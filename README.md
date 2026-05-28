@@ -32,6 +32,12 @@ while the semantic model gets richer.
 
 ## Install
 
+Requirements:
+
+- Entire CLI
+- Git
+- Go toolchain with CGO support (tree-sitter uses native parser bindings)
+
 Install the plugin binary with Go, then copy it into Entire's managed plugin
 directory:
 
@@ -43,6 +49,10 @@ entire sem version
 
 If `$(go env GOPATH)/bin` is already on your `PATH`, Entire can also discover
 the binary directly after `go install`.
+
+Entire plugins are currently local executables, not a hosted plugin marketplace:
+`entire sem` works because Entire discovers an `entire-sem` binary from its
+managed plugin directory or from `$PATH`.
 
 ## Install From Source
 

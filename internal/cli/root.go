@@ -82,9 +82,30 @@ func runDoctor(opts Options) error {
 	fmt.Fprintf(opts.Stdout, "ENTIRE_CLI_VERSION=%s\n", valueOrUnset(opts.Env.CLIVersion))
 	fmt.Fprintf(opts.Stdout, "ENTIRE_REPO_ROOT=%s\n", valueOrUnset(opts.Env.RepoRoot))
 	fmt.Fprintf(opts.Stdout, "ENTIRE_PLUGIN_DATA_DIR=%s\n", valueOrUnset(opts.Env.PluginDataDir))
+
+	if opts.Env.PluginDataDir != "" {
+		if err := os.MkdirAll(opts.Env.PluginDataDir, 0o700); err != nil {
+			return fmt.Errorf("create plugin data dir: %w", err)
+		}
+		probe, err := os.CreateTemp(opts.Env.PluginDataDir, ".write-test-*")
+		if err != nil {
+			return fmt.Errorf("write plugin data dir: %w", err)
+		}
+		probeName := probe.Name()
+		if err := probe.Close(); err != nil {
+			return fmt.Errorf("close plugin data probe: %w", err)
+		}
+		if err := os.Remove(probeName); err != nil {
+			return fmt.Errorf("remove plugin data probe: %w", err)
+		}
+		fmt.Fprintln(opts.Stdout, "plugin_data_dir=writable")
+	}
+
 	repo, err := resolveRepo(context.Background(), opts.Env, "")
 	if err != nil {
-		return err
+		fmt.Fprintf(opts.Stdout, "repo_root=%s\n", valueOrUnset(""))
+		fmt.Fprintf(opts.Stdout, "repo_error=%s\n", err)
+		return nil
 	}
 	fmt.Fprintf(opts.Stdout, "repo_root=%s\n", repo)
 	return nil
