@@ -109,6 +109,13 @@ auth.py
   - function parse_token removed (0 dependents)
 ```
 
+## Use Case
+
+When an agent changes a repo, you often need to decide if the checkpoint is safe
+to keep, revert, or continue from. File names are not enough. `entire-sem` shows
+the actual functions, classes, signatures, and renames that changed, so you can
+understand the checkpoint before reading the full diff.
+
 ## Why This Exists
 
 Issue [entireio/cli#589](https://github.com/entireio/cli/issues/589) proposes showing
