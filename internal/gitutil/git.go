@@ -22,6 +22,14 @@ func RepoRoot(ctx context.Context, cwd string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+func RevParse(ctx context.Context, repo, rev string) (string, error) {
+	out, err := run(ctx, repo, "git", "rev-parse", rev)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 func FirstParent(ctx context.Context, repo, rev string) (string, error) {
 	out, err := run(ctx, repo, "git", "rev-parse", rev+"^")
 	if err != nil {
