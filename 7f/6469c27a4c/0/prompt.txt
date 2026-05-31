@@ -1,0 +1,5 @@
+Create a new branch to implement docs/semantic_provider_requirements.md. Write your progress into docs/progress-so-far.md. Make sure everything is tested, reviewed with "entire review", and commit/push along the way.
+
+---
+
+Try “entire review” again. If you don’t understand how it works, inspect the ../cli repo.
