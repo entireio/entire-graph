@@ -33,3 +33,24 @@ Branch: `semantic-provider-contract`
   - `origin/semantic-provider-contract`
 - Ran `entire review`; it exited successfully with no output.
 - Re-ran `go test ./...` after `entire review`; it passed.
+
+## Review Follow-Up
+
+- Inspected `../cli/docs/architecture/review-command.md` and `entire review --help` to verify the canonical review flow.
+- Re-ran `entire review --base origin/main`; both configured reviewers completed successfully:
+  - `claude-code`
+  - `codex`
+- Addressed review findings:
+  - Snapshot records now come from the advertised `HEAD` tree when git metadata is available, instead of mixing `HEAD` commit/tree metadata with live working-tree file contents.
+  - Added a regression test proving dirty tracked changes and untracked files are excluded from a commit-addressed snapshot.
+  - Set `.entire/settings.json` telemetry to `false` so repo configuration matches the Phase 1 no-egress provider contract.
+- Re-ran `entire review --base origin/main` against the final uncommitted fix; both reviewers completed successfully.
+- Addressed second-pass review findings:
+  - Capabilities now advertise only relation types currently emitted by the provider.
+  - Unsupported-but-detected source files now produce machine-readable partial failures instead of silently disappearing.
+  - Go import extraction now tracks `import (...)` blocks instead of treating any quoted line as an import.
+  - Tool-handler detection now uses identifier tokens instead of broad substring matching.
+  - Added tests for no-`HEAD` warnings, unsupported source files, and Go import block scanning.
+- Validation after fixes:
+  - `go test ./...` passed.
+  - `git diff --check` passed.

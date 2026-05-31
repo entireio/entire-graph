@@ -29,10 +29,6 @@ var relationTypes = []string{
 	"CONTAINS",
 	"IMPORTS",
 	"CALLS",
-	"IMPLEMENTS",
-	"EXTENDS",
-	"OVERRIDES",
-	"ACCESSES",
 	"HANDLES_ROUTE",
 	"HANDLES_TOOL",
 }
@@ -180,12 +176,21 @@ func BuildProviderSnapshot(ctx context.Context, repo, providerVersion string) (P
 		return ProviderSnapshot{}, err
 	}
 	repoKey := repoKey(absRepo)
-	commit, _ := gitutil.RevParse(ctx, absRepo, "HEAD")
-	tree, _ := gitutil.RevParse(ctx, absRepo, "HEAD^{tree}")
+	var warnings []ProviderWarning
+	commit, commitErr := gitutil.RevParse(ctx, absRepo, "HEAD")
+	tree, treeErr := gitutil.RevParse(ctx, absRepo, "HEAD^{tree}")
 
-	paths, err := workingTreeFiles(absRepo)
+	paths, contentByFile, err := snapshotSource(ctx, absRepo, commitErr == nil && treeErr == nil)
 	if err != nil {
 		return ProviderSnapshot{}, err
+	}
+	if commitErr != nil || treeErr != nil {
+		warnings = append(warnings, ProviderWarning{
+			Code:                 "E_NO_GIT_HEAD",
+			Severity:             "warning",
+			EffectOnCompleteness: "snapshot records are read from the working tree because no HEAD tree is available",
+			Detail:               firstError(commitErr, treeErr).Error(),
+		})
 	}
 
 	parser := TreeSitterParser{}
@@ -197,20 +202,29 @@ func BuildProviderSnapshot(ctx context.Context, repo, providerVersion string) (P
 
 	for _, path := range paths {
 		if !Supported(path) {
+			if hint := unsupportedLanguageHint(path); hint != "" {
+				failures = append(failures, PartialFailure{
+					Code:                 "E_UNSUPPORTED_LANGUAGE",
+					Severity:             "warning",
+					FilePath:             path,
+					EffectOnCompleteness: "file omitted because no parser is available",
+					Detail:               hint,
+				})
+			}
 			continue
 		}
-		content, err := os.ReadFile(filepath.Join(absRepo, filepath.FromSlash(path)))
-		if err != nil {
+		content, ok := contentByFile[path]
+		if !ok {
 			failures = append(failures, PartialFailure{
 				Code:                 "E_FILE_READ",
 				Severity:             "error",
 				FilePath:             path,
 				EffectOnCompleteness: "file omitted from semantic snapshot",
-				Detail:               err.Error(),
+				Detail:               "file listed but content was unavailable",
 			})
 			continue
 		}
-		entities, language := parser.Parse(path, string(content))
+		entities, language := parser.Parse(path, content)
 		if language == "" {
 			failures = append(failures, PartialFailure{
 				Code:                 "E_UNSUPPORTED_LANGUAGE",
@@ -221,20 +235,24 @@ func BuildProviderSnapshot(ctx context.Context, repo, providerVersion string) (P
 			continue
 		}
 		languageSet[language] = struct{}{}
+		contentBytes := []byte(content)
 		files = append(files, FileRecord{
 			RecordType: "file",
 			Path:       path,
-			Blob:       contentHash(content),
+			Blob:       contentHash(contentBytes),
 			Language:   language,
-			Bytes:      len(content),
+			Bytes:      len(contentBytes),
 		})
 		fileSymbols := entitySymbols(repoKey, path, language, entities)
 		symbols = append(symbols, fileSymbols...)
 		recordsByFile[path] = fileSymbols
 	}
 
-	relations := buildRelations(repoKey, absRepo, files, recordsByFile)
+	relations := buildRelations(repoKey, files, recordsByFile, contentByFile)
 	languages := sortedKeys(languageSet)
+	if warnings == nil {
+		warnings = []ProviderWarning{}
+	}
 	if failures == nil {
 		failures = []PartialFailure{}
 	}
@@ -248,7 +266,7 @@ func BuildProviderSnapshot(ctx context.Context, repo, providerVersion string) (P
 		Tree:            tree,
 		Languages:       languages,
 		Capabilities:    []string{"ndjson", "stable-symbol-id-v1", "local-only", "partial-failures"},
-		Warnings:        []ProviderWarning{},
+		Warnings:        warnings,
 		PartialFailures: failures,
 		Stats: ProviderStats{
 			Files:             len(files),
@@ -335,7 +353,7 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 	return symbols
 }
 
-func buildRelations(repoKey, repo string, files []FileRecord, recordsByFile map[string][]SymbolRecord) []RelationRecord {
+func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, contentByFile map[string]string) []RelationRecord {
 	var relations []RelationRecord
 	symbolsByShortName := map[string][]SymbolRecord{}
 	for _, records := range recordsByFile {
@@ -365,11 +383,10 @@ func buildRelations(repoKey, repo string, files []FileRecord, recordsByFile map[
 	}
 
 	for _, file := range files {
-		contentBytes, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(file.Path)))
-		if err != nil {
+		content, ok := contentByFile[file.Path]
+		if !ok {
 			continue
 		}
-		content := string(contentBytes)
 		fromID := fileID(repoKey, file.Path)
 		for _, imported := range importsFor(file.Path, content) {
 			relations = append(relations, RelationRecord{
@@ -436,6 +453,39 @@ func buildRelations(repoKey, repo string, files []FileRecord, recordsByFile map[
 	return dedupeRelations(relations)
 }
 
+func snapshotSource(ctx context.Context, repo string, useHead bool) ([]string, map[string]string, error) {
+	if useHead {
+		paths, err := gitutil.ListFiles(ctx, repo, "HEAD")
+		if err != nil {
+			return nil, nil, err
+		}
+		contentByFile := map[string]string{}
+		for _, path := range paths {
+			content, ok, err := gitutil.ShowFile(ctx, repo, "HEAD", path)
+			if err != nil {
+				return nil, nil, err
+			}
+			if ok {
+				contentByFile[path] = content
+			}
+		}
+		return paths, contentByFile, nil
+	}
+	paths, err := workingTreeFiles(repo)
+	if err != nil {
+		return nil, nil, err
+	}
+	contentByFile := map[string]string{}
+	for _, path := range paths {
+		content, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(path)))
+		if err != nil {
+			continue
+		}
+		contentByFile[path] = string(content)
+	}
+	return paths, contentByFile, nil
+}
+
 func workingTreeFiles(repo string) ([]string, error) {
 	var paths []string
 	err := filepath.WalkDir(repo, func(path string, entry fs.DirEntry, err error) error {
@@ -464,10 +514,19 @@ func workingTreeFiles(repo string) ([]string, error) {
 	return paths, err
 }
 
+func firstError(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func importsFor(path, content string) []string {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".go":
-		return scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+(?:\w+\s+)?["]([^"]+)["]`), regexp.MustCompile(`(?m)^\s*(?:\w+\s+)?["]([^"]+)["]`))
+		return scanGoImports(content)
 	case ".py":
 		return scanImports(content, regexp.MustCompile(`(?m)^\s*(?:from\s+([A-Za-z0-9_\.]+)\s+import|import\s+([A-Za-z0-9_\.]+))`))
 	case ".js", ".jsx", ".ts", ".tsx":
@@ -477,6 +536,35 @@ func importsFor(path, content string) []string {
 	default:
 		return nil
 	}
+}
+
+func scanGoImports(content string) []string {
+	seen := map[string]struct{}{}
+	singleImport := regexp.MustCompile(`^\s*import\s+(?:\w+\s+)?["]([^"]+)["]`)
+	blockImport := regexp.MustCompile(`^\s*(?:\w+\s+)?["]([^"]+)["]`)
+	inBlock := false
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !inBlock {
+			if strings.HasPrefix(line, "import (") {
+				inBlock = true
+				continue
+			}
+			if matches := singleImport.FindStringSubmatch(line); len(matches) > 1 {
+				seen[matches[1]] = struct{}{}
+			}
+			continue
+		}
+		if strings.HasPrefix(line, ")") {
+			inBlock = false
+			continue
+		}
+		if matches := blockImport.FindStringSubmatch(line); len(matches) > 1 {
+			seen[matches[1]] = struct{}{}
+		}
+	}
+	return sortedKeys(seen)
 }
 
 func scanImports(content string, expressions ...*regexp.Regexp) []string {
@@ -513,7 +601,8 @@ func routeLiterals(content string) []string {
 
 func looksLikeToolHandler(symbol SymbolRecord, block string) bool {
 	value := strings.ToLower(symbol.QualifiedName + "\n" + block)
-	return strings.Contains(value, "tool") && (strings.Contains(value, "handler") || strings.Contains(value, "execute") || strings.Contains(value, "schema"))
+	tokens := tokenSet(value)
+	return tokens["tool"] && (tokens["handler"] || tokens["execute"] || tokens["schema"])
 }
 
 func symbolBlock(content string, symbol SymbolRecord) string {
@@ -602,4 +691,13 @@ func sortedKeys(set map[string]struct{}) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func unsupportedLanguageHint(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".c", ".cc", ".cpp", ".cs", ".h", ".hpp", ".java", ".kt", ".php", ".rb", ".scala", ".swift":
+		return "unsupported source extension " + filepath.Ext(path)
+	default:
+		return ""
+	}
 }

@@ -108,6 +108,102 @@ func TestWriteSnapshotNDJSON(t *testing.T) {
 	}
 }
 
+func TestBuildProviderSnapshotReadsAdvertisedHeadTree(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Sem Test")
+	git(t, repo, "config", "user.email", "sem@example.com")
+	writeFile(t, repo, "tracked.py", "def committed():\n    return True\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	writeFile(t, repo, "tracked.py", "def dirty():\n    return False\n")
+	writeFile(t, repo, "untracked.py", "def should_not_emit():\n    return True\n")
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Header.Commit == "" || snapshot.Header.Tree == "" {
+		t.Fatalf("missing git metadata: %#v", snapshot.Header)
+	}
+
+	seenSymbols := map[string]bool{}
+	for _, symbol := range snapshot.Symbols {
+		seenSymbols[symbol.QualifiedName] = true
+		if symbol.FilePath == "untracked.py" {
+			t.Fatalf("snapshot included untracked file symbol: %#v", symbol)
+		}
+	}
+	if !seenSymbols["committed"] {
+		t.Fatalf("snapshot did not include committed symbol: %#v", snapshot.Symbols)
+	}
+	if seenSymbols["dirty"] || seenSymbols["should_not_emit"] {
+		t.Fatalf("snapshot included working-tree-only symbols: %#v", snapshot.Symbols)
+	}
+}
+
+func TestBuildProviderSnapshotWarnsWithoutGitHead(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Header.Warnings) != 1 {
+		t.Fatalf("warnings = %#v", snapshot.Header.Warnings)
+	}
+	if snapshot.Header.Warnings[0].Code != "E_NO_GIT_HEAD" {
+		t.Fatalf("warning code = %q", snapshot.Header.Warnings[0].Code)
+	}
+	if snapshot.Header.Commit != "" || snapshot.Header.Tree != "" {
+		t.Fatalf("unexpected git metadata: %#v", snapshot.Header)
+	}
+}
+
+func TestBuildProviderSnapshotReportsUnsupportedSourceFiles(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "Supported.py", "def validate_token(token):\n    return bool(token)\n")
+	writeFile(t, repo, "Unsupported.java", "class Unsupported {}\n")
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var found bool
+	for _, failure := range snapshot.Header.PartialFailures {
+		if failure.Code == "E_UNSUPPORTED_LANGUAGE" && failure.FilePath == "Unsupported.java" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing unsupported language partial failure: %#v", snapshot.Header.PartialFailures)
+	}
+}
+
+func TestGoImportScannerOnlyReadsImportDeclarations(t *testing.T) {
+	imports := importsFor("main.go", `package main
+
+import (
+	"fmt"
+	alias "net/http"
+)
+
+var notImport = "not/a/package"
+
+func main() {
+	_ = "also/not/imported"
+	fmt.Println(http.MethodGet)
+}
+`)
+	got := strings.Join(imports, ",")
+	if got != "fmt,net/http" {
+		t.Fatalf("imports = %q", got)
+	}
+}
+
 func writeFile(t *testing.T, repo, path, content string) {
 	t.Helper()
 	full := filepath.Join(repo, path)
