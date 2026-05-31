@@ -6,7 +6,10 @@
   "checkpoints_count": 1,
   "files_touched": [
     "internal/cli/root.go",
-    "internal/gitutil/git.go"
+    "internal/cli/root_test.go",
+    "internal/gitutil/git.go",
+    "internal/sem/provider.go",
+    "internal/sem/provider_test.go"
   ],
   "sessions": [
     {
@@ -14,13 +17,19 @@
       "transcript": "/7f/6469c27a4c/0/full.jsonl",
       "content_hash": "/7f/6469c27a4c/0/content_hash.txt",
       "prompt": "/7f/6469c27a4c/0/prompt.txt"
+    },
+    {
+      "metadata": "/7f/6469c27a4c/1/metadata.json",
+      "transcript": "/7f/6469c27a4c/1/full.jsonl",
+      "content_hash": "/7f/6469c27a4c/1/content_hash.txt",
+      "prompt": "/7f/6469c27a4c/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 224343,
+    "input_tokens": 375760,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 6189824,
-    "output_tokens": 21561,
-    "api_call_count": 107
+    "cache_read_tokens": 13448320,
+    "output_tokens": 34630,
+    "api_call_count": 184
   }
 }
