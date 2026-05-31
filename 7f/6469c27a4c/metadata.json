@@ -3,7 +3,7 @@
   "checkpoint_id": "7f6469c27a4c",
   "strategy": "manual-commit",
   "branch": "semantic-provider-contract",
-  "checkpoints_count": 2,
+  "checkpoints_count": 3,
   "files_touched": [
     "internal/cli/root.go",
     "internal/cli/root_test.go",
@@ -29,14 +29,20 @@
       "transcript": "/7f/6469c27a4c/2/full.jsonl",
       "content_hash": "/7f/6469c27a4c/2/content_hash.txt",
       "prompt": "/7f/6469c27a4c/2/prompt.txt"
+    },
+    {
+      "metadata": "/7f/6469c27a4c/3/metadata.json",
+      "transcript": "/7f/6469c27a4c/3/full.jsonl",
+      "content_hash": "/7f/6469c27a4c/3/content_hash.txt",
+      "prompt": "/7f/6469c27a4c/3/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 443310,
+    "input_tokens": 522894,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 14169216,
-    "output_tokens": 40050,
-    "api_call_count": 196
+    "cache_read_tokens": 15153280,
+    "output_tokens": 45976,
+    "api_call_count": 212
   },
   "has_review": true
 }
