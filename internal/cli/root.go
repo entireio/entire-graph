@@ -103,8 +103,9 @@ func runDoctor(ctx context.Context, opts Options, args []string) error {
 		return errors.New("doctor accepts only --json")
 	}
 	report := map[string]any{
-		"provider": sem.ProviderName,
-		"version":  opts.Version,
+		"provider":  sem.ProviderName,
+		"version":   opts.Version,
+		"no_egress": true,
 		"environment": map[string]string{
 			envCLIVersion:    valueOrUnset(opts.Env.CLIVersion),
 			envRepoRoot:      valueOrUnset(opts.Env.RepoRoot),
@@ -123,6 +124,7 @@ func runDoctor(ctx context.Context, opts Options, args []string) error {
 		fmt.Fprintf(opts.Stdout, "ENTIRE_CLI_VERSION=%s\n", valueOrUnset(opts.Env.CLIVersion))
 		fmt.Fprintf(opts.Stdout, "ENTIRE_REPO_ROOT=%s\n", valueOrUnset(opts.Env.RepoRoot))
 		fmt.Fprintf(opts.Stdout, "ENTIRE_PLUGIN_DATA_DIR=%s\n", valueOrUnset(opts.Env.PluginDataDir))
+		fmt.Fprintln(opts.Stdout, "no_egress=true")
 	}
 
 	if opts.Env.PluginDataDir != "" {
@@ -187,7 +189,10 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	if err != nil {
 		return err
 	}
-	snapshot, err := sem.BuildProviderSnapshot(ctx, repo, opts.Version)
+	snapshot, err := sem.BuildProviderSnapshotWithOptions(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
+		NoNetwork: flags.NoNetwork,
+		Worktree:  flags.Worktree,
+	})
 	if err != nil {
 		return err
 	}
@@ -209,8 +214,10 @@ type commonFlags struct {
 }
 
 type providerFlags struct {
-	Repo   string
-	Format string
+	Repo      string
+	Format    string
+	NoNetwork bool
+	Worktree  bool
 }
 
 func parseProviderFlags(args []string) (providerFlags, []string, error) {
@@ -230,6 +237,10 @@ func parseProviderFlags(args []string) (providerFlags, []string, error) {
 				return flags, nil, errors.New("--format requires a value")
 			}
 			flags.Format = args[i]
+		case "--no-network":
+			flags.NoNetwork = true
+		case "--worktree":
+			flags.Worktree = true
 		default:
 			rest = append(rest, args[i])
 		}

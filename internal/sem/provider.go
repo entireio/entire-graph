@@ -130,6 +130,11 @@ type ProviderSnapshot struct {
 	Relations []RelationRecord
 }
 
+type ProviderSnapshotOptions struct {
+	NoNetwork bool
+	Worktree  bool
+}
+
 func Capabilities() CapabilityReport {
 	extensions := make([]string, 0, len(treeSitterLanguages))
 	languageSet := map[string]struct{}{}
@@ -171,20 +176,34 @@ func Capabilities() CapabilityReport {
 }
 
 func BuildProviderSnapshot(ctx context.Context, repo, providerVersion string) (ProviderSnapshot, error) {
+	return BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, ProviderSnapshotOptions{})
+}
+
+func BuildProviderSnapshotWithOptions(ctx context.Context, repo, providerVersion string, options ProviderSnapshotOptions) (ProviderSnapshot, error) {
 	absRepo, err := filepath.Abs(repo)
 	if err != nil {
 		return ProviderSnapshot{}, err
 	}
-	repoKey := repoKey(absRepo)
+	key := repoKey(ctx, absRepo)
 	var warnings []ProviderWarning
 	commit, commitErr := gitutil.RevParse(ctx, absRepo, "HEAD")
 	tree, treeErr := gitutil.RevParse(ctx, absRepo, "HEAD^{tree}")
 
-	paths, contentByFile, err := snapshotSource(ctx, absRepo, commitErr == nil && treeErr == nil)
+	// The provider is local-only. NoNetwork is accepted to make that contract
+	// explicit for callers that enforce no-egress provider execution.
+	_ = options.NoNetwork
+	useHead := !options.Worktree && commitErr == nil && treeErr == nil
+	paths, contentByFile, err := snapshotSource(ctx, absRepo, useHead)
 	if err != nil {
 		return ProviderSnapshot{}, err
 	}
-	if commitErr != nil || treeErr != nil {
+	if options.Worktree {
+		warnings = append(warnings, ProviderWarning{
+			Code:                 "W_WORKTREE_SNAPSHOT",
+			Severity:             "warning",
+			EffectOnCompleteness: "snapshot records are read from the working tree because --worktree was requested",
+		})
+	} else if commitErr != nil || treeErr != nil {
 		warnings = append(warnings, ProviderWarning{
 			Code:                 "E_NO_GIT_HEAD",
 			Severity:             "warning",
@@ -243,12 +262,12 @@ func BuildProviderSnapshot(ctx context.Context, repo, providerVersion string) (P
 			Language:   language,
 			Bytes:      len(contentBytes),
 		})
-		fileSymbols := entitySymbols(repoKey, path, language, entities)
+		fileSymbols := entitySymbols(key, path, language, entities)
 		symbols = append(symbols, fileSymbols...)
 		recordsByFile[path] = fileSymbols
 	}
 
-	relations := buildRelations(repoKey, files, recordsByFile, contentByFile)
+	relations := buildRelations(key, files, recordsByFile, contentByFile)
 	languages := sortedKeys(languageSet)
 	if warnings == nil {
 		warnings = []ProviderWarning{}
@@ -261,7 +280,7 @@ func BuildProviderSnapshot(ctx context.Context, repo, providerVersion string) (P
 		Provider:        ProviderName,
 		ProviderVersion: providerVersion,
 		RepoRoot:        absRepo,
-		RepoKey:         repoKey,
+		RepoKey:         key,
 		Commit:          commit,
 		Tree:            tree,
 		Languages:       languages,
@@ -667,8 +686,46 @@ func externalID(kind, value string) string {
 	return "external:" + kind + ":" + value
 }
 
-func repoKey(repo string) string {
+func repoKey(ctx context.Context, repo string) string {
+	for _, remoteURL := range githubRemoteURLs(ctx, repo) {
+		if key, ok := githubRepoKey(remoteURL); ok {
+			return key
+		}
+	}
 	return "local/" + filepath.Base(repo)
+}
+
+func githubRemoteURLs(ctx context.Context, repo string) []string {
+	urls, err := gitutil.RemoteURLs(ctx, repo)
+	if err != nil {
+		return nil
+	}
+	return urls
+}
+
+func githubRepoKey(remoteURL string) (string, bool) {
+	remoteURL = strings.TrimSpace(remoteURL)
+	remoteURL = strings.TrimRight(remoteURL, "/")
+	remoteURL = strings.TrimSuffix(remoteURL, ".git")
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`^git@github\.com:([^/]+)/(.+)$`),
+		regexp.MustCompile(`^https://github\.com/([^/]+)/(.+)$`),
+		regexp.MustCompile(`^http://github\.com/([^/]+)/(.+)$`),
+		regexp.MustCompile(`^ssh://git@github\.com/([^/]+)/(.+)$`),
+	}
+	for _, pattern := range patterns {
+		matches := pattern.FindStringSubmatch(remoteURL)
+		if len(matches) != 3 {
+			continue
+		}
+		owner := strings.TrimSpace(matches[1])
+		name := strings.TrimSpace(matches[2])
+		if owner == "" || name == "" || strings.Contains(name, "/") {
+			continue
+		}
+		return "gh/" + owner + "/" + name, true
+	}
+	return "", false
 }
 
 func containerName(qualifiedName string) string {

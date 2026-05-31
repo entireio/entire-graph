@@ -90,6 +90,9 @@ func TestProviderJSONCommands(t *testing.T) {
 	if doctor["repo_root"] != repo {
 		t.Fatalf("doctor repo_root = %#v", doctor["repo_root"])
 	}
+	if doctor["no_egress"] != true {
+		t.Fatalf("doctor no_egress = %#v", doctor["no_egress"])
+	}
 
 	var capabilitiesOut bytes.Buffer
 	if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &capabilitiesOut}, []string{"capabilities", "--json"}); err != nil {
@@ -132,6 +135,47 @@ def check_token(token):
 				t.Fatalf("%s invalid json line %q: %v", tt.command, line, err)
 			}
 		}
+	}
+}
+
+func TestSnapshotAcceptsNoNetwork(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(repo); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(cwd); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+
+	var out bytes.Buffer
+	err = Run(t.Context(), Options{Version: "0.1.0", Stdout: &out}, []string{"snapshot", "--repo", ".", "--format", "ndjson", "--no-network"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"schema_version":"1.0"`) {
+		t.Fatalf("snapshot output:\n%s", out.String())
+	}
+}
+
+func TestSnapshotAcceptsWorktree(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
+
+	var out bytes.Buffer
+	err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{"snapshot", "--repo", repo, "--format", "ndjson", "--no-network", "--worktree"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"schema_version":"1.0"`) {
+		t.Fatalf("snapshot output:\n%s", out.String())
 	}
 }
 

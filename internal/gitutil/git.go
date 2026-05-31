@@ -109,6 +109,32 @@ func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error)
 	return out, true, nil
 }
 
+func RemoteURLs(ctx context.Context, repo string) ([]string, error) {
+	out, err := run(ctx, repo, "git", "config", "--get-regexp", `^remote\..*\.url$`)
+	if err != nil {
+		return nil, err
+	}
+	origin := ""
+	var urls []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		key := fields[0]
+		url := fields[1]
+		if key == "remote.origin.url" {
+			origin = url
+			continue
+		}
+		urls = append(urls, url)
+	}
+	if origin != "" {
+		urls = append([]string{origin}, urls...)
+	}
+	return urls, nil
+}
+
 func run(ctx context.Context, dir, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir

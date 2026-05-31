@@ -143,6 +143,44 @@ func TestBuildProviderSnapshotReadsAdvertisedHeadTree(t *testing.T) {
 	}
 }
 
+func TestBuildProviderSnapshotWorktreeIncludesDirtyFiles(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Sem Test")
+	git(t, repo, "config", "user.email", "sem@example.com")
+	writeFile(t, repo, "tracked.py", "def committed():\n    return True\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	writeFile(t, repo, "tracked.py", "def dirty():\n    return False\n")
+	writeFile(t, repo, "untracked.py", "def worktree_only():\n    return True\n")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		NoNetwork: true,
+		Worktree:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seenSymbols := map[string]bool{}
+	for _, symbol := range snapshot.Symbols {
+		seenSymbols[symbol.QualifiedName] = true
+	}
+	if !seenSymbols["dirty"] || !seenSymbols["worktree_only"] {
+		t.Fatalf("snapshot did not include worktree symbols: %#v", snapshot.Symbols)
+	}
+	if seenSymbols["committed"] {
+		t.Fatalf("snapshot included HEAD-only symbol: %#v", snapshot.Symbols)
+	}
+	if len(snapshot.Header.Warnings) != 1 || snapshot.Header.Warnings[0].Code != "W_WORKTREE_SNAPSHOT" {
+		t.Fatalf("warnings = %#v", snapshot.Header.Warnings)
+	}
+	if snapshot.Header.Commit == "" || snapshot.Header.Tree == "" {
+		t.Fatalf("worktree snapshot should include HEAD commit/tree metadata: %#v", snapshot.Header)
+	}
+}
+
 func TestBuildProviderSnapshotWarnsWithoutGitHead(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
@@ -159,6 +197,50 @@ func TestBuildProviderSnapshotWarnsWithoutGitHead(t *testing.T) {
 	}
 	if snapshot.Header.Commit != "" || snapshot.Header.Tree != "" {
 		t.Fatalf("unexpected git metadata: %#v", snapshot.Header)
+	}
+}
+
+func TestBuildProviderSnapshotUsesGitHubSSHRepoKey(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "remote", "add", "origin", "git@github.com:jayparikh/agentviz.git")
+	writeFile(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Header.RepoKey != "gh/jayparikh/agentviz" {
+		t.Fatalf("repo_key = %q", snapshot.Header.RepoKey)
+	}
+}
+
+func TestBuildProviderSnapshotUsesGitHubHTTPSRepoKey(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "remote", "add", "origin", "https://github.com/jayparikh/agentviz.git/")
+	writeFile(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Header.RepoKey != "gh/jayparikh/agentviz" {
+		t.Fatalf("repo_key = %q", snapshot.Header.RepoKey)
+	}
+}
+
+func TestBuildProviderSnapshotFallsBackWithoutSupportedRemote(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	writeFile(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Header.RepoKey != "local/"+filepath.Base(repo) {
+		t.Fatalf("repo_key = %q", snapshot.Header.RepoKey)
 	}
 }
 
