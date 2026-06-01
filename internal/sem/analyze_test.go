@@ -79,6 +79,46 @@ func TestAnalyzeGitRangeDependentCounts(t *testing.T) {
 	}
 }
 
+func TestAnalyzeGitRangeExpandedLanguageSignatureChange(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Sem Test")
+	git(t, repo, "config", "user.email", "sem@example.com")
+
+	write(t, repo, "User.java", `class User {
+    boolean validate(String token) { return true; }
+}
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "User.java", `class User {
+    boolean validate(String token, String issuer) { return true; }
+}
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "semantic change")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, file := range result.Files {
+		if file.Path != "User.java" || file.Language != "Java" {
+			continue
+		}
+		for _, change := range file.Changes {
+			if change.Type == "signature_changed" && change.Kind == "method" && change.Name == "User.validate" {
+				return
+			}
+		}
+	}
+	t.Fatalf("missing Java method signature change in %#v", result.Files)
+}
+
 func TestAnalyzeCheckpointResolvesAssociatedCommit(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")

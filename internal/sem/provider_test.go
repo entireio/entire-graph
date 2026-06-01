@@ -72,6 +72,43 @@ def check_token(token):
 	}
 }
 
+func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
+	caps := Capabilities()
+	seen := map[string]bool{}
+	for _, language := range caps.SupportedLanguages {
+		seen[language] = true
+	}
+	for _, want := range []string{
+		"Bash",
+		"C",
+		"C#",
+		"C++",
+		"CUE",
+		"Elixir",
+		"Go",
+		"Groovy",
+		"HCL",
+		"Java",
+		"JavaScript",
+		"Kotlin",
+		"Lua",
+		"OCaml",
+		"PHP",
+		"Protocol Buffers",
+		"Python",
+		"Ruby",
+		"Rust",
+		"SQL",
+		"Scala",
+		"Swift",
+		"TypeScript",
+	} {
+		if !seen[want] {
+			t.Fatalf("capabilities missing language %q in %#v", want, caps.SupportedLanguages)
+		}
+	}
+}
+
 func TestWriteSnapshotNDJSON(t *testing.T) {
 	snapshot := ProviderSnapshot{
 		Header: SnapshotHeader{
@@ -341,7 +378,7 @@ func TestBuildProviderSnapshotFallsBackWithoutSupportedRemote(t *testing.T) {
 func TestBuildProviderSnapshotReportsUnsupportedSourceFiles(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "Supported.py", "def validate_token(token):\n    return bool(token)\n")
-	writeFile(t, repo, "Unsupported.java", "class Unsupported {}\n")
+	writeFile(t, repo, "Unsupported.dart", "class Unsupported {}\n")
 
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
 	if err != nil {
@@ -350,7 +387,7 @@ func TestBuildProviderSnapshotReportsUnsupportedSourceFiles(t *testing.T) {
 
 	var found bool
 	for _, failure := range snapshot.Header.PartialFailures {
-		if failure.Code == "E_UNSUPPORTED_LANGUAGE" && failure.FilePath == "Unsupported.java" {
+		if failure.Code == "E_UNSUPPORTED_LANGUAGE" && failure.FilePath == "Unsupported.dart" {
 			found = true
 		}
 	}

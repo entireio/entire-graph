@@ -562,14 +562,46 @@ func firstError(errs ...error) error {
 
 func importsFor(path, content string) []string {
 	switch strings.ToLower(filepath.Ext(path)) {
+	case ".bash", ".sh", ".zsh":
+		return scanImports(content, regexp.MustCompile(`(?m)^\s*(?:source|\.)\s+["']?([^"'\s]+)`))
+	case ".c", ".h":
+		return scanImports(content, regexp.MustCompile(`(?m)^\s*#\s*include\s+[<"]([^>"]+)[>"]`))
+	case ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx":
+		return scanImports(content, regexp.MustCompile(`(?m)^\s*#\s*include\s+[<"]([^>"]+)[>"]`))
+	case ".cs":
+		return scanImports(content, regexp.MustCompile(`(?m)^\s*using\s+([A-Za-z0-9_\.]+)\s*;`))
+	case ".cue":
+		return scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+(?:\(\s*)?["]([^"]+)["]`))
+	case ".ex", ".exs":
+		return scanImports(content, regexp.MustCompile(`(?m)^\s*(?:alias|import|require|use)\s+([A-Za-z0-9_\.]+)`))
 	case ".go":
 		return scanGoImports(content)
+	case ".gradle", ".groovy":
+		return scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z0-9_\.]+)`))
+	case ".hcl", ".tf", ".tfvars":
+		return nil
+	case ".java", ".kt", ".kts", ".scala", ".sc", ".sbt":
+		return scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z0-9_\.\*]+)`))
 	case ".py":
 		return scanImports(content, regexp.MustCompile(`(?m)^\s*(?:from\s+([A-Za-z0-9_\.]+)\s+import|import\s+([A-Za-z0-9_\.]+))`))
 	case ".js", ".jsx", ".ts", ".tsx":
 		return scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+.*?\s+from\s+['"]([^'"]+)['"]|^\s*import\s+['"]([^'"]+)['"]`))
+	case ".lua":
+		return scanImports(content, regexp.MustCompile(`(?m)require\s*(?:\(|\s)\s*["']([^"']+)["']`))
+	case ".ml", ".mli":
+		return scanImports(content, regexp.MustCompile(`(?m)^\s*open\s+([A-Za-z0-9_\.]+)`))
+	case ".php":
+		return scanImports(content, regexp.MustCompile(`(?m)^\s*(?:use|include|require|include_once|require_once)\s+['"]?([^'";]+)`))
+	case ".proto":
+		return scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+["]([^"]+)["]`))
+	case ".rb":
+		return scanImports(content, regexp.MustCompile(`(?m)^\s*require(?:_relative)?\s+['"]([^'"]+)['"]`))
 	case ".rs":
 		return scanImports(content, regexp.MustCompile(`(?m)^\s*use\s+([^;]+);`))
+	case ".sql":
+		return nil
+	case ".swift":
+		return scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z0-9_]+)`))
 	default:
 		return nil
 	}
@@ -773,7 +805,7 @@ func sortedKeys(set map[string]struct{}) []string {
 
 func unsupportedLanguageHint(path string) string {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".c", ".cc", ".cpp", ".cs", ".h", ".hpp", ".java", ".kt", ".php", ".rb", ".scala", ".swift":
+	case ".dart", ".erb", ".f90", ".for", ".fs", ".fsharp", ".m", ".mm", ".pl", ".pm", ".svelte", ".vue", ".zig":
 		return "unsupported source extension " + filepath.Ext(path)
 	default:
 		return ""

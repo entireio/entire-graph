@@ -9,10 +9,28 @@ import (
 	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
+	"github.com/smacker/go-tree-sitter/bash"
+	"github.com/smacker/go-tree-sitter/c"
+	"github.com/smacker/go-tree-sitter/cpp"
+	"github.com/smacker/go-tree-sitter/csharp"
+	"github.com/smacker/go-tree-sitter/cue"
+	"github.com/smacker/go-tree-sitter/elixir"
 	"github.com/smacker/go-tree-sitter/golang"
+	"github.com/smacker/go-tree-sitter/groovy"
+	"github.com/smacker/go-tree-sitter/hcl"
+	"github.com/smacker/go-tree-sitter/java"
 	"github.com/smacker/go-tree-sitter/javascript"
+	"github.com/smacker/go-tree-sitter/kotlin"
+	"github.com/smacker/go-tree-sitter/lua"
+	"github.com/smacker/go-tree-sitter/ocaml"
+	"github.com/smacker/go-tree-sitter/php"
+	"github.com/smacker/go-tree-sitter/protobuf"
 	"github.com/smacker/go-tree-sitter/python"
+	"github.com/smacker/go-tree-sitter/ruby"
 	"github.com/smacker/go-tree-sitter/rust"
+	"github.com/smacker/go-tree-sitter/scala"
+	"github.com/smacker/go-tree-sitter/sql"
+	"github.com/smacker/go-tree-sitter/swift"
 	treesittertsx "github.com/smacker/go-tree-sitter/typescript/tsx"
 	treesitterts "github.com/smacker/go-tree-sitter/typescript/typescript"
 )
@@ -23,13 +41,47 @@ type languageSpec struct {
 }
 
 var treeSitterLanguages = map[string]languageSpec{
-	".go":  {language: "Go", grammar: golang.GetLanguage()},
-	".py":  {language: "Python", grammar: python.GetLanguage()},
-	".js":  {language: "JavaScript", grammar: javascript.GetLanguage()},
-	".jsx": {language: "JavaScript", grammar: treesittertsx.GetLanguage()},
-	".ts":  {language: "TypeScript", grammar: treesitterts.GetLanguage()},
-	".tsx": {language: "TypeScript", grammar: treesittertsx.GetLanguage()},
-	".rs":  {language: "Rust", grammar: rust.GetLanguage()},
+	".bash":   {language: "Bash", grammar: bash.GetLanguage()},
+	".c":      {language: "C", grammar: c.GetLanguage()},
+	".cc":     {language: "C++", grammar: cpp.GetLanguage()},
+	".cpp":    {language: "C++", grammar: cpp.GetLanguage()},
+	".cs":     {language: "C#", grammar: csharp.GetLanguage()},
+	".cue":    {language: "CUE", grammar: cue.GetLanguage()},
+	".cxx":    {language: "C++", grammar: cpp.GetLanguage()},
+	".ex":     {language: "Elixir", grammar: elixir.GetLanguage()},
+	".exs":    {language: "Elixir", grammar: elixir.GetLanguage()},
+	".go":     {language: "Go", grammar: golang.GetLanguage()},
+	".gradle": {language: "Groovy", grammar: groovy.GetLanguage()},
+	".groovy": {language: "Groovy", grammar: groovy.GetLanguage()},
+	".h":      {language: "C", grammar: c.GetLanguage()},
+	".hcl":    {language: "HCL", grammar: hcl.GetLanguage()},
+	".hh":     {language: "C++", grammar: cpp.GetLanguage()},
+	".hpp":    {language: "C++", grammar: cpp.GetLanguage()},
+	".hxx":    {language: "C++", grammar: cpp.GetLanguage()},
+	".java":   {language: "Java", grammar: java.GetLanguage()},
+	".js":     {language: "JavaScript", grammar: javascript.GetLanguage()},
+	".jsx":    {language: "JavaScript", grammar: treesittertsx.GetLanguage()},
+	".kt":     {language: "Kotlin", grammar: kotlin.GetLanguage()},
+	".kts":    {language: "Kotlin", grammar: kotlin.GetLanguage()},
+	".lua":    {language: "Lua", grammar: lua.GetLanguage()},
+	".ml":     {language: "OCaml", grammar: ocaml.GetLanguage()},
+	".mli":    {language: "OCaml", grammar: ocaml.GetLanguage()},
+	".php":    {language: "PHP", grammar: php.GetLanguage()},
+	".proto":  {language: "Protocol Buffers", grammar: protobuf.GetLanguage()},
+	".py":     {language: "Python", grammar: python.GetLanguage()},
+	".rb":     {language: "Ruby", grammar: ruby.GetLanguage()},
+	".rs":     {language: "Rust", grammar: rust.GetLanguage()},
+	".sbt":    {language: "Scala", grammar: scala.GetLanguage()},
+	".scala":  {language: "Scala", grammar: scala.GetLanguage()},
+	".sc":     {language: "Scala", grammar: scala.GetLanguage()},
+	".sh":     {language: "Bash", grammar: bash.GetLanguage()},
+	".sql":    {language: "SQL", grammar: sql.GetLanguage()},
+	".swift":  {language: "Swift", grammar: swift.GetLanguage()},
+	".tf":     {language: "HCL", grammar: hcl.GetLanguage()},
+	".tfvars": {language: "HCL", grammar: hcl.GetLanguage()},
+	".ts":     {language: "TypeScript", grammar: treesitterts.GetLanguage()},
+	".tsx":    {language: "TypeScript", grammar: treesittertsx.GetLanguage()},
+	".zsh":    {language: "Bash", grammar: bash.GetLanguage()},
 }
 
 type TreeSitterParser struct{}
@@ -87,8 +139,11 @@ func entityFromNode(node *sitter.Node, src []byte, scope string) (Entity, bool) 
 	var kind string
 	var name string
 	switch node.Type() {
-	case "class_definition", "class_declaration":
+	case "class", "class_definition", "class_declaration", "class_specifier":
 		kind = "class"
+		name = nodeName(node, src)
+	case "module_definition":
+		kind = "module"
 		name = nodeName(node, src)
 	case "function_definition":
 		kind = "function"
@@ -100,6 +155,10 @@ func entityFromNode(node *sitter.Node, src []byte, scope string) (Entity, bool) 
 	case "function_declaration", "function_item":
 		kind = "function"
 		name = nodeName(node, src)
+		if scope != "" {
+			kind = "method"
+			name = qualify(scope, name)
+		}
 	case "function_signature_item":
 		kind = "function"
 		name = nodeName(node, src)
@@ -112,6 +171,8 @@ func entityFromNode(node *sitter.Node, src []byte, scope string) (Entity, bool) 
 		name = nodeName(node, src)
 		if receiver := goReceiverName(node, src); receiver != "" {
 			name = qualify(receiver, name)
+		} else if scope != "" {
+			name = qualify(scope, name)
 		}
 	case "method_definition":
 		kind = "method"
@@ -119,21 +180,72 @@ func entityFromNode(node *sitter.Node, src []byte, scope string) (Entity, bool) 
 		if scope != "" {
 			name = qualify(scope, name)
 		}
-	case "type_spec", "type_alias_declaration":
+	case "method":
+		kind = "function"
+		name = nodeName(node, src)
+		if scope != "" {
+			kind = "method"
+			name = qualify(scope, name)
+		}
+	case "type_definition", "type_spec", "type_alias_declaration":
 		kind = "type"
 		name = nodeName(node, src)
-	case "interface_declaration":
+	case "interface_declaration", "interface_definition":
 		kind = "interface"
 		name = nodeName(node, src)
-	case "struct_item":
+	case "struct_item", "struct_specifier", "struct_declaration":
 		kind = "struct"
 		name = nodeName(node, src)
-	case "enum_item":
+	case "enum_item", "enum_declaration", "enum_specifier":
 		kind = "enum"
 		name = nodeName(node, src)
-	case "trait_item":
+	case "trait_definition", "trait_item":
 		kind = "trait"
 		name = nodeName(node, src)
+	case "value_definition":
+		kind = "function"
+		name = nodeName(node, src)
+		if scope != "" {
+			kind = "method"
+			name = qualify(scope, name)
+		}
+	case "function_statement":
+		kind = "function"
+		name = luaFunctionName(node, src)
+		if scope != "" && name != "" && !strings.Contains(name, ".") {
+			kind = "method"
+			name = qualify(scope, name)
+		}
+	case "block":
+		kind = "block"
+		name = hclBlockName(node, src)
+	case "field":
+		kind = "field"
+		name = cueFieldName(node, src)
+	case "message":
+		kind = "message"
+		name = nodeName(node, src)
+	case "service":
+		kind = "service"
+		name = nodeName(node, src)
+	case "rpc":
+		kind = "rpc"
+		name = nodeName(node, src)
+		if scope != "" {
+			name = qualify(scope, name)
+		}
+	case "create_table":
+		kind = "table"
+		name = nodeName(node, src)
+	case "create_function":
+		kind = "function"
+		name = nodeName(node, src)
+	case "call":
+		var ok bool
+		kind, name, ok = elixirCallEntity(node, src, scope)
+		if !ok {
+			return Entity{}, false
+		}
 	case "variable_declarator":
 		value := node.ChildByFieldName("value")
 		if !functionLikeValue(value) {
@@ -147,6 +259,7 @@ func entityFromNode(node *sitter.Node, src []byte, scope string) (Entity, bool) 
 	if name == "" {
 		return Entity{}, false
 	}
+	kind = refineKind(kind, node, src)
 
 	block := node.Content(src)
 	entity := Entity{
@@ -161,25 +274,70 @@ func entityFromNode(node *sitter.Node, src []byte, scope string) (Entity, bool) 
 	return entity, true
 }
 
+func refineKind(kind string, node *sitter.Node, src []byte) string {
+	if kind != "class" {
+		return kind
+	}
+	content := strings.TrimSpace(node.Content(src))
+	switch {
+	case strings.HasPrefix(content, "struct "):
+		return "struct"
+	case strings.HasPrefix(content, "enum "):
+		return "enum"
+	case strings.HasPrefix(content, "interface "):
+		return "interface"
+	case strings.HasPrefix(content, "protocol "):
+		return "interface"
+	default:
+		return kind
+	}
+}
+
 func nodeName(node *sitter.Node, src []byte) string {
-	for _, field := range []string{"name", "property", "type"} {
+	for _, field := range []string{"name", "property"} {
 		child := node.ChildByFieldName(field)
 		if validNode(child) {
-			return child.Content(src)
+			if name := nameFromNode(child, src); name != "" {
+				return name
+			}
 		}
+	}
+	return firstNameDescendant(node, src)
+}
+
+func firstNameDescendant(node *sitter.Node, src []byte) string {
+	if !validNode(node) {
+		return ""
+	}
+	if isNameNode(node.Type()) {
+		return strings.TrimSpace(node.Content(src))
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		child := node.NamedChild(i)
-		if validNode(child) && isNameNode(child.Type()) {
-			return child.Content(src)
+		if name := firstNameDescendant(child, src); name != "" {
+			return name
 		}
 	}
 	return ""
 }
 
+func nameFromNode(node *sitter.Node, src []byte) string {
+	if !validNode(node) {
+		return ""
+	}
+	content := strings.TrimSpace(node.Content(src))
+	if isNameNode(node.Type()) && content != "" {
+		return content
+	}
+	if name := firstNameDescendant(node, src); name != "" {
+		return name
+	}
+	return content
+}
+
 func isNameNode(nodeType string) bool {
 	switch nodeType {
-	case "identifier", "type_identifier", "field_identifier", "property_identifier", "package_identifier":
+	case "alias", "bare_key", "class_name", "constant", "field_identifier", "field_name", "identifier", "id_name", "message_name", "module_name", "name", "package_identifier", "property_identifier", "rpc_name", "service_name", "simple_identifier", "template_literal", "type_constructor", "type_identifier", "value_name", "word":
 		return true
 	default:
 		return false
@@ -211,7 +369,7 @@ func firstBodyLikeChild(node *sitter.Node) *sitter.Node {
 			continue
 		}
 		switch child.Type() {
-		case "block", "statement_block", "class_body", "declaration_list", "field_declaration_list", "interface_body":
+		case "block", "statement_block", "class_body", "declaration_list", "field_declaration_list", "interface_body", "compound_statement", "closure", "do_block", "function_body", "message_body", "service_body", "template_body":
 			return child
 		}
 	}
@@ -223,7 +381,7 @@ func functionLikeValue(node *sitter.Node) bool {
 		return false
 	}
 	switch node.Type() {
-	case "arrow_function", "function", "function_expression", "generator_function":
+	case "arrow_function", "function", "function_definition", "function_expression", "generator_function", "lambda":
 		return true
 	default:
 		return false
@@ -232,11 +390,127 @@ func functionLikeValue(node *sitter.Node) bool {
 
 func scopesChildren(kind string) bool {
 	switch kind {
-	case "class", "struct", "trait", "interface":
+	case "class", "interface", "message", "module", "service", "struct", "trait":
 		return true
 	default:
 		return false
 	}
+}
+
+func elixirCallEntity(node *sitter.Node, src []byte, scope string) (string, string, bool) {
+	head := firstNamedChildOfType(node, "identifier")
+	if !validNode(head) {
+		return "", "", false
+	}
+	switch strings.TrimSpace(head.Content(src)) {
+	case "defmodule":
+		if alias := firstDescendantOfType(node, "alias"); validNode(alias) {
+			return "module", strings.TrimSpace(alias.Content(src)), true
+		}
+	case "def", "defp":
+		args := firstNamedChildOfType(node, "arguments")
+		if !validNode(args) {
+			return "", "", false
+		}
+		for i := 0; i < int(args.NamedChildCount()); i++ {
+			child := args.NamedChild(i)
+			if !validNode(child) || child.Type() != "call" {
+				continue
+			}
+			if nameNode := firstNamedChildOfType(child, "identifier"); validNode(nameNode) {
+				name := strings.TrimSpace(nameNode.Content(src))
+				if scope != "" {
+					return "method", qualify(scope, name), true
+				}
+				return "function", name, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+func hclBlockName(node *sitter.Node, src []byte) string {
+	var parts []string
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if !validNode(child) {
+			continue
+		}
+		switch child.Type() {
+		case "identifier", "string_lit":
+			if value := hclBlockPart(child, src); value != "" {
+				parts = append(parts, value)
+			}
+		}
+	}
+	return strings.Join(parts, ".")
+}
+
+func hclBlockPart(node *sitter.Node, src []byte) string {
+	if node.Type() == "identifier" {
+		return strings.TrimSpace(node.Content(src))
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if validNode(child) && child.Type() == "template_literal" {
+			return strings.TrimSpace(child.Content(src))
+		}
+	}
+	return strings.Trim(strings.TrimSpace(node.Content(src)), `"`)
+}
+
+func cueFieldName(node *sitter.Node, src []byte) string {
+	label := firstNamedChildOfType(node, "label")
+	if !validNode(label) {
+		return ""
+	}
+	return strings.TrimSpace(label.Content(src))
+}
+
+func luaFunctionName(node *sitter.Node, src []byte) string {
+	nameNode := firstNamedChildOfType(node, "function_name")
+	if !validNode(nameNode) {
+		return nodeName(node, src)
+	}
+	var parts []string
+	for i := 0; i < int(nameNode.NamedChildCount()); i++ {
+		child := nameNode.NamedChild(i)
+		if validNode(child) && child.Type() == "identifier" {
+			parts = append(parts, strings.TrimSpace(child.Content(src)))
+		}
+	}
+	if len(parts) == 0 {
+		return strings.TrimSpace(nameNode.Content(src))
+	}
+	return strings.Join(parts, ".")
+}
+
+func firstNamedChildOfType(node *sitter.Node, nodeType string) *sitter.Node {
+	if !validNode(node) {
+		return nil
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if validNode(child) && child.Type() == nodeType {
+			return child
+		}
+	}
+	return nil
+}
+
+func firstDescendantOfType(node *sitter.Node, nodeType string) *sitter.Node {
+	if !validNode(node) {
+		return nil
+	}
+	if node.Type() == nodeType {
+		return node
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		if found := firstDescendantOfType(node.NamedChild(i), nodeType); validNode(found) {
+			return found
+		}
+	}
+	return nil
 }
 
 func goReceiverName(node *sitter.Node, src []byte) string {

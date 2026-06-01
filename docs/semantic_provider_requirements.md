@@ -212,7 +212,9 @@ Useful existing foundation:
 
 - Go implementation.
 - Isolated tree-sitter parser boundary.
-- Go, Python, JavaScript, TypeScript, and Rust support.
+- Bash, C, C++, C#, CUE, Elixir, Go, Groovy, HCL/Terraform, Java,
+  JavaScript, TypeScript, Kotlin, Lua, OCaml, PHP, Protocol Buffers, Python,
+  Ruby, Rust, Scala, SQL, and Swift support.
 - Entity signature and body-hash comparison.
 - Checkpoint-aware semantic diffs.
 

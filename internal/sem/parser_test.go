@@ -123,3 +123,188 @@ trait Run { fn run(&self); }
 		}
 	}
 }
+
+func TestTreeSitterParserExpandedLanguageEntities(t *testing.T) {
+	tests := []struct {
+		path     string
+		input    string
+		language string
+		names    []string
+	}{
+		{
+			path:     "main.c",
+			language: "C",
+			input: `typedef struct User { int id; } User;
+int validate(int token) { return token; }
+`,
+			names: []string{"User", "validate"},
+		},
+		{
+			path:     "main.cpp",
+			language: "C++",
+			input: `class User { public: void run() {} };
+int validate(int token) { return token; }
+`,
+			names: []string{"User", "User.run", "validate"},
+		},
+		{
+			path:     "User.cs",
+			language: "C#",
+			input: `class User { public bool Validate(string token) { return true; } }
+interface IRun { void Run(); }
+`,
+			names: []string{"User", "User.Validate", "IRun", "IRun.Run"},
+		},
+		{
+			path:     "User.java",
+			language: "Java",
+			input: `class User { boolean validate(String token) { return true; } }
+interface Run { void run(); }
+`,
+			names: []string{"User", "User.validate", "Run", "Run.run"},
+		},
+		{
+			path:     "User.kt",
+			language: "Kotlin",
+			input: `class User { fun validate(token: String): Boolean { return true } }
+interface Run { fun run() }
+fun top() {}
+`,
+			names: []string{"User", "User.validate", "Run", "Run.run", "top"},
+		},
+		{
+			path:     "auth.rb",
+			language: "Ruby",
+			input: `class User
+  def validate(token)
+    true
+  end
+end
+def top; end
+`,
+			names: []string{"User", "User.validate", "top"},
+		},
+		{
+			path:     "auth.php",
+			language: "PHP",
+			input: `<?php
+class User { function validate($token) { return true; } }
+function top() {}
+interface Run { public function run(); }
+`,
+			names: []string{"User", "User.validate", "top", "Run", "Run.run"},
+		},
+		{
+			path:     "Auth.swift",
+			language: "Swift",
+			input: `struct User { func validate(token: String) -> Bool { true } }
+class Runner {}
+func top() {}
+`,
+			names: []string{"User", "User.validate", "Runner", "top"},
+		},
+		{
+			path:     "Auth.scala",
+			language: "Scala",
+			input: `class User { def validate(token: String): Boolean = true }
+trait Run { def run(): Unit }
+def top(): Unit = {}
+`,
+			names: []string{"User", "User.validate", "Run", "Run.run", "top"},
+		},
+		{
+			path:     "auth.ex",
+			language: "Elixir",
+			input: `defmodule User do
+  def validate(token), do: true
+  defp secret(), do: :ok
+end
+`,
+			names: []string{"User", "User.validate", "User.secret"},
+		},
+		{
+			path:     "auth.sh",
+			language: "Bash",
+			input: `validate_token() { echo ok; }
+function run_task { echo run; }
+`,
+			names: []string{"validate_token", "run_task"},
+		},
+		{
+			path:     "main.tf",
+			language: "HCL",
+			input: `resource "aws_instance" "web" { ami = "x" }
+variable "name" {}
+`,
+			names: []string{"resource.aws_instance.web", "variable.name"},
+		},
+		{
+			path:     "auth.ml",
+			language: "OCaml",
+			input: `type user = { name: string }
+let validate token = true
+module Auth = struct let run x = x end
+`,
+			names: []string{"user", "validate", "Auth", "Auth.run"},
+		},
+		{
+			path:     "auth.lua",
+			language: "Lua",
+			input: `function validate(token) return true end
+local function helper() end
+User = {}
+function User:run() end
+`,
+			names: []string{"validate", "helper", "User.run"},
+		},
+		{
+			path:     "schema.sql",
+			language: "SQL",
+			input: `CREATE TABLE users (id INT);
+CREATE FUNCTION validate_token(token TEXT) RETURNS BOOLEAN AS $$ SELECT true; $$ LANGUAGE SQL;
+`,
+			names: []string{"users", "validate_token"},
+		},
+		{
+			path:     "schema.cue",
+			language: "CUE",
+			input: `#User: { name: string }
+validate: true
+`,
+			names: []string{"#User", "validate"},
+		},
+		{
+			path:     "Auth.groovy",
+			language: "Groovy",
+			input: `class User { boolean validate(String token) { true } }
+def top() { }
+`,
+			names: []string{"User", "User.validate", "top"},
+		},
+		{
+			path:     "auth.proto",
+			language: "Protocol Buffers",
+			input: `syntax = "proto3";
+message User { string name = 1; }
+service Auth { rpc Validate(User) returns (User); }
+`,
+			names: []string{"User", "Auth", "Auth.Validate"},
+		},
+	}
+
+	for _, tt := range tests {
+		entities, language := TreeSitterParser{}.Parse(tt.path, tt.input)
+		if language != tt.language {
+			t.Fatalf("%s language = %q", tt.path, language)
+		}
+		seen := map[string]bool{}
+		for _, entity := range entities {
+			seen[entity.Name] = true
+		}
+		for _, name := range tt.names {
+			if !seen[name] {
+				t.Fatalf("%s missing entity %q in %#v", tt.path, name, entities)
+			}
+		}
+	}
+}

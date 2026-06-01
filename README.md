@@ -26,10 +26,27 @@ does not vendor or copy Ataraxy Labs' `inspect` / `sem` projects.
 
 The plugin uses a tree-sitter-backed parser for:
 
+- Bash
+- C / C++
+- C#
+- CUE
+- Elixir
 - Go
-- Python
+- Groovy
+- HCL / Terraform
+- Java
 - JavaScript / TypeScript
+- Kotlin
+- Lua
+- OCaml
+- PHP
+- Protocol Buffers
+- Python
+- Ruby
 - Rust
+- Scala
+- SQL
+- Swift
 
 The parser is isolated behind `internal/sem`, so the command surface can stay stable
 while the semantic model gets richer.
