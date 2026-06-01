@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.6.3-nightly.202605190723.fd212937",
+  "checkpoint_id": "a6d0e699272c",
+  "strategy": "manual-commit",
+  "branch": "semantic-provider-contract",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/dependents.go",
+    "internal/sem/provider.go",
+    "internal/sem/provider_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a6/d0e699272c/0/metadata.json",
+      "transcript": "/a6/d0e699272c/0/full.jsonl",
+      "content_hash": "/a6/d0e699272c/0/content_hash.txt",
+      "prompt": "/a6/d0e699272c/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 92901,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 753664,
+    "output_tokens": 6174,
+    "api_call_count": 20
+  }
+}
