@@ -231,6 +231,94 @@ func TestAnalyzeJSONCommand(t *testing.T) {
 	}
 }
 
+func TestDiffJSONCommandCoversEverySupportedLanguage(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Sem Test")
+	git(t, repo, "config", "user.email", "sem@example.com")
+
+	fixtures := []struct {
+		path     string
+		language string
+		before   string
+		after    string
+	}{
+		{path: "auth.sh", language: "Bash", before: "validate_token() { echo ok; }\n", after: "validate_token() { echo ok; }\nrun_task() { echo run; }\n"},
+		{path: "main.c", language: "C", before: "int validate(int token) { return token; }\n", after: "int validate(int token) { return token; }\nint audit(int token) { return token; }\n"},
+		{path: "User.cs", language: "C#", before: "class User { public bool Validate(string token) { return true; } }\n", after: "class User { public bool Validate(string token) { return true; } public bool Audit(string token) { return true; } }\n"},
+		{path: "main.cpp", language: "C++", before: "class User { public: void run() {} };\n", after: "class User { public: void run() {} void audit() {} };\n"},
+		{path: "schema.cue", language: "CUE", before: "#User: { name: string }\n", after: "#User: { name: string }\nvalidate: true\n"},
+		{path: "auth.ex", language: "Elixir", before: "defmodule User do\n  def validate(token), do: true\nend\n", after: "defmodule User do\n  def validate(token), do: true\n  def audit(token), do: token\nend\n"},
+		{path: "main.go", language: "Go", before: "package main\nfunc Validate(token string) bool { return token != \"\" }\n", after: "package main\nfunc Validate(token string) bool { return token != \"\" }\nfunc Audit(token string) bool { return true }\n"},
+		{path: "Auth.groovy", language: "Groovy", before: "class User { boolean validate(String token) { true } }\n", after: "class User { boolean validate(String token) { true } boolean audit(String token) { true } }\n"},
+		{path: "main.tf", language: "HCL", before: "resource \"aws_instance\" \"web\" { ami = \"x\" }\n", after: "resource \"aws_instance\" \"web\" { ami = \"x\" }\nvariable \"name\" {}\n"},
+		{path: "User.java", language: "Java", before: "class User { boolean validate(String token) { return true; } }\n", after: "class User { boolean validate(String token) { return true; } boolean audit(String token) { return true; } }\n"},
+		{path: "app.js", language: "JavaScript", before: "function validate(token) { return Boolean(token); }\n", after: "function validate(token) { return Boolean(token); }\nfunction audit(token) { return token; }\n"},
+		{path: "User.kt", language: "Kotlin", before: "class User { fun validate(token: String): Boolean { return true } }\n", after: "class User { fun validate(token: String): Boolean { return true } fun audit(token: String): Boolean { return true } }\n"},
+		{path: "auth.lua", language: "Lua", before: "function validate(token) return true end\n", after: "function validate(token) return true end\nfunction audit(token) return token end\n"},
+		{path: "auth.ml", language: "OCaml", before: "let validate token = true\n", after: "let validate token = true\nlet audit token = token\n"},
+		{path: "auth.php", language: "PHP", before: "<?php\nfunction validate($token) { return true; }\n", after: "<?php\nfunction validate($token) { return true; }\nfunction audit($token) { return $token; }\n"},
+		{path: "auth.proto", language: "Protocol Buffers", before: "syntax = \"proto3\";\nmessage User { string name = 1; }\n", after: "syntax = \"proto3\";\nmessage User { string name = 1; }\nmessage Audit { string id = 1; }\n"},
+		{path: "auth.py", language: "Python", before: "def validate_token(token):\n    return bool(token)\n", after: "def validate_token(token):\n    return bool(token)\n\ndef audit_token(token):\n    return token\n"},
+		{path: "auth.rb", language: "Ruby", before: "def validate(token)\n  true\nend\n", after: "def validate(token)\n  true\nend\ndef audit(token)\n  token\nend\n"},
+		{path: "lib.rs", language: "Rust", before: "pub fn validate(value: &str) -> bool { true }\n", after: "pub fn validate(value: &str) -> bool { true }\npub fn audit(value: &str) -> bool { true }\n"},
+		{path: "schema.sql", language: "SQL", before: "CREATE TABLE users (id INT);\n", after: "CREATE TABLE users (id INT);\nCREATE TABLE audit_events (id INT);\n"},
+		{path: "Auth.scala", language: "Scala", before: "class User { def validate(token: String): Boolean = true }\n", after: "class User { def validate(token: String): Boolean = true; def audit(token: String): Boolean = true }\n"},
+		{path: "Auth.swift", language: "Swift", before: "struct User { func validate(token: String) -> Bool { true } }\n", after: "struct User { func validate(token: String) -> Bool { true } func audit(token: String) -> Bool { true } }\n"},
+		{path: "app.ts", language: "TypeScript", before: "class User { validate(value: string) { return value } }\n", after: "class User { validate(value: string) { return value } audit(value: string) { return value } }\n"},
+	}
+
+	for _, fixture := range fixtures {
+		write(t, repo, fixture.path, fixture.before)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial languages")
+	base := rev(t, repo, "HEAD")
+
+	for _, fixture := range fixtures {
+		write(t, repo, fixture.path, fixture.after)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "update languages")
+	head := rev(t, repo, "HEAD")
+
+	var out bytes.Buffer
+	err := Run(t.Context(), Options{
+		Env:    EntireEnv{RepoRoot: repo},
+		Stdout: &out,
+		Stderr: &out,
+	}, []string{"diff", "--repo", repo, "--base", base, "--head", head, "--json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var payload struct {
+		Files []struct {
+			Path     string `json:"path"`
+			Language string `json:"language"`
+			Changes  []any  `json:"changes"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("diff json invalid:\n%s\n%v", out.String(), err)
+	}
+	seen := map[string]string{}
+	for _, file := range payload.Files {
+		if len(file.Changes) == 0 {
+			t.Fatalf("%s had no semantic changes: %#v", file.Path, file)
+		}
+		seen[file.Language] = file.Path
+	}
+	for _, fixture := range fixtures {
+		if seen[fixture.language] == "" {
+			t.Fatalf("missing %s diff for %s in %#v", fixture.language, fixture.path, payload.Files)
+		}
+	}
+	if len(seen) != len(fixtures) {
+		t.Fatalf("languages = %d, want %d: %#v", len(seen), len(fixtures), seen)
+	}
+}
+
 func write(t *testing.T, repo, path, content string) {
 	t.Helper()
 	full := filepath.Join(repo, path)
@@ -240,6 +328,17 @@ func write(t *testing.T, repo, path, content string) {
 	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func rev(t *testing.T, repo, value string) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", value)
+	cmd.Dir = repo
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse %s: %v\n%s", value, err, out)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func git(t *testing.T, repo string, args ...string) {
