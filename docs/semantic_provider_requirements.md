@@ -51,6 +51,7 @@ entire sem capabilities --json
 entire sem snapshot --repo . --format ndjson
 entire sem symbols --repo . --format ndjson
 entire sem edges --repo . --format ndjson
+entire sem snapshot --repo . --format ndjson --worktree --ignore-file .brainignore
 entire sem diff --base main --head HEAD --json
 ```
 
@@ -58,6 +59,12 @@ Whole-repo outputs should support newline-delimited JSON. Large repositories can
 produce hundreds of megabytes of semantic facts, so a single whole-repo JSON
 document should be treated as a debug/compatibility mode rather than the primary
 integration format.
+
+Worktree provider snapshots should honor the repository root `.gitignore` before
+walking or reading files. Callers may pass repeatable `--ignore-file <path>`
+flags for additional gitignore-style exclusions such as `.brainignore`; relative
+ignore-file paths resolve against `--repo`, and missing ignore files should fail
+closed with a clear error.
 
 ## Schema Contract
 

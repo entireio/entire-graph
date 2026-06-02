@@ -140,8 +140,9 @@ type ProviderSnapshot struct {
 }
 
 type ProviderSnapshotOptions struct {
-	NoNetwork bool
-	Worktree  bool
+	NoNetwork   bool
+	Worktree    bool
+	IgnoreFiles []string
 }
 
 func Capabilities() CapabilityReport {
@@ -202,7 +203,7 @@ func BuildProviderSnapshotWithOptions(ctx context.Context, repo, providerVersion
 	// explicit for callers that enforce no-egress provider execution.
 	_ = options.NoNetwork
 	useHead := !options.Worktree && commitErr == nil && treeErr == nil
-	paths, contentByFile, err := snapshotSource(ctx, absRepo, useHead)
+	paths, contentByFile, err := snapshotSource(ctx, absRepo, useHead, options.IgnoreFiles)
 	if err != nil {
 		return ProviderSnapshot{}, err
 	}
@@ -558,7 +559,7 @@ func externalParts(id string) (string, string) {
 	return kind, value
 }
 
-func snapshotSource(ctx context.Context, repo string, useHead bool) ([]string, map[string]string, error) {
+func snapshotSource(ctx context.Context, repo string, useHead bool, ignoreFiles []string) ([]string, map[string]string, error) {
 	if useHead {
 		paths, err := gitutil.ListFiles(ctx, repo, "HEAD")
 		if err != nil {
@@ -579,7 +580,11 @@ func snapshotSource(ctx context.Context, repo string, useHead bool) ([]string, m
 		}
 		return paths, contentByFile, nil
 	}
-	paths, err := workingTreeFiles(repo)
+	ignores, err := loadWorktreeIgnoreMatcher(repo, ignoreFiles)
+	if err != nil {
+		return nil, nil, err
+	}
+	paths, err := workingTreeFiles(repo, ignores)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -602,7 +607,7 @@ func snapshotSource(ctx context.Context, repo string, useHead bool) ([]string, m
 	return paths, contentByFile, nil
 }
 
-func workingTreeFiles(repo string) ([]string, error) {
+func workingTreeFiles(repo string, ignores ignoreMatcher) ([]string, error) {
 	var paths []string
 	err := filepath.WalkDir(repo, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -614,6 +619,15 @@ func workingTreeFiles(repo string) ([]string, error) {
 			case ".git", "node_modules", "vendor", ".next", "dist", "build":
 				return filepath.SkipDir
 			}
+			if path != repo {
+				rel, err := filepath.Rel(repo, path)
+				if err != nil {
+					return err
+				}
+				if ignores.Ignored(filepath.ToSlash(rel), true) {
+					return filepath.SkipDir
+				}
+			}
 			return nil
 		}
 		if entry.Type()&fs.ModeSymlink != 0 {
@@ -623,7 +637,11 @@ func workingTreeFiles(repo string) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		paths = append(paths, filepath.ToSlash(rel))
+		rel = filepath.ToSlash(rel)
+		if ignores.Ignored(rel, false) {
+			return nil
+		}
+		paths = append(paths, rel)
 		return nil
 	})
 	sort.Strings(paths)
