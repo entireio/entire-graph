@@ -16,6 +16,7 @@ entire sem capabilities --json
 entire sem snapshot --repo . --format ndjson
 entire sem symbols --repo . --format ndjson
 entire sem edges --repo . --format ndjson
+entire sem snapshot --repo . --format ndjson --worktree --ignore-file .brainignore
 ```
 
 ## Status
@@ -140,7 +141,10 @@ symbol, and relation records. `symbols` and `edges` are filtered views over the
 same snapshot builder. By default, snapshots read the committed `HEAD` tree when
 git metadata is available, so dirty tracked edits and untracked files are excluded.
 Use `--worktree` to include live working-tree contents, and `--no-network` to make
-the provider's no-egress contract explicit to callers.
+the provider's no-egress contract explicit to callers. Worktree snapshots honor
+the repository root `.gitignore`. Pass repeatable `--ignore-file <path>` flags for
+additional gitignore-style exclusions, resolved relative to `--repo` unless the
+path is absolute.
 
 Run without installing through Entire:
 
