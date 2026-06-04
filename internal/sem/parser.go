@@ -33,6 +33,7 @@ import (
 	"github.com/smacker/go-tree-sitter/swift"
 	treesittertsx "github.com/smacker/go-tree-sitter/typescript/tsx"
 	treesitterts "github.com/smacker/go-tree-sitter/typescript/typescript"
+	treesitteryaml "github.com/smacker/go-tree-sitter/yaml"
 )
 
 type languageSpec struct {
@@ -81,6 +82,8 @@ var treeSitterLanguages = map[string]languageSpec{
 	".tfvars": {language: "HCL", grammar: hcl.GetLanguage()},
 	".ts":     {language: "TypeScript", grammar: treesitterts.GetLanguage()},
 	".tsx":    {language: "TypeScript", grammar: treesittertsx.GetLanguage()},
+	".yaml":   {language: "YAML", grammar: treesitteryaml.GetLanguage()},
+	".yml":    {language: "YAML", grammar: treesitteryaml.GetLanguage()},
 	".zsh":    {language: "Bash", grammar: bash.GetLanguage()},
 }
 
@@ -109,6 +112,13 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 			detail = err.Error()
 		}
 		return nil, spec.language, ParseStatus{ParseError: true, Detail: detail}
+	}
+	if spec.language == "YAML" {
+		status := ParseStatus{}
+		if root.HasError() {
+			status = ParseStatus{ParseError: true, Detail: "tree-sitter syntax error nodes present"}
+		}
+		return yamlEntities(path, content), spec.language, status
 	}
 
 	var entities []Entity
