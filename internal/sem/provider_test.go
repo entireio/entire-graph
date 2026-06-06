@@ -77,7 +77,7 @@ def check_token(token):
 			t.Fatalf("relation missing confidence/reason: %#v", relation)
 		}
 	}
-	for _, want := range []string{"DEFINES", "CONTAINS", "IMPORTS", "CALLS", "HANDLES_ROUTE"} {
+	for _, want := range []string{"DEFINES", "CONTAINS", "IMPORTS", "CALLS", "HANDLES_ROUTE", "HANDLES_TOOL"} {
 		if !seenRelations[want] {
 			t.Fatalf("missing %s in %#v", want, snapshot.Relations)
 		}
@@ -104,6 +104,10 @@ export async function GET(request: Request) {
   return handleFeedCrawlerTick(request)
 }
 `)
+	writeFile(t, repo, "src/app/api/internal/post-transcription/tick/route.ts", `export async function GET(request: Request) {
+  return Response.json({ ok: true })
+}
+`)
 
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
 	if err != nil {
@@ -124,6 +128,15 @@ export async function GET(request: Request) {
 	}
 	if workflow.FilePath != "apps/web/src/app/api/internal/feed-crawler/tick/route.ts" {
 		t.Fatalf("workflow source = %#v", workflow)
+	}
+
+	rootRoute := symbolByKindAndName(snapshot.Symbols, "route", "/api/internal/post-transcription/tick")
+	if rootRoute.ID == "" {
+		t.Fatalf("missing route boundary for repo-root src/app path in %#v", snapshot.Symbols)
+	}
+	rootWorkflow := symbolByKindAndName(snapshot.Symbols, "workflow", "post-transcription")
+	if rootWorkflow.ID == "" {
+		t.Fatalf("missing workflow boundary for repo-root src/app path in %#v", snapshot.Symbols)
 	}
 }
 

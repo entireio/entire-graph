@@ -65,7 +65,7 @@ func ListFiles(ctx context.Context, repo, rev string) ([]string, error) {
 }
 
 func ChangedFiles(ctx context.Context, repo, base, head string, paths []string) ([]ChangedFile, error) {
-	args := []string{"diff", "--name-status", "--find-renames", base, head, "--"}
+	args := []string{"diff", "-z", "--name-status", "--find-renames", base, head, "--"}
 	args = append(args, paths...)
 	out, err := run(ctx, repo, "git", args...)
 	if err != nil {
@@ -73,22 +73,24 @@ func ChangedFiles(ctx context.Context, repo, base, head string, paths []string) 
 	}
 
 	var files []ChangedFile
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if strings.TrimSpace(line) == "" {
+	fields := strings.Split(out, "\x00")
+	for i := 0; i < len(fields); {
+		status := fields[i]
+		i++
+		if status == "" {
 			continue
 		}
-		fields := strings.Split(line, "\t")
-		if len(fields) < 2 {
-			continue
-		}
-		status := fields[0]
 		switch {
 		case strings.HasPrefix(status, "R") || strings.HasPrefix(status, "C"):
-			if len(fields) >= 3 {
-				files = append(files, ChangedFile{Status: status[:1], OldPath: fields[1], Path: fields[2]})
+			if i+1 < len(fields) {
+				files = append(files, ChangedFile{Status: status[:1], OldPath: fields[i], Path: fields[i+1]})
+				i += 2
 			}
 		default:
-			files = append(files, ChangedFile{Status: status[:1], Path: fields[1]})
+			if i < len(fields) {
+				files = append(files, ChangedFile{Status: status[:1], Path: fields[i]})
+				i++
+			}
 		}
 	}
 	return files, nil

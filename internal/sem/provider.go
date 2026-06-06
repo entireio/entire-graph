@@ -30,6 +30,7 @@ var relationTypes = []string{
 	"IMPORTS",
 	"CALLS",
 	"HANDLES_ROUTE",
+	"HANDLES_TOOL",
 }
 
 type ProviderRecord struct {
@@ -588,6 +589,17 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 					WarningCodes: []string{},
 				})
 			}
+			if symbol.Kind == "tool" && symbol.ContainerID != "" {
+				relations = append(relations, RelationRecord{
+					RecordType:   "relation",
+					FromID:       symbol.ContainerID,
+					ToID:         symbol.ID,
+					Type:         "HANDLES_TOOL",
+					Confidence:   0.85,
+					Reason:       "tool boundary inferred from handler symbol body",
+					WarningCodes: []string{},
+				})
+			}
 			symbolsByShortName[symbol.Name] = append(symbolsByShortName[symbol.Name], symbol)
 			symbolsByFile[symbol.FilePath] = append(symbolsByFile[symbol.FilePath], symbol)
 		}
@@ -1135,12 +1147,18 @@ func routeLiterals(content string) []string {
 
 func nextRouteBoundary(path string) string {
 	slashPath := filepath.ToSlash(path)
-	const marker = "/src/app/"
-	index := strings.Index(slashPath, marker)
-	if index < 0 {
+	const rootMarker = "src/app/"
+	const nestedMarker = "/src/app/"
+	var relative string
+	switch {
+	case strings.HasPrefix(slashPath, rootMarker):
+		relative = strings.TrimPrefix(slashPath, rootMarker)
+	case strings.Contains(slashPath, nestedMarker):
+		index := strings.Index(slashPath, nestedMarker)
+		relative = slashPath[index+len(nestedMarker):]
+	default:
 		return ""
 	}
-	relative := slashPath[index+len(marker):]
 	switch {
 	case strings.HasSuffix(relative, "/route.ts"):
 		relative = strings.TrimSuffix(relative, "/route.ts")
