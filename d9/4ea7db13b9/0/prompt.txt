@@ -1,0 +1,107 @@
+# Fix: SQL grammar can't parse PostgreSQL/Supabase migrations
+
+  ## Context
+  entire-sem uses `github.com/smacker/go-tree-sitter/sql` for `.sql` files
+  (internal/sem/parser.go:79 — `".sql": {language: "SQL", grammar: sql.GetLanguage()}`).
+  That is a generic SQL grammar with no PostgreSQL support. On real Supabase/Postgres
+  migration repos it produces tree-sitter ERROR nodes on almost every file, so the
+  file is reported as an E_PARSE_ERROR partial failure and its symbols/relations are
+  incomplete.
+
+  ## Evidence (reproduced)
+  On the `podcasts` repo (~/Projects/podcasts), 125 of 133 .sql files fail
+  (`entire-sem snapshot --repo . --format ndjson --no-network` →
+  header.stats.partial_failures = 125, completeness_level "unsafe"). Parsing
+  `supabase/migrations/202605090001_phase2_contract.sql` with sql.GetLanguage()
+  returns HasError()=true with the first ERROR node at `do $$` (line 4). Unsupported
+  constructs include:
+  - dollar-quoted blocks: `do $$ ... $$;`
+  - `create or replace function ... language plpgsql as $$ ... $$;` (PL/pgSQL bodies)
+  - `create extension ...`
+  - generated columns: `... generated always as (...) stored`
+  - pgvector types: `vector(1536)`, plus `timestamptz`, inline `check (... in (...))`,
+    `on conflict ... do update`
+  The only 8 passing files contain none of these (plain update/create index/insert).
+
+  ## Goal
+  Parse PostgreSQL (esp. Supabase migrations) without ERROR nodes so symbols/relations
+  are extracted and E_PARSE_ERROR rates drop to near zero on Postgres repos.
+
+  ## Suggested approach
+  1. Replace/augment the SQL grammar with a PostgreSQL-aware tree-sitter grammar
+     (e.g. DerekStride/tree-sitter-sql, which handles dollar-quoting, PL/pgSQL, DDL).
+     Confirm a Go binding is available or add one; weigh against the existing
+     smacker dependency set.
+  2. If a single grammar can't cover all dialects, consider dialect selection
+     (e.g. Postgres grammar for files under supabase/migrations/ or by content
+     sniffing for `$$`/`language plpgsql`).
+  3. Make sure walkEntities/entitySymbols know the new grammar's node types
+     (function/table/view/index/policy/trigger) so symbols are actually emitted,
+     not just error-free parses.
+
+  ## Acceptance criteria
+  - `entire-sem snapshot` on ~/Projects/podcasts reports partial_failures ≈ 0
+    (was 125) and completeness_level "ok".
+  - Symbols are emitted for Postgres functions/tables/policies (spot-check
+    202605090001_phase2_contract.sql yields table + function symbols).
+  - Existing non-SQL parsing and tests are unaffected; add a Postgres SQL fixture
+    test under internal/sem.
+  - No new network dependency at runtime (provider must stay no-egress;
+    `entire-sem doctor` keeps reporting no_egress=true).
+
+  ## Out of scope
+  The path-loss bug on the consumer side is being fixed separately in entire-brain
+  (JSON key mismatch: provider emits `file_path`/`effect_on_semantic_completeness`,
+  entire-brain expected `path`/`effect`). Keep emitting the current provider keys.
+
+---
+
+Continue
+
+---
+
+Task A — Verify SQL migrations get indexed (verification, fix believed in progress)
+
+  Context. entire brain stale --blind-spots on gh/ashtom/podcasts currently reports 125 partial failures, 100% .sql (124 in supabase/migrations/, 1 in scripts/), all
+  E_PARSE_ERROR from the bundled tree-sitter SQL grammar. This makes the Postgres schema — tables, RPCs, the embedding vector(1536) column, indexes — invisible to the semantic
+  index. Session history partially compensates, but there's no structured way to ask "what columns does podcast_feed_sources have?".
+
+  Verification steps (run after the suspected fix lands):
+  1. In podcasts: entire brain refresh then entire brain stale --blind-spots --json.
+  2. Confirm the .sql count drops to ~0 (or only genuinely-malformed files remain), and semantic_completeness moves from degraded toward ok (currently "38% of files").
+  3. Confirm SQL symbols are now queryable: entire brain search "podcast_feed_sources" --json and entire brain search "transcript_chunks embedding" --json should return symbol
+  records with file_path pointing into supabase/migrations/.
+  4. Confirm a schema-shaped relation exists (table → column, or RPC definitions) via entire brain inspect context "podcast_feed_sources" --json.
+
+  Done when: blind-spots no longer lists routine migrations, and DB schema symbols are searchable. If any SQL files still fail, capture which constructs (e.g. CREATE FUNCTION
+  ... LANGUAGE plpgsql, CREATE POLICY) the grammar chokes on and file those as follow-ups.
+
+---
+
+Task B — Emit file_path for route boundaries
+
+  Context. entire brain inspect boundaries --kind route returns 46 routes for podcasts, but every record has file_path: "" — the provider emits routes as synthetic
+  external:route:/... nodes with no handler location. An agent sees /oauth/device/code but can't jump to the route.ts that implements it, so the route list is a URL inventory
+  rather than an actionable map.
+
+  Task. When the provider detects a route boundary, attach the source file (and ideally start line) of the handler that defines it, so the boundary record carries a real
+  file_path. Where a route is genuinely external (no in-repo handler), keep the external node but mark it as such.
+
+  Done when: in podcasts, in-repo routes from inspect boundaries --kind route --json carry a non-empty file_path resolving to the handler; the same should hold for --kind tool
+  (Go CLI commands) and application --kind workflow boundaries. (Related: --kind workflow currently surfaces dependabot.yml/pnpm-lock.yaml/pnpm-workspace.yaml rather than app
+  pipelines like the feed-crawler/post-transcription loops — worth tuning workflow detection in the same pass.)
+
+---
+
+Task C — Reduce spurious low-confidence CALLS relations
+
+  Context. inspect context/impact relations are noisy: callers resolve by bare identifier, so a common utility name pollutes the graph — e.g. Login -> sleep, JobsPage -> sleep
+  appear as CALLS because multiple files reference a sleep symbol. All such relations come back at confidence: 0.62, and there's no way to tell a real edge from a name
+  collision. This undercuts the impact-analysis use case (the brain's strongest differentiator over grep).
+
+  Task. Improve call-edge resolution so identifier matches are scoped (import/binding-aware) rather than global-by-name, and/or calibrate confidence so true edges score
+  meaningfully higher than ambiguous ones. Consider emitting a reason/resolution-kind on the relation.
+
+  Done when: in podcasts, inspect context "apps/web/src/lib/embeddings.ts" no longer lists unrelated * -> sleep edges among the embedding callers, and confidence spreads enough
+  to be useful as a filter. (Plugin-side, we can add a --min-confidence flag on context/impact as a stopgap once the scores are trustworthy — noted in the polish plan's
+  out-of-scope section.)

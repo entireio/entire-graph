@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.7.6-nightly.202606050739.c8b5981e",
+  "checkpoint_id": "d94ea7db13b9",
+  "strategy": "manual-commit",
+  "branch": "fix-postgres-sql-boundaries-calls",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "internal/sem/parser.go",
+    "internal/sem/parser_test.go",
+    "internal/sem/pgsql/binding.go",
+    "internal/sem/pgsql/src/scanner.c",
+    "internal/sem/provider.go",
+    "internal/sem/provider_test.go",
+    "internal/sem/yaml.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/d9/4ea7db13b9/0/metadata.json",
+      "transcript": "/d9/4ea7db13b9/0/full.jsonl",
+      "content_hash": "/d9/4ea7db13b9/0/content_hash.txt",
+      "prompt": "/d9/4ea7db13b9/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 845184,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 36751744,
+    "output_tokens": 90968,
+    "api_call_count": 278
+  }
+}

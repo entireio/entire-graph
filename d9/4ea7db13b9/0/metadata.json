@@ -1,0 +1,93 @@
+{
+  "cli_version": "0.7.6-nightly.202606050739.c8b5981e",
+  "checkpoint_id": "d94ea7db13b9",
+  "session_id": "019e9ea7-f3e7-7463-8542-41b2e0fcb033",
+  "strategy": "manual-commit",
+  "created_at": "2026-06-06T23:24:40.337573Z",
+  "branch": "fix-postgres-sql-boundaries-calls",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "internal/sem/parser.go",
+    "internal/sem/parser_test.go",
+    "internal/sem/pgsql/binding.go",
+    "internal/sem/pgsql/src/scanner.c",
+    "internal/sem/provider.go",
+    "internal/sem/provider_test.go",
+    "internal/sem/yaml.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.5",
+  "turn_id": "e67e3506a71e",
+  "token_usage": {
+    "input_tokens": 845184,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 36751744,
+    "output_tokens": 90968,
+    "api_call_count": 278
+  },
+  "session_metrics": {
+    "turn_count": 4
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-06-06T23:24:40.295045Z",
+    "agent_lines": 885,
+    "agent_removed": 29,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 5,
+    "total_committed": 885,
+    "total_lines_changed": 919,
+    "agent_percentage": 99.45593035908597,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 559233,
+      "user_lines_removed": 5,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "internal/sem/debug_sql_test.go": 25,
+        "internal/sem/parser.go": 310,
+        "internal/sem/parser_test.go": 59,
+        "internal/sem/pgsql/LICENSE": 21,
+        "internal/sem/pgsql/binding.go": 21,
+        "internal/sem/pgsql/src/parser.c": 558344,
+        "internal/sem/pgsql/src/scanner.c": 188,
+        "internal/sem/pgsql/src/tree_sitter/parser.h": 265
+      },
+      "user_removed_per_file": {
+        "internal/sem/parser.go": 5
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 559459,
+      "agent_lines_removed": 5
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 559459,
+      "agent_lines_removed": 5
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 559809,
+      "agent_lines_removed": 26
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 560098,
+      "agent_lines_removed": 34
+    }
+  ]
+}
