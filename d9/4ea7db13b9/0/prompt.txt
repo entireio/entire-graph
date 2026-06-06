@@ -105,3 +105,7 @@ Task C — Reduce spurious low-confidence CALLS relations
   Done when: in podcasts, inspect context "apps/web/src/lib/embeddings.ts" no longer lists unrelated * -> sleep edges among the embedding callers, and confidence spreads enough
   to be useful as a filter. (Plugin-side, we can add a --min-confidence flag on context/impact as a stopgap once the scores are trustworthy — noted in the polish plan's
   out-of-scope section.)
+
+---
+
+Create a branch and commit your changes
