@@ -1,0 +1,56 @@
+{
+  "cli_version": "0.7.6-nightly.202606050739.c8b5981e",
+  "checkpoint_id": "34f7ca7184b2",
+  "session_id": "019e9f48-36ac-7472-a116-ee6adc220306",
+  "strategy": "manual-commit",
+  "created_at": "2026-06-06T23:35:22.229445Z",
+  "branch": "fix-postgres-sql-boundaries-calls",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/gitutil/git.go",
+    "internal/gitutil/git_test.go",
+    "internal/sem/provider.go",
+    "internal/sem/provider_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.5",
+  "turn_id": "0eb276976abd",
+  "token_usage": {
+    "input_tokens": 91907,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 600704,
+    "output_tokens": 5143,
+    "api_call_count": 15
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-06-06T23:35:22.221071Z",
+    "agent_lines": 98,
+    "agent_removed": 16,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 98,
+    "total_lines_changed": 114,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 98,
+      "agent_lines_removed": 16
+    }
+  ]
+}
