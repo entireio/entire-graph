@@ -181,6 +181,79 @@ jobs:
 	}
 }
 
+func TestTreeSitterParserDoesNotTreatEveryYAMLFileAsWorkflow(t *testing.T) {
+	entities, language := TreeSitterParser{}.Parse("pnpm-workspace.yaml", `packages:
+  - apps/*
+`)
+	if language != "YAML" {
+		t.Fatalf("language = %q", language)
+	}
+	for _, entity := range entities {
+		if entity.Kind == "workflow" {
+			t.Fatalf("unexpected workflow entity in %#v", entities)
+		}
+	}
+}
+
+func TestTreeSitterParserPostgresMigrationEntities(t *testing.T) {
+	input := `create extension if not exists vector;
+
+create table public.contracts (
+  id uuid primary key,
+  embedding vector(1536),
+  created_at timestamptz not null default now(),
+  status text generated always as ('active') stored,
+  check (status in ('active', 'archived'))
+);
+
+create or replace function public.touch_contract()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.created_at := now();
+  return new;
+end;
+$$;
+
+create trigger contracts_touch
+before update on public.contracts
+for each row execute function public.touch_contract();
+
+create index contracts_embedding_idx on public.contracts using ivfflat (embedding vector_cosine_ops);
+
+create policy "contracts are readable"
+on public.contracts for select
+using (true);
+
+insert into public.contracts (id)
+values ('00000000-0000-0000-0000-000000000000')
+on conflict (id) do update set created_at = excluded.created_at;
+`
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("supabase/migrations/202605090001_phase2_contract.sql", input)
+	if language != "SQL" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("parse status = %#v; entities = %#v", status, entities)
+	}
+	seen := map[string]string{}
+	for _, entity := range entities {
+		seen[entity.Name] = entity.Kind
+	}
+	for name, kind := range map[string]string{
+		"public.contracts":        "table",
+		"public.touch_contract":   "function",
+		"contracts_touch":         "trigger",
+		"contracts_embedding_idx": "index",
+		"contracts are readable":  "policy",
+	} {
+		if seen[name] != kind {
+			t.Fatalf("%s kind = %q, want %q in %#v", name, seen[name], kind, entities)
+		}
+	}
+}
+
 func TestTreeSitterParserExpandedLanguageEntities(t *testing.T) {
 	tests := []struct {
 		path     string

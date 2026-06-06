@@ -21,7 +21,9 @@ func yamlEntities(path, content string) []Entity {
 	}
 
 	var entities []Entity
-	entities = append(entities, yamlEntity("workflow", yamlWorkflowEntityName(path), yamlWorkflowSignature(path, lines, topLevel), 1, len(lines), lines))
+	if yamlWorkflowPath(path) {
+		entities = append(entities, yamlEntity("workflow", yamlWorkflowEntityName(path), yamlWorkflowSignature(path, lines, topLevel), 1, len(lines), lines))
+	}
 	for _, block := range topLevel {
 		switch block.Key {
 		case "name":
@@ -40,6 +42,11 @@ func yamlEntities(path, content string) []Entity {
 		return entities[i].StartLine < entities[j].StartLine
 	})
 	return entities
+}
+
+func yamlWorkflowPath(path string) bool {
+	slashPath := filepath.ToSlash(path)
+	return strings.HasPrefix(slashPath, ".github/workflows/") && (strings.HasSuffix(slashPath, ".yml") || strings.HasSuffix(slashPath, ".yaml"))
 }
 
 func yamlTopLevelBlocks(lines []string) []yamlBlock {
