@@ -1,0 +1,5 @@
+I am getting entire [sem snapshot --repo /Users/thomi/Projects/entire-brain --format ndjson --no-network --ignore-file /Users/thomi/Projects/entire-brain/.brainignore --worktree]: exit status 1: snapshot received unexpected arguments: --ignore-file /Users/thomi/Projects/entire-brain/.brainignore
+
+---
+
+Revert your file. We already built that.

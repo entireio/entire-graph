@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.7.6-nightly.202606050739.c8b5981e",
+  "checkpoint_id": "3c84caee111c",
+  "strategy": "manual-commit",
+  "branch": "add-ignore-file-support",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "internal/cli/root_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/3c/84caee111c/0/metadata.json",
+      "transcript": "/3c/84caee111c/0/full.jsonl",
+      "content_hash": "/3c/84caee111c/0/content_hash.txt",
+      "prompt": "/3c/84caee111c/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 7114,
+    "cache_creation_tokens": 45294,
+    "cache_read_tokens": 1380142,
+    "output_tokens": 16698,
+    "api_call_count": 30
+  }
+}
