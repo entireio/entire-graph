@@ -223,7 +223,7 @@ func TestProviderCommandsAcceptIgnoreFile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", command, err)
 		}
-		if !strings.Contains(out.String(), `"schema_version":"1.0"`) {
+		if !strings.Contains(out.String(), `"schema_version":"1.1"`) {
 			t.Fatalf("%s output missing header:\n%s", command, out.String())
 		}
 		if strings.Contains(out.String(), "ignored.py") || strings.Contains(out.String(), "ignored") {
@@ -252,7 +252,7 @@ func TestProviderCommandsAcceptIncludeFile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", command, err)
 		}
-		if !strings.Contains(out.String(), `"schema_version":"1.0"`) {
+		if !strings.Contains(out.String(), `"schema_version":"1.1"`) {
 			t.Fatalf("%s output missing header:\n%s", command, out.String())
 		}
 		if !strings.Contains(out.String(), "reopened") {
