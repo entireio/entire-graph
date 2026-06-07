@@ -19,7 +19,11 @@ import (
 )
 
 const (
-	SchemaVersion         = "1.0"
+	// SchemaVersion is bumped to 1.1 for the additive snapshot fields introduced
+	// alongside boundary source locations (the `external` flag on external records
+	// and the per-symbol source-location fields). The shape is backward compatible
+	// for tolerant readers; the bump lets consumers detect the new fields.
+	SchemaVersion         = "1.1"
 	ProviderName          = "entire-sem"
 	StableSymbolIDVersion = "compound-v1"
 )
@@ -87,10 +91,18 @@ type FileRecord struct {
 }
 
 type ExternalRecord struct {
-	RecordType string `json:"record_type"`
-	ID         string `json:"id"`
-	Kind       string `json:"kind"`
-	Value      string `json:"value"`
+	RecordType    string `json:"record_type"`
+	ID            string `json:"id"`
+	Kind          string `json:"kind"`
+	Value         string `json:"value"`
+	FilePath      string `json:"file_path,omitempty"`
+	StartLine     int    `json:"start_line,omitempty"`
+	EndLine       int    `json:"end_line,omitempty"`
+	Signature     string `json:"signature,omitempty"`
+	Language      string `json:"language,omitempty"`
+	External      bool   `json:"external"`
+	SourceSymbol  string `json:"source_symbol,omitempty"`
+	SourceDetails string `json:"source_details,omitempty"`
 }
 
 type SymbolRecord struct {
@@ -282,12 +294,13 @@ func BuildProviderSnapshotWithOptions(ctx context.Context, repo, providerVersion
 			Bytes:      len(contentBytes),
 		})
 		fileSymbols := entitySymbols(key, path, language, entities)
+		fileSymbols = append(fileSymbols, syntheticBoundarySymbols(key, path, language, content, fileSymbols)...)
 		symbols = append(symbols, fileSymbols...)
 		recordsByFile[path] = fileSymbols
 	}
 
 	relations := buildRelations(key, files, recordsByFile, contentByFile)
-	externals := externalRecords(relations)
+	externals := externalRecords(relations, files, recordsByFile)
 	languages := sortedKeys(languageSet)
 	if warnings == nil {
 		warnings = []ProviderWarning{}
@@ -419,9 +432,145 @@ func duplicateSymbolName(qualified string, entity Entity) string {
 	return fmt.Sprintf("%s#L%d-%d", qualified, entity.StartLine, entity.EndLine)
 }
 
+func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbols []SymbolRecord) []SymbolRecord {
+	var symbols []SymbolRecord
+	lines := strings.Split(content, "\n")
+	if route := nextRouteBoundary(path); route != "" {
+		source := routeBoundarySource(path, language, fileSymbols)
+		symbols = append(symbols, SymbolRecord{
+			RecordType:      "symbol",
+			ID:              symbolID(repoKey, language, path, "route", route),
+			StableIDVersion: StableSymbolIDVersion,
+			Kind:            "route",
+			Name:            route,
+			QualifiedName:   route,
+			FilePath:        path,
+			StartLine:       source.StartLine,
+			EndLine:         source.EndLine,
+			Signature:       "route " + route,
+			BodyHash:        hash(normalize(content)),
+			Language:        language,
+			ContainerID:     source.ContainerID,
+		})
+	}
+	for _, source := range fileSymbols {
+		block := symbolBlockFromLines(lines, source)
+		if !looksLikeToolHandler(source, block) {
+			continue
+		}
+		symbols = append(symbols, SymbolRecord{
+			RecordType:      "symbol",
+			ID:              symbolID(repoKey, language, path, "tool", source.QualifiedName),
+			StableIDVersion: StableSymbolIDVersion,
+			Kind:            "tool",
+			Name:            source.Name,
+			QualifiedName:   source.QualifiedName,
+			FilePath:        path,
+			StartLine:       source.StartLine,
+			EndLine:         source.EndLine,
+			Signature:       "tool " + source.QualifiedName,
+			BodyHash:        source.BodyHash,
+			Language:        language,
+			ContainerID:     source.ID,
+		})
+	}
+	if workflow := applicationWorkflowBoundary(path); workflow != "" {
+		source := routeBoundarySource(path, language, fileSymbols)
+		symbols = append(symbols, SymbolRecord{
+			RecordType:      "symbol",
+			ID:              symbolID(repoKey, language, path, "workflow", workflow),
+			StableIDVersion: StableSymbolIDVersion,
+			Kind:            "workflow",
+			Name:            workflow,
+			QualifiedName:   workflow,
+			FilePath:        path,
+			StartLine:       source.StartLine,
+			EndLine:         source.EndLine,
+			Signature:       "workflow " + workflow,
+			BodyHash:        hash(normalize(content)),
+			Language:        language,
+			ContainerID:     source.ContainerID,
+		})
+	}
+	return symbols
+}
+
+type routeSource struct {
+	StartLine   int
+	EndLine     int
+	ContainerID string
+}
+
+type resolvedCallTarget struct {
+	SymbolRecord
+	Confidence float64
+	Reason     string
+}
+
+func routeBoundarySource(path, language string, fileSymbols []SymbolRecord) routeSource {
+	file := FileRecord{Path: path, Language: language}
+	sourceID := routeBoundarySourceID("", file, fileSymbols)
+	for _, symbol := range fileSymbols {
+		if symbol.ID == sourceID {
+			return routeSource{StartLine: symbol.StartLine, EndLine: symbol.EndLine, ContainerID: symbol.ID}
+		}
+	}
+	return routeSource{StartLine: 1, EndLine: 1}
+}
+
+func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string) []resolvedCallTarget {
+	var local []resolvedCallTarget
+	for _, to := range sameFile {
+		if to.ID == from.ID || to.Name != name {
+			continue
+		}
+		local = append(local, resolvedCallTarget{
+			SymbolRecord: to,
+			Confidence:   0.92,
+			Reason:       "direct call expression resolved to same-file symbol",
+		})
+	}
+	if len(local) > 0 {
+		return local
+	}
+
+	var imported []resolvedCallTarget
+	for _, to := range candidates {
+		if to.ID == from.ID {
+			continue
+		}
+		if importedNameMatchesFile(importsByName[name], to.FilePath) {
+			imported = append(imported, resolvedCallTarget{
+				SymbolRecord: to,
+				Confidence:   0.86,
+				Reason:       "direct call expression resolved through import path",
+			})
+		}
+	}
+	if len(imported) > 0 {
+		return imported
+	}
+
+	var remaining []SymbolRecord
+	for _, to := range candidates {
+		if to.ID != from.ID {
+			remaining = append(remaining, to)
+		}
+	}
+	if len(remaining) == 1 {
+		return []resolvedCallTarget{{
+			SymbolRecord: remaining[0],
+			Confidence:   0.68,
+			Reason:       "direct call expression matched globally unique symbol name",
+		}}
+	}
+	return nil
+}
+
 func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, contentByFile map[string]string) []RelationRecord {
 	var relations []RelationRecord
 	symbolsByShortName := map[string][]SymbolRecord{}
+	symbolsByFile := map[string][]SymbolRecord{}
 	for _, records := range recordsByFile {
 		for _, symbol := range records {
 			relations = append(relations, RelationRecord{
@@ -444,7 +593,25 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 					WarningCodes: []string{},
 				})
 			}
+			if symbol.Kind == "tool" && symbol.ContainerID != "" {
+				relations = append(relations, RelationRecord{
+					RecordType:   "relation",
+					FromID:       symbol.ContainerID,
+					ToID:         symbol.ID,
+					Type:         "HANDLES_TOOL",
+					Confidence:   0.85,
+					Reason:       "tool boundary inferred from handler symbol body",
+					WarningCodes: []string{},
+				})
+			}
 			symbolsByShortName[symbol.Name] = append(symbolsByShortName[symbol.Name], symbol)
+			symbolsByFile[symbol.FilePath] = append(symbolsByFile[symbol.FilePath], symbol)
+		}
+	}
+	handledRoutes := map[string]struct{}{}
+	for _, file := range files {
+		if route := nextRouteBoundary(file.Path); route != "" {
+			handledRoutes[route] = struct{}{}
 		}
 	}
 
@@ -466,29 +633,29 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 				WarningCodes: []string{},
 			})
 		}
+		importsByName := importedNamesFor(file.Path, content)
 		for _, from := range recordsByFile[file.Path] {
 			block := symbolBlockFromLines(lines, from)
-			for name := range identifiersIn(block) {
+			for name := range callLikeIdentifiers(block) {
 				if name == from.Name {
 					continue
 				}
-				candidates := symbolsByShortName[name]
-				for _, to := range candidates {
-					if to.ID == from.ID {
-						continue
-					}
+				for _, to := range resolveCallTargets(name, from, symbolsByShortName[name], symbolsByFile[file.Path], importsByName) {
 					relations = append(relations, RelationRecord{
 						RecordType:   "relation",
 						FromID:       from.ID,
 						ToID:         to.ID,
 						Type:         "CALLS",
-						Confidence:   0.62,
-						Reason:       "identifier reference inside symbol body matches known symbol name",
+						Confidence:   to.Confidence,
+						Reason:       to.Reason,
 						WarningCodes: []string{},
 					})
 				}
 			}
 			for _, route := range routeLiterals(block) {
+				if _, ok := handledRoutes[route]; ok {
+					continue
+				}
 				relations = append(relations, RelationRecord{
 					RecordType:   "relation",
 					FromID:       from.ID,
@@ -496,17 +663,6 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 					Type:         "HANDLES_ROUTE",
 					Confidence:   0.7,
 					Reason:       "route-like string literal found inside handler symbol",
-					WarningCodes: []string{},
-				})
-			}
-			if looksLikeToolHandler(from, block) {
-				relations = append(relations, RelationRecord{
-					RecordType:   "relation",
-					FromID:       from.ID,
-					ToID:         externalID("tool", from.QualifiedName),
-					Type:         "HANDLES_TOOL",
-					Confidence:   0.58,
-					Reason:       "symbol name or body contains tool handler vocabulary",
 					WarningCodes: []string{},
 				})
 			}
@@ -521,20 +677,45 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 	return dedupeRelations(relations)
 }
 
-func externalRecords(relations []RelationRecord) []ExternalRecord {
+func externalRecords(relations []RelationRecord, files []FileRecord, recordsByFile map[string][]SymbolRecord) []ExternalRecord {
 	seen := map[string]ExternalRecord{}
+	filesByID := map[string]FileRecord{}
+	for _, file := range files {
+		filesByID[file.ID] = file
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, records := range recordsByFile {
+		for _, symbol := range records {
+			symbolsByID[symbol.ID] = symbol
+		}
+	}
 	for _, relation := range relations {
 		for _, id := range []string{relation.FromID, relation.ToID} {
 			if !strings.HasPrefix(id, "external:") {
 				continue
 			}
 			kind, value := externalParts(id)
-			seen[id] = ExternalRecord{
+			record := ExternalRecord{
 				RecordType: "external",
 				ID:         id,
 				Kind:       kind,
 				Value:      value,
+				External:   true,
 			}
+			if source, ok := boundarySourceLocation(relation, id, symbolsByID, filesByID); ok {
+				record.FilePath = source.FilePath
+				record.StartLine = source.StartLine
+				record.EndLine = source.EndLine
+				record.Signature = source.Signature
+				record.Language = source.Language
+				record.External = false
+				record.SourceSymbol = source.SourceSymbol
+				record.SourceDetails = relation.Reason
+			}
+			if existing, ok := seen[id]; ok && existing.FilePath != "" {
+				continue
+			}
+			seen[id] = record
 		}
 	}
 	ids := make([]string, 0, len(seen))
@@ -547,6 +728,54 @@ func externalRecords(relations []RelationRecord) []ExternalRecord {
 		out = append(out, seen[id])
 	}
 	return out
+}
+
+type boundarySource struct {
+	FilePath     string
+	StartLine    int
+	EndLine      int
+	Signature    string
+	Language     string
+	SourceSymbol string
+}
+
+func boundarySourceLocation(relation RelationRecord, externalID string, symbolsByID map[string]SymbolRecord, filesByID map[string]FileRecord) (boundarySource, bool) {
+	if !isBoundaryRelation(relation.Type) {
+		return boundarySource{}, false
+	}
+	sourceID := relation.FromID
+	if sourceID == externalID {
+		sourceID = relation.ToID
+	}
+	if symbol, ok := symbolsByID[sourceID]; ok {
+		return boundarySource{
+			FilePath:     symbol.FilePath,
+			StartLine:    symbol.StartLine,
+			EndLine:      symbol.EndLine,
+			Signature:    symbol.Signature,
+			Language:     symbol.Language,
+			SourceSymbol: symbol.QualifiedName,
+		}, true
+	}
+	if file, ok := filesByID[sourceID]; ok {
+		return boundarySource{
+			FilePath:  file.Path,
+			StartLine: 1,
+			EndLine:   1,
+			Signature: file.Path,
+			Language:  file.Language,
+		}, true
+	}
+	return boundarySource{}, false
+}
+
+func isBoundaryRelation(relationType string) bool {
+	switch relationType {
+	case "HANDLES_ROUTE":
+		return true
+	default:
+		return false
+	}
 }
 
 func externalParts(id string) (string, string) {
@@ -736,6 +965,179 @@ func scanImports(content string, expressions ...*regexp.Regexp) []string {
 	return sortedKeys(seen)
 }
 
+func importedNamesFor(path, content string) map[string][]string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".js", ".jsx", ".ts", ".tsx":
+		return importedJavaScriptNames(content)
+	default:
+		return map[string][]string{}
+	}
+}
+
+func importedJavaScriptNames(content string) map[string][]string {
+	imports := map[string][]string{}
+	namedImport := regexp.MustCompile(`(?m)^\s*import\s+(?:type\s+)?\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]`)
+	defaultImport := regexp.MustCompile(`(?m)^\s*import\s+(?:type\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+['"]([^'"]+)['"]`)
+	namespaceImport := regexp.MustCompile(`(?m)^\s*import\s+\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+['"]([^'"]+)['"]`)
+	for _, match := range namedImport.FindAllStringSubmatch(content, -1) {
+		for _, item := range strings.Split(match[1], ",") {
+			item = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(item), "type "))
+			if item == "" {
+				continue
+			}
+			parts := strings.Fields(item)
+			local := parts[0]
+			if len(parts) >= 3 && parts[len(parts)-2] == "as" {
+				local = parts[len(parts)-1]
+			}
+			imports[local] = append(imports[local], match[2])
+		}
+	}
+	for _, match := range defaultImport.FindAllStringSubmatch(content, -1) {
+		imports[match[1]] = append(imports[match[1]], match[2])
+	}
+	for _, match := range namespaceImport.FindAllStringSubmatch(content, -1) {
+		imports[match[1]] = append(imports[match[1]], match[2])
+	}
+	return imports
+}
+
+func importedNameMatchesFile(modules []string, targetPath string) bool {
+	for _, module := range modules {
+		if importModuleMatchesFile(module, targetPath) {
+			return true
+		}
+	}
+	return false
+}
+
+func importModuleMatchesFile(module, targetPath string) bool {
+	module = strings.TrimSpace(module)
+	if module == "" || strings.HasPrefix(module, ".") {
+		return false
+	}
+	module = strings.TrimPrefix(module, "@/")
+	module = strings.TrimPrefix(module, "src/")
+	target := strings.TrimSuffix(filepath.ToSlash(targetPath), filepath.Ext(targetPath))
+	return strings.HasSuffix(target, module) || strings.HasSuffix(target, "/"+module) || target == module
+}
+
+func callLikeIdentifiers(content string) map[string]struct{} {
+	stripped := stripCodeLiteralsAndComments(content)
+	identifiers := map[string]struct{}{}
+	call := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>\n;{}()]*>)?\(`)
+	for _, match := range call.FindAllStringSubmatchIndex(stripped, -1) {
+		if len(match) < 4 {
+			continue
+		}
+		start := match[2]
+		name := stripped[match[2]:match[3]]
+		if callNameIgnored(stripped, start, name) {
+			continue
+		}
+		identifiers[name] = struct{}{}
+	}
+	return identifiers
+}
+
+func callNameIgnored(content string, start int, name string) bool {
+	for i := start - 1; i >= 0; i-- {
+		switch content[i] {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '.':
+			return true
+		default:
+			i = -1
+		}
+	}
+	switch name {
+	case "if", "for", "while", "switch", "catch", "function", "return", "typeof", "sizeof":
+		return true
+	case "append", "cap", "close", "complex", "copy", "delete", "imag", "len", "make", "new", "panic", "print", "println", "real", "recover":
+		return true
+	case "Array", "Boolean", "Date", "Error", "Map", "Math", "Number", "Object", "Promise", "RegExp", "Request", "Response", "Set", "String", "URL", "URLSearchParams":
+		return true
+	default:
+		return false
+	}
+}
+
+func stripCodeLiteralsAndComments(content string) string {
+	bytes := []byte(content)
+	for i := 0; i < len(bytes); i++ {
+		switch bytes[i] {
+		case '"', '\'':
+			quote := bytes[i]
+			for j := i + 1; j < len(bytes); j++ {
+				if bytes[j] == '\n' || bytes[j] == '\r' {
+					i = j
+					break
+				}
+				if bytes[j] == '\\' {
+					j++
+					continue
+				}
+				if bytes[j] == quote {
+					maskBytes(bytes, i, j+1)
+					i = j
+					break
+				}
+			}
+		case '`':
+			for j := i + 1; j < len(bytes); j++ {
+				if bytes[j] == '\\' {
+					j++
+					continue
+				}
+				if bytes[j] == '`' {
+					maskBytes(bytes, i, j+1)
+					i = j
+					break
+				}
+			}
+		case '/':
+			if i+1 >= len(bytes) {
+				continue
+			}
+			switch bytes[i+1] {
+			case '/':
+				j := i + 2
+				for j < len(bytes) && bytes[j] != '\n' && bytes[j] != '\r' {
+					j++
+				}
+				maskBytes(bytes, i, j)
+				i = j
+			case '*':
+				j := i + 2
+				for j+1 < len(bytes) && !(bytes[j] == '*' && bytes[j+1] == '/') {
+					j++
+				}
+				if j+1 < len(bytes) {
+					j += 2
+				}
+				maskBytes(bytes, i, j)
+				i = j
+			}
+		}
+	}
+	return string(bytes)
+}
+
+func maskBytes(bytes []byte, start, end int) {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(bytes) {
+		end = len(bytes)
+	}
+	for i := start; i < end; i++ {
+		if bytes[i] != '\n' && bytes[i] != '\r' {
+			bytes[i] = ' '
+		}
+	}
+}
+
 func routeLiterals(content string) []string {
 	re := regexp.MustCompile(`["'](/[A-Za-z0-9_\-/{}/:.]*)["']`)
 	seen := map[string]struct{}{}
@@ -745,6 +1147,103 @@ func routeLiterals(content string) []string {
 		}
 	}
 	return sortedKeys(seen)
+}
+
+func nextRouteBoundary(path string) string {
+	slashPath := filepath.ToSlash(path)
+	const rootMarker = "src/app/"
+	const nestedMarker = "/src/app/"
+	var relative string
+	switch {
+	case strings.HasPrefix(slashPath, rootMarker):
+		relative = strings.TrimPrefix(slashPath, rootMarker)
+	case strings.Contains(slashPath, nestedMarker):
+		index := strings.Index(slashPath, nestedMarker)
+		relative = slashPath[index+len(nestedMarker):]
+	default:
+		return ""
+	}
+	switch {
+	case strings.HasSuffix(relative, "/route.ts"):
+		relative = strings.TrimSuffix(relative, "/route.ts")
+	case strings.HasSuffix(relative, "/route.tsx"):
+		relative = strings.TrimSuffix(relative, "/route.tsx")
+	case strings.HasSuffix(relative, "/page.ts"):
+		relative = strings.TrimSuffix(relative, "/page.ts")
+	case strings.HasSuffix(relative, "/page.tsx"):
+		relative = strings.TrimSuffix(relative, "/page.tsx")
+	default:
+		return ""
+	}
+	var segments []string
+	for _, segment := range strings.Split(relative, "/") {
+		segment = strings.TrimSpace(segment)
+		if segment == "" || strings.HasPrefix(segment, "(") && strings.HasSuffix(segment, ")") {
+			continue
+		}
+		if strings.HasPrefix(segment, "@") {
+			continue
+		}
+		segments = append(segments, nextRouteSegment(segment))
+	}
+	if len(segments) == 0 {
+		return "/"
+	}
+	return "/" + strings.Join(segments, "/")
+}
+
+func nextRouteSegment(segment string) string {
+	if strings.HasPrefix(segment, "[[...") && strings.HasSuffix(segment, "]]") {
+		return "{..." + strings.TrimSuffix(strings.TrimPrefix(segment, "[[..."), "]]") + "}"
+	}
+	if strings.HasPrefix(segment, "[...") && strings.HasSuffix(segment, "]") {
+		return "{..." + strings.TrimSuffix(strings.TrimPrefix(segment, "[..."), "]") + "}"
+	}
+	if strings.HasPrefix(segment, "[") && strings.HasSuffix(segment, "]") {
+		return "{" + strings.TrimSuffix(strings.TrimPrefix(segment, "["), "]") + "}"
+	}
+	return segment
+}
+
+func routeBoundarySourceID(repoKey string, file FileRecord, symbols []SymbolRecord) string {
+	for _, method := range []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"} {
+		for _, symbol := range symbols {
+			if symbol.Name == method || symbol.QualifiedName == method {
+				return symbol.ID
+			}
+		}
+	}
+	for _, symbol := range symbols {
+		if symbol.Kind == "function" || symbol.Kind == "method" {
+			return symbol.ID
+		}
+	}
+	return fileID(repoKey, file.Path)
+}
+
+func applicationWorkflowBoundary(path string) string {
+	route := nextRouteBoundary(path)
+	if !strings.HasPrefix(route, "/api/internal/") {
+		return ""
+	}
+	switch {
+	case route == "/api/internal/feed-crawler/tick":
+		return "feed-crawler"
+	case route == "/api/internal/post-transcription/tick":
+		return "post-transcription"
+	case route == "/api/internal/jobs/recover":
+		return "transcription-recovery"
+	case strings.HasSuffix(route, "/attribute-speakers"):
+		return "speaker-attribution"
+	case strings.HasSuffix(route, "/chunk"):
+		return "transcript-chunking"
+	case strings.HasSuffix(route, "/classify-ads"):
+		return "ad-classification"
+	case strings.HasSuffix(route, "/insights"):
+		return "transcript-insights"
+	default:
+		return ""
+	}
 }
 
 func looksLikeToolHandler(symbol SymbolRecord, block string) bool {

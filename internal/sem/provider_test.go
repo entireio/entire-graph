@@ -33,7 +33,7 @@ def check_token(token):
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Header.SchemaVersion != "1.0" {
+	if snapshot.Header.SchemaVersion != "1.1" {
 		t.Fatalf("schema version = %q", snapshot.Header.SchemaVersion)
 	}
 	if snapshot.Header.Provider != ProviderName {
@@ -82,8 +82,61 @@ def check_token(token):
 			t.Fatalf("missing %s in %#v", want, snapshot.Relations)
 		}
 	}
+	if symbolByKindAndName(snapshot.Symbols, "tool", "AuthService.execute_tool_handler").ID == "" {
+		t.Fatalf("missing tool boundary symbol in %#v", snapshot.Symbols)
+	}
 	if len(snapshot.Externals) == 0 {
 		t.Fatalf("missing external endpoint records")
+	}
+}
+
+func TestBuildProviderSnapshotAddsBoundarySourceLocations(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "apps/web/src/app/oauth/device/code/route.ts", `export async function POST(request: Request) {
+  return Response.json({ ok: true })
+}
+`)
+	writeFile(t, repo, "apps/web/src/app/api/internal/feed-crawler/tick/route.ts", `async function handleFeedCrawlerTick(request: Request) {
+  return Response.json({ ok: true })
+}
+
+export async function GET(request: Request) {
+  return handleFeedCrawlerTick(request)
+}
+`)
+	writeFile(t, repo, "src/app/api/internal/post-transcription/tick/route.ts", `export async function GET(request: Request) {
+  return Response.json({ ok: true })
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	route := symbolByKindAndName(snapshot.Symbols, "route", "/oauth/device/code")
+	if route.ID == "" {
+		t.Fatalf("missing route boundary in %#v", snapshot.Symbols)
+	}
+	if route.FilePath != "apps/web/src/app/oauth/device/code/route.ts" || route.StartLine != 1 {
+		t.Fatalf("route source = %#v", route)
+	}
+
+	workflow := symbolByKindAndName(snapshot.Symbols, "workflow", "feed-crawler")
+	if workflow.ID == "" {
+		t.Fatalf("missing workflow boundary in %#v", snapshot.Symbols)
+	}
+	if workflow.FilePath != "apps/web/src/app/api/internal/feed-crawler/tick/route.ts" {
+		t.Fatalf("workflow source = %#v", workflow)
+	}
+
+	rootRoute := symbolByKindAndName(snapshot.Symbols, "route", "/api/internal/post-transcription/tick")
+	if rootRoute.ID == "" {
+		t.Fatalf("missing route boundary for repo-root src/app path in %#v", snapshot.Symbols)
+	}
+	rootWorkflow := symbolByKindAndName(snapshot.Symbols, "workflow", "post-transcription")
+	if rootWorkflow.ID == "" {
+		t.Fatalf("missing workflow boundary for repo-root src/app path in %#v", snapshot.Symbols)
 	}
 }
 
@@ -285,6 +338,60 @@ func TestBuildRelationsUsesSymbolBlockIdentifierLookup(t *testing.T) {
 	}
 	if !sawTargetCall {
 		t.Fatalf("missing CALLS relation from caller to TargetSymbol in %#v", relations)
+	}
+}
+
+func TestBuildRelationsDropsAmbiguousCrossFileCallNameCollisions(t *testing.T) {
+	files := []FileRecord{
+		{RecordType: "file", ID: fileID("repo", "caller.go"), Path: "caller.go", Language: "Go"},
+		{RecordType: "file", ID: fileID("repo", "embeddings.ts"), Path: "embeddings.ts", Language: "TypeScript"},
+		{RecordType: "file", ID: fileID("repo", "runtime.ts"), Path: "runtime.ts", Language: "TypeScript"},
+	}
+	recordsByFile := map[string][]SymbolRecord{
+		"caller.go": {{
+			RecordType:    "symbol",
+			ID:            "caller",
+			Kind:          "function",
+			Name:          "Login",
+			QualifiedName: "Login",
+			FilePath:      "caller.go",
+			StartLine:     1,
+			EndLine:       4,
+			Language:      "Go",
+		}},
+		"embeddings.ts": {{
+			RecordType:    "symbol",
+			ID:            "embeddings-sleep",
+			Kind:          "function",
+			Name:          "sleep",
+			QualifiedName: "sleep",
+			FilePath:      "embeddings.ts",
+			StartLine:     1,
+			EndLine:       3,
+			Language:      "TypeScript",
+		}},
+		"runtime.ts": {{
+			RecordType:    "symbol",
+			ID:            "runtime-sleep",
+			Kind:          "function",
+			Name:          "sleep",
+			QualifiedName: "sleep",
+			FilePath:      "runtime.ts",
+			StartLine:     1,
+			EndLine:       3,
+			Language:      "TypeScript",
+		}},
+	}
+	contentByFile := map[string]string{
+		"caller.go":     "func Login() {\n\tsleep := options.Sleep\n\tsleep(interval)\n}\n",
+		"embeddings.ts": "function sleep(ms: number) {}\n",
+		"runtime.ts":    "function sleep(ms: number) {}\n",
+	}
+
+	for _, relation := range buildRelations("repo", files, recordsByFile, contentByFile) {
+		if relation.Type == "CALLS" && relation.FromID == "caller" {
+			t.Fatalf("ambiguous sleep call should not resolve globally: %#v", relation)
+		}
 	}
 }
 
@@ -521,4 +628,22 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func externalByID(records []ExternalRecord, id string) ExternalRecord {
+	for _, record := range records {
+		if record.ID == id {
+			return record
+		}
+	}
+	return ExternalRecord{}
+}
+
+func symbolByKindAndName(records []SymbolRecord, kind, qualifiedName string) SymbolRecord {
+	for _, record := range records {
+		if record.Kind == kind && record.QualifiedName == qualifiedName {
+			return record
+		}
+	}
+	return SymbolRecord{}
 }

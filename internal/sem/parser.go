@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -29,11 +30,11 @@ import (
 	"github.com/smacker/go-tree-sitter/ruby"
 	"github.com/smacker/go-tree-sitter/rust"
 	"github.com/smacker/go-tree-sitter/scala"
-	"github.com/smacker/go-tree-sitter/sql"
 	"github.com/smacker/go-tree-sitter/swift"
 	treesittertsx "github.com/smacker/go-tree-sitter/typescript/tsx"
 	treesitterts "github.com/smacker/go-tree-sitter/typescript/typescript"
 	treesitteryaml "github.com/smacker/go-tree-sitter/yaml"
+	"github.com/suhaanthayyil/entire-sem/internal/sem/pgsql"
 )
 
 type languageSpec struct {
@@ -76,7 +77,7 @@ var treeSitterLanguages = map[string]languageSpec{
 	".scala":  {language: "Scala", grammar: scala.GetLanguage()},
 	".sc":     {language: "Scala", grammar: scala.GetLanguage()},
 	".sh":     {language: "Bash", grammar: bash.GetLanguage()},
-	".sql":    {language: "SQL", grammar: sql.GetLanguage()},
+	".sql":    {language: "SQL"},
 	".swift":  {language: "Swift", grammar: swift.GetLanguage()},
 	".tf":     {language: "HCL", grammar: hcl.GetLanguage()},
 	".tfvars": {language: "HCL", grammar: hcl.GetLanguage()},
@@ -104,8 +105,15 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if !ok {
 		return nil, "", ParseStatus{}
 	}
+	if spec.language == "SQL" {
+		spec.grammar = pgsql.GetLanguage()
+	}
 	src := []byte(content)
-	root, err := sitter.ParseCtx(context.Background(), src, spec.grammar)
+	parseSrc := src
+	if spec.language == "SQL" {
+		parseSrc = []byte(maskPostgresUnsupportedSyntax(content))
+	}
+	root, err := sitter.ParseCtx(context.Background(), parseSrc, spec.grammar)
 	if err != nil || root == nil || root.IsNull() {
 		detail := "tree-sitter parse failed"
 		if err != nil {
@@ -123,6 +131,14 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 
 	var entities []Entity
 	walkEntities(root, src, "", &entities)
+	if spec.language == "SQL" {
+		// Run the regex fallback extractors on comment-stripped source so that
+		// commented-out (or otherwise non-DDL) text is not picked up as a phantom
+		// entity. The tree-sitter walk above already used masked source.
+		regexSrc := []byte(stripSQLComments(string(src)))
+		entities = append(entities, postgresFunctionEntities(regexSrc)...)
+		entities = append(entities, postgresPolicyEntities(regexSrc)...)
+	}
 	sort.Slice(entities, func(i, j int) bool {
 		if entities[i].StartLine == entities[j].StartLine {
 			return entities[i].Name < entities[j].Name
@@ -264,10 +280,28 @@ func entityFromNode(node *sitter.Node, src []byte, scope string) (Entity, bool) 
 		}
 	case "create_table":
 		kind = "table"
-		name = nodeName(node, src)
+		name = sqlObjectName(node, src)
 	case "create_function":
 		kind = "function"
-		name = nodeName(node, src)
+		name = sqlObjectName(node, src)
+	case "create_view":
+		kind = "view"
+		name = sqlObjectName(node, src)
+	case "create_materialized_view":
+		kind = "view"
+		name = sqlObjectName(node, src)
+	case "create_index":
+		kind = "index"
+		name = sqlIndexName(node, src)
+	case "create_trigger":
+		kind = "trigger"
+		name = sqlObjectName(node, src)
+	case "statement":
+		var ok bool
+		kind, name, ok = sqlStatementEntity(node, src)
+		if !ok {
+			return Entity{}, false
+		}
 	case "call":
 		var ok bool
 		kind, name, ok = elixirCallEntity(node, src, scope)
@@ -319,6 +353,658 @@ func refineKind(kind string, node *sitter.Node, src []byte) string {
 	default:
 		return kind
 	}
+}
+
+var postgresGeneratedColumnPattern = regexp.MustCompile(`(?is)\bgenerated\s+always\s+as\s*\([^;]*?\)\s+stored`)
+var postgresLineCommentPattern = regexp.MustCompile(`(?m)--[^\n\r]*`)
+var postgresBlockCommentPattern = regexp.MustCompile(`(?is)/\*.*?\*/`)
+var postgresVectorTypePattern = regexp.MustCompile(`(?i)\bvector\s*\([^)]*\)`)
+var postgresTimestamptzTypePattern = regexp.MustCompile(`(?i)\btimestamptz\b`)
+var postgresBigserialTypePattern = regexp.MustCompile(`(?i)\bbigserial\b`)
+var postgresTypeCastPattern = regexp.MustCompile(`(?i)::\s*[a-z_][a-z0-9_]*(?:\[\])?`)
+var postgresCurrentDatePattern = regexp.MustCompile(`(?i)\bcurrent_date\b`)
+var postgresOnConflictPattern = regexp.MustCompile(`(?is)\bon\s+conflict\b[^;]*`)
+var postgresGrantRevokePattern = regexp.MustCompile(`(?is)\b(?:grant|revoke)\b[^;]*;`)
+var postgresNotifyPattern = regexp.MustCompile(`(?is)\bnotify\b[^;]*;`)
+var postgresDeletePattern = regexp.MustCompile(`(?is)\bdelete\s+from\b[^;]*;`)
+var postgresDropFunctionPattern = regexp.MustCompile(`(?is)\bdrop\s+function\b[^;]*;`)
+var postgresAlterTablePattern = regexp.MustCompile(`(?is)\balter\s+table\b[^;]*;`)
+var postgresAlterFunctionPattern = regexp.MustCompile(`(?is)\balter\s+function\b[^;]*;`)
+var postgresPsqlMetaCommandPattern = regexp.MustCompile(`(?im)^\s*(?:\.[^\n\r]*|\\[a-z]+[^\n\r]*)`)
+var postgresSubstringFromPattern = regexp.MustCompile(`(?is)\bsubstring\s*\([^()]*\s+from\s+'[^']*'\)`)
+var postgresIsDistinctFromPattern = regexp.MustCompile(`(?i)\bis\s+distinct\s+from\b`)
+var postgresCrossJoinLateralPattern = regexp.MustCompile(`(?i)\bcross\s+join\s+lateral\b`)
+var postgresWithOrdinalityPattern = regexp.MustCompile(`(?i)\s+with\s+ordinality\b`)
+var postgresOnDeleteUpdatePattern = regexp.MustCompile(`(?i)\s+on\s+(?:delete|update)\s+(?:cascade|restrict|set\s+null|set\s+default|no\s+action)\b`)
+var postgresVectorOperatorClassPattern = regexp.MustCompile(`(?i)\s+vector_[a-z0-9_]+_ops\b`)
+var postgresIndexMethodPattern = regexp.MustCompile(`(?i)\s+using\s+[a-z0-9_]+\b`)
+var postgresCreateFunctionPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?function\b.*?\bas\s+\$[a-z0-9_]*\$.*?\$[a-z0-9_]*\$(?:\s+language\b[^;]*)?;`)
+var postgresDoBlockPattern = regexp.MustCompile(`(?is)\bdo\s+\$[a-z0-9_]*\$.*?\$[a-z0-9_]*\$;`)
+var postgresDropTriggerPattern = regexp.MustCompile(`(?is)\bdrop\s+trigger\b[^;]*;`)
+var postgresDropPolicyPattern = regexp.MustCompile(`(?is)\bdrop\s+policy\b[^;]*;`)
+var postgresRowLevelSecurityPattern = regexp.MustCompile(`(?is)\balter\s+table\b[^;]*\brow\s+level\s+security\s*;`)
+var postgresFunctionSetPattern = regexp.MustCompile(`(?im)^\s*set\s+search_path\s*=\s*[^;\n]+`)
+
+func maskPostgresUnsupportedSyntax(content string) string {
+	masked := []byte(content)
+	for _, loc := range postgresVectorTypePattern.FindAllStringIndex(content, -1) {
+		replaceBytesPreservingWidth(masked, loc[0], loc[1], "text")
+	}
+	for _, loc := range postgresTimestamptzTypePattern.FindAllStringIndex(content, -1) {
+		replaceBytesPreservingWidth(masked, loc[0], loc[1], "timestamp")
+	}
+	for _, loc := range postgresBigserialTypePattern.FindAllStringIndex(content, -1) {
+		replaceBytesPreservingWidth(masked, loc[0], loc[1], "bigint")
+	}
+	for _, loc := range postgresTypeCastPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresCurrentDatePattern.FindAllStringIndex(content, -1) {
+		replaceBytesPreservingWidth(masked, loc[0], loc[1], "now()")
+	}
+	for _, loc := range postgresLineCommentPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresBlockCommentPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresSubstringFromPattern.FindAllStringIndex(content, -1) {
+		replaceBytesPreservingWidth(masked, loc[0], loc[1], "null")
+	}
+	for _, loc := range postgresIsDistinctFromPattern.FindAllStringIndex(content, -1) {
+		replaceBytesPreservingWidth(masked, loc[0], loc[1], "<>")
+	}
+	for _, loc := range postgresCrossJoinLateralPattern.FindAllStringIndex(content, -1) {
+		replaceBytesPreservingWidth(masked, loc[0], loc[1], "cross join")
+	}
+	for _, loc := range postgresPsqlMetaCommandPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresGeneratedColumnPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	maskPostgresCheckConstraints(masked, content)
+	for _, loc := range postgresCreateFunctionPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresDoBlockPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresDropTriggerPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresDropPolicyPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresRowLevelSecurityPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresDropFunctionPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresAlterTablePattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresAlterFunctionPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresGrantRevokePattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresNotifyPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresDeletePattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresFunctionSetPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresWithOrdinalityPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresOnDeleteUpdatePattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	maskPostgresTableConstraints(masked, content)
+	for _, loc := range postgresIndexMethodPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresOnConflictPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresVectorOperatorClassPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	lower := strings.ToLower(content)
+	offset := 0
+	for {
+		rel := strings.Index(lower[offset:], "create policy")
+		if rel < 0 {
+			break
+		}
+		start := offset + rel
+		end := sqlStatementEnd(content, start)
+		maskBytesPreservingNewlines(masked, start, end)
+		offset = end
+	}
+	return string(masked)
+}
+
+func replaceBytesPreservingWidth(src []byte, start, end int, replacement string) {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(src) {
+		end = len(src)
+	}
+	for i := start; i < end; i++ {
+		src[i] = ' '
+	}
+	copy(src[start:end], replacement)
+}
+
+func replaceRangePreservingNewlines(src []byte, start, end int, replacement string) {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(src) {
+		end = len(src)
+	}
+	for i := start; i < end; i++ {
+		switch src[i] {
+		case '\n', '\r':
+		default:
+			src[i] = ' '
+		}
+	}
+	copy(src[start:min(end, start+len(replacement))], replacement)
+}
+
+func maskBytesPreservingNewlines(src []byte, start, end int) {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(src) {
+		end = len(src)
+	}
+	for i := start; i < end; i++ {
+		switch src[i] {
+		case '\n', '\r':
+		default:
+			src[i] = ' '
+		}
+	}
+}
+
+func maskPostgresCheckConstraints(masked []byte, content string) {
+	lower := strings.ToLower(content)
+	offset := 0
+	for {
+		rel := strings.Index(lower[offset:], "check")
+		if rel < 0 {
+			return
+		}
+		start := offset + rel
+		beforeOK := start == 0 || !isSQLIdentifierByte(lower[start-1])
+		after := start + len("check")
+		afterOK := after >= len(lower) || !isSQLIdentifierByte(lower[after])
+		if !beforeOK || !afterOK {
+			offset = after
+			continue
+		}
+		open := after
+		for open < len(content) && (content[open] == ' ' || content[open] == '\t' || content[open] == '\n' || content[open] == '\r') {
+			open++
+		}
+		if open >= len(content) || content[open] != '(' {
+			offset = after
+			continue
+		}
+		depth := 0
+		inString := false
+		for i := open; i < len(content); i++ {
+			switch content[i] {
+			case '\'':
+				if inString && i+1 < len(content) && content[i+1] == '\'' {
+					i++
+					continue
+				}
+				inString = !inString
+			case '(':
+				if !inString {
+					depth++
+				}
+			case ')':
+				if !inString {
+					depth--
+					if depth == 0 {
+						if before := previousNonSpace(content, start); before >= 0 && (content[before] == ',' || content[before] == '(') {
+							replaceRangePreservingNewlines(masked, start, i+1, "check_dummy text")
+						} else {
+							maskBytesPreservingNewlines(masked, start, i+1)
+						}
+						offset = i + 1
+						goto next
+					}
+				}
+			}
+		}
+		return
+	next:
+	}
+}
+
+func maskPostgresTableConstraints(masked []byte, content string) {
+	lower := strings.ToLower(content)
+	for _, keyword := range []string{"primary key", "foreign key", "unique", "constraint"} {
+		offset := 0
+		for {
+			rel := strings.Index(lower[offset:], keyword)
+			if rel < 0 {
+				break
+			}
+			start := offset + rel
+			before := previousNonSpace(content, start)
+			if before >= 0 && content[before] != ',' && content[before] != '(' {
+				offset = start + len(keyword)
+				continue
+			}
+			end := tableConstraintEnd(content, start)
+			replaceRangePreservingNewlines(masked, start, end, "constraint_dummy text")
+			offset = end
+		}
+	}
+}
+
+func previousNonSpace(content string, index int) int {
+	for i := index - 1; i >= 0; i-- {
+		switch content[i] {
+		case ' ', '\t', '\n', '\r':
+			continue
+		default:
+			return i
+		}
+	}
+	return -1
+}
+
+func tableConstraintEnd(content string, start int) int {
+	depth := 0
+	inString := false
+	seenParen := false
+	for i := start; i < len(content); i++ {
+		switch content[i] {
+		case '\'':
+			if inString && i+1 < len(content) && content[i+1] == '\'' {
+				i++
+				continue
+			}
+			inString = !inString
+		case '(':
+			if !inString {
+				depth++
+				seenParen = true
+			}
+		case ')':
+			if !inString {
+				if depth == 0 && seenParen {
+					return i
+				}
+				depth--
+				if seenParen && depth == 0 {
+					return i + 1
+				}
+			}
+		case ',':
+			if !inString && !seenParen {
+				return i + 1
+			}
+		case '\n', '\r':
+			if !inString && !seenParen {
+				return i
+			}
+		}
+	}
+	return len(content)
+}
+
+func isSQLIdentifierByte(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_'
+}
+
+func postgresFunctionEntities(src []byte) []Entity {
+	content := string(src)
+	var entities []Entity
+	for _, loc := range postgresCreateFunctionPattern.FindAllStringIndex(content, -1) {
+		block := content[loc[0]:loc[1]]
+		if name := matchSQLCreateFunctionName(block); name != "" {
+			signature := strings.TrimSpace(block)
+			if index := strings.IndexByte(signature, '\n'); index >= 0 {
+				signature = signature[:index]
+			}
+			entity := Entity{
+				Kind:        "function",
+				Name:        name,
+				Signature:   strings.TrimSpace(strings.TrimRight(signature, "{:; \t\r\n")),
+				StartLine:   countLinesBefore(content, loc[0]) + 1,
+				EndLine:     countLinesBefore(content, loc[1]) + 1,
+				BodyHash:    hash(normalize(block)),
+				Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+			}
+			entities = append(entities, entity)
+		}
+	}
+	return entities
+}
+
+func postgresPolicyEntities(src []byte) []Entity {
+	content := string(src)
+	lower := strings.ToLower(content)
+	var entities []Entity
+	offset := 0
+	for {
+		rel := strings.Index(lower[offset:], "create policy")
+		if rel < 0 {
+			break
+		}
+		start := offset + rel
+		end := sqlStatementEnd(content, start)
+		block := content[start:end]
+		if name := matchSQLCreatePolicyName(block); name != "" {
+			signature := strings.TrimSpace(block)
+			if index := strings.IndexByte(signature, '\n'); index >= 0 {
+				signature = signature[:index]
+			}
+			entity := Entity{
+				Kind:        "policy",
+				Name:        name,
+				Signature:   strings.TrimSpace(strings.TrimRight(signature, "{:; \t\r\n")),
+				StartLine:   countLinesBefore(content, start) + 1,
+				EndLine:     countLinesBefore(content, end) + 1,
+				BodyHash:    hash(normalize(block)),
+				Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+			}
+			entities = append(entities, entity)
+		}
+		offset = end
+	}
+	return entities
+}
+
+func countLinesBefore(content string, end int) int {
+	if end > len(content) {
+		end = len(content)
+	}
+	return strings.Count(content[:end], "\n")
+}
+
+// sqlStatementEnd returns the offset just past the ';' that terminates the SQL
+// statement starting at start, ignoring ';' that appear inside single-quoted
+// strings (” is an embedded quote) or dollar-quoted strings ($$...$$ /
+// $tag$...$tag$, used by function bodies). It returns len(content) when no
+// terminating ';' is found. This prevents a semicolon inside a literal (e.g. a
+// CREATE POLICY USING clause) from truncating the statement and silently
+// dropping every entity that follows it.
+func sqlStatementEnd(content string, start int) int {
+	n := len(content)
+	for i := start; i < n; {
+		switch content[i] {
+		case '\'':
+			i++
+			for i < n {
+				if content[i] == '\'' {
+					if i+1 < n && content[i+1] == '\'' {
+						i += 2
+						continue
+					}
+					i++
+					break
+				}
+				i++
+			}
+		case '$':
+			if tag, ok := dollarQuoteTag(content, i); ok {
+				rest := content[i+len(tag):]
+				closeRel := strings.Index(rest, tag)
+				if closeRel < 0 {
+					return n
+				}
+				i = i + len(tag) + closeRel + len(tag)
+			} else {
+				i++
+			}
+		case ';':
+			return i + 1
+		default:
+			i++
+		}
+	}
+	return n
+}
+
+// dollarQuoteTag reports whether content[i] begins a PostgreSQL dollar-quote and
+// returns the full opening tag (e.g. "$$" or "$body$"). A tag is '$', an optional
+// identifier (letters/underscore, then alnum/underscore), then '$'.
+func dollarQuoteTag(content string, i int) (string, bool) {
+	if i >= len(content) || content[i] != '$' {
+		return "", false
+	}
+	for j := i + 1; j < len(content); j++ {
+		c := content[j]
+		if c == '$' {
+			return content[i : j+1], true
+		}
+		isFirst := j == i+1
+		switch {
+		case c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'):
+		case !isFirst && c >= '0' && c <= '9':
+		default:
+			return "", false
+		}
+	}
+	return "", false
+}
+
+// stripSQLComments blanks -- line comments and /* */ block comments with spaces
+// (preserving length and newlines so reported line numbers stay correct), while
+// leaving comment markers that appear inside single-quoted or dollar-quoted
+// literals untouched. It is used to feed the regex entity extractors source that
+// cannot match commented-out DDL.
+func stripSQLComments(content string) string {
+	b := []byte(content)
+	n := len(b)
+	for i := 0; i < n; {
+		switch b[i] {
+		case '\'':
+			i++
+			for i < n {
+				if b[i] == '\'' {
+					if i+1 < n && b[i+1] == '\'' {
+						i += 2
+						continue
+					}
+					i++
+					break
+				}
+				i++
+			}
+		case '$':
+			if tag, ok := dollarQuoteTag(content, i); ok {
+				closeRel := strings.Index(content[i+len(tag):], tag)
+				if closeRel < 0 {
+					return string(b)
+				}
+				i = i + len(tag) + closeRel + len(tag)
+			} else {
+				i++
+			}
+		case '-':
+			if i+1 < n && b[i+1] == '-' {
+				for i < n && b[i] != '\n' {
+					b[i] = ' '
+					i++
+				}
+			} else {
+				i++
+			}
+		case '/':
+			if i+1 < n && b[i+1] == '*' {
+				b[i] = ' '
+				b[i+1] = ' '
+				i += 2
+				for i < n {
+					if b[i] == '*' && i+1 < n && b[i+1] == '/' {
+						b[i] = ' '
+						b[i+1] = ' '
+						i += 2
+						break
+					}
+					if b[i] != '\n' && b[i] != '\r' {
+						b[i] = ' '
+					}
+					i++
+				}
+			} else {
+				i++
+			}
+		default:
+			i++
+		}
+	}
+	return string(b)
+}
+
+func sqlObjectName(node *sitter.Node, src []byte) string {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if validNode(child) && child.Type() == "object_reference" {
+			if name := sqlReferenceName(child, src); name != "" {
+				return name
+			}
+		}
+	}
+	return nodeName(node, src)
+}
+
+func sqlIndexName(node *sitter.Node, src []byte) string {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if !validNode(child) {
+			continue
+		}
+		switch child.Type() {
+		case "object_reference":
+			// In CREATE INDEX, the first object_reference after ON is the table.
+			continue
+		case "identifier", "literal":
+			if name := sqlIdentifierContent(child, src); name != "" {
+				return name
+			}
+		}
+	}
+	return sqlObjectName(node, src)
+}
+
+func sqlReferenceName(node *sitter.Node, src []byte) string {
+	var parts []string
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if !validNode(child) {
+			continue
+		}
+		switch child.Type() {
+		case "identifier", "literal":
+			if part := sqlIdentifierContent(child, src); part != "" {
+				parts = append(parts, part)
+			}
+		}
+	}
+	return strings.Join(parts, ".")
+}
+
+func sqlIdentifierContent(node *sitter.Node, src []byte) string {
+	content := strings.TrimSpace(node.Content(src))
+	content = strings.Trim(content, "`\"")
+	return content
+}
+
+func sqlStatementEntity(node *sitter.Node, src []byte) (string, string, bool) {
+	content := strings.TrimSpace(node.Content(src))
+	lower := strings.ToLower(content)
+	if !strings.HasPrefix(lower, "create ") {
+		return "", "", false
+	}
+	if name := matchSQLCreatePolicyName(content); name != "" {
+		return "policy", name, true
+	}
+	return "", "", false
+}
+
+func matchSQLCreateFunctionName(content string) string {
+	lower := strings.ToLower(content)
+	idx := strings.Index(lower, "function")
+	if idx < 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(content[idx+len("function"):])
+	if rest == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(rest), "if not exists") {
+		rest = strings.TrimSpace(rest[len("if not exists"):])
+	}
+	open := strings.IndexByte(rest, '(')
+	if open < 0 {
+		return ""
+	}
+	return normalizeSQLDottedName(rest[:open])
+}
+
+func matchSQLCreatePolicyName(content string) string {
+	lower := strings.ToLower(content)
+	idx := strings.Index(lower, "create policy")
+	if idx < 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(content[idx+len("create policy"):])
+	if rest == "" {
+		return ""
+	}
+	if rest[0] == '"' {
+		if end := strings.IndexByte(rest[1:], '"'); end >= 0 {
+			return rest[1 : end+1]
+		}
+		return ""
+	}
+	tokens := sqlStatementTokens(rest)
+	if len(tokens) > 0 {
+		return tokens[0]
+	}
+	return ""
+}
+
+func normalizeSQLDottedName(content string) string {
+	var parts []string
+	for _, part := range strings.Split(content, ".") {
+		part = strings.TrimSpace(part)
+		part = strings.Trim(part, "`\"")
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return strings.Join(parts, ".")
+}
+
+func sqlStatementTokens(content string) []string {
+	var tokens []string
+	for _, field := range strings.Fields(content) {
+		token := strings.Trim(field, "`\"(),;")
+		if token != "" {
+			tokens = append(tokens, token)
+		}
+	}
+	return tokens
 }
 
 func nodeName(node *sitter.Node, src []byte) string {
