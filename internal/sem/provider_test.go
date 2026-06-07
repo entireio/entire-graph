@@ -33,7 +33,7 @@ def check_token(token):
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Header.SchemaVersion != "1.0" {
+	if snapshot.Header.SchemaVersion != "1.1" {
 		t.Fatalf("schema version = %q", snapshot.Header.SchemaVersion)
 	}
 	if snapshot.Header.Provider != ProviderName {

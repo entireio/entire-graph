@@ -19,7 +19,11 @@ import (
 )
 
 const (
-	SchemaVersion         = "1.0"
+	// SchemaVersion is bumped to 1.1 for the additive snapshot fields introduced
+	// alongside boundary source locations (the `external` flag on external records
+	// and the per-symbol source-location fields). The shape is backward compatible
+	// for tolerant readers; the bump lets consumers detect the new fields.
+	SchemaVersion         = "1.1"
 	ProviderName          = "entire-sem"
 	StableSymbolIDVersion = "compound-v1"
 )

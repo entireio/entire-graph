@@ -134,7 +134,7 @@ def check_token(token):
 		if err := json.Unmarshal([]byte(lines[0]), &header); err != nil {
 			t.Fatalf("%s invalid header json %q: %v", tt.command, lines[0], err)
 		}
-		if header["schema_version"] != "1.0" || header["provider"] != "entire-sem" {
+		if header["schema_version"] != "1.1" || header["provider"] != "entire-sem" {
 			t.Fatalf("%s header = %#v", tt.command, header)
 		}
 		seenTypes := map[string]bool{}
@@ -186,7 +186,7 @@ func TestSnapshotAcceptsNoNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), `"schema_version":"1.0"`) {
+	if !strings.Contains(out.String(), `"schema_version":"1.1"`) {
 		t.Fatalf("snapshot output:\n%s", out.String())
 	}
 }
@@ -200,7 +200,7 @@ func TestSnapshotAcceptsWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), `"schema_version":"1.0"`) {
+	if !strings.Contains(out.String(), `"schema_version":"1.1"`) {
 		t.Fatalf("snapshot output:\n%s", out.String())
 	}
 }

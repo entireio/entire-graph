@@ -132,8 +132,12 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	var entities []Entity
 	walkEntities(root, src, "", &entities)
 	if spec.language == "SQL" {
-		entities = append(entities, postgresFunctionEntities(src)...)
-		entities = append(entities, postgresPolicyEntities(src)...)
+		// Run the regex fallback extractors on comment-stripped source so that
+		// commented-out (or otherwise non-DDL) text is not picked up as a phantom
+		// entity. The tree-sitter walk above already used masked source.
+		regexSrc := []byte(stripSQLComments(string(src)))
+		entities = append(entities, postgresFunctionEntities(regexSrc)...)
+		entities = append(entities, postgresPolicyEntities(regexSrc)...)
 	}
 	sort.Slice(entities, func(i, j int) bool {
 		if entities[i].StartLine == entities[j].StartLine {
@@ -480,12 +484,7 @@ func maskPostgresUnsupportedSyntax(content string) string {
 			break
 		}
 		start := offset + rel
-		end := strings.IndexByte(content[start:], ';')
-		if end < 0 {
-			end = len(content)
-		} else {
-			end = start + end + 1
-		}
+		end := sqlStatementEnd(content, start)
 		maskBytesPreservingNewlines(masked, start, end)
 		offset = end
 	}
@@ -710,12 +709,7 @@ func postgresPolicyEntities(src []byte) []Entity {
 			break
 		}
 		start := offset + rel
-		end := strings.IndexByte(content[start:], ';')
-		if end < 0 {
-			end = len(content)
-		} else {
-			end = start + end + 1
-		}
+		end := sqlStatementEnd(content, start)
 		block := content[start:end]
 		if name := matchSQLCreatePolicyName(block); name != "" {
 			signature := strings.TrimSpace(block)
@@ -743,6 +737,142 @@ func countLinesBefore(content string, end int) int {
 		end = len(content)
 	}
 	return strings.Count(content[:end], "\n")
+}
+
+// sqlStatementEnd returns the offset just past the ';' that terminates the SQL
+// statement starting at start, ignoring ';' that appear inside single-quoted
+// strings (” is an embedded quote) or dollar-quoted strings ($$...$$ /
+// $tag$...$tag$, used by function bodies). It returns len(content) when no
+// terminating ';' is found. This prevents a semicolon inside a literal (e.g. a
+// CREATE POLICY USING clause) from truncating the statement and silently
+// dropping every entity that follows it.
+func sqlStatementEnd(content string, start int) int {
+	n := len(content)
+	for i := start; i < n; {
+		switch content[i] {
+		case '\'':
+			i++
+			for i < n {
+				if content[i] == '\'' {
+					if i+1 < n && content[i+1] == '\'' {
+						i += 2
+						continue
+					}
+					i++
+					break
+				}
+				i++
+			}
+		case '$':
+			if tag, ok := dollarQuoteTag(content, i); ok {
+				rest := content[i+len(tag):]
+				closeRel := strings.Index(rest, tag)
+				if closeRel < 0 {
+					return n
+				}
+				i = i + len(tag) + closeRel + len(tag)
+			} else {
+				i++
+			}
+		case ';':
+			return i + 1
+		default:
+			i++
+		}
+	}
+	return n
+}
+
+// dollarQuoteTag reports whether content[i] begins a PostgreSQL dollar-quote and
+// returns the full opening tag (e.g. "$$" or "$body$"). A tag is '$', an optional
+// identifier (letters/underscore, then alnum/underscore), then '$'.
+func dollarQuoteTag(content string, i int) (string, bool) {
+	if i >= len(content) || content[i] != '$' {
+		return "", false
+	}
+	for j := i + 1; j < len(content); j++ {
+		c := content[j]
+		if c == '$' {
+			return content[i : j+1], true
+		}
+		isFirst := j == i+1
+		switch {
+		case c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'):
+		case !isFirst && c >= '0' && c <= '9':
+		default:
+			return "", false
+		}
+	}
+	return "", false
+}
+
+// stripSQLComments blanks -- line comments and /* */ block comments with spaces
+// (preserving length and newlines so reported line numbers stay correct), while
+// leaving comment markers that appear inside single-quoted or dollar-quoted
+// literals untouched. It is used to feed the regex entity extractors source that
+// cannot match commented-out DDL.
+func stripSQLComments(content string) string {
+	b := []byte(content)
+	n := len(b)
+	for i := 0; i < n; {
+		switch b[i] {
+		case '\'':
+			i++
+			for i < n {
+				if b[i] == '\'' {
+					if i+1 < n && b[i+1] == '\'' {
+						i += 2
+						continue
+					}
+					i++
+					break
+				}
+				i++
+			}
+		case '$':
+			if tag, ok := dollarQuoteTag(content, i); ok {
+				closeRel := strings.Index(content[i+len(tag):], tag)
+				if closeRel < 0 {
+					return string(b)
+				}
+				i = i + len(tag) + closeRel + len(tag)
+			} else {
+				i++
+			}
+		case '-':
+			if i+1 < n && b[i+1] == '-' {
+				for i < n && b[i] != '\n' {
+					b[i] = ' '
+					i++
+				}
+			} else {
+				i++
+			}
+		case '/':
+			if i+1 < n && b[i+1] == '*' {
+				b[i] = ' '
+				b[i+1] = ' '
+				i += 2
+				for i < n {
+					if b[i] == '*' && i+1 < n && b[i+1] == '/' {
+						b[i] = ' '
+						b[i+1] = ' '
+						i += 2
+						break
+					}
+					if b[i] != '\n' && b[i] != '\r' {
+						b[i] = ' '
+					}
+					i++
+				}
+			} else {
+				i++
+			}
+		default:
+			i++
+		}
+	}
+	return string(b)
 }
 
 func sqlObjectName(node *sitter.Node, src []byte) string {
