@@ -39,6 +39,7 @@ var relationTypes = []string{
 	"HANDLES_ROUTE",
 	"HTTP_CALLS",
 	"HANDLES_TOOL",
+	"SIMILAR_TO",
 }
 
 // ooRelationSupport lists the OO/type relation types the provider can extract
@@ -252,11 +253,12 @@ func Capabilities() CapabilityReport {
 		ParserVersions:                  parserVersions(),
 		SupportedRelationTypes:          append([]string(nil), relationTypes...),
 		RelationSupportByLanguage:       relationSupportByLanguage(),
-		HeuristicRelationTypes:          []string{"HANDLES_ROUTE", "HTTP_CALLS", "HANDLES_TOOL"},
+		HeuristicRelationTypes:          []string{"HANDLES_ROUTE", "HTTP_CALLS", "HANDLES_TOOL", "SIMILAR_TO"},
 		OptionalLocalOnlyFeatures: map[string]bool{
-			"stable_symbol_ids": true,
-			"semantic_diff":     true,
-			"ndjson_snapshot":   true,
+			"stable_symbol_ids":    true,
+			"semantic_diff":        true,
+			"ndjson_snapshot":      true,
+			"near_clone_detection": true,
 		},
 		FeaturesRequiringNetworkAccess: map[string]bool{
 			"grammar_download":  false,
@@ -906,6 +908,7 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 	}
 
 	relations = append(relations, overrideRelations(relations, methodsByContainer)...)
+	relations = append(relations, similarityRelations(recordsByFile, contentByFile)...)
 
 	sort.Slice(relations, func(i, j int) bool {
 		left := relations[i].Type + relations[i].FromID + relations[i].ToID

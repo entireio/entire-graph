@@ -94,6 +94,58 @@ export function handleRoute() {
 	}
 }
 
+func TestSimilarToLinksNearDuplicates(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "clones.go", `package c
+
+func alpha(values []int) int {
+	total := 0
+	for _, value := range values {
+		total += value * value
+	}
+	return total
+}
+
+func beta(values []int) int {
+	total := 0
+	for _, value := range values {
+		total += value * value
+	}
+	return total
+}
+
+func unrelated(name string) bool {
+	return len(name) > 0
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var pairs [][2]string
+	for _, r := range snapshot.Relations {
+		if r.Type != "SIMILAR_TO" {
+			continue
+		}
+		if r.Confidence < 0.82 {
+			t.Fatalf("SIMILAR_TO below threshold: %#v", r)
+		}
+		pairs = append(pairs, [2]string{lastSegment(r.FromID), lastSegment(r.ToID)})
+	}
+	if len(pairs) != 1 {
+		t.Fatalf("want exactly one near-duplicate pair, got %v", pairs)
+	}
+	a, b := pairs[0][0], pairs[0][1]
+	if !((a == "alpha" && b == "beta") || (a == "beta" && b == "alpha")) {
+		t.Fatalf("unexpected pair %v", pairs[0])
+	}
+	if a == "unrelated" || b == "unrelated" {
+		t.Fatalf("unrelated function linked: %v", pairs[0])
+	}
+}
+
 func TestHTTPCallsDetectionAndRouteSeparation(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "client.js", `function register(app) {

@@ -207,6 +207,10 @@ Relation vocabulary:
   client) to a path. Client calls and route registrations to the same path
   share an `external:route:<path>` node, enabling client-to-route matching.
 - `HANDLES_TOOL`
+- `SIMILAR_TO` — near-duplicate symbol bodies, found by MinHash+LSH over
+  normalized function/method bodies. Tiny bodies are suppressed and only pairs
+  above an estimated-Jaccard threshold are emitted, with the estimate as
+  confidence. Local-only; advertised as the `near_clone_detection` feature.
 
 `EXTENDS`/`IMPLEMENTS` are extracted from class/interface headers (Java,
 TypeScript, JavaScript, C#, PHP, Python) and from Rust impl/supertrait syntax,
