@@ -39,6 +39,9 @@ func Check(token string) bool {
 	if metrics.Profile != "full" {
 		t.Fatalf("profile = %q, want full (default)", metrics.Profile)
 	}
+	if len(metrics.RelationSet) == 0 {
+		t.Fatalf("relation_set should record the profile's emitted families")
+	}
 
 	// The fast profile measures the same streaming path with a reduced relation
 	// set, so it should not emit the deep type/field relations.

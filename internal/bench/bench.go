@@ -41,6 +41,7 @@ type RepoMetrics struct {
 	LOCPerSec         float64        `json:"loc_per_sec"`
 	AllocBytes        uint64         `json:"alloc_bytes"`
 	Languages         []string       `json:"languages"`
+	RelationSet       []string       `json:"relation_set"`
 	RelationsByType   map[string]int `json:"relations_by_type"`
 	ResolutionCounts  map[string]int `json:"resolution_counts"`
 	ConfidenceBands   map[string]int `json:"confidence_bands"`
@@ -83,6 +84,7 @@ func MeasureRepo(ctx context.Context, name, language, dir, providerVersion strin
 		switch r := record.(type) {
 		case sem.SnapshotHeader:
 			metrics.Commit = r.Commit
+			metrics.RelationSet = append([]string(nil), r.RelationSet...)
 		case sem.FileRecord:
 			metrics.Files++
 			metrics.SourceBytes += r.Bytes

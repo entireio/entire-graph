@@ -61,33 +61,65 @@ produce hundreds of megabytes of semantic facts, so a single whole-repo JSON
 document should be treated as a debug/compatibility mode rather than the primary
 integration format.
 
-### Indexing profiles
-
-`--profile full|fast|syntax-only` selects indexing depth (default `full`):
-
-- `full`: the complete relation graph.
-- `fast`: symbol inventory, imports, shallow (same-file) calls, route/tool
-  boundaries, and IaC resource dependencies, with evidence omitted. Skips the
-  deep type/field/similarity/HTTP/channel families and does not re-read content
-  for them.
-- `syntax-only`: file/symbol inventory and structure (`DEFINES`/`CONTAINS`)
-  only, with warnings, partial failures, and freshness metadata; no relation
-  resolution (no per-file content re-read).
-
-The snapshot header reports the selected `profile`, its `profile_limits`
-(evidence, call resolution), the emitted `relation_set`, and the
-`skipped_relation_families`. Capabilities reports `relation_support_by_profile`.
+### Streaming NDJSON contract
 
 The `snapshot`/`symbols`/`edges` commands stream records to stdout as they are
-produced (via the provider's streaming path), so peak memory does not scale with
-the relation count on large repositories. Consequences for consumers:
+produced, so peak memory does not scale with repository size (it is bounded by
+the symbol/index metadata plus the relation dedup set, which holds one compact
+64-bit key per unique relation). The stream is emitted in this order:
 
-- The header is emitted first but its `stats.relations` is `0` and its
-  `completeness.relations` breakdown is empty, because the relation total is not
-  known until the stream ends. A trailing `{"record_type":"summary", ...}`
-  record carries the authoritative `relations` count and `completeness_level`.
-- Record order is not globally sorted (the in-memory `BuildProviderSnapshot`
-  path still sorts). Consumers should key on record `id`, not order.
+1. exactly one header line (a record with `schema_version`),
+2. `file` records, then `symbol` records (emitted per file as parsing
+   progresses, before any relation is resolved),
+3. `relation` records and the `external` endpoint records they reference,
+4. exactly one trailing `summary` record (`record_type: "summary"`).
+
+**The first header is intentionally lean.** It carries identity, capabilities,
+schema features, and the selected profile, but its `languages`, `warnings`,
+`partial_failures`, `stats`, and `completeness` are empty/zero — those totals
+are not known until the whole repository has been processed, and the header is
+emitted before that so consumers can begin work immediately.
+
+**The final `summary` record is authoritative for aggregate stats.** It carries
+the real `languages`, `warnings`, `partial_failures`, `stats` (including the
+`relations` count and `completeness_level`), and the `completeness` breakdown.
+Consumers must read the summary for any totals, not the header. (The in-memory
+`BuildProviderSnapshot` path reconstructs a complete header by merging the lean
+header with the summary, so its single header is fully populated.)
+
+**Ordering.** For a fixed input and profile the stream is deterministic and
+stable (file, symbol, and relation order are reproducible across runs), but it
+is not globally sorted the way the in-memory path sorts relations. Consumers
+should key on record `id`/identity, not on stream position.
+
+**Unknown record types.** Consumers must ignore record types they do not
+recognize within a supported major schema version (forward compatibility for new
+record types), and must not assume every line is a known type. A consumer that
+reads only the header and relations, for example, should skip `file`, `symbol`,
+`external`, and `summary` lines it does not need rather than erroring on them.
+
+### Indexing profiles
+
+`--profile full|fast|syntax-only` selects indexing depth (default `full`). The
+snapshot header reports the selected `profile`, its `profile_limits` (evidence,
+call resolution), the emitted `relation_set`, and the
+`skipped_relation_families`; capabilities reports `relation_support_by_profile`.
+Skipped families are always declared (in the header and capabilities) — a
+profile never silently drops a relation family.
+
+- `full` — the complete relation graph: `DEFINES`, `CONTAINS`, `IMPORTS`,
+  `CALLS`, `EXTENDS`, `IMPLEMENTS`, `OVERRIDES`, `USES_TYPE`, `READS_FIELD`,
+  `WRITES_FIELD`, `ACCESSES`, `HANDLES_ROUTE`, `HTTP_CALLS`, `EMITS`,
+  `LISTENS_ON`, `HANDLES_TOOL`, `SIMILAR_TO`, `TESTS`, `RESOURCE_DEPENDS_ON`,
+  with full evidence. **Semantic-depth and accuracy claims belong to `full`.**
+- `fast` — symbol inventory plus `DEFINES`, `CONTAINS`, `IMPORTS`, `CALLS`
+  (shallow: same-file/exact only), `HANDLES_ROUTE`, `HANDLES_TOOL`, and
+  `RESOURCE_DEPENDS_ON`. Evidence is omitted and the deep families
+  (type/field/similarity/HTTP/channel/test/uses-type/override) are skipped and
+  their content scans avoided. **Speed/throughput claims belong to `fast`.**
+- `syntax-only` — file/symbol inventory and structure (`DEFINES`, `CONTAINS`)
+  only, plus warnings, partial failures, and freshness metadata. No relation
+  resolution and no per-file content re-read.
 
 Worktree provider snapshots should honor the repository root `.gitignore` before
 walking or reading files. Callers may pass repeatable `--ignore-file <path>`
@@ -310,6 +342,13 @@ emit partial failures and continue where possible.
 Impact-sensitive consumers need parse-failure thresholds, so `entire-sem` should
 report enough aggregate stats to classify downstream reports as `ok`,
 `degraded`, or `unsafe`.
+
+No facts are dropped silently. A profile that omits relation families declares
+them in the header (`skipped_relation_families`) and in capabilities; a file
+that cannot be parsed or read emits a machine-readable partial failure. The
+provider currently applies no per-file size or count caps, so nothing is
+truncated; if such caps are added later, an exceeded cap must emit a
+machine-readable warning rather than silently omitting the file.
 
 ## Capability Reporting
 

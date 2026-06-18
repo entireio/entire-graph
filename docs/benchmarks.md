@@ -21,6 +21,25 @@ go run ./cmd/sem-bench -languages Go,Rust -limit 3
 go run ./cmd/sem-bench -skip-clone
 ```
 
+### Per-profile examples
+
+Each profile measures the production streaming path at a different depth. Small
+or medium runs make the trade-off visible:
+
+```sh
+# syntax-only — fastest; symbol inventory + structure only.
+go run ./cmd/sem-bench -profile syntax-only -languages Go -limit 3
+
+# fast — symbols, imports, shallow calls, boundaries, IaC; no deep relations.
+go run ./cmd/sem-bench -profile fast -languages Go,Python -limit 5
+
+# full — the complete relation graph (default).
+go run ./cmd/sem-bench -profile full -languages Go,Python,TypeScript -limit 5
+```
+
+Read speed/throughput numbers from `fast` (and `syntax-only` for the floor), and
+semantic-depth/coverage numbers from `full`.
+
 Cloning (network) is a distinct phase from measurement, which runs the provider
 with `NoNetwork` set, so the measured path is the same local-only path the
 provider guarantees in production. The measured path is `StreamSnapshot` (the
@@ -47,31 +66,38 @@ rising wall time.
 
 ## Metrics
 
+Every report includes the profile, hardware (OS/arch/CPUs), process peak RSS,
+provider version, and schema version at the run level, and per repository the
+relation set, languages, files/LOC, wall time, and output size. Full breakdown:
+
 Run-level: profile, hardware (OS/arch/CPUs), process peak RSS, provider version,
 schema version. Per repository (and aggregated per language and overall):
 
 - **Performance:** wall time, files, lines of code, files/sec, LOC/sec, output
-  bytes (of the streamed NDJSON), Go allocation bytes, profile.
+  bytes (of the streamed NDJSON), Go allocation bytes, profile, relation set.
 - **Quality:** symbols, relations by type, resolution distribution
   (`exact`/`import_resolved`/`type_inferred`/`name_only`/`pattern`), confidence
   bands (`exact`/`strong`/`heuristic`/`weak`), parse-failure codes, unresolved
   relative imports.
 
-## Findings to date
+## Findings to date (historical, pre-streaming)
 
-The harness has already driven concrete changes:
+These observations come from **early runs that measured the in-memory path,
+before the benchmark measured `StreamSnapshot` and before profiles existed**.
+Treat the numbers as historical; re-run with the current streaming benchmark
+(and a named profile) for current figures.
 
 - **Route over-firing.** An early run showed gin emitting 1039 `HANDLES_ROUTE`
   edges — every path-like string literal counted as a route. Requiring routing
   context on the literal's line cut that to 206 (real registrations only).
-- **C/C++ throughput is the floor.** C/C++ parse at ~1.5–3.5k LOC/s versus
+- **C/C++ throughput is the floor.** C/C++ parsed at ~1.5–3.5k LOC/s versus
   ~10–23k LOC/s for Go and scripting languages, and the C/C++ repos are the
-  largest, so they dominate full-tier wall time.
-- **Peak memory scaled with repo size.** The in-memory snapshot accumulates
+  largest, so they dominated full-profile wall time.
+- **Peak memory scaled with repo size.** The in-memory snapshot accumulated
   every relation with its evidence, reaching ~20 GB RSS on tensorflow. The
-  streaming snapshot path (`StreamSnapshot`, used by the CLI) emits records as
-  produced and never holds the full relation set, so peak memory no longer
-  scales with the relation count.
+  streaming path (`StreamSnapshot`, now the benchmark's measured path) emits
+  records as produced and never holds the full relation set, so peak memory no
+  longer scales with the relation count.
 
 ## Notes
 
