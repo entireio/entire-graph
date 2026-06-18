@@ -200,6 +200,126 @@ func TestNothingHere(t *testing.T) {}
 	// TestNothingHere has no matching subject -> no edge.
 }
 
+func TestGoStructFieldsEmittedAsSymbols(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "account.go", `package bank
+
+type Account struct {
+	ID      string
+	Balance int
+	owner   string
+}
+
+func Open(name string, initial int) Account {
+	normalized := name
+	return Account{ID: normalized, Balance: initial}
+}
+
+func (a *Account) Deposit(amount int) {
+	updated := a.Balance + amount
+	a.Balance = updated
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fields := map[string]SymbolRecord{}
+	for _, s := range snapshot.Symbols {
+		if s.Kind == "field" {
+			fields[s.QualifiedName] = s
+		}
+	}
+
+	// Positive: each declared field is emitted, qualified under and contained by
+	// the struct.
+	var account SymbolRecord
+	for _, s := range snapshot.Symbols {
+		if s.Kind == "type" && s.QualifiedName == "Account" {
+			account = s
+		}
+	}
+	if account.ID == "" {
+		t.Fatalf("Account type symbol missing")
+	}
+	for _, name := range []string{"Account.ID", "Account.Balance", "Account.owner"} {
+		f, ok := fields[name]
+		if !ok {
+			t.Fatalf("missing field %q in %v", name, keysOfFields(fields))
+		}
+		if f.ContainerID != account.ID {
+			t.Fatalf("field %q container = %q, want %q", name, f.ContainerID, account.ID)
+		}
+		if !strings.HasSuffix(f.ID, ":field:"+name) {
+			t.Fatalf("field %q unstable/odd id %q", name, f.ID)
+		}
+		if f.Signature == "" {
+			t.Fatalf("field %q missing signature/type text", name)
+		}
+	}
+
+	// Negative: function params (name, initial, amount) and locals (normalized,
+	// updated) must NOT be emitted as fields.
+	for _, notField := range []string{"name", "initial", "amount", "normalized", "updated",
+		"Open.name", "Open.initial", "Deposit.amount", "Deposit.normalized", "Deposit.updated"} {
+		if _, ok := fields[notField]; ok {
+			t.Fatalf("param/local %q was wrongly emitted as a field", notField)
+		}
+	}
+	if len(fields) != 3 {
+		t.Fatalf("want exactly 3 fields, got %d: %v", len(fields), keysOfFields(fields))
+	}
+}
+
+func TestGoFieldIDsStableAcrossMethodBodyEdits(t *testing.T) {
+	repo := t.TempDir() // same repo dir for both builds, so repo_key is constant
+	build := func(body string) map[string]string {
+		writeFile(t, repo, "account.go", `package bank
+
+type Account struct {
+	ID      string
+	Balance int
+}
+
+func (a *Account) Touch() {
+`+body+`
+}
+`)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := map[string]string{}
+		for _, s := range snapshot.Symbols {
+			if s.Kind == "field" {
+				ids[s.QualifiedName] = s.ID
+			}
+		}
+		return ids
+	}
+
+	before := build("\t_ = a.Balance")
+	after := build("\tx := a.Balance\n\ty := x + 1\n\t_ = y")
+	if len(before) != 2 {
+		t.Fatalf("expected 2 fields, got %v", before)
+	}
+	for name, id := range before {
+		if after[name] != id {
+			t.Fatalf("field %q id changed across method body edit: %q -> %q", name, id, after[name])
+		}
+	}
+}
+
+func keysOfFields(m map[string]SymbolRecord) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 func TestUsesTypeLinksSignatureTypes(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "shop.go", `package shop

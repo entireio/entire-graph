@@ -166,6 +166,12 @@ func walkEntities(node *sitter.Node, src []byte, scope string, entities *[]Entit
 	if !validNode(node) {
 		return
 	}
+	// Field/property declarations emit one entity per declared name and are not
+	// descended into (their name nodes would otherwise look like field accesses).
+	if fields, ok := fieldEntities(node, src, scope); ok {
+		*entities = append(*entities, fields...)
+		return
+	}
 	entity, ok := entityFromNode(node, src, scope)
 	childScope := scope
 	if ok {
@@ -177,6 +183,53 @@ func walkEntities(node *sitter.Node, src []byte, scope string, entities *[]Entit
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		walkEntities(node.NamedChild(i), src, childScope, entities)
 	}
+}
+
+// fieldEntities extracts struct/class field declarations as field symbols, one
+// per declared name, qualified under the containing type's scope. It returns
+// false for non-field nodes and for declarations outside a container (so local
+// variables and parameters are never treated as fields). This pass handles Go
+// struct fields (field_declaration -> field_identifier); TypeScript/Java/C#
+// fields are added later.
+func fieldEntities(node *sitter.Node, src []byte, scope string) ([]Entity, bool) {
+	if scope == "" || node.Type() != "field_declaration" {
+		return nil, false
+	}
+	typeText := ""
+	if typeNode := node.ChildByFieldName("type"); validNode(typeNode) {
+		typeText = strings.TrimSpace(typeNode.Content(src))
+	}
+	var names []string
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if child.Type() == "field_identifier" {
+			names = append(names, child.Content(src))
+		}
+	}
+	if len(names) == 0 {
+		// Embedded field (e.g. Go `io.Reader`) or an unsupported shape; the
+		// declaration extractor does not synthesize a name for these.
+		return nil, false
+	}
+	start := int(node.StartPoint().Row) + 1
+	end := int(node.EndPoint().Row) + 1
+	out := make([]Entity, 0, len(names))
+	for _, name := range names {
+		signature := name
+		if typeText != "" {
+			signature = name + " " + typeText
+		}
+		out = append(out, Entity{
+			Kind:        "field",
+			Name:        qualify(scope, name),
+			Signature:   signature,
+			StartLine:   start,
+			EndLine:     end,
+			BodyHash:    hash(typeText),
+			Fingerprint: hash(normalize(signature)),
+		})
+	}
+	return out, true
 }
 
 func entityFromNode(node *sitter.Node, src []byte, scope string) (Entity, bool) {
@@ -1104,7 +1157,10 @@ func functionLikeValue(node *sitter.Node) bool {
 
 func scopesChildren(kind string) bool {
 	switch kind {
-	case "class", "interface", "message", "module", "service", "struct", "trait":
+	// "type" scopes children so Go struct fields qualify under the struct
+	// (Go structs parse as type_spec -> kind "type"). Interface/alias bodies
+	// have no field declarations, so this only affects struct fields.
+	case "class", "interface", "message", "module", "service", "struct", "trait", "type":
 		return true
 	default:
 		return false

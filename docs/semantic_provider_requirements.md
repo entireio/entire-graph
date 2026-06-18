@@ -142,6 +142,24 @@ Symbols should include:
 - `language`
 - `container_id`
 
+### Symbol kinds
+
+Common kinds: `function`, `method`, `class`, `interface`, `struct`, `type`,
+`enum`, `trait`, `field`, plus boundary kinds (`route`, `tool`, `workflow`) and
+language-specific kinds (`message`, `service`, `rpc`, `table`, `block`, ...).
+
+`field` is the canonical kind for declared data members of a struct, class,
+interface, or record. Properties (e.g. C# properties, TypeScript accessors) map
+to the same `field` kind when added, rather than a separate `property` kind, so
+consumers have one kind to query. A field carries `container_id` (the enclosing
+type symbol), a `signature` of its name and type text, and a `body_hash` of its
+type text; its compound ID is stable across edits elsewhere in the file
+(including method-body edits) because the ID does not encode line numbers.
+Parameters and local variables are not fields and are not emitted as symbols.
+
+Field extraction currently covers Go (and Rust) struct fields; TypeScript,
+Java, and C# class/interface fields are a follow-up.
+
 The first stable symbol ID version should use a documented compound identity:
 
 ```text
