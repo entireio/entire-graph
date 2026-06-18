@@ -443,6 +443,14 @@ func (a *Account) Touch() {
 	}
 }
 
+// mapReader adapts an in-memory content map to a contentReader for tests.
+func mapReader(contentByFile map[string]string) contentReader {
+	return func(path string) (string, bool) {
+		content, ok := contentByFile[path]
+		return content, ok
+	}
+}
+
 func keysOfFields(m map[string]SymbolRecord) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -1198,7 +1206,7 @@ func TestBuildRelationsUsesSymbolBlockIdentifierLookup(t *testing.T) {
 	recordsByFile[caller.FilePath] = []SymbolRecord{caller}
 	contentByFile[caller.FilePath] = "package pkg\nfunc Caller() {\n\tTargetSymbol()\n}\n"
 
-	relations := buildRelations("repo", files, recordsByFile, contentByFile)
+	relations := buildRelations("repo", files, recordsByFile, mapReader(contentByFile))
 
 	var sawTargetCall bool
 	for _, relation := range relations {
@@ -1269,7 +1277,7 @@ func TestBuildRelationsDropsAmbiguousCrossFileCallNameCollisions(t *testing.T) {
 		"runtime.ts":    "function sleep(ms: number) {}\n",
 	}
 
-	for _, relation := range buildRelations("repo", files, recordsByFile, contentByFile) {
+	for _, relation := range buildRelations("repo", files, recordsByFile, mapReader(contentByFile)) {
 		if relation.Type == "CALLS" && relation.FromID == "caller" {
 			t.Fatalf("ambiguous sleep call should not resolve globally: %#v", relation)
 		}

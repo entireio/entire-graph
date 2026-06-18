@@ -76,11 +76,13 @@ schema section (`0.90-1.00 exact`, `0.70-0.89 strong`, `0.40-0.69 heuristic`,
 `heuristic_relation_types` (`HANDLES_ROUTE`, `HTTP_CALLS`, `EMITS`,
 `LISTENS_ON`, `HANDLES_TOOL`, `SIMILAR_TO`, `TESTS`).
 
-Still to come (each blocked on a larger change): `READS_FIELD`/`WRITES_FIELD`/
-`ACCESSES` (need struct/class field symbols from the parser), `HANDLES_GRAPHQL`
-(needs a GraphQL grammar), Dockerfile/Kubernetes `CONFIGURES` (Dockerfile
-grammar + k8s-shape handling), positional `PARAM_TYPE`/`RETURNS_TYPE`, and the
-deferred data-flow relations.
+Field access (`READS_FIELD`/`WRITES_FIELD`/`ACCESSES`) is emitted for accesses
+resolved through the receiver's type (see "Field-access relations" below).
+
+Still to come (each blocked on a larger change): `HANDLES_GRAPHQL` (needs a
+GraphQL grammar), Dockerfile/Kubernetes `CONFIGURES` (Dockerfile grammar +
+k8s-shape handling), positional `PARAM_TYPE`/`RETURNS_TYPE`, and the deferred
+data-flow relations.
 
 ## Known False Positives / Negatives
 

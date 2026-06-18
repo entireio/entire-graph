@@ -315,187 +315,118 @@ func BuildProviderSnapshot(ctx context.Context, repo, providerVersion string) (P
 	return BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, ProviderSnapshotOptions{})
 }
 
-// snapshotInputs holds the parsed, pre-relation state shared by the in-memory
-// and streaming snapshot paths.
-type snapshotInputs struct {
-	absRepo       string
-	key           string
-	commit        string
-	tree          string
-	warnings      []ProviderWarning
-	failures      []PartialFailure
-	files         []FileRecord
-	symbols       []SymbolRecord
-	recordsByFile map[string][]SymbolRecord
-	contentByFile map[string]string
-	languages     []string
+// contentReader returns a file's content on demand. The snapshot reads source
+// per file rather than holding all file contents in memory at once.
+type contentReader func(path string) (string, bool)
+
+// sourceContext is the repository state needed to stream a snapshot: identity,
+// the file list, a per-file content reader, and git-state warnings. It holds no
+// file content itself.
+type sourceContext struct {
+	absRepo  string
+	key      string
+	commit   string
+	tree     string
+	paths    []string
+	read     contentReader
+	warnings []ProviderWarning
 }
 
-// header builds the snapshot header. relations is the relation count to record
-// in stats and the relation set to break down in completeness; pass nil for the
-// streaming path, which reports relation totals in a trailing summary record.
-func (in snapshotInputs) header(providerVersion string, relations []RelationRecord) SnapshotHeader {
+// leanHeader is the streaming preamble emitted before any file is parsed. It
+// carries only what is known up front; languages, warnings, partial failures,
+// stats, and completeness are reported in the trailing SnapshotSummary because
+// they require the full parse. BuildProviderSnapshot merges the two back into a
+// complete in-memory header.
+func leanHeader(sc sourceContext, providerVersion string) SnapshotHeader {
 	return SnapshotHeader{
 		SchemaVersion:    SchemaVersion,
 		Provider:         ProviderName,
 		ProviderVersion:  providerVersion,
-		RepoRoot:         in.absRepo,
-		RepoKey:          in.key,
-		Commit:           in.commit,
-		Tree:             in.tree,
-		Languages:        in.languages,
+		RepoRoot:         sc.absRepo,
+		RepoKey:          sc.key,
+		Commit:           sc.commit,
+		Tree:             sc.tree,
+		Languages:        []string{},
 		Capabilities:     []string{"ndjson", "stable-symbol-id-v1", "local-only", "partial-failures"},
 		SchemaFeatures:   append([]string(nil), schemaFeatures...),
 		LanguageVersions: parserVersions(),
-		Warnings:         in.warnings,
-		PartialFailures:  in.failures,
-		Stats: ProviderStats{
-			Files:             len(in.files),
-			ParsedFiles:       len(in.recordsByFile),
-			Symbols:           len(in.symbols),
-			Relations:         len(relations),
-			PartialFailures:   len(in.failures),
-			CompletenessLevel: completenessLevel(len(in.failures), len(in.files)),
-		},
-		Completeness: buildCompleteness(in.files, in.symbols, relations),
+		Warnings:         []ProviderWarning{},
+		PartialFailures:  []PartialFailure{},
 	}
 }
 
+// BuildProviderSnapshotWithOptions is an accumulating sink over the streaming
+// path: it collects every streamed record into an in-memory ProviderSnapshot
+// and reconstructs the full header (merging the lean streamed header with the
+// trailing summary), sorting relations for stable output. Intended for tests
+// and small repositories; large repositories should consume StreamSnapshot.
 func BuildProviderSnapshotWithOptions(ctx context.Context, repo, providerVersion string, options ProviderSnapshotOptions) (ProviderSnapshot, error) {
-	in, err := prepareSnapshot(ctx, repo, options)
+	var snapshot ProviderSnapshot
+	var summary SnapshotSummary
+	err := StreamSnapshot(ctx, repo, providerVersion, options, func(record any) error {
+		switch r := record.(type) {
+		case SnapshotHeader:
+			snapshot.Header = r
+		case FileRecord:
+			snapshot.Files = append(snapshot.Files, r)
+		case SymbolRecord:
+			snapshot.Symbols = append(snapshot.Symbols, r)
+		case ExternalRecord:
+			snapshot.Externals = append(snapshot.Externals, r)
+		case RelationRecord:
+			snapshot.Relations = append(snapshot.Relations, r)
+		case SnapshotSummary:
+			summary = r
+		}
+		return nil
+	})
 	if err != nil {
 		return ProviderSnapshot{}, err
 	}
-	relations := buildRelations(in.key, in.files, in.recordsByFile, in.contentByFile)
-	externals := externalRecords(relations, in.files, in.recordsByFile)
-	return ProviderSnapshot{
-		Header:    in.header(providerVersion, relations),
-		Files:     in.files,
-		Externals: externals,
-		Symbols:   in.symbols,
-		Relations: relations,
-	}, nil
+	snapshot.Header.Languages = summary.Languages
+	snapshot.Header.Warnings = summary.Warnings
+	snapshot.Header.PartialFailures = summary.PartialFailures
+	snapshot.Header.Stats = summary.Stats
+	snapshot.Header.Completeness = summary.Completeness
+	sort.Slice(snapshot.Relations, func(i, j int) bool {
+		left := snapshot.Relations[i].Type + snapshot.Relations[i].FromID + snapshot.Relations[i].ToID
+		right := snapshot.Relations[j].Type + snapshot.Relations[j].FromID + snapshot.Relations[j].ToID
+		return left < right
+	})
+	return snapshot, nil
 }
 
-// StreamSnapshot performs the same analysis as BuildProviderSnapshotWithOptions
-// but emits records as they are produced instead of accumulating them, so peak
-// memory does not scale with the relation count. emit receives the header, then
-// file and symbol records, then relation and external records, then a trailing
-// SnapshotSummary carrying the relation total (unknown when the header is
-// emitted). Records may arrive in a different order than the in-memory snapshot;
-// the set is identical.
+// StreamSnapshot emits a snapshot as a stream of records with bounded memory.
+// Phase 1 lists the files, then parses each one and emits its file and symbol
+// records immediately while building compact metadata indexes — file contents
+// are read per file and discarded, never held all at once. Phase 2 resolves
+// relations against those indexes (re-reading content per file), emitting
+// relation and external records. A trailing SnapshotSummary carries the totals
+// (languages, warnings, partial failures, stats, completeness) that are only
+// known once the whole repository has been processed.
+//
+// Memory is bounded by the symbol/index metadata (no source content) plus the
+// relation dedup key set; it does not scale with held relation records or held
+// file contents.
 func StreamSnapshot(ctx context.Context, repo, providerVersion string, options ProviderSnapshotOptions, emit func(record any) error) error {
-	in, err := prepareSnapshot(ctx, repo, options)
+	sc, err := prepareSource(ctx, repo, options)
 	if err != nil {
 		return err
 	}
-	if err := emit(in.header(providerVersion, nil)); err != nil {
+	if err := emit(leanHeader(sc, providerVersion)); err != nil {
 		return err
-	}
-	for _, file := range in.files {
-		if err := emit(file); err != nil {
-			return err
-		}
-	}
-	for _, symbol := range in.symbols {
-		if err := emit(symbol); err != nil {
-			return err
-		}
-	}
-
-	symbolsByID, filesByID := recordIndexes(in.files, in.recordsByFile)
-	seenRelation := map[string]bool{}
-	externalsByID := map[string]ExternalRecord{}
-	relationCount := 0
-	var emitErr error
-	forEachRelation(in.key, in.files, in.recordsByFile, in.contentByFile, func(r RelationRecord) {
-		if emitErr != nil {
-			return
-		}
-		dedupKey := r.FromID + "\x00" + r.ToID + "\x00" + r.Type
-		if seenRelation[dedupKey] {
-			return
-		}
-		seenRelation[dedupKey] = true
-		for _, id := range []string{r.FromID, r.ToID} {
-			if strings.HasPrefix(id, "external:") {
-				mergeExternalRecord(externalsByID, externalRecordFor(r, id, symbolsByID, filesByID))
-			}
-		}
-		relationCount++
-		emitErr = emit(r)
-	})
-	if emitErr != nil {
-		return emitErr
-	}
-
-	externalIDs := make([]string, 0, len(externalsByID))
-	for id := range externalsByID {
-		externalIDs = append(externalIDs, id)
-	}
-	sort.Strings(externalIDs)
-	for _, id := range externalIDs {
-		if err := emit(externalsByID[id]); err != nil {
-			return err
-		}
-	}
-
-	return emit(SnapshotSummary{
-		RecordType:        "summary",
-		Relations:         relationCount,
-		CompletenessLevel: completenessLevel(len(in.failures), len(in.files)),
-	})
-}
-
-// SnapshotSummary is the trailing record of a streamed snapshot, carrying totals
-// that are only known after all records have been emitted.
-type SnapshotSummary struct {
-	RecordType        string `json:"record_type"`
-	Relations         int    `json:"relations"`
-	CompletenessLevel string `json:"completeness_level"`
-}
-
-func prepareSnapshot(ctx context.Context, repo string, options ProviderSnapshotOptions) (snapshotInputs, error) {
-	absRepo, err := filepath.Abs(repo)
-	if err != nil {
-		return snapshotInputs{}, err
-	}
-	key := repoKey(ctx, absRepo)
-	var warnings []ProviderWarning
-	commit, commitErr := gitutil.RevParse(ctx, absRepo, "HEAD")
-	tree, treeErr := gitutil.RevParse(ctx, absRepo, "HEAD^{tree}")
-
-	// The provider is local-only. NoNetwork is accepted to make that contract
-	// explicit for callers that enforce no-egress provider execution.
-	_ = options.NoNetwork
-	useHead := !options.Worktree && commitErr == nil && treeErr == nil
-	paths, contentByFile, err := snapshotSource(ctx, absRepo, useHead, options.IgnoreFiles, options.IncludeFiles)
-	if err != nil {
-		return snapshotInputs{}, err
-	}
-	if options.Worktree {
-		warnings = append(warnings, ProviderWarning{
-			Code:                 "W_WORKTREE_SNAPSHOT",
-			Severity:             "warning",
-			EffectOnCompleteness: "snapshot records are read from the working tree because --worktree was requested",
-		})
-	} else if commitErr != nil || treeErr != nil {
-		warnings = append(warnings, ProviderWarning{
-			Code:                 "E_NO_GIT_HEAD",
-			Severity:             "warning",
-			EffectOnCompleteness: "snapshot records are read from the working tree because no HEAD tree is available",
-			Detail:               firstError(commitErr, treeErr).Error(),
-		})
 	}
 
 	parser := TreeSitterParser{}
 	languageSet := map[string]struct{}{}
-	var files []FileRecord
-	var symbols []SymbolRecord
+	completenessLangs := map[string]LanguageCompleteness{}
 	var failures []PartialFailure
+	var files []FileRecord
 	recordsByFile := map[string][]SymbolRecord{}
+	symbolCount := 0
 
-	for _, path := range paths {
+	// Phase 1: parse + emit file/symbol records, build indexes, discard content.
+	for _, path := range sc.paths {
 		if !Supported(path) {
 			if hint := unsupportedLanguageHint(path); hint != "" {
 				failures = append(failures, PartialFailure{
@@ -508,7 +439,7 @@ func prepareSnapshot(ctx context.Context, repo string, options ProviderSnapshotO
 			}
 			continue
 		}
-		content, ok := contentByFile[path]
+		content, ok := sc.read(path)
 		if !ok {
 			failures = append(failures, PartialFailure{
 				Code:                 "E_FILE_READ",
@@ -540,39 +471,153 @@ func prepareSnapshot(ctx context.Context, repo string, options ProviderSnapshotO
 		}
 		languageSet[language] = struct{}{}
 		contentBytes := []byte(content)
-		files = append(files, FileRecord{
+		file := FileRecord{
 			RecordType: "file",
-			ID:         fileID(key, path),
+			ID:         fileID(sc.key, path),
 			Path:       path,
 			Blob:       contentHash(contentBytes),
 			Language:   language,
 			Bytes:      len(contentBytes),
-		})
-		fileSymbols := entitySymbols(key, path, language, entities)
-		fileSymbols = append(fileSymbols, syntheticBoundarySymbols(key, path, language, content, fileSymbols)...)
-		symbols = append(symbols, fileSymbols...)
+		}
+		if err := emit(file); err != nil {
+			return err
+		}
+		files = append(files, file)
+		fileSymbols := entitySymbols(sc.key, path, language, entities)
+		fileSymbols = append(fileSymbols, syntheticBoundarySymbols(sc.key, path, language, content, fileSymbols)...)
+		for _, symbol := range fileSymbols {
+			if err := emit(symbol); err != nil {
+				return err
+			}
+		}
 		recordsByFile[path] = fileSymbols
+		symbolCount += len(fileSymbols)
+		lc := completenessLangs[language]
+		lc.Files++
+		lc.Symbols += len(fileSymbols)
+		completenessLangs[language] = lc
 	}
 
-	languages := sortedKeys(languageSet)
+	// Phase 2: resolve relations from indexes, re-reading content per file.
+	symbolsByID, filesByID := recordIndexes(files, recordsByFile)
+	seenRelation := map[string]bool{}
+	externalsByID := map[string]ExternalRecord{}
+	relationsByType := map[string]int{}
+	relationCount := 0
+	var emitErr error
+	forEachRelation(sc.key, files, recordsByFile, sc.read, func(r RelationRecord) {
+		if emitErr != nil {
+			return
+		}
+		dedupKey := r.FromID + "\x00" + r.ToID + "\x00" + r.Type
+		if seenRelation[dedupKey] {
+			return
+		}
+		seenRelation[dedupKey] = true
+		for _, id := range []string{r.FromID, r.ToID} {
+			if strings.HasPrefix(id, "external:") {
+				mergeExternalRecord(externalsByID, externalRecordFor(r, id, symbolsByID, filesByID))
+			}
+		}
+		relationsByType[r.Type]++
+		relationCount++
+		emitErr = emit(r)
+	})
+	if emitErr != nil {
+		return emitErr
+	}
+
+	externalIDs := make([]string, 0, len(externalsByID))
+	for id := range externalsByID {
+		externalIDs = append(externalIDs, id)
+	}
+	sort.Strings(externalIDs)
+	for _, id := range externalIDs {
+		if err := emit(externalsByID[id]); err != nil {
+			return err
+		}
+	}
+
+	warnings := sc.warnings
 	if warnings == nil {
 		warnings = []ProviderWarning{}
 	}
 	if failures == nil {
 		failures = []PartialFailure{}
 	}
-	return snapshotInputs{
-		absRepo:       absRepo,
-		key:           key,
-		commit:        commit,
-		tree:          tree,
-		warnings:      warnings,
-		failures:      failures,
-		files:         files,
-		symbols:       symbols,
-		recordsByFile: recordsByFile,
-		contentByFile: contentByFile,
-		languages:     languages,
+	return emit(SnapshotSummary{
+		RecordType:      "summary",
+		Languages:       sortedKeys(languageSet),
+		Warnings:        warnings,
+		PartialFailures: failures,
+		Stats: ProviderStats{
+			Files:             len(files),
+			ParsedFiles:       len(recordsByFile),
+			Symbols:           symbolCount,
+			Relations:         relationCount,
+			PartialFailures:   len(failures),
+			CompletenessLevel: completenessLevel(len(failures), len(files)),
+		},
+		Completeness: CompletenessReport{Languages: completenessLangs, Relations: relationsByType},
+	})
+}
+
+// SnapshotSummary is the trailing record of a streamed snapshot. It carries the
+// totals known only after the whole repository is processed; a streaming
+// consumer reads it for languages, warnings, partial failures, stats, and the
+// completeness breakdown (the leading header leaves these empty).
+type SnapshotSummary struct {
+	RecordType      string             `json:"record_type"`
+	Languages       []string           `json:"languages"`
+	Warnings        []ProviderWarning  `json:"warnings"`
+	PartialFailures []PartialFailure   `json:"partial_failures"`
+	Stats           ProviderStats      `json:"stats"`
+	Completeness    CompletenessReport `json:"completeness"`
+}
+
+// prepareSource resolves repository identity, lists the source files, and
+// builds a per-file content reader without loading any content.
+func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOptions) (sourceContext, error) {
+	absRepo, err := filepath.Abs(repo)
+	if err != nil {
+		return sourceContext{}, err
+	}
+	key := repoKey(ctx, absRepo)
+	commit, commitErr := gitutil.RevParse(ctx, absRepo, "HEAD")
+	tree, treeErr := gitutil.RevParse(ctx, absRepo, "HEAD^{tree}")
+
+	// The provider is local-only. NoNetwork is accepted to make that contract
+	// explicit for callers that enforce no-egress provider execution.
+	_ = options.NoNetwork
+	useHead := !options.Worktree && commitErr == nil && treeErr == nil
+	paths, read, err := openSource(ctx, absRepo, useHead, options.IgnoreFiles, options.IncludeFiles)
+	if err != nil {
+		return sourceContext{}, err
+	}
+
+	var warnings []ProviderWarning
+	if options.Worktree {
+		warnings = append(warnings, ProviderWarning{
+			Code:                 "W_WORKTREE_SNAPSHOT",
+			Severity:             "warning",
+			EffectOnCompleteness: "snapshot records are read from the working tree because --worktree was requested",
+		})
+	} else if commitErr != nil || treeErr != nil {
+		warnings = append(warnings, ProviderWarning{
+			Code:                 "E_NO_GIT_HEAD",
+			Severity:             "warning",
+			EffectOnCompleteness: "snapshot records are read from the working tree because no HEAD tree is available",
+			Detail:               firstError(commitErr, treeErr).Error(),
+		})
+	}
+	return sourceContext{
+		absRepo:  absRepo,
+		key:      key,
+		commit:   commit,
+		tree:     tree,
+		paths:    paths,
+		read:     read,
+		warnings: warnings,
 	}, nil
 }
 
@@ -825,9 +870,9 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 // buildRelations collects every relation, deduplicates (first occurrence wins,
 // in emission order), and sorts for stable output. Used by the in-memory
 // snapshot path; the streaming path uses forEachRelation directly.
-func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, contentByFile map[string]string) []RelationRecord {
+func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
 	var relations []RelationRecord
-	forEachRelation(repoKey, files, recordsByFile, contentByFile, func(r RelationRecord) {
+	forEachRelation(repoKey, files, recordsByFile, readContent, func(r RelationRecord) {
 		relations = append(relations, r)
 	})
 	relations = dedupeRelations(relations)
@@ -843,7 +888,7 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 // as it is produced. It never accumulates the full relation set, so a streaming
 // caller can write records out with bounded memory. Callers deduplicate:
 // buildRelations collects-then-dedupes; the streaming path dedupes on emit.
-func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, contentByFile map[string]string, emit func(RelationRecord)) {
+func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, emit func(RelationRecord)) {
 	symbolsByShortName := map[string][]SymbolRecord{}
 	symbolsByFile := map[string][]SymbolRecord{}
 	childNamesByContainer := map[string]map[string]bool{}
@@ -931,7 +976,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	}
 
 	for _, file := range files {
-		content, ok := contentByFile[file.Path]
+		content, ok := readContent(file.Path)
 		if !ok {
 			continue
 		}
@@ -1111,10 +1156,10 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	for _, r := range testRelations(recordsByFile, symbolsByShortName) {
 		emit(r)
 	}
-	for _, r := range resourceDependsOnRelations(recordsByFile, contentByFile) {
+	for _, r := range resourceDependsOnRelations(recordsByFile, readContent) {
 		emit(r)
 	}
-	for _, r := range similarityRelations(recordsByFile, contentByFile) {
+	for _, r := range similarityRelations(recordsByFile, readContent) {
 		emit(r)
 	}
 }
@@ -1252,7 +1297,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 // resource or module block that references another block (e.g. aws_vpc.main.id,
 // module.network.id) emits RESOURCE_DEPENDS_ON to that block. Block symbols are
 // indexed by their referenceable name (the form used inside expressions).
-func resourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, contentByFile map[string]string) []RelationRecord {
+func resourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
 	index := map[string]SymbolRecord{}
 	for _, symbols := range recordsByFile {
 		for _, symbol := range symbols {
@@ -1273,7 +1318,7 @@ func resourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, content
 
 	var relations []RelationRecord
 	for _, path := range paths {
-		content, ok := contentByFile[path]
+		content, ok := readContent(path)
 		if !ok {
 			continue
 		}
@@ -1628,29 +1673,6 @@ func minFloat(a, b float64) float64 {
 	return b
 }
 
-func externalRecords(relations []RelationRecord, files []FileRecord, recordsByFile map[string][]SymbolRecord) []ExternalRecord {
-	symbolsByID, filesByID := recordIndexes(files, recordsByFile)
-	seen := map[string]ExternalRecord{}
-	for _, relation := range relations {
-		for _, id := range []string{relation.FromID, relation.ToID} {
-			if !strings.HasPrefix(id, "external:") {
-				continue
-			}
-			mergeExternalRecord(seen, externalRecordFor(relation, id, symbolsByID, filesByID))
-		}
-	}
-	ids := make([]string, 0, len(seen))
-	for id := range seen {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	out := make([]ExternalRecord, 0, len(ids))
-	for _, id := range ids {
-		out = append(out, seen[id])
-	}
-	return out
-}
-
 // recordIndexes builds id lookups for file and symbol records.
 func recordIndexes(files []FileRecord, recordsByFile map[string][]SymbolRecord) (map[string]SymbolRecord, map[string]FileRecord) {
 	filesByID := make(map[string]FileRecord, len(files))
@@ -1751,26 +1773,23 @@ func externalParts(id string) (string, string) {
 	return kind, value
 }
 
-func snapshotSource(ctx context.Context, repo string, useHead bool, ignoreFiles, includeFiles []string) ([]string, map[string]string, error) {
+// openSource lists the repository's files and returns a per-file content reader
+// that fetches one file at a time (from the git HEAD tree or the working tree),
+// so the snapshot never holds all source content in memory.
+func openSource(ctx context.Context, repo string, useHead bool, ignoreFiles, includeFiles []string) ([]string, contentReader, error) {
 	if useHead {
 		paths, err := gitutil.ListFiles(ctx, repo, "HEAD")
 		if err != nil {
 			return nil, nil, err
 		}
-		contentByFile := map[string]string{}
-		for _, path := range paths {
-			if !Supported(path) {
-				continue
-			}
+		read := func(path string) (string, bool) {
 			content, ok, err := gitutil.ShowFile(ctx, repo, "HEAD", path)
-			if err != nil {
-				return nil, nil, err
+			if err != nil || !ok {
+				return "", false
 			}
-			if ok {
-				contentByFile[path] = content
-			}
+			return content, true
 		}
-		return paths, contentByFile, nil
+		return paths, read, nil
 	}
 	ignores, err := loadWorktreeIgnoreMatcher(repo, ignoreFiles, includeFiles)
 	if err != nil {
@@ -1780,23 +1799,19 @@ func snapshotSource(ctx context.Context, repo string, useHead bool, ignoreFiles,
 	if err != nil {
 		return nil, nil, err
 	}
-	contentByFile := map[string]string{}
-	for _, path := range paths {
-		if !Supported(path) {
-			continue
-		}
+	read := func(path string) (string, bool) {
 		full := filepath.Join(repo, filepath.FromSlash(path))
 		info, err := os.Lstat(full)
 		if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			continue
+			return "", false
 		}
 		content, err := os.ReadFile(full)
 		if err != nil {
-			continue
+			return "", false
 		}
-		contentByFile[path] = string(content)
+		return string(content), true
 	}
-	return paths, contentByFile, nil
+	return paths, read, nil
 }
 
 func workingTreeFiles(repo string, ignores ignoreMatcher) ([]string, error) {
@@ -2365,34 +2380,6 @@ func completenessLevel(failures, files int) string {
 	default:
 		return "degraded"
 	}
-}
-
-// buildCompleteness aggregates parse/index coverage by language (file and
-// symbol counts) and by emitted relation type. The maps are nil-safe and
-// serialize with sorted keys, keeping golden output deterministic.
-func buildCompleteness(files []FileRecord, symbols []SymbolRecord, relations []RelationRecord) CompletenessReport {
-	byLanguage := map[string]LanguageCompleteness{}
-	for _, file := range files {
-		if file.Language == "" {
-			continue
-		}
-		entry := byLanguage[file.Language]
-		entry.Files++
-		byLanguage[file.Language] = entry
-	}
-	for _, symbol := range symbols {
-		if symbol.Language == "" {
-			continue
-		}
-		entry := byLanguage[symbol.Language]
-		entry.Symbols++
-		byLanguage[symbol.Language] = entry
-	}
-	byRelationType := map[string]int{}
-	for _, relation := range relations {
-		byRelationType[relation.Type]++
-	}
-	return CompletenessReport{Languages: byLanguage, Relations: byRelationType}
 }
 
 func dedupeRelations(relations []RelationRecord) []RelationRecord {

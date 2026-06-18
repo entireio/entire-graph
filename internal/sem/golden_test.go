@@ -2,76 +2,72 @@ package sem
 
 import (
 	"bytes"
-	"encoding/json"
 	"flag"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 )
 
-// TestStreamSnapshotMatchesBuild asserts the streaming path emits the same set
-// of file/symbol/external/relation records as the in-memory path for every
-// fixture (order aside, which the streaming contract does not promise).
-func TestStreamSnapshotMatchesBuild(t *testing.T) {
-	for _, name := range goldenFixtures {
-		t.Run(name, func(t *testing.T) {
-			dir := filepath.Join(t.TempDir(), name)
-			copyFixtureTree(t, filepath.Join("testdata", "fixtures", name), dir)
-			opts := ProviderSnapshotOptions{Worktree: true}
+// TestStreamSnapshotStreamsIncrementally proves the streaming contract: a lean
+// header is emitted first (before parsing finishes), file and symbol records are
+// emitted before relation resolution produces any relation, and a trailing
+// summary carries the totals the lean header omits. This is what makes the path
+// memory-bounded: nothing waits for the whole repo to be parsed.
+func TestStreamSnapshotStreamsIncrementally(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "go-fields")
+	copyFixtureTree(t, filepath.Join("testdata", "fixtures", "go-fields"), dir)
 
-			snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), dir, "0.0.0-test", opts)
-			if err != nil {
-				t.Fatal(err)
+	var header SnapshotHeader
+	var summary SnapshotSummary
+	haveHeader, haveSummary := false, false
+	firstFile, firstSymbol, firstRelation := -1, -1, -1
+	index := 0
+	err := StreamSnapshot(t.Context(), dir, "0.0.0-test", ProviderSnapshotOptions{Worktree: true}, func(rec any) error {
+		switch r := rec.(type) {
+		case SnapshotHeader:
+			header, haveHeader = r, true
+			if index != 0 {
+				t.Fatalf("header must be the first record, was at %d", index)
 			}
-			var want []string
-			for _, r := range snapshot.Files {
-				want = append(want, marshalRecord(t, r))
+		case FileRecord:
+			if firstFile < 0 {
+				firstFile = index
 			}
-			for _, r := range snapshot.Externals {
-				want = append(want, marshalRecord(t, r))
+		case SymbolRecord:
+			if firstSymbol < 0 {
+				firstSymbol = index
 			}
-			for _, r := range snapshot.Symbols {
-				want = append(want, marshalRecord(t, r))
+		case RelationRecord:
+			if firstRelation < 0 {
+				firstRelation = index
 			}
-			for _, r := range snapshot.Relations {
-				want = append(want, marshalRecord(t, r))
-			}
-
-			var got []string
-			err = StreamSnapshot(t.Context(), dir, "0.0.0-test", opts, func(rec any) error {
-				switch rec.(type) {
-				case FileRecord, ExternalRecord, SymbolRecord, RelationRecord:
-					got = append(got, marshalRecord(t, rec))
-				}
-				return nil
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			sort.Strings(want)
-			sort.Strings(got)
-			if len(want) != len(got) {
-				t.Fatalf("record count: build=%d stream=%d", len(want), len(got))
-			}
-			for i := range want {
-				if want[i] != got[i] {
-					t.Fatalf("record mismatch at %d:\n build:  %s\n stream: %s", i, want[i], got[i])
-				}
-			}
-		})
-	}
-}
-
-func marshalRecord(t *testing.T, rec any) string {
-	t.Helper()
-	b, err := json.Marshal(rec)
+		case SnapshotSummary:
+			summary, haveSummary = r, true
+		}
+		index++
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(b)
+
+	// Lean header: emitted before the repo is fully processed, so its totals are
+	// empty and reported in the summary instead.
+	if !haveHeader || len(header.Languages) != 0 || header.Stats.Relations != 0 {
+		t.Fatalf("expected a lean header (empty languages, zero relation stat): %#v", header)
+	}
+	// File and symbol records must precede relation resolution.
+	if firstFile < 0 || firstSymbol < 0 || firstRelation < 0 {
+		t.Fatalf("missing record kinds: file=%d symbol=%d relation=%d", firstFile, firstSymbol, firstRelation)
+	}
+	if firstFile >= firstRelation || firstSymbol >= firstRelation {
+		t.Fatalf("file/symbol records must stream before relations: file=%d symbol=%d relation=%d", firstFile, firstSymbol, firstRelation)
+	}
+	// Summary carries the totals the lean header omitted.
+	if !haveSummary || len(summary.Languages) == 0 || summary.Stats.Relations == 0 || summary.Stats.Symbols == 0 {
+		t.Fatalf("summary must carry languages and stats: %#v", summary)
+	}
 }
 
 // updateGolden regenerates the committed NDJSON baselines instead of asserting

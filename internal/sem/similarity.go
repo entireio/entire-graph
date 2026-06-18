@@ -46,7 +46,7 @@ func splitmix64(state *uint64) uint64 {
 // edges between them. Only function/method bodies with enough shingles are
 // considered. Signatures are computed per symbol and the shingle sets are
 // discarded immediately, so memory stays bounded on large repositories.
-func similarityRelations(recordsByFile map[string][]SymbolRecord, contentByFile map[string]string) []RelationRecord {
+func similarityRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
 	type sig struct {
 		id        string
 		signature [minHashCount]uint64
@@ -60,7 +60,7 @@ func similarityRelations(recordsByFile map[string][]SymbolRecord, contentByFile 
 	sort.Strings(paths)
 
 	for _, path := range paths {
-		content, ok := contentByFile[path]
+		content, ok := readContent(path)
 		if !ok {
 			continue
 		}
