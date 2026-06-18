@@ -103,6 +103,44 @@ func TestProviderJSONCommands(t *testing.T) {
 	}
 }
 
+func TestProviderProfileFlag(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "auth.go", "package a\ntype T struct{ X int }\nfunc (t *T) M() int { return t.X }\n")
+
+	// syntax-only: header reports the profile; only structural relations appear.
+	var out bytes.Buffer
+	err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out},
+		[]string{"snapshot", "--repo", repo, "--format", "ndjson", "--profile", "syntax-only"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	var header map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &header); err != nil {
+		t.Fatalf("header json: %v", err)
+	}
+	if header["profile"] != "syntax-only" {
+		t.Fatalf("header profile = %v", header["profile"])
+	}
+	for _, line := range lines[1:] {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatal(err)
+		}
+		if rec["record_type"] == "relation" {
+			if rt := rec["type"]; rt != "DEFINES" && rt != "CONTAINS" {
+				t.Fatalf("syntax-only emitted non-structural relation %v", rt)
+			}
+		}
+	}
+
+	// An unknown profile is rejected.
+	if err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &bytes.Buffer{}},
+		[]string{"snapshot", "--repo", repo, "--format", "ndjson", "--profile", "bogus"}); err == nil {
+		t.Fatalf("expected error for unknown profile")
+	}
+}
+
 func TestProviderNDJSONCommands(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "auth.py", `def validate_token(token):

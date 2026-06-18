@@ -67,7 +67,8 @@ Both tiers share `bench/repos.lock.json`. After changing the manifests, refresh
 pins with `-update-lock` (it records a SHA for every repo across both tiers).
 
 Flags: `-manifest`, `-cache`, `-out`, `-lock`, `-languages`, `-limit`, `-jobs`,
-`-depth`, `-skip-clone`, `-update-lock`, `-provider-version`.
+`-depth`, `-skip-clone`, `-update-lock`, `-provider-version`,
+`-profile full|fast|syntax-only`. The measured path is `StreamSnapshot`.
 
 ## Report
 

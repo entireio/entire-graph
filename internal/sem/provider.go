@@ -103,11 +103,21 @@ type SnapshotHeader struct {
 	Capabilities     []string           `json:"capabilities"`
 	SchemaFeatures   []string           `json:"schema_features"`
 	LanguageVersions map[string]string  `json:"language_versions,omitempty"`
+	Profile          string             `json:"profile"`
+	ProfileLimits    ProfileLimits      `json:"profile_limits"`
+	RelationSet      []string           `json:"relation_set"`
+	SkippedRelations []string           `json:"skipped_relation_families"`
 	Warnings         []ProviderWarning  `json:"warnings"`
 	PartialFailures  []PartialFailure   `json:"partial_failures"`
 	Stats            ProviderStats      `json:"stats"`
 	Completeness     CompletenessReport `json:"completeness"`
 	BenchmarkProfile string             `json:"benchmark_profile,omitempty"`
+}
+
+// ProfileLimits documents the depth limits the selected profile applies.
+type ProfileLimits struct {
+	Evidence       string `json:"evidence"`        // "full" | "none"
+	CallResolution string `json:"call_resolution"` // "full" | "shallow" | "none"
 }
 
 // CompletenessReport breaks down parse/index coverage by language and by emitted
@@ -219,6 +229,7 @@ type CapabilityReport struct {
 	ParserVersions                  map[string]string   `json:"parser_versions"`
 	SupportedRelationTypes          []string            `json:"supported_relation_types"`
 	RelationSupportByLanguage       map[string][]string `json:"relation_support_by_language"`
+	RelationSupportByProfile        map[string][]string `json:"relation_support_by_profile"`
 	HeuristicRelationTypes          []string            `json:"heuristic_relation_types"`
 	UnsupportedButDetectedLanguages []string            `json:"unsupported_but_detected_language_hints"`
 	OptionalLocalOnlyFeatures       map[string]bool     `json:"optional_local_only_features"`
@@ -238,6 +249,95 @@ type ProviderSnapshotOptions struct {
 	Worktree     bool
 	IgnoreFiles  []string
 	IncludeFiles []string
+	// Profile selects the indexing depth: full (all relations), fast (symbol
+	// inventory, imports, shallow local calls, boundaries, IaC, no evidence), or
+	// syntax-only (file/symbol inventory and structure only). Empty means full.
+	Profile Profile
+}
+
+// Profile names the indexing depth a snapshot is produced at.
+type Profile string
+
+const (
+	ProfileFull       Profile = "full"
+	ProfileFast       Profile = "fast"
+	ProfileSyntaxOnly Profile = "syntax-only"
+)
+
+// profileSpec describes what a profile emits and how deeply it resolves.
+type profileSpec struct {
+	name            Profile
+	relations       map[string]bool
+	includeEvidence bool
+	callResolution  string // "full" | "shallow" | "none"
+}
+
+func (s profileSpec) emits(relationType string) bool { return s.relations[relationType] }
+
+// relationSet returns the sorted relation types this profile emits.
+func (s profileSpec) relationSet() []string {
+	out := make([]string, 0, len(s.relations))
+	for t := range s.relations {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// skippedRelationFamilies returns the sorted relation types this profile omits.
+func (s profileSpec) skippedRelationFamilies() []string {
+	out := []string{}
+	for _, t := range relationTypes {
+		if !s.relations[t] {
+			out = append(out, t)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// profileNeedsPerFileScan reports whether any content-derived per-file relation
+// family is enabled, so the streaming path can skip re-reading file content
+// entirely for syntax-only profiles.
+func profileNeedsPerFileScan(spec profileSpec) bool {
+	for _, t := range []string{"IMPORTS", "CALLS", "HANDLES_ROUTE", "HTTP_CALLS", "EMITS", "LISTENS_ON", "EXTENDS", "IMPLEMENTS", "READS_FIELD", "WRITES_FIELD", "ACCESSES"} {
+		if spec.relations[t] {
+			return true
+		}
+	}
+	return false
+}
+
+// relationSupportByProfile reports the relation types emitted at each indexing
+// profile.
+func relationSupportByProfile() map[string][]string {
+	out := map[string][]string{}
+	for _, p := range []Profile{ProfileFull, ProfileFast, ProfileSyntaxOnly} {
+		out[string(p)] = resolveProfile(p).relationSet()
+	}
+	return out
+}
+
+func relationTypeSet(types ...string) map[string]bool {
+	set := make(map[string]bool, len(types))
+	for _, t := range types {
+		set[t] = true
+	}
+	return set
+}
+
+// resolveProfile maps a profile name (empty = full) to its spec. Initial
+// behavior is conservative: fast and syntax-only restrict the relation set and
+// skip the expensive families rather than approximating them.
+func resolveProfile(p Profile) profileSpec {
+	switch p {
+	case ProfileSyntaxOnly:
+		return profileSpec{name: ProfileSyntaxOnly, relations: relationTypeSet("DEFINES", "CONTAINS"), includeEvidence: false, callResolution: "none"}
+	case ProfileFast:
+		return profileSpec{name: ProfileFast, relations: relationTypeSet("DEFINES", "CONTAINS", "IMPORTS", "CALLS", "HANDLES_ROUTE", "HANDLES_TOOL", "RESOURCE_DEPENDS_ON"), includeEvidence: false, callResolution: "shallow"}
+	default:
+		return profileSpec{name: ProfileFull, relations: relationTypeSet(relationTypes...), includeEvidence: true, callResolution: "full"}
+	}
 }
 
 func Capabilities() CapabilityReport {
@@ -263,6 +363,7 @@ func Capabilities() CapabilityReport {
 		ParserVersions:                  parserVersions(),
 		SupportedRelationTypes:          append([]string(nil), relationTypes...),
 		RelationSupportByLanguage:       relationSupportByLanguage(),
+		RelationSupportByProfile:        relationSupportByProfile(),
 		HeuristicRelationTypes:          []string{"HANDLES_ROUTE", "HTTP_CALLS", "EMITS", "LISTENS_ON", "HANDLES_TOOL", "SIMILAR_TO", "TESTS"},
 		OptionalLocalOnlyFeatures: map[string]bool{
 			"stable_symbol_ids":    true,
@@ -337,7 +438,7 @@ type sourceContext struct {
 // stats, and completeness are reported in the trailing SnapshotSummary because
 // they require the full parse. BuildProviderSnapshot merges the two back into a
 // complete in-memory header.
-func leanHeader(sc sourceContext, providerVersion string) SnapshotHeader {
+func leanHeader(sc sourceContext, providerVersion string, spec profileSpec) SnapshotHeader {
 	return SnapshotHeader{
 		SchemaVersion:    SchemaVersion,
 		Provider:         ProviderName,
@@ -350,9 +451,20 @@ func leanHeader(sc sourceContext, providerVersion string) SnapshotHeader {
 		Capabilities:     []string{"ndjson", "stable-symbol-id-v1", "local-only", "partial-failures"},
 		SchemaFeatures:   append([]string(nil), schemaFeatures...),
 		LanguageVersions: parserVersions(),
+		Profile:          string(spec.name),
+		ProfileLimits:    ProfileLimits{Evidence: evidenceLimit(spec), CallResolution: spec.callResolution},
+		RelationSet:      spec.relationSet(),
+		SkippedRelations: spec.skippedRelationFamilies(),
 		Warnings:         []ProviderWarning{},
 		PartialFailures:  []PartialFailure{},
 	}
+}
+
+func evidenceLimit(spec profileSpec) string {
+	if spec.includeEvidence {
+		return "full"
+	}
+	return "none"
 }
 
 // BuildProviderSnapshotWithOptions is an accumulating sink over the streaming
@@ -413,7 +525,8 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	if err != nil {
 		return err
 	}
-	if err := emit(leanHeader(sc, providerVersion)); err != nil {
+	spec := resolveProfile(options.Profile)
+	if err := emit(leanHeader(sc, providerVersion, spec)); err != nil {
 		return err
 	}
 
@@ -505,9 +618,21 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	relationsByType := map[string]int{}
 	relationCount := 0
 	var emitErr error
-	forEachRelation(sc.key, files, recordsByFile, sc.read, func(r RelationRecord) {
+	forEachRelation(sc.key, files, recordsByFile, sc.read, spec, func(r RelationRecord) {
 		if emitErr != nil {
 			return
+		}
+		// Profile filter: emit only relation families the profile includes; in
+		// shallow call resolution, keep only exact (same-file) calls; drop
+		// evidence when the profile omits it.
+		if !spec.emits(r.Type) {
+			return
+		}
+		if r.Type == "CALLS" && spec.callResolution == "shallow" && r.Resolution != "exact" {
+			return
+		}
+		if !spec.includeEvidence {
+			r.Evidence = nil
 		}
 		dedupKey := r.FromID + "\x00" + r.ToID + "\x00" + r.Type
 		if seenRelation[dedupKey] {
@@ -872,7 +997,7 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 // snapshot path; the streaming path uses forEachRelation directly.
 func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
 	var relations []RelationRecord
-	forEachRelation(repoKey, files, recordsByFile, readContent, func(r RelationRecord) {
+	forEachRelation(repoKey, files, recordsByFile, readContent, resolveProfile(ProfileFull), func(r RelationRecord) {
 		relations = append(relations, r)
 	})
 	relations = dedupeRelations(relations)
@@ -888,7 +1013,7 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 // as it is produced. It never accumulates the full relation set, so a streaming
 // caller can write records out with bounded memory. Callers deduplicate:
 // buildRelations collects-then-dedupes; the streaming path dedupes on emit.
-func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, emit func(RelationRecord)) {
+func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, spec profileSpec, emit func(RelationRecord)) {
 	symbolsByShortName := map[string][]SymbolRecord{}
 	symbolsByFile := map[string][]SymbolRecord{}
 	childNamesByContainer := map[string]map[string]bool{}
@@ -976,6 +1101,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	}
 
 	for _, file := range files {
+		if !profileNeedsPerFileScan(spec) {
+			break // syntax-only: no content-derived relations
+		}
 		content, ok := readContent(file.Path)
 		if !ok {
 			continue
@@ -1085,7 +1213,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					WarningCodes: []string{},
 				})
 			}
+			httpAndChannels := spec.emits("HTTP_CALLS") || spec.emits("EMITS") || spec.emits("LISTENS_ON")
 			for _, call := range httpCalls(block) {
+				if !httpAndChannels {
+					break
+				}
 				confidence := 0.7
 				if call.Absolute {
 					confidence = 0.6 // host ignored; cross-service path match is weaker
@@ -1111,6 +1243,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				})
 			}
 			for _, event := range channelEvents(block) {
+				if !httpAndChannels {
+					break
+				}
 				emit(RelationRecord{
 					RecordType:    "relation",
 					FromID:        from.ID,
@@ -1131,36 +1266,52 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					WarningCodes: []string{"WEAK_PATTERN"},
 				})
 			}
-			for _, r := range receiverCallRelations(from, block, methodsByContainer, symbolsByShortName) {
-				emit(r)
+			if spec.callResolution == "full" {
+				for _, r := range receiverCallRelations(from, block, methodsByContainer, symbolsByShortName) {
+					emit(r)
+				}
 			}
-			for _, r := range fieldAccessRelations(from, block, fieldsByContainer, symbolsByShortName) {
-				emit(r)
+			if spec.emits("READS_FIELD") || spec.emits("WRITES_FIELD") || spec.emits("ACCESSES") {
+				for _, r := range fieldAccessRelations(from, block, fieldsByContainer, symbolsByShortName) {
+					emit(r)
+				}
 			}
 		}
 
-		for _, r := range typeRelationsForFile(repoKey, file, content, recordsByFile[file.Path], symbolsByFile[file.Path], symbolsByShortName) {
-			if r.Type == "EXTENDS" || r.Type == "IMPLEMENTS" {
-				inheritanceEdges = append(inheritanceEdges, r)
+		if spec.emits("EXTENDS") || spec.emits("IMPLEMENTS") || spec.emits("OVERRIDES") {
+			for _, r := range typeRelationsForFile(repoKey, file, content, recordsByFile[file.Path], symbolsByFile[file.Path], symbolsByShortName) {
+				if r.Type == "EXTENDS" || r.Type == "IMPLEMENTS" {
+					inheritanceEdges = append(inheritanceEdges, r)
+				}
+				emit(r)
 			}
+		}
+	}
+
+	if spec.emits("OVERRIDES") {
+		for _, r := range overrideRelations(inheritanceEdges, methodsByContainer) {
 			emit(r)
 		}
 	}
-
-	for _, r := range overrideRelations(inheritanceEdges, methodsByContainer) {
-		emit(r)
+	if spec.emits("USES_TYPE") {
+		for _, r := range usesTypeRelations(recordsByFile, symbolsByFile, symbolsByShortName) {
+			emit(r)
+		}
 	}
-	for _, r := range usesTypeRelations(recordsByFile, symbolsByFile, symbolsByShortName) {
-		emit(r)
+	if spec.emits("TESTS") {
+		for _, r := range testRelations(recordsByFile, symbolsByShortName) {
+			emit(r)
+		}
 	}
-	for _, r := range testRelations(recordsByFile, symbolsByShortName) {
-		emit(r)
+	if spec.emits("RESOURCE_DEPENDS_ON") {
+		for _, r := range resourceDependsOnRelations(recordsByFile, readContent) {
+			emit(r)
+		}
 	}
-	for _, r := range resourceDependsOnRelations(recordsByFile, readContent) {
-		emit(r)
-	}
-	for _, r := range similarityRelations(recordsByFile, readContent) {
-		emit(r)
+	if spec.emits("SIMILAR_TO") {
+		for _, r := range similarityRelations(recordsByFile, readContent) {
+			emit(r)
+		}
 	}
 }
 

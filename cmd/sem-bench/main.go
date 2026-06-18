@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/suhaanthayyil/entire-sem/internal/bench"
+	"github.com/suhaanthayyil/entire-sem/internal/sem"
 )
 
 type manifest struct {
@@ -41,6 +42,19 @@ type repoSpec struct {
 	language string
 	repoPath string // owner/name
 	ref      string // optional manifest-pinned ref
+}
+
+func parseProfile(value string) (sem.Profile, error) {
+	switch value {
+	case "", "full":
+		return sem.ProfileFull, nil
+	case "fast":
+		return sem.ProfileFast, nil
+	case "syntax-only":
+		return sem.ProfileSyntaxOnly, nil
+	default:
+		return "", fmt.Errorf("unknown -profile %q (want full, fast, or syntax-only)", value)
+	}
 }
 
 func (r repoSpec) cloneURL() string { return "https://github.com/" + r.repoPath + ".git" }
@@ -59,16 +73,21 @@ func main() {
 		skipClone    = flag.Bool("skip-clone", false, "do not clone; measure repos already in cache")
 		updateLock   = flag.Bool("update-lock", false, "resolve current commits and rewrite the lock file")
 		providerVer  = flag.String("provider-version", "dev", "provider version label recorded in the report")
+		profile      = flag.String("profile", "full", "indexing profile to measure: full, fast, or syntax-only")
 	)
 	flag.Parse()
 
-	if err := run(*manifestPath, *cacheDir, *outDir, *lockPath, *languages, *limit, *jobs, *depth, *skipClone, *updateLock, *providerVer); err != nil {
+	if err := run(*manifestPath, *cacheDir, *outDir, *lockPath, *languages, *profile, *limit, *jobs, *depth, *skipClone, *updateLock, *providerVer); err != nil {
 		fmt.Fprintln(os.Stderr, "sem-bench:", err)
 		os.Exit(1)
 	}
 }
 
-func run(manifestPath, cacheDir, outDir, lockPath, languages string, limit, jobs, depth int, skipClone, updateLock bool, providerVer string) error {
+func run(manifestPath, cacheDir, outDir, lockPath, languages, profileName string, limit, jobs, depth int, skipClone, updateLock bool, providerVer string) error {
+	profile, err := parseProfile(profileName)
+	if err != nil {
+		return err
+	}
 	specs, err := loadSpecs(manifestPath, languages, limit)
 	if err != nil {
 		return err
@@ -103,7 +122,7 @@ func run(manifestPath, cacheDir, outDir, lockPath, languages string, limit, jobs
 		}
 	}
 
-	fmt.Fprintln(os.Stderr, "Measuring (no-egress)...")
+	fmt.Fprintf(os.Stderr, "Measuring (no-egress, profile=%s)...\n", profile)
 	var metrics []bench.RepoMetrics
 	for _, spec := range specs {
 		dir := filepath.Join(cacheDir, spec.language, spec.dirName())
@@ -112,7 +131,7 @@ func run(manifestPath, cacheDir, outDir, lockPath, languages string, limit, jobs
 			fmt.Fprintf(os.Stderr, "  skip %-40s (not cloned)\n", spec.repoPath)
 			continue
 		}
-		m, measureErr := bench.MeasureRepo(ctx, spec.repoPath, spec.language, dir, providerVer)
+		m, measureErr := bench.MeasureRepo(ctx, spec.repoPath, spec.language, dir, providerVer, profile)
 		if measureErr != nil {
 			fmt.Fprintf(os.Stderr, "  FAIL %-40s %v\n", spec.repoPath, measureErr)
 		} else {
@@ -121,7 +140,7 @@ func run(manifestPath, cacheDir, outDir, lockPath, languages string, limit, jobs
 		metrics = append(metrics, m)
 	}
 
-	report := bench.BuildReport(time.Now().UTC().Format(time.RFC3339), providerVer, metrics)
+	report := bench.BuildReport(time.Now().UTC().Format(time.RFC3339), providerVer, profile, metrics)
 	if err := emitReport(report, outDir); err != nil {
 		return err
 	}

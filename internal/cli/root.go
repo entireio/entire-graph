@@ -192,11 +192,16 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	if mode != "snapshot" && mode != "symbols" && mode != "edges" {
 		return fmt.Errorf("unknown provider record mode %q", mode)
 	}
+	profile, err := parseProfile(flags.Profile)
+	if err != nil {
+		return err
+	}
 	options := sem.ProviderSnapshotOptions{
 		NoNetwork:    flags.NoNetwork,
 		Worktree:     flags.Worktree,
 		IgnoreFiles:  flags.IgnoreFiles,
 		IncludeFiles: flags.IncludeFiles,
+		Profile:      profile,
 	}
 	// Stream records straight to stdout so peak memory does not scale with the
 	// relation count on large repositories.
@@ -233,10 +238,25 @@ type commonFlags struct {
 type providerFlags struct {
 	Repo         string
 	Format       string
+	Profile      string
 	NoNetwork    bool
 	Worktree     bool
 	IgnoreFiles  []string
 	IncludeFiles []string
+}
+
+// parseProfile validates the --profile value. Empty defaults to full.
+func parseProfile(value string) (sem.Profile, error) {
+	switch value {
+	case "", "full":
+		return sem.ProfileFull, nil
+	case "fast":
+		return sem.ProfileFast, nil
+	case "syntax-only":
+		return sem.ProfileSyntaxOnly, nil
+	default:
+		return "", fmt.Errorf("unknown --profile %q (want full, fast, or syntax-only)", value)
+	}
 }
 
 func parseProviderFlags(args []string) (providerFlags, []string, error) {
@@ -256,6 +276,12 @@ func parseProviderFlags(args []string) (providerFlags, []string, error) {
 				return flags, nil, errors.New("--format requires a value")
 			}
 			flags.Format = args[i]
+		case "--profile":
+			i++
+			if i >= len(args) {
+				return flags, nil, errors.New("--profile requires a value")
+			}
+			flags.Profile = args[i]
 		case "--no-network":
 			flags.NoNetwork = true
 		case "--worktree":

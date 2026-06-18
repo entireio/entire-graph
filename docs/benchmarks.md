@@ -23,8 +23,14 @@ go run ./cmd/sem-bench -skip-clone
 
 Cloning (network) is a distinct phase from measurement, which runs the provider
 with `NoNetwork` set, so the measured path is the same local-only path the
-provider guarantees in production. Cloned repos live under `bench/.cache/`
-(gitignored) and never enter our commits.
+provider guarantees in production. The measured path is `StreamSnapshot` (the
+production streaming path, memory-bounded), not the in-memory accumulator, so
+large-repo runs do not OOM. Cloned repos live under `bench/.cache/` (gitignored)
+and never enter our commits.
+
+Pass `-profile full|fast|syntax-only` to measure a given indexing depth (default
+`full`); the report records the profile, hardware (OS/arch/CPUs), and process
+peak RSS.
 
 ## Comparing across phases
 
@@ -41,10 +47,11 @@ rising wall time.
 
 ## Metrics
 
-Per repository (and aggregated per language and overall):
+Run-level: profile, hardware (OS/arch/CPUs), process peak RSS, provider version,
+schema version. Per repository (and aggregated per language and overall):
 
 - **Performance:** wall time, files, lines of code, files/sec, LOC/sec, output
-  bytes, Go allocation bytes.
+  bytes (of the streamed NDJSON), Go allocation bytes, profile.
 - **Quality:** symbols, relations by type, resolution distribution
   (`exact`/`import_resolved`/`type_inferred`/`name_only`/`pattern`), confidence
   bands (`exact`/`strong`/`heuristic`/`weak`), parse-failure codes, unresolved

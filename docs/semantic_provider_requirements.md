@@ -61,6 +61,23 @@ produce hundreds of megabytes of semantic facts, so a single whole-repo JSON
 document should be treated as a debug/compatibility mode rather than the primary
 integration format.
 
+### Indexing profiles
+
+`--profile full|fast|syntax-only` selects indexing depth (default `full`):
+
+- `full`: the complete relation graph.
+- `fast`: symbol inventory, imports, shallow (same-file) calls, route/tool
+  boundaries, and IaC resource dependencies, with evidence omitted. Skips the
+  deep type/field/similarity/HTTP/channel families and does not re-read content
+  for them.
+- `syntax-only`: file/symbol inventory and structure (`DEFINES`/`CONTAINS`)
+  only, with warnings, partial failures, and freshness metadata; no relation
+  resolution (no per-file content re-read).
+
+The snapshot header reports the selected `profile`, its `profile_limits`
+(evidence, call resolution), the emitted `relation_set`, and the
+`skipped_relation_families`. Capabilities reports `relation_support_by_profile`.
+
 The `snapshot`/`symbols`/`edges` commands stream records to stdout as they are
 produced (via the provider's streaming path), so peak memory does not scale with
 the relation count on large repositories. Consequences for consumers:
@@ -306,6 +323,8 @@ report enough aggregate stats to classify downstream reports as `ok`,
   types extractable for each language. DEFINES, CONTAINS, and CALLS are
   structural for every language; IMPORTS is listed only where a language-specific
   import scanner exists.
+- relation support per profile (`relation_support_by_profile`): the relation
+  types each indexing profile emits (`full`, `fast`, `syntax-only`).
 - heuristic relation types (`heuristic_relation_types`): relations such as
   `HANDLES_ROUTE` and `HANDLES_TOOL` that are detected by file-path and body
   patterns rather than per-language grammar, so they are not attributed to a

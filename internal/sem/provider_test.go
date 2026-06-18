@@ -200,6 +200,87 @@ func TestNothingHere(t *testing.T) {}
 	// TestNothingHere has no matching subject -> no edge.
 }
 
+func TestProfilesControlRelationOutputAndHeader(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "auth.go", `package auth
+
+import "strings"
+
+type Token struct {
+	Value string
+}
+
+func (t *Token) Valid() bool {
+	return strings.TrimSpace(t.Value) != ""
+}
+
+func Check(v string) bool {
+	tok := Token{Value: v}
+	return tok.Valid()
+}
+`)
+
+	run := func(profile Profile) (SnapshotHeader, map[string]int) {
+		var header SnapshotHeader
+		byType := map[string]int{}
+		err := StreamSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{Profile: profile}, func(rec any) error {
+			switch r := rec.(type) {
+			case SnapshotHeader:
+				header = r
+			case RelationRecord:
+				byType[r.Type]++
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return header, byType
+	}
+
+	fullHeader, full := run(ProfileFull)
+	if fullHeader.Profile != "full" || fullHeader.ProfileLimits.Evidence != "full" {
+		t.Fatalf("full header = %#v", fullHeader)
+	}
+	if full["USES_TYPE"] == 0 || full["READS_FIELD"] == 0 {
+		t.Fatalf("full profile should include deep relations: %v", full)
+	}
+
+	fastHeader, fast := run(ProfileFast)
+	if fastHeader.Profile != "fast" || fastHeader.ProfileLimits.CallResolution != "shallow" {
+		t.Fatalf("fast header = %#v", fastHeader)
+	}
+	if len(fastHeader.SkippedRelations) == 0 {
+		t.Fatalf("fast header should list skipped relation families")
+	}
+	for _, deep := range []string{"USES_TYPE", "READS_FIELD", "EXTENDS", "SIMILAR_TO"} {
+		if fast[deep] != 0 {
+			t.Fatalf("fast profile must omit %s: %v", deep, fast)
+		}
+	}
+
+	synHeader, syn := run(ProfileSyntaxOnly)
+	if synHeader.Profile != "syntax-only" {
+		t.Fatalf("syntax-only header = %#v", synHeader)
+	}
+	for relType := range syn {
+		if relType != "DEFINES" && relType != "CONTAINS" {
+			t.Fatalf("syntax-only emitted unexpected relation %q: %v", relType, syn)
+		}
+	}
+
+	// Capabilities advertises the per-profile relation sets.
+	caps := Capabilities()
+	for _, p := range []string{"full", "fast", "syntax-only"} {
+		if len(caps.RelationSupportByProfile[p]) == 0 {
+			t.Fatalf("capabilities missing relation support for profile %q", p)
+		}
+	}
+	if !contains(caps.RelationSupportByProfile["syntax-only"], "DEFINES") || contains(caps.RelationSupportByProfile["syntax-only"], "CALLS") {
+		t.Fatalf("syntax-only profile relation set wrong: %v", caps.RelationSupportByProfile["syntax-only"])
+	}
+}
+
 func TestGoStructFieldsEmittedAsSymbols(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "account.go", `package bank

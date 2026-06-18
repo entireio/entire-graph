@@ -32,9 +32,25 @@ func Check(token string) bool {
 }
 `)
 
-	metrics, err := MeasureRepo(t.Context(), "local/sample", "Go", dir, "bench-test")
+	metrics, err := MeasureRepo(t.Context(), "local/sample", "Go", dir, "bench-test", "")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if metrics.Profile != "full" {
+		t.Fatalf("profile = %q, want full (default)", metrics.Profile)
+	}
+
+	// The fast profile measures the same streaming path with a reduced relation
+	// set, so it should not emit the deep type/field relations.
+	fast, err := MeasureRepo(t.Context(), "local/sample", "Go", dir, "bench-test", "fast")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fast.Profile != "fast" {
+		t.Fatalf("fast profile = %q", fast.Profile)
+	}
+	if fast.RelationsByType["USES_TYPE"] != 0 || fast.RelationsByType["EXTENDS"] != 0 {
+		t.Fatalf("fast profile should omit deep type relations: %v", fast.RelationsByType)
 	}
 
 	if metrics.Files != 1 || metrics.ParsedFiles != 1 {
@@ -71,10 +87,16 @@ func TestBuildReportAggregatesByLanguage(t *testing.T) {
 		{Name: "broken", Language: "Python", Error: "boom"},
 	}
 
-	report := BuildReport("2026-06-18T00:00:00Z", "bench-test", metrics)
+	report := BuildReport("2026-06-18T00:00:00Z", "bench-test", "fast", metrics)
 
 	if report.SchemaVersion == "" {
 		t.Fatalf("schema version missing")
+	}
+	if report.Profile != "fast" {
+		t.Fatalf("report profile = %q, want fast", report.Profile)
+	}
+	if report.Hardware.CPUs == 0 {
+		t.Fatalf("hardware metadata missing: %#v", report.Hardware)
 	}
 	if report.ByLanguage["Go"].Repos != 2 || report.ByLanguage["Go"].Files != 15 {
 		t.Fatalf("go aggregate = %#v", report.ByLanguage["Go"])

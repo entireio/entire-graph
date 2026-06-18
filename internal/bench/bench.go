@@ -7,10 +7,12 @@ package bench
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"syscall"
 	"time"
 
 	"github.com/suhaanthayyil/entire-sem/internal/sem"
@@ -22,6 +24,7 @@ import (
 type RepoMetrics struct {
 	Name              string         `json:"name"`
 	Language          string         `json:"language"`
+	Profile           string         `json:"profile"`
 	Commit            string         `json:"commit,omitempty"`
 	WallMS            float64        `json:"wall_ms"`
 	Files             int            `json:"files"`
@@ -46,14 +49,19 @@ type RepoMetrics struct {
 	Error             string         `json:"error,omitempty"`
 }
 
-// MeasureRepo runs the provider snapshot over dir and returns its metrics. The
-// snapshot is built with NoNetwork set so the measured path stays no-egress;
-// timing and Go allocation stats bracket only the snapshot build, while LOC is
-// counted afterward so file reads do not skew the wall time.
-func MeasureRepo(ctx context.Context, name, language, dir, providerVersion string) (RepoMetrics, error) {
+// MeasureRepo measures the streaming provider path (the production path) over
+// dir at the given profile and returns its metrics. StreamSnapshot is run with
+// NoNetwork set so the measured path stays no-egress; metrics are tallied from
+// the streamed records and the trailing summary. LOC is counted afterward so
+// the extra file reads do not skew wall time.
+func MeasureRepo(ctx context.Context, name, language, dir, providerVersion string, profile sem.Profile) (RepoMetrics, error) {
+	if profile == "" {
+		profile = sem.ProfileFull
+	}
 	metrics := RepoMetrics{
 		Name:             name,
 		Language:         language,
+		Profile:          string(profile),
 		RelationsByType:  map[string]int{},
 		ResolutionCounts: map[string]int{},
 		ConfidenceBands:  map[string]int{},
@@ -63,8 +71,45 @@ func MeasureRepo(ctx context.Context, name, language, dir, providerVersion strin
 	runtime.GC()
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
+
+	var filePaths []string
+	var summary sem.SnapshotSummary
+	outputBytes := 0
 	start := time.Now()
-	snapshot, err := sem.BuildProviderSnapshotWithOptions(ctx, dir, providerVersion, sem.ProviderSnapshotOptions{NoNetwork: true})
+	err := sem.StreamSnapshot(ctx, dir, providerVersion, sem.ProviderSnapshotOptions{NoNetwork: true, Profile: profile}, func(record any) error {
+		if encoded, marshalErr := json.Marshal(record); marshalErr == nil {
+			outputBytes += len(encoded) + 1 // record + newline, the NDJSON byte cost
+		}
+		switch r := record.(type) {
+		case sem.SnapshotHeader:
+			metrics.Commit = r.Commit
+		case sem.FileRecord:
+			metrics.Files++
+			metrics.SourceBytes += r.Bytes
+			filePaths = append(filePaths, r.Path)
+		case sem.SymbolRecord:
+			metrics.Symbols++
+		case sem.ExternalRecord:
+			metrics.Externals++
+		case sem.RelationRecord:
+			metrics.Relations++
+			metrics.RelationsByType[r.Type]++
+			resolution := r.Resolution
+			if resolution == "" {
+				resolution = "unspecified"
+			}
+			metrics.ResolutionCounts[resolution]++
+			metrics.ConfidenceBands[confidenceBand(r.Confidence)]++
+			for _, code := range r.WarningCodes {
+				if code == "UNRESOLVED_RELATIVE_IMPORT" {
+					metrics.UnresolvedImports++
+				}
+			}
+		case sem.SnapshotSummary:
+			summary = r
+		}
+		return nil
+	})
 	wall := time.Since(start)
 	if err != nil {
 		metrics.Error = err.Error()
@@ -72,54 +117,29 @@ func MeasureRepo(ctx context.Context, name, language, dir, providerVersion strin
 	}
 	runtime.ReadMemStats(&after)
 
-	counter := &countingWriter{}
-	_ = sem.WriteSnapshotNDJSON(counter, snapshot)
-
-	metrics.Commit = snapshot.Header.Commit
-	metrics.WallMS = float64(wall.Microseconds()) / 1000
-	metrics.Files = snapshot.Header.Stats.Files
-	metrics.ParsedFiles = snapshot.Header.Stats.ParsedFiles
-	metrics.Symbols = snapshot.Header.Stats.Symbols
-	metrics.Relations = snapshot.Header.Stats.Relations
-	metrics.Externals = len(snapshot.Externals)
-	metrics.ParseFailures = snapshot.Header.Stats.PartialFailures
-	metrics.CompletenessLevel = snapshot.Header.Stats.CompletenessLevel
-	metrics.OutputBytes = counter.n
-	metrics.Languages = append([]string(nil), snapshot.Header.Languages...)
+	metrics.WallMS = round2(float64(wall.Microseconds()) / 1000)
+	metrics.OutputBytes = outputBytes
+	metrics.ParsedFiles = summary.Stats.ParsedFiles
+	metrics.ParseFailures = summary.Stats.PartialFailures
+	metrics.CompletenessLevel = summary.Stats.CompletenessLevel
+	metrics.Languages = append([]string(nil), summary.Languages...)
+	for _, failure := range summary.PartialFailures {
+		metrics.FailureCodes[failure.Code]++
+	}
 	if after.TotalAlloc >= before.TotalAlloc {
 		metrics.AllocBytes = after.TotalAlloc - before.TotalAlloc
 	}
 
-	for _, file := range snapshot.Files {
-		metrics.SourceBytes += file.Bytes
-		if content, readErr := os.ReadFile(filepath.Join(dir, file.Path)); readErr == nil {
+	for _, path := range filePaths {
+		if content, readErr := os.ReadFile(filepath.Join(dir, path)); readErr == nil {
 			metrics.LOC += countLines(content)
 		}
-	}
-
-	for _, relation := range snapshot.Relations {
-		metrics.RelationsByType[relation.Type]++
-		resolution := relation.Resolution
-		if resolution == "" {
-			resolution = "unspecified"
-		}
-		metrics.ResolutionCounts[resolution]++
-		metrics.ConfidenceBands[confidenceBand(relation.Confidence)]++
-		for _, code := range relation.WarningCodes {
-			if code == "UNRESOLVED_RELATIVE_IMPORT" {
-				metrics.UnresolvedImports++
-			}
-		}
-	}
-	for _, failure := range snapshot.Header.PartialFailures {
-		metrics.FailureCodes[failure.Code]++
 	}
 
 	if seconds := wall.Seconds(); seconds > 0 {
 		metrics.FilesPerSec = round2(float64(metrics.Files) / seconds)
 		metrics.LOCPerSec = round2(float64(metrics.LOC) / seconds)
 	}
-	metrics.WallMS = round2(metrics.WallMS)
 	return metrics, nil
 }
 
@@ -152,11 +172,25 @@ func round2(value float64) float64 {
 	return float64(int64(value*100+0.5)) / 100
 }
 
-type countingWriter struct{ n int }
+// Hardware records the machine the benchmark ran on, for comparing results.
+type Hardware struct {
+	OS   string `json:"os"`
+	Arch string `json:"arch"`
+	CPUs int    `json:"cpus"`
+}
 
-func (w *countingWriter) Write(p []byte) (int, error) {
-	w.n += len(p)
-	return len(p), nil
+// maxRSSBytes returns the process peak resident set size (best-effort). It is a
+// process-wide peak, not per-repo; Linux reports kilobytes, macOS reports bytes.
+func maxRSSBytes() uint64 {
+	var ru syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+		return 0
+	}
+	rss := uint64(ru.Maxrss)
+	if runtime.GOOS == "linux" {
+		rss *= 1024
+	}
+	return rss
 }
 
 // Aggregate summarizes a set of repo metrics for a language or the whole run.
@@ -203,14 +237,21 @@ type Report struct {
 	GeneratedAt     string               `json:"generated_at"`
 	ProviderVersion string               `json:"provider_version"`
 	SchemaVersion   string               `json:"schema_version"`
+	Profile         string               `json:"profile"`
+	Hardware        Hardware             `json:"hardware"`
+	MaxRSSBytes     uint64               `json:"max_rss_bytes"`
 	Repos           []RepoMetrics        `json:"repos"`
 	ByLanguage      map[string]Aggregate `json:"by_language"`
 	Totals          Aggregate            `json:"totals"`
 }
 
 // BuildReport assembles per-language and total aggregates from repo metrics.
-// generatedAt is passed in so callers control timestamp determinism.
-func BuildReport(generatedAt, providerVersion string, metrics []RepoMetrics) Report {
+// generatedAt is passed in so callers control timestamp determinism; profile is
+// the indexing profile the run measured.
+func BuildReport(generatedAt, providerVersion string, profile sem.Profile, metrics []RepoMetrics) Report {
+	if profile == "" {
+		profile = sem.ProfileFull
+	}
 	byLanguage := map[string][]RepoMetrics{}
 	for _, m := range metrics {
 		byLanguage[m.Language] = append(byLanguage[m.Language], m)
@@ -230,6 +271,9 @@ func BuildReport(generatedAt, providerVersion string, metrics []RepoMetrics) Rep
 		GeneratedAt:     generatedAt,
 		ProviderVersion: providerVersion,
 		SchemaVersion:   sem.SchemaVersion,
+		Profile:         string(profile),
+		Hardware:        Hardware{OS: runtime.GOOS, Arch: runtime.GOARCH, CPUs: runtime.NumCPU()},
+		MaxRSSBytes:     maxRSSBytes(),
 		Repos:           sorted,
 		ByLanguage:      aggByLanguage,
 		Totals:          aggregate(metrics),
