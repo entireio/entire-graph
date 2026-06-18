@@ -279,6 +279,79 @@ func httpPath(literal string) (string, bool) {
 	return literal, false
 }
 
+// fieldAccess is a `receiver.field` / `receiver->field` access (not a call),
+// classified as a read, a write (assignment target), or an address-of.
+type fieldAccess struct {
+	Receiver  string
+	Field     string
+	Write     bool
+	AddressOf bool
+}
+
+var fieldAccessRe = regexp.MustCompile(`(&?)\s*([A-Za-z_$][\w$]*)\s*(?:->|\.)\s*([A-Za-z_]\w*)`)
+var goReceiverRe = regexp.MustCompile(`^func\s*\(\s*([A-Za-z_]\w*)\s+\*?[A-Za-z_]`)
+
+// fieldAccesses extracts distinct receiver.field accesses from a block,
+// classifying each as a write (followed by an assignment operator), an
+// address-of, or a read. Method calls (field followed by "(") are excluded.
+func fieldAccesses(block string) []fieldAccess {
+	stripped := stripCodeLiteralsAndComments(block)
+	var out []fieldAccess
+	seen := map[string]bool{}
+	for _, m := range fieldAccessRe.FindAllStringSubmatchIndex(stripped, -1) {
+		amp := stripped[m[2]:m[3]]
+		receiver := strings.TrimPrefix(stripped[m[4]:m[5]], "$")
+		field := stripped[m[6]:m[7]]
+		after := strings.TrimLeft(stripped[m[7]:], " \t")
+		if strings.HasPrefix(after, "(") {
+			continue // method call, handled by receiver-call resolution
+		}
+		access := fieldAccess{Receiver: receiver, Field: field, AddressOf: amp == "&", Write: isAssignTarget(after)}
+		key := receiver + "." + field
+		switch {
+		case access.AddressOf:
+			key += "&"
+		case access.Write:
+			key += "w"
+		default:
+			key += "r"
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, access)
+	}
+	return out
+}
+
+// isAssignTarget reports whether the text immediately after a field reference
+// makes it the target of a write.
+func isAssignTarget(after string) bool {
+	if strings.HasPrefix(after, "==") {
+		return false
+	}
+	if strings.HasPrefix(after, "=") {
+		return true
+	}
+	for _, op := range []string{"+=", "-=", "*=", "/=", "%=", "|=", "&=", "^=", "<<=", ">>=", "++", "--"} {
+		if strings.HasPrefix(after, op) {
+			return true
+		}
+	}
+	return false
+}
+
+// goReceiverVar returns the receiver variable name from a Go method signature
+// (`func (a *T) M(...)` -> "a"), so a.field accesses resolve to the enclosing
+// type. Empty for non-Go or non-method signatures.
+func goReceiverVar(signature string) string {
+	if m := goReceiverRe.FindStringSubmatch(signature); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
 // receiverCall is a `receiver.method(` / `receiver->method(` call site, used by
 // receiver-type call resolution.
 type receiverCall struct {

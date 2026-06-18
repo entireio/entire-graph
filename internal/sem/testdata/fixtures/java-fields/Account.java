@@ -4,13 +4,13 @@ public class Account {
     private String id;
     public int balance;
 
-    public Account(String id) {
-        String local = id;
-        this.id = local;
+    public void deposit(int amount) {
+        int updated = this.balance + amount;
+        this.balance = updated;
     }
 
-    public void deposit(int amount) {
-        int updated = balance + amount;
-        balance = updated;
+    public String identify(String prefix) {
+        String local = prefix;
+        return local + this.id;
     }
 }

@@ -273,6 +273,64 @@ func (a *Account) Deposit(amount int) {
 	}
 }
 
+func TestFieldAccessRelations(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "account.go", `package bank
+
+type Account struct {
+	Balance int
+}
+
+func (a *Account) Deposit(amount int) {
+	x := a.Balance + amount
+	a.Balance = x
+}
+
+func leak(other *Account, raw map[string]int) {
+	_ = raw.Balance
+	other.Mystery = 1
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reads, writes := map[string]bool{}, map[string]bool{}
+	for _, r := range snapshot.Relations {
+		switch r.Type {
+		case "READS_FIELD":
+			reads[lastSegment(r.FromID)+"->"+lastSegment(r.ToID)] = true
+		case "WRITES_FIELD":
+			writes[lastSegment(r.FromID)+"->"+lastSegment(r.ToID)] = true
+			if r.Confidence < 0.85 {
+				t.Fatalf("field write confidence too low: %#v", r)
+			}
+		}
+	}
+
+	// a.Balance read and write inside Deposit resolve via the Go receiver.
+	if !reads["Account.Deposit->Account.Balance"] {
+		t.Fatalf("missing READS_FIELD Deposit->Balance: %v", reads)
+	}
+	if !writes["Account.Deposit->Account.Balance"] {
+		t.Fatalf("missing WRITES_FIELD Deposit->Balance: %v", writes)
+	}
+	// raw.Balance (raw is a map, not Account) and other.Mystery (no such field)
+	// must not produce edges — the field is not a known member of the receiver.
+	for edge := range reads {
+		if strings.HasPrefix(edge, "leak->") {
+			t.Fatalf("unresolved/dynamic access produced READS_FIELD: %s", edge)
+		}
+	}
+	for edge := range writes {
+		if strings.HasPrefix(edge, "leak->") {
+			t.Fatalf("unresolved/dynamic access produced WRITES_FIELD: %s", edge)
+		}
+	}
+}
+
 func TestFieldsAcrossLanguages(t *testing.T) {
 	cases := []struct {
 		file      string

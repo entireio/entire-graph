@@ -37,6 +37,9 @@ var relationTypes = []string{
 	"IMPLEMENTS",
 	"OVERRIDES",
 	"USES_TYPE",
+	"READS_FIELD",
+	"WRITES_FIELD",
+	"ACCESSES",
 	"HANDLES_ROUTE",
 	"HTTP_CALLS",
 	"EMITS",
@@ -52,14 +55,14 @@ var relationTypes = []string{
 // OVERRIDES is derived from a resolved supertype's methods, so it is advertised
 // only for class-based languages with clear method containers.
 var ooRelationSupport = map[string][]string{
-	"Java":       {"EXTENDS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE"},
-	"TypeScript": {"EXTENDS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE"},
+	"Java":       {"EXTENDS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES"},
+	"TypeScript": {"EXTENDS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES"},
 	"JavaScript": {"EXTENDS"},
-	"C#":         {"EXTENDS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE"},
+	"C#":         {"EXTENDS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES"},
 	"PHP":        {"EXTENDS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE"},
 	"Python":     {"EXTENDS", "OVERRIDES", "USES_TYPE"},
-	"Rust":       {"EXTENDS", "IMPLEMENTS", "USES_TYPE"},
-	"Go":         {"USES_TYPE"},
+	"Rust":       {"EXTENDS", "IMPLEMENTS", "USES_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES"},
+	"Go":         {"USES_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES"},
 	"HCL":        {"RESOURCE_DEPENDS_ON"},
 }
 
@@ -845,6 +848,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	symbolsByFile := map[string][]SymbolRecord{}
 	childNamesByContainer := map[string]map[string]bool{}
 	methodsByContainer := map[string]map[string]SymbolRecord{}
+	fieldsByContainer := map[string]map[string]SymbolRecord{}
 	var inheritanceEdges []RelationRecord // captured for OVERRIDES derivation
 	for _, records := range recordsByFile {
 		for _, symbol := range records {
@@ -907,6 +911,12 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						methodsByContainer[symbol.ContainerID] = map[string]SymbolRecord{}
 					}
 					methodsByContainer[symbol.ContainerID][symbol.Name] = symbol
+				}
+				if symbol.Kind == "field" {
+					if fieldsByContainer[symbol.ContainerID] == nil {
+						fieldsByContainer[symbol.ContainerID] = map[string]SymbolRecord{}
+					}
+					fieldsByContainer[symbol.ContainerID][symbol.Name] = symbol
 				}
 			}
 		}
@@ -1077,6 +1087,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				})
 			}
 			for _, r := range receiverCallRelations(from, block, methodsByContainer, symbolsByShortName) {
+				emit(r)
+			}
+			for _, r := range fieldAccessRelations(from, block, fieldsByContainer, symbolsByShortName) {
 				emit(r)
 			}
 		}
@@ -1459,6 +1472,85 @@ func resolveTypeReference(name string, from SymbolRecord, sameFile []SymbolRecor
 		return sym, "name_only", "module", 0.75, true
 	}
 	return SymbolRecord{}, "", "", 0, false
+}
+
+// fieldAccessRelations resolves `receiver.field` accesses in a function/method
+// body to a known local field symbol and emits READS_FIELD, WRITES_FIELD, or
+// ACCESSES (address-of). The receiver type is resolved from this/self, a Go
+// method receiver variable, or a local constructor assignment; accesses whose
+// receiver type cannot be resolved, or whose field is not a known local field,
+// are skipped (no guessed edges).
+func fieldAccessRelations(from SymbolRecord, block string, fieldsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
+	if from.Kind != "function" && from.Kind != "method" {
+		return nil
+	}
+	selfContainers := map[string]string{} // receiver var -> container symbol id
+	if from.ContainerID != "" {
+		selfContainers["this"] = from.ContainerID
+		selfContainers["self"] = from.ContainerID
+		if recv := goReceiverVar(from.Signature); recv != "" {
+			selfContainers[recv] = from.ContainerID
+		}
+	}
+	varTypes := localVarTypes(block)
+
+	var relations []RelationRecord
+	emitted := map[string]bool{}
+	for _, access := range fieldAccesses(block) {
+		containerID := ""
+		confidence := 0.9
+		if id, ok := selfContainers[access.Receiver]; ok {
+			containerID = id
+		} else if typeName, ok := varTypes[access.Receiver]; ok {
+			if sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName); ok {
+				containerID = sym.ID
+				confidence = 0.85
+			}
+		}
+		if containerID == "" {
+			continue
+		}
+		field, ok := fieldsByContainer[containerID][access.Field]
+		if !ok || field.ID == from.ID {
+			continue
+		}
+		relationType := "READS_FIELD"
+		switch {
+		case access.AddressOf:
+			relationType = "ACCESSES"
+		case access.Write:
+			relationType = "WRITES_FIELD"
+		}
+		key := relationType + "\x00" + field.ID
+		if emitted[key] {
+			continue
+		}
+		emitted[key] = true
+		scope := "file"
+		if field.FilePath != from.FilePath {
+			scope = "module"
+		}
+		relations = append(relations, RelationRecord{
+			RecordType:    "relation",
+			FromID:        from.ID,
+			ToID:          field.ID,
+			Type:          relationType,
+			Confidence:    confidence,
+			Reason:        "field access resolved via inferred receiver type",
+			RelationScope: scope,
+			Resolution:    "type_inferred",
+			TargetKind:    "symbol",
+			Evidence: []Evidence{{
+				Kind:      "field_access",
+				FilePath:  from.FilePath,
+				StartLine: from.StartLine,
+				EndLine:   from.EndLine,
+				Detail:    access.Receiver + "." + access.Field,
+			}},
+			WarningCodes: []string{},
+		})
+	}
+	return relations
 }
 
 // overrideRelations derives OVERRIDES edges from resolved EXTENDS/IMPLEMENTS

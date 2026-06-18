@@ -8,8 +8,8 @@ namespace Bank
 
         public void Deposit(int amount)
         {
-            int updated = balance + amount;
-            balance = updated;
+            int updated = this.balance + amount;
+            this.balance = updated;
         }
     }
 }

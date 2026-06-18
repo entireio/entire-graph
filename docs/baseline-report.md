@@ -126,10 +126,12 @@ False negatives:
   `target_kind: file`). Non-relative local imports that depend on a manifest
   module root (`go.mod` path, `package.json` name, `tsconfig` paths) are not yet
   resolved and remain external. (WP3 follow-up: manifest readers.)
-- **Field-access relations not yet emitted.** Struct/class fields are now
-  emitted as `field` symbols (Go, Rust, Java, C#, TypeScript), which is the
-  prerequisite for `READS_FIELD`/`WRITES_FIELD`/`ACCESSES`; those relations are
-  the next step. (Data-flow remains separately deferred.)
+- **Field-access relations.** `READS_FIELD`/`WRITES_FIELD`/`ACCESSES` are now
+  emitted for `receiver.field` accesses resolved through the receiver's type
+  (this/self, Go method receiver, or constructor-assigned local) to a known
+  `field` symbol. Unresolved/dynamic receivers and bare implicit-`this` access
+  are skipped. Remaining: typed-parameter receivers, bare-field resolution via
+  scope, and data-flow (separately deferred).
 - **Partial OO/type relations.** `EXTENDS`, `IMPLEMENTS`, and `OVERRIDES` are
   now emitted (`EXTENDS`/`IMPLEMENTS` for Java, TypeScript, JavaScript, C#, PHP,
   Python, Rust; `OVERRIDES` for the class-based languages with method symbols).

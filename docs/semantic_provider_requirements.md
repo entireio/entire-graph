@@ -233,6 +233,13 @@ Relation vocabulary:
 - `OVERRIDES` — a method that redefines a same-named method on a resolved
   supertype (derived from EXTENDS/IMPLEMENTS; only when both the supertype and
   its methods are known local symbols).
+- `READS_FIELD` / `WRITES_FIELD` / `ACCESSES` — a function/method reads, writes
+  (assignment target), or takes the address of a field. The `receiver.field`
+  access is resolved to a known local field via the receiver's type (this/self,
+  a Go method receiver variable, or a constructor-assigned local). Accesses with
+  an unresolved/dynamic receiver, or to a name that is not a known field, are
+  skipped — no guessed edges. Bare implicit-`this` access (no `receiver.`) is
+  not resolved in this pass.
 - `USES_TYPE` — a function/method references a local type in its signature
   (resolved against known type symbols, so primitives and library types are
   excluded). Covers parameter and return types without per-language signature
