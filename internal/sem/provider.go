@@ -37,23 +37,60 @@ var relationTypes = []string{
 	"HANDLES_TOOL",
 }
 
+// schemaFeatures lists the optional schema 1.1 features this build emits. It
+// lets consumers detect available fields without inspecting every record. Keep
+// sorted and stable; only add entries when the field is actually populated.
+var schemaFeatures = []string{
+	"boundary_source_locations",
+	"completeness_breakdown",
+	"language_versions",
+	"relation_evidence",
+	"relation_resolution",
+	"relation_scope",
+	"relation_target_kind",
+}
+
+// parserVersions reports the parser/grammar libraries backing extraction. It is
+// shared by the snapshot header (language_versions) and the capabilities report.
+func parserVersions() map[string]string {
+	return map[string]string{
+		"go-tree-sitter": "github.com/smacker/go-tree-sitter",
+	}
+}
+
 type ProviderRecord struct {
 	RecordType string `json:"record_type,omitempty"`
 }
 
 type SnapshotHeader struct {
-	SchemaVersion   string            `json:"schema_version"`
-	Provider        string            `json:"provider"`
-	ProviderVersion string            `json:"provider_version"`
-	RepoRoot        string            `json:"repo_root"`
-	RepoKey         string            `json:"repo_key"`
-	Commit          string            `json:"commit"`
-	Tree            string            `json:"tree"`
-	Languages       []string          `json:"languages"`
-	Capabilities    []string          `json:"capabilities"`
-	Warnings        []ProviderWarning `json:"warnings"`
-	PartialFailures []PartialFailure  `json:"partial_failures"`
-	Stats           ProviderStats     `json:"stats"`
+	SchemaVersion    string             `json:"schema_version"`
+	Provider         string             `json:"provider"`
+	ProviderVersion  string             `json:"provider_version"`
+	RepoRoot         string             `json:"repo_root"`
+	RepoKey          string             `json:"repo_key"`
+	Commit           string             `json:"commit"`
+	Tree             string             `json:"tree"`
+	Languages        []string           `json:"languages"`
+	Capabilities     []string           `json:"capabilities"`
+	SchemaFeatures   []string           `json:"schema_features"`
+	LanguageVersions map[string]string  `json:"language_versions,omitempty"`
+	Warnings         []ProviderWarning  `json:"warnings"`
+	PartialFailures  []PartialFailure   `json:"partial_failures"`
+	Stats            ProviderStats      `json:"stats"`
+	Completeness     CompletenessReport `json:"completeness"`
+	BenchmarkProfile string             `json:"benchmark_profile,omitempty"`
+}
+
+// CompletenessReport breaks down parse/index coverage by language and by emitted
+// relation type so consumers can reason about which facts are dense or sparse.
+type CompletenessReport struct {
+	Languages map[string]LanguageCompleteness `json:"languages"`
+	Relations map[string]int                  `json:"relations"`
+}
+
+type LanguageCompleteness struct {
+	Files   int `json:"files"`
+	Symbols int `json:"symbols"`
 }
 
 type ProviderStats struct {
@@ -122,13 +159,27 @@ type SymbolRecord struct {
 }
 
 type RelationRecord struct {
-	RecordType   string   `json:"record_type"`
-	FromID       string   `json:"from_id"`
-	ToID         string   `json:"to_id"`
-	Type         string   `json:"type"`
-	Confidence   float64  `json:"confidence"`
-	Reason       string   `json:"reason"`
-	WarningCodes []string `json:"warning_codes"`
+	RecordType    string     `json:"record_type"`
+	FromID        string     `json:"from_id"`
+	ToID          string     `json:"to_id"`
+	Type          string     `json:"type"`
+	Confidence    float64    `json:"confidence"`
+	Reason        string     `json:"reason"`
+	RelationScope string     `json:"relation_scope,omitempty"`
+	Resolution    string     `json:"resolution,omitempty"`
+	TargetKind    string     `json:"target_kind,omitempty"`
+	Evidence      []Evidence `json:"evidence,omitempty"`
+	WarningCodes  []string   `json:"warning_codes"`
+}
+
+// Evidence is a compact pointer to the source location that justifies a
+// relation, so consumers can show provenance without re-parsing.
+type Evidence struct {
+	Kind      string `json:"kind"`
+	FilePath  string `json:"file_path,omitempty"`
+	StartLine int    `json:"start_line,omitempty"`
+	EndLine   int    `json:"end_line,omitempty"`
+	Detail    string `json:"detail,omitempty"`
 }
 
 type CapabilityReport struct {
@@ -178,10 +229,8 @@ func Capabilities() CapabilityReport {
 		SupportedFileExtensions:         extensions,
 		SupportedLanguages:              languages,
 		UnsupportedButDetectedLanguages: []string{},
-		ParserVersions: map[string]string{
-			"go-tree-sitter": "github.com/smacker/go-tree-sitter",
-		},
-		SupportedRelationTypes: append([]string(nil), relationTypes...),
+		ParserVersions:                  parserVersions(),
+		SupportedRelationTypes:          append([]string(nil), relationTypes...),
 		OptionalLocalOnlyFeatures: map[string]bool{
 			"stable_symbol_ids": true,
 			"semantic_diff":     true,
@@ -311,17 +360,19 @@ func BuildProviderSnapshotWithOptions(ctx context.Context, repo, providerVersion
 		failures = []PartialFailure{}
 	}
 	header := SnapshotHeader{
-		SchemaVersion:   SchemaVersion,
-		Provider:        ProviderName,
-		ProviderVersion: providerVersion,
-		RepoRoot:        absRepo,
-		RepoKey:         key,
-		Commit:          commit,
-		Tree:            tree,
-		Languages:       languages,
-		Capabilities:    []string{"ndjson", "stable-symbol-id-v1", "local-only", "partial-failures"},
-		Warnings:        warnings,
-		PartialFailures: failures,
+		SchemaVersion:    SchemaVersion,
+		Provider:         ProviderName,
+		ProviderVersion:  providerVersion,
+		RepoRoot:         absRepo,
+		RepoKey:          key,
+		Commit:           commit,
+		Tree:             tree,
+		Languages:        languages,
+		Capabilities:     []string{"ndjson", "stable-symbol-id-v1", "local-only", "partial-failures"},
+		SchemaFeatures:   append([]string(nil), schemaFeatures...),
+		LanguageVersions: parserVersions(),
+		Warnings:         warnings,
+		PartialFailures:  failures,
 		Stats: ProviderStats{
 			Files:             len(files),
 			ParsedFiles:       len(recordsByFile),
@@ -330,6 +381,7 @@ func BuildProviderSnapshotWithOptions(ctx context.Context, repo, providerVersion
 			PartialFailures:   len(failures),
 			CompletenessLevel: completenessLevel(len(failures), len(files)),
 		},
+		Completeness: buildCompleteness(files, symbols, relations),
 	}
 	return ProviderSnapshot{Header: header, Files: files, Externals: externals, Symbols: symbols, Relations: relations}, nil
 }
@@ -507,6 +559,8 @@ type resolvedCallTarget struct {
 	SymbolRecord
 	Confidence float64
 	Reason     string
+	Resolution string
+	Scope      string
 }
 
 func routeBoundarySource(path, language string, fileSymbols []SymbolRecord) routeSource {
@@ -530,6 +584,8 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 			SymbolRecord: to,
 			Confidence:   0.92,
 			Reason:       "direct call expression resolved to same-file symbol",
+			Resolution:   "exact",
+			Scope:        "file",
 		})
 	}
 	if len(local) > 0 {
@@ -546,6 +602,8 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 				SymbolRecord: to,
 				Confidence:   0.86,
 				Reason:       "direct call expression resolved through import path",
+				Resolution:   "import_resolved",
+				Scope:        "module",
 			})
 		}
 	}
@@ -564,6 +622,8 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 			SymbolRecord: remaining[0],
 			Confidence:   0.68,
 			Reason:       "direct call expression matched globally unique symbol name",
+			Resolution:   "name_only",
+			Scope:        "workspace",
 		}}
 	}
 	return nil
@@ -576,33 +636,49 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 	for _, records := range recordsByFile {
 		for _, symbol := range records {
 			relations = append(relations, RelationRecord{
-				RecordType:   "relation",
-				FromID:       fileID(repoKey, symbol.FilePath),
-				ToID:         symbol.ID,
-				Type:         "DEFINES",
-				Confidence:   1,
-				Reason:       "symbol parsed from file",
-				WarningCodes: []string{},
+				RecordType:    "relation",
+				FromID:        fileID(repoKey, symbol.FilePath),
+				ToID:          symbol.ID,
+				Type:          "DEFINES",
+				Confidence:    1,
+				Reason:        "symbol parsed from file",
+				RelationScope: "file",
+				Resolution:    "exact",
+				TargetKind:    "symbol",
+				WarningCodes:  []string{},
 			})
 			if symbol.ContainerID != "" {
 				relations = append(relations, RelationRecord{
-					RecordType:   "relation",
-					FromID:       symbol.ContainerID,
-					ToID:         symbol.ID,
-					Type:         "CONTAINS",
-					Confidence:   1,
-					Reason:       "symbol qualified name is nested in container",
-					WarningCodes: []string{},
+					RecordType:    "relation",
+					FromID:        symbol.ContainerID,
+					ToID:          symbol.ID,
+					Type:          "CONTAINS",
+					Confidence:    1,
+					Reason:        "symbol qualified name is nested in container",
+					RelationScope: "file",
+					Resolution:    "exact",
+					TargetKind:    "symbol",
+					WarningCodes:  []string{},
 				})
 			}
 			if symbol.Kind == "tool" && symbol.ContainerID != "" {
 				relations = append(relations, RelationRecord{
-					RecordType:   "relation",
-					FromID:       symbol.ContainerID,
-					ToID:         symbol.ID,
-					Type:         "HANDLES_TOOL",
-					Confidence:   0.85,
-					Reason:       "tool boundary inferred from handler symbol body",
+					RecordType:    "relation",
+					FromID:        symbol.ContainerID,
+					ToID:          symbol.ID,
+					Type:          "HANDLES_TOOL",
+					Confidence:    0.85,
+					Reason:        "tool boundary inferred from handler symbol body",
+					RelationScope: "file",
+					Resolution:    "pattern",
+					TargetKind:    "symbol",
+					Evidence: []Evidence{{
+						Kind:      "symbol_body",
+						FilePath:  symbol.FilePath,
+						StartLine: symbol.StartLine,
+						EndLine:   symbol.EndLine,
+						Detail:    symbol.QualifiedName,
+					}},
 					WarningCodes: []string{},
 				})
 			}
@@ -626,12 +702,20 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 		fromID := fileID(repoKey, file.Path)
 		for _, imported := range importsFor(file.Path, content) {
 			relations = append(relations, RelationRecord{
-				RecordType:   "relation",
-				FromID:       fromID,
-				ToID:         externalID("import", imported),
-				Type:         "IMPORTS",
-				Confidence:   0.8,
-				Reason:       "import declaration matched by language-specific scanner",
+				RecordType:    "relation",
+				FromID:        fromID,
+				ToID:          externalID("import", imported),
+				Type:          "IMPORTS",
+				Confidence:    0.8,
+				Reason:        "import declaration matched by language-specific scanner",
+				RelationScope: "external",
+				Resolution:    "name_only",
+				TargetKind:    "external",
+				Evidence: []Evidence{{
+					Kind:     "import_statement",
+					FilePath: file.Path,
+					Detail:   imported,
+				}},
 				WarningCodes: []string{},
 			})
 		}
@@ -644,12 +728,22 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 				}
 				for _, to := range resolveCallTargets(name, from, symbolsByShortName[name], symbolsByFile[file.Path], importsByName) {
 					relations = append(relations, RelationRecord{
-						RecordType:   "relation",
-						FromID:       from.ID,
-						ToID:         to.ID,
-						Type:         "CALLS",
-						Confidence:   to.Confidence,
-						Reason:       to.Reason,
+						RecordType:    "relation",
+						FromID:        from.ID,
+						ToID:          to.ID,
+						Type:          "CALLS",
+						Confidence:    to.Confidence,
+						Reason:        to.Reason,
+						RelationScope: to.Scope,
+						Resolution:    to.Resolution,
+						TargetKind:    "symbol",
+						Evidence: []Evidence{{
+							Kind:      "call_site",
+							FilePath:  from.FilePath,
+							StartLine: from.StartLine,
+							EndLine:   from.EndLine,
+							Detail:    name,
+						}},
 						WarningCodes: []string{},
 					})
 				}
@@ -659,12 +753,22 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 					continue
 				}
 				relations = append(relations, RelationRecord{
-					RecordType:   "relation",
-					FromID:       from.ID,
-					ToID:         externalID("route", route),
-					Type:         "HANDLES_ROUTE",
-					Confidence:   0.7,
-					Reason:       "route-like string literal found inside handler symbol",
+					RecordType:    "relation",
+					FromID:        from.ID,
+					ToID:          externalID("route", route),
+					Type:          "HANDLES_ROUTE",
+					Confidence:    0.7,
+					Reason:        "route-like string literal found inside handler symbol",
+					RelationScope: "external",
+					Resolution:    "pattern",
+					TargetKind:    "route",
+					Evidence: []Evidence{{
+						Kind:      "route_literal",
+						FilePath:  from.FilePath,
+						StartLine: from.StartLine,
+						EndLine:   from.EndLine,
+						Detail:    route,
+					}},
 					WarningCodes: []string{},
 				})
 			}
@@ -1300,6 +1404,34 @@ func completenessLevel(failures, files int) string {
 	default:
 		return "degraded"
 	}
+}
+
+// buildCompleteness aggregates parse/index coverage by language (file and
+// symbol counts) and by emitted relation type. The maps are nil-safe and
+// serialize with sorted keys, keeping golden output deterministic.
+func buildCompleteness(files []FileRecord, symbols []SymbolRecord, relations []RelationRecord) CompletenessReport {
+	byLanguage := map[string]LanguageCompleteness{}
+	for _, file := range files {
+		if file.Language == "" {
+			continue
+		}
+		entry := byLanguage[file.Language]
+		entry.Files++
+		byLanguage[file.Language] = entry
+	}
+	for _, symbol := range symbols {
+		if symbol.Language == "" {
+			continue
+		}
+		entry := byLanguage[symbol.Language]
+		entry.Symbols++
+		byLanguage[symbol.Language] = entry
+	}
+	byRelationType := map[string]int{}
+	for _, relation := range relations {
+		byRelationType[relation.Type]++
+	}
+	return CompletenessReport{Languages: byLanguage, Relations: byRelationType}
 }
 
 func dedupeRelations(relations []RelationRecord) []RelationRecord {

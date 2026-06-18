@@ -88,5 +88,23 @@ False negatives:
 
 Every snapshot header carries `stats` with `files`, `parsed_files`, `symbols`,
 `relations`, `partial_failures`, and a `completeness_level` of `ok`, `degraded`,
-or `unsafe`. Per-language and per-relation-type completeness breakdowns
-(v2-plan schema `1.1` `completeness` field) are not yet emitted.
+or `unsafe`.
+
+## Schema 1.1 Additive Fields (emitted)
+
+The following optional schema `1.1` fields are now emitted (additive, backward
+compatible; tolerant readers ignore unknown fields):
+
+- Header `schema_features`: stable list of optional features present in the
+  stream.
+- Header `language_versions`: parser/grammar library versions.
+- Header `completeness`: parse/index coverage by language (file + symbol counts)
+  and by relation type (counts). Per-language `failed_files` is not yet broken
+  out.
+- Header `benchmark_profile`: emitted only by benchmark tooling (WP10); omitted
+  otherwise.
+- Relation `relation_scope` (`file`/`module`/`workspace`/`external`),
+  `resolution` (`exact`/`import_resolved`/`name_only`/`pattern`),
+  `target_kind` (`symbol`/`external`/`route`), and `evidence` (compact source
+  pointers). Resolution values not yet produced: `type_inferred`,
+  `runtime_trace`, `unresolved` (await WP4/WP5).

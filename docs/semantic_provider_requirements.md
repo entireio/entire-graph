@@ -158,6 +158,21 @@ Relations should include:
 - `reason`
 - `warning_codes`
 
+Schema `1.1` adds optional relation fields (additive; tolerant readers ignore
+unknown fields):
+
+- `relation_scope`: `file`, `module`, `workspace`, `external`.
+- `resolution`: how the target was resolved, e.g. `exact`, `import_resolved`,
+  `name_only`, `pattern` (later: `type_inferred`, `runtime_trace`,
+  `unresolved`).
+- `target_kind`: `symbol`, `file`, `external`, `route`, `resource`, `channel`.
+- `evidence`: array of compact `{kind, file_path, start_line, end_line, detail}`
+  source pointers.
+
+The snapshot header also carries optional `schema_features` (features present in
+the stream), `language_versions` (parser/grammar versions), and `completeness`
+(coverage by language and relation type).
+
 Initial relation vocabulary:
 
 - `DEFINES`

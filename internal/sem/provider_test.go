@@ -90,6 +90,63 @@ def check_token(token):
 	}
 }
 
+func TestBuildProviderSnapshotEmitsSchema11Fields(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "auth.go", `package auth
+
+import "strings"
+
+func Validate(token string) bool {
+	return strings.TrimSpace(token) != ""
+}
+
+func Check(token string) bool {
+	return Validate(token)
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Header advertises the optional features and a completeness breakdown.
+	if !contains(snapshot.Header.SchemaFeatures, "relation_resolution") {
+		t.Fatalf("schema_features missing relation_resolution: %#v", snapshot.Header.SchemaFeatures)
+	}
+	if snapshot.Header.LanguageVersions["go-tree-sitter"] == "" {
+		t.Fatalf("language_versions missing go-tree-sitter: %#v", snapshot.Header.LanguageVersions)
+	}
+	if snapshot.Header.Completeness.Languages["Go"].Symbols == 0 {
+		t.Fatalf("completeness has no Go symbols: %#v", snapshot.Header.Completeness)
+	}
+	if snapshot.Header.Completeness.Relations["DEFINES"] == 0 {
+		t.Fatalf("completeness has no DEFINES relations: %#v", snapshot.Header.Completeness)
+	}
+
+	var calls, defines RelationRecord
+	for _, relation := range snapshot.Relations {
+		switch relation.Type {
+		case "CALLS":
+			calls = relation
+		case "DEFINES":
+			defines = relation
+		}
+	}
+	if defines.TargetKind != "symbol" || defines.Resolution != "exact" || defines.RelationScope != "file" {
+		t.Fatalf("DEFINES classification = %#v", defines)
+	}
+	if calls.FromID == "" {
+		t.Fatalf("missing CALLS relation in %#v", snapshot.Relations)
+	}
+	if calls.TargetKind != "symbol" || calls.Resolution == "" || calls.RelationScope == "" {
+		t.Fatalf("CALLS classification = %#v", calls)
+	}
+	if len(calls.Evidence) == 0 || calls.Evidence[0].Kind != "call_site" || calls.Evidence[0].FilePath == "" {
+		t.Fatalf("CALLS evidence = %#v", calls.Evidence)
+	}
+}
+
 func TestBuildProviderSnapshotAddsBoundarySourceLocations(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "apps/web/src/app/oauth/device/code/route.ts", `export async function POST(request: Request) {
