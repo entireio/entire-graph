@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.6.3-nightly.202605190723.fd212937",
+  "checkpoint_id": "90ecfa52f616",
+  "strategy": "manual-commit",
+  "branch": "v2-foundation",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "docs/baseline-report.md",
+    "internal/sem/golden_test.go",
+    "internal/sem/testdata/fixtures/csharp-basic/TokenService.cs",
+    "internal/sem/testdata/fixtures/java-basic/TokenService.java",
+    "internal/sem/testdata/fixtures/php-basic/TokenService.php",
+    "internal/sem/testdata/fixtures/rust-basic/auth.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/90/ecfa52f616/0/metadata.json",
+      "transcript": "/90/ecfa52f616/0/full.jsonl",
+      "content_hash": "/90/ecfa52f616/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 149,
+    "cache_creation_tokens": 6520,
+    "cache_read_tokens": 1381577,
+    "output_tokens": 5237,
+    "api_call_count": 10
+  }
+}
