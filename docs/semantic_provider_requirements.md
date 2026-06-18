@@ -180,8 +180,8 @@ unknown fields):
 
 - `relation_scope`: `file`, `module`, `workspace`, `external`.
 - `resolution`: how the target was resolved, e.g. `exact`, `import_resolved`,
-  `name_only`, `pattern` (later: `type_inferred`, `runtime_trace`,
-  `unresolved`).
+  `type_inferred` (receiver-type-inferred calls), `name_only`, `pattern`
+  (later: `runtime_trace`, `unresolved`).
 - `target_kind`: `symbol`, `file`, `external`, `route`, `resource`, `channel`.
 - `evidence`: array of compact `{kind, file_path, start_line, end_line, detail}`
   source pointers.

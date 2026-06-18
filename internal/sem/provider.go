@@ -873,6 +873,7 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 					WarningCodes: []string{},
 				})
 			}
+			relations = append(relations, receiverCallRelations(from, block, methodsByContainer, symbolsByShortName)...)
 		}
 
 		relations = append(relations, typeRelationsForFile(repoKey, file, content, recordsByFile[file.Path], symbolsByFile[file.Path], symbolsByShortName)...)
@@ -944,6 +945,77 @@ func buildTypeRelation(repoKey string, anchor SymbolRecord, super, relation stri
 		}},
 		WarningCodes: []string{},
 	}
+}
+
+// receiverCallRelations resolves `receiver.method()` calls inside a caller's
+// body to the target method symbol by inferring the receiver's type. Two cases
+// are handled: a this/self receiver resolves to the caller's enclosing type,
+// and a local variable resolves through a constructor assignment in the same
+// body. These calls are otherwise dropped (a name preceded by '.'/'->' is not a
+// plain call), so this is purely additive. Type containers are skipped as
+// callers — calls live in methods/functions, not in the class declaration.
+func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
+	if typeLikeKind(from.Kind) {
+		return nil
+	}
+	calls := receiverCalls(block)
+	if len(calls) == 0 {
+		return nil
+	}
+	varTypes := localVarTypes(block)
+	var relations []RelationRecord
+	for _, call := range calls {
+		var targetID string
+		confidence := 0.85
+		reason := "method call resolved via inferred receiver type"
+		switch call.Receiver {
+		case "this", "self":
+			if from.ContainerID == "" {
+				continue
+			}
+			targetID = from.ContainerID
+			confidence = 0.9
+			reason = "method call on this/self resolved to the enclosing type"
+		default:
+			typeName, ok := varTypes[call.Receiver]
+			if !ok {
+				continue
+			}
+			sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+			if !ok {
+				continue
+			}
+			targetID = sym.ID
+		}
+		method, ok := methodsByContainer[targetID][call.Method]
+		if !ok || method.ID == from.ID {
+			continue
+		}
+		scope := "file"
+		if method.FilePath != from.FilePath {
+			scope = "module"
+		}
+		relations = append(relations, RelationRecord{
+			RecordType:    "relation",
+			FromID:        from.ID,
+			ToID:          method.ID,
+			Type:          "CALLS",
+			Confidence:    confidence,
+			Reason:        reason,
+			RelationScope: scope,
+			Resolution:    "type_inferred",
+			TargetKind:    "symbol",
+			Evidence: []Evidence{{
+				Kind:      "call_site",
+				FilePath:  from.FilePath,
+				StartLine: from.StartLine,
+				EndLine:   from.EndLine,
+				Detail:    call.Receiver + "." + call.Method,
+			}},
+			WarningCodes: []string{},
+		})
+	}
+	return relations
 }
 
 // overrideRelations derives OVERRIDES edges from resolved EXTENDS/IMPLEMENTS

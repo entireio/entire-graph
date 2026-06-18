@@ -90,6 +90,52 @@ def check_token(token):
 	}
 }
 
+func TestBuildProviderSnapshotResolvesReceiverCalls(t *testing.T) {
+	// Python uses '.' receivers, which the name-based path drops, so these edges
+	// come only from receiver-type inference.
+	repo := t.TempDir()
+	writeFile(t, repo, "svc.py", `class Service:
+    def helper(self):
+        return 1
+
+    def run(self):
+        return self.helper()
+
+
+def use(other):
+    s = Service()
+    s.helper()
+    other.mystery()
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	inferred := map[string]RelationRecord{}
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" && r.Resolution == "type_inferred" {
+			inferred[lastSegment(r.FromID)+"->"+lastSegment(r.ToID)] = r
+		}
+	}
+
+	// self.helper() inside run -> resolves to the enclosing type's method.
+	if r, ok := inferred["Service.run->Service.helper"]; !ok || r.Confidence != 0.9 {
+		t.Fatalf("self-call not resolved (0.9): %#v", inferred)
+	}
+	// s = Service(); s.helper() -> resolves via the local variable's type.
+	if r, ok := inferred["use->Service.helper"]; !ok || r.Confidence != 0.85 {
+		t.Fatalf("local-var call not resolved (0.85): %#v", inferred)
+	}
+	// other.mystery(): receiver type unknown -> no fabricated edge.
+	for key := range inferred {
+		if strings.Contains(key, "mystery") {
+			t.Fatalf("fabricated edge for unknown receiver: %s", key)
+		}
+	}
+}
+
 func TestBuildProviderSnapshotEmitsTypeRelations(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "Animals.java", `package zoo;

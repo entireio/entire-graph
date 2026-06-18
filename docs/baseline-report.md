@@ -95,12 +95,15 @@ Fixed (kept as a note so the goldens explain the change):
 
 False negatives:
 
-- **Method calls on receivers are not captured.** Receiver calls such as
-  Go `t.Validate()` and Python `service.validate(token)` are intentionally
-  skipped (a name preceded by `.`/`->` is not treated as a call) because
-  resolving them needs the receiver's type. Implicit-receiver calls
-  (`Validate(token)` in Java/C#, `$this->validate()` in PHP) do resolve.
-  Receiver-type inference is the remaining WP4 method-resolution task. (WP4.)
+- **Receiver method calls — partially resolved.** Receiver calls are now
+  resolved by inferring the receiver's type (`resolution: type_inferred`): a
+  `this`/`self` receiver resolves to the enclosing type's method (confidence
+  0.9), and a local variable resolves through a constructor assignment
+  (`x = new T()` / `x = T()` / `x := T{}`, confidence 0.85). This recovers calls
+  the name-based path drops, e.g. Python `service.validate()` and Go
+  `t.Validate()`. Receivers whose type can't be inferred (e.g. untyped
+  parameters) still produce no edge — by design, no fabricated targets.
+  Remaining: typed-parameter receivers and chained/returned receivers. (WP4.)
 - **Imported-symbol calls.** Calls into imported modules (`strings.TrimSpace`,
   `json.dumps`, `readFileSync`) produce no `CALLS` edge to an external endpoint.
   (WP3/WP4.)

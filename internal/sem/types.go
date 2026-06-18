@@ -139,6 +139,58 @@ func rustSupertypeEdges(content string) []rustSupertypeEdge {
 	return edges
 }
 
+// receiverCall is a `receiver.method(` / `receiver->method(` call site, used by
+// receiver-type call resolution.
+type receiverCall struct {
+	Receiver string
+	Method   string
+}
+
+var receiverCallRe = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*\(`)
+
+// receiverCalls extracts distinct receiver.method() call sites from a code
+// block (literals and comments stripped). Leading `$` is dropped so PHP
+// receivers line up with variable names.
+func receiverCalls(block string) []receiverCall {
+	stripped := stripCodeLiteralsAndComments(block)
+	var out []receiverCall
+	seen := map[string]bool{}
+	for _, m := range receiverCallRe.FindAllStringSubmatch(stripped, -1) {
+		receiver := strings.TrimPrefix(m[1], "$")
+		key := receiver + "." + m[2]
+		if receiver == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, receiverCall{Receiver: receiver, Method: m[2]})
+	}
+	return out
+}
+
+var (
+	newAssignRe  = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*:?=\s*new\s+([A-Za-z_]\w*)`)
+	ctorAssignRe = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*:?=\s*&?([A-Z][A-Za-z0-9_]*)\s*[({]`)
+)
+
+// localVarTypes infers a best-effort variable -> type-name map from constructor
+// assignments inside a block: `x = new Type(...)`, `x = Type(...)` (capitalized,
+// e.g. Python), and `x := Type{...}` / `&Type{...}` (Go). Capitalization keeps
+// the heuristic conservative; results feed type-inferred call resolution.
+func localVarTypes(block string) map[string]string {
+	stripped := stripCodeLiteralsAndComments(block)
+	out := map[string]string{}
+	for _, m := range newAssignRe.FindAllStringSubmatch(stripped, -1) {
+		out[strings.TrimPrefix(m[1], "$")] = m[2]
+	}
+	for _, m := range ctorAssignRe.FindAllStringSubmatch(stripped, -1) {
+		name := strings.TrimPrefix(m[1], "$")
+		if _, exists := out[name]; !exists {
+			out[name] = m[2]
+		}
+	}
+	return out
+}
+
 // stripGenerics removes balanced <...> sections so type lists can be split on
 // commas without splitting inside generic parameters.
 func stripGenerics(s string) string {
