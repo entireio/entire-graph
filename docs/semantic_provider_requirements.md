@@ -147,6 +147,20 @@ If a change report spans a file rename or move that cannot be reconciled to
 stable symbols, `entire-sem` should emit an explicit warning instead of silently
 dropping edges.
 
+Semantic diffs reconcile identity continuity and tag it with explicit
+`reconciliation` metadata on each entity change:
+
+- `RENAMED`: a same-file rename (delete+add reconciled by body/signature
+  similarity at or above 0.92).
+- `MOVED`: a symbol moved across files (a removed entity in one file matched to
+  an added entity in another with similarity at or above 0.92). The change
+  carries `old_path`/`new_path` and is reported on the destination file; if the
+  name also changed, `old_name`/`new_name` are set.
+
+When a move has multiple equally similar destinations (within 0.05), the
+provider reports the pair as remove/add and emits a `W_MOVE_AMBIGUOUS` warning
+in the diff `warnings` array rather than guessing.
+
 ## Relations
 
 Relations should include:

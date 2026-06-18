@@ -43,6 +43,75 @@ def format_date(value):
 	}
 }
 
+func TestAnalyzeGitRangeReconcilesCrossFileMove(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Sem Test")
+	git(t, repo, "config", "user.email", "sem@example.com")
+
+	write(t, repo, "util.py", `def transform(value):
+    return value * 2
+
+
+def keep(value):
+    return value
+`)
+	write(t, repo, "helpers.py", `def helper(value):
+    return value
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	// Move transform from util.py to helpers.py with an identical body.
+	write(t, repo, "util.py", `def keep(value):
+    return value
+`)
+	write(t, repo, "helpers.py", `def helper(value):
+    return value
+
+
+def transform(value):
+    return value * 2
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "move transform")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var moved *EntityChange
+	for fi := range result.Files {
+		for ci := range result.Files[fi].Changes {
+			change := &result.Files[fi].Changes[ci]
+			if change.Type == "moved" {
+				moved = change
+			}
+			if change.Type == "removed" && change.Name == "transform" {
+				t.Fatalf("transform reported as removed instead of moved: %#v", result.Files)
+			}
+			if change.Type == "added" && change.Name == "transform" {
+				t.Fatalf("transform reported as added instead of moved: %#v", result.Files)
+			}
+		}
+	}
+	if moved == nil {
+		t.Fatalf("no moved change in %#v", result.Files)
+	}
+	if moved.Name != "transform" || moved.Reconciliation != "MOVED" {
+		t.Fatalf("moved change = %#v", moved)
+	}
+	if moved.OldPath != "util.py" || moved.NewPath != "helpers.py" {
+		t.Fatalf("moved paths = %q -> %q", moved.OldPath, moved.NewPath)
+	}
+	if moved.Similarity < moveThreshold {
+		t.Fatalf("moved similarity = %v", moved.Similarity)
+	}
+}
+
 func TestAnalyzeGitRangeDependentCounts(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
