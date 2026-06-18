@@ -693,15 +693,36 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 	return nil
 }
 
+// buildRelations collects every relation, deduplicates (first occurrence wins,
+// in emission order), and sorts for stable output. Used by the in-memory
+// snapshot path; the streaming path uses forEachRelation directly.
 func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, contentByFile map[string]string) []RelationRecord {
 	var relations []RelationRecord
+	forEachRelation(repoKey, files, recordsByFile, contentByFile, func(r RelationRecord) {
+		relations = append(relations, r)
+	})
+	relations = dedupeRelations(relations)
+	sort.Slice(relations, func(i, j int) bool {
+		left := relations[i].Type + relations[i].FromID + relations[i].ToID
+		right := relations[j].Type + relations[j].FromID + relations[j].ToID
+		return left < right
+	})
+	return relations
+}
+
+// forEachRelation drives all relation extraction, passing each relation to emit
+// as it is produced. It never accumulates the full relation set, so a streaming
+// caller can write records out with bounded memory. Callers deduplicate:
+// buildRelations collects-then-dedupes; the streaming path dedupes on emit.
+func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, contentByFile map[string]string, emit func(RelationRecord)) {
 	symbolsByShortName := map[string][]SymbolRecord{}
 	symbolsByFile := map[string][]SymbolRecord{}
 	childNamesByContainer := map[string]map[string]bool{}
 	methodsByContainer := map[string]map[string]SymbolRecord{}
+	var inheritanceEdges []RelationRecord // captured for OVERRIDES derivation
 	for _, records := range recordsByFile {
 		for _, symbol := range records {
-			relations = append(relations, RelationRecord{
+			emit(RelationRecord{
 				RecordType:    "relation",
 				FromID:        fileID(repoKey, symbol.FilePath),
 				ToID:          symbol.ID,
@@ -714,7 +735,7 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 				WarningCodes:  []string{},
 			})
 			if symbol.ContainerID != "" {
-				relations = append(relations, RelationRecord{
+				emit(RelationRecord{
 					RecordType:    "relation",
 					FromID:        symbol.ContainerID,
 					ToID:          symbol.ID,
@@ -728,7 +749,7 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 				})
 			}
 			if symbol.Kind == "tool" && symbol.ContainerID != "" {
-				relations = append(relations, RelationRecord{
+				emit(RelationRecord{
 					RecordType:    "relation",
 					FromID:        symbol.ContainerID,
 					ToID:          symbol.ID,
@@ -782,7 +803,7 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 		fromID := fileID(repoKey, file.Path)
 		for _, imported := range importsFor(file.Path, content) {
 			if resolved, ok := resolveLocalImport(file.Path, imported, knownFiles); ok {
-				relations = append(relations, RelationRecord{
+				emit(RelationRecord{
 					RecordType:    "relation",
 					FromID:        fromID,
 					ToID:          fileID(repoKey, resolved),
@@ -805,7 +826,7 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 			if isRelativeImportSpec(file.Path, imported) {
 				warningCodes = []string{"UNRESOLVED_RELATIVE_IMPORT"}
 			}
-			relations = append(relations, RelationRecord{
+			emit(RelationRecord{
 				RecordType:    "relation",
 				FromID:        fromID,
 				ToID:          externalID("import", imported),
@@ -838,7 +859,7 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 					continue
 				}
 				for _, to := range resolveCallTargets(name, from, symbolsByShortName[name], symbolsByFile[file.Path], importsByName) {
-					relations = append(relations, RelationRecord{
+					emit(RelationRecord{
 						RecordType:    "relation",
 						FromID:        from.ID,
 						ToID:          to.ID,
@@ -863,7 +884,7 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 				if _, ok := handledRoutes[route]; ok {
 					continue
 				}
-				relations = append(relations, RelationRecord{
+				emit(RelationRecord{
 					RecordType:    "relation",
 					FromID:        from.ID,
 					ToID:          externalID("route", route),
@@ -888,7 +909,7 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 				if call.Absolute {
 					confidence = 0.6 // host ignored; cross-service path match is weaker
 				}
-				relations = append(relations, RelationRecord{
+				emit(RelationRecord{
 					RecordType:    "relation",
 					FromID:        from.ID,
 					ToID:          externalID("route", call.Path),
@@ -909,7 +930,7 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 				})
 			}
 			for _, event := range channelEvents(block) {
-				relations = append(relations, RelationRecord{
+				emit(RelationRecord{
 					RecordType:    "relation",
 					FromID:        from.ID,
 					ToID:          externalID("channel", event.Name),
@@ -929,24 +950,34 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 					WarningCodes: []string{"WEAK_PATTERN"},
 				})
 			}
-			relations = append(relations, receiverCallRelations(from, block, methodsByContainer, symbolsByShortName)...)
+			for _, r := range receiverCallRelations(from, block, methodsByContainer, symbolsByShortName) {
+				emit(r)
+			}
 		}
 
-		relations = append(relations, typeRelationsForFile(repoKey, file, content, recordsByFile[file.Path], symbolsByFile[file.Path], symbolsByShortName)...)
+		for _, r := range typeRelationsForFile(repoKey, file, content, recordsByFile[file.Path], symbolsByFile[file.Path], symbolsByShortName) {
+			if r.Type == "EXTENDS" || r.Type == "IMPLEMENTS" {
+				inheritanceEdges = append(inheritanceEdges, r)
+			}
+			emit(r)
+		}
 	}
 
-	relations = append(relations, overrideRelations(relations, methodsByContainer)...)
-	relations = append(relations, usesTypeRelations(recordsByFile, symbolsByFile, symbolsByShortName)...)
-	relations = append(relations, testRelations(recordsByFile, symbolsByShortName)...)
-	relations = append(relations, resourceDependsOnRelations(recordsByFile, contentByFile)...)
-	relations = append(relations, similarityRelations(recordsByFile, contentByFile)...)
-
-	sort.Slice(relations, func(i, j int) bool {
-		left := relations[i].Type + relations[i].FromID + relations[i].ToID
-		right := relations[j].Type + relations[j].FromID + relations[j].ToID
-		return left < right
-	})
-	return dedupeRelations(relations)
+	for _, r := range overrideRelations(inheritanceEdges, methodsByContainer) {
+		emit(r)
+	}
+	for _, r := range usesTypeRelations(recordsByFile, symbolsByFile, symbolsByShortName) {
+		emit(r)
+	}
+	for _, r := range testRelations(recordsByFile, symbolsByShortName) {
+		emit(r)
+	}
+	for _, r := range resourceDependsOnRelations(recordsByFile, contentByFile) {
+		emit(r)
+	}
+	for _, r := range similarityRelations(recordsByFile, contentByFile) {
+		emit(r)
+	}
 }
 
 // typeRelationsForFile emits EXTENDS/IMPLEMENTS relations for the type symbols
