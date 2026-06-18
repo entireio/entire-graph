@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.6.3-nightly.202605190723.fd212937",
+  "checkpoint_id": "76cd2ea187ff",
+  "strategy": "manual-commit",
+  "branch": "v2-foundation",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/testdata/fixtures/typescript-basic/server.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/76/cd2ea187ff/0/metadata.json",
+      "transcript": "/76/cd2ea187ff/0/full.jsonl",
+      "content_hash": "/76/cd2ea187ff/0/content_hash.txt",
+      "prompt": "/76/cd2ea187ff/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 16187,
+    "cache_creation_tokens": 998776,
+    "cache_read_tokens": 64063220,
+    "output_tokens": 296286,
+    "api_call_count": 300
+  }
+}
