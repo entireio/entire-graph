@@ -74,22 +74,27 @@ intentionally captured in the goldens so improvements show up as diffs.
 
 False positives:
 
-- **Container credited as caller (Python `python-basic`).** `AuthService` is
-  emitted as `CALLS` of its own `validate`/`describe` methods at `0.92`. The
-  name-based resolver attributes the call site to the enclosing class rather
-  than to the function that actually issues the call. (WP4: method/receiver
-  resolution and call-site attribution.)
 - **Global-unique name match (Go `go-basic`).** `LoginHandler CALLS CheckToken`
   is emitted at `0.68` purely because the name is unique repo-wide, not because
   the call was resolved through imports/scope. Correct here, but fragile.
   (WP4: scoped, import-aware call resolution.)
 
+Fixed (kept as a note so the goldens explain the change):
+
+- **Container credited as caller** — a class used to be emitted as `CALLS` of
+  its own methods because the member definition lines (`def validate(...)`) match
+  the call pattern inside the container's block. Direct-child names are now
+  excluded from a container's call scan, so each fixture emits exactly one
+  correct `CALLS` edge.
+
 False negatives:
 
-- **Method calls on receivers are not captured.** Go `t.Validate()`,
-  TypeScript `loadConfig()` resolves but `readFileSync(...)` (imported call) and
-  Python `service.validate(token)` (the real method call) are not emitted as
-  edges to the method symbol. (WP4.)
+- **Method calls on receivers are not captured.** Receiver calls such as
+  Go `t.Validate()` and Python `service.validate(token)` are intentionally
+  skipped (a name preceded by `.`/`->` is not treated as a call) because
+  resolving them needs the receiver's type. Implicit-receiver calls
+  (`Validate(token)` in Java/C#, `$this->validate()` in PHP) do resolve.
+  Receiver-type inference is the remaining WP4 method-resolution task. (WP4.)
 - **Imported-symbol calls.** Calls into imported modules (`strings.TrimSpace`,
   `json.dumps`, `readFileSync`) produce no `CALLS` edge to an external endpoint.
   (WP3/WP4.)

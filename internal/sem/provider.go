@@ -669,6 +669,7 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 	var relations []RelationRecord
 	symbolsByShortName := map[string][]SymbolRecord{}
 	symbolsByFile := map[string][]SymbolRecord{}
+	childNamesByContainer := map[string]map[string]bool{}
 	for _, records := range recordsByFile {
 		for _, symbol := range records {
 			relations = append(relations, RelationRecord{
@@ -720,6 +721,12 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 			}
 			symbolsByShortName[symbol.Name] = append(symbolsByShortName[symbol.Name], symbol)
 			symbolsByFile[symbol.FilePath] = append(symbolsByFile[symbol.FilePath], symbol)
+			if symbol.ContainerID != "" {
+				if childNamesByContainer[symbol.ContainerID] == nil {
+					childNamesByContainer[symbol.ContainerID] = map[string]bool{}
+				}
+				childNamesByContainer[symbol.ContainerID][symbol.Name] = true
+			}
 		}
 	}
 	handledRoutes := map[string]struct{}{}
@@ -786,6 +793,13 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 			block := symbolBlockFromLines(lines, from)
 			for name := range callLikeIdentifiers(block) {
 				if name == from.Name {
+					continue
+				}
+				// A container's block spans its members' definition lines, which
+				// look like calls (e.g. `def validate(self):`). Skip the names of
+				// direct children so a class is not credited with calling its own
+				// methods; the real call site lives in the calling function.
+				if childNamesByContainer[from.ID][name] {
 					continue
 				}
 				for _, to := range resolveCallTargets(name, from, symbolsByShortName[name], symbolsByFile[file.Path], importsByName) {

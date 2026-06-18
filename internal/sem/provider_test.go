@@ -90,6 +90,35 @@ def check_token(token):
 	}
 }
 
+func TestBuildRelationsDoesNotCreditContainerAsCaller(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "auth.py", `class AuthService:
+    def validate(self, token):
+        return bool(token)
+
+
+def check_token(token):
+    service = AuthService()
+    return service.validate(token)
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, relation := range snapshot.Relations {
+		if relation.Type != "CALLS" {
+			continue
+		}
+		// The class must never be reported as calling its own members; those
+		// matches come from member definition lines, not real call sites.
+		if strings.Contains(relation.FromID, ":class:AuthService") {
+			t.Fatalf("class credited as caller: %#v", relation)
+		}
+	}
+}
+
 func TestBuildProviderSnapshotResolvesRelativeImports(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "src/util.ts", "export function helper(v: string): string {\n  return v\n}\n")
