@@ -157,8 +157,11 @@ type text; its compound ID is stable across edits elsewhere in the file
 (including method-body edits) because the ID does not encode line numbers.
 Parameters and local variables are not fields and are not emitted as symbols.
 
-Field extraction currently covers Go (and Rust) struct fields; TypeScript,
-Java, and C# class/interface fields are a follow-up.
+Field extraction covers Go/Rust struct fields, Java/C# class fields (and C#
+properties, mapped to `field`), and TypeScript class fields and
+interface/type-literal properties. It is declaration extraction only — Python
+instance attributes and other inference-based members are out of scope here and
+belong to later field-access inference.
 
 The first stable symbol ID version should use a documented compound identity:
 

@@ -273,6 +273,79 @@ func (a *Account) Deposit(amount int) {
 	}
 }
 
+func TestFieldsAcrossLanguages(t *testing.T) {
+	cases := []struct {
+		file      string
+		source    string
+		want      []string // qualified field names that must be present
+		notFields []string // params/locals that must NOT be fields
+	}{
+		{
+			file: "C.java",
+			source: `class C {
+  private int count;
+  public String name;
+  void m(int p) { int local = p; }
+}
+`,
+			want:      []string{"C.count", "C.name"},
+			notFields: []string{"p", "local", "C.p", "C.local", "m"},
+		},
+		{
+			file: "C.cs",
+			source: `namespace N { class C {
+  public int Count;
+  public string Name { get; set; }
+  void M(int p) { int local = p; }
+} }
+`,
+			want:      []string{"C.Count", "C.Name"},
+			notFields: []string{"p", "local", "C.p", "C.local"},
+		},
+		{
+			file: "c.ts",
+			source: `export class C {
+  count: number = 0
+  private name: string
+  go(p: number) { const local = p }
+}
+export interface I { size: number }
+`,
+			want:      []string{"C.count", "C.name", "I.size"},
+			notFields: []string{"p", "local", "C.p", "C.local"},
+		},
+	}
+
+	for _, tc := range cases {
+		repo := t.TempDir()
+		writeFile(t, repo, tc.file, tc.source)
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		fields := map[string]SymbolRecord{}
+		for _, s := range snapshot.Symbols {
+			if s.Kind == "field" {
+				fields[s.QualifiedName] = s
+			}
+		}
+		for _, name := range tc.want {
+			f, ok := fields[name]
+			if !ok {
+				t.Fatalf("%s: missing field %q in %v", tc.file, name, keysOfFields(fields))
+			}
+			if f.ContainerID == "" {
+				t.Fatalf("%s: field %q has no container_id", tc.file, name)
+			}
+		}
+		for _, name := range tc.notFields {
+			if _, ok := fields[name]; ok {
+				t.Fatalf("%s: %q wrongly emitted as a field", tc.file, name)
+			}
+		}
+	}
+}
+
 func TestGoFieldIDsStableAcrossMethodBodyEdits(t *testing.T) {
 	repo := t.TempDir() // same repo dir for both builds, so repo_key is constant
 	build := func(body string) map[string]string {

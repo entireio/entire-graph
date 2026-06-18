@@ -91,6 +91,7 @@ var updateGolden = flag.Bool("update", false, "regenerate golden NDJSON baseline
 // its name here, and running the test with -update to create the baseline.
 var goldenFixtures = []string{
 	"csharp-basic",
+	"csharp-fields",
 	"csharp-oo",
 	"go-basic",
 	"go-clones",
@@ -98,6 +99,7 @@ var goldenFixtures = []string{
 	"go-tests",
 	"go-types",
 	"java-basic",
+	"java-fields",
 	"java-oo",
 	"php-basic",
 	"php-oo",
@@ -109,6 +111,7 @@ var goldenFixtures = []string{
 	"terraform-basic",
 	"typescript-basic",
 	"typescript-events",
+	"typescript-fields",
 	"typescript-http",
 	"typescript-imports",
 	"typescript-oo",

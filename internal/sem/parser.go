@@ -192,20 +192,19 @@ func walkEntities(node *sitter.Node, src []byte, scope string, entities *[]Entit
 // struct fields (field_declaration -> field_identifier); TypeScript/Java/C#
 // fields are added later.
 func fieldEntities(node *sitter.Node, src []byte, scope string) ([]Entity, bool) {
-	if scope == "" || node.Type() != "field_declaration" {
+	if scope == "" {
 		return nil, false
 	}
-	typeText := ""
-	if typeNode := node.ChildByFieldName("type"); validNode(typeNode) {
-		typeText = strings.TrimSpace(typeNode.Content(src))
+	switch node.Type() {
+	case "field_declaration", // Go/Rust/Java/C#/C/C++ struct & class fields
+		"public_field_definition", "field_definition", // TS/JS class fields
+		"property_signature",   // TS interface/type-literal fields
+		"property_declaration": // C# properties (mapped to the canonical field kind)
+	default:
+		return nil, false
 	}
-	var names []string
-	for i := 0; i < int(node.NamedChildCount()); i++ {
-		child := node.NamedChild(i)
-		if child.Type() == "field_identifier" {
-			names = append(names, child.Content(src))
-		}
-	}
+	typeText := fieldTypeText(node, src)
+	names := fieldDeclNames(node, src)
 	if len(names) == 0 {
 		// Embedded field (e.g. Go `io.Reader`) or an unsupported shape; the
 		// declaration extractor does not synthesize a name for these.
@@ -230,6 +229,81 @@ func fieldEntities(node *sitter.Node, src []byte, scope string) ([]Entity, bool)
 		})
 	}
 	return out, true
+}
+
+// fieldDeclNames extracts the declared member names from a field/property node
+// across languages: field_identifier (Go/Rust/C++), variable_declarator (Java)
+// or variable_declaration>variable_declarator (C#), and property_identifier /
+// name field (TypeScript, C# properties).
+func fieldDeclNames(node *sitter.Node, src []byte) []string {
+	switch node.Type() {
+	case "public_field_definition", "field_definition", "property_signature", "property_declaration":
+		if name := node.ChildByFieldName("name"); validNode(name) {
+			return []string{name.Content(src)}
+		}
+		if name := firstChildOfType(node, src, "property_identifier", "field_identifier"); name != "" {
+			return []string{name}
+		}
+		return nil
+	}
+	// field_declaration: collect every declared name.
+	var names []string
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		switch child.Type() {
+		case "field_identifier":
+			names = append(names, child.Content(src))
+		case "variable_declarator":
+			if name := variableDeclaratorName(child, src); name != "" {
+				names = append(names, name)
+			}
+		case "variable_declaration": // C# wraps declarators in variable_declaration
+			for j := 0; j < int(child.NamedChildCount()); j++ {
+				if decl := child.NamedChild(j); decl.Type() == "variable_declarator" {
+					if name := variableDeclaratorName(decl, src); name != "" {
+						names = append(names, name)
+					}
+				}
+			}
+		}
+	}
+	return names
+}
+
+func variableDeclaratorName(node *sitter.Node, src []byte) string {
+	if name := node.ChildByFieldName("name"); validNode(name) {
+		return name.Content(src)
+	}
+	return firstChildOfType(node, src, "identifier", "field_identifier")
+}
+
+func firstChildOfType(node *sitter.Node, src []byte, types ...string) string {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		for _, t := range types {
+			if child.Type() == t {
+				return child.Content(src)
+			}
+		}
+	}
+	return ""
+}
+
+// fieldTypeText returns the field's type text when the grammar exposes it,
+// best-effort (signature/type text is optional metadata).
+func fieldTypeText(node *sitter.Node, src []byte) string {
+	if typeNode := node.ChildByFieldName("type"); validNode(typeNode) {
+		return strings.TrimSpace(typeNode.Content(src))
+	}
+	// C# field_declaration nests the type under variable_declaration.
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		if child := node.NamedChild(i); child.Type() == "variable_declaration" {
+			if typeNode := child.ChildByFieldName("type"); validNode(typeNode) {
+				return strings.TrimSpace(typeNode.Content(src))
+			}
+		}
+	}
+	return ""
 }
 
 func entityFromNode(node *sitter.Node, src []byte, scope string) (Entity, bool) {
