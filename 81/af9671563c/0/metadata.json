@@ -1,0 +1,46 @@
+{
+  "cli_version": "0.6.3-nightly.202605190723.fd212937",
+  "checkpoint_id": "81af9671563c",
+  "session_id": "5632e712-bdd3-4fd5-baac-7af16a8f7258",
+  "strategy": "manual-commit",
+  "created_at": "2026-06-18T09:56:36.902677Z",
+  "branch": "v2-foundation",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "internal/sem/provider.go",
+    "internal/sem/testdata/fixtures/typescript-imports/src/util.ts",
+    "internal/sem/testdata/fixtures/typescript-imports/src/app.ts",
+    "internal/sem/testdata/fixtures/python-imports/pkg/util.py",
+    "internal/sem/testdata/fixtures/python-imports/pkg/app.py",
+    "internal/sem/golden_test.go",
+    "internal/sem/provider_test.go",
+    "docs/baseline-report.md"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-8[1m]",
+  "turn_id": "87f0b8b6affa",
+  "checkpoint_transcript_start": 622,
+  "transcript_lines_at_start": 622,
+  "token_usage": {
+    "input_tokens": 459,
+    "cache_creation_tokens": 14011,
+    "cache_read_tokens": 3575805,
+    "output_tokens": 11267,
+    "api_call_count": 18
+  },
+  "session_metrics": {
+    "turn_count": 3
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-06-18T09:56:36.869481Z",
+    "agent_lines": 163,
+    "agent_removed": 1,
+    "human_added": 22,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 185,
+    "total_lines_changed": 186,
+    "agent_percentage": 88.17204301075269,
+    "metric_version": 2
+  }
+}
