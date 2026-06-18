@@ -167,6 +167,22 @@ func isTestName(name string) bool {
 	return testSubjectName(name) != ""
 }
 
+var hclRefRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_-]*)+`)
+
+// hclReferences returns distinct dotted reference tokens (e.g. aws_vpc.main.id,
+// module.network.id) found in an HCL block body.
+func hclReferences(block string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range hclRefRe.FindAllString(block, -1) {
+		if !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 // channelEvent is a pub/sub or event-emitter call to a named channel.
 type channelEvent struct {
 	Relation string // "EMITS" or "LISTENS_ON"

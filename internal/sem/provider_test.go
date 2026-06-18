@@ -94,6 +94,36 @@ export function handleRoute() {
 	}
 }
 
+func TestResourceDependsOnGraph(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "main.tf", `resource "aws_vpc" "main" {
+  cidr_block = "10.0.0.0/16"
+}
+
+resource "aws_subnet" "web" {
+  vpc_id = aws_vpc.main.id
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var deps [][2]string
+	for _, r := range snapshot.Relations {
+		if r.Type == "RESOURCE_DEPENDS_ON" {
+			deps = append(deps, [2]string{lastSegment(r.FromID), lastSegment(r.ToID)})
+		}
+	}
+	if len(deps) != 1 {
+		t.Fatalf("want exactly one dependency (subnet->vpc), got %v", deps)
+	}
+	if deps[0][0] != "resource.aws_subnet.web" || deps[0][1] != "resource.aws_vpc.main" {
+		t.Fatalf("unexpected dependency %v", deps[0])
+	}
+}
+
 func TestChannelEventsShareNode(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "bus.js", `function publish(bus) {

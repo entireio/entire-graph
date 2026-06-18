@@ -40,6 +40,7 @@ var goldenFixtures = []string{
 	"python-oo",
 	"rust-basic",
 	"rust-oo",
+	"terraform-basic",
 	"typescript-basic",
 	"typescript-events",
 	"typescript-http",

@@ -215,6 +215,10 @@ Relation vocabulary:
   and listener of the same name share an `external:channel:<name>` node. Weak
   naming-pattern detections: low confidence (0.6) with a `WEAK_PATTERN` code.
 - `HANDLES_TOOL`
+- `RESOURCE_DEPENDS_ON` — a Terraform/HCL block (resource/module) that
+  references another block (e.g. `aws_vpc.main.id`, `var.cidr`) depends on it.
+  Blocks are indexed by their referenceable name and references resolved within
+  the module.
 - `TESTS` — a test function maps to the unit it covers by naming convention
   (`TestFoo`/`testFoo` → `Foo`, `test_foo` → `foo`, `FooTest`/`FooSpec` → `Foo`)
   when the subject resolves to a non-test function/method/type.

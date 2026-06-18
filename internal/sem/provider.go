@@ -44,12 +44,13 @@ var relationTypes = []string{
 	"HANDLES_TOOL",
 	"SIMILAR_TO",
 	"TESTS",
+	"RESOURCE_DEPENDS_ON",
 }
 
-// ooRelationSupport lists the OO/type relation types the provider can extract
-// for each language, used by the capabilities matrix. OVERRIDES is derived from
-// a resolved supertype's methods, so it is advertised only for class-based
-// languages with clear method containers.
+// ooRelationSupport lists the additional (non-structural) relation types the
+// provider can extract for each language, used by the capabilities matrix.
+// OVERRIDES is derived from a resolved supertype's methods, so it is advertised
+// only for class-based languages with clear method containers.
 var ooRelationSupport = map[string][]string{
 	"Java":       {"EXTENDS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE"},
 	"TypeScript": {"EXTENDS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE"},
@@ -59,6 +60,7 @@ var ooRelationSupport = map[string][]string{
 	"Python":     {"EXTENDS", "OVERRIDES", "USES_TYPE"},
 	"Rust":       {"EXTENDS", "IMPLEMENTS", "USES_TYPE"},
 	"Go":         {"USES_TYPE"},
+	"HCL":        {"RESOURCE_DEPENDS_ON"},
 }
 
 // schemaFeatures lists the optional schema 1.1 features this build emits. It
@@ -936,6 +938,7 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 	relations = append(relations, overrideRelations(relations, methodsByContainer)...)
 	relations = append(relations, usesTypeRelations(recordsByFile, symbolsByFile, symbolsByShortName)...)
 	relations = append(relations, testRelations(recordsByFile, symbolsByShortName)...)
+	relations = append(relations, resourceDependsOnRelations(recordsByFile, contentByFile)...)
 	relations = append(relations, similarityRelations(recordsByFile, contentByFile)...)
 
 	sort.Slice(relations, func(i, j int) bool {
@@ -1073,6 +1076,99 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		})
 	}
 	return relations
+}
+
+// resourceDependsOnRelations builds the Terraform/HCL resource graph: a
+// resource or module block that references another block (e.g. aws_vpc.main.id,
+// module.network.id) emits RESOURCE_DEPENDS_ON to that block. Block symbols are
+// indexed by their referenceable name (the form used inside expressions).
+func resourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, contentByFile map[string]string) []RelationRecord {
+	index := map[string]SymbolRecord{}
+	for _, symbols := range recordsByFile {
+		for _, symbol := range symbols {
+			if symbol.Language == "HCL" && symbol.Kind == "block" {
+				index[hclReferenceableName(symbol.QualifiedName)] = symbol
+			}
+		}
+	}
+	if len(index) == 0 {
+		return nil
+	}
+
+	paths := make([]string, 0, len(recordsByFile))
+	for path := range recordsByFile {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	var relations []RelationRecord
+	for _, path := range paths {
+		content, ok := contentByFile[path]
+		if !ok {
+			continue
+		}
+		lines := strings.Split(content, "\n")
+		for _, symbol := range recordsByFile[path] {
+			if symbol.Language != "HCL" || symbol.Kind != "block" {
+				continue
+			}
+			body := symbolBlockFromLines(lines, symbol)
+			emitted := map[string]bool{}
+			for _, ref := range hclReferences(body) {
+				target, ok := lookupHCLReference(index, ref)
+				if !ok || target.ID == symbol.ID || emitted[target.ID] {
+					continue
+				}
+				emitted[target.ID] = true
+				relations = append(relations, RelationRecord{
+					RecordType:    "relation",
+					FromID:        symbol.ID,
+					ToID:          target.ID,
+					Type:          "RESOURCE_DEPENDS_ON",
+					Confidence:    0.85,
+					Reason:        "block references another block",
+					RelationScope: "module",
+					Resolution:    "exact",
+					TargetKind:    "symbol",
+					Evidence: []Evidence{{
+						Kind:      "hcl_reference",
+						FilePath:  symbol.FilePath,
+						StartLine: symbol.StartLine,
+						EndLine:   symbol.EndLine,
+						Detail:    ref,
+					}},
+					WarningCodes: []string{},
+				})
+			}
+		}
+	}
+	return relations
+}
+
+// hclReferenceableName maps a block symbol name to the form used to reference it
+// in expressions: resource.<t>.<n> -> <t>.<n>, variable.<n> -> var.<n>; module,
+// data, output, local blocks are referenced by their own name.
+func hclReferenceableName(name string) string {
+	switch {
+	case strings.HasPrefix(name, "resource."):
+		return strings.TrimPrefix(name, "resource.")
+	case strings.HasPrefix(name, "variable."):
+		return "var." + strings.TrimPrefix(name, "variable.")
+	default:
+		return name
+	}
+}
+
+// lookupHCLReference matches a dotted reference token against the index, trying
+// the longest prefix first (aws_vpc.main.id -> aws_vpc.main).
+func lookupHCLReference(index map[string]SymbolRecord, ref string) (SymbolRecord, bool) {
+	parts := strings.Split(ref, ".")
+	for n := len(parts); n >= 2; n-- {
+		if sym, ok := index[strings.Join(parts[:n], ".")]; ok {
+			return sym, true
+		}
+	}
+	return SymbolRecord{}, false
 }
 
 // testRelations links a test function to the unit it covers, using the test
