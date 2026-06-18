@@ -139,6 +139,67 @@ func rustSupertypeEdges(content string) []rustSupertypeEdge {
 	return edges
 }
 
+// httpCall is an outbound HTTP client call to a (method, path).
+type httpCall struct {
+	Method   string
+	Path     string
+	Absolute bool // path came from an absolute URL (cross-service)
+}
+
+var (
+	// httpClientRe marks a line as a client-side HTTP call. The library/function
+	// name (fetch/axios/requests/httpx/http client) is what distinguishes a
+	// client call from a server route registration (app.get/router.post), which
+	// share the .get(/.post( shape.
+	httpClientRe = regexp.MustCompile(`(?i)(\bfetch\s*\(|\baxios\b|\brequests\s*\.|\bhttpx\b|\bhttp\.(get|post|put|patch|delete|head)\b|\.(get|post|put|patch|delete)async\s*\(|\bhttpclient\b|\bresttemplate\b|\bwebclient\b|\bgot\s*\(|\bky\s*\()`)
+	httpVerbRe   = regexp.MustCompile(`(?i)\b(?:http\.|requests\.|httpx\.|axios\.)?(get|post|put|patch|delete|head)(?:async)?\s*\(`)
+	urlLiteralRe = regexp.MustCompile(`["'](https?://[^"'\s]+|/[A-Za-z0-9_\-/{}:.]*)["']`)
+)
+
+// httpCalls extracts outbound HTTP client calls from a code block: lines that
+// carry a client-library signal and a URL/path literal. Absolute URLs are
+// reduced to their path so a client call and a local route registration to the
+// same path share an endpoint node.
+func httpCalls(content string) []httpCall {
+	var out []httpCall
+	seen := map[string]bool{}
+	for _, line := range strings.Split(content, "\n") {
+		if !httpClientRe.MatchString(line) {
+			continue
+		}
+		method := "GET"
+		if m := httpVerbRe.FindStringSubmatch(line); m != nil {
+			method = strings.ToUpper(m[1])
+		}
+		for _, lm := range urlLiteralRe.FindAllStringSubmatch(line, -1) {
+			path, absolute := httpPath(lm[1])
+			if path == "" {
+				continue
+			}
+			key := method + " " + path
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, httpCall{Method: method, Path: path, Absolute: absolute})
+		}
+	}
+	return out
+}
+
+// httpPath reduces a URL literal to its path component. Absolute URLs return
+// (path, true); relative paths return (literal, false).
+func httpPath(literal string) (string, bool) {
+	if i := strings.Index(literal, "://"); i >= 0 {
+		rest := literal[i+3:]
+		if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+			return rest[slash:], true
+		}
+		return "/", true
+	}
+	return literal, false
+}
+
 // receiverCall is a `receiver.method(` / `receiver->method(` call site, used by
 // receiver-type call resolution.
 type receiverCall struct {

@@ -37,6 +37,7 @@ var relationTypes = []string{
 	"IMPLEMENTS",
 	"OVERRIDES",
 	"HANDLES_ROUTE",
+	"HTTP_CALLS",
 	"HANDLES_TOOL",
 }
 
@@ -251,7 +252,7 @@ func Capabilities() CapabilityReport {
 		ParserVersions:                  parserVersions(),
 		SupportedRelationTypes:          append([]string(nil), relationTypes...),
 		RelationSupportByLanguage:       relationSupportByLanguage(),
-		HeuristicRelationTypes:          []string{"HANDLES_ROUTE", "HANDLES_TOOL"},
+		HeuristicRelationTypes:          []string{"HANDLES_ROUTE", "HTTP_CALLS", "HANDLES_TOOL"},
 		OptionalLocalOnlyFeatures: map[string]bool{
 			"stable_symbol_ids": true,
 			"semantic_diff":     true,
@@ -869,6 +870,31 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 						StartLine: from.StartLine,
 						EndLine:   from.EndLine,
 						Detail:    route,
+					}},
+					WarningCodes: []string{},
+				})
+			}
+			for _, call := range httpCalls(block) {
+				confidence := 0.7
+				if call.Absolute {
+					confidence = 0.6 // host ignored; cross-service path match is weaker
+				}
+				relations = append(relations, RelationRecord{
+					RecordType:    "relation",
+					FromID:        from.ID,
+					ToID:          externalID("route", call.Path),
+					Type:          "HTTP_CALLS",
+					Confidence:    confidence,
+					Reason:        "outbound HTTP client call to " + call.Method + " " + call.Path,
+					RelationScope: "external",
+					Resolution:    "pattern",
+					TargetKind:    "route",
+					Evidence: []Evidence{{
+						Kind:      "http_call_site",
+						FilePath:  from.FilePath,
+						StartLine: from.StartLine,
+						EndLine:   from.EndLine,
+						Detail:    call.Method + " " + call.Path,
 					}},
 					WarningCodes: []string{},
 				})
@@ -1674,8 +1700,8 @@ var (
 func routeLiterals(content string) []string {
 	seen := map[string]struct{}{}
 	for _, line := range strings.Split(content, "\n") {
-		if !routingCallRe.MatchString(line) {
-			continue
+		if !routingCallRe.MatchString(line) || httpClientRe.MatchString(line) {
+			continue // skip client HTTP calls; those are HTTP_CALLS, not routes
 		}
 		for _, match := range routeLiteralRe.FindAllStringSubmatch(line, -1) {
 			if len(match) > 1 {

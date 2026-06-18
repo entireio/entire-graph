@@ -201,7 +201,11 @@ Relation vocabulary:
 - `OVERRIDES` — a method that redefines a same-named method on a resolved
   supertype (derived from EXTENDS/IMPLEMENTS; only when both the supertype and
   its methods are known local symbols).
-- `HANDLES_ROUTE`
+- `HANDLES_ROUTE` — a handler registers an HTTP route (path on a line carrying
+  routing context: a verb/route method call or mapping decorator).
+- `HTTP_CALLS` — an outbound HTTP client call (fetch/axios/requests/httpx/http
+  client) to a path. Client calls and route registrations to the same path
+  share an `external:route:<path>` node, enabling client-to-route matching.
 - `HANDLES_TOOL`
 
 `EXTENDS`/`IMPLEMENTS` are extracted from class/interface headers (Java,

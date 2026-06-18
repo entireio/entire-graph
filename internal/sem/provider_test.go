@@ -94,6 +94,61 @@ export function handleRoute() {
 	}
 }
 
+func TestHTTPCallsDetectionAndRouteSeparation(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "client.js", `function register(app) {
+  app.get("/server-route", show)
+}
+
+function ping() {
+  return axios.get("/client-route")
+}
+
+function external() {
+  return fetch("https://api.example.com/v1/items")
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	routes := map[string]bool{}
+	httpCallByPath := map[string]RelationRecord{}
+	for _, r := range snapshot.Relations {
+		switch r.Type {
+		case "HANDLES_ROUTE":
+			routes[lastSegment(r.ToID)] = true
+		case "HTTP_CALLS":
+			httpCallByPath[lastSegment(r.ToID)] = r
+		}
+	}
+
+	// Server registration is a route, not a client call.
+	if !routes["/server-route"] {
+		t.Fatalf("server route missing: %v", routes)
+	}
+	if _, isCall := httpCallByPath["/server-route"]; isCall {
+		t.Fatalf("server route misclassified as HTTP_CALLS")
+	}
+	// Client calls are HTTP_CALLS, not routes.
+	if _, isRoute := routes["/client-route"]; isRoute {
+		t.Fatalf("axios.get misclassified as a route")
+	}
+	if _, ok := httpCallByPath["/client-route"]; !ok {
+		t.Fatalf("axios.get not detected as HTTP_CALLS: %v", httpCallByPath)
+	}
+	// Absolute URL reduces to its path at lower confidence.
+	ext, ok := httpCallByPath["/v1/items"]
+	if !ok {
+		t.Fatalf("absolute-URL fetch not detected (path /v1/items): %v", httpCallByPath)
+	}
+	if ext.Confidence != 0.6 {
+		t.Fatalf("absolute-URL call confidence = %v, want 0.6", ext.Confidence)
+	}
+}
+
 func TestRouteDetectionRequiresRoutingContext(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "server.js", `function register(app) {
