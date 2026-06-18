@@ -56,22 +56,31 @@ Boundary/IaC fixtures (Terraform, Kubernetes, GitHub Actions) follow in WP6/WP7.
 
 ## Relation Coverage Today
 
-The provider emits six relation types: `DEFINES`, `CONTAINS`, `IMPORTS`,
-`CALLS`, `HANDLES_ROUTE`, `HANDLES_TOOL`. Confidence bands follow the v2-plan
-schema section (`0.90-1.00 exact`, `0.70-0.89 strong`, `0.40-0.69 heuristic`).
+The provider emits 16 relation types. Confidence bands follow the v2-plan
+schema section (`0.90-1.00 exact`, `0.70-0.89 strong`, `0.40-0.69 heuristic`,
+`<0.40 weak`).
+
+- Structural: `DEFINES`, `CONTAINS` (1.0).
+- Imports: `IMPORTS` (0.8; relative imports resolve to local files at 0.95).
+- Calls: `CALLS` — same-file 0.92, imported 0.86, type-inferred receiver
+  0.85-0.9, globally-unique name 0.68.
+- OO/type: `EXTENDS`, `IMPLEMENTS` (0.9; C# 0.7 heuristic), `OVERRIDES` (0.85),
+  `USES_TYPE` (0.75-0.85).
+- Boundaries: `HANDLES_ROUTE` (0.7), `HTTP_CALLS` (0.6-0.7), `HANDLES_TOOL`
+  (0.85), `EMITS`/`LISTENS_ON` (0.6, `WEAK_PATTERN`).
+- Other: `SIMILAR_TO` (MinHash estimate), `TESTS` (0.8),
+  `RESOURCE_DEPENDS_ON` (0.85, Terraform/HCL).
 
 `capabilities --json` reports per-language relation support
-(`relation_support_by_language`): DEFINES/CONTAINS/CALLS for every language plus
-IMPORTS where a language-specific scanner exists (HCL, SQL, and YAML have none).
-HANDLES_ROUTE and HANDLES_TOOL are reported in `heuristic_relation_types`
-because they are path/pattern-driven, not per-language.
+(`relation_support_by_language`) and pattern-driven relations separately in
+`heuristic_relation_types` (`HANDLES_ROUTE`, `HTTP_CALLS`, `EMITS`,
+`LISTENS_ON`, `HANDLES_TOOL`, `SIMILAR_TO`, `TESTS`).
 
-Observed confidences:
-
-- `DEFINES`, `CONTAINS`: `1.0` (structural, exact).
-- `CALLS` same-file: `0.92`. Imported: `0.86`. Globally-unique name match:
-  `0.68` (heuristic).
-- `IMPORTS`: `0.8`. `HANDLES_ROUTE`: `0.7`. `HANDLES_TOOL`: `0.85`.
+Still to come (each blocked on a larger change): `READS_FIELD`/`WRITES_FIELD`/
+`ACCESSES` (need struct/class field symbols from the parser), `HANDLES_GRAPHQL`
+(needs a GraphQL grammar), Dockerfile/Kubernetes `CONFIGURES` (Dockerfile
+grammar + k8s-shape handling), positional `PARAM_TYPE`/`RETURNS_TYPE`, and the
+deferred data-flow relations.
 
 ## Known False Positives / Negatives
 
