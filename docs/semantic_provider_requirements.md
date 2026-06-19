@@ -64,9 +64,12 @@ integration format.
 ### Streaming NDJSON contract
 
 The `snapshot`/`symbols`/`edges` commands stream records to stdout as they are
-produced, so peak memory does not scale with repository size (it is bounded by
-the symbol/index metadata plus the relation dedup set, which holds one compact
-64-bit key per unique relation). The stream is emitted in this order:
+produced, so the stream no longer holds full relation payloads, their evidence,
+or file contents in memory. Peak memory is bounded by the symbol/index metadata
+plus the relation dedup set, which holds one compact 64-bit key per unique
+relation. That dedup set still grows with the number of unique relations (the
+remaining relation-count-scaled component), but at a constant per relation
+rather than the full payload. The stream is emitted in this order:
 
 1. exactly one header line (a record with `schema_version`),
 2. `file` records, then `symbol` records (emitted per file as parsing
@@ -74,18 +77,31 @@ the symbol/index metadata plus the relation dedup set, which holds one compact
 3. `relation` records and the `external` endpoint records they reference,
 4. exactly one trailing `summary` record (`record_type: "summary"`).
 
-**The first header is intentionally lean.** It carries identity, capabilities,
-schema features, and the selected profile, but its `languages`, `warnings`,
-`partial_failures`, `stats`, and `completeness` are empty/zero — those totals
-are not known until the whole repository has been processed, and the header is
-emitted before that so consumers can begin work immediately.
+**The first header is intentionally lean.** It carries identity (`provider`,
+`provider_version`, `repo_root`, `repo_key`, `commit`, `tree`), `schema_version`,
+`capabilities`, `schema_features`, `language_versions`, and the **profile
+metadata** — `profile`, `profile_limits`, `relation_set`, and
+`skipped_relation_families`. Its `languages`, `warnings`, `partial_failures`,
+`stats`, and `completeness` are empty/zero — those totals are not known until
+the whole repository has been processed, and the header is emitted before that
+so consumers can begin work immediately. The profile metadata is **header-only**:
+it is known up front and is therefore not repeated in the summary.
 
-**The final `summary` record is authoritative for aggregate stats.** It carries
-the real `languages`, `warnings`, `partial_failures`, `stats` (including the
-`relations` count and `completeness_level`), and the `completeness` breakdown.
-Consumers must read the summary for any totals, not the header. (The in-memory
-`BuildProviderSnapshot` path reconstructs a complete header by merging the lean
-header with the summary, so its single header is fully populated.)
+**The final `summary` record is authoritative for aggregate metadata.** It
+carries the real `languages`, `warnings`, `partial_failures`, `stats` (including
+the `relations` count and `completeness_level`), and the `completeness`
+breakdown. It does **not** carry profile metadata (`profile`, `profile_limits`,
+`relation_set`, `skipped_relation_families`); consumers should read those from
+the lean header and must not expect them in the summary unless a future schema
+version adds them.
+
+**Merging the two.** A consumer that wants one fully-populated header should
+take the lean header and overlay the summary's aggregate fields (`languages`,
+`warnings`, `partial_failures`, `stats`, `completeness`) on top of it — summary
+wins for any field both records carry, the header wins for the profile metadata
+the summary omits. The in-memory `BuildProviderSnapshot` path does exactly this
+merge internally, so its single emitted header is fully populated. For any
+aggregate total, read the summary, never the lean header.
 
 **Ordering.** For a fixed input and profile the stream is deterministic and
 stable (file, symbol, and relation order are reproducible across runs), but it

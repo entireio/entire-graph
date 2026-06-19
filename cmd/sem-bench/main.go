@@ -127,7 +127,7 @@ func run(manifestPath, cacheDir, outDir, lockPath, languages, profileName string
 	for _, spec := range specs {
 		dir := filepath.Join(cacheDir, spec.language, spec.dirName())
 		if _, statErr := os.Stat(dir); statErr != nil {
-			metrics = append(metrics, bench.RepoMetrics{Name: spec.repoPath, Language: spec.language, Error: "not cloned"})
+			metrics = append(metrics, bench.RepoMetrics{Name: spec.repoPath, Language: spec.language, Profile: string(profile), Error: "not cloned"})
 			fmt.Fprintf(os.Stderr, "  skip %-40s (not cloned)\n", spec.repoPath)
 			continue
 		}

@@ -319,25 +319,38 @@ Acceptance:
 
 ### WP10: Performance And Memory
 
-Objective: support credible local claims.
+Objective: support credible local claims, and make the production path
+memory-bounded rather than accumulating the whole graph.
 
-Tasks:
+Delivered:
 
-- Add benchmark command or `go test -bench` suite over fixture repos.
-- Track:
-  wall time, files/sec, LOC/sec, peak RSS if feasible, output bytes, symbol
-  count, relation count, parse failures.
-- Add large-repo smoke targets:
-  Entire repos, a medium TS repo, a medium Python repo, a Go repo, and one
-  mixed IaC repo.
-- Optimize only after baseline:
-  parser reuse, worker pool sizing, file hash cache interface, streaming
-  output, lower allocation relation builders.
+- Benchmark harness in `cmd/sem-bench` (driver) and `internal/bench`
+  (measurement core), cloning pinned popular repos per language and measuring
+  the provider with no network egress. See `docs/benchmarks.md`.
+- The benchmark measures the production **streaming** path (`StreamSnapshot`),
+  not the in-memory accumulator. Streaming emits records as produced and no
+  longer holds full relation payloads, their evidence, or file contents; peak
+  memory is bounded by symbol/index metadata plus a compact relation dedup set
+  (one 64-bit key per unique relation). The dedup set still scales with the
+  count of unique relations — the remaining relation-count-scaled component.
+- Indexing profiles `full|fast|syntax-only` (`--profile`) select indexing
+  depth; the header declares the profile, its limits, the emitted relation set,
+  and skipped relation families. Read throughput numbers from `fast`/`syntax-only`
+  and semantic-depth numbers from `full`.
+- Reports record profile, hardware (OS/arch/CPUs), process peak RSS, and per-repo
+  performance and quality metrics; runs are pinned via `bench/repos.lock.json`
+  for cross-phase comparison.
 
-Acceptance:
+Acceptance (met):
 
-- Performance claims in docs cite reproducible commands.
-- Large snapshots stay streaming-friendly and bounded by documented limits.
+- Performance claims in docs cite reproducible `sem-bench` commands and a named
+  profile; docs do not claim memory is independent of relation count.
+- Large snapshots stay streaming-friendly and bounded as documented above.
+
+Remaining/optional:
+
+- Optimize only after baseline: parser reuse, worker-pool sizing, file-hash
+  cache interface, lower-allocation relation builders.
 
 ## Proposed Sequencing
 

@@ -80,6 +80,11 @@ schema version. Per repository (and aggregated per language and overall):
   bands (`exact`/`strong`/`heuristic`/`weak`), parse-failure codes, unresolved
   relative imports.
 
+The streaming path's only relation-count-scaled memory is the dedup set (one
+compact 64-bit key per unique relation), so its entry count equals the reported
+unique `relations` total — no separate dedup-count metric is emitted because
+`relations` already measures it.
+
 ## Findings to date (historical, pre-streaming)
 
 These observations come from **early runs that measured the in-memory path,
@@ -94,10 +99,15 @@ Treat the numbers as historical; re-run with the current streaming benchmark
   ~10–23k LOC/s for Go and scripting languages, and the C/C++ repos are the
   largest, so they dominated full-profile wall time.
 - **Peak memory scaled with repo size.** The in-memory snapshot accumulated
-  every relation with its evidence, reaching ~20 GB RSS on tensorflow. The
-  streaming path (`StreamSnapshot`, now the benchmark's measured path) emits
-  records as produced and never holds the full relation set, so peak memory no
-  longer scales with the relation count.
+  every relation with its evidence and source contents, reaching ~20 GB RSS on
+  tensorflow. The streaming path (`StreamSnapshot`, now the benchmark's measured
+  path) emits records as produced and no longer holds full relation payloads,
+  their evidence, or file contents in memory. Peak memory is instead bounded by
+  the symbol/index metadata plus a compact relation dedup set (one 64-bit key
+  per unique relation). That dedup set still scales with the count of unique
+  relations — it is the remaining relation-count-scaled component — but at a
+  tiny constant per relation rather than the full payload, which is what kept
+  the in-memory path from finishing on the largest repos.
 
 ## Notes
 
