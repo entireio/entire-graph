@@ -20,10 +20,16 @@ type EntityChange struct {
 	NewName         string  `json:"new_name,omitempty"`
 	OldSignature    string  `json:"old_signature,omitempty"`
 	NewSignature    string  `json:"new_signature,omitempty"`
+	OldPath         string  `json:"old_path,omitempty"`
+	NewPath         string  `json:"new_path,omitempty"`
 	BeforeStartLine int     `json:"before_start_line,omitempty"`
 	AfterStartLine  int     `json:"after_start_line,omitempty"`
 	DependentsCount int     `json:"dependents_count"`
 	Similarity      float64 `json:"similarity,omitempty"`
+	// Reconciliation carries explicit identity-continuity metadata when a
+	// delete+add pair was reconciled to a single change: RENAMED (same file),
+	// MOVED (across files), or RECONCILED_FROM. Empty for ordinary changes.
+	Reconciliation string `json:"reconciliation,omitempty"`
 }
 
 type FileChange struct {
@@ -35,10 +41,11 @@ type FileChange struct {
 }
 
 type Result struct {
-	Checkpoint string       `json:"checkpoint,omitempty"`
-	Base       string       `json:"base"`
-	Head       string       `json:"head"`
-	Files      []FileChange `json:"files"`
+	Checkpoint string            `json:"checkpoint,omitempty"`
+	Base       string            `json:"base"`
+	Head       string            `json:"head"`
+	Files      []FileChange      `json:"files"`
+	Warnings   []ProviderWarning `json:"warnings,omitempty"`
 }
 
 type Parser interface {

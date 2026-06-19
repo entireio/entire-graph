@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"io/fs"
 	"os"
@@ -33,8 +34,58 @@ var relationTypes = []string{
 	"CONTAINS",
 	"IMPORTS",
 	"CALLS",
+	"EXTENDS",
+	"IMPLEMENTS",
+	"OVERRIDES",
+	"USES_TYPE",
+	"READS_FIELD",
+	"WRITES_FIELD",
+	"ACCESSES",
 	"HANDLES_ROUTE",
+	"HTTP_CALLS",
+	"EMITS",
+	"LISTENS_ON",
 	"HANDLES_TOOL",
+	"SIMILAR_TO",
+	"TESTS",
+	"RESOURCE_DEPENDS_ON",
+}
+
+// ooRelationSupport lists the additional (non-structural) relation types the
+// provider can extract for each language, used by the capabilities matrix.
+// OVERRIDES is derived from a resolved supertype's methods, so it is advertised
+// only for class-based languages with clear method containers.
+var ooRelationSupport = map[string][]string{
+	"Java":       {"EXTENDS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES"},
+	"TypeScript": {"EXTENDS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES"},
+	"JavaScript": {"EXTENDS"},
+	"C#":         {"EXTENDS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES"},
+	"PHP":        {"EXTENDS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE"},
+	"Python":     {"EXTENDS", "OVERRIDES", "USES_TYPE"},
+	"Rust":       {"EXTENDS", "IMPLEMENTS", "USES_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES"},
+	"Go":         {"USES_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES"},
+	"HCL":        {"RESOURCE_DEPENDS_ON"},
+}
+
+// schemaFeatures lists the optional schema 1.1 features this build emits. It
+// lets consumers detect available fields without inspecting every record. Keep
+// sorted and stable; only add entries when the field is actually populated.
+var schemaFeatures = []string{
+	"boundary_source_locations",
+	"completeness_breakdown",
+	"language_versions",
+	"relation_evidence",
+	"relation_resolution",
+	"relation_scope",
+	"relation_target_kind",
+}
+
+// parserVersions reports the parser/grammar libraries backing extraction. It is
+// shared by the snapshot header (language_versions) and the capabilities report.
+func parserVersions() map[string]string {
+	return map[string]string{
+		"go-tree-sitter": "github.com/smacker/go-tree-sitter",
+	}
 }
 
 type ProviderRecord struct {
@@ -42,18 +93,44 @@ type ProviderRecord struct {
 }
 
 type SnapshotHeader struct {
-	SchemaVersion   string            `json:"schema_version"`
-	Provider        string            `json:"provider"`
-	ProviderVersion string            `json:"provider_version"`
-	RepoRoot        string            `json:"repo_root"`
-	RepoKey         string            `json:"repo_key"`
-	Commit          string            `json:"commit"`
-	Tree            string            `json:"tree"`
-	Languages       []string          `json:"languages"`
-	Capabilities    []string          `json:"capabilities"`
-	Warnings        []ProviderWarning `json:"warnings"`
-	PartialFailures []PartialFailure  `json:"partial_failures"`
-	Stats           ProviderStats     `json:"stats"`
+	SchemaVersion    string             `json:"schema_version"`
+	Provider         string             `json:"provider"`
+	ProviderVersion  string             `json:"provider_version"`
+	RepoRoot         string             `json:"repo_root"`
+	RepoKey          string             `json:"repo_key"`
+	Commit           string             `json:"commit"`
+	Tree             string             `json:"tree"`
+	Languages        []string           `json:"languages"`
+	Capabilities     []string           `json:"capabilities"`
+	SchemaFeatures   []string           `json:"schema_features"`
+	LanguageVersions map[string]string  `json:"language_versions,omitempty"`
+	Profile          string             `json:"profile"`
+	ProfileLimits    ProfileLimits      `json:"profile_limits"`
+	RelationSet      []string           `json:"relation_set"`
+	SkippedRelations []string           `json:"skipped_relation_families"`
+	Warnings         []ProviderWarning  `json:"warnings"`
+	PartialFailures  []PartialFailure   `json:"partial_failures"`
+	Stats            ProviderStats      `json:"stats"`
+	Completeness     CompletenessReport `json:"completeness"`
+	BenchmarkProfile string             `json:"benchmark_profile,omitempty"`
+}
+
+// ProfileLimits documents the depth limits the selected profile applies.
+type ProfileLimits struct {
+	Evidence       string `json:"evidence"`        // "full" | "none"
+	CallResolution string `json:"call_resolution"` // "full" | "shallow" | "none"
+}
+
+// CompletenessReport breaks down parse/index coverage by language and by emitted
+// relation type so consumers can reason about which facts are dense or sparse.
+type CompletenessReport struct {
+	Languages map[string]LanguageCompleteness `json:"languages"`
+	Relations map[string]int                  `json:"relations"`
+}
+
+type LanguageCompleteness struct {
+	Files   int `json:"files"`
+	Symbols int `json:"symbols"`
 }
 
 type ProviderStats struct {
@@ -122,25 +199,42 @@ type SymbolRecord struct {
 }
 
 type RelationRecord struct {
-	RecordType   string   `json:"record_type"`
-	FromID       string   `json:"from_id"`
-	ToID         string   `json:"to_id"`
-	Type         string   `json:"type"`
-	Confidence   float64  `json:"confidence"`
-	Reason       string   `json:"reason"`
-	WarningCodes []string `json:"warning_codes"`
+	RecordType    string     `json:"record_type"`
+	FromID        string     `json:"from_id"`
+	ToID          string     `json:"to_id"`
+	Type          string     `json:"type"`
+	Confidence    float64    `json:"confidence"`
+	Reason        string     `json:"reason"`
+	RelationScope string     `json:"relation_scope,omitempty"`
+	Resolution    string     `json:"resolution,omitempty"`
+	TargetKind    string     `json:"target_kind,omitempty"`
+	Evidence      []Evidence `json:"evidence,omitempty"`
+	WarningCodes  []string   `json:"warning_codes"`
+}
+
+// Evidence is a compact pointer to the source location that justifies a
+// relation, so consumers can show provenance without re-parsing.
+type Evidence struct {
+	Kind      string `json:"kind"`
+	FilePath  string `json:"file_path,omitempty"`
+	StartLine int    `json:"start_line,omitempty"`
+	EndLine   int    `json:"end_line,omitempty"`
+	Detail    string `json:"detail,omitempty"`
 }
 
 type CapabilityReport struct {
-	SchemaVersion                   string            `json:"schema_version"`
-	Provider                        string            `json:"provider"`
-	SupportedFileExtensions         []string          `json:"supported_file_extensions"`
-	SupportedLanguages              []string          `json:"supported_languages"`
-	ParserVersions                  map[string]string `json:"parser_versions"`
-	SupportedRelationTypes          []string          `json:"supported_relation_types"`
-	UnsupportedButDetectedLanguages []string          `json:"unsupported_but_detected_language_hints"`
-	OptionalLocalOnlyFeatures       map[string]bool   `json:"optional_local_only_features"`
-	FeaturesRequiringNetworkAccess  map[string]bool   `json:"features_requiring_network_access"`
+	SchemaVersion                   string              `json:"schema_version"`
+	Provider                        string              `json:"provider"`
+	SupportedFileExtensions         []string            `json:"supported_file_extensions"`
+	SupportedLanguages              []string            `json:"supported_languages"`
+	ParserVersions                  map[string]string   `json:"parser_versions"`
+	SupportedRelationTypes          []string            `json:"supported_relation_types"`
+	RelationSupportByLanguage       map[string][]string `json:"relation_support_by_language"`
+	RelationSupportByProfile        map[string][]string `json:"relation_support_by_profile"`
+	HeuristicRelationTypes          []string            `json:"heuristic_relation_types"`
+	UnsupportedButDetectedLanguages []string            `json:"unsupported_but_detected_language_hints"`
+	OptionalLocalOnlyFeatures       map[string]bool     `json:"optional_local_only_features"`
+	FeaturesRequiringNetworkAccess  map[string]bool     `json:"features_requiring_network_access"`
 }
 
 type ProviderSnapshot struct {
@@ -156,6 +250,95 @@ type ProviderSnapshotOptions struct {
 	Worktree     bool
 	IgnoreFiles  []string
 	IncludeFiles []string
+	// Profile selects the indexing depth: full (all relations), fast (symbol
+	// inventory, imports, shallow local calls, boundaries, IaC, no evidence), or
+	// syntax-only (file/symbol inventory and structure only). Empty means full.
+	Profile Profile
+}
+
+// Profile names the indexing depth a snapshot is produced at.
+type Profile string
+
+const (
+	ProfileFull       Profile = "full"
+	ProfileFast       Profile = "fast"
+	ProfileSyntaxOnly Profile = "syntax-only"
+)
+
+// profileSpec describes what a profile emits and how deeply it resolves.
+type profileSpec struct {
+	name            Profile
+	relations       map[string]bool
+	includeEvidence bool
+	callResolution  string // "full" | "shallow" | "none"
+}
+
+func (s profileSpec) emits(relationType string) bool { return s.relations[relationType] }
+
+// relationSet returns the sorted relation types this profile emits.
+func (s profileSpec) relationSet() []string {
+	out := make([]string, 0, len(s.relations))
+	for t := range s.relations {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// skippedRelationFamilies returns the sorted relation types this profile omits.
+func (s profileSpec) skippedRelationFamilies() []string {
+	out := []string{}
+	for _, t := range relationTypes {
+		if !s.relations[t] {
+			out = append(out, t)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// profileNeedsPerFileScan reports whether any content-derived per-file relation
+// family is enabled, so the streaming path can skip re-reading file content
+// entirely for syntax-only profiles.
+func profileNeedsPerFileScan(spec profileSpec) bool {
+	for _, t := range []string{"IMPORTS", "CALLS", "HANDLES_ROUTE", "HTTP_CALLS", "EMITS", "LISTENS_ON", "EXTENDS", "IMPLEMENTS", "READS_FIELD", "WRITES_FIELD", "ACCESSES"} {
+		if spec.relations[t] {
+			return true
+		}
+	}
+	return false
+}
+
+// relationSupportByProfile reports the relation types emitted at each indexing
+// profile.
+func relationSupportByProfile() map[string][]string {
+	out := map[string][]string{}
+	for _, p := range []Profile{ProfileFull, ProfileFast, ProfileSyntaxOnly} {
+		out[string(p)] = resolveProfile(p).relationSet()
+	}
+	return out
+}
+
+func relationTypeSet(types ...string) map[string]bool {
+	set := make(map[string]bool, len(types))
+	for _, t := range types {
+		set[t] = true
+	}
+	return set
+}
+
+// resolveProfile maps a profile name (empty = full) to its spec. Initial
+// behavior is conservative: fast and syntax-only restrict the relation set and
+// skip the expensive families rather than approximating them.
+func resolveProfile(p Profile) profileSpec {
+	switch p {
+	case ProfileSyntaxOnly:
+		return profileSpec{name: ProfileSyntaxOnly, relations: relationTypeSet("DEFINES", "CONTAINS"), includeEvidence: false, callResolution: "none"}
+	case ProfileFast:
+		return profileSpec{name: ProfileFast, relations: relationTypeSet("DEFINES", "CONTAINS", "IMPORTS", "CALLS", "HANDLES_ROUTE", "HANDLES_TOOL", "RESOURCE_DEPENDS_ON"), includeEvidence: false, callResolution: "shallow"}
+	default:
+		return profileSpec{name: ProfileFull, relations: relationTypeSet(relationTypes...), includeEvidence: true, callResolution: "full"}
+	}
 }
 
 func Capabilities() CapabilityReport {
@@ -178,14 +361,16 @@ func Capabilities() CapabilityReport {
 		SupportedFileExtensions:         extensions,
 		SupportedLanguages:              languages,
 		UnsupportedButDetectedLanguages: []string{},
-		ParserVersions: map[string]string{
-			"go-tree-sitter": "github.com/smacker/go-tree-sitter",
-		},
-		SupportedRelationTypes: append([]string(nil), relationTypes...),
+		ParserVersions:                  parserVersions(),
+		SupportedRelationTypes:          append([]string(nil), relationTypes...),
+		RelationSupportByLanguage:       relationSupportByLanguage(),
+		RelationSupportByProfile:        relationSupportByProfile(),
+		HeuristicRelationTypes:          []string{"HANDLES_ROUTE", "HTTP_CALLS", "EMITS", "LISTENS_ON", "HANDLES_TOOL", "SIMILAR_TO", "TESTS"},
 		OptionalLocalOnlyFeatures: map[string]bool{
-			"stable_symbol_ids": true,
-			"semantic_diff":     true,
-			"ndjson_snapshot":   true,
+			"stable_symbol_ids":    true,
+			"semantic_diff":        true,
+			"ndjson_snapshot":      true,
+			"near_clone_detection": true,
 		},
 		FeaturesRequiringNetworkAccess: map[string]bool{
 			"grammar_download":  false,
@@ -198,51 +383,164 @@ func Capabilities() CapabilityReport {
 	}
 }
 
+// relationSupportByLanguage reports which relation types the provider can
+// extract for each supported language. DEFINES, CONTAINS, and CALLS are
+// produced structurally from parsed entities for every language; IMPORTS is
+// added only where importsFor has a language-specific scanner. HANDLES_ROUTE
+// and HANDLES_TOOL are reported separately in HeuristicRelationTypes because
+// they are detected by file-path and body patterns rather than per-language
+// grammar, so they are not attributed to individual languages here.
+func relationSupportByLanguage() map[string][]string {
+	importCapable := map[string]bool{}
+	for ext, spec := range treeSitterLanguages {
+		if importCapableExtension(ext) {
+			importCapable[spec.language] = true
+		}
+	}
+	support := map[string][]string{}
+	for _, spec := range treeSitterLanguages {
+		if _, done := support[spec.language]; done {
+			continue
+		}
+		types := []string{"CALLS", "CONTAINS", "DEFINES"}
+		if importCapable[spec.language] {
+			types = append(types, "IMPORTS")
+		}
+		types = append(types, ooRelationSupport[spec.language]...)
+		sort.Strings(types)
+		support[spec.language] = types
+	}
+	return support
+}
+
 func BuildProviderSnapshot(ctx context.Context, repo, providerVersion string) (ProviderSnapshot, error) {
 	return BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, ProviderSnapshotOptions{})
 }
 
-func BuildProviderSnapshotWithOptions(ctx context.Context, repo, providerVersion string, options ProviderSnapshotOptions) (ProviderSnapshot, error) {
-	absRepo, err := filepath.Abs(repo)
-	if err != nil {
-		return ProviderSnapshot{}, err
-	}
-	key := repoKey(ctx, absRepo)
-	var warnings []ProviderWarning
-	commit, commitErr := gitutil.RevParse(ctx, absRepo, "HEAD")
-	tree, treeErr := gitutil.RevParse(ctx, absRepo, "HEAD^{tree}")
+// contentReader returns a file's content on demand. The snapshot reads source
+// per file rather than holding all file contents in memory at once.
+type contentReader func(path string) (string, bool)
 
-	// The provider is local-only. NoNetwork is accepted to make that contract
-	// explicit for callers that enforce no-egress provider execution.
-	_ = options.NoNetwork
-	useHead := !options.Worktree && commitErr == nil && treeErr == nil
-	paths, contentByFile, err := snapshotSource(ctx, absRepo, useHead, options.IgnoreFiles, options.IncludeFiles)
+// sourceContext is the repository state needed to stream a snapshot: identity,
+// the file list, a per-file content reader, and git-state warnings. It holds no
+// file content itself.
+type sourceContext struct {
+	absRepo  string
+	key      string
+	commit   string
+	tree     string
+	paths    []string
+	read     contentReader
+	warnings []ProviderWarning
+}
+
+// leanHeader is the streaming preamble emitted before any file is parsed. It
+// carries only what is known up front; languages, warnings, partial failures,
+// stats, and completeness are reported in the trailing SnapshotSummary because
+// they require the full parse. BuildProviderSnapshot merges the two back into a
+// complete in-memory header.
+func leanHeader(sc sourceContext, providerVersion string, spec profileSpec) SnapshotHeader {
+	return SnapshotHeader{
+		SchemaVersion:    SchemaVersion,
+		Provider:         ProviderName,
+		ProviderVersion:  providerVersion,
+		RepoRoot:         sc.absRepo,
+		RepoKey:          sc.key,
+		Commit:           sc.commit,
+		Tree:             sc.tree,
+		Languages:        []string{},
+		Capabilities:     []string{"ndjson", "stable-symbol-id-v1", "local-only", "partial-failures"},
+		SchemaFeatures:   append([]string(nil), schemaFeatures...),
+		LanguageVersions: parserVersions(),
+		Profile:          string(spec.name),
+		ProfileLimits:    ProfileLimits{Evidence: evidenceLimit(spec), CallResolution: spec.callResolution},
+		RelationSet:      spec.relationSet(),
+		SkippedRelations: spec.skippedRelationFamilies(),
+		Warnings:         []ProviderWarning{},
+		PartialFailures:  []PartialFailure{},
+	}
+}
+
+func evidenceLimit(spec profileSpec) string {
+	if spec.includeEvidence {
+		return "full"
+	}
+	return "none"
+}
+
+// BuildProviderSnapshotWithOptions is an accumulating sink over the streaming
+// path: it collects every streamed record into an in-memory ProviderSnapshot
+// and reconstructs the full header (merging the lean streamed header with the
+// trailing summary), sorting relations for stable output. Intended for tests
+// and small repositories; large repositories should consume StreamSnapshot.
+func BuildProviderSnapshotWithOptions(ctx context.Context, repo, providerVersion string, options ProviderSnapshotOptions) (ProviderSnapshot, error) {
+	var snapshot ProviderSnapshot
+	var summary SnapshotSummary
+	err := StreamSnapshot(ctx, repo, providerVersion, options, func(record any) error {
+		switch r := record.(type) {
+		case SnapshotHeader:
+			snapshot.Header = r
+		case FileRecord:
+			snapshot.Files = append(snapshot.Files, r)
+		case SymbolRecord:
+			snapshot.Symbols = append(snapshot.Symbols, r)
+		case ExternalRecord:
+			snapshot.Externals = append(snapshot.Externals, r)
+		case RelationRecord:
+			snapshot.Relations = append(snapshot.Relations, r)
+		case SnapshotSummary:
+			summary = r
+		}
+		return nil
+	})
 	if err != nil {
 		return ProviderSnapshot{}, err
 	}
-	if options.Worktree {
-		warnings = append(warnings, ProviderWarning{
-			Code:                 "W_WORKTREE_SNAPSHOT",
-			Severity:             "warning",
-			EffectOnCompleteness: "snapshot records are read from the working tree because --worktree was requested",
-		})
-	} else if commitErr != nil || treeErr != nil {
-		warnings = append(warnings, ProviderWarning{
-			Code:                 "E_NO_GIT_HEAD",
-			Severity:             "warning",
-			EffectOnCompleteness: "snapshot records are read from the working tree because no HEAD tree is available",
-			Detail:               firstError(commitErr, treeErr).Error(),
-		})
+	snapshot.Header.Languages = summary.Languages
+	snapshot.Header.Warnings = summary.Warnings
+	snapshot.Header.PartialFailures = summary.PartialFailures
+	snapshot.Header.Stats = summary.Stats
+	snapshot.Header.Completeness = summary.Completeness
+	sort.Slice(snapshot.Relations, func(i, j int) bool {
+		left := snapshot.Relations[i].Type + snapshot.Relations[i].FromID + snapshot.Relations[i].ToID
+		right := snapshot.Relations[j].Type + snapshot.Relations[j].FromID + snapshot.Relations[j].ToID
+		return left < right
+	})
+	return snapshot, nil
+}
+
+// StreamSnapshot emits a snapshot as a stream of records with bounded memory.
+// Phase 1 lists the files, then parses each one and emits its file and symbol
+// records immediately while building compact metadata indexes — file contents
+// are read per file and discarded, never held all at once. Phase 2 resolves
+// relations against those indexes (re-reading content per file), emitting
+// relation and external records. A trailing SnapshotSummary carries the totals
+// (languages, warnings, partial failures, stats, completeness) that are only
+// known once the whole repository has been processed.
+//
+// Memory is bounded by the symbol/index metadata (no source content) plus the
+// relation dedup key set; it does not scale with held relation records or held
+// file contents.
+func StreamSnapshot(ctx context.Context, repo, providerVersion string, options ProviderSnapshotOptions, emit func(record any) error) error {
+	sc, err := prepareSource(ctx, repo, options)
+	if err != nil {
+		return err
+	}
+	spec := resolveProfile(options.Profile)
+	if err := emit(leanHeader(sc, providerVersion, spec)); err != nil {
+		return err
 	}
 
 	parser := TreeSitterParser{}
 	languageSet := map[string]struct{}{}
-	var files []FileRecord
-	var symbols []SymbolRecord
+	completenessLangs := map[string]LanguageCompleteness{}
 	var failures []PartialFailure
+	var files []FileRecord
 	recordsByFile := map[string][]SymbolRecord{}
+	symbolCount := 0
 
-	for _, path := range paths {
+	// Phase 1: parse + emit file/symbol records, build indexes, discard content.
+	for _, path := range sc.paths {
 		if !Supported(path) {
 			if hint := unsupportedLanguageHint(path); hint != "" {
 				failures = append(failures, PartialFailure{
@@ -255,7 +553,7 @@ func BuildProviderSnapshotWithOptions(ctx context.Context, repo, providerVersion
 			}
 			continue
 		}
-		content, ok := contentByFile[path]
+		content, ok := sc.read(path)
 		if !ok {
 			failures = append(failures, PartialFailure{
 				Code:                 "E_FILE_READ",
@@ -287,51 +585,184 @@ func BuildProviderSnapshotWithOptions(ctx context.Context, repo, providerVersion
 		}
 		languageSet[language] = struct{}{}
 		contentBytes := []byte(content)
-		files = append(files, FileRecord{
+		file := FileRecord{
 			RecordType: "file",
-			ID:         fileID(key, path),
+			ID:         fileID(sc.key, path),
 			Path:       path,
 			Blob:       contentHash(contentBytes),
 			Language:   language,
 			Bytes:      len(contentBytes),
-		})
-		fileSymbols := entitySymbols(key, path, language, entities)
-		fileSymbols = append(fileSymbols, syntheticBoundarySymbols(key, path, language, content, fileSymbols)...)
-		symbols = append(symbols, fileSymbols...)
+		}
+		if err := emit(file); err != nil {
+			return err
+		}
+		files = append(files, file)
+		fileSymbols := entitySymbols(sc.key, path, language, entities)
+		fileSymbols = append(fileSymbols, syntheticBoundarySymbols(sc.key, path, language, content, fileSymbols)...)
+		for _, symbol := range fileSymbols {
+			if err := emit(symbol); err != nil {
+				return err
+			}
+		}
 		recordsByFile[path] = fileSymbols
+		symbolCount += len(fileSymbols)
+		lc := completenessLangs[language]
+		lc.Files++
+		lc.Symbols += len(fileSymbols)
+		completenessLangs[language] = lc
 	}
 
-	relations := buildRelations(key, files, recordsByFile, contentByFile)
-	externals := externalRecords(relations, files, recordsByFile)
-	languages := sortedKeys(languageSet)
+	// Phase 2: resolve relations from indexes, re-reading content per file.
+	symbolsByID, filesByID := recordIndexes(files, recordsByFile)
+	// Relation dedup uses compact 64-bit hashed keys rather than the full
+	// from+to+type string, so the set's memory is ~one machine word per unique
+	// relation instead of a ~100-byte key. The set is bounded by the unique
+	// relation count (== the relations reported in the summary). FNV-1a/64
+	// collisions across realistic relation counts are negligible.
+	seenRelation := map[uint64]struct{}{}
+	externalsByID := map[string]ExternalRecord{}
+	relationsByType := map[string]int{}
+	relationCount := 0
+	var emitErr error
+	forEachRelation(sc.key, files, recordsByFile, sc.read, spec, func(r RelationRecord) {
+		if emitErr != nil {
+			return
+		}
+		// Profile filter: emit only relation families the profile includes; in
+		// shallow call resolution, keep only exact (same-file) calls; drop
+		// evidence when the profile omits it.
+		if !spec.emits(r.Type) {
+			return
+		}
+		if r.Type == "CALLS" && spec.callResolution == "shallow" && r.Resolution != "exact" {
+			return
+		}
+		if !spec.includeEvidence {
+			r.Evidence = nil
+		}
+		dedupKey := relationDedupKey(r)
+		if _, seen := seenRelation[dedupKey]; seen {
+			return
+		}
+		seenRelation[dedupKey] = struct{}{}
+		for _, id := range []string{r.FromID, r.ToID} {
+			if strings.HasPrefix(id, "external:") {
+				mergeExternalRecord(externalsByID, externalRecordFor(r, id, symbolsByID, filesByID))
+			}
+		}
+		relationsByType[r.Type]++
+		relationCount++
+		emitErr = emit(r)
+	})
+	if emitErr != nil {
+		return emitErr
+	}
+
+	externalIDs := make([]string, 0, len(externalsByID))
+	for id := range externalsByID {
+		externalIDs = append(externalIDs, id)
+	}
+	sort.Strings(externalIDs)
+	for _, id := range externalIDs {
+		if err := emit(externalsByID[id]); err != nil {
+			return err
+		}
+	}
+
+	warnings := sc.warnings
 	if warnings == nil {
 		warnings = []ProviderWarning{}
 	}
 	if failures == nil {
 		failures = []PartialFailure{}
 	}
-	header := SnapshotHeader{
-		SchemaVersion:   SchemaVersion,
-		Provider:        ProviderName,
-		ProviderVersion: providerVersion,
-		RepoRoot:        absRepo,
-		RepoKey:         key,
-		Commit:          commit,
-		Tree:            tree,
-		Languages:       languages,
-		Capabilities:    []string{"ndjson", "stable-symbol-id-v1", "local-only", "partial-failures"},
+	return emit(SnapshotSummary{
+		RecordType:      "summary",
+		Languages:       sortedKeys(languageSet),
 		Warnings:        warnings,
 		PartialFailures: failures,
 		Stats: ProviderStats{
 			Files:             len(files),
 			ParsedFiles:       len(recordsByFile),
-			Symbols:           len(symbols),
-			Relations:         len(relations),
+			Symbols:           symbolCount,
+			Relations:         relationCount,
 			PartialFailures:   len(failures),
 			CompletenessLevel: completenessLevel(len(failures), len(files)),
 		},
+		Completeness: CompletenessReport{Languages: completenessLangs, Relations: relationsByType},
+	})
+}
+
+// relationDedupKey hashes a relation's identity (from, to, type) to a compact
+// 64-bit key for the streaming dedup set, keeping that set's memory small on
+// large repositories.
+func relationDedupKey(r RelationRecord) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(r.FromID))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(r.ToID))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(r.Type))
+	return h.Sum64()
+}
+
+// SnapshotSummary is the trailing record of a streamed snapshot. It carries the
+// totals known only after the whole repository is processed; a streaming
+// consumer reads it for languages, warnings, partial failures, stats, and the
+// completeness breakdown (the leading header leaves these empty).
+type SnapshotSummary struct {
+	RecordType      string             `json:"record_type"`
+	Languages       []string           `json:"languages"`
+	Warnings        []ProviderWarning  `json:"warnings"`
+	PartialFailures []PartialFailure   `json:"partial_failures"`
+	Stats           ProviderStats      `json:"stats"`
+	Completeness    CompletenessReport `json:"completeness"`
+}
+
+// prepareSource resolves repository identity, lists the source files, and
+// builds a per-file content reader without loading any content.
+func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOptions) (sourceContext, error) {
+	absRepo, err := filepath.Abs(repo)
+	if err != nil {
+		return sourceContext{}, err
 	}
-	return ProviderSnapshot{Header: header, Files: files, Externals: externals, Symbols: symbols, Relations: relations}, nil
+	key := repoKey(ctx, absRepo)
+	commit, commitErr := gitutil.RevParse(ctx, absRepo, "HEAD")
+	tree, treeErr := gitutil.RevParse(ctx, absRepo, "HEAD^{tree}")
+
+	// The provider is local-only. NoNetwork is accepted to make that contract
+	// explicit for callers that enforce no-egress provider execution.
+	_ = options.NoNetwork
+	useHead := !options.Worktree && commitErr == nil && treeErr == nil
+	paths, read, err := openSource(ctx, absRepo, useHead, options.IgnoreFiles, options.IncludeFiles)
+	if err != nil {
+		return sourceContext{}, err
+	}
+
+	var warnings []ProviderWarning
+	if options.Worktree {
+		warnings = append(warnings, ProviderWarning{
+			Code:                 "W_WORKTREE_SNAPSHOT",
+			Severity:             "warning",
+			EffectOnCompleteness: "snapshot records are read from the working tree because --worktree was requested",
+		})
+	} else if commitErr != nil || treeErr != nil {
+		warnings = append(warnings, ProviderWarning{
+			Code:                 "E_NO_GIT_HEAD",
+			Severity:             "warning",
+			EffectOnCompleteness: "snapshot records are read from the working tree because no HEAD tree is available",
+			Detail:               firstError(commitErr, treeErr).Error(),
+		})
+	}
+	return sourceContext{
+		absRepo:  absRepo,
+		key:      key,
+		commit:   commit,
+		tree:     tree,
+		paths:    paths,
+		read:     read,
+		warnings: warnings,
+	}, nil
 }
 
 func WriteSnapshotNDJSON(out io.Writer, snapshot ProviderSnapshot) error {
@@ -388,7 +819,7 @@ func WriteRelationsNDJSON(out io.Writer, snapshot ProviderSnapshot) error {
 func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRecord {
 	byName := map[string]string{}
 	baseCounts := map[string]int{}
-	seenDuplicateIDs := map[string]int{}
+	sigOrdinals := map[string]int{}
 	for _, entity := range entities {
 		baseCounts[symbolID(repoKey, language, path, entity.Kind, entity.Name)]++
 	}
@@ -397,10 +828,17 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 		qualified := entity.Name
 		id := symbolID(repoKey, language, path, entity.Kind, qualified)
 		if baseCounts[id] > 1 {
-			id = symbolID(repoKey, language, path, entity.Kind, duplicateSymbolName(qualified, entity))
-			seenDuplicateIDs[id]++
-			if seenDuplicateIDs[id] > 1 {
-				id = fmt.Sprintf("%s#%d", id, seenDuplicateIDs[id])
+			// Disambiguate same-name symbols by signature hash plus an ordinal
+			// within the matching-signature group. This is stable across edits
+			// that shift line numbers, unlike the previous line-range scheme;
+			// overloads with distinct signatures get distinct, stable IDs, and
+			// genuine duplicates fall back to a stable definition ordinal.
+			signatureHash := hash(entity.Signature)
+			ordinalKey := id + "\x00" + signatureHash
+			sigOrdinals[ordinalKey]++
+			id = fmt.Sprintf("%s#sig:%s", id, signatureHash)
+			if ordinal := sigOrdinals[ordinalKey]; ordinal > 1 {
+				id = fmt.Sprintf("%s#%d", id, ordinal)
 			}
 		}
 		containerID := ""
@@ -428,10 +866,6 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 		byName[qualified] = id
 	}
 	return symbols
-}
-
-func duplicateSymbolName(qualified string, entity Entity) string {
-	return fmt.Sprintf("%s#L%d-%d", qualified, entity.StartLine, entity.EndLine)
 }
 
 func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbols []SymbolRecord) []SymbolRecord {
@@ -507,6 +941,8 @@ type resolvedCallTarget struct {
 	SymbolRecord
 	Confidence float64
 	Reason     string
+	Resolution string
+	Scope      string
 }
 
 func routeBoundarySource(path, language string, fileSymbols []SymbolRecord) routeSource {
@@ -530,6 +966,8 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 			SymbolRecord: to,
 			Confidence:   0.92,
 			Reason:       "direct call expression resolved to same-file symbol",
+			Resolution:   "exact",
+			Scope:        "file",
 		})
 	}
 	if len(local) > 0 {
@@ -546,6 +984,8 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 				SymbolRecord: to,
 				Confidence:   0.86,
 				Reason:       "direct call expression resolved through import path",
+				Resolution:   "import_resolved",
+				Scope:        "module",
 			})
 		}
 	}
@@ -564,92 +1004,209 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 			SymbolRecord: remaining[0],
 			Confidence:   0.68,
 			Reason:       "direct call expression matched globally unique symbol name",
+			Resolution:   "name_only",
+			Scope:        "workspace",
 		}}
 	}
 	return nil
 }
 
-func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, contentByFile map[string]string) []RelationRecord {
+// buildRelations collects every relation, deduplicates (first occurrence wins,
+// in emission order), and sorts for stable output. Used by the in-memory
+// snapshot path; the streaming path uses forEachRelation directly.
+func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
 	var relations []RelationRecord
+	forEachRelation(repoKey, files, recordsByFile, readContent, resolveProfile(ProfileFull), func(r RelationRecord) {
+		relations = append(relations, r)
+	})
+	relations = dedupeRelations(relations)
+	sort.Slice(relations, func(i, j int) bool {
+		left := relations[i].Type + relations[i].FromID + relations[i].ToID
+		right := relations[j].Type + relations[j].FromID + relations[j].ToID
+		return left < right
+	})
+	return relations
+}
+
+// forEachRelation drives all relation extraction, passing each relation to emit
+// as it is produced. It never accumulates the full relation set, so a streaming
+// caller can write records out with bounded memory. Callers deduplicate:
+// buildRelations collects-then-dedupes; the streaming path dedupes on emit.
+func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, spec profileSpec, emit func(RelationRecord)) {
 	symbolsByShortName := map[string][]SymbolRecord{}
 	symbolsByFile := map[string][]SymbolRecord{}
-	for _, records := range recordsByFile {
+	childNamesByContainer := map[string]map[string]bool{}
+	methodsByContainer := map[string]map[string]SymbolRecord{}
+	fieldsByContainer := map[string]map[string]SymbolRecord{}
+	var inheritanceEdges []RelationRecord // captured for OVERRIDES derivation
+	// Iterate files in their (stable) slice order, not the recordsByFile map, so
+	// structural relations stream deterministically.
+	for _, file := range files {
+		records := recordsByFile[file.Path]
 		for _, symbol := range records {
-			relations = append(relations, RelationRecord{
-				RecordType:   "relation",
-				FromID:       fileID(repoKey, symbol.FilePath),
-				ToID:         symbol.ID,
-				Type:         "DEFINES",
-				Confidence:   1,
-				Reason:       "symbol parsed from file",
-				WarningCodes: []string{},
+			emit(RelationRecord{
+				RecordType:    "relation",
+				FromID:        fileID(repoKey, symbol.FilePath),
+				ToID:          symbol.ID,
+				Type:          "DEFINES",
+				Confidence:    1,
+				Reason:        "symbol parsed from file",
+				RelationScope: "file",
+				Resolution:    "exact",
+				TargetKind:    "symbol",
+				WarningCodes:  []string{},
 			})
 			if symbol.ContainerID != "" {
-				relations = append(relations, RelationRecord{
-					RecordType:   "relation",
-					FromID:       symbol.ContainerID,
-					ToID:         symbol.ID,
-					Type:         "CONTAINS",
-					Confidence:   1,
-					Reason:       "symbol qualified name is nested in container",
-					WarningCodes: []string{},
+				emit(RelationRecord{
+					RecordType:    "relation",
+					FromID:        symbol.ContainerID,
+					ToID:          symbol.ID,
+					Type:          "CONTAINS",
+					Confidence:    1,
+					Reason:        "symbol qualified name is nested in container",
+					RelationScope: "file",
+					Resolution:    "exact",
+					TargetKind:    "symbol",
+					WarningCodes:  []string{},
 				})
 			}
 			if symbol.Kind == "tool" && symbol.ContainerID != "" {
-				relations = append(relations, RelationRecord{
-					RecordType:   "relation",
-					FromID:       symbol.ContainerID,
-					ToID:         symbol.ID,
-					Type:         "HANDLES_TOOL",
-					Confidence:   0.85,
-					Reason:       "tool boundary inferred from handler symbol body",
+				emit(RelationRecord{
+					RecordType:    "relation",
+					FromID:        symbol.ContainerID,
+					ToID:          symbol.ID,
+					Type:          "HANDLES_TOOL",
+					Confidence:    0.85,
+					Reason:        "tool boundary inferred from handler symbol body",
+					RelationScope: "file",
+					Resolution:    "pattern",
+					TargetKind:    "symbol",
+					Evidence: []Evidence{{
+						Kind:      "symbol_body",
+						FilePath:  symbol.FilePath,
+						StartLine: symbol.StartLine,
+						EndLine:   symbol.EndLine,
+						Detail:    symbol.QualifiedName,
+					}},
 					WarningCodes: []string{},
 				})
 			}
 			symbolsByShortName[symbol.Name] = append(symbolsByShortName[symbol.Name], symbol)
 			symbolsByFile[symbol.FilePath] = append(symbolsByFile[symbol.FilePath], symbol)
+			if symbol.ContainerID != "" {
+				if childNamesByContainer[symbol.ContainerID] == nil {
+					childNamesByContainer[symbol.ContainerID] = map[string]bool{}
+				}
+				childNamesByContainer[symbol.ContainerID][symbol.Name] = true
+				if symbol.Kind == "method" {
+					if methodsByContainer[symbol.ContainerID] == nil {
+						methodsByContainer[symbol.ContainerID] = map[string]SymbolRecord{}
+					}
+					methodsByContainer[symbol.ContainerID][symbol.Name] = symbol
+				}
+				if symbol.Kind == "field" {
+					if fieldsByContainer[symbol.ContainerID] == nil {
+						fieldsByContainer[symbol.ContainerID] = map[string]SymbolRecord{}
+					}
+					fieldsByContainer[symbol.ContainerID][symbol.Name] = symbol
+				}
+			}
 		}
 	}
 	handledRoutes := map[string]struct{}{}
+	knownFiles := map[string]bool{}
 	for _, file := range files {
+		knownFiles[file.Path] = true
 		if route := nextRouteBoundary(file.Path); route != "" {
 			handledRoutes[route] = struct{}{}
 		}
 	}
 
 	for _, file := range files {
-		content, ok := contentByFile[file.Path]
+		if !profileNeedsPerFileScan(spec) {
+			break // syntax-only: no content-derived relations
+		}
+		content, ok := readContent(file.Path)
 		if !ok {
 			continue
 		}
 		lines := strings.Split(content, "\n")
 		fromID := fileID(repoKey, file.Path)
 		for _, imported := range importsFor(file.Path, content) {
-			relations = append(relations, RelationRecord{
-				RecordType:   "relation",
-				FromID:       fromID,
-				ToID:         externalID("import", imported),
-				Type:         "IMPORTS",
-				Confidence:   0.8,
-				Reason:       "import declaration matched by language-specific scanner",
-				WarningCodes: []string{},
+			if resolved, ok := resolveLocalImport(file.Path, imported, knownFiles); ok {
+				emit(RelationRecord{
+					RecordType:    "relation",
+					FromID:        fromID,
+					ToID:          fileID(repoKey, resolved),
+					Type:          "IMPORTS",
+					Confidence:    0.95,
+					Reason:        "relative import resolved to local file",
+					RelationScope: "module",
+					Resolution:    "import_resolved",
+					TargetKind:    "file",
+					Evidence: []Evidence{{
+						Kind:     "import_statement",
+						FilePath: file.Path,
+						Detail:   imported,
+					}},
+					WarningCodes: []string{},
+				})
+				continue
+			}
+			warningCodes := []string{}
+			if isRelativeImportSpec(file.Path, imported) {
+				warningCodes = []string{"UNRESOLVED_RELATIVE_IMPORT"}
+			}
+			emit(RelationRecord{
+				RecordType:    "relation",
+				FromID:        fromID,
+				ToID:          externalID("import", imported),
+				Type:          "IMPORTS",
+				Confidence:    0.8,
+				Reason:        "import declaration matched by language-specific scanner",
+				RelationScope: "external",
+				Resolution:    "name_only",
+				TargetKind:    "external",
+				Evidence: []Evidence{{
+					Kind:     "import_statement",
+					FilePath: file.Path,
+					Detail:   imported,
+				}},
+				WarningCodes: warningCodes,
 			})
 		}
 		importsByName := importedNamesFor(file.Path, content)
 		for _, from := range recordsByFile[file.Path] {
 			block := symbolBlockFromLines(lines, from)
-			for name := range callLikeIdentifiers(block) {
+			for _, name := range sortedKeysOf(callLikeIdentifiers(block)) {
 				if name == from.Name {
 					continue
 				}
+				// A container's block spans its members' definition lines, which
+				// look like calls (e.g. `def validate(self):`). Skip the names of
+				// direct children so a class is not credited with calling its own
+				// methods; the real call site lives in the calling function.
+				if childNamesByContainer[from.ID][name] {
+					continue
+				}
 				for _, to := range resolveCallTargets(name, from, symbolsByShortName[name], symbolsByFile[file.Path], importsByName) {
-					relations = append(relations, RelationRecord{
-						RecordType:   "relation",
-						FromID:       from.ID,
-						ToID:         to.ID,
-						Type:         "CALLS",
-						Confidence:   to.Confidence,
-						Reason:       to.Reason,
+					emit(RelationRecord{
+						RecordType:    "relation",
+						FromID:        from.ID,
+						ToID:          to.ID,
+						Type:          "CALLS",
+						Confidence:    to.Confidence,
+						Reason:        to.Reason,
+						RelationScope: to.Scope,
+						Resolution:    to.Resolution,
+						TargetKind:    "symbol",
+						Evidence: []Evidence{{
+							Kind:      "call_site",
+							FilePath:  from.FilePath,
+							StartLine: from.StartLine,
+							EndLine:   from.EndLine,
+							Detail:    name,
+						}},
 						WarningCodes: []string{},
 					})
 				}
@@ -658,30 +1215,641 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 				if _, ok := handledRoutes[route]; ok {
 					continue
 				}
+				emit(RelationRecord{
+					RecordType:    "relation",
+					FromID:        from.ID,
+					ToID:          externalID("route", route),
+					Type:          "HANDLES_ROUTE",
+					Confidence:    0.7,
+					Reason:        "route-like string literal found inside handler symbol",
+					RelationScope: "external",
+					Resolution:    "pattern",
+					TargetKind:    "route",
+					Evidence: []Evidence{{
+						Kind:      "route_literal",
+						FilePath:  from.FilePath,
+						StartLine: from.StartLine,
+						EndLine:   from.EndLine,
+						Detail:    route,
+					}},
+					WarningCodes: []string{},
+				})
+			}
+			httpAndChannels := spec.emits("HTTP_CALLS") || spec.emits("EMITS") || spec.emits("LISTENS_ON")
+			for _, call := range httpCalls(block) {
+				if !httpAndChannels {
+					break
+				}
+				confidence := 0.7
+				if call.Absolute {
+					confidence = 0.6 // host ignored; cross-service path match is weaker
+				}
+				emit(RelationRecord{
+					RecordType:    "relation",
+					FromID:        from.ID,
+					ToID:          externalID("route", call.Path),
+					Type:          "HTTP_CALLS",
+					Confidence:    confidence,
+					Reason:        "outbound HTTP client call to " + call.Method + " " + call.Path,
+					RelationScope: "external",
+					Resolution:    "pattern",
+					TargetKind:    "route",
+					Evidence: []Evidence{{
+						Kind:      "http_call_site",
+						FilePath:  from.FilePath,
+						StartLine: from.StartLine,
+						EndLine:   from.EndLine,
+						Detail:    call.Method + " " + call.Path,
+					}},
+					WarningCodes: []string{},
+				})
+			}
+			for _, event := range channelEvents(block) {
+				if !httpAndChannels {
+					break
+				}
+				emit(RelationRecord{
+					RecordType:    "relation",
+					FromID:        from.ID,
+					ToID:          externalID("channel", event.Name),
+					Type:          event.Relation,
+					Confidence:    0.6,
+					Reason:        "event/channel name detected by emit/listen pattern",
+					RelationScope: "external",
+					Resolution:    "pattern",
+					TargetKind:    "channel",
+					Evidence: []Evidence{{
+						Kind:      "channel_call_site",
+						FilePath:  from.FilePath,
+						StartLine: from.StartLine,
+						EndLine:   from.EndLine,
+						Detail:    event.Name,
+					}},
+					WarningCodes: []string{"WEAK_PATTERN"},
+				})
+			}
+			if spec.callResolution == "full" {
+				for _, r := range receiverCallRelations(from, block, methodsByContainer, symbolsByShortName) {
+					emit(r)
+				}
+			}
+			if spec.emits("READS_FIELD") || spec.emits("WRITES_FIELD") || spec.emits("ACCESSES") {
+				for _, r := range fieldAccessRelations(from, block, fieldsByContainer, symbolsByShortName) {
+					emit(r)
+				}
+			}
+		}
+
+		if spec.emits("EXTENDS") || spec.emits("IMPLEMENTS") || spec.emits("OVERRIDES") {
+			for _, r := range typeRelationsForFile(repoKey, file, content, recordsByFile[file.Path], symbolsByFile[file.Path], symbolsByShortName) {
+				if r.Type == "EXTENDS" || r.Type == "IMPLEMENTS" {
+					inheritanceEdges = append(inheritanceEdges, r)
+				}
+				emit(r)
+			}
+		}
+	}
+
+	if spec.emits("OVERRIDES") {
+		for _, r := range overrideRelations(inheritanceEdges, methodsByContainer) {
+			emit(r)
+		}
+	}
+	if spec.emits("USES_TYPE") {
+		for _, r := range usesTypeRelations(recordsByFile, symbolsByFile, symbolsByShortName) {
+			emit(r)
+		}
+	}
+	if spec.emits("TESTS") {
+		for _, r := range testRelations(recordsByFile, symbolsByShortName) {
+			emit(r)
+		}
+	}
+	if spec.emits("RESOURCE_DEPENDS_ON") {
+		for _, r := range resourceDependsOnRelations(recordsByFile, readContent) {
+			emit(r)
+		}
+	}
+	if spec.emits("SIMILAR_TO") {
+		for _, r := range similarityRelations(recordsByFile, readContent) {
+			emit(r)
+		}
+	}
+}
+
+// typeRelationsForFile emits EXTENDS/IMPLEMENTS relations for the type symbols
+// in a file. Most languages declare supertypes in the class/interface header,
+// which the parser captured in the symbol signature; Rust states them in impl
+// blocks and supertrait bounds, scanned from content. Each supertype is
+// resolved to a local type symbol when possible, otherwise to an external type
+// endpoint.
+func typeRelationsForFile(repoKey string, file FileRecord, content string, fileSymbols, sameFileSymbols []SymbolRecord, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
+	var relations []RelationRecord
+	for _, symbol := range fileSymbols {
+		if !typeLikeKind(symbol.Kind) {
+			continue
+		}
+		for _, edge := range supertypesFromSignature(symbol.Language, symbol.Signature) {
+			relations = append(relations, buildTypeRelation(repoKey, symbol, edge.Super, edge.Relation, edge.Confidence, sameFileSymbols, symbolsByShortName))
+		}
+	}
+	if file.Language == "Rust" {
+		for _, edge := range rustSupertypeEdges(content) {
+			anchor, ok := firstTypeLikeNamed(fileSymbols, edge.Anchor)
+			if !ok {
+				continue
+			}
+			relations = append(relations, buildTypeRelation(repoKey, anchor, edge.Super, edge.Relation, edge.Confidence, sameFileSymbols, symbolsByShortName))
+		}
+	}
+	return relations
+}
+
+func buildTypeRelation(repoKey string, anchor SymbolRecord, super, relation string, baseConfidence float64, sameFileSymbols []SymbolRecord, symbolsByShortName map[string][]SymbolRecord) RelationRecord {
+	toID := externalID("type", super)
+	targetKind, resolution, scope := "external", "name_only", "external"
+	confidence := minFloat(baseConfidence, 0.8)
+	if sym, ok := firstTypeLikeNamed(sameFileSymbols, super); ok && sym.ID != anchor.ID {
+		toID, targetKind, resolution, scope, confidence = sym.ID, "symbol", "exact", "file", baseConfidence
+	} else if sym, ok := firstTypeLikeNamed(symbolsByShortName[super], super); ok && sym.ID != anchor.ID {
+		toID, targetKind, resolution, scope, confidence = sym.ID, "symbol", "name_only", "module", minFloat(baseConfidence, 0.85)
+	}
+	return RelationRecord{
+		RecordType:    "relation",
+		FromID:        anchor.ID,
+		ToID:          toID,
+		Type:          relation,
+		Confidence:    confidence,
+		Reason:        typeRelationReason(relation, resolution),
+		RelationScope: scope,
+		Resolution:    resolution,
+		TargetKind:    targetKind,
+		Evidence: []Evidence{{
+			Kind:      "type_declaration",
+			FilePath:  anchor.FilePath,
+			StartLine: anchor.StartLine,
+			EndLine:   anchor.EndLine,
+			Detail:    super,
+		}},
+		WarningCodes: []string{},
+	}
+}
+
+// receiverCallRelations resolves `receiver.method()` calls inside a caller's
+// body to the target method symbol by inferring the receiver's type. Two cases
+// are handled: a this/self receiver resolves to the caller's enclosing type,
+// and a local variable resolves through a constructor assignment in the same
+// body. These calls are otherwise dropped (a name preceded by '.'/'->' is not a
+// plain call), so this is purely additive. Type containers are skipped as
+// callers — calls live in methods/functions, not in the class declaration.
+func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
+	if typeLikeKind(from.Kind) {
+		return nil
+	}
+	calls := receiverCalls(block)
+	if len(calls) == 0 {
+		return nil
+	}
+	varTypes := localVarTypes(block)
+	var relations []RelationRecord
+	for _, call := range calls {
+		var targetID string
+		confidence := 0.85
+		reason := "method call resolved via inferred receiver type"
+		switch call.Receiver {
+		case "this", "self":
+			if from.ContainerID == "" {
+				continue
+			}
+			targetID = from.ContainerID
+			confidence = 0.9
+			reason = "method call on this/self resolved to the enclosing type"
+		default:
+			typeName, ok := varTypes[call.Receiver]
+			if !ok {
+				continue
+			}
+			sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+			if !ok {
+				continue
+			}
+			targetID = sym.ID
+		}
+		method, ok := methodsByContainer[targetID][call.Method]
+		if !ok || method.ID == from.ID {
+			continue
+		}
+		scope := "file"
+		if method.FilePath != from.FilePath {
+			scope = "module"
+		}
+		relations = append(relations, RelationRecord{
+			RecordType:    "relation",
+			FromID:        from.ID,
+			ToID:          method.ID,
+			Type:          "CALLS",
+			Confidence:    confidence,
+			Reason:        reason,
+			RelationScope: scope,
+			Resolution:    "type_inferred",
+			TargetKind:    "symbol",
+			Evidence: []Evidence{{
+				Kind:      "call_site",
+				FilePath:  from.FilePath,
+				StartLine: from.StartLine,
+				EndLine:   from.EndLine,
+				Detail:    call.Receiver + "." + call.Method,
+			}},
+			WarningCodes: []string{},
+		})
+	}
+	return relations
+}
+
+// resourceDependsOnRelations builds the Terraform/HCL resource graph: a
+// resource or module block that references another block (e.g. aws_vpc.main.id,
+// module.network.id) emits RESOURCE_DEPENDS_ON to that block. Block symbols are
+// indexed by their referenceable name (the form used inside expressions).
+func resourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+	index := map[string]SymbolRecord{}
+	for _, symbols := range recordsByFile {
+		for _, symbol := range symbols {
+			if symbol.Language == "HCL" && symbol.Kind == "block" {
+				index[hclReferenceableName(symbol.QualifiedName)] = symbol
+			}
+		}
+	}
+	if len(index) == 0 {
+		return nil
+	}
+
+	paths := make([]string, 0, len(recordsByFile))
+	for path := range recordsByFile {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	var relations []RelationRecord
+	for _, path := range paths {
+		content, ok := readContent(path)
+		if !ok {
+			continue
+		}
+		lines := strings.Split(content, "\n")
+		for _, symbol := range recordsByFile[path] {
+			if symbol.Language != "HCL" || symbol.Kind != "block" {
+				continue
+			}
+			body := symbolBlockFromLines(lines, symbol)
+			emitted := map[string]bool{}
+			for _, ref := range hclReferences(body) {
+				target, ok := lookupHCLReference(index, ref)
+				if !ok || target.ID == symbol.ID || emitted[target.ID] {
+					continue
+				}
+				emitted[target.ID] = true
 				relations = append(relations, RelationRecord{
-					RecordType:   "relation",
-					FromID:       from.ID,
-					ToID:         externalID("route", route),
-					Type:         "HANDLES_ROUTE",
-					Confidence:   0.7,
-					Reason:       "route-like string literal found inside handler symbol",
+					RecordType:    "relation",
+					FromID:        symbol.ID,
+					ToID:          target.ID,
+					Type:          "RESOURCE_DEPENDS_ON",
+					Confidence:    0.85,
+					Reason:        "block references another block",
+					RelationScope: "module",
+					Resolution:    "exact",
+					TargetKind:    "symbol",
+					Evidence: []Evidence{{
+						Kind:      "hcl_reference",
+						FilePath:  symbol.FilePath,
+						StartLine: symbol.StartLine,
+						EndLine:   symbol.EndLine,
+						Detail:    ref,
+					}},
 					WarningCodes: []string{},
 				})
 			}
 		}
 	}
-
-	sort.Slice(relations, func(i, j int) bool {
-		left := relations[i].Type + relations[i].FromID + relations[i].ToID
-		right := relations[j].Type + relations[j].FromID + relations[j].ToID
-		return left < right
-	})
-	return dedupeRelations(relations)
+	return relations
 }
 
-func externalRecords(relations []RelationRecord, files []FileRecord, recordsByFile map[string][]SymbolRecord) []ExternalRecord {
-	seen := map[string]ExternalRecord{}
-	filesByID := map[string]FileRecord{}
+// hclReferenceableName maps a block symbol name to the form used to reference it
+// in expressions: resource.<t>.<n> -> <t>.<n>, variable.<n> -> var.<n>; module,
+// data, output, local blocks are referenced by their own name.
+func hclReferenceableName(name string) string {
+	switch {
+	case strings.HasPrefix(name, "resource."):
+		return strings.TrimPrefix(name, "resource.")
+	case strings.HasPrefix(name, "variable."):
+		return "var." + strings.TrimPrefix(name, "variable.")
+	default:
+		return name
+	}
+}
+
+// lookupHCLReference matches a dotted reference token against the index, trying
+// the longest prefix first (aws_vpc.main.id -> aws_vpc.main).
+func lookupHCLReference(index map[string]SymbolRecord, ref string) (SymbolRecord, bool) {
+	parts := strings.Split(ref, ".")
+	for n := len(parts); n >= 2; n-- {
+		if sym, ok := index[strings.Join(parts[:n], ".")]; ok {
+			return sym, true
+		}
+	}
+	return SymbolRecord{}, false
+}
+
+// testRelations links a test function to the unit it covers, using the test
+// naming convention (TestFoo -> Foo, test_foo -> foo, FooTest -> Foo). The
+// subject must resolve to a non-test function/method/type symbol. This is a
+// high-precision convention match, not call-graph analysis.
+func testRelations(recordsByFile map[string][]SymbolRecord, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
+	paths := make([]string, 0, len(recordsByFile))
+	for path := range recordsByFile {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	var relations []RelationRecord
+	for _, path := range paths {
+		for _, symbol := range recordsByFile[path] {
+			if symbol.Kind != "function" && symbol.Kind != "method" {
+				continue
+			}
+			subject := testSubjectName(symbol.Name)
+			if subject == "" {
+				continue
+			}
+			target, ok := firstTestSubject(symbolsByShortName[subject], symbol.ID)
+			if !ok {
+				continue
+			}
+			relations = append(relations, RelationRecord{
+				RecordType:    "relation",
+				FromID:        symbol.ID,
+				ToID:          target.ID,
+				Type:          "TESTS",
+				Confidence:    0.8,
+				Reason:        "test name maps to the unit under test by convention",
+				RelationScope: "module",
+				Resolution:    "name_only",
+				TargetKind:    "symbol",
+				Evidence: []Evidence{{
+					Kind:      "test_name",
+					FilePath:  symbol.FilePath,
+					StartLine: symbol.StartLine,
+					EndLine:   symbol.EndLine,
+					Detail:    subject,
+				}},
+				WarningCodes: []string{},
+			})
+		}
+	}
+	return relations
+}
+
+// firstTestSubject returns the first non-test function/method/type symbol with
+// the given name (other than the test itself), the unit a test covers.
+func firstTestSubject(candidates []SymbolRecord, testID string) (SymbolRecord, bool) {
+	for _, symbol := range candidates {
+		if symbol.ID == testID || isTestName(symbol.Name) {
+			continue
+		}
+		if symbol.Kind == "function" || symbol.Kind == "method" || typeLikeKind(symbol.Kind) {
+			return symbol, true
+		}
+	}
+	return SymbolRecord{}, false
+}
+
+// usesTypeRelations emits USES_TYPE from a function/method to each local type
+// symbol whose name appears in its signature. Resolving against known type
+// symbols means primitives and library types (which have no local symbol) are
+// naturally excluded, keeping the edges high-precision without per-language
+// signature grammar.
+func usesTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFile, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
+	paths := make([]string, 0, len(recordsByFile))
+	for path := range recordsByFile {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	var relations []RelationRecord
+	for _, path := range paths {
+		for _, symbol := range recordsByFile[path] {
+			if symbol.Kind != "function" && symbol.Kind != "method" || symbol.Signature == "" {
+				continue
+			}
+			names := make([]string, 0)
+			seen := map[string]bool{}
+			for name := range identifiersIn(symbol.Signature) {
+				if name == symbol.Name || seen[name] {
+					continue
+				}
+				seen[name] = true
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			emitted := map[string]bool{}
+			for _, name := range names {
+				target, resolution, scope, confidence, ok := resolveTypeReference(name, symbol, symbolsByFile[path], symbolsByShortName)
+				if !ok || emitted[target.ID] {
+					continue
+				}
+				emitted[target.ID] = true
+				relations = append(relations, RelationRecord{
+					RecordType:    "relation",
+					FromID:        symbol.ID,
+					ToID:          target.ID,
+					Type:          "USES_TYPE",
+					Confidence:    confidence,
+					Reason:        "type referenced in signature",
+					RelationScope: scope,
+					Resolution:    resolution,
+					TargetKind:    "symbol",
+					Evidence: []Evidence{{
+						Kind:      "signature",
+						FilePath:  symbol.FilePath,
+						StartLine: symbol.StartLine,
+						EndLine:   symbol.EndLine,
+						Detail:    name,
+					}},
+					WarningCodes: []string{},
+				})
+			}
+		}
+	}
+	return relations
+}
+
+func resolveTypeReference(name string, from SymbolRecord, sameFile []SymbolRecord, symbolsByShortName map[string][]SymbolRecord) (SymbolRecord, string, string, float64, bool) {
+	if sym, ok := firstTypeLikeNamed(sameFile, name); ok && sym.ID != from.ID {
+		return sym, "exact", "file", 0.85, true
+	}
+	if sym, ok := firstTypeLikeNamed(symbolsByShortName[name], name); ok && sym.ID != from.ID {
+		return sym, "name_only", "module", 0.75, true
+	}
+	return SymbolRecord{}, "", "", 0, false
+}
+
+// fieldAccessRelations resolves `receiver.field` accesses in a function/method
+// body to a known local field symbol and emits READS_FIELD, WRITES_FIELD, or
+// ACCESSES (address-of). The receiver type is resolved from this/self, a Go
+// method receiver variable, or a local constructor assignment; accesses whose
+// receiver type cannot be resolved, or whose field is not a known local field,
+// are skipped (no guessed edges).
+func fieldAccessRelations(from SymbolRecord, block string, fieldsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
+	if from.Kind != "function" && from.Kind != "method" {
+		return nil
+	}
+	selfContainers := map[string]string{} // receiver var -> container symbol id
+	if from.ContainerID != "" {
+		selfContainers["this"] = from.ContainerID
+		selfContainers["self"] = from.ContainerID
+		if recv := goReceiverVar(from.Signature); recv != "" {
+			selfContainers[recv] = from.ContainerID
+		}
+	}
+	varTypes := localVarTypes(block)
+
+	var relations []RelationRecord
+	emitted := map[string]bool{}
+	for _, access := range fieldAccesses(block) {
+		containerID := ""
+		confidence := 0.9
+		if id, ok := selfContainers[access.Receiver]; ok {
+			containerID = id
+		} else if typeName, ok := varTypes[access.Receiver]; ok {
+			if sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName); ok {
+				containerID = sym.ID
+				confidence = 0.85
+			}
+		}
+		if containerID == "" {
+			continue
+		}
+		field, ok := fieldsByContainer[containerID][access.Field]
+		if !ok || field.ID == from.ID {
+			continue
+		}
+		relationType := "READS_FIELD"
+		switch {
+		case access.AddressOf:
+			relationType = "ACCESSES"
+		case access.Write:
+			relationType = "WRITES_FIELD"
+		}
+		key := relationType + "\x00" + field.ID
+		if emitted[key] {
+			continue
+		}
+		emitted[key] = true
+		scope := "file"
+		if field.FilePath != from.FilePath {
+			scope = "module"
+		}
+		relations = append(relations, RelationRecord{
+			RecordType:    "relation",
+			FromID:        from.ID,
+			ToID:          field.ID,
+			Type:          relationType,
+			Confidence:    confidence,
+			Reason:        "field access resolved via inferred receiver type",
+			RelationScope: scope,
+			Resolution:    "type_inferred",
+			TargetKind:    "symbol",
+			Evidence: []Evidence{{
+				Kind:      "field_access",
+				FilePath:  from.FilePath,
+				StartLine: from.StartLine,
+				EndLine:   from.EndLine,
+				Detail:    access.Receiver + "." + access.Field,
+			}},
+			WarningCodes: []string{},
+		})
+	}
+	return relations
+}
+
+// overrideRelations derives OVERRIDES edges from resolved EXTENDS/IMPLEMENTS
+// relations: a method on the subtype that shares a name with a method on the
+// resolved supertype overrides it. It only fires when both the supertype and
+// its methods are known local symbols, so external base classes never produce
+// guessed overrides.
+func overrideRelations(relations []RelationRecord, methodsByContainer map[string]map[string]SymbolRecord) []RelationRecord {
+	var overrides []RelationRecord
+	for _, relation := range relations {
+		if relation.Type != "EXTENDS" && relation.Type != "IMPLEMENTS" {
+			continue
+		}
+		if relation.TargetKind != "symbol" {
+			continue
+		}
+		subMethods := methodsByContainer[relation.FromID]
+		superMethods := methodsByContainer[relation.ToID]
+		if len(subMethods) == 0 || len(superMethods) == 0 {
+			continue
+		}
+		for _, name := range sortedKeysOf(subMethods) {
+			subMethod := subMethods[name]
+			superMethod, ok := superMethods[name]
+			if !ok || superMethod.ID == subMethod.ID {
+				continue
+			}
+			overrides = append(overrides, RelationRecord{
+				RecordType:    "relation",
+				FromID:        subMethod.ID,
+				ToID:          superMethod.ID,
+				Type:          "OVERRIDES",
+				Confidence:    0.85,
+				Reason:        "method shares a name with a method on a resolved supertype",
+				RelationScope: "module",
+				Resolution:    "exact",
+				TargetKind:    "symbol",
+				Evidence: []Evidence{{
+					Kind:      "method_declaration",
+					FilePath:  subMethod.FilePath,
+					StartLine: subMethod.StartLine,
+					EndLine:   subMethod.EndLine,
+					Detail:    name,
+				}},
+				WarningCodes: []string{},
+			})
+		}
+	}
+	return overrides
+}
+
+func firstTypeLikeNamed(records []SymbolRecord, name string) (SymbolRecord, bool) {
+	for _, symbol := range records {
+		if symbol.Name == name && typeLikeKind(symbol.Kind) {
+			return symbol, true
+		}
+	}
+	return SymbolRecord{}, false
+}
+
+func typeRelationReason(relation, resolution string) string {
+	switch resolution {
+	case "exact":
+		return relation + " resolved to local type declaration"
+	case "name_only":
+		return relation + " matched a type by name"
+	default:
+		return relation + " references an external type"
+	}
+}
+
+func minFloat(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// recordIndexes builds id lookups for file and symbol records.
+func recordIndexes(files []FileRecord, recordsByFile map[string][]SymbolRecord) (map[string]SymbolRecord, map[string]FileRecord) {
+	filesByID := make(map[string]FileRecord, len(files))
 	for _, file := range files {
 		filesByID[file.ID] = file
 	}
@@ -691,45 +1859,35 @@ func externalRecords(relations []RelationRecord, files []FileRecord, recordsByFi
 			symbolsByID[symbol.ID] = symbol
 		}
 	}
-	for _, relation := range relations {
-		for _, id := range []string{relation.FromID, relation.ToID} {
-			if !strings.HasPrefix(id, "external:") {
-				continue
-			}
-			kind, value := externalParts(id)
-			record := ExternalRecord{
-				RecordType: "external",
-				ID:         id,
-				Kind:       kind,
-				Value:      value,
-				External:   true,
-			}
-			if source, ok := boundarySourceLocation(relation, id, symbolsByID, filesByID); ok {
-				record.FilePath = source.FilePath
-				record.StartLine = source.StartLine
-				record.EndLine = source.EndLine
-				record.Signature = source.Signature
-				record.Language = source.Language
-				record.External = false
-				record.SourceSymbol = source.SourceSymbol
-				record.SourceDetails = relation.Reason
-			}
-			if existing, ok := seen[id]; ok && existing.FilePath != "" {
-				continue
-			}
-			seen[id] = record
-		}
+	return symbolsByID, filesByID
+}
+
+// externalRecordFor builds the external endpoint record implied by one relation
+// endpoint id, attaching a boundary source location when the relation provides
+// one.
+func externalRecordFor(relation RelationRecord, id string, symbolsByID map[string]SymbolRecord, filesByID map[string]FileRecord) ExternalRecord {
+	kind, value := externalParts(id)
+	record := ExternalRecord{RecordType: "external", ID: id, Kind: kind, Value: value, External: true}
+	if source, ok := boundarySourceLocation(relation, id, symbolsByID, filesByID); ok {
+		record.FilePath = source.FilePath
+		record.StartLine = source.StartLine
+		record.EndLine = source.EndLine
+		record.Signature = source.Signature
+		record.Language = source.Language
+		record.External = false
+		record.SourceSymbol = source.SourceSymbol
+		record.SourceDetails = relation.Reason
 	}
-	ids := make([]string, 0, len(seen))
-	for id := range seen {
-		ids = append(ids, id)
+	return record
+}
+
+// mergeExternalRecord keeps the best record per id: a source-located record
+// wins over a bare external endpoint.
+func mergeExternalRecord(seen map[string]ExternalRecord, record ExternalRecord) {
+	if existing, ok := seen[record.ID]; ok && existing.FilePath != "" {
+		return
 	}
-	sort.Strings(ids)
-	out := make([]ExternalRecord, 0, len(ids))
-	for _, id := range ids {
-		out = append(out, seen[id])
-	}
-	return out
+	seen[record.ID] = record
 }
 
 type boundarySource struct {
@@ -789,26 +1947,23 @@ func externalParts(id string) (string, string) {
 	return kind, value
 }
 
-func snapshotSource(ctx context.Context, repo string, useHead bool, ignoreFiles, includeFiles []string) ([]string, map[string]string, error) {
+// openSource lists the repository's files and returns a per-file content reader
+// that fetches one file at a time (from the git HEAD tree or the working tree),
+// so the snapshot never holds all source content in memory.
+func openSource(ctx context.Context, repo string, useHead bool, ignoreFiles, includeFiles []string) ([]string, contentReader, error) {
 	if useHead {
 		paths, err := gitutil.ListFiles(ctx, repo, "HEAD")
 		if err != nil {
 			return nil, nil, err
 		}
-		contentByFile := map[string]string{}
-		for _, path := range paths {
-			if !Supported(path) {
-				continue
-			}
+		read := func(path string) (string, bool) {
 			content, ok, err := gitutil.ShowFile(ctx, repo, "HEAD", path)
-			if err != nil {
-				return nil, nil, err
+			if err != nil || !ok {
+				return "", false
 			}
-			if ok {
-				contentByFile[path] = content
-			}
+			return content, true
 		}
-		return paths, contentByFile, nil
+		return paths, read, nil
 	}
 	ignores, err := loadWorktreeIgnoreMatcher(repo, ignoreFiles, includeFiles)
 	if err != nil {
@@ -818,23 +1973,19 @@ func snapshotSource(ctx context.Context, repo string, useHead bool, ignoreFiles,
 	if err != nil {
 		return nil, nil, err
 	}
-	contentByFile := map[string]string{}
-	for _, path := range paths {
-		if !Supported(path) {
-			continue
-		}
+	read := func(path string) (string, bool) {
 		full := filepath.Join(repo, filepath.FromSlash(path))
 		info, err := os.Lstat(full)
 		if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			continue
+			return "", false
 		}
 		content, err := os.ReadFile(full)
 		if err != nil {
-			continue
+			return "", false
 		}
-		contentByFile[path] = string(content)
+		return string(content), true
 	}
-	return paths, contentByFile, nil
+	return paths, read, nil
 }
 
 func workingTreeFiles(repo string, ignores ignoreMatcher) ([]string, error) {
@@ -886,6 +2037,93 @@ func firstError(errs ...error) error {
 		}
 	}
 	return nil
+}
+
+// importCapableExtension reports whether importsFor has a dedicated import
+// scanner for the extension. It must mirror the non-nil cases in importsFor;
+// TestCapabilitiesReportRelationSupportPerLanguage guards key cases against
+// drift. Extensions that fall through importsFor's default (or explicitly
+// return nil, like .hcl/.tf/.tfvars/.sql/.yaml) are not import-capable.
+func importCapableExtension(ext string) bool {
+	switch ext {
+	case ".bash", ".sh", ".zsh",
+		".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx",
+		".cs", ".cue", ".ex", ".exs", ".go", ".gradle", ".groovy",
+		".java", ".kt", ".kts", ".scala", ".sc", ".sbt", ".py",
+		".js", ".jsx", ".ts", ".tsx", ".lua", ".ml", ".mli", ".php",
+		".proto", ".rb", ".rs", ".swift":
+		return true
+	default:
+		return false
+	}
+}
+
+// isRelativeImportSpec reports whether an import spec is a repo-relative path
+// (rather than an external package) for the importing file's language.
+func isRelativeImportSpec(importingPath, spec string) bool {
+	switch strings.ToLower(filepath.Ext(importingPath)) {
+	case ".js", ".jsx", ".ts", ".tsx":
+		return strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../")
+	case ".py":
+		return strings.HasPrefix(spec, ".")
+	default:
+		return false
+	}
+}
+
+// resolveLocalImport maps a relative import spec to a known repo file path. It
+// returns the resolved path and true when the import points at a file present
+// in the snapshot, so the IMPORTS edge can target a local file record instead
+// of an external endpoint. Only relative specs are resolved here; module-root
+// resolution via manifests is a later WP3 step.
+func resolveLocalImport(importingPath, spec string, knownFiles map[string]bool) (string, bool) {
+	switch strings.ToLower(filepath.Ext(importingPath)) {
+	case ".js", ".jsx", ".ts", ".tsx":
+		if !strings.HasPrefix(spec, "./") && !strings.HasPrefix(spec, "../") {
+			return "", false
+		}
+		base := filepath.ToSlash(filepath.Join(filepath.Dir(importingPath), spec))
+		exts := []string{".ts", ".tsx", ".js", ".jsx"}
+		var candidates []string
+		if filepath.Ext(base) != "" {
+			candidates = append(candidates, base)
+		}
+		for _, ext := range exts {
+			candidates = append(candidates, base+ext)
+		}
+		for _, ext := range exts {
+			candidates = append(candidates, filepath.ToSlash(filepath.Join(base, "index"+ext)))
+		}
+		for _, candidate := range candidates {
+			if knownFiles[candidate] {
+				return candidate, true
+			}
+		}
+		return "", false
+	case ".py":
+		if !strings.HasPrefix(spec, ".") {
+			return "", false
+		}
+		level := 0
+		for level < len(spec) && spec[level] == '.' {
+			level++
+		}
+		module := spec[level:]
+		dir := filepath.Dir(importingPath)
+		for i := 1; i < level; i++ {
+			dir = filepath.Dir(dir)
+		}
+		relPath := strings.ReplaceAll(module, ".", "/")
+		base := filepath.ToSlash(filepath.Join(dir, relPath))
+		for _, candidate := range []string{base + ".py", filepath.ToSlash(filepath.Join(base, "__init__.py"))} {
+			if knownFiles[candidate] {
+				return candidate, true
+			}
+		}
+		return "", false
+	default:
+		return "", false
+	}
 }
 
 func importsFor(path, content string) []string {
@@ -1158,12 +2396,28 @@ func maskBytes(bytes []byte, start, end int) {
 	}
 }
 
+var (
+	routeLiteralRe = regexp.MustCompile(`["'](/[A-Za-z0-9_\-/{}:.]*)["']`)
+	// routingCallRe marks a line as a route registration: an HTTP-verb or
+	// routing method call, or a mapping decorator, immediately before "(".
+	// Requiring this context next to the path literal avoids treating every
+	// path-like string (URLs, file paths, test data) as a handled route.
+	routingCallRe = regexp.MustCompile(`(?i)\b(get|post|put|patch|delete|head|options|route|handle|handlefunc|group|mapping|getmapping|postmapping|putmapping|deletemapping|patchmapping|requestmapping)\s*\(`)
+)
+
+// routeLiterals extracts route paths that appear on a line carrying routing
+// context, so plain path-like string literals are not misreported as handled
+// routes.
 func routeLiterals(content string) []string {
-	re := regexp.MustCompile(`["'](/[A-Za-z0-9_\-/{}/:.]*)["']`)
 	seen := map[string]struct{}{}
-	for _, match := range re.FindAllStringSubmatch(content, -1) {
-		if len(match) > 1 {
-			seen[match[1]] = struct{}{}
+	for _, line := range strings.Split(content, "\n") {
+		if !routingCallRe.MatchString(line) || httpClientRe.MatchString(line) {
+			continue // skip client HTTP calls; those are HTTP_CALLS, not routes
+		}
+		for _, match := range routeLiteralRe.FindAllStringSubmatch(line, -1) {
+			if len(match) > 1 {
+				seen[match[1]] = struct{}{}
+			}
 		}
 	}
 	return sortedKeys(seen)
@@ -1395,6 +2649,17 @@ func contentHash(content []byte) string {
 func sortedKeys(set map[string]struct{}) []string {
 	out := make([]string, 0, len(set))
 	for key := range set {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// sortedKeysOf returns a map's string keys in sorted order, so iterating them
+// yields a deterministic stream order regardless of Go's randomized map order.
+func sortedKeysOf[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for key := range m {
 		out = append(out, key)
 	}
 	sort.Strings(out)
