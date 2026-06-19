@@ -14,7 +14,9 @@ versioned, confidence-scored facts that `entire-brain` can persist and query.
 - Tree-sitter-backed parser boundary is isolated behind `internal/sem`.
 - Supports core languages: Bash, C/C++, C#, CUE, Elixir, Go, Groovy,
   HCL/Terraform, Java, JavaScript/TypeScript, Kotlin, Lua, OCaml, PHP,
-  Protocol Buffers, Python, Ruby, Rust, Scala, SQL, Swift, YAML/GitHub Actions.
+  Protocol Buffers, Python, Ruby, Rust, Scala, SQL, Swift, YAML/GitHub Actions,
+  plus fallback extraction for Dockerfile, Kustomize, JSON/JSON5, TOML, XML,
+  Make, Markdown, HTML/CSS, Vue, and Svelte.
 - Emits semantic diffs for commits, checkpoints, and arbitrary refs.
 - Emits provider records via `snapshot`, `symbols`, and `edges`.
 - Emits `doctor`, `version`, and `capabilities`.
@@ -35,7 +37,8 @@ versioned, confidence-scored facts that `entire-brain` can persist and query.
 - Service and async boundaries are emitted: route/client/channel edges plus
   `HANDLES_GRPC`, `HANDLES_GRAPHQL`, `HANDLES_TRPC`, and `ASYNC_CALLS`.
 - IaC/configuration extraction emits HCL dependencies and `CONFIGURES` edges for
-  HCL blocks, Dockerfile stages, Kubernetes-looking YAML, and GitHub Actions.
+  HCL blocks, Dockerfile stages, Kubernetes-looking YAML, Kustomize, common
+  JSON/TOML/XML project config, Make targets, and GitHub Actions.
 - Recent-history co-change extraction emits bounded `FILE_CHANGES_WITH` edges.
 - Language coverage is reported exactly through capabilities, warnings, and
   partial failures. Additional formats remain an expansion goal.
@@ -116,8 +119,9 @@ Remain out of provider scope or later expansion:
 
 - cross-repo `CROSS_*` edges, unless Brain asks for provider-level support.
 - deeper data-flow beyond high-confidence local return-flow.
-- Kustomize-specific semantics beyond generic Kubernetes YAML.
-- more file formats and parser grammars.
+- deeper semantics for fallback formats where only lightweight structure is
+  currently emitted.
+- more parser grammars when a real repo or benchmark fixture needs them.
 
 ## Work Packages
 

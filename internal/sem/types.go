@@ -436,6 +436,13 @@ func configTargets(symbol SymbolRecord, content string) []configTarget {
 				EvidenceKind: "workflow_yaml",
 			}}
 		}
+	case "Kustomize":
+		return []configTarget{{
+			Name:         "kustomize/" + symbol.Name,
+			Confidence:   0.85,
+			Reason:       "Kustomize manifest configures Kubernetes overlays and resources",
+			EvidenceKind: "kustomize_yaml",
+		}}
 	case "Dockerfile":
 		if symbol.Kind == "stage" {
 			return []configTarget{{
@@ -443,6 +450,42 @@ func configTargets(symbol SymbolRecord, content string) []configTarget {
 				Confidence:   0.85,
 				Reason:       "Dockerfile stage configures a container image",
 				EvidenceKind: "dockerfile_stage",
+			}}
+		}
+	case "JSON", "JSON5":
+		if symbol.Kind == "section" {
+			return []configTarget{{
+				Name:         strings.ToLower(symbol.Language) + "/" + symbol.Name,
+				Confidence:   0.65,
+				Reason:       "JSON project/config key detected",
+				EvidenceKind: "json_config",
+			}}
+		}
+	case "TOML":
+		if symbol.Kind == "section" || symbol.Kind == "setting" {
+			return []configTarget{{
+				Name:         "toml/" + symbol.Name,
+				Confidence:   0.7,
+				Reason:       "TOML project/config entry detected",
+				EvidenceKind: "toml_config",
+			}}
+		}
+	case "XML":
+		if symbol.Kind == "element" {
+			return []configTarget{{
+				Name:         "xml/" + symbol.Name,
+				Confidence:   0.65,
+				Reason:       "XML project/config element detected",
+				EvidenceKind: "xml_config",
+			}}
+		}
+	case "Make":
+		if symbol.Kind == "target" {
+			return []configTarget{{
+				Name:         "make/" + symbol.Name,
+				Confidence:   0.75,
+				Reason:       "Make target configures build automation",
+				EvidenceKind: "make_target",
 			}}
 		}
 	}

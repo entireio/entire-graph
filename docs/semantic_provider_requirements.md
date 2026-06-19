@@ -333,7 +333,8 @@ Relation vocabulary:
   the module.
 - `CONFIGURES` — configuration artifacts point at stable external config nodes:
   HCL blocks, Dockerfile stages, Kubernetes-looking YAML sections, and GitHub
-  Actions workflow jobs.
+  Actions workflow jobs, Kustomize sections, common JSON/TOML/XML project
+  configuration, and Make targets.
 - `DATA_FLOWS` — high-confidence local return-flow edge from a callee to a
   caller when a callable returns the result of another resolved callable.
 - `ASYNC_CALLS` — async call-site edge for language-level async constructs such
@@ -357,9 +358,10 @@ uses the `I<Upper>` naming heuristic at lower confidence. Per-language support
 is reported in `capabilities` under `relation_support_by_language`.
 
 Relation extraction continues to grow. Remaining known expansion areas are
-additional language/config formats and deeper flow analysis; the current
-contract already emits positional type, field-access, async, service-boundary,
-configuration, high-confidence return-flow, and bounded co-change edges.
+deeper fallback-format semantics and deeper flow analysis; the current contract
+already emits positional type, field-access, async, service-boundary,
+configuration, high-confidence return-flow, bounded co-change edges, and
+lightweight inventory for common web/document/config formats.
 
 ## Warnings And Partial Failures
 

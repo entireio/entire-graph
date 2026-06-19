@@ -81,11 +81,12 @@ Field access (`READS_FIELD`/`WRITES_FIELD`/`ACCESSES`) is emitted for accesses
 resolved through the receiver's type (see "Field-access relations" below).
 
 Service/configuration/type/flow expansion is now present in the baseline:
-`HANDLES_GRPC`, `HANDLES_GRAPHQL`, `HANDLES_TRPC`, Dockerfile/Kubernetes/HCL
-`CONFIGURES`, positional `PARAM_TYPE`/`RETURNS_TYPE`, `ASYNC_CALLS`,
-`DATA_FLOWS`, and bounded `FILE_CHANGES_WITH` edges. Remaining work is deeper
-coverage, not absence of the relation families: Kustomize-specific semantics,
-more file formats, richer data-flow, and larger corpus proof runs.
+`HANDLES_GRPC`, `HANDLES_GRAPHQL`, `HANDLES_TRPC`, Dockerfile/Kubernetes/
+Kustomize/HCL/common project-config `CONFIGURES`, positional
+`PARAM_TYPE`/`RETURNS_TYPE`, `ASYNC_CALLS`, `DATA_FLOWS`, and bounded
+`FILE_CHANGES_WITH` edges. Remaining work is deeper coverage, not absence of
+the relation families: richer data-flow, higher-precision fallback-format
+semantics, and larger corpus proof runs.
 
 ## Known False Positives / Negatives
 

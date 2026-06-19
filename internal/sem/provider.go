@@ -81,6 +81,12 @@ var ooRelationSupport = map[string][]string{
 	"Protocol Buffers": {"HANDLES_GRPC"},
 	"YAML":             {"CONFIGURES"},
 	"Dockerfile":       {"CONFIGURES"},
+	"Kustomize":        {"CONFIGURES"},
+	"JSON":             {"CONFIGURES"},
+	"JSON5":            {"CONFIGURES"},
+	"TOML":             {"CONFIGURES"},
+	"XML":              {"CONFIGURES"},
+	"Make":             {"CONFIGURES"},
 }
 
 // schemaFeatures lists the optional schema 1.1 features this build emits. It

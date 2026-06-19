@@ -1,0 +1,7 @@
+resources:
+  - deployment.yaml
+patches:
+  - path: patch.yaml
+images:
+  - name: api
+    newTag: v2

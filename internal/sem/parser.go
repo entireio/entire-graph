@@ -58,15 +58,22 @@ var treeSitterLanguages = map[string]languageSpec{
 	".groovy":     {language: "Groovy", grammar: groovy.GetLanguage()},
 	".h":          {language: "C", grammar: c.GetLanguage()},
 	".hcl":        {language: "HCL", grammar: hcl.GetLanguage()},
+	".html":       {language: "HTML"},
 	".hh":         {language: "C++", grammar: cpp.GetLanguage()},
 	".hpp":        {language: "C++", grammar: cpp.GetLanguage()},
 	".hxx":        {language: "C++", grammar: cpp.GetLanguage()},
 	".java":       {language: "Java", grammar: java.GetLanguage()},
 	".js":         {language: "JavaScript", grammar: javascript.GetLanguage()},
+	".json":       {language: "JSON"},
+	".json5":      {language: "JSON5"},
 	".jsx":        {language: "JavaScript", grammar: treesittertsx.GetLanguage()},
 	".kt":         {language: "Kotlin", grammar: kotlin.GetLanguage()},
 	".kts":        {language: "Kotlin", grammar: kotlin.GetLanguage()},
+	".css":        {language: "CSS"},
 	".lua":        {language: "Lua", grammar: lua.GetLanguage()},
+	".markdown":   {language: "Markdown"},
+	".md":         {language: "Markdown"},
+	".mk":         {language: "Make"},
 	".ml":         {language: "OCaml", grammar: ocaml.GetLanguage()},
 	".mli":        {language: "OCaml", grammar: ocaml.GetLanguage()},
 	".php":        {language: "PHP", grammar: php.GetLanguage()},
@@ -80,10 +87,14 @@ var treeSitterLanguages = map[string]languageSpec{
 	".sh":         {language: "Bash", grammar: bash.GetLanguage()},
 	".sql":        {language: "SQL"},
 	".swift":      {language: "Swift", grammar: swift.GetLanguage()},
+	".svelte":     {language: "Svelte"},
 	".tf":         {language: "HCL", grammar: hcl.GetLanguage()},
 	".tfvars":     {language: "HCL", grammar: hcl.GetLanguage()},
+	".toml":       {language: "TOML"},
 	".ts":         {language: "TypeScript", grammar: treesitterts.GetLanguage()},
 	".tsx":        {language: "TypeScript", grammar: treesittertsx.GetLanguage()},
+	".vue":        {language: "Vue"},
+	".xml":        {language: "XML"},
 	".yaml":       {language: "YAML", grammar: treesitteryaml.GetLanguage()},
 	".yml":        {language: "YAML", grammar: treesitteryaml.GetLanguage()},
 	".zsh":        {language: "Bash", grammar: bash.GetLanguage()},
@@ -167,6 +178,12 @@ func languageForPath(path string) (languageSpec, bool) {
 	if base == "dockerfile" || strings.HasPrefix(base, "dockerfile.") {
 		return languageSpec{language: "Dockerfile"}, true
 	}
+	if base == "makefile" || strings.HasPrefix(base, "makefile.") || base == "gnumakefile" {
+		return languageSpec{language: "Make"}, true
+	}
+	if base == "kustomization.yaml" || base == "kustomization.yml" || base == "kustomization" {
+		return languageSpec{language: "Kustomize"}, true
+	}
 	spec, ok := treeSitterLanguages[strings.ToLower(filepath.Ext(path))]
 	return spec, ok
 }
@@ -175,6 +192,24 @@ func fallbackEntities(path, content, language string) []Entity {
 	switch language {
 	case "Dockerfile":
 		return dockerfileEntities(content)
+	case "Kustomize":
+		return kustomizeEntities(content)
+	case "JSON", "JSON5":
+		return jsonLikeEntities(content)
+	case "TOML":
+		return tomlEntities(content)
+	case "XML":
+		return xmlEntities(content)
+	case "Make":
+		return makeEntities(content)
+	case "Markdown":
+		return markdownEntities(content)
+	case "HTML":
+		return htmlEntities(path, content)
+	case "CSS":
+		return cssEntities(content)
+	case "Vue", "Svelte":
+		return componentEntities(path, content, language)
 	default:
 		return nil
 	}
@@ -222,6 +257,203 @@ func dockerfileEntities(content string) []Entity {
 		})
 	}
 	return entities
+}
+
+func kustomizeEntities(content string) []Entity {
+	return yamlKeyEntities(content, "kustomize")
+}
+
+func yamlKeyEntities(content, prefix string) []Entity {
+	lines := strings.Split(content, "\n")
+	keyRe := regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_-]*):`)
+	var entities []Entity
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		match := keyRe.FindStringSubmatch(trimmed)
+		if match == nil {
+			continue
+		}
+		name := match[1]
+		entities = append(entities, simpleFallbackEntity("section", prefix+"/"+name, "section "+name, i+1, i+1, trimmed))
+	}
+	return entities
+}
+
+func jsonLikeEntities(content string) []Entity {
+	lines := strings.Split(content, "\n")
+	keyRe := regexp.MustCompile(`^\s*["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*:`)
+	var entities []Entity
+	seen := map[string]bool{}
+	for i, line := range lines {
+		match := keyRe.FindStringSubmatch(line)
+		if match == nil || seen[match[1]] {
+			continue
+		}
+		seen[match[1]] = true
+		entities = append(entities, simpleFallbackEntity("section", match[1], "json key "+match[1], i+1, i+1, strings.TrimSpace(line)))
+	}
+	return entities
+}
+
+func tomlEntities(content string) []Entity {
+	lines := strings.Split(content, "\n")
+	sectionRe := regexp.MustCompile(`^\s*\[+\s*([A-Za-z0-9_.-]+)\s*\]+`)
+	keyRe := regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*=`)
+	var entities []Entity
+	seen := map[string]bool{}
+	for i, line := range lines {
+		name := ""
+		kind := "section"
+		if match := sectionRe.FindStringSubmatch(line); match != nil {
+			name = match[1]
+		} else if match := keyRe.FindStringSubmatch(line); match != nil {
+			name = match[1]
+			kind = "setting"
+		}
+		if name == "" || seen[kind+"\x00"+name] {
+			continue
+		}
+		seen[kind+"\x00"+name] = true
+		entities = append(entities, simpleFallbackEntity(kind, name, kind+" "+name, i+1, i+1, strings.TrimSpace(line)))
+	}
+	return entities
+}
+
+func xmlEntities(content string) []Entity {
+	lines := strings.Split(content, "\n")
+	tagRe := regexp.MustCompile(`<\s*([A-Za-z_][A-Za-z0-9_.:-]*)\b`)
+	var entities []Entity
+	seen := map[string]bool{}
+	for i, line := range lines {
+		match := tagRe.FindStringSubmatch(line)
+		if match == nil || strings.HasPrefix(match[1], "?") || seen[match[1]] {
+			continue
+		}
+		seen[match[1]] = true
+		entities = append(entities, simpleFallbackEntity("element", match[1], "xml element "+match[1], i+1, i+1, strings.TrimSpace(line)))
+	}
+	return entities
+}
+
+func makeEntities(content string) []Entity {
+	lines := strings.Split(content, "\n")
+	targetRe := regexp.MustCompile(`^([A-Za-z0-9_.%/-]+)\s*:`)
+	var entities []Entity
+	for i, line := range lines {
+		if strings.HasPrefix(line, "\t") || strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		match := targetRe.FindStringSubmatch(line)
+		if match == nil || strings.Contains(match[1], "=") {
+			continue
+		}
+		entities = append(entities, simpleFallbackEntity("target", match[1], "make target "+match[1], i+1, i+1, strings.TrimSpace(line)))
+	}
+	return entities
+}
+
+func markdownEntities(content string) []Entity {
+	lines := strings.Split(content, "\n")
+	headingRe := regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
+	fenceRe := regexp.MustCompile("^```\\s*([A-Za-z0-9_+-]*)")
+	var entities []Entity
+	fenceIndex := 0
+	for i, line := range lines {
+		if match := headingRe.FindStringSubmatch(line); match != nil {
+			name := strings.TrimSpace(strings.Trim(match[2], "#"))
+			entities = append(entities, simpleFallbackEntity("section", slugName(name), "markdown heading "+name, i+1, i+1, strings.TrimSpace(line)))
+			continue
+		}
+		if match := fenceRe.FindStringSubmatch(line); match != nil {
+			fenceIndex++
+			lang := match[1]
+			if lang == "" {
+				lang = "text"
+			}
+			name := fmt.Sprintf("code_fence_%d_%s", fenceIndex, lang)
+			entities = append(entities, simpleFallbackEntity("code_fence", name, "markdown code fence "+lang, i+1, i+1, strings.TrimSpace(line)))
+		}
+	}
+	return entities
+}
+
+func htmlEntities(path, content string) []Entity {
+	lines := strings.Split(content, "\n")
+	idRe := regexp.MustCompile(`\bid\s*=\s*["']([^"']+)["']`)
+	var entities []Entity
+	seen := map[string]bool{}
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	entities = append(entities, simpleFallbackEntity("document", base, "html document "+base, 1, maxInt(1, len(lines)), base))
+	for i, line := range lines {
+		for _, match := range idRe.FindAllStringSubmatch(line, -1) {
+			name := slugName(match[1])
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			entities = append(entities, simpleFallbackEntity("element", name, "html id "+match[1], i+1, i+1, strings.TrimSpace(line)))
+		}
+	}
+	return entities
+}
+
+func cssEntities(content string) []Entity {
+	lines := strings.Split(content, "\n")
+	selectorRe := regexp.MustCompile(`^\s*([.#]?[A-Za-z_][A-Za-z0-9_-]*)\s*\{`)
+	var entities []Entity
+	for i, line := range lines {
+		match := selectorRe.FindStringSubmatch(line)
+		if match == nil {
+			continue
+		}
+		name := strings.TrimPrefix(strings.TrimPrefix(match[1], "."), "#")
+		entities = append(entities, simpleFallbackEntity("selector", name, "css selector "+match[1], i+1, i+1, strings.TrimSpace(line)))
+	}
+	return entities
+}
+
+func componentEntities(path, content, language string) []Entity {
+	lines := strings.Split(content, "\n")
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	entities := []Entity{simpleFallbackEntity("component", base, language+" component "+base, 1, maxInt(1, len(lines)), base)}
+	if language == "Vue" {
+		entities = append(entities, htmlEntities(path, content)...)
+	}
+	return entities
+}
+
+func simpleFallbackEntity(kind, name, signature string, startLine, endLine int, block string) Entity {
+	name = slugName(name)
+	if name == "" {
+		name = kind
+	}
+	return Entity{
+		Kind:        kind,
+		Name:        name,
+		Signature:   normalize(signature),
+		StartLine:   startLine,
+		EndLine:     endLine,
+		BodyHash:    hash(normalize(block)),
+		Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+	}
+}
+
+func slugName(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.Trim(name, `"'`)
+	name = regexp.MustCompile(`[^A-Za-z0-9_.:/-]+`).ReplaceAllString(name, "-")
+	name = strings.Trim(name, "-")
+	return name
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func walkEntities(node *sitter.Node, src []byte, language, scope string, entities *[]Entity) {
