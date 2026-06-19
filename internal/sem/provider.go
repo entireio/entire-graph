@@ -16,7 +16,6 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/suhaanthayyil/entire-sem/internal/gitutil"
@@ -795,18 +794,6 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 		},
 		Completeness: CompletenessReport{Languages: completenessLangs, Relations: relationsByType},
 	})
-}
-
-func maxRSSBytes() uint64 {
-	var ru syscall.Rusage
-	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
-		return 0
-	}
-	rss := uint64(ru.Maxrss)
-	if runtime.GOOS == "linux" {
-		rss *= 1024
-	}
-	return rss
 }
 
 // relationDedupKey hashes a relation's identity (from, to, type) to a compact
