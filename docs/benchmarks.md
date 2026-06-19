@@ -103,6 +103,12 @@ Treat the numbers as historical; re-run with the current streaming benchmark
   `E_FILE_TOO_LARGE` instead of being parsed, and C/C++ field symbols are
   suppressed. A Linux syntax-only run on this branch measured ~235k LOC/s over
   38.2M LOC.
+- **Syntax-only memory is compacted separately.** The syntax-only profile only
+  emits `DEFINES` and `CONTAINS`, so it does not need to retain full
+  `SymbolRecord` payloads after those records are streamed. A follow-on memory
+  run over Linux kept the same 3.37M symbols / 3.37M relations while reducing
+  peak RSS from ~5.82 GB to ~1.62 GB by retaining only structural symbol
+  metadata for phase 2.
 - **Peak memory scaled with repo size.** The in-memory snapshot accumulated
   every relation with its evidence and source contents, reaching ~20 GB RSS on
   tensorflow. The streaming path (`StreamSnapshot`, now the benchmark's measured

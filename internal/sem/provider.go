@@ -550,7 +550,9 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	var failures []PartialFailure
 	var files []FileRecord
 	recordsByFile := map[string][]SymbolRecord{}
+	structuralByFile := map[string][]structuralSymbol{}
 	symbolCount := 0
+	parsedFileCount := 0
 
 	// Phase 1: parse + emit file/symbol records, build indexes, discard content.
 	for _, path := range sc.paths {
@@ -639,6 +641,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 			return err
 		}
 		files = append(files, file)
+		parsedFileCount++
 		fileSymbols := entitySymbols(sc.key, path, language, entities)
 		fileSymbols = append(fileSymbols, syntheticBoundarySymbols(sc.key, path, language, content, fileSymbols)...)
 		for _, symbol := range fileSymbols {
@@ -646,7 +649,11 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 				return err
 			}
 		}
-		recordsByFile[path] = fileSymbols
+		if spec.name == ProfileSyntaxOnly {
+			structuralByFile[path] = compactStructuralSymbols(fileSymbols)
+		} else {
+			recordsByFile[path] = fileSymbols
+		}
 		symbolCount += len(fileSymbols)
 		lc := completenessLangs[language]
 		lc.Files++
@@ -655,7 +662,6 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	}
 
 	// Phase 2: resolve relations from indexes, re-reading content per file.
-	symbolsByID, filesByID := recordIndexes(files, recordsByFile)
 	// Relation dedup uses compact 64-bit hashed keys rather than the full
 	// from+to+type string, so the set's memory is ~one machine word per unique
 	// relation instead of a ~100-byte key. The set is bounded by the unique
@@ -666,7 +672,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	relationsByType := map[string]int{}
 	relationCount := 0
 	var emitErr error
-	forEachRelation(sc.key, files, recordsByFile, sc.read, spec, func(r RelationRecord) {
+	emitRelation := func(r RelationRecord, symbolsByID map[string]SymbolRecord, filesByID map[string]FileRecord) {
 		if emitErr != nil {
 			return
 		}
@@ -695,7 +701,17 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 		relationsByType[r.Type]++
 		relationCount++
 		emitErr = emit(r)
-	})
+	}
+	if spec.name == ProfileSyntaxOnly {
+		emitStructuralRelationsCompact(sc.key, files, structuralByFile, func(r RelationRecord) {
+			emitRelation(r, nil, nil)
+		})
+	} else {
+		symbolsByID, filesByID := recordIndexes(files, recordsByFile)
+		forEachRelation(sc.key, files, recordsByFile, sc.read, spec, func(r RelationRecord) {
+			emitRelation(r, symbolsByID, filesByID)
+		})
+	}
 	if emitErr != nil {
 		return emitErr
 	}
@@ -725,7 +741,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 		PartialFailures: failures,
 		Stats: ProviderStats{
 			Files:             len(files),
-			ParsedFiles:       len(recordsByFile),
+			ParsedFiles:       parsedFileCount,
 			Symbols:           symbolCount,
 			Relations:         relationCount,
 			PartialFailures:   len(failures),
@@ -1071,7 +1087,58 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 	return relations
 }
 
+type structuralSymbol struct {
+	ID          string
+	FilePath    string
+	ContainerID string
+}
+
+func compactStructuralSymbols(records []SymbolRecord) []structuralSymbol {
+	out := make([]structuralSymbol, 0, len(records))
+	for _, record := range records {
+		out = append(out, structuralSymbol{
+			ID:          record.ID,
+			FilePath:    record.FilePath,
+			ContainerID: record.ContainerID,
+		})
+	}
+	return out
+}
+
 func emitStructuralRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, emit func(RelationRecord)) {
+	for _, file := range files {
+		for _, symbol := range recordsByFile[file.Path] {
+			emit(RelationRecord{
+				RecordType:    "relation",
+				FromID:        fileID(repoKey, symbol.FilePath),
+				ToID:          symbol.ID,
+				Type:          "DEFINES",
+				Confidence:    1,
+				Reason:        "symbol parsed from file",
+				RelationScope: "file",
+				Resolution:    "exact",
+				TargetKind:    "symbol",
+				WarningCodes:  []string{},
+			})
+			if symbol.ContainerID != "" {
+				emit(RelationRecord{
+					RecordType:    "relation",
+					FromID:        symbol.ContainerID,
+					ToID:          symbol.ID,
+					Type:          "CONTAINS",
+					Confidence:    1,
+					Reason:        "symbol qualified name is nested in container",
+					RelationScope: "file",
+					Resolution:    "exact",
+					TargetKind:    "symbol",
+					WarningCodes:  []string{},
+				})
+			}
+		}
+	}
+}
+
+func emitStructuralRelationsCompact(repoKey string, files []FileRecord, recordsByFile map[string][]structuralSymbol, emit func(RelationRecord)) {
 	for _, file := range files {
 		for _, symbol := range recordsByFile[file.Path] {
 			emit(RelationRecord{
