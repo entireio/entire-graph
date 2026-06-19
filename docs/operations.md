@@ -34,4 +34,9 @@ ENTIRE_RELEASE_TARGETS="darwin/arm64 linux/amd64" scripts/release.sh
 `entire-sem` includes native tree-sitter parser bindings, so cross-platform
 artifacts require the matching cgo-capable compiler/toolchain for each requested
 target. The script records checksums for artifacts it successfully builds; it
-does not sign artifacts or publish them.
+also signs archives when a local signing key is explicitly configured:
+
+- `COSIGN_KEY=<key-ref>` with `cosign` on `PATH` writes `<archive>.sig`.
+- `GPG_SIGNING_KEY=<key-id>` with `gpg` on `PATH` writes `<archive>.asc`.
+
+The script does not publish artifacts.

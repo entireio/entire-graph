@@ -38,6 +38,18 @@ build_target() {
 	tar -C "$out_dir" -czf "$archive" "entire-sem-$version-$goos-$goarch"
 	rm -rf "$work"
 	shasum -a 256 "$archive" >> "$out_dir/SHA256SUMS"
+	sign_artifact "$archive"
+}
+
+sign_artifact() {
+	artifact=$1
+	if [ -n "${COSIGN_KEY:-}" ] && command -v cosign >/dev/null 2>&1; then
+		cosign sign-blob --yes --key "$COSIGN_KEY" --output-signature "$artifact.sig" "$artifact"
+		return
+	fi
+	if [ -n "${GPG_SIGNING_KEY:-}" ] && command -v gpg >/dev/null 2>&1; then
+		gpg --batch --yes --armor --detach-sign --local-user "$GPG_SIGNING_KEY" --output "$artifact.asc" "$artifact"
+	fi
 }
 
 for target in $targets; do
