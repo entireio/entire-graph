@@ -95,6 +95,20 @@ entire plugin install ./entire-sem --force
 After either install path, `entire sem ...` works anywhere the Entire CLI can
 find the managed plugin.
 
+For a one-command local source install, run:
+
+```sh
+scripts/install-local.sh
+```
+
+For local release archives with `SHA256SUMS`, run:
+
+```sh
+scripts/release.sh
+```
+
+See [docs/operations.md](docs/operations.md) for target and cgo details.
+
 ## Commands
 
 Compare one commit against its first parent:

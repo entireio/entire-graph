@@ -21,6 +21,14 @@ run = "go test -race ./..."
 description = "Build the plugin binary"
 run = "go build -o entire-sem ./cmd/entire-sem"
 
+[tasks.install]
+description = "Build and install the plugin into the local Entire CLI"
+run = "scripts/install-local.sh"
+
+[tasks.release]
+description = "Build checksum-backed release archives under dist/"
+run = "scripts/release.sh"
+
 [tasks.check]
 description = "Run formatting, vet, tests, and build"
 depends = ["fmt", "vet", "test:ci", "build"]
