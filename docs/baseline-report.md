@@ -109,7 +109,7 @@ Confidence bands follow the v2-plan schema section (`0.90-1.00 exact`,
   convention, and KEDA authentication refs resolve to TriggerAuthentication or
   ClusterTriggerAuthentication symbols. cert-manager issuer refs, External Secrets secret-store refs,
   Argo WorkflowTemplate refs, Argo Rollouts AnalysisTemplate refs, Tekton Pipeline/Task refs, Flux CD source,
-  chart, and dependsOn refs, Crossplane ProviderConfig/Composition/resource refs, and Istio VirtualService
+  chart, dependsOn, and HelmRelease valuesFrom ConfigMap/Secret refs, Crossplane ProviderConfig/Composition/resource refs, and Istio VirtualService
   route destinations and gateway refs, plus DestinationRule hosts, resolve to
   local resource symbols when those manifests are present).
 

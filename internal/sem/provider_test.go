@@ -1809,6 +1809,13 @@ metadata:
 spec:
   dependsOn:
     - name: redis
+  valuesFrom:
+    - kind: ConfigMap
+      name: podinfo-values
+      valuesKey: values.yaml
+    - kind: Secret
+      name: podinfo-secret-values
+      valuesKey: values.yaml
   chartRef:
     kind: HelmChart
     name: podinfo-chart
@@ -1818,6 +1825,22 @@ spec:
       sourceRef:
         kind: HelmRepository
         name: podinfo
+`)
+	writeFile(t, repo, "k8s/podinfo-values.yaml", `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: podinfo-values
+data:
+  values.yaml: |
+    replicaCount: 2
+`)
+	writeFile(t, repo, "k8s/podinfo-secret-values.yaml", `apiVersion: v1
+kind: Secret
+metadata:
+  name: podinfo-secret-values
+stringData:
+  values.yaml: |
+    token: test
 `)
 	writeFile(t, repo, "k8s/base-kustomization.yaml", `apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -1852,6 +1875,8 @@ spec:
 		{"HelmRelease.podinfo", "HelmRepository.podinfo"},
 		{"HelmRelease.podinfo", "HelmChart.podinfo-chart"},
 		{"HelmRelease.podinfo", "HelmRelease.redis"},
+		{"HelmRelease.podinfo", "ConfigMap.podinfo-values"},
+		{"HelmRelease.podinfo", "Secret.podinfo-secret-values"},
 		{"Kustomization.base", "GitRepository.platform-config"},
 		{"Kustomization.platform", "GitRepository.platform-config"},
 		{"Kustomization.platform", "Kustomization.base"},

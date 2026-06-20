@@ -2800,6 +2800,9 @@ func kubernetesResourceReferences(content string) []resourceReference {
 		for _, ref := range kubernetesNamedRefBlockReferences(content, "chartRef", "kubernetes_flux_chart_ref", 0.84, kubernetesDefaultReferenceKind("helmchart")) {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 		}
+		for _, ref := range kubernetesFluxHelmReleaseValuesFromReferences(content) {
+			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+		}
 	}
 	if kind := kubernetesFluxDependsOnKind(content); kind != "" {
 		for _, ref := range kubernetesNamedRefBlockReferences(content, "dependsOn", "kubernetes_flux_depends_on", 0.82, kubernetesDefaultReferenceKind(kind)) {
@@ -2928,6 +2931,17 @@ func kubernetesDefaultReferenceKind(defaultKind string) func(map[string]string) 
 
 func kubernetesExplicitReferenceKind(fields map[string]string) string {
 	return fields["kind"]
+}
+
+func kubernetesFluxHelmReleaseValuesFromReferences(content string) []resourceReference {
+	var refs []resourceReference
+	for _, ref := range kubernetesNamedRefBlockReferences(content, "valuesFrom", "kubernetes_flux_values_from", 0.82, kubernetesExplicitReferenceKind) {
+		switch strings.ToLower(ref.Kind) {
+		case "configmap", "secret":
+			refs = append(refs, ref)
+		}
+	}
+	return refs
 }
 
 func kubernetesFluxDependsOnKind(content string) string {

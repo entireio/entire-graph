@@ -199,9 +199,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   AnalysisTemplate refs, and Tekton `pipelineRef`/`taskRef`
   custom-controller references emit exact local `RESOURCE_DEPENDS_ON` edges
   when the referenced resource manifests are present in the snapshot.
-- Flux CD `sourceRef`, `chartRef`, and same-kind `dependsOn` references emit
-  exact local `RESOURCE_DEPENDS_ON` edges for `HelmChart` to `HelmRepository`,
-  `HelmRelease` to `HelmRepository`/`HelmChart`/`HelmRelease`, and Flux
+- Flux CD `sourceRef`, `chartRef`, same-kind `dependsOn`, and HelmRelease
+  `valuesFrom` references emit exact local `RESOURCE_DEPENDS_ON` edges for
+  `HelmChart` to `HelmRepository`, `HelmRelease` to
+  `HelmRepository`/`HelmChart`/`HelmRelease`/`ConfigMap`/`Secret`, and Flux
   `Kustomization` to `GitRepository`/`Kustomization` when the referenced
   manifests are present, including Flux `kustomization.yaml` files that would
   otherwise collide with ordinary Kustomize overlay detection.
@@ -336,6 +337,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
     149,934 LOC/s, max RSS 26,394,624 bytes, estimated output 1,902,621
     bytes; run after Flux `chartRef` and `dependsOn` resource-reference
     extraction.
+  - `bench/results/result-1781976172.json`: Go/gin, syntax-only, 28,618 LOC,
+    151,306 LOC/s, max RSS 29,294,592 bytes, estimated output 1,902,630
+    bytes; run after Flux HelmRelease `valuesFrom` ConfigMap/Secret
+    resource-reference extraction.
   - `bench/results/result-1781970127.json`: Go/gin, syntax-only, 28,618 LOC,
     150,315 LOC/s, max RSS 28,803,072 bytes, estimated output 1,902,626
     bytes; run after KEDA `authenticationRef` resource-reference extraction.
