@@ -332,8 +332,8 @@ Tasks:
 - Add route client detection:
   `fetch`, Axios, Python requests/httpx, Go `http.Client`, Java HTTP clients,
   C# HttpClient. JS/TS clients support deterministic static computed paths
-  built from known local route constants; arbitrary runtime builders remain out
-  of scope.
+  built from known local route constants or inline static array joins;
+  arbitrary runtime builders remain out of scope.
 - Emit `HANDLES_ROUTE` and `HTTP_CALLS` with method, path, confidence, and
   source evidence.
 - GraphQL operation literals and JS/TS resolver-map fields now emit
@@ -349,8 +349,9 @@ Acceptance:
 
 - Boundary fixtures produce first-class external route/service/channel records.
 - Client-to-route matching works within a repo when paths are static or
-  deterministic static computed paths; exact local matches also emit direct
-  `CALLS` from the client symbol to the local route handler/boundary symbol.
+  deterministic static computed paths, including inline static array joins;
+  exact local matches also emit direct `CALLS` from the client symbol to the
+  local route handler/boundary symbol.
 - Dynamic route/client paths do not create high-confidence false edges.
 - Static computed route paths compose when all parts are local string literals
   or known local route constants, including Express router mount prefixes,

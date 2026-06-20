@@ -46,6 +46,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 go test ./internal/sem -run 'TestStaticArrayJoinRouteExpressionComposesAndBridgesHTTPClient|TestComputedRouteExpressionComposesAndBridgesHTTPClient|TestBuildProviderSnapshotEmitsImportedExternalCalls' -count=1
 go test ./...
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-array-join-routes -min-loc-per-sec 1
+go test ./internal/sem -run 'TestStaticArrayJoinRouteExpressionComposesAndBridgesHTTPClient|TestHTTPCallsBridgeToLocalRouteHandler|TestComputedRouteExpressionComposesAndBridgesHTTPClient' -count=1
+go test ./...
+go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-array-join-http-calls -min-loc-per-sec 1
 ```
 
 ## Results
@@ -205,7 +208,8 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   template-literal route constants, chained concatenated constants, and static
   array joins, compose to route endpoints and bridge matching HTTP clients.
 - Deterministic static computed JS/TS HTTP client paths built from known local
-  route constants emit `HTTP_CALLS` and bridge to local handlers.
+  route constants or inline static array joins emit `HTTP_CALLS` and bridge to
+  local handlers.
 - Imported external calls for common Go, Python, and JS/TS import forms emit
   `CALLS` edges to `external:symbol:<module>.<member>` with
   `resolution: import_external`.
@@ -291,6 +295,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781970409.json`: Go/gin, syntax-only, 28,618 LOC,
     140,809 LOC/s, max RSS 28,934,144 bytes, estimated output 1,902,629
     bytes; run after static array-join route/import expression extraction.
+  - `bench/results/result-1781970688.json`: Go/gin, syntax-only, 28,618 LOC,
+    153,827 LOC/s, max RSS 27,148,288 bytes, estimated output 1,902,633
+    bytes; run after inline static array-join HTTP client extraction.
   - `bench/results/result-1781944479.json`: Go/gin, syntax-only, 28,618 LOC,
     154,533 LOC/s, max RSS 27,115,520 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781944927.json`: Go/gin, syntax-only, 28,618 LOC,

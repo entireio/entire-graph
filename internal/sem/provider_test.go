@@ -2644,7 +2644,7 @@ func TestStaticArrayJoinRouteExpressionComposesAndBridgesHTTPClient(t *testing.T
 		"  return \"ok\"\n"+
 		"}\n\n"+
 		"export async function ping(): Promise<unknown> {\n"+
-		"  return fetch(usersRoute)\n"+
+		"  return fetch([apiPrefix, version, \"users\", \":id\"].join(\"/\"))\n"+
 		"}\n")
 
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
