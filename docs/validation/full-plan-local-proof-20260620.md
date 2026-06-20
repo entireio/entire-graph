@@ -29,8 +29,10 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
   `package.json` `imports`, root import-map entries, and simple
   `tsconfig.json` path aliases resolve to local files with `import_resolved`
   metadata.
-- Python project/module imports resolve through local module files,
-  `pyproject.toml`, and `setup.cfg` with `import_resolved` metadata.
+- Python project/module imports resolve through local module files, repo-root
+  `src`, configured setuptools package-find roots, inferred nested `*/src`
+  namespace roots, `pyproject.toml`, and `setup.cfg` with `import_resolved`
+  metadata.
 - Exact Java/Kotlin/Scala-style package imports resolve through package
   declarations and source file names with `import_resolved` metadata.
 - Rust `crate::`, `self::`, and Cargo package-name imports resolve to local

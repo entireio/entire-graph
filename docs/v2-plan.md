@@ -185,7 +185,8 @@ Tasks:
   snapshot; root `package.json` package self-imports, `exports`, `imports`, root
   import maps, and simple `tsconfig.json` `compilerOptions.paths` aliases are
   implemented for local JS/TS files; `pyproject.toml` and `setup.cfg` package
-  names are implemented for local Python module resolution; exact
+  names, configured setuptools package-find roots, and inferred nested `*/src`
+  namespace roots are implemented for local Python module resolution; exact
   Java/Kotlin/Scala package imports are implemented through package declarations
   and source file names; Cargo package names are implemented for conventional
   local Rust module files. Maven/Gradle

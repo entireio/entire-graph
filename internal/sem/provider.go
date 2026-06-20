@@ -3374,19 +3374,21 @@ func resolveLocalImport(importingPath, spec string, knownFiles map[string]bool) 
 }
 
 type manifestImportResolver struct {
-	goModule         string
-	goPackages       map[string]string
-	jsPackageName    string
-	jsPackageExports map[string]string
-	jsPackageImports map[string]string
-	jsImportMap      map[string]string
-	jsModuleFiles    map[string]string
-	tsPathMappings   []tsPathMapping
-	pythonPackages   []string
-	pythonModules    map[string]string
-	jvmTypes         map[string]string
-	rustCrateName    string
-	rustModules      map[string]string
+	goModule          string
+	goPackages        map[string]string
+	jsPackageName     string
+	jsPackageExports  map[string]string
+	jsPackageImports  map[string]string
+	jsImportMap       map[string]string
+	jsModuleFiles     map[string]string
+	tsPathMappings    []tsPathMapping
+	pythonPackages    []string
+	pythonSourceRoots []string
+	pythonModules     map[string]string
+	pythonNamespaces  map[string]bool
+	jvmTypes          map[string]string
+	rustCrateName     string
+	rustModules       map[string]string
 }
 
 type manifestImportResolution struct {
@@ -3403,7 +3405,7 @@ type tsPathMapping struct {
 }
 
 func buildManifestImportResolver(files []FileRecord, readContent contentReader) manifestImportResolver {
-	resolver := manifestImportResolver{goPackages: map[string]string{}, jsPackageExports: map[string]string{}, jsPackageImports: map[string]string{}, jsImportMap: map[string]string{}, jsModuleFiles: map[string]string{}, pythonModules: map[string]string{}, jvmTypes: map[string]string{}, rustModules: map[string]string{}}
+	resolver := manifestImportResolver{goPackages: map[string]string{}, jsPackageExports: map[string]string{}, jsPackageImports: map[string]string{}, jsImportMap: map[string]string{}, jsModuleFiles: map[string]string{}, pythonSourceRoots: []string{"src"}, pythonModules: map[string]string{}, pythonNamespaces: map[string]bool{}, jvmTypes: map[string]string{}, rustModules: map[string]string{}}
 	if content, ok := readContent("go.mod"); ok {
 		resolver.goModule = parseGoModulePath(content)
 	}
@@ -3423,9 +3425,11 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 	}
 	if content, ok := readContent("pyproject.toml"); ok {
 		resolver.pythonPackages = append(resolver.pythonPackages, parsePyProjectName(content))
+		resolver.pythonSourceRoots = append(resolver.pythonSourceRoots, parsePyProjectPythonSourceRoots(content)...)
 	}
 	if content, ok := readContent("setup.cfg"); ok {
 		resolver.pythonPackages = append(resolver.pythonPackages, parseSetupCFGName(content))
+		resolver.pythonSourceRoots = append(resolver.pythonSourceRoots, parseSetupCFGPythonSourceRoots(content)...)
 	}
 	resolver.pythonPackages = normalizePythonPackageNames(resolver.pythonPackages)
 	if content, ok := readContent("Cargo.toml"); ok {
@@ -3489,10 +3493,18 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 	}
 	sort.Strings(pyPaths)
+	resolver.pythonSourceRoots = normalizePythonSourceRoots(append(resolver.pythonSourceRoots, inferPythonSourceRoots(pyPaths)...))
+	pyFileSet := map[string]bool{}
 	for _, path := range pyPaths {
-		for _, module := range pythonModuleKeysForPath(path) {
-			if _, exists := resolver.pythonModules[module]; !exists {
-				resolver.pythonModules[module] = path
+		pyFileSet[path] = true
+	}
+	for _, path := range pyPaths {
+		for _, key := range pythonModuleKeysForPath(path, resolver.pythonSourceRoots, pyFileSet) {
+			if _, exists := resolver.pythonModules[key.Module]; !exists {
+				resolver.pythonModules[key.Module] = path
+				if key.Namespace {
+					resolver.pythonNamespaces[key.Module] = true
+				}
 			}
 		}
 	}
@@ -3698,6 +3710,26 @@ func parsePyProjectName(content string) string {
 	return ""
 }
 
+func parsePyProjectPythonSourceRoots(content string) []string {
+	inSetuptoolsFind := false
+	var roots []string
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	for scanner.Scan() {
+		line := strings.TrimSpace(stripTOMLComment(scanner.Text()))
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			inSetuptoolsFind = line == "[tool.setuptools.packages.find]"
+			continue
+		}
+		if inSetuptoolsFind && strings.HasPrefix(line, "where") {
+			roots = append(roots, parsePythonSourceRootValues(line)...)
+		}
+	}
+	return normalizePythonSourceRoots(roots)
+}
+
 func parseSetupCFGName(content string) string {
 	inMetadata := false
 	scanner := bufio.NewScanner(strings.NewReader(content))
@@ -3717,6 +3749,26 @@ func parseSetupCFGName(content string) string {
 		}
 	}
 	return ""
+}
+
+func parseSetupCFGPythonSourceRoots(content string) []string {
+	inFind := false
+	var roots []string
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			inFind = strings.EqualFold(line, "[options.packages.find]")
+			continue
+		}
+		if inFind && strings.HasPrefix(strings.ToLower(line), "where") {
+			roots = append(roots, parsePythonSourceRootValues(line)...)
+		}
+	}
+	return normalizePythonSourceRoots(roots)
 }
 
 func parseCargoPackageName(content string) string {
@@ -4049,6 +4101,11 @@ func (resolver manifestImportResolver) resolvePythonImport(importingPath, spec s
 	confidence := 0.88
 	reason := "Python module import resolved through local module files"
 	evidenceKind := "python_module_import"
+	if resolver.pythonNamespaces[spec] {
+		confidence = 0.89
+		reason = "Python namespace package import resolved through discovered source roots"
+		evidenceKind = "python_namespace_import"
+	}
 	for _, name := range resolver.pythonPackages {
 		if spec == name || strings.HasPrefix(spec, name+".") {
 			confidence = 0.9
@@ -4066,7 +4123,12 @@ func (resolver manifestImportResolver) resolvePythonImport(importingPath, spec s
 	}, true
 }
 
-func pythonModuleKeysForPath(path string) []string {
+type pythonModuleKey struct {
+	Module    string
+	Namespace bool
+}
+
+func pythonModuleKeysForPath(path string, sourceRoots []string, pyFileSet map[string]bool) []pythonModuleKey {
 	path = filepath.ToSlash(path)
 	if !strings.HasSuffix(path, ".py") {
 		return nil
@@ -4075,18 +4137,98 @@ func pythonModuleKeysForPath(path string) []string {
 	if strings.HasSuffix(withoutExt, "/__init__") {
 		withoutExt = strings.TrimSuffix(withoutExt, "/__init__")
 	}
-	var keys []string
-	add := func(module string) {
+	var keys []pythonModuleKey
+	seen := map[string]bool{}
+	add := func(module string, namespace bool) {
 		module = strings.Trim(strings.ReplaceAll(filepath.ToSlash(module), "/", "."), ".")
-		if module != "" {
-			keys = append(keys, module)
+		if module != "" && !seen[module] {
+			seen[module] = true
+			keys = append(keys, pythonModuleKey{Module: module, Namespace: namespace})
 		}
 	}
-	add(withoutExt)
-	if strings.HasPrefix(withoutExt, "src/") {
-		add(strings.TrimPrefix(withoutExt, "src/"))
+	add(withoutExt, false)
+	for _, root := range sourceRoots {
+		root = strings.Trim(filepath.ToSlash(root), "/")
+		if root == "" || !strings.HasPrefix(withoutExt, root+"/") {
+			continue
+		}
+		add(strings.TrimPrefix(withoutExt, root+"/"), pythonPathUnderNamespaceRoot(path, root, pyFileSet))
 	}
 	return keys
+}
+
+func parsePythonSourceRootValues(line string) []string {
+	parts := strings.SplitN(line, "=", 2)
+	if len(parts) != 2 || !strings.EqualFold(strings.TrimSpace(parts[0]), "where") {
+		return nil
+	}
+	value := strings.TrimSpace(parts[1])
+	if value == "" {
+		return nil
+	}
+	var roots []string
+	if strings.HasPrefix(value, "[") {
+		matches := regexp.MustCompile(`["']([^"']+)["']`).FindAllStringSubmatch(value, -1)
+		for _, match := range matches {
+			roots = append(roots, match[1])
+		}
+		return roots
+	}
+	for _, part := range strings.Split(value, ",") {
+		part = strings.Trim(strings.TrimSpace(part), `"'`)
+		if part != "" {
+			roots = append(roots, part)
+		}
+	}
+	return roots
+}
+
+func normalizePythonSourceRoots(roots []string) []string {
+	seen := map[string]bool{}
+	var normalized []string
+	for _, root := range roots {
+		root = strings.Trim(filepath.ToSlash(strings.TrimSpace(root)), "/")
+		if root == "" || root == "." || seen[root] {
+			continue
+		}
+		seen[root] = true
+		normalized = append(normalized, root)
+	}
+	sort.Slice(normalized, func(i, j int) bool {
+		if len(normalized[i]) == len(normalized[j]) {
+			return normalized[i] < normalized[j]
+		}
+		return len(normalized[i]) > len(normalized[j])
+	})
+	return normalized
+}
+
+func inferPythonSourceRoots(paths []string) []string {
+	seen := map[string]bool{}
+	var roots []string
+	for _, path := range paths {
+		parts := strings.Split(filepath.ToSlash(path), "/")
+		for i, part := range parts {
+			if part != "src" || i >= len(parts)-1 {
+				continue
+			}
+			root := strings.Join(parts[:i+1], "/")
+			if root != "" && !seen[root] {
+				seen[root] = true
+				roots = append(roots, root)
+			}
+		}
+	}
+	return normalizePythonSourceRoots(roots)
+}
+
+func pythonPathUnderNamespaceRoot(path, sourceRoot string, pyFileSet map[string]bool) bool {
+	withoutRoot := strings.TrimPrefix(filepath.ToSlash(path), strings.Trim(filepath.ToSlash(sourceRoot), "/")+"/")
+	parts := strings.Split(withoutRoot, "/")
+	if len(parts) < 2 || parts[0] == "" {
+		return false
+	}
+	return !pyFileSet[strings.Trim(filepath.ToSlash(sourceRoot), "/")+"/"+parts[0]+"/__init__.py"]
 }
 
 func normalizePythonPackageNames(names []string) []string {

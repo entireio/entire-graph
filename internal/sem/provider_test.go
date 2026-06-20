@@ -332,6 +332,78 @@ def call():
 	}
 }
 
+func TestPythonNamespaceImportsResolveThroughDiscoveredSourceRoots(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "services/api/src/acme_ns/widgets/service.py", `def run():
+    return "ok"
+`)
+	writeFile(t, repo, "services/api/src/acme_ns/widgets/consumer.py", `import acme_ns.widgets.service
+
+def call():
+    return acme_ns.widgets.service.run()
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := fileID(snapshot.Header.RepoKey, "services/api/src/acme_ns/widgets/service.py")
+	var found RelationRecord
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "IMPORTS" && strings.HasSuffix(relation.FromID, "file:services/api/src/acme_ns/widgets/consumer.py") && relation.ToID == target {
+			found = relation
+			break
+		}
+	}
+	if found.FromID == "" {
+		t.Fatalf("missing Python namespace import to %s in %#v", target, snapshot.Relations)
+	}
+	if found.Resolution != "import_resolved" || found.RelationScope != "module" || found.TargetKind != "file" || found.Confidence < 0.89 {
+		t.Fatalf("unexpected Python namespace metadata: %#v", found)
+	}
+	if len(found.Evidence) != 1 || found.Evidence[0].Kind != "python_namespace_import" {
+		t.Fatalf("unexpected Python namespace evidence: %#v", found.Evidence)
+	}
+}
+
+func TestPythonImportsResolveThroughConfiguredPackageFindRoots(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "pyproject.toml", `[tool.setuptools.packages.find]
+where = ["lib"]
+`)
+	writeFile(t, repo, "lib/acme_lib/__init__.py", "")
+	writeFile(t, repo, "lib/acme_lib/service.py", `def run():
+    return "ok"
+`)
+	writeFile(t, repo, "lib/acme_lib/consumer.py", `import acme_lib.service
+
+def call():
+    return acme_lib.service.run()
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := fileID(snapshot.Header.RepoKey, "lib/acme_lib/service.py")
+	var found RelationRecord
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "IMPORTS" && strings.HasSuffix(relation.FromID, "file:lib/acme_lib/consumer.py") && relation.ToID == target {
+			found = relation
+			break
+		}
+	}
+	if found.FromID == "" {
+		t.Fatalf("missing configured-root Python import to %s in %#v", target, snapshot.Relations)
+	}
+	if found.Resolution != "import_resolved" || found.RelationScope != "module" || found.TargetKind != "file" || found.Confidence < 0.88 {
+		t.Fatalf("unexpected configured-root Python import metadata: %#v", found)
+	}
+	if len(found.Evidence) != 1 || found.Evidence[0].Kind != "python_module_import" {
+		t.Fatalf("unexpected configured-root Python import evidence: %#v", found.Evidence)
+	}
+}
+
 func TestSetupCFGNameParsingNormalizesPythonPackage(t *testing.T) {
 	name := parseSetupCFGName(`[metadata]
 Name = acme-tools
