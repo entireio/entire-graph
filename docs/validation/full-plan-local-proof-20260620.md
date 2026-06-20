@@ -10,6 +10,7 @@ go run ./cmd/entire-sem capabilities --json
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile full -provider-version codex-full-plan -out bench/results
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.json -languages C -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results -max-rss-bytes 5000000000
+go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
 ```
 
 ## Results
@@ -28,6 +29,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.json -languages C -limi
     44,070 LOC/s.
   - `bench/results/result-1781937376.json`: C/Linux, syntax-only, 39,798,167
     LOC, 205,436 LOC/s, max RSS 1,634,385,920 bytes.
+  - `bench/results/result-1781938318.json`: Go/gin, syntax-only, 28,618 LOC,
+    124,871 LOC/s, max RSS 27,639,808 bytes, output 1,938,906 bytes.
 
 ## Remaining Honesty Notes
 
