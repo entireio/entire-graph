@@ -169,11 +169,12 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   `workflowTemplateRef`/`templateRef`, and Tekton `pipelineRef`/`taskRef`
   custom-controller references emit exact local `RESOURCE_DEPENDS_ON` edges
   when the referenced resource manifests are present in the snapshot.
-- Flux CD `sourceRef` references emit exact local `RESOURCE_DEPENDS_ON` edges
-  for `HelmRelease` to `HelmRepository` and Flux `Kustomization` to
-  `GitRepository` when the referenced source manifests are present, including
-  Flux `kustomization.yaml` files that would otherwise collide with ordinary
-  Kustomize overlay detection.
+- Flux CD `sourceRef`, `chartRef`, and same-kind `dependsOn` references emit
+  exact local `RESOURCE_DEPENDS_ON` edges for `HelmChart` to `HelmRepository`,
+  `HelmRelease` to `HelmRepository`/`HelmChart`/`HelmRelease`, and Flux
+  `Kustomization` to `GitRepository`/`Kustomization` when the referenced
+  manifests are present, including Flux `kustomization.yaml` files that would
+  otherwise collide with ordinary Kustomize overlay detection.
 - Crossplane `providerConfigRef`, `compositionRef`, and explicit `resourceRef`
   references emit exact local `RESOURCE_DEPENDS_ON` edges to ProviderConfig,
   Composition, and composite resource manifests when the referenced resources
@@ -275,6 +276,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781969539.json`: Go/gin, syntax-only, 28,618 LOC,
     139,805 LOC/s, max RSS 28,852,224 bytes, estimated output 1,902,629
     bytes; run after JS/TS GraphQL resolver-map extraction.
+  - `bench/results/result-1781969714.json`: Go/gin, syntax-only, 28,618 LOC,
+    149,934 LOC/s, max RSS 26,394,624 bytes, estimated output 1,902,621
+    bytes; run after Flux `chartRef` and `dependsOn` resource-reference
+    extraction.
   - `bench/results/result-1781944479.json`: Go/gin, syntax-only, 28,618 LOC,
     154,533 LOC/s, max RSS 27,115,520 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781944927.json`: Go/gin, syntax-only, 28,618 LOC,

@@ -2750,8 +2750,18 @@ func kubernetesResourceReferences(content string) []resourceReference {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 		}
 	}
-	if kubernetesManifestHasAnyKind(content, "HelmRelease", "Kustomization", "ImageRepository", "ImagePolicy", "ImageUpdateAutomation") {
+	if kubernetesManifestHasAnyKind(content, "HelmRelease", "HelmChart", "Kustomization", "ImageRepository", "ImagePolicy", "ImageUpdateAutomation") {
 		for _, ref := range kubernetesNamedRefBlockReferences(content, "sourceRef", "kubernetes_flux_source_ref", 0.84, kubernetesExplicitReferenceKind) {
+			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+		}
+	}
+	if kubernetesManifestHasAnyKind(content, "HelmRelease") {
+		for _, ref := range kubernetesNamedRefBlockReferences(content, "chartRef", "kubernetes_flux_chart_ref", 0.84, kubernetesDefaultReferenceKind("helmchart")) {
+			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+		}
+	}
+	if kind := kubernetesFluxDependsOnKind(content); kind != "" {
+		for _, ref := range kubernetesNamedRefBlockReferences(content, "dependsOn", "kubernetes_flux_depends_on", 0.82, kubernetesDefaultReferenceKind(kind)) {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 		}
 	}
@@ -2872,6 +2882,17 @@ func kubernetesDefaultReferenceKind(defaultKind string) func(map[string]string) 
 
 func kubernetesExplicitReferenceKind(fields map[string]string) string {
 	return fields["kind"]
+}
+
+func kubernetesFluxDependsOnKind(content string) string {
+	switch {
+	case kubernetesManifestHasAnyKind(content, "HelmRelease"):
+		return "helmrelease"
+	case kubernetesManifestHasAnyKind(content, "Kustomization"):
+		return "kustomization"
+	default:
+		return ""
+	}
 }
 
 func kubernetesManifestHasCrossplaneReferences(content string) bool {

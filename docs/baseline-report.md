@@ -97,8 +97,8 @@ Confidence bands follow the v2-plan schema section (`0.90-1.00 exact`,
   resolve to local resource symbols when those manifests are present. KEDA
   ScaledObject name-only scale targets resolve to local Deployment symbols by
   convention. cert-manager issuer refs, External Secrets secret-store refs,
-  Argo WorkflowTemplate refs, Tekton Pipeline/Task refs, Flux CD source refs,
-  Crossplane ProviderConfig/Composition/resource refs, and Istio VirtualService
+  Argo WorkflowTemplate refs, Tekton Pipeline/Task refs, Flux CD source,
+  chart, and dependsOn refs, Crossplane ProviderConfig/Composition/resource refs, and Istio VirtualService
   route destinations and gateway refs, plus DestinationRule hosts, resolve to
   local resource symbols when those manifests are present).
 

@@ -1583,11 +1583,38 @@ spec:
   interval: 1m
   url: https://example.com/platform/config.git
 `)
+	writeFile(t, repo, "k8s/helm-chart.yaml", `apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmChart
+metadata:
+  name: podinfo-chart
+spec:
+  chart: podinfo
+  sourceRef:
+    kind: HelmRepository
+    name: podinfo
+`)
+	writeFile(t, repo, "k8s/redis-release.yaml", `apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: redis
+spec:
+  chart:
+    spec:
+      chart: redis
+      sourceRef:
+        kind: HelmRepository
+        name: podinfo
+`)
 	writeFile(t, repo, "k8s/helm-release.yaml", `apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: podinfo
 spec:
+  dependsOn:
+    - name: redis
+  chartRef:
+    kind: HelmChart
+    name: podinfo-chart
   chart:
     spec:
       chart: podinfo
@@ -1595,11 +1622,23 @@ spec:
         kind: HelmRepository
         name: podinfo
 `)
+	writeFile(t, repo, "k8s/base-kustomization.yaml", `apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: base
+spec:
+  sourceRef:
+    kind: GitRepository
+    name: platform-config
+  path: ./base
+`)
 	writeFile(t, repo, "k8s/kustomization.yaml", `apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
   name: platform
 spec:
+  dependsOn:
+    - name: base
   sourceRef:
     kind: GitRepository
     name: platform-config
@@ -1611,8 +1650,14 @@ spec:
 		t.Fatal(err)
 	}
 	for _, edge := range [][2]string{
+		{"HelmChart.podinfo-chart", "HelmRepository.podinfo"},
+		{"HelmRelease.redis", "HelmRepository.podinfo"},
 		{"HelmRelease.podinfo", "HelmRepository.podinfo"},
+		{"HelmRelease.podinfo", "HelmChart.podinfo-chart"},
+		{"HelmRelease.podinfo", "HelmRelease.redis"},
+		{"Kustomization.base", "GitRepository.platform-config"},
 		{"Kustomization.platform", "GitRepository.platform-config"},
+		{"Kustomization.platform", "Kustomization.base"},
 	} {
 		if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", edge[0], edge[1]) {
 			t.Fatalf("missing Flux source dependency %s -> %s in %#v", edge[0], edge[1], snapshot.Relations)
