@@ -55,6 +55,7 @@ go test ./...
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-graphql-schema-fields -min-loc-per-sec 1
 go test ./internal/sem -run 'TestKubernetesResourceDependencies|TestProviderGoldenFixtureQualityCoverageReport' -count=1
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-namespace-refs -min-loc-per-sec 1
+go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-vpa-refs -min-loc-per-sec 1
 ```
 
 ## Results
@@ -363,6 +364,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781993163.json`: post-Namespace-resource-ref smoke,
     Go/gin syntax-only, cached checkout, 28,618 LOC, 3,086 relations, 159,529
     LOC/s, max RSS 27,738,112 bytes, estimated output 1,902,626 bytes,
+    `completeness_level: degraded`; retained as small-corpus harness proof.
+  - `bench/results/result-1781993523.json`: post-VPA-targetRef smoke, Go/gin
+    syntax-only, cached checkout, 28,618 LOC, 3,086 relations, 161,337 LOC/s,
+    max RSS 26,869,760 bytes, estimated output 1,902,620 bytes,
     `completeness_level: degraded`; retained as small-corpus harness proof.
   - `bench/results/result-1781937160.json`: Go/gin, syntax-only, 28,618 LOC,
     152,621 LOC/s.
