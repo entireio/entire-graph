@@ -54,6 +54,9 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
 - Kubernetes named resource references for ConfigMaps, Secrets, service
   accounts, and PVCs emit exact local `RESOURCE_DEPENDS_ON` edges when the
   referenced resource manifests are present in the snapshot.
+- Kubernetes RBAC role/subject references, owner references, Ingress Service
+  backends, and HPA scale targets emit exact local `RESOURCE_DEPENDS_ON` edges
+  when the referenced resource manifests are present in the snapshot.
 - Kubernetes resource config tests pass for common container image,
   environment-variable, and port declarations emitted as `CONFIGURES` facts.
 - Docker Compose service extraction emits service resource symbols, exact

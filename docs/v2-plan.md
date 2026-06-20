@@ -294,7 +294,9 @@ Delivered:
   resource dependencies for common `ConfigMap`, `Secret`, service account, and
   persistent-volume-claim references; when the referenced resource manifests are
   present in the same provider snapshot, those named references also resolve to
-  exact local `RESOURCE_DEPENDS_ON` symbol edges.
+  exact local `RESOURCE_DEPENDS_ON` symbol edges. The same exact local
+  resolution covers RBAC role/subject references, owner references, Ingress
+  Service backends, and HPA scale targets.
 - Kubernetes resource symbols emit common container image, environment-variable,
   and port declarations as `CONFIGURES` facts, and Services can depend on
   matching workload resources by selector labels.
@@ -310,10 +312,11 @@ Delivered:
 Open:
 
 - Cross-file Kubernetes resource resolution is implemented for named
-  ConfigMap/Secret/service-account/PVC references and Service selector matches
-  when the target resource symbol exists in the same provider snapshot.
-  Remaining Kubernetes resource gaps include RBAC bindings, owner references,
-  Ingress backends, HPA targets, and multi-resource YAML symbolization.
+  ConfigMap/Secret/service-account/PVC/RBAC/owner/Ingress/HPA references and
+  Service selector matches when the target resource symbol exists in the same
+  provider snapshot. Remaining Kubernetes resource gaps include multi-resource
+  YAML symbolization, less common Kubernetes controllers, and custom resource
+  conventions.
 - Broad framework-specific IaC/service modeling remains partial.
 
 Acceptance:

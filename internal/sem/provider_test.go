@@ -711,6 +711,113 @@ spec:
 	}
 }
 
+func TestKubernetesRbacIngressAndScaleTargetDependencies(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "k8s/deployment.yaml", `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+`)
+	writeFile(t, repo, "k8s/service.yaml", `apiVersion: v1
+kind: Service
+metadata:
+  name: api
+`)
+	writeFile(t, repo, "k8s/service-account.yaml", `apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api-runner
+`)
+	writeFile(t, repo, "k8s/role.yaml", `apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: api-reader
+`)
+	writeFile(t, repo, "k8s/cluster-role.yaml", `apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: api-admin
+`)
+	writeFile(t, repo, "k8s/hpa.yaml", `apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api
+`)
+	writeFile(t, repo, "k8s/ingress.yaml", `apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            backend:
+              service:
+                name: api
+                port:
+                  number: 80
+`)
+	writeFile(t, repo, "k8s/role-binding.yaml", `apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: api-readers
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: api-reader
+subjects:
+  - kind: ServiceAccount
+    name: api-runner
+    namespace: default
+`)
+	writeFile(t, repo, "k8s/cluster-role-binding.yaml", `apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: api-admins
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: api-admin
+subjects:
+  - kind: ServiceAccount
+    name: api-runner
+    namespace: default
+`)
+	writeFile(t, repo, "k8s/job.yaml", `apiVersion: batch/v1
+kind: Job
+metadata:
+  name: api-migrate
+  ownerReferences:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: api
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range [][2]string{
+		{"HorizontalPodAutoscaler.api", "Deployment.api"},
+		{"Ingress.api", "Service.api"},
+		{"RoleBinding.api-readers", "Role.api-reader"},
+		{"RoleBinding.api-readers", "ServiceAccount.api-runner"},
+		{"ClusterRoleBinding.api-admins", "ClusterRole.api-admin"},
+		{"ClusterRoleBinding.api-admins", "ServiceAccount.api-runner"},
+		{"Job.api-migrate", "Deployment.api"},
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", edge[0], edge[1]) {
+			t.Fatalf("missing exact Kubernetes dependency %s -> %s in %#v", edge[0], edge[1], snapshot.Relations)
+		}
+	}
+}
+
 func TestKustomizeResourceDependencies(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "overlays/prod/kustomization.yaml", `resources:

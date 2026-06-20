@@ -2167,7 +2167,36 @@ func kubernetesResourceReferences(content string) []resourceReference {
 	for _, match := range regexp.MustCompile(`(?im)^\s*claimName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
 		add("persistentvolumeclaim", match[1], "kubernetes_pvc_claim", 0.78)
 	}
+	for _, ref := range kubernetesKindNameBlockReferences(content, "roleRef", "kubernetes_rbac_role_ref", 0.82) {
+		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+	}
+	for _, ref := range kubernetesKindNameBlockReferences(content, "scaleTargetRef", "kubernetes_hpa_scale_target", 0.84) {
+		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+	}
+	for _, ref := range kubernetesKindNameBlockReferences(content, "ownerReferences", "kubernetes_owner_reference", 0.78) {
+		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+	}
+	for _, match := range regexp.MustCompile(`(?is)\bsubjects:\s*\n(?:\s+-\s*)?kind:\s*ServiceAccount\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+		add("serviceaccount", match[1], "kubernetes_rbac_subject", 0.82)
+	}
+	for _, match := range regexp.MustCompile(`(?is)\bservice:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+		add("service", match[1], "kubernetes_ingress_service", 0.82)
+	}
+	for _, match := range regexp.MustCompile(`(?im)^\s*serviceName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+		add("service", match[1], "kubernetes_ingress_service_name", 0.8)
+	}
 	return dedupeResourceReferences(refs)
+}
+
+func kubernetesKindNameBlockReferences(content, blockKey, evidence string, confidence float64) []resourceReference {
+	re := regexp.MustCompile(`(?is)\b` + regexp.QuoteMeta(blockKey) + `:\s*\n(?:\s+(?:-\s*)?[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+(?:-\s*)?kind:\s*([A-Za-z][A-Za-z0-9_.-]+)\s*\n(?:\s+(?:-\s*)?[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`)
+	var refs []resourceReference
+	for _, match := range re.FindAllStringSubmatch(content, -1) {
+		if len(match) == 3 {
+			refs = append(refs, resourceReference{Kind: strings.ToLower(match[1]), Name: match[2], EvidenceKind: evidence, Confidence: confidence})
+		}
+	}
+	return refs
 }
 
 func kubernetesNamedResourceReferenceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
