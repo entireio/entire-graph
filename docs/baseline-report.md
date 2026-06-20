@@ -139,11 +139,13 @@ False negatives:
   0.9), and a local variable resolves through a constructor assignment
   (`x = new T()` / `x = T()` / `x := T{}`, confidence 0.85). Direct
   constructor chains such as `new Widget().label()` resolve to the local method
-  at confidence 0.8. This recovers calls the name-based path drops, e.g.
-  Python `service.validate()` and Go `t.Validate()`. Receivers whose type can't
-  be inferred (e.g. untyped parameters) still produce no edge — by design, no
-  fabricated targets. Remaining: typed-parameter receivers and arbitrary
-  returned/chained receivers beyond direct constructors. (WP4.)
+  at confidence 0.8. Typed parameters in conservative `name: Type`,
+  `Type name`, and `name Type` signatures resolve at confidence 0.83. This
+  recovers calls the name-based path drops, e.g. Python `service.validate()`
+  and Go `t.Validate()`. Receivers whose type can't be inferred still produce
+  no edge — by design, no fabricated targets. Remaining: arbitrary
+  returned/chained receivers beyond direct constructors and compiler-grade
+  type flow. (WP4.)
 - **Imported-symbol calls — external endpoints implemented for common import
   forms.** Go package calls (`strings.TrimSpace`), Python module/member calls
   (`json.dumps` and `from json import dumps`), and JS/TS named, default, or
@@ -167,10 +169,10 @@ False negatives:
   other ecosystem manifests remain external.
 - **Field-access relations.** `READS_FIELD`/`WRITES_FIELD`/`ACCESSES` are now
   emitted for `receiver.field` accesses resolved through the receiver's type
-  (this/self, Go method receiver, or constructor-assigned local) to a known
-  `field` symbol. Unresolved/dynamic receivers and bare implicit-`this` access
-  are skipped. Remaining: typed-parameter receivers, bare-field resolution via
-  scope, and data-flow (separately deferred).
+  (this/self, Go method receiver, constructor-assigned local, or typed
+  parameter) to a known `field` symbol. Unresolved/dynamic receivers and bare
+  implicit-`this` access are skipped. Remaining: bare-field resolution via
+  scope and broader data-flow.
 - **Partial OO/type relations.** `EXTENDS`, `INHERITS`, `IMPLEMENTS`,
   `OVERRIDES`, `USES_TYPE`, `PARAM_TYPE`, and `RETURNS_TYPE` are now emitted.
   `OVERRIDES` only fires when the supertype resolves locally and its methods are

@@ -1909,7 +1909,15 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 	if len(calls) == 0 && len(chainedCalls) == 0 {
 		return nil
 	}
-	varTypes := localVarTypes(block)
+	varTypes := parameterVarTypes(from.Signature)
+	localTypes := localVarTypes(block)
+	for name, typeName := range localTypes {
+		varTypes[name] = typeName
+	}
+	paramTypes := parameterVarTypes(from.Signature)
+	for name := range localTypes {
+		delete(paramTypes, name)
+	}
 	var relations []RelationRecord
 	for _, call := range calls {
 		var targetID string
@@ -1927,6 +1935,10 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			typeName, ok := varTypes[call.Receiver]
 			if !ok {
 				continue
+			}
+			if _, ok := paramTypes[call.Receiver]; ok {
+				confidence = 0.83
+				reason = "method call resolved via typed parameter receiver"
 			}
 			sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
 			if !ok {
@@ -3161,7 +3173,15 @@ func fieldAccessRelations(from SymbolRecord, block string, fieldsByContainer map
 			selfContainers[recv] = from.ContainerID
 		}
 	}
-	varTypes := localVarTypes(block)
+	varTypes := parameterVarTypes(from.Signature)
+	localTypes := localVarTypes(block)
+	for name, typeName := range localTypes {
+		varTypes[name] = typeName
+	}
+	paramTypes := parameterVarTypes(from.Signature)
+	for name := range localTypes {
+		delete(paramTypes, name)
+	}
 
 	var relations []RelationRecord
 	emitted := map[string]bool{}
@@ -3174,6 +3194,9 @@ func fieldAccessRelations(from SymbolRecord, block string, fieldsByContainer map
 			if sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName); ok {
 				containerID = sym.ID
 				confidence = 0.85
+				if _, ok := paramTypes[access.Receiver]; ok {
+					confidence = 0.83
+				}
 			}
 		}
 		if containerID == "" {

@@ -831,6 +831,39 @@ func localVarTypes(block string) map[string]string {
 	return out
 }
 
+func parameterVarTypes(signature string) map[string]string {
+	out := map[string]string{}
+	start := strings.Index(signature, "(")
+	end := strings.LastIndex(signature, ")")
+	if start < 0 || end <= start {
+		return out
+	}
+	params := strings.Split(stripGenerics(signature[start+1:end]), ",")
+	colonParamRe := regexp.MustCompile(`^\s*\$?([A-Za-z_][A-Za-z0-9_]*)\??\s*:\s*\??([A-Z][A-Za-z0-9_]*)\b`)
+	typeFirstParamRe := regexp.MustCompile(`^\s*(?:final\s+)?(?:[*&]\s*)?([A-Z][A-Za-z0-9_]*)\s+\$?([A-Za-z_][A-Za-z0-9_]*)\b`)
+	nameFirstParamRe := regexp.MustCompile(`^\s*\$?([A-Za-z_][A-Za-z0-9_]*)\s+(?:[*&]\s*)?([A-Z][A-Za-z0-9_]*)\b`)
+	for _, param := range params {
+		param = strings.TrimSpace(strings.SplitN(param, "=", 2)[0])
+		if param == "" {
+			continue
+		}
+		if m := colonParamRe.FindStringSubmatch(param); len(m) == 3 {
+			out[m[1]] = m[2]
+			continue
+		}
+		if m := typeFirstParamRe.FindStringSubmatch(param); len(m) == 3 {
+			out[m[2]] = m[1]
+			continue
+		}
+		if m := nameFirstParamRe.FindStringSubmatch(param); len(m) == 3 {
+			out[m[1]] = m[2]
+		}
+	}
+	delete(out, "self")
+	delete(out, "this")
+	return out
+}
+
 // stripGenerics removes balanced <...> sections so type lists can be split on
 // commas without splitting inside generic parameters.
 func stripGenerics(s string) string {

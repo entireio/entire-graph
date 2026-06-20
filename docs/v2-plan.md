@@ -222,6 +222,8 @@ Tasks:
   C#, Rust impl blocks, PHP classes.
 - Resolve direct constructor-chain calls such as `new Widget().label()` when
   the local type and method symbols are known.
+- Resolve typed-parameter receiver calls for conservative `name: Type`,
+  `Type name`, and `name Type` signatures.
 - Emit `CALLS` with `resolution`, `confidence`, `reason`, and evidence.
 
 Acceptance:
@@ -232,6 +234,8 @@ Acceptance:
   without fabricating local symbols.
 - Direct constructor-chain receiver calls resolve to local methods without
   fabricating arbitrary returned receiver flow.
+- Typed-parameter receiver calls resolve only when the parameter type and
+  target method are known local symbols.
 - Brain impact can trust high-confidence direct callers/callees.
 
 ### WP5: OO And Type Relations

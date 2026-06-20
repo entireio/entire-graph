@@ -1177,6 +1177,7 @@ func (a *Account) Deposit(amount int) {
 }
 
 func leak(other *Account, raw map[string]int) {
+	_ = other.Balance
 	_ = raw.Balance
 	other.Mystery = 1
 }
@@ -1187,13 +1188,13 @@ func leak(other *Account, raw map[string]int) {
 		t.Fatal(err)
 	}
 
-	reads, writes := map[string]bool{}, map[string]bool{}
+	reads, writes := map[string]RelationRecord{}, map[string]RelationRecord{}
 	for _, r := range snapshot.Relations {
 		switch r.Type {
 		case "READS_FIELD":
-			reads[lastSegment(r.FromID)+"->"+lastSegment(r.ToID)] = true
+			reads[lastSegment(r.FromID)+"->"+lastSegment(r.ToID)] = r
 		case "WRITES_FIELD":
-			writes[lastSegment(r.FromID)+"->"+lastSegment(r.ToID)] = true
+			writes[lastSegment(r.FromID)+"->"+lastSegment(r.ToID)] = r
 			if r.Confidence < 0.85 {
 				t.Fatalf("field write confidence too low: %#v", r)
 			}
@@ -1201,16 +1202,19 @@ func leak(other *Account, raw map[string]int) {
 	}
 
 	// a.Balance read and write inside Deposit resolve via the Go receiver.
-	if !reads["Account.Deposit->Account.Balance"] {
+	if _, ok := reads["Account.Deposit->Account.Balance"]; !ok {
 		t.Fatalf("missing READS_FIELD Deposit->Balance: %v", reads)
 	}
-	if !writes["Account.Deposit->Account.Balance"] {
+	if _, ok := writes["Account.Deposit->Account.Balance"]; !ok {
 		t.Fatalf("missing WRITES_FIELD Deposit->Balance: %v", writes)
+	}
+	if r, ok := reads["leak->Account.Balance"]; !ok || r.Confidence != 0.83 {
+		t.Fatalf("typed-parameter READS_FIELD leak->Balance not resolved (0.83): %#v", reads)
 	}
 	// raw.Balance (raw is a map, not Account) and other.Mystery (no such field)
 	// must not produce edges — the field is not a known member of the receiver.
 	for edge := range reads {
-		if strings.HasPrefix(edge, "leak->") {
+		if strings.HasPrefix(edge, "leak->") && edge != "leak->Account.Balance" {
 			t.Fatalf("unresolved/dynamic access produced READS_FIELD: %s", edge)
 		}
 	}
@@ -1747,6 +1751,10 @@ def use(other):
 export function makeLabel(): string {
   return new Widget().label()
 }
+
+export function labelFor(widget: Widget): string {
+  return widget.label()
+}
 `)
 
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
@@ -1772,6 +1780,10 @@ export function makeLabel(): string {
 	// new Widget().label() -> resolves through the direct constructor chain.
 	if r, ok := inferred["makeLabel->Widget.label"]; !ok || r.Confidence != 0.8 {
 		t.Fatalf("constructor-chain call not resolved (0.8): %#v", inferred)
+	}
+	// widget: Widget -> resolves through the typed parameter.
+	if r, ok := inferred["labelFor->Widget.label"]; !ok || r.Confidence != 0.83 {
+		t.Fatalf("typed-parameter call not resolved (0.83): %#v", inferred)
 	}
 	// other.mystery(): receiver type unknown -> no fabricated edge.
 	for key := range inferred {
