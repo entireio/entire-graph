@@ -7372,6 +7372,17 @@ func scanPythonImports(content string) []string {
 		add(module)
 	}
 	runtimeImportCalls := []string{`importlib\s*\.\s*import_module`, `__import__`}
+	for _, match := range regexp.MustCompile(`(?m)^\s*import\s+([^\n#]+)`).FindAllStringSubmatch(content, -1) {
+		if len(match) != 2 {
+			continue
+		}
+		for _, imported := range strings.Split(match[1], ",") {
+			fields := strings.Fields(strings.TrimSpace(imported))
+			if len(fields) == 3 && fields[0] == "importlib" && fields[1] == "as" && isSimpleIdentifier(fields[2]) {
+				runtimeImportCalls = append(runtimeImportCalls, regexp.QuoteMeta(fields[2])+`\s*\.\s*import_module`)
+			}
+		}
+	}
 	for _, match := range regexp.MustCompile(`(?m)^\s*from\s+importlib\s+import\s+([^\n#]+)`).FindAllStringSubmatch(content, -1) {
 		if len(match) != 2 {
 			continue

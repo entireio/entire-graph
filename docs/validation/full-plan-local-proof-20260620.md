@@ -83,9 +83,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   `importlib.import_module("module.path")`, `__import__("module.path")`,
   `importlib.import_module(MODULE)`, `__import__(PACKAGE + ".module")`,
   direct `from importlib import import_module` calls, and aliased
-  `import_module as name` calls emit `IMPORTS` and resolve to local files
-  through the same module resolver when the module expression is a literal or
-  deterministic local string expression.
+  `import_module as name` calls, and `import importlib as name` module aliases
+  emit `IMPORTS` and resolve to local files through the same module resolver
+  when the module expression is a literal or deterministic local string
+  expression.
 - Exact Java/Kotlin/Scala-style package imports resolve through package
   declarations and source file names with `import_resolved` metadata.
 - Simple root Maven/Gradle package identity aliases resolve matching JVM imports
@@ -494,6 +495,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781983484.json`: Go/gin, syntax-only, 28,618 LOC,
     162,626 LOC/s, max RSS 28,049,408 bytes, estimated output 1,902,632
     bytes; run after direct and aliased Python `import_module(...)` extraction.
+  - `bench/results/result-1781983799.json`: Go/gin, syntax-only, 28,618 LOC,
+    159,839 LOC/s, max RSS 27,738,112 bytes, estimated output 1,902,635
+    bytes; run after aliased Python `importlib` module extraction.
   - `bench/results/result-1781972446.json`: Go/gin, syntax-only, 28,618 LOC,
     162,982 LOC/s, max RSS 26,804,224 bytes, estimated output 1,902,630
     bytes; run after IngressClass reference extraction.

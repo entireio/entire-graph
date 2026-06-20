@@ -420,13 +420,18 @@ func TestPythonRuntimeLiteralImportsResolveToLocalFiles(t *testing.T) {
 	writeFile(t, repo, "src/acme_runtime/aliased.py", `def run():
     return "aliased"
 `)
+	writeFile(t, repo, "src/acme_runtime/module_alias.py", `def run():
+    return "module_alias"
+`)
 	writeFile(t, repo, "src/acme_runtime/loader.py", `import importlib
+import importlib as il
 from importlib import import_module, import_module as load_module
 
 PLUGIN = "acme_runtime.extra"
 PREFIX = "acme_runtime"
 JOINED = PREFIX + ".joined"
 ALIASED = PREFIX + ".aliased"
+MODULE_ALIAS = PREFIX + ".module_alias"
 
 def load():
     plugin = importlib.import_module("acme_runtime.plugin")
@@ -435,7 +440,8 @@ def load():
     joined = __import__(JOINED)
     direct = import_module("acme_runtime.direct")
     aliased = load_module(ALIASED)
-    return plugin, legacy, extra, joined, direct, aliased
+    module_alias = il.import_module(MODULE_ALIAS)
+    return plugin, legacy, extra, joined, direct, aliased, module_alias
 `)
 
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
@@ -449,6 +455,7 @@ def load():
 		"src/acme_runtime/joined.py",
 		"src/acme_runtime/direct.py",
 		"src/acme_runtime/aliased.py",
+		"src/acme_runtime/module_alias.py",
 	} {
 		target := fileID(snapshot.Header.RepoKey, targetPath)
 		if !hasImportRelation(snapshot.Relations, "src/acme_runtime/loader.py", target) {
