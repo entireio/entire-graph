@@ -280,12 +280,14 @@ func serviceBoundaries(symbol SymbolRecord, block string) []serviceBoundary {
 }
 
 var (
-	awaitCallRe     = regexp.MustCompile(`\bawait\s+([A-Za-z_$][\w$]*)\s*\(`)
-	goRoutineCallRe = regexp.MustCompile(`(?m)\bgo\s+([A-Za-z_]\w*)\s*\(`)
-	spawnCallRe     = regexp.MustCompile(`\b(?:Promise\.all|Promise\.race|asyncio\.gather|tokio::spawn|Task\.Run)\s*\([^)]*?([A-Za-z_]\w*)\s*\(`)
-	returnCallRe    = regexp.MustCompile(`(?m)\breturn\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
-	assignCallRe    = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
-	returnVarRe     = regexp.MustCompile(`(?m)\breturn\s+\$?([A-Za-z_$][\w$]*)\b`)
+	awaitCallRe         = regexp.MustCompile(`\bawait\s+([A-Za-z_$][\w$]*)\s*\(`)
+	goRoutineCallRe     = regexp.MustCompile(`(?m)\bgo\s+([A-Za-z_]\w*)\s*\(`)
+	spawnCallRe         = regexp.MustCompile(`\b(?:Promise\.all|Promise\.race|asyncio\.gather|tokio::spawn|Task\.Run)\s*\([^)]*?([A-Za-z_]\w*)\s*\(`)
+	returnCallRe        = regexp.MustCompile(`(?m)\breturn\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	assignCallRe        = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	returnVarRe         = regexp.MustCompile(`(?m)\breturn\s+\$?([A-Za-z_$][\w$]*)\b`)
+	localObjectVarRe    = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:\{\s*\}|new\s+[A-Za-z_$][\w$]*\s*\(\s*\))`)
+	objectFieldAssignRe = regexp.MustCompile(`(?m)\b\$?([A-Za-z_$][\w$]*)\s*\.\s*([A-Za-z_$][\w$]*)\s*=\s*\$?([A-Za-z_$][\w$]*)\b`)
 )
 
 func asyncCallNames(block string) []string {
@@ -364,6 +366,9 @@ func returnFlowCalls(block, signature string) []returnFlowCall {
 	for _, flow := range argumentForwardingFlows(stripped, signature) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
+	for _, flow := range objectFieldForwardingFlows(stripped, signature) {
+		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
+	}
 	out := make([]returnFlowCall, 0, len(flows))
 	for _, flow := range flows {
 		out = append(out, flow)
@@ -419,6 +424,81 @@ func argumentForwardingFlows(block, signature string) []returnFlowCall {
 		return flows[i].Detail < flows[j].Detail
 	})
 	return flows
+}
+
+func objectFieldForwardingFlows(block, signature string) []returnFlowCall {
+	params := parameterNames(signature)
+	if len(params) == 0 {
+		return nil
+	}
+	objectVars := localObjectVars(block)
+	if len(objectVars) == 0 {
+		return nil
+	}
+	fieldParamByObject := map[string]map[string]bool{}
+	for _, match := range objectFieldAssignRe.FindAllStringSubmatch(block, -1) {
+		if len(match) != 4 {
+			continue
+		}
+		objectName := strings.TrimPrefix(match[1], "$")
+		paramName := strings.TrimPrefix(match[3], "$")
+		if !objectVars[objectName] || !params[paramName] {
+			continue
+		}
+		if fieldParamByObject[objectName] == nil {
+			fieldParamByObject[objectName] = map[string]bool{}
+		}
+		fieldParamByObject[objectName][paramName] = true
+	}
+	if len(fieldParamByObject) == 0 {
+		return nil
+	}
+	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
+	var flows []returnFlowCall
+	seen := map[string]bool{}
+	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		name := strings.TrimPrefix(match[1], "$")
+		if dataFlowCallNameIgnored(name) {
+			continue
+		}
+		for _, arg := range splitSimpleArguments(match[2]) {
+			objectName := strings.TrimPrefix(strings.TrimSpace(arg), "$")
+			for paramName := range fieldParamByObject[objectName] {
+				key := name + "\x00" + objectName + "\x00" + paramName
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				flows = append(flows, returnFlowCall{
+					Name:         name,
+					Reason:       "caller parameter assigned into object field forwarded to callee argument",
+					EvidenceKind: "object_field_forward_flow",
+					Detail:       paramName + " -> " + objectName + " -> " + name + "()",
+					Direction:    "caller_to_callee",
+				})
+			}
+		}
+	}
+	sort.Slice(flows, func(i, j int) bool {
+		if flows[i].Name != flows[j].Name {
+			return flows[i].Name < flows[j].Name
+		}
+		return flows[i].Detail < flows[j].Detail
+	})
+	return flows
+}
+
+func localObjectVars(block string) map[string]bool {
+	vars := map[string]bool{}
+	for _, match := range localObjectVarRe.FindAllStringSubmatch(block, -1) {
+		if len(match) == 2 && match[1] != "" {
+			vars[strings.TrimPrefix(match[1], "$")] = true
+		}
+	}
+	return vars
 }
 
 func parameterNames(signature string) map[string]bool {
