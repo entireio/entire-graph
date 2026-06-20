@@ -1736,6 +1736,12 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			emit(r)
 		}
 	}
+	if spec.emits("HANDLES_ROUTE") {
+		for _, r := range crossFileExpressRouterRelations(files, recordsByFile, readContent, knownFiles) {
+			emit(r.Relation)
+			routeHandlers[r.Route] = append(routeHandlers[r.Route], r.Handler)
+		}
+	}
 	if spec.emits("CALLS") {
 		for _, r := range routeBridgeRelations(routeHandlers, httpCallsByRoute) {
 			emit(r)
@@ -5148,6 +5154,13 @@ type jsRouterMount struct {
 type jsRouterRoute struct {
 	Receiver string
 	Route    string
+	Handler  string
+}
+
+type expressRouteRelation struct {
+	Route    string
+	Handler  SymbolRecord
+	Relation RelationRecord
 }
 
 func jsRouterComposedRouteLiterals(block string) []string {
@@ -5198,14 +5211,101 @@ func jsRouterMounts(block string) []jsRouterMount {
 }
 
 func jsRouterRoutes(block string) []jsRouterRoute {
-	re := regexp.MustCompile(`(?i)\b([A-Za-z_$][\w$]*)\.(get|post|put|patch|delete|head|options)\s*\(\s*["']([^"']+)["']`)
+	re := regexp.MustCompile(`(?i)\b([A-Za-z_$][\w$]*)\.(get|post|put|patch|delete|head|options)\s*\(\s*["']([^"']+)["'](?:\s*,\s*([A-Za-z_$][\w$]*))?`)
 	var routes []jsRouterRoute
 	for _, match := range re.FindAllStringSubmatch(block, -1) {
-		if len(match) == 4 && strings.HasPrefix(match[3], "/") {
-			routes = append(routes, jsRouterRoute{Receiver: match[1], Route: match[3]})
+		if len(match) == 5 && strings.HasPrefix(match[3], "/") {
+			routes = append(routes, jsRouterRoute{Receiver: match[1], Route: match[3], Handler: match[4]})
 		}
 	}
 	return routes
+}
+
+func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, knownFiles map[string]bool) []expressRouteRelation {
+	routesByFile := map[string][]jsRouterRoute{}
+	mountsByFile := map[string][]jsRouterMount{}
+	importsByFile := map[string]map[string][]string{}
+	symbolsByFileAndName := map[string]map[string]SymbolRecord{}
+	for _, file := range files {
+		if !jsLikeExtension(filepath.Ext(file.Path)) {
+			continue
+		}
+		for _, symbol := range recordsByFile[file.Path] {
+			if typeLikeKind(symbol.Kind) {
+				continue
+			}
+			if symbolsByFileAndName[file.Path] == nil {
+				symbolsByFileAndName[file.Path] = map[string]SymbolRecord{}
+			}
+			if _, exists := symbolsByFileAndName[file.Path][symbol.Name]; !exists {
+				symbolsByFileAndName[file.Path][symbol.Name] = symbol
+			}
+		}
+		content, ok := readContent(file.Path)
+		if !ok {
+			continue
+		}
+		routesByFile[file.Path] = jsRouterRoutes(content)
+		mountsByFile[file.Path] = jsRouterMounts(content)
+		importsByFile[file.Path] = importedNamesFor(file.Path, content)
+	}
+	var relations []expressRouteRelation
+	seen := map[string]bool{}
+	for _, file := range files {
+		for _, mount := range mountsByFile[file.Path] {
+			for _, imported := range importsByFile[file.Path][mount.Target] {
+				routeFile, ok := resolveLocalImport(file.Path, imported, knownFiles)
+				if !ok || routeFile == file.Path {
+					continue
+				}
+				for _, route := range routesByFile[routeFile] {
+					if route.Receiver != mount.Target || route.Handler == "" {
+						continue
+					}
+					handler, ok := symbolsByFileAndName[routeFile][route.Handler]
+					if !ok {
+						continue
+					}
+					fullRoute := joinRoutePaths(mount.Prefix, route.Route)
+					key := handler.ID + "\x00" + fullRoute
+					if seen[key] {
+						continue
+					}
+					seen[key] = true
+					relations = append(relations, expressRouteRelation{
+						Route:   fullRoute,
+						Handler: handler,
+						Relation: RelationRecord{
+							RecordType:    "relation",
+							FromID:        handler.ID,
+							ToID:          externalID("route", fullRoute),
+							Type:          "HANDLES_ROUTE",
+							Confidence:    0.82,
+							Reason:        "Express router route resolved through local imported router mount",
+							RelationScope: "external",
+							Resolution:    "import_resolved",
+							TargetKind:    "route",
+							Evidence: []Evidence{{
+								Kind:      "express_router_mount",
+								FilePath:  handler.FilePath,
+								StartLine: handler.StartLine,
+								EndLine:   handler.EndLine,
+								Detail:    mount.Prefix + " + " + route.Receiver + "." + route.Route,
+							}},
+							WarningCodes: []string{},
+						},
+					})
+				}
+			}
+		}
+	}
+	sort.Slice(relations, func(i, j int) bool {
+		if relations[i].Route != relations[j].Route {
+			return relations[i].Route < relations[j].Route
+		}
+		return relations[i].Handler.ID < relations[j].Handler.ID
+	})
+	return relations
 }
 
 func pythonDecoratorRouteLiterals(content string, symbol SymbolRecord) []string {

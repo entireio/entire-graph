@@ -9,6 +9,7 @@ go test ./...
 go run ./cmd/entire-sem capabilities --json
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile full -provider-version codex-full-plan -out bench/results
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.json -languages C -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results -max-rss-bytes 5000000000
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
@@ -50,6 +51,10 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
   `app.use("/prefix", router)` prefixes with static `router.get/post/...`
   routes, emit `HANDLES_ROUTE`, and bridge exact matching `fetch`/Axios client
   calls as direct `CALLS`.
+- Same-name imported Express routers compose cross-file
+  `app.use("/prefix", router)` mounts with static `router.get/post/...`
+  registrations and bridge exact matching HTTP client calls to the handler
+  symbol.
 - Kubernetes resource extraction, including multi-document YAML manifests, and
   Service-selector dependency tests pass (`Service` -> matching workload
   resource by selector labels).
@@ -90,6 +95,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
     163,578 LOC/s, max RSS 27,983,872 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781944075.json`: Go/gin, syntax-only, 28,618 LOC,
     150,700 LOC/s, max RSS 29,048,832 bytes, output 1,938,906 bytes.
+  - `bench/results/result-1781944293.json`: Go/gin, syntax-only, 28,618 LOC,
+    133,281 LOC/s, max RSS 28,033,024 bytes, output 1,938,906 bytes.
 
 ## Remaining Honesty Notes
 

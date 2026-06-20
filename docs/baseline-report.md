@@ -54,9 +54,9 @@ review.
 All seven Priority-1 languages (per WP9) have committed baselines. Boundary,
 service, and IaC fixtures now cover Terraform/HCL, Dockerfile, Docker Compose,
 Kubernetes YAML, Kustomize, GitHub Actions, protobuf/gRPC, GraphQL, tRPC, and Python
-Flask/FastAPI-style decorator routes plus same-block Express router-prefix
-composition; remaining work is deeper framework coverage and larger-corpus
-proof.
+Flask/FastAPI-style decorator routes, same-block Express router-prefix
+composition, and same-name imported Express router mounts; remaining work is
+deeper framework coverage and larger-corpus proof.
 
 ## Relation Coverage Today
 
