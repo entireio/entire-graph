@@ -66,10 +66,11 @@ Confidence bands follow the v2-plan schema section (`0.90-1.00 exact`,
 - Structural: `DEFINES`, `CONTAINS` (1.0).
 - Imports: `IMPORTS` (0.8; relative imports resolve to local files at 0.95;
   Go module imports resolved through `go.mod` resolve locally at 0.93; JS/TS
-  package self-imports and `tsconfig.json` path aliases resolve locally at
-  0.90; Python project/module imports resolve locally at 0.88-0.90; exact JVM
-  package imports resolve locally at 0.90; Rust crate/Cargo module imports
-  resolve locally at 0.88).
+  package self-imports, package `exports`, package `imports`, import maps, and
+  `tsconfig.json` path aliases resolve locally at 0.89-0.92; Python
+  project/module imports resolve locally at 0.88-0.90; exact JVM package
+  imports resolve locally at 0.90; Rust crate/Cargo module imports resolve
+  locally at 0.88).
 - Calls: `CALLS` — same-file 0.92, imported 0.86, type-inferred receiver
   0.85-0.9, globally-unique name 0.68.
 - OO/type: `EXTENDS`, `IMPLEMENTS` (0.9; C# 0.7 heuristic), `OVERRIDES` (0.85),
@@ -141,14 +142,16 @@ False negatives:
   (WP3/WP4.)
 - **Module-root import resolution.** Relative imports (`./util`, `.util`), Go
   module imports covered by `go.mod`, JS/TS package self-imports covered by root
-  `package.json` `name`, and simple `tsconfig.json` `compilerOptions.paths`
-  aliases, and Python imports covered by local module files plus
-  `pyproject.toml`/`setup.cfg` package names, and exact Java/Kotlin/Scala-style
-  package imports covered by package declarations now resolve to local file
-  records (`resolution: import_resolved`, `target_kind: file`). Remaining
-  non-relative local imports that depend on JS/TS package `exports`/import maps,
-  deeper Python namespace/package discovery, Maven/Gradle classpath behavior,
-  deeper Rust module/export forms, or other ecosystem manifests remain external.
+  `package.json` `name`, root `package.json` `exports`/`imports`, root import
+  maps, and simple `tsconfig.json` `compilerOptions.paths` aliases, Python
+  imports covered by local module files plus `pyproject.toml`/`setup.cfg`
+  package names, and exact Java/Kotlin/Scala-style package imports covered by
+  package declarations now resolve to local file records
+  (`resolution: import_resolved`, `target_kind: file`). Remaining non-relative
+  local imports that depend on deeper JS/TS conditional exports/import-map
+  scopes, deeper Python namespace/package discovery, Maven/Gradle classpath
+  behavior, deeper Rust module/export forms, or other ecosystem manifests remain
+  external.
 - **Field-access relations.** `READS_FIELD`/`WRITES_FIELD`/`ACCESSES` are now
   emitted for `receiver.field` accesses resolved through the receiver's type
   (this/self, Go method receiver, or constructor-assigned local) to a known

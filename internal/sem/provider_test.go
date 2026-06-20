@@ -188,6 +188,112 @@ export function run(): string {
 	}
 }
 
+func TestTypeScriptManifestImportsResolveThroughExportsImportsAndImportMap(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "package.json", `{
+  "name": "@acme/pkg",
+  "exports": {
+    ".": "./src/index.ts",
+    "./feature": {
+      "import": "./src/feature.ts",
+      "default": "./dist/feature.js"
+    }
+  },
+  "imports": {
+    "#config": "./src/config.ts"
+  }
+}`)
+	writeFile(t, repo, "import-map.json", `{
+  "imports": {
+    "@shared/util": "./src/shared/util.ts"
+  }
+}`)
+	writeFile(t, repo, "src/app.ts", `import { feature } from "@acme/pkg/feature"
+import { config } from "#config"
+import { util } from "@shared/util"
+
+export const value = feature(config.name) + util()
+`)
+	writeFile(t, repo, "src/feature.ts", `export function feature(value: string): string {
+  return value
+}
+`)
+	writeFile(t, repo, "src/config.ts", `export const config = { name: "app" }
+`)
+	writeFile(t, repo, "src/shared/util.ts", `export function util(): string {
+  return "util"
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets := map[string]string{
+		"src/feature.ts":     "package_exports_import",
+		"src/config.ts":      "package_imports_import",
+		"src/shared/util.ts": "import_map_import",
+	}
+	for targetPath, evidenceKind := range targets {
+		target := fileID(snapshot.Header.RepoKey, targetPath)
+		var found RelationRecord
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "IMPORTS" && strings.HasSuffix(relation.FromID, "file:src/app.ts") && relation.ToID == target {
+				found = relation
+				break
+			}
+		}
+		if found.FromID == "" {
+			t.Fatalf("missing JS/TS manifest resolved import to %s in %#v", target, snapshot.Relations)
+		}
+		if found.Resolution != "import_resolved" || found.RelationScope != "module" || found.TargetKind != "file" || found.Confidence < 0.89 {
+			t.Fatalf("unexpected JS/TS import metadata: %#v", found)
+		}
+		if len(found.Evidence) != 1 || found.Evidence[0].Kind != evidenceKind {
+			t.Fatalf("unexpected JS/TS import evidence for %s: %#v", targetPath, found.Evidence)
+		}
+	}
+}
+
+func TestPackageJSONTargetsDoNotInventRootEntries(t *testing.T) {
+	exports := parsePackageJSONTargets(`{
+  "exports": {
+    "./feature": "./src/feature.ts"
+  },
+  "imports": {
+    "#config": "./src/config.ts"
+  }
+}`, "exports")
+	if _, ok := exports["."]; ok {
+		t.Fatalf("subpath-only exports invented a root target: %#v", exports)
+	}
+	if got := exports["./feature"]; got != "./src/feature.ts" {
+		t.Fatalf("missing subpath export target: %#v", exports)
+	}
+
+	imports := parsePackageJSONTargets(`{
+  "imports": {
+    "#config": "./src/config.ts"
+  }
+}`, "imports")
+	if _, ok := imports["."]; ok {
+		t.Fatalf("package imports invented a root target: %#v", imports)
+	}
+	if got := imports["#config"]; got != "./src/config.ts" {
+		t.Fatalf("missing package imports target: %#v", imports)
+	}
+
+	rootExport := parsePackageJSONTargets(`{
+  "exports": {
+    "import": "./src/index.ts",
+    "default": "./dist/index.js"
+  }
+}`, "exports")
+	if got := rootExport["."]; got != "./src/index.ts" {
+		t.Fatalf("conditional root export did not resolve: %#v", rootExport)
+	}
+}
+
 func TestPythonManifestImportsResolveThroughProjectMetadata(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "pyproject.toml", `[project]

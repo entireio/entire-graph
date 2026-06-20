@@ -3374,16 +3374,19 @@ func resolveLocalImport(importingPath, spec string, knownFiles map[string]bool) 
 }
 
 type manifestImportResolver struct {
-	goModule       string
-	goPackages     map[string]string
-	jsPackageName  string
-	jsModuleFiles  map[string]string
-	tsPathMappings []tsPathMapping
-	pythonPackages []string
-	pythonModules  map[string]string
-	jvmTypes       map[string]string
-	rustCrateName  string
-	rustModules    map[string]string
+	goModule         string
+	goPackages       map[string]string
+	jsPackageName    string
+	jsPackageExports map[string]string
+	jsPackageImports map[string]string
+	jsImportMap      map[string]string
+	jsModuleFiles    map[string]string
+	tsPathMappings   []tsPathMapping
+	pythonPackages   []string
+	pythonModules    map[string]string
+	jvmTypes         map[string]string
+	rustCrateName    string
+	rustModules      map[string]string
 }
 
 type manifestImportResolution struct {
@@ -3400,15 +3403,23 @@ type tsPathMapping struct {
 }
 
 func buildManifestImportResolver(files []FileRecord, readContent contentReader) manifestImportResolver {
-	resolver := manifestImportResolver{goPackages: map[string]string{}, jsModuleFiles: map[string]string{}, pythonModules: map[string]string{}, jvmTypes: map[string]string{}, rustModules: map[string]string{}}
+	resolver := manifestImportResolver{goPackages: map[string]string{}, jsPackageExports: map[string]string{}, jsPackageImports: map[string]string{}, jsImportMap: map[string]string{}, jsModuleFiles: map[string]string{}, pythonModules: map[string]string{}, jvmTypes: map[string]string{}, rustModules: map[string]string{}}
 	if content, ok := readContent("go.mod"); ok {
 		resolver.goModule = parseGoModulePath(content)
 	}
 	if content, ok := readContent("package.json"); ok {
 		resolver.jsPackageName = parsePackageJSONName(content)
+		resolver.jsPackageExports = parsePackageJSONTargets(content, "exports")
+		resolver.jsPackageImports = parsePackageJSONTargets(content, "imports")
 	}
 	if content, ok := readContent("tsconfig.json"); ok {
 		resolver.tsPathMappings = parseTSConfigPaths(content)
+	}
+	for _, importMapPath := range []string{"import-map.json", "importmap.json"} {
+		if content, ok := readContent(importMapPath); ok {
+			resolver.jsImportMap = parseJSImportMapTargets(content)
+			break
+		}
 	}
 	if content, ok := readContent("pyproject.toml"); ok {
 		resolver.pythonPackages = append(resolver.pythonPackages, parsePyProjectName(content))
@@ -3530,6 +3541,108 @@ func parsePackageJSONName(content string) string {
 		return ""
 	}
 	return strings.TrimSpace(data.Name)
+}
+
+func parsePackageJSONTargets(content, field string) map[string]string {
+	var data map[string]any
+	if err := json.Unmarshal([]byte(content), &data); err != nil {
+		return map[string]string{}
+	}
+	raw, ok := data[field]
+	if !ok {
+		return map[string]string{}
+	}
+	out := map[string]string{}
+	if entries, ok := raw.(map[string]any); ok {
+		if packageJSONTargetObjectIsEntryMap(field, entries) {
+			for key, value := range entries {
+				key = strings.TrimSpace(key)
+				if key == "" {
+					continue
+				}
+				if target := jsManifestTarget(value); target != "" {
+					out[key] = target
+				}
+			}
+			return out
+		}
+		if field == "exports" {
+			if target := jsManifestTarget(entries); target != "" {
+				out["."] = target
+			}
+		}
+		return out
+	}
+	if field == "exports" {
+		if target := jsManifestTarget(raw); target != "" {
+			out["."] = target
+		}
+	}
+	return out
+}
+
+func packageJSONTargetObjectIsEntryMap(field string, entries map[string]any) bool {
+	switch field {
+	case "imports":
+		return true
+	case "exports":
+		for key := range entries {
+			if strings.HasPrefix(strings.TrimSpace(key), ".") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func parseJSImportMapTargets(content string) map[string]string {
+	var data struct {
+		Imports map[string]any `json:"imports"`
+	}
+	if err := json.Unmarshal([]byte(stripJSONLineComments(content)), &data); err != nil {
+		return map[string]string{}
+	}
+	out := map[string]string{}
+	for key, value := range data.Imports {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if target := jsManifestTarget(value); target != "" {
+			out[key] = target
+		}
+	}
+	return out
+}
+
+func jsManifestTarget(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case []any:
+		for _, item := range v {
+			if target := jsManifestTarget(item); target != "" {
+				return target
+			}
+		}
+	case map[string]any:
+		for _, key := range []string{"import", "module", "browser", "default", "types", "require"} {
+			if target := jsManifestTarget(v[key]); target != "" {
+				return target
+			}
+		}
+		keys := make([]string, 0, len(v))
+		for key := range v {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if target := jsManifestTarget(v[key]); target != "" {
+				return target
+			}
+		}
+	}
+	return ""
 }
 
 func parseTSConfigPaths(content string) []tsPathMapping {
@@ -3740,8 +3853,23 @@ func (resolver manifestImportResolver) resolveJSImport(importingPath, spec strin
 		return manifestImportResolution{}, false
 	}
 	if resolver.jsPackageName != "" && (spec == resolver.jsPackageName || strings.HasPrefix(spec, resolver.jsPackageName+"/")) {
-		module := strings.TrimPrefix(strings.TrimPrefix(spec, resolver.jsPackageName), "/")
-		if module == "" {
+		exportKey := "."
+		if spec != resolver.jsPackageName {
+			exportKey = "./" + strings.TrimPrefix(strings.TrimPrefix(spec, resolver.jsPackageName), "/")
+		}
+		if targetModule, ok := resolver.resolveJSTargetMap(resolver.jsPackageExports, exportKey); ok {
+			if path, resolved := resolver.resolveJSModulePath(targetModule); resolved && path != filepath.ToSlash(importingPath) {
+				return manifestImportResolution{
+					Path:         path,
+					Confidence:   0.92,
+					Scope:        "module",
+					Reason:       "JS/TS package export resolved through package.json exports",
+					EvidenceKind: "package_exports_import",
+				}, true
+			}
+		}
+		module := strings.TrimPrefix(exportKey, "./")
+		if module == "." || module == "" {
 			module = "index"
 		}
 		if path, ok := resolver.resolveJSModulePath(module); ok && path != filepath.ToSlash(importingPath) {
@@ -3751,6 +3879,30 @@ func (resolver manifestImportResolver) resolveJSImport(importingPath, spec strin
 				Scope:        "module",
 				Reason:       "JS/TS package self-import resolved through package.json",
 				EvidenceKind: "package_json_import",
+			}, true
+		}
+	}
+	if strings.HasPrefix(spec, "#") {
+		if targetModule, ok := resolver.resolveJSTargetMap(resolver.jsPackageImports, spec); ok {
+			if path, resolved := resolver.resolveJSModulePath(targetModule); resolved && path != filepath.ToSlash(importingPath) {
+				return manifestImportResolution{
+					Path:         path,
+					Confidence:   0.91,
+					Scope:        "module",
+					Reason:       "JS/TS package import alias resolved through package.json imports",
+					EvidenceKind: "package_imports_import",
+				}, true
+			}
+		}
+	}
+	if targetModule, ok := resolver.resolveJSTargetMap(resolver.jsImportMap, spec); ok {
+		if path, resolved := resolver.resolveJSModulePath(targetModule); resolved && path != filepath.ToSlash(importingPath) {
+			return manifestImportResolution{
+				Path:         path,
+				Confidence:   0.89,
+				Scope:        "module",
+				Reason:       "JS/TS import resolved through import map",
+				EvidenceKind: "import_map_import",
 			}, true
 		}
 	}
@@ -3770,11 +3922,68 @@ func (resolver manifestImportResolver) resolveJSImport(importingPath, spec strin
 	return manifestImportResolution{}, false
 }
 
+func (resolver manifestImportResolver) resolveJSTargetMap(targets map[string]string, spec string) (string, bool) {
+	if len(targets) == 0 {
+		return "", false
+	}
+	spec = filepath.ToSlash(strings.TrimSpace(spec))
+	if target, ok := targets[spec]; ok && strings.TrimSpace(target) != "" {
+		return target, true
+	}
+	keys := make([]string, 0, len(targets))
+	for key := range targets {
+		if strings.Contains(key, "*") || strings.HasSuffix(key, "/") {
+			keys = append(keys, key)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if len(keys[i]) == len(keys[j]) {
+			return keys[i] < keys[j]
+		}
+		return len(keys[i]) > len(keys[j])
+	})
+	for _, key := range keys {
+		target := strings.TrimSpace(targets[key])
+		if target == "" {
+			continue
+		}
+		if strings.Contains(key, "*") {
+			if value, ok := applyJSWildcardTarget(key, target, spec); ok {
+				return value, true
+			}
+			continue
+		}
+		if strings.HasSuffix(key, "/") && strings.HasPrefix(spec, key) {
+			return filepath.ToSlash(target) + strings.TrimPrefix(spec, key), true
+		}
+	}
+	return "", false
+}
+
+func applyJSWildcardTarget(pattern, target, spec string) (string, bool) {
+	star := strings.Index(pattern, "*")
+	if star < 0 {
+		return "", false
+	}
+	prefix, suffix := pattern[:star], pattern[star+1:]
+	if !strings.HasPrefix(spec, prefix) || !strings.HasSuffix(spec, suffix) {
+		return "", false
+	}
+	wildcard := strings.TrimSuffix(strings.TrimPrefix(spec, prefix), suffix)
+	if strings.Contains(target, "*") {
+		return strings.Replace(filepath.ToSlash(target), "*", wildcard, 1), true
+	}
+	return target, true
+}
+
 func (resolver manifestImportResolver) resolveJSModulePath(module string) (string, bool) {
 	module = strings.Trim(strings.TrimSpace(filepath.ToSlash(module)), "/")
 	module = strings.TrimPrefix(module, "./")
 	if module == "" {
 		return "", false
+	}
+	if jsLikeExtension(filepath.Ext(module)) {
+		module = strings.TrimSuffix(module, filepath.Ext(module))
 	}
 	if path, ok := resolver.jsModuleFiles[module]; ok {
 		return path, true

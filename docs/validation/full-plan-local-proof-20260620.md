@@ -25,8 +25,10 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
   suffixes/extensions.
 - Go module imports resolve through `go.mod` to local package files with
   `import_resolved` metadata.
-- JS/TS package self-imports and simple `tsconfig.json` path aliases resolve to
-  local files with `import_resolved` metadata.
+- JS/TS package self-imports, root `package.json` `exports`, root
+  `package.json` `imports`, root import-map entries, and simple
+  `tsconfig.json` path aliases resolve to local files with `import_resolved`
+  metadata.
 - Python project/module imports resolve through local module files,
   `pyproject.toml`, and `setup.cfg` with `import_resolved` metadata.
 - Exact Java/Kotlin/Scala-style package imports resolve through package

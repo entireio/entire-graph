@@ -182,12 +182,13 @@ Tasks:
 - Build manifest readers for priority ecosystems:
   `requirements.txt`, `Cargo.toml`, `.csproj`, and `composer.json`. `go.mod`
   module import resolution is implemented for local Go packages present in the
-  snapshot; root `package.json` package self-imports and simple `tsconfig.json`
-  `compilerOptions.paths` aliases are implemented for local JS/TS files;
-  `pyproject.toml` and `setup.cfg` package names are implemented for local
-  Python module resolution; exact Java/Kotlin/Scala package imports are
-  implemented through package declarations and source file names; Cargo package
-  names are implemented for conventional local Rust module files. Maven/Gradle
+  snapshot; root `package.json` package self-imports, `exports`, `imports`, root
+  import maps, and simple `tsconfig.json` `compilerOptions.paths` aliases are
+  implemented for local JS/TS files; `pyproject.toml` and `setup.cfg` package
+  names are implemented for local Python module resolution; exact
+  Java/Kotlin/Scala package imports are implemented through package declarations
+  and source file names; Cargo package names are implemented for conventional
+  local Rust module files. Maven/Gradle
   classpath modeling and deeper Rust module/export forms remain open.
 - Normalize module/package roots and file-to-module ownership.
 - Resolve relative imports for Go, Python, JS/TS, Rust, Java, C#, PHP.
