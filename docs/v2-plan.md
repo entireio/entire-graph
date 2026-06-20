@@ -225,6 +225,9 @@ Tasks:
   the local type and method symbols are known.
 - Resolve typed-parameter receiver calls for conservative `name: Type`,
   `Type name`, and `name Type` signatures.
+- Resolve same-file factory-returned receiver calls such as
+  `makeWidget().label()` when the factory has an explicit local return type and
+  the target method is known on that type.
 - Emit `CALLS` with `resolution`, `confidence`, `reason`, and evidence.
 
 Acceptance:
@@ -237,6 +240,8 @@ Acceptance:
   fabricating arbitrary returned receiver flow.
 - Typed-parameter receiver calls resolve only when the parameter type and
   target method are known local symbols.
+- Factory-returned receiver calls resolve only when the same file contains an
+  explicit factory return type and the target method is known on that type.
 - Brain impact can trust high-confidence direct callers/callees.
 
 ### WP5: OO And Type Relations

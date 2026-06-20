@@ -1335,6 +1335,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	childNamesByContainer := map[string]map[string]bool{}
 	methodsByContainer := map[string]map[string]SymbolRecord{}
 	fieldsByContainer := map[string]map[string]SymbolRecord{}
+	returnTypesBySymbolNameAndFile := map[string]map[string][]string{}
 	var inheritanceEdges []RelationRecord // captured for OVERRIDES derivation
 	routeHandlers := map[string][]SymbolRecord{}
 	httpCallsByRoute := map[string][]RelationRecord{}
@@ -1412,6 +1413,14 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						fieldsByContainer[symbol.ContainerID] = map[string]SymbolRecord{}
 					}
 					fieldsByContainer[symbol.ContainerID][symbol.Name] = symbol
+				}
+			}
+			if needsReceiverCalls && !typeLikeKind(symbol.Kind) {
+				for _, typeName := range signatureTypeReferences(symbol.Language, symbol.Signature)["RETURNS_TYPE"] {
+					if returnTypesBySymbolNameAndFile[symbol.Name] == nil {
+						returnTypesBySymbolNameAndFile[symbol.Name] = map[string][]string{}
+					}
+					returnTypesBySymbolNameAndFile[symbol.Name][symbol.FilePath] = append(returnTypesBySymbolNameAndFile[symbol.Name][symbol.FilePath], typeName)
 				}
 			}
 		}
@@ -1707,7 +1716,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				})
 			}
 			if spec.callResolution == "full" {
-				for _, r := range receiverCallRelations(from, block, methodsByContainer, symbolsByShortName) {
+				for _, r := range receiverCallRelations(from, block, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
 					emit(r)
 				}
 				for _, r := range importedReceiverCallRelations(from, block, importsByName) {
@@ -1900,13 +1909,14 @@ func buildTypeRelation(repoKey string, anchor SymbolRecord, super, relation stri
 // body. These calls are otherwise dropped (a name preceded by '.'/'->' is not a
 // plain call), so this is purely additive. Type containers are skipped as
 // callers — calls live in methods/functions, not in the class declaration.
-func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
+func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) []RelationRecord {
 	if typeLikeKind(from.Kind) {
 		return nil
 	}
 	calls := receiverCalls(block)
 	chainedCalls := chainedConstructorCalls(block)
-	if len(calls) == 0 && len(chainedCalls) == 0 {
+	returnedCalls := returnedReceiverCalls(block)
+	if len(calls) == 0 && len(chainedCalls) == 0 && len(returnedCalls) == 0 {
 		return nil
 	}
 	varTypes := parameterVarTypes(from.Signature)
@@ -2006,6 +2016,42 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}},
 			WarningCodes: []string{},
 		})
+	}
+	for _, call := range returnedCalls {
+		for _, typeName := range returnTypesBySymbolNameAndFile[call.Factory][from.FilePath] {
+			sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+			if !ok {
+				continue
+			}
+			method, ok := methodsByContainer[sym.ID][call.Method]
+			if !ok || method.ID == from.ID {
+				continue
+			}
+			scope := "file"
+			if method.FilePath != from.FilePath {
+				scope = "module"
+			}
+			relations = append(relations, RelationRecord{
+				RecordType:    "relation",
+				FromID:        from.ID,
+				ToID:          method.ID,
+				Type:          "CALLS",
+				Confidence:    0.78,
+				Reason:        "method call resolved via returned receiver type",
+				RelationScope: scope,
+				Resolution:    "type_inferred",
+				TargetKind:    "symbol",
+				Evidence: []Evidence{{
+					Kind:      "call_site",
+					FilePath:  from.FilePath,
+					StartLine: from.StartLine,
+					EndLine:   from.EndLine,
+					Detail:    call.Detail,
+				}},
+				WarningCodes: []string{},
+			})
+			break
+		}
 	}
 	return relations
 }

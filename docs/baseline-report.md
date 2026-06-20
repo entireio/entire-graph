@@ -141,19 +141,23 @@ False negatives:
   (`x = new T()` / `x = T()` / `x := T{}`, confidence 0.85). Direct
   constructor chains such as `new Widget().label()` resolve to the local method
   at confidence 0.8. Typed parameters in conservative `name: Type`,
-  `Type name`, and `name Type` signatures resolve at confidence 0.83. This
-  recovers calls the name-based path drops, e.g. Python `service.validate()`
-  and Go `t.Validate()`. Receivers whose type can't be inferred still produce
-  no edge — by design, no fabricated targets. Remaining: arbitrary
-  returned/chained receivers beyond direct constructors and compiler-grade
-  type flow. (WP4.)
+  `Type name`, and `name Type` signatures resolve at confidence 0.83.
+  Same-file factory calls such as `makeWidget().label()` resolve at confidence
+  0.78 when the factory symbol has an explicit local return type and the target
+  method exists on that type. This recovers calls the name-based path drops,
+  e.g. Python `service.validate()` and Go `t.Validate()`. Receivers whose type
+  can't be inferred still produce no edge — by design, no fabricated targets.
+  Remaining: arbitrary returned/chained receivers beyond direct constructors
+  and explicit same-file factory return types, plus compiler-grade type flow.
+  (WP4.)
 - **Imported-symbol calls — external endpoints implemented for common import
   forms.** Go package calls (`strings.TrimSpace`), Python module/member calls
   (`json.dumps` and `from json import dumps`), and JS/TS named, default, or
   namespace import calls (`readFileSync`, `path.join`) now emit `CALLS` to
   `external:symbol:<module>.<member>` when no local symbol target resolves.
-  Remaining: compiler/type-aware package APIs, arbitrary returned receivers,
-  and dynamic import/module behavior. (WP3/WP4.)
+  Remaining: compiler/type-aware package APIs, arbitrary returned receivers
+  beyond explicit same-file factory return types, and dynamic import/module
+  behavior. (WP3/WP4.)
 - **Module-root import resolution.** Relative imports (`./util`, `.util`), Go
   module imports covered by `go.mod`, JS/TS package self-imports covered by root
   `package.json` `name`, root `package.json` `exports`/`imports`, root import

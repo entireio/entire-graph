@@ -854,9 +854,16 @@ type typedMethodCall struct {
 	Detail   string
 }
 
+type returnedMethodCall struct {
+	Factory string
+	Method  string
+	Detail  string
+}
+
 var (
-	newCtorMethodCallRe = regexp.MustCompile(`\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
-	ctorMethodCallRe    = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
+	newCtorMethodCallRe  = regexp.MustCompile(`\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
+	ctorMethodCallRe     = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
+	returnedMethodCallRe = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
 )
 
 func chainedConstructorCalls(block string) []typedMethodCall {
@@ -878,6 +885,36 @@ func chainedConstructorCalls(block string) []typedMethodCall {
 		add(m[1], m[2], m[1]+"()."+m[2])
 	}
 	return out
+}
+
+func returnedReceiverCalls(block string) []returnedMethodCall {
+	stripped := stripCodeLiteralsAndComments(block)
+	var out []returnedMethodCall
+	seen := map[string]bool{}
+	for _, m := range returnedMethodCallRe.FindAllStringSubmatch(stripped, -1) {
+		if len(m) != 3 {
+			continue
+		}
+		factory := strings.TrimPrefix(m[1], "$")
+		if factory == "" || factory == "new" || isCapitalized(factory) {
+			continue
+		}
+		key := factory + "." + m[2]
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, returnedMethodCall{Factory: factory, Method: m[2], Detail: factory + "()." + m[2]})
+	}
+	return out
+}
+
+func isCapitalized(value string) bool {
+	if value == "" {
+		return false
+	}
+	r := rune(value[0])
+	return r >= 'A' && r <= 'Z'
 }
 
 var (

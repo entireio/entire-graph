@@ -1782,6 +1782,14 @@ export function makeLabel(): string {
   return new Widget().label()
 }
 
+export function makeWidget(): Widget {
+  return new Widget()
+}
+
+export function labelFromFactory(): string {
+  return makeWidget().label()
+}
+
 export function labelFor(widget: Widget): string {
   return widget.label()
 }
@@ -1810,6 +1818,10 @@ export function labelFor(widget: Widget): string {
 	// new Widget().label() -> resolves through the direct constructor chain.
 	if r, ok := inferred["makeLabel->Widget.label"]; !ok || r.Confidence != 0.8 {
 		t.Fatalf("constructor-chain call not resolved (0.8): %#v", inferred)
+	}
+	// makeWidget(): Widget; makeWidget().label() -> resolves through the factory return type.
+	if r, ok := inferred["labelFromFactory->Widget.label"]; !ok || r.Confidence != 0.78 {
+		t.Fatalf("returned-receiver call not resolved (0.78): %#v", inferred)
 	}
 	// widget: Widget -> resolves through the typed parameter.
 	if r, ok := inferred["labelFor->Widget.label"]; !ok || r.Confidence != 0.83 {
