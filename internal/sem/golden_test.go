@@ -313,6 +313,7 @@ func copyFixtureTree(t *testing.T, src, dst string) {
 		if err != nil {
 			return err
 		}
+		data = normalizeFixtureData(data)
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
@@ -321,4 +322,9 @@ func copyFixtureTree(t *testing.T, src, dst string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func normalizeFixtureData(data []byte) []byte {
+	data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+	return bytes.ReplaceAll(data, []byte("\r"), []byte("\n"))
 }
