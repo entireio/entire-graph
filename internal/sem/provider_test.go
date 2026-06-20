@@ -2632,6 +2632,36 @@ func TestComputedRouteExpressionComposesAndBridgesHTTPClient(t *testing.T) {
 	}
 }
 
+func TestStaticArrayJoinRouteExpressionComposesAndBridgesHTTPClient(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "api.ts", "const apiPrefix = \"/api\"\n"+
+		"const version = \"v1\"\n"+
+		"const usersRoute = [apiPrefix, version, \"users\", \":id\"].join(\"/\")\n\n"+
+		"export function register(app: any): void {\n"+
+		"  app.get(usersRoute, showUser)\n"+
+		"}\n\n"+
+		"export function showUser(): string {\n"+
+		"  return \"ok\"\n"+
+		"}\n\n"+
+		"export async function ping(): Promise<unknown> {\n"+
+		"  return fetch(usersRoute)\n"+
+		"}\n")
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "showUser", "/api/v1/users/:id") {
+		t.Fatalf("missing static array-join route expression: %#v", snapshot.Relations)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HTTP_CALLS", "ping", "/api/v1/users/:id") {
+		t.Fatalf("missing static array-join HTTP call relation: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "showUser") {
+		t.Fatalf("missing array-join route bridge CALLS ping->showUser: %#v", snapshot.Relations)
+	}
+}
+
 func TestFastifyDirectRouteResolvesHandlerAndBridge(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "api.ts", `const userRoute = "/api/users/:id"
@@ -3634,8 +3664,10 @@ export function readConfig(name: string): string {
 		"const nodePrefix = \"node:\"\n"+
 		"const fsModule = nodePrefix + \"fs\"\n"+
 		"const pathModule = `${nodePrefix}path`\n"+
+		"const streamModule = [nodePrefix, \"stream\"].join(\"\")\n"+
 		"const runtimeFs = require(fsModule)\n"+
 		"const { resolve } = require(pathModule)\n\n"+
+		"const { Readable } = require(streamModule)\n\n"+
 		"export async function readCommonJS(name) {\n"+
 		"  await import(\"crypto\")\n"+
 		"  return join(\"config\", fs.readFileSync(name, \"utf8\"))\n"+
@@ -3643,6 +3675,9 @@ export function readConfig(name: string): string {
 		"export async function readComputedCommonJS(name) {\n"+
 		"  await import(`${nodePrefix}crypto`)\n"+
 		"  return resolve(\"config\", runtimeFs.readFileSync(name, \"utf8\"))\n"+
+		"}\n\n"+
+		"export function fromStream(value) {\n"+
+		"  return Readable.from(value)\n"+
 		"}\n")
 
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
@@ -3663,6 +3698,7 @@ export function readConfig(name: string): string {
 		{from: "readCommonJS", target: "path.join", detail: "join"},
 		{from: "readComputedCommonJS", target: "node:fs.readFileSync", detail: "runtimeFs.readFileSync"},
 		{from: "readComputedCommonJS", target: "node:path.resolve", detail: "resolve"},
+		{from: "fromStream", target: "node:stream.from", detail: "Readable.from"},
 	} {
 		var found RelationRecord
 		for _, relation := range snapshot.Relations {
@@ -3681,7 +3717,7 @@ export function readConfig(name: string): string {
 			t.Fatalf("unexpected imported external call evidence: %#v", found.Evidence)
 		}
 	}
-	for _, target := range []string{"external:import:fs", "external:import:path", "external:import:crypto", "external:import:node:fs", "external:import:node:path", "external:import:node:crypto"} {
+	for _, target := range []string{"external:import:fs", "external:import:path", "external:import:crypto", "external:import:node:fs", "external:import:node:path", "external:import:node:crypto", "external:import:node:stream"} {
 		if !hasRelationTo(snapshot.Relations, "IMPORTS", target) {
 			t.Fatalf("missing JS dynamic/CommonJS import to %s in %#v", target, snapshot.Relations)
 		}

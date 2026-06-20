@@ -43,6 +43,9 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-collection-flow -min-loc-per-sec 1
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-istio-resource-refs -min-loc-per-sec 1
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-object-literal-flow -min-loc-per-sec 1
+go test ./internal/sem -run 'TestStaticArrayJoinRouteExpressionComposesAndBridgesHTTPClient|TestComputedRouteExpressionComposesAndBridgesHTTPClient|TestBuildProviderSnapshotEmitsImportedExternalCalls' -count=1
+go test ./...
+go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-array-join-routes -min-loc-per-sec 1
 ```
 
 ## Results
@@ -199,16 +202,16 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 - Static HTTP client calls bridge to exact local route handlers through shared
   route endpoints as direct `CALLS` edges.
 - Deterministic static computed JS/TS route expressions, including
-  template-literal route constants and chained concatenated constants, compose
-  to route endpoints and bridge matching HTTP clients.
+  template-literal route constants, chained concatenated constants, and static
+  array joins, compose to route endpoints and bridge matching HTTP clients.
 - Deterministic static computed JS/TS HTTP client paths built from known local
   route constants emit `HTTP_CALLS` and bridge to local handlers.
 - Imported external calls for common Go, Python, and JS/TS import forms emit
   `CALLS` edges to `external:symbol:<module>.<member>` with
   `resolution: import_external`.
 - Deterministic computed JS/TS CommonJS and dynamic import module strings built
-  from known local string constants emit `IMPORTS`; computed CommonJS bindings
-  also emit imported external `CALLS`.
+  from known local string constants or static array joins emit `IMPORTS`;
+  computed CommonJS bindings also emit imported external `CALLS`.
 - Direct constructor-chain receiver calls such as `new Widget().label()` emit
   `CALLS` edges to local methods with `resolution: type_inferred`.
 - Same-file factory-returned receiver calls such as `makeWidget().label()` emit
@@ -285,6 +288,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781970127.json`: Go/gin, syntax-only, 28,618 LOC,
     150,315 LOC/s, max RSS 28,803,072 bytes, estimated output 1,902,626
     bytes; run after KEDA `authenticationRef` resource-reference extraction.
+  - `bench/results/result-1781970409.json`: Go/gin, syntax-only, 28,618 LOC,
+    140,809 LOC/s, max RSS 28,934,144 bytes, estimated output 1,902,629
+    bytes; run after static array-join route/import expression extraction.
   - `bench/results/result-1781944479.json`: Go/gin, syntax-only, 28,618 LOC,
     154,533 LOC/s, max RSS 27,115,520 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781944927.json`: Go/gin, syntax-only, 28,618 LOC,

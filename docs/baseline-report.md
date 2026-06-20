@@ -146,9 +146,10 @@ False positives:
   controller/method decorators, Next.js route-file boundaries, or same-block
   Express router mount plus route registration).
   Deterministic static computed route expressions such as
-  `apiPrefix + "/health"` and template literals with known local route
-  constants compose to one route and do not emit suffixes as separate routes.
-  Runtime builders remain intentionally skipped. Matching Python
+  `apiPrefix + "/health"`, template literals with known local route constants,
+  and static array joins such as `[apiPrefix, version, "users"].join("/")`
+  compose to one route and do not emit suffixes as separate routes. Runtime
+  builders remain intentionally skipped. Matching Python
   `requests`/`httpx`, Java `RestTemplate`/HTTP client calls, Go HTTP client
   calls, C# `HttpClient` calls, PHP `Http::` facade calls, and JS/TS
   `fetch`/Axios calls, including deterministic static computed JS/TS client
@@ -191,8 +192,8 @@ False negatives:
   forms.** Go package calls (`strings.TrimSpace`), Python module/member calls
   (`json.dumps` and `from json import dumps`), JS/TS named, default, or
   namespace import calls (`readFileSync`, `path.join`), literal CommonJS
-  `require(...)` bindings, and deterministic computed CommonJS bindings now
-  emit `CALLS` to
+  `require(...)` bindings, and deterministic computed CommonJS bindings,
+  including module strings built with static array joins, now emit `CALLS` to
   `external:symbol:<module>.<member>` when no local symbol target resolves.
   Remaining: compiler/type-aware package APIs, arbitrary returned receivers
   beyond explicit same-file factory return types, and arbitrary

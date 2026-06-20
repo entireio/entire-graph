@@ -208,8 +208,9 @@ Tasks:
   `pub use` re-exports are implemented for local Rust module files. JS/TS
   literal CommonJS `require("...")`, literal dynamic
   `import("...")`, and deterministic computed module strings built from known
-  local string constants emit `IMPORTS`; CommonJS bindings from those computed
-  modules also participate in imported external call resolution. Maven/Gradle
+  local string constants or static array joins emit `IMPORTS`; CommonJS
+  bindings from those computed modules also participate in imported external
+  call resolution. Maven/Gradle
   classpath/build-variant modeling beyond root package identity, arbitrary
   runtime-computed module names, and
   macro-expanded or complex Rust name resolution remain open.
@@ -326,8 +327,8 @@ Tasks:
   `include_router(router, prefix="/prefix")` mounts compose with static
   `@router.get/post/...` decorators, including locally resolved relative
   imports. Deterministic static computed route expressions such as
-  `apiPrefix + "/health"` and template literals with known local route
-  constants compose to a single route endpoint.
+  `apiPrefix + "/health"`, template literals with known local route constants,
+  and static array joins compose to a single route endpoint.
 - Add route client detection:
   `fetch`, Axios, Python requests/httpx, Go `http.Client`, Java HTTP clients,
   C# HttpClient. JS/TS clients support deterministic static computed paths
@@ -353,8 +354,8 @@ Acceptance:
 - Dynamic route/client paths do not create high-confidence false edges.
 - Static computed route paths compose when all parts are local string literals
   or known local route constants, including Express router mount prefixes,
-  template-literal route constants, and child route paths; arbitrary runtime
-  builders remain out of scope.
+  template-literal route constants, static array joins, and child route paths;
+  arbitrary runtime builders remain out of scope.
 
 ### WP7: IaC And Resource Graph
 

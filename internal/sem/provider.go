@@ -7481,7 +7481,7 @@ func staticStringConstants(content string) map[string]string {
 			if len(match) != 3 {
 				continue
 			}
-			value, ok := staticRouteExpressionValue(match[2], constants)
+			value, ok := staticStringExpressionValue(match[2], constants)
 			if !ok {
 				continue
 			}
@@ -7766,6 +7766,9 @@ func staticStringExpressionValue(expr string, constants map[string]string) (stri
 	if strings.HasPrefix(expr, "`") && strings.HasSuffix(expr, "`") {
 		return staticTemplateStringValue(expr, constants)
 	}
+	if value, ok := staticArrayJoinStringValue(expr, constants); ok {
+		return value, true
+	}
 	if value := constants[expr]; value != "" {
 		return value, true
 	}
@@ -7790,6 +7793,55 @@ func staticTemplateStringValue(expr string, constants map[string]string) (string
 		return "", false
 	}
 	return value, true
+}
+
+func staticArrayJoinStringValue(expr string, constants map[string]string) (string, bool) {
+	expr = strings.TrimSpace(expr)
+	if !strings.HasPrefix(expr, "[") {
+		return "", false
+	}
+	arrayEnd := findMatchingStaticDelimiter(expr, 0, '[', ']')
+	if arrayEnd < 0 {
+		return "", false
+	}
+	rest := strings.TrimSpace(expr[arrayEnd+1:])
+	if !strings.HasPrefix(rest, ".join") {
+		return "", false
+	}
+	call := strings.TrimSpace(strings.TrimPrefix(rest, ".join"))
+	if !strings.HasPrefix(call, "(") {
+		return "", false
+	}
+	callEnd := findMatchingStaticDelimiter(call, 0, '(', ')')
+	if callEnd < 0 || strings.TrimSpace(call[callEnd+1:]) != "" {
+		return "", false
+	}
+	separator := ","
+	arg := strings.TrimSpace(call[1:callEnd])
+	if arg != "" {
+		value, ok := staticStringExpressionValue(arg, constants)
+		if !ok {
+			return "", false
+		}
+		separator = value
+	}
+	body := strings.TrimSpace(expr[1:arrayEnd])
+	if body == "" {
+		return "", true
+	}
+	items := splitTopLevelStaticComma(body)
+	if len(items) == 0 {
+		return "", false
+	}
+	values := make([]string, 0, len(items))
+	for _, item := range items {
+		value, ok := staticStringExpressionValue(item, constants)
+		if !ok {
+			return "", false
+		}
+		values = append(values, value)
+	}
+	return strings.Join(values, separator), true
 }
 
 func staticConcatStringValue(parts []string, constants map[string]string) (string, bool) {
@@ -7876,6 +7928,154 @@ func splitStaticConcatExpression(expr string) []string {
 	}
 	parts = append(parts, part)
 	return parts
+}
+
+func splitTopLevelStaticComma(expr string) []string {
+	var parts []string
+	var b strings.Builder
+	quote := rune(0)
+	escaped := false
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+	templateDepth := 0
+	for _, r := range expr {
+		if quote != 0 {
+			b.WriteRune(r)
+			if escaped {
+				escaped = false
+				continue
+			}
+			if r == '\\' {
+				escaped = true
+				continue
+			}
+			if quote == '`' {
+				switch r {
+				case '{':
+					if strings.HasSuffix(b.String(), "${") {
+						templateDepth++
+					}
+				case '}':
+					if templateDepth > 0 {
+						templateDepth--
+					}
+				}
+			}
+			if r == quote && templateDepth == 0 {
+				quote = 0
+			}
+			continue
+		}
+		switch r {
+		case '\'', '"', '`':
+			quote = r
+			b.WriteRune(r)
+		case '(':
+			parenDepth++
+			b.WriteRune(r)
+		case ')':
+			if parenDepth == 0 {
+				return nil
+			}
+			parenDepth--
+			b.WriteRune(r)
+		case '[':
+			bracketDepth++
+			b.WriteRune(r)
+		case ']':
+			if bracketDepth == 0 {
+				return nil
+			}
+			bracketDepth--
+			b.WriteRune(r)
+		case '{':
+			braceDepth++
+			b.WriteRune(r)
+		case '}':
+			if braceDepth == 0 {
+				return nil
+			}
+			braceDepth--
+			b.WriteRune(r)
+		case ',':
+			if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
+				part := strings.TrimSpace(b.String())
+				if part == "" {
+					return nil
+				}
+				parts = append(parts, part)
+				b.Reset()
+				continue
+			}
+			b.WriteRune(r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	if quote != 0 || parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 {
+		return nil
+	}
+	part := strings.TrimSpace(b.String())
+	if part == "" {
+		return nil
+	}
+	parts = append(parts, part)
+	return parts
+}
+
+func findMatchingStaticDelimiter(expr string, start int, open, close rune) int {
+	if start < 0 || start >= len(expr) || rune(expr[start]) != open {
+		return -1
+	}
+	depth := 0
+	quote := rune(0)
+	escaped := false
+	templateDepth := 0
+	for i, r := range expr {
+		if i < start {
+			continue
+		}
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if r == '\\' {
+				escaped = true
+				continue
+			}
+			if quote == '`' {
+				switch r {
+				case '{':
+					prefix := expr[:i]
+					if strings.HasSuffix(prefix, "${") {
+						templateDepth++
+					}
+				case '}':
+					if templateDepth > 0 {
+						templateDepth--
+					}
+				}
+			}
+			if r == quote && templateDepth == 0 {
+				quote = 0
+			}
+			continue
+		}
+		switch r {
+		case '\'', '"', '`':
+			quote = r
+		case open:
+			depth++
+		case close:
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 func splitJavaScriptMember(value string) (string, string) {
