@@ -302,9 +302,11 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   `HANDLES_GRAPHQL` edges for `Query`, `Mutation`, and `Subscription` fields;
   GraphQL schema files now emit `graphql_schema_field` symbols and
   `HANDLES_GRAPHQL` edges for root `Query`, `Mutation`, and `Subscription`
-  fields in `type` and `extend type` blocks. These complement existing
-  GraphQL operation-literal detection and remain heuristic boundary facts, not
-  full schema validation, type checking, or resolver type analysis.
+  fields in `type` and `extend type` blocks, and matching schema root fields
+  emit exact local `CALLS` edges to matching resolver-map fields. These
+  complement existing GraphQL operation-literal detection and remain heuristic
+  boundary/linking facts, not full schema validation, type checking, or
+  non-root resolver type analysis.
 - Koa/@koa-router `router.routes()` mounts, including static `koa-mount`
   prefixes, compose with static router registrations and bridge exact matching
   HTTP clients to local handlers.
@@ -363,6 +365,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781971341.json`: Go/gin, syntax-only, 28,618 LOC,
     141,372 LOC/s, max RSS 28,852,224 bytes, estimated output 1,902,633
     bytes; run after GraphQL schema root field boundary extraction.
+  - `bench/results/result-1781977107.json`: Go/gin, syntax-only, 28,618 LOC,
+    145,365 LOC/s, max RSS 28,491,776 bytes, estimated output 1,902,639
+    bytes; run after GraphQL schema root field to resolver-map linking.
   - `bench/results/result-1781971817.json`: Go/gin, syntax-only, 28,618 LOC,
     146,399 LOC/s, max RSS 29,130,752 bytes, estimated output 1,902,634
     bytes; run after Argo Rollouts AnalysisTemplate reference extraction.
@@ -554,9 +559,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   not quality proof for full C semantics.
 - Public large-corpus speed claims still need broader retained runs across more
   cached or supplied repositories and profiles.
-- GraphQL support covers operation literals, JS/TS resolver-map fields, and
-  schema root fields; it is not full GraphQL schema validation, type checking,
-  or resolver type analysis.
+- GraphQL support covers operation literals, JS/TS resolver-map fields, schema
+  root fields, and exact schema-root-to-resolver-field links; it is not full
+  GraphQL schema validation, type checking, or non-root resolver type analysis.
 - Attempted cached C/Linux `fast` profile with a 5 GB RSS ceiling exposed a
   real validation gap before this fix: live process inspection showed the run
   still active at roughly 7.3 GB RSS because the old guard only checked memory

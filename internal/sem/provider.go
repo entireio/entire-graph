@@ -1469,6 +1469,8 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	var inheritanceEdges []RelationRecord // captured for OVERRIDES derivation
 	routeHandlers := map[string][]SymbolRecord{}
 	httpCallsByRoute := map[string][]RelationRecord{}
+	graphqlSchemaFields := map[string][]SymbolRecord{}
+	graphqlResolvers := map[string][]SymbolRecord{}
 	// Iterate files in their (stable) slice order, not the recordsByFile map, so
 	// structural relations stream deterministically.
 	for _, file := range files {
@@ -1482,6 +1484,14 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			}
 			if symbol.Kind == "route" {
 				routeHandlers[symbol.Name] = append(routeHandlers[symbol.Name], symbol)
+			}
+			if endpoint := graphqlBoundaryEndpoint(symbol); endpoint != "" {
+				switch symbol.Kind {
+				case "graphql_schema_field":
+					graphqlSchemaFields[endpoint] = append(graphqlSchemaFields[endpoint], symbol)
+				case "graphql_resolver":
+					graphqlResolvers[endpoint] = append(graphqlResolvers[endpoint], symbol)
+				}
 			}
 			emit(RelationRecord{
 				RecordType:    "relation",
@@ -2013,6 +2023,12 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			}
 			emit(r)
 		}
+		for _, r := range graphqlSchemaResolverRelations(graphqlSchemaFields, graphqlResolvers) {
+			if shouldStop != nil && shouldStop() {
+				return
+			}
+			emit(r)
+		}
 	}
 	if spec.emits("USES_TYPE") {
 		for _, r := range usesTypeRelations(recordsByFile, symbolsByFile, symbolsByShortName) {
@@ -2112,6 +2128,82 @@ func routeBridgeRelations(routeHandlers map[string][]SymbolRecord, httpCallsByRo
 		}
 	}
 	return relations
+}
+
+func graphqlSchemaResolverRelations(schemaFields, resolvers map[string][]SymbolRecord) []RelationRecord {
+	var endpoints []string
+	for endpoint := range schemaFields {
+		if len(resolvers[endpoint]) > 0 {
+			endpoints = append(endpoints, endpoint)
+		}
+	}
+	sort.Strings(endpoints)
+	var relations []RelationRecord
+	for _, endpoint := range endpoints {
+		fields := append([]SymbolRecord(nil), schemaFields[endpoint]...)
+		sort.Slice(fields, func(i, j int) bool { return fields[i].ID < fields[j].ID })
+		targets := append([]SymbolRecord(nil), resolvers[endpoint]...)
+		sort.Slice(targets, func(i, j int) bool { return targets[i].ID < targets[j].ID })
+		for _, field := range fields {
+			for _, resolver := range targets {
+				if field.ID == resolver.ID {
+					continue
+				}
+				relations = append(relations, RelationRecord{
+					RecordType:    "relation",
+					FromID:        field.ID,
+					ToID:          resolver.ID,
+					Type:          "CALLS",
+					Confidence:    0.9,
+					Reason:        "GraphQL schema root field resolved to local resolver map field",
+					RelationScope: "workspace",
+					Resolution:    "exact",
+					TargetKind:    "symbol",
+					Evidence: []Evidence{{
+						Kind:     "graphql_schema_resolver_match",
+						FilePath: resolver.FilePath,
+						Detail:   endpoint,
+					}},
+					WarningCodes: []string{},
+				})
+			}
+		}
+	}
+	return relations
+}
+
+func graphqlBoundaryEndpoint(symbol SymbolRecord) string {
+	switch symbol.Kind {
+	case "graphql_schema_field", "graphql_resolver":
+	default:
+		return ""
+	}
+	fields := strings.Fields(symbol.Signature)
+	if len(fields) < 4 {
+		return ""
+	}
+	if fields[0] != "GraphQL" {
+		return ""
+	}
+	switch symbol.Kind {
+	case "graphql_schema_field":
+		if fields[1] != "schema" {
+			return ""
+		}
+	case "graphql_resolver":
+		if fields[1] != "resolver" {
+			return ""
+		}
+	}
+	root := strings.ToLower(fields[2])
+	if root != "query" && root != "mutation" && root != "subscription" {
+		return ""
+	}
+	name := strings.TrimSpace(fields[3])
+	if name == "" {
+		return ""
+	}
+	return root + " " + name
 }
 
 // typeRelationsForFile emits EXTENDS/IMPLEMENTS relations for the type symbols

@@ -4435,6 +4435,50 @@ type User {
 	}
 }
 
+func TestGraphQLSchemaFieldsLinkToResolverFields(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "schema.graphql", `type Query {
+  user(id: ID!): User!
+}
+
+extend type Mutation {
+  createUser(input: CreateUserInput!): User!
+}
+
+type User {
+  id: ID!
+}
+`)
+	writeFile(t, repo, "src/resolvers.ts", `export const resolvers = {
+  Query: {
+    user: (_parent, args) => ({ id: args.id }),
+  },
+  Mutation: {
+    createUser: async (_parent, args) => ({ id: args.input.id }),
+  },
+  User: {
+    id: (user) => user.id,
+  },
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range [][2]string{
+		{"Query.user", "Query.user"},
+		{"Mutation.createUser", "Mutation.createUser"},
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", want[0], want[1]) {
+			t.Fatalf("missing GraphQL schema-to-resolver CALLS %s -> %s in %#v", want[0], want[1], snapshot.Relations)
+		}
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "CALLS", "User.id", "User.id") {
+		t.Fatalf("non-root GraphQL object field linked to resolver: %#v", snapshot.Relations)
+	}
+}
+
 func TestBuildProviderSnapshotEmitsAssignedReturnDataFlow(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "flow.ts", `function helper(): string {
