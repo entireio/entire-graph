@@ -6667,6 +6667,120 @@ export function run(input: string): string {
 	}
 }
 
+func TestBuildProviderSnapshotEmitsParameterPropertyForwardDataFlow(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "flow.ts", `type Input = { value: string, other: string }
+
+function normalize(value: string): string {
+  return value.trim()
+}
+
+function collect(value: string): string {
+  return value.trim()
+}
+
+function ignore(value: string): string {
+  return "ignored"
+}
+
+export function run(input: Input): string {
+  normalize(input.value)
+  collect(input["other"])
+  const local = { value: "static" }
+  ignore(local.value)
+  return input.value
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct {
+		callee string
+		detail string
+	}{
+		{callee: "normalize", detail: "input.value -> normalize()"},
+		{callee: "collect", detail: "input[] -> collect()"},
+	} {
+		var found RelationRecord
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == "run" && lastSegment(relation.ToID) == want.callee {
+				found = relation
+				break
+			}
+		}
+		if found.FromID == "" {
+			t.Fatalf("missing parameter property DATA_FLOWS run->%s: %#v", want.callee, snapshot.Relations)
+		}
+		if found.Reason != "caller parameter property forwarded into callee argument" || found.Confidence > 0.7 {
+			t.Fatalf("unexpected parameter property flow metadata for %s: %#v", want.callee, found)
+		}
+		if len(found.Evidence) != 1 || found.Evidence[0].Kind != "parameter_property_forward_flow" || found.Evidence[0].Detail != want.detail {
+			t.Fatalf("unexpected parameter property flow evidence for %s: %#v", want.callee, found.Evidence)
+		}
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == "run" && lastSegment(relation.ToID) == "ignore" {
+			t.Fatalf("local object property produced DATA_FLOWS: %#v", relation)
+		}
+	}
+}
+
+func TestBuildProviderSnapshotEmitsPythonParameterPropertyForwardDataFlow(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "flow.py", `def normalize(value):
+    return value.strip()
+
+def collect(value):
+    return value.strip()
+
+def ignore(value):
+    return "ignored"
+
+def run(input):
+    normalize(input.value)
+    collect(input["other"])
+    local = {"value": "static"}
+    ignore(local["value"])
+    return input.value
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct {
+		callee string
+		detail string
+	}{
+		{callee: "normalize", detail: "input.value -> normalize()"},
+		{callee: "collect", detail: "input[] -> collect()"},
+	} {
+		var found RelationRecord
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == "run" && lastSegment(relation.ToID) == want.callee {
+				found = relation
+				break
+			}
+		}
+		if found.FromID == "" {
+			t.Fatalf("missing Python parameter property DATA_FLOWS run->%s: %#v", want.callee, snapshot.Relations)
+		}
+		if found.Reason != "caller parameter property forwarded into callee argument" || found.Confidence > 0.7 {
+			t.Fatalf("unexpected Python parameter property flow metadata for %s: %#v", want.callee, found)
+		}
+		if len(found.Evidence) != 1 || found.Evidence[0].Kind != "parameter_property_forward_flow" || found.Evidence[0].Detail != want.detail {
+			t.Fatalf("unexpected Python parameter property flow evidence for %s: %#v", want.callee, found.Evidence)
+		}
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == "run" && lastSegment(relation.ToID) == "ignore" {
+			t.Fatalf("local Python object property produced DATA_FLOWS: %#v", relation)
+		}
+	}
+}
+
 func TestBuildProviderSnapshotEmitsAliasForwardDataFlow(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "flow.ts", `function normalize(value: string): string {

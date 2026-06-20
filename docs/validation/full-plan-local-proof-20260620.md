@@ -77,6 +77,8 @@ go test ./...
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-dict-shorthand-flow -min-loc-per-sec 1
 go test ./internal/sem -run 'TestBuildProviderSnapshotEmits(DirectLiteralArgumentForward|PythonDirectLiteralArgumentForward|ObjectShorthandForward|PythonDictLiteralForward)DataFlow' -count=1
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-direct-literal-flow -min-loc-per-sec 1
+go test ./internal/sem -run 'TestBuildProviderSnapshotEmits(ArgumentForward|ParameterPropertyForward|PythonParameterPropertyForward|AliasForward)DataFlow' -count=1
+go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-param-property-flow -min-loc-per-sec 1
 ```
 
 ## Results
@@ -360,6 +362,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   assigned callees whose locals are not returned.
 - Exact/import-resolved argument forwarding emits caller-to-callee
   `DATA_FLOWS` when a caller parameter is passed into a known callee.
+- Conservative parameter-property forwarding emits caller-to-callee
+  `DATA_FLOWS` when a direct property or literal-key access on a caller
+  parameter, such as `input.value` or `input["value"]`, is passed into a known
+  callee; non-parameter locals are ignored.
 - Conservative parameter-alias forwarding emits caller-to-callee `DATA_FLOWS`
   when a caller parameter is assigned to a local alias and that alias is passed
   to a known callee.
@@ -786,6 +792,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781996982.json`: Go/gin, syntax-only, 28,618 LOC,
     140,447 LOC/s, max RSS 29,360,128 bytes, estimated output 1,902,631
     bytes.
+  - `bench/results/result-1781997213.json`: Go/gin, syntax-only, 28,618 LOC,
+    166,586 LOC/s, max RSS 29,523,968 bytes, estimated output 1,902,631
+    bytes.
 
 ## Remaining Honesty Notes
 
@@ -809,9 +818,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   constants. Arbitrary runtime URL construction remains intentionally skipped.
 - Data-flow support covers conservative destructured parameter-alias forwarding
   such as `const { value } = input; normalize(value)`, in addition to direct
-  parameter, alias, object-field/object-literal, and collection-element
-  forwarding, including JS/TS shorthand object literals, Python dict literals,
-  direct array/list literals such as `const values = [input];
+  parameter, direct parameter-property, alias, object-field/object-literal, and
+  collection-element forwarding, including JS/TS shorthand object literals,
+  Python dict literals, direct array/list literals such as `const values = [input];
   normalize(values)`, and direct literal callee arguments such as
   `normalize({ value: input })` or `collect([input])`. Broad program slicing
   remains intentionally out of scope.

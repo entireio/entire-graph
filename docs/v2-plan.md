@@ -41,8 +41,10 @@ versioned, confidence-scored facts that `entire-brain` can persist and query.
   branch assignment to the same returned local, simple JS/TS and Python
   conditional return expressions, simple JS/TS and Python fallback return
   expressions, simple JS/TS and Python conditional/fallback assignment followed
-  by bare `return value`, exact argument forwarding, conservative parameter-alias
-  forwarding, conservative destructured parameter-alias forwarding, and
+  by bare `return value`, exact argument forwarding, conservative
+  parameter-property forwarding for direct `param.field` or literal-key
+  `param[...]` arguments, conservative parameter-alias forwarding,
+  conservative destructured parameter-alias forwarding, and
   conservative object-field forwarding when a caller parameter is assigned into
   a local object field, simple object-literal forwarding including JS/TS
   `key: param`, JS/TS shorthand fields, and Python dict literal fields, plus
@@ -139,8 +141,9 @@ Remain out of provider scope or later expansion:
   simple branch-assigned return-flow, simple JS/TS and Python conditional
   return-flow, simple JS/TS and Python fallback return-flow, simple expression
   assignment-then-return flow, exact/import-resolved argument-forwarding flow,
-  conservative parameter-alias and destructured parameter-alias forwarding
-  flow, conservative local object-field forwarding flow, conservative local
+  conservative parameter-property forwarding flow, conservative parameter-alias
+  and destructured parameter-alias forwarding flow, conservative local
+  object-field forwarding flow, conservative local
   object-literal forwarding flow including JS/TS shorthand and Python dict
   literals, conservative local collection-element or collection-literal
   forwarding flow, and direct object/array/list literal argument forwarding.

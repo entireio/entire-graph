@@ -505,6 +505,9 @@ func returnFlowCalls(block, signature string) []returnFlowCall {
 	for _, flow := range argumentForwardingFlows(stripped, signature) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
+	for _, flow := range parameterPropertyForwardingFlows(stripped, signature) {
+		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
+	}
 	for _, flow := range aliasForwardingFlows(stripped, signature) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
@@ -851,6 +854,71 @@ func argumentForwardingFlows(block, signature string) []returnFlowCall {
 		return flows[i].Detail < flows[j].Detail
 	})
 	return flows
+}
+
+func parameterPropertyForwardingFlows(block, signature string) []returnFlowCall {
+	params := parameterNames(signature)
+	if len(params) == 0 {
+		return nil
+	}
+	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
+	var flows []returnFlowCall
+	seen := map[string]bool{}
+	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		name := strings.TrimPrefix(match[1], "$")
+		if dataFlowCallNameIgnored(name) {
+			continue
+		}
+		for _, arg := range splitSimpleArguments(match[2]) {
+			paramName, access, ok := forwardedParameterProperty(arg, params)
+			if !ok {
+				continue
+			}
+			key := name + "\x00" + paramName + "\x00" + access
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			flows = append(flows, returnFlowCall{
+				Name:         name,
+				Reason:       "caller parameter property forwarded into callee argument",
+				EvidenceKind: "parameter_property_forward_flow",
+				Detail:       paramName + access + " -> " + name + "()",
+				Direction:    "caller_to_callee",
+			})
+		}
+	}
+	sort.Slice(flows, func(i, j int) bool {
+		if flows[i].Name != flows[j].Name {
+			return flows[i].Name < flows[j].Name
+		}
+		return flows[i].Detail < flows[j].Detail
+	})
+	return flows
+}
+
+func forwardedParameterProperty(arg string, params map[string]bool) (string, string, bool) {
+	arg = strings.TrimPrefix(strings.TrimSpace(arg), "$")
+	if match := regexp.MustCompile(`^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)$`).FindStringSubmatch(arg); len(match) == 3 && params[match[1]] {
+		return match[1], "." + match[2], true
+	}
+	if match := regexp.MustCompile(`^([A-Za-z_$][\w$]*)\[\s*(?:"([^"]+)"|'([^']+)'|([0-9]+))\s*\]$`).FindStringSubmatch(arg); len(match) == 5 && params[match[1]] {
+		key := match[2]
+		if key == "" {
+			key = match[3]
+		}
+		if key == "" {
+			key = match[4]
+		}
+		return match[1], "[" + key + "]", true
+	}
+	if match := regexp.MustCompile(`^([A-Za-z_$][\w$]*)\[\s*\]$`).FindStringSubmatch(arg); len(match) == 2 && params[match[1]] {
+		return match[1], "[]", true
+	}
+	return "", "", false
 }
 
 func aliasForwardingFlows(block, signature string) []returnFlowCall {
