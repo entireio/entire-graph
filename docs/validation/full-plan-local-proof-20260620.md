@@ -123,9 +123,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   class and method routes, and matching PHP `Http::` facade calls bridge to
   handlers as direct `CALLS`.
 - Ruby on Rails static route declarations, `scope` blocks, `namespace` blocks,
-  and `resources` declarations with default REST actions, `only:`, and
-  `except:` resolve local controller actions, compose route/controller prefixes,
-  and matching HTTP client calls bridge to handlers as direct `CALLS`.
+  `resources` declarations with default REST actions, `only:`, `except:`, and
+  nested `resources` blocks resolve local controller actions, compose
+  route/controller prefixes, and matching HTTP client calls bridge to handlers
+  as direct `CALLS`.
 - Go `net/http` `HandleFunc` registrations and `HandlerFunc` wrappers resolve
   static or local-literal-constant paths to same-file local handler symbols,
   including unique same-file selector handler expressions, and bridge matching
@@ -442,6 +443,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781980407.json`: Go/gin, syntax-only, 28,618 LOC,
     162,532 LOC/s, max RSS 26,951,680 bytes, estimated output 1,902,640
     bytes; run after Rails scope/namespace route extraction.
+  - `bench/results/result-1781980824.json`: Go/gin, syntax-only, 28,618 LOC,
+    163,919 LOC/s, max RSS 29,163,520 bytes, estimated output 1,902,634
+    bytes; run after Rails nested resource route extraction.
   - `bench/results/result-1781972446.json`: Go/gin, syntax-only, 28,618 LOC,
     162,982 LOC/s, max RSS 26,804,224 bytes, estimated output 1,902,630
     bytes; run after IngressClass reference extraction.

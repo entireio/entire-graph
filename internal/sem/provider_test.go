@@ -4580,6 +4580,59 @@ end
 	}
 }
 
+func TestRailsNestedResourcesComposeControllerActions(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "config/routes.rb", `Rails.application.routes.draw do
+  resources :users, only: [:show] do
+    resources :posts, only: [:show, :create]
+  end
+end
+`)
+	writeFile(t, repo, "app/controllers/users_controller.rb", `class UsersController
+  def show
+    "ok"
+  end
+end
+`)
+	writeFile(t, repo, "app/controllers/posts_controller.rb", `class PostsController
+  def show
+    "ok"
+  end
+
+  def create
+    "created"
+  end
+
+  def ping
+    HTTP.get("/users/:user_id/posts/:id")
+  end
+end
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct {
+		handler string
+		route   string
+	}{
+		{"UsersController.show", "/users/:id"},
+		{"PostsController.show", "/users/:user_id/posts/:id"},
+		{"PostsController.create", "/users/:user_id/posts"},
+	} {
+		if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", want.handler, want.route) {
+			t.Fatalf("missing Rails nested route %s -> %s in %#v", want.handler, want.route, snapshot.Relations)
+		}
+	}
+	if hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "PostsController.show", "/posts/:id") {
+		t.Fatalf("Rails nested resources emitted unmounted child route: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "PostsController.ping", "PostsController.show") {
+		t.Fatalf("missing route bridge CALLS ping->PostsController.show: %#v", snapshot.Relations)
+	}
+}
+
 func TestRailsDefaultResourcesAndExceptResolveControllerActions(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "config/routes.rb", `Rails.application.routes.draw do

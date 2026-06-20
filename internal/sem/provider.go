@@ -8385,7 +8385,24 @@ func railsRouteRegistrations(content string) []railsRouteRegistration {
 			}
 		}
 	}
-	topLevel, scoped := railsScopedRouteBlocks(content)
+	topLevel, nested := railsNestedResourceBlocks(content)
+	for _, block := range nested {
+		parentActions := railsDefaultResourceActions()
+		evidence := "rails_resources_nested_parent"
+		if only := railsResourceOptionActions(block.ParentOptions, "only"); len(only) > 0 {
+			parentActions = only
+			evidence = "rails_resources_only_nested_parent"
+		} else if except := railsResourceOptionActions(block.ParentOptions, "except"); len(except) > 0 {
+			parentActions = railsResourceActionsExcept(parentActions, except)
+			evidence = "rails_resources_except_nested_parent"
+		}
+		for _, route := range railsResourceRoutes(block.Parent, parentActions) {
+			add(route.Path, block.Parent, route.Action, evidence)
+		}
+		parentPrefix := joinRoutePaths("/"+block.Parent, ":"+railsSingularResourceName(block.Parent)+"_id")
+		scan(block.Body, parentPrefix, "", "_nested_resources")
+	}
+	topLevel, scoped := railsScopedRouteBlocks(topLevel)
 	scan(topLevel, "", "", "")
 	for _, block := range scoped {
 		scan(block.Body, block.RoutePrefix, block.ControllerPrefix, block.EvidenceSuffix)
@@ -8398,6 +8415,30 @@ type railsScopedRouteBlock struct {
 	ControllerPrefix string
 	Body             string
 	EvidenceSuffix   string
+}
+
+type railsNestedResourceBlock struct {
+	Parent        string
+	ParentOptions string
+	Body          string
+}
+
+func railsNestedResourceBlocks(content string) (string, []railsNestedResourceBlock) {
+	re := regexp.MustCompile(`(?ims)^\s*resources\s+:([A-Za-z_][A-Za-z0-9_]*)([^\n]*)\s+do\s*(.*?)^\s*end\b`)
+	var blocks []railsNestedResourceBlock
+	top := re.ReplaceAllStringFunc(content, func(block string) string {
+		match := re.FindStringSubmatch(block)
+		if len(match) != 4 {
+			return block
+		}
+		blocks = append(blocks, railsNestedResourceBlock{
+			Parent:        match[1],
+			ParentOptions: strings.TrimSpace(match[2]),
+			Body:          match[3],
+		})
+		return ""
+	})
+	return top, blocks
 }
 
 func railsScopedRouteBlocks(content string) (string, []railsScopedRouteBlock) {
@@ -8429,6 +8470,17 @@ func railsScopedRouteBlocks(content string) (string, []railsScopedRouteBlock) {
 		return block
 	})
 	return top, blocks
+}
+
+func railsSingularResourceName(resource string) string {
+	resource = strings.TrimSpace(resource)
+	if strings.HasSuffix(resource, "ies") && len(resource) > 3 {
+		return strings.TrimSuffix(resource, "ies") + "y"
+	}
+	if strings.HasSuffix(resource, "s") && len(resource) > 1 {
+		return strings.TrimSuffix(resource, "s")
+	}
+	return resource
 }
 
 func railsJoinControllerPrefix(prefix, controller string) string {
