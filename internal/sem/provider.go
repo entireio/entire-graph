@@ -5206,7 +5206,9 @@ func maskBytes(bytes []byte, start, end int) {
 }
 
 var (
-	routeLiteralRe = regexp.MustCompile(`["'](/[A-Za-z0-9_\-/{}:.]*)["']`)
+	routeLiteralRe      = regexp.MustCompile(`["'](/[A-Za-z0-9_\-/{}:.]*)["']`)
+	staticRouteConcatRe = regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\+\s*["']([^"']*)["']`)
+	staticStringConstRe = regexp.MustCompile(`(?m)\b(?:(?:const|let|var)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=\n]+)?=\s*["'](/[A-Za-z0-9_\-/{}:.]*)["']`)
 	// routingCallRe marks a line as a route registration: an HTTP-verb or
 	// routing method call, or a mapping decorator, immediately before "(".
 	// Requiring this context next to the path literal avoids treating every
@@ -5218,14 +5220,26 @@ var (
 // context, so plain path-like string literals are not misreported as handled
 // routes.
 func routeLiterals(content string) []string {
+	return routeLiteralsWithConstants(content, staticStringConstants(content))
+}
+
+func routeLiteralsWithConstants(content string, constants map[string]string) []string {
 	seen := map[string]struct{}{}
 	for _, line := range strings.Split(content, "\n") {
 		if !routingCallRe.MatchString(line) || httpClientRe.MatchString(line) {
 			continue // skip client HTTP calls; those are HTTP_CALLS, not routes
 		}
-		for _, match := range routeLiteralRe.FindAllStringSubmatch(line, -1) {
-			if len(match) > 1 {
-				seen[match[1]] = struct{}{}
+		for _, match := range staticRouteConcatRe.FindAllStringSubmatch(line, -1) {
+			if len(match) == 3 && constants[match[1]] != "" {
+				seen[joinRoutePaths(constants[match[1]], match[2])] = struct{}{}
+			}
+		}
+		for _, match := range routeLiteralRe.FindAllStringSubmatchIndex(line, -1) {
+			if len(match) >= 4 {
+				if routeLiteralPartOfConcat(line, match[0], match[1]) {
+					continue
+				}
+				seen[line[match[2]:match[3]]] = struct{}{}
 			}
 		}
 	}
@@ -5245,7 +5259,7 @@ func routeLiteralsForSymbol(path, content, block string, symbol SymbolRecord, sy
 			return sortedKeys(seen)
 		}
 	}
-	for _, route := range routeLiterals(block) {
+	for _, route := range routeLiteralsWithConstants(block, staticStringConstants(content)) {
 		seen[route] = struct{}{}
 	}
 	if jsLikeExtension(filepath.Ext(path)) {
@@ -5259,6 +5273,22 @@ func routeLiteralsForSymbol(path, content, block string, symbol SymbolRecord, sy
 		}
 	}
 	return sortedKeys(seen)
+}
+
+func routeLiteralPartOfConcat(line string, start, end int) bool {
+	before := strings.TrimSpace(line[:start])
+	after := strings.TrimSpace(line[end:])
+	return strings.HasSuffix(before, "+") || strings.HasPrefix(after, "+")
+}
+
+func staticStringConstants(content string) map[string]string {
+	constants := map[string]string{}
+	for _, match := range staticStringConstRe.FindAllStringSubmatch(content, -1) {
+		if len(match) == 3 {
+			constants[match[1]] = match[2]
+		}
+	}
+	return constants
 }
 
 type jsRouterMount struct {

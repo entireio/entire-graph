@@ -1572,6 +1572,38 @@ export async function ping(): Promise<unknown> {
 	}
 }
 
+func TestStaticConstantRouteComposition(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "api.ts", `const apiPrefix = "/api"
+
+export function register(app: any): void {
+  app.get(apiPrefix + "/health", health)
+}
+
+export function health(): string {
+  return "ok"
+}
+
+export async function ping(): Promise<unknown> {
+  return fetch("/api/health")
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "register", "/api/health") {
+		t.Fatalf("missing static-composed route: %#v", snapshot.Relations)
+	}
+	if hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "register", "/health") {
+		t.Fatalf("suffix literal was misreported as standalone route: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "register") {
+		t.Fatalf("missing route bridge CALLS ping->register: %#v", snapshot.Relations)
+	}
+}
+
 func TestExpressRouterPrefixComposesAndBridgesHTTPClient(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "api.ts", `const usersRouter = Router()

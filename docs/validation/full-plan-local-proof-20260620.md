@@ -16,6 +16,7 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile full -provider-version codex-full-plan -out bench/results
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.json -languages C -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results -max-rss-bytes 5000000000
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
@@ -53,6 +54,9 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
 - FastAPI/Starlette-style `include_router(prefix=...)` mounts compose with
   same-file or locally imported `APIRouter` decorators and bridge matching
   Python HTTP client calls to the handler symbol.
+- Static constant-prefix route expressions such as `apiPrefix + "/health"`
+  compose to one route endpoint and avoid emitting the suffix literal as a
+  standalone route.
 - Java Spring-style route annotations compose class-level prefixes with
   method-level routes, emit `HANDLES_ROUTE`, and bridge matching
   `RestTemplate`/HTTP client calls to handlers as direct `CALLS`.
@@ -130,6 +134,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
     139,900 LOC/s, max RSS 27,049,984 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781947870.json`: Go/gin, syntax-only, 28,618 LOC,
     132,607 LOC/s, max RSS 27,721,728 bytes, output 1,938,906 bytes.
+  - `bench/results/result-1781948192.json`: Go/gin, syntax-only, 28,618 LOC,
+    102,244 LOC/s, max RSS 27,197,440 bytes, output 1,938,906 bytes.
 
 ## Remaining Honesty Notes
 

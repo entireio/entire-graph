@@ -117,10 +117,11 @@ False positives:
   method call, mapping decorator, Python Flask/FastAPI-style route decorator,
   FastAPI/Starlette-style `include_router(prefix=...)` mount, Java Spring-style
   direct mapping annotation, or same-block Express router mount plus route
-  registration), cutting gin to 206 and dropping path returns and file paths.
-  Matching Python `requests`/`httpx`, Java `RestTemplate`/HTTP client calls,
-  and JS/TS `fetch`/Axios calls can bridge to local decorated or registered
-  handlers through the shared route endpoint. (WP6.)
+  registration). Static constant-prefix expressions such as
+  `apiPrefix + "/health"` compose to one route and do not emit the suffix as a
+  separate route. Matching Python `requests`/`httpx`, Java `RestTemplate`/HTTP
+  client calls, and JS/TS `fetch`/Axios calls can bridge to local decorated or
+  registered handlers through the shared route endpoint. (WP6.)
 - **Global-unique name match (Go `go-basic`).** `LoginHandler CALLS CheckToken`
   is emitted at `0.68` purely because the name is unique repo-wide, not because
   the call was resolved through imports/scope. Correct here, but fragile.
