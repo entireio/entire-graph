@@ -282,7 +282,17 @@ func buildFixtureNDJSON(t *testing.T, name string) string {
 	if err := WriteSnapshotNDJSON(&buf, snapshot); err != nil {
 		t.Fatal(err)
 	}
-	return strings.ReplaceAll(buf.String(), dir, "<repo>")
+	return normalizeSnapshotRoot(buf.String(), dir)
+}
+
+func normalizeSnapshotRoot(snapshot, dir string) string {
+	snapshot = strings.ReplaceAll(snapshot, dir, "<repo>")
+	encoded, err := json.Marshal(dir)
+	if err != nil {
+		return snapshot
+	}
+	escaped := strings.Trim(string(encoded), `"`)
+	return strings.ReplaceAll(snapshot, escaped, "<repo>")
 }
 
 func copyFixtureTree(t *testing.T, src, dst string) {

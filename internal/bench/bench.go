@@ -11,7 +11,6 @@ import (
 	"runtime"
 	"sort"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/suhaanthayyil/entire-sem/internal/sem"
@@ -260,18 +259,6 @@ type Hardware struct {
 // process-wide peak, not per-repo; Linux reports kilobytes, macOS reports bytes.
 func maxRSSBytes() uint64 {
 	return maxRSSBytesCurrent()
-}
-
-func maxRSSBytesCurrent() uint64 {
-	var ru syscall.Rusage
-	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
-		return 0
-	}
-	rss := uint64(ru.Maxrss)
-	if runtime.GOOS == "linux" {
-		rss *= 1024
-	}
-	return rss
 }
 
 // Aggregate summarizes a set of repo metrics for a language or the whole run.
