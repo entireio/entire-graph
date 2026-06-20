@@ -344,6 +344,7 @@ var (
 	objectLiteralFieldRe     = regexp.MustCompile(`(?:^|,|\n)\s*([A-Za-z_$][\w$]*)\s*:\s*\$?([A-Za-z_$][\w$]*)\b`)
 	objectFieldAssignRe      = regexp.MustCompile(`(?m)\b\$?([A-Za-z_$][\w$]*)\s*\.\s*([A-Za-z_$][\w$]*)\s*=\s*\$?([A-Za-z_$][\w$]*)\b`)
 	localCollectionVarRe     = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:\[\s*\]|new\s+(?:Array|Set|Map)\s*\(\s*\))`)
+	collectionLiteralVarRe   = regexp.MustCompile(`(?s)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*\[([^\[\]]*)\]`)
 	collectionAddRe          = regexp.MustCompile(`(?m)\b\$?([A-Za-z_$][\w$]*)\s*\.\s*(?:push|append|add)\s*\(\s*\$?([A-Za-z_$][\w$]*)\s*\)`)
 )
 
@@ -1095,9 +1096,6 @@ func collectionElementForwardingFlows(block, signature string) []returnFlowCall 
 		return nil
 	}
 	collectionVars := localCollectionVars(block)
-	if len(collectionVars) == 0 {
-		return nil
-	}
 	paramByCollection := map[string]map[string]bool{}
 	for _, match := range collectionAddRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
@@ -1112,6 +1110,14 @@ func collectionElementForwardingFlows(block, signature string) []returnFlowCall 
 			paramByCollection[collectionName] = map[string]bool{}
 		}
 		paramByCollection[collectionName][paramName] = true
+	}
+	for collectionName, paramNames := range collectionLiteralElementParams(block, params) {
+		if paramByCollection[collectionName] == nil {
+			paramByCollection[collectionName] = map[string]bool{}
+		}
+		for paramName := range paramNames {
+			paramByCollection[collectionName][paramName] = true
+		}
 	}
 	if len(paramByCollection) == 0 {
 		return nil
@@ -1152,6 +1158,30 @@ func collectionElementForwardingFlows(block, signature string) []returnFlowCall 
 		return flows[i].Detail < flows[j].Detail
 	})
 	return flows
+}
+
+func collectionLiteralElementParams(block string, params map[string]bool) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	for _, match := range collectionLiteralVarRe.FindAllStringSubmatch(block, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		collectionName := strings.TrimPrefix(match[1], "$")
+		if collectionName == "" {
+			continue
+		}
+		for _, item := range splitSimpleArguments(match[2]) {
+			paramName := strings.TrimPrefix(strings.TrimSpace(item), "$")
+			if !params[paramName] {
+				continue
+			}
+			if out[collectionName] == nil {
+				out[collectionName] = map[string]bool{}
+			}
+			out[collectionName][paramName] = true
+		}
+	}
+	return out
 }
 
 func localObjectVars(block string) map[string]bool {

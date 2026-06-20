@@ -274,7 +274,8 @@ False negatives:
   (`const { value } = input; callee(value)`), object-field forwarding
   (`payload.field = input; callee(payload)`), simple object-literal forwarding
   (`const payload = { value: input }; callee(payload)`), and
-  collection-element forwarding (`values.push(input); callee(values)`) cases,
+  collection-element forwarding (`values.push(input); callee(values)` or
+  `const values = [input]; callee(values)`) cases,
   also emit lower-confidence caller-to-callee `DATA_FLOWS` edges. Non-returned
   assignments, weak name-only argument calls, returned receiver expressions,
   and arbitrary object/field/collection mutation flow are intentionally
