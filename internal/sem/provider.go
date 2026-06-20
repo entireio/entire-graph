@@ -5466,34 +5466,35 @@ func resolveLocalImport(importingPath, spec string, knownFiles map[string]bool) 
 }
 
 type manifestImportResolver struct {
-	goModule           string
-	goPackages         map[string]string
-	jsPackageName      string
-	jsPackageExports   map[string]string
-	jsPackageImports   map[string]string
-	jsImportMap        map[string]string
-	jsImportMapScopes  []jsImportMapScope
-	jsModuleFiles      map[string]string
-	tsPathMappings     []tsPathMapping
-	pythonPackages     []string
-	pythonSourceRoots  []string
-	pythonPackageDirs  []pythonPackageDirMapping
-	pythonModules      map[string]string
-	pythonNamespaces   map[string]bool
-	jvmTypes           map[string]string
-	jvmTypeEvidence    map[string]string
-	jvmPackagePrefixes []string
-	csharpNamespaces   map[string]string
-	csharpEvidence     map[string]string
-	csharpAmbiguous    map[string]bool
-	csharpPrefixes     []string
-	phpTypes           map[string]string
-	phpTypeEvidence    map[string]string
-	phpTypeAmbiguous   map[string]bool
-	phpPSR4Prefixes    []phpPSR4Prefix
-	rustCrateName      string
-	rustModules        map[string]string
-	rustAliases        map[string]string
+	goModule            string
+	goPackages          map[string]string
+	jsPackageName       string
+	jsPackageExports    map[string]string
+	jsPackageImports    map[string]string
+	jsWorkspacePackages []jsPackageRoot
+	jsImportMap         map[string]string
+	jsImportMapScopes   []jsImportMapScope
+	jsModuleFiles       map[string]string
+	tsPathMappings      []tsPathMapping
+	pythonPackages      []string
+	pythonSourceRoots   []string
+	pythonPackageDirs   []pythonPackageDirMapping
+	pythonModules       map[string]string
+	pythonNamespaces    map[string]bool
+	jvmTypes            map[string]string
+	jvmTypeEvidence     map[string]string
+	jvmPackagePrefixes  []string
+	csharpNamespaces    map[string]string
+	csharpEvidence      map[string]string
+	csharpAmbiguous     map[string]bool
+	csharpPrefixes      []string
+	phpTypes            map[string]string
+	phpTypeEvidence     map[string]string
+	phpTypeAmbiguous    map[string]bool
+	phpPSR4Prefixes     []phpPSR4Prefix
+	rustCrateName       string
+	rustModules         map[string]string
+	rustAliases         map[string]string
 }
 
 type manifestImportResolution struct {
@@ -5507,6 +5508,12 @@ type manifestImportResolution struct {
 type tsPathMapping struct {
 	Pattern string
 	Targets []string
+}
+
+type jsPackageRoot struct {
+	Name    string
+	Root    string
+	Exports map[string]string
 }
 
 type jsImportMapScope struct {
@@ -5534,6 +5541,31 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		resolver.jsPackageExports = parsePackageJSONTargets(content, "exports")
 		resolver.jsPackageImports = parsePackageJSONTargets(content, "imports")
 	}
+	for _, file := range files {
+		path := filepath.ToSlash(file.Path)
+		if path == "package.json" || filepath.Base(path) != "package.json" {
+			continue
+		}
+		content, ok := readContent(path)
+		if !ok {
+			continue
+		}
+		name := parsePackageJSONName(content)
+		if name == "" {
+			continue
+		}
+		resolver.jsWorkspacePackages = append(resolver.jsWorkspacePackages, jsPackageRoot{
+			Name:    name,
+			Root:    filepath.ToSlash(filepath.Dir(path)),
+			Exports: parsePackageJSONTargets(content, "exports"),
+		})
+	}
+	sort.Slice(resolver.jsWorkspacePackages, func(i, j int) bool {
+		if resolver.jsWorkspacePackages[i].Name == resolver.jsWorkspacePackages[j].Name {
+			return resolver.jsWorkspacePackages[i].Root < resolver.jsWorkspacePackages[j].Root
+		}
+		return resolver.jsWorkspacePackages[i].Name < resolver.jsWorkspacePackages[j].Name
+	})
 	if content, ok := readContent("tsconfig.json"); ok {
 		resolver.tsPathMappings = parseTSConfigPaths(content)
 	}
@@ -6446,6 +6478,9 @@ func (resolver manifestImportResolver) resolveJSImport(importingPath, spec strin
 			}
 		}
 	}
+	if resolution, ok := resolver.resolveJSWorkspacePackageImport(importingPath, spec); ok {
+		return resolution, true
+	}
 	if targetModule, ok := resolver.resolveScopedJSImportMap(importingPath, spec); ok {
 		if path, resolved := resolver.resolveJSModulePath(targetModule); resolved && path != filepath.ToSlash(importingPath) {
 			return manifestImportResolution{
@@ -6497,6 +6532,55 @@ func (resolver manifestImportResolver) resolveScopedJSImportMap(importingPath, s
 		}
 	}
 	return "", false
+}
+
+func (resolver manifestImportResolver) resolveJSWorkspacePackageImport(importingPath, spec string) (manifestImportResolution, bool) {
+	if len(resolver.jsWorkspacePackages) == 0 {
+		return manifestImportResolution{}, false
+	}
+	importingPath = filepath.ToSlash(importingPath)
+	for _, pkg := range resolver.jsWorkspacePackages {
+		if spec != pkg.Name && !strings.HasPrefix(spec, pkg.Name+"/") {
+			continue
+		}
+		exportKey := "."
+		if spec != pkg.Name {
+			exportKey = "./" + strings.TrimPrefix(strings.TrimPrefix(spec, pkg.Name), "/")
+		}
+		if targetModule, ok := resolver.resolveJSTargetMap(pkg.Exports, exportKey); ok {
+			if path, resolved := resolver.resolveJSWorkspacePackageModule(pkg, targetModule); resolved && path != importingPath {
+				return manifestImportResolution{
+					Path:         path,
+					Confidence:   0.91,
+					Scope:        "module",
+					Reason:       "JS/TS workspace package export resolved through nested package.json",
+					EvidenceKind: "package_workspace_exports_import",
+				}, true
+			}
+		}
+		module := strings.TrimPrefix(exportKey, "./")
+		if module == "." || module == "" {
+			module = "index"
+		}
+		if path, ok := resolver.resolveJSWorkspacePackageModule(pkg, module); ok && path != importingPath {
+			return manifestImportResolution{
+				Path:         path,
+				Confidence:   0.89,
+				Scope:        "module",
+				Reason:       "JS/TS workspace package import resolved through nested package.json",
+				EvidenceKind: "package_workspace_import",
+			}, true
+		}
+	}
+	return manifestImportResolution{}, false
+}
+
+func (resolver manifestImportResolver) resolveJSWorkspacePackageModule(pkg jsPackageRoot, module string) (string, bool) {
+	module = strings.TrimPrefix(strings.TrimSpace(filepath.ToSlash(module)), "./")
+	if module == "" {
+		return "", false
+	}
+	return resolver.resolveJSModulePath(filepath.ToSlash(filepath.Join(pkg.Root, module)))
 }
 
 func (resolver manifestImportResolver) resolveJSTargetMap(targets map[string]string, spec string) (string, bool) {

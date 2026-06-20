@@ -210,8 +210,9 @@ Tasks:
   `requirements.txt`, `Cargo.toml`, `.csproj`, and `composer.json`. `go.mod`
   module import resolution is implemented for local Go packages present in the
   snapshot; root `package.json` package self-imports, `exports`, `imports`, root
-  and scoped import maps, and simple `tsconfig.json` `compilerOptions.paths`
-  aliases are implemented for local JS/TS files; `pyproject.toml` and
+  and scoped import maps, nested workspace/package `package.json` names and
+  `exports`, and simple `tsconfig.json` `compilerOptions.paths` aliases are
+  implemented for local JS/TS files; `pyproject.toml` and
   `setup.cfg` package names, configured setuptools package-find roots, root and
   package-specific `package-dir`/`package_dir` mappings, and inferred nested
   `*/src` namespace roots are implemented for local Python module resolution,

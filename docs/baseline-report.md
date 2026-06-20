@@ -81,7 +81,8 @@ Confidence bands follow the v2-plan schema section (`0.90-1.00 exact`,
 - Imports: `IMPORTS` (0.8; relative imports resolve to local files at 0.95;
   Go module imports resolved through `go.mod` resolve locally at 0.93; JS/TS
   package self-imports, package `exports`, package `imports`, root/scoped
-  import maps, and `tsconfig.json` path aliases resolve locally at 0.89-0.92;
+  import maps, nested workspace/package `package.json` names and exports, and
+  `tsconfig.json` path aliases resolve locally at 0.89-0.92;
   Python project/module imports, configured source roots, and inferred
   namespace roots resolve locally at 0.88-0.90; exact JVM package imports
   and simple Maven/Gradle package-identity JVM imports resolve locally at 0.90;
@@ -225,8 +226,9 @@ False negatives:
 - **Module-root import resolution.** Relative imports (`./util`, `.util`), Go
   module imports covered by `go.mod`, JS/TS package self-imports covered by root
   `package.json` `name`, root `package.json` `exports`/`imports`, root import
-  maps, and simple `tsconfig.json` `compilerOptions.paths` aliases, Python
-  imports covered by local module files, repo-root `src`, configured setuptools
+  maps, nested workspace/package `package.json` names and `exports`, and simple
+  `tsconfig.json` `compilerOptions.paths` aliases, Python imports covered by
+  local module files, repo-root `src`, configured setuptools
   package-find roots, inferred nested `*/src` namespace roots, plus
   `pyproject.toml`/`setup.cfg` package names, and exact Java/Kotlin/Scala-style
   package imports covered by package declarations or simple root Maven/Gradle
@@ -236,7 +238,7 @@ False negatives:
   resolve to local file records (`resolution:
   import_resolved`, `target_kind: file`). Remaining
   non-relative local imports that depend on deeper JS/TS conditional
-  exports/import-map scopes, complex Python package-dir/editable-install/
+  exports/import-map scopes, package-manager install graphs, complex Python package-dir/editable-install/
   importlib behavior, Maven/Gradle classpath/build-variant behavior beyond
   root package identity, C# compiler reference/type usage resolution beyond
   unique namespace-file matches, complex Composer autoload/classmap semantics

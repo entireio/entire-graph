@@ -188,6 +188,66 @@ export function run(): string {
 	}
 }
 
+func TestTypeScriptManifestImportsResolveThroughNestedPackageJSON(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "package.json", `{"private": true, "workspaces": ["packages/*"]}`)
+	writeFile(t, repo, "packages/utils/package.json", `{
+  "name": "@acme/utils",
+  "exports": {
+    ".": "./src/index.ts",
+    "./extra": "./src/extra.ts"
+  }
+}`)
+	writeFile(t, repo, "packages/ui/package.json", `{"name":"@acme/ui"}`)
+	writeFile(t, repo, "apps/web/src/app.ts", `import { util } from "@acme/utils"
+import { extra } from "@acme/utils/extra"
+import { Button } from "@acme/ui/button"
+
+export const value = util() + extra() + new Button().label
+`)
+	writeFile(t, repo, "packages/utils/src/index.ts", `export function util(): string {
+  return "util"
+}
+`)
+	writeFile(t, repo, "packages/utils/src/extra.ts", `export function extra(): string {
+  return "extra"
+}
+`)
+	writeFile(t, repo, "packages/ui/button.ts", `export class Button {
+  label = "button"
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets := map[string]string{
+		"packages/utils/src/index.ts": "package_workspace_exports_import",
+		"packages/utils/src/extra.ts": "package_workspace_exports_import",
+		"packages/ui/button.ts":       "package_workspace_import",
+	}
+	for targetPath, evidenceKind := range targets {
+		target := fileID(snapshot.Header.RepoKey, targetPath)
+		var found RelationRecord
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "IMPORTS" && strings.HasSuffix(relation.FromID, "file:apps/web/src/app.ts") && relation.ToID == target {
+				found = relation
+				break
+			}
+		}
+		if found.FromID == "" {
+			t.Fatalf("missing nested package import to %s in %#v", targetPath, snapshot.Relations)
+		}
+		if found.Resolution != "import_resolved" || found.RelationScope != "module" || found.TargetKind != "file" || found.Confidence < 0.89 {
+			t.Fatalf("unexpected nested package import metadata: %#v", found)
+		}
+		if len(found.Evidence) != 1 || found.Evidence[0].Kind != evidenceKind {
+			t.Fatalf("unexpected nested package import evidence for %s: %#v", targetPath, found.Evidence)
+		}
+	}
+}
+
 func TestTypeScriptManifestImportsResolveThroughExportsImportsAndImportMap(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "package.json", `{
