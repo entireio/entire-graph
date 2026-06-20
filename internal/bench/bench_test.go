@@ -84,6 +84,10 @@ func Check(token string) bool {
 }
 
 func TestMeasureRepoEnforcesLiveRSSGuard(t *testing.T) {
+	if maxRSSBytesCurrent() == 0 {
+		t.Skip("process RSS is not available on this platform")
+	}
+
 	dir := t.TempDir()
 	writeFile(t, dir, "main.go", `package main
 

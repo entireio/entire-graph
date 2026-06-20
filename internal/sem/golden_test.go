@@ -192,7 +192,7 @@ func TestProviderGoldenSnapshots(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read golden (run with -update to create): %v", err)
 			}
-			if got != string(want) {
+			if got != normalizeSnapshotText(string(want)) {
 				t.Fatalf("snapshot for %s does not match golden; run:\n\tgo test ./internal/sem -run TestProviderGoldenSnapshots -update\n\n--- got ---\n%s", name, got)
 			}
 		})
@@ -286,8 +286,7 @@ func buildFixtureNDJSON(t *testing.T, name string) string {
 }
 
 func normalizeSnapshotRoot(snapshot, dir string) string {
-	snapshot = strings.ReplaceAll(snapshot, "\r\n", "\n")
-	snapshot = strings.ReplaceAll(snapshot, "\r", "\n")
+	snapshot = normalizeSnapshotText(snapshot)
 	snapshot = strings.ReplaceAll(snapshot, dir, "<repo>")
 	encoded, err := json.Marshal(dir)
 	if err != nil {
@@ -295,6 +294,11 @@ func normalizeSnapshotRoot(snapshot, dir string) string {
 	}
 	escaped := strings.Trim(string(encoded), `"`)
 	return strings.ReplaceAll(snapshot, escaped, "<repo>")
+}
+
+func normalizeSnapshotText(snapshot string) string {
+	snapshot = strings.ReplaceAll(snapshot, "\r\n", "\n")
+	return strings.ReplaceAll(snapshot, "\r", "\n")
 }
 
 func copyFixtureTree(t *testing.T, src, dst string) {
