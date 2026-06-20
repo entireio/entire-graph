@@ -66,6 +66,8 @@ go test ./internal/sem -run 'TestBuildProviderSnapshotEmits(DestructuredAliasFor
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-destructured-alias-flow -min-loc-per-sec 1
 go test ./internal/sem -run 'TestTypeScriptManifestImportsResolveThrough(NestedPackageJSON|PackageAndTSConfig|ExportsImportsAndImportMap)' -count=1
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-nested-js-package-imports -min-loc-per-sec 1
+go test ./internal/sem -run 'TestPythonImportedRouterPrefixComposesAndBridgesHTTPClient|TestFlaskBlueprintPrefixComposesAndBridgesHTTPClient|TestFlaskImportedBlueprintAliasComposesAndBridgesHTTPClient' -count=1
+go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-flask-blueprint-alias -min-loc-per-sec 1
 ```
 
 ## Results
@@ -117,6 +119,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 - Python Flask/FastAPI-style route decorators and Flask `add_url_rule`
   registrations emit `HANDLES_ROUTE`, and matching Python `requests`/`httpx`
   calls bridge to handlers as direct `CALLS` through shared route endpoints.
+- Flask Blueprint `register_blueprint(..., url_prefix=...)` mounts compose
+  with same-file, imported, and aliased Blueprint route decorators, and
+  matching Python `requests`/`httpx` calls bridge to handlers as direct
+  `CALLS`.
 - FastAPI/Starlette-style `include_router(prefix=...)` mounts compose with
   same-file or locally imported `APIRouter` decorators and bridge matching
   Python HTTP client calls to the handler symbol.
@@ -746,6 +752,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
     bytes.
   - `bench/results/result-1781995498.json`: Go/gin, syntax-only, 28,618 LOC,
     166,007 LOC/s, max RSS 27,525,120 bytes, estimated output 1,902,637
+    bytes.
+  - `bench/results/result-1781995749.json`: Go/gin, syntax-only, 28,618 LOC,
+    165,117 LOC/s, max RSS 30,244,864 bytes, estimated output 1,902,633
     bytes.
 
 ## Remaining Honesty Notes
