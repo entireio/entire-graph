@@ -62,6 +62,8 @@ go test ./internal/sem -run 'TestTreeSitterParserTypeScriptGraphQL.*Resolver|Tes
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-modular-graphql-resolvers -min-loc-per-sec 1
 go test ./internal/sem -run 'TestURLPathnameRouteConstantComposesAndBridgesHTTPClient|TestStaticArrayJoinRouteExpressionComposesAndBridgesHTTPClient|TestStringRawTemplateRouteExpressionComposesAndBridgesHTTPClient' -count=1
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-static-url-path-routes -min-loc-per-sec 1
+go test ./internal/sem -run 'TestBuildProviderSnapshotEmits(DestructuredAliasForward|AliasForward|ObjectFieldForward|ObjectLiteralForward|CollectionElementForward)DataFlow' -count=1
+go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-destructured-alias-flow -min-loc-per-sec 1
 ```
 
 ## Results
@@ -735,6 +737,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781994615.json`: Go/gin, syntax-only, 28,618 LOC,
     155,338 LOC/s, max RSS 29,360,128 bytes, estimated output 1,902,634
     bytes.
+  - `bench/results/result-1781995028.json`: Go/gin, syntax-only, 28,618 LOC,
+    164,415 LOC/s, max RSS 29,605,888 bytes, estimated output 1,902,635
+    bytes.
 
 ## Remaining Honesty Notes
 
@@ -756,6 +761,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   concatenations including string-first concatenations, template literals,
   `String.raw`, static array joins, and `new URL("/path", base).pathname`
   constants. Arbitrary runtime URL construction remains intentionally skipped.
+- Data-flow support covers conservative destructured parameter-alias forwarding
+  such as `const { value } = input; normalize(value)`, in addition to direct
+  parameter, alias, object-field/object-literal, and collection-element
+  forwarding. Broad program slicing remains intentionally out of scope.
 - GraphQL support covers operation literals, JS/TS resolver-map fields,
   modular resolver root objects such as `export const Query = { ... }`, schema
   fields for root and non-root object types, exact schema-field-to-resolver
