@@ -42,6 +42,7 @@ go build -o /tmp/sem-bench ./cmd/sem-bench
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-k8s-crd-refs -out bench/results
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-collection-flow -min-loc-per-sec 1
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-istio-resource-refs -min-loc-per-sec 1
+go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-object-literal-flow -min-loc-per-sec 1
 ```
 
 ## Results
@@ -227,6 +228,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 - Conservative object-field forwarding emits caller-to-callee `DATA_FLOWS` when
   a caller parameter is assigned into a local object field and that object is
   passed to a known callee.
+- Conservative object-literal forwarding emits caller-to-callee `DATA_FLOWS`
+  when a caller parameter is assigned into a simple local object literal and
+  that object is passed to a known callee.
 - Conservative collection-element forwarding emits caller-to-callee
   `DATA_FLOWS` when a caller parameter is pushed/appended/added into a local
   collection and that collection is passed to a known callee.
@@ -354,6 +358,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
     bytes.
   - `bench/results/result-1781966936.json`: Go/gin, syntax-only, 28,618 LOC,
     142,244 LOC/s, max RSS 28,082,176 bytes, estimated output 1,902,631
+    bytes.
+  - `bench/results/result-1781967564.json`: Go/gin, syntax-only, 28,618 LOC,
+    134,592 LOC/s, max RSS 29,081,600 bytes, estimated output 1,902,631
     bytes.
 
 ## Remaining Honesty Notes

@@ -290,6 +290,8 @@ var (
 	returnVarRe          = regexp.MustCompile(`(?m)\breturn\s+\$?([A-Za-z_$][\w$]*)\b`)
 	aliasAssignRe        = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*\$?([A-Za-z_$][\w$]*)\b`)
 	localObjectVarRe     = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:\{\s*\}|new\s+[A-Za-z_$][\w$]*\s*\(\s*\))`)
+	objectLiteralVarRe   = regexp.MustCompile(`(?s)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*\{([^{}]*)\}`)
+	objectLiteralFieldRe = regexp.MustCompile(`(?:^|,|\n)\s*([A-Za-z_$][\w$]*)\s*:\s*\$?([A-Za-z_$][\w$]*)\b`)
 	objectFieldAssignRe  = regexp.MustCompile(`(?m)\b\$?([A-Za-z_$][\w$]*)\s*\.\s*([A-Za-z_$][\w$]*)\s*=\s*\$?([A-Za-z_$][\w$]*)\b`)
 	localCollectionVarRe = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:\[\s*\]|new\s+(?:Array|Set|Map)\s*\(\s*\))`)
 	collectionAddRe      = regexp.MustCompile(`(?m)\b\$?([A-Za-z_$][\w$]*)\s*\.\s*(?:push|append|add)\s*\(\s*\$?([A-Za-z_$][\w$]*)\s*\)`)
@@ -619,9 +621,6 @@ func objectFieldForwardingFlows(block, signature string) []returnFlowCall {
 		return nil
 	}
 	objectVars := localObjectVars(block)
-	if len(objectVars) == 0 {
-		return nil
-	}
 	fieldParamByObject := map[string]map[string]bool{}
 	for _, match := range objectFieldAssignRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 4 {
@@ -636,6 +635,14 @@ func objectFieldForwardingFlows(block, signature string) []returnFlowCall {
 			fieldParamByObject[objectName] = map[string]bool{}
 		}
 		fieldParamByObject[objectName][paramName] = true
+	}
+	for objectName, paramNames := range objectLiteralFieldParams(block, params) {
+		if fieldParamByObject[objectName] == nil {
+			fieldParamByObject[objectName] = map[string]bool{}
+		}
+		for paramName := range paramNames {
+			fieldParamByObject[objectName][paramName] = true
+		}
 	}
 	if len(fieldParamByObject) == 0 {
 		return nil
@@ -676,6 +683,33 @@ func objectFieldForwardingFlows(block, signature string) []returnFlowCall {
 		return flows[i].Detail < flows[j].Detail
 	})
 	return flows
+}
+
+func objectLiteralFieldParams(block string, params map[string]bool) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	for _, match := range objectLiteralVarRe.FindAllStringSubmatch(block, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		objectName := strings.TrimPrefix(match[1], "$")
+		if objectName == "" {
+			continue
+		}
+		for _, fieldMatch := range objectLiteralFieldRe.FindAllStringSubmatch(match[2], -1) {
+			if len(fieldMatch) != 3 {
+				continue
+			}
+			paramName := strings.TrimPrefix(fieldMatch[2], "$")
+			if !params[paramName] {
+				continue
+			}
+			if out[objectName] == nil {
+				out[objectName] = map[string]bool{}
+			}
+			out[objectName][paramName] = true
+		}
+	}
+	return out
 }
 
 func collectionElementForwardingFlows(block, signature string) []returnFlowCall {

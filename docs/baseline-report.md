@@ -219,11 +219,13 @@ False negatives:
   `return primary() if flag else fallback()`. Caller parameters passed into
   exact/import-resolved callees, including conservative local alias
   (`alias = input; callee(alias)`), object-field forwarding
-  (`payload.field = input; callee(payload)`), and collection-element forwarding
-  (`values.push(input); callee(values)`) cases, also emit lower-confidence
-  caller-to-callee `DATA_FLOWS` edges. Non-returned assignments, weak name-only
-  argument calls, returned receiver expressions, and arbitrary object/field/
-  collection mutation flow are intentionally skipped.
+  (`payload.field = input; callee(payload)`), simple object-literal forwarding
+  (`const payload = { value: input }; callee(payload)`), and
+  collection-element forwarding (`values.push(input); callee(values)`) cases,
+  also emit lower-confidence caller-to-callee `DATA_FLOWS` edges. Non-returned
+  assignments, weak name-only argument calls, returned receiver expressions,
+  and arbitrary object/field/collection mutation flow are intentionally
+  skipped.
   Remaining: broader object flow, broader branch/control-flow analysis, complex
   aliases, and cross-function data-flow beyond these high-confidence paths.
 - **Partial OO/type relations.** `EXTENDS`, `INHERITS`, `IMPLEMENTS`,

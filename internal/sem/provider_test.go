@@ -3710,6 +3710,54 @@ export function run(input: string): string {
 	}
 }
 
+func TestBuildProviderSnapshotEmitsObjectLiteralForwardDataFlow(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "flow.ts", `type Payload = { value?: string }
+
+function normalize(payload: Payload): string {
+  return payload.value ?? ""
+}
+
+function ignore(payload: Payload): string {
+  return "ignored"
+}
+
+export function run(input: string): string {
+  const payload = { value: input }
+  normalize(payload)
+  const other = { value: "static" }
+  ignore(other)
+  return input
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found RelationRecord
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == "run" && lastSegment(relation.ToID) == "normalize" {
+			found = relation
+			break
+		}
+	}
+	if found.FromID == "" {
+		t.Fatalf("missing object literal DATA_FLOWS run->normalize: %#v", snapshot.Relations)
+	}
+	if found.Reason != "caller parameter assigned into object field forwarded to callee argument" || found.Confidence > 0.7 {
+		t.Fatalf("unexpected object literal flow metadata: %#v", found)
+	}
+	if len(found.Evidence) != 1 || found.Evidence[0].Kind != "object_field_forward_flow" || found.Evidence[0].Detail != "input -> payload -> normalize()" {
+		t.Fatalf("unexpected object literal flow evidence: %#v", found.Evidence)
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == "run" && lastSegment(relation.ToID) == "ignore" {
+			t.Fatalf("non-parameter object literal produced DATA_FLOWS: %#v", relation)
+		}
+	}
+}
+
 func TestBuildProviderSnapshotEmitsCollectionElementForwardDataFlow(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "flow.ts", `function normalize(values: string[]): string {
