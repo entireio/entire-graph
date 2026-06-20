@@ -103,6 +103,9 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
 - Local literal-constant Express router mount prefixes and child router paths
   compose across files and bridge exact matching HTTP client calls to the
   handler symbol.
+- Next.js route-file boundaries bridge matching JS/TS HTTP clients, including
+  bracket-parameter client paths normalized to the provider's canonical route
+  endpoint form.
 - Kubernetes resource extraction, including multi-document YAML manifests, and
   Service-selector dependency tests pass (`Service` -> matching workload
   resource by selector labels).
@@ -215,6 +218,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
     131,577 LOC/s, max RSS 28,835,840 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781951990.json`: Go/gin, syntax-only, 28,618 LOC,
     135,361 LOC/s, max RSS 26,066,944 bytes, output 1,938,906 bytes.
+  - `bench/results/result-1781952178.json`: Go/gin, syntax-only, 28,618 LOC,
+    163,186 LOC/s, max RSS 28,573,696 bytes, output 1,938,906 bytes.
 
 ## Remaining Honesty Notes
 

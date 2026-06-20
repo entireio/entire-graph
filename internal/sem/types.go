@@ -948,7 +948,7 @@ var (
 	// share the .get(/.post( shape.
 	httpClientRe = regexp.MustCompile(`(?i)(\bfetch\s*\(|\baxios\b|\brequests\s*\.|\bhttpx\b|\bhttp::\s*(get|post|put|patch|delete|head)\s*\(|\bhttp\.(get|post|put|patch|delete|head)\b|\.(get|post|put|patch|delete|head)(?:fromjson|asjson)?async(?:<[^>]+>)?\s*\(|\bhttpclient\b|\bresttemplate\b|\bwebclient\b|\bgot\s*\(|\bky\s*\()`)
 	httpVerbRe   = regexp.MustCompile(`(?i)\b(?:http\.|http::\s*|requests\.|httpx\.|axios\.)?(get|post|put|patch|delete|head)(?:fromjson|asjson)?(?:async)?(?:<[^>]+>)?\s*\(`)
-	urlLiteralRe = regexp.MustCompile(`["'](https?://[^"'\s]+|/[A-Za-z0-9_\-/{}:.]*)["']`)
+	urlLiteralRe = regexp.MustCompile(`["'](https?://[^"'\s]+|/[A-Za-z0-9_\-/{}\[\]:.]*)["']`)
 )
 
 // httpCalls extracts outbound HTTP client calls from a code block: lines that
@@ -971,6 +971,7 @@ func httpCalls(content string) []httpCall {
 			if path == "" {
 				continue
 			}
+			path = normalizeRouteParamSyntax(path)
 			key := method + " " + path
 			if seen[key] {
 				continue
@@ -980,6 +981,10 @@ func httpCalls(content string) []httpCall {
 		}
 	}
 	return out
+}
+
+func normalizeRouteParamSyntax(path string) string {
+	return regexp.MustCompile(`\[\.{0,3}([A-Za-z_][A-Za-z0-9_]*)\]`).ReplaceAllString(path, `{$1}`)
 }
 
 // httpPath reduces a URL literal to its path component. Absolute URLs return

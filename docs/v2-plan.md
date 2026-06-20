@@ -296,8 +296,9 @@ Tasks:
   attributes compose and bridge matching `HttpClient` calls. PHP Laravel route
   declarations resolve local controller methods, and Symfony/PHP route
   attributes compose class and method routes. Direct Fastify/app/server JS/TS
-  route registrations resolve local handler functions. Express-style JS/TS
-  same-block router mounts plus
+  route registrations resolve local handler functions. Next.js route-file
+  boundaries bridge matching JS/TS clients, including bracket-parameter paths.
+  Express-style JS/TS same-block router mounts plus
   same-name, aliased named-import, and namespace-member imported router mounts
   compose `app.use("/prefix", router)` with static `router.get/post/...`
   registrations, including local literal constants in mount prefixes and child

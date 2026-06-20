@@ -2956,6 +2956,33 @@ export async function GET(request: Request) {
 	}
 }
 
+func TestNextJSRouteBoundaryBridgesHTTPClient(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/app/api/users/[id]/route.ts", `export async function GET(request: Request) {
+  return Response.json({ ok: true })
+}
+`)
+	writeFile(t, repo, "src/client.ts", `export async function ping(): Promise<unknown> {
+  return fetch("/api/users/[id]")
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "HTTP_CALLS", "ping", "/api/users/{id}") {
+		t.Fatalf("missing HTTP_CALLS to Next.js route boundary: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "/api/users/{id}") {
+		t.Fatalf("missing route bridge CALLS ping->Next.js route boundary: %#v", snapshot.Relations)
+	}
+	route := symbolByKindAndName(snapshot.Symbols, "route", "/api/users/{id}")
+	if route.ID == "" || route.ContainerID == "" {
+		t.Fatalf("missing Next.js route boundary sourced to handler: %#v", route)
+	}
+}
+
 func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 	caps := Capabilities()
 	if caps.SchemaVersion != SchemaVersion || caps.Provider != ProviderName {

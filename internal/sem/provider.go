@@ -5370,7 +5370,7 @@ func maskBytes(bytes []byte, start, end int) {
 }
 
 var (
-	routeLiteralRe      = regexp.MustCompile(`["'](/[A-Za-z0-9_\-/{}:.]*)["']`)
+	routeLiteralRe      = regexp.MustCompile(`["'](/[A-Za-z0-9_\-/{}\[\]:.]*)["']`)
 	staticRouteConcatRe = regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\+\s*["']([^"']*)["']`)
 	staticStringConstRe = regexp.MustCompile(`(?m)\b(?:(?:const|let|var)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=\n]+)?=\s*["'](/[A-Za-z0-9_\-/{}:.]*)["']`)
 	staticConcatConstRe = regexp.MustCompile(`(?m)\b(?:(?:const|let|var)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=\n]+)?=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\+\s*["']([^"']*)["']`)
@@ -5404,7 +5404,7 @@ func routeLiteralsWithConstants(content string, constants map[string]string) []s
 				if routeLiteralPartOfConcat(line, match[0], match[1]) {
 					continue
 				}
-				seen[line[match[2]:match[3]]] = struct{}{}
+				seen[normalizeRouteParamSyntax(line[match[2]:match[3]])] = struct{}{}
 			}
 		}
 	}
