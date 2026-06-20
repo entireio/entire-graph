@@ -133,6 +133,61 @@ func Validate() {}
 	}
 }
 
+func TestTypeScriptManifestImportsResolveThroughPackageAndTSConfig(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "package.json", `{"name":"@acme/app"}`)
+	writeFile(t, repo, "tsconfig.json", `{
+  "compilerOptions": {
+    "paths": {
+      "@lib/*": ["src/lib/*"]
+    }
+  }
+}`)
+	writeFile(t, repo, "src/app.ts", `import { helper } from "@lib/helper"
+import { Widget } from "@acme/app/src/components/widget"
+
+export function run(): string {
+  return helper(new Widget().name)
+}
+`)
+	writeFile(t, repo, "src/lib/helper.ts", `export function helper(value: string): string {
+  return value
+}
+`)
+	writeFile(t, repo, "src/components/widget.ts", `export class Widget {
+  name = "widget"
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets := map[string]string{
+		"src/lib/helper.ts":        "tsconfig_paths_import",
+		"src/components/widget.ts": "package_json_import",
+	}
+	for targetPath, evidenceKind := range targets {
+		target := fileID(snapshot.Header.RepoKey, targetPath)
+		var found RelationRecord
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "IMPORTS" && strings.HasSuffix(relation.FromID, "file:src/app.ts") && relation.ToID == target {
+				found = relation
+				break
+			}
+		}
+		if found.FromID == "" {
+			t.Fatalf("missing JS/TS manifest resolved import to %s in %#v", target, snapshot.Relations)
+		}
+		if found.Resolution != "import_resolved" || found.RelationScope != "module" || found.TargetKind != "file" || found.Confidence < 0.89 {
+			t.Fatalf("unexpected JS/TS import metadata: %#v", found)
+		}
+		if len(found.Evidence) != 1 || found.Evidence[0].Kind != evidenceKind {
+			t.Fatalf("unexpected JS/TS import evidence for %s: %#v", targetPath, found.Evidence)
+		}
+	}
+}
+
 func TestResourceDependsOnGraph(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "main.tf", `resource "aws_vpc" "main" {
