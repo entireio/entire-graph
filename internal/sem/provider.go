@@ -5403,6 +5403,17 @@ func routeLiteralsWithConstants(content string, constants map[string]string) []s
 
 func routeLiteralsForSymbol(path, content, block string, symbol SymbolRecord, symbolsByID map[string]SymbolRecord) []string {
 	seen := map[string]struct{}{}
+	if strings.EqualFold(filepath.Ext(path), ".cs") {
+		if typeLikeKind(symbol.Kind) {
+			return nil
+		}
+		for _, route := range csharpAnnotationRouteLiterals(content, symbol, symbolsByID) {
+			seen[route] = struct{}{}
+		}
+		if len(seen) > 0 {
+			return sortedKeys(seen)
+		}
+	}
 	if jvmLikeExtension(filepath.Ext(path)) {
 		if typeLikeKind(symbol.Kind) {
 			return nil
@@ -6095,6 +6106,33 @@ func pythonDecoratorRouteLiterals(content string, symbol SymbolRecord) []string 
 	return annotationRouteLiteralsNearSymbol(content, symbol, false)
 }
 
+func csharpAnnotationRouteLiterals(content string, symbol SymbolRecord, symbolsByID map[string]SymbolRecord) []string {
+	if symbol.Kind != "method" && symbol.Kind != "function" {
+		return nil
+	}
+	methodRoutes := csharpRouteAnnotationLiteralsAroundSymbol(content, symbol, nil)
+	if len(methodRoutes) == 0 {
+		return nil
+	}
+	var classPrefixes []string
+	if symbol.ContainerID != "" {
+		if container, ok := symbolsByID[symbol.ContainerID]; ok && typeLikeKind(container.Kind) {
+			tokens := map[string]string{"controller": csharpControllerRouteToken(container.Name)}
+			classPrefixes = csharpRouteAnnotationLiteralsAroundSymbol(content, container, tokens)
+		}
+	}
+	if len(classPrefixes) == 0 {
+		return methodRoutes
+	}
+	seen := map[string]struct{}{}
+	for _, prefix := range classPrefixes {
+		for _, route := range methodRoutes {
+			seen[joinRoutePaths(prefix, route)] = struct{}{}
+		}
+	}
+	return sortedKeys(seen)
+}
+
 func jvmAnnotationRouteLiterals(content string, symbol SymbolRecord, symbolsByID map[string]SymbolRecord) []string {
 	if symbol.Kind != "method" && symbol.Kind != "function" {
 		return nil
@@ -6212,6 +6250,93 @@ func springRouteAnnotationLine(line string) bool {
 		}
 	}
 	return false
+}
+
+func csharpRouteAnnotationLiteralsAroundSymbol(content string, symbol SymbolRecord, tokens map[string]string) []string {
+	lines := strings.Split(content, "\n")
+	index := symbol.StartLine - 1
+	if index >= len(lines) {
+		index = len(lines) - 1
+	}
+	seen := map[string]struct{}{}
+	if index >= 0 && index < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[index]), "[") {
+		for i := index; i < len(lines) && i-index <= 8; i++ {
+			line := strings.TrimSpace(lines[i])
+			if line == "" {
+				continue
+			}
+			if !strings.HasPrefix(line, "[") {
+				break
+			}
+			for _, route := range csharpRouteAnnotationLiterals(line, tokens) {
+				seen[route] = struct{}{}
+			}
+		}
+	}
+	for i := index - 1; i >= 0 && index-i <= 8; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "[") {
+			break
+		}
+		for _, route := range csharpRouteAnnotationLiterals(line, tokens) {
+			seen[route] = struct{}{}
+		}
+	}
+	return sortedKeys(seen)
+}
+
+func csharpRouteAnnotationLiterals(line string, tokens map[string]string) []string {
+	attributeRe := regexp.MustCompile(`\[(?i:(Route|HttpGet|HttpPost|HttpPut|HttpPatch|HttpDelete|HttpHead|HttpOptions))\s*(?:\(\s*(?:"([^"]*)"|'([^']*)'))?`)
+	var routes []string
+	for _, match := range attributeRe.FindAllStringSubmatch(line, -1) {
+		if len(match) < 4 {
+			continue
+		}
+		route := match[2]
+		if route == "" {
+			route = match[3]
+		}
+		route = csharpNormalizeRouteTemplate(route, tokens)
+		if route == "" {
+			if strings.EqualFold(match[1], "Route") {
+				continue
+			}
+			route = "/"
+		}
+		routes = append(routes, route)
+	}
+	sort.Strings(routes)
+	return routes
+}
+
+func csharpNormalizeRouteTemplate(route string, tokens map[string]string) string {
+	route = strings.TrimSpace(route)
+	if route == "" {
+		return ""
+	}
+	route = strings.Trim(route, "/")
+	if tokens != nil {
+		for key, value := range tokens {
+			route = strings.ReplaceAll(route, "["+key+"]", value)
+			route = strings.ReplaceAll(route, "["+strings.ToUpper(key)+"]", value)
+			route = strings.ReplaceAll(route, "["+strings.Title(key)+"]", value)
+		}
+	}
+	if route == "" {
+		return "/"
+	}
+	return "/" + route
+}
+
+func csharpControllerRouteToken(name string) string {
+	name = strings.TrimSuffix(name, "Controller")
+	if name == "" {
+		return ""
+	}
+	return strings.ToLower(name)
 }
 
 func joinRoutePaths(prefix, route string) string {

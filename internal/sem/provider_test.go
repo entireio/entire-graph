@@ -2082,6 +2082,46 @@ class UserController {
 	}
 }
 
+func TestCSharpAspNetRouteAttributesAndHttpClientBridge(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "Controllers/UsersController.cs", `using System.Net.Http;
+using Microsoft.AspNetCore.Mvc;
+
+[ApiController]
+[Route("api/[controller]")]
+public class UsersController : ControllerBase
+{
+    [HttpGet("{id}")]
+    public string Show(string id)
+    {
+        return id;
+    }
+
+    public async Task<object> Ping(HttpClient client, string id)
+    {
+        return await client.GetFromJsonAsync<object>($"/api/users/{id}");
+    }
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "HANDLES_ROUTE", "UsersController.Show", "/api/users/{id}") {
+		t.Fatalf("missing ASP.NET attribute route handler: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "HTTP_CALLS", "UsersController.Ping", "/api/users/{id}") {
+		t.Fatalf("missing C# HttpClient HTTP_CALLS relation: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "UsersController.Ping", "UsersController.Show") {
+		t.Fatalf("missing route bridge CALLS Ping->Show: %#v", snapshot.Relations)
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "HANDLES_ROUTE", "UsersController", "/api/users/{id}") {
+		t.Fatalf("controller class was misclassified as route handler: %#v", snapshot.Relations)
+	}
+}
+
 func TestRouteDetectionRequiresRoutingContext(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "server.js", `function register(app) {

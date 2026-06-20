@@ -946,8 +946,8 @@ var (
 	// name (fetch/axios/requests/httpx/http client) is what distinguishes a
 	// client call from a server route registration (app.get/router.post), which
 	// share the .get(/.post( shape.
-	httpClientRe = regexp.MustCompile(`(?i)(\bfetch\s*\(|\baxios\b|\brequests\s*\.|\bhttpx\b|\bhttp\.(get|post|put|patch|delete|head)\b|\.(get|post|put|patch|delete)async\s*\(|\bhttpclient\b|\bresttemplate\b|\bwebclient\b|\bgot\s*\(|\bky\s*\()`)
-	httpVerbRe   = regexp.MustCompile(`(?i)\b(?:http\.|requests\.|httpx\.|axios\.)?(get|post|put|patch|delete|head)(?:async)?\s*\(`)
+	httpClientRe = regexp.MustCompile(`(?i)(\bfetch\s*\(|\baxios\b|\brequests\s*\.|\bhttpx\b|\bhttp\.(get|post|put|patch|delete|head)\b|\.(get|post|put|patch|delete|head)(?:fromjson|asjson)?async(?:<[^>]+>)?\s*\(|\bhttpclient\b|\bresttemplate\b|\bwebclient\b|\bgot\s*\(|\bky\s*\()`)
+	httpVerbRe   = regexp.MustCompile(`(?i)\b(?:http\.|requests\.|httpx\.|axios\.)?(get|post|put|patch|delete|head)(?:fromjson|asjson)?(?:async)?(?:<[^>]+>)?\s*\(`)
 	urlLiteralRe = regexp.MustCompile(`["'](https?://[^"'\s]+|/[A-Za-z0-9_\-/{}:.]*)["']`)
 )
 

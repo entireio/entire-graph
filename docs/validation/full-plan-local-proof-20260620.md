@@ -73,6 +73,9 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
 - Java Spring-style route annotations compose class-level prefixes with
   method-level routes, emit `HANDLES_ROUTE`, and bridge matching
   `RestTemplate`/HTTP client calls to handlers as direct `CALLS`.
+- C# ASP.NET controller route attributes compose class-level `[Route]`
+  prefixes with method-level HTTP verb attributes, emit `HANDLES_ROUTE`, and
+  bridge matching `HttpClient` calls to handlers as direct `CALLS`.
 - Go `net/http` `HandleFunc` registrations and `HandlerFunc` wrappers resolve
   static or local-literal-constant paths to same-file local handler symbols and
   bridge matching Go HTTP client calls as direct `CALLS`.
@@ -198,6 +201,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
     113,776 LOC/s, max RSS 26,460,160 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781951308.json`: Go/gin, syntax-only, 28,618 LOC,
     132,835 LOC/s, max RSS 26,738,688 bytes, output 1,938,906 bytes.
+  - `bench/results/result-1781951621.json`: Go/gin, syntax-only, 28,618 LOC,
+    132,020 LOC/s, max RSS 27,099,136 bytes, output 1,938,906 bytes.
 
 ## Remaining Honesty Notes
 
