@@ -7558,9 +7558,14 @@ func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 			if _, exists := handlers[symbol.Name]; !exists {
 				handlers[symbol.Name] = symbol
 			}
+			if symbol.QualifiedName != "" {
+				if _, exists := handlers[symbol.QualifiedName]; !exists {
+					handlers[symbol.QualifiedName] = symbol
+				}
+			}
 		}
 		for _, registration := range goHTTPRouteRegistrations(content) {
-			handler, ok := handlers[registration.Handler]
+			handler, ok := resolveGoRouteHandler(handlers, registration.Handler)
 			if !ok {
 				continue
 			}
@@ -7653,10 +7658,11 @@ func goHTTPRouteRegistrations(content string) []goHTTPRouteRegistration {
 			Detail:       route + " -> " + handler,
 		})
 	}
-	handleFuncRe := regexp.MustCompile(`\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?HandleFunc\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)`)
-	handleFuncWrapperRe := regexp.MustCompile(`\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?Handle\s*\(\s*([^,\n]+)\s*,\s*(?:http\.)?HandlerFunc\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\)`)
-	routerMethodRe := regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\.(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)`)
-	chainedGroupMethodRe := regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\.Group\s*\(\s*([^,\n)]+)\s*\)\.(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)`)
+	goHandlerExpr := `[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?`
+	handleFuncRe := regexp.MustCompile(`\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?HandleFunc\s*\(\s*([^,\n]+)\s*,\s*(` + goHandlerExpr + `)\s*\)`)
+	handleFuncWrapperRe := regexp.MustCompile(`\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?Handle\s*\(\s*([^,\n]+)\s*,\s*(?:http\.)?HandlerFunc\s*\(\s*(` + goHandlerExpr + `)\s*\)\s*\)`)
+	routerMethodRe := regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\.(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*([^,\n]+)\s*,\s*(` + goHandlerExpr + `)\s*\)`)
+	chainedGroupMethodRe := regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\.Group\s*\(\s*([^,\n)]+)\s*\)\.(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*([^,\n]+)\s*,\s*(` + goHandlerExpr + `)\s*\)`)
 	for _, match := range handleFuncRe.FindAllStringSubmatch(content, -1) {
 		if len(match) == 3 {
 			add(match[1], match[2], "go_http_handle_func")
@@ -7696,6 +7702,35 @@ func goHTTPRouteRegistrations(content string) []goHTTPRouteRegistration {
 		add(strconv.Quote(joinRoutePaths(prefix, route)), match[4], "go_router_group_method")
 	}
 	return registrations
+}
+
+func resolveGoRouteHandler(handlers map[string]SymbolRecord, expr string) (SymbolRecord, bool) {
+	expr = strings.TrimSpace(expr)
+	if handler, ok := handlers[expr]; ok {
+		return handler, true
+	}
+	if !strings.Contains(expr, ".") {
+		return SymbolRecord{}, false
+	}
+	_, member, ok := strings.Cut(expr, ".")
+	if !ok || member == "" || strings.Contains(member, ".") {
+		return SymbolRecord{}, false
+	}
+	var found SymbolRecord
+	seen := map[string]bool{}
+	for name, handler := range handlers {
+		if seen[handler.ID] {
+			continue
+		}
+		if name == member || strings.HasSuffix(name, "."+member) {
+			found = handler
+			seen[handler.ID] = true
+		}
+	}
+	if len(seen) == 1 {
+		return found, true
+	}
+	return SymbolRecord{}, false
 }
 
 func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []expressRouteRelation {

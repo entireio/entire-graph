@@ -3017,6 +3017,83 @@ func ping() {
 	}
 }
 
+func TestGoRouterSelectorHandlerResolvesUniqueMethodAndBridge(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "server.go", `package server
+
+import "net/http"
+
+type Router interface {
+	Get(string, http.HandlerFunc)
+}
+
+type apiHandlers struct{}
+
+func register(r Router, handlers apiHandlers) {
+	r.Get("/api/users/{id}", handlers.ShowUser)
+	http.HandleFunc("/api/health", handlers.Health)
+}
+
+func (apiHandlers) ShowUser(w http.ResponseWriter, r *http.Request) {}
+
+func (apiHandlers) Health(w http.ResponseWriter, r *http.Request) {}
+
+func ping() {
+	http.Get("http://localhost/api/users/{id}")
+	http.Get("http://localhost/api/health")
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "apiHandlers.ShowUser", "/api/users/{id}") {
+		t.Fatalf("missing Go selector router method route handler: %#v", snapshot.Relations)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "apiHandlers.Health", "/api/health") {
+		t.Fatalf("missing Go selector HandleFunc route handler: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "apiHandlers.ShowUser") {
+		t.Fatalf("missing route bridge CALLS ping->apiHandlers.ShowUser: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "apiHandlers.Health") {
+		t.Fatalf("missing route bridge CALLS ping->apiHandlers.Health: %#v", snapshot.Relations)
+	}
+}
+
+func TestGoRouterSelectorHandlerSkipsAmbiguousMethod(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "server.go", `package server
+
+import "net/http"
+
+type Router interface {
+	Get(string, http.HandlerFunc)
+}
+
+type apiHandlers struct{}
+type adminHandlers struct{}
+
+func register(r Router, handlers apiHandlers) {
+	r.Get("/api/users/{id}", handlers.ShowUser)
+}
+
+func (apiHandlers) ShowUser(w http.ResponseWriter, r *http.Request) {}
+
+func (adminHandlers) ShowUser(w http.ResponseWriter, r *http.Request) {}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "apiHandlers.ShowUser", "/api/users/{id}") ||
+		hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "adminHandlers.ShowUser", "/api/users/{id}") {
+		t.Fatalf("ambiguous Go selector route handler should not resolve: %#v", snapshot.Relations)
+	}
+}
+
 func TestGoRouterGroupPrefixComposesHandlerAndBridge(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "server.go", `package server

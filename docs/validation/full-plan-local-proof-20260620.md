@@ -122,11 +122,13 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   default REST actions, `only:`, and `except:` resolve local controller
   actions, and matching HTTP client calls bridge to handlers as direct `CALLS`.
 - Go `net/http` `HandleFunc` registrations and `HandlerFunc` wrappers resolve
-  static or local-literal-constant paths to same-file local handler symbols and
-  bridge matching Go HTTP client calls as direct `CALLS`.
+  static or local-literal-constant paths to same-file local handler symbols,
+  including unique same-file selector handler expressions, and bridge matching
+  Go HTTP client calls as direct `CALLS`.
 - Go chi/gin-style router method registrations resolve static or
-  local-literal-constant paths to same-file local handler symbols and bridge
-  matching Go HTTP client calls as direct `CALLS`.
+  local-literal-constant paths to same-file local handler symbols, including
+  unique same-file selector handler expressions, and bridge matching Go HTTP
+  client calls as direct `CALLS`.
 - Go router group prefixes such as `api := e.Group("/api")` compose with
   static child route registrations and bridge matching Go HTTP clients as
   direct `CALLS`; chained group calls such as
@@ -408,6 +410,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781978698.json`: Go/gin, syntax-only, 28,618 LOC,
     162,018 LOC/s, max RSS 28,114,944 bytes, estimated output 1,902,638
     bytes; run after Gateway API policy targetRef/targetRefs extraction.
+  - `bench/results/result-1781979074.json`: Go/gin, syntax-only, 28,618 LOC,
+    162,516 LOC/s, max RSS 29,835,264 bytes, estimated output 1,902,638
+    bytes; run after unique same-file Go route selector handler extraction.
   - `bench/results/result-1781972446.json`: Go/gin, syntax-only, 28,618 LOC,
     162,982 LOC/s, max RSS 26,804,224 bytes, estimated output 1,902,630
     bytes; run after IngressClass reference extraction.
@@ -576,6 +581,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
     bytes.
   - `bench/results/result-1781969096.json`: Go/gin, syntax-only, 28,618 LOC,
     79,237 LOC/s, max RSS 26,804,224 bytes, estimated output 1,902,626 bytes.
+  - `bench/results/result-1781979074.json`: Go/gin, syntax-only, 28,618 LOC,
+    162,516 LOC/s, max RSS 29,835,264 bytes, estimated output 1,902,638
+    bytes.
 
 ## Remaining Honesty Notes
 
