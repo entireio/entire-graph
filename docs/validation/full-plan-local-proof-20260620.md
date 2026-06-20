@@ -265,11 +265,12 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 - Static HTTP client calls bridge to exact local route handlers through shared
   route endpoints as direct `CALLS` edges.
 - Deterministic static computed JS/TS route expressions, including
-  template-literal route constants, chained concatenated constants, and static
-  array joins, compose to route endpoints and bridge matching HTTP clients.
+  template-literal route constants, `String.raw` template literals with
+  deterministic local holes, chained concatenated constants, and static array
+  joins, compose to route endpoints and bridge matching HTTP clients.
 - Deterministic static computed JS/TS HTTP client paths built from known local
-  route constants or inline static array joins emit `HTTP_CALLS` and bridge to
-  local handlers.
+  route constants, `String.raw` templates, or inline static array joins emit
+  `HTTP_CALLS` and bridge to local handlers.
 - Imported external calls for common Go, Python, and JS/TS import forms emit
   `CALLS` edges to `external:symbol:<module>.<member>` with
   `resolution: import_external`.

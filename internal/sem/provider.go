@@ -9644,6 +9644,9 @@ func staticStringExpressionValue(expr string, constants map[string]string) (stri
 	if strings.HasPrefix(expr, "`") && strings.HasSuffix(expr, "`") {
 		return staticTemplateStringValue(expr, constants)
 	}
+	if value, ok := staticTaggedTemplateStringValue(expr, constants); ok {
+		return value, true
+	}
 	if value, ok := staticArrayJoinStringValue(expr, constants); ok {
 		return value, true
 	}
@@ -9671,6 +9674,14 @@ func staticTemplateStringValue(expr string, constants map[string]string) (string
 		return "", false
 	}
 	return value, true
+}
+
+func staticTaggedTemplateStringValue(expr string, constants map[string]string) (string, bool) {
+	const rawTag = "String.raw"
+	if !strings.HasPrefix(expr, rawTag+"`") || !strings.HasSuffix(expr, "`") {
+		return "", false
+	}
+	return staticTemplateStringValue(strings.TrimPrefix(expr, rawTag), constants)
 }
 
 func staticArrayJoinStringValue(expr string, constants map[string]string) (string, bool) {

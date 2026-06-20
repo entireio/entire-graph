@@ -355,11 +355,12 @@ Tasks:
   `@router.get/post/...` decorators, including locally resolved relative
   imports. Deterministic static computed route expressions such as
   `apiPrefix + "/health"`, template literals with known local route constants,
-  and static array joins compose to a single route endpoint.
+  `String.raw` template literals with deterministic local holes, and static
+  array joins compose to a single route endpoint.
 - Add route client detection:
   `fetch`, Axios, Python requests/httpx, Go `http.Client`, Java HTTP clients,
   C# HttpClient. JS/TS clients support deterministic static computed paths
-  built from known local route constants or inline static array joins;
+  built from known local route constants, `String.raw` templates, or inline static array joins;
   arbitrary runtime builders remain out of scope.
 - Emit `HANDLES_ROUTE` and `HTTP_CALLS` with method, path, confidence, and
   source evidence.

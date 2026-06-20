@@ -3570,6 +3570,34 @@ func TestStaticArrayJoinRouteExpressionComposesAndBridgesHTTPClient(t *testing.T
 	}
 }
 
+func TestStringRawTemplateRouteExpressionComposesAndBridgesHTTPClient(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "api.ts", "const version = \"v1\"\n\n"+
+		"export function register(app: any): void {\n"+
+		"  app.get(String.raw`/api/${version}/users/:id`, showUser)\n"+
+		"}\n\n"+
+		"export function showUser(): string {\n"+
+		"  return \"ok\"\n"+
+		"}\n\n"+
+		"export async function ping(): Promise<unknown> {\n"+
+		"  return fetch(String.raw`/api/${version}/users/:id`)\n"+
+		"}\n")
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "showUser", "/api/v1/users/:id") {
+		t.Fatalf("missing String.raw route expression: %#v", snapshot.Relations)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HTTP_CALLS", "ping", "/api/v1/users/:id") {
+		t.Fatalf("missing String.raw HTTP call relation: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "showUser") {
+		t.Fatalf("missing String.raw route bridge CALLS ping->showUser: %#v", snapshot.Relations)
+	}
+}
+
 func TestFastifyDirectRouteResolvesHandlerAndBridge(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "api.ts", `const userRoute = "/api/users/:id"
