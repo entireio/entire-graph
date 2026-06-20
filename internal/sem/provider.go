@@ -7371,13 +7371,29 @@ func scanPythonImports(content string) []string {
 	for _, module := range scanImports(content, regexp.MustCompile(`(?m)^\s*(?:from\s+(\.*[A-Za-z0-9_\.]+)\s+import|import\s+([A-Za-z0-9_\.]+))`)) {
 		add(module)
 	}
-	for _, match := range regexp.MustCompile(`\b(?:importlib\s*\.\s*import_module|__import__)\s*\(\s*["']([^"']+)["']`).FindAllStringSubmatch(content, -1) {
+	runtimeImportCalls := []string{`importlib\s*\.\s*import_module`, `__import__`}
+	for _, match := range regexp.MustCompile(`(?m)^\s*from\s+importlib\s+import\s+([^\n#]+)`).FindAllStringSubmatch(content, -1) {
+		if len(match) != 2 {
+			continue
+		}
+		for _, imported := range strings.Split(match[1], ",") {
+			fields := strings.Fields(strings.TrimSpace(imported))
+			if len(fields) == 1 && fields[0] == "import_module" {
+				runtimeImportCalls = append(runtimeImportCalls, regexp.QuoteMeta(fields[0]))
+			}
+			if len(fields) == 3 && fields[0] == "import_module" && fields[1] == "as" && isSimpleIdentifier(fields[2]) {
+				runtimeImportCalls = append(runtimeImportCalls, regexp.QuoteMeta(fields[2]))
+			}
+		}
+	}
+	runtimeImportCallRe := strings.Join(runtimeImportCalls, "|")
+	for _, match := range regexp.MustCompile(`\b(?:`+runtimeImportCallRe+`)\s*\(\s*["']([^"']+)["']`).FindAllStringSubmatch(content, -1) {
 		if len(match) == 2 {
 			add(match[1])
 		}
 	}
 	constants := staticStringConstants(content)
-	for _, match := range regexp.MustCompile(`\b(?:importlib\s*\.\s*import_module|__import__)\s*\(\s*([^,\n)]+)`).FindAllStringSubmatch(content, -1) {
+	for _, match := range regexp.MustCompile(`\b(?:`+runtimeImportCallRe+`)\s*\(\s*([^,\n)]+)`).FindAllStringSubmatch(content, -1) {
 		if len(match) != 2 {
 			continue
 		}
@@ -7386,6 +7402,24 @@ func scanPythonImports(content string) []string {
 		}
 	}
 	return sortedKeys(seen)
+}
+
+func isSimpleIdentifier(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i, r := range value {
+		if i == 0 {
+			if r != '_' && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
+				return false
+			}
+			continue
+		}
+		if r != '_' && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func scanJSImports(content string) []string {

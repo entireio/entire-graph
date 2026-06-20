@@ -212,7 +212,8 @@ Tasks:
   `setup.cfg` package names, configured setuptools package-find roots, root and
   package-specific `package-dir`/`package_dir` mappings, and inferred nested
   `*/src` namespace roots are implemented for local Python module resolution,
-  including literal and local-constant `importlib.import_module(...)` and
+  including literal and local-constant `importlib.import_module(...)`,
+  direct or aliased `from importlib import import_module` calls, and
   `__import__(...)` runtime imports; exact
   Java/Kotlin/Scala package imports are implemented through package declarations
   and source file names, with simple root Maven/Gradle package identity aliases;
