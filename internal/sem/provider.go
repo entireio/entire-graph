@@ -5370,10 +5370,11 @@ func maskBytes(bytes []byte, start, end int) {
 }
 
 var (
-	routeLiteralRe      = regexp.MustCompile(`["'](/[A-Za-z0-9_\-/{}\[\]:.]*)["']`)
-	staticRouteConcatRe = regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\+\s*["']([^"']*)["']`)
-	staticStringConstRe = regexp.MustCompile(`(?m)\b(?:(?:const|let|var)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=\n]+)?=\s*["'](/[A-Za-z0-9_\-/{}:.]*)["']`)
-	staticConcatConstRe = regexp.MustCompile(`(?m)\b(?:(?:const|let|var)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=\n]+)?=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\+\s*["']([^"']*)["']`)
+	routeLiteralRe        = regexp.MustCompile(`["'](/[A-Za-z0-9_\-/{}\[\]:.]*)["']`)
+	staticRouteConcatRe   = regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\+\s*["']([^"']*)["']`)
+	staticStringAssignRe  = regexp.MustCompile(`(?m)\b(?:(?:const|let|var)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=\n]+)?=\s*([^\n;]+)`)
+	staticTemplateHoleRe  = regexp.MustCompile(`\$\{\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\}`)
+	routeCallExpressionRe = regexp.MustCompile(`(?i)\b(?:get|post|put|patch|delete|head|options|route|handle|handlefunc|group|mapping|getmapping|postmapping|putmapping|deletemapping|patchmapping|requestmapping)\s*\(\s*([^,\n)]+)`)
 	// routingCallRe marks a line as a route registration: an HTTP-verb or
 	// routing method call, or a mapping decorator, immediately before "(".
 	// Requiring this context next to the path literal avoids treating every
@@ -5393,6 +5394,13 @@ func routeLiteralsWithConstants(content string, constants map[string]string) []s
 	for _, line := range strings.Split(content, "\n") {
 		if !routingCallRe.MatchString(line) || httpClientRe.MatchString(line) {
 			continue // skip client HTTP calls; those are HTTP_CALLS, not routes
+		}
+		for _, match := range routeCallExpressionRe.FindAllStringSubmatch(line, -1) {
+			if len(match) == 2 {
+				if route, ok := staticRouteExpressionValue(match[1], constants); ok {
+					seen[route] = struct{}{}
+				}
+			}
 		}
 		for _, match := range staticRouteConcatRe.FindAllStringSubmatch(line, -1) {
 			if len(match) == 3 && constants[match[1]] != "" {
@@ -5795,18 +5803,16 @@ func routeLiteralPartOfConcat(line string, start, end int) bool {
 
 func staticStringConstants(content string) map[string]string {
 	constants := map[string]string{}
-	for _, match := range staticStringConstRe.FindAllStringSubmatch(content, -1) {
-		if len(match) == 3 {
-			constants[match[1]] = match[2]
-		}
-	}
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 5; i++ {
 		changed := false
-		for _, match := range staticConcatConstRe.FindAllStringSubmatch(content, -1) {
-			if len(match) != 4 || constants[match[2]] == "" {
+		for _, match := range staticStringAssignRe.FindAllStringSubmatch(content, -1) {
+			if len(match) != 3 {
 				continue
 			}
-			value := joinRoutePaths(constants[match[2]], match[3])
+			value, ok := staticRouteExpressionValue(match[2], constants)
+			if !ok {
+				continue
+			}
 			if constants[match[1]] == value {
 				continue
 			}
@@ -6026,17 +6032,130 @@ func staticRouteExpressionValue(expr string, constants map[string]string) (strin
 	}
 	if (strings.HasPrefix(expr, `"`) && strings.HasSuffix(expr, `"`)) || (strings.HasPrefix(expr, `'`) && strings.HasSuffix(expr, `'`)) {
 		route := strings.Trim(expr, `"'`)
-		return route, strings.HasPrefix(route, "/")
+		if !strings.HasPrefix(route, "/") {
+			return "", false
+		}
+		return normalizeRouteParamSyntax(route), true
+	}
+	if strings.HasPrefix(expr, "`") && strings.HasSuffix(expr, "`") {
+		return staticTemplateRouteValue(expr, constants)
 	}
 	if route := constants[expr]; route != "" {
 		return route, true
 	}
-	for _, match := range staticRouteConcatRe.FindAllStringSubmatch(expr, -1) {
-		if len(match) == 3 && constants[match[1]] != "" {
-			return joinRoutePaths(constants[match[1]], match[2]), true
+	if parts := splitStaticConcatExpression(expr); len(parts) > 1 {
+		route, ok := staticConcatRouteValue(parts, constants)
+		if ok {
+			return route, true
 		}
 	}
 	return "", false
+}
+
+func staticTemplateRouteValue(expr string, constants map[string]string) (string, bool) {
+	body := strings.TrimSuffix(strings.TrimPrefix(expr, "`"), "`")
+	ok := true
+	value := staticTemplateHoleRe.ReplaceAllStringFunc(body, func(hole string) string {
+		match := staticTemplateHoleRe.FindStringSubmatch(hole)
+		if len(match) != 2 || constants[match[1]] == "" {
+			ok = false
+			return ""
+		}
+		return constants[match[1]]
+	})
+	if !ok || strings.Contains(value, "${") || !strings.HasPrefix(value, "/") {
+		return "", false
+	}
+	return normalizeRouteParamSyntax(value), true
+}
+
+func staticConcatRouteValue(parts []string, constants map[string]string) (string, bool) {
+	var route string
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		var value string
+		switch {
+		case (strings.HasPrefix(part, `"`) && strings.HasSuffix(part, `"`)) || (strings.HasPrefix(part, `'`) && strings.HasSuffix(part, `'`)):
+			value = strings.Trim(part, `"'`)
+		case strings.HasPrefix(part, "`") && strings.HasSuffix(part, "`"):
+			resolved, ok := staticTemplateRouteValue(part, constants)
+			if !ok {
+				return "", false
+			}
+			value = resolved
+		default:
+			if constants[part] == "" {
+				return "", false
+			}
+			value = constants[part]
+		}
+		if route == "" {
+			route = value
+			continue
+		}
+		route = joinRoutePaths(route, value)
+	}
+	if !strings.HasPrefix(route, "/") {
+		return "", false
+	}
+	return normalizeRouteParamSyntax(route), true
+}
+
+func splitStaticConcatExpression(expr string) []string {
+	var parts []string
+	var b strings.Builder
+	quote := rune(0)
+	templateDepth := 0
+	escaped := false
+	for _, r := range expr {
+		if quote != 0 {
+			b.WriteRune(r)
+			if escaped {
+				escaped = false
+				continue
+			}
+			if r == '\\' {
+				escaped = true
+				continue
+			}
+			if quote == '`' {
+				switch r {
+				case '{':
+					if strings.HasSuffix(b.String(), "${") {
+						templateDepth++
+					}
+				case '}':
+					if templateDepth > 0 {
+						templateDepth--
+					}
+				}
+			}
+			if r == quote && templateDepth == 0 {
+				quote = 0
+			}
+			continue
+		}
+		switch r {
+		case '\'', '"', '`':
+			quote = r
+			b.WriteRune(r)
+		case '+':
+			part := strings.TrimSpace(b.String())
+			if part == "" {
+				return nil
+			}
+			parts = append(parts, part)
+			b.Reset()
+		default:
+			b.WriteRune(r)
+		}
+	}
+	part := strings.TrimSpace(b.String())
+	if part == "" {
+		return nil
+	}
+	parts = append(parts, part)
+	return parts
 }
 
 func splitJavaScriptMember(value string) (string, string) {

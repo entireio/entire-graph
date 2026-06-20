@@ -126,13 +126,15 @@ False positives:
   attributes, PHP Laravel/Symfony route attributes and declarations, direct
   Fastify/app/server JS route registrations, Next.js route-file boundaries, or
   same-block Express router mount plus route registration).
-  Static constant-prefix expressions such as
-  `apiPrefix + "/health"` compose to one route and do not emit the suffix as a
-  separate route. Matching Python `requests`/`httpx`, Java `RestTemplate`/HTTP
-  client calls, Go HTTP client calls, C# `HttpClient` calls, PHP `Http::`
-  facade calls, and JS/TS `fetch`/Axios calls, including Next.js bracket
-  parameter paths, can bridge to local decorated or registered handlers through
-  the shared route endpoint. (WP6.)
+  Deterministic static computed route expressions such as
+  `apiPrefix + "/health"` and template literals with known local route
+  constants compose to one route and do not emit suffixes as separate routes.
+  Runtime builders remain intentionally skipped. Matching Python
+  `requests`/`httpx`, Java `RestTemplate`/HTTP client calls, Go HTTP client
+  calls, C# `HttpClient` calls, PHP `Http::` facade calls, and JS/TS
+  `fetch`/Axios calls, including Next.js bracket parameter paths, can bridge to
+  local decorated or registered handlers through the shared route endpoint.
+  (WP6.)
 - **Global-unique name match (Go `go-basic`).** `LoginHandler CALLS CheckToken`
   is emitted at `0.68` purely because the name is unique repo-wide, not because
   the call was resolved through imports/scope. Correct here, but fragile.

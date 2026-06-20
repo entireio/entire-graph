@@ -307,9 +307,9 @@ Tasks:
   router paths. FastAPI/Starlette-style local
   `include_router(router, prefix="/prefix")` mounts compose with static
   `@router.get/post/...` decorators, including locally resolved relative
-  imports. Static constant-prefix route expressions such as
-  `apiPrefix + "/health"` compose to a single route endpoint when the constant
-  has a literal route prefix.
+  imports. Deterministic static computed route expressions such as
+  `apiPrefix + "/health"` and template literals with known local route
+  constants compose to a single route endpoint.
 - Add route client detection:
   `fetch`, Axios, Python requests/httpx, Go `http.Client`, Java HTTP clients,
   C# HttpClient.
@@ -329,9 +329,10 @@ Acceptance:
   local matches also emit direct `CALLS` from the client symbol to the local
   route handler/boundary symbol.
 - Dynamic route/client paths do not create high-confidence false edges.
-- Static constant-prefix route paths compose when all parts are local string
-  literals, including Express router mount prefixes and child route paths;
-  arbitrary runtime builders remain out of scope.
+- Static computed route paths compose when all parts are local string literals
+  or known local route constants, including Express router mount prefixes,
+  template-literal route constants, and child route paths; arbitrary runtime
+  builders remain out of scope.
 
 ### WP7: IaC And Resource Graph
 

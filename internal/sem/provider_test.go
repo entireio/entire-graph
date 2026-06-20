@@ -1791,6 +1791,36 @@ export async function ping(): Promise<unknown> {
 	}
 }
 
+func TestComputedRouteExpressionComposesAndBridgesHTTPClient(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "api.ts", "const apiPrefix = \"/api\"\n"+
+		"const versionPrefix = `${apiPrefix}/v1`\n"+
+		"const usersRoute = versionPrefix + \"/users/:id\"\n\n"+
+		"export function register(app: any): void {\n"+
+		"  app.get(usersRoute, showUser)\n"+
+		"}\n\n"+
+		"export function showUser(): string {\n"+
+		"  return \"ok\"\n"+
+		"}\n\n"+
+		"export async function ping(): Promise<unknown> {\n"+
+		"  return fetch(\"/api/v1/users/:id\")\n"+
+		"}\n")
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "showUser", "/api/v1/users/:id") {
+		t.Fatalf("missing computed route expression: %#v", snapshot.Relations)
+	}
+	if hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "showUser", "/users/:id") {
+		t.Fatalf("computed suffix was misreported as standalone route: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "showUser") {
+		t.Fatalf("missing route bridge CALLS ping->showUser: %#v", snapshot.Relations)
+	}
+}
+
 func TestFastifyDirectRouteResolvesHandlerAndBridge(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "api.ts", `const userRoute = "/api/users/:id"
