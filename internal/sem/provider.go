@@ -2910,6 +2910,9 @@ func kubernetesResourceReferences(content string) []resourceReference {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 		}
 	}
+	for _, ref := range kubernetesKnativeServingTrafficReferences(content) {
+		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+	}
 	if kubernetesManifestHasAnyKind(content, "HelmRelease", "HelmChart", "Kustomization", "ImageRepository", "ImagePolicy", "ImageUpdateAutomation") {
 		for _, ref := range kubernetesNamedRefBlockReferences(content, "sourceRef", "kubernetes_flux_source_ref", 0.84, kubernetesExplicitReferenceKind) {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
@@ -3077,6 +3080,34 @@ func kubernetesKnativeTriggerBrokerReferences(content string) []resourceReferenc
 		}
 	}
 	return refs
+}
+
+func kubernetesKnativeServingTrafficReferences(content string) []resourceReference {
+	if !kubernetesManifestAPIMatches(content, `serving\.knative\.dev/`) || !kubernetesManifestHasAnyKind(content, "Service", "Route") {
+		return nil
+	}
+	var refs []resourceReference
+	for _, match := range regexp.MustCompile(`(?im)^\s*(?:-\s*)?revisionName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+		refs = append(refs, resourceReference{
+			Kind:         "revision",
+			Name:         match[1],
+			EvidenceKind: "kubernetes_knative_traffic_revision_ref",
+			Confidence:   0.82,
+		})
+	}
+	for _, match := range regexp.MustCompile(`(?im)^\s*(?:-\s*)?configurationName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+		refs = append(refs, resourceReference{
+			Kind:         "configuration",
+			Name:         match[1],
+			EvidenceKind: "kubernetes_knative_traffic_configuration_ref",
+			Confidence:   0.82,
+		})
+	}
+	return refs
+}
+
+func kubernetesManifestAPIMatches(content, pattern string) bool {
+	return regexp.MustCompile(`(?im)^\s*apiVersion:\s*` + pattern).MatchString(content)
 }
 
 func kubernetesFluxDependsOnKind(content string) string {

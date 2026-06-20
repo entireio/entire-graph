@@ -203,6 +203,8 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   AnalysisTemplate refs, Tekton `pipelineRef`/`taskRef`, and ServiceBinding
   `service`/`workload`, Knative Trigger `broker`/`subscriber.ref`, and
   Knative Subscription `channel`/`subscriber.ref`/`reply.ref`
+  and Knative Serving `Route`/`Service` traffic `revisionName`/
+  `configurationName`
   custom-controller references emit exact local `RESOURCE_DEPENDS_ON` edges
   when the referenced resource manifests are present in the snapshot.
 - Flux CD `sourceRef`, `chartRef`, same-kind `dependsOn`, and HelmRelease
@@ -391,6 +393,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781977945.json`: Go/gin, syntax-only, 28,618 LOC,
     171,893 LOC/s, max RSS 27,033,600 bytes, estimated output 1,902,637
     bytes; run after Knative Subscription channel/subscriber/reply reference
+    extraction.
+  - `bench/results/result-1781978414.json`: Go/gin, syntax-only, 28,618 LOC,
+    157,840 LOC/s, max RSS 29,589,504 bytes, estimated output 1,902,640
+    bytes; run after Knative Serving traffic revision/configuration reference
     extraction.
   - `bench/results/result-1781972047.json`: Go/gin, syntax-only, 28,618 LOC,
     151,466 LOC/s, max RSS 26,624,000 bytes, estimated output 1,902,634

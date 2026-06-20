@@ -1884,6 +1884,25 @@ spec:
       kind: Broker
       name: default
 `)
+	writeFile(t, repo, "k8s/knative-route.yaml", `apiVersion: serving.knative.dev/v1
+kind: Route
+metadata:
+  name: user-api
+spec:
+  traffic:
+    - revisionName: user-api-00001
+    - configurationName: user-api
+`)
+	writeFile(t, repo, "k8s/knative-configuration.yaml", `apiVersion: serving.knative.dev/v1
+kind: Configuration
+metadata:
+  name: user-api
+`)
+	writeFile(t, repo, "k8s/knative-revision.yaml", `apiVersion: serving.knative.dev/v1
+kind: Revision
+metadata:
+  name: user-api-00001
+`)
 
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
 	if err != nil {
@@ -1906,6 +1925,8 @@ spec:
 		{"Subscription.user-events-to-handler", "InMemoryChannel.user-events"},
 		{"Subscription.user-events-to-handler", "Service.event-handler"},
 		{"Subscription.user-events-to-handler", "Broker.default"},
+		{"Route.user-api", "Revision.user-api-00001"},
+		{"Route.user-api", "Configuration.user-api"},
 	} {
 		if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", edge[0], edge[1]) {
 			t.Fatalf("missing custom-controller dependency %s -> %s in %#v", edge[0], edge[1], snapshot.Relations)
