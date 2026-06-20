@@ -2971,6 +2971,9 @@ func kubernetesResourceReferences(content string) []resourceReference {
 	for _, ref := range kubernetesGatewayParentReferences(content) {
 		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 	}
+	for _, ref := range kubernetesGatewayPolicyTargetReferences(content) {
+		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+	}
 	for _, ref := range kubernetesIstioServiceMeshReferences(content) {
 		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 	}
@@ -3368,6 +3371,22 @@ func kubernetesGatewayParentReferences(content string) []resourceReference {
 			}
 		}
 		flush()
+	}
+	return refs
+}
+
+func kubernetesGatewayPolicyTargetReferences(content string) []resourceReference {
+	if !kubernetesManifestAPIMatches(content, `gateway\.networking\.k8s\.io/`) || !regexp.MustCompile(`(?im)^\s*kind:\s*[A-Za-z0-9_.-]*Policy\s*$`).MatchString(content) {
+		return nil
+	}
+	var refs []resourceReference
+	for _, blockKey := range []string{"targetRef", "targetRefs"} {
+		for _, ref := range kubernetesNamedRefBlockReferences(content, blockKey, "kubernetes_gateway_policy_target_ref", 0.84, kubernetesExplicitReferenceKind) {
+			switch strings.ToLower(ref.Kind) {
+			case "service", "gateway", "httproute", "grpcroute", "tlsroute", "tcproute", "udproute":
+				refs = append(refs, ref)
+			}
+		}
 	}
 	return refs
 }

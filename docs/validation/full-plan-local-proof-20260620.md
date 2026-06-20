@@ -188,9 +188,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   referenced resource manifests are present in the snapshot.
 - Kubernetes RBAC role/subject references, owner references, Ingress Service
   backends, Gateway API route backend refs, Gateway API route parent Gateway
-  refs, Gateway listener `certificateRefs`, Ingress `ingressClassName` refs,
-  PVC `storageClassName` refs, PVC `volumeName` refs, pod `runtimeClassName`
-  refs, pod `priorityClassName` refs, and HPA scale targets emit exact local
+  refs, Gateway listener `certificateRefs`, Gateway API policy `targetRef`/
+  `targetRefs`, Ingress `ingressClassName` refs, PVC `storageClassName` refs,
+  PVC `volumeName` refs, pod `runtimeClassName` refs, pod
+  `priorityClassName` refs, and HPA scale targets emit exact local
   `RESOURCE_DEPENDS_ON` edges when the referenced resource manifests are
   present in the snapshot.
 - KEDA ScaledObject name-only scale targets emit exact local
@@ -404,6 +405,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781972280.json`: Go/gin, syntax-only, 28,618 LOC,
     164,367 LOC/s, max RSS 26,574,848 bytes, estimated output 1,902,636
     bytes; run after Gateway listener certificateRef extraction.
+  - `bench/results/result-1781978698.json`: Go/gin, syntax-only, 28,618 LOC,
+    162,018 LOC/s, max RSS 28,114,944 bytes, estimated output 1,902,638
+    bytes; run after Gateway API policy targetRef/targetRefs extraction.
   - `bench/results/result-1781972446.json`: Go/gin, syntax-only, 28,618 LOC,
     162,982 LOC/s, max RSS 26,804,224 bytes, estimated output 1,902,630
     bytes; run after IngressClass reference extraction.

@@ -1583,6 +1583,19 @@ spec:
 kind: BackendTLSPolicy
 metadata:
   name: ignored-policy
+spec:
+  targetRefs:
+    - kind: Service
+      name: grpc-api
+`)
+	writeFile(t, repo, "k8s/gateway-policy.yaml", `apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: BackendTrafficPolicy
+metadata:
+  name: public-policy
+spec:
+  targetRef:
+    kind: Gateway
+    name: public
 `)
 
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
@@ -1600,6 +1613,8 @@ metadata:
 		{"TLSRoute.secure-api", "Service.secure-api"},
 		{"TLSRoute.secure-api", "Gateway.public"},
 		{"Gateway.public", "Secret.public-cert"},
+		{"BackendTLSPolicy.ignored-policy", "Service.grpc-api"},
+		{"BackendTrafficPolicy.public-policy", "Gateway.public"},
 		{"RoleBinding.api-readers", "Role.api-reader"},
 		{"RoleBinding.api-readers", "ServiceAccount.api-runner"},
 		{"ClusterRoleBinding.api-admins", "ClusterRole.api-admin"},
