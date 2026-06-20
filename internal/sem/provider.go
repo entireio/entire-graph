@@ -10071,8 +10071,10 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 				if binding.Namespace {
 					routeReceiver = targetMember
 				}
-				if routeReceiver == "default" {
-					routeReceiver = defaultExportsByFile[routeFile]
+				if routeReceiver == "default" || routeReceiver == "" {
+					if exported := defaultExportsByFile[routeFile]; exported != "" {
+						routeReceiver = exported
+					}
 				}
 				if routeReceiver == "" {
 					routeReceiver = targetLocal
@@ -10196,6 +10198,16 @@ func javascriptDefaultExportName(content string) string {
 			if imported == "default" && local != "" {
 				return local
 			}
+		}
+	}
+	for _, match := range regexp.MustCompile(`(?m)^\s*module\.exports\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*$`).FindAllStringSubmatch(content, -1) {
+		if len(match) == 2 {
+			return match[1]
+		}
+	}
+	for _, match := range regexp.MustCompile(`(?m)^\s*exports\.default\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*$`).FindAllStringSubmatch(content, -1) {
+		if len(match) == 2 {
+			return match[1]
 		}
 	}
 	return ""

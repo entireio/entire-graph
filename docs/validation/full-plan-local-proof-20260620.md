@@ -179,7 +179,7 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   `app.register(plugin, { prefix })` compose static plugin route registrations
   with the register prefix and bridge exact matching HTTP client calls to the
   handler symbol, including unique same-file selector handler expressions.
-- Default-imported, aliased named-import, and namespace-member imported
+- Default-imported, CommonJS-exported, aliased named-import, and namespace-member imported
   Express routers compose cross-file `app.use("/prefix", router)` mounts with static
   `router.get/post/...` registrations and bridge exact matching HTTP client
   calls to the handler symbol.
