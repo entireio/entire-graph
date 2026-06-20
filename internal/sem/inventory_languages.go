@@ -34,6 +34,7 @@ var inventoryLanguageExtensions = map[string]languageSpec{
 	".coffee":      {language: "CoffeeScript", inventoryOnly: true},
 	".coq":         {language: "Coq", inventoryOnly: true},
 	".cr":          {language: "Crystal", inventoryOnly: true},
+	".csproj":      {language: "MSBuild Project", inventoryOnly: true},
 	".d":           {language: "D", inventoryOnly: true},
 	".dart":        {language: "Dart", inventoryOnly: true},
 	".dhall":       {language: "Dhall", inventoryOnly: true},

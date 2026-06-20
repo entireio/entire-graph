@@ -612,6 +612,67 @@ class Service {}
 	}
 }
 
+func TestCSharpProjectNamespaceResolvesLocalNamespaceFile(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "Worker.csproj", `<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Acme.WorkerLib</RootNamespace>
+  </PropertyGroup>
+</Project>
+`)
+	writeFile(t, repo, "App/Handler.cs", `using Acme.WorkerLib.Services;
+
+namespace App;
+
+class Handler {
+  Service service;
+}
+`)
+	writeFile(t, repo, "Services/Service.cs", `namespace Services;
+
+class Service {}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := fileID(snapshot.Header.RepoKey, "Services/Service.cs")
+	if !hasImportRelationWithEvidence(snapshot.Relations, "App/Handler.cs", target, "Acme.WorkerLib.Services", "csharp_csproj_namespace_import") {
+		t.Fatalf("missing .csproj identity C# import to %s in %#v", target, snapshot.Relations)
+	}
+}
+
+func TestCSharpNamespaceImportSkipsAmbiguousNamespace(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "App/Handler.cs", `using Shared.Services;
+
+namespace App;
+
+class Handler {}
+`)
+	writeFile(t, repo, "Services/First.cs", `namespace Shared.Services;
+
+class First {}
+`)
+	writeFile(t, repo, "Services/Second.cs", `namespace Shared.Services;
+
+class Second {}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "IMPORTS" &&
+			strings.HasSuffix(relation.FromID, "file:App/Handler.cs") &&
+			relation.Resolution == "import_resolved" {
+			t.Fatalf("ambiguous C# namespace should not resolve to one file: %#v", relation)
+		}
+	}
+}
+
 func TestRustCargoImportsResolveToLocalModuleFile(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "Cargo.toml", `[package]

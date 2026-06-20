@@ -64,7 +64,7 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   guard.
 - CLI low-ceiling validation fails as intended with
   `memory guardrail failed during measurement` before completing a repo.
-- Capability output reports 182 language/filetype labels and 201 deterministic
+- Capability output reports 183 language/filetype labels and 202 deterministic
   suffixes/extensions.
 - Go module imports resolve through `go.mod` to local package files with
   `import_resolved` metadata.
@@ -82,7 +82,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 - Exact Java/Kotlin/Scala-style package imports resolve through package
   declarations and source file names with `import_resolved` metadata.
 - Simple root Maven/Gradle package identity aliases resolve matching JVM imports
-  to local type files with `import_resolved` metadata.
+  to local type files with `import_resolved` metadata; `.csproj` root
+  namespace and assembly-name aliases resolve unique C# namespace imports to
+  local source files with `import_resolved` metadata.
 - Rust `crate::`, `self::`, and Cargo package-name imports resolve to local
   module files with `import_resolved` metadata for conventional source layouts,
   deterministic `#[path] mod` aliases, and straightforward `pub use`
@@ -341,6 +343,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
     151,306 LOC/s, max RSS 29,294,592 bytes, estimated output 1,902,630
     bytes; run after Flux HelmRelease `valuesFrom` ConfigMap/Secret
     resource-reference extraction.
+  - `bench/results/result-1781976712.json`: Go/gin, syntax-only, 28,618 LOC,
+    154,859 LOC/s, max RSS 27,475,968 bytes, estimated output 1,902,631
+    bytes; run after `.csproj` C# namespace import resolution.
   - `bench/results/result-1781970127.json`: Go/gin, syntax-only, 28,618 LOC,
     150,315 LOC/s, max RSS 28,803,072 bytes, estimated output 1,902,626
     bytes; run after KEDA `authenticationRef` resource-reference extraction.

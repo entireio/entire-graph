@@ -4990,6 +4990,10 @@ type manifestImportResolver struct {
 	jvmTypes           map[string]string
 	jvmTypeEvidence    map[string]string
 	jvmPackagePrefixes []string
+	csharpNamespaces   map[string]string
+	csharpEvidence     map[string]string
+	csharpAmbiguous    map[string]bool
+	csharpPrefixes     []string
 	rustCrateName      string
 	rustModules        map[string]string
 	rustAliases        map[string]string
@@ -5014,7 +5018,7 @@ type jsImportMapScope struct {
 }
 
 func buildManifestImportResolver(files []FileRecord, readContent contentReader) manifestImportResolver {
-	resolver := manifestImportResolver{goPackages: map[string]string{}, jsPackageExports: map[string]string{}, jsPackageImports: map[string]string{}, jsImportMap: map[string]string{}, jsModuleFiles: map[string]string{}, pythonSourceRoots: []string{"src"}, pythonModules: map[string]string{}, pythonNamespaces: map[string]bool{}, jvmTypes: map[string]string{}, jvmTypeEvidence: map[string]string{}, rustModules: map[string]string{}, rustAliases: map[string]string{}}
+	resolver := manifestImportResolver{goPackages: map[string]string{}, jsPackageExports: map[string]string{}, jsPackageImports: map[string]string{}, jsImportMap: map[string]string{}, jsModuleFiles: map[string]string{}, pythonSourceRoots: []string{"src"}, pythonModules: map[string]string{}, pythonNamespaces: map[string]bool{}, jvmTypes: map[string]string{}, jvmTypeEvidence: map[string]string{}, csharpNamespaces: map[string]string{}, csharpEvidence: map[string]string{}, csharpAmbiguous: map[string]bool{}, rustModules: map[string]string{}, rustAliases: map[string]string{}}
 	if content, ok := readContent("go.mod"); ok {
 		resolver.goModule = parseGoModulePath(content)
 	}
@@ -5063,10 +5067,22 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 	}
 	resolver.jvmPackagePrefixes = normalizeJVMPackagePrefixes(resolver.jvmPackagePrefixes)
+	for _, file := range files {
+		if !strings.EqualFold(filepath.Ext(file.Path), ".csproj") {
+			continue
+		}
+		content, ok := readContent(file.Path)
+		if !ok {
+			continue
+		}
+		resolver.csharpPrefixes = append(resolver.csharpPrefixes, parseCSharpProjectNamespacePrefixes(file.Path, content)...)
+	}
+	resolver.csharpPrefixes = normalizeCSharpNamespaces(resolver.csharpPrefixes)
 	var goPaths []string
 	var jsPaths []string
 	var pyPaths []string
 	var jvmPaths []string
+	var csharpPaths []string
 	var rustPaths []string
 	for _, file := range files {
 		if strings.EqualFold(filepath.Ext(file.Path), ".go") {
@@ -5080,6 +5096,9 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 		if jvmLikeExtension(filepath.Ext(file.Path)) {
 			jvmPaths = append(jvmPaths, filepath.ToSlash(file.Path))
+		}
+		if strings.EqualFold(filepath.Ext(file.Path), ".cs") {
+			csharpPaths = append(csharpPaths, filepath.ToSlash(file.Path))
 		}
 		if strings.EqualFold(filepath.Ext(file.Path), ".rs") {
 			rustPaths = append(rustPaths, filepath.ToSlash(file.Path))
@@ -5152,6 +5171,24 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 			}
 		}
 	}
+	sort.Strings(csharpPaths)
+	for _, path := range csharpPaths {
+		content, ok := readContent(path)
+		if !ok {
+			continue
+		}
+		namespace := csharpNamespaceName(content)
+		if namespace == "" {
+			continue
+		}
+		resolver.addCSharpNamespace(namespace, path, "csharp_namespace_import")
+		for _, prefix := range resolver.csharpPrefixes {
+			if namespace == prefix || strings.HasPrefix(namespace, prefix+".") {
+				continue
+			}
+			resolver.addCSharpNamespace(prefix+"."+namespace, path, "csharp_csproj_namespace_import")
+		}
+	}
 	sort.Strings(rustPaths)
 	for _, path := range rustPaths {
 		for _, module := range rustModuleKeysForPath(path) {
@@ -5180,6 +5217,21 @@ func (resolver manifestImportResolver) addJVMType(qualifiedName, path, evidenceK
 	}
 	resolver.jvmTypes[qualifiedName] = path
 	resolver.jvmTypeEvidence[qualifiedName] = evidenceKind
+}
+
+func (resolver manifestImportResolver) addCSharpNamespace(namespace, path, evidenceKind string) {
+	namespace = normalizeCSharpNamespace(namespace)
+	if namespace == "" {
+		return
+	}
+	if existing, exists := resolver.csharpNamespaces[namespace]; exists {
+		if existing != path {
+			resolver.csharpAmbiguous[namespace] = true
+		}
+		return
+	}
+	resolver.csharpNamespaces[namespace] = path
+	resolver.csharpEvidence[namespace] = evidenceKind
 }
 
 func parseGoModulePath(content string) string {
@@ -5570,6 +5622,9 @@ func (resolver manifestImportResolver) resolve(importingPath, spec string) (mani
 	}
 	if jvmLikeExtension(ext) {
 		return resolver.resolveJVMImport(importingPath, spec)
+	}
+	if ext == ".cs" {
+		return resolver.resolveCSharpImport(importingPath, spec)
 	}
 	if ext == ".rs" {
 		return resolver.resolveRustImport(importingPath, spec)
@@ -5974,6 +6029,34 @@ func normalizePythonPackageNames(names []string) []string {
 	return normalized
 }
 
+func (resolver manifestImportResolver) resolveCSharpImport(importingPath, spec string) (manifestImportResolution, bool) {
+	spec = normalizeCSharpNamespace(spec)
+	if spec == "" || resolver.csharpAmbiguous[spec] {
+		return manifestImportResolution{}, false
+	}
+	path, ok := resolver.csharpNamespaces[spec]
+	if !ok || path == filepath.ToSlash(importingPath) {
+		return manifestImportResolution{}, false
+	}
+	evidenceKind := resolver.csharpEvidence[spec]
+	if evidenceKind == "" {
+		evidenceKind = "csharp_namespace_import"
+	}
+	confidence := 0.86
+	reason := "C# namespace import resolved through local namespace"
+	if evidenceKind == "csharp_csproj_namespace_import" {
+		confidence = 0.87
+		reason = "C# namespace import resolved through .csproj root namespace"
+	}
+	return manifestImportResolution{
+		Path:         path,
+		Confidence:   confidence,
+		Scope:        "module",
+		Reason:       reason,
+		EvidenceKind: evidenceKind,
+	}, true
+}
+
 func (resolver manifestImportResolver) resolveJVMImport(importingPath, spec string) (manifestImportResolution, bool) {
 	spec = strings.TrimSpace(spec)
 	if spec == "" || strings.HasSuffix(spec, ".*") {
@@ -6015,6 +6098,23 @@ func parsePOMJVMPackagePrefixes(content string) []string {
 	groupID := firstXMLTagValue(content, "groupId")
 	artifactID := firstXMLTagValue(content, "artifactId")
 	return jvmPackagePrefixesFromGroupArtifact(groupID, artifactID)
+}
+
+func parseCSharpProjectNamespacePrefixes(path, content string) []string {
+	var prefixes []string
+	if root := firstXMLTagValue(content, "RootNamespace"); root != "" {
+		prefixes = append(prefixes, root)
+	}
+	if assembly := firstXMLTagValue(content, "AssemblyName"); assembly != "" {
+		prefixes = append(prefixes, assembly)
+	}
+	if len(prefixes) == 0 {
+		base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		if base != "" {
+			prefixes = append(prefixes, base)
+		}
+	}
+	return normalizeCSharpNamespaces(prefixes)
 }
 
 func firstXMLTagValue(content, tag string) string {
@@ -6097,6 +6197,37 @@ func jvmQualifiedTypeName(path, content string) string {
 		return base
 	}
 	return pkg + "." + base
+}
+
+func csharpNamespaceName(content string) string {
+	re := regexp.MustCompile(`(?m)^\s*namespace\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*(?:[;{]|$)`)
+	if match := re.FindStringSubmatch(content); len(match) == 2 {
+		return normalizeCSharpNamespace(match[1])
+	}
+	return ""
+}
+
+func normalizeCSharpNamespaces(names []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, name := range names {
+		name = normalizeCSharpNamespace(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func normalizeCSharpNamespace(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.ReplaceAll(name, "-", ".")
+	name = regexp.MustCompile(`[^A-Za-z0-9_.]+`).ReplaceAllString(name, ".")
+	name = regexp.MustCompile(`\.+`).ReplaceAllString(name, ".")
+	return strings.Trim(name, ".")
 }
 
 func jvmLikeExtension(ext string) bool {
