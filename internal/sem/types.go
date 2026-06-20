@@ -321,28 +321,29 @@ func graphqlOperationRoot(root string) bool {
 }
 
 var (
-	awaitCallRe          = regexp.MustCompile(`\bawait\s+([A-Za-z_$][\w$]*)\s*\(`)
-	goRoutineCallRe      = regexp.MustCompile(`(?m)\bgo\s+([A-Za-z_]\w*)\s*\(`)
-	spawnCallRe          = regexp.MustCompile(`\b(?:Promise\.all|Promise\.race|asyncio\.gather|tokio::spawn|Task\.Run)\s*\([^)]*?([A-Za-z_]\w*)\s*\(`)
-	returnCallRe         = regexp.MustCompile(`(?m)\breturn\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
-	ternaryReturnCallRe  = regexp.MustCompile(`(?m)\breturn\s+[^?\n]+?\?\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^:\n]*\)\s*:\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
-	pythonIfReturnRe     = regexp.MustCompile(`(?m)\breturn\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^\n]*?\)\s+if\s+[^\n]+?\s+else\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
-	jsFallbackReturnRe   = regexp.MustCompile(`(?m)\breturn\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^\n]*?\)\s*(?:\|\||\?\?)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
-	pythonOrReturnRe     = regexp.MustCompile(`(?m)\breturn\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^\n]*?\)\s+or\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
-	ternaryAssignCallRe  = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*[^?\n]+?\?\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^:\n]*\)\s*:\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
-	pythonIfAssignRe     = regexp.MustCompile(`(?m)\b\$?([A-Za-z_$][\w$]*)\s*(?::=|=)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^\n]*?\)\s+if\s+[^\n]+?\s+else\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
-	jsFallbackAssignRe   = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^\n]*?\)\s*(?:\|\||\?\?)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
-	pythonOrAssignRe     = regexp.MustCompile(`(?m)\b\$?([A-Za-z_$][\w$]*)\s*(?::=|=)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^\n]*?\)\s+or\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
-	assignCallRe         = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
-	returnVarRe          = regexp.MustCompile(`(?m)\breturn\s+\$?([A-Za-z_$][\w$]*)\b`)
-	returnPropertyRe     = regexp.MustCompile(`(?m)\breturn\s+\$?([A-Za-z_$][\w$]*)\s*\.\s*([A-Za-z_$][\w$]*)\b`)
-	aliasAssignRe        = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*\$?([A-Za-z_$][\w$]*)\b`)
-	localObjectVarRe     = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:\{\s*\}|new\s+[A-Za-z_$][\w$]*\s*\(\s*\))`)
-	objectLiteralVarRe   = regexp.MustCompile(`(?s)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*\{([^{}]*)\}`)
-	objectLiteralFieldRe = regexp.MustCompile(`(?:^|,|\n)\s*([A-Za-z_$][\w$]*)\s*:\s*\$?([A-Za-z_$][\w$]*)\b`)
-	objectFieldAssignRe  = regexp.MustCompile(`(?m)\b\$?([A-Za-z_$][\w$]*)\s*\.\s*([A-Za-z_$][\w$]*)\s*=\s*\$?([A-Za-z_$][\w$]*)\b`)
-	localCollectionVarRe = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:\[\s*\]|new\s+(?:Array|Set|Map)\s*\(\s*\))`)
-	collectionAddRe      = regexp.MustCompile(`(?m)\b\$?([A-Za-z_$][\w$]*)\s*\.\s*(?:push|append|add)\s*\(\s*\$?([A-Za-z_$][\w$]*)\s*\)`)
+	awaitCallRe              = regexp.MustCompile(`\bawait\s+([A-Za-z_$][\w$]*)\s*\(`)
+	goRoutineCallRe          = regexp.MustCompile(`(?m)\bgo\s+([A-Za-z_]\w*)\s*\(`)
+	spawnCallRe              = regexp.MustCompile(`\b(?:Promise\.all|Promise\.race|asyncio\.gather|tokio::spawn|Task\.Run)\s*\([^)]*?([A-Za-z_]\w*)\s*\(`)
+	returnCallRe             = regexp.MustCompile(`(?m)\breturn\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	ternaryReturnCallRe      = regexp.MustCompile(`(?m)\breturn\s+[^?\n]+?\?\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^:\n]*\)\s*:\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	pythonIfReturnRe         = regexp.MustCompile(`(?m)\breturn\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^\n]*?\)\s+if\s+[^\n]+?\s+else\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	jsFallbackReturnRe       = regexp.MustCompile(`(?m)\breturn\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^\n]*?\)\s*(?:\|\||\?\?)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	pythonOrReturnRe         = regexp.MustCompile(`(?m)\breturn\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^\n]*?\)\s+or\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	ternaryAssignCallRe      = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*[^?\n]+?\?\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^:\n]*\)\s*:\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	pythonIfAssignRe         = regexp.MustCompile(`(?m)\b\$?([A-Za-z_$][\w$]*)\s*(?::=|=)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^\n]*?\)\s+if\s+[^\n]+?\s+else\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	jsFallbackAssignRe       = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^\n]*?\)\s*(?:\|\||\?\?)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	pythonOrAssignRe         = regexp.MustCompile(`(?m)\b\$?([A-Za-z_$][\w$]*)\s*(?::=|=)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^\n]*?\)\s+or\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	assignCallRe             = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	destructuredAssignCallRe = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*(?:\[\s*([^\]\n]+)\s*\]|\(?\s*([A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)+)\s*\)?)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	returnVarRe              = regexp.MustCompile(`(?m)\breturn\s+\$?([A-Za-z_$][\w$]*)\b`)
+	returnPropertyRe         = regexp.MustCompile(`(?m)\breturn\s+\$?([A-Za-z_$][\w$]*)\s*\.\s*([A-Za-z_$][\w$]*)\b`)
+	aliasAssignRe            = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*\$?([A-Za-z_$][\w$]*)\b`)
+	localObjectVarRe         = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:\{\s*\}|new\s+[A-Za-z_$][\w$]*\s*\(\s*\))`)
+	objectLiteralVarRe       = regexp.MustCompile(`(?s)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*\{([^{}]*)\}`)
+	objectLiteralFieldRe     = regexp.MustCompile(`(?:^|,|\n)\s*([A-Za-z_$][\w$]*)\s*:\s*\$?([A-Za-z_$][\w$]*)\b`)
+	objectFieldAssignRe      = regexp.MustCompile(`(?m)\b\$?([A-Za-z_$][\w$]*)\s*\.\s*([A-Za-z_$][\w$]*)\s*=\s*\$?([A-Za-z_$][\w$]*)\b`)
+	localCollectionVarRe     = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:\[\s*\]|new\s+(?:Array|Set|Map)\s*\(\s*\))`)
+	collectionAddRe          = regexp.MustCompile(`(?m)\b\$?([A-Za-z_$][\w$]*)\s*\.\s*(?:push|append|add)\s*\(\s*\$?([A-Za-z_$][\w$]*)\s*\)`)
 )
 
 func asyncCallNames(block string) []string {
@@ -695,10 +696,56 @@ func assignmentFlowEvents(block string) []assignmentFlowEvent {
 			Pos:   match[0],
 		})
 	}
+	for _, match := range destructuredAssignCallRe.FindAllStringSubmatchIndex(block, -1) {
+		if len(match) != 8 {
+			continue
+		}
+		varList := ""
+		if match[2] >= 0 {
+			varList = block[match[2]:match[3]]
+		} else if match[4] >= 0 {
+			varList = block[match[4]:match[5]]
+		}
+		call := strings.TrimPrefix(block[match[6]:match[7]], "$")
+		if call == "" {
+			continue
+		}
+		for _, variable := range destructuredAssignmentVariables(varList) {
+			events = append(events, assignmentFlowEvent{
+				Var:          variable,
+				Calls:        []string{call},
+				Reason:       "callee return value destructured into local and returned by caller",
+				EvidenceKind: "destructured_assigned_return_flow",
+				Pos:          match[0],
+			})
+		}
+	}
 	sort.Slice(events, func(i, j int) bool {
 		return events[i].Pos < events[j].Pos
 	})
 	return events
+}
+
+func destructuredAssignmentVariables(varList string) []string {
+	seen := map[string]struct{}{}
+	for _, part := range strings.Split(varList, ",") {
+		part = strings.TrimSpace(strings.TrimPrefix(part, "..."))
+		if part == "" || part == "_" {
+			continue
+		}
+		if strings.ContainsAny(part, "{}[]=:") {
+			fields := regexp.MustCompile(`[A-Za-z_$][\w$]*`).FindAllString(part, -1)
+			if len(fields) != 1 {
+				continue
+			}
+			part = fields[0]
+		}
+		if !regexp.MustCompile(`^[A-Za-z_$][\w$]*$`).MatchString(part) {
+			continue
+		}
+		seen[strings.TrimPrefix(part, "$")] = struct{}{}
+	}
+	return sortedStringSet(seen)
 }
 
 func branchAssignedReturnFlows(block string) []returnFlowCall {

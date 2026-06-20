@@ -294,6 +294,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   relations when the parameter type is a known local symbol.
 - Assigned return-flow emits `DATA_FLOWS` when a local variable assigned from a
   known callee is returned as a bare variable.
+- Destructured assignment-then-return flow emits `DATA_FLOWS` when a local
+  variable destructured from a known callee return is returned as a bare
+  variable.
 - Simple branch-assigned return-flow emits `DATA_FLOWS` for known callees
   assigned to the same returned local in `if/else` branches, while preserving
   the sequential reassignment guard.
@@ -536,6 +539,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781975899.json`: Go/gin, syntax-only, 28,618 LOC,
     152,866 LOC/s, max RSS 27,459,584 bytes, estimated output 1,902,640
     bytes; run after assigned property-return data-flow extraction.
+  - `bench/results/result-1781984529.json`: Go/gin, syntax-only, 28,618 LOC,
+    163,314 LOC/s, max RSS 28,917,760 bytes, estimated output 1,902,630
+    bytes; run after destructured assignment-return data-flow extraction.
   - `bench/results/result-1781975430.json`: Go/gin, syntax-only, 28,618 LOC,
     153,893 LOC/s, max RSS 27,672,576 bytes, estimated output 1,902,641
     bytes; run after Docker Compose service reference dependency extraction.

@@ -5540,6 +5540,65 @@ export function run(): string {
 	}
 }
 
+func TestBuildProviderSnapshotEmitsDestructuredAssignedReturnDataFlow(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "flow.ts", `function helper(): [string, string] {
+  return ["ok", "ignored"]
+}
+
+function side(): [string, string] {
+  return ["side", "ignored"]
+}
+
+export function run(): string {
+  const [value, _ignored] = helper()
+  const [other] = side()
+  return value
+}
+`)
+	writeFile(t, repo, "flow.py", `def load_pair():
+    return "ok", "ignored"
+
+def ignored_pair():
+    return "ignored", "ignored"
+
+def run_py():
+    value, _ = load_pair()
+    other, _ = ignored_pair()
+    return value
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range [][2]string{
+		{"helper", "run"},
+		{"load_pair", "run_py"},
+	} {
+		var found RelationRecord
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == want[0] && lastSegment(relation.ToID) == want[1] && len(relation.Evidence) == 1 && relation.Evidence[0].Kind == "destructured_assigned_return_flow" {
+				found = relation
+				break
+			}
+		}
+		if found.FromID == "" {
+			t.Fatalf("missing destructured assigned return DATA_FLOWS %s->%s: %#v", want[0], want[1], snapshot.Relations)
+		}
+		if found.Reason != "callee return value destructured into local and returned by caller" || found.Confidence > 0.75 {
+			t.Fatalf("unexpected destructured flow metadata: %#v", found)
+		}
+	}
+	for _, stale := range []string{"side", "ignored_pair"} {
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == stale {
+				t.Fatalf("non-returned destructured assignment produced DATA_FLOWS: %#v", relation)
+			}
+		}
+	}
+}
+
 func TestBuildProviderSnapshotEmitsBranchAssignedReturnDataFlow(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "flow.ts", `function primary(): string {
