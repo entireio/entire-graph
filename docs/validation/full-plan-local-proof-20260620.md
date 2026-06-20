@@ -93,6 +93,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 - FastAPI/Starlette-style `include_router(prefix=...)` mounts compose with
   same-file or locally imported `APIRouter` decorators and bridge matching
   Python HTTP client calls to the handler symbol.
+- Tornado-style route tuples in `tornado.web.Application([...])` resolve static
+  string or regex route patterns to same-file local handler classes, normalize
+  named captures such as `(?P<id>...)` to `{id}`, and bridge matching Python
+  HTTP client calls to the handler class.
 - Static constant-prefix route expressions such as `apiPrefix + "/health"`
   compose to one route endpoint and avoid emitting the suffix literal as a
   standalone route.
@@ -359,6 +363,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781972991.json`: Go/gin, syntax-only, 28,618 LOC,
     162,362 LOC/s, max RSS 27,344,896 bytes, estimated output 1,902,628
     bytes; run after Flask Blueprint route extraction.
+  - `bench/results/result-1781974683.json`: Go/gin, syntax-only, 28,618 LOC,
+    150,155 LOC/s, max RSS 27,394,048 bytes, estimated output 1,902,631
+    bytes; run after Python Tornado route tuple extraction.
   - `bench/results/result-1781973208.json`: Go/gin, syntax-only, 28,618 LOC,
     151,226 LOC/s, max RSS 27,066,368 bytes, estimated output 1,902,628
     bytes; run after Go router group-prefix extraction.

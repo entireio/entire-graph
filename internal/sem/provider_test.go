@@ -3360,6 +3360,48 @@ def ping():
 	}
 }
 
+func TestPythonTornadoRouteTupleBridgesToHTTPClient(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "app.py", `import requests
+import tornado.web
+
+class UserHandler(tornado.web.RequestHandler):
+    def get(self, user_id):
+        self.write({"id": user_id})
+
+class HealthHandler(tornado.web.RequestHandler):
+    def get(self):
+        self.write("ok")
+
+def make_app():
+    return tornado.web.Application([
+        (r"/users/(?P<user_id>[^/]+)", UserHandler),
+        ("/health", HealthHandler),
+    ])
+
+def ping():
+    requests.get("/users/{user_id}")
+    return requests.get("/health")
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "UserHandler", "/users/{user_id}") {
+		t.Fatalf("missing Tornado handler route: %#v", snapshot.Relations)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "HealthHandler", "/health") {
+		t.Fatalf("missing Tornado health route: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "UserHandler") {
+		t.Fatalf("missing route bridge CALLS ping->UserHandler: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "HealthHandler") {
+		t.Fatalf("missing route bridge CALLS ping->HealthHandler: %#v", snapshot.Relations)
+	}
+}
+
 func TestDjangoURLPatternsResolveHandlersAndBridgeHTTPClients(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "urls.py", `import requests

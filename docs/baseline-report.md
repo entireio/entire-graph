@@ -55,8 +55,9 @@ All seven Priority-1 languages (per WP9) have committed baselines. Boundary,
 service, and IaC fixtures now cover Terraform/HCL, Dockerfile, Docker Compose,
 Kubernetes YAML, Kustomize, GitHub Actions, protobuf/gRPC, GraphQL, tRPC, and
 Python Flask/FastAPI-style decorator routes, FastAPI/Starlette-style
-`include_router(prefix=...)` composition, same-block Express router-prefix
-composition, same-name imported Express router mounts, and C# ASP.NET
+`include_router(prefix=...)` composition, Tornado route tuples to handler
+classes, same-block Express router-prefix composition, same-name imported
+Express router mounts, and C# ASP.NET
 controller route attributes, plus PHP Laravel controller route declarations and
 prefix groups, Symfony/PHP route attributes, Ruby on Rails static route declarations and
 `resources` expansion for default REST actions, `only:`, and `except:`, plus
@@ -136,7 +137,8 @@ False positives:
   now recorded only when its line carries routing context (an HTTP-verb/route
   method call, mapping decorator, Python Flask/FastAPI-style route decorator,
   FastAPI/Starlette-style `include_router(prefix=...)` mount, Java Spring-style
-  direct mapping annotation, Django `path(...)`/simple `re_path(...)`
+  direct mapping annotation, Python Tornado route tuple,
+  Django `path(...)`/simple `re_path(...)`
   registration or URLConf `include(...)` mount, Go `net/http`
   `HandleFunc`/`HandlerFunc` registration, or
   Go chi/gin-style router method registration, C# ASP.NET route/HTTP-verb
