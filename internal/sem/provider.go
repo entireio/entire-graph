@@ -2174,7 +2174,9 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 	calls := receiverCalls(block)
 	chainedCalls := chainedConstructorCalls(block)
 	returnedCalls := returnedReceiverCalls(block)
-	if len(calls) == 0 && len(chainedCalls) == 0 && len(returnedCalls) == 0 {
+	chainedReturnCalls := chainedConstructorReturnCalls(block)
+	returnedChainCalls := returnedReceiverChainCalls(block)
+	if len(calls) == 0 && len(chainedCalls) == 0 && len(returnedCalls) == 0 && len(chainedReturnCalls) == 0 && len(returnedChainCalls) == 0 {
 		return nil
 	}
 	varTypes := parameterVarTypes(from.Signature)
@@ -2321,7 +2323,94 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			break
 		}
 	}
+	for _, call := range chainedReturnCalls {
+		for _, typeName := range methodReturnTypes(call.TypeName, call.FirstMethod, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+			sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+			if !ok {
+				continue
+			}
+			method, ok := methodsByContainer[sym.ID][call.Method]
+			if !ok || method.ID == from.ID {
+				continue
+			}
+			scope := "file"
+			if method.FilePath != from.FilePath {
+				scope = "module"
+			}
+			relations = append(relations, RelationRecord{
+				RecordType:    "relation",
+				FromID:        from.ID,
+				ToID:          method.ID,
+				Type:          "CALLS",
+				Confidence:    0.74,
+				Reason:        "method call resolved via chained constructor-return type",
+				RelationScope: scope,
+				Resolution:    "type_inferred",
+				TargetKind:    "symbol",
+				Evidence: []Evidence{{
+					Kind:      "call_site",
+					FilePath:  from.FilePath,
+					StartLine: from.StartLine,
+					EndLine:   from.EndLine,
+					Detail:    call.Detail,
+				}},
+				WarningCodes: []string{},
+			})
+			break
+		}
+	}
+	for _, call := range returnedChainCalls {
+		for _, factoryTypeName := range returnTypesBySymbolNameAndFile[call.Factory][from.FilePath] {
+			for _, typeName := range methodReturnTypes(factoryTypeName, call.FirstMethod, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+				sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+				if !ok {
+					continue
+				}
+				method, ok := methodsByContainer[sym.ID][call.Method]
+				if !ok || method.ID == from.ID {
+					continue
+				}
+				scope := "file"
+				if method.FilePath != from.FilePath {
+					scope = "module"
+				}
+				relations = append(relations, RelationRecord{
+					RecordType:    "relation",
+					FromID:        from.ID,
+					ToID:          method.ID,
+					Type:          "CALLS",
+					Confidence:    0.73,
+					Reason:        "method call resolved via chained returned receiver type",
+					RelationScope: scope,
+					Resolution:    "type_inferred",
+					TargetKind:    "symbol",
+					Evidence: []Evidence{{
+						Kind:      "call_site",
+						FilePath:  from.FilePath,
+						StartLine: from.StartLine,
+						EndLine:   from.EndLine,
+						Detail:    call.Detail,
+					}},
+					WarningCodes: []string{},
+				})
+				break
+			}
+			break
+		}
+	}
 	return relations
+}
+
+func methodReturnTypes(typeName, methodName string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) []string {
+	typeSymbol, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+	if !ok {
+		return nil
+	}
+	method, ok := methodsByContainer[typeSymbol.ID][methodName]
+	if !ok {
+		return nil
+	}
+	return returnTypesBySymbolNameAndFile[method.Name][method.FilePath]
 }
 
 func importedExternalCallRelationsForName(from SymbolRecord, name string, modules []string) []RelationRecord {

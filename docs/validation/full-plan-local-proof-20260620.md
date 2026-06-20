@@ -189,6 +189,10 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
 - Same-file factory-returned receiver calls such as `makeWidget().label()` emit
   `CALLS` edges to local methods with `resolution: type_inferred` when the
   factory has an explicit local return type.
+- Explicit two-hop returned receiver calls such as
+  `makeContainer().widget().label()` and constructor-return chains such as
+  `new Container().widget().label()` emit `CALLS` edges to the final local
+  method when each intermediate method has an explicit local return type.
 - Same-file assigned factory receivers such as
   `const widget = makeWidget(); widget.label()` emit `CALLS` edges to local
   methods with `resolution: type_inferred` when the factory has an explicit
@@ -325,6 +329,9 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
     failures, `completeness_level: degraded`.
   - `bench/results/result-1781965760.json`: Go/gin, syntax-only, 28,618 LOC,
     136,147 LOC/s, max RSS 27,410,432 bytes, estimated output 1,902,624
+    bytes.
+  - `bench/results/result-1781966207.json`: Go/gin, syntax-only, 28,618 LOC,
+    130,307 LOC/s, max RSS 29,245,440 bytes, estimated output 1,902,626
     bytes.
 
 ## Remaining Honesty Notes

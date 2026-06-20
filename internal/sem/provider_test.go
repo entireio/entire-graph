@@ -3070,6 +3070,12 @@ def use(other):
   }
 }
 
+class Container {
+  widget(): Widget {
+    return new Widget()
+  }
+}
+
 export function makeLabel(): string {
   return new Widget().label()
 }
@@ -3078,8 +3084,20 @@ export function makeWidget(): Widget {
   return new Widget()
 }
 
+export function makeContainer(): Container {
+  return new Container()
+}
+
 export function labelFromFactory(): string {
   return makeWidget().label()
+}
+
+export function labelFromConstructorChain(): string {
+  return new Container().widget().label()
+}
+
+export function labelFromFactoryChain(): string {
+  return makeContainer().widget().label()
 }
 
 export function labelFromAssignedFactory(): string {
@@ -3119,6 +3137,14 @@ export function labelFor(widget: Widget): string {
 	// makeWidget(): Widget; makeWidget().label() -> resolves through the factory return type.
 	if r, ok := inferred["labelFromFactory->Widget.label"]; !ok || r.Confidence != 0.78 {
 		t.Fatalf("returned-receiver call not resolved (0.78): %#v", inferred)
+	}
+	// new Container().widget().label() -> resolves through the explicitly returned Widget.
+	if r, ok := inferred["labelFromConstructorChain->Widget.label"]; !ok || r.Confidence != 0.74 {
+		t.Fatalf("constructor-return-chain call not resolved (0.74): %#v", inferred)
+	}
+	// makeContainer(): Container; Container.widget(): Widget; ...label() -> resolves two explicit return hops.
+	if r, ok := inferred["labelFromFactoryChain->Widget.label"]; !ok || r.Confidence != 0.73 {
+		t.Fatalf("returned-receiver-chain call not resolved (0.73): %#v", inferred)
 	}
 	// const widget = makeWidget(); widget.label() -> resolves through the assigned factory return type.
 	if r, ok := inferred["labelFromAssignedFactory->Widget.label"]; !ok || r.Confidence != 0.77 {
