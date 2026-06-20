@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
@@ -78,8 +79,26 @@ func main() {
 		minLOCPerSec = flag.Float64("min-loc-per-sec", 0, "fail if successful aggregate LOC/s is below this floor")
 		maxRSSBytes  = flag.Uint64("max-rss-bytes", 0, "fail if process peak RSS bytes exceeds this ceiling")
 		exactOutput  = flag.Bool("exact-output-bytes", false, "marshal every streamed record for exact NDJSON output bytes; slower on large repos")
+		cpuProfile   = flag.String("cpuprofile", "", "write a Go CPU profile for the benchmark process")
 	)
 	flag.Parse()
+
+	if *cpuProfile != "" {
+		f, err := os.Create(*cpuProfile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "sem-bench:", err)
+			os.Exit(1)
+		}
+		if err := pprof.StartCPUProfile(f); err != nil {
+			_ = f.Close()
+			fmt.Fprintln(os.Stderr, "sem-bench:", err)
+			os.Exit(1)
+		}
+		defer func() {
+			pprof.StopCPUProfile()
+			_ = f.Close()
+		}()
+	}
 
 	if err := run(*manifestPath, *cacheDir, *outDir, *lockPath, *languages, *profile, *limit, *jobs, *depth, *skipClone, *updateLock, *providerVer, *progress, *minLOCPerSec, *maxRSSBytes, *exactOutput); err != nil {
 		fmt.Fprintln(os.Stderr, "sem-bench:", err)

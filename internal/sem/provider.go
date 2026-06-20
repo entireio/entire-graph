@@ -1762,6 +1762,10 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		fileNeedsHTTPScan := spec.emits("HTTP_CALLS") && httpScanLanguage(file.Language)
 		fileNeedsServiceScan := needsServiceRelations && serviceScanLanguage(file.Language)
 		fileNeedsChannelScan := channelScanLanguage(file.Language)
+		var fileStringConstants map[string]string
+		if fileNeedsRouteScan || fileNeedsHTTPScan {
+			fileStringConstants = staticStringConstants(content)
+		}
 		var routeSymbolsByID map[string]SymbolRecord
 		if fileNeedsRouteScan {
 			routeSymbolsByID = map[string]SymbolRecord{}
@@ -1908,7 +1912,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 			}
 			if fileNeedsRouteScan {
-				for _, route := range routeLiteralsForSymbol(file.Path, content, block, from, routeSymbolsByID) {
+				for _, route := range routeLiteralsForSymbol(file.Path, content, block, from, routeSymbolsByID, fileStringConstants) {
 					if _, ok := handledRoutes[route]; ok {
 						continue
 					}
@@ -1936,7 +1940,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 			}
 			if fileNeedsHTTPScan && callableSymbol {
-				for _, call := range httpCallsWithConstants(block, staticStringConstants(content)) {
+				for _, call := range httpCallsWithConstants(block, fileStringConstants) {
 					confidence := 0.7
 					if call.Absolute {
 						confidence = 0.6 // host ignored; cross-service path match is weaker
@@ -8032,7 +8036,7 @@ func routeLiteralsWithConstants(content string, constants map[string]string) []s
 	return sortedKeys(seen)
 }
 
-func routeLiteralsForSymbol(path, content, block string, symbol SymbolRecord, symbolsByID map[string]SymbolRecord) []string {
+func routeLiteralsForSymbol(path, content, block string, symbol SymbolRecord, symbolsByID map[string]SymbolRecord, constants map[string]string) []string {
 	seen := map[string]struct{}{}
 	ext := filepath.Ext(path)
 	if strings.EqualFold(ext, ".cs") {
@@ -8079,11 +8083,11 @@ func routeLiteralsForSymbol(path, content, block string, symbol SymbolRecord, sy
 			return sortedKeys(seen)
 		}
 	}
-	for _, route := range routeLiteralsWithConstants(block, staticStringConstants(content)) {
+	for _, route := range routeLiteralsWithConstants(block, constants) {
 		seen[route] = struct{}{}
 	}
 	if jsLikeExtension(ext) {
-		for _, route := range jsRouterComposedRouteLiterals(block, staticStringConstants(content)) {
+		for _, route := range jsRouterComposedRouteLiterals(block, constants) {
 			seen[route] = struct{}{}
 		}
 	}
