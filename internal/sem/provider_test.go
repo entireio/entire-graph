@@ -608,6 +608,31 @@ spec:
             - secretRef:
                 name: api-env
 `)
+	writeFile(t, repo, "k8s/configmap.yaml", `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+`)
+	writeFile(t, repo, "k8s/secret.yaml", `apiVersion: v1
+kind: Secret
+metadata:
+  name: api-secret
+`)
+	writeFile(t, repo, "k8s/env-secret.yaml", `apiVersion: v1
+kind: Secret
+metadata:
+  name: api-env
+`)
+	writeFile(t, repo, "k8s/service-account.yaml", `apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api-runner
+`)
+	writeFile(t, repo, "k8s/pvc.yaml", `apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: api-cache
+`)
 
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
 	if err != nil {
@@ -632,6 +657,17 @@ spec:
 	} {
 		if !hasRelationTo(snapshot.Relations, "CONFIGURES", target) {
 			t.Fatalf("missing Kubernetes config fact to %s in %#v", target, snapshot.Relations)
+		}
+	}
+	for _, target := range []string{
+		"ConfigMap.api-config",
+		"Secret.api-secret",
+		"Secret.api-env",
+		"ServiceAccount.api-runner",
+		"PersistentVolumeClaim.api-cache",
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "Deployment.api", target) {
+			t.Fatalf("missing exact Kubernetes resource dependency Deployment.api -> %s in %#v", target, snapshot.Relations)
 		}
 	}
 }

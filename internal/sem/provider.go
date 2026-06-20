@@ -1958,6 +1958,7 @@ func resourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readCon
 	relations = append(relations, hclResourceDependsOnRelations(recordsByFile, readContent)...)
 	relations = append(relations, dockerfileResourceDependsOnRelations(recordsByFile, readContent)...)
 	relations = append(relations, kubernetesResourceDependsOnRelations(recordsByFile, readContent)...)
+	relations = append(relations, kubernetesNamedResourceReferenceRelations(recordsByFile, readContent)...)
 	relations = append(relations, kubernetesSelectorResourceRelations(recordsByFile, readContent)...)
 	relations = append(relations, kustomizeResourceDependsOnRelations(recordsByFile, readContent)...)
 	relations = append(relations, composeResourceDependsOnRelations(recordsByFile, readContent)...)
@@ -2167,6 +2168,74 @@ func kubernetesResourceReferences(content string) []resourceReference {
 		add("persistentvolumeclaim", match[1], "kubernetes_pvc_claim", 0.78)
 	}
 	return dedupeResourceReferences(refs)
+}
+
+func kubernetesNamedResourceReferenceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+	resources := map[string]SymbolRecord{}
+	var sources []SymbolRecord
+	for _, path := range sortedKeysOf(recordsByFile) {
+		content, ok := readContent(path)
+		if !ok || !(isKubernetesPath(path) || looksLikeKubernetesManifest(content)) {
+			continue
+		}
+		for _, symbol := range recordsByFile[path] {
+			if symbol.Language != "YAML" || symbol.Kind != "resource" {
+				continue
+			}
+			kind, name, ok := strings.Cut(symbol.QualifiedName, ".")
+			if !ok {
+				continue
+			}
+			resources[kubernetesResourceKey(kind, name)] = symbol
+			sources = append(sources, symbol)
+		}
+	}
+	if len(resources) == 0 || len(sources) == 0 {
+		return nil
+	}
+	var relations []RelationRecord
+	emitted := map[string]bool{}
+	for _, source := range sources {
+		content, ok := readContent(source.FilePath)
+		if !ok {
+			continue
+		}
+		for _, dep := range kubernetesResourceReferences(content) {
+			target, ok := resources[kubernetesResourceKey(dep.Kind, dep.Name)]
+			if !ok || target.ID == source.ID {
+				continue
+			}
+			key := source.ID + "\x00" + target.ID + "\x00" + dep.EvidenceKind
+			if emitted[key] {
+				continue
+			}
+			emitted[key] = true
+			relations = append(relations, RelationRecord{
+				RecordType:    "relation",
+				FromID:        source.ID,
+				ToID:          target.ID,
+				Type:          "RESOURCE_DEPENDS_ON",
+				Confidence:    minFloat(dep.Confidence+0.08, 0.9),
+				Reason:        "Kubernetes resource reference resolved to local resource manifest",
+				RelationScope: "workspace",
+				Resolution:    "exact",
+				TargetKind:    "symbol",
+				Evidence: []Evidence{{
+					Kind:      dep.EvidenceKind,
+					FilePath:  source.FilePath,
+					StartLine: source.StartLine,
+					EndLine:   source.EndLine,
+					Detail:    dep.Kind + "/" + dep.Name,
+				}},
+				WarningCodes: []string{},
+			})
+		}
+	}
+	return relations
+}
+
+func kubernetesResourceKey(kind, name string) string {
+	return strings.ToLower(strings.TrimSpace(kind)) + "\x00" + strings.Trim(strings.TrimSpace(name), `"'`)
 }
 
 type kubernetesResourceInfo struct {

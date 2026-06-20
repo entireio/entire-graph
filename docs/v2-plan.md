@@ -292,7 +292,9 @@ Delivered:
   dependencies.
 - Kubernetes-looking YAML emits config sections plus conservative external
   resource dependencies for common `ConfigMap`, `Secret`, service account, and
-  persistent-volume-claim references.
+  persistent-volume-claim references; when the referenced resource manifests are
+  present in the same provider snapshot, those named references also resolve to
+  exact local `RESOURCE_DEPENDS_ON` symbol edges.
 - Kubernetes resource symbols emit common container image, environment-variable,
   and port declarations as `CONFIGURES` facts, and Services can depend on
   matching workload resources by selector labels.
@@ -307,8 +309,11 @@ Delivered:
 
 Open:
 
-- Cross-file Kubernetes resource resolution remains endpoint-based unless a
-  richer resource symbol exists in the same provider snapshot.
+- Cross-file Kubernetes resource resolution is implemented for named
+  ConfigMap/Secret/service-account/PVC references and Service selector matches
+  when the target resource symbol exists in the same provider snapshot.
+  Remaining Kubernetes resource gaps include RBAC bindings, owner references,
+  Ingress backends, HPA targets, and multi-resource YAML symbolization.
 - Broad framework-specific IaC/service modeling remains partial.
 
 Acceptance:

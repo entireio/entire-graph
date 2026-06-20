@@ -81,7 +81,9 @@ Confidence bands follow the v2-plan schema section (`0.90-1.00 exact`,
   (0.85), `EMITS`/`LISTENS_ON` (0.6, `WEAK_PATTERN`).
 - Other: `SIMILAR_TO` (MinHash estimate), `TESTS` (0.8),
   `RESOURCE_DEPENDS_ON` (0.78-0.9 across HCL, Dockerfile, Docker Compose,
-  Kubernetes, and Kustomize dependency patterns).
+  Kubernetes, and Kustomize dependency patterns; Kubernetes named
+  ConfigMap/Secret/service-account/PVC references resolve to local resource
+  symbols when those manifests are present).
 
 `capabilities --json` reports per-language relation support
 (`relation_support_by_language`) and pattern-driven relations separately in
