@@ -7761,6 +7761,22 @@ func jsRouterMounts(block string, constants map[string]string) []jsRouterMount {
 			mounts = append(mounts, jsRouterMount{Receiver: match[1], Prefix: prefix, Target: match[3]})
 		}
 	}
+	koaMountRe := regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\.use\s*\(\s*mount\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\.routes\s*\(\s*\)\s*\)\s*\)`)
+	for _, match := range koaMountRe.FindAllStringSubmatch(block, -1) {
+		if len(match) != 4 {
+			continue
+		}
+		prefix, ok := staticRouteExpressionValue(match[2], constants)
+		if ok {
+			mounts = append(mounts, jsRouterMount{Receiver: match[1], Prefix: prefix, Target: match[3]})
+		}
+	}
+	koaUseRe := regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\.use\s*\(\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\.routes\s*\(\s*\)\s*\)`)
+	for _, match := range koaUseRe.FindAllStringSubmatch(block, -1) {
+		if len(match) == 3 {
+			mounts = append(mounts, jsRouterMount{Receiver: match[1], Prefix: "/", Target: match[2]})
+		}
+	}
 	return mounts
 }
 
@@ -8269,6 +8285,48 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 	for _, file := range files {
 		for _, mount := range mountsByFile[file.Path] {
 			targetLocal, targetMember := splitJavaScriptMember(mount.Target)
+			localReceiver := targetLocal
+			if targetMember != "" {
+				localReceiver = targetMember
+			}
+			for _, route := range routesByFile[file.Path] {
+				if route.Receiver != localReceiver || route.Handler == "" {
+					continue
+				}
+				handler, ok := symbolsByFileAndName[file.Path][route.Handler]
+				if !ok {
+					continue
+				}
+				fullRoute := joinRoutePaths(mount.Prefix, route.Route)
+				key := handler.ID + "\x00" + fullRoute
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				relations = append(relations, expressRouteRelation{
+					Route:   fullRoute,
+					Handler: handler,
+					Relation: RelationRecord{
+						RecordType:    "relation",
+						FromID:        handler.ID,
+						ToID:          externalID("route", fullRoute),
+						Type:          "HANDLES_ROUTE",
+						Confidence:    0.82,
+						Reason:        "JavaScript router route resolved through local router mount",
+						RelationScope: "external",
+						Resolution:    "exact",
+						TargetKind:    "route",
+						Evidence: []Evidence{{
+							Kind:      "js_router_mount",
+							FilePath:  handler.FilePath,
+							StartLine: handler.StartLine,
+							EndLine:   handler.EndLine,
+							Detail:    mount.Prefix + " + " + route.Receiver + "." + route.Route,
+						}},
+						WarningCodes: []string{},
+					},
+				})
+			}
 			for _, binding := range importBindingsByFile[file.Path][targetLocal] {
 				routeFile, ok := resolveLocalImport(file.Path, binding.Module, knownFiles)
 				if !ok || routeFile == file.Path {

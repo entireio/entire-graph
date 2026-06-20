@@ -396,6 +396,9 @@ Delivered:
 - Docker Compose manifests emit service resources, exact `depends_on`
   `RESOURCE_DEPENDS_ON` edges between services, and common image/env/port
   `CONFIGURES` facts.
+- Koa/@koa-router `router.routes()` mounts, including static `koa-mount`
+  prefixes, compose with static router registrations and bridge exact matching
+  HTTP clients to local handlers.
 - Terraform/HCL blocks emit resources, modules, variables, outputs, config
   targets, and exact intra-module `RESOURCE_DEPENDS_ON` edges for block
   references.

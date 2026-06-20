@@ -270,6 +270,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   fields in `type` and `extend type` blocks. These complement existing
   GraphQL operation-literal detection and remain heuristic boundary facts, not
   full schema validation, type checking, or resolver type analysis.
+- Koa/@koa-router `router.routes()` mounts, including static `koa-mount`
+  prefixes, compose with static router registrations and bridge exact matching
+  HTTP clients to local handlers.
 - Retained benchmark reports:
   - `bench/results/result-1781937160.json`: Go/gin, syntax-only, 28,618 LOC,
     152,621 LOC/s.
@@ -330,6 +333,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781972617.json`: Go/gin, syntax-only, 28,618 LOC,
     148,588 LOC/s, max RSS 26,886,144 bytes, estimated output 1,902,639
     bytes; run after RuntimeClass and PriorityClass reference extraction.
+  - `bench/results/result-1781972763.json`: Go/gin, syntax-only, 28,618 LOC,
+    152,329 LOC/s, max RSS 27,803,648 bytes, estimated output 1,902,629
+    bytes; run after Koa router mount route extraction.
   - `bench/results/result-1781944479.json`: Go/gin, syntax-only, 28,618 LOC,
     154,533 LOC/s, max RSS 27,115,520 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781944927.json`: Go/gin, syntax-only, 28,618 LOC,
