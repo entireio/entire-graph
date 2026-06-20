@@ -1395,6 +1395,39 @@ export async function ping(): Promise<unknown> {
 	}
 }
 
+func TestExpressRouterPrefixComposesAndBridgesHTTPClient(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "api.ts", `const usersRouter = Router()
+
+export function register(app: any): void {
+  usersRouter.get("/:id", showUser)
+  app.use("/api/users", usersRouter)
+}
+
+export function showUser(): string {
+  return "ok"
+}
+
+export async function ping(): Promise<unknown> {
+  return fetch("/api/users/:id")
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "register", "/api/users/:id") {
+		t.Fatalf("missing composed Express router route: %#v", snapshot.Relations)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HTTP_CALLS", "ping", "/api/users/:id") {
+		t.Fatalf("missing matching HTTP_CALLS relation: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "register") {
+		t.Fatalf("missing route bridge CALLS ping->register: %#v", snapshot.Relations)
+	}
+}
+
 func TestPythonRouteDecoratorsBridgeToHTTPClients(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "app.py", `from fastapi import FastAPI
@@ -1627,6 +1660,15 @@ func lastSegment(id string) string {
 func hasRelationByLastSegment(relations []RelationRecord, relationType, from, to string) bool {
 	for _, relation := range relations {
 		if relation.Type == relationType && lastSegment(relation.FromID) == from && lastSegment(relation.ToID) == to {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRelationToExternalRoute(relations []RelationRecord, relationType, from, route string) bool {
+	for _, relation := range relations {
+		if relation.Type == relationType && lastSegment(relation.FromID) == from && relation.ToID == externalID("route", route) {
 			return true
 		}
 	}

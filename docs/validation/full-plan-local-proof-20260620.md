@@ -45,6 +45,10 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
 - Java Spring-style route annotations compose class-level prefixes with
   method-level routes, emit `HANDLES_ROUTE`, and bridge matching
   `RestTemplate`/HTTP client calls to handlers as direct `CALLS`.
+- Express-style JS/TS router mounts compose same-block
+  `app.use("/prefix", router)` prefixes with static `router.get/post/...`
+  routes, emit `HANDLES_ROUTE`, and bridge exact matching `fetch`/Axios client
+  calls as direct `CALLS`.
 - Kubernetes resource extraction and Service-selector dependency tests pass
   (`Service` -> matching workload resource by selector labels).
 - Kubernetes resource config tests pass for common container image,

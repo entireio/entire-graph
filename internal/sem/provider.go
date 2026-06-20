@@ -4843,12 +4843,86 @@ func routeLiteralsForSymbol(path, content, block string, symbol SymbolRecord, sy
 	for _, route := range routeLiterals(block) {
 		seen[route] = struct{}{}
 	}
+	if jsLikeExtension(filepath.Ext(path)) {
+		for _, route := range jsRouterComposedRouteLiterals(block) {
+			seen[route] = struct{}{}
+		}
+	}
 	if strings.EqualFold(filepath.Ext(path), ".py") {
 		for _, route := range pythonDecoratorRouteLiterals(content, symbol) {
 			seen[route] = struct{}{}
 		}
 	}
 	return sortedKeys(seen)
+}
+
+type jsRouterMount struct {
+	Receiver string
+	Prefix   string
+	Target   string
+}
+
+type jsRouterRoute struct {
+	Receiver string
+	Route    string
+}
+
+func jsRouterComposedRouteLiterals(block string) []string {
+	mounts := jsRouterMounts(block)
+	routes := jsRouterRoutes(block)
+	if len(mounts) == 0 || len(routes) == 0 {
+		return nil
+	}
+	prefixes := map[string]string{}
+	for i := 0; i < len(mounts)+1; i++ {
+		changed := false
+		for _, mount := range mounts {
+			base := ""
+			if receiverPrefix, ok := prefixes[mount.Receiver]; ok {
+				base = receiverPrefix
+			}
+			prefix := joinRoutePaths(base, mount.Prefix)
+			if existing, ok := prefixes[mount.Target]; ok && len(existing) >= len(prefix) {
+				continue
+			}
+			prefixes[mount.Target] = prefix
+			changed = true
+		}
+		if !changed {
+			break
+		}
+	}
+	seen := map[string]struct{}{}
+	for _, route := range routes {
+		prefix, ok := prefixes[route.Receiver]
+		if !ok {
+			continue
+		}
+		seen[joinRoutePaths(prefix, route.Route)] = struct{}{}
+	}
+	return sortedKeys(seen)
+}
+
+func jsRouterMounts(block string) []jsRouterMount {
+	re := regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\.use\s*\(\s*["']([^"']+)["']\s*,\s*([A-Za-z_$][\w$]*)`)
+	var mounts []jsRouterMount
+	for _, match := range re.FindAllStringSubmatch(block, -1) {
+		if len(match) == 4 && strings.HasPrefix(match[2], "/") {
+			mounts = append(mounts, jsRouterMount{Receiver: match[1], Prefix: match[2], Target: match[3]})
+		}
+	}
+	return mounts
+}
+
+func jsRouterRoutes(block string) []jsRouterRoute {
+	re := regexp.MustCompile(`(?i)\b([A-Za-z_$][\w$]*)\.(get|post|put|patch|delete|head|options)\s*\(\s*["']([^"']+)["']`)
+	var routes []jsRouterRoute
+	for _, match := range re.FindAllStringSubmatch(block, -1) {
+		if len(match) == 4 && strings.HasPrefix(match[3], "/") {
+			routes = append(routes, jsRouterRoute{Receiver: match[1], Route: match[3]})
+		}
+	}
+	return routes
 }
 
 func pythonDecoratorRouteLiterals(content string, symbol SymbolRecord) []string {

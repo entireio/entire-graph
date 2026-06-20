@@ -54,8 +54,9 @@ review.
 All seven Priority-1 languages (per WP9) have committed baselines. Boundary,
 service, and IaC fixtures now cover Terraform/HCL, Dockerfile, Docker Compose,
 Kubernetes YAML, Kustomize, GitHub Actions, protobuf/gRPC, GraphQL, tRPC, and Python
-Flask/FastAPI-style decorator routes; remaining work is deeper framework
-coverage and larger-corpus proof.
+Flask/FastAPI-style decorator routes plus same-block Express router-prefix
+composition; remaining work is deeper framework coverage and larger-corpus
+proof.
 
 ## Relation Coverage Today
 
@@ -110,10 +111,11 @@ False positives:
   path-like string literal in any symbol (gin reported 1039 routes). A route is
   now recorded only when its line carries routing context (an HTTP-verb/route
   method call, mapping decorator, Python Flask/FastAPI-style route decorator,
-  or Java Spring-style direct mapping annotation), cutting gin to 206 and
-  dropping path returns and file paths. Matching Python `requests`/`httpx` and
-  Java `RestTemplate`/HTTP client calls can bridge to local decorated handlers
-  through the shared route endpoint. (WP6.)
+  Java Spring-style direct mapping annotation, or same-block Express router
+  mount plus route registration), cutting gin to 206 and dropping path returns
+  and file paths. Matching Python `requests`/`httpx`, Java `RestTemplate`/HTTP
+  client calls, and JS/TS `fetch`/Axios calls can bridge to local decorated or
+  registered handlers through the shared route endpoint. (WP6.)
 - **Global-unique name match (Go `go-basic`).** `LoginHandler CALLS CheckToken`
   is emitted at `0.68` purely because the name is unique repo-wide, not because
   the call was resolved through imports/scope. Correct here, but fragile.
