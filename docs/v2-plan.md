@@ -375,9 +375,10 @@ Delivered:
   present in the same provider snapshot, those named references also resolve to
   exact local `RESOURCE_DEPENDS_ON` symbol edges. The same exact local
   resolution covers RBAC role/subject references, owner references, Ingress
-  Service backends, Gateway API route backend refs and parent Gateway refs,
-  HPA scale targets, projected ConfigMap/Secret volume refs, ConfigMap/Secret
-  key refs, and image pull secrets.
+  Service backends, Gateway API route backend refs, parent Gateway refs, and
+  Gateway listener certificateRefs, HPA scale targets, projected
+  ConfigMap/Secret volume refs, ConfigMap/Secret key refs, and image pull
+  secrets.
 - Istio VirtualService route destinations and gateway refs, plus
   DestinationRule hosts, resolve to exact local Service/Gateway resource
   symbols when the referenced manifests are present.
@@ -402,7 +403,8 @@ Open:
 
 - Cross-file Kubernetes resource resolution is implemented for named
   ConfigMap/Secret/service-account/PVC/RBAC/owner/Ingress/HPA/Gateway API
-  HTTPRoute backend and parent Gateway references, Service selector matches,
+  HTTPRoute backend, parent Gateway, and Gateway listener certificate
+  references, Service selector matches,
   PodDisruptionBudget selector and matchExpression matches, NetworkPolicy podSelector and
   matchExpression matches, Prometheus Operator ServiceMonitor selector and
   matchExpression matches, and Prometheus Operator PodMonitor selector and

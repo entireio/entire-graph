@@ -2774,6 +2774,11 @@ func kubernetesResourceReferences(content string) []resourceReference {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 		}
 	}
+	if kubernetesManifestHasAnyKind(content, "Gateway") {
+		for _, ref := range kubernetesNamedRefBlockReferences(content, "certificateRefs", "kubernetes_gateway_certificate_ref", 0.84, kubernetesGatewayCertificateReferenceKind) {
+			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+		}
+	}
 	if kubernetesManifestHasCrossplaneReferences(content) {
 		for _, ref := range kubernetesNamedRefBlockReferences(content, "providerConfigRef", "kubernetes_crossplane_provider_config_ref", 0.84, kubernetesDefaultReferenceKind("providerconfig")) {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
@@ -2920,6 +2925,14 @@ func kubernetesWorkflowTemplateReferenceKind(fields map[string]string) string {
 		return "clusterworkflowtemplate"
 	}
 	return "workflowtemplate"
+}
+
+func kubernetesGatewayCertificateReferenceKind(fields map[string]string) string {
+	kind := strings.Trim(strings.TrimSpace(fields["kind"]), `"'`)
+	if kind == "" || strings.EqualFold(kind, "Secret") {
+		return "secret"
+	}
+	return ""
 }
 
 func kubernetesRolloutsAnalysisTemplateReferences(content string) []resourceReference {

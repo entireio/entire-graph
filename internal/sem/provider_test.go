@@ -1257,6 +1257,26 @@ metadata:
 kind: Gateway
 metadata:
   name: public
+spec:
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      tls:
+        certificateRefs:
+          - name: public-cert
+          - name: ignored-cert-config
+            kind: ConfigMap
+`)
+	writeFile(t, repo, "k8s/gateway-cert.yaml", `apiVersion: v1
+kind: Secret
+metadata:
+  name: public-cert
+`)
+	writeFile(t, repo, "k8s/ignored-cert-config.yaml", `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ignored-cert-config
 `)
 	writeFile(t, repo, "k8s/reference-grant.yaml", `apiVersion: gateway.networking.k8s.io/v1
 kind: ReferenceGrant
@@ -1400,6 +1420,7 @@ metadata:
 		{"GRPCRoute.grpc-api", "Gateway.public"},
 		{"TLSRoute.secure-api", "Service.secure-api"},
 		{"TLSRoute.secure-api", "Gateway.public"},
+		{"Gateway.public", "Secret.public-cert"},
 		{"RoleBinding.api-readers", "Role.api-reader"},
 		{"RoleBinding.api-readers", "ServiceAccount.api-runner"},
 		{"ClusterRoleBinding.api-admins", "ClusterRole.api-admin"},
@@ -1415,6 +1436,9 @@ metadata:
 	}
 	if hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "GRPCRoute.grpc-api", "BackendTLSPolicy.ignored-policy") {
 		t.Fatalf("Gateway API backendRefs should not treat explicit non-Service backend as Service dependency: %#v", snapshot.Relations)
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "Gateway.public", "ConfigMap.ignored-cert-config") {
+		t.Fatalf("Gateway certificateRefs should not treat explicit non-Secret certificate as Secret dependency: %#v", snapshot.Relations)
 	}
 }
 
