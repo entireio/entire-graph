@@ -866,6 +866,46 @@ function external() {
 	}
 }
 
+func TestHTTPCallsBridgeToLocalRouteHandler(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "api.ts", `export function register(app: any): void {
+  app.get("/health", health)
+}
+
+export function health(): string {
+  return "ok"
+}
+
+export async function ping(): Promise<unknown> {
+  return fetch("/health")
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "HTTP_CALLS", "ping", "/health") {
+		t.Fatalf("missing HTTP_CALLS endpoint relation: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "HANDLES_ROUTE", "register", "/health") {
+		t.Fatalf("missing HANDLES_ROUTE endpoint relation: %#v", snapshot.Relations)
+	}
+	var bridge RelationRecord
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CALLS" && lastSegment(relation.FromID) == "ping" && lastSegment(relation.ToID) == "register" {
+			bridge = relation
+			break
+		}
+	}
+	if bridge.FromID == "" {
+		t.Fatalf("missing route bridge CALLS ping->register: %#v", snapshot.Relations)
+	}
+	if bridge.Resolution != "pattern" || bridge.TargetKind != "symbol" || bridge.Confidence > 0.72 {
+		t.Fatalf("unexpected bridge metadata: %#v", bridge)
+	}
+}
+
 func TestRouteDetectionRequiresRoutingContext(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "server.js", `function register(app) {

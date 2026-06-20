@@ -263,7 +263,9 @@ Tasks:
 Acceptance:
 
 - Boundary fixtures produce first-class external route/service/channel records.
-- Client-to-route matching works within a repo when paths are static.
+- Client-to-route matching works within a repo when paths are static; exact
+  local matches also emit direct `CALLS` from the client symbol to the local
+  route handler/boundary symbol.
 - Dynamic route/client paths do not create high-confidence false edges.
 
 ### WP7: IaC And Resource Graph

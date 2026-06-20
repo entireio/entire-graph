@@ -321,7 +321,10 @@ Relation vocabulary:
   procedure declarations to stable external endpoint nodes.
 - `HTTP_CALLS` — an outbound HTTP client call (fetch/axios/requests/httpx/http
   client) to a path. Client calls and route registrations to the same path
-  share an `external:route:<path>` node, enabling client-to-route matching.
+  share an `external:route:<path>` node, enabling client-to-route matching. When
+  that static route has a local handler/boundary in the snapshot, the provider
+  also emits a direct pattern-resolved `CALLS` edge from the client symbol to
+  that handler/boundary symbol.
 - `EMITS` / `LISTENS_ON` — pub/sub and event-emitter calls
   (`emit`/`publish`/`dispatch` and `on`/`subscribe`/`addEventListener`). Emitter
   and listener of the same name share an `external:channel:<name>` node. Weak

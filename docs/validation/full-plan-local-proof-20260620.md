@@ -22,6 +22,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
   (`Service` -> matching workload resource by selector labels).
 - Kubernetes resource config tests pass for common container image,
   environment-variable, and port declarations emitted as `CONFIGURES` facts.
+- Static HTTP client calls bridge to exact local route handlers through shared
+  route endpoints as direct `CALLS` edges.
 - Retained benchmark reports:
   - `bench/results/result-1781937160.json`: Go/gin, syntax-only, 28,618 LOC,
     152,621 LOC/s.

@@ -1335,11 +1335,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	methodsByContainer := map[string]map[string]SymbolRecord{}
 	fieldsByContainer := map[string]map[string]SymbolRecord{}
 	var inheritanceEdges []RelationRecord // captured for OVERRIDES derivation
+	routeHandlers := map[string][]SymbolRecord{}
+	httpCallsByRoute := map[string][]RelationRecord{}
 	// Iterate files in their (stable) slice order, not the recordsByFile map, so
 	// structural relations stream deterministically.
 	for _, file := range files {
 		records := recordsByFile[file.Path]
 		for _, symbol := range records {
+			if symbol.Kind == "route" {
+				routeHandlers[symbol.Name] = append(routeHandlers[symbol.Name], symbol)
+			}
 			emit(RelationRecord{
 				RecordType:    "relation",
 				FromID:        fileID(repoKey, symbol.FilePath),
@@ -1594,7 +1599,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				if _, ok := handledRoutes[route]; ok {
 					continue
 				}
-				emit(RelationRecord{
+				relation := RelationRecord{
 					RecordType:    "relation",
 					FromID:        from.ID,
 					ToID:          externalID("route", route),
@@ -1612,7 +1617,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						Detail:    route,
 					}},
 					WarningCodes: []string{},
-				})
+				}
+				emit(relation)
+				routeHandlers[route] = append(routeHandlers[route], from)
 			}
 			for _, call := range httpCalls(block) {
 				if !spec.emits("HTTP_CALLS") {
@@ -1622,7 +1629,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				if call.Absolute {
 					confidence = 0.6 // host ignored; cross-service path match is weaker
 				}
-				emit(RelationRecord{
+				relation := RelationRecord{
 					RecordType:    "relation",
 					FromID:        from.ID,
 					ToID:          externalID("route", call.Path),
@@ -1640,7 +1647,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						Detail:    call.Method + " " + call.Path,
 					}},
 					WarningCodes: []string{},
-				})
+				}
+				emit(relation)
+				httpCallsByRoute[call.Path] = append(httpCallsByRoute[call.Path], relation)
 			}
 			for _, event := range channelEvents(block) {
 				if !spec.emits(event.Relation) {
@@ -1693,6 +1702,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			emit(r)
 		}
 	}
+	if spec.emits("CALLS") {
+		for _, r := range routeBridgeRelations(routeHandlers, httpCallsByRoute) {
+			emit(r)
+		}
+	}
 	if spec.emits("USES_TYPE") {
 		for _, r := range usesTypeRelations(recordsByFile, symbolsByFile, symbolsByShortName) {
 			emit(r)
@@ -1723,6 +1737,56 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			emit(r)
 		}
 	}
+}
+
+func routeBridgeRelations(routeHandlers map[string][]SymbolRecord, httpCallsByRoute map[string][]RelationRecord) []RelationRecord {
+	var routes []string
+	for route := range httpCallsByRoute {
+		if len(routeHandlers[route]) > 0 {
+			routes = append(routes, route)
+		}
+	}
+	sort.Strings(routes)
+	var relations []RelationRecord
+	for _, route := range routes {
+		handlers := append([]SymbolRecord(nil), routeHandlers[route]...)
+		sort.Slice(handlers, func(i, j int) bool {
+			return handlers[i].ID < handlers[j].ID
+		})
+		calls := append([]RelationRecord(nil), httpCallsByRoute[route]...)
+		sort.Slice(calls, func(i, j int) bool {
+			if calls[i].FromID == calls[j].FromID {
+				return calls[i].ToID < calls[j].ToID
+			}
+			return calls[i].FromID < calls[j].FromID
+		})
+		for _, call := range calls {
+			for _, handler := range handlers {
+				if call.FromID == handler.ID {
+					continue
+				}
+				confidence := minFloat(call.Confidence, 0.72)
+				relations = append(relations, RelationRecord{
+					RecordType:    "relation",
+					FromID:        call.FromID,
+					ToID:          handler.ID,
+					Type:          "CALLS",
+					Confidence:    confidence,
+					Reason:        "HTTP client call resolved to local route handler through shared route endpoint",
+					RelationScope: "workspace",
+					Resolution:    "pattern",
+					TargetKind:    "symbol",
+					Evidence: []Evidence{{
+						Kind:     "route_endpoint_match",
+						FilePath: handler.FilePath,
+						Detail:   route,
+					}},
+					WarningCodes: []string{},
+				})
+			}
+		}
+	}
+	return relations
 }
 
 // typeRelationsForFile emits EXTENDS/IMPLEMENTS relations for the type symbols
