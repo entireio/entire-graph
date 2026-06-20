@@ -245,6 +245,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 - Conservative collection-element forwarding emits caller-to-callee
   `DATA_FLOWS` when a caller parameter is pushed/appended/added into a local
   collection and that collection is passed to a known callee.
+- JS/TS GraphQL resolver maps now emit concrete `graphql_resolver` symbols and
+  `HANDLES_GRAPHQL` edges for `Query`, `Mutation`, and `Subscription` fields;
+  this complements existing GraphQL operation-literal detection and remains a
+  heuristic resolver-map pass, not full schema/type-aware GraphQL linking.
 - Retained benchmark reports:
   - `bench/results/result-1781937160.json`: Go/gin, syntax-only, 28,618 LOC,
     152,621 LOC/s.
@@ -268,6 +272,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
     150,700 LOC/s, max RSS 29,048,832 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781944293.json`: Go/gin, syntax-only, 28,618 LOC,
     133,281 LOC/s, max RSS 28,033,024 bytes, output 1,938,906 bytes.
+  - `bench/results/result-1781969539.json`: Go/gin, syntax-only, 28,618 LOC,
+    139,805 LOC/s, max RSS 28,852,224 bytes, estimated output 1,902,629
+    bytes; run after JS/TS GraphQL resolver-map extraction.
   - `bench/results/result-1781944479.json`: Go/gin, syntax-only, 28,618 LOC,
     154,533 LOC/s, max RSS 27,115,520 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781944927.json`: Go/gin, syntax-only, 28,618 LOC,
@@ -401,6 +408,8 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   not quality proof for full C semantics.
 - Public large-corpus speed claims still need broader retained runs across more
   cached or supplied repositories and profiles.
+- GraphQL support covers operation literals and JS/TS resolver-map fields; it
+  is not full GraphQL schema validation or resolver type analysis.
 - Attempted cached C/Linux `fast` profile with a 5 GB RSS ceiling exposed a
   real validation gap before this fix: live process inspection showed the run
   still active at roughly 7.3 GB RSS because the old guard only checked memory

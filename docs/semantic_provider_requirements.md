@@ -317,7 +317,8 @@ Relation vocabulary:
 - `HANDLES_ROUTE` — a handler registers an HTTP route (path on a line carrying
   routing context: a verb/route method call or mapping decorator).
 - `HANDLES_GRPC` / `HANDLES_GRAPHQL` / `HANDLES_TRPC` — service boundary edges
-  from protobuf RPC declarations, GraphQL operation literals, and tRPC
+  from protobuf RPC declarations, GraphQL operation literals, JS/TS GraphQL
+  resolver-map fields (`Query`, `Mutation`, `Subscription`), and tRPC
   procedure declarations to stable external endpoint nodes.
 - `HTTP_CALLS` — an outbound HTTP client call (fetch/axios/requests/httpx/http
   client) to a path. Client calls and route registrations to the same path

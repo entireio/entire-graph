@@ -256,6 +256,19 @@ func serviceBoundaries(symbol SymbolRecord, block string) []serviceBoundary {
 			EvidenceKind: "grpc_rpc",
 		})
 	}
+	if symbol.Kind == "graphql_resolver" {
+		fields := strings.Fields(symbol.Signature)
+		if len(fields) >= 4 && fields[0] == "GraphQL" && fields[1] == "resolver" {
+			add(serviceBoundary{
+				Relation:     "HANDLES_GRAPHQL",
+				Kind:         "graphql",
+				Name:         strings.ToLower(fields[2]) + " " + fields[3],
+				Confidence:   0.85,
+				Reason:       "GraphQL resolver field detected in resolver map",
+				EvidenceKind: "graphql_resolver",
+			})
+		}
+	}
 	for _, match := range graphqlOperationRe.FindAllStringSubmatch(block, -1) {
 		add(serviceBoundary{
 			Relation:     "HANDLES_GRAPHQL",

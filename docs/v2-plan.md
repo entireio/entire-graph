@@ -335,7 +335,9 @@ Tasks:
   of scope.
 - Emit `HANDLES_ROUTE` and `HTTP_CALLS` with method, path, confidence, and
   source evidence.
-- Add GraphQL operation and resolver detection.
+- GraphQL operation literals and JS/TS resolver-map fields now emit
+  `HANDLES_GRAPHQL`; full schema/type-aware GraphQL linking remains out of
+  scope for the current heuristic pass.
 - Add gRPC/protobuf service extraction.
 - Add tRPC detection for TypeScript.
 - Add channel detection for common pub-sub/event APIs:

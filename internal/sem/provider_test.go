@@ -3608,6 +3608,41 @@ export function readConfig(name: string): string {
 	}
 }
 
+func TestBuildProviderSnapshotEmitsGraphQLResolverBoundaries(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/resolvers.ts", `export const resolvers = {
+  Query: {
+    user: (_parent, args) => ({ id: args.id }),
+  },
+  Mutation: {
+    createUser: async (_parent, args) => ({ id: args.input.id }),
+  },
+  Subscription: {
+    userCreated: {
+      subscribe: (_parent, _args, ctx) => ctx.pubsub.asyncIterator("USER_CREATED"),
+    },
+  },
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct {
+		from string
+		to   string
+	}{
+		{"Query.user", "query user"},
+		{"Mutation.createUser", "mutation createUser"},
+		{"Subscription.userCreated", "subscription userCreated"},
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "HANDLES_GRAPHQL", want.from, want.to) {
+			t.Fatalf("missing HANDLES_GRAPHQL %s -> %s in %#v", want.from, want.to, snapshot.Relations)
+		}
+	}
+}
+
 func TestBuildProviderSnapshotEmitsAssignedReturnDataFlow(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "flow.ts", `function helper(): string {

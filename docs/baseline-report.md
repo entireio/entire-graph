@@ -112,12 +112,14 @@ Field access (`READS_FIELD`/`WRITES_FIELD`/`ACCESSES`) is emitted for accesses
 resolved through the receiver's type (see "Field-access relations" below).
 
 Service/configuration/type/flow expansion is now present in the baseline:
-`HANDLES_GRPC`, `HANDLES_GRAPHQL`, `HANDLES_TRPC`, Dockerfile/Kubernetes/
-Kustomize/HCL/common project-config `CONFIGURES`, positional
+`HANDLES_GRPC`, `HANDLES_GRAPHQL` from operation literals and JS/TS resolver
+maps, `HANDLES_TRPC`, Dockerfile/Kubernetes/Kustomize/HCL/common
+project-config `CONFIGURES`, positional
 `PARAM_TYPE`/`RETURNS_TYPE`, `ASYNC_CALLS`, `DATA_FLOWS`, and bounded
 `FILE_CHANGES_WITH` edges. Remaining work is deeper coverage, not absence of
 the relation families: richer cross-statement/cross-symbol data-flow,
-higher-precision fallback-format semantics, and larger corpus proof runs.
+higher-precision fallback-format semantics, full schema/type-aware GraphQL
+linking, and larger corpus proof runs.
 
 ## Known False Positives / Negatives
 

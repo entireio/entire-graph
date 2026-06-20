@@ -147,6 +147,43 @@ jobs:
 	}
 }
 
+func TestTreeSitterParserTypeScriptGraphQLResolverEntities(t *testing.T) {
+	entities, language := TreeSitterParser{}.Parse("src/resolvers.ts", `export const resolvers = {
+  Query: {
+    user: (_parent, args) => ({ id: args.id }),
+    viewer(_parent, _args, ctx) {
+      return ctx.viewer
+    },
+  },
+  Mutation: {
+    createUser: async (_parent, args) => ({ id: args.input.id }),
+  },
+  Subscription: {
+    userCreated: {
+      subscribe: (_parent, _args, ctx) => ctx.pubsub.asyncIterator("USER_CREATED"),
+    },
+  },
+}
+`)
+	if language != "TypeScript" {
+		t.Fatalf("language = %q", language)
+	}
+	seen := map[string]Entity{}
+	for _, entity := range entities {
+		if entity.Kind == "graphql_resolver" {
+			seen[entity.Name] = entity
+		}
+	}
+	for _, name := range []string{"Query.user", "Query.viewer", "Mutation.createUser", "Subscription.userCreated"} {
+		if _, ok := seen[name]; !ok {
+			t.Fatalf("missing GraphQL resolver entity %s in %#v", name, entities)
+		}
+	}
+	if seen["Query.user"].Signature != "GraphQL resolver query user" {
+		t.Fatalf("resolver signature = %q", seen["Query.user"].Signature)
+	}
+}
+
 func TestTreeSitterParserSupportsYAMLWorkflowExtensions(t *testing.T) {
 	if !Supported(".github/workflows/ci.yml") {
 		t.Fatal(".yml workflow should be supported")

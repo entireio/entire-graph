@@ -151,6 +151,9 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 
 	var entities []Entity
 	walkEntities(root, src, spec.language, "", &entities)
+	if spec.language == "JavaScript" || spec.language == "TypeScript" {
+		entities = append(entities, graphqlResolverEntities(path, content)...)
+	}
 	if spec.language == "SQL" {
 		// Run the regex fallback extractors on comment-stripped source so that
 		// commented-out (or otherwise non-DDL) text is not picked up as a phantom
@@ -720,6 +723,13 @@ func slugName(name string) string {
 
 func maxInt(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func minInt(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b
@@ -1423,6 +1433,251 @@ func postgresPolicyEntities(src []byte) []Entity {
 		offset = end
 	}
 	return entities
+}
+
+var (
+	graphqlResolverRootPattern    = regexp.MustCompile(`(?m)\b(Query|Mutation|Subscription)\s*:\s*\{`)
+	graphqlResolverContextPattern = regexp.MustCompile(`(?i)\b(graphql|resolvers?)\b`)
+	graphqlResolverFieldPattern   = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
+	graphqlResolverObjectPattern  = regexp.MustCompile(`(?m)\b(?:subscribe|resolve)\s*:`)
+)
+
+func graphqlResolverEntities(path, content string) []Entity {
+	var entities []Entity
+	seen := map[string]bool{}
+	for _, loc := range graphqlResolverRootPattern.FindAllStringSubmatchIndex(content, -1) {
+		rootKind := content[loc[2]:loc[3]]
+		open := strings.LastIndex(content[loc[0]:loc[1]], "{")
+		if open < 0 {
+			continue
+		}
+		open += loc[0]
+		close := matchingBraceOffset(content, open)
+		if close < 0 {
+			continue
+		}
+		if !graphqlResolverContext(path, content, loc[0], close) {
+			continue
+		}
+		body := content[open+1 : close]
+		for _, field := range graphqlResolverFields(body) {
+			name := rootKind + "." + field.Name
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			start := open + 1 + field.Start
+			end := open + 1 + field.End
+			block := content[start:end]
+			signature := "GraphQL resolver " + strings.ToLower(rootKind) + " " + field.Name
+			entities = append(entities, Entity{
+				Kind:        "graphql_resolver",
+				Name:        name,
+				Signature:   signature,
+				StartLine:   countLinesBefore(content, start) + 1,
+				EndLine:     countLinesBefore(content, end) + 1,
+				BodyHash:    hash(normalize(block)),
+				Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+			})
+		}
+	}
+	return entities
+}
+
+func graphqlResolverContext(path, content string, start, end int) bool {
+	base := strings.ToLower(filepath.Base(path))
+	if strings.Contains(base, "resolver") || strings.Contains(base, "graphql") || strings.Contains(base, "schema") {
+		return true
+	}
+	from := maxInt(0, start-300)
+	to := minInt(len(content), end+80)
+	return graphqlResolverContextPattern.MatchString(content[from:to])
+}
+
+type graphqlResolverField struct {
+	Name  string
+	Start int
+	End   int
+}
+
+func graphqlResolverFields(body string) []graphqlResolverField {
+	var fields []graphqlResolverField
+	depth := 0
+	inString := byte(0)
+	escaped := false
+	for i := 0; i < len(body); i++ {
+		ch := body[i]
+		if inString != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"', '`':
+			inString = ch
+			continue
+		case '{', '(', '[':
+			depth++
+			continue
+		case '}', ')', ']':
+			if depth > 0 {
+				depth--
+			}
+			continue
+		}
+		if depth != 0 || !isJSIdentifierStart(ch) {
+			continue
+		}
+		nameStart := i
+		i++
+		for i < len(body) && isJSIdentifierPart(body[i]) {
+			i++
+		}
+		name := body[nameStart:i]
+		if !graphqlResolverFieldPattern.MatchString(name) {
+			continue
+		}
+		cursor := skipSpace(body, i)
+		if cursor >= len(body) {
+			continue
+		}
+		if body[cursor] == '(' {
+			end := graphqlResolverFieldEnd(body, cursor)
+			fields = append(fields, graphqlResolverField{Name: name, Start: nameStart, End: end})
+			i = maxInt(i, end-1)
+			continue
+		}
+		if body[cursor] != ':' {
+			continue
+		}
+		valueStart := skipSpace(body, cursor+1)
+		if !looksLikeGraphQLResolverValue(body[valueStart:]) {
+			continue
+		}
+		end := graphqlResolverFieldEnd(body, valueStart)
+		fields = append(fields, graphqlResolverField{Name: name, Start: nameStart, End: end})
+		i = maxInt(i, end-1)
+	}
+	return fields
+}
+
+func looksLikeGraphQLResolverValue(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	switch {
+	case strings.HasPrefix(trimmed, "async function"), strings.HasPrefix(trimmed, "function"):
+		return true
+	case strings.HasPrefix(trimmed, "async ("), strings.HasPrefix(trimmed, "("):
+		return strings.Contains(trimmed, "=>")
+	case strings.HasPrefix(trimmed, "{"):
+		end := matchingBraceOffset(trimmed, 0)
+		if end < 0 {
+			return false
+		}
+		return graphqlResolverObjectPattern.MatchString(trimmed[:end])
+	default:
+		arrow := strings.Index(trimmed, "=>")
+		return arrow > 0 && arrow < 80
+	}
+}
+
+func graphqlResolverFieldEnd(body string, start int) int {
+	depth := 0
+	inString := byte(0)
+	escaped := false
+	for i := start; i < len(body); i++ {
+		ch := body[i]
+		if inString != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"', '`':
+			inString = ch
+		case '{', '(', '[':
+			depth++
+		case '}', ')', ']':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return len(body)
+}
+
+func matchingBraceOffset(content string, open int) int {
+	if open < 0 || open >= len(content) || content[open] != '{' {
+		return -1
+	}
+	depth := 0
+	inString := byte(0)
+	escaped := false
+	for i := open; i < len(content); i++ {
+		ch := content[i]
+		if inString != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"', '`':
+			inString = ch
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func skipSpace(value string, index int) int {
+	for index < len(value) && (value[index] == ' ' || value[index] == '\t' || value[index] == '\n' || value[index] == '\r') {
+		index++
+	}
+	return index
+}
+
+func isJSIdentifierStart(ch byte) bool {
+	return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_' || ch == '$'
+}
+
+func isJSIdentifierPart(ch byte) bool {
+	return isJSIdentifierStart(ch) || (ch >= '0' && ch <= '9')
 }
 
 func countLinesBefore(content string, end int) int {
