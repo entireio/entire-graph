@@ -4682,6 +4682,48 @@ urlpatterns = [
 	}
 }
 
+func TestDjangoImportedIncludeURLConfComposesHandlersAndBridgeHTTPClients(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "project/urls.py", `import requests
+from django.urls import include, path
+from users import urls as users_urls
+
+urlpatterns = [
+    path("api/", include(users_urls)),
+]
+
+def ping():
+    requests.get("http://localhost/api/health")
+`)
+	writeFile(t, repo, "users/urls.py", `from django.urls import path
+from . import views
+
+urlpatterns = [
+    path("health/", views.health),
+]
+`)
+	writeFile(t, repo, "users/views.py", `def health(request):
+    return "ok"
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasImportRelationToPath(snapshot.Relations, "project/urls.py", "users/urls.py") {
+		t.Fatalf("missing local import project/urls.py -> users/urls.py: %#v", snapshot.Relations)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "health", "/api/health") {
+		t.Fatalf("missing imported Django include route handler: %#v", snapshot.Relations)
+	}
+	if hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "health", "/health") {
+		t.Fatalf("imported Django include emitted unmounted child route: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "health") {
+		t.Fatalf("missing route bridge CALLS ping->health: %#v", snapshot.Relations)
+	}
+}
+
 func TestPythonImportedRouterPrefixComposesAndBridgesHTTPClient(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "routes.py", `from fastapi import APIRouter

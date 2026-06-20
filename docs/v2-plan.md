@@ -214,8 +214,9 @@ Tasks:
   `exports`, and simple `tsconfig.json` `compilerOptions.paths` aliases are
   implemented for local JS/TS files; `pyproject.toml` and
   `setup.cfg` package names, configured setuptools package-find roots, root and
-  package-specific `package-dir`/`package_dir` mappings, and inferred nested
-  `*/src` namespace roots are implemented for local Python module resolution,
+  package-specific `package-dir`/`package_dir` mappings, inferred nested
+  `*/src` namespace roots, and simple `from package import module`
+  member-module candidates are implemented for local Python module resolution,
   including literal and local-constant `importlib.import_module(...)`,
   direct or aliased `from importlib import import_module` calls,
   `import importlib as name` aliases, and `__import__(...)` runtime imports; exact
@@ -328,8 +329,9 @@ Tasks:
   Express/Fastify/Next.js, Django, Go `net/http`/chi/gin, Java Spring, C#
   ASP.NET, PHP Laravel/Symfony, Ruby on Rails, NestJS, Python Tornado. Django `path(...)`
   registrations, simple `re_path(...)` registrations, and URLConf
-  `include(...)` mounts resolve to local handler symbols when patterns are
-  static. Go `net/http` `HandleFunc` registrations and
+  `include(...)` mounts, including string module paths and imported URLConf
+  aliases, resolve to local handler symbols when patterns are static. Go
+  `net/http` `HandleFunc` registrations and
   `HandlerFunc` wrappers resolve to same-file local handler symbols when paths
   are static or local literal constants; common Go chi/gin-style router method
   registrations do the same. Flask/FastAPI-style Python route decorators are

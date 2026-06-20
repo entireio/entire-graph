@@ -157,7 +157,8 @@ False positives:
   Flask Blueprint `register_blueprint(url_prefix=...)` mount, Java Spring-style
   direct mapping annotation, Python Tornado route tuple,
   Django `path(...)`/simple `re_path(...)`
-  registration or URLConf `include(...)` mount, Go `net/http`
+  registration or URLConf `include(...)` mount including imported URLConf
+  aliases, Go `net/http`
   `HandleFunc`/`HandlerFunc` registration, or
   Go chi/gin-style router method registration, C# ASP.NET route/HTTP-verb
   attributes, C# minimal API `MapGet`/`MapPost` registrations, PHP Laravel
@@ -230,8 +231,9 @@ False negatives:
   `package.json` `name`, root `package.json` `exports`/`imports`, root import
   maps, nested workspace/package `package.json` names and `exports`, and simple
   `tsconfig.json` `compilerOptions.paths` aliases, Python imports covered by
-  local module files, repo-root `src`, configured setuptools
-  package-find roots, inferred nested `*/src` namespace roots, plus
+  local module files, repo-root `src`, configured setuptools package-find
+  roots, inferred nested `*/src` namespace roots, simple
+  `from package import module` member-module candidates, plus
   `pyproject.toml`/`setup.cfg` package names, and exact Java/Kotlin/Scala-style
   package imports covered by package declarations or simple root Maven/Gradle
   package identity now resolve to local file records, and unique C# namespace

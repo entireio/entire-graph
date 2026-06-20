@@ -7615,6 +7615,27 @@ func scanPythonImports(content string) []string {
 			add(module)
 		}
 	}
+	for _, match := range regexp.MustCompile(`(?m)^\s*from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)\s+import\s+([^\n#]+)`).FindAllStringSubmatch(content, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		module := strings.TrimSpace(match[1])
+		if module == "" {
+			continue
+		}
+		for _, item := range strings.Split(match[2], ",") {
+			name, _ := parsePythonImportItem(item)
+			if name == "" || name == "*" {
+				continue
+			}
+			switch {
+			case module == ".":
+				add("." + name)
+			case !strings.HasPrefix(module, ".") && !strings.Contains(module, "."):
+				add(strings.TrimRight(module, ".") + "." + name)
+			}
+		}
+	}
 	return sortedKeys(seen)
 }
 
@@ -8444,6 +8465,7 @@ func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 		knownFiles[file.Path] = true
 	}
 	moduleFiles := pythonModuleFiles(files)
+	importsByFile := map[string]map[string][]pythonImportBinding{}
 	symbolsByFileAndName := map[string]map[string]SymbolRecord{}
 	typeSymbolsByFileAndName := map[string]map[string]SymbolRecord{}
 	for _, file := range files {
@@ -8480,8 +8502,9 @@ func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 		if !ok {
 			continue
 		}
+		importsByFile[file.Path] = importedPythonBindings(content)
 		for _, mount := range djangoIncludeMounts(content) {
-			if target, ok := djangoResolveIncludeTarget(mount.Module, moduleFiles); ok {
+			if target, ok := djangoResolveIncludeTarget(file.Path, mount, importsByFile[file.Path], moduleFiles, knownFiles); ok {
 				includedTargets[target] = true
 			}
 		}
@@ -8540,7 +8563,7 @@ func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 			}
 		}
 		for _, mount := range djangoIncludeMounts(content) {
-			targetFile, ok := djangoResolveIncludeTarget(mount.Module, moduleFiles)
+			targetFile, ok := djangoResolveIncludeTarget(file.Path, mount, importsByFile[file.Path], moduleFiles, knownFiles)
 			if !ok {
 				continue
 			}
@@ -8611,6 +8634,7 @@ func djangoRouteRegistrations(content string) []djangoRouteRegistration {
 type djangoIncludeMount struct {
 	Prefix string
 	Module string
+	Target string
 }
 
 func pythonModuleFiles(files []FileRecord) map[string]string {
@@ -8644,9 +8668,10 @@ func pythonModuleFiles(files []FileRecord) map[string]string {
 }
 
 func djangoIncludeMounts(content string) []djangoIncludeMount {
-	re := regexp.MustCompile(`\bpath\s*\(\s*([rRuUbB]*["'][^"']*["'])\s*,\s*include\s*\(\s*([rRuUbB]*["'][^"']*["'])`)
+	stringRe := regexp.MustCompile(`\bpath\s*\(\s*([rRuUbB]*["'][^"']*["'])\s*,\s*include\s*\(\s*([rRuUbB]*["'][^"']*["'])`)
+	targetRe := regexp.MustCompile(`\bpath\s*\(\s*([rRuUbB]*["'][^"']*["'])\s*,\s*include\s*\(\s*([A-Za-z_][A-Za-z0-9_]*(?:\.urlpatterns)?)\s*[\),]`)
 	var mounts []djangoIncludeMount
-	for _, match := range re.FindAllStringSubmatch(content, -1) {
+	for _, match := range stringRe.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
 			continue
 		}
@@ -8657,10 +8682,44 @@ func djangoIncludeMounts(content string) []djangoIncludeMount {
 		}
 		mounts = append(mounts, djangoIncludeMount{Prefix: prefix, Module: module})
 	}
+	for _, match := range targetRe.FindAllStringSubmatch(content, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		prefix := djangoRoutePatternValue(match[1], false)
+		target := strings.TrimSpace(match[2])
+		if prefix == "" || target == "" {
+			continue
+		}
+		mounts = append(mounts, djangoIncludeMount{Prefix: prefix, Target: target})
+	}
 	return mounts
 }
 
-func djangoResolveIncludeTarget(module string, moduleFiles map[string]string) (string, bool) {
+func djangoResolveIncludeTarget(importingPath string, mount djangoIncludeMount, imports map[string][]pythonImportBinding, moduleFiles map[string]string, knownFiles map[string]bool) (string, bool) {
+	if mount.Module != "" {
+		return djangoResolveIncludeModule(importingPath, mount.Module, moduleFiles, knownFiles)
+	}
+	target := strings.TrimSuffix(strings.TrimSpace(mount.Target), ".urlpatterns")
+	if target == "" {
+		return "", false
+	}
+	for _, binding := range imports[target] {
+		module := strings.TrimSpace(binding.Module)
+		if binding.Imported != "" {
+			module = strings.TrimRight(module, ".") + "." + strings.TrimSpace(binding.Imported)
+		}
+		if resolved, ok := djangoResolveIncludeModule(importingPath, module, moduleFiles, knownFiles); ok {
+			return resolved, true
+		}
+	}
+	return "", false
+}
+
+func djangoResolveIncludeModule(importingPath, module string, moduleFiles map[string]string, knownFiles map[string]bool) (string, bool) {
+	if resolved, ok := resolveLocalImport(importingPath, module, knownFiles); ok {
+		return resolved, true
+	}
 	module = strings.Trim(strings.TrimSpace(module), ".")
 	if module == "" {
 		return "", false
