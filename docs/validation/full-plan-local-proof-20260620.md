@@ -332,8 +332,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   handlers.
 - Flask Blueprint `register_blueprint(..., url_prefix=...)` mounts compose
   with Blueprint route decorators, while Flask `add_url_rule` positional and
-  `view_func=` handlers resolve local functions; both bridge exact matching
-  Python HTTP clients to local handlers.
+  `view_func=` handlers resolve local functions and `MethodView.as_view(...)`
+  class-based views; both bridge exact matching Python HTTP clients to local
+  handlers.
 - Retained benchmark reports:
   - `bench/results/result-1781937160.json`: Go/gin, syntax-only, 28,618 LOC,
     152,621 LOC/s.
@@ -454,6 +455,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781981445.json`: Go/gin, syntax-only, 28,618 LOC,
     164,840 LOC/s, max RSS 27,295,744 bytes, estimated output 1,902,630
     bytes; run after Flask `add_url_rule` route extraction.
+  - `bench/results/result-1781981708.json`: Go/gin, syntax-only, 28,618 LOC,
+    162,459 LOC/s, max RSS 29,655,040 bytes, estimated output 1,902,628
+    bytes; run after Flask `MethodView.as_view` route extraction.
   - `bench/results/result-1781972446.json`: Go/gin, syntax-only, 28,618 LOC,
     162,982 LOC/s, max RSS 26,804,224 bytes, estimated output 1,902,630
     bytes; run after IngressClass reference extraction.

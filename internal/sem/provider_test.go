@@ -3919,6 +3919,41 @@ def ping_status():
 	}
 }
 
+func TestFlaskMethodViewAddURLRuleResolvesClassAndBridge(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "app.py", `from flask import Flask
+from flask.views import MethodView
+import requests
+
+app = Flask(__name__)
+route = "/users/<id>"
+
+class UserView(MethodView):
+    def get(self, id):
+        return {"id": id}
+
+def register():
+    app.add_url_rule(route, view_func=UserView.as_view("user_view"))
+
+def ping_user():
+    return requests.get("/users/{id}")
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "UserView", "/users/{id}") {
+		t.Fatalf("missing Flask MethodView add_url_rule route: %#v", snapshot.Relations)
+	}
+	if hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "register", "/users/{id}") {
+		t.Fatalf("registration function was misclassified as Flask MethodView handler: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping_user", "UserView") {
+		t.Fatalf("missing route bridge CALLS ping_user->UserView: %#v", snapshot.Relations)
+	}
+}
+
 func TestPythonAddAPIRouteSelectorHandlerResolvesUniqueMemberAndBridge(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "app.py", `from fastapi import FastAPI

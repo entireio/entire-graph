@@ -8727,10 +8727,11 @@ type expressRouteRelation struct {
 }
 
 type goHTTPRouteRegistration struct {
-	Route        string
-	Handler      string
-	EvidenceKind string
-	Detail       string
+	Route            string
+	Handler          string
+	EvidenceKind     string
+	Detail           string
+	AllowTypeHandler bool
 }
 
 type djangoRouteRegistration struct {
@@ -9625,8 +9626,17 @@ func pythonDirectRouteRelations(files []FileRecord, recordsByFile map[string][]S
 			continue
 		}
 		handlers := map[string]SymbolRecord{}
+		typeHandlers := map[string]SymbolRecord{}
 		for _, symbol := range recordsByFile[file.Path] {
 			if typeLikeKind(symbol.Kind) {
+				if _, exists := typeHandlers[symbol.Name]; !exists {
+					typeHandlers[symbol.Name] = symbol
+				}
+				if symbol.QualifiedName != "" {
+					if _, exists := typeHandlers[symbol.QualifiedName]; !exists {
+						typeHandlers[symbol.QualifiedName] = symbol
+					}
+				}
 				continue
 			}
 			if _, exists := handlers[symbol.Name]; !exists {
@@ -9640,6 +9650,9 @@ func pythonDirectRouteRelations(files []FileRecord, recordsByFile map[string][]S
 		}
 		for _, registration := range pythonDirectRouteRegistrations(content) {
 			handler, ok := resolveRouteHandlerSymbol(handlers, registration.Handler)
+			if !ok && registration.AllowTypeHandler {
+				handler, ok = resolveRouteHandlerSymbol(typeHandlers, registration.Handler)
+			}
 			if !ok {
 				continue
 			}
@@ -9685,9 +9698,10 @@ func pythonDirectRouteRelations(files []FileRecord, recordsByFile map[string][]S
 func pythonDirectRouteRegistrations(content string) []goHTTPRouteRegistration {
 	constants := staticStringConstants(content)
 	handlerExpr := `[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?`
+	handlerOrAsViewExpr := `(?:` + handlerExpr + `\.as_view\s*\([^)\n]*\)|` + handlerExpr + `)`
 	addAPIRe := regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*\.add_api_route\s*\(\s*([^,\n]+)\s*,\s*(` + handlerExpr + `)`)
-	addURLRuleKeywordRe := regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*\.add_url_rule\s*\(\s*([^,\n]+)[^\n)]*\bview_func\s*=\s*(` + handlerExpr + `)`)
-	addURLRulePositionalRe := regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*\.add_url_rule\s*\(\s*([^,\n]+)\s*,\s*[^,\n)]+\s*,\s*(` + handlerExpr + `)`)
+	addURLRuleKeywordRe := regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*\.add_url_rule\s*\(\s*([^,\n]+)[^\n)]*\bview_func\s*=\s*(` + handlerOrAsViewExpr + `)`)
+	addURLRulePositionalRe := regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*\.add_url_rule\s*\(\s*([^,\n]+)\s*,\s*[^,\n)]+\s*,\s*(` + handlerOrAsViewExpr + `)`)
 	var registrations []goHTTPRouteRegistration
 	add := func(routeExpr, handler, evidence string) {
 		route, ok := staticRouteExpressionValue(routeExpr, constants)
@@ -9698,11 +9712,17 @@ func pythonDirectRouteRegistrations(content string) []goHTTPRouteRegistration {
 		if handler == "" {
 			return
 		}
+		allowTypeHandler := false
+		if className, ok := pythonAsViewClassName(handler); ok {
+			handler = className
+			allowTypeHandler = true
+		}
 		registrations = append(registrations, goHTTPRouteRegistration{
-			Route:        route,
-			Handler:      handler,
-			EvidenceKind: evidence,
-			Detail:       route + " -> " + handler,
+			Route:            route,
+			Handler:          handler,
+			EvidenceKind:     evidence,
+			Detail:           route + " -> " + handler,
+			AllowTypeHandler: allowTypeHandler,
 		})
 	}
 	for _, match := range addAPIRe.FindAllStringSubmatch(content, -1) {
@@ -9724,6 +9744,14 @@ func pythonDirectRouteRegistrations(content string) []goHTTPRouteRegistration {
 		add(match[1], match[2], "python_flask_add_url_rule")
 	}
 	return registrations
+}
+
+func pythonAsViewClassName(handler string) (string, bool) {
+	match := regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\.as_view\s*\(`).FindStringSubmatch(handler)
+	if len(match) != 2 {
+		return "", false
+	}
+	return strings.TrimSpace(match[1]), true
 }
 
 func pythonRouterTargetFiles(importingPath, target string, importsByName map[string][]string, knownFiles map[string]bool) []string {
