@@ -898,6 +898,16 @@ kind: Service
 metadata:
   name: api
 `)
+	writeFile(t, repo, "k8s/gateway.yaml", `apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: public
+`)
+	writeFile(t, repo, "k8s/reference-grant.yaml", `apiVersion: gateway.networking.k8s.io/v1
+kind: ReferenceGrant
+metadata:
+  name: ignored-parent
+`)
 	writeFile(t, repo, "k8s/service-account.yaml", `apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -978,6 +988,10 @@ kind: HTTPRoute
 metadata:
   name: api
 spec:
+  parentRefs:
+    - name: public
+    - name: ignored-parent
+      kind: ReferenceGrant
   rules:
     - backendRefs:
         - name: api
@@ -993,6 +1007,7 @@ spec:
 		{"HorizontalPodAutoscaler.api", "Deployment.api"},
 		{"Ingress.api", "Service.api"},
 		{"HTTPRoute.api", "Service.api"},
+		{"HTTPRoute.api", "Gateway.public"},
 		{"RoleBinding.api-readers", "Role.api-reader"},
 		{"RoleBinding.api-readers", "ServiceAccount.api-runner"},
 		{"ClusterRoleBinding.api-admins", "ClusterRole.api-admin"},
@@ -1002,6 +1017,9 @@ spec:
 		if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", edge[0], edge[1]) {
 			t.Fatalf("missing exact Kubernetes dependency %s -> %s in %#v", edge[0], edge[1], snapshot.Relations)
 		}
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "HTTPRoute.api", "ReferenceGrant.ignored-parent") {
+		t.Fatalf("HTTPRoute parentRefs should not treat explicit non-Gateway parent as Gateway dependency: %#v", snapshot.Relations)
 	}
 }
 

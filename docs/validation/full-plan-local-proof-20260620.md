@@ -121,9 +121,9 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
   accounts, and PVCs emit exact local `RESOURCE_DEPENDS_ON` edges when the
   referenced resource manifests are present in the snapshot.
 - Kubernetes RBAC role/subject references, owner references, Ingress Service
-  backends, Gateway API HTTPRoute backend refs, and HPA scale targets emit
-  exact local `RESOURCE_DEPENDS_ON` edges when the referenced resource
-  manifests are present in the snapshot.
+  backends, Gateway API HTTPRoute backend refs, Gateway API HTTPRoute parent
+  Gateway refs, and HPA scale targets emit exact local `RESOURCE_DEPENDS_ON`
+  edges when the referenced resource manifests are present in the snapshot.
 - Kubernetes projected ConfigMap/Secret volume refs and image pull secrets emit
   external and exact local `RESOURCE_DEPENDS_ON` edges when the referenced
   resource manifests are present in the snapshot.
@@ -259,6 +259,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
     160,307 LOC/s, max RSS 27,770,880 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781954571.json`: Go/gin, syntax-only, 28,618 LOC,
     152,410 LOC/s, max RSS 26,116,096 bytes, output 1,938,906 bytes.
+  - `bench/results/result-1781955127.json`: Go/gin, syntax-only, 28,618 LOC,
+    148,241 LOC/s, max RSS 26,869,760 bytes, output 1,938,906 bytes.
 
 ## Remaining Honesty Notes
 

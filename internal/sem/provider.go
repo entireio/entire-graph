@@ -2418,6 +2418,9 @@ func kubernetesResourceReferences(content string) []resourceReference {
 	for _, match := range regexp.MustCompile(`(?is)\bbackendRefs:\s*\n(?:\s+-\s*)?(?:(?:kind:\s*Service\s*\n)|(?:[A-Za-z0-9_-]+:\s*[^\n]*\n))*\s+name:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
 		add("service", match[1], "kubernetes_gateway_backend_ref", 0.82)
 	}
+	for _, ref := range kubernetesGatewayParentReferences(content) {
+		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+	}
 	return dedupeResourceReferences(refs)
 }
 
@@ -2428,6 +2431,60 @@ func kubernetesKindNameBlockReferences(content, blockKey, evidence string, confi
 		if len(match) == 3 {
 			refs = append(refs, resourceReference{Kind: strings.ToLower(match[1]), Name: match[2], EvidenceKind: evidence, Confidence: confidence})
 		}
+	}
+	return refs
+}
+
+func kubernetesGatewayParentReferences(content string) []resourceReference {
+	lines := strings.Split(content, "\n")
+	var refs []resourceReference
+	for i := 0; i < len(lines); i++ {
+		key, ok := yamlLineKey(lines[i])
+		if !ok || key != "parentRefs" {
+			continue
+		}
+		parentIndent := yamlIndent(lines[i])
+		var name, kind string
+		flush := func() {
+			if name == "" {
+				return
+			}
+			if kind == "" || strings.EqualFold(kind, "Gateway") {
+				refs = append(refs, resourceReference{
+					Kind:         "gateway",
+					Name:         name,
+					EvidenceKind: "kubernetes_gateway_parent_ref",
+					Confidence:   0.82,
+				})
+			}
+			name, kind = "", ""
+		}
+		for j := i + 1; j < len(lines); j++ {
+			line := lines[j]
+			if yamlIgnoreLine(line) {
+				continue
+			}
+			indent := yamlIndent(line)
+			if indent <= parentIndent {
+				break
+			}
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "- ") {
+				flush()
+				trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+			}
+			childKey, ok := yamlLineKey(trimmed)
+			if !ok {
+				continue
+			}
+			switch childKey {
+			case "name":
+				name = yamlLineValue(trimmed)
+			case "kind":
+				kind = yamlLineValue(trimmed)
+			}
+		}
+		flush()
 	}
 	return refs
 }
