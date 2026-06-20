@@ -1471,6 +1471,21 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	httpCallsByRoute := map[string][]RelationRecord{}
 	graphqlSchemaFields := map[string][]SymbolRecord{}
 	graphqlResolvers := map[string][]SymbolRecord{}
+	graphqlOperationRootAliases := map[string]string{}
+	for _, file := range files {
+		for _, symbol := range recordsByFile[file.Path] {
+			if symbol.Kind != "graphql_schema_field" {
+				continue
+			}
+			rootName := graphqlRootNameFromSignature(symbol)
+			if rootName == "" || !graphqlOperationRoot(rootName) {
+				continue
+			}
+			if typeName, _, ok := strings.Cut(symbol.QualifiedName, "."); ok {
+				graphqlOperationRootAliases[strings.ToLower(typeName)] = rootName
+			}
+		}
+	}
 	// Iterate files in their (stable) slice order, not the recordsByFile map, so
 	// structural relations stream deterministically.
 	for _, file := range files {
@@ -1485,7 +1500,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			if symbol.Kind == "route" {
 				routeHandlers[symbol.Name] = append(routeHandlers[symbol.Name], symbol)
 			}
-			if endpoint := graphqlBoundaryEndpoint(symbol); endpoint != "" {
+			if endpoint := graphqlBoundaryEndpoint(symbol, graphqlOperationRootAliases); endpoint != "" {
 				switch symbol.Kind {
 				case "graphql_schema_field":
 					graphqlSchemaFields[endpoint] = append(graphqlSchemaFields[endpoint], symbol)
@@ -2180,7 +2195,7 @@ func graphqlSchemaResolverRelations(schemaFields, resolvers map[string][]SymbolR
 	return relations
 }
 
-func graphqlBoundaryEndpoint(symbol SymbolRecord) string {
+func graphqlBoundaryEndpoint(symbol SymbolRecord, operationRootAliases map[string]string) string {
 	switch symbol.Kind {
 	case "graphql_schema_field", "graphql_resolver":
 	default:
@@ -2207,11 +2222,24 @@ func graphqlBoundaryEndpoint(symbol SymbolRecord) string {
 	if typeName == "" {
 		return ""
 	}
+	if operationRootAliases != nil {
+		if alias := operationRootAliases[typeName]; alias != "" {
+			typeName = alias
+		}
+	}
 	name := strings.TrimSpace(fields[3])
 	if name == "" {
 		return ""
 	}
 	return typeName + " " + name
+}
+
+func graphqlRootNameFromSignature(symbol SymbolRecord) string {
+	fields := strings.Fields(symbol.Signature)
+	if len(fields) < 4 || fields[0] != "GraphQL" {
+		return ""
+	}
+	return strings.ToLower(fields[2])
 }
 
 // typeRelationsForFile emits EXTENDS/IMPLEMENTS relations for the type symbols

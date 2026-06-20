@@ -1440,17 +1440,20 @@ func postgresPolicyEntities(src []byte) []Entity {
 }
 
 var (
-	graphqlResolverRootPattern    = regexp.MustCompile(`(?m)\b([A-Z][A-Za-z0-9_]*)\s*:\s*\{`)
-	graphqlResolverContextPattern = regexp.MustCompile(`(?i)\b(graphql|resolvers?)\b`)
-	graphqlResolverFieldPattern   = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
-	graphqlResolverObjectPattern  = regexp.MustCompile(`(?m)\b(?:subscribe|resolve)\s*:`)
-	graphqlSchemaTypePattern      = regexp.MustCompile(`(?m)\b(?:extend\s+)?type\s+([_A-Za-z][_0-9A-Za-z]*)\b[^{]*\{`)
-	graphqlSchemaFieldNamePattern = regexp.MustCompile(`^[_A-Za-z][_0-9A-Za-z]*$`)
+	graphqlResolverRootPattern     = regexp.MustCompile(`(?m)\b([A-Z][A-Za-z0-9_]*)\s*:\s*\{`)
+	graphqlResolverContextPattern  = regexp.MustCompile(`(?i)\b(graphql|resolvers?)\b`)
+	graphqlResolverFieldPattern    = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
+	graphqlResolverObjectPattern   = regexp.MustCompile(`(?m)\b(?:subscribe|resolve)\s*:`)
+	graphqlSchemaDefinitionPattern = regexp.MustCompile(`(?m)\bschema\b[^{]*\{`)
+	graphqlSchemaOperationPattern  = regexp.MustCompile(`(?m)\b(query|mutation|subscription)\s*:\s*([_A-Za-z][_0-9A-Za-z]*)\b`)
+	graphqlSchemaTypePattern       = regexp.MustCompile(`(?m)\b(?:extend\s+)?type\s+([_A-Za-z][_0-9A-Za-z]*)\b[^{]*\{`)
+	graphqlSchemaFieldNamePattern  = regexp.MustCompile(`^[_A-Za-z][_0-9A-Za-z]*$`)
 )
 
 func graphqlSchemaEntities(content string) []Entity {
 	var entities []Entity
 	seen := map[string]bool{}
+	operationRoots := graphqlSchemaOperationRoots(content)
 	for _, loc := range graphqlSchemaTypePattern.FindAllStringSubmatchIndex(content, -1) {
 		typeName := content[loc[2]:loc[3]]
 		open := strings.LastIndex(content[loc[0]:loc[1]], "{")
@@ -1464,6 +1467,10 @@ func graphqlSchemaEntities(content string) []Entity {
 		}
 		body := content[open+1 : close]
 		for _, field := range graphqlSchemaFields(body) {
+			rootName := operationRoots[typeName]
+			if rootName == "" {
+				rootName = typeName
+			}
 			name := typeName + "." + field.Name
 			if seen[name] {
 				continue
@@ -1472,7 +1479,7 @@ func graphqlSchemaEntities(content string) []Entity {
 			start := open + 1 + field.Start
 			end := open + 1 + field.End
 			block := content[start:end]
-			signature := "GraphQL schema " + strings.ToLower(typeName) + " " + field.Name
+			signature := "GraphQL schema " + strings.ToLower(rootName) + " " + field.Name
 			entities = append(entities, Entity{
 				Kind:        "graphql_schema_field",
 				Name:        name,
@@ -1485,6 +1492,29 @@ func graphqlSchemaEntities(content string) []Entity {
 		}
 	}
 	return entities
+}
+
+func graphqlSchemaOperationRoots(content string) map[string]string {
+	roots := map[string]string{}
+	for _, loc := range graphqlSchemaDefinitionPattern.FindAllStringSubmatchIndex(content, -1) {
+		open := strings.LastIndex(content[loc[0]:loc[1]], "{")
+		if open < 0 {
+			continue
+		}
+		open += loc[0]
+		close := matchingBraceOffset(content, open)
+		if close < 0 {
+			continue
+		}
+		body := content[open+1 : close]
+		for _, match := range graphqlSchemaOperationPattern.FindAllStringSubmatch(body, -1) {
+			if len(match) < 3 {
+				continue
+			}
+			roots[match[2]] = strings.ToLower(match[1])
+		}
+	}
+	return roots
 }
 
 func graphqlSchemaFields(body string) []graphqlResolverField {

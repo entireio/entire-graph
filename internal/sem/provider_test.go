@@ -5451,6 +5451,58 @@ type User {
 	}
 }
 
+func TestGraphQLSchemaAliasedRootsLinkToResolverFields(t *testing.T) {
+	aliases := map[string]string{"rootquery": "query"}
+	if got := graphqlBoundaryEndpoint(SymbolRecord{Kind: "graphql_resolver", Signature: "GraphQL resolver rootquery user"}, aliases); got != "query user" {
+		t.Fatalf("aliased resolver endpoint = %q", got)
+	}
+
+	repo := t.TempDir()
+	writeFile(t, repo, "schema.graphql", `schema {
+  query: RootQuery
+  mutation: RootMutation
+}
+
+type RootQuery {
+  user(id: ID!): User!
+}
+
+type RootMutation {
+  createUser(input: CreateUserInput!): User!
+}
+`)
+	writeFile(t, repo, "src/resolvers.ts", `export const resolvers = {
+  RootQuery: {
+    user: (_parent, args) => ({ id: args.id }),
+  },
+  RootMutation: {
+    createUser: async (_parent, args) => ({ id: args.input.id }),
+  },
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range [][2]string{
+		{"RootQuery.user", "query user"},
+		{"RootMutation.createUser", "mutation createUser"},
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "HANDLES_GRAPHQL", want[0], want[1]) {
+			t.Fatalf("missing aliased schema HANDLES_GRAPHQL %s -> %s in %#v", want[0], want[1], snapshot.Relations)
+		}
+	}
+	for _, want := range [][2]string{
+		{"RootQuery.user", "RootQuery.user"},
+		{"RootMutation.createUser", "RootMutation.createUser"},
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", want[0], want[1]) {
+			t.Fatalf("missing aliased GraphQL schema-to-resolver CALLS %s -> %s in %#v", want[0], want[1], snapshot.Relations)
+		}
+	}
+}
+
 func TestGraphQLSchemaFieldsLinkToResolverFields(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "schema.graphql", `type Query {

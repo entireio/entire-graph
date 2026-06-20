@@ -225,6 +225,35 @@ type User {
 	}
 }
 
+func TestGraphQLSchemaAliasedRootEntities(t *testing.T) {
+	entities, language := TreeSitterParser{}.Parse("schema.graphql", `schema {
+  query: RootQuery
+  mutation: RootMutation
+}
+
+type RootQuery {
+  user(id: ID!): User!
+}
+
+type RootMutation {
+  createUser(input: CreateUserInput!): User!
+}
+`)
+	if language != "GraphQL" {
+		t.Fatalf("language = %q", language)
+	}
+	seen := map[string]Entity{}
+	for _, entity := range entities {
+		seen[entity.Name] = entity
+	}
+	if seen["RootQuery.user"].Kind != "graphql_schema_field" || seen["RootQuery.user"].Signature != "GraphQL schema query user" {
+		t.Fatalf("query alias entity = %#v", seen["RootQuery.user"])
+	}
+	if seen["RootMutation.createUser"].Kind != "graphql_schema_field" || seen["RootMutation.createUser"].Signature != "GraphQL schema mutation createUser" {
+		t.Fatalf("mutation alias entity = %#v", seen["RootMutation.createUser"])
+	}
+}
+
 func TestTreeSitterParserSupportsYAMLWorkflowExtensions(t *testing.T) {
 	if !Supported(".github/workflows/ci.yml") {
 		t.Fatal(".yml workflow should be supported")
