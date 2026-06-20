@@ -6376,7 +6376,7 @@ func javascriptImportNames(item string) (string, string) {
 func importedPythonNames(content string) map[string][]string {
 	imports := map[string][]string{}
 	importRe := regexp.MustCompile(`^\s*import\s+(.+)$`)
-	fromRe := regexp.MustCompile(`^\s*from\s+(\.*[A-Za-z_][A-Za-z0-9_\.]*)\s+import\s+(.+)$`)
+	fromRe := regexp.MustCompile(`^\s*from\s+(\.*(?:[A-Za-z_][A-Za-z0-9_\.]*)?)\s+import\s+(.+)$`)
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -6777,8 +6777,24 @@ func goHTTPRouteRegistrations(content string) []goHTTPRouteRegistration {
 }
 
 func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []expressRouteRelation {
-	var relations []expressRouteRelation
-	seen := map[string]bool{}
+	knownFiles := map[string]bool{}
+	for _, file := range files {
+		knownFiles[file.Path] = true
+	}
+	moduleFiles := pythonModuleFiles(files)
+	symbolsByFileAndName := map[string]map[string]SymbolRecord{}
+	for _, file := range files {
+		symbolsByFileAndName[file.Path] = map[string]SymbolRecord{}
+		for _, symbol := range recordsByFile[file.Path] {
+			if typeLikeKind(symbol.Kind) {
+				continue
+			}
+			if _, exists := symbolsByFileAndName[file.Path][symbol.Name]; !exists {
+				symbolsByFileAndName[file.Path][symbol.Name] = symbol
+			}
+		}
+	}
+	includedTargets := map[string]bool{}
 	for _, file := range files {
 		if !strings.EqualFold(filepath.Ext(file.Path), ".py") {
 			continue
@@ -6787,48 +6803,78 @@ func djangoRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolR
 		if !ok {
 			continue
 		}
-		handlers := map[string]SymbolRecord{}
-		for _, symbol := range recordsByFile[file.Path] {
-			if typeLikeKind(symbol.Kind) {
-				continue
-			}
-			if _, exists := handlers[symbol.Name]; !exists {
-				handlers[symbol.Name] = symbol
+		for _, mount := range djangoIncludeMounts(content) {
+			if target, ok := djangoResolveIncludeTarget(mount.Module, moduleFiles); ok {
+				includedTargets[target] = true
 			}
 		}
-		for _, registration := range djangoRouteRegistrations(content) {
-			handler, ok := handlers[registration.Handler]
+	}
+	var relations []expressRouteRelation
+	seen := map[string]bool{}
+	addRelation := func(route, evidence, detail string, handler SymbolRecord) {
+		key := handler.ID + "\x00" + route
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		relations = append(relations, expressRouteRelation{
+			Route:   route,
+			Handler: handler,
+			Relation: RelationRecord{
+				RecordType:    "relation",
+				FromID:        handler.ID,
+				ToID:          externalID("route", route),
+				Type:          "HANDLES_ROUTE",
+				Confidence:    0.84,
+				Reason:        "Django URL pattern resolved to local handler",
+				RelationScope: "external",
+				Resolution:    "exact",
+				TargetKind:    "route",
+				Evidence: []Evidence{{
+					Kind:      evidence,
+					FilePath:  handler.FilePath,
+					StartLine: handler.StartLine,
+					EndLine:   handler.EndLine,
+					Detail:    detail,
+				}},
+				WarningCodes: []string{},
+			},
+		})
+	}
+	for _, file := range files {
+		if !strings.EqualFold(filepath.Ext(file.Path), ".py") {
+			continue
+		}
+		content, ok := readContent(file.Path)
+		if !ok {
+			continue
+		}
+		if !includedTargets[file.Path] {
+			for _, registration := range djangoRouteRegistrations(content) {
+				handler, ok := djangoResolveRouteHandler(registration.Handler, file.Path, content, symbolsByFileAndName, knownFiles)
+				if !ok {
+					continue
+				}
+				addRelation(registration.Route, registration.EvidenceKind, registration.Detail, handler)
+			}
+		}
+		for _, mount := range djangoIncludeMounts(content) {
+			targetFile, ok := djangoResolveIncludeTarget(mount.Module, moduleFiles)
 			if !ok {
 				continue
 			}
-			key := handler.ID + "\x00" + registration.Route
-			if seen[key] {
+			targetContent, ok := readContent(targetFile)
+			if !ok {
 				continue
 			}
-			seen[key] = true
-			relations = append(relations, expressRouteRelation{
-				Route:   registration.Route,
-				Handler: handler,
-				Relation: RelationRecord{
-					RecordType:    "relation",
-					FromID:        handler.ID,
-					ToID:          externalID("route", registration.Route),
-					Type:          "HANDLES_ROUTE",
-					Confidence:    0.84,
-					Reason:        "Django URL pattern resolved to local handler",
-					RelationScope: "external",
-					Resolution:    "exact",
-					TargetKind:    "route",
-					Evidence: []Evidence{{
-						Kind:      registration.EvidenceKind,
-						FilePath:  handler.FilePath,
-						StartLine: handler.StartLine,
-						EndLine:   handler.EndLine,
-						Detail:    registration.Detail,
-					}},
-					WarningCodes: []string{},
-				},
-			})
+			for _, registration := range djangoRouteRegistrations(targetContent) {
+				handler, ok := djangoResolveRouteHandler(registration.Handler, targetFile, targetContent, symbolsByFileAndName, knownFiles)
+				if !ok {
+					continue
+				}
+				fullRoute := joinRoutePaths(mount.Prefix, registration.Route)
+				addRelation(fullRoute, "django_include", mount.Prefix+" + "+registration.Detail, handler)
+			}
 		}
 	}
 	sort.Slice(relations, func(i, j int) bool {
@@ -6854,8 +6900,8 @@ func djangoRouteRegistrations(content string) []djangoRouteRegistration {
 			Detail:       route + " -> " + handler,
 		})
 	}
-	pathRe := regexp.MustCompile(`\bpath\s*\(\s*([rRuUbB]*["'][^"']*["'])\s*,\s*([A-Za-z_][A-Za-z0-9_]*)`)
-	rePathRe := regexp.MustCompile(`\bre_path\s*\(\s*([rRuUbB]*["'][^"']*["'])\s*,\s*([A-Za-z_][A-Za-z0-9_]*)`)
+	pathRe := regexp.MustCompile(`\bpath\s*\(\s*([rRuUbB]*["'][^"']*["'])\s*,\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)`)
+	rePathRe := regexp.MustCompile(`\bre_path\s*\(\s*([rRuUbB]*["'][^"']*["'])\s*,\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)`)
 	for _, match := range pathRe.FindAllStringSubmatch(content, -1) {
 		if len(match) == 3 {
 			add(match[1], match[2], "django_path")
@@ -6867,6 +6913,105 @@ func djangoRouteRegistrations(content string) []djangoRouteRegistration {
 		}
 	}
 	return registrations
+}
+
+type djangoIncludeMount struct {
+	Prefix string
+	Module string
+}
+
+func pythonModuleFiles(files []FileRecord) map[string]string {
+	paths := map[string]bool{}
+	for _, file := range files {
+		paths[file.Path] = true
+	}
+	candidates := map[string][]string{}
+	for _, file := range files {
+		if !strings.EqualFold(filepath.Ext(file.Path), ".py") {
+			continue
+		}
+		for _, key := range pythonModuleKeysForPath(file.Path, nil, paths) {
+			parts := strings.Split(key.Module, ".")
+			for i := 0; i < len(parts)-1; i++ {
+				if suffix := strings.Join(parts[i:], "."); suffix != "" {
+					candidates[suffix] = append(candidates[suffix], file.Path)
+				}
+			}
+			candidates[key.Module] = append(candidates[key.Module], file.Path)
+		}
+	}
+	out := map[string]string{}
+	for module, paths := range candidates {
+		paths = dedupeStrings(paths)
+		if len(paths) == 1 {
+			out[module] = paths[0]
+		}
+	}
+	return out
+}
+
+func djangoIncludeMounts(content string) []djangoIncludeMount {
+	re := regexp.MustCompile(`\bpath\s*\(\s*([rRuUbB]*["'][^"']*["'])\s*,\s*include\s*\(\s*([rRuUbB]*["'][^"']*["'])`)
+	var mounts []djangoIncludeMount
+	for _, match := range re.FindAllStringSubmatch(content, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		prefix := djangoRoutePatternValue(match[1], false)
+		module, ok := pythonStringLiteralValue(match[2])
+		if prefix == "" || !ok || module == "" {
+			continue
+		}
+		mounts = append(mounts, djangoIncludeMount{Prefix: prefix, Module: module})
+	}
+	return mounts
+}
+
+func djangoResolveIncludeTarget(module string, moduleFiles map[string]string) (string, bool) {
+	module = strings.Trim(strings.TrimSpace(module), ".")
+	if module == "" {
+		return "", false
+	}
+	target, ok := moduleFiles[module]
+	return target, ok
+}
+
+func djangoResolveRouteHandler(handler, filePath, content string, symbolsByFileAndName map[string]map[string]SymbolRecord, knownFiles map[string]bool) (SymbolRecord, bool) {
+	if !strings.Contains(handler, ".") {
+		symbol, ok := symbolsByFileAndName[filePath][handler]
+		return symbol, ok
+	}
+	alias, member, ok := strings.Cut(handler, ".")
+	if !ok || alias == "" || member == "" {
+		return SymbolRecord{}, false
+	}
+	for _, module := range importedPythonNames(content)[alias] {
+		spec := module
+		if strings.HasPrefix(module, ".") {
+			spec = strings.TrimRight(module, ".") + "." + alias
+		}
+		targetFile, ok := resolveLocalImport(filePath, spec, knownFiles)
+		if !ok {
+			continue
+		}
+		if symbol, ok := symbolsByFileAndName[targetFile][member]; ok {
+			return symbol, true
+		}
+	}
+	return SymbolRecord{}, false
+}
+
+func pythonStringLiteralValue(expr string) (string, bool) {
+	expr = strings.TrimSpace(expr)
+	for expr != "" {
+		first := expr[0]
+		if first == 'r' || first == 'R' || first == 'u' || first == 'U' || first == 'b' || first == 'B' {
+			expr = strings.TrimSpace(expr[1:])
+			continue
+		}
+		break
+	}
+	return staticStringExpressionValue(expr, nil)
 }
 
 func laravelRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []expressRouteRelation {

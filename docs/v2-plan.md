@@ -300,8 +300,9 @@ Tasks:
 - Improve route handler detection:
   Express/Fastify/Next.js, Django, Go `net/http`/chi/gin, Java Spring, C#
   ASP.NET, PHP Laravel/Symfony, Ruby on Rails, NestJS. Django `path(...)`
-  registrations and simple `re_path(...)` registrations resolve to same-file
-  local handler symbols when patterns are static. Go `net/http` `HandleFunc` registrations and
+  registrations, simple `re_path(...)` registrations, and URLConf
+  `include(...)` mounts resolve to local handler symbols when patterns are
+  static. Go `net/http` `HandleFunc` registrations and
   `HandlerFunc` wrappers resolve to same-file local handler symbols when paths
   are static or local literal constants; common Go chi/gin-style router method
   registrations do the same. Flask/FastAPI-style Python route decorators are

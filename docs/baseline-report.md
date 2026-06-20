@@ -132,7 +132,8 @@ False positives:
   method call, mapping decorator, Python Flask/FastAPI-style route decorator,
   FastAPI/Starlette-style `include_router(prefix=...)` mount, Java Spring-style
   direct mapping annotation, Django `path(...)`/simple `re_path(...)`
-  registration, Go `net/http` `HandleFunc`/`HandlerFunc` registration, or
+  registration or URLConf `include(...)` mount, Go `net/http`
+  `HandleFunc`/`HandlerFunc` registration, or
   Go chi/gin-style router method registration, C# ASP.NET route/HTTP-verb
   attributes, PHP Laravel/Symfony route attributes and declarations, direct
   Fastify/app/server JS route registrations, Ruby on Rails static route

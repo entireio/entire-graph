@@ -104,8 +104,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 - Go chi/gin-style router method registrations resolve static or
   local-literal-constant paths to same-file local handler symbols and bridge
   matching Go HTTP client calls as direct `CALLS`.
-- Django `path(...)` registrations and simple `re_path(...)` registrations
-  resolve static patterns to same-file local handler symbols and bridge
+- Django `path(...)` registrations, simple `re_path(...)` registrations, and
+  `path(..., include("module.urls"))` URLConf mounts resolve static patterns
+  to local handler symbols, including `views.handler` imports, and bridge
   matching Python HTTP client calls as direct `CALLS`.
 - Express-style JS/TS router mounts compose same-block
   `app.use("/prefix", router)` prefixes with static `router.get/post/...`
@@ -379,6 +380,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
     bytes.
   - `bench/results/result-1781968541.json`: Go/gin, syntax-only, 28,618 LOC,
     123,615 LOC/s, max RSS 29,360,128 bytes, estimated output 1,902,627
+    bytes.
+  - `bench/results/result-1781968842.json`: Go/gin, syntax-only, 28,618 LOC,
+    142,102 LOC/s, max RSS 26,853,376 bytes, estimated output 1,902,626
     bytes.
 
 ## Remaining Honesty Notes
