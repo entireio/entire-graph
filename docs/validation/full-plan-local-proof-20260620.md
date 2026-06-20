@@ -343,7 +343,8 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   `DATA_FLOWS` when a caller parameter is pushed/appended/added into a local
   collection and that collection is passed to a known callee.
 - JS/TS GraphQL resolver maps now emit concrete `graphql_resolver` symbols and
-  `HANDLES_GRAPHQL` edges for `Query`, `Mutation`, and `Subscription` fields;
+  `HANDLES_GRAPHQL` edges for `Query`, `Mutation`, and `Subscription` fields,
+  including inline handlers and named/member/wrapped resolver references;
   GraphQL schema files now emit `graphql_schema_field` symbols and
   `HANDLES_GRAPHQL` edges for root `Query`, `Mutation`, and `Subscription`
   fields in `type` and `extend type` blocks, and matching schema root fields

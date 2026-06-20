@@ -368,10 +368,13 @@ Tasks:
   source evidence.
 - GraphQL operation literals, JS/TS resolver-map fields, and GraphQL schema
   root fields in `type`/`extend type` `Query`, `Mutation`, and `Subscription`
-  blocks now emit `HANDLES_GRAPHQL`; matching schema root fields emit exact
-  local `CALLS` links to matching resolver-map fields. Full schema validation,
-  type checking, and non-root resolver type analysis remain out of scope for
-  the current heuristic pass.
+  blocks now emit `HANDLES_GRAPHQL`. Resolver-map fields cover inline
+  function/arrow handlers, subscription resolver objects, and named/member or
+  wrapped resolver references such as `user: getUser`,
+  `viewer: userResolvers.viewer`, and `user: withAuth(getUser)`. Matching
+  schema root fields emit exact local `CALLS` links to matching resolver-map
+  fields. Full schema validation, type checking, and non-root resolver type
+  analysis remain out of scope for the current heuristic pass.
 - Add gRPC/protobuf service extraction.
 - Add tRPC detection for TypeScript.
 - Add channel detection for common pub-sub/event APIs:

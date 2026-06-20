@@ -1440,14 +1440,15 @@ func postgresPolicyEntities(src []byte) []Entity {
 }
 
 var (
-	graphqlResolverRootPattern     = regexp.MustCompile(`(?m)\b([A-Z][A-Za-z0-9_]*)\s*:\s*\{`)
-	graphqlResolverContextPattern  = regexp.MustCompile(`(?i)\b(graphql|resolvers?)\b`)
-	graphqlResolverFieldPattern    = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
-	graphqlResolverObjectPattern   = regexp.MustCompile(`(?m)\b(?:subscribe|resolve)\s*:`)
-	graphqlSchemaDefinitionPattern = regexp.MustCompile(`(?m)\bschema\b[^{]*\{`)
-	graphqlSchemaOperationPattern  = regexp.MustCompile(`(?m)\b(query|mutation|subscription)\s*:\s*([_A-Za-z][_0-9A-Za-z]*)\b`)
-	graphqlSchemaTypePattern       = regexp.MustCompile(`(?m)\b(?:extend\s+)?type\s+([_A-Za-z][_0-9A-Za-z]*)\b[^{]*\{`)
-	graphqlSchemaFieldNamePattern  = regexp.MustCompile(`^[_A-Za-z][_0-9A-Za-z]*$`)
+	graphqlResolverRootPattern      = regexp.MustCompile(`(?m)\b([A-Z][A-Za-z0-9_]*)\s*:\s*\{`)
+	graphqlResolverContextPattern   = regexp.MustCompile(`(?i)\b(graphql|resolvers?)\b`)
+	graphqlResolverFieldPattern     = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
+	graphqlResolverReferencePattern = regexp.MustCompile(`^([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*)*(?:\s*\([^{};]*\))?\s*(?:,|$)`)
+	graphqlResolverObjectPattern    = regexp.MustCompile(`(?m)\b(?:subscribe|resolve)\s*:`)
+	graphqlSchemaDefinitionPattern  = regexp.MustCompile(`(?m)\bschema\b[^{]*\{`)
+	graphqlSchemaOperationPattern   = regexp.MustCompile(`(?m)\b(query|mutation|subscription)\s*:\s*([_A-Za-z][_0-9A-Za-z]*)\b`)
+	graphqlSchemaTypePattern        = regexp.MustCompile(`(?m)\b(?:extend\s+)?type\s+([_A-Za-z][_0-9A-Za-z]*)\b[^{]*\{`)
+	graphqlSchemaFieldNamePattern   = regexp.MustCompile(`^[_A-Za-z][_0-9A-Za-z]*$`)
 )
 
 func graphqlSchemaEntities(content string) []Entity {
@@ -1702,7 +1703,20 @@ func looksLikeGraphQLResolverValue(value string) bool {
 		return graphqlResolverObjectPattern.MatchString(trimmed[:end])
 	default:
 		arrow := strings.Index(trimmed, "=>")
-		return arrow > 0 && arrow < 80
+		return (arrow > 0 && arrow < 80) || looksLikeGraphQLResolverReference(trimmed)
+	}
+}
+
+func looksLikeGraphQLResolverReference(value string) bool {
+	match := graphqlResolverReferencePattern.FindStringSubmatch(value)
+	if len(match) < 2 {
+		return false
+	}
+	switch match[1] {
+	case "false", "null", "true", "undefined":
+		return false
+	default:
+		return true
 	}
 }
 

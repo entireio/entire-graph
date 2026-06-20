@@ -129,7 +129,8 @@ resolved through the receiver's type (see "Field-access relations" below).
 
 Service/configuration/type/flow expansion is now present in the baseline:
 `HANDLES_GRPC`, `HANDLES_GRAPHQL` from operation literals, JS/TS resolver
-maps, and GraphQL schema root fields with exact schema-root-to-resolver
+maps including inline handlers and named/member resolver references, and
+GraphQL schema root fields with exact schema-root-to-resolver
 `CALLS` links, `HANDLES_TRPC`, Dockerfile/Kubernetes/Kustomize/HCL/common
 project-config `CONFIGURES`, positional
 `PARAM_TYPE`/`RETURNS_TYPE`, `ASYNC_CALLS`, `DATA_FLOWS`, and bounded

@@ -154,6 +154,10 @@ func TestTreeSitterParserTypeScriptGraphQLResolverEntities(t *testing.T) {
     viewer(_parent, _args, ctx) {
       return ctx.viewer
     },
+    namedUser: getUser,
+    memberUser: userResolvers.findUser,
+    wrappedUser: withAuth(getUser),
+    disabled: true,
   },
   Mutation: {
     createUser: async (_parent, args) => ({ id: args.input.id }),
@@ -177,10 +181,13 @@ func TestTreeSitterParserTypeScriptGraphQLResolverEntities(t *testing.T) {
 			seen[entity.Name] = entity
 		}
 	}
-	for _, name := range []string{"Query.user", "Query.viewer", "Mutation.createUser", "Subscription.userCreated", "User.id"} {
+	for _, name := range []string{"Query.user", "Query.viewer", "Query.namedUser", "Query.memberUser", "Query.wrappedUser", "Mutation.createUser", "Subscription.userCreated", "User.id"} {
 		if _, ok := seen[name]; !ok {
 			t.Fatalf("missing GraphQL resolver entity %s in %#v", name, entities)
 		}
+	}
+	if _, ok := seen["Query.disabled"]; ok {
+		t.Fatalf("literal boolean was misreported as GraphQL resolver entity: %#v", seen["Query.disabled"])
 	}
 	if seen["Query.user"].Signature != "GraphQL resolver query user" {
 		t.Fatalf("resolver signature = %q", seen["Query.user"].Signature)

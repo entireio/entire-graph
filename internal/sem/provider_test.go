@@ -5756,13 +5756,13 @@ type User {
 `)
 	writeFile(t, repo, "src/resolvers.ts", `export const resolvers = {
   Query: {
-    user: (_parent, args) => ({ id: args.id }),
+    user: getUser,
   },
   Mutation: {
-    createUser: async (_parent, args) => ({ id: args.input.id }),
+    createUser: mutationResolvers.createUser,
   },
   User: {
-    id: (user) => user.id,
+    id: userFieldResolvers.id,
   },
 }
 `)
