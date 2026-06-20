@@ -337,7 +337,7 @@ var (
 	destructuredAssignCallRe = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*(?:\[\s*([^\]\n]+)\s*\]|\(?\s*([A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)+)\s*\)?)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
 	returnVarRe              = regexp.MustCompile(`(?m)\breturn\s+\$?([A-Za-z_$][\w$]*)\b`)
 	returnPropertyRe         = regexp.MustCompile(`(?m)\breturn\s+\$?([A-Za-z_$][\w$]*)\s*\.\s*([A-Za-z_$][\w$]*)\b`)
-	aliasAssignRe            = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*\$?([A-Za-z_$][\w$]*)\b`)
+	aliasAssignRe            = regexp.MustCompile(`(?m)\b(?:(?:const|let|var)\s+)?\$?([A-Za-z_$][\w$]*)[ \t]*(?:\:[^=\n]+)?[ \t]*(?::=|=)[ \t]*\$?([A-Za-z_$][\w$]*)[ \t]*(?:$|[;\r\n])`)
 	destructuredParamAliasRe = regexp.MustCompile(`(?m)\b(?:const|let|var)\s*\{([^{}\n]+)\}\s*(?:\:\s*[^=\n]+)?\s*=\s*\$?([A-Za-z_$][\w$]*)\b`)
 	localObjectVarRe         = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:\{\s*\}|new\s+[A-Za-z_$][\w$]*\s*\(\s*\))`)
 	objectLiteralVarRe       = regexp.MustCompile(`(?s)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*\{([^{}]*)\}`)
@@ -506,6 +506,9 @@ func returnFlowCalls(block, signature string) []returnFlowCall {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
 	for _, flow := range parameterPropertyForwardingFlows(stripped, signature) {
+		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
+	}
+	for _, flow := range parameterPropertyAliasForwardingFlows(stripped, signature) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
 	for _, flow := range aliasForwardingFlows(stripped, signature) {
@@ -919,6 +922,67 @@ func forwardedParameterProperty(arg string, params map[string]bool) (string, str
 		return match[1], "[]", true
 	}
 	return "", "", false
+}
+
+func parameterPropertyAliasForwardingFlows(block, signature string) []returnFlowCall {
+	params := parameterNames(signature)
+	if len(params) == 0 {
+		return nil
+	}
+	aliasToProperty := map[string]string{}
+	assignmentRe := regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(\$?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\s*(?:"[^"]*"|'[^']*'|[0-9]*)\s*\]))`)
+	for _, match := range assignmentRe.FindAllStringSubmatch(block, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		alias := strings.TrimPrefix(match[1], "$")
+		paramName, access, ok := forwardedParameterProperty(match[2], params)
+		if alias == "" || alias == paramName || !ok {
+			continue
+		}
+		aliasToProperty[alias] = paramName + access
+	}
+	if len(aliasToProperty) == 0 {
+		return nil
+	}
+	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
+	var flows []returnFlowCall
+	seen := map[string]bool{}
+	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		name := strings.TrimPrefix(match[1], "$")
+		if dataFlowCallNameIgnored(name) {
+			continue
+		}
+		for _, arg := range splitSimpleArguments(match[2]) {
+			alias := strings.TrimPrefix(strings.TrimSpace(arg), "$")
+			property := aliasToProperty[alias]
+			if property == "" {
+				continue
+			}
+			key := name + "\x00" + alias + "\x00" + property
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			flows = append(flows, returnFlowCall{
+				Name:         name,
+				Reason:       "caller parameter property alias forwarded into callee argument",
+				EvidenceKind: "parameter_property_alias_forward_flow",
+				Detail:       property + " -> " + alias + " -> " + name + "()",
+				Direction:    "caller_to_callee",
+			})
+		}
+	}
+	sort.Slice(flows, func(i, j int) bool {
+		if flows[i].Name != flows[j].Name {
+			return flows[i].Name < flows[j].Name
+		}
+		return flows[i].Detail < flows[j].Detail
+	})
+	return flows
 }
 
 func aliasForwardingFlows(block, signature string) []returnFlowCall {

@@ -79,6 +79,8 @@ go test ./internal/sem -run 'TestBuildProviderSnapshotEmits(DirectLiteralArgumen
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-direct-literal-flow -min-loc-per-sec 1
 go test ./internal/sem -run 'TestBuildProviderSnapshotEmits(ArgumentForward|ParameterPropertyForward|PythonParameterPropertyForward|AliasForward)DataFlow' -count=1
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-param-property-flow -min-loc-per-sec 1
+go test ./internal/sem -run 'TestBuildProviderSnapshotEmits(ParameterPropertyAliasForward|PythonParameterPropertyAliasForward|ParameterPropertyForward|PythonParameterPropertyForward|AliasForward)DataFlow' -count=1
+go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-param-property-alias-flow -min-loc-per-sec 1
 go test ./internal/sem -run 'TestKubernetes(MonitorSelectorsDependOnTargets|PrometheusMonitorSecretDependencies)' -count=1
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-prom-monitor-secrets -min-loc-per-sec 1
 ```
@@ -373,6 +375,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   `DATA_FLOWS` when a direct property or literal-key access on a caller
   parameter, such as `input.value` or `input["value"]`, is passed into a known
   callee; non-parameter locals are ignored.
+- Conservative parameter-property alias forwarding emits caller-to-callee
+  `DATA_FLOWS` when a local alias is assigned from a caller parameter property
+  or literal-key access, such as `const value = input.value`, and that alias is
+  passed to a known callee; unrelated local object properties are ignored.
 - Conservative parameter-alias forwarding emits caller-to-callee `DATA_FLOWS`
   when a caller parameter is assigned to a local alias and that alias is passed
   to a known callee.
@@ -802,6 +808,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781997213.json`: Go/gin, syntax-only, 28,618 LOC,
     166,586 LOC/s, max RSS 29,523,968 bytes, estimated output 1,902,631
     bytes.
+  - `bench/results/result-1781997681.json`: Go/gin, syntax-only, 28,618 LOC,
+    168,578 LOC/s, max RSS 27,885,568 bytes, estimated output 1,902,637
+    bytes.
   - `bench/results/result-1781997407.json`: Go/gin, syntax-only, 28,618 LOC,
     165,967 LOC/s, max RSS 30,015,488 bytes, estimated output 1,902,632
     bytes.
@@ -828,10 +837,11 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   constants. Arbitrary runtime URL construction remains intentionally skipped.
 - Data-flow support covers conservative destructured parameter-alias forwarding
   such as `const { value } = input; normalize(value)`, in addition to direct
-  parameter, direct parameter-property, alias, object-field/object-literal, and
-  collection-element forwarding, including JS/TS shorthand object literals,
-  Python dict literals, direct array/list literals such as `const values = [input];
-  normalize(values)`, and direct literal callee arguments such as
+  parameter, direct parameter-property, parameter-property alias, alias,
+  object-field/object-literal, and collection-element forwarding, including
+  JS/TS shorthand object literals, Python dict literals, direct array/list
+  literals such as `const values = [input]; normalize(values)`, and direct
+  literal callee arguments such as
   `normalize({ value: input })` or `collect([input])`. Broad program slicing
   remains intentionally out of scope.
 - GraphQL support covers operation literals, JS/TS resolver-map fields,

@@ -6841,6 +6841,126 @@ def run(input):
 	}
 }
 
+func TestBuildProviderSnapshotEmitsParameterPropertyAliasForwardDataFlow(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "flow.ts", `type Input = { value: string, other: string }
+
+function normalize(value: string): string {
+  return value.trim()
+}
+
+function collect(value: string): string {
+  return value.trim()
+}
+
+function ignore(value: string): string {
+  return "ignored"
+}
+
+export function run(input: Input): string {
+  const value = input.value
+  const other = input["other"]
+  normalize(value)
+  collect(other)
+  const local = { value: "static" }
+  const ignored = local.value
+  ignore(ignored)
+  return value
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct {
+		callee string
+		detail string
+	}{
+		{callee: "normalize", detail: "input.value -> value -> normalize()"},
+		{callee: "collect", detail: "input[] -> other -> collect()"},
+	} {
+		var found RelationRecord
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == "run" && lastSegment(relation.ToID) == want.callee && relation.Evidence[0].Kind == "parameter_property_alias_forward_flow" {
+				found = relation
+				break
+			}
+		}
+		if found.FromID == "" {
+			t.Fatalf("missing parameter property alias DATA_FLOWS run->%s: %#v", want.callee, snapshot.Relations)
+		}
+		if found.Reason != "caller parameter property alias forwarded into callee argument" || found.Confidence > 0.7 {
+			t.Fatalf("unexpected parameter property alias flow metadata for %s: %#v", want.callee, found)
+		}
+		if len(found.Evidence) != 1 || found.Evidence[0].Kind != "parameter_property_alias_forward_flow" || found.Evidence[0].Detail != want.detail {
+			t.Fatalf("unexpected parameter property alias flow evidence for %s: %#v", want.callee, found.Evidence)
+		}
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == "run" && lastSegment(relation.ToID) == "ignore" {
+			t.Fatalf("local object property alias produced DATA_FLOWS: %#v", relation)
+		}
+	}
+}
+
+func TestBuildProviderSnapshotEmitsPythonParameterPropertyAliasForwardDataFlow(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "flow.py", `def normalize(value):
+    return value.strip()
+
+def collect(value):
+    return value.strip()
+
+def ignore(value):
+    return "ignored"
+
+def run(input):
+    value = input.value
+    other = input["other"]
+    normalize(value)
+    collect(other)
+    local = {"value": "static"}
+    ignored = local["value"]
+    ignore(ignored)
+    return value
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct {
+		callee string
+		detail string
+	}{
+		{callee: "normalize", detail: "input.value -> value -> normalize()"},
+		{callee: "collect", detail: "input[] -> other -> collect()"},
+	} {
+		var found RelationRecord
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == "run" && lastSegment(relation.ToID) == want.callee && relation.Evidence[0].Kind == "parameter_property_alias_forward_flow" {
+				found = relation
+				break
+			}
+		}
+		if found.FromID == "" {
+			t.Fatalf("missing Python parameter property alias DATA_FLOWS run->%s: %#v", want.callee, snapshot.Relations)
+		}
+		if found.Reason != "caller parameter property alias forwarded into callee argument" || found.Confidence > 0.7 {
+			t.Fatalf("unexpected Python parameter property alias flow metadata for %s: %#v", want.callee, found)
+		}
+		if len(found.Evidence) != 1 || found.Evidence[0].Kind != "parameter_property_alias_forward_flow" || found.Evidence[0].Detail != want.detail {
+			t.Fatalf("unexpected Python parameter property alias flow evidence for %s: %#v", want.callee, found.Evidence)
+		}
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == "run" && lastSegment(relation.ToID) == "ignore" {
+			t.Fatalf("local Python object property alias produced DATA_FLOWS: %#v", relation)
+		}
+	}
+}
+
 func TestBuildProviderSnapshotEmitsAliasForwardDataFlow(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "flow.ts", `function normalize(value: string): string {
