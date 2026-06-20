@@ -1169,7 +1169,7 @@ func sortedStringSet(seen map[string]struct{}) []string {
 }
 
 func signatureTypeReferences(language, signature string) map[string][]string {
-	out := map[string][]string{"PARAM_TYPE": []string{}, "RETURNS_TYPE": []string{}}
+	out := map[string][]string{"PARAM_TYPE": {}, "RETURNS_TYPE": {}}
 	paramText, returnText := splitSignatureTypes(language, signature)
 	out["PARAM_TYPE"] = typeNamesFromText(paramText)
 	out["RETURNS_TYPE"] = typeNamesFromText(returnText)
