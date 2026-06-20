@@ -345,7 +345,8 @@ Relation vocabulary:
   direct, branch, conditional/fallback, and expression-assigned local
   assignment-then-return cases, plus
   conservative local caller-to-callee forwarding for exact/import-resolved
-  parameter, alias, object-field/object-literal, and collection-element cases.
+  parameter, alias, destructured alias, object-field/object-literal, and
+  collection-element cases.
 - `ASYNC_CALLS` — async call-site edge for language-level async constructs such
   as Go `go` statements, JavaScript/TypeScript/Python `await`, and common
   spawn/promise patterns when the target resolves to a known symbol.

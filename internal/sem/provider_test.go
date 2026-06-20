@@ -6571,6 +6571,54 @@ export function run(input: string): string {
 	}
 }
 
+func TestBuildProviderSnapshotEmitsDestructuredAliasForwardDataFlow(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "flow.ts", `type Input = { value: string }
+
+function normalize(value: string): string {
+  return value.trim()
+}
+
+function ignore(value: string): string {
+  return "ignored"
+}
+
+export function run(input: Input): string {
+  const { value } = input
+  normalize(value)
+  const { other } = { other: "static" }
+  ignore(other)
+  return value
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found RelationRecord
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == "run" && lastSegment(relation.ToID) == "normalize" {
+			found = relation
+			break
+		}
+	}
+	if found.FromID == "" {
+		t.Fatalf("missing destructured alias forward DATA_FLOWS run->normalize: %#v", snapshot.Relations)
+	}
+	if found.Reason != "caller parameter destructured alias forwarded into callee argument" || found.Confidence > 0.7 {
+		t.Fatalf("unexpected destructured alias flow metadata: %#v", found)
+	}
+	if len(found.Evidence) != 1 || found.Evidence[0].Kind != "destructured_alias_forward_flow" || found.Evidence[0].Detail != "input -> value -> normalize()" {
+		t.Fatalf("unexpected destructured alias flow evidence: %#v", found.Evidence)
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == "run" && lastSegment(relation.ToID) == "ignore" {
+			t.Fatalf("non-parameter destructured alias produced DATA_FLOWS: %#v", relation)
+		}
+	}
+}
+
 func TestBuildProviderSnapshotEmitsObjectFieldForwardDataFlow(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "flow.ts", `type Payload = { value?: string }

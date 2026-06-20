@@ -338,6 +338,7 @@ var (
 	returnVarRe              = regexp.MustCompile(`(?m)\breturn\s+\$?([A-Za-z_$][\w$]*)\b`)
 	returnPropertyRe         = regexp.MustCompile(`(?m)\breturn\s+\$?([A-Za-z_$][\w$]*)\s*\.\s*([A-Za-z_$][\w$]*)\b`)
 	aliasAssignRe            = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*\$?([A-Za-z_$][\w$]*)\b`)
+	destructuredParamAliasRe = regexp.MustCompile(`(?m)\b(?:const|let|var)\s*\{([^{}\n]+)\}\s*(?:\:\s*[^=\n]+)?\s*=\s*\$?([A-Za-z_$][\w$]*)\b`)
 	localObjectVarRe         = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:\{\s*\}|new\s+[A-Za-z_$][\w$]*\s*\(\s*\))`)
 	objectLiteralVarRe       = regexp.MustCompile(`(?s)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*\{([^{}]*)\}`)
 	objectLiteralFieldRe     = regexp.MustCompile(`(?:^|,|\n)\s*([A-Za-z_$][\w$]*)\s*:\s*\$?([A-Za-z_$][\w$]*)\b`)
@@ -504,6 +505,9 @@ func returnFlowCalls(block, signature string) []returnFlowCall {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
 	for _, flow := range aliasForwardingFlows(stripped, signature) {
+		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
+	}
+	for _, flow := range destructuredAliasForwardingFlows(stripped, signature) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
 	for _, flow := range objectFieldForwardingFlows(stripped, signature) {
@@ -903,6 +907,89 @@ func aliasForwardingFlows(block, signature string) []returnFlowCall {
 		return flows[i].Detail < flows[j].Detail
 	})
 	return flows
+}
+
+func destructuredAliasForwardingFlows(block, signature string) []returnFlowCall {
+	params := parameterNames(signature)
+	if len(params) == 0 {
+		return nil
+	}
+	aliasToParam := map[string]string{}
+	for _, match := range destructuredParamAliasRe.FindAllStringSubmatch(block, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		param := strings.TrimPrefix(match[2], "$")
+		if !params[param] {
+			continue
+		}
+		for _, alias := range destructuredObjectAliases(match[1]) {
+			if alias == "" || alias == param {
+				continue
+			}
+			aliasToParam[alias] = param
+		}
+	}
+	if len(aliasToParam) == 0 {
+		return nil
+	}
+	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
+	var flows []returnFlowCall
+	seen := map[string]bool{}
+	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		name := strings.TrimPrefix(match[1], "$")
+		if dataFlowCallNameIgnored(name) {
+			continue
+		}
+		for _, arg := range splitSimpleArguments(match[2]) {
+			alias := strings.TrimPrefix(strings.TrimSpace(arg), "$")
+			param := aliasToParam[alias]
+			if param == "" {
+				continue
+			}
+			key := name + "\x00" + alias + "\x00" + param
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			flows = append(flows, returnFlowCall{
+				Name:         name,
+				Reason:       "caller parameter destructured alias forwarded into callee argument",
+				EvidenceKind: "destructured_alias_forward_flow",
+				Detail:       param + " -> " + alias + " -> " + name + "()",
+				Direction:    "caller_to_callee",
+			})
+		}
+	}
+	sort.Slice(flows, func(i, j int) bool {
+		if flows[i].Name != flows[j].Name {
+			return flows[i].Name < flows[j].Name
+		}
+		return flows[i].Detail < flows[j].Detail
+	})
+	return flows
+}
+
+func destructuredObjectAliases(fields string) []string {
+	seen := map[string]struct{}{}
+	for _, field := range splitSimpleArguments(fields) {
+		field = strings.TrimSpace(strings.TrimPrefix(field, "..."))
+		if field == "" {
+			continue
+		}
+		if colon := strings.LastIndex(field, ":"); colon >= 0 {
+			field = strings.TrimSpace(field[colon+1:])
+		}
+		field = strings.TrimSpace(strings.TrimPrefix(field, "..."))
+		if !regexp.MustCompile(`^[A-Za-z_$][\w$]*$`).MatchString(field) {
+			continue
+		}
+		seen[strings.TrimPrefix(field, "$")] = struct{}{}
+	}
+	return sortedStringSet(seen)
 }
 
 func objectFieldForwardingFlows(block, signature string) []returnFlowCall {

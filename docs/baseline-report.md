@@ -264,7 +264,8 @@ False negatives:
   assigned callee results such as `const result = helper(); return result.data`.
   Caller parameters passed into
   exact/import-resolved callees, including conservative local alias
-  (`alias = input; callee(alias)`), object-field forwarding
+  (`alias = input; callee(alias)`), destructured alias forwarding
+  (`const { value } = input; callee(value)`), object-field forwarding
   (`payload.field = input; callee(payload)`), simple object-literal forwarding
   (`const payload = { value: input }; callee(payload)`), and
   collection-element forwarding (`values.push(input); callee(values)`) cases,
