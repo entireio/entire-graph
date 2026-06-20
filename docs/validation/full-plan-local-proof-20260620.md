@@ -57,6 +57,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
   metadata.
 - Exact Java/Kotlin/Scala-style package imports resolve through package
   declarations and source file names with `import_resolved` metadata.
+- Simple root Maven/Gradle package identity aliases resolve matching JVM imports
+  to local type files with `import_resolved` metadata.
 - Rust `crate::`, `self::`, and Cargo package-name imports resolve to local
   module files with `import_resolved` metadata for conventional source layouts,
   deterministic `#[path] mod` aliases, and straightforward `pub use`
@@ -293,6 +295,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
     135,086 LOC/s, max RSS 27,246,592 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781957549.json`: Go/gin, syntax-only, 28,618 LOC,
     138,238 LOC/s, max RSS 27,983,872 bytes, output 1,938,906 bytes.
+  - `bench/results/result-1781958095.json`: Go/gin, syntax-only, 28,618 LOC,
+    164,424 LOC/s, max RSS 28,344,320 bytes, output 1,938,906 bytes.
 
 ## Remaining Honesty Notes
 

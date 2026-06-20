@@ -199,13 +199,15 @@ Tasks:
   inferred nested `*/src` namespace roots are implemented for local Python
   module resolution; exact
   Java/Kotlin/Scala package imports are implemented through package declarations
-  and source file names; Cargo package names, deterministic `#[path] mod`
-  aliases, and straightforward `pub use` re-exports are implemented for local
-  Rust module files. JS/TS literal CommonJS `require("...")`, literal dynamic
+  and source file names, with simple root Maven/Gradle package identity aliases;
+  Cargo package names, deterministic `#[path] mod` aliases, and straightforward
+  `pub use` re-exports are implemented for local Rust module files. JS/TS
+  literal CommonJS `require("...")`, literal dynamic
   `import("...")`, and deterministic computed module strings built from known
   local string constants emit `IMPORTS`; CommonJS bindings from those computed
   modules also participate in imported external call resolution. Maven/Gradle
-  classpath modeling, arbitrary runtime-computed module names, and
+  classpath/build-variant modeling beyond root package identity, arbitrary
+  runtime-computed module names, and
   macro-expanded or complex Rust name resolution remain open.
 - Normalize module/package roots and file-to-module ownership.
 - Resolve relative imports for Go, Python, JS/TS, Rust, Java, C#, PHP.

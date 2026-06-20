@@ -535,6 +535,83 @@ class Util {
 	}
 }
 
+func TestJavaMavenPackageIdentityResolvesLocalTypeFile(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "pom.xml", `<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.acme</groupId>
+  <artifactId>worker-lib</artifactId>
+</project>
+`)
+	writeFile(t, repo, "src/main/java/app/Handler.java", `package app;
+
+import com.acme.worker.lib.service.Service;
+
+class Handler {
+  Service service;
+}
+`)
+	writeFile(t, repo, "src/main/java/service/Service.java", `package service;
+
+class Service {}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := fileID(snapshot.Header.RepoKey, "src/main/java/service/Service.java")
+	var found RelationRecord
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "IMPORTS" && strings.HasSuffix(relation.FromID, "file:src/main/java/app/Handler.java") && relation.ToID == target && relation.Evidence[0].Detail == "com.acme.worker.lib.service.Service" {
+			found = relation
+			break
+		}
+	}
+	if found.FromID == "" {
+		t.Fatalf("missing Maven identity Java import to %s in %#v", target, snapshot.Relations)
+	}
+	if found.Resolution != "import_resolved" || found.RelationScope != "module" || found.TargetKind != "file" || found.Confidence < 0.89 {
+		t.Fatalf("unexpected Maven identity import metadata: %#v", found)
+	}
+	if len(found.Evidence) != 1 || found.Evidence[0].Kind != "jvm_manifest_package_import" {
+		t.Fatalf("unexpected Maven identity import evidence: %#v", found.Evidence)
+	}
+}
+
+func TestJavaGradlePackageIdentityResolvesLocalTypeFile(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "settings.gradle", `rootProject.name = 'analytics-lib'
+`)
+	writeFile(t, repo, "build.gradle", `plugins {
+    id 'java-library'
+}
+
+group = 'io.acme'
+`)
+	writeFile(t, repo, "src/main/java/app/Handler.java", `package app;
+
+import io.acme.analytics.lib.service.Service;
+
+class Handler {
+  Service service;
+}
+`)
+	writeFile(t, repo, "src/main/java/service/Service.java", `package service;
+
+class Service {}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := fileID(snapshot.Header.RepoKey, "src/main/java/service/Service.java")
+	if !hasImportRelationWithEvidence(snapshot.Relations, "src/main/java/app/Handler.java", target, "io.acme.analytics.lib.service.Service", "jvm_manifest_package_import") {
+		t.Fatalf("missing Gradle identity Java import to %s in %#v", target, snapshot.Relations)
+	}
+}
+
 func TestRustCargoImportsResolveToLocalModuleFile(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "Cargo.toml", `[package]
@@ -3470,6 +3547,18 @@ func hasRelationTo(relations []RelationRecord, relationType, to string) bool {
 func hasImportRelation(relations []RelationRecord, fromPath, toID string) bool {
 	for _, relation := range relations {
 		if relation.Type == "IMPORTS" && strings.HasSuffix(relation.FromID, "file:"+fromPath) && relation.ToID == toID {
+			return true
+		}
+	}
+	return false
+}
+
+func hasImportRelationWithEvidence(relations []RelationRecord, fromPath, toID, detail, evidenceKind string) bool {
+	for _, relation := range relations {
+		if relation.Type != "IMPORTS" || !strings.HasSuffix(relation.FromID, "file:"+fromPath) || relation.ToID != toID {
+			continue
+		}
+		if len(relation.Evidence) == 1 && relation.Evidence[0].Detail == detail && relation.Evidence[0].Kind == evidenceKind {
 			return true
 		}
 	}

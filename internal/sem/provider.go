@@ -4127,23 +4127,25 @@ func resolveLocalImport(importingPath, spec string, knownFiles map[string]bool) 
 }
 
 type manifestImportResolver struct {
-	goModule          string
-	goPackages        map[string]string
-	jsPackageName     string
-	jsPackageExports  map[string]string
-	jsPackageImports  map[string]string
-	jsImportMap       map[string]string
-	jsImportMapScopes []jsImportMapScope
-	jsModuleFiles     map[string]string
-	tsPathMappings    []tsPathMapping
-	pythonPackages    []string
-	pythonSourceRoots []string
-	pythonModules     map[string]string
-	pythonNamespaces  map[string]bool
-	jvmTypes          map[string]string
-	rustCrateName     string
-	rustModules       map[string]string
-	rustAliases       map[string]string
+	goModule           string
+	goPackages         map[string]string
+	jsPackageName      string
+	jsPackageExports   map[string]string
+	jsPackageImports   map[string]string
+	jsImportMap        map[string]string
+	jsImportMapScopes  []jsImportMapScope
+	jsModuleFiles      map[string]string
+	tsPathMappings     []tsPathMapping
+	pythonPackages     []string
+	pythonSourceRoots  []string
+	pythonModules      map[string]string
+	pythonNamespaces   map[string]bool
+	jvmTypes           map[string]string
+	jvmTypeEvidence    map[string]string
+	jvmPackagePrefixes []string
+	rustCrateName      string
+	rustModules        map[string]string
+	rustAliases        map[string]string
 }
 
 type manifestImportResolution struct {
@@ -4165,7 +4167,7 @@ type jsImportMapScope struct {
 }
 
 func buildManifestImportResolver(files []FileRecord, readContent contentReader) manifestImportResolver {
-	resolver := manifestImportResolver{goPackages: map[string]string{}, jsPackageExports: map[string]string{}, jsPackageImports: map[string]string{}, jsImportMap: map[string]string{}, jsModuleFiles: map[string]string{}, pythonSourceRoots: []string{"src"}, pythonModules: map[string]string{}, pythonNamespaces: map[string]bool{}, jvmTypes: map[string]string{}, rustModules: map[string]string{}, rustAliases: map[string]string{}}
+	resolver := manifestImportResolver{goPackages: map[string]string{}, jsPackageExports: map[string]string{}, jsPackageImports: map[string]string{}, jsImportMap: map[string]string{}, jsModuleFiles: map[string]string{}, pythonSourceRoots: []string{"src"}, pythonModules: map[string]string{}, pythonNamespaces: map[string]bool{}, jvmTypes: map[string]string{}, jvmTypeEvidence: map[string]string{}, rustModules: map[string]string{}, rustAliases: map[string]string{}}
 	if content, ok := readContent("go.mod"); ok {
 		resolver.goModule = parseGoModulePath(content)
 	}
@@ -4196,6 +4198,24 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 	if content, ok := readContent("Cargo.toml"); ok {
 		resolver.rustCrateName = normalizeRustCrateName(parseCargoPackageName(content))
 	}
+	if content, ok := readContent("pom.xml"); ok {
+		resolver.jvmPackagePrefixes = append(resolver.jvmPackagePrefixes, parsePOMJVMPackagePrefixes(content)...)
+	}
+	var gradleArtifactName string
+	for _, path := range []string{"settings.gradle", "settings.gradle.kts"} {
+		if content, ok := readContent(path); ok {
+			gradleArtifactName = parseGradleRootProjectName(content)
+			if gradleArtifactName != "" {
+				break
+			}
+		}
+	}
+	for _, path := range []string{"build.gradle", "build.gradle.kts"} {
+		if content, ok := readContent(path); ok {
+			resolver.jvmPackagePrefixes = append(resolver.jvmPackagePrefixes, parseGradleJVMPackagePrefixes(content, gradleArtifactName)...)
+		}
+	}
+	resolver.jvmPackagePrefixes = normalizeJVMPackagePrefixes(resolver.jvmPackagePrefixes)
 	var goPaths []string
 	var jsPaths []string
 	var pyPaths []string
@@ -4276,8 +4296,12 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 			continue
 		}
 		if qualifiedName := jvmQualifiedTypeName(path, content); qualifiedName != "" {
-			if _, exists := resolver.jvmTypes[qualifiedName]; !exists {
-				resolver.jvmTypes[qualifiedName] = path
+			resolver.addJVMType(qualifiedName, path, "jvm_package_import")
+			for _, prefix := range resolver.jvmPackagePrefixes {
+				if qualifiedName == prefix || strings.HasPrefix(qualifiedName, prefix+".") {
+					continue
+				}
+				resolver.addJVMType(prefix+"."+qualifiedName, path, "jvm_manifest_package_import")
 			}
 		}
 	}
@@ -4301,6 +4325,14 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 	}
 	return resolver
+}
+
+func (resolver manifestImportResolver) addJVMType(qualifiedName, path, evidenceKind string) {
+	if _, exists := resolver.jvmTypes[qualifiedName]; exists {
+		return
+	}
+	resolver.jvmTypes[qualifiedName] = path
+	resolver.jvmTypeEvidence[qualifiedName] = evidenceKind
 }
 
 func parseGoModulePath(content string) string {
@@ -5101,11 +5133,13 @@ func (resolver manifestImportResolver) resolveJVMImport(importingPath, spec stri
 		return manifestImportResolution{}, false
 	}
 	path, ok := resolver.jvmTypes[spec]
+	matchedSpec := spec
 	if !ok {
 		probe := spec
 		for strings.Contains(probe, ".") {
 			probe = probe[:strings.LastIndex(probe, ".")]
 			if path, ok = resolver.jvmTypes[probe]; ok {
+				matchedSpec = probe
 				break
 			}
 		}
@@ -5113,13 +5147,93 @@ func (resolver manifestImportResolver) resolveJVMImport(importingPath, spec stri
 	if !ok || path == filepath.ToSlash(importingPath) {
 		return manifestImportResolution{}, false
 	}
+	evidenceKind := resolver.jvmTypeEvidence[matchedSpec]
+	if evidenceKind == "" {
+		evidenceKind = "jvm_package_import"
+	}
+	reason := "JVM package import resolved through package declaration"
+	if evidenceKind == "jvm_manifest_package_import" {
+		reason = "JVM package import resolved through Maven/Gradle package identity"
+	}
 	return manifestImportResolution{
 		Path:         path,
 		Confidence:   0.9,
 		Scope:        "module",
-		Reason:       "JVM package import resolved through package declaration",
-		EvidenceKind: "jvm_package_import",
+		Reason:       reason,
+		EvidenceKind: evidenceKind,
 	}, true
+}
+
+func parsePOMJVMPackagePrefixes(content string) []string {
+	groupID := firstXMLTagValue(content, "groupId")
+	artifactID := firstXMLTagValue(content, "artifactId")
+	return jvmPackagePrefixesFromGroupArtifact(groupID, artifactID)
+}
+
+func firstXMLTagValue(content, tag string) string {
+	re := regexp.MustCompile(`(?is)<` + regexp.QuoteMeta(tag) + `>\s*([^<]+?)\s*</` + regexp.QuoteMeta(tag) + `>`)
+	if match := re.FindStringSubmatch(content); len(match) == 2 {
+		return strings.TrimSpace(match[1])
+	}
+	return ""
+}
+
+func parseGradleJVMPackagePrefixes(content, fallbackArtifact string) []string {
+	group := firstGradleStringAssignment(content, "group")
+	artifact := firstGradleStringAssignment(content, "archivesBaseName")
+	if artifact == "" {
+		artifact = firstGradleStringAssignment(content, "archivesName")
+	}
+	if artifact == "" {
+		artifact = fallbackArtifact
+	}
+	return jvmPackagePrefixesFromGroupArtifact(group, artifact)
+}
+
+func parseGradleRootProjectName(content string) string {
+	return firstGradleStringAssignment(content, "rootProject.name")
+}
+
+func firstGradleStringAssignment(content, key string) string {
+	pattern := `(?m)^\s*` + regexp.QuoteMeta(key) + `\s*(?:=|\(\s*)\s*["']([^"']+)["']`
+	re := regexp.MustCompile(pattern)
+	if match := re.FindStringSubmatch(content); len(match) == 2 {
+		return strings.TrimSpace(match[1])
+	}
+	return ""
+}
+
+func jvmPackagePrefixesFromGroupArtifact(groupID, artifactID string) []string {
+	groupID = normalizeJVMPackagePrefix(groupID)
+	artifactID = normalizeJVMPackagePrefix(artifactID)
+	if groupID == "" || artifactID == "" {
+		return nil
+	}
+	return []string{groupID + "." + artifactID}
+}
+
+func normalizeJVMPackagePrefixes(prefixes []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, prefix := range prefixes {
+		prefix = normalizeJVMPackagePrefix(prefix)
+		if prefix == "" || seen[prefix] {
+			continue
+		}
+		seen[prefix] = true
+		out = append(out, prefix)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func normalizeJVMPackagePrefix(prefix string) string {
+	prefix = strings.TrimSpace(prefix)
+	prefix = strings.ReplaceAll(prefix, "-", ".")
+	prefix = strings.ReplaceAll(prefix, "_", ".")
+	prefix = regexp.MustCompile(`[^A-Za-z0-9.]+`).ReplaceAllString(prefix, ".")
+	prefix = regexp.MustCompile(`\.+`).ReplaceAllString(prefix, ".")
+	return strings.Trim(prefix, ".")
 }
 
 func jvmQualifiedTypeName(path, content string) string {
