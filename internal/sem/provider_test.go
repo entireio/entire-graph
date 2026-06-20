@@ -1150,6 +1150,43 @@ export async function ping(): Promise<unknown> {
 	}
 }
 
+func TestPythonRouteDecoratorsBridgeToHTTPClients(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "app.py", `from fastapi import FastAPI
+import requests
+
+app = FastAPI()
+
+@app.get("/users/{id}")
+def show_user(id: str):
+    return {"id": id}
+
+@app.route("/health", methods=["GET"])
+def health():
+    return "ok"
+
+def ping():
+    return requests.get("/health")
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "HANDLES_ROUTE", "show_user", "/users/{id}") {
+		t.Fatalf("missing FastAPI decorator route: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "HANDLES_ROUTE", "health", "/health") {
+		t.Fatalf("missing Flask route decorator: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "HTTP_CALLS", "ping", "/health") {
+		t.Fatalf("missing Python requests HTTP_CALLS relation: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "health") {
+		t.Fatalf("missing route bridge CALLS ping->health: %#v", snapshot.Relations)
+	}
+}
+
 func TestRouteDetectionRequiresRoutingContext(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "server.js", `function register(app) {

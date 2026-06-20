@@ -1616,7 +1616,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					})
 				}
 			}
-			for _, route := range routeLiterals(block) {
+			for _, route := range routeLiteralsForSymbol(file.Path, content, block, from) {
 				if _, ok := handledRoutes[route]; ok {
 					continue
 				}
@@ -4093,6 +4093,47 @@ func routeLiterals(content string) []string {
 			if len(match) > 1 {
 				seen[match[1]] = struct{}{}
 			}
+		}
+	}
+	return sortedKeys(seen)
+}
+
+func routeLiteralsForSymbol(path, content, block string, symbol SymbolRecord) []string {
+	seen := map[string]struct{}{}
+	for _, route := range routeLiterals(block) {
+		seen[route] = struct{}{}
+	}
+	if strings.EqualFold(filepath.Ext(path), ".py") {
+		for _, route := range pythonDecoratorRouteLiterals(content, symbol) {
+			seen[route] = struct{}{}
+		}
+	}
+	return sortedKeys(seen)
+}
+
+func pythonDecoratorRouteLiterals(content string, symbol SymbolRecord) []string {
+	if symbol.StartLine <= 0 {
+		return nil
+	}
+	lines := strings.Split(content, "\n")
+	index := symbol.StartLine - 1
+	if index >= len(lines) {
+		index = len(lines) - 1
+	}
+	seen := map[string]struct{}{}
+	for i := index; i >= 0 && index-i <= 8; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "def ") || strings.HasPrefix(line, "async def ") {
+			continue
+		}
+		if !strings.HasPrefix(line, "@") {
+			break
+		}
+		for _, route := range routeLiterals(line) {
+			seen[route] = struct{}{}
 		}
 	}
 	return sortedKeys(seen)

@@ -252,8 +252,9 @@ Objective: make boundary and cross-service analysis competitive.
 Tasks:
 
 - Improve route handler detection:
-  Express/Fastify/Next.js, Flask/FastAPI/Django, Go `net/http`/chi/gin, Java
-  Spring, C# ASP.NET, PHP Laravel/Symfony.
+  Express/Fastify/Next.js, Django, Go `net/http`/chi/gin, Java Spring, C#
+  ASP.NET, PHP Laravel/Symfony. Flask/FastAPI-style Python route decorators are
+  implemented for direct app/router decorators.
 - Add route client detection:
   `fetch`, Axios, Python requests/httpx, Go `http.Client`, Java HTTP clients,
   C# HttpClient.
