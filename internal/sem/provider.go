@@ -10037,11 +10037,11 @@ func springAnnotationRouteLiteralsAroundSymbol(content string, symbol SymbolReco
 		index = len(lines) - 1
 	}
 	seen := map[string]struct{}{}
-	collect := func(line string) {
-		if !springRouteAnnotationLine(line) {
+	collect := func(block string) {
+		if !springRouteAnnotationLine(block) {
 			return
 		}
-		for _, route := range routeLiterals(line) {
+		for _, route := range springRouteAnnotationLiterals(block) {
 			seen[route] = struct{}{}
 		}
 	}
@@ -10050,7 +10050,7 @@ func springAnnotationRouteLiteralsAroundSymbol(content string, symbol SymbolReco
 		current = strings.TrimSpace(lines[index])
 	}
 	if strings.HasPrefix(current, "@") {
-		collect(current)
+		collect(springAnnotationBlock(lines, index, minInt(len(lines)-1, index+8)))
 		for i := index + 1; i < len(lines) && i-index <= 8; i++ {
 			line := strings.TrimSpace(lines[i])
 			if line == "" {
@@ -10059,7 +10059,7 @@ func springAnnotationRouteLiteralsAroundSymbol(content string, symbol SymbolReco
 			if !strings.HasPrefix(line, "@") {
 				break
 			}
-			collect(line)
+			collect(springAnnotationBlock(lines, i, minInt(len(lines)-1, index+8)))
 		}
 	}
 	for i := index - 1; i >= 0 && index-i <= 8; i-- {
@@ -10068,9 +10068,60 @@ func springAnnotationRouteLiteralsAroundSymbol(content string, symbol SymbolReco
 			continue
 		}
 		if !strings.HasPrefix(line, "@") {
+			if springAnnotationContinuationLine(line) {
+				continue
+			}
 			break
 		}
-		collect(line)
+		collect(springAnnotationBlock(lines, i, index-1))
+	}
+	return sortedKeys(seen)
+}
+
+func springAnnotationBlock(lines []string, start, maxEnd int) string {
+	if start < 0 || start >= len(lines) {
+		return ""
+	}
+	if maxEnd >= len(lines) {
+		maxEnd = len(lines) - 1
+	}
+	var block []string
+	depth := 0
+	for i := start; i <= maxEnd; i++ {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if i > start && strings.HasPrefix(line, "@") && depth <= 0 {
+			break
+		}
+		block = append(block, line)
+		depth += strings.Count(line, "(")
+		depth -= strings.Count(line, ")")
+		if i > start && depth <= 0 {
+			break
+		}
+		if i == start && !strings.Contains(line, "(") {
+			break
+		}
+	}
+	return strings.Join(block, " ")
+}
+
+func springAnnotationContinuationLine(line string) bool {
+	line = strings.TrimSpace(line)
+	return line == ")" || line == "})" || strings.HasPrefix(line, "{") || strings.HasPrefix(line, "}") || strings.HasPrefix(line, `"`) || strings.HasPrefix(line, `'`)
+}
+
+func springRouteAnnotationLiterals(block string) []string {
+	if !springRouteAnnotationLine(block) {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	for _, match := range routeLiteralRe.FindAllStringSubmatch(block, -1) {
+		if len(match) == 2 && strings.HasPrefix(match[1], "/") {
+			seen[normalizeRouteParamSyntax(match[1])] = struct{}{}
+		}
 	}
 	return sortedKeys(seen)
 }

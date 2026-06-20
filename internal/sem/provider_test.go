@@ -4074,8 +4074,18 @@ class UserController {
     return id;
   }
 
+  @GetMapping({
+    "/members/{id}",
+    "/profiles/{id}"
+  })
+  String showMember(String id) {
+    return id;
+  }
+
   String ping(RestTemplate restTemplate) {
-    return restTemplate.getForObject("/api/users/{id}", String.class);
+    restTemplate.getForObject("/api/users/{id}", String.class);
+    restTemplate.getForObject("/api/members/{id}", String.class);
+    return restTemplate.getForObject("/api/profiles/{id}", String.class);
   }
 }
 `)
@@ -4087,11 +4097,20 @@ class UserController {
 	if !hasRelationByLastSegment(snapshot.Relations, "HANDLES_ROUTE", "UserController.show", "/api/users/{id}") {
 		t.Fatalf("missing composed Spring route annotation: %#v", snapshot.Relations)
 	}
+	if !hasRelationByLastSegment(snapshot.Relations, "HANDLES_ROUTE", "UserController.showMember", "/api/members/{id}") {
+		t.Fatalf("missing composed multi-line Spring member route annotation: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "HANDLES_ROUTE", "UserController.showMember", "/api/profiles/{id}") {
+		t.Fatalf("missing composed multi-line Spring profile route annotation: %#v", snapshot.Relations)
+	}
 	if !hasRelationByLastSegment(snapshot.Relations, "HTTP_CALLS", "UserController.ping", "/api/users/{id}") {
 		t.Fatalf("missing RestTemplate HTTP_CALLS relation: %#v", snapshot.Relations)
 	}
 	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "UserController.ping", "UserController.show") {
 		t.Fatalf("missing route bridge CALLS ping->show: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "UserController.ping", "UserController.showMember") {
+		t.Fatalf("missing route bridge CALLS ping->showMember: %#v", snapshot.Relations)
 	}
 	if hasRelationByLastSegment(snapshot.Relations, "HTTP_CALLS", "UserController", "/api/users/{id}") {
 		t.Fatalf("class body misclassified as HTTP_CALLS caller: %#v", snapshot.Relations)

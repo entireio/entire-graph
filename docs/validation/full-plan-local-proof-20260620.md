@@ -105,8 +105,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   compose to one route endpoint and avoid emitting the suffix literal as a
   standalone route.
 - Java Spring-style route annotations compose class-level prefixes with
-  method-level routes, emit `HANDLES_ROUTE`, and bridge matching
-  `RestTemplate`/HTTP client calls to handlers as direct `CALLS`.
+  method-level routes, including multi-line mapping arrays with multiple route
+  alternatives, emit `HANDLES_ROUTE`, and bridge matching `RestTemplate`/HTTP
+  client calls to handlers as direct `CALLS`.
 - C# ASP.NET controller route attributes compose class-level `[Route]`
   prefixes with method-level HTTP verb attributes, emit `HANDLES_ROUTE`, and
   bridge matching `HttpClient` calls to handlers as direct `CALLS`.
@@ -430,6 +431,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781979547.json`: Go/gin, syntax-only, 28,618 LOC,
     171,904 LOC/s, max RSS 27,443,200 bytes, estimated output 1,902,634
     bytes; run after C# minimal API `MapGroup` route extraction.
+  - `bench/results/result-1781979910.json`: Go/gin, syntax-only, 28,618 LOC,
+    171,072 LOC/s, max RSS 28,442,624 bytes, estimated output 1,902,635
+    bytes; run after Spring multi-line mapping array extraction.
   - `bench/results/result-1781972446.json`: Go/gin, syntax-only, 28,618 LOC,
     162,982 LOC/s, max RSS 26,804,224 bytes, estimated output 1,902,630
     bytes; run after IngressClass reference extraction.
@@ -609,6 +613,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
     bytes.
   - `bench/results/result-1781979547.json`: Go/gin, syntax-only, 28,618 LOC,
     171,904 LOC/s, max RSS 27,443,200 bytes, estimated output 1,902,634
+    bytes.
+  - `bench/results/result-1781979910.json`: Go/gin, syntax-only, 28,618 LOC,
+    171,072 LOC/s, max RSS 28,442,624 bytes, estimated output 1,902,635
     bytes.
 
 ## Remaining Honesty Notes
