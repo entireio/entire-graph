@@ -269,10 +269,12 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 - Same-file factory-returned receiver calls such as `makeWidget().label()` emit
   `CALLS` edges to local methods with `resolution: type_inferred` when the
   factory has an explicit local return type.
-- Explicit two-hop returned receiver calls such as
-  `makeContainer().widget().label()` and constructor-return chains such as
-  `new Container().widget().label()` emit `CALLS` edges to the final local
-  method when each intermediate method has an explicit local return type.
+- Explicit two- and three-hop returned receiver calls such as
+  `makeContainer().widget().label()` and
+  `makeContainer().section().widget().label()`, plus constructor-return chains
+  such as `new Container().widget().label()` and
+  `new Container().section().widget().label()`, emit `CALLS` edges to the final
+  local method when each intermediate method has an explicit local return type.
 - Same-file assigned factory receivers such as
   `const widget = makeWidget(); widget.label()` emit `CALLS` edges to local
   methods with `resolution: type_inferred` when the factory has an explicit
@@ -462,6 +464,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781982215.json`: Go/gin, syntax-only, 28,618 LOC,
     168,873 LOC/s, max RSS 27,885,568 bytes, estimated output 1,902,629
     bytes; run after Django class-based view route extraction.
+  - `bench/results/result-1781982554.json`: Go/gin, syntax-only, 28,618 LOC,
+    163,959 LOC/s, max RSS 29,769,728 bytes, estimated output 1,902,631
+    bytes; run after explicit three-hop receiver-chain extraction.
   - `bench/results/result-1781972446.json`: Go/gin, syntax-only, 28,618 LOC,
     162,982 LOC/s, max RSS 26,804,224 bytes, estimated output 1,902,630
     bytes; run after IngressClass reference extraction.

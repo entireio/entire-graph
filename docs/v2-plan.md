@@ -267,6 +267,10 @@ Tasks:
   `makeWidget().label()` and assigned factory receivers such as
   `const widget = makeWidget(); widget.label()` when the factory has an
   explicit local return type and the target method is known on that type.
+- Resolve explicit two- and three-hop same-file returned receiver chains such
+  as `makeContainer().widget().label()` and
+  `makeContainer().section().widget().label()` when every intermediate method
+  has an explicit local return type.
 - Emit `CALLS` with `resolution`, `confidence`, `reason`, and evidence.
 
 Acceptance:
@@ -279,9 +283,10 @@ Acceptance:
   fabricating arbitrary returned receiver flow.
 - Typed-parameter receiver calls resolve only when the parameter type and
   target method are known local symbols.
-- Factory-returned receiver calls, including assigned factory receivers, resolve
-  only when the same file contains an explicit factory return type and the
-  target method is known on that type.
+- Factory-returned receiver calls, including assigned factory receivers and
+  explicit two- and three-hop returned receiver chains, resolve only when the
+  same file contains explicit local return types and the target method is known
+  on the resolved type.
 - Brain impact can trust high-confidence direct callers/callees.
 
 ### WP5: OO And Type Relations

@@ -1636,6 +1636,12 @@ type returnedMethodChainCall struct {
 	Detail      string
 }
 
+type returnedMethodDeepChainCall struct {
+	Factory string
+	Methods []string
+	Detail  string
+}
+
 type typedMethodChainCall struct {
 	TypeName    string
 	FirstMethod string
@@ -1643,13 +1649,22 @@ type typedMethodChainCall struct {
 	Detail      string
 }
 
+type typedMethodDeepChainCall struct {
+	TypeName string
+	Methods  []string
+	Detail   string
+}
+
 var (
-	newCtorMethodChainCallRe  = regexp.MustCompile(`\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
-	ctorMethodChainCallRe     = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
-	returnedMethodChainCallRe = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
-	newCtorMethodCallRe       = regexp.MustCompile(`\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
-	ctorMethodCallRe          = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
-	returnedMethodCallRe      = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
+	newCtorMethodDeepChainCallRe = regexp.MustCompile(`\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
+	ctorMethodDeepChainCallRe    = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
+	returnedMethodDeepChainRe    = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
+	newCtorMethodChainCallRe     = regexp.MustCompile(`\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
+	ctorMethodChainCallRe        = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
+	returnedMethodChainCallRe    = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
+	newCtorMethodCallRe          = regexp.MustCompile(`\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
+	ctorMethodCallRe             = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
+	returnedMethodCallRe         = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
 )
 
 func chainedConstructorCalls(block string) []typedMethodCall {
@@ -1720,6 +1735,36 @@ func chainedConstructorReturnCalls(block string) []typedMethodChainCall {
 	return out
 }
 
+func chainedConstructorDeepReturnCalls(block string) []typedMethodDeepChainCall {
+	stripped := stripCodeLiteralsAndComments(block)
+	var out []typedMethodDeepChainCall
+	seen := map[string]bool{}
+	add := func(typeName string, methods []string, detail string) {
+		key := typeName + "." + strings.Join(methods, ".")
+		if typeName == "" || len(methods) < 3 || seen[key] {
+			return
+		}
+		for _, method := range methods {
+			if method == "" {
+				return
+			}
+		}
+		seen[key] = true
+		out = append(out, typedMethodDeepChainCall{TypeName: typeName, Methods: methods, Detail: detail})
+	}
+	for _, m := range newCtorMethodDeepChainCallRe.FindAllStringSubmatch(stripped, -1) {
+		if len(m) == 5 {
+			add(m[1], []string{m[2], m[3], m[4]}, "new "+m[1]+"()."+m[2]+"()."+m[3]+"()."+m[4])
+		}
+	}
+	for _, m := range ctorMethodDeepChainCallRe.FindAllStringSubmatch(stripped, -1) {
+		if len(m) == 5 {
+			add(m[1], []string{m[2], m[3], m[4]}, m[1]+"()."+m[2]+"()."+m[3]+"()."+m[4])
+		}
+	}
+	return out
+}
+
 func returnedReceiverChainCalls(block string) []returnedMethodChainCall {
 	stripped := stripCodeLiteralsAndComments(block)
 	var out []returnedMethodChainCall
@@ -1738,6 +1783,29 @@ func returnedReceiverChainCalls(block string) []returnedMethodChainCall {
 		}
 		seen[key] = true
 		out = append(out, returnedMethodChainCall{Factory: factory, FirstMethod: m[2], Method: m[3], Detail: factory + "()." + m[2] + "()." + m[3]})
+	}
+	return out
+}
+
+func returnedReceiverDeepChainCalls(block string) []returnedMethodDeepChainCall {
+	stripped := stripCodeLiteralsAndComments(block)
+	var out []returnedMethodDeepChainCall
+	seen := map[string]bool{}
+	for _, m := range returnedMethodDeepChainRe.FindAllStringSubmatch(stripped, -1) {
+		if len(m) != 5 {
+			continue
+		}
+		factory := strings.TrimPrefix(m[1], "$")
+		if factory == "" || factory == "new" || isCapitalized(factory) {
+			continue
+		}
+		methods := []string{m[2], m[3], m[4]}
+		key := factory + "." + strings.Join(methods, ".")
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, returnedMethodDeepChainCall{Factory: factory, Methods: methods, Detail: factory + "()." + strings.Join(methods, "().")})
 	}
 	return out
 }

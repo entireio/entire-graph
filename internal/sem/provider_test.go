@@ -4956,6 +4956,16 @@ def use(other):
 }
 
 class Container {
+  section(): Section {
+    return new Section()
+  }
+
+  widget(): Widget {
+    return new Widget()
+  }
+}
+
+class Section {
   widget(): Widget {
     return new Widget()
   }
@@ -4983,6 +4993,14 @@ export function labelFromConstructorChain(): string {
 
 export function labelFromFactoryChain(): string {
   return makeContainer().widget().label()
+}
+
+export function labelFromDeepConstructorChain(): string {
+  return new Container().section().widget().label()
+}
+
+export function labelFromDeepFactoryChain(): string {
+  return makeContainer().section().widget().label()
 }
 
 export function labelFromAssignedFactory(): string {
@@ -5030,6 +5048,14 @@ export function labelFor(widget: Widget): string {
 	// makeContainer(): Container; Container.widget(): Widget; ...label() -> resolves two explicit return hops.
 	if r, ok := inferred["labelFromFactoryChain->Widget.label"]; !ok || r.Confidence != 0.73 {
 		t.Fatalf("returned-receiver-chain call not resolved (0.73): %#v", inferred)
+	}
+	// new Container().section().widget().label() resolves three explicit return hops.
+	if r, ok := inferred["labelFromDeepConstructorChain->Widget.label"]; !ok || r.Confidence != 0.71 {
+		t.Fatalf("deep constructor-return-chain call not resolved (0.71): %#v", inferred)
+	}
+	// makeContainer(): Container; Container.section(): Section; Section.widget(): Widget; ...label().
+	if r, ok := inferred["labelFromDeepFactoryChain->Widget.label"]; !ok || r.Confidence != 0.7 {
+		t.Fatalf("deep returned-receiver-chain call not resolved (0.7): %#v", inferred)
 	}
 	// const widget = makeWidget(); widget.label() -> resolves through the assigned factory return type.
 	if r, ok := inferred["labelFromAssignedFactory->Widget.label"]; !ok || r.Confidence != 0.77 {

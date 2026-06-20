@@ -2293,8 +2293,10 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 	chainedCalls := chainedConstructorCalls(block)
 	returnedCalls := returnedReceiverCalls(block)
 	chainedReturnCalls := chainedConstructorReturnCalls(block)
+	deepChainedReturnCalls := chainedConstructorDeepReturnCalls(block)
 	returnedChainCalls := returnedReceiverChainCalls(block)
-	if len(calls) == 0 && len(chainedCalls) == 0 && len(returnedCalls) == 0 && len(chainedReturnCalls) == 0 && len(returnedChainCalls) == 0 {
+	returnedDeepChainCalls := returnedReceiverDeepChainCalls(block)
+	if len(calls) == 0 && len(chainedCalls) == 0 && len(returnedCalls) == 0 && len(chainedReturnCalls) == 0 && len(deepChainedReturnCalls) == 0 && len(returnedChainCalls) == 0 && len(returnedDeepChainCalls) == 0 {
 		return nil
 	}
 	varTypes := parameterVarTypes(from.Signature)
@@ -2308,6 +2310,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			varTypes[name] = typeName
 		}
 	}
+	deepReturnedCallSuffixes := receiverDeepChainSuffixes(deepChainedReturnCalls, returnedDeepChainCalls)
 	paramTypes := parameterVarTypes(from.Signature)
 	for name := range localTypes {
 		delete(paramTypes, name)
@@ -2406,6 +2409,9 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		})
 	}
 	for _, call := range returnedCalls {
+		if deepReturnedCallSuffixes[call.Factory+"."+call.Method] {
+			continue
+		}
 		for _, typeName := range returnTypesBySymbolNameAndFile[call.Factory][from.FilePath] {
 			sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
 			if !ok {
@@ -2442,7 +2448,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		}
 	}
 	for _, call := range chainedReturnCalls {
-		for _, typeName := range methodReturnTypes(call.TypeName, call.FirstMethod, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+		for _, typeName := range methodReturnChainTypes(call.TypeName, []string{call.FirstMethod}, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
 			sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
 			if !ok {
 				continue
@@ -2477,9 +2483,50 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			break
 		}
 	}
+	for _, call := range deepChainedReturnCalls {
+		if len(call.Methods) < 2 {
+			continue
+		}
+		intermediateMethods := call.Methods[:len(call.Methods)-1]
+		finalMethod := call.Methods[len(call.Methods)-1]
+		for _, typeName := range methodReturnChainTypes(call.TypeName, intermediateMethods, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+			sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+			if !ok {
+				continue
+			}
+			method, ok := methodsByContainer[sym.ID][finalMethod]
+			if !ok || method.ID == from.ID {
+				continue
+			}
+			scope := "file"
+			if method.FilePath != from.FilePath {
+				scope = "module"
+			}
+			relations = append(relations, RelationRecord{
+				RecordType:    "relation",
+				FromID:        from.ID,
+				ToID:          method.ID,
+				Type:          "CALLS",
+				Confidence:    0.71,
+				Reason:        "method call resolved via deep chained constructor-return type",
+				RelationScope: scope,
+				Resolution:    "type_inferred",
+				TargetKind:    "symbol",
+				Evidence: []Evidence{{
+					Kind:      "call_site",
+					FilePath:  from.FilePath,
+					StartLine: from.StartLine,
+					EndLine:   from.EndLine,
+					Detail:    call.Detail,
+				}},
+				WarningCodes: []string{},
+			})
+			break
+		}
+	}
 	for _, call := range returnedChainCalls {
 		for _, factoryTypeName := range returnTypesBySymbolNameAndFile[call.Factory][from.FilePath] {
-			for _, typeName := range methodReturnTypes(factoryTypeName, call.FirstMethod, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+			for _, typeName := range methodReturnChainTypes(factoryTypeName, []string{call.FirstMethod}, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
 				sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
 				if !ok {
 					continue
@@ -2516,7 +2563,97 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			break
 		}
 	}
+	for _, call := range returnedDeepChainCalls {
+		if len(call.Methods) < 2 {
+			continue
+		}
+		intermediateMethods := call.Methods[:len(call.Methods)-1]
+		finalMethod := call.Methods[len(call.Methods)-1]
+		for _, factoryTypeName := range returnTypesBySymbolNameAndFile[call.Factory][from.FilePath] {
+			for _, typeName := range methodReturnChainTypes(factoryTypeName, intermediateMethods, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+				sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
+				if !ok {
+					continue
+				}
+				method, ok := methodsByContainer[sym.ID][finalMethod]
+				if !ok || method.ID == from.ID {
+					continue
+				}
+				scope := "file"
+				if method.FilePath != from.FilePath {
+					scope = "module"
+				}
+				relations = append(relations, RelationRecord{
+					RecordType:    "relation",
+					FromID:        from.ID,
+					ToID:          method.ID,
+					Type:          "CALLS",
+					Confidence:    0.7,
+					Reason:        "method call resolved via deep chained returned receiver type",
+					RelationScope: scope,
+					Resolution:    "type_inferred",
+					TargetKind:    "symbol",
+					Evidence: []Evidence{{
+						Kind:      "call_site",
+						FilePath:  from.FilePath,
+						StartLine: from.StartLine,
+						EndLine:   from.EndLine,
+						Detail:    call.Detail,
+					}},
+					WarningCodes: []string{},
+				})
+				break
+			}
+			break
+		}
+	}
 	return relations
+}
+
+func receiverDeepChainSuffixes(chained []typedMethodDeepChainCall, returned []returnedMethodDeepChainCall) map[string]bool {
+	suffixes := map[string]bool{}
+	add := func(methods []string) {
+		if len(methods) < 2 {
+			return
+		}
+		receiver := methods[len(methods)-2]
+		method := methods[len(methods)-1]
+		if receiver != "" && method != "" {
+			suffixes[receiver+"."+method] = true
+		}
+	}
+	for _, call := range chained {
+		add(call.Methods)
+	}
+	for _, call := range returned {
+		add(call.Methods)
+	}
+	return suffixes
+}
+
+func methodReturnChainTypes(typeName string, methodNames []string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) []string {
+	if typeName == "" {
+		return nil
+	}
+	types := []string{typeName}
+	for _, methodName := range methodNames {
+		if methodName == "" || len(types) == 0 {
+			return nil
+		}
+		var next []string
+		seen := map[string]bool{}
+		for _, currentType := range types {
+			for _, returnedType := range methodReturnTypes(currentType, methodName, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
+				if returnedType == "" || seen[returnedType] {
+					continue
+				}
+				seen[returnedType] = true
+				next = append(next, returnedType)
+			}
+		}
+		types = next
+	}
+	return types
 }
 
 func methodReturnTypes(typeName, methodName string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) []string {
