@@ -104,6 +104,10 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
   `app.use("/prefix", router)` mounts with static `router.get/post/...`
   registrations and bridge exact matching HTTP client calls to the handler
   symbol.
+- Same-name imported Hono-style routers compose cross-file
+  `app.route("/prefix", router)` mounts with static `router.get/post/...`
+  registrations and bridge exact matching HTTP client calls to the handler
+  symbol.
 - Aliased named-import and namespace-member imported Express routers compose
   cross-file `app.use("/prefix", router)` mounts with static
   `router.get/post/...` registrations and bridge exact matching HTTP client
@@ -297,6 +301,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
     138,238 LOC/s, max RSS 27,983,872 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781958095.json`: Go/gin, syntax-only, 28,618 LOC,
     164,424 LOC/s, max RSS 28,344,320 bytes, output 1,938,906 bytes.
+  - `bench/results/result-1781958227.json`: Go/gin, syntax-only, 28,618 LOC,
+    129,558 LOC/s, max RSS 28,868,608 bytes, output 1,938,906 bytes.
 
 ## Remaining Honesty Notes
 

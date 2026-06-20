@@ -313,11 +313,11 @@ Tasks:
   boundaries bridge matching JS/TS clients, including bracket-parameter paths.
   NestJS controller/method decorators compose class prefixes with method routes
   and bridge matching JS/TS HTTP clients.
-  Express-style JS/TS same-block router mounts plus
+  Express/Hono-style JS/TS same-block router mounts plus
   same-name, aliased named-import, and namespace-member imported router mounts
-  compose `app.use("/prefix", router)` with static `router.get/post/...`
-  registrations, including local literal constants in mount prefixes and child
-  router paths. FastAPI/Starlette-style local
+  compose `app.use("/prefix", router)` or `app.route("/prefix", router)` with
+  static `router.get/post/...` registrations, including local literal constants
+  in mount prefixes and child router paths. FastAPI/Starlette-style local
   `include_router(router, prefix="/prefix")` mounts compose with static
   `@router.get/post/...` decorators, including locally resolved relative
   imports. Deterministic static computed route expressions such as

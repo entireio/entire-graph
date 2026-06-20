@@ -6800,7 +6800,7 @@ func jsRouterComposedRouteLiterals(block string, constants map[string]string) []
 }
 
 func jsRouterMounts(block string, constants map[string]string) []jsRouterMount {
-	re := regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\.use\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)`)
+	re := regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\.(?:use|route)\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)`)
 	var mounts []jsRouterMount
 	for _, match := range re.FindAllStringSubmatch(block, -1) {
 		if len(match) != 4 {
@@ -7113,12 +7113,12 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 							ToID:          externalID("route", fullRoute),
 							Type:          "HANDLES_ROUTE",
 							Confidence:    0.82,
-							Reason:        "Express router route resolved through local imported router mount",
+							Reason:        "JavaScript router route resolved through local imported router mount",
 							RelationScope: "external",
 							Resolution:    "import_resolved",
 							TargetKind:    "route",
 							Evidence: []Evidence{{
-								Kind:      "express_router_mount",
+								Kind:      "js_router_mount",
 								FilePath:  handler.FilePath,
 								StartLine: handler.StartLine,
 								EndLine:   handler.EndLine,
