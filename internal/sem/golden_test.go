@@ -6,6 +6,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -195,6 +196,70 @@ func TestProviderGoldenSnapshots(t *testing.T) {
 				t.Fatalf("snapshot for %s does not match golden; run:\n\tgo test ./internal/sem -run TestProviderGoldenSnapshots -update\n\n--- got ---\n%s", name, got)
 			}
 		})
+	}
+}
+
+type goldenFixtureCoverage struct {
+	FixtureCount  int            `json:"fixture_count"`
+	FileLanguages map[string]int `json:"file_languages"`
+	SymbolKinds   map[string]int `json:"symbol_kinds"`
+	RelationTypes map[string]int `json:"relation_types"`
+}
+
+func TestProviderGoldenFixtureQualityCoverageReport(t *testing.T) {
+	got := goldenFixtureCoverage{
+		FixtureCount:  len(goldenFixtures),
+		FileLanguages: map[string]int{},
+		SymbolKinds:   map[string]int{},
+		RelationTypes: map[string]int{},
+	}
+	for _, name := range goldenFixtures {
+		goldenPath := filepath.Join("testdata", "fixtures", name+".ndjson.golden")
+		data, err := os.ReadFile(goldenPath)
+		if err != nil {
+			t.Fatalf("read golden %s: %v", name, err)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			if line == "" {
+				continue
+			}
+			var record struct {
+				RecordType string `json:"record_type"`
+				Language   string `json:"language"`
+				Kind       string `json:"kind"`
+				Type       string `json:"type"`
+			}
+			if err := json.Unmarshal([]byte(line), &record); err != nil {
+				t.Fatalf("parse golden %s: %v\n%s", name, err, line)
+			}
+			switch record.RecordType {
+			case "file":
+				if record.Language != "" {
+					got.FileLanguages[record.Language]++
+				}
+			case "symbol":
+				if record.Kind != "" {
+					got.SymbolKinds[record.Kind]++
+				}
+			case "relation":
+				if record.Type != "" {
+					got.RelationTypes[record.Type]++
+				}
+			}
+		}
+	}
+	reportPath := filepath.Join("testdata", "fixtures", "quality_coverage.json")
+	var want goldenFixtureCoverage
+	data, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("read quality coverage report: %v", err)
+	}
+	if err := json.Unmarshal(data, &want); err != nil {
+		t.Fatalf("parse quality coverage report: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		gotJSON, _ := json.MarshalIndent(got, "", "  ")
+		t.Fatalf("golden fixture quality coverage drifted; update %s\n%s", reportPath, gotJSON)
 	}
 }
 

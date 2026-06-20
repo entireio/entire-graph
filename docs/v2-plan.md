@@ -160,12 +160,16 @@ Tasks:
   relation counts.
 - Add no-egress tests that fail if provider commands attempt network access.
 - Add a fixture-report command or test artifact that Brain can consume for the
-  cross-repo capability matrix.
+  cross-repo capability matrix. Delivered locally as the checked
+  `internal/sem/testdata/fixtures/quality_coverage.json` coverage artifact,
+  verified by `TestProviderGoldenFixtureQualityCoverageReport`.
 
 Acceptance:
 
 - `go test ./...` validates the current provider contract.
 - A baseline report exists for all fixture repos.
+- A checked fixture coverage artifact records current language, symbol-kind, and
+  relation-type coverage for the golden corpus.
 - Current known false positives and false negatives are documented.
 
 ### WP2: Stable Identity And Reconciliation

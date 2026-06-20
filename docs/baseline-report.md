@@ -16,6 +16,11 @@ fixture repo under `internal/sem/testdata/fixtures/<name>/` in worktree mode and
 compares the full NDJSON stream against `<name>.ndjson.golden`. Any change to
 symbols, relations, externals, or header stats appears as a golden diff in
 review.
+`TestProviderGoldenFixtureQualityCoverageReport` also verifies
+`internal/sem/testdata/fixtures/quality_coverage.json`, a checked summary of
+fixture count, covered file languages, symbol kinds, and relation types. That
+artifact is the retained semantic-quality coverage proof for the committed
+goldens; it is not a substitute for broader external scored corpora.
 
 - Determinism: fixtures are copied into an isolated temp dir named after the
   fixture, so `repo_key` resolves to a stable `local/<name>` and never inherits
@@ -29,7 +34,8 @@ review.
   ```
 
 - Add a fixture: drop a directory under `internal/sem/testdata/fixtures/`, list
-  its name in `goldenFixtures`, and run with `-update`.
+  its name in `goldenFixtures`, run with `-update`, then update
+  `quality_coverage.json`.
 
 ## Current Fixtures
 
