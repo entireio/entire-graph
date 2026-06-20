@@ -68,6 +68,8 @@ go test ./internal/sem -run 'TestTypeScriptManifestImportsResolveThrough(NestedP
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-nested-js-package-imports -min-loc-per-sec 1
 go test ./internal/sem -run 'TestPythonImportedRouterPrefixComposesAndBridgesHTTPClient|TestFlaskBlueprintPrefixComposesAndBridgesHTTPClient|TestFlaskImportedBlueprintAliasComposesAndBridgesHTTPClient' -count=1
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-flask-blueprint-alias -min-loc-per-sec 1
+go test ./internal/sem -run 'TestDjangoIncludeURLPatternsComposeHandlersAndBridgeHTTPClients|TestDjangoImportedIncludeURLConfComposesHandlersAndBridgeHTTPClients|TestProviderGoldenSnapshots/python-imports' -count=1
+go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-django-urlconf-alias -min-loc-per-sec 1
 ```
 
 ## Results
@@ -126,6 +128,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 - FastAPI/Starlette-style `include_router(prefix=...)` mounts compose with
   same-file or locally imported `APIRouter` decorators and bridge matching
   Python HTTP client calls to the handler symbol.
+- Django URLConf `include(...)` mounts compose with static child URL patterns
+  from string module paths or imported URLConf aliases and bridge matching
+  Python HTTP client calls to handler symbols.
 - Tornado-style route tuples in `tornado.web.Application([...])` resolve static
   string or regex route patterns to same-file local handler classes, normalize
   named captures such as `(?P<id>...)` to `{id}`, and bridge matching Python
@@ -755,6 +760,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
     bytes.
   - `bench/results/result-1781995749.json`: Go/gin, syntax-only, 28,618 LOC,
     165,117 LOC/s, max RSS 30,244,864 bytes, estimated output 1,902,633
+    bytes.
+  - `bench/results/result-1781996065.json`: Go/gin, syntax-only, 28,618 LOC,
+    164,320 LOC/s, max RSS 27,508,736 bytes, estimated output 1,902,632
     bytes.
 
 ## Remaining Honesty Notes
