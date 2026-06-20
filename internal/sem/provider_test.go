@@ -5785,6 +5785,59 @@ type User {
 	}
 }
 
+func TestGraphQLSchemaFieldsLinkToModularResolverObjects(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "schema.graphql", `type Query {
+  user(id: ID!): User!
+}
+
+type Mutation {
+  createUser(input: CreateUserInput!): User!
+}
+
+type User {
+  id: ID!
+}
+`)
+	writeFile(t, repo, "src/user.resolvers.ts", `export const Query = {
+  user: getUser,
+}
+
+export const Mutation = {
+  createUser: mutationResolvers.createUser,
+}
+
+export const User = {
+  id: userFieldResolvers.id,
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range [][2]string{
+		{"Query.user", "Query.user"},
+		{"Mutation.createUser", "Mutation.createUser"},
+		{"User.id", "User.id"},
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", want[0], want[1]) {
+			t.Fatalf("missing modular GraphQL schema-to-resolver CALLS %s -> %s in %#v", want[0], want[1], snapshot.Relations)
+		}
+	}
+	for _, want := range [][2]string{
+		{"Query.user", "query user"},
+		{"Mutation.createUser", "mutation createUser"},
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "HANDLES_GRAPHQL", want[0], want[1]) {
+			t.Fatalf("missing modular GraphQL HANDLES_GRAPHQL %s -> %s in %#v", want[0], want[1], snapshot.Relations)
+		}
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "HANDLES_GRAPHQL", "User.id", "user id") {
+		t.Fatalf("non-root modular GraphQL object field was misreported as GraphQL boundary: %#v", snapshot.Relations)
+	}
+}
+
 func TestBuildProviderSnapshotEmitsAssignedReturnDataFlow(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "flow.ts", `function helper(): string {

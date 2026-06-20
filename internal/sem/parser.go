@@ -1440,15 +1440,16 @@ func postgresPolicyEntities(src []byte) []Entity {
 }
 
 var (
-	graphqlResolverRootPattern      = regexp.MustCompile(`(?m)\b([A-Z][A-Za-z0-9_]*)\s*:\s*\{`)
-	graphqlResolverContextPattern   = regexp.MustCompile(`(?i)\b(graphql|resolvers?)\b`)
-	graphqlResolverFieldPattern     = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
-	graphqlResolverReferencePattern = regexp.MustCompile(`^([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*)*(?:\s*\([^{};]*\))?\s*(?:,|$)`)
-	graphqlResolverObjectPattern    = regexp.MustCompile(`(?m)\b(?:subscribe|resolve)\s*:`)
-	graphqlSchemaDefinitionPattern  = regexp.MustCompile(`(?m)\bschema\b[^{]*\{`)
-	graphqlSchemaOperationPattern   = regexp.MustCompile(`(?m)\b(query|mutation|subscription)\s*:\s*([_A-Za-z][_0-9A-Za-z]*)\b`)
-	graphqlSchemaTypePattern        = regexp.MustCompile(`(?m)\b(?:extend\s+)?type\s+([_A-Za-z][_0-9A-Za-z]*)\b[^{]*\{`)
-	graphqlSchemaFieldNamePattern   = regexp.MustCompile(`^[_A-Za-z][_0-9A-Za-z]*$`)
+	graphqlResolverRootPattern       = regexp.MustCompile(`(?m)\b([A-Z][A-Za-z0-9_]*)\s*:\s*\{`)
+	graphqlResolverExportRootPattern = regexp.MustCompile(`(?m)\b(?:export\s+)?(?:const|let|var)\s+([A-Z][A-Za-z0-9_]*)\s*=\s*\{`)
+	graphqlResolverContextPattern    = regexp.MustCompile(`(?i)\b(graphql|resolvers?)\b`)
+	graphqlResolverFieldPattern      = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
+	graphqlResolverReferencePattern  = regexp.MustCompile(`^([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*)*(?:\s*\([^{};]*\))?\s*(?:,|$)`)
+	graphqlResolverObjectPattern     = regexp.MustCompile(`(?m)\b(?:subscribe|resolve)\s*:`)
+	graphqlSchemaDefinitionPattern   = regexp.MustCompile(`(?m)\bschema\b[^{]*\{`)
+	graphqlSchemaOperationPattern    = regexp.MustCompile(`(?m)\b(query|mutation|subscription)\s*:\s*([_A-Za-z][_0-9A-Za-z]*)\b`)
+	graphqlSchemaTypePattern         = regexp.MustCompile(`(?m)\b(?:extend\s+)?type\s+([_A-Za-z][_0-9A-Za-z]*)\b[^{]*\{`)
+	graphqlSchemaFieldNamePattern    = regexp.MustCompile(`^[_A-Za-z][_0-9A-Za-z]*$`)
 )
 
 func graphqlSchemaEntities(content string) []Entity {
@@ -1565,39 +1566,48 @@ func graphqlResolverEntities(path, content string) []Entity {
 	seen := map[string]bool{}
 	for _, loc := range graphqlResolverRootPattern.FindAllStringSubmatchIndex(content, -1) {
 		typeName := content[loc[2]:loc[3]]
-		open := strings.LastIndex(content[loc[0]:loc[1]], "{")
-		if open < 0 {
+		entities = appendGraphQLResolverRootEntities(entities, seen, path, content, typeName, loc[0], loc[1])
+	}
+	for _, loc := range graphqlResolverExportRootPattern.FindAllStringSubmatchIndex(content, -1) {
+		typeName := content[loc[2]:loc[3]]
+		entities = appendGraphQLResolverRootEntities(entities, seen, path, content, typeName, loc[0], loc[1])
+	}
+	return entities
+}
+
+func appendGraphQLResolverRootEntities(entities []Entity, seen map[string]bool, path, content, typeName string, locStart, locEnd int) []Entity {
+	open := strings.LastIndex(content[locStart:locEnd], "{")
+	if open < 0 {
+		return entities
+	}
+	open += locStart
+	close := matchingBraceOffset(content, open)
+	if close < 0 {
+		return entities
+	}
+	if !graphqlResolverContext(path, content, locStart, close) {
+		return entities
+	}
+	body := content[open+1 : close]
+	for _, field := range graphqlResolverFields(body) {
+		name := typeName + "." + field.Name
+		if seen[name] {
 			continue
 		}
-		open += loc[0]
-		close := matchingBraceOffset(content, open)
-		if close < 0 {
-			continue
-		}
-		if !graphqlResolverContext(path, content, loc[0], close) {
-			continue
-		}
-		body := content[open+1 : close]
-		for _, field := range graphqlResolverFields(body) {
-			name := typeName + "." + field.Name
-			if seen[name] {
-				continue
-			}
-			seen[name] = true
-			start := open + 1 + field.Start
-			end := open + 1 + field.End
-			block := content[start:end]
-			signature := "GraphQL resolver " + strings.ToLower(typeName) + " " + field.Name
-			entities = append(entities, Entity{
-				Kind:        "graphql_resolver",
-				Name:        name,
-				Signature:   signature,
-				StartLine:   countLinesBefore(content, start) + 1,
-				EndLine:     countLinesBefore(content, end) + 1,
-				BodyHash:    hash(normalize(block)),
-				Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
-			})
-		}
+		seen[name] = true
+		start := open + 1 + field.Start
+		end := open + 1 + field.End
+		block := content[start:end]
+		signature := "GraphQL resolver " + strings.ToLower(typeName) + " " + field.Name
+		entities = append(entities, Entity{
+			Kind:        "graphql_resolver",
+			Name:        name,
+			Signature:   signature,
+			StartLine:   countLinesBefore(content, start) + 1,
+			EndLine:     countLinesBefore(content, end) + 1,
+			BodyHash:    hash(normalize(block)),
+			Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+		})
 	}
 	return entities
 }

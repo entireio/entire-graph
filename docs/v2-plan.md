@@ -366,13 +366,14 @@ Tasks:
   arbitrary runtime builders remain out of scope.
 - Emit `HANDLES_ROUTE` and `HTTP_CALLS` with method, path, confidence, and
   source evidence.
-- GraphQL operation literals, JS/TS resolver-map fields, and GraphQL schema
-  root fields in `type`/`extend type` `Query`, `Mutation`, and `Subscription`
-  blocks now emit `HANDLES_GRAPHQL`. Resolver-map fields cover inline
+- GraphQL operation literals, JS/TS resolver-map fields, modular resolver root
+  objects such as `export const Query = { ... }`, and GraphQL schema root
+  fields in `type`/`extend type` `Query`, `Mutation`, and `Subscription`
+  blocks now emit `HANDLES_GRAPHQL`. Resolver fields cover inline
   function/arrow handlers, subscription resolver objects, and named/member or
   wrapped resolver references such as `user: getUser`,
   `viewer: userResolvers.viewer`, and `user: withAuth(getUser)`. Matching
-  schema root fields emit exact local `CALLS` links to matching resolver-map
+  schema root fields emit exact local `CALLS` links to matching resolver
   fields. Full schema validation, type checking, and non-root resolver type
   analysis remain out of scope for the current heuristic pass.
 - Add gRPC/protobuf service extraction.

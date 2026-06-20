@@ -194,6 +194,44 @@ func TestTreeSitterParserTypeScriptGraphQLResolverEntities(t *testing.T) {
 	}
 }
 
+func TestTreeSitterParserTypeScriptGraphQLModularResolverEntities(t *testing.T) {
+	entities, language := TreeSitterParser{}.Parse("src/user.resolvers.ts", `export const Query = {
+  user: getUser,
+}
+
+const Mutation = {
+  createUser: mutationResolvers.createUser,
+}
+
+const QueryIgnored = {
+  disabled: true,
+}
+
+const helper = {
+  user: getUser,
+}
+`)
+	if language != "TypeScript" {
+		t.Fatalf("language = %q", language)
+	}
+	seen := map[string]Entity{}
+	for _, entity := range entities {
+		if entity.Kind == "graphql_resolver" {
+			seen[entity.Name] = entity
+		}
+	}
+	for _, name := range []string{"Query.user", "Mutation.createUser"} {
+		if _, ok := seen[name]; !ok {
+			t.Fatalf("missing modular GraphQL resolver entity %s in %#v", name, entities)
+		}
+	}
+	for _, name := range []string{"QueryIgnored.disabled", "helper.user"} {
+		if _, ok := seen[name]; ok {
+			t.Fatalf("unexpected modular GraphQL resolver entity %s in %#v", name, entities)
+		}
+	}
+}
+
 func TestGraphQLSchemaFieldEntities(t *testing.T) {
 	entities, language := TreeSitterParser{}.Parse("schema.graphql", `schema {
   query: Query
