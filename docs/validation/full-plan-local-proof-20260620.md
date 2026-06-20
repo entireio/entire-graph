@@ -79,6 +79,8 @@ go test ./internal/sem -run 'TestBuildProviderSnapshotEmits(DirectLiteralArgumen
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-direct-literal-flow -min-loc-per-sec 1
 go test ./internal/sem -run 'TestBuildProviderSnapshotEmits(ArgumentForward|ParameterPropertyForward|PythonParameterPropertyForward|AliasForward)DataFlow' -count=1
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-param-property-flow -min-loc-per-sec 1
+go test ./internal/sem -run 'TestKubernetes(MonitorSelectorsDependOnTargets|PrometheusMonitorSecretDependencies)' -count=1
+go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-prom-monitor-secrets -min-loc-per-sec 1
 ```
 
 ## Results
@@ -236,6 +238,11 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 - ServiceMonitor and PodMonitor selectors emit exact local
   `RESOURCE_DEPENDS_ON` edges to target-kind-filtered Service and workload
   resources by labels.
+- Prometheus Operator ServiceMonitor and PodMonitor auth/TLS Secret selector
+  blocks such as `bearerTokenSecret`, `basicAuth.username`,
+  `basicAuth.password`, `authorization.credentials`, and `tlsConfig.keySecret`
+  emit exact local `RESOURCE_DEPENDS_ON` edges when the referenced Secret
+  manifests are present.
 - PodDisruptionBudget, NetworkPolicy, ServiceMonitor, and PodMonitor
   `matchExpressions` selectors emit exact local `RESOURCE_DEPENDS_ON` edges
   when expressions match target resource labels.
@@ -794,6 +801,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
     bytes.
   - `bench/results/result-1781997213.json`: Go/gin, syntax-only, 28,618 LOC,
     166,586 LOC/s, max RSS 29,523,968 bytes, estimated output 1,902,631
+    bytes.
+  - `bench/results/result-1781997407.json`: Go/gin, syntax-only, 28,618 LOC,
+    165,967 LOC/s, max RSS 30,015,488 bytes, estimated output 1,902,632
     bytes.
 
 ## Remaining Honesty Notes

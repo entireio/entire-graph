@@ -3129,6 +3129,9 @@ func kubernetesResourceReferences(content string) []resourceReference {
 	for _, ref := range kubernetesKnativeServingTrafficReferences(content) {
 		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 	}
+	for _, ref := range kubernetesPrometheusMonitorSecretReferences(content) {
+		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+	}
 	if kubernetesManifestHasAnyKind(content, "HelmRelease", "HelmChart", "Kustomization", "ImageRepository", "ImagePolicy", "ImageUpdateAutomation") {
 		for _, ref := range kubernetesNamedRefBlockReferences(content, "sourceRef", "kubernetes_flux_source_ref", 0.84, kubernetesExplicitReferenceKind) {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
@@ -3362,6 +3365,17 @@ func kubernetesKnativeServingTrafficReferences(content string) []resourceReferen
 			EvidenceKind: "kubernetes_knative_traffic_configuration_ref",
 			Confidence:   0.82,
 		})
+	}
+	return refs
+}
+
+func kubernetesPrometheusMonitorSecretReferences(content string) []resourceReference {
+	if !kubernetesManifestAPIMatches(content, `monitoring\.coreos\.com/`) || !kubernetesManifestHasAnyKind(content, "ServiceMonitor", "PodMonitor", "Probe", "ScrapeConfig") {
+		return nil
+	}
+	var refs []resourceReference
+	for _, blockKey := range []string{"bearerTokenSecret", "keySecret", "username", "password", "clientSecret", "credentials"} {
+		refs = append(refs, kubernetesNamedRefBlockReferences(content, blockKey, "kubernetes_prometheus_monitor_secret_ref", 0.82, kubernetesDefaultReferenceKind("secret"))...)
 	}
 	return refs
 }

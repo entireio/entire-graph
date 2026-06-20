@@ -1697,6 +1697,66 @@ spec:
 	}
 }
 
+func TestKubernetesPrometheusMonitorSecretDependencies(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "k8s/service-monitor.yaml", `apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: api
+spec:
+  endpoints:
+    - port: http
+      bearerTokenSecret:
+        name: scrape-token
+        key: token
+      basicAuth:
+        username:
+          name: scrape-basic
+          key: username
+        password:
+          name: scrape-basic
+          key: password
+      authorization:
+        credentials:
+          name: scrape-credentials
+          key: credentials
+`)
+	writeFile(t, repo, "k8s/pod-monitor.yaml", `apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: api-pods
+spec:
+  podMetricsEndpoints:
+    - port: http
+      tlsConfig:
+        keySecret:
+          name: scrape-key
+          key: tls.key
+`)
+	for _, name := range []string{"scrape-token", "scrape-basic", "scrape-credentials", "scrape-key"} {
+		writeFile(t, repo, "k8s/"+name+".yaml", `apiVersion: v1
+kind: Secret
+metadata:
+  name: `+name+`
+`)
+	}
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range [][2]string{
+		{"ServiceMonitor.api", "Secret.scrape-token"},
+		{"ServiceMonitor.api", "Secret.scrape-basic"},
+		{"ServiceMonitor.api", "Secret.scrape-credentials"},
+		{"PodMonitor.api-pods", "Secret.scrape-key"},
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", edge[0], edge[1]) {
+			t.Fatalf("missing Prometheus monitor secret dependency %s -> %s in %#v", edge[0], edge[1], snapshot.Relations)
+		}
+	}
+}
+
 func TestKubernetesRbacIngressAndScaleTargetDependencies(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "k8s/deployment.yaml", `apiVersion: apps/v1

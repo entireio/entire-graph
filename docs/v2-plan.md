@@ -472,8 +472,9 @@ Open:
   VerticalPodAutoscaler targetRefs, Service selector matches,
   PodDisruptionBudget selector and matchExpression matches, NetworkPolicy podSelector and
   matchExpression matches, Prometheus Operator ServiceMonitor selector and
-  matchExpression matches, and Prometheus Operator PodMonitor selector and
-  matchExpression matches when the target resource symbol exists in the same
+  matchExpression matches, Prometheus Operator ServiceMonitor auth/TLS Secret
+  refs, and Prometheus Operator PodMonitor selector, matchExpression, and
+  auth/TLS Secret refs when the target resource symbol exists in the same
   provider snapshot. Workload selector matching includes CronJob job-template
   labels and Rollout-style workload labels. Custom-controller coverage also
   includes KEDA authentication refs, cert-manager issuer refs, External
