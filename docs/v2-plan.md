@@ -186,8 +186,9 @@ Tasks:
   `compilerOptions.paths` aliases are implemented for local JS/TS files;
   `pyproject.toml` and `setup.cfg` package names are implemented for local
   Python module resolution; exact Java/Kotlin/Scala package imports are
-  implemented through package declarations and source file names. Maven/Gradle
-  classpath modeling remains open.
+  implemented through package declarations and source file names; Cargo package
+  names are implemented for conventional local Rust module files. Maven/Gradle
+  classpath modeling and deeper Rust module/export forms remain open.
 - Normalize module/package roots and file-to-module ownership.
 - Resolve relative imports for Go, Python, JS/TS, Rust, Java, C#, PHP.
 - Emit `IMPORTS` edges to symbols/files when resolved, external endpoints when

@@ -290,6 +290,54 @@ class Util {
 	}
 }
 
+func TestRustCargoImportsResolveToLocalModuleFile(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "Cargo.toml", `[package]
+name = "acme-tools"
+version = "0.1.0"
+`)
+	writeFile(t, repo, "src/lib.rs", `pub mod config;
+pub mod engine;
+`)
+	writeFile(t, repo, "src/config.rs", `pub struct Settings;
+`)
+	writeFile(t, repo, "src/engine/mod.rs", `pub struct Runner;
+`)
+	writeFile(t, repo, "src/main.rs", `use crate::config::Settings;
+use acme_tools::engine::Runner;
+
+fn main() {}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets := map[string]string{
+		"src/config.rs":     "rust_crate_import",
+		"src/engine/mod.rs": "cargo_package_import",
+	}
+	for targetPath, evidenceKind := range targets {
+		target := fileID(snapshot.Header.RepoKey, targetPath)
+		var found RelationRecord
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "IMPORTS" && strings.HasSuffix(relation.FromID, "file:src/main.rs") && relation.ToID == target {
+				found = relation
+				break
+			}
+		}
+		if found.FromID == "" {
+			t.Fatalf("missing Rust resolved import to %s in %#v", target, snapshot.Relations)
+		}
+		if found.Resolution != "import_resolved" || found.RelationScope != "module" || found.TargetKind != "file" || found.Confidence < 0.87 {
+			t.Fatalf("unexpected Rust import metadata: %#v", found)
+		}
+		if len(found.Evidence) != 1 || found.Evidence[0].Kind != evidenceKind {
+			t.Fatalf("unexpected Rust import evidence for %s: %#v", targetPath, found.Evidence)
+		}
+	}
+}
+
 func TestResourceDependsOnGraph(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "main.tf", `resource "aws_vpc" "main" {

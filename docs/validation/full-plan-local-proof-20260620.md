@@ -28,6 +28,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
   `pyproject.toml`, and `setup.cfg` with `import_resolved` metadata.
 - Exact Java/Kotlin/Scala-style package imports resolve through package
   declarations and source file names with `import_resolved` metadata.
+- Rust `crate::`, `self::`, and Cargo package-name imports resolve to local
+  module files with `import_resolved` metadata for conventional source layouts.
 - Kubernetes resource extraction and Service-selector dependency tests pass
   (`Service` -> matching workload resource by selector labels).
 - Kubernetes resource config tests pass for common container image,

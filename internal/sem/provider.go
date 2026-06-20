@@ -3150,6 +3150,8 @@ type manifestImportResolver struct {
 	pythonPackages []string
 	pythonModules  map[string]string
 	jvmTypes       map[string]string
+	rustCrateName  string
+	rustModules    map[string]string
 }
 
 type manifestImportResolution struct {
@@ -3166,7 +3168,7 @@ type tsPathMapping struct {
 }
 
 func buildManifestImportResolver(files []FileRecord, readContent contentReader) manifestImportResolver {
-	resolver := manifestImportResolver{goPackages: map[string]string{}, jsModuleFiles: map[string]string{}, pythonModules: map[string]string{}, jvmTypes: map[string]string{}}
+	resolver := manifestImportResolver{goPackages: map[string]string{}, jsModuleFiles: map[string]string{}, pythonModules: map[string]string{}, jvmTypes: map[string]string{}, rustModules: map[string]string{}}
 	if content, ok := readContent("go.mod"); ok {
 		resolver.goModule = parseGoModulePath(content)
 	}
@@ -3183,10 +3185,14 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		resolver.pythonPackages = append(resolver.pythonPackages, parseSetupCFGName(content))
 	}
 	resolver.pythonPackages = normalizePythonPackageNames(resolver.pythonPackages)
+	if content, ok := readContent("Cargo.toml"); ok {
+		resolver.rustCrateName = normalizeRustCrateName(parseCargoPackageName(content))
+	}
 	var goPaths []string
 	var jsPaths []string
 	var pyPaths []string
 	var jvmPaths []string
+	var rustPaths []string
 	for _, file := range files {
 		if strings.EqualFold(filepath.Ext(file.Path), ".go") {
 			goPaths = append(goPaths, filepath.ToSlash(file.Path))
@@ -3199,6 +3205,9 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 		if jvmLikeExtension(filepath.Ext(file.Path)) {
 			jvmPaths = append(jvmPaths, filepath.ToSlash(file.Path))
+		}
+		if strings.EqualFold(filepath.Ext(file.Path), ".rs") {
+			rustPaths = append(rustPaths, filepath.ToSlash(file.Path))
 		}
 	}
 	sort.Slice(goPaths, func(i, j int) bool {
@@ -3253,6 +3262,14 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		if qualifiedName := jvmQualifiedTypeName(path, content); qualifiedName != "" {
 			if _, exists := resolver.jvmTypes[qualifiedName]; !exists {
 				resolver.jvmTypes[qualifiedName] = path
+			}
+		}
+	}
+	sort.Strings(rustPaths)
+	for _, path := range rustPaths {
+		for _, module := range rustModuleKeysForPath(path) {
+			if _, exists := resolver.rustModules[module]; !exists {
+				resolver.rustModules[module] = path
 			}
 		}
 	}
@@ -3357,6 +3374,27 @@ func parseSetupCFGName(content string) string {
 	return ""
 }
 
+func parseCargoPackageName(content string) string {
+	inPackage := false
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	for scanner.Scan() {
+		line := strings.TrimSpace(stripTOMLComment(scanner.Text()))
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			inPackage = line == "[package]"
+			continue
+		}
+		if inPackage && strings.HasPrefix(strings.ToLower(line), "name") {
+			if name, ok := parseSimpleConfigValue(line); ok {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
 func parseSimpleConfigValue(line string) (string, bool) {
 	parts := strings.SplitN(line, "=", 2)
 	if len(parts) != 2 || strings.ToLower(strings.TrimSpace(parts[0])) != "name" {
@@ -3436,6 +3474,9 @@ func (resolver manifestImportResolver) resolve(importingPath, spec string) (mani
 	}
 	if jvmLikeExtension(ext) {
 		return resolver.resolveJVMImport(importingPath, spec)
+	}
+	if ext == ".rs" {
+		return resolver.resolveRustImport(importingPath, spec)
 	}
 	return manifestImportResolution{}, false
 }
@@ -3675,6 +3716,89 @@ func jvmLikeExtension(ext string) bool {
 	default:
 		return false
 	}
+}
+
+func (resolver manifestImportResolver) resolveRustImport(importingPath, spec string) (manifestImportResolution, bool) {
+	module := normalizeRustImportSpec(spec)
+	if module == "" {
+		return manifestImportResolution{}, false
+	}
+	evidenceKind := "rust_crate_import"
+	if strings.HasPrefix(module, "crate::") {
+		module = strings.TrimPrefix(module, "crate::")
+	} else if resolver.rustCrateName != "" && (module == resolver.rustCrateName || strings.HasPrefix(module, resolver.rustCrateName+"::")) {
+		module = strings.TrimPrefix(strings.TrimPrefix(module, resolver.rustCrateName), "::")
+		evidenceKind = "cargo_package_import"
+	} else if strings.HasPrefix(module, "self::") {
+		module = strings.TrimPrefix(module, "self::")
+	} else {
+		return manifestImportResolution{}, false
+	}
+	path, ok := resolver.resolveRustModulePath(module)
+	if !ok || path == filepath.ToSlash(importingPath) {
+		return manifestImportResolution{}, false
+	}
+	return manifestImportResolution{
+		Path:         path,
+		Confidence:   0.88,
+		Scope:        "module",
+		Reason:       "Rust crate import resolved through local module files",
+		EvidenceKind: evidenceKind,
+	}, true
+}
+
+func (resolver manifestImportResolver) resolveRustModulePath(module string) (string, bool) {
+	module = strings.Trim(module, ":")
+	for module != "" {
+		if path, ok := resolver.rustModules[module]; ok {
+			return path, true
+		}
+		idx := strings.LastIndex(module, "::")
+		if idx < 0 {
+			break
+		}
+		module = module[:idx]
+	}
+	return "", false
+}
+
+func normalizeRustImportSpec(spec string) string {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return ""
+	}
+	if idx := strings.Index(spec, " as "); idx >= 0 {
+		spec = spec[:idx]
+	}
+	if idx := strings.Index(spec, "::{"); idx >= 0 {
+		spec = spec[:idx]
+	}
+	spec = strings.Trim(spec, "{} ")
+	return strings.Trim(spec, ":")
+}
+
+func rustModuleKeysForPath(path string) []string {
+	path = filepath.ToSlash(path)
+	if !strings.HasPrefix(path, "src/") || !strings.HasSuffix(path, ".rs") {
+		return nil
+	}
+	rel := strings.TrimSuffix(strings.TrimPrefix(path, "src/"), ".rs")
+	if rel == "lib" || rel == "main" {
+		return nil
+	}
+	if strings.HasSuffix(rel, "/mod") {
+		rel = strings.TrimSuffix(rel, "/mod")
+	}
+	module := strings.ReplaceAll(rel, "/", "::")
+	if module == "" {
+		return nil
+	}
+	return []string{module}
+}
+
+func normalizeRustCrateName(name string) string {
+	name = strings.TrimSpace(strings.ToLower(name))
+	return strings.ReplaceAll(name, "-", "_")
 }
 
 func importsFor(path, content string) []string {
