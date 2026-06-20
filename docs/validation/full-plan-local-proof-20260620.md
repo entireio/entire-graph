@@ -17,6 +17,7 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile full -provider-version codex-full-plan -out bench/results
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.json -languages C -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results -max-rss-bytes 5000000000
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
@@ -99,6 +100,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
   relations when the parameter type is a known local symbol.
 - Assigned return-flow emits `DATA_FLOWS` when a local variable assigned from a
   known callee is returned as a bare variable.
+- Exact/import-resolved argument forwarding emits caller-to-callee
+  `DATA_FLOWS` when a caller parameter is passed into a known callee.
 - Retained benchmark reports:
   - `bench/results/result-1781937160.json`: Go/gin, syntax-only, 28,618 LOC,
     152,621 LOC/s.
@@ -136,6 +139,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
     132,607 LOC/s, max RSS 27,721,728 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781948192.json`: Go/gin, syntax-only, 28,618 LOC,
     102,244 LOC/s, max RSS 27,197,440 bytes, output 1,938,906 bytes.
+  - `bench/results/result-1781948530.json`: Go/gin, syntax-only, 28,618 LOC,
+    110,725 LOC/s, max RSS 28,327,936 bytes, output 1,938,906 bytes.
 
 ## Remaining Honesty Notes
 

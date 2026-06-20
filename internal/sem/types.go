@@ -320,9 +320,10 @@ type returnFlowCall struct {
 	Reason       string
 	EvidenceKind string
 	Detail       string
+	Direction    string
 }
 
-func returnFlowCalls(block string) []returnFlowCall {
+func returnFlowCalls(block, signature string) []returnFlowCall {
 	stripped := stripCodeLiteralsAndComments(block)
 	flows := map[string]returnFlowCall{}
 	for _, name := range returnFlowCallNames(block) {
@@ -331,6 +332,7 @@ func returnFlowCalls(block string) []returnFlowCall {
 			Reason:       "callee return value flows into caller return value",
 			EvidenceKind: "return_flow",
 			Detail:       name,
+			Direction:    "callee_to_caller",
 		}
 	}
 	assigned := map[string]string{}
@@ -356,7 +358,11 @@ func returnFlowCalls(block string) []returnFlowCall {
 			Reason:       "callee return value assigned to local and returned by caller",
 			EvidenceKind: "assigned_return_flow",
 			Detail:       name + " -> " + varName,
+			Direction:    "callee_to_caller",
 		}
+	}
+	for _, flow := range argumentForwardingFlows(stripped, signature) {
+		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
 	out := make([]returnFlowCall, 0, len(flows))
 	for _, flow := range flows {
@@ -369,6 +375,107 @@ func returnFlowCalls(block string) []returnFlowCall {
 		return out[i].EvidenceKind < out[j].EvidenceKind
 	})
 	return out
+}
+
+func argumentForwardingFlows(block, signature string) []returnFlowCall {
+	params := parameterNames(signature)
+	if len(params) == 0 {
+		return nil
+	}
+	callRe := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^()\n]*)\)`)
+	var flows []returnFlowCall
+	seen := map[string]bool{}
+	for _, match := range callRe.FindAllStringSubmatch(block, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		name := strings.TrimPrefix(match[1], "$")
+		if dataFlowCallNameIgnored(name) {
+			continue
+		}
+		for _, arg := range splitSimpleArguments(match[2]) {
+			arg = strings.TrimPrefix(strings.TrimSpace(arg), "$")
+			if !params[arg] {
+				continue
+			}
+			key := name + "\x00" + arg
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			flows = append(flows, returnFlowCall{
+				Name:         name,
+				Reason:       "caller parameter forwarded into callee argument",
+				EvidenceKind: "argument_forward_flow",
+				Detail:       arg + " -> " + name + "()",
+				Direction:    "caller_to_callee",
+			})
+		}
+	}
+	sort.Slice(flows, func(i, j int) bool {
+		if flows[i].Name != flows[j].Name {
+			return flows[i].Name < flows[j].Name
+		}
+		return flows[i].Detail < flows[j].Detail
+	})
+	return flows
+}
+
+func parameterNames(signature string) map[string]bool {
+	out := map[string]bool{}
+	start := strings.Index(signature, "(")
+	end := strings.LastIndex(signature, ")")
+	if start < 0 || end <= start {
+		return out
+	}
+	for _, part := range splitSimpleArguments(signature[start+1 : end]) {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if eq := strings.Index(part, "="); eq >= 0 {
+			part = strings.TrimSpace(part[:eq])
+		}
+		part = strings.TrimPrefix(part, "...")
+		fields := strings.Fields(part)
+		if len(fields) == 0 {
+			continue
+		}
+		name := fields[0]
+		if colon := strings.Index(name, ":"); colon >= 0 {
+			name = name[:colon]
+		}
+		name = strings.TrimPrefix(strings.TrimSpace(name), "$")
+		if name == "" || name == "self" || name == "this" {
+			continue
+		}
+		out[name] = true
+	}
+	return out
+}
+
+func splitSimpleArguments(args string) []string {
+	if strings.TrimSpace(args) == "" {
+		return nil
+	}
+	parts := strings.Split(args, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func dataFlowCallNameIgnored(name string) bool {
+	switch name {
+	case "", "if", "for", "while", "switch", "return", "new", "function":
+		return true
+	default:
+		return false
+	}
 }
 
 func followsReturnedVariable(stripped string, end int) bool {

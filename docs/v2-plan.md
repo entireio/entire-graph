@@ -120,7 +120,8 @@ Add priority relations:
 Remain out of provider scope or later expansion:
 
 - cross-repo `CROSS_*` edges, unless Brain asks for provider-level support.
-- deeper data-flow beyond high-confidence local direct/assigned return-flow.
+- deeper data-flow beyond high-confidence local direct/assigned return-flow and
+  exact/import-resolved argument-forwarding flow.
 - deeper semantics for fallback formats where only lightweight structure is
   currently emitted.
 - more parser grammars when a real repo or benchmark fixture needs them.
