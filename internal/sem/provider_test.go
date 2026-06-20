@@ -1140,6 +1140,15 @@ spec:
   source:
     persistentVolumeClaimName: api-cache
 `)
+	writeFile(t, repo, "k8s/snapshot-content.yaml", `apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotContent
+metadata:
+  name: api-cache-snapshot-content
+spec:
+  volumeSnapshotRef:
+    name: api-cache-snapshot
+    namespace: default
+`)
 	writeFile(t, repo, "k8s/restore-pvc.yaml", `apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -1236,6 +1245,12 @@ metadata:
 	}
 	if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "PersistentVolumeClaim.cloned-cache", "PersistentVolumeClaim.api-cache") {
 		t.Fatalf("missing exact Kubernetes PVC dataSourceRef dependency in %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "VolumeSnapshot.api-cache-snapshot", "PersistentVolumeClaim.api-cache") {
+		t.Fatalf("missing exact Kubernetes VolumeSnapshot source dependency in %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "VolumeSnapshotContent.api-cache-snapshot-content", "VolumeSnapshot.api-cache-snapshot") {
+		t.Fatalf("missing exact Kubernetes VolumeSnapshotContent ref dependency in %#v", snapshot.Relations)
 	}
 }
 

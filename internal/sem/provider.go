@@ -3016,6 +3016,16 @@ func kubernetesResourceReferences(content string) []resourceReference {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 		}
 	}
+	if kubernetesManifestHasAnyKind(content, "VolumeSnapshot") {
+		for _, match := range regexp.MustCompile(`(?im)^\s*persistentVolumeClaimName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+			add("persistentvolumeclaim", match[1], "kubernetes_volume_snapshot_pvc_ref", 0.82)
+		}
+	}
+	if kubernetesManifestHasAnyKind(content, "VolumeSnapshotContent") {
+		for _, ref := range kubernetesNamedRefBlockReferences(content, "volumeSnapshotRef", "kubernetes_volume_snapshot_content_ref", 0.82, kubernetesDefaultReferenceKind("volumesnapshot")) {
+			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+		}
+	}
 	for _, match := range regexp.MustCompile(`(?im)^\s*ingressClassName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
 		add("ingressclass", match[1], "kubernetes_ingress_class", 0.8)
 	}
