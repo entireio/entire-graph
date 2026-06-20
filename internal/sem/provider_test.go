@@ -1371,6 +1371,65 @@ spec:
 	}
 }
 
+func TestKubernetesReloaderAnnotationsDependOnConfigResources(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "k8s/deployment.yaml", `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: web
+  annotations:
+    configmap.reloader.stakater.com/reload: api-config, feature-flags
+spec:
+  template:
+    metadata:
+      annotations:
+        secret.reloader.stakater.com/reload: "api-secret; api-token"
+    spec:
+      containers:
+        - name: api
+          image: example/api:latest
+`)
+	writeFile(t, repo, "k8s/config.yaml", `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+`)
+	writeFile(t, repo, "k8s/secret.yaml", `apiVersion: v1
+kind: Secret
+metadata:
+  name: api-secret
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, target := range []string{
+		"external:config:kubernetes/configmap/api-config",
+		"external:config:kubernetes/configmap/web/api-config",
+		"external:config:kubernetes/configmap/feature-flags",
+		"external:config:kubernetes/configmap/web/feature-flags",
+		"external:config:kubernetes/secret/api-secret",
+		"external:config:kubernetes/secret/web/api-secret",
+		"external:config:kubernetes/secret/api-token",
+		"external:config:kubernetes/secret/web/api-token",
+	} {
+		if !hasRelationTo(snapshot.Relations, "RESOURCE_DEPENDS_ON", target) {
+			t.Fatalf("missing Reloader annotation dependency to %s in %#v", target, snapshot.Relations)
+		}
+	}
+	for _, target := range []string{
+		"ConfigMap.api-config",
+		"Secret.api-secret",
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "Deployment.api", target) {
+			t.Fatalf("missing exact Reloader annotation dependency Deployment.api -> %s in %#v", target, snapshot.Relations)
+		}
+	}
+}
+
 func TestKubernetesServiceSelectorDependsOnWorkload(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "k8s/deployment.yaml", `apiVersion: apps/v1

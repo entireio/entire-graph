@@ -432,7 +432,8 @@ Delivered:
   Gateway listener certificateRefs, IngressClass refs, StorageClass refs,
   PersistentVolume refs, RuntimeClass refs, PriorityClass refs, HPA scale
   targets, projected ConfigMap/Secret volume refs, ConfigMap/Secret key refs,
-  and image pull secrets. When the referring manifest declares
+  image pull secrets, and Stakater Reloader ConfigMap/Secret reload
+  annotations. When the referring manifest declares
   `metadata.namespace`, namespaced resource references also emit
   namespace-qualified external endpoints such as
   `external:config:kubernetes/secret/web/api-secret`, while preserving the
@@ -493,8 +494,9 @@ Open:
   WorkflowTemplate refs, Argo Rollouts AnalysisTemplate refs, Argo CD
   Application/AppProject refs, Tekton Pipeline/Task refs, ServiceBinding
   service/workload refs, Knative Trigger broker/subscriber refs, Flux CD source, chart, dependsOn, and HelmRelease valuesFrom ConfigMap/Secret refs,
-  Crossplane ProviderConfig/Composition/resource/connection Secret refs, and Istio
-  VirtualService/DestinationRule refs.
+  Crossplane ProviderConfig/Composition/resource/connection Secret refs, Istio
+  VirtualService/DestinationRule refs, and Stakater Reloader ConfigMap/Secret
+  reload annotations.
   Remaining Kubernetes resource gaps include less common Kubernetes controllers
   beyond these selectors and other custom resource conventions.
 - Broad framework-specific IaC/service modeling remains partial.

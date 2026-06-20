@@ -88,6 +88,8 @@ go test ./internal/sem -run 'TestBuildProviderSnapshotEmits(MultiHopAliasForward
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-multihop-alias-flow -min-loc-per-sec 1
 go test ./internal/sem -run 'TestKubernetes(MonitorSelectorsDependOnTargets|PrometheusMonitorSecretDependencies)' -count=1
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-prom-monitor-secrets -min-loc-per-sec 1
+go test ./internal/sem -run 'TestKubernetes(ReloaderAnnotationsDependOnConfigResources|ResourceDependencies|ResourceReferencesIncludeNamespaceQualifiedExternalNames)' -count=1
+go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-reloader-annotation-refs -min-loc-per-sec 1
 ```
 
 ## Results
@@ -263,6 +265,11 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   `external:config:kubernetes/configmap/web/api-config` and
   `external:config:kubernetes/secret/web/api-secret`, while preserving the
   existing short endpoints and exact local resource edges.
+- Stakater Reloader `configmap.reloader.stakater.com/reload` and
+  `secret.reloader.stakater.com/reload` annotations emit external,
+  namespace-qualified external, and exact local `RESOURCE_DEPENDS_ON` edges for
+  comma- or semicolon-separated ConfigMap/Secret names when the referenced
+  manifests are present in the snapshot.
 - Kubernetes RBAC role/subject references, owner references, Ingress Service
   backends, Gateway API route backend refs, Gateway API route parent Gateway
   refs, Gateway listener `certificateRefs`, Gateway API policy `targetRef`/
@@ -836,6 +843,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
     bytes.
   - `bench/results/result-1781998685.json`: Go/gin, syntax-only, 28,618 LOC,
     164,150 LOC/s, max RSS 26,968,064 bytes, estimated output 1,902,631
+    bytes.
+  - `bench/results/result-1781998905.json`: Go/gin, syntax-only, 28,618 LOC,
+    163,567 LOC/s, max RSS 28,655,616 bytes, estimated output 1,902,636
     bytes.
   - `bench/results/result-1781997407.json`: Go/gin, syntax-only, 28,618 LOC,
     165,967 LOC/s, max RSS 30,015,488 bytes, estimated output 1,902,632

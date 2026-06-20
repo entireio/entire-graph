@@ -3142,6 +3142,9 @@ func kubernetesResourceReferences(content string) []resourceReference {
 	for _, ref := range kubernetesPrometheusMonitorSecretReferences(content) {
 		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 	}
+	for _, ref := range kubernetesReloaderAnnotationReferences(content) {
+		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+	}
 	if kubernetesManifestHasAnyKind(content, "HelmRelease", "HelmChart", "Kustomization", "ImageRepository", "ImagePolicy", "ImageUpdateAutomation") {
 		for _, ref := range kubernetesNamedRefBlockReferences(content, "sourceRef", "kubernetes_flux_source_ref", 0.84, kubernetesExplicitReferenceKind) {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
@@ -3399,6 +3402,56 @@ func kubernetesPrometheusMonitorSecretReferences(content string) []resourceRefer
 		refs = append(refs, kubernetesNamedRefBlockReferences(content, blockKey, "kubernetes_prometheus_monitor_secret_ref", 0.82, kubernetesDefaultReferenceKind("secret"))...)
 	}
 	return refs
+}
+
+func kubernetesReloaderAnnotationReferences(content string) []resourceReference {
+	var refs []resourceReference
+	for _, path := range [][]string{
+		{"metadata", "annotations"},
+		{"spec", "template", "metadata", "annotations"},
+		{"spec", "jobTemplate", "spec", "template", "metadata", "annotations"},
+	} {
+		for key, value := range yamlMapAtPath(content, path...) {
+			kind := ""
+			evidence := ""
+			switch key {
+			case "configmap.reloader.stakater.com/reload":
+				kind = "configmap"
+				evidence = "kubernetes_reloader_configmap_ref"
+			case "secret.reloader.stakater.com/reload":
+				kind = "secret"
+				evidence = "kubernetes_reloader_secret_ref"
+			default:
+				continue
+			}
+			for _, name := range splitKubernetesNamedList(value) {
+				refs = append(refs, resourceReference{
+					Kind:         kind,
+					Name:         name,
+					EvidenceKind: evidence,
+					Confidence:   0.82,
+				})
+			}
+		}
+	}
+	return dedupeResourceReferences(refs)
+}
+
+func splitKubernetesNamedList(value string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, part := range strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n'
+	}) {
+		name := strings.Trim(strings.TrimSpace(part), `"'`)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func kubernetesManifestAPIMatches(content, pattern string) bool {
