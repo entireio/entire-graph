@@ -2817,6 +2817,59 @@ func ping() {
 	}
 }
 
+func TestGoNestedRouterGroupPrefixComposesHandlerAndBridge(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "server.go", `package server
+
+import "net/http"
+
+type Echo interface {
+	Group(string) Group
+}
+
+type Group interface {
+	Group(string) Group
+	GET(string, http.HandlerFunc)
+}
+
+func register(e Echo) {
+	api := e.Group("/api")
+	v1 := api.Group("/v1")
+	v1.GET("/users/:id", showUser)
+	api.Group("/admin").GET("/audit", showAudit)
+}
+
+func showUser(w http.ResponseWriter, r *http.Request) {}
+
+func showAudit(w http.ResponseWriter, r *http.Request) {}
+
+func ping() {
+	http.Get("http://localhost/api/v1/users/:id")
+	http.Get("http://localhost/api/admin/audit")
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "showUser", "/api/v1/users/:id") {
+		t.Fatalf("missing nested Go grouped router route handler: %#v", snapshot.Relations)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "showAudit", "/api/admin/audit") {
+		t.Fatalf("missing nested chained Go grouped router route handler: %#v", snapshot.Relations)
+	}
+	if hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "showUser", "/v1/users/:id") {
+		t.Fatalf("nested grouped Go route emitted partially mounted route: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "showUser") {
+		t.Fatalf("missing route bridge CALLS ping->showUser: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "showAudit") {
+		t.Fatalf("missing route bridge CALLS ping->showAudit: %#v", snapshot.Relations)
+	}
+}
+
 func TestStaticConstantRouteComposition(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "api.ts", `const apiPrefix = "/api"

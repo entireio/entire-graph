@@ -406,7 +406,9 @@ Delivered:
 - Go router group prefixes such as `api := e.Group("/api")` compose with
   static child route registrations and bridge exact matching Go HTTP clients to
   local handlers, including chained group calls such as
-  `app.Group("/api").Get("/users/{id}", handler)`.
+  `app.Group("/api").Get("/users/{id}", handler)`, nested assigned groups such
+  as `v1 := api.Group("/v1")`, and chained groups from assigned parent groups
+  such as `api.Group("/admin").Get(...)`.
 - Terraform/HCL blocks emit resources, modules, variables, outputs, config
   targets, and exact intra-module `RESOURCE_DEPENDS_ON` edges for block
   references.

@@ -118,7 +118,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 - Go router group prefixes such as `api := e.Group("/api")` compose with
   static child route registrations and bridge matching Go HTTP clients as
   direct `CALLS`; chained group calls such as
-  `app.Group("/api").Get("/users/{id}", handler)` are covered too.
+  `app.Group("/api").Get("/users/{id}", handler)`, nested assigned groups
+  such as `v1 := api.Group("/v1")`, and chained groups from assigned parent
+  groups such as `api.Group("/admin").Get(...)` are covered too.
 - Django `path(...)` registrations, simple `re_path(...)` registrations, and
   `path(..., include("module.urls"))` URLConf mounts resolve static patterns
   to local handler symbols, including `views.handler` imports, and bridge
@@ -359,6 +361,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781973947.json`: Go/gin, syntax-only, 28,618 LOC,
     153,530 LOC/s, max RSS 29,442,048 bytes, estimated output 1,902,632
     bytes; run after fallback return-flow extraction.
+  - `bench/results/result-1781974226.json`: Go/gin, syntax-only, 28,618 LOC,
+    162,059 LOC/s, max RSS 29,130,752 bytes, estimated output 1,902,633
+    bytes; run after nested Go router group-prefix extraction.
   - `bench/results/result-1781944479.json`: Go/gin, syntax-only, 28,618 LOC,
     154,533 LOC/s, max RSS 27,115,520 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781944927.json`: Go/gin, syntax-only, 28,618 LOC,
