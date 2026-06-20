@@ -39,8 +39,9 @@ import (
 )
 
 type languageSpec struct {
-	language string
-	grammar  *sitter.Language
+	language      string
+	grammar       *sitter.Language
+	inventoryOnly bool
 }
 
 var treeSitterLanguages = map[string]languageSpec{
@@ -184,8 +185,41 @@ func languageForPath(path string) (languageSpec, bool) {
 	if base == "kustomization.yaml" || base == "kustomization.yml" || base == "kustomization" {
 		return languageSpec{language: "Kustomize"}, true
 	}
-	spec, ok := treeSitterLanguages[strings.ToLower(filepath.Ext(path))]
-	return spec, ok
+	if spec, ok := inventoryLanguageForSuffix(base); ok {
+		return spec, true
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	if spec, ok := treeSitterLanguages[ext]; ok {
+		return spec, true
+	}
+	if spec, ok := inventoryLanguageExtensions[ext]; ok {
+		return spec, true
+	}
+	if spec, ok := inventoryLanguageFilenames[base]; ok {
+		return spec, true
+	}
+	return languageSpec{}, false
+}
+
+func inventoryLanguageForSuffix(base string) (languageSpec, bool) {
+	var suffixes []string
+	for suffix := range inventoryLanguageExtensions {
+		if strings.Count(suffix, ".") > 1 {
+			suffixes = append(suffixes, suffix)
+		}
+	}
+	sort.Slice(suffixes, func(i, j int) bool {
+		if len(suffixes[i]) == len(suffixes[j]) {
+			return suffixes[i] < suffixes[j]
+		}
+		return len(suffixes[i]) > len(suffixes[j])
+	})
+	for _, suffix := range suffixes {
+		if strings.HasSuffix(base, suffix) {
+			return inventoryLanguageExtensions[suffix], true
+		}
+	}
+	return languageSpec{}, false
 }
 
 func fallbackEntities(path, content, language string) []Entity {
@@ -211,8 +245,22 @@ func fallbackEntities(path, content, language string) []Entity {
 	case "Vue", "Svelte":
 		return componentEntities(path, content, language)
 	default:
-		return nil
+		return inventoryEntities(path, content, language)
 	}
+}
+
+func inventoryEntities(path, content, language string) []Entity {
+	lines := strings.Split(content, "\n")
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	if base == "" {
+		base = filepath.Base(path)
+	}
+	if base == "" {
+		base = strings.ToLower(language)
+	}
+	kind := "document"
+	signature := strings.ToLower(language) + " document " + base
+	return []Entity{simpleFallbackEntity(kind, base, signature, 1, maxInt(1, len(lines)), content)}
 }
 
 func dockerfileEntities(content string) []Entity {

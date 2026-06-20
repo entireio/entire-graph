@@ -51,14 +51,16 @@ review.
 | `python-oo`         | Python     | multiple inheritance via base list                         |
 | `rust-oo`           | Rust       | `impl Trait for Type`, supertrait bounds                   |
 
-All seven Priority-1 languages (per WP9) now have committed baselines.
-Boundary/IaC fixtures (Terraform, Kubernetes, GitHub Actions) follow in WP6/WP7.
+All seven Priority-1 languages (per WP9) have committed baselines. Boundary,
+service, and IaC fixtures now cover Terraform/HCL, Dockerfile, Kubernetes YAML,
+Kustomize, GitHub Actions, protobuf/gRPC, GraphQL, and tRPC cases; remaining
+work is deeper framework coverage and larger-corpus proof.
 
 ## Relation Coverage Today
 
-The provider emits 16 relation types. Confidence bands follow the v2-plan
-schema section (`0.90-1.00 exact`, `0.70-0.89 strong`, `0.40-0.69 heuristic`,
-`<0.40 weak`).
+The provider emits the relation types advertised by `capabilities --json`.
+Confidence bands follow the v2-plan schema section (`0.90-1.00 exact`,
+`0.70-0.89 strong`, `0.40-0.69 heuristic`, `<0.40 weak`).
 
 - Structural: `DEFINES`, `CONTAINS` (1.0).
 - Imports: `IMPORTS` (0.8; relative imports resolve to local files at 0.95).
@@ -69,7 +71,8 @@ schema section (`0.90-1.00 exact`, `0.70-0.89 strong`, `0.40-0.69 heuristic`,
 - Boundaries: `HANDLES_ROUTE` (0.7), `HTTP_CALLS` (0.6-0.7), `HANDLES_TOOL`
   (0.85), `EMITS`/`LISTENS_ON` (0.6, `WEAK_PATTERN`).
 - Other: `SIMILAR_TO` (MinHash estimate), `TESTS` (0.8),
-  `RESOURCE_DEPENDS_ON` (0.85, Terraform/HCL).
+  `RESOURCE_DEPENDS_ON` (0.78-0.9 across HCL, Dockerfile, Kubernetes, and
+  Kustomize dependency patterns).
 
 `capabilities --json` reports per-language relation support
 (`relation_support_by_language`) and pattern-driven relations separately in
@@ -174,7 +177,8 @@ compatible; tolerant readers ignore unknown fields):
 - Header `benchmark_profile`: emitted only by benchmark tooling (WP10); omitted
   otherwise.
 - Relation `relation_scope` (`file`/`module`/`workspace`/`external`),
-  `resolution` (`exact`/`import_resolved`/`name_only`/`pattern`),
-  `target_kind` (`symbol`/`external`/`route`), and `evidence` (compact source
-  pointers). Resolution values not yet produced: `type_inferred`,
-  `runtime_trace`, `unresolved` (await WP4/WP5).
+  `resolution` (`exact`/`import_resolved`/`type_inferred`/`name_only`/
+  `pattern`), `target_kind` (`symbol`/`file`/`external`/`route`/`resource`/
+  `channel`/`config`), and `evidence` (compact source pointers). Resolution
+  values still reserved for consumers or future producers include
+  `runtime_trace` and `unresolved`.

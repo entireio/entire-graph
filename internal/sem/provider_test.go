@@ -124,6 +124,95 @@ resource "aws_subnet" "web" {
 	}
 }
 
+func TestDockerfileStageResourceDependencies(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "Dockerfile", `FROM golang:1.22 AS builder
+RUN go build -o /out/app ./cmd/app
+
+FROM alpine:3.20 AS runtime
+COPY --from=builder /out/app /usr/local/bin/app
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "runtime", "builder") {
+		t.Fatalf("missing runtime->builder dependency in %#v", snapshot.Relations)
+	}
+}
+
+func TestKubernetesResourceDependencies(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "k8s/deployment.yaml", `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  template:
+    spec:
+      serviceAccountName: api-runner
+      volumes:
+        - name: credentials
+          secret:
+            secretName: api-secret
+        - name: cache
+          persistentVolumeClaim:
+            claimName: api-cache
+      containers:
+        - name: api
+          image: example/api:latest
+          envFrom:
+            - configMapRef:
+                name: api-config
+            - secretRef:
+                name: api-env
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, target := range []string{
+		"external:config:kubernetes/configmap/api-config",
+		"external:config:kubernetes/secret/api-secret",
+		"external:config:kubernetes/secret/api-env",
+		"external:config:kubernetes/serviceaccount/api-runner",
+		"external:config:kubernetes/persistentvolumeclaim/api-cache",
+	} {
+		if !hasRelationTo(snapshot.Relations, "RESOURCE_DEPENDS_ON", target) {
+			t.Fatalf("missing Kubernetes dependency to %s in %#v", target, snapshot.Relations)
+		}
+	}
+}
+
+func TestKustomizeResourceDependencies(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "overlays/prod/kustomization.yaml", `resources:
+  - ../../base/deployment.yaml
+  - service.yaml
+patches:
+  - patch-replicas.yaml
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, target := range []string{
+		"external:config:kustomize/file/../../base/deployment.yaml",
+		"external:config:kustomize/file/service.yaml",
+		"external:config:kustomize/file/patch-replicas.yaml",
+	} {
+		if !hasRelationTo(snapshot.Relations, "RESOURCE_DEPENDS_ON", target) {
+			t.Fatalf("missing Kustomize dependency to %s in %#v", target, snapshot.Relations)
+		}
+	}
+}
+
 func TestChannelEventsShareNode(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "bus.js", `function publish(bus) {
@@ -875,6 +964,24 @@ func lastSegment(id string) string {
 	return id
 }
 
+func hasRelationByLastSegment(relations []RelationRecord, relationType, from, to string) bool {
+	for _, relation := range relations {
+		if relation.Type == relationType && lastSegment(relation.FromID) == from && lastSegment(relation.ToID) == to {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRelationTo(relations []RelationRecord, relationType, to string) bool {
+	for _, relation := range relations {
+		if relation.Type == relationType && relation.ToID == to {
+			return true
+		}
+	}
+	return false
+}
+
 func TestBuildProviderSnapshotEmitsOverrides(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "Shapes.java", `package s;
@@ -1100,6 +1207,9 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 	if caps.SchemaVersion != SchemaVersion || caps.Provider != ProviderName {
 		t.Fatalf("capabilities identity = %#v", caps)
 	}
+	if len(caps.SupportedLanguages) < 158 {
+		t.Fatalf("supported language/filetype count = %d, want at least 158: %#v", len(caps.SupportedLanguages), caps.SupportedLanguages)
+	}
 	seen := map[string]bool{}
 	for _, language := range caps.SupportedLanguages {
 		seen[language] = true
@@ -1128,12 +1238,19 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 		"Scala",
 		"Swift",
 		"TypeScript",
+		"Dart",
+		"Zig",
+		"Bicep",
+		"GraphQL",
+		"Solidity",
+		"Nix",
+		"Kustomize",
 	} {
 		if !seen[want] {
 			t.Fatalf("capabilities missing language %q in %#v", want, caps.SupportedLanguages)
 		}
 	}
-	for _, want := range []string{".go", ".py", ".ts", ".rs", ".swift", ".proto"} {
+	for _, want := range []string{".go", ".py", ".ts", ".rs", ".swift", ".proto", ".dart", ".zig", ".bicep", ".graphql"} {
 		if !contains(caps.SupportedFileExtensions, want) {
 			t.Fatalf("capabilities missing extension %q in %#v", want, caps.SupportedFileExtensions)
 		}
@@ -1158,6 +1275,40 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 	}
 }
 
+func TestInventoryOnlyLanguagesEmitDocumentSymbols(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "app/main.dart", "void main() {\n  print('hi');\n}\n")
+	writeFile(t, repo, "infra/main.bicep", "resource storage 'Microsoft.Storage/storageAccounts@2023-01-01' = {\n  name: 'stapp'\n}\n")
+	writeFile(t, repo, "schema/user.graphql", "type User {\n  id: ID!\n}\n")
+	writeFile(t, repo, "views/home.blade.php", "<h1>{{ $title }}</h1>\n")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct {
+		path     string
+		language string
+		name     string
+	}{
+		{"app/main.dart", "Dart", "main"},
+		{"infra/main.bicep", "Bicep", "main"},
+		{"schema/user.graphql", "GraphQL", "user"},
+		{"views/home.blade.php", "Blade", "blade"},
+	} {
+		var found bool
+		for _, symbol := range snapshot.Symbols {
+			if symbol.FilePath == want.path && symbol.Language == want.language && symbol.Kind == "document" && symbol.Name == want.name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing inventory symbol for %#v in %#v", want, snapshot.Symbols)
+		}
+	}
+}
+
 func TestCapabilitiesReportRelationSupportPerLanguage(t *testing.T) {
 	caps := Capabilities()
 
@@ -1167,7 +1318,7 @@ func TestCapabilitiesReportRelationSupportPerLanguage(t *testing.T) {
 		t.Fatalf("relation matrix covers %d languages, want %d", len(caps.RelationSupportByLanguage), len(caps.SupportedLanguages))
 	}
 	for language, types := range caps.RelationSupportByLanguage {
-		for _, base := range []string{"DEFINES", "CONTAINS", "CALLS"} {
+		for _, base := range []string{"DEFINES", "CONTAINS"} {
 			if !contains(types, base) {
 				t.Fatalf("language %q missing structural relation %q: %#v", language, base, types)
 			}
@@ -1176,6 +1327,16 @@ func TestCapabilitiesReportRelationSupportPerLanguage(t *testing.T) {
 			if !contains(relationTypes, relation) {
 				t.Fatalf("language %q reports unknown relation %q", language, relation)
 			}
+		}
+	}
+	for _, language := range []string{"Go", "Python", "TypeScript", "Java", "Rust", "C#", "PHP"} {
+		if !contains(caps.RelationSupportByLanguage[language], "CALLS") {
+			t.Fatalf("language %q should support CALLS: %#v", language, caps.RelationSupportByLanguage[language])
+		}
+	}
+	for _, language := range []string{"Dart", "Zig", "Bicep", "Dockerfile", "YAML", "Kustomize"} {
+		if contains(caps.RelationSupportByLanguage[language], "CALLS") {
+			t.Fatalf("inventory/config language %q should not advertise CALLS: %#v", language, caps.RelationSupportByLanguage[language])
 		}
 	}
 
@@ -1729,8 +1890,8 @@ func TestBuildProviderSnapshotMissingIncludeFileFailsClosed(t *testing.T) {
 func TestBuildProviderSnapshotIgnoredUnsupportedFilesDoNotProduceFailures(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, ".gitignore", "ignored/\n")
-	writeFile(t, repo, "ignored/Unsupported.dart", "class Ignored {}\n")
-	writeFile(t, repo, "Visible.dart", "class Visible {}\n")
+	writeFile(t, repo, "ignored/Unsupported.f90", "subroutine ignored\nend subroutine ignored\n")
+	writeFile(t, repo, "Visible.f90", "subroutine visible\nend subroutine visible\n")
 
 	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{
 		Worktree: true,
@@ -1741,10 +1902,10 @@ func TestBuildProviderSnapshotIgnoredUnsupportedFilesDoNotProduceFailures(t *tes
 
 	var sawVisibleFailure bool
 	for _, failure := range snapshot.Header.PartialFailures {
-		if failure.FilePath == "ignored/Unsupported.dart" {
+		if failure.FilePath == "ignored/Unsupported.f90" {
 			t.Fatalf("ignored unsupported file produced a partial failure: %#v", snapshot.Header.PartialFailures)
 		}
-		if failure.FilePath == "Visible.dart" && failure.Code == "E_UNSUPPORTED_LANGUAGE" {
+		if failure.FilePath == "Visible.f90" && failure.Code == "E_UNSUPPORTED_LANGUAGE" {
 			sawVisibleFailure = true
 		}
 	}
@@ -1859,7 +2020,7 @@ func TestBuildProviderSnapshotFallsBackWithoutSupportedRemote(t *testing.T) {
 func TestBuildProviderSnapshotReportsUnsupportedSourceFiles(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "Supported.py", "def validate_token(token):\n    return bool(token)\n")
-	writeFile(t, repo, "Unsupported.dart", "class Unsupported {}\n")
+	writeFile(t, repo, "Unsupported.f90", "subroutine unsupported\nend subroutine unsupported\n")
 
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
 	if err != nil {
@@ -1868,7 +2029,7 @@ func TestBuildProviderSnapshotReportsUnsupportedSourceFiles(t *testing.T) {
 
 	var found bool
 	for _, failure := range snapshot.Header.PartialFailures {
-		if failure.Code == "E_UNSUPPORTED_LANGUAGE" && failure.FilePath == "Unsupported.dart" {
+		if failure.Code == "E_UNSUPPORTED_LANGUAGE" && failure.FilePath == "Unsupported.f90" {
 			found = true
 		}
 	}

@@ -79,9 +79,9 @@ var ooRelationSupport = map[string][]string{
 	"Go":               {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
 	"HCL":              {"CONFIGURES", "RESOURCE_DEPENDS_ON"},
 	"Protocol Buffers": {"HANDLES_GRPC"},
-	"YAML":             {"CONFIGURES"},
-	"Dockerfile":       {"CONFIGURES"},
-	"Kustomize":        {"CONFIGURES"},
+	"YAML":             {"CONFIGURES", "RESOURCE_DEPENDS_ON"},
+	"Dockerfile":       {"CONFIGURES", "RESOURCE_DEPENDS_ON"},
+	"Kustomize":        {"CONFIGURES", "RESOURCE_DEPENDS_ON"},
 	"JSON":             {"CONFIGURES"},
 	"JSON5":            {"CONFIGURES"},
 	"TOML":             {"CONFIGURES"},
@@ -382,11 +382,18 @@ func resolveProfile(p Profile) profileSpec {
 }
 
 func Capabilities() CapabilityReport {
-	extensions := make([]string, 0, len(treeSitterLanguages))
+	specs := supportedLanguageSpecs()
+	extensions := make([]string, 0, len(specs))
 	languageSet := map[string]struct{}{}
-	for extension, spec := range treeSitterLanguages {
+	for extension, spec := range specs {
 		extensions = append(extensions, extension)
 		languageSet[spec.language] = struct{}{}
+	}
+	for _, spec := range inventoryLanguageFilenames {
+		languageSet[spec.language] = struct{}{}
+	}
+	for _, language := range specialFilenameLanguages() {
+		languageSet[language] = struct{}{}
 	}
 	sort.Strings(extensions)
 	languages := make([]string, 0, len(languageSet))
@@ -433,25 +440,71 @@ func Capabilities() CapabilityReport {
 // grammar, so they are not attributed to individual languages here.
 func relationSupportByLanguage() map[string][]string {
 	importCapable := map[string]bool{}
-	for ext, spec := range treeSitterLanguages {
+	for ext, spec := range supportedLanguageSpecs() {
 		if importCapableExtension(ext) {
 			importCapable[spec.language] = true
 		}
 	}
 	support := map[string][]string{}
-	for _, spec := range treeSitterLanguages {
-		if _, done := support[spec.language]; done {
-			continue
-		}
-		types := []string{"CALLS", "CONTAINS", "DEFINES"}
-		if importCapable[spec.language] {
-			types = append(types, "IMPORTS")
-		}
-		types = append(types, ooRelationSupport[spec.language]...)
-		sort.Strings(types)
-		support[spec.language] = types
+	for _, spec := range supportedLanguageSpecs() {
+		mergeLanguageSupport(support, spec.language, spec, importCapable[spec.language])
+	}
+	for _, spec := range inventoryLanguageFilenames {
+		mergeLanguageSupport(support, spec.language, spec, false)
+	}
+	for _, language := range specialFilenameLanguages() {
+		mergeLanguageSupport(support, language, languageSpec{language: language}, false)
 	}
 	return support
+}
+
+func supportedLanguageSpecs() map[string]languageSpec {
+	specs := make(map[string]languageSpec, len(treeSitterLanguages)+len(inventoryLanguageExtensions))
+	for ext, spec := range treeSitterLanguages {
+		specs[ext] = spec
+	}
+	for ext, spec := range inventoryLanguageExtensions {
+		specs[ext] = spec
+	}
+	return specs
+}
+
+func specialFilenameLanguages() []string {
+	return []string{"Dockerfile", "Kustomize", "Make"}
+}
+
+func mergeLanguageSupport(support map[string][]string, language string, spec languageSpec, importCapable bool) {
+	set := map[string]bool{"CONTAINS": true, "DEFINES": true}
+	for _, relation := range support[language] {
+		set[relation] = true
+	}
+	if supportsCallExtraction(spec) {
+		set["CALLS"] = true
+	}
+	if importCapable {
+		set["IMPORTS"] = true
+	}
+	for _, relation := range ooRelationSupport[language] {
+		set[relation] = true
+	}
+	types := make([]string, 0, len(set))
+	for relation := range set {
+		types = append(types, relation)
+	}
+	sort.Strings(types)
+	support[language] = types
+}
+
+func supportsCallExtraction(spec languageSpec) bool {
+	if spec.inventoryOnly {
+		return false
+	}
+	switch spec.language {
+	case "Bash", "C", "C++", "C#", "Elixir", "Go", "Groovy", "Java", "JavaScript", "Kotlin", "Lua", "OCaml", "PHP", "Python", "Ruby", "Rust", "Scala", "Swift", "TypeScript":
+		return true
+	default:
+		return false
+	}
 }
 
 func BuildProviderSnapshot(ctx context.Context, repo, providerVersion string) (ProviderSnapshot, error) {
@@ -1812,6 +1865,15 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 // module.network.id) emits RESOURCE_DEPENDS_ON to that block. Block symbols are
 // indexed by their referenceable name (the form used inside expressions).
 func resourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+	var relations []RelationRecord
+	relations = append(relations, hclResourceDependsOnRelations(recordsByFile, readContent)...)
+	relations = append(relations, dockerfileResourceDependsOnRelations(recordsByFile, readContent)...)
+	relations = append(relations, kubernetesResourceDependsOnRelations(recordsByFile, readContent)...)
+	relations = append(relations, kustomizeResourceDependsOnRelations(recordsByFile, readContent)...)
+	return relations
+}
+
+func hclResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
 	index := map[string]SymbolRecord{}
 	for _, symbols := range recordsByFile {
 		for _, symbol := range symbols {
@@ -1872,6 +1934,261 @@ func resourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readCon
 		}
 	}
 	return relations
+}
+
+func dockerfileResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+	var relations []RelationRecord
+	for _, path := range sortedKeysOf(recordsByFile) {
+		content, ok := readContent(path)
+		if !ok {
+			continue
+		}
+		stages := map[string]SymbolRecord{}
+		for _, symbol := range recordsByFile[path] {
+			if symbol.Language == "Dockerfile" && symbol.Kind == "stage" {
+				stages[strings.ToLower(symbol.Name)] = symbol
+				stages[strings.ToLower(symbol.QualifiedName)] = symbol
+			}
+		}
+		if len(stages) == 0 {
+			continue
+		}
+		lines := strings.Split(content, "\n")
+		for _, symbol := range recordsByFile[path] {
+			if symbol.Language != "Dockerfile" || symbol.Kind != "stage" {
+				continue
+			}
+			body := symbolBlockFromLines(lines, symbol)
+			for _, sourceStage := range dockerCopyFromStages(body) {
+				target, ok := stages[strings.ToLower(sourceStage)]
+				if !ok || target.ID == symbol.ID {
+					continue
+				}
+				relations = append(relations, RelationRecord{
+					RecordType:    "relation",
+					FromID:        symbol.ID,
+					ToID:          target.ID,
+					Type:          "RESOURCE_DEPENDS_ON",
+					Confidence:    0.9,
+					Reason:        "Dockerfile stage copies artifacts from another stage",
+					RelationScope: "file",
+					Resolution:    "exact",
+					TargetKind:    "symbol",
+					Evidence: []Evidence{{
+						Kind:      "dockerfile_copy_from",
+						FilePath:  symbol.FilePath,
+						StartLine: symbol.StartLine,
+						EndLine:   symbol.EndLine,
+						Detail:    sourceStage,
+					}},
+					WarningCodes: []string{},
+				})
+			}
+		}
+	}
+	return relations
+}
+
+func dockerCopyFromStages(content string) []string {
+	re := regexp.MustCompile(`(?im)^\s*COPY\s+(?:--[^\s=]+(?:=\S+)?\s+)*--from=([A-Za-z0-9_.-]+)\b`)
+	matches := re.FindAllStringSubmatch(content, -1)
+	out := make([]string, 0, len(matches))
+	seen := map[string]bool{}
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		name := match[1]
+		key := strings.ToLower(name)
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func kubernetesResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+	var relations []RelationRecord
+	for _, path := range sortedKeysOf(recordsByFile) {
+		content, ok := readContent(path)
+		if !ok || !(isKubernetesPath(path) || looksLikeKubernetesManifest(content)) {
+			continue
+		}
+		source, ok := firstSymbol(recordsByFile[path], "YAML", "spec", "template", "metadata")
+		if !ok {
+			continue
+		}
+		for _, dep := range kubernetesResourceReferences(content) {
+			relations = append(relations, RelationRecord{
+				RecordType:    "relation",
+				FromID:        source.ID,
+				ToID:          externalID("config", "kubernetes/"+dep.Kind+"/"+dep.Name),
+				Type:          "RESOURCE_DEPENDS_ON",
+				Confidence:    dep.Confidence,
+				Reason:        "Kubernetes manifest references another resource",
+				RelationScope: "external",
+				Resolution:    "pattern",
+				TargetKind:    "config",
+				Evidence: []Evidence{{
+					Kind:      dep.EvidenceKind,
+					FilePath:  source.FilePath,
+					StartLine: source.StartLine,
+					EndLine:   source.EndLine,
+					Detail:    dep.Kind + "/" + dep.Name,
+				}},
+				WarningCodes: []string{"WEAK_PATTERN"},
+			})
+		}
+	}
+	return relations
+}
+
+type resourceReference struct {
+	Kind         string
+	Name         string
+	EvidenceKind string
+	Confidence   float64
+}
+
+func kubernetesResourceReferences(content string) []resourceReference {
+	var refs []resourceReference
+	add := func(kind, name, evidence string, confidence float64) {
+		name = strings.Trim(strings.TrimSpace(name), `"'`)
+		if name == "" {
+			return
+		}
+		refs = append(refs, resourceReference{Kind: strings.ToLower(kind), Name: name, EvidenceKind: evidence, Confidence: confidence})
+	}
+	for _, match := range regexp.MustCompile(`(?is)\bconfigMapRef:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+		add("configmap", match[1], "kubernetes_configmap_ref", 0.8)
+	}
+	for _, match := range regexp.MustCompile(`(?is)\bsecretRef:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+name:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+		add("secret", match[1], "kubernetes_secret_ref", 0.8)
+	}
+	for _, match := range regexp.MustCompile(`(?im)^\s*secretName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+		add("secret", match[1], "kubernetes_secret_name", 0.8)
+	}
+	for _, match := range regexp.MustCompile(`(?im)^\s*serviceAccountName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+		add("serviceaccount", match[1], "kubernetes_service_account", 0.8)
+	}
+	for _, match := range regexp.MustCompile(`(?im)^\s*claimName:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+		add("persistentvolumeclaim", match[1], "kubernetes_pvc_claim", 0.78)
+	}
+	return dedupeResourceReferences(refs)
+}
+
+func kustomizeResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+	var relations []RelationRecord
+	for _, path := range sortedKeysOf(recordsByFile) {
+		content, ok := readContent(path)
+		if !ok {
+			continue
+		}
+		source, ok := firstSymbol(recordsByFile[path], "Kustomize", "resources", "patches", "components")
+		if !ok {
+			continue
+		}
+		for _, ref := range kustomizeFileReferences(content) {
+			relations = append(relations, RelationRecord{
+				RecordType:    "relation",
+				FromID:        source.ID,
+				ToID:          externalID("config", "kustomize/file/"+ref),
+				Type:          "RESOURCE_DEPENDS_ON",
+				Confidence:    0.82,
+				Reason:        "Kustomize manifest references another resource file",
+				RelationScope: "external",
+				Resolution:    "pattern",
+				TargetKind:    "config",
+				Evidence: []Evidence{{
+					Kind:      "kustomize_file_reference",
+					FilePath:  source.FilePath,
+					StartLine: source.StartLine,
+					EndLine:   source.EndLine,
+					Detail:    ref,
+				}},
+				WarningCodes: []string{"WEAK_PATTERN"},
+			})
+		}
+	}
+	return relations
+}
+
+func kustomizeFileReferences(content string) []string {
+	var refs []string
+	inList := false
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		switch {
+		case regexp.MustCompile(`^(resources|patches|components):\s*$`).MatchString(trimmed):
+			inList = true
+			continue
+		case regexp.MustCompile(`^[A-Za-z0-9_-]+:`).MatchString(trimmed):
+			inList = false
+		}
+		if !inList || !strings.HasPrefix(trimmed, "-") {
+			continue
+		}
+		ref := strings.TrimSpace(strings.TrimPrefix(trimmed, "-"))
+		ref = strings.Trim(ref, `"'`)
+		if ref != "" {
+			refs = append(refs, ref)
+		}
+	}
+	sort.Strings(refs)
+	return dedupeStrings(refs)
+}
+
+func firstSymbol(symbols []SymbolRecord, language string, preferredNames ...string) (SymbolRecord, bool) {
+	for _, name := range preferredNames {
+		for _, symbol := range symbols {
+			if symbol.Language == language && strings.EqualFold(symbol.Name, name) {
+				return symbol, true
+			}
+		}
+	}
+	for _, symbol := range symbols {
+		if symbol.Language == language {
+			return symbol, true
+		}
+	}
+	return SymbolRecord{}, false
+}
+
+func dedupeResourceReferences(refs []resourceReference) []resourceReference {
+	seen := map[string]bool{}
+	var out []resourceReference
+	for _, ref := range refs {
+		key := ref.Kind + "/" + ref.Name
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, ref)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Kind == out[j].Kind {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].Kind < out[j].Kind
+	})
+	return out
+}
+
+func dedupeStrings(values []string) []string {
+	seen := map[string]bool{}
+	out := values[:0]
+	for _, value := range values {
+		if seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 // hclReferenceableName maps a block symbol name to the form used to reference it
@@ -3158,7 +3475,7 @@ func sortedKeysOf[V any](m map[string]V) []string {
 
 func unsupportedLanguageHint(path string) string {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".dart", ".erb", ".f90", ".for", ".fs", ".fsharp", ".m", ".mm", ".pl", ".pm", ".svelte", ".vue", ".zig":
+	case ".f90", ".for", ".fsharp", ".mm":
 		return "unsupported source extension " + filepath.Ext(path)
 	default:
 		return ""

@@ -435,9 +435,12 @@ Useful existing foundation:
 
 - Go implementation.
 - Isolated tree-sitter parser boundary.
-- Bash, C, C++, C#, CUE, Elixir, Go, Groovy, HCL/Terraform, Java,
-  JavaScript, TypeScript, Kotlin, Lua, OCaml, PHP, Protocol Buffers, Python,
-  Ruby, Rust, Scala, SQL, and Swift support.
+- Rich parser support for Bash, C, C++, C#, CUE, Elixir, Go, Groovy,
+  HCL/Terraform, Java, JavaScript, TypeScript, Kotlin, Lua, OCaml, PHP,
+  Protocol Buffers, Python, Ruby, Rust, Scala, SQL, and Swift.
+- Lightweight deterministic inventory support for 158+ reported
+  languages/filetypes. Inventory-only entries emit file/symbol structure but do
+  not claim call/type/data-flow analysis.
 - Entity signature and body-hash comparison.
 - Checkpoint-aware semantic diffs.
 
@@ -455,6 +458,8 @@ Remaining gaps:
 - Relation extraction is still intentionally heuristic.
 - File moves, renames, and duplicate same-name symbols need stronger ID
   reconciliation.
-- `IMPLEMENTS`, `EXTENDS`, `OVERRIDES`, and `ACCESSES` are future relation types,
-  not Phase 1 contract records yet.
+- `IMPLEMENTS`, `EXTENDS`, `OVERRIDES`, `ACCESSES`, field-access,
+  data-flow, service-boundary, config, and resource-dependency relation
+  families are implemented for supported high-confidence cases, but they remain
+  heuristic and not compiler/type-checker complete.
 - Performance and memory budgets need larger benchmark coverage.

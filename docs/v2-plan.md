@@ -269,19 +269,25 @@ Acceptance:
 
 Objective: cover the infrastructure files agents frequently need for impact.
 
-Tasks:
+Delivered:
 
-- Add Dockerfile parser/extractor:
-  base images, stages, exposed ports, copied entrypoints.
-- Add Kubernetes YAML extractor:
-  Deployment, Service, Ingress, ConfigMap, Secret references, env vars,
-  service selectors.
-- Add Kustomize extractor:
-  overlays, resources, patches, bases.
-- Add Terraform/HCL resource graph:
-  resources, modules, variables, outputs, dependencies.
-- Emit resource nodes as external or resource records compatible with Brain.
-- Emit `CONFIGURES` and `RESOURCE_DEPENDS_ON`.
+- Dockerfile fallback extraction emits stages, `CONFIGURES` edges, and exact
+  `RESOURCE_DEPENDS_ON` edges for multi-stage `COPY --from=<stage>`
+  dependencies.
+- Kubernetes-looking YAML emits config sections plus conservative external
+  resource dependencies for common `ConfigMap`, `Secret`, service account, and
+  persistent-volume-claim references.
+- Kustomize manifests emit overlay/resource sections plus external
+  dependencies for listed resources, patches, and components.
+- Terraform/HCL blocks emit resources, modules, variables, outputs, config
+  targets, and exact intra-module `RESOURCE_DEPENDS_ON` edges for block
+  references.
+
+Open:
+
+- Port/image/env-var and selector-level resource matching is still partial.
+- Cross-file Kubernetes resource resolution is still endpoint-based unless a
+  richer resource symbol exists in the same provider snapshot.
 
 Acceptance:
 
