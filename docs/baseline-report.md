@@ -70,11 +70,12 @@ Confidence bands follow the v2-plan schema section (`0.90-1.00 exact`,
 - Structural: `DEFINES`, `CONTAINS` (1.0).
 - Imports: `IMPORTS` (0.8; relative imports resolve to local files at 0.95;
   Go module imports resolved through `go.mod` resolve locally at 0.93; JS/TS
-  package self-imports, package `exports`, package `imports`, import maps, and
-  `tsconfig.json` path aliases resolve locally at 0.89-0.92; Python
-  project/module imports, configured source roots, and inferred namespace roots
-  resolve locally at 0.88-0.90; exact JVM package imports resolve locally at
-  0.90; Rust crate/Cargo module imports, deterministic `#[path] mod` aliases,
+  package self-imports, package `exports`, package `imports`, root/scoped
+  import maps, and `tsconfig.json` path aliases resolve locally at 0.89-0.92;
+  Python project/module imports, configured source roots, and inferred
+  namespace roots resolve locally at 0.88-0.90; exact JVM package imports
+  resolve locally at 0.90; Rust crate/Cargo module imports, deterministic
+  `#[path] mod` aliases,
   and straightforward `pub use` re-exports resolve locally at 0.88).
 - Calls: `CALLS` — same-file 0.92, imported 0.86, type-inferred receiver
   0.85-0.9, globally-unique name 0.68.

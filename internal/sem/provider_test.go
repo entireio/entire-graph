@@ -255,6 +255,73 @@ export const value = feature(config.name) + util()
 	}
 }
 
+func TestTypeScriptManifestImportsResolveThroughScopedImportMap(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "import-map.json", `{
+  "imports": {
+    "@shared/util": "./src/global/util.ts"
+  },
+  "scopes": {
+    "./src/app/": {
+      "@shared/util": "./src/app/util.ts",
+      "@scoped/": "./src/scoped/"
+    }
+  }
+}`)
+	writeFile(t, repo, "src/app/main.ts", `import { util } from "@shared/util"
+import { feature } from "@scoped/feature"
+
+export const value = util() + feature()
+`)
+	writeFile(t, repo, "src/other.ts", `import { util } from "@shared/util"
+
+export const value = util()
+`)
+	writeFile(t, repo, "src/app/util.ts", `export function util(): string {
+  return "app"
+}
+`)
+	writeFile(t, repo, "src/global/util.ts", `export function util(): string {
+  return "global"
+}
+`)
+	writeFile(t, repo, "src/scoped/feature.ts", `export function feature(): string {
+  return "feature"
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertImport := func(fromPath, targetPath, evidenceKind string) {
+		t.Helper()
+		target := fileID(snapshot.Header.RepoKey, targetPath)
+		var found RelationRecord
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "IMPORTS" && strings.HasSuffix(relation.FromID, "file:"+fromPath) && relation.ToID == target {
+				found = relation
+				break
+			}
+		}
+		if found.FromID == "" {
+			t.Fatalf("missing scoped import-map import %s -> %s in %#v", fromPath, targetPath, snapshot.Relations)
+		}
+		if found.Resolution != "import_resolved" || found.RelationScope != "module" || found.TargetKind != "file" || found.Confidence < 0.89 {
+			t.Fatalf("unexpected scoped import-map metadata: %#v", found)
+		}
+		if len(found.Evidence) != 1 || found.Evidence[0].Kind != evidenceKind {
+			t.Fatalf("unexpected scoped import-map evidence: %#v", found.Evidence)
+		}
+	}
+	assertImport("src/app/main.ts", "src/app/util.ts", "import_map_scoped_import")
+	assertImport("src/app/main.ts", "src/scoped/feature.ts", "import_map_scoped_import")
+	assertImport("src/other.ts", "src/global/util.ts", "import_map_import")
+	if hasImportRelation(snapshot.Relations, "src/app/main.ts", fileID(snapshot.Header.RepoKey, "src/global/util.ts")) {
+		t.Fatalf("scoped import-map override also resolved to global target: %#v", snapshot.Relations)
+	}
+}
+
 func TestPackageJSONTargetsDoNotInventRootEntries(t *testing.T) {
 	exports := parsePackageJSONTargets(`{
   "exports": {
@@ -3032,6 +3099,15 @@ func hasRelationToExternalRoute(relations []RelationRecord, relationType, from, 
 func hasRelationTo(relations []RelationRecord, relationType, to string) bool {
 	for _, relation := range relations {
 		if relation.Type == relationType && relation.ToID == to {
+			return true
+		}
+	}
+	return false
+}
+
+func hasImportRelation(relations []RelationRecord, fromPath, toID string) bool {
+	for _, relation := range relations {
+		if relation.Type == "IMPORTS" && strings.HasSuffix(relation.FromID, "file:"+fromPath) && relation.ToID == toID {
 			return true
 		}
 	}

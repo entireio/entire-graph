@@ -45,7 +45,7 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
 - Go module imports resolve through `go.mod` to local package files with
   `import_resolved` metadata.
 - JS/TS package self-imports, root `package.json` `exports`, root
-  `package.json` `imports`, root import-map entries, and simple
+  `package.json` `imports`, root and scoped import-map entries, and simple
   `tsconfig.json` path aliases resolve to local files with `import_resolved`
   metadata.
 - JS/TS literal CommonJS `require(...)` and literal dynamic `import(...)`
@@ -261,6 +261,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
     152,410 LOC/s, max RSS 26,116,096 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781955127.json`: Go/gin, syntax-only, 28,618 LOC,
     148,241 LOC/s, max RSS 26,869,760 bytes, output 1,938,906 bytes.
+  - `bench/results/result-1781955405.json`: Go/gin, syntax-only, 28,618 LOC,
+    131,801 LOC/s, max RSS 26,755,072 bytes, output 1,938,906 bytes.
 
 ## Remaining Honesty Notes
 
