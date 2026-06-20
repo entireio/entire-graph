@@ -5172,7 +5172,7 @@ func importsFor(path, content string) []string {
 	case ".py":
 		return scanImports(content, regexp.MustCompile(`(?m)^\s*(?:from\s+(\.*[A-Za-z0-9_\.]+)\s+import|import\s+([A-Za-z0-9_\.]+))`))
 	case ".js", ".jsx", ".ts", ".tsx":
-		return scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+.*?\s+from\s+['"]([^'"]+)['"]|^\s*import\s+['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\)|import\s*\(\s*['"]([^'"]+)['"]\s*\)`))
+		return scanJSImports(content)
 	case ".lua":
 		return scanImports(content, regexp.MustCompile(`(?m)require\s*(?:\(|\s)\s*["']([^"']+)["']`))
 	case ".ml", ".mli":
@@ -5192,6 +5192,52 @@ func importsFor(path, content string) []string {
 	default:
 		return nil
 	}
+}
+
+func scanJSImports(content string) []string {
+	seen := map[string]struct{}{}
+	add := func(module string) {
+		module = strings.TrimSpace(module)
+		if module != "" {
+			seen[module] = struct{}{}
+		}
+	}
+	for _, module := range scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+.*?\s+from\s+['"]([^'"]+)['"]|^\s*import\s+['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\)|import\s*\(\s*['"]([^'"]+)['"]\s*\)`)) {
+		add(module)
+	}
+	constants := staticJSStringConstants(content)
+	dynamicRe := regexp.MustCompile(`(?m)(?:require|import)\s*\(\s*([^\n)]+)\s*\)`)
+	for _, match := range dynamicRe.FindAllStringSubmatch(content, -1) {
+		if len(match) != 2 {
+			continue
+		}
+		if module, ok := staticStringExpressionValue(match[1], constants); ok {
+			add(module)
+		}
+	}
+	return sortedKeys(seen)
+}
+
+func staticJSStringConstants(content string) map[string]string {
+	constants := map[string]string{}
+	for i := 0; i < 5; i++ {
+		changed := false
+		for _, match := range staticStringAssignRe.FindAllStringSubmatch(content, -1) {
+			if len(match) != 3 {
+				continue
+			}
+			value, ok := staticStringExpressionValue(match[2], constants)
+			if !ok || constants[match[1]] == value {
+				continue
+			}
+			constants[match[1]] = value
+			changed = true
+		}
+		if !changed {
+			break
+		}
+	}
+	return constants
 }
 
 func scanGoImports(content string) []string {
@@ -5314,28 +5360,54 @@ func importedJavaScriptNames(content string) map[string][]string {
 	namespaceImport := regexp.MustCompile(`(?m)^\s*import\s+\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+['"]([^'"]+)['"]`)
 	requireNamed := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)`)
 	requireDefault := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*['"]([^'"]+)['"]\s*\)`)
+	requireNamedExpr := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*([^\n)]+)\s*\)`)
+	requireDefaultExpr := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*([^\n)]+)\s*\)`)
+	constants := staticJSStringConstants(content)
+	add := func(local, module string) {
+		local = strings.TrimSpace(local)
+		module = strings.TrimSpace(module)
+		if local != "" && module != "" {
+			imports[local] = append(imports[local], module)
+		}
+	}
 	for _, match := range namedImport.FindAllStringSubmatch(content, -1) {
 		for _, item := range strings.Split(match[1], ",") {
-			if local := javascriptImportedLocalName(item); local != "" {
-				imports[local] = append(imports[local], match[2])
-			}
+			add(javascriptImportedLocalName(item), match[2])
 		}
 	}
 	for _, match := range defaultImport.FindAllStringSubmatch(content, -1) {
-		imports[match[1]] = append(imports[match[1]], match[2])
+		add(match[1], match[2])
 	}
 	for _, match := range namespaceImport.FindAllStringSubmatch(content, -1) {
-		imports[match[1]] = append(imports[match[1]], match[2])
+		add(match[1], match[2])
 	}
 	for _, match := range requireNamed.FindAllStringSubmatch(content, -1) {
 		for _, item := range strings.Split(match[1], ",") {
-			if local := javascriptImportedLocalName(item); local != "" {
-				imports[local] = append(imports[local], match[2])
-			}
+			add(javascriptImportedLocalName(item), match[2])
 		}
 	}
 	for _, match := range requireDefault.FindAllStringSubmatch(content, -1) {
-		imports[match[1]] = append(imports[match[1]], match[2])
+		add(match[1], match[2])
+	}
+	for _, match := range requireNamedExpr.FindAllStringSubmatch(content, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		module, ok := staticStringExpressionValue(match[2], constants)
+		if !ok {
+			continue
+		}
+		for _, item := range strings.Split(match[1], ",") {
+			add(javascriptImportedLocalName(item), module)
+		}
+	}
+	for _, match := range requireDefaultExpr.FindAllStringSubmatch(content, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		if module, ok := staticStringExpressionValue(match[2], constants); ok {
+			add(match[1], module)
+		}
 	}
 	return imports
 }
@@ -5354,6 +5426,9 @@ func importedJavaScriptBindings(content string) map[string][]jsImportBinding {
 	namespaceImport := regexp.MustCompile(`(?m)^\s*import\s+\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+['"]([^'"]+)['"]`)
 	requireNamed := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)`)
 	requireDefault := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*['"]([^'"]+)['"]\s*\)`)
+	requireNamedExpr := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\s*\(\s*([^\n)]+)\s*\)`)
+	requireDefaultExpr := regexp.MustCompile(`(?m)\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?(?:require|import)\s*\(\s*([^\n)]+)\s*\)`)
+	constants := staticJSStringConstants(content)
 	for _, match := range namedImport.FindAllStringSubmatch(content, -1) {
 		for _, item := range strings.Split(match[1], ",") {
 			imported, local := javascriptImportNames(item)
@@ -5374,6 +5449,27 @@ func importedJavaScriptBindings(content string) map[string][]jsImportBinding {
 	}
 	for _, match := range requireDefault.FindAllStringSubmatch(content, -1) {
 		add(match[1], jsImportBinding{Module: match[2]})
+	}
+	for _, match := range requireNamedExpr.FindAllStringSubmatch(content, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		module, ok := staticStringExpressionValue(match[2], constants)
+		if !ok {
+			continue
+		}
+		for _, item := range strings.Split(match[1], ",") {
+			imported, local := javascriptImportNames(item)
+			add(local, jsImportBinding{Module: module, Imported: imported})
+		}
+	}
+	for _, match := range requireDefaultExpr.FindAllStringSubmatch(content, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		if module, ok := staticStringExpressionValue(match[2], constants); ok {
+			add(match[1], jsImportBinding{Module: module})
+		}
 	}
 	return bindings
 }
@@ -6250,33 +6346,34 @@ func jsDirectRouteReceiver(receiver string) bool {
 }
 
 func staticRouteExpressionValue(expr string, constants map[string]string) (string, bool) {
+	value, ok := staticStringExpressionValue(expr, constants)
+	if !ok || !strings.HasPrefix(value, "/") {
+		return "", false
+	}
+	return normalizeRouteParamSyntax(value), true
+}
+
+func staticStringExpressionValue(expr string, constants map[string]string) (string, bool) {
 	expr = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(expr), ";"))
 	if expr == "" {
 		return "", false
 	}
 	if (strings.HasPrefix(expr, `"`) && strings.HasSuffix(expr, `"`)) || (strings.HasPrefix(expr, `'`) && strings.HasSuffix(expr, `'`)) {
-		route := strings.Trim(expr, `"'`)
-		if !strings.HasPrefix(route, "/") {
-			return "", false
-		}
-		return normalizeRouteParamSyntax(route), true
+		return strings.Trim(expr, `"'`), true
 	}
 	if strings.HasPrefix(expr, "`") && strings.HasSuffix(expr, "`") {
-		return staticTemplateRouteValue(expr, constants)
+		return staticTemplateStringValue(expr, constants)
 	}
-	if route := constants[expr]; route != "" {
-		return route, true
+	if value := constants[expr]; value != "" {
+		return value, true
 	}
 	if parts := splitStaticConcatExpression(expr); len(parts) > 1 {
-		route, ok := staticConcatRouteValue(parts, constants)
-		if ok {
-			return route, true
-		}
+		return staticConcatStringValue(parts, constants)
 	}
 	return "", false
 }
 
-func staticTemplateRouteValue(expr string, constants map[string]string) (string, bool) {
+func staticTemplateStringValue(expr string, constants map[string]string) (string, bool) {
 	body := strings.TrimSuffix(strings.TrimPrefix(expr, "`"), "`")
 	ok := true
 	value := staticTemplateHoleRe.ReplaceAllStringFunc(body, func(hole string) string {
@@ -6287,42 +6384,39 @@ func staticTemplateRouteValue(expr string, constants map[string]string) (string,
 		}
 		return constants[match[1]]
 	})
-	if !ok || strings.Contains(value, "${") || !strings.HasPrefix(value, "/") {
+	if !ok || strings.Contains(value, "${") {
 		return "", false
 	}
-	return normalizeRouteParamSyntax(value), true
+	return value, true
 }
 
-func staticConcatRouteValue(parts []string, constants map[string]string) (string, bool) {
-	var route string
+func staticConcatStringValue(parts []string, constants map[string]string) (string, bool) {
+	var value string
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
-		var value string
+		var piece string
 		switch {
 		case (strings.HasPrefix(part, `"`) && strings.HasSuffix(part, `"`)) || (strings.HasPrefix(part, `'`) && strings.HasSuffix(part, `'`)):
-			value = strings.Trim(part, `"'`)
+			piece = strings.Trim(part, `"'`)
 		case strings.HasPrefix(part, "`") && strings.HasSuffix(part, "`"):
-			resolved, ok := staticTemplateRouteValue(part, constants)
+			resolved, ok := staticTemplateStringValue(part, constants)
 			if !ok {
 				return "", false
 			}
-			value = resolved
+			piece = resolved
 		default:
 			if constants[part] == "" {
 				return "", false
 			}
-			value = constants[part]
+			piece = constants[part]
 		}
-		if route == "" {
-			route = value
+		if value == "" {
+			value = piece
 			continue
 		}
-		route = joinRoutePaths(route, value)
+		value += piece
 	}
-	if !strings.HasPrefix(route, "/") {
-		return "", false
-	}
-	return normalizeRouteParamSyntax(route), true
+	return value, true
 }
 
 func splitStaticConcatExpression(expr string) []string {

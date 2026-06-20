@@ -142,6 +142,9 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
 - Imported external calls for common Go, Python, and JS/TS import forms emit
   `CALLS` edges to `external:symbol:<module>.<member>` with
   `resolution: import_external`.
+- Deterministic computed JS/TS CommonJS and dynamic import module strings built
+  from known local string constants emit `IMPORTS`; computed CommonJS bindings
+  also emit imported external `CALLS`.
 - Direct constructor-chain receiver calls such as `new Widget().label()` emit
   `CALLS` edges to local methods with `resolution: type_inferred`.
 - Same-file factory-returned receiver calls such as `makeWidget().label()` emit
@@ -239,6 +242,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
     138,593 LOC/s, max RSS 28,819,456 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781953248.json`: Go/gin, syntax-only, 28,618 LOC,
     152,499 LOC/s, max RSS 26,771,456 bytes, output 1,938,906 bytes.
+  - `bench/results/result-1781953552.json`: Go/gin, syntax-only, 28,618 LOC,
+    152,866 LOC/s, max RSS 27,983,872 bytes, output 1,938,906 bytes.
 
 ## Remaining Honesty Notes
 

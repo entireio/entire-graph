@@ -2488,14 +2488,21 @@ export function readConfig(name: string): string {
   return path.join("config", readFileSync(name, "utf8"))
 }
 `)
-	writeFile(t, repo, "cjs.js", `const fs = require("fs")
-const { join } = require("path")
-
-export async function readCommonJS(name) {
-  await import("crypto")
-  return join("config", fs.readFileSync(name, "utf8"))
-}
-`)
+	writeFile(t, repo, "cjs.js", "const fs = require(\"fs\")\n"+
+		"const { join } = require(\"path\")\n"+
+		"const nodePrefix = \"node:\"\n"+
+		"const fsModule = nodePrefix + \"fs\"\n"+
+		"const pathModule = `${nodePrefix}path`\n"+
+		"const runtimeFs = require(fsModule)\n"+
+		"const { resolve } = require(pathModule)\n\n"+
+		"export async function readCommonJS(name) {\n"+
+		"  await import(\"crypto\")\n"+
+		"  return join(\"config\", fs.readFileSync(name, \"utf8\"))\n"+
+		"}\n\n"+
+		"export async function readComputedCommonJS(name) {\n"+
+		"  await import(`${nodePrefix}crypto`)\n"+
+		"  return resolve(\"config\", runtimeFs.readFileSync(name, \"utf8\"))\n"+
+		"}\n")
 
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
 	if err != nil {
@@ -2513,6 +2520,8 @@ export async function readCommonJS(name) {
 		{from: "readConfig", target: "axios.get", detail: "axios.get"},
 		{from: "readCommonJS", target: "fs.readFileSync", detail: "fs.readFileSync"},
 		{from: "readCommonJS", target: "path.join", detail: "join"},
+		{from: "readComputedCommonJS", target: "node:fs.readFileSync", detail: "runtimeFs.readFileSync"},
+		{from: "readComputedCommonJS", target: "node:path.resolve", detail: "resolve"},
 	} {
 		var found RelationRecord
 		for _, relation := range snapshot.Relations {
@@ -2531,7 +2540,7 @@ export async function readCommonJS(name) {
 			t.Fatalf("unexpected imported external call evidence: %#v", found.Evidence)
 		}
 	}
-	for _, target := range []string{"external:import:fs", "external:import:path", "external:import:crypto"} {
+	for _, target := range []string{"external:import:fs", "external:import:path", "external:import:crypto", "external:import:node:fs", "external:import:node:path", "external:import:node:crypto"} {
 		if !hasRelationTo(snapshot.Relations, "IMPORTS", target) {
 			t.Fatalf("missing JS dynamic/CommonJS import to %s in %#v", target, snapshot.Relations)
 		}
