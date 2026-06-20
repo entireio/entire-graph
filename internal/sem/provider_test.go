@@ -1859,6 +1859,31 @@ kind: Service
 metadata:
   name: event-handler
 `)
+	writeFile(t, repo, "k8s/knative-channel.yaml", `apiVersion: messaging.knative.dev/v1
+kind: InMemoryChannel
+metadata:
+  name: user-events
+`)
+	writeFile(t, repo, "k8s/knative-subscription.yaml", `apiVersion: messaging.knative.dev/v1
+kind: Subscription
+metadata:
+  name: user-events-to-handler
+spec:
+  channel:
+    apiVersion: messaging.knative.dev/v1
+    kind: InMemoryChannel
+    name: user-events
+  subscriber:
+    ref:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      name: event-handler
+  reply:
+    ref:
+      apiVersion: eventing.knative.dev/v1
+      kind: Broker
+      name: default
+`)
 
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
 	if err != nil {
@@ -1878,6 +1903,9 @@ metadata:
 		{"ServiceBinding.api-database", "Deployment.api"},
 		{"Trigger.user-created", "Broker.default"},
 		{"Trigger.user-created", "Service.event-handler"},
+		{"Subscription.user-events-to-handler", "InMemoryChannel.user-events"},
+		{"Subscription.user-events-to-handler", "Service.event-handler"},
+		{"Subscription.user-events-to-handler", "Broker.default"},
 	} {
 		if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", edge[0], edge[1]) {
 			t.Fatalf("missing custom-controller dependency %s -> %s in %#v", edge[0], edge[1], snapshot.Relations)

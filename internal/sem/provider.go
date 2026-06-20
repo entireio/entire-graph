@@ -2899,6 +2899,17 @@ func kubernetesResourceReferences(content string) []resourceReference {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 		}
 	}
+	if kubernetesManifestHasAnyKind(content, "Subscription") {
+		for _, ref := range kubernetesNamedRefBlockReferences(content, "channel", "kubernetes_knative_subscription_channel_ref", 0.84, kubernetesExplicitReferenceKind) {
+			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+		}
+		for _, ref := range kubernetesNamedRefBlockReferences(content, "subscriber", "kubernetes_knative_subscription_subscriber_ref", 0.82, kubernetesDefaultReferenceKind("service")) {
+			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+		}
+		for _, ref := range kubernetesNamedRefBlockReferences(content, "reply", "kubernetes_knative_subscription_reply_ref", 0.82, kubernetesDefaultReferenceKind("service")) {
+			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+		}
+	}
 	if kubernetesManifestHasAnyKind(content, "HelmRelease", "HelmChart", "Kustomization", "ImageRepository", "ImagePolicy", "ImageUpdateAutomation") {
 		for _, ref := range kubernetesNamedRefBlockReferences(content, "sourceRef", "kubernetes_flux_source_ref", 0.84, kubernetesExplicitReferenceKind) {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
