@@ -1662,6 +1662,53 @@ export async function ping(): Promise<unknown> {
 	}
 }
 
+func TestGoHTTPHandleFuncResolvesRouteHandlerAndBridge(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "server.go", `package server
+
+import (
+	"net/http"
+)
+
+const apiPrefix = "/api"
+const healthRoute = apiPrefix + "/health"
+
+func register(mux *http.ServeMux) {
+	http.HandleFunc(healthRoute, health)
+	mux.Handle("/ready", http.HandlerFunc(ready))
+}
+
+func health(w http.ResponseWriter, r *http.Request) {}
+
+func ready(w http.ResponseWriter, r *http.Request) {}
+
+func ping() {
+	http.Get("http://localhost/api/health")
+	http.Get("http://localhost/ready")
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "health", "/api/health") {
+		t.Fatalf("missing Go HandleFunc route handler: %#v", snapshot.Relations)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "ready", "/ready") {
+		t.Fatalf("missing Go HandlerFunc wrapper route handler: %#v", snapshot.Relations)
+	}
+	if hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "register", "/api/health") {
+		t.Fatalf("registration function was misclassified as route handler: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "health") {
+		t.Fatalf("missing route bridge CALLS ping->health: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "ready") {
+		t.Fatalf("missing route bridge CALLS ping->ready: %#v", snapshot.Relations)
+	}
+}
+
 func TestStaticConstantRouteComposition(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "api.ts", `const apiPrefix = "/api"

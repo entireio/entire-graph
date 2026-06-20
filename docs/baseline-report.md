@@ -35,7 +35,7 @@ review.
 
 | Fixture             | Language   | Exercises                                              |
 | ------------------- | ---------- | ------------------------------------------------------ |
-| `go-basic`          | Go         | type + method, function, imports, call, HTTP route     |
+| `go-basic`          | Go         | type + method, function, imports, call, net/http route |
 | `python-basic`      | Python     | class + methods, function, import, constructor/method calls |
 | `typescript-basic`  | TypeScript | exported functions, import, intra-file call, route literal |
 | `java-basic`        | Java       | class + methods, import, intra-class call              |
@@ -118,12 +118,14 @@ False positives:
   now recorded only when its line carries routing context (an HTTP-verb/route
   method call, mapping decorator, Python Flask/FastAPI-style route decorator,
   FastAPI/Starlette-style `include_router(prefix=...)` mount, Java Spring-style
-  direct mapping annotation, or same-block Express router mount plus route
-  registration). Static constant-prefix expressions such as
+  direct mapping annotation, Go `net/http` `HandleFunc`/`HandlerFunc`
+  registration, or same-block Express router mount plus route registration).
+  Static constant-prefix expressions such as
   `apiPrefix + "/health"` compose to one route and do not emit the suffix as a
   separate route. Matching Python `requests`/`httpx`, Java `RestTemplate`/HTTP
-  client calls, and JS/TS `fetch`/Axios calls can bridge to local decorated or
-  registered handlers through the shared route endpoint. (WP6.)
+  client calls, Go HTTP client calls, and JS/TS `fetch`/Axios calls can bridge
+  to local decorated or registered handlers through the shared route endpoint.
+  (WP6.)
 - **Global-unique name match (Go `go-basic`).** `LoginHandler CALLS CheckToken`
   is emitted at `0.68` purely because the name is unique repo-wide, not because
   the call was resolved through imports/scope. Correct here, but fragile.

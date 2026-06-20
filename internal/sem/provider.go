@@ -1433,6 +1433,13 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			handledRoutes[route] = struct{}{}
 		}
 	}
+	if spec.emits("HANDLES_ROUTE") {
+		for _, r := range goHTTPRouteRelations(files, recordsByFile, readContent) {
+			emit(r.Relation)
+			routeHandlers[r.Route] = append(routeHandlers[r.Route], r.Handler)
+			handledRoutes[r.Route] = struct{}{}
+		}
+	}
 	manifestImports := buildManifestImportResolver(files, readContent)
 
 	for _, file := range files {
@@ -5415,6 +5422,100 @@ func routeLiteralsForSymbol(path, content, block string, symbol SymbolRecord, sy
 	return sortedKeys(seen)
 }
 
+func goHTTPRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []expressRouteRelation {
+	var relations []expressRouteRelation
+	seen := map[string]bool{}
+	for _, file := range files {
+		if !strings.EqualFold(filepath.Ext(file.Path), ".go") {
+			continue
+		}
+		content, ok := readContent(file.Path)
+		if !ok {
+			continue
+		}
+		handlers := map[string]SymbolRecord{}
+		for _, symbol := range recordsByFile[file.Path] {
+			if typeLikeKind(symbol.Kind) {
+				continue
+			}
+			if _, exists := handlers[symbol.Name]; !exists {
+				handlers[symbol.Name] = symbol
+			}
+		}
+		for _, registration := range goHTTPRouteRegistrations(content) {
+			handler, ok := handlers[registration.Handler]
+			if !ok {
+				continue
+			}
+			key := handler.ID + "\x00" + registration.Route
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			relations = append(relations, expressRouteRelation{
+				Route:   registration.Route,
+				Handler: handler,
+				Relation: RelationRecord{
+					RecordType:    "relation",
+					FromID:        handler.ID,
+					ToID:          externalID("route", registration.Route),
+					Type:          "HANDLES_ROUTE",
+					Confidence:    0.86,
+					Reason:        "Go net/http route registration resolved to local handler",
+					RelationScope: "external",
+					Resolution:    "exact",
+					TargetKind:    "route",
+					Evidence: []Evidence{{
+						Kind:      registration.EvidenceKind,
+						FilePath:  handler.FilePath,
+						StartLine: handler.StartLine,
+						EndLine:   handler.EndLine,
+						Detail:    registration.Detail,
+					}},
+					WarningCodes: []string{},
+				},
+			})
+		}
+	}
+	sort.Slice(relations, func(i, j int) bool {
+		if relations[i].Route != relations[j].Route {
+			return relations[i].Route < relations[j].Route
+		}
+		return relations[i].Handler.ID < relations[j].Handler.ID
+	})
+	return relations
+}
+
+func goHTTPRouteRegistrations(content string) []goHTTPRouteRegistration {
+	constants := staticStringConstants(content)
+	var registrations []goHTTPRouteRegistration
+	add := func(routeExpr, handler, evidence string) {
+		route, ok := staticRouteExpressionValue(routeExpr, constants)
+		if !ok || handler == "" {
+			return
+		}
+		registrations = append(registrations, goHTTPRouteRegistration{
+			Route:        route,
+			Handler:      handler,
+			EvidenceKind: evidence,
+			Detail:       route + " -> " + handler,
+		})
+	}
+	handleFuncRe := regexp.MustCompile(`\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?HandleFunc\s*\(\s*([^,\n]+)\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)`)
+	handleFuncWrapperRe := regexp.MustCompile(`\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?Handle\s*\(\s*([^,\n]+)\s*,\s*(?:http\.)?HandlerFunc\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\)`)
+	for _, match := range handleFuncRe.FindAllStringSubmatch(content, -1) {
+		if len(match) == 3 {
+			add(match[1], match[2], "go_http_handle_func")
+		}
+	}
+	for _, match := range handleFuncWrapperRe.FindAllStringSubmatch(content, -1) {
+		if len(match) == 3 {
+			add(match[1], match[2], "go_http_handler_func")
+		}
+	}
+	return registrations
+}
+
 func routeLiteralPartOfConcat(line string, start, end int) bool {
 	before := strings.TrimSpace(line[:start])
 	after := strings.TrimSpace(line[end:])
@@ -5464,6 +5565,13 @@ type expressRouteRelation struct {
 	Route    string
 	Handler  SymbolRecord
 	Relation RelationRecord
+}
+
+type goHTTPRouteRegistration struct {
+	Route        string
+	Handler      string
+	EvidenceKind string
+	Detail       string
 }
 
 type jsImportBinding struct {

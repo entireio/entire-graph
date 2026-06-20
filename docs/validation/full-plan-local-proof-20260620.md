@@ -23,6 +23,7 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile full -provider-version codex-full-plan -out bench/results
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.json -languages C -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results -max-rss-bytes 5000000000
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
@@ -69,6 +70,9 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
 - Java Spring-style route annotations compose class-level prefixes with
   method-level routes, emit `HANDLES_ROUTE`, and bridge matching
   `RestTemplate`/HTTP client calls to handlers as direct `CALLS`.
+- Go `net/http` `HandleFunc` registrations and `HandlerFunc` wrappers resolve
+  static or local-literal-constant paths to same-file local handler symbols and
+  bridge matching Go HTTP client calls as direct `CALLS`.
 - Express-style JS/TS router mounts compose same-block
   `app.use("/prefix", router)` prefixes with static `router.get/post/...`
   routes, emit `HANDLES_ROUTE`, and bridge exact matching `fetch`/Axios client
@@ -171,6 +175,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
     131,698 LOC/s, max RSS 29,261,824 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781949898.json`: Go/gin, syntax-only, 28,618 LOC,
     133,673 LOC/s, max RSS 26,411,008 bytes, output 1,938,906 bytes.
+  - `bench/results/result-1781950245.json`: Go/gin, syntax-only, 28,618 LOC,
+    160,523 LOC/s, max RSS 27,508,736 bytes, output 1,938,906 bytes.
 
 ## Remaining Honesty Notes
 

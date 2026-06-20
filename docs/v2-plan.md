@@ -280,7 +280,9 @@ Tasks:
 
 - Improve route handler detection:
   Express/Fastify/Next.js, Django, Go `net/http`/chi/gin, Java Spring, C#
-  ASP.NET, PHP Laravel/Symfony. Flask/FastAPI-style Python route decorators are
+  ASP.NET, PHP Laravel/Symfony. Go `net/http` `HandleFunc` registrations and
+  `HandlerFunc` wrappers resolve to same-file local handler symbols when paths
+  are static or local literal constants. Flask/FastAPI-style Python route decorators are
   implemented for direct app/router decorators. Java Spring-style direct
   mapping annotations are implemented for class-level prefix plus method-level
   route composition. Express-style JS/TS same-block router mounts plus
