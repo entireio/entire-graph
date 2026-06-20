@@ -374,14 +374,16 @@ Tasks:
   imports. Deterministic static computed route expressions such as
   `apiPrefix + "/health"`, template literals with known local route constants,
   `String.raw` template literals with deterministic local holes, static array
-  joins, and `new URL("/path", base).pathname` constants compose to a single
-  route endpoint.
+  joins, static `path.join(...)`/`path.posix.join(...)` calls, and
+  `new URL("/path", base).pathname` constants compose to a single route
+  endpoint.
 - Add route client detection:
   `fetch`, Axios, Python requests/httpx, Go `http.Client`, Java HTTP clients,
   C# HttpClient. JS/TS clients support deterministic static computed paths
   built from known local route constants, `String.raw` templates, inline static
-  array joins, or `new URL("/path", base).pathname` constants; arbitrary runtime
-  builders remain out of scope.
+  array joins, static `path.join(...)`/`path.posix.join(...)` calls, or
+  `new URL("/path", base).pathname` constants; arbitrary runtime builders
+  remain out of scope.
 - Emit `HANDLES_ROUTE` and `HTTP_CALLS` with method, path, confidence, and
   source evidence.
 - GraphQL operation literals, JS/TS resolver-map fields, modular resolver root

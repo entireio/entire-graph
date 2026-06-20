@@ -9925,6 +9925,9 @@ func staticStringExpressionValue(expr string, constants map[string]string) (stri
 	if value, ok := staticArrayJoinStringValue(expr, constants); ok {
 		return value, true
 	}
+	if value, ok := staticPathJoinStringValue(expr, constants); ok {
+		return value, true
+	}
 	if value, ok := staticURLPathnameStringValue(expr, constants); ok {
 		return value, true
 	}
@@ -10009,6 +10012,65 @@ func staticArrayJoinStringValue(expr string, constants map[string]string) (strin
 		values = append(values, value)
 	}
 	return strings.Join(values, separator), true
+}
+
+func staticPathJoinStringValue(expr string, constants map[string]string) (string, bool) {
+	expr = strings.TrimSpace(expr)
+	call := ""
+	switch {
+	case strings.HasPrefix(expr, "path.join"):
+		call = strings.TrimSpace(strings.TrimPrefix(expr, "path.join"))
+	case strings.HasPrefix(expr, "path.posix.join"):
+		call = strings.TrimSpace(strings.TrimPrefix(expr, "path.posix.join"))
+	default:
+		return "", false
+	}
+	if !strings.HasPrefix(call, "(") {
+		return "", false
+	}
+	callEnd := findMatchingStaticDelimiter(call, 0, '(', ')')
+	if callEnd < 0 || strings.TrimSpace(call[callEnd+1:]) != "" {
+		return "", false
+	}
+	args := splitTopLevelStaticComma(call[1:callEnd])
+	if len(args) == 0 {
+		return "", false
+	}
+	values := make([]string, 0, len(args))
+	for _, arg := range args {
+		value, ok := staticStringExpressionValue(arg, constants)
+		if !ok {
+			return "", false
+		}
+		values = append(values, value)
+	}
+	return joinStaticPathSegments(values), true
+}
+
+func joinStaticPathSegments(values []string) string {
+	var out string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if out == "" {
+			out = strings.TrimRight(value, "/")
+			if out == "" && strings.HasPrefix(value, "/") {
+				out = "/"
+			}
+			continue
+		}
+		segment := strings.Trim(value, "/")
+		if segment == "" {
+			continue
+		}
+		out = strings.TrimRight(out, "/") + "/" + segment
+	}
+	if out == "" {
+		return "."
+	}
+	return out
 }
 
 func staticURLPathnameStringValue(expr string, constants map[string]string) (string, bool) {

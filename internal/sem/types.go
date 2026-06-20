@@ -1840,6 +1840,7 @@ var (
 	urlLiteralRe           = regexp.MustCompile(`["'](https?://[^"'\s]+|/[A-Za-z0-9_\-/{}\[\]:.]*)["']`)
 	httpCallArgRe          = regexp.MustCompile(`(?i)(?:\b(?:fetch|got|ky)\s*\(|\b(?:axios|requests|httpx|http)\s*\.\s*(?:get|post|put|patch|delete|head)\s*\(|\bhttp::\s*(?:get|post|put|patch|delete|head)\s*\(|\.\s*(?:get|post|put|patch|delete|head)(?:fromjson|asjson)?async(?:<[^>]+>)?\s*\()\s*([^,\n)]+)`)
 	httpCallArrayJoinArgRe = regexp.MustCompile(`(?i)(?:\b(?:fetch|got|ky)\s*\(|\b(?:axios|requests|httpx|http)\s*\.\s*(?:get|post|put|patch|delete|head)\s*\(|\bhttp::\s*(?:get|post|put|patch|delete|head)\s*\(|\.\s*(?:get|post|put|patch|delete|head)(?:fromjson|asjson)?async(?:<[^>]+>)?\s*\()\s*(\[[^\]\n]*\]\s*\.\s*join\s*\([^\)\n]*\))`)
+	httpCallPathJoinArgRe  = regexp.MustCompile(`(?i)(?:\b(?:fetch|got|ky)\s*\(|\b(?:axios|requests|httpx|http)\s*\.\s*(?:get|post|put|patch|delete|head)\s*\(|\bhttp::\s*(?:get|post|put|patch|delete|head)\s*\(|\.\s*(?:get|post|put|patch|delete|head)(?:fromjson|asjson)?async(?:<[^>]+>)?\s*\()\s*(path(?:\.posix)?\.join\s*\([^\)\n]*\))`)
 )
 
 // httpCalls extracts outbound HTTP client calls from a code block: lines that
@@ -1874,6 +1875,14 @@ func httpCallsWithConstants(content string, constants map[string]string) []httpC
 			method = strings.ToUpper(m[1])
 		}
 		for _, match := range httpCallArrayJoinArgRe.FindAllStringSubmatch(line, -1) {
+			if len(match) != 2 {
+				continue
+			}
+			if path, absolute, ok := staticHTTPCallExpressionValue(match[1], constants); ok {
+				add(method, path, absolute)
+			}
+		}
+		for _, match := range httpCallPathJoinArgRe.FindAllStringSubmatch(line, -1) {
 			if len(match) != 2 {
 				continue
 			}

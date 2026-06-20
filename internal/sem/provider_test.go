@@ -3854,6 +3854,36 @@ func TestStaticArrayJoinRouteExpressionComposesAndBridgesHTTPClient(t *testing.T
 	}
 }
 
+func TestStaticPathJoinRouteExpressionComposesAndBridgesHTTPClient(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "api.ts", "const apiPrefix = \"/api\"\n"+
+		"const version = \"v1\"\n"+
+		"const usersRoute = path.posix.join(apiPrefix, version, \"users\", \":id\")\n\n"+
+		"export function register(app: any): void {\n"+
+		"  app.get(usersRoute, showUser)\n"+
+		"}\n\n"+
+		"export function showUser(): string {\n"+
+		"  return \"ok\"\n"+
+		"}\n\n"+
+		"export async function ping(): Promise<unknown> {\n"+
+		"  return fetch(path.join(apiPrefix, version, \"users\", \":id\"))\n"+
+		"}\n")
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "showUser", "/api/v1/users/:id") {
+		t.Fatalf("missing static path.join route expression: %#v", snapshot.Relations)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HTTP_CALLS", "ping", "/api/v1/users/:id") {
+		t.Fatalf("missing static path.join HTTP call relation: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "showUser") {
+		t.Fatalf("missing path.join route bridge CALLS ping->showUser: %#v", snapshot.Relations)
+	}
+}
+
 func TestStringRawTemplateRouteExpressionComposesAndBridgesHTTPClient(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "api.ts", "const version = \"v1\"\n\n"+

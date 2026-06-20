@@ -90,6 +90,8 @@ go test ./internal/sem -run 'TestKubernetes(MonitorSelectorsDependOnTargets|Prom
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-prom-monitor-secrets -min-loc-per-sec 1
 go test ./internal/sem -run 'TestKubernetes(ReloaderAnnotationsDependOnConfigResources|ResourceDependencies|ResourceReferencesIncludeNamespaceQualifiedExternalNames)' -count=1
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-reloader-annotation-refs -min-loc-per-sec 1
+go test ./internal/sem -run 'Test(StaticPathJoinRouteExpressionComposesAndBridgesHTTPClient|StaticArrayJoinRouteExpressionComposesAndBridgesHTTPClient|StringRawTemplateRouteExpressionComposesAndBridgesHTTPClient|URLPathnameRouteConstantComposesAndBridgesHTTPClient|ComputedRouteExpressionComposesAndBridgesHTTPClient)' -count=1
+go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-path-join-routes -min-loc-per-sec 1
 ```
 
 ## Results
@@ -330,11 +332,13 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   route endpoints as direct `CALLS` edges.
 - Deterministic static computed JS/TS route expressions, including
   template-literal route constants, `String.raw` template literals with
-  deterministic local holes, chained concatenated constants, and static array
-  joins, compose to route endpoints and bridge matching HTTP clients.
+  deterministic local holes, chained concatenated constants, static array
+  joins, and static `path.join(...)`/`path.posix.join(...)` calls, compose to
+  route endpoints and bridge matching HTTP clients.
 - Deterministic static computed JS/TS HTTP client paths built from known local
-  route constants, `String.raw` templates, or inline static array joins emit
-  `HTTP_CALLS` and bridge to local handlers.
+  route constants, `String.raw` templates, inline static array joins, or static
+  `path.join(...)`/`path.posix.join(...)` calls emit `HTTP_CALLS` and bridge to
+  local handlers.
 - Imported external calls for common Go, Python, and JS/TS import forms emit
   `CALLS` edges to `external:symbol:<module>.<member>` with
   `resolution: import_external`.
@@ -847,6 +851,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781998905.json`: Go/gin, syntax-only, 28,618 LOC,
     163,567 LOC/s, max RSS 28,655,616 bytes, estimated output 1,902,636
     bytes.
+  - `bench/results/result-1781999134.json`: Go/gin, syntax-only, 28,618 LOC,
+    163,751 LOC/s, max RSS 28,131,328 bytes, estimated output 1,902,628
+    bytes.
   - `bench/results/result-1781997407.json`: Go/gin, syntax-only, 28,618 LOC,
     165,967 LOC/s, max RSS 30,015,488 bytes, estimated output 1,902,632
     bytes.
@@ -869,8 +876,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   fast-profile speed result to full-profile indexing.
 - JS/TS deterministic route and HTTP client bridging covers local constants,
   concatenations including string-first concatenations, template literals,
-  `String.raw`, static array joins, and `new URL("/path", base).pathname`
-  constants. Arbitrary runtime URL construction remains intentionally skipped.
+  `String.raw`, static array joins, static `path.join(...)`/`path.posix.join(...)`
+  calls, and `new URL("/path", base).pathname` constants. Arbitrary runtime URL
+  construction remains intentionally skipped.
 - Data-flow support covers conservative destructured parameter-alias forwarding
   such as `const { value } = input; normalize(value)`, in addition to direct
   parameter, direct parameter-property, parameter-property alias, alias,
