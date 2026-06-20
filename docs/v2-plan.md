@@ -288,7 +288,8 @@ Tasks:
   `re_path(...)` registrations resolve to same-file local handler symbols when
   patterns are static. Go `net/http` `HandleFunc` registrations and
   `HandlerFunc` wrappers resolve to same-file local handler symbols when paths
-  are static or local literal constants. Flask/FastAPI-style Python route decorators are
+  are static or local literal constants; common Go chi/gin-style router method
+  registrations do the same. Flask/FastAPI-style Python route decorators are
   implemented for direct app/router decorators. Java Spring-style direct
   mapping annotations are implemented for class-level prefix plus method-level
   route composition. C# ASP.NET controller `[Route]` prefixes and HTTP-verb

@@ -82,6 +82,9 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
 - Go `net/http` `HandleFunc` registrations and `HandlerFunc` wrappers resolve
   static or local-literal-constant paths to same-file local handler symbols and
   bridge matching Go HTTP client calls as direct `CALLS`.
+- Go chi/gin-style router method registrations resolve static or
+  local-literal-constant paths to same-file local handler symbols and bridge
+  matching Go HTTP client calls as direct `CALLS`.
 - Django `path(...)` registrations and simple `re_path(...)` registrations
   resolve static patterns to same-file local handler symbols and bridge
   matching Python HTTP client calls as direct `CALLS`.
@@ -208,6 +211,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
     132,020 LOC/s, max RSS 27,099,136 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781951788.json`: Go/gin, syntax-only, 28,618 LOC,
     131,704 LOC/s, max RSS 28,082,176 bytes, output 1,938,906 bytes.
+  - `bench/results/result-1781951876.json`: Go/gin, syntax-only, 28,618 LOC,
+    131,577 LOC/s, max RSS 28,835,840 bytes, output 1,938,906 bytes.
 
 ## Remaining Honesty Notes
 

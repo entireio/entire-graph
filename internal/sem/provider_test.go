@@ -1721,6 +1721,44 @@ func ping() {
 	}
 }
 
+func TestGoRouterMethodResolvesChiGinHandlerAndBridge(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "server.go", `package server
+
+import "net/http"
+
+const userRoute = "/api/users/{id}"
+
+type Router interface {
+	Get(string, http.HandlerFunc)
+}
+
+func register(r Router) {
+	r.Get(userRoute, showUser)
+}
+
+func showUser(w http.ResponseWriter, r *http.Request) {}
+
+func ping() {
+	http.Get("http://localhost/api/users/{id}")
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "showUser", "/api/users/{id}") {
+		t.Fatalf("missing Go router method route handler: %#v", snapshot.Relations)
+	}
+	if hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "register", "/api/users/{id}") {
+		t.Fatalf("registration function was misclassified as router handler: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "showUser") {
+		t.Fatalf("missing route bridge CALLS ping->showUser: %#v", snapshot.Relations)
+	}
+}
+
 func TestStaticConstantRouteComposition(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "api.ts", `const apiPrefix = "/api"
