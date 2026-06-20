@@ -5315,6 +5315,7 @@ type manifestImportResolver struct {
 	tsPathMappings     []tsPathMapping
 	pythonPackages     []string
 	pythonSourceRoots  []string
+	pythonPackageDirs  []pythonPackageDirMapping
 	pythonModules      map[string]string
 	pythonNamespaces   map[string]bool
 	jvmTypes           map[string]string
@@ -5356,6 +5357,11 @@ type phpPSR4Prefix struct {
 	Dirs   []string
 }
 
+type pythonPackageDirMapping struct {
+	Package string
+	Dir     string
+}
+
 func buildManifestImportResolver(files []FileRecord, readContent contentReader) manifestImportResolver {
 	resolver := manifestImportResolver{goPackages: map[string]string{}, jsPackageExports: map[string]string{}, jsPackageImports: map[string]string{}, jsImportMap: map[string]string{}, jsModuleFiles: map[string]string{}, pythonSourceRoots: []string{"src"}, pythonModules: map[string]string{}, pythonNamespaces: map[string]bool{}, jvmTypes: map[string]string{}, jvmTypeEvidence: map[string]string{}, csharpNamespaces: map[string]string{}, csharpEvidence: map[string]string{}, csharpAmbiguous: map[string]bool{}, phpTypes: map[string]string{}, phpTypeEvidence: map[string]string{}, phpTypeAmbiguous: map[string]bool{}, rustModules: map[string]string{}, rustAliases: map[string]string{}}
 	if content, ok := readContent("go.mod"); ok {
@@ -5379,10 +5385,12 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 	if content, ok := readContent("pyproject.toml"); ok {
 		resolver.pythonPackages = append(resolver.pythonPackages, parsePyProjectName(content))
 		resolver.pythonSourceRoots = append(resolver.pythonSourceRoots, parsePyProjectPythonSourceRoots(content)...)
+		resolver.pythonPackageDirs = append(resolver.pythonPackageDirs, parsePyProjectPythonPackageDirs(content)...)
 	}
 	if content, ok := readContent("setup.cfg"); ok {
 		resolver.pythonPackages = append(resolver.pythonPackages, parseSetupCFGName(content))
 		resolver.pythonSourceRoots = append(resolver.pythonSourceRoots, parseSetupCFGPythonSourceRoots(content)...)
+		resolver.pythonPackageDirs = append(resolver.pythonPackageDirs, parseSetupCFGPythonPackageDirs(content)...)
 	}
 	resolver.pythonPackages = normalizePythonPackageNames(resolver.pythonPackages)
 	if content, ok := readContent("Cargo.toml"); ok {
@@ -5493,6 +5501,14 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 	}
 	for _, path := range pyPaths {
 		for _, key := range pythonModuleKeysForPath(path, resolver.pythonSourceRoots, pyFileSet) {
+			if _, exists := resolver.pythonModules[key.Module]; !exists {
+				resolver.pythonModules[key.Module] = path
+				if key.Namespace {
+					resolver.pythonNamespaces[key.Module] = true
+				}
+			}
+		}
+		for _, key := range pythonPackageDirModuleKeysForPath(path, resolver.pythonPackageDirs, pyFileSet) {
 			if _, exists := resolver.pythonModules[key.Module]; !exists {
 				resolver.pythonModules[key.Module] = path
 				if key.Namespace {
@@ -5871,6 +5887,31 @@ func parsePyProjectPythonSourceRoots(content string) []string {
 	return normalizePythonSourceRoots(roots)
 }
 
+func parsePyProjectPythonPackageDirs(content string) []pythonPackageDirMapping {
+	inSetuptools := false
+	inSetuptoolsPackageDir := false
+	var mappings []pythonPackageDirMapping
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	for scanner.Scan() {
+		line := strings.TrimSpace(stripTOMLComment(scanner.Text()))
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			inSetuptools = line == "[tool.setuptools]"
+			inSetuptoolsPackageDir = line == "[tool.setuptools.package-dir]" || line == "[tool.setuptools.package_dir]"
+			continue
+		}
+		if inSetuptools && (strings.HasPrefix(line, "package-dir") || strings.HasPrefix(line, "package_dir")) {
+			mappings = append(mappings, parsePyProjectPackageDirMappings(line)...)
+		}
+		if inSetuptoolsPackageDir {
+			mappings = append(mappings, parsePythonPackageDirMapping(line)...)
+		}
+	}
+	return normalizePythonPackageDirMappings(mappings)
+}
+
 func parseSetupCFGName(content string) string {
 	inMetadata := false
 	scanner := bufio.NewScanner(strings.NewReader(content))
@@ -5930,6 +5971,38 @@ func parseSetupCFGPythonSourceRoots(content string) []string {
 	return normalizePythonSourceRoots(roots)
 }
 
+func parseSetupCFGPythonPackageDirs(content string) []pythonPackageDirMapping {
+	inOptions := false
+	inPackageDirSection := false
+	inPackageDirContinuation := false
+	var mappings []pythonPackageDirMapping
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			inOptions = strings.EqualFold(line, "[options]")
+			inPackageDirSection = strings.EqualFold(line, "[options.package_dir]") || strings.EqualFold(line, "[options.package-dir]")
+			inPackageDirContinuation = false
+			continue
+		}
+		if inOptions && strings.HasPrefix(strings.ToLower(line), "package_dir") {
+			value := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line[len("package_dir"):]), "="))
+			if value != "" {
+				mappings = append(mappings, pythonPackageDirMapping{Dir: strings.Trim(value, `"'`)})
+			}
+			inPackageDirContinuation = value == ""
+			continue
+		}
+		if inPackageDirSection || inPackageDirContinuation {
+			mappings = append(mappings, parsePythonPackageDirMapping(line)...)
+		}
+	}
+	return normalizePythonPackageDirMappings(mappings)
+}
+
 func parsePyProjectPackageDirRoots(line string) []string {
 	parts := strings.SplitN(line, "=", 2)
 	if len(parts) != 2 {
@@ -5944,6 +6017,25 @@ func parsePyProjectPackageDirRoots(line string) []string {
 		return nil
 	}
 	return []string{value}
+}
+
+func parsePyProjectPackageDirMappings(line string) []pythonPackageDirMapping {
+	parts := strings.SplitN(line, "=", 2)
+	if len(parts) != 2 {
+		return nil
+	}
+	value := strings.TrimSpace(parts[1])
+	if !strings.HasPrefix(value, "{") {
+		return []pythonPackageDirMapping{{Dir: strings.Trim(value, `"'`)}}
+	}
+	var mappings []pythonPackageDirMapping
+	re := regexp.MustCompile(`(?m)["']([^"']*)["']\s*=\s*["']([^"']+)["']`)
+	for _, match := range re.FindAllStringSubmatch(value, -1) {
+		if len(match) == 3 {
+			mappings = append(mappings, pythonPackageDirMapping{Package: match[1], Dir: match[2]})
+		}
+	}
+	return mappings
 }
 
 func regexpPackageDirRootValues(value string) []string {
@@ -5967,6 +6059,47 @@ func parsePythonPackageDirRootMapping(line string) []string {
 		return nil
 	}
 	return []string{value}
+}
+
+func parsePythonPackageDirMapping(line string) []pythonPackageDirMapping {
+	parts := strings.SplitN(line, "=", 2)
+	if len(parts) != 2 {
+		return nil
+	}
+	pkg := strings.Trim(strings.TrimSpace(parts[0]), `"'`)
+	dir := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
+	if dir == "" {
+		return nil
+	}
+	return []pythonPackageDirMapping{{Package: pkg, Dir: dir}}
+}
+
+func normalizePythonPackageDirMappings(mappings []pythonPackageDirMapping) []pythonPackageDirMapping {
+	seen := map[string]bool{}
+	var out []pythonPackageDirMapping
+	for _, mapping := range mappings {
+		pkg := strings.Trim(strings.ReplaceAll(strings.TrimSpace(mapping.Package), "/", "."), ".")
+		dir := strings.Trim(filepath.ToSlash(strings.TrimSpace(mapping.Dir)), "/")
+		if dir == "" {
+			continue
+		}
+		key := pkg + "\x00" + dir
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, pythonPackageDirMapping{Package: pkg, Dir: dir})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if len(out[i].Dir) == len(out[j].Dir) {
+			if out[i].Dir == out[j].Dir {
+				return out[i].Package < out[j].Package
+			}
+			return out[i].Dir < out[j].Dir
+		}
+		return len(out[i].Dir) > len(out[j].Dir)
+	})
+	return out
 }
 
 func parseCargoPackageName(content string) string {
@@ -6385,6 +6518,47 @@ func pythonModuleKeysForPath(path string, sourceRoots []string, pyFileSet map[st
 		add(strings.TrimPrefix(withoutExt, root+"/"), pythonPathUnderNamespaceRoot(path, root, pyFileSet))
 	}
 	return keys
+}
+
+func pythonPackageDirModuleKeysForPath(path string, mappings []pythonPackageDirMapping, pyFileSet map[string]bool) []pythonModuleKey {
+	path = filepath.ToSlash(path)
+	if !strings.HasSuffix(path, ".py") || len(mappings) == 0 {
+		return nil
+	}
+	withoutExt := strings.TrimSuffix(path, ".py")
+	if strings.HasSuffix(withoutExt, "/__init__") {
+		withoutExt = strings.TrimSuffix(withoutExt, "/__init__")
+	}
+	var keys []pythonModuleKey
+	seen := map[string]bool{}
+	for _, mapping := range mappings {
+		dir := strings.Trim(filepath.ToSlash(mapping.Dir), "/")
+		if dir == "" || (withoutExt != dir && !strings.HasPrefix(withoutExt, dir+"/")) {
+			continue
+		}
+		rel := strings.Trim(strings.TrimPrefix(withoutExt, dir), "/")
+		module := strings.Trim(strings.ReplaceAll(filepath.ToSlash(rel), "/", "."), ".")
+		if mapping.Package != "" {
+			module = strings.Trim(mapping.Package+"."+module, ".")
+		}
+		if module == "" || seen[module] {
+			continue
+		}
+		seen[module] = true
+		keys = append(keys, pythonModuleKey{
+			Module:    module,
+			Namespace: pythonPackageDirUnderNamespaceRoot(path, mapping, pyFileSet),
+		})
+	}
+	return keys
+}
+
+func pythonPackageDirUnderNamespaceRoot(path string, mapping pythonPackageDirMapping, pyFileSet map[string]bool) bool {
+	dir := strings.Trim(filepath.ToSlash(mapping.Dir), "/")
+	if dir == "" || mapping.Package == "" {
+		return false
+	}
+	return !pyFileSet[dir+"/__init__.py"]
 }
 
 func parsePythonSourceRootValues(line string) []string {

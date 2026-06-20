@@ -76,8 +76,8 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   calls emit `IMPORTS`; CommonJS bindings also emit imported external `CALLS`
   when called.
 - Python project/module imports resolve through local module files, repo-root
-  `src`, configured setuptools package-find roots, root `package-dir`/
-  `package_dir` mappings, inferred nested `*/src` namespace roots,
+  `src`, configured setuptools package-find roots, root and package-specific
+  `package-dir`/`package_dir` mappings, inferred nested `*/src` namespace roots,
   `pyproject.toml`, and `setup.cfg` with `import_resolved` metadata.
 - Exact Java/Kotlin/Scala-style package imports resolve through package
   declarations and source file names with `import_resolved` metadata.
@@ -470,6 +470,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781982731.json`: Go/gin, syntax-only, 28,618 LOC,
     164,678 LOC/s, max RSS 27,328,512 bytes, estimated output 1,902,630
     bytes; run after Python root `package-dir`/`package_dir` import resolution.
+  - `bench/results/result-1781982896.json`: Go/gin, syntax-only, 28,618 LOC,
+    158,363 LOC/s, max RSS 28,409,856 bytes, estimated output 1,902,639
+    bytes; run after Python package-specific `package-dir`/`package_dir` import
+    resolution.
   - `bench/results/result-1781972446.json`: Go/gin, syntax-only, 28,618 LOC,
     162,982 LOC/s, max RSS 26,804,224 bytes, estimated output 1,902,630
     bytes; run after IngressClass reference extraction.
