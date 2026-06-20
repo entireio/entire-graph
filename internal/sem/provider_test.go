@@ -188,6 +188,45 @@ spec:
 	}
 }
 
+func TestKubernetesServiceSelectorDependsOnWorkload(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "k8s/deployment.yaml", `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  template:
+    metadata:
+      labels:
+        app: api
+        tier: backend
+    spec:
+      containers:
+        - name: api
+          image: example/api:latest
+`)
+	writeFile(t, repo, "k8s/service.yaml", `apiVersion: v1
+kind: Service
+metadata:
+  name: api
+spec:
+  selector:
+    app: api
+    tier: backend
+  ports:
+    - port: 80
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "Service.api", "Deployment.api") {
+		t.Fatalf("missing Service.api -> Deployment.api selector dependency in %#v", snapshot.Relations)
+	}
+}
+
 func TestKustomizeResourceDependencies(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "overlays/prod/kustomization.yaml", `resources:

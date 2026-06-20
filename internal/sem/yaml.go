@@ -24,6 +24,9 @@ func yamlEntities(path, content string) []Entity {
 	if yamlWorkflowPath(path) {
 		entities = append(entities, yamlEntity("workflow", yamlWorkflowEntityName(path), yamlWorkflowSignature(path, lines, topLevel), 1, len(lines), lines))
 	}
+	if resource := yamlKubernetesResourceEntity(lines, topLevel); resource.Name != "" {
+		entities = append(entities, resource)
+	}
 	for _, block := range topLevel {
 		switch block.Key {
 		case "name":
@@ -42,6 +45,16 @@ func yamlEntities(path, content string) []Entity {
 		return entities[i].StartLine < entities[j].StartLine
 	})
 	return entities
+}
+
+func yamlKubernetesResourceEntity(lines []string, topLevel []yamlBlock) Entity {
+	kind := yamlTopLevelScalar("kind", lines, topLevel)
+	name := yamlNestedScalar("metadata", "name", lines, topLevel)
+	if kind == "" || name == "" {
+		return Entity{}
+	}
+	qualified := kind + "." + name
+	return yamlEntity("resource", qualified, "kubernetes resource "+qualified, 1, len(lines), lines)
 }
 
 func yamlWorkflowPath(path string) bool {
@@ -165,6 +178,30 @@ func yamlTopLevelScalar(key string, lines []string, blocks []yamlBlock) string {
 			continue
 		}
 		return yamlLineValue(lines[block.StartLine-1])
+	}
+	return ""
+}
+
+func yamlNestedScalar(parentKey, childKey string, lines []string, blocks []yamlBlock) string {
+	for _, block := range blocks {
+		if block.Key != parentKey {
+			continue
+		}
+		parentIndent := yamlIndent(lines[block.StartLine-1])
+		for index := block.StartLine; index < block.EndLine && index < len(lines); index++ {
+			line := lines[index]
+			if yamlIgnoreLine(line) {
+				continue
+			}
+			indent := yamlIndent(line)
+			if indent <= parentIndent {
+				break
+			}
+			key, ok := yamlLineKey(line)
+			if ok && key == childKey {
+				return yamlLineValue(line)
+			}
+		}
 	}
 	return ""
 }

@@ -1869,6 +1869,7 @@ func resourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readCon
 	relations = append(relations, hclResourceDependsOnRelations(recordsByFile, readContent)...)
 	relations = append(relations, dockerfileResourceDependsOnRelations(recordsByFile, readContent)...)
 	relations = append(relations, kubernetesResourceDependsOnRelations(recordsByFile, readContent)...)
+	relations = append(relations, kubernetesSelectorResourceRelations(recordsByFile, readContent)...)
 	relations = append(relations, kustomizeResourceDependsOnRelations(recordsByFile, readContent)...)
 	return relations
 }
@@ -2076,6 +2077,128 @@ func kubernetesResourceReferences(content string) []resourceReference {
 		add("persistentvolumeclaim", match[1], "kubernetes_pvc_claim", 0.78)
 	}
 	return dedupeResourceReferences(refs)
+}
+
+type kubernetesResourceInfo struct {
+	Symbol   SymbolRecord
+	Kind     string
+	Name     string
+	Labels   map[string]string
+	Selector map[string]string
+}
+
+type yamlPathFrame struct {
+	indent int
+	key    string
+}
+
+func kubernetesSelectorResourceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+	var resources []kubernetesResourceInfo
+	for _, path := range sortedKeysOf(recordsByFile) {
+		content, ok := readContent(path)
+		if !ok || !(isKubernetesPath(path) || looksLikeKubernetesManifest(content)) {
+			continue
+		}
+		for _, symbol := range recordsByFile[path] {
+			if symbol.Language != "YAML" || symbol.Kind != "resource" {
+				continue
+			}
+			kind, name, ok := strings.Cut(symbol.QualifiedName, ".")
+			if !ok {
+				continue
+			}
+			labels := yamlMapAtPath(content, "spec", "template", "metadata", "labels")
+			if len(labels) == 0 {
+				labels = yamlMapAtPath(content, "metadata", "labels")
+			}
+			resources = append(resources, kubernetesResourceInfo{
+				Symbol:   symbol,
+				Kind:     strings.ToLower(kind),
+				Name:     name,
+				Labels:   labels,
+				Selector: yamlMapAtPath(content, "spec", "selector"),
+			})
+		}
+	}
+	var relations []RelationRecord
+	for _, source := range resources {
+		if source.Kind != "service" || len(source.Selector) == 0 {
+			continue
+		}
+		for _, target := range resources {
+			if target.Symbol.ID == source.Symbol.ID || len(target.Labels) == 0 {
+				continue
+			}
+			if !kubernetesSelectorMatches(source.Selector, target.Labels) {
+				continue
+			}
+			relations = append(relations, RelationRecord{
+				RecordType:    "relation",
+				FromID:        source.Symbol.ID,
+				ToID:          target.Symbol.ID,
+				Type:          "RESOURCE_DEPENDS_ON",
+				Confidence:    0.88,
+				Reason:        "Kubernetes Service selector matches workload labels",
+				RelationScope: "file",
+				Resolution:    "exact",
+				TargetKind:    "symbol",
+				Evidence: []Evidence{{
+					Kind:      "kubernetes_service_selector",
+					FilePath:  source.Symbol.FilePath,
+					StartLine: source.Symbol.StartLine,
+					EndLine:   source.Symbol.EndLine,
+					Detail:    source.Name + " -> " + target.Name,
+				}},
+				WarningCodes: []string{},
+			})
+		}
+	}
+	return relations
+}
+
+func yamlMapAtPath(content string, path ...string) map[string]string {
+	var stack []yamlPathFrame
+	out := map[string]string{}
+	for _, line := range strings.Split(content, "\n") {
+		if yamlIgnoreLine(line) {
+			continue
+		}
+		indent := yamlIndent(line)
+		for len(stack) > 0 && indent <= stack[len(stack)-1].indent {
+			stack = stack[:len(stack)-1]
+		}
+		key, ok := yamlLineKey(line)
+		if !ok {
+			continue
+		}
+		value := strings.Trim(strings.TrimSpace(yamlLineValue(line)), `"'`)
+		if len(stack) == len(path) && yamlPathMatches(stack, path) && value != "" {
+			out[key] = value
+		}
+		stack = append(stack, yamlPathFrame{indent: indent, key: key})
+	}
+	return out
+}
+
+func yamlPathMatches(stack []yamlPathFrame, path []string) bool {
+	if len(stack) != len(path) {
+		return false
+	}
+	for i := range path {
+		if stack[i].key != path[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func kubernetesSelectorMatches(selector, labels map[string]string) bool {
+	for key, want := range selector {
+		if labels[key] != want {
+			return false
+		}
+	}
+	return true
 }
 
 func kustomizeResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {

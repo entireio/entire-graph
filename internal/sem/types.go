@@ -420,6 +420,14 @@ func configTargets(symbol SymbolRecord, content string) []configTarget {
 			}}
 		}
 	case "YAML":
+		if symbol.Kind == "resource" && (isKubernetesPath(symbol.FilePath) || looksLikeKubernetesManifest(content)) {
+			return []configTarget{{
+				Name:         "kubernetes/" + strings.ToLower(symbol.QualifiedName),
+				Confidence:   0.9,
+				Reason:       "YAML manifest declares a Kubernetes resource",
+				EvidenceKind: "kubernetes_resource",
+			}}
+		}
 		if isKubernetesPath(symbol.FilePath) || looksLikeKubernetesManifest(content) {
 			return []configTarget{{
 				Name:         "kubernetes/" + symbol.Name,
