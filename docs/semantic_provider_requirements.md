@@ -363,8 +363,9 @@ is reported in `capabilities` under `relation_support_by_language`.
 Relation extraction continues to grow. Remaining known expansion areas are
 deeper fallback-format semantics and deeper flow analysis; the current contract
 already emits positional type, field-access, async, service-boundary,
-configuration, high-confidence return-flow, bounded co-change edges, and
-lightweight inventory for common web/document/config formats.
+configuration, high-confidence direct, assigned, branch-assigned, and simple
+conditional return-flow, bounded co-change edges, and lightweight inventory for
+common web/document/config formats.
 
 ## Warnings And Partial Failures
 

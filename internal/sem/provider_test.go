@@ -2654,6 +2654,55 @@ export function run(flag: boolean): string {
 	}
 }
 
+func TestBuildProviderSnapshotEmitsConditionalReturnDataFlow(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "flow.ts", `function primary(): string {
+  return "primary"
+}
+
+async function fallback(): Promise<string> {
+  return "fallback"
+}
+
+function side(): string {
+  return "side"
+}
+
+export async function run(flag: boolean): Promise<string> {
+  side()
+  return flag ? primary() : await fallback()
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"primary", "fallback"} {
+		var found RelationRecord
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == want && lastSegment(relation.ToID) == "run" {
+				found = relation
+				break
+			}
+		}
+		if found.FromID == "" {
+			t.Fatalf("missing conditional return DATA_FLOWS %s->run: %#v", want, snapshot.Relations)
+		}
+		if found.Reason != "callee return value returned through conditional expression" || found.Confidence > 0.75 {
+			t.Fatalf("unexpected conditional return flow metadata: %#v", found)
+		}
+		if len(found.Evidence) != 1 || found.Evidence[0].Kind != "conditional_return_flow" || found.Evidence[0].Detail != want {
+			t.Fatalf("unexpected conditional return flow evidence: %#v", found.Evidence)
+		}
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == "side" && lastSegment(relation.ToID) == "run" {
+			t.Fatalf("non-returned side call produced DATA_FLOWS: %#v", relation)
+		}
+	}
+}
+
 func TestBuildProviderSnapshotSequentialAssignmentKeepsLastReturnDataFlow(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "flow.ts", `function first(): string {

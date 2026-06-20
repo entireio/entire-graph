@@ -284,6 +284,7 @@ var (
 	goRoutineCallRe     = regexp.MustCompile(`(?m)\bgo\s+([A-Za-z_]\w*)\s*\(`)
 	spawnCallRe         = regexp.MustCompile(`\b(?:Promise\.all|Promise\.race|asyncio\.gather|tokio::spawn|Task\.Run)\s*\([^)]*?([A-Za-z_]\w*)\s*\(`)
 	returnCallRe        = regexp.MustCompile(`(?m)\breturn\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	ternaryReturnCallRe = regexp.MustCompile(`(?m)\breturn\s+[^?\n]+?\?\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^:\n]*\)\s*:\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
 	assignCallRe        = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
 	returnVarRe         = regexp.MustCompile(`(?m)\breturn\s+\$?([A-Za-z_$][\w$]*)\b`)
 	aliasAssignRe       = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*\$?([A-Za-z_$][\w$]*)\b`)
@@ -338,6 +339,9 @@ func returnFlowCalls(block, signature string) []returnFlowCall {
 			Direction:    "callee_to_caller",
 		}
 	}
+	for _, flow := range ternaryReturnFlows(stripped) {
+		flows[flow.Name+"\x00"+flow.EvidenceKind] = flow
+	}
 	assigned := map[string]string{}
 	for _, match := range assignCallRe.FindAllStringSubmatch(stripped, -1) {
 		if len(match) == 3 && match[1] != "" && match[2] != "" {
@@ -387,6 +391,38 @@ func returnFlowCalls(block, signature string) []returnFlowCall {
 		return out[i].EvidenceKind < out[j].EvidenceKind
 	})
 	return out
+}
+
+func ternaryReturnFlows(block string) []returnFlowCall {
+	matches := ternaryReturnCallRe.FindAllStringSubmatch(block, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var flows []returnFlowCall
+	for _, match := range matches {
+		if len(match) != 3 {
+			continue
+		}
+		for _, name := range []string{match[1], match[2]} {
+			name = strings.TrimPrefix(name, "$")
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			flows = append(flows, returnFlowCall{
+				Name:         name,
+				Reason:       "callee return value returned through conditional expression",
+				EvidenceKind: "conditional_return_flow",
+				Detail:       name,
+				Direction:    "callee_to_caller",
+			})
+		}
+	}
+	sort.Slice(flows, func(i, j int) bool {
+		return flows[i].Name < flows[j].Name
+	})
+	return flows
 }
 
 func branchAssignedReturnFlows(block string) []returnFlowCall {
