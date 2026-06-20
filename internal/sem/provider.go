@@ -2601,10 +2601,7 @@ func kubernetesSelectorResourceRelations(recordsByFile map[string][]SymbolRecord
 			if !ok {
 				continue
 			}
-			labels := yamlMapAtPath(content, "spec", "template", "metadata", "labels")
-			if len(labels) == 0 {
-				labels = yamlMapAtPath(content, "metadata", "labels")
-			}
+			labels := kubernetesWorkloadLabels(strings.ToLower(kind), content)
 			selector, targetKinds, evidence, reason, confidence := kubernetesSelectorForResource(strings.ToLower(kind), content)
 			resources = append(resources, kubernetesResourceInfo{
 				Symbol:              symbol,
@@ -2708,6 +2705,18 @@ func kubernetesWorkloadKinds() map[string]bool {
 	}
 }
 
+func kubernetesWorkloadLabels(kind, content string) map[string]string {
+	if strings.EqualFold(kind, "cronjob") {
+		if labels := yamlMapAtPath(content, "spec", "jobTemplate", "spec", "template", "metadata", "labels"); len(labels) > 0 {
+			return labels
+		}
+	}
+	if labels := yamlMapAtPath(content, "spec", "template", "metadata", "labels"); len(labels) > 0 {
+		return labels
+	}
+	return yamlMapAtPath(content, "metadata", "labels")
+}
+
 func yamlMapAtPath(content string, path ...string) map[string]string {
 	var stack []yamlPathFrame
 	out := map[string]string{}
@@ -2774,10 +2783,7 @@ func kubernetesSelectorExpressionResourceRelations(recordsByFile map[string][]Sy
 			if !ok {
 				continue
 			}
-			labels := yamlMapAtPath(content, "spec", "template", "metadata", "labels")
-			if len(labels) == 0 {
-				labels = yamlMapAtPath(content, "metadata", "labels")
-			}
+			labels := kubernetesWorkloadLabels(strings.ToLower(kind), content)
 			selector, expressions, targetKinds, evidence, reason, confidence := kubernetesExpressionSelectorForResource(strings.ToLower(kind), content)
 			resources = append(resources, kubernetesResourceInfo{
 				Symbol:              symbol,

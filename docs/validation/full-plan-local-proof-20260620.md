@@ -117,12 +117,16 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
   resource by selector labels).
 - PodDisruptionBudget and NetworkPolicy selectors emit exact local
   `RESOURCE_DEPENDS_ON` edges to matching workload resources by labels.
+- Service, PodDisruptionBudget, and NetworkPolicy selectors match CronJob
+  workload labels under `spec.jobTemplate.spec.template.metadata.labels`.
 - ServiceMonitor and PodMonitor selectors emit exact local
   `RESOURCE_DEPENDS_ON` edges to target-kind-filtered Service and workload
   resources by labels.
 - PodDisruptionBudget, NetworkPolicy, ServiceMonitor, and PodMonitor
   `matchExpressions` selectors emit exact local `RESOURCE_DEPENDS_ON` edges
   when expressions match target resource labels.
+- PodDisruptionBudget and NetworkPolicy `matchExpressions` selectors match
+  CronJob workload labels under `spec.jobTemplate.spec.template.metadata.labels`.
 - Kubernetes named resource references for ConfigMaps, Secrets, service
   accounts, and PVCs emit exact local `RESOURCE_DEPENDS_ON` edges when the
   referenced resource manifests are present in the snapshot.
@@ -280,6 +284,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
     147,713 LOC/s, max RSS 30,048,256 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781956848.json`: Go/gin, syntax-only, 28,618 LOC,
     151,282 LOC/s, max RSS 29,016,064 bytes, output 1,938,906 bytes.
+  - `bench/results/result-1781957331.json`: Go/gin, syntax-only, 28,618 LOC,
+    135,086 LOC/s, max RSS 27,246,592 bytes, output 1,938,906 bytes.
 
 ## Remaining Honesty Notes
 

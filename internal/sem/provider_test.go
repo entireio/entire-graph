@@ -856,6 +856,72 @@ spec:
 	}
 }
 
+func TestKubernetesSelectorsDependOnCronJobWorkload(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "k8s/cronjob.yaml", `apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cleanup
+spec:
+  schedule: "*/5 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: cleanup
+            tier: batch
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: cleanup
+              image: example/cleanup:latest
+`)
+	writeFile(t, repo, "k8s/service.yaml", `apiVersion: v1
+kind: Service
+metadata:
+  name: cleanup
+spec:
+  selector:
+    app: cleanup
+    tier: batch
+  ports:
+    - port: 80
+`)
+	writeFile(t, repo, "k8s/pdb.yaml", `apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cleanup
+spec:
+  selector:
+    matchLabels:
+      app: cleanup
+`)
+	writeFile(t, repo, "k8s/network-policy.yaml", `apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cleanup
+spec:
+  podSelector:
+    matchLabels:
+      tier: batch
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range [][2]string{
+		{"Service.cleanup", "CronJob.cleanup"},
+		{"PodDisruptionBudget.cleanup", "CronJob.cleanup"},
+		{"NetworkPolicy.cleanup", "CronJob.cleanup"},
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", edge[0], edge[1]) {
+			t.Fatalf("missing Kubernetes selector dependency %s -> %s in %#v", edge[0], edge[1], snapshot.Relations)
+		}
+	}
+}
+
 func TestKubernetesMatchExpressionSelectorsDependOnWorkloads(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "k8s/deployment.yaml", `apiVersion: apps/v1
@@ -908,6 +974,65 @@ spec:
 	}
 	if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "NetworkPolicy.api-policy", "Deployment.api") {
 		t.Fatalf("missing NetworkPolicy matchExpressions dependency in %#v", snapshot.Relations)
+	}
+}
+
+func TestKubernetesMatchExpressionSelectorsDependOnCronJobWorkload(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "k8s/cronjob.yaml", `apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cleanup
+spec:
+  schedule: "*/5 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: cleanup
+            tier: batch
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: cleanup
+              image: example/cleanup:latest
+`)
+	writeFile(t, repo, "k8s/pdb.yaml", `apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cleanup
+spec:
+  selector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - cleanup
+      - key: tier
+        operator: Exists
+`)
+	writeFile(t, repo, "k8s/network-policy.yaml", `apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cleanup
+spec:
+  podSelector:
+    matchExpressions:
+      - key: tier
+        operator: NotIn
+        values: ["frontend"]
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "PodDisruptionBudget.cleanup", "CronJob.cleanup") {
+		t.Fatalf("missing PDB matchExpressions dependency on CronJob in %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "NetworkPolicy.cleanup", "CronJob.cleanup") {
+		t.Fatalf("missing NetworkPolicy matchExpressions dependency on CronJob in %#v", snapshot.Relations)
 	}
 }
 
