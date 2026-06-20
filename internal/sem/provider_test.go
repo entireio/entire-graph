@@ -730,6 +730,8 @@ metadata:
 spec:
   template:
     spec:
+      runtimeClassName: sandboxed
+      priorityClassName: critical
       serviceAccountName: api-runner
       imagePullSecrets:
         - name: registry-creds
@@ -816,6 +818,18 @@ kind: ServiceAccount
 metadata:
   name: api-runner
 `)
+	writeFile(t, repo, "k8s/runtime-class.yaml", `apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: sandboxed
+handler: runsc
+`)
+	writeFile(t, repo, "k8s/priority-class.yaml", `apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: critical
+value: 100000
+`)
 	writeFile(t, repo, "k8s/pvc.yaml", `apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -854,6 +868,8 @@ metadata:
 		"external:config:kubernetes/persistentvolumeclaim/api-cache",
 		"external:config:kubernetes/storageclass/fast",
 		"external:config:kubernetes/persistentvolume/api-cache-pv",
+		"external:config:kubernetes/runtimeclass/sandboxed",
+		"external:config:kubernetes/priorityclass/critical",
 	} {
 		if !hasRelationTo(snapshot.Relations, "RESOURCE_DEPENDS_ON", target) {
 			t.Fatalf("missing Kubernetes dependency to %s in %#v", target, snapshot.Relations)
@@ -879,6 +895,8 @@ metadata:
 		"Secret.registry-creds",
 		"ServiceAccount.api-runner",
 		"PersistentVolumeClaim.api-cache",
+		"RuntimeClass.sandboxed",
+		"PriorityClass.critical",
 	} {
 		if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "Deployment.api", target) {
 			t.Fatalf("missing exact Kubernetes resource dependency Deployment.api -> %s in %#v", target, snapshot.Relations)

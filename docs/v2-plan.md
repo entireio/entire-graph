@@ -377,8 +377,9 @@ Delivered:
   resolution covers RBAC role/subject references, owner references, Ingress
   Service backends, Gateway API route backend refs, parent Gateway refs, and
   Gateway listener certificateRefs, IngressClass refs, StorageClass refs,
-  PersistentVolume refs, HPA scale targets, projected ConfigMap/Secret volume
-  refs, ConfigMap/Secret key refs, and image pull secrets.
+  PersistentVolume refs, RuntimeClass refs, PriorityClass refs, HPA scale
+  targets, projected ConfigMap/Secret volume refs, ConfigMap/Secret key refs,
+  and image pull secrets.
 - Istio VirtualService route destinations and gateway refs, plus
   DestinationRule hosts, resolve to exact local Service/Gateway resource
   symbols when the referenced manifests are present.
@@ -405,7 +406,7 @@ Open:
   ConfigMap/Secret/service-account/PVC/RBAC/owner/Ingress/HPA/Gateway API
   HTTPRoute backend, parent Gateway, and Gateway listener certificate
   references, IngressClass, StorageClass, and PersistentVolume references,
-  Service selector matches,
+  RuntimeClass references, PriorityClass references, Service selector matches,
   PodDisruptionBudget selector and matchExpression matches, NetworkPolicy podSelector and
   matchExpression matches, Prometheus Operator ServiceMonitor selector and
   matchExpression matches, and Prometheus Operator PodMonitor selector and
