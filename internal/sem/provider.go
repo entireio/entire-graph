@@ -7076,7 +7076,6 @@ func railsRouteRegistrations(content string) []railsRouteRegistration {
 	}
 	toRe := regexp.MustCompile(`(?is)\b(?:get|post|put|patch|delete|match)\s+["']([^"']+)["']\s*,\s*to:\s*["']([A-Za-z0-9_/]+)#([A-Za-z_][A-Za-z0-9_]*)["']`)
 	hashRocketRe := regexp.MustCompile(`(?is)\b(?:get|post|put|patch|delete|match)\s+["']([^"']+)["']\s*=>\s*["']([A-Za-z0-9_/]+)#([A-Za-z_][A-Za-z0-9_]*)["']`)
-	resourcesOnlyRe := regexp.MustCompile(`(?is)\bresources\s+:([A-Za-z_][A-Za-z0-9_]*)\s*,\s*only:\s*\[([^\]]+)\]`)
 	for _, match := range toRe.FindAllStringSubmatch(content, -1) {
 		if len(match) == 4 {
 			add(match[1], match[2], match[3], "rails_route_to")
@@ -7087,14 +7086,18 @@ func railsRouteRegistrations(content string) []railsRouteRegistration {
 			add(match[1], match[2], match[3], "rails_route_hash_rocket")
 		}
 	}
-	for _, match := range resourcesOnlyRe.FindAllStringSubmatch(content, -1) {
-		if len(match) == 3 {
-			for _, route := range railsResourceRoutes(match[1], railsResourceActions(match[2])) {
-				add(route.Path, match[1], route.Action, "rails_resources_only")
-			}
+	for _, resource := range railsResourceDeclarations(content) {
+		for _, route := range railsResourceRoutes(resource.Name, resource.Actions) {
+			add(route.Path, resource.Name, route.Action, resource.EvidenceKind)
 		}
 	}
 	return registrations
+}
+
+type railsResourceDeclaration struct {
+	Name         string
+	Actions      []string
+	EvidenceKind string
 }
 
 type railsResourceRoute struct {
@@ -7126,14 +7129,44 @@ func railsResourceRoutes(resource string, actions []string) []railsResourceRoute
 	return routes
 }
 
+func railsResourceDeclarations(content string) []railsResourceDeclaration {
+	re := regexp.MustCompile(`(?m)^\s*resources\s+:([A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*(.*))?$`)
+	var declarations []railsResourceDeclaration
+	for _, match := range re.FindAllStringSubmatch(content, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		options := strings.TrimSpace(match[2])
+		actions := railsDefaultResourceActions()
+		evidence := "rails_resources"
+		if only := railsResourceOptionActions(options, "only"); len(only) > 0 {
+			actions = only
+			evidence = "rails_resources_only"
+		} else if except := railsResourceOptionActions(options, "except"); len(except) > 0 {
+			actions = railsResourceActionsExcept(actions, except)
+			evidence = "rails_resources_except"
+		}
+		declarations = append(declarations, railsResourceDeclaration{Name: match[1], Actions: actions, EvidenceKind: evidence})
+	}
+	return declarations
+}
+
+func railsDefaultResourceActions() []string {
+	return []string{"index", "create", "new", "show", "edit", "update", "destroy"}
+}
+
 func railsResourceActions(value string) []string {
 	seen := map[string]bool{}
 	var actions []string
-	for _, match := range regexp.MustCompile(`:([A-Za-z_][A-Za-z0-9_]*)`).FindAllStringSubmatch(value, -1) {
-		if len(match) != 2 {
+	known := map[string]bool{}
+	for _, action := range railsDefaultResourceActions() {
+		known[action] = true
+	}
+	normalized := regexp.MustCompile(`[:'",\[\]]`).ReplaceAllString(value, " ")
+	for _, action := range strings.Fields(normalized) {
+		if !known[action] {
 			continue
 		}
-		action := match[1]
 		if seen[action] {
 			continue
 		}
@@ -7141,6 +7174,34 @@ func railsResourceActions(value string) []string {
 		actions = append(actions, action)
 	}
 	return actions
+}
+
+func railsResourceOptionActions(options, key string) []string {
+	re := regexp.MustCompile(`(?is)\b` + regexp.QuoteMeta(key) + `:\s*(?:\[(.*?)\]|%i\[(.*?)\]|:([A-Za-z_][A-Za-z0-9_]*))`)
+	match := re.FindStringSubmatch(options)
+	if len(match) == 0 {
+		return nil
+	}
+	for _, group := range match[1:] {
+		if strings.TrimSpace(group) != "" {
+			return railsResourceActions(group)
+		}
+	}
+	return nil
+}
+
+func railsResourceActionsExcept(actions, except []string) []string {
+	excluded := map[string]bool{}
+	for _, action := range except {
+		excluded[action] = true
+	}
+	var out []string
+	for _, action := range actions {
+		if !excluded[action] {
+			out = append(out, action)
+		}
+	}
+	return out
 }
 
 func railsControllerClassCandidates(controller string) []string {

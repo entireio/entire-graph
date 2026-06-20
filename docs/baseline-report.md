@@ -59,7 +59,8 @@ Python Flask/FastAPI-style decorator routes, FastAPI/Starlette-style
 composition, same-name imported Express router mounts, and C# ASP.NET
 controller route attributes, plus PHP Laravel controller route declarations and
 Symfony/PHP route attributes, Ruby on Rails static route declarations and
-explicit `resources ... only:` expansion, plus NestJS controller/method decorators;
+`resources` expansion for default REST actions, `only:`, and `except:`, plus
+NestJS controller/method decorators;
 remaining work is deeper framework coverage and larger-corpus proof.
 
 ## Relation Coverage Today
@@ -135,7 +136,8 @@ False positives:
   Go chi/gin-style router method registration, C# ASP.NET route/HTTP-verb
   attributes, PHP Laravel/Symfony route attributes and declarations, direct
   Fastify/app/server JS route registrations, Ruby on Rails static route
-  declarations and explicit `resources ... only:` expansion, NestJS
+  declarations and `resources` expansion for default REST actions, `only:`,
+  and `except:`, NestJS
   controller/method decorators, Next.js route-file boundaries, or same-block
   Express router mount plus route registration).
   Deterministic static computed route expressions such as

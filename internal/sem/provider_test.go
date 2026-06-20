@@ -3192,6 +3192,77 @@ end
 	}
 }
 
+func TestRailsDefaultResourcesAndExceptResolveControllerActions(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "config/routes.rb", `Rails.application.routes.draw do
+  resources :users
+  resources :projects, except: %i[destroy]
+end
+`)
+	writeFile(t, repo, "app/controllers/users_controller.rb", `class UsersController
+  def index
+    "index"
+  end
+
+  def new
+    "new"
+  end
+
+  def show
+    "show"
+  end
+
+  def edit
+    "edit"
+  end
+
+  def create
+    "create"
+  end
+
+  def update
+    "update"
+  end
+
+  def destroy
+    "destroy"
+  end
+end
+`)
+	writeFile(t, repo, "app/controllers/projects_controller.rb", `class ProjectsController
+  def index
+    "index"
+  end
+
+  def destroy
+    "destroy"
+  end
+end
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range [][2]string{
+		{"UsersController.index", "/users"},
+		{"UsersController.new", "/users/new"},
+		{"UsersController.show", "/users/:id"},
+		{"UsersController.edit", "/users/:id/edit"},
+		{"UsersController.create", "/users"},
+		{"UsersController.update", "/users/:id"},
+		{"UsersController.destroy", "/users/:id"},
+		{"ProjectsController.index", "/projects"},
+	} {
+		if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", edge[0], edge[1]) {
+			t.Fatalf("missing Rails resource route %s -> %s in %#v", edge[0], edge[1], snapshot.Relations)
+		}
+	}
+	if hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "ProjectsController.destroy", "/projects/:id") {
+		t.Fatalf("Rails resources except emitted excluded destroy route: %#v", snapshot.Relations)
+	}
+}
+
 func TestSymfonyRouteAttributesResolveHandler(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "src/Controller/HealthController.php", `<?php
