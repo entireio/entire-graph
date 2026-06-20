@@ -1510,6 +1510,62 @@ metadata:
 	}
 }
 
+func TestKubernetesIstioServiceMeshReferenceDependencies(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "k8s/service.yaml", `apiVersion: v1
+kind: Service
+metadata:
+  name: reviews
+`)
+	writeFile(t, repo, "k8s/gateway.yaml", `apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: public-gateway
+`)
+	writeFile(t, repo, "k8s/virtual-service.yaml", `apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: reviews
+spec:
+  hosts:
+    - reviews.example.com
+  gateways:
+    - mesh
+    - public-gateway
+  http:
+    - route:
+        - destination:
+            host: reviews.default.svc.cluster.local
+            subset: v1
+`)
+	writeFile(t, repo, "k8s/destination-rule.yaml", `apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: reviews
+spec:
+  host: reviews.default.svc.cluster.local
+  subsets:
+    - name: v1
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range [][2]string{
+		{"VirtualService.reviews", "Service.reviews"},
+		{"VirtualService.reviews", "Gateway.public-gateway"},
+		{"DestinationRule.reviews", "Service.reviews"},
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", edge[0], edge[1]) {
+			t.Fatalf("missing Istio dependency %s -> %s in %#v", edge[0], edge[1], snapshot.Relations)
+		}
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "VirtualService.reviews", "Gateway.mesh") {
+		t.Fatalf("Istio special mesh gateway should not emit a resource dependency: %#v", snapshot.Relations)
+	}
+}
+
 func TestKustomizeResourceDependencies(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "overlays/prod/kustomization.yaml", `resources:

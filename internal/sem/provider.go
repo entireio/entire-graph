@@ -2768,6 +2768,9 @@ func kubernetesResourceReferences(content string) []resourceReference {
 	for _, ref := range kubernetesGatewayParentReferences(content) {
 		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 	}
+	for _, ref := range kubernetesIstioServiceMeshReferences(content) {
+		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+	}
 	return dedupeResourceReferences(refs)
 }
 
@@ -2965,6 +2968,96 @@ func kubernetesGatewayParentReferences(content string) []resourceReference {
 		flush()
 	}
 	return refs
+}
+
+func kubernetesIstioServiceMeshReferences(content string) []resourceReference {
+	var refs []resourceReference
+	if kubernetesManifestHasAnyKind(content, "VirtualService", "DestinationRule") {
+		for _, match := range regexp.MustCompile(`(?is)\bdestination:\s*\n(?:\s+[A-Za-z0-9_-]+:\s*[^\n]*\n)*\s+host:\s*([A-Za-z0-9_.-]+)`).FindAllStringSubmatch(content, -1) {
+			service := kubernetesServiceNameFromHost(match[1])
+			if service == "" {
+				continue
+			}
+			refs = append(refs, resourceReference{
+				Kind:         "service",
+				Name:         service,
+				EvidenceKind: "kubernetes_istio_destination_host",
+				Confidence:   0.8,
+			})
+		}
+	}
+	if kubernetesManifestHasAnyKind(content, "DestinationRule") {
+		for _, match := range regexp.MustCompile(`(?im)^\s*host:\s*([A-Za-z0-9_.-]+)\s*$`).FindAllStringSubmatch(content, -1) {
+			service := kubernetesServiceNameFromHost(match[1])
+			if service == "" {
+				continue
+			}
+			refs = append(refs, resourceReference{
+				Kind:         "service",
+				Name:         service,
+				EvidenceKind: "kubernetes_istio_host",
+				Confidence:   0.78,
+			})
+		}
+	}
+	if !kubernetesManifestHasAnyKind(content, "VirtualService") {
+		return refs
+	}
+	lines := strings.Split(content, "\n")
+	for i := 0; i < len(lines); i++ {
+		key, ok := yamlLineKey(lines[i])
+		if !ok || key != "gateways" {
+			continue
+		}
+		parentIndent := yamlIndent(lines[i])
+		for j := i + 1; j < len(lines); j++ {
+			line := lines[j]
+			if yamlIgnoreLine(line) {
+				continue
+			}
+			indent := yamlIndent(line)
+			if indent <= parentIndent {
+				break
+			}
+			trimmed := strings.TrimSpace(line)
+			if !strings.HasPrefix(trimmed, "- ") {
+				continue
+			}
+			gateway := kubernetesServiceMeshName(strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")))
+			if gateway == "" || strings.EqualFold(gateway, "mesh") {
+				continue
+			}
+			refs = append(refs, resourceReference{
+				Kind:         "gateway",
+				Name:         gateway,
+				EvidenceKind: "kubernetes_istio_gateway_ref",
+				Confidence:   0.78,
+			})
+		}
+	}
+	return refs
+}
+
+func kubernetesServiceNameFromHost(host string) string {
+	name := kubernetesServiceMeshName(host)
+	if name == "" || strings.Contains(name, "*") {
+		return ""
+	}
+	if dot := strings.Index(name, "."); dot >= 0 {
+		name = name[:dot]
+	}
+	return name
+}
+
+func kubernetesServiceMeshName(value string) string {
+	name := strings.Trim(strings.TrimSpace(value), `"'`)
+	if name == "" {
+		return ""
+	}
+	if slash := strings.LastIndex(name, "/"); slash >= 0 {
+		name = name[slash+1:]
+	}
+	return strings.TrimSpace(name)
 }
 
 func kubernetesNamedResourceReferenceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {

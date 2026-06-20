@@ -369,6 +369,9 @@ Delivered:
   Service backends, Gateway API HTTPRoute backend refs and parent Gateway refs,
   HPA scale targets, projected ConfigMap/Secret volume refs, ConfigMap/Secret
   key refs, and image pull secrets.
+- Istio VirtualService route destinations and gateway refs, plus
+  DestinationRule hosts, resolve to exact local Service/Gateway resource
+  symbols when the referenced manifests are present.
 - Kubernetes resource symbols emit common container image, environment-variable,
   and port declarations as `CONFIGURES` facts, multi-document Kubernetes YAML
   emits one resource symbol per document, and Service, PodDisruptionBudget,
@@ -396,7 +399,10 @@ Open:
   matchExpression matches, and Prometheus Operator PodMonitor selector and
   matchExpression matches when the target resource symbol exists in the same
   provider snapshot. Workload selector matching includes CronJob job-template
-  labels and Rollout-style workload labels.
+  labels and Rollout-style workload labels. Custom-controller coverage also
+  includes cert-manager issuer refs, External Secrets secret-store refs, Argo
+  WorkflowTemplate refs, Tekton Pipeline/Task refs, and Istio
+  VirtualService/DestinationRule refs.
   Remaining Kubernetes resource gaps include less common Kubernetes controllers
   beyond these selectors and other custom resource conventions.
 - Broad framework-specific IaC/service modeling remains partial.

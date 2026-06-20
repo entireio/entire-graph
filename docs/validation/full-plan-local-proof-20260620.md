@@ -41,6 +41,7 @@ go build -o /tmp/sem-bench ./cmd/sem-bench
 /tmp/sem-bench -skip-clone -manifest bench/repos.json -languages C -limit 1 -profile fast -provider-version codex-fast-c-scan -out bench/results -max-rss-bytes 5000000000 -min-loc-per-sec 150000
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-k8s-crd-refs -out bench/results
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-collection-flow -min-loc-per-sec 1
+go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-istio-resource-refs -min-loc-per-sec 1
 ```
 
 ## Results
@@ -165,6 +166,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   `workflowTemplateRef`/`templateRef`, and Tekton `pipelineRef`/`taskRef`
   custom-controller references emit exact local `RESOURCE_DEPENDS_ON` edges
   when the referenced resource manifests are present in the snapshot.
+- Istio VirtualService route destinations and gateway refs, plus
+  DestinationRule hosts, emit exact local `RESOURCE_DEPENDS_ON` edges to
+  Service/Gateway resources when the referenced manifests are present in the
+  snapshot.
 - Kubernetes projected ConfigMap/Secret volume refs and image pull secrets emit
   external and exact local `RESOURCE_DEPENDS_ON` edges when the referenced
   resource manifests are present in the snapshot.
@@ -346,6 +351,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
     bytes.
   - `bench/results/result-1781966708.json`: Go/gin, syntax-only, 28,618 LOC,
     126,735 LOC/s, max RSS 28,229,632 bytes, estimated output 1,902,627
+    bytes.
+  - `bench/results/result-1781966936.json`: Go/gin, syntax-only, 28,618 LOC,
+    142,244 LOC/s, max RSS 28,082,176 bytes, estimated output 1,902,631
     bytes.
 
 ## Remaining Honesty Notes

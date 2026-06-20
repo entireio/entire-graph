@@ -95,7 +95,9 @@ Confidence bands follow the v2-plan schema section (`0.90-1.00 exact`,
   CronJob job-template label targets and Argo Rollout-style workload targets,
   resolve to local resource symbols when those manifests are present. KEDA
   ScaledObject name-only scale targets resolve to local Deployment symbols by
-  convention).
+  convention. Istio VirtualService route destinations and gateway refs, plus
+  DestinationRule hosts, resolve to local Service/Gateway symbols when those
+  manifests are present).
 
 `capabilities --json` reports per-language relation support
 (`relation_support_by_language`) and pattern-driven relations separately in
