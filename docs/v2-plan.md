@@ -370,7 +370,9 @@ Delivered:
   emits one resource symbol per document, and Service, PodDisruptionBudget,
   NetworkPolicy, ServiceMonitor, and PodMonitor selectors can depend on
   matching target resources by labels with target-kind filters, including
-  CronJob targets whose labels live under `spec.jobTemplate.spec.template`.
+  CronJob targets whose labels live under `spec.jobTemplate.spec.template` and
+  Argo Rollout-style workload targets. KEDA ScaledObject name-only
+  `scaleTargetRef` entries resolve to Deployment targets by convention.
 - Kustomize manifests emit overlay/resource sections plus external
   dependencies for listed resources, patches, and components.
 - Docker Compose manifests emit service resources, exact `depends_on`
@@ -390,7 +392,7 @@ Open:
   matchExpression matches, and Prometheus Operator PodMonitor selector and
   matchExpression matches when the target resource symbol exists in the same
   provider snapshot. Workload selector matching includes CronJob job-template
-  labels.
+  labels and Rollout-style workload labels.
   Remaining Kubernetes resource gaps include less common Kubernetes controllers
   beyond these selectors and other custom resource conventions.
 - Broad framework-specific IaC/service modeling remains partial.

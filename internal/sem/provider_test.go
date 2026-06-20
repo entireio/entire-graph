@@ -922,6 +922,58 @@ spec:
 	}
 }
 
+func TestKubernetesSelectorsDependOnRolloutWorkload(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "k8s/rollout.yaml", `apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: api
+spec:
+  template:
+    metadata:
+      labels:
+        app: api
+        tier: frontend
+    spec:
+      containers:
+        - name: api
+          image: example/api:latest
+`)
+	writeFile(t, repo, "k8s/service.yaml", `apiVersion: v1
+kind: Service
+metadata:
+  name: api
+spec:
+  selector:
+    app: api
+    tier: frontend
+  ports:
+    - port: 80
+`)
+	writeFile(t, repo, "k8s/pod-monitor.yaml", `apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: api
+spec:
+  selector:
+    matchLabels:
+      app: api
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range [][2]string{
+		{"Service.api", "Rollout.api"},
+		{"PodMonitor.api", "Rollout.api"},
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", edge[0], edge[1]) {
+			t.Fatalf("missing Kubernetes selector dependency %s -> %s in %#v", edge[0], edge[1], snapshot.Relations)
+		}
+	}
+}
+
 func TestKubernetesMatchExpressionSelectorsDependOnWorkloads(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "k8s/deployment.yaml", `apiVersion: apps/v1
@@ -1236,6 +1288,45 @@ spec:
 	}
 	if hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "HTTPRoute.api", "ReferenceGrant.ignored-parent") {
 		t.Fatalf("HTTPRoute parentRefs should not treat explicit non-Gateway parent as Gateway dependency: %#v", snapshot.Relations)
+	}
+}
+
+func TestKubernetesScaledObjectDefaultScaleTargetDependsOnDeployment(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "k8s/deployment.yaml", `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+spec:
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: example/worker:latest
+`)
+	writeFile(t, repo, "k8s/scaled-object.yaml", `apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker
+spec:
+  scaleTargetRef:
+    name: worker
+  triggers:
+    - type: cpu
+      metadata:
+        type: Utilization
+        value: "80"
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "ScaledObject.worker", "Deployment.worker") {
+		t.Fatalf("missing ScaledObject.worker -> Deployment.worker default scale target dependency in %#v", snapshot.Relations)
 	}
 }
 

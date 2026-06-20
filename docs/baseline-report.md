@@ -92,8 +92,10 @@ Confidence bands follow the v2-plan schema section (`0.90-1.00 exact`,
   ConfigMap/Secret volume refs, ConfigMap/Secret key refs, image pull secrets,
   Service selectors, PodDisruptionBudget selectors, NetworkPolicy pod
   selectors, ServiceMonitor selectors, and PodMonitor selectors, including
-  CronJob job-template label targets, resolve to local resource symbols when
-  those manifests are present).
+  CronJob job-template label targets and Argo Rollout-style workload targets,
+  resolve to local resource symbols when those manifests are present. KEDA
+  ScaledObject name-only scale targets resolve to local Deployment symbols by
+  convention).
 
 `capabilities --json` reports per-language relation support
 (`relation_support_by_language`) and pattern-driven relations separately in

@@ -2414,6 +2414,9 @@ func kubernetesResourceReferences(content string) []resourceReference {
 	for _, ref := range kubernetesKindNameBlockReferences(content, "scaleTargetRef", "kubernetes_hpa_scale_target", 0.84) {
 		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 	}
+	for _, ref := range kubernetesScaledObjectScaleTargetReferences(content) {
+		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+	}
 	for _, ref := range kubernetesKindNameBlockReferences(content, "ownerReferences", "kubernetes_owner_reference", 0.78) {
 		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 	}
@@ -2442,6 +2445,54 @@ func kubernetesKindNameBlockReferences(content, blockKey, evidence string, confi
 		if len(match) == 3 {
 			refs = append(refs, resourceReference{Kind: strings.ToLower(match[1]), Name: match[2], EvidenceKind: evidence, Confidence: confidence})
 		}
+	}
+	return refs
+}
+
+func kubernetesScaledObjectScaleTargetReferences(content string) []resourceReference {
+	if !regexp.MustCompile(`(?im)^\s*kind:\s*ScaledObject\s*$`).MatchString(content) {
+		return nil
+	}
+	lines := strings.Split(content, "\n")
+	var refs []resourceReference
+	for i := 0; i < len(lines); i++ {
+		key, ok := yamlLineKey(lines[i])
+		if !ok || key != "scaleTargetRef" {
+			continue
+		}
+		parentIndent := yamlIndent(lines[i])
+		var name, kind string
+		for j := i + 1; j < len(lines); j++ {
+			line := lines[j]
+			if yamlIgnoreLine(line) {
+				continue
+			}
+			indent := yamlIndent(line)
+			if indent <= parentIndent {
+				break
+			}
+			childKey, ok := yamlLineKey(line)
+			if !ok {
+				continue
+			}
+			switch childKey {
+			case "name":
+				name = yamlLineValue(line)
+			case "kind":
+				kind = yamlLineValue(line)
+			}
+		}
+		name = strings.Trim(strings.TrimSpace(name), `"'`)
+		kind = strings.Trim(strings.TrimSpace(kind), `"'`)
+		if name == "" || kind != "" {
+			continue
+		}
+		refs = append(refs, resourceReference{
+			Kind:         "deployment",
+			Name:         name,
+			EvidenceKind: "kubernetes_keda_scale_target",
+			Confidence:   0.8,
+		})
 	}
 	return refs
 }
@@ -2702,6 +2753,7 @@ func kubernetesWorkloadKinds() map[string]bool {
 		"replicationcontroller": true,
 		"job":                   true,
 		"cronjob":               true,
+		"rollout":               true,
 	}
 }
 

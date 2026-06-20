@@ -119,6 +119,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
   `RESOURCE_DEPENDS_ON` edges to matching workload resources by labels.
 - Service, PodDisruptionBudget, and NetworkPolicy selectors match CronJob
   workload labels under `spec.jobTemplate.spec.template.metadata.labels`.
+- Service and PodMonitor selectors match Argo Rollout-style workload labels
+  under `spec.template.metadata.labels`.
 - ServiceMonitor and PodMonitor selectors emit exact local
   `RESOURCE_DEPENDS_ON` edges to target-kind-filtered Service and workload
   resources by labels.
@@ -134,6 +136,9 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
   backends, Gateway API HTTPRoute backend refs, Gateway API HTTPRoute parent
   Gateway refs, and HPA scale targets emit exact local `RESOURCE_DEPENDS_ON`
   edges when the referenced resource manifests are present in the snapshot.
+- KEDA ScaledObject name-only scale targets emit exact local
+  `RESOURCE_DEPENDS_ON` edges to Deployment resources by convention when the
+  target manifest is present in the snapshot.
 - Kubernetes projected ConfigMap/Secret volume refs and image pull secrets emit
   external and exact local `RESOURCE_DEPENDS_ON` edges when the referenced
   resource manifests are present in the snapshot.
@@ -286,6 +291,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
     151,282 LOC/s, max RSS 29,016,064 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781957331.json`: Go/gin, syntax-only, 28,618 LOC,
     135,086 LOC/s, max RSS 27,246,592 bytes, output 1,938,906 bytes.
+  - `bench/results/result-1781957549.json`: Go/gin, syntax-only, 28,618 LOC,
+    138,238 LOC/s, max RSS 27,983,872 bytes, output 1,938,906 bytes.
 
 ## Remaining Honesty Notes
 
