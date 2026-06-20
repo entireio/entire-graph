@@ -231,7 +231,10 @@ False negatives:
   JS/TS `return flag ? primary() : fallback()` and Python
   `return primary() if flag else fallback()`, plus simple fallback return
   expressions such as JS/TS `return primary() || fallback()` and Python
-  `return primary() or fallback()`. Caller parameters passed into
+  `return primary() or fallback()`, plus simple conditional/fallback
+  assignment-then-return expressions such as
+  `const value = primary() ?? fallback(); return value` and Python
+  `value = primary() or fallback(); return value`. Caller parameters passed into
   exact/import-resolved callees, including conservative local alias
   (`alias = input; callee(alias)`), object-field forwarding
   (`payload.field = input; callee(payload)`), simple object-literal forwarding

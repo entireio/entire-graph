@@ -342,6 +342,8 @@ Relation vocabulary:
   configuration, and Make targets.
 - `DATA_FLOWS` — high-confidence local return-flow edge from a callee to a
   caller when a callable returns the result of another resolved callable, plus
+  direct, branch, conditional/fallback, and expression-assigned local
+  assignment-then-return cases, plus
   conservative local caller-to-callee forwarding for exact/import-resolved
   parameter, alias, object-field/object-literal, and collection-element cases.
 - `ASYNC_CALLS` — async call-site edge for language-level async constructs such
@@ -368,8 +370,9 @@ Relation extraction continues to grow. Remaining known expansion areas are
 deeper fallback-format semantics and deeper flow analysis; the current contract
 already emits positional type, field-access, async, service-boundary,
 configuration, high-confidence direct, assigned, branch-assigned, and simple
-conditional return-flow, bounded co-change edges, and lightweight inventory for
-common web/document/config formats.
+conditional/fallback return-flow plus expression assignment-then-return flow,
+bounded co-change edges, and lightweight inventory for common web/document/
+config formats.
 
 ## Warnings And Partial Failures
 

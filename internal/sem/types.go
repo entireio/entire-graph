@@ -314,6 +314,10 @@ var (
 	pythonIfReturnRe     = regexp.MustCompile(`(?m)\breturn\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^\n]*?\)\s+if\s+[^\n]+?\s+else\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
 	jsFallbackReturnRe   = regexp.MustCompile(`(?m)\breturn\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^\n]*?\)\s*(?:\|\||\?\?)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
 	pythonOrReturnRe     = regexp.MustCompile(`(?m)\breturn\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^\n]*?\)\s+or\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	ternaryAssignCallRe  = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*[^?\n]+?\?\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^:\n]*\)\s*:\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	pythonIfAssignRe     = regexp.MustCompile(`(?m)\b\$?([A-Za-z_$][\w$]*)\s*(?::=|=)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^\n]*?\)\s+if\s+[^\n]+?\s+else\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	jsFallbackAssignRe   = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^\n]*?\)\s*(?:\|\||\?\?)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	pythonOrAssignRe     = regexp.MustCompile(`(?m)\b\$?([A-Za-z_$][\w$]*)\s*(?::=|=)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\([^\n]*?\)\s+or\s+(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
 	assignCallRe         = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
 	returnVarRe          = regexp.MustCompile(`(?m)\breturn\s+\$?([A-Za-z_$][\w$]*)\b`)
 	aliasAssignRe        = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*\$?([A-Za-z_$][\w$]*)\b`)
@@ -383,6 +387,15 @@ func returnLineAt(block string, pos int) string {
 	return block[start:end]
 }
 
+func isExpressionAssignmentLine(block string, pos int) bool {
+	line := returnLineAt(block, pos)
+	return strings.Contains(line, " || ") ||
+		strings.Contains(line, " ?? ") ||
+		strings.Contains(line, " or ") ||
+		strings.Contains(line, "?") ||
+		(strings.Contains(line, " if ") && strings.Contains(line, " else "))
+}
+
 type returnFlowCall struct {
 	Name         string
 	Reason       string
@@ -409,10 +422,21 @@ func returnFlowCalls(block, signature string) []returnFlowCall {
 	for _, flow := range fallbackReturnFlows(stripped) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind] = flow
 	}
+	for _, flow := range expressionAssignedReturnFlows(stripped) {
+		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
+	}
 	assigned := map[string]string{}
-	for _, match := range assignCallRe.FindAllStringSubmatch(stripped, -1) {
-		if len(match) == 3 && match[1] != "" && match[2] != "" {
-			assigned[strings.TrimPrefix(match[1], "$")] = strings.TrimPrefix(match[2], "$")
+	for _, match := range assignCallRe.FindAllStringSubmatchIndex(stripped, -1) {
+		if len(match) != 6 {
+			continue
+		}
+		if isExpressionAssignmentLine(stripped, match[0]) {
+			continue
+		}
+		varName := strings.TrimPrefix(stripped[match[2]:match[3]], "$")
+		callee := strings.TrimPrefix(stripped[match[4]:match[5]], "$")
+		if varName != "" && callee != "" {
+			assigned[varName] = callee
 		}
 	}
 	for _, match := range returnVarRe.FindAllStringSubmatchIndex(stripped, -1) {
@@ -531,6 +555,113 @@ func fallbackReturnFlows(block string) []returnFlowCall {
 		return flows[i].Name < flows[j].Name
 	})
 	return flows
+}
+
+type assignmentFlowEvent struct {
+	Var          string
+	Calls        []string
+	Reason       string
+	EvidenceKind string
+	Pos          int
+}
+
+func expressionAssignedReturnFlows(block string) []returnFlowCall {
+	events := assignmentFlowEvents(block)
+	if len(events) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var flows []returnFlowCall
+	for _, match := range returnVarRe.FindAllStringSubmatchIndex(block, -1) {
+		if len(match) != 4 {
+			continue
+		}
+		if followsReturnedVariable(block, match[1]) {
+			continue
+		}
+		returned := strings.TrimPrefix(block[match[2]:match[3]], "$")
+		var last assignmentFlowEvent
+		for _, event := range events {
+			if event.Var != returned || event.Pos > match[0] || event.Pos < last.Pos {
+				continue
+			}
+			if event.Pos == last.Pos && last.EvidenceKind != "" && event.EvidenceKind == "" {
+				continue
+			}
+			last = event
+		}
+		if last.EvidenceKind == "" || len(last.Calls) == 0 {
+			continue
+		}
+		for _, name := range last.Calls {
+			key := name + "\x00" + last.EvidenceKind + "\x00" + returned
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			flows = append(flows, returnFlowCall{
+				Name:         name,
+				Reason:       last.Reason,
+				EvidenceKind: last.EvidenceKind,
+				Detail:       name + " -> " + returned,
+				Direction:    "callee_to_caller",
+			})
+		}
+	}
+	sort.Slice(flows, func(i, j int) bool {
+		if flows[i].Name != flows[j].Name {
+			return flows[i].Name < flows[j].Name
+		}
+		return flows[i].Detail < flows[j].Detail
+	})
+	return flows
+}
+
+func assignmentFlowEvents(block string) []assignmentFlowEvent {
+	var events []assignmentFlowEvent
+	addExpressionMatches := func(re *regexp.Regexp, reason, evidence string) {
+		for _, match := range re.FindAllStringSubmatchIndex(block, -1) {
+			if len(match) != 8 {
+				continue
+			}
+			variable := strings.TrimPrefix(block[match[2]:match[3]], "$")
+			first := strings.TrimPrefix(block[match[4]:match[5]], "$")
+			second := strings.TrimPrefix(block[match[6]:match[7]], "$")
+			if variable == "" || first == "" || second == "" {
+				continue
+			}
+			events = append(events, assignmentFlowEvent{
+				Var:          variable,
+				Calls:        []string{first, second},
+				Reason:       reason,
+				EvidenceKind: evidence,
+				Pos:          match[0],
+			})
+		}
+	}
+	addExpressionMatches(ternaryAssignCallRe, "callee return value assigned through conditional expression and returned by caller", "conditional_assigned_return_flow")
+	addExpressionMatches(pythonIfAssignRe, "callee return value assigned through conditional expression and returned by caller", "conditional_assigned_return_flow")
+	addExpressionMatches(jsFallbackAssignRe, "callee return value assigned through fallback expression and returned by caller", "fallback_assigned_return_flow")
+	addExpressionMatches(pythonOrAssignRe, "callee return value assigned through fallback expression and returned by caller", "fallback_assigned_return_flow")
+	for _, match := range assignCallRe.FindAllStringSubmatchIndex(block, -1) {
+		if len(match) != 6 {
+			continue
+		}
+		variable := strings.TrimPrefix(block[match[2]:match[3]], "$")
+		call := strings.TrimPrefix(block[match[4]:match[5]], "$")
+		if variable == "" || call == "" {
+			continue
+		}
+		events = append(events, assignmentFlowEvent{
+			Var:   variable,
+			Calls: []string{call},
+			Pos:   match[0],
+		})
+	}
+	sort.Slice(events, func(i, j int) bool {
+		return events[i].Pos < events[j].Pos
+	})
+	return events
 }
 
 func branchAssignedReturnFlows(block string) []returnFlowCall {

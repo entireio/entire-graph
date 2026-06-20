@@ -259,6 +259,13 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   through JS/TS expressions like `return primary() || fallback()` and Python
   expressions like `return primary() or fallback()`, while avoiding
   unconditional return-flow labeling for the first branch.
+- Simple conditional/fallback assignment-then-return flow emits `DATA_FLOWS`
+  for known callees assigned through JS/TS expressions like
+  `const value = flag ? primary() : fallback()` and
+  `const value = primary() ?? fallback()`, and Python expressions like
+  `value = primary() or fallback()`, when the local is returned as a bare
+  variable. Sequential overwrite guards prevent stale branch callees from being
+  reported when a later assignment wins.
 - Exact/import-resolved argument forwarding emits caller-to-callee
   `DATA_FLOWS` when a caller parameter is passed into a known callee.
 - Conservative parameter-alias forwarding emits caller-to-callee `DATA_FLOWS`
@@ -364,6 +371,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781974226.json`: Go/gin, syntax-only, 28,618 LOC,
     162,059 LOC/s, max RSS 29,130,752 bytes, estimated output 1,902,633
     bytes; run after nested Go router group-prefix extraction.
+  - `bench/results/result-1781974459.json`: Go/gin, syntax-only, 28,618 LOC,
+    169,397 LOC/s, max RSS 29,507,584 bytes, estimated output 1,902,642
+    bytes; run after conditional/fallback expression assigned-return flow
+    extraction.
   - `bench/results/result-1781944479.json`: Go/gin, syntax-only, 28,618 LOC,
     154,533 LOC/s, max RSS 27,115,520 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781944927.json`: Go/gin, syntax-only, 28,618 LOC,

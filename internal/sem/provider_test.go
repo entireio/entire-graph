@@ -4475,6 +4475,179 @@ def run():
 	}
 }
 
+func TestBuildProviderSnapshotEmitsFallbackAssignedReturnDataFlow(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "flow.ts", `function primary(): string {
+  return "primary"
+}
+
+async function fallback(): Promise<string> {
+  return "fallback"
+}
+
+function side(): string {
+  return "side"
+}
+
+export async function run(): Promise<string> {
+  const value = primary() ?? await fallback()
+  const ignored = side()
+  return value
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"primary", "fallback"} {
+		var found RelationRecord
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == want && lastSegment(relation.ToID) == "run" && len(relation.Evidence) == 1 && relation.Evidence[0].Kind == "fallback_assigned_return_flow" {
+				found = relation
+				break
+			}
+		}
+		if found.FromID == "" {
+			t.Fatalf("missing fallback assigned DATA_FLOWS %s->run: %#v", want, snapshot.Relations)
+		}
+		if found.Reason != "callee return value assigned through fallback expression and returned by caller" || found.Confidence > 0.75 {
+			t.Fatalf("unexpected fallback assigned flow metadata: %#v", found)
+		}
+		if len(found.Evidence) != 1 || found.Evidence[0].Detail != want+" -> value" {
+			t.Fatalf("unexpected fallback assigned flow evidence: %#v", found.Evidence)
+		}
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == "side" && lastSegment(relation.ToID) == "run" {
+			t.Fatalf("non-returned side assignment produced DATA_FLOWS: %#v", relation)
+		}
+	}
+}
+
+func TestBuildProviderSnapshotEmitsConditionalAssignedReturnDataFlow(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "flow.ts", `function primary(): string {
+  return "primary"
+}
+
+async function fallback(): Promise<string> {
+  return "fallback"
+}
+
+export async function run(flag: boolean): Promise<string> {
+  const value = flag ? primary() : await fallback()
+  return value
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"primary", "fallback"} {
+		var found RelationRecord
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == want && lastSegment(relation.ToID) == "run" && len(relation.Evidence) == 1 && relation.Evidence[0].Kind == "conditional_assigned_return_flow" {
+				found = relation
+				break
+			}
+		}
+		if found.FromID == "" {
+			t.Fatalf("missing conditional assigned DATA_FLOWS %s->run: %#v", want, snapshot.Relations)
+		}
+		if found.Reason != "callee return value assigned through conditional expression and returned by caller" || found.Confidence > 0.75 {
+			t.Fatalf("unexpected conditional assigned flow metadata: %#v", found)
+		}
+		if len(found.Evidence) != 1 || found.Evidence[0].Detail != want+" -> value" {
+			t.Fatalf("unexpected conditional assigned flow evidence: %#v", found.Evidence)
+		}
+	}
+}
+
+func TestBuildProviderSnapshotEmitsPythonFallbackAssignedReturnDataFlow(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "flow.py", `def primary():
+    return "primary"
+
+def fallback():
+    return "fallback"
+
+def side():
+    return "side"
+
+def run():
+    value = primary() or fallback()
+    ignored = side()
+    return value
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"primary", "fallback"} {
+		var found RelationRecord
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == want && lastSegment(relation.ToID) == "run" && len(relation.Evidence) == 1 && relation.Evidence[0].Kind == "fallback_assigned_return_flow" {
+				found = relation
+				break
+			}
+		}
+		if found.FromID == "" {
+			t.Fatalf("missing Python fallback assigned DATA_FLOWS %s->run: %#v", want, snapshot.Relations)
+		}
+		if found.Reason != "callee return value assigned through fallback expression and returned by caller" || found.Confidence > 0.75 {
+			t.Fatalf("unexpected Python fallback assigned flow metadata: %#v", found)
+		}
+		if len(found.Evidence) != 1 || found.Evidence[0].Detail != want+" -> value" {
+			t.Fatalf("unexpected Python fallback assigned flow evidence: %#v", found.Evidence)
+		}
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == "side" && lastSegment(relation.ToID) == "run" {
+			t.Fatalf("non-returned Python side assignment produced DATA_FLOWS: %#v", relation)
+		}
+	}
+}
+
+func TestBuildProviderSnapshotFallbackAssignedReturnHonorsOverwrite(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "flow.ts", `function primary(): string {
+  return "primary"
+}
+
+function fallback(): string {
+  return "fallback"
+}
+
+function finalValue(): string {
+  return "final"
+}
+
+export function run(): string {
+  let value = primary() || fallback()
+  value = finalValue()
+  return value
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "DATA_FLOWS", "finalValue", "run") {
+		t.Fatalf("missing overwritten final assignment flow finalValue->run: %#v", snapshot.Relations)
+	}
+	for _, stale := range []string{"primary", "fallback"} {
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == stale && lastSegment(relation.ToID) == "run" && len(relation.Evidence) == 1 && relation.Evidence[0].Kind == "fallback_assigned_return_flow" {
+				t.Fatalf("overwritten fallback assignment produced DATA_FLOWS %s->run: %#v", stale, relation)
+			}
+		}
+	}
+}
+
 func TestBuildProviderSnapshotSequentialAssignmentKeepsLastReturnDataFlow(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "flow.ts", `function first(): string {
