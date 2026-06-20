@@ -188,6 +188,57 @@ export function run(): string {
 	}
 }
 
+func TestPythonManifestImportsResolveThroughProjectMetadata(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "pyproject.toml", `[project]
+name = "acme-app"
+`)
+	writeFile(t, repo, "src/acme_app/__init__.py", "")
+	writeFile(t, repo, "src/acme_app/service.py", `def run():
+    return "ok"
+`)
+	writeFile(t, repo, "src/acme_app/consumer.py", `import acme_app.service
+
+def call():
+    return acme_app.service.run()
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := fileID(snapshot.Header.RepoKey, "src/acme_app/service.py")
+	var found RelationRecord
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "IMPORTS" && strings.HasSuffix(relation.FromID, "file:src/acme_app/consumer.py") && relation.ToID == target {
+			found = relation
+			break
+		}
+	}
+	if found.FromID == "" {
+		t.Fatalf("missing Python manifest resolved import to %s in %#v", target, snapshot.Relations)
+	}
+	if found.Resolution != "import_resolved" || found.RelationScope != "module" || found.TargetKind != "file" || found.Confidence < 0.89 {
+		t.Fatalf("unexpected Python import metadata: %#v", found)
+	}
+	if len(found.Evidence) != 1 || found.Evidence[0].Kind != "python_project_import" {
+		t.Fatalf("unexpected Python import evidence: %#v", found.Evidence)
+	}
+}
+
+func TestSetupCFGNameParsingNormalizesPythonPackage(t *testing.T) {
+	name := parseSetupCFGName(`[metadata]
+Name = acme-tools
+`)
+	if name != "acme-tools" {
+		t.Fatalf("setup.cfg name = %q", name)
+	}
+	names := normalizePythonPackageNames([]string{name})
+	if len(names) != 1 || names[0] != "acme_tools" {
+		t.Fatalf("normalized package names = %#v", names)
+	}
+}
+
 func TestResourceDependsOnGraph(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "main.tf", `resource "aws_vpc" "main" {

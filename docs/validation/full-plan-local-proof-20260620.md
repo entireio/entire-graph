@@ -24,6 +24,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
   `import_resolved` metadata.
 - JS/TS package self-imports and simple `tsconfig.json` path aliases resolve to
   local files with `import_resolved` metadata.
+- Python project/module imports resolve through local module files,
+  `pyproject.toml`, and `setup.cfg` with `import_resolved` metadata.
 - Kubernetes resource extraction and Service-selector dependency tests pass
   (`Service` -> matching workload resource by selector labels).
 - Kubernetes resource config tests pass for common container image,

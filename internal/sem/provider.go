@@ -3147,6 +3147,8 @@ type manifestImportResolver struct {
 	jsPackageName  string
 	jsModuleFiles  map[string]string
 	tsPathMappings []tsPathMapping
+	pythonPackages []string
+	pythonModules  map[string]string
 }
 
 type manifestImportResolution struct {
@@ -3163,7 +3165,7 @@ type tsPathMapping struct {
 }
 
 func buildManifestImportResolver(files []FileRecord, readContent contentReader) manifestImportResolver {
-	resolver := manifestImportResolver{goPackages: map[string]string{}, jsModuleFiles: map[string]string{}}
+	resolver := manifestImportResolver{goPackages: map[string]string{}, jsModuleFiles: map[string]string{}, pythonModules: map[string]string{}}
 	if content, ok := readContent("go.mod"); ok {
 		resolver.goModule = parseGoModulePath(content)
 	}
@@ -3173,14 +3175,25 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 	if content, ok := readContent("tsconfig.json"); ok {
 		resolver.tsPathMappings = parseTSConfigPaths(content)
 	}
+	if content, ok := readContent("pyproject.toml"); ok {
+		resolver.pythonPackages = append(resolver.pythonPackages, parsePyProjectName(content))
+	}
+	if content, ok := readContent("setup.cfg"); ok {
+		resolver.pythonPackages = append(resolver.pythonPackages, parseSetupCFGName(content))
+	}
+	resolver.pythonPackages = normalizePythonPackageNames(resolver.pythonPackages)
 	var goPaths []string
 	var jsPaths []string
+	var pyPaths []string
 	for _, file := range files {
 		if strings.EqualFold(filepath.Ext(file.Path), ".go") {
 			goPaths = append(goPaths, filepath.ToSlash(file.Path))
 		}
 		if jsLikeExtension(filepath.Ext(file.Path)) {
 			jsPaths = append(jsPaths, filepath.ToSlash(file.Path))
+		}
+		if strings.EqualFold(filepath.Ext(file.Path), ".py") {
+			pyPaths = append(pyPaths, filepath.ToSlash(file.Path))
 		}
 	}
 	sort.Slice(goPaths, func(i, j int) bool {
@@ -3215,6 +3228,14 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 				if _, exists := resolver.jsModuleFiles[dir]; !exists {
 					resolver.jsModuleFiles[dir] = path
 				}
+			}
+		}
+	}
+	sort.Strings(pyPaths)
+	for _, path := range pyPaths {
+		for _, module := range pythonModuleKeysForPath(path) {
+			if _, exists := resolver.pythonModules[module]; !exists {
+				resolver.pythonModules[module] = path
 			}
 		}
 	}
@@ -3277,6 +3298,82 @@ func parseTSConfigPaths(content string) []tsPathMapping {
 	return mappings
 }
 
+func parsePyProjectName(content string) string {
+	inProject := false
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	for scanner.Scan() {
+		line := strings.TrimSpace(stripTOMLComment(scanner.Text()))
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			inProject = line == "[project]"
+			continue
+		}
+		if inProject && strings.HasPrefix(line, "name") {
+			if name, ok := parseSimpleConfigValue(line); ok {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+func parseSetupCFGName(content string) string {
+	inMetadata := false
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			inMetadata = strings.EqualFold(line, "[metadata]")
+			continue
+		}
+		if inMetadata && strings.HasPrefix(strings.ToLower(line), "name") {
+			if name, ok := parseSimpleConfigValue(line); ok {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+func parseSimpleConfigValue(line string) (string, bool) {
+	parts := strings.SplitN(line, "=", 2)
+	if len(parts) != 2 || strings.ToLower(strings.TrimSpace(parts[0])) != "name" {
+		return "", false
+	}
+	value := strings.TrimSpace(parts[1])
+	value = strings.Trim(value, `"'`)
+	return strings.TrimSpace(value), strings.TrimSpace(value) != ""
+}
+
+func stripTOMLComment(line string) string {
+	inString := false
+	escaped := false
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' && inString {
+			escaped = true
+			continue
+		}
+		if ch == '"' || ch == '\'' {
+			inString = !inString
+			continue
+		}
+		if !inString && ch == '#' {
+			return line[:i]
+		}
+	}
+	return line
+}
+
 func stripJSONLineComments(content string) string {
 	var b strings.Builder
 	scanner := bufio.NewScanner(strings.NewReader(content))
@@ -3316,6 +3413,9 @@ func (resolver manifestImportResolver) resolve(importingPath, spec string) (mani
 	}
 	if jsLikeExtension(ext) {
 		return resolver.resolveJSImport(importingPath, spec)
+	}
+	if ext == ".py" {
+		return resolver.resolvePythonImport(importingPath, spec)
 	}
 	return manifestImportResolution{}, false
 }
@@ -3430,6 +3530,79 @@ func jsLikeExtension(ext string) bool {
 	default:
 		return false
 	}
+}
+
+func (resolver manifestImportResolver) resolvePythonImport(importingPath, spec string) (manifestImportResolution, bool) {
+	spec = strings.Trim(strings.TrimSpace(spec), ".")
+	if spec == "" {
+		return manifestImportResolution{}, false
+	}
+	path, ok := resolver.pythonModules[spec]
+	if !ok {
+		return manifestImportResolution{}, false
+	}
+	if path == filepath.ToSlash(importingPath) {
+		return manifestImportResolution{}, false
+	}
+	confidence := 0.88
+	reason := "Python module import resolved through local module files"
+	evidenceKind := "python_module_import"
+	for _, name := range resolver.pythonPackages {
+		if spec == name || strings.HasPrefix(spec, name+".") {
+			confidence = 0.9
+			reason = "Python package import resolved through project metadata"
+			evidenceKind = "python_project_import"
+			break
+		}
+	}
+	return manifestImportResolution{
+		Path:         path,
+		Confidence:   confidence,
+		Scope:        "module",
+		Reason:       reason,
+		EvidenceKind: evidenceKind,
+	}, true
+}
+
+func pythonModuleKeysForPath(path string) []string {
+	path = filepath.ToSlash(path)
+	if !strings.HasSuffix(path, ".py") {
+		return nil
+	}
+	withoutExt := strings.TrimSuffix(path, ".py")
+	if strings.HasSuffix(withoutExt, "/__init__") {
+		withoutExt = strings.TrimSuffix(withoutExt, "/__init__")
+	}
+	var keys []string
+	add := func(module string) {
+		module = strings.Trim(strings.ReplaceAll(filepath.ToSlash(module), "/", "."), ".")
+		if module != "" {
+			keys = append(keys, module)
+		}
+	}
+	add(withoutExt)
+	if strings.HasPrefix(withoutExt, "src/") {
+		add(strings.TrimPrefix(withoutExt, "src/"))
+	}
+	return keys
+}
+
+func normalizePythonPackageNames(names []string) []string {
+	seen := map[string]bool{}
+	var normalized []string
+	for _, name := range names {
+		name = strings.TrimSpace(strings.ToLower(name))
+		if name == "" {
+			continue
+		}
+		name = strings.ReplaceAll(name, "-", "_")
+		if !seen[name] {
+			seen[name] = true
+			normalized = append(normalized, name)
+		}
+	}
+	sort.Strings(normalized)
+	return normalized
 }
 
 func importsFor(path, content string) []string {
