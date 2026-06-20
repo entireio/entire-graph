@@ -473,6 +473,219 @@ func componentEntities(path, content, language string) []Entity {
 	return entities
 }
 
+var (
+	cFamilyTypeLineRe     = regexp.MustCompile(`^\s*(?:typedef\s+)?(struct|union|enum|class)\s+([A-Za-z_][A-Za-z0-9_]*)\b`)
+	cFamilyTypedefNameRe  = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\])?\s*$`)
+	cFamilyFunctionNameRe = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*\([^;{}]*\)\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*)*$`)
+)
+
+var cFamilyNonFunctionNames = map[string]bool{
+	"alignof": true,
+	"catch":   true,
+	"do":      true,
+	"for":     true,
+	"if":      true,
+	"return":  true,
+	"sizeof":  true,
+	"switch":  true,
+	"typeof":  true,
+	"while":   true,
+}
+
+func fastCFamilyEntities(path, content, language string) []Entity {
+	_ = path
+	_ = language
+	stripped := stripCodeLiteralsAndComments(content)
+	lines := strings.Split(stripped, "\n")
+	originalLines := strings.Split(content, "\n")
+	var entities []Entity
+	entities = append(entities, fastCFamilyTypeEntities(lines, originalLines)...)
+	entities = append(entities, fastCFamilyFunctionEntities(lines, originalLines)...)
+	sort.Slice(entities, func(i, j int) bool {
+		if entities[i].StartLine == entities[j].StartLine {
+			if entities[i].Kind == entities[j].Kind {
+				return entities[i].Name < entities[j].Name
+			}
+			return entities[i].Kind < entities[j].Kind
+		}
+		return entities[i].StartLine < entities[j].StartLine
+	})
+	return entities
+}
+
+func fastCFamilyTypeEntities(lines, originalLines []string) []Entity {
+	var entities []Entity
+	seen := map[string]bool{}
+	depth := 0
+	for i := 0; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if depth != 0 || trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			depth += braceDelta(lines[i])
+			if depth < 0 {
+				depth = 0
+			}
+			continue
+		}
+		for _, match := range cFamilyTypeLineRe.FindAllStringSubmatch(trimmed, -1) {
+			kind := match[1]
+			name := match[2]
+			key := kind + "\x00" + name + "\x00" + fmt.Sprint(i+1)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			end := fastCFamilyStatementEnd(lines, i)
+			entities = append(entities, fastCFamilyEntity(kind, name, i+1, end, originalLines))
+		}
+		if !strings.HasPrefix(trimmed, "typedef ") {
+			continue
+		}
+		end := fastCFamilyStatementEnd(lines, i)
+		statement := strings.TrimSpace(strings.Join(lines[i:end], " "))
+		statement = strings.TrimSuffix(statement, ";")
+		if match := cFamilyTypedefNameRe.FindStringSubmatch(statement); match != nil {
+			name := match[1]
+			key := "type\x00" + name + "\x00" + fmt.Sprint(i+1)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			entities = append(entities, fastCFamilyEntity("type", name, i+1, end, originalLines))
+		}
+		depth += braceDelta(lines[i])
+		if depth < 0 {
+			depth = 0
+		}
+	}
+	return entities
+}
+
+func fastCFamilyFunctionEntities(lines, originalLines []string) []Entity {
+	var entities []Entity
+	depth := 0
+	pendingStart := -1
+	pending := ""
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		if depth != 0 {
+			depth += braceDelta(line)
+			if depth < 0 {
+				depth = 0
+			}
+			continue
+		}
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			pending = ""
+			pendingStart = -1
+			continue
+		}
+		if pendingStart < 0 {
+			pendingStart = i
+		}
+		pending = strings.TrimSpace(pending + " " + trimmed)
+		if brace := strings.IndexByte(line, '{'); brace >= 0 {
+			signature := strings.TrimSpace(pending)
+			if idx := strings.IndexByte(signature, '{'); idx >= 0 {
+				signature = strings.TrimSpace(signature[:idx])
+			} else if braceText := strings.TrimSpace(line[brace:]); braceText != "" {
+				signature = strings.TrimSpace(strings.TrimSuffix(signature, braceText))
+			}
+			if name := fastCFamilyFunctionName(signature); name != "" {
+				end := fastCFamilyBraceEnd(lines, i)
+				entities = append(entities, fastCFamilyEntity("function", name, pendingStart+1, end, originalLines))
+				i = end - 1
+				pending = ""
+				pendingStart = -1
+				depth = 0
+				continue
+			}
+			depth += braceDelta(line)
+			pending = ""
+			pendingStart = -1
+			continue
+		}
+		if strings.Contains(line, ";") {
+			pending = ""
+			pendingStart = -1
+		}
+	}
+	return entities
+}
+
+func fastCFamilyFunctionName(signature string) string {
+	signature = strings.TrimSpace(signature)
+	if signature == "" || strings.Contains(signature, "=") {
+		return ""
+	}
+	match := cFamilyFunctionNameRe.FindStringSubmatch(signature)
+	if match == nil {
+		return ""
+	}
+	name := match[1]
+	if cFamilyNonFunctionNames[name] {
+		return ""
+	}
+	return name
+}
+
+func fastCFamilyStatementEnd(lines []string, start int) int {
+	depth := 0
+	for i := start; i < len(lines); i++ {
+		depth += braceDelta(lines[i])
+		if strings.Contains(lines[i], ";") && depth <= 0 {
+			return i + 1
+		}
+		if depth <= 0 && strings.Contains(lines[i], "}") {
+			return i + 1
+		}
+	}
+	return start + 1
+}
+
+func fastCFamilyBraceEnd(lines []string, start int) int {
+	depth := 0
+	for i := start; i < len(lines); i++ {
+		depth += braceDelta(lines[i])
+		if depth <= 0 && i > start {
+			return i + 1
+		}
+	}
+	return len(lines)
+}
+
+func braceDelta(line string) int {
+	delta := 0
+	for _, ch := range line {
+		switch ch {
+		case '{':
+			delta++
+		case '}':
+			delta--
+		}
+	}
+	return delta
+}
+
+func fastCFamilyEntity(kind, name string, startLine, endLine int, lines []string) Entity {
+	signature := ""
+	if startLine > 0 && startLine <= len(lines) {
+		signature = strings.TrimSpace(lines[startLine-1])
+	}
+	if signature == "" {
+		signature = kind + " " + name
+	}
+	return Entity{
+		Kind:        kind,
+		Name:        name,
+		Signature:   normalize(signature),
+		StartLine:   startLine,
+		EndLine:     maxInt(startLine, endLine),
+		BodyHash:    "",
+		Fingerprint: "",
+	}
+}
+
 func simpleFallbackEntity(kind, name, signature string, startLine, endLine int, block string) Entity {
 	name = slugName(name)
 	if name == "" {

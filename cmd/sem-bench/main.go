@@ -77,16 +77,17 @@ func main() {
 		progress     = flag.Bool("progress", false, "print provider phase progress to stderr")
 		minLOCPerSec = flag.Float64("min-loc-per-sec", 0, "fail if successful aggregate LOC/s is below this floor")
 		maxRSSBytes  = flag.Uint64("max-rss-bytes", 0, "fail if process peak RSS bytes exceeds this ceiling")
+		exactOutput  = flag.Bool("exact-output-bytes", false, "marshal every streamed record for exact NDJSON output bytes; slower on large repos")
 	)
 	flag.Parse()
 
-	if err := run(*manifestPath, *cacheDir, *outDir, *lockPath, *languages, *profile, *limit, *jobs, *depth, *skipClone, *updateLock, *providerVer, *progress, *minLOCPerSec, *maxRSSBytes); err != nil {
+	if err := run(*manifestPath, *cacheDir, *outDir, *lockPath, *languages, *profile, *limit, *jobs, *depth, *skipClone, *updateLock, *providerVer, *progress, *minLOCPerSec, *maxRSSBytes, *exactOutput); err != nil {
 		fmt.Fprintln(os.Stderr, "sem-bench:", err)
 		os.Exit(1)
 	}
 }
 
-func run(manifestPath, cacheDir, outDir, lockPath, languages, profileName string, limit, jobs, depth int, skipClone, updateLock bool, providerVer string, progress bool, minLOCPerSec float64, maxRSSBytes uint64) error {
+func run(manifestPath, cacheDir, outDir, lockPath, languages, profileName string, limit, jobs, depth int, skipClone, updateLock bool, providerVer string, progress bool, minLOCPerSec float64, maxRSSBytes uint64, exactOutputBytes bool) error {
 	profile, err := parseProfile(profileName)
 	if err != nil {
 		return err
@@ -134,7 +135,7 @@ func run(manifestPath, cacheDir, outDir, lockPath, languages, profileName string
 			fmt.Fprintf(os.Stderr, "  skip %-40s (not cloned)\n", spec.repoPath)
 			continue
 		}
-		opts := bench.MeasureOptions{MaxRSSBytes: maxRSSBytes}
+		opts := bench.MeasureOptions{MaxRSSBytes: maxRSSBytes, ExactOutputBytes: exactOutputBytes}
 		if progress {
 			opts.Progress = func(event sem.ProgressEvent) {
 				fmt.Fprintf(os.Stderr, "  progress %-40s phase=%s files=%d/%d symbols=%d relations=%d heap=%d rss=%d elapsed=%s\n",

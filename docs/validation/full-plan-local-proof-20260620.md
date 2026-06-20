@@ -37,6 +37,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
 go test ./internal/bench -run TestMeasureRepoEnforcesLiveRSSGuard
 go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version guard-test -out - -max-rss-bytes 1
+go build -o /tmp/sem-bench ./cmd/sem-bench
+/tmp/sem-bench -skip-clone -manifest bench/repos.json -languages C -limit 1 -profile fast -provider-version codex-fast-c-scan -out bench/results -max-rss-bytes 5000000000 -min-loc-per-sec 150000
 ```
 
 ## Results
@@ -311,18 +313,28 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
     164,424 LOC/s, max RSS 28,344,320 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781958227.json`: Go/gin, syntax-only, 28,618 LOC,
     129,558 LOC/s, max RSS 28,868,608 bytes, output 1,938,906 bytes.
+  - `bench/results/result-1781965402.json`: C/Linux cached checkout, fast
+    profile, 80,300 files, 39,788,715 LOC, 2,102,504 symbols, 2,542,302
+    relations, 136,672.59 ms provider wall time, 291,124 LOC/s, max RSS
+    3,753,017,344 bytes, estimated output 1,739,142,766 bytes, 125 parse
+    failures, `completeness_level: degraded`.
 
 ## Remaining Honesty Notes
 
-- The Linux run is syntax-only proof over a cached local checkout, not a full
-  relation-depth benchmark.
-- The Linux run reports `completeness_level: unsafe` because generated/large C
-  sources still produce parse failures or `E_FILE_TOO_LARGE`; this does not
-  invalidate the speed/RSS proof, but it is not quality proof for C semantics.
+- The retained fast-profile Linux run is proof over a cached local checkout,
+  not clone/network time and not a full-profile relation-depth benchmark.
+- The retained fast-profile Linux run used estimated output bytes to avoid
+  making benchmark accounting dominate provider runtime; the report records
+  `output_bytes_estimated: true`.
+- The retained fast-profile Linux run reports `completeness_level: degraded`
+  because generated/large C sources still produce parse failures or
+  `E_FILE_TOO_LARGE`; this does not invalidate the speed/RSS proof, but it is
+  not quality proof for full C semantics.
 - Public large-corpus speed claims still need broader retained runs across more
   cached or supplied repositories and profiles.
 - Attempted cached C/Linux `fast` profile with a 5 GB RSS ceiling exposed a
   real validation gap before this fix: live process inspection showed the run
   still active at roughly 7.3 GB RSS because the old guard only checked memory
   after completion. That run was terminated and is not counted as retained
-  performance proof.
+  performance proof; the later retained fast-profile run above is the current
+  speed/RSS proof.

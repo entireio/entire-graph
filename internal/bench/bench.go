@@ -5,12 +5,9 @@
 package bench
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"sync/atomic"
@@ -34,6 +31,7 @@ type RepoMetrics struct {
 	LOC               int            `json:"loc"`
 	SourceBytes       int            `json:"source_bytes"`
 	OutputBytes       int            `json:"output_bytes"`
+	OutputEstimated   bool           `json:"output_bytes_estimated,omitempty"`
 	Symbols           int            `json:"symbols"`
 	Relations         int            `json:"relations"`
 	Externals         int            `json:"externals"`
@@ -53,8 +51,9 @@ type RepoMetrics struct {
 }
 
 type MeasureOptions struct {
-	Progress    func(sem.ProgressEvent)
-	MaxRSSBytes uint64
+	Progress         func(sem.ProgressEvent)
+	MaxRSSBytes      uint64
+	ExactOutputBytes bool
 }
 
 // MeasureRepo measures the streaming provider path (the production path) over
@@ -84,7 +83,6 @@ func MeasureRepoWithOptions(ctx context.Context, name, language, dir, providerVe
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
 
-	var filePaths []string
 	var summary sem.SnapshotSummary
 	outputBytes := 0
 	start := time.Now()
@@ -94,9 +92,7 @@ func MeasureRepoWithOptions(ctx context.Context, name, language, dir, providerVe
 		if rss := rssExceeded.Load(); rss > 0 {
 			return fmt.Errorf("memory guardrail failed during measurement: max RSS %d exceeds ceiling %d", rss, opts.MaxRSSBytes)
 		}
-		if encoded, marshalErr := json.Marshal(record); marshalErr == nil {
-			outputBytes += len(encoded) + 1 // record + newline, the NDJSON byte cost
-		}
+		outputBytes += recordOutputBytes(record, opts.ExactOutputBytes)
 		switch r := record.(type) {
 		case sem.SnapshotHeader:
 			metrics.Commit = r.Commit
@@ -104,7 +100,7 @@ func MeasureRepoWithOptions(ctx context.Context, name, language, dir, providerVe
 		case sem.FileRecord:
 			metrics.Files++
 			metrics.SourceBytes += r.Bytes
-			filePaths = append(filePaths, r.Path)
+			metrics.LOC += r.Lines
 		case sem.SymbolRecord:
 			metrics.Symbols++
 		case sem.ExternalRecord:
@@ -140,6 +136,7 @@ func MeasureRepoWithOptions(ctx context.Context, name, language, dir, providerVe
 
 	metrics.WallMS = round2(float64(wall.Microseconds()) / 1000)
 	metrics.OutputBytes = outputBytes
+	metrics.OutputEstimated = !opts.ExactOutputBytes
 	metrics.ParsedFiles = summary.Stats.ParsedFiles
 	metrics.ParseFailures = summary.Stats.PartialFailures
 	metrics.CompletenessLevel = summary.Stats.CompletenessLevel
@@ -151,17 +148,42 @@ func MeasureRepoWithOptions(ctx context.Context, name, language, dir, providerVe
 		metrics.AllocBytes = after.TotalAlloc - before.TotalAlloc
 	}
 
-	for _, path := range filePaths {
-		if content, readErr := os.ReadFile(filepath.Join(dir, path)); readErr == nil {
-			metrics.LOC += countLines(content)
-		}
-	}
-
 	if seconds := wall.Seconds(); seconds > 0 {
 		metrics.FilesPerSec = round2(float64(metrics.Files) / seconds)
 		metrics.LOCPerSec = round2(float64(metrics.LOC) / seconds)
 	}
 	return metrics, nil
+}
+
+func recordOutputBytes(record any, exact bool) int {
+	if exact {
+		if encoded, err := json.Marshal(record); err == nil {
+			return len(encoded) + 1
+		}
+		return 0
+	}
+	switch r := record.(type) {
+	case sem.FileRecord:
+		return 96 + len(r.ID) + len(r.Path) + len(r.Blob) + len(r.Language)
+	case sem.SymbolRecord:
+		return 176 + len(r.ID) + len(r.StableIDVersion) + len(r.Kind) + len(r.Name) + len(r.QualifiedName) + len(r.FilePath) + len(r.Signature) + len(r.BodyHash) + len(r.Language) + len(r.ContainerID)
+	case sem.RelationRecord:
+		size := 160 + len(r.FromID) + len(r.ToID) + len(r.Type) + len(r.Reason) + len(r.RelationScope) + len(r.Resolution) + len(r.TargetKind)
+		for _, evidence := range r.Evidence {
+			size += 64 + len(evidence.Kind) + len(evidence.FilePath) + len(evidence.Detail)
+		}
+		for _, code := range r.WarningCodes {
+			size += 4 + len(code)
+		}
+		return size
+	case sem.ExternalRecord:
+		return 144 + len(r.ID) + len(r.Kind) + len(r.Value) + len(r.FilePath) + len(r.Signature) + len(r.Language) + len(r.SourceSymbol) + len(r.SourceDetails)
+	default:
+		if encoded, err := json.Marshal(record); err == nil {
+			return len(encoded) + 1
+		}
+		return 0
+	}
 }
 
 func startRSSGuard(ctx context.Context, maxRSSBytes uint64) (context.Context, func(), *atomic.Uint64) {
@@ -221,17 +243,6 @@ func confidenceBand(confidence float64) string {
 	default:
 		return "weak"
 	}
-}
-
-func countLines(content []byte) int {
-	if len(content) == 0 {
-		return 0
-	}
-	lines := bytes.Count(content, []byte{'\n'})
-	if content[len(content)-1] != '\n' {
-		lines++
-	}
-	return lines
 }
 
 func round2(value float64) float64 {

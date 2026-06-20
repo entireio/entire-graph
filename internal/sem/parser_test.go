@@ -489,3 +489,39 @@ service Auth { rpc Validate(User) returns (User); }
 		}
 	}
 }
+
+func TestFastCFamilyEntitiesTopLevelInventory(t *testing.T) {
+	entities := fastCFamilyEntities("main.c", `#include "user.h"
+typedef struct User {
+	int id;
+} User;
+
+static inline int helper(int token)
+{
+	return token + 1;
+}
+
+int validate(int token) {
+	if (token) {
+		return helper(token);
+	}
+	return 0;
+}
+`, "C")
+	seen := map[string]string{}
+	for _, entity := range entities {
+		seen[entity.Name] = entity.Kind
+	}
+	for name, kind := range map[string]string{
+		"User":     "type",
+		"helper":   "function",
+		"validate": "function",
+	} {
+		if seen[name] != kind {
+			t.Fatalf("%s kind = %q, want %q in %#v", name, seen[name], kind, entities)
+		}
+	}
+	if seen["if"] != "" {
+		t.Fatalf("control statement parsed as function: %#v", entities)
+	}
+}

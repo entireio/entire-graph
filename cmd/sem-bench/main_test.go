@@ -46,7 +46,7 @@ func TestSkippedRepoReportsSelectedProfile(t *testing.T) {
 	lockPath := filepath.Join(dir, "lock.json")
 
 	// skip-clone so no network is touched; syntax-only is the selected profile.
-	err := run(manifestPath, cacheDir, outDir, lockPath, "", "syntax-only", 0, 1, 1, true, false, "bench-test", false, 0, 0)
+	err := run(manifestPath, cacheDir, outDir, lockPath, "", "syntax-only", 0, 1, 1, true, false, "bench-test", false, 0, 0, false)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestGuardrailFailureAfterReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	outDir := filepath.Join(dir, "out")
-	err := run(manifestPath, filepath.Join(dir, "cache"), outDir, filepath.Join(dir, "lock.json"), "", "syntax-only", 0, 1, 1, true, false, "bench-test", false, 1, 0)
+	err := run(manifestPath, filepath.Join(dir, "cache"), outDir, filepath.Join(dir, "lock.json"), "", "syntax-only", 0, 1, 1, true, false, "bench-test", false, 1, 0, false)
 	if err == nil {
 		t.Fatalf("expected guardrail failure")
 	}

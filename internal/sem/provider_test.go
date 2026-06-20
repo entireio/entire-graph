@@ -4209,6 +4209,48 @@ func TestBuildRelationsDropsAmbiguousCrossFileCallNameCollisions(t *testing.T) {
 	}
 }
 
+func TestRecordsByRelationSupportFiltersUnsupportedLanguages(t *testing.T) {
+	recordsByFile := map[string][]SymbolRecord{
+		"kernel/sched/core.c": {{
+			ID:       "symbol:core.c:schedule",
+			Language: "C",
+			Kind:     "function",
+			Name:     "schedule",
+		}},
+		"deploy/app.yaml": {{
+			ID:       "symbol:app.yaml:Deployment.app",
+			Language: "YAML",
+			Kind:     "resource",
+			Name:     "app",
+		}},
+		"infra/main.tf": {{
+			ID:       "symbol:main.tf:aws_vpc.main",
+			Language: "HCL",
+			Kind:     "block",
+			Name:     "main",
+		}},
+	}
+
+	resourceRecords := recordsByRelationSupport(recordsByFile, "RESOURCE_DEPENDS_ON")
+	if _, ok := resourceRecords["kernel/sched/core.c"]; ok {
+		t.Fatalf("C records should not be included in resource dependency scans")
+	}
+	if _, ok := resourceRecords["deploy/app.yaml"]; !ok {
+		t.Fatalf("YAML records should be included in resource dependency scans")
+	}
+	if _, ok := resourceRecords["infra/main.tf"]; !ok {
+		t.Fatalf("HCL records should be included in resource dependency scans")
+	}
+
+	configRecords := recordsByRelationSupport(recordsByFile, "CONFIGURES")
+	if _, ok := configRecords["kernel/sched/core.c"]; ok {
+		t.Fatalf("C records should not be included in config scans")
+	}
+	if _, ok := configRecords["deploy/app.yaml"]; !ok {
+		t.Fatalf("YAML records should be included in config scans")
+	}
+}
+
 func TestEntitySymbolsDisambiguatesDuplicateNames(t *testing.T) {
 	symbols := entitySymbols("gh/example/repo", "src/session.ts", "TypeScript", []Entity{
 		{Kind: "method", Name: "Session.toTime", StartLine: 10, EndLine: 12},

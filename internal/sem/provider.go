@@ -187,6 +187,7 @@ type FileRecord struct {
 	Blob       string `json:"blob"`
 	Language   string `json:"language,omitempty"`
 	Bytes      int    `json:"bytes"`
+	Lines      int    `json:"-"`
 }
 
 type ExternalRecord struct {
@@ -660,6 +661,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	var files []FileRecord
 	recordsByFile := map[string][]SymbolRecord{}
 	structuralByFile := map[string][]structuralSymbol{}
+	precomputedImports := map[string][]string{}
 	symbolCount := 0
 	relationCount := 0
 	parsedFileCount := 0
@@ -711,6 +713,10 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 			Blob:       contentHash(contentBytes),
 			Language:   language,
 			Bytes:      len(contentBytes),
+			Lines:      sourceLineCount(content),
+		}
+		if skipFastProfilePerSymbolScan(spec, language) {
+			precomputedImports[path] = importsFor(path, content)
 		}
 		if maxParseBytes > 0 && len(contentBytes) > maxParseBytes {
 			languageSet[language] = struct{}{}
@@ -730,7 +736,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 			})
 			continue
 		}
-		entities, language, parseStatus := parser.ParseWithStatus(path, content)
+		entities, language, parseStatus := parseWithProfile(parser, spec, langSpec, path, content)
 		if language == "" {
 			failures = append(failures, PartialFailure{
 				Code:                 "E_UNSUPPORTED_LANGUAGE",
@@ -833,8 +839,12 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 			emitRelation(r, nil, nil)
 		})
 	} else {
-		symbolsByID, filesByID := recordIndexes(files, recordsByFile)
-		forEachRelation(sc.key, files, recordsByFile, sc.read, spec, func() bool {
+		var symbolsByID map[string]SymbolRecord
+		var filesByID map[string]FileRecord
+		if spec.includeEvidence {
+			symbolsByID, filesByID = recordIndexes(files, recordsByFile)
+		}
+		forEachRelation(sc.key, files, recordsByFile, sc.read, precomputedImports, spec, func() bool {
 			return emitErr != nil || ctx.Err() != nil
 		}, func(r RelationRecord) {
 			emitRelation(r, symbolsByID, filesByID)
@@ -890,6 +900,108 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 		},
 		Completeness: CompletenessReport{Languages: completenessLangs, Relations: relationsByType},
 	})
+}
+
+func parseWithProfile(parser TreeSitterParser, spec profileSpec, langSpec languageSpec, path, content string) ([]Entity, string, ParseStatus) {
+	if useFastCFamilyParser(spec, langSpec) {
+		return fastCFamilyEntities(path, content, langSpec.language), langSpec.language, ParseStatus{}
+	}
+	return parser.ParseWithStatus(path, content)
+}
+
+func sourceLineCount(content string) int {
+	if content == "" {
+		return 0
+	}
+	lines := strings.Count(content, "\n")
+	if !strings.HasSuffix(content, "\n") {
+		lines++
+	}
+	return lines
+}
+
+func skipFastCFamilyCallScan(spec profileSpec, language string) bool {
+	return spec.name == ProfileFast && (language == "C" || language == "C++")
+}
+
+func skipFastProfilePerSymbolScan(spec profileSpec, language string) bool {
+	if spec.name != ProfileFast {
+		return false
+	}
+	switch language {
+	case "C#", "Dockerfile", "Go", "HCL", "Java", "JavaScript", "JSON", "JSON5", "Kustomize", "PHP", "Protocol Buffers", "Python", "Ruby", "TOML", "TypeScript", "XML", "YAML":
+		return false
+	default:
+		return true
+	}
+}
+
+func routeScanLanguage(language string) bool {
+	switch language {
+	case "C#", "Go", "Java", "JavaScript", "PHP", "Python", "Ruby", "TypeScript":
+		return true
+	default:
+		return false
+	}
+}
+
+func httpScanLanguage(language string) bool {
+	switch language {
+	case "C#", "Go", "Java", "JavaScript", "PHP", "Python", "Ruby", "TypeScript":
+		return true
+	default:
+		return false
+	}
+}
+
+func serviceScanLanguage(language string) bool {
+	switch language {
+	case "C#", "Go", "Java", "JavaScript", "PHP", "Protocol Buffers", "Python", "Ruby", "TypeScript":
+		return true
+	default:
+		return false
+	}
+}
+
+func channelScanLanguage(language string) bool {
+	switch language {
+	case "C#", "Go", "Java", "JavaScript", "PHP", "Python", "Ruby", "TypeScript":
+		return true
+	default:
+		return false
+	}
+}
+
+func recordsByRelationSupport(recordsByFile map[string][]SymbolRecord, relationType string) map[string][]SymbolRecord {
+	filtered := map[string][]SymbolRecord{}
+	for path, records := range recordsByFile {
+		var kept []SymbolRecord
+		for _, record := range records {
+			if languageSupportsRelation(record.Language, relationType) {
+				kept = append(kept, record)
+			}
+		}
+		if len(kept) > 0 {
+			filtered[path] = kept
+		}
+	}
+	return filtered
+}
+
+func languageSupportsRelation(language, relationType string) bool {
+	for _, supported := range ooRelationSupport[language] {
+		if supported == relationType {
+			return true
+		}
+	}
+	return false
+}
+
+func useFastCFamilyParser(spec profileSpec, langSpec languageSpec) bool {
+	if spec.name == ProfileFull {
+		return false
+	}
+	return langSpec.language == "C" || langSpec.language == "C++"
 }
 
 // relationDedupKey hashes a relation's identity (from, to, type) to a compact
@@ -1216,7 +1328,7 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 // snapshot path; the streaming path uses forEachRelation directly.
 func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
 	var relations []RelationRecord
-	forEachRelation(repoKey, files, recordsByFile, readContent, resolveProfile(ProfileFull), nil, func(r RelationRecord) {
+	forEachRelation(repoKey, files, recordsByFile, readContent, nil, resolveProfile(ProfileFull), nil, func(r RelationRecord) {
 		relations = append(relations, r)
 	})
 	relations = dedupeRelations(relations)
@@ -1330,7 +1442,7 @@ func emitStructuralRelationsCompact(repoKey string, files []FileRecord, recordsB
 // as it is produced. It never accumulates the full relation set, so a streaming
 // caller can write records out with bounded memory. Callers deduplicate:
 // buildRelations collects-then-dedupes; the streaming path dedupes on emit.
-func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, spec profileSpec, shouldStop func() bool, emit func(RelationRecord)) {
+func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, precomputedImports map[string][]string, spec profileSpec, shouldStop func() bool, emit func(RelationRecord)) {
 	if spec.name == ProfileSyntaxOnly {
 		emitStructuralRelations(repoKey, files, recordsByFile, emit)
 		return
@@ -1344,7 +1456,8 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	needsAsyncCalls := spec.emits("ASYNC_CALLS")
 	needsDataFlow := spec.emits("DATA_FLOWS")
 	needsServiceRelations := spec.emits("HANDLES_GRPC") || spec.emits("HANDLES_GRAPHQL") || spec.emits("HANDLES_TRPC")
-	symbolsByID := map[string]SymbolRecord{}
+	needsGlobalSymbolsByShortName := spec.callResolution == "full" || needsReceiverCalls || needsFields || needsTypes || needsOverrides || needsAsyncCalls || needsDataFlow || spec.emits("USES_TYPE") || spec.emits("PARAM_TYPE") || spec.emits("RETURNS_TYPE") || spec.emits("TESTS")
+	needsGlobalSymbolsByFile := needsGlobalSymbolsByShortName
 	symbolsByShortName := map[string][]SymbolRecord{}
 	symbolsByFile := map[string][]SymbolRecord{}
 	childNamesByContainer := map[string]map[string]bool{}
@@ -1368,7 +1481,6 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			if symbol.Kind == "route" {
 				routeHandlers[symbol.Name] = append(routeHandlers[symbol.Name], symbol)
 			}
-			symbolsByID[symbol.ID] = symbol
 			emit(RelationRecord{
 				RecordType:    "relation",
 				FromID:        fileID(repoKey, symbol.FilePath),
@@ -1416,8 +1528,12 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					WarningCodes: []string{},
 				})
 			}
-			symbolsByShortName[symbol.Name] = append(symbolsByShortName[symbol.Name], symbol)
-			symbolsByFile[symbol.FilePath] = append(symbolsByFile[symbol.FilePath], symbol)
+			if needsGlobalSymbolsByShortName {
+				symbolsByShortName[symbol.Name] = append(symbolsByShortName[symbol.Name], symbol)
+			}
+			if needsGlobalSymbolsByFile {
+				symbolsByFile[symbol.FilePath] = append(symbolsByFile[symbol.FilePath], symbol)
+			}
 			if symbol.ContainerID != "" && (needsCallScan || needsReceiverCalls || needsFields || needsOverrides) {
 				if childNamesByContainer[symbol.ContainerID] == nil {
 					childNamesByContainer[symbol.ContainerID] = map[string]bool{}
@@ -1508,13 +1624,20 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		if !profileNeedsPerFileScan(spec) {
 			break // syntax-only: no content-derived relations
 		}
-		content, ok := readContent(file.Path)
-		if !ok {
-			continue
+		imports, havePrecomputedImports := precomputedImports[file.Path]
+		content := ""
+		if !havePrecomputedImports || !skipFastProfilePerSymbolScan(spec, file.Language) {
+			var ok bool
+			content, ok = readContent(file.Path)
+			if !ok {
+				continue
+			}
+			if !havePrecomputedImports {
+				imports = importsFor(file.Path, content)
+			}
 		}
-		lines := strings.Split(content, "\n")
 		fromID := fileID(repoKey, file.Path)
-		for _, imported := range importsFor(file.Path, content) {
+		for _, imported := range imports {
 			if resolved, ok := resolveLocalImport(file.Path, imported, knownFiles); ok {
 				emit(RelationRecord{
 					RecordType:    "relation",
@@ -1578,47 +1701,66 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			})
 		}
 		importsByName := importedNamesFor(file.Path, content)
-		for _, from := range recordsByFile[file.Path] {
+		if skipFastProfilePerSymbolScan(spec, file.Language) {
+			continue
+		}
+		lines := strings.Split(content, "\n")
+		currentFileSymbols := recordsByFile[file.Path]
+		fileNeedsCallScan := needsCallScan && !skipFastCFamilyCallScan(spec, file.Language)
+		fileNeedsRouteScan := spec.emits("HANDLES_ROUTE") && routeScanLanguage(file.Language)
+		fileNeedsHTTPScan := spec.emits("HTTP_CALLS") && httpScanLanguage(file.Language)
+		fileNeedsServiceScan := needsServiceRelations && serviceScanLanguage(file.Language)
+		fileNeedsChannelScan := channelScanLanguage(file.Language)
+		var routeSymbolsByID map[string]SymbolRecord
+		if fileNeedsRouteScan {
+			routeSymbolsByID = map[string]SymbolRecord{}
+			for _, symbol := range currentFileSymbols {
+				routeSymbolsByID[symbol.ID] = symbol
+			}
+		}
+		for _, from := range currentFileSymbols {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			block := symbolBlockFromLines(lines, from)
-			for _, name := range sortedKeysOf(callLikeIdentifiers(block)) {
-				if name == from.Name {
-					continue
-				}
-				// A container's block spans its members' definition lines, which
-				// look like calls (e.g. `def validate(self):`). Skip the names of
-				// direct children so a class is not credited with calling its own
-				// methods; the real call site lives in the calling function.
-				if childNamesByContainer[from.ID][name] {
-					continue
-				}
-				targets := resolveCallTargets(name, from, symbolsByShortName[name], symbolsByFile[file.Path], importsByName)
-				for _, to := range targets {
-					emit(RelationRecord{
-						RecordType:    "relation",
-						FromID:        from.ID,
-						ToID:          to.ID,
-						Type:          "CALLS",
-						Confidence:    to.Confidence,
-						Reason:        to.Reason,
-						RelationScope: to.Scope,
-						Resolution:    to.Resolution,
-						TargetKind:    "symbol",
-						Evidence: []Evidence{{
-							Kind:      "call_site",
-							FilePath:  from.FilePath,
-							StartLine: from.StartLine,
-							EndLine:   from.EndLine,
-							Detail:    name,
-						}},
-						WarningCodes: []string{},
-					})
-				}
-				if len(targets) == 0 {
-					for _, relation := range importedExternalCallRelationsForName(from, name, importsByName[name]) {
-						emit(relation)
+			if fileNeedsCallScan {
+				for _, name := range sortedKeysOf(callLikeIdentifiers(block)) {
+					if name == from.Name {
+						continue
+					}
+					// A container's block spans its members' definition lines, which
+					// look like calls (e.g. `def validate(self):`). Skip the names of
+					// direct children so a class is not credited with calling its own
+					// methods; the real call site lives in the calling function.
+					if childNamesByContainer[from.ID][name] {
+						continue
+					}
+					targets := resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, importsByName)
+					for _, to := range targets {
+						emit(RelationRecord{
+							RecordType:    "relation",
+							FromID:        from.ID,
+							ToID:          to.ID,
+							Type:          "CALLS",
+							Confidence:    to.Confidence,
+							Reason:        to.Reason,
+							RelationScope: to.Scope,
+							Resolution:    to.Resolution,
+							TargetKind:    "symbol",
+							Evidence: []Evidence{{
+								Kind:      "call_site",
+								FilePath:  from.FilePath,
+								StartLine: from.StartLine,
+								EndLine:   from.EndLine,
+								Detail:    name,
+							}},
+							WarningCodes: []string{},
+						})
+					}
+					if len(targets) == 0 {
+						for _, relation := range importedExternalCallRelationsForName(from, name, importsByName[name]) {
+							emit(relation)
+						}
 					}
 				}
 			}
@@ -1628,7 +1770,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(name, from, symbolsByShortName[name], symbolsByFile[file.Path], importsByName) {
+					for _, to := range resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, importsByName) {
 						emit(RelationRecord{
 							RecordType:    "relation",
 							FromID:        from.ID,
@@ -1656,7 +1798,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if flow.Name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(flow.Name, from, symbolsByShortName[flow.Name], symbolsByFile[file.Path], importsByName) {
+					for _, to := range resolveCallTargets(flow.Name, from, symbolsByShortName[flow.Name], currentFileSymbols, importsByName) {
 						if flow.Direction == "caller_to_callee" && to.Resolution == "name_only" {
 							continue
 						}
@@ -1688,7 +1830,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 				}
 			}
-			if needsServiceRelations {
+			if fileNeedsServiceScan {
 				for _, boundary := range serviceBoundaries(from, block) {
 					if !spec.emits(boundary.Relation) {
 						continue
@@ -1714,37 +1856,36 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					})
 				}
 			}
-			for _, route := range routeLiteralsForSymbol(file.Path, content, block, from, symbolsByID) {
-				if _, ok := handledRoutes[route]; ok {
-					continue
-				}
-				relation := RelationRecord{
-					RecordType:    "relation",
-					FromID:        from.ID,
-					ToID:          externalID("route", route),
-					Type:          "HANDLES_ROUTE",
-					Confidence:    0.7,
-					Reason:        "route-like string literal found inside handler symbol",
-					RelationScope: "external",
-					Resolution:    "pattern",
-					TargetKind:    "route",
-					Evidence: []Evidence{{
-						Kind:      "route_literal",
-						FilePath:  from.FilePath,
-						StartLine: from.StartLine,
-						EndLine:   from.EndLine,
-						Detail:    route,
-					}},
-					WarningCodes: []string{},
-				}
-				emit(relation)
-				routeHandlers[route] = append(routeHandlers[route], from)
-			}
-			if callableSymbol {
-				for _, call := range httpCallsWithConstants(block, staticStringConstants(content)) {
-					if !spec.emits("HTTP_CALLS") {
-						break
+			if fileNeedsRouteScan {
+				for _, route := range routeLiteralsForSymbol(file.Path, content, block, from, routeSymbolsByID) {
+					if _, ok := handledRoutes[route]; ok {
+						continue
 					}
+					relation := RelationRecord{
+						RecordType:    "relation",
+						FromID:        from.ID,
+						ToID:          externalID("route", route),
+						Type:          "HANDLES_ROUTE",
+						Confidence:    0.7,
+						Reason:        "route-like string literal found inside handler symbol",
+						RelationScope: "external",
+						Resolution:    "pattern",
+						TargetKind:    "route",
+						Evidence: []Evidence{{
+							Kind:      "route_literal",
+							FilePath:  from.FilePath,
+							StartLine: from.StartLine,
+							EndLine:   from.EndLine,
+							Detail:    route,
+						}},
+						WarningCodes: []string{},
+					}
+					emit(relation)
+					routeHandlers[route] = append(routeHandlers[route], from)
+				}
+			}
+			if fileNeedsHTTPScan && callableSymbol {
+				for _, call := range httpCallsWithConstants(block, staticStringConstants(content)) {
 					confidence := 0.7
 					if call.Absolute {
 						confidence = 0.6 // host ignored; cross-service path match is weaker
@@ -1772,29 +1913,31 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					httpCallsByRoute[call.Path] = append(httpCallsByRoute[call.Path], relation)
 				}
 			}
-			for _, event := range channelEvents(block) {
-				if !spec.emits(event.Relation) {
-					continue
+			if fileNeedsChannelScan {
+				for _, event := range channelEvents(block) {
+					if !spec.emits(event.Relation) {
+						continue
+					}
+					emit(RelationRecord{
+						RecordType:    "relation",
+						FromID:        from.ID,
+						ToID:          externalID("channel", event.Name),
+						Type:          event.Relation,
+						Confidence:    0.6,
+						Reason:        "event/channel name detected by emit/listen pattern",
+						RelationScope: "external",
+						Resolution:    "pattern",
+						TargetKind:    "channel",
+						Evidence: []Evidence{{
+							Kind:      "channel_call_site",
+							FilePath:  from.FilePath,
+							StartLine: from.StartLine,
+							EndLine:   from.EndLine,
+							Detail:    event.Name,
+						}},
+						WarningCodes: []string{"WEAK_PATTERN"},
+					})
 				}
-				emit(RelationRecord{
-					RecordType:    "relation",
-					FromID:        from.ID,
-					ToID:          externalID("channel", event.Name),
-					Type:          event.Relation,
-					Confidence:    0.6,
-					Reason:        "event/channel name detected by emit/listen pattern",
-					RelationScope: "external",
-					Resolution:    "pattern",
-					TargetKind:    "channel",
-					Evidence: []Evidence{{
-						Kind:      "channel_call_site",
-						FilePath:  from.FilePath,
-						StartLine: from.StartLine,
-						EndLine:   from.EndLine,
-						Detail:    event.Name,
-					}},
-					WarningCodes: []string{"WEAK_PATTERN"},
-				})
 			}
 			if spec.callResolution == "full" {
 				for _, r := range receiverCallRelations(from, block, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
@@ -1878,7 +2021,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		}
 	}
 	if spec.emits("RESOURCE_DEPENDS_ON") {
-		for _, r := range resourceDependsOnRelations(recordsByFile, readContent) {
+		for _, r := range resourceDependsOnRelations(recordsByRelationSupport(recordsByFile, "RESOURCE_DEPENDS_ON"), readContent) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
@@ -1886,7 +2029,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		}
 	}
 	if spec.emits("CONFIGURES") {
-		for _, r := range configuresRelations(recordsByFile, readContent) {
+		for _, r := range configuresRelations(recordsByRelationSupport(recordsByFile, "CONFIGURES"), readContent) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
