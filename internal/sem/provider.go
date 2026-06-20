@@ -3009,6 +3009,11 @@ func kubernetesResourceReferences(content string) []resourceReference {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 		}
 	}
+	if kubernetesManifestHasAnyKind(content, "ExternalSecret") {
+		for _, ref := range kubernetesExternalSecretTargetReferences(content) {
+			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+		}
+	}
 	if kubernetesManifestHasAnyKind(content, "Workflow", "CronWorkflow", "WorkflowTemplate") {
 		for _, ref := range kubernetesNamedRefBlockReferences(content, "workflowTemplateRef", "kubernetes_argo_workflow_template_ref", 0.84, kubernetesWorkflowTemplateReferenceKind) {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
@@ -3209,6 +3214,44 @@ func kubernetesFluxHelmReleaseValuesFromReferences(content string) []resourceRef
 		switch strings.ToLower(ref.Kind) {
 		case "configmap", "secret":
 			refs = append(refs, ref)
+		}
+	}
+	return refs
+}
+
+func kubernetesExternalSecretTargetReferences(content string) []resourceReference {
+	lines := strings.Split(content, "\n")
+	var refs []resourceReference
+	for i := 0; i < len(lines); i++ {
+		key, ok := yamlLineKey(lines[i])
+		if !ok || key != "target" {
+			continue
+		}
+		parentIndent := yamlIndent(lines[i])
+		for j := i + 1; j < len(lines); j++ {
+			line := lines[j]
+			if yamlIgnoreLine(line) {
+				continue
+			}
+			indent := yamlIndent(line)
+			if indent <= parentIndent {
+				break
+			}
+			childKey, ok := yamlLineKey(line)
+			if !ok || childKey != "name" {
+				continue
+			}
+			name := strings.Trim(strings.TrimSpace(yamlLineValue(line)), `"'`)
+			if name == "" {
+				continue
+			}
+			refs = append(refs, resourceReference{
+				Kind:         "secret",
+				Name:         name,
+				EvidenceKind: "kubernetes_external_secret_target",
+				Confidence:   0.82,
+			})
+			break
 		}
 	}
 	return refs

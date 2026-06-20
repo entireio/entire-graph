@@ -451,7 +451,8 @@ Open:
   matchExpression matches when the target resource symbol exists in the same
   provider snapshot. Workload selector matching includes CronJob job-template
   labels and Rollout-style workload labels. Custom-controller coverage also
-  includes KEDA authentication refs, cert-manager issuer refs, External Secrets secret-store refs, Argo
+  includes KEDA authentication refs, cert-manager issuer refs, External
+  Secrets secret-store and target Secret refs, Argo
   WorkflowTemplate refs, Argo Rollouts AnalysisTemplate refs, Tekton Pipeline/Task refs, ServiceBinding
   service/workload refs, Knative Trigger broker/subscriber refs, Flux CD source, chart, dependsOn, and HelmRelease valuesFrom ConfigMap/Secret refs,
   Crossplane ProviderConfig/Composition/resource refs, and Istio

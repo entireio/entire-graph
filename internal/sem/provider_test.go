@@ -1890,6 +1890,11 @@ kind: ClusterSecretStore
 metadata:
   name: vault
 `)
+	writeFile(t, repo, "k8s/external-secret-target.yaml", `apiVersion: v1
+kind: Secret
+metadata:
+  name: api-runtime
+`)
 	writeFile(t, repo, "k8s/cron-workflow.yaml", `apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow
 metadata:
@@ -2073,6 +2078,7 @@ metadata:
 	for _, edge := range [][2]string{
 		{"Certificate.api-cert", "ClusterIssuer.letsencrypt"},
 		{"ExternalSecret.api-secrets", "ClusterSecretStore.vault"},
+		{"ExternalSecret.api-secrets", "Secret.api-runtime"},
 		{"CronWorkflow.nightly-report", "WorkflowTemplate.report-template"},
 		{"CronWorkflow.nightly-report", "ClusterWorkflowTemplate.shared-template"},
 		{"PipelineRun.api-build", "Pipeline.build-pipeline"},

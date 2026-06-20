@@ -218,7 +218,8 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   target manifest is present in the snapshot. KEDA `authenticationRef` blocks
   emit exact local edges to `TriggerAuthentication` by default and to
   `ClusterTriggerAuthentication` when the ref carries that explicit kind.
-- cert-manager `issuerRef`, External Secrets `secretStoreRef`, Argo
+- cert-manager `issuerRef`, External Secrets `secretStoreRef` and
+  `target.name` Secret refs, Argo
   `workflowTemplateRef`/`templateRef`, Argo Rollouts `templateName`
   AnalysisTemplate refs, Tekton `pipelineRef`/`taskRef`, and ServiceBinding
   `service`/`workload`, Knative Trigger `broker`/`subscriber.ref`, and
@@ -484,6 +485,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781983129.json`: Go/gin, syntax-only, 28,618 LOC,
     163,368 LOC/s, max RSS 26,705,920 bytes, estimated output 1,902,643
     bytes; run after Python local-constant runtime import extraction.
+  - `bench/results/result-1781983240.json`: Go/gin, syntax-only, 28,618 LOC,
+    165,859 LOC/s, max RSS 26,853,376 bytes, estimated output 1,902,634
+    bytes; run after ExternalSecret target Secret dependency extraction.
   - `bench/results/result-1781972446.json`: Go/gin, syntax-only, 28,618 LOC,
     162,982 LOC/s, max RSS 26,804,224 bytes, estimated output 1,902,630
     bytes; run after IngressClass reference extraction.
