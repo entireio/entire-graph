@@ -164,7 +164,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   edges when the referenced resource manifests are present in the snapshot.
 - KEDA ScaledObject name-only scale targets emit exact local
   `RESOURCE_DEPENDS_ON` edges to Deployment resources by convention when the
-  target manifest is present in the snapshot.
+  target manifest is present in the snapshot. KEDA `authenticationRef` blocks
+  emit exact local edges to `TriggerAuthentication` by default and to
+  `ClusterTriggerAuthentication` when the ref carries that explicit kind.
 - cert-manager `issuerRef`, External Secrets `secretStoreRef`, Argo
   `workflowTemplateRef`/`templateRef`, and Tekton `pipelineRef`/`taskRef`
   custom-controller references emit exact local `RESOURCE_DEPENDS_ON` edges
@@ -280,6 +282,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
     149,934 LOC/s, max RSS 26,394,624 bytes, estimated output 1,902,621
     bytes; run after Flux `chartRef` and `dependsOn` resource-reference
     extraction.
+  - `bench/results/result-1781970127.json`: Go/gin, syntax-only, 28,618 LOC,
+    150,315 LOC/s, max RSS 28,803,072 bytes, estimated output 1,902,626
+    bytes; run after KEDA `authenticationRef` resource-reference extraction.
   - `bench/results/result-1781944479.json`: Go/gin, syntax-only, 28,618 LOC,
     154,533 LOC/s, max RSS 27,115,520 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781944927.json`: Go/gin, syntax-only, 28,618 LOC,

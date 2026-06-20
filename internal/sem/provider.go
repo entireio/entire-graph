@@ -2724,6 +2724,11 @@ func kubernetesResourceReferences(content string) []resourceReference {
 	for _, ref := range kubernetesScaledObjectScaleTargetReferences(content) {
 		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 	}
+	if kubernetesManifestHasAnyKind(content, "ScaledObject", "ScaledJob") {
+		for _, ref := range kubernetesNamedRefBlockReferences(content, "authenticationRef", "kubernetes_keda_authentication_ref", 0.84, kubernetesDefaultReferenceKind("triggerauthentication")) {
+			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+		}
+	}
 	if kubernetesManifestHasAnyKind(content, "Certificate", "CertificateRequest") {
 		for _, ref := range kubernetesNamedRefBlockReferences(content, "issuerRef", "kubernetes_cert_manager_issuer_ref", 0.84, kubernetesDefaultReferenceKind("issuer")) {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)

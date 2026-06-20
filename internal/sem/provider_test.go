@@ -1393,9 +1393,38 @@ spec:
     name: worker
   triggers:
     - type: cpu
+      authenticationRef:
+        name: api-trigger-auth
       metadata:
         type: Utilization
         value: "80"
+    - type: cron
+      authenticationRef:
+        name: cluster-trigger-auth
+        kind: ClusterTriggerAuthentication
+      metadata:
+        timezone: UTC
+        start: "0 * * * *"
+        end: "30 * * * *"
+        desiredReplicas: "2"
+`)
+	writeFile(t, repo, "k8s/trigger-auth.yaml", `apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: api-trigger-auth
+spec:
+  secretTargetRef:
+    - parameter: token
+      name: api-token
+      key: token
+`)
+	writeFile(t, repo, "k8s/cluster-trigger-auth.yaml", `apiVersion: keda.sh/v1alpha1
+kind: ClusterTriggerAuthentication
+metadata:
+  name: cluster-trigger-auth
+spec:
+  podIdentity:
+    provider: aws
 `)
 
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
@@ -1404,6 +1433,12 @@ spec:
 	}
 	if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "ScaledObject.worker", "Deployment.worker") {
 		t.Fatalf("missing ScaledObject.worker -> Deployment.worker default scale target dependency in %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "ScaledObject.worker", "TriggerAuthentication.api-trigger-auth") {
+		t.Fatalf("missing ScaledObject.worker -> TriggerAuthentication.api-trigger-auth dependency in %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "RESOURCE_DEPENDS_ON", "ScaledObject.worker", "ClusterTriggerAuthentication.cluster-trigger-auth") {
+		t.Fatalf("missing ScaledObject.worker -> ClusterTriggerAuthentication.cluster-trigger-auth dependency in %#v", snapshot.Relations)
 	}
 }
 

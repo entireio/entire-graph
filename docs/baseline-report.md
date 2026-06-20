@@ -96,7 +96,8 @@ Confidence bands follow the v2-plan schema section (`0.90-1.00 exact`,
   CronJob job-template label targets and Argo Rollout-style workload targets,
   resolve to local resource symbols when those manifests are present. KEDA
   ScaledObject name-only scale targets resolve to local Deployment symbols by
-  convention. cert-manager issuer refs, External Secrets secret-store refs,
+  convention, and KEDA authentication refs resolve to TriggerAuthentication or
+  ClusterTriggerAuthentication symbols. cert-manager issuer refs, External Secrets secret-store refs,
   Argo WorkflowTemplate refs, Tekton Pipeline/Task refs, Flux CD source,
   chart, and dependsOn refs, Crossplane ProviderConfig/Composition/resource refs, and Istio VirtualService
   route destinations and gateway refs, plus DestinationRule hosts, resolve to
