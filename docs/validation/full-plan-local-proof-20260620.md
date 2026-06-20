@@ -76,6 +76,9 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
 - C# ASP.NET controller route attributes compose class-level `[Route]`
   prefixes with method-level HTTP verb attributes, emit `HANDLES_ROUTE`, and
   bridge matching `HttpClient` calls to handlers as direct `CALLS`.
+- PHP Laravel route declarations resolve local controller methods, Symfony/PHP
+  route attributes compose class and method routes, and matching PHP `Http::`
+  facade calls bridge to handlers as direct `CALLS`.
 - Go `net/http` `HandleFunc` registrations and `HandlerFunc` wrappers resolve
   static or local-literal-constant paths to same-file local handler symbols and
   bridge matching Go HTTP client calls as direct `CALLS`.
@@ -203,6 +206,8 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
     132,835 LOC/s, max RSS 26,738,688 bytes, output 1,938,906 bytes.
   - `bench/results/result-1781951621.json`: Go/gin, syntax-only, 28,618 LOC,
     132,020 LOC/s, max RSS 27,099,136 bytes, output 1,938,906 bytes.
+  - `bench/results/result-1781951788.json`: Go/gin, syntax-only, 28,618 LOC,
+    131,704 LOC/s, max RSS 28,082,176 bytes, output 1,938,906 bytes.
 
 ## Remaining Honesty Notes
 

@@ -57,7 +57,8 @@ Kubernetes YAML, Kustomize, GitHub Actions, protobuf/gRPC, GraphQL, tRPC, and
 Python Flask/FastAPI-style decorator routes, FastAPI/Starlette-style
 `include_router(prefix=...)` composition, same-block Express router-prefix
 composition, same-name imported Express router mounts, and C# ASP.NET
-controller route attributes; remaining work is deeper framework coverage and
+controller route attributes, plus PHP Laravel controller route declarations and
+Symfony/PHP route attributes; remaining work is deeper framework coverage and
 larger-corpus proof.
 
 ## Relation Coverage Today
@@ -121,14 +122,15 @@ False positives:
   FastAPI/Starlette-style `include_router(prefix=...)` mount, Java Spring-style
   direct mapping annotation, Django `path(...)`/simple `re_path(...)`
   registration, Go `net/http` `HandleFunc`/`HandlerFunc` registration, or
-  C# ASP.NET route/HTTP-verb attributes, or same-block Express router mount
-  plus route registration).
+  C# ASP.NET route/HTTP-verb attributes, PHP Laravel/Symfony route attributes
+  and declarations, or same-block Express router mount plus route
+  registration).
   Static constant-prefix expressions such as
   `apiPrefix + "/health"` compose to one route and do not emit the suffix as a
   separate route. Matching Python `requests`/`httpx`, Java `RestTemplate`/HTTP
-  client calls, Go HTTP client calls, C# `HttpClient` calls, and JS/TS
-  `fetch`/Axios calls can bridge to local decorated or registered handlers
-  through the shared route endpoint. (WP6.)
+  client calls, Go HTTP client calls, C# `HttpClient` calls, PHP `Http::`
+  facade calls, and JS/TS `fetch`/Axios calls can bridge to local decorated or
+  registered handlers through the shared route endpoint. (WP6.)
 - **Global-unique name match (Go `go-basic`).** `LoginHandler CALLS CheckToken`
   is emitted at `0.68` purely because the name is unique repo-wide, not because
   the call was resolved through imports/scope. Correct here, but fragile.

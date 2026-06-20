@@ -1444,6 +1444,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			routeHandlers[r.Route] = append(routeHandlers[r.Route], r.Handler)
 			handledRoutes[r.Route] = struct{}{}
 		}
+		for _, r := range laravelRouteRelations(files, recordsByFile, readContent) {
+			emit(r.Relation)
+			routeHandlers[r.Route] = append(routeHandlers[r.Route], r.Handler)
+			handledRoutes[r.Route] = struct{}{}
+		}
 	}
 	manifestImports := buildManifestImportResolver(files, readContent)
 
@@ -5425,6 +5430,17 @@ func routeLiteralsForSymbol(path, content, block string, symbol SymbolRecord, sy
 			return sortedKeys(seen)
 		}
 	}
+	if strings.EqualFold(filepath.Ext(path), ".php") {
+		if typeLikeKind(symbol.Kind) {
+			return nil
+		}
+		for _, route := range phpAttributeRouteLiterals(content, symbol, symbolsByID) {
+			seen[route] = struct{}{}
+		}
+		if len(seen) > 0 {
+			return sortedKeys(seen)
+		}
+	}
 	for _, route := range routeLiteralsWithConstants(block, staticStringConstants(content)) {
 		seen[route] = struct{}{}
 	}
@@ -5628,6 +5644,109 @@ func djangoRouteRegistrations(content string) []djangoRouteRegistration {
 	return registrations
 }
 
+func laravelRouteRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []expressRouteRelation {
+	handlers := map[string]SymbolRecord{}
+	for _, records := range recordsByFile {
+		for _, symbol := range records {
+			if symbol.Kind != "method" || symbol.ContainerID == "" {
+				continue
+			}
+			className := ""
+			for _, candidate := range recordsByFile[symbol.FilePath] {
+				if candidate.ID == symbol.ContainerID {
+					className = candidate.Name
+					break
+				}
+			}
+			if className == "" {
+				continue
+			}
+			handlers[className+"."+symbol.Name] = symbol
+		}
+	}
+	var relations []expressRouteRelation
+	seen := map[string]bool{}
+	for _, file := range files {
+		if !strings.EqualFold(filepath.Ext(file.Path), ".php") {
+			continue
+		}
+		content, ok := readContent(file.Path)
+		if !ok {
+			continue
+		}
+		for _, registration := range laravelRouteRegistrations(content) {
+			handler, ok := handlers[registration.Controller+"."+registration.Method]
+			if !ok {
+				continue
+			}
+			key := handler.ID + "\x00" + registration.Route
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			relations = append(relations, expressRouteRelation{
+				Route:   registration.Route,
+				Handler: handler,
+				Relation: RelationRecord{
+					RecordType:    "relation",
+					FromID:        handler.ID,
+					ToID:          externalID("route", registration.Route),
+					Type:          "HANDLES_ROUTE",
+					Confidence:    0.82,
+					Reason:        "Laravel route declaration resolved to controller method",
+					RelationScope: "external",
+					Resolution:    "exact",
+					TargetKind:    "route",
+					Evidence: []Evidence{{
+						Kind:     registration.EvidenceKind,
+						FilePath: file.Path,
+						Detail:   registration.Detail,
+					}},
+					WarningCodes: []string{},
+				},
+			})
+		}
+	}
+	sort.Slice(relations, func(i, j int) bool {
+		if relations[i].Route != relations[j].Route {
+			return relations[i].Route < relations[j].Route
+		}
+		return relations[i].Handler.ID < relations[j].Handler.ID
+	})
+	return relations
+}
+
+func laravelRouteRegistrations(content string) []laravelRouteRegistration {
+	var registrations []laravelRouteRegistration
+	add := func(route, controller, method, evidence string) {
+		route = normalizeSlashRoute(route)
+		controller = shortQualifiedName(strings.TrimSpace(controller))
+		if route == "" || controller == "" || method == "" {
+			return
+		}
+		registrations = append(registrations, laravelRouteRegistration{
+			Route:        route,
+			Controller:   controller,
+			Method:       method,
+			EvidenceKind: evidence,
+			Detail:       route + " -> " + controller + "." + method,
+		})
+	}
+	arrayRe := regexp.MustCompile(`(?is)\bRoute::(?:get|post|put|patch|delete|options|any)\s*\(\s*["']([^"']+)["']\s*,\s*\[\s*([A-Za-z_\\][A-Za-z0-9_\\]*)::class\s*,\s*["']([A-Za-z_][A-Za-z0-9_]*)["']\s*\]`)
+	stringRe := regexp.MustCompile(`(?is)\bRoute::(?:get|post|put|patch|delete|options|any)\s*\(\s*["']([^"']+)["']\s*,\s*["']([A-Za-z_\\][A-Za-z0-9_\\]*)@([A-Za-z_][A-Za-z0-9_]*)["']`)
+	for _, match := range arrayRe.FindAllStringSubmatch(content, -1) {
+		if len(match) == 4 {
+			add(match[1], match[2], match[3], "laravel_route_controller_array")
+		}
+	}
+	for _, match := range stringRe.FindAllStringSubmatch(content, -1) {
+		if len(match) == 4 {
+			add(match[1], match[2], match[3], "laravel_route_controller_string")
+		}
+	}
+	return registrations
+}
+
 func djangoRoutePatternValue(pattern string, regex bool) string {
 	pattern = strings.TrimSpace(pattern)
 	for pattern != "" {
@@ -5718,6 +5837,14 @@ type goHTTPRouteRegistration struct {
 type djangoRouteRegistration struct {
 	Route        string
 	Handler      string
+	EvidenceKind string
+	Detail       string
+}
+
+type laravelRouteRegistration struct {
+	Route        string
+	Controller   string
+	Method       string
 	EvidenceKind string
 	Detail       string
 }
@@ -6106,6 +6233,32 @@ func pythonDecoratorRouteLiterals(content string, symbol SymbolRecord) []string 
 	return annotationRouteLiteralsNearSymbol(content, symbol, false)
 }
 
+func phpAttributeRouteLiterals(content string, symbol SymbolRecord, symbolsByID map[string]SymbolRecord) []string {
+	if symbol.Kind != "method" && symbol.Kind != "function" {
+		return nil
+	}
+	methodRoutes := phpRouteAttributeLiteralsAroundSymbol(content, symbol)
+	if len(methodRoutes) == 0 {
+		return nil
+	}
+	var classPrefixes []string
+	if symbol.ContainerID != "" {
+		if container, ok := symbolsByID[symbol.ContainerID]; ok && typeLikeKind(container.Kind) {
+			classPrefixes = phpRouteAttributeLiteralsAroundSymbol(content, container)
+		}
+	}
+	if len(classPrefixes) == 0 {
+		return methodRoutes
+	}
+	seen := map[string]struct{}{}
+	for _, prefix := range classPrefixes {
+		for _, route := range methodRoutes {
+			seen[joinRoutePaths(prefix, route)] = struct{}{}
+		}
+	}
+	return sortedKeys(seen)
+}
+
 func csharpAnnotationRouteLiterals(content string, symbol SymbolRecord, symbolsByID map[string]SymbolRecord) []string {
 	if symbol.Kind != "method" && symbol.Kind != "function" {
 		return nil
@@ -6337,6 +6490,80 @@ func csharpControllerRouteToken(name string) string {
 		return ""
 	}
 	return strings.ToLower(name)
+}
+
+func phpRouteAttributeLiteralsAroundSymbol(content string, symbol SymbolRecord) []string {
+	lines := strings.Split(content, "\n")
+	index := symbol.StartLine - 1
+	if index >= len(lines) {
+		index = len(lines) - 1
+	}
+	seen := map[string]struct{}{}
+	if index >= 0 && index < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[index]), "#[") {
+		for i := index; i < len(lines) && i-index <= 8; i++ {
+			line := strings.TrimSpace(lines[i])
+			if line == "" {
+				continue
+			}
+			if !strings.HasPrefix(line, "#[") {
+				break
+			}
+			for _, route := range phpRouteAttributeLiterals(line) {
+				seen[route] = struct{}{}
+			}
+		}
+	}
+	for i := index - 1; i >= 0 && index-i <= 8; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "#[") {
+			break
+		}
+		for _, route := range phpRouteAttributeLiterals(line) {
+			seen[route] = struct{}{}
+		}
+	}
+	return sortedKeys(seen)
+}
+
+func phpRouteAttributeLiterals(line string) []string {
+	attributeRe := regexp.MustCompile(`(?i)#\[\s*(?:[A-Za-z_\\][A-Za-z0-9_\\]*\\)?Route\s*\(\s*(?:"([^"]*)"|'([^']*)')`)
+	var routes []string
+	for _, match := range attributeRe.FindAllStringSubmatch(line, -1) {
+		if len(match) < 3 {
+			continue
+		}
+		route := match[1]
+		if route == "" {
+			route = match[2]
+		}
+		if normalized := normalizeSlashRoute(route); normalized != "" {
+			routes = append(routes, normalized)
+		}
+	}
+	sort.Strings(routes)
+	return routes
+}
+
+func normalizeSlashRoute(route string) string {
+	route = strings.TrimSpace(route)
+	if route == "" {
+		return ""
+	}
+	if !strings.HasPrefix(route, "/") {
+		route = "/" + route
+	}
+	return route
+}
+
+func shortQualifiedName(name string) string {
+	name = strings.Trim(name, "\\")
+	if idx := strings.LastIndex(name, "\\"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	return name
 }
 
 func joinRoutePaths(prefix, route string) string {

@@ -2122,6 +2122,77 @@ public class UsersController : ControllerBase
 	}
 }
 
+func TestLaravelRoutesResolveControllerMethodsAndBridgeHTTPClient(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "routes/web.php", `<?php
+
+use App\Http\Controllers\UserController;
+
+Route::get('/users/{id}', [UserController::class, 'show']);
+
+function ping() {
+    return Http::get('/users/{id}');
+}
+`)
+	writeFile(t, repo, "app/Http/Controllers/UserController.php", `<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function show(string $id): string
+    {
+        return $id;
+    }
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "HANDLES_ROUTE", "UserController.show", "/users/{id}") {
+		t.Fatalf("missing Laravel controller route handler: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "HTTP_CALLS", "ping", "/users/{id}") {
+		t.Fatalf("missing PHP HTTP facade call: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "UserController.show") {
+		t.Fatalf("missing route bridge CALLS ping->UserController.show: %#v", snapshot.Relations)
+	}
+}
+
+func TestSymfonyRouteAttributesResolveHandler(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Controller/HealthController.php", `<?php
+
+namespace App\Controller;
+
+use Symfony\Component\Routing\Annotation\Route;
+
+#[Route('/api')]
+class HealthController
+{
+    #[Route('/health')]
+    public function health(): string
+    {
+        return 'ok';
+    }
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "HANDLES_ROUTE", "HealthController.health", "/api/health") {
+		t.Fatalf("missing Symfony route attribute handler: %#v", snapshot.Relations)
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "HANDLES_ROUTE", "HealthController", "/api") {
+		t.Fatalf("controller class was misclassified as route handler: %#v", snapshot.Relations)
+	}
+}
+
 func TestRouteDetectionRequiresRoutingContext(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "server.js", `function register(app) {
