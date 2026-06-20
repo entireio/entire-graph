@@ -2413,6 +2413,47 @@ export async function ping(): Promise<unknown> {
 	}
 }
 
+func TestFastifyImportedPluginPrefixComposesAndBridgesHTTPClient(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "users.ts", `const detailRoute = "/:id"
+
+export async function usersRoutes(fastify: any): Promise<void> {
+  fastify.get(detailRoute, showUser)
+}
+
+export function showUser(): string {
+  return "ok"
+}
+`)
+	writeFile(t, repo, "app.ts", `import { usersRoutes } from "./users"
+
+const apiPrefix = "/api"
+const userPrefix = apiPrefix + "/users"
+
+export async function register(app: any): Promise<void> {
+  app.register(usersRoutes, { prefix: userPrefix })
+}
+
+export async function ping(): Promise<unknown> {
+  return fetch("/api/users/:id")
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HANDLES_ROUTE", "showUser", "/api/users/:id") {
+		t.Fatalf("missing Fastify plugin route handler: %#v", snapshot.Relations)
+	}
+	if !hasRelationToExternalRoute(snapshot.Relations, "HTTP_CALLS", "ping", "/api/users/:id") {
+		t.Fatalf("missing matching HTTP_CALLS relation: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "ping", "showUser") {
+		t.Fatalf("missing route bridge CALLS ping->showUser: %#v", snapshot.Relations)
+	}
+}
+
 func TestExpressRouterPrefixComposesAndBridgesHTTPClient(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "api.ts", `const usersRouter = Router()

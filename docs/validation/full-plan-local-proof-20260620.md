@@ -119,6 +119,10 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
   `app.route("/prefix", router)` mounts with static `router.get/post/...`
   registrations and bridge exact matching HTTP client calls to the handler
   symbol.
+- Imported Fastify plugin functions registered with
+  `app.register(plugin, { prefix })` compose static plugin route registrations
+  with the register prefix and bridge exact matching HTTP client calls to the
+  handler symbol.
 - Aliased named-import and namespace-member imported Express routers compose
   cross-file `app.use("/prefix", router)` mounts with static
   `router.get/post/...` registrations and bridge exact matching HTTP client
@@ -332,6 +336,9 @@ go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go
     bytes.
   - `bench/results/result-1781966207.json`: Go/gin, syntax-only, 28,618 LOC,
     130,307 LOC/s, max RSS 29,245,440 bytes, estimated output 1,902,626
+    bytes.
+  - `bench/results/result-1781966413.json`: Go/gin, syntax-only, 28,618 LOC,
+    140,816 LOC/s, max RSS 26,542,080 bytes, estimated output 1,902,626
     bytes.
 
 ## Remaining Honesty Notes

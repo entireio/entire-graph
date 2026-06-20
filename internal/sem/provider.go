@@ -7120,6 +7120,11 @@ type jsRouterMount struct {
 	Target   string
 }
 
+type jsFastifyPluginMount struct {
+	Prefix string
+	Target string
+}
+
 type jsRouterRoute struct {
 	Receiver string
 	Route    string
@@ -7228,6 +7233,43 @@ func jsRouterMounts(block string, constants map[string]string) []jsRouterMount {
 		}
 	}
 	return mounts
+}
+
+func jsFastifyPluginMounts(block string, constants map[string]string) []jsFastifyPluginMount {
+	re := regexp.MustCompile(`(?is)\b[A-Za-z_$][\w$]*\.register\s*\(\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\s*,\s*\{([^}]*)\}`)
+	var mounts []jsFastifyPluginMount
+	for _, match := range re.FindAllStringSubmatch(block, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		options := match[2]
+		prefixMatch := regexp.MustCompile(`(?is)\bprefix\s*:\s*([^,\n}]+)`).FindStringSubmatch(options)
+		if len(prefixMatch) != 2 {
+			continue
+		}
+		prefix, ok := staticRouteExpressionValue(prefixMatch[1], constants)
+		if ok {
+			mounts = append(mounts, jsFastifyPluginMount{Prefix: prefix, Target: match[1]})
+		}
+	}
+	return mounts
+}
+
+func jsFastifyPluginRoutes(content string, constants map[string]string, symbols []SymbolRecord) map[string][]jsRouterRoute {
+	lines := strings.Split(content, "\n")
+	routes := map[string][]jsRouterRoute{}
+	for _, symbol := range symbols {
+		if typeLikeKind(symbol.Kind) {
+			continue
+		}
+		block := symbolBlockFromLines(lines, symbol)
+		for _, route := range jsRouterRoutes(block, constants) {
+			if route.Handler != "" {
+				routes[symbol.Name] = append(routes[symbol.Name], route)
+			}
+		}
+	}
+	return routes
 }
 
 func jsRouterRoutes(block string, constants map[string]string) []jsRouterRoute {
@@ -7462,7 +7504,9 @@ func splitJavaScriptMember(value string) (string, string) {
 
 func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, knownFiles map[string]bool) []expressRouteRelation {
 	routesByFile := map[string][]jsRouterRoute{}
+	pluginRoutesByFile := map[string]map[string][]jsRouterRoute{}
 	mountsByFile := map[string][]jsRouterMount{}
+	pluginMountsByFile := map[string][]jsFastifyPluginMount{}
 	importBindingsByFile := map[string]map[string][]jsImportBinding{}
 	symbolsByFileAndName := map[string]map[string]SymbolRecord{}
 	for _, file := range files {
@@ -7486,7 +7530,9 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 		}
 		constants := staticStringConstants(content)
 		routesByFile[file.Path] = jsRouterRoutes(content, constants)
+		pluginRoutesByFile[file.Path] = jsFastifyPluginRoutes(content, constants, recordsByFile[file.Path])
 		mountsByFile[file.Path] = jsRouterMounts(content, constants)
+		pluginMountsByFile[file.Path] = jsFastifyPluginMounts(content, constants)
 		importBindingsByFile[file.Path] = importedJavaScriptBindings(content)
 	}
 	var relations []expressRouteRelation
@@ -7539,6 +7585,60 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 								StartLine: handler.StartLine,
 								EndLine:   handler.EndLine,
 								Detail:    mount.Prefix + " + " + route.Receiver + "." + route.Route,
+							}},
+							WarningCodes: []string{},
+						},
+					})
+				}
+			}
+		}
+		for _, mount := range pluginMountsByFile[file.Path] {
+			targetLocal, targetMember := splitJavaScriptMember(mount.Target)
+			for _, binding := range importBindingsByFile[file.Path][targetLocal] {
+				routeFile, ok := resolveLocalImport(file.Path, binding.Module, knownFiles)
+				if !ok || routeFile == file.Path {
+					continue
+				}
+				pluginName := binding.Imported
+				if binding.Namespace {
+					pluginName = targetMember
+				}
+				if pluginName == "" {
+					pluginName = targetLocal
+				}
+				for _, route := range pluginRoutesByFile[routeFile][pluginName] {
+					if route.Handler == "" {
+						continue
+					}
+					handler, ok := symbolsByFileAndName[routeFile][route.Handler]
+					if !ok {
+						continue
+					}
+					fullRoute := joinRoutePaths(mount.Prefix, route.Route)
+					key := handler.ID + "\x00" + fullRoute
+					if seen[key] {
+						continue
+					}
+					seen[key] = true
+					relations = append(relations, expressRouteRelation{
+						Route:   fullRoute,
+						Handler: handler,
+						Relation: RelationRecord{
+							RecordType:    "relation",
+							FromID:        handler.ID,
+							ToID:          externalID("route", fullRoute),
+							Type:          "HANDLES_ROUTE",
+							Confidence:    0.82,
+							Reason:        "Fastify plugin route resolved through local imported register prefix",
+							RelationScope: "external",
+							Resolution:    "import_resolved",
+							TargetKind:    "route",
+							Evidence: []Evidence{{
+								Kind:      "fastify_plugin_register",
+								FilePath:  handler.FilePath,
+								StartLine: handler.StartLine,
+								EndLine:   handler.EndLine,
+								Detail:    mount.Prefix + " + " + pluginName + "." + route.Route,
 							}},
 							WarningCodes: []string{},
 						},
