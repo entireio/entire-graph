@@ -4483,6 +4483,9 @@ type User {
 	if hasRelationByLastSegment(snapshot.Relations, "HANDLES_GRAPHQL", "User.id", "query id") {
 		t.Fatalf("non-root object field was misreported as GraphQL boundary: %#v", snapshot.Relations)
 	}
+	if hasRelationByLastSegment(snapshot.Relations, "HANDLES_GRAPHQL", "User.id", "user id") {
+		t.Fatalf("non-root object field was misreported as GraphQL boundary: %#v", snapshot.Relations)
+	}
 }
 
 func TestGraphQLSchemaFieldsLinkToResolverFields(t *testing.T) {
@@ -4519,13 +4522,14 @@ type User {
 	for _, want := range [][2]string{
 		{"Query.user", "Query.user"},
 		{"Mutation.createUser", "Mutation.createUser"},
+		{"User.id", "User.id"},
 	} {
 		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", want[0], want[1]) {
 			t.Fatalf("missing GraphQL schema-to-resolver CALLS %s -> %s in %#v", want[0], want[1], snapshot.Relations)
 		}
 	}
-	if hasRelationByLastSegment(snapshot.Relations, "CALLS", "User.id", "User.id") {
-		t.Fatalf("non-root GraphQL object field linked to resolver: %#v", snapshot.Relations)
+	if hasRelationByLastSegment(snapshot.Relations, "HANDLES_GRAPHQL", "User.id", "user id") {
+		t.Fatalf("non-root GraphQL object field was misreported as GraphQL boundary: %#v", snapshot.Relations)
 	}
 }
 

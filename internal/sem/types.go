@@ -259,27 +259,33 @@ func serviceBoundaries(symbol SymbolRecord, block string) []serviceBoundary {
 	if symbol.Kind == "graphql_resolver" {
 		fields := strings.Fields(symbol.Signature)
 		if len(fields) >= 4 && fields[0] == "GraphQL" && fields[1] == "resolver" {
-			add(serviceBoundary{
-				Relation:     "HANDLES_GRAPHQL",
-				Kind:         "graphql",
-				Name:         strings.ToLower(fields[2]) + " " + fields[3],
-				Confidence:   0.85,
-				Reason:       "GraphQL resolver field detected in resolver map",
-				EvidenceKind: "graphql_resolver",
-			})
+			root := strings.ToLower(fields[2])
+			if graphqlOperationRoot(root) {
+				add(serviceBoundary{
+					Relation:     "HANDLES_GRAPHQL",
+					Kind:         "graphql",
+					Name:         root + " " + fields[3],
+					Confidence:   0.85,
+					Reason:       "GraphQL resolver root field detected in resolver map",
+					EvidenceKind: "graphql_resolver",
+				})
+			}
 		}
 	}
 	if symbol.Kind == "graphql_schema_field" {
 		fields := strings.Fields(symbol.Signature)
 		if len(fields) >= 4 && fields[0] == "GraphQL" && fields[1] == "schema" {
-			add(serviceBoundary{
-				Relation:     "HANDLES_GRAPHQL",
-				Kind:         "graphql",
-				Name:         strings.ToLower(fields[2]) + " " + fields[3],
-				Confidence:   0.9,
-				Reason:       "GraphQL schema root field detected in schema document",
-				EvidenceKind: "graphql_schema_field",
-			})
+			root := strings.ToLower(fields[2])
+			if graphqlOperationRoot(root) {
+				add(serviceBoundary{
+					Relation:     "HANDLES_GRAPHQL",
+					Kind:         "graphql",
+					Name:         root + " " + fields[3],
+					Confidence:   0.9,
+					Reason:       "GraphQL schema root field detected in schema document",
+					EvidenceKind: "graphql_schema_field",
+				})
+			}
 		}
 	}
 	for _, match := range graphqlOperationRe.FindAllStringSubmatch(block, -1) {
@@ -303,6 +309,15 @@ func serviceBoundaries(symbol SymbolRecord, block string) []serviceBoundary {
 		})
 	}
 	return out
+}
+
+func graphqlOperationRoot(root string) bool {
+	switch strings.ToLower(root) {
+	case "query", "mutation", "subscription":
+		return true
+	default:
+		return false
+	}
 }
 
 var (

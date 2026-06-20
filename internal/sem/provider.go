@@ -2155,7 +2155,7 @@ func graphqlSchemaResolverRelations(schemaFields, resolvers map[string][]SymbolR
 					ToID:          resolver.ID,
 					Type:          "CALLS",
 					Confidence:    0.9,
-					Reason:        "GraphQL schema root field resolved to local resolver map field",
+					Reason:        "GraphQL schema field resolved to local resolver map field",
 					RelationScope: "workspace",
 					Resolution:    "exact",
 					TargetKind:    "symbol",
@@ -2195,15 +2195,15 @@ func graphqlBoundaryEndpoint(symbol SymbolRecord) string {
 			return ""
 		}
 	}
-	root := strings.ToLower(fields[2])
-	if root != "query" && root != "mutation" && root != "subscription" {
+	typeName := strings.ToLower(fields[2])
+	if typeName == "" {
 		return ""
 	}
 	name := strings.TrimSpace(fields[3])
 	if name == "" {
 		return ""
 	}
-	return root + " " + name
+	return typeName + " " + name
 }
 
 // typeRelationsForFile emits EXTENDS/IMPLEMENTS relations for the type symbols

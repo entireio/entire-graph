@@ -369,6 +369,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781977107.json`: Go/gin, syntax-only, 28,618 LOC,
     145,365 LOC/s, max RSS 28,491,776 bytes, estimated output 1,902,639
     bytes; run after GraphQL schema root field to resolver-map linking.
+  - `bench/results/result-1781977794.json`: Go/gin, syntax-only, 28,618 LOC,
+    148,890 LOC/s, max RSS 27,967,488 bytes, estimated output 1,902,634
+    bytes; run after non-root GraphQL schema/resolver field extraction and
+    exact schema-field-to-resolver-map linking.
   - `bench/results/result-1781971817.json`: Go/gin, syntax-only, 28,618 LOC,
     146,399 LOC/s, max RSS 29,130,752 bytes, estimated output 1,902,634
     bytes; run after Argo Rollouts AnalysisTemplate reference extraction.
@@ -567,8 +571,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 - Public large-corpus speed claims still need broader retained runs across more
   cached or supplied repositories and profiles.
 - GraphQL support covers operation literals, JS/TS resolver-map fields, schema
-  root fields, and exact schema-root-to-resolver-field links; it is not full
-  GraphQL schema validation, type checking, or non-root resolver type analysis.
+  fields for root and non-root object types, exact schema-field-to-resolver-map
+  links, and root GraphQL operation boundaries. It is not full GraphQL schema
+  validation, type checking, or resolver analysis beyond exact type/field-name
+  matching.
 - Attempted cached C/Linux `fast` profile with a 5 GB RSS ceiling exposed a
   real validation gap before this fix: live process inspection showed the run
   still active at roughly 7.3 GB RSS because the old guard only checked memory

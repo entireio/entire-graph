@@ -163,6 +163,9 @@ func TestTreeSitterParserTypeScriptGraphQLResolverEntities(t *testing.T) {
       subscribe: (_parent, _args, ctx) => ctx.pubsub.asyncIterator("USER_CREATED"),
     },
   },
+  User: {
+    id: (user) => user.id,
+  },
 }
 `)
 	if language != "TypeScript" {
@@ -174,7 +177,7 @@ func TestTreeSitterParserTypeScriptGraphQLResolverEntities(t *testing.T) {
 			seen[entity.Name] = entity
 		}
 	}
-	for _, name := range []string{"Query.user", "Query.viewer", "Mutation.createUser", "Subscription.userCreated"} {
+	for _, name := range []string{"Query.user", "Query.viewer", "Mutation.createUser", "Subscription.userCreated", "User.id"} {
 		if _, ok := seen[name]; !ok {
 			t.Fatalf("missing GraphQL resolver entity %s in %#v", name, entities)
 		}
@@ -209,7 +212,7 @@ type User {
 	for _, entity := range entities {
 		seen[entity.Name] = entity
 	}
-	for _, name := range []string{"schema", "Query.user", "Query.viewer", "Mutation.createUser"} {
+	for _, name := range []string{"schema", "Query.user", "Query.viewer", "Mutation.createUser", "User.id"} {
 		if _, ok := seen[name]; !ok {
 			t.Fatalf("missing GraphQL schema entity %s in %#v", name, entities)
 		}
@@ -217,8 +220,8 @@ type User {
 	if seen["Query.user"].Kind != "graphql_schema_field" || seen["Query.user"].Signature != "GraphQL schema query user" {
 		t.Fatalf("unexpected Query.user entity: %#v", seen["Query.user"])
 	}
-	if _, ok := seen["User.id"]; ok {
-		t.Fatalf("non-root object field should not be a GraphQL boundary entity: %#v", seen["User.id"])
+	if seen["User.id"].Kind != "graphql_schema_field" || seen["User.id"].Signature != "GraphQL schema user id" {
+		t.Fatalf("unexpected User.id entity: %#v", seen["User.id"])
 	}
 }
 
