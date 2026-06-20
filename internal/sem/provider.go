@@ -1905,7 +1905,8 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		return nil
 	}
 	calls := receiverCalls(block)
-	if len(calls) == 0 {
+	chainedCalls := chainedConstructorCalls(block)
+	if len(calls) == 0 && len(chainedCalls) == 0 {
 		return nil
 	}
 	varTypes := localVarTypes(block)
@@ -1957,6 +1958,39 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				StartLine: from.StartLine,
 				EndLine:   from.EndLine,
 				Detail:    call.Receiver + "." + call.Method,
+			}},
+			WarningCodes: []string{},
+		})
+	}
+	for _, call := range chainedCalls {
+		sym, ok := firstTypeLikeNamed(symbolsByShortName[call.TypeName], call.TypeName)
+		if !ok {
+			continue
+		}
+		method, ok := methodsByContainer[sym.ID][call.Method]
+		if !ok || method.ID == from.ID {
+			continue
+		}
+		scope := "file"
+		if method.FilePath != from.FilePath {
+			scope = "module"
+		}
+		relations = append(relations, RelationRecord{
+			RecordType:    "relation",
+			FromID:        from.ID,
+			ToID:          method.ID,
+			Type:          "CALLS",
+			Confidence:    0.8,
+			Reason:        "method call resolved via chained constructor type",
+			RelationScope: scope,
+			Resolution:    "type_inferred",
+			TargetKind:    "symbol",
+			Evidence: []Evidence{{
+				Kind:      "call_site",
+				FilePath:  from.FilePath,
+				StartLine: from.StartLine,
+				EndLine:   from.EndLine,
+				Detail:    call.Detail,
 			}},
 			WarningCodes: []string{},
 		})

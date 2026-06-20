@@ -772,6 +772,41 @@ func receiverCalls(block string) []receiverCall {
 	return out
 }
 
+// typedMethodCall is a `new Type().method(` / `Type().method(` call site. It is
+// intentionally limited to direct constructor chains so relation extraction can
+// resolve the receiver without tracking arbitrary returned values.
+type typedMethodCall struct {
+	TypeName string
+	Method   string
+	Detail   string
+}
+
+var (
+	newCtorMethodCallRe = regexp.MustCompile(`\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
+	ctorMethodCallRe    = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
+)
+
+func chainedConstructorCalls(block string) []typedMethodCall {
+	stripped := stripCodeLiteralsAndComments(block)
+	var out []typedMethodCall
+	seen := map[string]bool{}
+	add := func(typeName, method, detail string) {
+		key := typeName + "." + method
+		if typeName == "" || method == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, typedMethodCall{TypeName: typeName, Method: method, Detail: detail})
+	}
+	for _, m := range newCtorMethodCallRe.FindAllStringSubmatch(stripped, -1) {
+		add(m[1], m[2], "new "+m[1]+"()."+m[2])
+	}
+	for _, m := range ctorMethodCallRe.FindAllStringSubmatch(stripped, -1) {
+		add(m[1], m[2], m[1]+"()."+m[2])
+	}
+	return out
+}
+
 var (
 	newAssignRe  = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*:?=\s*new\s+([A-Za-z_]\w*)`)
 	ctorAssignRe = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*:?=\s*&?([A-Z][A-Za-z0-9_]*)\s*[({]`)

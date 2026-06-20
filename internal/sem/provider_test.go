@@ -1738,6 +1738,16 @@ def use(other):
     s.helper()
     other.mystery()
 `)
+	writeFile(t, repo, "widget.ts", `class Widget {
+  label(): string {
+    return "ok"
+  }
+}
+
+export function makeLabel(): string {
+  return new Widget().label()
+}
+`)
 
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
 	if err != nil {
@@ -1758,6 +1768,10 @@ def use(other):
 	// s = Service(); s.helper() -> resolves via the local variable's type.
 	if r, ok := inferred["use->Service.helper"]; !ok || r.Confidence != 0.85 {
 		t.Fatalf("local-var call not resolved (0.85): %#v", inferred)
+	}
+	// new Widget().label() -> resolves through the direct constructor chain.
+	if r, ok := inferred["makeLabel->Widget.label"]; !ok || r.Confidence != 0.8 {
+		t.Fatalf("constructor-chain call not resolved (0.8): %#v", inferred)
 	}
 	// other.mystery(): receiver type unknown -> no fabricated edge.
 	for key := range inferred {

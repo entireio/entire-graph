@@ -220,6 +220,8 @@ Tasks:
 - Avoid global ambiguous matches unless confidence is low and warning-coded.
 - Add method receiver resolution for Go, Python classes, TS/JS classes, Java,
   C#, Rust impl blocks, PHP classes.
+- Resolve direct constructor-chain calls such as `new Widget().label()` when
+  the local type and method symbols are known.
 - Emit `CALLS` with `resolution`, `confidence`, `reason`, and evidence.
 
 Acceptance:
@@ -228,6 +230,8 @@ Acceptance:
 - Exact local calls rank above imported and name-only matches.
 - Imported external calls identify `external:symbol:<module>.<member>` targets
   without fabricating local symbols.
+- Direct constructor-chain receiver calls resolve to local methods without
+  fabricating arbitrary returned receiver flow.
 - Brain impact can trust high-confidence direct callers/callees.
 
 ### WP5: OO And Type Relations
