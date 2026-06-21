@@ -784,11 +784,19 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 			continue
 		}
 		if parseStatus.ParseError {
+			code := parseStatus.Code
+			if code == "" {
+				code = "E_PARSE_ERROR"
+			}
+			effect := "file parsed with syntax errors; semantic facts may be incomplete"
+			if code == "E_PARSE_TIMEOUT" {
+				effect = "file record emitted but symbol parsing skipped because parser time budget was exceeded"
+			}
 			failures = append(failures, PartialFailure{
-				Code:                 "E_PARSE_ERROR",
+				Code:                 code,
 				Severity:             "warning",
 				FilePath:             path,
-				EffectOnCompleteness: "file parsed with syntax errors; semantic facts may be incomplete",
+				EffectOnCompleteness: effect,
 				Detail:               parseStatus.Detail,
 			})
 		}

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	sitter "github.com/smacker/go-tree-sitter"
 	"github.com/smacker/go-tree-sitter/bash"
@@ -105,8 +106,11 @@ var treeSitterLanguages = map[string]languageSpec{
 
 type TreeSitterParser struct{}
 
+const treeSitterParseTimeout = 5 * time.Second
+
 type ParseStatus struct {
 	ParseError bool
+	Code       string
 	Detail     string
 }
 
@@ -172,18 +176,25 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if spec.language == "TypeScript" && !strings.EqualFold(filepath.Ext(path), ".tsx") {
 		parseSrc = []byte(maskTypeScriptUnsupportedSyntax(content))
 	}
-	root, err := sitter.ParseCtx(context.Background(), parseSrc, spec.grammar)
+	ctx, cancel := context.WithTimeout(context.Background(), treeSitterParseTimeout)
+	defer cancel()
+	root, err := sitter.ParseCtx(ctx, parseSrc, spec.grammar)
 	if err != nil || root == nil || root.IsNull() {
 		detail := "tree-sitter parse failed"
+		code := "E_PARSE_ERROR"
 		if err != nil {
 			detail = err.Error()
+			if ctx.Err() != nil {
+				code = "E_PARSE_TIMEOUT"
+				detail = fmt.Sprintf("tree-sitter parse exceeded %s", treeSitterParseTimeout)
+			}
 		}
-		return nil, spec.language, ParseStatus{ParseError: true, Detail: detail}
+		return nil, spec.language, ParseStatus{ParseError: true, Code: code, Detail: detail}
 	}
 	if spec.language == "YAML" {
 		status := ParseStatus{}
 		if root.HasError() {
-			status = ParseStatus{ParseError: true, Detail: parseErrorDetail(root, src)}
+			status = ParseStatus{ParseError: true, Code: "E_PARSE_ERROR", Detail: parseErrorDetail(root, src)}
 		}
 		return yamlEntities(path, content), spec.language, status
 	}
@@ -217,7 +228,7 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	})
 	status := ParseStatus{}
 	if root.HasError() {
-		status = ParseStatus{ParseError: true, Detail: parseErrorDetail(root, src)}
+		status = ParseStatus{ParseError: true, Code: "E_PARSE_ERROR", Detail: parseErrorDetail(root, src)}
 	}
 	return entities, spec.language, status
 }
