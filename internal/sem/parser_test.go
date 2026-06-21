@@ -232,6 +232,40 @@ const helper = {
 	}
 }
 
+func TestTreeSitterParserKotlinPrimaryConstructorFieldEntities(t *testing.T) {
+	entities, language := TreeSitterParser{}.Parse("User.kt", `package com.acme
+
+data class User(
+  val id: String,
+  var displayName: String = "anonymous",
+  private val age: Int,
+)
+`)
+	if language != "Kotlin" {
+		t.Fatalf("language = %q", language)
+	}
+	seen := map[string]Entity{}
+	for _, entity := range entities {
+		seen[entity.Name] = entity
+	}
+	for _, want := range []struct {
+		name      string
+		signature string
+	}{
+		{name: "User.id", signature: "id String"},
+		{name: "User.displayName", signature: "displayName String"},
+		{name: "User.age", signature: "age Int"},
+	} {
+		entity, ok := seen[want.name]
+		if !ok {
+			t.Fatalf("missing Kotlin primary constructor field %s in %#v", want.name, entities)
+		}
+		if entity.Kind != "field" || entity.Signature != want.signature {
+			t.Fatalf("unexpected Kotlin field entity %s: %#v", want.name, entity)
+		}
+	}
+}
+
 func TestGraphQLSchemaFieldEntities(t *testing.T) {
 	entities, language := TreeSitterParser{}.Parse("schema.graphql", `schema {
   query: Query

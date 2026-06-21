@@ -135,6 +135,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   `memory guardrail failed during measurement` before completing a repo.
 - Capability output reports 183 language/filetype labels and 202 deterministic
   suffixes/extensions.
+- Kotlin primary-constructor `val`/`var` parameters emit field symbols such as
+  `User.id` and `User.displayName`; Kotlin field-access relations are not
+  claimed by this proof.
 - Go module imports resolve through `go.mod` to local package files with
   `import_resolved` metadata.
 - JS/TS package self-imports, root `package.json` `exports`, root
@@ -211,6 +214,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   1,902,642 bytes.
 - Exact Java/Kotlin/Scala-style package imports resolve through package
   declarations and source file names with `import_resolved` metadata.
+- Kotlin primary-constructor `val`/`var` parameters emit field symbols such as
+  `User.id` and `User.displayName`, improving Kotlin semantic depth beyond
+  class/function inventory.
 - Simple root Maven/Gradle package identity aliases resolve matching JVM imports
   to local type files with `import_resolved` metadata; `.csproj` root
   namespace and assembly-name aliases resolve unique C# namespace imports to
@@ -542,6 +548,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   - `bench/results/result-1781998468.json`: post-namespaced-Kubernetes-resource-ref
     smoke, Go/gin syntax-only, cached checkout, 28,618 LOC, 3,086 relations,
     167,855 LOC/s, max RSS 27,820,032 bytes, estimated output 1,902,640 bytes,
+    `completeness_level: degraded`; retained as small-corpus harness proof.
+  - `bench/results/result-1782002431.json`: post-Kotlin-primary-constructor-field
+    smoke, Go/gin syntax-only, cached checkout, 28,618 LOC, 3,086 relations,
+    171,334 LOC/s, max RSS 28,688,384 bytes, estimated output 1,902,645 bytes,
     `completeness_level: degraded`; retained as small-corpus harness proof.
   - `bench/results/result-1781993523.json`: post-VPA-targetRef smoke, Go/gin
     syntax-only, cached checkout, 28,618 LOC, 3,086 relations, 161,337 LOC/s,

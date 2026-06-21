@@ -151,6 +151,9 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 
 	var entities []Entity
 	walkEntities(root, src, spec.language, "", &entities)
+	if spec.language == "Kotlin" {
+		entities = append(entities, kotlinPrimaryConstructorFieldEntities(content)...)
+	}
 	if spec.language == "JavaScript" || spec.language == "TypeScript" {
 		entities = append(entities, graphqlResolverEntities(path, content)...)
 	}
@@ -884,6 +887,114 @@ func fieldTypeText(node *sitter.Node, src []byte) string {
 		}
 	}
 	return ""
+}
+
+var kotlinClassDeclarationRe = regexp.MustCompile(`(?m)\b(?:data\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+var kotlinPrimaryConstructorPropertyRe = regexp.MustCompile(`\b(?:val|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^=]+)`)
+
+func kotlinPrimaryConstructorFieldEntities(content string) []Entity {
+	var entities []Entity
+	seen := map[string]bool{}
+	for _, loc := range kotlinClassDeclarationRe.FindAllStringSubmatchIndex(content, -1) {
+		if len(loc) < 4 {
+			continue
+		}
+		className := content[loc[2]:loc[3]]
+		open := strings.LastIndex(content[loc[0]:loc[1]], "(")
+		if open < 0 {
+			continue
+		}
+		open += loc[0]
+		close := matchingDelimiterOffset(content, open, '(', ')')
+		if close < 0 {
+			continue
+		}
+		params := content[open+1 : close]
+		for _, param := range splitTopLevelCommaSpans(params) {
+			text := strings.TrimSpace(param.Text)
+			match := kotlinPrimaryConstructorPropertyRe.FindStringSubmatch(text)
+			if match == nil {
+				continue
+			}
+			name := match[1]
+			typeText := strings.TrimSpace(match[2])
+			if idx := strings.Index(typeText, "="); idx >= 0 {
+				typeText = strings.TrimSpace(typeText[:idx])
+			}
+			typeText = strings.TrimSpace(strings.TrimRight(typeText, ","))
+			qualifiedName := qualify(className, name)
+			if seen[qualifiedName] {
+				continue
+			}
+			seen[qualifiedName] = true
+			start := open + 1 + param.Start
+			end := open + 1 + param.End
+			signature := name
+			if typeText != "" {
+				signature = name + " " + typeText
+			}
+			block := content[start:end]
+			entities = append(entities, Entity{
+				Kind:        "field",
+				Name:        qualifiedName,
+				Signature:   signature,
+				StartLine:   countLinesBefore(content, start) + 1,
+				EndLine:     countLinesBefore(content, end) + 1,
+				BodyHash:    hash(normalize(block)),
+				Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: qualifiedName, Signature: signature}, block))),
+			})
+		}
+	}
+	return entities
+}
+
+type commaSpan struct {
+	Text       string
+	Start, End int
+}
+
+func splitTopLevelCommaSpans(value string) []commaSpan {
+	var spans []commaSpan
+	start := 0
+	depth := 0
+	inString := byte(0)
+	escaped := false
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		if inString != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"', '`':
+			inString = ch
+		case '(', '[', '{', '<':
+			depth++
+		case ')', ']', '}', '>':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				spans = append(spans, commaSpan{Text: value[start:i], Start: start, End: i})
+				start = i + 1
+			}
+		}
+	}
+	if start <= len(value) {
+		spans = append(spans, commaSpan{Text: value[start:], Start: start, End: len(value)})
+	}
+	return spans
 }
 
 func entityFromNode(node *sitter.Node, src []byte, scope string) (Entity, bool) {

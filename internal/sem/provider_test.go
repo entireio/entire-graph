@@ -8828,6 +8828,43 @@ func TestInventoryOnlyLanguagesEmitDocumentSymbols(t *testing.T) {
 	}
 }
 
+func TestKotlinPrimaryConstructorFieldsEmitSymbols(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/User.kt", `package com.acme
+
+data class User(
+  val id: String,
+  var displayName: String = "anonymous",
+)
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct {
+		name      string
+		signature string
+	}{
+		{name: "User.id", signature: "id String"},
+		{name: "User.displayName", signature: "displayName String"},
+	} {
+		var found SymbolRecord
+		for _, symbol := range snapshot.Symbols {
+			if symbol.FilePath == "src/User.kt" && symbol.Kind == "field" && symbol.QualifiedName == want.name {
+				found = symbol
+				break
+			}
+		}
+		if found.ID == "" {
+			t.Fatalf("missing Kotlin primary constructor field %s in %#v", want.name, snapshot.Symbols)
+		}
+		if found.Language != "Kotlin" || found.Signature != want.signature {
+			t.Fatalf("unexpected Kotlin field symbol %s: %#v", want.name, found)
+		}
+	}
+}
+
 func TestCapabilitiesReportRelationSupportPerLanguage(t *testing.T) {
 	caps := Capabilities()
 
