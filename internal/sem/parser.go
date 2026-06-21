@@ -142,6 +142,9 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if spec.language == "Groovy" {
 		parseSrc = []byte(maskGroovyUnsupportedSyntax(content))
 	}
+	if spec.language == "Kotlin" {
+		parseSrc = []byte(maskKotlinUnsupportedSyntax(content))
+	}
 	if spec.language == "TypeScript" && !strings.EqualFold(filepath.Ext(path), ".tsx") {
 		parseSrc = []byte(maskTypeScriptUnsupportedSyntax(content))
 	}
@@ -370,6 +373,20 @@ func maskGroovyUnsupportedSyntax(content string) string {
 	})
 	return groovyJavaCastPattern.ReplaceAllStringFunc(content, func(match string) string {
 		return strings.Repeat(" ", len(match)-1) + match[len(match)-1:]
+	})
+}
+
+var (
+	kotlinSuspendLambdaPattern = regexp.MustCompile(`\bsuspend\s+\{`)
+	kotlinMultiDollarString    = regexp.MustCompile(`\$+\s*"`)
+)
+
+func maskKotlinUnsupportedSyntax(content string) string {
+	content = kotlinSuspendLambdaPattern.ReplaceAllStringFunc(content, func(match string) string {
+		return strings.Repeat(" ", len(match)-1) + "{"
+	})
+	return kotlinMultiDollarString.ReplaceAllStringFunc(content, func(match string) string {
+		return strings.Repeat(" ", len(match)-1) + "\""
 	})
 }
 

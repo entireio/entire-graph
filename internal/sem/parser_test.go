@@ -554,6 +554,40 @@ class PrimitiveAndWrapperTypeHelpers {
 	}
 }
 
+func TestTreeSitterParserKotlinMasksSuspendLambdaInvocation(t *testing.T) {
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("KotlinAssertionsTests.kt", `import kotlinx.coroutines.runBlocking
+
+fun expectedContextExceptionTesting() =
+    runBlocking<Unit> {
+        assertThrows<AssertionError>("Should fail async") {
+            suspend { fail("Should fail async") }()
+        }
+    }
+`)
+	if language != "Kotlin" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	if len(entities) == 0 {
+		t.Fatalf("expected entities after masking Kotlin suspend lambda invocation")
+	}
+}
+
+func TestTreeSitterParserKotlinMasksMultiDollarStrings(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("GenerateJreRelatedSourceCode.kt", `fun render(year: String): String {
+    return licenseHeader.replace($$"$YEAR", year)
+}
+`)
+	if language != "Kotlin" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+}
+
 func TestTreeSitterParserTypeScriptMasksTypeofDynamicImportTypeArgument(t *testing.T) {
 	_, language, status := TreeSitterParser{}.ParseWithStatus("configureStore.test.ts", `vi.doMock('redux', async (importOriginal) => {
   const redux = await importOriginal<typeof import('redux')>()
