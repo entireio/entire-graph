@@ -88,6 +88,7 @@ var inventoryLanguageExtensions = map[string]languageSpec{
 	".m":           {language: "Objective-C", inventoryOnly: true},
 	".m4":          {language: "M4", inventoryOnly: true},
 	".matlab":      {language: "MATLAB", inventoryOnly: true},
+	".mm":          {language: "Objective-C++", inventoryOnly: true},
 	".mcfunction":  {language: "MCFunction", inventoryOnly: true},
 	".mermaid":     {language: "Mermaid", inventoryOnly: true},
 	".metal":       {language: "Metal", inventoryOnly: true},

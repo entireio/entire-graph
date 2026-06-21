@@ -1,6 +1,9 @@
 package sem
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestTreeSitterParserPythonEntities(t *testing.T) {
 	input := `class Token:
@@ -191,6 +194,262 @@ export const createSlice = /* @__PURE__ */ buildCreateSlice()
 		}
 	}
 	t.Fatalf("missing exported variable after parse recovery: %#v", entities)
+}
+
+func TestTreeSitterParserParseErrorDetailIncludesLocation(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("slice.ts", `type Broken = <
+
+export const createSlice = /* @__PURE__ */ buildCreateSlice()
+`)
+	if language != "TypeScript" {
+		t.Fatalf("language = %q", language)
+	}
+	if !status.ParseError {
+		t.Fatalf("expected parse recovery status")
+	}
+	if !strings.Contains(status.Detail, "line ") || !strings.Contains(status.Detail, "near ") {
+		t.Fatalf("parse detail should include location and snippet, got %q", status.Detail)
+	}
+}
+
+func TestTreeSitterParserTypeScriptMasksGeneratedKeywordProperties(t *testing.T) {
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("types.generated.ts", `export type IdQueryType = {
+  equals?: Maybe<Scalars['ID']>
+  in?: Maybe<Scalars['ID']>
+  notIn?: Maybe<Scalars['ID']>
+}
+`)
+	if language != "TypeScript" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	if len(entities) == 0 {
+		t.Fatalf("expected type entity from generated type")
+	}
+}
+
+func TestTreeSitterParserTypeScriptMasksGenericCallableTypeSignatures(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("callable.ts", `export interface TakePattern<State> {
+  <Predicate extends AnyListenerPredicate<State>>(
+    predicate: Predicate,
+  ): TakePatternOutputWithoutTimeout<State, Predicate>
+  <Predicate extends AnyListenerPredicate<State>>(
+    predicate: Predicate,
+    timeout: number,
+  ): TakePatternOutputWithTimeout<State, Predicate>
+}
+`)
+	if language != "TypeScript" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+}
+
+func TestTreeSitterParserTypeScriptMasksCallableSelectorReturnSignatures(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("combineSlices.ts", `export interface CombinedSliceReducer<DeclaredState, InitialState> {
+  selector: {
+    <Selector extends (state: DeclaredState, ...args: any[]) => unknown>(
+      selectorFn: Selector,
+    ): (
+      state: WithOptionalProp<
+        Parameters<Selector>[0],
+        Exclude<keyof DeclaredState, keyof InitialState>
+      >,
+      ...args: Tail<Parameters<Selector>>
+    ) => ReturnType<Selector>
+  }
+}
+`)
+	if language != "TypeScript" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+}
+
+func TestTreeSitterParserTypeScriptMasksNamedGenericTypeMembers(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("createAsyncThunk.ts", `type CreateAsyncThunk<CurriedThunkApiConfig extends AsyncThunkConfig> =
+  CreateAsyncThunkFunction<CurriedThunkApiConfig> & {
+    withTypes<ThunkApiConfig extends AsyncThunkConfig>(): CreateAsyncThunk<
+      OverrideThunkApiConfigs<CurriedThunkApiConfig, ThunkApiConfig>
+    >
+  }
+`)
+	if language != "TypeScript" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+}
+
+func TestTreeSitterParserTypeScriptMasksAdjacentGenericCallableTypeAliases(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("createAsyncThunk.ts", `export type CreateAsyncThunkFunction<
+  CurriedThunkApiConfig extends AsyncThunkConfig,
+> = {
+  <Returned, ThunkArg = void>(
+    typePrefix: string,
+    payloadCreator: AsyncThunkPayloadCreator<
+      Returned,
+      ThunkArg,
+      CurriedThunkApiConfig
+    >,
+    options?: AsyncThunkOptions<ThunkArg, CurriedThunkApiConfig>,
+  ): AsyncThunk<Returned, ThunkArg, CurriedThunkApiConfig>
+
+  <Returned, ThunkArg, ThunkApiConfig extends AsyncThunkConfig>(
+    typePrefix: string,
+    payloadCreator: AsyncThunkPayloadCreator<
+      Returned,
+      ThunkArg,
+      OverrideThunkApiConfigs<CurriedThunkApiConfig, ThunkApiConfig>
+    >,
+    options?: AsyncThunkOptions<
+      ThunkArg,
+      OverrideThunkApiConfigs<CurriedThunkApiConfig, ThunkApiConfig>
+    >,
+  ): AsyncThunk<
+    Returned,
+    ThunkArg,
+    OverrideThunkApiConfigs<CurriedThunkApiConfig, ThunkApiConfig>
+  >
+}
+
+type CreateAsyncThunk<CurriedThunkApiConfig extends AsyncThunkConfig> =
+  CreateAsyncThunkFunction<CurriedThunkApiConfig> & {
+    withTypes<ThunkApiConfig extends AsyncThunkConfig>(): CreateAsyncThunk<
+      OverrideThunkApiConfigs<CurriedThunkApiConfig, ThunkApiConfig>
+    >
+  }
+`)
+	if language != "TypeScript" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+}
+
+func TestTreeSitterParserTypeScriptMasksNestedGenericCallableOverloads(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("listenerMiddleware/types.ts", `export type AddListenerOverloads<Return, AdditionalOptions = unknown> = {
+  <
+    MiddlewareActionType extends UnknownAction,
+    ListenerPredicateType extends ListenerPredicate<MiddlewareActionType>,
+  >(
+    options: {
+      predicate: ListenerPredicateType
+      effect: ListenerEffect<
+        ListenerPredicateGuardedActionType<ListenerPredicateType>,
+        StateType,
+        DispatchType,
+        ExtraArgument
+      >
+    } & AdditionalOptions,
+  ): Return
+
+  <ActionCreatorType extends TypedActionCreatorWithMatchFunction<any>>(
+    options: {
+      actionCreator: ActionCreatorType
+      effect: ListenerEffect<
+        ReturnType<ActionCreatorType>,
+        StateType,
+        DispatchType,
+        ExtraArgument
+      >
+    } & AdditionalOptions,
+  ): Return
+}
+`)
+	if language != "TypeScript" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+}
+
+func TestTreeSitterParserTypeScriptDoesNotMaskRuntimeGenericArrows(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("runtime.ts", `export const prepareAutoBatched =
+  <T>() =>
+  (payload: T): { payload: T; meta: unknown } => ({
+    payload,
+    meta: {},
+  })
+
+const memoizeSpy = vi.fn(
+  <F extends (...args: any[]) => any>(fn: F, param?: boolean) => fn,
+)
+`)
+	if language != "TypeScript" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+}
+
+func TestTreeSitterParserTypeScriptDoesNotMaskTemplateHTML(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("docusaurus.config.ts", "const config = {\n  html: `\n    <a href=\"https://www.netlify.com\">\n      <img src=\"badge.svg\" />\n    </a>\n  `,\n}\n")
+	if language != "TypeScript" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+}
+
+func TestTreeSitterParserTypeScriptMasksTypeofDynamicImportTypeArgument(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("configureStore.test.ts", `vi.doMock('redux', async (importOriginal) => {
+  const redux = await importOriginal<typeof import('redux')>()
+  return redux
+})
+`)
+	if language != "TypeScript" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+}
+
+func TestTreeSitterParserObjectiveCInventoryFallback(t *testing.T) {
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("AppDelegate.h", `#import <RCTAppDelegate.h>
+#import <UIKit/UIKit.h>
+
+@interface AppDelegate : RCTAppDelegate
+
+@end
+`)
+	if language != "Objective-C" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	if len(entities) == 0 || entities[0].Kind != "document" {
+		t.Fatalf("expected Objective-C inventory entity, got %#v", entities)
+	}
+
+	entities, language, status = TreeSitterParser{}.ParseWithStatus("AppDelegate.mm", `#import "AppDelegate.h"
+
+@implementation AppDelegate
+
+@end
+`)
+	if language != "Objective-C++" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	if len(entities) == 0 || entities[0].Kind != "document" {
+		t.Fatalf("expected Objective-C++ inventory entity, got %#v", entities)
+	}
 }
 
 func TestTreeSitterParserTypeScriptGraphQLResolverEntities(t *testing.T) {

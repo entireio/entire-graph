@@ -122,6 +122,9 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if spec.language == "Kustomize" && looksLikeFluxKustomizationManifest(content) {
 		spec = treeSitterLanguages[".yaml"]
 	}
+	if strings.EqualFold(filepath.Ext(path), ".h") && looksLikeObjectiveC(content) {
+		spec = languageSpec{language: "Objective-C", inventoryOnly: true}
+	}
 	if spec.language == "SQL" {
 		spec.grammar = pgsql.GetLanguage()
 	}
@@ -132,6 +135,9 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	parseSrc := src
 	if spec.language == "SQL" {
 		parseSrc = []byte(maskPostgresUnsupportedSyntax(content))
+	}
+	if spec.language == "TypeScript" && !strings.EqualFold(filepath.Ext(path), ".tsx") {
+		parseSrc = []byte(maskTypeScriptUnsupportedSyntax(content))
 	}
 	root, err := sitter.ParseCtx(context.Background(), parseSrc, spec.grammar)
 	if err != nil || root == nil || root.IsNull() {
@@ -144,7 +150,7 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if spec.language == "YAML" {
 		status := ParseStatus{}
 		if root.HasError() {
-			status = ParseStatus{ParseError: true, Detail: "tree-sitter syntax error nodes present"}
+			status = ParseStatus{ParseError: true, Detail: parseErrorDetail(root, src)}
 		}
 		return yamlEntities(path, content), spec.language, status
 	}
@@ -174,9 +180,165 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	})
 	status := ParseStatus{}
 	if root.HasError() {
-		status = ParseStatus{ParseError: true, Detail: "tree-sitter syntax error nodes present"}
+		status = ParseStatus{ParseError: true, Detail: parseErrorDetail(root, src)}
 	}
 	return entities, spec.language, status
+}
+
+func parseErrorDetail(root *sitter.Node, src []byte) string {
+	details := collectParseErrorDetails(root, src, 5)
+	if len(details) == 0 {
+		return "tree-sitter syntax error nodes present"
+	}
+	return "tree-sitter syntax error nodes present: " + strings.Join(details, "; ")
+}
+
+func collectParseErrorDetails(root *sitter.Node, src []byte, limit int) []string {
+	if root == nil || root.IsNull() || limit <= 0 {
+		return nil
+	}
+	var details []string
+	var walk func(*sitter.Node)
+	walk = func(node *sitter.Node) {
+		if node == nil || node.IsNull() || len(details) >= limit {
+			return
+		}
+		if node.IsError() || node.IsMissing() {
+			point := node.StartPoint()
+			kind := "error"
+			if node.IsMissing() {
+				kind = "missing"
+			}
+			snippet := strings.TrimSpace(node.Content(src))
+			if snippet == "" {
+				snippet = strings.TrimSpace(sourceLineAt(src, int(point.Row)+1))
+			}
+			if len(snippet) > 80 {
+				snippet = snippet[:80] + "..."
+			}
+			details = append(details, fmt.Sprintf("%s %s at line %d column %d near %q", kind, node.Type(), point.Row+1, point.Column+1, snippet))
+		}
+		for i := 0; i < int(node.ChildCount()) && len(details) < limit; i++ {
+			walk(node.Child(i))
+		}
+	}
+	walk(root)
+	return details
+}
+
+func sourceLineAt(src []byte, line int) string {
+	if line <= 0 {
+		return ""
+	}
+	current := 1
+	start := 0
+	for i, b := range src {
+		if current == line && b == '\n' {
+			return string(src[start:i])
+		}
+		if b == '\n' {
+			current++
+			start = i + 1
+		}
+	}
+	if current == line && start <= len(src) {
+		return string(src[start:])
+	}
+	return ""
+}
+
+var (
+	tsKeywordTypePropertyPattern = regexp.MustCompile(`^(\s*)in(\??\s*:)`)
+	tsTypeImportPattern          = regexp.MustCompile(`typeof\s+import\(([^)]*)\)`)
+)
+
+func maskTypeScriptUnsupportedSyntax(content string) string {
+	masked := tsTypeImportPattern.ReplaceAllStringFunc(content, sameLengthIdentifierMask)
+	lines := strings.SplitAfter(masked, "\n")
+	maskingGenericCallSignature := false
+	maskingGenericCallSignatureReturn := false
+	for i, line := range lines {
+		text, newline := splitLineEnding(line)
+		trimmed := strings.TrimSpace(text)
+		if maskingGenericCallSignature {
+			if trimmed == "" {
+				maskingGenericCallSignature = false
+				maskingGenericCallSignatureReturn = false
+				continue
+			}
+			lines[i] = maskLineText(text) + newline
+			if typeScriptGenericCallSignatureEnds(trimmed, maskingGenericCallSignatureReturn) {
+				maskingGenericCallSignature = false
+				maskingGenericCallSignatureReturn = false
+			} else if typeScriptGenericCallSignatureReturnStarts(trimmed) {
+				maskingGenericCallSignatureReturn = true
+			}
+			continue
+		}
+		text = maskTypeScriptKeywordTypeProperty(text)
+		trimmed = strings.TrimSpace(text)
+		if typeScriptGenericCallSignatureStarts(trimmed) {
+			lines[i] = maskLineText(text) + newline
+			if typeScriptGenericCallSignatureReturnStarts(trimmed) {
+				maskingGenericCallSignatureReturn = true
+			}
+			if !typeScriptGenericCallSignatureEnds(trimmed, maskingGenericCallSignatureReturn) {
+				maskingGenericCallSignature = true
+			}
+			continue
+		}
+		lines[i] = text + newline
+	}
+	return strings.Join(lines, "")
+}
+
+func sameLengthIdentifierMask(value string) string {
+	if len(value) <= 3 {
+		return strings.Repeat("_", len(value))
+	}
+	return "any" + strings.Repeat(" ", len(value)-3)
+}
+
+func splitLineEnding(line string) (text, newline string) {
+	if strings.HasSuffix(line, "\r\n") {
+		return strings.TrimSuffix(line, "\r\n"), "\r\n"
+	}
+	if strings.HasSuffix(line, "\n") {
+		return strings.TrimSuffix(line, "\n"), "\n"
+	}
+	return line, ""
+}
+
+func maskTypeScriptKeywordTypeProperty(line string) string {
+	return tsKeywordTypePropertyPattern.ReplaceAllString(line, "${1}ii${2}")
+}
+
+func typeScriptGenericCallSignatureStarts(trimmed string) bool {
+	return trimmed == "<" || (strings.HasPrefix(trimmed, "<") && strings.HasSuffix(trimmed, "("))
+}
+
+func typeScriptGenericCallSignatureReturnStarts(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "):") || strings.HasPrefix(trimmed, ") =>")
+}
+
+func typeScriptGenericCallSignatureEnds(trimmed string, inReturn bool) bool {
+	if trimmed == "" {
+		return true
+	}
+	if inReturn && trimmed == ">" {
+		return true
+	}
+	if strings.HasSuffix(trimmed, "<") || strings.HasSuffix(trimmed, ",") {
+		return false
+	}
+	if strings.HasPrefix(trimmed, "):") {
+		return !strings.HasSuffix(trimmed, "(") && !strings.HasSuffix(trimmed, "<")
+	}
+	return strings.HasPrefix(trimmed, ") =>") && !strings.HasSuffix(trimmed, "<")
+}
+
+func maskLineText(text string) string {
+	return strings.Repeat(" ", len(text))
 }
 
 func Supported(path string) bool {
@@ -187,6 +349,11 @@ func Supported(path string) bool {
 func looksLikeFluxKustomizationManifest(content string) bool {
 	return regexp.MustCompile(`(?m)^apiVersion:\s*kustomize\.toolkit\.fluxcd\.io/`).MatchString(content) &&
 		regexp.MustCompile(`(?m)^kind:\s*Kustomization\s*$`).MatchString(content)
+}
+
+func looksLikeObjectiveC(content string) bool {
+	return regexp.MustCompile(`(?m)^\s*@(?:interface|implementation|protocol|class|end)\b`).MatchString(content) ||
+		regexp.MustCompile(`(?m)^\s*#import\s+[<"]`).MatchString(content)
 }
 
 func languageForPath(path string) (languageSpec, bool) {

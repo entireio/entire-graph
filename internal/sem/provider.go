@@ -12464,7 +12464,7 @@ func sortedKeysOf[V any](m map[string]V) []string {
 
 func unsupportedLanguageHint(path string) string {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".f90", ".for", ".fsharp", ".mm":
+	case ".f90", ".for", ".fsharp":
 		return "unsupported source extension " + filepath.Ext(path)
 	default:
 		return ""
