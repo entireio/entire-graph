@@ -479,14 +479,36 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 			lines[i] = paddedReplacement(leadingWhitespace(text), "namespace nlohmann {", len(text)) + newline
 		case "NLOHMANN_JSON_NAMESPACE_END":
 			lines[i] = paddedReplacement(leadingWhitespace(text), "}", len(text)) + newline
+		case "NLOHMANN_BASIC_JSON_TPL_DECLARATION":
+			lines[i] = paddedReplacement(leadingWhitespace(text), "template<typename BasicJsonType>", len(text)) + newline
 		case "FMT_BEGIN_EXPORT", "FMT_END_EXPORT":
 			lines[i] = maskLineText(text) + newline
 		case "FMT_TRY {":
 			lines[i] = paddedReplacement(leadingWhitespace(text), "try {", len(text)) + newline
 		case "FMT_CATCH(...) {}":
 			lines[i] = paddedReplacement(leadingWhitespace(text), "catch(...) {}", len(text)) + newline
+		case "JSON_TRY":
+			lines[i] = paddedReplacement(leadingWhitespace(text), "try", len(text)) + newline
 		default:
+			if strings.HasPrefix(trimmed, "JSON_CATCH(...) {}") {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "catch(...) {}", len(text)) + newline
+				continue
+			}
+			if strings.HasPrefix(trimmed, "JSON_CATCH") || strings.HasPrefix(trimmed, "JSON_INTERNAL_CATCH") {
+				catchName := "JSON_CATCH"
+				if strings.HasPrefix(trimmed, "JSON_INTERNAL_CATCH") {
+					catchName = "JSON_INTERNAL_CATCH"
+				}
+				if masked, ok := maskCPlusPlusCatchMacro(text, catchName); ok {
+					lines[i] = masked + newline
+					continue
+				}
+			}
 			if strings.HasPrefix(trimmed, "export module ") {
+				lines[i] = maskLineText(text) + newline
+				continue
+			}
+			if strings.HasPrefix(trimmed, "import ") && strings.Contains(trimmed, ".") {
 				lines[i] = maskLineText(text) + newline
 				continue
 			}
@@ -495,6 +517,36 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 			text = replaceAllSameLength(text, "using typename ", "using ")
 			if strings.HasPrefix(trimmed, "JSON_PRIVATE_UNLESS_TESTED") {
 				lines[i] = maskLineText(text) + newline
+			} else if strings.HasPrefix(trimmed, "void_t<decltype(") {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "void>", len(text)) + newline
+			} else if strings.Contains(text, "-> decltype(") && balancedCallEnd(text, strings.Index(text, "-> decltype(")+len("-> decltype")) < 0 {
+				marker := strings.Index(text, "-> decltype(")
+				lines[i] = text[:marker] + sameLengthReplacement("-> void", len(text)-marker) + newline
+				balance := strings.Count(text[marker:], "(") - strings.Count(text[marker:], ")")
+				for balance > 0 && i+1 < len(lines) {
+					i++
+					text, newline = splitLineEnding(lines[i])
+					balance += strings.Count(text, "(") - strings.Count(text, ")")
+					lines[i] = maskLineText(text) + newline
+				}
+			} else if cPlusPlusMultilineTestMacroStart(trimmed) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "void test_macro()", len(text)) + newline
+				balance := strings.Count(text, "(") - strings.Count(text, ")")
+				for balance > 0 && i+1 < len(lines) {
+					i++
+					text, newline = splitLineEnding(lines[i])
+					balance += strings.Count(text, "(") - strings.Count(text, ")")
+					lines[i] = maskLineText(text) + newline
+				}
+			} else if cPlusPlusMultilineControlMacroStart(trimmed) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "if (true)", len(text)) + newline
+				balance := strings.Count(text, "(") - strings.Count(text, ")")
+				for balance > 0 && i+1 < len(lines) {
+					i++
+					text, newline = splitLineEnding(lines[i])
+					balance += strings.Count(text, "(") - strings.Count(text, ")")
+					lines[i] = maskLineText(text) + newline
+				}
 			} else if cPlusPlusMultilineBlankMacroStart(trimmed) {
 				balance := 0
 				for {
@@ -523,6 +575,10 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 				}
 			} else if cPlusPlusBlankMacroLine(trimmed) {
 				lines[i] = maskLineText(text) + newline
+			} else if strings.Contains(trimmed, `result["compiler"] = "hp"`) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), `result["compiler"]="hp";`, len(text)) + newline
+			} else if strings.Contains(text, "std::partial_ordering operator<=>") {
+				lines[i] = maskLineText(text) + newline
 			} else if strings.Contains(text, "FMT_ENABLE_IF(") && balancedCallEnd(text, strings.Index(text, "FMT_ENABLE_IF(")+len("FMT_ENABLE_IF")) < 0 {
 				marker := strings.Index(text, "FMT_ENABLE_IF(")
 				lines[i] = text[:marker] + sameLengthReplacement("int = 0>", len(text)-marker) + newline
@@ -539,10 +595,25 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 				text = maskCPlusPlusFunctionLikeMacro(text, "__declspec", "")
 				text = maskCPlusPlusLikelyMacro(text, "JSON_HEDLEY_LIKELY")
 				text = maskCPlusPlusLikelyMacro(text, "JSON_HEDLEY_UNLIKELY")
+				text = maskCPlusPlusFunctionLikeMacro(text, "STRINGIZE", `"s"`)
 				text = maskCPlusPlusFunctionLikeMacroPattern(text, cPlusPlusHedleyFunctionLikeMacroPattern, "")
+				text = maskCPlusPlusTrailingDecltypeReturn(text)
 				text = maskCPlusPlusDependentTemplateKeyword(text)
 				text = maskCPlusPlusMemberOperatorCall(text)
-				text = replaceAllSameLength(text, "operator<=>", "operator==")
+				text = maskCPlusPlusOperatorCall(text)
+				text = replaceAllSameLength(text, "std::strong_ordering", "bool")
+				text = replaceAllSameLength(text, "operator<=>", "operator<")
+				text = replaceAllSameLength(text, " <=> ", " < ")
+				text = replacePatternSameLength(text, cPlusPlusDependentTypenameTemporaryPattern, "= T{}")
+				text = replacePatternSameLength(text, cPlusPlusDependentTypenameParenPattern, "= T(")
+				text = replacePatternSameLength(text, cPlusPlusDependentTypenameConstructorPattern, "T(")
+				text = replacePatternSameLength(text, cPlusPlusArrayReferenceTemplateDefaultPattern, "typename Array = T")
+				text = replacePatternSameLength(text, cPlusPlusEmptyBraceDefaultPattern, "= 0")
+				text = replacePatternSameLength(text, cPlusPlusTemplatePointerDefaultPattern, "> = 0 >")
+				text = replaceAllSameLength(text, "operator*()", "op()")
+				text = replaceAllSameLength(text, "NLOHMANN_BASIC_JSON_TPL", "BasicJsonType")
+				text = replaceAllSameLength(text, "JSON_INLINE_VARIABLE", "inline")
+				text = replaceAllSameLength(text, "JSON_NO_UNIQUE_ADDRESS", "")
 				text = maskCPlusPlusUnsignedFunctionalCast(text)
 				text = maskCPlusPlusEmptyDefaultInitializers(text)
 				text = replaceAllSameLength(text, "template <typename,", "template <class T, ")
@@ -559,17 +630,24 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 }
 
 var (
-	cPlusPlusAnnotationMacroPattern         = regexp.MustCompile(`\b(?:FMT_(?:API|FUNC|EXPORT|INLINE(?:_VARIABLE)?|CONSTEXPR(?:20|_STRING)?|CONSTEVAL|ALWAYS_INLINE|NODISCARD|NORETURN|DEPRECATED|MAYBE_UNUSED|NO_UNIQUE_ADDRESS|LIFETIMEBOUND)|JSON_HEDLEY_[A-Z0-9_]+|DOCTEST_[A-Z0-9_]+|GTEST_API_|GMOCK_API_|GTEST_NO_INLINE_|__stdcall|CALLBACK|WINAPI)\b`)
-	cPlusPlusTestMacroPattern               = regexp.MustCompile(`^(\s*)(?:TEST|TEST_F|TEST_P|TYPED_TEST|TYPED_TEST_P|TEST_CASE(?:_[A-Z0-9_]+)*|TEMPLATE_TEST_CASE(?:_[A-Z0-9_]+)*|SCENARIO|GIVEN|WHEN|THEN)\s*\(.*\)\s*`)
-	cPlusPlusDoctestControlMacroPattern     = regexp.MustCompile(`^(\s*)(?:SECTION|SUBCASE|AND_WHEN|AND_THEN)\s*\(.*\)\s*`)
-	cPlusPlusStatementMacroLinePattern      = regexp.MustCompile(`^(?:CAPTURE|INFO|WARN|FAIL|CHECK(?:_[A-Z0-9_]+)?|REQUIRE(?:_[A-Z0-9_]+)?|STATIC_REQUIRE(?:_[A-Z0-9_]+)?|JSON_DIAGNOSTIC_IGNORE)\s*\(`)
-	cPlusPlusHedleyFunctionLikeMacroPattern = regexp.MustCompile(`\bJSON_HEDLEY_[A-Z0-9_]+\s*\(`)
-	cPlusPlusDependentTemplatePattern       = regexp.MustCompile(`(\.|->)template\s+([A-Za-z_][A-Za-z0-9_]*)`)
-	cPlusPlusMemberOperatorPattern          = regexp.MustCompile(`(\.|->)operator\s*(?:\[\]|\(\)|[+\-*/<>=!&|^%,]+)`)
-	cPlusPlusUnsignedCastPattern            = regexp.MustCompile(`\bunsigned\(([^)\n]+)\)`)
-	cPlusPlusAnonymousEnumPattern           = regexp.MustCompile(`\benum\s*:\s*unsigned\b`)
-	cPlusPlusExplicitOperatorCallPattern    = regexp.MustCompile(`operator\(\)<[^>\n]+>\(`)
-	cPlusPlusNoArgGTestMacroLinePattern     = regexp.MustCompile(`^GTEST_[A-Z0-9_]+_\(\)\s*;?\s*(?://.*)?$`)
+	cPlusPlusAnnotationMacroPattern               = regexp.MustCompile(`\b(?:FMT_(?:API|FUNC|EXPORT|INLINE(?:_VARIABLE)?|CONSTEXPR(?:20|_STRING)?|CONSTEVAL|ALWAYS_INLINE|NODISCARD|NORETURN|DEPRECATED|MAYBE_UNUSED|NO_UNIQUE_ADDRESS|LIFETIMEBOUND)|JSON_(?:HEDLEY_[A-Z0-9_]+|EXPLICIT|INLINE_VARIABLE)|DOCTEST_(?:INTERFACE|CONSTEXPR|NOEXCEPT|INLINE|ATTRIBUTE_[A-Z0-9_]+)|GTEST_API_|GMOCK_API_|GTEST_NO_INLINE_|__stdcall|CALLBACK|WINAPI)\b`)
+	cPlusPlusTestMacroPattern                     = regexp.MustCompile(`^(\s*)(?:TEST|TEST_F|TEST_P|TYPED_TEST|TYPED_TEST_P|TEST_CASE(?:_[A-Z0-9_]+)*|TEMPLATE_TEST_CASE(?:_[A-Z0-9_]+)*|SCENARIO|GIVEN|WHEN|THEN)\s*\(.*\)\s*`)
+	cPlusPlusDoctestControlMacroPattern           = regexp.MustCompile(`^(\s*)(?:SECTION|SUBCASE|AND_WHEN|AND_THEN)\s*\(.*\)\s*`)
+	cPlusPlusStatementMacroLinePattern            = regexp.MustCompile(`^(?:CAPTURE|INFO|WARN|FAIL|CHECK(?:_[A-Z0-9_]+)?|REQUIRE(?:_[A-Z0-9_]+)?|STATIC_REQUIRE(?:_[A-Z0-9_]+)?|JSON_(?:ASSERT|THROW|DIAGNOSTIC_IGNORE))\s*\(`)
+	cPlusPlusHedleyFunctionLikeMacroPattern       = regexp.MustCompile(`\bJSON_HEDLEY_[A-Z0-9_]+\s*\(`)
+	cPlusPlusDependentTemplatePattern             = regexp.MustCompile(`(\.|->)template\s+([A-Za-z_][A-Za-z0-9_]*)`)
+	cPlusPlusMemberOperatorPattern                = regexp.MustCompile(`(\.|->)operator\s*(?:\[\]|\(\)|[+\-*/<>=!&|^%,]+)`)
+	cPlusPlusOperatorCallPattern                  = regexp.MustCompile(`(?:::)?operator\s*(?:<<|>>|\[\]|\(\)|[+\-*/<>=!&|^%,]+)\s*\(`)
+	cPlusPlusDependentTypenameTemporaryPattern    = regexp.MustCompile(`=\s*typename\s+[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+\s*\{\}`)
+	cPlusPlusDependentTypenameParenPattern        = regexp.MustCompile(`=\s*typename\s+[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+\s*\(`)
+	cPlusPlusDependentTypenameConstructorPattern  = regexp.MustCompile(`\btypename\s+[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+\s*\(`)
+	cPlusPlusArrayReferenceTemplateDefaultPattern = regexp.MustCompile(`typename\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*[A-Za-z_][A-Za-z0-9_]*\s*\(\s*&\s*\)\s*\[[^\]\n]+\]`)
+	cPlusPlusEmptyBraceDefaultPattern             = regexp.MustCompile(`=\s*\{\}`)
+	cPlusPlusTemplatePointerDefaultPattern        = regexp.MustCompile(`>\s*\*\s*=\s*nullptr\s*>`)
+	cPlusPlusUnsignedCastPattern                  = regexp.MustCompile(`\bunsigned\(([^)\n]+)\)`)
+	cPlusPlusAnonymousEnumPattern                 = regexp.MustCompile(`\benum\s*:\s*unsigned\b`)
+	cPlusPlusExplicitOperatorCallPattern          = regexp.MustCompile(`operator\(\)<[^>\n]+>\(`)
+	cPlusPlusNoArgGTestMacroLinePattern           = regexp.MustCompile(`^GTEST_[A-Z0-9_]+_\(\)\s*;?\s*(?://.*)?$`)
 )
 
 func maskCPlusPlusAnnotationMacros(text string) string {
@@ -594,7 +672,13 @@ func cPlusPlusBlankMacroLine(trimmed string) bool {
 		return true
 	case strings.HasPrefix(trimmed, "NLOHMANN_DEFINE_"):
 		return true
+	case strings.HasPrefix(trimmed, "JSON_IMPLEMENT_OPERATOR("):
+		return true
 	case strings.HasPrefix(trimmed, "DOCTEST_"):
+		return true
+	case strings.HasPrefix(trimmed, "BENCHMARK_CAPTURE("):
+		return true
+	case strings.HasPrefix(trimmed, "SETUP_TESTCASES("):
 		return true
 	case cPlusPlusStatementMacroLinePattern.MatchString(trimmed):
 		return true
@@ -607,7 +691,18 @@ func cPlusPlusBlankMacroLine(trimmed string) bool {
 
 func cPlusPlusMultilineBlankMacroStart(trimmed string) bool {
 	return strings.HasPrefix(trimmed, "NLOHMANN_JSON_SERIALIZE_ENUM") ||
+		strings.HasPrefix(trimmed, "TEST_CASE_TEMPLATE_INVOKE") ||
 		cPlusPlusStatementMacroLinePattern.MatchString(trimmed)
+}
+
+func cPlusPlusMultilineTestMacroStart(trimmed string) bool {
+	return (strings.HasPrefix(trimmed, "TEST_CASE_TEMPLATE") && !strings.HasPrefix(trimmed, "TEST_CASE_TEMPLATE_INVOKE")) ||
+		strings.HasPrefix(trimmed, "TEMPLATE_TEST_CASE")
+}
+
+func cPlusPlusMultilineControlMacroStart(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "SECTION(") ||
+		strings.HasPrefix(trimmed, "SUBCASE(")
 }
 
 func maskCPlusPlusTestMacroDefinition(text string) (string, bool) {
@@ -668,6 +763,38 @@ func maskCPlusPlusLikelyMacro(text, name string) string {
 	}
 }
 
+func maskCPlusPlusTrailingDecltypeReturn(text string) string {
+	for {
+		start := strings.Index(text, "-> decltype(")
+		if start < 0 {
+			return text
+		}
+		open := start + len("-> decltype")
+		end := balancedCallEnd(text, open)
+		if end < 0 {
+			return text
+		}
+		text = text[:start] + sameLengthReplacement("-> void", end-start) + text[end:]
+	}
+}
+
+func maskCPlusPlusCatchMacro(text, name string) (string, bool) {
+	start := strings.Index(text, name)
+	if start < 0 {
+		return "", false
+	}
+	open := strings.Index(text[start+len(name):], "(")
+	if open < 0 {
+		return "", false
+	}
+	open += start + len(name)
+	end := balancedCallEnd(text, open)
+	if end < 0 {
+		return "", false
+	}
+	return text[:start] + sameLengthReplacement("catch(...)", end-start) + text[end:], true
+}
+
 func maskCPlusPlusFunctionLikeMacroPattern(text string, pattern *regexp.Regexp, replacement string) string {
 	for {
 		location := pattern.FindStringIndex(text)
@@ -703,6 +830,15 @@ func maskCPlusPlusMemberOperatorCall(text string) string {
 			return sameLengthReplacement("->op", len(match))
 		}
 		return sameLengthReplacement(".op", len(match))
+	})
+}
+
+func maskCPlusPlusOperatorCall(text string) string {
+	return cPlusPlusOperatorCallPattern.ReplaceAllStringFunc(text, func(match string) string {
+		if strings.HasPrefix(match, "::") {
+			return sameLengthReplacement("::op(", len(match))
+		}
+		return sameLengthReplacement("op(", len(match))
 	})
 }
 

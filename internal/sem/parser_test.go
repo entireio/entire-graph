@@ -942,7 +942,30 @@ struct adl_serializer {
   static void from_json(BasicJsonType&& j, TargetType& val) {
     val = j.template get<TargetType>();
   }
+
+  template <typename TargetType>
+  auto sfinae(BasicJsonType&& j) -> decltype(j.template get<TargetType>(), void()) {
+    return;
+  }
+
+  template <typename TargetType>
+  auto multi_line_sfinae(BasicJsonType&& j)
+  -> decltype(
+    j.template get<TargetType>(),
+    void())
+  {
+    return;
+  }
 };
+
+NLOHMANN_BASIC_JSON_TPL_DECLARATION
+class basic_json {};
+using basic_json_t = NLOHMANN_BASIC_JSON_TPL;
+
+template <typename T>
+bool compare(const T& lhs, const T& rhs) {
+  return lhs <=> rhs;
+}
 
 JSON_PRIVATE_UNLESS_TESTED:
 void private_helper();
@@ -985,7 +1008,73 @@ TEST_CASE("modifiers" * doctest::test_suite("json"))
         CHECK(json::parse("{}").is_object());
         CHECK_THROWS_AS(json::parse("["), json::parse_error&);
     }
+    SECTION("compile error in from_json converting to container "
+            "with std::pair")
+    {
+        CHECK(true);
+    }
 }
+
+void assert_invariant(bool check_parents) {
+  JSON_TRY
+  {
+    JSON_ASSERT(!check_parents || std::all_of(begin(), end(), [](const auto& j)
+    {
+      return true;
+    }));
+  }
+  JSON_CATCH(...) {}
+}
+
+int at(bool ok) {
+  if (ok) {
+    JSON_TRY
+    {
+      return 1;
+    }
+    JSON_CATCH (std::out_of_range&)
+    {
+      JSON_THROW(type_error::create(304, "bad"));
+    }
+  }
+  return 0;
+}
+
+TEST_CASE_TEMPLATE("checking forward-iterators", T,
+                   std::vector<int>, std::string, nlohmann::json)
+{
+    auto it1 = typename T::iterator{};
+    CHECK(it1 == it1);
+}
+
+TEST_CASE_TEMPLATE_INVOKE(value_in_range_of_test,
+                          trait_test_arg<std::size_t, std::int32_t, false, true>,
+                          trait_test_arg<std::size_t, std::uint32_t, true, true>);
+
+template <typename C = char,
+          enable_if_t<std::is_unsigned<C>::value>* = nullptr>
+void sfinae_default() {}
+
+class DOCTEST_INTERFACE String {
+ public:
+  using size_type = DOCTEST_CONFIG_STRING_SIZE_TYPE;
+ private:
+  static DOCTEST_CONSTEXPR size_type len = 24;
+};
+
+template <typename T, std::size_t N,
+          typename Array = T (&)[N]>
+Array array_ref(T (&v)[N]) {
+  return v;
+}
+
+struct explicit_value {
+  JSON_EXPLICIT operator int() const { return 0; }
+};
+
+JSON_IMPLEMENT_OPERATOR( ==, true, false, false)
+
+auto ns = STRINGIZE(NLOHMANN_JSON_NAMESPACE);
 DOCTEST_MSVC_SUPPRESS_WARNING_POP
 `)
 	if language != "C++" {
