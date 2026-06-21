@@ -452,7 +452,9 @@ Useful existing foundation:
   Protocol Buffers, Python, Ruby, Rust, Scala, SQL, and Swift.
 - Lightweight deterministic inventory support for 158+ reported
   languages/filetypes. Inventory-only entries emit file/symbol structure but do
-  not claim call/type/data-flow analysis.
+  not claim call/type/data-flow analysis. The capabilities JSON exposes this
+  distinction through `semantic_languages` and `inventory_only_languages`; see
+  `docs/language-support.md` for the current generated matrix.
 - Entity signature and body-hash comparison.
 - Checkpoint-aware semantic diffs.
 

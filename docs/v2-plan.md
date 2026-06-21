@@ -671,7 +671,8 @@ Update `entire-sem` docs as work lands:
 - `README.md`: supported languages, commands, current limits.
 - `docs/semantic_provider_requirements.md`: schema and relation vocabulary.
 - New `docs/relation-confidence.md`: confidence bands and warning codes.
-- New `docs/language-support.md`: exact per-language support matrix.
+- Delivered `docs/language-support.md`: exact support matrix separating
+  parser-backed semantic languages from inventory-only filetype coverage.
 - New `docs/benchmarks.md`: reproducible benchmark commands and results.
 
 ## Risks

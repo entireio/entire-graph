@@ -253,6 +253,8 @@ type CapabilityReport struct {
 	Provider                        string              `json:"provider"`
 	SupportedFileExtensions         []string            `json:"supported_file_extensions"`
 	SupportedLanguages              []string            `json:"supported_languages"`
+	SemanticLanguages               []string            `json:"semantic_languages"`
+	InventoryOnlyLanguages          []string            `json:"inventory_only_languages"`
 	ParserVersions                  map[string]string   `json:"parser_versions"`
 	SupportedRelationTypes          []string            `json:"supported_relation_types"`
 	RelationSupportByLanguage       map[string][]string `json:"relation_support_by_language"`
@@ -389,15 +391,24 @@ func Capabilities() CapabilityReport {
 	specs := supportedLanguageSpecs()
 	extensions := make([]string, 0, len(specs))
 	languageSet := map[string]struct{}{}
+	semanticLanguageSet := map[string]struct{}{}
+	inventoryOnlyLanguageSet := map[string]struct{}{}
 	for extension, spec := range specs {
 		extensions = append(extensions, extension)
 		languageSet[spec.language] = struct{}{}
+		if supportsSemanticExtraction(spec) {
+			semanticLanguageSet[spec.language] = struct{}{}
+		} else {
+			inventoryOnlyLanguageSet[spec.language] = struct{}{}
+		}
 	}
 	for _, spec := range inventoryLanguageFilenames {
 		languageSet[spec.language] = struct{}{}
+		inventoryOnlyLanguageSet[spec.language] = struct{}{}
 	}
 	for _, language := range specialFilenameLanguages() {
 		languageSet[language] = struct{}{}
+		inventoryOnlyLanguageSet[language] = struct{}{}
 	}
 	sort.Strings(extensions)
 	languages := make([]string, 0, len(languageSet))
@@ -405,12 +416,16 @@ func Capabilities() CapabilityReport {
 		languages = append(languages, language)
 	}
 	sort.Strings(languages)
+	semanticLanguages := sortedSetKeys(semanticLanguageSet)
+	inventoryOnlyLanguages := sortedSetKeys(inventoryOnlyLanguageSet)
 
 	return CapabilityReport{
 		SchemaVersion:                   SchemaVersion,
 		Provider:                        ProviderName,
 		SupportedFileExtensions:         extensions,
 		SupportedLanguages:              languages,
+		SemanticLanguages:               semanticLanguages,
+		InventoryOnlyLanguages:          inventoryOnlyLanguages,
 		UnsupportedButDetectedLanguages: []string{},
 		ParserVersions:                  parserVersions(),
 		SupportedRelationTypes:          append([]string(nil), relationTypes...),
@@ -433,6 +448,25 @@ func Capabilities() CapabilityReport {
 			"network_discovery": false,
 		},
 	}
+}
+
+func sortedSetKeys(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for key := range set {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func supportsSemanticExtraction(spec languageSpec) bool {
+	if spec.inventoryOnly {
+		return false
+	}
+	if spec.grammar != nil {
+		return true
+	}
+	return spec.language == "SQL"
 }
 
 // relationSupportByLanguage reports which relation types the provider can

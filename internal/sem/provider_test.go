@@ -8997,9 +8997,32 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 	if len(caps.SupportedLanguages) < 158 {
 		t.Fatalf("supported language/filetype count = %d, want at least 158: %#v", len(caps.SupportedLanguages), caps.SupportedLanguages)
 	}
+	if len(caps.SemanticLanguages) == 0 {
+		t.Fatalf("semantic languages missing: %#v", caps)
+	}
+	if len(caps.InventoryOnlyLanguages) == 0 {
+		t.Fatalf("inventory-only languages missing: %#v", caps)
+	}
 	seen := map[string]bool{}
 	for _, language := range caps.SupportedLanguages {
 		seen[language] = true
+	}
+	semanticSeen := map[string]bool{}
+	for _, language := range caps.SemanticLanguages {
+		semanticSeen[language] = true
+		if !seen[language] {
+			t.Fatalf("semantic language %q missing from supported languages", language)
+		}
+	}
+	inventorySeen := map[string]bool{}
+	for _, language := range caps.InventoryOnlyLanguages {
+		inventorySeen[language] = true
+		if !seen[language] {
+			t.Fatalf("inventory-only language %q missing from supported languages", language)
+		}
+		if semanticSeen[language] {
+			t.Fatalf("language %q appears in both semantic and inventory-only tiers", language)
+		}
 	}
 	for _, want := range []string{
 		"Bash",
@@ -9035,6 +9058,16 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 	} {
 		if !seen[want] {
 			t.Fatalf("capabilities missing language %q in %#v", want, caps.SupportedLanguages)
+		}
+	}
+	for _, want := range []string{"TypeScript", "Python", "JavaScript", "Java", "C++", "C", "C#", "Go", "PHP", "Rust", "Kotlin", "Ruby", "Swift", "SQL", "Bash"} {
+		if !semanticSeen[want] {
+			t.Fatalf("capabilities should classify %q as semantic, got semantic=%#v inventory=%#v", want, caps.SemanticLanguages, caps.InventoryOnlyLanguages)
+		}
+	}
+	for _, want := range []string{"Dart", "Zig", "Bicep", "Solidity", "Nix", "Blade"} {
+		if !inventorySeen[want] {
+			t.Fatalf("capabilities should classify %q as inventory-only, got semantic=%#v inventory=%#v", want, caps.SemanticLanguages, caps.InventoryOnlyLanguages)
 		}
 	}
 	for _, want := range []string{".go", ".py", ".ts", ".rs", ".swift", ".proto", ".dart", ".zig", ".bicep", ".graphql"} {
