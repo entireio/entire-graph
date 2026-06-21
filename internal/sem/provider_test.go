@@ -246,6 +246,78 @@ export const value = base() + override()
 	}
 }
 
+func TestTypeScriptManifestImportsResolveThroughTSConfigBaseURL(t *testing.T) {
+	t.Run("inherited baseUrl", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "package.json", `{"name":"@acme/app"}`)
+		writeFile(t, repo, "tsconfig.json", `{
+  "extends": "./config/tsconfig.base.json"
+}`)
+		writeFile(t, repo, "config/tsconfig.base.json", `{
+  "compilerOptions": {
+    "baseUrl": "../src"
+  }
+}`)
+		writeFile(t, repo, "app/main.ts", `import { helper } from "core/helper"
+
+export const value = helper()
+`)
+		writeFile(t, repo, "src/core/helper.ts", `export function helper(): string {
+  return "base"
+}
+`)
+
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		target := fileID(snapshot.Header.RepoKey, "src/core/helper.ts")
+		if !hasImportRelationWithEvidence(snapshot.Relations, "app/main.ts", target, "core/helper", "tsconfig_baseurl_import") {
+			t.Fatalf("missing inherited tsconfig baseUrl import to %s in %#v", target, snapshot.Relations)
+		}
+	})
+
+	t.Run("child baseUrl overrides parent", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, repo, "package.json", `{"name":"@acme/app"}`)
+		writeFile(t, repo, "tsconfig.json", `{
+  "extends": "./config/tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": "app"
+  }
+}`)
+		writeFile(t, repo, "config/tsconfig.base.json", `{
+  "compilerOptions": {
+    "baseUrl": "../src"
+  }
+}`)
+		writeFile(t, repo, "app/main.ts", `import { feature } from "feature/widget"
+
+export const value = feature()
+`)
+		writeFile(t, repo, "src/feature/widget.ts", `export function feature(): string {
+  return "parent"
+}
+`)
+		writeFile(t, repo, "app/feature/widget.ts", `export function feature(): string {
+  return "child"
+}
+`)
+
+		snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		childTarget := fileID(snapshot.Header.RepoKey, "app/feature/widget.ts")
+		if !hasImportRelationWithEvidence(snapshot.Relations, "app/main.ts", childTarget, "feature/widget", "tsconfig_baseurl_import") {
+			t.Fatalf("missing child tsconfig baseUrl import to %s in %#v", childTarget, snapshot.Relations)
+		}
+		if hasImportRelation(snapshot.Relations, "app/main.ts", fileID(snapshot.Header.RepoKey, "src/feature/widget.ts")) {
+			t.Fatalf("child tsconfig baseUrl should override inherited parent baseUrl: %#v", snapshot.Relations)
+		}
+	})
+}
+
 func TestTypeScriptManifestImportsResolveThroughNestedPackageJSON(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "package.json", `{"private": true, "workspaces": ["packages/*"]}`)

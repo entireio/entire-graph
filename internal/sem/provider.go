@@ -5567,6 +5567,7 @@ type manifestImportResolver struct {
 	jsImportMapScopes   []jsImportMapScope
 	jsModuleFiles       map[string]string
 	tsPathMappings      []tsPathMapping
+	tsBaseURLDirs       []string
 	pythonPackages      []string
 	pythonSourceRoots   []string
 	pythonPackageDirs   []pythonPackageDirMapping
@@ -5659,6 +5660,9 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 	})
 	if _, ok := readContent("tsconfig.json"); ok {
 		resolver.tsPathMappings = tsConfigPathMappings("tsconfig.json", readContent, nil)
+		if baseURL, ok := tsConfigBaseURL("tsconfig.json", readContent, nil); ok {
+			resolver.tsBaseURLDirs = []string{baseURL}
+		}
 	}
 	for _, importMapPath := range []string{"import-map.json", "importmap.json"} {
 		if content, ok := readContent(importMapPath); ok {
@@ -6127,6 +6131,47 @@ func parseTSConfigExtends(content string) string {
 	return strings.TrimSpace(data.Extends)
 }
 
+func tsConfigBaseURL(path string, readContent contentReader, seen map[string]bool) (string, bool) {
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	if path == "" {
+		return "", false
+	}
+	if seen == nil {
+		seen = map[string]bool{}
+	}
+	if seen[path] {
+		return "", false
+	}
+	seen[path] = true
+	content, ok := readContent(path)
+	if !ok {
+		return "", false
+	}
+	baseURL := ""
+	found := false
+	if extendsPath, ok := resolveTSConfigExtendsPath(path, parseTSConfigExtends(content)); ok {
+		baseURL, found = tsConfigBaseURL(extendsPath, readContent, seen)
+	}
+	if current, ok := parseTSConfigBaseURLAt(content, filepath.Dir(path)); ok {
+		baseURL = current
+		found = true
+	}
+	return baseURL, found
+}
+
+func parseTSConfigBaseURLAt(content, configDir string) (string, bool) {
+	var data struct {
+		CompilerOptions struct {
+			BaseURL *string `json:"baseUrl"`
+		} `json:"compilerOptions"`
+	}
+	if err := json.Unmarshal([]byte(stripJSONLineComments(content)), &data); err != nil || data.CompilerOptions.BaseURL == nil {
+		return "", false
+	}
+	baseURL := normalizeTSConfigRelativePath(*data.CompilerOptions.BaseURL, configDir)
+	return baseURL, true
+}
+
 func resolveTSConfigExtendsPath(currentPath, spec string) (string, bool) {
 	spec = strings.Trim(strings.TrimSpace(spec), `"'`)
 	if spec == "" || !(strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../")) {
@@ -6194,15 +6239,33 @@ func parseTSConfigPathsAt(content, configDir string) []tsPathMapping {
 }
 
 func normalizeTSConfigPathTarget(target, configDir string) string {
+	return normalizeTSConfigRelativePath(target, configDir)
+}
+
+func normalizeTSConfigRelativePath(target, configDir string) string {
 	target = strings.TrimSpace(filepath.ToSlash(target))
 	if target == "" {
 		return ""
 	}
-	configDir = strings.Trim(strings.TrimSpace(filepath.ToSlash(configDir)), ". /")
-	if strings.HasPrefix(target, "/") || configDir == "" {
+	if strings.HasPrefix(target, "/") {
+		return strings.TrimPrefix(target, "/")
+	}
+	configDir = strings.TrimSpace(filepath.ToSlash(configDir))
+	if configDir == "." {
+		configDir = ""
+	}
+	configDir = strings.Trim(configDir, "/")
+	if configDir == "" {
 		return strings.TrimPrefix(target, "./")
 	}
-	return strings.TrimPrefix(filepath.ToSlash(filepath.Clean(filepath.Join(configDir, target))), "./")
+	resolved := filepath.ToSlash(filepath.Clean(filepath.Join(configDir, target)))
+	if resolved == "." {
+		return ""
+	}
+	if resolved == ".." || strings.HasPrefix(resolved, "../") {
+		return ""
+	}
+	return strings.TrimPrefix(resolved, "./")
 }
 
 func parsePyProjectName(content string) string {
@@ -6689,6 +6752,18 @@ func (resolver manifestImportResolver) resolveJSImport(importingPath, spec strin
 					EvidenceKind: "tsconfig_paths_import",
 				}, true
 			}
+		}
+	}
+	for _, baseURL := range resolver.tsBaseURLDirs {
+		targetModule := filepath.ToSlash(filepath.Join(baseURL, spec))
+		if path, resolved := resolver.resolveJSModulePath(targetModule); resolved && path != filepath.ToSlash(importingPath) {
+			return manifestImportResolution{
+				Path:         path,
+				Confidence:   0.88,
+				Scope:        "module",
+				Reason:       "JS/TS bare module import resolved through tsconfig.json baseUrl",
+				EvidenceKind: "tsconfig_baseurl_import",
+			}, true
 		}
 	}
 	return manifestImportResolution{}, false
