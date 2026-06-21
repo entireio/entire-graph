@@ -776,6 +776,12 @@ auto reserve(OutputIt it, size_t n) -> typename OutputIt::value_type* {
 class FMT_SO_VISIBILITY("default") format_error : public std::runtime_error {
 };
 
+template <typename T, typename Char>
+FMT_VISIBILITY("hidden")
+FMT_CONSTEXPR auto invoke_parse(parse_context<Char>& ctx) -> const Char* {
+  return nullptr;
+}
+
 class basic_memory_buffer {
   FMT_NO_UNIQUE_ADDRESS Allocator alloc_;
 };
@@ -804,7 +810,24 @@ GMOCK_DECLARE_KIND_(bool, kBool);
 
 TEST(buffer_test, indestructible) {
   static_assert(true, "ok");
+  EXPECT_FALSE(fmt::is_formattable<int(s::*)>::value);
 }
+
+TEST(module_test, errors) {
+  EXPECT_THROW(throw fmt::format_error("oops"), std::exception);
+  EXPECT_NONFATAL_FAILURE(
+      EXPECT_THROW_MSG(throw runtime_error("a"), runtime_error, "b"), "");
+}
+
+GTEST_DISABLE_MSC_WARNINGS_PUSH_(4251 \
+/* class A needs to have dll-interface to be used by clients of class B */)
+
+GTEST_DEFINE_bool_(catch_exceptions,
+                   internal::BoolFromGTestEnv("catch_exceptions", true),
+                   "True if and only if " GTEST_NAME_
+                   " should catch exceptions and treat them as test failures.");
+
+GMOCK_DEFINE_DEFAULT_ACTION_FOR_RETURN_TYPE_(::std::string, "");
 `)
 	if language != "C++" {
 		t.Fatalf("language = %q", language)
@@ -880,6 +903,35 @@ template <typename Tuple, FMT_ENABLE_IF(is_tuple_like<Tuple>::value)>
 auto join(const Tuple& tuple FMT_LIFETIMEBOUND, string_view sep) -> int {
   return 0;
 }
+
+template <typename T, typename Enable = void>
+struct is_std_string_like : std::false_type {};
+template <typename T>
+struct is_std_string_like<T, void_t<decltype(std::declval<T>().find_first_of(
+                                 typename T::value_type(), 0))>>
+    : std::is_convertible<decltype(std::declval<T>().data()),
+                          const typename T::value_type*> {};
+
+template <bool IS_CONSTEXPR, typename T, typename Ptr = const T*>
+FMT_CONSTEXPR auto find(Ptr first, Ptr last, T value, Ptr& out) -> bool {
+  return false;
+}
+
+template <typename T>
+std::string namespace_name(std::string ns, T* /*unused*/ = nullptr) {
+  return ns;
+}
+
+class MutationDispatcher {
+  struct Mutator {
+    size_t (MutationDispatcher::*Fn)(uint8_t *Data, size_t Size, size_t Max);
+  };
+  size_t Mutate(uint8_t *Data, size_t Size, size_t MaxSize) {
+    auto M = Mutator{};
+    size_t NewSize = (this->*(M.Fn))(Data, Size, MaxSize);
+    return NewSize;
+  }
+};
 
 class max_size_allocator {
  public:
