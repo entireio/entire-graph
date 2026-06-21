@@ -396,7 +396,9 @@ Tasks:
   source evidence.
 - GraphQL operation literals emit `HANDLES_GRAPHQL` for named-operation
   compatibility endpoints and selected root-field endpoints, including explicit
-  anonymous operations such as `query { viewer { id } }`. JS/TS resolver-map
+  anonymous operations such as `query { viewer { id } }` and named fragments
+  spread at root operation scope when the fragment type is `Query`, `Mutation`,
+  or `Subscription`. JS/TS resolver-map
   fields, modular resolver root objects such as `export const Query = { ... }`,
   and GraphQL schema root fields in `type`/`extend type` `Query`, `Mutation`,
   and `Subscription` blocks now emit `HANDLES_GRAPHQL`. Resolver fields cover inline

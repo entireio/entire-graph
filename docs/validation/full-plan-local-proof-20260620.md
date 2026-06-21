@@ -106,6 +106,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 go test ./internal/sem -run 'TestBuildProviderSnapshotEmits.*(Collection|AliasContainer|MultiHopAlias|DataFlow|Forward)' -count=1
 go test ./...
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-map-set-data-flow -min-loc-per-sec 1
+go test ./internal/sem -run 'Test(GraphQLOperationLiteralsEmitRootFieldBoundaries|BuildProviderSnapshotEmitsGraphQLResolverBoundaries|BuildProviderSnapshotEmitsGraphQLSchemaBoundaries|GraphQLSchemaFieldsLinkToResolverFields|GraphQLSchemaFieldsLinkToModularResolverObjects|GraphQLSchemaAliasedRootsLinkToResolverFields)' -count=1
+go test ./...
+go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-graphql-fragment-fields -min-loc-per-sec 1
 ```
 
 ## Results
@@ -151,6 +154,13 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 - Latest local Go/gin syntax-only Map.set data-flow smoke benchmark:
   `bench/results/result-1782000875.json`, 28,618 LOC, 168,104 LOC/s,
   27,672,576 bytes max RSS, 1 parse failure, estimated output 1,902,629 bytes.
+- GraphQL operation root-field extraction follows named fragments spread at
+  root operation scope when the fragment is explicitly typed as `Query`,
+  `Mutation`, or `Subscription`, while avoiding bogus field endpoints for the
+  fragment spread name itself.
+- Latest local Go/gin syntax-only GraphQL fragment smoke benchmark:
+  `bench/results/result-1782001031.json`, 28,618 LOC, 164,575 LOC/s,
+  28,655,616 bytes max RSS, 1 parse failure, estimated output 1,902,635 bytes.
 - Nested JS/TS workspace/package `package.json` names and `exports` resolve
   local package imports to file records with `import_resolved` metadata.
 - JS/TS literal CommonJS `require(...)` and literal dynamic `import(...)`

@@ -233,6 +233,7 @@ type serviceBoundary struct {
 var (
 	graphqlOperationRe          = regexp.MustCompile(`(?is)\b(query|mutation|subscription)\s+([A-Za-z_][A-Za-z0-9_]*)`)
 	graphqlOperationSelectionRe = regexp.MustCompile(`(?is)\b(query|mutation|subscription)\b\s*(?:[A-Za-z_][A-Za-z0-9_]*)?\s*(?:\([^{}]*\))?\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^{}]*\))?\s*)*\{`)
+	graphqlFragmentRe           = regexp.MustCompile(`(?is)\bfragment\s+([A-Za-z_][A-Za-z0-9_]*)\s+on\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^{}]*\))?\s*)*\{`)
 	trpcProcedureRe             = regexp.MustCompile(`(?m)([A-Za-z_$][\w$]*)\s*:\s*(?:publicProcedure|protectedProcedure|procedure)\s*\.\s*(query|mutation|subscription)\s*\(`)
 )
 
@@ -327,9 +328,15 @@ type graphqlOperationSelection struct {
 	Field string
 }
 
+type graphqlFragmentSelection struct {
+	Root   string
+	Fields []string
+}
+
 func graphqlOperationRootFieldSelections(block string) []graphqlOperationSelection {
 	seen := map[string]bool{}
 	var out []graphqlOperationSelection
+	fragments := graphqlFragmentSelections(block)
 	for _, loc := range graphqlOperationSelectionRe.FindAllStringSubmatchIndex(block, -1) {
 		if len(loc) < 4 {
 			continue
@@ -344,7 +351,15 @@ func graphqlOperationRootFieldSelections(block string) []graphqlOperationSelecti
 		if close < 0 {
 			continue
 		}
-		for _, field := range graphqlRootSelectionFields(block[open+1 : close]) {
+		body := block[open+1 : close]
+		fields := graphqlRootSelectionFields(body)
+		for _, spread := range graphqlRootFragmentSpreads(body) {
+			fragment := fragments[spread]
+			if fragment.Root == root {
+				fields = append(fields, fragment.Fields...)
+			}
+		}
+		for _, field := range fields {
 			key := root + "\x00" + field
 			if seen[key] {
 				continue
@@ -360,6 +375,110 @@ func graphqlOperationRootFieldSelections(block string) []graphqlOperationSelecti
 		return out[i].Root < out[j].Root
 	})
 	return out
+}
+
+func graphqlFragmentSelections(block string) map[string]graphqlFragmentSelection {
+	out := map[string]graphqlFragmentSelection{}
+	for _, loc := range graphqlFragmentRe.FindAllStringSubmatchIndex(block, -1) {
+		if len(loc) < 6 {
+			continue
+		}
+		name := block[loc[2]:loc[3]]
+		root := graphqlOperationRootForType(block[loc[4]:loc[5]])
+		if root == "" {
+			continue
+		}
+		open := strings.LastIndex(block[loc[0]:loc[1]], "{")
+		if open < 0 {
+			continue
+		}
+		open += loc[0]
+		close := matchingBraceOffset(block, open)
+		if close < 0 {
+			continue
+		}
+		fields := graphqlRootSelectionFields(block[open+1 : close])
+		if len(fields) > 0 {
+			out[name] = graphqlFragmentSelection{Root: root, Fields: fields}
+		}
+	}
+	return out
+}
+
+func graphqlOperationRootForType(typeName string) string {
+	switch strings.ToLower(strings.TrimSpace(typeName)) {
+	case "query":
+		return "query"
+	case "mutation":
+		return "mutation"
+	case "subscription":
+		return "subscription"
+	default:
+		return ""
+	}
+}
+
+func graphqlRootFragmentSpreads(body string) []string {
+	seen := map[string]bool{}
+	var spreads []string
+	depth := 0
+	inString := byte(0)
+	escaped := false
+	for i := 0; i < len(body); i++ {
+		ch := body[i]
+		if inString != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			inString = ch
+			continue
+		case '#':
+			for i < len(body) && body[i] != '\n' {
+				i++
+			}
+			continue
+		case '{', '(', '[':
+			depth++
+			continue
+		case '}', ')', ']':
+			if depth > 0 {
+				depth--
+			}
+			continue
+		}
+		if depth != 0 || i+3 >= len(body) || body[i:i+3] != "..." {
+			continue
+		}
+		cursor := skipSpace(body, i+3)
+		if cursor >= len(body) || !isJSIdentifierStart(body[cursor]) {
+			continue
+		}
+		start := cursor
+		cursor++
+		for cursor < len(body) && isJSIdentifierPart(body[cursor]) {
+			cursor++
+		}
+		name := body[start:cursor]
+		if name == "on" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		spreads = append(spreads, name)
+	}
+	sort.Strings(spreads)
+	return spreads
 }
 
 func graphqlRootSelectionFields(body string) []string {
@@ -406,6 +525,9 @@ func graphqlRootSelectionFields(body string) []string {
 			continue
 		}
 		nameStart := i
+		if nameStart >= 3 && body[nameStart-3:nameStart] == "..." {
+			continue
+		}
 		i++
 		for i < len(body) && isJSIdentifierPart(body[i]) {
 			i++

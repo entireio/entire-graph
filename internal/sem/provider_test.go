@@ -6346,6 +6346,9 @@ type User {
 		"export function loadAnonymous(): unknown {\n"+
 		"  return gql`query { viewer { id } }`\n"+
 		"}\n\n"+
+		"export function loadFragment(): unknown {\n"+
+		"  return gql`query GetFragmentViewer { ...ViewerFields } fragment ViewerFields on Query { viewer { id } }`\n"+
+		"}\n\n"+
 		"export function mutate(id: string): unknown {\n"+
 		"  return gql`mutation Update($id: ID!) { updateUser(id: $id) { id } }`\n"+
 		"}\n")
@@ -6361,6 +6364,7 @@ type User {
 		{"loadViewer", "query viewer"},
 		{"loadViewer", "query user"},
 		{"loadAnonymous", "query viewer"},
+		{"loadFragment", "query viewer"},
 		{"mutate", "mutation updateUser"},
 	} {
 		if !hasRelationByLastSegment(snapshot.Relations, "HANDLES_GRAPHQL", want.from, want.to) {
