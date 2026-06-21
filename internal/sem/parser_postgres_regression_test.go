@@ -104,3 +104,24 @@ func TestStripSQLCommentsPreservesLiteralsAndLength(t *testing.T) {
 		t.Errorf("real comments not stripped: %q", out)
 	}
 }
+
+// PostgreSQL statements the SQL grammar cannot parse (EXPLAIN option lists,
+// ALTER OPERATOR FAMILY/CLASS, COMMENT ON non-table objects) must be masked so
+// they do not raise parse errors or drop surrounding real entities.
+func TestPostgresUnparseableStatementsMaskedWithoutDroppingEntities(t *testing.T) {
+	src := "CREATE TABLE before_tbl (id int);\n" +
+		"EXPLAIN (COSTS OFF, ANALYZE) SELECT * FROM before_tbl;\n" +
+		"ALTER OPERATOR FAMILY int4_ops USING gin ADD OPERATOR 1 = (int4, int4);\n" +
+		"COMMENT ON ACCESS METHOD bloom IS 'bloom index';\n" +
+		"CREATE TABLE after_tbl (id int);\n"
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("ext.sql", src)
+	if status.ParseError {
+		t.Fatalf("unexpected parse error after masking: %s", status.Detail)
+	}
+	if countEntity(entities, "table", "before_tbl") != 1 {
+		t.Errorf("before_tbl missing: %+v", entities)
+	}
+	if countEntity(entities, "table", "after_tbl") != 1 {
+		t.Errorf("after_tbl dropped by unmasked PostgreSQL statement: %+v", entities)
+	}
+}

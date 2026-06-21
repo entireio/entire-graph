@@ -3180,6 +3180,14 @@ var postgresInlinePsqlMetaCommandPattern = regexp.MustCompile(`(?im)\\(?:gset|ge
 var postgresExtensionDDLPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:access\s+method|operator(?:\s+class|\s+family)?|type|aggregate|text\s+search\s+(?:configuration|dictionary|parser|template)|collation|statistics|transform)\b[^;]*;`)
 var postgresAlterExtensionPattern = regexp.MustCompile(`(?is)\balter\s+extension\b[^;]*;`)
 
+// PostgreSQL-specific statements the SQL grammar does not parse: the EXPLAIN
+// options parenthetical (`EXPLAIN (COSTS OFF, ...) <stmt>` — mask only the
+// option list so the inner statement still parses), ALTER OPERATOR FAMILY/CLASS,
+// and COMMENT ON for non-table objects (access method, operator, type, ...).
+var postgresExplainOptionsPattern = regexp.MustCompile(`(?i)\bexplain\s*\([^)]*\)`)
+var postgresAlterOperatorPattern = regexp.MustCompile(`(?is)\balter\s+operator\s+(?:family|class)\b[^;]*;`)
+var postgresCommentOnObjectPattern = regexp.MustCompile(`(?is)\bcomment\s+on\s+(?:access\s+method|operator(?:\s+(?:family|class))?|aggregate|type|domain|collation|text\s+search\s+\w+|transform|extension|cast|function|procedure|language|server|publication|subscription)\b[^;]*;`)
+
 func maskPostgresUnsupportedSyntax(content string) string {
 	masked := []byte(content)
 	for _, loc := range postgresVectorTypePattern.FindAllStringIndex(content, -1) {
@@ -3235,6 +3243,15 @@ func maskPostgresUnsupportedSyntax(content string) string {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
 	for _, loc := range postgresAlterExtensionPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresExplainOptionsPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresAlterOperatorPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresCommentOnObjectPattern.FindAllStringIndex(content, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
 	for _, loc := range postgresLoadPattern.FindAllStringIndex(content, -1) {
