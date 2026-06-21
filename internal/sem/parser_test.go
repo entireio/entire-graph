@@ -2522,3 +2522,38 @@ func TestTreeSitterParserCSharpBOMPreservesSymbolNames(t *testing.T) {
 		}
 	}
 }
+
+func TestTreeSitterParserKotlinNamesSkipAnnotationsAndTypeParameters(t *testing.T) {
+	// A declaration's own name is never inside its leading annotations/modifiers
+	// or its generic type parameters. The fallback name search must skip those:
+	// "@OptIn class Koin" must be "Koin" (not "OptIn"), and "fun <T> get()" must
+	// be "get" (not the type parameter "T").
+	src := "@OptIn(KoinInternalApi::class)\nclass Koin {\n    fun <T> get(): T { return resolve() }\n    inline fun <reified T> getOrNull(): T? { return null }\n}\n"
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("Koin.kt", src)
+	if language != "Kotlin" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	want := map[string]string{
+		"Koin":           "class",
+		"Koin.get":       "method",
+		"Koin.getOrNull": "method",
+	}
+	seen := map[string]string{}
+	for _, entity := range entities {
+		seen[entity.Name] = entity.Kind
+	}
+	for name, kind := range want {
+		if seen[name] != kind {
+			t.Fatalf("Kotlin name %q kind = %q, want %q; annotation/type-parameter leak in %#v", name, seen[name], kind, entities)
+		}
+	}
+	if _, leaked := seen["OptIn"]; leaked {
+		t.Fatalf("annotation name leaked as a symbol: %#v", entities)
+	}
+	if _, leaked := seen["T"]; leaked {
+		t.Fatalf("type parameter leaked as a symbol name: %#v", entities)
+	}
+}

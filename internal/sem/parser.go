@@ -4332,11 +4332,28 @@ func firstNameDescendant(node *sitter.Node, src []byte) string {
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		child := node.NamedChild(i)
+		// A declaration's own name is never inside its leading modifiers,
+		// annotations, or generic type parameters. Skipping those subtrees
+		// stops the pre-order search from latching onto an annotation name
+		// (e.g. Kotlin `@OptIn class Koin` -> "OptIn") or a type parameter
+		// (e.g. `fun <T> get()` -> "T") before reaching the real name.
+		if skipForNameDescent(child.Type()) {
+			continue
+		}
 		if name := firstNameDescendant(child, src); name != "" {
 			return name
 		}
 	}
 	return ""
+}
+
+func skipForNameDescent(nodeType string) bool {
+	switch nodeType {
+	case "modifiers", "annotation", "type_parameters":
+		return true
+	default:
+		return false
+	}
 }
 
 func nameFromNode(node *sitter.Node, src []byte) string {
