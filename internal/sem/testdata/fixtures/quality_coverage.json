@@ -32,10 +32,10 @@
   },
   "relation_types": {
     "ASYNC_CALLS": 1,
-    "CALLS": 24,
+    "CALLS": 22,
     "CONFIGURES": 12,
     "CONTAINS": 52,
-    "DATA_FLOWS": 8,
+    "DATA_FLOWS": 9,
     "DEFINES": 136,
     "EMITS": 1,
     "EXTENDS": 9,

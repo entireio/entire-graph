@@ -188,6 +188,73 @@ export function run(): string {
 	}
 }
 
+func TestTypeScriptRelativeImportedCallsResolveWithoutFieldFalsePositive(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/app.ts", `import { helper } from './helper'
+
+interface Options {
+  middleware?: () => void
+}
+
+export function run(options: Options): string {
+  options.middleware?.()
+  return helper()
+}
+`)
+	writeFile(t, repo, "src/helper.ts", `export function helper(): string {
+  return 'ok'
+}
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "run", "helper") {
+		t.Fatalf("missing imported helper call relation: %#v", snapshot.Relations)
+	}
+	if hasRelationByLastSegment(snapshot.Relations, "CALLS", "run", "Options.middleware") {
+		t.Fatalf("interface field was treated as a callee: %#v", snapshot.Relations)
+	}
+}
+
+func TestTypeScriptWorkspacePackageReexportCallsResolveToSource(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "packages/toolkit/package.json", `{
+  "name": "@acme/toolkit",
+  "exports": { ".": "./dist/index.js" }
+}
+`)
+	writeFile(t, repo, "packages/toolkit/src/index.ts", `export {
+  // js
+  configureStore,
+} from './configureStore'
+`)
+	writeFile(t, repo, "packages/toolkit/src/configureStore.ts", `export function configureStore(): string {
+  return 'ok'
+}
+`)
+	writeFile(t, repo, "examples/app/src/store.ts", `import { configureStore } from '@acme/toolkit'
+
+const store = configureStore()
+
+export function boot(): string {
+  return configureStore()
+}
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", "boot", "configureStore", "import_resolved") {
+		t.Fatalf("missing workspace package re-export call relation: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", "examples/app/src/store.ts", "configureStore", "import_resolved") {
+		t.Fatalf("missing top-level workspace package call relation: %#v", snapshot.Relations)
+	}
+}
+
 func TestTypeScriptManifestImportsResolveThroughExtendedTSConfig(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "package.json", `{"name":"@acme/app"}`)
@@ -8361,6 +8428,15 @@ func lastSegment(id string) string {
 func hasRelationByLastSegment(relations []RelationRecord, relationType, from, to string) bool {
 	for _, relation := range relations {
 		if relation.Type == relationType && lastSegment(relation.FromID) == from && lastSegment(relation.ToID) == to {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRelationByLastSegmentWithResolution(relations []RelationRecord, relationType, from, to, resolution string) bool {
+	for _, relation := range relations {
+		if relation.Type == relationType && relation.Resolution == resolution && lastSegment(relation.FromID) == from && lastSegment(relation.ToID) == to {
 			return true
 		}
 	}

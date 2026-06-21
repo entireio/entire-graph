@@ -923,6 +923,42 @@ func sourceLineCount(content string) int {
 	return lines
 }
 
+func topLevelBlockFromLines(lines []string, symbols []SymbolRecord) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	masked := append([]string(nil), lines...)
+	for _, symbol := range symbols {
+		start := maxInt(1, symbol.StartLine)
+		end := maxInt(start, symbol.EndLine)
+		if start > len(masked) {
+			continue
+		}
+		if end > len(masked) {
+			end = len(masked)
+		}
+		for i := start - 1; i <= end-1; i++ {
+			masked[i] = ""
+		}
+	}
+	return strings.Join(masked, "\n")
+}
+
+var jsDeclarationOnlyCallSignaturePattern = regexp.MustCompile(`^\s*(?:export\s+)?(?:(?:public|private|protected|readonly|static|abstract|override|declare|async)\s+)*[A-Za-z_$][A-Za-z0-9_$]*\s*(?:<[^>{}\n]*>)?\([^{};]*\)\s*:\s*[^{};]+;?\s*$`)
+
+func stripDeclarationOnlyCallSignatures(language, content string) string {
+	if language != "JavaScript" && language != "TypeScript" {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if jsDeclarationOnlyCallSignaturePattern.MatchString(line) {
+			lines[i] = ""
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 func skipFastCFamilyCallScan(spec profileSpec, language string) bool {
 	return spec.name == ProfileFast && (language == "C" || language == "C++")
 }
@@ -1274,7 +1310,7 @@ func routeBoundarySource(path, language string, fileSymbols []SymbolRecord) rout
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string) []resolvedCallTarget {
 	var local []resolvedCallTarget
 	for _, to := range sameFile {
-		if to.ID == from.ID || to.Name != name {
+		if to.ID == from.ID || to.Name != name || to.Kind == "field" {
 			continue
 		}
 		local = append(local, resolvedCallTarget{
@@ -1291,10 +1327,10 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 
 	var imported []resolvedCallTarget
 	for _, to := range candidates {
-		if to.ID == from.ID {
+		if to.ID == from.ID || to.Kind == "field" {
 			continue
 		}
-		if importedNameMatchesFile(importsByName[name], to.FilePath) {
+		if importedNameMatchesFile(importsByName[name], from.FilePath, to.FilePath) {
 			imported = append(imported, resolvedCallTarget{
 				SymbolRecord: to,
 				Confidence:   0.86,
@@ -1310,7 +1346,7 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 
 	var remaining []SymbolRecord
 	for _, to := range candidates {
-		if to.ID != from.ID {
+		if to.ID != from.ID && to.Kind != "field" {
 			remaining = append(remaining, to)
 		}
 	}
@@ -1753,6 +1789,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			})
 		}
 		importsByName := importedNamesFor(file.Path, content)
+		importsByName = resolvedImportedNameModules(file.Path, importsByName, manifestImports, knownFiles, readContent)
 		if skipFastProfilePerSymbolScan(spec, file.Language) {
 			continue
 		}
@@ -1779,7 +1816,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				return
 			}
 			block := symbolBlockFromLines(lines, from)
-			if fileNeedsCallScan {
+			if fileNeedsCallScan && !typeLikeKind(from.Kind) {
 				for _, name := range sortedKeysOf(callLikeIdentifiers(block)) {
 					if name == from.Name {
 						continue
@@ -2006,6 +2043,40 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			if needsFields {
 				for _, r := range fieldAccessRelations(from, block, fieldsByContainer, symbolsByShortName) {
 					emit(r)
+				}
+			}
+		}
+
+		if fileNeedsCallScan {
+			topLevel := stripDeclarationOnlyCallSignatures(file.Language, topLevelBlockFromLines(lines, currentFileSymbols))
+			if strings.TrimSpace(topLevel) != "" {
+				fileSource := SymbolRecord{
+					ID:       fileID(repoKey, file.Path),
+					Kind:     "file",
+					Name:     filepath.Base(file.Path),
+					FilePath: file.Path,
+					Language: file.Language,
+				}
+				for _, name := range sortedKeysOf(callLikeIdentifiers(topLevel)) {
+					for _, to := range resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName) {
+						emit(RelationRecord{
+							RecordType:    "relation",
+							FromID:        fileSource.ID,
+							ToID:          to.ID,
+							Type:          "CALLS",
+							Confidence:    minFloat(to.Confidence, 0.8),
+							Reason:        "top-level call expression resolved to symbol",
+							RelationScope: to.Scope,
+							Resolution:    to.Resolution,
+							TargetKind:    "symbol",
+							Evidence: []Evidence{{
+								Kind:     "top_level_call_site",
+								FilePath: file.Path,
+								Detail:   name,
+							}},
+							WarningCodes: []string{},
+						})
+					}
 				}
 			}
 		}
@@ -6875,7 +6946,10 @@ func (resolver manifestImportResolver) resolveJSWorkspacePackageModule(pkg jsPac
 	if module == "" {
 		return "", false
 	}
-	return resolver.resolveJSModulePath(filepath.ToSlash(filepath.Join(pkg.Root, module)))
+	if path, ok := resolver.resolveJSModulePath(filepath.ToSlash(filepath.Join(pkg.Root, module))); ok {
+		return path, true
+	}
+	return resolver.resolveJSModulePath(filepath.ToSlash(filepath.Join(pkg.Root, "src", module)))
 }
 
 func (resolver manifestImportResolver) resolveJSTargetMap(targets map[string]string, spec string) (string, bool) {
@@ -8201,6 +8275,86 @@ func importedJavaScriptNames(content string) map[string][]string {
 	return imports
 }
 
+func resolvedImportedNameModules(importingPath string, imports map[string][]string, manifestImports manifestImportResolver, knownFiles map[string]bool, readContent contentReader) map[string][]string {
+	if len(imports) == 0 {
+		return imports
+	}
+	resolved := make(map[string][]string, len(imports))
+	for name, modules := range imports {
+		resolved[name] = append(resolved[name], modules...)
+		for _, module := range modules {
+			var targetPath string
+			switch {
+			case isRelativeImportSpec(importingPath, module):
+				if path, ok := resolveLocalImport(importingPath, module, knownFiles); ok {
+					targetPath = path
+				}
+			default:
+				if resolution, ok := manifestImports.resolve(importingPath, module); ok {
+					targetPath = resolution.Path
+				}
+			}
+			if targetPath == "" {
+				continue
+			}
+			resolved[name] = append(resolved[name], targetPath)
+			if content, ok := readContent(targetPath); ok {
+				for _, reexport := range javascriptReexportModulesForName(content, name) {
+					if path, ok := resolveLocalImport(targetPath, reexport, knownFiles); ok {
+						resolved[name] = append(resolved[name], path)
+					} else if resolution, ok := manifestImports.resolve(targetPath, reexport); ok {
+						resolved[name] = append(resolved[name], resolution.Path)
+					}
+				}
+			}
+		}
+		resolved[name] = uniqueStrings(resolved[name])
+	}
+	return resolved
+}
+
+var jsNamedReexportPattern = regexp.MustCompile(`(?ms)^\s*export\s+(?:type\s+)?\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]`)
+
+func javascriptReexportModulesForName(content, name string) []string {
+	var modules []string
+	for _, match := range jsNamedReexportPattern.FindAllStringSubmatch(content, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		for _, item := range strings.Split(stripJSLineComments(match[1]), ",") {
+			imported, local := javascriptImportNames(item)
+			if imported == name || local == name {
+				modules = append(modules, match[2])
+				break
+			}
+		}
+	}
+	return uniqueStrings(modules)
+}
+
+func stripJSLineComments(content string) string {
+	var lines []string
+	for _, line := range strings.Split(content, "\n") {
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = line[:i]
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		seen[value] = struct{}{}
+	}
+	return sortedKeys(seen)
+}
+
 func importedJavaScriptBindings(content string) map[string][]jsImportBinding {
 	bindings := map[string][]jsImportBinding{}
 	add := func(local string, binding jsImportBinding) {
@@ -8342,23 +8496,30 @@ func parsePythonImportItem(item string) (name, alias string) {
 	return parts[0], ""
 }
 
-func importedNameMatchesFile(modules []string, targetPath string) bool {
+func importedNameMatchesFile(modules []string, importingPath, targetPath string) bool {
 	for _, module := range modules {
-		if importModuleMatchesFile(module, targetPath) {
+		if importModuleMatchesFile(module, importingPath, targetPath) {
 			return true
 		}
 	}
 	return false
 }
 
-func importModuleMatchesFile(module, targetPath string) bool {
+func importModuleMatchesFile(module, importingPath, targetPath string) bool {
 	module = strings.TrimSpace(module)
-	if module == "" || strings.HasPrefix(module, ".") {
+	if module == "" {
 		return false
+	}
+	targetPath = filepath.ToSlash(targetPath)
+	if strings.HasPrefix(module, ".") {
+		base := filepath.ToSlash(filepath.Join(filepath.Dir(importingPath), module))
+		target := strings.TrimSuffix(targetPath, filepath.Ext(targetPath))
+		return target == base || (strings.HasSuffix(target, "/index") && strings.TrimSuffix(target, "/index") == base)
 	}
 	module = strings.TrimPrefix(module, "@/")
 	module = strings.TrimPrefix(module, "src/")
-	target := strings.TrimSuffix(filepath.ToSlash(targetPath), filepath.Ext(targetPath))
+	module = strings.TrimSuffix(filepath.ToSlash(module), filepath.Ext(module))
+	target := strings.TrimSuffix(targetPath, filepath.Ext(targetPath))
 	return strings.HasSuffix(target, module) || strings.HasSuffix(target, "/"+module) || target == module
 }
 
