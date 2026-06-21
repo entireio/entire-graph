@@ -196,7 +196,8 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   `src`, configured setuptools package-find roots, root and package-specific
   `package-dir`/`package_dir` mappings, inferred nested `*/src` namespace roots,
   `pyproject.toml`, and `setup.cfg` with `import_resolved` metadata.
-- Python literal and local-constant runtime imports through
+- Python literal, local-constant, and simple constant-hole f-string runtime
+  imports through
   `importlib.import_module("module.path")`, `__import__("module.path")`,
   `importlib.import_module(MODULE)`, `__import__(PACKAGE + ".module")`,
   direct `from importlib import import_module` calls, and aliased
@@ -204,6 +205,10 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   emit `IMPORTS` and resolve to local files through the same module resolver
   when the module expression is a literal or deterministic local string
   expression.
+- Latest local Go/gin syntax-only Python f-string runtime import smoke
+  benchmark: `bench/results/result-1782001960.json`, 28,618 LOC, 162,973
+  LOC/s, 29,081,600 bytes max RSS, 1 parse failure, estimated output
+  1,902,642 bytes.
 - Exact Java/Kotlin/Scala-style package imports resolve through package
   declarations and source file names with `import_resolved` metadata.
 - Simple root Maven/Gradle package identity aliases resolve matching JVM imports

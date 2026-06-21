@@ -236,7 +236,8 @@ Tasks:
   package-specific `package-dir`/`package_dir` mappings, inferred nested
   `*/src` namespace roots, and simple `from package import module`
   member-module candidates are implemented for local Python module resolution,
-  including literal and local-constant `importlib.import_module(...)`,
+  including literal, local-constant, and simple constant-hole f-string
+  `importlib.import_module(...)`,
   direct or aliased `from importlib import import_module` calls,
   `import importlib as name` aliases, and `__import__(...)` runtime imports; exact
   Java/Kotlin/Scala package imports are implemented through package declarations

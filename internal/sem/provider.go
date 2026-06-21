@@ -8478,11 +8478,12 @@ func maskBytes(bytes []byte, start, end int) {
 }
 
 var (
-	routeLiteralRe        = regexp.MustCompile(`["'](/[A-Za-z0-9_\-/{}\[\]:.]*)["']`)
-	staticRouteConcatRe   = regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\+\s*["']([^"']*)["']`)
-	staticStringAssignRe  = regexp.MustCompile(`(?m)\b(?:(?:const|let|var)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=\n]+)?=\s*([^\n;]+)`)
-	staticTemplateHoleRe  = regexp.MustCompile(`\$\{\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\}`)
-	routeCallExpressionRe = regexp.MustCompile(`(?i)\b(?:get|post|put|patch|delete|head|options|route|handle|handlefunc|group|mapping|getmapping|postmapping|putmapping|deletemapping|patchmapping|requestmapping)\s*\(\s*([^,\n)]+)`)
+	routeLiteralRe            = regexp.MustCompile(`["'](/[A-Za-z0-9_\-/{}\[\]:.]*)["']`)
+	staticRouteConcatRe       = regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\+\s*["']([^"']*)["']`)
+	staticStringAssignRe      = regexp.MustCompile(`(?m)\b(?:(?:const|let|var)\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=\n]+)?=\s*([^\n;]+)`)
+	staticTemplateHoleRe      = regexp.MustCompile(`\$\{\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\}`)
+	staticPythonFStringHoleRe = regexp.MustCompile(`\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}`)
+	routeCallExpressionRe     = regexp.MustCompile(`(?i)\b(?:get|post|put|patch|delete|head|options|route|handle|handlefunc|group|mapping|getmapping|postmapping|putmapping|deletemapping|patchmapping|requestmapping)\s*\(\s*([^,\n)]+)`)
 	// routingCallRe marks a line as a route registration: an HTTP-verb or
 	// routing method call, or a mapping decorator, immediately before "(".
 	// Requiring this context next to the path literal avoids treating every
@@ -10144,6 +10145,9 @@ func staticStringExpressionValue(expr string, constants map[string]string) (stri
 	if expr == "" {
 		return "", false
 	}
+	if value, ok := staticPythonFStringValue(expr, constants); ok {
+		return value, true
+	}
 	if (strings.HasPrefix(expr, `"`) && strings.HasSuffix(expr, `"`)) || (strings.HasPrefix(expr, `'`) && strings.HasSuffix(expr, `'`)) {
 		if parts := splitStaticConcatExpression(expr); len(parts) > 1 {
 			return staticConcatStringValue(parts, constants)
@@ -10186,6 +10190,41 @@ func staticTemplateStringValue(expr string, constants map[string]string) (string
 		return constants[match[1]]
 	})
 	if !ok || strings.Contains(value, "${") {
+		return "", false
+	}
+	return value, true
+}
+
+func staticPythonFStringValue(expr string, constants map[string]string) (string, bool) {
+	expr = strings.TrimSpace(expr)
+	lower := strings.ToLower(expr)
+	prefixLen := 0
+	switch {
+	case strings.HasPrefix(lower, "fr\"") || strings.HasPrefix(lower, "rf\"") || strings.HasPrefix(lower, "fr'") || strings.HasPrefix(lower, "rf'"):
+		prefixLen = 2
+	case strings.HasPrefix(lower, "f\"") || strings.HasPrefix(lower, "f'"):
+		prefixLen = 1
+	default:
+		return "", false
+	}
+	if len(expr) <= prefixLen+1 {
+		return "", false
+	}
+	quote := expr[prefixLen]
+	if (quote != '"' && quote != '\'') || expr[len(expr)-1] != quote {
+		return "", false
+	}
+	body := expr[prefixLen+1 : len(expr)-1]
+	ok := true
+	value := staticPythonFStringHoleRe.ReplaceAllStringFunc(body, func(hole string) string {
+		match := staticPythonFStringHoleRe.FindStringSubmatch(hole)
+		if len(match) != 2 || constants[match[1]] == "" {
+			ok = false
+			return ""
+		}
+		return constants[match[1]]
+	})
+	if !ok || strings.ContainsAny(value, "{}") {
 		return "", false
 	}
 	return value, true

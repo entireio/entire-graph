@@ -645,6 +645,9 @@ func TestPythonRuntimeLiteralImportsResolveToLocalFiles(t *testing.T) {
 	writeFile(t, repo, "src/acme_runtime/module_alias.py", `def run():
     return "module_alias"
 `)
+	writeFile(t, repo, "src/acme_runtime/formatted.py", `def run():
+    return "formatted"
+`)
 	writeFile(t, repo, "src/acme_runtime/loader.py", `import importlib
 import importlib as il
 from importlib import import_module, import_module as load_module
@@ -663,7 +666,8 @@ def load():
     direct = import_module("acme_runtime.direct")
     aliased = load_module(ALIASED)
     module_alias = il.import_module(MODULE_ALIAS)
-    return plugin, legacy, extra, joined, direct, aliased, module_alias
+    formatted = importlib.import_module(f"{PREFIX}.formatted")
+    return plugin, legacy, extra, joined, direct, aliased, module_alias, formatted
 `)
 
 	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
@@ -678,6 +682,7 @@ def load():
 		"src/acme_runtime/direct.py",
 		"src/acme_runtime/aliased.py",
 		"src/acme_runtime/module_alias.py",
+		"src/acme_runtime/formatted.py",
 	} {
 		target := fileID(snapshot.Header.RepoKey, targetPath)
 		if !hasImportRelation(snapshot.Relations, "src/acme_runtime/loader.py", target) {
