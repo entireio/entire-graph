@@ -417,12 +417,43 @@ func maskYAMLUnsupportedSyntax(content string) string {
 	// Bare YAML scalars cannot start with "@", but replacing it in parse-only
 	// input preserves line and column positions while leaving entity extraction
 	// on the original source.
-	return strings.Map(func(r rune) rune {
+	content = strings.Map(func(r rune) rune {
 		if r == '@' {
 			return 'x'
 		}
 		return r
 	}, content)
+	lines := strings.SplitAfter(content, "\n")
+	for i, line := range lines {
+		text, newline := splitLineEnding(line)
+		lines[i] = maskYAMLQuotedMappingKey(text) + newline
+	}
+	return strings.Join(lines, "")
+}
+
+func maskYAMLQuotedMappingKey(line string) string {
+	colon := yamlKeyColonIndex(line)
+	if colon < 0 {
+		return line
+	}
+	prefix := line[:colon]
+	trimmed := strings.TrimSpace(prefix)
+	if strings.HasPrefix(trimmed, "- ") {
+		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+	}
+	if len(trimmed) < 2 {
+		return line
+	}
+	quote := trimmed[0]
+	if (quote != '\'' && quote != '"') || trimmed[len(trimmed)-1] != quote {
+		return line
+	}
+	start := strings.IndexByte(line[:colon], quote)
+	end := strings.LastIndexByte(line[:colon], quote)
+	if start < 0 || end <= start {
+		return line
+	}
+	return line[:start] + string(quote) + "key" + string(quote) + line[end+1:]
 }
 
 var (
@@ -479,11 +510,15 @@ func maskCUnsupportedSyntax(content string) string {
 			continue
 		}
 		if strings.HasPrefix(trimmed, "__attribute__") {
-			replacement := ""
-			if strings.HasSuffix(trimmed, ";") {
-				replacement = ";"
+			if strings.Contains(trimmed, " extern ") {
+				lines[i] = maskCAnnotationMacros(text) + newline
+			} else {
+				replacement := ""
+				if strings.HasSuffix(trimmed, ";") {
+					replacement = ";"
+				}
+				lines[i] = paddedReplacement(leadingWhitespace(text), replacement, len(text)) + newline
 			}
-			lines[i] = paddedReplacement(leadingWhitespace(text), replacement, len(text)) + newline
 			continue
 		}
 		if cEnumMacroPattern.MatchString(trimmed) {
@@ -759,7 +794,7 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 				firstLine := true
 				statementMacro := cPlusPlusStatementReplacementMacroLinePattern.MatchString(trimmed)
 				for {
-					if !firstLine && (strings.TrimSpace(text) == "}" || strings.TrimSpace(text) == "};") {
+					if !firstLine && !strings.HasPrefix(trimmed, "CHECK_THROWS") && (strings.TrimSpace(text) == "}" || strings.TrimSpace(text) == "};") {
 						break
 					}
 					balance += strings.Count(text, "(") - strings.Count(text, ")")
@@ -804,6 +839,20 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 					i++
 					text, newline = splitLineEnding(lines[i])
 				}
+			} else if cPlusPlusLeadingAnnotationMacroLine(trimmed) {
+				text = maskCPlusPlusAnnotationMacros(text)
+				text = maskCPlusPlusFunctionLikeMacro(text, "DOCTEST_REF_WRAP", "T")
+				text = normalizeCPlusPlusPrimitiveSpecifiers(text)
+				lines[i] = text + newline
+			} else if strings.HasPrefix(trimmed, "struct StringMaker : public detail::StringMakerBase<") {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "struct StringMaker {};", len(text)) + newline
+				for !strings.Contains(text, "{};") && i+1 < len(lines) {
+					i++
+					text, newline = splitLineEnding(lines[i])
+					lines[i] = maskLineText(text) + newline
+				}
+			} else if strings.HasPrefix(trimmed, "DOCTEST_INTERNAL_ERROR(") {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "0;", len(text)) + newline
 			} else if cPlusPlusBlankMacroLine(trimmed) {
 				if cPlusPlusStatementReplacementMacroLinePattern.MatchString(trimmed) {
 					lines[i] = paddedReplacement(leadingWhitespace(text), "0;", len(text)) + newline
@@ -814,7 +863,7 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 			} else if strings.Contains(trimmed, `result["compiler"] = "hp"`) {
 				lines[i] = paddedReplacement(leadingWhitespace(text), `result["compiler"]="hp";`, len(text)) + newline
 			} else if strings.Contains(text, "std::partial_ordering operator<=>") {
-				lines[i] = maskLineText(text) + newline
+				lines[i] = paddedReplacement(leadingWhitespace(text), "bool compare_spaceship() const noexcept", len(text)) + newline
 			} else if strings.Contains(text, "FMT_ENABLE_IF(") && balancedCallEnd(text, strings.Index(text, "FMT_ENABLE_IF(")+len("FMT_ENABLE_IF")) < 0 {
 				marker := strings.Index(text, "FMT_ENABLE_IF(")
 				lines[i] = text[:marker] + sameLengthReplacement("int = 0>", len(text)-marker) + newline
@@ -867,6 +916,9 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 					lines[i] = maskLineText(nextText) + nextNewline
 					break
 				}
+			} else if marker := cPlusPlusEnableIfTypenameStart(text); marker >= 0 && cPlusPlusEnableIfTypePointerTemplateDefaultLinePattern.MatchString(text) {
+				replacement := text[:marker] + sameLengthReplacement("typename E=void>", len(text)-marker)
+				lines[i] = replacement + newline
 			} else if cPlusPlusEnableIfTypePointerTemplateDefaultLinePattern.MatchString(text) {
 				lines[i] = paddedReplacement(leadingWhitespace(text), "typename = void>", len(text)) + newline
 			} else if cPlusPlusEnableIfTypePointerParamLinePattern.MatchString(text) {
@@ -884,7 +936,10 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 				lines[i] = paddedReplacement(leadingWhitespace(text), "int* p = nullptr", len(text)) + newline
 				if i+1 < len(lines) {
 					nextText, nextNewline := splitLineEnding(lines[i+1])
-					if idx := strings.Index(nextText, "nullptr"); idx >= 0 {
+					if strings.Contains(nextText, "static_cast") && strings.Contains(nextText, "{") {
+						i++
+						lines[i] = paddedReplacement(leadingWhitespace(nextText), ") {", len(nextText)) + nextNewline
+					} else if idx := strings.Index(nextText, "nullptr"); idx >= 0 {
 						i++
 						lines[i] = nextText[:idx] + strings.Repeat(" ", len("nullptr")) + nextText[idx+len("nullptr"):] + nextNewline
 					}
@@ -905,8 +960,47 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 					i++
 					text, newline = splitLineEnding(lines[i])
 				}
+			} else if strings.HasPrefix(trimmed, "template struct ") {
+				lines[i] = maskLineText(text) + newline
 			} else if strings.HasPrefix(trimmed, "FMT_PRAGMA_") {
 				lines[i] = maskLineText(text) + newline
+			} else if trimmed == `extern "C" {` {
+				for {
+					lines[i] = maskLineText(text) + newline
+					if (strings.HasPrefix(strings.TrimSpace(text), `}  // extern "C"`) || strings.HasPrefix(strings.TrimSpace(text), `} // extern "C"`)) || i+1 >= len(lines) {
+						break
+					}
+					i++
+					text, newline = splitLineEnding(lines[i])
+				}
+			} else if strings.HasPrefix(trimmed, `}  // extern "C"`) || strings.HasPrefix(trimmed, `} // extern "C"`) {
+				lines[i] = maskLineText(text) + newline
+			} else if strings.HasPrefix(trimmed, "(void)") && (strings.Contains(trimmed, "{}") || strings.Contains(trimmed, "{};")) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "(void)0;", len(text)) + newline
+			} else if strings.HasPrefix(trimmed, ": std::conditional<") {
+				lines[i] = paddedReplacement(leadingWhitespace(text), ": std::true_type {};", len(text)) + newline
+				for !strings.Contains(text, "{}") && !strings.Contains(text, "{ }") && i+1 < len(lines) {
+					i++
+					text, newline = splitLineEnding(lines[i])
+					lines[i] = maskLineText(text) + newline
+				}
+			} else if cPlusPlusStdIntegralConstantBoolExpressionLinePattern.MatchString(trimmed) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "struct cxx_bool_constant : std::false_type {};", len(text)) + newline
+			} else if cPlusPlusBoolConstantCallLinePattern.MatchString(trimmed) {
+				lines[i] = replacePatternSameLength(text, cPlusPlusBoolConstantCallPattern, "bool_constant<true>") + newline
+			} else if !strings.HasPrefix(trimmed, "struct ") && !strings.HasPrefix(trimmed, "class ") && strings.Contains(trimmed, ")") && strings.HasSuffix(trimmed, "{};") {
+				lines[i] = text[:strings.LastIndex(text, ";")] + strings.Repeat(" ", len(text)-strings.LastIndex(text, ";")) + newline
+			} else if strings.HasPrefix(trimmed, "}; // namespace") {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "} // namespace", len(text)) + newline
+			} else if trimmed == "};" && cPlusPlusLikelyFunctionBodyCloseSemi(lines, i) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "}", len(text)) + newline
+			} else if strings.HasPrefix(trimmed, "return {") {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "return {};", len(text)) + newline
+				for !strings.Contains(text, ";") && i+1 < len(lines) {
+					i++
+					text, newline = splitLineEnding(lines[i])
+					lines[i] = maskLineText(text) + newline
+				}
 			} else if !strings.HasPrefix(trimmed, "#") {
 				text = maskCPlusPlusFunctionLikeMacro(text, "FMT_ENABLE_IF", "typename T = void")
 				text = maskCPlusPlusFunctionLikeMacro(text, "FMT_SO_VISIBILITY", "")
@@ -916,10 +1010,12 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 				text = maskCPlusPlusFunctionLikeMacro(text, "GTEST_REMOVE_REFERENCE_AND_CONST_", "T")
 				text = maskCPlusPlusFunctionLikeMacro(text, "GMOCK_KIND_OF_", "kBool")
 				text = maskCPlusPlusFunctionLikeMacro(text, "GMOCK_FLAG", "gmock_flag")
+				text = maskCPlusPlusFunctionLikeMacro(text, "DOCTEST_STRINGIFY", `"expr"`)
 				text = maskCPlusPlusFunctionLikeMacro(text, "__declspec", "")
 				text = maskCPlusPlusLikelyMacro(text, "JSON_HEDLEY_LIKELY")
 				text = maskCPlusPlusLikelyMacro(text, "JSON_HEDLEY_UNLIKELY")
 				text = maskCPlusPlusFunctionLikeMacro(text, "STRINGIZE", `"s"`)
+				text = maskCPlusPlusFunctionLikeMacro(text, "DOCTEST_BRANCH_ON_DISABLED", "{}")
 				text = maskCPlusPlusFunctionLikeMacroPattern(text, cPlusPlusHedleyFunctionLikeMacroPattern, "")
 				text = maskCPlusPlusFunctionLikeMacroPattern(text, cPlusPlusAnnotationFunctionLikeMacroPattern, "")
 				text = maskCPlusPlusTrailingDecltypeReturn(text)
@@ -927,6 +1023,7 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 				text = maskCPlusPlusMemberOperatorCall(text)
 				text = maskCPlusPlusOperatorCall(text)
 				text = replaceAllSameLength(text, "std::strong_ordering", "bool")
+				text = normalizeCPlusPlusPrimitiveSpecifiers(text)
 				text = replaceAllSameLength(text, "operator<=>", "operator<")
 				text = replaceAllSameLength(text, " <=> ", " < ")
 				text = replacePatternSameLength(text, cPlusPlusDependentTypenameTemporaryPattern, "= T{}")
@@ -945,6 +1042,7 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 				text = replaceAllSameLength(text, "NLOHMANN_BASIC_JSON_TPL", "BasicJsonType")
 				text = replaceAllSameLength(text, "JSON_INLINE_VARIABLE", "inline")
 				text = replaceAllSameLength(text, "JSON_NO_UNIQUE_ADDRESS", "")
+				text = replaceAllSameLength(text, "decltype(filters)(9)", "{}")
 				text = replaceAllSameLength(text, "GTEST_NAME_", `"gtest"`)
 				text = replacePatternSameLength(text, cPlusPlusGTestPointerTemplateDefaultPattern, "typename R, int N = 0")
 				text = replacePatternSameLength(text, cPlusPlusMemberPointerDecltypePattern, "int")
@@ -955,13 +1053,21 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 					text = paddedReplacement(leadingWhitespace(text), "auto call_result = call();", len(text))
 				}
 				if strings.HasPrefix(strings.TrimSpace(text), "if (auto ") {
-					text = paddedReplacement(leadingWhitespace(text), "if (true) {", len(text))
+					replacement := "if (true)"
+					if strings.Contains(text, "{") {
+						replacement = "if (true) {"
+					}
+					text = paddedReplacement(leadingWhitespace(text), replacement, len(text))
 				}
 				if strings.Contains(text, ".*(&") {
 					text = paddedReplacement(leadingWhitespace(text), "return {};", len(text))
 				}
+				if strings.Contains(text, "::operator bool()") {
+					text = paddedReplacement(leadingWhitespace(text), "bool op() {", len(text))
+				}
 				text = replacePatternSameLength(text, cPlusPlusAnonymousEnumPattern, "enum cxx_enum")
 				text = replacePatternSameLength(text, cPlusPlusExplicitOperatorCallPattern, "call(")
+				text = replacePatternSameLength(text, cPlusPlusConversionOperatorDeclPattern, "convert()")
 				lines[i] = maskCPlusPlusAnnotationMacros(text) + newline
 			}
 		}
@@ -1003,6 +1109,66 @@ func cPlusPlusUsingAliasName(text string) string {
 	return name
 }
 
+func cPlusPlusLeadingAnnotationMacroLine(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "DOCTEST_NOINLINE ") ||
+		strings.HasPrefix(trimmed, "DOCTEST_NORETURN ") ||
+		strings.HasPrefix(trimmed, "DOCTEST_INTERFACE ") ||
+		strings.HasPrefix(trimmed, "DOCTEST_INTERFACE_DECL ") ||
+		strings.HasPrefix(trimmed, "DOCTEST_CONSTEXPR_FUNC ") ||
+		strings.HasPrefix(trimmed, "DOCTEST_THREAD_LOCAL ") ||
+		strings.HasPrefix(trimmed, "ATTRIBUTE_TARGET_") ||
+		strings.HasPrefix(trimmed, "ATTRIBUTE_NO_SANITIZE_") ||
+		strings.HasPrefix(trimmed, "NO_SANITIZE_")
+}
+
+func normalizeCPlusPlusPrimitiveSpecifiers(text string) string {
+	text = replaceAllSameLength(text, "double long", "long double")
+	text = replaceAllSameLength(text, "char signed", "signed char")
+	text = replaceAllSameLength(text, "char unsigned", "unsigned char")
+	text = replaceAllSameLength(text, "short unsigned", "unsigned short")
+	text = replaceAllSameLength(text, "long long unsigned", "unsigned long long")
+	text = replaceAllSameLength(text, "long unsigned", "unsigned long")
+	return text
+}
+
+func cPlusPlusLikelyFunctionBodyCloseSemi(lines []string, i int) bool {
+	balance := 1
+	for j := i - 1; j >= 0 && i-j <= 200; j-- {
+		text, _ := splitLineEnding(lines[j])
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		balance += strings.Count(text, "}") - strings.Count(text, "{")
+		if balance == 0 {
+			openBrace := strings.Index(trimmed, "{")
+			if openBrace < 0 || strings.Contains(trimmed[:openBrace], "=") {
+				return false
+			}
+			return strings.Contains(trimmed[:openBrace], ")")
+		}
+		if balance < 0 {
+			return false
+		}
+	}
+	return false
+}
+
+func cPlusPlusEnableIfTypenameStart(text string) int {
+	start := -1
+	for _, needle := range []string{
+		"typename std::enable_if",
+		"typename types::enable_if",
+		"typename detail::types::enable_if",
+		"typename doctest::detail::types::enable_if",
+	} {
+		if idx := strings.Index(text, needle); idx >= 0 && (start < 0 || idx < start) {
+			start = idx
+		}
+	}
+	return start
+}
+
 func cPlusPlusEnableIfContinuationEndsWithComma(lines []string, i int) bool {
 	for j := i + 1; j < len(lines) && j-i <= 8; j++ {
 		text, _ := splitLineEnding(lines[j])
@@ -1042,8 +1208,8 @@ func cPlusPlusPreprocessorDirectiveSkipsBlock(trimmed string) bool {
 }
 
 var (
-	cPlusPlusAnnotationMacroPattern                        = regexp.MustCompile(`\b(?:FMT_(?:API|FUNC|EXPORT|INLINE(?:_VARIABLE)?|CONSTEXPR(?:20|_STRING)?|CONSTEVAL|ALWAYS_INLINE|NODISCARD|NORETURN|DEPRECATED|MAYBE_UNUSED|NO_UNIQUE_ADDRESS|LIFETIMEBOUND|BUILTIN)|JSON_(?:HEDLEY_[A-Z0-9_]+|EXPLICIT|INLINE_VARIABLE)|DOCTEST_(?:INTERFACE|CONSTEXPR|NOEXCEPT|INLINE|ATTRIBUTE_[A-Z0-9_]+)|GTEST_API_|GMOCK_API_|GTEST_NO_INLINE_|GTEST_MUST_USE_RESULT_|GTEST_INTERNAL_EMPTY_BASE_CLASS|GTEST_ATTRIBUTE_NO_SANITIZE_[A-Z_]+|__stdcall|CALLBACK|WINAPI)\b`)
-	cPlusPlusAnnotationFunctionLikeMacroPattern            = regexp.MustCompile(`\b(?:GTEST_API_|GMOCK_API_|GTEST_DISABLE_MSC_WARNINGS_PUSH_|GTEST_DISABLE_MSC_WARNINGS_POP_|GTEST_ATTRIBUTE_[A-Za-z0-9_]+|GTEST_INTERNAL_DEPRECATED|GTEST_LOCK_EXCLUDED_|GTEST_EXCLUSIVE_LOCK_REQUIRED_|DOCTEST_MSVC_SUPPRESS_WARNING|DOCTEST_CLANG_SUPPRESS_WARNING|DOCTEST_GCC_SUPPRESS_WARNING)\s*\(`)
+	cPlusPlusAnnotationMacroPattern                        = regexp.MustCompile(`\b(?:FMT_(?:API|FUNC|EXPORT|INLINE(?:_VARIABLE)?|CONSTEXPR(?:20|_STRING)?|CONSTEVAL|ALWAYS_INLINE|NODISCARD|NORETURN|DEPRECATED|MAYBE_UNUSED|NO_UNIQUE_ADDRESS|LIFETIMEBOUND|BUILTIN)|JSON_(?:HEDLEY_[A-Z0-9_]+|EXPLICIT|INLINE_VARIABLE)|DOCTEST_(?:INTERFACE(?:_DECL|_DEF)?|CONSTEXPR(?:_FUNC)?|NOEXCEPT|INLINE|NOINLINE|NORETURN|THREAD_LOCAL|ATTRIBUTE_[A-Z0-9_]+)|GTEST_API_|GMOCK_API_|GTEST_NO_INLINE_|GTEST_MUST_USE_RESULT_|GTEST_INTERNAL_EMPTY_BASE_CLASS|GTEST_ATTRIBUTE_NO_SANITIZE_[A-Z_]+|ATTRIBUTE_TARGET_[A-Z0-9_]+|ATTRIBUTE_NO_SANITIZE_[A-Z0-9_]+|NO_SANITIZE_[A-Z0-9_]+|__stdcall|CALLBACK|WINAPI)\b`)
+	cPlusPlusAnnotationFunctionLikeMacroPattern            = regexp.MustCompile(`\b(?:GTEST_API_|GMOCK_API_|GTEST_DISABLE_MSC_WARNINGS_PUSH_|GTEST_DISABLE_MSC_WARNINGS_POP_|GTEST_ATTRIBUTE_[A-Za-z0-9_]+|GTEST_INTERNAL_DEPRECATED|GTEST_LOCK_EXCLUDED_|GTEST_EXCLUSIVE_LOCK_REQUIRED_|DOCTEST_MSVC_SUPPRESS_WARNING|DOCTEST_CLANG_SUPPRESS_WARNING|DOCTEST_GCC_SUPPRESS_WARNING|__attribute__)\s*\(`)
 	cPlusPlusTestMacroPattern                              = regexp.MustCompile(`^(\s*)(?:TEST|TEST_F|TEST_P|TYPED_TEST|TYPED_TEST_P|MATCHER|TEST_CASE(?:_[A-Z0-9_]+)*|TEMPLATE_TEST_CASE(?:_[A-Z0-9_]+)*|SCENARIO|GIVEN|WHEN|THEN)\s*\(`)
 	cPlusPlusDoctestControlMacroPattern                    = regexp.MustCompile(`^(\s*)(?:SECTION|SUBCASE|AND_WHEN|AND_THEN)\s*\(.*\)\s*`)
 	cPlusPlusStatementMacroLinePattern                     = regexp.MustCompile(`^(?:CAPTURE|INFO|WARN|FAIL|SUCCEED|ADD_FAILURE(?:_AT)?|EXPECT(?:_[A-Z0-9_]+)?|ASSERT(?:_[A-Z0-9_]+)?|CHECK(?:_[A-Z0-9_]+)?|REQUIRE(?:_[A-Z0-9_]+)?|STATIC_REQUIRE(?:_[A-Z0-9_]+)?|JSON_(?:ASSERT|THROW|DIAGNOSTIC_IGNORE)|GTEST_(?:DEFINE|DISABLE|ALLOW|SUPPRESS)[A-Za-z0-9_]*|GMOCK_[A-Za-z0-9_]+)\s*\(`)
@@ -1063,12 +1229,16 @@ var (
 	cPlusPlusMemberFunctionPointerTemplateArgPattern       = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_:<>]*\s+\([A-Za-z_][A-Za-z0-9_:<>]*::\*\)\(\)\s*const`)
 	cPlusPlusEmptyBraceDefaultPattern                      = regexp.MustCompile(`=\s*\{\}`)
 	cPlusPlusTemplatePointerDefaultPattern                 = regexp.MustCompile(`>\s*\*\s*=\s*nullptr\s*>`)
-	cPlusPlusEnableIfPointerDefaultPattern                 = regexp.MustCompile(`typename[ \t]+[A-Za-z_][A-Za-z0-9_:<>!,& \t]*::type[ \t]*\*[ \t]*=`)
+	cPlusPlusEnableIfPointerDefaultPattern                 = regexp.MustCompile(`typename[ \t]+(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_]*enable_if[^;\n]*::type[ \t]*\*[ \t]*=`)
 	cPlusPlusEnableIfTypePointerTemplateDefaultLinePattern = regexp.MustCompile(`::type[ \t]*\*[ \t]*=[ \t]*nullptr>`)
 	cPlusPlusEnableIfTypePointerParamLinePattern           = regexp.MustCompile(`::type[ \t]*\*[ \t]*$`)
 	cPlusPlusUnsignedCastPattern                           = regexp.MustCompile(`\bunsigned\(([^)\n]+)\)`)
 	cPlusPlusAnonymousEnumPattern                          = regexp.MustCompile(`\benum\s*:\s*[A-Za-z_][A-Za-z0-9_:]*\b`)
 	cPlusPlusExplicitOperatorCallPattern                   = regexp.MustCompile(`operator\(\)<[^>\n]+>\(`)
+	cPlusPlusConversionOperatorDeclPattern                 = regexp.MustCompile(`operator\s+[A-Za-z_][A-Za-z0-9_:<>]*\s*\(\s*\)`)
+	cPlusPlusStdIntegralConstantBoolExpressionLinePattern  = regexp.MustCompile(`^template<[^>]+>\s*struct\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*std::integral_constant\s*<\s*bool\s*,[^>]+>\s*\{\s*\};?$`)
+	cPlusPlusBoolConstantCallPattern                       = regexp.MustCompile(`bool_constant<[A-Za-z_][A-Za-z0-9_:<>]*\(\)>`)
+	cPlusPlusBoolConstantCallLinePattern                   = regexp.MustCompile(`^template<[^>]+>\s*struct\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*bool_constant<[A-Za-z_][A-Za-z0-9_:<>]*\(\)>\s*\{\s*\};?$`)
 	cPlusPlusGTestPointerTemplateDefaultPattern            = regexp.MustCompile(`typename\s+R\s*,\s*R\s*\*\s*=\s*nullptr`)
 	cPlusPlusMemberPointerDecltypePattern                  = regexp.MustCompile(`decltype\s*\(\s*\([^;\n]*->\*[^;\n]*\)\s*\(\s*\)\s*\)`)
 	cPlusPlusDirectInitializerTernaryPattern               = regexp.MustCompile(`^\s*(?:const\s+)?[A-Za-z_][A-Za-z0-9_:<>]*\s*&\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^;\n]*\?\s*[^;\n]*:\s*$`)
@@ -1131,6 +1301,7 @@ func cPlusPlusBlankMacroLine(trimmed string) bool {
 func cPlusPlusMultilineBlankMacroStart(trimmed string) bool {
 	return strings.HasPrefix(trimmed, "NLOHMANN_JSON_SERIALIZE_ENUM") ||
 		strings.HasPrefix(trimmed, "TEST_CASE_TEMPLATE_INVOKE") ||
+		strings.HasPrefix(trimmed, "JSON_IMPLEMENT_OPERATOR") ||
 		strings.HasPrefix(trimmed, "GTEST_DEFINE_") ||
 		strings.HasPrefix(trimmed, "GMOCK_DEFINE_") ||
 		strings.HasPrefix(trimmed, "GTEST_COMPILE_ASSERT_") ||

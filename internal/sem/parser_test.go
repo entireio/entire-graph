@@ -259,6 +259,7 @@ int xsnprintf(char *, size_t, const char *, ...)
 		__attribute__((__format__ (printf, 3, 4)))
 		__attribute__((__nonnull__ (3)))
 		__attribute__((__bounded__ (__string__, 1, 2)));
+__attribute__((weak)) extern int LLVMFuzzerInitialize(int *argc, char ***argv);
 
 #endif
 `)
@@ -880,6 +881,24 @@ ui:
 	}
 }
 
+func TestTreeSitterParserYAMLMasksQuotedMappingKeys(t *testing.T) {
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("mkdocs.yml", `nav:
+  - API Documentation:
+      - macros:
+          - 'NLOHMANN_DEFINE_DERIVED_TYPE_INTRUSIVE, NLOHMANN_DEFINE_DERIVED_TYPE_INTRUSIVE_WITH_DEFAULT, NLOHMANN_DEFINE_DERIVED_TYPE_INTRUSIVE_ONLY_SERIALIZE, NLOHMANN_DEFINE_DERIVED_TYPE_NON_INTRUSIVE, NLOHMANN_DEFINE_DERIVED_TYPE_NON_INTRUSIVE_WITH_DEFAULT, NLOHMANN_DEFINE_DERIVED_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE': api/macros/nlohmann_define_derived_type.md
+          - 'NLOHMANN_DEFINE_TYPE_INTRUSIVE, NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT, NLOHMANN_DEFINE_TYPE_INTRUSIVE_ONLY_SERIALIZE': api/macros/nlohmann_define_type_intrusive.md
+`)
+	if language != "YAML" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	if len(entities) == 0 {
+		t.Fatalf("expected YAML section entities after masking quoted mapping keys")
+	}
+}
+
 func TestTreeSitterParserDetectsCPlusPlusHeaders(t *testing.T) {
 	entities, language, status := TreeSitterParser{}.ParseWithStatus("args.h", `#ifndef FMT_ARGS_H_
 #define FMT_ARGS_H_
@@ -1442,6 +1461,99 @@ struct explicit_value {
 };
 
 JSON_IMPLEMENT_OPERATOR( ==, true, false, false)
+std::partial_ordering operator<=>(const_reference rhs) const noexcept
+{
+    const_reference lhs = *this;
+    JSON_IMPLEMENT_OPERATOR(<=>,
+                            std::partial_ordering::equivalent,
+                            std::partial_ordering::unordered,
+                            lhs_type <=> rhs_type)
+}
+
+CHECK_THROWS_WITH_AS([&]()
+{
+    [[maybe_unused]] auto result = json::from_msgpack(empty_data);
+    return true;
+}
+(),
+"parse error",
+json::parse_error&);
+
+struct DOCTEST_INTERFACE_DECL IsNaN
+{
+    bool flipped;
+};
+
+struct Approx
+{
+    template <typename T>
+    explicit Approx(const T& value,
+                    typename detail::types::enable_if<std::is_constructible<double, T>::value>::type* =
+                            static_cast<T*>(nullptr)) {
+        *this = static_cast<double>(value);
+    }
+};
+
+template <typename L>
+struct Expression_lhs {
+    operator L() const { return lhs; }
+    L lhs;
+};
+struct ExpressionDecomposer {
+    template <typename L,typename types::enable_if<!doctest::detail::types::is_rvalue_reference<L>::value,void >::type* = nullptr>
+    Expression_lhs<const L&> operator<<(const L &operand) { return Expression_lhs<const L&>(operand, m_at); }
+};
+struct ResultBuilder {
+    template <int comparison, typename L, typename R>
+    DOCTEST_NOINLINE bool binary_assert(const DOCTEST_REF_WRAP(L) lhs,
+                                        const DOCTEST_REF_WRAP(R) rhs) {
+        if (!lhs) {
+            return { false };
+        }
+        return { true, (DOCTEST_STRINGIFY(lhs)) };
+    }
+};
+
+ATTRIBUTE_TARGET_POPCNT
+bool MergeFrom(ValueBitMap &Other) { return true; }
+class TimerQ {
+ public:
+  TimerQ() : TimerQueue(NULL) {};
+  ~TimerQ() {
+    DeleteTimerQueueEx(TimerQueue, NULL);
+  };
+};
+extern "C" {
+__attribute__((visibility("default")))
+void __sanitizer_cov_trace_pc_guard(uint32_t *Guard) {}
+}  // extern "C"
+
+template<class B, class... Bn>
+struct conjunction<B, Bn...>
+: std::conditional<static_cast<bool>(B::value), conjunction<Bn...>, B>::type {};
+template<class B> struct negation : std::integral_constant < bool, !B::value > { };
+template<typename T>
+struct is_c_string : bool_constant<impl::is_c_string<T>()> {};
+template<typename T>
+void sax_static_asserts() {
+    (void)detail::is_sax_static_asserts<T, T> {};
+}
+
+DOCTEST_NORETURN void throw_exception(int e) {
+    throw e;
+}
+void color_to_stream(std::ostream&, Color::Enum) DOCTEST_BRANCH_ON_DISABLED({}, ;)
+DOCTEST_INTERFACE String toString(double long in);
+String toString(char signed in);
+String toString(char unsigned in);
+String toString(short unsigned in);
+String toString(long unsigned in);
+String toString(long long unsigned in);
+template struct DOCTEST_INTERFACE_DEF IsNaN<long double>;
+template <typename F>
+IsNaN<F>::operator bool() const {
+    return std::isnan(value) ^ flipped;
+}
 
 auto ns = STRINGIZE(NLOHMANN_JSON_NAMESPACE);
 DOCTEST_MSVC_SUPPRESS_WARNING_POP
