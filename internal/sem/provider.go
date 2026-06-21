@@ -5657,8 +5657,8 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 		return resolver.jsWorkspacePackages[i].Name < resolver.jsWorkspacePackages[j].Name
 	})
-	if content, ok := readContent("tsconfig.json"); ok {
-		resolver.tsPathMappings = parseTSConfigPaths(content)
+	if _, ok := readContent("tsconfig.json"); ok {
+		resolver.tsPathMappings = tsConfigPathMappings("tsconfig.json", readContent, nil)
 	}
 	for _, importMapPath := range []string{"import-map.json", "importmap.json"} {
 		if content, ok := readContent(importMapPath); ok {
@@ -6090,6 +6090,78 @@ func jsManifestTarget(value any) string {
 }
 
 func parseTSConfigPaths(content string) []tsPathMapping {
+	return parseTSConfigPathsAt(content, "")
+}
+
+func tsConfigPathMappings(path string, readContent contentReader, seen map[string]bool) []tsPathMapping {
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	if path == "" {
+		return nil
+	}
+	if seen == nil {
+		seen = map[string]bool{}
+	}
+	if seen[path] {
+		return nil
+	}
+	seen[path] = true
+	content, ok := readContent(path)
+	if !ok {
+		return nil
+	}
+	var mappings []tsPathMapping
+	if extendsPath, ok := resolveTSConfigExtendsPath(path, parseTSConfigExtends(content)); ok {
+		mappings = append(mappings, tsConfigPathMappings(extendsPath, readContent, seen)...)
+	}
+	mappings = append(mappings, parseTSConfigPathsAt(content, filepath.Dir(path))...)
+	return mergeTSPathMappings(mappings)
+}
+
+func parseTSConfigExtends(content string) string {
+	var data struct {
+		Extends string `json:"extends"`
+	}
+	if err := json.Unmarshal([]byte(stripJSONLineComments(content)), &data); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(data.Extends)
+}
+
+func resolveTSConfigExtendsPath(currentPath, spec string) (string, bool) {
+	spec = strings.Trim(strings.TrimSpace(spec), `"'`)
+	if spec == "" || !(strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../")) {
+		return "", false
+	}
+	baseDir := filepath.Dir(filepath.ToSlash(currentPath))
+	if baseDir == "." {
+		baseDir = ""
+	}
+	resolved := filepath.ToSlash(filepath.Clean(filepath.Join(baseDir, spec)))
+	if filepath.Ext(resolved) == "" {
+		resolved += ".json"
+	}
+	if strings.HasPrefix(resolved, "../") || resolved == ".." {
+		return "", false
+	}
+	return strings.TrimPrefix(resolved, "./"), true
+}
+
+func mergeTSPathMappings(mappings []tsPathMapping) []tsPathMapping {
+	byPattern := map[string]tsPathMapping{}
+	for _, mapping := range mappings {
+		if mapping.Pattern == "" || len(mapping.Targets) == 0 {
+			continue
+		}
+		byPattern[mapping.Pattern] = mapping
+	}
+	out := make([]tsPathMapping, 0, len(byPattern))
+	for _, pattern := range sortedKeysOf(byPattern) {
+		out = append(out, byPattern[pattern])
+	}
+	return out
+}
+
+func parseTSConfigPathsAt(content, configDir string) []tsPathMapping {
 	var data struct {
 		CompilerOptions struct {
 			Paths map[string][]string `json:"paths"`
@@ -6106,7 +6178,7 @@ func parseTSConfigPaths(content string) []tsPathMapping {
 		}
 		var cleanTargets []string
 		for _, target := range targets {
-			target = strings.TrimSpace(target)
+			target = normalizeTSConfigPathTarget(target, configDir)
 			if target != "" {
 				cleanTargets = append(cleanTargets, target)
 			}
@@ -6119,6 +6191,18 @@ func parseTSConfigPaths(content string) []tsPathMapping {
 		return mappings[i].Pattern < mappings[j].Pattern
 	})
 	return mappings
+}
+
+func normalizeTSConfigPathTarget(target, configDir string) string {
+	target = strings.TrimSpace(filepath.ToSlash(target))
+	if target == "" {
+		return ""
+	}
+	configDir = strings.Trim(strings.TrimSpace(filepath.ToSlash(configDir)), ". /")
+	if strings.HasPrefix(target, "/") || configDir == "" {
+		return strings.TrimPrefix(target, "./")
+	}
+	return strings.TrimPrefix(filepath.ToSlash(filepath.Clean(filepath.Join(configDir, target))), "./")
 }
 
 func parsePyProjectName(content string) string {

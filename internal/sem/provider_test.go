@@ -188,6 +188,64 @@ export function run(): string {
 	}
 }
 
+func TestTypeScriptManifestImportsResolveThroughExtendedTSConfig(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "package.json", `{"name":"@acme/app"}`)
+	writeFile(t, repo, "tsconfig.json", `{
+  "extends": "./config/tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@override/*": ["src/override/*"]
+    }
+  }
+}`)
+	writeFile(t, repo, "config/tsconfig.base.json", `{
+  "compilerOptions": {
+    "paths": {
+      "@base/*": ["../src/base/*"],
+      "@override/*": ["../src/base-override/*"]
+    }
+  }
+}`)
+	writeFile(t, repo, "src/app.ts", `import { base } from "@base/helper"
+import { override } from "@override/helper"
+
+export const value = base() + override()
+`)
+	writeFile(t, repo, "src/base/helper.ts", `export function base(): string {
+  return "base"
+}
+`)
+	writeFile(t, repo, "src/base-override/helper.ts", `export function override(): string {
+  return "base-override"
+}
+`)
+	writeFile(t, repo, "src/override/helper.ts", `export function override(): string {
+  return "override"
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct {
+		targetPath string
+		detail     string
+	}{
+		{targetPath: "src/base/helper.ts", detail: "@base/helper"},
+		{targetPath: "src/override/helper.ts", detail: "@override/helper"},
+	} {
+		target := fileID(snapshot.Header.RepoKey, want.targetPath)
+		if !hasImportRelationWithEvidence(snapshot.Relations, "src/app.ts", target, want.detail, "tsconfig_paths_import") {
+			t.Fatalf("missing extended tsconfig import %s -> %s in %#v", want.detail, want.targetPath, snapshot.Relations)
+		}
+	}
+	if hasImportRelation(snapshot.Relations, "src/app.ts", fileID(snapshot.Header.RepoKey, "src/base-override/helper.ts")) {
+		t.Fatalf("child tsconfig paths should override inherited duplicate pattern: %#v", snapshot.Relations)
+	}
+}
+
 func TestTypeScriptManifestImportsResolveThroughNestedPackageJSON(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "package.json", `{"private": true, "workspaces": ["packages/*"]}`)

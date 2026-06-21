@@ -227,7 +227,9 @@ Tasks:
   snapshot; root `package.json` package self-imports, `exports`, `imports`, root
   and scoped import maps, nested workspace/package `package.json` names and
   `exports`, and simple `tsconfig.json` `compilerOptions.paths` aliases are
-  implemented for local JS/TS files; `pyproject.toml` and
+  implemented for local JS/TS files, including local-file `extends`
+  inheritance where child path mappings override duplicate parent patterns;
+  `pyproject.toml` and
   `setup.cfg` package names, configured setuptools package-find roots, root and
   package-specific `package-dir`/`package_dir` mappings, inferred nested
   `*/src` namespace roots, and simple `from package import module`
