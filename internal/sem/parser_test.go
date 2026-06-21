@@ -944,6 +944,31 @@ public class WrappedReaderTests
 	}
 }
 
+func TestTreeSitterParserSwiftMasksModernSyntax(t *testing.T) {
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("CommandParser.swift", `struct Runner {
+  mutating func parse(
+    arguments: [String]
+  ) async throws(CommandError) -> ParsableCommand {
+    for try await line in try fileHandle.bytes.lines {
+      if let prefix {
+        print(prefix)
+      }
+    }
+    return command
+  }
+}
+`)
+	if language != "Swift" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	if len(entities) == 0 {
+		t.Fatalf("expected Swift entities after masking modern syntax")
+	}
+}
+
 func TestTreeSitterParserDetectsCPlusPlusHeaders(t *testing.T) {
 	entities, language, status := TreeSitterParser{}.ParseWithStatus("args.h", `#ifndef FMT_ARGS_H_
 #define FMT_ARGS_H_

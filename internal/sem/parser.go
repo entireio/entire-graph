@@ -159,6 +159,9 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if spec.language == "Kotlin" {
 		parseSrc = []byte(maskKotlinUnsupportedSyntax(path, content))
 	}
+	if spec.language == "Swift" {
+		parseSrc = []byte(maskSwiftUnsupportedSyntax(content))
+	}
 	if spec.language == "YAML" {
 		parseSrc = []byte(maskYAMLUnsupportedSyntax(content))
 	}
@@ -488,11 +491,57 @@ func cSharpMaskPrimaryConstructorClass(text string) string {
 	return paddedReplacement(leadingWhitespace(text), replacement, len(text))
 }
 
+func maskSwiftUnsupportedSyntax(content string) string {
+	lines := strings.SplitAfter(content, "\n")
+	for i, line := range lines {
+		text, newline := splitLineEnding(line)
+		text = replacePatternSameLength(text, swiftTypedThrowsPattern, "throws")
+		if replacement, ok := maskSwiftAsyncForLine(text); ok {
+			text = replacement
+		}
+		if replacement, ok := maskSwiftOptionalBindingShorthand(text); ok {
+			text = replacement
+		}
+		lines[i] = text + newline
+	}
+	return strings.Join(lines, "")
+}
+
+func maskSwiftAsyncForLine(text string) (string, bool) {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "for try await ") || !strings.Contains(trimmed, " in try ") {
+		return text, false
+	}
+	afterAwait := strings.TrimPrefix(trimmed, "for try await ")
+	parts := strings.SplitN(afterAwait, " in try ", 2)
+	if len(parts) != 2 {
+		return text, false
+	}
+	variable := strings.Fields(parts[0])
+	if len(variable) == 0 {
+		return text, false
+	}
+	collection := strings.TrimSpace(strings.TrimSuffix(parts[1], "{"))
+	replacement := "for " + variable[0] + " in " + collection + " {"
+	return paddedReplacement(leadingWhitespace(text), replacement, len(text)), true
+}
+
+func maskSwiftOptionalBindingShorthand(text string) (string, bool) {
+	matches := swiftOptionalBindingShorthandPattern.FindStringSubmatchIndex(text)
+	if len(matches) != 6 {
+		return text, false
+	}
+	replacement := "if true {"
+	return text[:matches[0]] + sameLengthReplacement(replacement, matches[1]-matches[0]) + text[matches[1]:], true
+}
+
 var (
 	cSharpPrimaryConstructorClassLinePattern        = regexp.MustCompile(`^\s*(?:(?:public|internal|private|protected|sealed|abstract|partial|static)\s+)*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^;\n]*\)\s*(?::\s*[^{};\n]+)?\s*;\s*$`)
 	cSharpDictionaryIndexInitializerPattern         = regexp.MustCompile(`\{\s*\[[^\]\n]+\]\s*=\s*[^{}\n]+\}`)
 	cSharpAssignmentCollectionExpressionPattern     = regexp.MustCompile(`=\s*\[\]`)
 	cSharpNullCoalescingCollectionExpressionPattern = regexp.MustCompile(`\?\?=\s*\[\]`)
+	swiftTypedThrowsPattern                         = regexp.MustCompile(`throws\([A-Za-z_][A-Za-z0-9_.<>]*\)`)
+	swiftOptionalBindingShorthandPattern            = regexp.MustCompile(`\bif\s+let\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{`)
 	cControlIteratorMacroPattern                    = regexp.MustCompile(`^(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:FOREACH|FOREACH_SAFE|FOREACH_REVERSE|FOREACH_REVERSE_SAFE)\s*\(`)
 	cGenerateMacroPattern                           = regexp.MustCompile(`^(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:HEAD|ENTRY|PROTOTYPE|PROTOTYPE_STATIC|GENERATE|GENERATE_STATIC)\s*\(`)
 	cEnumMacroPattern                               = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_KEYS\s*\(`)
