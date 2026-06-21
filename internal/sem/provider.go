@@ -7963,16 +7963,47 @@ func scanJSImports(content string) []string {
 		add(module)
 	}
 	constants := staticJSStringConstants(content)
-	dynamicRe := regexp.MustCompile(`(?m)(?:require|import)\s*\(\s*([^\n)]+)\s*\)`)
-	for _, match := range dynamicRe.FindAllStringSubmatch(content, -1) {
-		if len(match) != 2 {
-			continue
-		}
-		if module, ok := staticStringExpressionValue(match[1], constants); ok {
+	for _, expr := range scanJSDynamicImportExpressions(content) {
+		if module, ok := staticStringExpressionValue(expr, constants); ok {
 			add(module)
 		}
 	}
 	return sortedKeys(seen)
+}
+
+func scanJSDynamicImportExpressions(content string) []string {
+	callRe := regexp.MustCompile(`\b(?:require|import)\s*\(`)
+	var expressions []string
+	for _, loc := range callRe.FindAllStringIndex(content, -1) {
+		if len(loc) != 2 {
+			continue
+		}
+		if loc[0] > 0 {
+			prev := content[loc[0]-1]
+			if prev == '.' || isASCIIIdentifierByte(prev) {
+				continue
+			}
+		}
+		open := strings.LastIndex(content[loc[0]:loc[1]], "(")
+		if open < 0 {
+			continue
+		}
+		open += loc[0]
+		close := findMatchingStaticDelimiter(content, open, '(', ')')
+		if close < 0 {
+			continue
+		}
+		args := splitTopLevelStaticComma(content[open+1 : close])
+		if len(args) != 1 {
+			continue
+		}
+		expressions = append(expressions, args[0])
+	}
+	return expressions
+}
+
+func isASCIIIdentifierByte(ch byte) bool {
+	return ch == '_' || ch == '$' || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')
 }
 
 func staticJSStringConstants(content string) map[string]string {

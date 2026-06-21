@@ -318,6 +318,38 @@ export const value = feature()
 	})
 }
 
+func TestTypeScriptComputedRuntimeImportsResolveToLocalFiles(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/app.ts", `const helper = require(path.posix.join(".", "lib", "helper"))
+
+export async function run(): Promise<string> {
+  const feature = await import([".", "feature"].join("/"))
+  return helper.value + feature.value
+}
+`)
+	writeFile(t, repo, "src/lib/helper.ts", `export const value = "helper"
+`)
+	writeFile(t, repo, "src/feature.ts", `export const value = "feature"
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct {
+		targetPath string
+		detail     string
+	}{
+		{targetPath: "src/lib/helper.ts", detail: "./lib/helper"},
+		{targetPath: "src/feature.ts", detail: "./feature"},
+	} {
+		target := fileID(snapshot.Header.RepoKey, want.targetPath)
+		if !hasImportRelationWithEvidence(snapshot.Relations, "src/app.ts", target, want.detail, "import_statement") {
+			t.Fatalf("missing computed runtime import %s -> %s in %#v", want.detail, want.targetPath, snapshot.Relations)
+		}
+	}
+}
+
 func TestTypeScriptManifestImportsResolveThroughNestedPackageJSON(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "package.json", `{"private": true, "workspaces": ["packages/*"]}`)

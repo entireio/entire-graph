@@ -419,8 +419,12 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
   `CALLS` edges to `external:symbol:<module>.<member>` with
   `resolution: import_external`.
 - Deterministic computed JS/TS CommonJS and dynamic import module strings built
-  from known local string constants or static array joins emit `IMPORTS`;
+  from known local string constants, static array joins, or nested static
+  `path.join(...)`/`path.posix.join(...)` expressions emit `IMPORTS`;
   computed CommonJS bindings also emit imported external `CALLS`.
+- Latest local Go/gin syntax-only computed runtime import smoke benchmark:
+  `bench/results/result-1782001786.json`, 28,618 LOC, 162,501 LOC/s,
+  27,738,112 bytes max RSS, 1 parse failure, estimated output 1,902,636 bytes.
 - Direct constructor-chain receiver calls such as `new Widget().label()` emit
   `CALLS` edges to local methods with `resolution: type_inferred`.
 - Same-file factory-returned receiver calls such as `makeWidget().label()` emit

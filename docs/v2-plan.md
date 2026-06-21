@@ -248,9 +248,10 @@ Tasks:
   `pub use` re-exports are implemented for local Rust module files. JS/TS
   literal CommonJS `require("...")`, literal dynamic
   `import("...")`, and deterministic computed module strings built from known
-  local string constants or static array joins emit `IMPORTS`; CommonJS
-  bindings from those computed modules also participate in imported external
-  call resolution. Maven/Gradle
+  local string constants, static array joins, or nested static
+  `path.join(...)`/`path.posix.join(...)` expressions emit `IMPORTS`;
+  CommonJS bindings from those computed modules also participate in imported
+  external call resolution. Maven/Gradle
   classpath/build-variant modeling beyond root package identity, C# compiler
   reference/type usage resolution beyond unique namespace-file matches,
   complex Composer autoload/classmap semantics beyond PSR-4, arbitrary runtime-computed module names, and
