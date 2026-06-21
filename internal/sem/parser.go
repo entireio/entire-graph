@@ -823,16 +823,36 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 					text, newline = splitLineEnding(lines[i])
 					lines[i] = maskLineText(text) + newline
 				}
+			} else if strings.Contains(text, "using ") && strings.Contains(text, "= typename std::enable_if<") {
+				replacement := "using cxx_enable_if = void;"
+				if alias := cPlusPlusUsingAliasName(text); alias != "" {
+					replacement = "using " + alias + " = void;"
+				}
+				lines[i] = paddedReplacement(leadingWhitespace(text), replacement, len(text)) + newline
+				for i+1 < len(lines) {
+					nextText, nextNewline := splitLineEnding(lines[i+1])
+					i++
+					lines[i] = maskLineText(nextText) + nextNewline
+					if strings.Contains(nextText, "::type") || strings.Contains(nextText, ">;") || strings.Contains(nextText, ";") {
+						break
+					}
+				}
 			} else if strings.Contains(text, "std::enable_if<") && !strings.Contains(text, "::type") {
-				templateParam := strings.Contains(text, "template <") || cPlusPlusPreviousNonBlankLineStartsTemplate(lines, i)
+				templateParam := strings.Contains(text, "template <") || strings.Contains(text, "template<") || cPlusPlusPreviousNonBlankLineStartsTemplate(lines, i)
 				if templateParam {
-					replacement := "typename EnableIf = void>"
-					if strings.Contains(text, "template <") {
+					replacement := "typename E=void>"
+					if marker := strings.Index(text, "typename std::enable_if<"); marker >= 0 && strings.Contains(text[:marker], "template") {
+						replacement = text[:marker] + sameLengthReplacement("typename E=void>", len(text)-marker)
+					} else if strings.Contains(text, "template") && strings.Contains(text, "= std::enable_if<") {
 						replacement = "template <typename E = void>"
 					} else if cPlusPlusEnableIfContinuationEndsWithComma(lines, i) {
-						replacement = "typename EnableIf = void,"
+						replacement = "typename E=void,"
 					}
-					lines[i] = paddedReplacement(leadingWhitespace(text), replacement, len(text)) + newline
+					if len(replacement) == len(text) {
+						lines[i] = replacement + newline
+					} else {
+						lines[i] = paddedReplacement(leadingWhitespace(text), replacement, len(text)) + newline
+					}
 				} else {
 					lines[i] = paddedReplacement(leadingWhitespace(text), "int* enabler", len(text)) + newline
 				}
@@ -964,6 +984,23 @@ func cPlusPlusPreviousNonBlankLineStartsTemplate(lines []string, i int) bool {
 		}
 	}
 	return false
+}
+
+func cPlusPlusUsingAliasName(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "using ") {
+		return ""
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "using "))
+	end := strings.Index(rest, "=")
+	if end < 0 {
+		return ""
+	}
+	name := strings.TrimSpace(rest[:end])
+	if name == "" || strings.ContainsAny(name, " \t<>") {
+		return ""
+	}
+	return name
 }
 
 func cPlusPlusEnableIfContinuationEndsWithComma(lines []string, i int) bool {

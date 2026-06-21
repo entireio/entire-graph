@@ -1120,6 +1120,21 @@ static AssertionResult Compare(const char* lhs_expression,
                                const char* rhs_expression, const T1& lhs,
                                const T2& rhs) {}
 const FieldType Class::*field_;
+struct span_input_adapter {
+template<class IteratorType,
+         typename std::enable_if<
+             std::is_same<typename iterator_traits<IteratorType>::iterator_category, std::random_access_iterator_tag>::value,
+             int>::type = 0>
+span_input_adapter(IteratorType first, IteratorType last) {}
+};
+template<typename NumberType, typename std::enable_if<
+             std::is_floating_point<NumberType>::value, int>::type = 0>
+void write_number_with_ubjson_prefix(const NumberType n) {}
+template<typename InputIt>
+using require_input_iter = typename std::enable_if<std::is_convertible<typename std::iterator_traits<InputIt>::iterator_category,
+    std::input_iterator_tag>::value>::type;
+template<typename InputIt, typename = require_input_iter<InputIt>>
+void insert(InputIt first, InputIt last) {}
 `)
 	if language != "C++" {
 		t.Fatalf("language = %q", language)
