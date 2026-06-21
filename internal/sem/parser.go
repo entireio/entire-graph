@@ -124,6 +124,8 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	}
 	if strings.EqualFold(filepath.Ext(path), ".h") && looksLikeObjectiveC(content) {
 		spec = languageSpec{language: "Objective-C", inventoryOnly: true}
+	} else if strings.EqualFold(filepath.Ext(path), ".h") && looksLikeCPlusPlusHeader(content) {
+		spec = treeSitterLanguages[".hpp"]
 	}
 	if spec.language == "SQL" {
 		spec.grammar = pgsql.GetLanguage()
@@ -141,6 +143,9 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	}
 	if spec.language == "Groovy" {
 		parseSrc = []byte(maskGroovyUnsupportedSyntax(content))
+	}
+	if spec.language == "C++" {
+		parseSrc = []byte(maskCPlusPlusUnsupportedSyntax(content))
 	}
 	if spec.language == "Kotlin" {
 		parseSrc = []byte(maskKotlinUnsupportedSyntax(path, content))
@@ -449,6 +454,88 @@ func maskKotlinGradleBlocks(content, marker, replacement string) string {
 	return strings.Join(lines, "")
 }
 
+func maskCPlusPlusUnsupportedSyntax(content string) string {
+	lines := strings.SplitAfter(content, "\n")
+	for i := 0; i < len(lines); i++ {
+		text, newline := splitLineEnding(lines[i])
+		trimmed := strings.TrimSpace(text)
+		if strings.HasPrefix(trimmed, "#") {
+			for {
+				lines[i] = maskLineText(text) + newline
+				if !strings.HasSuffix(strings.TrimRight(text, " \t"), "\\") || i+1 >= len(lines) {
+					break
+				}
+				i++
+				text, newline = splitLineEnding(lines[i])
+			}
+			continue
+		}
+		switch trimmed {
+		case "FMT_BEGIN_NAMESPACE":
+			lines[i] = paddedReplacement(leadingWhitespace(text), "namespace fmt {", len(text)) + newline
+		case "FMT_END_NAMESPACE":
+			lines[i] = paddedReplacement(leadingWhitespace(text), "}", len(text)) + newline
+		case "FMT_BEGIN_EXPORT", "FMT_END_EXPORT":
+			lines[i] = maskLineText(text) + newline
+		default:
+			if strings.HasPrefix(trimmed, "FMT_PRAGMA_") {
+				lines[i] = maskLineText(text) + newline
+			} else if !strings.HasPrefix(trimmed, "#") {
+				text = maskCPlusPlusFunctionLikeMacro(text, "FMT_ENABLE_IF", "typename = void")
+				lines[i] = maskCPlusPlusAnnotationMacros(text) + newline
+			}
+		}
+	}
+	return strings.Join(lines, "")
+}
+
+var cPlusPlusAnnotationMacroPattern = regexp.MustCompile(`\b(?:FMT_(?:API|FUNC|EXPORT|CONSTEXPR(?:20|_STRING)?|CONSTEVAL|ALWAYS_INLINE|NODISCARD|NORETURN|DEPRECATED|MAYBE_UNUSED)|GTEST_API_|GMOCK_API_)\b`)
+
+func maskCPlusPlusAnnotationMacros(text string) string {
+	return cPlusPlusAnnotationMacroPattern.ReplaceAllStringFunc(text, func(match string) string {
+		return strings.Repeat(" ", len(match))
+	})
+}
+
+func maskCPlusPlusFunctionLikeMacro(text, name, replacement string) string {
+	for {
+		start := strings.Index(text, name+"(")
+		if start < 0 {
+			return text
+		}
+		end := balancedCallEnd(text, start+len(name))
+		if end < 0 {
+			return text
+		}
+		width := end - start
+		out := replacement
+		if len(out) > width {
+			out = out[:width]
+		}
+		out += strings.Repeat(" ", width-len(out))
+		text = text[:start] + out + text[end:]
+	}
+}
+
+func balancedCallEnd(text string, open int) int {
+	if open >= len(text) || text[open] != '(' {
+		return -1
+	}
+	depth := 0
+	for i := open; i < len(text); i++ {
+		switch text[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return -1
+}
+
 func leadingWhitespace(text string) string {
 	return text[:len(text)-len(strings.TrimLeft(text, " \t"))]
 }
@@ -502,6 +589,13 @@ func looksLikeFluxKustomizationManifest(content string) bool {
 func looksLikeObjectiveC(content string) bool {
 	return regexp.MustCompile(`(?m)^\s*@(?:interface|implementation|protocol|class|end)\b`).MatchString(content) ||
 		regexp.MustCompile(`(?m)^\s*#import\s+[<"]`).MatchString(content)
+}
+
+func looksLikeCPlusPlusHeader(content string) bool {
+	return regexp.MustCompile(`(?m)^\s*(namespace|template\s*<|class\s+\w|struct\s+\w+\s*:|using\s+\w+\s*=|(?:inline\s+)?auto\s+\w+\s*\()`).MatchString(content) ||
+		strings.Contains(content, "std::") ||
+		strings.Contains(content, "extern \"C\"") ||
+		strings.Contains(content, "::")
 }
 
 func languageForPath(path string) (languageSpec, bool) {

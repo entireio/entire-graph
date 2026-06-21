@@ -664,6 +664,116 @@ ui:
 	}
 }
 
+func TestTreeSitterParserDetectsCPlusPlusHeaders(t *testing.T) {
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("args.h", `#ifndef FMT_ARGS_H_
+#define FMT_ARGS_H_
+
+#include <memory>
+
+namespace detail {
+template <typename T> struct is_reference_wrapper : std::false_type {};
+
+class dynamic_arg_list {
+ public:
+  template <typename T, typename Arg> auto push(const Arg& arg) -> const T&;
+};
+}
+#endif
+`)
+	if language != "C++" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	if len(entities) == 0 {
+		t.Fatalf("expected C++ header entities")
+	}
+}
+
+func TestTreeSitterParserCPlusPlusMasksFmtMacros(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("format.cc", `#if __has_include(<cxxabi.h>)
+#  include <cxxabi.h>
+#endif
+
+FMT_PRAGMA_GCC(push_options)
+FMT_BEGIN_NAMESPACE
+
+template <typename T> auto unwrap(const T& v) -> const T& { return v; }
+
+FMT_BEGIN_EXPORT
+enum class color : uint32_t { red };
+FMT_END_EXPORT
+
+FMT_END_NAMESPACE
+`)
+	if language != "C++" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+}
+
+func TestTreeSitterParserCPlusPlusMasksAnnotationMacros(t *testing.T) {
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("base.h", `#if FMT_CPLUSPLUS > 201703L && FMT_HAS_INCLUDE(<version>)
+#  include <version>
+#endif
+
+class FMT_API format_error : public std::runtime_error {
+ public:
+  FMT_CONSTEXPR explicit format_error(const char* message) : std::runtime_error(message) {}
+};
+
+template <typename T>
+FMT_CONSTEXPR20 auto unwrap(const T& v) -> const T& { return v; }
+
+class GTEST_API_ ScopedFakeTestPartResultReporter
+    : public TestPartResultReporterInterface {};
+`)
+	if language != "C++" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	if len(entities) == 0 {
+		t.Fatalf("expected C++ entities after masking annotation macros")
+	}
+}
+
+func TestTreeSitterParserCPlusPlusMasksComplexPreprocessorForms(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("os.h", `#  if FMT_HAS_INCLUDE(<xlocale.h>)
+#    include <xlocale.h>
+#  endif
+
+#  define FMT_ASSERT(condition, message)                                    \
+    ((condition) ? void() : report_error(message))
+
+inline auto get() -> int { return 1; }
+`)
+	if language != "C++" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+}
+
+func TestTreeSitterParserCPlusPlusMasksFunctionLikeMacros(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("format.h", `template <typename To, typename From, FMT_ENABLE_IF(sizeof(To) > sizeof(From))>
+auto convert(From value) -> To {
+  return static_cast<To>(value);
+}
+`)
+	if language != "C++" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+}
+
 func TestTreeSitterParserTypeScriptMasksTypeofDynamicImportTypeArgument(t *testing.T) {
 	_, language, status := TreeSitterParser{}.ParseWithStatus("configureStore.test.ts", `vi.doMock('redux', async (importOriginal) => {
   const redux = await importOriginal<typeof import('redux')>()
