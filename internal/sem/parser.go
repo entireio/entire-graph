@@ -139,6 +139,9 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if spec.language == "Java" {
 		parseSrc = []byte(maskJavaUnsupportedSyntax(content))
 	}
+	if spec.language == "Groovy" {
+		parseSrc = []byte(maskGroovyUnsupportedSyntax(content))
+	}
 	if spec.language == "TypeScript" && !strings.EqualFold(filepath.Ext(path), ".tsx") {
 		parseSrc = []byte(maskTypeScriptUnsupportedSyntax(content))
 	}
@@ -339,6 +342,35 @@ func maskJavaUnsupportedSyntax(content string) string {
 		lines[i] = text + newline
 	}
 	return strings.Join(lines, "")
+}
+
+var (
+	groovyQuotedMethodPattern = regexp.MustCompile(`\b(def|void)\s+"[^"\n]+"\s*\(`)
+	groovyJavaCastPattern     = regexp.MustCompile(`\([A-Za-z_][A-Za-z0-9_]*\)\s+[A-Za-z_$]`)
+)
+
+func maskGroovyUnsupportedSyntax(content string) string {
+	content = groovyQuotedMethodPattern.ReplaceAllStringFunc(content, func(match string) string {
+		open := strings.LastIndex(match, "(")
+		quote := strings.Index(match, "\"")
+		if open <= quote || quote < 0 {
+			return match
+		}
+		prefix := match[:quote]
+		placeholder := "quotedFeature"
+		spaceCount := open - quote - len(placeholder)
+		if spaceCount < 1 {
+			placeholder = "q"
+			spaceCount = open - quote - len(placeholder)
+		}
+		if spaceCount < 0 {
+			return match
+		}
+		return prefix + placeholder + strings.Repeat(" ", spaceCount) + "("
+	})
+	return groovyJavaCastPattern.ReplaceAllStringFunc(content, func(match string) string {
+		return strings.Repeat(" ", len(match)-1) + match[len(match)-1:]
+	})
 }
 
 func typeScriptGenericCallSignatureStarts(trimmed string) bool {

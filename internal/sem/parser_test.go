@@ -504,6 +504,56 @@ class MultiplicationTests {
 	t.Fatalf("missing method entity after masking module import: %#v", entities)
 }
 
+func TestTreeSitterParserGroovyMasksQuotedMethodNames(t *testing.T) {
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("GroovyAssertEqualsTests.groovy", `package org.junit.jupiter.api
+
+class GroovyAssertEqualsTests {
+    @Test
+    void "null references can be passed to assertEquals"() {
+        assert true
+    }
+
+    def "regular"() {
+        expect:
+        true
+    }
+}
+`)
+	if language != "Groovy" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	if len(entities) == 0 {
+		t.Fatalf("expected entities after masking quoted Groovy methods")
+	}
+}
+
+func TestTreeSitterParserGroovyMasksJavaStyleCasts(t *testing.T) {
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("PrimitiveAndWrapperTypeHelpers.groovy", `package org.junit.jupiter.api
+
+class PrimitiveAndWrapperTypeHelpers {
+    static char c(int number) {
+        return (char) number
+    }
+
+    static Character C(int number) {
+        return Character.valueOf((char) number)
+    }
+}
+`)
+	if language != "Groovy" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	if len(entities) == 0 {
+		t.Fatalf("expected entities after masking Groovy Java-style casts")
+	}
+}
+
 func TestTreeSitterParserTypeScriptMasksTypeofDynamicImportTypeArgument(t *testing.T) {
 	_, language, status := TreeSitterParser{}.ParseWithStatus("configureStore.test.ts", `vi.doMock('redux', async (importOriginal) => {
   const redux = await importOriginal<typeof import('redux')>()
