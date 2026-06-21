@@ -2306,6 +2306,26 @@ spec:
 kind: ClusterIssuer
 metadata:
   name: letsencrypt
+spec:
+  acme:
+    privateKeySecretRef:
+      name: letsencrypt-account-key
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token
+`)
+	writeFile(t, repo, "k8s/issuer-secrets.yaml", `apiVersion: v1
+kind: Secret
+metadata:
+  name: letsencrypt-account-key
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cloudflare-api-token
 `)
 	writeFile(t, repo, "k8s/external-secret.yaml", `apiVersion: external-secrets.io/v1beta1
 kind: ExternalSecret
@@ -2617,6 +2637,8 @@ metadata:
 	}
 	for _, edge := range [][2]string{
 		{"Certificate.api-cert", "ClusterIssuer.letsencrypt"},
+		{"ClusterIssuer.letsencrypt", "Secret.letsencrypt-account-key"},
+		{"ClusterIssuer.letsencrypt", "Secret.cloudflare-api-token"},
 		{"ExternalSecret.api-secrets", "ClusterSecretStore.vault"},
 		{"ExternalSecret.api-secrets", "Secret.api-runtime"},
 		{"ClusterExternalSecret.shared-secrets", "ClusterSecretStore.vault"},

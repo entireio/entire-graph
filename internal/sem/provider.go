@@ -3074,6 +3074,9 @@ func kubernetesResourceReferences(content string) []resourceReference {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 		}
 	}
+	for _, ref := range kubernetesCertManagerIssuerSecretReferences(content) {
+		add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+	}
 	if kubernetesManifestHasAnyKind(content, "ExternalSecret", "ClusterExternalSecret", "PushSecret") {
 		for _, ref := range kubernetesNamedRefBlockReferences(content, "secretStoreRef", "kubernetes_external_secret_store_ref", 0.84, kubernetesDefaultReferenceKind("secretstore")) {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
@@ -3356,6 +3359,24 @@ func kubernetesExternalSecretTargetReferences(content string) []resourceReferenc
 		}
 	}
 	return refs
+}
+
+func kubernetesCertManagerIssuerSecretReferences(content string) []resourceReference {
+	if !kubernetesManifestAPIMatches(content, `cert-manager\.io/`) || !kubernetesManifestHasAnyKind(content, "Issuer", "ClusterIssuer") {
+		return nil
+	}
+	var refs []resourceReference
+	for _, blockKey := range []string{
+		"privateKeySecretRef",
+		"apiTokenSecretRef",
+		"apiKeySecretRef",
+		"secretAccessKeySecretRef",
+		"clientSecretSecretRef",
+		"serviceAccountSecretRef",
+	} {
+		refs = append(refs, kubernetesNamedRefBlockReferences(content, blockKey, "kubernetes_cert_manager_issuer_secret_ref", 0.82, kubernetesDefaultReferenceKind("secret"))...)
+	}
+	return dedupeResourceReferences(refs)
 }
 
 func kubernetesSealedSecretTargetReferences(content string) []resourceReference {

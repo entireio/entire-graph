@@ -503,9 +503,10 @@ Open:
   auth/TLS Secret refs when the target resource symbol exists in the same
   provider snapshot. Workload selector matching includes CronJob job-template
   labels and Rollout-style workload labels. Custom-controller coverage also
-  includes KEDA authentication refs, cert-manager issuer refs, External
-  Secrets secret-store refs, ExternalSecret and ClusterExternalSecret target
-  Secret refs, Bitnami SealedSecret target
+  includes KEDA authentication refs, cert-manager issuer refs and Issuer/
+  ClusterIssuer Secret refs such as `privateKeySecretRef` and DNS solver
+  Secret refs, External Secrets secret-store refs, ExternalSecret and
+  ClusterExternalSecret target Secret refs, Bitnami SealedSecret target
   Secret refs, Argo
   WorkflowTemplate refs, Argo Rollouts AnalysisTemplate refs, Argo CD
   Application/AppProject refs, Tekton Pipeline/Task refs, ServiceBinding

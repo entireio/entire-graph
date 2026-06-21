@@ -179,6 +179,14 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 - Latest local Go/gin syntax-only ClusterExternalSecret smoke benchmark:
   `bench/results/result-1782001370.json`, 28,618 LOC, 165,412 LOC/s,
   28,262,400 bytes max RSS, 1 parse failure, estimated output 1,902,641 bytes.
+- cert-manager `Issuer` and `ClusterIssuer` resources now emit target Secret
+  dependencies for account and DNS-provider Secret reference blocks, including
+  `privateKeySecretRef` and solver refs such as `apiTokenSecretRef`, and
+  resolve to exact local `Secret` manifests when present.
+- Latest local Go/gin syntax-only cert-manager issuer Secret-ref smoke
+  benchmark: `bench/results/result-1782001576.json`, 28,618 LOC, 147,607
+  LOC/s, 29,851,648 bytes max RSS, 1 parse failure, estimated output
+  1,902,642 bytes.
 - Nested JS/TS workspace/package `package.json` names and `exports` resolve
   local package imports to file records with `import_resolved` metadata.
 - JS/TS literal CommonJS `require(...)` and literal dynamic `import(...)`
