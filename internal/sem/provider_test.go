@@ -2328,6 +2328,35 @@ kind: Secret
 metadata:
   name: api-runtime
 `)
+	writeFile(t, repo, "k8s/sealed-secret.yaml", `apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: sealed-api
+spec:
+  encryptedData:
+    token: AgBy...
+  template:
+    metadata:
+      name: api-sealed-runtime
+`)
+	writeFile(t, repo, "k8s/sealed-secret-fallback.yaml", `apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: worker-sealed-runtime
+spec:
+  encryptedData:
+    token: AgBy...
+`)
+	writeFile(t, repo, "k8s/sealed-secret-targets.yaml", `apiVersion: v1
+kind: Secret
+metadata:
+  name: api-sealed-runtime
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: worker-sealed-runtime
+`)
 	writeFile(t, repo, "k8s/cron-workflow.yaml", `apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow
 metadata:
@@ -2573,6 +2602,8 @@ metadata:
 		{"Certificate.api-cert", "ClusterIssuer.letsencrypt"},
 		{"ExternalSecret.api-secrets", "ClusterSecretStore.vault"},
 		{"ExternalSecret.api-secrets", "Secret.api-runtime"},
+		{"SealedSecret.sealed-api", "Secret.api-sealed-runtime"},
+		{"SealedSecret.worker-sealed-runtime", "Secret.worker-sealed-runtime"},
 		{"CronWorkflow.nightly-report", "WorkflowTemplate.report-template"},
 		{"CronWorkflow.nightly-report", "ClusterWorkflowTemplate.shared-template"},
 		{"PipelineRun.api-build", "Pipeline.build-pipeline"},

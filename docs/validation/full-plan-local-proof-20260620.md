@@ -109,6 +109,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 go test ./internal/sem -run 'Test(GraphQLOperationLiteralsEmitRootFieldBoundaries|BuildProviderSnapshotEmitsGraphQLResolverBoundaries|BuildProviderSnapshotEmitsGraphQLSchemaBoundaries|GraphQLSchemaFieldsLinkToResolverFields|GraphQLSchemaFieldsLinkToModularResolverObjects|GraphQLSchemaAliasedRootsLinkToResolverFields)' -count=1
 go test ./...
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-graphql-fragment-fields -min-loc-per-sec 1
+go test ./internal/sem -run 'TestKubernetesCustomControllerReferenceDependencies' -count=1
+go test ./...
+go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-sealedsecret-resource-refs -min-loc-per-sec 1
 ```
 
 ## Results
@@ -161,6 +164,12 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 - Latest local Go/gin syntax-only GraphQL fragment smoke benchmark:
   `bench/results/result-1782001031.json`, 28,618 LOC, 164,575 LOC/s,
   28,655,616 bytes max RSS, 1 parse failure, estimated output 1,902,635 bytes.
+- Bitnami `SealedSecret` resources now emit target Secret dependencies through
+  `spec.template.metadata.name`, with metadata-name fallback, and resolve to
+  exact local `Secret` manifests when present.
+- Latest local Go/gin syntax-only SealedSecret resource smoke benchmark:
+  `bench/results/result-1782001211.json`, 28,618 LOC, 164,746 LOC/s,
+  29,016,064 bytes max RSS, 1 parse failure, estimated output 1,902,638 bytes.
 - Nested JS/TS workspace/package `package.json` names and `exports` resolve
   local package imports to file records with `import_resolved` metadata.
 - JS/TS literal CommonJS `require(...)` and literal dynamic `import(...)`

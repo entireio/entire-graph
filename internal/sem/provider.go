@@ -3084,6 +3084,11 @@ func kubernetesResourceReferences(content string) []resourceReference {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
 		}
 	}
+	if kubernetesManifestHasAnyKind(content, "SealedSecret") {
+		for _, ref := range kubernetesSealedSecretTargetReferences(content) {
+			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
+		}
+	}
 	if kubernetesManifestHasAnyKind(content, "Workflow", "CronWorkflow", "WorkflowTemplate") {
 		for _, ref := range kubernetesNamedRefBlockReferences(content, "workflowTemplateRef", "kubernetes_argo_workflow_template_ref", 0.84, kubernetesWorkflowTemplateReferenceKind) {
 			add(ref.Kind, ref.Name, ref.EvidenceKind, ref.Confidence)
@@ -3351,6 +3356,24 @@ func kubernetesExternalSecretTargetReferences(content string) []resourceReferenc
 		}
 	}
 	return refs
+}
+
+func kubernetesSealedSecretTargetReferences(content string) []resourceReference {
+	name := strings.Trim(strings.TrimSpace(yamlMapAtPath(content, "spec", "template", "metadata")["name"]), `"'`)
+	evidence := "kubernetes_sealed_secret_template"
+	if name == "" {
+		name = strings.Trim(strings.TrimSpace(yamlMapAtPath(content, "metadata")["name"]), `"'`)
+		evidence = "kubernetes_sealed_secret_name"
+	}
+	if name == "" {
+		return nil
+	}
+	return []resourceReference{{
+		Kind:         "secret",
+		Name:         name,
+		EvidenceKind: evidence,
+		Confidence:   0.84,
+	}}
 }
 
 func kubernetesKnativeTriggerBrokerReferences(content string) []resourceReference {
