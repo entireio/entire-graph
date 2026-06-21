@@ -2421,7 +2421,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 	}
 	var relations []RelationRecord
 	for _, call := range calls {
-		method, confidence, reason, resolution, scope, ok := receiverQualifiedMethodTarget(from, call, symbolsByShortName[call.Method])
+		method, confidence, reason, resolution, scope, ok := receiverQualifiedMethodTarget(from, call, symbolsByShortName[call.Method], returnTypesBySymbolNameAndFile)
 		if !ok {
 			continue
 		}
@@ -2739,7 +2739,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 	return relations
 }
 
-func receiverQualifiedMethodTarget(from SymbolRecord, call receiverCall, candidates []SymbolRecord) (SymbolRecord, float64, string, string, string, bool) {
+func receiverQualifiedMethodTarget(from SymbolRecord, call receiverCall, candidates []SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) (SymbolRecord, float64, string, string, string, bool) {
 	qualified := call.Receiver + "." + call.Method
 	var matches []SymbolRecord
 	var sameFile []SymbolRecord
@@ -2758,6 +2758,9 @@ func receiverQualifiedMethodTarget(from SymbolRecord, call receiverCall, candida
 	if len(sameFile) == 1 {
 		return sameFile[0], 0.82, "receiver call resolved to same-file qualified method symbol", "exact", "file", true
 	}
+	if target, ok := receiverQualifiedOverloadByArgReturnType(from, call, sameFile, returnTypesBySymbolNameAndFile); ok {
+		return target, 0.8, "receiver call overload resolved from nested argument return type", "type_inferred", "file", true
+	}
 	if len(matches) == 1 {
 		scope := "workspace"
 		if matches[0].FilePath != from.FilePath {
@@ -2765,7 +2768,68 @@ func receiverQualifiedMethodTarget(from SymbolRecord, call receiverCall, candida
 		}
 		return matches[0], 0.66, "receiver call matched globally unique qualified method symbol", "name_only", scope, true
 	}
+	if target, ok := receiverQualifiedOverloadByArgReturnType(from, call, matches, returnTypesBySymbolNameAndFile); ok {
+		scope := "workspace"
+		if target.FilePath != from.FilePath {
+			scope = "module"
+		}
+		return target, 0.78, "receiver call overload resolved from nested argument return type", "type_inferred", scope, true
+	}
 	return SymbolRecord{}, 0, "", "", "", false
+}
+
+func receiverQualifiedOverloadByArgReturnType(from SymbolRecord, call receiverCall, candidates []SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) (SymbolRecord, bool) {
+	if len(candidates) < 2 || strings.TrimSpace(call.Args) == "" {
+		return SymbolRecord{}, false
+	}
+	argTypes := receiverCallArgumentReturnTypes(call.Args, from.FilePath, returnTypesBySymbolNameAndFile)
+	if len(argTypes) == 0 {
+		return SymbolRecord{}, false
+	}
+	var matches []SymbolRecord
+	for _, candidate := range candidates {
+		params := signatureTypeReferences(candidate.Language, candidate.Signature)["PARAM_TYPE"]
+		if typeListIntersects(params, argTypes) {
+			matches = append(matches, candidate)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], true
+	}
+	return SymbolRecord{}, false
+}
+
+func receiverCallArgumentReturnTypes(args, filePath string, returnTypesBySymbolNameAndFile map[string]map[string][]string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, arg := range splitTopLevelStaticComma(args) {
+		arg = strings.TrimSpace(arg)
+		m := regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\s*\(`).FindStringSubmatch(arg)
+		if len(m) != 2 {
+			continue
+		}
+		for _, typeName := range returnTypesBySymbolNameAndFile[m[1]][filePath] {
+			if typeName == "" || seen[typeName] {
+				continue
+			}
+			seen[typeName] = true
+			out = append(out, typeName)
+		}
+	}
+	return out
+}
+
+func typeListIntersects(left, right []string) bool {
+	set := map[string]bool{}
+	for _, value := range left {
+		set[value] = true
+	}
+	for _, value := range right {
+		if set[value] {
+			return true
+		}
+	}
+	return false
 }
 
 func receiverDeepChainSuffixes(chained []typedMethodDeepChainCall, returned []returnedMethodDeepChainCall) map[string]bool {

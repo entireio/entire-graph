@@ -2374,6 +2374,7 @@ func goReceiverVar(signature string) string {
 type receiverCall struct {
 	Receiver string
 	Method   string
+	Args     string
 }
 
 var receiverCallRe = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*\(`)
@@ -2385,14 +2386,24 @@ func receiverCalls(block string) []receiverCall {
 	stripped := stripCodeLiteralsAndComments(block)
 	var out []receiverCall
 	seen := map[string]bool{}
-	for _, m := range receiverCallRe.FindAllStringSubmatch(stripped, -1) {
-		receiver := strings.TrimPrefix(m[1], "$")
-		key := receiver + "." + m[2]
+	for _, m := range receiverCallRe.FindAllStringSubmatchIndex(stripped, -1) {
+		if len(m) < 6 {
+			continue
+		}
+		receiver := strings.TrimPrefix(stripped[m[2]:m[3]], "$")
+		method := stripped[m[4]:m[5]]
+		key := receiver + "." + method
 		if receiver == "" || seen[key] {
 			continue
 		}
+		open := m[1] - 1
+		close := matchingParen(stripped, open)
+		args := ""
+		if close > open {
+			args = stripped[open+1 : close]
+		}
 		seen[key] = true
-		out = append(out, receiverCall{Receiver: receiver, Method: m[2]})
+		out = append(out, receiverCall{Receiver: receiver, Method: method, Args: args})
 	}
 	return out
 }

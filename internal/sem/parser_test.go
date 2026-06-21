@@ -455,6 +455,55 @@ func TestTreeSitterParserTypeScriptDoesNotMaskTemplateHTML(t *testing.T) {
 	}
 }
 
+func TestTreeSitterParserJavaMasksAnnotatedVarargs(t *testing.T) {
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("ClassUtils.java", `package org.junit.platform.commons.util;
+
+class ClassUtils {
+  public static String nullSafeToString(@Nullable Class<?> @Nullable... classes) {
+    return "";
+  }
+}
+`)
+	if language != "Java" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	for _, entity := range entities {
+		if entity.Name == "ClassUtils.nullSafeToString" && entity.Kind == "method" {
+			return
+		}
+	}
+	t.Fatalf("missing method entity after masking annotated varargs: %#v", entities)
+}
+
+func TestTreeSitterParserJavaMasksModuleImports(t *testing.T) {
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("JUnitRunModule.java", `package p;
+
+import module org.junit.jupiter.api;
+
+class MultiplicationTests {
+  @Test
+  void multiplication() {
+    Assertions.assertEquals(4, 2 * 2);
+  }
+}
+`)
+	if language != "Java" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	for _, entity := range entities {
+		if entity.Name == "MultiplicationTests.multiplication" && entity.Kind == "method" {
+			return
+		}
+	}
+	t.Fatalf("missing method entity after masking module import: %#v", entities)
+}
+
 func TestTreeSitterParserTypeScriptMasksTypeofDynamicImportTypeArgument(t *testing.T) {
 	_, language, status := TreeSitterParser{}.ParseWithStatus("configureStore.test.ts", `vi.doMock('redux', async (importOriginal) => {
   const redux = await importOriginal<typeof import('redux')>()

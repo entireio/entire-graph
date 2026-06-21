@@ -136,6 +136,9 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if spec.language == "SQL" {
 		parseSrc = []byte(maskPostgresUnsupportedSyntax(content))
 	}
+	if spec.language == "Java" {
+		parseSrc = []byte(maskJavaUnsupportedSyntax(content))
+	}
 	if spec.language == "TypeScript" && !strings.EqualFold(filepath.Ext(path), ".tsx") {
 		parseSrc = []byte(maskTypeScriptUnsupportedSyntax(content))
 	}
@@ -318,6 +321,24 @@ func maskTypeScriptKeywordTypeProperty(line string) string {
 
 func maskTypeScriptStaticAccessorMethod(line string) string {
 	return tsStaticAccessorMethodPattern.ReplaceAllString(line, "static accessoR${1}")
+}
+
+var (
+	javaModuleImportPattern      = regexp.MustCompile(`^(\s*import\s+)module\s+`)
+	javaVarargsAnnotationPattern = regexp.MustCompile(`@[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*\.\.\.`)
+)
+
+func maskJavaUnsupportedSyntax(content string) string {
+	lines := strings.SplitAfter(content, "\n")
+	for i, line := range lines {
+		text, newline := splitLineEnding(line)
+		text = javaModuleImportPattern.ReplaceAllString(text, "${1}       ")
+		text = javaVarargsAnnotationPattern.ReplaceAllStringFunc(text, func(match string) string {
+			return strings.Repeat(" ", len(match)-3) + "..."
+		})
+		lines[i] = text + newline
+	}
+	return strings.Join(lines, "")
 }
 
 func typeScriptGenericCallSignatureStarts(trimmed string) bool {

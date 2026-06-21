@@ -6256,6 +6256,69 @@ export function labelFor(widget: Widget): string {
 	}
 }
 
+func TestBuildProviderSnapshotResolvesJavaSamePackageStaticOverload(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/main/java/org/acme/LauncherDiscoveryRequest.java", `package org.acme;
+
+public class LauncherDiscoveryRequest {}
+`)
+	writeFile(t, repo, "src/main/java/org/acme/TestPlan.java", `package org.acme;
+
+public class TestPlan {}
+`)
+	writeFile(t, repo, "src/main/java/org/acme/LauncherExecutionRequestBuilder.java", `package org.acme;
+
+public class LauncherExecutionRequestBuilder {
+  public static LauncherExecutionRequestBuilder request(LauncherDiscoveryRequest discoveryRequest) {
+    return new LauncherExecutionRequestBuilder();
+  }
+
+  public static LauncherExecutionRequestBuilder request(TestPlan testPlan) {
+    return new LauncherExecutionRequestBuilder();
+  }
+}
+`)
+	writeFile(t, repo, "src/main/java/org/acme/LauncherDiscoveryRequestBuilder.java", `package org.acme;
+
+public class LauncherDiscoveryRequestBuilder {
+  public LauncherExecutionRequestBuilder forExecution() {
+    return LauncherExecutionRequestBuilder.request(build());
+  }
+
+  public LauncherDiscoveryRequest build() {
+    return new LauncherDiscoveryRequest();
+  }
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	var found RelationRecord
+	for _, r := range snapshot.Relations {
+		target := symbolsByID[r.ToID]
+		if r.Type == "CALLS" &&
+			strings.Contains(r.FromID, "LauncherDiscoveryRequestBuilder.forExecution") &&
+			strings.Contains(r.ToID, "LauncherExecutionRequestBuilder.request") &&
+			strings.Contains(target.Signature, "LauncherDiscoveryRequest") {
+			found = r
+			break
+		}
+	}
+	if found.ToID == "" {
+		t.Fatalf("missing same-package static overload CALLS relation: %#v", snapshot.Relations)
+	}
+	if found.Resolution != "type_inferred" || found.RelationScope != "module" || found.Confidence < 0.78 {
+		t.Fatalf("unexpected relation metadata: %#v", found)
+	}
+}
+
 func TestBuildProviderSnapshotEmitsImportedExternalCalls(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "trim.go", `package api
