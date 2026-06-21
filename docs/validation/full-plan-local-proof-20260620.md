@@ -103,6 +103,9 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 go test ./internal/sem -run 'TestTypeScriptManifestImportsResolveThrough(TSConfigBaseURL|ExtendedTSConfig|PackageAndTSConfig|NestedPackageJSON|ExportsImportsAndImportMap)' -count=1
 go test ./...
 go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-tsconfig-baseurl-imports -min-loc-per-sec 1
+go test ./internal/sem -run 'TestBuildProviderSnapshotEmits.*(Collection|AliasContainer|MultiHopAlias|DataFlow|Forward)' -count=1
+go test ./...
+go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-map-set-data-flow -min-loc-per-sec 1
 ```
 
 ## Results
@@ -142,6 +145,12 @@ go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out 
 - Latest local Go/gin syntax-only baseUrl import smoke benchmark:
   `bench/results/result-1782000658.json`, 28,618 LOC, 164,746 LOC/s,
   28,852,224 bytes max RSS, 1 parse failure, estimated output 1,902,636 bytes.
+- JS/TS local `Map.set(key, value)` container mutation now participates in
+  conservative collection-element data-flow when the inserted value is a caller
+  parameter or direct alias and the local map is forwarded to a callee.
+- Latest local Go/gin syntax-only Map.set data-flow smoke benchmark:
+  `bench/results/result-1782000875.json`, 28,618 LOC, 168,104 LOC/s,
+  27,672,576 bytes max RSS, 1 parse failure, estimated output 1,902,629 bytes.
 - Nested JS/TS workspace/package `package.json` names and `exports` resolve
   local package imports to file records with `import_resolved` metadata.
 - JS/TS literal CommonJS `require(...)` and literal dynamic `import(...)`

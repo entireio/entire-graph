@@ -53,7 +53,8 @@ versioned, confidence-scored facts that `entire-brain` can persist and query.
   object-literal forwarding including JS/TS `key: param`, JS/TS shorthand
   fields, Python dict literal fields, and direct parameter aliases, plus
   conservative collection-element forwarding when a caller parameter or direct
-  alias is inserted into a local collection or array/list literal, conservative
+  alias is inserted into a local collection, `Map.set(...)`, or array/list
+  literal, conservative
   JS/TS callback-element forwarding when a parameter-owned collection or direct
   alias is iterated with common collection methods and the callback forwards
   the element to a callee, and direct object or array/list literal argument
@@ -155,8 +156,8 @@ Remain out of provider scope or later expansion:
   object-field forwarding flow, conservative local
   object-literal forwarding flow including JS/TS shorthand, Python dict
   literals, and direct parameter aliases, conservative local
-  collection-element or collection-literal forwarding flow including direct
-  parameter aliases, conservative JS/TS collection-callback element forwarding,
+  collection-element, `Map.set(...)`, or collection-literal forwarding flow
+  including direct parameter aliases, conservative JS/TS collection-callback element forwarding,
   and direct object/array/list literal argument forwarding.
 - deeper semantics for fallback formats where only lightweight structure is
   currently emitted.

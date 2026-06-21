@@ -473,6 +473,7 @@ var (
 	localCollectionVarRe     = regexp.MustCompile(`(?m)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*(?:\[\s*\]|new\s+(?:Array|Set|Map)\s*\(\s*\))`)
 	collectionLiteralVarRe   = regexp.MustCompile(`(?s)\b(?:const|let|var)?\s*\$?([A-Za-z_$][\w$]*)\s*(?:\:\s*[^=\n]+)?\s*(?::=|=)\s*\[([^\[\]]*)\]`)
 	collectionAddRe          = regexp.MustCompile(`(?m)\b\$?([A-Za-z_$][\w$]*)\s*\.\s*(?:push|append|add)\s*\(\s*\$?([A-Za-z_$][\w$]*)\s*\)`)
+	collectionSetRe          = regexp.MustCompile(`(?m)\b\$?([A-Za-z_$][\w$]*)\s*\.\s*set\s*\(\s*[^,\n()]+\s*,\s*\$?([A-Za-z_$][\w$]*)\s*\)`)
 	collectionCallbackRe     = regexp.MustCompile(`\b\$?([A-Za-z_$][\w$]*)\s*\.\s*(?:map|forEach|filter|flatMap|some|every|find)\s*\(`)
 	arrowCallbackParamRe     = regexp.MustCompile(`(?s)^\s*\(?\s*\$?([A-Za-z_$][\w$]*)(?:\s*,[^)]*)?\)?\s*=>`)
 	functionCallbackParamRe  = regexp.MustCompile(`(?s)^\s*(?:async\s+)?function(?:\s+[A-Za-z_$][\w$]*)?\s*\(\s*\$?([A-Za-z_$][\w$]*)`)
@@ -1375,6 +1376,20 @@ func collectionElementForwardingFlows(block, signature string) []returnFlowCall 
 	collectionVars := localCollectionVars(block)
 	paramByCollection := map[string]map[string]bool{}
 	for _, match := range collectionAddRe.FindAllStringSubmatch(block, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		collectionName := strings.TrimPrefix(match[1], "$")
+		paramName := resolveParameterOrAlias(match[2], params, aliases)
+		if !collectionVars[collectionName] || paramName == "" {
+			continue
+		}
+		if paramByCollection[collectionName] == nil {
+			paramByCollection[collectionName] = map[string]bool{}
+		}
+		paramByCollection[collectionName][paramName] = true
+	}
+	for _, match := range collectionSetRe.FindAllStringSubmatch(block, -1) {
 		if len(match) != 3 {
 			continue
 		}

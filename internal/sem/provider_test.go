@@ -8011,7 +8011,15 @@ func TestBuildProviderSnapshotEmitsCollectionElementForwardDataFlow(t *testing.T
   return values.join(",")
 }
 
+function normalizeMap(values: Map<string, string>): string {
+  return values.get("value") ?? ""
+}
+
 function ignore(values: string[]): string {
+  return "ignored"
+}
+
+function ignoreMap(values: Map<string, string>): string {
   return "ignored"
 }
 
@@ -8019,9 +8027,16 @@ export function run(input: string): string {
   const values: string[] = []
   values.push(input)
   normalize(values)
+  const alias = input
+  const mapped = new Map()
+  mapped.set("value", alias)
+  normalizeMap(mapped)
   const other: string[] = []
   other.push("static")
   ignore(other)
+  const otherMap = new Map()
+  otherMap.set("value", "static")
+  ignoreMap(otherMap)
   return input
 }
 `)
@@ -8030,24 +8045,32 @@ export function run(input: string): string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var found RelationRecord
-	for _, relation := range snapshot.Relations {
-		if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == "run" && lastSegment(relation.ToID) == "normalize" {
-			found = relation
-			break
+	for _, want := range []struct {
+		callee string
+		detail string
+	}{
+		{callee: "normalize", detail: "input -> values[] -> normalize()"},
+		{callee: "normalizeMap", detail: "input -> mapped[] -> normalizeMap()"},
+	} {
+		var found RelationRecord
+		for _, relation := range snapshot.Relations {
+			if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == "run" && lastSegment(relation.ToID) == want.callee {
+				found = relation
+				break
+			}
+		}
+		if found.FromID == "" {
+			t.Fatalf("missing collection element DATA_FLOWS run->%s: %#v", want.callee, snapshot.Relations)
+		}
+		if found.Reason != "caller parameter inserted into collection forwarded to callee argument" || found.Confidence > 0.7 {
+			t.Fatalf("unexpected collection element flow metadata for %s: %#v", want.callee, found)
+		}
+		if len(found.Evidence) != 1 || found.Evidence[0].Kind != "collection_element_forward_flow" || found.Evidence[0].Detail != want.detail {
+			t.Fatalf("unexpected collection element flow evidence for %s: %#v", want.callee, found.Evidence)
 		}
 	}
-	if found.FromID == "" {
-		t.Fatalf("missing collection element DATA_FLOWS run->normalize: %#v", snapshot.Relations)
-	}
-	if found.Reason != "caller parameter inserted into collection forwarded to callee argument" || found.Confidence > 0.7 {
-		t.Fatalf("unexpected collection element flow metadata: %#v", found)
-	}
-	if len(found.Evidence) != 1 || found.Evidence[0].Kind != "collection_element_forward_flow" || found.Evidence[0].Detail != "input -> values[] -> normalize()" {
-		t.Fatalf("unexpected collection element flow evidence: %#v", found.Evidence)
-	}
 	for _, relation := range snapshot.Relations {
-		if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == "run" && lastSegment(relation.ToID) == "ignore" {
+		if relation.Type == "DATA_FLOWS" && lastSegment(relation.FromID) == "run" && (lastSegment(relation.ToID) == "ignore" || lastSegment(relation.ToID) == "ignoreMap") {
 			t.Fatalf("non-parameter collection element produced DATA_FLOWS: %#v", relation)
 		}
 	}
