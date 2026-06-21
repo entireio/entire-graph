@@ -1035,7 +1035,19 @@ TEST(module_test, errors) {
       EXPECT_THROW_MSG(throw runtime_error("a"), runtime_error, "b"), "");
   EXPECT_CALL(streambuf, xsputn(data, static_cast<std::streamsize>(n)))
       .WillOnce(testing::Return(max_streamsize));
+  if (auto result = std::scan<std::string, int>("answer = 42", "{} = {}")) {
+    FAIL();
+  }
 }
+
+#if defined(__cpp_lib_ranges) && __cpp_lib_ranges >= 202207L
+TEST(ranges_test, nested_ranges) {
+  auto r = std::views::iota(0, 3) | std::views::transform([](auto i) {
+             return std::views::take(std::ranges::subrange(l), i);
+           }) |
+           std::views::transform(std::views::reverse);
+}
+#endif
 
 GTEST_DISABLE_MSC_WARNINGS_PUSH_(4251 \
 /* class A needs to have dll-interface to be used by clients of class B */)
@@ -1046,10 +1058,14 @@ GTEST_DEFINE_bool_(catch_exceptions,
                    " should catch exceptions and treat them as test failures.");
 
 GMOCK_DEFINE_DEFAULT_ACTION_FOR_RETURN_TYPE_(::std::string, "");
+GTEST_COMPILE_ASSERT_(!std::is_reference<Result>::value,
+                      Result_cannot_be_a_reference_type);
+GTEST_DISALLOW_COPY_AND_ASSIGN_(Impl);
 
 GTEST_REPEATER_METHOD_(OnTestProgramStart, UnitTest)
 GTEST_REVERSE_REPEATER_METHOD_(OnEnvironmentsSetUpEnd, UnitTest)
 GTEST_IMPL_FORMAT_C_STRING_AS_POINTER_(const char)
+GTEST_IMPL_FORMAT_C_STRING_AS_STRING_(char, ::std::string)
 
 GTEST_ATTRIBUTE_PRINTF_(2, 3)
 static void ColoredPrintf(GTestColor color, const char *fmt, ...) {}
@@ -1058,6 +1074,52 @@ GTEST_INTERNAL_DEPRECATED(
     "INSTANTIATE_TEST_CASE_P is deprecated, please use "
     "INSTANTIATE_TEST_SUITE_P")
 constexpr bool InstantiateTestCase_P_IsDeprecated() { return true; }
+
+template <GTEST_TEMPLATE_ Fixture, class TestSel, typename Types>
+class TypeParameterizedTest {
+  typedef typename GTEST_BIND_(TestSel, Type) TestClass;
+};
+
+std::string OsStackTraceGetter::CurrentStackTrace(int max_depth, int skip_count)
+    GTEST_LOCK_EXCLUDED_(mutex_) {
+#if GTEST_HAS_ABSL
+  return "";
+#else
+  static_cast<void>(max_depth);
+  return "";
+#endif
+}
+
+using ReturnType =
+    decltype((std::declval<Class*>()->*std::declval<MethodPtr>())());
+
+template <typename R, R* = nullptr>
+internal::ReturnRefAction<R> ReturnRef(R&&) = delete;
+
+int Run() GTEST_MUST_USE_RESULT_;
+class Matcher {
+template <typename T>
+explicit Matcher(
+    const MatcherInterface<T>* impl,
+    typename std::enable_if<!std::is_same<T, const T&>::value>::type* =
+        nullptr) {}
+};
+typedef GTEST_REMOVE_REFERENCE_AND_CONST_(T) RawT;
+GTEST_IMPL_CMP_HELPER_(NE, !=)
+using LosslessArithmeticConvertible =
+    LosslessArithmeticConvertibleImpl<GMOCK_KIND_OF_(From), From,
+                                      GMOCK_KIND_OF_(To), To>;
+template <typename E = std::enable_if<sizeof...(Ts) == 1>,
+          typename E::type* = nullptr>
+explicit MatcherBaseImpl(Ts... params) {}
+template <
+    typename T1, typename T2,
+    typename std::enable_if<!std::is_integral<T1>::value ||
+                            !std::is_pointer<T2>::value>::type* = nullptr>
+static AssertionResult Compare(const char* lhs_expression,
+                               const char* rhs_expression, const T1& lhs,
+                               const T2& rhs) {}
+const FieldType Class::*field_;
 `)
 	if language != "C++" {
 		t.Fatalf("language = %q", language)
