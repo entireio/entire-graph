@@ -821,9 +821,10 @@ var (
 	swiftPropertyWrapperPrefixPattern               = regexp.MustCompile(`^(\s*)@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+(?:var|let)\s+`)
 	swiftLeadingOperatorContinuationLinePattern     = regexp.MustCompile(`^\s*(?:<|>|<=|>=|==|!=|&&|\|\|)\s+`)
 	swiftComputedStringPropertyStartPattern         = regexp.MustCompile(`^((?:(?:private|fileprivate|internal|public)\s+)?)var\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(String|\[String\])\s*\{$`)
-	cControlIteratorMacroPattern                    = regexp.MustCompile(`^(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:FOREACH|FOREACH_SAFE|FOREACH_REVERSE|FOREACH_REVERSE_SAFE)\s*\(`)
+	cControlIteratorMacroPattern                    = regexp.MustCompile(`^(?:(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:FOREACH|FOREACH_SAFE|FOREACH_REVERSE|FOREACH_REVERSE_SAFE)|(?:foreach|foreach_ptr|foreach_delete_current|forboth|for_both_cell|forthree|for_fourth_cell|for_each_from|dlist_foreach(?:_modify)?|slist_foreach(?:_modify)?|hash_seq_search|SGITITERATE))\s*\(`)
 	cGenerateMacroPattern                           = regexp.MustCompile(`^(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:HEAD|ENTRY|PROTOTYPE|PROTOTYPE_STATIC|GENERATE|GENERATE_STATIC)\s*\(`)
 	cEnumMacroPattern                               = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_KEYS\s*\(`)
+	cFileScopeStatementMacroPattern                 = regexp.MustCompile(`^(?:PG_MODULE_MAGIC(?:_EXT)?|PG_FUNCTION_INFO_V1|PGDLLEXPORT|PG_KEYWORD|PG_FUNCTION_ARGS|PG_USED_FOR_ASSERTS_ONLY)\s*\(`)
 	cStringMacroPattern                             = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*_FEATURE\s*\([^)\n]*\)`)
 	cAnnotationMacroPattern                         = regexp.MustCompile(`\b(?:printflike|__dead|__packed|__unused|__maybe_unused|__attribute__)\s*\([^)\n]*(?:\)[^)\n]*)?\)`)
 	cBareAnnotationPattern                          = regexp.MustCompile(`\b(?:__dead|__packed|__unused|__maybe_unused)\b`)
@@ -851,6 +852,17 @@ func maskCUnsupportedSyntax(content string) string {
 		}
 		if cPreprocessorSkipping(preprocessorSkipStack) {
 			lines[i] = maskLineText(text) + newline
+			continue
+		}
+		if cFileScopeStatementMacroPattern.MatchString(trimmed) {
+			balance := strings.Count(text, "(") - strings.Count(text, ")")
+			lines[i] = maskLineText(text) + newline
+			for balance > 0 && i+1 < len(lines) {
+				i++
+				nextText, nextNewline := splitLineEnding(lines[i])
+				balance += strings.Count(nextText, "(") - strings.Count(nextText, ")")
+				lines[i] = maskLineText(nextText) + nextNewline
+			}
 			continue
 		}
 		if cControlIteratorMacroPattern.MatchString(trimmed) {
@@ -3152,11 +3164,16 @@ var postgresOnDeleteUpdatePattern = regexp.MustCompile(`(?i)\s+on\s+(?:delete|up
 var postgresVectorOperatorClassPattern = regexp.MustCompile(`(?i)\s+vector_[a-z0-9_]+_ops\b`)
 var postgresIndexMethodPattern = regexp.MustCompile(`(?i)\s+using\s+[a-z0-9_]+\b`)
 var postgresCreateFunctionPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?function\b.*?\bas\s+\$[a-z0-9_]*\$.*?\$[a-z0-9_]*\$(?:\s+language\b[^;]*)?;`)
+var postgresCreateExternalFunctionPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?function\b.*?\bas\s+'[^']+'(?:\s*,\s*'[^']+')?(?:\s+language\b[^;]*)?;`)
 var postgresDoBlockPattern = regexp.MustCompile(`(?is)\bdo\s+\$[a-z0-9_]*\$.*?\$[a-z0-9_]*\$;`)
 var postgresDropTriggerPattern = regexp.MustCompile(`(?is)\bdrop\s+trigger\b[^;]*;`)
 var postgresDropPolicyPattern = regexp.MustCompile(`(?is)\bdrop\s+policy\b[^;]*;`)
 var postgresRowLevelSecurityPattern = regexp.MustCompile(`(?is)\balter\s+table\b[^;]*\brow\s+level\s+security\s*;`)
 var postgresFunctionSetPattern = regexp.MustCompile(`(?im)^\s*set\s+search_path\s*=\s*[^;\n]+`)
+var postgresLoadPattern = regexp.MustCompile(`(?im)^\s*load\s+'[^']+'\s*;?`)
+var postgresInlinePsqlMetaCommandPattern = regexp.MustCompile(`(?im)\\(?:gset|gexec|gdesc|watch|if|elif|else|endif|quit|q)\b[^\n\r]*`)
+var postgresExtensionDDLPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:access\s+method|operator(?:\s+class|\s+family)?|type|aggregate|text\s+search\s+(?:configuration|dictionary|parser|template)|collation|statistics|transform)\b[^;]*;`)
+var postgresAlterExtensionPattern = regexp.MustCompile(`(?is)\balter\s+extension\b[^;]*;`)
 
 func maskPostgresUnsupportedSyntax(content string) string {
 	masked := []byte(content)
@@ -3193,6 +3210,9 @@ func maskPostgresUnsupportedSyntax(content string) string {
 	for _, loc := range postgresPsqlMetaCommandPattern.FindAllStringIndex(content, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
+	for _, loc := range postgresInlinePsqlMetaCommandPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
 	for _, loc := range postgresGeneratedColumnPattern.FindAllStringIndex(content, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
@@ -3200,7 +3220,19 @@ func maskPostgresUnsupportedSyntax(content string) string {
 	for _, loc := range postgresCreateFunctionPattern.FindAllStringIndex(content, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
+	for _, loc := range postgresCreateExternalFunctionPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
 	for _, loc := range postgresDoBlockPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresExtensionDDLPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresAlterExtensionPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresLoadPattern.FindAllStringIndex(content, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
 	for _, loc := range postgresDropTriggerPattern.FindAllStringIndex(content, -1) {
@@ -3449,23 +3481,25 @@ func isSQLIdentifierByte(ch byte) bool {
 func postgresFunctionEntities(src []byte) []Entity {
 	content := string(src)
 	var entities []Entity
-	for _, loc := range postgresCreateFunctionPattern.FindAllStringIndex(content, -1) {
-		block := content[loc[0]:loc[1]]
-		if name := matchSQLCreateFunctionName(block); name != "" {
-			signature := strings.TrimSpace(block)
-			if index := strings.IndexByte(signature, '\n'); index >= 0 {
-				signature = signature[:index]
+	for _, pattern := range []*regexp.Regexp{postgresCreateFunctionPattern, postgresCreateExternalFunctionPattern} {
+		for _, loc := range pattern.FindAllStringIndex(content, -1) {
+			block := content[loc[0]:loc[1]]
+			if name := matchSQLCreateFunctionName(block); name != "" {
+				signature := strings.TrimSpace(block)
+				if index := strings.IndexByte(signature, '\n'); index >= 0 {
+					signature = signature[:index]
+				}
+				entity := Entity{
+					Kind:        "function",
+					Name:        name,
+					Signature:   strings.TrimSpace(strings.TrimRight(signature, "{:; \t\r\n")),
+					StartLine:   countLinesBefore(content, loc[0]) + 1,
+					EndLine:     countLinesBefore(content, loc[1]) + 1,
+					BodyHash:    hash(normalize(block)),
+					Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+				}
+				entities = append(entities, entity)
 			}
-			entity := Entity{
-				Kind:        "function",
-				Name:        name,
-				Signature:   strings.TrimSpace(strings.TrimRight(signature, "{:; \t\r\n")),
-				StartLine:   countLinesBefore(content, loc[0]) + 1,
-				EndLine:     countLinesBefore(content, loc[1]) + 1,
-				BodyHash:    hash(normalize(block)),
-				Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
-			}
-			entities = append(entities, entity)
 		}
 	}
 	return entities

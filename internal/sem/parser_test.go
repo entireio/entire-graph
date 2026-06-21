@@ -248,6 +248,40 @@ server_loop(void)
 	}
 }
 
+func TestTreeSitterParserCMasksPostgresMacros(t *testing.T) {
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("verify_nbtree.c", `#include "postgres.h"
+
+PG_MODULE_MAGIC_EXT(
+					.name = "amcheck",
+					.version = PG_VERSION
+);
+
+PG_FUNCTION_INFO_V1(bt_index_check);
+
+static void
+check_all(List *items)
+{
+	ListCell *cell;
+
+	foreach(cell, items)
+		check_item(lfirst(cell));
+}
+`)
+	if language != "C" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse error: %s", status.Detail)
+	}
+	seen := map[string]Entity{}
+	for _, entity := range entities {
+		seen[entity.Name] = entity
+	}
+	if seen["check_all"].Name == "" {
+		t.Fatalf("missing PostgreSQL C entity in %#v", entities)
+	}
+}
+
 func TestTreeSitterParserCMasksMultilineAttributes(t *testing.T) {
 	_, language, status := TreeSitterParser{}.ParseWithStatus("xmalloc.h", `#ifndef XMALLOC_H
 #define XMALLOC_H
@@ -2188,6 +2222,47 @@ on conflict (id) do update set created_at = excluded.created_at;
 		if seen[name] != kind {
 			t.Fatalf("%s kind = %q, want %q in %#v", name, seen[name], kind, entities)
 		}
+	}
+}
+
+func TestTreeSitterParserPostgresExtensionDDL(t *testing.T) {
+	input := `LOAD 'pg_plan_advice';
+
+CREATE FUNCTION bt_index_check(index regclass, heapallindexed boolean)
+RETURNS void
+AS 'MODULE_PATHNAME', 'bt_index_check'
+LANGUAGE C STRICT PARALLEL RESTRICTED;
+
+ALTER EXTENSION pg_stat_statements UPDATE TO '1.11';
+
+CREATE ACCESS METHOD bloom TYPE INDEX HANDLER blhandler;
+
+CREATE TYPE seg (
+  internallength = variable,
+  input = seg_in,
+  output = seg_out
+);
+
+CREATE OPERATOR CLASS int4_ops
+DEFAULT FOR TYPE int4 USING bloom AS
+  OPERATOR 1 =(int4, int4),
+  FUNCTION 1 hashint4(int4);
+
+SELECT 1 AS ok \gset
+`
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("contrib/amcheck/amcheck--1.0.sql", input)
+	if language != "SQL" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("parse status = %#v; entities = %#v", status, entities)
+	}
+	seen := map[string]string{}
+	for _, entity := range entities {
+		seen[entity.Name] = entity.Kind
+	}
+	if seen["bt_index_check"] != "function" {
+		t.Fatalf("missing external C function entity in %#v", entities)
 	}
 }
 
