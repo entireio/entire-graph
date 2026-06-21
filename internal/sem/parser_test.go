@@ -177,6 +177,38 @@ const internalSlice = buildCreateSlice()
 	}
 }
 
+func TestTreeSitterParserJavaScriptAssignmentMethodEntities(t *testing.T) {
+	entities, language := TreeSitterParser{}.Parse("application.js", `var app = exports = module.exports = {};
+
+app.init = function init() {
+  this.ready = true;
+};
+
+res.json = function json(obj) {
+  return this.send(obj);
+};
+`)
+	if language != "JavaScript" {
+		t.Fatalf("language = %q", language)
+	}
+	seen := map[string]Entity{}
+	for _, entity := range entities {
+		seen[entity.Name] = entity
+	}
+	for _, name := range []string{"app.init", "res.json"} {
+		entity, ok := seen[name]
+		if !ok {
+			t.Fatalf("missing assignment method %q in %#v", name, entities)
+		}
+		if entity.Kind != "method" {
+			t.Fatalf("%s kind = %q, want method", name, entity.Kind)
+		}
+		if entity.EndLine <= entity.StartLine {
+			t.Fatalf("%s should span its function body: %#v", name, entity)
+		}
+	}
+}
+
 func TestTreeSitterParserTypeScriptExportedVariablesSurviveParseRecovery(t *testing.T) {
 	entities, language, status := TreeSitterParser{}.ParseWithStatus("slice.ts", `type Broken = <
 

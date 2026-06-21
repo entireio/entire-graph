@@ -162,6 +162,7 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	}
 	if spec.language == "JavaScript" || spec.language == "TypeScript" {
 		entities = appendMissingEntities(entities, javascriptExportedVariableEntities(content)...)
+		entities = appendMissingEntities(entities, javascriptAssignmentMethodEntities(content)...)
 		entities = append(entities, graphqlResolverEntities(path, content)...)
 	}
 	if spec.language == "SQL" {
@@ -2584,6 +2585,7 @@ func functionLikeValue(node *sitter.Node) bool {
 }
 
 var jsExportedVariablePattern = regexp.MustCompile(`(?m)^\s*export\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=`)
+var jsAssignmentMethodPattern = regexp.MustCompile(`(?m)^\s*((?:[A-Za-z_$][A-Za-z0-9_$]*\s*\.\s*)+[A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s+)?function(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s*\(`)
 
 func javascriptExportedVariableEntities(content string) []Entity {
 	matches := jsExportedVariablePattern.FindAllStringSubmatchIndex(content, -1)
@@ -2609,6 +2611,55 @@ func javascriptExportedVariableEntities(content string) []Entity {
 			EndLine:     startLine,
 			BodyHash:    hash(normalize(signature)),
 			Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, signature))),
+		})
+	}
+	return entities
+}
+
+func javascriptAssignmentMethodEntities(content string) []Entity {
+	matches := jsAssignmentMethodPattern.FindAllStringSubmatchIndex(content, -1)
+	entities := make([]Entity, 0, len(matches))
+	for _, match := range matches {
+		if len(match) < 4 {
+			continue
+		}
+		name := strings.Join(regexp.MustCompile(`\s*\.\s*`).Split(strings.TrimSpace(content[match[2]:match[3]]), -1), ".")
+		if name == "" || strings.HasPrefix(name, "module.exports.") || strings.HasPrefix(name, "exports.") {
+			// Export alias properties are useful exports, but not object/prototype
+			// method declarations with a stable receiver.
+			continue
+		}
+		lineStart := strings.LastIndexByte(content[:match[0]], '\n') + 1
+		lineEndRel := strings.IndexByte(content[match[0]:], '\n')
+		lineEnd := len(content)
+		if lineEndRel >= 0 {
+			lineEnd = match[0] + lineEndRel
+		}
+		startLine := countLinesBefore(content, match[0]) + 1
+		endLine := startLine
+		openBrace := strings.IndexByte(content[match[0]:], '{')
+		if openBrace >= 0 {
+			openBrace += match[0]
+			if closeBrace := matchingDelimiterOffset(content, openBrace, '{', '}'); closeBrace >= 0 {
+				endLine = countLinesBefore(content, closeBrace) + 1
+			}
+		}
+		signature := strings.TrimSpace(content[lineStart:lineEnd])
+		blockEnd := lineEnd
+		if endLine > startLine && openBrace >= 0 {
+			if closeBrace := matchingDelimiterOffset(content, openBrace, '{', '}'); closeBrace >= 0 {
+				blockEnd = closeBrace + 1
+			}
+		}
+		block := content[match[0]:minInt(blockEnd, len(content))]
+		entities = append(entities, Entity{
+			Kind:        "method",
+			Name:        name,
+			Signature:   signature,
+			StartLine:   startLine,
+			EndLine:     endLine,
+			BodyHash:    hash(normalize(block)),
+			Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
 		})
 	}
 	return entities

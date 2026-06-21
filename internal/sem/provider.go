@@ -2421,6 +2421,31 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 	}
 	var relations []RelationRecord
 	for _, call := range calls {
+		method, confidence, reason, resolution, scope, ok := receiverQualifiedMethodTarget(from, call, symbolsByShortName[call.Method])
+		if !ok {
+			continue
+		}
+		relations = append(relations, RelationRecord{
+			RecordType:    "relation",
+			FromID:        from.ID,
+			ToID:          method.ID,
+			Type:          "CALLS",
+			Confidence:    confidence,
+			Reason:        reason,
+			RelationScope: scope,
+			Resolution:    resolution,
+			TargetKind:    "symbol",
+			Evidence: []Evidence{{
+				Kind:      "call_site",
+				FilePath:  from.FilePath,
+				StartLine: from.StartLine,
+				EndLine:   from.EndLine,
+				Detail:    call.Receiver + "." + call.Method,
+			}},
+			WarningCodes: []string{},
+		})
+	}
+	for _, call := range calls {
 		var targetID string
 		confidence := 0.85
 		reason := "method call resolved via inferred receiver type"
@@ -2712,6 +2737,35 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		}
 	}
 	return relations
+}
+
+func receiverQualifiedMethodTarget(from SymbolRecord, call receiverCall, candidates []SymbolRecord) (SymbolRecord, float64, string, string, string, bool) {
+	qualified := call.Receiver + "." + call.Method
+	var matches []SymbolRecord
+	var sameFile []SymbolRecord
+	for _, candidate := range candidates {
+		if candidate.ID == from.ID || candidate.Kind != "method" {
+			continue
+		}
+		if candidate.QualifiedName != qualified && candidate.Name != qualified {
+			continue
+		}
+		matches = append(matches, candidate)
+		if candidate.FilePath == from.FilePath {
+			sameFile = append(sameFile, candidate)
+		}
+	}
+	if len(sameFile) == 1 {
+		return sameFile[0], 0.82, "receiver call resolved to same-file qualified method symbol", "exact", "file", true
+	}
+	if len(matches) == 1 {
+		scope := "workspace"
+		if matches[0].FilePath != from.FilePath {
+			scope = "module"
+		}
+		return matches[0], 0.66, "receiver call matched globally unique qualified method symbol", "name_only", scope, true
+	}
+	return SymbolRecord{}, 0, "", "", "", false
 }
 
 func receiverDeepChainSuffixes(chained []typedMethodDeepChainCall, returned []returnedMethodDeepChainCall) map[string]bool {

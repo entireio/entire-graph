@@ -255,6 +255,43 @@ export function boot(): string {
 	}
 }
 
+func TestJavaScriptReceiverCallsResolveUniqueAssignmentMethods(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "lib/application.js", `var app = exports = module.exports = {};
+
+app.init = function init() {
+  this.ready = true;
+};
+
+app.handle = function handle(req, res, next) {
+  next();
+};
+`)
+	writeFile(t, repo, "lib/express.js", `var proto = require('./application');
+
+function createApplication() {
+  var app = function(req, res, next) {
+    app.handle(req, res, next);
+  };
+
+  mixin(app, proto, false);
+  app.init();
+  return app;
+}
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", "createApplication", "app.init", "name_only") {
+		t.Fatalf("missing receiver-qualified call createApplication -> app.init in %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", "createApplication", "app.handle", "name_only") {
+		t.Fatalf("missing receiver-qualified call createApplication -> app.handle in %#v", snapshot.Relations)
+	}
+}
+
 func TestTypeScriptManifestImportsResolveThroughExtendedTSConfig(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "package.json", `{"name":"@acme/app"}`)
