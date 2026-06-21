@@ -249,8 +249,9 @@ func sourceLineAt(src []byte, line int) string {
 }
 
 var (
-	tsKeywordTypePropertyPattern = regexp.MustCompile(`^(\s*)in(\??\s*:)`)
-	tsTypeImportPattern          = regexp.MustCompile(`typeof\s+import\(([^)]*)\)`)
+	tsKeywordTypePropertyPattern  = regexp.MustCompile(`^(\s*)in(\??\s*:)`)
+	tsTypeImportPattern           = regexp.MustCompile(`typeof\s+import\(([^)]*)\)`)
+	tsStaticAccessorMethodPattern = regexp.MustCompile(`\bstatic\s+accessor(\s*\()`)
 )
 
 func maskTypeScriptUnsupportedSyntax(content string) string {
@@ -277,6 +278,7 @@ func maskTypeScriptUnsupportedSyntax(content string) string {
 			continue
 		}
 		text = maskTypeScriptKeywordTypeProperty(text)
+		text = maskTypeScriptStaticAccessorMethod(text)
 		trimmed = strings.TrimSpace(text)
 		if typeScriptGenericCallSignatureStarts(trimmed) {
 			lines[i] = maskLineText(text) + newline
@@ -312,6 +314,10 @@ func splitLineEnding(line string) (text, newline string) {
 
 func maskTypeScriptKeywordTypeProperty(line string) string {
 	return tsKeywordTypePropertyPattern.ReplaceAllString(line, "${1}ii${2}")
+}
+
+func maskTypeScriptStaticAccessorMethod(line string) string {
+	return tsStaticAccessorMethodPattern.ReplaceAllString(line, "static accessoR${1}")
 }
 
 func typeScriptGenericCallSignatureStarts(trimmed string) bool {

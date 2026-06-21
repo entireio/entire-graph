@@ -262,6 +262,26 @@ func TestTreeSitterParserTypeScriptMasksGeneratedKeywordProperties(t *testing.T)
 	}
 }
 
+func TestTreeSitterParserTypeScriptMasksStaticAccessorMethod(t *testing.T) {
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("index.d.ts", `export class AxiosHeaders {
+  static from(thing?: AxiosHeaders | string): AxiosHeaders;
+  static accessor(header: string | string[]): AxiosHeaders;
+}
+`)
+	if language != "TypeScript" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	for _, entity := range entities {
+		if entity.Name == "AxiosHeaders" && entity.Kind == "class" {
+			return
+		}
+	}
+	t.Fatalf("missing class entity after masking static accessor method: %#v", entities)
+}
+
 func TestTreeSitterParserTypeScriptMasksGenericCallableTypeSignatures(t *testing.T) {
 	_, language, status := TreeSitterParser{}.ParseWithStatus("callable.ts", `export interface TakePattern<State> {
   <Predicate extends AnyListenerPredicate<State>>(
