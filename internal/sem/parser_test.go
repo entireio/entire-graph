@@ -2494,3 +2494,31 @@ int validate(int token) {
 		t.Fatalf("control statement parsed as function: %#v", entities)
 	}
 }
+
+func TestTreeSitterParserCSharpBOMPreservesSymbolNames(t *testing.T) {
+	// A leading UTF-8 BOM must not shift symbol byte offsets. The BOM mask is
+	// byte-length-preserving (3-byte BOM -> 3 spaces); a 3->1 byte replacement
+	// previously drifted every name by -2 (e.g. "WidgetFactory" -> "s WidgetFacto").
+	src := "\ufeffnamespace Acme.Demo\n{\n    public class WidgetFactory\n    {\n        public int CounterValue;\n        public string BuildWidget(string name) { return name; }\n    }\n}\n"
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("Widget.cs", src)
+	if language != "C#" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	want := map[string]string{
+		"WidgetFactory":              "class",
+		"WidgetFactory.CounterValue": "field",
+		"WidgetFactory.BuildWidget":  "method",
+	}
+	seen := map[string]string{}
+	for _, entity := range entities {
+		seen[entity.Name] = entity.Kind
+	}
+	for name, kind := range want {
+		if seen[name] != kind {
+			t.Fatalf("BOM-prefixed C# name %q kind = %q, want %q; corrupted names present in %#v", name, seen[name], kind, entities)
+		}
+	}
+}

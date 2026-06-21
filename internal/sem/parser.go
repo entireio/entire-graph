@@ -570,7 +570,12 @@ func maskYAMLQuotedMappingKey(line string) string {
 }
 
 func maskCSharpUnsupportedSyntax(content string) string {
-	content = strings.ReplaceAll(content, "\ufeff", " ")
+	// Neutralize byte-order marks with a byte-length-preserving replacement.
+	// The UTF-8 BOM is 3 bytes; replacing it with a single space would shrink
+	// the masked source by 2 bytes and drift every downstream symbol offset by
+	// -2 relative to the unmasked content the names are sliced from (corrupting
+	// every name in a BOM-prefixed file, e.g. "SqlMapper" -> "s SqlMapp").
+	content = strings.ReplaceAll(content, "\ufeff", "   ")
 	lines := strings.SplitAfter(content, "\n")
 	for i, line := range lines {
 		text, newline := splitLineEnding(line)
