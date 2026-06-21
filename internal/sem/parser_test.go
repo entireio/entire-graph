@@ -181,8 +181,21 @@ func TestTreeSitterParserCMasksBSDMacros(t *testing.T) {
 	entities, language, status := TreeSitterParser{}.ParseWithStatus("server.c", `#include "tmux.h"
 
 TAILQ_HEAD(clients, client);
-RB_GENERATE_STATIC(args_tree, args_entry, entry, args_cmp);
+RB_GENERATE_STATIC(args_tree, args_entry, entry,
+    args_cmp);
 static TAILQ_HEAD(, window) alerts_list = TAILQ_HEAD_INITIALIZER(alerts_list);
+static struct utf8_width_cache utf8_width_cache =
+    RB_INITIALIZER(utf8_width_cache);
+
+enum key_code {
+	KEYC_MOUSE,
+	KEYC_MOUSE_KEYS(MOUSEMOVE),
+	KEYC_NONE,
+};
+
+static const char *client_rows[] = {
+	"Features " WINDOW_CLIENT_FEATURE(256) " " WINDOW_CLIENT_FEATURE(RGB),
+};
 
 void printflike(3, 4)
 cmd_log_argv(int argc, char **argv, const char *fmt, ...)
@@ -209,6 +222,12 @@ server_loop(void)
 	RB_FOREACH(c, args_tree, &args->tree) {
 		notify_client(c);
 	}
+	RB_FOREACH(c, args_tree, &args->tree)
+		notify_client(c);
+	RB_FOREACH_SAFE(c, args_tree, &args->tree,
+	    tmp) {
+		notify_client(c);
+	}
 	return 0;
 }
 `)
@@ -226,6 +245,120 @@ server_loop(void)
 		if seen[name].Name == "" {
 			t.Fatalf("missing C entity %q in %#v", name, entities)
 		}
+	}
+}
+
+func TestTreeSitterParserCMasksMultilineAttributes(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("xmalloc.h", `#ifndef XMALLOC_H
+#define XMALLOC_H
+
+int xasprintf(char **, const char *, ...)
+		__attribute__((__format__ (printf, 2, 3)))
+		__attribute__((__nonnull__ (2)));
+int xsnprintf(char *, size_t, const char *, ...)
+		__attribute__((__format__ (printf, 3, 4)))
+		__attribute__((__nonnull__ (3)))
+		__attribute__((__bounded__ (__string__, 1, 2)));
+
+#endif
+`)
+	if language != "C" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse error: %s", status.Detail)
+	}
+}
+
+func TestTreeSitterParserCMasksPreprocessorAlternates(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("utf8.c", `static void
+utf8_add_to_width_cache(void)
+{
+#ifdef HAVE_UTF8PROC
+	if (utf8proc_mbtowc() <= 0) {
+#else
+	if (mbtowc() <= 0) {
+#endif
+		return;
+	}
+}
+`)
+	if language != "C" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse error: %s", status.Detail)
+	}
+}
+
+func TestTreeSitterParserCMasksBSDTreeTables(t *testing.T) {
+	_, language, status := TreeSitterParser{}.ParseWithStatus("utf8.c", `#include "tmux.h"
+
+struct utf8_width_item {
+	wchar_t wc;
+	u_int width;
+	int allocated;
+	RB_ENTRY(utf8_width_item) entry;
+};
+
+static int
+utf8_width_cache_cmp(struct utf8_width_item *uw1, struct utf8_width_item *uw2)
+{
+	return (0);
+}
+RB_HEAD(utf8_width_cache, utf8_width_item);
+RB_GENERATE_STATIC(utf8_width_cache, utf8_width_item, entry,
+    utf8_width_cache_cmp);
+static struct utf8_width_cache utf8_width_cache =
+    RB_INITIALIZER(utf8_width_cache);
+
+static struct utf8_width_item utf8_default_width_cache[] = {
+	{ .wc = 0x0261D, .width = 2 },
+	{ .wc = 0x1FAF8, .width = 2 }
+};
+
+struct utf8_item {
+	RB_ENTRY(utf8_item) index_entry;
+	u_int index;
+	RB_ENTRY(utf8_item) data_entry;
+	char data[UTF8_SIZE];
+	u_char size;
+};
+RB_HEAD(utf8_data_tree, utf8_item);
+RB_GENERATE_STATIC(utf8_data_tree, utf8_item, data_entry, utf8_data_cmp);
+static struct utf8_data_tree utf8_data_tree = RB_INITIALIZER(utf8_data_tree);
+
+#define UTF8_GET_SIZE(uc) (((uc) >> 24) & 0x1f)
+#define UTF8_SET_SIZE(size) (((utf8_char)(size)) << 24)
+
+static struct utf8_item *
+utf8_item_by_data(const u_char *data, size_t size)
+{
+	struct utf8_item ui;
+	return (RB_FIND(utf8_data_tree, &utf8_data_tree, &ui));
+}
+
+static void
+utf8_insert_width_cache(wchar_t wc, u_int width)
+{
+	struct utf8_width_item *uw, *old;
+	old = RB_INSERT(utf8_width_cache, &utf8_width_cache, uw);
+	if (old != NULL) {
+		RB_REMOVE(utf8_width_cache, &utf8_width_cache, old);
+		RB_INSERT(utf8_width_cache, &utf8_width_cache, uw);
+	}
+}
+
+static void
+utf8_add_to_width_cache(const char *s)
+{
+}
+`)
+	if language != "C" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse error: %s", status.Detail)
 	}
 }
 

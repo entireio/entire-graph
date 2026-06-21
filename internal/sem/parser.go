@@ -425,18 +425,22 @@ func maskYAMLUnsupportedSyntax(content string) string {
 var (
 	cControlIteratorMacroPattern = regexp.MustCompile(`^(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:FOREACH|FOREACH_SAFE|FOREACH_REVERSE|FOREACH_REVERSE_SAFE)\s*\(`)
 	cGenerateMacroPattern        = regexp.MustCompile(`^(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:HEAD|ENTRY|PROTOTYPE|PROTOTYPE_STATIC|GENERATE|GENERATE_STATIC)\s*\(`)
+	cEnumMacroPattern            = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_KEYS\s*\(`)
+	cStringMacroPattern          = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*_FEATURE\s*\([^)\n]*\)`)
 	cAnnotationMacroPattern      = regexp.MustCompile(`\b(?:printflike|__dead|__packed|__unused|__maybe_unused|__attribute__)\s*\([^)\n]*(?:\)[^)\n]*)?\)`)
 	cBareAnnotationPattern       = regexp.MustCompile(`\b(?:__dead|__packed|__unused|__maybe_unused)\b`)
 	cTypeMacroPattern            = regexp.MustCompile(`\b(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:HEAD|ENTRY)\s*\([^)\n]*\)`)
-	cHeadInitializerPattern      = regexp.MustCompile(`\b(?:TAILQ|STAILQ|LIST|SLIST)_(?:HEAD_)?INITIALIZER\s*\([^)\n]*\)`)
+	cHeadInitializerPattern      = regexp.MustCompile(`\b(?:(?:TAILQ|STAILQ|LIST|SLIST)_(?:HEAD_)?INITIALIZER|RB_INITIALIZER|SPLAY_INITIALIZER)\s*\([^)\n]*\)`)
 )
 
 func maskCUnsupportedSyntax(content string) string {
 	lines := strings.SplitAfter(content, "\n")
+	var preprocessorSkipStack []bool
 	for i := 0; i < len(lines); i++ {
 		text, newline := splitLineEnding(lines[i])
 		trimmed := strings.TrimSpace(text)
 		if strings.HasPrefix(trimmed, "#") {
+			preprocessorSkipStack = updateCPreprocessorSkipStack(preprocessorSkipStack, trimmed)
 			for {
 				lines[i] = maskLineText(text) + newline
 				if !strings.HasSuffix(strings.TrimRight(text, " \t"), "\\") || i+1 >= len(lines) {
@@ -447,14 +451,54 @@ func maskCUnsupportedSyntax(content string) string {
 			}
 			continue
 		}
-		if cControlIteratorMacroPattern.MatchString(trimmed) {
-			lines[i] = paddedReplacement(leadingWhitespace(text), "for (;;) {", len(text)) + newline
-			continue
-		}
-		if cGenerateMacroPattern.MatchString(trimmed) {
+		if cPreprocessorSkipping(preprocessorSkipStack) {
 			lines[i] = maskLineText(text) + newline
 			continue
 		}
+		if cControlIteratorMacroPattern.MatchString(trimmed) {
+			combined := trimmed
+			end := i
+			for !strings.Contains(combined, ")") && end+1 < len(lines) {
+				end++
+				nextText, _ := splitLineEnding(lines[end])
+				combined += " " + strings.TrimSpace(nextText)
+			}
+			replacement := "for (;;)"
+			if strings.Contains(combined, "{") {
+				replacement = "for (;;) {"
+			}
+			lines[i] = paddedReplacement(leadingWhitespace(text), replacement, len(text)) + newline
+			for j := i + 1; j <= end; j++ {
+				nextText, nextNewline := splitLineEnding(lines[j])
+				lines[j] = maskLineText(nextText) + nextNewline
+			}
+			i = end
+			continue
+		}
+		if strings.HasPrefix(trimmed, "__attribute__") {
+			replacement := ""
+			if strings.HasSuffix(trimmed, ";") {
+				replacement = ";"
+			}
+			lines[i] = paddedReplacement(leadingWhitespace(text), replacement, len(text)) + newline
+			continue
+		}
+		if cEnumMacroPattern.MatchString(trimmed) {
+			lines[i] = maskLineText(text) + newline
+			continue
+		}
+		if cGenerateMacroPattern.MatchString(trimmed) {
+			for {
+				lines[i] = maskLineText(text) + newline
+				if strings.Contains(text, ";") || i+1 >= len(lines) {
+					break
+				}
+				i++
+				text, newline = splitLineEnding(lines[i])
+			}
+			continue
+		}
+		text = maskCStringMacros(text)
 		text = maskCAnnotationMacros(text)
 		text = maskCTypeMacros(text)
 		text = replaceAllSameLength(text, ", >)", ", 0)")
@@ -464,9 +508,47 @@ func maskCUnsupportedSyntax(content string) string {
 	return strings.Join(lines, "")
 }
 
+func updateCPreprocessorSkipStack(stack []bool, trimmed string) []bool {
+	directive := strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
+	fields := strings.Fields(directive)
+	if len(fields) == 0 {
+		return stack
+	}
+	switch fields[0] {
+	case "if":
+		stack = append(stack, len(fields) > 1 && fields[1] == "0")
+	case "ifdef", "ifndef":
+		stack = append(stack, false)
+	case "elif", "else":
+		if len(stack) > 0 {
+			stack[len(stack)-1] = true
+		}
+	case "endif":
+		if len(stack) > 0 {
+			stack = stack[:len(stack)-1]
+		}
+	}
+	return stack
+}
+
+func cPreprocessorSkipping(stack []bool) bool {
+	for _, skipping := range stack {
+		if skipping {
+			return true
+		}
+	}
+	return false
+}
+
 func maskCAnnotationMacros(text string) string {
 	return cAnnotationMacroPattern.ReplaceAllStringFunc(text, func(match string) string {
 		return strings.Repeat(" ", len(match))
+	})
+}
+
+func maskCStringMacros(text string) string {
+	return cStringMacroPattern.ReplaceAllStringFunc(text, func(match string) string {
+		return sameLengthReplacement(`""`, len(match))
 	})
 }
 
