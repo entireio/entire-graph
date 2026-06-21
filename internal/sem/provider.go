@@ -2036,7 +2036,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				for _, r := range receiverCallRelations(from, block, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile) {
 					emit(r)
 				}
-				for _, r := range importedReceiverCallRelations(from, block, importsByName) {
+				for _, r := range importedReceiverCallRelations(from, block, importsByName, symbolsByShortName) {
 					emit(r)
 				}
 			}
@@ -2789,13 +2789,57 @@ func importedExternalCallRelationsForName(from SymbolRecord, name string, module
 	return relations
 }
 
-func importedReceiverCallRelations(from SymbolRecord, block string, importsByName map[string][]string) []RelationRecord {
+func importedReceiverCallRelations(from SymbolRecord, block string, importsByName map[string][]string, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
 	if typeLikeKind(from.Kind) {
 		return nil
 	}
 	var relations []RelationRecord
 	seen := map[string]bool{}
 	for _, call := range receiverCalls(block) {
+		var localTargets []resolvedCallTarget
+		for _, to := range symbolsByShortName[call.Method] {
+			if to.ID == from.ID || to.Kind == "field" {
+				continue
+			}
+			if importedNameMatchesFile(importsByName[call.Receiver], from.FilePath, to.FilePath) {
+				localTargets = append(localTargets, resolvedCallTarget{
+					SymbolRecord: to,
+					Confidence:   0.84,
+					Reason:       "receiver call resolved through imported module path",
+					Resolution:   "import_resolved",
+					Scope:        "module",
+				})
+			}
+		}
+		if len(localTargets) > 0 {
+			for _, target := range localTargets {
+				key := target.ID
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				relations = append(relations, RelationRecord{
+					RecordType:    "relation",
+					FromID:        from.ID,
+					ToID:          target.ID,
+					Type:          "CALLS",
+					Confidence:    target.Confidence,
+					Reason:        target.Reason,
+					RelationScope: target.Scope,
+					Resolution:    target.Resolution,
+					TargetKind:    "symbol",
+					Evidence: []Evidence{{
+						Kind:      "call_site",
+						FilePath:  from.FilePath,
+						StartLine: from.StartLine,
+						EndLine:   from.EndLine,
+						Detail:    call.Receiver + "." + call.Method,
+					}},
+					WarningCodes: []string{},
+				})
+			}
+			continue
+		}
 		for _, module := range importsByName[call.Receiver] {
 			target := importedExternalSymbolName(module, call.Method)
 			if target == "" || seen[target] {
@@ -7941,6 +7985,9 @@ func scanPythonImports(content string) []string {
 		}
 	}
 	for _, module := range scanImports(content, regexp.MustCompile(`(?m)^\s*(?:from\s+(\.*[A-Za-z0-9_\.]+)\s+import|import\s+([A-Za-z0-9_\.]+))`)) {
+		if strings.HasPrefix(module, ".") && strings.Trim(module, ".") == "" {
+			continue
+		}
 		add(module)
 	}
 	runtimeImportCalls := []string{`importlib\s*\.\s*import_module`, `__import__`}
@@ -7998,8 +8045,8 @@ func scanPythonImports(content string) []string {
 				continue
 			}
 			switch {
-			case module == ".":
-				add("." + name)
+			case strings.HasPrefix(module, ".") && strings.Trim(module, ".") == "":
+				add(pythonFromImportModuleSpec(module, name))
 			case !strings.HasPrefix(module, ".") && !strings.Contains(module, "."):
 				add(strings.TrimRight(module, ".") + "." + name)
 			}
@@ -8477,7 +8524,8 @@ func importedPythonNames(content string) map[string][]string {
 				if local == "" {
 					local = name
 				}
-				imports[local] = append(imports[local], module)
+				importedModule := pythonFromImportModuleSpec(module, name)
+				imports[local] = append(imports[local], importedModule)
 			}
 		}
 	}
@@ -8494,6 +8542,15 @@ func parsePythonImportItem(item string) (name, alias string) {
 		return parts[0], parts[len(parts)-1]
 	}
 	return parts[0], ""
+}
+
+func pythonFromImportModuleSpec(module, imported string) string {
+	module = strings.TrimSpace(module)
+	imported = strings.TrimSpace(imported)
+	if strings.HasPrefix(module, ".") && strings.Trim(module, ".") == "" && imported != "" {
+		return module + imported
+	}
+	return module
 }
 
 func importedNameMatchesFile(modules []string, importingPath, targetPath string) bool {
@@ -9195,7 +9252,7 @@ func djangoResolveIncludeTarget(importingPath string, mount djangoIncludeMount, 
 	for _, binding := range imports[target] {
 		module := strings.TrimSpace(binding.Module)
 		if binding.Imported != "" {
-			module = strings.TrimRight(module, ".") + "." + strings.TrimSpace(binding.Imported)
+			module = pythonDjangoIncludeModuleSpec(module, binding.Imported)
 		}
 		if resolved, ok := djangoResolveIncludeModule(importingPath, module, moduleFiles, knownFiles); ok {
 			return resolved, true
@@ -9216,6 +9273,21 @@ func djangoResolveIncludeModule(importingPath, module string, moduleFiles map[st
 	return target, ok
 }
 
+func pythonDjangoIncludeModuleSpec(module, imported string) string {
+	module = strings.TrimSpace(module)
+	imported = strings.TrimSpace(imported)
+	if imported == "" {
+		return module
+	}
+	if strings.HasPrefix(module, ".") {
+		if strings.Trim(module, ".") == "" {
+			return module + imported
+		}
+		return module
+	}
+	return strings.TrimRight(module, ".") + "." + imported
+}
+
 func djangoResolveRouteHandler(handler, filePath, content string, symbolsByFileAndName map[string]map[string]SymbolRecord, knownFiles map[string]bool) (SymbolRecord, bool) {
 	if !strings.Contains(handler, ".") {
 		symbol, ok := symbolsByFileAndName[filePath][handler]
@@ -9227,7 +9299,7 @@ func djangoResolveRouteHandler(handler, filePath, content string, symbolsByFileA
 	}
 	for _, module := range importedPythonNames(content)[alias] {
 		spec := module
-		if strings.HasPrefix(module, ".") {
+		if strings.HasPrefix(module, ".") && strings.Trim(module, ".") == "" {
 			spec = strings.TrimRight(module, ".") + "." + alias
 		}
 		targetFile, ok := resolveLocalImport(filePath, spec, knownFiles)

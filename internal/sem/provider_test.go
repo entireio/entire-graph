@@ -931,6 +931,36 @@ def call():
 	}
 }
 
+func TestPythonFromPackageImportModuleReceiverCallsResolveToLocalSymbols(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/acme/__init__.py", "")
+	writeFile(t, repo, "src/acme/sessions.py", `class Session:
+    pass
+`)
+	writeFile(t, repo, "src/acme/api.py", `from . import sessions
+
+def request():
+    return sessions.Session()
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := fileID(snapshot.Header.RepoKey, "src/acme/sessions.py")
+	if !hasImportRelationWithEvidence(snapshot.Relations, "src/acme/api.py", target, ".sessions", "import_statement") {
+		t.Fatalf("missing from-package module import to %s in %#v", target, snapshot.Relations)
+	}
+	if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", "request", "Session", "import_resolved") {
+		t.Fatalf("missing imported module receiver call to Session in %#v", snapshot.Relations)
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CALLS" && relation.FromID != "" && strings.HasSuffix(relation.FromID, ":function:request") && strings.HasPrefix(relation.ToID, "external:symbol:sessions.Session") {
+			t.Fatalf("local module receiver call also emitted external fallback: %#v", relation)
+		}
+	}
+}
+
 func TestSetupCFGNameParsingNormalizesPythonPackage(t *testing.T) {
 	name := parseSetupCFGName(`[metadata]
 Name = acme-tools
