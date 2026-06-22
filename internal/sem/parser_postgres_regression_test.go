@@ -144,3 +144,20 @@ func TestPostgresForeignAndOperatorDDLMasked(t *testing.T) {
 		t.Fatalf("surrounding tables dropped by unmasked DDL: %#v", entities)
 	}
 }
+
+// CREATE DOMAIN/CAST/PROCEDURE and @extschema@ extension-template placeholders
+// must be masked so .sql.in template statements parse.
+func TestPostgresDomainCastProcedureAndPlaceholders(t *testing.T) {
+	src := "CREATE TABLE before_tbl (id int);\n" +
+		"CREATE DOMAIN earth AS @extschema:cube@.cube;\n" +
+		"CREATE CAST (hstore AS jsonb) WITH FUNCTION hstore_to_jsonb(hstore);\n" +
+		"CREATE PROCEDURE p1() LANGUAGE plpgsql AS $$ BEGIN NULL; END $$;\n" +
+		"CREATE TABLE after_tbl (id int);\n"
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("ext.sql", src)
+	if status.ParseError {
+		t.Fatalf("unexpected parse error after masking: %s", status.Detail)
+	}
+	if countEntity(entities, "table", "before_tbl") != 1 || countEntity(entities, "table", "after_tbl") != 1 {
+		t.Fatalf("surrounding tables dropped: %#v", entities)
+	}
+}

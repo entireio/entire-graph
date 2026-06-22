@@ -3252,8 +3252,13 @@ var postgresWithOrdinalityPattern = regexp.MustCompile(`(?i)\s+with\s+ordinality
 var postgresOnDeleteUpdatePattern = regexp.MustCompile(`(?i)\s+on\s+(?:delete|update)\s+(?:cascade|restrict|set\s+null|set\s+default|no\s+action)\b`)
 var postgresVectorOperatorClassPattern = regexp.MustCompile(`(?i)\s+vector_[a-z0-9_]+_ops\b`)
 var postgresIndexMethodPattern = regexp.MustCompile(`(?i)\s+using\s+[a-z0-9_]+\b`)
-var postgresCreateFunctionPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?function\b.*?\bas\s+\$[a-z0-9_]*\$.*?\$[a-z0-9_]*\$(?:\s+language\b[^;]*)?;`)
-var postgresCreateExternalFunctionPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?function\b.*?\bas\s+'[^']+'(?:\s*,\s*'[^']+')?(?:\s+language\b[^;]*)?;`)
+var postgresCreateFunctionPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:function|procedure)\b.*?\bas\s+\$[a-z0-9_]*\$.*?\$[a-z0-9_]*\$(?:\s+language\b[^;]*)?;`)
+var postgresCreateExternalFunctionPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:function|procedure)\b.*?\bas\s+'[^']+'(?:\s*,\s*'[^']+')?(?:\s+language\b[^;]*)?;`)
+var postgresCreateDomainCastPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:domain|cast)\b[^;]*;`)
+// Extension-template placeholders like @extschema@ / @extschema:cube@ in .sql.in
+// files are not valid SQL scalars; replace each with a same-width identifier so
+// the surrounding statement parses (e.g. `AS @extschema:cube@.cube`).
+var postgresExtschemaPlaceholderPattern = regexp.MustCompile(`@[A-Za-z_][A-Za-z0-9_:]*@`)
 var postgresDoBlockPattern = regexp.MustCompile(`(?is)\bdo\s+\$[a-z0-9_]*\$.*?\$[a-z0-9_]*\$;`)
 var postgresDropTriggerPattern = regexp.MustCompile(`(?is)\bdrop\s+trigger\b[^;]*;`)
 var postgresDropPolicyPattern = regexp.MustCompile(`(?is)\bdrop\s+policy\b[^;]*;`)
@@ -3345,6 +3350,12 @@ func maskPostgresUnsupportedSyntax(content string) string {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
 	for _, loc := range postgresAlterTextSearchPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresExtschemaPlaceholderPattern.FindAllStringIndex(content, -1) {
+		replaceBytesPreservingWidth(masked, loc[0], loc[1], strings.Repeat("a", loc[1]-loc[0]))
+	}
+	for _, loc := range postgresCreateDomainCastPattern.FindAllStringIndex(content, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
 	for _, loc := range postgresCommentOnObjectPattern.FindAllStringIndex(content, -1) {
