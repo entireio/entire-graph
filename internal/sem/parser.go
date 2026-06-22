@@ -843,6 +843,16 @@ var (
 	// remaining names are the high-frequency PostgreSQL declaration qualifiers
 	// surfaced by the postgres/postgres failure clustering.
 	cBareAnnotationPattern = regexp.MustCompile(`\b(?:__dead|__packed|__unused|__maybe_unused|\w*DLL(?:IMPORT|EXPORT)|PG_USED_FOR_ASSERTS_ONLY|NON_EXEC_STATIC|pg_attribute_\w+|WINAPI)\b`)
+	// C++ library namespace-opening/closing macros (asmjit ASMJIT_BEGIN_NAMESPACE
+	// / ASMJIT_BEGIN_SUB_NAMESPACE(x), and the *_NAMESPACE_BEGIN order) expand to
+	// `namespace x {` / `}`. The fmt/nlohmann variants are handled by exact cases
+	// above; this generalizes to other libraries. Each begin/end pair maps to one
+	// brace, which keeps braces balanced regardless of real nesting depth.
+	cxxBeginNamespaceMacroPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_(?:BEGIN(?:_SUB)?_NAMESPACE|NAMESPACE_BEGIN)\b`)
+	cxxEndNamespaceMacroPattern   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_(?:END(?:_SUB)?_NAMESPACE|NAMESPACE_END)\b`)
+	// Julia annotation macros (JL_NOTSAFEPOINT, JL_GLOBALLY_ROOTED, ...) annotate
+	// declarations and break the C/C++ grammar; mask them (with any args).
+	jlAnnotationMacroPattern = regexp.MustCompile(`\bJL_[A-Z][A-Z0-9_]*\b(?:\s*\([^)\n]*\))?`)
 	cTypeMacroPattern                               = regexp.MustCompile(`\b(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:HEAD|ENTRY)\s*\([^)\n]*\)`)
 	cHeadInitializerPattern                         = regexp.MustCompile(`\b(?:(?:TAILQ|STAILQ|LIST|SLIST)_(?:HEAD_)?INITIALIZER|RB_INITIALIZER|SPLAY_INITIALIZER)\s*\([^)\n]*\)`)
 )
@@ -1198,6 +1208,7 @@ func maskKotlinGradleBlocks(content, marker, replacement string) string {
 
 func maskCPlusPlusUnsupportedSyntax(content string) string {
 	content = maskCPlusPlusTemplateDecltypeExpressions(content)
+	content = jlAnnotationMacroPattern.ReplaceAllStringFunc(content, func(m string) string { return strings.Repeat(" ", len(m)) })
 	lines := strings.SplitAfter(content, "\n")
 	var preprocessorSkipStack []bool
 	for i := 0; i < len(lines); i++ {
@@ -1239,6 +1250,14 @@ func maskCPlusPlusUnsupportedSyntax(content string) string {
 		case "JSON_TRY":
 			lines[i] = paddedReplacement(leadingWhitespace(text), "try", len(text)) + newline
 		default:
+			if cxxBeginNamespaceMacroPattern.MatchString(trimmed) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "namespace ns {", len(text)) + newline
+				continue
+			}
+			if cxxEndNamespaceMacroPattern.MatchString(trimmed) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "}", len(text)) + newline
+				continue
+			}
 			if strings.HasPrefix(trimmed, "JSON_CATCH(...) {}") {
 				lines[i] = paddedReplacement(leadingWhitespace(text), "catch(...) {}", len(text)) + newline
 				continue

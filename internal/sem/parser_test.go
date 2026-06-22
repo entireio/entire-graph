@@ -2616,3 +2616,35 @@ func TestTreeSitterParserCMasksCatalogStructMacros(t *testing.T) {
 		t.Fatalf("real function after catalog struct not extracted: %#v", entities)
 	}
 }
+
+func TestTreeSitterParserCPlusPlusMasksNamespaceAndAnnotationMacros(t *testing.T) {
+	// Library namespace-opening macros (asmjit ASMJIT_BEGIN_(SUB_)NAMESPACE) and
+	// Julia annotation macros (JL_NOTSAFEPOINT) break the C++ grammar. Masking
+	// them must let the enclosed declarations parse.
+	src := "ASMJIT_BEGIN_SUB_NAMESPACE(a64)\n\n" +
+		"class Assembler {\n" +
+		"public:\n" +
+		"  void emit() JL_NOTSAFEPOINT;\n" +
+		"  int realMethod(int n) { return n; }\n" +
+		"};\n\n" +
+		"ASMJIT_END_SUB_NAMESPACE\n"
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("assembler.cpp", src)
+	if language != "C++" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse error after masking C++ macros: %s", status.Detail)
+	}
+	gotClass, gotMethod := false, false
+	for _, e := range entities {
+		if e.Name == "Assembler" && e.Kind == "class" {
+			gotClass = true
+		}
+		if e.Name == "realMethod" || e.Name == "Assembler.realMethod" {
+			gotMethod = true
+		}
+	}
+	if !gotClass || !gotMethod {
+		t.Fatalf("class/method not extracted inside namespace macro: %#v", entities)
+	}
+}
