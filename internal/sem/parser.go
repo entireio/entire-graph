@@ -617,6 +617,32 @@ var ocamlSigCloseWord = regexp.MustCompile(`\bend\b`)
 // symbol extraction) and blank the type, including `:`/`->`/`|` continuation
 // lines. Only top-level vals are rewritten: inside `sig`/`object ... end`
 // blocks `let` is invalid, so those are left untouched (not made worse).
+// ocamlValStartKeywords begin a new top-level signature item, so a line
+// starting with one ends the preceding val's type continuation.
+var ocamlValStartKeywords = map[string]struct{}{
+	"val": {}, "type": {}, "module": {}, "include": {}, "exception": {},
+	"external": {}, "open": {}, "let": {}, "class": {}, "end": {}, "and": {},
+	"sig": {}, "object": {}, "method": {}, "inherit": {}, "constraint": {},
+}
+
+// ocamlContinuesValSignature reports whether a line continues the multi-line
+// type of the preceding `val` (i.e. it is non-blank, not a comment, and does
+// not begin a new top-level signature item).
+func ocamlContinuesValSignature(line string) bool {
+	t := strings.TrimSpace(line)
+	if t == "" || strings.HasPrefix(t, "(*") {
+		return false
+	}
+	word := t
+	if idx := strings.IndexFunc(t, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == ':' || r == '(' || r == '='
+	}); idx >= 0 {
+		word = t[:idx]
+	}
+	_, isKeyword := ocamlValStartKeywords[word]
+	return !isKeyword
+}
+
 func maskOCamlInterfaceSyntax(content string) string {
 	lines := strings.SplitAfter(content, "\n")
 	depth := 0
@@ -625,10 +651,12 @@ func maskOCamlInterfaceSyntax(content string) string {
 		if depth == 0 {
 			if m := ocamlValSignaturePattern.FindStringSubmatch(text); m != nil {
 				lines[i] = paddedReplacement(m[1], "let "+m[2]+" = ()", len(text)) + newline
+				// The type signature may wrap over several lines whose
+				// continuations start with anything (`(`, identifiers, `'a`,
+				// `->`). Mask until a blank line or a new top-level construct.
 				for i+1 < len(lines) {
 					nextText, nextNewline := splitLineEnding(lines[i+1])
-					t := strings.TrimSpace(nextText)
-					if t == "" || !(strings.HasPrefix(t, ":") || strings.HasPrefix(t, "->") || strings.HasPrefix(t, "|")) {
+					if !ocamlContinuesValSignature(nextText) {
 						break
 					}
 					lines[i+1] = maskLineText(nextText) + nextNewline
