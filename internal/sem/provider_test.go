@@ -9061,12 +9061,12 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 			t.Fatalf("capabilities missing language %q in %#v", want, caps.SupportedLanguages)
 		}
 	}
-	for _, want := range []string{"TypeScript", "Python", "JavaScript", "Java", "C++", "C", "C#", "Go", "PHP", "Rust", "Kotlin", "Ruby", "Swift", "SQL", "Bash", "Zsh"} {
+	for _, want := range []string{"TypeScript", "Python", "JavaScript", "Java", "C++", "C", "C#", "Go", "PHP", "Rust", "Kotlin", "Ruby", "Swift", "SQL", "Bash", "Zsh", "Dart"} {
 		if !semanticSeen[want] {
 			t.Fatalf("capabilities should classify %q as semantic, got semantic=%#v inventory=%#v", want, caps.SemanticLanguages, caps.InventoryOnlyLanguages)
 		}
 	}
-	for _, want := range []string{"Dart", "Zig", "Bicep", "Solidity", "Nix", "Blade"} {
+	for _, want := range []string{"Zig", "Bicep", "Solidity", "Nix", "Blade"} {
 		if !inventorySeen[want] {
 			t.Fatalf("capabilities should classify %q as inventory-only, got semantic=%#v inventory=%#v", want, caps.SemanticLanguages, caps.InventoryOnlyLanguages)
 		}
@@ -9098,7 +9098,9 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 
 func TestInventoryOnlyLanguagesEmitDocumentSymbols(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, repo, "app/main.dart", "void main() {\n  print('hi');\n}\n")
+	// Dart was promoted to the semantic tier; it now emits function/class symbols
+	// rather than an inventory document symbol, so it is covered by the semantic
+	// tests instead of this inventory-only one.
 	writeFile(t, repo, "infra/main.bicep", "resource storage 'Microsoft.Storage/storageAccounts@2023-01-01' = {\n  name: 'stapp'\n}\n")
 	writeFile(t, repo, "schema/user.graphql", "type User {\n  id: ID!\n}\n")
 	writeFile(t, repo, "views/home.blade.php", "<h1>{{ $title }}</h1>\n")
@@ -9112,7 +9114,6 @@ func TestInventoryOnlyLanguagesEmitDocumentSymbols(t *testing.T) {
 		language string
 		name     string
 	}{
-		{"app/main.dart", "Dart", "main"},
 		{"infra/main.bicep", "Bicep", "main"},
 		{"schema/user.graphql", "GraphQL", "user"},
 		{"views/home.blade.php", "Blade", "blade"},
@@ -9231,7 +9232,7 @@ func TestCapabilitiesReportRelationSupportPerLanguage(t *testing.T) {
 			t.Fatalf("language %q should support CALLS: %#v", language, caps.RelationSupportByLanguage[language])
 		}
 	}
-	for _, language := range []string{"Dart", "Zig", "Bicep", "Dockerfile", "YAML", "Kustomize"} {
+	for _, language := range []string{"Zig", "Bicep", "Dockerfile", "YAML", "Kustomize"} {
 		if contains(caps.RelationSupportByLanguage[language], "CALLS") {
 			t.Fatalf("inventory/config language %q should not advertise CALLS: %#v", language, caps.RelationSupportByLanguage[language])
 		}
@@ -10224,5 +10225,40 @@ func TestIsVendoredScanDir(t *testing.T) {
 		if got := isVendoredScanDir(c.rel, c.name); got != c.want {
 			t.Errorf("isVendoredScanDir(%q, %q) = %v, want %v", c.rel, c.name, got, c.want)
 		}
+	}
+}
+
+func TestDartSemanticExtraction(t *testing.T) {
+	// Dart was promoted from inventory to the semantic tier (vendored grammar);
+	// it must now extract classes, methods, and top-level functions.
+	repo := t.TempDir()
+	writeFile(t, repo, "lib/app.dart", `int helper(int n) {
+  return n + 1;
+}
+
+class Widget {
+  int build(int x) {
+    return helper(x);
+  }
+}
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, s := range snapshot.Symbols {
+		if s.Language == "Dart" {
+			kinds[s.Name] = s.Kind
+		}
+	}
+	if kinds["helper"] != "function" {
+		t.Fatalf("Dart top-level function not extracted: %#v", kinds)
+	}
+	if kinds["Widget"] != "class" {
+		t.Fatalf("Dart class not extracted: %#v", kinds)
+	}
+	if kinds["Widget.build"] == "" && kinds["build"] == "" {
+		t.Fatalf("Dart method not extracted: %#v", kinds)
 	}
 }

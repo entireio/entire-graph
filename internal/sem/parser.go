@@ -13,6 +13,7 @@ import (
 
 	sitter "github.com/smacker/go-tree-sitter"
 	"github.com/smacker/go-tree-sitter/bash"
+	dart "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/dart"
 	"github.com/smacker/go-tree-sitter/c"
 	"github.com/smacker/go-tree-sitter/cpp"
 	"github.com/smacker/go-tree-sitter/csharp"
@@ -54,6 +55,7 @@ var treeSitterLanguages = map[string]languageSpec{
 	".cs":         {language: "C#", grammar: csharp.GetLanguage()},
 	".cue":        {language: "CUE", grammar: cue.GetLanguage()},
 	".cxx":        {language: "C++", grammar: cpp.GetLanguage()},
+	".dart":       {language: "Dart", grammar: dart.GetLanguage()},
 	".ex":         {language: "Elixir", grammar: elixir.GetLanguage()},
 	".exs":        {language: "Elixir", grammar: elixir.GetLanguage()},
 	".go":         {language: "Go", grammar: golang.GetLanguage()},
@@ -3082,9 +3084,33 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 	var kind string
 	var name string
 	switch node.Type() {
-	case "class", "class_definition", "class_declaration", "class_specifier":
+	case "class", "class_definition", "class_declaration", "class_specifier", "mixin_declaration":
 		kind = "class"
 		name = nodeName(node, src)
+	case "method_signature", "getter_signature", "setter_signature":
+		// Dart class members (declaration head; body is a sibling node). Gated to
+		// Dart because `method_signature` also denotes TypeScript interface
+		// members, where extracting them as methods would change TS behavior.
+		if language != "Dart" {
+			return Entity{}, false
+		}
+		kind = "method"
+		name = nodeName(node, src)
+		if scope != "" {
+			name = qualify(scope, name)
+		}
+	case "function_signature":
+		// Dart top-level / local function declaration head. Gated to Dart because
+		// `function_signature` also denotes TypeScript ambient declarations.
+		if language != "Dart" {
+			return Entity{}, false
+		}
+		kind = "function"
+		name = nodeName(node, src)
+		if scope != "" {
+			kind = "method"
+			name = qualify(scope, name)
+		}
 	case "module_definition":
 		kind = "module"
 		name = nodeName(node, src)
