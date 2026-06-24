@@ -104,3 +104,60 @@ func TestStripSQLCommentsPreservesLiteralsAndLength(t *testing.T) {
 		t.Errorf("real comments not stripped: %q", out)
 	}
 }
+
+// PostgreSQL statements the SQL grammar cannot parse (EXPLAIN option lists,
+// ALTER OPERATOR FAMILY/CLASS, COMMENT ON non-table objects) must be masked so
+// they do not raise parse errors or drop surrounding real entities.
+func TestPostgresUnparseableStatementsMaskedWithoutDroppingEntities(t *testing.T) {
+	src := "CREATE TABLE before_tbl (id int);\n" +
+		"EXPLAIN (COSTS OFF, ANALYZE) SELECT * FROM before_tbl;\n" +
+		"ALTER OPERATOR FAMILY int4_ops USING gin ADD OPERATOR 1 = (int4, int4);\n" +
+		"COMMENT ON ACCESS METHOD bloom IS 'bloom index';\n" +
+		"CREATE TABLE after_tbl (id int);\n"
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("ext.sql", src)
+	if status.ParseError {
+		t.Fatalf("unexpected parse error after masking: %s", status.Detail)
+	}
+	if countEntity(entities, "table", "before_tbl") != 1 {
+		t.Errorf("before_tbl missing: %+v", entities)
+	}
+	if countEntity(entities, "table", "after_tbl") != 1 {
+		t.Errorf("after_tbl dropped by unmasked PostgreSQL statement: %+v", entities)
+	}
+}
+
+// Additional PostgreSQL DDL the SQL grammar cannot parse (foreign-data/event-
+// trigger families, ALTER TEXT SEARCH, generic ALTER OPERATOR) must be masked
+// without dropping surrounding real entities.
+func TestPostgresForeignAndOperatorDDLMasked(t *testing.T) {
+	src := "CREATE TABLE before_tbl (id int);\n" +
+		"CREATE FOREIGN DATA WRAPPER dblink_fdw VALIDATOR dblink_fdw_validator;\n" +
+		"CREATE EVENT TRIGGER t ON ddl_command_start EXECUTE FUNCTION f();\n" +
+		"ALTER TEXT SEARCH DICTIONARY intdict (MAXLEN = 8);\n" +
+		"ALTER OPERATOR >= (citext, citext) SET (RESTRICT = scalargesel);\n" +
+		"CREATE TABLE after_tbl (id int);\n"
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("ddl.sql", src)
+	if status.ParseError {
+		t.Fatalf("unexpected parse error after masking: %s", status.Detail)
+	}
+	if countEntity(entities, "table", "before_tbl") != 1 || countEntity(entities, "table", "after_tbl") != 1 {
+		t.Fatalf("surrounding tables dropped by unmasked DDL: %#v", entities)
+	}
+}
+
+// CREATE DOMAIN/CAST/PROCEDURE and @extschema@ extension-template placeholders
+// must be masked so .sql.in template statements parse.
+func TestPostgresDomainCastProcedureAndPlaceholders(t *testing.T) {
+	src := "CREATE TABLE before_tbl (id int);\n" +
+		"CREATE DOMAIN earth AS @extschema:cube@.cube;\n" +
+		"CREATE CAST (hstore AS jsonb) WITH FUNCTION hstore_to_jsonb(hstore);\n" +
+		"CREATE PROCEDURE p1() LANGUAGE plpgsql AS $$ BEGIN NULL; END $$;\n" +
+		"CREATE TABLE after_tbl (id int);\n"
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("ext.sql", src)
+	if status.ParseError {
+		t.Fatalf("unexpected parse error after masking: %s", status.Detail)
+	}
+	if countEntity(entities, "table", "before_tbl") != 1 || countEntity(entities, "table", "after_tbl") != 1 {
+		t.Fatalf("surrounding tables dropped: %#v", entities)
+	}
+}

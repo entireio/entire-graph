@@ -41,6 +41,8 @@ func describe(change EntityChange) string {
 		return fmt.Sprintf("- %s %s removed%s", change.Kind, change.Name, dependents)
 	case "renamed":
 		return fmt.Sprintf("~ %s %s renamed from %s%s", change.Kind, change.NewName, change.OldName, dependents)
+	case "moved":
+		return fmt.Sprintf("~ %s %s moved from %s%s", change.Kind, movedName(change), change.OldPath, dependents)
 	case "signature_changed":
 		return fmt.Sprintf("~ %s %s signature changed%s", change.Kind, change.Name, dependents)
 	case "body_changed":
@@ -48,6 +50,13 @@ func describe(change EntityChange) string {
 	default:
 		return fmt.Sprintf("~ %s %s changed%s", change.Kind, change.Name, dependents)
 	}
+}
+
+func movedName(change EntityChange) string {
+	if change.OldName != "" && change.NewName != "" {
+		return fmt.Sprintf("%s (renamed from %s)", change.NewName, change.OldName)
+	}
+	return change.Name
 }
 
 func dependentSuffix(change EntityChange) string {
@@ -130,6 +139,8 @@ func (s textStyles) describe(change EntityChange) string {
 		return fmt.Sprintf("%s %s %s %s%s", s.removed("-"), change.Kind, s.file(change.Name), s.removed("removed"), dependents)
 	case "renamed":
 		return fmt.Sprintf("%s %s %s %s %s%s", s.changed("~"), change.Kind, s.file(change.NewName), s.changed("renamed from"), s.file(change.OldName), dependents)
+	case "moved":
+		return fmt.Sprintf("%s %s %s %s %s%s", s.changed("~"), change.Kind, s.file(movedName(change)), s.changed("moved from"), s.file(change.OldPath), dependents)
 	case "signature_changed":
 		return fmt.Sprintf("%s %s %s %s%s", s.changed("~"), change.Kind, s.file(change.Name), s.changed("signature changed"), dependents)
 	case "body_changed":

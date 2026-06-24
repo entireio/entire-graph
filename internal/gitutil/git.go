@@ -1,17 +1,28 @@
 package gitutil
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 )
 
 type ChangedFile struct {
 	Status  string `json:"status"`
 	Path    string `json:"path"`
 	OldPath string `json:"old_path,omitempty"`
+}
+
+type FileCochange struct {
+	Left  string
+	Right string
+	Count int
 }
 
 func RepoRoot(ctx context.Context, cwd string) (string, error) {
@@ -96,6 +107,87 @@ func ChangedFiles(ctx context.Context, repo, base, head string, paths []string) 
 	return files, nil
 }
 
+func FileCochanges(ctx context.Context, repo string, maxCommits int) ([]FileCochange, error) {
+	if maxCommits <= 0 {
+		maxCommits = 256
+	}
+	// -z makes git emit raw, NUL-terminated pathnames with no quoting at all,
+	// matching the file keys produced by ListFiles (`ls-tree -z`). A plain
+	// --name-only (even with core.quotePath=false) still C-quotes paths
+	// containing '"', '\', tabs, or newlines, which would never match those
+	// keys. The per-commit marker is emitted via --pretty=format; under -z each
+	// commit's output is either the marker alone (no files, e.g. a merge) or
+	// "<marker>\n<first file>" followed by NUL-separated paths.
+	const marker = "--entire-sem-commit--"
+	out, err := run(ctx, repo, "git", "log", "-z", "--name-only", "--pretty=format:"+marker, "-n", strconv.Itoa(maxCommits), "--")
+	if err != nil {
+		return nil, err
+	}
+	counts := map[string]int{}
+	var commitFiles []string
+	flush := func() {
+		if len(commitFiles) < 2 {
+			commitFiles = nil
+			return
+		}
+		sort.Strings(commitFiles)
+		uniq := commitFiles[:0]
+		for _, path := range commitFiles {
+			if len(uniq) == 0 || uniq[len(uniq)-1] != path {
+				uniq = append(uniq, path)
+			}
+		}
+		for i := 0; i < len(uniq); i++ {
+			for j := i + 1; j < len(uniq); j++ {
+				counts[uniq[i]+"\x00"+uniq[j]]++
+			}
+		}
+		commitFiles = nil
+	}
+	for _, tok := range strings.Split(out, "\x00") {
+		if tok == marker {
+			flush()
+			continue
+		}
+		if first, ok := strings.CutPrefix(tok, marker+"\n"); ok {
+			flush()
+			if first != "" {
+				commitFiles = append(commitFiles, first)
+			}
+			continue
+		}
+		if tok != "" {
+			commitFiles = append(commitFiles, tok)
+		}
+	}
+	flush()
+
+	pairs := make([]FileCochange, 0, len(counts))
+	for key, count := range counts {
+		if count < 2 {
+			continue
+		}
+		left, right, ok := strings.Cut(key, "\x00")
+		if !ok {
+			continue
+		}
+		pairs = append(pairs, FileCochange{Left: left, Right: right, Count: count})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].Count != pairs[j].Count {
+			return pairs[i].Count > pairs[j].Count
+		}
+		if pairs[i].Left != pairs[j].Left {
+			return pairs[i].Left < pairs[j].Left
+		}
+		return pairs[i].Right < pairs[j].Right
+	})
+	if len(pairs) > 1000 {
+		pairs = pairs[:1000]
+	}
+	return pairs, nil
+}
+
 func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error) {
 	out, err := run(ctx, repo, "git", "show", rev+":"+path)
 	if err != nil {
@@ -108,6 +200,113 @@ func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error)
 		return "", false, err
 	}
 	return out, true, nil
+}
+
+// BatchFileReader reads blobs from one revision through a persistent
+// `git cat-file --batch` process. It avoids spawning one git process per file
+// while preserving HEAD-tree snapshot semantics.
+type BatchFileReader struct {
+	rev    string
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout *bufio.Reader
+	stderr *bytes.Buffer
+	mu     sync.Mutex
+	closed bool
+}
+
+func NewBatchFileReader(ctx context.Context, repo, rev string) (*BatchFileReader, error) {
+	cmd := exec.CommandContext(ctx, "git", "cat-file", "--batch")
+	cmd.Dir = repo
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		_ = stdin.Close()
+		return nil, err
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		return nil, fmt.Errorf("git cat-file --batch: %w", err)
+	}
+	return &BatchFileReader{
+		rev:    rev,
+		cmd:    cmd,
+		stdin:  stdin,
+		stdout: bufio.NewReader(stdoutPipe),
+		stderr: &stderr,
+	}, nil
+}
+
+func (r *BatchFileReader) ReadFile(path string) (string, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return "", false, fmt.Errorf("git cat-file batch reader is closed")
+	}
+	if _, err := fmt.Fprintf(r.stdin, "%s:%s\n", r.rev, path); err != nil {
+		return "", false, err
+	}
+	header, err := r.stdout.ReadString('\n')
+	if err != nil {
+		return "", false, fmt.Errorf("read git cat-file header: %w", err)
+	}
+	header = strings.TrimSuffix(header, "\n")
+	if strings.HasSuffix(header, " missing") {
+		return "", false, nil
+	}
+	fields := strings.Fields(header)
+	if len(fields) != 3 {
+		return "", false, fmt.Errorf("unexpected git cat-file header %q", header)
+	}
+	size, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil {
+		return "", false, fmt.Errorf("parse git cat-file size %q: %w", fields[2], err)
+	}
+	if fields[1] != "blob" {
+		if _, err := io.CopyN(io.Discard, r.stdout, size+1); err != nil {
+			return "", false, err
+		}
+		return "", false, nil
+	}
+	content := make([]byte, size)
+	if _, err := io.ReadFull(r.stdout, content); err != nil {
+		return "", false, err
+	}
+	trailing, err := r.stdout.ReadByte()
+	if err != nil {
+		return "", false, err
+	}
+	if trailing != '\n' {
+		return "", false, fmt.Errorf("git cat-file blob missing trailing newline separator")
+	}
+	return string(content), true, nil
+}
+
+func (r *BatchFileReader) Close() error {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return nil
+	}
+	r.closed = true
+	stdin := r.stdin
+	r.mu.Unlock()
+	if err := stdin.Close(); err != nil {
+		return err
+	}
+	if err := r.cmd.Wait(); err != nil {
+		msg := strings.TrimSpace(r.stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("git cat-file --batch: %s", msg)
+	}
+	return nil
 }
 
 func RemoteURLs(ctx context.Context, repo string) ([]string, error) {

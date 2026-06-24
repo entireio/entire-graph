@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	sitter "github.com/smacker/go-tree-sitter"
 	"github.com/smacker/go-tree-sitter/bash"
+	dart "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/dart"
 	"github.com/smacker/go-tree-sitter/c"
 	"github.com/smacker/go-tree-sitter/cpp"
 	"github.com/smacker/go-tree-sitter/csharp"
@@ -35,63 +38,81 @@ import (
 	treesitterts "github.com/smacker/go-tree-sitter/typescript/typescript"
 	treesitteryaml "github.com/smacker/go-tree-sitter/yaml"
 	"github.com/suhaanthayyil/entire-sem/internal/sem/pgsql"
+	"github.com/suhaanthayyil/entire-sem/internal/sem/zsh"
 )
 
 type languageSpec struct {
-	language string
-	grammar  *sitter.Language
+	language      string
+	grammar       *sitter.Language
+	inventoryOnly bool
 }
 
 var treeSitterLanguages = map[string]languageSpec{
-	".bash":   {language: "Bash", grammar: bash.GetLanguage()},
-	".c":      {language: "C", grammar: c.GetLanguage()},
-	".cc":     {language: "C++", grammar: cpp.GetLanguage()},
-	".cpp":    {language: "C++", grammar: cpp.GetLanguage()},
-	".cs":     {language: "C#", grammar: csharp.GetLanguage()},
-	".cue":    {language: "CUE", grammar: cue.GetLanguage()},
-	".cxx":    {language: "C++", grammar: cpp.GetLanguage()},
-	".ex":     {language: "Elixir", grammar: elixir.GetLanguage()},
-	".exs":    {language: "Elixir", grammar: elixir.GetLanguage()},
-	".go":     {language: "Go", grammar: golang.GetLanguage()},
-	".gradle": {language: "Groovy", grammar: groovy.GetLanguage()},
-	".groovy": {language: "Groovy", grammar: groovy.GetLanguage()},
-	".h":      {language: "C", grammar: c.GetLanguage()},
-	".hcl":    {language: "HCL", grammar: hcl.GetLanguage()},
-	".hh":     {language: "C++", grammar: cpp.GetLanguage()},
-	".hpp":    {language: "C++", grammar: cpp.GetLanguage()},
-	".hxx":    {language: "C++", grammar: cpp.GetLanguage()},
-	".java":   {language: "Java", grammar: java.GetLanguage()},
-	".js":     {language: "JavaScript", grammar: javascript.GetLanguage()},
-	".jsx":    {language: "JavaScript", grammar: treesittertsx.GetLanguage()},
-	".kt":     {language: "Kotlin", grammar: kotlin.GetLanguage()},
-	".kts":    {language: "Kotlin", grammar: kotlin.GetLanguage()},
-	".lua":    {language: "Lua", grammar: lua.GetLanguage()},
-	".ml":     {language: "OCaml", grammar: ocaml.GetLanguage()},
-	".mli":    {language: "OCaml", grammar: ocaml.GetLanguage()},
-	".php":    {language: "PHP", grammar: php.GetLanguage()},
-	".proto":  {language: "Protocol Buffers", grammar: protobuf.GetLanguage()},
-	".py":     {language: "Python", grammar: python.GetLanguage()},
-	".rb":     {language: "Ruby", grammar: ruby.GetLanguage()},
-	".rs":     {language: "Rust", grammar: rust.GetLanguage()},
-	".sbt":    {language: "Scala", grammar: scala.GetLanguage()},
-	".scala":  {language: "Scala", grammar: scala.GetLanguage()},
-	".sc":     {language: "Scala", grammar: scala.GetLanguage()},
-	".sh":     {language: "Bash", grammar: bash.GetLanguage()},
-	".sql":    {language: "SQL"},
-	".swift":  {language: "Swift", grammar: swift.GetLanguage()},
-	".tf":     {language: "HCL", grammar: hcl.GetLanguage()},
-	".tfvars": {language: "HCL", grammar: hcl.GetLanguage()},
-	".ts":     {language: "TypeScript", grammar: treesitterts.GetLanguage()},
-	".tsx":    {language: "TypeScript", grammar: treesittertsx.GetLanguage()},
-	".yaml":   {language: "YAML", grammar: treesitteryaml.GetLanguage()},
-	".yml":    {language: "YAML", grammar: treesitteryaml.GetLanguage()},
-	".zsh":    {language: "Bash", grammar: bash.GetLanguage()},
+	".bash":       {language: "Bash", grammar: bash.GetLanguage()},
+	".c":          {language: "C", grammar: c.GetLanguage()},
+	".cc":         {language: "C++", grammar: cpp.GetLanguage()},
+	".cpp":        {language: "C++", grammar: cpp.GetLanguage()},
+	".cs":         {language: "C#", grammar: csharp.GetLanguage()},
+	".cue":        {language: "CUE", grammar: cue.GetLanguage()},
+	".cxx":        {language: "C++", grammar: cpp.GetLanguage()},
+	".dart":       {language: "Dart", grammar: dart.GetLanguage()},
+	".ex":         {language: "Elixir", grammar: elixir.GetLanguage()},
+	".exs":        {language: "Elixir", grammar: elixir.GetLanguage()},
+	".go":         {language: "Go", grammar: golang.GetLanguage()},
+	".gradle":     {language: "Groovy", grammar: groovy.GetLanguage()},
+	".groovy":     {language: "Groovy", grammar: groovy.GetLanguage()},
+	".h":          {language: "C", grammar: c.GetLanguage()},
+	".hcl":        {language: "HCL", grammar: hcl.GetLanguage()},
+	".html":       {language: "HTML"},
+	".hh":         {language: "C++", grammar: cpp.GetLanguage()},
+	".hpp":        {language: "C++", grammar: cpp.GetLanguage()},
+	".hxx":        {language: "C++", grammar: cpp.GetLanguage()},
+	".java":       {language: "Java", grammar: java.GetLanguage()},
+	".js":         {language: "JavaScript", grammar: javascript.GetLanguage()},
+	".json":       {language: "JSON"},
+	".json5":      {language: "JSON5"},
+	".jsx":        {language: "JavaScript", grammar: treesittertsx.GetLanguage()},
+	".kt":         {language: "Kotlin", grammar: kotlin.GetLanguage()},
+	".kts":        {language: "Kotlin", grammar: kotlin.GetLanguage()},
+	".css":        {language: "CSS"},
+	".lua":        {language: "Lua", grammar: lua.GetLanguage()},
+	".markdown":   {language: "Markdown"},
+	".md":         {language: "Markdown"},
+	".mk":         {language: "Make"},
+	".ml":         {language: "OCaml", grammar: ocaml.GetLanguage()},
+	".mli":        {language: "OCaml", grammar: ocaml.GetLanguage()},
+	".php":        {language: "PHP", grammar: php.GetLanguage()},
+	".proto":      {language: "Protocol Buffers", grammar: protobuf.GetLanguage()},
+	".py":         {language: "Python", grammar: python.GetLanguage()},
+	".rb":         {language: "Ruby", grammar: ruby.GetLanguage()},
+	".rs":         {language: "Rust", grammar: rust.GetLanguage()},
+	".sbt":        {language: "Scala", grammar: scala.GetLanguage()},
+	".scala":      {language: "Scala", grammar: scala.GetLanguage()},
+	".sc":         {language: "Scala", grammar: scala.GetLanguage()},
+	".sh":         {language: "Bash", grammar: bash.GetLanguage()},
+	".sql":        {language: "SQL"},
+	".swift":      {language: "Swift", grammar: swift.GetLanguage()},
+	".svelte":     {language: "Svelte"},
+	".tf":         {language: "HCL", grammar: hcl.GetLanguage()},
+	".tfvars":     {language: "HCL", grammar: hcl.GetLanguage()},
+	".toml":       {language: "TOML"},
+	".ts":         {language: "TypeScript", grammar: treesitterts.GetLanguage()},
+	".tsx":        {language: "TypeScript", grammar: treesittertsx.GetLanguage()},
+	".vue":        {language: "Vue"},
+	".xml":        {language: "XML"},
+	".yaml":       {language: "YAML", grammar: treesitteryaml.GetLanguage()},
+	".yml":        {language: "YAML", grammar: treesitteryaml.GetLanguage()},
+	".zsh":        {language: "Zsh", grammar: zsh.GetLanguage()},
+	".dockerfile": {language: "Dockerfile"},
 }
 
 type TreeSitterParser struct{}
 
+const treeSitterParseTimeout = 5 * time.Second
+
 type ParseStatus struct {
 	ParseError bool
+	Code       string
 	Detail     string
 }
 
@@ -105,32 +126,97 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if !ok {
 		return nil, "", ParseStatus{}
 	}
+	if spec.language == "Kustomize" && looksLikeFluxKustomizationManifest(content) {
+		spec = treeSitterLanguages[".yaml"]
+	}
+	if strings.EqualFold(filepath.Ext(path), ".h") && looksLikeObjectiveC(content) {
+		spec = languageSpec{language: "Objective-C", inventoryOnly: true}
+	} else if strings.EqualFold(filepath.Ext(path), ".h") && looksLikeCPlusPlusHeader(content) {
+		spec = treeSitterLanguages[".hpp"]
+	}
 	if spec.language == "SQL" {
 		spec.grammar = pgsql.GetLanguage()
+	}
+	if spec.grammar == nil {
+		return fallbackEntities(path, content, spec.language), spec.language, ParseStatus{}
 	}
 	src := []byte(content)
 	parseSrc := src
 	if spec.language == "SQL" {
 		parseSrc = []byte(maskPostgresUnsupportedSyntax(content))
 	}
-	root, err := sitter.ParseCtx(context.Background(), parseSrc, spec.grammar)
+	if spec.language == "C" {
+		parseSrc = []byte(maskCUnsupportedSyntax(content))
+	}
+	if spec.language == "Bash" {
+		parseSrc = []byte(maskBashUnsupportedSyntax(content))
+	}
+	if spec.language == "Zsh" {
+		parseSrc = []byte(maskZshUnsupportedSyntax(content))
+	}
+	if spec.language == "Java" {
+		parseSrc = []byte(maskJavaUnsupportedSyntax(content))
+	}
+	if spec.language == "C#" {
+		parseSrc = []byte(maskCSharpUnsupportedSyntax(content))
+	}
+	if spec.language == "Groovy" {
+		parseSrc = []byte(maskGroovyUnsupportedSyntax(content))
+	}
+	if spec.language == "C++" {
+		parseSrc = []byte(maskCPlusPlusUnsupportedSyntax(content))
+	}
+	if spec.language == "Kotlin" {
+		parseSrc = []byte(maskKotlinUnsupportedSyntax(path, content))
+	}
+	if spec.language == "Swift" {
+		parseSrc = []byte(maskSwiftUnsupportedSyntax(content))
+	}
+	if spec.language == "OCaml" && strings.EqualFold(filepath.Ext(path), ".mli") {
+		parseSrc = []byte(maskOCamlInterfaceSyntax(content))
+	}
+	if spec.language == "YAML" {
+		parseSrc = []byte(maskYAMLUnsupportedSyntax(content))
+	}
+	if spec.language == "TypeScript" && !strings.EqualFold(filepath.Ext(path), ".tsx") {
+		parseSrc = []byte(maskTypeScriptUnsupportedSyntax(content))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), treeSitterParseTimeout)
+	defer cancel()
+	root, err := sitter.ParseCtx(ctx, parseSrc, spec.grammar)
 	if err != nil || root == nil || root.IsNull() {
 		detail := "tree-sitter parse failed"
+		code := "E_PARSE_ERROR"
 		if err != nil {
 			detail = err.Error()
+			if ctx.Err() != nil {
+				code = "E_PARSE_TIMEOUT"
+				detail = fmt.Sprintf("tree-sitter parse exceeded %s", treeSitterParseTimeout)
+			}
 		}
-		return nil, spec.language, ParseStatus{ParseError: true, Detail: detail}
+		return nil, spec.language, ParseStatus{ParseError: true, Code: code, Detail: detail}
 	}
 	if spec.language == "YAML" {
 		status := ParseStatus{}
 		if root.HasError() {
-			status = ParseStatus{ParseError: true, Detail: "tree-sitter syntax error nodes present"}
+			status = ParseStatus{ParseError: true, Code: "E_PARSE_ERROR", Detail: parseErrorDetail(root, src)}
 		}
 		return yamlEntities(path, content), spec.language, status
 	}
 
 	var entities []Entity
-	walkEntities(root, src, "", &entities)
+	walkEntities(root, src, spec.language, "", &entities)
+	if spec.language == "C++" {
+		entities = appendMissingEntities(entities, cPlusPlusTypeAliasEntities(content)...)
+	}
+	if spec.language == "Kotlin" {
+		entities = append(entities, kotlinPrimaryConstructorFieldEntities(content)...)
+	}
+	if spec.language == "JavaScript" || spec.language == "TypeScript" {
+		entities = appendMissingEntities(entities, javascriptExportedVariableEntities(content)...)
+		entities = appendMissingEntities(entities, javascriptAssignmentMethodEntities(content)...)
+		entities = append(entities, graphqlResolverEntities(path, content)...)
+	}
 	if spec.language == "SQL" {
 		// Run the regex fallback extractors on comment-stripped source so that
 		// commented-out (or otherwise non-DDL) text is not picked up as a phantom
@@ -147,9 +233,2020 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	})
 	status := ParseStatus{}
 	if root.HasError() {
-		status = ParseStatus{ParseError: true, Detail: "tree-sitter syntax error nodes present"}
+		status = ParseStatus{ParseError: true, Code: "E_PARSE_ERROR", Detail: parseErrorDetail(root, src)}
 	}
 	return entities, spec.language, status
+}
+
+func parseErrorDetail(root *sitter.Node, src []byte) string {
+	details := collectParseErrorDetails(root, src, 5)
+	if len(details) == 0 {
+		return "tree-sitter syntax error nodes present"
+	}
+	return "tree-sitter syntax error nodes present: " + strings.Join(details, "; ")
+}
+
+func collectParseErrorDetails(root *sitter.Node, src []byte, limit int) []string {
+	if root == nil || root.IsNull() || limit <= 0 {
+		return nil
+	}
+	var details []string
+	var walk func(*sitter.Node)
+	walk = func(node *sitter.Node) {
+		if node == nil || node.IsNull() || len(details) >= limit {
+			return
+		}
+		if node.IsError() || node.IsMissing() {
+			point := node.StartPoint()
+			kind := "error"
+			if node.IsMissing() {
+				kind = "missing"
+			}
+			snippet := strings.TrimSpace(node.Content(src))
+			if snippet == "" {
+				snippet = strings.TrimSpace(sourceLineAt(src, int(point.Row)+1))
+			}
+			if len(snippet) > 80 {
+				snippet = snippet[:80] + "..."
+			}
+			details = append(details, fmt.Sprintf("%s %s at line %d column %d near %q", kind, node.Type(), point.Row+1, point.Column+1, snippet))
+		}
+		for i := 0; i < int(node.ChildCount()) && len(details) < limit; i++ {
+			walk(node.Child(i))
+		}
+	}
+	walk(root)
+	return details
+}
+
+func sourceLineAt(src []byte, line int) string {
+	if line <= 0 {
+		return ""
+	}
+	current := 1
+	start := 0
+	for i, b := range src {
+		if current == line && b == '\n' {
+			return string(src[start:i])
+		}
+		if b == '\n' {
+			current++
+			start = i + 1
+		}
+	}
+	if current == line && start <= len(src) {
+		return string(src[start:])
+	}
+	return ""
+}
+
+var (
+	tsKeywordTypePropertyPattern  = regexp.MustCompile(`^(\s*)in(\??\s*:)`)
+	tsTypeImportPattern           = regexp.MustCompile(`typeof\s+import\(([^)]*)\)`)
+	tsStaticAccessorMethodPattern = regexp.MustCompile(`\bstatic\s+accessor(\s*\()`)
+)
+
+func maskTypeScriptUnsupportedSyntax(content string) string {
+	masked := tsTypeImportPattern.ReplaceAllStringFunc(content, sameLengthIdentifierMask)
+	lines := strings.SplitAfter(masked, "\n")
+	maskingGenericCallSignature := false
+	maskingGenericCallSignatureReturn := false
+	for i, line := range lines {
+		text, newline := splitLineEnding(line)
+		trimmed := strings.TrimSpace(text)
+		if maskingGenericCallSignature {
+			if trimmed == "" {
+				maskingGenericCallSignature = false
+				maskingGenericCallSignatureReturn = false
+				continue
+			}
+			lines[i] = maskLineText(text) + newline
+			if typeScriptGenericCallSignatureEnds(trimmed, maskingGenericCallSignatureReturn) {
+				maskingGenericCallSignature = false
+				maskingGenericCallSignatureReturn = false
+			} else if typeScriptGenericCallSignatureReturnStarts(trimmed) {
+				maskingGenericCallSignatureReturn = true
+			}
+			continue
+		}
+		text = maskTypeScriptKeywordTypeProperty(text)
+		text = maskTypeScriptStaticAccessorMethod(text)
+		trimmed = strings.TrimSpace(text)
+		if typeScriptGenericCallSignatureStarts(trimmed) {
+			lines[i] = maskLineText(text) + newline
+			if typeScriptGenericCallSignatureReturnStarts(trimmed) {
+				maskingGenericCallSignatureReturn = true
+			}
+			if !typeScriptGenericCallSignatureEnds(trimmed, maskingGenericCallSignatureReturn) {
+				maskingGenericCallSignature = true
+			}
+			continue
+		}
+		lines[i] = text + newline
+	}
+	return strings.Join(lines, "")
+}
+
+func sameLengthIdentifierMask(value string) string {
+	if len(value) <= 3 {
+		return strings.Repeat("_", len(value))
+	}
+	return "any" + strings.Repeat(" ", len(value)-3)
+}
+
+func splitLineEnding(line string) (text, newline string) {
+	if strings.HasSuffix(line, "\r\n") {
+		return strings.TrimSuffix(line, "\r\n"), "\r\n"
+	}
+	if strings.HasSuffix(line, "\n") {
+		return strings.TrimSuffix(line, "\n"), "\n"
+	}
+	return line, ""
+}
+
+func maskTypeScriptKeywordTypeProperty(line string) string {
+	return tsKeywordTypePropertyPattern.ReplaceAllString(line, "${1}ii${2}")
+}
+
+func maskTypeScriptStaticAccessorMethod(line string) string {
+	return tsStaticAccessorMethodPattern.ReplaceAllString(line, "static accessoR${1}")
+}
+
+var (
+	javaModuleImportPattern      = regexp.MustCompile(`^(\s*import\s+)module\s+`)
+	javaVarargsAnnotationPattern = regexp.MustCompile(`@[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*\.\.\.`)
+)
+
+func maskJavaUnsupportedSyntax(content string) string {
+	lines := strings.SplitAfter(content, "\n")
+	for i, line := range lines {
+		text, newline := splitLineEnding(line)
+		text = javaModuleImportPattern.ReplaceAllString(text, "${1}       ")
+		text = javaVarargsAnnotationPattern.ReplaceAllStringFunc(text, func(match string) string {
+			return strings.Repeat(" ", len(match)-3) + "..."
+		})
+		lines[i] = text + newline
+	}
+	return strings.Join(lines, "")
+}
+
+var (
+	groovyQuotedMethodPattern = regexp.MustCompile(`\b(def|void)\s+"[^"\n]+"\s*\(`)
+	groovyJavaCastPattern     = regexp.MustCompile(`\([A-Za-z_][A-Za-z0-9_]*\)\s+[A-Za-z_$]`)
+)
+
+func maskGroovyUnsupportedSyntax(content string) string {
+	content = groovyQuotedMethodPattern.ReplaceAllStringFunc(content, func(match string) string {
+		open := strings.LastIndex(match, "(")
+		quote := strings.Index(match, "\"")
+		if open <= quote || quote < 0 {
+			return match
+		}
+		prefix := match[:quote]
+		placeholder := "quotedFeature"
+		spaceCount := open - quote - len(placeholder)
+		if spaceCount < 1 {
+			placeholder = "q"
+			spaceCount = open - quote - len(placeholder)
+		}
+		if spaceCount < 0 {
+			return match
+		}
+		return prefix + placeholder + strings.Repeat(" ", spaceCount) + "("
+	})
+	return groovyJavaCastPattern.ReplaceAllStringFunc(content, func(match string) string {
+		return strings.Repeat(" ", len(match)-1) + match[len(match)-1:]
+	})
+}
+
+var (
+	kotlinSuspendLambdaPattern        = regexp.MustCompile(`\bsuspend\s+\{`)
+	kotlinMultiDollarString           = regexp.MustCompile(`\$+\s*"`)
+	kotlinCallTypeArgumentsWithParen  = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)<[^<>\n(){}]+>\(`)
+	kotlinCallTypeArgumentsWithLambda = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)<[^<>\n(){}]+>(\s*\{)`)
+	kotlinEmptyArrayDefault           = regexp.MustCompile(`=\s*\[\]`)
+	kotlinOverrideCallPattern         = regexp.MustCompile(`\boverride\(\)`)
+)
+
+func maskKotlinUnsupportedSyntax(path, content string) string {
+	content = kotlinSuspendLambdaPattern.ReplaceAllStringFunc(content, func(match string) string {
+		return strings.Repeat(" ", len(match)-1) + "{"
+	})
+	content = kotlinMultiDollarString.ReplaceAllStringFunc(content, func(match string) string {
+		return strings.Repeat(" ", len(match)-1) + "\""
+	})
+	content = maskKotlinCallTypeArguments(content)
+	content = kotlinEmptyArrayDefault.ReplaceAllStringFunc(content, func(match string) string {
+		return sameLengthReplacement("= 0", len(match))
+	})
+	content = kotlinOverrideCallPattern.ReplaceAllString(content, "masked__()")
+	content = maskKotlinUnsupportedLines(content)
+	content = maskKotlinTrailingCommas(content)
+	if strings.EqualFold(filepath.Ext(path), ".kts") {
+		content = maskKotlinGradleOptionValueAssignments(content)
+		content = maskKotlinGradleWhenGetOrElse(content)
+		content = maskKotlinGradleNamedBlock(content, "allOpen", "run {}")
+	}
+	return content
+}
+
+func maskKotlinUnsupportedLines(content string) string {
+	lines := strings.SplitAfter(content, "\n")
+	for i := 0; i < len(lines); i++ {
+		text, newline := splitLineEnding(lines[i])
+		trimmed := strings.TrimSpace(text)
+		if strings.HasPrefix(trimmed, "*") || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(trimmed, "findViewById(") && strings.Contains(trimmed, ").") && strings.Contains(trimmed, "="):
+			lines[i] = paddedReplacement(leadingWhitespace(text), "findViewById(R.id.masked)", len(text)) + newline
+		case strings.Contains(text, " withOptions {"):
+			suffix := strings.Index(text, " withOptions {")
+			replacement := strings.TrimRight(text[:suffix], " \t")
+			lines[i] = paddedReplacement(leadingWhitespace(text), strings.TrimSpace(replacement), len(text)) + newline
+			indent := leadingWhitespace(text)
+			for j := i + 1; j < len(lines); j++ {
+				lineText, lineNewline := splitLineEnding(lines[j])
+				lines[j] = maskLineText(lineText) + lineNewline
+				if leadingWhitespace(lineText) == indent && strings.TrimSpace(lineText) == "}" {
+					i = j
+					break
+				}
+			}
+		}
+	}
+	return strings.Join(lines, "")
+}
+
+func maskKotlinCallTypeArguments(content string) string {
+	content = kotlinCallTypeArgumentsWithParen.ReplaceAllStringFunc(content, func(match string) string {
+		open := strings.Index(match, "<")
+		if open < 0 {
+			return match
+		}
+		replacement := match[:open] + "("
+		return replacement + strings.Repeat(" ", len(match)-len(replacement))
+	})
+	return kotlinCallTypeArgumentsWithLambda.ReplaceAllStringFunc(content, func(match string) string {
+		parts := kotlinCallTypeArgumentsWithLambda.FindStringSubmatch(match)
+		if len(parts) != 3 {
+			return match
+		}
+		replacement := parts[1] + parts[2]
+		return replacement + strings.Repeat(" ", len(match)-len(replacement))
+	})
+}
+
+func maskKotlinTrailingCommas(content string) string {
+	lines := strings.SplitAfter(content, "\n")
+	for i := 0; i < len(lines); i++ {
+		text, newline := splitLineEnding(lines[i])
+		trimmed := strings.TrimSpace(text)
+		if !strings.HasSuffix(trimmed, ",") {
+			continue
+		}
+		next := kotlinNextNonEmptyTrimmedLine(lines, i+1)
+		if !strings.HasPrefix(next, ")") && !strings.HasPrefix(next, "]") {
+			continue
+		}
+		comma := strings.LastIndex(text, ",")
+		if comma >= 0 {
+			text = text[:comma] + " " + text[comma+1:]
+			lines[i] = text + newline
+		}
+	}
+	return strings.Join(lines, "")
+}
+
+func kotlinNextNonEmptyTrimmedLine(lines []string, start int) string {
+	for i := start; i < len(lines); i++ {
+		text, _ := splitLineEnding(lines[i])
+		trimmed := strings.TrimSpace(text)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func maskYAMLUnsupportedSyntax(content string) string {
+	// Antora playbooks commonly use @PLACEHOLDER@ values before templating.
+	// Bare YAML scalars cannot start with "@", but replacing it in parse-only
+	// input preserves line and column positions while leaving entity extraction
+	// on the original source.
+	content = strings.Map(func(r rune) rune {
+		if r == '@' {
+			return 'x'
+		}
+		return r
+	}, content)
+	lines := strings.SplitAfter(content, "\n")
+	for i, line := range lines {
+		text, newline := splitLineEnding(line)
+		lines[i] = maskYAMLQuotedMappingKey(text) + newline
+	}
+	return strings.Join(lines, "")
+}
+
+func maskYAMLQuotedMappingKey(line string) string {
+	colon := yamlKeyColonIndex(line)
+	if colon < 0 {
+		return line
+	}
+	prefix := line[:colon]
+	trimmed := strings.TrimSpace(prefix)
+	if strings.HasPrefix(trimmed, "- ") {
+		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+	}
+	if len(trimmed) < 2 {
+		return line
+	}
+	quote := trimmed[0]
+	if (quote != '\'' && quote != '"') || trimmed[len(trimmed)-1] != quote {
+		return line
+	}
+	start := strings.IndexByte(line[:colon], quote)
+	end := strings.LastIndexByte(line[:colon], quote)
+	if start < 0 || end <= start {
+		return line
+	}
+	return line[:start] + string(quote) + "key" + string(quote) + line[end+1:]
+}
+
+func maskCSharpUnsupportedSyntax(content string) string {
+	// Neutralize byte-order marks with a byte-length-preserving replacement.
+	// The UTF-8 BOM is 3 bytes; replacing it with a single space would shrink
+	// the masked source by 2 bytes and drift every downstream symbol offset by
+	// -2 relative to the unmasked content the names are sliced from (corrupting
+	// every name in a BOM-prefixed file, e.g. "SqlMapper" -> "s SqlMapp").
+	content = strings.ReplaceAll(content, "\ufeff", "   ")
+	lines := strings.SplitAfter(content, "\n")
+	for i, line := range lines {
+		text, newline := splitLineEnding(line)
+		trimmed := strings.TrimPrefix(strings.TrimSpace(text), "\ufeff")
+		switch {
+		case strings.HasPrefix(trimmed, "#"):
+			lines[i] = maskLineText(text) + newline
+		case cSharpPrimaryConstructorClassLinePattern.MatchString(text):
+			lines[i] = cSharpMaskPrimaryConstructorClass(text) + newline
+		default:
+			text = replacePatternSameLength(text, cSharpNullCoalescingCollectionExpressionPattern, "??= null")
+			text = replacePatternSameLength(text, cSharpAssignmentCollectionExpressionPattern, "= null")
+			lines[i] = replacePatternSameLength(text, cSharpDictionaryIndexInitializerPattern, "{}") + newline
+		}
+	}
+	return strings.Join(lines, "")
+}
+
+func cSharpMaskPrimaryConstructorClass(text string) string {
+	matches := cSharpPrimaryConstructorClassLinePattern.FindStringSubmatch(text)
+	if len(matches) < 2 {
+		return text
+	}
+	replacement := "class " + matches[1] + " {}"
+	return paddedReplacement(leadingWhitespace(text), replacement, len(text))
+}
+
+var ocamlValSignaturePattern = regexp.MustCompile(`^(\s*)val\s+(\([^)\n]*\)|[A-Za-z_][\w']*)\b`)
+var ocamlSigOpenWord = regexp.MustCompile(`\b(?:sig|object)\b`)
+var ocamlSigCloseWord = regexp.MustCompile(`\bend\b`)
+
+// maskOCamlInterfaceSyntax rewrites OCaml .mli interface signatures into forms
+// the implementation grammar accepts. The package ships only the .ml grammar,
+// so top-level `val NAME : <type>` signatures (which have no implementation)
+// raise parse errors. Rewrite each to `let NAME = ()` (preserving NAME for
+// symbol extraction) and blank the type, including `:`/`->`/`|` continuation
+// lines. Only top-level vals are rewritten: inside `sig`/`object ... end`
+// blocks `let` is invalid, so those are left untouched (not made worse).
+// ocamlValStartKeywords begin a new top-level signature item, so a line
+// starting with one ends the preceding val's type continuation.
+var ocamlValStartKeywords = map[string]struct{}{
+	"val": {}, "type": {}, "module": {}, "include": {}, "exception": {},
+	"external": {}, "open": {}, "let": {}, "class": {}, "end": {}, "and": {},
+	"sig": {}, "object": {}, "method": {}, "inherit": {}, "constraint": {},
+}
+
+// ocamlContinuesValSignature reports whether a line continues the multi-line
+// type of the preceding `val` (i.e. it is non-blank, not a comment, and does
+// not begin a new top-level signature item).
+func ocamlContinuesValSignature(line string) bool {
+	t := strings.TrimSpace(line)
+	if t == "" || strings.HasPrefix(t, "(*") {
+		return false
+	}
+	word := t
+	if idx := strings.IndexFunc(t, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == ':' || r == '(' || r == '='
+	}); idx >= 0 {
+		word = t[:idx]
+	}
+	_, isKeyword := ocamlValStartKeywords[word]
+	return !isKeyword
+}
+
+func maskOCamlInterfaceSyntax(content string) string {
+	lines := strings.SplitAfter(content, "\n")
+	depth := 0
+	for i := 0; i < len(lines); i++ {
+		text, newline := splitLineEnding(lines[i])
+		if depth == 0 {
+			if m := ocamlValSignaturePattern.FindStringSubmatch(text); m != nil {
+				lines[i] = paddedReplacement(m[1], "let "+m[2]+" = ()", len(text)) + newline
+				// The type signature may wrap over several lines whose
+				// continuations start with anything (`(`, identifiers, `'a`,
+				// `->`). Mask until a blank line or a new top-level construct.
+				for i+1 < len(lines) {
+					nextText, nextNewline := splitLineEnding(lines[i+1])
+					if !ocamlContinuesValSignature(nextText) {
+						break
+					}
+					lines[i+1] = maskLineText(nextText) + nextNewline
+					i++
+				}
+				continue
+			}
+		}
+		trimmed := strings.TrimSpace(text)
+		depth += len(ocamlSigOpenWord.FindAllString(trimmed, -1)) - len(ocamlSigCloseWord.FindAllString(trimmed, -1))
+		if depth < 0 {
+			depth = 0
+		}
+	}
+	return strings.Join(lines, "")
+}
+
+func maskSwiftUnsupportedSyntax(content string) string {
+	lines := strings.SplitAfter(content, "\n")
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		text, newline := splitLineEnding(line)
+		if end, ok := maskSwiftComputedStringPropertyBlock(lines, i, text, newline); ok {
+			i = end
+			continue
+		}
+		text = maskSwiftPropertyWrapperPrefix(text)
+		text = maskSwiftEmptyAttributeCalls(text)
+		text = replacePatternSameLength(text, swiftTypedThrowsPattern, "throws")
+		if replacement, ok := maskSwiftAsyncForLine(text); ok {
+			text = replacement
+		}
+		if replacement, ok := maskSwiftOptionalBindingShorthand(text); ok {
+			text = replacement
+		}
+		if strings.Contains(text, `"""`) {
+			text, i = maskSwiftMultilineStringLiteral(lines, i, text, newline)
+			if i < len(lines) {
+				continue
+			}
+			break
+		}
+		if swiftLeadingOperatorContinuationLinePattern.MatchString(text) {
+			if strings.Contains(text, "{") {
+				balance := strings.Count(text, "(") - strings.Count(text, ")")
+				balance += strings.Count(text, "{") - strings.Count(text, "}")
+				lines[i] = maskLineText(text) + newline
+				for balance > 0 && i+1 < len(lines) {
+					i++
+					text, newline = splitLineEnding(lines[i])
+					balance += strings.Count(text, "(") - strings.Count(text, ")")
+					balance += strings.Count(text, "{") - strings.Count(text, "}")
+					lines[i] = maskLineText(text) + newline
+				}
+				continue
+			}
+			if strings.HasSuffix(strings.TrimSpace(text), ")") && !strings.Contains(text, "(") {
+				text = paddedReplacement(leadingWhitespace(text), ")", len(text))
+			} else {
+				text = maskLineText(text)
+			}
+		}
+		lines[i] = text + newline
+	}
+	return strings.Join(lines, "")
+}
+
+func maskSwiftComputedStringPropertyBlock(lines []string, i int, text, newline string) (int, bool) {
+	trimmed := strings.TrimSpace(text)
+	matches := swiftComputedStringPropertyStartPattern.FindStringSubmatch(trimmed)
+	if len(matches) != 4 {
+		return i, false
+	}
+	indent := leadingWhitespace(text)
+	end := -1
+	hasMultilineString := strings.Contains(text, `"""`)
+	for j := i + 1; j < len(lines); j++ {
+		lineText, _ := splitLineEnding(lines[j])
+		if strings.Contains(lineText, `"""`) {
+			hasMultilineString = true
+		}
+		if leadingWhitespace(lineText) == indent && strings.TrimSpace(lineText) == "}" {
+			end = j
+			break
+		}
+	}
+	if end < 0 || !hasMultilineString || i+1 >= end {
+		if end < 0 || !swiftComputedStringPropertyHasRecoverableBody(lines[i+1:end]) {
+			return i, false
+		}
+	}
+	value := `"s"`
+	if matches[3] == "[String]" {
+		value = `[]`
+	}
+	replacement := strings.TrimSpace(matches[1] + "var " + matches[2] + ": " + matches[3] + " = " + value)
+	if len(replacement) > len(trimmed) && matches[1] != "" {
+		replacement = "var " + matches[2] + ": " + matches[3] + " = " + value
+	}
+	if len(replacement) > len(trimmed) {
+		return i, false
+	}
+	lines[i] = paddedReplacement(leadingWhitespace(text), replacement, len(text)) + newline
+	for j := i + 1; j <= end; j++ {
+		lineText, lineNewline := splitLineEnding(lines[j])
+		lines[j] = maskLineText(lineText) + lineNewline
+	}
+	return end, true
+}
+
+func maskSwiftMultilineStringLiteral(lines []string, i int, text, newline string) (string, int) {
+	start := strings.Index(text, `"""`)
+	if start < 0 {
+		return text, i
+	}
+	replacement := text[:start] + sameLengthReplacement(`"s"`, len(text)-start)
+	lines[i] = replacement + newline
+	for j := i + 1; j < len(lines); j++ {
+		lineText, lineNewline := splitLineEnding(lines[j])
+		if strings.Contains(lineText, `"""`) {
+			closeIndex := strings.Index(lineText, `"""`)
+			suffix := strings.TrimSpace(lineText[closeIndex+len(`"""`):])
+			if suffix != "" {
+				lines[j] = paddedReplacement(leadingWhitespace(lineText), suffix, len(lineText)) + lineNewline
+				return replacement, j
+			}
+			next := swiftNextNonEmptyTrimmedLine(lines, j+1)
+			lines[j] = maskLineText(lineText) + lineNewline
+			if strings.HasPrefix(next, ".") {
+				return replacement, maskSwiftChainedDotLines(lines, j+1)
+			}
+			return replacement, j
+		}
+		lines[j] = maskLineText(lineText) + lineNewline
+	}
+	return replacement, len(lines)
+}
+
+func maskSwiftChainedDotLines(lines []string, start int) int {
+	last := start - 1
+	for i := start; i < len(lines); i++ {
+		text, newline := splitLineEnding(lines[i])
+		if !strings.HasPrefix(strings.TrimSpace(text), ".") {
+			return last
+		}
+		lines[i] = maskLineText(text) + newline
+		last = i
+	}
+	return last
+}
+
+func swiftNextNonEmptyTrimmedLine(lines []string, start int) string {
+	for i := start; i < len(lines); i++ {
+		text, _ := splitLineEnding(lines[i])
+		trimmed := strings.TrimSpace(text)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func maskSwiftEmptyAttributeCalls(text string) string {
+	return swiftEmptyAttributeCallPattern.ReplaceAllStringFunc(text, func(match string) string {
+		return strings.TrimSuffix(match, "()") + strings.Repeat(" ", len("()"))
+	})
+}
+
+func swiftComputedStringPropertyHasRecoverableBody(lines []string) bool {
+	hasExpression := false
+	for _, line := range lines {
+		text, _ := splitLineEnding(line)
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, `"`) || strings.HasPrefix(trimmed, "[") {
+			hasExpression = true
+			continue
+		}
+		return false
+	}
+	return hasExpression
+}
+
+func maskSwiftPropertyWrapperPrefix(text string) string {
+	matches := swiftPropertyWrapperPrefixPattern.FindStringIndex(text)
+	if len(matches) != 2 {
+		return text
+	}
+	wrapperEnd := strings.LastIndex(text[:matches[1]], " var ")
+	if wrapperEnd < 0 {
+		wrapperEnd = strings.LastIndex(text[:matches[1]], " let ")
+	}
+	if wrapperEnd < 0 {
+		return text
+	}
+	declStart := wrapperEnd + 1
+	return text[:matches[0]] + strings.Repeat(" ", declStart-matches[0]) + text[declStart:]
+}
+
+func maskSwiftAsyncForLine(text string) (string, bool) {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "for try await ") || !strings.Contains(trimmed, " in try ") {
+		return text, false
+	}
+	afterAwait := strings.TrimPrefix(trimmed, "for try await ")
+	parts := strings.SplitN(afterAwait, " in try ", 2)
+	if len(parts) != 2 {
+		return text, false
+	}
+	variable := strings.Fields(parts[0])
+	if len(variable) == 0 {
+		return text, false
+	}
+	collection := strings.TrimSpace(strings.TrimSuffix(parts[1], "{"))
+	replacement := "for " + variable[0] + " in " + collection + " {"
+	return paddedReplacement(leadingWhitespace(text), replacement, len(text)), true
+}
+
+func maskSwiftOptionalBindingShorthand(text string) (string, bool) {
+	matches := swiftOptionalBindingShorthandPattern.FindStringSubmatchIndex(text)
+	if len(matches) != 4 {
+		return text, false
+	}
+	replacement := "if true {"
+	return text[:matches[0]] + sameLengthReplacement(replacement, matches[1]-matches[0]) + text[matches[1]:], true
+}
+
+var (
+	cSharpPrimaryConstructorClassLinePattern        = regexp.MustCompile(`^\s*(?:(?:public|internal|private|protected|sealed|abstract|partial|static)\s+)*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^;\n]*\)\s*(?::\s*[^{};\n]+)?\s*;\s*$`)
+	cSharpDictionaryIndexInitializerPattern         = regexp.MustCompile(`\{\s*\[[^\]\n]+\]\s*=\s*[^{}\n]+\}`)
+	cSharpAssignmentCollectionExpressionPattern     = regexp.MustCompile(`=\s*\[\]`)
+	cSharpNullCoalescingCollectionExpressionPattern = regexp.MustCompile(`\?\?=\s*\[\]`)
+	swiftTypedThrowsPattern                         = regexp.MustCompile(`throws\([A-Za-z_][A-Za-z0-9_.<>]*\)`)
+	swiftOptionalBindingShorthandPattern            = regexp.MustCompile(`\bif\s+let\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{`)
+	swiftEmptyAttributeCallPattern                  = regexp.MustCompile(`@[A-Za-z_][A-Za-z0-9_]*\(\)`)
+	swiftPropertyWrapperPrefixPattern               = regexp.MustCompile(`^(\s*)@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+(?:var|let)\s+`)
+	swiftLeadingOperatorContinuationLinePattern     = regexp.MustCompile(`^\s*(?:<|>|<=|>=|==|!=|&&|\|\|)\s+`)
+	swiftComputedStringPropertyStartPattern         = regexp.MustCompile(`^((?:(?:private|fileprivate|internal|public)\s+)?)var\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(String|\[String\])\s*\{$`)
+	cControlIteratorMacroPattern                    = regexp.MustCompile(`^(?:(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:FOREACH|FOREACH_SAFE|FOREACH_REVERSE|FOREACH_REVERSE_SAFE)|(?:foreach|foreach_ptr|foreach_node|foreach_oid|foreach_int|foreach_xid|foreach_delete_current|forboth|for_both_cell|forthree|for_fourth_cell|for_each_from|dlist_foreach(?:_modify)?|dclist_foreach(?:_modify)?|slist_foreach(?:_modify)?|hash_seq_search|SGITITERATE))\s*\(`)
+	cGenerateMacroPattern                           = regexp.MustCompile(`^(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:HEAD|ENTRY|PROTOTYPE|PROTOTYPE_STATIC|GENERATE|GENERATE_STATIC)\s*\(`)
+	cEnumMacroPattern                               = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_KEYS\s*\(`)
+	cFileScopeStatementMacroPattern                 = regexp.MustCompile(`^(?:PG_MODULE_MAGIC(?:_EXT)?|PG_FUNCTION_INFO_V1|PGDLLEXPORT|PG_KEYWORD|PG_FUNCTION_ARGS|PG_USED_FOR_ASSERTS_ONLY|DECLARE_[A-Z][A-Z0-9_]*|MAKE_SYSCACHE)\s*\(`)
+	// PostgreSQL system-catalog header macros: the `CATALOG(name,oid,...) BKI_...`
+	// struct opener (the `{` follows on the next line) and BKI_* field/struct
+	// annotations. BEGIN/END_CATALOG_STRUCT markers are handled as bare lines.
+	cCatalogStructPattern = regexp.MustCompile(`^CATALOG\s*\(`)
+	cBKIMacroPattern      = regexp.MustCompile(`\bBKI_[A-Z0-9_]*(?:\s*\([^)\n]*\))?`)
+	cStringMacroPattern                             = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*_FEATURE\s*\([^)\n]*\)`)
+	cAnnotationMacroPattern                         = regexp.MustCompile(`\b(?:printflike|__dead|__packed|__unused|__maybe_unused|__attribute__|pg_attribute_\w+)\s*\([^)\n]*(?:\)[^)\n]*)?\)`)
+	// Bare (parenless) C qualifier/attribute macros that prefix or annotate
+	// declarations and break the C grammar. `\w*DLL(IMPORT|EXPORT)` generalizes
+	// across C runtimes (PostgreSQL PGDLLIMPORT, Julia JL_DLLEXPORT, ...); the
+	// remaining names are the high-frequency PostgreSQL declaration qualifiers
+	// surfaced by the postgres/postgres failure clustering.
+	cBareAnnotationPattern = regexp.MustCompile(`\b(?:__dead|__packed|__unused|__maybe_unused|\w*DLL(?:IMPORT|EXPORT)|PG_USED_FOR_ASSERTS_ONLY|NON_EXEC_STATIC|pg_attribute_\w+|WINAPI)\b`)
+	// C++ library namespace-opening/closing macros (asmjit ASMJIT_BEGIN_NAMESPACE
+	// / ASMJIT_BEGIN_SUB_NAMESPACE(x), and the *_NAMESPACE_BEGIN order) expand to
+	// `namespace x {` / `}`. The fmt/nlohmann variants are handled by exact cases
+	// above; this generalizes to other libraries. Each begin/end pair maps to one
+	// brace, which keeps braces balanced regardless of real nesting depth.
+	cxxBeginNamespaceMacroPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_(?:BEGIN(?:_SUB)?_NAMESPACE|NAMESPACE_BEGIN)\b`)
+	cxxEndNamespaceMacroPattern   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_(?:END(?:_SUB)?_NAMESPACE|NAMESPACE_END)\b`)
+	// Julia annotation macros (JL_NOTSAFEPOINT, JL_GLOBALLY_ROOTED, ...) annotate
+	// declarations and break the C/C++ grammar; mask them (with any args).
+	jlAnnotationMacroPattern = regexp.MustCompile(`\bJL_[A-Z][A-Z0-9_]*\b(?:\s*\([^)\n]*\))?`)
+	cTypeMacroPattern                               = regexp.MustCompile(`\b(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:HEAD|ENTRY)\s*\([^)\n]*\)`)
+	cHeadInitializerPattern                         = regexp.MustCompile(`\b(?:(?:TAILQ|STAILQ|LIST|SLIST)_(?:HEAD_)?INITIALIZER|RB_INITIALIZER|SPLAY_INITIALIZER)\s*\([^)\n]*\)`)
+)
+
+func maskCUnsupportedSyntax(content string) string {
+	lines := strings.SplitAfter(content, "\n")
+	var preprocessorSkipStack []bool
+	for i := 0; i < len(lines); i++ {
+		text, newline := splitLineEnding(lines[i])
+		trimmed := strings.TrimSpace(text)
+		if strings.HasPrefix(trimmed, "#") {
+			preprocessorSkipStack = updateCPreprocessorSkipStack(preprocessorSkipStack, trimmed)
+			for {
+				lines[i] = maskLineText(text) + newline
+				if !strings.HasSuffix(strings.TrimRight(text, " \t"), "\\") || i+1 >= len(lines) {
+					break
+				}
+				i++
+				text, newline = splitLineEnding(lines[i])
+			}
+			continue
+		}
+		if cPreprocessorSkipping(preprocessorSkipStack) {
+			lines[i] = maskLineText(text) + newline
+			continue
+		}
+		if trimmed == "BEGIN_CATALOG_STRUCT" || trimmed == "END_CATALOG_STRUCT" {
+			lines[i] = maskLineText(text) + newline
+			continue
+		}
+		if cCatalogStructPattern.MatchString(trimmed) {
+			// `CATALOG(name,oid,...) BKI_... ` opens a system-catalog struct whose
+			// `{` is on the next line; replace the whole macro line with a plain
+			// struct opener so the (valid C) field body parses.
+			lines[i] = paddedReplacement(leadingWhitespace(text), "struct c_catalog", len(text)) + newline
+			continue
+		}
+		if cFileScopeStatementMacroPattern.MatchString(trimmed) {
+			balance := strings.Count(text, "(") - strings.Count(text, ")")
+			lines[i] = maskLineText(text) + newline
+			for balance > 0 && i+1 < len(lines) {
+				i++
+				nextText, nextNewline := splitLineEnding(lines[i])
+				balance += strings.Count(nextText, "(") - strings.Count(nextText, ")")
+				lines[i] = maskLineText(nextText) + nextNewline
+			}
+			continue
+		}
+		if cControlIteratorMacroPattern.MatchString(trimmed) {
+			combined := trimmed
+			end := i
+			for !strings.Contains(combined, ")") && end+1 < len(lines) {
+				end++
+				nextText, _ := splitLineEnding(lines[end])
+				combined += " " + strings.TrimSpace(nextText)
+			}
+			replacement := "for (;;)"
+			if strings.Contains(combined, "{") {
+				replacement = "for (;;) {"
+			}
+			lines[i] = paddedReplacement(leadingWhitespace(text), replacement, len(text)) + newline
+			for j := i + 1; j <= end; j++ {
+				nextText, nextNewline := splitLineEnding(lines[j])
+				lines[j] = maskLineText(nextText) + nextNewline
+			}
+			i = end
+			continue
+		}
+		if strings.HasPrefix(trimmed, "__attribute__") {
+			if strings.Contains(trimmed, " extern ") {
+				lines[i] = maskCAnnotationMacros(text) + newline
+			} else {
+				replacement := ""
+				if strings.HasSuffix(trimmed, ";") {
+					replacement = ";"
+				}
+				lines[i] = paddedReplacement(leadingWhitespace(text), replacement, len(text)) + newline
+			}
+			continue
+		}
+		if cEnumMacroPattern.MatchString(trimmed) {
+			lines[i] = maskLineText(text) + newline
+			continue
+		}
+		if cGenerateMacroPattern.MatchString(trimmed) {
+			for {
+				lines[i] = maskLineText(text) + newline
+				if strings.Contains(text, ";") || i+1 >= len(lines) {
+					break
+				}
+				i++
+				text, newline = splitLineEnding(lines[i])
+			}
+			continue
+		}
+		text = maskCStringMacros(text)
+		text = maskCAnnotationMacros(text)
+		text = maskCTypeMacros(text)
+		text = cBKIMacroPattern.ReplaceAllStringFunc(text, func(m string) string { return strings.Repeat(" ", len(m)) })
+		text = replaceAllSameLength(text, ", >)", ", 0)")
+		text = replaceAllSameLength(text, ", <)", ", 0)")
+		lines[i] = text + newline
+	}
+	return strings.Join(lines, "")
+}
+
+func updateCPreprocessorSkipStack(stack []bool, trimmed string) []bool {
+	directive := strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
+	fields := strings.Fields(directive)
+	if len(fields) == 0 {
+		return stack
+	}
+	switch fields[0] {
+	case "if":
+		stack = append(stack, len(fields) > 1 && fields[1] == "0")
+	case "ifdef", "ifndef":
+		stack = append(stack, false)
+	case "elif", "else":
+		if len(stack) > 0 {
+			stack[len(stack)-1] = true
+		}
+	case "endif":
+		if len(stack) > 0 {
+			stack = stack[:len(stack)-1]
+		}
+	}
+	return stack
+}
+
+func cPreprocessorSkipping(stack []bool) bool {
+	for _, skipping := range stack {
+		if skipping {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	bashHereDocPipePattern      = regexp.MustCompile(`<<-?['"]?[A-Za-z_][A-Za-z0-9_]*['"]?\|`)
+	bashHereDocPipeNamePattern  = regexp.MustCompile(`<<-?['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?\|`)
+	bashCommandParameterPattern = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*:\+[^}\n;]+;[^}\n]*\}`)
+	zshGlobParameterPattern     = regexp.MustCompile(`\$\{(?:\([^}\n]*\))?[@A-Za-z_][^}\n]*:#\([^}\n]*\)\}`)
+	zshNestedParameterPattern   = regexp.MustCompile(`\$\{#[^}\n]*\$\{[^}\n]+\}[^}\n]*\}`)
+)
+
+func maskBashUnsupportedSyntax(content string) string {
+	masked := bashCommandParameterPattern.ReplaceAllStringFunc(content, func(match string) string {
+		return sameLengthReplacement(`""`, len(match))
+	})
+	masked = zshGlobParameterPattern.ReplaceAllStringFunc(masked, func(match string) string {
+		return sameLengthReplacement(`"x"`, len(match))
+	})
+	masked = zshNestedParameterPattern.ReplaceAllStringFunc(masked, func(match string) string {
+		return sameLengthReplacement(`"1"`, len(match))
+	})
+	lines := strings.SplitAfter(masked, "\n")
+	skipHereDocUntil := ""
+	for i, line := range lines {
+		text, newline := splitLineEnding(line)
+		if skipHereDocUntil != "" {
+			if strings.TrimSpace(text) == skipHereDocUntil {
+				skipHereDocUntil = ""
+			}
+			lines[i] = maskLineText(text) + newline
+			continue
+		}
+		if bashHereDocPipePattern.MatchString(text) {
+			if match := bashHereDocPipeNamePattern.FindStringSubmatch(text); len(match) == 2 {
+				skipHereDocUntil = match[1]
+			}
+			replacement := "true"
+			if strings.HasPrefix(strings.TrimSpace(text), "(") {
+				replacement = "(true) || true"
+			}
+			text = paddedReplacement(leadingWhitespace(text), replacement, len(text))
+		}
+		if strings.Contains(text, `${(@f)"$(`) {
+			text = paddedReplacement(leadingWhitespace(text), `completions=("x")`, len(text))
+		}
+		lines[i] = text + newline
+	}
+	return strings.Join(lines, "")
+}
+
+func maskZshUnsupportedSyntax(content string) string {
+	content = maskZshParameterExpansions(content)
+	content = strings.ReplaceAll(content, ">|", "> ")
+	content = maskZshAnonymousFunctions(content)
+	return maskBashUnsupportedSyntax(content)
+}
+
+func maskZshParameterExpansions(content string) string {
+	var out strings.Builder
+	out.Grow(len(content))
+	for i := 0; i < len(content); {
+		if i+1 >= len(content) || content[i] != '$' || content[i+1] != '{' {
+			out.WriteByte(content[i])
+			i++
+			continue
+		}
+		end := findShellExpansionEnd(content, i+2)
+		if end < 0 {
+			out.WriteByte(content[i])
+			i++
+			continue
+		}
+		expansion := content[i : end+1]
+		inner := content[i+2 : end]
+		if zshSpecificParameterExpansion(inner) {
+			out.WriteString(sameLengthReplacement("0", len(expansion)))
+		} else {
+			out.WriteString(expansion)
+		}
+		i = end + 1
+	}
+	return out.String()
+}
+
+func findShellExpansionEnd(content string, start int) int {
+	depth := 1
+	for i := start; i < len(content); i++ {
+		switch content[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func zshSpecificParameterExpansion(inner string) bool {
+	return strings.HasPrefix(inner, "(") ||
+		strings.HasPrefix(inner, "+") ||
+		strings.Contains(inner, "${") ||
+		strings.Contains(inner, ":#") ||
+		strings.Contains(inner, ":|") ||
+		strings.Contains(inner, ":gs") ||
+		strings.Contains(inner, ":h") ||
+		strings.Contains(inner, "[(I") ||
+		strings.Contains(inner, "[(r") ||
+		strings.Contains(inner, "[(R")
+}
+
+func maskZshAnonymousFunctions(content string) string {
+	lines := strings.SplitAfter(content, "\n")
+	for i, line := range lines {
+		text, newline := splitLineEnding(line)
+		trimmed := strings.TrimSpace(text)
+		switch trimmed {
+		case "() {":
+			lines[i] = paddedReplacement(leadingWhitespace(text), "f(){", len(text)) + newline
+		case "function {":
+			lines[i] = paddedReplacement(leadingWhitespace(text), "anon() {", len(text)) + newline
+		}
+	}
+	return strings.Join(lines, "")
+}
+
+func maskCAnnotationMacros(text string) string {
+	return cAnnotationMacroPattern.ReplaceAllStringFunc(text, func(match string) string {
+		return strings.Repeat(" ", len(match))
+	})
+}
+
+func maskCStringMacros(text string) string {
+	return cStringMacroPattern.ReplaceAllStringFunc(text, func(match string) string {
+		return sameLengthReplacement(`""`, len(match))
+	})
+}
+
+func maskCTypeMacros(text string) string {
+	text = cTypeMacroPattern.ReplaceAllStringFunc(text, func(match string) string {
+		return sameLengthReplacement("struct c_macro", len(match))
+	})
+	text = cHeadInitializerPattern.ReplaceAllStringFunc(text, func(match string) string {
+		return sameLengthReplacement("0", len(match))
+	})
+	return cBareAnnotationPattern.ReplaceAllStringFunc(text, func(match string) string {
+		return strings.Repeat(" ", len(match))
+	})
+}
+
+func maskKotlinGradleOptionValueAssignments(content string) string {
+	return maskKotlinGradleBlocks(content, ".value =", "maskedGradleOptionValue()")
+}
+
+func maskKotlinGradleWhenGetOrElse(content string) string {
+	return maskKotlinGradleBlocks(content, ".getOrElse(when (", ".getOrElse(\"masked\")")
+}
+
+func maskKotlinGradleNamedBlock(content, name, replacement string) string {
+	lines := strings.SplitAfter(content, "\n")
+	for i := 0; i < len(lines); i++ {
+		text, newline := splitLineEnding(lines[i])
+		if strings.TrimSpace(text) != name+" {" {
+			continue
+		}
+		indent := leadingWhitespace(text)
+		blankUntil := i
+		balance := 0
+		for j := i; j < len(lines); j++ {
+			lineText, _ := splitLineEnding(lines[j])
+			balance += strings.Count(lineText, "{") - strings.Count(lineText, "}")
+			blankUntil = j
+			if j > i && balance <= 0 {
+				break
+			}
+		}
+		lines[i] = paddedReplacement(indent, replacement, len(text)) + newline
+		for j := i + 1; j <= blankUntil; j++ {
+			lineText, lineNewline := splitLineEnding(lines[j])
+			lines[j] = maskLineText(lineText) + lineNewline
+		}
+		i = blankUntil
+	}
+	return strings.Join(lines, "")
+}
+
+func maskKotlinGradleBlocks(content, marker, replacement string) string {
+	lines := strings.SplitAfter(content, "\n")
+	for i := 0; i < len(lines); i++ {
+		text, newline := splitLineEnding(lines[i])
+		markerIndex := strings.Index(text, marker)
+		if markerIndex < 0 {
+			continue
+		}
+		indent := leadingWhitespace(text)
+		blankUntil := i
+		balance := 0
+		for j := i; j < len(lines); j++ {
+			lineText, _ := splitLineEnding(lines[j])
+			balance += strings.Count(lineText, "(") - strings.Count(lineText, ")")
+			balance += strings.Count(lineText, "{") - strings.Count(lineText, "}")
+			blankUntil = j
+			if j > i && balance <= 0 {
+				break
+			}
+		}
+		lines[i] = paddedReplacement(indent, replacement, len(text)) + newline
+		for j := i + 1; j <= blankUntil; j++ {
+			lineText, lineNewline := splitLineEnding(lines[j])
+			lines[j] = maskLineText(lineText) + lineNewline
+		}
+		i = blankUntil
+	}
+	return strings.Join(lines, "")
+}
+
+func maskCPlusPlusUnsupportedSyntax(content string) string {
+	content = maskCPlusPlusTemplateDecltypeExpressions(content)
+	content = jlAnnotationMacroPattern.ReplaceAllStringFunc(content, func(m string) string { return strings.Repeat(" ", len(m)) })
+	lines := strings.SplitAfter(content, "\n")
+	var preprocessorSkipStack []bool
+	for i := 0; i < len(lines); i++ {
+		text, newline := splitLineEnding(lines[i])
+		trimmed := strings.TrimSpace(text)
+		if strings.HasPrefix(trimmed, "#") {
+			preprocessorSkipStack = updateCPlusPlusPreprocessorSkipStack(preprocessorSkipStack, trimmed)
+			for {
+				lines[i] = maskLineText(text) + newline
+				if !strings.HasSuffix(strings.TrimRight(text, " \t"), "\\") || i+1 >= len(lines) {
+					break
+				}
+				i++
+				text, newline = splitLineEnding(lines[i])
+			}
+			continue
+		}
+		if cPreprocessorSkipping(preprocessorSkipStack) {
+			lines[i] = maskLineText(text) + newline
+			continue
+		}
+		switch trimmed {
+		case "FMT_BEGIN_NAMESPACE":
+			lines[i] = paddedReplacement(leadingWhitespace(text), "namespace fmt {", len(text)) + newline
+		case "FMT_END_NAMESPACE":
+			lines[i] = paddedReplacement(leadingWhitespace(text), "}", len(text)) + newline
+		case "NLOHMANN_JSON_NAMESPACE_BEGIN":
+			lines[i] = paddedReplacement(leadingWhitespace(text), "namespace nlohmann {", len(text)) + newline
+		case "NLOHMANN_JSON_NAMESPACE_END":
+			lines[i] = paddedReplacement(leadingWhitespace(text), "}", len(text)) + newline
+		case "NLOHMANN_BASIC_JSON_TPL_DECLARATION":
+			lines[i] = paddedReplacement(leadingWhitespace(text), "template<typename BasicJsonType>", len(text)) + newline
+		case "FMT_BEGIN_EXPORT", "FMT_END_EXPORT":
+			lines[i] = maskLineText(text) + newline
+		case "FMT_TRY {":
+			lines[i] = paddedReplacement(leadingWhitespace(text), "try {", len(text)) + newline
+		case "FMT_CATCH(...) {}":
+			lines[i] = paddedReplacement(leadingWhitespace(text), "catch(...) {}", len(text)) + newline
+		case "JSON_TRY":
+			lines[i] = paddedReplacement(leadingWhitespace(text), "try", len(text)) + newline
+		default:
+			if cxxBeginNamespaceMacroPattern.MatchString(trimmed) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "namespace ns {", len(text)) + newline
+				continue
+			}
+			if cxxEndNamespaceMacroPattern.MatchString(trimmed) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "}", len(text)) + newline
+				continue
+			}
+			if strings.HasPrefix(trimmed, "JSON_CATCH(...) {}") {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "catch(...) {}", len(text)) + newline
+				continue
+			}
+			if strings.HasPrefix(trimmed, "JSON_CATCH") || strings.HasPrefix(trimmed, "JSON_INTERNAL_CATCH") {
+				catchName := "JSON_CATCH"
+				if strings.HasPrefix(trimmed, "JSON_INTERNAL_CATCH") {
+					catchName = "JSON_INTERNAL_CATCH"
+				}
+				if masked, ok := maskCPlusPlusCatchMacro(text, catchName); ok {
+					lines[i] = masked + newline
+					continue
+				}
+			}
+			if strings.HasPrefix(trimmed, "export module ") {
+				lines[i] = maskLineText(text) + newline
+				continue
+			}
+			if strings.HasPrefix(trimmed, "import ") && strings.Contains(trimmed, ".") {
+				lines[i] = maskLineText(text) + newline
+				continue
+			}
+			text = replaceAllSameLength(text, "FMT_TRY", "try")
+			text = replaceAllSameLength(text, "FMT_CATCH", "catch")
+			text = replaceAllSameLength(text, "using typename ", "using ")
+			if strings.HasPrefix(trimmed, "JSON_PRIVATE_UNLESS_TESTED") {
+				lines[i] = maskLineText(text) + newline
+			} else if strings.HasPrefix(trimmed, "void_t<decltype(") {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "void>", len(text)) + newline
+			} else if strings.Contains(text, "-> decltype(") && balancedCallEnd(text, strings.Index(text, "-> decltype(")+len("-> decltype")) < 0 {
+				startLine := i
+				startText := text
+				startNewline := newline
+				marker := strings.Index(text, "-> decltype(")
+				balance := strings.Count(text[marker:], "(") - strings.Count(text[marker:], ")")
+				for balance > 0 && i+1 < len(lines) {
+					i++
+					text, newline = splitLineEnding(lines[i])
+					balance += strings.Count(text, "(") - strings.Count(text, ")")
+					lines[i] = maskLineText(text) + newline
+				}
+				replacement := "-> void"
+				if strings.HasSuffix(strings.TrimSpace(text), "{") {
+					replacement = "-> void {"
+				} else if !cPlusPlusNextNonEmptyLineStarts(lines, i+1, "{") {
+					replacement = "-> void;"
+				}
+				lines[startLine] = startText[:marker] + sameLengthReplacement(replacement, len(startText)-marker) + startNewline
+			} else if cPlusPlusMultilineTestMacroStart(trimmed) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "void test_macro()", len(text)) + newline
+				balance := strings.Count(text, "(") - strings.Count(text, ")")
+				for balance > 0 && i+1 < len(lines) {
+					i++
+					text, newline = splitLineEnding(lines[i])
+					balance += strings.Count(text, "(") - strings.Count(text, ")")
+					lines[i] = maskLineText(text) + newline
+				}
+			} else if cPlusPlusMultilineControlMacroStart(trimmed) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "if (true)", len(text)) + newline
+				balance := strings.Count(text, "(") - strings.Count(text, ")")
+				for balance > 0 && i+1 < len(lines) {
+					i++
+					text, newline = splitLineEnding(lines[i])
+					balance += strings.Count(text, "(") - strings.Count(text, ")")
+					lines[i] = maskLineText(text) + newline
+				}
+			} else if strings.HasPrefix(trimmed, "GMOCK_KIND_OF_(") || strings.HasPrefix(trimmed, "GMOCK_FLAG(") {
+				text = maskCPlusPlusFunctionLikeMacro(text, "GMOCK_KIND_OF_", "kBool")
+				text = maskCPlusPlusFunctionLikeMacro(text, "GMOCK_FLAG", "gmock_flag")
+				lines[i] = text + newline
+			} else if cPlusPlusMultilineBlankMacroStart(trimmed) {
+				balance := 0
+				firstLine := true
+				statementMacro := cPlusPlusStatementReplacementMacroLinePattern.MatchString(trimmed)
+				for {
+					if !firstLine && !strings.HasPrefix(trimmed, "CHECK_THROWS") && (strings.TrimSpace(text) == "}" || strings.TrimSpace(text) == "};") {
+						break
+					}
+					balance += strings.Count(text, "(") - strings.Count(text, ")")
+					if firstLine && statementMacro {
+						lines[i] = paddedReplacement(leadingWhitespace(text), "0;", len(text)) + newline
+					} else {
+						lines[i] = maskLineText(text) + newline
+					}
+					firstLine = false
+					if (balance <= 0 && strings.Contains(text, ")")) || i+1 >= len(lines) {
+						break
+					}
+					i++
+					text, newline = splitLineEnding(lines[i])
+				}
+				if statementMacro {
+					i = maskCPlusPlusStreamingMacroContinuations(lines, i)
+				}
+			} else if cPlusPlusMultilineAnnotationMacroStart(trimmed) {
+				balance := 0
+				for {
+					balance += strings.Count(text, "(") - strings.Count(text, ")")
+					lines[i] = maskLineText(text) + newline
+					if (balance <= 0 && strings.Contains(text, ")")) || i+1 >= len(lines) {
+						break
+					}
+					i++
+					text, newline = splitLineEnding(lines[i])
+				}
+			} else if masked, ok := maskCPlusPlusTestMacroDefinition(text); ok {
+				lines[i] = masked + newline
+			} else if masked, ok := maskCPlusPlusDoctestControlMacro(text); ok {
+				lines[i] = masked + newline
+			} else if strings.Contains(trimmed, "= delete;") {
+				lines[i] = maskLineText(text) + newline
+			} else if strings.HasPrefix(trimmed, "extern template ") {
+				for {
+					lines[i] = maskLineText(text) + newline
+					if strings.Contains(text, ";") || i+1 >= len(lines) {
+						break
+					}
+					i++
+					text, newline = splitLineEnding(lines[i])
+				}
+			} else if cPlusPlusLeadingAnnotationMacroLine(trimmed) {
+				text = maskCPlusPlusAnnotationMacros(text)
+				text = maskCPlusPlusFunctionLikeMacro(text, "DOCTEST_REF_WRAP", "T")
+				text = normalizeCPlusPlusPrimitiveSpecifiers(text)
+				lines[i] = text + newline
+			} else if strings.HasPrefix(trimmed, "struct StringMaker : public detail::StringMakerBase<") {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "struct StringMaker {};", len(text)) + newline
+				for !strings.Contains(text, "{};") && i+1 < len(lines) {
+					i++
+					text, newline = splitLineEnding(lines[i])
+					lines[i] = maskLineText(text) + newline
+				}
+			} else if strings.HasPrefix(trimmed, "DOCTEST_INTERNAL_ERROR(") {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "0;", len(text)) + newline
+			} else if cPlusPlusBlankMacroLine(trimmed) {
+				if cPlusPlusStatementReplacementMacroLinePattern.MatchString(trimmed) {
+					lines[i] = paddedReplacement(leadingWhitespace(text), "0;", len(text)) + newline
+					i = maskCPlusPlusStreamingMacroContinuations(lines, i)
+				} else {
+					lines[i] = maskLineText(text) + newline
+				}
+			} else if strings.Contains(trimmed, `result["compiler"] = "hp"`) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), `result["compiler"]="hp";`, len(text)) + newline
+			} else if strings.Contains(text, "std::partial_ordering operator<=>") {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "bool compare_spaceship() const noexcept", len(text)) + newline
+			} else if strings.Contains(text, "FMT_ENABLE_IF(") && balancedCallEnd(text, strings.Index(text, "FMT_ENABLE_IF(")+len("FMT_ENABLE_IF")) < 0 {
+				marker := strings.Index(text, "FMT_ENABLE_IF(")
+				lines[i] = text[:marker] + sameLengthReplacement("int = 0>", len(text)-marker) + newline
+				for !strings.Contains(text, ")>") && i+1 < len(lines) {
+					i++
+					text, newline = splitLineEnding(lines[i])
+					lines[i] = maskLineText(text) + newline
+				}
+			} else if strings.Contains(text, "using ") && strings.Contains(text, "= typename std::enable_if<") {
+				replacement := "using cxx_enable_if = void;"
+				if alias := cPlusPlusUsingAliasName(text); alias != "" {
+					replacement = "using " + alias + " = void;"
+				}
+				lines[i] = paddedReplacement(leadingWhitespace(text), replacement, len(text)) + newline
+				for i+1 < len(lines) {
+					nextText, nextNewline := splitLineEnding(lines[i+1])
+					i++
+					lines[i] = maskLineText(nextText) + nextNewline
+					if strings.Contains(nextText, "::type") || strings.Contains(nextText, ">;") || strings.Contains(nextText, ";") {
+						break
+					}
+				}
+			} else if strings.Contains(text, "std::enable_if<") && !strings.Contains(text, "::type") {
+				templateParam := strings.Contains(text, "template <") || strings.Contains(text, "template<") || cPlusPlusPreviousNonBlankLineStartsTemplate(lines, i)
+				if templateParam {
+					replacement := "typename E=void>"
+					if marker := strings.Index(text, "typename std::enable_if<"); marker >= 0 && strings.Contains(text[:marker], "template") {
+						replacement = text[:marker] + sameLengthReplacement("typename E=void>", len(text)-marker)
+					} else if strings.Contains(text, "template") && strings.Contains(text, "= std::enable_if<") {
+						replacement = "template <typename E = void>"
+					} else if cPlusPlusEnableIfContinuationEndsWithComma(lines, i) {
+						replacement = "typename E=void,"
+					}
+					if len(replacement) == len(text) {
+						lines[i] = replacement + newline
+					} else {
+						lines[i] = paddedReplacement(leadingWhitespace(text), replacement, len(text)) + newline
+					}
+				} else {
+					lines[i] = paddedReplacement(leadingWhitespace(text), "int* enabler", len(text)) + newline
+				}
+				for i+1 < len(lines) {
+					nextText, nextNewline := splitLineEnding(lines[i+1])
+					if !strings.Contains(nextText, "::type") {
+						i++
+						lines[i] = maskLineText(nextText) + nextNewline
+						continue
+					}
+					i++
+					lines[i] = maskLineText(nextText) + nextNewline
+					break
+				}
+			} else if marker := cPlusPlusEnableIfTypenameStart(text); marker >= 0 && cPlusPlusEnableIfTypePointerTemplateDefaultLinePattern.MatchString(text) {
+				replacement := text[:marker] + sameLengthReplacement("typename E=void>", len(text)-marker)
+				lines[i] = replacement + newline
+			} else if cPlusPlusEnableIfTypePointerTemplateDefaultLinePattern.MatchString(text) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "typename = void>", len(text)) + newline
+			} else if cPlusPlusEnableIfTypePointerParamLinePattern.MatchString(text) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "int* enabler", len(text)) + newline
+			} else if cPlusPlusGTestPointerTemplateDefaultPattern.MatchString(text) {
+				lines[i] = maskLineText(text) + newline
+				if i+1 < len(lines) {
+					nextText, nextNewline := splitLineEnding(lines[i+1])
+					if strings.Contains(nextText, "= delete;") {
+						i++
+						lines[i] = maskLineText(nextText) + nextNewline
+					}
+				}
+			} else if cPlusPlusEnableIfPointerDefaultPattern.MatchString(text) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "int* p = nullptr", len(text)) + newline
+				if i+1 < len(lines) {
+					nextText, nextNewline := splitLineEnding(lines[i+1])
+					if strings.Contains(nextText, "static_cast") && strings.Contains(nextText, "{") {
+						i++
+						lines[i] = paddedReplacement(leadingWhitespace(nextText), ") {", len(nextText)) + nextNewline
+					} else if idx := strings.Index(nextText, "nullptr"); idx >= 0 {
+						i++
+						lines[i] = nextText[:idx] + strings.Repeat(" ", len("nullptr")) + nextText[idx+len("nullptr"):] + nextNewline
+					}
+				}
+			} else if cPlusPlusDirectInitializerTernaryPattern.MatchString(text) && i+1 < len(lines) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "auto cxx_value = value;", len(text)) + newline
+				i++
+				nextText, nextNewline := splitLineEnding(lines[i])
+				lines[i] = maskLineText(nextText) + nextNewline
+			} else if strings.Contains(text, "typename std::is_pointer") && strings.Contains(text, "::type()") {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "std::true_type(),", len(text)) + newline
+			} else if strings.HasPrefix(trimmed, "template class ") {
+				for {
+					lines[i] = maskLineText(text) + newline
+					if strings.Contains(text, ";") || i+1 >= len(lines) {
+						break
+					}
+					i++
+					text, newline = splitLineEnding(lines[i])
+				}
+			} else if strings.HasPrefix(trimmed, "template struct ") {
+				lines[i] = maskLineText(text) + newline
+			} else if strings.HasPrefix(trimmed, "FMT_PRAGMA_") {
+				lines[i] = maskLineText(text) + newline
+			} else if trimmed == `extern "C" {` {
+				for {
+					lines[i] = maskLineText(text) + newline
+					if (strings.HasPrefix(strings.TrimSpace(text), `}  // extern "C"`) || strings.HasPrefix(strings.TrimSpace(text), `} // extern "C"`)) || i+1 >= len(lines) {
+						break
+					}
+					i++
+					text, newline = splitLineEnding(lines[i])
+				}
+			} else if strings.HasPrefix(trimmed, `}  // extern "C"`) || strings.HasPrefix(trimmed, `} // extern "C"`) {
+				lines[i] = maskLineText(text) + newline
+			} else if strings.HasPrefix(trimmed, "(void)") && (strings.Contains(trimmed, "{}") || strings.Contains(trimmed, "{};")) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "(void)0;", len(text)) + newline
+			} else if strings.HasPrefix(trimmed, ": std::conditional<") {
+				lines[i] = paddedReplacement(leadingWhitespace(text), ": std::true_type {};", len(text)) + newline
+				for !strings.Contains(text, "{}") && !strings.Contains(text, "{ }") && i+1 < len(lines) {
+					i++
+					text, newline = splitLineEnding(lines[i])
+					lines[i] = maskLineText(text) + newline
+				}
+			} else if cPlusPlusStdIntegralConstantBoolExpressionLinePattern.MatchString(trimmed) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "struct cxx_bool_constant : std::false_type {};", len(text)) + newline
+			} else if cPlusPlusBoolConstantCallLinePattern.MatchString(trimmed) {
+				lines[i] = replacePatternSameLength(text, cPlusPlusBoolConstantCallPattern, "bool_constant<true>") + newline
+			} else if !strings.HasPrefix(trimmed, "struct ") && !strings.HasPrefix(trimmed, "class ") && strings.Contains(trimmed, ")") && strings.HasSuffix(trimmed, "{};") {
+				lines[i] = text[:strings.LastIndex(text, ";")] + strings.Repeat(" ", len(text)-strings.LastIndex(text, ";")) + newline
+			} else if strings.HasPrefix(trimmed, "}; // namespace") {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "} // namespace", len(text)) + newline
+			} else if trimmed == "};" && cPlusPlusLikelyFunctionBodyCloseSemi(lines, i) {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "}", len(text)) + newline
+			} else if strings.HasPrefix(trimmed, "return {") {
+				lines[i] = paddedReplacement(leadingWhitespace(text), "return {};", len(text)) + newline
+				for !strings.Contains(text, ";") && i+1 < len(lines) {
+					i++
+					text, newline = splitLineEnding(lines[i])
+					lines[i] = maskLineText(text) + newline
+				}
+			} else if !strings.HasPrefix(trimmed, "#") {
+				text = maskCPlusPlusFunctionLikeMacro(text, "FMT_ENABLE_IF", "typename T = void")
+				text = maskCPlusPlusFunctionLikeMacro(text, "FMT_SO_VISIBILITY", "")
+				text = maskCPlusPlusFunctionLikeMacro(text, "FMT_VISIBILITY", "")
+				text = maskCPlusPlusFunctionLikeMacro(text, "DOCTEST_REF_WRAP", "T")
+				text = maskCPlusPlusFunctionLikeMacro(text, "GTEST_BIND_", "TestSel")
+				text = maskCPlusPlusFunctionLikeMacro(text, "GTEST_REMOVE_REFERENCE_AND_CONST_", "T")
+				text = maskCPlusPlusFunctionLikeMacro(text, "GMOCK_KIND_OF_", "kBool")
+				text = maskCPlusPlusFunctionLikeMacro(text, "GMOCK_FLAG", "gmock_flag")
+				text = maskCPlusPlusFunctionLikeMacro(text, "DOCTEST_STRINGIFY", `"expr"`)
+				text = maskCPlusPlusFunctionLikeMacro(text, "__declspec", "")
+				text = maskCPlusPlusLikelyMacro(text, "JSON_HEDLEY_LIKELY")
+				text = maskCPlusPlusLikelyMacro(text, "JSON_HEDLEY_UNLIKELY")
+				text = maskCPlusPlusFunctionLikeMacro(text, "STRINGIZE", `"s"`)
+				text = maskCPlusPlusFunctionLikeMacro(text, "DOCTEST_BRANCH_ON_DISABLED", "{}")
+				text = maskCPlusPlusFunctionLikeMacroPattern(text, cPlusPlusHedleyFunctionLikeMacroPattern, "")
+				text = maskCPlusPlusFunctionLikeMacroPattern(text, cPlusPlusAnnotationFunctionLikeMacroPattern, "")
+				text = maskCPlusPlusTrailingDecltypeReturn(text)
+				text = maskCPlusPlusDependentTemplateKeyword(text)
+				text = maskCPlusPlusMemberOperatorCall(text)
+				text = maskCPlusPlusOperatorCall(text)
+				text = replaceAllSameLength(text, "std::strong_ordering", "bool")
+				text = normalizeCPlusPlusPrimitiveSpecifiers(text)
+				text = replaceAllSameLength(text, "operator<=>", "operator<")
+				text = replaceAllSameLength(text, " <=> ", " < ")
+				text = replacePatternSameLength(text, cPlusPlusDependentTypenameTemporaryPattern, "= T{}")
+				text = replacePatternSameLength(text, cPlusPlusDependentTypenameParenPattern, "= T(")
+				text = replacePatternSameLength(text, cPlusPlusDependentTypenameConstructorPattern, "T(")
+				text = replacePatternSameLength(text, cPlusPlusArrayReferenceTemplateDefaultPattern, "typename Array = T")
+				text = replacePatternSameLength(text, cPlusPlusPointerTemplateDefaultPattern, "typename Ptr = T")
+				text = replacePatternSameLength(text, cPlusPlusCommentedPointerParamPattern, "T* unused")
+				text = replacePatternSameLength(text, cPlusPlusMemberPointerDeclPattern, "size_t (*Fn)(")
+				text = replacePatternSameLength(text, cPlusPlusMemberPointerFieldPattern, "int *field_")
+				text = replacePatternSameLength(text, cPlusPlusMemberFunctionPointerTemplateArgPattern, "PropertyType (*)()")
+				text = replacePatternSameLength(text, cPlusPlusEmptyBraceDefaultPattern, "= 0")
+				text = replacePatternSameLength(text, cPlusPlusTemplatePointerDefaultPattern, "> = 0 >")
+				text = replacePatternSameLength(text, cPlusPlusEnableIfPointerDefaultPattern, "typename = void")
+				text = replaceAllSameLength(text, "operator*()", "op()")
+				text = replaceAllSameLength(text, "NLOHMANN_BASIC_JSON_TPL", "BasicJsonType")
+				text = replaceAllSameLength(text, "JSON_INLINE_VARIABLE", "inline")
+				text = replaceAllSameLength(text, "JSON_NO_UNIQUE_ADDRESS", "")
+				text = replaceAllSameLength(text, "decltype(filters)(9)", "{}")
+				text = replaceAllSameLength(text, "GTEST_NAME_", `"gtest"`)
+				text = replacePatternSameLength(text, cPlusPlusGTestPointerTemplateDefaultPattern, "typename R, int N = 0")
+				text = replacePatternSameLength(text, cPlusPlusMemberPointerDecltypePattern, "int")
+				text = maskCPlusPlusUnsignedFunctionalCast(text)
+				text = maskCPlusPlusEmptyDefaultInitializers(text)
+				text = replaceAllSameLength(text, "template <typename,", "template <class T, ")
+				if strings.Contains(text, "->*") {
+					text = paddedReplacement(leadingWhitespace(text), "auto call_result = call();", len(text))
+				}
+				if strings.HasPrefix(strings.TrimSpace(text), "if (auto ") {
+					replacement := "if (true)"
+					if strings.Contains(text, "{") {
+						replacement = "if (true) {"
+					}
+					text = paddedReplacement(leadingWhitespace(text), replacement, len(text))
+				}
+				if strings.Contains(text, ".*(&") {
+					text = paddedReplacement(leadingWhitespace(text), "return {};", len(text))
+				}
+				if strings.Contains(text, "::operator bool()") {
+					text = paddedReplacement(leadingWhitespace(text), "bool op() {", len(text))
+				}
+				text = replacePatternSameLength(text, cPlusPlusAnonymousEnumPattern, "enum cxx_enum")
+				text = replacePatternSameLength(text, cPlusPlusExplicitOperatorCallPattern, "call(")
+				text = replacePatternSameLength(text, cPlusPlusConversionOperatorDeclPattern, "convert()")
+				lines[i] = maskCPlusPlusAnnotationMacros(text) + newline
+			}
+		}
+	}
+	return strings.Join(lines, "")
+}
+
+func cPlusPlusPreviousNonBlankLineStartsTemplate(lines []string, i int) bool {
+	for j := i - 1; j >= 0 && i-j <= 8; j-- {
+		text, _ := splitLineEnding(lines[j])
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "template") {
+			return true
+		}
+		if !strings.HasPrefix(trimmed, "typename") {
+			return false
+		}
+	}
+	return false
+}
+
+func cPlusPlusUsingAliasName(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "using ") {
+		return ""
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "using "))
+	end := strings.Index(rest, "=")
+	if end < 0 {
+		return ""
+	}
+	name := strings.TrimSpace(rest[:end])
+	if name == "" || strings.ContainsAny(name, " \t<>") {
+		return ""
+	}
+	return name
+}
+
+func cPlusPlusLeadingAnnotationMacroLine(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "DOCTEST_NOINLINE ") ||
+		strings.HasPrefix(trimmed, "DOCTEST_NORETURN ") ||
+		strings.HasPrefix(trimmed, "DOCTEST_INTERFACE ") ||
+		strings.HasPrefix(trimmed, "DOCTEST_INTERFACE_DECL ") ||
+		strings.HasPrefix(trimmed, "DOCTEST_CONSTEXPR_FUNC ") ||
+		strings.HasPrefix(trimmed, "DOCTEST_THREAD_LOCAL ") ||
+		strings.HasPrefix(trimmed, "ATTRIBUTE_TARGET_") ||
+		strings.HasPrefix(trimmed, "ATTRIBUTE_NO_SANITIZE_") ||
+		strings.HasPrefix(trimmed, "NO_SANITIZE_")
+}
+
+func normalizeCPlusPlusPrimitiveSpecifiers(text string) string {
+	text = replaceAllSameLength(text, "double long", "long double")
+	text = replaceAllSameLength(text, "char signed", "signed char")
+	text = replaceAllSameLength(text, "char unsigned", "unsigned char")
+	text = replaceAllSameLength(text, "short unsigned", "unsigned short")
+	text = replaceAllSameLength(text, "long long unsigned", "unsigned long long")
+	text = replaceAllSameLength(text, "long unsigned", "unsigned long")
+	return text
+}
+
+func cPlusPlusLikelyFunctionBodyCloseSemi(lines []string, i int) bool {
+	balance := 1
+	for j := i - 1; j >= 0 && i-j <= 200; j-- {
+		text, _ := splitLineEnding(lines[j])
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		balance += strings.Count(text, "}") - strings.Count(text, "{")
+		if balance == 0 {
+			openBrace := strings.Index(trimmed, "{")
+			if openBrace < 0 || strings.Contains(trimmed[:openBrace], "=") {
+				return false
+			}
+			return strings.Contains(trimmed[:openBrace], ")")
+		}
+		if balance < 0 {
+			return false
+		}
+	}
+	return false
+}
+
+func cPlusPlusEnableIfTypenameStart(text string) int {
+	start := -1
+	for _, needle := range []string{
+		"typename std::enable_if",
+		"typename types::enable_if",
+		"typename detail::types::enable_if",
+		"typename doctest::detail::types::enable_if",
+	} {
+		if idx := strings.Index(text, needle); idx >= 0 && (start < 0 || idx < start) {
+			start = idx
+		}
+	}
+	return start
+}
+
+func cPlusPlusEnableIfContinuationEndsWithComma(lines []string, i int) bool {
+	for j := i + 1; j < len(lines) && j-i <= 8; j++ {
+		text, _ := splitLineEnding(lines[j])
+		if strings.Contains(text, "::type") {
+			return strings.Contains(text, ",")
+		}
+	}
+	return false
+}
+
+func updateCPlusPlusPreprocessorSkipStack(stack []bool, trimmed string) []bool {
+	directive := strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
+	fields := strings.Fields(directive)
+	if len(fields) == 0 {
+		return stack
+	}
+	switch fields[0] {
+	case "if", "ifdef", "ifndef":
+		stack = append(stack, cPlusPlusPreprocessorDirectiveSkipsBlock(trimmed))
+	case "elif", "else":
+		if len(stack) > 0 {
+			stack[len(stack)-1] = !stack[len(stack)-1]
+		}
+	case "endif":
+		if len(stack) > 0 {
+			stack = stack[:len(stack)-1]
+		}
+	}
+	return stack
+}
+
+func cPlusPlusPreprocessorDirectiveSkipsBlock(trimmed string) bool {
+	directive := strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
+	fields := strings.Fields(directive)
+	return (len(fields) >= 2 && fields[0] == "if" && fields[1] == "0") ||
+		strings.Contains(trimmed, "__cpp_lib_ranges")
+}
+
+var (
+	cPlusPlusAnnotationMacroPattern                        = regexp.MustCompile(`\b(?:FMT_(?:API|FUNC|EXPORT|INLINE(?:_VARIABLE)?|CONSTEXPR(?:20|_STRING)?|CONSTEVAL|ALWAYS_INLINE|NODISCARD|NORETURN|DEPRECATED|MAYBE_UNUSED|NO_UNIQUE_ADDRESS|LIFETIMEBOUND|BUILTIN)|JSON_(?:HEDLEY_[A-Z0-9_]+|EXPLICIT|INLINE_VARIABLE)|DOCTEST_(?:INTERFACE(?:_DECL|_DEF)?|CONSTEXPR(?:_FUNC)?|NOEXCEPT|INLINE|NOINLINE|NORETURN|THREAD_LOCAL|ATTRIBUTE_[A-Z0-9_]+)|GTEST_API_|GMOCK_API_|GTEST_NO_INLINE_|GTEST_MUST_USE_RESULT_|GTEST_INTERNAL_EMPTY_BASE_CLASS|GTEST_ATTRIBUTE_NO_SANITIZE_[A-Z_]+|ATTRIBUTE_TARGET_[A-Z0-9_]+|ATTRIBUTE_NO_SANITIZE_[A-Z0-9_]+|NO_SANITIZE_[A-Z0-9_]+|__stdcall|CALLBACK|WINAPI)\b`)
+	cPlusPlusAnnotationFunctionLikeMacroPattern            = regexp.MustCompile(`\b(?:GTEST_API_|GMOCK_API_|GTEST_DISABLE_MSC_WARNINGS_PUSH_|GTEST_DISABLE_MSC_WARNINGS_POP_|GTEST_ATTRIBUTE_[A-Za-z0-9_]+|GTEST_INTERNAL_DEPRECATED|GTEST_LOCK_EXCLUDED_|GTEST_EXCLUSIVE_LOCK_REQUIRED_|DOCTEST_MSVC_SUPPRESS_WARNING|DOCTEST_CLANG_SUPPRESS_WARNING|DOCTEST_GCC_SUPPRESS_WARNING|__attribute__)\s*\(`)
+	cPlusPlusTestMacroPattern                              = regexp.MustCompile(`^(\s*)(?:TEST|TEST_F|TEST_P|TYPED_TEST|TYPED_TEST_P|MATCHER|TEST_CASE(?:_[A-Z0-9_]+)*|TEMPLATE_TEST_CASE(?:_[A-Z0-9_]+)*|SCENARIO|GIVEN|WHEN|THEN)\s*\(`)
+	cPlusPlusDoctestControlMacroPattern                    = regexp.MustCompile(`^(\s*)(?:SECTION|SUBCASE|AND_WHEN|AND_THEN)\s*\(.*\)\s*`)
+	cPlusPlusStatementMacroLinePattern                     = regexp.MustCompile(`^(?:CAPTURE|INFO|WARN|FAIL|SUCCEED|ADD_FAILURE(?:_AT)?|EXPECT(?:_[A-Z0-9_]+)?|ASSERT(?:_[A-Z0-9_]+)?|CHECK(?:_[A-Z0-9_]+)?|REQUIRE(?:_[A-Z0-9_]+)?|STATIC_REQUIRE(?:_[A-Z0-9_]+)?|JSON_(?:ASSERT|THROW|DIAGNOSTIC_IGNORE)|GTEST_(?:DEFINE|DISABLE|ALLOW|SUPPRESS)[A-Za-z0-9_]*|GMOCK_[A-Za-z0-9_]+)\s*\(`)
+	cPlusPlusStatementReplacementMacroLinePattern          = regexp.MustCompile(`^(?:CAPTURE|INFO|WARN|FAIL|SUCCEED|ADD_FAILURE(?:_AT)?|EXPECT(?:_[A-Z0-9_]+)?|ASSERT(?:_[A-Z0-9_]+)?|CHECK(?:_[A-Z0-9_]+)?|REQUIRE(?:_[A-Z0-9_]+)?|STATIC_REQUIRE(?:_[A-Z0-9_]+)?|JSON_(?:ASSERT|THROW|DIAGNOSTIC_IGNORE))\s*\(`)
+	cPlusPlusHedleyFunctionLikeMacroPattern                = regexp.MustCompile(`\bJSON_HEDLEY_[A-Z0-9_]+\s*\(`)
+	cPlusPlusDependentTemplatePattern                      = regexp.MustCompile(`(\.|->)template\s+([A-Za-z_][A-Za-z0-9_]*)`)
+	cPlusPlusMemberOperatorPattern                         = regexp.MustCompile(`(\.|->)operator\s*(?:\[\]|\(\)|[+\-*/<>=!&|^%,]+)`)
+	cPlusPlusOperatorCallPattern                           = regexp.MustCompile(`(?:::)?operator\s*(?:<<|>>|\[\]|\(\)|[+\-*/<>=!&|^%,]+)\s*\(`)
+	cPlusPlusDependentTypenameTemporaryPattern             = regexp.MustCompile(`=\s*typename\s+[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+\s*\{\}`)
+	cPlusPlusDependentTypenameParenPattern                 = regexp.MustCompile(`=\s*typename\s+[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+\s*\(`)
+	cPlusPlusDependentTypenameConstructorPattern           = regexp.MustCompile(`\btypename\s+[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+\s*\(`)
+	cPlusPlusArrayReferenceTemplateDefaultPattern          = regexp.MustCompile(`typename\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*[A-Za-z_][A-Za-z0-9_]*\s*\(\s*&\s*\)\s*\[[^\]\n]+\]`)
+	cPlusPlusPointerTemplateDefaultPattern                 = regexp.MustCompile(`typename\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:const\s+)?[A-Za-z_][A-Za-z0-9_:]*\s*\*`)
+	cPlusPlusCommentedPointerParamPattern                  = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_:]*\s*\*\s*/\*[^*\n]*\*/`)
+	cPlusPlusMemberPointerDeclPattern                      = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_:]*\s*\(\s*[A-Za-z_][A-Za-z0-9_:]*::\*[A-Za-z_][A-Za-z0-9_]*\s*\)\s*\(`)
+	cPlusPlusMemberPointerFieldPattern                     = regexp.MustCompile(`(?:const\s+)?[A-Za-z_][A-Za-z0-9_:<>]*\s+[A-Za-z_][A-Za-z0-9_:<>]*::\*[A-Za-z_][A-Za-z0-9_]*`)
+	cPlusPlusMemberFunctionPointerTemplateArgPattern       = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_:<>]*\s+\([A-Za-z_][A-Za-z0-9_:<>]*::\*\)\(\)\s*const`)
+	cPlusPlusEmptyBraceDefaultPattern                      = regexp.MustCompile(`=\s*\{\}`)
+	cPlusPlusTemplatePointerDefaultPattern                 = regexp.MustCompile(`>\s*\*\s*=\s*nullptr\s*>`)
+	cPlusPlusEnableIfPointerDefaultPattern                 = regexp.MustCompile(`typename[ \t]+(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_]*enable_if[^;\n]*::type[ \t]*\*[ \t]*=`)
+	cPlusPlusEnableIfTypePointerTemplateDefaultLinePattern = regexp.MustCompile(`::type[ \t]*\*[ \t]*=[ \t]*nullptr>`)
+	cPlusPlusEnableIfTypePointerParamLinePattern           = regexp.MustCompile(`::type[ \t]*\*[ \t]*$`)
+	cPlusPlusUnsignedCastPattern                           = regexp.MustCompile(`\bunsigned\(([^)\n]+)\)`)
+	cPlusPlusAnonymousEnumPattern                          = regexp.MustCompile(`\benum\s*:\s*[A-Za-z_][A-Za-z0-9_:]*\b`)
+	cPlusPlusExplicitOperatorCallPattern                   = regexp.MustCompile(`operator\(\)<[^>\n]+>\(`)
+	cPlusPlusConversionOperatorDeclPattern                 = regexp.MustCompile(`operator\s+[A-Za-z_][A-Za-z0-9_:<>]*\s*\(\s*\)`)
+	cPlusPlusStdIntegralConstantBoolExpressionLinePattern  = regexp.MustCompile(`^template<[^>]+>\s*struct\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*std::integral_constant\s*<\s*bool\s*,[^>]+>\s*\{\s*\};?$`)
+	cPlusPlusBoolConstantCallPattern                       = regexp.MustCompile(`bool_constant<[A-Za-z_][A-Za-z0-9_:<>]*\(\)>`)
+	cPlusPlusBoolConstantCallLinePattern                   = regexp.MustCompile(`^template<[^>]+>\s*struct\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*bool_constant<[A-Za-z_][A-Za-z0-9_:<>]*\(\)>\s*\{\s*\};?$`)
+	cPlusPlusGTestPointerTemplateDefaultPattern            = regexp.MustCompile(`typename\s+R\s*,\s*R\s*\*\s*=\s*nullptr`)
+	cPlusPlusMemberPointerDecltypePattern                  = regexp.MustCompile(`decltype\s*\(\s*\([^;\n]*->\*[^;\n]*\)\s*\(\s*\)\s*\)`)
+	cPlusPlusDirectInitializerTernaryPattern               = regexp.MustCompile(`^\s*(?:const\s+)?[A-Za-z_][A-Za-z0-9_:<>]*\s*&\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^;\n]*\?\s*[^;\n]*:\s*$`)
+	cPlusPlusNoArgGTestMacroLinePattern                    = regexp.MustCompile(`^GTEST_[A-Z0-9_]+_\(\)\s*;?\s*(?://.*)?$`)
+)
+
+func maskCPlusPlusAnnotationMacros(text string) string {
+	return cPlusPlusAnnotationMacroPattern.ReplaceAllStringFunc(text, func(match string) string {
+		return strings.Repeat(" ", len(match))
+	})
+}
+
+func cPlusPlusBlankMacroLine(trimmed string) bool {
+	switch {
+	case strings.HasPrefix(trimmed, "MOCK_METHOD("):
+		return true
+	case strings.HasPrefix(trimmed, "GMOCK_DECLARE_KIND_("):
+		return true
+	case strings.HasPrefix(trimmed, "GTEST_COMPILE_ASSERT_("):
+		return true
+	case strings.HasPrefix(trimmed, "GTEST_DISALLOW_COPY_AND_ASSIGN_("):
+		return true
+	case strings.HasPrefix(trimmed, "GTEST_REPEATER_METHOD_("):
+		return true
+	case strings.HasPrefix(trimmed, "GTEST_REVERSE_REPEATER_METHOD_("):
+		return true
+	case strings.HasPrefix(trimmed, "GTEST_IMPL_FORMAT_C_STRING_AS_POINTER_("):
+		return true
+	case strings.HasPrefix(trimmed, "GTEST_IMPL_FORMAT_C_STRING_AS_STRING_("):
+		return true
+	case strings.HasPrefix(trimmed, "GTEST_IMPL_CMP_HELPER_("):
+		return true
+	case strings.HasPrefix(trimmed, "VISIT_TYPE("):
+		return true
+	case strings.HasPrefix(trimmed, "SPECIALIZE_MAKE_SIGNED("):
+		return true
+	case strings.HasPrefix(trimmed, "FMT_TYPE_CONSTANT("):
+		return true
+	case strings.HasPrefix(trimmed, "FMT_FORMAT_AS("):
+		return true
+	case strings.HasPrefix(trimmed, "NLOHMANN_DEFINE_"):
+		return true
+	case strings.HasPrefix(trimmed, "JSON_IMPLEMENT_OPERATOR("):
+		return true
+	case strings.HasPrefix(trimmed, "DOCTEST_"):
+		return true
+	case strings.HasPrefix(trimmed, "BENCHMARK_CAPTURE("):
+		return true
+	case strings.HasPrefix(trimmed, "SETUP_TESTCASES("):
+		return true
+	case cPlusPlusStatementMacroLinePattern.MatchString(trimmed):
+		return true
+	case cPlusPlusNoArgGTestMacroLinePattern.MatchString(trimmed):
+		return true
+	default:
+		return false
+	}
+}
+
+func cPlusPlusMultilineBlankMacroStart(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "NLOHMANN_JSON_SERIALIZE_ENUM") ||
+		strings.HasPrefix(trimmed, "TEST_CASE_TEMPLATE_INVOKE") ||
+		strings.HasPrefix(trimmed, "JSON_IMPLEMENT_OPERATOR") ||
+		strings.HasPrefix(trimmed, "GTEST_DEFINE_") ||
+		strings.HasPrefix(trimmed, "GMOCK_DEFINE_") ||
+		strings.HasPrefix(trimmed, "GTEST_COMPILE_ASSERT_") ||
+		cPlusPlusStatementMacroLinePattern.MatchString(trimmed)
+}
+
+func cPlusPlusMultilineAnnotationMacroStart(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "GTEST_INTERNAL_DEPRECATED(") ||
+		(strings.HasPrefix(trimmed, "GTEST_ATTRIBUTE_") && strings.Contains(trimmed, "("))
+}
+
+func cPlusPlusNextNonEmptyLineStarts(lines []string, start int, prefix string) bool {
+	for i := start; i < len(lines); i++ {
+		text, _ := splitLineEnding(lines[i])
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" {
+			continue
+		}
+		return strings.HasPrefix(trimmed, prefix)
+	}
+	return false
+}
+
+func cPlusPlusMultilineTestMacroStart(trimmed string) bool {
+	return (strings.HasPrefix(trimmed, "TEST_CASE_TEMPLATE") && !strings.HasPrefix(trimmed, "TEST_CASE_TEMPLATE_INVOKE")) ||
+		strings.HasPrefix(trimmed, "TEMPLATE_TEST_CASE")
+}
+
+func cPlusPlusMultilineControlMacroStart(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "SECTION(") ||
+		strings.HasPrefix(trimmed, "SUBCASE(")
+}
+
+func maskCPlusPlusStreamingMacroContinuations(lines []string, i int) int {
+	for i+1 < len(lines) {
+		text, newline := splitLineEnding(lines[i+1])
+		trimmed := strings.TrimSpace(text)
+		if !strings.HasPrefix(trimmed, "<<") && !strings.HasPrefix(trimmed, ".") {
+			return i
+		}
+		i++
+		lines[i] = maskLineText(text) + newline
+		if strings.Contains(text, ";") {
+			return i
+		}
+	}
+	return i
+}
+
+func maskCPlusPlusTestMacroDefinition(text string) (string, bool) {
+	match := cPlusPlusTestMacroPattern.FindString(text)
+	if match == "" {
+		return "", false
+	}
+	open := strings.LastIndex(match, "(")
+	if open < 0 {
+		return "", false
+	}
+	end := balancedCallEnd(text, open)
+	if end < 0 {
+		return "", false
+	}
+	brace := strings.Index(text[end:], "{")
+	if brace < 0 {
+		return paddedReplacement(leadingWhitespace(text), "void test_macro();", len(text)), true
+	}
+	brace += end
+	replacement := paddedReplacement(leadingWhitespace(text), "void test_macro() ", brace)
+	return replacement + text[brace:], true
+}
+
+func maskCPlusPlusDoctestControlMacro(text string) (string, bool) {
+	match := cPlusPlusDoctestControlMacroPattern.FindString(text)
+	if match == "" {
+		return "", false
+	}
+	brace := strings.Index(text[len(match):], "{")
+	if brace < 0 {
+		return paddedReplacement(leadingWhitespace(text), "if (true)", len(text)), true
+	}
+	brace += len(match)
+	replacement := paddedReplacement(leadingWhitespace(text), "if (true) ", brace)
+	return replacement + text[brace:], true
+}
+
+func maskCPlusPlusFunctionLikeMacro(text, name, replacement string) string {
+	for {
+		start := strings.Index(text, name+"(")
+		if start < 0 {
+			return text
+		}
+		end := balancedCallEnd(text, start+len(name))
+		if end < 0 {
+			return text
+		}
+		text = text[:start] + sameLengthReplacement(replacement, end-start) + text[end:]
+	}
+}
+
+func maskCPlusPlusLikelyMacro(text, name string) string {
+	for {
+		start := strings.Index(text, name+"(")
+		if start < 0 {
+			return text
+		}
+		open := start + len(name)
+		end := balancedCallEnd(text, open)
+		if end < 0 {
+			return text
+		}
+		inner := text[open+1 : end-1]
+		text = text[:start] + sameLengthReplacement(inner, end-start) + text[end:]
+	}
+}
+
+func maskCPlusPlusTrailingDecltypeReturn(text string) string {
+	for {
+		start := strings.Index(text, "-> decltype(")
+		if start < 0 {
+			return text
+		}
+		open := start + len("-> decltype")
+		end := balancedCallEnd(text, open)
+		if end < 0 {
+			return text
+		}
+		text = text[:start] + sameLengthReplacement("-> void", end-start) + text[end:]
+	}
+}
+
+func maskCPlusPlusTemplateDecltypeExpressions(text string) string {
+	searchFrom := 0
+	for {
+		relativeStart := strings.Index(text[searchFrom:], "decltype(")
+		if relativeStart < 0 {
+			return text
+		}
+		start := searchFrom + relativeStart
+		lineStart := strings.LastIndexByte(text[:start], '\n') + 1
+		prefix := text[lineStart:start]
+		if !cPlusPlusTemplateDecltypeContext(prefix) {
+			searchFrom = start + len("decltype(")
+			continue
+		}
+		open := start + len("decltype")
+		end := balancedCallEnd(text, open)
+		if end < 0 {
+			return text
+		}
+		text = text[:start] + sameLengthReplacementPreserveNewlines("void", text[start:end]) + text[end:]
+		searchFrom = start + len("void")
+	}
+}
+
+func cPlusPlusTemplateDecltypeContext(prefix string) bool {
+	return strings.Contains(prefix, "<") &&
+		(strings.Contains(prefix, "void_t<") ||
+			strings.Contains(prefix, ",") ||
+			strings.Contains(prefix, "std::is_") ||
+			strings.Contains(prefix, "struct ") ||
+			strings.Contains(prefix, "using "))
+}
+
+func maskCPlusPlusCatchMacro(text, name string) (string, bool) {
+	start := strings.Index(text, name)
+	if start < 0 {
+		return "", false
+	}
+	open := strings.Index(text[start+len(name):], "(")
+	if open < 0 {
+		return "", false
+	}
+	open += start + len(name)
+	end := balancedCallEnd(text, open)
+	if end < 0 {
+		return "", false
+	}
+	return text[:start] + sameLengthReplacement("catch(...)", end-start) + text[end:], true
+}
+
+func maskCPlusPlusFunctionLikeMacroPattern(text string, pattern *regexp.Regexp, replacement string) string {
+	for {
+		location := pattern.FindStringIndex(text)
+		if location == nil {
+			return text
+		}
+		open := strings.LastIndex(text[location[0]:location[1]], "(")
+		if open < 0 {
+			return text
+		}
+		start := location[0]
+		end := balancedCallEnd(text, location[0]+open)
+		if end < 0 {
+			return text
+		}
+		text = text[:start] + sameLengthReplacement(replacement, end-start) + text[end:]
+	}
+}
+
+func maskCPlusPlusDependentTemplateKeyword(text string) string {
+	return cPlusPlusDependentTemplatePattern.ReplaceAllStringFunc(text, func(match string) string {
+		parts := cPlusPlusDependentTemplatePattern.FindStringSubmatch(match)
+		if len(parts) != 3 {
+			return match
+		}
+		return sameLengthReplacement(parts[1]+parts[2], len(match))
+	})
+}
+
+func maskCPlusPlusMemberOperatorCall(text string) string {
+	return cPlusPlusMemberOperatorPattern.ReplaceAllStringFunc(text, func(match string) string {
+		if strings.HasPrefix(match, "->") {
+			return sameLengthReplacement("->op", len(match))
+		}
+		return sameLengthReplacement(".op", len(match))
+	})
+}
+
+func maskCPlusPlusOperatorCall(text string) string {
+	return cPlusPlusOperatorCallPattern.ReplaceAllStringFunc(text, func(match string) string {
+		if strings.HasPrefix(match, "::") {
+			return sameLengthReplacement("::op(", len(match))
+		}
+		return sameLengthReplacement("op(", len(match))
+	})
+}
+
+func maskCPlusPlusUnsignedFunctionalCast(text string) string {
+	return cPlusPlusUnsignedCastPattern.ReplaceAllString(text, "uint32_t($1)")
+}
+
+func maskCPlusPlusEmptyDefaultInitializers(text string) string {
+	text = replaceAllSameLength(text, "locale_ref loc = {}", "locale_ref loc = loc")
+	text = replaceAllSameLength(text, "locale_ref = {}", "locale_ref = loc")
+	text = replaceAllSameLength(text, "format_specs = {}", "format_specs = s")
+	text = replaceAllSameLength(text, "const format_specs& specs = {}", "const format_specs& specs = s")
+	text = replaceAllSameLength(text, "const format_specs& = {}", "const format_specs& = s")
+	return text
+}
+
+func replaceAllSameLength(text, old, replacement string) string {
+	return strings.ReplaceAll(text, old, sameLengthReplacement(replacement, len(old)))
+}
+
+func replacePatternSameLength(text string, pattern *regexp.Regexp, replacement string) string {
+	return pattern.ReplaceAllStringFunc(text, func(match string) string {
+		return sameLengthReplacement(replacement, len(match))
+	})
+}
+
+func sameLengthReplacement(replacement string, length int) string {
+	if len(replacement) >= length {
+		return replacement[:length]
+	}
+	return replacement + strings.Repeat(" ", length-len(replacement))
+}
+
+func sameLengthReplacementPreserveNewlines(replacement, original string) string {
+	var b strings.Builder
+	b.Grow(len(original))
+	replacementOffset := 0
+	for i := 0; i < len(original); i++ {
+		if original[i] == '\n' {
+			b.WriteByte('\n')
+			continue
+		}
+		if replacementOffset < len(replacement) {
+			b.WriteByte(replacement[replacementOffset])
+			replacementOffset++
+		} else {
+			b.WriteByte(' ')
+		}
+	}
+	return b.String()
+}
+
+func balancedCallEnd(text string, open int) int {
+	if open >= len(text) || text[open] != '(' {
+		return -1
+	}
+	depth := 0
+	for i := open; i < len(text); i++ {
+		switch text[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return -1
+}
+
+func leadingWhitespace(text string) string {
+	return text[:len(text)-len(strings.TrimLeft(text, " \t"))]
+}
+
+func paddedReplacement(indent, replacement string, width int) string {
+	out := indent + replacement
+	if len(out) >= width {
+		return out[:width]
+	}
+	return out + strings.Repeat(" ", width-len(out))
+}
+
+func typeScriptGenericCallSignatureStarts(trimmed string) bool {
+	return trimmed == "<" || (strings.HasPrefix(trimmed, "<") && strings.HasSuffix(trimmed, "("))
+}
+
+func typeScriptGenericCallSignatureReturnStarts(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "):") || strings.HasPrefix(trimmed, ") =>")
+}
+
+func typeScriptGenericCallSignatureEnds(trimmed string, inReturn bool) bool {
+	if trimmed == "" {
+		return true
+	}
+	if inReturn && trimmed == ">" {
+		return true
+	}
+	if strings.HasSuffix(trimmed, "<") || strings.HasSuffix(trimmed, ",") {
+		return false
+	}
+	if strings.HasPrefix(trimmed, "):") {
+		return !strings.HasSuffix(trimmed, "(") && !strings.HasSuffix(trimmed, "<")
+	}
+	return strings.HasPrefix(trimmed, ") =>") && !strings.HasSuffix(trimmed, "<")
+}
+
+func maskLineText(text string) string {
+	return strings.Repeat(" ", len(text))
 }
 
 func Supported(path string) bool {
@@ -157,16 +2254,588 @@ func Supported(path string) bool {
 	return ok
 }
 
-func languageForPath(path string) (languageSpec, bool) {
-	spec, ok := treeSitterLanguages[strings.ToLower(filepath.Ext(path))]
-	return spec, ok
+func looksLikeFluxKustomizationManifest(content string) bool {
+	return regexp.MustCompile(`(?m)^apiVersion:\s*kustomize\.toolkit\.fluxcd\.io/`).MatchString(content) &&
+		regexp.MustCompile(`(?m)^kind:\s*Kustomization\s*$`).MatchString(content)
 }
 
-func walkEntities(node *sitter.Node, src []byte, scope string, entities *[]Entity) {
+func looksLikeObjectiveC(content string) bool {
+	return regexp.MustCompile(`(?m)^\s*@(?:interface|implementation|protocol|class|end)\b`).MatchString(content) ||
+		regexp.MustCompile(`(?m)^\s*#import\s+[<"]`).MatchString(content)
+}
+
+func looksLikeCPlusPlusHeader(content string) bool {
+	return regexp.MustCompile(`(?m)^\s*(namespace|template\s*<|class\s+\w|struct\s+\w+\s*:|using\s+\w+\s*=|(?:inline\s+)?auto\s+\w+\s*\()`).MatchString(content) ||
+		strings.Contains(content, "std::") ||
+		strings.Contains(content, "extern \"C\"") ||
+		strings.Contains(content, "::")
+}
+
+func languageForPath(path string) (languageSpec, bool) {
+	base := strings.ToLower(filepath.Base(path))
+	if base == "dockerfile" || strings.HasPrefix(base, "dockerfile.") {
+		return languageSpec{language: "Dockerfile"}, true
+	}
+	if base == "makefile" || strings.HasPrefix(base, "makefile.") || base == "gnumakefile" {
+		return languageSpec{language: "Make"}, true
+	}
+	if base == "kustomization.yaml" || base == "kustomization.yml" || base == "kustomization" {
+		return languageSpec{language: "Kustomize"}, true
+	}
+	if spec, ok := inventoryLanguageForSuffix(base); ok {
+		return spec, true
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	if spec, ok := treeSitterLanguages[ext]; ok {
+		return spec, true
+	}
+	if spec, ok := inventoryLanguageExtensions[ext]; ok {
+		return spec, true
+	}
+	if spec, ok := inventoryLanguageFilenames[base]; ok {
+		return spec, true
+	}
+	return languageSpec{}, false
+}
+
+func inventoryLanguageForSuffix(base string) (languageSpec, bool) {
+	var suffixes []string
+	for suffix := range inventoryLanguageExtensions {
+		if strings.Count(suffix, ".") > 1 {
+			suffixes = append(suffixes, suffix)
+		}
+	}
+	sort.Slice(suffixes, func(i, j int) bool {
+		if len(suffixes[i]) == len(suffixes[j]) {
+			return suffixes[i] < suffixes[j]
+		}
+		return len(suffixes[i]) > len(suffixes[j])
+	})
+	for _, suffix := range suffixes {
+		if strings.HasSuffix(base, suffix) {
+			return inventoryLanguageExtensions[suffix], true
+		}
+	}
+	return languageSpec{}, false
+}
+
+func fallbackEntities(path, content, language string) []Entity {
+	switch language {
+	case "Dockerfile":
+		return dockerfileEntities(content)
+	case "Kustomize":
+		return kustomizeEntities(content)
+	case "JSON", "JSON5":
+		return jsonLikeEntities(content)
+	case "TOML":
+		return tomlEntities(content)
+	case "XML":
+		return xmlEntities(content)
+	case "Make":
+		return makeEntities(content)
+	case "Markdown":
+		return markdownEntities(content)
+	case "HTML":
+		return htmlEntities(path, content)
+	case "CSS":
+		return cssEntities(content)
+	case "GraphQL":
+		entities := inventoryEntities(path, content, language)
+		entities = append(entities, graphqlSchemaEntities(content)...)
+		return entities
+	case "Vue", "Svelte":
+		return componentEntities(path, content, language)
+	default:
+		return inventoryEntities(path, content, language)
+	}
+}
+
+func inventoryEntities(path, content, language string) []Entity {
+	lines := strings.Split(content, "\n")
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	if base == "" {
+		base = filepath.Base(path)
+	}
+	if base == "" {
+		base = strings.ToLower(language)
+	}
+	kind := "document"
+	signature := strings.ToLower(language) + " document " + base
+	return []Entity{simpleFallbackEntity(kind, base, signature, 1, maxInt(1, len(lines)), content)}
+}
+
+func dockerfileEntities(content string) []Entity {
+	lines := strings.Split(content, "\n")
+	var entities []Entity
+	stageIndex := 0
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) == 0 || !strings.EqualFold(fields[0], "FROM") {
+			continue
+		}
+		stageIndex++
+		name := fmt.Sprintf("stage%d", stageIndex)
+		for i := 2; i+1 < len(fields); i++ {
+			if strings.EqualFold(fields[i], "AS") {
+				name = fields[i+1]
+				break
+			}
+		}
+		startLine := index + 1
+		endLine := len(lines)
+		for j := index + 1; j < len(lines); j++ {
+			next := strings.TrimSpace(lines[j])
+			if len(strings.Fields(next)) > 0 && strings.EqualFold(strings.Fields(next)[0], "FROM") {
+				endLine = j
+				break
+			}
+		}
+		block := strings.Join(lines[startLine-1:endLine], "\n")
+		entities = append(entities, Entity{
+			Kind:        "stage",
+			Name:        name,
+			Signature:   normalize(trimmed),
+			StartLine:   startLine,
+			EndLine:     endLine,
+			BodyHash:    hash(normalize(block)),
+			Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: trimmed}, block))),
+		})
+	}
+	return entities
+}
+
+func kustomizeEntities(content string) []Entity {
+	return yamlKeyEntities(content, "kustomize")
+}
+
+func yamlKeyEntities(content, prefix string) []Entity {
+	lines := strings.Split(content, "\n")
+	keyRe := regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_-]*):`)
+	var entities []Entity
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		match := keyRe.FindStringSubmatch(trimmed)
+		if match == nil {
+			continue
+		}
+		name := match[1]
+		entities = append(entities, simpleFallbackEntity("section", prefix+"/"+name, "section "+name, i+1, i+1, trimmed))
+	}
+	return entities
+}
+
+func jsonLikeEntities(content string) []Entity {
+	lines := strings.Split(content, "\n")
+	keyRe := regexp.MustCompile(`^\s*["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*:`)
+	var entities []Entity
+	seen := map[string]bool{}
+	for i, line := range lines {
+		match := keyRe.FindStringSubmatch(line)
+		if match == nil || seen[match[1]] {
+			continue
+		}
+		seen[match[1]] = true
+		entities = append(entities, simpleFallbackEntity("section", match[1], "json key "+match[1], i+1, i+1, strings.TrimSpace(line)))
+	}
+	return entities
+}
+
+func tomlEntities(content string) []Entity {
+	lines := strings.Split(content, "\n")
+	sectionRe := regexp.MustCompile(`^\s*\[+\s*([A-Za-z0-9_.-]+)\s*\]+`)
+	keyRe := regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*=`)
+	var entities []Entity
+	seen := map[string]bool{}
+	for i, line := range lines {
+		name := ""
+		kind := "section"
+		if match := sectionRe.FindStringSubmatch(line); match != nil {
+			name = match[1]
+		} else if match := keyRe.FindStringSubmatch(line); match != nil {
+			name = match[1]
+			kind = "setting"
+		}
+		if name == "" || seen[kind+"\x00"+name] {
+			continue
+		}
+		seen[kind+"\x00"+name] = true
+		entities = append(entities, simpleFallbackEntity(kind, name, kind+" "+name, i+1, i+1, strings.TrimSpace(line)))
+	}
+	return entities
+}
+
+func xmlEntities(content string) []Entity {
+	lines := strings.Split(content, "\n")
+	tagRe := regexp.MustCompile(`<\s*([A-Za-z_][A-Za-z0-9_.:-]*)\b`)
+	var entities []Entity
+	seen := map[string]bool{}
+	for i, line := range lines {
+		match := tagRe.FindStringSubmatch(line)
+		if match == nil || strings.HasPrefix(match[1], "?") || seen[match[1]] {
+			continue
+		}
+		seen[match[1]] = true
+		entities = append(entities, simpleFallbackEntity("element", match[1], "xml element "+match[1], i+1, i+1, strings.TrimSpace(line)))
+	}
+	return entities
+}
+
+func makeEntities(content string) []Entity {
+	lines := strings.Split(content, "\n")
+	targetRe := regexp.MustCompile(`^([A-Za-z0-9_.%/-]+)\s*:`)
+	var entities []Entity
+	for i, line := range lines {
+		if strings.HasPrefix(line, "\t") || strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		match := targetRe.FindStringSubmatch(line)
+		if match == nil || strings.Contains(match[1], "=") {
+			continue
+		}
+		entities = append(entities, simpleFallbackEntity("target", match[1], "make target "+match[1], i+1, i+1, strings.TrimSpace(line)))
+	}
+	return entities
+}
+
+func markdownEntities(content string) []Entity {
+	lines := strings.Split(content, "\n")
+	headingRe := regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
+	fenceRe := regexp.MustCompile("^```\\s*([A-Za-z0-9_+-]*)")
+	var entities []Entity
+	fenceIndex := 0
+	for i, line := range lines {
+		if match := headingRe.FindStringSubmatch(line); match != nil {
+			name := strings.TrimSpace(strings.Trim(match[2], "#"))
+			entities = append(entities, simpleFallbackEntity("section", slugName(name), "markdown heading "+name, i+1, i+1, strings.TrimSpace(line)))
+			continue
+		}
+		if match := fenceRe.FindStringSubmatch(line); match != nil {
+			fenceIndex++
+			lang := match[1]
+			if lang == "" {
+				lang = "text"
+			}
+			name := fmt.Sprintf("code_fence_%d_%s", fenceIndex, lang)
+			entities = append(entities, simpleFallbackEntity("code_fence", name, "markdown code fence "+lang, i+1, i+1, strings.TrimSpace(line)))
+		}
+	}
+	return entities
+}
+
+func htmlEntities(path, content string) []Entity {
+	lines := strings.Split(content, "\n")
+	idRe := regexp.MustCompile(`\bid\s*=\s*["']([^"']+)["']`)
+	var entities []Entity
+	seen := map[string]bool{}
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	entities = append(entities, simpleFallbackEntity("document", base, "html document "+base, 1, maxInt(1, len(lines)), base))
+	for i, line := range lines {
+		for _, match := range idRe.FindAllStringSubmatch(line, -1) {
+			name := slugName(match[1])
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			entities = append(entities, simpleFallbackEntity("element", name, "html id "+match[1], i+1, i+1, strings.TrimSpace(line)))
+		}
+	}
+	return entities
+}
+
+func cssEntities(content string) []Entity {
+	lines := strings.Split(content, "\n")
+	selectorRe := regexp.MustCompile(`^\s*([.#]?[A-Za-z_][A-Za-z0-9_-]*)\s*\{`)
+	var entities []Entity
+	for i, line := range lines {
+		match := selectorRe.FindStringSubmatch(line)
+		if match == nil {
+			continue
+		}
+		name := strings.TrimPrefix(strings.TrimPrefix(match[1], "."), "#")
+		entities = append(entities, simpleFallbackEntity("selector", name, "css selector "+match[1], i+1, i+1, strings.TrimSpace(line)))
+	}
+	return entities
+}
+
+func componentEntities(path, content, language string) []Entity {
+	lines := strings.Split(content, "\n")
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	entities := []Entity{simpleFallbackEntity("component", base, language+" component "+base, 1, maxInt(1, len(lines)), base)}
+	if language == "Vue" {
+		entities = append(entities, htmlEntities(path, content)...)
+	}
+	return entities
+}
+
+var (
+	cFamilyTypeLineRe     = regexp.MustCompile(`^\s*(?:typedef\s+)?(struct|union|enum|class)\s+([A-Za-z_][A-Za-z0-9_]*)\b`)
+	cFamilyTypedefNameRe  = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\])?\s*$`)
+	cFamilyFunctionNameRe = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*\([^;{}]*\)\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*)*$`)
+)
+
+var cFamilyNonFunctionNames = map[string]bool{
+	"alignof": true,
+	"catch":   true,
+	"do":      true,
+	"for":     true,
+	"if":      true,
+	"return":  true,
+	"sizeof":  true,
+	"switch":  true,
+	"typeof":  true,
+	"while":   true,
+}
+
+func fastCFamilyEntities(path, content, language string) []Entity {
+	_ = path
+	_ = language
+	stripped := stripCodeLiteralsAndComments(content)
+	lines := strings.Split(stripped, "\n")
+	originalLines := strings.Split(content, "\n")
+	var entities []Entity
+	entities = append(entities, fastCFamilyTypeEntities(lines, originalLines)...)
+	entities = append(entities, fastCFamilyFunctionEntities(lines, originalLines)...)
+	sort.Slice(entities, func(i, j int) bool {
+		if entities[i].StartLine == entities[j].StartLine {
+			if entities[i].Kind == entities[j].Kind {
+				return entities[i].Name < entities[j].Name
+			}
+			return entities[i].Kind < entities[j].Kind
+		}
+		return entities[i].StartLine < entities[j].StartLine
+	})
+	return entities
+}
+
+func fastCFamilyTypeEntities(lines, originalLines []string) []Entity {
+	var entities []Entity
+	seen := map[string]bool{}
+	depth := 0
+	for i := 0; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if depth != 0 || trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			depth += braceDelta(lines[i])
+			if depth < 0 {
+				depth = 0
+			}
+			continue
+		}
+		for _, match := range cFamilyTypeLineRe.FindAllStringSubmatch(trimmed, -1) {
+			kind := match[1]
+			name := match[2]
+			key := kind + "\x00" + name + "\x00" + fmt.Sprint(i+1)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			end := fastCFamilyStatementEnd(lines, i)
+			entities = append(entities, fastCFamilyEntity(kind, name, i+1, end, originalLines))
+		}
+		if !strings.HasPrefix(trimmed, "typedef ") {
+			continue
+		}
+		end := fastCFamilyStatementEnd(lines, i)
+		statement := strings.TrimSpace(strings.Join(lines[i:end], " "))
+		statement = strings.TrimSuffix(statement, ";")
+		if match := cFamilyTypedefNameRe.FindStringSubmatch(statement); match != nil {
+			name := match[1]
+			key := "type\x00" + name + "\x00" + fmt.Sprint(i+1)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			entities = append(entities, fastCFamilyEntity("type", name, i+1, end, originalLines))
+		}
+		depth += braceDelta(lines[i])
+		if depth < 0 {
+			depth = 0
+		}
+	}
+	return entities
+}
+
+func fastCFamilyFunctionEntities(lines, originalLines []string) []Entity {
+	var entities []Entity
+	depth := 0
+	pendingStart := -1
+	pending := ""
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		if depth != 0 {
+			depth += braceDelta(line)
+			if depth < 0 {
+				depth = 0
+			}
+			continue
+		}
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			pending = ""
+			pendingStart = -1
+			continue
+		}
+		if pendingStart < 0 {
+			pendingStart = i
+		}
+		pending = strings.TrimSpace(pending + " " + trimmed)
+		if brace := strings.IndexByte(line, '{'); brace >= 0 {
+			signature := strings.TrimSpace(pending)
+			if idx := strings.IndexByte(signature, '{'); idx >= 0 {
+				signature = strings.TrimSpace(signature[:idx])
+			} else if braceText := strings.TrimSpace(line[brace:]); braceText != "" {
+				signature = strings.TrimSpace(strings.TrimSuffix(signature, braceText))
+			}
+			if name := fastCFamilyFunctionName(signature); name != "" {
+				end := fastCFamilyBraceEnd(lines, i)
+				entities = append(entities, fastCFamilyEntity("function", name, pendingStart+1, end, originalLines))
+				i = end - 1
+				pending = ""
+				pendingStart = -1
+				depth = 0
+				continue
+			}
+			depth += braceDelta(line)
+			pending = ""
+			pendingStart = -1
+			continue
+		}
+		if strings.Contains(line, ";") {
+			pending = ""
+			pendingStart = -1
+		}
+	}
+	return entities
+}
+
+func fastCFamilyFunctionName(signature string) string {
+	signature = strings.TrimSpace(signature)
+	if signature == "" || strings.Contains(signature, "=") {
+		return ""
+	}
+	match := cFamilyFunctionNameRe.FindStringSubmatch(signature)
+	if match == nil {
+		return ""
+	}
+	name := match[1]
+	if cFamilyNonFunctionNames[name] {
+		return ""
+	}
+	return name
+}
+
+func fastCFamilyStatementEnd(lines []string, start int) int {
+	depth := 0
+	for i := start; i < len(lines); i++ {
+		depth += braceDelta(lines[i])
+		if strings.Contains(lines[i], ";") && depth <= 0 {
+			return i + 1
+		}
+		if depth <= 0 && strings.Contains(lines[i], "}") {
+			return i + 1
+		}
+	}
+	return start + 1
+}
+
+func fastCFamilyBraceEnd(lines []string, start int) int {
+	depth := 0
+	for i := start; i < len(lines); i++ {
+		depth += braceDelta(lines[i])
+		if depth <= 0 && i > start {
+			return i + 1
+		}
+	}
+	return len(lines)
+}
+
+func braceDelta(line string) int {
+	delta := 0
+	for _, ch := range line {
+		switch ch {
+		case '{':
+			delta++
+		case '}':
+			delta--
+		}
+	}
+	return delta
+}
+
+func fastCFamilyEntity(kind, name string, startLine, endLine int, lines []string) Entity {
+	signature := ""
+	if startLine > 0 && startLine <= len(lines) {
+		signature = strings.TrimSpace(lines[startLine-1])
+	}
+	if signature == "" {
+		signature = kind + " " + name
+	}
+	return Entity{
+		Kind:        kind,
+		Name:        name,
+		Signature:   normalize(signature),
+		StartLine:   startLine,
+		EndLine:     maxInt(startLine, endLine),
+		BodyHash:    "",
+		Fingerprint: "",
+	}
+}
+
+func simpleFallbackEntity(kind, name, signature string, startLine, endLine int, block string) Entity {
+	name = slugName(name)
+	if name == "" {
+		name = kind
+	}
+	return Entity{
+		Kind:        kind,
+		Name:        name,
+		Signature:   normalize(signature),
+		StartLine:   startLine,
+		EndLine:     endLine,
+		BodyHash:    hash(normalize(block)),
+		Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+	}
+}
+
+func slugName(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.Trim(name, `"'`)
+	name = regexp.MustCompile(`[^A-Za-z0-9_.:/-]+`).ReplaceAllString(name, "-")
+	name = strings.Trim(name, "-")
+	return name
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func walkEntities(node *sitter.Node, src []byte, language, scope string, entities *[]Entity) {
 	if !validNode(node) {
 		return
 	}
-	entity, ok := entityFromNode(node, src, scope)
+	// Field/property declarations emit one entity per declared name and are not
+	// descended into (their name nodes would otherwise look like field accesses).
+	if fields, ok := fieldEntities(node, src, language, scope); ok {
+		*entities = append(*entities, fields...)
+		return
+	}
+	entity, ok := entityFromNode(node, src, language, scope)
 	childScope := scope
 	if ok {
 		*entities = append(*entities, entity)
@@ -175,17 +2844,273 @@ func walkEntities(node *sitter.Node, src []byte, scope string, entities *[]Entit
 		}
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		walkEntities(node.NamedChild(i), src, childScope, entities)
+		walkEntities(node.NamedChild(i), src, language, childScope, entities)
 	}
 }
 
-func entityFromNode(node *sitter.Node, src []byte, scope string) (Entity, bool) {
+// fieldEntities extracts struct/class field declarations as field symbols, one
+// per declared name, qualified under the containing type's scope. It returns
+// false for non-field nodes and for declarations outside a container (so local
+// variables and parameters are never treated as fields). This pass handles Go
+// struct fields (field_declaration -> field_identifier); TypeScript/Java/C#
+// fields are added later.
+func fieldEntities(node *sitter.Node, src []byte, language, scope string) ([]Entity, bool) {
+	if scope == "" {
+		return nil, false
+	}
+	if node.Type() == "field_declaration" && (language == "C" || language == "C++") {
+		return nil, false
+	}
+	switch node.Type() {
+	case "field_declaration", // Go/Rust/Java/C#/C/C++ struct & class fields
+		"public_field_definition", "field_definition", // TS/JS class fields
+		"property_signature",   // TS interface/type-literal fields
+		"property_declaration": // C# properties (mapped to the canonical field kind)
+	default:
+		return nil, false
+	}
+	typeText := fieldTypeText(node, src)
+	names := fieldDeclNames(node, src)
+	if len(names) == 0 {
+		// Embedded field (e.g. Go `io.Reader`) or an unsupported shape; the
+		// declaration extractor does not synthesize a name for these.
+		return nil, false
+	}
+	start := int(node.StartPoint().Row) + 1
+	end := int(node.EndPoint().Row) + 1
+	out := make([]Entity, 0, len(names))
+	for _, name := range names {
+		signature := name
+		if typeText != "" {
+			signature = name + " " + typeText
+		}
+		out = append(out, Entity{
+			Kind:        "field",
+			Name:        qualify(scope, name),
+			Signature:   signature,
+			StartLine:   start,
+			EndLine:     end,
+			BodyHash:    hash(typeText),
+			Fingerprint: hash(normalize(signature)),
+		})
+	}
+	return out, true
+}
+
+// fieldDeclNames extracts the declared member names from a field/property node
+// across languages: field_identifier (Go/Rust/C++), variable_declarator (Java)
+// or variable_declaration>variable_declarator (C#), and property_identifier /
+// name field (TypeScript, C# properties).
+func fieldDeclNames(node *sitter.Node, src []byte) []string {
+	switch node.Type() {
+	case "public_field_definition", "field_definition", "property_signature", "property_declaration":
+		if name := node.ChildByFieldName("name"); validNode(name) {
+			return []string{name.Content(src)}
+		}
+		if name := firstChildOfType(node, src, "property_identifier", "field_identifier"); name != "" {
+			return []string{name}
+		}
+		return nil
+	}
+	// field_declaration: collect every declared name.
+	var names []string
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		switch child.Type() {
+		case "field_identifier":
+			names = append(names, child.Content(src))
+		case "variable_declarator":
+			if name := variableDeclaratorName(child, src); name != "" {
+				names = append(names, name)
+			}
+		case "variable_declaration": // C# wraps declarators in variable_declaration
+			for j := 0; j < int(child.NamedChildCount()); j++ {
+				if decl := child.NamedChild(j); decl.Type() == "variable_declarator" {
+					if name := variableDeclaratorName(decl, src); name != "" {
+						names = append(names, name)
+					}
+				}
+			}
+		}
+	}
+	return names
+}
+
+func variableDeclaratorName(node *sitter.Node, src []byte) string {
+	if name := node.ChildByFieldName("name"); validNode(name) {
+		return name.Content(src)
+	}
+	return firstChildOfType(node, src, "identifier", "field_identifier")
+}
+
+func firstChildOfType(node *sitter.Node, src []byte, types ...string) string {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		for _, t := range types {
+			if child.Type() == t {
+				return child.Content(src)
+			}
+		}
+	}
+	return ""
+}
+
+// fieldTypeText returns the field's type text when the grammar exposes it,
+// best-effort (signature/type text is optional metadata).
+func fieldTypeText(node *sitter.Node, src []byte) string {
+	if typeNode := node.ChildByFieldName("type"); validNode(typeNode) {
+		return strings.TrimSpace(typeNode.Content(src))
+	}
+	// C# field_declaration nests the type under variable_declaration.
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		if child := node.NamedChild(i); child.Type() == "variable_declaration" {
+			if typeNode := child.ChildByFieldName("type"); validNode(typeNode) {
+				return strings.TrimSpace(typeNode.Content(src))
+			}
+		}
+	}
+	return ""
+}
+
+var kotlinClassDeclarationRe = regexp.MustCompile(`(?m)\b(?:data\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+var kotlinPrimaryConstructorPropertyRe = regexp.MustCompile(`\b(?:val|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^=]+)`)
+
+func kotlinPrimaryConstructorFieldEntities(content string) []Entity {
+	var entities []Entity
+	seen := map[string]bool{}
+	for _, loc := range kotlinClassDeclarationRe.FindAllStringSubmatchIndex(content, -1) {
+		if len(loc) < 4 {
+			continue
+		}
+		className := content[loc[2]:loc[3]]
+		open := strings.LastIndex(content[loc[0]:loc[1]], "(")
+		if open < 0 {
+			continue
+		}
+		open += loc[0]
+		close := matchingDelimiterOffset(content, open, '(', ')')
+		if close < 0 {
+			continue
+		}
+		params := content[open+1 : close]
+		for _, param := range splitTopLevelCommaSpans(params) {
+			text := strings.TrimSpace(param.Text)
+			match := kotlinPrimaryConstructorPropertyRe.FindStringSubmatch(text)
+			if match == nil {
+				continue
+			}
+			name := match[1]
+			typeText := strings.TrimSpace(match[2])
+			if idx := strings.Index(typeText, "="); idx >= 0 {
+				typeText = strings.TrimSpace(typeText[:idx])
+			}
+			typeText = strings.TrimSpace(strings.TrimRight(typeText, ","))
+			qualifiedName := qualify(className, name)
+			if seen[qualifiedName] {
+				continue
+			}
+			seen[qualifiedName] = true
+			start := open + 1 + param.Start
+			end := open + 1 + param.End
+			signature := name
+			if typeText != "" {
+				signature = name + " " + typeText
+			}
+			block := content[start:end]
+			entities = append(entities, Entity{
+				Kind:        "field",
+				Name:        qualifiedName,
+				Signature:   signature,
+				StartLine:   countLinesBefore(content, start) + 1,
+				EndLine:     countLinesBefore(content, end) + 1,
+				BodyHash:    hash(normalize(block)),
+				Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: qualifiedName, Signature: signature}, block))),
+			})
+		}
+	}
+	return entities
+}
+
+type commaSpan struct {
+	Text       string
+	Start, End int
+}
+
+func splitTopLevelCommaSpans(value string) []commaSpan {
+	var spans []commaSpan
+	start := 0
+	depth := 0
+	inString := byte(0)
+	escaped := false
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		if inString != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"', '`':
+			inString = ch
+		case '(', '[', '{', '<':
+			depth++
+		case ')', ']', '}', '>':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				spans = append(spans, commaSpan{Text: value[start:i], Start: start, End: i})
+				start = i + 1
+			}
+		}
+	}
+	if start <= len(value) {
+		spans = append(spans, commaSpan{Text: value[start:], Start: start, End: len(value)})
+	}
+	return spans
+}
+
+func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Entity, bool) {
 	var kind string
 	var name string
 	switch node.Type() {
-	case "class", "class_definition", "class_declaration", "class_specifier":
+	case "class", "class_definition", "class_declaration", "class_specifier", "mixin_declaration":
 		kind = "class"
 		name = nodeName(node, src)
+	case "method_signature", "getter_signature", "setter_signature":
+		// Dart class members (declaration head; body is a sibling node). Gated to
+		// Dart because `method_signature` also denotes TypeScript interface
+		// members, where extracting them as methods would change TS behavior.
+		if language != "Dart" {
+			return Entity{}, false
+		}
+		kind = "method"
+		name = nodeName(node, src)
+		if scope != "" {
+			name = qualify(scope, name)
+		}
+	case "function_signature":
+		// Dart top-level / local function declaration head. Gated to Dart because
+		// `function_signature` also denotes TypeScript ambient declarations.
+		if language != "Dart" {
+			return Entity{}, false
+		}
+		kind = "function"
+		name = nodeName(node, src)
+		if scope != "" {
+			kind = "method"
+			name = qualify(scope, name)
+		}
 	case "module_definition":
 		kind = "module"
 		name = nodeName(node, src)
@@ -310,10 +3235,13 @@ func entityFromNode(node *sitter.Node, src []byte, scope string) (Entity, bool) 
 		}
 	case "variable_declarator":
 		value := node.ChildByFieldName("value")
-		if !functionLikeValue(value) {
+		if functionLikeValue(value) {
+			kind = "function"
+		} else if isExportedTopLevelJSVariable(node, language) {
+			kind = "variable"
+		} else {
 			return Entity{}, false
 		}
-		kind = "function"
 		name = nodeName(node, src)
 	default:
 		return Entity{}, false
@@ -378,12 +3306,33 @@ var postgresWithOrdinalityPattern = regexp.MustCompile(`(?i)\s+with\s+ordinality
 var postgresOnDeleteUpdatePattern = regexp.MustCompile(`(?i)\s+on\s+(?:delete|update)\s+(?:cascade|restrict|set\s+null|set\s+default|no\s+action)\b`)
 var postgresVectorOperatorClassPattern = regexp.MustCompile(`(?i)\s+vector_[a-z0-9_]+_ops\b`)
 var postgresIndexMethodPattern = regexp.MustCompile(`(?i)\s+using\s+[a-z0-9_]+\b`)
-var postgresCreateFunctionPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?function\b.*?\bas\s+\$[a-z0-9_]*\$.*?\$[a-z0-9_]*\$(?:\s+language\b[^;]*)?;`)
+var postgresCreateFunctionPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:function|procedure)\b.*?\bas\s+\$[a-z0-9_]*\$.*?\$[a-z0-9_]*\$(?:\s+language\b[^;]*)?;`)
+var postgresCreateExternalFunctionPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:function|procedure)\b.*?\bas\s+'[^']+'(?:\s*,\s*'[^']+')?(?:\s+language\b[^;]*)?;`)
+var postgresCreateDomainCastPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:domain|cast)\b[^;]*;`)
+// Extension-template placeholders like @extschema@ / @extschema:cube@ in .sql.in
+// files are not valid SQL scalars; replace each with a same-width identifier so
+// the surrounding statement parses (e.g. `AS @extschema:cube@.cube`).
+var postgresExtschemaPlaceholderPattern = regexp.MustCompile(`@[A-Za-z_][A-Za-z0-9_:]*@`)
 var postgresDoBlockPattern = regexp.MustCompile(`(?is)\bdo\s+\$[a-z0-9_]*\$.*?\$[a-z0-9_]*\$;`)
 var postgresDropTriggerPattern = regexp.MustCompile(`(?is)\bdrop\s+trigger\b[^;]*;`)
 var postgresDropPolicyPattern = regexp.MustCompile(`(?is)\bdrop\s+policy\b[^;]*;`)
 var postgresRowLevelSecurityPattern = regexp.MustCompile(`(?is)\balter\s+table\b[^;]*\brow\s+level\s+security\s*;`)
 var postgresFunctionSetPattern = regexp.MustCompile(`(?im)^\s*set\s+search_path\s*=\s*[^;\n]+`)
+var postgresLoadPattern = regexp.MustCompile(`(?im)^\s*load\s+'[^']+'\s*;?`)
+var postgresInlinePsqlMetaCommandPattern = regexp.MustCompile(`(?im)\\(?:gset|gexec|gdesc|watch|if|elif|else|endif|quit|q)\b[^\n\r]*`)
+var postgresExtensionDDLPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:access\s+method|operator(?:\s+class|\s+family)?|type|aggregate|text\s+search\s+(?:configuration|dictionary|parser|template)|collation|statistics|transform)\b[^;]*;`)
+var postgresAlterExtensionPattern = regexp.MustCompile(`(?is)\balter\s+extension\b[^;]*;`)
+
+// PostgreSQL-specific statements the SQL grammar does not parse: the EXPLAIN
+// options parenthetical (`EXPLAIN (COSTS OFF, ...) <stmt>` — mask only the
+// option list so the inner statement still parses), ALTER OPERATOR FAMILY/CLASS,
+// and COMMENT ON for non-table objects (access method, operator, type, ...).
+var postgresExplainOptionsPattern = regexp.MustCompile(`(?i)\bexplain\s*\([^)]*\)`)
+var postgresAlterOperatorPattern = regexp.MustCompile(`(?is)\balter\s+operator\s+(?:family|class)\b[^;]*;`)
+var postgresAlterOperatorGenericPattern = regexp.MustCompile(`(?is)\balter\s+operator\s+[^\s(]+\s*\([^)]*\)[^;]*;`)
+var postgresForeignAndTriggerDDLPattern = regexp.MustCompile(`(?is)\b(?:create|alter|drop)\s+(?:foreign\s+data\s+wrapper|server|user\s+mapping|event\s+trigger|publication|subscription)\b[^;]*;`)
+var postgresAlterTextSearchPattern = regexp.MustCompile(`(?is)\balter\s+text\s+search\s+(?:configuration|dictionary|parser|template)\b[^;]*;`)
+var postgresCommentOnObjectPattern = regexp.MustCompile(`(?is)\bcomment\s+on\s+(?:access\s+method|operator(?:\s+(?:family|class))?|aggregate|type|domain|collation|text\s+search\s+\w+|transform|extension|cast|function|procedure|language|server|publication|subscription)\b[^;]*;`)
 
 func maskPostgresUnsupportedSyntax(content string) string {
 	masked := []byte(content)
@@ -420,6 +3369,9 @@ func maskPostgresUnsupportedSyntax(content string) string {
 	for _, loc := range postgresPsqlMetaCommandPattern.FindAllStringIndex(content, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
+	for _, loc := range postgresInlinePsqlMetaCommandPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
 	for _, loc := range postgresGeneratedColumnPattern.FindAllStringIndex(content, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
@@ -427,7 +3379,43 @@ func maskPostgresUnsupportedSyntax(content string) string {
 	for _, loc := range postgresCreateFunctionPattern.FindAllStringIndex(content, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
+	for _, loc := range postgresCreateExternalFunctionPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
 	for _, loc := range postgresDoBlockPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresExtensionDDLPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresAlterExtensionPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresExplainOptionsPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresAlterOperatorPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresAlterOperatorGenericPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresForeignAndTriggerDDLPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresAlterTextSearchPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresExtschemaPlaceholderPattern.FindAllStringIndex(content, -1) {
+		replaceBytesPreservingWidth(masked, loc[0], loc[1], strings.Repeat("a", loc[1]-loc[0]))
+	}
+	for _, loc := range postgresCreateDomainCastPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresCommentOnObjectPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresLoadPattern.FindAllStringIndex(content, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
 	for _, loc := range postgresDropTriggerPattern.FindAllStringIndex(content, -1) {
@@ -676,23 +3664,25 @@ func isSQLIdentifierByte(ch byte) bool {
 func postgresFunctionEntities(src []byte) []Entity {
 	content := string(src)
 	var entities []Entity
-	for _, loc := range postgresCreateFunctionPattern.FindAllStringIndex(content, -1) {
-		block := content[loc[0]:loc[1]]
-		if name := matchSQLCreateFunctionName(block); name != "" {
-			signature := strings.TrimSpace(block)
-			if index := strings.IndexByte(signature, '\n'); index >= 0 {
-				signature = signature[:index]
+	for _, pattern := range []*regexp.Regexp{postgresCreateFunctionPattern, postgresCreateExternalFunctionPattern} {
+		for _, loc := range pattern.FindAllStringIndex(content, -1) {
+			block := content[loc[0]:loc[1]]
+			if name := matchSQLCreateFunctionName(block); name != "" {
+				signature := strings.TrimSpace(block)
+				if index := strings.IndexByte(signature, '\n'); index >= 0 {
+					signature = signature[:index]
+				}
+				entity := Entity{
+					Kind:        "function",
+					Name:        name,
+					Signature:   strings.TrimSpace(strings.TrimRight(signature, "{:; \t\r\n")),
+					StartLine:   countLinesBefore(content, loc[0]) + 1,
+					EndLine:     countLinesBefore(content, loc[1]) + 1,
+					BodyHash:    hash(normalize(block)),
+					Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+				}
+				entities = append(entities, entity)
 			}
-			entity := Entity{
-				Kind:        "function",
-				Name:        name,
-				Signature:   strings.TrimSpace(strings.TrimRight(signature, "{:; \t\r\n")),
-				StartLine:   countLinesBefore(content, loc[0]) + 1,
-				EndLine:     countLinesBefore(content, loc[1]) + 1,
-				BodyHash:    hash(normalize(block)),
-				Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
-			}
-			entities = append(entities, entity)
 		}
 	}
 	return entities
@@ -730,6 +3720,498 @@ func postgresPolicyEntities(src []byte) []Entity {
 		offset = end
 	}
 	return entities
+}
+
+var (
+	graphqlResolverRootPattern       = regexp.MustCompile(`(?m)\b([A-Z][A-Za-z0-9_]*)\s*:\s*\{`)
+	graphqlResolverExportRootPattern = regexp.MustCompile(`(?m)\b(?:export\s+)?(?:const|let|var)\s+([A-Z][A-Za-z0-9_]*)\s*=\s*\{`)
+	graphqlResolverContextPattern    = regexp.MustCompile(`(?i)\b(graphql|resolvers?)\b`)
+	graphqlResolverFieldPattern      = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
+	graphqlResolverReferencePattern  = regexp.MustCompile(`^([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*)*(?:\s*\([^{};]*\))?\s*(?:,|$)`)
+	graphqlResolverObjectPattern     = regexp.MustCompile(`(?m)\b(?:subscribe|resolve)\s*:`)
+	graphqlSchemaDefinitionPattern   = regexp.MustCompile(`(?m)\bschema\b[^{]*\{`)
+	graphqlSchemaOperationPattern    = regexp.MustCompile(`(?m)\b(query|mutation|subscription)\s*:\s*([_A-Za-z][_0-9A-Za-z]*)\b`)
+	graphqlSchemaTypePattern         = regexp.MustCompile(`(?m)\b(?:extend\s+)?type\s+([_A-Za-z][_0-9A-Za-z]*)\b[^{]*\{`)
+	graphqlSchemaFieldNamePattern    = regexp.MustCompile(`^[_A-Za-z][_0-9A-Za-z]*$`)
+)
+
+func graphqlSchemaEntities(content string) []Entity {
+	var entities []Entity
+	seen := map[string]bool{}
+	operationRoots := graphqlSchemaOperationRoots(content)
+	for _, loc := range graphqlSchemaTypePattern.FindAllStringSubmatchIndex(content, -1) {
+		typeName := content[loc[2]:loc[3]]
+		open := strings.LastIndex(content[loc[0]:loc[1]], "{")
+		if open < 0 {
+			continue
+		}
+		open += loc[0]
+		close := matchingBraceOffset(content, open)
+		if close < 0 {
+			continue
+		}
+		body := content[open+1 : close]
+		for _, field := range graphqlSchemaFields(body) {
+			rootName := operationRoots[typeName]
+			if rootName == "" {
+				rootName = typeName
+			}
+			name := typeName + "." + field.Name
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			start := open + 1 + field.Start
+			end := open + 1 + field.End
+			block := content[start:end]
+			signature := "GraphQL schema " + strings.ToLower(rootName) + " " + field.Name
+			entities = append(entities, Entity{
+				Kind:        "graphql_schema_field",
+				Name:        name,
+				Signature:   signature,
+				StartLine:   countLinesBefore(content, start) + 1,
+				EndLine:     countLinesBefore(content, end) + 1,
+				BodyHash:    hash(normalize(block)),
+				Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+			})
+		}
+	}
+	return entities
+}
+
+func graphqlSchemaOperationRoots(content string) map[string]string {
+	roots := map[string]string{}
+	for _, loc := range graphqlSchemaDefinitionPattern.FindAllStringSubmatchIndex(content, -1) {
+		open := strings.LastIndex(content[loc[0]:loc[1]], "{")
+		if open < 0 {
+			continue
+		}
+		open += loc[0]
+		close := matchingBraceOffset(content, open)
+		if close < 0 {
+			continue
+		}
+		body := content[open+1 : close]
+		for _, match := range graphqlSchemaOperationPattern.FindAllStringSubmatch(body, -1) {
+			if len(match) < 3 {
+				continue
+			}
+			roots[match[2]] = strings.ToLower(match[1])
+		}
+	}
+	return roots
+}
+
+func graphqlSchemaFields(body string) []graphqlResolverField {
+	var fields []graphqlResolverField
+	for i := 0; i < len(body); i++ {
+		i = skipGraphQLIgnored(body, i)
+		if i >= len(body) {
+			break
+		}
+		if !isGraphQLNameStart(body[i]) {
+			continue
+		}
+		nameStart := i
+		i++
+		for i < len(body) && isGraphQLNamePart(body[i]) {
+			i++
+		}
+		name := body[nameStart:i]
+		if !graphqlSchemaFieldNamePattern.MatchString(name) {
+			continue
+		}
+		cursor := skipGraphQLIgnored(body, i)
+		if cursor < len(body) && body[cursor] == '(' {
+			close := matchingDelimiterOffset(body, cursor, '(', ')')
+			if close < 0 {
+				continue
+			}
+			cursor = skipGraphQLIgnored(body, close+1)
+		}
+		if cursor >= len(body) || body[cursor] != ':' {
+			i = maxInt(i, cursor)
+			continue
+		}
+		end := graphqlSchemaFieldEnd(body, cursor+1)
+		fields = append(fields, graphqlResolverField{Name: name, Start: nameStart, End: end})
+		i = maxInt(i, end-1)
+	}
+	return fields
+}
+
+func skipGraphQLIgnored(value string, index int) int {
+	for index < len(value) {
+		switch {
+		case value[index] == ' ' || value[index] == '\t' || value[index] == '\n' || value[index] == '\r' || value[index] == ',':
+			index++
+		case value[index] == '#':
+			for index < len(value) && value[index] != '\n' && value[index] != '\r' {
+				index++
+			}
+		case strings.HasPrefix(value[index:], `"""`):
+			index += 3
+			if end := strings.Index(value[index:], `"""`); end >= 0 {
+				index += end + 3
+			} else {
+				return len(value)
+			}
+		case value[index] == '"':
+			index++
+			for index < len(value) {
+				if value[index] == '\\' {
+					index += 2
+					continue
+				}
+				if value[index] == '"' {
+					index++
+					break
+				}
+				index++
+			}
+		default:
+			return index
+		}
+	}
+	return index
+}
+
+func graphqlSchemaFieldEnd(body string, start int) int {
+	seenType := false
+	depth := 0
+	for i := start; i < len(body); i++ {
+		switch body[i] {
+		case '[':
+			depth++
+			seenType = true
+		case ']':
+			if depth > 0 {
+				depth--
+			}
+			seenType = true
+		case '#':
+			if seenType && depth == 0 {
+				return i
+			}
+			for i < len(body) && body[i] != '\n' && body[i] != '\r' {
+				i++
+			}
+		case '\n', '\r':
+			if seenType && depth == 0 {
+				return i
+			}
+		case ' ', '\t':
+		default:
+			seenType = true
+		}
+	}
+	return len(body)
+}
+
+func isGraphQLNameStart(ch byte) bool {
+	return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_'
+}
+
+func isGraphQLNamePart(ch byte) bool {
+	return isGraphQLNameStart(ch) || (ch >= '0' && ch <= '9')
+}
+
+func graphqlResolverEntities(path, content string) []Entity {
+	var entities []Entity
+	seen := map[string]bool{}
+	for _, loc := range graphqlResolverRootPattern.FindAllStringSubmatchIndex(content, -1) {
+		typeName := content[loc[2]:loc[3]]
+		entities = appendGraphQLResolverRootEntities(entities, seen, path, content, typeName, loc[0], loc[1])
+	}
+	for _, loc := range graphqlResolverExportRootPattern.FindAllStringSubmatchIndex(content, -1) {
+		typeName := content[loc[2]:loc[3]]
+		entities = appendGraphQLResolverRootEntities(entities, seen, path, content, typeName, loc[0], loc[1])
+	}
+	return entities
+}
+
+func appendGraphQLResolverRootEntities(entities []Entity, seen map[string]bool, path, content, typeName string, locStart, locEnd int) []Entity {
+	open := strings.LastIndex(content[locStart:locEnd], "{")
+	if open < 0 {
+		return entities
+	}
+	open += locStart
+	close := matchingBraceOffset(content, open)
+	if close < 0 {
+		return entities
+	}
+	if !graphqlResolverContext(path, content, locStart, close) {
+		return entities
+	}
+	body := content[open+1 : close]
+	for _, field := range graphqlResolverFields(body) {
+		name := typeName + "." + field.Name
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		start := open + 1 + field.Start
+		end := open + 1 + field.End
+		block := content[start:end]
+		signature := "GraphQL resolver " + strings.ToLower(typeName) + " " + field.Name
+		entities = append(entities, Entity{
+			Kind:        "graphql_resolver",
+			Name:        name,
+			Signature:   signature,
+			StartLine:   countLinesBefore(content, start) + 1,
+			EndLine:     countLinesBefore(content, end) + 1,
+			BodyHash:    hash(normalize(block)),
+			Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+		})
+	}
+	return entities
+}
+
+func graphqlResolverContext(path, content string, start, end int) bool {
+	base := strings.ToLower(filepath.Base(path))
+	if strings.Contains(base, "resolver") || strings.Contains(base, "graphql") || strings.Contains(base, "schema") {
+		return true
+	}
+	from := maxInt(0, start-300)
+	to := minInt(len(content), end+80)
+	return graphqlResolverContextPattern.MatchString(content[from:to])
+}
+
+type graphqlResolverField struct {
+	Name  string
+	Start int
+	End   int
+}
+
+func graphqlResolverFields(body string) []graphqlResolverField {
+	var fields []graphqlResolverField
+	depth := 0
+	inString := byte(0)
+	escaped := false
+	for i := 0; i < len(body); i++ {
+		ch := body[i]
+		if inString != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"', '`':
+			inString = ch
+			continue
+		case '{', '(', '[':
+			depth++
+			continue
+		case '}', ')', ']':
+			if depth > 0 {
+				depth--
+			}
+			continue
+		}
+		if depth != 0 || !isJSIdentifierStart(ch) {
+			continue
+		}
+		nameStart := i
+		i++
+		for i < len(body) && isJSIdentifierPart(body[i]) {
+			i++
+		}
+		name := body[nameStart:i]
+		if !graphqlResolverFieldPattern.MatchString(name) {
+			continue
+		}
+		cursor := skipSpace(body, i)
+		if cursor >= len(body) {
+			continue
+		}
+		if body[cursor] == '(' {
+			end := graphqlResolverFieldEnd(body, cursor)
+			fields = append(fields, graphqlResolverField{Name: name, Start: nameStart, End: end})
+			i = maxInt(i, end-1)
+			continue
+		}
+		if body[cursor] != ':' {
+			continue
+		}
+		valueStart := skipSpace(body, cursor+1)
+		if !looksLikeGraphQLResolverValue(body[valueStart:]) {
+			continue
+		}
+		end := graphqlResolverFieldEnd(body, valueStart)
+		fields = append(fields, graphqlResolverField{Name: name, Start: nameStart, End: end})
+		i = maxInt(i, end-1)
+	}
+	return fields
+}
+
+func looksLikeGraphQLResolverValue(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	switch {
+	case strings.HasPrefix(trimmed, "async function"), strings.HasPrefix(trimmed, "function"):
+		return true
+	case strings.HasPrefix(trimmed, "async ("), strings.HasPrefix(trimmed, "("):
+		return strings.Contains(trimmed, "=>")
+	case strings.HasPrefix(trimmed, "{"):
+		end := matchingBraceOffset(trimmed, 0)
+		if end < 0 {
+			return false
+		}
+		return graphqlResolverObjectPattern.MatchString(trimmed[:end])
+	default:
+		arrow := strings.Index(trimmed, "=>")
+		return (arrow > 0 && arrow < 80) || looksLikeGraphQLResolverReference(trimmed)
+	}
+}
+
+func looksLikeGraphQLResolverReference(value string) bool {
+	match := graphqlResolverReferencePattern.FindStringSubmatch(value)
+	if len(match) < 2 {
+		return false
+	}
+	switch match[1] {
+	case "false", "null", "true", "undefined":
+		return false
+	default:
+		return true
+	}
+}
+
+func graphqlResolverFieldEnd(body string, start int) int {
+	depth := 0
+	inString := byte(0)
+	escaped := false
+	for i := start; i < len(body); i++ {
+		ch := body[i]
+		if inString != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"', '`':
+			inString = ch
+		case '{', '(', '[':
+			depth++
+		case '}', ')', ']':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return len(body)
+}
+
+func matchingBraceOffset(content string, open int) int {
+	if open < 0 || open >= len(content) || content[open] != '{' {
+		return -1
+	}
+	depth := 0
+	inString := byte(0)
+	escaped := false
+	for i := open; i < len(content); i++ {
+		ch := content[i]
+		if inString != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"', '`':
+			inString = ch
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func matchingDelimiterOffset(content string, open int, openCh, closeCh byte) int {
+	if open < 0 || open >= len(content) || content[open] != openCh {
+		return -1
+	}
+	depth := 0
+	inString := byte(0)
+	escaped := false
+	for i := open; i < len(content); i++ {
+		ch := content[i]
+		if inString != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == inString {
+				inString = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"', '`':
+			inString = ch
+		case openCh:
+			depth++
+		case closeCh:
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func skipSpace(value string, index int) int {
+	for index < len(value) && (value[index] == ' ' || value[index] == '\t' || value[index] == '\n' || value[index] == '\r') {
+		index++
+	}
+	return index
+}
+
+func isJSIdentifierStart(ch byte) bool {
+	return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_' || ch == '$'
+}
+
+func isJSIdentifierPart(ch byte) bool {
+	return isJSIdentifierStart(ch) || (ch >= '0' && ch <= '9')
 }
 
 func countLinesBefore(content string, end int) int {
@@ -1028,11 +4510,28 @@ func firstNameDescendant(node *sitter.Node, src []byte) string {
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		child := node.NamedChild(i)
+		// A declaration's own name is never inside its leading modifiers,
+		// annotations, or generic type parameters. Skipping those subtrees
+		// stops the pre-order search from latching onto an annotation name
+		// (e.g. Kotlin `@OptIn class Koin` -> "OptIn") or a type parameter
+		// (e.g. `fun <T> get()` -> "T") before reaching the real name.
+		if skipForNameDescent(child.Type()) {
+			continue
+		}
 		if name := firstNameDescendant(child, src); name != "" {
 			return name
 		}
 	}
 	return ""
+}
+
+func skipForNameDescent(nodeType string) bool {
+	switch nodeType {
+	case "modifiers", "annotation", "type_parameters":
+		return true
+	default:
+		return false
+	}
 }
 
 func nameFromNode(node *sitter.Node, src []byte) string {
@@ -1102,9 +4601,161 @@ func functionLikeValue(node *sitter.Node) bool {
 	}
 }
 
+var jsExportedVariablePattern = regexp.MustCompile(`(?m)^\s*export\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=`)
+var jsAssignmentMethodPattern = regexp.MustCompile(`(?m)^\s*((?:[A-Za-z_$][A-Za-z0-9_$]*\s*\.\s*)+[A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s+)?function(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s*\(`)
+
+func javascriptExportedVariableEntities(content string) []Entity {
+	matches := jsExportedVariablePattern.FindAllStringSubmatchIndex(content, -1)
+	entities := make([]Entity, 0, len(matches))
+	for _, match := range matches {
+		if len(match) < 4 {
+			continue
+		}
+		name := content[match[2]:match[3]]
+		lineStart := strings.LastIndexByte(content[:match[0]], '\n') + 1
+		lineEndRel := strings.IndexByte(content[match[0]:], '\n')
+		lineEnd := len(content)
+		if lineEndRel >= 0 {
+			lineEnd = match[0] + lineEndRel
+		}
+		signature := strings.TrimSpace(content[lineStart:lineEnd])
+		startLine := strings.Count(content[:match[0]], "\n") + 1
+		entities = append(entities, Entity{
+			Kind:        "variable",
+			Name:        name,
+			Signature:   signature,
+			StartLine:   startLine,
+			EndLine:     startLine,
+			BodyHash:    hash(normalize(signature)),
+			Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, signature))),
+		})
+	}
+	return entities
+}
+
+func javascriptAssignmentMethodEntities(content string) []Entity {
+	matches := jsAssignmentMethodPattern.FindAllStringSubmatchIndex(content, -1)
+	entities := make([]Entity, 0, len(matches))
+	for _, match := range matches {
+		if len(match) < 4 {
+			continue
+		}
+		name := strings.Join(regexp.MustCompile(`\s*\.\s*`).Split(strings.TrimSpace(content[match[2]:match[3]]), -1), ".")
+		if name == "" || strings.HasPrefix(name, "module.exports.") || strings.HasPrefix(name, "exports.") {
+			// Export alias properties are useful exports, but not object/prototype
+			// method declarations with a stable receiver.
+			continue
+		}
+		lineStart := strings.LastIndexByte(content[:match[0]], '\n') + 1
+		lineEndRel := strings.IndexByte(content[match[0]:], '\n')
+		lineEnd := len(content)
+		if lineEndRel >= 0 {
+			lineEnd = match[0] + lineEndRel
+		}
+		startLine := countLinesBefore(content, match[0]) + 1
+		endLine := startLine
+		openBrace := strings.IndexByte(content[match[0]:], '{')
+		if openBrace >= 0 {
+			openBrace += match[0]
+			if closeBrace := matchingDelimiterOffset(content, openBrace, '{', '}'); closeBrace >= 0 {
+				endLine = countLinesBefore(content, closeBrace) + 1
+			}
+		}
+		signature := strings.TrimSpace(content[lineStart:lineEnd])
+		blockEnd := lineEnd
+		if endLine > startLine && openBrace >= 0 {
+			if closeBrace := matchingDelimiterOffset(content, openBrace, '{', '}'); closeBrace >= 0 {
+				blockEnd = closeBrace + 1
+			}
+		}
+		block := content[match[0]:minInt(blockEnd, len(content))]
+		entities = append(entities, Entity{
+			Kind:        "method",
+			Name:        name,
+			Signature:   signature,
+			StartLine:   startLine,
+			EndLine:     endLine,
+			BodyHash:    hash(normalize(block)),
+			Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+		})
+	}
+	return entities
+}
+
+func appendMissingEntities(entities []Entity, candidates ...Entity) []Entity {
+	seen := make(map[string]bool, len(entities))
+	for _, entity := range entities {
+		seen[entity.Kind+"\x00"+entity.Name] = true
+	}
+	for _, candidate := range candidates {
+		key := candidate.Kind + "\x00" + candidate.Name
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		entities = append(entities, candidate)
+	}
+	return entities
+}
+
+var cPlusPlusUsingAliasLineRe = regexp.MustCompile(`^\s*(?:template\s*<[^>\n]+>\s*)?using\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]+);`)
+
+func cPlusPlusTypeAliasEntities(content string) []Entity {
+	lines := strings.SplitAfter(content, "\n")
+	var entities []Entity
+	braceDepth := 0
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if match := cPlusPlusUsingAliasLineRe.FindStringSubmatch(line); match != nil && braceDepth <= 1 {
+			signature := strings.TrimSpace(strings.TrimSuffix(line, "\n"))
+			name := match[1]
+			block := strings.TrimSpace(line)
+			entities = append(entities, Entity{
+				Kind:        "type",
+				Name:        name,
+				Signature:   signature,
+				StartLine:   i + 1,
+				EndLine:     i + 1,
+				BodyHash:    hash(normalize(block)),
+				Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+			})
+		}
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			braceDepth += strings.Count(line, "{")
+			braceDepth -= strings.Count(line, "}")
+			if braceDepth < 0 {
+				braceDepth = 0
+			}
+		}
+	}
+	return entities
+}
+
+func isExportedTopLevelJSVariable(node *sitter.Node, language string) bool {
+	if language != "JavaScript" && language != "TypeScript" {
+		return false
+	}
+	parent := node.Parent()
+	if !validNode(parent) {
+		return false
+	}
+	if parent.Type() != "lexical_declaration" && parent.Type() != "variable_declaration" {
+		return false
+	}
+	grandparent := parent.Parent()
+	if !validNode(grandparent) || grandparent.Type() != "export_statement" {
+		return false
+	}
+	root := grandparent.Parent()
+	return validNode(root) && root.Type() == "program"
+}
+
 func scopesChildren(kind string) bool {
 	switch kind {
-	case "class", "interface", "message", "module", "service", "struct", "trait":
+	// "type" scopes children so Go struct fields qualify under the struct
+	// (Go structs parse as type_spec -> kind "type"). Interface/alias bodies
+	// have no field declarations, so this only affects struct fields.
+	case "class", "interface", "message", "module", "service", "struct", "trait", "type":
 		return true
 	default:
 		return false

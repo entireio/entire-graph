@@ -95,6 +95,20 @@ entire plugin install ./entire-sem --force
 After either install path, `entire sem ...` works anywhere the Entire CLI can
 find the managed plugin.
 
+For a one-command local source install, run:
+
+```sh
+scripts/install-local.sh
+```
+
+For local release archives with `SHA256SUMS`, run:
+
+```sh
+scripts/release.sh
+```
+
+See [docs/operations.md](docs/operations.md) for target and cgo details.
+
 ## Commands
 
 Compare one commit against its first parent:
@@ -233,8 +247,11 @@ checkpoint context at the entity level instead of stopping at "this file changed
 - expose the same parser through local-only provider commands that emit
   JSON/NDJSON snapshot, symbol, and relation records
 
-The implementation does not copy or vendor Ataraxy Labs code. The parser dependency is
-`github.com/smacker/go-tree-sitter`, which is MIT-licensed.
+The implementation does not copy or vendor Ataraxy Labs code. The runtime parser
+dependency is `github.com/smacker/go-tree-sitter`, which is MIT-licensed. This
+repository additionally vendors three tree-sitter grammars as source, each under
+its own upstream MIT license: Dart (`internal/sem/grammars/dart/`), PostgreSQL
+(`internal/sem/pgsql/`), and Zsh (`internal/sem/zsh/`).
 
 ## Current Limits
 

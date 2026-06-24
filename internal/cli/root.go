@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/suhaanthayyil/entire-sem/internal/gitutil"
 	"github.com/suhaanthayyil/entire-sem/internal/sem"
@@ -92,9 +93,9 @@ Usage:
   entire sem doctor [--json]
   entire sem version [--json]
   entire sem capabilities --json
-  entire sem snapshot --repo . --format ndjson [--worktree] [--ignore-file path] [--include-file path]
-  entire sem symbols --repo . --format ndjson [--worktree] [--ignore-file path] [--include-file path]
-  entire sem edges --repo . --format ndjson [--worktree] [--ignore-file path] [--include-file path]`)
+  entire sem snapshot --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
+  entire sem symbols --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
+  entire sem edges --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]`)
 }
 
 func runDoctor(ctx context.Context, opts Options, args []string) error {
@@ -189,24 +190,58 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	if err != nil {
 		return err
 	}
-	snapshot, err := sem.BuildProviderSnapshotWithOptions(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
+	if mode != "snapshot" && mode != "symbols" && mode != "edges" {
+		return fmt.Errorf("unknown provider record mode %q", mode)
+	}
+	profile, err := parseProfile(flags.Profile)
+	if err != nil {
+		return err
+	}
+	options := sem.ProviderSnapshotOptions{
 		NoNetwork:    flags.NoNetwork,
 		Worktree:     flags.Worktree,
 		IgnoreFiles:  flags.IgnoreFiles,
 		IncludeFiles: flags.IncludeFiles,
-	})
-	if err != nil {
-		return err
+		Profile:      profile,
 	}
-	switch mode {
-	case "snapshot":
-		return sem.WriteSnapshotNDJSON(opts.Stdout, snapshot)
-	case "symbols":
-		return sem.WriteSymbolsNDJSON(opts.Stdout, snapshot)
-	case "edges":
-		return sem.WriteRelationsNDJSON(opts.Stdout, snapshot)
-	default:
-		return fmt.Errorf("unknown provider record mode %q", mode)
+	if flags.Progress {
+		options.Progress = func(event sem.ProgressEvent) {
+			fmt.Fprintf(opts.Stderr, "sem progress phase=%s files=%d/%d symbols=%d relations=%d heap=%d rss=%d elapsed=%s\n",
+				event.Phase,
+				event.FilesDone,
+				event.FilesTotal,
+				event.Symbols,
+				event.Relations,
+				event.HeapAlloc,
+				event.MaxRSSBytes,
+				event.Elapsed.Round(time.Millisecond),
+			)
+		}
+	}
+	// Stream records straight to stdout so peak memory does not scale with the
+	// relation count on large repositories.
+	encoder := json.NewEncoder(opts.Stdout)
+	encoder.SetEscapeHTML(false) // match json.Marshal used elsewhere (no < escaping)
+	return sem.StreamSnapshot(ctx, repo, opts.Version, options, func(record any) error {
+		if !includeRecord(mode, record) {
+			return nil
+		}
+		return encoder.Encode(record)
+	})
+}
+
+// includeRecord filters streamed records for the symbols and edges modes, which
+// emit a subset of the full snapshot.
+func includeRecord(mode string, record any) bool {
+	switch record.(type) {
+	case sem.FileRecord, sem.ExternalRecord:
+		return mode == "snapshot"
+	case sem.SymbolRecord:
+		return mode == "snapshot" || mode == "symbols"
+	case sem.RelationRecord:
+		return mode == "snapshot" || mode == "edges"
+	default: // header, summary
+		return true
 	}
 }
 
@@ -218,10 +253,26 @@ type commonFlags struct {
 type providerFlags struct {
 	Repo         string
 	Format       string
+	Profile      string
 	NoNetwork    bool
 	Worktree     bool
+	Progress     bool
 	IgnoreFiles  []string
 	IncludeFiles []string
+}
+
+// parseProfile validates the --profile value. Empty defaults to full.
+func parseProfile(value string) (sem.Profile, error) {
+	switch value {
+	case "", "full":
+		return sem.ProfileFull, nil
+	case "fast":
+		return sem.ProfileFast, nil
+	case "syntax-only":
+		return sem.ProfileSyntaxOnly, nil
+	default:
+		return "", fmt.Errorf("unknown --profile %q (want full, fast, or syntax-only)", value)
+	}
 }
 
 func parseProviderFlags(args []string) (providerFlags, []string, error) {
@@ -241,10 +292,18 @@ func parseProviderFlags(args []string) (providerFlags, []string, error) {
 				return flags, nil, errors.New("--format requires a value")
 			}
 			flags.Format = args[i]
+		case "--profile":
+			i++
+			if i >= len(args) {
+				return flags, nil, errors.New("--profile requires a value")
+			}
+			flags.Profile = args[i]
 		case "--no-network":
 			flags.NoNetwork = true
 		case "--worktree":
 			flags.Worktree = true
+		case "--progress":
+			flags.Progress = true
 		case "--ignore-file":
 			i++
 			if i >= len(args) {

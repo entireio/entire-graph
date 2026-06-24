@@ -1,0 +1,210 @@
+# Language Support
+
+This document separates semantic extraction support from deterministic filetype
+inventory support. The `capabilities --json` output exposes both tiers:
+
+- `supported_languages`: combined language/filetype names recognized by the
+  provider.
+- `semantic_languages`: languages with a parser-backed semantic extraction path.
+- `inventory_only_languages`: filetypes recognized for stable file/document
+  inventory, without claiming call/type/data-flow analysis.
+
+Inventory-only coverage must not be counted as semantic-resolution parity in
+competitive evaluations. It can count only for file discovery, document symbols,
+and honest unsupported/degraded coverage reporting.
+
+Current generated counts:
+
+- Supported language/filetype names: 184
+- Semantic languages: 24
+- Inventory-only languages: 160
+
+## Semantic Languages
+
+- Bash
+- C
+- C#
+- C++
+- CUE
+- Elixir
+- Go
+- Groovy
+- HCL
+- Java
+- JavaScript
+- Kotlin
+- Lua
+- OCaml
+- PHP
+- Protocol Buffers
+- Python
+- Ruby
+- Rust
+- SQL
+- Scala
+- Swift
+- TypeScript
+- YAML
+
+## Inventory-Only Languages
+
+- ABAP
+- ANTLR
+- ActionScript
+- Agda
+- AppleScript
+- Arduino
+- Assembly
+- Astro
+- Augeas
+- AutoHotkey
+- Awk
+- BASIC
+- BNF
+- Babel Config
+- Ballerina
+- BibTeX
+- Bicep
+- Blade
+- Boo
+- Brainfuck
+- Bundler
+- CMake
+- COBOL
+- CSS
+- Cabal
+- Ceylon
+- Clojure
+- ClojureScript
+- CoffeeScript
+- ColdFusion
+- Common Lisp
+- Coq
+- Crystal
+- D
+- DM
+- DTD
+- Dart
+- Dhall
+- Diff
+- Dockerfile
+- Dotenv
+- Dylan
+- ECL
+- ERB
+- EditorConfig
+- Eiffel
+- Elm
+- Erlang
+- F#
+- Factor
+- Fantom
+- Fish
+- Forth
+- GDB
+- GDScript
+- GLSL
+- GameMaker Language
+- Git Ignore
+- Gnuplot
+- GraphQL
+- HTML
+- Hack
+- Haml
+- Handlebars
+- Haskell
+- Homebrew Bundle
+- INI
+- Idris
+- Io
+- JSON
+- JSON5
+- JSP
+- Jinja
+- Julia
+- Just
+- Kustomize
+- LLVM
+- Lean
+- Less
+- Lisp
+- LiveScript
+- M4
+- MATLAB
+- MCFunction
+- MSBuild Project
+- Make
+- Markdown
+- Mermaid
+- Metal
+- Mint
+- MoonScript
+- Mustache
+- NPM Config
+- Nim
+- Nix
+- Nu
+- Objective-C
+- Objective-C++
+- OpenSCAD
+- Pascal
+- Patch
+- Perl
+- Pico-8
+- Pip Requirements
+- Pony
+- Processing
+- Property List
+- Pug
+- Puppet
+- PureScript
+- R
+- RON
+- Racket
+- Rake
+- Raku
+- Razor
+- ReScript
+- Reason
+- Rego
+- RubyGems
+- SAS
+- SCSS
+- SPARQL
+- SQF
+- SRecode Template
+- Sass
+- Scheme
+- ShaderLab
+- Slim
+- Solidity
+- Stan
+- Starlark
+- Stylus
+- Svelte
+- TOML
+- Tcl
+- TeX
+- Textile
+- Thrift
+- Twig
+- V
+- VCL
+- VHDL
+- Vala
+- Vim Script
+- Visual Basic .NET
+- Vue
+- VuePress
+- WebAssembly
+- Wolfram Language
+- Wren
+- XML
+- XQuery
+- XSLT
+- Xtend
+- Zig
+- Zimpl
+- jq
+- reStructuredText
+- sed
