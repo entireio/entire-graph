@@ -15,7 +15,7 @@
   },
   "symbol_kinds": {
     "block": 4,
-    "class": 17,
+    "class": 18,
     "field": 17,
     "function": 37,
     "interface": 7,
@@ -36,7 +36,7 @@
     "CONFIGURES": 12,
     "CONTAINS": 52,
     "DATA_FLOWS": 9,
-    "DEFINES": 136,
+    "DEFINES": 137,
     "EMITS": 1,
     "EXTENDS": 9,
     "HANDLES_GRAPHQL": 2,

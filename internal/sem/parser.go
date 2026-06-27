@@ -3084,7 +3084,12 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 	var kind string
 	var name string
 	switch node.Type() {
-	case "class", "class_definition", "class_declaration", "class_specifier", "mixin_declaration":
+	case "class", "class_definition", "class_declaration", "class_specifier", "mixin_declaration",
+		"abstract_class_declaration":
+		// tree-sitter-typescript emits a distinct node type for `abstract class X`.
+		// Without this case the class symbol is dropped and — because scope flows
+		// from the class kind — its methods are never qualified under it (empty
+		// container_id), so this/self call resolution can't fire for them.
 		kind = "class"
 		name = nodeName(node, src)
 	case "method_signature", "getter_signature", "setter_signature":
@@ -4570,9 +4575,12 @@ func signatureFromNode(node *sitter.Node, src []byte) string {
 		end = node.EndByte()
 	}
 	signature := strings.TrimSpace(string(src[start:end]))
-	if index := strings.IndexByte(signature, '\n'); index >= 0 {
-		signature = signature[:index]
-	}
+	// Collapse a multi-line declaration header into one line rather than cutting
+	// at the first newline: a class whose generic parameter list spans several
+	// lines carries its `extends`/`implements` clause only after the break, and
+	// dropping it loses the supertype (so inheritance-aware call resolution and
+	// EXTENDS/INHERITS edges silently disappear for that type).
+	signature = strings.Join(strings.Fields(signature), " ")
 	return strings.TrimSpace(strings.TrimRight(signature, "{:; \t\r\n"))
 }
 

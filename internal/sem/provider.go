@@ -1764,6 +1764,37 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			}
 		}
 	}
+	// superContainerByID maps a class container to its (direct) superclass
+	// container, so receiver-call resolution can follow inheritance: a
+	// `this.method()` whose method is declared on a base class resolves up the
+	// chain. Built after the symbol pass so the global short-name index is
+	// complete; same-file resolution is preferred (a subclass and its base
+	// usually share a file — e.g. zod's ZodType hierarchy), falling back to the
+	// global index. Single-inheritance only (first EXTENDS edge), which matches
+	// class semantics in every language that reaches here.
+	superContainerByID := map[string]string{}
+	if needsReceiverCalls {
+		for _, file := range files {
+			for _, symbol := range recordsByFile[file.Path] {
+				if !typeLikeKind(symbol.Kind) {
+					continue
+				}
+				for _, edge := range supertypesFromSignature(symbol.Language, symbol.Signature) {
+					if edge.Relation != "EXTENDS" {
+						continue
+					}
+					sup, ok := firstTypeLikeNamed(symbolsByFile[symbol.FilePath], edge.Super)
+					if !ok || sup.ID == symbol.ID {
+						sup, ok = firstTypeLikeNamed(symbolsByShortName[edge.Super], edge.Super)
+					}
+					if ok && sup.ID != symbol.ID {
+						superContainerByID[symbol.ID] = sup.ID
+					}
+					break
+				}
+			}
+		}
+	}
 	handledRoutes := map[string]struct{}{}
 	knownFiles := map[string]bool{}
 	for _, file := range files {
@@ -2175,7 +2206,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 			}
 			if spec.callResolution == "full" {
-				for _, r := range receiverCallRelations(from, block, methodsByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile, importsByName, manifestImports.goModule) {
+				for _, r := range receiverCallRelations(from, block, methodsByContainer, superContainerByID, symbolsByShortName, returnTypesBySymbolNameAndFile, importsByName, manifestImports.goModule) {
 					emit(r)
 				}
 				for _, r := range importedReceiverCallRelations(from, block, importsByName, symbolsByShortName) {
@@ -2534,7 +2565,23 @@ func buildTypeRelation(repoKey string, anchor SymbolRecord, super, relation stri
 // type. These calls are otherwise dropped (a name preceded by '.'/'->' is not a
 // plain call), so this is purely additive. Type containers are skipped as
 // callers — calls live in methods/functions, not in the class declaration.
-func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string, importsByName map[string][]string, goModule string) []RelationRecord {
+// lookupMethodUpChain finds a method by name starting in the given container and,
+// failing that, walking up the superclass chain (superContainerByID). It returns
+// the method, whether it was found on an ancestor rather than the start container,
+// and ok. A visited set guards against inheritance cycles from misparsed headers;
+// the chain is single-inheritance so the first hit is the resolution-order target.
+func lookupMethodUpChain(start, name string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string) (SymbolRecord, bool, bool) {
+	seen := map[string]bool{}
+	for c, hops := start, 0; c != "" && !seen[c] && hops < 32; c, hops = superContainerByID[c], hops+1 {
+		seen[c] = true
+		if m, ok := methodsByContainer[c][name]; ok {
+			return m, hops > 0, true
+		}
+	}
+	return SymbolRecord{}, false, false
+}
+
+func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string, importsByName map[string][]string, goModule string) []RelationRecord {
 	if typeLikeKind(from.Kind) {
 		return nil
 	}
@@ -2624,9 +2671,16 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 			targetID = sym.ID
 		}
-		method, ok := methodsByContainer[targetID][call.Method]
+		method, inherited, ok := lookupMethodUpChain(targetID, call.Method, methodsByContainer, superContainerByID)
 		if !ok || method.ID == from.ID {
 			continue
+		}
+		if inherited {
+			// Resolved on a base class, not the receiver's own type. Still a real
+			// call (single inheritance makes the target unambiguous), but one
+			// resolution hop removed, so cap the confidence and mark it.
+			confidence = minFloat(confidence, 0.82)
+			reason += " (inherited from a base type)"
 		}
 		scope := "file"
 		if method.FilePath != from.FilePath {
