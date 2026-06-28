@@ -77,6 +77,20 @@ func runLSPCalls(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return fmt.Errorf("heuristic snapshot: %w", err)
 	}
+	// Scope both sides to the files the LSP actually analyzed (it excludes
+	// test/example/vendor dirs the heuristic scans). Without this, heuristic_only
+	// is dominated by test-file edges the LSP never saw rather than real
+	// over-emission. An edge counts only if both endpoints are in LSP-seen files.
+	lspFiles := map[string]bool{}
+	for _, s := range res.Symbols {
+		lspFiles[s.File] = true
+	}
+	inScope := func(k edgeKey) bool { return lspFiles[k.ff] && lspFiles[k.tf] }
+	for k := range heuristic {
+		if !inScope(k) {
+			delete(heuristic, k)
+		}
+	}
 	lspSet := map[edgeKey]lsp.CallEdge{}
 	for _, e := range res.Calls {
 		lspSet[edgeKey{e.FromFile, e.FromLine, e.ToFile, e.ToLine}] = e

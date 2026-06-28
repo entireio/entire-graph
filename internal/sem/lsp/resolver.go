@@ -111,10 +111,10 @@ func ResolveCalls(ctx context.Context, repo, language string) (*Result, bool, er
 		})
 	}
 
-	// Wait for the semantic index (cachePriming end), then settle: documentSymbol
+	// Wait for the server's semantic index to prime, then settle: documentSymbol
 	// answers from syntax far earlier (the trap the oracle client documents), and
 	// a second indexing pass can otherwise change call-hierarchy answers mid-run.
-	client.waitReady(180*time.Second, 2*time.Second)
+	client.waitReady(server.readyMarkers, server.warmup, server.maxWait, server.settle)
 
 	rel := func(p string) string {
 		if r, err := filepath.Rel(repo, p); err == nil {
@@ -234,12 +234,16 @@ func ResolveCalls(ctx context.Context, repo, language string) (*Result, bool, er
 
 // server describes an LSP backend for a language.
 type server struct {
-	command    string
-	args       []string
-	languageID string
-	exts       []string
-	testDirs   []string
-	srcSubdir  string // restrict to this subdir if present (e.g. "src" for Rust)
+	command      string
+	args         []string
+	languageID   string
+	exts         []string
+	testDirs     []string
+	srcSubdir    string        // restrict to this subdir if present (e.g. "src" for Rust)
+	readyMarkers []string      // progress token/title substrings that signal index-ready
+	warmup       time.Duration // fallback wait when the server emits no known marker
+	settle       time.Duration // quiet window after readiness before querying
+	maxWait      time.Duration // hard ceiling on the readiness wait (never hang)
 }
 
 func (s server) sourceFiles(repo string) []string {
@@ -284,23 +288,90 @@ func isDir(p string) bool {
 	return err == nil && info.IsDir()
 }
 
-// serverFor returns the configured, available LSP server for a language.
+// serverFor returns the configured, available LSP server for a language. When no
+// server is found on PATH the caller silently falls back to the heuristic.
 func serverFor(language string) (server, bool) {
 	switch strings.ToLower(language) {
-	case "rust":
+	case "rust", "rs":
 		cmd := rustAnalyzerPath()
 		if cmd == "" {
 			return server{}, false
 		}
 		return server{
+			command:      cmd,
+			languageID:   "rust",
+			exts:         []string{".rs"},
+			testDirs:     []string{"/tests/", "/examples/", "/benches/", "/target/"},
+			srcSubdir:    "src",
+			readyMarkers: []string{"cachePriming"},
+			warmup:       5 * time.Second,
+			settle:       2 * time.Second,
+			maxWait:      90 * time.Second,
+		}, true
+	case "go", "golang":
+		cmd, ok := lookCmd("gopls")
+		if !ok {
+			return server{}, false
+		}
+		return server{
+			command:      cmd,
+			languageID:   "go",
+			exts:         []string{".go"},
+			testDirs:     []string{"/testdata/", "/vendor/"},
+			readyMarkers: []string{"Setting up workspace", "Loading packages"},
+			warmup:       8 * time.Second,
+			settle:       1500 * time.Millisecond,
+			maxWait:      60 * time.Second,
+		}, true
+	case "typescript", "ts", "tsx", "javascript", "js":
+		cmd, ok := lookCmd("typescript-language-server")
+		if !ok {
+			return server{}, false
+		}
+		return server{
+			command:      cmd,
+			args:         []string{"--stdio"},
+			languageID:   "typescript",
+			exts:         []string{".ts", ".tsx"},
+			testDirs:     []string{"/node_modules/", "/dist/", "/__tests__/"},
+			readyMarkers: nil, // tsserver does not emit reliable progress; use warmup
+			warmup:       8 * time.Second,
+			settle:       1500 * time.Millisecond,
+			maxWait:      30 * time.Second,
+		}, true
+	case "python", "py":
+		cmd, ok := lookCmd("pyright-langserver")
+		if !ok {
+			return server{}, false
+		}
+		return server{
 			command:    cmd,
-			languageID: "rust",
-			exts:       []string{".rs"},
-			testDirs:   []string{"/tests/", "/examples/", "/benches/", "/target/"},
-			srcSubdir:  "src",
+			args:       []string{"--stdio"},
+			languageID: "python",
+			exts:       []string{".py"},
+			testDirs:   []string{"/tests/", "/test/", "/.venv/", "/venv/"},
+			// pyright emits no $/progress for analysis by default; use a warmup.
+			readyMarkers: nil,
+			warmup:       10 * time.Second,
+			settle:       1500 * time.Millisecond,
+			maxWait:      45 * time.Second,
 		}, true
 	}
 	return server{}, false
+}
+
+// lookCmd resolves an executable on PATH, also checking GOPATH/bin for go tools.
+func lookCmd(name string) (string, bool) {
+	if p, err := exec.LookPath(name); err == nil {
+		return p, true
+	}
+	if out, err := exec.Command("go", "env", "GOPATH").Output(); err == nil {
+		cand := filepath.Join(strings.TrimSpace(string(out)), "bin", name)
+		if _, err := os.Stat(cand); err == nil {
+			return cand, true
+		}
+	}
+	return "", false
 }
 
 func rustAnalyzerPath() string {

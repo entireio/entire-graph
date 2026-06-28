@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -34,12 +35,17 @@ type Client struct {
 
 	writeMu sync.Mutex
 
-	mu      sync.Mutex
-	nextID  int
-	ready   bool // semantic index primed (cachePriming end)
-	diags   map[string]int
-	waiters map[int]chan json.RawMessage
+	mu          sync.Mutex
+	nextID      int
+	titles      map[string]string // progress token -> title (from begin)
+	endedSignal []string          // tokens/titles whose progress has ended
+	diags       map[string]int
+	waiters     map[int]chan json.RawMessage
 }
+
+// debugLog, when DEBUG_LSP is set, surfaces progress signals so each server's
+// readiness markers can be discovered/tuned.
+var debugLSP = os.Getenv("DEBUG_LSP") != ""
 
 type rpcMessage struct {
 	JSONRPC string           `json:"jsonrpc"`
@@ -71,6 +77,7 @@ func Start(ctx context.Context, command string, args []string, repoDir string) (
 		cmd:     cmd,
 		stdin:   stdin,
 		stdout:  bufio.NewReaderSize(stdout, 1<<20),
+		titles:  map[string]string{},
 		diags:   map[string]int{},
 		waiters: map[int]chan json.RawMessage{},
 	}
@@ -157,16 +164,29 @@ func (c *Client) readLoop() {
 			var p struct {
 				Token any `json:"token"`
 				Value struct {
-					Kind string `json:"kind"`
+					Kind  string `json:"kind"`
+					Title string `json:"title"`
 				} `json:"value"`
 			}
-			if json.Unmarshal(msg.Params, &p) == nil && p.Value.Kind == "end" {
+			if json.Unmarshal(msg.Params, &p) == nil {
 				tok := fmt.Sprintf("%v", p.Token)
-				if strings.Contains(tok, "cachePriming") {
-					c.mu.Lock()
-					c.ready = true
-					c.mu.Unlock()
+				c.mu.Lock()
+				switch p.Value.Kind {
+				case "begin":
+					c.titles[tok] = p.Value.Title
+					if debugLSP {
+						fmt.Fprintf(os.Stderr, "[lsp] progress begin token=%q title=%q\n", tok, p.Value.Title)
+					}
+				case "end":
+					c.endedSignal = append(c.endedSignal, tok)
+					if t := c.titles[tok]; t != "" {
+						c.endedSignal = append(c.endedSignal, t)
+					}
+					if debugLSP {
+						fmt.Fprintf(os.Stderr, "[lsp] progress end   token=%q title=%q\n", tok, c.titles[tok])
+					}
 				}
+				c.mu.Unlock()
 			}
 		case "textDocument/publishDiagnostics":
 			var p struct {
@@ -226,25 +246,42 @@ func (c *Client) request(method string, params any, timeout time.Duration) (json
 	}
 }
 
-// isReady reports whether the semantic index has finished priming.
-func (c *Client) isReady() bool {
+// sawReady reports whether any ended progress token/title contains one of the
+// readiness markers (case-insensitive).
+func (c *Client) sawReady(markers []string) bool {
+	if len(markers) == 0 {
+		return false
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.ready
+	for _, sig := range c.endedSignal {
+		low := strings.ToLower(sig)
+		for _, m := range markers {
+			if strings.Contains(low, strings.ToLower(m)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
-// waitReady blocks until the semantic index is primed (cachePriming end) or the
-// timeout elapses, then settles for a short window so a second indexing pass
-// can't change call-hierarchy answers mid-run (the source of nondeterminism).
-func (c *Client) waitReady(timeout, settle time.Duration) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if c.isReady() {
+// waitReady blocks until a server-specific readiness marker is observed (the
+// semantic index has primed), then settles briefly so a later indexing pass
+// can't change call-hierarchy answers mid-run. When the server emits no known
+// marker, it falls back to a fixed warmup. maxWait caps the total wait.
+func (c *Client) waitReady(markers []string, warmup, maxWait, settle time.Duration) {
+	start := time.Now()
+	for time.Since(start) < maxWait {
+		if c.sawReady(markers) {
 			time.Sleep(settle)
 			return
 		}
+		if len(markers) == 0 && time.Since(start) >= warmup {
+			break
+		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	time.Sleep(settle)
 }
 
 // loadErrors returns the count of error diagnostics over the given files.
