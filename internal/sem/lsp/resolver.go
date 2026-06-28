@@ -111,9 +111,10 @@ func ResolveCalls(ctx context.Context, repo, language string) (*Result, bool, er
 		})
 	}
 
-	// Wait for the semantic index (cachePriming end). documentSymbol answers from
-	// syntax far earlier — using that is the trap the oracle client documents.
-	client.pumpUntil(func() bool { return client.ready }, 180*time.Second)
+	// Wait for the semantic index (cachePriming end), then settle: documentSymbol
+	// answers from syntax far earlier (the trap the oracle client documents), and
+	// a second indexing pass can otherwise change call-hierarchy answers mid-run.
+	client.waitReady(180*time.Second, 2*time.Second)
 
 	rel := func(p string) string {
 		if r, err := filepath.Rel(repo, p); err == nil {
@@ -227,11 +228,7 @@ func ResolveCalls(ctx context.Context, repo, language string) (*Result, bool, er
 	for _, f := range files {
 		compiled[rel(f)] = true
 	}
-	for p, n := range client.diags {
-		if compiled[rel(p)] {
-			result.LoadErrors += n
-		}
-	}
+	result.LoadErrors = client.loadErrors(func(p string) bool { return compiled[rel(p)] })
 	return result, true, nil
 }
 
