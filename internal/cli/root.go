@@ -65,6 +65,8 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runProviderRecords(ctx, opts, args[1:], "symbols")
 	case "edges":
 		return runProviderRecords(ctx, opts, args[1:], "edges")
+	case "lsp-calls":
+		return runLSPCalls(ctx, opts, args[1:])
 	case "version", "--version", "-v":
 		if len(args) > 1 && args[1] == "--json" {
 			return json.NewEncoder(opts.Stdout).Encode(map[string]string{
