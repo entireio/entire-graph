@@ -1384,7 +1384,12 @@ func routeBoundarySource(path, language string, fileSymbols []SymbolRecord) rout
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, kindByID map[string]string) []resolvedCallTarget {
 	var local []resolvedCallTarget
 	for _, to := range sameFile {
-		if to.ID == from.ID || to.Name != name || to.Kind == "field" {
+		// A call expression resolving to a type (class/struct/enum/…) is
+		// construction, not a function call — the compiler oracles resolve it to a
+		// constructor (or not at all), never to the type symbol. Excluding
+		// type-like targets removes a cross-language over-emission source (Python
+		// CompletionItem(), Rust tuple structs) the LSP divergence diff surfaced.
+		if to.ID == from.ID || to.Name != name || to.Kind == "field" || typeLikeKind(to.Kind) {
 			continue
 		}
 		local = append(local, resolvedCallTarget{
@@ -1412,7 +1417,7 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 
 	var imported []resolvedCallTarget
 	for _, to := range candidates {
-		if to.ID == from.ID || to.Kind == "field" {
+		if to.ID == from.ID || to.Kind == "field" || typeLikeKind(to.Kind) {
 			continue
 		}
 		if importedNameMatchesFile(importsByName[name], from.FilePath, to.FilePath) {
@@ -1458,7 +1463,7 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 
 	var remaining []SymbolRecord
 	for _, to := range candidates {
-		if to.ID != from.ID && to.Kind != "field" {
+		if to.ID != from.ID && to.Kind != "field" && !typeLikeKind(to.Kind) {
 			remaining = append(remaining, to)
 		}
 	}

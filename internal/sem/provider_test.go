@@ -10464,3 +10464,22 @@ func TestResolveCallTargetsPrefersTraitDeclarationOverImplFanout(t *testing.T) {
 		t.Fatalf("cross-file: expected trait declaration %q, got %+v", traitDecl.ID, got)
 	}
 }
+
+func TestResolveCallTargetsExcludesConstruction(t *testing.T) {
+	// A call expression resolving to a type is construction, not a function call;
+	// the compiler oracles never emit it as a call to the type symbol. (LSP diff:
+	// Python CompletionItem(), Rust tuple structs.)
+	from := SymbolRecord{ID: "repo:Python:m.py:function:caller", Name: "caller", FilePath: "m.py", Language: "Python"}
+	typeOnly := SymbolRecord{ID: "repo:Python:m.py:class:Widget", Name: "Widget", FilePath: "m.py", Language: "Python", Kind: "class"}
+	if got := resolveCallTargets("Widget", from, []SymbolRecord{typeOnly}, []SymbolRecord{typeOnly}, nil, nil); len(got) != 0 {
+		t.Fatalf("construction must not be a call edge, got %+v", got)
+	}
+
+	// A real function with the same name (cross-file) still resolves; the type is
+	// dropped, the function kept.
+	fn := SymbolRecord{ID: "repo:Python:u.py:function:Widget", Name: "Widget", FilePath: "u.py", Language: "Python", Kind: "function"}
+	got := resolveCallTargets("Widget", from, []SymbolRecord{typeOnly, fn}, nil, nil, nil)
+	if len(got) != 1 || got[0].ID != fn.ID {
+		t.Fatalf("expected the function target, got %+v", got)
+	}
+}
