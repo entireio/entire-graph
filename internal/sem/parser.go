@@ -2826,6 +2826,13 @@ func minInt(a, b int) int {
 }
 
 func walkEntities(node *sitter.Node, src []byte, language, scope string, entities *[]Entity) {
+	walkEntitiesScoped(node, src, language, scope, false, entities)
+}
+
+// walkEntitiesScoped tracks whether the current node is inside a function body
+// (inFunc), so a callable defined there is marked Entity.Local — a nested/closure
+// def that call resolution must not name-match across scopes.
+func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, inFunc bool, entities *[]Entity) {
 	if !validNode(node) {
 		return
 	}
@@ -2837,15 +2844,47 @@ func walkEntities(node *sitter.Node, src []byte, language, scope string, entitie
 	}
 	entity, ok := entityFromNode(node, src, language, scope)
 	childScope := scope
+	childInFunc := inFunc
 	if ok {
+		if inFunc && (entity.Kind == "function" || entity.Kind == "method") {
+			entity.Local = true // nested inside another function
+		}
 		*entities = append(*entities, entity)
 		if scopesChildren(entity.Kind) {
 			childScope = entity.Name
 		}
+		if entity.Kind == "function" || entity.Kind == "method" {
+			childInFunc = true // descendants of this callable are function-local
+		}
+	}
+	// A Rust `impl Foo {}` / `impl Trait for Foo {}` block is not a symbol itself,
+	// but it scopes its functions to the implementing type: without this they'd be
+	// bare top-level functions with no container, so self./typed-receiver call
+	// resolution can't find them. Scope descendants to the concrete type.
+	if node.Type() == "impl_item" {
+		if t := rustImplTypeName(node, src); t != "" {
+			childScope = t
+		}
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		walkEntities(node.NamedChild(i), src, language, childScope, entities)
+		walkEntitiesScoped(node.NamedChild(i), src, language, childScope, childInFunc, entities)
 	}
+}
+
+// rustImplTypeName returns the implementing type of a Rust impl block (the `type`
+// field; for `impl Trait for Foo` that is Foo), so methods inside scope under it.
+func rustImplTypeName(node *sitter.Node, src []byte) string {
+	t := node.ChildByFieldName("type")
+	if !validNode(t) {
+		return ""
+	}
+	if t.Type() == "type_identifier" {
+		return strings.TrimSpace(t.Content(src))
+	}
+	if id := firstDescendantOfType(t, "type_identifier"); validNode(id) {
+		return strings.TrimSpace(id.Content(src))
+	}
+	return ""
 }
 
 // fieldEntities extracts struct/class field declarations as field symbols, one
@@ -3100,6 +3139,34 @@ func splitTopLevelCommaSpans(value string) []commaSpan {
 	return spans
 }
 
+// pythonOverloadStub reports whether a Python function_definition is decorated
+// with @typing.overload (in any alias: `@overload`, `@t.overload`,
+// `@typing.overload`). tree-sitter-python nests a decorated function under a
+// `decorated_definition` whose `decorator` children precede the definition.
+func pythonOverloadStub(node *sitter.Node, src []byte) bool {
+	parent := node.Parent()
+	if !validNode(parent) || parent.Type() != "decorated_definition" {
+		return false
+	}
+	for i := 0; i < int(parent.NamedChildCount()); i++ {
+		c := parent.NamedChild(i)
+		if !validNode(c) || c.Type() != "decorator" {
+			continue
+		}
+		name := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(c.Content(src)), "@"))
+		if idx := strings.IndexAny(name, "(\t "); idx >= 0 {
+			name = name[:idx] // drop any call args, e.g. @overload(...)
+		}
+		if dot := strings.LastIndex(name, "."); dot >= 0 {
+			name = name[dot+1:] // last dotted component: t.overload -> overload
+		}
+		if name == "overload" {
+			return true
+		}
+	}
+	return false
+}
+
 func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Entity, bool) {
 	var kind string
 	var name string
@@ -3140,6 +3207,13 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		kind = "module"
 		name = nodeName(node, src)
 	case "function_definition":
+		// A @typing.overload-decorated def is a type-only stub, not a real
+		// definition (replaced at runtime by the implementation of the same
+		// name), so it must not be emitted as its own symbol — the impl carries
+		// the symbol.
+		if pythonOverloadStub(node, src) {
+			return Entity{}, false
+		}
 		kind = "function"
 		name = nodeName(node, src)
 		if scope != "" {

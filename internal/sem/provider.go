@@ -38,6 +38,7 @@ var relationTypes = []string{
 	"CONTAINS",
 	"IMPORTS",
 	"CALLS",
+	"CONSTRUCTS",
 	"ASYNC_CALLS",
 	"EXTENDS",
 	"INHERITS",
@@ -226,6 +227,10 @@ type SymbolRecord struct {
 	BodyHash        string `json:"body_hash"`
 	Language        string `json:"language"`
 	ContainerID     string `json:"container_id,omitempty"`
+	// Local: a callable defined inside another function (nested/closure). Only
+	// callable within its enclosing function, so it is excluded from cross-scope
+	// name-match call resolution. Not serialized (internal to resolution).
+	Local bool `json:"-"`
 }
 
 type RelationRecord struct {
@@ -385,7 +390,7 @@ func resolveProfile(p Profile) profileSpec {
 	case ProfileSyntaxOnly:
 		return profileSpec{name: ProfileSyntaxOnly, relations: relationTypeSet("DEFINES", "CONTAINS"), includeEvidence: false, callResolution: "none"}
 	case ProfileFast:
-		return profileSpec{name: ProfileFast, relations: relationTypeSet("DEFINES", "CONTAINS", "IMPORTS", "CALLS", "HANDLES_ROUTE", "HANDLES_TOOL", "CONFIGURES", "RESOURCE_DEPENDS_ON"), includeEvidence: false, callResolution: "shallow"}
+		return profileSpec{name: ProfileFast, relations: relationTypeSet("DEFINES", "CONTAINS", "IMPORTS", "CALLS", "CONSTRUCTS", "HANDLES_ROUTE", "HANDLES_TOOL", "CONFIGURES", "RESOURCE_DEPENDS_ON"), includeEvidence: false, callResolution: "shallow"}
 	default:
 		return profileSpec{name: ProfileFull, relations: relationTypeSet(relationTypes...), includeEvidence: true, callResolution: "full"}
 	}
@@ -1019,13 +1024,28 @@ func topLevelBlockFromLines(lines []string, symbols []SymbolRecord) string {
 
 var jsDeclarationOnlyCallSignaturePattern = regexp.MustCompile(`^\s*(?:export\s+)?(?:(?:public|private|protected|readonly|static|abstract|override|declare|async)\s+)*[A-Za-z_$][A-Za-z0-9_$]*\s*(?:<[^>{}\n]*>)?\([^{};]*\)\s*:\s*[^{};]+;?\s*$`)
 
+// pythonEllipsisStubSignaturePattern matches a declaration-only Python def whose
+// body is `...` on the same line (`def describe(x: int) -> str: ...`). These are
+// @typing.overload / Protocol stubs: they are intentionally not emitted as
+// symbols, so their lines survive top-level masking, and the bare `def f(`
+// token would otherwise be mis-scanned as a call to `f`. The real
+// implementation (a `def f(...):` with a body on following lines) is part of an
+// emitted symbol and is already masked, so it is not matched here.
+var pythonEllipsisStubSignaturePattern = regexp.MustCompile(`^\s*(?:async\s+)?def\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^{}]*\)\s*(?:->[^:]+)?:\s*\.\.\.\s*$`)
+
 func stripDeclarationOnlyCallSignatures(language, content string) string {
-	if language != "JavaScript" && language != "TypeScript" {
+	var pattern *regexp.Regexp
+	switch language {
+	case "JavaScript", "TypeScript":
+		pattern = jsDeclarationOnlyCallSignaturePattern
+	case "Python":
+		pattern = pythonEllipsisStubSignaturePattern
+	default:
 		return content
 	}
 	lines := strings.Split(content, "\n")
 	for i, line := range lines {
-		if jsDeclarationOnlyCallSignaturePattern.MatchString(line) {
+		if pattern.MatchString(line) {
 			lines[i] = ""
 		}
 	}
@@ -1286,6 +1306,7 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 			BodyHash:        entity.BodyHash,
 			Language:        language,
 			ContainerID:     containerID,
+			Local:           entity.Local,
 		}
 		symbols = append(symbols, symbol)
 		byName[qualified] = id
@@ -1381,10 +1402,45 @@ func routeBoundarySource(path, language string, fileSymbols []SymbolRecord) rout
 	return routeSource{StartLine: 1, EndLine: 1}
 }
 
-func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string) []resolvedCallTarget {
+// localReachable enforces lexical nesting in name-match call resolution: a
+// function-local (nested/closure) callable is only reachable from within its
+// enclosing function — i.e. when `from` lexically contains it in the same file.
+// Non-local callables are always reachable. This kills the dominant cross-scope
+// false edges (e.g. every decorator factory's nested `decorator`/`new_func`
+// name-matching each other) without a full scope resolver.
+func localReachable(from, to SymbolRecord) bool {
+	if !to.Local {
+		return true
+	}
+	return to.FilePath == from.FilePath && from.StartLine <= to.StartLine && to.StartLine <= from.EndLine
+}
+
+// implicitReceiverLanguage reports whether a bare `name()` call can mean
+// `this.name()` (an implicit-receiver method call). In such languages a bare
+// call legitimately targets a method, so it must not be excluded from name-match
+// resolution; in Go/Python/JS/TS a method call always carries an explicit
+// receiver and is handled by receiverCallRelations instead.
+func implicitReceiverLanguage(lang string) bool {
+	switch lang {
+	case "Java", "C#", "C++", "Kotlin", "Scala", "Ruby":
+		return true
+	}
+	return false
+}
+
+// allowMethodTargets relaxes the "a bare name() never resolves to a method"
+// rule. It must stay false for CALLS resolution (a receiver-less call is a
+// function, not a class method), but the DATA_FLOWS argument-forward path
+// resolves the *called* symbol of `obj.method(arg)` — which legitimately is a
+// method — so it passes true. Folding that distinction into one resolver kept
+// the data-flow path from silently dropping the `arg -> method` flow.
+func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
 	var local []resolvedCallTarget
 	for _, to := range sameFile {
-		if to.ID == from.ID || to.Name != name || to.Kind == "field" {
+		// A bare `name()` call resolves to a function, not a class method (methods
+		// require a receiver and are resolved by receiverCallRelations) — matching
+		// a same-named method here is a false edge.
+		if to.ID == from.ID || to.Name != name || to.Kind == "field" || (to.Kind == "method" && !implicitReceiverLanguage(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
 			continue
 		}
 		local = append(local, resolvedCallTarget{
@@ -1395,13 +1451,26 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 			Scope:        "file",
 		})
 	}
-	if len(local) > 0 {
+	if len(local) == 1 {
 		return local
+	}
+	if len(local) > 1 {
+		// Ambiguous bare name with multiple same-file definitions: emit the
+		// lexically nearest one (closest declaration line to the call site) rather
+		// than fanning out an edge to every candidate. A single best guess keeps
+		// recall while cutting the over-emission that dominates the false edges.
+		best := local[0]
+		for _, c := range local[1:] {
+			if absInt(c.StartLine-from.StartLine) < absInt(best.StartLine-from.StartLine) {
+				best = c
+			}
+		}
+		return []resolvedCallTarget{best}
 	}
 
 	var imported []resolvedCallTarget
 	for _, to := range candidates {
-		if to.ID == from.ID || to.Kind == "field" {
+		if to.ID == from.ID || to.Kind == "field" || (to.Kind == "method" && !implicitReceiverLanguage(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
 			continue
 		}
 		if importedNameMatchesFile(importsByName[name], from.FilePath, to.FilePath) {
@@ -1427,7 +1496,7 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 		fromDir := filepath.ToSlash(filepath.Dir(from.FilePath))
 		var samePkg []SymbolRecord
 		for _, to := range candidates {
-			if to.ID == from.ID || to.Kind != "function" {
+			if to.ID == from.ID || to.Kind != "function" || !localReachable(from, to) {
 				continue
 			}
 			if filepath.ToSlash(filepath.Dir(to.FilePath)) == fromDir {
@@ -1447,7 +1516,7 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 
 	var remaining []SymbolRecord
 	for _, to := range candidates {
-		if to.ID != from.ID && to.Kind != "field" {
+		if to.ID != from.ID && to.Kind != "field" && (to.Kind != "method" || implicitReceiverLanguage(from.Language) || allowMethodTargets) && localReachable(from, to) {
 			remaining = append(remaining, to)
 		}
 	}
@@ -2001,13 +2070,19 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if childNamesByContainer[from.ID][name] {
 						continue
 					}
-					targets := resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, importsByName)
+					targets := resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, importsByName, false)
 					for _, to := range targets {
+						// Call to a type (class/struct/...) is a constructor/conversion, not a
+						// callable->callable call: keep it as CONSTRUCTS for agents, out of CALLS.
+						relType := "CALLS"
+						if typeLikeKind(to.Kind) {
+							relType = "CONSTRUCTS"
+						}
 						emit(RelationRecord{
 							RecordType:    "relation",
 							FromID:        from.ID,
 							ToID:          to.ID,
-							Type:          "CALLS",
+							Type:          relType,
 							Confidence:    to.Confidence,
 							Reason:        to.Reason,
 							RelationScope: to.Scope,
@@ -2036,7 +2111,10 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, importsByName) {
+					for _, to := range resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, importsByName, false) {
+						if typeLikeKind(to.Kind) {
+							continue // construction, not an async call
+						}
 						emit(RelationRecord{
 							RecordType:    "relation",
 							FromID:        from.ID,
@@ -2064,7 +2142,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if flow.Name == from.Name {
 						continue
 					}
-					for _, to := range resolveCallTargets(flow.Name, from, symbolsByShortName[flow.Name], currentFileSymbols, importsByName) {
+					for _, to := range resolveCallTargets(flow.Name, from, symbolsByShortName[flow.Name], currentFileSymbols, importsByName, true) {
 						if flow.Direction == "caller_to_callee" && to.Resolution == "name_only" {
 							continue
 						}
@@ -2234,12 +2312,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					Language: file.Language,
 				}
 				for _, name := range sortedKeysOf(callLikeIdentifiers(topLevel)) {
-					for _, to := range resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName) {
+					for _, to := range resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName, false) {
+						relType := "CALLS"
+						if typeLikeKind(to.Kind) {
+							relType = "CONSTRUCTS"
+						}
 						emit(RelationRecord{
 							RecordType:    "relation",
 							FromID:        fileSource.ID,
 							ToID:          to.ID,
-							Type:          "CALLS",
+							Type:          relType,
 							Confidence:    minFloat(to.Confidence, 0.8),
 							Reason:        "top-level call expression resolved to symbol",
 							RelationScope: to.Scope,
@@ -13138,4 +13220,11 @@ func unsupportedLanguageHint(path string) string {
 	default:
 		return ""
 	}
+}
+
+func absInt(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
