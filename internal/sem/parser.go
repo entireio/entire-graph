@@ -3337,6 +3337,7 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 			return Entity{}, false
 		}
 		kind = "module"
+		name = nodeName(node, src)
 	case "function", "bind":
 		// Haskell function equations (`f x = …`) and simple variable bindings
 		// (`f = …`). Gated to Haskell because the node types are generic words
@@ -3392,6 +3393,7 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 			return Entity{}, false
 		}
 		kind = "type"
+		name = nodeName(node, src)
 	case "fun_decl":
 		// Erlang function definition form (`name(Args) -> Body.`). Gated to
 		// Erlang and handled by a dedicated builder because tree-sitter-erlang
