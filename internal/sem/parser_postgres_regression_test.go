@@ -216,3 +216,18 @@ func TestPostgresDeclarativePartitioningParses(t *testing.T) {
 		}
 	}
 }
+
+// COPY is a psql/dump construct the grammar rejects. `COPY t (...) FROM stdin;`
+// is followed by tab-delimited data terminated by a `\.` line. Masking the COPY
+// statement (and the stdin data block) keeps following statements parseable.
+func TestPostgresCopyFromStdinParses(t *testing.T) {
+	src := "COPY users (id, name) FROM stdin;\n1\tAlice\n2\tBob\n\\.\n" +
+		"CREATE TABLE after_tbl (id int);\n"
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("schema.sql", src)
+	if status.ParseError {
+		t.Fatalf("unexpected parse error on COPY block: %s", status.Detail)
+	}
+	if countEntity(entities, "table", "after_tbl") != 1 {
+		t.Errorf("after_tbl dropped after COPY block: %+v", entities)
+	}
+}

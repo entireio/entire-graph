@@ -3434,6 +3434,12 @@ var postgresCreateDomainCastPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:dom
 var postgresPartitionByPattern = regexp.MustCompile(`(?is)\s+partition\s+by\b[^;]*`)
 var postgresPartitionOfPattern = regexp.MustCompile(`(?is)\s+partition\s+of\b[^;]*`)
 
+// COPY is a psql/dump construct the grammar rejects. `COPY t (...) FROM stdin;`
+// is followed by tab-delimited data terminated by a `\.` line (pg_dump output);
+// mask the whole block. Other COPY statements (TO/FROM file) mask as one statement.
+var postgresCopyStdinBlockPattern = regexp.MustCompile(`(?ism)^[ \t]*copy\b[^;]*\bfrom\s+stdin\b[^;]*;.*?^\\\.[ \t]*$`)
+var postgresCopyStatementPattern = regexp.MustCompile(`(?im)^[ \t]*copy\b[^;]*;`)
+
 // Extension-template placeholders like @extschema@ / @extschema:cube@ in .sql.in
 // files are not valid SQL scalars; replace each with a same-width identifier so
 // the surrounding statement parses (e.g. `AS @extschema:cube@.cube`).
@@ -3583,6 +3589,12 @@ func maskPostgresUnsupportedSyntax(content string) string {
 		replaceRangePreservingNewlines(masked, loc[0], loc[1], " (partition_dummy int)")
 	}
 	for _, loc := range postgresPartitionByPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresCopyStdinBlockPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresCopyStatementPattern.FindAllStringIndex(content, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
 	maskPostgresTableConstraints(masked, content)
