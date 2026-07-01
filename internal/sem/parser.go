@@ -37,6 +37,7 @@ import (
 	treesitterts "github.com/smacker/go-tree-sitter/typescript/typescript"
 	treesitteryaml "github.com/smacker/go-tree-sitter/yaml"
 	dart "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/dart"
+	haskell "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/haskell"
 	"github.com/suhaanthayyil/entire-sem/internal/sem/pgsql"
 	"github.com/suhaanthayyil/entire-sem/internal/sem/zsh"
 )
@@ -65,6 +66,8 @@ var treeSitterLanguages = map[string]languageSpec{
 	".hcl":        {language: "HCL", grammar: hcl.GetLanguage()},
 	".html":       {language: "HTML"},
 	".hh":         {language: "C++", grammar: cpp.GetLanguage()},
+	".hs":         {language: "Haskell", grammar: haskell.GetLanguage()},
+	".hsc":        {language: "Haskell", grammar: haskell.GetLanguage()},
 	".hpp":        {language: "C++", grammar: cpp.GetLanguage()},
 	".hxx":        {language: "C++", grammar: cpp.GetLanguage()},
 	".java":       {language: "Java", grammar: java.GetLanguage()},
@@ -2903,6 +2906,48 @@ func rustImplTypeName(node *sitter.Node, src []byte) string {
 	return ""
 }
 
+// haskellBindingName returns the LHS name of a Haskell `function`, `bind`, or
+// `signature` node (the `name` field: `f` in `f x = …` / `f :: …`). It returns
+// "" for shapes without a single LHS name — pattern binds, infix operator
+// definitions, multi-name signatures (`f, g :: …`), and the `function` nodes
+// that are type arrows (`Int -> Int`) nested inside signatures.
+func haskellBindingName(node *sitter.Node, src []byte) string {
+	nameNode := node.ChildByFieldName("name")
+	if !validNode(nameNode) {
+		return ""
+	}
+	return strings.TrimSpace(nameNode.Content(src))
+}
+
+// haskellPrevDeclSibling / haskellNextDeclSibling step over trivia (comments,
+// haddock, pragmas, CPP lines like `#ifdef`) so that equation deduplication and
+// signature/binding pairing still see adjacent declarations when trivia sits
+// between them.
+func haskellPrevDeclSibling(node *sitter.Node) *sitter.Node {
+	prev := node.PrevNamedSibling()
+	for validNode(prev) && haskellTriviaNode(prev.Type()) {
+		prev = prev.PrevNamedSibling()
+	}
+	return prev
+}
+
+func haskellNextDeclSibling(node *sitter.Node) *sitter.Node {
+	next := node.NextNamedSibling()
+	for validNode(next) && haskellTriviaNode(next.Type()) {
+		next = next.NextNamedSibling()
+	}
+	return next
+}
+
+func haskellTriviaNode(nodeType string) bool {
+	switch nodeType {
+	case "comment", "haddock", "pragma", "cpp":
+		return true
+	default:
+		return false
+	}
+}
+
 // fieldEntities extracts struct/class field declarations as field symbols, one
 // per declared name, qualified under the containing type's scope. It returns
 // false for non-field nodes and for declarations outside a container (so local
@@ -3219,6 +3264,62 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 			kind = "method"
 			name = qualify(scope, name)
 		}
+	case "function", "bind":
+		// Haskell function equations (`f x = …`) and simple variable bindings
+		// (`f = …`). Gated to Haskell because the node types are generic words
+		// other grammars could reuse. A multi-equation definition parses as one
+		// `function` node per equation; only the first consecutive equation of a
+		// name emits, so each top-level name yields a single symbol.
+		if language != "Haskell" {
+			return Entity{}, false
+		}
+		name = haskellBindingName(node, src)
+		if name == "" {
+			// Pattern bindings (`(a, b) = …`) have no single LHS name.
+			return Entity{}, false
+		}
+		if prev := haskellPrevDeclSibling(node); validNode(prev) &&
+			(prev.Type() == "function" || prev.Type() == "bind") &&
+			haskellBindingName(prev, src) == name {
+			return Entity{}, false // later equation of the same binding
+		}
+		kind = "function"
+		if scope != "" {
+			kind = "method"
+			name = qualify(scope, name)
+		}
+	case "signature":
+		// Haskell type signature (`f :: …`). It only carries the symbol when no
+		// binding follows (e.g. a class method without a default implementation);
+		// otherwise the binding right after it emits, avoiding duplicates. Gated
+		// to Haskell: `function` type arrows nest inside signatures too, but they
+		// have no name field so haskellBindingName rejects them above.
+		if language != "Haskell" {
+			return Entity{}, false
+		}
+		name = haskellBindingName(node, src)
+		if name == "" {
+			return Entity{}, false
+		}
+		if next := haskellNextDeclSibling(node); validNode(next) &&
+			(next.Type() == "function" || next.Type() == "bind") &&
+			haskellBindingName(next, src) == name {
+			return Entity{}, false // the binding itself emits the symbol
+		}
+		kind = "function"
+		if scope != "" {
+			kind = "method"
+			name = qualify(scope, name)
+		}
+	case "data_type", "newtype", "type_synomym":
+		// Haskell `data`/`newtype`/`type` declarations ("type_synomym" is the
+		// grammar's spelling). Gated to Haskell so the generic node names cannot
+		// leak into other grammars.
+		if language != "Haskell" {
+			return Entity{}, false
+		}
+		kind = "type"
+		name = nodeName(node, src)
 	case "module_definition":
 		kind = "module"
 		name = nodeName(node, src)

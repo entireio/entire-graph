@@ -9202,6 +9202,7 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 		"TypeScript",
 		"Zsh",
 		"Dart",
+		"Haskell",
 		"Zig",
 		"Bicep",
 		"GraphQL",
@@ -9213,7 +9214,7 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 			t.Fatalf("capabilities missing language %q in %#v", want, caps.SupportedLanguages)
 		}
 	}
-	for _, want := range []string{"TypeScript", "Python", "JavaScript", "Java", "C++", "C", "C#", "Go", "PHP", "Rust", "Kotlin", "Ruby", "Swift", "SQL", "Bash", "Zsh", "Dart"} {
+	for _, want := range []string{"TypeScript", "Python", "JavaScript", "Java", "C++", "C", "C#", "Go", "PHP", "Rust", "Kotlin", "Ruby", "Swift", "SQL", "Bash", "Zsh", "Dart", "Haskell"} {
 		if !semanticSeen[want] {
 			t.Fatalf("capabilities should classify %q as semantic, got semantic=%#v inventory=%#v", want, caps.SemanticLanguages, caps.InventoryOnlyLanguages)
 		}
@@ -9223,7 +9224,7 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 			t.Fatalf("capabilities should classify %q as inventory-only, got semantic=%#v inventory=%#v", want, caps.SemanticLanguages, caps.InventoryOnlyLanguages)
 		}
 	}
-	for _, want := range []string{".go", ".py", ".ts", ".rs", ".swift", ".proto", ".dart", ".zig", ".bicep", ".graphql"} {
+	for _, want := range []string{".go", ".py", ".ts", ".rs", ".swift", ".proto", ".dart", ".hs", ".zig", ".bicep", ".graphql"} {
 		if !contains(caps.SupportedFileExtensions, want) {
 			t.Fatalf("capabilities missing extension %q in %#v", want, caps.SupportedFileExtensions)
 		}
@@ -10412,5 +10413,68 @@ class Widget {
 	}
 	if kinds["Widget.build"] == "" && kinds["build"] == "" {
 		t.Fatalf("Dart method not extracted: %#v", kinds)
+	}
+}
+
+func TestHaskellSemanticExtraction(t *testing.T) {
+	// Haskell was promoted from inventory to the semantic tier (vendored
+	// grammar); it must now extract top-level function bindings (one symbol
+	// per name, even across multiple equations), data/newtype declarations,
+	// type synonyms, and classes.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/App.hs", `module App where
+
+data Widget = Widget
+  { widgetName :: String
+  , widgetSize :: Int
+  }
+
+newtype Wrapper = Wrapper Int
+
+type Alias = [Widget]
+
+class Renderable a where
+  render :: a -> String
+
+helper :: Int -> Int
+helper n = n + 1
+
+multiEq :: Int -> Int
+multiEq 0 = 0
+multiEq n = multiEq (n - 1)
+
+topValue :: Int
+topValue = helper 3
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	count := map[string]int{}
+	for _, s := range snapshot.Symbols {
+		if s.Language == "Haskell" {
+			kinds[s.Name] = s.Kind
+			count[s.Name]++
+		}
+	}
+	for _, name := range []string{"helper", "multiEq", "topValue"} {
+		if kinds[name] != "function" {
+			t.Fatalf("Haskell top-level binding %q not extracted as function: %#v", name, kinds)
+		}
+	}
+	if count["multiEq"] != 1 {
+		t.Fatalf("Haskell multi-equation function should emit one symbol, got %d: %#v", count["multiEq"], kinds)
+	}
+	for _, name := range []string{"Widget", "Wrapper", "Alias"} {
+		if kinds[name] != "type" {
+			t.Fatalf("Haskell type declaration %q not extracted: %#v", name, kinds)
+		}
+	}
+	if kinds["Renderable"] != "class" {
+		t.Fatalf("Haskell class not extracted: %#v", kinds)
+	}
+	if kinds["Renderable.render"] == "" && kinds["render"] == "" {
+		t.Fatalf("Haskell class method signature not extracted: %#v", kinds)
 	}
 }
