@@ -74,7 +74,6 @@ var inventoryLanguageExtensions = map[string]languageSpec{
 	".io":          {language: "Io", inventoryOnly: true},
 	".j2":          {language: "Jinja", inventoryOnly: true},
 	".jade":        {language: "Pug", inventoryOnly: true},
-	".jl":          {language: "Julia", inventoryOnly: true},
 	".jq":          {language: "jq", inventoryOnly: true},
 	".jsp":         {language: "JSP", inventoryOnly: true},
 	".jlisp":       {language: "Lisp", inventoryOnly: true},
