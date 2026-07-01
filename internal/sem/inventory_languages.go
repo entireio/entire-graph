@@ -107,7 +107,6 @@ var inventoryLanguageExtensions = map[string]languageSpec{
 	".pony":        {language: "Pony", inventoryOnly: true},
 	".pp":          {language: "Puppet", inventoryOnly: true},
 	".purs":        {language: "PureScript", inventoryOnly: true},
-	".r":           {language: "R", inventoryOnly: true},
 	".racket":      {language: "Racket", inventoryOnly: true},
 	".raku":        {language: "Raku", inventoryOnly: true},
 	".razor":       {language: "Razor", inventoryOnly: true},

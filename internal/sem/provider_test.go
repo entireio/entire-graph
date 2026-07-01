@@ -9202,6 +9202,7 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 		"TypeScript",
 		"Zsh",
 		"Dart",
+		"R",
 		"Zig",
 		"Bicep",
 		"GraphQL",
@@ -9213,7 +9214,7 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 			t.Fatalf("capabilities missing language %q in %#v", want, caps.SupportedLanguages)
 		}
 	}
-	for _, want := range []string{"TypeScript", "Python", "JavaScript", "Java", "C++", "C", "C#", "Go", "PHP", "Rust", "Kotlin", "Ruby", "Swift", "SQL", "Bash", "Zsh", "Dart"} {
+	for _, want := range []string{"TypeScript", "Python", "JavaScript", "Java", "C++", "C", "C#", "Go", "PHP", "Rust", "Kotlin", "Ruby", "Swift", "SQL", "Bash", "Zsh", "Dart", "R"} {
 		if !semanticSeen[want] {
 			t.Fatalf("capabilities should classify %q as semantic, got semantic=%#v inventory=%#v", want, caps.SemanticLanguages, caps.InventoryOnlyLanguages)
 		}
@@ -9223,7 +9224,7 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 			t.Fatalf("capabilities should classify %q as inventory-only, got semantic=%#v inventory=%#v", want, caps.SemanticLanguages, caps.InventoryOnlyLanguages)
 		}
 	}
-	for _, want := range []string{".go", ".py", ".ts", ".rs", ".swift", ".proto", ".dart", ".zig", ".bicep", ".graphql"} {
+	for _, want := range []string{".go", ".py", ".ts", ".rs", ".swift", ".proto", ".dart", ".r", ".zig", ".bicep", ".graphql"} {
 		if !contains(caps.SupportedFileExtensions, want) {
 			t.Fatalf("capabilities missing extension %q in %#v", want, caps.SupportedFileExtensions)
 		}
@@ -10412,5 +10413,66 @@ class Widget {
 	}
 	if kinds["Widget.build"] == "" && kinds["build"] == "" {
 		t.Fatalf("Dart method not extracted: %#v", kinds)
+	}
+}
+
+func TestRSemanticExtraction(t *testing.T) {
+	// R was promoted from inventory to the semantic tier (vendored grammar).
+	// R defines functions by assignment, so the extractor must name symbols
+	// from the assignment target across the assignment operator spellings.
+	repo := t.TempDir()
+	writeFile(t, repo, "R/plot.R", `helper <- function(n) {
+  n + 1
+}
+
+scale = function(x) x * 2
+
+"at<-" <- function(x, value) {
+  x
+}
+
+Person <- R6::R6Class("Person", public = list(
+  greet = function() cat("hi")
+))
+
+render <- function(x) {
+  helper(x)
+}
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, s := range snapshot.Symbols {
+		if s.Language == "R" {
+			kinds[s.Name] = s.Kind
+		}
+	}
+	if kinds["helper"] != "function" {
+		t.Fatalf("R `<-` function not extracted: %#v", kinds)
+	}
+	if kinds["scale"] != "function" {
+		t.Fatalf("R `=` function not extracted: %#v", kinds)
+	}
+	if kinds["at<-"] != "function" {
+		t.Fatalf("R string-named replacement function not extracted: %#v", kinds)
+	}
+	if kinds["Person"] != "class" {
+		t.Fatalf("R R6 class not extracted: %#v", kinds)
+	}
+	// Anonymous function_definition nodes must not invent symbols named after
+	// their first parameter.
+	if _, ok := kinds["n"]; ok {
+		t.Fatalf("R anonymous function invented a parameter-named symbol: %#v", kinds)
+	}
+	var calls int
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" {
+			calls++
+		}
+	}
+	if calls == 0 {
+		t.Fatalf("expected CALLS relations for R (render -> helper), got none")
 	}
 }

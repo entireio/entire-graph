@@ -37,6 +37,7 @@ import (
 	treesitterts "github.com/smacker/go-tree-sitter/typescript/typescript"
 	treesitteryaml "github.com/smacker/go-tree-sitter/yaml"
 	dart "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/dart"
+	rlang "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/r"
 	"github.com/suhaanthayyil/entire-sem/internal/sem/pgsql"
 	"github.com/suhaanthayyil/entire-sem/internal/sem/zsh"
 )
@@ -84,6 +85,7 @@ var treeSitterLanguages = map[string]languageSpec{
 	".php":        {language: "PHP", grammar: php.GetLanguage()},
 	".proto":      {language: "Protocol Buffers", grammar: protobuf.GetLanguage()},
 	".py":         {language: "Python", grammar: python.GetLanguage()},
+	".r":          {language: "R", grammar: rlang.GetLanguage()},
 	".rb":         {language: "Ruby", grammar: ruby.GetLanguage()},
 	".rs":         {language: "Rust", grammar: rust.GetLanguage()},
 	".sbt":        {language: "Scala", grammar: scala.GetLanguage()},
@@ -3222,7 +3224,26 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 	case "module_definition":
 		kind = "module"
 		name = nodeName(node, src)
+	case "binary_operator":
+		// R defines functions by assignment: `name <- function(args) ...` is a
+		// binary_operator whose value side is a function_definition. Gated to R
+		// so languages whose grammars also emit binary_operator nodes are
+		// unchanged.
+		if language != "R" {
+			return Entity{}, false
+		}
+		var ok bool
+		kind, name, ok = rAssignmentEntity(node, src, scope)
+		if !ok {
+			return Entity{}, false
+		}
 	case "function_definition":
+		// In R, function_definition is anonymous — the name lives on the
+		// enclosing assignment (the binary_operator case above); extracting
+		// here would invent a name from the first parameter.
+		if language == "R" {
+			return Entity{}, false
+		}
 		// A @typing.overload-decorated def is a type-only stub, not a real
 		// definition (replaced at runtime by the implementation of the same
 		// name), so it must not be emitted as its own symbol — the impl carries
@@ -4929,6 +4950,69 @@ func scopesChildren(kind string) bool {
 	default:
 		return false
 	}
+}
+
+// rAssignmentEntity extracts an R definition from an assignment. The r-lib
+// grammar represents `name <- function(args) ...` as a binary_operator with
+// lhs/operator/rhs fields; `=`, `<<-`, and the right-assign forms
+// (`function(...) ... -> name`) are the same node with a different operator.
+// A function_definition value (including the `\(x)` lambda shorthand) yields a
+// function; an R6Class/setRefClass call value yields a class (the trivial
+// S4/R6 idiom). The name side may be an identifier or a string, as in
+// syntactic names like `"myop<-" <- function(x, value) ...`.
+func rAssignmentEntity(node *sitter.Node, src []byte, scope string) (string, string, bool) {
+	operator := node.ChildByFieldName("operator")
+	if !validNode(operator) {
+		return "", "", false
+	}
+	target := node.ChildByFieldName("lhs")
+	value := node.ChildByFieldName("rhs")
+	switch operator.Type() {
+	case "<-", "<<-", "=":
+	case "->", "->>":
+		target, value = value, target
+	default:
+		return "", "", false
+	}
+	if !validNode(value) {
+		return "", "", false
+	}
+	name := rAssignmentTargetName(target, src)
+	if name == "" {
+		return "", "", false
+	}
+	switch value.Type() {
+	case "function_definition":
+		if scope != "" {
+			return "method", qualify(scope, name), true
+		}
+		return "function", name, true
+	case "call":
+		if fn := value.ChildByFieldName("function"); validNode(fn) {
+			callee := strings.TrimSpace(fn.Content(src))
+			if callee == "R6Class" || callee == "R6::R6Class" || callee == "setRefClass" || callee == "methods::setRefClass" {
+				return "class", name, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// rAssignmentTargetName returns the defined name from the target side of an R
+// assignment: a plain identifier or a quoted string (syntactic names).
+func rAssignmentTargetName(node *sitter.Node, src []byte) string {
+	if !validNode(node) {
+		return ""
+	}
+	switch node.Type() {
+	case "identifier":
+		return strings.TrimSpace(node.Content(src))
+	case "string":
+		if content := firstNamedChildOfType(node, "string_content"); validNode(content) {
+			return strings.TrimSpace(content.Content(src))
+		}
+	}
+	return ""
 }
 
 func elixirCallEntity(node *sitter.Node, src []byte, scope string) (string, string, bool) {
