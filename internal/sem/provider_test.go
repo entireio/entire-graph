@@ -9213,7 +9213,7 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 			t.Fatalf("capabilities missing language %q in %#v", want, caps.SupportedLanguages)
 		}
 	}
-	for _, want := range []string{"TypeScript", "Python", "JavaScript", "Java", "C++", "C", "C#", "Go", "PHP", "Rust", "Kotlin", "Ruby", "Swift", "SQL", "Bash", "Zsh", "Dart"} {
+	for _, want := range []string{"TypeScript", "Python", "JavaScript", "Java", "C++", "C", "C#", "Go", "PHP", "Rust", "Kotlin", "Ruby", "Swift", "SQL", "Bash", "Zsh", "Dart", "F#"} {
 		if !semanticSeen[want] {
 			t.Fatalf("capabilities should classify %q as semantic, got semantic=%#v inventory=%#v", want, caps.SemanticLanguages, caps.InventoryOnlyLanguages)
 		}
@@ -10412,5 +10412,60 @@ class Widget {
 	}
 	if kinds["Widget.build"] == "" && kinds["build"] == "" {
 		t.Fatalf("Dart method not extracted: %#v", kinds)
+	}
+}
+
+func TestFSharpSemanticExtraction(t *testing.T) {
+	// F# was promoted from inventory to the semantic tier (vendored
+	// ionide/tree-sitter-fsharp grammar); it must now extract modules, types,
+	// members, and top-level let bindings.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/App.fs", `module MyApp.Core
+
+let simpleValue = 42
+
+let add x y = x + y
+
+[<CustomEquality; NoComparison>]
+type SemVerInfo =
+    { Major: uint32 }
+    override x.ToString() = string x.Major
+
+type Widget(name: string) =
+    member this.Describe (verbose: bool) =
+        if verbose then name else "w"
+
+module Nested =
+    let helper a = add a 2
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, s := range snapshot.Symbols {
+		if s.Language == "F#" {
+			kinds[s.QualifiedName] = s.Kind
+		}
+	}
+	if kinds["MyApp.Core"] != "module" || kinds["Nested"] != "module" {
+		t.Fatalf("F# modules not extracted: %#v", kinds)
+	}
+	if kinds["add"] != "function" || kinds["helper"] != "function" {
+		t.Fatalf("F# top-level let functions not extracted: %#v", kinds)
+	}
+	if kinds["simpleValue"] != "variable" {
+		t.Fatalf("F# top-level let value not extracted: %#v", kinds)
+	}
+	// The attribute-decorated type must be named from its type_name, not the
+	// leading attribute.
+	if kinds["SemVerInfo"] != "type" || kinds["Widget"] != "type" {
+		t.Fatalf("F# types not extracted: %#v", kinds)
+	}
+	if kinds["Widget.Describe"] != "method" {
+		t.Fatalf("F# member not extracted as method: %#v", kinds)
+	}
+	if kinds["SemVerInfo.ToString"] != "method" {
+		t.Fatalf("F# override member not extracted as method: %#v", kinds)
 	}
 }
