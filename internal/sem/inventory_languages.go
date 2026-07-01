@@ -63,8 +63,6 @@ var inventoryLanguageExtensions = map[string]languageSpec{
 	".hack":        {language: "Hack", inventoryOnly: true},
 	".haml":        {language: "Haml", inventoryOnly: true},
 	".handlebars":  {language: "Handlebars", inventoryOnly: true},
-	".hs":          {language: "Haskell", inventoryOnly: true},
-	".hsc":         {language: "Haskell", inventoryOnly: true},
 	".idr":         {language: "Idris", inventoryOnly: true},
 	".ini":         {language: "INI", inventoryOnly: true},
 	".ino":         {language: "Arduino", inventoryOnly: true},
