@@ -39,6 +39,7 @@ import (
 	clojure "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/clojure"
 	dart "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/dart"
 	erlang "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/erlang"
+	fsharp "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/fsharp"
 	haskell "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/haskell"
 	julia "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/julia"
 	objc "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/objc"
@@ -71,6 +72,10 @@ var treeSitterLanguages = map[string]languageSpec{
 	".ex":         {language: "Elixir", grammar: elixir.GetLanguage()},
 	".exs":        {language: "Elixir", grammar: elixir.GetLanguage()},
 	".hrl":        {language: "Erlang", grammar: erlang.GetLanguage()},
+	".fs":         {language: "F#", grammar: fsharp.GetLanguage()},
+	".fsi":        {language: "F#", grammar: fsharp.GetLanguage()},
+	".fsscript":   {language: "F#", grammar: fsharp.GetLanguage()},
+	".fsx":        {language: "F#", grammar: fsharp.GetLanguage()},
 	".go":         {language: "Go", grammar: golang.GetLanguage()},
 	".gradle":     {language: "Groovy", grammar: groovy.GetLanguage()},
 	".groovy":     {language: "Groovy", grammar: groovy.GetLanguage()},
@@ -3000,6 +3005,159 @@ func haskellTriviaNode(nodeType string) bool {
 	}
 }
 
+// fsharpModuleName returns the (possibly dotted) name of an F# module
+// declaration. A file-heading `named_module` carries the full long_identifier
+// in its name field (`module Paket.UpdateProcess`); a nested `module_defn`
+// names itself with a plain identifier child after optional attributes.
+func fsharpModuleName(node *sitter.Node, src []byte) string {
+	if name := node.ChildByFieldName("name"); validNode(name) {
+		return strings.TrimSpace(name.Content(src))
+	}
+	if id := firstNamedChildOfType(node, "identifier"); validNode(id) {
+		return strings.TrimSpace(id.Content(src))
+	}
+	return ""
+}
+
+// fsharpTypeName returns the declared name of an F# type_definition, which
+// lives on the type_name node of the concrete *_type_defn child (record,
+// union, anon/class, ...).
+func fsharpTypeName(node *sitter.Node, src []byte) string {
+	if tn := firstDescendantOfType(node, "type_name"); validNode(tn) {
+		return firstNameDescendant(tn, src)
+	}
+	return ""
+}
+
+// fsharpLetBinding classifies an F# `let` binding (function_or_value_defn).
+// A binding with a parameter list (function_declaration_left) is a function,
+// as is a bare binding whose body is a `fun`/`function` expression. Any other
+// value binding is a variable, emitted only outside function and member
+// bodies so the pervasive function-local `let x = ...` bindings do not
+// surface as module-level variable symbols (function-local functions still
+// surface and are marked Local by the walker).
+func fsharpLetBinding(node *sitter.Node, src []byte) (string, string) {
+	if left := firstNamedChildOfType(node, "function_declaration_left"); validNode(left) {
+		if id := firstNamedChildOfType(left, "identifier"); validNode(id) {
+			return "function", strings.TrimSpace(id.Content(src))
+		}
+		return "", ""
+	}
+	left := firstNamedChildOfType(node, "value_declaration_left")
+	if !validNode(left) {
+		return "", ""
+	}
+	// The declared name lives in the identifier_pattern; descending blindly
+	// would latch onto a leading attribute (`let [<Literal>] Name = ...`
+	// parses as attribute_pattern with the attributes first).
+	var name string
+	if pattern := firstDescendantOfType(left, "identifier_pattern"); validNode(pattern) {
+		name = firstNameDescendant(pattern, src)
+	}
+	if body := node.ChildByFieldName("body"); validNode(body) {
+		switch body.Type() {
+		case "fun_expression", "function_expression":
+			return "function", name
+		}
+	}
+	if fsharpInsideCallable(node) {
+		return "", ""
+	}
+	return "variable", name
+}
+
+// fsharpInsideCallable reports whether node is nested inside another F# let
+// binding or member body, i.e. it is a local binding rather than a module- or
+// type-level declaration.
+func fsharpInsideCallable(node *sitter.Node) bool {
+	for parent := node.Parent(); validNode(parent); parent = parent.Parent() {
+		switch parent.Type() {
+		case "function_or_value_defn", "member_defn":
+			return true
+		}
+	}
+	return false
+}
+
+// fsharpMemberName returns the declared name of an F# member_defn. Instance
+// members parse as method_or_prop_defn whose property_or_ident name node
+// holds the member name in its `method` field (the `instance` field is the
+// self identifier, e.g. `this`); static members and `member val` properties
+// carry a bare identifier; abstract members parse as member_signature.
+func fsharpMemberName(node *sitter.Node, src []byte) string {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if !validNode(child) {
+			continue
+		}
+		switch child.Type() {
+		case "method_or_prop_defn":
+			if name := child.ChildByFieldName("name"); validNode(name) {
+				return fsharpPropertyOrIdentName(name, src)
+			}
+		case "property_or_ident":
+			return fsharpPropertyOrIdentName(child, src)
+		case "member_signature":
+			return firstNameDescendant(child, src)
+		}
+	}
+	return ""
+}
+
+func fsharpPropertyOrIdentName(node *sitter.Node, src []byte) string {
+	if m := node.ChildByFieldName("method"); validNode(m) {
+		return strings.TrimSpace(m.Content(src))
+	}
+	return firstNameDescendant(node, src)
+}
+
+// fsharpSignature returns a bounded declaration header for F# node types whose
+// tree keeps the body as unlabeled sibling children (modules, members), where
+// the generic body-field cut cannot apply.
+func fsharpSignature(node *sitter.Node, src []byte) string {
+	start := node.StartByte()
+	var end uint32
+	switch node.Type() {
+	case "named_module":
+		if name := node.ChildByFieldName("name"); validNode(name) {
+			end = name.EndByte()
+		}
+	case "module_defn":
+		if id := firstNamedChildOfType(node, "identifier"); validNode(id) {
+			end = id.EndByte()
+		}
+	case "member_defn":
+		// Cut before the trailing body expression (the last named child of the
+		// method_or_prop_defn), keeping `member this.Name args`.
+		if defn := firstNamedChildOfType(node, "method_or_prop_defn"); validNode(defn) {
+			if n := int(defn.NamedChildCount()); n >= 2 {
+				if body := defn.NamedChild(n - 1); validNode(body) {
+					end = body.StartByte()
+				}
+			}
+		}
+	case "type_definition":
+		// Cut before the type body (the concrete *_type_defn child's first
+		// `block` field: record fields, union cases, or member elements),
+		// keeping attributes, name, and primary constructor arguments.
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			child := node.NamedChild(i)
+			if !validNode(child) || !strings.HasSuffix(child.Type(), "_type_defn") {
+				continue
+			}
+			if block := child.ChildByFieldName("block"); validNode(block) {
+				end = block.StartByte()
+			}
+			break
+		}
+	}
+	if end <= start || int(end) > len(src) {
+		return ""
+	}
+	signature := strings.Join(strings.Fields(string(src[start:end])), " ")
+	return strings.TrimSpace(strings.TrimRight(signature, "=: \t\r\n"))
+}
+
 // fieldEntities extracts struct/class field declarations as field symbols, one
 // per declared name, qualified under the containing type's scope. It returns
 // false for non-field nodes and for declarations outside a container (so local
@@ -3417,6 +3575,37 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		}
 		kind = "struct"
 		name = nodeName(node, src)
+	case "named_module", "module_defn":
+		// F# module declarations: `module A.B.C` heading a file (named_module) or
+		// a nested `module Name =` block (module_defn). Gated to F# per the
+		// language-promotion pattern so no other grammar's node types shift.
+		if language != "F#" {
+			return Entity{}, false
+		}
+		kind = "module"
+		name = fsharpModuleName(node, src)
+	case "function_or_value_defn":
+		// F# `let` binding: a binding with a parameter list is a function; a bare
+		// value binding is a variable (only surfaced outside function bodies, so
+		// the pervasive function-local `let x = ...` stays out of the symbol set).
+		if language != "F#" {
+			return Entity{}, false
+		}
+		kind, name = fsharpLetBinding(node, src)
+		if kind == "" {
+			return Entity{}, false
+		}
+	case "member_defn":
+		// F# type member (`member this.Name ...`, `static member`, `member val`,
+		// `abstract member`), qualified under the enclosing type via scope.
+		if language != "F#" {
+			return Entity{}, false
+		}
+		kind = "method"
+		name = fsharpMemberName(node, src)
+		if scope != "" {
+			name = qualify(scope, name)
+		}
 	case "module_definition":
 		kind = "module"
 		name = nodeName(node, src)
@@ -3594,7 +3783,14 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		}
 	case "type_definition", "type_spec", "type_alias_declaration":
 		kind = "type"
-		name = nodeName(node, src)
+		if language == "F#" {
+			// The declared name lives on the type_name node of the concrete
+			// *_type_defn child; the generic name descent would instead latch onto
+			// a leading attribute ([<CustomEquality>] type SemVerInfo -> "CustomEquality").
+			name = fsharpTypeName(node, src)
+		} else {
+			name = nodeName(node, src)
+		}
 	case "interface_declaration", "interface_definition":
 		kind = "interface"
 		name = nodeName(node, src)
@@ -3737,6 +3933,16 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		EndLine:     int(node.EndPoint().Row) + 1,
 		BodyHash:    hash(normalize(block)),
 		Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signatureFromNode(node, src)}, block))),
+	}
+	// F# modules and members carry their declarations/body as direct siblings of
+	// the name (no `body` field or body-like wrapper node), so signatureFromNode
+	// would collapse the whole remaining file (module) or member body into the
+	// signature. Cap it to the declaration header.
+	if language == "F#" {
+		if sig := fsharpSignature(node, src); sig != "" {
+			entity.Signature = sig
+			entity.Fingerprint = hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: sig}, block)))
+		}
 	}
 	return entity, true
 }
