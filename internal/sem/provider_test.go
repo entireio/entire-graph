@@ -9207,6 +9207,7 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 		"Dart",
 		"R",
 		"Julia",
+		"Erlang",
 		"Haskell",
 		"Perl",
 		"Zig",
@@ -9220,7 +9221,7 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 			t.Fatalf("capabilities missing language %q in %#v", want, caps.SupportedLanguages)
 		}
 	}
-	for _, want := range []string{"TypeScript", "Python", "JavaScript", "Java", "C++", "C", "C#", "Go", "PHP", "Rust", "Kotlin", "Ruby", "Swift", "SQL", "Bash", "Zsh", "Dart", "R", "Julia", "Clojure", "ClojureScript", "Zig", "Perl", "Haskell"} {
+	for _, want := range []string{"TypeScript", "Python", "JavaScript", "Java", "C++", "C", "C#", "Go", "PHP", "Rust", "Kotlin", "Ruby", "Swift", "SQL", "Bash", "Zsh", "Dart", "R", "Julia", "Clojure", "ClojureScript", "Zig", "Perl", "Haskell", "Erlang"} {
 		if !semanticSeen[want] {
 			t.Fatalf("capabilities should classify %q as semantic, got semantic=%#v inventory=%#v", want, caps.SemanticLanguages, caps.InventoryOnlyLanguages)
 		}
@@ -9230,7 +9231,7 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 			t.Fatalf("capabilities should classify %q as inventory-only, got semantic=%#v inventory=%#v", want, caps.SemanticLanguages, caps.InventoryOnlyLanguages)
 		}
 	}
-	for _, want := range []string{".go", ".py", ".ts", ".rs", ".swift", ".proto", ".dart", ".r", ".jl", ".zig", ".bicep", ".graphql", ".pl", ".pm", ".hs"} {
+	for _, want := range []string{".go", ".py", ".ts", ".rs", ".swift", ".proto", ".dart", ".r", ".jl", ".zig", ".bicep", ".graphql", ".pl", ".pm", ".hs", ".erl", ".hrl"} {
 		if !contains(caps.SupportedFileExtensions, want) {
 			t.Fatalf("capabilities missing extension %q in %#v", want, caps.SupportedFileExtensions)
 		}
@@ -10793,5 +10794,47 @@ topValue = helper 3
 	}
 	if kinds["Renderable.render"] == "" && kinds["render"] == "" {
 		t.Fatalf("Haskell class method signature not extracted: %#v", kinds)
+	}
+}
+func TestErlangSemanticExtraction(t *testing.T) {
+	// Erlang was promoted from inventory to the semantic tier (vendored
+	// grammar); it must now extract modules, records, and functions, folding a
+	// multi-clause function into a single symbol named after the bare function.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/geometry.erl", `-module(geometry).
+-export([area/1, add/2]).
+-record(point, {x = 0, y = 0}).
+
+area(#point{x = X, y = Y}) when X > 0 ->
+    X * Y;
+area(_) ->
+    0.
+
+add(A, B) ->
+    A + B.
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	names := map[string]int{}
+	for _, s := range snapshot.Symbols {
+		if s.Language == "Erlang" {
+			kinds[s.Name] = s.Kind
+			names[s.Name]++
+		}
+	}
+	if kinds["geometry"] != "module" {
+		t.Fatalf("Erlang module attribute not extracted: %#v", kinds)
+	}
+	if kinds["point"] != "struct" {
+		t.Fatalf("Erlang record not extracted: %#v", kinds)
+	}
+	if kinds["area"] != "function" || kinds["add"] != "function" {
+		t.Fatalf("Erlang functions not extracted: %#v", kinds)
+	}
+	if names["area"] != 1 {
+		t.Fatalf("Erlang multi-clause function should fold into one symbol, got %d: %#v", names["area"], kinds)
 	}
 }
