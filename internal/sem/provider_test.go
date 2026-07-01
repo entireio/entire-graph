@@ -9202,6 +9202,7 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 		"TypeScript",
 		"Zsh",
 		"Dart",
+		"Julia",
 		"Zig",
 		"Bicep",
 		"GraphQL",
@@ -9213,7 +9214,7 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 			t.Fatalf("capabilities missing language %q in %#v", want, caps.SupportedLanguages)
 		}
 	}
-	for _, want := range []string{"TypeScript", "Python", "JavaScript", "Java", "C++", "C", "C#", "Go", "PHP", "Rust", "Kotlin", "Ruby", "Swift", "SQL", "Bash", "Zsh", "Dart"} {
+	for _, want := range []string{"TypeScript", "Python", "JavaScript", "Java", "C++", "C", "C#", "Go", "PHP", "Rust", "Kotlin", "Ruby", "Swift", "SQL", "Bash", "Zsh", "Dart", "Julia"} {
 		if !semanticSeen[want] {
 			t.Fatalf("capabilities should classify %q as semantic, got semantic=%#v inventory=%#v", want, caps.SemanticLanguages, caps.InventoryOnlyLanguages)
 		}
@@ -9223,7 +9224,7 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 			t.Fatalf("capabilities should classify %q as inventory-only, got semantic=%#v inventory=%#v", want, caps.SemanticLanguages, caps.InventoryOnlyLanguages)
 		}
 	}
-	for _, want := range []string{".go", ".py", ".ts", ".rs", ".swift", ".proto", ".dart", ".zig", ".bicep", ".graphql"} {
+	for _, want := range []string{".go", ".py", ".ts", ".rs", ".swift", ".proto", ".dart", ".jl", ".zig", ".bicep", ".graphql"} {
 		if !contains(caps.SupportedFileExtensions, want) {
 			t.Fatalf("capabilities missing extension %q in %#v", want, caps.SupportedFileExtensions)
 		}
@@ -10412,5 +10413,73 @@ class Widget {
 	}
 	if kinds["Widget.build"] == "" && kinds["build"] == "" {
 		t.Fatalf("Dart method not extracted: %#v", kinds)
+	}
+}
+
+func TestJuliaSemanticExtraction(t *testing.T) {
+	// Julia was promoted from inventory to the semantic tier (vendored grammar);
+	// it must now extract modules, structs, macros, and both long- and
+	// short-form function definitions.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/app.jl", `function long_form(x, y)
+    return x + y
+end
+
+short_form(a, b) = a * b
+
+Base.show(io::IO, p::Point) = print(io, p.x)
+
+struct Point{T}
+    x::T
+    y::T
+end
+
+mutable struct Counter
+    n::Int
+end
+
+macro trace(ex)
+    return ex
+end
+
+module Inner
+
+inner_helper(v) = v + 1
+
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, s := range snapshot.Symbols {
+		if s.Language == "Julia" {
+			kinds[s.QualifiedName] = s.Kind
+		}
+	}
+	if kinds["long_form"] != "function" {
+		t.Fatalf("Julia long-form function not extracted: %#v", kinds)
+	}
+	if kinds["short_form"] != "function" {
+		t.Fatalf("Julia short-form function not extracted: %#v", kinds)
+	}
+	if kinds["Base.show"] != "function" {
+		t.Fatalf("Julia qualified extension method not extracted: %#v", kinds)
+	}
+	if kinds["Point"] != "struct" {
+		t.Fatalf("Julia parametric struct not extracted: %#v", kinds)
+	}
+	if kinds["Counter"] != "struct" {
+		t.Fatalf("Julia mutable struct not extracted: %#v", kinds)
+	}
+	if kinds["trace"] != "function" {
+		t.Fatalf("Julia macro not extracted: %#v", kinds)
+	}
+	if kinds["Inner"] != "module" {
+		t.Fatalf("Julia module not extracted: %#v", kinds)
+	}
+	if kinds["Inner.inner_helper"] == "" && kinds["inner_helper"] == "" {
+		t.Fatalf("Julia module-scoped function not extracted: %#v", kinds)
 	}
 }

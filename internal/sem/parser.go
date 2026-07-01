@@ -37,6 +37,7 @@ import (
 	treesitterts "github.com/smacker/go-tree-sitter/typescript/typescript"
 	treesitteryaml "github.com/smacker/go-tree-sitter/yaml"
 	dart "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/dart"
+	julia "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/julia"
 	"github.com/suhaanthayyil/entire-sem/internal/sem/pgsql"
 	"github.com/suhaanthayyil/entire-sem/internal/sem/zsh"
 )
@@ -68,6 +69,7 @@ var treeSitterLanguages = map[string]languageSpec{
 	".hpp":        {language: "C++", grammar: cpp.GetLanguage()},
 	".hxx":        {language: "C++", grammar: cpp.GetLanguage()},
 	".java":       {language: "Java", grammar: java.GetLanguage()},
+	".jl":         {language: "Julia", grammar: julia.GetLanguage()},
 	".js":         {language: "JavaScript", grammar: javascript.GetLanguage()},
 	".json":       {language: "JSON"},
 	".json5":      {language: "JSON5"},
@@ -3223,6 +3225,23 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		kind = "module"
 		name = nodeName(node, src)
 	case "function_definition":
+		// Julia long-form `function name(args) ... end`. The name needs the
+		// signature walk instead of generic nodeName: a qualified extension
+		// method (`function Base.show(io, x)`) must keep its dotted path (the
+		// generic descent would stop at "Base"), and a callable-object
+		// definition (`function (obj::T)(x)`) binds no name at all.
+		if language == "Julia" {
+			kind = "function"
+			name = juliaDefinitionName(firstNamedChildOfType(node, "signature"), src)
+			if name == "" {
+				return Entity{}, false
+			}
+			if scope != "" && !strings.Contains(name, ".") {
+				kind = "method"
+				name = qualify(scope, name)
+			}
+			break
+		}
 		// A @typing.overload-decorated def is a type-only stub, not a real
 		// definition (replaced at runtime by the implementation of the same
 		// name), so it must not be emitted as its own symbol — the impl carries
@@ -3233,6 +3252,58 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		kind = "function"
 		name = nodeName(node, src)
 		if scope != "" {
+			kind = "method"
+			name = qualify(scope, name)
+		}
+	case "macro_definition":
+		// Julia `macro name(args) ... end`. The kind vocabulary has no macro
+		// kind, so macros join the callable inventory as functions. Gated to
+		// Julia because tree-sitter-rust also emits `macro_definition` (for
+		// `macro_rules!`), which stays unextracted.
+		if language != "Julia" {
+			return Entity{}, false
+		}
+		kind = "function"
+		name = juliaDefinitionName(firstNamedChildOfType(node, "signature"), src)
+		if name == "" {
+			return Entity{}, false
+		}
+		if scope != "" && !strings.Contains(name, ".") {
+			kind = "method"
+			name = qualify(scope, name)
+		}
+	case "struct_definition":
+		// Julia `struct Name ... end` / `mutable struct Name ... end`. The name
+		// is the first identifier of the type head, past type parameters and the
+		// `<:` supertype clause. Gated to Julia so the node type cannot leak
+		// into other grammars.
+		if language != "Julia" {
+			return Entity{}, false
+		}
+		kind = "struct"
+		name = nodeName(node, src)
+	case "abstract_definition", "primitive_definition":
+		// Julia `abstract type Name end` / `primitive type Name N end`.
+		if language != "Julia" {
+			return Entity{}, false
+		}
+		kind = "type"
+		name = nodeName(node, src)
+	case "assignment":
+		// Julia short-form function definition `name(args) = expr` — an
+		// assignment whose left-hand side is a call. Plain assignments
+		// (variable bindings, tuple destructuring, indexed stores) bind no
+		// callable and stay unextracted, as do assignment nodes in every other
+		// language.
+		if language != "Julia" {
+			return Entity{}, false
+		}
+		name = juliaDefinitionName(node.NamedChild(0), src)
+		if name == "" {
+			return Entity{}, false
+		}
+		kind = "function"
+		if scope != "" && !strings.Contains(name, ".") {
 			kind = "method"
 			name = qualify(scope, name)
 		}
@@ -4961,6 +5032,56 @@ func elixirCallEntity(node *sitter.Node, src []byte, scope string) (string, stri
 		}
 	}
 	return "", "", false
+}
+
+// juliaDefinitionName returns the name a Julia callable definition binds, given
+// its head node: the `signature` child of a long-form `function`/`macro`
+// definition, or the left-hand side of a short-form `name(args) = expr`
+// assignment. Return-type (`f(x)::T`) and type-parameter (`f(x) where T`)
+// wrappers are looked through; a qualified extension method (`Base.show`,
+// `Base.:(==)`) keeps its dotted path; a parametric constructor
+// (`Foo{T}(x) where T`) binds the type name. Callable-object definitions
+// (`function (obj::T)(x)`) and non-definition assignments bind no callable
+// name and yield "".
+func juliaDefinitionName(head *sitter.Node, src []byte) string {
+	inSignature := false
+	for validNode(head) {
+		switch head.Type() {
+		case "signature":
+			inSignature = true
+			head = head.NamedChild(0)
+		case "where_expression", "typed_expression":
+			head = head.NamedChild(0)
+		case "identifier":
+			// A bare identifier signature is a `function name end` zero-method
+			// declaration; a bare-identifier assignment LHS is a variable
+			// binding, not a callable definition.
+			if inSignature {
+				return strings.TrimSpace(head.Content(src))
+			}
+			return ""
+		case "call_expression":
+			callee := head.NamedChild(0)
+			if !validNode(callee) {
+				return ""
+			}
+			switch callee.Type() {
+			case "identifier", "operator", "field_expression":
+				return strings.TrimSpace(callee.Content(src))
+			case "curly_expression", "parametrized_type_expression":
+				// Parametric constructor definition, e.g. `Foo{T}(x) where T`.
+				if id := firstNamedChildOfType(callee, "identifier"); validNode(id) {
+					return strings.TrimSpace(id.Content(src))
+				}
+				return ""
+			default:
+				return ""
+			}
+		default:
+			return ""
+		}
+	}
+	return ""
 }
 
 func hclBlockName(node *sitter.Node, src []byte) string {
