@@ -2160,6 +2160,19 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				for _, r := range erlangCallRelations(from, block, currentFileSymbols, symbolsByShortName) {
 					emit(r)
 				}
+			} else if fileNeedsCallScan && !typeLikeKind(from.Kind) && file.Language == "OCaml" {
+				// OCaml applies functions by juxtaposition (`Mod.fn arg`), so
+				// the generic `name(` scanner sees almost no OCaml call sites;
+				// a dedicated scanner reads applications directly and uses the
+				// module qualifier (module `Mod` lives in `mod.ml` by language
+				// convention) to resolve targets. Interfaces (`.mli`) contain
+				// only type mentions, and a nested module's block spans its
+				// members' bodies, so both are skipped rather than misread.
+				if from.Kind != "module" && ocamlCallScanFile(file.Path) {
+					for _, r := range ocamlCallRelations(from, block, currentFileSymbols, symbolsByShortName) {
+						emit(r)
+					}
+				}
 			} else if fileNeedsCallScan && !typeLikeKind(from.Kind) {
 				callBlock := block
 				if file.Language == "Rust" {
@@ -2422,8 +2435,12 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		// Erlang has no top-level call expressions: everything outside function
 		// bodies is a module attribute, and attribute payloads like
 		// `-spec name(...)` or `-export([...])` are declarations that would
-		// register as bogus file->function call sites.
-		if fileNeedsCallScan && file.Language != "Erlang" {
+		// register as bogus file->function call sites. OCaml is skipped for
+		// the mirror-image reason: expression code lives in `let` bindings
+		// (extracted as symbols and scanned by the dedicated OCaml pass), so
+		// what remains at top level is declarations — opens, type definitions,
+		// signatures — whose `name (` sequences are type syntax, not calls.
+		if fileNeedsCallScan && file.Language != "Erlang" && file.Language != "OCaml" {
 			topLevel := stripDeclarationOnlyCallSignatures(file.Language, topLevelBlockFromLines(lines, currentFileSymbols))
 			if file.Language == "Rust" {
 				topLevel = stripRustCodegenMacroBodies(topLevel)
