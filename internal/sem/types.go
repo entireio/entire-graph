@@ -1915,7 +1915,9 @@ func splitSignatureTypes(language, signature string) (string, string) {
 	switch language {
 	case "Go", "Rust":
 		return params, after
-	case "TypeScript", "JavaScript", "Kotlin":
+	case "TypeScript", "JavaScript", "Kotlin", "PHP":
+		// PHP return types share the `): Type` suffix syntax; the default
+		// prefix-scan below would misread `function name(` signatures.
 		if strings.HasPrefix(after, ":") {
 			after = strings.TrimSpace(strings.TrimPrefix(after, ":"))
 		} else {

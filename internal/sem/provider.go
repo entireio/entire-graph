@@ -2138,6 +2138,13 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				routeSymbolsByID[symbol.ID] = symbol
 			}
 		}
+		var phpPropTypes map[string]string
+		if file.Language == "PHP" && spec.callResolution == "full" {
+			// Property types are declared at the class level, outside any
+			// method's block: collect them once per file so property-receiver
+			// calls (`$this->prop->method()`) can resolve.
+			phpPropTypes = phpPropertyTypes(content)
+		}
 		for _, from := range currentFileSymbols {
 			if shouldStop != nil && shouldStop() {
 				return
@@ -2388,7 +2395,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 			}
 			if spec.callResolution == "full" {
-				for _, r := range receiverCallRelations(from, block, methodsByContainer, superContainerByID, symbolsByShortName, returnTypesBySymbolNameAndFile, importsByName, manifestImports.goModule, pkgVarTypesByDir[filepath.ToSlash(filepath.Dir(file.Path))]) {
+				for _, r := range receiverCallRelations(from, block, methodsByContainer, superContainerByID, symbolsByShortName, returnTypesBySymbolNameAndFile, importsByName, manifestImports.goModule, pkgVarTypesByDir[filepath.ToSlash(filepath.Dir(file.Path))], phpPropTypes) {
 					emit(r)
 				}
 				for _, r := range importedReceiverCallRelations(from, block, importsByName, symbolsByShortName) {
@@ -2831,7 +2838,7 @@ func resolveQualifiedType(qt pkgQualType, symbolsByShortName map[string][]Symbol
 	return SymbolRecord{}, false
 }
 
-func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string, importsByName map[string][]string, goModule string, pkgVarTypes map[string]pkgQualType) []RelationRecord {
+func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string, importsByName map[string][]string, goModule string, pkgVarTypes map[string]pkgQualType, phpPropTypes map[string]string) []RelationRecord {
 	if typeLikeKind(from.Kind) {
 		return nil
 	}
@@ -2851,7 +2858,18 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		chainedCalls = append(chainedCalls, rubyChainedConstructorCalls(block)...)
 		rubyBareCalls = rubyBareCallNames(block, from.Signature)
 	}
-	if len(calls) == 0 && len(chainedCalls) == 0 && len(returnedCalls) == 0 && len(chainedReturnCalls) == 0 && len(deepChainedReturnCalls) == 0 && len(returnedChainCalls) == 0 && len(returnedDeepChainCalls) == 0 && len(rubyBareCalls) == 0 {
+	var phpStatics []phpStaticCall
+	var phpPropCalls []receiverCall
+	if from.Language == "PHP" {
+		// PHP static calls use `::` (never matched by receiverCallRe) and
+		// constructor chains are spelled `(new Klass(...))->m(` rather than
+		// `new Klass().m(`; property receivers resolve through the class-level
+		// property types the caller collected from this file.
+		phpStatics = phpStaticCalls(block)
+		phpPropCalls = phpPropertyReceiverCalls(block)
+		chainedCalls = append(chainedCalls, phpChainedConstructorCalls(block)...)
+	}
+	if len(calls) == 0 && len(chainedCalls) == 0 && len(returnedCalls) == 0 && len(chainedReturnCalls) == 0 && len(deepChainedReturnCalls) == 0 && len(returnedChainCalls) == 0 && len(returnedDeepChainCalls) == 0 && len(rubyBareCalls) == 0 && len(phpStatics) == 0 && len(phpPropCalls) == 0 {
 		return nil
 	}
 	varTypes := parameterVarTypes(from.Signature)
@@ -2863,10 +2881,27 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 		}
 	}
+	if from.Language == "PHP" {
+		// The PHP-aware constructor scan understands namespace-qualified
+		// `new \Foo\Bar(...)`; its terminal segment wins over the generic
+		// scanner's first-segment misread.
+		for name, typeName := range phpLocalVarTypes(block) {
+			localTypes[name] = typeName
+		}
+	}
 	for name, typeName := range localTypes {
 		varTypes[name] = typeName
 	}
 	factoryTypes := factoryReturnVarTypes(block, from.FilePath, returnTypesBySymbolNameAndFile)
+	if from.Language == "PHP" {
+		// `$v = $this->factory()` receivers typed by the factory's declared
+		// return type, the PHP spelling of the factory-assignment tier above.
+		for name, typeName := range phpThisFactoryVarTypes(block, from.FilePath, returnTypesBySymbolNameAndFile) {
+			if _, exists := factoryTypes[name]; !exists {
+				factoryTypes[name] = typeName
+			}
+		}
+	}
 	for name, typeName := range factoryTypes {
 		if _, exists := varTypes[name]; !exists {
 			varTypes[name] = typeName
@@ -3097,6 +3132,111 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				StartLine: from.StartLine,
 				EndLine:   from.EndLine,
 				Detail:    name,
+			}},
+			WarningCodes: []string{},
+		})
+	}
+	// PHP `Class::method()` / `self::` / `static::` / `parent::` static calls:
+	// resolve the class reference (terminal segment against the workspace type
+	// index, or the enclosing class / its superclass for the keywords), then
+	// look the method up the inheritance chain like every other receiver call.
+	for _, call := range phpStatics {
+		var targetID string
+		confidence := 0.82
+		reason := "PHP static method call resolved to the named class"
+		switch call.Class {
+		case "self", "static":
+			targetID = from.ContainerID
+			confidence = 0.9
+			reason = "PHP self/static call resolved to the enclosing class"
+		case "parent":
+			targetID = superContainerByID[from.ContainerID]
+			confidence = 0.85
+			reason = "PHP parent:: call resolved to the superclass"
+		default:
+			cls, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[call.Class], call.Class, from.FilePath)
+			if !ok {
+				continue
+			}
+			targetID = cls.ID
+		}
+		if targetID == "" {
+			continue
+		}
+		method, inherited, ok := lookupMethodUpChain(targetID, call.Method, methodsByContainer, superContainerByID)
+		if !ok || method.ID == from.ID {
+			continue
+		}
+		if inherited && call.Class != "parent" {
+			confidence = minFloat(confidence, 0.82)
+			reason += " (inherited from a base type)"
+		}
+		scope := "file"
+		if method.FilePath != from.FilePath {
+			scope = "module"
+		}
+		relations = append(relations, RelationRecord{
+			RecordType:    "relation",
+			FromID:        from.ID,
+			ToID:          method.ID,
+			Type:          "CALLS",
+			Confidence:    confidence,
+			Reason:        reason,
+			RelationScope: scope,
+			Resolution:    "type_inferred",
+			TargetKind:    "symbol",
+			Evidence: []Evidence{{
+				Kind:      "call_site",
+				FilePath:  from.FilePath,
+				StartLine: from.StartLine,
+				EndLine:   from.EndLine,
+				Detail:    call.Detail,
+			}},
+			WarningCodes: []string{},
+		})
+	}
+	// PHP `$this->prop->method()` property receivers: the property's type comes
+	// from this file's typed declarations, @var docblocks, or constructor
+	// assignments (phpPropertyTypes, computed once per file by the caller).
+	for _, call := range phpPropCalls {
+		typeName, ok := phpPropTypes[call.Receiver]
+		if !ok {
+			continue
+		}
+		sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath)
+		if !ok {
+			continue
+		}
+		method, inherited, ok := lookupMethodUpChain(sym.ID, call.Method, methodsByContainer, superContainerByID)
+		if !ok || method.ID == from.ID {
+			continue
+		}
+		confidence := 0.8
+		reason := "method call resolved via typed property receiver"
+		if inherited {
+			confidence = 0.78
+			reason += " (inherited from a base type)"
+		}
+		scope := "file"
+		if method.FilePath != from.FilePath {
+			scope = "module"
+		}
+		relations = append(relations, RelationRecord{
+			RecordType:    "relation",
+			FromID:        from.ID,
+			ToID:          method.ID,
+			Type:          "CALLS",
+			Confidence:    confidence,
+			Reason:        reason,
+			RelationScope: scope,
+			Resolution:    "type_inferred",
+			TargetKind:    "symbol",
+			Evidence: []Evidence{{
+				Kind:      "call_site",
+				FilePath:  from.FilePath,
+				StartLine: from.StartLine,
+				EndLine:   from.EndLine,
+				Detail:    "this->" + call.Receiver + "->" + call.Method,
 			}},
 			WarningCodes: []string{},
 		})
