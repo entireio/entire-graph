@@ -148,7 +148,7 @@ func (TreeSitterParser) Parse(path, content string) ([]Entity, string) {
 }
 
 func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string, ParseStatus) {
-	spec, ok := languageForPath(path)
+	spec, ok := languageForContent(path, content)
 	if !ok {
 		return nil, "", ParseStatus{}
 	}
@@ -1475,12 +1475,61 @@ var (
 	bashCommandParameterPattern = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*:\+[^}\n;]+;[^}\n]*\}`)
 	zshGlobParameterPattern     = regexp.MustCompile(`\$\{(?:\([^}\n]*\))?[@A-Za-z_][^}\n]*:#\([^}\n]*\)\}`)
 	zshNestedParameterPattern   = regexp.MustCompile(`\$\{#[^}\n]*\$\{[^}\n]+\}[^}\n]*\}`)
+	// bashSubstringExpansionPattern matches substring expansions
+	// (`${arg:$index:1}`) while excluding the `:-` `:=` `:+` `:?` operator
+	// forms; bashBareVariableRefPattern then finds bare `$var` offsets/lengths
+	// inside them, which the vendored tree-sitter-bash grammar cannot parse
+	// (it accepts `${arg:0:1}` and `${arg:${i}:1}` but emits a missing-`}`
+	// error for `${arg:$i:1}` that derails everything after it — pyenv's
+	// python-build lost can_use_homebrew and neighbors to one such expansion).
+	bashSubstringExpansionPattern = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*:[ \t]*[^-=+?}\n][^}\n]*\}`)
+	bashBareVariableRefPattern    = regexp.MustCompile(`\$[A-Za-z_][A-Za-z0-9_]*`)
+	// bashSplicedTestArgsPattern matches `[ operand "$@" ]` test commands,
+	// where "$@" splices the operator and right operand in at runtime (pyenv's
+	// is_mac does `[ "$(osx_version)" "$@" ]`). The grammar has no production
+	// for a two-operand test without an operator, and the resulting ERROR node
+	// swallows adjacent function definitions.
+	bashSplicedTestArgsPattern = regexp.MustCompile(`\[ [^]\[\n]+ ("\$@") \]`)
 )
+
+// maskBashSplicedTestArgs rewrites the trailing `"$@"` of a two-operand test
+// command to the same-length `= xx` operator-and-operand pair so the grammar
+// sees a well-formed binary test. Line and column positions are unchanged.
+func maskBashSplicedTestArgs(content string) string {
+	return bashSplicedTestArgsPattern.ReplaceAllStringFunc(content, func(match string) string {
+		fields := strings.Fields(strings.TrimSuffix(match, ` "$@" ]`))
+		// When the token before "$@" is a test operator (`[ -n "$@" ]`,
+		// `[ "$a" -ot "$@" ]`), the test is already well-formed.
+		if len(fields) == 0 || strings.HasPrefix(fields[len(fields)-1], "-") {
+			return match
+		}
+		return strings.Replace(match, `"$@" ]`, `= xx ]`, 1)
+	})
+}
+
+// maskBashSubstringVariableOffsets rewrites bare `$var` offsets/lengths in
+// substring expansions to same-length digit runs (`${arg:$index:1}` →
+// `${arg:000000:1}`), which the grammar parses as numbers. Line and column
+// positions are unchanged.
+func maskBashSubstringVariableOffsets(content string) string {
+	return bashSubstringExpansionPattern.ReplaceAllStringFunc(content, func(match string) string {
+		colon := strings.Index(match, ":")
+		head, body := match[:colon+1], match[colon+1:]
+		if !bashBareVariableRefPattern.MatchString(body) {
+			return match
+		}
+		return head + bashBareVariableRefPattern.ReplaceAllStringFunc(body, func(ref string) string {
+			return strings.Repeat("0", len(ref))
+		})
+	})
+}
 
 func maskBashUnsupportedSyntax(content string) string {
 	masked := bashCommandParameterPattern.ReplaceAllStringFunc(content, func(match string) string {
 		return sameLengthReplacement(`""`, len(match))
 	})
+	masked = maskBashSubstringVariableOffsets(masked)
+	masked = maskBashSplicedTestArgs(masked)
 	masked = zshGlobParameterPattern.ReplaceAllStringFunc(masked, func(match string) string {
 		return sameLengthReplacement(`"x"`, len(match))
 	})
