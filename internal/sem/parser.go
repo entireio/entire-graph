@@ -1162,7 +1162,91 @@ var (
 	// across C runtimes (PostgreSQL PGDLLIMPORT, Julia JL_DLLEXPORT, ...); the
 	// remaining names are the high-frequency PostgreSQL declaration qualifiers
 	// surfaced by the postgres/postgres failure clustering.
-	cBareAnnotationPattern = regexp.MustCompile(`\b(?:__dead|__packed|__unused|__maybe_unused|\w*DLL(?:IMPORT|EXPORT)|PG_USED_FOR_ASSERTS_ONLY|NON_EXEC_STATIC|pg_attribute_\w+|WINAPI)\b`)
+	// `\w+_EXTERN` generalizes export-annotation macros (curl CURL_EXTERN,
+	// GLib GLIB_EXTERN, ...); `\w+_NORETURN`/`\w+_STDCALL` follow the same
+	// attribute/calling-convention shape. UNITTEST (curl, empty-or-static),
+	// WARN_UNUSED_RESULT, APIENTRY/WINBASEAPI/CALLBACK (Windows headers) and
+	// z_const (zlib) are cross-project annotation names that never appear in
+	// expression position.
+	cBareAnnotationPattern = regexp.MustCompile(`\b(?:__dead|__packed|__unused|__maybe_unused|\w*DLL(?:IMPORT|EXPORT)|\w+_EXTERN|\w+_NORETURN|\w+_STDCALL|\w+_INLINE|PG_USED_FOR_ASSERTS_ONLY|NON_EXEC_STATIC|pg_attribute_\w+|WINAPI|APIENTRY|WINBASEAPI|CALLBACK|_CRTIMP|UNITTEST|WARN_UNUSED_RESULT|z_const)\b`)
+	// Printf-format attribute macros after a declarator: `... , ...) CURL_PRINTF(2, 3);`
+	// (expands to __attribute__((format(printf, ...)))). The digit-only argument
+	// list keeps the shape distinct from real function calls.
+	cPrintfAttributeMacroPattern = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*_PRINTF\s*\(\s*\d+\s*,\s*\d+\s*\)`)
+	// Bare block begin/end statement macros (curl UNITTEST_BEGIN_SIMPLE /
+	// UNITTEST_END(stop()) pairs, BEGIN_C_DECLS/END_C_DECLS, ...). Each BEGIN
+	// expands to an opener whose `}` lives in the matching END macro, so
+	// blanking both keeps braces balanced.
+	cBlockBeginEndMacroPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_(?:BEGIN|END)(?:_[A-Z0-9_]+)?\s*(?:\(.*\))?$`)
+	// Statement macros wrapping a declaration (curl `VERBOSE(const char *p);`,
+	// `VERBOSE(size_t calls = 0);`): an all-caps macro call whose first tokens
+	// look like a declaration (two identifiers, optionally pointer/const/struct
+	// qualified) cannot be parsed as a call argument.
+	cDeclarationStatementMacroPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*\(\s*(?:const\s+|struct\s+|unsigned\s+|signed\s+)*[A-Za-z_]\w*\s+\**\s*[A-Za-z_]\w*\s*[=;,\[\)]`)
+	// Macro invocations with empty arguments (`CS_ENTRY(0x1301, TLS,AES,128,GCM,SHA256,,,),`
+	// or a trailing `...,SHA256,),`) are unparseable as calls; such lines are
+	// pure macro data, so blank them.
+	cEmptyArgMacroLinePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*\([^()\n]*,\s*[,)][^()\n]*\)?\s*[,;]?$`)
+	// Clang availability builtin takes version specs, not expressions:
+	// `if(__builtin_available(macOS 10.9, iOS 7, *))`.
+	cBuiltinAvailablePattern = regexp.MustCompile(`\b__builtin_available\s*\([^()\n]*\)`)
+	// `va_arg(ap, TYPE)` calls: the second argument is a type name, which the C
+	// grammar cannot parse as a call argument (va_arg is compiler magic).
+	cVaArgCallPattern = regexp.MustCompile(`\bva_arg\s*\(`)
+	// A line of only all-caps macro words (optionally with argument lists)
+	// annotating the following declaration (curl `ALLOC_FUNC` above
+	// `void *curl_dbg_malloc(...)`, `CURL_EXTERN ALLOC_FUNC ALLOC_SIZE(1)`);
+	// only blanked when the next code line looks like a declaration so bare
+	// enumerators and expression continuations are untouched.
+	cLoneAnnotationMacroLinePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]{2,}(?:\s*\([^()\n]*\))?(?:\s+[A-Z][A-Z0-9_]{2,}(?:\s*\([^()\n]*\))?)*$`)
+	cDeclarationStartLinePattern    = regexp.MustCompile(`^[A-Za-z_][^={}]*\(`)
+	// A bare `MACRO(` line opening a statement-wrapping macro
+	// (curl `CURL_IGNORE_DEPRECATION(` ... `)`); handled in the line loop by
+	// blanking only the opener and its bare `)`/`);` closer line, keeping the
+	// wrapped statements. Guarded on the interior containing a `;`, which call
+	// arguments cannot.
+	cBareMacroOpenLinePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*\($`)
+	// va_arg-wrapper macro calls whose (last) argument is a type name
+	// (`avalue = form_ptr_arg(char *);`, `APR_ARRAY_IDX(args, i, char *)`).
+	// Anchored on a preceding `=`/`(`/`,` so real prototypes with unnamed
+	// parameters (`void foo(char *);`) are never rewritten; a genuine call can
+	// never take a type argument.
+	cTypeArgMacroCallPattern = regexp.MustCompile(`[=(,]\s*[A-Za-z_]\w*\s*\((?:[^()\n;]*,)?(\s*(?:const\s+)?(?:unsigned\s+|signed\s+)?(?:void|char|short|int|long|float|double|struct\s+\w+|\w+_t)\s*\*+\s*)\)`)
+	// Parameter-list prefix macros in the libev style: `(EV_P_ struct ev_timer *w`
+	// — a trailing-underscore all-caps macro directly before a type keyword can
+	// only be a macro (two type tokens cannot open a parameter otherwise).
+	cParamPrefixMacroPattern = regexp.MustCompile(`\(\s*([A-Z][A-Z0-9_]*_)\s+(?:struct|const|unsigned|signed|void|char|short|int|long|float|double)\b`)
+	// All-caps annotation macro before the return type of a declarator
+	// (`ALLOC_FUNC FILE *curl_dbg_fopen(...)`): three word tokens ahead of a
+	// parameter list are one too many for a declaration, so the leading
+	// all-caps word is blanked. Even when the first token is the real return
+	// type and the middle a calling-convention macro (`HRESULT STDMETHODCALLTYPE
+	// f(...)`), blanking the first still leaves a parseable `type name(`.
+	cAnnotationBeforeTypePattern = regexp.MustCompile(`\b([A-Z][A-Z0-9_]{2,})[ \t]+[A-Za-z_]\w*[ \t]+\**[A-Za-z_]\w*\s*\(`)
+	// Attribute macro between a type and its declarator
+	// (`static const char CURL_USED min_stack[] = "..."`): TYPE MACRO name.
+	// Guarded in maskCInterDeclarationAnnotations so struct/union/enum tags
+	// (`struct FOO bar;`) are never blanked.
+	cTypeAnnotationNamePattern = regexp.MustCompile(`\b([A-Za-z_]\w*)[ \t]+([A-Z][A-Z0-9_]{2,})[ \t]+([A-Za-z_]*[a-z]\w*)\s*(\[[^\]\n]*\])?\s*[=;,]`)
+	// Attribute macro between the declarator and its initializer
+	// (`gss_OID_desc Curl_spnego_mech_oid CURL_ALIGN8 = {`): TYPE name MACRO =.
+	// The declarator must contain a lowercase letter so an all-caps declarator
+	// (`MyType FLAGS = {0}`) is never mistaken for the macro.
+	cNameAnnotationInitPattern = regexp.MustCompile(`\b([A-Za-z_]\w*)[ \t]+([A-Za-z_]*[a-z]\w*)[ \t]+([A-Z][A-Z0-9_]{2,})\s*=`)
+	// Qualifier macro between a pointer star and the declarator
+	// (`struct Curl_addrinfo *vqualifier canext;`, a volatile-style qualifier):
+	// `TYPE *word name;` is only valid C when `word` is a qualifier, so any
+	// non-keyword word in that slot is a macro to blank.
+	cPointerQualifierMacroPattern = regexp.MustCompile(`\*[ \t]*([a-z_]\w*)[ \t]+([A-Za-z_]\w*)\s*[;=,\[)]`)
+	// The vendored tree-sitter-c grammar only accepts `\x` escapes with two or
+	// more hex digits; blank the backslash of a single-digit `"\xb"` escape so
+	// the (still valid) string literal parses.
+	cShortHexEscapePattern = regexp.MustCompile(`\\x[0-9a-fA-F][^0-9a-fA-F]`)
+	// Pointer-slot words that are real C qualifiers, not macros.
+	cPointerQualifierKeywords = map[string]bool{
+		"const": true, "volatile": true, "restrict": true,
+		"__restrict": true, "__restrict__": true, "register": true,
+	}
 	// C++ library namespace-opening/closing macros (asmjit ASMJIT_BEGIN_NAMESPACE
 	// / ASMJIT_BEGIN_SUB_NAMESPACE(x), and the *_NAMESPACE_BEGIN order) expand to
 	// `namespace x {` / `}`. The fmt/nlohmann variants are handled by exact cases
@@ -1192,6 +1276,19 @@ func maskCUnsupportedSyntax(content string) string {
 				}
 				i++
 				text, newline = splitLineEnding(lines[i])
+			}
+			// A block comment opened on the (now blanked) directive line may
+			// span lines (`#endif /* FOO ||\n  BAR */`); blank through its
+			// closing `*/` so the tail tokens do not leak into the parse.
+			if cLineOpensBlockComment(text) {
+				for i+1 < len(lines) {
+					i++
+					text, newline = splitLineEnding(lines[i])
+					lines[i] = maskLineText(text) + newline
+					if strings.Contains(text, "*/") {
+						break
+					}
+				}
 			}
 			continue
 		}
@@ -1257,6 +1354,62 @@ func maskCUnsupportedSyntax(content string) string {
 			lines[i] = maskLineText(text) + newline
 			continue
 		}
+		if cBlockBeginEndMacroPattern.MatchString(trimmed) || cEmptyArgMacroLinePattern.MatchString(trimmed) {
+			lines[i] = maskLineText(text) + newline
+			continue
+		}
+		if cLoneAnnotationMacroLinePattern.MatchString(trimmed) && cNextCodeLineStartsDeclaration(lines, i+1) {
+			lines[i] = maskLineText(text) + newline
+			continue
+		}
+		if cBareMacroOpenLinePattern.MatchString(trimmed) {
+			// Statement-wrapping macro (`CURL_IGNORE_DEPRECATION(` ... `)`).
+			// Blank only the opener and the bare closer line, keeping the
+			// wrapped statements. The interior must contain a `;` — real call
+			// arguments cannot — and the closer must sit alone on its line.
+			balance := 1
+			end := i
+			sawStatement := false
+			for balance > 0 && end+1 < len(lines) {
+				end++
+				nextText, _ := splitLineEnding(lines[end])
+				balance += strings.Count(nextText, "(") - strings.Count(nextText, ")")
+				if balance > 0 && strings.Contains(nextText, ";") {
+					sawStatement = true
+				}
+			}
+			lastText, lastNewline := splitLineEnding(lines[end])
+			lastTrimmed := strings.TrimSpace(lastText)
+			if balance == 0 && sawStatement && (lastTrimmed == ")" || lastTrimmed == ");") {
+				lines[i] = maskLineText(text) + newline
+				lines[end] = maskLineText(lastText) + lastNewline
+				continue
+			}
+		}
+		if cDeclarationStatementMacroPattern.MatchString(trimmed) {
+			// Statement macro wrapping a declaration; blank the whole (possibly
+			// multi-line) invocation, tracking paren balance like the file-scope
+			// statement macros above. Look ahead first: the construct must close
+			// with `;` to be a statement — a macro-typed parameter inside a real
+			// signature (`CURL_THREAD_RETURN_T(X *func)(void *), void *arg)`)
+			// must not be blanked.
+			balance := strings.Count(text, "(") - strings.Count(text, ")")
+			end := i
+			for balance > 0 && end+1 < len(lines) {
+				end++
+				nextText, _ := splitLineEnding(lines[end])
+				balance += strings.Count(nextText, "(") - strings.Count(nextText, ")")
+			}
+			lastText, _ := splitLineEnding(lines[end])
+			if balance == 0 && strings.HasSuffix(strings.TrimSpace(lastText), ";") {
+				for j := i; j <= end; j++ {
+					jText, jNewline := splitLineEnding(lines[j])
+					lines[j] = maskLineText(jText) + jNewline
+				}
+				i = end
+				continue
+			}
+		}
 		if cGenerateMacroPattern.MatchString(trimmed) {
 			for {
 				lines[i] = maskLineText(text) + newline
@@ -1271,6 +1424,11 @@ func maskCUnsupportedSyntax(content string) string {
 		text = maskCStringMacros(text)
 		text = maskCAnnotationMacros(text)
 		text = maskCTypeMacros(text)
+		text = maskCVaArgTypeArguments(text)
+		text = maskCTypeArgumentMacroCalls(text)
+		text = maskCInterDeclarationAnnotations(text)
+		text = maskCShortHexEscapes(text)
+		text = replacePatternSameLength(text, cBuiltinAvailablePattern, "1")
 		text = cBKIMacroPattern.ReplaceAllStringFunc(text, func(m string) string { return strings.Repeat(" ", len(m)) })
 		text = replaceAllSameLength(text, ", >)", ", 0)")
 		text = replaceAllSameLength(text, ", <)", ", 0)")
@@ -1437,9 +1595,150 @@ func maskZshAnonymousFunctions(content string) string {
 }
 
 func maskCAnnotationMacros(text string) string {
-	return cAnnotationMacroPattern.ReplaceAllStringFunc(text, func(match string) string {
+	text = cAnnotationMacroPattern.ReplaceAllStringFunc(text, func(match string) string {
 		return strings.Repeat(" ", len(match))
 	})
+	return cPrintfAttributeMacroPattern.ReplaceAllStringFunc(text, func(match string) string {
+		return strings.Repeat(" ", len(match))
+	})
+}
+
+// cNextCodeLineStartsDeclaration reports whether the next non-blank line looks
+// like the start of a declaration (identifier leading to a parameter list).
+func cNextCodeLineStartsDeclaration(lines []string, from int) bool {
+	for i := from; i < len(lines); i++ {
+		text, _ := splitLineEnding(lines[i])
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" {
+			continue
+		}
+		return cDeclarationStartLinePattern.MatchString(trimmed)
+	}
+	return false
+}
+
+// maskCTypeArgumentMacroCalls blanks the type argument of va_arg-wrapper macro
+// calls (`avalue = form_ptr_arg(char *);`, `APR_ARRAY_IDX(args, i, char *)`)
+// to a same-length integer literal.
+func maskCTypeArgumentMacroCalls(text string) string {
+	matches := cTypeArgMacroCallPattern.FindAllStringSubmatchIndex(text, -1)
+	if matches == nil {
+		return text
+	}
+	b := []byte(text)
+	for _, m := range matches {
+		copy(b[m[2]:m[3]], sameLengthReplacement("0", m[3]-m[2]))
+	}
+	return string(b)
+}
+
+// cInterDeclarationKeywords are leading tokens that make a TYPE-MACRO-name or
+// TYPE-name-MACRO match part of regular C (struct tags, storage classes,
+// multi-keyword types) rather than an annotation macro to blank.
+var cInterDeclarationKeywords = map[string]bool{
+	"struct": true, "union": true, "enum": true, "const": true, "static": true,
+	"unsigned": true, "signed": true, "long": true, "short": true,
+	"volatile": true, "register": true, "case": true, "return": true,
+	"goto": true, "typedef": true, "else": true, "extern": true,
+}
+
+// maskCInterDeclarationAnnotations blanks all-caps attribute macros wedged
+// inside a declaration, either between the type and the declarator
+// (`static const char CURL_USED min_stack[] = ...`) or between the declarator
+// and its initializer (`gss_OID_desc Curl_spnego_mech_oid CURL_ALIGN8 = {`).
+func maskCInterDeclarationAnnotations(text string) string {
+	text = blankGuardedSubmatch(text, cTypeAnnotationNamePattern, 2, cInterDeclarationKeywords)
+	text = blankGuardedSubmatch(text, cNameAnnotationInitPattern, 3, cInterDeclarationKeywords)
+	text = blankGuardedSubmatch(text, cPointerQualifierMacroPattern, 1, cPointerQualifierKeywords)
+	text = blankGuardedSubmatch(text, cParamPrefixMacroPattern, 1, nil)
+	return blankGuardedSubmatch(text, cAnnotationBeforeTypePattern, 1, nil)
+}
+
+// blankGuardedSubmatch blanks capture group `group` of every pattern match
+// whose guard token (group 1) is not one of the given C keywords.
+func blankGuardedSubmatch(text string, pattern *regexp.Regexp, group int, keywords map[string]bool) string {
+	matches := pattern.FindAllStringSubmatchIndex(text, -1)
+	if matches == nil {
+		return text
+	}
+	b := []byte(text)
+	for _, m := range matches {
+		guard := text[m[2]:m[3]]
+		if keywords[guard] {
+			continue
+		}
+		for i := m[2*group]; i < m[2*group+1]; i++ {
+			b[i] = ' '
+		}
+	}
+	return string(b)
+}
+
+// maskCShortHexEscapes blanks the backslash of single-hex-digit `\x` string
+// escapes (`"\xb"`), which the vendored tree-sitter-c grammar rejects; the
+// literal stays a valid string of the same length. Applied twice because a
+// match consumes the character that follows the escape, which may itself be
+// the backslash of an adjacent short escape (`"\xb\xc"`).
+func maskCShortHexEscapes(text string) string {
+	blank := func(m string) string { return " " + m[1:] }
+	text = cShortHexEscapePattern.ReplaceAllStringFunc(text, blank)
+	return cShortHexEscapePattern.ReplaceAllStringFunc(text, blank)
+}
+
+// cLineOpensBlockComment reports whether text opens a `/*` block comment that
+// is not closed on the same line.
+func cLineOpensBlockComment(text string) bool {
+	open := strings.LastIndex(text, "/*")
+	if open < 0 {
+		return false
+	}
+	return !strings.Contains(text[open+2:], "*/")
+}
+
+// maskCVaArgTypeArguments blanks the type argument of `va_arg(ap, TYPE)`
+// invocations to a same-length integer literal so the call parses; va_arg is
+// compiler magic and its second argument is a type name, not an expression.
+func maskCVaArgTypeArguments(text string) string {
+	locs := cVaArgCallPattern.FindAllStringIndex(text, -1)
+	if locs == nil {
+		return text
+	}
+	b := []byte(text)
+	for _, loc := range locs {
+		open := loc[1] - 1
+		end := balancedCallEnd(text, open)
+		if end < 0 {
+			continue
+		}
+		depth, comma := 0, -1
+		for i := open; i < end && comma < 0; i++ {
+			switch text[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			case ',':
+				if depth == 1 {
+					comma = i
+				}
+			}
+		}
+		if comma < 0 {
+			continue
+		}
+		start := comma + 1
+		for start < end-1 && (b[start] == ' ' || b[start] == '\t') {
+			start++
+		}
+		if start >= end-1 {
+			continue
+		}
+		b[start] = '0'
+		for i := start + 1; i < end-1; i++ {
+			b[i] = ' '
+		}
+	}
+	return string(b)
 }
 
 func maskCStringMacros(text string) string {
@@ -3963,13 +4262,14 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		}
 		kind = "function"
 		name = nodeName(node, src)
-		if language == "Objective-C" {
-			// A C function in a .m file routinely returns a typedef'd type
-			// (`static NSString * Escape(...)`), whose type_identifier is the
-			// first name node in pre-order, so nodeName would misname the
-			// function after its return type. Take the identifier from the
-			// declarator field instead. Gated to Objective-C so C/C++
-			// extraction is unchanged.
+		if language == "Objective-C" || language == "C" {
+			// A C function routinely returns a typedef'd type
+			// (`CURLcode curl_easy_perform(...)`, `static NSString * Escape(...)`
+			// in a .m file), whose type_identifier is the first name node in
+			// pre-order, so nodeName would misname the function after its
+			// return type. Take the identifier from the declarator field
+			// instead. Gated to C and Objective-C so C++ extraction (qualified
+			// names, destructors) is unchanged.
 			if declarator := node.ChildByFieldName("declarator"); validNode(declarator) {
 				if id := firstDescendantOfType(declarator, "identifier"); validNode(id) {
 					name = strings.TrimSpace(id.Content(src))
