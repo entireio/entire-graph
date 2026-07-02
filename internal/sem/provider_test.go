@@ -6418,6 +6418,99 @@ export function labelFor(widget: Widget): string {
 	}
 }
 
+// Shell functions call each other as bare commands (no parentheses), which the
+// generic paren-based scanner cannot see; the shell command-position scanner
+// must recover those CALLS while ignoring builtins like cd/return. Shaped like
+// ohmyzsh's dirhistory.plugin.zsh.
+func TestBuildProviderSnapshotResolvesZshBareCommandCalls(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "plugins/dirhistory/dirhistory.plugin.zsh", `dirhistory_past=($PWD)
+export DIRHISTORY_SIZE=30
+
+alias cde='dirhistory_cd'
+
+function pop_past() {
+  setopt localoptions no_ksh_arrays
+  if [[ $#dirhistory_past -gt 0 ]]; then
+    typeset -g $1="${dirhistory_past[$#dirhistory_past]}"
+  fi
+}
+
+function push_past() {
+  if [[ $#dirhistory_past -ge $DIRHISTORY_SIZE ]]; then
+    shift dirhistory_past
+  fi
+}
+
+function push_future() {
+  dirhistory_future+=($1)
+}
+
+function dirhistory_cd(){
+  DIRHISTORY_CD="1"
+  cd $1
+  unset DIRHISTORY_CD
+}
+
+function dirhistory_back() {
+  local cw=""
+  local d=""
+
+  pop_past cw
+  if [[ "" == "$cw" ]]; then
+    dirhistory_past=($PWD)
+    return
+  fi
+
+  pop_past d
+  if [[ "" != "$d" ]]; then
+    dirhistory_cd $d
+    push_future $cw
+  else
+    push_past $cw
+  fi
+}
+
+function dirhistory_zle_dirhistory_back() {
+  zle .kill-buffer
+  dirhistory_back
+  zle .accept-line
+}
+
+zle -N dirhistory_zle_dirhistory_back
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, edge := range [][2]string{
+		{"dirhistory_zle_dirhistory_back", "dirhistory_back"},
+		{"dirhistory_back", "pop_past"},
+		{"dirhistory_back", "dirhistory_cd"},
+		{"dirhistory_back", "push_future"},
+		{"dirhistory_back", "push_past"},
+	} {
+		if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", edge[0], edge[1], "exact") {
+			t.Fatalf("shell call %s -> %s not resolved: %#v", edge[0], edge[1], snapshot.Relations)
+		}
+	}
+	// Builtins and keywords must not fabricate edges.
+	for _, relation := range snapshot.Relations {
+		if relation.Type != "CALLS" {
+			continue
+		}
+		if lastSegment(relation.FromID) == "dirhistory_back" {
+			switch lastSegment(relation.ToID) {
+			case "pop_past", "dirhistory_cd", "push_future", "push_past":
+			default:
+				t.Fatalf("unexpected outbound call from dirhistory_back: %#v", relation)
+			}
+		}
+	}
+}
+
 // Swift methods call same-type siblings without a receiver (implicit self),
 // including across `extension` blocks, and construct types whose extensions
 // must not break the unique-name gate. Shaped like swift-argument-parser's

@@ -2126,6 +2126,13 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						callNames[name] = struct{}{}
 					}
 				}
+				if shellCallLanguage(file.Language) {
+					// Shell functions are invoked as bare commands with no
+					// parentheses; the generic scanner sees no call sites at all.
+					for name := range shellCommandCallIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
+				}
 				for _, name := range sortedKeysOf(callNames) {
 					if name == from.Name {
 						continue
