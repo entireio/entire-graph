@@ -2218,6 +2218,15 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			// property-receiver calls (`taskQueue.execute(...)`) can resolve.
 			kotlinPropTypes = kotlinPropertyTypes(content, returnTypesBySymbolNameAndFile)
 		}
+		var swiftTypes swiftFileTypes
+		if file.Language == "Swift" && spec.callResolution == "full" {
+			// Swift stored-property types and enum-case payload types live at
+			// the type level, outside any method's block: collect them once per
+			// file so property receivers (`self._buffer!.discardReadBytes()`)
+			// and enum-case pattern bindings (`case .available(var buffer):`)
+			// can resolve.
+			swiftTypes = swiftFileTypeInfo(content)
+		}
 		for _, from := range currentFileSymbols {
 			if shouldStop != nil && shouldStop() {
 				return
@@ -2266,6 +2275,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// like) survive the generic stripper's line-scoped string
 					// masking and would register as call sites.
 					callBlock = maskCSharpTextBlocks(block)
+				}
+				if file.Language == "Swift" {
+					// Multiline string bodies ("""...""") likewise survive the
+					// line-scoped masking and would register as call sites.
+					callBlock = maskSwiftMultilineStrings(block)
 				}
 				callNames := callLikeIdentifiers(callBlock, file.Language)
 				if file.Language == "Ruby" {
@@ -2548,7 +2562,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 			}
 			if spec.callResolution == "full" {
-				for _, r := range receiverCallRelations(from, block, methodsByContainer, superContainerByID, symbolsByShortName, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir, importsByName, manifestImports.goModule, pkgVarTypesByDir[filepath.ToSlash(filepath.Dir(file.Path))], phpPropTypes, kotlinPropTypes, fieldsByContainer) {
+				for _, r := range receiverCallRelations(from, block, methodsByContainer, superContainerByID, symbolsByShortName, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir, importsByName, manifestImports.goModule, pkgVarTypesByDir[filepath.ToSlash(filepath.Dir(file.Path))], phpPropTypes, kotlinPropTypes, fieldsByContainer, swiftTypes) {
 					emit(r)
 				}
 				for _, r := range importedReceiverCallRelations(from, block, importsByName, symbolsByShortName) {
@@ -3037,7 +3051,7 @@ func resolveQualifiedType(qt pkgQualType, symbolsByShortName map[string][]Symbol
 	return SymbolRecord{}, false
 }
 
-func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir map[string]map[string][]string, importsByName map[string][]string, goModule string, pkgVarTypes map[string]pkgQualType, phpPropTypes, kotlinPropTypes map[string]string, fieldsByContainer map[string]map[string]SymbolRecord) []RelationRecord {
+func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir map[string]map[string][]string, importsByName map[string][]string, goModule string, pkgVarTypes map[string]pkgQualType, phpPropTypes, kotlinPropTypes map[string]string, fieldsByContainer map[string]map[string]SymbolRecord, swiftTypes swiftFileTypes) []RelationRecord {
 	if typeLikeKind(from.Kind) {
 		return nil
 	}
@@ -3046,6 +3060,11 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		// through the generic stripper (which contains string masking to one
 		// line), so SQL/text blocks would feed every extractor below.
 		block = maskCSharpTextBlocks(block)
+	}
+	if from.Language == "Swift" {
+		// Multiline string bodies ("""...""") likewise span lines and would
+		// feed every extractor below through the line-scoped generic stripper.
+		block = maskSwiftMultilineStrings(block)
 	}
 	calls := receiverCalls(block)
 	allReceiverCalls := calls
@@ -3084,6 +3103,13 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		calls = mergeReceiverCalls(calls, kotlinReceiverCalls(block))
 		kotlinChains = kotlinChainedReceiverCalls(block)
 	}
+	if from.Language == "Swift" {
+		// Force-unwrapped (`self._buffer!.discardReadBytes()`) and
+		// optional-chained (`delegate?.retry(...)`) receivers never match the
+		// generic receiverCallRe, which requires a literal `.` directly after
+		// the receiver name.
+		calls = mergeReceiverCalls(calls, swiftReceiverCalls(block))
+	}
 	var javaChains []javaCtorChainCall
 	if from.Language == "Java" {
 		// Nested-type fluent constructor chains
@@ -3111,10 +3137,20 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		// class-level member types can resolve it hop by hop.
 		csChainCalls = csharpMemberChainCalls(block)
 	}
-	if len(allReceiverCalls) == 0 && len(chainedCalls) == 0 && len(returnedCalls) == 0 && len(chainedReturnCalls) == 0 && len(deepChainedReturnCalls) == 0 && len(returnedChainCalls) == 0 && len(returnedDeepChainCalls) == 0 && len(rubyBareCalls) == 0 && len(phpStatics) == 0 && len(phpPropCalls) == 0 && len(csChainCalls) == 0 && len(kotlinChains) == 0 && len(javaChains) == 0 {
+	if len(calls) == 0 && len(allReceiverCalls) == 0 && len(chainedCalls) == 0 && len(returnedCalls) == 0 && len(chainedReturnCalls) == 0 && len(deepChainedReturnCalls) == 0 && len(returnedChainCalls) == 0 && len(returnedDeepChainCalls) == 0 && len(rubyBareCalls) == 0 && len(phpStatics) == 0 && len(phpPropCalls) == 0 && len(csChainCalls) == 0 && len(kotlinChains) == 0 && len(javaChains) == 0 {
 		return nil
 	}
 	varTypes := parameterVarTypes(from.Signature)
+	if from.Language == "Swift" {
+		// Swift parameters are `label name: inout Type` (`func f(remainder
+		// buffer: inout ByteBuffer)`, `_ buffer: ByteBuffer`): the generic
+		// colon branch only understands the bare `name: Type` form.
+		for name, typeName := range swiftParameterVarTypes(from.Signature, from.Name) {
+			if _, exists := varTypes[name]; !exists {
+				varTypes[name] = typeName
+			}
+		}
+	}
 	localTypes := localVarTypes(block)
 	if from.Language == "Ruby" {
 		for name, typeName := range rubyLocalVarTypes(block) {
@@ -3154,6 +3190,17 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		// Platform.builtInFactories;`), which the generic
 		// constructor-assignment scan cannot type.
 		for name, typeName := range javaLocalVarTypes(block) {
+			if _, exists := localTypes[name]; !exists {
+				localTypes[name] = typeName
+			}
+		}
+	}
+	if from.Language == "Swift" {
+		// Declared-type locals (`let decoded: ByteBuffer? = nil`) and
+		// enum-case pattern bindings (`case .available(var buffer):` typed by
+		// the file's `case available(ByteBuffer)` declaration), which the
+		// generic constructor-assignment scan cannot type.
+		for name, typeName := range swiftLocalVarTypes(block, swiftTypes.enumPayloads) {
 			if _, exists := localTypes[name]; !exists {
 				localTypes[name] = typeName
 			}
@@ -3208,9 +3255,28 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 		}
 	}
+	// Swift stored-property receivers (`_buffer.discardReadBytes()` extracted
+	// from `self._buffer!....`, bare `delegate?.retry(...)`). Lowest tier: a
+	// same-named parameter or local shadows the property.
+	swiftPropReceivers := map[string]bool{}
+	if from.Language == "Swift" {
+		for name, typeName := range swiftTypes.props {
+			if _, exists := varTypes[name]; !exists {
+				varTypes[name] = typeName
+				swiftPropReceivers[name] = true
+			}
+		}
+	}
 	importedReceiverVars := importedReceiverVarTypes(from.Signature, block, importsByName, goModule)
 	deepReturnedCallSuffixes := receiverDeepChainSuffixes(deepChainedReturnCalls, returnedDeepChainCalls)
 	paramTypes := parameterVarTypes(from.Signature)
+	if from.Language == "Swift" {
+		for name, typeName := range swiftParameterVarTypes(from.Signature, from.Name) {
+			if _, exists := paramTypes[name]; !exists {
+				paramTypes[name] = typeName
+			}
+		}
+	}
 	for name := range localTypes {
 		delete(paramTypes, name)
 	}
@@ -3246,6 +3312,8 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		var targetID string
 		confidence := 0.85
 		reason := "method call resolved via inferred receiver type"
+		resolution := "type_inferred"
+		receiverTypeKind := ""
 		switch call.Receiver {
 		case "this", "self":
 			if from.ContainerID == "" {
@@ -3264,7 +3332,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 					confidence = 0.77
 					reason = "method call resolved via assigned returned receiver type"
 				}
-				if kotlinPropReceivers[call.Receiver] {
+				if kotlinPropReceivers[call.Receiver] || swiftPropReceivers[call.Receiver] {
 					confidence = 0.8
 					reason = "method call resolved via typed property receiver"
 				}
@@ -3273,6 +3341,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 					continue
 				}
 				targetID = sym.ID
+				receiverTypeKind = sym.Kind
 			} else if cls, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[call.Receiver], call.Receiver, from.FilePath); ok {
 				// ClassName.method(): the receiver is itself a type name, not a
 				// variable, so this is a static (class-qualified) call and the
@@ -3315,6 +3384,20 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				reason = "Ruby Class.new call resolved to the class initialize constructor"
 			}
 		}
+		if !ok && from.Language == "Swift" && receiverTypeKind == "protocol" {
+			// A Swift protocol requirement without a default implementation
+			// produces no method symbol (only `extension Proto` defaults do), so
+			// member lookup on a protocol-typed receiver cannot find it. When
+			// exactly one method in the workspace carries the name, resolve to
+			// that sole implementation — the same unique-name stance as the Go
+			// interface fallback.
+			method, ok = uniqueMethodByShortName(symbolsByShortName[call.Method])
+			if ok {
+				confidence = minFloat(confidence, 0.7)
+				reason = "protocol-typed receiver call resolved to the unique implementing method"
+				resolution = "name_only"
+			}
+		}
 		if !ok || method.ID == from.ID {
 			continue
 		}
@@ -3337,7 +3420,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			Confidence:    confidence,
 			Reason:        reason,
 			RelationScope: scope,
-			Resolution:    "type_inferred",
+			Resolution:    resolution,
 			TargetKind:    "symbol",
 			Evidence: []Evidence{{
 				Kind:      "call_site",
