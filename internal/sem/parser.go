@@ -3678,6 +3678,13 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		if language != "Dart" {
 			return Entity{}, false
 		}
+		// A method_signature wrapping a function/getter/setter signature is just
+		// packaging: the walk extracts the inner signature (whose name node is the
+		// member name), while nodeName on the wrapper picks the first identifier —
+		// the return type (`Future<Response> head(...)` -> a bogus "Future" method).
+		if node.Type() == "method_signature" && validNode(dartInnerSignature(node)) {
+			return Entity{}, false
+		}
 		kind = "method"
 		name = nodeName(node, src)
 		if scope != "" {
@@ -4213,7 +4220,51 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 			entity.Fingerprint = hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: sig}, block)))
 		}
 	}
+	// Dart declaration heads (function/method/getter/setter signatures) keep the
+	// body as a *sibling* function_body node, so the node range covers only the
+	// head. Extend the entity to the body: without this, the symbol block that
+	// call scanning reads contains no call sites, so Dart emitted zero CALLS.
+	if language == "Dart" {
+		if body := dartSignatureBody(node); validNode(body) && int(body.EndByte()) <= len(src) {
+			entity.EndLine = int(body.EndPoint().Row) + 1
+			full := string(src[node.StartByte():body.EndByte()])
+			entity.BodyHash = hash(normalize(full))
+			entity.Fingerprint = hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: entity.Signature}, full)))
+		}
+	}
 	return entity, true
+}
+
+// dartInnerSignature returns the function/getter/setter signature wrapped by a
+// Dart method_signature node, if any.
+func dartInnerSignature(node *sitter.Node) *sitter.Node {
+	for _, inner := range []string{"function_signature", "getter_signature", "setter_signature"} {
+		if child := firstNamedChildOfType(node, inner); validNode(child) {
+			return child
+		}
+	}
+	return nil
+}
+
+// dartSignatureBody returns the function_body sibling that carries a Dart
+// declaration head's body. For a class member the head is wrapped in a
+// method_signature and the body is the *wrapper's* next sibling; for a
+// top-level function it directly follows the function_signature. Abstract
+// members have no body sibling and return nil.
+func dartSignatureBody(node *sitter.Node) *sitter.Node {
+	switch node.Type() {
+	case "function_signature", "getter_signature", "setter_signature", "method_signature":
+	default:
+		return nil
+	}
+	holder := node
+	if parent := node.Parent(); validNode(parent) && parent.Type() == "method_signature" {
+		holder = parent
+	}
+	if sibling := holder.NextNamedSibling(); validNode(sibling) && sibling.Type() == "function_body" {
+		return sibling
+	}
+	return nil
 }
 
 func refineKind(kind string, node *sitter.Node, src []byte) string {

@@ -572,7 +572,7 @@ func supportsCallExtraction(spec languageSpec) bool {
 		return false
 	}
 	switch spec.language {
-	case "Bash", "C", "C++", "C#", "Elixir", "Go", "Groovy", "Java", "JavaScript", "Kotlin", "Lua", "OCaml", "PHP", "Python", "Ruby", "Rust", "Scala", "Swift", "TypeScript", "Zsh":
+	case "Bash", "C", "C++", "C#", "Dart", "Elixir", "Go", "Groovy", "Java", "JavaScript", "Kotlin", "Lua", "OCaml", "PHP", "Python", "Ruby", "Rust", "Scala", "Swift", "TypeScript", "Zsh":
 		return true
 	default:
 		return false
@@ -1453,7 +1453,7 @@ func localReachable(from, to SymbolRecord) bool {
 // receiver and is handled by receiverCallRelations instead.
 func implicitReceiverLanguage(lang string) bool {
 	switch lang {
-	case "Java", "C#", "C++", "Kotlin", "Scala", "Ruby":
+	case "Java", "C#", "C++", "Dart", "Kotlin", "Scala", "Ruby":
 		return true
 	}
 	return false
@@ -1539,6 +1539,36 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 				SymbolRecord: samePkg[0],
 				Confidence:   0.80,
 				Reason:       "direct call expression resolved to same-package symbol",
+				Resolution:   "package",
+				Scope:        "module",
+			}}
+		}
+	}
+
+	// Same-directory resolution for Dart: a Dart file imports siblings by bare
+	// relative path (`import 'request.dart';`) without binding a local name, so
+	// the import-map branch above can never disambiguate. A unique function or
+	// type (constructor call) in the caller's directory wins over the
+	// globally-unique gate below, which drops the call whenever another package
+	// in a monorepo reuses the name (e.g. two `Request` classes in dart-lang/http).
+	// Methods stay excluded: a Dart class is single-file, so an implicit-receiver
+	// method call is already resolved by the same-file branch.
+	if from.Language == "Dart" {
+		fromDir := filepath.ToSlash(filepath.Dir(from.FilePath))
+		var sameDir []SymbolRecord
+		for _, to := range candidates {
+			if to.ID == from.ID || (to.Kind != "function" && !typeLikeKind(to.Kind)) || !localReachable(from, to) {
+				continue
+			}
+			if filepath.ToSlash(filepath.Dir(to.FilePath)) == fromDir {
+				sameDir = append(sameDir, to)
+			}
+		}
+		if len(sameDir) == 1 {
+			return []resolvedCallTarget{{
+				SymbolRecord: sameDir[0],
+				Confidence:   0.80,
+				Reason:       "direct call expression resolved to same-directory symbol",
 				Resolution:   "package",
 				Scope:        "module",
 			}}
@@ -2118,7 +2148,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				if file.Language == "Rust" {
 					callBlock = stripRustCodegenMacroBodies(block)
 				}
-				callNames := callLikeIdentifiers(callBlock)
+				callNames := callLikeIdentifiers(callBlock, file.Language)
 				if file.Language == "Ruby" {
 					// Ruby method names may end in `!`/`?` and are commonly called
 					// without parentheses; the generic scanner misses both.
@@ -2378,7 +2408,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					FilePath: file.Path,
 					Language: file.Language,
 				}
-				topLevelNames := callLikeIdentifiers(topLevel)
+				topLevelNames := callLikeIdentifiers(topLevel, file.Language)
 				if file.Language == "Ruby" {
 					for name := range rubySuffixedCallIdentifiers(topLevel) {
 						topLevelNames[name] = struct{}{}
@@ -9651,7 +9681,7 @@ func matchDelimiter(b []byte, openIdx int) int {
 	return -1
 }
 
-func callLikeIdentifiers(content string) map[string]struct{} {
+func callLikeIdentifiers(content, language string) map[string]struct{} {
 	stripped := stripCodeLiteralsAndComments(content)
 	identifiers := map[string]struct{}{}
 	call := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>\n;{}()]*>)?\(`)
@@ -9661,7 +9691,7 @@ func callLikeIdentifiers(content string) map[string]struct{} {
 		}
 		start := match[2]
 		name := stripped[match[2]:match[3]]
-		if callNameIgnored(stripped, start, name) {
+		if callNameIgnored(stripped, start, name, language) {
 			continue
 		}
 		identifiers[name] = struct{}{}
@@ -9669,7 +9699,7 @@ func callLikeIdentifiers(content string) map[string]struct{} {
 	return identifiers
 }
 
-func callNameIgnored(content string, start int, name string) bool {
+func callNameIgnored(content string, start int, name, language string) bool {
 	for i := start - 1; i >= 0; i-- {
 		switch content[i] {
 		case ' ', '\t', '\n', '\r':
@@ -9686,7 +9716,12 @@ func callNameIgnored(content string, start int, name string) bool {
 	case "append", "cap", "close", "complex", "copy", "delete", "imag", "len", "make", "new", "panic", "print", "println", "real", "recover":
 		return true
 	case "Array", "Boolean", "Date", "Error", "Map", "Math", "Number", "Object", "Promise", "RegExp", "Request", "Response", "Set", "String", "URL", "URLSearchParams":
-		return true
+		// JS/browser globals; a call to these names is almost never a call to a
+		// repo symbol in a JS-family file. Dart is different: names like Request
+		// and Response are ordinary user classes (dart:core has no such globals),
+		// and resolution only fires when a repo symbol actually matches — so the
+		// blanket skip would silently drop Dart constructor calls.
+		return language != "Dart"
 	default:
 		return false
 	}

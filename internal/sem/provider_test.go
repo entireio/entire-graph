@@ -9470,7 +9470,7 @@ func TestCapabilitiesReportRelationSupportPerLanguage(t *testing.T) {
 			}
 		}
 	}
-	for _, language := range []string{"Go", "Python", "TypeScript", "Java", "Rust", "C#", "PHP"} {
+	for _, language := range []string{"Go", "Python", "TypeScript", "Java", "Rust", "C#", "PHP", "Dart"} {
 		if !contains(caps.RelationSupportByLanguage[language], "CALLS") {
 			t.Fatalf("language %q should support CALLS: %#v", language, caps.RelationSupportByLanguage[language])
 		}
@@ -10628,6 +10628,106 @@ class Widget {
 	}
 	if kinds["Widget.build"] == "" && kinds["build"] == "" {
 		t.Fatalf("Dart method not extracted: %#v", kinds)
+	}
+}
+
+// Dart CALLS extraction (evidence: on dart-lang/http the focus method
+// BaseClient._sendUnstreamed had zero inbound/outbound CALLS). Dart keeps a
+// declaration's body as a *sibling* function_body node, so symbols spanned only
+// the head and the call scanner saw no call sites; bare sibling-method calls
+// were also dropped because Dart wasn't an implicit-receiver language; and
+// constructor calls to names like Request were eaten by the JS-builtin ignore
+// list. Private `_names` must survive the identifier scan.
+func TestDartCallExtraction(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "lib/src/base_client.dart", `import 'request.dart';
+import 'response.dart';
+
+abstract mixin class BaseClient implements Client {
+  Future<Response> head(Uri url, {Map<String, String>? headers}) =>
+      _sendUnstreamed('HEAD', url, headers);
+
+  Future<Response> get(Uri url, {Map<String, String>? headers}) =>
+      _sendUnstreamed('GET', url, headers);
+
+  Future<Response> _sendUnstreamed(
+      String method, Uri url, Map<String, String>? headers,
+      {Object? body, Encoding? encoding}) async {
+    var request = Request(method, url);
+    if (headers != null) request.headers.addAll(headers);
+    return Response.fromStream(await send(request));
+  }
+
+  Future<StreamedResponse> send(BaseRequest request);
+}
+`)
+	writeFile(t, repo, "lib/src/request.dart", `class Request extends BaseRequest {
+  Request(super.method, super.url);
+}
+`)
+	writeFile(t, repo, "lib/src/response.dart", `class Response extends BaseResponse {
+  static Future<Response> fromStream(StreamedResponse response) async {
+    final body = await response.stream.toBytes();
+    return Response(body, response.statusCode);
+  }
+}
+`)
+	// A same-named class in another package: the constructor call must still
+	// resolve — to the same-directory Request — instead of being dropped as
+	// globally ambiguous (dart-lang/http has a second Request in ok_http).
+	writeFile(t, repo, "other_pkg/lib/src/bindings.dart", `class Request {
+  Request();
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	edges := map[string]RelationRecord{}
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" || r.Type == "CONSTRUCTS" {
+			edges[r.Type+" "+lastSegment(r.FromID)+"->"+lastSegment(r.ToID)] = r
+		}
+	}
+	// Public methods calling a private (`_`-prefixed) sibling method: the
+	// symbol block must include the sibling function_body, the identifier scan
+	// must keep the leading underscore, and the bare call must resolve to a
+	// same-class method (implicit receiver).
+	for _, want := range []string{
+		"CALLS BaseClient.head->BaseClient._sendUnstreamed",
+		"CALLS BaseClient.get->BaseClient._sendUnstreamed",
+	} {
+		if r, ok := edges[want]; !ok || r.Resolution != "exact" {
+			t.Fatalf("missing/weak %q: %#v", want, edges)
+		}
+	}
+	// Bare sibling-method call inside the method body.
+	if _, ok := edges["CALLS BaseClient._sendUnstreamed->BaseClient.send"]; !ok {
+		t.Fatalf("missing _sendUnstreamed->send call: %#v", edges)
+	}
+	// Static class-name receiver call resolved cross-file.
+	if _, ok := edges["CALLS BaseClient._sendUnstreamed->Response.fromStream"]; !ok {
+		t.Fatalf("missing _sendUnstreamed->Response.fromStream call: %#v", edges)
+	}
+	// Constructor call to a class in another file: a call to a type-like symbol
+	// is recorded as CONSTRUCTS (the convention shared with Go/TS), the name
+	// Request must not be dropped by the JS-builtin ignore list in Dart, and the
+	// decoy Request in other_pkg/ must lose to the same-directory class.
+	r, ok := edges["CONSTRUCTS BaseClient._sendUnstreamed->Request"]
+	if !ok || r.Resolution != "package" {
+		t.Fatalf("missing/weak _sendUnstreamed->Request construction: %#v", edges)
+	}
+	if !strings.Contains(r.ToID, "lib/src/request.dart") {
+		t.Fatalf("Request construction resolved to the wrong class: %#v", r)
+	}
+	// The method_signature wrapper must not surface as a bogus method named
+	// after the return type.
+	for _, s := range snapshot.Symbols {
+		if s.Language == "Dart" && strings.HasSuffix(s.Name, ".Future") {
+			t.Fatalf("return type extracted as method symbol: %#v", s)
+		}
 	}
 }
 
