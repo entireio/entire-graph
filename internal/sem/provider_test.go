@@ -10378,6 +10378,13 @@ func TestIsVendoredScanDir(t *testing.T) {
 		{"a/b/third_party", "third_party", true},
 		{"node_modules", "node_modules", true},
 		{"vendor", "vendor", true},
+		// Ambiguous generated-output names are not unconditionally vendored;
+		// skipVendoredDir decides them from git tracked-ness.
+		{"build", "build", false},
+		{"packages/next/src/build", "build", false},
+		{"dist", "dist", false},
+		{"deps", "deps", false},
+		{"external", "external", false},
 		// Normal source directories are kept.
 		{"src", "src", false},
 		{"lib/std", "std", false},
@@ -10387,6 +10394,124 @@ func TestIsVendoredScanDir(t *testing.T) {
 		if got := isVendoredScanDir(c.rel, c.name); got != c.want {
 			t.Errorf("isVendoredScanDir(%q, %q) = %v, want %v", c.rel, c.name, got, c.want)
 		}
+	}
+}
+
+func TestSkipVendoredDirTrackedAmbiguousNames(t *testing.T) {
+	tracked := func(rel string) bool { return rel == "src/build" || rel == "deps" }
+	cases := []struct {
+		rel, name string
+		want      bool
+	}{
+		// A tracked build/deps directory is first-party source and is walked.
+		{"src/build", "build", false},
+		{"deps", "deps", false},
+		// The same names untracked are generated/fetched output and skipped.
+		{"build", "build", true},
+		{"a/dist", "dist", true},
+		{"external", "external", true},
+		// Unambiguous vendored names are skipped even when tracked.
+		{"node_modules", "node_modules", true},
+		{"vendor", "vendor", true},
+	}
+	for _, c := range cases {
+		if got := skipVendoredDir(c.rel, c.name, ignoreMatcher{}, tracked); got != c.want {
+			t.Errorf("skipVendoredDir(%q, %q) = %v, want %v", c.rel, c.name, got, c.want)
+		}
+	}
+}
+
+func TestBuildProviderSnapshotWorktreeKeepsTrackedBuildDir(t *testing.T) {
+	// packages/next/src/build in vercel/next.js is first-party, git-tracked
+	// source; the vendored-directory heuristic must not skip a tracked
+	// directory just because it is named "build". The untracked build/ output
+	// directory stays excluded.
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Sem Test")
+	git(t, repo, "config", "user.email", "sem@example.com")
+	writeFile(t, repo, "src/build/lib.ts", "export function collectTraces(): number {\n  return 1\n}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	writeFile(t, repo, "build/out.js", "function generatedOutput() {\n  return 1\n}\n")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshotHasPath(snapshot, "src/build/lib.ts") || !snapshotHasSymbol(snapshot, "collectTraces") {
+		t.Fatalf("tracked src/build was skipped: files=%#v", snapshot.Files)
+	}
+	if snapshotHasPath(snapshot, "build/out.js") || snapshotHasSymbol(snapshot, "generatedOutput") {
+		t.Fatalf("untracked build output was included: files=%#v symbols=%#v", snapshot.Files, snapshot.Symbols)
+	}
+}
+
+func TestBuildProviderSnapshotHeadKeepsTrackedBuildDir(t *testing.T) {
+	// The HEAD-tree listing only contains tracked paths, so ambiguous
+	// generated-output names (build, dist, deps, external) must never be
+	// filtered from it.
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Sem Test")
+	git(t, repo, "config", "user.email", "sem@example.com")
+	writeFile(t, repo, "src/build/lib.ts", "export function collectTraces(): number {\n  return 1\n}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshotHasPath(snapshot, "src/build/lib.ts") || !snapshotHasSymbol(snapshot, "collectTraces") {
+		t.Fatalf("HEAD snapshot skipped tracked src/build: files=%#v", snapshot.Files)
+	}
+}
+
+func TestBuildProviderSnapshotWorktreeUntrackedBuildDirStaysExcluded(t *testing.T) {
+	// Without git metadata (plain directory), an ambiguous name cannot be
+	// proven first-party, so it keeps the conservative vendored treatment.
+	repo := t.TempDir()
+	writeFile(t, repo, "build/out.py", "def generated_output():\n    return True\n")
+	writeFile(t, repo, "src/keep.py", "def keep():\n    return True\n")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshotHasSymbol(snapshot, "keep") {
+		t.Fatalf("snapshot missing kept symbol: %#v", snapshot.Symbols)
+	}
+	assertSnapshotOmitsPathPrefix(t, snapshot, "build/")
+}
+
+func TestBuildProviderSnapshotWorktreeDepsGitignoreNegation(t *testing.T) {
+	// rabbitmq-server layout: fetched dependencies live in deps/ and are
+	// gitignored (`/deps/*`), while the project's own applications are negated
+	// back in (`!/deps/rabbit/`) and committed. The tracked deps/ tree must be
+	// walked, with the ignore rules keeping the fetched dependencies out.
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Sem Test")
+	git(t, repo, "config", "user.email", "sem@example.com")
+	writeFile(t, repo, ".gitignore", "/deps/*\n!/deps/rabbit/\n")
+	writeFile(t, repo, "deps/rabbit/src/app.py", "def first_party_app():\n    return True\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	writeFile(t, repo, "deps/fetched/dep.py", "def fetched_dependency():\n    return True\n")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshotHasPath(snapshot, "deps/rabbit/src/app.py") || !snapshotHasSymbol(snapshot, "first_party_app") {
+		t.Fatalf("first-party deps application was skipped: files=%#v", snapshot.Files)
+	}
+	assertSnapshotOmitsPathPrefix(t, snapshot, "deps/fetched/")
+	if snapshotHasSymbol(snapshot, "fetched_dependency") {
+		t.Fatalf("fetched dependency was included: %#v", snapshot.Symbols)
 	}
 }
 
