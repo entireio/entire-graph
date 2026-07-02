@@ -2115,7 +2115,15 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				if file.Language == "Rust" {
 					callBlock = stripRustCodegenMacroBodies(block)
 				}
-				for _, name := range sortedKeysOf(callLikeIdentifiers(callBlock)) {
+				callNames := callLikeIdentifiers(callBlock)
+				if file.Language == "Ruby" {
+					// Ruby method names may end in `!`/`?` and are commonly called
+					// without parentheses; the generic scanner misses both.
+					for name := range rubySuffixedCallIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
+				}
+				for _, name := range sortedKeysOf(callNames) {
 					if name == from.Name {
 						continue
 					}
@@ -2367,7 +2375,13 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					FilePath: file.Path,
 					Language: file.Language,
 				}
-				for _, name := range sortedKeysOf(callLikeIdentifiers(topLevel)) {
+				topLevelNames := callLikeIdentifiers(topLevel)
+				if file.Language == "Ruby" {
+					for name := range rubySuffixedCallIdentifiers(topLevel) {
+						topLevelNames[name] = struct{}{}
+					}
+				}
+				for _, name := range sortedKeysOf(topLevelNames) {
 					for _, to := range resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName, false) {
 						relType := "CALLS"
 						if typeLikeKind(to.Kind) {
@@ -2788,11 +2802,27 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 	deepChainedReturnCalls := chainedConstructorDeepReturnCalls(block)
 	returnedChainCalls := returnedReceiverChainCalls(block)
 	returnedDeepChainCalls := returnedReceiverDeepChainCalls(block)
-	if len(calls) == 0 && len(chainedCalls) == 0 && len(returnedCalls) == 0 && len(chainedReturnCalls) == 0 && len(deepChainedReturnCalls) == 0 && len(returnedChainCalls) == 0 && len(returnedDeepChainCalls) == 0 {
+	var rubyBareCalls []string
+	if from.Language == "Ruby" {
+		// Ruby call sites often omit parentheses and method names may end in
+		// `!`/`?`; the generic extractors above miss both, and constructor
+		// chains are spelled `Klass.new(...).method` rather than `new Klass()`.
+		calls = mergeReceiverCalls(calls, rubyReceiverCalls(block))
+		chainedCalls = append(chainedCalls, rubyChainedConstructorCalls(block)...)
+		rubyBareCalls = rubyBareCallNames(block, from.Signature)
+	}
+	if len(calls) == 0 && len(chainedCalls) == 0 && len(returnedCalls) == 0 && len(chainedReturnCalls) == 0 && len(deepChainedReturnCalls) == 0 && len(returnedChainCalls) == 0 && len(returnedDeepChainCalls) == 0 && len(rubyBareCalls) == 0 {
 		return nil
 	}
 	varTypes := parameterVarTypes(from.Signature)
 	localTypes := localVarTypes(block)
+	if from.Language == "Ruby" {
+		for name, typeName := range rubyLocalVarTypes(block) {
+			if _, exists := localTypes[name]; !exists {
+				localTypes[name] = typeName
+			}
+		}
+	}
 	for name, typeName := range localTypes {
 		varTypes[name] = typeName
 	}
@@ -2886,6 +2916,14 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 		}
 		method, inherited, ok := lookupMethodUpChain(targetID, call.Method, methodsByContainer, superContainerByID)
+		if !ok && from.Language == "Ruby" && call.Method == "new" {
+			// Ruby spells construction `Klass.new`; the constructor that runs is
+			// the class's initialize method.
+			method, inherited, ok = lookupMethodUpChain(targetID, "initialize", methodsByContainer, superContainerByID)
+			if ok {
+				reason = "Ruby Class.new call resolved to the class initialize constructor"
+			}
+		}
 		if !ok || method.ID == from.ID {
 			continue
 		}
@@ -2977,6 +3015,48 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				StartLine: from.StartLine,
 				EndLine:   from.EndLine,
 				Detail:    call.Receiver + "." + call.Method,
+			}},
+			WarningCodes: []string{},
+		})
+	}
+	// Ruby receiver-less calls target implicit self: emit an edge when the bare
+	// word resolves to a method of the enclosing class (or an ancestor). The
+	// candidate list already excludes keywords, locals, parameters, and hash
+	// keys; requiring a same-class method match keeps this precise.
+	for _, name := range rubyBareCalls {
+		if name == from.Name || from.ContainerID == "" {
+			continue
+		}
+		method, inherited, ok := lookupMethodUpChain(from.ContainerID, name, methodsByContainer, superContainerByID)
+		if !ok || method.ID == from.ID {
+			continue
+		}
+		confidence := 0.85
+		reason := "receiver-less Ruby call resolved to a method of the enclosing class"
+		if inherited {
+			confidence = 0.8
+			reason += " (inherited from a base type)"
+		}
+		scope := "file"
+		if method.FilePath != from.FilePath {
+			scope = "module"
+		}
+		relations = append(relations, RelationRecord{
+			RecordType:    "relation",
+			FromID:        from.ID,
+			ToID:          method.ID,
+			Type:          "CALLS",
+			Confidence:    confidence,
+			Reason:        reason,
+			RelationScope: scope,
+			Resolution:    "type_inferred",
+			TargetKind:    "symbol",
+			Evidence: []Evidence{{
+				Kind:      "call_site",
+				FilePath:  from.FilePath,
+				StartLine: from.StartLine,
+				EndLine:   from.EndLine,
+				Detail:    name,
 			}},
 			WarningCodes: []string{},
 		})
