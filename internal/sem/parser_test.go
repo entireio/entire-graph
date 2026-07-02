@@ -2003,6 +2003,133 @@ data class User(
 	}
 }
 
+// Kotlin top-level extension functions must emit under their own name, not the
+// receiver type (evidence: on square/retrofit `suspend fun <T> Call<T>
+// .awaitResponse()` and `suspend fun Exception.suspendAndThrow()` in
+// KotlinExtensions.kt were absent — tree-sitter-kotlin has no name field on
+// function_declaration, so the generic name descent returned the receiver's
+// type_identifier).
+func TestKotlinTopLevelExtensionFunctionSymbols(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "KotlinExtensions.kt", `package retrofit2
+
+suspend fun <T : Any> Call<T>.awaitResponse(): Response<T> {
+  return suspendCancellableCoroutine { continuation -> }
+}
+
+internal suspend fun Exception.suspendAndThrow(): Nothing {
+  throw this
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"awaitResponse", "suspendAndThrow"} {
+		symbol := symbolByKindAndName(snapshot.Symbols, "function", name)
+		if symbol.ID == "" {
+			t.Fatalf("missing extension function symbol %q in %#v", name, snapshot.Symbols)
+		}
+		if symbol.FilePath != "KotlinExtensions.kt" {
+			t.Fatalf("%s file = %q", name, symbol.FilePath)
+		}
+	}
+	// The receiver type must not be misread as the function name.
+	for _, wrong := range []string{"Call", "Exception"} {
+		if symbolByKindAndName(snapshot.Symbols, "function", wrong).ID != "" {
+			t.Fatalf("receiver type %q emitted as a function symbol", wrong)
+		}
+	}
+}
+
+// Scala `object` singletons must emit — including with an extends clause
+// (evidence: on apache/spark `object SQLExecution extends Logging` was absent;
+// plain companion objects only appeared present because the same-named class
+// carried the symbol — object_definition had no entityFromNode case at all).
+func TestScalaObjectDefinitionSymbols(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "SQLExecution.scala", `object SQLExecution extends Logging {
+  def withNewExecutionId(x: Int): Int = x
+}
+
+object Plain {
+  def m(): Int = 1
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"SQLExecution", "Plain"} {
+		object := symbolByKindAndName(snapshot.Symbols, "class", name)
+		if object.ID == "" {
+			t.Fatalf("missing object symbol %q in %#v", name, snapshot.Symbols)
+		}
+		if object.FilePath != "SQLExecution.scala" {
+			t.Fatalf("%s file = %q", name, object.FilePath)
+		}
+	}
+	method := symbolByKindAndName(snapshot.Symbols, "method", "SQLExecution.withNewExecutionId")
+	if method.ID == "" {
+		t.Fatalf("object method not qualified under object in %#v", snapshot.Symbols)
+	}
+}
+
+// Dart 3 class modifiers (`final class`, `sealed class`, `base class`, ...)
+// predate the vendored tree-sitter-dart grammar, so such declarations parsed
+// as ERROR nodes (evidence: on dart-lang/http `final class ByteStream extends
+// StreamView<List<int>>` lost its class symbol — a recovered factory
+// constructor emitted kind "function" named ByteStream instead — and `final
+// class RetryClient extends BaseClient` emitted nothing). The modifier is
+// masked to spaces before parsing.
+func TestDartClassModifierSymbols(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "byte_stream.dart", `final class ByteStream extends StreamView<List<int>> {
+  const ByteStream(super.stream);
+
+  factory ByteStream.fromBytes(List<int> bytes) =>
+      ByteStream(Stream.value(bytes));
+
+  Future<Uint8List> toBytes() {
+    return completer.future;
+  }
+}
+
+sealed class Shape {}
+
+abstract interface class Client {
+  void close();
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"ByteStream", "Shape", "Client"} {
+		class := symbolByKindAndName(snapshot.Symbols, "class", name)
+		if class.ID == "" {
+			t.Fatalf("missing class symbol %q in %#v", name, snapshot.Symbols)
+		}
+		if class.FilePath != "byte_stream.dart" {
+			t.Fatalf("%s file = %q", name, class.FilePath)
+		}
+	}
+	if symbolByKindAndName(snapshot.Symbols, "method", "ByteStream.toBytes").ID == "" {
+		t.Fatalf("modified class method not qualified under class in %#v", snapshot.Symbols)
+	}
+	// The old failure mode: the recovered factory constructor emitted as a
+	// top-level function named after the class.
+	if symbolByKindAndName(snapshot.Symbols, "function", "ByteStream").ID != "" {
+		t.Fatalf("class name still emitted as a bare function symbol")
+	}
+}
+
 func TestGraphQLSchemaFieldEntities(t *testing.T) {
 	entities, language := TreeSitterParser{}.Parse("schema.graphql", `schema {
   query: Query

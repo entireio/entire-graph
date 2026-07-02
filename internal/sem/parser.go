@@ -206,6 +206,9 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if spec.language == "Swift" {
 		parseSrc = []byte(maskSwiftUnsupportedSyntax(content))
 	}
+	if spec.language == "Dart" {
+		parseSrc = []byte(maskDartUnsupportedSyntax(content))
+	}
 	if spec.language == "OCaml" && strings.EqualFold(filepath.Ext(path), ".mli") {
 		parseSrc = []byte(maskOCamlInterfaceSyntax(content))
 	}
@@ -879,6 +882,32 @@ func maskOCamlInterfaceSyntax(content string) string {
 		}
 	}
 	return strings.Join(lines, "")
+}
+
+// dartClassModifierPattern matches a Dart 3 class modifier immediately ahead
+// of the `class` keyword (`final class`, `sealed class`, `base mixin class`,
+// `abstract interface class`, ...). The vendored tree-sitter-dart grammar
+// predates class modifiers, so an unmasked `final class ByteStream extends
+// StreamView<List<int>>` parses as an ERROR node and the class symbol is lost
+// (its factory constructor gets recovered as a bare function instead).
+var dartClassModifierPattern = regexp.MustCompile(`\b(final|base|interface|sealed|mixin)(\s+)(class\b)`)
+
+// maskDartUnsupportedSyntax blanks Dart 3 class modifiers the grammar cannot
+// parse, preserving byte length so node offsets keep pointing into the
+// original source. `abstract` is left alone (the grammar knows `abstract
+// class`); stacked modifiers (`base mixin class`) resolve over the fixpoint
+// iterations.
+func maskDartUnsupportedSyntax(content string) string {
+	for {
+		masked := dartClassModifierPattern.ReplaceAllStringFunc(content, func(match string) string {
+			m := dartClassModifierPattern.FindStringSubmatch(match)
+			return strings.Repeat(" ", len(m[1])) + m[2] + m[3]
+		})
+		if masked == content {
+			return masked
+		}
+		content = masked
+	}
 }
 
 func maskSwiftUnsupportedSyntax(content string) string {
@@ -3801,6 +3830,17 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 	case "module_definition":
 		kind = "module"
 		name = nodeName(node, src)
+	case "module":
+		// Ruby `module Name ... end` (tree-sitter-ruby's node type; the name
+		// field is a constant). Modules are namespaces/mixins on par with
+		// classes, and "module" scopes children, so nested methods qualify under
+		// the module name. Gated to Ruby because the bare node type is a word
+		// other grammars could reuse.
+		if language != "Ruby" {
+			return Entity{}, false
+		}
+		kind = "module"
+		name = nodeName(node, src)
 	case "binary_operator":
 		// R defines functions by assignment: `name <- function(args) ...` is a
 		// binary_operator whose value side is a function_definition. Gated to R
@@ -3919,6 +3959,17 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 	case "function_declaration", "function_item":
 		kind = "function"
 		name = nodeName(node, src)
+		if language == "Kotlin" {
+			// tree-sitter-kotlin has no name field on function_declaration, and on
+			// an extension function (`fun Call<T>.awaitResponse()`) the receiver
+			// type precedes the name, so nodeName's pre-order descent latches onto
+			// the receiver's type_identifier ("Call") instead of the function
+			// name. The function's own name is always the direct simple_identifier
+			// child (the receiver's identifiers sit inside a user_type subtree).
+			if id := firstNamedChildOfType(node, "simple_identifier"); validNode(id) {
+				name = strings.TrimSpace(id.Content(src))
+			}
+		}
 		if scope != "" {
 			kind = "method"
 			name = qualify(scope, name)
@@ -4037,6 +4088,20 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		if id := firstNamedChildOfType(node, "identifier"); validNode(id) {
 			name = strings.TrimSpace(id.Content(src))
 		}
+	case "object_definition":
+		// Scala `object Name` singleton — with or without an extends clause
+		// (`object SQLExecution extends Logging`); both parse as
+		// object_definition with the identifier in the name field, but the node
+		// type had no case, so objects never emitted (companion objects only
+		// appeared to extract because the same-named class carried the symbol).
+		// An object is a singleton class, so it emits kind "class", which also
+		// scopes nested defs under the object name. Gated to Scala so grammars
+		// reusing the node type are unchanged.
+		if language != "Scala" {
+			return Entity{}, false
+		}
+		kind = "class"
+		name = nodeName(node, src)
 	case "trait_definition", "trait_item":
 		kind = "trait"
 		name = nodeName(node, src)
