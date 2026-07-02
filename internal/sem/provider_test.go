@@ -6418,6 +6418,177 @@ export function labelFor(widget: Widget): string {
 	}
 }
 
+// Shell functions call each other as bare commands (no parentheses), which the
+// generic paren-based scanner cannot see; the shell command-position scanner
+// must recover those CALLS while ignoring builtins like cd/return. Shaped like
+// ohmyzsh's dirhistory.plugin.zsh.
+func TestBuildProviderSnapshotResolvesZshBareCommandCalls(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "plugins/dirhistory/dirhistory.plugin.zsh", `dirhistory_past=($PWD)
+export DIRHISTORY_SIZE=30
+
+alias cde='dirhistory_cd'
+
+function pop_past() {
+  setopt localoptions no_ksh_arrays
+  if [[ $#dirhistory_past -gt 0 ]]; then
+    typeset -g $1="${dirhistory_past[$#dirhistory_past]}"
+  fi
+}
+
+function push_past() {
+  if [[ $#dirhistory_past -ge $DIRHISTORY_SIZE ]]; then
+    shift dirhistory_past
+  fi
+}
+
+function push_future() {
+  dirhistory_future+=($1)
+}
+
+function dirhistory_cd(){
+  DIRHISTORY_CD="1"
+  cd $1
+  unset DIRHISTORY_CD
+}
+
+function dirhistory_back() {
+  local cw=""
+  local d=""
+
+  pop_past cw
+  if [[ "" == "$cw" ]]; then
+    dirhistory_past=($PWD)
+    return
+  fi
+
+  pop_past d
+  if [[ "" != "$d" ]]; then
+    dirhistory_cd $d
+    push_future $cw
+  else
+    push_past $cw
+  fi
+}
+
+function dirhistory_zle_dirhistory_back() {
+  zle .kill-buffer
+  dirhistory_back
+  zle .accept-line
+}
+
+zle -N dirhistory_zle_dirhistory_back
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, edge := range [][2]string{
+		{"dirhistory_zle_dirhistory_back", "dirhistory_back"},
+		{"dirhistory_back", "pop_past"},
+		{"dirhistory_back", "dirhistory_cd"},
+		{"dirhistory_back", "push_future"},
+		{"dirhistory_back", "push_past"},
+	} {
+		if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", edge[0], edge[1], "exact") {
+			t.Fatalf("shell call %s -> %s not resolved: %#v", edge[0], edge[1], snapshot.Relations)
+		}
+	}
+	// Builtins and keywords must not fabricate edges.
+	for _, relation := range snapshot.Relations {
+		if relation.Type != "CALLS" {
+			continue
+		}
+		if lastSegment(relation.FromID) == "dirhistory_back" {
+			switch lastSegment(relation.ToID) {
+			case "pop_past", "dirhistory_cd", "push_future", "push_past":
+			default:
+				t.Fatalf("unexpected outbound call from dirhistory_back: %#v", relation)
+			}
+		}
+	}
+}
+
+// Swift methods call same-type siblings without a receiver (implicit self),
+// including across `extension` blocks, and construct types whose extensions
+// must not break the unique-name gate. Shaped like swift-argument-parser's
+// CommandParser.swift / ArgumentSet.swift.
+func TestBuildProviderSnapshotResolvesSwiftExtensionAndImplicitSelfCalls(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "Sources/Parsing/CommandParser.swift", `struct CommandParser {
+  var commandTree: Tree
+}
+
+extension CommandParser {
+  func checkForBuiltInFlags(_ split: SplitArguments) throws {
+  }
+
+  fileprivate mutating func parseCurrent(
+    _ split: inout SplitArguments
+  ) throws -> ParsableCommand {
+    var parser = LenientParser(commandTree, split)
+    let values = try parser.parse()
+    try checkForBuiltInFlags(values)
+    return values
+  }
+
+  internal mutating func descendingParse(_ split: inout SplitArguments) throws {
+    var parsedCommand = try parseCurrent(&split)
+  }
+}
+
+extension CommandParser {
+  func checkForCompletionScriptRequest(_ split: inout SplitArguments) throws {
+    var completionsParser = CommandParser(GenerateCompletions.self)
+    if let result = try? completionsParser.parseCurrent(&split) {
+      return
+    }
+  }
+}
+`)
+	writeFile(t, repo, "Sources/Parsing/ArgumentSet.swift", `struct LenientParser {
+  var content: Int
+
+  mutating func parse() throws -> ParsedValues {
+    return ParsedValues()
+  }
+}
+
+extension LenientParser {
+  var describing: String { "parser" }
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Bare same-file sibling-method calls (implicit self).
+	if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", "CommandParser.descendingParse", "CommandParser.parseCurrent", "exact") {
+		t.Fatalf("implicit-self call descendingParse -> parseCurrent not resolved: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", "CommandParser.parseCurrent", "CommandParser.checkForBuiltInFlags", "exact") {
+		t.Fatalf("implicit-self call parseCurrent -> checkForBuiltInFlags not resolved: %#v", snapshot.Relations)
+	}
+	// Receiver-typed call on a constructor-assigned local; only works when the
+	// extension did not fork the CommandParser container.
+	if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", "CommandParser.checkForCompletionScriptRequest", "CommandParser.parseCurrent", "type_inferred") {
+		t.Fatalf("receiver call checkForCompletionScriptRequest -> parseCurrent not resolved: %#v", snapshot.Relations)
+	}
+	// Cross-file receiver call through the constructor-assigned type.
+	if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", "CommandParser.parseCurrent", "LenientParser.parse", "type_inferred") {
+		t.Fatalf("receiver call parseCurrent -> LenientParser.parse not resolved: %#v", snapshot.Relations)
+	}
+	// LenientParser has an extension in its defining file; construction must
+	// still resolve as a globally unique name (extensions emit no duplicate).
+	if !hasRelationByLastSegment(snapshot.Relations, "CONSTRUCTS", "CommandParser.parseCurrent", "LenientParser") {
+		t.Fatalf("construction parseCurrent -> LenientParser not resolved: %#v", snapshot.Relations)
+	}
+}
+
 func TestBuildProviderSnapshotResolvesJavaSamePackageStaticOverload(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "src/main/java/org/acme/LauncherDiscoveryRequest.java", `package org.acme;

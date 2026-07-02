@@ -1453,7 +1453,7 @@ func localReachable(from, to SymbolRecord) bool {
 // receiver and is handled by receiverCallRelations instead.
 func implicitReceiverLanguage(lang string) bool {
 	switch lang {
-	case "Java", "C#", "C++", "Dart", "Kotlin", "Scala", "Ruby":
+	case "Java", "C#", "C++", "Dart", "Kotlin", "Scala", "Ruby", "Swift":
 		return true
 	}
 	return false
@@ -2153,6 +2153,13 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// Ruby method names may end in `!`/`?` and are commonly called
 					// without parentheses; the generic scanner misses both.
 					for name := range rubySuffixedCallIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
+				}
+				if shellCallLanguage(file.Language) {
+					// Shell functions are invoked as bare commands with no
+					// parentheses; the generic scanner sees no call sites at all.
+					for name := range shellCommandCallIdentifiers(callBlock) {
 						callNames[name] = struct{}{}
 					}
 				}
