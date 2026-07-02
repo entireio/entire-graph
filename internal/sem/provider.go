@@ -587,18 +587,24 @@ func BuildProviderSnapshot(ctx context.Context, repo, providerVersion string) (P
 // per file rather than holding all file contents in memory at once.
 type contentReader func(path string) (string, bool)
 
+// prefixReader returns up to limit leading bytes of a file's content. It backs
+// cheap first-line sniffing (shebang routing of extensionless executables)
+// without reading whole files.
+type prefixReader func(path string, limit int) (string, bool)
+
 // sourceContext is the repository state needed to stream a snapshot: identity,
 // the file list, a per-file content reader, and git-state warnings. It holds no
 // file content itself.
 type sourceContext struct {
-	absRepo  string
-	key      string
-	commit   string
-	tree     string
-	paths    []string
-	read     contentReader
-	close    func() error
-	warnings []ProviderWarning
+	absRepo    string
+	key        string
+	commit     string
+	tree       string
+	paths      []string
+	read       contentReader
+	readPrefix prefixReader
+	close      func() error
+	warnings   []ProviderWarning
 }
 
 // leanHeader is the streaming preamble emitted before any file is parsed. It
@@ -743,7 +749,10 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if !Supported(path) {
+		// Path-based routing first; files the path cannot classify (extensionless
+		// executables like pyenv's libexec/* scripts) get one bounded prefix read
+		// to route by shebang before being declared unsupported.
+		if !Supported(path) && !shebangRoutable(sc.readPrefix, path) {
 			if hint := unsupportedLanguageHint(path); hint != "" {
 				failures = append(failures, PartialFailure{
 					Code:                 "E_UNSUPPORTED_LANGUAGE",
@@ -767,7 +776,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 			continue
 		}
 		contentBytes := []byte(content)
-		langSpec, ok := languageForPath(path)
+		langSpec, ok := languageForContent(path, content)
 		if !ok {
 			failures = append(failures, PartialFailure{
 				Code:                 "E_UNSUPPORTED_LANGUAGE",
@@ -1209,7 +1218,7 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 	// explicit for callers that enforce no-egress provider execution.
 	_ = options.NoNetwork
 	useHead := !options.Worktree && commitErr == nil && treeErr == nil
-	paths, read, closeSource, err := openSource(ctx, absRepo, useHead, options.IgnoreFiles, options.IncludeFiles)
+	paths, read, readPrefix, closeSource, err := openSource(ctx, absRepo, useHead, options.IgnoreFiles, options.IncludeFiles)
 	if err != nil {
 		return sourceContext{}, err
 	}
@@ -1230,14 +1239,15 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		})
 	}
 	return sourceContext{
-		absRepo:  absRepo,
-		key:      key,
-		commit:   commit,
-		tree:     tree,
-		paths:    paths,
-		read:     read,
-		close:    closeSource,
-		warnings: warnings,
+		absRepo:    absRepo,
+		key:        key,
+		commit:     commit,
+		tree:       tree,
+		paths:      paths,
+		read:       read,
+		readPrefix: readPrefix,
+		close:      closeSource,
+		warnings:   warnings,
 	}, nil
 }
 
@@ -6445,16 +6455,16 @@ func externalParts(id string) (string, string) {
 // openSource lists the repository's files and returns a per-file content reader
 // that fetches one file at a time (from the git HEAD tree or the working tree),
 // so the snapshot never holds all source content in memory.
-func openSource(ctx context.Context, repo string, useHead bool, ignoreFiles, includeFiles []string) ([]string, contentReader, func() error, error) {
+func openSource(ctx context.Context, repo string, useHead bool, ignoreFiles, includeFiles []string) ([]string, contentReader, prefixReader, func() error, error) {
 	if useHead {
 		paths, err := gitutil.ListFiles(ctx, repo, "HEAD")
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		paths = filterVendoredPaths(paths, headIgnoreMatcher(ctx, repo))
 		batch, err := gitutil.NewBatchFileReader(ctx, repo, "HEAD")
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		read := func(path string) (string, bool) {
 			if strings.Contains(path, "\n") {
@@ -6470,15 +6480,27 @@ func openSource(ctx context.Context, repo string, useHead bool, ignoreFiles, inc
 			}
 			return content, true
 		}
-		return paths, read, batch.Close, nil
+		// Git blob reads are all-or-nothing, so the HEAD-tree prefix reader
+		// fetches the blob and truncates.
+		readPrefix := func(path string, limit int) (string, bool) {
+			content, ok := read(path)
+			if !ok {
+				return "", false
+			}
+			if limit >= 0 && len(content) > limit {
+				content = content[:limit]
+			}
+			return content, true
+		}
+		return paths, read, readPrefix, batch.Close, nil
 	}
 	ignores, err := loadWorktreeIgnoreMatcher(repo, ignoreFiles, includeFiles)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	paths, err := workingTreeFiles(repo, ignores, trackedDirSet(ctx, repo))
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	read := func(path string) (string, bool) {
 		full := filepath.Join(repo, filepath.FromSlash(path))
@@ -6492,7 +6514,25 @@ func openSource(ctx context.Context, repo string, useHead bool, ignoreFiles, inc
 		}
 		return string(content), true
 	}
-	return paths, read, nil, nil
+	readPrefix := func(path string, limit int) (string, bool) {
+		full := filepath.Join(repo, filepath.FromSlash(path))
+		info, err := os.Lstat(full)
+		if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return "", false
+		}
+		file, err := os.Open(full)
+		if err != nil {
+			return "", false
+		}
+		defer file.Close()
+		buf := make([]byte, limit)
+		n, err := io.ReadFull(file, buf)
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			return "", false
+		}
+		return string(buf[:n]), true
+	}
+	return paths, read, readPrefix, nil, nil
 }
 
 // bundledRuntimeDirNames are directory basenames of third-party C/C++ runtime,
