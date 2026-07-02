@@ -11881,3 +11881,39 @@ struct Impl: ParsableThing {
 		t.Fatalf("Swift struct missing: %#v", kinds)
 	}
 }
+
+func TestRustPathCallResolvesToMethod(t *testing.T) {
+	// `Type::name()` path calls and associated functions are written explicitly
+	// in Rust and must resolve to the method by name (ported from
+	// fix/rust-call-resolution ad6ca4d): methods may be name-call targets for
+	// Rust, unlike Go/Python/JS/TS where a method call always has a receiver.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/lib.rs", `pub struct Store {
+    n: u32,
+}
+
+impl Store {
+    pub fn open_default() -> Store {
+        Store { n: 0 }
+    }
+}
+
+pub fn boot() -> u32 {
+    let s = Store::open_default();
+    s.n
+}
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" && strings.Contains(r.FromID, "boot") && strings.Contains(r.ToID, "Store.open_default") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Rust Type::method path call did not resolve to the method")
+	}
+}

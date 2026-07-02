@@ -1477,13 +1477,27 @@ func implicitReceiverLanguage(lang string) bool {
 // resolves the *called* symbol of `obj.method(arg)` — which legitimately is a
 // method — so it passes true. Folding that distinction into one resolver kept
 // the data-flow path from silently dropping the `arg -> method` flow.
+// nameCallMayTargetMethod reports whether a name-resolved call (a bare `name()`
+// or a path-qualified `Type::name()`) can legitimately bind to a *method*, so
+// methods must NOT be excluded from name-match resolution for that language:
+//   - implicit-receiver languages: bare `name()` means `this.name()`;
+//   - Rust: `Type::name()` / `Trait::name()` path calls and associated
+//     functions are written explicitly and resolve to the method by name.
+//
+// In Go/Python/JS/TS a method call always carries an explicit `.`-receiver and
+// is handled by receiverCallRelations instead, so methods stay excluded there.
+// (Ported from fix/rust-call-resolution ad6ca4d onto the current gate shape.)
+func nameCallMayTargetMethod(lang string) bool {
+	return implicitReceiverLanguage(lang) || lang == "Rust"
+}
+
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
 	var local []resolvedCallTarget
 	for _, to := range sameFile {
 		// A bare `name()` call resolves to a function, not a class method (methods
 		// require a receiver and are resolved by receiverCallRelations) — matching
 		// a same-named method here is a false edge.
-		if to.ID == from.ID || to.Name != name || to.Kind == "field" || (to.Kind == "method" && !implicitReceiverLanguage(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
+		if to.ID == from.ID || to.Name != name || to.Kind == "field" || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
 			continue
 		}
 		local = append(local, resolvedCallTarget{
@@ -1513,7 +1527,7 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 
 	var imported []resolvedCallTarget
 	for _, to := range candidates {
-		if to.ID == from.ID || to.Kind == "field" || (to.Kind == "method" && !implicitReceiverLanguage(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
+		if to.ID == from.ID || to.Kind == "field" || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
 			continue
 		}
 		if importedNameMatchesFile(importsByName[name], from.FilePath, to.FilePath) {
@@ -1589,7 +1603,7 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 
 	var remaining []SymbolRecord
 	for _, to := range candidates {
-		if to.ID != from.ID && to.Kind != "field" && (to.Kind != "method" || implicitReceiverLanguage(from.Language) || allowMethodTargets) && localReachable(from, to) {
+		if to.ID != from.ID && to.Kind != "field" && (to.Kind != "method" || nameCallMayTargetMethod(from.Language) || allowMethodTargets) && localReachable(from, to) {
 			remaining = append(remaining, to)
 		}
 	}
