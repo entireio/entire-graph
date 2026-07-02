@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -6265,7 +6266,7 @@ func openSource(ctx context.Context, repo string, useHead bool, ignoreFiles, inc
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	paths, err := workingTreeFiles(repo, ignores)
+	paths, err := workingTreeFiles(repo, ignores, trackedDirSet(ctx, repo))
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -6295,14 +6296,17 @@ var bundledRuntimeDirNames = map[string]struct{}{
 	"mingw": {}, "mingw-w64": {}, "wasi-libc": {},
 }
 
-// isVendoredScanDir reports whether a directory is vendored/generated and should
-// be skipped during the working-tree walk. It covers the universally-vendored
-// and generated directory names plus nested bundled C/C++ runtime trees.
+// isVendoredScanDir reports whether a directory is unambiguously vendored
+// third-party (or generated) and must be skipped during the scan regardless of
+// git tracked-ness: these names mean third-party even when committed (Go
+// vendor/, checked-in node_modules, third_party trees) plus nested bundled
+// C/C++ runtime trees. Ambiguous names like build/ or deps/ are handled
+// separately by skipVendoredDir, which consults git tracked-ness.
 func isVendoredScanDir(rel, name string) bool {
 	switch name {
-	case ".git", "node_modules", "vendor", ".next", "dist", "build",
-		"third_party", "third-party", "thirdparty", "3rdparty", "external",
-		"deps", "Pods", "Carthage":
+	case ".git", "node_modules", "vendor", ".next",
+		"third_party", "third-party", "thirdparty", "3rdparty",
+		"Pods", "Carthage":
 		return true
 	}
 	// Nested bundled-runtime trees: require a parent segment so the project's own
@@ -6315,6 +6319,55 @@ func isVendoredScanDir(rel, name string) bool {
 	return false
 }
 
+// isAmbiguousVendoredDirName reports whether a directory name usually denotes
+// generated or fetched content (build output, dist bundles, fetched deps) but
+// is also a common first-party source directory name (next.js keeps its
+// compiler in packages/next/src/build; rabbitmq keeps its applications in
+// deps/). Generated output is virtually never committed, so these names are
+// skipped only when the directory is not tracked in git — a tracked directory
+// of this name is first-party source.
+func isAmbiguousVendoredDirName(name string) bool {
+	switch name {
+	case "build", "dist", "external", "deps":
+		return true
+	}
+	return false
+}
+
+// skipVendoredDir is the single vendored-directory decision for both the
+// working-tree walk and the HEAD-tree listing: skip unambiguous vendored names
+// always, and ambiguous generated-output names only when the directory is not
+// tracked in git (dirTracked). Gitignore negations that re-include a
+// descendant (see ReincludesDescendant) keep the tree walked in either case;
+// the ignore rules themselves then filter its contents.
+func skipVendoredDir(rel, name string, ignores ignoreMatcher, dirTracked func(string) bool) bool {
+	vendored := isVendoredScanDir(rel, name) ||
+		(isAmbiguousVendoredDirName(name) && !dirTracked(rel))
+	return vendored && !ignores.ReincludesDescendant(rel)
+}
+
+// trackedDirSet returns every repo-relative directory (slash-separated) that
+// contains a git-tracked file, built from one `git ls-files -z` subprocess for
+// the whole snapshot; the walk then answers "is this directory tracked?" with
+// a map lookup instead of per-directory git calls. A non-git directory yields
+// nil, so every directory reads as untracked there.
+func trackedDirSet(ctx context.Context, repo string) map[string]struct{} {
+	files, err := gitutil.ListIndexFiles(ctx, repo)
+	if err != nil {
+		return nil
+	}
+	dirs := make(map[string]struct{})
+	for _, file := range files {
+		for dir := path.Dir(file); dir != "." && dir != "/"; dir = path.Dir(dir) {
+			if _, seen := dirs[dir]; seen {
+				break
+			}
+			dirs[dir] = struct{}{}
+		}
+	}
+	return dirs
+}
+
 func isVendoredScanFile(rel, name string) bool {
 	switch name {
 	case "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
@@ -6325,7 +6378,11 @@ func isVendoredScanFile(rel, name string) bool {
 	return strings.HasSuffix(rel, ".map")
 }
 
-func workingTreeFiles(repo string, ignores ignoreMatcher) ([]string, error) {
+func workingTreeFiles(repo string, ignores ignoreMatcher, trackedDirs map[string]struct{}) ([]string, error) {
+	dirTracked := func(rel string) bool {
+		_, ok := trackedDirs[rel]
+		return ok
+	}
 	var paths []string
 	err := filepath.WalkDir(repo, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -6339,7 +6396,7 @@ func workingTreeFiles(repo string, ignores ignoreMatcher) ([]string, error) {
 					return err
 				}
 				rel = filepath.ToSlash(rel)
-				if isVendoredScanDir(rel, name) && !ignores.ReincludesDescendant(rel) {
+				if skipVendoredDir(rel, name, ignores, dirTracked) {
 					return filepath.SkipDir
 				}
 				if ignores.Ignored(rel, true) && !ignores.MayIncludeDescendant(rel) {
@@ -6396,7 +6453,12 @@ func headIgnoreMatcher(ctx context.Context, repo string) ignoreMatcher {
 	return matcher
 }
 
+// vendoredPath filters a HEAD-tree path. Every path in the HEAD listing is
+// tracked by construction, so ambiguous generated-output directory names
+// (build, dist, external, deps) are never vendored here — headTracked reports
+// every directory as tracked; only the unambiguous vendored names are skipped.
 func vendoredPath(rel string, ignores ignoreMatcher) bool {
+	headTracked := func(string) bool { return true }
 	rel = filepath.ToSlash(rel)
 	parts := strings.Split(rel, "/")
 	if len(parts) == 0 {
@@ -6407,7 +6469,7 @@ func vendoredPath(rel string, ignores ignoreMatcher) bool {
 	}
 	for i, part := range parts[:len(parts)-1] {
 		dirRel := strings.Join(parts[:i+1], "/")
-		if isVendoredScanDir(dirRel, part) && !ignores.ReincludesDescendant(dirRel) {
+		if skipVendoredDir(dirRel, part, ignores, headTracked) {
 			return true
 		}
 	}
