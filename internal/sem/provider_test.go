@@ -3,9 +3,11 @@ package sem
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,12 +15,15 @@ import (
 )
 
 func TestLanguageTiersClassifiesSemanticAndInventory(t *testing.T) {
-	tiers := languageTiers(map[string]struct{}{"Go": {}, "Zig": {}})
+	tiers := languageTiers(map[string]struct{}{"Go": {}, "Zig": {}, "Bicep": {}})
 	if tiers["Go"] != "semantic" {
 		t.Fatalf("Go tier = %q, want semantic", tiers["Go"])
 	}
-	if tiers["Zig"] != "inventory-only" {
+	if tiers["Zig"] != "semantic" {
 		t.Fatalf("Zig tier = %q, want inventory-only", tiers["Zig"])
+	}
+	if tiers["Bicep"] != "inventory-only" {
+		t.Fatalf("Bicep tier = %q, want inventory-only", tiers["Bicep"])
 	}
 	if languageTiers(nil) != nil {
 		t.Fatalf("nil languageSet should yield nil tiers, got %#v", languageTiers(nil))
@@ -3461,6 +3466,85 @@ func TestMaxParseBytesSkipsOversizedFileWithPartialFailure(t *testing.T) {
 	}
 }
 
+// streamMinifiedProbe runs a snapshot over repo and returns the symbol names and
+// the set of partial-failure codes, for the minified-detection tests below.
+func streamMinifiedProbe(t *testing.T, repo string) (symbolNames []string, failureCodes []string) {
+	t.Helper()
+	err := StreamSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{}, func(rec any) error {
+		switch r := rec.(type) {
+		case SymbolRecord:
+			symbolNames = append(symbolNames, r.Name)
+		case SnapshotSummary:
+			for _, failure := range r.PartialFailures {
+				failureCodes = append(failureCodes, failure.Code)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return symbolNames, failureCodes
+}
+
+// Real source with a few enormous single-line data literals (the shape of
+// microsoft/TypeScript's src/compiler/scanner.ts) must not be treated as
+// minified: long lines exist but do not dominate the file's bytes.
+func TestFewGiantDataLinesInRealSourceStillParsed(t *testing.T) {
+	repo := t.TempDir()
+	var sb strings.Builder
+	sb.WriteString("export function createScanner(): number {\n\treturn unicodeTable0.length;\n}\n")
+	// ~172KB of ordinary lines.
+	sb.WriteString(strings.Repeat("// ordinary source line describing the scanner state machine\n", 2800))
+	// Three ~50KB single-line array literals (~150KB, well under 70% of total).
+	for i := 0; i < 3; i++ {
+		fmt.Fprintf(&sb, "const unicodeTable%d = [%s0];\n", i, strings.Repeat("170,171,", 6250))
+	}
+	writeFile(t, repo, "scanner.ts", sb.String())
+
+	symbols, failures := streamMinifiedProbe(t, repo)
+	for _, code := range failures {
+		if code == "E_MINIFIED" {
+			t.Fatalf("real source with a few giant data lines was flagged E_MINIFIED (failures = %v)", failures)
+		}
+	}
+	if !slices.Contains(symbols, "createScanner") {
+		t.Fatalf("symbols = %v, want createScanner extracted", symbols)
+	}
+}
+
+// A genuine bundle packing the whole program onto one enormous line must still
+// be flagged and skipped.
+func TestSingleLineBundleFlaggedMinified(t *testing.T) {
+	repo := t.TempDir()
+	// ~500KB of minified-style JS on a single line.
+	writeFile(t, repo, "main.min.js", "!function(){"+strings.Repeat("var a=fn(1);a&&a();", 26000)+"}();")
+
+	symbols, failures := streamMinifiedProbe(t, repo)
+	if !slices.Contains(failures, "E_MINIFIED") {
+		t.Fatalf("single-line bundle not flagged; failures = %v", failures)
+	}
+	if len(symbols) != 0 {
+		t.Fatalf("symbols = %v, want none for minified bundle", symbols)
+	}
+}
+
+// A bundle split across a handful of lines that are all overlong (a common
+// webpack/rollup output shape) must also be flagged.
+func TestFewLinesAllLongBundleFlaggedMinified(t *testing.T) {
+	repo := t.TempDir()
+	line := "!function(){" + strings.Repeat("var b=go(2);b&&b();", 1200) + "}();\n"
+	writeFile(t, repo, "bundle.js", strings.Repeat(line, 6))
+
+	symbols, failures := streamMinifiedProbe(t, repo)
+	if !slices.Contains(failures, "E_MINIFIED") {
+		t.Fatalf("few-lines-all-long bundle not flagged; failures = %v", failures)
+	}
+	if len(symbols) != 0 {
+		t.Fatalf("symbols = %v, want none for minified bundle", symbols)
+	}
+}
+
 func TestGoStructFieldsEmittedAsSymbols(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "account.go", `package bank
@@ -6334,6 +6418,177 @@ export function labelFor(widget: Widget): string {
 	}
 }
 
+// Shell functions call each other as bare commands (no parentheses), which the
+// generic paren-based scanner cannot see; the shell command-position scanner
+// must recover those CALLS while ignoring builtins like cd/return. Shaped like
+// ohmyzsh's dirhistory.plugin.zsh.
+func TestBuildProviderSnapshotResolvesZshBareCommandCalls(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "plugins/dirhistory/dirhistory.plugin.zsh", `dirhistory_past=($PWD)
+export DIRHISTORY_SIZE=30
+
+alias cde='dirhistory_cd'
+
+function pop_past() {
+  setopt localoptions no_ksh_arrays
+  if [[ $#dirhistory_past -gt 0 ]]; then
+    typeset -g $1="${dirhistory_past[$#dirhistory_past]}"
+  fi
+}
+
+function push_past() {
+  if [[ $#dirhistory_past -ge $DIRHISTORY_SIZE ]]; then
+    shift dirhistory_past
+  fi
+}
+
+function push_future() {
+  dirhistory_future+=($1)
+}
+
+function dirhistory_cd(){
+  DIRHISTORY_CD="1"
+  cd $1
+  unset DIRHISTORY_CD
+}
+
+function dirhistory_back() {
+  local cw=""
+  local d=""
+
+  pop_past cw
+  if [[ "" == "$cw" ]]; then
+    dirhistory_past=($PWD)
+    return
+  fi
+
+  pop_past d
+  if [[ "" != "$d" ]]; then
+    dirhistory_cd $d
+    push_future $cw
+  else
+    push_past $cw
+  fi
+}
+
+function dirhistory_zle_dirhistory_back() {
+  zle .kill-buffer
+  dirhistory_back
+  zle .accept-line
+}
+
+zle -N dirhistory_zle_dirhistory_back
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, edge := range [][2]string{
+		{"dirhistory_zle_dirhistory_back", "dirhistory_back"},
+		{"dirhistory_back", "pop_past"},
+		{"dirhistory_back", "dirhistory_cd"},
+		{"dirhistory_back", "push_future"},
+		{"dirhistory_back", "push_past"},
+	} {
+		if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", edge[0], edge[1], "exact") {
+			t.Fatalf("shell call %s -> %s not resolved: %#v", edge[0], edge[1], snapshot.Relations)
+		}
+	}
+	// Builtins and keywords must not fabricate edges.
+	for _, relation := range snapshot.Relations {
+		if relation.Type != "CALLS" {
+			continue
+		}
+		if lastSegment(relation.FromID) == "dirhistory_back" {
+			switch lastSegment(relation.ToID) {
+			case "pop_past", "dirhistory_cd", "push_future", "push_past":
+			default:
+				t.Fatalf("unexpected outbound call from dirhistory_back: %#v", relation)
+			}
+		}
+	}
+}
+
+// Swift methods call same-type siblings without a receiver (implicit self),
+// including across `extension` blocks, and construct types whose extensions
+// must not break the unique-name gate. Shaped like swift-argument-parser's
+// CommandParser.swift / ArgumentSet.swift.
+func TestBuildProviderSnapshotResolvesSwiftExtensionAndImplicitSelfCalls(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "Sources/Parsing/CommandParser.swift", `struct CommandParser {
+  var commandTree: Tree
+}
+
+extension CommandParser {
+  func checkForBuiltInFlags(_ split: SplitArguments) throws {
+  }
+
+  fileprivate mutating func parseCurrent(
+    _ split: inout SplitArguments
+  ) throws -> ParsableCommand {
+    var parser = LenientParser(commandTree, split)
+    let values = try parser.parse()
+    try checkForBuiltInFlags(values)
+    return values
+  }
+
+  internal mutating func descendingParse(_ split: inout SplitArguments) throws {
+    var parsedCommand = try parseCurrent(&split)
+  }
+}
+
+extension CommandParser {
+  func checkForCompletionScriptRequest(_ split: inout SplitArguments) throws {
+    var completionsParser = CommandParser(GenerateCompletions.self)
+    if let result = try? completionsParser.parseCurrent(&split) {
+      return
+    }
+  }
+}
+`)
+	writeFile(t, repo, "Sources/Parsing/ArgumentSet.swift", `struct LenientParser {
+  var content: Int
+
+  mutating func parse() throws -> ParsedValues {
+    return ParsedValues()
+  }
+}
+
+extension LenientParser {
+  var describing: String { "parser" }
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Bare same-file sibling-method calls (implicit self).
+	if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", "CommandParser.descendingParse", "CommandParser.parseCurrent", "exact") {
+		t.Fatalf("implicit-self call descendingParse -> parseCurrent not resolved: %#v", snapshot.Relations)
+	}
+	if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", "CommandParser.parseCurrent", "CommandParser.checkForBuiltInFlags", "exact") {
+		t.Fatalf("implicit-self call parseCurrent -> checkForBuiltInFlags not resolved: %#v", snapshot.Relations)
+	}
+	// Receiver-typed call on a constructor-assigned local; only works when the
+	// extension did not fork the CommandParser container.
+	if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", "CommandParser.checkForCompletionScriptRequest", "CommandParser.parseCurrent", "type_inferred") {
+		t.Fatalf("receiver call checkForCompletionScriptRequest -> parseCurrent not resolved: %#v", snapshot.Relations)
+	}
+	// Cross-file receiver call through the constructor-assigned type.
+	if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", "CommandParser.parseCurrent", "LenientParser.parse", "type_inferred") {
+		t.Fatalf("receiver call parseCurrent -> LenientParser.parse not resolved: %#v", snapshot.Relations)
+	}
+	// LenientParser has an extension in its defining file; construction must
+	// still resolve as a globally unique name (extensions emit no duplicate).
+	if !hasRelationByLastSegment(snapshot.Relations, "CONSTRUCTS", "CommandParser.parseCurrent", "LenientParser") {
+		t.Fatalf("construction parseCurrent -> LenientParser not resolved: %#v", snapshot.Relations)
+	}
+}
+
 func TestBuildProviderSnapshotResolvesJavaSamePackageStaticOverload(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "src/main/java/org/acme/LauncherDiscoveryRequest.java", `package org.acme;
@@ -6530,6 +6785,339 @@ func walk(s string) {
 	}
 	if !found {
 		t.Fatalf("function-returned receiver res := Parse(): expected res.ForEach() -> Result.ForEach edge, got none")
+	}
+}
+
+func TestGoReceiverMethodResolvesAcrossPackageFiles(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "go.mod", "module example.com/etcdlike\n\ngo 1.21\n")
+	// The receiver type and the caller live in server.go; the callee method
+	// lives in a sibling file of the same package. A same-named method on
+	// another package's type defeats the globally-unique-name fallback, so the
+	// edge only resolves when the sibling file's method is linked to its
+	// cross-file container type.
+	writeFile(t, repo, "server/server.go", `package server
+
+import "context"
+
+type Server struct{}
+
+func (s *Server) checkPermission(ctx context.Context) error {
+	info, err := s.AuthInfoFromCtx(ctx)
+	_ = info
+	return err
+}
+`)
+	writeFile(t, repo, "server/v3.go", `package server
+
+import "context"
+
+type Info struct{ User string }
+
+func (s *Server) AuthInfoFromCtx(ctx context.Context) (*Info, error) {
+	return &Info{}, nil
+}
+`)
+	writeFile(t, repo, "auth/store.go", `package auth
+
+import "context"
+
+type Info struct{ User string }
+
+type authStore struct{}
+
+func (as *authStore) AuthInfoFromCtx(ctx context.Context) (*Info, error) {
+	return &Info{}, nil
+}
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", "Server.checkPermission", "Server.AuthInfoFromCtx", "type_inferred") {
+		t.Fatalf("cross-file receiver call s.AuthInfoFromCtx() not resolved to the sibling-file method: %#v", snapshot.Relations)
+	}
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" && lastSegment(r.FromID) == "Server.checkPermission" &&
+			strings.Contains(r.ToID, "auth/store.go") {
+			t.Fatalf("cross-file receiver call bound to the wrong package's method: %s -> %s (%s)", r.FromID, r.ToID, r.Reason)
+		}
+	}
+	// The reconciled container also restores type CONTAINS method across files.
+	found := false
+	for _, r := range snapshot.Relations {
+		if r.Type == "CONTAINS" && strings.Contains(r.FromID, "server/server.go:type:Server") &&
+			strings.Contains(r.ToID, "server/v3.go:method:Server.AuthInfoFromCtx") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("cross-file method missing CONTAINS edge from its receiver type: %#v", snapshot.Relations)
+	}
+}
+
+func TestGoMultiAssignedReceiverCallResolvesViaCalleeFirstResult(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "go.mod", "module example.com/cobralike\n\ngo 1.21\n")
+	// `cmd` is typed only by the multi-value assignment from Find's first
+	// result. A same-named method on another package's type defeats the
+	// globally-unique-name fallback, so the edge only resolves when the
+	// multi-assign receiver is actually typed.
+	writeFile(t, repo, "cli/command.go", `package cli
+
+type Command struct{}
+
+func (c *Command) Find(args []string) (*Command, []string, error) {
+	return c, args, nil
+}
+
+func (c *Command) execute(a []string) error { return nil }
+
+func (c *Command) Run(args []string) error {
+	cmd, flags, err := c.Find(args)
+	if err != nil {
+		return err
+	}
+	return cmd.execute(flags)
+}
+`)
+	writeFile(t, repo, "worker/worker.go", `package worker
+
+type Job struct{}
+
+func (j *Job) execute(a []string) error { return nil }
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", "Command.Run", "Command.execute", "type_inferred") {
+		t.Fatalf("multi-assigned receiver call cmd.execute() not resolved through Find's first result type: %#v", snapshot.Relations)
+	}
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" && lastSegment(r.FromID) == "Command.Run" && strings.Contains(r.ToID, "worker/worker.go") {
+			t.Fatalf("multi-assigned receiver call bound to the wrong package's method: %s -> %s (%s)", r.FromID, r.ToID, r.Reason)
+		}
+	}
+}
+
+func TestGoNamedResultReceiverCallResolvesViaSignature(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "go.mod", "module example.com/cobralike\n\ngo 1.21\n")
+	// `st` is typed only by the named result declaration `(st *Store, err
+	// error)`: the assignment `st = s.lookup()` is receiver-qualified, which
+	// neither the constructor scan nor the factory-assignment scan types. A
+	// same-named method elsewhere defeats the unique-name fallback.
+	writeFile(t, repo, "registry/registry.go", `package registry
+
+type Store struct{}
+
+func (s *Store) lookup() *Store { return s }
+
+func (s *Store) refresh() error { return nil }
+
+func (s *Store) Sync() (st *Store, err error) {
+	st = s.lookup()
+	return st, st.refresh()
+}
+`)
+	writeFile(t, repo, "cache/cache.go", `package cache
+
+type Cache struct{}
+
+func (c *Cache) refresh() error { return nil }
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegmentWithResolution(snapshot.Relations, "CALLS", "Store.Sync", "Store.refresh", "type_inferred") {
+		t.Fatalf("named-result receiver call st.refresh() not resolved through the signature's result type: %#v", snapshot.Relations)
+	}
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" && lastSegment(r.FromID) == "Store.Sync" && strings.Contains(r.ToID, "cache/cache.go") {
+			t.Fatalf("named-result receiver call bound to the wrong package's method: %s -> %s (%s)", r.FromID, r.ToID, r.Reason)
+		}
+	}
+}
+
+func TestGoPackageQualifiedSubpackageCallsResolveAcrossPackageFiles(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "go.mod", "module example.com/hugolike\n\ngo 1.21\n")
+	// Both callees live in a NON-representative file of their package (the
+	// import resolver records the alphabetically first non-test file —
+	// handlerdefault.go / finder.go), so `pkg.Fn(...)` only resolves when
+	// import matching is package-directory granular. WalkDeep is called from
+	// inside a func literal.
+	writeFile(t, repo, "hugolib/map.go", `package hugolib
+
+import (
+	"example.com/hugolike/common/loggers"
+	"example.com/hugolike/identity"
+)
+
+type Sites struct{}
+
+func (h *Sites) resolveState(changes []string) error {
+	for _, change := range changes {
+		fn := func() bool {
+			identity.WalkDeep(change)
+			return false
+		}
+		_ = fn()
+	}
+	return loggers.TimeTrack(changes)
+}
+`)
+	writeFile(t, repo, "common/loggers/handlerdefault.go", `package loggers
+
+func Handler() {}
+`)
+	writeFile(t, repo, "common/loggers/logger.go", `package loggers
+
+func TimeTrack(v []string) error { return nil }
+`)
+	writeFile(t, repo, "identity/finder.go", `package identity
+
+func Find() {}
+`)
+	writeFile(t, repo, "identity/identity.go", `package identity
+
+func WalkDeep(v string) {}
+`)
+	writeFile(t, repo, "util/track.go", `package util
+
+func TimeTrack(v []string) error { return nil }
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertQualifiedCall := func(calleeFile, callee string) {
+		t.Helper()
+		for _, r := range snapshot.Relations {
+			if r.Type == "CALLS" && lastSegment(r.FromID) == "Sites.resolveState" &&
+				strings.Contains(r.ToID, calleeFile+":function:"+callee) && r.Resolution == "import_resolved" {
+				return
+			}
+		}
+		t.Fatalf("package-qualified call to %s (%s) not resolved through the imported package directory: %#v", callee, calleeFile, snapshot.Relations)
+	}
+	assertQualifiedCall("common/loggers/logger.go", "TimeTrack")
+	assertQualifiedCall("identity/identity.go", "WalkDeep")
+	for _, r := range snapshot.Relations {
+		if r.Type != "CALLS" || lastSegment(r.FromID) != "Sites.resolveState" {
+			continue
+		}
+		if strings.Contains(r.ToID, "util/track.go") {
+			t.Fatalf("package-qualified call bound to a same-named function outside the imported package: %s -> %s (%s)", r.FromID, r.ToID, r.Reason)
+		}
+		if strings.Contains(r.ToID, "external:symbol:example.com/hugolike/") {
+			t.Fatalf("in-module package-qualified call left as an external edge: %s -> %s (%s)", r.FromID, r.ToID, r.Reason)
+		}
+	}
+}
+
+func TestGoInterfaceReturnedCallResolvesUniqueImplementingMethod(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "go.mod", "module example.com/etcdlike\n\ngo 1.21\n")
+	// AuthStore() returns an interface declared in another package; the
+	// interface's methods are part of its type declaration, not method
+	// symbols, so resolution must fall back to the unique implementation.
+	writeFile(t, repo, "server/server.go", `package server
+
+import "example.com/etcdlike/auth"
+
+type Server struct {
+	authStore auth.AuthStore
+}
+
+func (s *Server) AuthStore() auth.AuthStore { return s.authStore }
+
+func (s *Server) store() auth.AuthStore { return s.authStore }
+
+func (s *Server) checkPermission(info *auth.Info) error {
+	return s.AuthStore().IsAdminPermitted(info)
+}
+`)
+	writeFile(t, repo, "server/v3.go", `package server
+
+import "example.com/etcdlike/auth"
+
+func (s *Server) permitted(info *auth.Info) bool {
+	return s.store().IsAdminPermitted(info) == nil
+}
+`)
+	writeFile(t, repo, "auth/store.go", `package auth
+
+type Info struct{ User string }
+
+type AuthStore interface {
+	Authenticate(name string) (*Info, error)
+	IsAdminPermitted(info *Info) error
+}
+
+type authStore struct{}
+
+func (as *authStore) Authenticate(name string) (*Info, error) { return &Info{}, nil }
+
+func (as *authStore) IsAdminPermitted(info *Info) error { return nil }
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One-hop chain through the capitalized getter (same file as the caller).
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "Server.checkPermission", "authStore.IsAdminPermitted") {
+		t.Fatalf("interface-typed chain s.AuthStore().IsAdminPermitted() not resolved to the unique implementation: %#v", snapshot.Relations)
+	}
+	// One-hop chain through a lower-case getter declared in a sibling file of
+	// the same package (exercises the package-level return-type lookup).
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "Server.permitted", "authStore.IsAdminPermitted") {
+		t.Fatalf("interface-typed chain s.store().IsAdminPermitted() with sibling-file getter not resolved: %#v", snapshot.Relations)
+	}
+}
+
+func TestGoInterfaceReturnedCallStaysUnresolvedWhenMethodNameAmbiguous(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "go.mod", "module example.com/etcdlike\n\ngo 1.21\n")
+	writeFile(t, repo, "server/server.go", `package server
+
+import "example.com/etcdlike/auth"
+
+type Server struct {
+	authStore auth.AuthStore
+}
+
+func (s *Server) AuthStore() auth.AuthStore { return s.authStore }
+
+func (s *Server) Close() error { return nil }
+
+func (s *Server) shutdown() error {
+	return s.AuthStore().Close()
+}
+`)
+	writeFile(t, repo, "auth/store.go", `package auth
+
+type AuthStore interface {
+	Close() error
+}
+
+type authStore struct{}
+
+func (as *authStore) Close() error { return nil }
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two methods named Close exist, so the conservative unique-name subset
+	// must not guess between them.
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" && lastSegment(r.FromID) == "Server.shutdown" &&
+			(lastSegment(r.ToID) == "authStore.Close" || lastSegment(r.ToID) == "Server.Close") {
+			t.Fatalf("ambiguous interface method call must stay unresolved, got %s -> %s (%s)", r.FromID, r.ToID, r.Reason)
+		}
 	}
 }
 
@@ -9202,6 +9790,13 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 		"TypeScript",
 		"Zsh",
 		"Dart",
+		"R",
+		"Julia",
+		"F#",
+		"Objective-C",
+		"Erlang",
+		"Haskell",
+		"Perl",
 		"Zig",
 		"Bicep",
 		"GraphQL",
@@ -9213,17 +9808,17 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 			t.Fatalf("capabilities missing language %q in %#v", want, caps.SupportedLanguages)
 		}
 	}
-	for _, want := range []string{"TypeScript", "Python", "JavaScript", "Java", "C++", "C", "C#", "Go", "PHP", "Rust", "Kotlin", "Ruby", "Swift", "SQL", "Bash", "Zsh", "Dart"} {
+	for _, want := range []string{"TypeScript", "Python", "JavaScript", "Java", "C++", "C", "C#", "Go", "PHP", "Rust", "Kotlin", "Ruby", "Swift", "SQL", "Bash", "Zsh", "Dart", "R", "Julia", "Clojure", "ClojureScript", "Zig", "Perl", "Haskell", "Erlang", "Objective-C", "F#"} {
 		if !semanticSeen[want] {
 			t.Fatalf("capabilities should classify %q as semantic, got semantic=%#v inventory=%#v", want, caps.SemanticLanguages, caps.InventoryOnlyLanguages)
 		}
 	}
-	for _, want := range []string{"Zig", "Bicep", "Solidity", "Nix", "Blade"} {
+	for _, want := range []string{"Bicep", "Solidity", "Nix", "Blade"} {
 		if !inventorySeen[want] {
 			t.Fatalf("capabilities should classify %q as inventory-only, got semantic=%#v inventory=%#v", want, caps.SemanticLanguages, caps.InventoryOnlyLanguages)
 		}
 	}
-	for _, want := range []string{".go", ".py", ".ts", ".rs", ".swift", ".proto", ".dart", ".zig", ".bicep", ".graphql"} {
+	for _, want := range []string{".go", ".py", ".ts", ".rs", ".swift", ".proto", ".dart", ".r", ".jl", ".zig", ".bicep", ".graphql", ".pl", ".pm", ".hs", ".erl", ".hrl", ".m", ".fs", ".fsx"} {
 		if !contains(caps.SupportedFileExtensions, want) {
 			t.Fatalf("capabilities missing extension %q in %#v", want, caps.SupportedFileExtensions)
 		}
@@ -9379,12 +9974,12 @@ func TestCapabilitiesReportRelationSupportPerLanguage(t *testing.T) {
 			}
 		}
 	}
-	for _, language := range []string{"Go", "Python", "TypeScript", "Java", "Rust", "C#", "PHP"} {
+	for _, language := range []string{"Go", "Python", "TypeScript", "Java", "Rust", "C#", "PHP", "Dart", "Erlang", "OCaml", "Haskell"} {
 		if !contains(caps.RelationSupportByLanguage[language], "CALLS") {
 			t.Fatalf("language %q should support CALLS: %#v", language, caps.RelationSupportByLanguage[language])
 		}
 	}
-	for _, language := range []string{"Zig", "Bicep", "Dockerfile", "YAML", "Kustomize"} {
+	for _, language := range []string{"Bicep", "Dockerfile", "YAML", "Kustomize"} {
 		if contains(caps.RelationSupportByLanguage[language], "CALLS") {
 			t.Fatalf("inventory/config language %q should not advertise CALLS: %#v", language, caps.RelationSupportByLanguage[language])
 		}
@@ -10368,6 +10963,13 @@ func TestIsVendoredScanDir(t *testing.T) {
 		{"a/b/third_party", "third_party", true},
 		{"node_modules", "node_modules", true},
 		{"vendor", "vendor", true},
+		// Ambiguous generated-output names are not unconditionally vendored;
+		// skipVendoredDir decides them from git tracked-ness.
+		{"build", "build", false},
+		{"packages/next/src/build", "build", false},
+		{"dist", "dist", false},
+		{"deps", "deps", false},
+		{"external", "external", false},
 		// Normal source directories are kept.
 		{"src", "src", false},
 		{"lib/std", "std", false},
@@ -10377,6 +10979,124 @@ func TestIsVendoredScanDir(t *testing.T) {
 		if got := isVendoredScanDir(c.rel, c.name); got != c.want {
 			t.Errorf("isVendoredScanDir(%q, %q) = %v, want %v", c.rel, c.name, got, c.want)
 		}
+	}
+}
+
+func TestSkipVendoredDirTrackedAmbiguousNames(t *testing.T) {
+	tracked := func(rel string) bool { return rel == "src/build" || rel == "deps" }
+	cases := []struct {
+		rel, name string
+		want      bool
+	}{
+		// A tracked build/deps directory is first-party source and is walked.
+		{"src/build", "build", false},
+		{"deps", "deps", false},
+		// The same names untracked are generated/fetched output and skipped.
+		{"build", "build", true},
+		{"a/dist", "dist", true},
+		{"external", "external", true},
+		// Unambiguous vendored names are skipped even when tracked.
+		{"node_modules", "node_modules", true},
+		{"vendor", "vendor", true},
+	}
+	for _, c := range cases {
+		if got := skipVendoredDir(c.rel, c.name, ignoreMatcher{}, tracked); got != c.want {
+			t.Errorf("skipVendoredDir(%q, %q) = %v, want %v", c.rel, c.name, got, c.want)
+		}
+	}
+}
+
+func TestBuildProviderSnapshotWorktreeKeepsTrackedBuildDir(t *testing.T) {
+	// packages/next/src/build in vercel/next.js is first-party, git-tracked
+	// source; the vendored-directory heuristic must not skip a tracked
+	// directory just because it is named "build". The untracked build/ output
+	// directory stays excluded.
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Sem Test")
+	git(t, repo, "config", "user.email", "sem@example.com")
+	writeFile(t, repo, "src/build/lib.ts", "export function collectTraces(): number {\n  return 1\n}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	writeFile(t, repo, "build/out.js", "function generatedOutput() {\n  return 1\n}\n")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshotHasPath(snapshot, "src/build/lib.ts") || !snapshotHasSymbol(snapshot, "collectTraces") {
+		t.Fatalf("tracked src/build was skipped: files=%#v", snapshot.Files)
+	}
+	if snapshotHasPath(snapshot, "build/out.js") || snapshotHasSymbol(snapshot, "generatedOutput") {
+		t.Fatalf("untracked build output was included: files=%#v symbols=%#v", snapshot.Files, snapshot.Symbols)
+	}
+}
+
+func TestBuildProviderSnapshotHeadKeepsTrackedBuildDir(t *testing.T) {
+	// The HEAD-tree listing only contains tracked paths, so ambiguous
+	// generated-output names (build, dist, deps, external) must never be
+	// filtered from it.
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Sem Test")
+	git(t, repo, "config", "user.email", "sem@example.com")
+	writeFile(t, repo, "src/build/lib.ts", "export function collectTraces(): number {\n  return 1\n}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshotHasPath(snapshot, "src/build/lib.ts") || !snapshotHasSymbol(snapshot, "collectTraces") {
+		t.Fatalf("HEAD snapshot skipped tracked src/build: files=%#v", snapshot.Files)
+	}
+}
+
+func TestBuildProviderSnapshotWorktreeUntrackedBuildDirStaysExcluded(t *testing.T) {
+	// Without git metadata (plain directory), an ambiguous name cannot be
+	// proven first-party, so it keeps the conservative vendored treatment.
+	repo := t.TempDir()
+	writeFile(t, repo, "build/out.py", "def generated_output():\n    return True\n")
+	writeFile(t, repo, "src/keep.py", "def keep():\n    return True\n")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshotHasSymbol(snapshot, "keep") {
+		t.Fatalf("snapshot missing kept symbol: %#v", snapshot.Symbols)
+	}
+	assertSnapshotOmitsPathPrefix(t, snapshot, "build/")
+}
+
+func TestBuildProviderSnapshotWorktreeDepsGitignoreNegation(t *testing.T) {
+	// rabbitmq-server layout: fetched dependencies live in deps/ and are
+	// gitignored (`/deps/*`), while the project's own applications are negated
+	// back in (`!/deps/rabbit/`) and committed. The tracked deps/ tree must be
+	// walked, with the ignore rules keeping the fetched dependencies out.
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Sem Test")
+	git(t, repo, "config", "user.email", "sem@example.com")
+	writeFile(t, repo, ".gitignore", "/deps/*\n!/deps/rabbit/\n")
+	writeFile(t, repo, "deps/rabbit/src/app.py", "def first_party_app():\n    return True\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	writeFile(t, repo, "deps/fetched/dep.py", "def fetched_dependency():\n    return True\n")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshotHasPath(snapshot, "deps/rabbit/src/app.py") || !snapshotHasSymbol(snapshot, "first_party_app") {
+		t.Fatalf("first-party deps application was skipped: files=%#v", snapshot.Files)
+	}
+	assertSnapshotOmitsPathPrefix(t, snapshot, "deps/fetched/")
+	if snapshotHasSymbol(snapshot, "fetched_dependency") {
+		t.Fatalf("fetched dependency was included: %#v", snapshot.Symbols)
 	}
 }
 
@@ -10412,5 +11132,788 @@ class Widget {
 	}
 	if kinds["Widget.build"] == "" && kinds["build"] == "" {
 		t.Fatalf("Dart method not extracted: %#v", kinds)
+	}
+}
+
+// Dart CALLS extraction (evidence: on dart-lang/http the focus method
+// BaseClient._sendUnstreamed had zero inbound/outbound CALLS). Dart keeps a
+// declaration's body as a *sibling* function_body node, so symbols spanned only
+// the head and the call scanner saw no call sites; bare sibling-method calls
+// were also dropped because Dart wasn't an implicit-receiver language; and
+// constructor calls to names like Request were eaten by the JS-builtin ignore
+// list. Private `_names` must survive the identifier scan.
+func TestDartCallExtraction(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "lib/src/base_client.dart", `import 'request.dart';
+import 'response.dart';
+
+abstract mixin class BaseClient implements Client {
+  Future<Response> head(Uri url, {Map<String, String>? headers}) =>
+      _sendUnstreamed('HEAD', url, headers);
+
+  Future<Response> get(Uri url, {Map<String, String>? headers}) =>
+      _sendUnstreamed('GET', url, headers);
+
+  Future<Response> _sendUnstreamed(
+      String method, Uri url, Map<String, String>? headers,
+      {Object? body, Encoding? encoding}) async {
+    var request = Request(method, url);
+    if (headers != null) request.headers.addAll(headers);
+    return Response.fromStream(await send(request));
+  }
+
+  Future<StreamedResponse> send(BaseRequest request);
+}
+`)
+	writeFile(t, repo, "lib/src/request.dart", `class Request extends BaseRequest {
+  Request(super.method, super.url);
+}
+`)
+	writeFile(t, repo, "lib/src/response.dart", `class Response extends BaseResponse {
+  static Future<Response> fromStream(StreamedResponse response) async {
+    final body = await response.stream.toBytes();
+    return Response(body, response.statusCode);
+  }
+}
+`)
+	// A same-named class in another package: the constructor call must still
+	// resolve — to the same-directory Request — instead of being dropped as
+	// globally ambiguous (dart-lang/http has a second Request in ok_http).
+	writeFile(t, repo, "other_pkg/lib/src/bindings.dart", `class Request {
+  Request();
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	edges := map[string]RelationRecord{}
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" || r.Type == "CONSTRUCTS" {
+			edges[r.Type+" "+lastSegment(r.FromID)+"->"+lastSegment(r.ToID)] = r
+		}
+	}
+	// Public methods calling a private (`_`-prefixed) sibling method: the
+	// symbol block must include the sibling function_body, the identifier scan
+	// must keep the leading underscore, and the bare call must resolve to a
+	// same-class method (implicit receiver).
+	for _, want := range []string{
+		"CALLS BaseClient.head->BaseClient._sendUnstreamed",
+		"CALLS BaseClient.get->BaseClient._sendUnstreamed",
+	} {
+		if r, ok := edges[want]; !ok || r.Resolution != "exact" {
+			t.Fatalf("missing/weak %q: %#v", want, edges)
+		}
+	}
+	// Bare sibling-method call inside the method body.
+	if _, ok := edges["CALLS BaseClient._sendUnstreamed->BaseClient.send"]; !ok {
+		t.Fatalf("missing _sendUnstreamed->send call: %#v", edges)
+	}
+	// Static class-name receiver call resolved cross-file.
+	if _, ok := edges["CALLS BaseClient._sendUnstreamed->Response.fromStream"]; !ok {
+		t.Fatalf("missing _sendUnstreamed->Response.fromStream call: %#v", edges)
+	}
+	// Constructor call to a class in another file: a call to a type-like symbol
+	// is recorded as CONSTRUCTS (the convention shared with Go/TS), the name
+	// Request must not be dropped by the JS-builtin ignore list in Dart, and the
+	// decoy Request in other_pkg/ must lose to the same-directory class.
+	r, ok := edges["CONSTRUCTS BaseClient._sendUnstreamed->Request"]
+	if !ok || r.Resolution != "package" {
+		t.Fatalf("missing/weak _sendUnstreamed->Request construction: %#v", edges)
+	}
+	if !strings.Contains(r.ToID, "lib/src/request.dart") {
+		t.Fatalf("Request construction resolved to the wrong class: %#v", r)
+	}
+	// The method_signature wrapper must not surface as a bogus method named
+	// after the return type.
+	for _, s := range snapshot.Symbols {
+		if s.Language == "Dart" && strings.HasSuffix(s.Name, ".Future") {
+			t.Fatalf("return type extracted as method symbol: %#v", s)
+		}
+	}
+}
+
+func TestRSemanticExtraction(t *testing.T) {
+	// R was promoted from inventory to the semantic tier (vendored grammar).
+	// R defines functions by assignment, so the extractor must name symbols
+	// from the assignment target across the assignment operator spellings.
+	repo := t.TempDir()
+	writeFile(t, repo, "R/plot.R", `helper <- function(n) {
+  n + 1
+}
+
+scale = function(x) x * 2
+
+"at<-" <- function(x, value) {
+  x
+}
+
+Person <- R6::R6Class("Person", public = list(
+  greet = function() cat("hi")
+))
+
+render <- function(x) {
+  helper(x)
+}
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, s := range snapshot.Symbols {
+		if s.Language == "R" {
+			kinds[s.Name] = s.Kind
+		}
+	}
+	if kinds["helper"] != "function" {
+		t.Fatalf("R `<-` function not extracted: %#v", kinds)
+	}
+	if kinds["scale"] != "function" {
+		t.Fatalf("R `=` function not extracted: %#v", kinds)
+	}
+	if kinds["at<-"] != "function" {
+		t.Fatalf("R string-named replacement function not extracted: %#v", kinds)
+	}
+	if kinds["Person"] != "class" {
+		t.Fatalf("R R6 class not extracted: %#v", kinds)
+	}
+	// Anonymous function_definition nodes must not invent symbols named after
+	// their first parameter.
+	if _, ok := kinds["n"]; ok {
+		t.Fatalf("R anonymous function invented a parameter-named symbol: %#v", kinds)
+	}
+	var calls int
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" {
+			calls++
+		}
+	}
+	if calls == 0 {
+		t.Fatalf("expected CALLS relations for R (render -> helper), got none")
+	}
+}
+
+func TestJuliaSemanticExtraction(t *testing.T) {
+	// Julia was promoted from inventory to the semantic tier (vendored grammar);
+	// it must now extract modules, structs, macros, and both long- and
+	// short-form function definitions.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/app.jl", `function long_form(x, y)
+    return x + y
+end
+
+short_form(a, b) = a * b
+
+Base.show(io::IO, p::Point) = print(io, p.x)
+
+struct Point{T}
+    x::T
+    y::T
+end
+
+mutable struct Counter
+    n::Int
+end
+
+macro trace(ex)
+    return ex
+end
+
+module Inner
+
+inner_helper(v) = v + 1
+
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, s := range snapshot.Symbols {
+		if s.Language == "Julia" {
+			kinds[s.QualifiedName] = s.Kind
+		}
+	}
+	if kinds["long_form"] != "function" {
+		t.Fatalf("Julia long-form function not extracted: %#v", kinds)
+	}
+	if kinds["short_form"] != "function" {
+		t.Fatalf("Julia short-form function not extracted: %#v", kinds)
+	}
+	if kinds["Base.show"] != "function" {
+		t.Fatalf("Julia qualified extension method not extracted: %#v", kinds)
+	}
+	if kinds["Point"] != "struct" {
+		t.Fatalf("Julia parametric struct not extracted: %#v", kinds)
+	}
+	if kinds["Counter"] != "struct" {
+		t.Fatalf("Julia mutable struct not extracted: %#v", kinds)
+	}
+	if kinds["trace"] != "function" {
+		t.Fatalf("Julia macro not extracted: %#v", kinds)
+	}
+	if kinds["Inner"] != "module" {
+		t.Fatalf("Julia module not extracted: %#v", kinds)
+	}
+	if kinds["Inner.inner_helper"] == "" && kinds["inner_helper"] == "" {
+		t.Fatalf("Julia module-scoped function not extracted: %#v", kinds)
+	}
+}
+
+func TestClojureSemanticExtraction(t *testing.T) {
+	// Clojure was promoted from inventory to the semantic tier (vendored
+	// grammar). tree-sitter-clojure only produces generic list_lit nodes, so
+	// def-forms are recognized by list-head inspection, including namespaced
+	// heads such as `mu/defn` (a common def-macro idiom).
+	repo := t.TempDir()
+	writeFile(t, repo, "src/app/core.clj", `(ns app.core)
+
+(def config {:port 8080})
+
+(defonce state (atom nil))
+
+(defn- helper [n]
+  (inc n))
+
+(defn ^:private process-item
+  "Docstring is skipped."
+  [item]
+  (helper item))
+
+(mu/defn instrumented :- :int
+  [x :- :int]
+  (inc x))
+
+(defmacro with-thing [& body]
+  body)
+
+(defmulti area :shape)
+
+(defmethod area :circle [c]
+  (* 3.14 (:radius c) (:radius c)))
+
+(defprotocol Renderer
+  (render [this]))
+
+(defrecord Card [title]
+  Renderer
+  (render [this] title))
+
+(deftype Box [w h])
+
+(definterface IThing
+  (doThing []))
+`)
+	writeFile(t, repo, "src/app/shared.cljc", "(defn shared-fn [x] x)\n")
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, s := range snapshot.Symbols {
+		if s.Language == "Clojure" {
+			kinds[s.Name] = s.Kind
+		}
+	}
+	for name, want := range map[string]string{
+		"config":       "variable",
+		"state":        "variable",
+		"helper":       "function",
+		"process-item": "function",
+		"instrumented": "function",
+		"with-thing":   "function",
+		"area":         "function",
+		"Renderer":     "interface",
+		"Card":         "class",
+		"Box":          "class",
+		"IThing":       "interface",
+		"shared-fn":    "function",
+	} {
+		if kinds[name] != want {
+			t.Fatalf("Clojure symbol %q: want kind %q, got %q (all: %#v)", name, want, kinds[name], kinds)
+		}
+	}
+}
+func TestZigSemanticExtraction(t *testing.T) {
+	// Zig was promoted from inventory to the semantic tier (vendored grammar);
+	// it must now extract functions and const-bound struct/enum/union types.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/app.zig", `pub fn add(a: i32, b: i32) i32 {
+    return a + b;
+}
+
+const Point = struct {
+    x: i32,
+    y: i32,
+
+    pub fn norm(self: Point) i32 {
+        return add(self.x, self.y);
+    }
+};
+
+pub const Mode = enum { fast, slow };
+
+const Value = union(enum) {
+    int: i64,
+    float: f64,
+};
+
+test "add works" {
+    _ = add(1, 2);
+}
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, s := range snapshot.Symbols {
+		if s.Language == "Zig" {
+			kinds[s.Name] = s.Kind
+		}
+	}
+	if kinds["add"] != "function" {
+		t.Fatalf("Zig top-level fn not extracted: %#v", kinds)
+	}
+	if kinds["Point"] != "struct" {
+		t.Fatalf("Zig struct const not extracted: %#v", kinds)
+	}
+	if kinds["Mode"] != "enum" {
+		t.Fatalf("Zig enum const not extracted: %#v", kinds)
+	}
+	if kinds["Value"] != "type" {
+		t.Fatalf("Zig union const not extracted: %#v", kinds)
+	}
+	if kinds["Point.norm"] == "" && kinds["norm"] == "" {
+		t.Fatalf("Zig container fn not extracted: %#v", kinds)
+	}
+	for name, kind := range kinds {
+		if strings.Contains(name, "add works") || kind == "" {
+			t.Fatalf("Zig test declaration should be skipped: %#v", kinds)
+		}
+	}
+}
+func TestPerlSemanticExtraction(t *testing.T) {
+	// Perl was promoted from inventory to the semantic tier (vendored grammar);
+	// it must now extract packages (as modules) and subroutines (as functions).
+	repo := t.TempDir()
+	writeFile(t, repo, "lib/My/Util.pm", `package My::Util;
+
+sub slugify {
+  my ($value) = @_;
+  return lc $value;
+}
+
+package My::Inner {
+  sub scoped { return 1 }
+}
+
+1;
+`)
+	writeFile(t, repo, "bin/tool.pl", `#!/usr/bin/perl
+sub run {
+  return 42;
+}
+run();
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, s := range snapshot.Symbols {
+		if s.Language == "Perl" {
+			kinds[s.Name] = s.Kind
+		}
+	}
+	if kinds["My::Util"] != "module" {
+		t.Fatalf("Perl package statement not extracted as module: %#v", kinds)
+	}
+	if kinds["My::Inner"] != "module" {
+		t.Fatalf("Perl package block not extracted as module: %#v", kinds)
+	}
+	if kinds["slugify"] != "function" {
+		t.Fatalf("Perl sub in .pm not extracted as function: %#v", kinds)
+	}
+	if kinds["run"] != "function" {
+		t.Fatalf("Perl sub in .pl not extracted as function: %#v", kinds)
+	}
+	if kinds["My::Inner.scoped"] != "function" && kinds["scoped"] != "function" {
+		t.Fatalf("Perl sub inside package block not extracted: %#v", kinds)
+	}
+}
+func TestHaskellSemanticExtraction(t *testing.T) {
+	// Haskell was promoted from inventory to the semantic tier (vendored
+	// grammar); it must now extract top-level function bindings (one symbol
+	// per name, even across multiple equations), data/newtype declarations,
+	// type synonyms, and classes.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/App.hs", `module App where
+
+data Widget = Widget
+  { widgetName :: String
+  , widgetSize :: Int
+  }
+
+newtype Wrapper = Wrapper Int
+
+type Alias = [Widget]
+
+class Renderable a where
+  render :: a -> String
+
+helper :: Int -> Int
+helper n = n + 1
+
+multiEq :: Int -> Int
+multiEq 0 = 0
+multiEq n = multiEq (n - 1)
+
+topValue :: Int
+topValue = helper 3
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	count := map[string]int{}
+	for _, s := range snapshot.Symbols {
+		if s.Language == "Haskell" {
+			kinds[s.Name] = s.Kind
+			count[s.Name]++
+		}
+	}
+	for _, name := range []string{"helper", "multiEq", "topValue"} {
+		if kinds[name] != "function" {
+			t.Fatalf("Haskell top-level binding %q not extracted as function: %#v", name, kinds)
+		}
+	}
+	if count["multiEq"] != 1 {
+		t.Fatalf("Haskell multi-equation function should emit one symbol, got %d: %#v", count["multiEq"], kinds)
+	}
+	for _, name := range []string{"Widget", "Wrapper", "Alias"} {
+		if kinds[name] != "type" {
+			t.Fatalf("Haskell type declaration %q not extracted: %#v", name, kinds)
+		}
+	}
+	if kinds["Renderable"] != "class" {
+		t.Fatalf("Haskell class not extracted: %#v", kinds)
+	}
+	if kinds["Renderable.render"] == "" && kinds["render"] == "" {
+		t.Fatalf("Haskell class method signature not extracted: %#v", kinds)
+	}
+}
+func TestErlangSemanticExtraction(t *testing.T) {
+	// Erlang was promoted from inventory to the semantic tier (vendored
+	// grammar); it must now extract modules, records, and functions, folding a
+	// multi-clause function into a single symbol named after the bare function.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/geometry.erl", `-module(geometry).
+-export([area/1, add/2]).
+-record(point, {x = 0, y = 0}).
+
+area(#point{x = X, y = Y}) when X > 0 ->
+    X * Y;
+area(_) ->
+    0.
+
+add(A, B) ->
+    A + B.
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	names := map[string]int{}
+	for _, s := range snapshot.Symbols {
+		if s.Language == "Erlang" {
+			kinds[s.Name] = s.Kind
+			names[s.Name]++
+		}
+	}
+	if kinds["geometry"] != "module" {
+		t.Fatalf("Erlang module attribute not extracted: %#v", kinds)
+	}
+	if kinds["point"] != "struct" {
+		t.Fatalf("Erlang record not extracted: %#v", kinds)
+	}
+	if kinds["area"] != "function" || kinds["add"] != "function" {
+		t.Fatalf("Erlang functions not extracted: %#v", kinds)
+	}
+	if names["area"] != 1 {
+		t.Fatalf("Erlang multi-clause function should fold into one symbol, got %d: %#v", names["area"], kinds)
+	}
+}
+func TestObjectiveCSemanticExtraction(t *testing.T) {
+	// Objective-C was promoted from inventory to the semantic tier (vendored
+	// tree-sitter-objc grammar for .m files); it must now extract classes from
+	// @interface/@implementation, methods (named by the selector's first
+	// segment), and plain C functions. .h files keep their existing C-path /
+	// inventory handling.
+	repo := t.TempDir()
+	writeFile(t, repo, "Sources/Manager.m", `#import <Foundation/Foundation.h>
+
+static NSString * EscapedString(NSString *string) {
+    return string;
+}
+
+@interface Manager : NSObject
+@end
+
+@implementation Manager
+
+- (void)startMonitoring {
+    NSLog(@"%@", EscapedString(@"hi"));
+}
+
+- (instancetype)initWithBaseURL:(NSURL *)url sessionConfiguration:(NSURLSessionConfiguration *)configuration {
+    return self;
+}
+
+@end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, s := range snapshot.Symbols {
+		if s.Language == "Objective-C" {
+			kinds[s.Name] = s.Kind
+		}
+	}
+	if kinds["EscapedString"] != "function" {
+		t.Fatalf("Objective-C C function not extracted: %#v", kinds)
+	}
+	if kinds["Manager"] != "class" {
+		t.Fatalf("Objective-C class not extracted: %#v", kinds)
+	}
+	if kinds["Manager.startMonitoring"] == "" && kinds["startMonitoring"] == "" {
+		t.Fatalf("Objective-C unary-selector method not extracted: %#v", kinds)
+	}
+	if kinds["Manager.initWithBaseURL"] == "" && kinds["initWithBaseURL"] == "" {
+		t.Fatalf("Objective-C multi-part-selector method not extracted: %#v", kinds)
+	}
+}
+
+func TestObjectiveCHeaderSemanticExtraction(t *testing.T) {
+	// Definition lookups anchor an Objective-C class at its .h header (the
+	// @interface lives there; the .m only holds the @implementation), so a
+	// header that sniffs as Objective-C must parse with the objc grammar and
+	// emit the class from the header. Method prototypes stay skipped (the .m
+	// implementation carries the method symbols), @class / @protocol forward
+	// declarations stay unextracted, and @protocol blocks emit interfaces.
+	repo := t.TempDir()
+	writeFile(t, repo, "Sources/Manager.h", `#import <Foundation/Foundation.h>
+
+@class NSURLSessionConfiguration;
+@protocol ManagerObserving;
+
+@protocol ManagerDelegate <NSObject>
+- (void)managerDidFinish;
+@end
+
+@interface Manager : NSObject
+@property (readonly, nonatomic, strong) NSURL *baseURL;
+- (instancetype)initWithBaseURL:(NSURL *)url;
++ (instancetype)manager;
+@end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type sym struct {
+		kind, file, language string
+	}
+	symbols := map[string]sym{}
+	for _, s := range snapshot.Symbols {
+		symbols[s.Name] = sym{kind: s.Kind, file: s.FilePath, language: s.Language}
+	}
+	manager := symbols["Manager"]
+	if manager.kind != "class" || manager.file != "Sources/Manager.h" || manager.language != "Objective-C" {
+		t.Fatalf("Objective-C class not extracted from header: %#v (all: %#v)", manager, symbols)
+	}
+	delegate := symbols["ManagerDelegate"]
+	if delegate.kind != "interface" || delegate.file != "Sources/Manager.h" || delegate.language != "Objective-C" {
+		t.Fatalf("Objective-C protocol not extracted as interface: %#v (all: %#v)", delegate, symbols)
+	}
+	for _, forwardOnly := range []string{"NSURLSessionConfiguration", "ManagerObserving"} {
+		if _, ok := symbols[forwardOnly]; ok {
+			t.Fatalf("forward declaration %q must not emit a symbol: %#v", forwardOnly, symbols)
+		}
+	}
+	for _, prototype := range []string{"initWithBaseURL", "Manager.initWithBaseURL", "manager", "Manager.manager", "managerDidFinish", "ManagerDelegate.managerDidFinish"} {
+		if _, ok := symbols[prototype]; ok {
+			t.Fatalf("header method prototype %q must not emit a symbol: %#v", prototype, symbols)
+		}
+	}
+}
+
+func TestCHeaderRoutingUnchangedByObjectiveCSniff(t *testing.T) {
+	// A plain C header (no @interface/@implementation/#import markers) must
+	// keep the existing C routing — C repos (linux, postgres, tmux) are full
+	// of .h files that must be untouched by the Objective-C header dispatch.
+	repo := t.TempDir()
+	writeFile(t, repo, "include/queue.h", `#ifndef QUEUE_H
+#define QUEUE_H
+
+#include <stddef.h>
+
+struct queue_entry {
+	struct queue_entry *next;
+	void *data;
+};
+
+static inline size_t queue_align(size_t n) {
+	return (n + 7) & ~(size_t)7;
+}
+
+#endif
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]string{}
+	for _, s := range snapshot.Symbols {
+		if s.Language != "C" {
+			t.Fatalf("plain C header must stay on the C path, got language %q for %q", s.Language, s.Name)
+		}
+		byName[s.Name] = s.Kind
+	}
+	if byName["queue_entry"] != "struct" {
+		t.Fatalf("C struct not extracted from header: %#v", byName)
+	}
+	if byName["queue_align"] != "function" {
+		t.Fatalf("C inline function not extracted from header: %#v", byName)
+	}
+}
+func TestFSharpSemanticExtraction(t *testing.T) {
+	// F# was promoted from inventory to the semantic tier (vendored
+	// ionide/tree-sitter-fsharp grammar); it must now extract modules, types,
+	// members, and top-level let bindings.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/App.fs", `module MyApp.Core
+
+let simpleValue = 42
+
+let add x y = x + y
+
+[<CustomEquality; NoComparison>]
+type SemVerInfo =
+    { Major: uint32 }
+    override x.ToString() = string x.Major
+
+type Widget(name: string) =
+    member this.Describe (verbose: bool) =
+        if verbose then name else "w"
+
+module Nested =
+    let helper a = add a 2
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, s := range snapshot.Symbols {
+		if s.Language == "F#" {
+			kinds[s.QualifiedName] = s.Kind
+		}
+	}
+	if kinds["MyApp.Core"] != "module" || kinds["Nested"] != "module" {
+		t.Fatalf("F# modules not extracted: %#v", kinds)
+	}
+	if kinds["add"] != "function" || kinds["helper"] != "function" {
+		t.Fatalf("F# top-level let functions not extracted: %#v", kinds)
+	}
+	if kinds["simpleValue"] != "variable" {
+		t.Fatalf("F# top-level let value not extracted: %#v", kinds)
+	}
+	// The attribute-decorated type must be named from its type_name, not the
+	// leading attribute.
+	if kinds["SemVerInfo"] != "type" || kinds["Widget"] != "type" {
+		t.Fatalf("F# types not extracted: %#v", kinds)
+	}
+	if kinds["Widget.Describe"] != "method" {
+		t.Fatalf("F# member not extracted as method: %#v", kinds)
+	}
+	if kinds["SemVerInfo.ToString"] != "method" {
+		t.Fatalf("F# override member not extracted as method: %#v", kinds)
+	}
+}
+
+func TestSwiftProtocolDeclarationsEmitted(t *testing.T) {
+	// tree-sitter-swift emits protocol_declaration; an Objective-C-only gate
+	// on that node type silently dropped every Swift protocol (regression
+	// caught by the swift-argument-parser eval row: ParsableCommand,
+	// ParsableArguments, ExpressibleByArgument all vanished).
+	repo := t.TempDir()
+	writeFile(t, repo, "Sources/App/Proto.swift", `public protocol ParsableThing {
+    func parse() throws
+}
+
+struct Impl: ParsableThing {
+    func parse() throws {}
+}
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, s := range snapshot.Symbols {
+		if s.Language == "Swift" {
+			kinds[s.Name] = s.Kind
+		}
+	}
+	if kinds["ParsableThing"] != "protocol" {
+		t.Fatalf("Swift protocol not extracted: %#v", kinds)
+	}
+	if kinds["Impl"] == "" {
+		t.Fatalf("Swift struct missing: %#v", kinds)
+	}
+}
+
+func TestRustPathCallResolvesToMethod(t *testing.T) {
+	// `Type::name()` path calls and associated functions are written explicitly
+	// in Rust and must resolve to the method by name (ported from
+	// fix/rust-call-resolution ad6ca4d): methods may be name-call targets for
+	// Rust, unlike Go/Python/JS/TS where a method call always has a receiver.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/lib.rs", `pub struct Store {
+    n: u32,
+}
+
+impl Store {
+    pub fn open_default() -> Store {
+        Store { n: 0 }
+    }
+}
+
+pub fn boot() -> u32 {
+    let s = Store::open_default();
+    s.n
+}
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" && strings.Contains(r.FromID, "boot") && strings.Contains(r.ToID, "Store.open_default") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Rust Type::method path call did not resolve to the method")
 	}
 }

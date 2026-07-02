@@ -19,7 +19,6 @@ import (
 	"github.com/smacker/go-tree-sitter/cue"
 	"github.com/smacker/go-tree-sitter/elixir"
 	"github.com/smacker/go-tree-sitter/golang"
-	"github.com/smacker/go-tree-sitter/groovy"
 	"github.com/smacker/go-tree-sitter/hcl"
 	"github.com/smacker/go-tree-sitter/java"
 	"github.com/smacker/go-tree-sitter/javascript"
@@ -36,7 +35,16 @@ import (
 	treesittertsx "github.com/smacker/go-tree-sitter/typescript/tsx"
 	treesitterts "github.com/smacker/go-tree-sitter/typescript/typescript"
 	treesitteryaml "github.com/smacker/go-tree-sitter/yaml"
+	clojure "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/clojure"
 	dart "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/dart"
+	erlang "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/erlang"
+	fsharp "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/fsharp"
+	haskell "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/haskell"
+	julia "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/julia"
+	objc "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/objc"
+	perl "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/perl"
+	rlang "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/r"
+	zig "github.com/suhaanthayyil/entire-sem/internal/sem/grammars/zig"
 	"github.com/suhaanthayyil/entire-sem/internal/sem/pgsql"
 	"github.com/suhaanthayyil/entire-sem/internal/sem/zsh"
 )
@@ -48,26 +56,42 @@ type languageSpec struct {
 }
 
 var treeSitterLanguages = map[string]languageSpec{
-	".bash":       {language: "Bash", grammar: bash.GetLanguage()},
-	".c":          {language: "C", grammar: c.GetLanguage()},
-	".cc":         {language: "C++", grammar: cpp.GetLanguage()},
-	".cpp":        {language: "C++", grammar: cpp.GetLanguage()},
-	".cs":         {language: "C#", grammar: csharp.GetLanguage()},
-	".cue":        {language: "CUE", grammar: cue.GetLanguage()},
-	".cxx":        {language: "C++", grammar: cpp.GetLanguage()},
-	".dart":       {language: "Dart", grammar: dart.GetLanguage()},
-	".ex":         {language: "Elixir", grammar: elixir.GetLanguage()},
-	".exs":        {language: "Elixir", grammar: elixir.GetLanguage()},
-	".go":         {language: "Go", grammar: golang.GetLanguage()},
-	".gradle":     {language: "Groovy", grammar: groovy.GetLanguage()},
-	".groovy":     {language: "Groovy", grammar: groovy.GetLanguage()},
+	".bash":     {language: "Bash", grammar: bash.GetLanguage()},
+	".c":        {language: "C", grammar: c.GetLanguage()},
+	".cc":       {language: "C++", grammar: cpp.GetLanguage()},
+	".cpp":      {language: "C++", grammar: cpp.GetLanguage()},
+	".clj":      {language: "Clojure", grammar: clojure.GetLanguage()},
+	".cljc":     {language: "Clojure", grammar: clojure.GetLanguage()},
+	".cljs":     {language: "ClojureScript", grammar: clojure.GetLanguage()},
+	".cs":       {language: "C#", grammar: csharp.GetLanguage()},
+	".cue":      {language: "CUE", grammar: cue.GetLanguage()},
+	".cxx":      {language: "C++", grammar: cpp.GetLanguage()},
+	".dart":     {language: "Dart", grammar: dart.GetLanguage()},
+	".erl":      {language: "Erlang", grammar: erlang.GetLanguage()},
+	".ex":       {language: "Elixir", grammar: elixir.GetLanguage()},
+	".exs":      {language: "Elixir", grammar: elixir.GetLanguage()},
+	".hrl":      {language: "Erlang", grammar: erlang.GetLanguage()},
+	".fs":       {language: "F#", grammar: fsharp.GetLanguage()},
+	".fsi":      {language: "F#", grammar: fsharp.GetLanguage()},
+	".fsscript": {language: "F#", grammar: fsharp.GetLanguage()},
+	".fsx":      {language: "F#", grammar: fsharp.GetLanguage()},
+	".go":       {language: "Go", grammar: golang.GetLanguage()},
+	// Groovy has no grammar entry: it routes to the dedicated structural
+	// parser in groovy.go (the best available tree-sitter-groovy grammar
+	// fails on fundamental Groovy syntax).
+	".gradle":     {language: "Groovy"},
+	".groovy":     {language: "Groovy"},
+	".gvy":        {language: "Groovy"},
 	".h":          {language: "C", grammar: c.GetLanguage()},
 	".hcl":        {language: "HCL", grammar: hcl.GetLanguage()},
 	".html":       {language: "HTML"},
 	".hh":         {language: "C++", grammar: cpp.GetLanguage()},
+	".hs":         {language: "Haskell", grammar: haskell.GetLanguage()},
+	".hsc":        {language: "Haskell", grammar: haskell.GetLanguage()},
 	".hpp":        {language: "C++", grammar: cpp.GetLanguage()},
 	".hxx":        {language: "C++", grammar: cpp.GetLanguage()},
 	".java":       {language: "Java", grammar: java.GetLanguage()},
+	".jl":         {language: "Julia", grammar: julia.GetLanguage()},
 	".js":         {language: "JavaScript", grammar: javascript.GetLanguage()},
 	".json":       {language: "JSON"},
 	".json5":      {language: "JSON5"},
@@ -79,11 +103,15 @@ var treeSitterLanguages = map[string]languageSpec{
 	".markdown":   {language: "Markdown"},
 	".md":         {language: "Markdown"},
 	".mk":         {language: "Make"},
+	".m":          {language: "Objective-C", grammar: objc.GetLanguage()},
 	".ml":         {language: "OCaml", grammar: ocaml.GetLanguage()},
 	".mli":        {language: "OCaml", grammar: ocaml.GetLanguage()},
 	".php":        {language: "PHP", grammar: php.GetLanguage()},
+	".pl":         {language: "Perl", grammar: perl.GetLanguage()},
+	".pm":         {language: "Perl", grammar: perl.GetLanguage()},
 	".proto":      {language: "Protocol Buffers", grammar: protobuf.GetLanguage()},
 	".py":         {language: "Python", grammar: python.GetLanguage()},
+	".r":          {language: "R", grammar: rlang.GetLanguage()},
 	".rb":         {language: "Ruby", grammar: ruby.GetLanguage()},
 	".rs":         {language: "Rust", grammar: rust.GetLanguage()},
 	".sbt":        {language: "Scala", grammar: scala.GetLanguage()},
@@ -102,6 +130,7 @@ var treeSitterLanguages = map[string]languageSpec{
 	".xml":        {language: "XML"},
 	".yaml":       {language: "YAML", grammar: treesitteryaml.GetLanguage()},
 	".yml":        {language: "YAML", grammar: treesitteryaml.GetLanguage()},
+	".zig":        {language: "Zig", grammar: zig.GetLanguage()},
 	".zsh":        {language: "Zsh", grammar: zsh.GetLanguage()},
 	".dockerfile": {language: "Dockerfile"},
 }
@@ -122,7 +151,7 @@ func (TreeSitterParser) Parse(path, content string) ([]Entity, string) {
 }
 
 func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string, ParseStatus) {
-	spec, ok := languageForPath(path)
+	spec, ok := languageForContent(path, content)
 	if !ok {
 		return nil, "", ParseStatus{}
 	}
@@ -130,12 +159,35 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		spec = treeSitterLanguages[".yaml"]
 	}
 	if strings.EqualFold(filepath.Ext(path), ".h") && looksLikeObjectiveC(content) {
-		spec = languageSpec{language: "Objective-C", inventoryOnly: true}
+		// Objective-C classes are canonically anchored at their .h header
+		// (`@interface Foo : NSObject` lives there; the .m holds the
+		// @implementation), so sniffed headers parse with the vendored
+		// tree-sitter-objc grammar like .m files instead of falling back to
+		// inventory. Headers that don't sniff keep the C/C++ routing below.
+		spec = treeSitterLanguages[".m"]
 	} else if strings.EqualFold(filepath.Ext(path), ".h") && looksLikeCPlusPlusHeader(content) {
 		spec = treeSitterLanguages[".hpp"]
 	}
+	flowJS := false
+	if spec.language == "JavaScript" && looksLikeFlowJavaScript(content) {
+		// Flow-typed JavaScript parses with the vendored TSX grammar (a
+		// near-superset of Flow's annotation syntax) plus a small
+		// position-preserving mask; tree-sitter-javascript chokes on every
+		// type annotation. The language label stays "JavaScript", mirroring
+		// the .jsx routing. See flowjs.go for the probe evidence.
+		spec.grammar = treesittertsx.GetLanguage()
+		flowJS = true
+	}
 	if spec.language == "SQL" {
 		spec.grammar = pgsql.GetLanguage()
+	}
+	if spec.language == "Groovy" {
+		// Groovy uses a dedicated structural parser (see groovy.go): the best
+		// available tree-sitter-groovy grammar fails on fundamental syntax —
+		// quoted method names, casts, slashy strings — leaving 1,400+ parse
+		// errors on real repos, so it is not consulted at all.
+		entities, status := groovyEntities(content)
+		return entities, spec.language, status
 	}
 	if spec.grammar == nil {
 		return fallbackEntities(path, content, spec.language), spec.language, ParseStatus{}
@@ -147,6 +199,9 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	}
 	if spec.language == "C" {
 		parseSrc = []byte(maskCUnsupportedSyntax(content))
+	}
+	if spec.language == "Objective-C" {
+		parseSrc = []byte(maskObjectiveCUnsupportedSyntax(content))
 	}
 	if spec.language == "Bash" {
 		parseSrc = []byte(maskBashUnsupportedSyntax(content))
@@ -160,9 +215,6 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if spec.language == "C#" {
 		parseSrc = []byte(maskCSharpUnsupportedSyntax(content))
 	}
-	if spec.language == "Groovy" {
-		parseSrc = []byte(maskGroovyUnsupportedSyntax(content))
-	}
 	if spec.language == "C++" {
 		parseSrc = []byte(maskCPlusPlusUnsupportedSyntax(content))
 	}
@@ -172,6 +224,9 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if spec.language == "Swift" {
 		parseSrc = []byte(maskSwiftUnsupportedSyntax(content))
 	}
+	if spec.language == "Dart" {
+		parseSrc = []byte(maskDartUnsupportedSyntax(content))
+	}
 	if spec.language == "OCaml" && strings.EqualFold(filepath.Ext(path), ".mli") {
 		parseSrc = []byte(maskOCamlInterfaceSyntax(content))
 	}
@@ -180,6 +235,12 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	}
 	if spec.language == "TypeScript" && !strings.EqualFold(filepath.Ext(path), ".tsx") {
 		parseSrc = []byte(maskTypeScriptUnsupportedSyntax(content))
+	}
+	if spec.language == "Rust" {
+		parseSrc = []byte(maskRustUnsupportedSyntax(content))
+	}
+	if flowJS {
+		parseSrc = []byte(maskFlowJavaScriptUnsupportedSyntax(content))
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), treeSitterParseTimeout)
 	defer cancel()
@@ -388,6 +449,158 @@ func maskTypeScriptStaticAccessorMethod(line string) string {
 	return tsStaticAccessorMethodPattern.ReplaceAllString(line, "static accessoR${1}")
 }
 
+// rustItemWrapperMacroHint cheaply detects source that may contain a
+// brace-delimited cfg_*! macro invocation so unaffected files skip the extra
+// unwrap parse below.
+var rustItemWrapperMacroHint = regexp.MustCompile(`\bcfg_[A-Za-z0-9_]*\s*!\s*\{`)
+
+// rustItemWrapperMacroName gates which macros maskRustUnsupportedSyntax may
+// unwrap: tokio's declarative config family (cfg_net!, cfg_io_util!, ...) plus
+// cfg_if!, whose brace bodies wrap real items. Arbitrary macros (quote!,
+// macro_rules!, matches!, vec!) must stay opaque token trees.
+var rustItemWrapperMacroName = regexp.MustCompile(`^cfg_[A-Za-z0-9_]*$`)
+
+// maskRustUnsupportedSyntax unwraps known item-wrapping macro invocations so
+// the items they wrap parse as real items. tree-sitter-rust parses a macro
+// invocation's body as an opaque token_tree, so `cfg_net! { pub struct
+// TcpListener { ... } }` (pervasive in tokio) otherwise yields no entities at
+// all. The macro name, `!`, and wrapping braces are blanked with same-length
+// whitespace so the contents parse at identical byte offsets. Wrappers nest
+// (`cfg_net! { cfg_io! { ... } }`), so unwrapping iterates to a fixed point.
+func maskRustUnsupportedSyntax(content string) string {
+	if !rustItemWrapperMacroHint.MatchString(content) {
+		return content
+	}
+	src := []byte(content)
+	const maxUnwrapDepth = 8
+	for i := 0; i < maxUnwrapDepth; i++ {
+		if !unwrapRustItemWrapperMacros(src) {
+			break
+		}
+	}
+	return string(src)
+}
+
+// unwrapRustItemWrapperMacros blanks one layer of item-position cfg_*! macro
+// wrappers in src in place and reports whether anything changed.
+func unwrapRustItemWrapperMacros(src []byte) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), treeSitterParseTimeout)
+	defer cancel()
+	parser := sitter.NewParser()
+	defer parser.Close()
+	parser.SetLanguage(rust.GetLanguage())
+	tree, err := parser.ParseCtx(ctx, nil, src)
+	if tree != nil {
+		defer tree.Close()
+	}
+	if err != nil || tree == nil {
+		return false
+	}
+	root := tree.RootNode()
+	if root == nil || root.IsNull() {
+		return false
+	}
+	changed := false
+	var walk func(node *sitter.Node)
+	walk = func(node *sitter.Node) {
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			child := node.NamedChild(i)
+			if child == nil || child.IsNull() {
+				continue
+			}
+			if child.Type() == "macro_invocation" && unwrapRustItemWrapperMacro(src, child, node) {
+				changed = true
+				continue
+			}
+			walk(child)
+		}
+	}
+	walk(root)
+	return changed
+}
+
+// unwrapRustItemWrapperMacro blanks a single cfg_*! wrapper when the
+// invocation sits at item position (file, module, impl, or trait scope — not
+// inside a function body) with a brace-delimited body. cfg_if!-style bodies
+// (`if #[cfg(...)] { items } else { items }`) additionally get the if/else
+// scaffolding blanked, keeping only the branch interiors.
+func unwrapRustItemWrapperMacro(src []byte, node, parent *sitter.Node) bool {
+	switch parent.Type() {
+	case "source_file", "declaration_list":
+	default:
+		return false
+	}
+	name := node.ChildByFieldName("macro")
+	if name == nil || name.IsNull() {
+		return false
+	}
+	macroName := string(src[name.StartByte():name.EndByte()])
+	if dot := strings.LastIndex(macroName, "::"); dot >= 0 {
+		macroName = macroName[dot+2:]
+	}
+	if !rustItemWrapperMacroName.MatchString(macroName) {
+		return false
+	}
+	var body *sitter.Node
+	for i := int(node.NamedChildCount()) - 1; i >= 0; i-- {
+		child := node.NamedChild(i)
+		if child != nil && !child.IsNull() && child.Type() == "token_tree" {
+			body = child
+			break
+		}
+	}
+	if body == nil || src[body.StartByte()] != '{' {
+		return false
+	}
+	// Byte ranges inside the invocation whose contents survive the blanking.
+	var keep [][2]int
+	if rustTokenTreeStartsWithIf(src, body) {
+		// cfg_if! style: keep only the brace-delimited branch bodies.
+		for i := 0; i < int(body.NamedChildCount()); i++ {
+			branch := body.NamedChild(i)
+			if branch == nil || branch.IsNull() || branch.Type() != "token_tree" {
+				continue
+			}
+			if src[branch.StartByte()] != '{' {
+				continue
+			}
+			keep = append(keep, [2]int{int(branch.StartByte()) + 1, int(branch.EndByte()) - 1})
+		}
+	} else {
+		keep = append(keep, [2]int{int(body.StartByte()) + 1, int(body.EndByte()) - 1})
+	}
+	pos := int(node.StartByte())
+	for _, segment := range keep {
+		maskBytesPreservingNewlines(src, pos, segment[0])
+		pos = segment[1]
+	}
+	maskBytesPreservingNewlines(src, pos, int(node.EndByte()))
+	return true
+}
+
+// rustTokenTreeStartsWithIf reports whether the first token inside the brace
+// body is the `if` keyword, i.e. a cfg_if!-style conditional wrapper.
+func rustTokenTreeStartsWithIf(src []byte, body *sitter.Node) bool {
+	i := int(body.StartByte()) + 1
+	end := int(body.EndByte()) - 1
+	for i < end {
+		switch src[i] {
+		case ' ', '\t', '\n', '\r':
+			i++
+			continue
+		}
+		break
+	}
+	if i+2 > end || src[i] != 'i' || src[i+1] != 'f' {
+		return false
+	}
+	if i+2 == end {
+		return true
+	}
+	next := src[i+2]
+	return !(next == '_' || (next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') || (next >= '0' && next <= '9'))
+}
+
 var (
 	javaModuleImportPattern      = regexp.MustCompile(`^(\s*import\s+)module\s+`)
 	javaVarargsAnnotationPattern = regexp.MustCompile(`@[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*\.\.\.`)
@@ -407,44 +620,26 @@ func maskJavaUnsupportedSyntax(content string) string {
 }
 
 var (
-	groovyQuotedMethodPattern = regexp.MustCompile(`\b(def|void)\s+"[^"\n]+"\s*\(`)
-	groovyJavaCastPattern     = regexp.MustCompile(`\([A-Za-z_][A-Za-z0-9_]*\)\s+[A-Za-z_$]`)
-)
-
-func maskGroovyUnsupportedSyntax(content string) string {
-	content = groovyQuotedMethodPattern.ReplaceAllStringFunc(content, func(match string) string {
-		open := strings.LastIndex(match, "(")
-		quote := strings.Index(match, "\"")
-		if open <= quote || quote < 0 {
-			return match
-		}
-		prefix := match[:quote]
-		placeholder := "quotedFeature"
-		spaceCount := open - quote - len(placeholder)
-		if spaceCount < 1 {
-			placeholder = "q"
-			spaceCount = open - quote - len(placeholder)
-		}
-		if spaceCount < 0 {
-			return match
-		}
-		return prefix + placeholder + strings.Repeat(" ", spaceCount) + "("
-	})
-	return groovyJavaCastPattern.ReplaceAllStringFunc(content, func(match string) string {
-		return strings.Repeat(" ", len(match)-1) + match[len(match)-1:]
-	})
-}
-
-var (
 	kotlinSuspendLambdaPattern        = regexp.MustCompile(`\bsuspend\s+\{`)
 	kotlinMultiDollarString           = regexp.MustCompile(`\$+\s*"`)
 	kotlinCallTypeArgumentsWithParen  = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)<[^<>\n(){}]+>\(`)
 	kotlinCallTypeArgumentsWithLambda = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)<[^<>\n(){}]+>(\s*\{)`)
 	kotlinEmptyArrayDefault           = regexp.MustCompile(`=\s*\[\]`)
 	kotlinOverrideCallPattern         = regexp.MustCompile(`\boverride\(\)`)
+	kotlinFunInterfacePattern         = regexp.MustCompile(`\bfun(\s+interface\s+[A-Za-z_])`)
 )
 
 func maskKotlinUnsupportedSyntax(path, content string) string {
+	// tree-sitter-kotlin does not support `fun interface` (SAM interface)
+	// declarations: the whole declaration becomes an ERROR node and the
+	// interface symbol is lost (evidence: okhttp3.Interceptor was absent from
+	// the square/okhttp snapshot). Blank the `fun` modifier — same length, so
+	// node positions still line up with the original source — and the
+	// declaration parses as a plain interface; signatures and refineKind read
+	// the original text, which keeps the `fun` spelling visible there.
+	content = kotlinFunInterfacePattern.ReplaceAllStringFunc(content, func(match string) string {
+		return "   " + match[3:]
+	})
 	content = kotlinSuspendLambdaPattern.ReplaceAllStringFunc(content, func(match string) string {
 		return strings.Repeat(" ", len(match)-1) + "{"
 	})
@@ -692,6 +887,32 @@ func maskOCamlInterfaceSyntax(content string) string {
 	return strings.Join(lines, "")
 }
 
+// dartClassModifierPattern matches a Dart 3 class modifier immediately ahead
+// of the `class` keyword (`final class`, `sealed class`, `base mixin class`,
+// `abstract interface class`, ...). The vendored tree-sitter-dart grammar
+// predates class modifiers, so an unmasked `final class ByteStream extends
+// StreamView<List<int>>` parses as an ERROR node and the class symbol is lost
+// (its factory constructor gets recovered as a bare function instead).
+var dartClassModifierPattern = regexp.MustCompile(`\b(final|base|interface|sealed|mixin)(\s+)(class\b)`)
+
+// maskDartUnsupportedSyntax blanks Dart 3 class modifiers the grammar cannot
+// parse, preserving byte length so node offsets keep pointing into the
+// original source. `abstract` is left alone (the grammar knows `abstract
+// class`); stacked modifiers (`base mixin class`) resolve over the fixpoint
+// iterations.
+func maskDartUnsupportedSyntax(content string) string {
+	for {
+		masked := dartClassModifierPattern.ReplaceAllStringFunc(content, func(match string) string {
+			m := dartClassModifierPattern.FindStringSubmatch(match)
+			return strings.Repeat(" ", len(m[1])) + m[2] + m[3]
+		})
+		if masked == content {
+			return masked
+		}
+		content = masked
+	}
+}
+
 func maskSwiftUnsupportedSyntax(content string) string {
 	lines := strings.SplitAfter(content, "\n")
 	for i := 0; i < len(lines); i++ {
@@ -931,7 +1152,91 @@ var (
 	// across C runtimes (PostgreSQL PGDLLIMPORT, Julia JL_DLLEXPORT, ...); the
 	// remaining names are the high-frequency PostgreSQL declaration qualifiers
 	// surfaced by the postgres/postgres failure clustering.
-	cBareAnnotationPattern = regexp.MustCompile(`\b(?:__dead|__packed|__unused|__maybe_unused|\w*DLL(?:IMPORT|EXPORT)|PG_USED_FOR_ASSERTS_ONLY|NON_EXEC_STATIC|pg_attribute_\w+|WINAPI)\b`)
+	// `\w+_EXTERN` generalizes export-annotation macros (curl CURL_EXTERN,
+	// GLib GLIB_EXTERN, ...); `\w+_NORETURN`/`\w+_STDCALL` follow the same
+	// attribute/calling-convention shape. UNITTEST (curl, empty-or-static),
+	// WARN_UNUSED_RESULT, APIENTRY/WINBASEAPI/CALLBACK (Windows headers) and
+	// z_const (zlib) are cross-project annotation names that never appear in
+	// expression position.
+	cBareAnnotationPattern = regexp.MustCompile(`\b(?:__dead|__packed|__unused|__maybe_unused|\w*DLL(?:IMPORT|EXPORT)|\w+_EXTERN|\w+_NORETURN|\w+_STDCALL|\w+_INLINE|PG_USED_FOR_ASSERTS_ONLY|NON_EXEC_STATIC|pg_attribute_\w+|WINAPI|APIENTRY|WINBASEAPI|CALLBACK|_CRTIMP|UNITTEST|WARN_UNUSED_RESULT|z_const)\b`)
+	// Printf-format attribute macros after a declarator: `... , ...) CURL_PRINTF(2, 3);`
+	// (expands to __attribute__((format(printf, ...)))). The digit-only argument
+	// list keeps the shape distinct from real function calls.
+	cPrintfAttributeMacroPattern = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*_PRINTF\s*\(\s*\d+\s*,\s*\d+\s*\)`)
+	// Bare block begin/end statement macros (curl UNITTEST_BEGIN_SIMPLE /
+	// UNITTEST_END(stop()) pairs, BEGIN_C_DECLS/END_C_DECLS, ...). Each BEGIN
+	// expands to an opener whose `}` lives in the matching END macro, so
+	// blanking both keeps braces balanced.
+	cBlockBeginEndMacroPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_(?:BEGIN|END)(?:_[A-Z0-9_]+)?\s*(?:\(.*\))?$`)
+	// Statement macros wrapping a declaration (curl `VERBOSE(const char *p);`,
+	// `VERBOSE(size_t calls = 0);`): an all-caps macro call whose first tokens
+	// look like a declaration (two identifiers, optionally pointer/const/struct
+	// qualified) cannot be parsed as a call argument.
+	cDeclarationStatementMacroPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*\(\s*(?:const\s+|struct\s+|unsigned\s+|signed\s+)*[A-Za-z_]\w*\s+\**\s*[A-Za-z_]\w*\s*[=;,\[\)]`)
+	// Macro invocations with empty arguments (`CS_ENTRY(0x1301, TLS,AES,128,GCM,SHA256,,,),`
+	// or a trailing `...,SHA256,),`) are unparseable as calls; such lines are
+	// pure macro data, so blank them.
+	cEmptyArgMacroLinePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*\([^()\n]*,\s*[,)][^()\n]*\)?\s*[,;]?$`)
+	// Clang availability builtin takes version specs, not expressions:
+	// `if(__builtin_available(macOS 10.9, iOS 7, *))`.
+	cBuiltinAvailablePattern = regexp.MustCompile(`\b__builtin_available\s*\([^()\n]*\)`)
+	// `va_arg(ap, TYPE)` calls: the second argument is a type name, which the C
+	// grammar cannot parse as a call argument (va_arg is compiler magic).
+	cVaArgCallPattern = regexp.MustCompile(`\bva_arg\s*\(`)
+	// A line of only all-caps macro words (optionally with argument lists)
+	// annotating the following declaration (curl `ALLOC_FUNC` above
+	// `void *curl_dbg_malloc(...)`, `CURL_EXTERN ALLOC_FUNC ALLOC_SIZE(1)`);
+	// only blanked when the next code line looks like a declaration so bare
+	// enumerators and expression continuations are untouched.
+	cLoneAnnotationMacroLinePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]{2,}(?:\s*\([^()\n]*\))?(?:\s+[A-Z][A-Z0-9_]{2,}(?:\s*\([^()\n]*\))?)*$`)
+	cDeclarationStartLinePattern    = regexp.MustCompile(`^[A-Za-z_][^={}]*\(`)
+	// A bare `MACRO(` line opening a statement-wrapping macro
+	// (curl `CURL_IGNORE_DEPRECATION(` ... `)`); handled in the line loop by
+	// blanking only the opener and its bare `)`/`);` closer line, keeping the
+	// wrapped statements. Guarded on the interior containing a `;`, which call
+	// arguments cannot.
+	cBareMacroOpenLinePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*\($`)
+	// va_arg-wrapper macro calls whose (last) argument is a type name
+	// (`avalue = form_ptr_arg(char *);`, `APR_ARRAY_IDX(args, i, char *)`).
+	// Anchored on a preceding `=`/`(`/`,` so real prototypes with unnamed
+	// parameters (`void foo(char *);`) are never rewritten; a genuine call can
+	// never take a type argument.
+	cTypeArgMacroCallPattern = regexp.MustCompile(`[=(,]\s*[A-Za-z_]\w*\s*\((?:[^()\n;]*,)?(\s*(?:const\s+)?(?:unsigned\s+|signed\s+)?(?:void|char|short|int|long|float|double|struct\s+\w+|\w+_t)\s*\*+\s*)\)`)
+	// Parameter-list prefix macros in the libev style: `(EV_P_ struct ev_timer *w`
+	// — a trailing-underscore all-caps macro directly before a type keyword can
+	// only be a macro (two type tokens cannot open a parameter otherwise).
+	cParamPrefixMacroPattern = regexp.MustCompile(`\(\s*([A-Z][A-Z0-9_]*_)\s+(?:struct|const|unsigned|signed|void|char|short|int|long|float|double)\b`)
+	// All-caps annotation macro before the return type of a declarator
+	// (`ALLOC_FUNC FILE *curl_dbg_fopen(...)`): three word tokens ahead of a
+	// parameter list are one too many for a declaration, so the leading
+	// all-caps word is blanked. Even when the first token is the real return
+	// type and the middle a calling-convention macro (`HRESULT STDMETHODCALLTYPE
+	// f(...)`), blanking the first still leaves a parseable `type name(`.
+	cAnnotationBeforeTypePattern = regexp.MustCompile(`\b([A-Z][A-Z0-9_]{2,})[ \t]+[A-Za-z_]\w*[ \t]+\**[A-Za-z_]\w*\s*\(`)
+	// Attribute macro between a type and its declarator
+	// (`static const char CURL_USED min_stack[] = "..."`): TYPE MACRO name.
+	// Guarded in maskCInterDeclarationAnnotations so struct/union/enum tags
+	// (`struct FOO bar;`) are never blanked.
+	cTypeAnnotationNamePattern = regexp.MustCompile(`\b([A-Za-z_]\w*)[ \t]+([A-Z][A-Z0-9_]{2,})[ \t]+([A-Za-z_]*[a-z]\w*)\s*(\[[^\]\n]*\])?\s*[=;,]`)
+	// Attribute macro between the declarator and its initializer
+	// (`gss_OID_desc Curl_spnego_mech_oid CURL_ALIGN8 = {`): TYPE name MACRO =.
+	// The declarator must contain a lowercase letter so an all-caps declarator
+	// (`MyType FLAGS = {0}`) is never mistaken for the macro.
+	cNameAnnotationInitPattern = regexp.MustCompile(`\b([A-Za-z_]\w*)[ \t]+([A-Za-z_]*[a-z]\w*)[ \t]+([A-Z][A-Z0-9_]{2,})\s*=`)
+	// Qualifier macro between a pointer star and the declarator
+	// (`struct Curl_addrinfo *vqualifier canext;`, a volatile-style qualifier):
+	// `TYPE *word name;` is only valid C when `word` is a qualifier, so any
+	// non-keyword word in that slot is a macro to blank.
+	cPointerQualifierMacroPattern = regexp.MustCompile(`\*[ \t]*([a-z_]\w*)[ \t]+([A-Za-z_]\w*)\s*[;=,\[)]`)
+	// The vendored tree-sitter-c grammar only accepts `\x` escapes with two or
+	// more hex digits; blank the backslash of a single-digit `"\xb"` escape so
+	// the (still valid) string literal parses.
+	cShortHexEscapePattern = regexp.MustCompile(`\\x[0-9a-fA-F][^0-9a-fA-F]`)
+	// Pointer-slot words that are real C qualifiers, not macros.
+	cPointerQualifierKeywords = map[string]bool{
+		"const": true, "volatile": true, "restrict": true,
+		"__restrict": true, "__restrict__": true, "register": true,
+	}
 	// C++ library namespace-opening/closing macros (asmjit ASMJIT_BEGIN_NAMESPACE
 	// / ASMJIT_BEGIN_SUB_NAMESPACE(x), and the *_NAMESPACE_BEGIN order) expand to
 	// `namespace x {` / `}`. The fmt/nlohmann variants are handled by exact cases
@@ -961,6 +1266,19 @@ func maskCUnsupportedSyntax(content string) string {
 				}
 				i++
 				text, newline = splitLineEnding(lines[i])
+			}
+			// A block comment opened on the (now blanked) directive line may
+			// span lines (`#endif /* FOO ||\n  BAR */`); blank through its
+			// closing `*/` so the tail tokens do not leak into the parse.
+			if cLineOpensBlockComment(text) {
+				for i+1 < len(lines) {
+					i++
+					text, newline = splitLineEnding(lines[i])
+					lines[i] = maskLineText(text) + newline
+					if strings.Contains(text, "*/") {
+						break
+					}
+				}
 			}
 			continue
 		}
@@ -1026,6 +1344,62 @@ func maskCUnsupportedSyntax(content string) string {
 			lines[i] = maskLineText(text) + newline
 			continue
 		}
+		if cBlockBeginEndMacroPattern.MatchString(trimmed) || cEmptyArgMacroLinePattern.MatchString(trimmed) {
+			lines[i] = maskLineText(text) + newline
+			continue
+		}
+		if cLoneAnnotationMacroLinePattern.MatchString(trimmed) && cNextCodeLineStartsDeclaration(lines, i+1) {
+			lines[i] = maskLineText(text) + newline
+			continue
+		}
+		if cBareMacroOpenLinePattern.MatchString(trimmed) {
+			// Statement-wrapping macro (`CURL_IGNORE_DEPRECATION(` ... `)`).
+			// Blank only the opener and the bare closer line, keeping the
+			// wrapped statements. The interior must contain a `;` — real call
+			// arguments cannot — and the closer must sit alone on its line.
+			balance := 1
+			end := i
+			sawStatement := false
+			for balance > 0 && end+1 < len(lines) {
+				end++
+				nextText, _ := splitLineEnding(lines[end])
+				balance += strings.Count(nextText, "(") - strings.Count(nextText, ")")
+				if balance > 0 && strings.Contains(nextText, ";") {
+					sawStatement = true
+				}
+			}
+			lastText, lastNewline := splitLineEnding(lines[end])
+			lastTrimmed := strings.TrimSpace(lastText)
+			if balance == 0 && sawStatement && (lastTrimmed == ")" || lastTrimmed == ");") {
+				lines[i] = maskLineText(text) + newline
+				lines[end] = maskLineText(lastText) + lastNewline
+				continue
+			}
+		}
+		if cDeclarationStatementMacroPattern.MatchString(trimmed) {
+			// Statement macro wrapping a declaration; blank the whole (possibly
+			// multi-line) invocation, tracking paren balance like the file-scope
+			// statement macros above. Look ahead first: the construct must close
+			// with `;` to be a statement — a macro-typed parameter inside a real
+			// signature (`CURL_THREAD_RETURN_T(X *func)(void *), void *arg)`)
+			// must not be blanked.
+			balance := strings.Count(text, "(") - strings.Count(text, ")")
+			end := i
+			for balance > 0 && end+1 < len(lines) {
+				end++
+				nextText, _ := splitLineEnding(lines[end])
+				balance += strings.Count(nextText, "(") - strings.Count(nextText, ")")
+			}
+			lastText, _ := splitLineEnding(lines[end])
+			if balance == 0 && strings.HasSuffix(strings.TrimSpace(lastText), ";") {
+				for j := i; j <= end; j++ {
+					jText, jNewline := splitLineEnding(lines[j])
+					lines[j] = maskLineText(jText) + jNewline
+				}
+				i = end
+				continue
+			}
+		}
 		if cGenerateMacroPattern.MatchString(trimmed) {
 			for {
 				lines[i] = maskLineText(text) + newline
@@ -1040,6 +1414,11 @@ func maskCUnsupportedSyntax(content string) string {
 		text = maskCStringMacros(text)
 		text = maskCAnnotationMacros(text)
 		text = maskCTypeMacros(text)
+		text = maskCVaArgTypeArguments(text)
+		text = maskCTypeArgumentMacroCalls(text)
+		text = maskCInterDeclarationAnnotations(text)
+		text = maskCShortHexEscapes(text)
+		text = replacePatternSameLength(text, cBuiltinAvailablePattern, "1")
 		text = cBKIMacroPattern.ReplaceAllStringFunc(text, func(m string) string { return strings.Repeat(" ", len(m)) })
 		text = replaceAllSameLength(text, ", >)", ", 0)")
 		text = replaceAllSameLength(text, ", <)", ", 0)")
@@ -1086,12 +1465,61 @@ var (
 	bashCommandParameterPattern = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*:\+[^}\n;]+;[^}\n]*\}`)
 	zshGlobParameterPattern     = regexp.MustCompile(`\$\{(?:\([^}\n]*\))?[@A-Za-z_][^}\n]*:#\([^}\n]*\)\}`)
 	zshNestedParameterPattern   = regexp.MustCompile(`\$\{#[^}\n]*\$\{[^}\n]+\}[^}\n]*\}`)
+	// bashSubstringExpansionPattern matches substring expansions
+	// (`${arg:$index:1}`) while excluding the `:-` `:=` `:+` `:?` operator
+	// forms; bashBareVariableRefPattern then finds bare `$var` offsets/lengths
+	// inside them, which the vendored tree-sitter-bash grammar cannot parse
+	// (it accepts `${arg:0:1}` and `${arg:${i}:1}` but emits a missing-`}`
+	// error for `${arg:$i:1}` that derails everything after it — pyenv's
+	// python-build lost can_use_homebrew and neighbors to one such expansion).
+	bashSubstringExpansionPattern = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*:[ \t]*[^-=+?}\n][^}\n]*\}`)
+	bashBareVariableRefPattern    = regexp.MustCompile(`\$[A-Za-z_][A-Za-z0-9_]*`)
+	// bashSplicedTestArgsPattern matches `[ operand "$@" ]` test commands,
+	// where "$@" splices the operator and right operand in at runtime (pyenv's
+	// is_mac does `[ "$(osx_version)" "$@" ]`). The grammar has no production
+	// for a two-operand test without an operator, and the resulting ERROR node
+	// swallows adjacent function definitions.
+	bashSplicedTestArgsPattern = regexp.MustCompile(`\[ [^]\[\n]+ ("\$@") \]`)
 )
+
+// maskBashSplicedTestArgs rewrites the trailing `"$@"` of a two-operand test
+// command to the same-length `= xx` operator-and-operand pair so the grammar
+// sees a well-formed binary test. Line and column positions are unchanged.
+func maskBashSplicedTestArgs(content string) string {
+	return bashSplicedTestArgsPattern.ReplaceAllStringFunc(content, func(match string) string {
+		fields := strings.Fields(strings.TrimSuffix(match, ` "$@" ]`))
+		// When the token before "$@" is a test operator (`[ -n "$@" ]`,
+		// `[ "$a" -ot "$@" ]`), the test is already well-formed.
+		if len(fields) == 0 || strings.HasPrefix(fields[len(fields)-1], "-") {
+			return match
+		}
+		return strings.Replace(match, `"$@" ]`, `= xx ]`, 1)
+	})
+}
+
+// maskBashSubstringVariableOffsets rewrites bare `$var` offsets/lengths in
+// substring expansions to same-length digit runs (`${arg:$index:1}` →
+// `${arg:000000:1}`), which the grammar parses as numbers. Line and column
+// positions are unchanged.
+func maskBashSubstringVariableOffsets(content string) string {
+	return bashSubstringExpansionPattern.ReplaceAllStringFunc(content, func(match string) string {
+		colon := strings.Index(match, ":")
+		head, body := match[:colon+1], match[colon+1:]
+		if !bashBareVariableRefPattern.MatchString(body) {
+			return match
+		}
+		return head + bashBareVariableRefPattern.ReplaceAllStringFunc(body, func(ref string) string {
+			return strings.Repeat("0", len(ref))
+		})
+	})
+}
 
 func maskBashUnsupportedSyntax(content string) string {
 	masked := bashCommandParameterPattern.ReplaceAllStringFunc(content, func(match string) string {
 		return sameLengthReplacement(`""`, len(match))
 	})
+	masked = maskBashSubstringVariableOffsets(masked)
+	masked = maskBashSplicedTestArgs(masked)
 	masked = zshGlobParameterPattern.ReplaceAllStringFunc(masked, func(match string) string {
 		return sameLengthReplacement(`"x"`, len(match))
 	})
@@ -1206,9 +1634,150 @@ func maskZshAnonymousFunctions(content string) string {
 }
 
 func maskCAnnotationMacros(text string) string {
-	return cAnnotationMacroPattern.ReplaceAllStringFunc(text, func(match string) string {
+	text = cAnnotationMacroPattern.ReplaceAllStringFunc(text, func(match string) string {
 		return strings.Repeat(" ", len(match))
 	})
+	return cPrintfAttributeMacroPattern.ReplaceAllStringFunc(text, func(match string) string {
+		return strings.Repeat(" ", len(match))
+	})
+}
+
+// cNextCodeLineStartsDeclaration reports whether the next non-blank line looks
+// like the start of a declaration (identifier leading to a parameter list).
+func cNextCodeLineStartsDeclaration(lines []string, from int) bool {
+	for i := from; i < len(lines); i++ {
+		text, _ := splitLineEnding(lines[i])
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" {
+			continue
+		}
+		return cDeclarationStartLinePattern.MatchString(trimmed)
+	}
+	return false
+}
+
+// maskCTypeArgumentMacroCalls blanks the type argument of va_arg-wrapper macro
+// calls (`avalue = form_ptr_arg(char *);`, `APR_ARRAY_IDX(args, i, char *)`)
+// to a same-length integer literal.
+func maskCTypeArgumentMacroCalls(text string) string {
+	matches := cTypeArgMacroCallPattern.FindAllStringSubmatchIndex(text, -1)
+	if matches == nil {
+		return text
+	}
+	b := []byte(text)
+	for _, m := range matches {
+		copy(b[m[2]:m[3]], sameLengthReplacement("0", m[3]-m[2]))
+	}
+	return string(b)
+}
+
+// cInterDeclarationKeywords are leading tokens that make a TYPE-MACRO-name or
+// TYPE-name-MACRO match part of regular C (struct tags, storage classes,
+// multi-keyword types) rather than an annotation macro to blank.
+var cInterDeclarationKeywords = map[string]bool{
+	"struct": true, "union": true, "enum": true, "const": true, "static": true,
+	"unsigned": true, "signed": true, "long": true, "short": true,
+	"volatile": true, "register": true, "case": true, "return": true,
+	"goto": true, "typedef": true, "else": true, "extern": true,
+}
+
+// maskCInterDeclarationAnnotations blanks all-caps attribute macros wedged
+// inside a declaration, either between the type and the declarator
+// (`static const char CURL_USED min_stack[] = ...`) or between the declarator
+// and its initializer (`gss_OID_desc Curl_spnego_mech_oid CURL_ALIGN8 = {`).
+func maskCInterDeclarationAnnotations(text string) string {
+	text = blankGuardedSubmatch(text, cTypeAnnotationNamePattern, 2, cInterDeclarationKeywords)
+	text = blankGuardedSubmatch(text, cNameAnnotationInitPattern, 3, cInterDeclarationKeywords)
+	text = blankGuardedSubmatch(text, cPointerQualifierMacroPattern, 1, cPointerQualifierKeywords)
+	text = blankGuardedSubmatch(text, cParamPrefixMacroPattern, 1, nil)
+	return blankGuardedSubmatch(text, cAnnotationBeforeTypePattern, 1, nil)
+}
+
+// blankGuardedSubmatch blanks capture group `group` of every pattern match
+// whose guard token (group 1) is not one of the given C keywords.
+func blankGuardedSubmatch(text string, pattern *regexp.Regexp, group int, keywords map[string]bool) string {
+	matches := pattern.FindAllStringSubmatchIndex(text, -1)
+	if matches == nil {
+		return text
+	}
+	b := []byte(text)
+	for _, m := range matches {
+		guard := text[m[2]:m[3]]
+		if keywords[guard] {
+			continue
+		}
+		for i := m[2*group]; i < m[2*group+1]; i++ {
+			b[i] = ' '
+		}
+	}
+	return string(b)
+}
+
+// maskCShortHexEscapes blanks the backslash of single-hex-digit `\x` string
+// escapes (`"\xb"`), which the vendored tree-sitter-c grammar rejects; the
+// literal stays a valid string of the same length. Applied twice because a
+// match consumes the character that follows the escape, which may itself be
+// the backslash of an adjacent short escape (`"\xb\xc"`).
+func maskCShortHexEscapes(text string) string {
+	blank := func(m string) string { return " " + m[1:] }
+	text = cShortHexEscapePattern.ReplaceAllStringFunc(text, blank)
+	return cShortHexEscapePattern.ReplaceAllStringFunc(text, blank)
+}
+
+// cLineOpensBlockComment reports whether text opens a `/*` block comment that
+// is not closed on the same line.
+func cLineOpensBlockComment(text string) bool {
+	open := strings.LastIndex(text, "/*")
+	if open < 0 {
+		return false
+	}
+	return !strings.Contains(text[open+2:], "*/")
+}
+
+// maskCVaArgTypeArguments blanks the type argument of `va_arg(ap, TYPE)`
+// invocations to a same-length integer literal so the call parses; va_arg is
+// compiler magic and its second argument is a type name, not an expression.
+func maskCVaArgTypeArguments(text string) string {
+	locs := cVaArgCallPattern.FindAllStringIndex(text, -1)
+	if locs == nil {
+		return text
+	}
+	b := []byte(text)
+	for _, loc := range locs {
+		open := loc[1] - 1
+		end := balancedCallEnd(text, open)
+		if end < 0 {
+			continue
+		}
+		depth, comma := 0, -1
+		for i := open; i < end && comma < 0; i++ {
+			switch text[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			case ',':
+				if depth == 1 {
+					comma = i
+				}
+			}
+		}
+		if comma < 0 {
+			continue
+		}
+		start := comma + 1
+		for start < end-1 && (b[start] == ' ' || b[start] == '\t') {
+			start++
+		}
+		if start >= end-1 {
+			continue
+		}
+		b[start] = '0'
+		for i := start + 1; i < end-1; i++ {
+			b[i] = ' '
+		}
+	}
+	return string(b)
 }
 
 func maskCStringMacros(text string) string {
@@ -2275,6 +2844,43 @@ func looksLikeFluxKustomizationManifest(content string) bool {
 		regexp.MustCompile(`(?m)^kind:\s*Kustomization\s*$`).MatchString(content)
 }
 
+// objcSelectorName returns the first selector segment of an Objective-C
+// method_definition. The grammar emits each selector segment as a bare
+// identifier child (parameters live in method_parameter nodes), so the first
+// direct identifier child is the method name — `startMonitoring` for a unary
+// selector, `initWithBaseURL` for `initWithBaseURL:sessionConfiguration:`.
+func objcSelectorName(node *sitter.Node, src []byte) string {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if validNode(child) && child.Type() == "identifier" {
+			return strings.TrimSpace(child.Content(src))
+		}
+	}
+	return ""
+}
+
+// objcBareAuditMacroPattern matches file-scope nullability/sendability audit
+// macros that expand to nothing statement-like (`NS_ASSUME_NONNULL_BEGIN`,
+// `NS_HEADER_AUDIT_BEGIN(nullability, sendability)`); tree-sitter-objc has no
+// production for a bare identifier at file scope, so an unmasked occurrence
+// derails the parse of everything that follows (AFHTTPSessionManager.h lost
+// its whole @interface to this).
+var objcBareAuditMacroPattern = regexp.MustCompile(`^NS_(?:ASSUME_NONNULL_(?:BEGIN|END)|HEADER_AUDIT_(?:BEGIN|END)\s*\([^)]*\))$`)
+
+// maskObjectiveCUnsupportedSyntax blanks file-scope audit macros (see
+// objcBareAuditMacroPattern) with same-length whitespace so byte offsets and
+// line numbers of the surviving code are unchanged.
+func maskObjectiveCUnsupportedSyntax(content string) string {
+	lines := strings.SplitAfter(content, "\n")
+	for i, line := range lines {
+		text, newline := splitLineEnding(line)
+		if objcBareAuditMacroPattern.MatchString(strings.TrimSpace(text)) {
+			lines[i] = maskLineText(text) + newline
+		}
+	}
+	return strings.Join(lines, "")
+}
+
 func looksLikeObjectiveC(content string) bool {
 	return regexp.MustCompile(`(?m)^\s*@(?:interface|implementation|protocol|class|end)\b`).MatchString(content) ||
 		regexp.MustCompile(`(?m)^\s*#import\s+[<"]`).MatchString(content)
@@ -2854,7 +3460,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 	}
 	// Field/property declarations emit one entity per declared name and are not
 	// descended into (their name nodes would otherwise look like field accesses).
-	if fields, ok := fieldEntities(node, src, language, scope); ok {
+	if fields, ok := fieldEntities(node, src, language, scope, inFunc); ok {
 		*entities = append(*entities, fields...)
 		return
 	}
@@ -2882,9 +3488,73 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 			childScope = t
 		}
 	}
+	// A Swift `extension Foo { ... }` block is likewise not a symbol itself
+	// (entityFromNode skips it), but it scopes its members to the extended type
+	// so they emit as Foo.method and resolve against the primary declaration.
+	if language == "Swift" && node.Type() == "class_declaration" && swiftExtensionDeclaration(node) {
+		if t := swiftExtensionTypeName(node, src); t != "" {
+			childScope = t
+		}
+	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		walkEntitiesScoped(node.NamedChild(i), src, language, childScope, childInFunc, entities)
 	}
+}
+
+// swiftExtensionDeclaration reports whether a tree-sitter-swift
+// class_declaration node is an `extension` block (the grammar reuses one node
+// type for class/struct/enum/actor/extension; the introducing keyword is the
+// first child).
+func swiftExtensionDeclaration(node *sitter.Node) bool {
+	if node.Type() != "class_declaration" {
+		return false
+	}
+	for i := 0; i < int(node.ChildCount()); i++ {
+		switch node.Child(i).Type() {
+		case "modifiers", "attribute":
+			continue // `public extension Foo`, `@retroactive extension ...`
+		case "extension":
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// swiftExtensionTypeName returns the extended type of a Swift extension block
+// (the user_type after the `extension` keyword; `extension Foo.Bar` keeps its
+// dotted path). Generic arguments are cut so `extension Array<Element>` scopes
+// to Array.
+func swiftExtensionTypeName(node *sitter.Node, src []byte) string {
+	t := firstNamedChildOfType(node, "user_type")
+	if !validNode(t) {
+		return ""
+	}
+	name := strings.TrimSpace(t.Content(src))
+	if idx := strings.IndexByte(name, '<'); idx >= 0 {
+		name = strings.TrimSpace(name[:idx])
+	}
+	return name
+}
+
+// zigContainerKind classifies a Zig variable_declaration whose value is a
+// container literal (`const Name = struct/union/enum {...}`) into the symbol
+// vocabulary: struct -> "struct", enum -> "enum", union -> "type" (unions have
+// no dedicated kind). It returns "" for plain value bindings, which are not
+// declarations of a named type.
+func zigContainerKind(node *sitter.Node) string {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		switch node.NamedChild(i).Type() {
+		case "struct_declaration":
+			return "struct"
+		case "enum_declaration":
+			return "enum"
+		case "union_declaration":
+			return "type"
+		}
+	}
+	return ""
 }
 
 // rustImplTypeName returns the implementing type of a Rust impl block (the `type`
@@ -2903,13 +3573,208 @@ func rustImplTypeName(node *sitter.Node, src []byte) string {
 	return ""
 }
 
+// haskellBindingName returns the LHS name of a Haskell `function`, `bind`, or
+// `signature` node (the `name` field: `f` in `f x = …` / `f :: …`). It returns
+// "" for shapes without a single LHS name — pattern binds, infix operator
+// definitions, multi-name signatures (`f, g :: …`), and the `function` nodes
+// that are type arrows (`Int -> Int`) nested inside signatures.
+func haskellBindingName(node *sitter.Node, src []byte) string {
+	nameNode := node.ChildByFieldName("name")
+	if !validNode(nameNode) {
+		return ""
+	}
+	return strings.TrimSpace(nameNode.Content(src))
+}
+
+// haskellPrevDeclSibling / haskellNextDeclSibling step over trivia (comments,
+// haddock, pragmas, CPP lines like `#ifdef`) so that equation deduplication and
+// signature/binding pairing still see adjacent declarations when trivia sits
+// between them.
+func haskellPrevDeclSibling(node *sitter.Node) *sitter.Node {
+	prev := node.PrevNamedSibling()
+	for validNode(prev) && haskellTriviaNode(prev.Type()) {
+		prev = prev.PrevNamedSibling()
+	}
+	return prev
+}
+
+func haskellNextDeclSibling(node *sitter.Node) *sitter.Node {
+	next := node.NextNamedSibling()
+	for validNode(next) && haskellTriviaNode(next.Type()) {
+		next = next.NextNamedSibling()
+	}
+	return next
+}
+
+func haskellTriviaNode(nodeType string) bool {
+	switch nodeType {
+	case "comment", "haddock", "pragma", "cpp":
+		return true
+	default:
+		return false
+	}
+}
+
+// fsharpModuleName returns the (possibly dotted) name of an F# module
+// declaration. A file-heading `named_module` carries the full long_identifier
+// in its name field (`module Paket.UpdateProcess`); a nested `module_defn`
+// names itself with a plain identifier child after optional attributes.
+func fsharpModuleName(node *sitter.Node, src []byte) string {
+	if name := node.ChildByFieldName("name"); validNode(name) {
+		return strings.TrimSpace(name.Content(src))
+	}
+	if id := firstNamedChildOfType(node, "identifier"); validNode(id) {
+		return strings.TrimSpace(id.Content(src))
+	}
+	return ""
+}
+
+// fsharpTypeName returns the declared name of an F# type_definition, which
+// lives on the type_name node of the concrete *_type_defn child (record,
+// union, anon/class, ...).
+func fsharpTypeName(node *sitter.Node, src []byte) string {
+	if tn := firstDescendantOfType(node, "type_name"); validNode(tn) {
+		return firstNameDescendant(tn, src)
+	}
+	return ""
+}
+
+// fsharpLetBinding classifies an F# `let` binding (function_or_value_defn).
+// A binding with a parameter list (function_declaration_left) is a function,
+// as is a bare binding whose body is a `fun`/`function` expression. Any other
+// value binding is a variable, emitted only outside function and member
+// bodies so the pervasive function-local `let x = ...` bindings do not
+// surface as module-level variable symbols (function-local functions still
+// surface and are marked Local by the walker).
+func fsharpLetBinding(node *sitter.Node, src []byte) (string, string) {
+	if left := firstNamedChildOfType(node, "function_declaration_left"); validNode(left) {
+		if id := firstNamedChildOfType(left, "identifier"); validNode(id) {
+			return "function", strings.TrimSpace(id.Content(src))
+		}
+		return "", ""
+	}
+	left := firstNamedChildOfType(node, "value_declaration_left")
+	if !validNode(left) {
+		return "", ""
+	}
+	// The declared name lives in the identifier_pattern; descending blindly
+	// would latch onto a leading attribute (`let [<Literal>] Name = ...`
+	// parses as attribute_pattern with the attributes first).
+	var name string
+	if pattern := firstDescendantOfType(left, "identifier_pattern"); validNode(pattern) {
+		name = firstNameDescendant(pattern, src)
+	}
+	if body := node.ChildByFieldName("body"); validNode(body) {
+		switch body.Type() {
+		case "fun_expression", "function_expression":
+			return "function", name
+		}
+	}
+	if fsharpInsideCallable(node) {
+		return "", ""
+	}
+	return "variable", name
+}
+
+// fsharpInsideCallable reports whether node is nested inside another F# let
+// binding or member body, i.e. it is a local binding rather than a module- or
+// type-level declaration.
+func fsharpInsideCallable(node *sitter.Node) bool {
+	for parent := node.Parent(); validNode(parent); parent = parent.Parent() {
+		switch parent.Type() {
+		case "function_or_value_defn", "member_defn":
+			return true
+		}
+	}
+	return false
+}
+
+// fsharpMemberName returns the declared name of an F# member_defn. Instance
+// members parse as method_or_prop_defn whose property_or_ident name node
+// holds the member name in its `method` field (the `instance` field is the
+// self identifier, e.g. `this`); static members and `member val` properties
+// carry a bare identifier; abstract members parse as member_signature.
+func fsharpMemberName(node *sitter.Node, src []byte) string {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if !validNode(child) {
+			continue
+		}
+		switch child.Type() {
+		case "method_or_prop_defn":
+			if name := child.ChildByFieldName("name"); validNode(name) {
+				return fsharpPropertyOrIdentName(name, src)
+			}
+		case "property_or_ident":
+			return fsharpPropertyOrIdentName(child, src)
+		case "member_signature":
+			return firstNameDescendant(child, src)
+		}
+	}
+	return ""
+}
+
+func fsharpPropertyOrIdentName(node *sitter.Node, src []byte) string {
+	if m := node.ChildByFieldName("method"); validNode(m) {
+		return strings.TrimSpace(m.Content(src))
+	}
+	return firstNameDescendant(node, src)
+}
+
+// fsharpSignature returns a bounded declaration header for F# node types whose
+// tree keeps the body as unlabeled sibling children (modules, members), where
+// the generic body-field cut cannot apply.
+func fsharpSignature(node *sitter.Node, src []byte) string {
+	start := node.StartByte()
+	var end uint32
+	switch node.Type() {
+	case "named_module":
+		if name := node.ChildByFieldName("name"); validNode(name) {
+			end = name.EndByte()
+		}
+	case "module_defn":
+		if id := firstNamedChildOfType(node, "identifier"); validNode(id) {
+			end = id.EndByte()
+		}
+	case "member_defn":
+		// Cut before the trailing body expression (the last named child of the
+		// method_or_prop_defn), keeping `member this.Name args`.
+		if defn := firstNamedChildOfType(node, "method_or_prop_defn"); validNode(defn) {
+			if n := int(defn.NamedChildCount()); n >= 2 {
+				if body := defn.NamedChild(n - 1); validNode(body) {
+					end = body.StartByte()
+				}
+			}
+		}
+	case "type_definition":
+		// Cut before the type body (the concrete *_type_defn child's first
+		// `block` field: record fields, union cases, or member elements),
+		// keeping attributes, name, and primary constructor arguments.
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			child := node.NamedChild(i)
+			if !validNode(child) || !strings.HasSuffix(child.Type(), "_type_defn") {
+				continue
+			}
+			if block := child.ChildByFieldName("block"); validNode(block) {
+				end = block.StartByte()
+			}
+			break
+		}
+	}
+	if end <= start || int(end) > len(src) {
+		return ""
+	}
+	signature := strings.Join(strings.Fields(string(src[start:end])), " ")
+	return strings.TrimSpace(strings.TrimRight(signature, "=: \t\r\n"))
+}
+
 // fieldEntities extracts struct/class field declarations as field symbols, one
 // per declared name, qualified under the containing type's scope. It returns
 // false for non-field nodes and for declarations outside a container (so local
 // variables and parameters are never treated as fields). This pass handles Go
 // struct fields (field_declaration -> field_identifier); TypeScript/Java/C#
 // fields are added later.
-func fieldEntities(node *sitter.Node, src []byte, language, scope string) ([]Entity, bool) {
+func fieldEntities(node *sitter.Node, src []byte, language, scope string, inFunc bool) ([]Entity, bool) {
 	if scope == "" {
 		return nil, false
 	}
@@ -2920,9 +3785,20 @@ func fieldEntities(node *sitter.Node, src []byte, language, scope string) ([]Ent
 	case "field_declaration", // Go/Rust/Java/C#/C/C++ struct & class fields
 		"public_field_definition", "field_definition", // TS/JS class fields
 		"property_signature",   // TS interface/type-literal fields
-		"property_declaration": // C# properties (mapped to the canonical field kind)
+		"property_declaration": // C# properties and Kotlin class-body properties (mapped to the canonical field kind)
 	default:
 		return nil, false
+	}
+	// tree-sitter-kotlin also emits property_declaration for locals inside
+	// function bodies (and for members of object literals declared there); only
+	// declarations directly inside a class/interface body, outside any function,
+	// are members (evidence: ktor's `public val application: Application` on the
+	// ApplicationCall interface, which typed-property receiver resolution needs).
+	if language == "Kotlin" {
+		parent := node.Parent()
+		if inFunc || !validNode(parent) || parent.Type() != "class_body" {
+			return nil, false
+		}
 	}
 	// A TS/JS class field initialised with a function value
 	// (`method = (x) => …` / `static create = function () {…}`) is a callable
@@ -2985,6 +3861,13 @@ func fieldDeclNames(node *sitter.Node, src []byte) []string {
 		if name := firstChildOfType(node, src, "property_identifier", "field_identifier"); name != "" {
 			return []string{name}
 		}
+		// Kotlin property_declaration: the name is the simple_identifier of the
+		// variable_declaration child (`val listener: Listener` / `var x = ...`).
+		if decl := firstNamedChildOfType(node, "variable_declaration"); validNode(decl) {
+			if name := firstChildOfType(decl, src, "simple_identifier"); name != "" {
+				return []string{name}
+			}
+		}
 		return nil
 	}
 	// field_declaration: collect every declared name.
@@ -3036,13 +3919,31 @@ func fieldTypeText(node *sitter.Node, src []byte) string {
 	if typeNode := node.ChildByFieldName("type"); validNode(typeNode) {
 		return strings.TrimSpace(typeNode.Content(src))
 	}
-	// C# field_declaration nests the type under variable_declaration.
+	// C# field_declaration nests the type under variable_declaration; Kotlin
+	// property_declaration nests the declared type there too, as the sibling of
+	// the name (`val listener: Listener` -> variable_declaration
+	// [simple_identifier, user_type]).
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		if child := node.NamedChild(i); child.Type() == "variable_declaration" {
 			if typeNode := child.ChildByFieldName("type"); validNode(typeNode) {
 				return strings.TrimSpace(typeNode.Content(src))
 			}
+			for j := 0; j < int(child.NamedChildCount()); j++ {
+				switch typeNode := child.NamedChild(j); typeNode.Type() {
+				case "user_type", "nullable_type":
+					return strings.TrimSpace(typeNode.Content(src))
+				}
+			}
 		}
+	}
+	// tree-sitter-swift property_declaration carries the declared type in a
+	// type_annotation child (`var fileio: FileIO { ... }`); its named child is
+	// the type node. Without this, Swift field symbols carry no type text, so
+	// property-chain receiver typing has no cross-file source. No other
+	// routed grammar puts a type_annotation directly under a field node, so
+	// the fallback stays inert elsewhere.
+	if ann := firstNamedChildOfType(node, "type_annotation"); validNode(ann) && ann.NamedChildCount() > 0 {
+		return strings.TrimSpace(ann.NamedChild(0).Content(src))
 	}
 	return ""
 }
@@ -3193,6 +4094,24 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		// Without this case the class symbol is dropped and — because scope flows
 		// from the class kind — its methods are never qualified under it (empty
 		// container_id), so this/self call resolution can't fire for them.
+		//
+		// tree-sitter-objc reuses `class_declaration` for `@class Foo;` forward
+		// declarations (headers are full of them); the class symbol comes from
+		// class_interface / class_implementation, so forward decls are skipped.
+		if language == "Objective-C" && node.Type() == "class_declaration" {
+			return Entity{}, false
+		}
+		// tree-sitter-swift reuses `class_declaration` for `extension Foo { ... }`
+		// blocks. An extension declares no new type — emitting it produced a
+		// duplicate class symbol per extension (same name as the primary
+		// struct/class), which forced #sig-suffixed IDs, pointed members'
+		// container_id at the extension instead of the real type, and broke the
+		// "globally unique name" gate in call resolution for every extended type.
+		// The extension is a pure scope: walkEntitiesScoped qualifies its members
+		// under the extended type name (see the swiftExtensionTypeName hook).
+		if language == "Swift" && swiftExtensionDeclaration(node) {
+			return Entity{}, false
+		}
 		kind = "class"
 		name = nodeName(node, src)
 	case "method_signature", "getter_signature", "setter_signature":
@@ -3200,6 +4119,13 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		// Dart because `method_signature` also denotes TypeScript interface
 		// members, where extracting them as methods would change TS behavior.
 		if language != "Dart" {
+			return Entity{}, false
+		}
+		// A method_signature wrapping a function/getter/setter signature is just
+		// packaging: the walk extracts the inner signature (whose name node is the
+		// member name), while nodeName on the wrapper picks the first identifier —
+		// the return type (`Future<Response> head(...)` -> a bogus "Future" method).
+		if node.Type() == "method_signature" && validNode(dartInnerSignature(node)) {
 			return Entity{}, false
 		}
 		kind = "method"
@@ -3219,10 +4145,189 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 			kind = "method"
 			name = qualify(scope, name)
 		}
+	case "subroutine_declaration_statement":
+		// Perl `sub name { ... }` (name field is a bareword). Gated to Perl so
+		// the generic extraction of other languages is unchanged. Perl subs are
+		// plain functions regardless of the enclosing package (packages are
+		// namespaces, not classes), so the kind stays "function"; a sub inside a
+		// `package Name { ... }` block is qualified under that package's scope.
+		if language != "Perl" {
+			return Entity{}, false
+		}
+		kind = "function"
+		name = nodeName(node, src)
+		if scope != "" {
+			name = qualify(scope, name)
+		}
+	case "package_statement":
+		// Perl `package Name;` / `package Name { ... }` namespace declaration
+		// (name field is a package node such as Mojo::Util).
+		if language != "Perl" {
+			return Entity{}, false
+		}
+		kind = "module"
+		name = nodeName(node, src)
+	case "function", "bind":
+		// Haskell function equations (`f x = …`) and simple variable bindings
+		// (`f = …`). Gated to Haskell because the node types are generic words
+		// other grammars could reuse. A multi-equation definition parses as one
+		// `function` node per equation; only the first consecutive equation of a
+		// name emits, so each top-level name yields a single symbol.
+		if language != "Haskell" {
+			return Entity{}, false
+		}
+		name = haskellBindingName(node, src)
+		if name == "" {
+			// Pattern bindings (`(a, b) = …`) have no single LHS name.
+			return Entity{}, false
+		}
+		if prev := haskellPrevDeclSibling(node); validNode(prev) &&
+			(prev.Type() == "function" || prev.Type() == "bind") &&
+			haskellBindingName(prev, src) == name {
+			return Entity{}, false // later equation of the same binding
+		}
+		kind = "function"
+		if scope != "" {
+			kind = "method"
+			name = qualify(scope, name)
+		}
+	case "signature":
+		// Haskell type signature (`f :: …`). It only carries the symbol when no
+		// binding follows (e.g. a class method without a default implementation);
+		// otherwise the binding right after it emits, avoiding duplicates. Gated
+		// to Haskell: `function` type arrows nest inside signatures too, but they
+		// have no name field so haskellBindingName rejects them above.
+		if language != "Haskell" {
+			return Entity{}, false
+		}
+		name = haskellBindingName(node, src)
+		if name == "" {
+			return Entity{}, false
+		}
+		if next := haskellNextDeclSibling(node); validNode(next) &&
+			(next.Type() == "function" || next.Type() == "bind") &&
+			haskellBindingName(next, src) == name {
+			return Entity{}, false // the binding itself emits the symbol
+		}
+		kind = "function"
+		if scope != "" {
+			kind = "method"
+			name = qualify(scope, name)
+		}
+	case "data_type", "newtype", "type_synomym":
+		// Haskell `data`/`newtype`/`type` declarations ("type_synomym" is the
+		// grammar's spelling). Gated to Haskell so the generic node names cannot
+		// leak into other grammars.
+		if language != "Haskell" {
+			return Entity{}, false
+		}
+		kind = "type"
+		name = nodeName(node, src)
+	case "fun_decl":
+		// Erlang function definition form (`name(Args) -> Body.`). Gated to
+		// Erlang and handled by a dedicated builder because tree-sitter-erlang
+		// parses each clause of a multi-clause function as its own fun_decl form,
+		// so consecutive same-name/arity clauses fold into one function symbol.
+		if language != "Erlang" {
+			return Entity{}, false
+		}
+		return erlangFunDeclEntity(node, src)
+	case "module_attribute":
+		// Erlang `-module(name).` attribute names the compilation unit.
+		if language != "Erlang" {
+			return Entity{}, false
+		}
+		kind = "module"
+		name = nodeName(node, src)
+	case "record_decl":
+		// Erlang `-record(name, {...}).` — the language's struct-like form.
+		if language != "Erlang" {
+			return Entity{}, false
+		}
+		kind = "struct"
+		name = nodeName(node, src)
+	case "named_module", "module_defn":
+		// F# module declarations: `module A.B.C` heading a file (named_module) or
+		// a nested `module Name =` block (module_defn). Gated to F# per the
+		// language-promotion pattern so no other grammar's node types shift.
+		if language != "F#" {
+			return Entity{}, false
+		}
+		kind = "module"
+		name = fsharpModuleName(node, src)
+	case "function_or_value_defn":
+		// F# `let` binding: a binding with a parameter list is a function; a bare
+		// value binding is a variable (only surfaced outside function bodies, so
+		// the pervasive function-local `let x = ...` stays out of the symbol set).
+		if language != "F#" {
+			return Entity{}, false
+		}
+		kind, name = fsharpLetBinding(node, src)
+		if kind == "" {
+			return Entity{}, false
+		}
+	case "member_defn":
+		// F# type member (`member this.Name ...`, `static member`, `member val`,
+		// `abstract member`), qualified under the enclosing type via scope.
+		if language != "F#" {
+			return Entity{}, false
+		}
+		kind = "method"
+		name = fsharpMemberName(node, src)
+		if scope != "" {
+			name = qualify(scope, name)
+		}
 	case "module_definition":
 		kind = "module"
 		name = nodeName(node, src)
+	case "module":
+		// Ruby `module Name ... end` (tree-sitter-ruby's node type; the name
+		// field is a constant). Modules are namespaces/mixins on par with
+		// classes, and "module" scopes children, so nested methods qualify under
+		// the module name. Gated to Ruby because the bare node type is a word
+		// other grammars could reuse.
+		if language != "Ruby" {
+			return Entity{}, false
+		}
+		kind = "module"
+		name = nodeName(node, src)
+	case "binary_operator":
+		// R defines functions by assignment: `name <- function(args) ...` is a
+		// binary_operator whose value side is a function_definition. Gated to R
+		// so languages whose grammars also emit binary_operator nodes are
+		// unchanged.
+		if language != "R" {
+			return Entity{}, false
+		}
+		var ok bool
+		kind, name, ok = rAssignmentEntity(node, src, scope)
+		if !ok {
+			return Entity{}, false
+		}
 	case "function_definition":
+		// In R, function_definition is anonymous — the name lives on the
+		// enclosing assignment (the binary_operator case above); extracting
+		// here would invent a name from the first parameter.
+		if language == "R" {
+			return Entity{}, false
+		}
+		// Julia long-form `function name(args) ... end`. The name needs the
+		// signature walk instead of generic nodeName: a qualified extension
+		// method (`function Base.show(io, x)`) must keep its dotted path (the
+		// generic descent would stop at "Base"), and a callable-object
+		// definition (`function (obj::T)(x)`) binds no name at all.
+		if language == "Julia" {
+			kind = "function"
+			name = juliaDefinitionName(firstNamedChildOfType(node, "signature"), src)
+			if name == "" {
+				return Entity{}, false
+			}
+			if scope != "" && !strings.Contains(name, ".") {
+				kind = "method"
+				name = qualify(scope, name)
+			}
+			break
+		}
 		// A @typing.overload-decorated def is a type-only stub, not a real
 		// definition (replaced at runtime by the implementation of the same
 		// name), so it must not be emitted as its own symbol — the impl carries
@@ -3232,13 +4337,90 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		}
 		kind = "function"
 		name = nodeName(node, src)
+		if language == "Objective-C" || language == "C" {
+			// A C function routinely returns a typedef'd type
+			// (`CURLcode curl_easy_perform(...)`, `static NSString * Escape(...)`
+			// in a .m file), whose type_identifier is the first name node in
+			// pre-order, so nodeName would misname the function after its
+			// return type. Take the identifier from the declarator field
+			// instead. Gated to C and Objective-C so C++ extraction (qualified
+			// names, destructors) is unchanged.
+			if declarator := node.ChildByFieldName("declarator"); validNode(declarator) {
+				if id := firstDescendantOfType(declarator, "identifier"); validNode(id) {
+					name = strings.TrimSpace(id.Content(src))
+				}
+			}
+		}
 		if scope != "" {
+			kind = "method"
+			name = qualify(scope, name)
+		}
+	case "macro_definition":
+		// Julia `macro name(args) ... end`. The kind vocabulary has no macro
+		// kind, so macros join the callable inventory as functions. Gated to
+		// Julia because tree-sitter-rust also emits `macro_definition` (for
+		// `macro_rules!`), which stays unextracted.
+		if language != "Julia" {
+			return Entity{}, false
+		}
+		kind = "function"
+		name = juliaDefinitionName(firstNamedChildOfType(node, "signature"), src)
+		if name == "" {
+			return Entity{}, false
+		}
+		if scope != "" && !strings.Contains(name, ".") {
+			kind = "method"
+			name = qualify(scope, name)
+		}
+	case "struct_definition":
+		// Julia `struct Name ... end` / `mutable struct Name ... end`. The name
+		// is the first identifier of the type head, past type parameters and the
+		// `<:` supertype clause. Gated to Julia so the node type cannot leak
+		// into other grammars.
+		if language != "Julia" {
+			return Entity{}, false
+		}
+		kind = "struct"
+		name = nodeName(node, src)
+	case "abstract_definition", "primitive_definition":
+		// Julia `abstract type Name end` / `primitive type Name N end`.
+		if language != "Julia" {
+			return Entity{}, false
+		}
+		kind = "type"
+		name = nodeName(node, src)
+	case "assignment":
+		// Julia short-form function definition `name(args) = expr` — an
+		// assignment whose left-hand side is a call. Plain assignments
+		// (variable bindings, tuple destructuring, indexed stores) bind no
+		// callable and stay unextracted, as do assignment nodes in every other
+		// language.
+		if language != "Julia" {
+			return Entity{}, false
+		}
+		name = juliaDefinitionName(node.NamedChild(0), src)
+		if name == "" {
+			return Entity{}, false
+		}
+		kind = "function"
+		if scope != "" && !strings.Contains(name, ".") {
 			kind = "method"
 			name = qualify(scope, name)
 		}
 	case "function_declaration", "function_item":
 		kind = "function"
 		name = nodeName(node, src)
+		if language == "Kotlin" {
+			// tree-sitter-kotlin has no name field on function_declaration, and on
+			// an extension function (`fun Call<T>.awaitResponse()`) the receiver
+			// type precedes the name, so nodeName's pre-order descent latches onto
+			// the receiver's type_identifier ("Call") instead of the function
+			// name. The function's own name is always the direct simple_identifier
+			// child (the receiver's identifiers sit inside a user_type subtree).
+			if id := firstNamedChildOfType(node, "simple_identifier"); validNode(id) {
+				name = strings.TrimSpace(id.Content(src))
+			}
+		}
 		if scope != "" {
 			kind = "method"
 			name = qualify(scope, name)
@@ -3251,6 +4433,13 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 			name = qualify(scope, name)
 		}
 	case "method_declaration":
+		// An Objective-C method_declaration is a prototype in an @interface /
+		// category head; the @implementation's method_definition carries the
+		// symbol. It also has no name field, so nodeName's descent would latch
+		// onto the return type instead of the selector.
+		if language == "Objective-C" {
+			return Entity{}, false
+		}
 		kind = "method"
 		name = nodeName(node, src)
 		if receiver := goReceiverName(node, src); receiver != "" {
@@ -3260,10 +4449,42 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		}
 	case "method_definition":
 		kind = "method"
-		name = nodeName(node, src)
+		if language == "Objective-C" {
+			// tree-sitter-objc has no name field on method_definition; the
+			// selector's segments are bare identifier children following the
+			// return method_type, so nodeName's pre-order descent would return
+			// the return type. Use the first selector segment (colon-free),
+			// e.g. `initWithBaseURL:sessionConfiguration:` -> initWithBaseURL.
+			name = objcSelectorName(node, src)
+		} else {
+			name = nodeName(node, src)
+		}
 		if scope != "" {
 			name = qualify(scope, name)
 		}
+	case "class_interface", "class_implementation":
+		// Objective-C @interface / @implementation (node types unique to
+		// tree-sitter-objc). Both declare the class; the first identifier child
+		// is the class name (a category `@interface Foo (Bar)` still names Foo).
+		kind = "class"
+		name = nodeName(node, src)
+	case "protocol_declaration":
+		// Objective-C `@protocol Foo <NSObject> ... @end` (the first identifier
+		// child is the protocol name) and Swift `protocol Foo { ... }` — both
+		// grammars emit this node type. ObjC protocols are its interface
+		// analogue; Swift protocols keep their own kind (regression: an
+		// ObjC-only gate here silently dropped every Swift protocol). Forward
+		// declarations (`@protocol Foo;`) are a distinct
+		// protocol_forward_declaration node and stay unextracted.
+		switch language {
+		case "Objective-C":
+			kind = "interface"
+		case "Swift":
+			kind = "protocol"
+		default:
+			return Entity{}, false
+		}
+		name = nodeName(node, src)
 	case "method":
 		kind = "function"
 		name = nodeName(node, src)
@@ -3273,15 +4494,81 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		}
 	case "type_definition", "type_spec", "type_alias_declaration":
 		kind = "type"
-		name = nodeName(node, src)
+		if language == "F#" {
+			// The declared name lives on the type_name node of the concrete
+			// *_type_defn child; the generic name descent would instead latch onto
+			// a leading attribute ([<CustomEquality>] type SemVerInfo -> "CustomEquality").
+			name = fsharpTypeName(node, src)
+		} else {
+			name = nodeName(node, src)
+		}
 	case "interface_declaration", "interface_definition":
 		kind = "interface"
 		name = nodeName(node, src)
+	case "record_declaration":
+		// C# `record` / `record struct` types. Without this case a record is
+		// invisible: no type symbol, and its properties/methods get no container
+		// (dropping e.g. every EF Core `*Dependencies` parameter object), so
+		// property-typed receiver calls through a record can never resolve.
+		// Gated to C# so the same node name in other grammars (e.g. Java
+		// records, currently unextracted) keeps its existing behavior.
+		if language != "C#" {
+			return Entity{}, false
+		}
+		kind = "class"
+		name = nodeName(node, src)
 	case "struct_item", "struct_specifier", "struct_declaration":
+		// Zig struct literals are anonymous (`const Point = struct {...}`); the
+		// symbol is extracted at the enclosing variable_declaration, which carries
+		// the name. Extracting here would latch onto the first container field.
+		if language == "Zig" {
+			return Entity{}, false
+		}
+		// tree-sitter-objc reuses `struct_declaration` for @property and ivar
+		// declarations (`AFHTTPSessionManager *sessionManager;`), whose first
+		// name node is the property's *type* — emitting those would flood the
+		// snapshot with type names masquerading as structs. Skip them for
+		// Objective-C; real `struct x` usages still surface as struct_specifier.
+		if language == "Objective-C" && node.Type() == "struct_declaration" {
+			return Entity{}, false
+		}
 		kind = "struct"
 		name = nodeName(node, src)
 	case "enum_item", "enum_declaration", "enum_specifier":
+		// Same as struct_declaration: Zig enums are anonymous literals named by
+		// the enclosing variable_declaration.
+		if language == "Zig" {
+			return Entity{}, false
+		}
 		kind = "enum"
+		name = nodeName(node, src)
+	case "variable_declaration":
+		// Zig type declarations are `const Name = struct/union/enum {...}`. Gated
+		// to Zig so other grammars' variable declarations stay unextracted. Plain
+		// value bindings (locals, imports) are not symbols and are skipped.
+		if language != "Zig" {
+			return Entity{}, false
+		}
+		kind = zigContainerKind(node)
+		if kind == "" {
+			return Entity{}, false
+		}
+		if id := firstNamedChildOfType(node, "identifier"); validNode(id) {
+			name = strings.TrimSpace(id.Content(src))
+		}
+	case "object_definition":
+		// Scala `object Name` singleton — with or without an extends clause
+		// (`object SQLExecution extends Logging`); both parse as
+		// object_definition with the identifier in the name field, but the node
+		// type had no case, so objects never emitted (companion objects only
+		// appeared to extract because the same-named class carried the symbol).
+		// An object is a singleton class, so it emits kind "class", which also
+		// scopes nested defs under the object name. Gated to Scala so grammars
+		// reusing the node type are unchanged.
+		if language != "Scala" {
+			return Entity{}, false
+		}
+		kind = "class"
 		name = nodeName(node, src)
 	case "trait_definition", "trait_item":
 		kind = "trait"
@@ -3348,6 +4635,14 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		if !ok {
 			return Entity{}, false
 		}
+	case "list_lit":
+		// Clojure def-forms. tree-sitter-clojure has no semantic node types
+		// (defn is just a list), so extract by list-head inspection. Gated to
+		// Clojure/ClojureScript so no other grammar's node types are affected.
+		if language != "Clojure" && language != "ClojureScript" {
+			return Entity{}, false
+		}
+		return clojureListEntity(node, src)
 	case "variable_declarator":
 		value := node.ChildByFieldName("value")
 		if functionLikeValue(value) {
@@ -3376,26 +4671,149 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		BodyHash:    hash(normalize(block)),
 		Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signatureFromNode(node, src)}, block))),
 	}
+	// F# modules and members carry their declarations/body as direct siblings of
+	// the name (no `body` field or body-like wrapper node), so signatureFromNode
+	// would collapse the whole remaining file (module) or member body into the
+	// signature. Cap it to the declaration header.
+	if language == "F#" {
+		if sig := fsharpSignature(node, src); sig != "" {
+			entity.Signature = sig
+			entity.Fingerprint = hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: sig}, block)))
+		}
+	}
+	// Dart declaration heads (function/method/getter/setter signatures) keep the
+	// body as a *sibling* function_body node, so the node range covers only the
+	// head. Extend the entity to the body: without this, the symbol block that
+	// call scanning reads contains no call sites, so Dart emitted zero CALLS.
+	if language == "Dart" {
+		if body := dartSignatureBody(node); validNode(body) && int(body.EndByte()) <= len(src) {
+			entity.EndLine = int(body.EndPoint().Row) + 1
+			full := string(src[node.StartByte():body.EndByte()])
+			entity.BodyHash = hash(normalize(full))
+			entity.Fingerprint = hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: entity.Signature}, full)))
+		}
+	}
 	return entity, true
+}
+
+// dartInnerSignature returns the function/getter/setter signature wrapped by a
+// Dart method_signature node, if any.
+func dartInnerSignature(node *sitter.Node) *sitter.Node {
+	for _, inner := range []string{"function_signature", "getter_signature", "setter_signature"} {
+		if child := firstNamedChildOfType(node, inner); validNode(child) {
+			return child
+		}
+	}
+	return nil
+}
+
+// dartSignatureBody returns the function_body sibling that carries a Dart
+// declaration head's body. For a class member the head is wrapped in a
+// method_signature and the body is the *wrapper's* next sibling; for a
+// top-level function it directly follows the function_signature. Abstract
+// members have no body sibling and return nil.
+func dartSignatureBody(node *sitter.Node) *sitter.Node {
+	switch node.Type() {
+	case "function_signature", "getter_signature", "setter_signature", "method_signature":
+	default:
+		return nil
+	}
+	holder := node
+	if parent := node.Parent(); validNode(parent) && parent.Type() == "method_signature" {
+		holder = parent
+	}
+	if sibling := holder.NextNamedSibling(); validNode(sibling) && sibling.Type() == "function_body" {
+		return sibling
+	}
+	return nil
 }
 
 func refineKind(kind string, node *sitter.Node, src []byte) string {
 	if kind != "class" {
 		return kind
 	}
-	content := strings.TrimSpace(node.Content(src))
-	switch {
-	case strings.HasPrefix(content, "struct "):
+	// Grammars that fold several declaration forms into one class-like node
+	// (tree-sitter-kotlin parses `interface X` as class_declaration) are told
+	// apart by the declaration keyword. That keyword may sit behind
+	// annotations and modifiers (`@OptIn(...) public sealed interface X`,
+	// `fun interface X`), so skip those before matching (evidence: ktor's
+	// `public interface HttpClientEngine : CoroutineScope, Closeable` was
+	// emitted as a class).
+	switch declarationKeyword(strings.TrimSpace(node.Content(src))) {
+	case "struct":
 		return "struct"
-	case strings.HasPrefix(content, "enum "):
+	case "enum":
 		return "enum"
-	case strings.HasPrefix(content, "interface "):
+	case "interface":
 		return "interface"
-	case strings.HasPrefix(content, "protocol "):
+	case "protocol":
 		return "interface"
 	default:
 		return kind
 	}
+}
+
+// declKeywordModifiers are declaration modifiers that may precede the
+// class/interface/struct/enum keyword across the class-like grammars. `fun` is
+// a modifier only in Kotlin's `fun interface`; a plain function never reaches
+// refineKind because its node kind is not class-like.
+var declKeywordModifiers = map[string]bool{
+	"public": true, "private": true, "protected": true, "internal": true,
+	"abstract": true, "final": true, "open": true, "sealed": true,
+	"static": true, "inner": true, "data": true, "value": true,
+	"expect": true, "actual": true, "external": true, "partial": true,
+	"fun": true, "export": true, "default": true,
+}
+
+// declarationKeyword returns the first word of a declaration after skipping
+// leading annotations (`@Name` / `@Name(...)`) and declaration modifiers, "" if
+// the text runs out before a non-modifier word.
+func declarationKeyword(content string) string {
+	for content != "" {
+		content = strings.TrimLeft(content, " \t\r\n")
+		if strings.HasPrefix(content, "@") {
+			end := 1
+			for end < len(content) && (isWordByte(content[end]) || content[end] == '.') {
+				end++
+			}
+			rest := strings.TrimLeft(content[end:], " \t\r\n")
+			if strings.HasPrefix(rest, "(") {
+				if close := matchingParen(rest, 0); close > 0 {
+					rest = rest[close+1:]
+				} else {
+					return ""
+				}
+			}
+			content = rest
+			continue
+		}
+		end := 0
+		for end < len(content) && isWordByte(content[end]) {
+			end++
+		}
+		if end == 0 {
+			return ""
+		}
+		word := content[:end]
+		if word == "interface" {
+			// Dart spells class modifiers with the same words (`abstract
+			// interface class Client` declares a class); only a bare
+			// `interface X` declaration keyword counts.
+			if rest := strings.TrimLeft(content[end:], " \t\r\n"); strings.HasPrefix(rest, "class ") {
+				content = content[end:]
+				continue
+			}
+		}
+		if !declKeywordModifiers[word] {
+			return word
+		}
+		content = content[end:]
+	}
+	return ""
+}
+
+func isWordByte(b byte) bool {
+	return b == '_' || ('a' <= b && b <= 'z') || ('A' <= b && b <= 'Z') || ('0' <= b && b <= '9')
 }
 
 var postgresGeneratedColumnPattern = regexp.MustCompile(`(?is)\bgenerated\s+always\s+as\s*\([^;]*?\)\s+stored`)
@@ -3421,9 +4839,37 @@ var postgresWithOrdinalityPattern = regexp.MustCompile(`(?i)\s+with\s+ordinality
 var postgresOnDeleteUpdatePattern = regexp.MustCompile(`(?i)\s+on\s+(?:delete|update)\s+(?:cascade|restrict|set\s+null|set\s+default|no\s+action)\b`)
 var postgresVectorOperatorClassPattern = regexp.MustCompile(`(?i)\s+vector_[a-z0-9_]+_ops\b`)
 var postgresIndexMethodPattern = regexp.MustCompile(`(?i)\s+using\s+[a-z0-9_]+\b`)
-var postgresCreateFunctionPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:function|procedure)\b.*?\bas\s+\$[a-z0-9_]*\$.*?\$[a-z0-9_]*\$(?:\s+language\b[^;]*)?;`)
-var postgresCreateExternalFunctionPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:function|procedure)\b.*?\bas\s+'[^']+'(?:\s*,\s*'[^']+')?(?:\s+language\b[^;]*)?;`)
+
+// The function/procedure header (between the CREATE keyword and the AS body
+// clause) is matched with `[^;]*?` instead of `.*?` so a match cannot run across
+// a statement boundary: with `.*?`, a file that opens with LANGUAGE C functions
+// (`AS '@MODULE_PATHNAME@', ...`) and later defines a dollar-quoted function let
+// the match start at the first CREATE and end at the later body, swallowing every
+// definition in between (timescaledb sql/time_bucket.sql). After the closing
+// dollar-quote a statement may carry trailing attribute clauses — `LANGUAGE ...`,
+// `SET search_path TO ...`, volatility/strictness/parallel markers — before the
+// terminating `;` (timescaledb ends most plpgsql bodies with `$BODY$ SET
+// search_path TO pg_catalog, pg_temp;`).
+const postgresFunctionTrailer = `(?:\s+(?:language|set|immutable|stable|volatile|strict|called|returns|leakproof|not|external|security|parallel|cost|rows|window|support|transform)\b[^;]*)?;`
+
+var postgresCreateFunctionPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:function|procedure)\b[^;]*?\bas\s+\$[a-z0-9_]*\$.*?\$[a-z0-9_]*\$` + postgresFunctionTrailer)
+var postgresCreateExternalFunctionPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:function|procedure)\b[^;]*?\bas\s+'[^']+'(?:\s*,\s*'[^']+')?` + postgresFunctionTrailer)
 var postgresCreateDomainCastPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:domain|cast)\b[^;]*;`)
+
+// Declarative partitioning the grammar rejects. `PARTITION BY {RANGE|LIST|HASH}
+// (...)` trails a normal column list, so blanking it to the statement end leaves
+// a valid `CREATE TABLE t (...)`. `PARTITION OF parent FOR VALUES ...` replaces
+// the column list entirely, so a bare `CREATE TABLE t` would be left with no body;
+// substitute a dummy body so the statement still parses (the real table symbol is
+// still extracted from the original bytes).
+var postgresPartitionByPattern = regexp.MustCompile(`(?is)\s+partition\s+by\b[^;]*`)
+var postgresPartitionOfPattern = regexp.MustCompile(`(?is)\s+partition\s+of\b[^;]*`)
+
+// COPY is a psql/dump construct the grammar rejects. `COPY t (...) FROM stdin;`
+// is followed by tab-delimited data terminated by a `\.` line (pg_dump output);
+// mask the whole block. Other COPY statements (TO/FROM file) mask as one statement.
+var postgresCopyStdinBlockPattern = regexp.MustCompile(`(?ism)^[ \t]*copy\b[^;]*\bfrom\s+stdin\b[^;]*;.*?^\\\.[ \t]*$`)
+var postgresCopyStatementPattern = regexp.MustCompile(`(?im)^[ \t]*copy\b[^;]*;`)
 
 // Extension-template placeholders like @extschema@ / @extschema:cube@ in .sql.in
 // files are not valid SQL scalars; replace each with a same-width identifier so
@@ -3568,6 +5014,18 @@ func maskPostgresUnsupportedSyntax(content string) string {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
 	for _, loc := range postgresOnDeleteUpdatePattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresPartitionOfPattern.FindAllStringIndex(content, -1) {
+		replaceRangePreservingNewlines(masked, loc[0], loc[1], " (partition_dummy int)")
+	}
+	for _, loc := range postgresPartitionByPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresCopyStdinBlockPattern.FindAllStringIndex(content, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresCopyStatementPattern.FindAllStringIndex(content, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
 	maskPostgresTableConstraints(masked, content)
@@ -4562,18 +6020,22 @@ func sqlStatementEntity(node *sitter.Node, src []byte) (string, string, bool) {
 	return "", "", false
 }
 
+// sqlCreateFunctionHeadPattern anchors on the whole CREATE FUNCTION/PROCEDURE
+// header. Matching the keyword as part of the header (rather than searching for
+// the substring "function") supports CREATE PROCEDURE and avoids keying off
+// "function" embedded in a schema name (e.g. `CREATE PROCEDURE
+// _timescaledb_functions.rebuild_columnstore(...)` used to yield the garbage
+// name "s.rebuild_columnstore").
+var sqlCreateFunctionHeadPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:function|procedure)\s+(?:if\s+not\s+exists\s+)?`)
+
 func matchSQLCreateFunctionName(content string) string {
-	lower := asciiLowerString(content)
-	idx := strings.Index(lower, "function")
-	if idx < 0 {
+	loc := sqlCreateFunctionHeadPattern.FindStringIndex(content)
+	if loc == nil {
 		return ""
 	}
-	rest := strings.TrimSpace(content[idx+len("function"):])
+	rest := strings.TrimSpace(content[loc[1]:])
 	if rest == "" {
 		return ""
-	}
-	if strings.HasPrefix(strings.ToLower(rest), "if not exists") {
-		rest = strings.TrimSpace(rest[len("if not exists"):])
 	}
 	open := strings.IndexByte(rest, '(')
 	if open < 0 {
@@ -4904,6 +6366,128 @@ func scopesChildren(kind string) bool {
 	}
 }
 
+// rAssignmentEntity extracts an R definition from an assignment. The r-lib
+// grammar represents `name <- function(args) ...` as a binary_operator with
+// lhs/operator/rhs fields; `=`, `<<-`, and the right-assign forms
+// (`function(...) ... -> name`) are the same node with a different operator.
+// A function_definition value (including the `\(x)` lambda shorthand) yields a
+// function; an R6Class/setRefClass call value yields a class (the trivial
+// S4/R6 idiom). The name side may be an identifier or a string, as in
+// syntactic names like `"myop<-" <- function(x, value) ...`.
+func rAssignmentEntity(node *sitter.Node, src []byte, scope string) (string, string, bool) {
+	operator := node.ChildByFieldName("operator")
+	if !validNode(operator) {
+		return "", "", false
+	}
+	target := node.ChildByFieldName("lhs")
+	value := node.ChildByFieldName("rhs")
+	switch operator.Type() {
+	case "<-", "<<-", "=":
+	case "->", "->>":
+		target, value = value, target
+	default:
+		return "", "", false
+	}
+	if !validNode(value) {
+		return "", "", false
+	}
+	name := rAssignmentTargetName(target, src)
+	if name == "" {
+		return "", "", false
+	}
+	switch value.Type() {
+	case "function_definition":
+		if scope != "" {
+			return "method", qualify(scope, name), true
+		}
+		return "function", name, true
+	case "call":
+		if fn := value.ChildByFieldName("function"); validNode(fn) {
+			callee := strings.TrimSpace(fn.Content(src))
+			if callee == "R6Class" || callee == "R6::R6Class" || callee == "setRefClass" || callee == "methods::setRefClass" {
+				return "class", name, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// rAssignmentTargetName returns the defined name from the target side of an R
+// assignment: a plain identifier or a quoted string (syntactic names).
+func rAssignmentTargetName(node *sitter.Node, src []byte) string {
+	if !validNode(node) {
+		return ""
+	}
+	switch node.Type() {
+	case "identifier":
+		return strings.TrimSpace(node.Content(src))
+	case "string":
+		if content := firstNamedChildOfType(node, "string_content"); validNode(content) {
+			return strings.TrimSpace(content.Content(src))
+		}
+	}
+	return ""
+}
+
+// erlangFunDeclEntity builds the function symbol for an Erlang fun_decl form.
+// tree-sitter-erlang parses each clause of a multi-clause function
+// (`f(1) -> a;\nf(2) -> b.`) as its own fun_decl form, so a run of consecutive
+// fun_decl siblings with the same name/arity is folded into a single symbol:
+// the first clause emits an entity spanning the whole run and the later
+// clauses emit nothing.
+func erlangFunDeclEntity(node *sitter.Node, src []byte) (Entity, bool) {
+	name, arity := erlangFunClauseNameArity(node, src)
+	if name == "" {
+		return Entity{}, false
+	}
+	if prev := node.PrevNamedSibling(); validNode(prev) && prev.Type() == "fun_decl" {
+		if prevName, prevArity := erlangFunClauseNameArity(prev, src); prevName == name && prevArity == arity {
+			return Entity{}, false // continuation clause; the run's first clause carries the symbol
+		}
+	}
+	last := node
+	for next := last.NextNamedSibling(); validNode(next) && next.Type() == "fun_decl"; next = next.NextNamedSibling() {
+		if nextName, nextArity := erlangFunClauseNameArity(next, src); nextName != name || nextArity != arity {
+			break
+		}
+		last = next
+	}
+	start, end := node.StartByte(), last.EndByte()
+	if end <= start || int(end) > len(src) {
+		end = node.EndByte()
+	}
+	block := string(src[start:end])
+	signature := name
+	if clause := firstNamedChildOfType(node, "function_clause"); validNode(clause) {
+		signature = strings.TrimSpace(strings.TrimSuffix(signatureFromNode(clause, src), "->"))
+	}
+	return Entity{
+		Kind:        "function",
+		Name:        name,
+		Signature:   signature,
+		StartLine:   int(node.StartPoint().Row) + 1,
+		EndLine:     int(last.EndPoint().Row) + 1,
+		BodyHash:    hash(normalize(block)),
+		Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+	}, true
+}
+
+// erlangFunClauseNameArity returns the function name and arity of a fun_decl's
+// first clause. Erlang identifies functions by name/arity, so both are needed
+// to decide whether adjacent fun_decl forms are clauses of the same function.
+func erlangFunClauseNameArity(node *sitter.Node, src []byte) (string, int) {
+	clause := firstNamedChildOfType(node, "function_clause")
+	if !validNode(clause) {
+		return "", 0
+	}
+	name := nameFromNode(clause.ChildByFieldName("name"), src)
+	arity := 0
+	if args := clause.ChildByFieldName("args"); validNode(args) {
+		arity = int(args.NamedChildCount())
+	}
+	return name, arity
+}
+
 func elixirCallEntity(node *sitter.Node, src []byte, scope string) (string, string, bool) {
 	head := firstNamedChildOfType(node, "identifier")
 	if !validNode(head) {
@@ -4934,6 +6518,157 @@ func elixirCallEntity(node *sitter.Node, src []byte, scope string) (string, stri
 		}
 	}
 	return "", "", false
+}
+
+// juliaDefinitionName returns the name a Julia callable definition binds, given
+// its head node: the `signature` child of a long-form `function`/`macro`
+// definition, or the left-hand side of a short-form `name(args) = expr`
+// assignment. Return-type (`f(x)::T`) and type-parameter (`f(x) where T`)
+// wrappers are looked through; a qualified extension method (`Base.show`,
+// `Base.:(==)`) keeps its dotted path; a parametric constructor
+// (`Foo{T}(x) where T`) binds the type name. Callable-object definitions
+// (`function (obj::T)(x)`) and non-definition assignments bind no callable
+// name and yield "".
+func juliaDefinitionName(head *sitter.Node, src []byte) string {
+	inSignature := false
+	for validNode(head) {
+		switch head.Type() {
+		case "signature":
+			inSignature = true
+			head = head.NamedChild(0)
+		case "where_expression", "typed_expression":
+			head = head.NamedChild(0)
+		case "identifier":
+			// A bare identifier signature is a `function name end` zero-method
+			// declaration; a bare-identifier assignment LHS is a variable
+			// binding, not a callable definition.
+			if inSignature {
+				return strings.TrimSpace(head.Content(src))
+			}
+			return ""
+		case "call_expression":
+			callee := head.NamedChild(0)
+			if !validNode(callee) {
+				return ""
+			}
+			switch callee.Type() {
+			case "identifier", "operator", "field_expression":
+				return strings.TrimSpace(callee.Content(src))
+			case "curly_expression", "parametrized_type_expression":
+				// Parametric constructor definition, e.g. `Foo{T}(x) where T`.
+				if id := firstNamedChildOfType(callee, "identifier"); validNode(id) {
+					return strings.TrimSpace(id.Content(src))
+				}
+				return ""
+			default:
+				return ""
+			}
+		default:
+			return ""
+		}
+	}
+	return ""
+}
+
+// clojureDefKinds maps a Clojure def-form head symbol (its final segment, so
+// namespaced heads like `mu/defn` or `methodical/defmulti` match too — a
+// common idiom for instrumented/extended def macros) to the symbol kind.
+var clojureDefKinds = map[string]string{
+	"defn":         "function",
+	"defn-":        "function",
+	"defmacro":     "function",
+	"defmulti":     "function",
+	"defmethod":    "function",
+	"def":          "variable",
+	"defonce":      "variable",
+	"defrecord":    "class",
+	"deftype":      "class",
+	"defprotocol":  "interface",
+	"definterface": "interface",
+}
+
+// clojureListEntity extracts a symbol from a Clojure `(defX name ...)` list.
+// tree-sitter-clojure parses every form as a generic list_lit, so the def-form
+// is recognized by inspecting the list head: the head symbol's final segment
+// (after any namespace qualifier) must be a known def macro, and the symbol
+// name is the next symbol value in the list (metadata attaches to the sym_lit
+// node itself in this grammar, and docstrings follow the name, so neither
+// interferes).
+func clojureListEntity(node *sitter.Node, src []byte) (Entity, bool) {
+	values := clojureListValues(node)
+	if len(values) < 2 {
+		return Entity{}, false
+	}
+	head := values[0]
+	if head.Type() != "sym_lit" {
+		return Entity{}, false
+	}
+	kind, ok := clojureDefKinds[clojureSymName(head, src)]
+	if !ok {
+		return Entity{}, false
+	}
+	nameNode := values[1]
+	if nameNode.Type() != "sym_lit" {
+		return Entity{}, false
+	}
+	name := clojureSymName(nameNode, src)
+	if name == "" {
+		return Entity{}, false
+	}
+	// The header — through the params vector when one directly follows the
+	// name — is the signature; the whole form would collapse a large function
+	// body into one line.
+	sigEnd := nameNode.EndByte()
+	if len(values) > 2 && values[2].Type() == "vec_lit" {
+		sigEnd = values[2].EndByte()
+	}
+	signature := node.Content(src)
+	if int(sigEnd) > int(node.StartByte()) && int(sigEnd) <= len(src) {
+		signature = string(src[node.StartByte():sigEnd])
+	}
+	signature = strings.Join(strings.Fields(signature), " ")
+
+	block := node.Content(src)
+	return Entity{
+		Kind:        kind,
+		Name:        name,
+		Signature:   signature,
+		StartLine:   int(node.StartPoint().Row) + 1,
+		EndLine:     int(node.EndPoint().Row) + 1,
+		BodyHash:    hash(normalize(block)),
+		Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+	}, true
+}
+
+// clojureListValues returns the value children of a list_lit, skipping
+// comments, discard expressions (#_), and metadata attached to the list.
+func clojureListValues(node *sitter.Node) []*sitter.Node {
+	var values []*sitter.Node
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if !validNode(child) {
+			continue
+		}
+		switch child.Type() {
+		case "comment", "dis_expr", "meta_lit", "old_meta_lit":
+			continue
+		}
+		values = append(values, child)
+	}
+	return values
+}
+
+// clojureSymName returns a symbol's name without its namespace qualifier
+// (`mu/defn` -> `defn`, `clojure.core/def` -> `def`).
+func clojureSymName(node *sitter.Node, src []byte) string {
+	if name := node.ChildByFieldName("name"); validNode(name) {
+		return strings.TrimSpace(name.Content(src))
+	}
+	text := strings.TrimSpace(node.Content(src))
+	if idx := strings.LastIndex(text, "/"); idx >= 0 && idx+1 < len(text) {
+		return text[idx+1:]
+	}
+	return text
 }
 
 func hclBlockName(node *sitter.Node, src []byte) string {

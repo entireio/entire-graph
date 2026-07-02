@@ -75,6 +75,24 @@ func ListFiles(ctx context.Context, repo, rev string) ([]string, error) {
 	return files, nil
 }
 
+// ListIndexFiles lists the tracked files of the working tree's git index
+// (`git ls-files -z`), relative to repo. It runs one git subprocess for the
+// whole listing; callers use it to decide tracked-ness without per-path git
+// calls. A non-git directory returns an error.
+func ListIndexFiles(ctx context.Context, repo string) ([]string, error) {
+	out, err := run(ctx, repo, "git", "ls-files", "-z")
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, path := range strings.Split(out, "\x00") {
+		if path != "" {
+			files = append(files, path)
+		}
+	}
+	return files, nil
+}
+
 func ChangedFiles(ctx context.Context, repo, base, head string, paths []string) ([]ChangedFile, error) {
 	args := []string{"diff", "-z", "--name-status", "--find-renames", base, head, "--"}
 	args = append(args, paths...)

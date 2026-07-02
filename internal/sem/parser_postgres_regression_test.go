@@ -196,3 +196,143 @@ func TestAsciiLowerStringPreservesByteLength(t *testing.T) {
 		t.Errorf("ASCII not lowercased / non-ASCII altered: %q", asciiLowerString("CREATE Policy İ"))
 	}
 }
+
+// Declarative partitioning the pgsql grammar rejects: `PARTITION BY {RANGE|LIST|
+// HASH} (...)` trails a column list, and `PARTITION OF parent FOR VALUES ...`
+// replaces the column list. Both used to leave tree-sitter error nodes and drop
+// the table (postgres .sql failures). The masks blank/substitute the partition
+// clause while the real table symbol is still extracted from the original bytes.
+func TestPostgresDeclarativePartitioningParses(t *testing.T) {
+	src := "CREATE TABLE measurement (city_id int, logdate date) PARTITION BY RANGE (logdate);\n" +
+		"CREATE TABLE measurement_y2026 PARTITION OF measurement FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');\n" +
+		"CREATE TABLE after_tbl (id int);\n"
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("schema.sql", src)
+	if status.ParseError {
+		t.Fatalf("unexpected parse error on partitioned tables: %s", status.Detail)
+	}
+	for _, name := range []string{"measurement", "measurement_y2026", "after_tbl"} {
+		if countEntity(entities, "table", name) != 1 {
+			t.Errorf("table %s missing/duplicated (partition clause not masked): %+v", name, entities)
+		}
+	}
+}
+
+// COPY is a psql/dump construct the grammar rejects. `COPY t (...) FROM stdin;`
+// is followed by tab-delimited data terminated by a `\.` line. Masking the COPY
+// statement (and the stdin data block) keeps following statements parseable.
+func TestPostgresCopyFromStdinParses(t *testing.T) {
+	src := "COPY users (id, name) FROM stdin;\n1\tAlice\n2\tBob\n\\.\n" +
+		"CREATE TABLE after_tbl (id int);\n"
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("schema.sql", src)
+	if status.ParseError {
+		t.Fatalf("unexpected parse error on COPY block: %s", status.Detail)
+	}
+	if countEntity(entities, "table", "after_tbl") != 1 {
+		t.Errorf("after_tbl dropped after COPY block: %+v", entities)
+	}
+}
+
+// CREATE PROCEDURE must yield a symbol like CREATE FUNCTION does. TimescaleDB
+// sql/ddl_api.sql and sql/maintenance_utils.sql define procedures with the
+// @extschema@ placeholder and LANGUAGE C bodies (`AS '@MODULE_PATHNAME@',
+// 'ts_...'`), and schema-qualified procedures under _timescaledb_functions
+// (whose schema name contains the substring "function" — the old extractor
+// keyed off that substring and produced a garbage name).
+func TestPostgresCreateProcedureExtracted(t *testing.T) {
+	src := "CREATE OR REPLACE PROCEDURE @extschema@.refresh_continuous_aggregate(\n" +
+		"    continuous_aggregate     REGCLASS,\n" +
+		"    window_start             \"any\",\n" +
+		"    window_end               \"any\",\n" +
+		"    force                    BOOLEAN = FALSE,\n" +
+		"    options                  JSONB = NULL\n" +
+		") LANGUAGE C AS '@MODULE_PATHNAME@', 'ts_continuous_agg_refresh';\n" +
+		"\n" +
+		"CREATE OR REPLACE PROCEDURE _timescaledb_functions.rebuild_columnstore(\n" +
+		"    chunk REGCLASS\n" +
+		") AS '@MODULE_PATHNAME@', 'ts_rebuild_columnstore' LANGUAGE C;\n" +
+		"\n" +
+		"CREATE OR REPLACE PROCEDURE plpgsql_proc() LANGUAGE plpgsql AS $$ BEGIN NULL; END $$;\n"
+	entities, _, _ := TreeSitterParser{}.ParseWithStatus("ddl_api.sql", src)
+	for _, name := range []string{
+		"@extschema@.refresh_continuous_aggregate",
+		"_timescaledb_functions.rebuild_columnstore",
+		"plpgsql_proc",
+	} {
+		if countEntity(entities, "function", name) != 1 {
+			t.Errorf("procedure %s missing/duplicated: %+v", name, entities)
+		}
+	}
+	if countEntity(entities, "function", "s.rebuild_columnstore") != 0 {
+		t.Errorf("garbage name from 'function' substring inside schema name: %+v", entities)
+	}
+}
+
+// A dollar-quoted function body followed by `SET search_path TO ...;` (instead
+// of `LANGUAGE ...;`) must still terminate the statement. TimescaleDB ends most
+// plpgsql bodies with `$BODY$ SET search_path TO pg_catalog, pg_temp;`
+// (sql/chunk_constraint.sql, sql/size_utils.sql); the body also nests `$$ ... $$`
+// dollar quotes, which must not close the statement early.
+func TestPostgresFunctionBodyWithSetSearchPathSuffix(t *testing.T) {
+	src := "CREATE OR REPLACE FUNCTION _timescaledb_functions.chunk_constraint_add_table_constraint(\n" +
+		"    chunk_id integer,\n" +
+		"    constraint_name name\n" +
+		")\n" +
+		"    RETURNS VOID LANGUAGE PLPGSQL AS\n" +
+		"$BODY$\n" +
+		"BEGIN\n" +
+		"    EXECUTE pg_catalog.format(\n" +
+		"        $$ ALTER TABLE %I.%I ADD CONSTRAINT %I %s $$,\n" +
+		"        chunk_row.schema_name, chunk_row.table_name, constraint_name, def\n" +
+		"    );\n" +
+		"END\n" +
+		"$BODY$ SET search_path TO pg_catalog, pg_temp;\n" +
+		"\n" +
+		"CREATE OR REPLACE FUNCTION @extschema@.hypertable_detailed_size(\n" +
+		"    hypertable              REGCLASS)\n" +
+		"RETURNS TABLE (table_bytes BIGINT)\n" +
+		"LANGUAGE PLPGSQL VOLATILE STRICT AS\n" +
+		"$BODY$\n" +
+		"BEGIN\n" +
+		"        RETURN QUERY SELECT 1::bigint;\n" +
+		"END;\n" +
+		"$BODY$ SET search_path TO pg_catalog, pg_temp;\n"
+	entities, _, _ := TreeSitterParser{}.ParseWithStatus("size_utils.sql", src)
+	for _, name := range []string{
+		"_timescaledb_functions.chunk_constraint_add_table_constraint",
+		"@extschema@.hypertable_detailed_size",
+	} {
+		if countEntity(entities, "function", name) != 1 {
+			t.Errorf("function %s missing/duplicated (SET search_path suffix): %+v", name, entities)
+		}
+	}
+}
+
+// A dollar-quoted function that follows LANGUAGE C (`AS '...', '...'`) functions
+// in the same file must not be swallowed: the old create-function pattern let
+// `.*?` run across statement boundaries, so the match started at the first
+// LANGUAGE C `CREATE FUNCTION` and ended at the later dollar-quoted body,
+// attributing the whole span to the first name (timescaledb sql/time_bucket.sql:
+// align_to_bucket was only found in an unrelated updates/ script).
+func TestPostgresDollarBodyAfterExternalFunctionsNotSwallowed(t *testing.T) {
+	src := "CREATE OR REPLACE FUNCTION @extschema@.time_bucket(bucket_width SMALLINT, ts SMALLINT) RETURNS SMALLINT\n" +
+		"\tAS '@MODULE_PATHNAME@', 'ts_int16_bucket' LANGUAGE C IMMUTABLE PARALLEL SAFE STRICT;\n" +
+		"CREATE OR REPLACE FUNCTION @extschema@.time_bucket(bucket_width INT, ts INT) RETURNS INT\n" +
+		"\tAS '@MODULE_PATHNAME@', 'ts_int32_bucket' LANGUAGE C IMMUTABLE PARALLEL SAFE STRICT;\n" +
+		"\n" +
+		"CREATE OR REPLACE FUNCTION _timescaledb_functions.align_to_bucket(width interval, rng anyrange)\n" +
+		"RETURNS anyrange AS\n" +
+		"$body$\n" +
+		"BEGIN\n" +
+		"  RETURN @extschema@.time_bucket(width, lower(rng));\n" +
+		"END\n" +
+		"$body$\n" +
+		"LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE\n" +
+		"SET search_path TO pg_catalog, pg_temp;\n"
+	entities, _, _ := TreeSitterParser{}.ParseWithStatus("time_bucket.sql", src)
+	if countEntity(entities, "function", "_timescaledb_functions.align_to_bucket") != 1 {
+		t.Errorf("align_to_bucket missing/duplicated (swallowed by cross-statement match): %+v", entities)
+	}
+	if countEntity(entities, "function", "@extschema@.time_bucket") != 2 {
+		t.Errorf("time_bucket overloads should extract twice: %+v", entities)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -475,7 +476,9 @@ func supportsSemanticExtraction(spec languageSpec) bool {
 	if spec.grammar != nil {
 		return true
 	}
-	return spec.language == "SQL"
+	// SQL and Groovy have no grammar in the extension table but are backed by
+	// dedicated parsers (pgsql grammar and the structural Groovy scanner).
+	return spec.language == "SQL" || spec.language == "Groovy"
 }
 
 // languageTiers classifies the languages present in a snapshot as "semantic"
@@ -571,7 +574,7 @@ func supportsCallExtraction(spec languageSpec) bool {
 		return false
 	}
 	switch spec.language {
-	case "Bash", "C", "C++", "C#", "Elixir", "Go", "Groovy", "Java", "JavaScript", "Kotlin", "Lua", "OCaml", "PHP", "Python", "Ruby", "Rust", "Scala", "Swift", "TypeScript", "Zsh":
+	case "Bash", "C", "C++", "C#", "Dart", "Elixir", "Erlang", "Go", "Groovy", "Haskell", "Java", "JavaScript", "Kotlin", "Lua", "OCaml", "PHP", "Python", "Ruby", "Rust", "Scala", "Swift", "TypeScript", "Zsh":
 		return true
 	default:
 		return false
@@ -586,18 +589,24 @@ func BuildProviderSnapshot(ctx context.Context, repo, providerVersion string) (P
 // per file rather than holding all file contents in memory at once.
 type contentReader func(path string) (string, bool)
 
+// prefixReader returns up to limit leading bytes of a file's content. It backs
+// cheap first-line sniffing (shebang routing of extensionless executables)
+// without reading whole files.
+type prefixReader func(path string, limit int) (string, bool)
+
 // sourceContext is the repository state needed to stream a snapshot: identity,
 // the file list, a per-file content reader, and git-state warnings. It holds no
 // file content itself.
 type sourceContext struct {
-	absRepo  string
-	key      string
-	commit   string
-	tree     string
-	paths    []string
-	read     contentReader
-	close    func() error
-	warnings []ProviderWarning
+	absRepo    string
+	key        string
+	commit     string
+	tree       string
+	paths      []string
+	read       contentReader
+	readPrefix prefixReader
+	close      func() error
+	warnings   []ProviderWarning
 }
 
 // leanHeader is the streaming preamble emitted before any file is parsed. It
@@ -742,7 +751,10 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if !Supported(path) {
+		// Path-based routing first; files the path cannot classify (extensionless
+		// executables like pyenv's libexec/* scripts) get one bounded prefix read
+		// to route by shebang before being declared unsupported.
+		if !Supported(path) && !shebangRoutable(sc.readPrefix, path) {
 			if hint := unsupportedLanguageHint(path); hint != "" {
 				failures = append(failures, PartialFailure{
 					Code:                 "E_UNSUPPORTED_LANGUAGE",
@@ -766,7 +778,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 			continue
 		}
 		contentBytes := []byte(content)
-		langSpec, ok := languageForPath(path)
+		langSpec, ok := languageForContent(path, content)
 		if !ok {
 			failures = append(failures, PartialFailure{
 				Code:                 "E_UNSUPPORTED_LANGUAGE",
@@ -817,7 +829,9 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 		// their thousands of single-letter symbols in one file form a near-complete
 		// same-file call graph (the dominant relation-count + time blow-up on repos
 		// that vendor web assets), and they are not meaningful source to analyze.
-		if longestLineLen(content) > maxMinifiedLineLen {
+		// Overlong lines must dominate the file; a few giant data lines embedded
+		// in otherwise ordinary source do not disqualify it.
+		if looksMinified(content) {
 			languageSet[language] = struct{}{}
 			if err := emit(file); err != nil {
 				return err
@@ -1206,7 +1220,7 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 	// explicit for callers that enforce no-egress provider execution.
 	_ = options.NoNetwork
 	useHead := !options.Worktree && commitErr == nil && treeErr == nil
-	paths, read, closeSource, err := openSource(ctx, absRepo, useHead, options.IgnoreFiles, options.IncludeFiles)
+	paths, read, readPrefix, closeSource, err := openSource(ctx, absRepo, useHead, options.IgnoreFiles, options.IncludeFiles)
 	if err != nil {
 		return sourceContext{}, err
 	}
@@ -1227,14 +1241,15 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		})
 	}
 	return sourceContext{
-		absRepo:  absRepo,
-		key:      key,
-		commit:   commit,
-		tree:     tree,
-		paths:    paths,
-		read:     read,
-		close:    closeSource,
-		warnings: warnings,
+		absRepo:    absRepo,
+		key:        key,
+		commit:     commit,
+		tree:       tree,
+		paths:      paths,
+		read:       read,
+		readPrefix: readPrefix,
+		close:      closeSource,
+		warnings:   warnings,
 	}, nil
 }
 
@@ -1450,7 +1465,7 @@ func localReachable(from, to SymbolRecord) bool {
 // receiver and is handled by receiverCallRelations instead.
 func implicitReceiverLanguage(lang string) bool {
 	switch lang {
-	case "Java", "C#", "C++", "Kotlin", "Scala", "Ruby":
+	case "Java", "C#", "C++", "Dart", "Groovy", "Kotlin", "Scala", "Ruby", "Swift":
 		return true
 	}
 	return false
@@ -1462,13 +1477,27 @@ func implicitReceiverLanguage(lang string) bool {
 // resolves the *called* symbol of `obj.method(arg)` — which legitimately is a
 // method — so it passes true. Folding that distinction into one resolver kept
 // the data-flow path from silently dropping the `arg -> method` flow.
+// nameCallMayTargetMethod reports whether a name-resolved call (a bare `name()`
+// or a path-qualified `Type::name()`) can legitimately bind to a *method*, so
+// methods must NOT be excluded from name-match resolution for that language:
+//   - implicit-receiver languages: bare `name()` means `this.name()`;
+//   - Rust: `Type::name()` / `Trait::name()` path calls and associated
+//     functions are written explicitly and resolve to the method by name.
+//
+// In Go/Python/JS/TS a method call always carries an explicit `.`-receiver and
+// is handled by receiverCallRelations instead, so methods stay excluded there.
+// (Ported from fix/rust-call-resolution ad6ca4d onto the current gate shape.)
+func nameCallMayTargetMethod(lang string) bool {
+	return implicitReceiverLanguage(lang) || lang == "Rust"
+}
+
 func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
 	var local []resolvedCallTarget
 	for _, to := range sameFile {
 		// A bare `name()` call resolves to a function, not a class method (methods
 		// require a receiver and are resolved by receiverCallRelations) — matching
 		// a same-named method here is a false edge.
-		if to.ID == from.ID || to.Name != name || to.Kind == "field" || (to.Kind == "method" && !implicitReceiverLanguage(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
+		if to.ID == from.ID || to.Name != name || to.Kind == "field" || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
 			continue
 		}
 		local = append(local, resolvedCallTarget{
@@ -1498,7 +1527,7 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 
 	var imported []resolvedCallTarget
 	for _, to := range candidates {
-		if to.ID == from.ID || to.Kind == "field" || (to.Kind == "method" && !implicitReceiverLanguage(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
+		if to.ID == from.ID || to.Kind == "field" || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
 			continue
 		}
 		if importedNameMatchesFile(importsByName[name], from.FilePath, to.FilePath) {
@@ -1542,9 +1571,39 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 		}
 	}
 
+	// Same-directory resolution for Dart: a Dart file imports siblings by bare
+	// relative path (`import 'request.dart';`) without binding a local name, so
+	// the import-map branch above can never disambiguate. A unique function or
+	// type (constructor call) in the caller's directory wins over the
+	// globally-unique gate below, which drops the call whenever another package
+	// in a monorepo reuses the name (e.g. two `Request` classes in dart-lang/http).
+	// Methods stay excluded: a Dart class is single-file, so an implicit-receiver
+	// method call is already resolved by the same-file branch.
+	if from.Language == "Dart" {
+		fromDir := filepath.ToSlash(filepath.Dir(from.FilePath))
+		var sameDir []SymbolRecord
+		for _, to := range candidates {
+			if to.ID == from.ID || (to.Kind != "function" && !typeLikeKind(to.Kind)) || !localReachable(from, to) {
+				continue
+			}
+			if filepath.ToSlash(filepath.Dir(to.FilePath)) == fromDir {
+				sameDir = append(sameDir, to)
+			}
+		}
+		if len(sameDir) == 1 {
+			return []resolvedCallTarget{{
+				SymbolRecord: sameDir[0],
+				Confidence:   0.80,
+				Reason:       "direct call expression resolved to same-directory symbol",
+				Resolution:   "package",
+				Scope:        "module",
+			}}
+		}
+	}
+
 	var remaining []SymbolRecord
 	for _, to := range candidates {
-		if to.ID != from.ID && to.Kind != "field" && (to.Kind != "method" || implicitReceiverLanguage(from.Language) || allowMethodTargets) && localReachable(from, to) {
+		if to.ID != from.ID && to.Kind != "field" && (to.Kind != "method" || nameCallMayTargetMethod(from.Language) || allowMethodTargets) && localReachable(from, to) {
 			remaining = append(remaining, to)
 		}
 	}
@@ -1738,6 +1797,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	methodsByContainer := map[string]map[string]SymbolRecord{}
 	fieldsByContainer := map[string]map[string]SymbolRecord{}
 	returnTypesBySymbolNameAndFile := map[string]map[string][]string{}
+	returnTypesBySymbolNameAndDir := map[string]map[string][]string{}
 	var inheritanceEdges []RelationRecord // captured for OVERRIDES derivation
 	routeHandlers := map[string][]SymbolRecord{}
 	httpCallsByRoute := map[string][]RelationRecord{}
@@ -1758,6 +1818,24 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			}
 		}
 	}
+	// Cross-file container index: entitySymbols links a member to its container
+	// only within one file, but some containers span files — a Go receiver type
+	// commonly lives in a different file of the same package than its methods
+	// (C# partial classes and reopened Ruby classes behave the same) — leaving
+	// such members with an empty ContainerID and therefore invisible to
+	// receiver-typed call resolution. Resolve those containers from the
+	// member's qualified-name prefix against the workspace's type-like symbols.
+	crossFileContainers := needsCallScan || needsReceiverCalls || needsFields || needsOverrides
+	typeLikeByShortName := map[string][]SymbolRecord{}
+	if crossFileContainers {
+		for _, file := range files {
+			for _, symbol := range recordsByFile[file.Path] {
+				if typeLikeKind(symbol.Kind) {
+					typeLikeByShortName[symbol.Name] = append(typeLikeByShortName[symbol.Name], symbol)
+				}
+			}
+		}
+	}
 	// Iterate files in their (stable) slice order, not the recordsByFile map, so
 	// structural relations stream deterministically.
 	for _, file := range files {
@@ -1765,9 +1843,23 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			return
 		}
 		records := recordsByFile[file.Path]
-		for _, symbol := range records {
+		for si, symbol := range records {
 			if shouldStop != nil && shouldStop() {
 				return
+			}
+			containsScope := "file"
+			if crossFileContainers && symbol.ContainerID == "" && (symbol.Kind == "method" || symbol.Kind == "field") {
+				if parent := containerName(symbol.QualifiedName); parent != "" {
+					if container, ok := resolveContainerAcrossFiles(parent, symbol.FilePath, typeLikeByShortName); ok && container.ID != symbol.ID {
+						symbol.ContainerID = container.ID
+						// Write through so later passes (receiver-call scans read
+						// recordsByFile again) see the resolved container too.
+						records[si].ContainerID = container.ID
+						if container.FilePath != symbol.FilePath {
+							containsScope = "module"
+						}
+					}
+				}
 			}
 			if symbol.Kind == "route" {
 				routeHandlers[symbol.Name] = append(routeHandlers[symbol.Name], symbol)
@@ -1800,7 +1892,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					Type:          "CONTAINS",
 					Confidence:    1,
 					Reason:        "symbol qualified name is nested in container",
-					RelationScope: "file",
+					RelationScope: containsScope,
 					Resolution:    "exact",
 					TargetKind:    "symbol",
 					WarningCodes:  []string{},
@@ -1844,7 +1936,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 					methodsByContainer[symbol.ContainerID][symbol.Name] = symbol
 				}
-				if needsFields && symbol.Kind == "field" {
+				// C# receiver-call resolution also reads the field index:
+				// class-level `Type Name { get; }` members type `Name.Method()`
+				// receivers (csharpMemberType), so the map is built whenever
+				// receiver calls are resolved, not only for field relations.
+				if (needsFields || (needsReceiverCalls && symbol.Language == "C#")) && symbol.Kind == "field" {
 					if fieldsByContainer[symbol.ContainerID] == nil {
 						fieldsByContainer[symbol.ContainerID] = map[string]SymbolRecord{}
 					}
@@ -1857,6 +1953,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						returnTypesBySymbolNameAndFile[symbol.Name] = map[string][]string{}
 					}
 					returnTypesBySymbolNameAndFile[symbol.Name][symbol.FilePath] = append(returnTypesBySymbolNameAndFile[symbol.Name][symbol.FilePath], typeName)
+					if symbol.Language == "Go" {
+						// A Go package spans every file in a directory, so a factory
+						// is commonly declared in a sibling file of its callers; key
+						// return types by directory too for the package-level lookup.
+						dir := filepath.ToSlash(filepath.Dir(symbol.FilePath))
+						if returnTypesBySymbolNameAndDir[symbol.Name] == nil {
+							returnTypesBySymbolNameAndDir[symbol.Name] = map[string][]string{}
+						}
+						returnTypesBySymbolNameAndDir[symbol.Name][dir] = append(returnTypesBySymbolNameAndDir[symbol.Name][dir], typeName)
+					}
 				}
 			}
 		}
@@ -2105,17 +2211,130 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				routeSymbolsByID[symbol.ID] = symbol
 			}
 		}
+		var phpPropTypes map[string]string
+		if file.Language == "PHP" && spec.callResolution == "full" {
+			// Property types are declared at the class level, outside any
+			// method's block: collect them once per file so property-receiver
+			// calls (`$this->prop->method()`) can resolve.
+			phpPropTypes = phpPropertyTypes(content)
+		}
+		var hsImports haskellFileImports
+		if file.Language == "Haskell" && fileNeedsCallScan {
+			// Import declarations live at the top of the file, outside any
+			// binding's block: parse them once per file so qualified
+			// applications (`Utils.fn` via `import qualified ... as Utils`)
+			// and imported bare names can resolve.
+			hsImports = haskellImports(content)
+		}
+		var kotlinPropTypes map[string]string
+		if file.Language == "Kotlin" && spec.callResolution == "full" {
+			// Kotlin property types live at the class level too (primary
+			// constructor val/var parameters, modifier-prefixed declarations
+			// and factory initializers): collect them once per file so
+			// property-receiver calls (`taskQueue.execute(...)`) can resolve.
+			kotlinPropTypes = kotlinPropertyTypes(content, returnTypesBySymbolNameAndFile)
+		}
+		var swiftTypes swiftFileTypes
+		if file.Language == "Swift" && spec.callResolution == "full" {
+			// Swift stored-property types and enum-case payload types live at
+			// the type level, outside any method's block: collect them once per
+			// file so property receivers (`self._buffer!.discardReadBytes()`)
+			// and enum-case pattern bindings (`case .available(var buffer):`)
+			// can resolve.
+			swiftTypes = swiftFileTypeInfo(content)
+		}
 		for _, from := range currentFileSymbols {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			block := symbolBlockFromLines(lines, from)
-			if fileNeedsCallScan && !typeLikeKind(from.Kind) {
+			if fileNeedsCallScan && !typeLikeKind(from.Kind) && file.Language == "Erlang" {
+				// Erlang call sites carry information the generic scanner cannot
+				// use: a bare call is module-local by language rule, and a remote
+				// `mod:fun(...)` call names the target module explicitly (module
+				// `mod` lives in `mod.erl` by convention). A dedicated scanner
+				// also keeps Erlang's variables (capitalized), `?MACRO(...)`
+				// expansions, and `%` comments out of the call-name set.
+				for _, r := range erlangCallRelations(from, block, currentFileSymbols, symbolsByShortName) {
+					emit(r)
+				}
+			} else if fileNeedsCallScan && !typeLikeKind(from.Kind) && file.Language == "OCaml" {
+				// OCaml applies functions by juxtaposition (`Mod.fn arg`), so
+				// the generic `name(` scanner sees almost no OCaml call sites;
+				// a dedicated scanner reads applications directly and uses the
+				// module qualifier (module `Mod` lives in `mod.ml` by language
+				// convention) to resolve targets. Interfaces (`.mli`) contain
+				// only type mentions, and a nested module's block spans its
+				// members' bodies, so both are skipped rather than misread.
+				if from.Kind != "module" && ocamlCallScanFile(file.Path) {
+					for _, r := range ocamlCallRelations(from, block, currentFileSymbols, symbolsByShortName) {
+						emit(r)
+					}
+				}
+			} else if fileNeedsCallScan && !typeLikeKind(from.Kind) && file.Language == "Haskell" {
+				// Haskell applies functions by whitespace (`fn arg`, `fn $
+				// arg`, `Alias.fn arg`), so the generic `name(` scanner sees
+				// almost no Haskell call sites; a dedicated scanner reads
+				// applications directly, resolves qualified names through the
+				// file's import aliases, and resolves bare names against
+				// same-file bindings and the import section.
+				for _, r := range haskellCallRelations(from, block, currentFileSymbols, symbolsByShortName, hsImports) {
+					emit(r)
+				}
+			} else if fileNeedsCallScan && !typeLikeKind(from.Kind) {
 				callBlock := block
 				if file.Language == "Rust" {
 					callBlock = stripRustCodegenMacroBodies(block)
 				}
-				for _, name := range sortedKeysOf(callLikeIdentifiers(callBlock)) {
+				if file.Language == "C#" {
+					// Multi-line verbatim/raw string bodies (SQL blocks and the
+					// like) survive the generic stripper's line-scoped string
+					// masking and would register as call sites.
+					callBlock = maskCSharpTextBlocks(block)
+				}
+				if file.Language == "Swift" {
+					// Multiline string bodies ("""...""") likewise survive the
+					// line-scoped masking and would register as call sites.
+					callBlock = maskSwiftMultilineStrings(block)
+				}
+				if file.Language == "Groovy" {
+					// Triple-quoted, slashy, and interpolated string bodies
+					// survive the generic line-scoped masking and would
+					// register as call sites.
+					callBlock = maskGroovyLiteralsAndComments(block)
+				}
+				callNames := callLikeIdentifiers(callBlock, file.Language)
+				if file.Language == "Ruby" {
+					// Ruby method names may end in `!`/`?` and are commonly called
+					// without parentheses; the generic scanner misses both.
+					for name := range rubySuffixedCallIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
+				}
+				if file.Language == "Kotlin" {
+					// Kotlin trailing-lambda calls (`runTask { ... }`) carry no
+					// parentheses, so the generic `name(` scanner never sees
+					// them.
+					for name := range kotlinBareLambdaCallIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
+				}
+				if file.Language == "Groovy" {
+					// Groovy command expressions (`visitType p.type`,
+					// `print 'x'`) likewise carry no parentheses. callBlock is
+					// already Groovy-masked above.
+					for name := range groovyCommandCallIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
+				}
+				if shellCallLanguage(file.Language) {
+					// Shell functions are invoked as bare commands with no
+					// parentheses; the generic scanner sees no call sites at all.
+					for name := range shellCommandCallIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
+				}
+				for _, name := range sortedKeysOf(callNames) {
 					if name == from.Name {
 						continue
 					}
@@ -2153,6 +2372,39 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							}},
 							WarningCodes: []string{},
 						})
+					}
+					if len(targets) == 0 && file.Language == "Kotlin" && spec.callResolution == "full" {
+						// A bare call inside a Kotlin extension-function body
+						// (`fun ApplicationCall.respondResource(...)` calling
+						// `resolveResource(...)`) dispatches on the implicit
+						// extension receiver: resolve it against the receiver
+						// type's members and matching extension functions.
+						if to, reason, ok := kotlinImplicitReceiverCallTarget(from, name, methodsByContainer, superContainerByID, symbolsByShortName); ok {
+							scope := "file"
+							if to.FilePath != from.FilePath {
+								scope = "module"
+							}
+							emit(RelationRecord{
+								RecordType:    "relation",
+								FromID:        from.ID,
+								ToID:          to.ID,
+								Type:          "CALLS",
+								Confidence:    0.8,
+								Reason:        reason,
+								RelationScope: scope,
+								Resolution:    "type_inferred",
+								TargetKind:    "symbol",
+								Evidence: []Evidence{{
+									Kind:      "call_site",
+									FilePath:  from.FilePath,
+									StartLine: from.StartLine,
+									EndLine:   from.EndLine,
+									Detail:    name,
+								}},
+								WarningCodes: []string{},
+							})
+							continue
+						}
 					}
 					if len(targets) == 0 {
 						for _, relation := range importedExternalCallRelationsForName(from, name, importsByName[name]) {
@@ -2340,7 +2592,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 			}
 			if spec.callResolution == "full" {
-				for _, r := range receiverCallRelations(from, block, methodsByContainer, superContainerByID, symbolsByShortName, returnTypesBySymbolNameAndFile, importsByName, manifestImports.goModule, pkgVarTypesByDir[filepath.ToSlash(filepath.Dir(file.Path))]) {
+				for _, r := range receiverCallRelations(from, block, methodsByContainer, superContainerByID, symbolsByShortName, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir, importsByName, manifestImports.goModule, pkgVarTypesByDir[filepath.ToSlash(filepath.Dir(file.Path))], phpPropTypes, kotlinPropTypes, fieldsByContainer, swiftTypes) {
 					emit(r)
 				}
 				for _, r := range importedReceiverCallRelations(from, block, importsByName, symbolsByShortName) {
@@ -2354,10 +2606,28 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			}
 		}
 
-		if fileNeedsCallScan {
+		// Erlang has no top-level call expressions: everything outside function
+		// bodies is a module attribute, and attribute payloads like
+		// `-spec name(...)` or `-export([...])` are declarations that would
+		// register as bogus file->function call sites. OCaml is skipped for
+		// the mirror-image reason: expression code lives in `let` bindings
+		// (extracted as symbols and scanned by the dedicated OCaml pass), so
+		// what remains at top level is declarations — opens, type definitions,
+		// signatures — whose `name (` sequences are type syntax, not calls.
+		// Haskell matches the same shape: all expressions live in top-level
+		// bindings (extracted as symbols and scanned by the dedicated Haskell
+		// pass), and what remains at top level — module/export lists, imports
+		// like `hiding (doesFileExist)`, class/instance heads — would only
+		// register bogus file->symbol call sites.
+		if fileNeedsCallScan && file.Language != "Erlang" && file.Language != "OCaml" && file.Language != "Haskell" {
 			topLevel := stripDeclarationOnlyCallSignatures(file.Language, topLevelBlockFromLines(lines, currentFileSymbols))
 			if file.Language == "Rust" {
 				topLevel = stripRustCodegenMacroBodies(topLevel)
+			}
+			if file.Language == "Groovy" {
+				// Multi-line string bodies at script level would otherwise
+				// register as top-level call sites.
+				topLevel = maskGroovyLiteralsAndComments(topLevel)
 			}
 			if strings.TrimSpace(topLevel) != "" {
 				fileSource := SymbolRecord{
@@ -2367,7 +2637,13 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					FilePath: file.Path,
 					Language: file.Language,
 				}
-				for _, name := range sortedKeysOf(callLikeIdentifiers(topLevel)) {
+				topLevelNames := callLikeIdentifiers(topLevel, file.Language)
+				if file.Language == "Ruby" {
+					for name := range rubySuffixedCallIdentifiers(topLevel) {
+						topLevelNames[name] = struct{}{}
+					}
+				}
+				for _, name := range sortedKeysOf(topLevelNames) {
 					for _, to := range resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName, false) {
 						relType := "CALLS"
 						if typeLikeKind(to.Kind) {
@@ -2719,6 +2995,39 @@ func lookupMethodUpChain(start, name string, methodsByContainer map[string]map[s
 	return SymbolRecord{}, false, false
 }
 
+// resolveContainerAcrossFiles resolves a member's container name to a
+// type-like symbol when per-file linking left the member orphaned. Preference
+// order keeps it conservative: a unique same-file type (per-file linking can
+// miss a container declared after its member), then a unique same-directory
+// type (a Go package — where methods routinely live in sibling files of their
+// receiver type — is a directory), then a workspace-unique type. Ambiguity at
+// the first populated tier resolves to nothing rather than wrongly.
+func resolveContainerAcrossFiles(name, file string, typesByShortName map[string][]SymbolRecord) (SymbolRecord, bool) {
+	candidates := typesByShortName[name]
+	if len(candidates) == 0 {
+		return SymbolRecord{}, false
+	}
+	dir := filepath.ToSlash(filepath.Dir(file))
+	var sameFile, sameDir []SymbolRecord
+	for _, candidate := range candidates {
+		switch {
+		case candidate.FilePath == file:
+			sameFile = append(sameFile, candidate)
+		case filepath.ToSlash(filepath.Dir(candidate.FilePath)) == dir:
+			sameDir = append(sameDir, candidate)
+		}
+	}
+	for _, tier := range [][]SymbolRecord{sameFile, sameDir, candidates} {
+		if len(tier) == 1 {
+			return tier[0], true
+		}
+		if len(tier) > 1 {
+			return SymbolRecord{}, false
+		}
+	}
+	return SymbolRecord{}, false
+}
+
 // pkgQualType is a package-qualified type reference (alias.TypeName), used to
 // resolve method calls on package-level vars whose bare type name is ambiguous
 // across packages (e.g. zerolog's `enc = json.Encoder{}` where both internal/json
@@ -2777,34 +3086,281 @@ func resolveQualifiedType(qt pkgQualType, symbolsByShortName map[string][]Symbol
 	return SymbolRecord{}, false
 }
 
-func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string, importsByName map[string][]string, goModule string, pkgVarTypes map[string]pkgQualType) []RelationRecord {
+func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir map[string]map[string][]string, importsByName map[string][]string, goModule string, pkgVarTypes map[string]pkgQualType, phpPropTypes, kotlinPropTypes map[string]string, fieldsByContainer map[string]map[string]SymbolRecord, swiftTypes swiftFileTypes) []RelationRecord {
 	if typeLikeKind(from.Kind) {
 		return nil
 	}
+	if from.Language == "C#" {
+		// Multi-line verbatim (@"...") and raw ("""...""") string bodies pass
+		// through the generic stripper (which contains string masking to one
+		// line), so SQL/text blocks would feed every extractor below.
+		block = maskCSharpTextBlocks(block)
+	}
+	if from.Language == "Swift" {
+		// Multiline string bodies ("""...""") likewise span lines and would
+		// feed every extractor below through the line-scoped generic stripper.
+		block = maskSwiftMultilineStrings(block)
+	}
 	calls := receiverCalls(block)
+	allReceiverCalls := calls
+	if from.Language == "C#" {
+		// Chain tails (`Dependencies.MigrationsSqlGenerator.Generate(`) look
+		// like `MigrationsSqlGenerator.Generate(` to the generic scanner, and
+		// the typed tiers misresolve them — EF Core names properties after
+		// their concrete type, so the static-call tier hits that class instead
+		// of the property's interface. The typed tiers get only clean-receiver
+		// calls; the chain loop below resolves the tails, and the extension
+		// fallback — receiver-agnostic by construction — sees every pair.
+		calls = csharpNonTailReceiverCalls(block)
+	}
 	chainedCalls := chainedConstructorCalls(block)
 	returnedCalls := returnedReceiverCalls(block)
 	chainedReturnCalls := chainedConstructorReturnCalls(block)
 	deepChainedReturnCalls := chainedConstructorDeepReturnCalls(block)
 	returnedChainCalls := returnedReceiverChainCalls(block)
 	returnedDeepChainCalls := returnedReceiverDeepChainCalls(block)
-	if len(calls) == 0 && len(chainedCalls) == 0 && len(returnedCalls) == 0 && len(chainedReturnCalls) == 0 && len(deepChainedReturnCalls) == 0 && len(returnedChainCalls) == 0 && len(returnedDeepChainCalls) == 0 {
+	var rubyBareCalls []string
+	if from.Language == "Ruby" {
+		// Ruby call sites often omit parentheses and method names may end in
+		// `!`/`?`; the generic extractors above miss both, and constructor
+		// chains are spelled `Klass.new(...).method` rather than `new Klass()`.
+		calls = mergeReceiverCalls(calls, rubyReceiverCalls(block))
+		chainedCalls = append(chainedCalls, rubyChainedConstructorCalls(block)...)
+		rubyBareCalls = rubyBareCallNames(block, from.Signature)
+	}
+	var kotlinChains []kotlinChainedCall
+	if from.Language == "Kotlin" {
+		// Kotlin safe calls (`socket?.closeQuietly()`) and trailing-lambda
+		// invocations (`taskQueue.execute { ... }`) never match the generic
+		// receiverCallRe, which requires a literal `.` and a literal `(`.
+		// Chained receivers (`call.application.resolveResource(...)`) carry a
+		// property hop the flat scanner misreads as an unknown receiver.
+		calls = mergeReceiverCalls(calls, kotlinReceiverCalls(block))
+		kotlinChains = kotlinChainedReceiverCalls(block)
+	}
+	var swiftChains []swiftChainedCall
+	if from.Language == "Swift" {
+		// Force-unwrapped (`self._buffer!.discardReadBytes()`) and
+		// optional-chained (`delegate?.retry(...)`) receivers never match the
+		// generic receiverCallRe, which requires a literal `.` directly after
+		// the receiver name. Property-chain receivers
+		// (`request.fileio.streamFile(...)`, often spelled across lines) carry
+		// a property hop the flat scanner misreads as an unknown receiver.
+		calls = mergeReceiverCalls(calls, swiftReceiverCalls(block))
+		swiftChains = swiftChainedReceiverCalls(block)
+	}
+	var javaChains []javaCtorChainCall
+	if from.Language == "Java" {
+		// Nested-type fluent constructor chains
+		// (`new Retrofit.Builder().baseUrl(...).build()`): the generic chain
+		// regexes handle neither the dotted type nor arbitrary chain depth with
+		// nested call arguments.
+		javaChains = javaConstructorChainCalls(block)
+	}
+	var phpStatics []phpStaticCall
+	var phpPropCalls []receiverCall
+	if from.Language == "PHP" {
+		// PHP static calls use `::` (never matched by receiverCallRe) and
+		// constructor chains are spelled `(new Klass(...))->m(` rather than
+		// `new Klass().m(`; property receivers resolve through the class-level
+		// property types the caller collected from this file.
+		phpStatics = phpStaticCalls(block)
+		phpPropCalls = phpPropertyReceiverCalls(block)
+		chainedCalls = append(chainedCalls, phpChainedConstructorCalls(block)...)
+	}
+	var csChainCalls []csharpChainCall
+	if from.Language == "C#" {
+		// One-hop member chains (`Dependencies.ModelDiffer.GetDifferences(`)
+		// are matched by receiverCallRe as `ModelDiffer.GetDifferences(`, an
+		// untypeable receiver; the dedicated extractor keeps the full chain so
+		// class-level member types can resolve it hop by hop.
+		csChainCalls = csharpMemberChainCalls(block)
+	}
+	if len(calls) == 0 && len(allReceiverCalls) == 0 && len(chainedCalls) == 0 && len(returnedCalls) == 0 && len(chainedReturnCalls) == 0 && len(deepChainedReturnCalls) == 0 && len(returnedChainCalls) == 0 && len(returnedDeepChainCalls) == 0 && len(rubyBareCalls) == 0 && len(phpStatics) == 0 && len(phpPropCalls) == 0 && len(csChainCalls) == 0 && len(kotlinChains) == 0 && len(javaChains) == 0 && len(swiftChains) == 0 {
 		return nil
 	}
 	varTypes := parameterVarTypes(from.Signature)
+	if from.Language == "Swift" {
+		// Swift parameters are `label name: inout Type` (`func f(remainder
+		// buffer: inout ByteBuffer)`, `_ buffer: ByteBuffer`): the generic
+		// colon branch only understands the bare `name: Type` form.
+		for name, typeName := range swiftParameterVarTypes(from.Signature, from.Name) {
+			if _, exists := varTypes[name]; !exists {
+				varTypes[name] = typeName
+			}
+		}
+	}
 	localTypes := localVarTypes(block)
+	if from.Language == "Ruby" {
+		for name, typeName := range rubyLocalVarTypes(block) {
+			if _, exists := localTypes[name]; !exists {
+				localTypes[name] = typeName
+			}
+		}
+	}
+	if from.Language == "PHP" {
+		// The PHP-aware constructor scan understands namespace-qualified
+		// `new \Foo\Bar(...)`; its terminal segment wins over the generic
+		// scanner's first-segment misread.
+		for name, typeName := range phpLocalVarTypes(block) {
+			localTypes[name] = typeName
+		}
+	}
+	if from.Language == "Kotlin" {
+		// Declared-type locals (`val writerToClose: WebSocketWriter?`), which
+		// the generic constructor-assignment scan cannot type.
+		for name, typeName := range kotlinLocalVarTypes(block) {
+			if _, exists := localTypes[name]; !exists {
+				localTypes[name] = typeName
+			}
+		}
+		// Trailing-lambda parameters typed by the callee's declared
+		// function-type parameter (`status(*code) { call, status -> ... }`
+		// against `fun status(..., handler: suspend (ApplicationCall,
+		// HttpStatusCode) -> Unit)`) or by an explicit annotation.
+		for name, typeName := range kotlinLambdaParamVarTypes(block, from, symbolsByShortName) {
+			if _, exists := localTypes[name]; !exists {
+				localTypes[name] = typeName
+			}
+		}
+	}
+	if from.Language == "Java" {
+		// Declared-type locals (`BuiltInFactories builtInFactories =
+		// Platform.builtInFactories;`), which the generic
+		// constructor-assignment scan cannot type.
+		for name, typeName := range javaLocalVarTypes(block) {
+			if _, exists := localTypes[name]; !exists {
+				localTypes[name] = typeName
+			}
+		}
+	}
+	if from.Language == "Swift" {
+		// Declared-type locals (`let decoded: ByteBuffer? = nil`) and
+		// enum-case pattern bindings (`case .available(var buffer):` typed by
+		// the file's `case available(ByteBuffer)` declaration), which the
+		// generic constructor-assignment scan cannot type.
+		for name, typeName := range swiftLocalVarTypes(block, swiftTypes.enumPayloads) {
+			if _, exists := localTypes[name]; !exists {
+				localTypes[name] = typeName
+			}
+		}
+	}
 	for name, typeName := range localTypes {
 		varTypes[name] = typeName
 	}
+	if from.Language == "Go" {
+		// Named result parameters (`func (c *Command) ExecuteC() (cmd
+		// *Command, err error)`) declare typed locals exactly like
+		// parameters, but the generic parameter scan reads the signature's
+		// first paren group — a method's receiver — so `cmd.execute()`
+		// receivers stayed untyped. Parameters and constructor-typed locals
+		// win; named results fill the gaps.
+		for name, typeName := range goNamedResultVarTypes(from.Signature) {
+			if _, exists := varTypes[name]; !exists {
+				varTypes[name] = typeName
+			}
+		}
+	}
 	factoryTypes := factoryReturnVarTypes(block, from.FilePath, returnTypesBySymbolNameAndFile)
+	if from.Language == "Go" {
+		// Multi-value assignments (`cmd, flags, err := c.Find(args)`) type
+		// their first variable from the callee's declared first result; the
+		// generic factory-assignment scan matches only single-variable,
+		// unqualified factories.
+		for name, typeName := range goMultiAssignReturnVarTypes(block, from, symbolsByShortName) {
+			if _, exists := factoryTypes[name]; !exists {
+				factoryTypes[name] = typeName
+			}
+		}
+	}
+	if from.Language == "PHP" {
+		// `$v = $this->factory()` receivers typed by the factory's declared
+		// return type, the PHP spelling of the factory-assignment tier above.
+		for name, typeName := range phpThisFactoryVarTypes(block, from.FilePath, returnTypesBySymbolNameAndFile) {
+			if _, exists := factoryTypes[name]; !exists {
+				factoryTypes[name] = typeName
+			}
+		}
+	}
 	for name, typeName := range factoryTypes {
 		if _, exists := varTypes[name]; !exists {
 			varTypes[name] = typeName
 		}
 	}
+	// Kotlin class-property receivers (`taskQueue.execute(...)` where
+	// `taskQueue` is a typed property or constructor val/var parameter). Lowest
+	// tier: a same-named parameter or local shadows the property.
+	kotlinPropReceivers := map[string]bool{}
+	if from.Language == "Kotlin" {
+		for name, typeName := range kotlinPropTypes {
+			if _, exists := varTypes[name]; !exists {
+				varTypes[name] = typeName
+				kotlinPropReceivers[name] = true
+			}
+		}
+		// Properties of the enclosing extension receiver type: inside
+		// `fun ApplicationCall.respondStaticResource(...)` a bare receiver
+		// `application` is `this.application`, typed by the workspace field
+		// symbol `ApplicationCall.application: Application` — a cross-file
+		// source kotlinPropTypes (same-file class properties) cannot see.
+		if receiverType := kotlinExtensionReceiver(from.Signature, from.Name); receiverType != "" {
+			for _, call := range calls {
+				if call.Receiver == "this" || call.Receiver == "self" || call.Receiver == "super" {
+					continue
+				}
+				if _, exists := varTypes[call.Receiver]; exists {
+					continue
+				}
+				if typeName := kotlinFieldTypeOnType(receiverType, call.Receiver, from, symbolsByShortName); typeName != "" {
+					varTypes[call.Receiver] = typeName
+					kotlinPropReceivers[call.Receiver] = true
+				}
+			}
+		}
+	}
+	// Swift stored-property receivers (`_buffer.discardReadBytes()` extracted
+	// from `self._buffer!....`, bare `delegate?.retry(...)`). Lowest tier: a
+	// same-named parameter or local shadows the property.
+	swiftPropReceivers := map[string]bool{}
+	swiftChainLocalReceivers := map[string]bool{}
+	swiftNestedTypeLocals := map[string]string{}
+	if from.Language == "Swift" {
+		for name, typeName := range swiftTypes.props {
+			if _, exists := varTypes[name]; !exists {
+				varTypes[name] = typeName
+				swiftPropReceivers[name] = true
+			}
+		}
+		// Locals bound from property chains (`let contentRange =
+		// request.headers.range`), typed by hopping declared property types
+		// through the workspace's field symbols. Locals of dotted nested
+		// types (`if let firstRange = contentRange.ranges.first` ->
+		// HTTPFields.Range.Value) resolve by qualified method name in a
+		// dedicated pass below: their type symbols keep the short name, so
+		// the flat tiers cannot look methods up on them.
+		plainChainLocals, dottedChainLocals := swiftChainBoundLocalTypes(block, varTypes, symbolsByShortName)
+		for name, typeName := range plainChainLocals {
+			if _, exists := varTypes[name]; !exists {
+				varTypes[name] = typeName
+				swiftChainLocalReceivers[name] = true
+			}
+		}
+		for name, dotted := range dottedChainLocals {
+			if _, exists := varTypes[name]; !exists {
+				swiftNestedTypeLocals[name] = dotted
+			}
+		}
+	}
 	importedReceiverVars := importedReceiverVarTypes(from.Signature, block, importsByName, goModule)
 	deepReturnedCallSuffixes := receiverDeepChainSuffixes(deepChainedReturnCalls, returnedDeepChainCalls)
 	paramTypes := parameterVarTypes(from.Signature)
+	if from.Language == "Swift" {
+		for name, typeName := range swiftParameterVarTypes(from.Signature, from.Name) {
+			if _, exists := paramTypes[name]; !exists {
+				paramTypes[name] = typeName
+			}
+		}
+	}
 	for name := range localTypes {
 		delete(paramTypes, name)
 	}
@@ -2840,6 +3396,8 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		var targetID string
 		confidence := 0.85
 		reason := "method call resolved via inferred receiver type"
+		resolution := "type_inferred"
+		receiverTypeKind := ""
 		switch call.Receiver {
 		case "this", "self":
 			if from.ContainerID == "" {
@@ -2858,11 +3416,20 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 					confidence = 0.77
 					reason = "method call resolved via assigned returned receiver type"
 				}
+				if kotlinPropReceivers[call.Receiver] || swiftPropReceivers[call.Receiver] {
+					confidence = 0.8
+					reason = "method call resolved via typed property receiver"
+				}
+				if swiftChainLocalReceivers[call.Receiver] {
+					confidence = 0.75
+					reason = "method call resolved via property-chain-typed local receiver"
+				}
 				sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath)
 				if !ok {
 					continue
 				}
 				targetID = sym.ID
+				receiverTypeKind = sym.Kind
 			} else if cls, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[call.Receiver], call.Receiver, from.FilePath); ok {
 				// ClassName.method(): the receiver is itself a type name, not a
 				// variable, so this is a static (class-qualified) call and the
@@ -2881,11 +3448,44 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				targetID = sym.ID
 				confidence = 0.78
 				reason = "method call on package var resolved via qualified imported type"
+			} else if typeName, ok := csharpReceiverMemberType(from, call.Receiver, fieldsByContainer, superContainerByID); ok {
+				// C# class-level member receiver: `Dependencies.Method(...)`
+				// where `Dependencies` is a typed property or field of the
+				// enclosing class (or a base class).
+				sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath)
+				if !ok {
+					continue
+				}
+				targetID = sym.ID
+				confidence = 0.8
+				reason = "method call resolved via typed property receiver"
 			} else {
 				continue
 			}
 		}
 		method, inherited, ok := lookupMethodUpChain(targetID, call.Method, methodsByContainer, superContainerByID)
+		if !ok && from.Language == "Ruby" && call.Method == "new" {
+			// Ruby spells construction `Klass.new`; the constructor that runs is
+			// the class's initialize method.
+			method, inherited, ok = lookupMethodUpChain(targetID, "initialize", methodsByContainer, superContainerByID)
+			if ok {
+				reason = "Ruby Class.new call resolved to the class initialize constructor"
+			}
+		}
+		if !ok && from.Language == "Swift" && receiverTypeKind == "protocol" {
+			// A Swift protocol requirement without a default implementation
+			// produces no method symbol (only `extension Proto` defaults do), so
+			// member lookup on a protocol-typed receiver cannot find it. When
+			// exactly one method in the workspace carries the name, resolve to
+			// that sole implementation — the same unique-name stance as the Go
+			// interface fallback.
+			method, ok = uniqueMethodByShortName(symbolsByShortName[call.Method])
+			if ok {
+				confidence = minFloat(confidence, 0.7)
+				reason = "protocol-typed receiver call resolved to the unique implementing method"
+				resolution = "name_only"
+			}
+		}
 		if !ok || method.ID == from.ID {
 			continue
 		}
@@ -2908,7 +3508,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			Confidence:    confidence,
 			Reason:        reason,
 			RelationScope: scope,
-			Resolution:    "type_inferred",
+			Resolution:    resolution,
 			TargetKind:    "symbol",
 			Evidence: []Evidence{{
 				Kind:      "call_site",
@@ -2981,12 +3581,590 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			WarningCodes: []string{},
 		})
 	}
+	// Kotlin extension functions (`fun Closeable.closeQuietly()`) are top-level
+	// functions, not members of the receiver's type, so the container lookups
+	// above can never resolve `writerToClose.closeQuietly()`. When member
+	// resolution failed, match the call against workspace extension functions:
+	// by declared receiver type (the receiver's inferred type or one of its
+	// spelled supertypes) when the receiver is typed, or by workspace-unique
+	// name when it is not.
+	if from.Language == "Kotlin" {
+		for _, call := range calls {
+			if call.Receiver == "this" || call.Receiver == "self" || call.Receiver == "super" {
+				continue
+			}
+			if methodResolved[call.Receiver+"."+call.Method] {
+				continue
+			}
+			receiverType := varTypes[call.Receiver]
+			if receiverType == "" && isCapitalized(call.Receiver) {
+				// A capitalized untyped receiver is a type/object reference
+				// (`Companion.foo()`), not a value an extension is called on.
+				continue
+			}
+			target, typeDirected, ok := kotlinExtensionFunctionTarget(call, receiverType, from, symbolsByShortName)
+			if !ok || target.ID == from.ID {
+				continue
+			}
+			confidence, reason, resolution := 0.78, "call resolved to Kotlin extension function matching the receiver type", "type_inferred"
+			if !typeDirected {
+				confidence, reason, resolution = 0.68, "call matched workspace-unique Kotlin extension function", "name_only"
+			}
+			methodResolved[call.Receiver+"."+call.Method] = true
+			scope := "file"
+			if target.FilePath != from.FilePath {
+				scope = "module"
+			}
+			relations = append(relations, RelationRecord{
+				RecordType:    "relation",
+				FromID:        from.ID,
+				ToID:          target.ID,
+				Type:          "CALLS",
+				Confidence:    confidence,
+				Reason:        reason,
+				RelationScope: scope,
+				Resolution:    resolution,
+				TargetKind:    "symbol",
+				Evidence: []Evidence{{
+					Kind:      "call_site",
+					FilePath:  from.FilePath,
+					StartLine: from.StartLine,
+					EndLine:   from.EndLine,
+					Detail:    call.Receiver + "." + call.Method,
+				}},
+				WarningCodes: []string{},
+			})
+		}
+	}
+	// Kotlin chained receivers (`call.application.resolveResource(...)`): the
+	// base is a typed variable, the middle hop a declared property of that type
+	// (workspace field symbols), and the terminal call resolves against the
+	// property's type — as a member first, then as a type-directed extension
+	// function.
+	if from.Language == "Kotlin" {
+		for _, chain := range kotlinChains {
+			key := chain.Property + "." + chain.Method
+			if methodResolved[key] {
+				continue
+			}
+			baseType, ok := varTypes[chain.Base]
+			if !ok {
+				continue
+			}
+			propType := kotlinFieldTypeOnType(baseType, chain.Property, from, symbolsByShortName)
+			if propType == "" {
+				continue
+			}
+			var target SymbolRecord
+			resolved := false
+			if sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[propType], propType, from.FilePath); ok {
+				if method, _, ok := lookupMethodUpChain(sym.ID, chain.Method, methodsByContainer, superContainerByID); ok {
+					target, resolved = method, true
+				}
+			}
+			if !resolved {
+				if ext, typeDirected, ok := kotlinExtensionFunctionTarget(receiverCall{Method: chain.Method}, propType, from, symbolsByShortName); ok && typeDirected {
+					target, resolved = ext, true
+				}
+			}
+			if !resolved || target.ID == from.ID {
+				continue
+			}
+			methodResolved[key] = true
+			scope := "file"
+			if target.FilePath != from.FilePath {
+				scope = "module"
+			}
+			relations = append(relations, RelationRecord{
+				RecordType:    "relation",
+				FromID:        from.ID,
+				ToID:          target.ID,
+				Type:          "CALLS",
+				Confidence:    0.75,
+				Reason:        "method call resolved via typed property of chained receiver",
+				RelationScope: scope,
+				Resolution:    "type_inferred",
+				TargetKind:    "symbol",
+				Evidence: []Evidence{{
+					Kind:      "call_site",
+					FilePath:  from.FilePath,
+					StartLine: from.StartLine,
+					EndLine:   from.EndLine,
+					Detail:    chain.Detail,
+				}},
+				WarningCodes: []string{},
+			})
+		}
+	}
+	// Swift property-chain receivers (`request.fileio.streamFile(...)`): the
+	// base is a typed variable, the middle hop a declared (stored or computed)
+	// property — including properties added in `extension` blocks, whose field
+	// symbols carry the extended type in their qualified name even when the
+	// extension lives away from the type's file — and the terminal call
+	// resolves against the property's type. An untyped base (route-handler
+	// closure parameters like `app.get { req ... }` carry no annotation) falls
+	// back to the workspace-unique property name, still gated by the tail
+	// method existing on the property's declared type.
+	if from.Language == "Swift" {
+		for _, chain := range swiftChains {
+			key := chain.Property + "." + chain.Method
+			if methodResolved[key] {
+				continue
+			}
+			if chain.Base == "self" || chain.Base == "super" {
+				// The flat scanner already reads `self.prop.method(` as
+				// `prop.method(`, which the stored-property tier types.
+				continue
+			}
+			baseType, baseTyped := varTypes[chain.Base]
+			propType := ""
+			nameOnly := false
+			if baseTyped {
+				propType = swiftFieldTypeOnType(baseType, chain.Property, symbolsByShortName)
+			} else {
+				propType = swiftUniqueFieldType(chain.Property, symbolsByShortName)
+				nameOnly = propType != ""
+			}
+			if propType == "" {
+				continue
+			}
+			var target SymbolRecord
+			resolved := false
+			if sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[propType], propType, from.FilePath); ok {
+				if method, _, ok := lookupMethodUpChain(sym.ID, chain.Method, methodsByContainer, superContainerByID); ok {
+					target, resolved = method, true
+				}
+			}
+			if !resolved {
+				// Extension members declared in a different file than their
+				// type are scoped under the extended type's name but never
+				// linked to its container; resolve them by qualified name.
+				target, resolved = swiftUniqueQualifiedMethod(propType, chain.Method, symbolsByShortName)
+			}
+			if !resolved || target.ID == from.ID {
+				continue
+			}
+			confidence, reason, resolution := 0.75, "method call resolved via typed property of chained receiver", "type_inferred"
+			if nameOnly {
+				confidence, reason, resolution = 0.68, "chained receiver typed via workspace-unique Swift property", "name_only"
+			}
+			methodResolved[key] = true
+			scope := "file"
+			if target.FilePath != from.FilePath {
+				scope = "module"
+			}
+			relations = append(relations, RelationRecord{
+				RecordType:    "relation",
+				FromID:        from.ID,
+				ToID:          target.ID,
+				Type:          "CALLS",
+				Confidence:    confidence,
+				Reason:        reason,
+				RelationScope: scope,
+				Resolution:    resolution,
+				TargetKind:    "symbol",
+				Evidence: []Evidence{{
+					Kind:      "call_site",
+					FilePath:  from.FilePath,
+					StartLine: from.StartLine,
+					EndLine:   from.EndLine,
+					Detail:    chain.Detail,
+				}},
+				WarningCodes: []string{},
+			})
+		}
+		// Locals chain-bound to dotted nested types (`if let firstRange =
+		// contentRange.ranges.first` -> HTTPFields.Range.Value): the nested
+		// type's symbol keeps its short name (often ambiguous, e.g. two
+		// `Value` enums per header type), so calls on these receivers resolve
+		// by the method's unique dotted qualified name instead.
+		for _, call := range calls {
+			key := call.Receiver + "." + call.Method
+			if methodResolved[key] {
+				continue
+			}
+			dottedType := swiftNestedTypeLocals[call.Receiver]
+			if dottedType == "" {
+				continue
+			}
+			method, ok := swiftUniqueQualifiedMethod(dottedType, call.Method, symbolsByShortName)
+			if !ok || method.ID == from.ID {
+				continue
+			}
+			methodResolved[key] = true
+			scope := "file"
+			if method.FilePath != from.FilePath {
+				scope = "module"
+			}
+			relations = append(relations, RelationRecord{
+				RecordType:    "relation",
+				FromID:        from.ID,
+				ToID:          method.ID,
+				Type:          "CALLS",
+				Confidence:    0.75,
+				Reason:        "method call resolved via nested-type property-chain local receiver",
+				RelationScope: scope,
+				Resolution:    "type_inferred",
+				TargetKind:    "symbol",
+				Evidence: []Evidence{{
+					Kind:      "call_site",
+					FilePath:  from.FilePath,
+					StartLine: from.StartLine,
+					EndLine:   from.EndLine,
+					Detail:    call.Receiver + "." + call.Method,
+				}},
+				WarningCodes: []string{},
+			})
+		}
+	}
+	// Java fluent constructor chains (`new Retrofit.Builder().baseUrl(...)
+	// .build()`): every chained method resolves against the constructed type
+	// when the whole chain is defined on it (fluent builders return `this`);
+	// otherwise only the first call — dispatched on the constructed value
+	// itself — is trusted.
+	if from.Language == "Java" {
+		for _, chain := range javaChains {
+			sym, ok := javaResolveConstructedType(chain, from, symbolsByShortName)
+			if !ok {
+				continue
+			}
+			targets := make([]SymbolRecord, 0, len(chain.Methods))
+			for _, name := range chain.Methods {
+				method, _, ok := lookupMethodUpChain(sym.ID, name, methodsByContainer, superContainerByID)
+				if !ok {
+					break
+				}
+				targets = append(targets, method)
+			}
+			if len(targets) == 0 {
+				continue
+			}
+			if len(targets) < len(chain.Methods) {
+				targets = targets[:1]
+			}
+			for _, method := range targets {
+				if method.ID == from.ID {
+					continue
+				}
+				scope := "file"
+				if method.FilePath != from.FilePath {
+					scope = "module"
+				}
+				relations = append(relations, RelationRecord{
+					RecordType:    "relation",
+					FromID:        from.ID,
+					ToID:          method.ID,
+					Type:          "CALLS",
+					Confidence:    0.78,
+					Reason:        "method call resolved via fluent constructor chain type",
+					RelationScope: scope,
+					Resolution:    "type_inferred",
+					TargetKind:    "symbol",
+					Evidence: []Evidence{{
+						Kind:      "call_site",
+						FilePath:  from.FilePath,
+						StartLine: from.StartLine,
+						EndLine:   from.EndLine,
+						Detail:    chain.Detail,
+					}},
+					WarningCodes: []string{},
+				})
+			}
+		}
+	}
+	// Ruby receiver-less calls target implicit self: emit an edge when the bare
+	// word resolves to a method of the enclosing class (or an ancestor). The
+	// candidate list already excludes keywords, locals, parameters, and hash
+	// keys; requiring a same-class method match keeps this precise.
+	for _, name := range rubyBareCalls {
+		if name == from.Name || from.ContainerID == "" {
+			continue
+		}
+		method, inherited, ok := lookupMethodUpChain(from.ContainerID, name, methodsByContainer, superContainerByID)
+		if !ok || method.ID == from.ID {
+			continue
+		}
+		confidence := 0.85
+		reason := "receiver-less Ruby call resolved to a method of the enclosing class"
+		if inherited {
+			confidence = 0.8
+			reason += " (inherited from a base type)"
+		}
+		scope := "file"
+		if method.FilePath != from.FilePath {
+			scope = "module"
+		}
+		relations = append(relations, RelationRecord{
+			RecordType:    "relation",
+			FromID:        from.ID,
+			ToID:          method.ID,
+			Type:          "CALLS",
+			Confidence:    confidence,
+			Reason:        reason,
+			RelationScope: scope,
+			Resolution:    "type_inferred",
+			TargetKind:    "symbol",
+			Evidence: []Evidence{{
+				Kind:      "call_site",
+				FilePath:  from.FilePath,
+				StartLine: from.StartLine,
+				EndLine:   from.EndLine,
+				Detail:    name,
+			}},
+			WarningCodes: []string{},
+		})
+	}
+	// PHP `Class::method()` / `self::` / `static::` / `parent::` static calls:
+	// resolve the class reference (terminal segment against the workspace type
+	// index, or the enclosing class / its superclass for the keywords), then
+	// look the method up the inheritance chain like every other receiver call.
+	for _, call := range phpStatics {
+		var targetID string
+		confidence := 0.82
+		reason := "PHP static method call resolved to the named class"
+		switch call.Class {
+		case "self", "static":
+			targetID = from.ContainerID
+			confidence = 0.9
+			reason = "PHP self/static call resolved to the enclosing class"
+		case "parent":
+			targetID = superContainerByID[from.ContainerID]
+			confidence = 0.85
+			reason = "PHP parent:: call resolved to the superclass"
+		default:
+			cls, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[call.Class], call.Class, from.FilePath)
+			if !ok {
+				continue
+			}
+			targetID = cls.ID
+		}
+		if targetID == "" {
+			continue
+		}
+		method, inherited, ok := lookupMethodUpChain(targetID, call.Method, methodsByContainer, superContainerByID)
+		if !ok || method.ID == from.ID {
+			continue
+		}
+		if inherited && call.Class != "parent" {
+			confidence = minFloat(confidence, 0.82)
+			reason += " (inherited from a base type)"
+		}
+		scope := "file"
+		if method.FilePath != from.FilePath {
+			scope = "module"
+		}
+		relations = append(relations, RelationRecord{
+			RecordType:    "relation",
+			FromID:        from.ID,
+			ToID:          method.ID,
+			Type:          "CALLS",
+			Confidence:    confidence,
+			Reason:        reason,
+			RelationScope: scope,
+			Resolution:    "type_inferred",
+			TargetKind:    "symbol",
+			Evidence: []Evidence{{
+				Kind:      "call_site",
+				FilePath:  from.FilePath,
+				StartLine: from.StartLine,
+				EndLine:   from.EndLine,
+				Detail:    call.Detail,
+			}},
+			WarningCodes: []string{},
+		})
+	}
+	// PHP `$this->prop->method()` property receivers: the property's type comes
+	// from this file's typed declarations, @var docblocks, or constructor
+	// assignments (phpPropertyTypes, computed once per file by the caller).
+	for _, call := range phpPropCalls {
+		typeName, ok := phpPropTypes[call.Receiver]
+		if !ok {
+			continue
+		}
+		sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath)
+		if !ok {
+			continue
+		}
+		method, inherited, ok := lookupMethodUpChain(sym.ID, call.Method, methodsByContainer, superContainerByID)
+		if !ok || method.ID == from.ID {
+			continue
+		}
+		confidence := 0.8
+		reason := "method call resolved via typed property receiver"
+		if inherited {
+			confidence = 0.78
+			reason += " (inherited from a base type)"
+		}
+		scope := "file"
+		if method.FilePath != from.FilePath {
+			scope = "module"
+		}
+		relations = append(relations, RelationRecord{
+			RecordType:    "relation",
+			FromID:        from.ID,
+			ToID:          method.ID,
+			Type:          "CALLS",
+			Confidence:    confidence,
+			Reason:        reason,
+			RelationScope: scope,
+			Resolution:    "type_inferred",
+			TargetKind:    "symbol",
+			Evidence: []Evidence{{
+				Kind:      "call_site",
+				FilePath:  from.FilePath,
+				StartLine: from.StartLine,
+				EndLine:   from.EndLine,
+				Detail:    "this->" + call.Receiver + "->" + call.Method,
+			}},
+			WarningCodes: []string{},
+		})
+	}
+	// C# one-hop member chains `A.B.Method(...)`: A is a typed member of the
+	// enclosing class (or a typed parameter/local), B a typed property on A's
+	// type — declared in that type's own file — and Method resolves up B's
+	// type's inheritance chain. Interface-typed members resolve to the
+	// interface's method symbol, matching how the call is dispatched.
+	for _, call := range csChainCalls {
+		if methodResolved[call.Property+"."+call.Method] {
+			// The generic scanner read this site as `B.Method(` and a typed
+			// tier above already resolved that pair (e.g. the enclosing class
+			// itself has a member named B of the same type); don't double-emit.
+			continue
+		}
+		// The property is looked up on A's type — or on the enclosing class
+		// itself when the chain is spelled `this.B.Method(` / `base.B.Method(`
+		// (the member walk already covers inherited members for both).
+		propContainer, propFile := "", from.FilePath
+		if call.Receiver == "this" || call.Receiver == "base" {
+			propContainer = from.ContainerID
+		} else {
+			receiverType, ok := csharpReceiverMemberType(from, call.Receiver, fieldsByContainer, superContainerByID)
+			if !ok {
+				receiverType, ok = varTypes[call.Receiver]
+			}
+			if !ok {
+				continue
+			}
+			receiverSym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[receiverType], receiverType, from.FilePath)
+			if !ok {
+				continue
+			}
+			propContainer, propFile = receiverSym.ID, receiverSym.FilePath
+		}
+		if propContainer == "" {
+			continue
+		}
+		propType, ok := csharpMemberType(fieldsByContainer, superContainerByID, propContainer, call.Property)
+		if !ok {
+			continue
+		}
+		propSym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[propType], propType, propFile)
+		if !ok {
+			continue
+		}
+		method, inherited, ok := lookupMethodUpChain(propSym.ID, call.Method, methodsByContainer, superContainerByID)
+		if !ok || method.ID == from.ID {
+			continue
+		}
+		confidence := 0.75
+		reason := "method call resolved via typed property chain receiver"
+		if inherited {
+			confidence = 0.73
+			reason += " (inherited from a base type)"
+		}
+		scope := "file"
+		if method.FilePath != from.FilePath {
+			scope = "module"
+		}
+		relations = append(relations, RelationRecord{
+			RecordType:    "relation",
+			FromID:        from.ID,
+			ToID:          method.ID,
+			Type:          "CALLS",
+			Confidence:    confidence,
+			Reason:        reason,
+			RelationScope: scope,
+			Resolution:    "type_inferred",
+			TargetKind:    "symbol",
+			Evidence: []Evidence{{
+				Kind:      "call_site",
+				FilePath:  from.FilePath,
+				StartLine: from.StartLine,
+				EndLine:   from.EndLine,
+				Detail:    call.Detail,
+			}},
+			WarningCodes: []string{},
+		})
+		// The generic scanner saw this site as `B.Method(`; mark that pair
+		// resolved so the fallback tiers below do not re-emit for it.
+		methodResolved[call.Property+"."+call.Method] = true
+	}
+	// C# extension methods: `x.Ext(...)` never resolves through the receiver's
+	// type (the method is a static on an unrelated static class), so a receiver
+	// call left unresolved by the typed tiers falls back to the workspace's
+	// unique extension-shaped method with that name (static + `this` first
+	// parameter). Uniqueness keeps this conflict-free, as in the Go fallback.
+	if from.Language == "C#" {
+		for _, call := range allReceiverCalls {
+			if call.Receiver == "this" || call.Receiver == "self" || call.Receiver == "base" {
+				continue
+			}
+			if methodResolved[call.Receiver+"."+call.Method] {
+				continue
+			}
+			method, ok := csharpUniqueExtensionMethod(symbolsByShortName[call.Method])
+			if !ok || method.ID == from.ID {
+				continue
+			}
+			methodResolved[call.Receiver+"."+call.Method] = true
+			scope := "file"
+			if method.FilePath != from.FilePath {
+				scope = "module"
+			}
+			relations = append(relations, RelationRecord{
+				RecordType:    "relation",
+				FromID:        from.ID,
+				ToID:          method.ID,
+				Type:          "CALLS",
+				Confidence:    0.7,
+				Reason:        "method call resolved to the unique C# extension method",
+				RelationScope: scope,
+				Resolution:    "name_only",
+				TargetKind:    "symbol",
+				Evidence: []Evidence{{
+					Kind:      "call_site",
+					FilePath:  from.FilePath,
+					StartLine: from.StartLine,
+					EndLine:   from.EndLine,
+					Detail:    call.Receiver + "." + call.Method,
+				}},
+				WarningCodes: []string{},
+			})
+		}
+	}
 	for _, call := range chainedCalls {
 		sym, ok := firstTypeLikeNamed(symbolsByShortName[call.TypeName], call.TypeName)
 		if !ok {
 			continue
 		}
+		confidence := 0.8
+		reason := "method call resolved via chained constructor type"
+		resolution := "type_inferred"
 		method, ok := methodsByContainer[sym.ID][call.Method]
+		if !ok && interfaceSignatureDeclaresMethod(sym.Signature, call.Method) {
+			// The "constructor" here is really an interface-typed accessor: a Go
+			// getter is conventionally named after the interface it returns
+			// (s.AuthStore().IsAdminPermitted()), and interface methods are
+			// declared inside the type declaration rather than as method
+			// symbols. When the interface names this method and exactly one
+			// method in the workspace carries the name, resolve to that sole
+			// implementation — the same unique-name tier as the receiver-call
+			// fallback.
+			method, ok = uniqueMethodByShortName(symbolsByShortName[call.Method])
+			confidence = 0.7
+			reason = "interface method call resolved to the unique implementing method"
+			resolution = "name_only"
+		}
 		if !ok || method.ID == from.ID {
 			continue
 		}
@@ -2999,10 +4177,10 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			FromID:        from.ID,
 			ToID:          method.ID,
 			Type:          "CALLS",
-			Confidence:    0.8,
-			Reason:        "method call resolved via chained constructor type",
+			Confidence:    confidence,
+			Reason:        reason,
 			RelationScope: scope,
-			Resolution:    "type_inferred",
+			Resolution:    resolution,
 			TargetKind:    "symbol",
 			Evidence: []Evidence{{
 				Kind:      "call_site",
@@ -3018,12 +4196,35 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		if deepReturnedCallSuffixes[call.Factory+"."+call.Method] {
 			continue
 		}
-		for _, typeName := range returnTypesBySymbolNameAndFile[call.Factory][from.FilePath] {
+		returnTypes := returnTypesBySymbolNameAndFile[call.Factory][from.FilePath]
+		if len(returnTypes) == 0 && from.Language == "Go" {
+			// A Go factory is commonly declared in a sibling file of the same
+			// package (one package spans a directory), so fall back to the
+			// package-level return types when this file declares no such factory.
+			returnTypes = returnTypesBySymbolNameAndDir[call.Factory][filepath.ToSlash(filepath.Dir(from.FilePath))]
+		}
+		for _, typeName := range returnTypes {
 			sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
 			if !ok {
 				continue
 			}
+			confidence := 0.78
+			reason := "method call resolved via returned receiver type"
+			resolution := "type_inferred"
 			method, ok := methodsByContainer[sym.ID][call.Method]
+			if !ok && interfaceSignatureDeclaresMethod(sym.Signature, call.Method) {
+				// Interface-typed return: a Go interface declares its methods
+				// inside the type declaration itself (they are not separate
+				// method symbols), so the container lookup above cannot succeed.
+				// When the locally-known interface names this method and exactly
+				// one method in the workspace carries the name, resolve to that
+				// sole implementation — the same unique-name tier as the
+				// receiver-call fallback.
+				method, ok = uniqueMethodByShortName(symbolsByShortName[call.Method])
+				confidence = 0.7
+				reason = "interface-typed return resolved to the unique implementing method"
+				resolution = "name_only"
+			}
 			if !ok || method.ID == from.ID {
 				continue
 			}
@@ -3036,10 +4237,10 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				FromID:        from.ID,
 				ToID:          method.ID,
 				Type:          "CALLS",
-				Confidence:    0.78,
-				Reason:        "method call resolved via returned receiver type",
+				Confidence:    confidence,
+				Reason:        reason,
 				RelationScope: scope,
-				Resolution:    "type_inferred",
+				Resolution:    resolution,
 				TargetKind:    "symbol",
 				Evidence: []Evidence{{
 					Kind:      "call_site",
@@ -6154,16 +7355,16 @@ func externalParts(id string) (string, string) {
 // openSource lists the repository's files and returns a per-file content reader
 // that fetches one file at a time (from the git HEAD tree or the working tree),
 // so the snapshot never holds all source content in memory.
-func openSource(ctx context.Context, repo string, useHead bool, ignoreFiles, includeFiles []string) ([]string, contentReader, func() error, error) {
+func openSource(ctx context.Context, repo string, useHead bool, ignoreFiles, includeFiles []string) ([]string, contentReader, prefixReader, func() error, error) {
 	if useHead {
 		paths, err := gitutil.ListFiles(ctx, repo, "HEAD")
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
-		paths = filterVendoredPaths(paths)
+		paths = filterVendoredPaths(paths, headIgnoreMatcher(ctx, repo))
 		batch, err := gitutil.NewBatchFileReader(ctx, repo, "HEAD")
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		read := func(path string) (string, bool) {
 			if strings.Contains(path, "\n") {
@@ -6179,15 +7380,27 @@ func openSource(ctx context.Context, repo string, useHead bool, ignoreFiles, inc
 			}
 			return content, true
 		}
-		return paths, read, batch.Close, nil
+		// Git blob reads are all-or-nothing, so the HEAD-tree prefix reader
+		// fetches the blob and truncates.
+		readPrefix := func(path string, limit int) (string, bool) {
+			content, ok := read(path)
+			if !ok {
+				return "", false
+			}
+			if limit >= 0 && len(content) > limit {
+				content = content[:limit]
+			}
+			return content, true
+		}
+		return paths, read, readPrefix, batch.Close, nil
 	}
 	ignores, err := loadWorktreeIgnoreMatcher(repo, ignoreFiles, includeFiles)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	paths, err := workingTreeFiles(repo, ignores)
+	paths, err := workingTreeFiles(repo, ignores, trackedDirSet(ctx, repo))
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	read := func(path string) (string, bool) {
 		full := filepath.Join(repo, filepath.FromSlash(path))
@@ -6201,7 +7414,25 @@ func openSource(ctx context.Context, repo string, useHead bool, ignoreFiles, inc
 		}
 		return string(content), true
 	}
-	return paths, read, nil, nil
+	readPrefix := func(path string, limit int) (string, bool) {
+		full := filepath.Join(repo, filepath.FromSlash(path))
+		info, err := os.Lstat(full)
+		if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return "", false
+		}
+		file, err := os.Open(full)
+		if err != nil {
+			return "", false
+		}
+		defer file.Close()
+		buf := make([]byte, limit)
+		n, err := io.ReadFull(file, buf)
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			return "", false
+		}
+		return string(buf[:n]), true
+	}
+	return paths, read, readPrefix, nil, nil
 }
 
 // bundledRuntimeDirNames are directory basenames of third-party C/C++ runtime,
@@ -6215,14 +7446,17 @@ var bundledRuntimeDirNames = map[string]struct{}{
 	"mingw": {}, "mingw-w64": {}, "wasi-libc": {},
 }
 
-// isVendoredScanDir reports whether a directory is vendored/generated and should
-// be skipped during the working-tree walk. It covers the universally-vendored
-// and generated directory names plus nested bundled C/C++ runtime trees.
+// isVendoredScanDir reports whether a directory is unambiguously vendored
+// third-party (or generated) and must be skipped during the scan regardless of
+// git tracked-ness: these names mean third-party even when committed (Go
+// vendor/, checked-in node_modules, third_party trees) plus nested bundled
+// C/C++ runtime trees. Ambiguous names like build/ or deps/ are handled
+// separately by skipVendoredDir, which consults git tracked-ness.
 func isVendoredScanDir(rel, name string) bool {
 	switch name {
-	case ".git", "node_modules", "vendor", ".next", "dist", "build",
-		"third_party", "third-party", "thirdparty", "3rdparty", "external",
-		"deps", "Pods", "Carthage":
+	case ".git", "node_modules", "vendor", ".next",
+		"third_party", "third-party", "thirdparty", "3rdparty",
+		"Pods", "Carthage":
 		return true
 	}
 	// Nested bundled-runtime trees: require a parent segment so the project's own
@@ -6235,6 +7469,55 @@ func isVendoredScanDir(rel, name string) bool {
 	return false
 }
 
+// isAmbiguousVendoredDirName reports whether a directory name usually denotes
+// generated or fetched content (build output, dist bundles, fetched deps) but
+// is also a common first-party source directory name (next.js keeps its
+// compiler in packages/next/src/build; rabbitmq keeps its applications in
+// deps/). Generated output is virtually never committed, so these names are
+// skipped only when the directory is not tracked in git — a tracked directory
+// of this name is first-party source.
+func isAmbiguousVendoredDirName(name string) bool {
+	switch name {
+	case "build", "dist", "external", "deps":
+		return true
+	}
+	return false
+}
+
+// skipVendoredDir is the single vendored-directory decision for both the
+// working-tree walk and the HEAD-tree listing: skip unambiguous vendored names
+// always, and ambiguous generated-output names only when the directory is not
+// tracked in git (dirTracked). Gitignore negations that re-include a
+// descendant (see ReincludesDescendant) keep the tree walked in either case;
+// the ignore rules themselves then filter its contents.
+func skipVendoredDir(rel, name string, ignores ignoreMatcher, dirTracked func(string) bool) bool {
+	vendored := isVendoredScanDir(rel, name) ||
+		(isAmbiguousVendoredDirName(name) && !dirTracked(rel))
+	return vendored && !ignores.ReincludesDescendant(rel)
+}
+
+// trackedDirSet returns every repo-relative directory (slash-separated) that
+// contains a git-tracked file, built from one `git ls-files -z` subprocess for
+// the whole snapshot; the walk then answers "is this directory tracked?" with
+// a map lookup instead of per-directory git calls. A non-git directory yields
+// nil, so every directory reads as untracked there.
+func trackedDirSet(ctx context.Context, repo string) map[string]struct{} {
+	files, err := gitutil.ListIndexFiles(ctx, repo)
+	if err != nil {
+		return nil
+	}
+	dirs := make(map[string]struct{})
+	for _, file := range files {
+		for dir := path.Dir(file); dir != "." && dir != "/"; dir = path.Dir(dir) {
+			if _, seen := dirs[dir]; seen {
+				break
+			}
+			dirs[dir] = struct{}{}
+		}
+	}
+	return dirs
+}
+
 func isVendoredScanFile(rel, name string) bool {
 	switch name {
 	case "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
@@ -6245,7 +7528,11 @@ func isVendoredScanFile(rel, name string) bool {
 	return strings.HasSuffix(rel, ".map")
 }
 
-func workingTreeFiles(repo string, ignores ignoreMatcher) ([]string, error) {
+func workingTreeFiles(repo string, ignores ignoreMatcher, trackedDirs map[string]struct{}) ([]string, error) {
+	dirTracked := func(rel string) bool {
+		_, ok := trackedDirs[rel]
+		return ok
+	}
 	var paths []string
 	err := filepath.WalkDir(repo, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -6259,7 +7546,7 @@ func workingTreeFiles(repo string, ignores ignoreMatcher) ([]string, error) {
 					return err
 				}
 				rel = filepath.ToSlash(rel)
-				if isVendoredScanDir(rel, name) {
+				if skipVendoredDir(rel, name, ignores, dirTracked) {
 					return filepath.SkipDir
 				}
 				if ignores.Ignored(rel, true) && !ignores.MayIncludeDescendant(rel) {
@@ -6289,10 +7576,10 @@ func workingTreeFiles(repo string, ignores ignoreMatcher) ([]string, error) {
 	return paths, err
 }
 
-func filterVendoredPaths(paths []string) []string {
+func filterVendoredPaths(paths []string, ignores ignoreMatcher) []string {
 	filtered := paths[:0]
 	for _, rel := range paths {
-		if vendoredPath(rel) {
+		if vendoredPath(rel, ignores) {
 			continue
 		}
 		filtered = append(filtered, rel)
@@ -6300,7 +7587,28 @@ func filterVendoredPaths(paths []string) []string {
 	return filtered
 }
 
-func vendoredPath(rel string) bool {
+// headIgnoreMatcher parses the repository's root .gitignore as of HEAD so the
+// vendored-directory heuristic can honor negation rules (see
+// ReincludesDescendant) when listing files from the HEAD tree, matching the
+// working-tree walk's behavior.
+func headIgnoreMatcher(ctx context.Context, repo string) ignoreMatcher {
+	content, ok, err := gitutil.ShowFile(ctx, repo, "HEAD", ".gitignore")
+	if err != nil || !ok {
+		return ignoreMatcher{}
+	}
+	var matcher ignoreMatcher
+	if err := matcher.loadContent(content, false); err != nil {
+		return ignoreMatcher{}
+	}
+	return matcher
+}
+
+// vendoredPath filters a HEAD-tree path. Every path in the HEAD listing is
+// tracked by construction, so ambiguous generated-output directory names
+// (build, dist, external, deps) are never vendored here — headTracked reports
+// every directory as tracked; only the unambiguous vendored names are skipped.
+func vendoredPath(rel string, ignores ignoreMatcher) bool {
+	headTracked := func(string) bool { return true }
 	rel = filepath.ToSlash(rel)
 	parts := strings.Split(rel, "/")
 	if len(parts) == 0 {
@@ -6311,7 +7619,7 @@ func vendoredPath(rel string) bool {
 	}
 	for i, part := range parts[:len(parts)-1] {
 		dirRel := strings.Join(parts[:i+1], "/")
-		if isVendoredScanDir(dirRel, part) {
+		if skipVendoredDir(dirRel, part, ignores, headTracked) {
 			return true
 		}
 	}
@@ -6336,7 +7644,7 @@ func importCapableExtension(ext string) bool {
 	switch ext {
 	case ".bash", ".sh", ".zsh",
 		".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx",
-		".cs", ".cue", ".ex", ".exs", ".go", ".gradle", ".groovy",
+		".cs", ".cue", ".ex", ".exs", ".go", ".gradle", ".groovy", ".gvy",
 		".java", ".kt", ".kts", ".scala", ".sc", ".sbt", ".py",
 		".js", ".jsx", ".ts", ".tsx", ".lua", ".ml", ".mli", ".php",
 		".proto", ".rb", ".rs", ".swift":
@@ -8795,7 +10103,7 @@ func importsFor(path, content string) []string {
 		return scanImports(content, regexp.MustCompile(`(?m)^\s*(?:alias|import|require|use)\s+([A-Za-z0-9_\.]+)`))
 	case ".go":
 		return scanGoImports(content)
-	case ".gradle", ".groovy":
+	case ".gradle", ".groovy", ".gvy":
 		return scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z0-9_\.]+)`))
 	case ".hcl", ".tf", ".tfvars":
 		return nil
@@ -9423,6 +10731,18 @@ func importModuleMatchesFile(module, importingPath, targetPath string) bool {
 		target := strings.TrimSuffix(targetPath, filepath.Ext(targetPath))
 		return target == base || (strings.HasSuffix(target, "/index") && strings.TrimSuffix(target, "/index") == base)
 	}
+	if strings.HasSuffix(module, ".go") && strings.HasSuffix(targetPath, ".go") {
+		// A Go import names a package — every non-test .go file in a
+		// directory — but resolveGoImport records one representative file per
+		// package, so symbols declared in sibling files of the imported
+		// package never matched (hugo's `loggers.TimeTrackfn` resolved only
+		// when the callee happened to live in the representative file). When
+		// the resolved module entry is a .go file, any non-test sibling in
+		// its directory belongs to the imported package; test files are not
+		// importable.
+		return !strings.HasSuffix(targetPath, "_test.go") &&
+			filepath.ToSlash(filepath.Dir(module)) == filepath.ToSlash(filepath.Dir(targetPath))
+	}
 	module = strings.TrimPrefix(module, "@/")
 	module = strings.TrimPrefix(module, "src/")
 	module = strings.TrimSuffix(filepath.ToSlash(module), filepath.Ext(module))
@@ -9491,7 +10811,7 @@ func matchDelimiter(b []byte, openIdx int) int {
 	return -1
 }
 
-func callLikeIdentifiers(content string) map[string]struct{} {
+func callLikeIdentifiers(content, language string) map[string]struct{} {
 	stripped := stripCodeLiteralsAndComments(content)
 	identifiers := map[string]struct{}{}
 	call := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>\n;{}()]*>)?\(`)
@@ -9501,7 +10821,7 @@ func callLikeIdentifiers(content string) map[string]struct{} {
 		}
 		start := match[2]
 		name := stripped[match[2]:match[3]]
-		if callNameIgnored(stripped, start, name) {
+		if callNameIgnored(stripped, start, name, language) {
 			continue
 		}
 		identifiers[name] = struct{}{}
@@ -9509,7 +10829,7 @@ func callLikeIdentifiers(content string) map[string]struct{} {
 	return identifiers
 }
 
-func callNameIgnored(content string, start int, name string) bool {
+func callNameIgnored(content string, start int, name, language string) bool {
 	for i := start - 1; i >= 0; i-- {
 		switch content[i] {
 		case ' ', '\t', '\n', '\r':
@@ -9526,7 +10846,12 @@ func callNameIgnored(content string, start int, name string) bool {
 	case "append", "cap", "close", "complex", "copy", "delete", "imag", "len", "make", "new", "panic", "print", "println", "real", "recover":
 		return true
 	case "Array", "Boolean", "Date", "Error", "Map", "Math", "Number", "Object", "Promise", "RegExp", "Request", "Response", "Set", "String", "URL", "URLSearchParams":
-		return true
+		// JS/browser globals; a call to these names is almost never a call to a
+		// repo symbol in a JS-family file. Dart is different: names like Request
+		// and Response are ordinary user classes (dart:core has no such globals),
+		// and resolution only fires when a repo symbol actually matches — so the
+		// blanket skip would silently drop Dart constructor calls.
+		return language != "Dart"
 	default:
 		return false
 	}

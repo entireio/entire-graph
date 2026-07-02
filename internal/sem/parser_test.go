@@ -1124,6 +1124,76 @@ func TestTreeSitterParserSwiftMasksModernSyntax(t *testing.T) {
 	}
 }
 
+// Swift `extension Foo` blocks parse as class_declaration nodes; they must not
+// emit duplicate class symbols, and their members (any modifier combination)
+// must qualify under the extended type so call resolution can find them.
+func TestTreeSitterParserSwiftExtensionMembersScopeToExtendedType(t *testing.T) {
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("CommandParser.swift", `struct CommandParser {
+  var commandTree: Tree
+
+  struct Nested {
+    var flag: Bool
+  }
+}
+
+extension CommandParser {
+  fileprivate mutating func parseCurrent(
+    _ split: inout SplitArguments
+  ) throws -> ParsableCommand {
+    return try checkForBuiltInFlags(split)
+  }
+
+  internal mutating func descendingParse(_ split: inout SplitArguments) throws {
+    _ = try parseCurrent(&split)
+  }
+}
+
+public extension CommandParser {
+  func checkForCompletionScriptRequest(_ split: inout SplitArguments) throws {
+  }
+}
+
+extension CommandParser.Nested {
+  func toggle() -> Bool { return !flag }
+}
+
+extension Array<Element> {
+  func firstOrNil() -> Element? { return first }
+}
+`)
+	if language != "Swift" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	byName := map[string]Entity{}
+	for _, entity := range entities {
+		byName[entity.Name] = entity
+		if entity.Kind == "class" {
+			t.Fatalf("extension emitted a class symbol %q: %#v", entity.Name, entities)
+		}
+	}
+	for _, want := range []string{
+		"CommandParser.parseCurrent",
+		"CommandParser.descendingParse",
+		"CommandParser.checkForCompletionScriptRequest",
+		"CommandParser.Nested.toggle",
+		"Array.firstOrNil",
+	} {
+		entity, ok := byName[want]
+		if !ok {
+			t.Fatalf("missing extension member %q in %#v", want, entities)
+		}
+		if entity.Kind != "method" {
+			t.Fatalf("extension member %q kind = %q, want method", want, entity.Kind)
+		}
+	}
+	if entity := byName["CommandParser"]; entity.Kind != "struct" {
+		t.Fatalf("primary declaration kind = %q, want struct", entity.Kind)
+	}
+}
+
 func TestTreeSitterParserDetectsCPlusPlusHeaders(t *testing.T) {
 	entities, language, status := TreeSitterParser{}.ParseWithStatus("args.h", `#ifndef FMT_ARGS_H_
 #define FMT_ARGS_H_
@@ -1840,6 +1910,10 @@ func TestTreeSitterParserTypeScriptMasksTypeofDynamicImportTypeArgument(t *testi
 }
 
 func TestTreeSitterParserObjectiveCInventoryFallback(t *testing.T) {
+	// A .h that sniffs as Objective-C parses with the tree-sitter-objc grammar
+	// (the header is the canonical anchor of the class: definition lookups
+	// expect e.g. AFHTTPSessionManager at AFHTTPSessionManager.h), so the
+	// @interface must yield a class symbol rather than an inventory document.
 	entities, language, status := TreeSitterParser{}.ParseWithStatus("AppDelegate.h", `#import <RCTAppDelegate.h>
 #import <UIKit/UIKit.h>
 
@@ -1853,8 +1927,14 @@ func TestTreeSitterParserObjectiveCInventoryFallback(t *testing.T) {
 	if status.ParseError {
 		t.Fatalf("unexpected parse status: %#v", status)
 	}
-	if len(entities) == 0 || entities[0].Kind != "document" {
-		t.Fatalf("expected Objective-C inventory entity, got %#v", entities)
+	var class *Entity
+	for i := range entities {
+		if entities[i].Kind == "class" && entities[i].Name == "AppDelegate" {
+			class = &entities[i]
+		}
+	}
+	if class == nil {
+		t.Fatalf("expected Objective-C class entity from header, got %#v", entities)
 	}
 
 	entities, language, status = TreeSitterParser{}.ParseWithStatus("AppDelegate.mm", `#import "AppDelegate.h"
@@ -1990,6 +2070,133 @@ data class User(
 		if entity.Kind != "field" || entity.Signature != want.signature {
 			t.Fatalf("unexpected Kotlin field entity %s: %#v", want.name, entity)
 		}
+	}
+}
+
+// Kotlin top-level extension functions must emit under their own name, not the
+// receiver type (evidence: on square/retrofit `suspend fun <T> Call<T>
+// .awaitResponse()` and `suspend fun Exception.suspendAndThrow()` in
+// KotlinExtensions.kt were absent — tree-sitter-kotlin has no name field on
+// function_declaration, so the generic name descent returned the receiver's
+// type_identifier).
+func TestKotlinTopLevelExtensionFunctionSymbols(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "KotlinExtensions.kt", `package retrofit2
+
+suspend fun <T : Any> Call<T>.awaitResponse(): Response<T> {
+  return suspendCancellableCoroutine { continuation -> }
+}
+
+internal suspend fun Exception.suspendAndThrow(): Nothing {
+  throw this
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"awaitResponse", "suspendAndThrow"} {
+		symbol := symbolByKindAndName(snapshot.Symbols, "function", name)
+		if symbol.ID == "" {
+			t.Fatalf("missing extension function symbol %q in %#v", name, snapshot.Symbols)
+		}
+		if symbol.FilePath != "KotlinExtensions.kt" {
+			t.Fatalf("%s file = %q", name, symbol.FilePath)
+		}
+	}
+	// The receiver type must not be misread as the function name.
+	for _, wrong := range []string{"Call", "Exception"} {
+		if symbolByKindAndName(snapshot.Symbols, "function", wrong).ID != "" {
+			t.Fatalf("receiver type %q emitted as a function symbol", wrong)
+		}
+	}
+}
+
+// Scala `object` singletons must emit — including with an extends clause
+// (evidence: on apache/spark `object SQLExecution extends Logging` was absent;
+// plain companion objects only appeared present because the same-named class
+// carried the symbol — object_definition had no entityFromNode case at all).
+func TestScalaObjectDefinitionSymbols(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "SQLExecution.scala", `object SQLExecution extends Logging {
+  def withNewExecutionId(x: Int): Int = x
+}
+
+object Plain {
+  def m(): Int = 1
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"SQLExecution", "Plain"} {
+		object := symbolByKindAndName(snapshot.Symbols, "class", name)
+		if object.ID == "" {
+			t.Fatalf("missing object symbol %q in %#v", name, snapshot.Symbols)
+		}
+		if object.FilePath != "SQLExecution.scala" {
+			t.Fatalf("%s file = %q", name, object.FilePath)
+		}
+	}
+	method := symbolByKindAndName(snapshot.Symbols, "method", "SQLExecution.withNewExecutionId")
+	if method.ID == "" {
+		t.Fatalf("object method not qualified under object in %#v", snapshot.Symbols)
+	}
+}
+
+// Dart 3 class modifiers (`final class`, `sealed class`, `base class`, ...)
+// predate the vendored tree-sitter-dart grammar, so such declarations parsed
+// as ERROR nodes (evidence: on dart-lang/http `final class ByteStream extends
+// StreamView<List<int>>` lost its class symbol — a recovered factory
+// constructor emitted kind "function" named ByteStream instead — and `final
+// class RetryClient extends BaseClient` emitted nothing). The modifier is
+// masked to spaces before parsing.
+func TestDartClassModifierSymbols(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "byte_stream.dart", `final class ByteStream extends StreamView<List<int>> {
+  const ByteStream(super.stream);
+
+  factory ByteStream.fromBytes(List<int> bytes) =>
+      ByteStream(Stream.value(bytes));
+
+  Future<Uint8List> toBytes() {
+    return completer.future;
+  }
+}
+
+sealed class Shape {}
+
+abstract interface class Client {
+  void close();
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"ByteStream", "Shape", "Client"} {
+		class := symbolByKindAndName(snapshot.Symbols, "class", name)
+		if class.ID == "" {
+			t.Fatalf("missing class symbol %q in %#v", name, snapshot.Symbols)
+		}
+		if class.FilePath != "byte_stream.dart" {
+			t.Fatalf("%s file = %q", name, class.FilePath)
+		}
+	}
+	if symbolByKindAndName(snapshot.Symbols, "method", "ByteStream.toBytes").ID == "" {
+		t.Fatalf("modified class method not qualified under class in %#v", snapshot.Symbols)
+	}
+	// The old failure mode: the recovered factory constructor emitted as a
+	// top-level function named after the class.
+	if symbolByKindAndName(snapshot.Symbols, "function", "ByteStream").ID != "" {
+		t.Fatalf("class name still emitted as a bare function symbol")
 	}
 }
 
@@ -2673,5 +2880,119 @@ func TestTreeSitterParserOCamlInterfaceValSignatures(t *testing.T) {
 	}
 	if !names["fundecl"] || !names["instrument_initialiser"] {
 		t.Fatalf("val names not extracted from .mli: %#v", entities)
+	}
+}
+
+func TestRustCfgWrapperMacroItemsExtracted(t *testing.T) {
+	// tokio wraps public items in declarative config macros (`cfg_net! { pub
+	// struct TcpListener { ... } }`). tree-sitter-rust parses a macro body as
+	// an opaque token_tree, so without unwrapping the wrapper every item
+	// inside — TcpListener included — vanished from the snapshot.
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("listener.rs", `use std::io;
+
+cfg_net! {
+    pub struct TcpListener {
+        io: u8,
+    }
+
+    impl TcpListener {
+        pub fn local_addr(&self) -> io::Result<u8> {
+            Ok(self.io)
+        }
+    }
+}
+`)
+	if language != "Rust" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse error: %+v", status)
+	}
+	byName := map[string]Entity{}
+	for _, entity := range entities {
+		byName[entity.Name] = entity
+	}
+	listener, ok := byName["TcpListener"]
+	if !ok {
+		t.Fatalf("TcpListener not extracted from cfg_net! wrapper: %#v", entities)
+	}
+	if listener.Kind != "struct" {
+		t.Fatalf("TcpListener kind = %q, want struct: %#v", listener.Kind, entities)
+	}
+	if listener.StartLine != 4 {
+		t.Fatalf("TcpListener start line = %d, want 4 (masking must preserve positions)", listener.StartLine)
+	}
+	if method, ok := byName["TcpListener.local_addr"]; !ok || method.Kind != "method" {
+		t.Fatalf("impl method inside cfg_net! not extracted: %#v", entities)
+	}
+}
+
+func TestRustCfgWrapperMacroNestedAndCfgIf(t *testing.T) {
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("nested.rs", `cfg_net! {
+    cfg_io_util! {
+        pub struct Inner;
+    }
+}
+
+mod sys {
+    cfg_rt! {
+        pub fn spawn() {}
+    }
+}
+
+cfg_if! {
+    if #[cfg(unix)] {
+        pub fn unix_only() {}
+    } else if #[cfg(windows)] {
+        pub fn windows_only() {}
+    } else {
+        pub fn fallback() {}
+    }
+}
+`)
+	if status.ParseError {
+		t.Fatalf("unexpected parse error: %+v", status)
+	}
+	names := map[string]bool{}
+	for _, entity := range entities {
+		names[entity.Name] = true
+	}
+	for _, want := range []string{"Inner", "spawn", "unix_only", "windows_only", "fallback"} {
+		if !names[want] {
+			t.Fatalf("missing %q after unwrapping nested cfg wrappers: %#v", want, entities)
+		}
+	}
+}
+
+func TestRustNonCfgMacrosStayOpaque(t *testing.T) {
+	// Only the cfg_*! wrapper family is unwrapped. Arbitrary macros — both at
+	// item position (macro_rules!, quote! in build scripts) and in function
+	// bodies (matches!, vec!) — must remain opaque token trees: their bodies
+	// are patterns/templates, not items.
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("lib.rs", `macro_rules! ready {
+    ($e:expr) => { struct NotAnItem; };
+}
+
+quote! {
+    pub struct Generated;
+}
+
+pub fn check(value: u8) -> bool {
+    let all = vec![1, 2, 3];
+    matches!(value, 1 | 2)
+}
+`)
+	if status.ParseError {
+		t.Fatalf("unexpected parse error: %+v", status)
+	}
+	names := map[string]bool{}
+	for _, entity := range entities {
+		names[entity.Name] = true
+	}
+	if names["NotAnItem"] || names["Generated"] {
+		t.Fatalf("non-cfg macro bodies must stay opaque: %#v", entities)
+	}
+	if !names["check"] {
+		t.Fatalf("plain function missing: %#v", entities)
 	}
 }
