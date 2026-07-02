@@ -4095,15 +4095,20 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		name = nodeName(node, src)
 	case "protocol_declaration":
 		// Objective-C `@protocol Foo <NSObject> ... @end` (the first identifier
-		// child is the protocol name). Protocols are the ObjC analogue of
-		// interfaces. Gated to Objective-C because tree-sitter-swift also emits
-		// protocol_declaration, whose extraction must stay unchanged. Forward
+		// child is the protocol name) and Swift `protocol Foo { ... }` — both
+		// grammars emit this node type. ObjC protocols are its interface
+		// analogue; Swift protocols keep their own kind (regression: an
+		// ObjC-only gate here silently dropped every Swift protocol). Forward
 		// declarations (`@protocol Foo;`) are a distinct
 		// protocol_forward_declaration node and stay unextracted.
-		if language != "Objective-C" {
+		switch language {
+		case "Objective-C":
+			kind = "interface"
+		case "Swift":
+			kind = "protocol"
+		default:
 			return Entity{}, false
 		}
-		kind = "interface"
 		name = nodeName(node, src)
 	case "method":
 		kind = "function"

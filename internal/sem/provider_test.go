@@ -11516,3 +11516,35 @@ module Nested =
 		t.Fatalf("F# override member not extracted as method: %#v", kinds)
 	}
 }
+
+func TestSwiftProtocolDeclarationsEmitted(t *testing.T) {
+	// tree-sitter-swift emits protocol_declaration; an Objective-C-only gate
+	// on that node type silently dropped every Swift protocol (regression
+	// caught by the swift-argument-parser eval row: ParsableCommand,
+	// ParsableArguments, ExpressibleByArgument all vanished).
+	repo := t.TempDir()
+	writeFile(t, repo, "Sources/App/Proto.swift", `public protocol ParsableThing {
+    func parse() throws
+}
+
+struct Impl: ParsableThing {
+    func parse() throws {}
+}
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, s := range snapshot.Symbols {
+		if s.Language == "Swift" {
+			kinds[s.Name] = s.Kind
+		}
+	}
+	if kinds["ParsableThing"] != "protocol" {
+		t.Fatalf("Swift protocol not extracted: %#v", kinds)
+	}
+	if kinds["Impl"] == "" {
+		t.Fatalf("Swift struct missing: %#v", kinds)
+	}
+}
