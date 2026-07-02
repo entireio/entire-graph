@@ -2145,6 +2145,14 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			// calls (`$this->prop->method()`) can resolve.
 			phpPropTypes = phpPropertyTypes(content)
 		}
+		var kotlinPropTypes map[string]string
+		if file.Language == "Kotlin" && spec.callResolution == "full" {
+			// Kotlin property types live at the class level too (primary
+			// constructor val/var parameters, modifier-prefixed declarations
+			// and factory initializers): collect them once per file so
+			// property-receiver calls (`taskQueue.execute(...)`) can resolve.
+			kotlinPropTypes = kotlinPropertyTypes(content, returnTypesBySymbolNameAndFile)
+		}
 		for _, from := range currentFileSymbols {
 			if shouldStop != nil && shouldStop() {
 				return
@@ -2170,6 +2178,14 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// Ruby method names may end in `!`/`?` and are commonly called
 					// without parentheses; the generic scanner misses both.
 					for name := range rubySuffixedCallIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
+				}
+				if file.Language == "Kotlin" {
+					// Kotlin trailing-lambda calls (`runTask { ... }`) carry no
+					// parentheses, so the generic `name(` scanner never sees
+					// them.
+					for name := range kotlinBareLambdaCallIdentifiers(callBlock) {
 						callNames[name] = struct{}{}
 					}
 				}
@@ -2405,7 +2421,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 			}
 			if spec.callResolution == "full" {
-				for _, r := range receiverCallRelations(from, block, methodsByContainer, superContainerByID, symbolsByShortName, returnTypesBySymbolNameAndFile, importsByName, manifestImports.goModule, pkgVarTypesByDir[filepath.ToSlash(filepath.Dir(file.Path))], phpPropTypes) {
+				for _, r := range receiverCallRelations(from, block, methodsByContainer, superContainerByID, symbolsByShortName, returnTypesBySymbolNameAndFile, importsByName, manifestImports.goModule, pkgVarTypesByDir[filepath.ToSlash(filepath.Dir(file.Path))], phpPropTypes, kotlinPropTypes) {
 					emit(r)
 				}
 				for _, r := range importedReceiverCallRelations(from, block, importsByName, symbolsByShortName) {
@@ -2852,7 +2868,7 @@ func resolveQualifiedType(qt pkgQualType, symbolsByShortName map[string][]Symbol
 	return SymbolRecord{}, false
 }
 
-func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string, importsByName map[string][]string, goModule string, pkgVarTypes map[string]pkgQualType, phpPropTypes map[string]string) []RelationRecord {
+func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string, importsByName map[string][]string, goModule string, pkgVarTypes map[string]pkgQualType, phpPropTypes, kotlinPropTypes map[string]string) []RelationRecord {
 	if typeLikeKind(from.Kind) {
 		return nil
 	}
@@ -2871,6 +2887,12 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		calls = mergeReceiverCalls(calls, rubyReceiverCalls(block))
 		chainedCalls = append(chainedCalls, rubyChainedConstructorCalls(block)...)
 		rubyBareCalls = rubyBareCallNames(block, from.Signature)
+	}
+	if from.Language == "Kotlin" {
+		// Kotlin safe calls (`socket?.closeQuietly()`) and trailing-lambda
+		// invocations (`taskQueue.execute { ... }`) never match the generic
+		// receiverCallRe, which requires a literal `.` and a literal `(`.
+		calls = mergeReceiverCalls(calls, kotlinReceiverCalls(block))
 	}
 	var phpStatics []phpStaticCall
 	var phpPropCalls []receiverCall
@@ -2903,6 +2925,15 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			localTypes[name] = typeName
 		}
 	}
+	if from.Language == "Kotlin" {
+		// Declared-type locals (`val writerToClose: WebSocketWriter?`), which
+		// the generic constructor-assignment scan cannot type.
+		for name, typeName := range kotlinLocalVarTypes(block) {
+			if _, exists := localTypes[name]; !exists {
+				localTypes[name] = typeName
+			}
+		}
+	}
 	for name, typeName := range localTypes {
 		varTypes[name] = typeName
 	}
@@ -2919,6 +2950,18 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 	for name, typeName := range factoryTypes {
 		if _, exists := varTypes[name]; !exists {
 			varTypes[name] = typeName
+		}
+	}
+	// Kotlin class-property receivers (`taskQueue.execute(...)` where
+	// `taskQueue` is a typed property or constructor val/var parameter). Lowest
+	// tier: a same-named parameter or local shadows the property.
+	kotlinPropReceivers := map[string]bool{}
+	if from.Language == "Kotlin" {
+		for name, typeName := range kotlinPropTypes {
+			if _, exists := varTypes[name]; !exists {
+				varTypes[name] = typeName
+				kotlinPropReceivers[name] = true
+			}
 		}
 	}
 	importedReceiverVars := importedReceiverVarTypes(from.Signature, block, importsByName, goModule)
@@ -2976,6 +3019,10 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				if _, ok := factoryTypes[call.Receiver]; ok {
 					confidence = 0.77
 					reason = "method call resolved via assigned returned receiver type"
+				}
+				if kotlinPropReceivers[call.Receiver] {
+					confidence = 0.8
+					reason = "method call resolved via typed property receiver"
 				}
 				sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath)
 				if !ok {
@@ -3107,6 +3154,61 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}},
 			WarningCodes: []string{},
 		})
+	}
+	// Kotlin extension functions (`fun Closeable.closeQuietly()`) are top-level
+	// functions, not members of the receiver's type, so the container lookups
+	// above can never resolve `writerToClose.closeQuietly()`. When member
+	// resolution failed, match the call against workspace extension functions:
+	// by declared receiver type (the receiver's inferred type or one of its
+	// spelled supertypes) when the receiver is typed, or by workspace-unique
+	// name when it is not.
+	if from.Language == "Kotlin" {
+		for _, call := range calls {
+			if call.Receiver == "this" || call.Receiver == "self" || call.Receiver == "super" {
+				continue
+			}
+			if methodResolved[call.Receiver+"."+call.Method] {
+				continue
+			}
+			receiverType := varTypes[call.Receiver]
+			if receiverType == "" && isCapitalized(call.Receiver) {
+				// A capitalized untyped receiver is a type/object reference
+				// (`Companion.foo()`), not a value an extension is called on.
+				continue
+			}
+			target, typeDirected, ok := kotlinExtensionFunctionTarget(call, receiverType, from, symbolsByShortName)
+			if !ok || target.ID == from.ID {
+				continue
+			}
+			confidence, reason, resolution := 0.78, "call resolved to Kotlin extension function matching the receiver type", "type_inferred"
+			if !typeDirected {
+				confidence, reason, resolution = 0.68, "call matched workspace-unique Kotlin extension function", "name_only"
+			}
+			methodResolved[call.Receiver+"."+call.Method] = true
+			scope := "file"
+			if target.FilePath != from.FilePath {
+				scope = "module"
+			}
+			relations = append(relations, RelationRecord{
+				RecordType:    "relation",
+				FromID:        from.ID,
+				ToID:          target.ID,
+				Type:          "CALLS",
+				Confidence:    confidence,
+				Reason:        reason,
+				RelationScope: scope,
+				Resolution:    resolution,
+				TargetKind:    "symbol",
+				Evidence: []Evidence{{
+					Kind:      "call_site",
+					FilePath:  from.FilePath,
+					StartLine: from.StartLine,
+					EndLine:   from.EndLine,
+					Detail:    call.Receiver + "." + call.Method,
+				}},
+				WarningCodes: []string{},
+			})
+		}
 	}
 	// Ruby receiver-less calls target implicit self: emit an edge when the bare
 	// word resolves to a method of the enclosing class (or an ancestor). The
