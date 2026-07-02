@@ -476,7 +476,9 @@ func supportsSemanticExtraction(spec languageSpec) bool {
 	if spec.grammar != nil {
 		return true
 	}
-	return spec.language == "SQL"
+	// SQL and Groovy have no grammar in the extension table but are backed by
+	// dedicated parsers (pgsql grammar and the structural Groovy scanner).
+	return spec.language == "SQL" || spec.language == "Groovy"
 }
 
 // languageTiers classifies the languages present in a snapshot as "semantic"
@@ -1463,7 +1465,7 @@ func localReachable(from, to SymbolRecord) bool {
 // receiver and is handled by receiverCallRelations instead.
 func implicitReceiverLanguage(lang string) bool {
 	switch lang {
-	case "Java", "C#", "C++", "Dart", "Kotlin", "Scala", "Ruby", "Swift":
+	case "Java", "C#", "C++", "Dart", "Groovy", "Kotlin", "Scala", "Ruby", "Swift":
 		return true
 	}
 	return false
@@ -2281,6 +2283,12 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// line-scoped masking and would register as call sites.
 					callBlock = maskSwiftMultilineStrings(block)
 				}
+				if file.Language == "Groovy" {
+					// Triple-quoted, slashy, and interpolated string bodies
+					// survive the generic line-scoped masking and would
+					// register as call sites.
+					callBlock = maskGroovyLiteralsAndComments(block)
+				}
 				callNames := callLikeIdentifiers(callBlock, file.Language)
 				if file.Language == "Ruby" {
 					// Ruby method names may end in `!`/`?` and are commonly called
@@ -2294,6 +2302,14 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					// parentheses, so the generic `name(` scanner never sees
 					// them.
 					for name := range kotlinBareLambdaCallIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
+				}
+				if file.Language == "Groovy" {
+					// Groovy command expressions (`visitType p.type`,
+					// `print 'x'`) likewise carry no parentheses. callBlock is
+					// already Groovy-masked above.
+					for name := range groovyCommandCallIdentifiers(callBlock) {
 						callNames[name] = struct{}{}
 					}
 				}
@@ -2593,6 +2609,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			topLevel := stripDeclarationOnlyCallSignatures(file.Language, topLevelBlockFromLines(lines, currentFileSymbols))
 			if file.Language == "Rust" {
 				topLevel = stripRustCodegenMacroBodies(topLevel)
+			}
+			if file.Language == "Groovy" {
+				// Multi-line string bodies at script level would otherwise
+				// register as top-level call sites.
+				topLevel = maskGroovyLiteralsAndComments(topLevel)
 			}
 			if strings.TrimSpace(topLevel) != "" {
 				fileSource := SymbolRecord{
@@ -7609,7 +7630,7 @@ func importCapableExtension(ext string) bool {
 	switch ext {
 	case ".bash", ".sh", ".zsh",
 		".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx",
-		".cs", ".cue", ".ex", ".exs", ".go", ".gradle", ".groovy",
+		".cs", ".cue", ".ex", ".exs", ".go", ".gradle", ".groovy", ".gvy",
 		".java", ".kt", ".kts", ".scala", ".sc", ".sbt", ".py",
 		".js", ".jsx", ".ts", ".tsx", ".lua", ".ml", ".mli", ".php",
 		".proto", ".rb", ".rs", ".swift":
@@ -10068,7 +10089,7 @@ func importsFor(path, content string) []string {
 		return scanImports(content, regexp.MustCompile(`(?m)^\s*(?:alias|import|require|use)\s+([A-Za-z0-9_\.]+)`))
 	case ".go":
 		return scanGoImports(content)
-	case ".gradle", ".groovy":
+	case ".gradle", ".groovy", ".gvy":
 		return scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z0-9_\.]+)`))
 	case ".hcl", ".tf", ".tfvars":
 		return nil

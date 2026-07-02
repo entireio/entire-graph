@@ -37,7 +37,7 @@ var (
 // covers languages whose inheritance is stated in the class/interface header.
 func supertypesFromSignature(language, signature string) []rawSupertype {
 	switch language {
-	case "Java", "TypeScript", "JavaScript", "PHP":
+	case "Java", "Groovy", "TypeScript", "JavaScript", "PHP":
 		return extendsImplementsEdges(signature)
 	case "C#":
 		return csharpBaseEdges(signature)
