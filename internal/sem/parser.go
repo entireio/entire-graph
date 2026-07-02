@@ -4258,8 +4258,21 @@ var postgresWithOrdinalityPattern = regexp.MustCompile(`(?i)\s+with\s+ordinality
 var postgresOnDeleteUpdatePattern = regexp.MustCompile(`(?i)\s+on\s+(?:delete|update)\s+(?:cascade|restrict|set\s+null|set\s+default|no\s+action)\b`)
 var postgresVectorOperatorClassPattern = regexp.MustCompile(`(?i)\s+vector_[a-z0-9_]+_ops\b`)
 var postgresIndexMethodPattern = regexp.MustCompile(`(?i)\s+using\s+[a-z0-9_]+\b`)
-var postgresCreateFunctionPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:function|procedure)\b.*?\bas\s+\$[a-z0-9_]*\$.*?\$[a-z0-9_]*\$(?:\s+language\b[^;]*)?;`)
-var postgresCreateExternalFunctionPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:function|procedure)\b.*?\bas\s+'[^']+'(?:\s*,\s*'[^']+')?(?:\s+language\b[^;]*)?;`)
+
+// The function/procedure header (between the CREATE keyword and the AS body
+// clause) is matched with `[^;]*?` instead of `.*?` so a match cannot run across
+// a statement boundary: with `.*?`, a file that opens with LANGUAGE C functions
+// (`AS '@MODULE_PATHNAME@', ...`) and later defines a dollar-quoted function let
+// the match start at the first CREATE and end at the later body, swallowing every
+// definition in between (timescaledb sql/time_bucket.sql). After the closing
+// dollar-quote a statement may carry trailing attribute clauses — `LANGUAGE ...`,
+// `SET search_path TO ...`, volatility/strictness/parallel markers — before the
+// terminating `;` (timescaledb ends most plpgsql bodies with `$BODY$ SET
+// search_path TO pg_catalog, pg_temp;`).
+const postgresFunctionTrailer = `(?:\s+(?:language|set|immutable|stable|volatile|strict|called|returns|leakproof|not|external|security|parallel|cost|rows|window|support|transform)\b[^;]*)?;`
+
+var postgresCreateFunctionPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:function|procedure)\b[^;]*?\bas\s+\$[a-z0-9_]*\$.*?\$[a-z0-9_]*\$` + postgresFunctionTrailer)
+var postgresCreateExternalFunctionPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:function|procedure)\b[^;]*?\bas\s+'[^']+'(?:\s*,\s*'[^']+')?` + postgresFunctionTrailer)
 var postgresCreateDomainCastPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:domain|cast)\b[^;]*;`)
 
 // Declarative partitioning the grammar rejects. `PARTITION BY {RANGE|LIST|HASH}
@@ -5426,18 +5439,22 @@ func sqlStatementEntity(node *sitter.Node, src []byte) (string, string, bool) {
 	return "", "", false
 }
 
+// sqlCreateFunctionHeadPattern anchors on the whole CREATE FUNCTION/PROCEDURE
+// header. Matching the keyword as part of the header (rather than searching for
+// the substring "function") supports CREATE PROCEDURE and avoids keying off
+// "function" embedded in a schema name (e.g. `CREATE PROCEDURE
+// _timescaledb_functions.rebuild_columnstore(...)` used to yield the garbage
+// name "s.rebuild_columnstore").
+var sqlCreateFunctionHeadPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:function|procedure)\s+(?:if\s+not\s+exists\s+)?`)
+
 func matchSQLCreateFunctionName(content string) string {
-	lower := asciiLowerString(content)
-	idx := strings.Index(lower, "function")
-	if idx < 0 {
+	loc := sqlCreateFunctionHeadPattern.FindStringIndex(content)
+	if loc == nil {
 		return ""
 	}
-	rest := strings.TrimSpace(content[idx+len("function"):])
+	rest := strings.TrimSpace(content[loc[1]:])
 	if rest == "" {
 		return ""
-	}
-	if strings.HasPrefix(strings.ToLower(rest), "if not exists") {
-		rest = strings.TrimSpace(rest[len("if not exists"):])
 	}
 	open := strings.IndexByte(rest, '(')
 	if open < 0 {
