@@ -12,6 +12,7 @@ import (
 	"time"
 
 	clojure "github.com/entireio/entire-sem/internal/sem/grammars/clojure"
+	csharp "github.com/entireio/entire-sem/internal/sem/grammars/csharp"
 	dart "github.com/entireio/entire-sem/internal/sem/grammars/dart"
 	erlang "github.com/entireio/entire-sem/internal/sem/grammars/erlang"
 	fsharp "github.com/entireio/entire-sem/internal/sem/grammars/fsharp"
@@ -27,7 +28,6 @@ import (
 	"github.com/smacker/go-tree-sitter/bash"
 	"github.com/smacker/go-tree-sitter/c"
 	"github.com/smacker/go-tree-sitter/cpp"
-	"github.com/smacker/go-tree-sitter/csharp"
 	"github.com/smacker/go-tree-sitter/cue"
 	"github.com/smacker/go-tree-sitter/elixir"
 	"github.com/smacker/go-tree-sitter/golang"
@@ -799,24 +799,27 @@ func maskCSharpUnsupportedSyntax(content string) string {
 		switch {
 		case strings.HasPrefix(trimmed, "#"):
 			lines[i] = maskLineText(text) + newline
-		case cSharpPrimaryConstructorClassLinePattern.MatchString(text):
-			lines[i] = cSharpMaskPrimaryConstructorClass(text) + newline
 		default:
-			text = replacePatternSameLength(text, cSharpNullCoalescingCollectionExpressionPattern, "??= null")
-			text = replacePatternSameLength(text, cSharpAssignmentCollectionExpressionPattern, "= null")
+			// The vendored C# 13 grammar parses collection expressions,
+			// primary constructors, and params collections natively. Two
+			// constructs still degrade to ERROR nodes: prefix dereference
+			// of a pointer cast (`*(T*)&x`, unsafe hot paths) and
+			// dictionary index initializers with non-literal keys
+			// (`{ [key] = value }`).
+			text = maskPointerDerefCasts(text)
 			lines[i] = replacePatternSameLength(text, cSharpDictionaryIndexInitializerPattern, "{}") + newline
 		}
 	}
 	return strings.Join(lines, "")
 }
 
-func cSharpMaskPrimaryConstructorClass(text string) string {
-	matches := cSharpPrimaryConstructorClassLinePattern.FindStringSubmatch(text)
-	if len(matches) < 2 {
-		return text
-	}
-	replacement := "class " + matches[1] + " {}"
-	return paddedReplacement(leadingWhitespace(text), replacement, len(text))
+// maskPointerDerefCasts rewrites `*(T*)expr` into ` (T )expr` (same byte
+// length) because tree-sitter-c-sharp cannot disambiguate a prefix pointer
+// dereference applied directly to a pointer-cast expression.
+func maskPointerDerefCasts(text string) string {
+	return cSharpPointerDerefCastPattern.ReplaceAllStringFunc(text, func(m string) string {
+		return strings.ReplaceAll(m, "*", " ")
+	})
 }
 
 var ocamlValSignaturePattern = regexp.MustCompile(`^(\s*)val\s+(\([^)\n]*\)|[A-Za-z_][\w']*)\b`)
@@ -1126,10 +1129,8 @@ func maskSwiftOptionalBindingShorthand(text string) (string, bool) {
 }
 
 var (
-	cSharpPrimaryConstructorClassLinePattern        = regexp.MustCompile(`^\s*(?:(?:public|internal|private|protected|sealed|abstract|partial|static)\s+)*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^;\n]*\)\s*(?::\s*[^{};\n]+)?\s*;\s*$`)
-	cSharpDictionaryIndexInitializerPattern         = regexp.MustCompile(`\{\s*\[[^\]\n]+\]\s*=\s*[^{}\n]+\}`)
-	cSharpAssignmentCollectionExpressionPattern     = regexp.MustCompile(`=\s*\[\]`)
-	cSharpNullCoalescingCollectionExpressionPattern = regexp.MustCompile(`\?\?=\s*\[\]`)
+	cSharpPointerDerefCastPattern           = regexp.MustCompile(`\*+\(\s*[A-Za-z_@][\w<>,.\s]*?\*+\s*\)`)
+	cSharpDictionaryIndexInitializerPattern = regexp.MustCompile(`\{\s*\[[^\]\n]+\]\s*=\s*[^{}\n]+\}`)
 	swiftTypedThrowsPattern                         = regexp.MustCompile(`throws\([A-Za-z_][A-Za-z0-9_.<>]*\)`)
 	swiftOptionalBindingShorthandPattern            = regexp.MustCompile(`\bif\s+let\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{`)
 	swiftEmptyAttributeCallPattern                  = regexp.MustCompile(`@[A-Za-z_][A-Za-z0-9_]*\(\)`)
