@@ -3118,3 +3118,47 @@ pub fn check(value: u8) -> bool {
 		t.Fatalf("plain function missing: %#v", entities)
 	}
 }
+
+func TestTreeSitterParserCTypedefReturnTypeDoesNotSwallowFunctionName(t *testing.T) {
+	// jqlang/jq: `jv_kind jv_get_kind(jv x)` was extracted as a function
+	// named "jv_kind" — the pre-order name fallback latched onto the
+	// typedef'd return type instead of the declarator. Only void/primitive
+	// returns produced correct names.
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("jv.c", `typedef enum { JV_KIND_INVALID } jv_kind;
+typedef struct { int x; } jv;
+
+jv_kind jv_get_kind(jv x) {
+  return JV_KIND_INVALID;
+}
+
+jv jv_true(void) {
+  jv v;
+  return v;
+}
+
+jv* jv_alloc(void) {
+  return 0;
+}
+
+void jv_free(jv x) {
+}
+`)
+	if language != "C" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	seen := map[string]string{}
+	for _, entity := range entities {
+		seen[entity.Name] = entity.Kind
+	}
+	for _, name := range []string{"jv_get_kind", "jv_true", "jv_alloc", "jv_free"} {
+		if seen[name] != "function" {
+			t.Errorf("function %q not extracted (got kind %q); seen: %#v", name, seen[name], seen)
+		}
+	}
+	if seen["jv_kind"] == "function" {
+		t.Errorf("return type jv_kind extracted as a function name")
+	}
+}

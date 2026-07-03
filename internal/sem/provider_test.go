@@ -12199,3 +12199,43 @@ class WP_REST_Server
 		t.Errorf("missing CALLS rest_do_request->WP_REST_Server.dispatch via docblock @return receiver type: %#v", relationsOfType(snapshot.Relations, "CALLS"))
 	}
 }
+
+func TestGoSelfModuleImportResolvesCrossPackageCall(t *testing.T) {
+	// entire-sem's own snapshot missed cli->sem edges: a package imported
+	// via the repo's own module path ("github.com/acme/tool/internal/sem")
+	// fell through to an external fallback because the module prefix was
+	// never mapped back to the in-repo package directory.
+	repo := t.TempDir()
+	writeFile(t, repo, "go.mod", `module github.com/acme/tool
+
+go 1.24
+`)
+	writeFile(t, repo, "internal/sem/analyze.go", `package sem
+
+func analyzeNothing() {}
+`)
+	writeFile(t, repo, "internal/sem/provider.go", `package sem
+
+func StreamSnapshot(repo string) error {
+	return nil
+}
+`)
+	writeFile(t, repo, "internal/cli/root.go", `package cli
+
+import (
+	"github.com/acme/tool/internal/sem"
+)
+
+func runProviderRecords(repo string) error {
+	return sem.StreamSnapshot(repo)
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "runProviderRecords", "StreamSnapshot") {
+		t.Errorf("missing CALLS runProviderRecords->StreamSnapshot via self-module import: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
