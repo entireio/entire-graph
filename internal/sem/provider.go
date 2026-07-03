@@ -3424,13 +3424,13 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 					confidence = 0.75
 					reason = "method call resolved via property-chain-typed local receiver"
 				}
-				sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath)
+				sym, ok := typeLikeNamedWithMethod(symbolsByShortName[typeName], typeName, from.FilePath, call.Method, methodsByContainer, superContainerByID)
 				if !ok {
 					continue
 				}
 				targetID = sym.ID
 				receiverTypeKind = sym.Kind
-			} else if cls, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[call.Receiver], call.Receiver, from.FilePath); ok {
+			} else if cls, ok := typeLikeNamedWithMethod(symbolsByShortName[call.Receiver], call.Receiver, from.FilePath, call.Method, methodsByContainer, superContainerByID); ok {
 				// ClassName.method(): the receiver is itself a type name, not a
 				// variable, so this is a static (class-qualified) call and the
 				// target is that class's own method.
@@ -7225,6 +7225,35 @@ func firstTypeLikeNamed(records []SymbolRecord, name string) (SymbolRecord, bool
 // Same-file preference matters when a repo vendors a mirror copy of its sources
 // (e.g. a Deno build alongside src/): without it a class-qualified call could
 // bind to the twin in the wrong file.
+// typeLikeNamedWithMethod resolves a type name to the declaration that
+// actually defines the called method. C# partial classes declare the same
+// type in several files, and the lexically-first declaration may not hold
+// the method (roslyn's Contract.InterpolatedStringHandlers.cs sorts before
+// Contract.cs, which defines ThrowIfFalse); probing only the first
+// candidate dropped every such static call. Preference order: a same-file
+// declaration defining the method, any declaration defining it (directly
+// or up its supertype chain), then the plain prefer-file lookup.
+func typeLikeNamedWithMethod(records []SymbolRecord, name, file, method string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string) (SymbolRecord, bool) {
+	var withMethod []SymbolRecord
+	for _, symbol := range records {
+		if symbol.Name != name || !typeLikeKind(symbol.Kind) {
+			continue
+		}
+		if _, _, ok := lookupMethodUpChain(symbol.ID, method, methodsByContainer, superContainerByID); ok {
+			withMethod = append(withMethod, symbol)
+		}
+	}
+	if len(withMethod) > 0 {
+		for _, symbol := range withMethod {
+			if symbol.FilePath == file {
+				return symbol, true
+			}
+		}
+		return withMethod[0], true
+	}
+	return firstTypeLikeNamedPreferFile(records, name, file)
+}
+
 func firstTypeLikeNamedPreferFile(records []SymbolRecord, name, file string) (SymbolRecord, bool) {
 	for _, symbol := range records {
 		if symbol.Name == name && symbol.FilePath == file && typeLikeKind(symbol.Kind) {

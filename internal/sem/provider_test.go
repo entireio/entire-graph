@@ -11968,3 +11968,73 @@ pub fn boot() -> u32 {
 >>>>>>> 051bc95 (sem(csharp): infer receiver types from out-declarations and nullable locals)
 	}
 }
+
+func TestCSharpStaticCallResolvesAcrossPartialClassFiles(t *testing.T) {
+	// roslyn declares 'internal static partial class Contract' in both
+	// Contract.cs (which holds ThrowIfFalse) and
+	// Contract.InterpolatedStringHandlers.cs (which does not, and sorts
+	// lexically first). A static type-qualified call
+	// 'Contract.ThrowIfFalse(...)' must resolve to the partial
+	// declaration that actually defines the method instead of being
+	// dropped after probing only the first candidate.
+	repo := t.TempDir()
+	writeFile(t, repo, "Contracts/Contract.InterpolatedStringHandlers.cs", `namespace Roslyn.Utilities
+{
+    internal static partial class Contract
+    {
+        public readonly struct ThrowIfFalseInterpolatedStringHandler
+        {
+            public string GetFormattedText() { return ""; }
+        }
+    }
+}
+`)
+	writeFile(t, repo, "Contracts/Contract.cs", `namespace Roslyn.Utilities
+{
+    internal static partial class Contract
+    {
+        public static void ThrowIfFalse(bool condition) { }
+
+        public static void ThrowIfFalse(bool condition, string message) { }
+    }
+}
+`)
+	writeFile(t, repo, "Workspace/Workspace_Editor.cs", `namespace Microsoft.CodeAnalysis
+{
+    public partial class Workspace
+    {
+        private void UpdateCurrentContextMapping_NoLock(bool isCurrentContext)
+        {
+            Contract.ThrowIfFalse(isCurrentContext);
+        }
+    }
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CALLS" &&
+			strings.Contains(relation.FromID, "Workspace.UpdateCurrentContextMapping_NoLock") &&
+			strings.Contains(relation.ToID, "Contracts/Contract.cs") &&
+			strings.Contains(relation.ToID, "Contract.ThrowIfFalse") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("missing static type-qualified CALLS to the partial class that defines ThrowIfFalse: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func relationsOfType(relations []RelationRecord, relationType string) []RelationRecord {
+	var out []RelationRecord
+	for _, relation := range relations {
+		if relation.Type == relationType {
+			out = append(out, relation)
+		}
+	}
+	return out
+}
