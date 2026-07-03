@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.7.8-nightly.202606290756.c457486ca",
+  "checkpoint_version": "branch-v1",
+  "checkpoint_id": "fd43f008633b",
+  "strategy": "manual-commit",
+  "branch": "fix/self-corpus-gaps",
+  "checkpoints_count": 12,
+  "files_touched": [
+    "internal/sem/parser.go",
+    "internal/sem/parser_test.go",
+    "internal/sem/provider.go",
+    "internal/sem/provider_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/fd/43f008633b/0/metadata.json",
+      "transcript": "/fd/43f008633b/0/full.jsonl",
+      "compact_transcript": "/fd/43f008633b/0/transcript.jsonl",
+      "content_hash": "/fd/43f008633b/0/content_hash.txt",
+      "prompt": "/fd/43f008633b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 25811,
+    "cache_creation_tokens": 405346,
+    "cache_read_tokens": 26867265,
+    "output_tokens": 89095,
+    "api_call_count": 91
+  }
+}

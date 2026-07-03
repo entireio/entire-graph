@@ -1,0 +1,51 @@
+{
+  "cli_version": "0.7.8-nightly.202606290756.c457486ca",
+  "checkpoint_id": "fd43f008633b",
+  "session_id": "3535d4da-9e32-4c85-a203-63a84eabcd32",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-03T10:22:37.833519Z",
+  "branch": "fix/self-corpus-gaps",
+  "checkpoints_count": 12,
+  "files_touched": [
+    "internal/sem/parser.go",
+    "internal/sem/parser_test.go",
+    "internal/sem/provider.go",
+    "internal/sem/provider_test.go"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "ed12f9bbdee6",
+  "checkpoint_transcript_start": 1330,
+  "transcript_lines_at_start": 1330,
+  "token_usage": {
+    "input_tokens": 25811,
+    "cache_creation_tokens": 405346,
+    "cache_read_tokens": 26867265,
+    "output_tokens": 89095,
+    "api_call_count": 91
+  },
+  "session_metrics": {
+    "turn_count": 12
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-03T10:22:37.647158Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 105,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 105,
+    "total_lines_changed": 105,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
