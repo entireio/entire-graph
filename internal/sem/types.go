@@ -2666,6 +2666,13 @@ var (
 	newAssignRe           = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*:?=\s*new\s+([A-Za-z_]\w*)`)
 	ctorAssignRe          = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*:?=\s*&?([A-Z][A-Za-z0-9_]*)\s*[({]`)
 	factoryReturnAssignRe = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?\s*(?::=|=)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	// C#-style declarations that carry the variable's type at a use site:
+	// `out HttpConnectionPool? pool` (argument-position out-declaration) and
+	// `HttpConnectionPool? pool;` / `= ...` (nullable-annotated local).
+	// Both require a capitalized type followed by the variable name, so
+	// name-first languages (Go `out Type`) cannot match.
+	outParamDeclRe      = regexp.MustCompile(`\bout\s+([A-Z][A-Za-z0-9_]*)(?:<[^;()<>]*>)?\s*\??\s+([A-Za-z_]\w*)\b`)
+	nullableLocalDeclRe = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)(?:<[^;()<>]*>)?\?\s+([A-Za-z_]\w*)\s*[;=]`)
 )
 
 // localVarTypes infers a best-effort variable -> type-name map from constructor
@@ -2682,6 +2689,14 @@ func localVarTypes(block string) map[string]string {
 		name := strings.TrimPrefix(m[1], "$")
 		if _, exists := out[name]; !exists {
 			out[name] = m[2]
+		}
+	}
+	for _, re := range []*regexp.Regexp{outParamDeclRe, nullableLocalDeclRe} {
+		for _, m := range re.FindAllStringSubmatch(stripped, -1) {
+			name := m[2]
+			if _, exists := out[name]; !exists {
+				out[name] = m[1]
+			}
 		}
 	}
 	return out
@@ -2720,7 +2735,11 @@ func parameterVarTypes(signature string) map[string]string {
 	// `&'a`) before the type, so `bytes: &mut Bytes` registers bytes -> Bytes.
 	// Harmless for the other colon-style languages (they have no such prefix).
 	colonParamRe := regexp.MustCompile(`^\s*\$?([A-Za-z_][A-Za-z0-9_]*)\??\s*:\s*(?:&\s*)*(?:'[A-Za-z_]\w*\s+)?(?:mut\s+)?\??([A-Z][A-Za-z0-9_]*)\b`)
-	typeFirstParamRe := regexp.MustCompile(`^\s*(?:final\s+)?(?:[*&]\s*)?([A-Z][A-Za-z0-9_]*)\s+\$?([A-Za-z_][A-Za-z0-9_]*)\b`)
+	// Leading modifiers cover Java (`final`) and C# parameter modifiers
+	// (`out`/`ref`/`in`/`params`/`this`/`scoped`/`readonly`); a trailing
+	// `?` on the type is C#'s nullable annotation (`out HttpConnectionPool?
+	// pool` must register pool -> HttpConnectionPool, not out -> ...).
+	typeFirstParamRe := regexp.MustCompile(`^\s*(?:(?:final|out|ref|in|params|this|scoped|readonly)\s+)*(?:[*&]\s*)?([A-Z][A-Za-z0-9_]*)\s*\??\s+\$?([A-Za-z_][A-Za-z0-9_]*)\b`)
 	nameFirstParamRe := regexp.MustCompile(`^\s*\$?([A-Za-z_][A-Za-z0-9_]*)\s+(?:[*&]\s*)?([A-Z][A-Za-z0-9_]*)\b`)
 	for _, param := range params {
 		param = strings.TrimSpace(strings.SplitN(param, "=", 2)[0])

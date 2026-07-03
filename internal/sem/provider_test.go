@@ -11181,6 +11181,46 @@ abstract mixin class BaseClient implements Client {
 	// globally ambiguous (dart-lang/http has a second Request in ok_http).
 	writeFile(t, repo, "other_pkg/lib/src/bindings.dart", `class Request {
   Request();
+func TestCSharpNullableAndOutVarReceiversResolveCrossFile(t *testing.T) {
+	// dotnet/runtime HttpConnectionPoolManager.SendAsyncCore: a local
+	// declared with a nullable annotation ('HttpConnectionPool? pool;'),
+	// assigned via 'out pool' / 'pool = new HttpConnectionPool(...)', then
+	// invoked ('pool.SendAsync(...)') must resolve to the method declared
+	// in another file, and the constructor call must emit CONSTRUCTS.
+	repo := t.TempDir()
+	writeFile(t, repo, "Net/HttpConnectionPool.cs", `namespace System.Net.Http
+{
+    internal sealed class HttpConnectionPool
+    {
+        public HttpConnectionPool(object owner) { }
+
+        public string SendAsync(string request, bool async) { return request; }
+    }
+}
+`)
+	writeFile(t, repo, "Net/HttpConnectionPoolManager.cs", `namespace System.Net.Http
+{
+    internal sealed class HttpConnectionPoolManager
+    {
+        public string SendAsyncCore(string request, bool async)
+        {
+            HttpConnectionPool? pool;
+            while (!_pools.TryGetValue(request, out pool))
+            {
+                pool = new HttpConnectionPool(this);
+            }
+            return pool.SendAsync(request, async);
+        }
+
+        public string SendViaOutDeclaration(string request)
+        {
+            if (_pools.TryGetValue(request, out HttpConnectionPool? cached))
+            {
+                return cached.SendAsync(request, false);
+            }
+            return request;
+        }
+    }
 }
 `)
 
@@ -11188,6 +11228,7 @@ abstract mixin class BaseClient implements Client {
 	if err != nil {
 		t.Fatal(err)
 	}
+<<<<<<< HEAD
 
 	edges := map[string]RelationRecord{}
 	for _, r := range snapshot.Relations {
@@ -11915,5 +11956,15 @@ pub fn boot() -> u32 {
 	}
 	if !found {
 		t.Fatalf("Rust Type::method path call did not resolve to the method")
+=======
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "HttpConnectionPoolManager.SendAsyncCore", "HttpConnectionPool.SendAsync") {
+		t.Errorf("missing CALLS SendAsyncCore->HttpConnectionPool.SendAsync (nullable local + new assignment)")
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CONSTRUCTS", "HttpConnectionPoolManager.SendAsyncCore", "HttpConnectionPool") {
+		t.Errorf("missing CONSTRUCTS SendAsyncCore->HttpConnectionPool")
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "HttpConnectionPoolManager.SendViaOutDeclaration", "HttpConnectionPool.SendAsync") {
+		t.Errorf("missing CALLS SendViaOutDeclaration->HttpConnectionPool.SendAsync (out Type? declaration)")
+>>>>>>> 051bc95 (sem(csharp): infer receiver types from out-declarations and nullable locals)
 	}
 }
