@@ -2381,7 +2381,7 @@ type receiverCall struct {
 	Args     string
 }
 
-var receiverCallRe = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*\(`)
+var receiverCallRe = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*(?:<[^>\n;{}()]*>)?\(`)
 
 // receiverCalls extracts distinct receiver.method() call sites from a code
 // block (literals and comments stripped). Leading `$` is dropped so PHP

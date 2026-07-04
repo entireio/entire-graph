@@ -52,7 +52,7 @@ var (
 	swiftCaseLetBindingRe = regexp.MustCompile(`\bcase\s+(?:let|var)\s+\.([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)\s*\)`)
 	// Modifier-prefixed class-body stored properties with explicit types
 	// (`internal private(set) var _buffer: ByteBuffer?`).
-	swiftPropTypedRe = regexp.MustCompile(`(?m)^[ \t]*` + swiftModifierPattern + `+(?:let|var)\s+([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w.]*)`)
+	swiftPropTypedRe = regexp.MustCompile(`(?m)^[ \t]*` + swiftModifierPattern + `+(?:let|var)\s+([A-Za-z_]\w*)\s*:\s*((?:\(\s*)?(?:any\s+|some\s+)?[A-Za-z_][\w.]*(?:\s*\))?[?!]?)`)
 	// Modifier-prefixed stored property with a constructor initializer instead
 	// of a type annotation: `private var buffers = CircularBuffer<ByteBuffer>()`.
 	swiftPropInitRe = regexp.MustCompile(`(?m)^[ \t]*` + swiftModifierPattern + `+(?:let|var)\s+([A-Za-z_]\w*)\s*=\s*([A-Z]\w*)\s*[<(]`)
@@ -75,6 +75,7 @@ var (
 	// accepts Vapor-style multi-line chains (`request\n  .fileio\n
 	// .streamFile(...)`).
 	swiftChainedReceiverCallRe = regexp.MustCompile(`(?:^|[^\w.$)\]!?])([a-z_]\w*)[!?]?\s*\.\s*([a-z_]\w*)[!?]?\s*\.\s*([A-Za-z_]\w*)\s*[({]`)
+	swiftLongChainTailRe       = regexp.MustCompile(`\b(?:[A-Za-z_]\w*[!?]?\s*\.\s*)+([a-z_]\w*)[!?]?\s*\.\s*([A-Za-z_]\w*)\s*[({]`)
 	// Local bound from a property chain: `let contentRange = request.headers.range`,
 	// `if let firstRange = contentRange.ranges.first`. The hops are lowercase
 	// property names; validation of what follows the chain happens in
@@ -260,6 +261,17 @@ func swiftChainedReceiverCalls(block string) []swiftChainedCall {
 	return out
 }
 
+func swiftReceiverCallTailsInLongerChains(block string) map[string]bool {
+	stripped := stripSwiftCodeText(block)
+	out := map[string]bool{}
+	for _, m := range swiftLongChainTailRe.FindAllStringSubmatch(stripped, -1) {
+		if len(m) == 3 {
+			out[m[1]+"."+m[2]] = true
+		}
+	}
+	return out
+}
+
 // swiftTypeRefText reports whether text is a plain (possibly dotted) type
 // reference: word characters and dots only. Signature-derived type text can
 // carry arrays, tuples, or generics, which the chain typing never guesses at.
@@ -283,6 +295,10 @@ func swiftTypeRefText(text string) bool {
 // reference (arrays, dictionaries, tuples, function types).
 func swiftDeclaredTypeName(raw string) string {
 	raw = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(stripGenerics(raw)), "?"), "!")
+	if strings.HasPrefix(raw, "(") && strings.HasSuffix(raw, ")") {
+		raw = strings.TrimSpace(raw[1 : len(raw)-1])
+	}
+	raw = strings.TrimPrefix(strings.TrimPrefix(raw, "any "), "some ")
 	if !swiftTypeRefText(raw) {
 		return ""
 	}
@@ -392,6 +408,78 @@ func swiftUniqueQualifiedMethod(typeRef, name string, symbolsByShortName map[str
 		return SymbolRecord{}, false
 	}
 	return match, true
+}
+
+func swiftReceiverMethodByArgumentLabels(call receiverCall, candidates []SymbolRecord) (SymbolRecord, bool) {
+	labels := swiftCallArgumentLabels(call.Args)
+	if len(labels) == 0 {
+		return SymbolRecord{}, false
+	}
+	var matches []SymbolRecord
+	for _, cand := range candidates {
+		if cand.Kind != "method" || cand.Language != "Swift" {
+			continue
+		}
+		if labelSetIntersects(labels, swiftSignatureArgumentLabels(cand.Signature, call.Method)) {
+			matches = append(matches, cand)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], true
+	}
+	return SymbolRecord{}, false
+}
+
+func swiftCallArgumentLabels(args string) map[string]bool {
+	labels := map[string]bool{}
+	for _, arg := range splitTopLevelCommas(args) {
+		arg = strings.TrimSpace(arg)
+		m := regexp.MustCompile(`^([A-Za-z_]\w*)\s*:`).FindStringSubmatch(arg)
+		if len(m) == 2 {
+			labels[m[1]] = true
+		}
+	}
+	return labels
+}
+
+func swiftSignatureArgumentLabels(signature, name string) map[string]bool {
+	labels := map[string]bool{}
+	loc := regexp.MustCompile(`\bfunc\s+` + regexp.QuoteMeta(name) + `\s*(?:<[^<>]*>)?\s*\(`).FindStringIndex(signature)
+	if loc == nil {
+		return labels
+	}
+	open := loc[1] - 1
+	close := matchingParen(signature, open)
+	if close < 0 {
+		return labels
+	}
+	for _, param := range splitTopLevelCommas(signature[open+1 : close]) {
+		param = strings.TrimSpace(param)
+		if param == "" {
+			continue
+		}
+		param = regexp.MustCompile(`^@\w+(?:\([^)]*\))?\s+`).ReplaceAllString(param, "")
+		if strings.HasPrefix(param, "_ ") {
+			continue
+		}
+		if m := regexp.MustCompile(`^([A-Za-z_]\w*)\s+(?:[A-Za-z_]\w*)\s*:`).FindStringSubmatch(param); len(m) == 2 {
+			labels[m[1]] = true
+			continue
+		}
+		if m := regexp.MustCompile(`^([A-Za-z_]\w*)\s*:`).FindStringSubmatch(param); len(m) == 2 {
+			labels[m[1]] = true
+		}
+	}
+	return labels
+}
+
+func labelSetIntersects(left, right map[string]bool) bool {
+	for label := range left {
+		if right[label] {
+			return true
+		}
+	}
+	return false
 }
 
 // swiftChainBoundLocalTypes infers local -> type for locals bound from

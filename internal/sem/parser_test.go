@@ -3162,3 +3162,42 @@ void jv_free(jv x) {
 		t.Errorf("return type jv_kind extracted as a function name")
 	}
 }
+
+func TestTreeSitterParserCAnonymousTypedefStructUsesAliasName(t *testing.T) {
+	// codebase-memory-mcp: anonymous typedef structs in cbm.h were named after
+	// the first field type/name (`CBMArena`, `name`, ...), not the trailing
+	// typedef alias (`CBMExtractCtx`, `CBMDefinition`, ...).
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("cbm.h", `typedef struct {
+    const char *name;
+    const char *qualified_name;
+} CBMDefinition;
+
+typedef struct {
+    CBMArena *arena;
+    CBMDefinition *defs;
+    int count;
+} CBMExtractCtx;
+`)
+	if language != "C" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	seen := map[string]string{}
+	for _, entity := range entities {
+		if entity.Kind == "type" {
+			seen[entity.Name] = entity.Kind
+		}
+	}
+	for _, name := range []string{"CBMDefinition", "CBMExtractCtx"} {
+		if seen[name] != "type" {
+			t.Fatalf("typedef alias %q not extracted as a type; seen: %#v; entities: %#v", name, seen, entities)
+		}
+	}
+	for _, wrong := range []string{"name", "CBMArena"} {
+		if seen[wrong] == "type" {
+			t.Fatalf("anonymous typedef struct named after body token %q; seen: %#v; entities: %#v", wrong, seen, entities)
+		}
+	}
+}

@@ -52,6 +52,8 @@ var (
 	phpVarDocPropRe = regexp.MustCompile(`@var\s+\\?((?:[A-Za-z_]\w*\\)*)([A-Z]\w*)\s*\*/\s*(?:(?:public|protected|private|static|readonly)\s+)+\$([A-Za-z_]\w*)`)
 	// $this->prop = $param assignments inside the constructor body.
 	phpCtorPropAssignRe = regexp.MustCompile(`\$this\s*->\s*([A-Za-z_]\w*)\s*=\s*\$([A-Za-z_]\w*)`)
+	// $this->fooFactory->create(...)->bar(...) generated-factory chains.
+	phpPropertyFactoryChainStartRe = regexp.MustCompile(`\$this\s*->\s*([A-Za-z_]\w*)\s*->\s*([A-Za-z_]\w*)\s*\(`)
 	// Constructor header (params follow at the returned match's end).
 	phpCtorHeaderRe = regexp.MustCompile(`\bfunction\s+__construct\s*\(`)
 	// One constructor parameter: optional promotion visibility, optional
@@ -71,6 +73,13 @@ type phpStaticCall struct {
 	Class  string
 	Method string
 	Detail string
+}
+
+type phpPropertyFactoryChainCall struct {
+	Property      string
+	FactoryMethod string
+	Method        string
+	Detail        string
 }
 
 // stripPHPCodeText extends the generic literal/comment stripper with the PHP
@@ -207,6 +216,46 @@ func phpChainedConstructorCalls(block string) []typedMethodCall {
 		}
 		seen[key] = true
 		out = append(out, typedMethodCall{TypeName: typeName, Method: method, Detail: "new " + typeName + "()->" + method})
+	}
+	return out
+}
+
+func phpPropertyFactoryChainCalls(block string) []phpPropertyFactoryChainCall {
+	stripped := stripPHPCodeText(block)
+	var out []phpPropertyFactoryChainCall
+	seen := map[string]bool{}
+	for _, m := range phpPropertyFactoryChainStartRe.FindAllStringSubmatchIndex(stripped, -1) {
+		prop := stripped[m[2]:m[3]]
+		factory := stripped[m[4]:m[5]]
+		open := m[1] - 1
+		close := matchingParen(stripped, open)
+		if close < 0 {
+			continue
+		}
+		i := skipPHPSpace(stripped, close+1)
+		if !strings.HasPrefix(stripped[i:], "->") {
+			continue
+		}
+		i = skipPHPSpace(stripped, i+2)
+		j := i
+		for j < len(stripped) && isPHPWordByte(stripped[j]) {
+			j++
+		}
+		method := stripped[i:j]
+		if method == "" || skipPHPSpace(stripped, j) >= len(stripped) || stripped[skipPHPSpace(stripped, j)] != '(' {
+			continue
+		}
+		key := prop + "." + factory + "." + method
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, phpPropertyFactoryChainCall{
+			Property:      prop,
+			FactoryMethod: factory,
+			Method:        method,
+			Detail:        "this->" + prop + "->" + factory + "()->" + method,
+		})
 	}
 	return out
 }

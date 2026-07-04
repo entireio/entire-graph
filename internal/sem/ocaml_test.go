@@ -58,7 +58,7 @@ func TestOCamlCallSites(t *testing.T) {
   set |> helper;
   Ordered_set_lang.eval set ~standard ~eq:String.equal ~parse:(fun ~loc:_ s -> s)
 `
-	sites := ocamlCallSites(block, locals)
+	sites := ocamlCallSites(block, locals, nil)
 	got := map[ocamlCallSite]bool{}
 	for _, site := range sites {
 		got[site] = true
@@ -186,6 +186,76 @@ val eval : t -> standard:string list -> eq:(string -> string -> bool) -> parse:(
 		// literal must not fabricate extra edges into ordered_set_lang.
 		if e.from == "src/ocaml_flags_db.ml:ocaml_flags_env" && strings.Contains(e.to, "ordered_set_lang") {
 			t.Fatalf("masked text fabricated OCaml CALLS edge %v", e)
+		}
+	}
+}
+
+func TestOCamlOpenModuleAndCallableReferenceExtraction(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "stdlib/camlinternalFormatBasics.ml", `let rec concat_fmt fmt rest =
+  if fmt = rest then fmt else concat_fmt rest fmt
+`)
+	writeFile(t, repo, "stdlib/camlinternalFormat.ml", `open CamlinternalFormatBasics
+
+let convert_int iconv n = iconv + n
+let convert_int32 iconv n = iconv + n
+let convert_int64 iconv n = iconv + n
+
+let make_int_padding_precision _k _acc _rest _pad _prec trans iconv =
+  trans iconv 1
+
+let rec make_printf fmt =
+  make_int_padding_precision () () fmt () () convert_int 0;
+  make_int_padding_precision () () fmt () () convert_int32 0;
+  make_int_padding_precision () () fmt () () convert_int64 0;
+  concat_fmt fmt fmt
+`)
+	writeFile(t, repo, "stdlib/format.ml", `open CamlinternalFormatBasics
+open CamlinternalFormat
+
+let printf fmt =
+  make_printf fmt
+
+let eprintf fmt =
+  make_printf fmt
+`)
+	writeFile(t, repo, "stdlib/printf.ml", `open CamlinternalFormat
+
+let kbprintf fmt =
+  make_printf fmt
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, s := range snapshot.Symbols {
+		symbolsByID[s.ID] = s
+	}
+	type edge struct{ from, to string }
+	calls := map[edge]bool{}
+	for _, r := range snapshot.Relations {
+		if r.Type != "CALLS" {
+			continue
+		}
+		from, fromOK := symbolsByID[r.FromID]
+		to, toOK := symbolsByID[r.ToID]
+		if !fromOK || !toOK || from.Language != "OCaml" || to.Language != "OCaml" {
+			continue
+		}
+		calls[edge{from.FilePath + ":" + from.Name, to.FilePath + ":" + to.Name}] = true
+	}
+	for _, want := range []edge{
+		{"stdlib/format.ml:printf", "stdlib/camlinternalFormat.ml:make_printf"},
+		{"stdlib/format.ml:eprintf", "stdlib/camlinternalFormat.ml:make_printf"},
+		{"stdlib/printf.ml:kbprintf", "stdlib/camlinternalFormat.ml:make_printf"},
+		{"stdlib/camlinternalFormat.ml:make_printf", "stdlib/camlinternalFormatBasics.ml:concat_fmt"},
+		{"stdlib/camlinternalFormat.ml:make_printf", "stdlib/camlinternalFormat.ml:convert_int"},
+		{"stdlib/camlinternalFormat.ml:make_printf", "stdlib/camlinternalFormat.ml:convert_int32"},
+		{"stdlib/camlinternalFormat.ml:make_printf", "stdlib/camlinternalFormat.ml:convert_int64"},
+	} {
+		if !calls[want] {
+			t.Fatalf("missing OCaml open/callable-reference CALLS edge %v in %v", want, calls)
 		}
 	}
 }
