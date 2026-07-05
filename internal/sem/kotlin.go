@@ -315,6 +315,55 @@ func kotlinPropertyTypes(content string, returnTypesBySymbolNameAndFile map[stri
 	return out
 }
 
+// kotlinFieldInitializerTypes infers types for parser-confirmed class fields
+// whose declaration has no explicit type in the emitted signature, e.g.
+// `val koin = Koin()`. Because the input symbols are already fields, not local
+// property declarations, this can accept unmodified `val`/`var` lines without
+// reading method locals as class properties.
+func kotlinFieldInitializerTypes(content string, fields []SymbolRecord) map[string]string {
+	lines := strings.Split(stripKotlinCodeText(content), "\n")
+	out := map[string]string{}
+	conflicted := map[string]bool{}
+	record := func(name, typeName string) {
+		if name == "" || typeName == "" {
+			return
+		}
+		if existing, ok := out[name]; ok && existing != typeName {
+			conflicted[name] = true
+			return
+		}
+		out[name] = typeName
+	}
+	for _, field := range fields {
+		if field.Kind != "field" || field.Language != "Kotlin" {
+			continue
+		}
+		start := maxInt(1, field.StartLine)
+		end := maxInt(start, field.EndLine)
+		if start > len(lines) {
+			continue
+		}
+		if end > len(lines) {
+			end = len(lines)
+		}
+		block := strings.Join(lines[start-1:end], "\n")
+		pattern := regexp.MustCompile(`\b(?:val|var)\s+` + regexp.QuoteMeta(field.Name) + `\s*(?::\s*([A-Za-z_][\w.]*(?:<[^>\n]+>)?\??))?\s*=\s*([A-Z]\w*)\s*\(`)
+		match := pattern.FindStringSubmatch(block)
+		if match == nil {
+			continue
+		}
+		if typeName := kotlinTypeName(strings.TrimSuffix(stripGenerics(match[1]), "?")); typeName != "" {
+			record(field.Name, typeName)
+			continue
+		}
+		record(field.Name, match[2])
+	}
+	for name := range conflicted {
+		delete(out, name)
+	}
+	return out
+}
+
 // kotlinUniqueReturnType returns the single declared return type of the named
 // callable when every declaration in the workspace agrees on exactly one type
 // name (`fun newQueue(): TaskQueue` -> TaskQueue). Ambiguity (overloads with

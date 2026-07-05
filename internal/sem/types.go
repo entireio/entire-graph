@@ -1920,6 +1920,8 @@ func splitSignatureTypes(language, signature string) (string, string) {
 		// prefix-scan below would misread `function name(` signatures.
 		if strings.HasPrefix(after, ":") {
 			after = strings.TrimSpace(strings.TrimPrefix(after, ":"))
+			// PHP nullable return hint (`: ?Foo`).
+			after = strings.TrimPrefix(after, "?")
 		} else {
 			after = ""
 		}
@@ -2379,7 +2381,7 @@ type receiverCall struct {
 	Args     string
 }
 
-var receiverCallRe = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*\(`)
+var receiverCallRe = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*(?:<[^>\n;{}()]*>)?\(`)
 
 // receiverCalls extracts distinct receiver.method() call sites from a code
 // block (literals and comments stripped). Leading `$` is dropped so PHP
@@ -2454,13 +2456,13 @@ type typedMethodDeepChainCall struct {
 var (
 	newCtorMethodDeepChainCallRe = regexp.MustCompile(`\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
 	ctorMethodDeepChainCallRe    = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
-	returnedMethodDeepChainRe    = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
-	newCtorMethodChainCallRe     = regexp.MustCompile(`\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
-	ctorMethodChainCallRe        = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
-	returnedMethodChainCallRe    = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
-	newCtorMethodCallRe          = regexp.MustCompile(`\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
-	ctorMethodCallRe             = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
-	returnedMethodCallRe         = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\.\s*([A-Za-z_]\w*)\s*\(`)
+	returnedMethodDeepChainRe    = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*\(`)
+	newCtorMethodChainCallRe     = regexp.MustCompile(`\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*\(`)
+	ctorMethodChainCallRe        = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*\(`)
+	returnedMethodChainCallRe    = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*\([^)]*\)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*\(`)
+	newCtorMethodCallRe          = regexp.MustCompile(`\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*\(`)
+	ctorMethodCallRe             = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)\s*\([^)]*\)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*\(`)
+	returnedMethodCallRe         = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?:->|\.)\s*([A-Za-z_]\w*)\s*\(`)
 )
 
 func chainedConstructorCalls(block string) []typedMethodCall {
@@ -2666,6 +2668,13 @@ var (
 	newAssignRe           = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*:?=\s*new\s+([A-Za-z_]\w*)`)
 	ctorAssignRe          = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*:?=\s*&?([A-Z][A-Za-z0-9_]*)\s*[({]`)
 	factoryReturnAssignRe = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?\s*(?::=|=)\s*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(`)
+	// C#-style declarations that carry the variable's type at a use site:
+	// `out HttpConnectionPool? pool` (argument-position out-declaration) and
+	// `HttpConnectionPool? pool;` / `= ...` (nullable-annotated local).
+	// Both require a capitalized type followed by the variable name, so
+	// name-first languages (Go `out Type`) cannot match.
+	outParamDeclRe      = regexp.MustCompile(`\bout\s+([A-Z][A-Za-z0-9_]*)(?:<[^;()<>]*>)?\s*\??\s+([A-Za-z_]\w*)\b`)
+	nullableLocalDeclRe = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)(?:<[^;()<>]*>)?\?\s+([A-Za-z_]\w*)\s*[;=]`)
 )
 
 // localVarTypes infers a best-effort variable -> type-name map from constructor
@@ -2682,6 +2691,14 @@ func localVarTypes(block string) map[string]string {
 		name := strings.TrimPrefix(m[1], "$")
 		if _, exists := out[name]; !exists {
 			out[name] = m[2]
+		}
+	}
+	for _, re := range []*regexp.Regexp{outParamDeclRe, nullableLocalDeclRe} {
+		for _, m := range re.FindAllStringSubmatch(stripped, -1) {
+			name := m[2]
+			if _, exists := out[name]; !exists {
+				out[name] = m[1]
+			}
 		}
 	}
 	return out
@@ -2720,7 +2737,11 @@ func parameterVarTypes(signature string) map[string]string {
 	// `&'a`) before the type, so `bytes: &mut Bytes` registers bytes -> Bytes.
 	// Harmless for the other colon-style languages (they have no such prefix).
 	colonParamRe := regexp.MustCompile(`^\s*\$?([A-Za-z_][A-Za-z0-9_]*)\??\s*:\s*(?:&\s*)*(?:'[A-Za-z_]\w*\s+)?(?:mut\s+)?\??([A-Z][A-Za-z0-9_]*)\b`)
-	typeFirstParamRe := regexp.MustCompile(`^\s*(?:final\s+)?(?:[*&]\s*)?([A-Z][A-Za-z0-9_]*)\s+\$?([A-Za-z_][A-Za-z0-9_]*)\b`)
+	// Leading modifiers cover Java (`final`) and C# parameter modifiers
+	// (`out`/`ref`/`in`/`params`/`this`/`scoped`/`readonly`); a trailing
+	// `?` on the type is C#'s nullable annotation (`out HttpConnectionPool?
+	// pool` must register pool -> HttpConnectionPool, not out -> ...).
+	typeFirstParamRe := regexp.MustCompile(`^\s*(?:(?:final|out|ref|in|params|this|scoped|readonly)\s+)*(?:[*&]\s*)?([A-Z][A-Za-z0-9_]*)\s*\??\s+\$?([A-Za-z_][A-Za-z0-9_]*)\b`)
 	nameFirstParamRe := regexp.MustCompile(`^\s*\$?([A-Za-z_][A-Za-z0-9_]*)\s+(?:[*&]\s*)?([A-Z][A-Za-z0-9_]*)\b`)
 	for _, param := range params {
 		param = strings.TrimSpace(strings.SplitN(param, "=", 2)[0])
@@ -3110,4 +3131,50 @@ func goFirstResultTypeForCallable(name string, from SymbolRecord, symbolsByShort
 		return agreed
 	}
 	return ""
+}
+
+// phpDocblockFuncRe pairs a docblock with the PHP function/method declared
+// immediately after it; phpDocReturnTagRe pulls the '@return' type out of
+// the docblock body.
+var (
+	phpDocblockFuncRe  = regexp.MustCompile(`(?s)/\*\*(.*?)\*/\s*(?:(?:abstract|final|public|protected|private|static)\s+)*function\s+&?([A-Za-z_]\w*)\s*\(`)
+	phpDocReturnTagRe  = regexp.MustCompile(`@return\s+([\\\w|]+)`)
+	phpDocPrimitiveSet = map[string]bool{
+		"array": true, "bool": true, "boolean": true, "callable": true,
+		"false": true, "float": true, "int": true, "integer": true,
+		"iterable": true, "mixed": true, "never": true, "null": true,
+		"object": true, "resource": true, "self": true, "static": true,
+		"string": true, "true": true, "void": true, "this": true,
+	}
+)
+
+// phpDocblockReturnTypes maps each PHP function/method name in a file to the
+// class-like '@return' type of its docblock. WordPress-era PHP declares
+// return types in docblocks rather than native hints, so this is the only
+// source for factory-return receiver inference there ('@return
+// WP_REST_Server' lets rest_get_server()->dispatch() resolve). Union types
+// take their first class-like member; FQCNs reduce to the short class name.
+func phpDocblockReturnTypes(content string) map[string]string {
+	out := map[string]string{}
+	for _, m := range phpDocblockFuncRe.FindAllStringSubmatch(content, -1) {
+		doc, name := m[1], m[2]
+		tag := phpDocReturnTagRe.FindStringSubmatch(doc)
+		if tag == nil {
+			continue
+		}
+		for _, alt := range strings.Split(tag[1], "|") {
+			alt = strings.TrimPrefix(alt, "\\")
+			if i := strings.LastIndex(alt, "\\"); i >= 0 {
+				alt = alt[i+1:]
+			}
+			if alt == "" || phpDocPrimitiveSet[strings.ToLower(alt)] || !isCapitalized(alt) {
+				continue
+			}
+			if _, exists := out[name]; !exists {
+				out[name] = alt
+			}
+			break
+		}
+	}
+	return out
 }

@@ -1031,6 +1031,128 @@ func TestTreeSitterParserYAMLMasksQuotedMappingKeys(t *testing.T) {
 	}
 }
 
+func TestTreeSitterParserCSharp13SyntaxParses(t *testing.T) {
+	// The vendored tree-sitter-c-sharp grammar must parse C# 12/13 syntax
+	// that the old bundled grammar degraded to ERROR nodes: params
+	// collections, collection expressions, primary constructors, and the
+	// `field` keyword. Regression: dotnet/runtime Task.cs lost its
+	// top-level `class Task` symbol and every member after the first
+	// `params ReadOnlySpan<Task>` overload.
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("Scheduler.cs", `namespace Runtime.Tasks;
+
+public partial class Scheduler(string name) : SchedulerBase(name)
+{
+    private int[] _pending = [];
+
+    public string Label { get; set => field = value; }
+
+    public static void WaitAll(params Task[] tasks) { }
+
+    public static void WaitAll(params ReadOnlySpan<Task> tasks) { }
+
+    public static Task WhenAll(IEnumerable<Task> tasks) { return null; }
+}
+`)
+	if language != "C#" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("C# 13 syntax must parse cleanly, got: %#v", status)
+	}
+	seen := map[string]string{}
+	for _, entity := range entities {
+		seen[entity.Name] = entity.Kind
+	}
+	for name, kind := range map[string]string{
+		"Scheduler":         "class",
+		"Scheduler.WaitAll": "method",
+		"Scheduler.WhenAll": "method",
+	} {
+		if seen[name] != kind {
+			t.Fatalf("%s kind = %q, want %q in %#v", name, seen[name], kind, seen)
+		}
+	}
+}
+
+func TestTreeSitterParserCSharpPointerDerefCastMasked(t *testing.T) {
+	// Prefix dereference of a pointer cast (`*(T*)&x`) is the one unsafe
+	// construct the C# 13 grammar still rejects; the masker blanks the
+	// `*`s so the rest of the method parses.
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("Cache.cs", `public class Cache
+{
+    public unsafe Task<TResult> Fetch<TResult>(TResult result)
+    {
+        Task<bool> task = *(bool*)&result ? TaskCache.s_trueTask : TaskCache.s_falseTask;
+        return *(Task<TResult>*)&task;
+    }
+
+    public void After() { }
+}
+`)
+	if language != "C#" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("pointer-deref cast must be masked into parseable form, got: %#v", status)
+	}
+	seen := map[string]string{}
+	for _, entity := range entities {
+		seen[entity.Name] = entity.Kind
+	}
+	for name, kind := range map[string]string{
+		"Cache":       "class",
+		"Cache.Fetch": "method",
+		"Cache.After": "method",
+	} {
+		if seen[name] != kind {
+			t.Fatalf("%s kind = %q, want %q in %#v", name, seen[name], kind, seen)
+		}
+	}
+}
+
+func TestTreeSitterParserCSharpErrorNodeDoesNotSuppressSiblings(t *testing.T) {
+	// Even when a member fails to parse, the enclosing class, its other
+	// members, and later top-level declarations must still be extracted.
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("Salvage.cs", `namespace Demo.Space
+{
+    public partial class Container
+    {
+        public void Before() { }
+
+        public static void Broken(some !!! unparseable @@@ garbage here ###) { }
+
+        public void After() { }
+    }
+
+    public class Later
+    {
+        public void Fine() { }
+    }
+}
+`)
+	if language != "C#" {
+		t.Fatalf("language = %q", language)
+	}
+	if !status.ParseError {
+		t.Fatalf("expected ParseError for garbage member, got: %#v", status)
+	}
+	seen := map[string]string{}
+	for _, entity := range entities {
+		seen[entity.Name] = entity.Kind
+	}
+	for name, kind := range map[string]string{
+		"Container":        "class",
+		"Container.Before": "method",
+		"Container.After":  "method",
+		"Later":            "class",
+		"Later.Fine":       "method",
+	} {
+		if seen[name] != kind {
+			t.Fatalf("ERROR node suppressed %s (kind = %q, want %q) in %#v", name, seen[name], kind, seen)
+		}
+	}
+}
+
 func TestTreeSitterParserCSharpMasksPreprocessorAndPrimaryConstructors(t *testing.T) {
 	entities, language, status := TreeSitterParser{}.ParseWithStatus("WrappedReaderTests.cs", "\ufeff"+`#if !NET5_0_OR_GREATER
 namespace System.Diagnostics.CodeAnalysis
@@ -2994,5 +3116,129 @@ pub fn check(value: u8) -> bool {
 	}
 	if !names["check"] {
 		t.Fatalf("plain function missing: %#v", entities)
+	}
+}
+
+func TestTreeSitterParserCTypedefReturnTypeDoesNotSwallowFunctionName(t *testing.T) {
+	// jqlang/jq: `jv_kind jv_get_kind(jv x)` was extracted as a function
+	// named "jv_kind" — the pre-order name fallback latched onto the
+	// typedef'd return type instead of the declarator. Only void/primitive
+	// returns produced correct names.
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("jv.c", `typedef enum { JV_KIND_INVALID } jv_kind;
+typedef struct { int x; } jv;
+
+jv_kind jv_get_kind(jv x) {
+  return JV_KIND_INVALID;
+}
+
+jv jv_true(void) {
+  jv v;
+  return v;
+}
+
+jv* jv_alloc(void) {
+  return 0;
+}
+
+void jv_free(jv x) {
+}
+`)
+	if language != "C" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	seen := map[string]string{}
+	for _, entity := range entities {
+		seen[entity.Name] = entity.Kind
+	}
+	for _, name := range []string{"jv_get_kind", "jv_true", "jv_alloc", "jv_free"} {
+		if seen[name] != "function" {
+			t.Errorf("function %q not extracted (got kind %q); seen: %#v", name, seen[name], seen)
+		}
+	}
+	if seen["jv_kind"] == "function" {
+		t.Errorf("return type jv_kind extracted as a function name")
+	}
+}
+
+func TestTreeSitterParserCAnonymousTypedefStructUsesAliasName(t *testing.T) {
+	// codebase-memory-mcp: anonymous typedef structs in cbm.h were named after
+	// the first field type/name (`CBMArena`, `name`, ...), not the trailing
+	// typedef alias (`CBMExtractCtx`, `CBMDefinition`, ...).
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("cbm.h", `typedef struct {
+    const char *name;
+    const char *qualified_name;
+} CBMDefinition;
+
+typedef struct {
+    CBMArena *arena;
+    CBMDefinition *defs;
+    int count;
+} CBMExtractCtx;
+`)
+	if language != "C" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("unexpected parse status: %#v", status)
+	}
+	seen := map[string]string{}
+	for _, entity := range entities {
+		if entity.Kind == "type" {
+			seen[entity.Name] = entity.Kind
+		}
+	}
+	for _, name := range []string{"CBMDefinition", "CBMExtractCtx"} {
+		if seen[name] != "type" {
+			t.Fatalf("typedef alias %q not extracted as a type; seen: %#v; entities: %#v", name, seen, entities)
+		}
+	}
+	for _, wrong := range []string{"name", "CBMArena"} {
+		if seen[wrong] == "type" {
+			t.Fatalf("anonymous typedef struct named after body token %q; seen: %#v; entities: %#v", wrong, seen, entities)
+		}
+	}
+}
+
+func TestTreeSitterParserCSharpBareAsyncArgumentMasked(t *testing.T) {
+	// dotnet/runtime passes `async` (a bool parameter) as a plain argument:
+	// `AuthenticationHelper.SendWithRequestAuthAsync(request, async, ...)`.
+	// tree-sitter-c-sharp reads argument-position `async` as an async-lambda
+	// head; the ERROR swallowed HttpConnectionPool's class declaration and
+	// left every member unqualified. The masker rewrites the token to a
+	// same-length literal so the file parses.
+	entities, language, status := TreeSitterParser{}.ParseWithStatus("Pool.cs", `internal sealed class HttpConnectionPool
+{
+    public string SendAsync(string request, bool async)
+    {
+        return Helper.F(request, async, this);
+    }
+
+    public string SendWithProxyAuthAsync(string request, bool async)
+    {
+        return G(async);
+    }
+}
+`)
+	if language != "C#" {
+		t.Fatalf("language = %q", language)
+	}
+	if status.ParseError {
+		t.Fatalf("bare async argument must be masked into parseable form, got: %#v", status)
+	}
+	seen := map[string]string{}
+	for _, entity := range entities {
+		seen[entity.Name] = entity.Kind
+	}
+	for name, kind := range map[string]string{
+		"HttpConnectionPool":                        "class",
+		"HttpConnectionPool.SendAsync":              "method",
+		"HttpConnectionPool.SendWithProxyAuthAsync": "method",
+	} {
+		if seen[name] != kind {
+			t.Fatalf("%s kind = %q, want %q in %#v", name, seen[name], kind, seen)
+		}
 	}
 }

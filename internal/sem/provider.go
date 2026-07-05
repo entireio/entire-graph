@@ -574,7 +574,7 @@ func supportsCallExtraction(spec languageSpec) bool {
 		return false
 	}
 	switch spec.language {
-	case "Bash", "C", "C++", "C#", "Dart", "Elixir", "Erlang", "Go", "Groovy", "Haskell", "Java", "JavaScript", "Kotlin", "Lua", "OCaml", "PHP", "Python", "Ruby", "Rust", "Scala", "Swift", "TypeScript", "Zsh":
+	case "Bash", "C", "C++", "C#", "Clojure", "ClojureScript", "Dart", "Elixir", "Erlang", "F#", "Go", "Groovy", "Haskell", "Java", "JavaScript", "Kotlin", "Lua", "Objective-C", "OCaml", "Perl", "PHP", "Python", "Ruby", "Rust", "Scala", "SQL", "Swift", "TypeScript", "Zig", "Zsh":
 		return true
 	default:
 		return false
@@ -1465,7 +1465,7 @@ func localReachable(from, to SymbolRecord) bool {
 // receiver and is handled by receiverCallRelations instead.
 func implicitReceiverLanguage(lang string) bool {
 	switch lang {
-	case "Java", "C#", "C++", "Dart", "Groovy", "Kotlin", "Scala", "Ruby", "Swift":
+	case "Java", "C#", "C++", "Dart", "Elixir", "Groovy", "Kotlin", "Scala", "Ruby", "Swift":
 		return true
 	}
 	return false
@@ -1509,7 +1509,7 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 		})
 	}
 	if len(local) == 1 {
-		return local
+		return appendSQLDerivedDuplicateTargets(local, from, candidates)
 	}
 	if len(local) > 1 {
 		// Ambiguous bare name with multiple same-file definitions: emit the
@@ -1539,6 +1539,9 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 				Scope:        "module",
 			})
 		}
+	}
+	if len(imported) == 0 {
+		imported = jsExportedImportFallbackTargets(name, from, candidates, importsByName[name], allowMethodTargets)
 	}
 	if len(imported) > 0 {
 		return imported
@@ -1616,6 +1619,32 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 			Scope:        "workspace",
 		}}
 	}
+	if from.Language == "PHP" && len(remaining) > 1 {
+		// PHP repos commonly re-declare bare functions (WordPress ships
+		// apply_filters in plugin.php plus compat/noop stubs), and PHP has
+		// no import statements for functions to disambiguate through.
+		// Ambiguity must not mean silence: emit candidate edges to the
+		// same-name declarations, largest declaration first (the canonical
+		// implementation dwarfs its stubs), capped to keep noise bounded.
+		ranked := append([]SymbolRecord(nil), remaining...)
+		sort.SliceStable(ranked, func(i, j int) bool {
+			return ranked[i].EndLine-ranked[i].StartLine > ranked[j].EndLine-ranked[j].StartLine
+		})
+		if len(ranked) > 4 {
+			ranked = ranked[:4]
+		}
+		out := make([]resolvedCallTarget, 0, len(ranked))
+		for _, cand := range ranked {
+			out = append(out, resolvedCallTarget{
+				SymbolRecord: cand,
+				Confidence:   0.55,
+				Reason:       fmt.Sprintf("ambiguous bare call: candidate among %d same-name declarations", len(remaining)),
+				Resolution:   "name_only",
+				Scope:        "workspace",
+			})
+		}
+		return out
+	}
 	if cFamilyOverloadResolutionEnabled(from.Language) {
 		if overloads, ok := sameFileOverloadSet(remaining); ok {
 			out := make([]resolvedCallTarget, 0, len(overloads))
@@ -1632,6 +1661,121 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 		}
 	}
 	return nil
+}
+
+func jsExportedImportFallbackTargets(name string, from SymbolRecord, candidates []SymbolRecord, modules []string, allowMethodTargets bool) []resolvedCallTarget {
+	if len(modules) == 0 || (from.Language != "JavaScript" && from.Language != "TypeScript") {
+		return nil
+	}
+	var exported []SymbolRecord
+	var imported []SymbolRecord
+	for _, to := range candidates {
+		if to.ID == from.ID || to.Kind == "field" || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
+			continue
+		}
+		if importedNameMatchesFile(modules, from.FilePath, to.FilePath) {
+			imported = append(imported, to)
+		}
+		if jsExportedSymbol(name, to) {
+			exported = append(exported, to)
+		}
+	}
+	if len(exported) != 1 {
+		exported = preferExportedSymbols(name, imported)
+		if len(exported) != 1 {
+			return nil
+		}
+	}
+	return []resolvedCallTarget{{
+		SymbolRecord: exported[0],
+		Confidence:   0.64,
+		Reason:       "JS/TS imported name matched unique exported workspace symbol",
+		Resolution:   "import_resolved",
+		Scope:        "module",
+	}}
+}
+
+func preferExportedSymbols(name string, candidates []SymbolRecord) []SymbolRecord {
+	var exported []SymbolRecord
+	for _, candidate := range candidates {
+		if jsExportedSymbol(name, candidate) {
+			exported = append(exported, candidate)
+		}
+	}
+	if len(exported) == 1 {
+		return exported
+	}
+	if len(candidates) == 1 {
+		return candidates
+	}
+	return nil
+}
+
+func jsExportedSymbol(name string, symbol SymbolRecord) bool {
+	signature := strings.TrimSpace(symbol.Signature)
+	for _, prefix := range []string{
+		"export function " + name,
+		"export async function " + name,
+		"export const " + name,
+		"export let " + name,
+		"export var " + name,
+		"export class " + name,
+	} {
+		if strings.HasPrefix(signature, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func appendSQLDerivedDuplicateTargets(targets []resolvedCallTarget, from SymbolRecord, candidates []SymbolRecord) []resolvedCallTarget {
+	if from.Language != "SQL" || len(targets) == 0 {
+		return targets
+	}
+	seen := map[string]bool{}
+	for _, target := range targets {
+		seen[target.ID] = true
+	}
+	var extras []resolvedCallTarget
+	for _, target := range targets {
+		if !sqlDerivedScriptPath(target.FilePath) {
+			continue
+		}
+		for _, candidate := range candidates {
+			if candidate.ID == from.ID || seen[candidate.ID] || candidate.QualifiedName != target.QualifiedName || candidate.Kind != target.Kind || sqlDerivedScriptPath(candidate.FilePath) || !localReachable(from, candidate) {
+				continue
+			}
+			seen[candidate.ID] = true
+			extras = append(extras, resolvedCallTarget{
+				SymbolRecord: candidate,
+				Confidence:   0.54,
+				Reason:       "SQL migration-script call also linked to canonical same-qualified routine",
+				Resolution:   "name_only",
+				Scope:        "workspace",
+			})
+		}
+	}
+	if len(extras) == 0 {
+		return targets
+	}
+	out := append([]resolvedCallTarget(nil), targets...)
+	out = append(out, extras...)
+	return out
+}
+
+func sqlDerivedScriptPath(path string) bool {
+	path = strings.ToLower(filepath.ToSlash(path))
+	base := filepath.Base(path)
+	if strings.Contains(base, "--") {
+		return true
+	}
+	for _, part := range strings.Split(path, "/") {
+		switch part {
+		case "migration", "migrations", "update", "updates", "upgrade", "upgrades", "downgrade", "downgrades":
+			return true
+		}
+	}
+	return false
 }
 
 func cFamilyOverloadResolutionEnabled(language string) bool {
@@ -1967,6 +2111,29 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			}
 		}
 	}
+	// PHP declares return types in docblocks far more often than in native
+	// hints (WordPress uses docblocks exclusively), and the signature pass
+	// above cannot see them. Harvest '@return Type' from the docblock
+	// directly above each PHP function/method so factory-return and
+	// chained-call receiver inference work (rest_get_server()->dispatch()
+	// must resolve through '@return WP_REST_Server').
+	if needsReceiverCalls {
+		for _, file := range files {
+			if file.Language != "PHP" {
+				continue
+			}
+			content, ok := readContent(file.Path)
+			if !ok {
+				continue
+			}
+			for name, typeName := range phpDocblockReturnTypes(content) {
+				if returnTypesBySymbolNameAndFile[name] == nil {
+					returnTypesBySymbolNameAndFile[name] = map[string][]string{}
+				}
+				returnTypesBySymbolNameAndFile[name][file.Path] = append(returnTypesBySymbolNameAndFile[name][file.Path], typeName)
+			}
+		}
+	}
 	// superContainerByID maps a class container to its (direct) superclass
 	// container, so receiver-call resolution can follow inheritance: a
 	// `this.method()` whose method is declared on a base class resolves up the
@@ -1976,6 +2143,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	// global index. Single-inheritance only (first EXTENDS edge), which matches
 	// class semantics in every language that reaches here.
 	superContainerByID := map[string]string{}
+	implementersByContainer := map[string][]string{}
 	if needsReceiverCalls {
 		for _, file := range files {
 			for _, symbol := range recordsByFile[file.Path] {
@@ -1983,17 +2151,19 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					continue
 				}
 				for _, edge := range supertypesFromSignature(symbol.Language, symbol.Signature) {
-					if edge.Relation != "EXTENDS" {
-						continue
-					}
 					sup, ok := firstTypeLikeNamed(symbolsByFile[symbol.FilePath], edge.Super)
 					if !ok || sup.ID == symbol.ID {
 						sup, ok = firstTypeLikeNamed(symbolsByShortName[edge.Super], edge.Super)
 					}
-					if ok && sup.ID != symbol.ID {
-						superContainerByID[symbol.ID] = sup.ID
+					if !ok || sup.ID == symbol.ID {
+						continue
 					}
-					break
+					implementersByContainer[sup.ID] = append(implementersByContainer[sup.ID], symbol.ID)
+					if edge.Relation == "EXTENDS" {
+						if _, exists := superContainerByID[symbol.ID]; !exists {
+							superContainerByID[symbol.ID] = sup.ID
+						}
+					}
 				}
 			}
 		}
@@ -2226,6 +2396,14 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			// and imported bare names can resolve.
 			hsImports = haskellImports(content)
 		}
+		var ocamlOpenedModules []string
+		var ocamlOpenedCallables map[string]bool
+		var ocamlOpenedReferences map[string]bool
+		if file.Language == "OCaml" && fileNeedsCallScan {
+			ocamlOpenedModules = ocamlOpenModules(content)
+			ocamlOpenedCallables = ocamlOpenedCallableNames(ocamlOpenedModules, symbolsByShortName)
+			ocamlOpenedReferences = ocamlOpenedCallableReferenceNames(ocamlOpenedModules, symbolsByShortName)
+		}
 		var kotlinPropTypes map[string]string
 		if file.Language == "Kotlin" && spec.callResolution == "full" {
 			// Kotlin property types live at the class level too (primary
@@ -2233,6 +2411,21 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			// and factory initializers): collect them once per file so
 			// property-receiver calls (`taskQueue.execute(...)`) can resolve.
 			kotlinPropTypes = kotlinPropertyTypes(content, returnTypesBySymbolNameAndFile)
+			for name, typeName := range kotlinFieldInitializerTypes(content, recordsByFile[file.Path]) {
+				if existing, ok := kotlinPropTypes[name]; !ok || existing == typeName {
+					kotlinPropTypes[name] = typeName
+				} else {
+					delete(kotlinPropTypes, name)
+				}
+			}
+		}
+		var typeScriptPropTypes map[string]string
+		if file.Language == "TypeScript" && spec.callResolution == "full" {
+			// TypeScript class-property receivers are commonly typed by Angular
+			// DI initializers (`private router = inject(Router)`) or field
+			// annotations outside the method body. Collect those once per file
+			// and let receiverCallRelations apply the usual shadowing rules.
+			typeScriptPropTypes = typeScriptPropertyTypes(content, recordsByFile[file.Path])
 		}
 		var swiftTypes swiftFileTypes
 		if file.Language == "Swift" && spec.callResolution == "full" {
@@ -2267,7 +2460,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				// only type mentions, and a nested module's block spans its
 				// members' bodies, so both are skipped rather than misread.
 				if from.Kind != "module" && ocamlCallScanFile(file.Path) {
-					for _, r := range ocamlCallRelations(from, block, currentFileSymbols, symbolsByShortName) {
+					for _, r := range ocamlCallRelations(from, block, currentFileSymbols, symbolsByShortName, ocamlOpenedModules, ocamlOpenedCallables, ocamlOpenedReferences) {
 						emit(r)
 					}
 				}
@@ -2304,6 +2497,14 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					callBlock = maskGroovyLiteralsAndComments(block)
 				}
 				callNames := callLikeIdentifiers(callBlock, file.Language)
+				if file.Language == "Julia" {
+					callNames = juliaCallIdentifiers(callBlock)
+				}
+				if file.Language == "Rust" {
+					for name := range rustTurbofishCallIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
+				}
 				if file.Language == "Ruby" {
 					// Ruby method names may end in `!`/`?` and are commonly called
 					// without parentheses; the generic scanner misses both.
@@ -2327,10 +2528,59 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						callNames[name] = struct{}{}
 					}
 				}
+				if file.Language == "JavaScript" || file.Language == "TypeScript" {
+					// JS/TS often routes calls through generated namespace imports
+					// (`performance.mark(...)`, `Parser.parseSourceFile(...)`), and
+					// callback helpers can be passed as bare identifiers (`noop`).
+					for name := range jsDottedCallIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
+					for name := range jsCallableArgumentIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
+				}
+				if file.Language == "F#" {
+					// F# module-qualified calls (`UpdateProcess.SmartInstall(...)`,
+					// `LoadingScripts.ScriptGeneration.constructScriptsFromData(...)`)
+					// hide the target behind a dotted path.
+					for name := range fsharpDottedCallIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
+				}
+				if file.Language == "Lua" {
+					// Lua table/module calls (`vim.split(...)`, `M.joinpath(...)`)
+					// are dotted or colon-qualified; the generic scanner drops the
+					// final segment because it follows a selector.
+					for name := range luaDottedCallIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
+				}
+				if file.Language == "Zig" {
+					// Zig code frequently calls imported analyzer helpers through
+					// module aliases (`analysis.resolveVarDeclAlias(...)`).
+					for name := range zigDottedCallIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
+				}
 				if shellCallLanguage(file.Language) {
 					// Shell functions are invoked as bare commands with no
 					// parentheses; the generic scanner sees no call sites at all.
 					for name := range shellCommandCallIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
+				}
+				if file.Language == "Clojure" || file.Language == "ClojureScript" {
+					// Clojure calls are list heads, usually `(name ...)` or
+					// `(alias/name ...)`, not `name(...)`.
+					for name := range clojureCallIdentifiers(callBlock) {
+						callNames[name] = struct{}{}
+					}
+				}
+				if file.Language == "SQL" {
+					// PostgreSQL function/procedure bodies call routines as
+					// `name(...)` or `schema.name(...)`. The generic scanner
+					// drops schema-qualified calls because of the preceding dot.
+					for name := range sqlCallIdentifiers(callBlock) {
 						callNames[name] = struct{}{}
 					}
 				}
@@ -2592,7 +2842,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 			}
 			if spec.callResolution == "full" {
-				for _, r := range receiverCallRelations(from, block, methodsByContainer, superContainerByID, symbolsByShortName, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir, importsByName, manifestImports.goModule, pkgVarTypesByDir[filepath.ToSlash(filepath.Dir(file.Path))], phpPropTypes, kotlinPropTypes, fieldsByContainer, swiftTypes) {
+				for _, r := range receiverCallRelations(from, block, methodsByContainer, superContainerByID, implementersByContainer, symbolsByShortName, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir, importsByName, manifestImports.goModule, pkgVarTypesByDir[filepath.ToSlash(filepath.Dir(file.Path))], phpPropTypes, kotlinPropTypes, typeScriptPropTypes, fieldsByContainer, swiftTypes) {
 					emit(r)
 				}
 				for _, r := range importedReceiverCallRelations(from, block, importsByName, symbolsByShortName) {
@@ -2638,6 +2888,47 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					Language: file.Language,
 				}
 				topLevelNames := callLikeIdentifiers(topLevel, file.Language)
+				if file.Language == "Julia" {
+					topLevelNames = juliaCallIdentifiers(topLevel)
+				}
+				if file.Language == "Rust" {
+					for name := range rustTurbofishCallIdentifiers(topLevel) {
+						topLevelNames[name] = struct{}{}
+					}
+				}
+				if file.Language == "JavaScript" || file.Language == "TypeScript" {
+					for name := range jsDottedCallIdentifiers(topLevel) {
+						topLevelNames[name] = struct{}{}
+					}
+					for name := range jsCallableArgumentIdentifiers(topLevel) {
+						topLevelNames[name] = struct{}{}
+					}
+				}
+				if file.Language == "F#" {
+					for name := range fsharpDottedCallIdentifiers(topLevel) {
+						topLevelNames[name] = struct{}{}
+					}
+				}
+				if file.Language == "Lua" {
+					for name := range luaDottedCallIdentifiers(topLevel) {
+						topLevelNames[name] = struct{}{}
+					}
+				}
+				if file.Language == "Zig" {
+					for name := range zigDottedCallIdentifiers(topLevel) {
+						topLevelNames[name] = struct{}{}
+					}
+				}
+				if file.Language == "Clojure" || file.Language == "ClojureScript" {
+					for name := range clojureCallIdentifiers(topLevel) {
+						topLevelNames[name] = struct{}{}
+					}
+				}
+				if file.Language == "SQL" {
+					for name := range sqlCallIdentifiers(topLevel) {
+						topLevelNames[name] = struct{}{}
+					}
+				}
 				if file.Language == "Ruby" {
 					for name := range rubySuffixedCallIdentifiers(topLevel) {
 						topLevelNames[name] = struct{}{}
@@ -2995,6 +3286,38 @@ func lookupMethodUpChain(start, name string, methodsByContainer map[string]map[s
 	return SymbolRecord{}, false, false
 }
 
+func uniqueImplementedMethod(start, name string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, implementersByContainer map[string][]string) (SymbolRecord, bool) {
+	seenContainers := map[string]bool{}
+	seenMethods := map[string]bool{}
+	var out SymbolRecord
+	var walk func(string, int) bool
+	walk = func(container string, depth int) bool {
+		if container == "" || depth > 16 || seenContainers[container] {
+			return true
+		}
+		seenContainers[container] = true
+		for _, impl := range implementersByContainer[container] {
+			if method, _, ok := lookupMethodUpChain(impl, name, methodsByContainer, superContainerByID); ok {
+				if !seenMethods[method.ID] {
+					if out.ID != "" {
+						return false
+					}
+					out = method
+					seenMethods[method.ID] = true
+				}
+			}
+			if !walk(impl, depth+1) {
+				return false
+			}
+		}
+		return true
+	}
+	if !walk(start, 0) || out.ID == "" {
+		return SymbolRecord{}, false
+	}
+	return out, true
+}
+
 // resolveContainerAcrossFiles resolves a member's container name to a
 // type-like symbol when per-file linking left the member orphaned. Preference
 // order keeps it conservative: a unique same-file type (per-file linking can
@@ -3086,7 +3409,7 @@ func resolveQualifiedType(qt pkgQualType, symbolsByShortName map[string][]Symbol
 	return SymbolRecord{}, false
 }
 
-func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir map[string]map[string][]string, importsByName map[string][]string, goModule string, pkgVarTypes map[string]pkgQualType, phpPropTypes, kotlinPropTypes map[string]string, fieldsByContainer map[string]map[string]SymbolRecord, swiftTypes swiftFileTypes) []RelationRecord {
+func receiverCallRelations(from SymbolRecord, block string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, implementersByContainer map[string][]string, symbolsByShortName map[string][]SymbolRecord, returnTypesBySymbolNameAndFile, returnTypesBySymbolNameAndDir map[string]map[string][]string, importsByName map[string][]string, goModule string, pkgVarTypes map[string]pkgQualType, phpPropTypes, kotlinPropTypes, typeScriptPropTypes map[string]string, fieldsByContainer map[string]map[string]SymbolRecord, swiftTypes swiftFileTypes) []RelationRecord {
 	if typeLikeKind(from.Kind) {
 		return nil
 	}
@@ -3157,8 +3480,18 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		// nested call arguments.
 		javaChains = javaConstructorChainCalls(block)
 	}
+	if from.Language == "Objective-C" {
+		// Objective-C message sends use bracket syntax (`[self setState:...]`),
+		// not `receiver.method(...)`, so the generic receiver scanner never sees
+		// intra-class selector calls.
+		objcCalls := objectiveCMessageReceiverCalls(block)
+		calls = mergeReceiverCalls(calls, objcCalls)
+		allReceiverCalls = mergeReceiverCalls(allReceiverCalls, objcCalls)
+	}
 	var phpStatics []phpStaticCall
 	var phpPropCalls []receiverCall
+	var phpFactoryChains []phpPropertyFactoryChainCall
+	var rustPathCalls []rustPathCall
 	if from.Language == "PHP" {
 		// PHP static calls use `::` (never matched by receiverCallRe) and
 		// constructor chains are spelled `(new Klass(...))->m(` rather than
@@ -3166,7 +3499,19 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		// property types the caller collected from this file.
 		phpStatics = phpStaticCalls(block)
 		phpPropCalls = phpPropertyReceiverCalls(block)
+		phpFactoryChains = phpPropertyFactoryChainCalls(block)
 		chainedCalls = append(chainedCalls, phpChainedConstructorCalls(block)...)
+	}
+	if from.Language == "Rust" {
+		// Rust module calls (`strings::index_of(...)`) are not receiver calls:
+		// the left side is a `use`-bound module alias, not a value. Resolve them
+		// through Rust import bindings and Cargo/module alias resolution.
+		rustPathCalls = rustModulePathCalls(block)
+	}
+	if from.Language == "Perl" {
+		// Perl method calls commonly omit parentheses (`$self->stash`,
+		// `$base->protocol`), which the generic receiver scanner never sees.
+		calls = mergeReceiverCalls(calls, perlReceiverCalls(block))
 	}
 	var csChainCalls []csharpChainCall
 	if from.Language == "C#" {
@@ -3176,7 +3521,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		// class-level member types can resolve it hop by hop.
 		csChainCalls = csharpMemberChainCalls(block)
 	}
-	if len(calls) == 0 && len(allReceiverCalls) == 0 && len(chainedCalls) == 0 && len(returnedCalls) == 0 && len(chainedReturnCalls) == 0 && len(deepChainedReturnCalls) == 0 && len(returnedChainCalls) == 0 && len(returnedDeepChainCalls) == 0 && len(rubyBareCalls) == 0 && len(phpStatics) == 0 && len(phpPropCalls) == 0 && len(csChainCalls) == 0 && len(kotlinChains) == 0 && len(javaChains) == 0 && len(swiftChains) == 0 {
+	if len(calls) == 0 && len(allReceiverCalls) == 0 && len(chainedCalls) == 0 && len(returnedCalls) == 0 && len(chainedReturnCalls) == 0 && len(deepChainedReturnCalls) == 0 && len(returnedChainCalls) == 0 && len(returnedDeepChainCalls) == 0 && len(rubyBareCalls) == 0 && len(phpStatics) == 0 && len(phpPropCalls) == 0 && len(phpFactoryChains) == 0 && len(rustPathCalls) == 0 && len(csChainCalls) == 0 && len(kotlinChains) == 0 && len(javaChains) == 0 && len(swiftChains) == 0 {
 		return nil
 	}
 	varTypes := parameterVarTypes(from.Signature)
@@ -3219,6 +3564,27 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		// against `fun status(..., handler: suspend (ApplicationCall,
 		// HttpStatusCode) -> Unit)`) or by an explicit annotation.
 		for name, typeName := range kotlinLambdaParamVarTypes(block, from, symbolsByShortName) {
+			if _, exists := localTypes[name]; !exists {
+				localTypes[name] = typeName
+			}
+		}
+	}
+	if from.Language == "TypeScript" {
+		// Declared-type and Angular-DI locals (`const router: Router = ...`,
+		// `const ref = inject(ViewContainerRef)`), which the generic
+		// constructor-assignment scan cannot type.
+		for name, typeName := range typeScriptLocalVarTypes(block) {
+			if _, exists := localTypes[name]; !exists {
+				localTypes[name] = typeName
+			}
+		}
+	}
+	if from.Language == "Rust" {
+		// Locals assigned from associated constructors (`let id =
+		// task::Id::next()`) carry their receiver type in the path, not a
+		// declaration annotation or constructor call shape the generic scanner
+		// understands.
+		for name, typeName := range rustAssociatedPathVarTypes(block) {
 			if _, exists := localTypes[name]; !exists {
 				localTypes[name] = typeName
 			}
@@ -3282,6 +3648,17 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}
 		}
 	}
+	if from.Language == "Rust" {
+		// Rust locals often come from a typed receiver method, e.g.
+		// `let c = ctx.c();` where `ctx: GenerateChunkCtx` and `c()` returns
+		// `&mut LinkerContext`. Type the local through the receiver method's
+		// declared return type before resolving `c.method(...)`.
+		for name, typeName := range rustReceiverFactoryVarTypes(block, varTypes, methodsByContainer, superContainerByID, symbolsByShortName, returnTypesBySymbolNameAndFile, from.FilePath) {
+			if _, exists := factoryTypes[name]; !exists {
+				factoryTypes[name] = typeName
+			}
+		}
+	}
 	for name, typeName := range factoryTypes {
 		if _, exists := varTypes[name]; !exists {
 			varTypes[name] = typeName
@@ -3315,6 +3692,15 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 					varTypes[call.Receiver] = typeName
 					kotlinPropReceivers[call.Receiver] = true
 				}
+			}
+		}
+	}
+	typeScriptPropReceivers := map[string]bool{}
+	if from.Language == "TypeScript" {
+		for name, typeName := range typeScriptPropTypes {
+			if _, exists := varTypes[name]; !exists {
+				varTypes[name] = typeName
+				typeScriptPropReceivers[name] = true
 			}
 		}
 	}
@@ -3416,7 +3802,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 					confidence = 0.77
 					reason = "method call resolved via assigned returned receiver type"
 				}
-				if kotlinPropReceivers[call.Receiver] || swiftPropReceivers[call.Receiver] {
+				if kotlinPropReceivers[call.Receiver] || swiftPropReceivers[call.Receiver] || typeScriptPropReceivers[call.Receiver] {
 					confidence = 0.8
 					reason = "method call resolved via typed property receiver"
 				}
@@ -3424,13 +3810,13 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 					confidence = 0.75
 					reason = "method call resolved via property-chain-typed local receiver"
 				}
-				sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath)
+				sym, ok := typeLikeNamedWithMethod(symbolsByShortName[typeName], typeName, from.FilePath, call.Method, methodsByContainer, superContainerByID)
 				if !ok {
 					continue
 				}
 				targetID = sym.ID
 				receiverTypeKind = sym.Kind
-			} else if cls, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[call.Receiver], call.Receiver, from.FilePath); ok {
+			} else if cls, ok := typeLikeNamedWithMethod(symbolsByShortName[call.Receiver], call.Receiver, from.FilePath, call.Method, methodsByContainer, superContainerByID); ok {
 				// ClassName.method(): the receiver is itself a type name, not a
 				// variable, so this is a static (class-qualified) call and the
 				// target is that class's own method.
@@ -3459,6 +3845,16 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				targetID = sym.ID
 				confidence = 0.8
 				reason = "method call resolved via typed property receiver"
+			} else if from.ContainerID != "" && strings.EqualFold(call.Receiver, enclosingTypeShortName(from)) {
+				// An untyped receiver named after the enclosing type resolves
+				// to it: laravel/framework's Container.getClosure returns a
+				// closure whose $container parameter is (by convention) the
+				// container itself, so $container->resolve(...) is a call on
+				// the enclosing class. The method-existence check below keeps
+				// this honest — no edge unless the type defines the method.
+				targetID = from.ContainerID
+				confidence = 0.62
+				reason = "method call receiver named after the enclosing type"
 			} else {
 				continue
 			}
@@ -3484,6 +3880,14 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				confidence = minFloat(confidence, 0.7)
 				reason = "protocol-typed receiver call resolved to the unique implementing method"
 				resolution = "name_only"
+			}
+		}
+		if !ok && from.Language == "TypeScript" && targetID != "" {
+			if impl, implOK := uniqueImplementedMethod(targetID, call.Method, methodsByContainer, superContainerByID, implementersByContainer); implOK {
+				method, ok = impl, true
+				confidence = minFloat(confidence, 0.72)
+				reason = "interface-typed receiver call resolved to the unique TypeScript implementation"
+				resolution = "type_inferred"
 			}
 		}
 		if !ok || method.ID == from.ID {
@@ -3522,10 +3926,10 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		methodResolved[call.Receiver+"."+call.Method] = true
 	}
 	// Globally-unique method-name fallback: when receiver-type resolution did not
-	// resolve a receiver.method() call and exactly one method with this short name
-	// exists in the workspace, resolve to it. This is conflict-free — a unique
-	// method name means type-based and name-based resolution agree — and it is the
-	// same "unique name" heuristic the comparison baseline (CBM) uses.
+	// resolve a Go receiver.method() call and exactly one method with this short
+	// name exists in the workspace, resolve to it. This is conflict-free for Go
+	// once package selectors and external receiver variables have been excluded:
+	// a unique method name means type-based and name-based resolution agree.
 	for _, call := range calls {
 		if call.Receiver == "this" || call.Receiver == "self" {
 			continue
@@ -3533,10 +3937,6 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		if methodResolved[call.Receiver+"."+call.Method] {
 			continue
 		}
-		// Restrict to Go (the only language this tier is validated on) and skip
-		// imported-package selectors like json.Marshal(): there the receiver is a
-		// package, not a variable, and the call is external — without this guard
-		// the fallback would emit a spurious local edge to any same-named method.
 		if from.Language != "Go" {
 			continue
 		}
@@ -3580,6 +3980,73 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}},
 			WarningCodes: []string{},
 		})
+	}
+	for _, call := range calls {
+		if from.Language != "Zig" || call.Receiver == "this" || call.Receiver == "self" {
+			continue
+		}
+		if methodResolved[call.Receiver+"."+call.Method] {
+			continue
+		}
+		m, ok := uniqueMethodByShortName(symbolsByShortName[call.Method])
+		if !ok || m.ID == from.ID || m.FilePath != from.FilePath {
+			continue
+		}
+		methodResolved[call.Receiver+"."+call.Method] = true
+		relations = append(relations, RelationRecord{
+			RecordType:    "relation",
+			FromID:        from.ID,
+			ToID:          m.ID,
+			Type:          "CALLS",
+			Confidence:    0.62,
+			Reason:        "Zig namespace-style receiver call matched same-file unique callable",
+			RelationScope: "file",
+			Resolution:    "name_only",
+			TargetKind:    "symbol",
+			Evidence: []Evidence{{
+				Kind:      "call_site",
+				FilePath:  from.FilePath,
+				StartLine: from.StartLine,
+				EndLine:   from.EndLine,
+				Detail:    call.Receiver + "." + call.Method,
+			}},
+			WarningCodes: []string{},
+		})
+	}
+	if from.Language == "Perl" {
+		for _, call := range calls {
+			if methodResolved[call.Receiver+"."+call.Method] {
+				continue
+			}
+			target, ok := uniqueCallableByShortName(symbolsByShortName[call.Method], from.Language)
+			if !ok || target.ID == from.ID {
+				continue
+			}
+			methodResolved[call.Receiver+"."+call.Method] = true
+			scope := "file"
+			if target.FilePath != from.FilePath {
+				scope = "module"
+			}
+			relations = append(relations, RelationRecord{
+				RecordType:    "relation",
+				FromID:        from.ID,
+				ToID:          target.ID,
+				Type:          "CALLS",
+				Confidence:    0.68,
+				Reason:        "Perl receiver call matched globally unique subroutine name",
+				RelationScope: scope,
+				Resolution:    "name_only",
+				TargetKind:    "symbol",
+				Evidence: []Evidence{{
+					Kind:      "call_site",
+					FilePath:  from.FilePath,
+					StartLine: from.StartLine,
+					EndLine:   from.EndLine,
+					Detail:    call.Receiver + "." + call.Method,
+				}},
+				WarningCodes: []string{},
+			})
+		}
 	}
 	// Kotlin extension functions (`fun Closeable.closeQuietly()`) are top-level
 	// functions, not members of the receiver's type, so the container lookups
@@ -3817,6 +4284,46 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			})
 		}
 	}
+	if from.Language == "Swift" {
+		swiftChainTails := swiftReceiverCallTailsInLongerChains(block)
+		for _, chain := range swiftChains {
+			swiftChainTails[chain.Property+"."+chain.Method] = true
+		}
+		for _, call := range calls {
+			key := call.Receiver + "." + call.Method
+			if methodResolved[key] || swiftChainTails[key] {
+				continue
+			}
+			target, ok := swiftReceiverMethodByArgumentLabels(call, symbolsByShortName[call.Method])
+			if !ok || target.ID == from.ID {
+				continue
+			}
+			methodResolved[key] = true
+			scope := "file"
+			if target.FilePath != from.FilePath {
+				scope = "module"
+			}
+			relations = append(relations, RelationRecord{
+				RecordType:    "relation",
+				FromID:        from.ID,
+				ToID:          target.ID,
+				Type:          "CALLS",
+				Confidence:    0.66,
+				Reason:        "Swift receiver call matched unique argument-label signature",
+				RelationScope: scope,
+				Resolution:    "signature",
+				TargetKind:    "symbol",
+				Evidence: []Evidence{{
+					Kind:      "call_site",
+					FilePath:  from.FilePath,
+					StartLine: from.StartLine,
+					EndLine:   from.EndLine,
+					Detail:    call.Receiver + "." + call.Method,
+				}},
+				WarningCodes: []string{},
+			})
+		}
+	}
 	// Java fluent constructor chains (`new Retrofit.Builder().baseUrl(...)
 	// .build()`): every chained method resolves against the constructed type
 	// when the whole chain is defined on it (fluent builders return `this`);
@@ -4019,6 +4526,57 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			WarningCodes: []string{},
 		})
 	}
+	// Generated factory convention: a property typed `CustomerFactory` exposes
+	// `create()`, whose returned object is the generated product type
+	// (`Customer`). Resolve the terminal chain call on that product.
+	for _, call := range phpFactoryChains {
+		factoryType, ok := phpPropTypes[call.Property]
+		if !ok || call.FactoryMethod != "create" || !strings.HasSuffix(factoryType, "Factory") {
+			continue
+		}
+		typeName := strings.TrimSuffix(factoryType, "Factory")
+		if typeName == "" {
+			continue
+		}
+		sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath)
+		if !ok {
+			continue
+		}
+		method, inherited, ok := lookupMethodUpChain(sym.ID, call.Method, methodsByContainer, superContainerByID)
+		if !ok || method.ID == from.ID {
+			continue
+		}
+		confidence := 0.72
+		reason := "PHP factory property chain resolved via generated Factory::create product type"
+		if inherited {
+			confidence = 0.7
+			reason += " (inherited from a base type)"
+		}
+		scope := "file"
+		if method.FilePath != from.FilePath {
+			scope = "module"
+		}
+		relations = append(relations, RelationRecord{
+			RecordType:    "relation",
+			FromID:        from.ID,
+			ToID:          method.ID,
+			Type:          "CALLS",
+			Confidence:    confidence,
+			Reason:        reason,
+			RelationScope: scope,
+			Resolution:    "type_inferred",
+			TargetKind:    "symbol",
+			Evidence: []Evidence{{
+				Kind:      "call_site",
+				FilePath:  from.FilePath,
+				StartLine: from.StartLine,
+				EndLine:   from.EndLine,
+				Detail:    call.Detail,
+			}},
+			WarningCodes: []string{},
+		})
+	}
+	relations = append(relations, rustModulePathCallRelations(from, rustPathCalls, importsByName, symbolsByShortName)...)
 	// C# one-hop member chains `A.B.Method(...)`: A is a typed member of the
 	// enclosing class (or a typed parameter/local), B a typed property on A's
 	// type — declared in that type's own file — and Method resolves up B's
@@ -4202,6 +4760,36 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			// package (one package spans a directory), so fall back to the
 			// package-level return types when this file declares no such factory.
 			returnTypes = returnTypesBySymbolNameAndDir[call.Factory][filepath.ToSlash(filepath.Dir(from.FilePath))]
+		}
+		if len(returnTypes) == 0 && from.Language == "Rust" {
+			method, ok := uniqueMethodByShortName(symbolsByShortName[call.Method])
+			if !ok || method.ID == from.ID || method.Language != "Rust" {
+				continue
+			}
+			scope := "file"
+			if method.FilePath != from.FilePath {
+				scope = "module"
+			}
+			relations = append(relations, RelationRecord{
+				RecordType:    "relation",
+				FromID:        from.ID,
+				ToID:          method.ID,
+				Type:          "CALLS",
+				Confidence:    0.66,
+				Reason:        "Rust returned receiver call matched globally unique method name",
+				RelationScope: scope,
+				Resolution:    "name_only",
+				TargetKind:    "symbol",
+				Evidence: []Evidence{{
+					Kind:      "call_site",
+					FilePath:  from.FilePath,
+					StartLine: from.StartLine,
+					EndLine:   from.EndLine,
+					Detail:    call.Detail,
+				}},
+				WarningCodes: []string{},
+			})
+			continue
 		}
 		for _, typeName := range returnTypes {
 			sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName)
@@ -4468,6 +5056,22 @@ func uniqueMethodByShortName(candidates []SymbolRecord) (SymbolRecord, bool) {
 	}
 	if len(methods) == 1 {
 		return methods[0], true
+	}
+	return SymbolRecord{}, false
+}
+
+func uniqueCallableByShortName(candidates []SymbolRecord, language string) (SymbolRecord, bool) {
+	var callables []SymbolRecord
+	for _, c := range candidates {
+		if language != "" && c.Language != language {
+			continue
+		}
+		if c.Kind == "function" || c.Kind == "method" {
+			callables = append(callables, c)
+		}
+	}
+	if len(callables) == 1 {
+		return callables[0], true
 	}
 	return SymbolRecord{}, false
 }
@@ -7225,6 +7829,48 @@ func firstTypeLikeNamed(records []SymbolRecord, name string) (SymbolRecord, bool
 // Same-file preference matters when a repo vendors a mirror copy of its sources
 // (e.g. a Deno build alongside src/): without it a class-qualified call could
 // bind to the twin in the wrong file.
+// enclosingTypeShortName extracts the short name of a symbol's enclosing
+// type from its container ID (".../class:Outer.Inner" -> "Inner").
+func enclosingTypeShortName(from SymbolRecord) string {
+	id := from.ContainerID
+	if idx := strings.LastIndex(id, ":"); idx >= 0 {
+		id = id[idx+1:]
+	}
+	if idx := strings.LastIndex(id, "."); idx >= 0 {
+		id = id[idx+1:]
+	}
+	return id
+}
+
+// typeLikeNamedWithMethod resolves a type name to the declaration that
+// actually defines the called method. C# partial classes declare the same
+// type in several files, and the lexically-first declaration may not hold
+// the method (roslyn's Contract.InterpolatedStringHandlers.cs sorts before
+// Contract.cs, which defines ThrowIfFalse); probing only the first
+// candidate dropped every such static call. Preference order: a same-file
+// declaration defining the method, any declaration defining it (directly
+// or up its supertype chain), then the plain prefer-file lookup.
+func typeLikeNamedWithMethod(records []SymbolRecord, name, file, method string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string) (SymbolRecord, bool) {
+	var withMethod []SymbolRecord
+	for _, symbol := range records {
+		if symbol.Name != name || !typeLikeKind(symbol.Kind) {
+			continue
+		}
+		if _, _, ok := lookupMethodUpChain(symbol.ID, method, methodsByContainer, superContainerByID); ok {
+			withMethod = append(withMethod, symbol)
+		}
+	}
+	if len(withMethod) > 0 {
+		for _, symbol := range withMethod {
+			if symbol.FilePath == file {
+				return symbol, true
+			}
+		}
+		return withMethod[0], true
+	}
+	return firstTypeLikeNamedPreferFile(records, name, file)
+}
+
 func firstTypeLikeNamedPreferFile(records []SymbolRecord, name, file string) (SymbolRecord, bool) {
 	for _, symbol := range records {
 		if symbol.Name == name && symbol.FilePath == file && typeLikeKind(symbol.Kind) {
@@ -7357,11 +8003,16 @@ func externalParts(id string) (string, string) {
 // so the snapshot never holds all source content in memory.
 func openSource(ctx context.Context, repo string, useHead bool, ignoreFiles, includeFiles []string) ([]string, contentReader, prefixReader, func() error, error) {
 	if useHead {
+		ignores, err := loadExplicitIgnoreMatcher(repo, ignoreFiles, includeFiles)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
 		paths, err := gitutil.ListFiles(ctx, repo, "HEAD")
 		if err != nil {
 			return nil, nil, nil, nil, err
 		}
 		paths = filterVendoredPaths(paths, headIgnoreMatcher(ctx, repo))
+		paths = filterIgnoredPaths(paths, ignores)
 		batch, err := gitutil.NewBatchFileReader(ctx, repo, "HEAD")
 		if err != nil {
 			return nil, nil, nil, nil, err
@@ -7587,6 +8238,18 @@ func filterVendoredPaths(paths []string, ignores ignoreMatcher) []string {
 	return filtered
 }
 
+func filterIgnoredPaths(paths []string, ignores ignoreMatcher) []string {
+	filtered := paths[:0]
+	for _, rel := range paths {
+		rel = filepath.ToSlash(rel)
+		if ignores.Ignored(rel, false) {
+			continue
+		}
+		filtered = append(filtered, rel)
+	}
+	return filtered
+}
+
 // headIgnoreMatcher parses the repository's root .gitignore as of HEAD so the
 // vendored-directory heuristic can honor negation rules (see
 // ReincludesDescendant) when listing files from the HEAD tree, matching the
@@ -7677,22 +8340,7 @@ func resolveLocalImport(importingPath, spec string, knownFiles map[string]bool) 
 	case ".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx":
 		return resolveCFamilyLocalInclude(importingPath, spec, knownFiles)
 	case ".js", ".jsx", ".ts", ".tsx":
-		if !strings.HasPrefix(spec, "./") && !strings.HasPrefix(spec, "../") {
-			return "", false
-		}
-		base := filepath.ToSlash(filepath.Join(filepath.Dir(importingPath), spec))
-		exts := []string{".ts", ".tsx", ".js", ".jsx"}
-		var candidates []string
-		if filepath.Ext(base) != "" {
-			candidates = append(candidates, base)
-		}
-		for _, ext := range exts {
-			candidates = append(candidates, base+ext)
-		}
-		for _, ext := range exts {
-			candidates = append(candidates, filepath.ToSlash(filepath.Join(base, "index"+ext)))
-		}
-		for _, candidate := range candidates {
+		for _, candidate := range jsLocalImportCandidates(importingPath, spec) {
 			if knownFiles[candidate] {
 				return candidate, true
 			}
@@ -7722,6 +8370,45 @@ func resolveLocalImport(importingPath, spec string, knownFiles map[string]bool) 
 	default:
 		return "", false
 	}
+}
+
+func resolveReadableLocalImport(importingPath, spec string, readContent contentReader) (string, bool) {
+	switch strings.ToLower(filepath.Ext(importingPath)) {
+	case ".js", ".jsx", ".ts", ".tsx":
+		for _, candidate := range jsLocalImportCandidates(importingPath, spec) {
+			if _, ok := readContent(candidate); ok {
+				return candidate, true
+			}
+		}
+	}
+	return "", false
+}
+
+func jsLocalImportCandidates(importingPath, spec string) []string {
+	if !strings.HasPrefix(spec, "./") && !strings.HasPrefix(spec, "../") {
+		return nil
+	}
+	base := filepath.ToSlash(filepath.Join(filepath.Dir(importingPath), spec))
+	exts := []string{".ts", ".tsx", ".js", ".jsx"}
+	var candidates []string
+	if ext := strings.ToLower(filepath.Ext(base)); ext != "" {
+		candidates = append(candidates, base)
+		stem := strings.TrimSuffix(base, filepath.Ext(base))
+		switch ext {
+		case ".js":
+			candidates = append(candidates, stem+".ts", stem+".tsx")
+		case ".jsx":
+			candidates = append(candidates, stem+".tsx")
+		}
+		return candidates
+	}
+	for _, ext := range exts {
+		candidates = append(candidates, base+ext)
+	}
+	for _, ext := range exts {
+		candidates = append(candidates, filepath.ToSlash(filepath.Join(base, "index"+ext)))
+	}
+	return candidates
 }
 
 func resolveCFamilyLocalInclude(importingPath, spec string, knownFiles map[string]bool) (string, bool) {
@@ -7969,6 +8656,8 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 			cargoPaths = append(cargoPaths, filepath.ToSlash(file.Path))
 		}
 	}
+	cargoPaths = append(cargoPaths, inferCargoManifestsFromRustPaths(rustPaths, readContent)...)
+	cargoPaths = uniqueStrings(cargoPaths)
 	sort.Slice(goPaths, func(i, j int) bool {
 		leftTest := strings.HasSuffix(goPaths[i], "_test.go")
 		rightTest := strings.HasSuffix(goPaths[j], "_test.go")
@@ -8092,11 +8781,7 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		if name == "" {
 			continue
 		}
-		dir := filepath.ToSlash(filepath.Dir(cp))
-		srcDir := "src"
-		if dir != "." && dir != "" {
-			srcDir = dir + "/src"
-		}
+		srcDir := cargoRustSourceRootDir(cp, content)
 		resolver.rustSrcRoots = append(resolver.rustSrcRoots, rustSrcRoot{dir: srcDir, crate: name})
 		resolver.rustCrateNames[name] = true
 	}
@@ -8106,6 +8791,14 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 	if resolver.rustCrateName != "" {
 		resolver.rustCrateNames[resolver.rustCrateName] = true
 	}
+	for _, sr := range resolver.rustSrcRoots {
+		for _, rootFile := range []string{sr.dir + "/lib.rs", sr.dir + "/main.rs", sr.dir + "/mod.rs"} {
+			if _, ok := readContent(rootFile); ok {
+				rustPaths = append(rustPaths, rootFile)
+			}
+		}
+	}
+	rustPaths = uniqueStrings(rustPaths)
 	sort.Strings(rustPaths)
 	for _, path := range rustPaths {
 		for _, module := range resolver.rustModuleKeysForPath(path) {
@@ -8802,9 +9495,79 @@ func parseCargoPackageName(content string) string {
 	return ""
 }
 
+func parseCargoLibPath(content string) string {
+	inLib := false
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	for scanner.Scan() {
+		line := strings.TrimSpace(stripTOMLComment(scanner.Text()))
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			inLib = line == "[lib]"
+			continue
+		}
+		if inLib && strings.HasPrefix(strings.ToLower(line), "path") {
+			if path, ok := parseSimpleConfigKeyValue(line, "path"); ok {
+				return filepath.ToSlash(path)
+			}
+		}
+	}
+	return ""
+}
+
+func cargoRustSourceRootDir(cargoPath, content string) string {
+	dir := filepath.ToSlash(filepath.Dir(cargoPath))
+	if libPath := parseCargoLibPath(content); libPath != "" {
+		root := filepath.ToSlash(filepath.Dir(filepath.Join(dir, libPath)))
+		if root == "." {
+			return ""
+		}
+		return root
+	}
+	if dir == "." || dir == "" {
+		return "src"
+	}
+	return dir + "/src"
+}
+
+func inferCargoManifestsFromRustPaths(rustPaths []string, readContent contentReader) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, path := range rustPaths {
+		dir := filepath.ToSlash(filepath.Dir(path))
+		for {
+			candidate := "Cargo.toml"
+			if dir != "." && dir != "" {
+				candidate = dir + "/Cargo.toml"
+			}
+			if !seen[candidate] {
+				if _, ok := readContent(candidate); ok {
+					seen[candidate] = true
+					out = append(out, candidate)
+				}
+			}
+			if dir == "." || dir == "" {
+				break
+			}
+			parent := filepath.ToSlash(filepath.Dir(dir))
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func parseSimpleConfigValue(line string) (string, bool) {
+	return parseSimpleConfigKeyValue(line, "name")
+}
+
+func parseSimpleConfigKeyValue(line, key string) (string, bool) {
 	parts := strings.SplitN(line, "=", 2)
-	if len(parts) != 2 || strings.ToLower(strings.TrimSpace(parts[0])) != "name" {
+	if len(parts) != 2 || strings.ToLower(strings.TrimSpace(parts[0])) != strings.ToLower(key) {
 		return "", false
 	}
 	value := strings.TrimSpace(parts[1])
@@ -10364,8 +11127,12 @@ func importedNamesFor(path, content string) map[string][]string {
 		return importedGoNames(content)
 	case ".js", ".jsx", ".ts", ".tsx":
 		return importedJavaScriptNames(content)
+	case ".kt", ".kts":
+		return importedKotlinNames(content)
 	case ".py":
 		return importedPythonNames(content)
+	case ".rs":
+		return importedRustNames(content)
 	default:
 		return map[string][]string{}
 	}
@@ -10480,47 +11247,138 @@ func importedJavaScriptNames(content string) map[string][]string {
 	return imports
 }
 
+func importedKotlinNames(content string) map[string][]string {
+	imports := map[string][]string{}
+	importRe := regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z_][A-Za-z0-9_.]*(?:\.\*)?)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?`)
+	for _, match := range importRe.FindAllStringSubmatch(content, -1) {
+		module := strings.TrimSpace(match[1])
+		if module == "" || strings.HasSuffix(module, ".*") {
+			continue
+		}
+		local := strings.TrimSpace(match[2])
+		if local == "" {
+			parts := strings.Split(module, ".")
+			local = parts[len(parts)-1]
+		}
+		if local != "" {
+			imports[local] = append(imports[local], module)
+		}
+	}
+	return imports
+}
+
 func resolvedImportedNameModules(importingPath string, imports map[string][]string, manifestImports manifestImportResolver, knownFiles map[string]bool, readContent contentReader) map[string][]string {
 	if len(imports) == 0 {
 		return imports
 	}
+	readCached := cachingContentReader(readContent)
+	reexportCache := map[string][]string{}
 	resolved := make(map[string][]string, len(imports))
 	for name, modules := range imports {
 		resolved[name] = append(resolved[name], modules...)
 		for _, module := range modules {
-			var targetPath string
-			switch {
-			case isRelativeImportSpec(importingPath, module):
-				if path, ok := resolveLocalImport(importingPath, module, knownFiles); ok {
-					targetPath = path
-				}
-			default:
-				if resolution, ok := manifestImports.resolve(importingPath, module); ok {
-					targetPath = resolution.Path
-				}
-			}
+			targetPath, _ := resolveImportSpecPath(importingPath, module, manifestImports, knownFiles, readCached)
 			if targetPath == "" {
 				continue
 			}
 			resolved[name] = append(resolved[name], targetPath)
-			if content, ok := readContent(targetPath); ok {
-				for _, reexport := range javascriptReexportModulesForName(content, name) {
-					if path, ok := resolveLocalImport(targetPath, reexport, knownFiles); ok {
-						resolved[name] = append(resolved[name], path)
-					} else if resolution, ok := manifestImports.resolve(targetPath, reexport); ok {
-						resolved[name] = append(resolved[name], resolution.Path)
-					}
-				}
-			}
+			resolved[name] = append(resolved[name], resolvedJavaScriptReexportTargets(targetPath, name, manifestImports, knownFiles, readCached, map[string]bool{}, reexportCache, 0)...)
 		}
 		resolved[name] = uniqueStrings(resolved[name])
 	}
 	return resolved
 }
 
-var jsNamedReexportPattern = regexp.MustCompile(`(?ms)^\s*export\s+(?:type\s+)?\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]`)
+func cachingContentReader(readContent contentReader) contentReader {
+	type cached struct {
+		content string
+		ok      bool
+	}
+	cache := map[string]cached{}
+	return func(path string) (string, bool) {
+		if hit, ok := cache[path]; ok {
+			return hit.content, hit.ok
+		}
+		content, ok := readContent(path)
+		cache[path] = cached{content: content, ok: ok}
+		return content, ok
+	}
+}
 
-func javascriptReexportModulesForName(content, name string) []string {
+func resolveImportSpecPath(importingPath, module string, manifestImports manifestImportResolver, knownFiles map[string]bool, readContent contentReader) (string, bool) {
+	switch {
+	case isRelativeImportSpec(importingPath, module):
+		if path, ok := resolveLocalImport(importingPath, module, knownFiles); ok {
+			return path, true
+		}
+		return resolveReadableLocalImport(importingPath, module, readContent)
+	default:
+		if resolution, ok := manifestImports.resolve(importingPath, module); ok {
+			return resolution.Path, true
+		}
+	}
+	return "", false
+}
+
+func resolvedJavaScriptReexportTargets(path, name string, manifestImports manifestImportResolver, knownFiles map[string]bool, readContent contentReader, seen map[string]bool, cache map[string][]string, depth int) []string {
+	if path == "" || depth > 8 || seen[path] {
+		return nil
+	}
+	cacheKey := path + "\x00" + name
+	if cached, ok := cache[cacheKey]; ok {
+		return cached
+	}
+	seen[path] = true
+	content, ok := readContent(path)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, reexport := range javascriptNamedReexportModulesForName(content, name) {
+		targetPath, ok := resolveImportSpecPath(path, reexport, manifestImports, knownFiles, readContent)
+		if !ok || targetPath == "" {
+			continue
+		}
+		out = append(out, targetPath)
+		out = append(out, resolvedJavaScriptReexportTargets(targetPath, name, manifestImports, knownFiles, readContent, seen, cache, depth+1)...)
+	}
+	out = append(out, resolvedJavaScriptStarReexportClosure(path, manifestImports, knownFiles, readContent, map[string]bool{}, cache, 0)...)
+	out = uniqueStrings(out)
+	cache[cacheKey] = out
+	return out
+}
+
+func resolvedJavaScriptStarReexportClosure(path string, manifestImports manifestImportResolver, knownFiles map[string]bool, readContent contentReader, seen map[string]bool, cache map[string][]string, depth int) []string {
+	if path == "" || depth > 8 || seen[path] {
+		return nil
+	}
+	cacheKey := "\x00star\x00" + path
+	if cached, ok := cache[cacheKey]; ok {
+		return cached
+	}
+	seen[path] = true
+	content, ok := readContent(path)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, reexport := range javascriptStarReexportModules(content) {
+		targetPath, ok := resolveImportSpecPath(path, reexport, manifestImports, knownFiles, readContent)
+		if !ok || targetPath == "" {
+			continue
+		}
+		out = append(out, targetPath)
+		out = append(out, resolvedJavaScriptStarReexportClosure(targetPath, manifestImports, knownFiles, readContent, seen, cache, depth+1)...)
+	}
+	out = uniqueStrings(out)
+	cache[cacheKey] = out
+	return out
+}
+
+var jsNamedReexportPattern = regexp.MustCompile(`(?ms)^\s*export\s+(?:type\s+)?\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]`)
+var jsStarReexportPattern = regexp.MustCompile(`(?m)^\s*export\s+(?:type\s+)?\*\s+from\s+['"]([^'"]+)['"]`)
+
+func javascriptNamedReexportModulesForName(content, name string) []string {
 	var modules []string
 	for _, match := range jsNamedReexportPattern.FindAllStringSubmatch(content, -1) {
 		if len(match) != 3 {
@@ -10532,6 +11390,16 @@ func javascriptReexportModulesForName(content, name string) []string {
 				modules = append(modules, match[2])
 				break
 			}
+		}
+	}
+	return uniqueStrings(modules)
+}
+
+func javascriptStarReexportModules(content string) []string {
+	var modules []string
+	for _, match := range jsStarReexportPattern.FindAllStringSubmatch(content, -1) {
+		if len(match) == 2 {
+			modules = append(modules, match[1])
 		}
 	}
 	return uniqueStrings(modules)
@@ -10726,7 +11594,23 @@ func importModuleMatchesFile(module, importingPath, targetPath string) bool {
 		return false
 	}
 	targetPath = filepath.ToSlash(targetPath)
+	if strings.Contains(module, ".") && !strings.Contains(module, "/") {
+		dottedPath := strings.ReplaceAll(module, ".", "/")
+		target := strings.TrimSuffix(targetPath, filepath.Ext(targetPath))
+		if target == dottedPath || strings.HasSuffix(target, "/"+dottedPath) {
+			return true
+		}
+		if parent := filepath.ToSlash(filepath.Dir(dottedPath)); parent != "." && parent != "" {
+			targetDir := filepath.ToSlash(filepath.Dir(targetPath))
+			if targetDir == parent || strings.HasSuffix(targetDir, "/"+parent) {
+				return true
+			}
+		}
+	}
 	if strings.HasPrefix(module, ".") {
+		if dottedRelativeModuleStemMatchesFile(module, targetPath) {
+			return true
+		}
 		base := filepath.ToSlash(filepath.Join(filepath.Dir(importingPath), module))
 		target := strings.TrimSuffix(targetPath, filepath.Ext(targetPath))
 		return target == base || (strings.HasSuffix(target, "/index") && strings.TrimSuffix(target, "/index") == base)
@@ -10748,6 +11632,30 @@ func importModuleMatchesFile(module, importingPath, targetPath string) bool {
 	module = strings.TrimSuffix(filepath.ToSlash(module), filepath.Ext(module))
 	target := strings.TrimSuffix(targetPath, filepath.Ext(targetPath))
 	return strings.HasSuffix(target, module) || strings.HasSuffix(target, "/"+module) || target == module
+}
+
+func dottedRelativeModuleStemMatchesFile(module, targetPath string) bool {
+	stem := jsModuleSpecifierStem(module)
+	if !strings.Contains(stem, ".") {
+		return false
+	}
+	parts := strings.Split(stem, ".")
+	if len(parts) < 2 {
+		return false
+	}
+	exportedModule := strings.TrimSpace(parts[len(parts)-1])
+	targetBase := strings.TrimSuffix(filepath.Base(targetPath), filepath.Ext(targetPath))
+	return exportedModule != "" && targetBase == exportedModule
+}
+
+func jsModuleSpecifierStem(module string) string {
+	base := filepath.Base(filepath.ToSlash(module))
+	for _, suffix := range []string{".d.ts", ".d.tsx", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"} {
+		if strings.HasSuffix(base, suffix) {
+			return strings.TrimSuffix(base, suffix)
+		}
+	}
+	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
 // rustCodegenMacroStart matches the opening of a Rust code-generation macro

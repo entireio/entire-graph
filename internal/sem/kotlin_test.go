@@ -352,6 +352,41 @@ class Other {
 	}
 }
 
+func TestKotlinFieldInitializerTypes(t *testing.T) {
+	content := `class Koin {
+  val scopeRegistry = ScopeRegistry(this)
+  val instanceRegistry = InstanceRegistry(this)
+
+  fun loadModules() {
+    val local = LocalOnly()
+  }
+}
+
+class KoinApplication {
+  val koin = Koin()
+}
+`
+	fields := []SymbolRecord{
+		{Kind: "field", Language: "Kotlin", Name: "scopeRegistry", StartLine: 2, EndLine: 2},
+		{Kind: "field", Language: "Kotlin", Name: "instanceRegistry", StartLine: 3, EndLine: 3},
+		{Kind: "field", Language: "Kotlin", Name: "koin", StartLine: 11, EndLine: 11},
+	}
+	types := kotlinFieldInitializerTypes(content, fields)
+	want := map[string]string{
+		"scopeRegistry":    "ScopeRegistry",
+		"instanceRegistry": "InstanceRegistry",
+		"koin":             "Koin",
+	}
+	for name, typeName := range want {
+		if types[name] != typeName {
+			t.Fatalf("field %s: got %q, want %q (all: %v)", name, types[name], typeName, types)
+		}
+	}
+	if _, ok := types["local"]; ok {
+		t.Fatalf("local initializer should not be typed from field-only scan: %v", types)
+	}
+}
+
 // kotlinLocalVarTypes reads declared-type local declarations, dropping names
 // declared with two different types.
 func TestKotlinLocalVarTypes(t *testing.T) {

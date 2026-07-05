@@ -37,13 +37,28 @@ func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 	if err := matcher.loadOptional(filepath.Join(repo, ".gitignore"), false); err != nil {
 		return ignoreMatcher{}, err
 	}
+	if err := matcher.loadExplicit(repo, ignoreFiles, includeFiles); err != nil {
+		return ignoreMatcher{}, err
+	}
+	return matcher, nil
+}
+
+func loadExplicitIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) (ignoreMatcher, error) {
+	var matcher ignoreMatcher
+	if err := matcher.loadExplicit(repo, ignoreFiles, includeFiles); err != nil {
+		return ignoreMatcher{}, err
+	}
+	return matcher, nil
+}
+
+func (m *ignoreMatcher) loadExplicit(repo string, ignoreFiles, includeFiles []string) error {
 	for _, ignoreFile := range ignoreFiles {
 		resolved := ignoreFile
 		if !filepath.IsAbs(resolved) {
 			resolved = filepath.Join(repo, resolved)
 		}
-		if err := matcher.loadRequired(resolved, false); err != nil {
-			return ignoreMatcher{}, err
+		if err := m.loadRequired(resolved, false); err != nil {
+			return err
 		}
 	}
 	for _, includeFile := range includeFiles {
@@ -51,11 +66,11 @@ func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 		if !filepath.IsAbs(resolved) {
 			resolved = filepath.Join(repo, resolved)
 		}
-		if err := matcher.loadRequired(resolved, true); err != nil {
-			return ignoreMatcher{}, err
+		if err := m.loadRequired(resolved, true); err != nil {
+			return err
 		}
 	}
-	return matcher, nil
+	return nil
 }
 
 func (m *ignoreMatcher) loadOptional(file string, includeMode bool) error {

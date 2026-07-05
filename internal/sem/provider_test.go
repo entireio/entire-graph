@@ -375,6 +375,53 @@ function createApplication() {
 	}
 }
 
+func TestTypeScriptReceiverCallsWithTypeArgumentsResolve(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/injector.ts", `class Controller {}
+
+class Injector {
+  public async loadInstance<T>() {
+    const callback = async () => {
+      await this.resolveProperties<T>();
+      await this.instantiateClass<T>();
+    };
+    await this.resolveConstructorParams<T>(callback);
+  }
+
+  public async loadController() {
+    await this.loadInstance<Controller>();
+  }
+
+  public async loadProvider<T>() {
+    await this.loadInstance<T>();
+  }
+
+  private async resolveConstructorParams<T>(callback: () => Promise<void>) {
+    await callback();
+  }
+
+  private async resolveProperties<T>() {}
+
+  private async instantiateClass<T>() {}
+}
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range [][2]string{
+		{"Injector.loadController", "Injector.loadInstance"},
+		{"Injector.loadProvider", "Injector.loadInstance"},
+		{"Injector.loadInstance", "Injector.resolveConstructorParams"},
+		{"Injector.loadInstance", "Injector.resolveProperties"},
+		{"Injector.loadInstance", "Injector.instantiateClass"},
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", want[0], want[1]) {
+			t.Fatalf("missing TypeScript generic receiver call %s -> %s in %#v", want[0], want[1], snapshot.Relations)
+		}
+	}
+}
+
 func TestTypeScriptManifestImportsResolveThroughExtendedTSConfig(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "package.json", `{"name":"@acme/app"}`)
@@ -6589,6 +6636,89 @@ extension LenientParser {
 	}
 }
 
+func TestBuildProviderSnapshotResolvesSwiftExistentialDelegateAndLabelCalls(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "Source/Core/Request.swift", `class Request {
+  public private(set) weak var delegate: (any RequestDelegate)?
+  var isCancelled: Bool { false }
+
+  func retryOrFinish(error: AFError?) {
+    guard !isCancelled, let error, let delegate else { finish(); return }
+    delegate.retryResult(for: self, dueTo: error) { retryResult in
+      switch retryResult {
+      case .doNotRetry:
+        self.finish()
+      case let .doNotRetryWithError(retryError):
+        self.finish(error: retryError.asAFError(orFailWith: "Received retryError was not already AFError"))
+      case .retry, .retryWithDelay:
+        delegate.retryRequest(self, withDelay: retryResult.delay)
+      }
+    }
+  }
+
+  func finish(error: AFError? = nil) {}
+}
+
+protocol RequestDelegate: AnyObject {
+  func retryResult(for request: Request, dueTo error: AFError, completion: @escaping (RetryResult) -> Void)
+  func retryRequest(_ request: Request, withDelay timeDelay: Double?)
+}
+`)
+	writeFile(t, repo, "Source/Core/Session.swift", `class Session: RequestDelegate {
+  func retryResult(for request: Request, dueTo error: AFError, completion: @escaping (RetryResult) -> Void) {}
+  func retryRequest(_ request: Request, withDelay timeDelay: Double?) {}
+}
+`)
+	writeFile(t, repo, "Source/Core/AFError.swift", `struct AFError {}
+
+extension Error {
+  func asAFError(orFailWith message: @autoclosure () -> String) -> AFError {
+    return AFError()
+  }
+
+  func asAFError(or defaultAFError: @autoclosure () -> AFError) -> AFError {
+    return defaultAFError()
+  }
+}
+`)
+	writeFile(t, repo, "Source/Features/RequestInterceptor.swift", `enum RetryResult {
+  case doNotRetry
+  case doNotRetryWithError(any Error)
+  case retry
+  case retryWithDelay
+
+  var delay: Double? { nil }
+}
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, edge := range [][2]string{
+		{"Request.retryOrFinish", "Request.finish"},
+		{"Request.retryOrFinish", "Session.retryResult"},
+		{"Request.retryOrFinish", "Session.retryRequest"},
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", edge[0], edge[1]) {
+			t.Fatalf("Swift call %s -> %s not resolved: %#v", edge[0], edge[1], snapshot.Relations)
+		}
+	}
+	foundAsAFError := false
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CALLS" &&
+			lastSegment(relation.FromID) == "Request.retryOrFinish" &&
+			strings.Contains(relation.ToID, ":method:Error.asAFError") {
+			foundAsAFError = true
+			break
+		}
+	}
+	if !foundAsAFError {
+		t.Fatalf("Swift call Request.retryOrFinish -> Error.asAFError not resolved: %#v", snapshot.Relations)
+	}
+}
+
 func TestBuildProviderSnapshotResolvesJavaSamePackageStaticOverload(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "src/main/java/org/acme/LauncherDiscoveryRequest.java", `package org.acme;
@@ -9375,6 +9505,42 @@ func hasRelationByLastSegmentWithResolution(relations []RelationRecord, relation
 	return false
 }
 
+func hasRelationBySymbolName(snapshot ProviderSnapshot, relationType, from, to string) bool {
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type != relationType {
+			continue
+		}
+		fromSymbol, fromOK := symbolsByID[relation.FromID]
+		toSymbol, toOK := symbolsByID[relation.ToID]
+		if fromOK && toOK && fromSymbol.Name == from && toSymbol.Name == to {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRelationBySymbolNameAndFile(snapshot ProviderSnapshot, relationType, from, fromFile, to, toFile string) bool {
+	symbolsByID := map[string]SymbolRecord{}
+	for _, symbol := range snapshot.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type != relationType {
+			continue
+		}
+		fromSymbol, fromOK := symbolsByID[relation.FromID]
+		toSymbol, toOK := symbolsByID[relation.ToID]
+		if fromOK && toOK && fromSymbol.Name == from && fromSymbol.FilePath == fromFile && toSymbol.Name == to && toSymbol.FilePath == toFile {
+			return true
+		}
+	}
+	return false
+}
+
 func hasRelationToExternalRoute(relations []RelationRecord, relationType, from, route string) bool {
 	for _, relation := range relations {
 		if relation.Type == relationType && lastSegment(relation.FromID) == from && relation.ToID == externalID("route", route) {
@@ -9950,6 +10116,94 @@ class Greeter {
 	} {
 		if !hasRelationByLastSegment(snapshot.Relations, want.relationType, want.from, want.to) {
 			t.Fatalf("missing Kotlin %s %s -> %s in %#v", want.relationType, want.from, want.to, snapshot.Relations)
+		}
+	}
+}
+
+func TestKotlinClassPropertyInitializersAndImportedTopLevelCallsResolve(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/org/koin/core/module/Module.kt", `package org.koin.core.module
+
+class Module
+
+fun flatten(modules: List<Module>): Set<Module> = modules.toSet()
+`)
+	writeFile(t, repo, "src/org/koin/core/registry/InstanceRegistry.kt", `package org.koin.core.registry
+
+import org.koin.core.module.Module
+
+class InstanceRegistry {
+  fun loadModules(modules: Set<Module>, allowOverride: Boolean) {}
+}
+`)
+	writeFile(t, repo, "src/org/koin/core/registry/ScopeRegistry.kt", `package org.koin.core.registry
+
+import org.koin.core.module.Module
+
+class ScopeRegistry {
+  fun loadScopes(modules: Set<Module>) {}
+}
+`)
+	writeFile(t, repo, "src/org/koin/core/Koin.kt", `package org.koin.core
+
+import org.koin.core.module.Module
+import org.koin.core.module.flatten
+import org.koin.core.registry.InstanceRegistry
+import org.koin.core.registry.ScopeRegistry
+
+class Koin {
+  val instanceRegistry = InstanceRegistry()
+  val scopeRegistry = ScopeRegistry()
+
+  fun loadModules(modules: List<Module>, allowOverride: Boolean = true, createEagerInstances: Boolean = false) {
+    val flattedModules = flatten(modules)
+    instanceRegistry.loadModules(flattedModules, allowOverride)
+    scopeRegistry.loadScopes(flattedModules)
+    if (createEagerInstances) {
+      createEagerInstances()
+    }
+  }
+
+  fun createEagerInstances() {}
+}
+`)
+	writeFile(t, repo, "src/org/koin/core/KoinApplication.kt", `package org.koin.core
+
+import org.koin.core.module.Module
+
+class KoinApplication {
+  val koin = Koin()
+
+  private fun loadModules(modules: List<Module>) {
+    koin.loadModules(modules, allowOverride = true, createEagerInstances = false)
+  }
+}
+`)
+	writeFile(t, repo, "src/other/Other.kt", `package other
+
+import org.koin.core.module.Module
+
+fun flatten(modules: List<Module>): Set<Module> = emptySet()
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct {
+		from     string
+		fromFile string
+		to       string
+		toFile   string
+	}{
+		{"loadModules", "src/org/koin/core/KoinApplication.kt", "loadModules", "src/org/koin/core/Koin.kt"},
+		{"loadModules", "src/org/koin/core/Koin.kt", "flatten", "src/org/koin/core/module/Module.kt"},
+		{"loadModules", "src/org/koin/core/Koin.kt", "loadModules", "src/org/koin/core/registry/InstanceRegistry.kt"},
+		{"loadModules", "src/org/koin/core/Koin.kt", "loadScopes", "src/org/koin/core/registry/ScopeRegistry.kt"},
+		{"loadModules", "src/org/koin/core/Koin.kt", "createEagerInstances", "src/org/koin/core/Koin.kt"},
+	} {
+		if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", want.from, want.fromFile, want.to, want.toFile) {
+			t.Fatalf("missing Kotlin CALLS %s:%s -> %s:%s in %#v", want.fromFile, want.from, want.toFile, want.to, relationsOfType(snapshot.Relations, "CALLS"))
 		}
 	}
 }
@@ -10614,6 +10868,34 @@ func TestBuildProviderSnapshotWorktreeIncludeDirectoryKeepsSpecificFileIgnore(t 
 	}
 	if snapshotHasPath(snapshot, "cache/skip.py") || snapshotHasSymbol(snapshot, "skip_me") {
 		t.Fatalf("snapshot included specifically ignored file: files=%#v symbols=%#v", snapshot.Files, snapshot.Symbols)
+	}
+}
+
+func TestBuildProviderSnapshotHeadHonorsIgnoreAndIncludeFiles(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Sem Test")
+	git(t, repo, "config", "user.email", "sem@example.com")
+	writeFile(t, repo, ".semignore", "*\n")
+	writeFile(t, repo, ".seminclude", "src/keep.py\n")
+	writeFile(t, repo, "src/keep.py", "def keep_me():\n    return True\n")
+	writeFile(t, repo, "src/drop.py", "def drop_me():\n    return False\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		IgnoreFiles:  []string{".semignore"},
+		IncludeFiles: []string{".seminclude"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !snapshotHasSymbol(snapshot, "keep_me") {
+		t.Fatalf("snapshot did not include explicitly included HEAD file: %#v", snapshot.Symbols)
+	}
+	if snapshotHasPath(snapshot, "src/drop.py") || snapshotHasSymbol(snapshot, "drop_me") {
+		t.Fatalf("snapshot included ignored HEAD file: files=%#v symbols=%#v", snapshot.Files, snapshot.Symbols)
 	}
 }
 
@@ -11364,6 +11646,51 @@ end
 	}
 }
 
+func TestJuliaBangCallsAndHashCommentsResolve(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/hpack.jl", `function _decode_integer(block, index, bits)
+    return index, bits
+end
+
+function _decode_literal!(decoder, block, index)
+    return decoder, block, index
+end
+
+function set_max_dynamic_table_size!(decoder, size)
+    return size
+end
+
+function decode_header_block(decoder, block)
+    index, bits = _decode_integer(block, 1, 7)
+    header = _decode_literal!(decoder, block, index)
+    # Keep this comment ending with a selector-looking dot.
+    set_max_dynamic_table_size!(decoder, bits)
+    return header
+end
+`)
+	writeFile(t, repo, "src/http2_server.jl", `function _h2_server_refuse_stream!(decoder, block)
+    # Keep the shared decoder state consistent with the peer's encoder.
+    decode_header_block(decoder, block)
+    return nothing
+end
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range [][2]string{
+		{"decode_header_block", "_decode_integer"},
+		{"decode_header_block", "_decode_literal!"},
+		{"decode_header_block", "set_max_dynamic_table_size!"},
+		{"_h2_server_refuse_stream!", "decode_header_block"},
+	} {
+		if !hasRelationByLastSegment(snapshot.Relations, "CALLS", want[0], want[1]) {
+			t.Fatalf("missing Julia CALLS %s->%s: %#v", want[0], want[1], relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+}
+
 func TestClojureSemanticExtraction(t *testing.T) {
 	// Clojure was promoted from inventory to the semantic tier (vendored
 	// grammar). tree-sitter-clojure only produces generic list_lit nodes, so
@@ -11546,6 +11873,69 @@ run();
 		t.Fatalf("Perl sub inside package block not extracted: %#v", kinds)
 	}
 }
+
+func TestPerlReceiverCallsWithoutParentheses(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "lib/Mojolicious/Controller.pm", `package Mojolicious::Controller;
+
+sub stash { return {} }
+
+sub url_for {
+  my ($self, $target) = (shift, shift // '');
+  my $req  = $self->req;
+  my $base = $self->base;
+
+  if (defined(my $prefix = $self->stash->{path})) {
+    my $real = $req->url->path->to_route;
+  }
+
+  return $base->protocol eq 'https';
+}
+`)
+	writeFile(t, repo, "lib/Mojo/Path.pm", `package Mojo::Path;
+
+sub to_route {
+  return '/';
+}
+`)
+	writeFile(t, repo, "lib/Mojo/URL.pm", `package Mojo::URL;
+
+sub protocol {
+  return 'http';
+}
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, s := range snapshot.Symbols {
+		symbolsByID[s.ID] = s
+	}
+	calls := map[string]RelationRecord{}
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" {
+			calls[lastSegment(r.FromID)+"->"+lastSegment(r.ToID)] = r
+		}
+	}
+	for _, want := range []string{
+		"url_for->stash",
+		"url_for->to_route",
+		"url_for->protocol",
+	} {
+		r, ok := calls[want]
+		if !ok {
+			t.Fatalf("missing Perl receiver call %s in %#v", want, calls)
+		}
+		if got := r.Reason; got != "Perl receiver call matched globally unique subroutine name" {
+			t.Fatalf("%s reason = %q", want, got)
+		}
+		if symbolsByID[r.ToID].Language != "Perl" {
+			t.Fatalf("%s resolved to non-Perl target: %#v", want, symbolsByID[r.ToID])
+		}
+	}
+}
+
 func TestHaskellSemanticExtraction(t *testing.T) {
 	// Haskell was promoted from inventory to the semantic tier (vendored
 	// grammar); it must now extract top-level function bindings (one symbol
@@ -11850,6 +12240,75 @@ module Nested =
 	}
 }
 
+func TestFSharpQualifiedCallExtraction(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Paket.Core/Installation/InstallProcess.fs", `module Paket.InstallProcess
+
+let InstallIntoProjects(options, forceTouch, dependenciesFile, lockFile, projectsAndReferences, updatedGroups, touchedPackages) =
+    ignore (options, forceTouch, dependenciesFile, lockFile, projectsAndReferences, updatedGroups, touchedPackages)
+`)
+	writeFile(t, repo, "src/Paket.Core/Installation/GarbageCollection.fs", `module Paket.GarbageCollection
+
+let CleanUp(dependenciesFile, lockFile) =
+    ignore (dependenciesFile, lockFile)
+`)
+	writeFile(t, repo, "src/Paket.Core/Installation/ScriptGeneration.fs", `module Paket.LoadingScripts
+
+module ScriptGeneration =
+    let constructScriptsFromData depCache groups frameworks scriptTypes =
+        ignore (depCache, groups, frameworks, scriptTypes)
+`)
+	writeFile(t, repo, "src/Paket.Core/Installation/UpdateProcess.fs", `module Paket.UpdateProcess
+
+let SelectiveUpdate(dependenciesFile, alternativeProjectRoot, updateMode, semVerUpdateMode, force) =
+    ignore (dependenciesFile, alternativeProjectRoot, updateMode, semVerUpdateMode, force)
+
+let SmartInstall(dependenciesFile, updateMode, options) =
+    SelectiveUpdate(dependenciesFile, None, updateMode, None, false)
+    InstallProcess.InstallIntoProjects(options, false, dependenciesFile, lockFile, [], [], None)
+    GarbageCollection.CleanUp(dependenciesFile, lockFile)
+    LoadingScripts.ScriptGeneration.constructScriptsFromData depCache [] [] []
+`)
+	writeFile(t, repo, "src/Paket.Core/PublicAPI.fs", `module Paket.PublicAPI
+
+type Dependencies() =
+    member private this.Install(options) =
+        UpdateProcess.SmartInstall("deps", "Install", options)
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, s := range snapshot.Symbols {
+		symbolsByID[s.ID] = s
+	}
+	type edge struct{ from, to string }
+	calls := map[edge]bool{}
+	for _, r := range snapshot.Relations {
+		if r.Type != "CALLS" {
+			continue
+		}
+		from, fromOK := symbolsByID[r.FromID]
+		to, toOK := symbolsByID[r.ToID]
+		if !fromOK || !toOK || from.Language != "F#" || to.Language != "F#" {
+			continue
+		}
+		calls[edge{from.FilePath + ":" + from.Name, to.FilePath + ":" + to.Name}] = true
+	}
+	for _, want := range []edge{
+		{"src/Paket.Core/PublicAPI.fs:Install", "src/Paket.Core/Installation/UpdateProcess.fs:SmartInstall"},
+		{"src/Paket.Core/Installation/UpdateProcess.fs:SmartInstall", "src/Paket.Core/Installation/UpdateProcess.fs:SelectiveUpdate"},
+		{"src/Paket.Core/Installation/UpdateProcess.fs:SmartInstall", "src/Paket.Core/Installation/InstallProcess.fs:InstallIntoProjects"},
+		{"src/Paket.Core/Installation/UpdateProcess.fs:SmartInstall", "src/Paket.Core/Installation/GarbageCollection.fs:CleanUp"},
+		{"src/Paket.Core/Installation/UpdateProcess.fs:SmartInstall", "src/Paket.Core/Installation/ScriptGeneration.fs:constructScriptsFromData"},
+	} {
+		if !calls[want] {
+			t.Fatalf("missing F# qualified CALLS edge %v in %v", want, calls)
+		}
+	}
+}
+
 func TestSwiftProtocolDeclarationsEmitted(t *testing.T) {
 	// tree-sitter-swift emits protocol_declaration; an Objective-C-only gate
 	// on that node type silently dropped every Swift protocol (regression
@@ -11915,5 +12374,963 @@ pub fn boot() -> u32 {
 	}
 	if !found {
 		t.Fatalf("Rust Type::method path call did not resolve to the method")
+	}
+}
+
+func TestRustReceiverFactoryAssignmentTypesLocal(t *testing.T) {
+	// Bun's bundler code often types a local through a receiver method
+	// (`let c = ctx.c();`) before dispatching on that local. The receiver
+	// method's declared return type should type the local for the next call.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/lib.rs", `pub struct LinkerContext;
+pub struct GenerateChunkCtx;
+
+impl GenerateChunkCtx {
+    pub fn c(&self) -> &mut LinkerContext {
+        todo!()
+    }
+}
+
+impl LinkerContext {
+    pub fn break_output_into_pieces(&self) {}
+}
+
+pub fn post_process(ctx: GenerateChunkCtx) {
+    let c = ctx.c();
+    c.break_output_into_pieces();
+}
+
+pub fn post_process_typed(ctx: GenerateChunkCtx) {
+    let c: &mut LinkerContext = ctx.c();
+    c.break_output_into_pieces();
+}
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" && strings.Contains(r.ToID, "LinkerContext.break_output_into_pieces") {
+			if strings.Contains(r.FromID, "post_process_typed") {
+				found["post_process_typed"] = true
+			} else if strings.Contains(r.FromID, "post_process") {
+				found["post_process"] = true
+			}
+		}
+	}
+	for _, name := range []string{"post_process", "post_process_typed"} {
+		if !found[name] {
+			t.Fatalf("missing Rust receiver-factory CALLS edge from %s to break_output_into_pieces; found=%v", name, found)
+		}
+	}
+}
+
+func TestRustTokioStyleBlockingSpawnEdges(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "Cargo.toml", `[package]
+name = "tokio-shape"
+version = "0.1.0"
+`)
+	writeFile(t, repo, "src/lib.rs", `pub mod runtime;
+pub mod task;
+pub mod util;
+`)
+	writeFile(t, repo, "src/runtime/mod.rs", `pub mod blocking;
+pub mod task;
+
+pub struct Handle {
+    pub inner: scheduler::Handle,
+}
+
+pub mod scheduler {
+    pub enum Handle {}
+}
+`)
+	writeFile(t, repo, "src/runtime/blocking/mod.rs", `pub mod pool;
+`)
+	writeFile(t, repo, "src/runtime/blocking/pool.rs", `use crate::runtime::task::Id;
+use crate::util::trace::blocking_task;
+
+pub struct Spawner;
+pub struct JoinHandle;
+pub struct BlockingTask<F>(F);
+
+impl<F> BlockingTask<F> {
+    pub fn new(func: F) -> Self {
+        BlockingTask(func)
+    }
+}
+
+impl Spawner {
+    pub fn spawn_blocking_inner<F>(&self, func: F) -> JoinHandle {
+        let id = Id::next();
+        let _fut = blocking_task::<F, BlockingTask<F>>(BlockingTask::new(func), id.as_u64());
+        JoinHandle
+    }
+}
+`)
+	writeFile(t, repo, "src/runtime/task.rs", `pub struct Id(u64);
+
+impl Id {
+    pub fn next() -> Id {
+        Id(1)
+    }
+
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+}
+`)
+	writeFile(t, repo, "src/task/mod.rs", `pub mod builder;
+`)
+	writeFile(t, repo, "src/task/builder.rs", `use crate::runtime::Handle;
+
+pub struct Builder;
+
+impl Builder {
+    pub fn spawn_blocking_on(&self, handle: &Handle) {
+        handle.inner.blocking_spawner().spawn_blocking_inner(|| {});
+    }
+}
+`)
+	writeFile(t, repo, "src/util/mod.rs", `pub mod trace;
+`)
+	writeFile(t, repo, "src/util/trace.rs", `pub fn blocking_task<Fn, Fut>(task: Fut, id: u64) -> Fut {
+    task
+}
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := map[string]RelationRecord{}
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" {
+			calls[lastSegment(r.FromID)+"->"+lastSegment(r.ToID)] = r
+		}
+	}
+	for _, want := range []string{
+		"Builder.spawn_blocking_on->Spawner.spawn_blocking_inner",
+		"Spawner.spawn_blocking_inner->blocking_task",
+		"Spawner.spawn_blocking_inner->Id.as_u64",
+	} {
+		if _, ok := calls[want]; !ok {
+			t.Fatalf("missing Rust Tokio-style CALLS edge %s in %#v", want, calls)
+		}
+	}
+	if got := calls["Builder.spawn_blocking_on->Spawner.spawn_blocking_inner"].Reason; got != "Rust returned receiver call matched globally unique method name" {
+		t.Fatalf("spawn_blocking_inner resolved for the wrong reason %q", got)
+	}
+}
+
+func TestRustUseBoundModulePathCallResolvesThroughAlias(t *testing.T) {
+	// `use crate::strings; strings::index_of(...)` should resolve through the
+	// public alias `pub use crate::string::immutable as strings`, not fall back
+	// to a bare unique-name guess.
+	repo := t.TempDir()
+	writeFile(t, repo, "Cargo.toml", `[package]
+name = "acme-core"
+version = "0.1.0"
+`)
+	writeFile(t, repo, "src/lib.rs", `pub mod string;
+pub use crate::string::immutable as strings;
+
+use crate::strings;
+
+pub fn caller() {
+    strings::index_of();
+}
+`)
+	writeFile(t, repo, "src/string/mod.rs", `pub mod immutable;
+`)
+	writeFile(t, repo, "src/string/immutable.rs", `pub fn index_of() {}
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" && strings.Contains(r.FromID, "caller") && strings.Contains(r.ToID, "index_of") && strings.Contains(r.ToID, "src/string/immutable.rs") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Rust use-bound module path call did not resolve through alias")
+	}
+}
+
+func TestRustNestedCrateLibPathAliasResolves(t *testing.T) {
+	// Bun's `bun_core` crate lives under `src/bun_core` and declares
+	// `[lib] path = "lib.rs"`, so the crate root is not `src/bun_core/src`.
+	// The manifest resolver must still index `pub use ... as strings`.
+	repo := t.TempDir()
+	writeFile(t, repo, "Cargo.toml", `[workspace]
+members = ["src/bun_core", "src/bundler"]
+`)
+	writeFile(t, repo, "src/bun_core/Cargo.toml", `[package]
+name = "bun_core"
+version = "0.1.0"
+
+[lib]
+path = "lib.rs"
+`)
+	writeFile(t, repo, "src/bun_core/lib.rs", `pub mod string;
+pub use crate::string::immutable as strings;
+`)
+	writeFile(t, repo, "src/bun_core/string/mod.rs", `pub mod immutable;
+`)
+	writeFile(t, repo, "src/bun_core/string/immutable.rs", `pub fn index_of() {}
+`)
+	writeFile(t, repo, "src/bundler/Cargo.toml", `[package]
+name = "bundler"
+version = "0.1.0"
+`)
+	writeFile(t, repo, "src/bundler/src/lib.rs", `use bun_core::strings;
+
+pub fn caller() {
+    strings::index_of();
+}
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range snapshot.Relations {
+		if r.Type == "CALLS" && strings.Contains(r.FromID, "caller") && strings.Contains(r.ToID, "src/bun_core/string/immutable.rs:function:index_of") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Rust nested crate [lib] path alias call did not resolve")
+	}
+}
+
+func TestElixirBareSameModuleCallsResolveToMethods(t *testing.T) {
+	// Elixir functions inside a module are emitted as method symbols. Bare
+	// same-module calls (`terminate_children(...)`, `monitor_children(...)`)
+	// must therefore be allowed to resolve to methods.
+	repo := t.TempDir()
+	writeFile(t, repo, "lib/dynamic_supervisor.ex", `defmodule DynamicSupervisor do
+  def handle_call({:terminate_child, pid}, _from, %{children: children} = state) do
+    :ok = terminate_children(%{pid => :child}, state)
+    {:reply, :ok, state}
+  end
+
+  def terminate(_, %{children: children} = state) do
+    :ok = terminate_children(children, state)
+  end
+
+  defp terminate_children(children, state) do
+    pids = monitor_children(children)
+    wait_children(pids, state)
+    report_error(:shutdown_error, state)
+    :ok
+  end
+
+  defp monitor_children(children), do: children
+  defp wait_children(pids, state), do: {pids, state}
+  defp report_error(error, state), do: {error, state}
+end
+`)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbolsByID := map[string]SymbolRecord{}
+	for _, s := range snapshot.Symbols {
+		symbolsByID[s.ID] = s
+	}
+	type edge struct{ from, to string }
+	calls := map[edge]bool{}
+	for _, r := range snapshot.Relations {
+		if r.Type != "CALLS" {
+			continue
+		}
+		from, fromOK := symbolsByID[r.FromID]
+		to, toOK := symbolsByID[r.ToID]
+		if !fromOK || !toOK || from.Language != "Elixir" || to.Language != "Elixir" {
+			continue
+		}
+		calls[edge{from.Name, to.Name}] = true
+	}
+	for _, want := range []edge{
+		{"handle_call", "terminate_children"},
+		{"terminate", "terminate_children"},
+		{"terminate_children", "monitor_children"},
+		{"terminate_children", "wait_children"},
+		{"terminate_children", "report_error"},
+	} {
+		if !calls[want] {
+			t.Fatalf("missing Elixir CALLS edge %v in %v", want, calls)
+		}
+	}
+}
+
+func TestCSharpNullableAndOutVarReceiversResolveCrossFile(t *testing.T) {
+	// dotnet/runtime HttpConnectionPoolManager.SendAsyncCore: a local
+	// declared with a nullable annotation ('HttpConnectionPool? pool;'),
+	// assigned via 'out pool' / 'pool = new HttpConnectionPool(...)', then
+	// invoked ('pool.SendAsync(...)') must resolve to the method declared
+	// in another file, and the constructor call must emit CONSTRUCTS.
+	repo := t.TempDir()
+	writeFile(t, repo, "Net/HttpConnectionPool.cs", `namespace System.Net.Http
+{
+    internal sealed class HttpConnectionPool
+    {
+        public HttpConnectionPool(object owner) { }
+
+        public string SendAsync(string request, bool async) { return request; }
+    }
+}
+`)
+	writeFile(t, repo, "Net/HttpConnectionPoolManager.cs", `namespace System.Net.Http
+{
+    internal sealed class HttpConnectionPoolManager
+    {
+        public string SendAsyncCore(string request, bool async)
+        {
+            HttpConnectionPool? pool;
+            while (!_pools.TryGetValue(request, out pool))
+            {
+                pool = new HttpConnectionPool(this);
+            }
+            return pool.SendAsync(request, async);
+        }
+
+        public string SendViaOutDeclaration(string request)
+        {
+            if (_pools.TryGetValue(request, out HttpConnectionPool? cached))
+            {
+                return cached.SendAsync(request, false);
+            }
+            return request;
+        }
+    }
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "HttpConnectionPoolManager.SendAsyncCore", "HttpConnectionPool.SendAsync") {
+		t.Errorf("missing CALLS SendAsyncCore->HttpConnectionPool.SendAsync (nullable local + new assignment)")
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CONSTRUCTS", "HttpConnectionPoolManager.SendAsyncCore", "HttpConnectionPool") {
+		t.Errorf("missing CONSTRUCTS SendAsyncCore->HttpConnectionPool")
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "HttpConnectionPoolManager.SendViaOutDeclaration", "HttpConnectionPool.SendAsync") {
+		t.Errorf("missing CALLS SendViaOutDeclaration->HttpConnectionPool.SendAsync (out Type? declaration)")
+	}
+}
+
+func TestCSharpStaticCallResolvesAcrossPartialClassFiles(t *testing.T) {
+	// roslyn declares 'internal static partial class Contract' in both
+	// Contract.cs (which holds ThrowIfFalse) and
+	// Contract.InterpolatedStringHandlers.cs (which does not, and sorts
+	// lexically first). A static type-qualified call
+	// 'Contract.ThrowIfFalse(...)' must resolve to the partial
+	// declaration that actually defines the method instead of being
+	// dropped after probing only the first candidate.
+	repo := t.TempDir()
+	writeFile(t, repo, "Contracts/Contract.InterpolatedStringHandlers.cs", `namespace Roslyn.Utilities
+{
+    internal static partial class Contract
+    {
+        public readonly struct ThrowIfFalseInterpolatedStringHandler
+        {
+            public string GetFormattedText() { return ""; }
+        }
+    }
+}
+`)
+	writeFile(t, repo, "Contracts/Contract.cs", `namespace Roslyn.Utilities
+{
+    internal static partial class Contract
+    {
+        public static void ThrowIfFalse(bool condition) { }
+
+        public static void ThrowIfFalse(bool condition, string message) { }
+    }
+}
+`)
+	writeFile(t, repo, "Workspace/Workspace_Editor.cs", `namespace Microsoft.CodeAnalysis
+{
+    public partial class Workspace
+    {
+        private void UpdateCurrentContextMapping_NoLock(bool isCurrentContext)
+        {
+            Contract.ThrowIfFalse(isCurrentContext);
+        }
+    }
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "CALLS" &&
+			strings.Contains(relation.FromID, "Workspace.UpdateCurrentContextMapping_NoLock") &&
+			strings.Contains(relation.ToID, "Contracts/Contract.cs") &&
+			strings.Contains(relation.ToID, "Contract.ThrowIfFalse") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("missing static type-qualified CALLS to the partial class that defines ThrowIfFalse: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func relationsOfType(relations []RelationRecord, relationType string) []RelationRecord {
+	var out []RelationRecord
+	for _, relation := range relations {
+		if relation.Type == relationType {
+			out = append(out, relation)
+		}
+	}
+	return out
+}
+
+func TestPHPClosureBodyCallsResolveToEnclosingClassViaReceiverName(t *testing.T) {
+	// laravel/framework Container.getClosure returns a closure whose body
+	// calls $container->build(...) and $container->resolve(...). The calls
+	// must be attributed to the enclosing named method, and the untyped
+	// $container receiver (named after the enclosing class) must resolve
+	// to the Container class's own methods.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Container.php", `<?php
+
+namespace Illuminate\Container;
+
+class Container
+{
+    protected function getClosure($abstract, $concrete)
+    {
+        return function ($container, $parameters = []) use ($abstract, $concrete) {
+            if ($abstract == $concrete) {
+                return $container->build($concrete);
+            }
+
+            return $container->resolve(
+                $concrete, $parameters, raiseEvents: false
+            );
+        };
+    }
+
+    public function build($concrete)
+    {
+        return $concrete;
+    }
+
+    public function resolve($abstract, $parameters = [], $raiseEvents = true)
+    {
+        return $abstract;
+    }
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "Container.getClosure", "Container.resolve") {
+		t.Errorf("missing CALLS Container.getClosure->Container.resolve (closure body, receiver named after enclosing class)")
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "Container.getClosure", "Container.build") {
+		t.Errorf("missing CALLS Container.getClosure->Container.build (closure body, receiver named after enclosing class)")
+	}
+}
+
+func TestPHPAmbiguousBareCallEmitsCandidateEdges(t *testing.T) {
+	// WordPress declares apply_filters() three times (plugin.php canonical,
+	// a compat copy, and a wp-admin noop stub). The globally-unique gate
+	// dropped the call entirely; ambiguity must not mean silence — emit
+	// candidate edges to the same-name declarations instead.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/wp-includes/plugin.php", `<?php
+
+function apply_filters( $hook_name, $value ) {
+    global $wp_filter;
+    if ( ! isset( $wp_filter[ $hook_name ] ) ) {
+        return $value;
+    }
+    return $wp_filter[ $hook_name ]->apply_filters( $value, func_get_args() );
+}
+`)
+	writeFile(t, repo, "src/wp-admin/includes/noop.php", `<?php
+
+function apply_filters( $hook_name, $value ) {
+    return $value;
+}
+`)
+	writeFile(t, repo, "src/wp-includes/rest-api/class-wp-rest-server.php", `<?php
+
+class WP_REST_Server
+{
+    public function dispatch( $request ) {
+        $result = apply_filters( 'rest_pre_dispatch', null, $this, $request );
+        return $result;
+    }
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var toPlugin, toNoop bool
+	for _, relation := range snapshot.Relations {
+		if relation.Type != "CALLS" || !strings.Contains(relation.FromID, "WP_REST_Server.dispatch") {
+			continue
+		}
+		if strings.Contains(relation.ToID, "wp-includes/plugin.php") && strings.Contains(relation.ToID, "apply_filters") {
+			toPlugin = true
+		}
+		if strings.Contains(relation.ToID, "noop.php") && strings.Contains(relation.ToID, "apply_filters") {
+			toNoop = true
+		}
+	}
+	if !toPlugin {
+		t.Errorf("missing candidate CALLS edge to the canonical apply_filters in plugin.php: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !toNoop {
+		t.Errorf("missing candidate CALLS edge to the noop.php apply_filters (ambiguous calls emit all candidates): %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func TestPHPChainedCallResolvesViaDocblockReturnType(t *testing.T) {
+	// WordPress rest_do_request() calls rest_get_server()->dispatch($request).
+	// rest_get_server() has no native return hint, only a docblock
+	// '@return WP_REST_Server'; the chained call must resolve to
+	// WP_REST_Server::dispatch via that inferred receiver type.
+	repo := t.TempDir()
+	writeFile(t, repo, "src/wp-includes/rest-api.php", `<?php
+
+/**
+ * Do a REST request.
+ *
+ * @param WP_REST_Request $request Request.
+ * @return WP_REST_Response The response.
+ */
+function rest_do_request( $request ) {
+    return rest_get_server()->dispatch( $request );
+}
+
+/**
+ * Retrieves the current REST server instance.
+ *
+ * @return WP_REST_Server REST server instance.
+ */
+function rest_get_server() {
+    global $wp_rest_server;
+    return $wp_rest_server;
+}
+`)
+	writeFile(t, repo, "src/wp-includes/rest-api/class-wp-rest-server.php", `<?php
+
+class WP_REST_Server
+{
+    public function dispatch( $request ) {
+        return $request;
+    }
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "rest_do_request", "WP_REST_Server.dispatch") {
+		t.Errorf("missing CALLS rest_do_request->WP_REST_Server.dispatch via docblock @return receiver type: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func TestPHPGeneratedFactoryCreateChainResolvesProductMethod(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/Session.php", `<?php
+
+class Session
+{
+    /**
+     * @var CustomerFactory
+     */
+    protected $_customerFactory;
+
+    public function setCustomerDataAsLoggedIn($customer)
+    {
+        $customerModel = $this->_customerFactory->create()->updateData($customer);
+        return $customerModel;
+    }
+}
+`)
+	writeFile(t, repo, "src/Customer.php", `<?php
+
+class Customer
+{
+    public function updateData($customer)
+    {
+        return $this;
+    }
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "Session.setCustomerDataAsLoggedIn", "Customer.updateData") {
+		t.Errorf("missing generated-factory chain CALLS edge: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func TestObjectiveCMessageSendCallsResolveToMethods(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "Indicator.m", `@interface Indicator
+- (void)setEnabled;
+- (void)setCurrentState:(int)state;
+- (void)cancelActivationDelayTimer;
+@end
+
+@implementation Indicator
+- (void)setEnabled {
+    [self setCurrentState:1];
+}
+
+- (void)setCurrentState:(int)state {
+    [self cancelActivationDelayTimer];
+}
+
+- (void)cancelActivationDelayTimer {}
+@end
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationBySymbolName(snapshot, "CALLS", "setEnabled", "setCurrentState") {
+		t.Errorf("missing Objective-C message CALLS setEnabled->setCurrentState: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !hasRelationBySymbolName(snapshot, "CALLS", "setCurrentState", "cancelActivationDelayTimer") {
+		t.Errorf("missing Objective-C message CALLS setCurrentState->cancelActivationDelayTimer: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func TestObjectiveCMethodFallbackExtractsColonSelectors(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "AFURLSessionManager.m", `@implementation AFURLSessionManager
+- (void)invalidateSessionCancelingTasks:(BOOL)cancelPendingTasks resetSession:(BOOL)resetSession {
+    if (cancelPendingTasks) {
+        [self.session invalidateAndCancel];
+    } else {
+        [self.session finishTasksAndInvalidate];
+    }
+    if (resetSession) {
+        self.session = nil;
+    }
+}
+@end
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshotHasSymbol(snapshot, "invalidateSessionCancelingTasks") {
+		t.Fatalf("missing Objective-C colon selector method: %#v", snapshot.Symbols)
+	}
+}
+
+func TestClojureListHeadCallsResolve(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "core.clj", `(ns app.core
+  (:require [app.urls :as urls]))
+
+(defn dashcard-url [id] id)
+(defn make-title-if-needed [] "title")
+(defn render-pulse-card []
+  (make-title-if-needed)
+  (urls/dashcard-url 1))
+(defn caller []
+  (render-pulse-card))
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationBySymbolName(snapshot, "CALLS", "caller", "render-pulse-card") {
+		t.Errorf("missing Clojure CALLS caller->render-pulse-card: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !hasRelationBySymbolName(snapshot, "CALLS", "render-pulse-card", "make-title-if-needed") {
+		t.Errorf("missing Clojure CALLS render-pulse-card->make-title-if-needed: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !hasRelationBySymbolName(snapshot, "CALLS", "render-pulse-card", "dashcard-url") {
+		t.Errorf("missing Clojure namespaced CALLS render-pulse-card->dashcard-url: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func TestLuaTableFunctionDefinitionsAndDottedCallsResolve(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "vim.lua", `_G.vim = _G.vim or {}
+local M = {}
+
+function vim.gsplit(s, sep)
+  return s
+end
+
+function vim.split(s, sep)
+  return vim.gsplit(s, sep)
+end
+
+function M.joinpath(...)
+  return table.concat({ ... }, "/")
+end
+
+function M.normalize(path)
+  return M.joinpath(path, "child")
+end
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"vim.gsplit", "vim.split", "M.joinpath", "M.normalize"} {
+		if !snapshotHasSymbol(snapshot, want) {
+			t.Fatalf("missing Lua table function %s: %#v", want, snapshot.Symbols)
+		}
+	}
+	if !hasRelationBySymbolName(snapshot, "CALLS", "split", "gsplit") {
+		t.Errorf("missing Lua dotted CALLS split->gsplit: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !hasRelationBySymbolName(snapshot, "CALLS", "normalize", "joinpath") {
+		t.Errorf("missing Lua module CALLS normalize->joinpath: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func TestTypeScriptNamespaceImportsAndCallbackReferencesResolve(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/compiler/core.ts", `export function noop() {}
+`)
+	writeFile(t, repo, "src/compiler/performance.ts", `export function mark(name: string) {}
+export function measure(name: string, start: string, end: string) {}
+`)
+	writeFile(t, repo, "src/compiler/generated/ts.ts", `export { noop } from "../core";
+export { createSourceFile } from "../parser";
+`)
+	writeFile(t, repo, "src/compiler/generated/ts.performance.ts", `export * from "../performance";
+`)
+	writeFile(t, repo, "src/compiler/parser.ts", `import { noop } from "./generated/ts.js";
+import * as performance from "./generated/ts.performance.js";
+
+export function createSourceFile() {
+    performance.mark("beforeParse");
+    Parser.parseSourceFile(noop);
+    performance.measure("Parse", "beforeParse", "afterParse");
+}
+
+namespace Parser {
+    export function parseSourceFile(done: () => void) {
+        done();
+    }
+
+    function createSourceFile() {
+        return undefined;
+    }
+}
+`)
+	writeFile(t, repo, "src/compiler/program.ts", `import { createSourceFile } from "./generated/ts.js";
+
+export function createGetSourceFile() {
+    return createSourceFile();
+}
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Worktree: true,
+		IncludeFiles: []string{
+			"src/compiler/core.ts",
+			"src/compiler/parser.ts",
+			"src/compiler/performance.ts",
+			"src/compiler/program.ts",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", "createGetSourceFile", "src/compiler/program.ts", "createSourceFile", "src/compiler/parser.ts") {
+		t.Errorf("missing TypeScript generated namespace import CALLS createGetSourceFile->createSourceFile: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	for _, want := range []struct {
+		name string
+		file string
+	}{
+		{name: "parseSourceFile", file: "src/compiler/parser.ts"},
+		{name: "mark", file: "src/compiler/performance.ts"},
+		{name: "measure", file: "src/compiler/performance.ts"},
+		{name: "noop", file: "src/compiler/core.ts"},
+	} {
+		if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", "createSourceFile", "src/compiler/parser.ts", want.name, want.file) {
+			t.Errorf("missing TypeScript createSourceFile->%s CALLS: %#v", want.name, relationsOfType(snapshot.Relations, "CALLS"))
+		}
+	}
+}
+
+func TestSQLRoutineCallsResolve(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "policy.sql", `CREATE FUNCTION compress_chunk() RETURNS void LANGUAGE SQL AS $$
+SELECT 1;
+$$;
+
+CREATE FUNCTION policy_compression_execute() RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM _timescaledb_internal.compress_chunk();
+  PERFORM @extschema@.compress_chunk();
+END
+$$;
+
+CREATE FUNCTION policy_compression() RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  CALL policy_compression_execute();
+END
+$$;
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationBySymbolName(snapshot, "CALLS", "policy_compression_execute", "compress_chunk") {
+		t.Errorf("missing SQL schema-qualified CALLS policy_compression_execute->compress_chunk: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !hasRelationBySymbolName(snapshot, "CALLS", "policy_compression", "policy_compression_execute") {
+		t.Errorf("missing SQL CALLS policy_compression->policy_compression_execute: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func TestSQLMigrationScriptCallsAlsoLinkCanonicalRoutine(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "sql/policy_internal.sql", `CREATE PROCEDURE _timescaledb_functions.policy_compression_execute(job_id INTEGER)
+AS $$
+BEGIN
+  PERFORM @extschema@.compress_chunk();
+END
+$$ LANGUAGE PLPGSQL;
+
+CREATE PROCEDURE _timescaledb_functions.policy_compression(job_id INTEGER)
+AS $$
+BEGIN
+  CALL _timescaledb_functions.policy_compression_execute(job_id);
+END
+$$ LANGUAGE PLPGSQL;
+`)
+	writeFile(t, repo, "db/migrations/V2__policy_compression.sql", `CREATE PROCEDURE _timescaledb_functions.policy_compression_execute(job_id INTEGER)
+AS $$
+BEGIN
+  PERFORM @extschema@.compress_chunk();
+END
+$$ LANGUAGE PLPGSQL;
+
+CREATE PROCEDURE _timescaledb_functions.policy_compression(job_id INTEGER)
+AS $$
+BEGIN
+  CALL _timescaledb_functions.policy_compression_execute(job_id);
+END
+$$ LANGUAGE PLPGSQL;
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", "policy_compression", "db/migrations/V2__policy_compression.sql", "policy_compression_execute", "db/migrations/V2__policy_compression.sql") {
+		t.Errorf("missing SQL migration local CALLS policy_compression->policy_compression_execute: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", "policy_compression", "db/migrations/V2__policy_compression.sql", "policy_compression_execute", "sql/policy_internal.sql") {
+		t.Errorf("missing SQL migration canonical CALLS policy_compression->canonical policy_compression_execute: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func TestZigBareAndReceiverCallsResolve(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "analysis.zig", `const analysis = struct {};
+
+const Type = struct {
+    pub fn lookupSymbol(self: *Type) void {
+        _ = self;
+    }
+};
+
+fn resolveTypeOfNode() void {}
+
+fn resolveVarDeclAlias(t: Type) void {
+    analysis.resolveTypeOfNode();
+    t.lookupSymbol();
+}
+
+fn definitionToken() void {
+    analysis.resolveVarDeclAlias(Type{});
+}
+`)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationBySymbolName(snapshot, "CALLS", "definitionToken", "resolveVarDeclAlias") {
+		t.Errorf("missing Zig CALLS definitionToken->resolveVarDeclAlias: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !hasRelationBySymbolName(snapshot, "CALLS", "resolveVarDeclAlias", "resolveTypeOfNode") {
+		t.Errorf("missing Zig CALLS resolveVarDeclAlias->resolveTypeOfNode: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+	if !hasRelationBySymbolName(snapshot, "CALLS", "resolveVarDeclAlias", "lookupSymbol") {
+		t.Errorf("missing Zig receiver CALLS resolveVarDeclAlias->lookupSymbol: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func TestGoSelfModuleImportResolvesCrossPackageCall(t *testing.T) {
+	// entire-sem's own snapshot missed cli->sem edges: a package imported
+	// via the repo's own module path ("github.com/acme/tool/internal/sem")
+	// fell through to an external fallback because the module prefix was
+	// never mapped back to the in-repo package directory.
+	repo := t.TempDir()
+	writeFile(t, repo, "go.mod", `module github.com/acme/tool
+
+go 1.24
+`)
+	writeFile(t, repo, "internal/sem/analyze.go", `package sem
+
+func analyzeNothing() {}
+`)
+	writeFile(t, repo, "internal/sem/provider.go", `package sem
+
+func StreamSnapshot(repo string) error {
+	return nil
+}
+`)
+	writeFile(t, repo, "internal/cli/root.go", `package cli
+
+import (
+	"github.com/acme/tool/internal/sem"
+)
+
+func runProviderRecords(repo string) error {
+	return sem.StreamSnapshot(repo)
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "runProviderRecords", "StreamSnapshot") {
+		t.Errorf("missing CALLS runProviderRecords->StreamSnapshot via self-module import: %#v", relationsOfType(snapshot.Relations, "CALLS"))
 	}
 }

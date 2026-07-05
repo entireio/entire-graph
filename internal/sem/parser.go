@@ -12,6 +12,7 @@ import (
 	"time"
 
 	clojure "github.com/entireio/entire-sem/internal/sem/grammars/clojure"
+	csharp "github.com/entireio/entire-sem/internal/sem/grammars/csharp"
 	dart "github.com/entireio/entire-sem/internal/sem/grammars/dart"
 	erlang "github.com/entireio/entire-sem/internal/sem/grammars/erlang"
 	fsharp "github.com/entireio/entire-sem/internal/sem/grammars/fsharp"
@@ -27,7 +28,6 @@ import (
 	"github.com/smacker/go-tree-sitter/bash"
 	"github.com/smacker/go-tree-sitter/c"
 	"github.com/smacker/go-tree-sitter/cpp"
-	"github.com/smacker/go-tree-sitter/csharp"
 	"github.com/smacker/go-tree-sitter/cue"
 	"github.com/smacker/go-tree-sitter/elixir"
 	"github.com/smacker/go-tree-sitter/golang"
@@ -301,6 +301,18 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		regexSrc := []byte(stripSQLComments(string(src)))
 		entities = append(entities, postgresFunctionEntities(regexSrc)...)
 		entities = append(entities, postgresPolicyEntities(regexSrc)...)
+	}
+	if spec.language == "Lua" {
+		// tree-sitter-lua can recover from large annotated files with incomplete
+		// top-level function coverage. Supplement it with the canonical Lua
+		// declaration forms so exported table functions stay discoverable.
+		entities = appendMissingEntities(entities, luaFunctionEntities(content)...)
+	}
+	if spec.language == "Objective-C" {
+		// Large Objective-C implementation files with blocks/macros can leave
+		// recoverable method definitions out of the tree-sitter walk. Supplement
+		// only brace-backed implementation methods; header prototypes end in ';'.
+		entities = appendMissingEntities(entities, objectiveCMethodEntities(content)...)
 	}
 	sort.Slice(entities, func(i, j int) bool {
 		if entities[i].StartLine == entities[j].StartLine {
@@ -799,24 +811,28 @@ func maskCSharpUnsupportedSyntax(content string) string {
 		switch {
 		case strings.HasPrefix(trimmed, "#"):
 			lines[i] = maskLineText(text) + newline
-		case cSharpPrimaryConstructorClassLinePattern.MatchString(text):
-			lines[i] = cSharpMaskPrimaryConstructorClass(text) + newline
 		default:
-			text = replacePatternSameLength(text, cSharpNullCoalescingCollectionExpressionPattern, "??= null")
-			text = replacePatternSameLength(text, cSharpAssignmentCollectionExpressionPattern, "= null")
+			// The vendored C# 13 grammar parses collection expressions,
+			// primary constructors, and params collections natively. Two
+			// constructs still degrade to ERROR nodes: prefix dereference
+			// of a pointer cast (`*(T*)&x`, unsafe hot paths) and
+			// dictionary index initializers with non-literal keys
+			// (`{ [key] = value }`).
+			text = maskPointerDerefCasts(text)
+			text = maskBareAsyncArguments(text)
 			lines[i] = replacePatternSameLength(text, cSharpDictionaryIndexInitializerPattern, "{}") + newline
 		}
 	}
 	return strings.Join(lines, "")
 }
 
-func cSharpMaskPrimaryConstructorClass(text string) string {
-	matches := cSharpPrimaryConstructorClassLinePattern.FindStringSubmatch(text)
-	if len(matches) < 2 {
-		return text
-	}
-	replacement := "class " + matches[1] + " {}"
-	return paddedReplacement(leadingWhitespace(text), replacement, len(text))
+// maskPointerDerefCasts rewrites `*(T*)expr` into ` (T )expr` (same byte
+// length) because tree-sitter-c-sharp cannot disambiguate a prefix pointer
+// dereference applied directly to a pointer-cast expression.
+func maskPointerDerefCasts(text string) string {
+	return cSharpPointerDerefCastPattern.ReplaceAllStringFunc(text, func(m string) string {
+		return strings.ReplaceAll(m, "*", " ")
+	})
 }
 
 var ocamlValSignaturePattern = regexp.MustCompile(`^(\s*)val\s+(\([^)\n]*\)|[A-Za-z_][\w']*)\b`)
@@ -841,6 +857,21 @@ var ocamlValStartKeywords = map[string]struct{}{
 // ocamlContinuesValSignature reports whether a line continues the multi-line
 // type of the preceding `val` (i.e. it is non-blank, not a comment, and does
 // not begin a new top-level signature item).
+// maskBareAsyncArguments rewrites a bare `async` identifier in argument
+// position (`F(request, async, this)`) into `true ` (same byte length).
+// tree-sitter-c-sharp reads argument-position `async` as the start of an
+// async lambda and the resulting ERROR can swallow the enclosing class
+// declaration (dotnet/runtime HttpConnectionPool.cs lost its class symbol
+// and every member's qualification). Lambda forms (`async x => ...`,
+// `async () => ...`) never match: the token must be followed directly by
+// `,` or `)`. Applied twice because adjacent matches share delimiters.
+func maskBareAsyncArguments(text string) string {
+	for i := 0; i < 2; i++ {
+		text = cSharpBareAsyncArgumentPattern.ReplaceAllString(text, "${1}true $2")
+	}
+	return text
+}
+
 func ocamlContinuesValSignature(line string) bool {
 	t := strings.TrimSpace(line)
 	if t == "" || strings.HasPrefix(t, "(*") {
@@ -1126,20 +1157,19 @@ func maskSwiftOptionalBindingShorthand(text string) (string, bool) {
 }
 
 var (
-	cSharpPrimaryConstructorClassLinePattern        = regexp.MustCompile(`^\s*(?:(?:public|internal|private|protected|sealed|abstract|partial|static)\s+)*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^;\n]*\)\s*(?::\s*[^{};\n]+)?\s*;\s*$`)
-	cSharpDictionaryIndexInitializerPattern         = regexp.MustCompile(`\{\s*\[[^\]\n]+\]\s*=\s*[^{}\n]+\}`)
-	cSharpAssignmentCollectionExpressionPattern     = regexp.MustCompile(`=\s*\[\]`)
-	cSharpNullCoalescingCollectionExpressionPattern = regexp.MustCompile(`\?\?=\s*\[\]`)
-	swiftTypedThrowsPattern                         = regexp.MustCompile(`throws\([A-Za-z_][A-Za-z0-9_.<>]*\)`)
-	swiftOptionalBindingShorthandPattern            = regexp.MustCompile(`\bif\s+let\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{`)
-	swiftEmptyAttributeCallPattern                  = regexp.MustCompile(`@[A-Za-z_][A-Za-z0-9_]*\(\)`)
-	swiftPropertyWrapperPrefixPattern               = regexp.MustCompile(`^(\s*)@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+(?:var|let)\s+`)
-	swiftLeadingOperatorContinuationLinePattern     = regexp.MustCompile(`^\s*(?:<|>|<=|>=|==|!=|&&|\|\|)\s+`)
-	swiftComputedStringPropertyStartPattern         = regexp.MustCompile(`^((?:(?:private|fileprivate|internal|public)\s+)?)var\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(String|\[String\])\s*\{$`)
-	cControlIteratorMacroPattern                    = regexp.MustCompile(`^(?:(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:FOREACH|FOREACH_SAFE|FOREACH_REVERSE|FOREACH_REVERSE_SAFE)|(?:foreach|foreach_ptr|foreach_node|foreach_oid|foreach_int|foreach_xid|foreach_delete_current|forboth|for_both_cell|forthree|for_fourth_cell|for_each_from|dlist_foreach(?:_modify)?|dclist_foreach(?:_modify)?|slist_foreach(?:_modify)?|hash_seq_search|SGITITERATE))\s*\(`)
-	cGenerateMacroPattern                           = regexp.MustCompile(`^(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:HEAD|ENTRY|PROTOTYPE|PROTOTYPE_STATIC|GENERATE|GENERATE_STATIC)\s*\(`)
-	cEnumMacroPattern                               = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_KEYS\s*\(`)
-	cFileScopeStatementMacroPattern                 = regexp.MustCompile(`^(?:PG_MODULE_MAGIC(?:_EXT)?|PG_FUNCTION_INFO_V1|PGDLLEXPORT|PG_KEYWORD|PG_FUNCTION_ARGS|PG_USED_FOR_ASSERTS_ONLY|DECLARE_[A-Z][A-Z0-9_]*|MAKE_SYSCACHE)\s*\(`)
+	cSharpPointerDerefCastPattern               = regexp.MustCompile(`\*+\(\s*[A-Za-z_@][\w<>,.\s]*?\*+\s*\)`)
+	cSharpBareAsyncArgumentPattern              = regexp.MustCompile(`([(,]\s*)async(\s*[,)])`)
+	cSharpDictionaryIndexInitializerPattern     = regexp.MustCompile(`\{\s*\[[^\]\n]+\]\s*=\s*[^{}\n]+\}`)
+	swiftTypedThrowsPattern                     = regexp.MustCompile(`throws\([A-Za-z_][A-Za-z0-9_.<>]*\)`)
+	swiftOptionalBindingShorthandPattern        = regexp.MustCompile(`\bif\s+let\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{`)
+	swiftEmptyAttributeCallPattern              = regexp.MustCompile(`@[A-Za-z_][A-Za-z0-9_]*\(\)`)
+	swiftPropertyWrapperPrefixPattern           = regexp.MustCompile(`^(\s*)@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+(?:var|let)\s+`)
+	swiftLeadingOperatorContinuationLinePattern = regexp.MustCompile(`^\s*(?:<|>|<=|>=|==|!=|&&|\|\|)\s+`)
+	swiftComputedStringPropertyStartPattern     = regexp.MustCompile(`^((?:(?:private|fileprivate|internal|public)\s+)?)var\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(String|\[String\])\s*\{$`)
+	cControlIteratorMacroPattern                = regexp.MustCompile(`^(?:(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:FOREACH|FOREACH_SAFE|FOREACH_REVERSE|FOREACH_REVERSE_SAFE)|(?:foreach|foreach_ptr|foreach_node|foreach_oid|foreach_int|foreach_xid|foreach_delete_current|forboth|for_both_cell|forthree|for_fourth_cell|for_each_from|dlist_foreach(?:_modify)?|dclist_foreach(?:_modify)?|slist_foreach(?:_modify)?|hash_seq_search|SGITITERATE))\s*\(`)
+	cGenerateMacroPattern                       = regexp.MustCompile(`^(?:TAILQ|STAILQ|LIST|SLIST|RB|SPLAY)_(?:HEAD|ENTRY|PROTOTYPE|PROTOTYPE_STATIC|GENERATE|GENERATE_STATIC)\s*\(`)
+	cEnumMacroPattern                           = regexp.MustCompile(`^[A-Z][A-Z0-9_]*_KEYS\s*\(`)
+	cFileScopeStatementMacroPattern             = regexp.MustCompile(`^(?:PG_MODULE_MAGIC(?:_EXT)?|PG_FUNCTION_INFO_V1|PGDLLEXPORT|PG_KEYWORD|PG_FUNCTION_ARGS|PG_USED_FOR_ASSERTS_ONLY|DECLARE_[A-Z][A-Z0-9_]*|MAKE_SYSCACHE)\s*\(`)
 	// PostgreSQL system-catalog header macros: the `CATALOG(name,oid,...) BKI_...`
 	// struct opener (the `{` follows on the next line) and BKI_* field/struct
 	// annotations. BEGIN/END_CATALOG_STRUCT markers are handled as bare lines.
@@ -3215,6 +3245,23 @@ var cFamilyNonFunctionNames = map[string]bool{
 	"while":   true,
 }
 
+func cFamilyTypedefAliasName(node *sitter.Node, src []byte) string {
+	text := strings.TrimSpace(stripCodeLiteralsAndComments(node.Content(src)))
+	if !strings.HasPrefix(text, "typedef ") {
+		return ""
+	}
+	text = strings.TrimSuffix(strings.TrimSpace(text), ";")
+	match := cFamilyTypedefNameRe.FindStringSubmatch(text)
+	if match == nil {
+		return ""
+	}
+	name := match[1]
+	if cFamilyNonFunctionNames[name] {
+		return ""
+	}
+	return name
+}
+
 func fastCFamilyEntities(path, content, language string) []Entity {
 	_ = path
 	_ = language
@@ -4499,6 +4546,12 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 			// *_type_defn child; the generic name descent would instead latch onto
 			// a leading attribute ([<CustomEquality>] type SemVerInfo -> "CustomEquality").
 			name = fsharpTypeName(node, src)
+		} else if (language == "C" || language == "C++") && node.Type() == "type_definition" {
+			if alias := cFamilyTypedefAliasName(node, src); alias != "" {
+				name = alias
+			} else {
+				name = nodeName(node, src)
+			}
 		} else {
 			name = nodeName(node, src)
 		}
@@ -6207,6 +6260,9 @@ func functionLikeValue(node *sitter.Node) bool {
 
 var jsExportedVariablePattern = regexp.MustCompile(`(?m)^\s*export\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=`)
 var jsAssignmentMethodPattern = regexp.MustCompile(`(?m)^\s*((?:[A-Za-z_$][A-Za-z0-9_$]*\s*\.\s*)+[A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s+)?function(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s*\(`)
+var luaFunctionLinePattern = regexp.MustCompile(`(?m)^[ \t]*(?:local[ \t]+)?function[ \t]+([A-Za-z_][A-Za-z0-9_]*(?:(?:[.:])[A-Za-z_][A-Za-z0-9_]*)*)[ \t]*\(`)
+var luaBlockTokenPattern = regexp.MustCompile(`\b(function|if|for|while|repeat|do|end|until)\b`)
+var objectiveCMethodNamePattern = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)`)
 
 func javascriptExportedVariableEntities(content string) []Entity {
 	matches := jsExportedVariablePattern.FindAllStringSubmatchIndex(content, -1)
@@ -6284,6 +6340,201 @@ func javascriptAssignmentMethodEntities(content string) []Entity {
 		})
 	}
 	return entities
+}
+
+func luaFunctionEntities(content string) []Entity {
+	matches := luaFunctionLinePattern.FindAllStringSubmatchIndex(content, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	lines := strings.Split(content, "\n")
+	entities := make([]Entity, 0, len(matches))
+	for _, match := range matches {
+		if len(match) < 4 {
+			continue
+		}
+		name := strings.ReplaceAll(strings.TrimSpace(content[match[2]:match[3]]), ":", ".")
+		if name == "" {
+			continue
+		}
+		lineStart := strings.LastIndexByte(content[:match[0]], '\n') + 1
+		lineEndRel := strings.IndexByte(content[match[0]:], '\n')
+		lineEnd := len(content)
+		if lineEndRel >= 0 {
+			lineEnd = match[0] + lineEndRel
+		}
+		signature := strings.TrimSpace(content[lineStart:lineEnd])
+		startLine := countLinesBefore(content, match[0]) + 1
+		endLine := luaFunctionEndLine(lines, startLine)
+		block := luaBlock(lines, startLine, endLine)
+		entities = append(entities, Entity{
+			Kind:        "function",
+			Name:        name,
+			Signature:   signature,
+			StartLine:   startLine,
+			EndLine:     endLine,
+			BodyHash:    hash(normalize(block)),
+			Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+		})
+	}
+	return entities
+}
+
+func luaBlock(lines []string, startLine, endLine int) string {
+	if startLine < 1 {
+		startLine = 1
+	}
+	if endLine < startLine {
+		endLine = startLine
+	}
+	if endLine > len(lines) {
+		endLine = len(lines)
+	}
+	if startLine > len(lines) || endLine < startLine {
+		return ""
+	}
+	return strings.Join(lines[startLine-1:endLine], "\n")
+}
+
+func luaFunctionEndLine(lines []string, startLine int) int {
+	depth := 0
+	for i := startLine - 1; i < len(lines); i++ {
+		code := stripLuaLineForBlockScan(lines[i])
+		previous := ""
+		for _, match := range luaBlockTokenPattern.FindAllStringSubmatch(code, -1) {
+			if len(match) < 2 {
+				continue
+			}
+			token := match[1]
+			switch token {
+			case "function", "if", "for", "while", "repeat":
+				depth++
+			case "do":
+				if previous != "for" && previous != "while" {
+					depth++
+				}
+			case "end", "until":
+				depth--
+				if depth <= 0 {
+					return i + 1
+				}
+			}
+			previous = token
+		}
+	}
+	return len(lines)
+}
+
+func stripLuaLineForBlockScan(line string) string {
+	bytes := []byte(line)
+	quote := byte(0)
+	for i := 0; i < len(bytes); i++ {
+		if quote != 0 {
+			if bytes[i] == '\\' {
+				i++
+				continue
+			}
+			if bytes[i] == quote {
+				quote = 0
+			}
+			bytes[i] = ' '
+			continue
+		}
+		switch bytes[i] {
+		case '"', '\'':
+			quote = bytes[i]
+			bytes[i] = ' '
+		case '-':
+			if i+1 < len(bytes) && bytes[i+1] == '-' {
+				for j := i; j < len(bytes); j++ {
+					bytes[j] = ' '
+				}
+				return string(bytes)
+			}
+		}
+	}
+	return string(bytes)
+}
+
+func objectiveCMethodEntities(content string) []Entity {
+	lines := strings.SplitAfter(content, "\n")
+	offsets := make([]int, len(lines))
+	offset := 0
+	for i, line := range lines {
+		offsets[i] = offset
+		offset += len(line)
+	}
+
+	var entities []Entity
+	for i := 0; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(trimmed, "- (") && !strings.HasPrefix(trimmed, "+ (") {
+			continue
+		}
+		startLine := i + 1
+		startByte := offsets[i] + strings.Index(lines[i], strings.TrimLeft(lines[i], " \t"))
+		headerParts := []string{strings.TrimSpace(strings.TrimRight(lines[i], "\r\n"))}
+		openByte := -1
+		prototype := false
+		for j := i; j < len(lines) && j < i+40; j++ {
+			if j > i {
+				headerParts = append(headerParts, strings.TrimSpace(strings.TrimRight(lines[j], "\r\n")))
+			}
+			line := lines[j]
+			brace := strings.IndexByte(line, '{')
+			semi := strings.IndexByte(line, ';')
+			if semi >= 0 && (brace < 0 || semi < brace) {
+				prototype = true
+				break
+			}
+			if brace >= 0 {
+				openByte = offsets[j] + brace
+				break
+			}
+		}
+		if prototype || openByte < 0 {
+			continue
+		}
+		header := strings.Join(headerParts, " ")
+		name := objectiveCMethodHeaderName(header)
+		if name == "" {
+			continue
+		}
+		endLine := startLine
+		closeByte := matchingDelimiterOffset(content, openByte, '{', '}')
+		if closeByte >= 0 {
+			endLine = countLinesBefore(content, closeByte) + 1
+		}
+		signature := strings.TrimSpace(strings.TrimSuffix(header[:strings.Index(header, "{")+1], "{"))
+		blockEnd := minInt(len(content), openByte+1)
+		if closeByte >= 0 {
+			blockEnd = closeByte + 1
+		}
+		block := content[startByte:blockEnd]
+		entities = append(entities, Entity{
+			Kind:        "method",
+			Name:        name,
+			Signature:   signature,
+			StartLine:   startLine,
+			EndLine:     endLine,
+			BodyHash:    hash(normalize(block)),
+			Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+		})
+	}
+	return entities
+}
+
+func objectiveCMethodHeaderName(header string) string {
+	closeReturnType := strings.IndexByte(header, ')')
+	if closeReturnType < 0 || closeReturnType+1 >= len(header) {
+		return ""
+	}
+	rest := header[closeReturnType+1:]
+	match := objectiveCMethodNamePattern.FindStringSubmatch(rest)
+	if len(match) < 2 {
+		return ""
+	}
+	return match[1]
 }
 
 func appendMissingEntities(entities []Entity, candidates ...Entity) []Entity {
