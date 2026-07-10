@@ -1135,6 +1135,19 @@ func TestPythonDottedCallModulesDoesNotDuplicateResolvedTail(t *testing.T) {
 	}
 }
 
+func TestPythonDottedCallModulesUseAddressedParentForDeepImports(t *testing.T) {
+	got := pythonDottedCallImportedNames(
+		"pkg.sub.fn()\npkg.sub.mod.call()\n",
+		map[string][]string{"pkg": {"pkg.sub.mod"}},
+	)
+	if want := []string{"pkg.sub"}; !reflect.DeepEqual(got["fn"], want) {
+		t.Fatalf("pkg.sub.fn() modules = %#v, want %#v", got["fn"], want)
+	}
+	if want := []string{"pkg.sub.mod"}; !reflect.DeepEqual(got["call"], want) {
+		t.Fatalf("pkg.sub.mod.call() modules = %#v, want %#v", got["call"], want)
+	}
+}
+
 func TestPythonDottedImportedCallsAllowSingleSelectorAlias(t *testing.T) {
 	got := pythonDottedCallImportedNames(
 		"json.dumps({})\nok = path.isdir(dst)\nsvc.run()\n# leak.call()\n\"\"\"leak.call()\"\"\"\n",
@@ -1197,6 +1210,20 @@ func TestDartSetterAssignmentCallsAllowDollarSetterNames(t *testing.T) {
 	got := dartSetterAssignmentCalls("obj._$field = value;\n")
 	if len(got) != 1 || got[0].Receiver != "obj" || got[0].Method != "_$field" {
 		t.Fatalf("dartSetterAssignmentCalls() = %#v, want obj._$field", got)
+	}
+}
+
+func TestDartSetterAssignmentCallsIgnoreMultilineStrings(t *testing.T) {
+	got := dartSetterAssignmentCalls(`final text = '''
+obj.fake = 1;
+''';
+real.value = 2;
+final raw = r"""
+raw.fake = 3;
+""";
+`)
+	if len(got) != 1 || got[0].Receiver != "real" || got[0].Method != "value" {
+		t.Fatalf("dartSetterAssignmentCalls() = %#v, want real.value only", got)
 	}
 }
 

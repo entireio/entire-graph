@@ -130,12 +130,23 @@ func pythonDottedCallModules(alias string, tail []string, imported []string) []s
 		if module == "" {
 			continue
 		}
-		add(module)
 		if len(tail) > 0 && !strings.Contains(module, "/") {
 			tailSpec := strings.Join(tail, ".")
-			if module == alias || !strings.HasSuffix(module, "."+tailSpec) {
-				add(module + "." + tailSpec)
+			selectorModule := alias + "." + tailSpec
+			switch {
+			case module == alias:
+				add(selectorModule)
+			case module == selectorModule || strings.HasPrefix(module, selectorModule+"."):
+				add(selectorModule)
+			case strings.Split(module, ".")[0] != alias:
+				if strings.HasSuffix(module, "."+tailSpec) {
+					add(module)
+				} else {
+					add(module + "." + tailSpec)
+				}
 			}
+		} else {
+			add(module)
 		}
 		if pythonOSPathDottedCall(alias, tail, module) {
 			add("genericpath")
