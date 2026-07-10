@@ -2674,11 +2674,12 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 				}
 				if len(dottedCallImportsByName) > 0 {
+					dottedImports := make(map[string][]string, len(dottedCallImportsByName))
 					for _, name := range sortedKeysOf(dottedCallImportsByName) {
 						if name == from.Name {
 							continue
 						}
-						dottedImports := map[string][]string{name: dottedCallImportsByName[name]}
+						dottedImports[name] = dottedCallImportsByName[name]
 						targets := resolveImportedCallTargets(name, from, symbolsByShortName[name], dottedImports, false)
 						for _, to := range targets {
 							relType := "CALLS"
