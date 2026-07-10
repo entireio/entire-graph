@@ -12208,12 +12208,16 @@ func TestPerlLocalVarTypesIgnoreArgumentReceiverChains(t *testing.T) {
 	types := perlLocalVarTypes(`$url = Mojo::URL->new;
 $path = $url->base($req->url->base->clone);
 $base = $url->base($req->url)->userinfo;
+$mixed = $url->base($req) + $other->x;
 `)
 	if got := types["path"]; got != "" {
 		t.Fatalf("single outer receiver call with nested argument chain inferred path type %q from %#v", got, types)
 	}
 	if got := types["base"]; got != "Mojo::URL" {
 		t.Fatalf("multi-hop outer fluent assignment inferred base type %q from %#v", got, types)
+	}
+	if got := types["mixed"]; got != "" {
+		t.Fatalf("mixed expression inferred fluent type %q from %#v", got, types)
 	}
 }
 

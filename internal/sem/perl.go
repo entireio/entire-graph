@@ -73,7 +73,7 @@ func perlLocalVarTypes(block string) map[string]string {
 			// same-object assignments. This covers idioms such as
 			// `$base = $url->base(...)->base->userinfo(...)` without typing
 			// single-hop value getters like `$path = $url->path`.
-			if len(perlReceiverSegmentRe.FindAllStringSubmatch(maskPerlParenthesizedArgumentContents(chain), -1)) < 2 {
+			if !perlOuterReceiverChainOnly(chain) {
 				continue
 			}
 			out[dst] = receiverType
@@ -117,6 +117,46 @@ func stripPerlCodeLiteralsAndComments(content string) string {
 		}
 	}
 	return string(bytes)
+}
+
+func perlOuterReceiverChainOnly(chain string) bool {
+	masked := maskPerlParenthesizedArgumentContents(chain)
+	i := 0
+	segments := 0
+	for {
+		for i < len(masked) && (masked[i] == ' ' || masked[i] == '\t') {
+			i++
+		}
+		if !strings.HasPrefix(masked[i:], "->") {
+			break
+		}
+		i += 2
+		for i < len(masked) && (masked[i] == ' ' || masked[i] == '\t') {
+			i++
+		}
+		if i >= len(masked) || !perlIdentStartByte(masked[i]) {
+			return false
+		}
+		i++
+		for i < len(masked) && isASCIIIdentifierByte(masked[i]) {
+			i++
+		}
+		for i < len(masked) && (masked[i] == ' ' || masked[i] == '\t') {
+			i++
+		}
+		if i < len(masked) && masked[i] == '(' {
+			close := findMatchingStaticDelimiter(masked, i, '(', ')')
+			if close < 0 {
+				return false
+			}
+			i = close + 1
+		}
+		segments++
+	}
+	for i < len(masked) && (masked[i] == ' ' || masked[i] == '\t') {
+		i++
+	}
+	return i == len(masked) && segments >= 2
 }
 
 func maskPerlParenthesizedArgumentContents(content string) string {
@@ -253,6 +293,10 @@ func perlRegexOpeningDelimiter(delimiter byte) bool {
 
 func perlIdentByte(ch byte) bool {
 	return ch == '_' || ch >= '0' && ch <= '9' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z'
+}
+
+func perlIdentStartByte(ch byte) bool {
+	return ch == '_' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z'
 }
 
 func perlCallableForType(typeName, method string, candidates []SymbolRecord) (SymbolRecord, bool) {
