@@ -12109,6 +12109,8 @@ $value =~ s/#/x/;
 $value =~ s{#}{x}; $obj->method;
 $value =~ m{#};
 $value =~ /#/;
+/#/; $obj->implicit;
+if (/#/) { $obj->grouped; }
 $obj->real; foo()# $obj->fake
 $value = $maybe // $fallback;
 $base = $url->base # ->userinfo
@@ -12128,6 +12130,12 @@ $base = $url->base # ->userinfo
 	if !strings.Contains(stripped, "/#/") {
 		t.Fatalf("Perl binding regex hash was masked: %q", stripped)
 	}
+	if !strings.Contains(stripped, "$obj->implicit") {
+		t.Fatalf("Perl expression-start regex hash masked following code: %q", stripped)
+	}
+	if !strings.Contains(stripped, "$obj->grouped") {
+		t.Fatalf("Perl grouped regex hash masked following code: %q", stripped)
+	}
 	if !strings.Contains(stripped, "// $fallback") {
 		t.Fatalf("Perl defined-or operator was masked: %q", stripped)
 	}
@@ -12140,6 +12148,34 @@ $base = $url->base # ->userinfo
 	calls := perlReceiverCalls(`$value =~ s{#}{x}; $obj->method;`)
 	if len(calls) != 1 || calls[0].Receiver != "obj" || calls[0].Method != "method" {
 		t.Fatalf("Perl receiver call after brace-delimited regex was masked: %#v", calls)
+	}
+}
+
+func TestPerlReceiverChainsIgnoreArgumentReceiverChains(t *testing.T) {
+	calls := perlReceiverCalls(`$url->base($req->url->base->clone);
+$url->base($req->url)->userinfo;
+`)
+	if len(calls) != 2 {
+		t.Fatalf("perlReceiverCalls() = %#v, want two outer calls", calls)
+	}
+	if calls[0].Receiver != "url" || calls[0].Method != "base" {
+		t.Fatalf("single outer call used nested argument receiver segment: %#v", calls[0])
+	}
+	if calls[1].Receiver != "url" || calls[1].Method != "userinfo" {
+		t.Fatalf("multi-hop outer call not preserved: %#v", calls[1])
+	}
+}
+
+func TestPerlLocalVarTypesIgnoreArgumentReceiverChains(t *testing.T) {
+	types := perlLocalVarTypes(`$url = Mojo::URL->new;
+$path = $url->base($req->url->base->clone);
+$base = $url->base($req->url)->userinfo;
+`)
+	if got := types["path"]; got != "" {
+		t.Fatalf("single outer receiver call with nested argument chain inferred path type %q from %#v", got, types)
+	}
+	if got := types["base"]; got != "Mojo::URL" {
+		t.Fatalf("multi-hop outer fluent assignment inferred base type %q from %#v", got, types)
 	}
 }
 

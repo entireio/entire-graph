@@ -22,7 +22,8 @@ func perlReceiverCalls(block string) []receiverCall {
 	seen := map[string]bool{}
 	for _, loc := range perlReceiverChainRe.FindAllStringIndex(stripped, -1) {
 		chain := stripped[loc[0]:loc[1]]
-		segments := perlReceiverSegmentRe.FindAllStringSubmatch(chain, -1)
+		topLevelChain := maskPerlParenthesizedArgumentContents(chain)
+		segments := perlReceiverSegmentRe.FindAllStringSubmatch(topLevelChain, -1)
 		if len(segments) == 0 {
 			continue
 		}
@@ -30,7 +31,7 @@ func perlReceiverCalls(block string) []receiverCall {
 		if method == "" || method == "new" {
 			continue
 		}
-		receiver := strings.TrimSpace(strings.SplitN(chain, "->", 2)[0])
+		receiver := strings.TrimSpace(strings.SplitN(topLevelChain, "->", 2)[0])
 		receiver = strings.TrimPrefix(receiver, "$")
 		if receiver == "" {
 			continue
@@ -72,7 +73,7 @@ func perlLocalVarTypes(block string) map[string]string {
 			// same-object assignments. This covers idioms such as
 			// `$base = $url->base(...)->base->userinfo(...)` without typing
 			// single-hop value getters like `$path = $url->path`.
-			if len(perlReceiverSegmentRe.FindAllStringSubmatch(chain, -1)) < 2 {
+			if len(perlReceiverSegmentRe.FindAllStringSubmatch(maskPerlParenthesizedArgumentContents(chain), -1)) < 2 {
 				continue
 			}
 			out[dst] = receiverType
@@ -118,6 +119,34 @@ func stripPerlCodeLiteralsAndComments(content string) string {
 	return string(bytes)
 }
 
+func maskPerlParenthesizedArgumentContents(content string) string {
+	bytes := []byte(content)
+	depth := 0
+	start := -1
+	for i, ch := range bytes {
+		switch ch {
+		case '(':
+			if depth == 0 {
+				start = i + 1
+			}
+			depth++
+		case ')':
+			if depth == 0 {
+				continue
+			}
+			depth--
+			if depth == 0 && start >= 0 {
+				maskBytes(bytes, start, i)
+				start = -1
+			}
+		}
+	}
+	if depth > 0 && start >= 0 {
+		maskBytes(bytes, start, len(bytes))
+	}
+	return string(bytes)
+}
+
 func perlHashStartsComment(bytes []byte, pos int) bool {
 	if pos == 0 {
 		return true
@@ -147,6 +176,9 @@ func perlHashStartsRegexLiteral(bytes []byte, pos int) bool {
 	if strings.HasSuffix(prefix, "=~") || strings.HasSuffix(prefix, "!~") {
 		return true
 	}
+	if opener == '/' && perlRegexAtExpressionStart(prefix) {
+		return true
+	}
 	for _, operator := range []string{"qr", "tr", "s", "m", "y"} {
 		if !strings.HasSuffix(prefix, operator) {
 			continue
@@ -157,6 +189,20 @@ func perlHashStartsRegexLiteral(bytes []byte, pos int) bool {
 		}
 	}
 	return false
+}
+
+func perlRegexAtExpressionStart(prefix string) bool {
+	trimmed := strings.TrimSpace(prefix)
+	if trimmed == "" {
+		return true
+	}
+	last := trimmed[len(trimmed)-1]
+	switch last {
+	case '(', '[', '{', ',', ';', '=', '!', '~', '?', ':':
+		return true
+	default:
+		return false
+	}
 }
 
 func perlRegexOpeningDelimiter(delimiter byte) bool {
