@@ -122,13 +122,54 @@ func perlHashStartsComment(bytes []byte, pos int) bool {
 	if pos == 0 {
 		return true
 	}
-	prev := bytes[pos-1]
-	switch prev {
-	case '\n', '\r', ' ', '\t', ';':
+	if bytes[pos-1] == '$' {
+		return false
+	}
+	if perlHashStartsRegexLiteral(bytes, pos) {
+		return false
+	}
+	return true
+}
+
+func perlHashStartsRegexLiteral(bytes []byte, pos int) bool {
+	if pos == 0 {
+		return false
+	}
+	opener := bytes[pos-1]
+	if !perlRegexOpeningDelimiter(opener) {
+		return false
+	}
+	lineStart := pos - 1
+	for lineStart > 0 && bytes[lineStart-1] != '\n' && bytes[lineStart-1] != '\r' {
+		lineStart--
+	}
+	prefix := strings.TrimRight(string(bytes[lineStart:pos-1]), " \t")
+	if strings.HasSuffix(prefix, "=~") || strings.HasSuffix(prefix, "!~") {
+		return true
+	}
+	for _, operator := range []string{"qr", "tr", "s", "m", "y"} {
+		if !strings.HasSuffix(prefix, operator) {
+			continue
+		}
+		start := len(prefix) - len(operator)
+		if start == 0 || !perlIdentByte(prefix[start-1]) {
+			return true
+		}
+	}
+	return false
+}
+
+func perlRegexOpeningDelimiter(delimiter byte) bool {
+	switch delimiter {
+	case '/', '{', '(', '[', '<':
 		return true
 	default:
 		return false
 	}
+}
+
+func perlIdentByte(ch byte) bool {
+	return ch == '_' || ch >= '0' && ch <= '9' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z'
 }
 
 func perlCallableForType(typeName, method string, candidates []SymbolRecord) (SymbolRecord, bool) {

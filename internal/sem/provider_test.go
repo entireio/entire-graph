@@ -12107,6 +12107,9 @@ func TestPerlCommentStrippingPreservesHashSyntax(t *testing.T) {
 	stripped := stripPerlCodeLiteralsAndComments(`my $last = $#items;
 $value =~ s/#/x/;
 $value =~ s{#}{x}; $obj->method;
+$value =~ m{#};
+$value =~ /#/;
+$obj->real; foo()# $obj->fake
 $value = $maybe // $fallback;
 $base = $url->base # ->userinfo
 `)
@@ -12119,11 +12122,20 @@ $base = $url->base # ->userinfo
 	if !strings.Contains(stripped, "s{#}{x}; $obj->method") {
 		t.Fatalf("Perl brace-delimited regex hash masked following code: %q", stripped)
 	}
+	if !strings.Contains(stripped, "m{#}") {
+		t.Fatalf("Perl match regex hash was masked: %q", stripped)
+	}
+	if !strings.Contains(stripped, "/#/") {
+		t.Fatalf("Perl binding regex hash was masked: %q", stripped)
+	}
 	if !strings.Contains(stripped, "// $fallback") {
 		t.Fatalf("Perl defined-or operator was masked: %q", stripped)
 	}
 	if strings.Contains(stripped, "userinfo") {
 		t.Fatalf("Perl line comment was not masked: %q", stripped)
+	}
+	if strings.Contains(stripped, "fake") {
+		t.Fatalf("Perl trailing line comment was not masked: %q", stripped)
 	}
 	calls := perlReceiverCalls(`$value =~ s{#}{x}; $obj->method;`)
 	if len(calls) != 1 || calls[0].Receiver != "obj" || calls[0].Method != "method" {
