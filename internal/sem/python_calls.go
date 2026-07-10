@@ -25,7 +25,7 @@ func pythonDottedCallImportedNames(block string, importsByName map[string][]stri
 		}
 		name := parts[len(parts)-1]
 		tail := parts[1 : len(parts)-1]
-		if len(tail) == 0 {
+		if len(tail) == 0 && !pythonSingleSelectorAliasCall(alias, imported) {
 			continue
 		}
 		for _, module := range pythonDottedCallModules(alias, tail, imported) {
@@ -55,6 +55,19 @@ func pythonDottedPathParts(path string) []string {
 		parts = append(parts, part)
 	}
 	return parts
+}
+
+func pythonSingleSelectorAliasCall(alias string, imported []string) bool {
+	for _, module := range imported {
+		module = strings.TrimSpace(module)
+		if module == "" {
+			continue
+		}
+		if module != alias || pythonOSPathDottedCall(alias, nil, module) {
+			return true
+		}
+	}
+	return false
 }
 
 func pythonDottedCallModules(alias string, tail []string, imported []string) []string {

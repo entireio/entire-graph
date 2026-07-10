@@ -1135,6 +1135,26 @@ func TestPythonDottedCallModulesDoesNotDuplicateResolvedTail(t *testing.T) {
 	}
 }
 
+func TestPythonDottedImportedCallsAllowSingleSelectorAlias(t *testing.T) {
+	got := pythonDottedCallImportedNames(
+		"json.dumps({})\nok = path.isdir(dst)\nsvc.run()\n",
+		map[string][]string{
+			"json": {"json"},
+			"path": {"os"},
+			"svc":  {"acme_pkg.service"},
+		},
+	)
+	if _, ok := got["dumps"]; ok {
+		t.Fatalf("plain import json; json.dumps() should not synthesize a bare dumps hint: %#v", got)
+	}
+	if !slices.Contains(got["isdir"], "genericpath") {
+		t.Fatalf("path.isdir() did not include genericpath hint: %#v", got)
+	}
+	if !slices.Contains(got["run"], "acme_pkg.service") {
+		t.Fatalf("svc.run() did not include imported module hint: %#v", got)
+	}
+}
+
 func TestPythonDottedImportedModuleCallsResolveToLocalSymbols(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "src/acme_pkg/__init__.py", "")
@@ -1166,6 +1186,13 @@ def copy2(src, dst):
 	}
 	if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", "copy2", "Lib/shutil.py", "isdir", "Lib/genericpath.py") {
 		t.Fatalf("missing os.path.isdir -> genericpath.isdir call: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func TestDartSetterAssignmentCallsAllowDollarSetterNames(t *testing.T) {
+	got := dartSetterAssignmentCalls("obj._$field = value;\n")
+	if len(got) != 1 || got[0].Receiver != "obj" || got[0].Method != "_$field" {
+		t.Fatalf("dartSetterAssignmentCalls() = %#v, want obj._$field", got)
 	}
 }
 

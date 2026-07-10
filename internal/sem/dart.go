@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-var dartSetterAssignmentRe = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_$]*)\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*=`)
+var dartSetterAssignmentRe = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_$]*)\s*\.\s*([A-Za-z_][A-Za-z0-9_$]*)\s*=`)
 
 func dartSetterAssignmentCalls(block string) []receiverCall {
 	stripped := stripCodeLiteralsAndComments(block)
