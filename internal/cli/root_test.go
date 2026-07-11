@@ -243,6 +243,41 @@ func TestSnapshotAcceptsWorktree(t *testing.T) {
 	}
 }
 
+func TestSearchCommandReturnsRankedJSON(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "auth.py", `def validate_token(token):
+    """Validate a signed authentication token."""
+    return bool(token)
+`)
+
+	var out bytes.Buffer
+	err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{
+		"search",
+		"--repo", repo,
+		"--query", "validate authentication token",
+		"--format", "json",
+		"--profile", "syntax-only",
+		"--worktree",
+		"--top-k", "3",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Results []struct {
+			Rank       int    `json:"rank"`
+			FilePath   string `json:"file_path"`
+			SymbolName string `json:"symbol_name"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		t.Fatalf("invalid search JSON: %v\n%s", err, out.String())
+	}
+	if len(response.Results) == 0 || response.Results[0].Rank != 1 || response.Results[0].FilePath != "auth.py" || response.Results[0].SymbolName != "validate_token" {
+		t.Fatalf("search response = %#v", response)
+	}
+}
+
 func TestProviderCommandsAcceptIgnoreFile(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, ".brainignore", "ignored/\n")
