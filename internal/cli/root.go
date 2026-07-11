@@ -98,7 +98,7 @@ Usage:
   entire sem snapshot --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
   entire sem symbols --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
   entire sem edges --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
-  entire sem search --query "issue or concept" --repo . [--format json|ndjson|text] [--top-k 20] [--head] [--profile syntax-only|fast|full] [--max-indexed-files 96|--index-all-files] [--cache-dir path|--no-cache]`)
+  entire sem search --query "issue or concept" --repo . [--format json|ndjson|text] [--top-k 20] [--max-context-bytes 16384] [--head] [--profile syntax-only|fast|full] [--max-indexed-files 96|--index-all-files] [--cache-dir path|--no-cache]`)
 }
 
 func runDoctor(ctx context.Context, opts Options, args []string) error {

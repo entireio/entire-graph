@@ -209,7 +209,9 @@ semantic graph rather than human-oriented diff text.
 - `symbols --format ndjson` emits the same header followed by symbol records.
 - `edges --format ndjson` emits the same header followed by relation records.
 - `search --query ...` emits ranked, qrel-blind source regions as JSON, NDJSON,
-  or text without network access or a hosted model.
+  or text without network access or a hosted model. Search output is bounded to
+  16 KiB of serialized result context by default; use `--max-context-bytes 0`
+  for an unbounded diagnostic ranking.
 
 Snapshot headers include the schema version, provider version, repository key,
 `HEAD` commit and tree when available, parsed languages, capability labels,

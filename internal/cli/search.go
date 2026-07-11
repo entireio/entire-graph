@@ -28,6 +28,7 @@ type searchFlags struct {
 	DisableCache      bool
 	MaxIndexedFiles   int
 	IndexAllFiles     bool
+	MaxContextBytes   int
 }
 
 func runSearch(ctx context.Context, opts Options, args []string) error {
@@ -67,6 +68,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		DisableCache:      flags.DisableCache,
 		MaxIndexedFiles:   flags.MaxIndexedFiles,
 		IndexAllFiles:     flags.IndexAllFiles,
+		MaxContextBytes:   flags.MaxContextBytes,
 	})
 	if err != nil {
 		return err
@@ -124,7 +126,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 }
 
 func parseSearchFlags(args []string) (searchFlags, []string, error) {
-	flags := searchFlags{Format: "json", Profile: "syntax-only", Worktree: true}
+	flags := searchFlags{Format: "json", Profile: "syntax-only", Worktree: true, MaxContextBytes: 16 * 1024}
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -210,6 +212,12 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 			flags.MaxIndexedFiles, i = value, next
 		case "--index-all-files":
 			flags.IndexAllFiles = true
+		case "--max-context-bytes":
+			value, next, err := searchNonNegativeIntFlag(args, i)
+			if err != nil {
+				return flags, nil, err
+			}
+			flags.MaxContextBytes, i = value, next
 		case "--worktree", "--no-network":
 			if args[i] == "--worktree" {
 				flags.Worktree = true

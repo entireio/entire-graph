@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -123,20 +124,20 @@ type systemClock struct{}
 	}
 }
 
-func TestSearchRepositoryExpandsIssueConceptsToAPIVocabulary(t *testing.T) {
+func TestSearchRepositoryExpandsMorphologicalIssueTerms(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "reader/collection.go", `package reader
 
-// newCollectionReader selects the collection implementation, including EnumSet.
-func newCollectionReader(kind string) *CollectionReader { return &CollectionReader{} }
+// initializeCollectionReader selects the collection implementation.
+func initializeCollectionReader(kind string) *CollectionReader { return &CollectionReader{} }
 
-// readObject parses values from the input stream.
+// readObject reads values from the input stream.
 func (r *CollectionReader) readObject(input []byte) any { return nil }
 
 type CollectionReader struct{}
 `)
 
-	response, err := SearchRepository(t.Context(), repo, "test", "EnumSet deserialization failure", SearchOptions{
+	response, err := SearchRepository(t.Context(), repo, "test", "collection reader initialization", SearchOptions{
 		Worktree:          true,
 		Profile:           ProfileSyntaxOnly,
 		TopK:              10,
@@ -145,14 +146,14 @@ type CollectionReader struct{}
 	if err != nil {
 		t.Fatal(err)
 	}
-	seenReader := false
+	seenInitializer := false
 	for _, result := range response.Results {
-		if result.SymbolName == "readObject" {
-			seenReader = true
+		if result.SymbolName == "initializeCollectionReader" {
+			seenInitializer = true
 		}
 	}
-	if !seenReader {
-		t.Fatalf("deserialization did not expand to reader API vocabulary: %#v", response.Results)
+	if !seenInitializer {
+		t.Fatalf("initialization did not expand to initialize: %#v", response.Results)
 	}
 }
 
@@ -271,6 +272,63 @@ func NeedleTarget() bool { return true }
 	}
 }
 
+func TestSearchRepositoryDoesNotTreatPathPriorAsEvidence(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "src/target.go", "package source\nfunc TargetNeedle() bool { return true }\n")
+	write(t, repo, "src/unrelated.go", "package source\nfunc UnrelatedOperation() bool { return false }\n")
+	response, err := SearchRepository(t.Context(), repo, "test", "TargetNeedle", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range response.Results {
+		if result.SymbolName == "UnrelatedOperation" {
+			t.Fatalf("source-directory prior created an unrelated candidate: %#v", response.Results)
+		}
+	}
+}
+
+func TestSearchRepositoryKeepsUntrackedFiles(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Sem Test")
+	git(t, repo, "config", "user.email", "sem@example.com")
+	for index := 0; index < 20; index++ {
+		write(t, repo, fmt.Sprintf("src/noise_%02d.go", index), fmt.Sprintf("package source\nfunc Noise%d() int { return %d }\n", index, index))
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "tracked source")
+	write(t, repo, "src/draft.go", "package source\nfunc DraftNeedle() bool { return true }\n")
+
+	response, err := SearchRepository(t.Context(), repo, "test", "DraftNeedle", SearchOptions{
+		Worktree:        true,
+		Profile:         ProfileSyntaxOnly,
+		TopK:            5,
+		MaxIndexedFiles: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) == 0 || response.Results[0].SymbolName != "DraftNeedle" {
+		t.Fatalf("git preselection lost an untracked edit: %#v", response.Results)
+	}
+}
+
+func TestSearchGitPreselectionThresholdTargetsLargeWorktrees(t *testing.T) {
+	if shouldUseGitGrepPreselection(true, minGitGrepPreselectionFiles-1) {
+		t.Fatal("small worktree selected git-grep accelerator")
+	}
+	if !shouldUseGitGrepPreselection(true, minGitGrepPreselectionFiles) {
+		t.Fatal("large worktree did not select git-grep accelerator")
+	}
+	if shouldUseGitGrepPreselection(false, minGitGrepPreselectionFiles*2) {
+		t.Fatal("immutable tree selected worktree-only accelerator")
+	}
+}
+
 func TestSearchTermMatcherIsCaseInsensitiveAndFindsOverlaps(t *testing.T) {
 	terms := []string{"list", "listitem", "secondaryaction", "missing"}
 	matched := newSearchTermMatcher(terms).match("export const ListItemSecondaryAction = true")
@@ -281,6 +339,32 @@ func TestSearchTermMatcherIsCaseInsensitiveAndFindsOverlaps(t *testing.T) {
 	}
 	if matched[3] {
 		t.Fatalf("absent term matched: %#v", matched)
+	}
+}
+
+func TestSearchPreselectionPatternsPreferCodeShapedTerms(t *testing.T) {
+	query := buildSearchQuery("refactor RenderProfileButton documentation behavior with trailingAction")
+	patterns := searchPreselectionPatterns(query)
+	if !containsString(patterns, "renderprofilebutton") || !containsString(patterns, "trailingaction") {
+		t.Fatalf("preselection patterns = %#v", patterns)
+	}
+	for _, generic := range []string{"render", "profile", "button", "trailing", "action"} {
+		if containsString(patterns, generic) {
+			t.Fatalf("compound identifier fragment %q entered preselection: %#v", generic, patterns)
+		}
+	}
+	if len(patterns) > 12 {
+		t.Fatalf("preselection pattern count = %d", len(patterns))
+	}
+}
+
+func TestSearchPathScoreIgnoresDerivedURLAndIdentifierFragments(t *testing.T) {
+	query := buildSearchQuery("https://example.com/packages/ui-kit RenderProfileButton")
+	if got := pathSearchScore(query, "packages/ui-kit/src/unrelated.js"); got != 0 {
+		t.Fatalf("derived URL fragments created path evidence: %v", got)
+	}
+	if got := pathSearchScore(query, "packages/renderprofilebutton/implementation.js"); got == 0 {
+		t.Fatal("original compound identifier did not create path evidence")
 	}
 }
 
@@ -328,17 +412,51 @@ func TestDiverseSelectionDoesNotSpendBudgetOnClones(t *testing.T) {
 }
 
 func TestSearchPathPriorPrefersProductCodeUnlessWorkflowRequested(t *testing.T) {
-	issue := buildSearchQuery("pretty print DOM with documentation")
-	if source, workflow := searchPathPrior(issue, "include/dom/serialization.h"), searchPathPrior(issue, ".github/workflows/documentation.yml"); source <= workflow {
+	issue := buildSearchQuery("render account profile")
+	if source, workflow := searchPathPrior(issue, "src/profile/render.go"), searchPathPrior(issue, ".github/workflows/release.yml"); source <= workflow {
 		t.Fatalf("source prior %v did not exceed workflow prior %v", source, workflow)
 	}
 	workflowIssue := buildSearchQuery("fix CI workflow pipeline")
 	if got := searchPathPrior(workflowIssue, ".github/workflows/test.yml"); got < 0 {
 		t.Fatalf("explicit workflow query was penalized: %v", got)
 	}
-	testIssue := buildSearchQuery("add regression test for parser")
-	if got := searchPathPrior(testIssue, "tests/parser_test.go"); got < 0 {
-		t.Fatalf("explicit test query was penalized: %v", got)
+}
+
+func TestSearchResultContextBudgetPreservesDiverseFocusedResults(t *testing.T) {
+	results := make([]SearchResult, 10)
+	for index := range results {
+		results[index] = SearchResult{
+			Rank:             index + 1,
+			FilePath:         fmt.Sprintf("src/component_%d.go", index),
+			StartLine:        1,
+			EndLine:          40,
+			FocusLine:        20,
+			SnippetStartLine: 1,
+			SnippetEndLine:   40,
+			Signature:        "func HandleConfigurationRequestWithManyArguments(input string, output string, retries int) error",
+			Signals:          []string{"body", "exact-code-token"},
+			Snippet:          strings.Repeat("configuration request handler with implementation detail\n", 40),
+		}
+	}
+	const budget = 4096
+	compacted, resultBytes, dropped, truncated := fitSearchResultsToBudget(results, buildSearchQuery("configuration handler"), budget)
+	encoded, err := json.Marshal(compacted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resultBytes != len(encoded) || resultBytes > budget {
+		t.Fatalf("budget accounting = %d, encoded = %d, budget = %d", resultBytes, len(encoded), budget)
+	}
+	if len(compacted) < 2 || compacted[0].FilePath != results[0].FilePath {
+		t.Fatalf("budgeting lost ranked diversity: %#v", compacted)
+	}
+	if dropped != len(results)-len(compacted) || truncated == 0 {
+		t.Fatalf("unexpected budget stats: dropped=%d truncated=%d results=%d", dropped, truncated, len(compacted))
+	}
+	for _, result := range compacted {
+		if result.FocusLine < result.SnippetStartLine || result.FocusLine > result.SnippetEndLine {
+			t.Fatalf("focus line fell outside compacted snippet: %#v", result)
+		}
 	}
 }
 

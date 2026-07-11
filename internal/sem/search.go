@@ -2,6 +2,7 @@ package sem
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"github.com/entireio/entire-sem/internal/gitutil"
 )
 
 const (
@@ -23,6 +26,7 @@ const (
 	defaultSearchMaxRegionsPerFile = 3
 	defaultSearchMaxIndexedFiles   = 96
 	maxSearchQueryTerms            = 48
+	minGitGrepPreselectionFiles    = 10_000
 )
 
 // SearchOptions controls local issue-to-code retrieval. Search reads the same
@@ -42,6 +46,7 @@ type SearchOptions struct {
 	DisableCache      bool
 	MaxIndexedFiles   int
 	IndexAllFiles     bool
+	MaxContextBytes   int
 }
 
 // SearchResult is a ranked source region suitable for direct agent context.
@@ -66,11 +71,16 @@ type SearchResult struct {
 
 type SearchStats struct {
 	FilesScanned       int   `json:"files_scanned"`
+	FilesContentRead   int   `json:"files_content_read_during_preselection"`
 	FilesIndexed       int   `json:"files_indexed"`
 	SymbolsConsidered  int   `json:"symbols_considered"`
 	LexicalCandidates  int   `json:"lexical_candidates"`
 	GraphCandidates    int   `json:"graph_candidates"`
 	CandidatesSelected int   `json:"candidates_selected"`
+	ResultBytes        int   `json:"result_bytes"`
+	ContextBudgetBytes int   `json:"context_budget_bytes,omitempty"`
+	ResultsDropped     int   `json:"results_dropped_by_budget,omitempty"`
+	SnippetsTruncated  int   `json:"snippets_truncated_by_budget,omitempty"`
 	IndexCacheHit      bool  `json:"index_cache_hit"`
 	IndexLatencyMS     int64 `json:"index_latency_ms"`
 	SearchLatencyMS    int64 `json:"search_latency_ms"`
@@ -117,29 +127,6 @@ var searchStopWords = map[string]bool{
 	"with": true, "without": true,
 }
 
-// Issue descriptions use prose where APIs use terse verbs. These generic
-// concept expansions carry less weight than terms the user supplied.
-var searchConceptTerms = map[string][]string{
-	"authentication":  {"auth", "login", "credential"},
-	"configuration":   {"config", "option", "setting"},
-	"deserialization": {"deserialize", "reader", "read", "parse", "decode"},
-	"directory":       {"dir", "cwd", "folder", "path"},
-	"disabled":        {"disable", "off"},
-	"documentation":   {"docs", "doc", "readme"},
-	"enabled":         {"enable", "on"},
-	"failure":         {"fail", "error"},
-	"indentation":     {"indent", "spacing"},
-	"initialization":  {"initialize", "init", "create"},
-	"lookup":          {"resolve", "resolver", "resolution"},
-	"minified":        {"minify", "compact"},
-	"nonexistent":     {"missing", "absent", "exist", "existing", "create"},
-	"pretty":          {"prettify", "prettification", "indent", "formatter", "format", "formatted"},
-	"printing":        {"print", "output", "render"},
-	"serialization":   {"serialize", "writer", "write", "marshal", "encode"},
-	"spaces":          {"space", "spacing"},
-	"validation":      {"validate", "check", "verify"},
-}
-
 // SearchRepository performs local hybrid lexical/semantic retrieval. It uses
 // no qrels, hosted models, embeddings, or network access.
 func SearchRepository(ctx context.Context, repo, providerVersion, query string, options SearchOptions) (SearchResponse, error) {
@@ -173,7 +160,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	searchStarted := time.Now()
 	preselectStarted := time.Now()
-	selectedFiles, discoveredFiles, err := preselectSearchFiles(ctx, repo, q, options)
+	selectedFiles, discoveredFiles, filesContentRead, err := preselectSearchFiles(ctx, repo, q, options)
 	if err != nil {
 		return SearchResponse{}, err
 	}
@@ -190,7 +177,10 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 			Results:  []SearchResult{},
 			Stats: SearchStats{
 				FilesScanned:       discoveredFiles,
+				FilesContentRead:   filesContentRead,
 				FilesIndexed:       0,
+				ResultBytes:        serializedSearchResultBytes([]SearchResult{}),
+				ContextBudgetBytes: options.MaxContextBytes,
 				PreselectLatencyMS: preselectLatency.Milliseconds(),
 				SearchLatencyMS:    time.Since(searchStarted).Milliseconds(),
 			},
@@ -268,6 +258,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 
 	stats := SearchStats{
 		FilesScanned:       discoveredFiles,
+		FilesContentRead:   filesContentRead,
 		FilesIndexed:       len(selectedFiles),
 		SymbolsConsidered:  len(snapshot.Symbols),
 		LexicalCandidates:  len(candidates),
@@ -292,7 +283,12 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		}
 		results = append(results, selected[i].result)
 	}
+	results, resultBytes, dropped, truncated := fitSearchResultsToBudget(results, q, options.MaxContextBytes)
 	stats.CandidatesSelected = len(results)
+	stats.ResultBytes = resultBytes
+	stats.ContextBudgetBytes = options.MaxContextBytes
+	stats.ResultsDropped = dropped
+	stats.SnippetsTruncated = truncated
 	stats.SearchLatencyMS = time.Since(searchStarted).Milliseconds()
 	if results == nil {
 		results = []SearchResult{}
@@ -309,12 +305,119 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}, nil
 }
 
+func fitSearchResultsToBudget(results []SearchResult, q searchQuery, budget int) ([]SearchResult, int, int, int) {
+	originalCount := len(results)
+	if budget <= 0 || len(results) == 0 {
+		return results, serializedSearchResultBytes(results), 0, 0
+	}
+
+	for count := len(results); count > 0; count-- {
+		perResult := maxInt(256, (budget-2-(count-1))/count)
+		compacted := make([]SearchResult, count)
+		truncated := 0
+		for index := range compacted {
+			compacted[index], _ = compactSearchResultToBytes(results[index], q, perResult)
+			if compacted[index].Snippet != results[index].Snippet || compacted[index].Signature != results[index].Signature {
+				truncated++
+			}
+		}
+		resultBytes := serializedSearchResultBytes(compacted)
+		if resultBytes <= budget {
+			return compacted, resultBytes, originalCount - count, truncated
+		}
+	}
+	return []SearchResult{}, serializedSearchResultBytes([]SearchResult{}), originalCount, 0
+}
+
+func compactSearchResultToBytes(result SearchResult, q searchQuery, budget int) (SearchResult, int) {
+	if size := serializedSearchResultBytes(result); size <= budget {
+		return result, size
+	}
+	result.Signature = truncateSearchText(result.Signature, 192, q)
+	if size := serializedSearchResultBytes(result); size <= budget {
+		return result, size
+	}
+
+	lines := strings.Split(result.Snippet, "\n")
+	focus := result.FocusLine - result.SnippetStartLine
+	if focus < 0 || focus >= len(lines) {
+		focus = len(lines) / 2
+	}
+	left, right := focus, focus
+	for {
+		candidate := result
+		candidate.SnippetStartLine = result.SnippetStartLine + left
+		candidate.SnippetEndLine = result.SnippetStartLine + right
+		candidate.Snippet = strings.Join(lines[left:right+1], "\n")
+		size := serializedSearchResultBytes(candidate)
+		if size <= budget {
+			return candidate, size
+		}
+		if left == right {
+			candidate.Snippet = truncateSearchText(candidate.Snippet, maxInt(16, budget/3), q)
+			return candidate, serializedSearchResultBytes(candidate)
+		}
+		if right-focus >= focus-left {
+			right--
+		} else {
+			left++
+		}
+	}
+}
+
+func truncateSearchText(value string, maxBytes int, q searchQuery) string {
+	if maxBytes <= 0 || len(value) <= maxBytes {
+		return value
+	}
+	center := len(value) / 2
+	lower := strings.ToLower(value)
+	for _, term := range q.terms {
+		if index := strings.Index(lower, term); index >= 0 {
+			center = index + len(term)/2
+			break
+		}
+	}
+	window := maxBytes - len(" ... ")
+	if window <= 0 {
+		return ""
+	}
+	start := maxInt(0, center-window/2)
+	end := minInt(len(value), start+window)
+	start = maxInt(0, end-window)
+	for start < end && !utf8RuneStart(value[start]) {
+		start++
+	}
+	for end > start && end < len(value) && !utf8RuneStart(value[end]) {
+		end--
+	}
+	prefix, suffix := "", ""
+	if start > 0 {
+		prefix = "... "
+	}
+	if end < len(value) {
+		suffix = " ..."
+	}
+	return prefix + value[start:end] + suffix
+}
+
+func utf8RuneStart(value byte) bool {
+	return value&0xc0 != 0x80
+}
+
+func serializedSearchResultBytes(value any) int {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return 0
+	}
+	return len(encoded)
+}
+
 type searchFileCandidate struct {
 	path  string
 	score float64
 }
 
-func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, options SearchOptions) ([]string, int, error) {
+func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, options SearchOptions) ([]string, int, int, error) {
 	source, err := prepareSource(ctx, repo, ProviderSnapshotOptions{
 		NoNetwork:    true,
 		Worktree:     options.Worktree,
@@ -322,19 +425,93 @@ func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, optio
 		IncludeFiles: options.IncludeFiles,
 	})
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	if source.close != nil {
 		defer source.close()
 	}
 	if options.IndexAllFiles || len(source.paths) <= options.MaxIndexedFiles {
-		return append([]string(nil), source.paths...), len(source.paths), nil
+		return append([]string(nil), source.paths...), len(source.paths), 0, nil
 	}
 	queryWeight := 0.0
 	for _, weight := range q.weights {
 		queryWeight += weight
 	}
 	matcher := newSearchTermMatcher(q.terms)
+	scanPaths := source.paths
+	if shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
+		matches, grepErr := gitutil.GrepIndexMatches(ctx, source.absRepo, searchPreselectionPatterns(q), 32)
+		tracked, trackedErr := gitutil.ListIndexFiles(ctx, source.absRepo)
+		if grepErr == nil && trackedErr == nil {
+			allowed := make(map[string]bool, len(source.paths))
+			for _, filePath := range source.paths {
+				allowed[filePath] = true
+			}
+			trackedSet := make(map[string]bool, len(tracked))
+			for _, filePath := range tracked {
+				trackedSet[filePath] = true
+			}
+			termMatches := make(map[string][]bool)
+			for _, match := range matches {
+				if !allowed[match.Path] {
+					continue
+				}
+				seen := termMatches[match.Path]
+				if seen == nil {
+					seen = make([]bool, len(q.terms))
+				}
+				for index, matched := range matcher.match(match.Text) {
+					seen[index] = seen[index] || matched
+				}
+				termMatches[match.Path] = seen
+			}
+			provisional := make([]searchFileCandidate, 0, len(termMatches)+16)
+			for filePath, seen := range termMatches {
+				matchedWeight := 0.0
+				for index, matched := range seen {
+					if matched {
+						matchedWeight += q.weights[q.terms[index]]
+					}
+				}
+				pathScore := pathSearchScore(q, filePath)
+				score := 2*pathScore + matchedWeight + searchPathPrior(q, filePath)
+				if queryWeight > 0 {
+					score += 4 * matchedWeight / queryWeight
+				}
+				provisional = append(provisional, searchFileCandidate{path: filePath, score: score})
+			}
+			untracked := make([]string, 0, 16)
+			for _, filePath := range source.paths {
+				if !trackedSet[filePath] {
+					untracked = append(untracked, filePath)
+					continue
+				}
+				if _, exists := termMatches[filePath]; !exists {
+					if pathScore := pathSearchScore(q, filePath); pathScore > 0 {
+						provisional = append(provisional, searchFileCandidate{
+							path:  filePath,
+							score: 2*pathScore + searchPathPrior(q, filePath),
+						})
+					}
+				}
+			}
+			sort.Slice(provisional, func(i, j int) bool {
+				if provisional[i].score != provisional[j].score {
+					return provisional[i].score > provisional[j].score
+				}
+				return provisional[i].path < provisional[j].path
+			})
+			poolLimit := minInt(len(provisional), options.MaxIndexedFiles*4)
+			scanPaths = make([]string, 0, poolLimit+len(untracked))
+			for _, candidate := range provisional[:poolLimit] {
+				scanPaths = append(scanPaths, candidate.path)
+			}
+			scanPaths = append(scanPaths, untracked...)
+			if len(scanPaths) == 0 {
+				scanPaths = source.paths
+			}
+		}
+	}
 	scoreFile := func(filePath string) (searchFileCandidate, bool) {
 		if err := ctx.Err(); err != nil {
 			return searchFileCandidate{}, false
@@ -343,19 +520,19 @@ func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, optio
 		if !ok || strings.IndexByte(content, 0) >= 0 {
 			return searchFileCandidate{}, false
 		}
-		score := 2*pathSearchScore(q, filePath) + searchPathPrior(q, filePath)
+		pathScore := pathSearchScore(q, filePath)
 		matchedWeight := 0.0
 		for index, matched := range matcher.match(content) {
 			if matched {
 				term := q.terms[index]
 				weight := q.weights[term]
-				score += weight
 				matchedWeight += weight
 			}
 		}
-		if score == 0 {
+		if pathScore == 0 && matchedWeight == 0 {
 			return searchFileCandidate{}, false
 		}
+		score := 2*pathScore + matchedWeight + searchPathPrior(q, filePath)
 		if queryWeight > 0 {
 			score += 4 * matchedWeight / queryWeight
 		}
@@ -380,7 +557,7 @@ func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, optio
 		}
 		go func() {
 			defer close(jobs)
-			for _, filePath := range source.paths {
+			for _, filePath := range scanPaths {
 				jobs <- filePath
 			}
 		}()
@@ -392,14 +569,14 @@ func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, optio
 			files = append(files, candidate)
 		}
 	} else {
-		for _, filePath := range source.paths {
+		for _, filePath := range scanPaths {
 			if candidate, ok := scoreFile(filePath); ok {
 				files = append(files, candidate)
 			}
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, len(source.paths), err
+		return nil, len(source.paths), len(scanPaths), err
 	}
 	sort.Slice(files, func(i, j int) bool {
 		if files[i].score != files[j].score {
@@ -414,7 +591,51 @@ func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, optio
 	for i, file := range files {
 		selected[i] = file.path
 	}
-	return selected, len(source.paths), nil
+	return selected, len(source.paths), len(scanPaths), nil
+}
+
+func shouldUseGitGrepPreselection(worktree bool, fileCount int) bool {
+	return worktree && fileCount >= minGitGrepPreselectionFiles
+}
+
+func searchPreselectionPatterns(q searchQuery) []string {
+	patterns := make([]string, 0, 12)
+	seen := make(map[string]bool, cap(patterns))
+	for _, term := range q.terms {
+		if q.weights[term] >= 2 {
+			patterns = append(patterns, term)
+			seen[term] = true
+			if len(patterns) == cap(patterns) {
+				return patterns
+			}
+		}
+	}
+	if len(patterns) == 0 {
+		for _, term := range q.terms {
+			if q.weights[term] >= 1.25 {
+				patterns = append(patterns, term)
+				seen[term] = true
+				if len(patterns) == cap(patterns) {
+					return patterns
+				}
+			}
+		}
+	}
+	target := cap(patterns)
+	if len(patterns) > 0 {
+		target = minInt(target, len(patterns)+4)
+	}
+	for _, term := range q.terms {
+		if q.weights[term] != 1 || seen[term] {
+			continue
+		}
+		patterns = append(patterns, term)
+		seen[term] = true
+		if len(patterns) == target {
+			break
+		}
+	}
+	return patterns
 }
 
 func candidatesForFile(q searchQuery, filePath, language string, lines []string, symbols []SymbolRecord, options SearchOptions) []searchCandidate {
@@ -537,9 +758,10 @@ func makeSearchCandidate(q searchQuery, filePath, language string, lines []strin
 	}
 	snippetStart, snippetEnd := focusedSnippetRegion(start, end, focus, maxSnippetLines)
 	snippet := strings.Join(lines[snippetStart-1:snippetEnd], "\n")
-	base := pathSearchScore(q, filePath) + searchPathPrior(q, filePath)
+	pathScore := pathSearchScore(q, filePath)
+	base := pathScore
 	signals := []string{}
-	if base > 0 {
+	if pathScore > 0 {
 		signals = append(signals, "path")
 	}
 	if len(counts) > 0 {
@@ -550,9 +772,10 @@ func makeSearchCandidate(q searchQuery, filePath, language string, lines []strin
 		base += nameScore
 		signals = append(signals, nameSignals...)
 	}
-	if len(counts) == 0 && base == 0 {
+	if len(counts) == 0 && pathScore == 0 && len(signals) == 0 {
 		return searchCandidate{}, false
 	}
+	base += searchPathPrior(q, filePath)
 	return searchCandidate{
 		result: SearchResult{
 			FilePath:         filePath,
@@ -875,9 +1098,6 @@ func buildSearchQuery(query string) searchQuery {
 		originalTerms = append(originalTerms, term)
 	}
 	for _, term := range originalTerms {
-		for _, related := range searchConceptTerms[term] {
-			add(related, 0.5)
-		}
 		for _, related := range morphologicalSearchTerms(term) {
 			add(related, 0.55)
 		}
@@ -1076,6 +1296,9 @@ func pathSearchScore(q searchQuery, filePath string) float64 {
 	score := 0.0
 	for _, term := range q.terms {
 		weight := q.weights[term]
+		if weight != 1 && weight < 1.25 {
+			continue
+		}
 		if strings.Contains(base, term) {
 			score += 2.5 * weight
 		} else if strings.Contains(lower, term) {
@@ -1096,15 +1319,6 @@ func searchPathPrior(q searchQuery, filePath string) float64 {
 	}
 	if strings.Contains(lower, "/dependencies/") || strings.Contains(lower, "/third_party/") || strings.Contains(lower, "/third-party/") {
 		score -= 5
-	}
-	if strings.Contains(lower, "/singleheader/") && !searchQuerySupplied(q, "singleheader", "amalgamation") {
-		score -= 3
-	}
-	if strings.Contains(lower, "/benchmark/") && !searchQuerySupplied(q, "benchmark", "performance", "speed") {
-		score -= 2
-	}
-	if (strings.Contains(lower, "/tests/") || strings.Contains(lower, "/test/")) && !searchQuerySupplied(q, "test", "tests", "testing", "regression") {
-		score -= 1.5
 	}
 	return score
 }
@@ -1194,6 +1408,12 @@ func appendUnique(values []string, additions ...string) []string {
 }
 
 func (response SearchResponse) Validate() error {
+	if actual := serializedSearchResultBytes(response.Results); response.Stats.ResultBytes != actual {
+		return fmt.Errorf("search result byte accounting mismatch: %d != %d", response.Stats.ResultBytes, actual)
+	}
+	if response.Stats.ContextBudgetBytes > 0 && response.Stats.ResultBytes > response.Stats.ContextBudgetBytes {
+		return fmt.Errorf("search result context exceeds byte budget: %d > %d", response.Stats.ResultBytes, response.Stats.ContextBudgetBytes)
+	}
 	for index, result := range response.Results {
 		if result.Rank != index+1 {
 			return fmt.Errorf("search result rank %d at index %d", result.Rank, index)
