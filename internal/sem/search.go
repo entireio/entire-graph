@@ -160,31 +160,30 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	searchStarted := time.Now()
 	preselectStarted := time.Now()
-	selectedFiles, discoveredFiles, filesContentRead, err := preselectSearchFiles(ctx, repo, q, options)
+	selection, err := preselectSearchFiles(ctx, repo, q, options)
 	if err != nil {
 		return SearchResponse{}, err
 	}
 	preselectLatency := time.Since(preselectStarted)
+	selectedFiles := selection.files
 	if len(selectedFiles) == 0 {
-		absRepo, absErr := filepath.Abs(repo)
-		if absErr != nil {
-			return SearchResponse{}, absErr
-		}
 		return SearchResponse{
 			Query:    query,
-			RepoRoot: absRepo,
+			RepoRoot: selection.repoRoot,
+			Commit:   selection.commit,
+			Tree:     selection.tree,
 			Profile:  string(options.Profile),
 			Results:  []SearchResult{},
 			Stats: SearchStats{
-				FilesScanned:       discoveredFiles,
-				FilesContentRead:   filesContentRead,
+				FilesScanned:       selection.filesScanned,
+				FilesContentRead:   selection.filesContentRead,
 				FilesIndexed:       0,
 				ResultBytes:        serializedSearchResultBytes([]SearchResult{}),
 				ContextBudgetBytes: options.MaxContextBytes,
 				PreselectLatencyMS: preselectLatency.Milliseconds(),
 				SearchLatencyMS:    time.Since(searchStarted).Milliseconds(),
 			},
-			Warnings: []ProviderWarning{},
+			Warnings: selection.warnings,
 		}, nil
 	}
 
@@ -257,8 +256,8 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 
 	stats := SearchStats{
-		FilesScanned:       discoveredFiles,
-		FilesContentRead:   filesContentRead,
+		FilesScanned:       selection.filesScanned,
+		FilesContentRead:   selection.filesContentRead,
 		FilesIndexed:       len(selectedFiles),
 		SymbolsConsidered:  len(snapshot.Symbols),
 		LexicalCandidates:  len(candidates),
@@ -417,7 +416,17 @@ type searchFileCandidate struct {
 	score float64
 }
 
-func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, options SearchOptions) ([]string, int, int, error) {
+type searchFileSelection struct {
+	files            []string
+	repoRoot         string
+	commit           string
+	tree             string
+	warnings         []ProviderWarning
+	filesScanned     int
+	filesContentRead int
+}
+
+func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, options SearchOptions) (searchFileSelection, error) {
 	source, err := prepareSource(ctx, repo, ProviderSnapshotOptions{
 		NoNetwork:    true,
 		Worktree:     options.Worktree,
@@ -425,13 +434,21 @@ func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, optio
 		IncludeFiles: options.IncludeFiles,
 	})
 	if err != nil {
-		return nil, 0, 0, err
+		return searchFileSelection{}, err
 	}
 	if source.close != nil {
 		defer source.close()
 	}
+	selection := searchFileSelection{
+		repoRoot:     source.absRepo,
+		commit:       source.commit,
+		tree:         source.tree,
+		warnings:     append([]ProviderWarning{}, source.warnings...),
+		filesScanned: len(source.paths),
+	}
 	if options.IndexAllFiles || len(source.paths) <= options.MaxIndexedFiles {
-		return append([]string(nil), source.paths...), len(source.paths), 0, nil
+		selection.files = append([]string(nil), source.paths...)
+		return selection, nil
 	}
 	queryWeight := 0.0
 	for _, weight := range q.weights {
@@ -576,7 +593,7 @@ func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, optio
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, len(source.paths), len(scanPaths), err
+		return searchFileSelection{}, err
 	}
 	sort.Slice(files, func(i, j int) bool {
 		if files[i].score != files[j].score {
@@ -591,7 +608,9 @@ func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, optio
 	for i, file := range files {
 		selected[i] = file.path
 	}
-	return selected, len(source.paths), len(scanPaths), nil
+	selection.files = selected
+	selection.filesContentRead = len(scanPaths)
+	return selection, nil
 }
 
 func shouldUseGitGrepPreselection(worktree bool, fileCount int) bool {

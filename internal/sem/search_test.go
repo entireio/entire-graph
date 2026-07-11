@@ -209,6 +209,82 @@ func TestSearchRepositoryRejectsStopWordsOnly(t *testing.T) {
 	}
 }
 
+func TestSearchRepositoryPreservesHeadProvenanceWhenPreselectionIsEmpty(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Sem Test")
+	git(t, repo, "config", "user.email", "sem@example.com")
+	write(t, repo, "alpha.go", "package source\nfunc Alpha() {}\n")
+	write(t, repo, "beta.go", "package source\nfunc Beta() {}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	response, err := SearchRepository(t.Context(), repo, "test", "unmatched-provenance-query", SearchOptions{
+		Profile:         ProfileSyntaxOnly,
+		MaxIndexedFiles: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 0 || response.Stats.FilesIndexed != 0 {
+		t.Fatalf("unexpected results: results=%#v stats=%#v", response.Results, response.Stats)
+	}
+	if response.Commit != rev(t, repo, "HEAD") || response.Tree != rev(t, repo, "HEAD^{tree}") {
+		t.Fatalf("provenance does not identify HEAD: commit=%q tree=%q", response.Commit, response.Tree)
+	}
+	if response.Warnings == nil || len(response.Warnings) != 0 {
+		t.Fatalf("warnings = %#v", response.Warnings)
+	}
+}
+
+func TestSearchRepositoryPreservesSourceWarningsWhenPreselectionIsEmpty(t *testing.T) {
+	t.Run("worktree", func(t *testing.T) {
+		repo := t.TempDir()
+		git(t, repo, "init")
+		git(t, repo, "config", "user.name", "Entire Sem Test")
+		git(t, repo, "config", "user.email", "sem@example.com")
+		write(t, repo, "alpha.go", "package source\nfunc Alpha() {}\n")
+		write(t, repo, "beta.go", "package source\nfunc Beta() {}\n")
+		git(t, repo, "add", ".")
+		git(t, repo, "commit", "-m", "initial")
+
+		response, err := SearchRepository(t.Context(), repo, "test", "unmatched-worktree-query", SearchOptions{
+			Worktree:        true,
+			Profile:         ProfileSyntaxOnly,
+			MaxIndexedFiles: 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.Commit == "" || response.Tree == "" {
+			t.Fatalf("worktree response lost baseline provenance: %#v", response)
+		}
+		if len(response.Warnings) != 1 || response.Warnings[0].Code != "W_WORKTREE_SNAPSHOT" {
+			t.Fatalf("warnings = %#v", response.Warnings)
+		}
+	})
+
+	t.Run("no git head", func(t *testing.T) {
+		repo := t.TempDir()
+		write(t, repo, "alpha.go", "package source\nfunc Alpha() {}\n")
+		write(t, repo, "beta.go", "package source\nfunc Beta() {}\n")
+
+		response, err := SearchRepository(t.Context(), repo, "test", "unmatched-fallback-query", SearchOptions{
+			Profile:         ProfileSyntaxOnly,
+			MaxIndexedFiles: 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.Commit != "" || response.Tree != "" {
+			t.Fatalf("unexpected git provenance: %#v", response)
+		}
+		if len(response.Warnings) != 1 || response.Warnings[0].Code != "E_NO_GIT_HEAD" {
+			t.Fatalf("warnings = %#v", response.Warnings)
+		}
+	})
+}
+
 func TestSearchRepositoryReusesCommittedIndexCache(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
