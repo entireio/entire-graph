@@ -58,7 +58,7 @@ func TestGrepIndexFilesUsesFixedStringsAndUnstagedContent(t *testing.T) {
 	}
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "initial")
-	if err := os.WriteFile(filepath.Join(repo, "src/target.go"), []byte("package source\nfunc NeedlePattern() {}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "src/target.go"), []byte("package source\nfunc NeedlePattern() {}\nfunc AnotherNeedlePattern() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -66,8 +66,13 @@ func TestGrepIndexFilesUsesFixedStringsAndUnstagedContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) != 1 || matches[0].Path != "src/target.go" || !strings.Contains(matches[0].Text, "NeedlePattern") {
-		t.Fatalf("grep matches = %#v", matches)
+	if len(matches) != 2 {
+		t.Fatalf("grep match count = %d, want 2: %#v", len(matches), matches)
+	}
+	for _, match := range matches {
+		if match.Path != "src/target.go" || match.Text != "NeedlePattern" {
+			t.Fatalf("grep match = %#v, want path src/target.go and exact fixed-string text", match)
+		}
 	}
 	empty, err := GrepIndexMatches(t.Context(), repo, []string{"absent-fixed-string"}, 2)
 	if err != nil {
