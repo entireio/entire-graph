@@ -367,6 +367,66 @@ func TestSearchRepositoryDoesNotTreatPathPriorAsEvidence(t *testing.T) {
 	}
 }
 
+func TestSearchRepositoryDropsWeakFragmentPathOnlyCandidates(t *testing.T) {
+	repo := t.TempDir()
+	// "config" is only a derived fragment (weight 1.1) of the compound query
+	// identifier, and the file body contains no query tokens: the file must
+	// not produce a candidate at all, and in particular must not produce a
+	// zero-value result that fails response validation.
+	write(t, repo, "config/notes.md", "# unrelated documentation\nplain prose only\n")
+	write(t, repo, "svc/main.go", "package svc\nfunc NewServiceConfig() {}\n")
+
+	response, err := SearchRepository(t.Context(), repo, "test", "NewServiceConfig", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     10,
+	})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if err := response.Validate(); err != nil {
+		t.Fatalf("response validation failed: %v (results=%#v)", err, response.Results)
+	}
+	if len(response.Results) == 0 || response.Results[0].SymbolName != "NewServiceConfig" {
+		t.Fatalf("expected symbol result first: %#v", response.Results)
+	}
+	for _, result := range response.Results {
+		if result.FilePath == "config/notes.md" || result.FilePath == "" {
+			t.Fatalf("weak fragment-only path match produced a candidate: %#v", response.Results)
+		}
+	}
+}
+
+func TestSearchRepositoryKeepsFullTermPathOnlyCandidates(t *testing.T) {
+	repo := t.TempDir()
+	// "authentication" matches the path as a full-weight query term, so the
+	// path-only fallback candidate must survive even though the body has no
+	// query tokens.
+	write(t, repo, "docs/authentication.md", "# overview\nplain prose only\n")
+	write(t, repo, "svc/main.go", "package svc\nfunc Unrelated() {}\n")
+
+	response, err := SearchRepository(t.Context(), repo, "test", "authentication", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     10,
+	})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	found := false
+	for _, result := range response.Results {
+		if result.FilePath == "docs/authentication.md" {
+			found = true
+			if !containsString(result.Signals, "path") {
+				t.Fatalf("path-only candidate lost its path signal: %#v", result)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("full-term path-only candidate was dropped: %#v", response.Results)
+	}
+}
+
 func TestSearchRepositoryKeepsUntrackedFiles(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")

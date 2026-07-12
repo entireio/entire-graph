@@ -697,10 +697,15 @@ func candidatesForFile(q searchQuery, filePath, language string, lines []string,
 
 	if len(out) == 0 && textMatchesSearchQuery(q, filepath.ToSlash(filePath)) {
 		end := minInt(len(lines), maxInt(1, options.ContextLines*2+1))
-		candidate, _ := makeSearchCandidate(q, filePath, language, lines, 1, end, SymbolRecord{}, options.MaxSnippetLines)
-		candidate.baseScore += pathSearchScore(q, filePath)
-		candidate.result.Signals = appendUnique(candidate.result.Signals, "path")
-		out = append(out, candidate)
+		// A path can match only through weak derived fragments (compound
+		// identifier parts or morphological variants) that pathSearchScore
+		// does not treat as evidence. Such files produce no valid candidate
+		// and must be skipped, not emitted as zero-value results.
+		if candidate, ok := makeSearchCandidate(q, filePath, language, lines, 1, end, SymbolRecord{}, options.MaxSnippetLines); ok {
+			candidate.baseScore += pathSearchScore(q, filePath)
+			candidate.result.Signals = appendUnique(candidate.result.Signals, "path")
+			out = append(out, candidate)
+		}
 	}
 	return out
 }
