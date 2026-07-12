@@ -26,7 +26,7 @@ type FileCochange struct {
 	Count int
 }
 
-// GrepMatch is one tracked-worktree line returned by a fixed-string grep.
+// GrepMatch is one matched substring from a tracked-worktree fixed-string grep.
 type GrepMatch struct {
 	Path string
 	Text string
