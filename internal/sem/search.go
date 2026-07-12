@@ -388,7 +388,7 @@ func truncateSearchText(value string, maxBytes int, q searchQuery) string {
 			break
 		}
 	}
-	window := maxBytes - len(" ... ")
+	window := maxBytes - len("... ") - len(" ...")
 	if window <= 0 {
 		return ""
 	}
@@ -657,42 +657,37 @@ func shouldUseGitGrepPreselection(worktree bool, fileCount int) bool {
 }
 
 func searchPreselectionPatterns(q searchQuery) []string {
-	patterns := make([]string, 0, 12)
-	seen := make(map[string]bool, cap(patterns))
-	for _, term := range q.terms {
-		if q.weights[term] >= 2 {
+	const (
+		maxPatterns       = 12
+		maxStrongPatterns = 8
+		maxMorphPatterns  = 2
+		maxFragmentTerms  = 2
+	)
+	patterns := make([]string, 0, maxPatterns)
+	seen := make(map[string]bool, maxPatterns)
+	appendTier := func(limit int, include func(float64) bool) {
+		added := 0
+		for _, term := range q.terms {
+			if seen[term] || !include(q.weights[term]) {
+				continue
+			}
 			patterns = append(patterns, term)
 			seen[term] = true
-			if len(patterns) == cap(patterns) {
-				return patterns
+			added++
+			if added == limit || len(patterns) == maxPatterns {
+				return
 			}
 		}
 	}
-	if len(patterns) == 0 {
-		for _, term := range q.terms {
-			if q.weights[term] >= 1.25 {
-				patterns = append(patterns, term)
-				seen[term] = true
-				if len(patterns) == cap(patterns) {
-					return patterns
-				}
-			}
-		}
-	}
-	target := cap(patterns)
-	if len(patterns) > 0 {
-		target = minInt(target, len(patterns)+4)
-	}
-	for _, term := range q.terms {
-		if q.weights[term] != 1 || seen[term] {
-			continue
-		}
-		patterns = append(patterns, term)
-		seen[term] = true
-		if len(patterns) == target {
-			break
-		}
-	}
+	appendTier(maxStrongPatterns, func(weight float64) bool {
+		return weight >= 1.25 || weight == 1
+	})
+	appendTier(maxMorphPatterns, func(weight float64) bool {
+		return weight < 1
+	})
+	appendTier(maxFragmentTerms, func(weight float64) bool {
+		return weight > 1 && weight < 1.25
+	})
 	return patterns
 }
 

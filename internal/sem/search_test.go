@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestSearchRepositoryRanksExactSymbol(t *testing.T) {
@@ -546,10 +547,27 @@ func TestSearchPreselectionPatternsPreferCodeShapedTerms(t *testing.T) {
 	if !containsString(patterns, "renderprofilebutton") || !containsString(patterns, "trailingaction") {
 		t.Fatalf("preselection patterns = %#v", patterns)
 	}
-	for _, generic := range []string{"render", "profile", "button", "trailing", "action"} {
-		if containsString(patterns, generic) {
-			t.Fatalf("compound identifier fragment %q entered preselection: %#v", generic, patterns)
+	fragmentCount := 0
+	for _, fragment := range []string{"render", "profile", "button", "trailing", "action"} {
+		if containsString(patterns, fragment) {
+			fragmentCount++
 		}
+	}
+	if fragmentCount == 0 || fragmentCount > 2 {
+		t.Fatalf("bounded compound-fragment fallback count = %d, patterns = %#v", fragmentCount, patterns)
+	}
+	if len(patterns) > 12 {
+		t.Fatalf("preselection pattern count = %d", len(patterns))
+	}
+}
+
+func TestSearchPreselectionPatternsReserveMorphologicalFallbacks(t *testing.T) {
+	patterns := searchPreselectionPatterns(buildSearchQuery("configuring serializer behavior"))
+	if !containsString(patterns, "configuring") {
+		t.Fatalf("direct query term missing from preselection: %#v", patterns)
+	}
+	if !containsString(patterns, "configur") && !containsString(patterns, "configure") {
+		t.Fatalf("morphological fallback missing from preselection: %#v", patterns)
 	}
 	if len(patterns) > 12 {
 		t.Fatalf("preselection pattern count = %d", len(patterns))
@@ -709,6 +727,20 @@ func TestCompactSearchResultKeepsLargestFocusedWindowThatFits(t *testing.T) {
 	}
 	if got.SnippetStartLine != 2 || got.SnippetEndLine != 4 || got.Snippet != threeLine.Snippet {
 		t.Fatalf("compacted snippet = lines %d-%d %q, want balanced lines 2-4", got.SnippetStartLine, got.SnippetEndLine, got.Snippet)
+	}
+}
+
+func TestTruncateSearchTextNeverExceedsByteBudget(t *testing.T) {
+	value := strings.Repeat("å", 20) + " configuration handler " + strings.Repeat("界", 20)
+	query := buildSearchQuery("configuration handler")
+	for _, budget := range []int{4, 8, 16, 24, 32, 48, 64} {
+		got := truncateSearchText(value, budget, query)
+		if len(got) > budget {
+			t.Fatalf("budget %d produced %d bytes: %q", budget, len(got), got)
+		}
+		if !utf8.ValidString(got) {
+			t.Fatalf("budget %d split UTF-8: %q", budget, got)
+		}
 	}
 }
 
