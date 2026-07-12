@@ -342,26 +342,38 @@ func compactSearchResultToBytes(result SearchResult, q searchQuery, budget int) 
 	if focus < 0 || focus >= len(lines) {
 		focus = len(lines) / 2
 	}
-	left, right := focus, focus
-	for {
-		candidate := result
-		candidate.SnippetStartLine = result.SnippetStartLine + left
-		candidate.SnippetEndLine = result.SnippetStartLine + right
-		candidate.Snippet = strings.Join(lines[left:right+1], "\n")
-		size := serializedSearchResultBytes(candidate)
-		if size <= budget {
-			return candidate, size
-		}
-		if left == right {
-			candidate.Snippet = truncateSearchText(candidate.Snippet, maxInt(16, budget/3), q)
-			return candidate, serializedSearchResultBytes(candidate)
-		}
-		if right-focus >= focus-left {
-			right--
-		} else {
-			left++
+	bestSpan, bestBalance := 0, len(lines)+1
+	var best SearchResult
+	bestSize := 0
+	for left := 0; left <= focus; left++ {
+		for right := focus; right < len(lines); right++ {
+			candidate := result
+			candidate.SnippetStartLine = result.SnippetStartLine + left
+			candidate.SnippetEndLine = result.SnippetStartLine + right
+			candidate.Snippet = strings.Join(lines[left:right+1], "\n")
+			size := serializedSearchResultBytes(candidate)
+			if size > budget {
+				continue
+			}
+			span := right - left + 1
+			balance := (focus - left) - (right - focus)
+			if balance < 0 {
+				balance = -balance
+			}
+			if span > bestSpan || (span == bestSpan && balance < bestBalance) {
+				best, bestSize = candidate, size
+				bestSpan, bestBalance = span, balance
+			}
 		}
 	}
+	if bestSpan > 0 {
+		return best, bestSize
+	}
+	candidate := result
+	candidate.SnippetStartLine = result.SnippetStartLine + focus
+	candidate.SnippetEndLine = candidate.SnippetStartLine
+	candidate.Snippet = truncateSearchText(lines[focus], maxInt(16, budget/3), q)
+	return candidate, serializedSearchResultBytes(candidate)
 }
 
 func truncateSearchText(value string, maxBytes int, q searchQuery) string {
@@ -555,43 +567,11 @@ func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, optio
 		}
 		return searchFileCandidate{path: filePath, score: score}, true
 	}
-	files := make([]searchFileCandidate, 0, options.MaxIndexedFiles*2)
+	workers := 1
 	if options.Worktree {
-		workers := minInt(8, maxInt(1, runtime.GOMAXPROCS(0)))
-		jobs := make(chan string)
-		results := make(chan searchFileCandidate)
-		var wait sync.WaitGroup
-		for worker := 0; worker < workers; worker++ {
-			wait.Add(1)
-			go func() {
-				defer wait.Done()
-				for filePath := range jobs {
-					if candidate, ok := scoreFile(filePath); ok {
-						results <- candidate
-					}
-				}
-			}()
-		}
-		go func() {
-			defer close(jobs)
-			for _, filePath := range scanPaths {
-				jobs <- filePath
-			}
-		}()
-		go func() {
-			wait.Wait()
-			close(results)
-		}()
-		for candidate := range results {
-			files = append(files, candidate)
-		}
-	} else {
-		for _, filePath := range scanPaths {
-			if candidate, ok := scoreFile(filePath); ok {
-				files = append(files, candidate)
-			}
-		}
+		workers = minInt(8, maxInt(1, runtime.GOMAXPROCS(0)))
 	}
+	files := scoreSearchPaths(ctx, scanPaths, workers, scoreFile)
 	if err := ctx.Err(); err != nil {
 		return searchFileSelection{}, err
 	}
@@ -611,6 +591,65 @@ func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, optio
 	selection.files = selected
 	selection.filesContentRead = len(scanPaths)
 	return selection, nil
+}
+
+func scoreSearchPaths(
+	ctx context.Context,
+	paths []string,
+	workers int,
+	score func(string) (searchFileCandidate, bool),
+) []searchFileCandidate {
+	initialCapacity := minInt(len(paths), 1024)
+	if workers <= 1 {
+		files := make([]searchFileCandidate, 0, initialCapacity)
+		for _, filePath := range paths {
+			if ctx.Err() != nil {
+				break
+			}
+			if candidate, ok := score(filePath); ok {
+				files = append(files, candidate)
+			}
+		}
+		return files
+	}
+
+	jobs := make(chan string)
+	results := make(chan searchFileCandidate)
+	var wait sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for filePath := range jobs {
+				if candidate, ok := score(filePath); ok {
+					select {
+					case results <- candidate:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for _, filePath := range paths {
+			select {
+			case jobs <- filePath:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	go func() {
+		wait.Wait()
+		close(results)
+	}()
+	files := make([]searchFileCandidate, 0, initialCapacity)
+	for candidate := range results {
+		files = append(files, candidate)
+	}
+	return files
 }
 
 func shouldUseGitGrepPreselection(worktree bool, fileCount int) bool {

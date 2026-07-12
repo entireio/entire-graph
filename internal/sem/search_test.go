@@ -1,9 +1,12 @@
 package sem
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -321,6 +324,25 @@ func ValidateToken(token string) bool { return token != "" }
 	}
 }
 
+func TestWriteSearchSnapshotReplacesExistingEntry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.json.gz")
+	first := cachedSearchSnapshot{CacheVersion: searchSnapshotCacheVersion, Tree: "first"}
+	second := cachedSearchSnapshot{CacheVersion: searchSnapshotCacheVersion, Tree: "second"}
+	if err := writeSearchSnapshot(path, first); err != nil {
+		t.Fatalf("write first snapshot: %v", err)
+	}
+	if err := writeSearchSnapshot(path, second); err != nil {
+		t.Fatalf("replace snapshot: %v", err)
+	}
+	got, err := readSearchSnapshot(path)
+	if err != nil {
+		t.Fatalf("read replaced snapshot: %v", err)
+	}
+	if got.Tree != second.Tree {
+		t.Fatalf("cached tree = %q, want %q", got.Tree, second.Tree)
+	}
+}
+
 func TestSearchRepositorySelectivelyIndexesLargeRepositories(t *testing.T) {
 	repo := t.TempDir()
 	for index := 0; index < 20; index++ {
@@ -465,6 +487,28 @@ func TestSearchGitPreselectionThresholdTargetsLargeWorktrees(t *testing.T) {
 	}
 }
 
+func TestScoreSearchPathsStopsDispatchAfterCancellation(t *testing.T) {
+	paths := make([]string, 10_000)
+	for index := range paths {
+		paths[index] = fmt.Sprintf("src/file_%05d.go", index)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var calls atomic.Int32
+	files := scoreSearchPaths(ctx, paths, 8, func(path string) (searchFileCandidate, bool) {
+		if calls.Add(1) == 1 {
+			cancel()
+		}
+		return searchFileCandidate{path: path, score: 1}, true
+	})
+	if got := calls.Load(); got > 8 {
+		t.Fatalf("canceled dispatch scored %d paths, want at most one in-flight path per worker", got)
+	}
+	if len(files) > 8 {
+		t.Fatalf("canceled dispatch returned %d files, want at most one per worker", len(files))
+	}
+}
+
 func TestSearchTermMatcherIsCaseInsensitiveAndFindsOverlaps(t *testing.T) {
 	terms := []string{"list", "listitem", "secondaryaction", "missing"}
 	matched := newSearchTermMatcher(terms).match("export const ListItemSecondaryAction = true")
@@ -593,6 +637,44 @@ func TestSearchResultContextBudgetPreservesDiverseFocusedResults(t *testing.T) {
 		if result.FocusLine < result.SnippetStartLine || result.FocusLine > result.SnippetEndLine {
 			t.Fatalf("focus line fell outside compacted snippet: %#v", result)
 		}
+	}
+}
+
+func TestCompactSearchResultKeepsLargestFocusedWindowThatFits(t *testing.T) {
+	lines := []string{
+		"first context line with enough detail to consume bytes",
+		"second context line with enough detail to consume bytes",
+		"focus configuration handler with enough detail to consume bytes",
+		"fourth context line with enough detail to consume bytes",
+		"fifth context line with enough detail to consume bytes",
+	}
+	result := SearchResult{
+		Rank:             1,
+		FilePath:         "src/configuration.go",
+		StartLine:        1,
+		EndLine:          len(lines),
+		FocusLine:        3,
+		SnippetStartLine: 1,
+		SnippetEndLine:   len(lines),
+		Signature:        "func HandleConfiguration() error",
+		Signals:          []string{"body"},
+		Snippet:          strings.Join(lines, "\n"),
+	}
+	threeLine := result
+	threeLine.SnippetStartLine = 2
+	threeLine.SnippetEndLine = 4
+	threeLine.Snippet = strings.Join(lines[1:4], "\n")
+	budget := serializedSearchResultBytes(threeLine)
+	if serializedSearchResultBytes(result) <= budget {
+		t.Fatal("test fixture full snippet unexpectedly fits compacted budget")
+	}
+
+	got, size := compactSearchResultToBytes(result, buildSearchQuery("configuration handler"), budget)
+	if size > budget {
+		t.Fatalf("compacted size = %d, budget = %d", size, budget)
+	}
+	if got.SnippetStartLine != 2 || got.SnippetEndLine != 4 || got.Snippet != threeLine.Snippet {
+		t.Fatalf("compacted snippet = lines %d-%d %q, want balanced lines 2-4", got.SnippetStartLine, got.SnippetEndLine, got.Snippet)
 	}
 }
 
