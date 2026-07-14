@@ -1,0 +1,81 @@
+Review the CODEX-RESTART-HANDOVER-2026-07-12.md in ../entire-plan. Identify next steps specifically for the entire-sem side of the plan and outline them here.
+
+---
+
+Ok, switch to the worktree. Also make sure you have worktrees for brain-bench in case you change code there. Export your entire-sem plan into entire-plan and start working through the phases. Do not make any changes to entire-brain without asking me.
+
+---
+
+Yes, you may
+
+---
+
+What's next per your plan?
+
+---
+
+Go ahead then
+
+---
+
+Don't worry about battery, just go
+
+---
+
+Did you run a Copilot review loop on PR 23?
+
+---
+
+Ok, what's next then?
+
+---
+
+23 is merged. Go ahead then.
+
+---
+
+Give me a progress update
+
+---
+
+Your process got killed. Figure out what happened and how to continue from here?
+
+---
+
+Continue with the previous task
+
+---
+
+What's your ETA? Can you create PRs for all changes while you are still verifying the overall results?
+
+---
+
+What's the outcome?
+
+---
+
+Try again
+
+---
+
+What is V7?
+
+---
+
+What do we achieve with V7?
+
+---
+
+Ok, update the handover doc and give me a blurb that I can paste into a new agent session for you to continue there.
+
+---
+
+Rename the entire-sem repo to entire-graph, then update this folder's name, and update all references to the old name here, in entire-brain, in entire-plan, and in brain-bench. Make sure that no mention of entire-sem is left.
+
+---
+
+Did you update the handover doc? Which are the instructions for the new agent session now?
+
+---
+
+Push an empty commit to wrap up this Entire session
