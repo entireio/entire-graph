@@ -75,7 +75,7 @@ func TestProviderJSONCommands(t *testing.T) {
 	if err := json.Unmarshal(versionOut.Bytes(), &version); err != nil {
 		t.Fatal(err)
 	}
-	if version["provider"] != "entire-sem" || version["version"] != "0.1.0" {
+	if version["provider"] != "entire-graph" || version["version"] != "0.1.0" {
 		t.Fatalf("version json = %#v", version)
 	}
 
@@ -172,7 +172,7 @@ def check_token(token):
 		if err := json.Unmarshal([]byte(lines[0]), &header); err != nil {
 			t.Fatalf("%s invalid header json %q: %v", tt.command, lines[0], err)
 		}
-		if header["schema_version"] != "1.1" || header["provider"] != "entire-sem" {
+		if header["schema_version"] != "1.1" || header["provider"] != "entire-graph" {
 			t.Fatalf("%s header = %#v", tt.command, header)
 		}
 		seenTypes := map[string]bool{}
@@ -315,7 +315,7 @@ func TestProviderCommandsAcceptIgnoreFile(t *testing.T) {
 func TestProviderCommandsAcceptIncludeFile(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, ".gitignore", "ignored/\n")
-	write(t, repo, ".seminclude", "ignored/\n")
+	write(t, repo, ".graphinclude", "ignored/\n")
 	write(t, repo, "ignored/reopened.py", `def reopened():
     return True
 `)
@@ -327,7 +327,7 @@ func TestProviderCommandsAcceptIncludeFile(t *testing.T) {
 			"--repo", repo,
 			"--format", "ndjson",
 			"--worktree",
-			"--include-file", ".seminclude",
+			"--include-file", ".graphinclude",
 		})
 		if err != nil {
 			t.Fatalf("%s: %v", command, err)
@@ -344,8 +344,8 @@ func TestProviderCommandsAcceptIncludeFile(t *testing.T) {
 func TestSnapshotSkipsTrackedVendoredDependencies(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 	write(t, repo, "src/app.ts", "export function app() { return true }\n")
 	write(t, repo, "node_modules/pkg/index.ts", "export function vendored() { return false }\n")
 	write(t, repo, "apps/web/package-lock.json", `{"packages":{"node_modules/noisy":{"version":"1.0.0"}}}`)
@@ -374,8 +374,8 @@ func TestSnapshotSkipsTrackedVendoredDependencies(t *testing.T) {
 func TestAnalyzeJSONCommand(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 	write(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "initial")
@@ -400,8 +400,8 @@ func TestAnalyzeJSONCommand(t *testing.T) {
 func TestDiffJSONCommandCoversEverySupportedLanguage(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 
 	fixtures := []struct {
 		path     string

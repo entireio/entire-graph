@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/entireio/entire-sem/internal/gitutil"
-	"github.com/entireio/entire-sem/internal/sem"
+	"github.com/entireio/entire-graph/internal/gitutil"
+	"github.com/entireio/entire-graph/internal/sem"
 )
 
 type Options struct {
@@ -85,20 +85,20 @@ func Run(ctx context.Context, opts Options, args []string) error {
 }
 
 func printHelp(out io.Writer) {
-	fmt.Fprintln(out, `entire-sem adds entity-level context to Entire checkpoints.
+	fmt.Fprintln(out, `entire-graph adds entity-level context to Entire checkpoints.
 
 Usage:
-  entire sem commit [rev] [--json] [--repo path]
-  entire sem checkpoint <checkpoint-id> [--json] [--repo path]
-  entire sem diff --base <rev> --head <rev> [--json] [--repo path] [-- path...]
-  entire sem analyze [--base <rev>] [--head <rev>] [--json] [--repo path] [-- path...]
-  entire sem doctor [--json]
-  entire sem version [--json]
-  entire sem capabilities --json
-  entire sem snapshot --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
-  entire sem symbols --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
-  entire sem edges --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
-  entire sem search --query "issue or concept" --repo . [--format json|ndjson|text] [--top-k 20] [--max-context-bytes 16384] [--head] [--profile syntax-only|fast|full] [--max-indexed-files 96|--index-all-files] [--cache-dir path|--no-cache]`)
+  entire graph commit [rev] [--json] [--repo path]
+  entire graph checkpoint <checkpoint-id> [--json] [--repo path]
+  entire graph diff --base <rev> --head <rev> [--json] [--repo path] [-- path...]
+  entire graph analyze [--base <rev>] [--head <rev>] [--json] [--repo path] [-- path...]
+  entire graph doctor [--json]
+  entire graph version [--json]
+  entire graph capabilities --json
+  entire graph snapshot --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
+  entire graph symbols --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
+  entire graph edges --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
+  entire graph search --query "issue or concept" --repo . [--format json|ndjson|text] [--top-k 20] [--max-context-bytes 16384] [--head] [--profile syntax-only|fast|full] [--max-indexed-files 96|--index-all-files] [--cache-dir path|--no-cache]`)
 }
 
 func runDoctor(ctx context.Context, opts Options, args []string) error {
@@ -209,7 +209,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	}
 	if flags.Progress {
 		options.Progress = func(event sem.ProgressEvent) {
-			fmt.Fprintf(opts.Stderr, "sem progress phase=%s files=%d/%d symbols=%d relations=%d heap=%d rss=%d elapsed=%s\n",
+			fmt.Fprintf(opts.Stderr, "graph progress phase=%s files=%d/%d symbols=%d relations=%d heap=%d rss=%d elapsed=%s\n",
 				event.Phase,
 				event.FilesDone,
 				event.FilesTotal,

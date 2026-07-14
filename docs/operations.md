@@ -1,6 +1,6 @@
 # Operations
 
-`entire-sem` is a local Entire CLI plugin. The operational surface is intentionally
+`entire-graph` is a local Entire CLI plugin. The operational surface is intentionally
 small: build the provider, install the local executable into Entire's plugin
 directory, and generate checksum-backed release archives.
 
@@ -10,8 +10,8 @@ directory, and generate checksum-backed release archives.
 scripts/install-local.sh
 ```
 
-The script builds `./entire-sem`, installs it with `entire plugin install
-./entire-sem --force`, and prints `entire sem version`. It fails before writing
+The script builds `./entire-graph`, installs it with `entire plugin install
+./entire-graph --force`, and prints `entire graph version`. It fails before writing
 anything if the parent `entire` CLI is not on `PATH`.
 
 ## Release Archives
@@ -31,7 +31,7 @@ to a space-separated list of `GOOS/GOARCH` targets to request more builds:
 ENTIRE_RELEASE_TARGETS="darwin/arm64 linux/amd64" scripts/release.sh
 ```
 
-`entire-sem` includes native tree-sitter parser bindings, so cross-platform
+`entire-graph` includes native tree-sitter parser bindings, so cross-platform
 artifacts require the matching cgo-capable compiler/toolchain for each requested
 target. The script records checksums for artifacts it successfully builds; it
 also signs archives when a local signing key is explicitly configured:

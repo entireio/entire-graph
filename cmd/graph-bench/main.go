@@ -1,14 +1,14 @@
-// Command sem-bench clones popular repositories per language and measures the
+// Command graph-bench clones popular repositories per language and measures the
 // semantic provider over them, emitting a machine-readable performance and
 // quality report. Cloning (network) is a distinct phase from measurement, which
 // runs the provider with NoNetwork so the measured path stays no-egress.
 //
 // Usage:
 //
-//	go run ./cmd/sem-bench -update-lock          # resolve and pin repo commits
-//	go run ./cmd/sem-bench                        # full run using the lock file
-//	go run ./cmd/sem-bench -languages Go,Rust -limit 3
-//	go run ./cmd/sem-bench -skip-clone            # offline: measure existing clones
+//	go run ./cmd/graph-bench -update-lock          # resolve and pin repo commits
+//	go run ./cmd/graph-bench                        # full run using the lock file
+//	go run ./cmd/graph-bench -languages Go,Rust -limit 3
+//	go run ./cmd/graph-bench -skip-clone            # offline: measure existing clones
 //
 // Cloned repositories live under -cache (gitignored) and never enter our own
 // commits. Pinning is via bench/repos.lock.json: commit it to make runs
@@ -31,8 +31,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/entireio/entire-sem/internal/bench"
-	"github.com/entireio/entire-sem/internal/sem"
+	"github.com/entireio/entire-graph/internal/bench"
+	"github.com/entireio/entire-graph/internal/sem"
 )
 
 type manifest struct {
@@ -86,12 +86,12 @@ func main() {
 	if *cpuProfile != "" {
 		f, err := os.Create(*cpuProfile)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "sem-bench:", err)
+			fmt.Fprintln(os.Stderr, "graph-bench:", err)
 			os.Exit(1)
 		}
 		if err := pprof.StartCPUProfile(f); err != nil {
 			_ = f.Close()
-			fmt.Fprintln(os.Stderr, "sem-bench:", err)
+			fmt.Fprintln(os.Stderr, "graph-bench:", err)
 			os.Exit(1)
 		}
 		defer func() {
@@ -101,7 +101,7 @@ func main() {
 	}
 
 	if err := run(*manifestPath, *cacheDir, *outDir, *lockPath, *languages, *profile, *limit, *jobs, *depth, *skipClone, *updateLock, *providerVer, *progress, *minLOCPerSec, *maxRSSBytes, *exactOutput); err != nil {
-		fmt.Fprintln(os.Stderr, "sem-bench:", err)
+		fmt.Fprintln(os.Stderr, "graph-bench:", err)
 		os.Exit(1)
 	}
 }

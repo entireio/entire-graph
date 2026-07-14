@@ -16,8 +16,8 @@ func TestListFilesHandlesNewlinesInPaths(t *testing.T) {
 	}
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 
 	path := "dir/line\nbreak.py"
 	full := filepath.Join(repo, path)
@@ -42,8 +42,8 @@ func TestListFilesHandlesNewlinesInPaths(t *testing.T) {
 func TestGrepIndexMatchesUsesFixedStringsAndUnstagedContent(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 	for path, content := range map[string]string{
 		"src/target.go": "package source\nfunc Initial() {}\n",
 		"src/other.go":  "package source\nfunc Other() {}\n",
@@ -89,8 +89,8 @@ func TestChangedFilesHandlesNewlinesAndTabsInPaths(t *testing.T) {
 	}
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 
 	path := "dir/line\nbreak\tfile.py"
 	full := filepath.Join(repo, path)
@@ -126,8 +126,8 @@ func TestFileCochangesHandlesQuotedPaths(t *testing.T) {
 	}
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 
 	// '"' and '\' force git to C-quote the path even under core.quotePath=false;
 	// the non-ASCII byte is what plain quotePath would octal-escape. Only -z
@@ -174,8 +174,8 @@ func TestFileCochangesHandlesQuotedPaths(t *testing.T) {
 func TestBatchFileReaderReadsMultipleFilesFromHead(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 
 	for path, content := range map[string]string{
 		"a.go":     "package a\nfunc A() {}\n",

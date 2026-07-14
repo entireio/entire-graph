@@ -7,7 +7,7 @@ import (
 )
 
 func TestWriteTextPlainWhenNotTerminal(t *testing.T) {
-	t.Setenv("ENTIRE_SEM_FORCE_COLOR", "")
+	t.Setenv("ENTIRE_GRAPH_FORCE_COLOR", "")
 	t.Setenv("FORCE_COLOR", "")
 	t.Setenv("NO_COLOR", "")
 
@@ -22,7 +22,7 @@ func TestWriteTextPlainWhenNotTerminal(t *testing.T) {
 }
 
 func TestWriteTextColorCanBeForced(t *testing.T) {
-	t.Setenv("ENTIRE_SEM_FORCE_COLOR", "1")
+	t.Setenv("ENTIRE_GRAPH_FORCE_COLOR", "1")
 	t.Setenv("NO_COLOR", "")
 
 	var out bytes.Buffer
@@ -36,7 +36,7 @@ func TestWriteTextColorCanBeForced(t *testing.T) {
 }
 
 func TestNoColorOverridesForcedColor(t *testing.T) {
-	t.Setenv("ENTIRE_SEM_FORCE_COLOR", "1")
+	t.Setenv("ENTIRE_GRAPH_FORCE_COLOR", "1")
 	t.Setenv("NO_COLOR", "1")
 
 	var out bytes.Buffer

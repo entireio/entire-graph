@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/entireio/entire-sem/internal/gitutil"
+	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
 const (
@@ -29,7 +29,7 @@ const (
 	// and the per-symbol source-location fields). The shape is backward compatible
 	// for tolerant readers; the bump lets consumers detect the new fields.
 	SchemaVersion         = "1.1"
-	ProviderName          = "entire-sem"
+	ProviderName          = "entire-graph"
 	StableSymbolIDVersion = "compound-v1"
 	defaultMaxParseBytes  = 4 * 1024 * 1024
 )

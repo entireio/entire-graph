@@ -1,5 +1,5 @@
 // Package bench measures the performance and quality of the semantic provider
-// over a set of repositories. It is the measured core of the sem-bench tool:
+// over a set of repositories. It is the measured core of the graph-bench tool:
 // the analysis it runs is local-only (no egress), so cloning happens elsewhere
 // and this package only reads already-present source.
 package bench
@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/entireio/entire-sem/internal/sem"
+	"github.com/entireio/entire-graph/internal/sem"
 )
 
 // RepoMetrics captures the performance and quality of analyzing one repository.

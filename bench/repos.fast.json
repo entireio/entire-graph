@@ -1,5 +1,5 @@
 {
-  "_comment": "Fast tier: a curated subset of repos.json (3 small/medium repos per language, no mega-repos) for quick per-phase runs. Every entry is also in repos.json, so it is pinned by the shared repos.lock.json and reuses the same clone cache. Run: sem-bench -manifest bench/repos.fast.json",
+  "_comment": "Fast tier: a curated subset of repos.json (3 small/medium repos per language, no mega-repos) for quick per-phase runs. Every entry is also in repos.json, so it is pinned by the shared repos.lock.json and reuses the same clone cache. Run: graph-bench -manifest bench/repos.fast.json",
   "languages": {
     "Bash": ["rbenv/rbenv", "tj/n", "pyenv/pyenv"],
     "C": ["wg/wrk", "redis/redis", "curl/curl"],

@@ -1,24 +1,24 @@
 # Benchmarks
 
-Reproducible performance and quality measurement for `entire-sem`, per v2-plan
-WP10. The harness lives in `cmd/sem-bench` (driver) and `internal/bench`
+Reproducible performance and quality measurement for `entire-graph`, per v2-plan
+WP10. The harness lives in `cmd/graph-bench` (driver) and `internal/bench`
 (measurement core); see `bench/README.md` for layout and flags.
 
 ## Running
 
 ```sh
 # Pin repo commits once (writes bench/repos.lock.json) — commit the result.
-go run ./cmd/sem-bench -update-lock
+go run ./cmd/graph-bench -update-lock
 
 # Fast tier — routine per-phase tracking (minutes):
-go run ./cmd/sem-bench -manifest bench/repos.fast.json
+go run ./cmd/graph-bench -manifest bench/repos.fast.json
 
 # Full tier — all 24 languages x 10 repos (slow; includes mega-repos):
-go run ./cmd/sem-bench
+go run ./cmd/graph-bench
 
 # Quick subset / offline:
-go run ./cmd/sem-bench -languages Go,Rust -limit 3
-go run ./cmd/sem-bench -skip-clone
+go run ./cmd/graph-bench -languages Go,Rust -limit 3
+go run ./cmd/graph-bench -skip-clone
 ```
 
 For long runs, add `-progress` to print provider phase telemetry to stderr
@@ -26,7 +26,7 @@ without changing the JSON report. Guardrails can make local or CI runs fail
 after writing the report:
 
 ```sh
-go run ./cmd/sem-bench -profile syntax-only -languages Go -limit 1 \
+go run ./cmd/graph-bench -profile syntax-only -languages Go -limit 1 \
   -min-loc-per-sec 50000 -max-rss-bytes 1000000000
 ```
 
@@ -37,13 +37,13 @@ or medium runs make the trade-off visible:
 
 ```sh
 # syntax-only — fastest; symbol inventory + structure only.
-go run ./cmd/sem-bench -profile syntax-only -languages Go -limit 3
+go run ./cmd/graph-bench -profile syntax-only -languages Go -limit 3
 
 # fast — symbols, imports, shallow calls, boundaries, IaC; no deep relations.
-go run ./cmd/sem-bench -profile fast -languages Go,Python -limit 5
+go run ./cmd/graph-bench -profile fast -languages Go,Python -limit 5
 
 # full — the complete relation graph (default).
-go run ./cmd/sem-bench -profile full -languages Go,Python,TypeScript -limit 5
+go run ./cmd/graph-bench -profile full -languages Go,Python,TypeScript -limit 5
 ```
 
 Read speed/throughput numbers from `fast` (and `syntax-only` for the floor), and

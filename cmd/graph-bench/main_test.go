@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/entireio/entire-sem/internal/bench"
-	"github.com/entireio/entire-sem/internal/sem"
+	"github.com/entireio/entire-graph/internal/bench"
+	"github.com/entireio/entire-graph/internal/sem"
 )
 
 func TestParseProfile(t *testing.T) {

@@ -1,6 +1,6 @@
 # Semantic Provider Benchmark
 
-`sem-bench` clones popular real-world repositories per language and measures the
+`graph-bench` clones popular real-world repositories per language and measures the
 semantic provider over them, emitting a machine-readable performance and quality
 report. It is the WP10 harness from the v2-plan and is meant to be re-run each
 work phase to track regressions and quality gains.
@@ -39,28 +39,28 @@ by a handful of giant repositories and can take 1.5-3 hours.
 | `bench/.cache/`          | Cloned repositories (gitignored).                      |
 | `bench/results/`         | JSON reports, one per run (gitignored, local-only).    |
 | `internal/bench`         | Measurement core (unit-tested, no network).            |
-| `cmd/sem-bench`          | CLI driver (clone + measure + report).                 |
+| `cmd/graph-bench`          | CLI driver (clone + measure + report).                 |
 
 ## Usage
 
 ```sh
 # Fast tier — routine per-phase run (minutes):
-go run ./cmd/sem-bench -manifest bench/repos.fast.json
+go run ./cmd/graph-bench -manifest bench/repos.fast.json
 
 # Full tier — comprehensive run (slow; includes mega-repos):
-go run ./cmd/sem-bench
+go run ./cmd/graph-bench
 
 # Pin commits once (writes bench/repos.lock.json) — commit the result.
-go run ./cmd/sem-bench -update-lock
+go run ./cmd/graph-bench -update-lock
 
 # Subset while iterating:
-go run ./cmd/sem-bench -languages Go,Rust -limit 3
+go run ./cmd/graph-bench -languages Go,Rust -limit 3
 
 # Offline: measure repos already in the cache, no cloning.
-go run ./cmd/sem-bench -skip-clone
+go run ./cmd/graph-bench -skip-clone
 
 # Print the report to stdout instead of bench/results/.
-go run ./cmd/sem-bench -out -
+go run ./cmd/graph-bench -out -
 ```
 
 Both tiers share `bench/repos.lock.json`. After changing the manifests, refresh

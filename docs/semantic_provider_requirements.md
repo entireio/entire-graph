@@ -1,15 +1,15 @@
 # Semantic Provider Requirements
 
-This document describes the requirements for `entire-sem` to serve as the
+This document describes the requirements for `entire-graph` to serve as the
 semantic provider for Entire Brain.
 
-`entire-sem` should remain responsible for parsing and semantic extraction.
+`entire-graph` should remain responsible for parsing and semantic extraction.
 Entire Brain should remain responsible for persistence, indexing, query
 behavior, freshness policy, and agent presentation.
 
 ## Scope
 
-`entire-sem` is an artifact-emitting provider. It parses source and emits
+`entire-graph` is an artifact-emitting provider. It parses source and emits
 versioned semantic facts. It should not own the brain store, workspace model, or
 agent UX.
 
@@ -28,7 +28,7 @@ Required responsibilities:
 
 Phase 1 integration is local-only.
 
-During Phase 1 indexing, `entire-sem` must not:
+During Phase 1 indexing, `entire-graph` must not:
 
 - Fetch remote code.
 - Download grammars or parser assets.
@@ -45,15 +45,15 @@ assert that the provider can run without network egress.
 Initial command surface:
 
 ```sh
-entire sem doctor --json
-entire sem version --json
-entire sem capabilities --json
-entire sem snapshot --repo . --format ndjson
-entire sem symbols --repo . --format ndjson
-entire sem edges --repo . --format ndjson
-entire sem snapshot --repo . --format ndjson --worktree --ignore-file .brainignore
-entire sem snapshot --repo . --format ndjson --worktree --include-file .seminclude
-entire sem diff --base main --head HEAD --json
+entire graph doctor --json
+entire graph version --json
+entire graph capabilities --json
+entire graph snapshot --repo . --format ndjson
+entire graph symbols --repo . --format ndjson
+entire graph edges --repo . --format ndjson
+entire graph snapshot --repo . --format ndjson --worktree --ignore-file .brainignore
+entire graph snapshot --repo . --format ndjson --worktree --include-file .graphinclude
+entire graph diff --base main --head HEAD --json
 ```
 
 Whole-repo outputs should support newline-delimited JSON. Large repositories can
@@ -154,7 +154,7 @@ Compatibility policy:
 
 - Consumers refuse unknown major versions.
 - Consumers may ignore unknown fields within a supported major version.
-- If `entire-sem` emits a newer supported-major minor version, consumers should
+- If `entire-graph` emits a newer supported-major minor version, consumers should
   warn that some facts may have been skipped.
 - Unknown relation types should use an extension namespace, such as
   `X-provider-name:RELATION`.
@@ -164,7 +164,7 @@ Initial snapshot header:
 ```json
 {
   "schema_version": "1.1",
-  "provider": "entire-sem",
+  "provider": "entire-graph",
   "provider_version": "0.1.0",
   "repo_root": "/path/to/repo",
   "repo_key": "gh/org/repo",
@@ -242,12 +242,12 @@ disambiguated by signature hash plus a definition ordinal
 (`...#sig:<hash>[#<n>]`) rather than source line ranges, so overloads keep
 stable IDs across edits that shift line numbers. File moves and some renames are
 reconciled in the semantic diff (see below) rather than in the snapshot ID.
-`entire-sem` should document that breakage and emit enough diff data for later
+`entire-graph` should document that breakage and emit enough diff data for later
 rename reconciliation using body hash, signature similarity, and semantic diff
 records.
 
 If a change report spans a file rename or move that cannot be reconciled to
-stable symbols, `entire-sem` should emit an explicit warning instead of silently
+stable symbols, `entire-graph` should emit an explicit warning instead of silently
 dropping edges.
 
 Semantic diffs reconcile identity continuity and tag it with explicit
@@ -389,7 +389,7 @@ allowed as human detail, but every warning needs:
 One parser failure should not fail a whole-repo snapshot. The provider should
 emit partial failures and continue where possible.
 
-Impact-sensitive consumers need parse-failure thresholds, so `entire-sem` should
+Impact-sensitive consumers need parse-failure thresholds, so `entire-graph` should
 report enough aggregate stats to classify downstream reports as `ok`,
 `degraded`, or `unsafe`.
 
@@ -403,7 +403,7 @@ reported.
 
 ## Capability Reporting
 
-`entire sem capabilities --json` should report:
+`entire graph capabilities --json` should report:
 
 - supported file extensions
 - supported languages

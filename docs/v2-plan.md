@@ -1,10 +1,10 @@
-# Detailed Plan: `entire-sem`
+# Detailed Plan: `entire-graph`
 
 Date: 2026-06-18
 
 ## Purpose
 
-`entire-sem` should become the reliable semantic-fact provider for Entire's
+`entire-graph` should become the reliable semantic-fact provider for Entire's
 code-intelligence stack. It should not become a database, MCP server, graph UI,
 or agent-memory product. Its job is to parse source locally and emit accurate,
 versioned, confidence-scored facts that `entire-brain` can persist and query.
@@ -529,14 +529,14 @@ Acceptance:
 
 ### WP8: Semantic Similarity And Clone Hints
 
-Objective: provide useful local similarity facts without making `entire-sem` own
+Objective: provide useful local similarity facts without making `entire-graph` own
 vector search.
 
 Tasks:
 
 - Add MinHash/LSH-style near-clone detection over normalized symbol bodies.
 - Emit `SIMILAR_TO` only for high-confidence near duplicates.
-- Keep embedding/vector semantic search in Brain, not `entire-sem`.
+- Keep embedding/vector semantic search in Brain, not `entire-graph`.
 
 Acceptance:
 
@@ -574,7 +574,7 @@ memory-bounded rather than accumulating the whole graph.
 
 Delivered:
 
-- Benchmark harness in `cmd/sem-bench` (driver) and `internal/bench`
+- Benchmark harness in `cmd/graph-bench` (driver) and `internal/bench`
   (measurement core), cloning pinned popular repos per language and measuring
   the provider with no network egress. See `docs/benchmarks.md`.
 - The benchmark measures the production **streaming** path (`StreamSnapshot`),
@@ -593,7 +593,7 @@ Delivered:
 
 Acceptance (met):
 
-- Performance claims in docs cite reproducible `sem-bench` commands and a named
+- Performance claims in docs cite reproducible `graph-bench` commands and a named
   profile; docs do not claim memory is independent of relation count.
 - Large snapshots stay streaming-friendly and bounded as documented above.
 
@@ -633,7 +633,7 @@ Remaining/optional:
 
 ## Brain Integration Contract
 
-`entire-sem` should provide:
+`entire-graph` should provide:
 
 - Stable NDJSON snapshot stream.
 - Stable diff JSON.
@@ -666,7 +666,7 @@ Every new relation type needs:
 
 ## Documentation Updates
 
-Update `entire-sem` docs as work lands:
+Update `entire-graph` docs as work lands:
 
 - `README.md`: supported languages, commands, current limits.
 - `docs/semantic_provider_requirements.md`: schema and relation vocabulary.
@@ -686,11 +686,11 @@ Update `entire-sem` docs as work lands:
 - Performance regressions can hide behind richer facts. Mitigate with baseline
   benchmarks before each work package.
 - Sharing graph artifacts can leak private symbols/routes/config. Keep sharing
-  policy in Brain, not `entire-sem`.
+  policy in Brain, not `entire-graph`.
 
 ## Definition Of Done
 
-`entire-sem` reaches the graph-provider goal when:
+`entire-graph` reaches the graph-provider goal when:
 
 - It emits accurate enough symbols and relations for Brain to implement graph
   schema, graph search, call tracing, impact, snippet retrieval, dead-code, and

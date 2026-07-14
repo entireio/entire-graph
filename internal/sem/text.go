@@ -81,7 +81,7 @@ func shouldUseColor(out io.Writer) bool {
 	if os.Getenv("NO_COLOR") != "" {
 		return false
 	}
-	if os.Getenv("ENTIRE_SEM_FORCE_COLOR") != "" || os.Getenv("FORCE_COLOR") != "" {
+	if os.Getenv("ENTIRE_GRAPH_FORCE_COLOR") != "" || os.Getenv("FORCE_COLOR") != "" {
 		return true
 	}
 	if strings.EqualFold(os.Getenv("TERM"), "dumb") {

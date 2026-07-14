@@ -3,7 +3,7 @@
 Date: 2026-06-18
 Schema: `1.1`
 
-This report documents what `entire-sem` emits today, per the v2-plan WP1
+This report documents what `entire-graph` emits today, per the v2-plan WP1
 ("Baseline Audit And Golden Harness"). It is the human-readable companion to the
 machine-readable golden baselines under
 `internal/sem/testdata/fixtures/*.ndjson.golden`, which are the authoritative

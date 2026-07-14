@@ -10799,8 +10799,8 @@ func TestEntitySymbolsKeepCompoundIDStableAcrossBodyEdits(t *testing.T) {
 func TestBuildProviderSnapshotReadsAdvertisedHeadTree(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 	writeFile(t, repo, "tracked.py", "def committed():\n    return True\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "initial")
@@ -10834,8 +10834,8 @@ func TestBuildProviderSnapshotReadsAdvertisedHeadTree(t *testing.T) {
 func TestBuildProviderSnapshotEmitsFileChangesWithFromGitHistory(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 
 	writeFile(t, repo, "a.go", "package p\n\nfunc A() {}\n")
 	writeFile(t, repo, "b.go", "package p\n\nfunc B() {}\n")
@@ -10869,8 +10869,8 @@ func TestBuildProviderSnapshotEmitsFileChangesWithFromGitHistory(t *testing.T) {
 func TestBuildProviderSnapshotWorktreeIncludesDirtyFiles(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 	writeFile(t, repo, "tracked.py", "def committed():\n    return True\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "initial")
@@ -10949,7 +10949,7 @@ func TestBuildProviderSnapshotWorktreeHonorsAdditionalIgnoreFile(t *testing.T) {
 func TestBuildProviderSnapshotWorktreeCombinesMultipleIgnoreFiles(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, ".brainignore", "cache/\n")
-	writeFile(t, repo, ".semignore", "# comments and blanks are ignored\n\n**/generated.py\nbenchmarks/agent-brain/results/\n")
+	writeFile(t, repo, ".graphignore", "# comments and blanks are ignored\n\n**/generated.py\nbenchmarks/agent-brain/results/\n")
 	writeFile(t, repo, "cache/cache.py", "def cache():\n    return True\n")
 	writeFile(t, repo, "src/generated.py", "def generated():\n    return True\n")
 	writeFile(t, repo, "benchmarks/agent-brain/results/result.py", "def result():\n    return True\n")
@@ -10957,7 +10957,7 @@ func TestBuildProviderSnapshotWorktreeCombinesMultipleIgnoreFiles(t *testing.T) 
 
 	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{
 		Worktree:    true,
-		IgnoreFiles: []string{".brainignore", ".semignore"},
+		IgnoreFiles: []string{".brainignore", ".graphignore"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -10977,13 +10977,13 @@ func TestBuildProviderSnapshotWorktreeCombinesMultipleIgnoreFiles(t *testing.T) 
 func TestBuildProviderSnapshotWorktreeIncludeFileReopensIgnoredDirectory(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, ".gitignore", "cache/\n")
-	writeFile(t, repo, ".seminclude", "cache/\n")
+	writeFile(t, repo, ".graphinclude", "cache/\n")
 	writeFile(t, repo, "cache/included.py", "def included():\n    return True\n")
 	writeFile(t, repo, "src/keep.py", "def keep():\n    return True\n")
 
 	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{
 		Worktree:     true,
-		IncludeFiles: []string{".seminclude"},
+		IncludeFiles: []string{".graphinclude"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -11000,13 +11000,13 @@ func TestBuildProviderSnapshotWorktreeIncludeFileReopensIgnoredDirectory(t *test
 func TestBuildProviderSnapshotWorktreeIncludeFileWinsAfterIgnoreFile(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, ".brainignore", "generated/\n")
-	writeFile(t, repo, ".seminclude", "generated/\n")
+	writeFile(t, repo, ".graphinclude", "generated/\n")
 	writeFile(t, repo, "generated/included.py", "def included():\n    return True\n")
 
 	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{
 		Worktree:     true,
 		IgnoreFiles:  []string{".brainignore"},
-		IncludeFiles: []string{".seminclude"},
+		IncludeFiles: []string{".graphinclude"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -11020,13 +11020,13 @@ func TestBuildProviderSnapshotWorktreeIncludeFileWinsAfterIgnoreFile(t *testing.
 func TestBuildProviderSnapshotWorktreeIncludeDirectoryKeepsSpecificFileIgnore(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, ".gitignore", "cache/\ncache/skip.py\n")
-	writeFile(t, repo, ".seminclude", "cache/\n")
+	writeFile(t, repo, ".graphinclude", "cache/\n")
 	writeFile(t, repo, "cache/include.py", "def include_me():\n    return True\n")
 	writeFile(t, repo, "cache/skip.py", "def skip_me():\n    return True\n")
 
 	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{
 		Worktree:     true,
-		IncludeFiles: []string{".seminclude"},
+		IncludeFiles: []string{".graphinclude"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -11043,18 +11043,18 @@ func TestBuildProviderSnapshotWorktreeIncludeDirectoryKeepsSpecificFileIgnore(t 
 func TestBuildProviderSnapshotHeadHonorsIgnoreAndIncludeFiles(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
-	writeFile(t, repo, ".semignore", "*\n")
-	writeFile(t, repo, ".seminclude", "src/keep.py\n")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	writeFile(t, repo, ".graphignore", "*\n")
+	writeFile(t, repo, ".graphinclude", "src/keep.py\n")
 	writeFile(t, repo, "src/keep.py", "def keep_me():\n    return True\n")
 	writeFile(t, repo, "src/drop.py", "def drop_me():\n    return False\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "initial")
 
 	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{
-		IgnoreFiles:  []string{".semignore"},
-		IncludeFiles: []string{".seminclude"},
+		IgnoreFiles:  []string{".graphignore"},
+		IncludeFiles: []string{".graphinclude"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -11130,8 +11130,8 @@ func TestBuildProviderSnapshotMissingIgnoreFileFailsClosed(t *testing.T) {
 func TestBuildProviderSnapshotHeadDoesNotReadLiveIgnoreFiles(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 	writeFile(t, repo, "tracked.py", "def committed():\n    return True\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "initial")
@@ -11464,8 +11464,8 @@ func TestBuildProviderSnapshotWorktreeKeepsTrackedBuildDir(t *testing.T) {
 	// directory stays excluded.
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 	writeFile(t, repo, "src/build/lib.ts", "export function collectTraces(): number {\n  return 1\n}\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "initial")
@@ -11490,8 +11490,8 @@ func TestBuildProviderSnapshotHeadKeepsTrackedBuildDir(t *testing.T) {
 	// filtered from it.
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 	writeFile(t, repo, "src/build/lib.ts", "export function collectTraces(): number {\n  return 1\n}\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "initial")
@@ -11529,8 +11529,8 @@ func TestBuildProviderSnapshotWorktreeDepsGitignoreNegation(t *testing.T) {
 	// walked, with the ignore rules keeping the fetched dependencies out.
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 	writeFile(t, repo, ".gitignore", "/deps/*\n!/deps/rabbit/\n")
 	writeFile(t, repo, "deps/rabbit/src/app.py", "def first_party_app():\n    return True\n")
 	git(t, repo, "add", ".")
@@ -13616,7 +13616,7 @@ fn definitionToken() void {
 }
 
 func TestGoSelfModuleImportResolvesCrossPackageCall(t *testing.T) {
-	// entire-sem's own snapshot missed cli->sem edges: a package imported
+	// entire-graph's own snapshot missed cli->sem edges: a package imported
 	// via the repo's own module path ("github.com/acme/tool/internal/sem")
 	// fell through to an external fallback because the module prefix was
 	// never mapped back to the in-repo package directory.

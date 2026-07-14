@@ -19,23 +19,23 @@ build_target() {
 		return 1
 	fi
 
-	bin="entire-sem"
+	bin="entire-graph"
 	case "$goos" in
 		windows) bin="$bin.exe" ;;
 	esac
 
-	work="$out_dir/entire-sem-$version-$goos-$goarch"
-	archive="$out_dir/entire-sem-$version-$goos-$goarch.tar.gz"
+	work="$out_dir/entire-graph-$version-$goos-$goarch"
+	archive="$out_dir/entire-graph-$version-$goos-$goarch.tar.gz"
 	rm -rf "$work"
 	mkdir -p "$work"
 
 	printf 'building %s/%s\n' "$goos" "$goarch" >&2
 	GOOS="$goos" GOARCH="$goarch" CGO_ENABLED="${CGO_ENABLED:-1}" \
 		go build -trimpath -ldflags "-s -w -X main.version=$version" \
-		-o "$work/$bin" ./cmd/entire-sem
+		-o "$work/$bin" ./cmd/entire-graph
 
 	cp README.md LICENSE entire-plugin.yml "$work/"
-	tar -C "$out_dir" -czf "$archive" "entire-sem-$version-$goos-$goarch"
+	tar -C "$out_dir" -czf "$archive" "entire-graph-$version-$goos-$goarch"
 	rm -rf "$work"
 	shasum -a 256 "$archive" >> "$out_dir/SHA256SUMS"
 	sign_artifact "$archive"
