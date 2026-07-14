@@ -297,14 +297,19 @@ range, signature, body hash, language, and container ID when the symbol is neste
 External endpoint records describe relation targets such as imported modules,
 routes, and tool handlers.
 
-Current relation records are:
+Schema 1.1 defines 30 relation types. Structural: `DEFINES`, `CONTAINS`,
+`IMPORTS`. Calls and construction: `CALLS`, `CONSTRUCTS`, `ASYNC_CALLS`.
+Types and inheritance: `EXTENDS`, `INHERITS`, `IMPLEMENTS`, `OVERRIDES`,
+`USES_TYPE`, `PARAM_TYPE`, `RETURNS_TYPE`. Fields: `READS_FIELD`,
+`WRITES_FIELD`, `ACCESSES`. Boundaries: `HANDLES_ROUTE`, `HANDLES_GRPC`,
+`HANDLES_GRAPHQL`, `HANDLES_TRPC`, `HTTP_CALLS`, `EMITS`, `LISTENS_ON`,
+`HANDLES_TOOL`. Configuration and analysis: `CONFIGURES`, `SIMILAR_TO`,
+`TESTS`, `RESOURCE_DEPENDS_ON`, `DATA_FLOWS`, `FILE_CHANGES_WITH`.
 
-- `DEFINES`
-- `CONTAINS`
-- `IMPORTS`
-- `CALLS`
-- `HANDLES_ROUTE`
-- `HANDLES_TOOL`
+Indexing profiles emit subsets: `syntax-only` emits `DEFINES` and `CONTAINS`,
+`fast` adds imports, shallow calls, and boundary relations, and `full` emits
+every relation type with evidence fields. `capabilities --json` reports the
+supported relation types per language.
 
 Unsupported but detected source files are reported as machine-readable partial
 failures instead of disappearing silently. Supported files with tree-sitter syntax
