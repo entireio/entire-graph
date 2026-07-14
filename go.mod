@@ -1,4 +1,4 @@
-module github.com/entireio/entire-sem
+module github.com/entireio/entire-graph
 
 go 1.24
 

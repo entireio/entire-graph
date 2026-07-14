@@ -1,5 +1,5 @@
 {
-  "_comment": "Popular GitHub repositories per language for the semantic benchmark: 10 per language for every language the provider supports (see 'entire-sem capabilities'). Entries are owner/name, optionally owner/name@ref to pin a tag/sha in the manifest. Commit pinning for reproducible runs is normally recorded in repos.lock.json via 'sem-bench -update-lock'. Some repos are very large; use -languages/-limit for quick iterations.",
+  "_comment": "Popular GitHub repositories per language for the semantic benchmark: 10 per language for every language the provider supports (see 'entire-graph capabilities'). Entries are owner/name, optionally owner/name@ref to pin a tag/sha in the manifest. Commit pinning for reproducible runs is normally recorded in repos.lock.json via 'graph-bench -update-lock'. Some repos are very large; use -languages/-limit for quick iterations.",
   "languages": {
     "Bash": [
       "ohmyzsh/ohmyzsh",

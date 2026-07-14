@@ -11,8 +11,8 @@ import (
 func TestAnalyzeGitRange(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 
 	write(t, repo, "auth.py", `def validate_token(token):
     return bool(token)
@@ -46,8 +46,8 @@ def format_date(value):
 func TestAnalyzeGitRangeReconcilesCrossFileMove(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 
 	write(t, repo, "util.py", `def transform(value):
     return value * 2
@@ -115,8 +115,8 @@ def transform(value):
 func TestAnalyzeGitRangeDependentCounts(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 
 	write(t, repo, "auth.py", `def validate_token(token):
     return bool(token)
@@ -151,8 +151,8 @@ func TestAnalyzeGitRangeDependentCounts(t *testing.T) {
 func TestAnalyzeGitRangeExpandedLanguageSignatureChange(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 
 	write(t, repo, "User.java", `class User {
     boolean validate(String token) { return true; }
@@ -191,8 +191,8 @@ func TestAnalyzeGitRangeExpandedLanguageSignatureChange(t *testing.T) {
 func TestAnalyzeGitRangeIncludesGitHubWorkflowYAML(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 
 	write(t, repo, ".github/workflows/ci.yml", `name: CI
 on:
@@ -258,8 +258,8 @@ jobs:
 func TestAnalyzeCheckpointResolvesAssociatedCommit(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 
 	write(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
 	git(t, repo, "add", ".")

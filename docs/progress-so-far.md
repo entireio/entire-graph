@@ -23,10 +23,10 @@ Branch: `semantic-provider-contract`
 
 - `go test ./...` passed.
 - Smoke-tested:
-  - `go run ./cmd/entire-sem version --json`
-  - `go run ./cmd/entire-sem doctor --json`
-  - `go run ./cmd/entire-sem capabilities --json`
-  - `go run ./cmd/entire-sem snapshot --repo . --format ndjson`
+  - `go run ./cmd/entire-graph version --json`
+  - `go run ./cmd/entire-graph doctor --json`
+  - `go run ./cmd/entire-graph capabilities --json`
+  - `go run ./cmd/entire-graph snapshot --repo . --format ndjson`
 - Committed implementation checkpoint:
   - `3c7913e Implement semantic provider contract`
 - Pushed branch:

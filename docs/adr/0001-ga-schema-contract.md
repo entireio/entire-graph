@@ -5,7 +5,7 @@ Date: 2026-07-03
 
 ## Context
 
-`entire-sem` emits a semantic index consumed by downstream tools (notably
+`entire-graph` emits a semantic index consumed by downstream tools (notably
 `entire-brain`). The wire format carries `schema_version` in `major.minor` form.
 The provider currently advertises **`1.1`** (`internal/sem/provider.go`
 `SchemaVersion`), where the `1.1` minor adds *optional, additive* relation fields
@@ -47,6 +47,6 @@ The contract, stable for the entire `1.x` major:
 - The `1.1` additive relation fields are part of GA; they are not gated or
   experimental.
 - A follow-up adds a brain-side ingestion contract test that asserts
-  `entire-brain` parses current `entire-sem` `1.x` output (tracked separately).
+  `entire-brain` parses current `entire-graph` `1.x` output (tracked separately).
 - The stale `1.0` example header in `semantic_provider_requirements.md` is updated
   to `1.1` for consistency with the emitted version.

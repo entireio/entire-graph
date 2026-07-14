@@ -205,7 +205,7 @@ func FileCochanges(ctx context.Context, repo string, maxCommits int) ([]FileCoch
 	// keys. The per-commit marker is emitted via --pretty=format; under -z each
 	// commit's output is either the marker alone (no files, e.g. a merge) or
 	// "<marker>\n<first file>" followed by NUL-separated paths.
-	const marker = "--entire-sem-commit--"
+	const marker = "--entire-graph-commit--"
 	// maxFilesPerCommit bounds the O(n^2) co-change pair expansion for a single
 	// commit. A commit touching more files than this is a mass change (initial
 	// import, tree-wide rename/format, generated-file regeneration, large merge),

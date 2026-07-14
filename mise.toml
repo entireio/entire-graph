@@ -19,7 +19,7 @@ run = "go test -race ./..."
 
 [tasks.build]
 description = "Build the plugin binary"
-run = "go build -o entire-sem ./cmd/entire-sem"
+run = "go build -o entire-graph ./cmd/entire-graph"
 
 [tasks.install]
 description = "Build and install the plugin into the local Entire CLI"

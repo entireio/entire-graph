@@ -10,6 +10,6 @@ if ! command -v entire >/dev/null 2>&1; then
 fi
 
 version=${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || printf 'dev')}
-go build -trimpath -ldflags "-X main.version=$version" -o entire-sem ./cmd/entire-sem
-entire plugin install ./entire-sem --force
-entire sem version
+go build -trimpath -ldflags "-X main.version=$version" -o entire-graph ./cmd/entire-graph
+entire plugin install ./entire-graph --force
+entire graph version

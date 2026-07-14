@@ -235,8 +235,8 @@ func TestSearchRepositoryRejectsStopWordsOnly(t *testing.T) {
 func TestSearchRepositoryPreservesHeadProvenanceWhenPreselectionIsEmpty(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 	write(t, repo, "alpha.go", "package source\nfunc Alpha() {}\n")
 	write(t, repo, "beta.go", "package source\nfunc Beta() {}\n")
 	git(t, repo, "add", ".")
@@ -264,8 +264,8 @@ func TestSearchRepositoryPreservesSourceWarningsWhenPreselectionIsEmpty(t *testi
 	t.Run("worktree", func(t *testing.T) {
 		repo := t.TempDir()
 		git(t, repo, "init")
-		git(t, repo, "config", "user.name", "Entire Sem Test")
-		git(t, repo, "config", "user.email", "sem@example.com")
+		git(t, repo, "config", "user.name", "Entire Graph Test")
+		git(t, repo, "config", "user.email", "graph@example.com")
 		write(t, repo, "alpha.go", "package source\nfunc Alpha() {}\n")
 		write(t, repo, "beta.go", "package source\nfunc Beta() {}\n")
 		git(t, repo, "add", ".")
@@ -311,8 +311,8 @@ func TestSearchRepositoryPreservesSourceWarningsWhenPreselectionIsEmpty(t *testi
 func TestSearchRepositoryReusesCommittedIndexCache(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 	write(t, repo, "auth.go", `package auth
 
 // ValidateToken verifies an authentication token.
@@ -472,8 +472,8 @@ func TestSearchRepositoryKeepsFullTermPathOnlyCandidates(t *testing.T) {
 func TestSearchRepositoryKeepsUntrackedFiles(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 	for index := 0; index < 20; index++ {
 		write(t, repo, fmt.Sprintf("src/noise_%02d.go", index), fmt.Sprintf("package source\nfunc Noise%d() int { return %d }\n", index, index))
 	}
@@ -498,8 +498,8 @@ func TestSearchRepositoryKeepsUntrackedFiles(t *testing.T) {
 func TestSearchRepositoryGitPreselectionKeepsFallbackTiers(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Sem Test")
-	git(t, repo, "config", "user.email", "sem@example.com")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
 	write(t, repo, "noise/selected.go", "package noise\n// sentinel alphaone\nfunc SelectedNoise() {}\n")
 	write(t, repo, "targets/morph.go", "package targets\n// configure\nfunc MorphTarget() {}\n")
 	write(t, repo, "targets/fragment.go", "package targets\n// profile\nfunc FragmentTarget() {}\n")

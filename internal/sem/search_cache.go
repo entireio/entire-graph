@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/entireio/entire-sem/internal/gitutil"
+	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
 const searchSnapshotCacheVersion = "search-snapshot-v1"

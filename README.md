@@ -1,24 +1,24 @@
-# Entire Sem
+# Entire Graph
 
-`entire-sem` is an Entire CLI plugin for entity-level checkpoint context.
+`entire-graph` is an Entire CLI plugin for entity-level checkpoint context.
 
 Entire already knows a checkpoint touched `auth.py` or `.github/workflows/ci.yml`.
 This plugin answers the next question: which semantic entities changed inside that file?
 
-This plugin builds a binary named `entire-sem`, which is invoked through Entire as:
+This plugin builds a binary named `entire-graph`, which is invoked through Entire as:
 
 ```sh
-entire sem commit HEAD
-entire sem checkpoint abc123def456
-entire sem diff --base HEAD~1 --head HEAD
-entire sem analyze --json
-entire sem capabilities --json
-entire sem snapshot --repo . --format ndjson
-entire sem symbols --repo . --format ndjson
-entire sem edges --repo . --format ndjson
-entire sem search --repo . --query "where is service config disabled?"
-entire sem snapshot --repo . --format ndjson --worktree --ignore-file .brainignore
-entire sem snapshot --repo . --format ndjson --worktree --include-file .seminclude
+entire graph commit HEAD
+entire graph checkpoint abc123def456
+entire graph diff --base HEAD~1 --head HEAD
+entire graph analyze --json
+entire graph capabilities --json
+entire graph snapshot --repo . --format ndjson
+entire graph symbols --repo . --format ndjson
+entire graph edges --repo . --format ndjson
+entire graph search --repo . --query "where is service config disabled?"
+entire graph snapshot --repo . --format ndjson --worktree --ignore-file .brainignore
+entire graph snapshot --repo . --format ndjson --worktree --include-file .graphinclude
 ```
 
 ## Status
@@ -67,32 +67,32 @@ Requirements:
 - Git
 - Go toolchain with CGO support (tree-sitter uses native parser bindings)
 
-Install the plugin binary with Go, then copy it into Entire's managed plugin
-directory:
+Install the current plugin binary from the default branch, then copy it into
+Entire's managed plugin directory:
 
 ```sh
-go install github.com/entireio/entire-sem/cmd/entire-sem@latest
-entire plugin install "$(go env GOPATH)/bin/entire-sem" --force
-entire sem version
+go install github.com/entireio/entire-graph/cmd/entire-graph@main
+entire plugin install "$(go env GOPATH)/bin/entire-graph" --force
+entire graph version
 ```
 
 If `$(go env GOPATH)/bin` is already on your `PATH`, Entire can also discover
 the binary directly after `go install`.
 
 Entire plugins are currently local executables, not a hosted plugin marketplace:
-`entire sem` works because Entire discovers an `entire-sem` binary from its
+`entire graph` works because Entire discovers an `entire-graph` binary from its
 managed plugin directory or from `$PATH`.
 
 ## Install From Source
 
 ```sh
-git clone https://github.com/entireio/entire-sem.git
-cd entire-sem
+git clone https://github.com/entireio/entire-graph.git
+cd entire-graph
 mise run build
-entire plugin install ./entire-sem --force
+entire plugin install ./entire-graph --force
 ```
 
-After either install path, `entire sem ...` works anywhere the Entire CLI can
+After either install path, `entire graph ...` works anywhere the Entire CLI can
 find the managed plugin.
 
 For a one-command local source install, run:
@@ -114,7 +114,7 @@ See [docs/operations.md](docs/operations.md) for target and cgo details.
 Search the live working tree for ranked source regions:
 
 ```sh
-entire sem search --repo . --query "where is service config disabled?" --top-k 20
+entire graph search --repo . --query "where is service config disabled?" --top-k 20
 ```
 
 `search` combines source-body matching, identifier splitting, symbol names and
@@ -139,41 +139,41 @@ stale results after edits.
 Compare one commit against its first parent:
 
 ```sh
-entire sem commit HEAD
+entire graph commit HEAD
 ```
 
 Compare two arbitrary refs:
 
 ```sh
-entire sem diff --base main --head HEAD
+entire graph diff --base main --head HEAD
 ```
 
 Emit JSON:
 
 ```sh
-entire sem diff --base main --head HEAD --json
+entire graph diff --base main --head HEAD --json
 ```
 
 Analyze the commit associated with an Entire checkpoint trailer:
 
 ```sh
-entire sem checkpoint abc123def456
+entire graph checkpoint abc123def456
 ```
 
 Inspect the provider and its environment:
 
 ```sh
-entire sem version --json
-entire sem doctor --json
-entire sem capabilities --json
+entire graph version --json
+entire graph doctor --json
+entire graph capabilities --json
 ```
 
 Emit semantic provider records:
 
 ```sh
-entire sem snapshot --repo . --format ndjson
-entire sem symbols --repo . --format ndjson
-entire sem edges --repo . --format ndjson
+entire graph snapshot --repo . --format ndjson
+entire graph symbols --repo . --format ndjson
+entire graph edges --repo . --format ndjson
 ```
 
 `snapshot` writes a complete NDJSON stream: one header record followed by file,
@@ -191,7 +191,7 @@ callers to reopen otherwise ignored paths.
 Run without installing through Entire:
 
 ```sh
-ENTIRE_REPO_ROOT=/path/to/repo ./entire-sem diff --base HEAD~1 --head HEAD
+ENTIRE_REPO_ROOT=/path/to/repo ./entire-graph diff --base HEAD~1 --head HEAD
 ```
 
 ## Provider Contract
@@ -257,7 +257,7 @@ auth.py
 ## Use Case
 
 When an agent changes a repo, you often need to decide if the checkpoint is safe
-to keep, revert, or continue from. File names are not enough. `entire-sem` shows
+to keep, revert, or continue from. File names are not enough. `entire-graph` shows
 the actual code entities, workflow sections, signatures, and renames that changed,
 so you can understand the checkpoint before reading the full diff.
 
@@ -265,7 +265,7 @@ so you can understand the checkpoint before reading the full diff.
 
 Issue [entireio/cli#589](https://github.com/entireio/cli/issues/589) proposes showing
 checkpoint context at the entity level instead of stopping at "this file changed."
-`entire-sem` is a plugin-shaped implementation of that idea:
+`entire-graph` is a plugin-shaped implementation of that idea:
 
 - parse the before and after git trees with tree-sitter
 - extract named entities like functions, classes, methods, structs, traits, types,
@@ -288,5 +288,5 @@ its own upstream MIT license: Dart (`internal/sem/grammars/dart/`), PostgreSQL
 - `CALLS`, `HANDLES_ROUTE`, and `HANDLES_TOOL` relations are heuristic.
 - Rename detection is heuristic.
 - Unsupported languages are reported as partial failures, not parsed semantically.
-- The plugin is invoked as `entire sem ...`; it does not require changes to the
+- The plugin is invoked as `entire graph ...`; it does not require changes to the
   main Entire CLI repository.

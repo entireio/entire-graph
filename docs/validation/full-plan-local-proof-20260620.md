@@ -6,115 +6,115 @@ Branch: `codex/full-plan-implementation`
 
 ```sh
 go test ./...
-go run ./cmd/entire-sem capabilities --json
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile full -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.json -languages C -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results -max-rss-bytes 5000000000
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/entire-graph capabilities --json
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile full -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.json -languages C -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results -max-rss-bytes 5000000000
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-full-plan -out bench/results
 go test ./internal/bench -run TestMeasureRepoEnforcesLiveRSSGuard
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version guard-test -out - -max-rss-bytes 1
-go build -o /tmp/sem-bench ./cmd/sem-bench
-/tmp/sem-bench -skip-clone -manifest bench/repos.json -languages C -limit 1 -profile fast -provider-version codex-fast-c-scan -out bench/results -max-rss-bytes 5000000000 -min-loc-per-sec 150000
-go run ./cmd/sem-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-k8s-crd-refs -out bench/results
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-collection-flow -min-loc-per-sec 1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-istio-resource-refs -min-loc-per-sec 1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-object-literal-flow -min-loc-per-sec 1
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version guard-test -out - -max-rss-bytes 1
+go build -o /tmp/graph-bench ./cmd/graph-bench
+/tmp/graph-bench -skip-clone -manifest bench/repos.json -languages C -limit 1 -profile fast -provider-version codex-fast-c-scan -out bench/results -max-rss-bytes 5000000000 -min-loc-per-sec 150000
+go run ./cmd/graph-bench -skip-clone -manifest bench/repos.fast.json -languages Go -limit 1 -profile syntax-only -provider-version codex-k8s-crd-refs -out bench/results
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-collection-flow -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-istio-resource-refs -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-object-literal-flow -min-loc-per-sec 1
 go test ./internal/sem -run 'TestStaticArrayJoinRouteExpressionComposesAndBridgesHTTPClient|TestComputedRouteExpressionComposesAndBridgesHTTPClient|TestBuildProviderSnapshotEmitsImportedExternalCalls' -count=1
 go test ./...
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-array-join-routes -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-array-join-routes -min-loc-per-sec 1
 go test ./internal/sem -run 'TestStaticArrayJoinRouteExpressionComposesAndBridgesHTTPClient|TestHTTPCallsBridgeToLocalRouteHandler|TestComputedRouteExpressionComposesAndBridgesHTTPClient' -count=1
 go test ./...
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-array-join-http-calls -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-array-join-http-calls -min-loc-per-sec 1
 go test ./internal/sem -run 'TestGraphQLSchemaFieldEntities|TestBuildProviderSnapshotEmitsGraphQLSchemaBoundaries|TestBuildProviderSnapshotEmitsGraphQLResolverBoundaries|TestTreeSitterParserTypeScriptGraphQLResolverEntities' -count=1
-go run ./cmd/entire-sem capabilities --json
+go run ./cmd/entire-graph capabilities --json
 go test ./...
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-graphql-schema-fields -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-graphql-schema-fields -min-loc-per-sec 1
 go test ./internal/sem -run 'TestKubernetes(ResourceDependencies|ResourceReferencesIncludeNamespaceQualifiedExternalNames)|TestProviderGoldenFixtureQualityCoverageReport' -count=1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-k8s-namespaced-resource-refs -min-loc-per-sec 1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-namespace-refs -min-loc-per-sec 1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-vpa-refs -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-k8s-namespaced-resource-refs -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-namespace-refs -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-vpa-refs -min-loc-per-sec 1
 go test ./internal/sem -run 'TestTreeSitterParserTypeScriptGraphQLResolverEntities|TestGraphQLSchemaFieldsLinkToResolverFields|TestProviderGoldenFixtureQualityCoverageReport' -count=1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-graphql-ref-resolvers -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-graphql-ref-resolvers -min-loc-per-sec 1
 go test ./internal/sem -run 'TestTreeSitterParserTypeScriptGraphQL.*Resolver|TestGraphQLSchemaFieldsLinkTo.*Resolver|TestProviderGoldenFixtureQualityCoverageReport' -count=1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-modular-graphql-resolvers -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-modular-graphql-resolvers -min-loc-per-sec 1
 go test ./internal/sem -run 'TestURLPathnameRouteConstantComposesAndBridgesHTTPClient|TestStaticArrayJoinRouteExpressionComposesAndBridgesHTTPClient|TestStringRawTemplateRouteExpressionComposesAndBridgesHTTPClient' -count=1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-static-url-path-routes -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-static-url-path-routes -min-loc-per-sec 1
 go test ./internal/sem -run 'TestBuildProviderSnapshotEmits(DestructuredAliasForward|AliasForward|ObjectFieldForward|ObjectLiteralForward|CollectionElementForward)DataFlow' -count=1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-destructured-alias-flow -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-destructured-alias-flow -min-loc-per-sec 1
 go test ./internal/sem -run 'TestTypeScriptManifestImportsResolveThrough(NestedPackageJSON|PackageAndTSConfig|ExportsImportsAndImportMap)' -count=1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-nested-js-package-imports -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-nested-js-package-imports -min-loc-per-sec 1
 go test ./internal/sem -run 'TestPythonImportedRouterPrefixComposesAndBridgesHTTPClient|TestFlaskBlueprintPrefixComposesAndBridgesHTTPClient|TestFlaskImportedBlueprintAliasComposesAndBridgesHTTPClient' -count=1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-flask-blueprint-alias -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-flask-blueprint-alias -min-loc-per-sec 1
 go test ./internal/sem -run 'TestDjangoIncludeURLPatternsComposeHandlersAndBridgeHTTPClients|TestDjangoImportedIncludeURLConfComposesHandlersAndBridgeHTTPClients|TestProviderGoldenSnapshots/python-imports' -count=1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-django-urlconf-alias -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-django-urlconf-alias -min-loc-per-sec 1
 go test ./internal/sem -run 'TestBuildProviderSnapshotEmits(CollectionElementForward|CollectionLiteralElementForward|PythonCollectionLiteralElementForward)DataFlow' -count=1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-collection-literal-flow -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-collection-literal-flow -min-loc-per-sec 1
 go test ./internal/sem -run 'TestBuildProviderSnapshotEmits(ObjectLiteralForward|ObjectShorthandForward|PythonDictLiteralForward|CollectionLiteralElementForward|PythonCollectionLiteralElementForward)DataFlow' -count=1
 go test ./...
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-dict-shorthand-flow -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-dict-shorthand-flow -min-loc-per-sec 1
 go test ./internal/sem -run 'TestBuildProviderSnapshotEmits(DirectLiteralArgumentForward|PythonDirectLiteralArgumentForward|ObjectShorthandForward|PythonDictLiteralForward)DataFlow' -count=1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-direct-literal-flow -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-direct-literal-flow -min-loc-per-sec 1
 go test ./internal/sem -run 'TestBuildProviderSnapshotEmits(ArgumentForward|ParameterPropertyForward|PythonParameterPropertyForward|AliasForward)DataFlow' -count=1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-param-property-flow -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-param-property-flow -min-loc-per-sec 1
 go test ./internal/sem -run 'TestBuildProviderSnapshotEmits(ParameterPropertyAliasForward|PythonParameterPropertyAliasForward|ParameterPropertyForward|PythonParameterPropertyForward|AliasForward)DataFlow' -count=1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-param-property-alias-flow -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-param-property-alias-flow -min-loc-per-sec 1
 go test ./internal/sem -run 'TestBuildProviderSnapshotEmits(AliasContainerForward|PythonAliasContainerForward|AliasForward|ObjectFieldForward|ObjectLiteralForward|ObjectShorthandForward|PythonDictLiteralForward|CollectionElementForward|CollectionLiteralElementForward|PythonCollectionLiteralElementForward|DirectLiteralArgumentForward|PythonDirectLiteralArgumentForward)DataFlow' -count=1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-alias-container-flow -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-alias-container-flow -min-loc-per-sec 1
 go test ./internal/sem -run 'TestBuildProviderSnapshotEmits(MultiHopAliasForward|PythonMultiHopAliasForward|AliasForward|AliasContainerForward|PythonAliasContainerForward|ObjectFieldForward|ObjectLiteralForward|PythonDictLiteralForward|CollectionElementForward|DirectLiteralArgumentForward|PythonDirectLiteralArgumentForward)DataFlow' -count=1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-multihop-alias-flow -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-multihop-alias-flow -min-loc-per-sec 1
 go test ./internal/sem -run 'TestKubernetes(MonitorSelectorsDependOnTargets|PrometheusMonitorSecretDependencies)' -count=1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-prom-monitor-secrets -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-prom-monitor-secrets -min-loc-per-sec 1
 go test ./internal/sem -run 'TestKubernetes(ReloaderAnnotationsDependOnConfigResources|ResourceDependencies|ResourceReferencesIncludeNamespaceQualifiedExternalNames)' -count=1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-reloader-annotation-refs -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-reloader-annotation-refs -min-loc-per-sec 1
 go test ./internal/sem -run 'Test(StaticPathJoinRouteExpressionComposesAndBridgesHTTPClient|StaticArrayJoinRouteExpressionComposesAndBridgesHTTPClient|StringRawTemplateRouteExpressionComposesAndBridgesHTTPClient|URLPathnameRouteConstantComposesAndBridgesHTTPClient|ComputedRouteExpressionComposesAndBridgesHTTPClient)' -count=1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-path-join-routes -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-path-join-routes -min-loc-per-sec 1
 go test ./internal/sem -run 'Test(GraphQLOperationLiteralsEmitRootFieldBoundaries|BuildProviderSnapshotEmitsGraphQLResolverBoundaries|BuildProviderSnapshotEmitsGraphQLSchemaBoundaries|GraphQLSchemaFieldsLinkToResolverFields|GraphQLSchemaFieldsLinkToModularResolverObjects)' -count=1
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-graphql-operation-fields -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-graphql-operation-fields -min-loc-per-sec 1
 go test ./internal/sem -run 'TestBuildProviderSnapshotEmits.*(DataFlow|Forward)|TestProviderGoldenFixtureQualityCoverageReport' -count=1
 go test ./...
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-callback-element-flow -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-callback-element-flow -min-loc-per-sec 1
 go test ./internal/sem -run 'TestTypeScriptManifestImportsResolveThrough(ExtendedTSConfig|PackageAndTSConfig|NestedPackageJSON|ExportsImportsAndImportMap)' -count=1
 go test ./...
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-tsconfig-extends-imports -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-tsconfig-extends-imports -min-loc-per-sec 1
 go test ./internal/sem -run 'TestTypeScriptManifestImportsResolveThrough(TSConfigBaseURL|ExtendedTSConfig|PackageAndTSConfig|NestedPackageJSON|ExportsImportsAndImportMap)' -count=1
 go test ./...
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-tsconfig-baseurl-imports -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-tsconfig-baseurl-imports -min-loc-per-sec 1
 go test ./internal/sem -run 'TestBuildProviderSnapshotEmits.*(Collection|AliasContainer|MultiHopAlias|DataFlow|Forward)' -count=1
 go test ./...
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-map-set-data-flow -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-map-set-data-flow -min-loc-per-sec 1
 go test ./internal/sem -run 'Test(GraphQLOperationLiteralsEmitRootFieldBoundaries|BuildProviderSnapshotEmitsGraphQLResolverBoundaries|BuildProviderSnapshotEmitsGraphQLSchemaBoundaries|GraphQLSchemaFieldsLinkToResolverFields|GraphQLSchemaFieldsLinkToModularResolverObjects|GraphQLSchemaAliasedRootsLinkToResolverFields)' -count=1
 go test ./...
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-graphql-fragment-fields -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-graphql-fragment-fields -min-loc-per-sec 1
 go test ./internal/sem -run 'TestKubernetesCustomControllerReferenceDependencies' -count=1
 go test ./...
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-sealedsecret-resource-refs -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-sealedsecret-resource-refs -min-loc-per-sec 1
 go test ./internal/sem -run 'TestKubernetesCustomControllerReferenceDependencies' -count=1
 go test ./...
-go run ./cmd/sem-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-clusterexternalsecret-targets -min-loc-per-sec 1
+go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -out bench/results -lock bench/repos.lock.json -languages Go -limit 1 -skip-clone -profile syntax-only -provider-version codex-clusterexternalsecret-targets -min-loc-per-sec 1
 ```
 
 ## Results

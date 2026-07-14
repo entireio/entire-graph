@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/entireio/entire-sem/internal/sem"
+	"github.com/entireio/entire-graph/internal/sem"
 )
 
 type searchFlags struct {

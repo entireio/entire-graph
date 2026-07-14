@@ -1,4 +1,4 @@
-/entire-sem
+/entire-graph
 /dist/
 
 # Benchmark working data: cloned external repos must never enter our commits.
