@@ -627,6 +627,9 @@ func scoreSearchPaths(
 		go func() {
 			defer wait.Done()
 			for filePath := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
 				if candidate, ok := score(filePath); ok {
 					select {
 					case results <- candidate:
