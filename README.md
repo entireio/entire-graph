@@ -5,6 +5,29 @@
 Entire already knows a checkpoint touched `auth.py` or `.github/workflows/ci.yml`.
 This plugin answers the next question: which semantic entities changed inside that file?
 
+## What Entire Graph Adds to Entire
+
+- **Entity-level checkpoint context.** `commit`, `checkpoint`, and `diff` report
+  added, removed, renamed, and signature- or body-changed entities with heuristic
+  dependent counts, so a checkpoint can be judged without reading the full diff.
+- **A local-only semantic provider.** `snapshot`, `symbols`, and `edges` stream
+  NDJSON graph records under a frozen schema 1.x contract for downstream
+  consumers such as Entire Brain — no network, no hosted models, no telemetry.
+- **Tree-sitter parsing across 36 languages**, from Go and TypeScript to
+  Terraform, SQL, and GitHub Actions YAML, with 149 more filetypes tracked as
+  inventory-only and honest partial failures for everything else.
+- **A 30-relation code graph with stable identity.** `compound-v1` symbol IDs
+  survive ordinary edits, and relations cover structure, calls, inheritance,
+  fields, service boundaries, and config dependencies, each tagged with
+  resolution and confidence.
+- **Agent-ready hybrid search.** Lexical scoring fused with graph-neighbor
+  expansion returns diverse source regions from the live working tree, budgeted
+  to 16 KiB for direct use in a model context window.
+- **How it works.** The plugin shells out to git for trees and diffs, parses
+  before/after states with tree-sitter behind `internal/sem`, reconciles renames
+  and moves by similarity, and streams results so memory stays bounded on very
+  large repositories.
+
 This plugin builds a binary named `entire-graph`, which is invoked through Entire as:
 
 ```sh
