@@ -42,10 +42,24 @@ func AnalyzeGitRange(ctx context.Context, repo, base, head string, paths []strin
 			}
 		}
 
-		beforeEntities, language := parser.Parse(oldPath, before)
-		afterEntities, afterLanguage := parser.Parse(path, after)
+		beforeEntities, language, beforeStatus := parser.ParseWithStatus(oldPath, before)
+		afterEntities, afterLanguage, afterStatus := parser.ParseWithStatus(path, after)
 		if language == "" {
 			language = afterLanguage
+		}
+		// A file that fails to parse on either side yields zero entities with no
+		// signal, which would otherwise make compareEntities report every entity
+		// as phantom removed/added. Surface it as a machine-readable partial
+		// failure and skip the delta instead. Only ParseError suppresses the
+		// delta — a validly-emptied file (ParseError false, zero entities) must
+		// still report its real removed changes.
+		if beforeStatus.ParseError || afterStatus.ParseError {
+			status := afterStatus
+			if !status.ParseError {
+				status = beforeStatus
+			}
+			result.Warnings = append(result.Warnings, parseFailureWarning(path, status))
+			continue
 		}
 		if !beforeOK {
 			beforeEntities = nil
@@ -69,7 +83,7 @@ func AnalyzeGitRange(ctx context.Context, repo, base, head string, paths []strin
 		})
 	}
 
-	result.Warnings = reconcileMoves(deltas)
+	result.Warnings = append(result.Warnings, reconcileMoves(deltas)...)
 
 	for _, delta := range deltas {
 		changes := delta.changes
@@ -96,6 +110,28 @@ func AnalyzeGitRange(ctx context.Context, repo, base, head string, paths []strin
 		return Result{}, err
 	}
 	return result, nil
+}
+
+// parseFailureWarning builds the partial-failure warning emitted when a changed
+// file cannot be parsed on one side of the diff. It mirrors the provider path's
+// parseStatus.ParseError → PartialFailure mapping so both surfaces stay
+// consistent (see provider.go).
+func parseFailureWarning(path string, status ParseStatus) ProviderWarning {
+	code := status.Code
+	if code == "" {
+		code = "E_PARSE_ERROR"
+	}
+	effect := "file parsed with syntax errors; semantic facts may be incomplete"
+	if code == "E_PARSE_TIMEOUT" {
+		effect = "file record emitted but symbol parsing skipped because parser time budget was exceeded"
+	}
+	return ProviderWarning{
+		Code:                 code,
+		Severity:             "warning",
+		FilePath:             path,
+		EffectOnCompleteness: effect,
+		Detail:               status.Detail,
+	}
 }
 
 // fileDelta accumulates a file's resolved changes plus the removed/added
