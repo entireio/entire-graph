@@ -287,15 +287,22 @@ func FileCochanges(ctx context.Context, repo string, maxCommits int) ([]FileCoch
 }
 
 func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error) {
-	out, err := run(ctx, repo, "git", "show", rev+":"+path)
+	// Classify against git's stderr only, never the wrapped error that echoes
+	// the argv (which includes rev+":"+path). Matching the full error text made
+	// any real failure on a path containing a marker substring (e.g. "Path" in
+	// src/PathHelper.go) look like a missing file, swallowing the error.
+	out, stderr, err := runWithStderr(ctx, repo, "git", "show", rev+":"+path)
 	if err != nil {
-		if strings.Contains(err.Error(), "exists on disk, but not in") ||
-			strings.Contains(err.Error(), "Path") ||
-			strings.Contains(err.Error(), "does not exist") ||
-			strings.Contains(err.Error(), "not found") {
+		if strings.Contains(stderr, "exists on disk, but not in") ||
+			strings.Contains(stderr, "does not exist") ||
+			strings.Contains(stderr, "not found") {
 			return "", false, nil
 		}
-		return "", false, err
+		msg := stderr
+		if msg == "" {
+			msg = err.Error()
+		}
+		return "", false, fmt.Errorf("git show %s:%s: %s", rev, path, msg)
 	}
 	return out, true, nil
 }
@@ -434,18 +441,27 @@ func RemoteURLs(ctx context.Context, repo string) ([]string, error) {
 }
 
 func run(ctx context.Context, dir, name string, args ...string) (string, error) {
+	stdout, stderr, err := runWithStderr(ctx, dir, name, args...)
+	if err != nil {
+		msg := stderr
+		if msg == "" {
+			msg = err.Error()
+		}
+		return "", fmt.Errorf("%s %s: %s", name, strings.Join(args, " "), msg)
+	}
+	return stdout, nil
+}
+
+// runWithStderr runs a command and returns its stdout and trimmed stderr
+// separately, so callers can classify failures against git's own message
+// without the wrapped error text (which echoes the argv, including paths).
+func runWithStderr(ctx context.Context, dir, name string, args ...string) (string, string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
-		}
-		return "", fmt.Errorf("%s %s: %s", name, strings.Join(args, " "), msg)
-	}
-	return stdout.String(), nil
+	err := cmd.Run()
+	return stdout.String(), strings.TrimSpace(stderr.String()), err
 }

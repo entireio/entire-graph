@@ -223,6 +223,45 @@ func TestBatchFileReaderReadsMultipleFilesFromHead(t *testing.T) {
 	}
 }
 
+func TestShowFileClassifiesErrorsByStderrNotPath(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "commit.gpgsign", "false")
+
+	// Path deliberately contains the substring "Path" — the old classifier
+	// treated any error mentioning "Path" as a missing file, and ShowFile's
+	// wrapped error always echoed the argv (which includes the path).
+	const path = "src/PathHelper.go"
+	const content = "package src\n\nfunc Help() {}\n"
+	full := filepath.Join(repo, path)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "add path helper")
+
+	// Regression: a bad rev on a path containing "Path" must surface a real
+	// error, not be swallowed as file-absent.
+	if _, ok, err := ShowFile(t.Context(), repo, "BADREV", path); err == nil {
+		t.Fatalf("ShowFile with bad rev = (ok %v, err nil), want non-nil error", ok)
+	}
+
+	// A genuinely missing path at a valid rev is still reported as absent.
+	if out, ok, err := ShowFile(t.Context(), repo, "HEAD", "src/DoesNotExist.go"); err != nil || ok || out != "" {
+		t.Fatalf("ShowFile missing path = (%q, ok %v, err %v), want (\"\", false, nil)", out, ok, err)
+	}
+
+	// An existing file at HEAD returns its content.
+	if out, ok, err := ShowFile(t.Context(), repo, "HEAD", path); err != nil || !ok || out != content {
+		t.Fatalf("ShowFile existing = (%q, ok %v, err %v), want (%q, true, nil)", out, ok, err, content)
+	}
+}
+
 func git(t *testing.T, repo string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
