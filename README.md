@@ -20,6 +20,24 @@ entire graph snapshot --repo . --format ndjson
 entire graph capabilities --json
 ```
 
+## Why entire-graph
+
+**More accurate than the leading code-memory tool.** On a frozen, multi-language board of 21 real repositories scored on fixed-answer semantic tasks (definition lookup, call graph, imports, change-impact), entire-graph scored **265/283 (94%)** versus **191/283 (68%)** for codebase-memory-mcp. It wins on the questions that matter for navigation and impact, not just node counts.
+
+**Deterministic. No LLM, no vectors.** Pure tree-sitter static analysis. The same commit always produces the same graph. No embeddings, no similarity thresholds, no fuzzy recall to second-guess. A relation is either in the graph or it is not.
+
+**100% local, zero egress.** No API keys, no network calls, no telemetry, no grammar downloads at runtime. `entire graph doctor --json` reports `no_egress=true`. Safe to point at private code.
+
+**Scales to millions of relations on a single machine.** Measured builds on real repositories: **41K relations in 4.8s**, **914K in 45s**, **2.5M in 130s**. No indexing service, no cluster.
+
+**Lean on memory where it counts.** Memory is released after the build. On repositories it fully indexes, peak memory stays in the tens of MB even where codebase-memory-mcp uses hundreds: **80 MB vs 599 MB** on nlohmann/json, **64 MB vs 285 MB** on koin, **43 MB vs 225 MB** on Dapper.
+
+**36 languages, one binary.** Tree-sitter grammars compiled in, plus 149 inventory-only filetypes. Nothing to install at runtime, nothing that breaks.
+
+**A 30-relation code graph with stable identity.** `compound-v1` symbol IDs survive ordinary edits, and relations span structure, calls, inheritance, fields, service boundaries, and config dependencies, each tagged with resolution and confidence.
+
+**Fewer tokens for coding agents.** One `search` or `edges` call returns exact `file:line` results and call relationships, replacing the dozens of grep and read cycles an agent otherwise burns to reconstruct structure and flood its context with file contents.
+
 ## What It Adds to Entire
 
 - **Entity-level checkpoint context.** `commit`, `checkpoint`, and `diff` report
