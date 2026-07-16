@@ -357,6 +357,91 @@ func TestCompareEntitiesSingleEntityUnchangedBehavior(t *testing.T) {
 	}
 }
 
+func TestCompareEntitiesAddedOverloadReportedAsAdded(t *testing.T) {
+	// Adding a third overload (before has 2, after has 3, appended in file
+	// order) must surface exactly one `added` for the new overload; the two
+	// pre-existing overloads stay paired by ordinal and produce no churn.
+	before := []Entity{
+		{Kind: "method", Name: "C.F", Signature: "F(int)", StartLine: 1},
+		{Kind: "method", Name: "C.F", Signature: "F(string)", StartLine: 5},
+	}
+	after := []Entity{
+		{Kind: "method", Name: "C.F", Signature: "F(int)", StartLine: 1},
+		{Kind: "method", Name: "C.F", Signature: "F(string)", StartLine: 5},
+		{Kind: "method", Name: "C.F", Signature: "F(bool)", StartLine: 9},
+	}
+
+	changes, removed, added := compareEntities(before, after)
+	if len(changes) != 0 {
+		t.Fatalf("unexpected changes on stable overloads: %#v", changes)
+	}
+	if len(removed) != 0 {
+		t.Fatalf("unexpected removed: %#v", removed)
+	}
+	if len(added) != 1 {
+		t.Fatalf("added = %#v, want exactly one added overload", added)
+	}
+	if added[0].Signature != "F(bool)" {
+		t.Fatalf("added signature = %q, want F(bool)", added[0].Signature)
+	}
+}
+
+func TestCompareEntitiesRemovedOverloadReported(t *testing.T) {
+	// Removing an overload (before has 3, after has 2, the last in file order
+	// dropped) must surface exactly one `removed` for the dropped overload and
+	// must not misattribute the removal to a surviving overload.
+	before := []Entity{
+		{Kind: "method", Name: "C.F", Signature: "F(int)", StartLine: 1},
+		{Kind: "method", Name: "C.F", Signature: "F(string)", StartLine: 5},
+		{Kind: "method", Name: "C.F", Signature: "F(bool)", StartLine: 9},
+	}
+	after := []Entity{
+		{Kind: "method", Name: "C.F", Signature: "F(int)", StartLine: 1},
+		{Kind: "method", Name: "C.F", Signature: "F(string)", StartLine: 5},
+	}
+
+	changes, removed, added := compareEntities(before, after)
+	if len(changes) != 0 {
+		t.Fatalf("unexpected changes on stable overloads: %#v", changes)
+	}
+	if len(added) != 0 {
+		t.Fatalf("unexpected added: %#v", added)
+	}
+	if len(removed) != 1 {
+		t.Fatalf("removed = %#v, want exactly one removed overload", removed)
+	}
+	if removed[0].Signature != "F(bool)" {
+		t.Fatalf("removed signature = %q, want F(bool)", removed[0].Signature)
+	}
+}
+
+func TestCompareEntitiesTrueDuplicatesEditOne(t *testing.T) {
+	// Two entities with identical Kind:Name:Signature on both sides (true
+	// duplicates). Editing the body of one must surface exactly one
+	// body_changed and no spurious remove/add for the untouched duplicate.
+	// This works precisely because entities are keyed by positional ordinal
+	// rather than signature (which would collide for true duplicates).
+	before := []Entity{
+		{Kind: "method", Name: "C.F", Signature: "F()", BodyHash: "h1", StartLine: 1},
+		{Kind: "method", Name: "C.F", Signature: "F()", BodyHash: "h1", StartLine: 5},
+	}
+	after := []Entity{
+		{Kind: "method", Name: "C.F", Signature: "F()", BodyHash: "h1", StartLine: 1},
+		{Kind: "method", Name: "C.F", Signature: "F()", BodyHash: "h2", StartLine: 5},
+	}
+
+	changes, removed, added := compareEntities(before, after)
+	if len(removed) != 0 || len(added) != 0 {
+		t.Fatalf("unexpected remove/add: removed=%#v added=%#v", removed, added)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("changes = %#v, want exactly one body change", changes)
+	}
+	if changes[0].Type != "body_changed" || changes[0].Kind != "method" || changes[0].Name != "C.F" {
+		t.Fatalf("change = %#v, want body_changed for method C.F", changes[0])
+	}
+}
+
 func write(t *testing.T, repo, path, content string) {
 	t.Helper()
 	full := filepath.Join(repo, path)
