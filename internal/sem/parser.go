@@ -614,7 +614,7 @@ func rustTokenTreeStartsWithIf(src []byte, body *sitter.Node) bool {
 }
 
 var (
-	javaModuleImportPattern      = regexp.MustCompile(`^(\s*import\s+)module\s+`)
+	javaModuleImportPattern      = regexp.MustCompile(`^(\s*import\s+)module(\s+)`)
 	javaVarargsAnnotationPattern = regexp.MustCompile(`@[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*\.\.\.`)
 )
 
@@ -622,7 +622,13 @@ func maskJavaUnsupportedSyntax(content string) string {
 	lines := strings.SplitAfter(content, "\n")
 	for i, line := range lines {
 		text, newline := splitLineEnding(line)
-		text = javaModuleImportPattern.ReplaceAllString(text, "${1}       ")
+		// Blank only the `module` contextual keyword (6 chars -> 6 spaces) and
+		// preserve the trailing whitespace group (${2}) verbatim, so the mask is
+		// length-preserving regardless of how much whitespace follows `module`.
+		// A literal replacement (e.g. 7 spaces) shortened multi-space imports and
+		// shifted every following entity's offsets, corrupting names/signatures/
+		// body-hashes (same bug class as the TS static-accessor mask).
+		text = javaModuleImportPattern.ReplaceAllString(text, "${1}      ${2}")
 		text = javaVarargsAnnotationPattern.ReplaceAllStringFunc(text, func(match string) string {
 			return strings.Repeat(" ", len(match)-3) + "..."
 		})

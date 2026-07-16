@@ -577,10 +577,47 @@ func TestMaskTypeScriptStaticAccessorMethodPreservesLength(t *testing.T) {
 		"  static accessor() { return 1; }",
 		"  static  accessor() { return 1; }",
 		"  static   accessor  () { return 1; }",
+		"  static\taccessor() { return 1; }",
+		"  static\t\taccessor () { return 1; }",
+		"  static \t accessor\t() { return 1; }",
 	} {
 		out := maskTypeScriptStaticAccessorMethod(in)
 		if len(out) != len(in) {
 			t.Fatalf("mask changed length: input %q (%d) -> output %q (%d)", in, len(in), out, len(out))
+		}
+	}
+}
+
+func TestMaskTypeScriptStaticAccessorMethodOnlyMasksStaticAccessorCalls(t *testing.T) {
+	t.Parallel()
+	// Must NOT mask: `accessor` as a plain identifier (not preceded by static),
+	// and `static accessor` with no following paren.
+	for _, in := range []string{
+		"  const accessor = 1;",
+		"  accessor();",
+		"  this.accessor(x);",
+		"  static accessor;",
+		"  static accessor = 1;",
+	} {
+		if out := maskTypeScriptStaticAccessorMethod(in); out != in {
+			t.Fatalf("unexpectedly masked non-static-accessor input %q -> %q", in, out)
+		}
+	}
+	// Must mask (r -> R before the paren) exactly once per occurrence.
+	for _, in := range []string{
+		"  static accessor() {}",
+		"  static  accessor () {}",
+		"  static\taccessor() {}",
+	} {
+		out := maskTypeScriptStaticAccessorMethod(in)
+		if out == in {
+			t.Fatalf("expected mask to fire on %q", in)
+		}
+		if len(out) != len(in) {
+			t.Fatalf("mask changed length: %q -> %q", in, out)
+		}
+		if !strings.Contains(out, "accessoR") || strings.Contains(out, "accessor") {
+			t.Fatalf("expected accessor->accessoR in %q", out)
 		}
 	}
 }
@@ -846,6 +883,63 @@ class MultiplicationTests {
 		}
 	}
 	t.Fatalf("missing method entity after masking module import: %#v", entities)
+}
+
+func TestMaskJavaModuleImportPreservesLength(t *testing.T) {
+	t.Parallel()
+	for _, in := range []string{
+		"import module java.base;",
+		"import module  java.base;",
+		"import module   java.base;",
+		"\timport\tmodule\t\tjava.base;",
+		"  import module\tjava.base;",
+	} {
+		out := maskJavaUnsupportedSyntax(in)
+		if len(out) != len(in) {
+			t.Fatalf("mask changed length: input %q (%d) -> output %q (%d)", in, len(in), out, len(out))
+		}
+	}
+}
+
+func TestTreeSitterParserJavaModuleImportMaskPreservesFollowingEntity(t *testing.T) {
+	t.Parallel()
+	find := func(entities []Entity, name string) (Entity, bool) {
+		for _, e := range entities {
+			if e.Name == name {
+				return e, true
+			}
+		}
+		return Entity{}, false
+	}
+	oneSpace := "import module java.base;\nclass C {\n  int bar() { return 42; }\n}\n"
+	multiSpace := "import module   java.base;\nclass C {\n  int bar() { return 42; }\n}\n"
+
+	oneEntities, _, oneStatus := TreeSitterParser{}.ParseWithStatus("C.java", oneSpace)
+	if oneStatus.ParseError {
+		t.Fatalf("one-space parse error: %#v", oneStatus)
+	}
+	multiEntities, _, multiStatus := TreeSitterParser{}.ParseWithStatus("C.java", multiSpace)
+	if multiStatus.ParseError {
+		t.Fatalf("multi-space parse error: %#v", multiStatus)
+	}
+
+	oneBar, ok := find(oneEntities, "C.bar")
+	if !ok {
+		t.Fatalf("one-space: missing C.bar entity: %#v", oneEntities)
+	}
+	multiBar, ok := find(multiEntities, "C.bar")
+	if !ok {
+		t.Fatalf("multi-space: missing C.bar entity (mask corrupted following entity): %#v", multiEntities)
+	}
+	if multiBar.Name != oneBar.Name {
+		t.Fatalf("name mismatch: one-space %q vs multi-space %q", oneBar.Name, multiBar.Name)
+	}
+	if multiBar.Signature != oneBar.Signature {
+		t.Fatalf("signature mismatch: one-space %q vs multi-space %q", oneBar.Signature, multiBar.Signature)
+	}
+	if multiBar.BodyHash != oneBar.BodyHash {
+		t.Fatalf("body-hash mismatch: one-space %q vs multi-space %q", oneBar.BodyHash, multiBar.BodyHash)
+	}
 }
 
 func TestTreeSitterParserGroovyMasksQuotedMethodNames(t *testing.T) {
