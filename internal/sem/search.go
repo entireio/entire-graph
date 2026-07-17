@@ -312,7 +312,10 @@ func defaultSearchIndexedFiles(topK int) int {
 	// before TopK and per-file diversity can take effect.
 	return minInt(
 		deepSearchMaxIndexedFiles,
-		maxInt(defaultSearchMaxIndexedFiles, topK*searchIndexedFilesPerResult),
+		maxInt(
+			defaultSearchMaxIndexedFiles,
+			minInt(topK, deepSearchMaxIndexedFiles)*searchIndexedFilesPerResult,
+		),
 	)
 }
 
@@ -548,7 +551,10 @@ func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, optio
 				}
 				return provisional[i].path < provisional[j].path
 			})
-			poolLimit := minInt(len(provisional), options.MaxIndexedFiles*4)
+			poolLimit := len(provisional)
+			if threshold := (len(provisional)-1)/4 + 1; options.MaxIndexedFiles < threshold {
+				poolLimit = options.MaxIndexedFiles * 4
+			}
 			scanPaths = make([]string, 0, poolLimit+len(untracked))
 			for _, candidate := range provisional[:poolLimit] {
 				scanPaths = append(scanPaths, candidate.path)
@@ -744,8 +750,15 @@ func candidatesForFile(q searchQuery, filePath, language string, lines []string,
 			}
 			continue
 		}
-		for _, region := range matchingLineRegions(q, lines, searchStart, end, options.ContextLines, options.MaxRegionLines) {
+		regions := matchingLineRegions(q, lines, searchStart, end, options.ContextLines, options.MaxRegionLines)
+		for _, region := range regions {
 			if candidate, ok := makeSearchCandidate(q, filePath, language, lines, region[0], region[1], symbol, options.MaxSnippetLines); ok {
+				out = append(out, candidate)
+			}
+		}
+		if len(regions) == 0 {
+			focusedEnd := minInt(end, searchStart+options.MaxRegionLines-1)
+			if candidate, ok := makeSearchCandidate(q, filePath, language, lines, searchStart, focusedEnd, symbol, options.MaxSnippetLines); ok {
 				out = append(out, candidate)
 			}
 		}

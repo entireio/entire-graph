@@ -132,9 +132,16 @@ func TestSearchRepositoryUsesFocusedDefaultRegions(t *testing.T) {
 	if len(response.Results) == 0 {
 		t.Fatal("focused default search returned no results")
 	}
+	const (
+		wantMaxLines = 80
+		needleLine   = 94
+	)
 	for _, result := range response.Results {
-		if lines := result.EndLine - result.StartLine + 1; lines > defaultSearchMaxRegionLines {
-			t.Fatalf("default result spans %d lines, want at most %d: %#v", lines, defaultSearchMaxRegionLines, result)
+		if lines := result.EndLine - result.StartLine + 1; lines > wantMaxLines {
+			t.Fatalf("default result spans %d lines, want at most %d: %#v", lines, wantMaxLines, result)
+		}
+		if result.StartLine > needleLine || result.EndLine < needleLine {
+			t.Fatalf("focused result omitted needle line %d: %#v", needleLine, result)
 		}
 	}
 }
@@ -425,11 +432,44 @@ func TestDefaultSearchIndexedFilesScalesWithRequestedDepth(t *testing.T) {
 		{topK: 40, want: 120},
 		{topK: 100, want: deepSearchMaxIndexedFiles},
 		{topK: 1_000, want: deepSearchMaxIndexedFiles},
+		{topK: int(^uint(0) >> 1), want: deepSearchMaxIndexedFiles},
 	}
 	for _, test := range tests {
 		if got := defaultSearchIndexedFiles(test.topK); got != test.want {
 			t.Fatalf("defaultSearchIndexedFiles(%d) = %d, want %d", test.topK, got, test.want)
 		}
+	}
+}
+
+func TestSearchRepositoryAppliesAdaptiveAndExplicitFileLimits(t *testing.T) {
+	repo := t.TempDir()
+	for index := 0; index < 130; index++ {
+		write(t, repo, fmt.Sprintf("docs/file_%03d.md", index), "adaptive retrieval needle\n")
+	}
+
+	adaptive, err := SearchRepository(t.Context(), repo, "test", "adaptive retrieval needle", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adaptive.Stats.FilesIndexed != 120 {
+		t.Fatalf("adaptive files indexed = %d, want 120", adaptive.Stats.FilesIndexed)
+	}
+
+	explicit, err := SearchRepository(t.Context(), repo, "test", "adaptive retrieval needle", SearchOptions{
+		Worktree:        true,
+		Profile:         ProfileSyntaxOnly,
+		TopK:            40,
+		MaxIndexedFiles: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Stats.FilesIndexed != 4 {
+		t.Fatalf("explicit files indexed = %d, want 4", explicit.Stats.FilesIndexed)
 	}
 }
 
