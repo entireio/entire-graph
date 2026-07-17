@@ -114,6 +114,39 @@ func NewTimingWheel(interval int) *Wheel {
 	return newTimingWheelWithClock(interval, systemClock{})
 }
 
+// newTimingWheelWithClock creates the timing wheel with an injected clock.
+func newTimingWheelWithClock(interval int, clock Clock) *Wheel {
+	return &Wheel{}
+}
+
+type Wheel struct{}
+type Clock interface{}
+type systemClock struct{}
+`)
+
+	response, err := SearchRepository(t.Context(), repo, "test", "create timing wheel with injected clock", SearchOptions{
+		Worktree:          true,
+		Profile:           ProfileSyntaxOnly,
+		TopK:              5,
+		MaxRegionsPerFile: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]SearchResult{}
+	for _, result := range response.Results {
+		seen[result.SymbolName] = result
+	}
+	constructor, constructorOK := seen["NewTimingWheel"]
+	helper, helperOK := seen["newTimingWheelWithClock"]
+	if !constructorOK || !helperOK {
+		t.Fatalf("missing distinct same-file regions: %#v", response.Results)
+	}
+	if constructor.StartLine == helper.StartLine {
+		t.Fatalf("regions collapsed to one location: %#v", response.Results)
+	}
+}
+
 func TestSearchRepositoryUsesFocusedDefaultRegions(t *testing.T) {
 	repo := t.TempDir()
 	body := "package source\n\nfunc LargeHandler() {\n" +
@@ -146,36 +179,85 @@ func TestSearchRepositoryUsesFocusedDefaultRegions(t *testing.T) {
 	}
 }
 
-// newTimingWheelWithClock creates the timing wheel with an injected clock.
-func newTimingWheelWithClock(interval int, clock Clock) *Wheel {
-	return &Wheel{}
-}
+func TestSearchRepositoryBuildsSparseRegionsOnlyForDeepSearch(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "source/large.go", "package source\n"+strings.Repeat("// filler line\n", 140)+"// sparse retrieval needle\n")
 
-type Wheel struct{}
-type Clock interface{}
-type systemClock struct{}
-`)
-
-	response, err := SearchRepository(t.Context(), repo, "test", "create timing wheel with injected clock", SearchOptions{
-		Worktree:          true,
-		Profile:           ProfileSyntaxOnly,
-		TopK:              5,
-		MaxRegionsPerFile: 3,
+	shallow, err := SearchRepository(t.Context(), repo, "test", "sparse retrieval needle", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     defaultSearchTopK,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	seen := map[string]SearchResult{}
-	for _, result := range response.Results {
-		seen[result.SymbolName] = result
+	if shallow.Stats.SparseCandidates != 0 {
+		t.Fatalf("shallow search built %d sparse candidates", shallow.Stats.SparseCandidates)
 	}
-	constructor, constructorOK := seen["NewTimingWheel"]
-	helper, helperOK := seen["newTimingWheelWithClock"]
-	if !constructorOK || !helperOK {
-		t.Fatalf("missing distinct same-file regions: %#v", response.Results)
+
+	deep, err := SearchRepository(t.Context(), repo, "test", "sparse retrieval needle", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     defaultSearchTopK + 1,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if constructor.StartLine == helper.StartLine {
-		t.Fatalf("regions collapsed to one location: %#v", response.Results)
+	if deep.Stats.SparseCandidates == 0 {
+		t.Fatal("deep search did not build sparse candidates")
+	}
+	foundSparse := false
+	for _, result := range deep.Results {
+		if containsString(result.Signals, "sparse-region") {
+			foundSparse = true
+		}
+	}
+	if !foundSparse {
+		t.Fatalf("deep results omitted sparse regions: %#v", deep.Results)
+	}
+}
+
+func TestSelectHybridCandidatesBalancesSparseDepthAndFileDiversity(t *testing.T) {
+	semantic := make([]searchCandidate, 100)
+	sparse := make([]searchCandidate, 100)
+	for index := range semantic {
+		semantic[index] = searchCandidate{
+			result: SearchResult{FilePath: fmt.Sprintf("semantic/%03d.go", index), StartLine: 1, EndLine: 10},
+			score:  float64(100 - index),
+		}
+		sparse[index] = searchCandidate{
+			result: SearchResult{
+				FilePath:  fmt.Sprintf("semantic/%03d.go", 99-index),
+				StartLine: index*60 + 1,
+				EndLine:   index*60 + 80,
+				Signals:   []string{"sparse-region"},
+			},
+			score: float64(100 - index),
+		}
+	}
+
+	selected := selectHybridCandidates(semantic, sparse, 100)
+	if len(selected) != 100 {
+		t.Fatalf("hybrid selection returned %d candidates, want 100", len(selected))
+	}
+	if selected[0].result.FilePath != semantic[0].result.FilePath ||
+		selected[1].result.FilePath != semantic[1].result.FilePath ||
+		selected[2].result.FilePath != semantic[2].result.FilePath {
+		t.Fatalf("hybrid semantic head = %#v", selected[:3])
+	}
+	sparseCount := 0
+	files := map[string]bool{}
+	for _, candidate := range selected {
+		files[candidate.result.FilePath] = true
+		if containsString(candidate.result.Signals, "sparse-region") {
+			sparseCount++
+		}
+	}
+	if sparseCount != 62 {
+		t.Fatalf("hybrid sparse count = %d, want 62", sparseCount)
+	}
+	if len(files) < 90 {
+		t.Fatalf("hybrid selection covered only %d distinct files", len(files))
 	}
 }
 

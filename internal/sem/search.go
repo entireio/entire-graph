@@ -29,6 +29,12 @@ const (
 	searchIndexedFilesPerResult    = 3
 	maxSearchQueryTerms            = 48
 	minGitGrepPreselectionFiles    = 10_000
+	sparseSearchChunkStrideLines   = 60
+	sparseSearchRRFConstant        = 60
+	sparseSearchFileRankWeight     = 2
+	deepSearchSparseNumerator      = 5
+	deepSearchSparseDenominator    = 8
+	deepSearchSemanticHeadDivisor  = 32
 )
 
 // SearchOptions controls local issue-to-code retrieval. Search reads the same
@@ -78,6 +84,7 @@ type SearchStats struct {
 	SymbolsConsidered  int   `json:"symbols_considered"`
 	LexicalCandidates  int   `json:"lexical_candidates"`
 	GraphCandidates    int   `json:"graph_candidates"`
+	SparseCandidates   int   `json:"sparse_candidates"`
 	CandidatesSelected int   `json:"candidates_selected"`
 	ResultBytes        int   `json:"result_bytes"`
 	ContextBudgetBytes int   `json:"context_budget_bytes,omitempty"`
@@ -235,7 +242,11 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 
 	fileDF := make(map[string]int, len(q.terms))
+	sparseDF := make(map[string]int, len(q.terms))
+	sparseDocumentCount := 0
+	sparseDocumentLength := 0
 	var candidates []searchCandidate
+	var sparseCandidates []searchCandidate
 	for _, filePath := range selectedFiles {
 		if err := ctx.Err(); err != nil {
 			return SearchResponse{}, err
@@ -255,6 +266,19 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		candidates = append(candidates, candidatesForFile(
 			q, filePath, fileLanguages[filePath], lines, symbolsByFile[filePath], options,
 		)...)
+		if options.TopK > defaultSearchTopK {
+			fileSparse, documentCount, documentLength := sparseCandidatesForFile(
+				q, filePath, fileLanguages[filePath], lines, options,
+			)
+			sparseCandidates = append(sparseCandidates, fileSparse...)
+			sparseDocumentCount += documentCount
+			sparseDocumentLength += documentLength
+			for _, candidate := range fileSparse {
+				for term := range candidate.termCounts {
+					sparseDF[term]++
+				}
+			}
+		}
 	}
 
 	stats := SearchStats{
@@ -263,6 +287,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		FilesIndexed:       len(selectedFiles),
 		SymbolsConsidered:  len(snapshot.Symbols),
 		LexicalCandidates:  len(candidates),
+		SparseCandidates:   len(sparseCandidates),
 		IndexCacheHit:      cacheHit,
 		IndexLatencyMS:     indexLatency.Milliseconds(),
 		PreselectLatencyMS: preselectLatency.Milliseconds(),
@@ -274,7 +299,13 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	stats.GraphCandidates = len(graphCandidates)
 	candidates = append(candidates, graphCandidates...)
 	sortSearchCandidates(candidates)
-	selected := selectDiverseCandidates(candidates, options.TopK, options.MaxRegionsPerFile)
+	semantic := selectDiverseCandidates(candidates, options.TopK, options.MaxRegionsPerFile)
+	selected := semantic
+	if len(sparseCandidates) > 0 {
+		scoreSparseCandidates(sparseCandidates, q, sparseDF, sparseDocumentCount, sparseDocumentLength)
+		sortSearchCandidates(sparseCandidates)
+		selected = selectHybridCandidates(semantic, sparseCandidates, options.TopK)
+	}
 	results := make([]SearchResult, 0, len(selected))
 	for i := range selected {
 		selected[i].result.Rank = i + 1
@@ -792,6 +823,78 @@ func candidatesForFile(q searchQuery, filePath, language string, lines []string,
 	return out
 }
 
+// sparseCandidatesForFile complements syntax-aware regions with fixed-width
+// lexical windows. Syntax regions are precise but can hide the relevant part
+// of a large symbol or prose-heavy file; overlapping windows preserve those
+// locations for deeper rankings without changing the interactive search path.
+func sparseCandidatesForFile(
+	q searchQuery, filePath, language string, lines []string, options SearchOptions,
+) ([]searchCandidate, int, int) {
+	if len(lines) == 0 {
+		return nil, 0, 0
+	}
+	chunkLines := maxInt(1, options.MaxRegionLines)
+	stride := minInt(sparseSearchChunkStrideLines, chunkLines)
+	documentCount := 0
+	documentLength := 0
+	var out []searchCandidate
+	for start := 1; start <= len(lines); start += stride {
+		end := minInt(len(lines), start+chunkLines-1)
+		text := filepath.ToSlash(filePath) + "\n" + strings.Join(lines[start-1:end], "\n")
+		counts, length := searchTermCounts(text, q.termSet)
+		documentCount++
+		documentLength += maxInt(1, length)
+		if len(counts) > 0 {
+			focus := searchFocusLine(q, lines, start, end)
+			snippetStart, snippetEnd := focusedSnippetRegion(start, end, focus, options.MaxSnippetLines)
+			out = append(out, searchCandidate{
+				result: SearchResult{
+					FilePath:         filePath,
+					StartLine:        start,
+					EndLine:          end,
+					FocusLine:        focus,
+					SnippetStartLine: snippetStart,
+					SnippetEndLine:   snippetEnd,
+					Language:         language,
+					Signals:          []string{"sparse-region"},
+					Snippet:          strings.Join(lines[snippetStart-1:snippetEnd], "\n"),
+				},
+				termCounts: counts,
+				docLength:  length,
+			})
+		}
+		if end == len(lines) {
+			break
+		}
+	}
+	return out, documentCount, documentLength
+}
+
+func scoreSparseCandidates(
+	candidates []searchCandidate,
+	q searchQuery,
+	documentFrequency map[string]int,
+	documentCount, documentLength int,
+) {
+	if len(candidates) == 0 || documentCount <= 0 {
+		return
+	}
+	averageLength := float64(maxInt(1, documentLength)) / float64(documentCount)
+	for i := range candidates {
+		candidate := &candidates[i]
+		for _, term := range q.terms {
+			frequency := candidate.termCounts[term]
+			if frequency == 0 {
+				continue
+			}
+			df := documentFrequency[term]
+			inverse := math.Log(1 + (float64(documentCount-df)+0.5)/(float64(df)+0.5))
+			denominator := float64(frequency) + 1.2*(0.25+0.75*float64(maxInt(1, candidate.docLength))/averageLength)
+			candidate.score += q.weights[term] * inverse * (float64(frequency) * 2.2 / denominator)
+		}
+	}
+}
+
 func uncoveredRegionsAroundHits(hits []int, covered []bool, lineCount, context, maxLines int) [][2]int {
 	baseRegions := regionsAroundHits(hits, 1, lineCount, context, maxLines)
 	hitSet := make(map[int]bool, len(hits))
@@ -1051,6 +1154,88 @@ func searchExpansionRelation(relation string) bool {
 	default:
 		return false
 	}
+}
+
+// selectHybridCandidates uses reciprocal-rank fusion to put sparse windows
+// from semantically strong files first, then reserves the rest of a deep
+// ranking for distinct files found by the syntax-aware search. The split keeps
+// region coverage from collapsing into repeated chunks from a few files while
+// retaining enough sparse depth to find relevant locations inside large files.
+func selectHybridCandidates(semantic, sparse []searchCandidate, topK int) []searchCandidate {
+	if topK <= 0 || len(semantic) == 0 {
+		return nil
+	}
+	if len(sparse) == 0 {
+		return append([]searchCandidate(nil), semantic[:minInt(topK, len(semantic))]...)
+	}
+
+	semanticFileRank := make(map[string]int, len(semantic))
+	for index, candidate := range semantic {
+		if _, exists := semanticFileRank[candidate.result.FilePath]; !exists {
+			semanticFileRank[candidate.result.FilePath] = index + 1
+		}
+	}
+	fusedSparse := append([]searchCandidate(nil), sparse...)
+	for index := range fusedSparse {
+		sparseRank := index + 1
+		fusedSparse[index].score = 1 / float64(sparseSearchRRFConstant+sparseRank)
+		if fileRank, exists := semanticFileRank[fusedSparse[index].result.FilePath]; exists {
+			fusedSparse[index].score += sparseSearchFileRankWeight / float64(sparseSearchRRFConstant+fileRank)
+		}
+	}
+	sortSearchCandidates(fusedSparse)
+
+	semanticHead := minInt(len(semantic), maxInt(1, topK/deepSearchSemanticHeadDivisor))
+	sparseTarget := minInt(len(fusedSparse), topK*deepSearchSparseNumerator/deepSearchSparseDenominator)
+	selected := make([]searchCandidate, 0, minInt(topK, len(semantic)+len(fusedSparse)))
+	selected = append(selected, semantic[:semanticHead]...)
+	selected = append(selected, fusedSparse[:minInt(sparseTarget, topK-len(selected))]...)
+
+	// Prefer one representative for every additional semantic file. This is a
+	// coverage reserve, so cross-modality region overlap is intentionally not a
+	// reason to discard a sparse window.
+	seenFiles := make(map[string]bool, len(selected))
+	for _, candidate := range selected {
+		seenFiles[candidate.result.FilePath] = true
+	}
+	for _, candidate := range semantic[semanticHead:] {
+		if len(selected) == topK {
+			break
+		}
+		if seenFiles[candidate.result.FilePath] {
+			continue
+		}
+		seenFiles[candidate.result.FilePath] = true
+		selected = append(selected, candidate)
+	}
+	for _, candidate := range semantic[semanticHead:] {
+		if len(selected) == topK {
+			break
+		}
+		if !containsSearchCandidate(selected, candidate) {
+			selected = append(selected, candidate)
+		}
+	}
+	for _, candidate := range fusedSparse[sparseTarget:] {
+		if len(selected) == topK {
+			break
+		}
+		if !containsSearchCandidate(selected, candidate) {
+			selected = append(selected, candidate)
+		}
+	}
+	return selected
+}
+
+func containsSearchCandidate(candidates []searchCandidate, target searchCandidate) bool {
+	for _, candidate := range candidates {
+		if candidate.result.FilePath == target.result.FilePath &&
+			candidate.result.StartLine == target.result.StartLine &&
+			candidate.result.EndLine == target.result.EndLine {
+			return true
+		}
+	}
+	return false
 }
 
 func selectDiverseCandidates(candidates []searchCandidate, topK, maxPerFile int) []searchCandidate {
