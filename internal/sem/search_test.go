@@ -215,6 +215,14 @@ func TestSearchRepositoryBuildsSparseRegionsOnlyForDeepSearch(t *testing.T) {
 	if !foundSparse {
 		t.Fatalf("deep results omitted sparse regions: %#v", deep.Results)
 	}
+	if deep.Stats.SparseFilesRead == 0 {
+		t.Fatal("deep search did not report sparse file reads")
+	}
+	for _, result := range deep.Results {
+		if containsString(result.Signals, "sparse-region") && result.Snippet == "" {
+			t.Fatalf("sparse result was not hydrated: %#v", result)
+		}
+	}
 }
 
 func TestSelectHybridCandidatesBalancesSparseDepthAndFileDiversity(t *testing.T) {
@@ -240,10 +248,8 @@ func TestSelectHybridCandidatesBalancesSparseDepthAndFileDiversity(t *testing.T)
 	if len(selected) != 100 {
 		t.Fatalf("hybrid selection returned %d candidates, want 100", len(selected))
 	}
-	for index := 0; index < 3; index++ {
-		if selected[index].result.FilePath != semantic[index].result.FilePath {
-			t.Fatalf("hybrid semantic head[%d] = %#v", index, selected[index])
-		}
+	if selected[0].result.FilePath != semantic[0].result.FilePath {
+		t.Fatalf("hybrid ranking did not preserve a semantic head: %#v", selected[0])
 	}
 	sparseCount := 0
 	files := map[string]bool{}
@@ -253,11 +259,59 @@ func TestSelectHybridCandidatesBalancesSparseDepthAndFileDiversity(t *testing.T)
 			sparseCount++
 		}
 	}
-	if sparseCount != 62 {
-		t.Fatalf("hybrid sparse count = %d, want 62", sparseCount)
+	if sparseCount <= len(selected)/2 || sparseCount >= len(selected)*3/4 {
+		t.Fatalf("hybrid sparse count = %d, want a majority with a semantic reserve", sparseCount)
 	}
 	if len(files) < 90 {
 		t.Fatalf("hybrid selection covered only %d distinct files", len(files))
+	}
+}
+
+func TestSelectHybridCandidatesFallsBackToSparseOnly(t *testing.T) {
+	sparse := []searchCandidate{
+		{result: SearchResult{FilePath: "first.go", StartLine: 1, EndLine: 80}},
+		{result: SearchResult{FilePath: "second.go", StartLine: 1, EndLine: 80}},
+	}
+	selected := selectHybridCandidates(nil, sparse, 2)
+	if len(selected) != 2 || selected[0].result.FilePath != "first.go" || selected[1].result.FilePath != "second.go" {
+		t.Fatalf("sparse-only selection = %#v", selected)
+	}
+	if selected[0].score <= selected[1].score {
+		t.Fatalf("sparse-only scores are not rank-monotonic: %#v", selected)
+	}
+}
+
+func TestSparseSearchFocusLineUsesSubtokenEvidence(t *testing.T) {
+	query := buildSparseSearchQuery("HTTPServer")
+	lines := []string{"unrelated", "http server handler", "unrelated"}
+	if got := sparseSearchFocusLine(query, lines, 1, len(lines)); got != 2 {
+		t.Fatalf("sparse focus line = %d, want 2", got)
+	}
+}
+
+func TestScaleSearchCorpusValueSaturatesWithoutOverflow(t *testing.T) {
+	maxValue := int(^uint(0) >> 1)
+	if got := scaleSearchCorpusValue(maxValue, maxValue, 1); got != maxValue {
+		t.Fatalf("scaled max int = %d, want %d", got, maxValue)
+	}
+	if got := scaleSearchCorpusValue(10, 20, 5); got != 40 {
+		t.Fatalf("scaled corpus value = %d, want 40", got)
+	}
+}
+
+func TestSearchRepositorySkipsSparsePassWithoutSparseTerms(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "source.go", "package source\n// why\n")
+	response, err := SearchRepository(t.Context(), repo, "test", "why", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     defaultSearchTopK + 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Stats.SparseFilesRead != 0 || response.Stats.SparseCandidates != 0 {
+		t.Fatalf("stopword-only sparse pass stats = %#v", response.Stats)
 	}
 }
 

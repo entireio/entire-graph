@@ -88,6 +88,7 @@ type SearchStats struct {
 	LexicalCandidates  int   `json:"lexical_candidates"`
 	GraphCandidates    int   `json:"graph_candidates"`
 	SparseCandidates   int   `json:"sparse_candidates"`
+	SparseFilesRead    int   `json:"sparse_files_content_read"`
 	CandidatesSelected int   `json:"candidates_selected"`
 	ResultBytes        int   `json:"result_bytes"`
 	ContextBudgetBytes int   `json:"context_budget_bytes,omitempty"`
@@ -289,7 +290,8 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 			q, filePath, fileLanguages[filePath], lines, symbolsByFile[filePath], options,
 		)...)
 	}
-	if options.TopK > defaultSearchTopK {
+	sparseFilesRead := selection.sparseFilesContentRead
+	if options.TopK > defaultSearchTopK && len(sparseQuery.terms) > 0 {
 		for _, filePath := range selection.sparseFiles {
 			if selection.sparsePrecomputedFiles[filePath] {
 				continue
@@ -298,6 +300,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 				return SearchResponse{}, err
 			}
 			content, ok := read(filePath)
+			sparseFilesRead++
 			if !ok || len(content) > maxSparseSearchFileBytes || strings.IndexByte(content, 0) >= 0 {
 				continue
 			}
@@ -305,8 +308,12 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 			if len(lines) == 1 && lines[0] == "" {
 				continue
 			}
+			language := ""
+			if spec, detected := languageForContent(filePath, content); detected {
+				language = spec.language
+			}
 			fileSparse, documentCount, documentLength := sparseCandidatesForFile(
-				q, sparseQuery, filePath, fileLanguages[filePath], lines, options,
+				sparseQuery, filePath, language, lines, options,
 			)
 			sparseCandidates = append(sparseCandidates, fileSparse...)
 			sparseDocumentCount += documentCount
@@ -318,9 +325,11 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 			}
 		}
 		if len(selection.sparseFiles) > 0 && len(selection.sparseFiles) < selection.filesScanned {
-			sparseDocumentCount = maxInt(
-				sparseDocumentCount,
-				sparseDocumentCount*selection.filesScanned/len(selection.sparseFiles),
+			sparseDocumentCount = scaleSearchCorpusValue(
+				sparseDocumentCount, selection.filesScanned, len(selection.sparseFiles),
+			)
+			sparseDocumentLength = scaleSearchCorpusValue(
+				sparseDocumentLength, selection.filesScanned, len(selection.sparseFiles),
 			)
 		}
 	}
@@ -332,6 +341,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		SymbolsConsidered:  len(snapshot.Symbols),
 		LexicalCandidates:  len(candidates),
 		SparseCandidates:   len(sparseCandidates),
+		SparseFilesRead:    sparseFilesRead,
 		IndexCacheHit:      cacheHit,
 		IndexLatencyMS:     indexLatency.Milliseconds(),
 		PreselectLatencyMS: preselectLatency.Milliseconds(),
@@ -349,7 +359,12 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		scoreSparseCandidates(sparseCandidates, sparseQuery, sparseDF, sparseDocumentCount, sparseDocumentLength)
 		sortSearchCandidates(sparseCandidates)
 		selected = selectHybridCandidates(semantic, sparseCandidates, options.TopK)
+		for index := range selected {
+			selected[index].score = 1 / float64(index+1)
+		}
 	}
+	sparseHydrationReads := hydrateSparseCandidates(selected, read)
+	stats.SparseFilesRead += sparseHydrationReads
 	results := make([]SearchResult, 0, len(selected))
 	for i := range selected {
 		selected[i].result.Rank = i + 1
@@ -532,6 +547,7 @@ type searchFileSelection struct {
 	sparsePrecomputedFiles map[string]bool
 	sparseDocumentCount    int
 	sparseDocumentLength   int
+	sparseFilesContentRead int
 	repoRoot               string
 	commit                 string
 	tree                   string
@@ -668,13 +684,18 @@ func preselectSearchFiles(
 		if options.TopK > defaultSearchTopK && len(sparseQuery.terms) > 0 && len(content) <= maxSparseSearchFileBytes {
 			lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
 			if len(lines) > 1 || lines[0] != "" {
+				language := ""
+				if spec, detected := languageForContent(filePath, content); detected {
+					language = spec.language
+				}
 				fileSparse, documentCount, documentLength := sparseCandidatesForFile(
-					q, sparseQuery, filePath, "", lines, options,
+					sparseQuery, filePath, language, lines, options,
 				)
 				sparseMu.Lock()
 				selection.sparseCandidates = append(selection.sparseCandidates, fileSparse...)
 				selection.sparseDocumentCount += documentCount
 				selection.sparseDocumentLength += documentLength
+				selection.sparseFilesContentRead++
 				selection.sparsePrecomputedFiles[filePath] = true
 				for _, candidate := range fileSparse {
 					for term := range candidate.termCounts {
@@ -908,7 +929,7 @@ func candidatesForFile(q searchQuery, filePath, language string, lines []string,
 // of a large symbol or prose-heavy file; overlapping windows preserve those
 // locations for deeper rankings without changing the interactive search path.
 func sparseCandidatesForFile(
-	focusQuery, sparseQuery searchQuery,
+	sparseQuery searchQuery,
 	filePath, language string,
 	lines []string,
 	options SearchOptions,
@@ -928,7 +949,7 @@ func sparseCandidatesForFile(
 		documentCount++
 		documentLength += maxInt(1, length)
 		if len(counts) > 0 {
-			focus := searchFocusLine(focusQuery, lines, start, end)
+			focus := sparseSearchFocusLine(sparseQuery, lines, start, end)
 			snippetStart, snippetEnd := focusedSnippetRegion(start, end, focus, options.MaxSnippetLines)
 			out = append(out, searchCandidate{
 				result: SearchResult{
@@ -940,7 +961,7 @@ func sparseCandidatesForFile(
 					SnippetEndLine:   snippetEnd,
 					Language:         language,
 					Signals:          []string{"sparse-region"},
-					Snippet:          strings.Join(lines[snippetStart-1:snippetEnd], "\n"),
+					Snippet:          "",
 				},
 				termCounts: counts,
 				docLength:  length,
@@ -951,6 +972,84 @@ func sparseCandidatesForFile(
 		}
 	}
 	return out, documentCount, documentLength
+}
+
+func sparseSearchFocusLine(q searchQuery, lines []string, start, end int) int {
+	bestLine := start
+	bestMatches := -1
+	for line := start; line <= end; line++ {
+		counts, _ := sparseSearchTermCounts(lines[line-1], q.termSet)
+		matches := 0
+		for _, count := range counts {
+			matches += count
+		}
+		if matches > bestMatches {
+			bestLine = line
+			bestMatches = matches
+		}
+	}
+	return bestLine
+}
+
+func hydrateSparseCandidates(candidates []searchCandidate, read contentReader) int {
+	cache := make(map[string][]string)
+	missing := make(map[string]bool)
+	reads := 0
+	for index := range candidates {
+		candidate := &candidates[index]
+		if candidate.result.Snippet != "" || !containsString(candidate.result.Signals, "sparse-region") {
+			continue
+		}
+		filePath := candidate.result.FilePath
+		lines, cached := cache[filePath]
+		if !cached && !missing[filePath] {
+			content, ok := read(filePath)
+			reads++
+			if !ok || strings.IndexByte(content, 0) >= 0 {
+				missing[filePath] = true
+				continue
+			}
+			lines = strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+			cache[filePath] = lines
+			if candidate.result.Language == "" {
+				if spec, detected := languageForContent(filePath, content); detected {
+					candidate.result.Language = spec.language
+				}
+			}
+		}
+		if len(lines) == 0 {
+			continue
+		}
+		start, end := clampRegion(candidate.result.SnippetStartLine, candidate.result.SnippetEndLine, len(lines))
+		if start > 0 {
+			candidate.result.Snippet = strings.Join(lines[start-1:end], "\n")
+		}
+	}
+	return reads
+}
+
+func scaleSearchCorpusValue(value, totalFiles, observedFiles int) int {
+	if value <= 0 || totalFiles <= observedFiles || observedFiles <= 0 {
+		return value
+	}
+	maxValue := int(^uint(0) >> 1)
+	quotient, remainder := value/observedFiles, value%observedFiles
+	if quotient > maxValue/totalFiles {
+		return maxValue
+	}
+	scaled := quotient * totalFiles
+	if remainder == 0 {
+		return scaled
+	}
+	if remainder > (maxValue-scaled)/totalFiles {
+		return maxValue
+	}
+	product := remainder * totalFiles
+	extra := product / observedFiles
+	if product%observedFiles != 0 {
+		extra++
+	}
+	return scaled + extra
 }
 
 func scoreSparseCandidates(
@@ -1245,8 +1344,15 @@ func searchExpansionRelation(relation string) bool {
 // region coverage from collapsing into repeated chunks from a few files while
 // retaining enough sparse depth to find relevant locations inside large files.
 func selectHybridCandidates(semantic, sparse []searchCandidate, topK int) []searchCandidate {
-	if topK <= 0 || len(semantic) == 0 {
+	if topK <= 0 {
 		return nil
+	}
+	if len(semantic) == 0 {
+		selected := append([]searchCandidate(nil), sparse[:minInt(topK, len(sparse))]...)
+		for index := range selected {
+			selected[index].score = 1 / float64(sparseSearchRRFConstant+index+1)
+		}
+		return selected
 	}
 	if len(sparse) == 0 {
 		return append([]searchCandidate(nil), semantic[:minInt(topK, len(semantic))]...)

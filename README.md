@@ -153,6 +153,7 @@ Search returns ranked, diverse source regions for a task description, fusing sev
 - symbol names and signatures, and file paths
 - conceptual issue-to-API term expansion
 - graph-neighbor expansion (in the `fast` profile) so related regions surface together
+- overlapping sparse regions for deep rankings, fused with syntax-aware file evidence
 - diversity-aware region selection, so one file can contribute several non-overlapping regions
 
 Behavior and budgets:
@@ -160,7 +161,7 @@ Behavior and budgets:
 - **Working tree by default**, so an agent sees its own dirty edits. Use `--head` for immutable committed-tree semantics.
 - **Bounded output.** Results are budgeted to **16 KiB** of serialized snippets by default, sized to drop straight into a model context window. Tune with `--top-k` and `--max-context-bytes` (`--max-context-bytes 0` for an unbounded diagnostic ranking).
 - **Focused regions.** Semantic results span at most 80 lines by default, keeping locations precise while snippets remain independently capped at 40 lines. Override with `--max-region-lines` and `--max-snippet-lines` when broader context is useful.
-- **Cold search** scans files without parsing, then indexes an adaptive pool of 96–256 query-relevant files based on the requested `--top-k`. Shallow agent searches retain the 96-file latency bound; deeper diagnostic rankings widen the pool for recall. Override it with `--max-indexed-files`, or force exhaustive parsing with `--index-all-files`.
+- **Cold search** scans files without parsing, then indexes an adaptive pool of 96–256 query-relevant files based on the requested `--top-k`. Shallow searches of up to 20 results retain the 96-file interactive latency bound. Deeper rankings add a corpus-wide sparse pass over eligible files up to 2 MiB, while syntax parsing remains bounded to the adaptive pool; this deliberately spends more time for region recall inside large files. Override the parsing pool with `--max-indexed-files`, or force exhaustive parsing with `--index-all-files`.
 - **Profiles.** The default `syntax-only` profile avoids synchronous whole-repository graph construction; `--profile fast` adds local relation expansion when deeper semantic indexing is worth the cost.
 - **Caching.** When Entire supplies `ENTIRE_PLUGIN_DATA_DIR`, committed-tree searches reuse a tree-keyed compressed index across invocations. Direct callers can set `--cache-dir`; `--no-cache` disables persistence. Worktree searches never reuse committed indexes, avoiding stale results after edits.
 
