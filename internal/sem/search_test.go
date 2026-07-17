@@ -985,6 +985,25 @@ func TestDiverseSelectionDoesNotSpendBudgetOnClones(t *testing.T) {
 	}
 }
 
+func TestDiverseSelectionCoversFilesBeforeAddingRegions(t *testing.T) {
+	candidates := []searchCandidate{
+		{score: 10, result: SearchResult{FilePath: "src/large.go", StartLine: 1, EndLine: 10, SymbolName: "first"}},
+		{score: 9.9, result: SearchResult{FilePath: "src/large.go", StartLine: 30, EndLine: 40, SymbolName: "second"}},
+		{score: 9.8, result: SearchResult{FilePath: "src/large.go", StartLine: 60, EndLine: 70, SymbolName: "third"}},
+		{score: 8, result: SearchResult{FilePath: "src/related.go", StartLine: 1, EndLine: 10, SymbolName: "related"}},
+	}
+	selected := selectDiverseCandidates(candidates, 3, 3)
+	if len(selected) != 3 {
+		t.Fatalf("selected %d candidates, want 3", len(selected))
+	}
+	if selected[0].result.FilePath != "src/large.go" || selected[1].result.FilePath != "src/related.go" {
+		t.Fatalf("first discovery pass did not cover distinct files: %#v", selected)
+	}
+	if selected[2].result.SymbolName != "second" {
+		t.Fatalf("second region was not restored after file coverage: %#v", selected)
+	}
+}
+
 func TestSearchPathPriorPrefersProductCodeUnlessWorkflowRequested(t *testing.T) {
 	issue := buildSearchQuery("render account profile")
 	if source, workflow := searchPathPrior(issue, "src/profile/render.go"), searchPathPrior(issue, ".github/workflows/release.yml"); source <= workflow {

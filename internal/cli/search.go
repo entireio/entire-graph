@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -53,6 +54,12 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 	cacheDir := flags.CacheDir
 	if cacheDir == "" {
 		cacheDir = opts.Env.PluginDataDir
+	}
+	contextBudget := flags.MaxContextBytes
+	// Agent output has a much smaller wire representation than the public JSON
+	// response. Keep full snippets until that representation is budgeted below.
+	if flags.Format == "agent" {
+		flags.MaxContextBytes = 0
 	}
 	response, err := sem.SearchRepository(ctx, repo, opts.Version, flags.Query, sem.SearchOptions{
 		Worktree:          flags.Worktree,
@@ -120,9 +127,87 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 			fmt.Fprintf(opts.Stdout, " signals=%s\n%s\n\n", strings.Join(result.Signals, ","), result.Snippet)
 		}
 		return nil
+	case "agent":
+		return writeAgentSearch(opts.Stdout, response.Results, contextBudget)
 	default:
-		return fmt.Errorf("search --format must be json, ndjson, or text, got %q", flags.Format)
+		return fmt.Errorf("search --format must be json, ndjson, text, or agent, got %q", flags.Format)
 	}
+}
+
+func writeAgentSearch(out interface{ Write([]byte) (int, error) }, results []sem.SearchResult, budget int) error {
+	if len(results) == 0 {
+		_, err := fmt.Fprintln(out, "No search results.")
+		return err
+	}
+	formatted := fitAgentSearchResults(results, budget)
+	_, err := out.Write(formatted)
+	return err
+}
+
+func fitAgentSearchResults(results []sem.SearchResult, budget int) []byte {
+	if budget <= 0 {
+		return renderAgentSearchResults(results, 0)
+	}
+	for count := len(results); count > 0; count-- {
+		perResult := maxIntCLI(128, (budget-(count-1))/count)
+		formatted := renderAgentSearchResults(results[:count], perResult)
+		if len(formatted) <= budget {
+			return formatted
+		}
+	}
+	return nil
+}
+
+func renderAgentSearchResults(results []sem.SearchResult, perResult int) []byte {
+	var output bytes.Buffer
+	for index, result := range results {
+		if index > 0 {
+			output.WriteByte('\n')
+		}
+		output.Write(agentSearchBlock(result, perResult))
+	}
+	return output.Bytes()
+}
+
+func agentSearchBlock(result sem.SearchResult, budget int) []byte {
+	name := result.QualifiedName
+	if name == "" {
+		name = result.SymbolName
+	}
+	header := fmt.Sprintf("%d. %s:%d-%d", result.Rank, result.FilePath, result.StartLine, result.EndLine)
+	if name != "" {
+		header += " " + name
+	}
+	header += "\n"
+	if budget <= 0 || len(header)+len(result.Snippet)+1 <= budget {
+		return []byte(header + result.Snippet + "\n")
+	}
+
+	lines := strings.Split(result.Snippet, "\n")
+	focus := result.FocusLine - result.SnippetStartLine
+	if focus < 0 || focus >= len(lines) {
+		focus = len(lines) / 2
+	}
+	best := ""
+	for left := 0; left <= focus; left++ {
+		for right := focus; right < len(lines); right++ {
+			candidate := strings.Join(lines[left:right+1], "\n")
+			if len(header)+len(candidate)+1 <= budget && len(candidate) > len(best) {
+				best = candidate
+			}
+		}
+	}
+	if best == "" {
+		return []byte(header)
+	}
+	return []byte(header + best + "\n")
+}
+
+func maxIntCLI(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func parseSearchFlags(args []string) (searchFlags, []string, error) {

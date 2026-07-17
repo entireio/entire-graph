@@ -285,6 +285,41 @@ func TestSearchCommandReturnsRankedJSON(t *testing.T) {
 	}
 }
 
+func TestSearchCommandAgentFormatIsCompactAndFocused(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "auth.py", `def validate_token(token):
+    """Validate a signed authentication token."""
+    first = token.strip()
+    second = first.lower()
+    third = bool(second)
+    return third
+`)
+
+	var out bytes.Buffer
+	err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{
+		"search",
+		"--repo", repo,
+		"--query", "validate authentication token",
+		"--format", "agent",
+		"--profile", "syntax-only",
+		"--worktree",
+		"--top-k", "3",
+		"--max-context-bytes", "512",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() > 512 {
+		t.Fatalf("agent output used %d bytes, budget 512:\n%s", out.Len(), out.String())
+	}
+	if !strings.Contains(out.String(), "1. auth.py:1-6 validate_token") || !strings.Contains(out.String(), "validate_token") {
+		t.Fatalf("agent output omitted ranked location or focused code:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), `"symbol_id"`) || strings.Contains(out.String(), `"stats"`) {
+		t.Fatalf("agent output retained machine-schema overhead:\n%s", out.String())
+	}
+}
+
 func TestProviderCommandsAcceptIgnoreFile(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, ".brainignore", "ignored/\n")

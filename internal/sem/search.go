@@ -1447,11 +1447,21 @@ func selectDiverseCandidates(candidates []searchCandidate, topK, maxPerFile int)
 	perSymbolName := map[string]int{}
 	perBaseName := map[string]int{}
 	for len(selected) < topK {
+		// Search is primarily a discovery operation for coding agents. Give the
+		// agent one strong location from each candidate file before spending the
+		// remaining result budget on additional regions in files it has already
+		// seen. Without this first pass, a few large or repetitive files can fill
+		// the context window even when other relevant implementation files ranked
+		// close behind them.
+		fileLimit := maxPerFile
+		if hasUnseenSearchFile(remaining, perFile) {
+			fileLimit = 1
+		}
 		bestIndex := -1
 		bestAdjusted := -math.MaxFloat64
 		for i := range remaining {
 			candidate := remaining[i]
-			if perFile[candidate.result.FilePath] >= maxPerFile || overlapsSelected(candidate, selected) {
+			if perFile[candidate.result.FilePath] >= fileLimit || overlapsSelected(candidate, selected) {
 				continue
 			}
 			symbolKey := strings.ToLower(candidate.result.QualifiedName)
@@ -1489,6 +1499,15 @@ func selectDiverseCandidates(candidates []searchCandidate, topK, maxPerFile int)
 		remaining = append(remaining[:bestIndex], remaining[bestIndex+1:]...)
 	}
 	return selected
+}
+
+func hasUnseenSearchFile(candidates []searchCandidate, perFile map[string]int) bool {
+	for _, candidate := range candidates {
+		if perFile[candidate.result.FilePath] == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func overlapsSelected(candidate searchCandidate, selected []searchCandidate) bool {

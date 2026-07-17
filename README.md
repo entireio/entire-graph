@@ -144,7 +144,7 @@ ENTIRE_REPO_ROOT=/path/to/repo ./entire-graph diff --base HEAD~1 --head HEAD
 ## 🔍 Search
 
 ```sh
-entire graph search --repo . --query "retry logic for webhook delivery" --top-k 20 --format json
+entire graph search --repo . --query "retry logic for webhook delivery" --top-k 20 --format agent
 ```
 
 Search returns ranked, diverse source regions for a task description, fusing several signals:
@@ -160,6 +160,7 @@ Behavior and budgets:
 
 - **Working tree by default**, so an agent sees its own dirty edits. Use `--head` for immutable committed-tree semantics.
 - **Bounded output.** Results are budgeted to **16 KiB** of serialized snippets by default, sized to drop straight into a model context window. Tune with `--top-k` and `--max-context-bytes` (`--max-context-bytes 0` for an unbounded diagnostic ranking).
+- **Agent-native output.** `--format agent` emits only ranked locations, symbol names, and focused source, preserving more useful code inside the same budget. Use `json` or `ndjson` when a program needs the full result schema and search diagnostics.
 - **Focused regions.** Semantic results span at most 80 lines by default, keeping locations precise while snippets remain independently capped at 40 lines. Override with `--max-region-lines` and `--max-snippet-lines` when broader context is useful.
 - **Cold search** scans files without parsing, then indexes an adaptive pool of 96–256 query-relevant files based on the requested `--top-k`. Shallow searches of up to 20 results retain the 96-file interactive latency bound. Deeper rankings add a corpus-wide sparse pass over eligible files up to 2 MiB, while syntax parsing remains bounded to the adaptive pool; this deliberately spends more time for region recall inside large files. Override the parsing pool with `--max-indexed-files`, or force exhaustive parsing with `--index-all-files`.
 - **Profiles.** The default `syntax-only` profile avoids synchronous whole-repository graph construction; `--profile fast` adds local relation expansion when deeper semantic indexing is worth the cost.
@@ -220,7 +221,7 @@ entire-graph is built to be called by coding agents, not only humans. Every comm
 
 - **🔍 Find where to work.** Retrieve ranked regions for a task before editing:
   ```sh
-  entire graph search --repo . --query "retry logic for webhook delivery" --format json
+  entire graph search --repo . --query "retry logic for webhook delivery" --format agent
   ```
   Output is bounded to 16 KiB by default, sized for direct inclusion in a model context window.
 - **🧬 Judge a change.** Summarize what actually changed at the entity level to decide keep / revert / continue:
