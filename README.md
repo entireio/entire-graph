@@ -205,10 +205,11 @@ preserving their `CONSTRUCTS` relation in JSON. `--depth 2` also returns bounded
 caller → focus → callee paths.
 `--relation` selects another relation family, `--direction` limits the side,
 `--internal-only` removes unresolved external endpoints, `--exclude-tests`
-removes conventional test-only neighbors, and `--limit` bounds both ambiguous
-focus matches and per-focus neighbor lists. JSON reports how many focus matches
-were omitted and carries the underlying index's partial failures and
-completeness breakdown.
+removes conventional test-only neighbors, and `--limit` bounds definition lists,
+neighbor lists, and two-hop paths. Ambiguous symbols return definitions only
+and require `--file` (plus a qualified `--symbol` when necessary) before any
+adjacency is expanded. JSON reports how many definitions were omitted and
+carries the underlying index's partial failures and completeness breakdown.
 Agent output represents a complete two-hop Cartesian family compactly instead
 of repeating every path. The default full profile favors
 relationship correctness; use `--profile fast` when shallow call resolution is

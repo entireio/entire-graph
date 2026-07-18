@@ -97,14 +97,17 @@ func TestNeighborsLimitBoundsAmbiguousFocusMatchesDeterministically(t *testing.T
 	if !response.Truncated || !response.FocusMatchesTruncated || response.FocusMatchesTotal != 3 {
 		t.Fatalf("ambiguous focus truncation metadata = %#v", response)
 	}
+	if !response.DisambiguationRequired {
+		t.Fatalf("ambiguous focus did not require disambiguation: %#v", response)
+	}
 	if len(response.Matches) != 2 ||
 		response.Matches[0].Symbol.ID != "focus-a-early" ||
 		response.Matches[1].Symbol.ID != "focus-a-late" {
 		t.Fatalf("bounded focus order = %#v", response.Matches)
 	}
 	for _, match := range response.Matches {
-		if len(match.Outgoing) != 1 || match.Outgoing[0].Endpoint.ID != "callee" {
-			t.Fatalf("adjacency for selected focus %q = %#v", match.Symbol.ID, match.Outgoing)
+		if len(match.Incoming) != 0 || len(match.Outgoing) != 0 || len(match.Paths) != 0 {
+			t.Fatalf("ambiguous definition %q expanded an unbounded adjacency: %#v", match.Symbol.ID, match)
 		}
 	}
 
@@ -112,9 +115,40 @@ func TestNeighborsLimitBoundsAmbiguousFocusMatchesDeterministically(t *testing.T
 	if err := writeAgentNeighbors(&out, response); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "showing the first 2 of 3 in file/line order; use --file") ||
-		strings.Contains(out.String(), "c.go:1") {
+	if !strings.Contains(out.String(), `Ambiguous symbol "Target" matched 3 definitions`) ||
+		!strings.Contains(out.String(), "rerun with --file") ||
+		strings.Contains(out.String(), "c.go:1") || strings.Contains(out.String(), "Callers:") {
 		t.Fatalf("agent ambiguity output was not deterministically bounded:\n%s", out.String())
+	}
+}
+
+func TestNeighborsHighDegreeFocusKeepsOnlyDeterministicTopLimit(t *testing.T) {
+	snapshot := sem.ProviderSnapshot{
+		Symbols: []sem.SymbolRecord{
+			{ID: "focus", Name: "Focus", QualifiedName: "Focus", FilePath: "focus.go", StartLine: 1},
+			{ID: "caller-z", Name: "Zulu", QualifiedName: "Zulu", FilePath: "z.go", StartLine: 1},
+			{ID: "caller-a", Name: "Alpha", QualifiedName: "Alpha", FilePath: "a.go", StartLine: 1},
+			{ID: "caller-m", Name: "Mike", QualifiedName: "Mike", FilePath: "m.go", StartLine: 1},
+			{ID: "caller-b", Name: "Bravo", QualifiedName: "Bravo", FilePath: "b.go", StartLine: 1},
+			{ID: "caller-y", Name: "Yankee", QualifiedName: "Yankee", FilePath: "y.go", StartLine: 1},
+		},
+		Relations: []sem.RelationRecord{
+			{FromID: "caller-z", ToID: "focus", Type: "CALLS"},
+			{FromID: "caller-y", ToID: "focus", Type: "CALLS"},
+			{FromID: "caller-m", ToID: "focus", Type: "CALLS"},
+			{FromID: "caller-b", ToID: "focus", Type: "CALLS"},
+			{FromID: "caller-a", ToID: "focus", Type: "CALLS"},
+		},
+	}
+	response := buildNeighborResponse(snapshot, neighborFlags{
+		Symbol: "Focus", Relation: "CALLS", Direction: "in", Depth: 1, Limit: 2,
+	})
+	if !response.Truncated || !response.endpointTruncated || len(response.Matches) != 1 {
+		t.Fatalf("high-degree truncation metadata = %#v", response)
+	}
+	incoming := response.Matches[0].Incoming
+	if len(incoming) != 2 || incoming[0].Endpoint.ID != "caller-a" || incoming[1].Endpoint.ID != "caller-b" {
+		t.Fatalf("bounded deterministic incoming = %#v", incoming)
 	}
 }
 
