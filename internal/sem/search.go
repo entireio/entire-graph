@@ -130,6 +130,22 @@ type searchCandidate struct {
 	score      float64
 }
 
+func cachedContentReader(read contentReader) contentReader {
+	type entry struct {
+		content string
+		ok      bool
+	}
+	cache := map[string]entry{}
+	return func(path string) (string, bool) {
+		if cached, exists := cache[path]; exists {
+			return cached.content, cached.ok
+		}
+		content, ok := read(path)
+		cache[path] = entry{content: content, ok: ok}
+		return content, ok
+	}
+}
+
 var searchWordPattern = regexp.MustCompile(`[[:alnum:]_./:+#-]+`)
 var sparseSearchWordPattern = regexp.MustCompile(`[[:alpha:]][[:alnum:]_]*|[[:digit:]]+`)
 
@@ -157,10 +173,6 @@ var sparseSearchStopWords = map[string]bool{
 	"was": true, "we": true, "were": true, "what": true, "when": true,
 	"where": true, "which": true, "why": true, "will": true, "with": true,
 	"would": true, "you": true, "your": true,
-}
-
-var searchGenericActionTerms = map[string]bool{
-	"ran": true, "run": true, "runs": true,
 }
 
 // SearchRepository performs local hybrid lexical/semantic retrieval. It uses
@@ -247,6 +259,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	if closeSource != nil {
 		defer closeSource()
 	}
+	read = cachedContentReader(read)
 
 	symbolsByFile := make(map[string][]SymbolRecord)
 	symbolsByID := make(map[string]SymbolRecord, len(snapshot.Symbols))
@@ -361,16 +374,24 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	stats.GraphCandidates = len(graphCandidates)
 	candidates = append(candidates, graphCandidates...)
 	sortSearchCandidates(candidates)
-	identifierUsages := expandIdentifierUsageCandidates(candidates, q, symbolsByID, symbolsByFile, read, fileLanguages, options)
+	expansionSeeds := append([]searchCandidate(nil), candidates...)
+	identifierUsages := expandIdentifierUsageCandidates(ctx, expansionSeeds, q, symbolsByID, symbolsByFile, read, fileLanguages, options)
+	if err := ctx.Err(); err != nil {
+		return SearchResponse{}, err
+	}
 	stats.IdentifierUsages = len(identifierUsages)
-	candidates = append(candidates, identifierUsages...)
-	sortSearchCandidates(candidates)
-	neighbors := expandSameContainerNeighborCandidates(candidates, q, symbolsByID, symbolsByFile, read, fileLanguages, options)
+	neighbors := expandSameContainerNeighborCandidates(ctx, expansionSeeds, q, symbolsByID, symbolsByFile, read, fileLanguages, options)
+	if err := ctx.Err(); err != nil {
+		return SearchResponse{}, err
+	}
 	stats.NeighborCandidates = len(neighbors)
-	candidates = append(candidates, neighbors...)
-	sortSearchCandidates(candidates)
-	bridges := expandSameFileBridgeCandidates(candidates, q, symbolsByFile, read, fileLanguages, options)
+	bridges := expandSameFileBridgeCandidates(ctx, expansionSeeds, q, symbolsByFile, read, fileLanguages, options)
+	if err := ctx.Err(); err != nil {
+		return SearchResponse{}, err
+	}
 	stats.BridgeCandidates = len(bridges)
+	candidates = append(candidates, identifierUsages...)
+	candidates = append(candidates, neighbors...)
 	candidates = append(candidates, bridges...)
 	sortSearchCandidates(candidates)
 	semantic := selectDiverseCandidates(candidates, options.TopK, options.MaxRegionsPerFile)
@@ -887,12 +908,31 @@ func searchPreselectionPatterns(q searchQuery) []string {
 func searchGitGrepPreselectionPatterns(q searchQuery) []string {
 	patterns := searchPreselectionPatterns(q)
 	// Each additional fixed-string pattern makes Git scan and emit more of a
-	// large index. Six high-priority terms preserve code-shaped and direct query
-	// evidence while bounding cold-start latency and match-volume parsing.
-	if len(patterns) > 6 {
-		patterns = patterns[:6]
+	// large index. Preserve one derived morphological/fragment fallback rather
+	// than letting direct terms consume the entire bounded pattern budget.
+	if len(patterns) <= 6 {
+		return patterns
 	}
-	return patterns
+	direct := make([]string, 0, 6)
+	derived := make([]string, 0, 1)
+	for _, pattern := range patterns {
+		if q.termSet[pattern] && q.weights[pattern] >= 1 {
+			direct = append(direct, pattern)
+		} else {
+			derived = append(derived, pattern)
+		}
+	}
+	limit := 6
+	if len(derived) > 0 {
+		limit--
+	}
+	if len(direct) > limit {
+		direct = direct[:limit]
+	}
+	if len(derived) > 0 {
+		direct = append(direct, derived[0])
+	}
+	return direct
 }
 
 func candidatesForFile(q searchQuery, filePath, language string, lines []string, symbols []SymbolRecord, options SearchOptions) []searchCandidate {
@@ -1285,6 +1325,17 @@ func minFloat64(left, right float64) float64 {
 	return right
 }
 
+func maxFloat64(left, right float64) float64 {
+	if left > right {
+		return left
+	}
+	return right
+}
+
+func derivedSearchScore(parent, proposed float64) float64 {
+	return minFloat64(parent-0.01, proposed)
+}
+
 func expandGraphCandidates(seeds []searchCandidate, relations []RelationRecord, symbolsByID map[string]SymbolRecord, read contentReader, languages map[string]string, options SearchOptions) []searchCandidate {
 	if len(seeds) == 0 || len(relations) == 0 {
 		return nil
@@ -1382,6 +1433,7 @@ func searchExpansionRelation(relation string) bool {
 // but their consumers are exactly the context a coding agent needs after finding
 // a definition.
 func expandIdentifierUsageCandidates(
+	ctx context.Context,
 	seeds []searchCandidate,
 	q searchQuery,
 	symbolsByID map[string]SymbolRecord,
@@ -1399,9 +1451,16 @@ func expandIdentifierUsageCandidates(
 	const maxRawUsagesPerSeed = 64
 	var selectedSeeds []usageSeed
 	seenSymbols := map[string]bool{}
+	if seeds[0].score <= 0 {
+		return nil
+	}
+	bestScore := seeds[0].score
 	for _, candidate := range seeds {
 		if len(selectedSeeds) == maxSeeds {
 			break
+		}
+		if candidate.score < 0.35*bestScore {
+			continue
 		}
 		symbol, ok := symbolsByID[candidate.result.SymbolID]
 		if !ok || seenSymbols[symbol.ID] || !expandableUsageIdentifier(symbol.Name) {
@@ -1428,6 +1487,19 @@ func expandIdentifierUsageCandidates(
 	var discovered []indexedUsage
 	usageContext := minInt(options.ContextLines, 2)
 	for _, filePath := range filePaths {
+		if ctx.Err() != nil {
+			return nil
+		}
+		allSaturated := true
+		for seedIndex := range selectedSeeds {
+			if rawUsageCounts[seedIndex] < maxRawUsagesPerSeed {
+				allSaturated = false
+				break
+			}
+		}
+		if allSaturated {
+			break
+		}
 		content, ok := read(filePath)
 		if !ok || strings.IndexByte(content, 0) >= 0 {
 			continue
@@ -1437,12 +1509,15 @@ func expandIdentifierUsageCandidates(
 			if rawUsageCounts[seedIndex] == maxRawUsagesPerSeed {
 				continue
 			}
+			if !strings.Contains(content, seed.symbol.Name) {
+				continue
+			}
+			definitionStart := seed.symbol.StartLine
+			if filePath == seed.symbol.FilePath {
+				definitionStart = precedingDocumentationStart(lines, seed.symbol.StartLine, options.ContextLines)
+			}
 			for lineIndex, line := range lines {
 				lineNumber := lineIndex + 1
-				definitionStart := seed.symbol.StartLine
-				if filePath == seed.symbol.FilePath {
-					definitionStart = precedingDocumentationStart(lines, seed.symbol.StartLine, options.ContextLines)
-				}
 				if !containsIdentifierUsage(line, seed.symbol.Name) || identifierUsageIsImport(line) ||
 					(filePath == seed.symbol.FilePath && lineNumber >= definitionStart && lineNumber <= seed.symbol.EndLine) {
 					continue
@@ -1460,7 +1535,7 @@ func expandIdentifierUsageCandidates(
 				}
 				candidate.result.FocusLine = lineNumber
 				candidate.result.Signals = appendUnique(candidate.result.Signals, "symbol-usage")
-				candidate.score = seed.score + 2 + identifierUsagePathPrior(q, filePath)
+				candidate.score = derivedSearchScore(seed.score, 0.9*seed.score+identifierUsagePathPrior(q, filePath))
 				candidate.baseScore = candidate.score
 				seenLocations[locationKey] = true
 				rawUsageCounts[seedIndex]++
@@ -1505,9 +1580,6 @@ func identifierUsagePathPrior(q searchQuery, filePath string) float64 {
 	if isTest && !searchQuerySupplied(q, "test", "tests", "spec", "regression") {
 		return -3
 	}
-	if strings.Contains(lower, "/src/") || strings.Contains(lower, "/lib/") || strings.Contains(lower, "/packages/") {
-		return 1.5
-	}
 	return 0
 }
 
@@ -1518,18 +1590,18 @@ func expandableUsageIdentifier(name string) bool {
 	hasLower, hasUpper, hasSeparator := false, false, false
 	for _, character := range name {
 		switch {
-		case character >= 'a' && character <= 'z':
+		case unicode.IsLower(character):
 			hasLower = true
-		case character >= 'A' && character <= 'Z':
+		case unicode.IsUpper(character):
 			hasUpper = true
 		case character == '_' || character == '$':
 			hasSeparator = true
-		case character >= '0' && character <= '9':
+		case unicode.IsDigit(character):
 		default:
 			return false
 		}
 	}
-	return hasLower && (hasUpper || hasSeparator)
+	return (hasLower && (hasUpper || hasSeparator)) || (hasUpper && hasSeparator)
 }
 
 func containsIdentifierUsage(line, name string) bool {
@@ -1575,6 +1647,7 @@ func enclosingSearchSymbol(symbols []SymbolRecord, line int) SymbolRecord {
 // explicit call edge (for example tick -> dispatch -> run); the transition is
 // often more useful to an agent than another weak match from an unrelated file.
 func expandSameContainerNeighborCandidates(
+	ctx context.Context,
 	seeds []searchCandidate,
 	q searchQuery,
 	symbolsByID map[string]SymbolRecord,
@@ -1588,8 +1661,14 @@ func expandSameContainerNeighborCandidates(
 	}
 	limit := minInt(len(seeds), maxInt(30, options.TopK*2))
 	bestScore := seeds[0].score
+	if bestScore <= 0 {
+		return nil
+	}
 	seedSymbolIDs := map[string]bool{}
 	for _, seed := range seeds[:limit] {
+		if ctx.Err() != nil {
+			return nil
+		}
 		seedSymbolIDs[seed.result.SymbolID] = true
 	}
 	seen := map[string]bool{}
@@ -1656,7 +1735,7 @@ func expandSameContainerNeighborCandidates(
 			}
 			candidate.result.FocusLine = neighbor.StartLine
 			candidate.result.Signals = appendUnique(candidate.result.Signals, "same-container-neighbor")
-			candidate.score = 0.9*seed.score + 1
+			candidate.score = derivedSearchScore(seed.score, 0.85*seed.score)
 			candidate.baseScore = candidate.score
 			seen[key] = true
 			out = append(out, candidate)
@@ -1690,6 +1769,7 @@ func sameContainerFlowSymbols(symbols []SymbolRecord, containerID string) []Symb
 // call or state transition that explains how neighboring lifecycle stages are
 // connected.
 func expandSameFileBridgeCandidates(
+	ctx context.Context,
 	candidates []searchCandidate,
 	q searchQuery,
 	symbolsByFile map[string][]SymbolRecord,
@@ -1703,6 +1783,9 @@ func expandSameFileBridgeCandidates(
 	limit := minInt(len(candidates), maxInt(40, options.TopK*2))
 	byFile := map[string][]searchCandidate{}
 	bestScore := candidates[0].score
+	if bestScore <= 0 {
+		return nil
+	}
 	for _, candidate := range candidates[:limit] {
 		if candidate.score < 0.3*bestScore || !searchFlowSymbolKind(candidate.result.Kind) || candidate.result.SymbolID == "" {
 			continue
@@ -1717,6 +1800,9 @@ func expandSameFileBridgeCandidates(
 	var out []searchCandidate
 	seenBridges := map[string]bool{}
 	for _, filePath := range filePaths {
+		if ctx.Err() != nil {
+			return nil
+		}
 		regions := byFile[filePath]
 		sort.Slice(regions, func(i, j int) bool {
 			return searchCandidateLess(regions[i], regions[j])
@@ -1757,7 +1843,7 @@ func expandSameFileBridgeCandidates(
 					continue
 				}
 				candidate.result.Signals = appendUnique(candidate.result.Signals, "same-file-bridge")
-				candidate.score = 0.5*(left.score+right.score) + 1
+				candidate.score = derivedSearchScore(maxFloat64(left.score, right.score), 0.45*(left.score+right.score))
 				candidate.baseScore = candidate.score
 				seenBridges[bridgeKey] = true
 				out = append(out, candidate)
@@ -2105,13 +2191,6 @@ func buildSearchQuery(query string) searchQuery {
 				weight = 1.1
 			}
 			add(term, weight)
-		}
-	}
-	if len(weights) > 1 {
-		for term := range weights {
-			if searchGenericActionTerms[term] {
-				weights[term] = minFloat64(weights[term], 0.35)
-			}
 		}
 	}
 	originalTerms := make([]string, 0, len(weights))

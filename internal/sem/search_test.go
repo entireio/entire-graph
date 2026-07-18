@@ -434,6 +434,7 @@ func TestSearchExpandsCompoundIdentifierConsumers(t *testing.T) {
 	definition := SymbolRecord{ID: "definition", Name: "cacheRefreshPolicy", FilePath: filePath, StartLine: 1, EndLine: 1}
 	consumer := SymbolRecord{ID: "consumer", Name: "configureCache", FilePath: filePath, StartLine: 3, EndLine: 5}
 	got := expandIdentifierUsageCandidates(
+		t.Context(),
 		[]searchCandidate{{score: 30, result: SearchResult{SymbolID: definition.ID}}},
 		buildSearchQuery("cache refresh policy"),
 		map[string]SymbolRecord{definition.ID: definition},
@@ -443,6 +444,41 @@ func TestSearchExpandsCompoundIdentifierConsumers(t *testing.T) {
 	)
 	if len(got) != 1 || got[0].result.FocusLine != 4 || got[0].result.SymbolName != "configureCache" || !containsString(got[0].result.Signals, "symbol-usage") {
 		t.Fatalf("consumer expansion = %#v", got)
+	}
+}
+
+func TestSearchUsageIdentifiersIncludeScreamingSnakeAndUnicode(t *testing.T) {
+	for _, name := range []string{"MAX_RETRY_COUNT", "überCache_Value"} {
+		if !expandableUsageIdentifier(name) {
+			t.Fatalf("compound identifier %q was excluded", name)
+		}
+	}
+	if expandableUsageIdentifier("ordinary") {
+		t.Fatal("plain lowercase word was accepted as a compound identifier")
+	}
+}
+
+func TestDerivedSearchScoreStaysBelowParent(t *testing.T) {
+	for _, proposed := range []float64{1, 10, 100} {
+		if got := derivedSearchScore(10, proposed); got >= 10 {
+			t.Fatalf("derived score %v was not below parent", got)
+		}
+	}
+}
+
+func TestSearchRelationshipCanPrecedeWeakFileDiversity(t *testing.T) {
+	selected := []searchCandidate{{result: SearchResult{FilePath: "src/a.go", StartLine: 1, EndLine: 3}}}
+	perFile := map[string]int{"src/a.go": 1}
+	perSymbol := map[string]int{}
+	perBase := map[string]int{}
+	related := searchCandidate{score: 10, result: SearchResult{FilePath: "src/a.go", StartLine: 20, EndLine: 22, Signals: []string{"symbol-usage"}}}
+	unseen := searchCandidate{score: 10, result: SearchResult{FilePath: "src/b.go", StartLine: 1, EndLine: 3}}
+	if shouldReserveUnseenSearchFile([]searchCandidate{related, unseen}, selected, perFile, perSymbol, perBase, 3) {
+		t.Fatal("strong causal relationship was incorrectly delayed for file diversity")
+	}
+	related.score = 6
+	if !shouldReserveUnseenSearchFile([]searchCandidate{related, unseen}, selected, perFile, perSymbol, perBase, 3) {
+		t.Fatal("weak causal relationship incorrectly displaced a stronger unseen file")
 	}
 }
 
@@ -456,6 +492,7 @@ func TestSearchPrioritizesExecutableIdentifierConsumers(t *testing.T) {
 		testPath:       "import { modernChunkLegacyGuard } from '../snippets'\nexpect(modernChunkLegacyGuard).toBeTruthy()\n",
 	}
 	got := expandIdentifierUsageCandidates(
+		t.Context(),
 		[]searchCandidate{{score: 30, result: SearchResult{SymbolID: definition.ID}}}, buildSearchQuery("legacy guard consumer"),
 		map[string]SymbolRecord{definition.ID: definition}, map[string][]SymbolRecord{consumerPath: {consumer}},
 		func(path string) (string, bool) { content, ok := contents[path]; return content, ok },
@@ -478,6 +515,7 @@ func TestSearchBridgesNearbyStrongRegions(t *testing.T) {
 	left := SymbolRecord{ID: "enqueue", Name: "enqueue", Kind: "function", FilePath: filePath, StartLine: 1, EndLine: 3}
 	right := SymbolRecord{ID: "run", Name: "runOne", Kind: "function", FilePath: filePath, StartLine: 7, EndLine: 9}
 	got := expandSameFileBridgeCandidates(
+		t.Context(),
 		[]searchCandidate{{score: 30, result: SearchResult{FilePath: filePath, StartLine: 1, EndLine: 3, SymbolID: left.ID, Kind: left.Kind}}, {score: 20, result: SearchResult{FilePath: filePath, StartLine: 7, EndLine: 9, SymbolID: right.ID, Kind: right.Kind}}},
 		buildSearchQuery("scheduled automation run"), map[string][]SymbolRecord{filePath: {left, right}},
 		func(path string) (string, bool) { return content, path == filePath }, map[string]string{filePath: "typescript"},
@@ -494,6 +532,7 @@ func TestSearchExpandsAdjacentLifecycleStage(t *testing.T) {
 	tick := SymbolRecord{ID: "tick", Name: "tick", Kind: "method", FilePath: filePath, ContainerID: "scheduler", StartLine: 2, EndLine: 4}
 	dispatch := SymbolRecord{ID: "dispatch", Name: "dispatchDue", Kind: "method", FilePath: filePath, ContainerID: "scheduler", StartLine: 5, EndLine: 7}
 	got := expandSameContainerNeighborCandidates(
+		t.Context(),
 		[]searchCandidate{{score: 30, result: SearchResult{FilePath: filePath, StartLine: 2, EndLine: 4, SymbolID: tick.ID, Kind: tick.Kind}}},
 		buildSearchQuery("scheduled automation tick"), map[string]SymbolRecord{tick.ID: tick}, map[string][]SymbolRecord{filePath: {tick, dispatch}},
 		func(path string) (string, bool) { return content, path == filePath }, map[string]string{filePath: "typescript"},
@@ -524,17 +563,6 @@ func TestSearchQueryDropsNarrativeStopWordsBeforePreselection(t *testing.T) {
 		if !query.termSet[meaningful] {
 			t.Fatalf("meaningful term %q missing: %#v", meaningful, query.terms)
 		}
-	}
-}
-
-func TestSearchQueryDownweightsGenericRunInNarrativeQueries(t *testing.T) {
-	query := buildSearchQuery("scheduled automation did not run while asleep")
-	if query.weights["run"] >= query.weights["automation"] {
-		t.Fatalf("generic run weight %v did not stay below automation %v", query.weights["run"], query.weights["automation"])
-	}
-	single := buildSearchQuery("run")
-	if single.weights["run"] != 1 {
-		t.Fatalf("single-term run query weight = %v, want 1", single.weights["run"])
 	}
 }
 
@@ -1007,6 +1035,16 @@ func TestGitGrepPreselectionBoundsLargeRepoPatternFanout(t *testing.T) {
 		if !containsString(patterns, meaningful) {
 			t.Fatalf("high-priority term %q missing: %#v", meaningful, patterns)
 		}
+	}
+	derived := false
+	query := buildSearchQuery("scheduled automation computer asleep misleading status catchup durable project memory")
+	for _, pattern := range patterns {
+		if query.weights[pattern] < 1 {
+			derived = true
+		}
+	}
+	if !derived {
+		t.Fatalf("git-grep cap dropped every morphological fallback: %#v", patterns)
 	}
 }
 
