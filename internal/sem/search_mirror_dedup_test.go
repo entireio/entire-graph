@@ -30,6 +30,106 @@ func TestSearchRepositoryDedupesTrackedSemanticMirror(t *testing.T) {
 	}
 }
 
+func TestSearchRepositoryDeepSearchDoesNotReintroduceTrackedSemanticMirror(t *testing.T) {
+	repo := t.TempDir()
+	implementation := `export function isAsync(value: unknown): boolean {
+  return value != null && typeof value === "object";
+}
+`
+	write(t, repo, "src/helpers/parseUtil.ts", implementation)
+	write(t, repo, "runtime-copy/lib/helpers/parseUtil.ts", implementation)
+
+	response, err := SearchRepository(t.Context(), repo, "test", "isAsync", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     defaultSearchTopK + 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Stats.SparseCandidates == 0 {
+		t.Fatal("deep search did not exercise sparse retrieval")
+	}
+	for _, result := range response.Results {
+		if result.FilePath == "runtime-copy/lib/helpers/parseUtil.ts" {
+			t.Fatalf("deep search reintroduced runtime mirror through sparse fusion: %#v", response.Results)
+		}
+	}
+}
+
+func TestSearchRepositoryDeepSearchPreservesExplicitMirrorPathQuery(t *testing.T) {
+	repo := t.TempDir()
+	implementation := `export function isAsync(value: unknown): boolean {
+  return value != null && typeof value === "object";
+}
+`
+	write(t, repo, "src/helpers/parseUtil.ts", implementation)
+	write(t, repo, "runtime-copy/lib/helpers/parseUtil.ts", implementation)
+
+	response, err := SearchRepository(t.Context(), repo, "test", "runtime-copy isAsync", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     defaultSearchTopK + 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range response.Results {
+		if result.FilePath == "runtime-copy/lib/helpers/parseUtil.ts" {
+			return
+		}
+	}
+	t.Fatalf("deep search dropped explicitly requested runtime path: %#v", response.Results)
+}
+
+func TestSearchRepositoryKeepsExactCopiesInSiblingGeneratedPackages(t *testing.T) {
+	repo := t.TempDir()
+	implementation := `export function parseUser(value) {
+  return value.trim();
+}
+`
+	write(t, repo, "packages/a/dist/index.js", implementation)
+	write(t, repo, "packages/b/dist/index.js", implementation)
+	git(t, repo, "init")
+	git(t, repo, "add", ".")
+
+	response, err := SearchRepository(t.Context(), repo, "test", "parseUser", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSearchResultPaths(t, response.Results, "parseUser",
+		"packages/a/dist/index.js", "packages/b/dist/index.js",
+	)
+}
+
+func TestSearchRepositoryKeepsExactCopiesAcrossSiblingSourceAndGeneratedPackages(t *testing.T) {
+	repo := t.TempDir()
+	implementation := `export function parseUser(value) {
+  return value.trim();
+}
+`
+	write(t, repo, "packages/a/src/index.js", implementation)
+	write(t, repo, "packages/b/dist/index.js", implementation)
+	git(t, repo, "init")
+	git(t, repo, "add", ".")
+
+	response, err := SearchRepository(t.Context(), repo, "test", "parseUser", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSearchResultPaths(t, response.Results, "parseUser",
+		"packages/a/src/index.js", "packages/b/dist/index.js",
+	)
+}
+
 func TestSearchRepositoryPrefersAuthoredUsagesBeforeMirrorQuota(t *testing.T) {
 	repo := t.TempDir()
 	definition := `export function isAsync(value: unknown): boolean {
@@ -224,6 +324,54 @@ func TestDedupeSemanticMirrorCandidatesKeepsSeparateMonorepoSources(t *testing.T
 	}
 }
 
+func TestDedupeSemanticMirrorCandidatesKeepsSeparateMonorepoGeneratedTrees(t *testing.T) {
+	symbols := map[string]SymbolRecord{
+		"left":  searchMirrorTestSymbol("left", "packages/a/dist/index.js", "same-body"),
+		"right": searchMirrorTestSymbol("right", "packages/b/dist/index.js", "same-body"),
+	}
+	candidates := []searchCandidate{
+		searchMirrorTestCandidate(symbols["left"], 12, "body"),
+		searchMirrorTestCandidate(symbols["right"], 11, "body"),
+	}
+
+	got := dedupeSemanticMirrorCandidates(candidates, buildSearchQuery("parse user"), symbols)
+	if len(got) != 2 {
+		t.Fatalf("separate monorepo generated trees were collapsed: %#v", got)
+	}
+}
+
+func TestDedupeSemanticMirrorCandidatesKeepsSeparateMonorepoSourceAndGeneratedTrees(t *testing.T) {
+	symbols := map[string]SymbolRecord{
+		"left":  searchMirrorTestSymbol("left", "packages/a/src/index.js", "same-body"),
+		"right": searchMirrorTestSymbol("right", "packages/b/dist/index.js", "same-body"),
+	}
+	candidates := []searchCandidate{
+		searchMirrorTestCandidate(symbols["left"], 12, "body"),
+		searchMirrorTestCandidate(symbols["right"], 11, "body"),
+	}
+
+	got := dedupeSemanticMirrorCandidates(candidates, buildSearchQuery("parse user"), symbols)
+	if len(got) != 2 {
+		t.Fatalf("separate monorepo source/generated trees were collapsed: %#v", got)
+	}
+}
+
+func TestDedupeSemanticMirrorCandidatesCollapsesSourceAndGeneratedTreeWithinOnePackage(t *testing.T) {
+	symbols := map[string]SymbolRecord{
+		"source": searchMirrorTestSymbol("source", "packages/a/src/index.js", "same-body"),
+		"dist":   searchMirrorTestSymbol("dist", "packages/a/dist/index.js", "same-body"),
+	}
+	candidates := []searchCandidate{
+		searchMirrorTestCandidate(symbols["dist"], 12, "body"),
+		searchMirrorTestCandidate(symbols["source"], 11, "body"),
+	}
+
+	got := dedupeSemanticMirrorCandidates(candidates, buildSearchQuery("parse user"), symbols)
+	if len(got) != 1 || got[0].result.FilePath != "packages/a/src/index.js" {
+		t.Fatalf("same-package source/generated mirror was not collapsed: %#v", got)
+	}
+}
+
 func TestDedupeSemanticMirrorCandidatesUsesStrongResultFallback(t *testing.T) {
 	source := searchMirrorTestCandidate(searchMirrorTestSymbol("", "src/schema/user.ts", ""), 9, "export function parseUser() { return true }", "source")
 	mirror := searchMirrorTestCandidate(searchMirrorTestSymbol("", "gen/schema/user.ts", ""), 10, "export  function parseUser() {\n  return true\n}", "mirror")
@@ -309,5 +457,20 @@ func searchMirrorTestCandidate(symbol SymbolRecord, score float64, snippet strin
 			Signals:       signals,
 			Snippet:       snippet,
 		},
+	}
+}
+
+func assertSearchResultPaths(t *testing.T, results []SearchResult, qualifiedName string, want ...string) {
+	t.Helper()
+	got := make(map[string]bool, len(want))
+	for _, result := range results {
+		if result.QualifiedName == qualifiedName {
+			got[result.FilePath] = true
+		}
+	}
+	for _, filePath := range want {
+		if !got[filePath] {
+			t.Fatalf("results for %q omitted %q: %#v", qualifiedName, filePath, results)
+		}
 	}
 }

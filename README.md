@@ -152,7 +152,10 @@ prepare the complete index before the task starts:
 entire graph index --repo . --head --profile full --cache-dir /path/to/cache --format json
 ```
 
-`index` is HEAD-only, local-only, and query independent. Its JSON response
+`index` is HEAD-only, local-only, query independent, and defaults to the
+`full` profile. Repeatable `--ignore-file` and `--include-file` flags let setup
+use the same repository scope—and therefore the same cache key—as later search
+and neighbor queries. Its JSON response
 binds the artifact to the exact repository root, commit, tree, profile, and
 provider version, and reports `index_cache_hit` plus indexing latency. A
 successful invocation verifies that the compressed cache artifact was written
@@ -160,8 +163,13 @@ durably. Repeat the command to require a cache hit before starting measured or
 latency-sensitive work.
 
 ```sh
-entire graph search --repo . --query "retry logic for webhook delivery" --top-k 20 --format agent
+entire graph search --repo . --query "retry logic for webhook delivery" --top-k 20 --format agent --head --profile full --index-all-files --cache-dir /path/to/cache
 ```
+
+That invocation consumes the complete prepared committed-tree index directly.
+Omit `--index-all-files` to retain a bounded selective view (derived without
+reparsing), or omit `--head` and the cache flags when the agent must inspect
+dirty working-tree edits instead.
 
 Search returns ranked, diverse source regions for a task description, fusing several signals:
 

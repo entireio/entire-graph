@@ -320,6 +320,34 @@ func TestSearchCommandAgentFormatIsCompactAndFocused(t *testing.T) {
 	}
 }
 
+func TestSearchCommandAgentFormatDoesNotTreatHeaderSizedBudgetAsUnbounded(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "auth.py", `def validate_token(token):
+    """Validate a signed authentication token."""
+    return bool(token)
+`)
+
+	var out bytes.Buffer
+	err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{
+		"search",
+		"--repo", repo,
+		"--query", "validate authentication token",
+		"--format", "agent",
+		"--profile", "syntax-only",
+		"--worktree",
+		"--max-context-bytes", "20",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out.String(), "Index: cache-miss") {
+		t.Fatalf("agent output omitted cache state: %q", out.String())
+	}
+	if strings.Contains(out.String(), "validate_token") || out.Len() > 64 {
+		t.Fatalf("header-sized positive budget became unbounded: %q", out.String())
+	}
+}
+
 func TestAgentSearchBudgetsFavorHigherRanks(t *testing.T) {
 	budgets := rankedAgentSearchBudgets(4, 1000)
 	if len(budgets) != 4 || budgets[0] <= budgets[1] || budgets[1] <= budgets[2] || budgets[2] <= budgets[3] {

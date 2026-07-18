@@ -149,7 +149,14 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, results []sem
 	}
 	resultBudget := budget
 	if resultBudget > 0 {
-		resultBudget = maxIntCLI(0, resultBudget-len(header))
+		resultBudget -= len(header)
+		if resultBudget <= 0 {
+			// A positive caller budget is always bounded. The cache-state header is
+			// intentionally indivisible, so a budget smaller than that header emits
+			// the header alone instead of accidentally switching to the zero-budget
+			// (unbounded diagnostic) behavior below.
+			return nil
+		}
 	}
 	formatted := fitAgentSearchResults(results, resultBudget)
 	_, err := out.Write(formatted)
@@ -247,13 +254,6 @@ func agentSearchBlock(result sem.SearchResult, budget int) []byte {
 
 func minIntCLI(left, right int) int {
 	if left < right {
-		return left
-	}
-	return right
-}
-
-func maxIntCLI(left, right int) int {
-	if left > right {
 		return left
 	}
 	return right

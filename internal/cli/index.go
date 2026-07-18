@@ -12,10 +12,12 @@ import (
 )
 
 type indexFlags struct {
-	Repo     string
-	Profile  string
-	CacheDir string
-	Format   string
+	Repo         string
+	Profile      string
+	CacheDir     string
+	Format       string
+	IgnoreFiles  []string
+	IncludeFiles []string
 }
 
 type indexResponse struct {
@@ -60,8 +62,10 @@ func runIndex(ctx context.Context, opts Options, args []string) error {
 	}
 	started := time.Now()
 	snapshot, cacheHit, err := sem.PreindexProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
-		NoNetwork: true,
-		Profile:   profile,
+		NoNetwork:    true,
+		Profile:      profile,
+		IgnoreFiles:  flags.IgnoreFiles,
+		IncludeFiles: flags.IncludeFiles,
 	}, cacheDir)
 	if err != nil {
 		return err
@@ -89,7 +93,7 @@ func runIndex(ctx context.Context, opts Options, args []string) error {
 }
 
 func parseIndexFlags(args []string) (indexFlags, []string, error) {
-	flags := indexFlags{Profile: "syntax-only", Format: "json"}
+	flags := indexFlags{Profile: "full", Format: "json"}
 	var rest []string
 	for index := 0; index < len(args); index++ {
 		switch args[index] {
@@ -111,6 +115,18 @@ func parseIndexFlags(args []string) (indexFlags, []string, error) {
 				return flags, nil, err
 			}
 			flags.CacheDir, index = value, next
+		case "--ignore-file":
+			value, next, err := searchFlagValue(args, index)
+			if err != nil {
+				return flags, nil, err
+			}
+			flags.IgnoreFiles, index = append(flags.IgnoreFiles, value), next
+		case "--include-file":
+			value, next, err := searchFlagValue(args, index)
+			if err != nil {
+				return flags, nil, err
+			}
+			flags.IncludeFiles, index = append(flags.IncludeFiles, value), next
 		case "--format":
 			value, next, err := searchFlagValue(args, index)
 			if err != nil {

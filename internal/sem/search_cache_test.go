@@ -5,8 +5,158 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
+
+func TestFullPreindexSelectiveSnapshotMatchesUncachedAcrossFileBoundary(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "src/caller.ts", `import { Helper, helperFunction } from "./helper";
+
+export class Caller extends Helper {
+  run(): string {
+    function localFormatter(value: string): string { return value.trim(); }
+    return localFormatter(helperFunction());
+  }
+}
+`)
+	write(t, repo, "src/helper.ts", `export class Helper {}
+export function helperFunction(): string { return "helper"; }
+`)
+	write(t, repo, "src/unrelated.ts", `export function unrelated(): boolean { return true; }
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cacheDir := t.TempDir()
+	if _, cacheHit, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Profile: ProfileFull,
+	}, cacheDir); err != nil {
+		t.Fatal(err)
+	} else if cacheHit {
+		t.Fatal("first preindex unexpectedly hit cache")
+	}
+
+	selectiveOptions := ProviderSnapshotOptions{
+		Profile:   ProfileFull,
+		OnlyFiles: []string{"src/caller.ts"},
+	}
+	cached, cacheHit, err := LoadOrBuildProviderSnapshot(
+		t.Context(), repo, "test-version", selectiveOptions, cacheDir, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cacheHit {
+		t.Fatal("selective build did not derive from complete preindex")
+	}
+	uncached, _, err := LoadOrBuildProviderSnapshot(
+		t.Context(), repo, "test-version", selectiveOptions, cacheDir, true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cached, uncached) {
+		t.Fatalf("cached selective snapshot differs from uncached OnlyFiles build:\ncached=%#v\nuncached=%#v", cached, uncached)
+	}
+
+	assertSelectiveSnapshotAccounting(t, cached)
+	if !hasExternalID(cached.Externals, "external:import:./helper") {
+		t.Fatalf("cross-boundary import was not externalized: %#v", cached.Externals)
+	}
+	if !hasExternalID(cached.Externals, "external:type:Helper") {
+		t.Fatalf("cross-boundary superclass was not externalized: %#v", cached.Externals)
+	}
+	for _, relation := range cached.Relations {
+		if strings.Contains(relation.ToID, ":src/helper.ts:") {
+			t.Fatalf("selective snapshot retained a relation to an unselected symbol: %#v", relation)
+		}
+	}
+}
+
+func TestFullPreindexSelectiveSnapshotFiltersFailureStats(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "selected.go", "package sample\nfunc Selected() bool { return true }\n")
+	write(t, repo, "too_large.go", "package sample\n// "+strings.Repeat("oversized ", 80)+"\n")
+	write(t, repo, "not_selected.go", "package sample\nfunc NotSelected() bool { return false }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cacheDir := t.TempDir()
+	baseOptions := ProviderSnapshotOptions{Profile: ProfileFull, MaxParseBytes: 128}
+	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", baseOptions, cacheDir); err != nil {
+		t.Fatal(err)
+	}
+	selectiveOptions := baseOptions
+	selectiveOptions.OnlyFiles = []string{"selected.go", "too_large.go"}
+	cached, cacheHit, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test-version", selectiveOptions, cacheDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cacheHit {
+		t.Fatal("selective build did not derive from complete preindex")
+	}
+	uncached, _, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test-version", selectiveOptions, cacheDir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cached, uncached) {
+		t.Fatalf("cached selective failure accounting differs from uncached build:\ncached=%#v\nuncached=%#v", cached.Header, uncached.Header)
+	}
+	assertSelectiveSnapshotAccounting(t, cached)
+	if cached.Header.Stats.Files != 2 || cached.Header.Stats.ParsedFiles != 1 || cached.Header.Stats.PartialFailures != 1 {
+		t.Fatalf("unexpected selective failure stats: %#v", cached.Header.Stats)
+	}
+	if len(cached.Header.PartialFailures) != 1 || cached.Header.PartialFailures[0].FilePath != "too_large.go" {
+		t.Fatalf("unexpected selective failures: %#v", cached.Header.PartialFailures)
+	}
+}
+
+func assertSelectiveSnapshotAccounting(t *testing.T, snapshot ProviderSnapshot) {
+	t.Helper()
+	if snapshot.Header.Stats.Files != len(snapshot.Files) ||
+		snapshot.Header.Stats.Symbols != len(snapshot.Symbols) ||
+		snapshot.Header.Stats.Relations != len(snapshot.Relations) ||
+		snapshot.Header.Stats.PartialFailures != len(snapshot.Header.PartialFailures) {
+		t.Fatalf("header stats do not describe selective records: stats=%#v files=%d symbols=%d relations=%d failures=%d",
+			snapshot.Header.Stats,
+			len(snapshot.Files),
+			len(snapshot.Symbols),
+			len(snapshot.Relations),
+			len(snapshot.Header.PartialFailures),
+		)
+	}
+	relationCount := 0
+	for _, count := range snapshot.Header.Completeness.Relations {
+		relationCount += count
+	}
+	if relationCount != len(snapshot.Relations) {
+		t.Fatalf("relation completeness total = %d, want %d: %#v", relationCount, len(snapshot.Relations), snapshot.Header.Completeness.Relations)
+	}
+	fileCount, symbolCount := 0, 0
+	for _, completeness := range snapshot.Header.Completeness.Languages {
+		fileCount += completeness.Files
+		symbolCount += completeness.Symbols
+	}
+	if fileCount != len(snapshot.Files) || symbolCount != len(snapshot.Symbols) {
+		t.Fatalf("language completeness does not describe selective records: %#v", snapshot.Header.Completeness.Languages)
+	}
+}
+
+func hasExternalID(externals []ExternalRecord, id string) bool {
+	for _, external := range externals {
+		if external.ID == id {
+			return true
+		}
+	}
+	return false
+}
 
 func TestPreindexProviderSnapshotServesSelectiveSearch(t *testing.T) {
 	repo := t.TempDir()

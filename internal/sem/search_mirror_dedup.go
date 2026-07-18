@@ -110,6 +110,14 @@ func searchMirrorPathPair(left, right string) bool {
 	if left == right || !strings.EqualFold(filepath.Base(left), filepath.Base(right)) {
 		return false
 	}
+	// A generated-directory cue describes a tree within one package; it is
+	// not evidence that two sibling monorepo packages own the same source.
+	// Preserve exact copies across those package boundaries, including when
+	// one sibling uses src/ and the other checks in dist/ output.
+	leftUnit, rightUnit := searchMonorepoUnit(left), searchMonorepoUnit(right)
+	if leftUnit != "" && rightUnit != "" && leftUnit != rightUnit {
+		return false
+	}
 	if hasGeneratedSearchPathCue(left) || hasGeneratedSearchPathCue(right) {
 		return true
 	}
@@ -125,6 +133,21 @@ func searchMirrorPathPair(left, right string) bool {
 	// an extra wrapper. Two monorepo packages may legitimately have identical
 	// src/services/x files and must not be merged merely for sharing a suffix.
 	return searchPathIsStrictSuffix(left, right) || searchPathIsStrictSuffix(right, left)
+}
+
+func searchMonorepoUnit(filePath string) string {
+	parts := strings.Split(strings.Trim(strings.ToLower(filepath.ToSlash(filepath.Clean(filePath))), "/"), "/")
+	for index := 0; index+1 < len(parts); index++ {
+		switch parts[index] {
+		case "apps", "crates", "modules", "packages", "plugins", "workspaces":
+			end := index + 2
+			if strings.HasPrefix(parts[index+1], "@") && end < len(parts) {
+				end++
+			}
+			return strings.Join(parts[:end], "/")
+		}
+	}
+	return ""
 }
 
 func commonSearchPathSuffixSegments(left, right string) int {

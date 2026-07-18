@@ -12,11 +12,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
-const searchSnapshotCacheVersion = "search-snapshot-v1"
+const searchSnapshotCacheVersion = "search-snapshot-v2"
 
 type cachedSearchSnapshot struct {
 	CacheVersion    string           `json:"cache_version"`
@@ -25,6 +26,12 @@ type cachedSearchSnapshot struct {
 	Profile         Profile          `json:"profile"`
 	MaxParseBytes   int              `json:"max_parse_bytes"`
 	Snapshot        ProviderSnapshot `json:"snapshot"`
+	// FileRecord.Lines and SymbolRecord.Local are intentionally absent from the
+	// public wire format, but relation resolution consumes them. Preserve those
+	// internal fields so a complete preindex can derive an exact selective view
+	// without reparsing source files.
+	FileLines      map[string]int `json:"file_lines,omitempty"`
+	LocalSymbolIDs []string       `json:"local_symbol_ids,omitempty"`
 }
 
 func loadOrBuildSearchSnapshot(
@@ -34,6 +41,9 @@ func loadOrBuildSearchSnapshot(
 	cacheDir string,
 	disableCache bool,
 ) (ProviderSnapshot, bool, error) {
+	if options.Profile == "" {
+		options.Profile = ProfileFull
+	}
 	if disableCache || cacheDir == "" || options.Worktree {
 		snapshot, err := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, options)
 		return snapshot, false, err
@@ -70,21 +80,23 @@ func loadOrBuildSearchSnapshot(
 		fullPath := filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, fullKey+".json.gz")
 		if cached, readErr := readSearchSnapshot(fullPath); readErr == nil && validCachedSearchSnapshot(cached, providerVersion, tree, fullOptions) {
 			cached.Snapshot.Header.Commit = commit
-			return filterSearchSnapshot(cached.Snapshot, options.OnlyFiles), true, nil
+			selective, deriveErr := selectiveSearchSnapshotFromFull(ctx, absRepo, providerVersion, options, cached.Snapshot)
+			if deriveErr == nil {
+				// Persisting the exact selective view makes repeated identical queries
+				// a direct cache hit. As with ordinary search caching, this is best effort.
+				_ = writeSearchSnapshot(path, newCachedSearchSnapshot(providerVersion, tree, options, selective))
+				return selective, true, nil
+			}
+			// Provenance or internal-metadata mismatches make the complete cache
+			// unsuitable for derivation. Fall through to the ordinary selective
+			// build instead of letting an optional cache break retrieval.
 		}
 	}
 	snapshot, err := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, options)
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
-	cache := cachedSearchSnapshot{
-		CacheVersion:    searchSnapshotCacheVersion,
-		ProviderVersion: providerVersion,
-		Tree:            tree,
-		Profile:         options.Profile,
-		MaxParseBytes:   options.MaxParseBytes,
-		Snapshot:        snapshot,
-	}
+	cache := newCachedSearchSnapshot(providerVersion, tree, options, snapshot)
 	// Cache persistence is best effort. Retrieval correctness never depends on
 	// a writable cache directory.
 	_ = writeSearchSnapshot(path, cache)
@@ -151,14 +163,7 @@ func PreindexProviderSnapshot(
 	path := filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, key+".json.gz")
 	persisted, readErr := readSearchSnapshot(path)
 	if readErr != nil || !validCachedSearchSnapshot(persisted, providerVersion, tree, options) {
-		cache := cachedSearchSnapshot{
-			CacheVersion:    searchSnapshotCacheVersion,
-			ProviderVersion: providerVersion,
-			Tree:            tree,
-			Profile:         options.Profile,
-			MaxParseBytes:   options.MaxParseBytes,
-			Snapshot:        snapshot,
-		}
+		cache := newCachedSearchSnapshot(providerVersion, tree, options, snapshot)
 		if err := writeSearchSnapshot(path, cache); err != nil {
 			return ProviderSnapshot{}, false, fmt.Errorf("persist preindex snapshot: %w", err)
 		}
@@ -166,49 +171,227 @@ func PreindexProviderSnapshot(
 	return snapshot, cacheHit, nil
 }
 
-func filterSearchSnapshot(snapshot ProviderSnapshot, onlyFiles []string) ProviderSnapshot {
-	allowedFiles := make(map[string]bool, len(onlyFiles))
-	for _, filePath := range onlyFiles {
-		allowedFiles[filepath.ToSlash(filepath.Clean(filePath))] = true
+func newCachedSearchSnapshot(providerVersion, tree string, options ProviderSnapshotOptions, snapshot ProviderSnapshot) cachedSearchSnapshot {
+	cache := cachedSearchSnapshot{
+		CacheVersion:    searchSnapshotCacheVersion,
+		ProviderVersion: providerVersion,
+		Tree:            tree,
+		Profile:         options.Profile,
+		MaxParseBytes:   options.MaxParseBytes,
+		Snapshot:        snapshot,
 	}
-	filtered := ProviderSnapshot{Header: snapshot.Header}
-	allowedIDs := make(map[string]bool)
 	for _, file := range snapshot.Files {
-		if allowedFiles[filepath.ToSlash(filepath.Clean(file.Path))] {
-			filtered.Files = append(filtered.Files, file)
-			allowedIDs[file.ID] = true
+		if file.Lines == 0 {
+			continue
 		}
+		if cache.FileLines == nil {
+			cache.FileLines = make(map[string]int)
+		}
+		cache.FileLines[file.ID] = file.Lines
 	}
 	for _, symbol := range snapshot.Symbols {
-		if allowedFiles[filepath.ToSlash(filepath.Clean(symbol.FilePath))] {
-			filtered.Symbols = append(filtered.Symbols, symbol)
-			allowedIDs[symbol.ID] = true
+		if symbol.Local {
+			cache.LocalSymbolIDs = append(cache.LocalSymbolIDs, symbol.ID)
 		}
 	}
-	for _, external := range snapshot.Externals {
-		if allowedIDs[external.SourceSymbol] || (external.FilePath != "" && allowedFiles[filepath.ToSlash(filepath.Clean(external.FilePath))]) {
-			filtered.Externals = append(filtered.Externals, external)
-			allowedIDs[external.ID] = true
-		}
-	}
-	for _, relation := range snapshot.Relations {
-		if allowedIDs[relation.FromID] && allowedIDs[relation.ToID] {
-			filtered.Relations = append(filtered.Relations, relation)
-		}
-	}
-	filtered.Header.Warnings = filterSearchWarnings(snapshot.Header.Warnings, allowedFiles)
-	filtered.Header.PartialFailures = filterSearchPartialFailures(snapshot.Header.PartialFailures, allowedFiles)
-	return filtered
+	return cache
 }
 
-func filterSearchWarnings(warnings []ProviderWarning, allowedFiles map[string]bool) []ProviderWarning {
-	filtered := make([]ProviderWarning, 0, len(warnings))
-	for _, warning := range warnings {
-		if warning.FilePath == "" || allowedFiles[filepath.ToSlash(filepath.Clean(warning.FilePath))] {
-			filtered = append(filtered, warning)
+func restoreCachedSearchInternals(cache *cachedSearchSnapshot) {
+	for index := range cache.Snapshot.Files {
+		cache.Snapshot.Files[index].Lines = cache.FileLines[cache.Snapshot.Files[index].ID]
+	}
+	localIDs := make(map[string]bool, len(cache.LocalSymbolIDs))
+	for _, id := range cache.LocalSymbolIDs {
+		localIDs[id] = true
+	}
+	for index := range cache.Snapshot.Symbols {
+		cache.Snapshot.Symbols[index].Local = localIDs[cache.Snapshot.Symbols[index].ID]
+	}
+}
+
+// selectiveSearchSnapshotFromFull derives the same graph that a fresh
+// OnlyFiles build would produce. It reuses cached parse output, but deliberately
+// reruns relation resolution against only the selected symbols: simply dropping
+// cross-boundary edges from a complete graph is wrong because an OnlyFiles build
+// externalizes those targets and records different resolution metadata.
+func selectiveSearchSnapshotFromFull(
+	ctx context.Context,
+	repo, providerVersion string,
+	options ProviderSnapshotOptions,
+	full ProviderSnapshot,
+) (ProviderSnapshot, error) {
+	sc, err := prepareSource(ctx, repo, options)
+	if err != nil {
+		return ProviderSnapshot{}, err
+	}
+	if sc.close != nil {
+		defer sc.close()
+	}
+	if sc.tree != full.Header.Tree || sc.key != full.Header.RepoKey {
+		return ProviderSnapshot{}, fmt.Errorf(
+			"cached full snapshot provenance mismatch: got repo %q tree %q, want repo %q tree %q",
+			full.Header.RepoKey, full.Header.Tree, sc.key, sc.tree,
+		)
+	}
+
+	spec := resolveProfile(options.Profile)
+	selective := ProviderSnapshot{Header: leanHeader(sc, providerVersion, spec)}
+	allowedFiles := make(map[string]bool, len(sc.paths))
+	for _, filePath := range sc.paths {
+		allowedFiles[filepath.ToSlash(filepath.Clean(filePath))] = true
+	}
+	for _, file := range full.Files {
+		if allowedFiles[filepath.ToSlash(filepath.Clean(file.Path))] {
+			selective.Files = append(selective.Files, file)
 		}
 	}
-	return filtered
+	for _, symbol := range full.Symbols {
+		if allowedFiles[filepath.ToSlash(filepath.Clean(symbol.FilePath))] {
+			selective.Symbols = append(selective.Symbols, symbol)
+		}
+	}
+
+	recordsByFile := make(map[string][]SymbolRecord)
+	structuralByFile := make(map[string][]structuralSymbol)
+	for _, symbol := range selective.Symbols {
+		recordsByFile[symbol.FilePath] = append(recordsByFile[symbol.FilePath], symbol)
+	}
+	if spec.name == ProfileSyntaxOnly {
+		for filePath, symbols := range recordsByFile {
+			structuralByFile[filePath] = compactStructuralSymbols(symbols)
+		}
+	} else {
+		for filePath, symbols := range recordsByFile {
+			recordsByFile[filePath] = retainedSymbolsForProfile(symbols, spec)
+		}
+	}
+	precomputedImports := make(map[string][]string)
+	if spec.name != ProfileSyntaxOnly {
+		for _, file := range selective.Files {
+			if !skipFastProfilePerSymbolScan(spec, file.Language) {
+				continue
+			}
+			if content, ok := sc.read(file.Path); ok {
+				precomputedImports[file.Path] = importsFor(file.Path, content)
+			}
+		}
+	}
+
+	seenRelations := make(map[uint64]struct{})
+	externalsByID := make(map[string]ExternalRecord)
+	relationsByType := make(map[string]int)
+	var symbolsByID map[string]SymbolRecord
+	var filesByID map[string]FileRecord
+	if spec.includeEvidence {
+		symbolsByID, filesByID = recordIndexes(selective.Files, recordsByFile)
+	}
+	emitRelation := func(relation RelationRecord) {
+		if !spec.emits(relation.Type) {
+			return
+		}
+		if relation.Type == "CALLS" && spec.callResolution == "shallow" && relation.Resolution != "exact" {
+			return
+		}
+		if !spec.includeEvidence {
+			relation.Evidence = nil
+		}
+		if relation.WarningCodes == nil {
+			relation.WarningCodes = []string{}
+		}
+		key := relationDedupKey(relation)
+		if _, seen := seenRelations[key]; seen {
+			return
+		}
+		seenRelations[key] = struct{}{}
+		for _, id := range []string{relation.FromID, relation.ToID} {
+			if strings.HasPrefix(id, "external:") {
+				mergeExternalRecord(externalsByID, externalRecordFor(relation, id, symbolsByID, filesByID))
+			}
+		}
+		relationsByType[relation.Type]++
+		selective.Relations = append(selective.Relations, relation)
+	}
+	if spec.name == ProfileSyntaxOnly {
+		emitStructuralRelationsCompact(sc.key, selective.Files, structuralByFile, emitRelation)
+	} else {
+		forEachRelation(sc.key, selective.Files, recordsByFile, sc.read, precomputedImports, spec, func() bool {
+			return ctx.Err() != nil
+		}, emitRelation)
+		if spec.emits("FILE_CHANGES_WITH") {
+			for _, relation := range fileChangesWithRelations(ctx, sc.absRepo, sc.key, selective.Files) {
+				if ctx.Err() != nil {
+					break
+				}
+				emitRelation(relation)
+			}
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return ProviderSnapshot{}, err
+	}
+
+	externalIDs := make([]string, 0, len(externalsByID))
+	for id := range externalsByID {
+		externalIDs = append(externalIDs, id)
+	}
+	sort.Strings(externalIDs)
+	for _, id := range externalIDs {
+		selective.Externals = append(selective.Externals, externalsByID[id])
+	}
+	sort.Slice(selective.Relations, func(i, j int) bool {
+		left := selective.Relations[i].Type + selective.Relations[i].FromID + selective.Relations[i].ToID
+		right := selective.Relations[j].Type + selective.Relations[j].FromID + selective.Relations[j].ToID
+		return left < right
+	})
+
+	warnings := sc.warnings
+	if warnings == nil {
+		warnings = []ProviderWarning{}
+	}
+	failures := filterSearchPartialFailures(full.Header.PartialFailures, allowedFiles)
+	languageSet := make(map[string]struct{})
+	completenessLanguages := make(map[string]LanguageCompleteness)
+	for _, file := range selective.Files {
+		languageSet[file.Language] = struct{}{}
+		completeness := completenessLanguages[file.Language]
+		completeness.Files++
+		completenessLanguages[file.Language] = completeness
+	}
+	for _, symbol := range selective.Symbols {
+		completeness := completenessLanguages[symbol.Language]
+		completeness.Symbols++
+		completenessLanguages[symbol.Language] = completeness
+	}
+	unparsedFiles := make(map[string]bool)
+	for _, failure := range failures {
+		if failure.Code == "E_FILE_TOO_LARGE" || failure.Code == "E_MINIFIED" {
+			unparsedFiles[filepath.ToSlash(filepath.Clean(failure.FilePath))] = true
+		}
+	}
+	parsedFiles := 0
+	for _, file := range selective.Files {
+		if !unparsedFiles[filepath.ToSlash(filepath.Clean(file.Path))] {
+			parsedFiles++
+		}
+	}
+	selective.Header.Languages = sortedKeys(languageSet)
+	selective.Header.LanguageTiers = languageTiers(languageSet)
+	selective.Header.Warnings = warnings
+	selective.Header.PartialFailures = failures
+	selective.Header.Stats = ProviderStats{
+		Files:             len(selective.Files),
+		ParsedFiles:       parsedFiles,
+		Symbols:           len(selective.Symbols),
+		Relations:         len(selective.Relations),
+		PartialFailures:   len(failures),
+		CompletenessLevel: completenessLevel(len(failures), len(selective.Files)),
+	}
+	selective.Header.Completeness = CompletenessReport{
+		Languages: completenessLanguages,
+		Relations: relationsByType,
+	}
+	return selective, nil
 }
 
 func filterSearchPartialFailures(failures []PartialFailure, allowedFiles map[string]bool) []PartialFailure {
@@ -308,6 +491,7 @@ func readSearchSnapshot(path string) (cachedSearchSnapshot, error) {
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return cachedSearchSnapshot{}, errors.New("search snapshot cache has trailing data")
 	}
+	restoreCachedSearchInternals(&cache)
 	return cache, nil
 }
 

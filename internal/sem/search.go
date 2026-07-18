@@ -411,6 +411,9 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	selected := semantic
 	if len(sparseCandidates) > 0 {
 		scoreSparseCandidates(sparseCandidates, sparseQuery, sparseDF, sparseDocumentCount, sparseDocumentLength)
+		attachSparseCandidateSymbols(sparseCandidates, symbolsByFile)
+		sortSearchCandidates(sparseCandidates)
+		sparseCandidates = dedupeSemanticMirrorCandidates(sparseCandidates, q, symbolsByID)
 		sortSearchCandidates(sparseCandidates)
 		selected = selectHybridCandidates(semantic, sparseCandidates, options.TopK)
 		for index := range selected {
@@ -1073,6 +1076,51 @@ func sparseSearchFocusLine(q searchQuery, lines []string, start, end int) int {
 		}
 	}
 	return bestLine
+}
+
+// attachSparseCandidateSymbols restores exact semantic identity for sparse
+// windows whose best matching line is inside a parsed symbol. Sparse regions
+// are built during file preselection, before the provider snapshot is
+// available, so they otherwise cannot participate in semantic mirror dedup.
+func attachSparseCandidateSymbols(candidates []searchCandidate, symbolsByFile map[string][]SymbolRecord) {
+	for index := range candidates {
+		candidate := &candidates[index]
+		if candidate.result.SymbolID != "" {
+			continue
+		}
+		symbol, ok := smallestSearchSymbolContainingLine(
+			symbolsByFile[candidate.result.FilePath], candidate.result.FocusLine,
+		)
+		if !ok {
+			continue
+		}
+		if candidate.result.Language == "" {
+			candidate.result.Language = symbol.Language
+		}
+		candidate.result.Kind = symbol.Kind
+		candidate.result.SymbolID = symbol.ID
+		candidate.result.SymbolName = symbol.Name
+		candidate.result.QualifiedName = symbol.QualifiedName
+		candidate.result.Signature = symbol.Signature
+	}
+}
+
+func smallestSearchSymbolContainingLine(symbols []SymbolRecord, line int) (SymbolRecord, bool) {
+	bestSpan := int(^uint(0) >> 1)
+	var best SymbolRecord
+	found := false
+	for _, symbol := range symbols {
+		if symbol.ID == "" || line < symbol.StartLine || line > symbol.EndLine {
+			continue
+		}
+		span := symbol.EndLine - symbol.StartLine
+		if !found || span < bestSpan || (span == bestSpan && symbol.StartLine > best.StartLine) {
+			best = symbol
+			bestSpan = span
+			found = true
+		}
+	}
+	return best, found
 }
 
 func hydrateSparseCandidates(candidates []searchCandidate, read contentReader) int {
