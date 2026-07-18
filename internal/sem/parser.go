@@ -4178,6 +4178,19 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		}
 		kind = "class"
 		name = nodeName(node, src)
+	case "abstract_method_signature":
+		// TypeScript abstract classes declare callable members without bodies.
+		// They remain real compiler-resolved call targets (`this.method()` binds
+		// to the abstract declaration), so preserve them as method symbols. Plain
+		// interface method_signature nodes stay inventory-only below.
+		if language != "TypeScript" {
+			return Entity{}, false
+		}
+		kind = "method"
+		name = nodeName(node, src)
+		if scope != "" {
+			name = qualify(scope, name)
+		}
 	case "method_signature", "getter_signature", "setter_signature":
 		// Dart class members (declaration head; body is a sibling node). Gated to
 		// Dart because `method_signature` also denotes TypeScript interface

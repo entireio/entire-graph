@@ -2558,6 +2558,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					callBlock = maskGroovyLiteralsAndComments(block)
 				}
 				callNames := callLikeIdentifiers(callBlock, file.Language)
+				jsCallableArgumentOnly := map[string]bool{}
 				if file.Language == "Julia" {
 					callNames = juliaCallIdentifiers(callBlock)
 				}
@@ -2598,6 +2599,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						callNames[name] = struct{}{}
 					}
 					for name := range jsCallableArgumentIdentifiers(callBlock) {
+						if _, directCall := callNames[name]; !directCall {
+							jsCallableArgumentOnly[name] = true
+						}
 						callNames[name] = struct{}{}
 					}
 				}
@@ -2671,6 +2675,13 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 					targets := resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, callImportsByName, false)
 					for _, to := range targets {
+						// A bare identifier passed as an argument may be a callback, but
+						// it is not a construction. Keep callback discovery additive while
+						// preventing `fn(input)` from linking the argument `input` to an
+						// unrelated same-named type alias.
+						if jsCallableArgumentOnly[name] && typeLikeKind(to.Kind) {
+							continue
+						}
 						// Call to a type (class/struct/...) is a constructor/conversion, not a
 						// callable->callable call: keep it as CONSTRUCTS for agents, out of CALLS.
 						relType := "CALLS"
@@ -2965,6 +2976,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					Language: file.Language,
 				}
 				topLevelNames := callLikeIdentifiers(topLevel, file.Language)
+				jsCallableArgumentOnly := map[string]bool{}
 				if file.Language == "Julia" {
 					topLevelNames = juliaCallIdentifiers(topLevel)
 				}
@@ -2978,6 +2990,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						topLevelNames[name] = struct{}{}
 					}
 					for name := range jsCallableArgumentIdentifiers(topLevel) {
+						if _, directCall := topLevelNames[name]; !directCall {
+							jsCallableArgumentOnly[name] = true
+						}
 						topLevelNames[name] = struct{}{}
 					}
 				}
@@ -3013,6 +3028,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 				for _, name := range sortedKeysOf(topLevelNames) {
 					for _, to := range resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName, false) {
+						if jsCallableArgumentOnly[name] && typeLikeKind(to.Kind) {
+							continue
+						}
 						relType := "CALLS"
 						if typeLikeKind(to.Kind) {
 							relType = "CONSTRUCTS"
@@ -4096,7 +4114,63 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}},
 			WarningCodes: []string{},
 		})
+		if from.Language == "TypeScript" && strings.HasPrefix(strings.TrimSpace(method.Signature), "abstract ") {
+			if impl, implOK := uniqueImplementedMethod(targetID, call.Method, methodsByContainer, superContainerByID, implementersByContainer); implOK && impl.ID != method.ID {
+				implScope := "file"
+				if impl.FilePath != from.FilePath {
+					implScope = "module"
+				}
+				relations = append(relations, RelationRecord{
+					RecordType: "relation", FromID: from.ID, ToID: impl.ID, Type: "CALLS",
+					Confidence:    minFloat(confidence, 0.72),
+					Reason:        "interface-typed receiver call resolved to the unique TypeScript implementation",
+					RelationScope: implScope, Resolution: "type_inferred", TargetKind: "symbol",
+					Evidence:     []Evidence{{Kind: "call_site", FilePath: from.FilePath, StartLine: from.StartLine, EndLine: from.EndLine, Detail: call.Receiver + "." + call.Method}},
+					WarningCodes: []string{},
+				})
+			}
+		}
 		methodResolved[call.Receiver+"."+call.Method] = true
+	}
+	// TypeScript receiver expressions frequently carry their useful type one or
+	// more property/collection hops away (`def.type._parseSync()`,
+	// `option._parseSync()`). When ordinary type inference cannot recover that
+	// receiver, accept a same-file method only if it is unique by short name and
+	// belongs to the caller's own inheritance chain. This restores polymorphic
+	// base-method calls without reviving the old arbitrary `obj.add()` -> bare
+	// function `add` false edge or linking unrelated classes.
+	if from.Language == "TypeScript" && from.ContainerID != "" {
+		for _, call := range calls {
+			key := call.Receiver + "." + call.Method
+			if methodResolved[key] || len(importsByName[call.Receiver]) > 0 {
+				continue
+			}
+			if typeName := varTypes[call.Receiver]; typeName != "" && len(importsByName[typeName]) > 0 {
+				continue
+			}
+			method, _, ok := lookupMethodUpChain(from.ContainerID, call.Method, methodsByContainer, superContainerByID)
+			if !ok || method.ID == from.ID || method.FilePath != from.FilePath {
+				continue
+			}
+			unique := 0
+			for _, candidate := range symbolsByShortName[call.Method] {
+				if candidate.Language == from.Language && candidate.Kind == "method" && candidate.FilePath == from.FilePath {
+					unique++
+				}
+			}
+			if unique != 1 {
+				continue
+			}
+			methodResolved[key] = true
+			relations = append(relations, RelationRecord{
+				RecordType: "relation", FromID: from.ID, ToID: method.ID, Type: "CALLS",
+				Confidence:    0.64,
+				Reason:        "TypeScript receiver call matched unique same-file method on caller inheritance chain",
+				RelationScope: "file", Resolution: "name_only", TargetKind: "symbol",
+				Evidence:     []Evidence{{Kind: "call_site", FilePath: from.FilePath, StartLine: from.StartLine, EndLine: from.EndLine, Detail: key}},
+				WarningCodes: []string{},
+			})
+		}
 	}
 	// Globally-unique method-name fallback: when receiver-type resolution did not
 	// resolve a Go receiver.method() call and exactly one method with this short
@@ -11816,6 +11890,16 @@ func importModuleMatchesFile(module, importingPath, targetPath string) bool {
 		return false
 	}
 	targetPath = filepath.ToSlash(targetPath)
+	// resolvedImportedNameModules adds exact repository-relative JS/TS target
+	// files alongside the authored import spec. Once an entry carries a source
+	// extension, match it exactly; suffix matching would also select generated
+	// mirrors such as `deno/lib/helpers/x.ts` for resolved `src/helpers/x.ts`.
+	if !strings.HasPrefix(module, ".") {
+		switch strings.ToLower(filepath.Ext(module)) {
+		case ".js", ".jsx", ".ts", ".tsx":
+			return filepath.ToSlash(module) == targetPath
+		}
+	}
 	if strings.Contains(module, ".") && !strings.Contains(module, "/") {
 		dottedPath := strings.ReplaceAll(module, ".", "/")
 		target := strings.TrimSuffix(targetPath, filepath.Ext(targetPath))
