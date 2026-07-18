@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "ade0ea94f76b",
+  "strategy": "manual-commit",
+  "branch": "codex/improve-search-retrieval",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "docs/language-support.md",
+    "internal/sem/parser.go",
+    "internal/sem/protobuf.go",
+    "internal/sem/protobuf_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ad/e0ea94f76b/0/metadata.json",
+      "transcript": "/ad/e0ea94f76b/0/full.jsonl",
+      "compact_transcript": "/ad/e0ea94f76b/0/transcript.jsonl",
+      "content_hash": "/ad/e0ea94f76b/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 126840,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 7622912,
+    "output_tokens": 24898,
+    "api_call_count": 152
+  }
+}
