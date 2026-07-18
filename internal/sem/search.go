@@ -88,6 +88,8 @@ type SearchStats struct {
 	SymbolsConsidered  int   `json:"symbols_considered"`
 	LexicalCandidates  int   `json:"lexical_candidates"`
 	GraphCandidates    int   `json:"graph_candidates"`
+	IdentifierUsages   int   `json:"identifier_usage_candidates,omitempty"`
+	BridgeCandidates   int   `json:"same_file_bridge_candidates,omitempty"`
 	SparseCandidates   int   `json:"sparse_candidates"`
 	SparseFilesRead    int   `json:"sparse_files_content_read"`
 	CandidatesSelected int   `json:"candidates_selected"`
@@ -132,13 +134,13 @@ var sparseSearchWordPattern = regexp.MustCompile(`[[:alpha:]][[:alnum:]_]*|[[:di
 
 var searchStopWords = map[string]bool{
 	"a": true, "an": true, "and": true, "are": true, "as": true,
-	"at": true, "be": true, "by": true, "can": true, "change": true,
-	"code": true, "does": true, "for": true, "from": true, "how": true,
+	"at": true, "be": true, "but": true, "by": true, "can": true, "change": true,
+	"code": true, "did": true, "does": true, "for": true, "from": true, "how": true,
 	"i": true, "in": true, "into": true, "is": true, "it": true,
-	"make": true, "of": true, "on": true, "or": true, "our": true,
+	"make": true, "not": true, "of": true, "on": true, "or": true, "our": true,
 	"should": true, "support": true, "that": true, "the": true,
 	"this": true, "to": true, "use": true, "uses": true, "using": true,
-	"we": true, "what": true, "when": true, "where": true, "which": true,
+	"we": true, "what": true, "when": true, "where": true, "which": true, "while": true,
 	"with": true, "without": true,
 }
 
@@ -154,6 +156,10 @@ var sparseSearchStopWords = map[string]bool{
 	"was": true, "we": true, "were": true, "what": true, "when": true,
 	"where": true, "which": true, "why": true, "will": true, "with": true,
 	"would": true, "you": true, "your": true,
+}
+
+var searchGenericActionTerms = map[string]bool{
+	"ran": true, "run": true, "runs": true,
 }
 
 // SearchRepository performs local hybrid lexical/semantic retrieval. It uses
@@ -353,6 +359,14 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	graphCandidates := expandGraphCandidates(candidates, snapshot.Relations, symbolsByID, read, fileLanguages, options)
 	stats.GraphCandidates = len(graphCandidates)
 	candidates = append(candidates, graphCandidates...)
+	sortSearchCandidates(candidates)
+	identifierUsages := expandIdentifierUsageCandidates(candidates, q, symbolsByID, symbolsByFile, read, fileLanguages, options)
+	stats.IdentifierUsages = len(identifierUsages)
+	candidates = append(candidates, identifierUsages...)
+	sortSearchCandidates(candidates)
+	bridges := expandSameFileBridgeCandidates(candidates, q, symbolsByFile, read, fileLanguages, options)
+	stats.BridgeCandidates = len(bridges)
+	candidates = append(candidates, bridges...)
 	sortSearchCandidates(candidates)
 	semantic := selectDiverseCandidates(candidates, options.TopK, options.MaxRegionsPerFile)
 	selected := semantic
@@ -593,7 +607,7 @@ func preselectSearchFiles(
 	matcher := newSearchTermMatcher(q.terms)
 	scanPaths := source.paths
 	if shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
-		matches, grepErr := gitutil.GrepIndexMatches(ctx, source.absRepo, searchPreselectionPatterns(q), 32)
+		matches, grepErr := gitutil.GrepIndexMatches(ctx, source.absRepo, searchGitGrepPreselectionPatterns(q), 32)
 		tracked, trackedErr := gitutil.ListIndexFiles(ctx, source.absRepo)
 		if grepErr == nil && trackedErr == nil {
 			allowed := make(map[string]bool, len(source.paths))
@@ -862,6 +876,17 @@ func searchPreselectionPatterns(q searchQuery) []string {
 	appendTier(maxPatterns-len(patterns), func(weight float64) bool {
 		return weight >= 1.25 || weight == 1
 	})
+	return patterns
+}
+
+func searchGitGrepPreselectionPatterns(q searchQuery) []string {
+	patterns := searchPreselectionPatterns(q)
+	// Each additional fixed-string pattern makes Git scan and emit more of a
+	// large index. Six high-priority terms preserve code-shaped and direct query
+	// evidence while bounding cold-start latency and match-volume parsing.
+	if len(patterns) > 6 {
+		patterns = patterns[:6]
+	}
 	return patterns
 }
 
@@ -1346,6 +1371,275 @@ func searchExpansionRelation(relation string) bool {
 	}
 }
 
+// expandIdentifierUsageCandidates complements typed graph edges with precise
+// lexical use sites for strong compound-identifier seeds. Constants, exported
+// values, callbacks, and other non-call references often have no relation edge,
+// but their consumers are exactly the context a coding agent needs after finding
+// a definition.
+func expandIdentifierUsageCandidates(
+	seeds []searchCandidate,
+	q searchQuery,
+	symbolsByID map[string]SymbolRecord,
+	symbolsByFile map[string][]SymbolRecord,
+	read contentReader,
+	languages map[string]string,
+	options SearchOptions,
+) []searchCandidate {
+	type usageSeed struct {
+		symbol SymbolRecord
+		score  float64
+	}
+	const maxSeeds = 20
+	const maxUsagesPerSeed = 2
+	var selectedSeeds []usageSeed
+	seenSymbols := map[string]bool{}
+	for _, candidate := range seeds {
+		if len(selectedSeeds) == maxSeeds {
+			break
+		}
+		symbol, ok := symbolsByID[candidate.result.SymbolID]
+		if !ok || seenSymbols[symbol.ID] || !expandableUsageIdentifier(symbol.Name) {
+			continue
+		}
+		seenSymbols[symbol.ID] = true
+		selectedSeeds = append(selectedSeeds, usageSeed{symbol: symbol, score: candidate.score})
+	}
+	if len(selectedSeeds) == 0 {
+		return nil
+	}
+
+	filePaths := make([]string, 0, len(languages))
+	for filePath := range languages {
+		filePaths = append(filePaths, filePath)
+	}
+	sort.Strings(filePaths)
+	usageCounts := make([]int, len(selectedSeeds))
+	seenLocations := map[string]bool{}
+	var out []searchCandidate
+	for _, filePath := range filePaths {
+		content, ok := read(filePath)
+		if !ok || strings.IndexByte(content, 0) >= 0 {
+			continue
+		}
+		lines := strings.Split(content, "\n")
+		for seedIndex, seed := range selectedSeeds {
+			if usageCounts[seedIndex] == maxUsagesPerSeed {
+				continue
+			}
+			for lineIndex, line := range lines {
+				lineNumber := lineIndex + 1
+				definitionStart := seed.symbol.StartLine
+				if filePath == seed.symbol.FilePath {
+					definitionStart = precedingDocumentationStart(lines, seed.symbol.StartLine, options.ContextLines)
+				}
+				if !containsIdentifierUsage(line, seed.symbol.Name) ||
+					(filePath == seed.symbol.FilePath && lineNumber >= definitionStart && lineNumber <= seed.symbol.EndLine) {
+					continue
+				}
+				locationKey := fmt.Sprintf("%s:%d:%s", filePath, lineNumber, seed.symbol.ID)
+				if seenLocations[locationKey] {
+					continue
+				}
+				start := maxInt(1, lineNumber-options.ContextLines)
+				end := minInt(len(lines), lineNumber+options.ContextLines)
+				container := enclosingSearchSymbol(symbolsByFile[filePath], lineNumber)
+				candidate, ok := makeSearchCandidate(q, filePath, languages[filePath], lines, start, end, container, options.MaxSnippetLines)
+				if !ok {
+					continue
+				}
+				candidate.result.FocusLine = lineNumber
+				candidate.result.Signals = appendUnique(candidate.result.Signals, "symbol-usage")
+				candidate.score = 0.85*seed.score + 1 + identifierUsagePathPrior(q, filePath)
+				candidate.baseScore = candidate.score
+				seenLocations[locationKey] = true
+				usageCounts[seedIndex]++
+				out = append(out, candidate)
+				if usageCounts[seedIndex] == maxUsagesPerSeed {
+					break
+				}
+			}
+		}
+	}
+	sortSearchCandidates(out)
+	if len(out) > 32 {
+		out = out[:32]
+	}
+	return out
+}
+
+func identifierUsagePathPrior(q searchQuery, filePath string) float64 {
+	lower := "/" + strings.ToLower(filepath.ToSlash(filePath))
+	isTest := strings.Contains(lower, "/test/") || strings.Contains(lower, "/tests/") ||
+		strings.Contains(lower, ".test.") || strings.Contains(lower, ".spec.")
+	if isTest && !searchQuerySupplied(q, "test", "tests", "spec", "regression") {
+		return -3
+	}
+	if strings.Contains(lower, "/src/") || strings.Contains(lower, "/lib/") || strings.Contains(lower, "/packages/") {
+		return 1.5
+	}
+	return 0
+}
+
+func expandableUsageIdentifier(name string) bool {
+	if len(name) < 6 {
+		return false
+	}
+	hasLower, hasUpper, hasSeparator := false, false, false
+	for _, character := range name {
+		switch {
+		case character >= 'a' && character <= 'z':
+			hasLower = true
+		case character >= 'A' && character <= 'Z':
+			hasUpper = true
+		case character == '_' || character == '$':
+			hasSeparator = true
+		case character >= '0' && character <= '9':
+		default:
+			return false
+		}
+	}
+	return hasLower && (hasUpper || hasSeparator)
+}
+
+func containsIdentifierUsage(line, name string) bool {
+	for offset := 0; offset <= len(line)-len(name); {
+		index := strings.Index(line[offset:], name)
+		if index < 0 {
+			return false
+		}
+		index += offset
+		leftBoundary := index == 0 || !searchIdentifierByte(line[index-1])
+		right := index + len(name)
+		rightBoundary := right == len(line) || !searchIdentifierByte(line[right])
+		if leftBoundary && rightBoundary {
+			return true
+		}
+		offset = index + len(name)
+	}
+	return false
+}
+
+func searchIdentifierByte(value byte) bool {
+	return value == '_' || value == '$' ||
+		(value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
+		(value >= '0' && value <= '9')
+}
+
+func enclosingSearchSymbol(symbols []SymbolRecord, line int) SymbolRecord {
+	var best SymbolRecord
+	for _, symbol := range symbols {
+		if line < symbol.StartLine || line > symbol.EndLine {
+			continue
+		}
+		if best.ID == "" || symbol.EndLine-symbol.StartLine < best.EndLine-best.StartLine {
+			best = symbol
+		}
+	}
+	return best
+}
+
+// expandSameFileBridgeCandidates exposes short omitted spans between two
+// independently strong regions. These bridges frequently contain the glue
+// call or state transition that explains how neighboring lifecycle stages are
+// connected.
+func expandSameFileBridgeCandidates(
+	candidates []searchCandidate,
+	q searchQuery,
+	symbolsByFile map[string][]SymbolRecord,
+	read contentReader,
+	languages map[string]string,
+	options SearchOptions,
+) []searchCandidate {
+	if len(candidates) < 2 {
+		return nil
+	}
+	limit := minInt(len(candidates), maxInt(40, options.TopK*2))
+	byFile := map[string][]searchCandidate{}
+	bestScore := candidates[0].score
+	for _, candidate := range candidates[:limit] {
+		if candidate.score < 0.3*bestScore || !searchFlowSymbolKind(candidate.result.Kind) || candidate.result.SymbolID == "" {
+			continue
+		}
+		byFile[candidate.result.FilePath] = append(byFile[candidate.result.FilePath], candidate)
+	}
+	filePaths := make([]string, 0, len(byFile))
+	for filePath := range byFile {
+		filePaths = append(filePaths, filePath)
+	}
+	sort.Strings(filePaths)
+	var out []searchCandidate
+	seenBridges := map[string]bool{}
+	for _, filePath := range filePaths {
+		regions := byFile[filePath]
+		sort.Slice(regions, func(i, j int) bool {
+			return searchCandidateLess(regions[i], regions[j])
+		})
+		content, ok := read(filePath)
+		if !ok || strings.IndexByte(content, 0) >= 0 {
+			continue
+		}
+		lines := strings.Split(content, "\n")
+		for leftIndex := 0; leftIndex+1 < len(regions); leftIndex++ {
+			for rightIndex := leftIndex + 1; rightIndex < len(regions); rightIndex++ {
+				left, right := regions[leftIndex], regions[rightIndex]
+				start, gapEnd := left.result.EndLine+1, right.result.StartLine-1
+				if start > gapEnd {
+					continue
+				}
+				if gapEnd-start+1 > options.MaxSnippetLines {
+					break
+				}
+				// Include the downstream region's leading context so the bridge
+				// shows both the omitted glue and the operation it feeds into.
+				end := minInt(right.result.EndLine, start+options.MaxSnippetLines-1)
+				leftSymbol, leftOK := searchSymbolByID(symbolsByFile[filePath], left.result.SymbolID)
+				rightSymbol, rightOK := searchSymbolByID(symbolsByFile[filePath], right.result.SymbolID)
+				if !leftOK || !rightOK || leftSymbol.ContainerID != rightSymbol.ContainerID {
+					continue
+				}
+				bridgeKey := fmt.Sprintf("%s:%d:%d", filePath, start, end)
+				if seenBridges[bridgeKey] {
+					continue
+				}
+				focus := searchFocusLine(q, lines, start, end)
+				container := enclosingSearchSymbol(symbolsByFile[filePath], focus)
+				candidate, ok := makeSearchCandidate(q, filePath, languages[filePath], lines, start, end, container, options.MaxSnippetLines)
+				if !ok {
+					continue
+				}
+				candidate.result.Signals = appendUnique(candidate.result.Signals, "same-file-bridge")
+				candidate.score = 0.5*(left.score+right.score) + 1
+				candidate.baseScore = candidate.score
+				seenBridges[bridgeKey] = true
+				out = append(out, candidate)
+			}
+		}
+	}
+	sortSearchCandidates(out)
+	if len(out) > 20 {
+		out = out[:20]
+	}
+	return out
+}
+
+func searchSymbolByID(symbols []SymbolRecord, id string) (SymbolRecord, bool) {
+	for _, symbol := range symbols {
+		if symbol.ID == id {
+			return symbol, true
+		}
+	}
+	return SymbolRecord{}, false
+}
+
+func searchFlowSymbolKind(kind string) bool {
+	switch kind {
+	case "function", "method", "constructor", "destructor", "closure":
+		return true
+	default:
+		return false
+	}
+}
+
 // selectHybridCandidates uses reciprocal-rank fusion to put sparse windows
 // from semantically strong files first, then reserves the rest of a deep
 // ranking for distinct files found by the syntax-aware search. The split keeps
@@ -1645,6 +1939,13 @@ func buildSearchQuery(query string) searchQuery {
 				weight = 1.1
 			}
 			add(term, weight)
+		}
+	}
+	if len(weights) > 1 {
+		for term := range weights {
+			if searchGenericActionTerms[term] {
+				weights[term] = minFloat64(weights[term], 0.35)
+			}
 		}
 	}
 	originalTerms := make([]string, 0, len(weights))

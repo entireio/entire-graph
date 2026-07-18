@@ -394,6 +394,66 @@ func Authenticate(raw string) bool {
 	return checkSignature(raw)
 }
 
+func TestSearchExpandsCompoundIdentifierConsumers(t *testing.T) {
+	const filePath = "src/policy.ts"
+	content := "export const cacheRefreshPolicy = 'eager'\n\n" +
+		"export function configureCache() {\n" +
+		"  install(cacheRefreshPolicy)\n" +
+		"}\n"
+	definition := SymbolRecord{ID: "definition", Name: "cacheRefreshPolicy", FilePath: filePath, StartLine: 1, EndLine: 1}
+	consumer := SymbolRecord{ID: "consumer", Name: "configureCache", FilePath: filePath, StartLine: 3, EndLine: 5}
+	seeds := []searchCandidate{{
+		score: 30,
+		result: SearchResult{SymbolID: definition.ID, SymbolName: definition.Name, FilePath: filePath, StartLine: 1, EndLine: 1},
+	}}
+	read := func(path string) (string, bool) { return content, path == filePath }
+	got := expandIdentifierUsageCandidates(
+		seeds,
+		buildSearchQuery("cache refresh policy"),
+		map[string]SymbolRecord{definition.ID: definition, consumer.ID: consumer},
+		map[string][]SymbolRecord{filePath: {definition, consumer}},
+		read,
+		map[string]string{filePath: "typescript"},
+		SearchOptions{ContextLines: 2, MaxSnippetLines: 20},
+	)
+	if len(got) != 1 || got[0].result.FocusLine != 4 || got[0].result.SymbolName != "configureCache" {
+		t.Fatalf("consumer expansion = %#v", got)
+	}
+	if !containsString(got[0].result.Signals, "symbol-usage") {
+		t.Fatalf("consumer signal missing: %#v", got[0].result.Signals)
+	}
+}
+
+func TestSearchBridgesNearbyStrongRegions(t *testing.T) {
+	const filePath = "src/scheduler.ts"
+	content := "function enqueue() {\n  return pending\n}\n" +
+		"function dispatchDue() {\n  const automation = findScheduled()\n  advanceBeforeRun(automation)\n}\n" +
+		"function runOne() {\n  return execute()\n}\n"
+	lines := strings.Split(content, "\n")
+	candidates := []searchCandidate{
+		{score: 30, result: SearchResult{FilePath: filePath, StartLine: 1, EndLine: 3, SymbolID: "enqueue", SymbolName: "enqueue", Kind: "function"}},
+		{score: 20, result: SearchResult{FilePath: filePath, StartLine: 8, EndLine: 10, SymbolID: "run", SymbolName: "runOne", Kind: "function"}},
+	}
+	enqueue := SymbolRecord{ID: "enqueue", Name: "enqueue", Kind: "function", FilePath: filePath, StartLine: 1, EndLine: 3}
+	dispatch := SymbolRecord{ID: "dispatch", Name: "dispatchDue", FilePath: filePath, StartLine: 4, EndLine: 7}
+	run := SymbolRecord{ID: "run", Name: "runOne", Kind: "function", FilePath: filePath, StartLine: 8, EndLine: 10}
+	read := func(path string) (string, bool) { return strings.Join(lines, "\n"), path == filePath }
+	got := expandSameFileBridgeCandidates(
+		candidates,
+		buildSearchQuery("scheduled automation run"),
+		map[string][]SymbolRecord{filePath: {enqueue, dispatch, run}},
+		read,
+		map[string]string{filePath: "typescript"},
+		SearchOptions{TopK: 20, MaxRegionLines: 80, MaxSnippetLines: 40},
+	)
+	if len(got) != 1 || got[0].result.StartLine != 4 || got[0].result.EndLine != 10 || got[0].result.SymbolName != "dispatchDue" {
+		t.Fatalf("bridge expansion = %#v", got)
+	}
+	if !containsString(got[0].result.Signals, "same-file-bridge") {
+		t.Fatalf("bridge signal missing: %#v", got[0].result.Signals)
+	}
+}
+
 func checkSignature(raw string) bool {
 	return len(raw) > 4
 }
@@ -434,6 +494,31 @@ func TestSearchRepositoryRejectsStopWordsOnly(t *testing.T) {
 	_, err := SearchRepository(t.Context(), repo, "test", "the and with", SearchOptions{Worktree: true})
 	if err == nil {
 		t.Fatal("expected an error for a stop-word-only query")
+	}
+}
+
+func TestSearchQueryDropsNarrativeStopWordsBeforePreselection(t *testing.T) {
+	query := buildSearchQuery("automation did not run while computer was asleep")
+	for _, stopWord := range []string{"did", "not", "while"} {
+		if query.termSet[stopWord] {
+			t.Fatalf("narrative stop word %q survived: %#v", stopWord, query.terms)
+		}
+	}
+	for _, meaningful := range []string{"automation", "computer", "asleep"} {
+		if !query.termSet[meaningful] {
+			t.Fatalf("meaningful term %q missing: %#v", meaningful, query.terms)
+		}
+	}
+}
+
+func TestSearchQueryDownweightsGenericRunInNarrativeQueries(t *testing.T) {
+	query := buildSearchQuery("scheduled automation did not run while asleep")
+	if query.weights["run"] >= query.weights["automation"] {
+		t.Fatalf("generic run weight %v did not stay below automation %v", query.weights["run"], query.weights["automation"])
+	}
+	single := buildSearchQuery("run")
+	if single.weights["run"] != 1 {
+		t.Fatalf("single-term run query weight = %v, want 1", single.weights["run"])
 	}
 }
 
@@ -892,6 +977,20 @@ func TestSearchPreselectionPatternsReserveMorphologicalFallbacks(t *testing.T) {
 	}
 	if len(patterns) > 12 {
 		t.Fatalf("preselection pattern count = %d", len(patterns))
+	}
+}
+
+func TestGitGrepPreselectionBoundsLargeRepoPatternFanout(t *testing.T) {
+	patterns := searchGitGrepPreselectionPatterns(buildSearchQuery(
+		"scheduled automation computer asleep misleading status catchup durable project memory",
+	))
+	if len(patterns) != 6 {
+		t.Fatalf("git-grep patterns = %#v, want six", patterns)
+	}
+	for _, meaningful := range []string{"automation", "scheduled", "computer"} {
+		if !containsString(patterns, meaningful) {
+			t.Fatalf("high-priority term %q missing: %#v", meaningful, patterns)
+		}
 	}
 }
 
