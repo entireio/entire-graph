@@ -224,6 +224,10 @@ entire-graph is built to be called by coding agents, not only humans. Every comm
   entire graph search --repo . --query "retry logic for webhook delivery" --format agent
   ```
   Output is bounded to 16 KiB by default, sized for direct inclusion in a model context window.
+  Start with one broad task query. Once results expose concrete identifiers,
+  use at most one exact-identifier follow-up, then inspect the returned ranges
+  with normal file tools. Prefer those ranges over reading whole large files,
+  and stop discovery once a causal hypothesis has a focused passing test.
 - **🧬 Judge a change.** Summarize what actually changed at the entity level to decide keep / revert / continue:
   ```sh
   entire graph commit HEAD --json
