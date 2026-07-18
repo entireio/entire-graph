@@ -41,6 +41,24 @@ namespace Parser {
 	}
 }
 
+func TestTypeScriptBareCallDoesNotResolveToInventoryDocument(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/use.ts", `export function useItems() {
+  return list();
+}
+`)
+	writeFile(t, repo, "templates/list.html", `<ul></ul>
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasRelationBySymbolName(snapshot, "CALLS", "useItems", "list") {
+		t.Fatalf("bare call resolved to a non-callable inventory symbol: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
 func TestTypeScriptReceiverTypesFromLocalsAndInjectProperties(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "src/url_handling_strategy.ts", `export abstract class UrlHandlingStrategy {

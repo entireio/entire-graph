@@ -175,7 +175,9 @@ entire graph neighbors --repo . --symbol ExecuteC --file command.go --depth 2 --
 ```
 
 `neighbors` reports resolved incoming and outgoing relations with definition
-locations. `--depth 2` also returns bounded caller → focus → callee paths.
+locations. The default call neighborhood includes constructor invocations while
+preserving their `CONSTRUCTS` relation in JSON. `--depth 2` also returns bounded
+caller → focus → callee paths.
 `--relation` selects another relation family, `--direction` limits the side,
 and `--limit` bounds neighbors and paths. The default full profile favors
 relationship correctness; use `--profile fast` when shallow call resolution is

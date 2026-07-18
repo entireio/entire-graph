@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -218,6 +219,9 @@ func parseNeighborFlags(args []string) (neighborFlags, error) {
 
 func buildNeighborResponse(snapshot sem.ProviderSnapshot, flags neighborFlags) neighborResponse {
 	endpoints := make(map[string]neighborEndpoint, len(snapshot.Symbols)+len(snapshot.Externals))
+	for _, file := range snapshot.Files {
+		endpoints[file.ID] = endpointForFile(file)
+	}
 	for _, symbol := range snapshot.Symbols {
 		endpoints[symbol.ID] = endpointForSymbol(symbol)
 	}
@@ -263,7 +267,7 @@ func buildNeighborResponse(snapshot sem.ProviderSnapshot, flags neighborFlags) n
 			Outgoing: []neighborEdge{},
 		}
 		for _, relation := range snapshot.Relations {
-			if relation.Type != flags.Relation {
+			if !neighborRelationMatches(flags.Relation, relation.Type) {
 				continue
 			}
 			if relation.ToID == focus.ID && flags.Direction != "out" {
@@ -312,6 +316,19 @@ func endpointForSymbol(symbol sem.SymbolRecord) neighborEndpoint {
 		ID: symbol.ID, Name: symbol.Name, QualifiedName: symbol.QualifiedName,
 		Kind: symbol.Kind, FilePath: symbol.FilePath, StartLine: symbol.StartLine,
 	}
+}
+
+func endpointForFile(file sem.FileRecord) neighborEndpoint {
+	return neighborEndpoint{
+		ID: file.ID, Name: filepath.Base(file.Path), Kind: "file", FilePath: file.Path,
+	}
+}
+
+func neighborRelationMatches(requested, actual string) bool {
+	// Constructors are callable dependencies. The provider schema keeps
+	// CONSTRUCTS distinct, while the focused call-neighborhood view includes
+	// them so "callees" does not silently omit direct constructor invocations.
+	return actual == requested || (requested == "CALLS" && actual == "CONSTRUCTS")
 }
 
 func endpointForExternal(external sem.ExternalRecord) neighborEndpoint {

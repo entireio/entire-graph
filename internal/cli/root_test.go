@@ -398,6 +398,30 @@ func TestNeighborsJSONDisambiguatesByFileAndDirection(t *testing.T) {
 	}
 }
 
+func TestNeighborsIncludesTopLevelFileCallersAndConstructors(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "target.py", "class Result:\n    pass\n\ndef target():\n    return Result()\n")
+	write(t, repo, "entry.py", "from target import target\n\nvalue = target()\n")
+
+	var out bytes.Buffer
+	err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{
+		"neighbors", "--repo", repo, "--symbol", "target", "--depth", "2", "--format", "agent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, expected := range []string{
+		"Callers:\n- entry.py (entry.py)",
+		"Callees:\n- Result (target.py:1)",
+		"entry.py -> target -> Result",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("neighbors output omitted %q:\n%s", expected, text)
+		}
+	}
+}
+
 func TestProviderCommandsAcceptIgnoreFile(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, ".brainignore", "ignored/\n")

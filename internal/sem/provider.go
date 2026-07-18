@@ -1452,6 +1452,10 @@ type resolvedCallTarget struct {
 	Scope      string
 }
 
+func callableTargetKind(kind string) bool {
+	return kind == "function" || kind == "method" || typeLikeKind(kind)
+}
+
 func routeBoundarySource(path, language string, fileSymbols []SymbolRecord) routeSource {
 	file := FileRecord{Path: path, Language: language}
 	sourceID := routeBoundarySourceID("", file, fileSymbols)
@@ -1515,7 +1519,7 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 		// A bare `name()` call resolves to a function, not a class method (methods
 		// require a receiver and are resolved by receiverCallRelations) — matching
 		// a same-named method here is a false edge.
-		if to.ID == from.ID || to.Name != name || to.Kind == "field" || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
+		if to.ID == from.ID || to.Name != name || !callableTargetKind(to.Kind) || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
 			continue
 		}
 		local = append(local, resolvedCallTarget{
@@ -1606,7 +1610,7 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 
 	var remaining []SymbolRecord
 	for _, to := range candidates {
-		if to.ID != from.ID && to.Kind != "field" && (to.Kind != "method" || nameCallMayTargetMethod(from.Language) || allowMethodTargets) && localReachable(from, to) {
+		if to.ID != from.ID && callableTargetKind(to.Kind) && (to.Kind != "method" || nameCallMayTargetMethod(from.Language) || allowMethodTargets) && localReachable(from, to) {
 			remaining = append(remaining, to)
 		}
 	}
@@ -1666,7 +1670,7 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 func resolveImportedCallTargets(name string, from SymbolRecord, candidates []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
 	var imported []resolvedCallTarget
 	for _, to := range candidates {
-		if to.ID == from.ID || to.Kind == "field" || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
+		if to.ID == from.ID || !callableTargetKind(to.Kind) || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
 			continue
 		}
 		if importedNameMatchesFile(importsByName[name], from.FilePath, to.FilePath) {
@@ -1692,7 +1696,7 @@ func jsExportedImportFallbackTargets(name string, from SymbolRecord, candidates 
 	var exported []SymbolRecord
 	var imported []SymbolRecord
 	for _, to := range candidates {
-		if to.ID == from.ID || to.Kind == "field" || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
+		if to.ID == from.ID || !callableTargetKind(to.Kind) || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
 			continue
 		}
 		if importedNameMatchesFile(modules, from.FilePath, to.FilePath) {
