@@ -1,0 +1,43 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "df721bb1d217",
+  "session_id": "019f6148-2b1a-7522-adec-081e066879a4",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-18T11:25:41.588477Z",
+  "branch": "codex/improve-search-retrieval",
+  "checkpoints_count": 7,
+  "save_step_count": 1,
+  "files_touched": [
+    "README.md",
+    "internal/cli/neighbors.go",
+    "internal/cli/root_test.go",
+    "internal/sem/provider.go",
+    "internal/sem/typescript_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "4821e60059f8",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 12057167,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 842386944,
+    "output_tokens": 1165286,
+    "api_call_count": 6467
+  },
+  "session_metrics": {
+    "turn_count": 8
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-18T11:25:40.190459Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 65,
+    "human_modified": 6,
+    "human_removed": 0,
+    "total_committed": 65,
+    "total_lines_changed": 71,
+    "agent_percentage": 0,
+    "metric_version": 2
+  }
+}
