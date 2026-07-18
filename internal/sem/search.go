@@ -89,6 +89,7 @@ type SearchStats struct {
 	LexicalCandidates  int   `json:"lexical_candidates"`
 	GraphCandidates    int   `json:"graph_candidates"`
 	IdentifierUsages   int   `json:"identifier_usage_candidates,omitempty"`
+	NeighborCandidates int   `json:"same_container_neighbor_candidates,omitempty"`
 	BridgeCandidates   int   `json:"same_file_bridge_candidates,omitempty"`
 	SparseCandidates   int   `json:"sparse_candidates"`
 	SparseFilesRead    int   `json:"sparse_files_content_read"`
@@ -363,6 +364,10 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	identifierUsages := expandIdentifierUsageCandidates(candidates, q, symbolsByID, symbolsByFile, read, fileLanguages, options)
 	stats.IdentifierUsages = len(identifierUsages)
 	candidates = append(candidates, identifierUsages...)
+	sortSearchCandidates(candidates)
+	neighbors := expandSameContainerNeighborCandidates(candidates, q, symbolsByID, symbolsByFile, read, fileLanguages, options)
+	stats.NeighborCandidates = len(neighbors)
+	candidates = append(candidates, neighbors...)
 	sortSearchCandidates(candidates)
 	bridges := expandSameFileBridgeCandidates(candidates, q, symbolsByFile, read, fileLanguages, options)
 	stats.BridgeCandidates = len(bridges)
@@ -1390,7 +1395,8 @@ func expandIdentifierUsageCandidates(
 		score  float64
 	}
 	const maxSeeds = 20
-	const maxUsagesPerSeed = 2
+	const maxUsagesPerSeed = 3
+	const maxRawUsagesPerSeed = 64
 	var selectedSeeds []usageSeed
 	seenSymbols := map[string]bool{}
 	for _, candidate := range seeds {
@@ -1413,9 +1419,14 @@ func expandIdentifierUsageCandidates(
 		filePaths = append(filePaths, filePath)
 	}
 	sort.Strings(filePaths)
-	usageCounts := make([]int, len(selectedSeeds))
+	type indexedUsage struct {
+		candidate searchCandidate
+		seedIndex int
+	}
+	rawUsageCounts := make([]int, len(selectedSeeds))
 	seenLocations := map[string]bool{}
-	var out []searchCandidate
+	var discovered []indexedUsage
+	usageContext := minInt(options.ContextLines, 2)
 	for _, filePath := range filePaths {
 		content, ok := read(filePath)
 		if !ok || strings.IndexByte(content, 0) >= 0 {
@@ -1423,7 +1434,7 @@ func expandIdentifierUsageCandidates(
 		}
 		lines := strings.Split(content, "\n")
 		for seedIndex, seed := range selectedSeeds {
-			if usageCounts[seedIndex] == maxUsagesPerSeed {
+			if rawUsageCounts[seedIndex] == maxRawUsagesPerSeed {
 				continue
 			}
 			for lineIndex, line := range lines {
@@ -1432,7 +1443,7 @@ func expandIdentifierUsageCandidates(
 				if filePath == seed.symbol.FilePath {
 					definitionStart = precedingDocumentationStart(lines, seed.symbol.StartLine, options.ContextLines)
 				}
-				if !containsIdentifierUsage(line, seed.symbol.Name) ||
+				if !containsIdentifierUsage(line, seed.symbol.Name) || identifierUsageIsImport(line) ||
 					(filePath == seed.symbol.FilePath && lineNumber >= definitionStart && lineNumber <= seed.symbol.EndLine) {
 					continue
 				}
@@ -1440,8 +1451,8 @@ func expandIdentifierUsageCandidates(
 				if seenLocations[locationKey] {
 					continue
 				}
-				start := maxInt(1, lineNumber-options.ContextLines)
-				end := minInt(len(lines), lineNumber+options.ContextLines)
+				start := maxInt(1, lineNumber-usageContext)
+				end := minInt(len(lines), lineNumber+usageContext)
 				container := enclosingSearchSymbol(symbolsByFile[filePath], lineNumber)
 				candidate, ok := makeSearchCandidate(q, filePath, languages[filePath], lines, start, end, container, options.MaxSnippetLines)
 				if !ok {
@@ -1449,22 +1460,42 @@ func expandIdentifierUsageCandidates(
 				}
 				candidate.result.FocusLine = lineNumber
 				candidate.result.Signals = appendUnique(candidate.result.Signals, "symbol-usage")
-				candidate.score = 0.85*seed.score + 1 + identifierUsagePathPrior(q, filePath)
+				candidate.score = seed.score + 2 + identifierUsagePathPrior(q, filePath)
 				candidate.baseScore = candidate.score
 				seenLocations[locationKey] = true
-				usageCounts[seedIndex]++
-				out = append(out, candidate)
-				if usageCounts[seedIndex] == maxUsagesPerSeed {
+				rawUsageCounts[seedIndex]++
+				discovered = append(discovered, indexedUsage{candidate: candidate, seedIndex: seedIndex})
+				if rawUsageCounts[seedIndex] == maxRawUsagesPerSeed {
 					break
 				}
 			}
 		}
 	}
-	sortSearchCandidates(out)
-	if len(out) > 32 {
-		out = out[:32]
+	sort.SliceStable(discovered, func(i, j int) bool {
+		if discovered[i].candidate.score != discovered[j].candidate.score {
+			return discovered[i].candidate.score > discovered[j].candidate.score
+		}
+		return searchCandidateLess(discovered[i].candidate, discovered[j].candidate)
+	})
+	selectedPerSeed := make([]int, len(selectedSeeds))
+	out := make([]searchCandidate, 0, minInt(32, len(discovered)))
+	for _, usage := range discovered {
+		if selectedPerSeed[usage.seedIndex] == maxUsagesPerSeed {
+			continue
+		}
+		selectedPerSeed[usage.seedIndex]++
+		out = append(out, usage.candidate)
+		if len(out) == 32 {
+			break
+		}
 	}
 	return out
+}
+
+func identifierUsageIsImport(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.HasPrefix(trimmed, "import ") || strings.HasPrefix(trimmed, "import{") ||
+		strings.HasPrefix(trimmed, "export {") || strings.HasPrefix(trimmed, "export{")
 }
 
 func identifierUsagePathPrior(q searchQuery, filePath string) float64 {
@@ -1538,6 +1569,122 @@ func enclosingSearchSymbol(symbols []SymbolRecord, line int) SymbolRecord {
 	return best
 }
 
+// expandSameContainerNeighborCandidates follows strong callable results to the
+// immediately preceding and following callable in the same lexical container.
+// Lifecycle code is commonly split into small adjacent stages without an
+// explicit call edge (for example tick -> dispatch -> run); the transition is
+// often more useful to an agent than another weak match from an unrelated file.
+func expandSameContainerNeighborCandidates(
+	seeds []searchCandidate,
+	q searchQuery,
+	symbolsByID map[string]SymbolRecord,
+	symbolsByFile map[string][]SymbolRecord,
+	read contentReader,
+	languages map[string]string,
+	options SearchOptions,
+) []searchCandidate {
+	if len(seeds) == 0 {
+		return nil
+	}
+	limit := minInt(len(seeds), maxInt(30, options.TopK*2))
+	bestScore := seeds[0].score
+	seedSymbolIDs := map[string]bool{}
+	for _, seed := range seeds[:limit] {
+		seedSymbolIDs[seed.result.SymbolID] = true
+	}
+	seen := map[string]bool{}
+	var out []searchCandidate
+	for _, seed := range seeds[:limit] {
+		if seed.score < 0.35*bestScore || !searchFlowSymbolKind(seed.result.Kind) {
+			continue
+		}
+		symbol, ok := symbolsByID[seed.result.SymbolID]
+		if !ok {
+			continue
+		}
+		siblings := sameContainerFlowSymbols(symbolsByFile[symbol.FilePath], symbol.ContainerID)
+		index := -1
+		for i := range siblings {
+			if siblings[i].ID == symbol.ID {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			continue
+		}
+		content, ok := read(symbol.FilePath)
+		if !ok || strings.IndexByte(content, 0) >= 0 {
+			continue
+		}
+		lines := strings.Split(content, "\n")
+		for _, neighborIndex := range []int{index - 1, index + 1} {
+			if neighborIndex < 0 || neighborIndex >= len(siblings) {
+				continue
+			}
+			neighbor := siblings[neighborIndex]
+			if seedSymbolIDs[neighbor.ID] {
+				continue
+			}
+			start, end := neighbor.StartLine, neighbor.EndLine
+			if neighborIndex < index {
+				end = minInt(symbol.StartLine-1, start+options.MaxSnippetLines-1)
+			} else {
+				start = maxInt(symbol.EndLine+1, neighbor.StartLine-options.ContextLines)
+				end = minInt(neighbor.EndLine, start+options.MaxSnippetLines-1)
+			}
+			if start < 1 || start > end || start > len(lines) || end-start+1 > options.MaxSnippetLines {
+				continue
+			}
+			gap := maxInt(0, maxInt(neighbor.StartLine-symbol.EndLine-1, symbol.StartLine-neighbor.EndLine-1))
+			if gap > options.MaxSnippetLines {
+				continue
+			}
+			key := fmt.Sprintf("%s:%d:%d", symbol.FilePath, start, end)
+			if seen[key] {
+				continue
+			}
+			candidate, ok := makeSearchCandidate(q, symbol.FilePath, languages[symbol.FilePath], lines, start, end, neighbor, options.MaxSnippetLines)
+			if !ok {
+				// Adjacency is itself the relevance signal; the neighboring stage
+				// need not repeat narrative terms from the original query.
+				candidate, ok = makeSearchCandidate(buildSearchQuery(neighbor.Name), symbol.FilePath, languages[symbol.FilePath], lines, start, end, neighbor, options.MaxSnippetLines)
+				if !ok {
+					continue
+				}
+				candidate.result.Signals = nil
+			}
+			candidate.result.FocusLine = neighbor.StartLine
+			candidate.result.Signals = appendUnique(candidate.result.Signals, "same-container-neighbor")
+			candidate.score = 0.9*seed.score + 1
+			candidate.baseScore = candidate.score
+			seen[key] = true
+			out = append(out, candidate)
+		}
+	}
+	sortSearchCandidates(out)
+	if len(out) > 24 {
+		out = out[:24]
+	}
+	return out
+}
+
+func sameContainerFlowSymbols(symbols []SymbolRecord, containerID string) []SymbolRecord {
+	var out []SymbolRecord
+	for _, symbol := range symbols {
+		if symbol.ContainerID == containerID && searchFlowSymbolKind(symbol.Kind) {
+			out = append(out, symbol)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].StartLine != out[j].StartLine {
+			return out[i].StartLine < out[j].StartLine
+		}
+		return out[i].EndLine < out[j].EndLine
+	})
+	return out
+}
+
 // expandSameFileBridgeCandidates exposes short omitted spans between two
 // independently strong regions. These bridges frequently contain the glue
 // call or state transition that explains how neighboring lifecycle stages are
@@ -1582,15 +1729,17 @@ func expandSameFileBridgeCandidates(
 		for leftIndex := 0; leftIndex+1 < len(regions); leftIndex++ {
 			for rightIndex := leftIndex + 1; rightIndex < len(regions); rightIndex++ {
 				left, right := regions[leftIndex], regions[rightIndex]
-				start, gapEnd := left.result.EndLine+1, right.result.StartLine-1
-				if start > gapEnd {
+				gapStart, gapEnd := left.result.EndLine+1, right.result.StartLine-1
+				if gapStart > gapEnd {
 					continue
 				}
-				if gapEnd-start+1 > options.MaxSnippetLines {
+				if gapEnd-gapStart+1 > options.MaxSnippetLines {
 					break
 				}
-				// Include the downstream region's leading context so the bridge
-				// shows both the omitted glue and the operation it feeds into.
+				// Reserve at least half the snippet for the downstream operation.
+				// A long omitted span must not consume the entire result and end one
+				// line before the consumer that makes the bridge actionable.
+				start := maxInt(gapStart, right.result.StartLine-options.MaxSnippetLines/2)
 				end := minInt(right.result.EndLine, start+options.MaxSnippetLines-1)
 				leftSymbol, leftOK := searchSymbolByID(symbolsByFile[filePath], left.result.SymbolID)
 				rightSymbol, rightOK := searchSymbolByID(symbolsByFile[filePath], right.result.SymbolID)
@@ -1796,6 +1945,7 @@ func shouldReserveUnseenSearchFile(
 ) bool {
 	bestAny := -math.MaxFloat64
 	bestUnseen := -math.MaxFloat64
+	bestRelationship := -math.MaxFloat64
 	for _, candidate := range candidates {
 		if perFile[candidate.result.FilePath] >= maxPerFile || overlapsSelected(candidate, selected) {
 			continue
@@ -1804,6 +1954,9 @@ func shouldReserveUnseenSearchFile(
 		if adjusted > bestAny {
 			bestAny = adjusted
 		}
+		if perFile[candidate.result.FilePath] > 0 && searchRelationshipCandidate(candidate) && adjusted > bestRelationship {
+			bestRelationship = adjusted
+		}
 		if perFile[candidate.result.FilePath] == 0 && adjusted > bestUnseen {
 			bestUnseen = adjusted
 		}
@@ -1811,10 +1964,23 @@ func shouldReserveUnseenSearchFile(
 	if bestUnseen == -math.MaxFloat64 {
 		return false
 	}
+	if bestRelationship != -math.MaxFloat64 && bestRelationship >= 0.65*bestUnseen {
+		return false
+	}
 	if bestAny <= 0 {
 		return true
 	}
 	return bestUnseen >= searchDiversityRelevanceRatio*bestAny
+}
+
+func searchRelationshipCandidate(candidate searchCandidate) bool {
+	for _, signal := range candidate.result.Signals {
+		switch signal {
+		case "symbol-usage", "same-container-neighbor", "same-file-bridge":
+			return true
+		}
+	}
+	return false
 }
 
 func adjustedSearchCandidateScore(

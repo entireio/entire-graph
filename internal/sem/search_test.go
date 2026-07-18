@@ -394,66 +394,6 @@ func Authenticate(raw string) bool {
 	return checkSignature(raw)
 }
 
-func TestSearchExpandsCompoundIdentifierConsumers(t *testing.T) {
-	const filePath = "src/policy.ts"
-	content := "export const cacheRefreshPolicy = 'eager'\n\n" +
-		"export function configureCache() {\n" +
-		"  install(cacheRefreshPolicy)\n" +
-		"}\n"
-	definition := SymbolRecord{ID: "definition", Name: "cacheRefreshPolicy", FilePath: filePath, StartLine: 1, EndLine: 1}
-	consumer := SymbolRecord{ID: "consumer", Name: "configureCache", FilePath: filePath, StartLine: 3, EndLine: 5}
-	seeds := []searchCandidate{{
-		score: 30,
-		result: SearchResult{SymbolID: definition.ID, SymbolName: definition.Name, FilePath: filePath, StartLine: 1, EndLine: 1},
-	}}
-	read := func(path string) (string, bool) { return content, path == filePath }
-	got := expandIdentifierUsageCandidates(
-		seeds,
-		buildSearchQuery("cache refresh policy"),
-		map[string]SymbolRecord{definition.ID: definition, consumer.ID: consumer},
-		map[string][]SymbolRecord{filePath: {definition, consumer}},
-		read,
-		map[string]string{filePath: "typescript"},
-		SearchOptions{ContextLines: 2, MaxSnippetLines: 20},
-	)
-	if len(got) != 1 || got[0].result.FocusLine != 4 || got[0].result.SymbolName != "configureCache" {
-		t.Fatalf("consumer expansion = %#v", got)
-	}
-	if !containsString(got[0].result.Signals, "symbol-usage") {
-		t.Fatalf("consumer signal missing: %#v", got[0].result.Signals)
-	}
-}
-
-func TestSearchBridgesNearbyStrongRegions(t *testing.T) {
-	const filePath = "src/scheduler.ts"
-	content := "function enqueue() {\n  return pending\n}\n" +
-		"function dispatchDue() {\n  const automation = findScheduled()\n  advanceBeforeRun(automation)\n}\n" +
-		"function runOne() {\n  return execute()\n}\n"
-	lines := strings.Split(content, "\n")
-	candidates := []searchCandidate{
-		{score: 30, result: SearchResult{FilePath: filePath, StartLine: 1, EndLine: 3, SymbolID: "enqueue", SymbolName: "enqueue", Kind: "function"}},
-		{score: 20, result: SearchResult{FilePath: filePath, StartLine: 8, EndLine: 10, SymbolID: "run", SymbolName: "runOne", Kind: "function"}},
-	}
-	enqueue := SymbolRecord{ID: "enqueue", Name: "enqueue", Kind: "function", FilePath: filePath, StartLine: 1, EndLine: 3}
-	dispatch := SymbolRecord{ID: "dispatch", Name: "dispatchDue", FilePath: filePath, StartLine: 4, EndLine: 7}
-	run := SymbolRecord{ID: "run", Name: "runOne", Kind: "function", FilePath: filePath, StartLine: 8, EndLine: 10}
-	read := func(path string) (string, bool) { return strings.Join(lines, "\n"), path == filePath }
-	got := expandSameFileBridgeCandidates(
-		candidates,
-		buildSearchQuery("scheduled automation run"),
-		map[string][]SymbolRecord{filePath: {enqueue, dispatch, run}},
-		read,
-		map[string]string{filePath: "typescript"},
-		SearchOptions{TopK: 20, MaxRegionLines: 80, MaxSnippetLines: 40},
-	)
-	if len(got) != 1 || got[0].result.StartLine != 4 || got[0].result.EndLine != 10 || got[0].result.SymbolName != "dispatchDue" {
-		t.Fatalf("bridge expansion = %#v", got)
-	}
-	if !containsString(got[0].result.Signals, "same-file-bridge") {
-		t.Fatalf("bridge signal missing: %#v", got[0].result.Signals)
-	}
-}
-
 func checkSignature(raw string) bool {
 	return len(raw) > 4
 }
@@ -485,6 +425,82 @@ func checkSignature(raw string) bool {
 	}
 	if !foundGraphSignal {
 		t.Fatalf("helper was not identified through graph expansion: %#v", helper)
+	}
+}
+
+func TestSearchExpandsCompoundIdentifierConsumers(t *testing.T) {
+	const filePath = "src/policy.ts"
+	content := "export const cacheRefreshPolicy = 'eager'\n\nexport function configureCache() {\n  install(cacheRefreshPolicy)\n}\n"
+	definition := SymbolRecord{ID: "definition", Name: "cacheRefreshPolicy", FilePath: filePath, StartLine: 1, EndLine: 1}
+	consumer := SymbolRecord{ID: "consumer", Name: "configureCache", FilePath: filePath, StartLine: 3, EndLine: 5}
+	got := expandIdentifierUsageCandidates(
+		[]searchCandidate{{score: 30, result: SearchResult{SymbolID: definition.ID}}},
+		buildSearchQuery("cache refresh policy"),
+		map[string]SymbolRecord{definition.ID: definition},
+		map[string][]SymbolRecord{filePath: {definition, consumer}},
+		func(path string) (string, bool) { return content, path == filePath },
+		map[string]string{filePath: "typescript"}, SearchOptions{ContextLines: 2, MaxSnippetLines: 20},
+	)
+	if len(got) != 1 || got[0].result.FocusLine != 4 || got[0].result.SymbolName != "configureCache" || !containsString(got[0].result.Signals, "symbol-usage") {
+		t.Fatalf("consumer expansion = %#v", got)
+	}
+}
+
+func TestSearchPrioritizesExecutableIdentifierConsumers(t *testing.T) {
+	definitionPath, consumerPath, testPath := "src/snippets.ts", "src/index.ts", "src/__tests__/snippets.spec.ts"
+	definition := SymbolRecord{ID: "definition", Name: "modernChunkLegacyGuard", FilePath: definitionPath, StartLine: 1, EndLine: 1}
+	consumer := SymbolRecord{ID: "consumer", Name: "renderChunk", Kind: "method", FilePath: consumerPath, StartLine: 1, EndLine: 3}
+	contents := map[string]string{
+		definitionPath: "export const modernChunkLegacyGuard = guard\n",
+		consumerPath:   "renderChunk(chunk) {\n  prepend(modernChunkLegacyGuard)\n}\n",
+		testPath:       "import { modernChunkLegacyGuard } from '../snippets'\nexpect(modernChunkLegacyGuard).toBeTruthy()\n",
+	}
+	got := expandIdentifierUsageCandidates(
+		[]searchCandidate{{score: 30, result: SearchResult{SymbolID: definition.ID}}}, buildSearchQuery("legacy guard consumer"),
+		map[string]SymbolRecord{definition.ID: definition}, map[string][]SymbolRecord{consumerPath: {consumer}},
+		func(path string) (string, bool) { content, ok := contents[path]; return content, ok },
+		map[string]string{definitionPath: "typescript", consumerPath: "typescript", testPath: "typescript"},
+		SearchOptions{ContextLines: 2, MaxSnippetLines: 20},
+	)
+	if len(got) == 0 || got[0].result.FilePath != consumerPath || got[0].result.FocusLine != 2 {
+		t.Fatalf("top executable consumer = %#v", got)
+	}
+	for _, candidate := range got {
+		if candidate.result.FilePath == testPath && candidate.result.FocusLine == 1 {
+			t.Fatalf("import was emitted as a consumer: %#v", got)
+		}
+	}
+}
+
+func TestSearchBridgesNearbyStrongRegions(t *testing.T) {
+	const filePath = "src/scheduler.ts"
+	content := "function enqueue() {\n  return pending\n}\nfunction dispatchDue() {\n  advanceBeforeRun()\n}\nfunction runOne() {\n  return execute()\n}\n"
+	left := SymbolRecord{ID: "enqueue", Name: "enqueue", Kind: "function", FilePath: filePath, StartLine: 1, EndLine: 3}
+	right := SymbolRecord{ID: "run", Name: "runOne", Kind: "function", FilePath: filePath, StartLine: 7, EndLine: 9}
+	got := expandSameFileBridgeCandidates(
+		[]searchCandidate{{score: 30, result: SearchResult{FilePath: filePath, StartLine: 1, EndLine: 3, SymbolID: left.ID, Kind: left.Kind}}, {score: 20, result: SearchResult{FilePath: filePath, StartLine: 7, EndLine: 9, SymbolID: right.ID, Kind: right.Kind}}},
+		buildSearchQuery("scheduled automation run"), map[string][]SymbolRecord{filePath: {left, right}},
+		func(path string) (string, bool) { return content, path == filePath }, map[string]string{filePath: "typescript"},
+		SearchOptions{TopK: 20, MaxSnippetLines: 40},
+	)
+	if len(got) != 1 || got[0].result.StartLine != 4 || got[0].result.EndLine != 9 || !containsString(got[0].result.Signals, "same-file-bridge") {
+		t.Fatalf("bridge expansion = %#v", got)
+	}
+}
+
+func TestSearchExpandsAdjacentLifecycleStage(t *testing.T) {
+	const filePath = "src/scheduler.ts"
+	content := "class Scheduler {\n  tick() {\n    return ready\n  }\n  dispatchDue() {\n    return runOne()\n  }\n}\n"
+	tick := SymbolRecord{ID: "tick", Name: "tick", Kind: "method", FilePath: filePath, ContainerID: "scheduler", StartLine: 2, EndLine: 4}
+	dispatch := SymbolRecord{ID: "dispatch", Name: "dispatchDue", Kind: "method", FilePath: filePath, ContainerID: "scheduler", StartLine: 5, EndLine: 7}
+	got := expandSameContainerNeighborCandidates(
+		[]searchCandidate{{score: 30, result: SearchResult{FilePath: filePath, StartLine: 2, EndLine: 4, SymbolID: tick.ID, Kind: tick.Kind}}},
+		buildSearchQuery("scheduled automation tick"), map[string]SymbolRecord{tick.ID: tick}, map[string][]SymbolRecord{filePath: {tick, dispatch}},
+		func(path string) (string, bool) { return content, path == filePath }, map[string]string{filePath: "typescript"},
+		SearchOptions{TopK: 20, ContextLines: 2, MaxSnippetLines: 20},
+	)
+	if len(got) != 1 || got[0].result.StartLine != 5 || got[0].result.SymbolName != "dispatchDue" || !containsString(got[0].result.Signals, "same-container-neighbor") {
+		t.Fatalf("neighbor expansion = %#v", got)
 	}
 }
 
