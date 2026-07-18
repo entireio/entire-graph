@@ -67,6 +67,8 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runProviderRecords(ctx, opts, args[1:], "edges")
 	case "search":
 		return runSearch(ctx, opts, args[1:])
+	case "index":
+		return runIndex(ctx, opts, args[1:])
 	case "neighbors":
 		return runNeighbors(ctx, opts, args[1:])
 	case "version", "--version", "-v":
@@ -100,8 +102,9 @@ Usage:
   entire graph snapshot --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
   entire graph symbols --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
   entire graph edges --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
+  entire graph index --repo . [--profile syntax-only|fast|full] [--cache-dir path] [--format json] [--head]
   entire graph search --query "issue or concept" --repo . [--format json|ndjson|text|agent] [--top-k 20] [--max-context-bytes 16384] [--head] [--profile syntax-only|fast|full] [--max-indexed-files n|--index-all-files] [--cache-dir path|--no-cache]
-  entire graph neighbors --symbol NAME --repo . [--file path] [--relation CALLS] [--direction both|in|out] [--depth 1|2] [--limit 20] [--format json|text|agent] [--head] [--cache-dir path|--no-cache]`)
+  entire graph neighbors --symbol NAME --repo . [--file path] [--relation CALLS] [--direction both|in|out] [--depth 1|2] [--limit 20] [--format json|text|agent] [--head] [--cache-dir path|--no-cache] [--internal-only] [--exclude-tests]`)
 }
 
 func runDoctor(ctx context.Context, opts Options, args []string) error {

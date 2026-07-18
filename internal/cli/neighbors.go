@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/entireio/entire-graph/internal/sem"
 )
@@ -30,6 +31,8 @@ type neighborFlags struct {
 	IncludeFile  []string
 	CacheDir     string
 	DisableCache bool
+	InternalOnly bool
+	ExcludeTests bool
 }
 
 type neighborEndpoint struct {
@@ -66,17 +69,24 @@ type neighborFocus struct {
 }
 
 type neighborResponse struct {
-	FormatVersion int                   `json:"format_version"`
-	RepoRoot      string                `json:"repo_root"`
-	Commit        string                `json:"commit,omitempty"`
-	Tree          string                `json:"tree,omitempty"`
-	Profile       string                `json:"profile"`
-	Relation      string                `json:"relation"`
-	Query         string                `json:"query"`
-	File          string                `json:"file,omitempty"`
-	Truncated     bool                  `json:"truncated"`
-	Matches       []neighborFocus       `json:"matches"`
-	Warnings      []sem.ProviderWarning `json:"warnings,omitempty"`
+	FormatVersion  int                   `json:"format_version"`
+	RepoRoot       string                `json:"repo_root"`
+	Commit         string                `json:"commit,omitempty"`
+	Tree           string                `json:"tree,omitempty"`
+	Profile        string                `json:"profile"`
+	Relation       string                `json:"relation"`
+	Query          string                `json:"query"`
+	File           string                `json:"file,omitempty"`
+	IndexCacheHit  bool                  `json:"index_cache_hit"`
+	IndexLatencyMS int64                 `json:"index_latency_ms"`
+	Truncated      bool                  `json:"truncated"`
+	Matches        []neighborFocus       `json:"matches"`
+	Warnings       []sem.ProviderWarning `json:"warnings,omitempty"`
+
+	// endpointTruncated distinguishes a bounded neighbor list from the JSON-only
+	// explicit path expansion. Agent output can express the full Cartesian path
+	// family compactly, so path expansion alone is not a truncation for agents.
+	endpointTruncated bool
 }
 
 func runNeighbors(ctx context.Context, opts Options, args []string) error {
@@ -96,7 +106,8 @@ func runNeighbors(ctx context.Context, opts Options, args []string) error {
 	if cacheDir == "" {
 		cacheDir = opts.Env.PluginDataDir
 	}
-	snapshot, _, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
+	indexStarted := time.Now()
+	snapshot, cacheHit, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
 		NoNetwork:    true,
 		Worktree:     flags.Worktree,
 		IgnoreFiles:  flags.IgnoreFile,
@@ -107,6 +118,8 @@ func runNeighbors(ctx context.Context, opts Options, args []string) error {
 		return err
 	}
 	response := buildNeighborResponse(snapshot, flags)
+	response.IndexCacheHit = cacheHit
+	response.IndexLatencyMS = time.Since(indexStarted).Milliseconds()
 	switch flags.Format {
 	case "json":
 		encoder := json.NewEncoder(opts.Stdout)
@@ -212,6 +225,10 @@ func parseNeighborFlags(args []string) (neighborFlags, error) {
 			flags.CacheDir = item
 		case "--no-cache":
 			flags.DisableCache = true
+		case "--internal-only":
+			flags.InternalOnly = true
+		case "--exclude-tests":
+			flags.ExcludeTests = true
 		default:
 			return flags, fmt.Errorf("neighbors received unexpected argument %q", arg)
 		}
@@ -286,12 +303,16 @@ func buildNeighborResponse(snapshot sem.ProviderSnapshot, flags neighborFlags) n
 			}
 			if relation.ToID == focus.ID && flags.Direction != "out" {
 				if endpoint, ok := endpoints[relation.FromID]; ok {
-					entry.Incoming = append(entry.Incoming, edgeForRelation("in", endpoint, relation))
+					if neighborEndpointAllowed(endpoint, flags) {
+						entry.Incoming = append(entry.Incoming, edgeForRelation("in", endpoint, relation))
+					}
 				}
 			}
 			if relation.FromID == focus.ID && flags.Direction != "in" {
 				if endpoint, ok := endpoints[relation.ToID]; ok {
-					entry.Outgoing = append(entry.Outgoing, edgeForRelation("out", endpoint, relation))
+					if neighborEndpointAllowed(endpoint, flags) {
+						entry.Outgoing = append(entry.Outgoing, edgeForRelation("out", endpoint, relation))
+					}
 				}
 			}
 		}
@@ -300,10 +321,12 @@ func buildNeighborResponse(snapshot sem.ProviderSnapshot, flags neighborFlags) n
 		if len(entry.Incoming) > flags.Limit {
 			entry.Incoming = entry.Incoming[:flags.Limit]
 			response.Truncated = true
+			response.endpointTruncated = true
 		}
 		if len(entry.Outgoing) > flags.Limit {
 			entry.Outgoing = entry.Outgoing[:flags.Limit]
 			response.Truncated = true
+			response.endpointTruncated = true
 		}
 		if flags.Depth == 2 && flags.Direction == "both" {
 			for _, incoming := range entry.Incoming {
@@ -336,6 +359,46 @@ func endpointForFile(file sem.FileRecord) neighborEndpoint {
 	return neighborEndpoint{
 		ID: file.ID, Name: filepath.Base(file.Path), Kind: "file", FilePath: file.Path,
 	}
+}
+
+func neighborEndpointAllowed(endpoint neighborEndpoint, flags neighborFlags) bool {
+	if flags.InternalOnly && endpoint.External {
+		return false
+	}
+	return !flags.ExcludeTests || !isConventionalTestPath(endpoint.FilePath)
+}
+
+func isConventionalTestPath(path string) bool {
+	clean := strings.Trim(filepath.ToSlash(filepath.Clean(path)), "/")
+	if clean == "" || clean == "." {
+		return false
+	}
+	parts := strings.Split(clean, "/")
+	for _, part := range parts[:len(parts)-1] {
+		switch strings.ToLower(part) {
+		case "test", "tests", "__tests__", "spec", "specs", "testdata":
+			return true
+		}
+	}
+
+	base := parts[len(parts)-1]
+	lowerBase := strings.ToLower(base)
+	if strings.Contains(lowerBase, ".test.") || strings.Contains(lowerBase, ".spec.") {
+		return true
+	}
+	if strings.HasSuffix(lowerBase, "_test.go") ||
+		strings.HasSuffix(lowerBase, "_test.py") ||
+		strings.HasPrefix(lowerBase, "test_") && strings.HasSuffix(lowerBase, ".py") ||
+		strings.HasSuffix(lowerBase, "_spec.rb") ||
+		lowerBase == "test.rs" || lowerBase == "tests.rs" {
+		return true
+	}
+
+	extension := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, extension)
+	return strings.HasSuffix(stem, "Test") ||
+		strings.HasSuffix(stem, "Tests") ||
+		strings.HasSuffix(stem, "TestCase")
 }
 
 func neighborRelationMatches(requested, actual string) bool {
@@ -385,6 +448,11 @@ func sortNeighborEdges(edges []neighborEdge) {
 }
 
 func writeAgentNeighbors(out io.Writer, response neighborResponse) error {
+	cacheState := "miss"
+	if response.IndexCacheHit {
+		cacheState = "hit"
+	}
+	fmt.Fprintf(out, "Index: cache-%s (%dms)\n", cacheState, response.IndexLatencyMS)
 	if len(response.Matches) == 0 {
 		_, err := fmt.Fprintf(out, "No symbols matched %q. Add --file to disambiguate a known definition.\n", response.Query)
 		return err
@@ -397,16 +465,47 @@ func writeAgentNeighbors(out io.Writer, response neighborResponse) error {
 		writeNeighborEdgeList(out, "Callers", match.Incoming)
 		writeNeighborEdgeList(out, "Callees", match.Outgoing)
 		if len(match.Paths) > 0 {
-			fmt.Fprintln(out, "Two-hop paths:")
-			for _, path := range match.Paths {
-				fmt.Fprintf(out, "- %s -> %s -> %s\n", endpointDisplayName(path.Caller), endpointDisplayName(path.Focus), endpointDisplayName(path.Callee))
-			}
+			writeNeighborPathFamily(out, match)
 		}
 	}
-	if response.Truncated {
-		fmt.Fprintln(out, "Results truncated; increase --limit for more neighbors or paths.")
+	if response.endpointTruncated {
+		fmt.Fprintln(out, "Neighbor lists truncated; increase --limit for more callers or callees.")
 	}
 	return nil
+}
+
+func writeNeighborPathFamily(out io.Writer, match neighborFocus) {
+	callers := make([]neighborEndpoint, 0, len(match.Incoming))
+	for _, edge := range match.Incoming {
+		callers = append(callers, edge.Endpoint)
+	}
+	callees := make([]neighborEndpoint, 0, len(match.Outgoing))
+	for _, edge := range match.Outgoing {
+		callees = append(callees, edge.Endpoint)
+	}
+	pathCount := len(callers) * len(callees)
+	fmt.Fprintf(out, "Two-hop path family (%d caller%s × 1 focus × %d callee%s = %d path%s):\n",
+		len(callers), pluralSuffix(len(callers)), len(callees), pluralSuffix(len(callees)), pathCount, pluralSuffix(pathCount))
+	fmt.Fprintf(out, "- %s -> %s -> %s\n",
+		formatNeighborEndpointFamily(callers), endpointDisplayName(match.Symbol), formatNeighborEndpointFamily(callees))
+}
+
+func formatNeighborEndpointFamily(endpoints []neighborEndpoint) string {
+	if len(endpoints) == 1 {
+		return endpointDisplayName(endpoints[0])
+	}
+	items := make([]string, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		items = append(items, formatNeighborEndpoint(endpoint))
+	}
+	return "{" + strings.Join(items, "; ") + "}"
+}
+
+func pluralSuffix(count int) string {
+	if count == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func writeNeighborEdgeList(out io.Writer, label string, edges []neighborEdge) {

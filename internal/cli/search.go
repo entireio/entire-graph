@@ -128,18 +128,30 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		}
 		return nil
 	case "agent":
-		return writeAgentSearch(opts.Stdout, response.Results, contextBudget)
+		return writeAgentSearch(opts.Stdout, response.Results, response.Stats, contextBudget)
 	default:
 		return fmt.Errorf("search --format must be json, ndjson, text, or agent, got %q", flags.Format)
 	}
 }
 
-func writeAgentSearch(out interface{ Write([]byte) (int, error) }, results []sem.SearchResult, budget int) error {
+func writeAgentSearch(out interface{ Write([]byte) (int, error) }, results []sem.SearchResult, stats sem.SearchStats, budget int) error {
+	cacheState := "miss"
+	if stats.IndexCacheHit {
+		cacheState = "hit"
+	}
+	header := []byte(fmt.Sprintf("Index: cache-%s (%dms)\n", cacheState, stats.IndexLatencyMS))
+	if _, err := out.Write(header); err != nil {
+		return err
+	}
 	if len(results) == 0 {
 		_, err := fmt.Fprintln(out, "No search results.")
 		return err
 	}
-	formatted := fitAgentSearchResults(results, budget)
+	resultBudget := budget
+	if resultBudget > 0 {
+		resultBudget = maxIntCLI(0, resultBudget-len(header))
+	}
+	formatted := fitAgentSearchResults(results, resultBudget)
 	_, err := out.Write(formatted)
 	return err
 }
@@ -235,6 +247,13 @@ func agentSearchBlock(result sem.SearchResult, budget int) []byte {
 
 func minIntCLI(left, right int) int {
 	if left < right {
+		return left
+	}
+	return right
+}
+
+func maxIntCLI(left, right int) int {
+	if left > right {
 		return left
 	}
 	return right

@@ -242,6 +242,12 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		}, nil
 	}
 
+	onlyFiles := selectedFiles
+	if options.IndexAllFiles || len(selectedFiles) == selection.filesScanned {
+		// Canonicalize complete snapshots to the query-independent cache key so
+		// `graph index` and all-files search share one durable artifact.
+		onlyFiles = nil
+	}
 	snapshotOptions := ProviderSnapshotOptions{
 		NoNetwork:     true,
 		Worktree:      options.Worktree,
@@ -249,7 +255,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		IncludeFiles:  options.IncludeFiles,
 		MaxParseBytes: options.MaxParseBytes,
 		Profile:       options.Profile,
-		OnlyFiles:     selectedFiles,
+		OnlyFiles:     onlyFiles,
 	}
 	indexStarted := time.Now()
 	snapshot, cacheHit, err := loadOrBuildSearchSnapshot(ctx, repo, providerVersion, snapshotOptions, options.CacheDir, options.DisableCache)
@@ -399,6 +405,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	candidates = append(candidates, identifierUsages...)
 	candidates = append(candidates, neighbors...)
 	candidates = append(candidates, bridges...)
+	candidates = dedupeSemanticMirrorCandidates(candidates, q, symbolsByID)
 	sortSearchCandidates(candidates)
 	semantic := selectDiverseCandidates(candidates, options.TopK, options.MaxRegionsPerFile)
 	selected := semantic
@@ -1483,7 +1490,9 @@ func expandIdentifierUsageCandidates(
 	for filePath := range languages {
 		filePaths = append(filePaths, filePath)
 	}
-	sort.Strings(filePaths)
+	sort.Slice(filePaths, func(i, j int) bool {
+		return canonicalSearchPathLess(filePaths[i], filePaths[j])
+	})
 	type indexedUsage struct {
 		candidate searchCandidate
 		seedIndex int
@@ -1555,6 +1564,11 @@ func expandIdentifierUsageCandidates(
 	sort.SliceStable(discovered, func(i, j int) bool {
 		if discovered[i].candidate.score != discovered[j].candidate.score {
 			return discovered[i].candidate.score > discovered[j].candidate.score
+		}
+		leftPath := discovered[i].candidate.result.FilePath
+		rightPath := discovered[j].candidate.result.FilePath
+		if leftPath != rightPath {
+			return canonicalSearchPathLess(leftPath, rightPath)
 		}
 		return searchCandidateLess(discovered[i].candidate, discovered[j].candidate)
 	})
