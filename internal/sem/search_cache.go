@@ -73,6 +73,19 @@ func loadOrBuildSearchSnapshot(
 	return snapshot, false, nil
 }
 
+// LoadOrBuildProviderSnapshot reuses the tree-keyed, option-keyed compressed
+// provider snapshot cache shared with search. Worktree snapshots always bypass
+// the cache so dirty edits cannot be hidden by committed-tree state.
+func LoadOrBuildProviderSnapshot(
+	ctx context.Context,
+	repo, providerVersion string,
+	options ProviderSnapshotOptions,
+	cacheDir string,
+	disableCache bool,
+) (ProviderSnapshot, bool, error) {
+	return loadOrBuildSearchSnapshot(ctx, repo, providerVersion, options, cacheDir, disableCache)
+}
+
 func searchSnapshotKey(absRepo, providerVersion, tree string, options ProviderSnapshotOptions) (string, error) {
 	hash := sha256.New()
 	writePart := func(value string) {

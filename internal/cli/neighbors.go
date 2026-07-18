@@ -16,18 +16,20 @@ import (
 const defaultNeighborLimit = 20
 
 type neighborFlags struct {
-	Repo        string
-	Symbol      string
-	File        string
-	Format      string
-	Profile     string
-	Relation    string
-	Direction   string
-	Depth       int
-	Limit       int
-	Worktree    bool
-	IgnoreFile  []string
-	IncludeFile []string
+	Repo         string
+	Symbol       string
+	File         string
+	Format       string
+	Profile      string
+	Relation     string
+	Direction    string
+	Depth        int
+	Limit        int
+	Worktree     bool
+	IgnoreFile   []string
+	IncludeFile  []string
+	CacheDir     string
+	DisableCache bool
 }
 
 type neighborEndpoint struct {
@@ -90,13 +92,17 @@ func runNeighbors(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	snapshot, err := sem.BuildProviderSnapshotWithOptions(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
+	cacheDir := flags.CacheDir
+	if cacheDir == "" {
+		cacheDir = opts.Env.PluginDataDir
+	}
+	snapshot, _, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
 		NoNetwork:    true,
 		Worktree:     flags.Worktree,
 		IgnoreFiles:  flags.IgnoreFile,
 		IncludeFiles: flags.IncludeFile,
 		Profile:      profile,
-	})
+	}, cacheDir, flags.DisableCache)
 	if err != nil {
 		return err
 	}
@@ -198,6 +204,14 @@ func parseNeighborFlags(args []string) (neighborFlags, error) {
 				return flags, valueErr
 			}
 			flags.IncludeFile = append(flags.IncludeFile, item)
+		case "--cache-dir":
+			item, valueErr := value()
+			if valueErr != nil {
+				return flags, valueErr
+			}
+			flags.CacheDir = item
+		case "--no-cache":
+			flags.DisableCache = true
 		default:
 			return flags, fmt.Errorf("neighbors received unexpected argument %q", arg)
 		}

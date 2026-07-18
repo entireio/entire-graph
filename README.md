@@ -182,7 +182,9 @@ caller → focus → callee paths.
 and `--limit` bounds neighbors and paths. The default full profile favors
 relationship correctness; use `--profile fast` when shallow call resolution is
 sufficient. Like search, it reads the working tree by default and performs no
-network access.
+network access. On a clean committed tree, `--head` enables reuse of a
+tree-keyed snapshot through `ENTIRE_PLUGIN_DATA_DIR` or an explicit
+`--cache-dir`; worktree queries bypass that cache so dirty edits stay visible.
 
 ---
 
