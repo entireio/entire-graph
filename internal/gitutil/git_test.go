@@ -91,6 +91,13 @@ func TestGrepTreeMatchesUsesCommittedTreeAndStripsTreeishPrefix(t *testing.T) {
 	git(t, repo, "config", "user.name", "Entire Graph Test")
 	git(t, repo, "config", "user.email", "graph@example.com")
 	path := "src/target:with-colon.go"
+	if runtime.GOOS == "windows" {
+		// A colon names an NTFS alternate data stream on Windows rather than a
+		// tracked file. Keep the cross-platform committed-tree assertion while
+		// exercising the colon-delimited display-prefix case on platforms where
+		// colons are valid path bytes.
+		path = "src/target with space.go"
+	}
 	full := filepath.Join(repo, path)
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		t.Fatal(err)
