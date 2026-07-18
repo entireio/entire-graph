@@ -2586,10 +2586,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 				}
 				if file.Language == "JavaScript" || file.Language == "TypeScript" {
-					// JS/TS often routes calls through generated namespace imports
-					// (`performance.mark(...)`, `Parser.parseSourceFile(...)`), and
-					// callback helpers can be passed as bare identifiers (`noop`).
-					for name := range jsDottedCallIdentifiers(callBlock) {
+					// Same-file namespaces (`Parser.parseSourceFile(...)`) need their
+					// terminal call resolved as a local symbol. Imported receivers are
+					// handled path-aware below; arbitrary object receivers must not be
+					// collapsed into workspace-global bare calls.
+					for name := range jsNamespaceCallIdentifiers(callBlock, content) {
 						callNames[name] = struct{}{}
 					}
 					for name := range jsCallableArgumentIdentifiers(callBlock) {
@@ -2969,7 +2970,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 				}
 				if file.Language == "JavaScript" || file.Language == "TypeScript" {
-					for name := range jsDottedCallIdentifiers(topLevel) {
+					for name := range jsNamespaceCallIdentifiers(topLevel, content) {
 						topLevelNames[name] = struct{}{}
 					}
 					for name := range jsCallableArgumentIdentifiers(topLevel) {

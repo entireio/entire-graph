@@ -2,6 +2,45 @@ package sem
 
 import "testing"
 
+func TestTypeScriptObjectMethodDoesNotResolveAsWorkspaceBareFunction(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/configure.ts", `export function configure() {
+  const references = new Set<unknown>();
+  references.add({});
+}
+`)
+	writeFile(t, repo, "examples/counter.ts", `export function add() {}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasRelationBySymbolName(snapshot, "CALLS", "configure", "add") {
+		t.Fatalf("object method call fabricated a workspace bare-function edge: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
+func TestTypeScriptSameFileNamespaceCallStillResolves(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/parser.ts", `export function run() {
+  Parser.parse();
+}
+
+namespace Parser {
+  export function parse() {}
+}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationBySymbolName(snapshot, "CALLS", "run", "parse") {
+		t.Fatalf("same-file namespace call was lost: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
 func TestTypeScriptReceiverTypesFromLocalsAndInjectProperties(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "src/url_handling_strategy.ts", `export abstract class UrlHandlingStrategy {

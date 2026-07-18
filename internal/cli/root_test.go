@@ -334,6 +334,70 @@ func TestAgentSearchBudgetsFavorHigherRanks(t *testing.T) {
 	}
 }
 
+func TestNeighborsAgentFormatReturnsBoundedCallGraphAndPaths(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "calls.go", `package calls
+
+func Alpha() { Beta() }
+func Beta() { Gamma() }
+func Gamma() {}
+`)
+
+	var out bytes.Buffer
+	err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{
+		"neighbors",
+		"--repo", repo,
+		"--symbol", "Beta",
+		"--format", "agent",
+		"--depth", "2",
+		"--limit", "10",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, expected := range []string{
+		"Focus: Beta (calls.go:4)",
+		"Callers:\n- Alpha (calls.go:3)",
+		"Callees:\n- Gamma (calls.go:5)",
+		"Alpha -> Beta -> Gamma",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("neighbors output omitted %q:\n%s", expected, text)
+		}
+	}
+}
+
+func TestNeighborsJSONDisambiguatesByFileAndDirection(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "one.py", "def target():\n    helper()\n\ndef helper():\n    return True\n")
+	write(t, repo, "two.py", "def target():\n    return False\n")
+
+	var out bytes.Buffer
+	err := Run(t.Context(), Options{Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out}, []string{
+		"neighbors", "--repo", repo, "--symbol", "target", "--file", "one.py",
+		"--direction", "out", "--format", "json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Matches []struct {
+			Symbol struct {
+				FilePath string `json:"file_path"`
+			} `json:"symbol"`
+			Incoming []any `json:"incoming"`
+			Outgoing []any `json:"outgoing"`
+		} `json:"matches"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Matches) != 1 || response.Matches[0].Symbol.FilePath != "one.py" || len(response.Matches[0].Incoming) != 0 || len(response.Matches[0].Outgoing) != 1 {
+		t.Fatalf("neighbors response = %#v", response)
+	}
+}
+
 func TestProviderCommandsAcceptIgnoreFile(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, ".brainignore", "ignored/\n")

@@ -115,6 +115,7 @@ For a one-command local source install run `scripts/install-local.sh`; it builds
 | `entire graph diff --base <a> --head <b>` | Semantic diff between two arbitrary refs (`analyze` is an alias) |
 | `entire graph checkpoint <id>` | Semantic diff for the commit behind an Entire checkpoint trailer |
 | `entire graph search --query "..."` | 🔍 Ranked source regions for a natural-language task |
+| `entire graph neighbors --symbol NAME` | Direct graph neighbors and bounded two-hop paths for a symbol |
 | `entire graph snapshot --format ndjson` | 🕸️ Full graph stream: header + files + symbols + relations |
 | `entire graph symbols --format ndjson` | Symbols only (filtered snapshot view) |
 | `entire graph edges --format ndjson` | Relations only (filtered snapshot view) |
@@ -165,6 +166,21 @@ Behavior and budgets:
 - **Cold search** scans files without parsing, then indexes an adaptive pool of 96–256 query-relevant files based on the requested `--top-k`. Shallow searches of up to 20 results retain the 96-file interactive latency bound. Deeper rankings add a corpus-wide sparse pass over eligible files up to 2 MiB, while syntax parsing remains bounded to the adaptive pool; this deliberately spends more time for region recall inside large files. Override the parsing pool with `--max-indexed-files`, or force exhaustive parsing with `--index-all-files`.
 - **Profiles.** The default `syntax-only` profile avoids synchronous whole-repository graph construction; `--profile fast` adds local relation expansion when deeper semantic indexing is worth the cost.
 - **Caching.** When Entire supplies `ENTIRE_PLUGIN_DATA_DIR`, committed-tree searches reuse a tree-keyed compressed index across invocations. Direct callers can set `--cache-dir`; `--no-cache` disables persistence. Worktree searches never reuse committed indexes, avoiding stale results after edits.
+
+For structural follow-up after search identifies a symbol, query its graph
+neighborhood directly instead of streaming and filtering every edge:
+
+```sh
+entire graph neighbors --repo . --symbol ExecuteC --file command.go --depth 2 --format agent
+```
+
+`neighbors` reports resolved incoming and outgoing relations with definition
+locations. `--depth 2` also returns bounded caller → focus → callee paths.
+`--relation` selects another relation family, `--direction` limits the side,
+and `--limit` bounds neighbors and paths. The default full profile favors
+relationship correctness; use `--profile fast` when shallow call resolution is
+sufficient. Like search, it reads the working tree by default and performs no
+network access.
 
 ---
 
