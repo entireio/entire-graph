@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -979,7 +980,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 			emitRelation(r, symbolsByID, filesByID)
 		})
 		if spec.emits("FILE_CHANGES_WITH") {
-			for _, r := range fileChangesWithRelations(ctx, sc.absRepo, sc.key, files) {
+			for _, r := range fileChangesWithRelations(ctx, sc.absRepo, sc.commit, sc.key, files) {
 				if emitErr != nil || ctx.Err() != nil {
 					break
 				}
@@ -1220,14 +1221,16 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		return sourceContext{}, err
 	}
 	key := repoKey(ctx, absRepo)
-	commit, commitErr := gitutil.RevParse(ctx, absRepo, "HEAD")
-	tree, treeErr := gitutil.RevParse(ctx, absRepo, "HEAD^{tree}")
+	commit, tree, headErr := resolveCommittedHEAD(ctx, absRepo)
 
 	// The provider is local-only. NoNetwork is accepted to make that contract
 	// explicit for callers that enforce no-egress provider execution.
 	_ = options.NoNetwork
-	useHead := !options.Worktree && commitErr == nil && treeErr == nil
-	paths, read, readPrefix, closeSource, err := openSource(ctx, absRepo, useHead, options.IgnoreFiles, options.IncludeFiles)
+	committedRevision := ""
+	if !options.Worktree && headErr == nil {
+		committedRevision = commit
+	}
+	paths, read, readPrefix, closeSource, err := openSource(ctx, absRepo, committedRevision, options.IgnoreFiles, options.IncludeFiles)
 	if err != nil {
 		return sourceContext{}, err
 	}
@@ -1252,12 +1255,12 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 			Severity:             "warning",
 			EffectOnCompleteness: "snapshot records are read from the working tree because --worktree was requested",
 		})
-	} else if commitErr != nil || treeErr != nil {
+	} else if headErr != nil {
 		warnings = append(warnings, ProviderWarning{
 			Code:                 "E_NO_GIT_HEAD",
 			Severity:             "warning",
 			EffectOnCompleteness: "snapshot records are read from the working tree because no HEAD tree is available",
-			Detail:               firstError(commitErr, treeErr).Error(),
+			Detail:               headErr.Error(),
 		})
 	}
 	return sourceContext{
@@ -1271,6 +1274,28 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		close:      closeSource,
 		warnings:   warnings,
 	}, nil
+}
+
+// resolveCommittedHEAD binds a repository view to one immutable commit. The
+// tree is resolved from that exact object rather than from a second moving
+// HEAD expression, preventing mixed commit/tree provenance if HEAD advances
+// between subprocesses.
+func resolveCommittedHEAD(ctx context.Context, repo string) (string, string, error) {
+	commit, err := gitutil.RevParse(ctx, repo, "HEAD")
+	if err != nil || commit == "" {
+		if err == nil {
+			err = errors.New("HEAD resolved to an empty commit")
+		}
+		return "", "", err
+	}
+	tree, err := gitutil.RevParse(ctx, repo, commit+"^{tree}")
+	if err != nil || tree == "" {
+		if err == nil {
+			err = errors.New("committed HEAD resolved to an empty tree")
+		}
+		return "", "", err
+	}
+	return commit, tree, nil
 }
 
 func WriteSnapshotNDJSON(out io.Writer, snapshot ProviderSnapshot) error {
@@ -7887,8 +7912,11 @@ func configuresRelations(recordsByFile map[string][]SymbolRecord, readContent co
 	return relations
 }
 
-func fileChangesWithRelations(ctx context.Context, repo, repoKey string, files []FileRecord) []RelationRecord {
-	cochanges, err := gitutil.FileCochanges(ctx, repo, 256)
+func fileChangesWithRelations(ctx context.Context, repo, revision, repoKey string, files []FileRecord) []RelationRecord {
+	if revision == "" {
+		return nil
+	}
+	cochanges, err := gitutil.FileCochanges(ctx, repo, revision, 256)
 	if err != nil || len(cochanges) == 0 {
 		return nil
 	}
@@ -8248,27 +8276,28 @@ func externalParts(id string) (string, string) {
 }
 
 // openSource lists the repository's files and returns a per-file content reader
-// that fetches one file at a time (from the git HEAD tree or the working tree),
-// so the snapshot never holds all source content in memory.
-func openSource(ctx context.Context, repo string, useHead bool, ignoreFiles, includeFiles []string) ([]string, contentReader, prefixReader, func() error, error) {
-	if useHead {
+// that fetches one file at a time from an exact committed revision (when
+// non-empty) or the working tree, so the snapshot never holds all source
+// content in memory.
+func openSource(ctx context.Context, repo, committedRevision string, ignoreFiles, includeFiles []string) ([]string, contentReader, prefixReader, func() error, error) {
+	if committedRevision != "" {
 		ignores, err := loadExplicitIgnoreMatcher(repo, ignoreFiles, includeFiles)
 		if err != nil {
 			return nil, nil, nil, nil, err
 		}
-		paths, err := gitutil.ListFiles(ctx, repo, "HEAD")
+		paths, err := gitutil.ListFiles(ctx, repo, committedRevision)
 		if err != nil {
 			return nil, nil, nil, nil, err
 		}
-		paths = filterVendoredPaths(paths, headIgnoreMatcher(ctx, repo))
+		paths = filterVendoredPaths(paths, headIgnoreMatcher(ctx, repo, committedRevision))
 		paths = filterIgnoredPaths(paths, ignores)
-		batch, err := gitutil.NewBatchFileReader(ctx, repo, "HEAD")
+		batch, err := gitutil.NewBatchFileReader(ctx, repo, committedRevision)
 		if err != nil {
 			return nil, nil, nil, nil, err
 		}
 		read := func(path string) (string, bool) {
 			if strings.Contains(path, "\n") {
-				content, ok, err := gitutil.ShowFile(ctx, repo, "HEAD", path)
+				content, ok, err := gitutil.ShowFile(ctx, repo, committedRevision, path)
 				if err != nil || !ok {
 					return "", false
 				}
@@ -8499,12 +8528,11 @@ func filterIgnoredPaths(paths []string, ignores ignoreMatcher) []string {
 	return filtered
 }
 
-// headIgnoreMatcher parses the repository's root .gitignore as of HEAD so the
-// vendored-directory heuristic can honor negation rules (see
-// ReincludesDescendant) when listing files from the HEAD tree, matching the
-// working-tree walk's behavior.
-func headIgnoreMatcher(ctx context.Context, repo string) ignoreMatcher {
-	content, ok, err := gitutil.ShowFile(ctx, repo, "HEAD", ".gitignore")
+// headIgnoreMatcher parses the repository's root .gitignore at the same exact
+// committed revision used for listing and content reads, so the vendored-
+// directory heuristic cannot observe a newer HEAD.
+func headIgnoreMatcher(ctx context.Context, repo, committedRevision string) ignoreMatcher {
+	content, ok, err := gitutil.ShowFile(ctx, repo, committedRevision, ".gitignore")
 	if err != nil || !ok {
 		return ignoreMatcher{}
 	}

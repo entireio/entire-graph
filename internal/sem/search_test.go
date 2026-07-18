@@ -884,6 +884,143 @@ func TestSearchRepositoryKeepsFullTermPathOnlyCandidates(t *testing.T) {
 	}
 }
 
+func TestCommittedPreselectionRequiresExactFullPreindexForUnboundedCandidates(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	queryText := "alphaaaa bravoooo charlieee deltaaaa echooooo foxtrott golfzzzz hotelzzz indiazzz julietzz kiloaaaa limaaaaa mikeaaaa november oscaraaa papaaaaa quebecaa romeoooo sierraaa tangoaaa"
+	query := buildSearchQuery(queryText)
+	bounded := searchPreselectionPatterns(query)
+	lateTerm := ""
+	for _, term := range query.terms {
+		if query.weights[term] >= 1 && !containsString(bounded, term) {
+			lateTerm = term
+			break
+		}
+	}
+	if lateTerm == "" {
+		t.Fatalf("test query did not produce an expanded term beyond the legacy bounded set: terms=%#v bounded=%#v", query.terms, bounded)
+	}
+	const eligibleFiles = 12
+	for index := 0; index < eligibleFiles; index++ {
+		write(t, repo, fmt.Sprintf("src/match_%02d.go", index), fmt.Sprintf(
+			"package source\n// %s\nfunc Match%d() int { return %d }\n", lateTerm, index, index,
+		))
+	}
+	for index := 0; index < 20; index++ {
+		write(t, repo, fmt.Sprintf("noise/file_%02d.go", index), fmt.Sprintf(
+			"package noise\nfunc Noise%d() int { return %d }\n", index, index,
+		))
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cold, err := SearchRepository(t.Context(), repo, "test", queryText, SearchOptions{
+		Profile: ProfileSyntaxOnly, TopK: 10, MaxIndexedFiles: 1, DisableCache: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cold.Stats.FilesIndexed > 1 {
+		t.Fatalf("cold committed search bypassed MaxIndexedFiles: %#v", cold.Stats)
+	}
+	if cold.Stats.PreselectionBackend != "go-content" || cold.Stats.FilesContentRead == 0 {
+		t.Fatalf("cold committed search did not retain bounded content preselection: %#v", cold.Stats)
+	}
+
+	cacheDir := t.TempDir()
+	if _, hit, err := PreindexProviderSnapshot(t.Context(), repo, "test", ProviderSnapshotOptions{
+		Profile: ProfileSyntaxOnly,
+	}, cacheDir); err != nil {
+		t.Fatal(err)
+	} else if hit {
+		t.Fatal("first preindex unexpectedly hit cache")
+	}
+	warm, err := SearchRepository(t.Context(), repo, "test", queryText, SearchOptions{
+		Profile: ProfileSyntaxOnly, TopK: 10, MaxIndexedFiles: 1, CacheDir: cacheDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warm.Stats.FilesIndexed != eligibleFiles {
+		t.Fatalf("warm committed preselection indexed %d files, want every one of %d eligible files", warm.Stats.FilesIndexed, eligibleFiles)
+	}
+	if warm.Stats.PreselectionBackend != "git-tree-grep" || warm.Stats.PreselectionPasses != 1 ||
+		warm.Stats.PreselectionFilesExamined != warm.Stats.FilesScanned {
+		t.Fatalf("warm Git scan was not represented honestly: %#v", warm.Stats)
+	}
+	if warm.Stats.FilesContentRead != 0 || warm.Stats.QueryFilesRead != eligibleFiles {
+		t.Fatalf("warm committed query did not use batched preselection and bounded hydration: %#v", warm.Stats)
+	}
+	if len(warm.Results) == 0 || !strings.HasPrefix(warm.Results[0].FilePath, "src/match_") {
+		t.Fatalf("expanded-term matches were lost: %#v", warm.Results)
+	}
+}
+
+func TestIdentifierUsagePostingsAvoidRepositoryWideReads(t *testing.T) {
+	definition := SymbolRecord{ID: "definition", Name: "cacheRefreshPolicy", FilePath: "src/policy.ts", StartLine: 1, EndLine: 1}
+	sourcePath := "src/consumer.ts"
+	testPath := "tests/consumer.test.ts"
+	languages := map[string]string{definition.FilePath: "typescript", sourcePath: "typescript", testPath: "typescript"}
+	for index := 0; index < 100; index++ {
+		languages[fmt.Sprintf("noise/file_%03d.ts", index)] = "typescript"
+	}
+	contents := map[string]string{
+		definition.FilePath: "export const cacheRefreshPolicy = 'eager'\n",
+		sourcePath:          "export function applyPolicy() { install(cacheRefreshPolicy) }\n",
+		testPath:            "test('policy', () => expect(cacheRefreshPolicy).toBeTruthy())\n",
+	}
+	reads := 0
+	selector := func(_ context.Context, identifiers []string) ([]string, bool) {
+		if len(identifiers) != 1 || identifiers[0] != definition.Name {
+			t.Fatalf("usage identifiers = %#v", identifiers)
+		}
+		return []string{testPath, definition.FilePath, sourcePath}, true
+	}
+	got := expandIdentifierUsageCandidates(
+		t.Context(), []searchCandidate{{score: 30, result: SearchResult{SymbolID: definition.ID}}},
+		buildSearchQuery("cache refresh policy behavior"), map[string]SymbolRecord{definition.ID: definition}, nil,
+		func(path string) (string, bool) { reads++; content, ok := contents[path]; return content, ok },
+		languages, SearchOptions{ContextLines: 2, MaxSnippetLines: 20}, selector,
+	)
+	if reads != 3 {
+		t.Fatalf("usage postings read %d files, want only the three matched files out of %d", reads, len(languages))
+	}
+	if len(got) < 2 || got[0].result.FilePath != sourcePath || got[1].result.FilePath != testPath {
+		t.Fatalf("query-aware usage ranking = %#v", got)
+	}
+}
+
+func TestSearchPathPriorIsQueryAwareAcrossArtifacts(t *testing.T) {
+	plain := buildSearchQuery("cache refresh policy")
+	explicit := buildSearchQuery("cache refresh policy tests documentation generated")
+	source := searchPathPrior(plain, "src/policy.ts")
+	for _, artifact := range []string{"tests/policy.test.ts", "docs/policy.md", "generated/policy_generated.go"} {
+		if got := searchPathPrior(plain, artifact); got >= source {
+			t.Fatalf("artifact %q prior = %v, want below source prior %v", artifact, got, source)
+		}
+	}
+	for _, artifact := range []string{"tests/policy.test.ts", "docs/policy.md", "generated/policy_generated.go"} {
+		if got := searchPathPrior(explicit, artifact); got != 0 {
+			t.Fatalf("explicit artifact query retained a prior for %q: %v", artifact, got)
+		}
+	}
+	for _, test := range []struct {
+		query    string
+		artifact string
+	}{
+		{query: "cache fixtures", artifact: "fixtures/policy.json"},
+		{query: "cache guides", artifact: "docs/guides/policy.md"},
+		{query: "cache examples", artifact: "docs/examples/policy.md"},
+		{query: "cache generators", artifact: "generated/policy_generated.go"},
+	} {
+		if got := searchPathPrior(buildSearchQuery(test.query), test.artifact); got != 0 {
+			t.Fatalf("plural artifact query %q retained a prior for %q: %v", test.query, test.artifact, got)
+		}
+	}
+}
+
 func TestSearchRepositoryKeepsUntrackedFiles(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
@@ -983,6 +1120,19 @@ func TestSearchGitPreselectionThresholdTargetsLargeWorktrees(t *testing.T) {
 	}
 	if shouldUseGitGrepPreselection(false, minGitGrepPreselectionFiles*2) {
 		t.Fatal("immutable tree selected worktree-only accelerator")
+	}
+}
+
+func TestSearchGitGrepPatternsCoverGoUnicodeLoweringOrFallBack(t *testing.T) {
+	patterns, safe := searchGitGrepPatterns([]string{"issueneedle", "kernelneedle"})
+	if !safe {
+		t.Fatal("small Unicode-lowering pattern set unexpectedly required exhaustive fallback")
+	}
+	if !containsString(patterns, "İssueneedle") {
+		t.Fatalf("Git patterns do not cover Go dotted-I lowering: %#v", patterns)
+	}
+	if _, safe := searchGitGrepPatterns([]string{strings.Repeat("i", 20)}); safe {
+		t.Fatal("combinatorial Unicode pattern expansion did not fail closed to exhaustive search")
 	}
 }
 

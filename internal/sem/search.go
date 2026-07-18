@@ -41,6 +41,7 @@ const (
 	maxSearchContentCacheBytes     = 32 * 1024 * 1024
 	maxSearchContentCacheFileBytes = 2 * 1024 * 1024
 	searchDiversityRelevanceRatio  = 0.75
+	maxSearchGitGrepPatterns       = 4096
 )
 
 // SearchOptions controls local issue-to-code retrieval. Search reads the same
@@ -84,8 +85,21 @@ type SearchResult struct {
 }
 
 type SearchStats struct {
-	FilesScanned       int   `json:"files_scanned"`
+	FilesScanned                   int    `json:"files_scanned"`
+	PreselectionBackend            string `json:"preselection_backend,omitempty"`
+	PreselectionPasses             int    `json:"preselection_passes,omitempty"`
+	PreselectionFilesExamined      int    `json:"preselection_files_examined,omitempty"`
+	UsagePreselectionBackend       string `json:"identifier_usage_preselection_backend,omitempty"`
+	UsagePreselectionPasses        int    `json:"identifier_usage_preselection_passes,omitempty"`
+	UsagePreselectionFilesExamined int    `json:"identifier_usage_preselection_files_examined,omitempty"`
+	// Content-read counters report blobs hydrated into the Go process. Git's
+	// own immutable-tree scans are represented by the backend/pass/examined
+	// counters above; their internal byte IO is deliberately not estimated.
 	FilesContentRead   int   `json:"files_content_read_during_preselection"`
+	QueryFilesRead     int   `json:"files_content_read_during_query"`
+	QueryBytesRead     int64 `json:"bytes_content_read_during_query"`
+	UsageFilesRead     int   `json:"files_content_read_for_identifier_usage,omitempty"`
+	UsageBytesRead     int64 `json:"bytes_content_read_for_identifier_usage,omitempty"`
 	FilesIndexed       int   `json:"files_indexed"`
 	SymbolsConsidered  int   `json:"symbols_considered"`
 	LexicalCandidates  int   `json:"lexical_candidates"`
@@ -137,6 +151,21 @@ type searchCandidate struct {
 	docLength  int
 	baseScore  float64
 	score      float64
+}
+
+type searchContentReadTracker struct {
+	read  contentReader
+	files int
+	bytes int64
+}
+
+func (tracker *searchContentReadTracker) Read(path string) (string, bool) {
+	content, ok := tracker.read(path)
+	if ok {
+		tracker.files++
+		tracker.bytes += int64(len(content))
+	}
+	return content, ok
 }
 
 func cachedContentReader(read contentReader) contentReader {
@@ -221,72 +250,130 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	sparseQuery := buildSparseSearchQuery(query)
 	searchStarted := time.Now()
-	preselectStarted := time.Now()
-	selection, err := preselectSearchFiles(ctx, repo, q, sparseQuery, options)
-	if err != nil {
-		return SearchResponse{}, err
-	}
-	preselectLatency := time.Since(preselectStarted)
-	selectedFiles := selection.files
-	if len(selectedFiles) == 0 {
-		totalLatency := time.Since(searchStarted).Milliseconds()
-		return SearchResponse{
-			Query:    query,
-			RepoRoot: selection.repoRoot,
-			Commit:   selection.commit,
-			Tree:     selection.tree,
-			Profile:  string(options.Profile),
-			Results:  []SearchResult{},
-			Stats: SearchStats{
-				FilesScanned:       selection.filesScanned,
-				FilesContentRead:   selection.filesContentRead,
-				FilesIndexed:       0,
-				ResultBytes:        serializedSearchResultBytes([]SearchResult{}),
-				ContextBudgetBytes: options.MaxContextBytes,
-				PreselectLatencyMS: preselectLatency.Milliseconds(),
-				TotalLatencyMS:     totalLatency,
-				SearchLatencyMS:    totalLatency,
-			},
-			Warnings:        selection.warnings,
-			PartialFailures: []PartialFailure{},
-			Completeness: CompletenessReport{
-				Languages: map[string]LanguageCompleteness{},
-				Relations: map[string]int{},
-			},
-		}, nil
-	}
-
-	onlyFiles := selectedFiles
-	if options.IndexAllFiles || len(selectedFiles) == selection.filesScanned {
-		// Canonicalize complete snapshots to the query-independent cache key so
-		// `graph index` and all-files search share one durable artifact.
-		onlyFiles = nil
-	}
-	snapshotOptions := ProviderSnapshotOptions{
+	baseSnapshotOptions := ProviderSnapshotOptions{
 		NoNetwork:     true,
 		Worktree:      options.Worktree,
 		IgnoreFiles:   options.IgnoreFiles,
 		IncludeFiles:  options.IncludeFiles,
 		MaxParseBytes: options.MaxParseBytes,
 		Profile:       options.Profile,
-		OnlyFiles:     onlyFiles,
 	}
+	var preindexedSnapshot ProviderSnapshot
+	preindexCacheHit := false
 	indexStarted := time.Now()
-	snapshot, cacheHit, err := loadOrBuildSearchSnapshot(ctx, repo, providerVersion, snapshotOptions, options.CacheDir, options.DisableCache)
+	if !options.Worktree && !options.DisableCache {
+		var err error
+		preindexedSnapshot, preindexCacheHit, err = loadCachedCompleteSearchSnapshot(
+			ctx, repo, providerVersion, baseSnapshotOptions, options.CacheDir,
+		)
+		if err != nil {
+			return SearchResponse{}, err
+		}
+	}
+	preindexLoadLatency := time.Since(indexStarted)
+	preselectStarted := time.Now()
+	selection, err := preselectSearchFiles(
+		ctx, repo, q, sparseQuery, options, preindexedSnapshot, preindexCacheHit,
+	)
 	if err != nil {
 		return SearchResponse{}, err
 	}
-	indexLatency := time.Since(indexStarted)
+	preselectLatency := time.Since(preselectStarted)
+	selectedFiles := selection.files
+	if len(selectedFiles) == 0 {
+		// A no-hit query still reports the health of an already-preindexed HEAD
+		// graph. Do not build a cold graph merely to return no results, but do
+		// preserve cached partial failures/completeness and cache-hit provenance.
+		cachedSnapshot, cacheHit := preindexedSnapshot, preindexCacheHit
+		if cacheHit && selection.commit != "" &&
+			(cachedSnapshot.Header.Commit != selection.commit || cachedSnapshot.Header.Tree != selection.tree) {
+			return SearchResponse{}, errors.New("repository HEAD changed during search; retry against a stable commit")
+		}
+		totalLatency := time.Since(searchStarted).Milliseconds()
+		repoRoot, commit, tree := selection.repoRoot, selection.commit, selection.tree
+		warnings := selection.warnings
+		partialFailures := []PartialFailure{}
+		completeness := CompletenessReport{Languages: map[string]LanguageCompleteness{}, Relations: map[string]int{}}
+		symbolsConsidered := 0
+		if cacheHit {
+			repoRoot = cachedSnapshot.Header.RepoRoot
+			commit = cachedSnapshot.Header.Commit
+			tree = cachedSnapshot.Header.Tree
+			warnings = cachedSnapshot.Header.Warnings
+			partialFailures = cachedSnapshot.Header.PartialFailures
+			if partialFailures == nil {
+				partialFailures = []PartialFailure{}
+			}
+			completeness = cachedSnapshot.Header.Completeness
+			symbolsConsidered = len(cachedSnapshot.Symbols)
+		}
+		return SearchResponse{
+			Query:    query,
+			RepoRoot: repoRoot,
+			Commit:   commit,
+			Tree:     tree,
+			Profile:  string(options.Profile),
+			Results:  []SearchResult{},
+			Stats: SearchStats{
+				FilesScanned:              selection.filesScanned,
+				PreselectionBackend:       selection.preselectionBackend,
+				PreselectionPasses:        selection.preselectionPasses,
+				PreselectionFilesExamined: selection.preselectionFilesExamined,
+				FilesContentRead:          selection.filesContentRead,
+				FilesIndexed:              0,
+				SymbolsConsidered:         symbolsConsidered,
+				ResultBytes:               serializedSearchResultBytes([]SearchResult{}),
+				ContextBudgetBytes:        options.MaxContextBytes,
+				IndexCacheHit:             cacheHit,
+				IndexLatencyMS:            preindexLoadLatency.Milliseconds(),
+				PreselectLatencyMS:        preselectLatency.Milliseconds(),
+				TotalLatencyMS:            totalLatency,
+				SearchLatencyMS:           totalLatency,
+			},
+			Warnings:        warnings,
+			PartialFailures: partialFailures,
+			Completeness:    completeness,
+		}, nil
+	}
+
+	// The provider graph and the lexical query scope are independent. A full
+	// graph gives relation expansion repository-wide context, while only the
+	// preselected files need content hydration for this query.
+	onlyFiles := selectedFiles
+	if options.IndexAllFiles || len(selectedFiles) == selection.filesScanned {
+		// Canonicalize complete snapshots to the query-independent cache key so
+		// `graph index` and all-files search share one durable artifact.
+		onlyFiles = nil
+	}
+	snapshotOptions := baseSnapshotOptions
+	snapshotOptions.OnlyFiles = onlyFiles
+	snapshot, cacheHit := preindexedSnapshot, preindexCacheHit
+	indexLatency := preindexLoadLatency
+	if !cacheHit {
+		indexStarted = time.Now()
+		snapshot, cacheHit, err = loadOrBuildSearchGraphSnapshot(ctx, repo, providerVersion, snapshotOptions, options.CacheDir, options.DisableCache)
+		if err != nil {
+			return SearchResponse{}, err
+		}
+		indexLatency += time.Since(indexStarted)
+	}
+	if selection.commit != "" &&
+		(snapshot.Header.Commit != selection.commit || snapshot.Header.Tree != selection.tree) {
+		return SearchResponse{}, errors.New("repository HEAD changed during search; retry against a stable commit")
+	}
 	queryStarted := time.Now()
 	useHead := !options.Worktree && snapshot.Header.Commit != ""
-	_, read, _, closeSource, err := openSource(ctx, repo, useHead, options.IgnoreFiles, options.IncludeFiles)
+	read, closeSource, err := openSearchContentReader(
+		ctx, repo, snapshot.Header.Commit, useHead, options.IgnoreFiles, options.IncludeFiles,
+	)
 	if err != nil {
 		return SearchResponse{}, err
 	}
 	if closeSource != nil {
 		defer closeSource()
 	}
-	read = cachedContentReader(read)
+	queryReads := &searchContentReadTracker{read: read}
+	read = cachedContentReader(queryReads.Read)
 
 	symbolsByFile := make(map[string][]SymbolRecord)
 	symbolsByID := make(map[string]SymbolRecord, len(snapshot.Symbols))
@@ -383,30 +470,46 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 
 	stats := SearchStats{
-		FilesScanned:       selection.filesScanned,
-		FilesContentRead:   selection.filesContentRead,
-		FilesIndexed:       len(selectedFiles),
-		SymbolsConsidered:  len(snapshot.Symbols),
-		LexicalCandidates:  len(candidates),
-		SparseCandidates:   len(sparseCandidates),
-		SparseFilesRead:    sparseFilesRead,
-		IndexCacheHit:      cacheHit,
-		IndexLatencyMS:     indexLatency.Milliseconds(),
-		PreselectLatencyMS: preselectLatency.Milliseconds(),
+		FilesScanned:              selection.filesScanned,
+		PreselectionBackend:       selection.preselectionBackend,
+		PreselectionPasses:        selection.preselectionPasses,
+		PreselectionFilesExamined: selection.preselectionFilesExamined,
+		FilesContentRead:          selection.filesContentRead,
+		FilesIndexed:              len(selectedFiles),
+		SymbolsConsidered:         len(snapshot.Symbols),
+		LexicalCandidates:         len(candidates),
+		SparseCandidates:          len(sparseCandidates),
+		SparseFilesRead:           sparseFilesRead,
+		IndexCacheHit:             cacheHit,
+		IndexLatencyMS:            indexLatency.Milliseconds(),
+		PreselectLatencyMS:        preselectLatency.Milliseconds(),
 	}
 	scoreSearchCandidates(candidates, q, fileDF, maxInt(1, len(selectedFiles)))
 	sortSearchCandidates(candidates)
 
-	graphCandidates := expandGraphCandidates(candidates, snapshot.Relations, symbolsByID, read, fileLanguages, options)
+	graphCandidates := expandGraphCandidates(candidates, q, snapshot.Relations, symbolsByID, read, fileLanguages, options)
 	stats.GraphCandidates = len(graphCandidates)
 	candidates = append(candidates, graphCandidates...)
 	sortSearchCandidates(candidates)
 	expansionSeeds := append([]searchCandidate(nil), candidates...)
-	identifierUsages := expandIdentifierUsageCandidates(ctx, expansionSeeds, q, symbolsByID, symbolsByFile, read, fileLanguages, options)
+	usageFilesBefore := queryReads.files
+	usageBytesBefore := queryReads.bytes
+	usagePreselection := searchScanTelemetry{}
+	identifierUsages := expandIdentifierUsageCandidates(
+		ctx, expansionSeeds, q, symbolsByID, symbolsByFile, read, fileLanguages, options,
+		committedUsageFileSelector(
+			repo, selection.commit, useHead, fileLanguages, options.TopK, selection.filesScanned, &usagePreselection,
+		),
+	)
+	usageFilesRead := queryReads.files - usageFilesBefore
+	usageBytesRead := queryReads.bytes - usageBytesBefore
 	if err := ctx.Err(); err != nil {
 		return SearchResponse{}, err
 	}
 	stats.IdentifierUsages = len(identifierUsages)
+	stats.UsagePreselectionBackend = usagePreselection.backend
+	stats.UsagePreselectionPasses = usagePreselection.passes
+	stats.UsagePreselectionFilesExamined = usagePreselection.filesExamined
 	neighbors := expandSameContainerNeighborCandidates(ctx, expansionSeeds, q, symbolsByID, symbolsByFile, read, fileLanguages, options)
 	if err := ctx.Err(); err != nil {
 		return SearchResponse{}, err
@@ -452,6 +555,12 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	stats.ContextBudgetBytes = options.MaxContextBytes
 	stats.ResultsDropped = dropped
 	stats.SnippetsTruncated = truncated
+	// Query and usage counters are disjoint physical reads. Identifier lookups
+	// already satisfied by the shared content cache add zero usage bytes.
+	stats.QueryFilesRead = queryReads.files - usageFilesRead
+	stats.QueryBytesRead = queryReads.bytes - usageBytesRead
+	stats.UsageFilesRead = usageFilesRead
+	stats.UsageBytesRead = usageBytesRead
 	stats.QueryLatencyMS = time.Since(queryStarted).Milliseconds()
 	stats.TotalLatencyMS = time.Since(searchStarted).Milliseconds()
 	stats.SearchLatencyMS = stats.TotalLatencyMS
@@ -474,6 +583,31 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		PartialFailures: partialFailures,
 		Completeness:    snapshot.Header.Completeness,
 	}, nil
+}
+
+func openSearchContentReader(
+	ctx context.Context,
+	repo, commit string,
+	useHead bool,
+	ignoreFiles, includeFiles []string,
+) (contentReader, func() error, error) {
+	if useHead {
+		batch, err := gitutil.NewBatchFileReader(ctx, repo, commit)
+		if err != nil {
+			return nil, nil, err
+		}
+		read := func(path string) (string, bool) {
+			if strings.Contains(path, "\n") {
+				content, ok, err := gitutil.ShowFile(ctx, repo, commit, path)
+				return content, ok && err == nil
+			}
+			content, ok, err := batch.ReadFile(path)
+			return content, ok && err == nil
+		}
+		return read, batch.Close, nil
+	}
+	_, read, _, closeSource, err := openSource(ctx, repo, "", ignoreFiles, includeFiles)
+	return read, closeSource, err
 }
 
 func defaultSearchIndexedFiles(topK int) int {
@@ -620,24 +754,38 @@ type searchFileCandidate struct {
 }
 
 type searchFileSelection struct {
-	files                  []string
-	sparseFiles            []string
-	sparseCandidates       []searchCandidate
-	sparseDF               map[string]int
-	sparsePrecomputedFiles map[string]bool
-	sparseDocumentCount    int
-	sparseDocumentLength   int
-	sparseFilesContentRead int
-	repoRoot               string
-	commit                 string
-	tree                   string
-	warnings               []ProviderWarning
-	filesScanned           int
-	filesContentRead       int
+	files                     []string
+	sparseFiles               []string
+	sparseCandidates          []searchCandidate
+	sparseDF                  map[string]int
+	sparsePrecomputedFiles    map[string]bool
+	sparseDocumentCount       int
+	sparseDocumentLength      int
+	sparseFilesContentRead    int
+	repoRoot                  string
+	commit                    string
+	tree                      string
+	warnings                  []ProviderWarning
+	filesScanned              int
+	filesContentRead          int
+	preselectionBackend       string
+	preselectionPasses        int
+	preselectionFilesExamined int
+}
+
+type searchScanTelemetry struct {
+	backend       string
+	passes        int
+	filesExamined int
 }
 
 func preselectSearchFiles(
-	ctx context.Context, repo string, q, sparseQuery searchQuery, options SearchOptions,
+	ctx context.Context,
+	repo string,
+	q, sparseQuery searchQuery,
+	options SearchOptions,
+	preindexedSnapshot ProviderSnapshot,
+	preindexCacheHit bool,
 ) (searchFileSelection, error) {
 	source, err := prepareSource(ctx, repo, ProviderSnapshotOptions{
 		NoNetwork:    true,
@@ -652,14 +800,38 @@ func preselectSearchFiles(
 		defer source.close()
 	}
 	selection := searchFileSelection{
-		repoRoot:               source.absRepo,
-		commit:                 source.commit,
-		tree:                   source.tree,
-		warnings:               append([]ProviderWarning{}, source.warnings...),
-		filesScanned:           len(source.paths),
-		sparseFiles:            append([]string(nil), source.paths...),
-		sparseDF:               make(map[string]int, len(sparseQuery.terms)),
-		sparsePrecomputedFiles: make(map[string]bool),
+		repoRoot:                  source.absRepo,
+		commit:                    source.commit,
+		tree:                      source.tree,
+		warnings:                  append([]ProviderWarning{}, source.warnings...),
+		filesScanned:              len(source.paths),
+		preselectionBackend:       "inventory",
+		preselectionPasses:        1,
+		preselectionFilesExamined: len(source.paths),
+		sparseFiles:               append([]string(nil), source.paths...),
+		sparseDF:                  make(map[string]int, len(sparseQuery.terms)),
+		sparsePrecomputedFiles:    make(map[string]bool),
+	}
+	// Interactive committed-tree search can ask Git's optimized object-store
+	// scanner for every eligible content match in one fixed-string batch. Keep
+	// every matched/path-evidenced file: MaxIndexedFiles is a cold selective-
+	// indexing guard, not a retrieval recall cap once the graph is preindexed.
+	// Deeper sparse search retains the exhaustive path until corpus statistics
+	// can be persisted with the preindex.
+	exactFullPreindex := preindexCacheHit &&
+		preindexedSnapshot.Header.Commit == source.commit &&
+		preindexedSnapshot.Header.Tree == source.tree
+	grepPatterns, grepSafe := searchGitGrepPatterns(q.terms)
+	if exactFullPreindex && !options.Worktree && options.TopK <= defaultSearchTopK && grepSafe {
+		matches, grepErr := gitutil.GrepTreePaths(ctx, source.absRepo, source.commit, grepPatterns)
+		if grepErr == nil {
+			selection.files = committedSearchFiles(source.paths, matches, q)
+			selection.sparseFiles = append([]string(nil), selection.files...)
+			selection.preselectionBackend = "git-tree-grep"
+			selection.preselectionPasses = 1
+			selection.preselectionFilesExamined = len(source.paths)
+			return selection, nil
+		}
 	}
 	if options.IndexAllFiles || len(source.paths) <= options.MaxIndexedFiles {
 		selection.files = append([]string(nil), source.paths...)
@@ -671,10 +843,12 @@ func preselectSearchFiles(
 	}
 	matcher := newSearchTermMatcher(q.terms)
 	scanPaths := source.paths
+	usedGitIndexPreselection := false
 	if shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
 		matches, grepErr := gitutil.GrepIndexMatches(ctx, source.absRepo, searchGitGrepPreselectionPatterns(q), 32)
 		tracked, trackedErr := gitutil.ListIndexFiles(ctx, source.absRepo)
 		if grepErr == nil && trackedErr == nil {
+			usedGitIndexPreselection = true
 			allowed := make(map[string]bool, len(source.paths))
 			for _, filePath := range source.paths {
 				allowed[filePath] = true
@@ -753,11 +927,18 @@ func preselectSearchFiles(
 		}
 	}
 	var sparseMu sync.Mutex
+	var contentReadMu sync.Mutex
+	contentReads := 0
 	scoreFile := func(filePath string) (searchFileCandidate, bool) {
 		if err := ctx.Err(); err != nil {
 			return searchFileCandidate{}, false
 		}
 		content, ok := source.read(filePath)
+		if ok {
+			contentReadMu.Lock()
+			contentReads++
+			contentReadMu.Unlock()
+		}
 		if !ok || strings.IndexByte(content, 0) >= 0 {
 			return searchFileCandidate{}, false
 		}
@@ -825,8 +1006,124 @@ func preselectSearchFiles(
 		selected[i] = file.path
 	}
 	selection.files = selected
-	selection.filesContentRead = len(scanPaths)
+	selection.filesContentRead = contentReads
+	selection.preselectionBackend = "go-content"
+	selection.preselectionPasses = 1
+	selection.preselectionFilesExamined = len(scanPaths)
+	if usedGitIndexPreselection {
+		selection.preselectionBackend = "git-index-grep+go-content"
+		selection.preselectionPasses++
+		selection.preselectionFilesExamined += len(source.paths)
+	}
 	return selection, nil
+}
+
+func searchTermsSafeForGitGrep(terms []string) bool {
+	for _, term := range terms {
+		for index := 0; index < len(term); index++ {
+			if term[index] < 0x20 || term[index] > 0x7e {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+var (
+	searchASCIILowerAlternativesOnce sync.Once
+	searchASCIILowerAlternatives     [128][]rune
+)
+
+// searchGitGrepPatterns makes Git's byte-oriented fixed-string preselection a
+// conservative superset of Go's strings.ToLower matching. Some non-ASCII
+// uppercase runes lower to ASCII (for example Turkish dotted İ -> i), while
+// Git's -i behavior for those runes varies by platform and locale. Generate
+// exact UTF-8 pattern alternatives from this Go runtime's Unicode tables. If
+// the cartesian expansion would be excessive, return unsafe so the caller
+// falls back to exhaustive content scoring without changing recall.
+func searchGitGrepPatterns(terms []string) ([]string, bool) {
+	if !searchTermsSafeForGitGrep(terms) {
+		return nil, false
+	}
+	searchASCIILowerAlternativesOnce.Do(func() {
+		for value := rune(128); value <= unicode.MaxRune; value++ {
+			lower := unicode.ToLower(value)
+			if lower >= 0 && lower < 128 {
+				searchASCIILowerAlternatives[lower] = append(searchASCIILowerAlternatives[lower], value)
+			}
+		}
+	})
+	patterns := make([]string, 0, len(terms))
+	seen := make(map[string]bool, len(terms))
+	for _, term := range terms {
+		variants := []string{""}
+		for index := 0; index < len(term); index++ {
+			alternatives := searchASCIILowerAlternatives[term[index]]
+			if len(alternatives) == 0 {
+				for variantIndex := range variants {
+					variants[variantIndex] += term[index : index+1]
+				}
+				continue
+			}
+			if len(variants)*(len(alternatives)+1) > maxSearchGitGrepPatterns-len(patterns) {
+				return nil, false
+			}
+			expanded := make([]string, 0, len(variants)*(len(alternatives)+1))
+			for _, prefix := range variants {
+				expanded = append(expanded, prefix+term[index:index+1])
+				for _, alternative := range alternatives {
+					expanded = append(expanded, prefix+string(alternative))
+				}
+			}
+			variants = expanded
+		}
+		for _, variant := range variants {
+			if seen[variant] {
+				continue
+			}
+			seen[variant] = true
+			patterns = append(patterns, variant)
+			if len(patterns) > maxSearchGitGrepPatterns {
+				return nil, false
+			}
+		}
+	}
+	return patterns, true
+}
+
+func committedSearchFiles(paths, matches []string, q searchQuery) []string {
+	allowed := make(map[string]bool, len(paths))
+	for _, filePath := range paths {
+		allowed[filePath] = true
+	}
+	matched := make(map[string]bool, len(matches))
+	for _, match := range matches {
+		if allowed[match] {
+			matched[match] = true
+		}
+	}
+	files := make([]searchFileCandidate, 0, len(matched)+16)
+	for _, filePath := range paths {
+		pathScore := pathSearchScore(q, filePath)
+		if !matched[filePath] && pathScore == 0 {
+			continue
+		}
+		files = append(files, searchFileCandidate{
+			path:  filePath,
+			score: 2*pathScore + searchPathPrior(q, filePath),
+		})
+	}
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].score != files[j].score {
+			return files[i].score > files[j].score
+		}
+		return canonicalSearchPathLess(files[i].path, files[j].path)
+	})
+	selected := make([]string, len(files))
+	for index, file := range files {
+		selected[index] = file.path
+	}
+	return selected
 }
 
 func scoreSearchPaths(
@@ -1226,6 +1523,7 @@ func scoreSparseCandidates(
 	averageLength := float64(maxInt(1, documentLength)) / float64(documentCount)
 	for i := range candidates {
 		candidate := &candidates[i]
+		candidate.score += searchPathPrior(q, candidate.result.FilePath)
 		for _, term := range q.terms {
 			frequency := candidate.termCounts[term]
 			if frequency == 0 {
@@ -1420,7 +1718,7 @@ func derivedSearchScore(parent, proposed float64) float64 {
 	return minFloat64(parent-0.01, proposed)
 }
 
-func expandGraphCandidates(seeds []searchCandidate, relations []RelationRecord, symbolsByID map[string]SymbolRecord, read contentReader, languages map[string]string, options SearchOptions) []searchCandidate {
+func expandGraphCandidates(seeds []searchCandidate, q searchQuery, relations []RelationRecord, symbolsByID map[string]SymbolRecord, read contentReader, languages map[string]string, options SearchOptions) []searchCandidate {
 	if len(seeds) == 0 || len(relations) == 0 {
 		return nil
 	}
@@ -1483,7 +1781,10 @@ func expandGraphCandidates(seeds []searchCandidate, relations []RelationRecord, 
 					Snippet:          strings.Join(lines[snippetStart-1:snippetEnd], "\n"),
 				},
 			}
-			candidate.score = 0.28*seedScore + relation.Confidence
+			candidate.score = derivedSearchScore(
+				seedScore,
+				0.28*seedScore+relation.Confidence+searchPathPrior(q, symbol.FilePath),
+			)
 			candidate.baseScore = candidate.score
 			candidate.result.Signals = appendUnique(candidate.result.Signals, "graph:"+strings.ToLower(relation.Type), "graph:"+pair[2])
 			if previous, exists := best[symbol.ID]; !exists || candidate.score > previous.score {
@@ -1511,6 +1812,49 @@ func searchExpansionRelation(relation string) bool {
 	}
 }
 
+type usageFileSelector func(context.Context, []string) ([]string, bool)
+
+func committedUsageFileSelector(
+	repo string,
+	treeish string,
+	useHead bool,
+	languages map[string]string,
+	topK int,
+	filesExamined int,
+	telemetry *searchScanTelemetry,
+) usageFileSelector {
+	if !useHead || topK > defaultSearchTopK {
+		return nil
+	}
+	return func(ctx context.Context, identifiers []string) ([]string, bool) {
+		if !searchTermsSafeForGitGrep(identifiers) {
+			return nil, false
+		}
+		matches, err := gitutil.GrepTreePaths(ctx, repo, treeish, identifiers)
+		if err != nil {
+			return nil, false
+		}
+		if telemetry != nil {
+			telemetry.backend = "git-tree-grep"
+			telemetry.passes = 1
+			telemetry.filesExamined = filesExamined
+		}
+		seen := make(map[string]bool, len(matches))
+		files := make([]string, 0, len(matches))
+		for _, match := range matches {
+			if _, eligible := languages[match]; !eligible || seen[match] {
+				continue
+			}
+			seen[match] = true
+			files = append(files, match)
+		}
+		// The expansion routine performs the final stable sort. Sorting there
+		// applies the same query-aware source/test/docs/generated prior to both
+		// Git postings and the exhaustive correctness fallback.
+		return files, true
+	}
+}
+
 // expandIdentifierUsageCandidates complements typed graph edges with precise
 // lexical use sites for strong compound-identifier seeds. Constants, exported
 // values, callbacks, and other non-call references often have no relation edge,
@@ -1525,6 +1869,7 @@ func expandIdentifierUsageCandidates(
 	read contentReader,
 	languages map[string]string,
 	options SearchOptions,
+	selectors ...usageFileSelector,
 ) []searchCandidate {
 	type usageSeed struct {
 		symbol SymbolRecord
@@ -1561,7 +1906,21 @@ func expandIdentifierUsageCandidates(
 	for filePath := range languages {
 		filePaths = append(filePaths, filePath)
 	}
+	if len(selectors) > 0 && selectors[0] != nil {
+		names := make([]string, len(selectedSeeds))
+		for index, seed := range selectedSeeds {
+			names[index] = seed.symbol.Name
+		}
+		if selected, ok := selectors[0](ctx, names); ok {
+			filePaths = selected
+		}
+	}
 	sort.Slice(filePaths, func(i, j int) bool {
+		leftScore := searchPathPrior(q, filePaths[i]) + pathSearchScore(q, filePaths[i])
+		rightScore := searchPathPrior(q, filePaths[j]) + pathSearchScore(q, filePaths[j])
+		if leftScore != rightScore {
+			return leftScore > rightScore
+		}
 		return canonicalSearchPathLess(filePaths[i], filePaths[j])
 	})
 	type indexedUsage struct {
@@ -1621,7 +1980,7 @@ func expandIdentifierUsageCandidates(
 				}
 				candidate.result.FocusLine = lineNumber
 				candidate.result.Signals = appendUnique(candidate.result.Signals, "symbol-usage")
-				candidate.score = derivedSearchScore(seed.score, 0.9*seed.score+identifierUsagePathPrior(q, filePath))
+				candidate.score = derivedSearchScore(seed.score, 0.9*seed.score+searchPathPrior(q, filePath))
 				candidate.baseScore = candidate.score
 				seenLocations[locationKey] = true
 				rawUsageCounts[seedIndex]++
@@ -1662,16 +2021,6 @@ func identifierUsageIsImport(line string) bool {
 	trimmed := strings.TrimSpace(line)
 	return strings.HasPrefix(trimmed, "import ") || strings.HasPrefix(trimmed, "import{") ||
 		strings.HasPrefix(trimmed, "export {") || strings.HasPrefix(trimmed, "export{")
-}
-
-func identifierUsagePathPrior(q searchQuery, filePath string) float64 {
-	lower := "/" + strings.ToLower(filepath.ToSlash(filePath))
-	isTest := strings.Contains(lower, "/test/") || strings.Contains(lower, "/tests/") ||
-		strings.Contains(lower, ".test.") || strings.Contains(lower, ".spec.")
-	if isTest && !searchQuerySupplied(q, "test", "tests", "spec", "regression") {
-		return -3
-	}
-	return 0
 }
 
 func expandableUsageIdentifier(name string) bool {
@@ -2588,7 +2937,43 @@ func searchPathPrior(q searchQuery, filePath string) float64 {
 	if strings.Contains(lower, "/dependencies/") || strings.Contains(lower, "/third_party/") || strings.Contains(lower, "/third-party/") {
 		score -= 5
 	}
+	if searchTestArtifactPath(lower) && !searchQuerySupplied(q,
+		"test", "tests", "testing", "spec", "specs", "regression", "regressions", "fixture", "fixtures",
+	) {
+		score -= 1.5
+	}
+	if searchDocumentationArtifactPath(lower) && !searchQuerySupplied(q,
+		"doc", "docs", "documentation", "readme", "readmes", "guide", "guides", "example", "examples",
+	) {
+		score -= 1.25
+	}
+	if searchGeneratedArtifactPath(lower) && !searchQuerySupplied(q,
+		"generated", "generator", "generators", "codegen", "codegens", "build", "builds", "dist", "bundle", "bundles",
+	) {
+		score -= 2
+	}
 	return score
+}
+
+func searchTestArtifactPath(lower string) bool {
+	return strings.Contains(lower, "/test/") || strings.Contains(lower, "/tests/") ||
+		strings.Contains(lower, "/testdata/") || strings.Contains(lower, "/fixtures/") ||
+		strings.Contains(lower, "/__tests__/") || strings.Contains(lower, ".test.") ||
+		strings.Contains(lower, ".spec.") || strings.HasSuffix(lower, "_test.go")
+}
+
+func searchDocumentationArtifactPath(lower string) bool {
+	base := filepath.Base(lower)
+	return strings.Contains(lower, "/docs/") || strings.HasSuffix(lower, ".md") ||
+		strings.HasPrefix(base, "readme") || strings.HasPrefix(base, "changelog")
+}
+
+func searchGeneratedArtifactPath(lower string) bool {
+	base := filepath.Base(lower)
+	return strings.Contains(lower, "/generated/") || strings.Contains(lower, "/dist/") ||
+		strings.Contains(lower, "/build/") || strings.Contains(lower, "/gen/") ||
+		strings.Contains(base, ".generated.") || strings.Contains(base, "_generated.") ||
+		strings.HasPrefix(base, "generated_") || strings.HasSuffix(base, ".min.js")
 }
 
 func searchQuerySupplied(q searchQuery, terms ...string) bool {

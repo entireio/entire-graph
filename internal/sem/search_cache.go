@@ -13,15 +13,14 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
-const searchSnapshotCacheVersion = "search-snapshot-v3"
+const searchSnapshotCacheVersion = "search-snapshot-v4"
 
 type cachedSearchSnapshot struct {
 	CacheVersion    string           `json:"cache_version"`
 	ProviderVersion string           `json:"provider_version"`
+	Commit          string           `json:"commit"`
 	Tree            string           `json:"tree"`
 	Profile         Profile          `json:"profile"`
 	MaxParseBytes   int              `json:"max_parse_bytes"`
@@ -32,6 +31,62 @@ type cachedSearchSnapshot struct {
 	// without reparsing source files.
 	FileLines      map[string]int `json:"file_lines,omitempty"`
 	LocalSymbolIDs []string       `json:"local_symbol_ids,omitempty"`
+}
+
+// loadOrBuildSearchGraphSnapshot keeps the query's candidate file scope from
+// shrinking a durable repository graph. If an exact complete committed-tree
+// preindex exists, search loads it directly and performs no query-time
+// relation re-resolution. Generic provider callers retain the exact OnlyFiles
+// projection semantics of loadOrBuildSearchSnapshot below.
+func loadOrBuildSearchGraphSnapshot(
+	ctx context.Context,
+	repo, providerVersion string,
+	options ProviderSnapshotOptions,
+	cacheDir string,
+	disableCache bool,
+) (ProviderSnapshot, bool, error) {
+	if !disableCache && cacheDir != "" && !options.Worktree && len(options.OnlyFiles) > 0 {
+		if snapshot, cacheHit, err := loadCachedCompleteSearchSnapshot(
+			ctx, repo, providerVersion, options, cacheDir,
+		); err != nil || cacheHit {
+			return snapshot, cacheHit, err
+		}
+	}
+	return loadOrBuildSearchSnapshot(ctx, repo, providerVersion, options, cacheDir, disableCache)
+}
+
+func loadCachedCompleteSearchSnapshot(
+	ctx context.Context,
+	repo, providerVersion string,
+	options ProviderSnapshotOptions,
+	cacheDir string,
+) (ProviderSnapshot, bool, error) {
+	if cacheDir == "" || options.Worktree {
+		return ProviderSnapshot{}, false, nil
+	}
+	absRepo, err := filepath.Abs(repo)
+	if err != nil {
+		return ProviderSnapshot{}, false, err
+	}
+	commit, tree, headErr := resolveCommittedHEAD(ctx, absRepo)
+	if headErr != nil {
+		return ProviderSnapshot{}, false, nil
+	}
+	fullOptions := options
+	fullOptions.OnlyFiles = nil
+	if fullOptions.Profile == "" {
+		fullOptions.Profile = ProfileFull
+	}
+	fullKey, keyErr := searchSnapshotKey(absRepo, providerVersion, commit, tree, fullOptions)
+	if keyErr != nil {
+		return ProviderSnapshot{}, false, keyErr
+	}
+	fullPath := filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, fullKey+".json.gz")
+	cached, readErr := readSearchSnapshot(fullPath)
+	if readErr != nil || !validCachedSearchSnapshot(cached, providerVersion, commit, tree, fullOptions) {
+		return ProviderSnapshot{}, false, nil
+	}
+	return cached.Snapshot, true, nil
 }
 
 func loadOrBuildSearchSnapshot(
@@ -52,19 +107,17 @@ func loadOrBuildSearchSnapshot(
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
-	commit, commitErr := gitutil.RevParse(ctx, absRepo, "HEAD")
-	tree, err := gitutil.RevParse(ctx, absRepo, "HEAD^{tree}")
-	if commitErr != nil || commit == "" || err != nil || tree == "" {
+	commit, tree, headErr := resolveCommittedHEAD(ctx, absRepo)
+	if headErr != nil {
 		snapshot, buildErr := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, options)
 		return snapshot, false, buildErr
 	}
-	key, err := searchSnapshotKey(absRepo, providerVersion, tree, options)
+	key, err := searchSnapshotKey(absRepo, providerVersion, commit, tree, options)
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
 	path := filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, key+".json.gz")
-	if cached, err := readSearchSnapshot(path); err == nil && validCachedSearchSnapshot(cached, providerVersion, tree, options) {
-		cached.Snapshot.Header.Commit = commit
+	if cached, err := readSearchSnapshot(path); err == nil && validCachedSearchSnapshot(cached, providerVersion, commit, tree, options) {
 		return cached.Snapshot, true, nil
 	}
 	// A complete committed-tree snapshot is query independent and can serve a
@@ -73,18 +126,17 @@ func loadOrBuildSearchSnapshot(
 	if len(options.OnlyFiles) > 0 {
 		fullOptions := options
 		fullOptions.OnlyFiles = nil
-		fullKey, keyErr := searchSnapshotKey(absRepo, providerVersion, tree, fullOptions)
+		fullKey, keyErr := searchSnapshotKey(absRepo, providerVersion, commit, tree, fullOptions)
 		if keyErr != nil {
 			return ProviderSnapshot{}, false, keyErr
 		}
 		fullPath := filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, fullKey+".json.gz")
-		if cached, readErr := readSearchSnapshot(fullPath); readErr == nil && validCachedSearchSnapshot(cached, providerVersion, tree, fullOptions) {
-			cached.Snapshot.Header.Commit = commit
+		if cached, readErr := readSearchSnapshot(fullPath); readErr == nil && validCachedSearchSnapshot(cached, providerVersion, commit, tree, fullOptions) {
 			selective, deriveErr := selectiveSearchSnapshotFromFull(ctx, absRepo, providerVersion, options, cached.Snapshot)
 			if deriveErr == nil {
 				// Persisting the exact selective view makes repeated identical queries
 				// a direct cache hit. As with ordinary search caching, this is best effort.
-				_ = writeSearchSnapshot(path, newCachedSearchSnapshot(providerVersion, tree, options, selective))
+				_ = writeSearchSnapshot(path, newCachedSearchSnapshot(providerVersion, commit, tree, options, selective))
 				return selective, true, nil
 			}
 			// Provenance or internal-metadata mismatches make the complete cache
@@ -96,7 +148,13 @@ func loadOrBuildSearchSnapshot(
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
-	cache := newCachedSearchSnapshot(providerVersion, tree, options, snapshot)
+	if snapshot.Header.Commit != commit || snapshot.Header.Tree != tree {
+		return ProviderSnapshot{}, false, fmt.Errorf(
+			"repository HEAD changed while building search snapshot: got commit %q tree %q, started at commit %q tree %q",
+			snapshot.Header.Commit, snapshot.Header.Tree, commit, tree,
+		)
+	}
+	cache := newCachedSearchSnapshot(providerVersion, commit, tree, options, snapshot)
 	// Cache persistence is best effort. Retrieval correctness never depends on
 	// a writable cache directory.
 	_ = writeSearchSnapshot(path, cache)
@@ -107,7 +165,7 @@ func loadOrBuildSearchSnapshot(
 // the repository's current HEAD tree. Unlike query-time selective indexing,
 // this cache entry is query independent and can be prepared before an agent
 // task begins. Worktree snapshots are deliberately rejected because dirty
-// state cannot be represented by a durable tree-keyed cache safely.
+// state cannot be represented by a durable commit-keyed cache safely.
 func PreindexProviderSnapshot(
 	ctx context.Context,
 	repo, providerVersion string,
@@ -129,19 +187,9 @@ func PreindexProviderSnapshot(
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
-	commit, err := gitutil.RevParse(ctx, absRepo, "HEAD")
-	if err != nil || commit == "" {
-		if err == nil {
-			err = errors.New("HEAD resolved to an empty commit")
-		}
+	commit, tree, err := resolveCommittedHEAD(ctx, absRepo)
+	if err != nil {
 		return ProviderSnapshot{}, false, fmt.Errorf("resolve committed HEAD for preindex: %w", err)
-	}
-	tree, err := gitutil.RevParse(ctx, absRepo, "HEAD^{tree}")
-	if err != nil || tree == "" {
-		if err == nil {
-			err = errors.New("HEAD resolved to an empty tree")
-		}
-		return ProviderSnapshot{}, false, fmt.Errorf("resolve committed HEAD tree for preindex: %w", err)
 	}
 	snapshot, cacheHit, err := loadOrBuildSearchSnapshot(ctx, absRepo, providerVersion, options, cacheDir, false)
 	if err != nil {
@@ -156,14 +204,14 @@ func PreindexProviderSnapshot(
 	// Query-time caching is deliberately best effort, but an explicit preindex
 	// command promises a durable artifact. Verify that the entry exists and, if
 	// the best-effort write failed, retry while surfacing the persistence error.
-	key, err := searchSnapshotKey(absRepo, providerVersion, tree, options)
+	key, err := searchSnapshotKey(absRepo, providerVersion, commit, tree, options)
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
 	path := filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, key+".json.gz")
 	persisted, readErr := readSearchSnapshot(path)
-	if readErr != nil || !validCachedSearchSnapshot(persisted, providerVersion, tree, options) {
-		cache := newCachedSearchSnapshot(providerVersion, tree, options, snapshot)
+	if readErr != nil || !validCachedSearchSnapshot(persisted, providerVersion, commit, tree, options) {
+		cache := newCachedSearchSnapshot(providerVersion, commit, tree, options, snapshot)
 		if err := writeSearchSnapshot(path, cache); err != nil {
 			return ProviderSnapshot{}, false, fmt.Errorf("persist preindex snapshot: %w", err)
 		}
@@ -171,10 +219,11 @@ func PreindexProviderSnapshot(
 	return snapshot, cacheHit, nil
 }
 
-func newCachedSearchSnapshot(providerVersion, tree string, options ProviderSnapshotOptions, snapshot ProviderSnapshot) cachedSearchSnapshot {
+func newCachedSearchSnapshot(providerVersion, commit, tree string, options ProviderSnapshotOptions, snapshot ProviderSnapshot) cachedSearchSnapshot {
 	cache := cachedSearchSnapshot{
 		CacheVersion:    searchSnapshotCacheVersion,
 		ProviderVersion: providerVersion,
+		Commit:          commit,
 		Tree:            tree,
 		Profile:         options.Profile,
 		MaxParseBytes:   options.MaxParseBytes,
@@ -228,10 +277,10 @@ func selectiveSearchSnapshotFromFull(
 	if sc.close != nil {
 		defer sc.close()
 	}
-	if sc.tree != full.Header.Tree || sc.key != full.Header.RepoKey {
+	if sc.commit != full.Header.Commit || sc.tree != full.Header.Tree || sc.key != full.Header.RepoKey {
 		return ProviderSnapshot{}, fmt.Errorf(
-			"cached full snapshot provenance mismatch: got repo %q tree %q, want repo %q tree %q",
-			full.Header.RepoKey, full.Header.Tree, sc.key, sc.tree,
+			"cached full snapshot provenance mismatch: got repo %q commit %q tree %q, want repo %q commit %q tree %q",
+			full.Header.RepoKey, full.Header.Commit, full.Header.Tree, sc.key, sc.commit, sc.tree,
 		)
 	}
 
@@ -319,7 +368,7 @@ func selectiveSearchSnapshotFromFull(
 			return ctx.Err() != nil
 		}, emitRelation)
 		if spec.emits("FILE_CHANGES_WITH") {
-			for _, relation := range fileChangesWithRelations(ctx, sc.absRepo, sc.key, selective.Files) {
+			for _, relation := range fileChangesWithRelations(ctx, sc.absRepo, sc.commit, sc.key, selective.Files) {
 				if ctx.Err() != nil {
 					break
 				}
@@ -404,7 +453,7 @@ func filterSearchPartialFailures(failures []PartialFailure, allowedFiles map[str
 	return filtered
 }
 
-// LoadOrBuildProviderSnapshot reuses the tree-keyed, option-keyed compressed
+// LoadOrBuildProviderSnapshot reuses the commit-keyed, option-keyed compressed
 // provider snapshot cache shared with search. Worktree snapshots always bypass
 // the cache so dirty edits cannot be hidden by committed-tree state.
 func LoadOrBuildProviderSnapshot(
@@ -417,7 +466,7 @@ func LoadOrBuildProviderSnapshot(
 	return loadOrBuildSearchSnapshot(ctx, repo, providerVersion, options, cacheDir, disableCache)
 }
 
-func searchSnapshotKey(absRepo, providerVersion, tree string, options ProviderSnapshotOptions) (string, error) {
+func searchSnapshotKey(absRepo, providerVersion, commit, tree string, options ProviderSnapshotOptions) (string, error) {
 	hash := sha256.New()
 	writePart := func(value string) {
 		_, _ = io.WriteString(hash, value)
@@ -426,6 +475,7 @@ func searchSnapshotKey(absRepo, providerVersion, tree string, options ProviderSn
 	writePart(searchSnapshotCacheVersion)
 	writePart(absRepo)
 	writePart(providerVersion)
+	writePart(commit)
 	writePart(tree)
 	writePart(string(options.Profile))
 	writePart(fmt.Sprintf("%d", options.MaxParseBytes))
@@ -460,12 +510,14 @@ func searchSnapshotKey(absRepo, providerVersion, tree string, options ProviderSn
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func validCachedSearchSnapshot(cache cachedSearchSnapshot, providerVersion, tree string, options ProviderSnapshotOptions) bool {
+func validCachedSearchSnapshot(cache cachedSearchSnapshot, providerVersion, commit, tree string, options ProviderSnapshotOptions) bool {
 	return cache.CacheVersion == searchSnapshotCacheVersion &&
 		cache.ProviderVersion == providerVersion &&
+		cache.Commit == commit &&
 		cache.Tree == tree &&
 		cache.Profile == options.Profile &&
 		cache.MaxParseBytes == options.MaxParseBytes &&
+		cache.Snapshot.Header.Commit == commit &&
 		cache.Snapshot.Header.Tree == tree &&
 		cache.Snapshot.Header.Provider == ProviderName &&
 		cache.Snapshot.Header.Profile == string(options.Profile)
