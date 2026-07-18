@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "a351de7f7d82",
+  "strategy": "manual-commit",
+  "branch": "codex/improve-search-retrieval",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/search.go",
+    "internal/sem/search_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a3/51de7f7d82/0/metadata.json",
+      "transcript": "/a3/51de7f7d82/0/full.jsonl",
+      "compact_transcript": "/a3/51de7f7d82/0/transcript.jsonl",
+      "content_hash": "/a3/51de7f7d82/0/content_hash.txt",
+      "prompt": "/a3/51de7f7d82/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 10303252,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 763987712,
+    "output_tokens": 1026852,
+    "api_call_count": 5793
+  }
+}
