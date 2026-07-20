@@ -366,21 +366,51 @@ func sortedEntities(byKey map[string]Entity) []Entity {
 
 func sortChanges(changes []EntityChange) {
 	sort.Slice(changes, func(i, j int) bool {
-		left := lineForSort(changes[i])
-		right := lineForSort(changes[j])
-		if left == right {
-			return fmt.Sprintf("%s:%s", changes[i].Kind, changes[i].Name) < fmt.Sprintf("%s:%s", changes[j].Kind, changes[j].Name)
+		left, right := changes[i], changes[j]
+		if leftLine, rightLine := lineForSort(left), lineForSort(right); leftLine != rightLine {
+			return leftLine < rightLine
 		}
-		return left < right
+		if left.Kind != right.Kind {
+			return left.Kind < right.Kind
+		}
+		if left.Name != right.Name {
+			return left.Name < right.Name
+		}
+		if left.Type != right.Type {
+			return left.Type < right.Type
+		}
+		if left.OldSignature != right.OldSignature {
+			return left.OldSignature < right.OldSignature
+		}
+		if left.NewSignature != right.NewSignature {
+			return left.NewSignature < right.NewSignature
+		}
+		if left.BeforeStartLine != right.BeforeStartLine {
+			return left.BeforeStartLine < right.BeforeStartLine
+		}
+		if left.AfterStartLine != right.AfterStartLine {
+			return left.AfterStartLine < right.AfterStartLine
+		}
+		if left.OldName != right.OldName {
+			return left.OldName < right.OldName
+		}
+		if left.NewName != right.NewName {
+			return left.NewName < right.NewName
+		}
+		if left.OldPath != right.OldPath {
+			return left.OldPath < right.OldPath
+		}
+		if left.NewPath != right.NewPath {
+			return left.NewPath < right.NewPath
+		}
+		if left.Reconciliation != right.Reconciliation {
+			return left.Reconciliation < right.Reconciliation
+		}
+		if left.Similarity != right.Similarity {
+			return left.Similarity < right.Similarity
+		}
+		return left.DependentsCount < right.DependentsCount
 	})
-}
-
-func key(entity Entity) string {
-	return entity.Kind + ":" + entity.Name
-}
-
-func sigKey(entity Entity) string {
-	return entity.Kind + ":" + entity.Name + ":" + entity.Signature
 }
 
 // keyedEntityMaps assigns each entity an ephemeral key such that entities that
@@ -388,60 +418,200 @@ func sigKey(entity Entity) string {
 // keys are opaque: they are used only inside compareEntities/bestRename and are
 // never persisted or emitted.
 //
-// Matching is two-phase:
+// Matching is evidence-first within each Kind:Name group:
 //
-//  1. Entities that share an exact Kind:Name:Signature across sides pair up
-//     first. True duplicates (an identical Kind:Name:Signature appearing more
-//     than once on one side) are disambiguated by occurrence index in file
-//     order, so the Nth duplicate on each side pairs with the Nth on the
-//     other. Exact pairing makes mid-list overload insertions, removals, and
-//     reorders inert for the untouched overloads instead of cascading phantom
-//     signature_changed events down the list (e.g. removing the first of
-//     three overloads now reports just that one removal).
+//  1. Exact-signature entities pair as content multisets: combined body and
+//     fingerprint evidence first, then body hash, then fingerprint. Members
+//     of an equal-content class are interchangeable, so repeated hashes pair
+//     safely up to the count present on both sides. This keeps an inserted
+//     exact-signature duplicate from shifting every surviving duplicate.
 //
-//  2. The leftovers -- entities whose exact signature has no counterpart on
-//     the other side -- are assigned positional ordinals per Kind:Name in
-//     file order. An in-place signature edit of one overload leaves exactly
-//     one leftover with that name on each side, so the edit still pairs and
-//     surfaces as signature_changed rather than remove+add (issue #35). A
-//     naive always-signature key would regress that case: the rename
-//     reconciler's signature similarity for e.g. F(int) -> F(long) falls well
-//     below renameThreshold.
+//  2. Remaining exact signatures pair by occurrence before leftovers take
+//     unambiguous fingerprint/body anchors across signatures. This prevents
+//     copied or swapped bodies from stealing an unchanged signature, while the
+//     identity anchors preserve the right survivor when one overload is removed
+//     as another changes signature. A final positional fallback still reports
+//     an otherwise-unanchored in-place signature edit as signature_changed
+//     rather than remove+add (issue #35). Multiple residuals without identity
+//     evidence remain inherently ambiguous; their positional pairing is
+//     retained as a compatibility heuristic.
 //
-// The "=" and "~" key prefixes keep phase-1 and phase-2 keys from colliding.
+// Numeric pair keys and side-specific unmatched keys avoid delimiter aliasing
+// with source-language names and signatures.
 func keyedEntityMaps(before, after []Entity) (map[string]Entity, map[string]Entity) {
-	sigCounts := func(entities []Entity) map[string]int {
-		counts := make(map[string]int, len(entities))
-		for _, entity := range entities {
-			counts[sigKey(entity)]++
-		}
-		return counts
+	type groupKey struct {
+		kind string
+		name string
 	}
-	beforeSigs := sigCounts(before)
-	afterSigs := sigCounts(after)
+	type entityGroup struct {
+		before []int
+		after  []int
+	}
 
-	keySide := func(entities []Entity, otherSigs map[string]int) map[string]Entity {
-		out := make(map[string]Entity, len(entities))
-		sigSeen := map[string]int{}
-		leftoverSeen := map[string]int{}
-		for _, entity := range entities {
-			sk := sigKey(entity)
-			occurrence := sigSeen[sk]
-			sigSeen[sk]++
-			if occurrence < otherSigs[sk] {
-				// Phase 1: the other side has a matching Nth occurrence of
-				// this exact Kind:Name:Signature.
-				out[fmt.Sprintf("=%s#%d", sk, occurrence)] = entity
+	groups := map[groupKey]*entityGroup{}
+	groupFor := func(entity Entity) *entityGroup {
+		key := groupKey{kind: entity.Kind, name: entity.Name}
+		group := groups[key]
+		if group == nil {
+			group = &entityGroup{}
+			groups[key] = group
+		}
+		return group
+	}
+	for i, entity := range before {
+		group := groupFor(entity)
+		group.before = append(group.before, i)
+	}
+	for i, entity := range after {
+		group := groupFor(entity)
+		group.after = append(group.after, i)
+	}
+
+	groupKeys := make([]groupKey, 0, len(groups))
+	for key := range groups {
+		groupKeys = append(groupKeys, key)
+	}
+	sort.Slice(groupKeys, func(i, j int) bool {
+		if groupKeys[i].kind != groupKeys[j].kind {
+			return groupKeys[i].kind < groupKeys[j].kind
+		}
+		return groupKeys[i].name < groupKeys[j].name
+	})
+
+	beforeByKey := make(map[string]Entity, len(before))
+	afterByKey := make(map[string]Entity, len(after))
+	beforeMatched := make([]bool, len(before))
+	afterMatched := make([]bool, len(after))
+	pairCount := 0
+
+	pair := func(beforeIndex, afterIndex int) {
+		key := fmt.Sprintf("=%09d", pairCount)
+		pairCount++
+		beforeMatched[beforeIndex] = true
+		afterMatched[afterIndex] = true
+		beforeByKey[key] = before[beforeIndex]
+		afterByKey[key] = after[afterIndex]
+	}
+	type evidenceKey struct {
+		signature   string
+		bodyHash    string
+		fingerprint string
+	}
+	matchClass := func(group *entityGroup, keyFor func(Entity) (evidenceKey, bool)) {
+		afterBuckets := map[evidenceKey][]int{}
+		for _, afterIndex := range group.after {
+			if afterMatched[afterIndex] {
 				continue
 			}
-			// Phase 2: positional ordinal among this side's leftovers.
-			base := key(entity)
-			out[fmt.Sprintf("~%s#%d", base, leftoverSeen[base])] = entity
-			leftoverSeen[base]++
+			key, ok := keyFor(after[afterIndex])
+			if ok {
+				afterBuckets[key] = append(afterBuckets[key], afterIndex)
+			}
 		}
-		return out
+		afterOffsets := map[evidenceKey]int{}
+		for _, beforeIndex := range group.before {
+			if beforeMatched[beforeIndex] {
+				continue
+			}
+			key, ok := keyFor(before[beforeIndex])
+			if !ok {
+				continue
+			}
+			offset := afterOffsets[key]
+			if offset >= len(afterBuckets[key]) {
+				continue
+			}
+			pair(beforeIndex, afterBuckets[key][offset])
+			afterOffsets[key]++
+		}
 	}
-	return keySide(before, afterSigs), keySide(after, beforeSigs)
+	matchUnique := func(group *entityGroup, keyFor func(Entity) (evidenceKey, bool)) {
+		beforeCounts := map[evidenceKey]int{}
+		afterCounts := map[evidenceKey]int{}
+		afterIndexByKey := map[evidenceKey]int{}
+		for _, beforeIndex := range group.before {
+			if beforeMatched[beforeIndex] {
+				continue
+			}
+			if key, ok := keyFor(before[beforeIndex]); ok {
+				beforeCounts[key]++
+			}
+		}
+		for _, afterIndex := range group.after {
+			if afterMatched[afterIndex] {
+				continue
+			}
+			if key, ok := keyFor(after[afterIndex]); ok {
+				afterCounts[key]++
+				afterIndexByKey[key] = afterIndex
+			}
+		}
+		for _, beforeIndex := range group.before {
+			if beforeMatched[beforeIndex] {
+				continue
+			}
+			key, ok := keyFor(before[beforeIndex])
+			if ok && beforeCounts[key] == 1 && afterCounts[key] == 1 {
+				pair(beforeIndex, afterIndexByKey[key])
+			}
+		}
+	}
+	matchRemaining := func(group *entityGroup) {
+		afterRemaining := make([]int, 0, len(group.after))
+		for _, afterIndex := range group.after {
+			if !afterMatched[afterIndex] {
+				afterRemaining = append(afterRemaining, afterIndex)
+			}
+		}
+		afterOffset := 0
+		for _, beforeIndex := range group.before {
+			if beforeMatched[beforeIndex] || afterOffset >= len(afterRemaining) {
+				continue
+			}
+			pair(beforeIndex, afterRemaining[afterOffset])
+			afterOffset++
+		}
+	}
+
+	for _, key := range groupKeys {
+		group := groups[key]
+		matchClass(group, func(entity Entity) (evidenceKey, bool) {
+			ok := entity.BodyHash != "" && entity.Fingerprint != ""
+			return evidenceKey{signature: entity.Signature, bodyHash: entity.BodyHash, fingerprint: entity.Fingerprint}, ok
+		})
+		matchClass(group, func(entity Entity) (evidenceKey, bool) {
+			return evidenceKey{signature: entity.Signature, bodyHash: entity.BodyHash}, entity.BodyHash != ""
+		})
+		matchClass(group, func(entity Entity) (evidenceKey, bool) {
+			return evidenceKey{signature: entity.Signature, fingerprint: entity.Fingerprint}, entity.Fingerprint != ""
+		})
+		matchClass(group, func(entity Entity) (evidenceKey, bool) {
+			return evidenceKey{signature: entity.Signature}, true
+		})
+		matchUnique(group, func(entity Entity) (evidenceKey, bool) {
+			ok := entity.BodyHash != "" && entity.Fingerprint != ""
+			return evidenceKey{bodyHash: entity.BodyHash, fingerprint: entity.Fingerprint}, ok
+		})
+		matchUnique(group, func(entity Entity) (evidenceKey, bool) {
+			return evidenceKey{fingerprint: entity.Fingerprint}, entity.Fingerprint != ""
+		})
+		matchUnique(group, func(entity Entity) (evidenceKey, bool) {
+			return evidenceKey{bodyHash: entity.BodyHash}, entity.BodyHash != ""
+		})
+		matchRemaining(group)
+	}
+
+	for i, entity := range before {
+		if !beforeMatched[i] {
+			beforeByKey[fmt.Sprintf("-before:%09d", i)] = entity
+		}
+	}
+	for i, entity := range after {
+		if !afterMatched[i] {
+			afterByKey[fmt.Sprintf("+after:%09d", i)] = entity
+		}
+	}
+	return beforeByKey, afterByKey
 }
 
 func lineForSort(change EntityChange) int {
