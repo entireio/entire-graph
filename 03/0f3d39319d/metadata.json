@@ -3,9 +3,19 @@
   "checkpoint_id": "030f3d39319d",
   "strategy": "manual-commit",
   "branch": "fix/35-diff-overload-key",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
-    "internal/sem/analyze_test.go"
+    "README.md",
+    "internal/sem/analyze.go",
+    "internal/sem/analyze_parsefailure_test.go",
+    "internal/sem/analyze_test.go",
+    "internal/sem/gobuild.go",
+    "internal/sem/parser.go",
+    "internal/sem/parser_test.go",
+    "internal/sem/search.go",
+    "internal/sem/search_test.go",
+    "internal/sem/text.go",
+    "internal/sem/text_test.go"
   ],
   "sessions": [
     {
@@ -14,13 +24,20 @@
       "compact_transcript": "/03/0f3d39319d/0/transcript.jsonl",
       "content_hash": "/03/0f3d39319d/0/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "metadata": "/03/0f3d39319d/1/metadata.json",
+      "transcript": "/03/0f3d39319d/1/full.jsonl",
+      "compact_transcript": "/03/0f3d39319d/1/transcript.jsonl",
+      "content_hash": "/03/0f3d39319d/1/content_hash.txt",
+      "prompt": "/03/0f3d39319d/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 38658,
-    "cache_creation_tokens": 0,
-    "cache_read_tokens": 1345280,
-    "output_tokens": 4856,
-    "api_call_count": 25
+    "input_tokens": 38671,
+    "cache_creation_tokens": 29409,
+    "cache_read_tokens": 1610152,
+    "output_tokens": 14890,
+    "api_call_count": 33
   }
 }
