@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "3705cde00da0",
+  "strategy": "manual-commit",
+  "branch": "fix/31-showfile-error-classify",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/gitutil/git.go",
+    "internal/gitutil/git_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/37/05cde00da0/0/metadata.json",
+      "transcript": "/37/05cde00da0/0/full.jsonl",
+      "compact_transcript": "/37/05cde00da0/0/transcript.jsonl",
+      "content_hash": "/37/05cde00da0/0/content_hash.txt",
+      "prompt": "/37/05cde00da0/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 444973,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 21855488,
+    "output_tokens": 53184,
+    "api_call_count": 199
+  }
+}
