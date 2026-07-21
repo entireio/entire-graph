@@ -3,22 +3,23 @@
   "checkpoint_id": "c71c9f0687d6",
   "session_id": "fffff083-8032-496a-81ae-244c3c25ea0f",
   "strategy": "manual-commit",
-  "created_at": "2026-07-21T21:45:58.772668Z",
+  "created_at": "2026-07-21T22:01:24.994215Z",
   "branch": "feat/retrieval-followups",
   "checkpoints_count": 3,
+  "save_step_count": 1,
   "files_touched": [],
   "agent": "Claude Code",
   "model": "claude-fable-5",
-  "turn_id": "d9823b4f6c4d",
-  "checkpoint_transcript_start": 1869,
-  "transcript_lines_at_start": 1869,
-  "compact_transcript_start": 264,
+  "turn_id": "5c7f1540eca3",
+  "checkpoint_transcript_start": 1878,
+  "transcript_lines_at_start": 1878,
+  "compact_transcript_start": 265,
   "token_usage": {
-    "input_tokens": 2,
-    "cache_creation_tokens": 1102,
-    "cache_read_tokens": 330744,
-    "output_tokens": 2478,
-    "api_call_count": 1
+    "input_tokens": 32,
+    "cache_creation_tokens": 22090,
+    "cache_read_tokens": 5499695,
+    "output_tokens": 9294,
+    "api_call_count": 16
   },
   "skill_events_version": 1,
   "skill_events": [
@@ -55,7 +56,7 @@
         "signal": "skill_tool_use",
         "confidence": "explicit"
       },
-      "turn_id": "d9823b4f6c4d",
+      "turn_id": "5c7f1540eca3",
       "transcript_anchor": {
         "unit": "line",
         "start": 21,
@@ -86,7 +87,7 @@
         "signal": "skill_tool_use",
         "confidence": "explicit"
       },
-      "turn_id": "d9823b4f6c4d",
+      "turn_id": "5c7f1540eca3",
       "transcript_anchor": {
         "unit": "line",
         "start": 1221,
@@ -108,6 +109,22 @@
     }
   ],
   "session_metrics": {
-    "turn_count": 42
-  }
+    "turn_count": 45
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 49,
+      "agent_lines_removed": 4
+    }
+  ]
 }
