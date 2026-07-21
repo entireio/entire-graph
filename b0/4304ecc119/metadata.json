@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "b04304ecc119",
+  "strategy": "manual-commit",
+  "branch": "feat/retrieval-followups",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "README.md",
+    "internal/cli/neighbors.go",
+    "internal/cli/neighbors_efficiency_test.go",
+    "internal/cli/root.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b0/4304ecc119/0/metadata.json",
+      "transcript": "/b0/4304ecc119/0/full.jsonl",
+      "compact_transcript": "/b0/4304ecc119/0/transcript.jsonl",
+      "content_hash": "/b0/4304ecc119/0/content_hash.txt",
+      "prompt": "/b0/4304ecc119/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1413471,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 84415744,
+    "output_tokens": 182870,
+    "api_call_count": 771
+  }
+}
