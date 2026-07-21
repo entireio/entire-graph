@@ -3,7 +3,7 @@
   "checkpoint_id": "95189a6708c5",
   "strategy": "manual-commit",
   "branch": "codex/improve-search-retrieval",
-  "checkpoints_count": 3,
+  "checkpoints_count": 9,
   "files_touched": [
     "internal/sem/search_test.go"
   ],
@@ -14,13 +14,20 @@
       "compact_transcript": "/95/189a6708c5/0/transcript.jsonl",
       "content_hash": "/95/189a6708c5/0/content_hash.txt",
       "prompt": "/95/189a6708c5/0/prompt.txt"
+    },
+    {
+      "metadata": "/95/189a6708c5/1/metadata.json",
+      "transcript": "/95/189a6708c5/1/full.jsonl",
+      "compact_transcript": "/95/189a6708c5/1/transcript.jsonl",
+      "content_hash": "/95/189a6708c5/1/content_hash.txt",
+      "prompt": "/95/189a6708c5/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 730556,
-    "cache_creation_tokens": 0,
-    "cache_read_tokens": 44072448,
-    "output_tokens": 85332,
-    "api_call_count": 409
+    "input_tokens": 730648,
+    "cache_creation_tokens": 88465,
+    "cache_read_tokens": 47326354,
+    "output_tokens": 107529,
+    "api_call_count": 455
   }
 }
