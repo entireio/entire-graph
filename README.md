@@ -116,7 +116,7 @@ For a one-command local source install run `scripts/install-local.sh`; it builds
 | `entire graph checkpoint <id>` | Semantic diff for the commit behind an Entire checkpoint trailer |
 | `entire graph index --head --profile full` | Prebuild a durable, query-independent index for committed `HEAD` |
 | `entire graph search --query "..."` | 🔍 Ranked source regions for a natural-language task |
-| `entire graph neighbors --symbol NAME` | Direct graph neighbors and bounded two-hop paths for a symbol |
+| `entire graph neighbors --symbol NAME_OR_ID` | Direct graph neighbors and bounded two-hop paths for a symbol |
 | `entire graph snapshot --format ndjson` | 🕸️ Full graph stream: header + files + symbols + relations |
 | `entire graph symbols --format ndjson` | Symbols only (filtered snapshot view) |
 | `entire graph edges --format ndjson` | Relations only (filtered snapshot view) |
@@ -206,10 +206,11 @@ caller → focus → callee paths.
 `--relation` selects another relation family, `--direction` limits the side,
 `--internal-only` removes unresolved external endpoints, `--exclude-tests`
 removes conventional test-only neighbors, and `--limit` bounds definition lists,
-neighbor lists, and two-hop paths. Ambiguous symbols return definitions only
-and require `--file` (plus a qualified `--symbol` when necessary) before any
-adjacency is expanded. JSON reports how many definitions were omitted and
-carries the underlying index's partial failures and completeness breakdown.
+neighbor lists, and two-hop paths. Ambiguous symbols return definitions with
+their stable IDs; pass one of those IDs back to `--symbol` to select an overload
+that a file path or qualified name cannot distinguish. JSON reports how many
+definitions were omitted and carries the underlying index's partial failures
+and completeness breakdown.
 Agent output represents a complete two-hop Cartesian family compactly instead
 of repeating every path. The default full profile favors
 relationship correctness; use `--profile fast` when shallow call resolution is
