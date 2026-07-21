@@ -366,7 +366,7 @@ func selectiveSearchSnapshotFromFull(
 	} else {
 		forEachRelation(sc.key, selective.Files, recordsByFile, sc.read, precomputedImports, spec, func() bool {
 			return ctx.Err() != nil
-		}, emitRelation)
+		}, emitRelation, func(PartialFailure) {})
 		if spec.emits("FILE_CHANGES_WITH") {
 			for _, relation := range fileChangesWithRelations(ctx, sc.absRepo, sc.commit, sc.key, selective.Files) {
 				if ctx.Err() != nil {

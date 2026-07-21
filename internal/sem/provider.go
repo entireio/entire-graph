@@ -233,6 +233,12 @@ type SymbolRecord struct {
 	// callable within its enclosing function, so it is excluded from cross-scope
 	// name-match call resolution. Not serialized (internal to resolution).
 	Local bool `json:"-"`
+	// sourceStartByte/sourceEndByte preserve the parser's exact declaration
+	// range for source-local resolution. They are deliberately private so the
+	// frozen provider schema and symbol IDs do not change.
+	sourceStartByte int
+	sourceEndByte   int
+	parameterNames  []string
 }
 
 type RelationRecord struct {
@@ -693,6 +699,25 @@ func BuildProviderSnapshotWithOptions(ctx context.Context, repo, providerVersion
 	return snapshot, nil
 }
 
+// mergePartialFailures appends extra failures that are not already present
+// for the same code and file, so entity-phase and relation-phase reports for
+// one file collapse to a single record regardless of build path.
+func mergePartialFailures(failures, extra []PartialFailure) []PartialFailure {
+	seen := make(map[string]bool, len(failures))
+	for _, failure := range failures {
+		seen[failure.Code+"\x00"+failure.FilePath] = true
+	}
+	for _, failure := range extra {
+		key := failure.Code + "\x00" + failure.FilePath
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		failures = append(failures, failure)
+	}
+	return failures
+}
+
 // StreamSnapshot emits a snapshot as a stream of records with bounded memory.
 // Phase 1 lists the files, then parses each one and emits its file and symbol
 // records immediately while building compact metadata indexes — file contents
@@ -974,11 +999,20 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 		if spec.includeEvidence {
 			symbolsByID, filesByID = recordIndexes(files, recordsByFile)
 		}
+		var relationFailures []PartialFailure
 		forEachRelation(sc.key, files, recordsByFile, sc.read, precomputedImports, spec, func() bool {
 			return emitErr != nil || ctx.Err() != nil
 		}, func(r RelationRecord) {
 			emitRelation(r, symbolsByID, filesByID)
+		}, func(failure PartialFailure) {
+			relationFailures = append(relationFailures, failure)
 		})
+		// A file can fail in both phases with the same code (a parse budget
+		// blown in the entity pass usually blows the relation-phase scope parse
+		// too): report one record per code+file, exactly as the cache-derived
+		// selective path does, so cache presence never changes the reported
+		// failure set.
+		failures = mergePartialFailures(failures, relationFailures)
 		if spec.emits("FILE_CHANGES_WITH") {
 			for _, r := range fileChangesWithRelations(ctx, sc.absRepo, sc.commit, sc.key, files) {
 				if emitErr != nil || ctx.Err() != nil {
@@ -1395,6 +1429,11 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 			Language:        language,
 			ContainerID:     containerID,
 			Local:           entity.Local,
+			sourceStartByte: entity.sourceStartByte,
+			sourceEndByte:   entity.sourceEndByte,
+		}
+		if language == "JavaScript" || language == "TypeScript" {
+			symbol.parameterNames = append([]string(nil), entity.parameterNames...)
 		}
 		symbols = append(symbols, symbol)
 		byName[qualified] = id
@@ -1421,10 +1460,15 @@ func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbo
 			BodyHash:        hash(normalize(content)),
 			Language:        language,
 			ContainerID:     source.ContainerID,
+			sourceStartByte: source.sourceStartByte,
+			sourceEndByte:   source.sourceEndByte,
 		})
 	}
 	for _, source := range fileSymbols {
 		block := symbolBlockFromLines(lines, source)
+		if exact, ok := exactSymbolSource(content, source); ok {
+			block = exact
+		}
 		if !looksLikeToolHandler(source, block) {
 			continue
 		}
@@ -1442,6 +1486,8 @@ func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbo
 			BodyHash:        source.BodyHash,
 			Language:        language,
 			ContainerID:     source.ID,
+			sourceStartByte: source.sourceStartByte,
+			sourceEndByte:   source.sourceEndByte,
 		})
 	}
 	if workflow := applicationWorkflowBoundary(path); workflow != "" {
@@ -1460,15 +1506,19 @@ func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbo
 			BodyHash:        hash(normalize(content)),
 			Language:        language,
 			ContainerID:     source.ContainerID,
+			sourceStartByte: source.sourceStartByte,
+			sourceEndByte:   source.sourceEndByte,
 		})
 	}
 	return symbols
 }
 
 type routeSource struct {
-	StartLine   int
-	EndLine     int
-	ContainerID string
+	StartLine       int
+	EndLine         int
+	ContainerID     string
+	sourceStartByte int
+	sourceEndByte   int
 }
 
 type resolvedCallTarget struct {
@@ -1488,7 +1538,7 @@ func routeBoundarySource(path, language string, fileSymbols []SymbolRecord) rout
 	sourceID := routeBoundarySourceID("", file, fileSymbols)
 	for _, symbol := range fileSymbols {
 		if symbol.ID == sourceID {
-			return routeSource{StartLine: symbol.StartLine, EndLine: symbol.EndLine, ContainerID: symbol.ID}
+			return routeSource{StartLine: symbol.StartLine, EndLine: symbol.EndLine, ContainerID: symbol.ID, sourceStartByte: symbol.sourceStartByte, sourceEndByte: symbol.sourceEndByte}
 		}
 	}
 	return routeSource{StartLine: 1, EndLine: 1}
@@ -1694,6 +1744,187 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 	return nil
 }
 
+// resolveJSNamespaceCallTargets resolves a namespace-qualified call against
+// same-file namespace members. The second result reports whether any member
+// matched at all: a false lets the caller fall back to generic terminal-name
+// resolution for namespaces merged across files, while an ambiguous multi-match
+// (true, nil) stays unresolved rather than guessing.
+func resolveJSNamespaceCallTargets(qualifiedName string, from SymbolRecord, sameFile []SymbolRecord, namespacesBySymbolID map[string]string) ([]resolvedCallTarget, bool) {
+	separator := strings.LastIndex(qualifiedName, ".")
+	if separator <= 0 || separator == len(qualifiedName)-1 {
+		return nil, false
+	}
+	namespace := qualifiedName[:separator]
+	name := qualifiedName[separator+1:]
+	var matches []resolvedCallTarget
+	for _, to := range sameFile {
+		if to.ID == from.ID || to.Name != name || !callableTargetKind(to.Kind) || !localReachable(from, to) {
+			continue
+		}
+		// A class method declared inside the namespace's source range is not a
+		// namespace-level callable. If a future parser version qualifies namespace
+		// members as methods, its qualified name still makes that case exact.
+		if to.Kind == "method" && to.QualifiedName != qualifiedName {
+			continue
+		}
+		if namespacesBySymbolID[to.ID] != namespace {
+			continue
+		}
+		matches = append(matches, resolvedCallTarget{
+			SymbolRecord: to,
+			Confidence:   0.92,
+			Reason:       "namespace-qualified call resolved to same-file declaration",
+			Resolution:   "exact",
+			Scope:        "file",
+		})
+	}
+	if len(matches) == 1 {
+		return matches, true
+	}
+	return nil, len(matches) > 0
+}
+
+// resolveJSMergedDeclarationMemberTargets handles the namespace-call fallback
+// when the receiver path also names a same-file class/enum/object declaration
+// (TypeScript declaration merging, `class A { static create() {} }` next to
+// `namespace A { ... }`): the call resolves against the merged declaration's
+// members. The second result reports whether a member actually matched (an
+// ambiguous multi-match counts: it stays unresolved rather than guessing);
+// the third reports whether the receiver names such a merged declaration at
+// all, which the terminal-name fallback uses to stay confined to the
+// receiver's namespace instead of resolving the bare name workspace-wide.
+func resolveJSMergedDeclarationMemberTargets(qualifiedName string, from SymbolRecord, sameFile []SymbolRecord, namespacesBySymbolID map[string]string) ([]resolvedCallTarget, bool, bool) {
+	separator := strings.LastIndex(qualifiedName, ".")
+	if separator <= 0 || separator == len(qualifiedName)-1 {
+		return nil, false, false
+	}
+	receiver := qualifiedName[:separator]
+	member := qualifiedName[separator+1:]
+	mergedContainers := map[string]bool{}
+	for _, symbol := range sameFile {
+		if !jsMergeableValueDeclarationKind(symbol.Kind) {
+			continue
+		}
+		qualified := symbol.Name
+		if namespace := namespacesBySymbolID[symbol.ID]; namespace != "" {
+			qualified = namespace + "." + symbol.Name
+		}
+		if qualified == receiver {
+			mergedContainers[symbol.ID] = true
+		}
+	}
+	if len(mergedContainers) == 0 {
+		return nil, false, false
+	}
+	var matches []resolvedCallTarget
+	for _, to := range sameFile {
+		if to.ID == from.ID || to.Name != member || !mergedContainers[to.ContainerID] || !localReachable(from, to) {
+			continue
+		}
+		if to.Kind != "method" && to.Kind != "function" {
+			continue
+		}
+		matches = append(matches, resolvedCallTarget{
+			SymbolRecord: to,
+			Confidence:   0.9,
+			Reason:       "namespace-qualified call resolved to merged same-file declaration member",
+			Resolution:   "exact",
+			Scope:        "file",
+		})
+	}
+	if len(matches) == 1 {
+		return matches, true, true
+	}
+	return nil, len(matches) > 0, true
+}
+
+// resolveJSNamespaceCallChain resolves one canonical namespace-qualified call
+// (an entry of jsNamespaceCalls) through the chain shared by the per-symbol
+// and top-level call paths:
+//
+//  1. same-file namespace members (resolveJSNamespaceCallTargets);
+//  2. members of a same-file value declaration merged with the receiver
+//     (resolveJSMergedDeclarationMemberTargets);
+//  3. terminal-name fallback for namespaces reopened in other files —
+//     declaration merging leaves no same-file member to match.
+//
+// When the receiver also names a merged same-file declaration, step 3 stays
+// confined to symbols that actually sit in a namespace matching the receiver
+// path in their own file (foreignNamespaceOf): the merged declaration proves
+// the receiver is not a plain identifier, so a bare-name workspace match to a
+// symbol unrelated to the receiver's namespace would fabricate a false edge.
+// skipTerminal, when non-nil, suppresses step 3 for terminals the call site
+// already excludes from bare-name resolution (self-calls, member names).
+func resolveJSNamespaceCallChain(name string, from SymbolRecord, sameFile []SymbolRecord, namespacesBySymbolID map[string]string, symbolsByShortName map[string][]SymbolRecord, importsByName map[string][]string, foreignNamespaceOf func(SymbolRecord) string, skipTerminal func(string) bool) []resolvedCallTarget {
+	targets, matched := resolveJSNamespaceCallTargets(name, from, sameFile, namespacesBySymbolID)
+	if matched {
+		return targets
+	}
+	targets, matched, receiverMerged := resolveJSMergedDeclarationMemberTargets(name, from, sameFile, namespacesBySymbolID)
+	if matched {
+		return targets
+	}
+	terminal := name[strings.LastIndex(name, ".")+1:]
+	if skipTerminal != nil && skipTerminal(terminal) {
+		return nil
+	}
+	if receiverMerged {
+		receiver := name[:strings.LastIndex(name, ".")]
+		var related []resolvedCallTarget
+		for _, to := range symbolsByShortName[terminal] {
+			if to.ID == from.ID || to.FilePath == from.FilePath || !callableTargetKind(to.Kind) || to.Kind == "method" || !localReachable(from, to) {
+				continue
+			}
+			if foreignNamespaceOf == nil || foreignNamespaceOf(to) != receiver {
+				continue
+			}
+			related = append(related, resolvedCallTarget{
+				SymbolRecord: to,
+				Confidence:   0.8,
+				Reason:       "namespace-qualified call resolved to namespace member reopened in another file",
+				Resolution:   "name_only",
+				Scope:        "workspace",
+			})
+		}
+		if len(related) == 1 {
+			return related
+		}
+		return nil
+	}
+	return resolveCallTargets(terminal, from, symbolsByShortName[terminal], sameFile, importsByName, false)
+}
+
+// jsCrossFileNamespaceLookup returns a lazy, memoizing lookup of the
+// canonical namespace path lexically containing a JS/TS symbol in its own
+// file. The merged-declaration terminal fallback uses it to verify that a
+// cross-file candidate actually reopens the receiver's namespace before
+// emitting an edge. Files without namespaces — or whose scope parse fails —
+// yield "" for every symbol; each file is read and scanned at most once.
+func jsCrossFileNamespaceLookup(readContent contentReader, recordsByFile map[string][]SymbolRecord) func(SymbolRecord) string {
+	cache := map[string]map[string]string{}
+	return func(symbol SymbolRecord) string {
+		if symbol.Language != "JavaScript" && symbol.Language != "TypeScript" {
+			return ""
+		}
+		byID, ok := cache[symbol.FilePath]
+		if !ok {
+			if content, okRead := readContent(symbol.FilePath); okRead {
+				if scan, err := newJSScanState(symbol.FilePath, content); err == nil && len(scan.namespaces) > 0 {
+					byID = jsNamespaceBySymbolID(content, recordsByFile[symbol.FilePath], scan.namespaces)
+				}
+			}
+			cache[symbol.FilePath] = byID
+		}
+		return byID[symbol.ID]
+	}
+}
+
+// jsMergeableValueDeclarationKind reports the symbol kinds that can merge
+// with a TypeScript namespace of the same name and carry callable members.
+func jsMergeableValueDeclarationKind(kind string) bool {
+	return kind == "class" || kind == "enum" || kind == "object"
+}
+
 func resolveImportedCallTargets(name string, from SymbolRecord, candidates []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
 	var imported []resolvedCallTarget
 	for _, to := range candidates {
@@ -1860,7 +2091,7 @@ func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string
 	var relations []RelationRecord
 	forEachRelation(repoKey, files, recordsByFile, readContent, nil, resolveProfile(ProfileFull), nil, func(r RelationRecord) {
 		relations = append(relations, r)
-	})
+	}, nil)
 	relations = dedupeRelations(relations)
 	sort.Slice(relations, func(i, j int) bool {
 		left := relations[i].Type + relations[i].FromID + relations[i].ToID
@@ -1972,7 +2203,24 @@ func emitStructuralRelationsCompact(repoKey string, files []FileRecord, recordsB
 // as it is produced. It never accumulates the full relation set, so a streaming
 // caller can write records out with bounded memory. Callers deduplicate:
 // buildRelations collects-then-dedupes; the streaming path dedupes on emit.
-func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, precomputedImports map[string][]string, spec profileSpec, shouldStop func() bool, emit func(RelationRecord)) {
+// jsScanPartialFailure maps a relation-phase JS/TS scope-parse error to the
+// partial-failure record the summary reports, mirroring the entity-phase
+// codes (E_PARSE_TIMEOUT for a blown parse budget, E_PARSE_ERROR otherwise).
+func jsScanPartialFailure(path string, err error) PartialFailure {
+	code := "E_PARSE_ERROR"
+	if errors.Is(err, context.DeadlineExceeded) {
+		code = "E_PARSE_TIMEOUT"
+	}
+	return PartialFailure{
+		Code:                 code,
+		Severity:             "warning",
+		FilePath:             path,
+		EffectOnCompleteness: "relation-phase scope parse failed; namespace-qualified call classification skipped for this file",
+		Detail:               err.Error(),
+	}
+}
+
+func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, precomputedImports map[string][]string, spec profileSpec, shouldStop func() bool, emit func(RelationRecord), recordFailure func(PartialFailure)) {
 	if spec.name == ProfileSyntaxOnly {
 		emitStructuralRelations(repoKey, files, recordsByFile, emit)
 		return
@@ -2023,6 +2271,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	// receiver-typed call resolution. Resolve those containers from the
 	// member's qualified-name prefix against the workspace's type-like symbols.
 	crossFileContainers := needsCallScan || needsReceiverCalls || needsFields || needsOverrides
+	// Cross-file namespace membership is only consulted by the JS/TS
+	// merged-declaration fallback (rare), and the lookup memoizes per file, so
+	// building the closure up front costs nothing for repositories without
+	// TypeScript namespaces.
+	foreignJSNamespaceOf := jsCrossFileNamespaceLookup(readContent, recordsByFile)
 	typeLikeByShortName := map[string][]SymbolRecord{}
 	if crossFileContainers {
 		for _, file := range files {
@@ -2515,6 +2768,29 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			// and let receiverCallRelations apply the usual shadowing rules.
 			typeScriptPropTypes = typeScriptPropertyTypes(content, recordsByFile[file.Path])
 		}
+		var jsSymbolNamespaces map[string]string
+		var jsScan *jsScanState
+		if fileNeedsCallScan && (file.Language == "JavaScript" || file.Language == "TypeScript") {
+			// One tree-sitter pass yields namespaces, binding scopes, and dotted
+			// call sites for the whole file; every JS/TS scope decision below
+			// shares this state instead of re-deriving it per symbol.
+			var jsScanErr error
+			jsScan, jsScanErr = newJSScanState(file.Path, content)
+			if jsScanErr != nil && recordFailure != nil {
+				// Surface the degraded relation pass the same way entity-phase
+				// parse failures are surfaced, so a timed-out or failed scope
+				// parse is observable instead of silently dropping namespace
+				// call classification for the file.
+				recordFailure(jsScanPartialFailure(file.Path, jsScanErr))
+			}
+			// Without namespaces there is nothing to map: every namespace-call
+			// consumer below is gated on jsNamespaceCalls entries, which require
+			// scanned namespaces, so skipping the per-symbol declaration matching
+			// on namespace-less files (the overwhelming majority) is free.
+			if len(jsScan.namespaces) > 0 {
+				jsSymbolNamespaces = jsNamespaceBySymbolID(content, currentFileSymbols, jsScan.namespaces)
+			}
+		}
 		var swiftTypes swiftFileTypes
 		if file.Language == "Swift" && spec.callResolution == "full" {
 			// Swift stored-property types and enum-case payload types live at
@@ -2529,6 +2805,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				return
 			}
 			block := symbolBlockFromLines(lines, from)
+			if file.Language == "JavaScript" || file.Language == "TypeScript" {
+				if exact, ok := exactSymbolSource(content, from); ok {
+					block = exact
+				}
+			}
 			if fileNeedsCallScan && !typeLikeKind(from.Kind) && file.Language == "Erlang" {
 				// Erlang call sites carry information the generic scanner cannot
 				// use: a bare call is module-local by language rule, and a remote
@@ -2586,6 +2867,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 				callNames := callLikeIdentifiers(callBlock, file.Language)
 				jsCallableArgumentOnly := map[string]bool{}
+				jsNamespaceCalls := map[string]struct{}{}
 				if file.Language == "Julia" {
 					callNames = juliaCallIdentifiers(callBlock)
 				}
@@ -2618,12 +2900,15 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 				}
 				if file.Language == "JavaScript" || file.Language == "TypeScript" {
-					// Same-file namespaces (`Parser.parseSourceFile(...)`) need their
-					// terminal call resolved as a local symbol. Imported receivers are
-					// handled path-aware below; arbitrary object receivers must not be
-					// collapsed into workspace-global bare calls.
-					for name := range jsNamespaceCallIdentifiers(callBlock, content) {
+					// Same-file namespaces (`Parser.parseSourceFile(...)`) are kept
+					// qualified so duplicate terminal names in other namespaces cannot
+					// steal the edge. Imported and ordinary object receivers are handled
+					// by their receiver-aware resolution paths below. Shadowing and
+					// namespace context come from the AST-derived scan state at each
+					// call site's own position.
+					for name := range jsScan.namespaceCallsForSymbol(from) {
 						callNames[name] = struct{}{}
+						jsNamespaceCalls[name] = struct{}{}
 					}
 					for name := range jsCallableArgumentIdentifiers(callBlock) {
 						if _, directCall := callNames[name]; !directCall {
@@ -2700,7 +2985,21 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					if childNamesByContainer[from.ID][name] {
 						continue
 					}
-					targets := resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, callImportsByName, false)
+					var targets []resolvedCallTarget
+					if _, namespaceCall := jsNamespaceCalls[name]; namespaceCall {
+						// Same-file namespace members first, then members of a
+						// merged same-file value declaration, then the terminal-name
+						// fallback for namespaces reopened in another file. Shadowed
+						// receiver roots never reach jsNamespaceCalls, so the
+						// fallback stays scope-accurate; self-calls and the caller's
+						// own member names stay excluded from it, matching the
+						// bare-name path.
+						targets = resolveJSNamespaceCallChain(name, from, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, callImportsByName, foreignJSNamespaceOf, func(terminal string) bool {
+							return terminal == from.Name || childNamesByContainer[from.ID][terminal]
+						})
+					} else {
+						targets = resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, callImportsByName, false)
+					}
 					for _, to := range targets {
 						// A bare identifier passed as an argument may be a callback, but
 						// it is not a construction. Keep callback discovery additive while
@@ -2811,7 +3110,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 			}
 			if needsDataFlow && callableSymbol {
-				for _, flow := range returnFlowCalls(block, from.Signature) {
+				for _, flow := range returnFlowCalls(block, symbolFlowParameterNames(from)) {
 					if flow.Name == from.Name {
 						continue
 					}
@@ -2985,7 +3284,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		// like `hiding (doesFileExist)`, class/instance heads — would only
 		// register bogus file->symbol call sites.
 		if fileNeedsCallScan && file.Language != "Erlang" && file.Language != "OCaml" && file.Language != "Haskell" {
-			topLevel := stripDeclarationOnlyCallSignatures(file.Language, topLevelBlockFromLines(lines, currentFileSymbols))
+			topLevelSource := topLevelBlockFromLines(lines, currentFileSymbols)
+			if jsScan != nil {
+				// Byte-exact complement of the per-symbol scans: a JS/TS call
+				// sharing a line with a declaration (`export function f() {}
+				// helper();`) is outside every symbol's byte range, so it must
+				// stay visible to the top-level scan instead of vanishing with
+				// the line-granular mask.
+				topLevelSource = jsScan.topLevelBlock(content, currentFileSymbols)
+			}
+			topLevel := stripDeclarationOnlyCallSignatures(file.Language, topLevelSource)
 			if file.Language == "Rust" {
 				topLevel = stripRustCodegenMacroBodies(topLevel)
 			}
@@ -3004,6 +3312,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 				topLevelNames := callLikeIdentifiers(topLevel, file.Language)
 				jsCallableArgumentOnly := map[string]bool{}
+				jsNamespaceCalls := map[string]struct{}{}
 				if file.Language == "Julia" {
 					topLevelNames = juliaCallIdentifiers(topLevel)
 				}
@@ -3013,8 +3322,12 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 				}
 				if file.Language == "JavaScript" || file.Language == "TypeScript" {
-					for name := range jsNamespaceCallIdentifiers(topLevel, content) {
+					// Statement-position calls inside namespace bodies resolve their
+					// relative receivers through the namespace each call lexically
+					// sits in (`B.f()` inside `namespace A` canonicalizes to A.B.f).
+					for name := range jsScan.topLevelNamespaceCalls(currentFileSymbols) {
 						topLevelNames[name] = struct{}{}
+						jsNamespaceCalls[name] = struct{}{}
 					}
 					for name := range jsCallableArgumentIdentifiers(topLevel) {
 						if _, directCall := topLevelNames[name]; !directCall {
@@ -3054,7 +3367,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 				}
 				for _, name := range sortedKeysOf(topLevelNames) {
-					for _, to := range resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName, false) {
+					var targets []resolvedCallTarget
+					if _, namespaceCall := jsNamespaceCalls[name]; namespaceCall {
+						// Same chain as the per-symbol namespace path above; the
+						// file-level pseudo-symbol has no self-call or member names
+						// to exclude, so the terminal fallback is unguarded.
+						targets = resolveJSNamespaceCallChain(name, fileSource, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, importsByName, foreignJSNamespaceOf, nil)
+					} else {
+						targets = resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName, false)
+					}
+					for _, to := range targets {
 						if jsCallableArgumentOnly[name] && typeLikeKind(to.Kind) {
 							continue
 						}
@@ -3406,6 +3728,32 @@ func lookupMethodUpChain(start, name string, methodsByContainer map[string]map[s
 		}
 	}
 	return SymbolRecord{}, false, false
+}
+
+func typeScriptReceiverTypeResolvesElsewhere(typeName string, from SymbolRecord, importsByName map[string][]string, symbolsByShortName map[string][]SymbolRecord, superContainerByID map[string]string) bool {
+	if len(importsByName[typeName]) > 0 {
+		return true
+	}
+	for _, candidate := range symbolsByShortName[typeName] {
+		if !typeLikeKind(candidate.Kind) || candidate.FilePath != from.FilePath {
+			continue
+		}
+		if !containerChainContains(from.ContainerID, candidate.ID, superContainerByID) {
+			return true
+		}
+	}
+	return false
+}
+
+func containerChainContains(start, target string, superContainerByID map[string]string) bool {
+	seen := map[string]bool{}
+	for c, hops := start, 0; c != "" && !seen[c] && hops < 32; c, hops = superContainerByID[c], hops+1 {
+		if c == target {
+			return true
+		}
+		seen[c] = true
+	}
+	return false
 }
 
 func uniqueImplementedMethod(start, name string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string, implementersByContainer map[string][]string) (SymbolRecord, bool) {
@@ -4172,7 +4520,13 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			if methodResolved[key] || len(importsByName[call.Receiver]) > 0 {
 				continue
 			}
-			if typeName := varTypes[call.Receiver]; typeName != "" && len(importsByName[typeName]) > 0 {
+			// A receiver annotation disqualifies the fallback only when it
+			// resolves somewhere concrete: an imported type, or a same-file
+			// type outside the caller's inheritance chain. A bare generic type
+			// parameter (`run<T extends Base>(item: T)`) or an unknown name
+			// resolves to nothing and must not suppress the polymorphic
+			// base-method call.
+			if typeName := varTypes[call.Receiver]; typeName != "" && typeScriptReceiverTypeResolvesElsewhere(typeName, from, importsByName, symbolsByShortName, superContainerByID) {
 				continue
 			}
 			method, _, ok := lookupMethodUpChain(from.ContainerID, call.Method, methodsByContainer, superContainerByID)
@@ -15885,6 +16239,13 @@ func looksLikeToolHandler(symbol SymbolRecord, block string) bool {
 
 func symbolBlock(content string, symbol SymbolRecord) string {
 	return symbolBlockFromLines(strings.Split(content, "\n"), symbol)
+}
+
+func exactSymbolSource(content string, symbol SymbolRecord) (string, bool) {
+	if symbol.sourceStartByte < 0 || symbol.sourceEndByte <= symbol.sourceStartByte || symbol.sourceEndByte > len(content) {
+		return "", false
+	}
+	return content[symbol.sourceStartByte:symbol.sourceEndByte], true
 }
 
 func symbolBlockFromLines(lines []string, symbol SymbolRecord) string {
