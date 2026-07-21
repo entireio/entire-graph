@@ -104,6 +104,87 @@ func ListIndexFiles(ctx context.Context, repo string) ([]string, error) {
 // worktree file. Fixed strings and NUL-delimited paths keep query terms and
 // unusual paths from changing grep semantics.
 func GrepIndexMatches(ctx context.Context, repo string, patterns []string, maxPerFile int) ([]GrepMatch, error) {
+	return grepFixedStringMatches(ctx, repo, "", patterns, maxPerFile)
+}
+
+// GrepTreeMatches returns a bounded sample of matched fixed strings per file
+// from an immutable Git tree. The returned paths are relative to repo and do
+// not include Git's "<treeish>:" display prefix. Query strings are always
+// passed as fixed-string patterns and paths are NUL-delimited, so neither can
+// change grep or path parsing semantics.
+func GrepTreeMatches(ctx context.Context, repo, treeish string, patterns []string, maxPerFile int) ([]GrepMatch, error) {
+	if treeish == "" {
+		return nil, errors.New("git grep treeish cannot be empty")
+	}
+	if strings.HasPrefix(treeish, "-") || strings.ContainsRune(treeish, '\x00') {
+		return nil, fmt.Errorf("invalid git grep treeish %q", treeish)
+	}
+	return grepFixedStringMatches(ctx, repo, treeish, patterns, maxPerFile)
+}
+
+// GrepTreePaths returns every file in an immutable Git tree that contains at
+// least one of the fixed-string patterns. Git emits each path once in
+// NUL-delimited form, avoiding both matched-text fanout and ambiguity from
+// unusual path bytes.
+func GrepTreePaths(ctx context.Context, repo, treeish string, patterns []string) ([]string, error) {
+	if treeish == "" {
+		return nil, errors.New("git grep treeish cannot be empty")
+	}
+	if strings.HasPrefix(treeish, "-") || strings.ContainsRune(treeish, '\x00') {
+		return nil, fmt.Errorf("invalid git grep treeish %q", treeish)
+	}
+	if len(patterns) == 0 {
+		return []string{}, nil
+	}
+	args := []string{"grep", "-z", "-I", "-i", "-F", "-l"}
+	patternCount := 0
+	for _, pattern := range patterns {
+		if pattern == "" {
+			continue
+		}
+		args = append(args, "-e", pattern)
+		patternCount++
+	}
+	if patternCount == 0 {
+		return []string{}, nil
+	}
+	args = append(args, treeish, "--")
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = repo
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) && exitError.ExitCode() == 1 && stderr.Len() == 0 {
+			return []string{}, nil
+		}
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
+	}
+	prefix := treeish + ":"
+	data := stdout.Bytes()
+	paths := make([]string, 0, bytes.Count(data, []byte{0}))
+	for len(data) > 0 {
+		pathEnd := bytes.IndexByte(data, 0)
+		if pathEnd < 0 {
+			return nil, errors.New("git grep returned a non-NUL-terminated path")
+		}
+		displayed := string(data[:pathEnd])
+		if !strings.HasPrefix(displayed, prefix) {
+			return nil, fmt.Errorf("git grep returned path %q without treeish prefix %q", displayed, prefix)
+		}
+		paths = append(paths, strings.TrimPrefix(displayed, prefix))
+		data = data[pathEnd+1:]
+	}
+	return paths, nil
+}
+
+func grepFixedStringMatches(ctx context.Context, repo, treeish string, patterns []string, maxPerFile int) ([]GrepMatch, error) {
 	if len(patterns) == 0 {
 		return []GrepMatch{}, nil
 	}
@@ -118,6 +199,9 @@ func GrepIndexMatches(ctx context.Context, repo string, patterns []string, maxPe
 	}
 	if len(args) == 8 {
 		return []GrepMatch{}, nil
+	}
+	if treeish != "" {
+		args = append(args, treeish)
 	}
 	args = append(args, "--")
 	// Preserve the caller's locale here. Unlike the other git commands in this
@@ -150,6 +234,13 @@ func GrepIndexMatches(ctx context.Context, repo string, patterns []string, maxPe
 			return nil, fmt.Errorf("git grep returned malformed path metadata")
 		}
 		path := string(data[:pathEnd])
+		if treeish != "" {
+			prefix := treeish + ":"
+			if !strings.HasPrefix(path, prefix) {
+				return nil, fmt.Errorf("git grep returned path %q without treeish prefix %q", path, prefix)
+			}
+			path = strings.TrimPrefix(path, prefix)
+		}
 		data = data[pathEnd+1:]
 		textEnd := bytes.IndexByte(data, '\n')
 		if textEnd < 0 {
@@ -197,7 +288,17 @@ func ChangedFiles(ctx context.Context, repo, base, head string, paths []string) 
 	return files, nil
 }
 
-func FileCochanges(ctx context.Context, repo string, maxCommits int) ([]FileCochange, error) {
+// FileCochanges returns repeated file pairs from the history reachable from
+// revision. Callers pass an already-resolved commit so every
+// history-derived relation belongs to the same immutable snapshot as its
+// files and symbols.
+func FileCochanges(ctx context.Context, repo, revision string, maxCommits int) ([]FileCochange, error) {
+	if revision == "" {
+		return nil, errors.New("git co-change revision cannot be empty")
+	}
+	if strings.HasPrefix(revision, "-") || strings.ContainsRune(revision, '\x00') {
+		return nil, fmt.Errorf("invalid git co-change revision %q", revision)
+	}
 	if maxCommits <= 0 {
 		maxCommits = 256
 	}
@@ -216,7 +317,7 @@ func FileCochanges(ctx context.Context, repo string, maxCommits int) ([]FileCoch
 	// blows up memory: one 10k-file commit alone produces ~50M pair keys (multi-GB).
 	// Real feature/fix commits touch a handful of related files and stay well under.
 	const maxFilesPerCommit = 50
-	out, err := run(ctx, repo, "git", "log", "-z", "--name-only", "--pretty=format:"+marker, "-n", strconv.Itoa(maxCommits), "--")
+	out, err := run(ctx, repo, "git", "log", "-z", "--name-only", "--pretty=format:"+marker, "-n", strconv.Itoa(maxCommits), revision, "--")
 	if err != nil {
 		return nil, err
 	}

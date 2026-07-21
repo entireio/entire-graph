@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -453,6 +454,8 @@ func Capabilities() CapabilityReport {
 			"hybrid_source_search": true,
 			"near_clone_detection": true,
 			"git_cochange_edges":   true,
+			"durable_preindex":     true,
+			"focused_neighbors":    true,
 		},
 		FeaturesRequiringNetworkAccess: map[string]bool{
 			"grammar_download":  false,
@@ -977,7 +980,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 			emitRelation(r, symbolsByID, filesByID)
 		})
 		if spec.emits("FILE_CHANGES_WITH") {
-			for _, r := range fileChangesWithRelations(ctx, sc.absRepo, sc.key, files) {
+			for _, r := range fileChangesWithRelations(ctx, sc.absRepo, sc.commit, sc.key, files) {
 				if emitErr != nil || ctx.Err() != nil {
 					break
 				}
@@ -1218,14 +1221,16 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		return sourceContext{}, err
 	}
 	key := repoKey(ctx, absRepo)
-	commit, commitErr := gitutil.RevParse(ctx, absRepo, "HEAD")
-	tree, treeErr := gitutil.RevParse(ctx, absRepo, "HEAD^{tree}")
+	commit, tree, headErr := resolveCommittedHEAD(ctx, absRepo)
 
 	// The provider is local-only. NoNetwork is accepted to make that contract
 	// explicit for callers that enforce no-egress provider execution.
 	_ = options.NoNetwork
-	useHead := !options.Worktree && commitErr == nil && treeErr == nil
-	paths, read, readPrefix, closeSource, err := openSource(ctx, absRepo, useHead, options.IgnoreFiles, options.IncludeFiles)
+	committedRevision := ""
+	if !options.Worktree && headErr == nil {
+		committedRevision = commit
+	}
+	paths, read, readPrefix, closeSource, err := openSource(ctx, absRepo, committedRevision, options.IgnoreFiles, options.IncludeFiles)
 	if err != nil {
 		return sourceContext{}, err
 	}
@@ -1250,12 +1255,12 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 			Severity:             "warning",
 			EffectOnCompleteness: "snapshot records are read from the working tree because --worktree was requested",
 		})
-	} else if commitErr != nil || treeErr != nil {
+	} else if headErr != nil {
 		warnings = append(warnings, ProviderWarning{
 			Code:                 "E_NO_GIT_HEAD",
 			Severity:             "warning",
 			EffectOnCompleteness: "snapshot records are read from the working tree because no HEAD tree is available",
-			Detail:               firstError(commitErr, treeErr).Error(),
+			Detail:               headErr.Error(),
 		})
 	}
 	return sourceContext{
@@ -1269,6 +1274,28 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		close:      closeSource,
 		warnings:   warnings,
 	}, nil
+}
+
+// resolveCommittedHEAD binds a repository view to one immutable commit. The
+// tree is resolved from that exact object rather than from a second moving
+// HEAD expression, preventing mixed commit/tree provenance if HEAD advances
+// between subprocesses.
+func resolveCommittedHEAD(ctx context.Context, repo string) (string, string, error) {
+	commit, err := gitutil.RevParse(ctx, repo, "HEAD")
+	if err != nil || commit == "" {
+		if err == nil {
+			err = errors.New("HEAD resolved to an empty commit")
+		}
+		return "", "", err
+	}
+	tree, err := gitutil.RevParse(ctx, repo, commit+"^{tree}")
+	if err != nil || tree == "" {
+		if err == nil {
+			err = errors.New("committed HEAD resolved to an empty tree")
+		}
+		return "", "", err
+	}
+	return commit, tree, nil
 }
 
 func WriteSnapshotNDJSON(out io.Writer, snapshot ProviderSnapshot) error {
@@ -1452,6 +1479,10 @@ type resolvedCallTarget struct {
 	Scope      string
 }
 
+func callableTargetKind(kind string) bool {
+	return kind == "function" || kind == "method" || typeLikeKind(kind)
+}
+
 func routeBoundarySource(path, language string, fileSymbols []SymbolRecord) routeSource {
 	file := FileRecord{Path: path, Language: language}
 	sourceID := routeBoundarySourceID("", file, fileSymbols)
@@ -1515,7 +1546,7 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 		// A bare `name()` call resolves to a function, not a class method (methods
 		// require a receiver and are resolved by receiverCallRelations) — matching
 		// a same-named method here is a false edge.
-		if to.ID == from.ID || to.Name != name || to.Kind == "field" || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
+		if to.ID == from.ID || to.Name != name || !callableTargetKind(to.Kind) || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
 			continue
 		}
 		local = append(local, resolvedCallTarget{
@@ -1606,7 +1637,7 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 
 	var remaining []SymbolRecord
 	for _, to := range candidates {
-		if to.ID != from.ID && to.Kind != "field" && (to.Kind != "method" || nameCallMayTargetMethod(from.Language) || allowMethodTargets) && localReachable(from, to) {
+		if to.ID != from.ID && callableTargetKind(to.Kind) && (to.Kind != "method" || nameCallMayTargetMethod(from.Language) || allowMethodTargets) && localReachable(from, to) {
 			remaining = append(remaining, to)
 		}
 	}
@@ -1666,7 +1697,7 @@ func resolveCallTargets(name string, from SymbolRecord, candidates, sameFile []S
 func resolveImportedCallTargets(name string, from SymbolRecord, candidates []SymbolRecord, importsByName map[string][]string, allowMethodTargets bool) []resolvedCallTarget {
 	var imported []resolvedCallTarget
 	for _, to := range candidates {
-		if to.ID == from.ID || to.Kind == "field" || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
+		if to.ID == from.ID || !callableTargetKind(to.Kind) || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
 			continue
 		}
 		if importedNameMatchesFile(importsByName[name], from.FilePath, to.FilePath) {
@@ -1692,7 +1723,7 @@ func jsExportedImportFallbackTargets(name string, from SymbolRecord, candidates 
 	var exported []SymbolRecord
 	var imported []SymbolRecord
 	for _, to := range candidates {
-		if to.ID == from.ID || to.Kind == "field" || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
+		if to.ID == from.ID || !callableTargetKind(to.Kind) || (to.Kind == "method" && !nameCallMayTargetMethod(from.Language) && !allowMethodTargets) || !localReachable(from, to) {
 			continue
 		}
 		if importedNameMatchesFile(modules, from.FilePath, to.FilePath) {
@@ -2554,6 +2585,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					callBlock = maskGroovyLiteralsAndComments(block)
 				}
 				callNames := callLikeIdentifiers(callBlock, file.Language)
+				jsCallableArgumentOnly := map[string]bool{}
 				if file.Language == "Julia" {
 					callNames = juliaCallIdentifiers(callBlock)
 				}
@@ -2586,13 +2618,17 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 				}
 				if file.Language == "JavaScript" || file.Language == "TypeScript" {
-					// JS/TS often routes calls through generated namespace imports
-					// (`performance.mark(...)`, `Parser.parseSourceFile(...)`), and
-					// callback helpers can be passed as bare identifiers (`noop`).
-					for name := range jsDottedCallIdentifiers(callBlock) {
+					// Same-file namespaces (`Parser.parseSourceFile(...)`) need their
+					// terminal call resolved as a local symbol. Imported receivers are
+					// handled path-aware below; arbitrary object receivers must not be
+					// collapsed into workspace-global bare calls.
+					for name := range jsNamespaceCallIdentifiers(callBlock, content) {
 						callNames[name] = struct{}{}
 					}
 					for name := range jsCallableArgumentIdentifiers(callBlock) {
+						if _, directCall := callNames[name]; !directCall {
+							jsCallableArgumentOnly[name] = true
+						}
 						callNames[name] = struct{}{}
 					}
 				}
@@ -2666,6 +2702,13 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 					targets := resolveCallTargets(name, from, symbolsByShortName[name], currentFileSymbols, callImportsByName, false)
 					for _, to := range targets {
+						// A bare identifier passed as an argument may be a callback, but
+						// it is not a construction. Keep callback discovery additive while
+						// preventing `fn(input)` from linking the argument `input` to an
+						// unrelated same-named type alias.
+						if jsCallableArgumentOnly[name] && typeLikeKind(to.Kind) {
+							continue
+						}
 						// Call to a type (class/struct/...) is a constructor/conversion, not a
 						// callable->callable call: keep it as CONSTRUCTS for agents, out of CALLS.
 						relType := "CALLS"
@@ -2960,6 +3003,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					Language: file.Language,
 				}
 				topLevelNames := callLikeIdentifiers(topLevel, file.Language)
+				jsCallableArgumentOnly := map[string]bool{}
 				if file.Language == "Julia" {
 					topLevelNames = juliaCallIdentifiers(topLevel)
 				}
@@ -2969,10 +3013,13 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					}
 				}
 				if file.Language == "JavaScript" || file.Language == "TypeScript" {
-					for name := range jsDottedCallIdentifiers(topLevel) {
+					for name := range jsNamespaceCallIdentifiers(topLevel, content) {
 						topLevelNames[name] = struct{}{}
 					}
 					for name := range jsCallableArgumentIdentifiers(topLevel) {
+						if _, directCall := topLevelNames[name]; !directCall {
+							jsCallableArgumentOnly[name] = true
+						}
 						topLevelNames[name] = struct{}{}
 					}
 				}
@@ -3008,6 +3055,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 				for _, name := range sortedKeysOf(topLevelNames) {
 					for _, to := range resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName, false) {
+						if jsCallableArgumentOnly[name] && typeLikeKind(to.Kind) {
+							continue
+						}
 						relType := "CALLS"
 						if typeLikeKind(to.Kind) {
 							relType = "CONSTRUCTS"
@@ -4091,7 +4141,63 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			}},
 			WarningCodes: []string{},
 		})
+		if from.Language == "TypeScript" && strings.HasPrefix(strings.TrimSpace(method.Signature), "abstract ") {
+			if impl, implOK := uniqueImplementedMethod(targetID, call.Method, methodsByContainer, superContainerByID, implementersByContainer); implOK && impl.ID != method.ID {
+				implScope := "file"
+				if impl.FilePath != from.FilePath {
+					implScope = "module"
+				}
+				relations = append(relations, RelationRecord{
+					RecordType: "relation", FromID: from.ID, ToID: impl.ID, Type: "CALLS",
+					Confidence:    minFloat(confidence, 0.72),
+					Reason:        "interface-typed receiver call resolved to the unique TypeScript implementation",
+					RelationScope: implScope, Resolution: "type_inferred", TargetKind: "symbol",
+					Evidence:     []Evidence{{Kind: "call_site", FilePath: from.FilePath, StartLine: from.StartLine, EndLine: from.EndLine, Detail: call.Receiver + "." + call.Method}},
+					WarningCodes: []string{},
+				})
+			}
+		}
 		methodResolved[call.Receiver+"."+call.Method] = true
+	}
+	// TypeScript receiver expressions frequently carry their useful type one or
+	// more property/collection hops away (`def.type._parseSync()`,
+	// `option._parseSync()`). When ordinary type inference cannot recover that
+	// receiver, accept a same-file method only if it is unique by short name and
+	// belongs to the caller's own inheritance chain. This restores polymorphic
+	// base-method calls without reviving the old arbitrary `obj.add()` -> bare
+	// function `add` false edge or linking unrelated classes.
+	if from.Language == "TypeScript" && from.ContainerID != "" {
+		for _, call := range calls {
+			key := call.Receiver + "." + call.Method
+			if methodResolved[key] || len(importsByName[call.Receiver]) > 0 {
+				continue
+			}
+			if typeName := varTypes[call.Receiver]; typeName != "" && len(importsByName[typeName]) > 0 {
+				continue
+			}
+			method, _, ok := lookupMethodUpChain(from.ContainerID, call.Method, methodsByContainer, superContainerByID)
+			if !ok || method.ID == from.ID || method.FilePath != from.FilePath {
+				continue
+			}
+			unique := 0
+			for _, candidate := range symbolsByShortName[call.Method] {
+				if candidate.Language == from.Language && candidate.Kind == "method" && candidate.FilePath == from.FilePath {
+					unique++
+				}
+			}
+			if unique != 1 {
+				continue
+			}
+			methodResolved[key] = true
+			relations = append(relations, RelationRecord{
+				RecordType: "relation", FromID: from.ID, ToID: method.ID, Type: "CALLS",
+				Confidence:    0.64,
+				Reason:        "TypeScript receiver call matched unique same-file method on caller inheritance chain",
+				RelationScope: "file", Resolution: "name_only", TargetKind: "symbol",
+				Evidence:     []Evidence{{Kind: "call_site", FilePath: from.FilePath, StartLine: from.StartLine, EndLine: from.EndLine, Detail: key}},
+				WarningCodes: []string{},
+			})
+		}
 	}
 	// Globally-unique method-name fallback: when receiver-type resolution did not
 	// resolve a Go receiver.method() call and exactly one method with this short
@@ -7806,8 +7912,11 @@ func configuresRelations(recordsByFile map[string][]SymbolRecord, readContent co
 	return relations
 }
 
-func fileChangesWithRelations(ctx context.Context, repo, repoKey string, files []FileRecord) []RelationRecord {
-	cochanges, err := gitutil.FileCochanges(ctx, repo, 256)
+func fileChangesWithRelations(ctx context.Context, repo, revision, repoKey string, files []FileRecord) []RelationRecord {
+	if revision == "" {
+		return nil
+	}
+	cochanges, err := gitutil.FileCochanges(ctx, repo, revision, 256)
 	if err != nil || len(cochanges) == 0 {
 		return nil
 	}
@@ -8167,27 +8276,28 @@ func externalParts(id string) (string, string) {
 }
 
 // openSource lists the repository's files and returns a per-file content reader
-// that fetches one file at a time (from the git HEAD tree or the working tree),
-// so the snapshot never holds all source content in memory.
-func openSource(ctx context.Context, repo string, useHead bool, ignoreFiles, includeFiles []string) ([]string, contentReader, prefixReader, func() error, error) {
-	if useHead {
+// that fetches one file at a time from an exact committed revision (when
+// non-empty) or the working tree, so the snapshot never holds all source
+// content in memory.
+func openSource(ctx context.Context, repo, committedRevision string, ignoreFiles, includeFiles []string) ([]string, contentReader, prefixReader, func() error, error) {
+	if committedRevision != "" {
 		ignores, err := loadExplicitIgnoreMatcher(repo, ignoreFiles, includeFiles)
 		if err != nil {
 			return nil, nil, nil, nil, err
 		}
-		paths, err := gitutil.ListFiles(ctx, repo, "HEAD")
+		paths, err := gitutil.ListFiles(ctx, repo, committedRevision)
 		if err != nil {
 			return nil, nil, nil, nil, err
 		}
-		paths = filterVendoredPaths(paths, headIgnoreMatcher(ctx, repo))
+		paths = filterVendoredPaths(paths, headIgnoreMatcher(ctx, repo, committedRevision))
 		paths = filterIgnoredPaths(paths, ignores)
-		batch, err := gitutil.NewBatchFileReader(ctx, repo, "HEAD")
+		batch, err := gitutil.NewBatchFileReader(ctx, repo, committedRevision)
 		if err != nil {
 			return nil, nil, nil, nil, err
 		}
 		read := func(path string) (string, bool) {
 			if strings.Contains(path, "\n") {
-				content, ok, err := gitutil.ShowFile(ctx, repo, "HEAD", path)
+				content, ok, err := gitutil.ShowFile(ctx, repo, committedRevision, path)
 				if err != nil || !ok {
 					return "", false
 				}
@@ -8418,12 +8528,11 @@ func filterIgnoredPaths(paths []string, ignores ignoreMatcher) []string {
 	return filtered
 }
 
-// headIgnoreMatcher parses the repository's root .gitignore as of HEAD so the
-// vendored-directory heuristic can honor negation rules (see
-// ReincludesDescendant) when listing files from the HEAD tree, matching the
-// working-tree walk's behavior.
-func headIgnoreMatcher(ctx context.Context, repo string) ignoreMatcher {
-	content, ok, err := gitutil.ShowFile(ctx, repo, "HEAD", ".gitignore")
+// headIgnoreMatcher parses the repository's root .gitignore at the same exact
+// committed revision used for listing and content reads, so the vendored-
+// directory heuristic cannot observe a newer HEAD.
+func headIgnoreMatcher(ctx context.Context, repo, committedRevision string) ignoreMatcher {
+	content, ok, err := gitutil.ShowFile(ctx, repo, committedRevision, ".gitignore")
 	if err != nil || !ok {
 		return ignoreMatcher{}
 	}
@@ -11811,6 +11920,16 @@ func importModuleMatchesFile(module, importingPath, targetPath string) bool {
 		return false
 	}
 	targetPath = filepath.ToSlash(targetPath)
+	// resolvedImportedNameModules adds exact repository-relative JS/TS target
+	// files alongside the authored import spec. Once an entry carries a source
+	// extension, match it exactly; suffix matching would also select generated
+	// mirrors such as `deno/lib/helpers/x.ts` for resolved `src/helpers/x.ts`.
+	if !strings.HasPrefix(module, ".") {
+		switch strings.ToLower(filepath.Ext(module)) {
+		case ".js", ".jsx", ".ts", ".tsx":
+			return filepath.ToSlash(module) == targetPath
+		}
+	}
 	if strings.Contains(module, ".") && !strings.Contains(module, "/") {
 		dottedPath := strings.ReplaceAll(module, ".", "/")
 		target := strings.TrimSuffix(targetPath, filepath.Ext(targetPath))
@@ -11938,6 +12057,15 @@ func matchDelimiter(b []byte, openIdx int) int {
 
 func callLikeIdentifiers(content, language string) map[string]struct{} {
 	stripped := stripCodeLiteralsAndComments(content)
+	if language == "Python" {
+		// Python uses # line comments and triple-quoted strings. The generic
+		// C-family masker intentionally does not consume either, which allowed
+		// examples in comments and docstrings (for example `Path("-")`) to
+		// become real CALLS/CONSTRUCTS edges when a same-named repository symbol
+		// happened to exist. Reuse the Python-aware, length-preserving masker
+		// before scanning bare call expressions.
+		stripped = stripPythonLiteralsAndComments(content)
+	}
 	identifiers := map[string]struct{}{}
 	call := regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>\n;{}()]*>)?\(`)
 	for _, match := range call.FindAllStringSubmatchIndex(stripped, -1) {

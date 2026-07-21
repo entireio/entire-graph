@@ -114,7 +114,9 @@ For a one-command local source install run `scripts/install-local.sh`; it builds
 | `entire graph commit <rev>` | Entity-level semantic diff of a commit against its first parent |
 | `entire graph diff --base <a> --head <b>` | Semantic diff between two arbitrary refs (`analyze` is an alias) |
 | `entire graph checkpoint <id>` | Semantic diff for the commit behind an Entire checkpoint trailer |
+| `entire graph index --head --profile full` | Prebuild a durable, query-independent index for committed `HEAD` |
 | `entire graph search --query "..."` | 🔍 Ranked source regions for a natural-language task |
+| `entire graph neighbors --symbol NAME` | Direct graph neighbors and bounded two-hop paths for a symbol |
 | `entire graph snapshot --format ndjson` | 🕸️ Full graph stream: header + files + symbols + relations |
 | `entire graph symbols --format ndjson` | Symbols only (filtered snapshot view) |
 | `entire graph edges --format ndjson` | Relations only (filtered snapshot view) |
@@ -143,9 +145,33 @@ ENTIRE_REPO_ROOT=/path/to/repo ./entire-graph diff --base HEAD~1 --head HEAD
 
 ## 🔍 Search
 
+For an agent or evaluation that will issue several committed-tree queries,
+prepare the complete index before the task starts:
+
 ```sh
-entire graph search --repo . --query "retry logic for webhook delivery" --top-k 20 --format json
+entire graph index --repo . --head --profile full --cache-dir /path/to/cache --format json
 ```
+
+`index` is HEAD-only, local-only, query independent, and defaults to the
+`full` profile. Repeatable `--ignore-file` and `--include-file` flags let setup
+use the same repository scope—and therefore the same cache key—as later search
+and neighbor queries. Its JSON response
+binds the artifact to the exact repository root, commit, tree, profile, and
+provider version, and reports `index_cache_hit` plus indexing latency. It also
+surfaces per-file partial failures and aggregate completeness, so a successful
+cache write cannot be mistaken for complete semantic coverage. A successful
+invocation verifies that the compressed cache artifact was written durably.
+Repeat the command to require a cache hit before starting measured or
+latency-sensitive work.
+
+```sh
+entire graph search --repo . --query "retry logic for webhook delivery" --top-k 20 --format agent --head --profile full --index-all-files --cache-dir /path/to/cache
+```
+
+That invocation consumes the complete prepared committed-tree index directly.
+Omit `--index-all-files` to retain a bounded selective view (derived without
+reparsing), or omit `--head` and the cache flags when the agent must inspect
+dirty working-tree edits instead.
 
 Search returns ranked, diverse source regions for a task description, fusing several signals:
 
@@ -153,15 +179,44 @@ Search returns ranked, diverse source regions for a task description, fusing sev
 - symbol names and signatures, and file paths
 - conceptual issue-to-API term expansion
 - graph-neighbor expansion (in the `fast` profile) so related regions surface together
+- overlapping sparse regions for deep rankings, fused with syntax-aware file evidence
 - diversity-aware region selection, so one file can contribute several non-overlapping regions
 
 Behavior and budgets:
 
 - **Working tree by default**, so an agent sees its own dirty edits. Use `--head` for immutable committed-tree semantics.
 - **Bounded output.** Results are budgeted to **16 KiB** of serialized snippets by default, sized to drop straight into a model context window. Tune with `--top-k` and `--max-context-bytes` (`--max-context-bytes 0` for an unbounded diagnostic ranking).
-- **Cold search** scans files without parsing, then indexes at most 96 query-relevant files. Change the bound with `--max-indexed-files`, or force exhaustive parsing with `--index-all-files`.
+- **Agent-native output.** `--format agent` starts with auditable cache, index, preselection, query, and total latency telemetry, then emits only ranked locations, symbol names, and focused source. When the full header would crowd out a ranked location, tight positive budgets use compact telemetry when it fits; the complete wire output never exceeds the requested bytes. Use `json` or `ndjson` when a program needs the full result schema, completeness, partial failures, and search diagnostics.
+- **Focused regions.** Semantic results span at most 80 lines by default, keeping locations precise while snippets remain independently capped at 40 lines. Override with `--max-region-lines` and `--max-snippet-lines` when broader context is useful.
+- **Cold search** scans files without parsing, then indexes an adaptive pool of 96–256 query-relevant files based on the requested `--top-k`. Shallow searches of up to 20 results retain the 96-file interactive latency bound. Deeper rankings add a corpus-wide sparse pass over eligible files up to 2 MiB, while syntax parsing remains bounded to the adaptive pool; this deliberately spends more time for region recall inside large files. Override the parsing pool with `--max-indexed-files`, or force exhaustive parsing with `--index-all-files`.
 - **Profiles.** The default `syntax-only` profile avoids synchronous whole-repository graph construction; `--profile fast` adds local relation expansion when deeper semantic indexing is worth the cost.
-- **Caching.** When Entire supplies `ENTIRE_PLUGIN_DATA_DIR`, committed-tree searches reuse a tree-keyed compressed index across invocations. Direct callers can set `--cache-dir`; `--no-cache` disables persistence. Worktree searches never reuse committed indexes, avoiding stale results after edits.
+- **Caching.** When Entire supplies `ENTIRE_PLUGIN_DATA_DIR`, committed-tree searches reuse a tree-keyed compressed index across invocations. Direct callers can set `--cache-dir`; `--no-cache` disables persistence. A complete cache prepared by `index` also serves selective searches without changing their result set. Worktree searches never reuse committed indexes, avoiding stale results after edits.
+
+For structural follow-up after search identifies a symbol, query its graph
+neighborhood directly instead of streaming and filtering every edge:
+
+```sh
+entire graph neighbors --repo . --symbol ExecuteC --file command.go --depth 2 --format agent
+```
+
+`neighbors` reports resolved incoming and outgoing relations with definition
+locations. The default call neighborhood includes constructor invocations while
+preserving their `CONSTRUCTS` relation in JSON. `--depth 2` also returns bounded
+caller → focus → callee paths.
+`--relation` selects another relation family, `--direction` limits the side,
+`--internal-only` removes unresolved external endpoints, `--exclude-tests`
+removes conventional test-only neighbors, and `--limit` bounds definition lists,
+neighbor lists, and two-hop paths. Ambiguous symbols return definitions only
+and require `--file` (plus a qualified `--symbol` when necessary) before any
+adjacency is expanded. JSON reports how many definitions were omitted and
+carries the underlying index's partial failures and completeness breakdown.
+Agent output represents a complete two-hop Cartesian family compactly instead
+of repeating every path. The default full profile favors
+relationship correctness; use `--profile fast` when shallow call resolution is
+sufficient. Like search, it reads the working tree by default and performs no
+network access. On a clean committed tree, `--head` enables reuse of a
+tree-keyed snapshot through `ENTIRE_PLUGIN_DATA_DIR` or an explicit
+`--cache-dir`; worktree queries bypass that cache so dirty edits stay visible.
 
 ---
 
@@ -218,9 +273,13 @@ entire-graph is built to be called by coding agents, not only humans. Every comm
 
 - **🔍 Find where to work.** Retrieve ranked regions for a task before editing:
   ```sh
-  entire graph search --repo . --query "retry logic for webhook delivery" --format json
+  entire graph search --repo . --query "retry logic for webhook delivery" --format agent
   ```
   Output is bounded to 16 KiB by default, sized for direct inclusion in a model context window.
+  Start with one broad task query. Once results expose concrete identifiers,
+  use at most one exact-identifier follow-up, then inspect the returned ranges
+  with normal file tools. Prefer those ranges over reading whole large files,
+  and stop discovery once a causal hypothesis has a focused passing test.
 - **🧬 Judge a change.** Summarize what actually changed at the entity level to decide keep / revert / continue:
   ```sh
   entire graph commit HEAD --json
@@ -288,6 +347,7 @@ Every number here is reproducible with the benchmark harness (see [Benchmark Har
 - **Full-graph build:** linear in repository size; 23K relations in 1.5s up to 2.27M relations in 25.6s across the repos above.
 - **Streaming output:** `snapshot` emits records as it parses, so memory stays bounded on very large repositories rather than materializing the whole graph in RAM.
 - **Cached committed-tree search:** reuses a tree-keyed compressed index across invocations when `ENTIRE_PLUGIN_DATA_DIR` is set, so repeated queries on an unchanged tree skip re-parsing.
+- **Explicit preindex:** `index --head` builds and verifies that same query-independent artifact before latency-sensitive agent work; cached `search` and `neighbors` calls then report the hit directly.
 
 Absolute numbers are environment-sensitive (measured on Apple Silicon). Read them as relative signals and reproduce locally with the harness.
 
@@ -314,7 +374,8 @@ For Entire and other local tools that want a stable graph rather than human diff
 
 - `snapshot --format ndjson` emits one header record, then file, external-endpoint, symbol, and relation records.
 - `symbols` / `edges` emit the same header followed by their record type.
-- `search --query ...` emits ranked, qrel-blind source regions as JSON, NDJSON, or text, bounded to 16 KiB by default.
+- `search --query ...` emits ranked, qrel-blind source regions as JSON, NDJSON, text, or compact agent output, bounded to 16 KiB by default; machine formats include partial failures, completeness, and phase-separated latency telemetry.
+- `index --head --format json` prepares a complete committed-tree search/neighbor cache and reports exact provenance, cache state, partial failures, and completeness.
 - `version`, `doctor`, and `capabilities` describe the provider, environment, and supported features.
 
 Snapshot headers carry the schema version, provider version, repository key, `HEAD` commit and tree when available, parsed languages, capability labels, warnings, partial failures, and aggregate completeness stats. File records include stable file IDs so `DEFINES` endpoints resolve. Symbol records include stable compound IDs, `stable_id_version`, kind, qualified name, source range, signature, body hash, language, and container ID when nested. External-endpoint records describe relation targets such as imported modules, routes, and tool handlers.
@@ -341,13 +402,14 @@ Environment variables and flags that shape a run:
 | Variable / flag | Effect |
 |---|---|
 | `ENTIRE_REPO_ROOT` | Repository root when running outside Entire (or use `--repo`) |
-| `ENTIRE_PLUGIN_DATA_DIR` | Enables the tree-keyed compressed index cache for committed-tree search |
+| `ENTIRE_PLUGIN_DATA_DIR` | Enables the tree-keyed compressed index cache for committed-tree index, search, and neighbor queries |
 | `--worktree` | Index live working-tree contents instead of committed `HEAD` |
 | `--no-network` | Make the no-egress contract explicit to callers |
 | `--profile syntax-only\|fast\|full` | Relation depth (structure only → shallow → complete) |
 | `--cache-dir` / `--no-cache` | Set or disable the search index cache directory |
 | `--max-indexed-files` / `--index-all-files` | Bound or exhaust cold-search parsing |
 | `--top-k` / `--max-context-bytes` | Search result count and byte budget |
+| `--internal-only` / `--exclude-tests` | Scope neighbor endpoints to production, repository-authored symbols |
 | `--ignore-file` / `--include-file` | Extra gitignore-style exclude / include rules |
 
 ---

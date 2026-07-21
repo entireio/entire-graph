@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
 func TestLanguageTiersClassifiesSemanticAndInventory(t *testing.T) {
@@ -1207,6 +1209,35 @@ func TestPythonDottedImportedCallsAllowSingleSelectorAlias(t *testing.T) {
 	}
 	if _, ok := got["call"]; ok {
 		t.Fatalf("comment/docstring dotted call synthesized import hints: %#v", got)
+	}
+}
+
+func TestPythonBareCallScannerIgnoresHashCommentsAndDocstrings(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/types.py", `class Path:
+    pass
+
+def real_call():
+    return 1
+`)
+	writeFile(t, repo, "src/consumer.py", `from .types import Path
+from .types import real_call
+
+def open_stream():
+    # Path("-") is documentation, not a constructor call.
+    """Likewise, neither Path("doc") nor real_call() executes here."""
+    return real_call()
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasRelationBySymbolNameAndFile(snapshot, "CONSTRUCTS", "open_stream", "src/consumer.py", "Path", "src/types.py") {
+		t.Fatalf("Python comment/docstring fabricated Path construction: %#v", relationsOfType(snapshot.Relations, "CONSTRUCTS"))
+	}
+	if !hasRelationBySymbolNameAndFile(snapshot, "CALLS", "open_stream", "src/consumer.py", "real_call", "src/types.py") {
+		t.Fatalf("real Python call was lost while masking comments/docstrings: %#v", relationsOfType(snapshot.Relations, "CALLS"))
 	}
 }
 
@@ -10171,7 +10202,7 @@ func TestCapabilitiesAdvertiseExpandedLanguageSet(t *testing.T) {
 			t.Fatalf("feature %s should not require network access", feature)
 		}
 	}
-	for _, feature := range []string{"stable_symbol_ids", "semantic_diff", "ndjson_snapshot"} {
+	for _, feature := range []string{"stable_symbol_ids", "semantic_diff", "ndjson_snapshot", "durable_preindex", "focused_neighbors"} {
 		if !caps.OptionalLocalOnlyFeatures[feature] {
 			t.Fatalf("optional feature %s not advertised: %#v", feature, caps.OptionalLocalOnlyFeatures)
 		}
@@ -10923,6 +10954,43 @@ func TestBuildProviderSnapshotWorktreeHonorsRootGitignore(t *testing.T) {
 	assertSnapshotOmitsPathPrefix(t, snapshot, "cache/")
 	if snapshotHasSymbol(snapshot, "ignored") {
 		t.Fatalf("snapshot included ignored symbol: %#v", snapshot.Symbols)
+	}
+}
+
+func TestOpenSourceBindsListingContentAndGitignoreToExactRevision(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	writeFile(t, repo, ".gitignore", "node_modules/*\n!node_modules/pkg/\n!node_modules/pkg/keep.py\n")
+	writeFile(t, repo, "node_modules/pkg/keep.py", "def committed_revision():\n    return True\n")
+	writeFile(t, repo, "old.py", "def old_revision():\n    return True\n")
+	git(t, repo, "add", "-f", ".")
+	git(t, repo, "commit", "-m", "first revision")
+	firstCommit, err := gitutil.RevParse(t.Context(), repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, repo, ".gitignore", "")
+	writeFile(t, repo, "node_modules/pkg/keep.py", "def moving_head():\n    return False\n")
+	writeFile(t, repo, "new.py", "def new_revision():\n    return True\n")
+	git(t, repo, "add", "-f", ".")
+	git(t, repo, "commit", "-m", "move HEAD")
+
+	paths, read, _, closeSource, err := openSource(t.Context(), repo, firstCommit, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closeSource != nil {
+		defer closeSource()
+	}
+	if !slices.Contains(paths, "old.py") || !slices.Contains(paths, "node_modules/pkg/keep.py") || slices.Contains(paths, "new.py") {
+		t.Fatalf("exact-revision paths = %#v", paths)
+	}
+	content, ok := read("node_modules/pkg/keep.py")
+	if !ok || !strings.Contains(content, "committed_revision") || strings.Contains(content, "moving_head") {
+		t.Fatalf("exact-revision content ok=%v content=%q", ok, content)
 	}
 }
 
