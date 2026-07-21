@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -224,7 +225,8 @@ func parseNeighborFlags(args []string) (neighborFlags, error) {
 			}
 			flags.Limit, index = parsed, next
 		case "--max-context-bytes":
-			parsed, next, parseErr := searchPositiveIntFlag(args, index)
+			// 0 disables the cap (unbounded), matching `graph search`.
+			parsed, next, parseErr := searchNonNegativeIntFlag(args, index)
 			if parseErr != nil {
 				return flags, parseErr
 			}
@@ -289,14 +291,30 @@ func buildNeighborResponse(snapshot sem.ProviderSnapshot, flags neighborFlags) n
 	}
 	focuses := make([]sem.SymbolRecord, 0)
 	query := strings.TrimSpace(flags.Symbol)
+	fileFilter := normalizeNeighborFileFilter(flags.File, snapshot.Header.RepoRoot)
+	exactIDFound := false
 	for _, symbol := range snapshot.Symbols {
-		if !strings.EqualFold(symbol.Name, query) && !strings.EqualFold(symbol.QualifiedName, query) {
+		if symbol.ID != query {
 			continue
 		}
-		if flags.File != "" && !strings.EqualFold(symbol.FilePath, flags.File) {
-			continue
-		}
+		// A stable symbol ID already encodes its defining file, so a stale or
+		// differently spelled --file must never veto the definition the ID
+		// names: the ID is the more precise selector, and an ID the tool
+		// itself printed has to keep resolving. --file only narrows name and
+		// qualified-name lookups below.
+		exactIDFound = true
 		focuses = append(focuses, symbol)
+	}
+	if !exactIDFound {
+		for _, symbol := range snapshot.Symbols {
+			if !strings.EqualFold(symbol.Name, query) && !strings.EqualFold(symbol.QualifiedName, query) {
+				continue
+			}
+			if fileFilter != "" && !strings.EqualFold(symbol.FilePath, fileFilter) {
+				continue
+			}
+			focuses = append(focuses, symbol)
+		}
 	}
 	sort.Slice(focuses, func(left, right int) bool {
 		if focuses[left].FilePath != focuses[right].FilePath {
@@ -432,6 +450,31 @@ func endpointForFile(file sem.FileRecord) neighborEndpoint {
 	return neighborEndpoint{
 		ID: file.ID, Name: filepath.Base(file.Path), Kind: "file", FilePath: file.Path,
 	}
+}
+
+// normalizeNeighborFileFilter canonicalizes a user-supplied --file argument to
+// the repo-relative slash form snapshot symbol paths use: backslashes become
+// forward slashes, "./" prefixes and redundant separators are cleaned away,
+// and an absolute path inside the repository is made repo-relative.
+func normalizeNeighborFileFilter(raw, repoRoot string) string {
+	cleaned := strings.ReplaceAll(strings.TrimSpace(raw), `\`, "/")
+	if cleaned == "" {
+		return ""
+	}
+	cleaned = path.Clean(cleaned)
+	root := path.Clean(strings.ReplaceAll(strings.TrimSpace(repoRoot), `\`, "/"))
+	if root != "" && root != "." && root != "/" {
+		if strings.EqualFold(cleaned, root) {
+			return ""
+		}
+		if len(cleaned) > len(root) && strings.EqualFold(cleaned[:len(root)], root) && cleaned[len(root)] == '/' {
+			cleaned = cleaned[len(root)+1:]
+		}
+	}
+	if cleaned == "." {
+		return ""
+	}
+	return cleaned
 }
 
 func neighborEndpointAllowed(endpoint neighborEndpoint, flags neighborFlags) bool {
@@ -617,16 +660,16 @@ func writeAgentNeighborsFull(out io.Writer, response neighborResponse) error {
 	)
 	writeAgentNeighborCompleteness(out, response)
 	if len(response.Matches) == 0 {
-		_, err := fmt.Fprintf(out, "No symbols matched %q. Add --file to disambiguate a known definition.\n", response.Query)
+		_, err := fmt.Fprintf(out, "No symbols matched %q. If a --file filter is set, drop it or rerun with --symbol <id> from a search result.\n", response.Query)
 		return err
 	}
 	if response.DisambiguationRequired {
 		fmt.Fprintf(out,
-			"Ambiguous symbol %q matched %d definitions; rerun with --file and, if needed, a qualified --symbol.\n",
+			"Ambiguous symbol %q matched %d definitions; rerun with --symbol <id> using an ID shown below.\n",
 			response.Query, response.FocusMatchesTotal,
 		)
 		for _, match := range response.Matches {
-			fmt.Fprintf(out, "- %s\n", formatNeighborEndpoint(match.Symbol))
+			fmt.Fprintf(out, "- %s [id: %s]\n", formatNeighborEndpoint(match.Symbol), match.Symbol.ID)
 		}
 		if response.FocusMatchesTruncated {
 			fmt.Fprintf(out, "- ... %d more definitions; increase --limit to list them\n",
@@ -695,11 +738,11 @@ func compactAgentNeighbors(response neighborResponse, budget int) []byte {
 		)
 	} else if response.DisambiguationRequired {
 		appendVariant(
-			fmt.Sprintf("Ambiguous %q: %d definitions; use --file.\n", response.Query, response.FocusMatchesTotal),
-			fmt.Sprintf("Ambiguous: %d; use --file.\n", response.FocusMatchesTotal),
+			fmt.Sprintf("Ambiguous %q: %d definitions; use --symbol <id> below.\n", response.Query, response.FocusMatchesTotal),
+			fmt.Sprintf("Ambiguous: %d; use an ID below.\n", response.FocusMatchesTotal),
 		)
 		for _, match := range response.Matches {
-			appendVariant("- " + formatNeighborEndpoint(match.Symbol) + "\n")
+			appendVariant(fmt.Sprintf("- %s [id: %s]\n", formatNeighborEndpoint(match.Symbol), match.Symbol.ID))
 		}
 	} else {
 		focus := response.Matches[0].Symbol

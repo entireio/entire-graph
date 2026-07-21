@@ -677,7 +677,7 @@ type returnFlowCall struct {
 	Direction    string
 }
 
-func returnFlowCalls(block, signature string) []returnFlowCall {
+func returnFlowCalls(block string, params map[string]bool) []returnFlowCall {
 	stripped := stripCodeLiteralsAndComments(block)
 	flows := map[string]returnFlowCall{}
 	for _, name := range returnFlowCallNames(block) {
@@ -756,31 +756,31 @@ func returnFlowCalls(block, signature string) []returnFlowCall {
 	for _, flow := range branchAssignedReturnFlows(stripped) {
 		flows[flow.Name+"\x00assigned_return_flow"] = flow
 	}
-	for _, flow := range argumentForwardingFlows(stripped, signature) {
+	for _, flow := range argumentForwardingFlows(stripped, params) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range parameterPropertyForwardingFlows(stripped, signature) {
+	for _, flow := range parameterPropertyForwardingFlows(stripped, params) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range parameterPropertyAliasForwardingFlows(stripped, signature) {
+	for _, flow := range parameterPropertyAliasForwardingFlows(stripped, params) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range aliasForwardingFlows(stripped, signature) {
+	for _, flow := range aliasForwardingFlows(stripped, params) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range destructuredAliasForwardingFlows(stripped, signature) {
+	for _, flow := range destructuredAliasForwardingFlows(stripped, params) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range objectFieldForwardingFlows(stripped, signature) {
+	for _, flow := range objectFieldForwardingFlows(stripped, params) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range collectionElementForwardingFlows(stripped, signature) {
+	for _, flow := range collectionElementForwardingFlows(stripped, params) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range callbackElementForwardingFlows(stripped, signature) {
+	for _, flow := range callbackElementForwardingFlows(stripped, params) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
-	for _, flow := range directLiteralForwardingFlows(stripped, signature) {
+	for _, flow := range directLiteralForwardingFlows(stripped, params) {
 		flows[flow.Name+"\x00"+flow.EvidenceKind+"\x00"+flow.Detail] = flow
 	}
 	out := make([]returnFlowCall, 0, len(flows))
@@ -1072,8 +1072,7 @@ func branchCallAssignments(block, variable string) []string {
 	return sortedStringSet(seen)
 }
 
-func argumentForwardingFlows(block, signature string) []returnFlowCall {
-	params := parameterNames(signature)
+func argumentForwardingFlows(block string, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
@@ -1116,8 +1115,7 @@ func argumentForwardingFlows(block, signature string) []returnFlowCall {
 	return flows
 }
 
-func parameterPropertyForwardingFlows(block, signature string) []returnFlowCall {
-	params := parameterNames(signature)
+func parameterPropertyForwardingFlows(block string, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
@@ -1181,8 +1179,7 @@ func forwardedParameterProperty(arg string, params map[string]bool) (string, str
 	return "", "", false
 }
 
-func parameterPropertyAliasForwardingFlows(block, signature string) []returnFlowCall {
-	params := parameterNames(signature)
+func parameterPropertyAliasForwardingFlows(block string, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
@@ -1242,8 +1239,7 @@ func parameterPropertyAliasForwardingFlows(block, signature string) []returnFlow
 	return flows
 }
 
-func aliasForwardingFlows(block, signature string) []returnFlowCall {
-	params := parameterNames(signature)
+func aliasForwardingFlows(block string, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
@@ -1291,8 +1287,7 @@ func aliasForwardingFlows(block, signature string) []returnFlowCall {
 	return flows
 }
 
-func destructuredAliasForwardingFlows(block, signature string) []returnFlowCall {
-	params := parameterNames(signature)
+func destructuredAliasForwardingFlows(block string, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
@@ -1374,8 +1369,7 @@ func destructuredObjectAliases(fields string) []string {
 	return sortedStringSet(seen)
 }
 
-func objectFieldForwardingFlows(block, signature string) []returnFlowCall {
-	params := parameterNames(signature)
+func objectFieldForwardingFlows(block string, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
@@ -1489,8 +1483,7 @@ func objectLiteralParamNames(fields string, params map[string]bool, aliases map[
 	return out
 }
 
-func collectionElementForwardingFlows(block, signature string) []returnFlowCall {
-	params := parameterNames(signature)
+func collectionElementForwardingFlows(block string, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
@@ -1598,8 +1591,7 @@ func collectionLiteralElementParams(block string, params map[string]bool, aliase
 	return out
 }
 
-func callbackElementForwardingFlows(block, signature string) []returnFlowCall {
-	params := parameterNames(signature)
+func callbackElementForwardingFlows(block string, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
@@ -1687,8 +1679,7 @@ func callsWithArgument(block, argName string) []string {
 	return sortedKeys(seen)
 }
 
-func directLiteralForwardingFlows(block, signature string) []returnFlowCall {
-	params := parameterNames(signature)
+func directLiteralForwardingFlows(block string, params map[string]bool) []returnFlowCall {
 	if len(params) == 0 {
 		return nil
 	}
@@ -1812,6 +1803,28 @@ func localCollectionVars(block string) map[string]bool {
 		}
 	}
 	return vars
+}
+
+// symbolFlowParameterNames returns the caller's formal parameter name set for
+// data-flow scanning. It prefers the AST-derived parameter identifiers the
+// parser recorded (JS/TS declarations), which are immune to generic clauses
+// containing parenthesized function types — `run<T extends (x: number) =>
+// void>(input: string)` — that the signature-string parse below misreads as
+// the parameter list. Symbols without AST parameter metadata (other
+// languages, synthesized entities) keep the signature-string fallback.
+func symbolFlowParameterNames(symbol SymbolRecord) map[string]bool {
+	if len(symbol.parameterNames) == 0 {
+		return parameterNames(symbol.Signature)
+	}
+	out := make(map[string]bool, len(symbol.parameterNames))
+	for _, name := range symbol.parameterNames {
+		name = strings.TrimPrefix(strings.TrimSpace(name), "$")
+		if name == "" || name == "self" || name == "this" {
+			continue
+		}
+		out[name] = true
+	}
+	return out
 }
 
 func parameterNames(signature string) map[string]bool {

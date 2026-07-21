@@ -336,9 +336,9 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		}, nil
 	}
 
-	// The provider graph and the lexical query scope are independent. A full
-	// graph gives relation expansion repository-wide context, while only the
-	// preselected files need content hydration for this query.
+	// The provider graph and lexical query scope must describe the same files.
+	// A complete preindex can supply cached parse output, but search derives the
+	// exact selective graph so cache presence cannot change relation expansion.
 	onlyFiles := selectedFiles
 	if options.IndexAllFiles || len(selectedFiles) == selection.filesScanned {
 		// Canonicalize complete snapshots to the query-independent cache key so
@@ -349,7 +349,20 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	snapshotOptions.OnlyFiles = onlyFiles
 	snapshot, cacheHit := preindexedSnapshot, preindexCacheHit
 	indexLatency := preindexLoadLatency
-	if !cacheHit {
+	if cacheHit && len(snapshotOptions.OnlyFiles) > 0 {
+		// The preindexed complete snapshot never serves a selective query
+		// directly: the loader reuses the per-query selective cache entry, only
+		// derives from the complete snapshot on a miss, and falls back to an
+		// ordinary build when derivation fails (for example after a HEAD move).
+		indexStarted = time.Now()
+		snapshot, cacheHit, err = loadOrDeriveSelectiveSearchSnapshot(
+			ctx, repo, providerVersion, snapshotOptions, options.CacheDir, options.DisableCache, preindexedSnapshot,
+		)
+		if err != nil {
+			return SearchResponse{}, err
+		}
+		indexLatency += time.Since(indexStarted)
+	} else if !cacheHit {
 		indexStarted = time.Now()
 		snapshot, cacheHit, err = loadOrBuildSearchGraphSnapshot(ctx, repo, providerVersion, snapshotOptions, options.CacheDir, options.DisableCache)
 		if err != nil {
@@ -2581,7 +2594,45 @@ func searchCandidateLess(left, right searchCandidate) bool {
 	if left.result.StartLine != right.result.StartLine {
 		return left.result.StartLine < right.result.StartLine
 	}
-	return left.result.EndLine < right.result.EndLine
+	if left.result.EndLine != right.result.EndLine {
+		return left.result.EndLine < right.result.EndLine
+	}
+	if left.result.SymbolID != right.result.SymbolID {
+		return left.result.SymbolID < right.result.SymbolID
+	}
+	if left.result.QualifiedName != right.result.QualifiedName {
+		return left.result.QualifiedName < right.result.QualifiedName
+	}
+	if left.result.SymbolName != right.result.SymbolName {
+		return left.result.SymbolName < right.result.SymbolName
+	}
+	if left.result.Kind != right.result.Kind {
+		return left.result.Kind < right.result.Kind
+	}
+	if left.result.Language != right.result.Language {
+		return left.result.Language < right.result.Language
+	}
+	if left.result.Signature != right.result.Signature {
+		return left.result.Signature < right.result.Signature
+	}
+	if left.result.FocusLine != right.result.FocusLine {
+		return left.result.FocusLine < right.result.FocusLine
+	}
+	if left.result.SnippetStartLine != right.result.SnippetStartLine {
+		return left.result.SnippetStartLine < right.result.SnippetStartLine
+	}
+	if left.result.SnippetEndLine != right.result.SnippetEndLine {
+		return left.result.SnippetEndLine < right.result.SnippetEndLine
+	}
+	if left.result.Snippet != right.result.Snippet {
+		return left.result.Snippet < right.result.Snippet
+	}
+	for index := 0; index < len(left.result.Signals) && index < len(right.result.Signals); index++ {
+		if left.result.Signals[index] != right.result.Signals[index] {
+			return left.result.Signals[index] < right.result.Signals[index]
+		}
+	}
+	return len(left.result.Signals) < len(right.result.Signals)
 }
 
 func matchingLineRegions(q searchQuery, lines []string, start, end, context, maxLines int) [][2]int {

@@ -14,6 +14,16 @@ type Entity struct {
 	// def). It is still a real symbol, but it is only callable from within its
 	// enclosing function, so call resolution must not name-match it across scopes.
 	Local bool `json:"-"`
+	// sourceStartByte/sourceEndByte are the exact tree-sitter declaration range.
+	// They are internal parse metadata: public schema and stable symbol identity
+	// intentionally remain line based. A zero start is valid when end > start.
+	sourceStartByte int
+	sourceEndByte   int
+	// parameterNames holds JS/TS parameter identifiers read from the
+	// declaration's formal_parameters AST node (internal parse metadata, like
+	// the byte range). Signature-string parsing cannot recover these reliably:
+	// generic clauses may themselves contain parenthesized function types.
+	parameterNames []string
 }
 
 type EntityChange struct {

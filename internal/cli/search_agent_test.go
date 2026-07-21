@@ -78,9 +78,30 @@ func TestAgentSearchReportsDisplayedSpanAndFocusAfterCompaction(t *testing.T) {
 	}
 }
 
-func TestSearchMaxContextBytesMustBePositive(t *testing.T) {
-	_, _, err := parseSearchFlags([]string{"--query", "x", "--max-context-bytes", "0"})
-	if err == nil || !strings.Contains(err.Error(), "must be positive") {
-		t.Fatalf("zero max context bytes error = %v", err)
+func TestSearchMaxContextBytesZeroIsUnbounded(t *testing.T) {
+	flags, rest, err := parseSearchFlags([]string{"--query", "x", "--max-context-bytes", "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rest) != 0 || flags.MaxContextBytes != 0 {
+		t.Fatalf("zero max context flags = %#v, rest = %#v", flags, rest)
+	}
+
+	response := sem.SearchResponse{Results: []sem.SearchResult{{
+		Rank: 1, FilePath: "src/service.go", StartLine: 1, EndLine: 3,
+		FocusLine: 2, SnippetStartLine: 1, SnippetEndLine: 3,
+		SymbolName: "serve", Snippet: "line one\nline two\nline three",
+	}}}
+	var out bytes.Buffer
+	if err := writeAgentSearch(&out, response, flags.MaxContextBytes); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "line one\nline two\nline three") {
+		t.Fatalf("zero context budget truncated agent output:\n%s", out.String())
+	}
+
+	if _, _, err := parseSearchFlags([]string{"--query", "x", "--max-context-bytes", "-1"}); err == nil ||
+		!strings.Contains(err.Error(), "non-negative integer") {
+		t.Fatalf("negative max context bytes error = %v", err)
 	}
 }

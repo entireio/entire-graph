@@ -117,9 +117,91 @@ func TestNeighborsLimitBoundsAmbiguousFocusMatchesDeterministically(t *testing.T
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), `Ambiguous symbol "Target" matched 3 definitions`) ||
-		!strings.Contains(out.String(), "rerun with --file") ||
+		!strings.Contains(out.String(), "rerun with --symbol <id>") ||
+		!strings.Contains(out.String(), "[id: focus-a-early]") ||
 		strings.Contains(out.String(), "c.go:1") || strings.Contains(out.String(), "Callers:") {
 		t.Fatalf("agent ambiguity output was not deterministically bounded:\n%s", out.String())
+	}
+}
+
+func TestNeighborsExactSymbolIDDisambiguatesSameFileOverloads(t *testing.T) {
+	snapshot := sem.ProviderSnapshot{
+		Symbols: []sem.SymbolRecord{
+			{ID: "process-string", Name: "Process", QualifiedName: "Service.Process", FilePath: "service.go", StartLine: 10},
+			{ID: "process-int", Name: "Process", QualifiedName: "Service.Process", FilePath: "service.go", StartLine: 20},
+			{ID: "string-callee", Name: "HandleString", QualifiedName: "HandleString", FilePath: "service.go", StartLine: 30},
+			{ID: "int-callee", Name: "HandleInt", QualifiedName: "HandleInt", FilePath: "service.go", StartLine: 40},
+		},
+		Relations: []sem.RelationRecord{
+			{FromID: "process-string", ToID: "string-callee", Type: "CALLS"},
+			{FromID: "process-int", ToID: "int-callee", Type: "CALLS"},
+		},
+	}
+
+	for _, test := range []struct {
+		id     string
+		callee string
+	}{
+		{id: "process-string", callee: "string-callee"},
+		{id: "process-int", callee: "int-callee"},
+	} {
+		t.Run(test.id, func(t *testing.T) {
+			response := buildNeighborResponse(snapshot, neighborFlags{
+				Symbol: test.id, Relation: "CALLS", Direction: "out", Depth: 1, Limit: 20,
+			})
+			if response.DisambiguationRequired || response.FocusMatchesTotal != 1 || len(response.Matches) != 1 {
+				t.Fatalf("ID lookup did not select exactly one overload: %#v", response)
+			}
+			match := response.Matches[0]
+			if match.Symbol.ID != test.id || len(match.Outgoing) != 1 || match.Outgoing[0].Endpoint.ID != test.callee {
+				t.Fatalf("ID lookup adjacency = %#v, want focus %q -> %q", match, test.id, test.callee)
+			}
+		})
+	}
+	// The ID already encodes the defining file, so a stale or mismatched
+	// --file must not turn a valid ID lookup into an empty result.
+	for _, staleFile := range []string{"other.go", "./service.go", `sub\service.go`, "/somewhere/else/service.go"} {
+		mismatchedFile := buildNeighborResponse(snapshot, neighborFlags{
+			Symbol: "process-string", File: staleFile, Relation: "CALLS", Direction: "out", Depth: 1, Limit: 20,
+		})
+		if mismatchedFile.FocusMatchesTotal != 1 || len(mismatchedFile.Matches) != 1 ||
+			mismatchedFile.Matches[0].Symbol.ID != "process-string" {
+			t.Fatalf("--file %q suppressed the exact ID lookup: %#v", staleFile, mismatchedFile)
+		}
+	}
+
+	ambiguous := buildNeighborResponse(snapshot, neighborFlags{
+		Symbol: "Service.Process", Relation: "CALLS", Direction: "out", Depth: 1, Limit: 20,
+	})
+	var out bytes.Buffer
+	if err := writeAgentNeighbors(&out, ambiguous); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"--symbol <id>", "[id: process-string]", "[id: process-int]"} {
+		if !strings.Contains(out.String(), expected) {
+			t.Fatalf("ambiguity output omitted selectable ID %q:\n%s", expected, out.String())
+		}
+	}
+}
+
+func TestNeighborsFileFilterNormalizesPathSpellings(t *testing.T) {
+	snapshot := sem.ProviderSnapshot{
+		Header: sem.SnapshotHeader{RepoRoot: "/repo/root"},
+		Symbols: []sem.SymbolRecord{
+			{ID: "focus-one", Name: "Target", QualifiedName: "Target", FilePath: "src/one.py", StartLine: 1},
+			{ID: "focus-two", Name: "Target", QualifiedName: "Target", FilePath: "src/two.py", StartLine: 1},
+		},
+	}
+	for _, file := range []string{
+		"src/one.py", "./src/one.py", "src//one.py", `src\one.py`, "/repo/root/src/one.py",
+	} {
+		response := buildNeighborResponse(snapshot, neighborFlags{
+			Symbol: "Target", File: file, Relation: "CALLS", Direction: "both", Depth: 1, Limit: 20,
+		})
+		if response.DisambiguationRequired || len(response.Matches) != 1 ||
+			response.Matches[0].Symbol.ID != "focus-one" {
+			t.Fatalf("--file %q did not select the src/one.py definition: %#v", file, response)
+		}
 	}
 }
 
@@ -430,16 +512,48 @@ func TestAgentNeighborsExactByteCapPreservesCoverageAndTruncationMarkers(t *test
 	}
 }
 
-func TestNeighborMaxContextBytesMustBePositive(t *testing.T) {
-	_, err := parseNeighborFlags([]string{"--symbol", "Focus", "--max-context-bytes", "0"})
-	if err == nil || !strings.Contains(err.Error(), "must be positive") {
-		t.Fatalf("zero max context bytes error = %v", err)
+func TestNeighborMaxContextBytesZeroMeansUnbounded(t *testing.T) {
+	flags, err := parseNeighborFlags([]string{"--symbol", "Focus", "--max-context-bytes", "0"})
+	if err != nil {
+		t.Fatalf("zero max context bytes was rejected: %v", err)
 	}
-	flags, err := parseNeighborFlags([]string{"--symbol", "Focus"})
+	if flags.MaxContextBytes != 0 {
+		t.Fatalf("max context bytes = %d, want 0 (unbounded)", flags.MaxContextBytes)
+	}
+	if _, err := parseNeighborFlags([]string{"--symbol", "Focus", "--max-context-bytes", "-1"}); err == nil ||
+		!strings.Contains(err.Error(), "non-negative") {
+		t.Fatalf("negative max context bytes error = %v", err)
+	}
+	flags, err = parseNeighborFlags([]string{"--symbol", "Focus"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if flags.MaxContextBytes != defaultNeighborContextBytes {
 		t.Fatalf("default max context bytes = %d, want %d", flags.MaxContextBytes, defaultNeighborContextBytes)
+	}
+
+	// A zero budget must emit the full agent output rather than the compact
+	// truncated form, mirroring `graph search` unbounded semantics.
+	response := neighborResponse{
+		Query: "Focus",
+		Matches: []neighborFocus{{
+			Symbol: neighborEndpoint{ID: "focus", Name: "Focus", FilePath: "src/focus.go", StartLine: 10},
+		}},
+	}
+	for index := 0; index < 50; index++ {
+		response.Matches[0].Incoming = append(response.Matches[0].Incoming, neighborEdge{
+			Direction: "in", Relation: "CALLS", Resolution: "exact",
+			Endpoint: neighborEndpoint{ID: fmt.Sprintf("caller-%d", index), Name: fmt.Sprintf("Caller%d", index), FilePath: fmt.Sprintf("src/caller_%d.go", index), StartLine: index + 1},
+		})
+	}
+	var unbounded, full bytes.Buffer
+	if err := writeAgentNeighborsBounded(&unbounded, response, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAgentNeighbors(&full, response); err != nil {
+		t.Fatal(err)
+	}
+	if unbounded.String() != full.String() || strings.Contains(unbounded.String(), "!output-truncated") {
+		t.Fatalf("zero budget did not behave as unbounded:\n%s", unbounded.String())
 	}
 }

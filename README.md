@@ -116,7 +116,7 @@ For a one-command local source install run `scripts/install-local.sh`; it builds
 | `entire graph checkpoint <id>` | Semantic diff for the commit behind an Entire checkpoint trailer |
 | `entire graph index --head --profile full` | Prebuild a durable, query-independent index for committed `HEAD` |
 | `entire graph search --query "..."` | 🔍 Ranked source regions for a natural-language task |
-| `entire graph neighbors --symbol NAME` | Direct graph neighbors and bounded two-hop paths for a symbol |
+| `entire graph neighbors --symbol NAME_OR_ID` | Direct graph neighbors and bounded two-hop paths for a symbol |
 | `entire graph snapshot --format ndjson` | 🕸️ Full graph stream: header + files + symbols + relations |
 | `entire graph symbols --format ndjson` | Symbols only (filtered snapshot view) |
 | `entire graph edges --format ndjson` | Relations only (filtered snapshot view) |
@@ -190,7 +190,7 @@ Behavior and budgets:
 - **Focused regions.** Semantic results span at most 80 lines by default, keeping locations precise while snippets remain independently capped at 40 lines. Override with `--max-region-lines` and `--max-snippet-lines` when broader context is useful.
 - **Cold search** scans files without parsing, then indexes an adaptive pool of 96–256 query-relevant files based on the requested `--top-k`. Shallow searches of up to 20 results retain the 96-file interactive latency bound. Deeper rankings add a corpus-wide sparse pass over eligible files up to 2 MiB, while syntax parsing remains bounded to the adaptive pool; this deliberately spends more time for region recall inside large files. Override the parsing pool with `--max-indexed-files`, or force exhaustive parsing with `--index-all-files`.
 - **Profiles.** The default `syntax-only` profile avoids synchronous whole-repository graph construction; `--profile fast` adds local relation expansion when deeper semantic indexing is worth the cost.
-- **Caching.** When Entire supplies `ENTIRE_PLUGIN_DATA_DIR`, committed-tree searches reuse a tree-keyed compressed index across invocations. Direct callers can set `--cache-dir`; `--no-cache` disables persistence. A complete cache prepared by `index` also serves selective searches without changing their result set. Worktree searches never reuse committed indexes, avoiding stale results after edits.
+- **Caching.** When Entire supplies `ENTIRE_PLUGIN_DATA_DIR`, committed-tree searches reuse a tree-keyed compressed index across invocations. Direct callers can set `--cache-dir`; `--no-cache` disables persistence. A complete cache prepared by `index` also serves selective searches without letting relation expansion escape the query-selected file set. Worktree searches never reuse committed indexes, avoiding stale results after edits.
 
 For structural follow-up after search identifies a symbol, query its graph
 neighborhood directly instead of streaming and filtering every edge:
@@ -206,10 +206,11 @@ caller → focus → callee paths.
 `--relation` selects another relation family, `--direction` limits the side,
 `--internal-only` removes unresolved external endpoints, `--exclude-tests`
 removes conventional test-only neighbors, and `--limit` bounds definition lists,
-neighbor lists, and two-hop paths. Ambiguous symbols return definitions only
-and require `--file` (plus a qualified `--symbol` when necessary) before any
-adjacency is expanded. JSON reports how many definitions were omitted and
-carries the underlying index's partial failures and completeness breakdown.
+neighbor lists, and two-hop paths. Ambiguous symbols return definitions with
+their stable IDs; pass one of those IDs back to `--symbol` to select an overload
+that a file path or qualified name cannot distinguish. JSON reports how many
+definitions were omitted and carries the underlying index's partial failures
+and completeness breakdown.
 Agent output represents a complete two-hop Cartesian family compactly instead
 of repeating every path. The default full profile favors
 relationship correctness; use `--profile fast` when shallow call resolution is
