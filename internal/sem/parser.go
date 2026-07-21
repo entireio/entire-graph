@@ -6289,9 +6289,7 @@ func isNameNode(nodeType string) bool {
 func signatureFromNode(node *sitter.Node, src []byte) string {
 	start := node.StartByte()
 	end := node.EndByte()
-	if body := node.ChildByFieldName("body"); validNode(body) {
-		end = body.StartByte()
-	} else if body := firstBodyLikeChild(node); validNode(body) {
+	if body := signatureBodyBoundary(node); validNode(body) {
 		end = body.StartByte()
 	}
 	if end <= start || int(end) > len(src) {
@@ -6305,6 +6303,32 @@ func signatureFromNode(node *sitter.Node, src []byte) string {
 	// EXTENDS/INHERITS edges silently disappear for that type).
 	signature = strings.Join(strings.Fields(signature), " ")
 	return strings.TrimSpace(strings.TrimRight(signature, "{:; \t\r\n"))
+}
+
+// signatureBodyBoundary returns the node whose start byte marks the end of a
+// symbol's signature (i.e. where the body begins), or nil if none applies.
+func signatureBodyBoundary(node *sitter.Node) *sitter.Node {
+	if body := node.ChildByFieldName("body"); validNode(body) {
+		return body
+	}
+	// A JS/TS variable or class field bound to a function value
+	// (`const f = (a, b) => {…}`, `create = function () {…}`) keeps the body
+	// inside the value node, so the declarator/field itself exposes no `body`
+	// field. Descend into the function-like value and cut at *its* body,
+	// otherwise the entire function body leaks into the signature and any body
+	// edit reads as a signature change.
+	if value := node.ChildByFieldName("value"); functionLikeValue(value) {
+		if body := value.ChildByFieldName("body"); validNode(body) {
+			return body
+		}
+		if body := firstBodyLikeChild(value); validNode(body) {
+			return body
+		}
+	}
+	if body := firstBodyLikeChild(node); validNode(body) {
+		return body
+	}
+	return nil
 }
 
 func firstBodyLikeChild(node *sitter.Node) *sitter.Node {
