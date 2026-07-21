@@ -604,3 +604,36 @@ Replacing smallest-span with earliest-start (outermost matching containing scope
 No repo files were modified; all probes ran in a copy under the scratchpad.</result>
 <usage><subagent_tokens>70108</subagent_tokens><tool_uses>24</tool_uses><duration_ms>485651</duration_ms></usage>
 </task-notification>
+
+---
+
+<task-notification>
+<task-id>aef6d7c9c69f39ab5</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/fffff083-8032-496a-81ae-244c3c25ea0f/tasks/aef6d7c9c69f39ab5.output</output-file>
+<status>completed</status>
+<summary>Agent "Verify failure-dedup and chain refactor" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All verification complete. Final report:
+
+## Verdict per angle
+
+**Angle 1 — failure order/stats invariant: HOLDS.**
+Probe (`TestProbeDerivedSelectiveMatchesFreshWithCrossPhaseFailures`, run in a scratchpad copy of HEAD): repo with `a.ts` (entity OK, relation-phase jsScan timeout), `b.ts` (entity `E_PARSE_ERROR` + relation `E_PARSE_TIMEOUT` — two codes, one file), `big.go` (`E_FILE_TOO_LARGE`), clean `c.go`, and a failing `excluded.ts` outside the selection. With `jsScanParseTimeout=1ns`, preindex-derived selective vs fresh selective (`LoadOrBuildProviderSnapshot` cached vs `disableCache`) produced byte-identical results — `reflect.DeepEqual` on the whole snapshot, on `PartialFailures` (same order: `[E_PARSE_ERROR:b.ts, E_FILE_TOO_LARGE:big.go, E_PARSE_TIMEOUT:a.ts, E_PARSE_TIMEOUT:b.ts]` — entity phase first, relation phase appended), and on `Stats` (`PartialFailures:4, CompletenessLevel:unsafe`). No duplicates, no `excluded.ts` leak, `assertSelectiveSnapshotAccounting` holds for both.
+
+**Angle 2 — double-fire: HOLDS (structurally impossible).**
+There is exactly one `recordFailure` firing point (`internal/sem/provider.go:2779-2784`), guarding the single `newJSScanState` per file (line 2778); the per-symbol pass and the top-level pass share that one `jsScanState` (top-level uses `jsScan.topLevelNamespaceCalls` at line 3328, same loop iteration). `buildJSScanState` returns a non-nil state on error, so the shared reuse is nil-safe. Probe (`TestProbeRelationFailureFiresOncePerFile`): a large TS file with both a symbol-body namespace call and a statement-position namespace call, driven through `forEachRelation` with a counting callback at 1ns budget → exactly one invocation (`[E_PARSE_TIMEOUT src/both.ts]`). Defense in depth: `mergePartialFailures` (provider.go:727) marks `seen` as it appends, so duplicates *within* `extra` also collapse.
+
+**Angle 3 — chain-refactor equivalence: HOLDS, with one evidentiary caveat.**
+The requested "diff against the previous commit" is impossible: the extraction landed atomically inside 093d733 — no commit reachable from any ref contains the pre-refactor inline copies (verified by a full `git rev-list --all` scan for trees having `resolveJSMergedDeclarationMemberTargets` without `resolveJSNamespaceCallChain`: zero hits; the `entire/checkpoints/v1` branch stores only transcripts, and the implementing subagent's Edit calls are not captured in them). What is verifiable: (a) the round-4 implementation report preserved in the checkpoint transcript states the top-level site's `nil` is "its previous unguarded behavior"; (b) the per-symbol closure at provider.go:2997-2999 (`terminal == from.Name || childNamesByContainer[from.ID][terminal]`) exactly mirrors the bare-name loop guards at 2978/2985; (c) probes: direct call of `resolveJSNamespaceCallChain` with the site-1 closure yields 0 targets while `nil` yields the 1 cross-file target (guard not accidentally unified); end-to-end, a function `bar` calling `B.bar()` produces no self-terminal edge, and the top-level pseudo-symbol path takes the same `resolveCallTargets(terminal, fileSource, ...)` shape as the adjacent non-namespace top-level branch (line 3377), so its edge-declination in the e2e probe is shared resolver behavior, not an extraction artifact.
+
+**Angle 4 — shim commit 093d733: HOLDS.**
+`go build ./...` on a `git archive` extraction of 093d733 exits 0 (only a vendored tree-sitter C warning). At 093d733 the no-op `func(PartialFailure) {}` exists solely at the derived-selective site in `search_cache.go`; the only other non-real sink is `buildRelations` passing `nil`, which has zero production callers (test-only). `StreamSnapshot` at 093d733 already does the real accumulate+merge, so every shipped build path (cold build, preindex, `BuildProviderSnapshotWithOptions`) reports failures; the derived path falls back to the filtered full-header failures, which deterministically contain the same records — the only theoretical loss at 093d733 is a timeout that fires in the selective re-scan but not the full build (nondeterministic), and that is precisely the site 8eb5b9a replaces (`-func(PartialFailure) {}` → accumulate + `mergePartialFailures(failures, relationFailures)`, confirmed in the 093d733..8eb5b9a diff).
+
+## Overall: CONFIRMED-SOUND
+
+Two cosmetic (non-behavioral) doc nits found: the comment above `filterSearchPartialFailures` (`internal/sem/search_cache.go:522`) names `mergePartialFailures`, and in `internal/sem/provider.go` the `mergePartialFailures` doc (line 714) is inserted directly between `StreamSnapshot`'s doc block (702-713) and its own func, leaving `StreamSnapshot` (line 733) with a misattached godoc.
+
+Regression cross-check: all five existing failure-related tests (`TestStreamSnapshotDedupesSameCodeFailuresAcrossPhases`, `TestStreamSnapshotFreshBuildReportsNoDuplicateFailures`, `TestMergePartialFailuresDeduplicatesByCodeAndFile`, `TestFullPreindexSelectiveSnapshotFiltersFailureStats`, `TestWarmSelectiveDerivationFailureFallsBackToFreshBuild`) pass. The repo working tree was not touched; all probes ran in `/private/tmp/...scratchpad/head` and `/...scratchpad/c093`.</result>
+<usage><subagent_tokens>107891</subagent_tokens><tool_uses>56</tool_uses><duration_ms>734235</duration_ms></usage>
+</task-notification>
