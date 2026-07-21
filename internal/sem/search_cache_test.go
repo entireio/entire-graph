@@ -10,7 +10,129 @@ import (
 	"testing"
 )
 
-func TestFullPreindexSelectiveSnapshotMatchesUncachedAcrossFileBoundary(t *testing.T) {
+func TestSearchSnapshotCachePreservesSymbolByteRanges(t *testing.T) {
+	snapshot := ProviderSnapshot{Symbols: []SymbolRecord{{
+		ID:              "symbol-id",
+		sourceStartByte: 17,
+		sourceEndByte:   43,
+		parameterNames:  []string{"B", "value"},
+	}}}
+	cache := newCachedSearchSnapshot("test-version", "commit", "tree", ProviderSnapshotOptions{Profile: ProfileFull}, snapshot)
+	path := filepath.Join(t.TempDir(), "snapshot.json.gz")
+	if err := writeSearchSnapshot(path, cache); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := readSearchSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restored.Snapshot.Symbols) != 1 {
+		t.Fatalf("restored symbols = %#v", restored.Snapshot.Symbols)
+	}
+	symbol := restored.Snapshot.Symbols[0]
+	if symbol.sourceStartByte != 17 || symbol.sourceEndByte != 43 {
+		t.Fatalf("restored byte range = [%d,%d), want [17,43)", symbol.sourceStartByte, symbol.sourceEndByte)
+	}
+	if !reflect.DeepEqual(symbol.parameterNames, []string{"B", "value"}) {
+		t.Fatalf("restored private parameter names = %#v", symbol.parameterNames)
+	}
+}
+
+func TestSearchSnapshotProvenanceIgnoresRepoKeyDrift(t *testing.T) {
+	header := SnapshotHeader{RepoKey: "local/fallback-after-transient-remote-failure", Commit: "commit", Tree: "tree"}
+	if searchSnapshotProvenanceChanged(header, "commit", "tree") {
+		t.Fatal("repo-key drift alone must not abort a build whose commit/tree provenance is intact")
+	}
+	if !searchSnapshotProvenanceChanged(header, "other-commit", "tree") {
+		t.Fatal("commit change must still be detected")
+	}
+	if !searchSnapshotProvenanceChanged(header, "commit", "other-tree") {
+		t.Fatal("tree change must still be detected")
+	}
+}
+
+func TestMergePartialFailuresDeduplicatesByCodeAndFile(t *testing.T) {
+	base := []PartialFailure{{Code: "E_PARSE_TIMEOUT", FilePath: "src/a.ts"}}
+	merged := mergePartialFailures(base, []PartialFailure{
+		{Code: "E_PARSE_TIMEOUT", FilePath: "src/a.ts", Detail: "duplicate"},
+		{Code: "E_PARSE_TIMEOUT", FilePath: "src/b.ts"},
+	})
+	if len(merged) != 2 {
+		t.Fatalf("merged failures = %#v, want the duplicate dropped and the new file kept", merged)
+	}
+	if merged[1].FilePath != "src/b.ts" {
+		t.Fatalf("merged failures = %#v, want src/b.ts appended", merged)
+	}
+}
+
+func TestSelectiveFastSearchSnapshotPreservesCachedParameterShadows(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "src/parser.ts", `namespace B { export function parse() {} }
+interface Client { parse(): void }
+export function run(B: Client) { B.parse(); }
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	cacheDir := t.TempDir()
+	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{Profile: ProfileFast}, cacheDir); err != nil {
+		t.Fatal(err)
+	}
+	selective, cacheHit, err := loadOrBuildSearchGraphSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{Profile: ProfileFast, OnlyFiles: []string{"src/parser.ts"}}, cacheDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cacheHit {
+		t.Fatal("fast selective snapshot did not derive from complete cache")
+	}
+	if hasRelationByLastSegment(selective.Relations, "CALLS", "run", "parse") {
+		t.Fatalf("cached fast selective snapshot lost parameter shadow: %#v", relationsOfType(selective.Relations, "CALLS"))
+	}
+}
+
+func TestSelectiveSearchSnapshotUsesCachedSymbolByteRanges(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	source := `namespace A { export function parse(value: string) {} export namespace B { export function parse(value: number) {} } } export function run() { A.B.parse(1); }`
+	write(t, repo, "src/parser.ts", source)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cacheDir := t.TempDir()
+	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{Profile: ProfileFull}, cacheDir); err != nil {
+		t.Fatal(err)
+	}
+	selective, cacheHit, err := loadOrBuildSearchGraphSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Profile:   ProfileFull,
+		OnlyFiles: []string{"src/parser.ts"},
+	}, cacheDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cacheHit {
+		t.Fatal("selective snapshot did not derive from the complete cache")
+	}
+	var calls []RelationRecord
+	for _, relation := range selective.Relations {
+		if relation.Type == "CALLS" {
+			calls = append(calls, relation)
+		}
+	}
+	symbolsByID := make(map[string]SymbolRecord, len(selective.Symbols))
+	for _, symbol := range selective.Symbols {
+		symbolsByID[symbol.ID] = symbol
+	}
+	namespaces := jsNamespaceBySymbolID(source, selective.Symbols, jsNamespaceScopes(source))
+	if len(calls) != 1 || symbolsByID[calls[0].FromID].Name != "run" || symbolsByID[calls[0].ToID].Name != "parse" || namespaces[calls[0].ToID] != "A.B" || calls[0].Resolution != "exact" {
+		t.Fatalf("cached selective namespace calls = %#v, want only exact run -> A.B.parse", calls)
+	}
+}
+
+func TestLateFullPreindexHitDerivesSelectiveSnapshotAcrossFileBoundary(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
@@ -45,7 +167,11 @@ export function helperFunction(): string { return "helper"; }
 		Profile:   ProfileFull,
 		OnlyFiles: []string{"src/caller.ts"},
 	}
-	cached, cacheHit, err := LoadOrBuildProviderSnapshot(
+	// This directly exercises the state reached when SearchRepository misses the
+	// complete cache during its initial probe, then another process publishes the
+	// full snapshot before the graph loader runs. The late full-cache hit must be
+	// derived into the requested OnlyFiles view, never returned verbatim.
+	cached, cacheHit, err := loadOrBuildSearchGraphSnapshot(
 		t.Context(), repo, "test-version", selectiveOptions, cacheDir, false,
 	)
 	if err != nil {
@@ -201,7 +327,7 @@ func NeedleTarget() bool { return true }
 		Profile:   ProfileSyntaxOnly,
 		OnlyFiles: []string{"target/needle.go"},
 	}
-	selectiveKey, err := searchSnapshotKey(repo, "test-version", preindexed.Header.Commit, preindexed.Header.Tree, selectiveProviderOptions)
+	selectiveKey, err := searchSnapshotKey(repo, preindexed.Header.RepoKey, "test-version", preindexed.Header.Commit, preindexed.Header.Tree, selectiveProviderOptions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,14 +342,14 @@ func NeedleTarget() bool { return true }
 	if cached.Stats.FilesIndexed != 1 {
 		t.Fatalf("selective search indexed %d files, want 1", cached.Stats.FilesIndexed)
 	}
-	if cached.Stats.SymbolsConsidered != len(preindexed.Symbols) {
-		t.Fatalf("search considered %d symbols, want complete cached graph with %d", cached.Stats.SymbolsConsidered, len(preindexed.Symbols))
+	if cached.Stats.SymbolsConsidered != 1 {
+		t.Fatalf("search considered %d symbols, want the one symbol in the selective cached graph", cached.Stats.SymbolsConsidered)
 	}
 	if cached.Stats.QueryFilesRead == 0 || cached.Stats.QueryBytesRead == 0 || cached.Stats.QueryFilesRead >= len(preindexed.Files) {
 		t.Fatalf("query content reads were not bounded to candidate scope: %#v", cached.Stats)
 	}
-	if _, statErr := os.Stat(selectivePath); !os.IsNotExist(statErr) {
-		t.Fatalf("warm search materialized a query-specific graph cache at %s: %v", selectivePath, statErr)
+	if _, statErr := os.Stat(selectivePath); statErr != nil {
+		t.Fatalf("warm search did not persist the per-query selective graph cache at %s: %v", selectivePath, statErr)
 	}
 	if len(cached.Results) == 0 || cached.Results[0].SymbolName != "NeedleTarget" {
 		t.Fatalf("preindexed search lost target: %#v", cached.Results)
@@ -246,6 +372,232 @@ func NeedleTarget() bool { return true }
 	}
 	if !secondHit {
 		t.Fatal("second preindex did not reuse the complete cache")
+	}
+}
+
+func TestFullPreindexSearchMatchesColdSelectiveGraphExpansion(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "target/entry.go", `package target
+
+// NeedlePolicy handles frobnication for a request.
+func NeedlePolicy() { helper() }
+`)
+	write(t, repo, "target/helper.go", `package target
+
+func helper() {}
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	const query = "NeedlePolicy frobnication"
+	baseOptions := SearchOptions{
+		Profile:         ProfileFull,
+		TopK:            10,
+		MaxIndexedFiles: 1,
+	}
+	coldOptions := baseOptions
+	coldOptions.DisableCache = true
+	cold, err := SearchRepository(t.Context(), repo, "test-version", query, coldOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cold.Stats.FilesIndexed != 1 {
+		t.Fatalf("cold search indexed %d files, want one", cold.Stats.FilesIndexed)
+	}
+
+	cacheDir := t.TempDir()
+	preindexed, cacheHit, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Profile: ProfileFull,
+	}, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cacheHit {
+		t.Fatal("first full preindex unexpectedly hit cache")
+	}
+	warmOptions := baseOptions
+	warmOptions.CacheDir = cacheDir
+	warm, err := SearchRepository(t.Context(), repo, "test-version", query, warmOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !warm.Stats.IndexCacheHit || warm.Stats.FilesIndexed != 1 {
+		t.Fatalf("warm selective search did not reuse the full preindex correctly: %#v", warm.Stats)
+	}
+	if warm.Stats.SymbolsConsidered >= len(preindexed.Symbols) || warm.Stats.SymbolsConsidered != cold.Stats.SymbolsConsidered {
+		t.Fatalf("warm search used a different graph scope: warm=%#v cold=%#v preindex_symbols=%d", warm.Stats, cold.Stats, len(preindexed.Symbols))
+	}
+	if !reflect.DeepEqual(warm.Results, cold.Results) {
+		t.Fatalf("full preindex changed selective graph expansion:\nwarm=%#v\ncold=%#v", warm.Results, cold.Results)
+	}
+	for _, result := range warm.Results {
+		if result.SymbolName == "helper" {
+			t.Fatalf("warm selective search expanded across the unselected file boundary: %#v", warm.Results)
+		}
+	}
+}
+
+func TestWarmSelectiveSearchPersistsAndReusesPerQueryCache(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	for index := 0; index < 12; index++ {
+		write(t, repo, fmt.Sprintf("noise/file_%02d.go", index), fmt.Sprintf(
+			"package noise\nfunc Noise%d() int { return %d }\n", index, index,
+		))
+	}
+	write(t, repo, "target/needle.go", `package target
+
+// NeedleTarget handles the repeated warm selective query.
+func NeedleTarget() bool { return true }
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cacheDir := t.TempDir()
+	preindexed, _, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Profile: ProfileSyntaxOnly,
+	}, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectiveOptions := ProviderSnapshotOptions{
+		Profile:   ProfileSyntaxOnly,
+		OnlyFiles: []string{"target/needle.go"},
+	}
+	selectiveKey, err := searchSnapshotKey(repo, preindexed.Header.RepoKey, "test-version", preindexed.Header.Commit, preindexed.Header.Tree, selectiveOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectivePath := filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, selectiveKey+".json.gz")
+
+	options := SearchOptions{
+		Profile:         ProfileSyntaxOnly,
+		TopK:            5,
+		MaxIndexedFiles: 1,
+		CacheDir:        cacheDir,
+	}
+	const query = "NeedleTarget warm selective query"
+	first, err := SearchRepository(t.Context(), repo, "test-version", query, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Stats.IndexCacheHit || first.Stats.FilesIndexed != 1 {
+		t.Fatalf("first warm search did not reuse the complete preindex: %#v", first.Stats)
+	}
+	if len(first.Results) == 0 || first.Results[0].SymbolName != "NeedleTarget" {
+		t.Fatalf("first warm search lost target: %#v", first.Results)
+	}
+	persisted, statErr := os.Stat(selectivePath)
+	if statErr != nil {
+		t.Fatalf("first warm search did not persist the per-query selective entry at %s: %v", selectivePath, statErr)
+	}
+
+	second, err := SearchRepository(t.Context(), repo, "test-version", query, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Stats.IndexCacheHit {
+		t.Fatalf("second warm search missed the selective cache: %#v", second.Stats)
+	}
+	if !reflect.DeepEqual(second.Results, first.Results) {
+		t.Fatalf("selective cache entry changed retrieval:\nfirst=%#v\nsecond=%#v", first.Results, second.Results)
+	}
+	reused, statErr := os.Stat(selectivePath)
+	if statErr != nil {
+		t.Fatalf("second warm search lost the selective entry: %v", statErr)
+	}
+	if !reused.ModTime().Equal(persisted.ModTime()) {
+		t.Fatalf("second warm search re-derived and rewrote the selective entry: first=%v second=%v", persisted.ModTime(), reused.ModTime())
+	}
+
+	// With the complete preindex entry gone, re-derivation is impossible: only
+	// the persisted per-query entry can keep the third identical search a hit.
+	fullKey, err := searchSnapshotKey(repo, preindexed.Header.RepoKey, "test-version", preindexed.Header.Commit, preindexed.Header.Tree, ProviderSnapshotOptions{
+		Profile: ProfileSyntaxOnly,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, fullKey+".json.gz")); err != nil {
+		t.Fatal(err)
+	}
+	third, err := SearchRepository(t.Context(), repo, "test-version", query, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !third.Stats.IndexCacheHit {
+		t.Fatalf("persisted selective entry was not reused after preindex removal: %#v", third.Stats)
+	}
+	if !reflect.DeepEqual(third.Results, first.Results) {
+		t.Fatalf("persisted selective entry changed retrieval:\nfirst=%#v\nthird=%#v", first.Results, third.Results)
+	}
+}
+
+func TestWarmSelectiveDerivationFailureFallsBackToFreshBuild(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "target/entry.go", `package target
+
+// NeedlePolicy handles frobnication for a request.
+func NeedlePolicy() { helper() }
+`)
+	write(t, repo, "target/helper.go", `package target
+
+func helper() {}
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cacheDir := t.TempDir()
+	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Profile: ProfileFull,
+	}, cacheDir); err != nil {
+		t.Fatal(err)
+	}
+	full, hit, err := loadCachedCompleteSearchSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Profile: ProfileFull,
+	}, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hit {
+		t.Fatal("preindexed complete snapshot did not load")
+	}
+
+	// This directly exercises the state reached when SearchRepository probes the
+	// complete cache successfully and HEAD then advances before derivation: the
+	// stale in-memory snapshot must not fail the search.
+	git(t, repo, "commit", "--allow-empty", "-m", "advance HEAD after preindex probe")
+	selectiveOptions := ProviderSnapshotOptions{
+		Profile:   ProfileFull,
+		OnlyFiles: []string{"target/entry.go"},
+	}
+	if _, deriveErr := selectiveSearchSnapshotFromFull(t.Context(), repo, "test-version", selectiveOptions, full); deriveErr == nil {
+		t.Fatal("stale complete snapshot no longer fails derivation; fixture does not simulate a provenance mismatch")
+	}
+	snapshot, cacheHit, err := loadOrDeriveSelectiveSearchSnapshot(t.Context(), repo, "test-version", selectiveOptions, cacheDir, false, full)
+	if err != nil {
+		t.Fatalf("warm derivation failure was not treated as soft: %v", err)
+	}
+	if cacheHit {
+		t.Fatal("stale-preindex fallback unexpectedly reported a cache hit")
+	}
+	if snapshot.Header.Commit == full.Header.Commit {
+		t.Fatalf("fallback did not rebuild at the advanced HEAD: %#v", snapshot.Header)
+	}
+	fresh, _, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test-version", selectiveOptions, cacheDir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(snapshot, fresh) {
+		t.Fatalf("fallback snapshot differs from uncached OnlyFiles build:\nfallback=%#v\nfresh=%#v", snapshot, fresh)
 	}
 }
 
@@ -548,6 +900,87 @@ func TestPreindexProviderSnapshotDoesNotReuseSameTreeAcrossCommits(t *testing.T)
 	}
 }
 
+func TestSearchSnapshotCacheDoesNotReuseRepoKeyAfterRemoteChanges(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "remote", "add", "origin", "https://github.com/acme/legacy.git")
+	write(t, repo, "target/needle.go", `package target
+
+// IdentitySensitiveTarget finds the repository identity cache regression.
+func IdentitySensitiveTarget() bool { return true }
+`)
+	write(t, repo, "noise/unrelated.go", "package noise\nfunc Unrelated() bool { return false }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cacheDir := t.TempDir()
+	preindexed, cacheHit, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Profile: ProfileSyntaxOnly,
+	}, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cacheHit {
+		t.Fatal("first preindex unexpectedly hit cache")
+	}
+	if preindexed.Header.RepoKey != "gh/acme/legacy" {
+		t.Fatalf("initial repo key = %q, want gh/acme/legacy", preindexed.Header.RepoKey)
+	}
+	commit, tree := preindexed.Header.Commit, preindexed.Header.Tree
+
+	git(t, repo, "remote", "set-url", "origin", "https://github.com/acme/renamed.git")
+	currentCommit, currentTree, err := resolveCommittedHEAD(t.Context(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentCommit != commit || currentTree != tree {
+		t.Fatalf("remote-only change altered HEAD provenance: got %s/%s, want %s/%s", currentCommit, currentTree, commit, tree)
+	}
+
+	if _, staleHit, err := loadCachedCompleteSearchSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Profile: ProfileSyntaxOnly,
+	}, cacheDir); err != nil {
+		t.Fatal(err)
+	} else if staleHit {
+		t.Fatal("full preindex with the old repository key was reported as usable")
+	}
+
+	assertNewRepoKeyResult := func(name string, response SearchResponse) {
+		t.Helper()
+		if response.Stats.IndexCacheHit {
+			t.Fatalf("%s search reported the old repository-key cache as a hit: %#v", name, response.Stats)
+		}
+		for _, result := range response.Results {
+			if result.SymbolName != "IdentitySensitiveTarget" {
+				continue
+			}
+			if !strings.HasPrefix(result.SymbolID, "gh/acme/renamed:") {
+				t.Fatalf("%s search returned stale symbol ID %q", name, result.SymbolID)
+			}
+			return
+		}
+		t.Fatalf("%s search lost IdentitySensitiveTarget: %#v", name, response.Results)
+	}
+
+	selective, err := SearchRepository(t.Context(), repo, "test-version", "IdentitySensitiveTarget repository identity", SearchOptions{
+		Profile: ProfileSyntaxOnly, TopK: 5, MaxIndexedFiles: 1, CacheDir: cacheDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNewRepoKeyResult("selective", selective)
+
+	full, err := SearchRepository(t.Context(), repo, "test-version", "IdentitySensitiveTarget repository identity", SearchOptions{
+		Profile: ProfileSyntaxOnly, TopK: 5, IndexAllFiles: true, CacheDir: cacheDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNewRepoKeyResult("full", full)
+}
+
 func TestSearchSnapshotCacheKeyPreservesIgnoreFileOrder(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
@@ -578,11 +1011,11 @@ func TestSearchSnapshotCacheKeyPreservesIgnoreFileOrder(t *testing.T) {
 
 	ignoreTarget := includeTarget
 	ignoreTarget.IgnoreFiles = []string{".reinclude-target", ".ignore-target"}
-	includeKey, err := searchSnapshotKey(repo, "test-version", first.Header.Commit, first.Header.Tree, includeTarget)
+	includeKey, err := searchSnapshotKey(repo, first.Header.RepoKey, "test-version", first.Header.Commit, first.Header.Tree, includeTarget)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ignoreKey, err := searchSnapshotKey(repo, "test-version", first.Header.Commit, first.Header.Tree, ignoreTarget)
+	ignoreKey, err := searchSnapshotKey(repo, first.Header.RepoKey, "test-version", first.Header.Commit, first.Header.Tree, ignoreTarget)
 	if err != nil {
 		t.Fatal(err)
 	}

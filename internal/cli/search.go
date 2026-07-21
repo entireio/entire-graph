@@ -550,7 +550,7 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 		case "--index-all-files":
 			flags.IndexAllFiles = true
 		case "--max-context-bytes":
-			value, next, err := searchPositiveIntFlag(args, i)
+			value, next, err := searchNonNegativeIntFlag(args, i)
 			if err != nil {
 				return flags, nil, err
 			}
