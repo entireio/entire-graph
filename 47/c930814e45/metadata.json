@@ -3,14 +3,15 @@
   "checkpoint_id": "47c930814e45",
   "strategy": "manual-commit",
   "branch": "feat/retrieval-followups",
-  "checkpoints_count": 3,
+  "checkpoints_count": 19,
   "files_touched": [
     "README.md",
     "internal/cli/search.go",
     "internal/cli/search_agent_test.go",
     "internal/sem/search.go",
     "internal/sem/search_cache.go",
-    "internal/sem/search_cache_test.go"
+    "internal/sem/search_cache_test.go",
+    "internal/sem/search_test.go"
   ],
   "sessions": [
     {
@@ -19,13 +20,20 @@
       "compact_transcript": "/47/c930814e45/0/transcript.jsonl",
       "content_hash": "/47/c930814e45/0/content_hash.txt",
       "prompt": "/47/c930814e45/0/prompt.txt"
+    },
+    {
+      "metadata": "/47/c930814e45/1/metadata.json",
+      "transcript": "/47/c930814e45/1/full.jsonl",
+      "compact_transcript": "/47/c930814e45/1/transcript.jsonl",
+      "content_hash": "/47/c930814e45/1/content_hash.txt",
+      "prompt": "/47/c930814e45/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 1413471,
-    "cache_creation_tokens": 0,
-    "cache_read_tokens": 84415744,
-    "output_tokens": 182870,
-    "api_call_count": 771
+    "input_tokens": 1413728,
+    "cache_creation_tokens": 212823,
+    "cache_read_tokens": 98242296,
+    "output_tokens": 273671,
+    "api_call_count": 901
   }
 }
