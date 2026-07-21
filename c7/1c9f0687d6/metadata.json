@@ -3,7 +3,7 @@
   "checkpoint_id": "c71c9f0687d6",
   "strategy": "manual-commit",
   "branch": "feat/retrieval-followups",
-  "checkpoints_count": 10,
+  "checkpoints_count": 9,
   "files_touched": null,
   "sessions": [
     {
@@ -22,11 +22,11 @@
     }
   ],
   "token_usage": {
-    "input_tokens": 1413519,
-    "cache_creation_tokens": 39780,
-    "cache_read_tokens": 89374288,
-    "output_tokens": 204160,
-    "api_call_count": 795
+    "input_tokens": 1413505,
+    "cache_creation_tokens": 32036,
+    "cache_read_tokens": 88560258,
+    "output_tokens": 201850,
+    "api_call_count": 788
   },
   "combined_attribution": {
     "calculated_at": "2026-07-21T18:11:12.834079Z",
