@@ -207,3 +207,54 @@ Yes, fix them all
 - Full `go test -count=1 ./internal/sem/`: ok (72.5s).</result>
 <usage><subagent_tokens>90517</subagent_tokens><tool_uses>21</tool_uses><duration_ms>551407</duration_ms></usage>
 </task-notification>
+
+---
+
+<task-notification>
+<task-id>a7cc4e36cde1294ac</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/fffff083-8032-496a-81ae-244c3c25ea0f/tasks/a7cc4e36cde1294ac.output</output-file>
+<status>completed</status>
+<summary>Agent "Fix scanner findings 1-5,10" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All six findings fixed. Only my three assigned files were touched (parser.go was not needed); the other modified files in `git status` belong to the concurrent agents.
+
+## Fixes
+
+**Finding 1 — namespace-call fallback** (`internal/sem/provider.go`)
+- `resolveJSNamespaceCallTargets` now returns `([]resolvedCallTarget, bool matched)`: `matched=false` means no same-file member of that namespace exists; ambiguous multi-match returns `(nil, true)` so it still refuses to guess.
+- Both call sites (per-symbol loop ~2790 and top-level loop ~3160) fall back to generic `resolveCallTargets` on the terminal segment when `!matched` (per-symbol site also guards `terminal != from.Name` and `!childNamesByContainer[from.ID][terminal]`). Shadowed receiver roots never enter `jsNamespaceCalls`, so precision is preserved.
+
+**Finding 2 — inherited-method fallback guard** (`internal/sem/provider.go` ~4280)
+- Guard changed from `varTypes[call.Receiver] != ""` to `typeName != "" &amp;&amp; typeScriptReceiverTypeResolvesElsewhere(...)`. New helpers `typeScriptReceiverTypeResolvesElsewhere` (imported type, or same-file type-like symbol outside the caller's chain) and `containerChainContains` (cycle/hop-guarded chain walk, mirroring `lookupMethodUpChain`). Bare generic params (`T`) and unknown names no longer suppress the fallback; the two existing skip-tests (imported / local-interface receiver) still pass.
+
+**Finding 3 — regex-literal masking** (`internal/sem/call_scanners.go`)
+- Added `stripJSScannedSource` = `maskJSRegexLiterals(stripCodeLiteralsAndComments(...))`, length-preserving. `maskJSRegexLiterals` starts a regex only after `( , = : [ ! &amp; | ? ; { } &lt; &gt; + - * % ~ ^`, start-of-content, or prefix keywords (`return`, `typeof`, `case`, …); body scan handles escapes and `[...]` classes; aborts at newline. Applied in `jsNamespaceScopes`, `jsNamespaceCallIdentifiersAt`, `jsFileBindingScopes`, `jsNamespaceBySymbolID`.
+
+**Finding 4 — nested destructuring** (`internal/sem/call_scanners.go`)
+- Replaced the single-level `jsDestructuredBindingRe`/`jsArrayBindingRe` with `jsDestructuringHeadRe` (`\b(const|let|var)\s*([{\[])`) + `findMatchingStaticDelimiter` + `jsAssignmentFollows`. `jsDestructuredNames` is now recursive: strips top-level defaults (`=`), object aliases via top-level `:` (new `jsTopLevelByteIndex` depth-aware scanner), rest `...`, and recurses into nested `{}`/`[]` patterns. Also improves nested destructured *parameters* via `jsParameterNames`.
+
+**Finding 5 — loop-head binding scope** (`internal/sem/call_scanners.go`)
+- New `jsForHeadBindingScope`: for `const`/`let` declared inside a `for (...)`/`for await (...)` head, the binding scope becomes the loop's following brace block; falls back to the enclosing brace scope when no block exists. `var` keeps its function-scope handling (correct JS semantics).
+
+**Finding 10 — quadratic brace scan** (`internal/sem/call_scanners.go`)
+- Removed `jsBraceScopeAt` (O(n) per binding). New `jsBraceScopes` struct built in one pass (`opens`/`closes`/`parents`), with `enclosing(position)` doing binary search + parent walk — O(n) build, O(log n + depth) per lookup, same semantics including unmatched-brace cases. Threaded through `jsFileBindingScopes` and `jsNamespaceMergesBinding`.
+
+## Tests added (internal/sem/typescript_test.go)
+
+- `TestTypeScriptCrossFileNamespaceMergeCallResolves` (finding 1)
+- `TestTypeScriptGenericReceiverKeepsInheritedMethodFallback` (finding 2)
+- `TestTypeScriptRegexLiteralBraceDoesNotCorruptBindingScopes` (finding 3)
+- `TestTypeScriptNestedDestructuringShadowsNamespaceCalls` (finding 4; object + array nesting, plus unshadowed control)
+- `TestTypeScriptLoopHeadBindingShadowConfinedToLoop` (finding 5; post-loop call resolves, in-loop call stays shadowed)
+
+All five verified to FAIL against the pre-fix HEAD (via a throwaway worktree, since removed) and pass with the fixes.
+
+## Verification
+
+- `gofmt -s -w` applied; `gofmt -l internal/sem` reports nothing for the touched files
+- `go vet ./internal/sem/` clean (only cgo warnings from the vendored tree-sitter dependency)
+- `go test -count=1 -run 'TypeScript|Javascript|JS|Namespace|Binding|Scope' ./internal/sem/` → ok
+- Full `go test -count=1 ./internal/sem/` → ok (30.8s), all pre-existing precision tests (shadowed-name suppression, minified-bundle false-positive guards) still pass</result>
+<usage><subagent_tokens>140671</subagent_tokens><tool_uses>50</tool_uses><duration_ms>837654</duration_ms></usage>
+</task-notification>
