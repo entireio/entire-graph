@@ -2971,8 +2971,12 @@ func searchPathPrior(q searchQuery, filePath string) float64 {
 	}
 	if searchGeneratedArtifactPath(lower) && !searchQuerySupplied(q,
 		"generated", "generator", "generators", "codegen", "codegens", "build", "builds", "dist", "bundle", "bundles",
+		"amalgamation", "amalgamated", "single", "onefile",
 	) {
-		score -= 2
+		// Strong demotion (was -2): an amalgamation scores as high as the real source
+		// (it IS the source, concatenated) so -2 leaves it competitive; -6 ranks the
+		// editable per-file source first so the agent's edit actually sticks.
+		score -= 6
 	}
 	return score
 }
@@ -3014,6 +3018,16 @@ func searchDocumentationArtifactPath(lower string) bool {
 
 func searchGeneratedArtifactPath(lower string) bool {
 	base := filepath.Base(lower)
+	// Amalgamated / single-header / concatenated build artifacts: a generated COPY of
+	// the real per-file source (e.g. nlohmann's single_include/nlohmann/json.hpp is a
+	// concatenation of include/nlohmann/**). They match the query as well as the real
+	// source AND duplicate it, so an agent that edits the amalgamation makes a change
+	// that gets overwritten by the next codegen — always steer to the real source.
+	if strings.Contains(lower, "/single_include/") || strings.Contains(lower, "/single-include/") ||
+		strings.Contains(lower, "amalgamat") || strings.Contains(lower, "/onefile/") ||
+		strings.Contains(lower, "/amalgamation/") {
+		return true
+	}
 	return strings.Contains(lower, "/generated/") || strings.Contains(lower, "/dist/") ||
 		strings.Contains(lower, "/build/") || strings.Contains(lower, "/gen/") ||
 		strings.Contains(base, ".generated.") || strings.Contains(base, "_generated.") ||
