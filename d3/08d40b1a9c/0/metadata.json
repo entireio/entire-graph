@@ -1,0 +1,137 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "d308d40b1a9c",
+  "session_id": "fc71f2f6-8d80-49fa-a756-bb1cb91bcb84",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-22T01:56:18.982657Z",
+  "branch": "perf/graph-cache-reuse",
+  "checkpoints_count": 20,
+  "save_step_count": 1,
+  "files_touched": [
+    "internal/sem/search.go",
+    "internal/sem/search_cache.go",
+    "internal/sem/search_cache_test.go"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-8[1m]",
+  "turn_id": "5948caa802b6",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 198,
+    "cache_creation_tokens": 200420,
+    "cache_read_tokens": 13464045,
+    "output_tokens": 62245,
+    "api_call_count": 100
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_018qPx3ZHcZ7VR5wzkzJHgGD",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "superpowers:brainstorming"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "5948caa802b6",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 26,
+        "end": 27,
+        "entry_ids": [
+          "393e58f0-21c9-4c5b-af48-1d1966089b36"
+        ],
+        "tool_use_id": "toolu_018qPx3ZHcZ7VR5wzkzJHgGD"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_018qPx3ZHcZ7VR5wzkzJHgGD"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: superpowers:brainstorming",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01YazR6KrYhCvjUwegGUqS4V",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "superpowers:writing-skills"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "5948caa802b6",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 76,
+        "end": 77,
+        "entry_ids": [
+          "62f04b7f-2e33-4ce5-8e73-54a3578db9de"
+        ],
+        "tool_use_id": "toolu_01YazR6KrYhCvjUwegGUqS4V"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01YazR6KrYhCvjUwegGUqS4V"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: superpowers:writing-skills",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01AHPBswjENJXVRLiX3Zsxe3",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "trail"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "5948caa802b6",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 611,
+        "end": 612,
+        "entry_ids": [
+          "de3b83b3-74f1-4601-8e79-36cc7b17db7c"
+        ],
+        "tool_use_id": "toolu_01AHPBswjENJXVRLiX3Zsxe3"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01AHPBswjENJXVRLiX3Zsxe3"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: trail",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 20
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-22T01:56:18.904544Z",
+    "agent_lines": 115,
+    "agent_removed": 32,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 115,
+    "total_lines_changed": 147,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
