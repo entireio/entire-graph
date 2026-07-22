@@ -179,7 +179,7 @@ func loadOrBuildSearchSnapshot(
 // the repository's current HEAD tree. Unlike query-time selective indexing,
 // this cache entry is query independent and can be prepared before an agent
 // task begins. Worktree snapshots are deliberately rejected because dirty
-// state cannot be represented by a durable commit-keyed cache safely.
+// state cannot be represented by a durable tree-keyed cache safely.
 func PreindexProviderSnapshot(
 	ctx context.Context,
 	repo, providerVersion string,
@@ -469,7 +469,7 @@ func filterSearchPartialFailures(failures []PartialFailure, allowedFiles map[str
 	return filtered
 }
 
-// LoadOrBuildProviderSnapshot reuses the commit-keyed, option-keyed compressed
+// LoadOrBuildProviderSnapshot reuses the tree-keyed, option-keyed compressed
 // provider snapshot cache shared with search. Worktree snapshots always bypass
 // the cache so dirty edits cannot be hidden by committed-tree state.
 func LoadOrBuildProviderSnapshot(
@@ -487,6 +487,12 @@ func LoadOrBuildProviderSnapshot(
 // entry can reuse it (e.g. --allow-empty commits, amends, rebases that don't
 // touch content). Commit is provenance metadata carried on the cached value
 // and re-stamped to the serving HEAD on load; it never influences the key.
+// This is scoped to the parsed graph itself: a full-profile snapshot also
+// embeds FILE_CHANGES_WITH co-change relations derived by walking recent git
+// history (see fileChangesWithRelations), so a same-tree hit after a rebase
+// can serve co-change edges computed against the prior history. That is
+// accepted because those edges are heuristic and confidence-scored, not
+// exact facts about the tree.
 func searchSnapshotKey(absRepo, providerVersion, tree string, options ProviderSnapshotOptions) (string, error) {
 	hash := sha256.New()
 	writePart := func(value string) {
@@ -532,8 +538,11 @@ func searchSnapshotKey(absRepo, providerVersion, tree string, options ProviderSn
 
 // validCachedSearchSnapshot deliberately does not compare commit: the cache is
 // tree-keyed, so an entry built at a different commit sharing this tree is a
-// valid hit. Callers re-stamp the commit to the serving HEAD via
-// restampCachedSearchSnapshotCommit before returning the snapshot.
+// valid hit. Callers that serve a cached snapshot re-stamp the commit to the
+// serving HEAD via restampCachedSearchSnapshotCommit before returning it;
+// other call sites (e.g. PreindexProviderSnapshot's persisted-entry check)
+// use this function only as a persistence check and never hand the cached
+// value back to a caller, so they have no re-stamping to do.
 func validCachedSearchSnapshot(cache cachedSearchSnapshot, providerVersion, tree string, options ProviderSnapshotOptions) bool {
 	return cache.CacheVersion == searchSnapshotCacheVersion &&
 		cache.ProviderVersion == providerVersion &&
@@ -550,7 +559,11 @@ func validCachedSearchSnapshot(cache cachedSearchSnapshot, providerVersion, tree
 // parsed graph, so a same-tree cache hit from a different (empty, amended,
 // rebased) commit is exactly correct content-wise; commit is provenance
 // metadata layered on top and must reflect the serving HEAD, never the
-// possibly-stale commit recorded when the entry was built.
+// possibly-stale commit recorded when the entry was built. This is not just
+// provenance cosmetics: query time also reads Header.Commit back out as the
+// git treeish for content reads (see openSearchContentReader in search.go),
+// so serving a stale commit here could point those reads at a dangling or
+// wrong revision.
 func restampCachedSearchSnapshotCommit(cache cachedSearchSnapshot, commit string) cachedSearchSnapshot {
 	cache.Commit = commit
 	cache.Snapshot.Header.Commit = commit

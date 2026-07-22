@@ -820,6 +820,7 @@ func preselectSearchFiles(
 	// indexing guard, not a retrieval recall cap once the graph is preindexed.
 	// Deeper sparse search retains the exhaustive path until corpus statistics
 	// can be persisted with the preindex.
+	//
 	// Tree identity is what makes the preindexed graph exact for source's
 	// current HEAD; the grep below runs against source.commit directly, so a
 	// same-tree preindex built at a different commit is still an exact match.

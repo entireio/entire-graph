@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
 // newDependentsTestRepo creates a git repo with:
@@ -52,9 +54,12 @@ def foo(token):
 func TestBuildReferenceIndexCaseSensitiveWholeToken(t *testing.T) {
 	repo, head := newDependentsTestRepo(t)
 
-	index, err := buildReferenceIndex(context.Background(), repo, head, map[string]struct{}{"Foo": {}})
+	index, warnings, err := buildReferenceIndex(context.Background(), repo, head, map[string]struct{}{"Foo": {}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings on a clean grep prefilter, got %#v", warnings)
 	}
 
 	dependents := index["Foo"]
@@ -98,12 +103,15 @@ func TestBuildReferenceIndexCaseSensitiveWholeToken(t *testing.T) {
 // does not exist must not surface an error, because buildReferenceIndex
 // should never reach gitutil.
 func TestBuildReferenceIndexEmptyNamesDoesNoWork(t *testing.T) {
-	index, err := buildReferenceIndex(context.Background(), "/nonexistent/repo/path", "HEAD", map[string]struct{}{})
+	index, warnings, err := buildReferenceIndex(context.Background(), "/nonexistent/repo/path", "HEAD", map[string]struct{}{})
 	if err != nil {
 		t.Fatalf("expected no error for empty names, got %v", err)
 	}
 	if len(index) != 0 {
 		t.Fatalf("expected empty index, got %#v", index)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for empty names, got %#v", warnings)
 	}
 }
 
@@ -155,7 +163,7 @@ func TestBuildReferenceIndexSkipsFilesOverMaxParseBytes(t *testing.T) {
 	git(t, repo, "commit", "-m", "initial")
 	head := rev(t, repo, "HEAD")
 
-	index, err := buildReferenceIndex(context.Background(), repo, head, map[string]struct{}{"Foo": {}})
+	index, warnings, err := buildReferenceIndex(context.Background(), repo, head, map[string]struct{}{"Foo": {}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,6 +177,16 @@ func TestBuildReferenceIndexSkipsFilesOverMaxParseBytes(t *testing.T) {
 	}
 	if got, want := len(dependents), 1; got != want {
 		t.Fatalf("dependents count = %d, want %d: %#v", got, want, dependents)
+	}
+
+	// The skipped oversized candidate must not be silent: a warning mirroring
+	// the provider's E_FILE_TOO_LARGE partial failure names the file and says
+	// its dependent references were not counted.
+	if got, want := len(warnings), 1; got != want {
+		t.Fatalf("warnings count = %d, want %d: %#v", got, want, warnings)
+	}
+	if warnings[0].Code != "E_FILE_TOO_LARGE" || warnings[0].FilePath != "huge.py" {
+		t.Fatalf("expected an E_FILE_TOO_LARGE warning for huge.py, got %#v", warnings[0])
 	}
 }
 
@@ -187,7 +205,7 @@ func TestBuildReferenceIndexFallsBackWhenGrepFails(t *testing.T) {
 		"poison\x00x": {},
 	}
 
-	index, err := buildReferenceIndex(context.Background(), repo, head, names)
+	index, warnings, err := buildReferenceIndex(context.Background(), repo, head, names)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,5 +226,57 @@ func TestBuildReferenceIndexFallsBackWhenGrepFails(t *testing.T) {
 	}
 	if len(index["poison\x00x"]) != 0 {
 		t.Fatalf("poisoned name should have no real dependents, got %#v", index["poison\x00x"])
+	}
+
+	// The fallback itself must not be silent: exactly one warning notes the
+	// prefilter failure and includes the underlying error text.
+	if got, want := len(warnings), 1; got != want {
+		t.Fatalf("warnings count = %d, want %d: %#v", got, want, warnings)
+	}
+	if warnings[0].Code != "W_DEPENDENTS_PREFILTER_FAILED" || warnings[0].Detail == "" {
+		t.Fatalf("expected a W_DEPENDENTS_PREFILTER_FAILED warning with error detail, got %#v", warnings[0])
+	}
+}
+
+// TestBuildReferenceIndexIncludesGitBinaryFlaggedFiles pins that the git-grep
+// prefilter used by referenceCandidateFiles is a genuine strict superset of
+// containsIdentifier's check, even for a file git itself classifies as
+// binary. `git grep -I` (binary-aware search) silently excludes such files
+// from its match list -- it does not error, so the grep-failure fallback
+// never triggers -- which would otherwise make a real dependent inside a
+// NUL-containing but perfectly parseable source file vanish without warning.
+func TestBuildReferenceIndexIncludesGitBinaryFlaggedFiles(t *testing.T) {
+	repo, _ := newDependentsTestRepo(t)
+
+	binaryFlaggedSource := "def binary_caller(token):\n    return Foo(token)\n# nul marker: \x00\n"
+	write(t, repo, "binary_caller.py", binaryFlaggedSource)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "add NUL-containing caller")
+	head := rev(t, repo, "HEAD")
+
+	// Confirm the fixture is actually excluded by git's binary-file heuristic
+	// (`-I`) -- otherwise this test would not be exercising the case it claims
+	// to cover.
+	textOnlyMatches, err := gitutil.GrepTreePaths(context.Background(), repo, head, []string{"Foo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range textOnlyMatches {
+		if path == "binary_caller.py" {
+			t.Fatal("fixture was not excluded by git grep -I; test no longer exercises the binary-file case")
+		}
+	}
+
+	index, warnings, err := buildReferenceIndex(context.Background(), repo, head, map[string]struct{}{"Foo": {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings; the binary-flagged file must be found without a prefilter fallback, got %#v", warnings)
+	}
+
+	dependents := index["Foo"]
+	if _, ok := dependents["binary_caller.py#function:binary_caller"]; !ok {
+		t.Fatalf("expected binary_caller.py binary_caller() as a dependent despite the embedded NUL byte, got %#v", dependents)
 	}
 }

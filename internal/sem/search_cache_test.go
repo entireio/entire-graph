@@ -649,3 +649,57 @@ func TestSearchSnapshotCacheKeyPreservesIgnoreFileOrder(t *testing.T) {
 		t.Fatalf("reversed-rule snapshot lost control symbol: %#v", second.Symbols)
 	}
 }
+
+// TestOnlyFilesDerivationReStampsCommitAfterSameTreeCommit pins the re-stamp
+// on the OnlyFiles-derivation branch of loadOrBuildSearchSnapshot: a selective
+// snapshot derived from a complete same-tree cache entry built at an older
+// commit must report the commit it is actually serving right now, not the
+// stale commit recorded when the complete entry was written.
+func TestOnlyFilesDerivationReStampsCommitAfterSameTreeCommit(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "selected.go", "package sample\nfunc Selected() bool { return true }\n")
+	write(t, repo, "other.go", "package sample\nfunc Other() bool { return false }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cacheDir := t.TempDir()
+	full, cacheHit, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Profile: ProfileFull,
+	}, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cacheHit {
+		t.Fatal("first preindex unexpectedly hit cache")
+	}
+
+	git(t, repo, "commit", "--allow-empty", "-m", "same tree")
+	newHead := rev(t, repo, "HEAD")
+	if newHead == full.Header.Commit {
+		t.Fatal("test setup did not advance HEAD to a new commit")
+	}
+
+	selective, cacheHit, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Profile:   ProfileFull,
+		OnlyFiles: []string{"selected.go"},
+	}, cacheDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cacheHit {
+		t.Fatal("selective build did not derive from the complete same-tree preindex")
+	}
+	if selective.Header.Tree != full.Header.Tree {
+		t.Fatalf("derived selective snapshot tree changed across an empty commit: got %s, want %s",
+			selective.Header.Tree, full.Header.Tree,
+		)
+	}
+	if selective.Header.Commit != newHead {
+		t.Fatalf("derived selective snapshot commit was not re-stamped to serving HEAD: got %s, want %s",
+			selective.Header.Commit, newHead,
+		)
+	}
+}
