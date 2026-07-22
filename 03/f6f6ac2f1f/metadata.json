@@ -3,7 +3,7 @@
   "checkpoint_id": "03f6f6ac2f1f",
   "strategy": "manual-commit",
   "branch": "fix/import-aware-type-and-test-edges",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     "internal/sem/analyze.go",
     "internal/sem/analyze_test.go",
@@ -17,13 +17,20 @@
       "compact_transcript": "/03/f6f6ac2f1f/0/transcript.jsonl",
       "content_hash": "/03/f6f6ac2f1f/0/content_hash.txt",
       "prompt": "/03/f6f6ac2f1f/0/prompt.txt"
+    },
+    {
+      "metadata": "/03/f6f6ac2f1f/1/metadata.json",
+      "transcript": "/03/f6f6ac2f1f/1/full.jsonl",
+      "compact_transcript": "/03/f6f6ac2f1f/1/transcript.jsonl",
+      "content_hash": "/03/f6f6ac2f1f/1/content_hash.txt",
+      "prompt": "/03/f6f6ac2f1f/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 192,
-    "cache_creation_tokens": 171494,
-    "cache_read_tokens": 11427395,
-    "output_tokens": 71218,
-    "api_call_count": 96
+    "input_tokens": 198,
+    "cache_creation_tokens": 174692,
+    "cache_read_tokens": 12492013,
+    "output_tokens": 73545,
+    "api_call_count": 99
   }
 }
