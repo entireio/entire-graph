@@ -369,6 +369,92 @@ func TestAnalyzeGitRangeMarksUnsupportedChangedFiles(t *testing.T) {
 	}
 }
 
+func TestAnalyzeGitRangeKeepsShebangRoutableChangedFiles(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	write(t, repo, "bin/tool", `#!/usr/bin/env python3
+
+def run(value):
+    return value
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "bin/tool", `#!/usr/bin/env python3
+
+def run(value, strict=False):
+    return value
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "change signature")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "bin/tool" || result.Files[0].Language != "Python" {
+		t.Fatalf("shebang-routable file was not analyzed: %#v", result)
+	}
+	for _, warning := range result.Warnings {
+		if warning.Code == "W_UNSUPPORTED_FILE" {
+			t.Fatalf("shebang-routable file marked unsupported: %#v", warning)
+		}
+	}
+}
+
+func TestAnalyzeGitRangeMarksMixedSupportRenames(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		fromPath string
+		toPath   string
+		warnPath string
+	}{
+		{name: "supported to unsupported", fromPath: "sample.go", toPath: "sample.ps1", warnPath: "sample.ps1"},
+		{name: "unsupported to supported", fromPath: "sample.ps1", toPath: "sample.go", warnPath: "sample.ps1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			git(t, repo, "init")
+			git(t, repo, "config", "user.name", "Entire Graph Test")
+			git(t, repo, "config", "user.email", "graph@example.com")
+			write(t, repo, tc.fromPath, "package sample\n\nfunc Run() {}\n")
+			git(t, repo, "add", ".")
+			git(t, repo, "commit", "-m", "initial")
+			base := rev(t, repo, "HEAD")
+
+			if err := os.Rename(filepath.Join(repo, tc.fromPath), filepath.Join(repo, tc.toPath)); err != nil {
+				t.Fatal(err)
+			}
+			git(t, repo, "add", "-A")
+			git(t, repo, "commit", "-m", "rename across parser boundary")
+			head := rev(t, repo, "HEAD")
+
+			result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Files) != 0 {
+				t.Fatalf("mixed-support rename produced a one-sided delta: %#v", result.Files)
+			}
+			var marker *ProviderWarning
+			for i, warning := range result.Warnings {
+				if warning.Code == "W_UNSUPPORTED_FILE" {
+					marker = &result.Warnings[i]
+					break
+				}
+			}
+			if marker == nil || marker.FilePath != tc.warnPath || !strings.Contains(marker.EffectOnCompleteness, "diff suppressed") {
+				t.Fatalf("missing mixed-support marker: %#v", result.Warnings)
+			}
+		})
+	}
+}
+
 func TestAnalyzeCheckpointResolvesAssociatedCommit(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")

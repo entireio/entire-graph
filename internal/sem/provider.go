@@ -7809,6 +7809,8 @@ func usesTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFile, s
 			if symbol.Kind != "function" && symbol.Kind != "method" || symbol.Signature == "" {
 				continue
 			}
+			importsByName := resolvedImportsByFile[path]
+			qualifiedImportsByName := qualifiedTypeImports(symbol.Signature, importsByName)
 			names := make([]string, 0)
 			seen := map[string]bool{}
 			for name := range identifiersIn(symbol.Signature) {
@@ -7821,7 +7823,7 @@ func usesTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFile, s
 			sort.Strings(names)
 			emitted := map[string]bool{}
 			for _, name := range names {
-				target, resolution, scope, confidence, ok := resolveTypeReference(name, symbol, symbolsByFile[path], symbolsByShortName, resolvedImportsByFile[path])
+				target, resolution, scope, confidence, ok := resolveTypeReference(name, symbol, symbolsByFile[path], symbolsByShortName, importsByName, qualifiedImportsByName)
 				if !ok || emitted[target.ID] {
 					continue
 				}
@@ -7864,6 +7866,8 @@ func signatureTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFi
 			if symbol.Kind != "function" && symbol.Kind != "method" || symbol.Signature == "" {
 				continue
 			}
+			importsByName := resolvedImportsByFile[path]
+			qualifiedImportsByName := qualifiedTypeImports(symbol.Signature, importsByName)
 			refs := signatureTypeReferences(symbol.Language, symbol.Signature)
 			for _, relationType := range []string{"PARAM_TYPE", "RETURNS_TYPE"} {
 				if !spec.emits(relationType) {
@@ -7873,7 +7877,7 @@ func signatureTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFi
 				sort.Strings(names)
 				emitted := map[string]bool{}
 				for _, name := range names {
-					target, resolution, scope, confidence, ok := resolveTypeReference(name, symbol, symbolsByFile[path], symbolsByShortName, resolvedImportsByFile[path])
+					target, resolution, scope, confidence, ok := resolveTypeReference(name, symbol, symbolsByFile[path], symbolsByShortName, importsByName, qualifiedImportsByName)
 					if !ok || emitted[target.ID] {
 						continue
 					}
@@ -7911,22 +7915,67 @@ func signatureTypeReason(relationType string) string {
 	return "parameter type referenced in signature"
 }
 
-// resolveTypeReference binds a bare type name from a signature to a type
-// declaration: same-file first, then the file's import bindings, then a
-// unique same-directory or workspace-unique match. An ambiguous name with no
-// import evidence resolves to nothing — picking the lexically-first of
-// several same-name types poisons the graph with cross-crate/cross-package
-// edges (issue reported on jdx/mise, where every bare `Config` in src/ bound
-// to crates/vfox's Config because that path sorts first).
-func resolveTypeReference(name string, from SymbolRecord, sameFile []SymbolRecord, symbolsByShortName map[string][]SymbolRecord, importsByName map[string][]string) (SymbolRecord, string, string, float64, bool) {
-	if sym, ok := firstTypeLikeNamed(sameFile, name); ok && sym.ID != from.ID {
-		return sym, "exact", "file", 0.85, true
+var qualifiedTypeReferencePattern = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)((?:\s*(?:\.|::)\s*[A-Za-z_][A-Za-z0-9_]*)+)`)
+var qualifiedTypeSegmentPattern = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
+
+// qualifiedTypeImports maps the terminal name of a qualified signature type
+// (`cfg.Config`, `models::Config`) to the modules bound to its leading import
+// qualifier. Import maps themselves are keyed by the local qualifier (`cfg`),
+// while the symbol index is keyed by the declaration name (`Config`); keeping
+// this bridge prevents a qualified type from falling through to an unrelated
+// same-file or same-directory declaration with the same terminal name.
+func qualifiedTypeImports(signature string, importsByName map[string][]string) map[string][]string {
+	if signature == "" || len(importsByName) == 0 {
+		return nil
 	}
+	qualified := map[string][]string{}
+	for _, match := range qualifiedTypeReferencePattern.FindAllStringSubmatch(signature, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		modules := importsByName[match[1]]
+		if len(modules) == 0 {
+			continue
+		}
+		segments := qualifiedTypeSegmentPattern.FindAllString(match[2], -1)
+		if len(segments) == 0 {
+			continue
+		}
+		name := segments[len(segments)-1]
+		qualified[name] = append(qualified[name], modules...)
+	}
+	for name, modules := range qualified {
+		qualified[name] = uniqueStrings(modules)
+	}
+	return qualified
+}
+
+// resolveTypeReference binds a type name from a signature to a type
+// declaration. A qualified reference is import-authoritative; a bare name uses
+// same-file, import-resolved, workspace-unique, then same-directory-unique
+// resolution. An ambiguous name with no import evidence resolves to nothing —
+// picking the lexically-first same-name type poisons the graph with
+// cross-crate/cross-package edges.
+func resolveTypeReference(name string, from SymbolRecord, sameFile []SymbolRecord, symbolsByShortName map[string][]SymbolRecord, importsByName, qualifiedImportsByName map[string][]string) (SymbolRecord, string, string, float64, bool) {
 	var candidates []SymbolRecord
 	for _, sym := range symbolsByShortName[name] {
 		if sym.ID != from.ID && sym.Name == name && typeLikeKind(sym.Kind) {
 			candidates = append(candidates, sym)
 		}
+	}
+	if modules := qualifiedImportsByName[name]; len(modules) > 0 {
+		for _, sym := range candidates {
+			if importedNameMatchesFile(modules, from.FilePath, sym.FilePath) {
+				return sym, "import_resolved", "module", 0.85, true
+			}
+		}
+		// An explicit qualifier is authoritative. If its imported target is not
+		// represented locally, dropping the edge is safer than binding its
+		// terminal name to an unrelated local declaration.
+		return SymbolRecord{}, "", "", 0, false
+	}
+	if sym, ok := firstTypeLikeNamed(sameFile, name); ok && sym.ID != from.ID {
+		return sym, "exact", "file", 0.85, true
 	}
 	if len(candidates) == 0 {
 		return SymbolRecord{}, "", "", 0, false

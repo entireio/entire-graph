@@ -3714,6 +3714,49 @@ pub fn which_shim(bin_name: &str, config: &Config) -> String {
 	}
 }
 
+func TestTypeReferencePreservesQualifiedGoImport(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "go.mod", "module example.com/review\n\ngo 1.24\n")
+	writeFile(t, repo, "app/config.go", `package app
+
+type Config struct{}
+`)
+	writeFile(t, repo, "beta/config.go", `package beta
+
+type Config struct{}
+`)
+	writeFile(t, repo, "app/use.go", `package app
+
+import cfg "example.com/review/beta"
+
+func Use(value *cfg.Config) {}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var typeEdges []RelationRecord
+	for _, r := range snapshot.Relations {
+		if r.Type != "USES_TYPE" && r.Type != "PARAM_TYPE" && r.Type != "RETURNS_TYPE" {
+			continue
+		}
+		if !strings.Contains(r.FromID, "function:Use") || !strings.HasSuffix(r.ToID, ":Config") {
+			continue
+		}
+		typeEdges = append(typeEdges, r)
+	}
+	if len(typeEdges) == 0 {
+		t.Fatal("qualified imported Config produced no type edges")
+	}
+	for _, r := range typeEdges {
+		if !strings.Contains(r.ToID, "beta/config.go") || r.Resolution != "import_resolved" {
+			t.Fatalf("qualified imported type resolved incorrectly: %#v", r)
+		}
+	}
+}
+
 func TestProfilesControlRelationOutputAndHeader(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "auth.go", `package auth
