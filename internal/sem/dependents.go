@@ -57,9 +57,18 @@ func buildReferenceIndex(ctx context.Context, repo, head string, names map[strin
 		return index, nil, nil
 	}
 
-	files, warnings, err := referenceCandidateFiles(ctx, repo, head, names)
+	files, prefiltered, warnings, err := referenceCandidateFiles(ctx, repo, head, names)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	// When the grep prefilter ran, every file below already matched a changed
+	// name, so every skip is worth warning about. On the fallback full-tree
+	// scan, apply the same candidate test in-process before warning, so the
+	// fallback does not spray warnings about files (e.g. huge vendored blobs)
+	// that contain no changed name and were never real candidates.
+	isCandidate := func(content string) bool {
+		return prefiltered || containsAnyNameFold(content, names)
 	}
 
 	parser := TreeSitterParser{}
@@ -74,17 +83,23 @@ func buildReferenceIndex(ctx context.Context, repo, head string, names map[strin
 		if !ok {
 			continue
 		}
-		// Parity with the provider's default MaxParseBytes eligibility: never
-		// count dependents inside a file the graph itself refuses to parse.
-		// The analyze path has no option plumbing today, so this is always the
-		// provider's DEFAULT limit, never a caller-supplied override.
+		// Size parity with the provider's default MaxParseBytes eligibility:
+		// never count dependents inside a file the graph itself refuses to
+		// parse for size. Parity is size-only -- the provider additionally
+		// skips minified files (E_MINIFIED) and non-default-build Go files,
+		// which this scan still parses, exactly as it did before the
+		// prefilter existed. The analyze path has no option plumbing today,
+		// so this is always the provider's DEFAULT limit, never a
+		// caller-supplied override.
 		if len(content) > defaultMaxParseBytes {
-			warnings = append(warnings, dependentsFileTooLargeWarning(path, len(content)))
+			if isCandidate(content) {
+				warnings = append(warnings, dependentsFileTooLargeWarning(path, len(content)))
+			}
 			continue
 		}
 
 		entities, _, status := parser.ParseWithStatus(path, content)
-		if status.ParseError {
+		if status.ParseError && isCandidate(content) {
 			warnings = append(warnings, dependentsParseFailureWarning(path, status))
 		}
 		lines := strings.Split(content, "\n")
@@ -168,7 +183,12 @@ func grepFallbackWarning(err error) ProviderWarning {
 // back to scanning every file in the tree so a git-grep quirk never silently
 // zeroes out dependent counts, and surface exactly one warning noting the
 // prefilter failure so the fallback (much slower) scan is not silent.
-func referenceCandidateFiles(ctx context.Context, repo, head string, names map[string]struct{}) ([]string, []ProviderWarning, error) {
+//
+// The prefiltered return reports whether the grep preselection actually ran:
+// true means every returned file already matched a changed name; false means
+// the list is the whole tree and callers must apply their own candidate test
+// before treating a file as relevant to the changed names.
+func referenceCandidateFiles(ctx context.Context, repo, head string, names map[string]struct{}) (files []string, prefiltered bool, warnings []ProviderWarning, err error) {
 	patterns := make([]string, 0, len(names))
 	for name := range names {
 		if name != "" {
@@ -178,16 +198,36 @@ func referenceCandidateFiles(ctx context.Context, repo, head string, names map[s
 	if len(patterns) > 0 {
 		matches, grepErr := gitutil.GrepTreePathsIncludingBinary(ctx, repo, head, patterns)
 		if grepErr == nil {
-			return matches, nil, nil
+			return matches, true, nil, nil
 		}
-		files, err := gitutil.ListFiles(ctx, repo, head)
+		files, err = gitutil.ListFiles(ctx, repo, head)
 		if err != nil {
-			return nil, nil, err
+			return nil, false, nil, err
 		}
-		return files, []ProviderWarning{grepFallbackWarning(grepErr)}, nil
+		return files, false, []ProviderWarning{grepFallbackWarning(grepErr)}, nil
 	}
-	files, err := gitutil.ListFiles(ctx, repo, head)
-	return files, nil, err
+	files, err = gitutil.ListFiles(ctx, repo, head)
+	return files, false, nil, err
+}
+
+// containsAnyNameFold mirrors the git-grep prefilter's case-insensitive
+// substring test (grep -i -F) in-process, so the fallback full-tree scan can
+// warn about exactly the files the prefiltered path would have surfaced as
+// candidates. Go's Unicode case folding and git's can differ at the margins
+// for non-ASCII names, but this only gates warnings -- dependent counting is
+// unaffected because the per-entity containsIdentifier check runs on every
+// scanned file either way.
+func containsAnyNameFold(content string, names map[string]struct{}) bool {
+	lower := strings.ToLower(content)
+	for name := range names {
+		if name == "" {
+			continue
+		}
+		if strings.Contains(lower, strings.ToLower(name)) {
+			return true
+		}
+	}
+	return false
 }
 
 func entityBlock(lines []string, entity Entity) string {

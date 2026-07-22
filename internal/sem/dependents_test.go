@@ -238,6 +238,67 @@ func TestBuildReferenceIndexFallsBackWhenGrepFails(t *testing.T) {
 	}
 }
 
+// TestBuildReferenceIndexFallbackWarnsOnlyForCandidateFiles pins that the
+// grep-failure fallback's full-tree scan applies the prefilter's candidate
+// test in-process before warning: an oversized or unparseable file that
+// contains no changed name was never a real candidate and must not produce a
+// warning (otherwise every huge vendored blob in the tree would spray
+// E_FILE_TOO_LARGE on the rare fallback path), while an oversized file that
+// does contain a changed name must still warn, exactly as it would have on
+// the prefiltered path. Dependent counts are unaffected either way.
+func TestBuildReferenceIndexFallbackWarnsOnlyForCandidateFiles(t *testing.T) {
+	repo, _ := newDependentsTestRepo(t)
+
+	write(t, repo, "huge_with_name.py", paddedPythonSource("huge_caller", "Foo", defaultMaxParseBytes+4096))
+	write(t, repo, "huge_without_name.py", paddedPythonSource("huge_unrelated", "Bar", defaultMaxParseBytes+4096))
+	write(t, repo, "broken_without_name.ts", "type Broken = <\n\nexport function alpha(){return Bar()}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "add fallback candidate fixtures")
+	head := rev(t, repo, "HEAD")
+
+	// The NUL byte forces the grep prefilter to fail (Go's exec layer rejects
+	// NUL in arguments), so buildReferenceIndex takes the full-tree fallback.
+	names := map[string]struct{}{
+		"Foo":         {},
+		"poison\x00x": {},
+	}
+	index, warnings, err := buildReferenceIndex(context.Background(), repo, head, names)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dependents := index["Foo"]
+	if got, want := len(dependents), 2; got != want {
+		t.Fatalf("dependents count = %d, want %d: %#v", got, want, dependents)
+	}
+
+	var codes []string
+	for _, warning := range warnings {
+		codes = append(codes, warning.Code+":"+warning.FilePath)
+		if warning.FilePath == "huge_without_name.py" {
+			t.Fatalf("oversized file with no changed name must not warn on the fallback path, got %#v", warning)
+		}
+		if warning.FilePath == "broken_without_name.ts" {
+			t.Fatalf("unparseable file with no changed name must not warn on the fallback path, got %#v", warning)
+		}
+	}
+	if got, want := len(warnings), 2; got != want {
+		t.Fatalf("warnings = %v, want exactly the fallback notice and one oversized candidate", codes)
+	}
+	sawFallback, sawTooLarge := false, false
+	for _, warning := range warnings {
+		switch {
+		case warning.Code == "W_DEPENDENTS_PREFILTER_FAILED":
+			sawFallback = true
+		case warning.Code == "E_FILE_TOO_LARGE" && warning.FilePath == "huge_with_name.py":
+			sawTooLarge = true
+		}
+	}
+	if !sawFallback || !sawTooLarge {
+		t.Fatalf("expected W_DEPENDENTS_PREFILTER_FAILED and E_FILE_TOO_LARGE for huge_with_name.py, got %v", codes)
+	}
+}
+
 // pfBrokenCallsFooTS is a hard tree-sitter parse failure (mirrors
 // analyze_parsefailure_test.go's pfBrokenTS trick: a malformed leading type
 // alias derails the whole parse) that also contains a whole-token match for
