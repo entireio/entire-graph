@@ -116,6 +116,37 @@
         "label": "Skill: trail",
         "default_collapsed": true
       }
+    },
+    {
+      "id": "claude-skill-toolu_01MS8wuK55zHSJcxGN9AEYsY",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "pr-review-toolkit:review-pr"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "5948caa802b6",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 637,
+        "end": 638,
+        "entry_ids": [
+          "2fb37953-a36e-4a8e-afc7-61b26921a35d"
+        ],
+        "tool_use_id": "toolu_01MS8wuK55zHSJcxGN9AEYsY"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01MS8wuK55zHSJcxGN9AEYsY"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: pr-review-toolkit:review-pr",
+        "default_collapsed": true
+      }
     }
   ],
   "session_metrics": {
