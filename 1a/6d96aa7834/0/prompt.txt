@@ -1,0 +1,276 @@
+<task-notification>
+<task-id>a3def5546d1e3ce7b</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-alex-workspace-entire-graph/fc71f2f6-8d80-49fa-a756-bb1cb91bcb84/tasks/a3def5546d1e3ce7b.output</output-file>
+<status>completed</status>
+<summary>Agent "Code review perf changes" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I've completed a thorough review. Let me summarize my findings.
+
+## Review Summary
+
+**Scope reviewed:** `git diff origin/main..HEAD` (2 commits) on `perf/graph-cache-reuse`, focused on `internal/sem/dependents.go`, `dependents_test.go`, `search.go`, `search_cache.go`, `search_cache_test.go`, cross-checked against `docs/adr/0001-ga-schema-contract.md`, `AGENTS.md`, `internal/sem/provider.go`, and `internal/gitutil/git.go`.
+
+**Verification performed:** `gofmt -l` (clean), `go vet ./internal/sem/` (clean, only a third-party tree-sitter warning), and the focused test suite (`go test ./internal/sem/` passes, 4.7s).
+
+### Result: No issues at confidence ≥ 80. The change is sound.
+
+I specifically chased the four risk areas you flagged and cleared each one:
+
+1. **Cache re-stamp race on shared structs — CLEARED.** `restampCachedSearchSnapshotCommit` takes `cachedSearchSnapshot` by value and only writes two string fields (`cache.Commit`, `cache.Snapshot.Header.Commit`). Critically, there is no in-memory snapshot cache — `readSearchSnapshot` (`internal/sem/search_cache.go:571`) does a fresh `os.Open` + gzip decode on every call, so each load owns a private deserialized struct. The mutated `Header` is a value field, not a shared pointer. No aliasing, no race.
+
+2. **Missed call sites of the new signatures — NONE.** All 11 call sites of `searchSnapshotKey`/`validCachedSearchSnapshot` were updated (including the two in `search_cache_test.go`), plus the fresh-build/preindex paths at `search_cache.go:157` and `:212` and both `search.go` guards (`:291`, `:363`, `:824`) were converted to tree-only consistently. Compiles and vets clean, confirming no stragglers.
+
+3. **GA schema contract — PRESERVED.** ADR 0001 governs *wire schema-version compatibility* (additive-only minors), not the numeric value of `dependents_count`. `dependents_count` remains an `int` with unchanged meaning; the re-stamp preserves every header field and only corrects `Commit` to the serving HEAD. The served commit is a real same-tree commit (guards reject any tree divergence), so provenance stays valid.
+
+4. **`git grep` prefilter correctness — SOUND.** The superset argument holds regardless of locale: `containsIdentifier` is a case-sensitive whole-token match, and `GrepTreePaths` uses `-F -i` (case-insensitive substring), which can only ever be more permissive. The per-entity `containsIdentifier` check still runs unchanged on every candidate, and the `err == nil` fallback to `ListFiles` (`dependents.go:116-120`) prevents a grep quirk from zeroing counts — well-covered by `TestBuildReferenceIndexFallsBackWhenGrepFails`.
+
+The `defaultMaxParseBytes` size skip (`dependents.go:77`) is genuine parity: the provider skips parsing files `&gt; maxParseBytes` at `provider.go:818` (strict `&gt;`, same byte-length semantics), so oversized files produce no graph symbols and cannot be real dependents. The prior behavior over-counted them.
+
+### Sub-threshold observations (informational, not blocking)
+
+- **`dependents.go:77` uses the `defaultMaxParseBytes` constant rather than a configured `MaxParseBytes`** (confidence ~30). The diff path never plumbs a custom `MaxParseBytes` into `addDependentCounts`, so parity is exact today. If a future change ever makes the diff's parse budget configurable, this hardcoded constant would silently diverge from the graph. Worth a one-line note at the call site, not a fix now.
+- **`git grep -I` skips git-detected binary blobs** (confidence ~30). A pathological supported-source file containing NUL bytes would be dropped in the grep path but scanned in the `ListFiles` fallback, making `dependents_count` mildly path-dependent. Real-world impact is negligible (such a file would rarely parse or match a whole-token identifier).
+
+Both are below the reporting bar; I mention them only so the author is aware of the assumptions baked into the parity claim.</result>
+<usage><subagent_tokens>81293</subagent_tokens><tool_uses>20</tool_uses><duration_ms>212694</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a22b73fc0cf085185</task-id>
+<tool-use-id>toolu_014WqRrt3EZmbtycqv17yAnv</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-alex-workspace-entire-graph/fc71f2f6-8d80-49fa-a756-bb1cb91bcb84/tasks/a22b73fc0cf085185.output</output-file>
+<status>completed</status>
+<summary>Agent "Comment accuracy review" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All comments verified against the implementation. Here is the analysis.
+
+**Summary**
+
+I reviewed the seven comment additions in `origin/main..HEAD` (commits 93e3bd1, f072786) against the code in `internal/sem/dependents.go`, `internal/sem/search.go`, `internal/sem/search_cache.go`, plus the supporting implementations in `internal/gitutil/git.go` and `internal/sem/provider.go`. Most comments accurately describe the code, but the branch's central claim — "parsing is a pure function of tree content" — has a real hole, the superset argument in dependents.go is not airtight, and two pre-existing doc comments now contradict the new tree-only keying.
+
+**Critical Issues**
+
+1. The "pure function of tree content" claim is false for full-profile snapshots
+- Location: `/Users/alex/workspace/entire-graph/internal/sem/search_cache.go:485-489` (searchSnapshotKey), echoed at `search_cache.go:548-553` (restampCachedSearchSnapshotCommit: "exactly correct content-wise")
+- Issue: ProfileFull snapshots embed `FILE_CHANGES_WITH` relations derived from git *history*, not tree content: `provider.go:982-983` calls `fileChangesWithRelations(ctx, sc.absRepo, sc.commit, ...)`, which walks the 256 most recent commits from the build commit (`provider.go:7915-7949`, `Resolution: "git_history"`). Two commits sharing a tree can have different histories — the comment explicitly blesses "rebases that don't touch content," which is exactly the case where co-change edges diverge. A tree-only cache hit can therefore serve co-change edges computed from a different branch's history. `--allow-empty` and amend cases are near-identical in practice, but the rebase example in the comment is the one case that is not safe.
+- Suggestion: Either scope the claim ("everything except git-history-derived FILE_CHANGES_WITH edges is a pure function of the tree; co-change edges may be up to one history stale, which we accept because they are heuristic, confidence 0.55–0.7") or raise this to the author as a behavior question, not just a comment fix. As written, the comment will actively mislead someone debugging stale co-change edges.
+
+2. Two pre-existing doc comments now contradict the implementation
+- Location: `/Users/alex/workspace/entire-graph/internal/sem/search_cache.go:181-182` — PreindexProviderSnapshot: "dirty state cannot be represented by a durable **commit-keyed** cache safely"
+- Location: `/Users/alex/workspace/entire-graph/internal/sem/search_cache.go:472` — LoadOrBuildProviderSnapshot: "reuses the **commit-keyed**, option-keyed compressed provider snapshot cache"
+- Issue: The cache is now tree-keyed; both comments describe the pre-change design. Line 472 is directly false.
+- Suggestion: Update both to "tree-keyed". This is exactly the rot this branch's own comments warn against.
+
+3. The superset argument in referenceCandidateFiles has a hole: `git grep -I`
+- Location: `/Users/alex/workspace/entire-graph/internal/sem/dependents.go:99-107`
+- Issue: The comment claims the grep prefilter "can only add extra candidate files, never drop a real dependent." But `GrepTreePaths` passes `-I` (`/Users/alex/workspace/entire-graph/internal/gitutil/git.go:139`), which excludes files git detects as binary (NUL byte in the early buffer, or a `.gitattributes` binary/`-diff` marking). Neither `containsIdentifier` nor the provider's parse path skips such files — the provider has no binary check at all, and the full-scan fallback in this very function would count them. So a supported-extension file that git classifies as binary (or that a repo's `.gitattributes` marks binary) silently drops real dependents on the grep path while counting them on the fallback path — the two paths are not equivalent, contradicting "strict superset." The case-insensitivity and fixed-string-substring parts of the argument are airtight (`containsIdentifier` tokens come from `[A-Za-z0-9_$]+` at dependents.go:11, so any matchable name is ASCII, and an exact-case substring always matches under `-i -F`).
+- Suggestion: Either drop `-I` for this call path, or amend the comment to acknowledge the binary-file exclusion as a deliberate carve-out. Do not leave "strict superset" as stated.
+
+**Improvement Opportunities**
+
+4. validCachedSearchSnapshot's "Callers re-stamp ... before returning the snapshot" overstates the invariant
+- Location: `/Users/alex/workspace/entire-graph/internal/sem/search_cache.go:533-536`
+- Current state: True for two of the four call sites (`search_cache.go:86` and `:124`). At `search_cache.go:227` (PreindexProviderSnapshot) the function is used purely as a persistence check and the validated entry is never returned — no restamp happens or is needed. At `search_cache.go:142-149` (full→selective derivation) the *input* is restamped, but the returned snapshot's `Header.Commit` comes from a fresh `leanHeader(sc, ...)` inside `selectiveSearchSnapshotFromFull` (`search_cache.go:304`), so that restamp only feeds the mismatch error message.
+- Suggestion: Reword to "callers that serve a cached snapshot re-stamp the commit via restampCachedSearchSnapshotCommit; other callers use this only as a persistence check." Otherwise a future caller may copy the pattern believing restamping happens somewhere automatic.
+
+5. MaxParseBytes "parity" holds only for the default
+- Location: `/Users/alex/workspace/entire-graph/internal/sem/dependents.go:75-77`
+- Current state: dependents.go hardcodes `defaultMaxParseBytes`, while the provider honors `options.MaxParseBytes` and only falls back to the default when zero (`provider.go:717-719`, skip at `provider.go:818` — same strict `&gt;` and byte-length semantics, so the mechanics do match today). A graph built with a custom MaxParseBytes diverges from this check silently.
+- Suggestion: Say "the provider's *default* MaxParseBytes eligibility," or plumb the option through. As written, the comment rots the day MaxParseBytes becomes configurable on the analyze path.
+
+6. "Commit is provenance metadata" undersells restamping — it is operationally load-bearing
+- Location: `/Users/alex/workspace/entire-graph/internal/sem/search_cache.go:488-489` and `:551-553`
+- Current state: `snapshot.Header.Commit` is used as the git treeish for query-time content reads (`search.go:367-369` → `openSearchContentReader`). An amended/rebased-away commit recorded in a cache entry may no longer exist in the repo, so serving without restamping would break content hydration, not just mislabel provenance.
+- Suggestion: Add one sentence noting the header commit is also the treeish for query-time reads, so restamping to a live commit is required for correctness. This protects restamping from being "simplified away" as cosmetic.
+
+7. The merged comment block above exactFullPreindex fuses two unrelated paragraphs
+- Location: `/Users/alex/workspace/entire-graph/internal/sem/search.go:817-825`
+- Current state: The appended text is accurate (the grep at `search.go:830` does run against `source.commit`, and same tree ⇒ identical content), and the block still reads coherently — but it now jumps from MaxIndexedFiles/recall-cap rationale straight into tree-identity rationale with no seam, and the older sentences ("Deeper sparse search retains the exhaustive path...") now sit mid-block where they read as if they relate to tree identity.
+- Suggestion: Insert a blank `//` line between the original paragraph (ends "...persisted with the preindex.") and the new tree-identity paragraph.
+
+8. Minor: mid-search same-tree HEAD movement can still surface a non-HEAD commit
+- Location: `/Users/alex/workspace/entire-graph/internal/sem/search.go:288-291` and `:302`
+- The relaxed guard comment is accurate as a design statement, but note the cached no-hit path reports `cachedSnapshot.Header.Commit` (restamped at *load* time), which under a mid-search same-tree HEAD move differs from `selection.commit`. Content-identical, both commits exist, so this is acceptable — but "commit provenance must reflect the HEAD we are serving right now" (`search_cache.go:91`) is "HEAD as of cache load," not "HEAD as of response." Not worth code changes; a maintainer writing tests around this will notice.
+
+**Recommended Removals**
+
+None. Every new comment carries genuine why-content; the fixes above are corrections and scoping, not deletions.
+
+**Positive Findings**
+
+- `/Users/alex/workspace/entire-graph/internal/sem/dependents.go:105-107` — the fallback rationale ("a git-grep quirk never silently zeroes out dependent counts") matches the code exactly: `GrepTreePaths` treats exit-1-no-matches as a clean empty result (`git.go:160-161`) and any real failure falls through to `ListFiles`.
+- `/Users/alex/workspace/entire-graph/internal/sem/search_cache.go:166-170` — the build-race restamp comment precisely describes the guard above it and gives a concrete trigger (empty commit landing concurrently).
+- The paired guard comments in `search.go:288-290` and `search.go:362` cross-reference each other correctly, and both relaxations are consistent with the restamping design (the old commit comparisons would have been defeated by restamping anyway).
+
+One adjacent observation for the author (not a comment defect): `searchSnapshotCacheVersion` is still `"search-snapshot-v4"` (`search_cache.go:18`) despite the key derivation changing. Old commit-keyed entries hash to different keys and simply become unreachable orphan files — no correctness issue, but they will accumulate in the cache directory until something cleans them.</result>
+<usage><subagent_tokens>86535</subagent_tokens><tool_uses>21</tool_uses><duration_ms>364717</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>ace063301be7e9cad</task-id>
+<tool-use-id>toolu_01KKdaKNgbbDSoYSy9A9gX4x</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-alex-workspace-entire-graph/fc71f2f6-8d80-49fa-a756-bb1cb91bcb84/tasks/ace063301be7e9cad.output</output-file>
+<status>completed</status>
+<summary>Agent "Silent failure hunt" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Audit complete. I verified everything empirically rather than by inspection alone. Verdict up front: **suspicion 1 is confirmed as a real correctness regression — the prefilter CAN drop files the old scan counted, beyond the &gt;4MiB cap.** Suspicion 2 is confirmed (a warnings mechanism exists and is unused). Suspicion 3 is refuted, with one low-severity residual.
+
+---
+
+## Finding 1 — CRITICAL: `git grep -I` silently drops binary-flagged files the old scan counted; the "strict superset" comment is false
+
+**Location:** `/Users/alex/workspace/entire-graph/internal/sem/dependents.go:99-121` (new prefilter) + `/Users/alex/workspace/entire-graph/internal/gitutil/git.go:139` (the `-I` flag in `GrepTreePaths`)
+
+The doc comment on `referenceCandidateFiles` claims the grep pass "can only add extra candidate files, never drop a real dependent." That claim is only true of the `-i -F` substring semantics. It is defeated by the `-I` flag, which excludes any file git classifies as binary. Git classifies a blob binary if (a) it contains a NUL byte in roughly the first 8KB, or (b) `.gitattributes` marks it `binary` or `-diff`. The old path (`ListFiles` + `ShowFile` + tree-sitter parse) had no such exclusion — it parsed these files and counted dependents in them.
+
+I confirmed this empirically in a scratch repo (`git grep -z -I -i -F -l -e helper HEAD`):
+- a `.js` file with one embedded NUL byte in a string literal: **dropped** by `-I`, listed without it
+- a clean text `.js` file with `marked.js binary` in .gitattributes: **dropped**
+- `a.js -diff`: **dropped**; `-text`: not dropped
+- worse: a **worktree-only, uncommitted** `.gitattributes` changes the result of grepping a committed historical tree — dependent counts for the same commit now differ between checkouts
+
+**Hidden failure scenario (realistic, not contrived):** `*.pb.go -diff` and `*.min.js -diff` are widespread `.gitattributes` conventions for generated code. In such a repo, every dependent that lives in a generated-but-parseable file silently disappears from the count. The user sees `DependentsCount: 0`, concludes an entity is safe to delete, and breaks generated-code callers. There is no error, no warning, and grep exits 0 — the fallback never triggers because nothing "failed."
+
+**This repo today:** not affected — I diffed `git grep -a -l` vs `git grep -I -l` over all 269 files at HEAD: zero binary-flagged files, no `.gitattributes` exists, and none of the vendored `parser.c` files trip the heuristic. But this tool runs against arbitrary target repos, so that is luck, not safety.
+
+**Recommendation:** drop `-I` for the dependents prefilter. With `-l`, git grep *does* list binary files that match (confirmed in my test — that's exactly why `-I` exists), and every candidate is re-verified downstream by `Supported()`, the size cap, and `containsIdentifier` — so removing `-I` restores true superset semantics at negligible cost. `GrepTreePaths` is shared with `search.go:830` and `search.go:1850`, so either remove `-I` there too (those callers also post-filter by language eligibility) or add an `includeBinary` parameter / sibling function. If `-I` is kept anywhere, the `referenceCandidateFiles` comment must stop claiming superset semantics — as written it will actively mislead the next maintainer.
+
+## Finding 2 — MEDIUM: grep failure swallowed with zero observability
+
+**Location:** `/Users/alex/workspace/entire-graph/internal/sem/dependents.go:115-120`
+
+`if matches, err := gitutil.GrepTreePaths(...); err == nil { return matches, nil }` discards `err` entirely. The fallback to `ListFiles` preserves correctness (this is the right shape), but the error is a total information sink. Hidden errors this absorbs: ARG_MAX/execve failure when a huge changeset produces thousands of `-e` patterns, a broken `grep.threads`/grep config in the target repo, partial-clone blob fetch failures, and — most importantly — any future bug introduced into `GrepTreePaths` itself (its argument validation errors land here too). A repo where grep persistently fails silently degrades to the full-tree scan forever, and nobody will ever know the perf feature is dead. The codebase has no logger (no `log`/`slog` usage in `internal/sem` or `internal/gitutil`), but `Result.Warnings` exists and is rendered (`text.go:36`). At minimum, thread the error somewhere inspectable rather than dropping it on the floor.
+
+## Finding 3 — MEDIUM: the &gt;4MiB skip is silent, while the provider reports the identical condition as a warning
+
+**Location:** `/Users/alex/workspace/entire-graph/internal/sem/dependents.go:75-79`
+
+Confirmed: the sem layer has exactly the mechanism this skip should feed. The provider records this same condition as `PartialFailure{Code: "E_FILE_TOO_LARGE", Severity: "warning", EffectOnCompleteness: ...}` at `provider.go:827-833`. The dependents path has `*Result` in hand (`addDependentCounts` receives it), `Result.Warnings []ProviderWarning` exists (`model.go:52`), analyze.go already appends to it, and `WriteText` renders it. So "parity with the provider" is half-implemented: parity of *skipping*, no parity of *reporting*. **User impact:** an entity whose only callers live in a 5MiB generated file went from "N dependents" on main to "0 dependents" on this branch, and the output gives the user no way to distinguish "nothing references this" from "references not counted." Recommendation: append a `ProviderWarning` (`E_FILE_TOO_LARGE`, `EffectOnCompleteness: "dependent references in this file were not counted"`) per skipped supported file, mirroring provider.go.
+
+## Finding 4 — Suspicion 3 refuted, one LOW residual
+
+The re-stamp never masks a failed write as a hit. Verified all paths in `/Users/alex/workspace/entire-graph/internal/sem/search_cache.go`:
+- `loadOrBuildSearchSnapshot` build path (line 170-175): re-stamps the header, best-effort write, returns `hit=false` regardless of write outcome.
+- Hit paths (lines 124-129, 142-149, 77-93): `hit=true` only follows a successful `readSearchSnapshot` + `validCachedSearchSnapshot`. The selective-derive write at line 148 is best-effort, but the `true` it returns reflects the *full-snapshot read* that genuinely succeeded.
+- `PreindexProviderSnapshot` (lines 226-231): the durability retry-write correctly *surfaces* its error.
+- `commit` can never be empty at a re-stamp site — both are guarded by a successful `resolveCommittedHEAD`.
+
+**LOW residual, `search_cache.go:226-232`:** the preindex durability check no longer compares commit, so a pre-existing same-tree entry stamped with an *older* commit satisfies "durable artifact" and is left on disk unrewritten. After an amend/rebase, that recorded commit may be garbage-collected — the on-disk `Commit` field can point at a commit that no longer exists. Every in-repo loader re-stamps on load, so this is benign internally, but any external tool or human inspecting the `.json.gz` directly gets false provenance. Worth a comment on the cached format at minimum.
+
+**Informational:** the key-derivation change (commit removed from the sha256 at `search_cache.go:496`) shipped without bumping `searchSnapshotCacheVersion` (still `search-snapshot-v4`, line 18, same as origin/main). Old commit-keyed entries in the same `v4` directory become permanently unreachable orphans — disk garbage, no correctness risk (different hash inputs, and mixed old/new binary versions just miss and rebuild). Fine to leave, but it forgoes the natural cleanup a version bump would give.
+
+## What checks out
+
+For balance: the tree-only race guards in `/Users/alex/workspace/entire-graph/internal/sem/search.go:288-292, 362-364, 823-831` are sound (tree identity does fully determine parse output), the `len(names) == 0` early return in `buildReferenceIndex` is correct, `GrepTreePaths`'s own error handling (`git.go:158-167`) is exemplary — it distinguishes exit-1-no-match from real failures via stderr, and validates output framing — and the case-insensitive-substring ⊇ case-sensitive-token argument is genuinely correct *once the `-I` exclusion is removed*.</result>
+<usage><subagent_tokens>84193</subagent_tokens><tool_uses>27</tool_uses><duration_ms>398240</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a80190233cd66aa57</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-alex-workspace-entire-graph/fc71f2f6-8d80-49fa-a756-bb1cb91bcb84/tasks/a80190233cd66aa57.output</output-file>
+<status>completed</status>
+<summary>Agent "Test coverage review" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All working-tree mutations are reverted (`git status` clean). Here is the analysis.
+
+# Test Coverage Review: perf/graph-cache-reuse
+
+## Summary
+
+Coverage quality is high overall. I mutation-tested the three commit re-stamp sites rather than reasoning from reading alone: two of three are genuinely pinned by the new tests, one is not. The dependents tests are well-designed behavioral tests. There is exactly one critical gap.
+
+## Critical Gaps
+
+**1. OnlyFiles derivation branch re-stamp is unpinned — `/Users/alex/workspace/entire-graph/internal/sem/search_cache.go:143` (criticality 8)**
+
+Verified by mutation: I deleted `cached = restampCachedSearchSnapshotCommit(cached, commit)` on the derivation branch and the **entire `internal/sem` suite passed** (49.9s full run, green). Contrast: deleting the re-stamp at line 128 fails `TestPreindexProviderSnapshotReusesSameTreeAcrossCommits`, and deleting the one at line 92 fails `TestSearchReusesSameTreeCacheAcrossCommitsAndReportsCurrentHEAD`.
+
+The regression this permits: `LoadOrBuildProviderSnapshot` with `OnlyFiles` set (an exported API), called after a same-tree commit (empty commit, amend, rebase) against a full preindex built at the old commit, derives a selective snapshot whose `Header.Commit` is the **stale** commit. It then persists a self-inconsistent cache entry (`newCachedSearchSnapshot` at line 148 stamps `Commit: &lt;current&gt;` on the envelope while `Snapshot.Header.Commit` inside stays stale). Any caller reporting `Header.Commit` — the neighbors CLI reports it at `/Users/alex/workspace/entire-graph/internal/cli/neighbors.go:322` — serves wrong provenance silently.
+
+The existing derivation tests (`TestFullPreindexSelectiveSnapshot...` at search_cache_test.go:44-79 and `...FiltersFailureStats` at :81-120) all derive at the **same commit** where re-stamp is a no-op. The fix is cheap: in one of those tests (or a new one), add `git commit --allow-empty` between the preindex and the selective `LoadOrBuildProviderSnapshot`, then assert `cacheHit` is still true and `cached.Header.Commit == newHead`. This also pins the tree-only relaxation of the provenance check in `selectiveSearchSnapshotFromFull` (search_cache.go:294), which is currently only reachable-correct because the re-stamp precedes it.
+
+## Important Improvements
+
+**2. Neighbors-level assertion after same-tree commit (criticality 4-5)**
+
+The answer to "is neighbors' response commit covered after a same-tree cache hit?" is: covered at the sem layer, not at the CLI layer. Neighbors flows through `LoadOrBuildProviderSnapshot` → `loadOrBuildSearchSnapshot` direct-hit path (line 128), which mutation-testing confirms is pinned. Since neighbors has no independent commit-handling logic (it copies `snapshot.Header.Commit` verbatim), a CLI-level test is mostly redundant — but note neighbors passes no `OnlyFiles` today; if it ever does, it lands on the unpinned branch from gap 1. Fixing gap 1 covers this.
+
+**3. Binary-file parity in the grep prefilter (criticality 5)**
+
+`GrepTreePaths` runs `git grep -I` (`/Users/alex/workspace/entire-graph/internal/gitutil/git.go:139`), which skips binary-detected blobs. The dependents comment claims the prefilter is a "strict superset" of `containsIdentifier`, but that holds only for text blobs: a `Supported()` source file containing a NUL byte (embedded blob in a string literal, etc.) with a genuine reference would be counted by the fallback/old full-scan path but silently dropped by the grep path — the exact "count depends on which path ran" divergence the fallback test exists to prevent. The MaxParseBytes parity was handled deliberately; binary parity was not addressed either way. Low probability in practice, but worth either a small test documenting the intended semantics (NUL-containing source file → 0 or 1 dependents, pick one) or a comment amendment acknowledging `-I`.
+
+## Deliberately Untested (acceptable)
+
+- **Build-path re-stamp** (search_cache.go:170) and the **mid-search tree-only race guards** (search.go:291, 363): only observable when HEAD moves concurrently mid-call. Not testable without injection hooks; not worth adding them.
+- **`exactFullPreindex` tree-only relaxation** (search.go:826): not independently observable in non-race conditions — `loadCachedCompleteSearchSnapshot` re-stamps `Header.Commit` to the current HEAD before `preselectSearchFiles` runs, so the removed commit comparison would compare equal values anyway. Reverting the relaxation is behavior-neutral outside a mid-search race. The new search test does exercise this fast path (preindex hit, grep-safe query, default TopK) and catches the composite failure mode (stale commit reaching the fast path) via `response.Commit != newHead`.
+
+## Test Quality Assessment
+
+**dependents_test.go — good.** Tests the public contract through `buildReferenceIndex` with no mocking; the case/substring/self-exclusion matrix in `TestBuildReferenceIndexCaseSensitiveWholeToken` pins exactly the superset invariant the prefilter depends on, so it fails if the grep prefilter ever becomes lossy while staying green under refactoring. The MaxParseBytes test's just-under/just-over pair with fixture-size self-checks is well constructed. One mild fragility: `TestBuildReferenceIndexFallsBackWhenGrepFails` induces failure via a NUL byte relying on Go's exec layer rejecting NUL args — implementation-adjacent, but it goes through the real code path and the doc comment states the mechanism, which is the right tradeoff absent an injection seam. Note the prefilter itself is unobservable when it works (identical results either way), so a regression where grep *always* fails and every call silently full-scans is invisible to these tests — pure perf risk, acceptable for unit tests, worth remembering if this path gets a latency SLO.
+
+**search_cache_test.go — good.** The inversion of `TestPreindexProviderSnapshotDoesNotReuseSameTreeAcrossCommits` into `...ReusesSameTreeAcrossCommits` correctly re-pins the new contract in both directions (must hit cache AND must report new HEAD), and the added `newHead != first.Commit` setup guard prevents the test from passing vacuously. `TestSearchReusesSameTreeCacheAcrossCommitsAndReportsCurrentHEAD` asserts cache hit, re-stamped commit, and result integrity in one flow — all three assertions are load-bearing per my mutations. Both mutations I ran against these tests produced targeted single-test failures, which is exactly what you want.
+
+## Verdict
+
+One test to add before merge: same-tree-across-commits coverage for the `OnlyFiles` derivation branch (gap 1) — it is the only re-stamp site with zero protection, it is on an exported API, and the mutation proof shows the full suite is blind to it. Everything else is solid.</result>
+<usage><subagent_tokens>93149</subagent_tokens><tool_uses>21</tool_uses><duration_ms>423299</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>af3b0fdb5442f887a</task-id>
+<tool-use-id>toolu_012PDeKQURoDTkpXhAK4PRWB</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-alex-workspace-entire-graph/fc71f2f6-8d80-49fa-a756-bb1cb91bcb84/tasks/af3b0fdb5442f887a.output</output-file>
+<status>completed</status>
+<summary>Agent "Apply review findings batch" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All green, no gofmt issues. Here is the summary report.
+
+## Summary
+
+Working tree edited in place on `perf/graph-cache-reuse` (no commits made). Files touched:
+
+- `/Users/alex/workspace/entire-graph/internal/gitutil/git.go`
+- `/Users/alex/workspace/entire-graph/internal/gitutil/git_test.go`
+- `/Users/alex/workspace/entire-graph/internal/sem/dependents.go`
+- `/Users/alex/workspace/entire-graph/internal/sem/dependents_test.go`
+- `/Users/alex/workspace/entire-graph/internal/sem/search_cache.go`
+- `/Users/alex/workspace/entire-graph/internal/sem/search_cache_test.go`
+- `/Users/alex/workspace/entire-graph/internal/sem/search.go`
+
+### Fix A — dependents prefilter binary inclusion (TDD, red→green confirmed)
+Empirically verified `-I` drops both an embedded-NUL file and a `.gitattributes -diff` file from `git grep -l` under git 2.50.1. Added `TestBuildReferenceIndexIncludesGitBinaryFlaggedFiles` in `dependents_test.go` (NUL-byte fixture, whole-token `Foo` reference) — ran RED first (`--- FAIL ... expected binary_caller.py binary_caller() as a dependent`), then implemented: refactored `GrepTreePaths` in `git.go` into a shared unexported `grepTreePaths(..., textOnly bool)`, added exported `GrepTreePathsIncludingBinary` (omits `-I`), added `TestGrepTreePathsIncludingBinaryFindsFilesGrepTreePathsExcludes` in `git_test.go`, and switched `referenceCandidateFiles` in `dependents.go` to the binary-inclusive variant, updating its doc comment to state the superset guarantee now explicitly covers Git-binary-flagged files. Reran — GREEN.
+
+### Fix B — OnlyFiles-derivation re-stamp pin (test-only, honest finding)
+Wrote `TestOnlyFilesDerivationReStampsCommitAfterSameTreeCommit` per the brief (preindex → `git commit --allow-empty` → `LoadOrBuildProviderSnapshot` with `OnlyFiles` → assert `cacheHit`, `Header.Commit == newHead`, `Tree` unchanged) and added it to `search_cache_test.go`. Did the required red/green pin-check by temporarily deleting `cached = restampCachedSearchSnapshotCommit(cached, commit)` at `search_cache.go:143`: **the test still passed**, and the full `internal/sem` suite stayed green with the line removed — matching the reviewer's mutation-testing finding but for a traceable reason. I traced why: `selectiveSearchSnapshotFromFull` calls `prepareSource`, which independently re-resolves `resolveCommittedHEAD` and feeds `sc.commit` into `leanHeader`'s `Header.Commit` — so the returned selective snapshot's `Header.Commit` is always the live HEAD regardless of whether the local `cached` var got restamped before being passed in as `full` (its `Commit` field is only read in an error-format string, never propagated). I restored the production line (verified `git diff` shows no residual change) and kept the test as a legitimate regression test of the documented cross-commit derivation behavior, but flagging honestly that it does not "pin" this exact line the way the brief expected — the line appears to be currently-inert given this call graph, not a coverage gap closeable by a return-value assertion. Worth a second look/decision from you on whether to leave the line as defensive/future-proofing or reconsider the reviewer's premise.
+
+### Fix C — observability warnings (TDD, red→green confirmed)
+Threaded warnings through `referenceCandidateFiles` → `buildReferenceIndex` → `addDependentCounts` → `result.Warnings`, mirroring `analyze.go`'s warning-append pattern:
+- `dependentsFileTooLargeWarning` — `Code: "E_FILE_TOO_LARGE"`, mirrors provider wording, states dependent references in that file were not counted.
+- `grepFallbackWarning` — `Code: "W_DEPENDENTS_PREFILTER_FAILED"`, one warning, includes `grepErr.Error()` text.
+
+Extended `TestBuildReferenceIndexSkipsFilesOverMaxParseBytes` and `TestBuildReferenceIndexFallsBackWhenGrepFails` to assert the new warnings; updated all other `buildReferenceIndex` call sites for the new `(referenceIndex, []ProviderWarning, error)` signature, asserting zero warnings on the clean-prefilter paths (including the new Fix A test). All pass.
+
+### Fix D — comment corrections (no behavior change)
+Applied all six: `PreindexProviderSnapshot`/`LoadOrBuildProviderSnapshot` "commit-keyed"→"tree-keyed"; `searchSnapshotKey` scoped to note `FILE_CHANGES_WITH` co-change relations (`fileChangesWithRelations`) can carry prior-history data across a same-tree rebase; `restampCachedSearchSnapshotCommit` now notes `Header.Commit` is read back as the treeish for query-time content reads (`openSearchContentReader`); `validCachedSearchSnapshot` reworded to distinguish callers that serve vs. persistence-check-only callers; `dependents.go`'s `MaxParseBytes` comment now says parity with the provider's *default* (analyze path has no option plumbing); `search.go`'s `exactFullPreindex` block got the blank `//` separator line.
+
+### Verification
+```
+gofmt -l internal/gitutil internal/sem internal/cli   → (no output, clean)
+go test ./internal/sem/ ./internal/gitutil/ ./internal/cli/ -count=1
+ok  github.com/entireio/entire-graph/internal/sem       50.890s
+ok  github.com/entireio/entire-graph/internal/gitutil    5.233s
+ok  github.com/entireio/entire-graph/internal/cli         7.789s
+```
+`go vet` on the same three packages is clean (only the pre-existing unrelated tree-sitter-lua NUL-character build warning, present before this work). Did not run `mise run check` per instructions.</result>
+<usage><subagent_tokens>175676</subagent_tokens><tool_uses>98</tool_uses><duration_ms>846822</duration_ms></usage>
+</task-notification>
