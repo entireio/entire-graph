@@ -2963,7 +2963,11 @@ func searchPathPrior(q searchQuery, filePath string) float64 {
 	if searchDocumentationArtifactPath(lower) && !searchQuerySupplied(q,
 		"doc", "docs", "documentation", "readme", "readmes", "guide", "guides", "example", "examples",
 	) {
-		score -= 1.25
+		// Strong demotion: docs describe features in the issue's own vocabulary and
+		// otherwise out-score the implementing code on a body-text match. A "fix the
+		// bug" query wants code, not the manual. (Was -1.25 — too weak to flip a ~9.9
+		// doc match below the ~5-8 code match; -6 reliably ranks code first.)
+		score -= 6
 	}
 	if searchGeneratedArtifactPath(lower) && !searchQuerySupplied(q,
 		"generated", "generator", "generators", "codegen", "codegens", "build", "builds", "dist", "bundle", "bundles",
@@ -2982,8 +2986,30 @@ func searchTestArtifactPath(lower string) bool {
 
 func searchDocumentationArtifactPath(lower string) bool {
 	base := filepath.Base(lower)
-	return strings.Contains(lower, "/docs/") || strings.HasSuffix(lower, ".md") ||
-		strings.HasPrefix(base, "readme") || strings.HasPrefix(base, "changelog")
+	if strings.Contains(lower, "/docs/") || strings.Contains(lower, "/doc/") ||
+		strings.Contains(lower, "/man/") || strings.Contains(lower, "/manual/") ||
+		strings.HasPrefix(base, "readme") || strings.HasPrefix(base, "changelog") {
+		return true
+	}
+	// Documentation / prose / man-page file types. These frequently describe a
+	// feature in the SAME words as the issue text (e.g. "--nul-output"), so they
+	// out-score the code that actually implements it on a body-text match. The
+	// agent's task is to edit SOURCE, so these must never outrank code.
+	// Note: .yml/.yaml are NOT here — they're usually config/CI (e.g. workflow files),
+	// not docs. Documentation YAML (manual.yml) is caught by the /docs/ /manual/ dir checks above.
+	for _, ext := range []string{".md", ".markdown", ".rst", ".adoc", ".txt"} {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	// man pages: foo.1 .. foo.9, and pre-rendered .prebuilt / .roff / .man / .1.prebuilt
+	if strings.HasSuffix(lower, ".prebuilt") || strings.HasSuffix(lower, ".roff") || strings.HasSuffix(lower, ".man") {
+		return true
+	}
+	if n := len(base); n >= 2 && base[n-2] == '.' && base[n-1] >= '1' && base[n-1] <= '9' {
+		return true
+	}
+	return false
 }
 
 func searchGeneratedArtifactPath(lower string) bool {
