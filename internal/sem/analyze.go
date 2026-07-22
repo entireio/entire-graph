@@ -24,6 +24,16 @@ func AnalyzeGitRange(ctx context.Context, repo, base, head string, paths []strin
 			oldPath = path
 		}
 		if !Supported(path) && !Supported(oldPath) {
+			// A changed file with no parser must still be visible in the result:
+			// without a marker, a consumer cannot distinguish "changed but had no
+			// entity-level changes" from "changed but never analyzed" (reported
+			// for a PowerShell file on jdx/mise).
+			result.Warnings = append(result.Warnings, ProviderWarning{
+				Code:                 "W_UNSUPPORTED_FILE",
+				Severity:             "info",
+				FilePath:             path,
+				EffectOnCompleteness: "file skipped; no parser for this file type, so its changes are not analyzed",
+			})
 			continue
 		}
 
