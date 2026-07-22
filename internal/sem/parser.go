@@ -241,8 +241,12 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if spec.language == "YAML" {
 		parseSrc = []byte(maskYAMLUnsupportedSyntax(content))
 	}
-	if spec.language == "TypeScript" && !strings.EqualFold(filepath.Ext(path), ".tsx") {
-		parseSrc = []byte(maskTypeScriptUnsupportedSyntax(content))
+	if spec.language == "TypeScript" {
+		if strings.EqualFold(filepath.Ext(path), ".tsx") {
+			parseSrc = []byte(maskTSXUnsupportedSyntax(content))
+		} else {
+			parseSrc = []byte(maskTypeScriptUnsupportedSyntax(content))
+		}
 	}
 	if spec.language == "Rust" {
 		parseSrc = []byte(maskRustUnsupportedSyntax(content))
@@ -412,13 +416,65 @@ func sourceLineAt(src []byte, line int) string {
 }
 
 var (
-	tsKeywordTypePropertyPattern  = regexp.MustCompile(`^(\s*)in(\??\s*:)`)
+	tsKeywordTypePropertyPattern  = regexp.MustCompile(`^(\s*)in((?:_[A-Za-z0-9_]*)?\??\s*:)`)
 	tsTypeImportPattern           = regexp.MustCompile(`typeof\s+import\(([^)]*)\)`)
 	tsStaticAccessorMethodPattern = regexp.MustCompile(`(\bstatic\s+accesso)r(\s*\()`)
+	// Import-type references without `typeof` — `import("./types").Foo["k"]` in a
+	// type position — are rejected by the grammar. Only the parenthesized head is
+	// blanked (to a same-width `_` identifier) so the trailing qualified name
+	// still parses as member access; the `[.\[]` guard keeps bare dynamic
+	// `import("./x")` expressions untouched.
+	tsBareTypeImportPattern = regexp.MustCompile(`(import\([ \t]*(?:"[^"\n]*"|'[^'\n]*')[ \t]*\))[ \t]*[.\[]`)
+	// `export type * from "./x"` (TS 5.0) is not in the grammar; blank the
+	// `type` keyword so it parses as a plain star re-export.
+	tsExportTypeStarPattern = regexp.MustCompile(`(?m)^(\s*export\s+)(type)(\s+\*)`)
+	// `unique` is the grammar's `unique symbol` type-operator keyword; after `<`
+	// it derails GLR recovery when used as a plain identifier (`i <
+	// unique.length`). Flip the last char so the masked source reads as an
+	// ordinary identifier; the guard suffix keeps `Set<unique symbol>` intact.
+	tsLessThanUniquePattern = regexp.MustCompile(`<[ \t]*(unique)[ \t]*[.\[),;]`)
 )
 
+// maskTypeScriptCommonSyntax applies the position-preserving rewrites shared by
+// the .ts and .tsx paths: import-type references (with and without `typeof`),
+// `export type *` re-exports, and identifier uses of the `unique` keyword.
+func maskTypeScriptCommonSyntax(content string) string {
+	masked := []byte(content)
+	changed := false
+	for _, m := range tsBareTypeImportPattern.FindAllStringSubmatchIndex(content, -1) {
+		for i := m[2]; i < m[3]; i++ {
+			masked[i] = '_'
+		}
+		changed = true
+	}
+	for _, m := range tsLessThanUniquePattern.FindAllStringSubmatchIndex(content, -1) {
+		masked[m[3]-1] = 'E'
+		changed = true
+	}
+	result := content
+	if changed {
+		result = string(masked)
+	}
+	result = tsTypeImportPattern.ReplaceAllStringFunc(result, sameLengthIdentifierMask)
+	return tsExportTypeStarPattern.ReplaceAllString(result, "${1}    ${3}")
+}
+
+// maskTSXUnsupportedSyntax is the .tsx variant of maskTypeScriptUnsupportedSyntax.
+// It applies only the shared rewrites plus the keyword-property mask: the
+// generic-call-signature line masking below is tuned for .ts and could blank
+// JSX lines.
+func maskTSXUnsupportedSyntax(content string) string {
+	masked := maskTypeScriptCommonSyntax(content)
+	lines := strings.SplitAfter(masked, "\n")
+	for i, line := range lines {
+		text, newline := splitLineEnding(line)
+		lines[i] = maskTypeScriptKeywordTypeProperty(text) + newline
+	}
+	return strings.Join(lines, "")
+}
+
 func maskTypeScriptUnsupportedSyntax(content string) string {
-	masked := tsTypeImportPattern.ReplaceAllStringFunc(content, sameLengthIdentifierMask)
+	masked := maskTypeScriptCommonSyntax(content)
 	lines := strings.SplitAfter(masked, "\n")
 	maskingGenericCallSignature := false
 	maskingGenericCallSignatureReturn := false
@@ -1543,6 +1599,16 @@ var (
 	// for a two-operand test without an operator, and the resulting ERROR node
 	// swallows adjacent function definitions.
 	bashSplicedTestArgsPattern = regexp.MustCompile(`\[ [^]\[\n]+ ("\$@") \]`)
+
+	// bashFdDuplexRedirectPattern matches `N<>word` read-write fd redirections
+	// (`exec 3<>/dev/tcp/host/port`), which the grammar has no production for.
+	// The `N<>` is blanked so the target survives as an ordinary word.
+	bashFdDuplexRedirectPattern = regexp.MustCompile(`[0-9]<>`)
+
+	// bashArithmeticBaseLiteralPattern matches base-N literals in arithmetic
+	// contexts (`(( 10#$version <= 10#$max ))`); the grammar rejects the `N#`
+	// prefix. The prefix is blanked, leaving the bare operand.
+	bashArithmeticBaseLiteralPattern = regexp.MustCompile(`\b([0-9]+#)[0-9a-zA-Z_$]`)
 )
 
 // maskBashSplicedTestArgs rewrites the trailing `"$@"` of a two-operand test
@@ -1583,6 +1649,14 @@ func maskBashUnsupportedSyntax(content string) string {
 	})
 	masked = maskBashSubstringVariableOffsets(masked)
 	masked = maskBashSplicedTestArgs(masked)
+	masked = bashFdDuplexRedirectPattern.ReplaceAllString(masked, "   ")
+	{
+		rewritten := []byte(masked)
+		for _, m := range bashArithmeticBaseLiteralPattern.FindAllStringSubmatchIndex(masked, -1) {
+			maskBytesPreservingNewlines(rewritten, m[2], m[3])
+		}
+		masked = string(rewritten)
+	}
 	masked = zshGlobParameterPattern.ReplaceAllStringFunc(masked, func(match string) string {
 		return sameLengthReplacement(`"x"`, len(match))
 	})
@@ -5000,8 +5074,19 @@ var postgresExtschemaPlaceholderPattern = regexp.MustCompile(`@[A-Za-z_][A-Za-z0
 var postgresDoBlockPattern = regexp.MustCompile(`(?is)\bdo\s+\$[a-z0-9_]*\$.*?\$[a-z0-9_]*\$;`)
 var postgresDropTriggerPattern = regexp.MustCompile(`(?is)\bdrop\s+trigger\b[^;]*;`)
 var postgresDropPolicyPattern = regexp.MustCompile(`(?is)\bdrop\s+policy\b[^;]*;`)
+
+// Multi-name DROP statements (`DROP TABLE IF EXISTS a, b, c;`) are rejected at
+// the comma; single-name drops parse fine, so only comma lists are masked.
+var postgresDropListPattern = regexp.MustCompile(`(?is)\bdrop\s+(?:view|table|domain|schema|sequence|index|extension)\b[^;,]*,[^;]*;`)
 var postgresRowLevelSecurityPattern = regexp.MustCompile(`(?is)\balter\s+table\b[^;]*\brow\s+level\s+security\s*;`)
-var postgresFunctionSetPattern = regexp.MustCompile(`(?im)^\s*set\s+search_path\s*=\s*[^;\n]+`)
+var postgresFunctionSetPattern = regexp.MustCompile(`(?im)^\s*set\s+search_path\s*(?:=|\bto\b)\s*[^;\n]+;?`)
+var postgresAlterDefaultPrivilegesPattern = regexp.MustCompile(`(?is)\balter\s+default\s+privileges\b[^;]*;`)
+
+// `key` is a reserved word in the grammar, so a column literally named `key`
+// derails the whole CREATE TABLE. Rewrite the line-anchored column-definition
+// form to a same-width ordinary identifier; symbol names are sliced from the
+// original bytes, so the entity still surfaces as `key`.
+var postgresKeyColumnPattern = regexp.MustCompile(`(?im)^(\s*)(key)\s+[a-z]`)
 var postgresLoadPattern = regexp.MustCompile(`(?im)^\s*load\s+'[^']+'\s*;?`)
 var postgresInlinePsqlMetaCommandPattern = regexp.MustCompile(`(?im)\\(?:gset|gexec|gdesc|watch|if|elif|else|endif|quit|q)\b[^\n\r]*`)
 var postgresExtensionDDLPattern = regexp.MustCompile(`(?is)\bcreate\s+(?:access\s+method|operator(?:\s+class|\s+family)?|type|aggregate|text\s+search\s+(?:configuration|dictionary|parser|template)|collation|statistics|transform)\b[^;]*;`)
@@ -5020,147 +5105,167 @@ var postgresCommentOnObjectPattern = regexp.MustCompile(`(?is)\bcomment\s+on\s+(
 
 func maskPostgresUnsupportedSyntax(content string) string {
 	masked := []byte(content)
-	for _, loc := range postgresVectorTypePattern.FindAllStringIndex(content, -1) {
-		replaceBytesPreservingWidth(masked, loc[0], loc[1], "text")
-	}
-	for _, loc := range postgresTimestamptzTypePattern.FindAllStringIndex(content, -1) {
-		replaceBytesPreservingWidth(masked, loc[0], loc[1], "timestamp")
-	}
-	for _, loc := range postgresBigserialTypePattern.FindAllStringIndex(content, -1) {
-		replaceBytesPreservingWidth(masked, loc[0], loc[1], "bigint")
-	}
-	for _, loc := range postgresTypeCastPattern.FindAllStringIndex(content, -1) {
-		maskBytesPreservingNewlines(masked, loc[0], loc[1])
-	}
-	for _, loc := range postgresCurrentDatePattern.FindAllStringIndex(content, -1) {
-		replaceBytesPreservingWidth(masked, loc[0], loc[1], "now()")
-	}
+	// Blank comments first and run every later pattern against the comment-free
+	// view: DDL-looking prose inside comments ("unique within a repo", "no
+	// partition of relation ...") otherwise matches the statement patterns and
+	// their replacements stomp bytes of real statements (apostrophes in comment
+	// prose also corrupt the constraint scanner's quote tracking).
 	for _, loc := range postgresLineCommentPattern.FindAllStringIndex(content, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
 	for _, loc := range postgresBlockCommentPattern.FindAllStringIndex(content, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresSubstringFromPattern.FindAllStringIndex(content, -1) {
+	search := string(masked)
+	for _, loc := range postgresVectorTypePattern.FindAllStringIndex(search, -1) {
+		replaceBytesPreservingWidth(masked, loc[0], loc[1], "text")
+	}
+	for _, loc := range postgresTimestamptzTypePattern.FindAllStringIndex(search, -1) {
+		replaceBytesPreservingWidth(masked, loc[0], loc[1], "timestamp")
+	}
+	for _, loc := range postgresBigserialTypePattern.FindAllStringIndex(search, -1) {
+		replaceBytesPreservingWidth(masked, loc[0], loc[1], "bigint")
+	}
+	for _, loc := range postgresTypeCastPattern.FindAllStringIndex(search, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresCurrentDatePattern.FindAllStringIndex(search, -1) {
+		replaceBytesPreservingWidth(masked, loc[0], loc[1], "now()")
+	}
+	for _, loc := range postgresSubstringFromPattern.FindAllStringIndex(search, -1) {
 		replaceBytesPreservingWidth(masked, loc[0], loc[1], "null")
 	}
-	for _, loc := range postgresIsDistinctFromPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresIsDistinctFromPattern.FindAllStringIndex(search, -1) {
 		replaceBytesPreservingWidth(masked, loc[0], loc[1], "<>")
 	}
-	for _, loc := range postgresCrossJoinLateralPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresCrossJoinLateralPattern.FindAllStringIndex(search, -1) {
 		replaceBytesPreservingWidth(masked, loc[0], loc[1], "cross join")
 	}
-	for _, loc := range postgresPsqlMetaCommandPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresPsqlMetaCommandPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresInlinePsqlMetaCommandPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresInlinePsqlMetaCommandPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresGeneratedColumnPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresGeneratedColumnPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	maskPostgresCheckConstraints(masked, content)
-	for _, loc := range postgresCreateFunctionPattern.FindAllStringIndex(content, -1) {
+	maskPostgresCheckConstraints(masked, search)
+	for _, loc := range postgresCreateFunctionPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresCreateExternalFunctionPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresCreateExternalFunctionPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresDoBlockPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresDoBlockPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresExtensionDDLPattern.FindAllStringIndex(content, -1) {
+	// Re-snapshot after the function/DO-body masks: dollar-quoted bodies often
+	// contain DDL-looking text in strings (`EXECUTE format('... PARTITION OF
+	// ...')`), and later patterns must not see it or their replacements write
+	// garbage into the already-blanked body region.
+	search = string(masked)
+	for _, loc := range postgresExtensionDDLPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresAlterExtensionPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresAlterExtensionPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresExplainOptionsPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresExplainOptionsPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresAlterOperatorPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresAlterOperatorPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresAlterOperatorGenericPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresAlterOperatorGenericPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresForeignAndTriggerDDLPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresForeignAndTriggerDDLPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresAlterTextSearchPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresAlterTextSearchPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresExtschemaPlaceholderPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresExtschemaPlaceholderPattern.FindAllStringIndex(search, -1) {
 		replaceBytesPreservingWidth(masked, loc[0], loc[1], strings.Repeat("a", loc[1]-loc[0]))
 	}
-	for _, loc := range postgresCreateDomainCastPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresCreateDomainCastPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresCommentOnObjectPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresCommentOnObjectPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresLoadPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresLoadPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresDropTriggerPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresDropTriggerPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresDropPolicyPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresDropPolicyPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresRowLevelSecurityPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresDropListPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresDropFunctionPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresRowLevelSecurityPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresAlterTablePattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresDropFunctionPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresAlterFunctionPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresAlterTablePattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresGrantRevokePattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresAlterFunctionPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresNotifyPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresAlterDefaultPrivilegesPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresDeletePattern.FindAllStringIndex(content, -1) {
+	for _, m := range postgresKeyColumnPattern.FindAllStringSubmatchIndex(search, -1) {
+		replaceBytesPreservingWidth(masked, m[4], m[5], "kex")
+	}
+	for _, loc := range postgresGrantRevokePattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresFunctionSetPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresNotifyPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresWithOrdinalityPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresDeletePattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresOnDeleteUpdatePattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresFunctionSetPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresPartitionOfPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresWithOrdinalityPattern.FindAllStringIndex(search, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresOnDeleteUpdatePattern.FindAllStringIndex(search, -1) {
+		maskBytesPreservingNewlines(masked, loc[0], loc[1])
+	}
+	for _, loc := range postgresPartitionOfPattern.FindAllStringIndex(search, -1) {
 		replaceRangePreservingNewlines(masked, loc[0], loc[1], " (partition_dummy int)")
 	}
-	for _, loc := range postgresPartitionByPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresPartitionByPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresCopyStdinBlockPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresCopyStdinBlockPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresCopyStatementPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresCopyStatementPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	maskPostgresTableConstraints(masked, content)
-	for _, loc := range postgresIndexMethodPattern.FindAllStringIndex(content, -1) {
+	maskPostgresTableConstraints(masked, search)
+	for _, loc := range postgresIndexMethodPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresOnConflictPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresOnConflictPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	for _, loc := range postgresVectorOperatorClassPattern.FindAllStringIndex(content, -1) {
+	for _, loc := range postgresVectorOperatorClassPattern.FindAllStringIndex(search, -1) {
 		maskBytesPreservingNewlines(masked, loc[0], loc[1])
 	}
-	lower := asciiLowerString(content)
+	lower := asciiLowerString(search)
 	offset := 0
 	for {
 		rel := strings.Index(lower[offset:], "create policy")
@@ -5168,7 +5273,7 @@ func maskPostgresUnsupportedSyntax(content string) string {
 			break
 		}
 		start := offset + rel
-		end := sqlStatementEnd(content, start)
+		end := sqlStatementEnd(search, start)
 		maskBytesPreservingNewlines(masked, start, end)
 		offset = end
 	}
