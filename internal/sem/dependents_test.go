@@ -1,0 +1,212 @@
+package sem
+
+import (
+	"context"
+	"strings"
+	"testing"
+)
+
+// newDependentsTestRepo creates a git repo with:
+//   - auth.py defining Foo (capitalized) and foo (lowercase, unrelated).
+//   - caller_one.py and caller_two.py each with a genuine dependent that
+//     calls Foo.
+//   - near_miss.py that only contains "foo" (case differs from "Foo").
+//   - substring.py that only contains "myFooBar" (substring, not a token).
+//
+// It returns the repo path and the head commit.
+func newDependentsTestRepo(t *testing.T) (repo, head string) {
+	t.Helper()
+	repo = t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	write(t, repo, "auth.py", `def Foo(token):
+    return bool(token)
+
+def foo(token):
+    return not bool(token)
+`)
+	write(t, repo, "caller_one.py", `def check(token):
+    return Foo(token)
+`)
+	write(t, repo, "caller_two.py", `def check_again(token):
+    return Foo(token) and Foo(token)
+`)
+	write(t, repo, "near_miss.py", `def uses_lowercase(token):
+    return foo(token)
+`)
+	write(t, repo, "substring.py", `def myFooBar(token):
+    return token
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	head = rev(t, repo, "HEAD")
+	return repo, head
+}
+
+// TestBuildReferenceIndexCaseSensitiveWholeToken pins the pre-grep semantics:
+// a case-sensitive, whole-token match on the entity block. Git's grep
+// preselection is case-insensitive substring matching, a strict superset, but
+// the final containsIdentifier check must still exclude near-miss files.
+func TestBuildReferenceIndexCaseSensitiveWholeToken(t *testing.T) {
+	repo, head := newDependentsTestRepo(t)
+
+	index, err := buildReferenceIndex(context.Background(), repo, head, map[string]struct{}{"Foo": {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dependents := index["Foo"]
+
+	// (c) genuine dependents in multiple files, counted once per entity even
+	// when an entity calls Foo more than once.
+	if _, ok := dependents["caller_one.py#function:check"]; !ok {
+		t.Fatalf("expected caller_one.py check() as a dependent, got %#v", dependents)
+	}
+	if _, ok := dependents["caller_two.py#function:check_again"]; !ok {
+		t.Fatalf("expected caller_two.py check_again() as a dependent, got %#v", dependents)
+	}
+
+	// (d) self-name exclusion: Foo's own definition must not count itself.
+	if _, ok := dependents["auth.py#function:Foo"]; ok {
+		t.Fatalf("Foo must not be counted as its own dependent, got %#v", dependents)
+	}
+
+	// (a) a file matching only case-insensitively (contains "foo" but the
+	// name is "Foo") must contribute 0 dependents.
+	if _, ok := dependents["near_miss.py#function:uses_lowercase"]; ok {
+		t.Fatalf("case-insensitive-only match must not count as a dependent, got %#v", dependents)
+	}
+	if _, ok := dependents["auth.py#function:foo"]; ok {
+		t.Fatalf("lowercase foo definition must not count as a dependent of Foo, got %#v", dependents)
+	}
+
+	// (b) a file matching as a substring only ("myFooBar" vs name "Foo")
+	// must contribute 0 dependents.
+	if _, ok := dependents["substring.py#function:myFooBar"]; ok {
+		t.Fatalf("substring-only match must not count as a dependent, got %#v", dependents)
+	}
+
+	if got, want := len(dependents), 2; got != want {
+		t.Fatalf("dependents count = %d, want %d: %#v", got, want, dependents)
+	}
+}
+
+// TestBuildReferenceIndexEmptyNamesDoesNoWork pins that an empty names map
+// short-circuits before any git call is made -- passing a repo path that
+// does not exist must not surface an error, because buildReferenceIndex
+// should never reach gitutil.
+func TestBuildReferenceIndexEmptyNamesDoesNoWork(t *testing.T) {
+	index, err := buildReferenceIndex(context.Background(), "/nonexistent/repo/path", "HEAD", map[string]struct{}{})
+	if err != nil {
+		t.Fatalf("expected no error for empty names, got %v", err)
+	}
+	if len(index) != 0 {
+		t.Fatalf("expected empty index, got %#v", index)
+	}
+}
+
+// TestAddDependentCountsNoChangesSkipsIndexBuild pins the same short-circuit
+// at the addDependentCounts level: a Result with no entity changes must not
+// attempt to build a reference index at all.
+func TestAddDependentCountsNoChangesSkipsIndexBuild(t *testing.T) {
+	result := &Result{}
+	if err := addDependentCounts(context.Background(), "/nonexistent/repo/path", "HEAD", result); err != nil {
+		t.Fatalf("expected no error when there are no changes, got %v", err)
+	}
+}
+
+// paddedPythonSource builds a syntactically valid Python file of exactly
+// targetSize bytes: a real function that calls calledName, followed by a
+// single padding comment line long enough to reach the target size.
+func paddedPythonSource(funcName, calledName string, targetSize int) string {
+	prefix := "def " + funcName + "(token):\n    return " + calledName + "(token)\n"
+	padNeeded := targetSize - len(prefix) - len("# \n")
+	if padNeeded < 0 {
+		padNeeded = 0
+	}
+	return prefix + "# " + strings.Repeat("x", padNeeded) + "\n"
+}
+
+// TestBuildReferenceIndexSkipsFilesOverMaxParseBytes pins parity with the
+// provider's MaxParseBytes eligibility: a file whose content exceeds
+// defaultMaxParseBytes must contribute 0 dependents, even though it contains
+// a token matching a changed name, while a file just under the limit with a
+// genuine call is still counted.
+func TestBuildReferenceIndexSkipsFilesOverMaxParseBytes(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	overLimit := paddedPythonSource("huge_caller", "Foo", defaultMaxParseBytes+4096)
+	underLimit := paddedPythonSource("under_caller", "Foo", defaultMaxParseBytes-4096)
+	if len(overLimit) <= defaultMaxParseBytes {
+		t.Fatalf("fixture must exceed defaultMaxParseBytes, got %d bytes", len(overLimit))
+	}
+	if len(underLimit) >= defaultMaxParseBytes {
+		t.Fatalf("fixture must stay under defaultMaxParseBytes, got %d bytes", len(underLimit))
+	}
+
+	write(t, repo, "huge.py", overLimit)
+	write(t, repo, "just_under.py", underLimit)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	head := rev(t, repo, "HEAD")
+
+	index, err := buildReferenceIndex(context.Background(), repo, head, map[string]struct{}{"Foo": {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dependents := index["Foo"]
+	if _, ok := dependents["huge.py#function:huge_caller"]; ok {
+		t.Fatalf("file above defaultMaxParseBytes must contribute 0 dependents, got %#v", dependents)
+	}
+	if _, ok := dependents["just_under.py#function:under_caller"]; !ok {
+		t.Fatalf("expected just_under.py under_caller() as a dependent, got %#v", dependents)
+	}
+	if got, want := len(dependents), 1; got != want {
+		t.Fatalf("dependents count = %d, want %d: %#v", got, want, dependents)
+	}
+}
+
+// TestBuildReferenceIndexFallsBackWhenGrepFails pins the fallback: if the git
+// grep preselection call fails for any reason, buildReferenceIndex must
+// still fall back to a full-tree scan rather than silently returning zero
+// dependents. A NUL byte in a pattern makes the underlying git-grep
+// subprocess invocation fail outright (Go's exec layer rejects NUL bytes in
+// arguments), while leaving the unrelated, well-formed pattern's real
+// dependents fully discoverable via the fallback scan.
+func TestBuildReferenceIndexFallsBackWhenGrepFails(t *testing.T) {
+	repo, head := newDependentsTestRepo(t)
+
+	names := map[string]struct{}{
+		"Foo":         {},
+		"poison\x00x": {},
+	}
+
+	index, err := buildReferenceIndex(context.Background(), repo, head, names)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dependents := index["Foo"]
+	if got, want := len(dependents), 2; got != want {
+		t.Fatalf("dependents count after grep failure = %d, want %d: %#v", got, want, dependents)
+	}
+	if _, ok := dependents["caller_one.py#function:check"]; !ok {
+		t.Fatalf("expected caller_one.py check() as a dependent after fallback, got %#v", dependents)
+	}
+	if _, ok := dependents["caller_two.py#function:check_again"]; !ok {
+		t.Fatalf("expected caller_two.py check_again() as a dependent after fallback, got %#v", dependents)
+	}
+
+	if _, ok := index["poison\x00x"]; !ok {
+		t.Fatalf("expected an (empty) entry for the poisoned name, got %#v", index)
+	}
+	if len(index["poison\x00x"]) != 0 {
+		t.Fatalf("poisoned name should have no real dependents, got %#v", index["poison\x00x"])
+	}
+}

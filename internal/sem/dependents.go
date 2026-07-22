@@ -47,17 +47,20 @@ func changedReferenceNames(result Result) map[string]struct{} {
 }
 
 func buildReferenceIndex(ctx context.Context, repo, head string, names map[string]struct{}) (referenceIndex, error) {
-	files, err := gitutil.ListFiles(ctx, repo, head)
+	index := referenceIndex{}
+	for name := range names {
+		index[name] = map[string]struct{}{}
+	}
+	if len(names) == 0 {
+		return index, nil
+	}
+
+	files, err := referenceCandidateFiles(ctx, repo, head, names)
 	if err != nil {
 		return nil, err
 	}
 
 	parser := TreeSitterParser{}
-	index := referenceIndex{}
-	for name := range names {
-		index[name] = map[string]struct{}{}
-	}
-
 	for _, path := range files {
 		if !Supported(path) {
 			continue
@@ -67,6 +70,11 @@ func buildReferenceIndex(ctx context.Context, repo, head string, names map[strin
 			return nil, err
 		}
 		if !ok {
+			continue
+		}
+		// Parity with the provider's MaxParseBytes eligibility: never count
+		// dependents inside a file the graph itself refuses to parse.
+		if len(content) > defaultMaxParseBytes {
 			continue
 		}
 
@@ -86,6 +94,30 @@ func buildReferenceIndex(ctx context.Context, repo, head string, names map[strin
 	}
 
 	return index, nil
+}
+
+// referenceCandidateFiles narrows the head tree to files worth parsing, using
+// git grep's fixed-string, case-insensitive substring search as a
+// preselection pass. That test is a strict superset of containsIdentifier's
+// case-sensitive whole-token check -- a case-sensitive substring is always
+// also a case-insensitive one -- so it can only add extra candidate files,
+// never drop a real dependent; the per-entity containsIdentifier check below
+// still runs unchanged. If the grep call itself fails for any reason, fall
+// back to scanning every file in the tree so a git-grep quirk never silently
+// zeroes out dependent counts.
+func referenceCandidateFiles(ctx context.Context, repo, head string, names map[string]struct{}) ([]string, error) {
+	patterns := make([]string, 0, len(names))
+	for name := range names {
+		if name != "" {
+			patterns = append(patterns, name)
+		}
+	}
+	if len(patterns) > 0 {
+		if matches, err := gitutil.GrepTreePaths(ctx, repo, head, patterns); err == nil {
+			return matches, nil
+		}
+	}
+	return gitutil.ListFiles(ctx, repo, head)
 }
 
 func entityBlock(lines []string, entity Entity) string {
