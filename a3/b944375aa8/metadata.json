@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "a3b944375aa8",
+  "strategy": "manual-commit",
+  "branch": "fix/corpus-parse-errors",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "internal/sem/parser.go",
+    "internal/sem/parser_postgres_regression_test.go",
+    "internal/sem/parser_typescript_regression_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a3/b944375aa8/0/metadata.json",
+      "transcript": "/a3/b944375aa8/0/full.jsonl",
+      "compact_transcript": "/a3/b944375aa8/0/transcript.jsonl",
+      "content_hash": "/a3/b944375aa8/0/content_hash.txt",
+      "prompt": "/a3/b944375aa8/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 343347,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 7714560,
+    "output_tokens": 36021,
+    "api_call_count": 77
+  }
+}

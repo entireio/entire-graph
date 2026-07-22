@@ -1,0 +1,9 @@
+Do an adversarial review of https://entire.io/gh/entireio/entire-graph/trails/8 - you can access the trail via the Entire CLI.
+
+---
+
+Fix them all
+
+---
+
+Did you push them?

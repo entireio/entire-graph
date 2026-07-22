@@ -1,0 +1,64 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "a3b944375aa8",
+  "session_id": "019f8c04-f40a-75a1-80a3-75c564780b42",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-22T23:57:15.446895Z",
+  "branch": "fix/corpus-parse-errors",
+  "checkpoints_count": 3,
+  "save_step_count": 2,
+  "files_touched": [
+    "internal/sem/parser.go",
+    "internal/sem/parser_postgres_regression_test.go",
+    "internal/sem/parser_typescript_regression_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "8f358d5e6e1d",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 343347,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 7714560,
+    "output_tokens": 36021,
+    "api_call_count": 77
+  },
+  "session_metrics": {
+    "turn_count": 3
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-22T23:57:15.402313Z",
+    "agent_lines": 152,
+    "agent_removed": 19,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 152,
+    "total_lines_changed": 171,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 152,
+      "agent_lines_removed": 19
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 152,
+      "agent_lines_removed": 19
+    }
+  ]
+}
