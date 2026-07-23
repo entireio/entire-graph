@@ -530,8 +530,8 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	semantic := selectDiverseCandidates(candidates, options.TopK, options.MaxRegionsPerFile)
 	selected := semantic
 	if len(sparseCandidates) > 0 {
-		scoreSparseCandidates(sparseCandidates, sparseQuery, sparseDF, sparseDocumentCount, sparseDocumentLength)
 		attachSparseCandidateSymbols(sparseCandidates, symbolsByFile)
+		scoreSparseCandidates(sparseCandidates, sparseQuery, sparseDF, sparseDocumentCount, sparseDocumentLength)
 		sortSearchCandidates(sparseCandidates)
 		sparseCandidates = dedupeSemanticMirrorCandidates(sparseCandidates, q, symbolsByID)
 		sortSearchCandidates(sparseCandidates)
@@ -1529,6 +1529,22 @@ func scoreSparseCandidates(
 	for i := range candidates {
 		candidate := &candidates[i]
 		candidate.score += searchPathPrior(q, candidate.result.FilePath)
+		// cmm parity: score a sparse window on its symbol identity (name / qualified-name)
+		// and path tokens, not only body-BM25 + path-prior. This is what lets a fix file whose
+		// domain nouns live in its path/identifiers surface as a genuine ranked hit instead of
+		// relevance-free RRF filler (measured whiffs: fmt core.h on_zero, druid *PostAggregator.java).
+		// attachSparseCandidateSymbols now runs before this, so the symbol fields are populated.
+		candidate.score += pathSearchScore(q, candidate.result.FilePath)
+		if candidate.result.SymbolID != "" {
+			nameScore, nameSignals := symbolSearchScore(q, SymbolRecord{
+				Name:          candidate.result.SymbolName,
+				QualifiedName: candidate.result.QualifiedName,
+				Signature:     candidate.result.Signature,
+				Kind:          candidate.result.Kind,
+			})
+			candidate.score += nameScore
+			candidate.result.Signals = appendUnique(candidate.result.Signals, nameSignals...)
+		}
 		for _, term := range q.terms {
 			frequency := candidate.termCounts[term]
 			if frequency == 0 {
