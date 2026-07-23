@@ -2982,7 +2982,14 @@ func searchPathPrior(q searchQuery, filePath string) float64 {
 	if searchTestArtifactPath(lower) && !searchQuerySupplied(q,
 		"test", "tests", "testing", "spec", "specs", "regression", "regressions", "fixture", "fixtures",
 	) {
-		score -= 1.5
+		// Strong demotion (was -1.5 — far too weak): a test file that exercises the buggy
+		// function matches the issue's exact code tokens (function name + behaviour keywords),
+		// so it out-scores the real source at ~26-47 while the implementation sits at ~13.
+		// A bug-fix task never edits a test, so tests are pure exploration noise. -12 reliably
+		// sinks the test below the editable source (measured: briannesbitt RoundTest.php crowded
+		// out src/Carbon/Traits/Rounding.php; php-cs-fixer's 13 test files buried the fix). Not
+		// excluded outright — a test still surfaces if it is the only match.
+		score -= 12
 	}
 	if searchDocumentationArtifactPath(lower) && !searchQuerySupplied(q,
 		"doc", "docs", "documentation", "readme", "readmes", "guide", "guides", "example", "examples",
@@ -3008,8 +3015,10 @@ func searchPathPrior(q searchQuery, filePath string) float64 {
 func searchTestArtifactPath(lower string) bool {
 	return strings.Contains(lower, "/test/") || strings.Contains(lower, "/tests/") ||
 		strings.Contains(lower, "/testdata/") || strings.Contains(lower, "/fixtures/") ||
-		strings.Contains(lower, "/__tests__/") || strings.Contains(lower, ".test.") ||
-		strings.Contains(lower, ".spec.") || strings.HasSuffix(lower, "_test.go")
+		strings.Contains(lower, "/__tests__/") || strings.Contains(lower, "/spec/") ||
+		strings.Contains(lower, ".test.") || strings.Contains(lower, ".spec.") ||
+		strings.Contains(lower, "_test.") || strings.Contains(lower, "_spec.") ||
+		strings.HasSuffix(lower, "_test.go") || strings.HasSuffix(lower, ".test")
 }
 
 func searchDocumentationArtifactPath(lower string) bool {
