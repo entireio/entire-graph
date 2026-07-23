@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "4b18f6ff334a",
+  "strategy": "manual-commit",
+  "branch": "feat/search-graph-ranking",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "internal/sem/provider.go",
+    "internal/sem/provider_test.go",
+    "internal/sem/search.go",
+    "internal/sem/search_cache.go",
+    "internal/sem/search_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/4b/18f6ff334a/0/metadata.json",
+      "transcript": "/4b/18f6ff334a/0/full.jsonl",
+      "compact_transcript": "/4b/18f6ff334a/0/transcript.jsonl",
+      "content_hash": "/4b/18f6ff334a/0/content_hash.txt",
+      "prompt": "/4b/18f6ff334a/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 421518,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 17636608,
+    "output_tokens": 46310,
+    "api_call_count": 140
+  }
+}

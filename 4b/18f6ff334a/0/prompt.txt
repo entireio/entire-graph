@@ -1,0 +1,21 @@
+Do an adversarial review of https://entire.io/gh/entireio/entire-graph/trails/10 - you can access the trail via the Entire CLI.
+
+---
+
+The local Entire CLI is logged in
+
+---
+
+I approve outside-sandbox Entire CLI access,
+
+---
+
+This worked in 2 previous Codex conversations. What changed?
+
+---
+
+I moved to Full access. Try again now.
+
+---
+
+Document them on the trail and address them
