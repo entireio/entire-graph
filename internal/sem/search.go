@@ -1643,6 +1643,12 @@ func makeSearchCandidate(q searchQuery, filePath, language string, lines []strin
 	if symbol.ID != "" {
 		focus = maxInt(focus, symbol.StartLine)
 	}
+	// symbol.StartLine can fall outside [start, end] when the caller passed a truncated
+	// window (e.g. a same-container-neighbor candidate clipped to a tiny --max-snippet-lines).
+	// Clamp so FocusLine always satisfies the SearchResponse.Validate invariant
+	// (StartLine <= FocusLine <= EndLine); otherwise the whole response is rejected with
+	// "invalid search result at rank N" (reproducible with --max-snippet-lines 1).
+	focus = minInt(maxInt(focus, start), end)
 	snippetStart, snippetEnd := focusedSnippetRegion(start, end, focus, maxSnippetLines)
 	snippet := strings.Join(lines[snippetStart-1:snippetEnd], "\n")
 	pathScore := pathSearchScore(q, filePath)
@@ -2277,7 +2283,11 @@ func expandSameContainerNeighborCandidates(
 				}
 				candidate.result.Signals = nil
 			}
-			candidate.result.FocusLine = neighbor.StartLine
+			// neighbor.StartLine is the meaningful focus point, but under a small
+			// options.MaxSnippetLines the emitted region above can be truncated to a window
+			// that no longer contains it. Clamp into the candidate's own region so FocusLine
+			// never escapes [StartLine, EndLine] and trips SearchResponse.Validate.
+			candidate.result.FocusLine = minInt(maxInt(neighbor.StartLine, candidate.result.StartLine), candidate.result.EndLine)
 			candidate.result.Signals = appendUnique(candidate.result.Signals, "same-container-neighbor")
 			candidate.score = derivedSearchScore(seed.score, 0.85*seed.score)
 			candidate.baseScore = candidate.score
