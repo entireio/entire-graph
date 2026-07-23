@@ -1027,7 +1027,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 			Symbols:           symbolCount,
 			Relations:         relationCount,
 			PartialFailures:   len(failures),
-			CompletenessLevel: completenessLevel(len(failures), len(files)),
+			CompletenessLevel: completenessLevel(len(failures), len(files), parsedFileCount, symbolCount),
 		},
 		Completeness: CompletenessReport{Languages: completenessLangs, Relations: relationsByType},
 	})
@@ -2954,6 +2954,35 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						}},
 						WarningCodes: []string{"WEAK_PATTERN"},
 					})
+				}
+				// NestJS microservice handlers declare their transport channel via
+				// an @MessagePattern/@EventPattern decorator rather than a runtime
+				// .on()/.subscribe() call, so the generic channelEvents scan misses
+				// them. They are the consumer side of the transport, so emit them as
+				// LISTENS_ON; the emitter side (client.emit/client.send) is picked up
+				// by the generic emit scan and matched on the shared channel name.
+				if spec.emits("LISTENS_ON") && !typeLikeKind(from.Kind) && jsLikeExtension(filepath.Ext(file.Path)) {
+					for _, channel := range nestJSMessagePatternChannelsAroundSymbol(content, from) {
+						emit(RelationRecord{
+							RecordType:    "relation",
+							FromID:        from.ID,
+							ToID:          externalID("channel", channel),
+							Type:          "LISTENS_ON",
+							Confidence:    0.7,
+							Reason:        "NestJS @MessagePattern/@EventPattern handler",
+							RelationScope: "external",
+							Resolution:    "pattern",
+							TargetKind:    "channel",
+							Evidence: []Evidence{{
+								Kind:      "message_pattern_decorator",
+								FilePath:  from.FilePath,
+								StartLine: from.StartLine,
+								EndLine:   from.EndLine,
+								Detail:    channel,
+							}},
+							WarningCodes: []string{},
+						})
+					}
 				}
 			}
 			if spec.callResolution == "full" {
@@ -15311,6 +15340,76 @@ func nestJSRouteDecoratorLiterals(line string, controllerOnly bool) []string {
 	return routes
 }
 
+var (
+	nestMessagePatternRe     = regexp.MustCompile("(?i)@(?:[A-Za-z_$][A-Za-z0-9_$]*\\.)?(MessagePattern|EventPattern)\\s*\\((.*)\\)")
+	nestMessageStringRe      = regexp.MustCompile(`^\s*(?:"([^"]*)"|'([^']*)'|` + "`" + `([^` + "`" + `]*)` + "`" + `)`)
+	nestMessageCmdPropertyRe = regexp.MustCompile(`(?i)\bcmd\s*:\s*(?:"([^"]*)"|'([^']*)'|` + "`" + `([^` + "`" + `]*)` + "`" + `)`)
+)
+
+// nestJSMessagePatternChannelsAroundSymbol finds the transport channels a NestJS
+// microservice handler listens on: methods decorated with @MessagePattern(...) or
+// @EventPattern(...) immediately above (or at) the symbol. Both a bare string
+// literal (`@MessagePattern('sum')`) and the object command form
+// (`@MessagePattern({ cmd: 'sum' })`) are recognized. Non-literal patterns
+// (identifiers/enums) are skipped since they cannot be resolved statically.
+func nestJSMessagePatternChannelsAroundSymbol(content string, symbol SymbolRecord) []string {
+	lines := strings.Split(content, "\n")
+	index := symbol.StartLine - 1
+	if index >= len(lines) {
+		index = len(lines) - 1
+	}
+	seen := map[string]struct{}{}
+	collect := func(line string) {
+		for _, channel := range nestJSMessagePatternChannels(line) {
+			seen[channel] = struct{}{}
+		}
+	}
+	if index >= 0 && index < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[index]), "@") {
+		for i := index; i < len(lines) && i-index <= 8; i++ {
+			line := strings.TrimSpace(lines[i])
+			if line == "" {
+				continue
+			}
+			if !strings.HasPrefix(line, "@") {
+				break
+			}
+			collect(line)
+		}
+	}
+	for i := index - 1; i >= 0 && index-i <= 8; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "@") {
+			break
+		}
+		collect(line)
+	}
+	return sortedKeys(seen)
+}
+
+func nestJSMessagePatternChannels(line string) []string {
+	var channels []string
+	for _, match := range nestMessagePatternRe.FindAllStringSubmatch(line, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		arg := strings.TrimSpace(match[2])
+		channel := ""
+		if parts := nestMessageStringRe.FindStringSubmatch(arg); len(parts) == 4 {
+			channel = firstNonEmpty(parts[1], parts[2], parts[3])
+		} else if parts := nestMessageCmdPropertyRe.FindStringSubmatch(arg); len(parts) == 4 {
+			channel = firstNonEmpty(parts[1], parts[2], parts[3])
+		}
+		if channel != "" {
+			channels = append(channels, channel)
+		}
+	}
+	sort.Strings(channels)
+	return channels
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if value != "" {
@@ -15902,11 +16001,24 @@ func symbolBlockFromLines(lines []string, symbol SymbolRecord) string {
 	return strings.Join(lines[start:end], "\n")
 }
 
-func completenessLevel(failures, files int) string {
+func completenessLevel(failures, files, parsedFiles, symbols int) string {
 	switch {
+	case files == 0:
+		// Genuinely empty repo/scope — nothing to parse, so "ok" (not "unsafe":
+		// there is no missing coverage to warn about).
+		return "ok"
+	case parsedFiles*2 < files:
+		// A majority of the discovered files were never parsed — likely an
+		// unsupported-language or mis-scoped run; the graph is missing most of
+		// the repo. Loud "unsafe" so the caller does not trust a partial graph.
+		return "unsafe"
+	case parsedFiles > 0 && symbols == 0:
+		// Files were parsed but zero symbols came out — the graph is empty and
+		// unusable even though no hard parse failure occurred.
+		return "degraded"
 	case failures == 0:
 		return "ok"
-	case files == 0 || failures*4 > files:
+	case failures*4 > files:
 		return "unsafe"
 	default:
 		return "degraded"
