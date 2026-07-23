@@ -486,7 +486,22 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		IndexLatencyMS:            indexLatency.Milliseconds(),
 		PreselectLatencyMS:        preselectLatency.Milliseconds(),
 	}
-	scoreSearchCandidates(candidates, q, fileDF, maxInt(1, len(selectedFiles)))
+	// Graph centrality: inbound CALLS/IMPLEMENTS degree per symbol. Implementation code is called
+	// by many sites; leaf/trait-dispatch/trivial methods (and most test helpers) are not. Ranking
+	// with this signal lets the real fix site outrank a flood of common-named leaves — the graph
+	// already resolves the callers, search just wasn't using them (field feedback: search behaved
+	// like keyword BM25 with graph_candidates:0, ranking tests/leaves over the implementation).
+	// Requires CALLS in the snapshot (profile fast/full); empty at syntax-only, so the bonus no-ops.
+	inboundDegree := make(map[string]int)
+	for _, rel := range snapshot.Relations {
+		switch rel.Type {
+		case "CALLS", "ASYNC_CALLS", "IMPLEMENTS", "OVERRIDES":
+			if rel.ToID != "" {
+				inboundDegree[rel.ToID]++
+			}
+		}
+	}
+	scoreSearchCandidates(candidates, q, fileDF, maxInt(1, len(selectedFiles)), inboundDegree)
 	sortSearchCandidates(candidates)
 
 	graphCandidates := expandGraphCandidates(candidates, q, snapshot.Relations, symbolsByID, read, fileLanguages, options)
@@ -1671,7 +1686,7 @@ func makeSearchCandidate(q searchQuery, filePath, language string, lines []strin
 	}, true
 }
 
-func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF map[string]int, fileCount int) {
+func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF map[string]int, fileCount int, inboundDegree map[string]int) {
 	if len(candidates) == 0 {
 		return
 	}
@@ -1710,7 +1725,18 @@ func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF m
 		if queryWeight > 0 {
 			coverage = coveredWeight / queryWeight
 		}
-		candidate.score = candidate.baseScore + bm25 + 7*coverage + minFloat64(24, codeTokenBonus)
+		// Centrality: reward well-connected implementation symbols (many inbound callers/impls) so
+		// they outrank leaf/trait-dispatch/trivial methods that merely share a common query term.
+		// log-scaled + capped so it tilts ties toward the implementation without overriding a strong
+		// direct match. Only meaningful when the candidate matched the query at all (bm25>0 or a
+		// name/base signal), so it can't drag in unrelated high-degree symbols.
+		centrality := 0.0
+		if len(inboundDegree) > 0 && candidate.result.SymbolID != "" && (bm25 > 0 || candidate.baseScore > 0) {
+			if deg := inboundDegree[candidate.result.SymbolID]; deg > 0 {
+				centrality = minFloat64(6, 1.6*math.Log(1+float64(deg)))
+			}
+		}
+		candidate.score = candidate.baseScore + bm25 + 7*coverage + minFloat64(24, codeTokenBonus) + centrality
 		if codeTokenBonus > 0 {
 			candidate.result.Signals = appendUnique(candidate.result.Signals, "exact-code-token")
 		}
