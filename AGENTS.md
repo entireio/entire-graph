@@ -44,6 +44,18 @@ entire graph neighbors --repo . --symbol NAME --relation CALLS --direction out  
 
 **When:** "what breaks if I change X", "who uses this", tracing a call chain — after search has given you a concrete symbol name.
 
+### 💥 impact — *one-shot blast radius for a change*
+Everything the graph knows about changing **one** symbol, in a single bounded explanation: direct + transitive callers (depth ≤ 2), callees, type consumers (`USES_TYPE`/`PARAM_TYPE`/`RETURNS_TYPE`), data flows, files that historically change together with the symbol's file, and same-container siblings. Text output is sectioned, `file:line` per entry, capped per section and ~4 KB total.
+
+```sh
+entire graph impact --repo . --symbol NAME [--file path] [--depth 1|2] [--format text|json]
+```
+
+- Ambiguous names return the definition list — rerun with `--file` to pick one.
+- `--limit N` per-section entry cap; `--max-context-bytes N` total text budget; `--exclude-tests`; `--head` / `--profile` as in `neighbors`.
+
+**When:** before changing behavior of a specific function/type — "you're changing ordering: here is every place results are ordered, limited, or consumed downstream" — one command instead of chaining neighbors + edges + git log.
+
 ### 📇 symbols — *definitions*
 Full stream of symbol records (stable `compound-v1` ID, kind, qualified name, source range, signature, language, container). This is a **bulk NDJSON stream of the whole repo**, filtered to the symbol record type — there is **no positional name argument** and no server-side name filter; grep the stream client-side, or prefer `search`/`neighbors` for a targeted single-symbol lookup.
 
@@ -144,7 +156,8 @@ Quick mental model:
 
 ```text
 locate  →  entire graph search --query "..."          (ranked code + file:line)
-impact  →  entire graph neighbors --symbol X ...       (callers/callees of X)
+impact  →  entire graph impact --symbol X              (one-shot blast radius: callers, types, data flow, co-change)
+callers →  entire graph neighbors --symbol X ...       (targeted callers/callees of X)
 change  →  entire graph diff --base A --head B          (entity-level, with dependents)
 ingest  →  entire graph snapshot --format ndjson        (whole graph)
 ```
