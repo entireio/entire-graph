@@ -149,11 +149,29 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 			}
 			continue
 		}
-		fmt.Fprintf(out, "%d. %s:%d-%d score=%.4f", result.Rank, result.FilePath, result.StartLine, result.EndLine, result.Score)
+		// Anchor the top ranks on the exact best-match line, not the enclosing
+		// symbol's span: agents Read at the range start, and for a class-level
+		// symbol that can be 60+ lines above the match (a wasted Read + recovery
+		// turn). Keep the span as secondary context and emit an explicit READ
+		// window so the follow-up Read needs no offset arithmetic.
+		focus := result.FocusLine
+		if focus <= 0 {
+			focus = result.StartLine
+		}
+		fmt.Fprintf(out, "%d. %s:%d score=%.4f", result.Rank, result.FilePath, focus, result.Score)
 		if name != "" {
 			fmt.Fprintf(out, " symbol=%s", name)
 		}
-		fmt.Fprintf(out, " signals=%s\n%s\n\n", strings.Join(result.Signals, ","), result.Snippet)
+		fmt.Fprintf(out, " lines=%d-%d signals=%s\n%s\n", result.StartLine, result.EndLine, strings.Join(result.Signals, ","), result.Snippet)
+		readFrom := focus - 15
+		if readFrom < result.StartLine {
+			readFrom = result.StartLine
+		}
+		readTo := focus + 25
+		if readTo > result.EndLine {
+			readTo = result.EndLine
+		}
+		fmt.Fprintf(out, "   READ: %s lines %d-%d\n\n", result.FilePath, readFrom, readTo)
 	}
 	return nil
 }
