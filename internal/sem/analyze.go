@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"path/filepath"
 	"sort"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
@@ -23,23 +24,60 @@ func AnalyzeGitRange(ctx context.Context, repo, base, head string, paths []strin
 		if oldPath == "" {
 			oldPath = path
 		}
-		if !Supported(path) && !Supported(oldPath) {
-			continue
-		}
 
 		var before, after string
 		var beforeOK, afterOK bool
-		if file.Status != "A" {
-			before, beforeOK, err = gitutil.ShowFile(ctx, repo, base, oldPath)
-			if err != nil {
-				return Result{}, err
+		// Fast-path: a file WITH a recognized-unsupported extension classifies without reading
+		// its blobs — shebang sniffing only matters for extensionless files. Avoids loading a
+		// large binary twice just to conclude "unsupported"; the marker below needs no content.
+		if extensionUnsupported(oldPath) && extensionUnsupported(path) {
+			beforeOK = file.Status != "A"
+			afterOK = file.Status != "D"
+		} else {
+			if file.Status != "A" {
+				before, beforeOK, err = gitutil.ShowFile(ctx, repo, base, oldPath)
+				if err != nil {
+					return Result{}, err
+				}
+			}
+			if file.Status != "D" {
+				after, afterOK, err = gitutil.ShowFile(ctx, repo, head, path)
+				if err != nil {
+					return Result{}, err
+				}
 			}
 		}
-		if file.Status != "D" {
-			after, afterOK, err = gitutil.ShowFile(ctx, repo, head, path)
-			if err != nil {
-				return Result{}, err
+
+		// Support is content-aware: extensionless executables can still route to a
+		// parser through their shebang. Classify each existing side independently
+		// so a rename across the parser boundary cannot become a one-sided phantom
+		// remove/add. Any unsupported side suppresses the delta and leaves a
+		// machine-readable completeness marker instead.
+		_, beforeSupported := languageForContent(oldPath, before)
+		_, afterSupported := languageForContent(path, after)
+		beforeUnsupported := beforeOK && !beforeSupported
+		afterUnsupported := afterOK && !afterSupported
+		if beforeUnsupported || afterUnsupported {
+			warningPath := path
+			detail := "head version has no supported parser"
+			if beforeUnsupported && !afterUnsupported {
+				warningPath = oldPath
+				detail = "base version has no supported parser"
+			} else if beforeUnsupported && afterUnsupported {
+				detail = "base and head versions have no supported parser"
 			}
+			effect := "file skipped; no parser for this file type, so its changes are not analyzed"
+			if beforeOK && afterOK && beforeUnsupported != afterUnsupported {
+				effect = "file diff suppressed; one side has no parser, so changes cannot be compared safely"
+			}
+			result.Warnings = append(result.Warnings, ProviderWarning{
+				Code:                 "W_UNSUPPORTED_FILE",
+				Severity:             "info",
+				FilePath:             warningPath,
+				EffectOnCompleteness: effect,
+				Detail:               detail,
+			})
+			continue
 		}
 
 		beforeEntities, language, beforeStatus := parser.ParseWithStatus(oldPath, before)
@@ -767,4 +805,15 @@ func tokenSet(value string) map[string]bool {
 		out[token] = true
 	}
 	return out
+}
+
+// extensionUnsupported reports whether the path carries an extension and that extension has
+// no supported parser. Extensionless files return false — they may still route to a parser
+// via shebang, which requires reading content.
+func extensionUnsupported(path string) bool {
+	if filepath.Ext(path) == "" {
+		return false
+	}
+	_, ok := languageForContent(path, "")
+	return !ok
 }
