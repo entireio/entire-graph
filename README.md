@@ -72,8 +72,7 @@ code-memory tool and the closest comparable.
 | Task completion (patch produced) | parity with baseline in every suite | parity |
 
 Methodology, prompts, harness, and every caveat (variance bands, fairness controls, per-model
-configs) are public in the [graphmark](https://github.com/entirehq/graphmark) repo
-(`agentic-swebench/REPRODUCE.md` reproduces everything end to end).
+configs) will be public soon.
 
 ## More
 
