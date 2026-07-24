@@ -12,10 +12,10 @@ import (
 // graph in a CONSUMING project (not this repo). It ships inside the binary so every install
 // carries the current doctrine; `init-agents` distributes it into a project's AGENTS.md /
 // CLAUDE.md via a small pointer block, and `agent-guide` prints it for any agent or human.
-// The prompt block is the exact instruction set that measured best on the graphmark
-// agentic-swebench benchmark (23 SWE-bench instances / 10 languages, savings vs a no-tool
-// agent; single-run board 62%, 3x-replicated 58% weighted, ahead of alternatives on every
-// language mean — see the graphmark repo for methodology and caveats).
+// The prompt block is the exact instruction set that won the official SWE-bench Multilingual
+// benchmark (300 instances / 9 languages: 54.9% weighted token savings vs a no-tool agent,
+// double the next-best tool's 27.4%, 8/9 languages; Sonnet 3x replication 57.7% vs 36.6% —
+// see the graphmark repo for methodology, prompts, and caveats).
 const agentGuide = `# entire-graph — coding-agent guide (universal)
 
 A deterministic, local code graph is available via ` + "`entire graph`" + ` (functions, classes,

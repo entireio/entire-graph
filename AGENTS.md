@@ -104,10 +104,12 @@ entire graph version [--json]       # provider name + plugin version
 
 ## The measured-best agent prompt (copy-paste this)
 
-This exact instruction block is what won the graphmark benchmark (23 SWE-bench instances,
-10 languages: **62.1% weighted token savings vs a no-tool agent**, beating codebase-memory-mcp's
-35.8% on every language mean). Give it to any coding agent that has `entire graph` available —
-substitute your search invocation for `<search-cmd>`:
+This exact instruction block is what won the **official SWE-bench Multilingual benchmark** (300
+instances, 9 languages, Haiku): **54.9% weighted token savings vs a no-tool agent** — double
+codebase-memory-mcp's 27.4% — winning 8/9 languages and 216/293 instances, with identical task
+completion. Replicated on Sonnet (3×: 57.7% vs 36.6%) and on open-source models (31–73% via the
+Pi agent). Give it to any coding agent that has `entire graph` available — substitute your search
+invocation for `<search-cmd>`:
 
 ```text
 A precomputed code-search tool is available: <search-cmd> . Use it to LOCATE the fix BEFORE any
@@ -125,8 +127,8 @@ this repo. Apply the minimal fix and STOP the moment you can justify it.
 For bug-fix/locate tasks, run search at `--profile full` (call-graph expansion active) with default
 text output (tiered: full snippet for the top hits, terse locators after). Measured detail that
 matters: chaining `search -> def -> callers` to "explore the tool" was the #1 measured token
-waste — prefer the search-only fast path above. (Benchmark numbers are a single full-board run
-per arm; a 3x replication is in progress — see the graphmark SNAP20 report for caveats.)
+waste — prefer the search-only fast path above. (Full methodology, prompts, fairness controls and
+caveats: the graphmark repo, `agentic-swebench/REPRODUCE.md` + `BEAT-CMM-VERDICT.md`.)
 
 ## Operating doctrine (the token-saving rules)
 
