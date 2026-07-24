@@ -109,13 +109,13 @@ func TestWriteTextSearchTiersRankOneAndTwoFullRestTerse(t *testing.T) {
 	if strings.Contains(out, "func method()") || strings.Contains(out, "// long") {
 		t.Fatalf("rank 3 must NOT carry its snippet:\n%s", out)
 	}
-	if !strings.Contains(out, "3. src/third.go:22 Third.method\n") {
+	if !strings.Contains(out, "3. src/third.go:22 Third.method score=8.0000\n") {
 		t.Fatalf("rank 3 terse line missing/wrong shape:\n%s", out)
 	}
 	if strings.Contains(out, "func fourth() {}") {
 		t.Fatalf("rank 4 must NOT carry its snippet:\n%s", out)
 	}
-	if !strings.Contains(out, "4. src/fourth.go:40\n") {
+	if !strings.Contains(out, "4. src/fourth.go:40 score=7.0000\n") {
 		t.Fatalf("rank 4 terse line should fall back to StartLine when FocusLine unset:\n%s", out)
 	}
 }

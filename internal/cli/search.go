@@ -142,10 +142,12 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 			if line <= 0 {
 				line = result.StartLine
 			}
+			// Score included so downstream consumers can confidence-gate on any
+			// rank, not just the snippet ranks (post-filters may promote these).
 			if name != "" {
-				fmt.Fprintf(out, "%d. %s:%d %s\n", result.Rank, result.FilePath, line, name)
+				fmt.Fprintf(out, "%d. %s:%d %s score=%.4f\n", result.Rank, result.FilePath, line, name, result.Score)
 			} else {
-				fmt.Fprintf(out, "%d. %s:%d\n", result.Rank, result.FilePath, line)
+				fmt.Fprintf(out, "%d. %s:%d score=%.4f\n", result.Rank, result.FilePath, line, result.Score)
 			}
 			continue
 		}
