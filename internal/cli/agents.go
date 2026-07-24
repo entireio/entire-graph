@@ -16,41 +16,45 @@ import (
 // benchmark (300 instances / 9 languages: 54.9% weighted token savings vs a no-tool agent,
 // double the next-best tool's 27.4%, 8/9 languages; Sonnet 3x replication 57.7% vs 36.6% —
 // see the graphmark repo for methodology, prompts, and caveats).
-const agentGuide = `# entire-graph — coding-agent guide (universal)
+const agentGuide = `# entire-graph — instructions for coding agents (follow directly)
 
-A deterministic, local code graph is available via ` + "`entire graph`" + ` (functions, classes,
-methods, types, routes + call/inheritance/field relations; tree-sitter; no network). Use it to
-LOCATE and UNDERSTAND code before any grep/find/cat/whole-file read — exploration is where most
-of a session's tokens go.
+You have a deterministic local code graph: ` + "`entire graph`" + ` (functions, classes, methods,
+types, routes + call/inheritance relations; no network). These instructions are FOR YOU, the
+agent reading this file. Following them is measured to cut session tokens roughly in half.
 
-## The measured-best instruction block (paste into your agent's system/tool prompt)
+## The workflow (mandatory for locate/fix/change tasks)
 
-    A precomputed code-search tool is available:
-      entire graph search --repo . --profile full --query "<task>"
-    Use it to LOCATE the fix BEFORE any grep/find. Your FIRST action must be ONE search:
-      entire graph search --repo . --profile full --query "<the bug in one sentence>"
-    Then open the top hit's file with your file-read tool (pass a line range around the reported
-    line), make the minimal edit, and STOP. The search top hit is the fix site on most tasks — go
-    straight there and edit; do NOT re-search or grep to 'confirm'. Reach the edit in as FEW turns
-    as possible (every turn re-reads your whole context — that is the token cost). Hard rules:
-    (1) SEARCH FIRST. (2) After search, READ the file directly (line range) and EDIT — do not
-    chain more searches. (3) NEVER read a whole file to explore; pass a line range. (4) NEVER
-    search outside this repo. Apply the minimal fix and STOP the moment you can justify it.
+Your FIRST action on any task that requires finding code must be ONE search:
 
-## Quick model
+    entire graph search --repo . --profile full --query "<the task or bug in one sentence>"
 
-    locate  ->  entire graph search --repo . --profile full --query "..."   (ranked code + file:line)
+Then open the top hit's file with your file-read tool (pass a line range around the reported
+line), make the minimal edit, and STOP. The top hit is the fix site on most tasks — go straight
+there and edit; do NOT re-search or grep to "confirm".
+
+## Hard rules (each violation costs real money)
+
+1. SEARCH FIRST — never grep/find/cat to locate code before you have searched.
+2. ONE search, then act. Do not run a second search unless the first clearly missed.
+3. After search, READ a line range and EDIT. Do not chain more graph commands to "explore".
+4. NEVER read a whole file; read at most ~120 lines around the reported line.
+5. Impact question ("who calls X")? ONE targeted query, not a graph dump:
+       entire graph neighbors --repo . --symbol X --relation CALLS --direction in
+6. Do not run builds or test suites unless the task explicitly requires it.
+7. Every extra turn re-reads your whole context — that is the token cost. Reach the edit in as
+   few turns as possible and stop the moment you can justify the fix.
+
+## When NOT to use the graph
+
+If the task already names the exact file and it is small, just read it — the graph saves tokens
+by eliminating exploration; when there is nothing to explore, skip it.
+
+## Reference
+
+    locate  ->  entire graph search --repo . --profile full --query "..."
     impact  ->  entire graph neighbors --repo . --symbol X --relation CALLS --direction in
-    change  ->  entire graph diff --base A --head B --json                   (entity-level)
-    detect  ->  entire graph capabilities --json                             (semantic vs inventory-only)
-
-## Rules that save tokens
-
-1. Search first — always. One plain-language query; the graph is deterministic, trust it.
-2. Read line ranges, never whole files. The search output already shows the top hits' source.
-3. Impact = one targeted neighbors query, never a whole-graph dump or repo-wide grep.
-4. Results ranks 3+ are terse locators by design — open one, don't re-search to compare.
-5. Chaining search -> definitions -> callers to "explore the tool" is the #1 measured waste.
+    change  ->  entire graph diff --base A --head B --json
+    detect  ->  entire graph capabilities --json   (inventory-only languages have no relations)
 `
 
 // agentPointerBegin/End delimit the block init-agents manages inside AGENTS.md / CLAUDE.md,
