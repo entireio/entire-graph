@@ -38,8 +38,9 @@ there and edit; do NOT re-search or grep to "confirm".
 2. ONE search, then act. Do not run a second search unless the first clearly missed.
 3. After search, READ a line range and EDIT. Do not chain more graph commands to "explore".
 4. NEVER read a whole file; read at most ~120 lines around the reported line.
-5. Impact question ("who calls X")? ONE targeted query, not a graph dump:
-       entire graph neighbors --repo . --symbol X --relation CALLS --direction in
+5. Impact question ("who calls X" / "what could this change break")? ONE targeted query:
+       entire graph impact --repo . --symbol X
+   (one shot: callers, callees, type consumers, data flow, co-change files, siblings)
 6. Do not run builds or test suites unless the task explicitly requires it.
 7. Every extra turn re-reads your whole context — that is the token cost. Reach the edit in as
    few turns as possible and stop the moment you can justify the fix.

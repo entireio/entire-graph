@@ -28,8 +28,8 @@ entire graph search --repo . --query "<the task or bug in one plain sentence>" -
 
 **When:** the start of essentially every task. One good query lands you on the fix area.
 
-### 🕸️ neighbors — *who calls this / what does it call* (impact, targeted)
-Direct incoming/outgoing relations for **one** symbol, with definition locations, plus bounded two-hop paths at `--depth 2`. **This is the impact query** — not `edges` (which is a full stream).
+### 🕸️ neighbors — *who calls this / what does it call* (targeted relations)
+Direct incoming/outgoing relations for **one** symbol, with definition locations, plus bounded two-hop paths at `--depth 2`. For the full blast radius of a change, prefer `impact`; use `neighbors` when you want one specific relation/direction. Never `edges` for this (full stream).
 
 ```sh
 entire graph neighbors --repo . --symbol NAME --relation CALLS --direction in   # who calls NAME
@@ -145,7 +145,7 @@ caveats: the graphmark repo, `agentic-swebench/REPRODUCE.md` + `BEAT-CMM-VERDICT
 ## Operating doctrine (the token-saving rules)
 
 1. **Search first — always.** Your first move on any task is one `entire graph search --query "<task>"`. Do **not** grep / find / cat to locate code before you have searched. Exploration is where ~90% of a session's tokens are wasted.
-2. **Then narrow, only as needed.** Search exposes concrete identifiers → use at most one `neighbors --symbol X` (for impact) or read the returned line ranges. Don't fan out.
+2. **Then narrow, only as needed.** Search exposes concrete identifiers → use at most one `impact --symbol X` (blast radius) or read the returned line ranges. Don't fan out.
 3. **Trust the graph.** Once search or neighbors shows you the function and its source, **edit it**. Do not re-read the whole file or re-grep to "confirm" what the graph already showed — the graph is deterministic.
 4. **Never read a whole file to explore.** If you must read, read the line range around the symbol. To understand a type/class, query it — don't open its file.
 5. **Impact = one targeted query.** For "what breaks if I change X", use `neighbors --symbol X --relation CALLS --direction in` — not a whole-graph `snapshot`/`edges` dump, and not a repo-wide grep.

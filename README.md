@@ -35,7 +35,7 @@ search-first workflow automatically. No config, no MCP server, no daemon.
 | agent workflow | before | with Entire Graph |
 |---|---|---|
 | **Locate a fix** | grep → open files → grep again (~90% of session tokens) | one `entire graph search` → read a line range → edit |
-| **Impact of a change** | repo-wide grep for callers | `entire graph neighbors --symbol X --relation CALLS --direction in` |
+| **Impact of a change** | repo-wide grep for callers | `entire graph impact --symbol X` — callers, type consumers, data flow, co-change in one shot |
 | **Review a diff** | file-by-file reading | `entire graph diff` — entity-level changes with dependent counts |
 
 The search understands natural language ("XTRIM trims wrong stream entries"), ranks real
