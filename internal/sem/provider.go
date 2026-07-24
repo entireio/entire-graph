@@ -7976,7 +7976,44 @@ func qualifiedTypeImports(signature string, importsByName map[string][]string) m
 	for name, modules := range qualified {
 		qualified[name] = uniqueStrings(modules)
 	}
+	// A name that ALSO appears bare in the signature must not become import-authoritative:
+	// `func New(hc *http.Client) *Client` mixes qualified http.Client with a bare Client — treating
+	// "Client" as import-only would early-return in resolveTypeReference and drop the legitimate
+	// same-file *Client edges. Only names whose every occurrence is qualified stay authoritative.
+	for name := range qualified {
+		if typeNameOccursBare(signature, name) {
+			delete(qualified, name)
+		}
+	}
 	return qualified
+}
+
+// typeNameOccursBare reports whether name appears in the signature NOT preceded by a
+// qualifier separator (`.` or `:`) or an identifier character — i.e. as a bare type name.
+func typeNameOccursBare(signature, name string) bool {
+	for idx := 0; ; {
+		i := strings.Index(signature[idx:], name)
+		if i < 0 {
+			return false
+		}
+		start := idx + i
+		end := start + len(name)
+		idx = start + 1
+		if start > 0 {
+			prev := signature[start-1]
+			if prev == '.' || prev == ':' || prev == '_' ||
+				(prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') || (prev >= '0' && prev <= '9') {
+				continue
+			}
+		}
+		if end < len(signature) {
+			next := signature[end]
+			if next == '_' || (next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') || (next >= '0' && next <= '9') {
+				continue
+			}
+		}
+		return true
+	}
 }
 
 // resolveTypeReference binds a type name from a signature to a type

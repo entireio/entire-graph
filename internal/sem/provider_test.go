@@ -14794,3 +14794,22 @@ sub path {
 		}
 	}
 }
+
+// TestQualifiedImportDoesNotPoisonBareSameFileType is the regression test for the
+// http.Client+Client collision: a signature mixing a qualified stdlib type with a bare
+// same-file type of the same terminal name must still resolve the bare name locally.
+func TestQualifiedImportDoesNotPoisonBareSameFileType(t *testing.T) {
+	qualified := qualifiedTypeImports("func New(hc *http.Client) *Client", map[string][]string{
+		"http": {"net/http"},
+	})
+	if _, poisoned := qualified["Client"]; poisoned {
+		t.Fatalf("bare-occurring name %q must not be import-authoritative: %#v", "Client", qualified)
+	}
+	// a purely-qualified reference stays authoritative
+	qualified = qualifiedTypeImports("func Fetch(hc *http.Client) error", map[string][]string{
+		"http": {"net/http"},
+	})
+	if mods, ok := qualified["Client"]; !ok || len(mods) == 0 {
+		t.Fatalf("fully-qualified name should remain import-authoritative: %#v", qualified)
+	}
+}
