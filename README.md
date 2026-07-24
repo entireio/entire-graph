@@ -14,8 +14,8 @@ completion. 100% local, no network, no model calls, no keys.
 ## Install (one minute)
 
 ```sh
-go install github.com/entireio/entire-graph/cmd/entire-graph@latest
-entire plugin install "$(go env GOPATH)/bin/entire-graph" --force
+go install github.com/entireio/entire-graph/cmd/entire-graph@main
+entire plugin install "$(go env GOBIN | grep . || echo "$(go env GOPATH)/bin")/entire-graph" --force
 ```
 
 Then, in any repo your agents work in:
