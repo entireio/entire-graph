@@ -6,10 +6,12 @@ Entire Graph gives coding agents a precomputed, deterministic map of your codeba
 function, type, route, and call relationship — so they stop burning your budget on grep-and-read
 exploration and go straight to the fix.
 
-On the official **SWE-bench Multilingual** benchmark (300 real issues, 9 languages), an agent with
-Entire Graph used **55% fewer tokens** than the same agent without it — roughly **double the
-savings of the next-best code-memory tool** — winning 8 of 9 languages, with identical task
-completion. 100% local, no network, no model calls, no keys.
+On the official **SWE-bench Multilingual** benchmark (300 real issues, 9 languages), a
+**Claude Code agent running Haiku** with Entire Graph used **55% fewer tokens** than the same
+agent working with no tool at all — same tasks, same model, identical completion rate. It also
+roughly doubled the savings of [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)
+(an open-source code-memory tool we benchmarked against as the closest comparable). 100% local,
+no network, no model calls, no keys.
 
 ## Install (one minute)
 
@@ -50,8 +52,6 @@ workflow to learn:
 
 - **Entire Search / Why / Blame** consume it to answer developer questions with entity-level
   precision.
-- **Entire Brain** ingests its snapshot stream (`symbols`, `edges`, `snapshot` NDJSON) as the code
-  half of its durable memory.
 - **Checkpoints and Trails** use its `diff`/`commit` analysis to describe what an agent actually
   changed.
 
@@ -59,12 +59,17 @@ You (a human) will mostly experience it *through* those surfaces. Your agents ca
 
 ## Numbers, honestly
 
-| measurement | result |
-|---|---|
-| Official SWE-bench Multilingual 300, Haiku | **54.9%** token savings vs no-tool agent (next-best tool: 27.4%) |
-| Sonnet, 23 instances, 3× replicated | **57.7%** vs 36.6% |
-| Open-source models (gpt-oss, Kimi K2.6, DeepSeek V4, GLM-5.2) via the Pi agent | **31–73%** savings vs each model's own baseline |
-| Task completion (patch produced) | parity with baseline in every suite |
+All savings are measured against the **baseline**: the same agent, same model, same task, with
+no code tool at all. For scale, the same suites also ran
+[codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) ("cmm"), an open-source
+code-memory tool and the closest comparable.
+
+| agent + model | Entire Graph savings vs baseline | cmm on the same suite |
+|---|---|---|
+| Claude Code · Haiku — official SWE-bench Multilingual 300 | **54.9%** | 27.4% |
+| Claude Code · Sonnet — 23 instances, 3× replicated | **57.7%** | 36.6% |
+| Pi agent · open-source models (gpt-oss, Kimi K2.6, DeepSeek V4, GLM-5.2) | **31–73%** | — |
+| Task completion (patch produced) | parity with baseline in every suite | parity |
 
 Methodology, prompts, harness, and every caveat (variance bands, fairness controls, per-model
 configs) are public in the [graphmark](https://github.com/entirehq/graphmark) repo
