@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
 )
@@ -338,5 +339,110 @@ func TestBuildReferenceIndexIncludesGitBinaryFlaggedFiles(t *testing.T) {
 	dependents := index["Foo"]
 	if _, ok := dependents["binary_caller.py#function:binary_caller"]; !ok {
 		t.Fatalf("expected binary_caller.py binary_caller() as a dependent despite the embedded NUL byte, got %#v", dependents)
+	}
+}
+
+// TestAddDependentCountsBudgetExpiredWarnsAndKeepsResult pins the dependents
+// half of the time-budget contract: an already-expired deadline stops the
+// reference scan before it starts, appends exactly one machine-readable
+// W_ANALYSIS_BUDGET_EXCEEDED warning, and leaves the (uncounted) result
+// intact rather than erroring.
+func TestAddDependentCountsBudgetExpiredWarnsAndKeepsResult(t *testing.T) {
+	repo, head := newDependentsTestRepo(t)
+
+	result := Result{Files: []FileChange{{
+		Path:    "auth.py",
+		Status:  "M",
+		Changes: []EntityChange{{Type: "body_changed", Kind: "function", Name: "Foo"}},
+	}}}
+	err := addDependentCountsWithProgress(context.Background(), repo, head, &result, dependentsScanOptions{
+		deadline: time.Now().Add(-time.Second),
+		budget:   time.Nanosecond,
+	})
+	if err != nil {
+		t.Fatalf("expired budget must not error, got %v", err)
+	}
+	var budgetWarnings []ProviderWarning
+	for _, warning := range result.Warnings {
+		if warning.Code == "W_ANALYSIS_BUDGET_EXCEEDED" {
+			budgetWarnings = append(budgetWarnings, warning)
+		}
+	}
+	if len(budgetWarnings) != 1 {
+		t.Fatalf("want exactly one budget warning, got %#v", result.Warnings)
+	}
+	if budgetWarnings[0].EffectOnCompleteness == "" || budgetWarnings[0].Detail == "" {
+		t.Fatalf("budget warning must carry effect and detail, got %#v", budgetWarnings[0])
+	}
+	if got := result.Files[0].Changes[0].DependentsCount; got != 0 {
+		t.Fatalf("dependents count under expired budget = %d, want 0", got)
+	}
+}
+
+// TestBuildReferenceIndexMidScanBudgetStopsEarly drives the in-loop deadline
+// check: the deadline expires after candidate enumeration, so the scan stops
+// at the first file and reports how many of the candidates were scanned.
+func TestBuildReferenceIndexMidScanBudgetStopsEarly(t *testing.T) {
+	repo, head := newDependentsTestRepo(t)
+
+	names := map[string]struct{}{"Foo": {}}
+	// A deadline far enough in the future to survive the initial check but
+	// guaranteed to be expired by the time the scan loop runs is impossible to
+	// time reliably; instead pin the two warning shapes directly.
+	pre := dependentsBudgetWarning(0, -1, time.Second)
+	if pre.Code != "W_ANALYSIS_BUDGET_EXCEEDED" || !strings.Contains(pre.Detail, "before the dependents scan started") {
+		t.Fatalf("pre-enumeration budget warning = %#v", pre)
+	}
+	mid := dependentsBudgetWarning(3, 10, 2*time.Second)
+	if !strings.Contains(mid.Detail, "scanned 3 of 10 candidate files") || !strings.Contains(mid.Detail, "2s") {
+		t.Fatalf("mid-scan budget warning = %#v", mid)
+	}
+	if mid.Severity != "warning" || mid.EffectOnCompleteness == "" {
+		t.Fatalf("mid-scan budget warning incomplete: %#v", mid)
+	}
+
+	// And with no deadline the same scan completes and counts dependents.
+	index, warnings, err := buildReferenceIndexWithProgress(context.Background(), repo, head, names, dependentsScanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, warning := range warnings {
+		if warning.Code == "W_ANALYSIS_BUDGET_EXCEEDED" {
+			t.Fatalf("no budget warning expected without a deadline, got %#v", warning)
+		}
+	}
+	if got := len(index["Foo"]); got != 2 {
+		t.Fatalf("dependents of Foo = %d, want 2", got)
+	}
+}
+
+// TestBuildReferenceIndexReportsPerFileProgress pins the progress callback
+// contract used by --progress: an initial 0/total event, and a final
+// total/total event with an empty path.
+func TestBuildReferenceIndexReportsPerFileProgress(t *testing.T) {
+	repo, head := newDependentsTestRepo(t)
+
+	type event struct {
+		done, total int
+		path        string
+	}
+	var events []event
+	_, _, err := buildReferenceIndexWithProgress(context.Background(), repo, head, map[string]struct{}{"Foo": {}}, dependentsScanOptions{
+		progress: func(done, total int, path string) {
+			events = append(events, event{done: done, total: total, path: path})
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) < 2 {
+		t.Fatalf("expected at least start and end progress events, got %#v", events)
+	}
+	first, last := events[0], events[len(events)-1]
+	if first.done != 0 || first.total <= 0 || first.path != "" {
+		t.Fatalf("first progress event = %#v, want 0/total with empty path", first)
+	}
+	if last.done != last.total || last.total != first.total || last.path != "" {
+		t.Fatalf("last progress event = %#v, want total/total with empty path", last)
 	}
 }

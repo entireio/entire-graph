@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -100,10 +101,10 @@ For coding agents: run 'entire graph agent-guide' (search-first doctrine — mea
 roughly halve agent token usage) or 'entire graph init-agents' to install it into a project.
 
 Usage:
-  entire graph commit [rev] [--json] [--progress] [--repo path]
+  entire graph commit [rev] [--json] [--progress] [--max-seconds n] [--repo path]
   entire graph checkpoint <checkpoint-id> [--json] [--repo path]
-  entire graph diff --base <rev> --head <rev> [--json] [--progress] [--repo path] [-- path...]
-  entire graph analyze [--base <rev>] [--head <rev>] [--json] [--progress] [--repo path] [-- path...]
+  entire graph diff --base <rev> --head <rev> [--json] [--progress] [--max-seconds n] [--repo path] [-- path...]
+  entire graph analyze [--base <rev>] [--head <rev>] [--json] [--progress] [--max-seconds n] [--repo path] [-- path...]
   entire graph doctor [--json]
   entire graph agent-guide                 # print the coding-agent operating guide
   entire graph init-agents [--repo path]   # install the guide into a project's AGENTS.md/CLAUDE.md
@@ -118,7 +119,9 @@ Usage:
 
 Notes:
   --include-file contains gitignore-style rules that re-include ignored paths; it is not an allowlist.
-  Streaming NDJSON writes aggregate stats and completeness in the trailing summary record.`)
+  Streaming NDJSON writes aggregate stats and completeness in the trailing summary record.
+  commit/diff/analyze stop cleanly after --max-seconds (default 120; 0 = unlimited) and emit the
+  partial result with W_ANALYSIS_BUDGET_EXCEEDED warnings listing what was skipped.`)
 }
 
 func runDoctor(ctx context.Context, opts Options, args []string) error {
@@ -386,10 +389,21 @@ func includeRecord(mode string, record any) bool {
 	}
 }
 
+// defaultMaxSeconds is the wall-clock budget applied to diff/commit/analyze
+// when --max-seconds is not given. Large repos with hot changed names can
+// otherwise grind for many minutes and produce nothing; with the budget the
+// command stops cleanly at the limit and emits the partial result plus
+// machine-readable W_ANALYSIS_BUDGET_EXCEEDED warnings. --max-seconds 0
+// disables the budget.
+const defaultMaxSeconds = 120
+
 type commonFlags struct {
 	Repo     string
 	JSON     bool
 	Progress bool
+	// MaxSeconds is the overall analysis budget in seconds; -1 means the flag
+	// was not given (commands apply their default), 0 means unlimited.
+	MaxSeconds int
 }
 
 type providerFlags struct {
@@ -541,7 +555,7 @@ func parseProviderFlags(args []string) (providerFlags, []string, error) {
 }
 
 func parseCommonFlags(args []string) (commonFlags, []string, error) {
-	var flags commonFlags
+	flags := commonFlags{MaxSeconds: -1}
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -550,6 +564,16 @@ func parseCommonFlags(args []string) (commonFlags, []string, error) {
 			flags.JSON = true
 		case "--progress":
 			flags.Progress = true
+		case "--max-seconds":
+			i++
+			if i >= len(args) {
+				return flags, nil, errors.New("--max-seconds requires a value")
+			}
+			seconds, err := strconv.Atoi(args[i])
+			if err != nil || seconds < 0 {
+				return flags, nil, fmt.Errorf("--max-seconds requires a non-negative integer, got %q", args[i])
+			}
+			flags.MaxSeconds = seconds
 		case "--repo":
 			i++
 			if i >= len(args) {
@@ -586,7 +610,7 @@ func runCommit(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	return analyzeAndPrint(ctx, opts, repo, base, rev, nil, flags.JSON, flags.Progress)
+	return analyzeAndPrint(ctx, opts, repo, base, rev, nil, flags)
 }
 
 func runCheckpoint(ctx context.Context, opts Options, args []string) error {
@@ -596,6 +620,9 @@ func runCheckpoint(ctx context.Context, opts Options, args []string) error {
 	}
 	if flags.Progress {
 		return errors.New("checkpoint does not support --progress")
+	}
+	if flags.MaxSeconds >= 0 {
+		return errors.New("checkpoint does not support --max-seconds")
 	}
 	if len(rest) != 1 {
 		return errors.New("checkpoint requires exactly one checkpoint ID")
@@ -647,7 +674,7 @@ func runDiff(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	return analyzeAndPrint(ctx, opts, repo, base, head, paths, flags.JSON, flags.Progress)
+	return analyzeAndPrint(ctx, opts, repo, base, head, paths, flags)
 }
 
 func resolveRepo(ctx context.Context, env EntireEnv, explicit string) (string, error) {
@@ -660,23 +687,33 @@ func resolveRepo(ctx context.Context, env EntireEnv, explicit string) (string, e
 	return gitutil.RepoRoot(ctx, ".")
 }
 
-func analyzeAndPrint(ctx context.Context, opts Options, repo, base, head string, paths []string, asJSON, progress bool) error {
-	analyzeOptions := sem.AnalyzeOptions{}
-	if progress {
+func analyzeAndPrint(ctx context.Context, opts Options, repo, base, head string, paths []string, flags commonFlags) error {
+	maxSeconds := flags.MaxSeconds
+	if maxSeconds < 0 {
+		maxSeconds = defaultMaxSeconds
+	}
+	analyzeOptions := sem.AnalyzeOptions{
+		MaxDuration: time.Duration(maxSeconds) * time.Second,
+	}
+	if flags.Progress {
 		analyzeOptions.Progress = func(event sem.AnalyzeProgressEvent) {
-			fmt.Fprintf(opts.Stderr, "graph diff progress phase=%s files=%d/%d elapsed=%s\n",
+			line := fmt.Sprintf("graph diff progress phase=%s files=%d/%d elapsed=%s",
 				event.Phase,
 				event.FilesDone,
 				event.FilesTotal,
 				event.Elapsed.Round(time.Millisecond),
 			)
+			if event.Path != "" {
+				line += " file=" + event.Path
+			}
+			fmt.Fprintln(opts.Stderr, line)
 		}
 	}
 	result, err := sem.AnalyzeGitRangeWithOptions(ctx, repo, base, head, paths, analyzeOptions)
 	if err != nil {
 		return err
 	}
-	return printResult(opts.Stdout, result, asJSON)
+	return printResult(opts.Stdout, result, flags.JSON)
 }
 
 func printResult(out io.Writer, result sem.Result, asJSON bool) error {

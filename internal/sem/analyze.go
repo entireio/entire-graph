@@ -18,6 +18,12 @@ func AnalyzeGitRange(ctx context.Context, repo, base, head string, paths []strin
 // AnalyzeOptions configures optional semantic diff behavior.
 type AnalyzeOptions struct {
 	Progress func(AnalyzeProgressEvent)
+	// MaxDuration is the overall wall-clock budget for the analysis. When it
+	// runs out the analysis stops cleanly and returns the partial result built
+	// so far, with machine-readable W_ANALYSIS_BUDGET_EXCEEDED warnings
+	// enumerating what was skipped. Zero means no budget (historical
+	// behavior).
+	MaxDuration time.Duration
 }
 
 // AnalyzeProgressEvent reports coarse progress for a semantic diff.
@@ -25,21 +31,43 @@ type AnalyzeProgressEvent struct {
 	Phase      string
 	FilesDone  int
 	FilesTotal int
-	Elapsed    time.Duration
+	// Path is the file currently being processed ("" on phase boundaries).
+	Path    string
+	Elapsed time.Duration
 }
 
 // AnalyzeGitRangeWithOptions analyzes a Git range with optional progress reporting.
 func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, paths []string, options AnalyzeOptions) (Result, error) {
 	started := time.Now()
-	emitProgress := func(phase string, filesDone, filesTotal int) {
-		if options.Progress != nil {
-			options.Progress(AnalyzeProgressEvent{
-				Phase:      phase,
-				FilesDone:  filesDone,
-				FilesTotal: filesTotal,
-				Elapsed:    time.Since(started),
-			})
+	var deadline time.Time
+	if options.MaxDuration > 0 {
+		deadline = started.Add(options.MaxDuration)
+	}
+	overBudget := func() bool {
+		return !deadline.IsZero() && time.Now().After(deadline)
+	}
+	var lastEmit time.Time
+	// force emits phase boundaries unconditionally; per-file events are
+	// throttled to roughly one per second so slow files stay visible without
+	// flooding stderr on fast ones.
+	emitProgressEvent := func(phase string, filesDone, filesTotal int, path string, force bool) {
+		if options.Progress == nil {
+			return
 		}
+		if !force && time.Since(lastEmit) < time.Second {
+			return
+		}
+		lastEmit = time.Now()
+		options.Progress(AnalyzeProgressEvent{
+			Phase:      phase,
+			FilesDone:  filesDone,
+			FilesTotal: filesTotal,
+			Path:       path,
+			Elapsed:    time.Since(started),
+		})
+	}
+	emitProgress := func(phase string, filesDone, filesTotal int) {
+		emitProgressEvent(phase, filesDone, filesTotal, "", true)
 	}
 
 	emitProgress("discover", 0, 0)
@@ -52,9 +80,16 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 	result := Result{Base: base, Head: head}
 	var deltas []*fileDelta
 	for i, file := range changed {
-		if i > 0 && i%100 == 0 {
-			emitProgress("parse", i, len(changed))
+		if overBudget() {
+			// Stop cleanly: keep everything analyzed so far and enumerate each
+			// skipped changed file with a machine-readable warning, so the
+			// partial result is never silently incomplete.
+			for _, skipped := range changed[i:] {
+				result.Warnings = append(result.Warnings, budgetSkippedFileWarning(skipped.Path, i, len(changed), options.MaxDuration))
+			}
+			break
 		}
+		emitProgressEvent("parse", i, len(changed), file.Path, i > 0 && i%100 == 0)
 		path := file.Path
 		oldPath := file.OldPath
 		if oldPath == "" {
@@ -202,13 +237,35 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		})
 	}
 
-	if err := addDependentCountsWithProgress(ctx, repo, head, &result, func(done, total int) {
-		emitProgress("dependents", done, total)
+	if err := addDependentCountsWithProgress(ctx, repo, head, &result, dependentsScanOptions{
+		progress: func(done, total int, path string) {
+			emitProgressEvent("dependents", done, total, path, path == "")
+		},
+		deadline: deadline,
+		budget:   options.MaxDuration,
 	}); err != nil {
 		return Result{}, err
 	}
 	emitProgress("complete", len(changed), len(changed))
 	return result, nil
+}
+
+// budgetSkippedFileWarning marks one changed file that was never analyzed
+// because the overall wall-clock budget (AnalyzeOptions.MaxDuration) ran out
+// first. It shares the W_ANALYSIS_BUDGET_EXCEEDED code with the dependents
+// scan's early-stop warning; FilePath distinguishes the per-file skips.
+func budgetSkippedFileWarning(path string, done, total int, budget time.Duration) ProviderWarning {
+	detail := fmt.Sprintf("analysis time budget ran out after %d of %d changed files", done, total)
+	if budget > 0 {
+		detail += fmt.Sprintf(" (budget %s)", budget)
+	}
+	return ProviderWarning{
+		Code:                 "W_ANALYSIS_BUDGET_EXCEEDED",
+		Severity:             "warning",
+		FilePath:             path,
+		EffectOnCompleteness: "file skipped; analysis time budget ran out before this changed file was analyzed",
+		Detail:               detail,
+	}
 }
 
 // parseFailureWarning builds the warning emitted when a changed file fails to
