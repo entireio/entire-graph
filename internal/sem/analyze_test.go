@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAnalyzeGitRange(t *testing.T) {
@@ -1137,4 +1138,83 @@ func rev(t *testing.T, repo, value string) string {
 		t.Fatalf("git rev-parse %s: %v\n%s", value, err, out)
 	}
 	return string(out[:len(out)-1])
+}
+
+// TestAnalyzeGitRangeBudgetExceededEmitsPartialResult pins the time-budget
+// contract: when MaxDuration runs out, the analysis returns cleanly (no
+// error) and enumerates every skipped changed file with a machine-readable
+// W_ANALYSIS_BUDGET_EXCEEDED warning instead of producing nothing.
+func TestAnalyzeGitRangeBudgetExceededEmitsPartialResult(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
+	write(t, repo, "other.py", "def helper(value):\n    return value\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+	write(t, repo, "auth.py", "def validate_token(token, issuer=None):\n    return bool(token)\n")
+	write(t, repo, "other.py", "def helper(value):\n    return value + 1\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "change")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRangeWithOptions(t.Context(), repo, base, head, nil, AnalyzeOptions{
+		MaxDuration: time.Nanosecond, // expires before the first changed file
+	})
+	if err != nil {
+		t.Fatalf("budget exhaustion must not error, got %v", err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("no file should have been analyzed under an expired budget, got %#v", result.Files)
+	}
+	skipped := map[string]bool{}
+	for _, warning := range result.Warnings {
+		if warning.Code != "W_ANALYSIS_BUDGET_EXCEEDED" {
+			t.Fatalf("unexpected warning %#v", warning)
+		}
+		if warning.Severity != "warning" {
+			t.Fatalf("severity = %q, want warning", warning.Severity)
+		}
+		if warning.EffectOnCompleteness == "" || warning.Detail == "" {
+			t.Fatalf("budget warning must carry effect and detail, got %#v", warning)
+		}
+		skipped[warning.FilePath] = true
+	}
+	for _, want := range []string{"auth.py", "other.py"} {
+		if !skipped[want] {
+			t.Fatalf("skipped files %v missing %q", skipped, want)
+		}
+	}
+}
+
+// TestAnalyzeGitRangeNoBudgetKeepsFullResult pins that MaxDuration == 0 keeps
+// the historical unbounded behavior: full result, no budget warnings.
+func TestAnalyzeGitRangeNoBudgetKeepsFullResult(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+	write(t, repo, "auth.py", "def validate_token(token, issuer=None):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "change")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRangeWithOptions(t.Context(), repo, base, head, nil, AnalyzeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 {
+		t.Fatalf("files = %#v, want the changed file analyzed", result.Files)
+	}
+	for _, warning := range result.Warnings {
+		if warning.Code == "W_ANALYSIS_BUDGET_EXCEEDED" {
+			t.Fatalf("no budget warning expected without MaxDuration, got %#v", warning)
+		}
+	}
 }

@@ -134,7 +134,7 @@ func GrepTreeMatches(ctx context.Context, repo, treeish string, patterns []strin
 // every possible match in the tree -- callers that need every matching file
 // regardless of Git's binary heuristic must use GrepTreePathsIncludingBinary.
 func GrepTreePaths(ctx context.Context, repo, treeish string, patterns []string) ([]string, error) {
-	return grepTreePaths(ctx, repo, treeish, patterns, true)
+	return grepTreePaths(ctx, repo, treeish, patterns, true, false)
 }
 
 // GrepTreePathsIncludingBinary behaves exactly like GrepTreePaths except it
@@ -146,10 +146,22 @@ func GrepTreePaths(ctx context.Context, repo, treeish string, patterns []string)
 // raw file content directly and does not care whether Git thinks the file is
 // binary.
 func GrepTreePathsIncludingBinary(ctx context.Context, repo, treeish string, patterns []string) ([]string, error) {
-	return grepTreePaths(ctx, repo, treeish, patterns, false)
+	return grepTreePaths(ctx, repo, treeish, patterns, false, false)
 }
 
-func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string, textOnly bool) ([]string, error) {
+// GrepTreePathsCaseSensitiveIncludingBinary behaves like
+// GrepTreePathsIncludingBinary but matches case-sensitively. It exists for
+// identifier prefilters: a case-sensitive substring match is still a strict
+// superset of a case-sensitive whole-identifier check, while excluding files
+// that only contain the pattern in a different case. Deliberately NOT -w:
+// git grep's word-boundary mode leaves the multi-pattern fixed-string fast
+// path and is orders of magnitude slower with hundreds of patterns (measured
+// 5s vs 0.06s on a ~2.6k-file tree with 234 patterns).
+func GrepTreePathsCaseSensitiveIncludingBinary(ctx context.Context, repo, treeish string, patterns []string) ([]string, error) {
+	return grepTreePaths(ctx, repo, treeish, patterns, false, true)
+}
+
+func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string, textOnly, caseSensitive bool) ([]string, error) {
 	if treeish == "" {
 		return nil, errors.New("git grep treeish cannot be empty")
 	}
@@ -163,7 +175,11 @@ func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string,
 	if textOnly {
 		args = append(args, "-I")
 	}
-	args = append(args, "-i", "-F", "-l")
+	if caseSensitive {
+		args = append(args, "-F", "-l")
+	} else {
+		args = append(args, "-i", "-F", "-l")
+	}
 	patternCount := 0
 	for _, pattern := range patterns {
 		if pattern == "" {
