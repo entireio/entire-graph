@@ -104,6 +104,114 @@ func ListIndexFiles(ctx context.Context, repo string) ([]string, error) {
 // worktree file. Fixed strings and NUL-delimited paths keep query terms and
 // unusual paths from changing grep semantics.
 func GrepIndexMatches(ctx context.Context, repo string, patterns []string, maxPerFile int) ([]GrepMatch, error) {
+	return grepFixedStringMatches(ctx, repo, "", patterns, maxPerFile)
+}
+
+// GrepTreeMatches returns a bounded sample of matched fixed strings per file
+// from an immutable Git tree. The returned paths are relative to repo and do
+// not include Git's "<treeish>:" display prefix. Query strings are always
+// passed as fixed-string patterns and paths are NUL-delimited, so neither can
+// change grep or path parsing semantics.
+func GrepTreeMatches(ctx context.Context, repo, treeish string, patterns []string, maxPerFile int) ([]GrepMatch, error) {
+	if treeish == "" {
+		return nil, errors.New("git grep treeish cannot be empty")
+	}
+	if strings.HasPrefix(treeish, "-") || strings.ContainsRune(treeish, '\x00') {
+		return nil, fmt.Errorf("invalid git grep treeish %q", treeish)
+	}
+	return grepFixedStringMatches(ctx, repo, treeish, patterns, maxPerFile)
+}
+
+// GrepTreePaths returns every file in an immutable Git tree that contains at
+// least one of the fixed-string patterns. Git emits each path once in
+// NUL-delimited form, avoiding both matched-text fanout and ambiguity from
+// unusual path bytes.
+//
+// It passes -I, so a blob Git itself classifies as binary (a NUL byte early
+// in the content, or a `.gitattributes` binary/-diff marking) is silently
+// excluded from the result even if it contains a matching pattern. That
+// makes this preselection a strict superset of a text-only match, but NOT of
+// every possible match in the tree -- callers that need every matching file
+// regardless of Git's binary heuristic must use GrepTreePathsIncludingBinary.
+func GrepTreePaths(ctx context.Context, repo, treeish string, patterns []string) ([]string, error) {
+	return grepTreePaths(ctx, repo, treeish, patterns, true)
+}
+
+// GrepTreePathsIncludingBinary behaves exactly like GrepTreePaths except it
+// omits -I, so a file Git classifies as binary (an early NUL byte, or a
+// `.gitattributes` binary/-diff marking) is still searched and can appear in
+// the result. Use this when a caller's correctness requires a genuine strict
+// superset of every file that contains a matching pattern, regardless of
+// Git's binary heuristic -- e.g. a prefilter ahead of a parser that reads
+// raw file content directly and does not care whether Git thinks the file is
+// binary.
+func GrepTreePathsIncludingBinary(ctx context.Context, repo, treeish string, patterns []string) ([]string, error) {
+	return grepTreePaths(ctx, repo, treeish, patterns, false)
+}
+
+func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string, textOnly bool) ([]string, error) {
+	if treeish == "" {
+		return nil, errors.New("git grep treeish cannot be empty")
+	}
+	if strings.HasPrefix(treeish, "-") || strings.ContainsRune(treeish, '\x00') {
+		return nil, fmt.Errorf("invalid git grep treeish %q", treeish)
+	}
+	if len(patterns) == 0 {
+		return []string{}, nil
+	}
+	args := []string{"grep", "-z"}
+	if textOnly {
+		args = append(args, "-I")
+	}
+	args = append(args, "-i", "-F", "-l")
+	patternCount := 0
+	for _, pattern := range patterns {
+		if pattern == "" {
+			continue
+		}
+		args = append(args, "-e", pattern)
+		patternCount++
+	}
+	if patternCount == 0 {
+		return []string{}, nil
+	}
+	args = append(args, treeish, "--")
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = repo
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) && exitError.ExitCode() == 1 && stderr.Len() == 0 {
+			return []string{}, nil
+		}
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
+	}
+	prefix := treeish + ":"
+	data := stdout.Bytes()
+	paths := make([]string, 0, bytes.Count(data, []byte{0}))
+	for len(data) > 0 {
+		pathEnd := bytes.IndexByte(data, 0)
+		if pathEnd < 0 {
+			return nil, errors.New("git grep returned a non-NUL-terminated path")
+		}
+		displayed := string(data[:pathEnd])
+		if !strings.HasPrefix(displayed, prefix) {
+			return nil, fmt.Errorf("git grep returned path %q without treeish prefix %q", displayed, prefix)
+		}
+		paths = append(paths, strings.TrimPrefix(displayed, prefix))
+		data = data[pathEnd+1:]
+	}
+	return paths, nil
+}
+
+func grepFixedStringMatches(ctx context.Context, repo, treeish string, patterns []string, maxPerFile int) ([]GrepMatch, error) {
 	if len(patterns) == 0 {
 		return []GrepMatch{}, nil
 	}
@@ -119,7 +227,13 @@ func GrepIndexMatches(ctx context.Context, repo string, patterns []string, maxPe
 	if len(args) == 8 {
 		return []GrepMatch{}, nil
 	}
+	if treeish != "" {
+		args = append(args, treeish)
+	}
 	args = append(args, "--")
+	// Preserve the caller's locale here. Unlike the other git commands in this
+	// package, `git grep -i` uses LC_CTYPE for non-ASCII case folding; forcing
+	// the C locale would make Unicode matches disappear.
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = repo
 	var stdout bytes.Buffer
@@ -147,6 +261,13 @@ func GrepIndexMatches(ctx context.Context, repo string, patterns []string, maxPe
 			return nil, fmt.Errorf("git grep returned malformed path metadata")
 		}
 		path := string(data[:pathEnd])
+		if treeish != "" {
+			prefix := treeish + ":"
+			if !strings.HasPrefix(path, prefix) {
+				return nil, fmt.Errorf("git grep returned path %q without treeish prefix %q", path, prefix)
+			}
+			path = strings.TrimPrefix(path, prefix)
+		}
 		data = data[pathEnd+1:]
 		textEnd := bytes.IndexByte(data, '\n')
 		if textEnd < 0 {
@@ -194,7 +315,17 @@ func ChangedFiles(ctx context.Context, repo, base, head string, paths []string) 
 	return files, nil
 }
 
-func FileCochanges(ctx context.Context, repo string, maxCommits int) ([]FileCochange, error) {
+// FileCochanges returns repeated file pairs from the history reachable from
+// revision. Callers pass an already-resolved commit so every
+// history-derived relation belongs to the same immutable snapshot as its
+// files and symbols.
+func FileCochanges(ctx context.Context, repo, revision string, maxCommits int) ([]FileCochange, error) {
+	if revision == "" {
+		return nil, errors.New("git co-change revision cannot be empty")
+	}
+	if strings.HasPrefix(revision, "-") || strings.ContainsRune(revision, '\x00') {
+		return nil, fmt.Errorf("invalid git co-change revision %q", revision)
+	}
 	if maxCommits <= 0 {
 		maxCommits = 256
 	}
@@ -213,7 +344,7 @@ func FileCochanges(ctx context.Context, repo string, maxCommits int) ([]FileCoch
 	// blows up memory: one 10k-file commit alone produces ~50M pair keys (multi-GB).
 	// Real feature/fix commits touch a handful of related files and stay well under.
 	const maxFilesPerCommit = 50
-	out, err := run(ctx, repo, "git", "log", "-z", "--name-only", "--pretty=format:"+marker, "-n", strconv.Itoa(maxCommits), "--")
+	out, err := run(ctx, repo, "git", "log", "-z", "--name-only", "--pretty=format:"+marker, "-n", strconv.Itoa(maxCommits), revision, "--")
 	if err != nil {
 		return nil, err
 	}
@@ -287,17 +418,35 @@ func FileCochanges(ctx context.Context, repo string, maxCommits int) ([]FileCoch
 }
 
 func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error) {
-	out, err := run(ctx, repo, "git", "show", rev+":"+path)
+	// Classify against git's stderr only, never the wrapped error that echoes
+	// the argv (which includes rev+":"+path). Matching the full error text made
+	// any real failure on a path containing a marker substring (e.g. "Path" in
+	// src/PathHelper.go) look like a missing file, swallowing the error.
+	// Peel the revision to a tree before resolving the path. Without the type
+	// constraint, a missing full object ID or a blob object can produce the
+	// same path-looking diagnostic as a genuinely absent file.
+	objectSpec := rev + "^{tree}:" + path
+	out, stderr, err := runWithStderr(ctx, repo, "git", "show", objectSpec)
 	if err != nil {
-		if strings.Contains(err.Error(), "exists on disk, but not in") ||
-			strings.Contains(err.Error(), "Path") ||
-			strings.Contains(err.Error(), "does not exist") ||
-			strings.Contains(err.Error(), "not found") {
+		if isMissingPathDiagnostic(stderr) {
 			return "", false, nil
 		}
-		return "", false, err
+		msg := stderr
+		if msg == "" {
+			msg = err.Error()
+		}
+		return "", false, fmt.Errorf("git show %s: %s", objectSpec, msg)
 	}
 	return out, true, nil
+}
+
+func isMissingPathDiagnostic(stderr string) bool {
+	// ShowFile runs git under the C locale, so only classify Git's specific
+	// missing-path diagnostics. Broad substring checks can match a bad revision
+	// or an unrelated error merely because an argv value contains the phrase.
+	return strings.HasPrefix(stderr, "fatal: path '") &&
+		(strings.Contains(stderr, "' does not exist in '") ||
+			strings.Contains(stderr, "' exists on disk, but not in '"))
 }
 
 // BatchFileReader reads blobs from one revision through a persistent
@@ -314,8 +463,7 @@ type BatchFileReader struct {
 }
 
 func NewBatchFileReader(ctx context.Context, repo, rev string) (*BatchFileReader, error) {
-	cmd := exec.CommandContext(ctx, "git", "cat-file", "--batch")
-	cmd.Dir = repo
+	cmd := newCmd(ctx, repo, "git", "cat-file", "--batch")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -434,18 +582,42 @@ func RemoteURLs(ctx context.Context, repo string) ([]string, error) {
 }
 
 func run(ctx context.Context, dir, name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = dir
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
+	stdout, stderr, err := runWithStderr(ctx, dir, name, args...)
+	if err != nil {
+		msg := stderr
 		if msg == "" {
 			msg = err.Error()
 		}
 		return "", fmt.Errorf("%s %s: %s", name, strings.Join(args, " "), msg)
 	}
-	return stdout.String(), nil
+	return stdout, nil
+}
+
+// newCmd builds the exec.Cmd used by subprocesses whose diagnostics must be
+// stable. It pins the subprocess locale to C (LC_ALL=C overrides LANG and any
+// LC_*; LANG=C is set as a belt-and-braces default) so git's stderr messages
+// are always the English ones our error classification matches — e.g.
+// ShowFile's absent-file detection would otherwise break under a non-English
+// git locale. GrepIndexMatches intentionally bypasses this helper and keeps
+// the caller's locale because git grep uses LC_CTYPE for case folding.
+func newCmd(ctx context.Context, dir, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	// Cmd.Environ observes Dir and updates PWD accordingly. Starting from
+	// os.Environ would leave child processes with the parent's stale PWD.
+	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
+	return cmd
+}
+
+// runWithStderr runs a command and returns its stdout and trimmed stderr
+// separately, so callers can classify failures against git's own message
+// without the wrapped error text (which echoes the argv, including paths).
+func runWithStderr(ctx context.Context, dir, name string, args ...string) (string, string, error) {
+	cmd := newCmd(ctx, dir, name, args...)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stdout.String(), strings.TrimSpace(stderr.String()), err
 }

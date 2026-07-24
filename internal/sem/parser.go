@@ -194,6 +194,14 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	}
 	src := []byte(content)
 	parseSrc := src
+	entitySrc := src
+	entityLineOffset := 0
+	if spec.language == "Protocol Buffers" {
+		prepared, original, lineOffset := prepareProtocolBuffersParseSource(content)
+		parseSrc = []byte(prepared)
+		entitySrc = []byte(original)
+		entityLineOffset = lineOffset
+	}
 	if spec.language == "SQL" {
 		parseSrc = []byte(maskPostgresUnsupportedSyntax(content))
 	}
@@ -282,9 +290,15 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	}
 
 	var entities []Entity
-	walkEntities(root, src, spec.language, "", &entities)
+	walkEntities(root, entitySrc, spec.language, "", &entities)
 	if spec.language == "C++" {
 		entities = appendMissingEntities(entities, cPlusPlusTypeAliasEntities(content)...)
+	}
+	if spec.language == "C" || spec.language == "C++" {
+		// The C mask blanks `#define` lines before tree-sitter, so macro names (opcodes,
+		// X-macros like MP_BC_*) never become symbols and a graph lookup for them returns
+		// nothing. Recover them from the UNMASKED content so `symbols`/`def <MACRO>` resolve.
+		entities = appendMissingEntities(entities, cMacroEntities(content)...)
 	}
 	if spec.language == "Kotlin" {
 		entities = append(entities, kotlinPrimaryConstructorFieldEntities(content)...)
@@ -314,6 +328,12 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		// only brace-backed implementation methods; header prototypes end in ';'.
 		entities = appendMissingEntities(entities, objectiveCMethodEntities(content)...)
 	}
+	if entityLineOffset > 0 {
+		for index := range entities {
+			entities[index].StartLine -= entityLineOffset
+			entities[index].EndLine -= entityLineOffset
+		}
+	}
 	sort.Slice(entities, func(i, j int) bool {
 		if entities[i].StartLine == entities[j].StartLine {
 			return entities[i].Name < entities[j].Name
@@ -322,20 +342,24 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	})
 	status := ParseStatus{}
 	if root.HasError() {
-		status = ParseStatus{ParseError: true, Code: "E_PARSE_ERROR", Detail: parseErrorDetail(root, src)}
+		status = ParseStatus{ParseError: true, Code: "E_PARSE_ERROR", Detail: parseErrorDetailWithLineOffset(root, entitySrc, entityLineOffset)}
 	}
 	return entities, spec.language, status
 }
 
 func parseErrorDetail(root *sitter.Node, src []byte) string {
-	details := collectParseErrorDetails(root, src, 5)
+	return parseErrorDetailWithLineOffset(root, src, 0)
+}
+
+func parseErrorDetailWithLineOffset(root *sitter.Node, src []byte, lineOffset int) string {
+	details := collectParseErrorDetails(root, src, 5, lineOffset)
 	if len(details) == 0 {
 		return "tree-sitter syntax error nodes present"
 	}
 	return "tree-sitter syntax error nodes present: " + strings.Join(details, "; ")
 }
 
-func collectParseErrorDetails(root *sitter.Node, src []byte, limit int) []string {
+func collectParseErrorDetails(root *sitter.Node, src []byte, limit, lineOffset int) []string {
 	if root == nil || root.IsNull() || limit <= 0 {
 		return nil
 	}
@@ -358,7 +382,11 @@ func collectParseErrorDetails(root *sitter.Node, src []byte, limit int) []string
 			if len(snippet) > 80 {
 				snippet = snippet[:80] + "..."
 			}
-			details = append(details, fmt.Sprintf("%s %s at line %d column %d near %q", kind, node.Type(), point.Row+1, point.Column+1, snippet))
+			line := int(point.Row) + 1 - lineOffset
+			if line < 1 {
+				line = 1
+			}
+			details = append(details, fmt.Sprintf("%s %s at line %d column %d near %q", kind, node.Type(), line, point.Column+1, snippet))
 		}
 		for i := 0; i < int(node.ChildCount()) && len(details) < limit; i++ {
 			walk(node.Child(i))
@@ -392,7 +420,7 @@ func sourceLineAt(src []byte, line int) string {
 var (
 	tsKeywordTypePropertyPattern  = regexp.MustCompile(`^(\s*)in(\??\s*:)`)
 	tsTypeImportPattern           = regexp.MustCompile(`typeof\s+import\(([^)]*)\)`)
-	tsStaticAccessorMethodPattern = regexp.MustCompile(`\bstatic\s+accessor(\s*\()`)
+	tsStaticAccessorMethodPattern = regexp.MustCompile(`(\bstatic\s+accesso)r(\s*\()`)
 )
 
 func maskTypeScriptUnsupportedSyntax(content string) string {
@@ -458,7 +486,12 @@ func maskTypeScriptKeywordTypeProperty(line string) string {
 }
 
 func maskTypeScriptStaticAccessorMethod(line string) string {
-	return tsStaticAccessorMethodPattern.ReplaceAllString(line, "static accessoR${1}")
+	// Flip only the trailing `r` of `accessor` to `R`, reconstructing the
+	// surrounding whitespace from capture groups, so the replacement is
+	// byte-length-preserving: entity offsets are computed against the masked
+	// source but sliced from the original, so any length drift corrupts every
+	// following entity (same constraint as the Java module-import mask).
+	return tsStaticAccessorMethodPattern.ReplaceAllString(line, "${1}R${2}")
 }
 
 // rustItemWrapperMacroHint cheaply detects source that may contain a
@@ -614,7 +647,7 @@ func rustTokenTreeStartsWithIf(src []byte, body *sitter.Node) bool {
 }
 
 var (
-	javaModuleImportPattern      = regexp.MustCompile(`^(\s*import\s+)module\s+`)
+	javaModuleImportPattern      = regexp.MustCompile(`^(\s*import\s+)module(\s+)`)
 	javaVarargsAnnotationPattern = regexp.MustCompile(`@[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\s*\.\.\.`)
 )
 
@@ -622,7 +655,13 @@ func maskJavaUnsupportedSyntax(content string) string {
 	lines := strings.SplitAfter(content, "\n")
 	for i, line := range lines {
 		text, newline := splitLineEnding(line)
-		text = javaModuleImportPattern.ReplaceAllString(text, "${1}       ")
+		// Blank only the `module` contextual keyword (6 chars -> 6 spaces) and
+		// preserve the trailing whitespace group (${2}) verbatim, so the mask is
+		// length-preserving regardless of how much whitespace follows `module`.
+		// A literal replacement (e.g. 7 spaces) shortened multi-space imports and
+		// shifted every following entity's offsets, corrupting names/signatures/
+		// body-hashes (same bug class as the TS static-accessor mask).
+		text = javaModuleImportPattern.ReplaceAllString(text, "${1}      ${2}")
 		text = javaVarargsAnnotationPattern.ReplaceAllStringFunc(text, func(match string) string {
 			return strings.Repeat(" ", len(match)-3) + "..."
 		})
@@ -4178,6 +4217,19 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		}
 		kind = "class"
 		name = nodeName(node, src)
+	case "abstract_method_signature":
+		// TypeScript abstract classes declare callable members without bodies.
+		// They remain real compiler-resolved call targets (`this.method()` binds
+		// to the abstract declaration), so preserve them as method symbols. Plain
+		// interface method_signature nodes stay inventory-only below.
+		if language != "TypeScript" {
+			return Entity{}, false
+		}
+		kind = "method"
+		name = nodeName(node, src)
+		if scope != "" {
+			name = qualify(scope, name)
+		}
 	case "method_signature", "getter_signature", "setter_signature":
 		// Dart class members (declaration head; body is a sibling node). Gated to
 		// Dart because `method_signature` also denotes TypeScript interface
@@ -4665,6 +4717,12 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		name = cueFieldName(node, src)
 	case "message":
 		kind = "message"
+		name = nodeName(node, src)
+	case "enum":
+		if language != "Protocol Buffers" {
+			return Entity{}, false
+		}
+		kind = "enum"
 		name = nodeName(node, src)
 	case "service":
 		kind = "service"
@@ -6231,9 +6289,7 @@ func isNameNode(nodeType string) bool {
 func signatureFromNode(node *sitter.Node, src []byte) string {
 	start := node.StartByte()
 	end := node.EndByte()
-	if body := node.ChildByFieldName("body"); validNode(body) {
-		end = body.StartByte()
-	} else if body := firstBodyLikeChild(node); validNode(body) {
+	if body := signatureBodyBoundary(node); validNode(body) {
 		end = body.StartByte()
 	}
 	if end <= start || int(end) > len(src) {
@@ -6247,6 +6303,32 @@ func signatureFromNode(node *sitter.Node, src []byte) string {
 	// EXTENDS/INHERITS edges silently disappear for that type).
 	signature = strings.Join(strings.Fields(signature), " ")
 	return strings.TrimSpace(strings.TrimRight(signature, "{:; \t\r\n"))
+}
+
+// signatureBodyBoundary returns the node whose start byte marks the end of a
+// symbol's signature (i.e. where the body begins), or nil if none applies.
+func signatureBodyBoundary(node *sitter.Node) *sitter.Node {
+	if body := node.ChildByFieldName("body"); validNode(body) {
+		return body
+	}
+	// A JS/TS variable or class field bound to a function value
+	// (`const f = (a, b) => {…}`, `create = function () {…}`) keeps the body
+	// inside the value node, so the declarator/field itself exposes no `body`
+	// field. Descend into the function-like value and cut at *its* body,
+	// otherwise the entire function body leaks into the signature and any body
+	// edit reads as a signature change.
+	if value := node.ChildByFieldName("value"); functionLikeValue(value) {
+		if body := value.ChildByFieldName("body"); validNode(body) {
+			return body
+		}
+		if body := firstBodyLikeChild(value); validNode(body) {
+			return body
+		}
+	}
+	if body := firstBodyLikeChild(node); validNode(body) {
+		return body
+	}
+	return nil
 }
 
 func firstBodyLikeChild(node *sitter.Node) *sitter.Node {
@@ -6599,6 +6681,38 @@ func cPlusPlusTypeAliasEntities(content string) []Entity {
 				braceDepth = 0
 			}
 		}
+	}
+	return entities
+}
+
+// cDefineLineRe matches a C/C++ `#define NAME` (object- or function-like) at line start,
+// tolerating leading whitespace and spaces after `#`.
+var cDefineLineRe = regexp.MustCompile(`^\s*#\s*define\s+([A-Za-z_]\w*)`)
+
+// cMacroEntities scans the ORIGINAL (unmasked) C/C++ source for `#define` directives and emits
+// one macro Entity per name at its real line. This restores macros as queryable symbols that the
+// C preprocessor-mask would otherwise blank out. Additive + line-preserving: start==end line is
+// the real definition line, so identity stays (file,line)-consistent. First definition of a name
+// wins (appendMissingEntities dedups by (Kind,Name)).
+func cMacroEntities(content string) []Entity {
+	lines := strings.SplitAfter(content, "\n")
+	var entities []Entity
+	for i, line := range lines {
+		match := cDefineLineRe.FindStringSubmatch(line)
+		if match == nil {
+			continue
+		}
+		name := match[1]
+		signature := strings.TrimSpace(strings.TrimSuffix(line, "\n"))
+		entities = append(entities, Entity{
+			Kind:        "macro",
+			Name:        name,
+			Signature:   signature,
+			StartLine:   i + 1,
+			EndLine:     i + 1,
+			BodyHash:    hash(normalize(signature)),
+			Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, signature))),
+		})
 	}
 	return entities
 }

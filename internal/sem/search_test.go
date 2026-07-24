@@ -147,6 +147,211 @@ type systemClock struct{}
 	}
 }
 
+func TestSearchRepositoryUsesFocusedDefaultRegions(t *testing.T) {
+	repo := t.TempDir()
+	body := "package source\n\nfunc LargeHandler() {\n" +
+		strings.Repeat("\t// unrelated implementation detail\n", 90) +
+		"\t// rare retrieval needle\n}\n"
+	write(t, repo, "source/large.go", body)
+
+	response, err := SearchRepository(t.Context(), repo, "test", "rare retrieval needle", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) == 0 {
+		t.Fatal("focused default search returned no results")
+	}
+	const (
+		wantMaxLines = 80
+		needleLine   = 94
+	)
+	for _, result := range response.Results {
+		if lines := result.EndLine - result.StartLine + 1; lines > wantMaxLines {
+			t.Fatalf("default result spans %d lines, want at most %d: %#v", lines, wantMaxLines, result)
+		}
+		if result.StartLine > needleLine || result.EndLine < needleLine {
+			t.Fatalf("focused result omitted needle line %d: %#v", needleLine, result)
+		}
+	}
+}
+
+func TestSearchRepositoryBuildsSparseRegionsOnlyForDeepSearch(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "source/large.go", "package source\n"+strings.Repeat("// filler line\n", 140)+"// sparse retrieval needle\n")
+
+	shallow, err := SearchRepository(t.Context(), repo, "test", "sparse retrieval needle", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     defaultSearchTopK,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shallow.Stats.SparseCandidates != 0 {
+		t.Fatalf("shallow search built %d sparse candidates", shallow.Stats.SparseCandidates)
+	}
+
+	deep, err := SearchRepository(t.Context(), repo, "test", "sparse retrieval needle", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     defaultSearchTopK + 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deep.Stats.SparseCandidates == 0 {
+		t.Fatal("deep search did not build sparse candidates")
+	}
+	foundSparse := false
+	for _, result := range deep.Results {
+		if containsString(result.Signals, "sparse-region") {
+			foundSparse = true
+		}
+	}
+	if !foundSparse {
+		t.Fatalf("deep results omitted sparse regions: %#v", deep.Results)
+	}
+	if deep.Stats.SparseFilesRead == 0 {
+		t.Fatal("deep search did not report sparse file reads")
+	}
+	for _, result := range deep.Results {
+		if containsString(result.Signals, "sparse-region") && result.Snippet == "" {
+			t.Fatalf("sparse result was not hydrated: %#v", result)
+		}
+	}
+}
+
+func TestSelectHybridCandidatesBalancesSparseDepthAndFileDiversity(t *testing.T) {
+	semantic := make([]searchCandidate, 100)
+	sparse := make([]searchCandidate, 100)
+	for index := range semantic {
+		semantic[index] = searchCandidate{
+			result: SearchResult{FilePath: fmt.Sprintf("semantic/%03d.go", index), StartLine: 1, EndLine: 10},
+			score:  float64(100 - index),
+		}
+		sparse[index] = searchCandidate{
+			result: SearchResult{
+				FilePath:  fmt.Sprintf("semantic/%03d.go", 99-index),
+				StartLine: index*60 + 1,
+				EndLine:   index*60 + 80,
+				Signals:   []string{"sparse-region"},
+			},
+			score: float64(100 - index),
+		}
+	}
+
+	selected := selectHybridCandidates(semantic, sparse, 100)
+	if len(selected) != 100 {
+		t.Fatalf("hybrid selection returned %d candidates, want 100", len(selected))
+	}
+	if selected[0].result.FilePath != semantic[0].result.FilePath {
+		t.Fatalf("hybrid ranking did not preserve a semantic head: %#v", selected[0])
+	}
+	sparseCount := 0
+	files := map[string]bool{}
+	for _, candidate := range selected {
+		files[candidate.result.FilePath] = true
+		if containsString(candidate.result.Signals, "sparse-region") {
+			sparseCount++
+		}
+	}
+	if sparseCount <= len(selected)/2 || sparseCount >= len(selected)*3/4 {
+		t.Fatalf("hybrid sparse count = %d, want a majority with a semantic reserve", sparseCount)
+	}
+	if len(files) < 90 {
+		t.Fatalf("hybrid selection covered only %d distinct files", len(files))
+	}
+}
+
+func TestSelectHybridCandidatesFallsBackToSparseOnly(t *testing.T) {
+	sparse := []searchCandidate{
+		{result: SearchResult{FilePath: "first.go", StartLine: 1, EndLine: 80}},
+		{result: SearchResult{FilePath: "second.go", StartLine: 1, EndLine: 80}},
+	}
+	selected := selectHybridCandidates(nil, sparse, 2)
+	if len(selected) != 2 || selected[0].result.FilePath != "first.go" || selected[1].result.FilePath != "second.go" {
+		t.Fatalf("sparse-only selection = %#v", selected)
+	}
+	if selected[0].score <= selected[1].score {
+		t.Fatalf("sparse-only scores are not rank-monotonic: %#v", selected)
+	}
+}
+
+func TestSparseSearchFocusLineUsesSubtokenEvidence(t *testing.T) {
+	query := buildSparseSearchQuery("HTTPServer")
+	lines := []string{"unrelated", "http server handler", "unrelated"}
+	if got := sparseSearchFocusLine(query, lines, 1, len(lines)); got != 2 {
+		t.Fatalf("sparse focus line = %d, want 2", got)
+	}
+}
+
+func TestScaleSearchCorpusValueSaturatesWithoutOverflow(t *testing.T) {
+	maxValue := int(^uint(0) >> 1)
+	if got := scaleSearchCorpusValue(maxValue, maxValue, 1); got != maxValue {
+		t.Fatalf("scaled max int = %d, want %d", got, maxValue)
+	}
+	if got := scaleSearchCorpusValue(10, 20, 5); got != 40 {
+		t.Fatalf("scaled corpus value = %d, want 40", got)
+	}
+}
+
+func TestSearchRepositorySkipsSparsePassWithoutSparseTerms(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "source.go", "package source\n// why\n")
+	response, err := SearchRepository(t.Context(), repo, "test", "why", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     defaultSearchTopK + 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Stats.SparseFilesRead != 0 || response.Stats.SparseCandidates != 0 {
+		t.Fatalf("stopword-only sparse pass stats = %#v", response.Stats)
+	}
+}
+
+func TestBuildSparseSearchQueryUsesLexicalSubtokens(t *testing.T) {
+	query := buildSparseSearchQuery("HTTPServer foo_bar and build2D 123")
+	want := []string{"http", "server", "foo", "bar", "build", "123"}
+	if fmt.Sprint(query.terms) != fmt.Sprint(want) {
+		t.Fatalf("sparse query terms = %v, want %v", query.terms, want)
+	}
+}
+
+func TestSelectHybridCandidatesBoundsSparseFusionAtTopK(t *testing.T) {
+	semantic := []searchCandidate{{
+		result: SearchResult{FilePath: "strong.go", StartLine: 1, EndLine: 10},
+		score:  100,
+	}}
+	sparse := make([]searchCandidate, 101)
+	for index := range sparse {
+		sparse[index] = searchCandidate{
+			result: SearchResult{
+				FilePath:  fmt.Sprintf("weak/%03d.go", index),
+				StartLine: 1,
+				EndLine:   80,
+				Signals:   []string{"sparse-region"},
+			},
+			score: float64(101 - index),
+		}
+	}
+	sparse[100].result.FilePath = "strong.go"
+	sparse[100].result.StartLine = 1001
+	sparse[100].result.EndLine = 1080
+
+	selected := selectHybridCandidates(semantic, sparse, 100)
+	for _, candidate := range selected {
+		if candidate.result.FilePath == "strong.go" && candidate.result.StartLine == 1001 {
+			t.Fatal("sparse candidate below TopK participated in reciprocal-rank fusion")
+		}
+	}
+}
+
 func TestSearchRepositoryExpandsMorphologicalIssueTerms(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "reader/collection.go", `package reader
@@ -223,12 +428,171 @@ func checkSignature(raw string) bool {
 	}
 }
 
+func TestSearchExpandsCompoundIdentifierConsumers(t *testing.T) {
+	const filePath = "src/policy.ts"
+	content := "export const cacheRefreshPolicy = 'eager'\n\nexport function configureCache() {\n  install(cacheRefreshPolicy)\n}\n"
+	definition := SymbolRecord{ID: "definition", Name: "cacheRefreshPolicy", FilePath: filePath, StartLine: 1, EndLine: 1}
+	consumer := SymbolRecord{ID: "consumer", Name: "configureCache", FilePath: filePath, StartLine: 3, EndLine: 5}
+	got := expandIdentifierUsageCandidates(
+		t.Context(),
+		[]searchCandidate{{score: 30, result: SearchResult{SymbolID: definition.ID}}},
+		buildSearchQuery("cache refresh policy"),
+		map[string]SymbolRecord{definition.ID: definition},
+		map[string][]SymbolRecord{filePath: {definition, consumer}},
+		func(path string) (string, bool) { return content, path == filePath },
+		map[string]string{filePath: "typescript"}, SearchOptions{ContextLines: 2, MaxSnippetLines: 20},
+	)
+	if len(got) != 1 || got[0].result.FocusLine != 4 || got[0].result.SymbolName != "configureCache" || !containsString(got[0].result.Signals, "symbol-usage") {
+		t.Fatalf("consumer expansion = %#v", got)
+	}
+}
+
+func TestSearchUsageIdentifiersIncludeScreamingSnakeAndUnicode(t *testing.T) {
+	for _, name := range []string{"MAX_RETRY_COUNT", "überCache_Value", "数据_缓存"} {
+		if !expandableUsageIdentifier(name) {
+			t.Fatalf("compound identifier %q was excluded", name)
+		}
+	}
+	if expandableUsageIdentifier("ordinary") {
+		t.Fatal("plain lowercase word was accepted as a compound identifier")
+	}
+}
+
+func TestSearchUsageExpansionHandlesEmptySeeds(t *testing.T) {
+	got := expandIdentifierUsageCandidates(
+		t.Context(), nil, buildSearchQuery("cache policy"), nil, nil,
+		func(string) (string, bool) { t.Fatal("empty seeds should not read content"); return "", false },
+		nil, SearchOptions{},
+	)
+	if got != nil {
+		t.Fatalf("empty seed expansion = %#v", got)
+	}
+}
+
+func TestCachedContentReaderBoundsLargeFiles(t *testing.T) {
+	calls := map[string]int{}
+	large := strings.Repeat("x", maxSearchContentCacheFileBytes+1)
+	read := cachedContentReader(func(path string) (string, bool) {
+		calls[path]++
+		if path == "large" {
+			return large, true
+		}
+		return "small", true
+	})
+	read("small")
+	read("small")
+	read("large")
+	read("large")
+	if calls["small"] != 1 || calls["large"] != 2 {
+		t.Fatalf("content reader calls = %#v", calls)
+	}
+}
+
+func TestDerivedSearchScoreStaysBelowParent(t *testing.T) {
+	for _, proposed := range []float64{1, 10, 100} {
+		if got := derivedSearchScore(10, proposed); got >= 10 {
+			t.Fatalf("derived score %v was not below parent", got)
+		}
+	}
+}
+
+func TestSearchRelationshipCanPrecedeWeakFileDiversity(t *testing.T) {
+	selected := []searchCandidate{{result: SearchResult{FilePath: "src/a.go", StartLine: 1, EndLine: 3}}}
+	perFile := map[string]int{"src/a.go": 1}
+	perSymbol := map[string]int{}
+	perBase := map[string]int{}
+	related := searchCandidate{score: 10, result: SearchResult{FilePath: "src/a.go", StartLine: 20, EndLine: 22, Signals: []string{"symbol-usage"}}}
+	unseen := searchCandidate{score: 10, result: SearchResult{FilePath: "src/b.go", StartLine: 1, EndLine: 3}}
+	if shouldReserveUnseenSearchFile([]searchCandidate{related, unseen}, selected, perFile, perSymbol, perBase, 3) {
+		t.Fatal("strong causal relationship was incorrectly delayed for file diversity")
+	}
+	related.score = 6
+	if !shouldReserveUnseenSearchFile([]searchCandidate{related, unseen}, selected, perFile, perSymbol, perBase, 3) {
+		t.Fatal("weak causal relationship incorrectly displaced a stronger unseen file")
+	}
+}
+
+func TestSearchPrioritizesExecutableIdentifierConsumers(t *testing.T) {
+	definitionPath, consumerPath, testPath := "src/snippets.ts", "src/index.ts", "src/__tests__/snippets.spec.ts"
+	definition := SymbolRecord{ID: "definition", Name: "modernChunkLegacyGuard", FilePath: definitionPath, StartLine: 1, EndLine: 1}
+	consumer := SymbolRecord{ID: "consumer", Name: "renderChunk", Kind: "method", FilePath: consumerPath, StartLine: 1, EndLine: 3}
+	contents := map[string]string{
+		definitionPath: "export const modernChunkLegacyGuard = guard\n",
+		consumerPath:   "renderChunk(chunk) {\n  prepend(modernChunkLegacyGuard)\n}\n",
+		testPath:       "import { modernChunkLegacyGuard } from '../snippets'\nexpect(modernChunkLegacyGuard).toBeTruthy()\n",
+	}
+	got := expandIdentifierUsageCandidates(
+		t.Context(),
+		[]searchCandidate{{score: 30, result: SearchResult{SymbolID: definition.ID}}}, buildSearchQuery("legacy guard consumer"),
+		map[string]SymbolRecord{definition.ID: definition}, map[string][]SymbolRecord{consumerPath: {consumer}},
+		func(path string) (string, bool) { content, ok := contents[path]; return content, ok },
+		map[string]string{definitionPath: "typescript", consumerPath: "typescript", testPath: "typescript"},
+		SearchOptions{ContextLines: 2, MaxSnippetLines: 20},
+	)
+	if len(got) == 0 || got[0].result.FilePath != consumerPath || got[0].result.FocusLine != 2 {
+		t.Fatalf("top executable consumer = %#v", got)
+	}
+	for _, candidate := range got {
+		if candidate.result.FilePath == testPath && candidate.result.FocusLine == 1 {
+			t.Fatalf("import was emitted as a consumer: %#v", got)
+		}
+	}
+}
+
+func TestSearchBridgesNearbyStrongRegions(t *testing.T) {
+	const filePath = "src/scheduler.ts"
+	content := "function enqueue() {\n  return pending\n}\nfunction dispatchDue() {\n  advanceBeforeRun()\n}\nfunction runOne() {\n  return execute()\n}\n"
+	left := SymbolRecord{ID: "enqueue", Name: "enqueue", Kind: "function", FilePath: filePath, StartLine: 1, EndLine: 3}
+	right := SymbolRecord{ID: "run", Name: "runOne", Kind: "function", FilePath: filePath, StartLine: 7, EndLine: 9}
+	got := expandSameFileBridgeCandidates(
+		t.Context(),
+		[]searchCandidate{{score: 30, result: SearchResult{FilePath: filePath, StartLine: 1, EndLine: 3, SymbolID: left.ID, Kind: left.Kind}}, {score: 20, result: SearchResult{FilePath: filePath, StartLine: 7, EndLine: 9, SymbolID: right.ID, Kind: right.Kind}}},
+		buildSearchQuery("scheduled automation run"), map[string][]SymbolRecord{filePath: {left, right}},
+		func(path string) (string, bool) { return content, path == filePath }, map[string]string{filePath: "typescript"},
+		SearchOptions{TopK: 20, MaxSnippetLines: 40},
+	)
+	if len(got) != 1 || got[0].result.StartLine != 4 || got[0].result.EndLine != 9 || !containsString(got[0].result.Signals, "same-file-bridge") {
+		t.Fatalf("bridge expansion = %#v", got)
+	}
+}
+
+func TestSearchExpandsAdjacentLifecycleStage(t *testing.T) {
+	const filePath = "src/scheduler.ts"
+	content := "class Scheduler {\n  tick() {\n    return ready\n  }\n  dispatchDue() {\n    return runOne()\n  }\n}\n"
+	tick := SymbolRecord{ID: "tick", Name: "tick", Kind: "method", FilePath: filePath, ContainerID: "scheduler", StartLine: 2, EndLine: 4}
+	dispatch := SymbolRecord{ID: "dispatch", Name: "dispatchDue", Kind: "method", FilePath: filePath, ContainerID: "scheduler", StartLine: 5, EndLine: 7}
+	got := expandSameContainerNeighborCandidates(
+		t.Context(),
+		[]searchCandidate{{score: 30, result: SearchResult{FilePath: filePath, StartLine: 2, EndLine: 4, SymbolID: tick.ID, Kind: tick.Kind}}},
+		buildSearchQuery("scheduled automation tick"), map[string]SymbolRecord{tick.ID: tick}, map[string][]SymbolRecord{filePath: {tick, dispatch}},
+		func(path string) (string, bool) { return content, path == filePath }, map[string]string{filePath: "typescript"},
+		SearchOptions{TopK: 20, ContextLines: 2, MaxSnippetLines: 20},
+	)
+	if len(got) != 1 || got[0].result.StartLine != 5 || got[0].result.SymbolName != "dispatchDue" || !containsString(got[0].result.Signals, "same-container-neighbor") {
+		t.Fatalf("neighbor expansion = %#v", got)
+	}
+}
+
 func TestSearchRepositoryRejectsStopWordsOnly(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "main.go", "package main\n")
 	_, err := SearchRepository(t.Context(), repo, "test", "the and with", SearchOptions{Worktree: true})
 	if err == nil {
 		t.Fatal("expected an error for a stop-word-only query")
+	}
+}
+
+func TestSearchQueryDropsNarrativeStopWordsBeforePreselection(t *testing.T) {
+	query := buildSearchQuery("automation did not run while computer was asleep")
+	for _, stopWord := range []string{"did", "not", "while"} {
+		if query.termSet[stopWord] {
+			t.Fatalf("narrative stop word %q survived: %#v", stopWord, query.terms)
+		}
+	}
+	for _, meaningful := range []string{"automation", "computer", "asleep"} {
+		if !query.termSet[meaningful] {
+			t.Fatalf("meaningful term %q missing: %#v", meaningful, query.terms)
+		}
 	}
 }
 
@@ -390,6 +754,57 @@ func NeedleTarget() bool { return true }
 	}
 }
 
+func TestDefaultSearchIndexedFilesScalesWithRequestedDepth(t *testing.T) {
+	tests := []struct {
+		topK int
+		want int
+	}{
+		{topK: 1, want: defaultSearchMaxIndexedFiles},
+		{topK: defaultSearchTopK, want: defaultSearchMaxIndexedFiles},
+		{topK: 40, want: 120},
+		{topK: 100, want: deepSearchMaxIndexedFiles},
+		{topK: 1_000, want: deepSearchMaxIndexedFiles},
+		{topK: int(^uint(0) >> 1), want: deepSearchMaxIndexedFiles},
+	}
+	for _, test := range tests {
+		if got := defaultSearchIndexedFiles(test.topK); got != test.want {
+			t.Fatalf("defaultSearchIndexedFiles(%d) = %d, want %d", test.topK, got, test.want)
+		}
+	}
+}
+
+func TestSearchRepositoryAppliesAdaptiveAndExplicitFileLimits(t *testing.T) {
+	repo := t.TempDir()
+	for index := 0; index < 130; index++ {
+		write(t, repo, fmt.Sprintf("docs/file_%03d.md", index), "adaptive retrieval needle\n")
+	}
+
+	adaptive, err := SearchRepository(t.Context(), repo, "test", "adaptive retrieval needle", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adaptive.Stats.FilesIndexed != 120 {
+		t.Fatalf("adaptive files indexed = %d, want 120", adaptive.Stats.FilesIndexed)
+	}
+
+	explicit, err := SearchRepository(t.Context(), repo, "test", "adaptive retrieval needle", SearchOptions{
+		Worktree:        true,
+		Profile:         ProfileSyntaxOnly,
+		TopK:            40,
+		MaxIndexedFiles: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Stats.FilesIndexed != 4 {
+		t.Fatalf("explicit files indexed = %d, want 4", explicit.Stats.FilesIndexed)
+	}
+}
+
 func TestSearchRepositoryDoesNotTreatPathPriorAsEvidence(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "src/target.go", "package source\nfunc TargetNeedle() bool { return true }\n")
@@ -466,6 +881,143 @@ func TestSearchRepositoryKeepsFullTermPathOnlyCandidates(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("full-term path-only candidate was dropped: %#v", response.Results)
+	}
+}
+
+func TestCommittedPreselectionRequiresExactFullPreindexForUnboundedCandidates(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	queryText := "alphaaaa bravoooo charlieee deltaaaa echooooo foxtrott golfzzzz hotelzzz indiazzz julietzz kiloaaaa limaaaaa mikeaaaa november oscaraaa papaaaaa quebecaa romeoooo sierraaa tangoaaa"
+	query := buildSearchQuery(queryText)
+	bounded := searchPreselectionPatterns(query)
+	lateTerm := ""
+	for _, term := range query.terms {
+		if query.weights[term] >= 1 && !containsString(bounded, term) {
+			lateTerm = term
+			break
+		}
+	}
+	if lateTerm == "" {
+		t.Fatalf("test query did not produce an expanded term beyond the legacy bounded set: terms=%#v bounded=%#v", query.terms, bounded)
+	}
+	const eligibleFiles = 12
+	for index := 0; index < eligibleFiles; index++ {
+		write(t, repo, fmt.Sprintf("src/match_%02d.go", index), fmt.Sprintf(
+			"package source\n// %s\nfunc Match%d() int { return %d }\n", lateTerm, index, index,
+		))
+	}
+	for index := 0; index < 20; index++ {
+		write(t, repo, fmt.Sprintf("noise/file_%02d.go", index), fmt.Sprintf(
+			"package noise\nfunc Noise%d() int { return %d }\n", index, index,
+		))
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cold, err := SearchRepository(t.Context(), repo, "test", queryText, SearchOptions{
+		Profile: ProfileSyntaxOnly, TopK: 10, MaxIndexedFiles: 1, DisableCache: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cold.Stats.FilesIndexed > 1 {
+		t.Fatalf("cold committed search bypassed MaxIndexedFiles: %#v", cold.Stats)
+	}
+	if cold.Stats.PreselectionBackend != "go-content" || cold.Stats.FilesContentRead == 0 {
+		t.Fatalf("cold committed search did not retain bounded content preselection: %#v", cold.Stats)
+	}
+
+	cacheDir := t.TempDir()
+	if _, hit, err := PreindexProviderSnapshot(t.Context(), repo, "test", ProviderSnapshotOptions{
+		Profile: ProfileSyntaxOnly,
+	}, cacheDir); err != nil {
+		t.Fatal(err)
+	} else if hit {
+		t.Fatal("first preindex unexpectedly hit cache")
+	}
+	warm, err := SearchRepository(t.Context(), repo, "test", queryText, SearchOptions{
+		Profile: ProfileSyntaxOnly, TopK: 10, MaxIndexedFiles: 1, CacheDir: cacheDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warm.Stats.FilesIndexed != eligibleFiles {
+		t.Fatalf("warm committed preselection indexed %d files, want every one of %d eligible files", warm.Stats.FilesIndexed, eligibleFiles)
+	}
+	if warm.Stats.PreselectionBackend != "git-tree-grep" || warm.Stats.PreselectionPasses != 1 ||
+		warm.Stats.PreselectionFilesExamined != warm.Stats.FilesScanned {
+		t.Fatalf("warm Git scan was not represented honestly: %#v", warm.Stats)
+	}
+	if warm.Stats.FilesContentRead != 0 || warm.Stats.QueryFilesRead != eligibleFiles {
+		t.Fatalf("warm committed query did not use batched preselection and bounded hydration: %#v", warm.Stats)
+	}
+	if len(warm.Results) == 0 || !strings.HasPrefix(warm.Results[0].FilePath, "src/match_") {
+		t.Fatalf("expanded-term matches were lost: %#v", warm.Results)
+	}
+}
+
+func TestIdentifierUsagePostingsAvoidRepositoryWideReads(t *testing.T) {
+	definition := SymbolRecord{ID: "definition", Name: "cacheRefreshPolicy", FilePath: "src/policy.ts", StartLine: 1, EndLine: 1}
+	sourcePath := "src/consumer.ts"
+	testPath := "tests/consumer.test.ts"
+	languages := map[string]string{definition.FilePath: "typescript", sourcePath: "typescript", testPath: "typescript"}
+	for index := 0; index < 100; index++ {
+		languages[fmt.Sprintf("noise/file_%03d.ts", index)] = "typescript"
+	}
+	contents := map[string]string{
+		definition.FilePath: "export const cacheRefreshPolicy = 'eager'\n",
+		sourcePath:          "export function applyPolicy() { install(cacheRefreshPolicy) }\n",
+		testPath:            "test('policy', () => expect(cacheRefreshPolicy).toBeTruthy())\n",
+	}
+	reads := 0
+	selector := func(_ context.Context, identifiers []string) ([]string, bool) {
+		if len(identifiers) != 1 || identifiers[0] != definition.Name {
+			t.Fatalf("usage identifiers = %#v", identifiers)
+		}
+		return []string{testPath, definition.FilePath, sourcePath}, true
+	}
+	got := expandIdentifierUsageCandidates(
+		t.Context(), []searchCandidate{{score: 30, result: SearchResult{SymbolID: definition.ID}}},
+		buildSearchQuery("cache refresh policy behavior"), map[string]SymbolRecord{definition.ID: definition}, nil,
+		func(path string) (string, bool) { reads++; content, ok := contents[path]; return content, ok },
+		languages, SearchOptions{ContextLines: 2, MaxSnippetLines: 20}, selector,
+	)
+	if reads != 3 {
+		t.Fatalf("usage postings read %d files, want only the three matched files out of %d", reads, len(languages))
+	}
+	if len(got) < 2 || got[0].result.FilePath != sourcePath || got[1].result.FilePath != testPath {
+		t.Fatalf("query-aware usage ranking = %#v", got)
+	}
+}
+
+func TestSearchPathPriorIsQueryAwareAcrossArtifacts(t *testing.T) {
+	plain := buildSearchQuery("cache refresh policy")
+	explicit := buildSearchQuery("cache refresh policy tests documentation generated")
+	source := searchPathPrior(plain, "src/policy.ts")
+	for _, artifact := range []string{"tests/policy.test.ts", "docs/policy.md", "generated/policy_generated.go"} {
+		if got := searchPathPrior(plain, artifact); got >= source {
+			t.Fatalf("artifact %q prior = %v, want below source prior %v", artifact, got, source)
+		}
+	}
+	for _, artifact := range []string{"tests/policy.test.ts", "docs/policy.md", "generated/policy_generated.go"} {
+		if got := searchPathPrior(explicit, artifact); got != 0 {
+			t.Fatalf("explicit artifact query retained a prior for %q: %v", artifact, got)
+		}
+	}
+	for _, test := range []struct {
+		query    string
+		artifact string
+	}{
+		{query: "cache fixtures", artifact: "fixtures/policy.json"},
+		{query: "cache guides", artifact: "docs/guides/policy.md"},
+		{query: "cache examples", artifact: "docs/examples/policy.md"},
+		{query: "cache generators", artifact: "generated/policy_generated.go"},
+	} {
+		if got := searchPathPrior(buildSearchQuery(test.query), test.artifact); got != 0 {
+			t.Fatalf("plural artifact query %q retained a prior for %q: %v", test.query, test.artifact, got)
+		}
 	}
 }
 
@@ -571,6 +1123,19 @@ func TestSearchGitPreselectionThresholdTargetsLargeWorktrees(t *testing.T) {
 	}
 }
 
+func TestSearchGitGrepPatternsCoverGoUnicodeLoweringOrFallBack(t *testing.T) {
+	patterns, safe := searchGitGrepPatterns([]string{"issueneedle", "kernelneedle"})
+	if !safe {
+		t.Fatal("small Unicode-lowering pattern set unexpectedly required exhaustive fallback")
+	}
+	if !containsString(patterns, "İssueneedle") {
+		t.Fatalf("Git patterns do not cover Go dotted-I lowering: %#v", patterns)
+	}
+	if _, safe := searchGitGrepPatterns([]string{strings.Repeat("i", 20)}); safe {
+		t.Fatal("combinatorial Unicode pattern expansion did not fail closed to exhaustive search")
+	}
+}
+
 func TestScoreSearchPathsStopsDispatchAfterCancellation(t *testing.T) {
 	paths := make([]string, 10_000)
 	for index := range paths {
@@ -636,6 +1201,30 @@ func TestSearchPreselectionPatternsReserveMorphologicalFallbacks(t *testing.T) {
 	}
 	if len(patterns) > 12 {
 		t.Fatalf("preselection pattern count = %d", len(patterns))
+	}
+}
+
+func TestGitGrepPreselectionBoundsLargeRepoPatternFanout(t *testing.T) {
+	patterns := searchGitGrepPreselectionPatterns(buildSearchQuery(
+		"scheduled automation computer asleep misleading status catchup durable project memory",
+	))
+	if len(patterns) != 6 {
+		t.Fatalf("git-grep patterns = %#v, want six", patterns)
+	}
+	for _, meaningful := range []string{"automation", "scheduled", "computer"} {
+		if !containsString(patterns, meaningful) {
+			t.Fatalf("high-priority term %q missing: %#v", meaningful, patterns)
+		}
+	}
+	derived := false
+	query := buildSearchQuery("scheduled automation computer asleep misleading status catchup durable project memory")
+	for _, pattern := range patterns {
+		if weight, exists := query.weights[pattern]; exists && weight > 0 && weight < 1 {
+			derived = true
+		}
+	}
+	if !derived {
+		t.Fatalf("git-grep cap dropped every morphological fallback: %#v", patterns)
 	}
 }
 
@@ -726,6 +1315,43 @@ func TestDiverseSelectionDoesNotSpendBudgetOnClones(t *testing.T) {
 	selected := selectDiverseCandidates(candidates, 2, 3)
 	if len(selected) != 2 || selected[1].result.SymbolName != "implementation" {
 		t.Fatalf("clone consumed diversity budget: %#v", selected)
+	}
+}
+
+func TestDiverseSelectionCoversFilesBeforeAddingRegions(t *testing.T) {
+	candidates := []searchCandidate{
+		{score: 10, result: SearchResult{FilePath: "src/large.go", StartLine: 1, EndLine: 10, SymbolName: "first"}},
+		{score: 9.9, result: SearchResult{FilePath: "src/large.go", StartLine: 30, EndLine: 40, SymbolName: "second"}},
+		{score: 9.8, result: SearchResult{FilePath: "src/large.go", StartLine: 60, EndLine: 70, SymbolName: "third"}},
+		{score: 8, result: SearchResult{FilePath: "src/related.go", StartLine: 1, EndLine: 10, SymbolName: "related"}},
+	}
+	selected := selectDiverseCandidates(candidates, 3, 3)
+	if len(selected) != 3 {
+		t.Fatalf("selected %d candidates, want 3", len(selected))
+	}
+	if selected[0].result.FilePath != "src/large.go" || selected[1].result.FilePath != "src/related.go" {
+		t.Fatalf("first discovery pass did not cover distinct files: %#v", selected)
+	}
+	if selected[2].result.SymbolName != "second" {
+		t.Fatalf("second region was not restored after file coverage: %#v", selected)
+	}
+}
+
+func TestDiverseSelectionDoesNotBuryExactSameFileUsages(t *testing.T) {
+	candidates := []searchCandidate{
+		{score: 88, result: SearchResult{FilePath: "src/snippets.ts", StartLine: 1, EndLine: 5, SymbolName: "guardDefinition"}},
+		{score: 58, result: SearchResult{FilePath: "src/snippets.ts", StartLine: 20, EndLine: 25, SymbolName: "guardUsageOne"}},
+		{score: 40, result: SearchResult{FilePath: "src/snippets.ts", StartLine: 40, EndLine: 45, SymbolName: "guardUsageTwo"}},
+		{score: 10, result: SearchResult{FilePath: "src/unrelated.ts", StartLine: 1, EndLine: 5, SymbolName: "fragment"}},
+	}
+	selected := selectDiverseCandidates(candidates, 4, 3)
+	if len(selected) != 4 {
+		t.Fatalf("selected %d candidates, want 4", len(selected))
+	}
+	for index, want := range []string{"guardDefinition", "guardUsageOne", "guardUsageTwo"} {
+		if selected[index].result.SymbolName != want {
+			t.Fatalf("rank %d = %q, want %q: %#v", index+1, selected[index].result.SymbolName, want, selected)
+		}
 	}
 }
 
@@ -843,4 +1469,168 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestExpandGraphCandidatesSkipsOutOfRangeSymbolLines(t *testing.T) {
+	seeds := []searchCandidate{{
+		result: SearchResult{SymbolID: "seed", FilePath: "seed.go"},
+		score:  5,
+	}}
+	relations := []RelationRecord{{
+		FromID:     "seed",
+		ToID:       "target",
+		Type:       "CALLS",
+		Confidence: 1.0,
+	}}
+	symbolsByID := map[string]SymbolRecord{
+		"seed":   {ID: "seed", Name: "Seed", FilePath: "seed.go", StartLine: 1, EndLine: 3},
+		"target": {ID: "target", Name: "Target", FilePath: "target.go", StartLine: 100, EndLine: 101},
+	}
+	read := func(path string) (string, bool) {
+		if path == "target.go" {
+			return "line1\nline2\nline3", true
+		}
+		return "", false
+	}
+	options := SearchOptions{MaxRegionLines: 40, MaxSnippetLines: 40}
+
+	// Pre-fix, clampRegion returns (0,0) for the out-of-range target and the
+	// unguarded lines[snippetStart-1:snippetEnd] slice panics with
+	// "slice bounds out of range [-1:]".
+	out := expandGraphCandidates(seeds, searchQuery{}, relations, symbolsByID, read, nil, options)
+
+	for _, candidate := range out {
+		if candidate.result.SymbolID == "target" {
+			t.Fatalf("expected out-of-range target candidate to be skipped, got %+v", candidate.result)
+		}
+	}
+}
+
+func TestExpandGraphCandidatesIncludesInRangeSymbol(t *testing.T) {
+	seeds := []searchCandidate{{
+		result: SearchResult{SymbolID: "seed", FilePath: "seed.go"},
+		score:  5,
+	}}
+	relations := []RelationRecord{{
+		FromID:     "seed",
+		ToID:       "target",
+		Type:       "CALLS",
+		Confidence: 1.0,
+	}}
+	symbolsByID := map[string]SymbolRecord{
+		"seed":   {ID: "seed", Name: "Seed", FilePath: "seed.go", StartLine: 1, EndLine: 3},
+		"target": {ID: "target", Name: "Target", FilePath: "target.go", StartLine: 2, EndLine: 3},
+	}
+	read := func(path string) (string, bool) {
+		if path == "target.go" {
+			return "line1\nline2\nline3", true
+		}
+		return "", false
+	}
+	options := SearchOptions{MaxRegionLines: 40, MaxSnippetLines: 40}
+
+	out := expandGraphCandidates(seeds, searchQuery{}, relations, symbolsByID, read, nil, options)
+
+	found := false
+	for _, candidate := range out {
+		if candidate.result.SymbolID == "target" {
+			found = true
+			if candidate.result.Snippet == "" {
+				t.Fatalf("expected in-range target candidate to carry a snippet")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected in-range target candidate to be included, got %d candidates", len(out))
+	}
+}
+
+func TestExpandGraphCandidatesClampsNonPositiveRegionLines(t *testing.T) {
+	seeds := []searchCandidate{{
+		result: SearchResult{SymbolID: "seed", FilePath: "seed.go"},
+		score:  5,
+	}}
+	relations := []RelationRecord{{
+		FromID:     "seed",
+		ToID:       "target",
+		Type:       "CALLS",
+		Confidence: 1.0,
+	}}
+	symbolsByID := map[string]SymbolRecord{
+		"seed":   {ID: "seed", Name: "Seed", FilePath: "seed.go", StartLine: 1, EndLine: 3},
+		"target": {ID: "target", Name: "Target", FilePath: "target.go", StartLine: 2, EndLine: 3},
+	}
+	read := func(path string) (string, bool) {
+		if path == "target.go" {
+			return "line1\nline2\nline3", true
+		}
+		return "", false
+	}
+
+	for _, maxRegionLines := range []int{-1, 0} {
+		// Pre-clamp, MaxRegionLines <= -1 shrinks end below start
+		// (end = start+MaxRegionLines-1) and the snippet slice panics with
+		// "slice bounds out of range" (low > high).
+		options := SearchOptions{MaxRegionLines: maxRegionLines, MaxSnippetLines: -1}
+		out := expandGraphCandidates(seeds, searchQuery{}, relations, symbolsByID, read, nil, options)
+
+		found := false
+		for _, candidate := range out {
+			if candidate.result.SymbolID == "target" {
+				found = true
+				if candidate.result.SnippetEndLine < candidate.result.SnippetStartLine {
+					t.Fatalf("MaxRegionLines=%d produced inverted snippet region %d-%d",
+						maxRegionLines, candidate.result.SnippetStartLine, candidate.result.SnippetEndLine)
+				}
+				if candidate.result.Snippet == "" {
+					t.Fatalf("MaxRegionLines=%d: expected target candidate to carry a snippet", maxRegionLines)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("MaxRegionLines=%d: expected in-range target candidate to be included, got %d candidates",
+				maxRegionLines, len(out))
+		}
+	}
+}
+
+// TestSearchRepositorySurvivesMaxSnippetLinesOne is a regression test for the
+// --max-snippet-lines 1 crash: a same-container-neighbor result's FocusLine was set
+// to neighbor.StartLine even when the emitted region (truncated by the tiny snippet
+// budget) no longer contained it, so SearchResponse.Validate rejected the whole
+// response with "invalid search result at rank N".
+func TestSearchRepositorySurvivesMaxSnippetLinesOne(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "flow.go", `package flow
+
+func alphaUniqueFocusTerm() {
+	println("alpha")
+}
+
+func beta() {
+	println("beta")
+}
+
+func gamma() {
+	println("gamma")
+}
+`)
+
+	response, err := SearchRepository(t.Context(), repo, "test", "alphaUniqueFocusTerm", SearchOptions{
+		Worktree:        true,
+		Profile:         ProfileSyntaxOnly,
+		TopK:            5,
+		MaxSnippetLines: 1,
+	})
+	if err != nil {
+		t.Fatalf("SearchRepository with MaxSnippetLines=1 returned error: %v", err)
+	}
+	if err := response.Validate(); err != nil {
+		t.Fatalf("MaxSnippetLines=1 produced an invalid response: %v", err)
+	}
+	for _, result := range response.Results {
+		if result.FocusLine < result.StartLine || result.FocusLine > result.EndLine {
+			t.Fatalf("result has out-of-range FocusLine: %#v", result)
+		}
+	}
 }

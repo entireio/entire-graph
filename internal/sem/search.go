@@ -21,12 +21,27 @@ import (
 const (
 	defaultSearchTopK              = 20
 	defaultSearchContextLines      = 8
-	defaultSearchMaxRegionLines    = 120
+	defaultSearchMaxRegionLines    = 80
 	defaultSearchMaxSnippetLines   = 40
 	defaultSearchMaxRegionsPerFile = 3
 	defaultSearchMaxIndexedFiles   = 96
+	deepSearchMaxIndexedFiles      = 256
+	searchIndexedFilesPerResult    = 3
 	maxSearchQueryTerms            = 48
 	minGitGrepPreselectionFiles    = 10_000
+	sparseSearchChunkStrideLines   = 60
+	sparseSearchRRFConstant        = 60
+	sparseSearchFileRankWeight     = 2
+	deepSearchSparseNumerator      = 5
+	deepSearchSparseDenominator    = 8
+	deepSearchSemanticHeadDivisor  = 32
+	maxDeepSearchSemanticHead      = 10
+	maxSparseSearchQueryTerms      = 64
+	maxSparseSearchFileBytes       = 2 * 1024 * 1024
+	maxSearchContentCacheBytes     = 32 * 1024 * 1024
+	maxSearchContentCacheFileBytes = 2 * 1024 * 1024
+	searchDiversityRelevanceRatio  = 0.75
+	maxSearchGitGrepPatterns       = 4096
 )
 
 // SearchOptions controls local issue-to-code retrieval. Search reads the same
@@ -70,12 +85,30 @@ type SearchResult struct {
 }
 
 type SearchStats struct {
-	FilesScanned       int   `json:"files_scanned"`
+	FilesScanned                   int    `json:"files_scanned"`
+	PreselectionBackend            string `json:"preselection_backend,omitempty"`
+	PreselectionPasses             int    `json:"preselection_passes,omitempty"`
+	PreselectionFilesExamined      int    `json:"preselection_files_examined,omitempty"`
+	UsagePreselectionBackend       string `json:"identifier_usage_preselection_backend,omitempty"`
+	UsagePreselectionPasses        int    `json:"identifier_usage_preselection_passes,omitempty"`
+	UsagePreselectionFilesExamined int    `json:"identifier_usage_preselection_files_examined,omitempty"`
+	// Content-read counters report blobs hydrated into the Go process. Git's
+	// own immutable-tree scans are represented by the backend/pass/examined
+	// counters above; their internal byte IO is deliberately not estimated.
 	FilesContentRead   int   `json:"files_content_read_during_preselection"`
+	QueryFilesRead     int   `json:"files_content_read_during_query"`
+	QueryBytesRead     int64 `json:"bytes_content_read_during_query"`
+	UsageFilesRead     int   `json:"files_content_read_for_identifier_usage,omitempty"`
+	UsageBytesRead     int64 `json:"bytes_content_read_for_identifier_usage,omitempty"`
 	FilesIndexed       int   `json:"files_indexed"`
 	SymbolsConsidered  int   `json:"symbols_considered"`
 	LexicalCandidates  int   `json:"lexical_candidates"`
 	GraphCandidates    int   `json:"graph_candidates"`
+	IdentifierUsages   int   `json:"identifier_usage_candidates,omitempty"`
+	NeighborCandidates int   `json:"same_container_neighbor_candidates,omitempty"`
+	BridgeCandidates   int   `json:"same_file_bridge_candidates,omitempty"`
+	SparseCandidates   int   `json:"sparse_candidates"`
+	SparseFilesRead    int   `json:"sparse_files_content_read"`
 	CandidatesSelected int   `json:"candidates_selected"`
 	ResultBytes        int   `json:"result_bytes"`
 	ContextBudgetBytes int   `json:"context_budget_bytes,omitempty"`
@@ -83,19 +116,26 @@ type SearchStats struct {
 	SnippetsTruncated  int   `json:"snippets_truncated_by_budget,omitempty"`
 	IndexCacheHit      bool  `json:"index_cache_hit"`
 	IndexLatencyMS     int64 `json:"index_latency_ms"`
+	QueryLatencyMS     int64 `json:"query_latency_ms"`
+	TotalLatencyMS     int64 `json:"total_latency_ms"`
+	// SearchLatencyMS is retained as the backwards-compatible name for total
+	// retrieval latency. New consumers should use TotalLatencyMS and the
+	// separate preselection, index, and query phases.
 	SearchLatencyMS    int64 `json:"search_latency_ms"`
 	PreselectLatencyMS int64 `json:"preselect_latency_ms"`
 }
 
 type SearchResponse struct {
-	Query    string            `json:"query"`
-	RepoRoot string            `json:"repo_root"`
-	Commit   string            `json:"commit,omitempty"`
-	Tree     string            `json:"tree,omitempty"`
-	Profile  string            `json:"profile"`
-	Results  []SearchResult    `json:"results"`
-	Stats    SearchStats       `json:"stats"`
-	Warnings []ProviderWarning `json:"warnings"`
+	Query           string             `json:"query"`
+	RepoRoot        string             `json:"repo_root"`
+	Commit          string             `json:"commit,omitempty"`
+	Tree            string             `json:"tree,omitempty"`
+	Profile         string             `json:"profile"`
+	Results         []SearchResult     `json:"results"`
+	Stats           SearchStats        `json:"stats"`
+	Warnings        []ProviderWarning  `json:"warnings"`
+	PartialFailures []PartialFailure   `json:"partial_failures"`
+	Completeness    CompletenessReport `json:"completeness"`
 }
 
 type searchQuery struct {
@@ -113,18 +153,68 @@ type searchCandidate struct {
 	score      float64
 }
 
+type searchContentReadTracker struct {
+	read  contentReader
+	files int
+	bytes int64
+}
+
+func (tracker *searchContentReadTracker) Read(path string) (string, bool) {
+	content, ok := tracker.read(path)
+	if ok {
+		tracker.files++
+		tracker.bytes += int64(len(content))
+	}
+	return content, ok
+}
+
+func cachedContentReader(read contentReader) contentReader {
+	type entry struct {
+		content string
+		ok      bool
+	}
+	cache := map[string]entry{}
+	cachedBytes := 0
+	return func(path string) (string, bool) {
+		if cached, exists := cache[path]; exists {
+			return cached.content, cached.ok
+		}
+		content, ok := read(path)
+		if len(content) <= maxSearchContentCacheFileBytes && cachedBytes+len(content) <= maxSearchContentCacheBytes {
+			cache[path] = entry{content: content, ok: ok}
+			cachedBytes += len(content)
+		}
+		return content, ok
+	}
+}
+
 var searchWordPattern = regexp.MustCompile(`[[:alnum:]_./:+#-]+`)
+var sparseSearchWordPattern = regexp.MustCompile(`[[:alpha:]][[:alnum:]_]*|[[:digit:]]+`)
 
 var searchStopWords = map[string]bool{
 	"a": true, "an": true, "and": true, "are": true, "as": true,
-	"at": true, "be": true, "by": true, "can": true, "change": true,
-	"code": true, "does": true, "for": true, "from": true, "how": true,
+	"at": true, "be": true, "but": true, "by": true, "can": true, "change": true,
+	"code": true, "did": true, "does": true, "for": true, "from": true, "how": true,
 	"i": true, "in": true, "into": true, "is": true, "it": true,
-	"make": true, "of": true, "on": true, "or": true, "our": true,
+	"make": true, "not": true, "of": true, "on": true, "or": true, "our": true,
 	"should": true, "support": true, "that": true, "the": true,
 	"this": true, "to": true, "use": true, "uses": true, "using": true,
-	"we": true, "what": true, "when": true, "where": true, "which": true,
+	"we": true, "what": true, "when": true, "where": true, "which": true, "while": true,
 	"with": true, "without": true,
+}
+
+var sparseSearchStopWords = map[string]bool{
+	"a": true, "an": true, "and": true, "are": true, "as": true,
+	"at": true, "be": true, "been": true, "but": true, "by": true,
+	"can": true, "could": true, "do": true, "does": true, "for": true,
+	"from": true, "had": true, "has": true, "have": true, "how": true,
+	"i": true, "if": true, "in": true, "into": true, "is": true,
+	"it": true, "its": true, "may": true, "not": true, "of": true,
+	"on": true, "or": true, "our": true, "should": true, "that": true,
+	"the": true, "their": true, "then": true, "this": true, "to": true,
+	"was": true, "we": true, "were": true, "what": true, "when": true,
+	"where": true, "which": true, "why": true, "will": true, "with": true,
+	"would": true, "you": true, "your": true,
 }
 
 // SearchRepository performs local hybrid lexical/semantic retrieval. It uses
@@ -153,63 +243,139 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		options.MaxRegionsPerFile = defaultSearchMaxRegionsPerFile
 	}
 	if options.MaxIndexedFiles <= 0 {
-		options.MaxIndexedFiles = defaultSearchMaxIndexedFiles
+		options.MaxIndexedFiles = defaultSearchIndexedFiles(options.TopK)
 	}
 	if options.Profile == "" {
 		options.Profile = ProfileSyntaxOnly
 	}
+	sparseQuery := buildSparseSearchQuery(query)
 	searchStarted := time.Now()
-	preselectStarted := time.Now()
-	selection, err := preselectSearchFiles(ctx, repo, q, options)
-	if err != nil {
-		return SearchResponse{}, err
-	}
-	preselectLatency := time.Since(preselectStarted)
-	selectedFiles := selection.files
-	if len(selectedFiles) == 0 {
-		return SearchResponse{
-			Query:    query,
-			RepoRoot: selection.repoRoot,
-			Commit:   selection.commit,
-			Tree:     selection.tree,
-			Profile:  string(options.Profile),
-			Results:  []SearchResult{},
-			Stats: SearchStats{
-				FilesScanned:       selection.filesScanned,
-				FilesContentRead:   selection.filesContentRead,
-				FilesIndexed:       0,
-				ResultBytes:        serializedSearchResultBytes([]SearchResult{}),
-				ContextBudgetBytes: options.MaxContextBytes,
-				PreselectLatencyMS: preselectLatency.Milliseconds(),
-				SearchLatencyMS:    time.Since(searchStarted).Milliseconds(),
-			},
-			Warnings: selection.warnings,
-		}, nil
-	}
-
-	snapshotOptions := ProviderSnapshotOptions{
+	baseSnapshotOptions := ProviderSnapshotOptions{
 		NoNetwork:     true,
 		Worktree:      options.Worktree,
 		IgnoreFiles:   options.IgnoreFiles,
 		IncludeFiles:  options.IncludeFiles,
 		MaxParseBytes: options.MaxParseBytes,
 		Profile:       options.Profile,
-		OnlyFiles:     selectedFiles,
 	}
+	var preindexedSnapshot ProviderSnapshot
+	preindexCacheHit := false
 	indexStarted := time.Now()
-	snapshot, cacheHit, err := loadOrBuildSearchSnapshot(ctx, repo, providerVersion, snapshotOptions, options.CacheDir, options.DisableCache)
+	if !options.Worktree && !options.DisableCache {
+		var err error
+		preindexedSnapshot, preindexCacheHit, err = loadCachedCompleteSearchSnapshot(
+			ctx, repo, providerVersion, baseSnapshotOptions, options.CacheDir,
+		)
+		if err != nil {
+			return SearchResponse{}, err
+		}
+	}
+	preindexLoadLatency := time.Since(indexStarted)
+	preselectStarted := time.Now()
+	selection, err := preselectSearchFiles(
+		ctx, repo, q, sparseQuery, options, preindexedSnapshot, preindexCacheHit,
+	)
 	if err != nil {
 		return SearchResponse{}, err
 	}
-	indexLatency := time.Since(indexStarted)
+	preselectLatency := time.Since(preselectStarted)
+	selectedFiles := selection.files
+	if len(selectedFiles) == 0 {
+		// A no-hit query still reports the health of an already-preindexed HEAD
+		// graph. Do not build a cold graph merely to return no results, but do
+		// preserve cached partial failures/completeness and cache-hit provenance.
+		cachedSnapshot, cacheHit := preindexedSnapshot, preindexCacheHit
+		// Tree, not commit, is what determines whether the graph is still valid:
+		// two different commits sharing a tree parse identically, so only a tree
+		// change mid-search is a real race worth rejecting.
+		if cacheHit && selection.commit != "" && cachedSnapshot.Header.Tree != selection.tree {
+			return SearchResponse{}, errors.New("repository HEAD changed during search; retry against a stable commit")
+		}
+		totalLatency := time.Since(searchStarted).Milliseconds()
+		repoRoot, commit, tree := selection.repoRoot, selection.commit, selection.tree
+		warnings := selection.warnings
+		partialFailures := []PartialFailure{}
+		completeness := CompletenessReport{Languages: map[string]LanguageCompleteness{}, Relations: map[string]int{}}
+		symbolsConsidered := 0
+		if cacheHit {
+			repoRoot = cachedSnapshot.Header.RepoRoot
+			commit = cachedSnapshot.Header.Commit
+			tree = cachedSnapshot.Header.Tree
+			warnings = cachedSnapshot.Header.Warnings
+			partialFailures = cachedSnapshot.Header.PartialFailures
+			if partialFailures == nil {
+				partialFailures = []PartialFailure{}
+			}
+			completeness = cachedSnapshot.Header.Completeness
+			symbolsConsidered = len(cachedSnapshot.Symbols)
+		}
+		return SearchResponse{
+			Query:    query,
+			RepoRoot: repoRoot,
+			Commit:   commit,
+			Tree:     tree,
+			Profile:  string(options.Profile),
+			Results:  []SearchResult{},
+			Stats: SearchStats{
+				FilesScanned:              selection.filesScanned,
+				PreselectionBackend:       selection.preselectionBackend,
+				PreselectionPasses:        selection.preselectionPasses,
+				PreselectionFilesExamined: selection.preselectionFilesExamined,
+				FilesContentRead:          selection.filesContentRead,
+				FilesIndexed:              0,
+				SymbolsConsidered:         symbolsConsidered,
+				ResultBytes:               serializedSearchResultBytes([]SearchResult{}),
+				ContextBudgetBytes:        options.MaxContextBytes,
+				IndexCacheHit:             cacheHit,
+				IndexLatencyMS:            preindexLoadLatency.Milliseconds(),
+				PreselectLatencyMS:        preselectLatency.Milliseconds(),
+				TotalLatencyMS:            totalLatency,
+				SearchLatencyMS:           totalLatency,
+			},
+			Warnings:        warnings,
+			PartialFailures: partialFailures,
+			Completeness:    completeness,
+		}, nil
+	}
+
+	// The provider graph and the lexical query scope are independent. A full
+	// graph gives relation expansion repository-wide context, while only the
+	// preselected files need content hydration for this query.
+	onlyFiles := selectedFiles
+	if options.IndexAllFiles || len(selectedFiles) == selection.filesScanned {
+		// Canonicalize complete snapshots to the query-independent cache key so
+		// `graph index` and all-files search share one durable artifact.
+		onlyFiles = nil
+	}
+	snapshotOptions := baseSnapshotOptions
+	snapshotOptions.OnlyFiles = onlyFiles
+	snapshot, cacheHit := preindexedSnapshot, preindexCacheHit
+	indexLatency := preindexLoadLatency
+	if !cacheHit {
+		indexStarted = time.Now()
+		snapshot, cacheHit, err = loadOrBuildSearchGraphSnapshot(ctx, repo, providerVersion, snapshotOptions, options.CacheDir, options.DisableCache)
+		if err != nil {
+			return SearchResponse{}, err
+		}
+		indexLatency += time.Since(indexStarted)
+	}
+	// See the analogous no-hit guard above: tree identity is what matters here.
+	if selection.commit != "" && snapshot.Header.Tree != selection.tree {
+		return SearchResponse{}, errors.New("repository HEAD changed during search; retry against a stable commit")
+	}
+	queryStarted := time.Now()
 	useHead := !options.Worktree && snapshot.Header.Commit != ""
-	_, read, _, closeSource, err := openSource(ctx, repo, useHead, options.IgnoreFiles, options.IncludeFiles)
+	read, closeSource, err := openSearchContentReader(
+		ctx, repo, snapshot.Header.Commit, useHead, options.IgnoreFiles, options.IncludeFiles,
+	)
 	if err != nil {
 		return SearchResponse{}, err
 	}
 	if closeSource != nil {
 		defer closeSource()
 	}
+	queryReads := &searchContentReadTracker{read: read}
+	read = cachedContentReader(queryReads.Read)
 
 	symbolsByFile := make(map[string][]SymbolRecord)
 	symbolsByID := make(map[string]SymbolRecord, len(snapshot.Symbols))
@@ -233,7 +399,14 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 
 	fileDF := make(map[string]int, len(q.terms))
+	sparseDF := selection.sparseDF
+	if sparseDF == nil {
+		sparseDF = make(map[string]int, len(sparseQuery.terms))
+	}
+	sparseDocumentCount := selection.sparseDocumentCount
+	sparseDocumentLength := selection.sparseDocumentLength
 	var candidates []searchCandidate
+	sparseCandidates := append([]searchCandidate(nil), selection.sparseCandidates...)
 	for _, filePath := range selectedFiles {
 		if err := ctx.Err(); err != nil {
 			return SearchResponse{}, err
@@ -254,25 +427,136 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 			q, filePath, fileLanguages[filePath], lines, symbolsByFile[filePath], options,
 		)...)
 	}
+	sparseFilesRead := selection.sparseFilesContentRead
+	if options.TopK > defaultSearchTopK && len(sparseQuery.terms) > 0 {
+		for _, filePath := range selection.sparseFiles {
+			if selection.sparsePrecomputedFiles[filePath] {
+				continue
+			}
+			if err := ctx.Err(); err != nil {
+				return SearchResponse{}, err
+			}
+			content, ok := read(filePath)
+			sparseFilesRead++
+			if !ok || len(content) > maxSparseSearchFileBytes || strings.IndexByte(content, 0) >= 0 {
+				continue
+			}
+			lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+			if len(lines) == 1 && lines[0] == "" {
+				continue
+			}
+			language := ""
+			if spec, detected := languageForContent(filePath, content); detected {
+				language = spec.language
+			}
+			fileSparse, documentCount, documentLength := sparseCandidatesForFile(
+				sparseQuery, filePath, language, lines, options,
+			)
+			sparseCandidates = append(sparseCandidates, fileSparse...)
+			sparseDocumentCount += documentCount
+			sparseDocumentLength += documentLength
+			for _, candidate := range fileSparse {
+				for term := range candidate.termCounts {
+					sparseDF[term]++
+				}
+			}
+		}
+		if len(selection.sparseFiles) > 0 && len(selection.sparseFiles) < selection.filesScanned {
+			sparseDocumentCount = scaleSearchCorpusValue(
+				sparseDocumentCount, selection.filesScanned, len(selection.sparseFiles),
+			)
+			sparseDocumentLength = scaleSearchCorpusValue(
+				sparseDocumentLength, selection.filesScanned, len(selection.sparseFiles),
+			)
+		}
+	}
 
 	stats := SearchStats{
-		FilesScanned:       selection.filesScanned,
-		FilesContentRead:   selection.filesContentRead,
-		FilesIndexed:       len(selectedFiles),
-		SymbolsConsidered:  len(snapshot.Symbols),
-		LexicalCandidates:  len(candidates),
-		IndexCacheHit:      cacheHit,
-		IndexLatencyMS:     indexLatency.Milliseconds(),
-		PreselectLatencyMS: preselectLatency.Milliseconds(),
+		FilesScanned:              selection.filesScanned,
+		PreselectionBackend:       selection.preselectionBackend,
+		PreselectionPasses:        selection.preselectionPasses,
+		PreselectionFilesExamined: selection.preselectionFilesExamined,
+		FilesContentRead:          selection.filesContentRead,
+		FilesIndexed:              len(selectedFiles),
+		SymbolsConsidered:         len(snapshot.Symbols),
+		LexicalCandidates:         len(candidates),
+		SparseCandidates:          len(sparseCandidates),
+		SparseFilesRead:           sparseFilesRead,
+		IndexCacheHit:             cacheHit,
+		IndexLatencyMS:            indexLatency.Milliseconds(),
+		PreselectLatencyMS:        preselectLatency.Milliseconds(),
 	}
-	scoreSearchCandidates(candidates, q, fileDF, maxInt(1, len(selectedFiles)))
+	// Graph centrality: inbound CALLS/IMPLEMENTS degree per symbol. Implementation code is called
+	// by many sites; leaf/trait-dispatch/trivial methods (and most test helpers) are not. Ranking
+	// with this signal lets the real fix site outrank a flood of common-named leaves — the graph
+	// already resolves the callers, search just wasn't using them (field feedback: search behaved
+	// like keyword BM25 with graph_candidates:0, ranking tests/leaves over the implementation).
+	// Requires CALLS in the snapshot (profile fast/full); empty at syntax-only, so the bonus no-ops.
+	inboundDegree := make(map[string]int)
+	for _, rel := range snapshot.Relations {
+		switch rel.Type {
+		case "CALLS", "ASYNC_CALLS", "IMPLEMENTS", "OVERRIDES":
+			if rel.ToID != "" {
+				inboundDegree[rel.ToID]++
+			}
+		}
+	}
+	scoreSearchCandidates(candidates, q, fileDF, maxInt(1, len(selectedFiles)), inboundDegree)
 	sortSearchCandidates(candidates)
 
-	graphCandidates := expandGraphCandidates(candidates, snapshot.Relations, symbolsByID, read, fileLanguages, options)
+	graphCandidates := expandGraphCandidates(candidates, q, snapshot.Relations, symbolsByID, read, fileLanguages, options)
 	stats.GraphCandidates = len(graphCandidates)
 	candidates = append(candidates, graphCandidates...)
 	sortSearchCandidates(candidates)
-	selected := selectDiverseCandidates(candidates, options.TopK, options.MaxRegionsPerFile)
+	expansionSeeds := append([]searchCandidate(nil), candidates...)
+	usageFilesBefore := queryReads.files
+	usageBytesBefore := queryReads.bytes
+	usagePreselection := searchScanTelemetry{}
+	identifierUsages := expandIdentifierUsageCandidates(
+		ctx, expansionSeeds, q, symbolsByID, symbolsByFile, read, fileLanguages, options,
+		committedUsageFileSelector(
+			repo, selection.commit, useHead, fileLanguages, options.TopK, selection.filesScanned, &usagePreselection,
+		),
+	)
+	usageFilesRead := queryReads.files - usageFilesBefore
+	usageBytesRead := queryReads.bytes - usageBytesBefore
+	if err := ctx.Err(); err != nil {
+		return SearchResponse{}, err
+	}
+	stats.IdentifierUsages = len(identifierUsages)
+	stats.UsagePreselectionBackend = usagePreselection.backend
+	stats.UsagePreselectionPasses = usagePreselection.passes
+	stats.UsagePreselectionFilesExamined = usagePreselection.filesExamined
+	neighbors := expandSameContainerNeighborCandidates(ctx, expansionSeeds, q, symbolsByID, symbolsByFile, read, fileLanguages, options)
+	if err := ctx.Err(); err != nil {
+		return SearchResponse{}, err
+	}
+	stats.NeighborCandidates = len(neighbors)
+	bridges := expandSameFileBridgeCandidates(ctx, expansionSeeds, q, symbolsByFile, read, fileLanguages, options)
+	if err := ctx.Err(); err != nil {
+		return SearchResponse{}, err
+	}
+	stats.BridgeCandidates = len(bridges)
+	candidates = append(candidates, identifierUsages...)
+	candidates = append(candidates, neighbors...)
+	candidates = append(candidates, bridges...)
+	candidates = dedupeSemanticMirrorCandidates(candidates, q, symbolsByID)
+	sortSearchCandidates(candidates)
+	semantic := selectDiverseCandidates(candidates, options.TopK, options.MaxRegionsPerFile)
+	selected := semantic
+	if len(sparseCandidates) > 0 {
+		attachSparseCandidateSymbols(sparseCandidates, symbolsByFile)
+		scoreSparseCandidates(sparseCandidates, sparseQuery, sparseDF, sparseDocumentCount, sparseDocumentLength)
+		sortSearchCandidates(sparseCandidates)
+		sparseCandidates = dedupeSemanticMirrorCandidates(sparseCandidates, q, symbolsByID)
+		sortSearchCandidates(sparseCandidates)
+		selected = selectHybridCandidates(semantic, sparseCandidates, options.TopK)
+		for index := range selected {
+			selected[index].score = 1 / float64(index+1)
+		}
+	}
+	sparseHydrationReads := hydrateSparseCandidates(selected, read)
+	stats.SparseFilesRead += sparseHydrationReads
 	results := make([]SearchResult, 0, len(selected))
 	for i := range selected {
 		selected[i].result.Rank = i + 1
@@ -288,20 +572,72 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	stats.ContextBudgetBytes = options.MaxContextBytes
 	stats.ResultsDropped = dropped
 	stats.SnippetsTruncated = truncated
-	stats.SearchLatencyMS = time.Since(searchStarted).Milliseconds()
+	// Query and usage counters are disjoint physical reads. Identifier lookups
+	// already satisfied by the shared content cache add zero usage bytes.
+	stats.QueryFilesRead = queryReads.files - usageFilesRead
+	stats.QueryBytesRead = queryReads.bytes - usageBytesRead
+	stats.UsageFilesRead = usageFilesRead
+	stats.UsageBytesRead = usageBytesRead
+	stats.QueryLatencyMS = time.Since(queryStarted).Milliseconds()
+	stats.TotalLatencyMS = time.Since(searchStarted).Milliseconds()
+	stats.SearchLatencyMS = stats.TotalLatencyMS
 	if results == nil {
 		results = []SearchResult{}
 	}
+	partialFailures := snapshot.Header.PartialFailures
+	if partialFailures == nil {
+		partialFailures = []PartialFailure{}
+	}
 	return SearchResponse{
-		Query:    query,
-		RepoRoot: snapshot.Header.RepoRoot,
-		Commit:   snapshot.Header.Commit,
-		Tree:     snapshot.Header.Tree,
-		Profile:  string(options.Profile),
-		Results:  results,
-		Stats:    stats,
-		Warnings: snapshot.Header.Warnings,
+		Query:           query,
+		RepoRoot:        snapshot.Header.RepoRoot,
+		Commit:          snapshot.Header.Commit,
+		Tree:            snapshot.Header.Tree,
+		Profile:         string(options.Profile),
+		Results:         results,
+		Stats:           stats,
+		Warnings:        snapshot.Header.Warnings,
+		PartialFailures: partialFailures,
+		Completeness:    snapshot.Header.Completeness,
 	}, nil
+}
+
+func openSearchContentReader(
+	ctx context.Context,
+	repo, commit string,
+	useHead bool,
+	ignoreFiles, includeFiles []string,
+) (contentReader, func() error, error) {
+	if useHead {
+		batch, err := gitutil.NewBatchFileReader(ctx, repo, commit)
+		if err != nil {
+			return nil, nil, err
+		}
+		read := func(path string) (string, bool) {
+			if strings.Contains(path, "\n") {
+				content, ok, err := gitutil.ShowFile(ctx, repo, commit, path)
+				return content, ok && err == nil
+			}
+			content, ok, err := batch.ReadFile(path)
+			return content, ok && err == nil
+		}
+		return read, batch.Close, nil
+	}
+	_, read, _, closeSource, err := openSource(ctx, repo, "", ignoreFiles, includeFiles)
+	return read, closeSource, err
+}
+
+func defaultSearchIndexedFiles(topK int) int {
+	// Shallow interactive searches keep the original cold-start bound. Deeper
+	// rankings need a wider file pool or preselection becomes the recall limit
+	// before TopK and per-file diversity can take effect.
+	return minInt(
+		deepSearchMaxIndexedFiles,
+		maxInt(
+			defaultSearchMaxIndexedFiles,
+			minInt(topK, deepSearchMaxIndexedFiles)*searchIndexedFilesPerResult,
+		),
+	)
 }
 
 func fitSearchResultsToBudget(results []SearchResult, q searchQuery, budget int) ([]SearchResult, int, int, int) {
@@ -435,16 +771,39 @@ type searchFileCandidate struct {
 }
 
 type searchFileSelection struct {
-	files            []string
-	repoRoot         string
-	commit           string
-	tree             string
-	warnings         []ProviderWarning
-	filesScanned     int
-	filesContentRead int
+	files                     []string
+	sparseFiles               []string
+	sparseCandidates          []searchCandidate
+	sparseDF                  map[string]int
+	sparsePrecomputedFiles    map[string]bool
+	sparseDocumentCount       int
+	sparseDocumentLength      int
+	sparseFilesContentRead    int
+	repoRoot                  string
+	commit                    string
+	tree                      string
+	warnings                  []ProviderWarning
+	filesScanned              int
+	filesContentRead          int
+	preselectionBackend       string
+	preselectionPasses        int
+	preselectionFilesExamined int
 }
 
-func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, options SearchOptions) (searchFileSelection, error) {
+type searchScanTelemetry struct {
+	backend       string
+	passes        int
+	filesExamined int
+}
+
+func preselectSearchFiles(
+	ctx context.Context,
+	repo string,
+	q, sparseQuery searchQuery,
+	options SearchOptions,
+	preindexedSnapshot ProviderSnapshot,
+	preindexCacheHit bool,
+) (searchFileSelection, error) {
 	source, err := prepareSource(ctx, repo, ProviderSnapshotOptions{
 		NoNetwork:    true,
 		Worktree:     options.Worktree,
@@ -458,11 +817,41 @@ func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, optio
 		defer source.close()
 	}
 	selection := searchFileSelection{
-		repoRoot:     source.absRepo,
-		commit:       source.commit,
-		tree:         source.tree,
-		warnings:     append([]ProviderWarning{}, source.warnings...),
-		filesScanned: len(source.paths),
+		repoRoot:                  source.absRepo,
+		commit:                    source.commit,
+		tree:                      source.tree,
+		warnings:                  append([]ProviderWarning{}, source.warnings...),
+		filesScanned:              len(source.paths),
+		preselectionBackend:       "inventory",
+		preselectionPasses:        1,
+		preselectionFilesExamined: len(source.paths),
+		sparseFiles:               append([]string(nil), source.paths...),
+		sparseDF:                  make(map[string]int, len(sparseQuery.terms)),
+		sparsePrecomputedFiles:    make(map[string]bool),
+	}
+	// Interactive committed-tree search can ask Git's optimized object-store
+	// scanner for every eligible content match in one fixed-string batch. Keep
+	// every matched/path-evidenced file: MaxIndexedFiles is a cold selective-
+	// indexing guard, not a retrieval recall cap once the graph is preindexed.
+	// Deeper sparse search retains the exhaustive path until corpus statistics
+	// can be persisted with the preindex.
+	//
+	// Tree identity is what makes the preindexed graph exact for source's
+	// current HEAD; the grep below runs against source.commit directly, so a
+	// same-tree preindex built at a different commit is still an exact match.
+	exactFullPreindex := preindexCacheHit &&
+		preindexedSnapshot.Header.Tree == source.tree
+	grepPatterns, grepSafe := searchGitGrepPatterns(q.terms)
+	if exactFullPreindex && !options.Worktree && options.TopK <= defaultSearchTopK && grepSafe {
+		matches, grepErr := gitutil.GrepTreePaths(ctx, source.absRepo, source.commit, grepPatterns)
+		if grepErr == nil {
+			selection.files = committedSearchFiles(source.paths, matches, q)
+			selection.sparseFiles = append([]string(nil), selection.files...)
+			selection.preselectionBackend = "git-tree-grep"
+			selection.preselectionPasses = 1
+			selection.preselectionFilesExamined = len(source.paths)
+			return selection, nil
+		}
 	}
 	if options.IndexAllFiles || len(source.paths) <= options.MaxIndexedFiles {
 		selection.files = append([]string(nil), source.paths...)
@@ -474,10 +863,12 @@ func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, optio
 	}
 	matcher := newSearchTermMatcher(q.terms)
 	scanPaths := source.paths
+	usedGitIndexPreselection := false
 	if shouldUseGitGrepPreselection(options.Worktree, len(source.paths)) {
-		matches, grepErr := gitutil.GrepIndexMatches(ctx, source.absRepo, searchPreselectionPatterns(q), 32)
+		matches, grepErr := gitutil.GrepIndexMatches(ctx, source.absRepo, searchGitGrepPreselectionPatterns(q), 32)
 		tracked, trackedErr := gitutil.ListIndexFiles(ctx, source.absRepo)
 		if grepErr == nil && trackedErr == nil {
+			usedGitIndexPreselection = true
 			allowed := make(map[string]bool, len(source.paths))
 			for _, filePath := range source.paths {
 				allowed[filePath] = true
@@ -536,8 +927,16 @@ func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, optio
 				}
 				return provisional[i].path < provisional[j].path
 			})
-			poolLimit := minInt(len(provisional), options.MaxIndexedFiles*4)
+			poolLimit := len(provisional)
+			if threshold := (len(provisional)-1)/4 + 1; options.MaxIndexedFiles < threshold {
+				poolLimit = options.MaxIndexedFiles * 4
+			}
 			scanPaths = make([]string, 0, poolLimit+len(untracked))
+			selection.sparseFiles = make([]string, 0, len(provisional)+len(untracked))
+			for _, candidate := range provisional {
+				selection.sparseFiles = append(selection.sparseFiles, candidate.path)
+			}
+			selection.sparseFiles = append(selection.sparseFiles, untracked...)
 			for _, candidate := range provisional[:poolLimit] {
 				scanPaths = append(scanPaths, candidate.path)
 			}
@@ -547,13 +946,45 @@ func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, optio
 			}
 		}
 	}
+	var sparseMu sync.Mutex
+	var contentReadMu sync.Mutex
+	contentReads := 0
 	scoreFile := func(filePath string) (searchFileCandidate, bool) {
 		if err := ctx.Err(); err != nil {
 			return searchFileCandidate{}, false
 		}
 		content, ok := source.read(filePath)
+		if ok {
+			contentReadMu.Lock()
+			contentReads++
+			contentReadMu.Unlock()
+		}
 		if !ok || strings.IndexByte(content, 0) >= 0 {
 			return searchFileCandidate{}, false
+		}
+		if options.TopK > defaultSearchTopK && len(sparseQuery.terms) > 0 && len(content) <= maxSparseSearchFileBytes {
+			lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+			if len(lines) > 1 || lines[0] != "" {
+				language := ""
+				if spec, detected := languageForContent(filePath, content); detected {
+					language = spec.language
+				}
+				fileSparse, documentCount, documentLength := sparseCandidatesForFile(
+					sparseQuery, filePath, language, lines, options,
+				)
+				sparseMu.Lock()
+				selection.sparseCandidates = append(selection.sparseCandidates, fileSparse...)
+				selection.sparseDocumentCount += documentCount
+				selection.sparseDocumentLength += documentLength
+				selection.sparseFilesContentRead++
+				selection.sparsePrecomputedFiles[filePath] = true
+				for _, candidate := range fileSparse {
+					for term := range candidate.termCounts {
+						selection.sparseDF[term]++
+					}
+				}
+				sparseMu.Unlock()
+			}
 		}
 		pathScore := pathSearchScore(q, filePath)
 		matchedWeight := 0.0
@@ -595,8 +1026,124 @@ func preselectSearchFiles(ctx context.Context, repo string, q searchQuery, optio
 		selected[i] = file.path
 	}
 	selection.files = selected
-	selection.filesContentRead = len(scanPaths)
+	selection.filesContentRead = contentReads
+	selection.preselectionBackend = "go-content"
+	selection.preselectionPasses = 1
+	selection.preselectionFilesExamined = len(scanPaths)
+	if usedGitIndexPreselection {
+		selection.preselectionBackend = "git-index-grep+go-content"
+		selection.preselectionPasses++
+		selection.preselectionFilesExamined += len(source.paths)
+	}
 	return selection, nil
+}
+
+func searchTermsSafeForGitGrep(terms []string) bool {
+	for _, term := range terms {
+		for index := 0; index < len(term); index++ {
+			if term[index] < 0x20 || term[index] > 0x7e {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+var (
+	searchASCIILowerAlternativesOnce sync.Once
+	searchASCIILowerAlternatives     [128][]rune
+)
+
+// searchGitGrepPatterns makes Git's byte-oriented fixed-string preselection a
+// conservative superset of Go's strings.ToLower matching. Some non-ASCII
+// uppercase runes lower to ASCII (for example Turkish dotted İ -> i), while
+// Git's -i behavior for those runes varies by platform and locale. Generate
+// exact UTF-8 pattern alternatives from this Go runtime's Unicode tables. If
+// the cartesian expansion would be excessive, return unsafe so the caller
+// falls back to exhaustive content scoring without changing recall.
+func searchGitGrepPatterns(terms []string) ([]string, bool) {
+	if !searchTermsSafeForGitGrep(terms) {
+		return nil, false
+	}
+	searchASCIILowerAlternativesOnce.Do(func() {
+		for value := rune(128); value <= unicode.MaxRune; value++ {
+			lower := unicode.ToLower(value)
+			if lower >= 0 && lower < 128 {
+				searchASCIILowerAlternatives[lower] = append(searchASCIILowerAlternatives[lower], value)
+			}
+		}
+	})
+	patterns := make([]string, 0, len(terms))
+	seen := make(map[string]bool, len(terms))
+	for _, term := range terms {
+		variants := []string{""}
+		for index := 0; index < len(term); index++ {
+			alternatives := searchASCIILowerAlternatives[term[index]]
+			if len(alternatives) == 0 {
+				for variantIndex := range variants {
+					variants[variantIndex] += term[index : index+1]
+				}
+				continue
+			}
+			if len(variants)*(len(alternatives)+1) > maxSearchGitGrepPatterns-len(patterns) {
+				return nil, false
+			}
+			expanded := make([]string, 0, len(variants)*(len(alternatives)+1))
+			for _, prefix := range variants {
+				expanded = append(expanded, prefix+term[index:index+1])
+				for _, alternative := range alternatives {
+					expanded = append(expanded, prefix+string(alternative))
+				}
+			}
+			variants = expanded
+		}
+		for _, variant := range variants {
+			if seen[variant] {
+				continue
+			}
+			seen[variant] = true
+			patterns = append(patterns, variant)
+			if len(patterns) > maxSearchGitGrepPatterns {
+				return nil, false
+			}
+		}
+	}
+	return patterns, true
+}
+
+func committedSearchFiles(paths, matches []string, q searchQuery) []string {
+	allowed := make(map[string]bool, len(paths))
+	for _, filePath := range paths {
+		allowed[filePath] = true
+	}
+	matched := make(map[string]bool, len(matches))
+	for _, match := range matches {
+		if allowed[match] {
+			matched[match] = true
+		}
+	}
+	files := make([]searchFileCandidate, 0, len(matched)+16)
+	for _, filePath := range paths {
+		pathScore := pathSearchScore(q, filePath)
+		if !matched[filePath] && pathScore == 0 {
+			continue
+		}
+		files = append(files, searchFileCandidate{
+			path:  filePath,
+			score: 2*pathScore + searchPathPrior(q, filePath),
+		})
+	}
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].score != files[j].score {
+			return files[i].score > files[j].score
+		}
+		return canonicalSearchPathLess(files[i].path, files[j].path)
+	})
+	selected := make([]string, len(files))
+	for index, file := range files {
+		selected[index] = file.path
+	}
+	return selected
 }
 
 func scoreSearchPaths(
@@ -714,6 +1261,36 @@ func searchPreselectionPatterns(q searchQuery) []string {
 	return patterns
 }
 
+func searchGitGrepPreselectionPatterns(q searchQuery) []string {
+	patterns := searchPreselectionPatterns(q)
+	// Each additional fixed-string pattern makes Git scan and emit more of a
+	// large index. Preserve one derived morphological/fragment fallback rather
+	// than letting direct terms consume the entire bounded pattern budget.
+	if len(patterns) <= 6 {
+		return patterns
+	}
+	direct := make([]string, 0, 6)
+	derived := make([]string, 0, 1)
+	for _, pattern := range patterns {
+		if q.weights[pattern] >= 1 {
+			direct = append(direct, pattern)
+		} else {
+			derived = append(derived, pattern)
+		}
+	}
+	limit := 6
+	if len(derived) > 0 {
+		limit--
+	}
+	if len(direct) > limit {
+		direct = direct[:limit]
+	}
+	if len(derived) > 0 {
+		direct = append(direct, derived[0])
+	}
+	return direct
+}
+
 func candidatesForFile(q searchQuery, filePath, language string, lines []string, symbols []SymbolRecord, options SearchOptions) []searchCandidate {
 	var out []searchCandidate
 	covered := make([]bool, len(lines)+1)
@@ -732,8 +1309,15 @@ func candidatesForFile(q searchQuery, filePath, language string, lines []string,
 			}
 			continue
 		}
-		for _, region := range matchingLineRegions(q, lines, searchStart, end, options.ContextLines, options.MaxRegionLines) {
+		regions := matchingLineRegions(q, lines, searchStart, end, options.ContextLines, options.MaxRegionLines)
+		for _, region := range regions {
 			if candidate, ok := makeSearchCandidate(q, filePath, language, lines, region[0], region[1], symbol, options.MaxSnippetLines); ok {
+				out = append(out, candidate)
+			}
+		}
+		if len(regions) == 0 {
+			focusedEnd := minInt(end, searchStart+options.MaxRegionLines-1)
+			if candidate, ok := makeSearchCandidate(q, filePath, language, lines, searchStart, focusedEnd, symbol, options.MaxSnippetLines); ok {
 				out = append(out, candidate)
 			}
 		}
@@ -765,6 +1349,228 @@ func candidatesForFile(q searchQuery, filePath, language string, lines []string,
 		}
 	}
 	return out
+}
+
+// sparseCandidatesForFile complements syntax-aware regions with fixed-width
+// lexical windows. Syntax regions are precise but can hide the relevant part
+// of a large symbol or prose-heavy file; overlapping windows preserve those
+// locations for deeper rankings without changing the interactive search path.
+func sparseCandidatesForFile(
+	sparseQuery searchQuery,
+	filePath, language string,
+	lines []string,
+	options SearchOptions,
+) ([]searchCandidate, int, int) {
+	if len(lines) == 0 {
+		return nil, 0, 0
+	}
+	chunkLines := maxInt(1, options.MaxRegionLines)
+	stride := minInt(sparseSearchChunkStrideLines, chunkLines)
+	documentCount := 0
+	documentLength := 0
+	var out []searchCandidate
+	for start := 1; start <= len(lines); start += stride {
+		end := minInt(len(lines), start+chunkLines-1)
+		text := filepath.ToSlash(filePath) + "\n" + strings.Join(lines[start-1:end], "\n")
+		counts, length := sparseSearchTermCounts(text, sparseQuery.termSet)
+		documentCount++
+		documentLength += maxInt(1, length)
+		if len(counts) > 0 {
+			focus := sparseSearchFocusLine(sparseQuery, lines, start, end)
+			snippetStart, snippetEnd := focusedSnippetRegion(start, end, focus, options.MaxSnippetLines)
+			out = append(out, searchCandidate{
+				result: SearchResult{
+					FilePath:         filePath,
+					StartLine:        start,
+					EndLine:          end,
+					FocusLine:        focus,
+					SnippetStartLine: snippetStart,
+					SnippetEndLine:   snippetEnd,
+					Language:         language,
+					Signals:          []string{"sparse-region"},
+					Snippet:          "",
+				},
+				termCounts: counts,
+				docLength:  length,
+			})
+		}
+		if end == len(lines) {
+			break
+		}
+	}
+	return out, documentCount, documentLength
+}
+
+func sparseSearchFocusLine(q searchQuery, lines []string, start, end int) int {
+	bestLine := start
+	bestMatches := -1
+	for line := start; line <= end; line++ {
+		counts, _ := sparseSearchTermCounts(lines[line-1], q.termSet)
+		matches := 0
+		for _, count := range counts {
+			matches += count
+		}
+		if matches > bestMatches {
+			bestLine = line
+			bestMatches = matches
+		}
+	}
+	return bestLine
+}
+
+// attachSparseCandidateSymbols restores exact semantic identity for sparse
+// windows whose best matching line is inside a parsed symbol. Sparse regions
+// are built during file preselection, before the provider snapshot is
+// available, so they otherwise cannot participate in semantic mirror dedup.
+func attachSparseCandidateSymbols(candidates []searchCandidate, symbolsByFile map[string][]SymbolRecord) {
+	for index := range candidates {
+		candidate := &candidates[index]
+		if candidate.result.SymbolID != "" {
+			continue
+		}
+		symbol, ok := smallestSearchSymbolContainingLine(
+			symbolsByFile[candidate.result.FilePath], candidate.result.FocusLine,
+		)
+		if !ok {
+			continue
+		}
+		if candidate.result.Language == "" {
+			candidate.result.Language = symbol.Language
+		}
+		candidate.result.Kind = symbol.Kind
+		candidate.result.SymbolID = symbol.ID
+		candidate.result.SymbolName = symbol.Name
+		candidate.result.QualifiedName = symbol.QualifiedName
+		candidate.result.Signature = symbol.Signature
+	}
+}
+
+func smallestSearchSymbolContainingLine(symbols []SymbolRecord, line int) (SymbolRecord, bool) {
+	bestSpan := int(^uint(0) >> 1)
+	var best SymbolRecord
+	found := false
+	for _, symbol := range symbols {
+		if symbol.ID == "" || line < symbol.StartLine || line > symbol.EndLine {
+			continue
+		}
+		span := symbol.EndLine - symbol.StartLine
+		if !found || span < bestSpan || (span == bestSpan && symbol.StartLine > best.StartLine) {
+			best = symbol
+			bestSpan = span
+			found = true
+		}
+	}
+	return best, found
+}
+
+func hydrateSparseCandidates(candidates []searchCandidate, read contentReader) int {
+	cache := make(map[string][]string)
+	missing := make(map[string]bool)
+	reads := 0
+	for index := range candidates {
+		candidate := &candidates[index]
+		isSparse := false
+		for _, signal := range candidate.result.Signals {
+			if signal == "sparse-region" {
+				isSparse = true
+				break
+			}
+		}
+		if candidate.result.Snippet != "" || !isSparse {
+			continue
+		}
+		filePath := candidate.result.FilePath
+		lines, cached := cache[filePath]
+		if !cached && !missing[filePath] {
+			content, ok := read(filePath)
+			reads++
+			if !ok || strings.IndexByte(content, 0) >= 0 {
+				missing[filePath] = true
+				continue
+			}
+			lines = strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+			cache[filePath] = lines
+			if candidate.result.Language == "" {
+				if spec, detected := languageForContent(filePath, content); detected {
+					candidate.result.Language = spec.language
+				}
+			}
+		}
+		if len(lines) == 0 {
+			continue
+		}
+		start, end := clampRegion(candidate.result.SnippetStartLine, candidate.result.SnippetEndLine, len(lines))
+		if start > 0 {
+			candidate.result.Snippet = strings.Join(lines[start-1:end], "\n")
+		}
+	}
+	return reads
+}
+
+func scaleSearchCorpusValue(value, totalFiles, observedFiles int) int {
+	if value <= 0 || totalFiles <= observedFiles || observedFiles <= 0 {
+		return value
+	}
+	maxValue := int(^uint(0) >> 1)
+	quotient, remainder := value/observedFiles, value%observedFiles
+	if quotient > maxValue/totalFiles {
+		return maxValue
+	}
+	scaled := quotient * totalFiles
+	if remainder == 0 {
+		return scaled
+	}
+	if remainder > (maxValue-scaled)/totalFiles {
+		return maxValue
+	}
+	product := remainder * totalFiles
+	extra := product / observedFiles
+	if product%observedFiles != 0 {
+		extra++
+	}
+	return scaled + extra
+}
+
+func scoreSparseCandidates(
+	candidates []searchCandidate,
+	q searchQuery,
+	documentFrequency map[string]int,
+	documentCount, documentLength int,
+) {
+	if len(candidates) == 0 || documentCount <= 0 {
+		return
+	}
+	averageLength := float64(maxInt(1, documentLength)) / float64(documentCount)
+	for i := range candidates {
+		candidate := &candidates[i]
+		candidate.score += searchPathPrior(q, candidate.result.FilePath)
+		// cmm parity: score a sparse window on its symbol identity (name / qualified-name)
+		// and path tokens, not only body-BM25 + path-prior. This is what lets a fix file whose
+		// domain nouns live in its path/identifiers surface as a genuine ranked hit instead of
+		// relevance-free RRF filler (measured whiffs: fmt core.h on_zero, druid *PostAggregator.java).
+		// attachSparseCandidateSymbols now runs before this, so the symbol fields are populated.
+		candidate.score += pathSearchScore(q, candidate.result.FilePath)
+		if candidate.result.SymbolID != "" {
+			nameScore, nameSignals := symbolSearchScore(q, SymbolRecord{
+				Name:          candidate.result.SymbolName,
+				QualifiedName: candidate.result.QualifiedName,
+				Signature:     candidate.result.Signature,
+				Kind:          candidate.result.Kind,
+			})
+			candidate.score += nameScore
+			candidate.result.Signals = appendUnique(candidate.result.Signals, nameSignals...)
+		}
+		for _, term := range q.terms {
+			frequency := candidate.termCounts[term]
+			if frequency == 0 {
+				continue
+			}
+			df := documentFrequency[term]
+			inverse := math.Log(1 + (float64(documentCount-df)+0.5)/(float64(df)+0.5))
+			denominator := float64(frequency) + 1.2*(0.25+0.75*float64(maxInt(1, candidate.docLength))/averageLength)
+			candidate.score += q.weights[term] * inverse * (float64(frequency) * 2.2 / denominator)
+		}
+	}
 }
 
 func uncoveredRegionsAroundHits(hits []int, covered []bool, lineCount, context, maxLines int) [][2]int {
@@ -837,6 +1643,12 @@ func makeSearchCandidate(q searchQuery, filePath, language string, lines []strin
 	if symbol.ID != "" {
 		focus = maxInt(focus, symbol.StartLine)
 	}
+	// symbol.StartLine can fall outside [start, end] when the caller passed a truncated
+	// window (e.g. a same-container-neighbor candidate clipped to a tiny --max-snippet-lines).
+	// Clamp so FocusLine always satisfies the SearchResponse.Validate invariant
+	// (StartLine <= FocusLine <= EndLine); otherwise the whole response is rejected with
+	// "invalid search result at rank N" (reproducible with --max-snippet-lines 1).
+	focus = minInt(maxInt(focus, start), end)
 	snippetStart, snippetEnd := focusedSnippetRegion(start, end, focus, maxSnippetLines)
 	snippet := strings.Join(lines[snippetStart-1:snippetEnd], "\n")
 	pathScore := pathSearchScore(q, filePath)
@@ -880,7 +1692,7 @@ func makeSearchCandidate(q searchQuery, filePath, language string, lines []strin
 	}, true
 }
 
-func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF map[string]int, fileCount int) {
+func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF map[string]int, fileCount int, inboundDegree map[string]int) {
 	if len(candidates) == 0 {
 		return
 	}
@@ -919,7 +1731,18 @@ func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF m
 		if queryWeight > 0 {
 			coverage = coveredWeight / queryWeight
 		}
-		candidate.score = candidate.baseScore + bm25 + 7*coverage + minFloat64(24, codeTokenBonus)
+		// Centrality: reward well-connected implementation symbols (many inbound callers/impls) so
+		// they outrank leaf/trait-dispatch/trivial methods that merely share a common query term.
+		// log-scaled + capped so it tilts ties toward the implementation without overriding a strong
+		// direct match. Only meaningful when the candidate matched the query at all (bm25>0 or a
+		// name/base signal), so it can't drag in unrelated high-degree symbols.
+		centrality := 0.0
+		if len(inboundDegree) > 0 && candidate.result.SymbolID != "" && (bm25 > 0 || candidate.baseScore > 0) {
+			if deg := inboundDegree[candidate.result.SymbolID]; deg > 0 {
+				centrality = minFloat64(6, 1.6*math.Log(1+float64(deg)))
+			}
+		}
+		candidate.score = candidate.baseScore + bm25 + 7*coverage + minFloat64(24, codeTokenBonus) + centrality
 		if codeTokenBonus > 0 {
 			candidate.result.Signals = appendUnique(candidate.result.Signals, "exact-code-token")
 		}
@@ -937,9 +1760,30 @@ func minFloat64(left, right float64) float64 {
 	return right
 }
 
-func expandGraphCandidates(seeds []searchCandidate, relations []RelationRecord, symbolsByID map[string]SymbolRecord, read contentReader, languages map[string]string, options SearchOptions) []searchCandidate {
+func maxFloat64(left, right float64) float64 {
+	if left > right {
+		return left
+	}
+	return right
+}
+
+func derivedSearchScore(parent, proposed float64) float64 {
+	return minFloat64(parent-0.01, proposed)
+}
+
+func expandGraphCandidates(seeds []searchCandidate, q searchQuery, relations []RelationRecord, symbolsByID map[string]SymbolRecord, read contentReader, languages map[string]string, options SearchOptions) []searchCandidate {
 	if len(seeds) == 0 || len(relations) == 0 {
 		return nil
+	}
+	// SearchRepository normalizes options before calling here, but direct
+	// callers (e.g. tests) may pass hand-built options. Mirror that
+	// normalization so a non-positive limit cannot shrink end below start
+	// and panic on the snippet slice below.
+	if options.MaxRegionLines <= 0 {
+		options.MaxRegionLines = defaultSearchMaxRegionLines
+	}
+	if options.MaxSnippetLines <= 0 {
+		options.MaxSnippetLines = defaultSearchMaxSnippetLines
 	}
 	seedScores := map[string]float64{}
 	for _, candidate := range seeds {
@@ -979,6 +1823,9 @@ func expandGraphCandidates(seeds []searchCandidate, relations []RelationRecord, 
 				contentCache[symbol.FilePath] = lines
 			}
 			start, end := clampRegion(symbol.StartLine, symbol.EndLine, len(lines))
+			if start == 0 {
+				continue
+			}
 			if end-start+1 > options.MaxRegionLines {
 				end = minInt(len(lines), start+options.MaxRegionLines-1)
 			}
@@ -1000,7 +1847,31 @@ func expandGraphCandidates(seeds []searchCandidate, relations []RelationRecord, 
 					Snippet:          strings.Join(lines[snippetStart-1:snippetEnd], "\n"),
 				},
 			}
-			candidate.score = 0.28*seedScore + relation.Confidence
+			// A high-confidence, type-resolved CALLS/CONSTRUCTS edge from a strongly-matched seed
+			// is very likely the collaborator that implements the query's behaviour — the vocab-gap
+			// bridge: the query matches the caller by name while the fix lives in the differently-
+			// named callee (e.g. rule "binary_operator_spaces" -> BinaryOperatorSpacesFixer ->CALLS->
+			// TokensAnalyzer.getLastTokenIndexOfArrowFunction, the gold). The default 0.28 seed
+			// fraction buries such a callee ~7 pts down, below prose/tests; score it just below the
+			// seed so it enters the top-K. derivedSearchScore's parent-0.01 cap keeps it under the
+			// caller, and best[]/dedup/diversity selection bound the added candidates.
+			// Vocab-gap bridge: boost a high-confidence CALLS/CONSTRUCTS callee to just below its
+			// caller ONLY when the callee is itself textually plausible for the query (its name shares
+			// a query term). This promotes a buried-but-relevant collaborator — e.g. the query
+			// "...arrow function..." reaches TokensAnalyzer.getLastTokenIndexOfArrowFunction (shares
+			// "arrow"/"function") from the caller BinaryOperatorSpacesFixer — while NOT surfacing the
+			// arbitrary callees of a strong direct hit (e.g. sympy's Point.__new__ callees don't match
+			// "imaginary/coordinates", so they stay unboosted and add no exploration noise).
+			seedFraction := 0.28
+			if relation.Confidence >= 0.8 &&
+				(relation.Type == "CALLS" || relation.Type == "ASYNC_CALLS" || relation.Type == "CONSTRUCTS") &&
+				searchSymbolNameMatchesQueryTerm(q, symbol) {
+				seedFraction = 0.85
+			}
+			candidate.score = derivedSearchScore(
+				seedScore,
+				seedFraction*seedScore+relation.Confidence+searchPathPrior(q, symbol.FilePath),
+			)
 			candidate.baseScore = candidate.score
 			candidate.result.Signals = appendUnique(candidate.result.Signals, "graph:"+strings.ToLower(relation.Type), "graph:"+pair[2])
 			if previous, exists := best[symbol.ID]; !exists || candidate.score > previous.score {
@@ -1019,6 +1890,22 @@ func expandGraphCandidates(seeds []searchCandidate, relations []RelationRecord, 
 	return out
 }
 
+// searchSymbolNameMatchesQueryTerm reports whether a symbol's name/qualified-name shares a
+// (non-trivial) query term — used to gate the graph-expansion boost to textually-plausible callees.
+func searchSymbolNameMatchesQueryTerm(q searchQuery, symbol SymbolRecord) bool {
+	name := strings.ToLower(symbol.Name)
+	qualified := strings.ToLower(symbol.QualifiedName)
+	for _, term := range q.terms {
+		if len(term) < 3 {
+			continue
+		}
+		if strings.Contains(name, term) || strings.Contains(qualified, term) {
+			return true
+		}
+	}
+	return false
+}
+
 func searchExpansionRelation(relation string) bool {
 	switch relation {
 	case "CALLS", "CONSTRUCTS", "ASYNC_CALLS", "IMPORTS", "EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "TESTS", "CONFIGURES":
@@ -1028,33 +1915,645 @@ func searchExpansionRelation(relation string) bool {
 	}
 }
 
+type usageFileSelector func(context.Context, []string) ([]string, bool)
+
+func committedUsageFileSelector(
+	repo string,
+	treeish string,
+	useHead bool,
+	languages map[string]string,
+	topK int,
+	filesExamined int,
+	telemetry *searchScanTelemetry,
+) usageFileSelector {
+	if !useHead || topK > defaultSearchTopK {
+		return nil
+	}
+	return func(ctx context.Context, identifiers []string) ([]string, bool) {
+		if !searchTermsSafeForGitGrep(identifiers) {
+			return nil, false
+		}
+		matches, err := gitutil.GrepTreePaths(ctx, repo, treeish, identifiers)
+		if err != nil {
+			return nil, false
+		}
+		if telemetry != nil {
+			telemetry.backend = "git-tree-grep"
+			telemetry.passes = 1
+			telemetry.filesExamined = filesExamined
+		}
+		seen := make(map[string]bool, len(matches))
+		files := make([]string, 0, len(matches))
+		for _, match := range matches {
+			if _, eligible := languages[match]; !eligible || seen[match] {
+				continue
+			}
+			seen[match] = true
+			files = append(files, match)
+		}
+		// The expansion routine performs the final stable sort. Sorting there
+		// applies the same query-aware source/test/docs/generated prior to both
+		// Git postings and the exhaustive correctness fallback.
+		return files, true
+	}
+}
+
+// expandIdentifierUsageCandidates complements typed graph edges with precise
+// lexical use sites for strong compound-identifier seeds. Constants, exported
+// values, callbacks, and other non-call references often have no relation edge,
+// but their consumers are exactly the context a coding agent needs after finding
+// a definition.
+func expandIdentifierUsageCandidates(
+	ctx context.Context,
+	seeds []searchCandidate,
+	q searchQuery,
+	symbolsByID map[string]SymbolRecord,
+	symbolsByFile map[string][]SymbolRecord,
+	read contentReader,
+	languages map[string]string,
+	options SearchOptions,
+	selectors ...usageFileSelector,
+) []searchCandidate {
+	type usageSeed struct {
+		symbol SymbolRecord
+		score  float64
+	}
+	const maxSeeds = 20
+	const maxUsagesPerSeed = 3
+	const maxRawUsagesPerSeed = 64
+	var selectedSeeds []usageSeed
+	seenSymbols := map[string]bool{}
+	if len(seeds) == 0 || seeds[0].score <= 0 {
+		return nil
+	}
+	bestScore := seeds[0].score
+	for _, candidate := range seeds {
+		if len(selectedSeeds) == maxSeeds {
+			break
+		}
+		if candidate.score < 0.35*bestScore {
+			continue
+		}
+		symbol, ok := symbolsByID[candidate.result.SymbolID]
+		if !ok || seenSymbols[symbol.ID] || !expandableUsageIdentifier(symbol.Name) {
+			continue
+		}
+		seenSymbols[symbol.ID] = true
+		selectedSeeds = append(selectedSeeds, usageSeed{symbol: symbol, score: candidate.score})
+	}
+	if len(selectedSeeds) == 0 {
+		return nil
+	}
+
+	filePaths := make([]string, 0, len(languages))
+	for filePath := range languages {
+		filePaths = append(filePaths, filePath)
+	}
+	if len(selectors) > 0 && selectors[0] != nil {
+		names := make([]string, len(selectedSeeds))
+		for index, seed := range selectedSeeds {
+			names[index] = seed.symbol.Name
+		}
+		if selected, ok := selectors[0](ctx, names); ok {
+			filePaths = selected
+		}
+	}
+	sort.Slice(filePaths, func(i, j int) bool {
+		leftScore := searchPathPrior(q, filePaths[i]) + pathSearchScore(q, filePaths[i])
+		rightScore := searchPathPrior(q, filePaths[j]) + pathSearchScore(q, filePaths[j])
+		if leftScore != rightScore {
+			return leftScore > rightScore
+		}
+		return canonicalSearchPathLess(filePaths[i], filePaths[j])
+	})
+	type indexedUsage struct {
+		candidate searchCandidate
+		seedIndex int
+	}
+	rawUsageCounts := make([]int, len(selectedSeeds))
+	seenLocations := map[string]bool{}
+	var discovered []indexedUsage
+	usageContext := minInt(options.ContextLines, 2)
+	for _, filePath := range filePaths {
+		if ctx.Err() != nil {
+			return nil
+		}
+		allSaturated := true
+		for seedIndex := range selectedSeeds {
+			if rawUsageCounts[seedIndex] < maxRawUsagesPerSeed {
+				allSaturated = false
+				break
+			}
+		}
+		if allSaturated {
+			break
+		}
+		content, ok := read(filePath)
+		if !ok || strings.IndexByte(content, 0) >= 0 {
+			continue
+		}
+		lines := strings.Split(content, "\n")
+		for seedIndex, seed := range selectedSeeds {
+			if rawUsageCounts[seedIndex] == maxRawUsagesPerSeed {
+				continue
+			}
+			if !strings.Contains(content, seed.symbol.Name) {
+				continue
+			}
+			definitionStart := seed.symbol.StartLine
+			if filePath == seed.symbol.FilePath {
+				definitionStart = precedingDocumentationStart(lines, seed.symbol.StartLine, options.ContextLines)
+			}
+			for lineIndex, line := range lines {
+				lineNumber := lineIndex + 1
+				if !containsIdentifierUsage(line, seed.symbol.Name) || identifierUsageIsImport(line) ||
+					(filePath == seed.symbol.FilePath && lineNumber >= definitionStart && lineNumber <= seed.symbol.EndLine) {
+					continue
+				}
+				locationKey := fmt.Sprintf("%s:%d:%s", filePath, lineNumber, seed.symbol.ID)
+				if seenLocations[locationKey] {
+					continue
+				}
+				start := maxInt(1, lineNumber-usageContext)
+				end := minInt(len(lines), lineNumber+usageContext)
+				container := enclosingSearchSymbol(symbolsByFile[filePath], lineNumber)
+				candidate, ok := makeSearchCandidate(q, filePath, languages[filePath], lines, start, end, container, options.MaxSnippetLines)
+				if !ok {
+					continue
+				}
+				candidate.result.FocusLine = lineNumber
+				candidate.result.Signals = appendUnique(candidate.result.Signals, "symbol-usage")
+				candidate.score = derivedSearchScore(seed.score, 0.9*seed.score+searchPathPrior(q, filePath))
+				candidate.baseScore = candidate.score
+				seenLocations[locationKey] = true
+				rawUsageCounts[seedIndex]++
+				discovered = append(discovered, indexedUsage{candidate: candidate, seedIndex: seedIndex})
+				if rawUsageCounts[seedIndex] == maxRawUsagesPerSeed {
+					break
+				}
+			}
+		}
+	}
+	sort.SliceStable(discovered, func(i, j int) bool {
+		if discovered[i].candidate.score != discovered[j].candidate.score {
+			return discovered[i].candidate.score > discovered[j].candidate.score
+		}
+		leftPath := discovered[i].candidate.result.FilePath
+		rightPath := discovered[j].candidate.result.FilePath
+		if leftPath != rightPath {
+			return canonicalSearchPathLess(leftPath, rightPath)
+		}
+		return searchCandidateLess(discovered[i].candidate, discovered[j].candidate)
+	})
+	selectedPerSeed := make([]int, len(selectedSeeds))
+	out := make([]searchCandidate, 0, minInt(32, len(discovered)))
+	for _, usage := range discovered {
+		if selectedPerSeed[usage.seedIndex] == maxUsagesPerSeed {
+			continue
+		}
+		selectedPerSeed[usage.seedIndex]++
+		out = append(out, usage.candidate)
+		if len(out) == 32 {
+			break
+		}
+	}
+	return out
+}
+
+func identifierUsageIsImport(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.HasPrefix(trimmed, "import ") || strings.HasPrefix(trimmed, "import{") ||
+		strings.HasPrefix(trimmed, "export {") || strings.HasPrefix(trimmed, "export{")
+}
+
+func expandableUsageIdentifier(name string) bool {
+	if len(name) < 6 {
+		return false
+	}
+	hasLetter, hasLower, hasUpper, hasSeparator := false, false, false, false
+	for _, character := range name {
+		switch {
+		case unicode.IsLower(character):
+			hasLetter = true
+			hasLower = true
+		case unicode.IsUpper(character):
+			hasLetter = true
+			hasUpper = true
+		case unicode.IsLetter(character):
+			hasLetter = true
+		case character == '_' || character == '$':
+			hasSeparator = true
+		case unicode.IsDigit(character):
+		default:
+			return false
+		}
+	}
+	return (hasLower && hasUpper) || (hasLetter && hasSeparator)
+}
+
+func containsIdentifierUsage(line, name string) bool {
+	for offset := 0; offset <= len(line)-len(name); {
+		index := strings.Index(line[offset:], name)
+		if index < 0 {
+			return false
+		}
+		index += offset
+		leftBoundary := index == 0 || !searchIdentifierByte(line[index-1])
+		right := index + len(name)
+		rightBoundary := right == len(line) || !searchIdentifierByte(line[right])
+		if leftBoundary && rightBoundary {
+			return true
+		}
+		offset = index + len(name)
+	}
+	return false
+}
+
+func searchIdentifierByte(value byte) bool {
+	return value == '_' || value == '$' ||
+		(value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
+		(value >= '0' && value <= '9')
+}
+
+func enclosingSearchSymbol(symbols []SymbolRecord, line int) SymbolRecord {
+	var best SymbolRecord
+	for _, symbol := range symbols {
+		if line < symbol.StartLine || line > symbol.EndLine {
+			continue
+		}
+		if best.ID == "" || symbol.EndLine-symbol.StartLine < best.EndLine-best.StartLine {
+			best = symbol
+		}
+	}
+	return best
+}
+
+// expandSameContainerNeighborCandidates follows strong callable results to the
+// immediately preceding and following callable in the same lexical container.
+// Lifecycle code is commonly split into small adjacent stages without an
+// explicit call edge (for example tick -> dispatch -> run); the transition is
+// often more useful to an agent than another weak match from an unrelated file.
+func expandSameContainerNeighborCandidates(
+	ctx context.Context,
+	seeds []searchCandidate,
+	q searchQuery,
+	symbolsByID map[string]SymbolRecord,
+	symbolsByFile map[string][]SymbolRecord,
+	read contentReader,
+	languages map[string]string,
+	options SearchOptions,
+) []searchCandidate {
+	if len(seeds) == 0 {
+		return nil
+	}
+	limit := minInt(len(seeds), maxInt(30, options.TopK*2))
+	bestScore := seeds[0].score
+	if bestScore <= 0 {
+		return nil
+	}
+	seedSymbolIDs := map[string]bool{}
+	for _, seed := range seeds[:limit] {
+		if ctx.Err() != nil {
+			return nil
+		}
+		seedSymbolIDs[seed.result.SymbolID] = true
+	}
+	seen := map[string]bool{}
+	var out []searchCandidate
+	for _, seed := range seeds[:limit] {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if seed.score < 0.35*bestScore || !searchFlowSymbolKind(seed.result.Kind) {
+			continue
+		}
+		symbol, ok := symbolsByID[seed.result.SymbolID]
+		if !ok {
+			continue
+		}
+		siblings := sameContainerFlowSymbols(symbolsByFile[symbol.FilePath], symbol.ContainerID)
+		index := -1
+		for i := range siblings {
+			if siblings[i].ID == symbol.ID {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			continue
+		}
+		content, ok := read(symbol.FilePath)
+		if !ok || strings.IndexByte(content, 0) >= 0 {
+			continue
+		}
+		lines := strings.Split(content, "\n")
+		for _, neighborIndex := range []int{index - 1, index + 1} {
+			if neighborIndex < 0 || neighborIndex >= len(siblings) {
+				continue
+			}
+			neighbor := siblings[neighborIndex]
+			if seedSymbolIDs[neighbor.ID] {
+				continue
+			}
+			start, end := neighbor.StartLine, neighbor.EndLine
+			if neighborIndex < index {
+				end = minInt(symbol.StartLine-1, start+options.MaxSnippetLines-1)
+			} else {
+				start = maxInt(symbol.EndLine+1, neighbor.StartLine-options.ContextLines)
+				end = minInt(neighbor.EndLine, start+options.MaxSnippetLines-1)
+			}
+			if start < 1 || start > end || start > len(lines) || end-start+1 > options.MaxSnippetLines {
+				continue
+			}
+			gap := maxInt(0, maxInt(neighbor.StartLine-symbol.EndLine-1, symbol.StartLine-neighbor.EndLine-1))
+			if gap > options.MaxSnippetLines {
+				continue
+			}
+			key := fmt.Sprintf("%s:%d:%d", symbol.FilePath, start, end)
+			if seen[key] {
+				continue
+			}
+			candidate, ok := makeSearchCandidate(q, symbol.FilePath, languages[symbol.FilePath], lines, start, end, neighbor, options.MaxSnippetLines)
+			if !ok {
+				// Adjacency is itself the relevance signal; the neighboring stage
+				// need not repeat narrative terms from the original query.
+				candidate, ok = makeSearchCandidate(buildSearchQuery(neighbor.Name), symbol.FilePath, languages[symbol.FilePath], lines, start, end, neighbor, options.MaxSnippetLines)
+				if !ok {
+					continue
+				}
+				candidate.result.Signals = nil
+			}
+			// neighbor.StartLine is the meaningful focus point, but under a small
+			// options.MaxSnippetLines the emitted region above can be truncated to a window
+			// that no longer contains it. Clamp into the candidate's own region so FocusLine
+			// never escapes [StartLine, EndLine] and trips SearchResponse.Validate.
+			candidate.result.FocusLine = minInt(maxInt(neighbor.StartLine, candidate.result.StartLine), candidate.result.EndLine)
+			candidate.result.Signals = appendUnique(candidate.result.Signals, "same-container-neighbor")
+			candidate.score = derivedSearchScore(seed.score, 0.85*seed.score)
+			candidate.baseScore = candidate.score
+			seen[key] = true
+			out = append(out, candidate)
+		}
+	}
+	sortSearchCandidates(out)
+	if len(out) > 24 {
+		out = out[:24]
+	}
+	return out
+}
+
+func sameContainerFlowSymbols(symbols []SymbolRecord, containerID string) []SymbolRecord {
+	var out []SymbolRecord
+	for _, symbol := range symbols {
+		if symbol.ContainerID == containerID && searchFlowSymbolKind(symbol.Kind) {
+			out = append(out, symbol)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].StartLine != out[j].StartLine {
+			return out[i].StartLine < out[j].StartLine
+		}
+		return out[i].EndLine < out[j].EndLine
+	})
+	return out
+}
+
+// expandSameFileBridgeCandidates exposes short omitted spans between two
+// independently strong regions. These bridges frequently contain the glue
+// call or state transition that explains how neighboring lifecycle stages are
+// connected.
+func expandSameFileBridgeCandidates(
+	ctx context.Context,
+	candidates []searchCandidate,
+	q searchQuery,
+	symbolsByFile map[string][]SymbolRecord,
+	read contentReader,
+	languages map[string]string,
+	options SearchOptions,
+) []searchCandidate {
+	if len(candidates) < 2 {
+		return nil
+	}
+	limit := minInt(len(candidates), maxInt(40, options.TopK*2))
+	byFile := map[string][]searchCandidate{}
+	bestScore := candidates[0].score
+	if bestScore <= 0 {
+		return nil
+	}
+	for _, candidate := range candidates[:limit] {
+		if candidate.score < 0.3*bestScore || !searchFlowSymbolKind(candidate.result.Kind) || candidate.result.SymbolID == "" {
+			continue
+		}
+		byFile[candidate.result.FilePath] = append(byFile[candidate.result.FilePath], candidate)
+	}
+	filePaths := make([]string, 0, len(byFile))
+	for filePath := range byFile {
+		filePaths = append(filePaths, filePath)
+	}
+	sort.Strings(filePaths)
+	var out []searchCandidate
+	seenBridges := map[string]bool{}
+	for _, filePath := range filePaths {
+		if ctx.Err() != nil {
+			return nil
+		}
+		regions := byFile[filePath]
+		sort.Slice(regions, func(i, j int) bool {
+			return searchCandidateLess(regions[i], regions[j])
+		})
+		content, ok := read(filePath)
+		if !ok || strings.IndexByte(content, 0) >= 0 {
+			continue
+		}
+		lines := strings.Split(content, "\n")
+		for leftIndex := 0; leftIndex+1 < len(regions); leftIndex++ {
+			for rightIndex := leftIndex + 1; rightIndex < len(regions); rightIndex++ {
+				left, right := regions[leftIndex], regions[rightIndex]
+				gapStart, gapEnd := left.result.EndLine+1, right.result.StartLine-1
+				if gapStart > gapEnd {
+					continue
+				}
+				if gapEnd-gapStart+1 > options.MaxSnippetLines {
+					break
+				}
+				// Reserve at least half the snippet for the downstream operation.
+				// A long omitted span must not consume the entire result and end one
+				// line before the consumer that makes the bridge actionable.
+				start := maxInt(gapStart, right.result.StartLine-options.MaxSnippetLines/2)
+				end := minInt(right.result.EndLine, start+options.MaxSnippetLines-1)
+				leftSymbol, leftOK := searchSymbolByID(symbolsByFile[filePath], left.result.SymbolID)
+				rightSymbol, rightOK := searchSymbolByID(symbolsByFile[filePath], right.result.SymbolID)
+				if !leftOK || !rightOK || leftSymbol.ContainerID != rightSymbol.ContainerID {
+					continue
+				}
+				bridgeKey := fmt.Sprintf("%s:%d:%d", filePath, start, end)
+				if seenBridges[bridgeKey] {
+					continue
+				}
+				focus := searchFocusLine(q, lines, start, end)
+				container := enclosingSearchSymbol(symbolsByFile[filePath], focus)
+				candidate, ok := makeSearchCandidate(q, filePath, languages[filePath], lines, start, end, container, options.MaxSnippetLines)
+				if !ok {
+					continue
+				}
+				candidate.result.Signals = appendUnique(candidate.result.Signals, "same-file-bridge")
+				candidate.score = derivedSearchScore(maxFloat64(left.score, right.score), 0.45*(left.score+right.score))
+				candidate.baseScore = candidate.score
+				seenBridges[bridgeKey] = true
+				out = append(out, candidate)
+			}
+		}
+	}
+	sortSearchCandidates(out)
+	if len(out) > 20 {
+		out = out[:20]
+	}
+	return out
+}
+
+func searchSymbolByID(symbols []SymbolRecord, id string) (SymbolRecord, bool) {
+	for _, symbol := range symbols {
+		if symbol.ID == id {
+			return symbol, true
+		}
+	}
+	return SymbolRecord{}, false
+}
+
+func searchFlowSymbolKind(kind string) bool {
+	switch kind {
+	case "function", "method", "constructor", "destructor", "closure":
+		return true
+	default:
+		return false
+	}
+}
+
+// selectHybridCandidates uses reciprocal-rank fusion to put sparse windows
+// from semantically strong files first, then reserves the rest of a deep
+// ranking for distinct files found by the syntax-aware search. The split keeps
+// region coverage from collapsing into repeated chunks from a few files while
+// retaining enough sparse depth to find relevant locations inside large files.
+func selectHybridCandidates(semantic, sparse []searchCandidate, topK int) []searchCandidate {
+	if topK <= 0 {
+		return nil
+	}
+	if len(semantic) == 0 {
+		selected := append([]searchCandidate(nil), sparse[:minInt(topK, len(sparse))]...)
+		for index := range selected {
+			selected[index].score = 1 / float64(sparseSearchRRFConstant+index+1)
+		}
+		return selected
+	}
+	if len(sparse) == 0 {
+		return append([]searchCandidate(nil), semantic[:minInt(topK, len(semantic))]...)
+	}
+
+	semanticFileRank := make(map[string]int, len(semantic))
+	for index, candidate := range semantic {
+		if _, exists := semanticFileRank[candidate.result.FilePath]; !exists {
+			semanticFileRank[candidate.result.FilePath] = index + 1
+		}
+	}
+	// RRF combines rankings at the requested retrieval depth. Allowing the
+	// entire sparse tail to participate lets weak chunks from a highly ranked
+	// file leapfrog genuinely strong top-K sparse regions.
+	fusedSparse := append([]searchCandidate(nil), sparse[:minInt(topK, len(sparse))]...)
+	for index := range fusedSparse {
+		sparseRank := index + 1
+		fusedSparse[index].score = 1 / float64(sparseSearchRRFConstant+sparseRank)
+		if fileRank, exists := semanticFileRank[fusedSparse[index].result.FilePath]; exists {
+			fusedSparse[index].score += sparseSearchFileRankWeight / float64(sparseSearchRRFConstant+fileRank)
+		}
+	}
+	sortSearchCandidates(fusedSparse)
+
+	semanticHead := minInt(
+		len(semantic),
+		minInt(maxDeepSearchSemanticHead, maxInt(1, topK/deepSearchSemanticHeadDivisor)),
+	)
+	sparseTarget := minInt(len(fusedSparse), topK*deepSearchSparseNumerator/deepSearchSparseDenominator)
+	selected := make([]searchCandidate, 0, minInt(topK, len(semantic)+len(fusedSparse)))
+	selected = append(selected, semantic[:semanticHead]...)
+	selected = append(selected, fusedSparse[:minInt(sparseTarget, topK-len(selected))]...)
+
+	// Prefer one representative for every additional semantic file. This is a
+	// coverage reserve, so cross-modality region overlap is intentionally not a
+	// reason to discard a sparse window.
+	seenFiles := make(map[string]bool, len(selected))
+	for _, candidate := range selected {
+		seenFiles[candidate.result.FilePath] = true
+	}
+	for _, candidate := range semantic[semanticHead:] {
+		if len(selected) == topK {
+			break
+		}
+		if seenFiles[candidate.result.FilePath] {
+			continue
+		}
+		seenFiles[candidate.result.FilePath] = true
+		selected = append(selected, candidate)
+	}
+	for _, candidate := range semantic[semanticHead:] {
+		if len(selected) == topK {
+			break
+		}
+		if !containsSearchCandidate(selected, candidate) {
+			selected = append(selected, candidate)
+		}
+	}
+	for _, candidate := range fusedSparse[sparseTarget:] {
+		if len(selected) == topK {
+			break
+		}
+		if !containsSearchCandidate(selected, candidate) {
+			selected = append(selected, candidate)
+		}
+	}
+	return selected
+}
+
+func containsSearchCandidate(candidates []searchCandidate, target searchCandidate) bool {
+	for _, candidate := range candidates {
+		if candidate.result.FilePath == target.result.FilePath &&
+			candidate.result.StartLine == target.result.StartLine &&
+			candidate.result.EndLine == target.result.EndLine {
+			return true
+		}
+	}
+	return false
+}
+
 func selectDiverseCandidates(candidates []searchCandidate, topK, maxPerFile int) []searchCandidate {
 	remaining := append([]searchCandidate(nil), candidates...)
 	selected := make([]searchCandidate, 0, minInt(topK, len(remaining)))
 	perFile := map[string]int{}
 	perSymbolName := map[string]int{}
 	perBaseName := map[string]int{}
+	distinctFileTarget := minInt(topK, (topK+1)/2)
 	for len(selected) < topK {
+		// Search is primarily a discovery operation for coding agents. Give the
+		// agent one strong location from each candidate file before spending the
+		// remaining result budget on additional regions in files it has already
+		// seen. Without this first pass, a few large or repetitive files can fill
+		// the context window even when other relevant implementation files ranked
+		// close behind them. The reserve is relevance-bounded: an exact usage or
+		// second requested symbol must not be buried under weak matches merely
+		// because it shares a file with an earlier result.
+		fileLimit := maxPerFile
+		if len(perFile) < distinctFileTarget && shouldReserveUnseenSearchFile(
+			remaining, selected, perFile, perSymbolName, perBaseName, maxPerFile,
+		) {
+			fileLimit = 1
+		}
 		bestIndex := -1
 		bestAdjusted := -math.MaxFloat64
 		for i := range remaining {
 			candidate := remaining[i]
-			if perFile[candidate.result.FilePath] >= maxPerFile || overlapsSelected(candidate, selected) {
+			if perFile[candidate.result.FilePath] >= fileLimit || overlapsSelected(candidate, selected) {
 				continue
 			}
-			symbolKey := strings.ToLower(candidate.result.QualifiedName)
-			if symbolKey == "" {
-				symbolKey = strings.ToLower(candidate.result.SymbolName)
-			}
-			symbolPenalty := 0.0
-			if symbolKey != "" {
-				symbolPenalty = 4 * float64(perSymbolName[symbolKey])
-			}
-			baseKey := strings.ToLower(filepath.Base(candidate.result.FilePath))
-			adjusted := candidate.score -
-				0.8*float64(perFile[candidate.result.FilePath]) -
-				symbolPenalty -
-				2*float64(perBaseName[baseKey])
+			adjusted := adjustedSearchCandidateScore(candidate, perFile, perSymbolName, perBaseName)
 			if adjusted > bestAdjusted || (adjusted == bestAdjusted && searchCandidateLess(candidate, remaining[bestIndex])) {
 				bestIndex = i
 				bestAdjusted = adjusted
@@ -1077,6 +2576,70 @@ func selectDiverseCandidates(candidates []searchCandidate, topK, maxPerFile int)
 		remaining = append(remaining[:bestIndex], remaining[bestIndex+1:]...)
 	}
 	return selected
+}
+
+func shouldReserveUnseenSearchFile(
+	candidates, selected []searchCandidate,
+	perFile, perSymbolName, perBaseName map[string]int,
+	maxPerFile int,
+) bool {
+	bestAny := -math.MaxFloat64
+	bestUnseen := -math.MaxFloat64
+	bestRelationship := -math.MaxFloat64
+	for _, candidate := range candidates {
+		if perFile[candidate.result.FilePath] >= maxPerFile || overlapsSelected(candidate, selected) {
+			continue
+		}
+		adjusted := adjustedSearchCandidateScore(candidate, perFile, perSymbolName, perBaseName)
+		if adjusted > bestAny {
+			bestAny = adjusted
+		}
+		if perFile[candidate.result.FilePath] > 0 && searchRelationshipCandidate(candidate) && adjusted > bestRelationship {
+			bestRelationship = adjusted
+		}
+		if perFile[candidate.result.FilePath] == 0 && adjusted > bestUnseen {
+			bestUnseen = adjusted
+		}
+	}
+	if bestUnseen == -math.MaxFloat64 {
+		return false
+	}
+	if bestRelationship != -math.MaxFloat64 && bestRelationship >= 0.65*bestUnseen {
+		return false
+	}
+	if bestAny <= 0 {
+		return true
+	}
+	return bestUnseen >= searchDiversityRelevanceRatio*bestAny
+}
+
+func searchRelationshipCandidate(candidate searchCandidate) bool {
+	for _, signal := range candidate.result.Signals {
+		switch signal {
+		case "symbol-usage", "same-container-neighbor", "same-file-bridge":
+			return true
+		}
+	}
+	return false
+}
+
+func adjustedSearchCandidateScore(
+	candidate searchCandidate,
+	perFile, perSymbolName, perBaseName map[string]int,
+) float64 {
+	symbolKey := strings.ToLower(candidate.result.QualifiedName)
+	if symbolKey == "" {
+		symbolKey = strings.ToLower(candidate.result.SymbolName)
+	}
+	symbolPenalty := 0.0
+	if symbolKey != "" {
+		symbolPenalty = 4 * float64(perSymbolName[symbolKey])
+	}
+	baseKey := strings.ToLower(filepath.Base(candidate.result.FilePath))
+	return candidate.score -
+		0.8*float64(perFile[candidate.result.FilePath]) -
+		symbolPenalty -
+		2*float64(perBaseName[baseKey])
 }
 
 func overlapsSelected(candidate searchCandidate, selected []searchCandidate) bool {
@@ -1226,6 +2789,29 @@ func buildSearchQuery(query string) searchQuery {
 	}
 }
 
+func buildSparseSearchQuery(query string) searchQuery {
+	terms := make([]string, 0, maxSparseSearchQueryTerms)
+	termSet := make(map[string]bool, maxSparseSearchQueryTerms)
+	weights := make(map[string]float64, maxSparseSearchQueryTerms)
+	for _, term := range sparseSearchTokens(query) {
+		if len(term) < 2 || sparseSearchStopWords[term] || termSet[term] {
+			continue
+		}
+		termSet[term] = true
+		weights[term] = 1
+		terms = append(terms, term)
+		if len(terms) == maxSparseSearchQueryTerms {
+			break
+		}
+	}
+	return searchQuery{
+		rawLower: strings.ToLower(strings.TrimSpace(query)),
+		terms:    terms,
+		termSet:  termSet,
+		weights:  weights,
+	}
+}
+
 func codeLikeSearchWeight(raw string) float64 {
 	trimmed := strings.Trim(raw, "./:+-")
 	letters := 0
@@ -1322,6 +2908,53 @@ func searchTokenVariants(raw string) []string {
 	return appendUnique(nil, variants...)
 }
 
+func sparseSearchTokens(text string) []string {
+	var out []string
+	for _, raw := range sparseSearchWordPattern.FindAllString(text, -1) {
+		var current []rune
+		currentDigit := false
+		flush := func() {
+			if len(current) > 0 {
+				out = append(out, strings.ToLower(string(current)))
+				current = nil
+			}
+		}
+		runes := []rune(raw)
+		for index, character := range runes {
+			if character == '_' {
+				flush()
+				continue
+			}
+			isDigit := unicode.IsDigit(character)
+			if len(current) > 0 && isDigit != currentDigit {
+				flush()
+			}
+			if len(current) > 0 && !isDigit && unicode.IsUpper(character) {
+				previous := runes[index-1]
+				nextLower := index+1 < len(runes) && unicode.IsLower(runes[index+1])
+				if unicode.IsLower(previous) || (unicode.IsUpper(previous) && nextLower) {
+					flush()
+				}
+			}
+			currentDigit = isDigit
+			current = append(current, character)
+		}
+		flush()
+	}
+	return out
+}
+
+func sparseSearchTermCounts(text string, queryTerms map[string]bool) (map[string]int, int) {
+	counts := map[string]int{}
+	tokens := sparseSearchTokens(text)
+	for _, token := range tokens {
+		if queryTerms[token] {
+			counts[token]++
+		}
+	}
+	return counts, len(tokens)
+}
+
 func searchTermCounts(text string, queryTerms map[string]bool) (map[string]int, int) {
 	counts := map[string]int{}
 	length := 0
@@ -1408,10 +3041,103 @@ func searchPathPrior(q searchQuery, filePath string) float64 {
 	if strings.Contains(lower, "/.github/workflows/") && !searchQuerySupplied(q, "workflow", "pipeline", "ci", "action") {
 		score -= 6
 	}
+	// .github/ metadata (ISSUE_TEMPLATE, PULL_REQUEST_TEMPLATE, CONTRIBUTING, FUNDING, etc.)
+	// is NEVER a code fix site, yet issue-template prose matches the problem statement's own
+	// filled-in fields (version/expected/actual boilerplate) and body-BM25-outranks the real
+	// source (measured: briannesbitt .github/ISSUE_TEMPLATE.md ranked #1 over src/Carbon/*).
+	// Hard-demote all non-workflow .github/ paths so template prose can never top the list.
+	if strings.Contains(lower, "/.github/") && !strings.Contains(lower, "/.github/workflows/") {
+		score -= 12
+	}
 	if strings.Contains(lower, "/dependencies/") || strings.Contains(lower, "/third_party/") || strings.Contains(lower, "/third-party/") {
 		score -= 5
 	}
+	if searchTestArtifactPath(lower) && !searchQuerySupplied(q,
+		"test", "tests", "testing", "spec", "specs", "regression", "regressions", "fixture", "fixtures",
+	) {
+		// Strong demotion (was -1.5 — far too weak): a test file that exercises the buggy
+		// function matches the issue's exact code tokens (function name + behaviour keywords),
+		// so it out-scores the real source at ~26-47 while the implementation sits at ~13.
+		// A bug-fix task never edits a test, so tests are pure exploration noise. -12 reliably
+		// sinks the test below the editable source (measured: briannesbitt RoundTest.php crowded
+		// out src/Carbon/Traits/Rounding.php; php-cs-fixer's 13 test files buried the fix). Not
+		// excluded outright — a test still surfaces if it is the only match.
+		score -= 12
+	}
+	if searchDocumentationArtifactPath(lower) && !searchQuerySupplied(q,
+		"doc", "docs", "documentation", "readme", "readmes", "guide", "guides", "example", "examples",
+	) {
+		// Strong demotion: docs describe features in the issue's own vocabulary and
+		// otherwise out-score the implementing code on a body-text match. A "fix the
+		// bug" query wants code, not the manual. (Was -1.25 — too weak to flip a ~9.9
+		// doc match below the ~5-8 code match; -6 reliably ranks code first.)
+		score -= 6
+	}
+	if searchGeneratedArtifactPath(lower) && !searchQuerySupplied(q,
+		"generated", "generator", "generators", "codegen", "codegens", "build", "builds", "dist", "bundle", "bundles",
+		"amalgamation", "amalgamated", "single", "onefile",
+	) {
+		// Strong demotion (was -2): an amalgamation scores as high as the real source
+		// (it IS the source, concatenated) so -2 leaves it competitive; -6 ranks the
+		// editable per-file source first so the agent's edit actually sticks.
+		score -= 6
+	}
 	return score
+}
+
+func searchTestArtifactPath(lower string) bool {
+	return strings.Contains(lower, "/test/") || strings.Contains(lower, "/tests/") ||
+		strings.Contains(lower, "/testdata/") || strings.Contains(lower, "/fixtures/") ||
+		strings.Contains(lower, "/__tests__/") || strings.Contains(lower, "/spec/") ||
+		strings.Contains(lower, ".test.") || strings.Contains(lower, ".spec.") ||
+		strings.Contains(lower, "_test.") || strings.Contains(lower, "_spec.") ||
+		strings.HasSuffix(lower, "_test.go") || strings.HasSuffix(lower, ".test")
+}
+
+func searchDocumentationArtifactPath(lower string) bool {
+	base := filepath.Base(lower)
+	if strings.Contains(lower, "/docs/") || strings.Contains(lower, "/doc/") ||
+		strings.Contains(lower, "/man/") || strings.Contains(lower, "/manual/") ||
+		strings.HasPrefix(base, "readme") || strings.HasPrefix(base, "changelog") {
+		return true
+	}
+	// Documentation / prose / man-page file types. These frequently describe a
+	// feature in the SAME words as the issue text (e.g. "--nul-output"), so they
+	// out-score the code that actually implements it on a body-text match. The
+	// agent's task is to edit SOURCE, so these must never outrank code.
+	// Note: .yml/.yaml are NOT here — they're usually config/CI (e.g. workflow files),
+	// not docs. Documentation YAML (manual.yml) is caught by the /docs/ /manual/ dir checks above.
+	for _, ext := range []string{".md", ".markdown", ".rst", ".adoc", ".txt"} {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	// man pages: foo.1 .. foo.9, and pre-rendered .prebuilt / .roff / .man / .1.prebuilt
+	if strings.HasSuffix(lower, ".prebuilt") || strings.HasSuffix(lower, ".roff") || strings.HasSuffix(lower, ".man") {
+		return true
+	}
+	if n := len(base); n >= 2 && base[n-2] == '.' && base[n-1] >= '1' && base[n-1] <= '9' {
+		return true
+	}
+	return false
+}
+
+func searchGeneratedArtifactPath(lower string) bool {
+	base := filepath.Base(lower)
+	// Amalgamated / single-header / concatenated build artifacts: a generated COPY of
+	// the real per-file source (e.g. nlohmann's single_include/nlohmann/json.hpp is a
+	// concatenation of include/nlohmann/**). They match the query as well as the real
+	// source AND duplicate it, so an agent that edits the amalgamation makes a change
+	// that gets overwritten by the next codegen — always steer to the real source.
+	if strings.Contains(lower, "/single_include/") || strings.Contains(lower, "/single-include/") ||
+		strings.Contains(lower, "amalgamat") || strings.Contains(lower, "/onefile/") ||
+		strings.Contains(lower, "/amalgamation/") {
+		return true
+	}
+	return strings.Contains(lower, "/generated/") || strings.Contains(lower, "/dist/") ||
+		strings.Contains(lower, "/build/") || strings.Contains(lower, "/gen/") ||
+		strings.Contains(base, ".generated.") || strings.Contains(base, "_generated.") ||
+		strings.HasPrefix(base, "generated_") || strings.HasSuffix(base, ".min.js")
 }
 
 func searchQuerySupplied(q searchQuery, terms ...string) bool {
