@@ -294,6 +294,12 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if spec.language == "C++" {
 		entities = appendMissingEntities(entities, cPlusPlusTypeAliasEntities(content)...)
 	}
+	if spec.language == "C" || spec.language == "C++" {
+		// The C mask blanks `#define` lines before tree-sitter, so macro names (opcodes,
+		// X-macros like MP_BC_*) never become symbols and a graph lookup for them returns
+		// nothing. Recover them from the UNMASKED content so `symbols`/`def <MACRO>` resolve.
+		entities = appendMissingEntities(entities, cMacroEntities(content)...)
+	}
 	if spec.language == "Kotlin" {
 		entities = append(entities, kotlinPrimaryConstructorFieldEntities(content)...)
 	}
@@ -6283,9 +6289,7 @@ func isNameNode(nodeType string) bool {
 func signatureFromNode(node *sitter.Node, src []byte) string {
 	start := node.StartByte()
 	end := node.EndByte()
-	if body := node.ChildByFieldName("body"); validNode(body) {
-		end = body.StartByte()
-	} else if body := firstBodyLikeChild(node); validNode(body) {
+	if body := signatureBodyBoundary(node); validNode(body) {
 		end = body.StartByte()
 	}
 	if end <= start || int(end) > len(src) {
@@ -6299,6 +6303,32 @@ func signatureFromNode(node *sitter.Node, src []byte) string {
 	// EXTENDS/INHERITS edges silently disappear for that type).
 	signature = strings.Join(strings.Fields(signature), " ")
 	return strings.TrimSpace(strings.TrimRight(signature, "{:; \t\r\n"))
+}
+
+// signatureBodyBoundary returns the node whose start byte marks the end of a
+// symbol's signature (i.e. where the body begins), or nil if none applies.
+func signatureBodyBoundary(node *sitter.Node) *sitter.Node {
+	if body := node.ChildByFieldName("body"); validNode(body) {
+		return body
+	}
+	// A JS/TS variable or class field bound to a function value
+	// (`const f = (a, b) => {…}`, `create = function () {…}`) keeps the body
+	// inside the value node, so the declarator/field itself exposes no `body`
+	// field. Descend into the function-like value and cut at *its* body,
+	// otherwise the entire function body leaks into the signature and any body
+	// edit reads as a signature change.
+	if value := node.ChildByFieldName("value"); functionLikeValue(value) {
+		if body := value.ChildByFieldName("body"); validNode(body) {
+			return body
+		}
+		if body := firstBodyLikeChild(value); validNode(body) {
+			return body
+		}
+	}
+	if body := firstBodyLikeChild(node); validNode(body) {
+		return body
+	}
+	return nil
 }
 
 func firstBodyLikeChild(node *sitter.Node) *sitter.Node {
@@ -6651,6 +6681,38 @@ func cPlusPlusTypeAliasEntities(content string) []Entity {
 				braceDepth = 0
 			}
 		}
+	}
+	return entities
+}
+
+// cDefineLineRe matches a C/C++ `#define NAME` (object- or function-like) at line start,
+// tolerating leading whitespace and spaces after `#`.
+var cDefineLineRe = regexp.MustCompile(`^\s*#\s*define\s+([A-Za-z_]\w*)`)
+
+// cMacroEntities scans the ORIGINAL (unmasked) C/C++ source for `#define` directives and emits
+// one macro Entity per name at its real line. This restores macros as queryable symbols that the
+// C preprocessor-mask would otherwise blank out. Additive + line-preserving: start==end line is
+// the real definition line, so identity stays (file,line)-consistent. First definition of a name
+// wins (appendMissingEntities dedups by (Kind,Name)).
+func cMacroEntities(content string) []Entity {
+	lines := strings.SplitAfter(content, "\n")
+	var entities []Entity
+	for i, line := range lines {
+		match := cDefineLineRe.FindStringSubmatch(line)
+		if match == nil {
+			continue
+		}
+		name := match[1]
+		signature := strings.TrimSpace(strings.TrimSuffix(line, "\n"))
+		entities = append(entities, Entity{
+			Kind:        "macro",
+			Name:        name,
+			Signature:   signature,
+			StartLine:   i + 1,
+			EndLine:     i + 1,
+			BodyHash:    hash(normalize(signature)),
+			Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, signature))),
+		})
 	}
 	return entities
 }
