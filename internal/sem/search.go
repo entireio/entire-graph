@@ -19,10 +19,13 @@ import (
 )
 
 const (
-	defaultSearchTopK              = 20
+	// Benchmark-calibrated: the graphmark suites (official SWE-bench Multilingual 300 among
+	// them) measured top-k 10 with 6-line snippets as the best agent config; the old defaults
+	// (20 / 40) produced ~15KB search outputs that get re-read every subsequent turn.
+	defaultSearchTopK              = 10
 	defaultSearchContextLines      = 8
 	defaultSearchMaxRegionLines    = 80
-	defaultSearchMaxSnippetLines   = 40
+	defaultSearchMaxSnippetLines   = 6
 	defaultSearchMaxRegionsPerFile = 3
 	defaultSearchMaxIndexedFiles   = 96
 	deepSearchMaxIndexedFiles      = 256
