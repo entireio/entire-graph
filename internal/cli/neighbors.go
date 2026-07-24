@@ -760,38 +760,44 @@ func compactNeighborEdge(direction string, edge neighborEdge) string {
 }
 
 func writeAgentNeighborCompleteness(out io.Writer, response neighborResponse) {
-	if len(response.Warnings) == 0 && len(response.PartialFailures) == 0 &&
-		(response.Stats.CompletenessLevel == "" || response.Stats.CompletenessLevel == "ok") {
+	writeCompletenessBlock(out, response.Warnings, response.PartialFailures, response.Stats)
+}
+
+// writeCompletenessBlock prints the shared coverage banner used by the
+// neighbors and impact text outputs. Silent on a clean "ok" run.
+func writeCompletenessBlock(out io.Writer, warnings []sem.ProviderWarning, partialFailures []sem.PartialFailure, stats sem.ProviderStats) {
+	if len(warnings) == 0 && len(partialFailures) == 0 &&
+		(stats.CompletenessLevel == "" || stats.CompletenessLevel == "ok") {
 		return
 	}
-	level := response.Stats.CompletenessLevel
+	level := stats.CompletenessLevel
 	if level == "" {
 		level = "degraded"
 	}
-	if response.Stats.Files > 0 {
+	if stats.Files > 0 {
 		fmt.Fprintf(out, "Completeness: %s (%d/%d files parsed; %d warning%s; %d partial failure%s)\n",
-			level, response.Stats.ParsedFiles, response.Stats.Files,
-			len(response.Warnings), pluralSuffix(len(response.Warnings)),
-			len(response.PartialFailures), pluralSuffix(len(response.PartialFailures)),
+			level, stats.ParsedFiles, stats.Files,
+			len(warnings), pluralSuffix(len(warnings)),
+			len(partialFailures), pluralSuffix(len(partialFailures)),
 		)
 	} else {
 		fmt.Fprintf(out, "Completeness: %s (%d warning%s; %d partial failure%s)\n",
-			level, len(response.Warnings), pluralSuffix(len(response.Warnings)),
-			len(response.PartialFailures), pluralSuffix(len(response.PartialFailures)),
+			level, len(warnings), pluralSuffix(len(warnings)),
+			len(partialFailures), pluralSuffix(len(partialFailures)),
 		)
 	}
 	const maxAgentFailures = 3
 	warningsVisible, failuresVisible := agentDiagnosticVisibility(
-		len(response.Warnings), len(response.PartialFailures), maxAgentFailures,
+		len(warnings), len(partialFailures), maxAgentFailures,
 	)
-	for _, warning := range response.Warnings[:warningsVisible] {
+	for _, warning := range warnings[:warningsVisible] {
 		if warning.FilePath == "" {
 			fmt.Fprintf(out, "- warning %s\n", warning.Code)
 		} else {
 			fmt.Fprintf(out, "- warning %s: %s\n", warning.Code, warning.FilePath)
 		}
 	}
-	for _, failure := range response.PartialFailures[:failuresVisible] {
+	for _, failure := range partialFailures[:failuresVisible] {
 		if failure.FilePath == "" {
 			fmt.Fprintf(out, "- partial %s\n", failure.Code)
 		} else {
@@ -799,7 +805,7 @@ func writeAgentNeighborCompleteness(out io.Writer, response neighborResponse) {
 		}
 	}
 	visible := warningsVisible + failuresVisible
-	if omitted := len(response.Warnings) + len(response.PartialFailures) - visible; omitted > 0 {
+	if omitted := len(warnings) + len(partialFailures) - visible; omitted > 0 {
 		fmt.Fprintf(out, "- ... %d more diagnostic%s in JSON output\n", omitted, pluralSuffix(omitted))
 	}
 }

@@ -52,7 +52,8 @@ by eliminating exploration; when there is nothing to explore, skip it.
 ## Reference
 
     locate  ->  entire graph search --repo . --profile full --query "..."
-    impact  ->  entire graph neighbors --repo . --symbol X --relation CALLS --direction in
+    impact  ->  entire graph impact --repo . --symbol X   (one shot: callers, callees, type consumers, data flow, co-change, siblings)
+    callers ->  entire graph neighbors --repo . --symbol X --relation CALLS --direction in
     change  ->  entire graph diff --base A --head B --json
     detect  ->  entire graph capabilities --json   (inventory-only languages have no relations)
 `
