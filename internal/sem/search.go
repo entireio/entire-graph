@@ -154,6 +154,12 @@ type searchQuery struct {
 	terms    []string
 	termSet  map[string]bool
 	weights  map[string]float64
+	// words holds only the terms the caller actually WROTE as words: the maximal
+	// alphanumeric runs of the raw query. It is deliberately not the term set —
+	// `terms` also contains camelCase/compound fragments and morphological variants
+	// mined out of identifiers, which are evidence for matching but not for intent.
+	// See searchQuerySupplied.
+	words map[string]bool
 }
 
 type searchCandidate struct {
@@ -1354,7 +1360,8 @@ func candidatesForFile(q searchQuery, filePath, language string, lines []string,
 		}
 		regions := matchingLineRegions(q, lines, searchStart, end, options.ContextLines, options.MaxRegionLines)
 		for _, region := range regions {
-			if candidate, ok := makeSearchCandidate(q, filePath, language, lines, region[0], region[1], symbol, options.MaxSnippetLines); ok {
+			attributed := attributeSearchRegion(q, lines, region[0], region[1], symbol, symbols)
+			if candidate, ok := makeSearchCandidate(q, filePath, language, lines, region[0], region[1], attributed, options.MaxSnippetLines); ok {
 				out = append(out, candidate)
 			}
 		}
@@ -1392,6 +1399,40 @@ func candidatesForFile(q searchQuery, filePath, language string, lines []string,
 		}
 	}
 	return out
+}
+
+// attributeSearchRegion decides which symbol a matching region INSIDE a larger symbol should
+// be credited to.
+//
+// A symbol too large to return whole is split into the regions that matched the query, and
+// every one of those regions inherited the enclosing symbol's identity — including its
+// name-match score. For a container that is wrong twice over: a 3,000-line class scores its
+// name bonus at every matching line in the file, so an arbitrary region of `class Calculation`
+// outranks the small method that actually implements the reported behaviour; and the result
+// then reports `class Calculation` as the thing the agent is looking at.
+//
+// The correction is narrow, and it is a statement about evidence rather than a tuning knob: a
+// region that does not even contain the declaration of the symbol it is named after did not
+// match that name, so it is credited to the smallest CALLABLE inside the container that
+// contains it. Regions that do include the declaration, and containers with no callable at
+// that line (field blocks, constant tables), are left exactly as they were.
+func attributeSearchRegion(
+	q searchQuery, lines []string, start, end int, symbol SymbolRecord, symbols []SymbolRecord,
+) SymbolRecord {
+	if symbol.ID == "" || searchEnclosableSymbolKind(symbol.Kind) || start <= symbol.StartLine {
+		return symbol
+	}
+	inner, ok := smallestSearchSymbolContainingLineWhere(
+		symbols, searchFocusLine(q, lines, start, end),
+		func(candidate SymbolRecord) bool {
+			return searchEnclosableSymbolKind(candidate.Kind) &&
+				candidate.StartLine >= symbol.StartLine && candidate.EndLine <= symbol.EndLine
+		},
+	)
+	if !ok {
+		return symbol
+	}
+	return inner
 }
 
 // sparseCandidatesForFile complements syntax-aware regions with fixed-width
@@ -2842,11 +2883,13 @@ func buildSearchQuery(query string) searchQuery {
 		}
 		weights = trimmedWeights
 	}
+	rawLower := strings.ToLower(strings.TrimSpace(query))
 	return searchQuery{
-		rawLower: strings.ToLower(strings.TrimSpace(query)),
+		rawLower: rawLower,
 		terms:    terms,
 		termSet:  termSet,
 		weights:  weights,
+		words:    searchQueryWords(rawLower),
 	}
 }
 
@@ -2865,11 +2908,13 @@ func buildSparseSearchQuery(query string) searchQuery {
 			break
 		}
 	}
+	rawLower := strings.ToLower(strings.TrimSpace(query))
 	return searchQuery{
-		rawLower: strings.ToLower(strings.TrimSpace(query)),
+		rawLower: rawLower,
 		terms:    terms,
 		termSet:  termSet,
 		weights:  weights,
+		words:    searchQueryWords(rawLower),
 	}
 }
 
@@ -3113,8 +3158,13 @@ func searchPathPrior(q searchQuery, filePath string) float64 {
 	if strings.Contains(lower, "/dependencies/") || strings.Contains(lower, "/third_party/") || strings.Contains(lower, "/third-party/") {
 		score -= 5
 	}
+	// "regression"/"regressions" are deliberately NOT test-intent words. In issue prose
+	// "a regression" names behaviour that used to work, not a request for the regression
+	// suite; a caller who does want tests writes "test"/"spec"/"fixture", and the phrase
+	// "regression test" already contains "test". Keeping them here let the commonest word
+	// in a bug report switch off the test demotion for the whole query.
 	if searchTestArtifactPath(lower) && !searchQuerySupplied(q,
-		"test", "tests", "testing", "spec", "specs", "regression", "regressions", "fixture", "fixtures",
+		"test", "tests", "testing", "spec", "specs", "fixture", "fixtures",
 	) {
 		// Strong demotion (was -1.5 — far too weak): a test file that exercises the buggy
 		// function matches the issue's exact code tokens (function name + behaviour keywords),
@@ -3187,13 +3237,54 @@ func searchGeneratedArtifactPath(lower string) bool {
 		strings.HasPrefix(base, "generated_") || strings.HasSuffix(base, ".min.js")
 }
 
+// searchQuerySupplied reports whether the caller ASKED FOR a class of file, which is how
+// every relevance prior below 1 is switched back off ("update the docs for…", "fix the
+// example", "add a test").
+//
+// Intent is read from the words the caller wrote, never from fragments mined out of an
+// identifier they merely mentioned. The distinction is not cosmetic: the tokenizer splits
+// `NamedByteArrayTest.java` into `named`/`byte`/`array`/`test` at weight 1.1, so under a
+// plain weight lookup an issue that merely names a reproduction file switched OFF the -12
+// test-artifact demotion for the whole query — and test fixtures, which restate the issue in
+// its own vocabulary, took the top of the ranking away from the source being fixed
+// (measured: a lombok issue quoting `NamedByteArrayTest.java` ranked a `test/transform/
+// resource/before/*.java` fixture first). Mentioning an identifier is not a request.
 func searchQuerySupplied(q searchQuery, terms ...string) bool {
+	words := q.words
+	if words == nil {
+		// Hand-built queries (tests, direct API callers) carry no precomputed word set.
+		// Derive it rather than silently answering "no intent" for every class.
+		words = searchQueryWords(q.rawLower)
+	}
 	for _, term := range terms {
-		if q.weights[term] >= 1 {
+		if words[term] {
 			return true
 		}
 	}
 	return false
+}
+
+// searchQueryWords splits a raw query into the words a human wrote: maximal alphanumeric
+// runs. Any separator a writer types — space, `/`, `.`, `_`, `-`, punctuation — ends a word,
+// so `docs/api.md` contributes `docs`, while `NamedByteArrayTest` contributes only itself.
+func searchQueryWords(rawLower string) map[string]bool {
+	words := map[string]bool{}
+	current := make([]rune, 0, 16)
+	flush := func() {
+		if len(current) > 0 {
+			words[string(current)] = true
+			current = current[:0]
+		}
+	}
+	for _, character := range rawLower {
+		if unicode.IsLetter(character) || unicode.IsDigit(character) {
+			current = append(current, unicode.ToLower(character))
+			continue
+		}
+		flush()
+	}
+	flush()
+	return words
 }
 
 func symbolSearchScore(q searchQuery, symbol SymbolRecord) (float64, []string) {

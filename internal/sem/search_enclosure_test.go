@@ -270,18 +270,20 @@ func TestAllocateSearchSnippetsSpendsBudgetByRank(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name          string
-		count         int
-		window        int
-		bodyLines     int
-		hardBudget    int
-		growth        int
-		headRanks     int
-		tailLines     int
-		withEnclosure bool
-		wantBodies    int
-		wantDemoted   int
-		wantGrowth    bool // payload may exceed the ranker's size
+		name                       string
+		count                      int
+		window                     int
+		bodyLines                  int
+		hardBudget                 int
+		growth                     int
+		headRanks                  int
+		tailLines                  int
+		withEnclosure              bool
+		wantBodies                 int
+		wantBodiesExact            bool // wantBodies is the exact count, not a floor
+		wantDemoted                int
+		wantCompleteRanksArePrefix bool // completed ranks must be 1..k, never a gap
+		wantGrowth                 bool // payload may exceed the ranker's size
 	}{
 		{
 			// Nothing to buy: the payload must come back byte-for-byte unchanged.
@@ -289,9 +291,19 @@ func TestAllocateSearchSnippetsSpendsBudgetByRank(t *testing.T) {
 			growth: 4096, headRanks: 3, tailLines: 2,
 		},
 		{
-			name: "buys complete bodies within the allowance", count: 6, window: 6, bodyLines: 30,
-			growth: 4096, headRanks: 3, tailLines: 2, withEnclosure: true,
-			wantBodies: 6, wantGrowth: true,
+			// The head — and only the head — comes back as N complete bodies. This is the
+			// property an agent depends on: it can edit rank 1..N without a follow-up read.
+			name: "buys a complete body for every head rank", count: 10, window: 6, bodyLines: 30,
+			growth: 16384, headRanks: 5, tailLines: 2, withEnclosure: true,
+			wantBodies: 5, wantBodiesExact: true, wantGrowth: true,
+		},
+		{
+			// Below the head the agent is deciding "is this worth opening", so a whole
+			// callable there would spend the head's budget on code that is not read. Even
+			// with a budget large enough for all ten, only the head is upgraded.
+			name: "never buys a body below the head", count: 10, window: 6, bodyLines: 30,
+			hardBudget: 1 << 20, growth: 1 << 20, headRanks: 2, tailLines: 2, withEnclosure: true,
+			wantBodies: 2, wantBodiesExact: true, wantGrowth: true,
 		},
 		{
 			// With no allowance the tail has to pay, so at least one result is demoted and
@@ -305,19 +317,27 @@ func TestAllocateSearchSnippetsSpendsBudgetByRank(t *testing.T) {
 			// window rather than blow the budget.
 			name: "symbol larger than the budget degrades gracefully", count: 4, window: 4, bodyLines: 400,
 			growth: 512, headRanks: 3, tailLines: 2, withEnclosure: true,
+			wantBodiesExact: true,
 		},
 		{
 			// Regression: a ranking shorter than the protected head must still be allocated.
 			name: "ranking shorter than the head is still allocated", count: 2, window: 4, bodyLines: 20,
 			growth: 4096, headRanks: 3, tailLines: 2, withEnclosure: true,
-			wantBodies: 2, wantGrowth: true,
+			wantBodies: 2, wantBodiesExact: true, wantGrowth: true,
 		},
 		{
-			// The hard ceiling wins over an unlimited growth allowance: bodies are bought
-			// until the ceiling is reached and not one byte further.
+			// Budget exhaustion: the ceiling wins over an unlimited growth allowance, so the
+			// head is completed top-down until the ceiling is reached and not one byte further.
 			name: "hard budget clamps the allowance", count: 4, window: 4, bodyLines: 20,
 			hardBudget: 2000, growth: 100000, headRanks: 3, tailLines: 2, withEnclosure: true,
 			wantBodies: 1, wantGrowth: true,
+		},
+		{
+			// Degradation order: when the budget can seat only some of the head's bodies, the
+			// ones it buys are the shallowest ranks (asserted below via wantCompleteRanks).
+			name: "spends the shallowest ranks first", count: 8, window: 4, bodyLines: 40,
+			hardBudget: 4200, growth: 100000, headRanks: 5, tailLines: 2, withEnclosure: true,
+			wantBodies: 1, wantCompleteRanksArePrefix: true, wantGrowth: true,
 		},
 	}
 
@@ -337,8 +357,29 @@ func TestAllocateSearchSnippetsSpendsBudgetByRank(t *testing.T) {
 			if bodies < testCase.wantBodies {
 				t.Fatalf("complete bodies = %d, want >= %d", bodies, testCase.wantBodies)
 			}
+			if testCase.wantBodiesExact && bodies != testCase.wantBodies {
+				t.Fatalf("complete bodies = %d, want exactly %d", bodies, testCase.wantBodies)
+			}
 			if demoted < testCase.wantDemoted {
 				t.Fatalf("demoted = %d, want >= %d", demoted, testCase.wantDemoted)
+			}
+			// A body is never granted below the head, whatever the budget allows.
+			completed := 0
+			for index, result := range allocated {
+				if !containsString(result.Signals, searchCompleteSymbolSignal) {
+					continue
+				}
+				completed++
+				if index >= testCase.headRanks {
+					t.Fatalf("rank %d is below the head (%d) but carries a complete body",
+						index+1, testCase.headRanks)
+				}
+				if testCase.wantCompleteRanksArePrefix && index != completed-1 {
+					t.Fatalf("completed rank %d leaves a shallower rank incomplete", index+1)
+				}
+			}
+			if completed != bodies {
+				t.Fatalf("allocator reported %d bodies but marked %d results", bodies, completed)
 			}
 			if len(allocated) != len(results) {
 				t.Fatalf("allocator changed the result count: %d != %d", len(allocated), len(results))
@@ -373,6 +414,64 @@ func TestAllocateSearchSnippetsSpendsBudgetByRank(t *testing.T) {
 				assertVerbatimSnippet(t, result, lines)
 			}
 		})
+	}
+}
+
+// TestSearchEnclosureHeadRanksIsFiveDeep pins the shipped head depth, not just the mechanism.
+// The number is the product measurement: first-hit is the edited file 35% of the time and one
+// of the first three 46%, so a head of two or three leaves most searches one Read short of an
+// edit. Five is the shipped judgement; changing it is a product decision and should break here.
+func TestSearchEnclosureHeadRanksIsFiveDeep(t *testing.T) {
+	t.Parallel()
+	if searchEnclosureHeadRanks != 5 {
+		t.Fatalf("searchEnclosureHeadRanks = %d, want 5", searchEnclosureHeadRanks)
+	}
+	results, enclosures, _ := makeAllocatorResults(8, 6, 30)
+	_, bodies, _ := allocateSearchSnippets(
+		results, enclosures, 1<<20, searchEnclosureGrowthBytes,
+		searchEnclosureHeadRanks, searchEnclosureTailSnippetLines,
+	)
+	if bodies != searchEnclosureHeadRanks {
+		t.Fatalf("a budget-unconstrained allocation completed %d bodies, want the whole head (%d)",
+			bodies, searchEnclosureHeadRanks)
+	}
+}
+
+// TestWidenSearchResultToEnclosureReportsTheBodyItReturns covers the identity half of the
+// upgrade: ranking may have attributed a hit to a container, but a result that SHOWS one
+// method's source must NAME that method, or the agent reads `class Foo` above a body that
+// is not the class.
+func TestWidenSearchResultToEnclosureReportsTheBodyItReturns(t *testing.T) {
+	t.Parallel()
+	lines, _ := enclosureTestFile(200, 40, 90, "method")
+	result := SearchResult{
+		Rank: 1, FilePath: "pkg/file.go", StartLine: 1, EndLine: 200, FocusLine: 55,
+		SnippetStartLine: 54, SnippetEndLine: 56, Snippet: strings.Join(lines[53:56], "\n"),
+		Kind: "class", SymbolID: "container", SymbolName: "Ledger",
+		QualifiedName: "Ledger", Signature: "class Ledger", Signals: []string{"body"},
+	}
+	inner := SymbolRecord{
+		ID: "inner", Kind: "method", Name: "post", QualifiedName: "Ledger.post",
+		Signature: "func (l *Ledger) post()", StartLine: 40, EndLine: 90,
+	}
+	widened := widenSearchResultToEnclosure(result, searchEnclosure{start: 40, end: 90, lines: lines, symbol: inner})
+
+	if widened.SymbolID != inner.ID || widened.SymbolName != inner.Name ||
+		widened.QualifiedName != inner.QualifiedName || widened.Kind != inner.Kind ||
+		widened.Signature != inner.Signature {
+		t.Fatalf("widened result still reports the container: %#v", widened)
+	}
+	if widened.SnippetStartLine != 40 || widened.SnippetEndLine != 90 {
+		t.Fatalf("widened snippet spans %d-%d, want 40-90", widened.SnippetStartLine, widened.SnippetEndLine)
+	}
+	// Re-identification is an upgrade, not truncation: the stats counter must not report it.
+	if truncated := countBudgetTruncatedResults([]SearchResult{result}, []SearchResult{widened}); truncated != 0 {
+		t.Fatalf("completed body counted as %d truncated result(s)", truncated)
+	}
+	// A result the allocator did not re-identify keeps whatever ranking gave it.
+	same := widenSearchResultToEnclosure(result, searchEnclosure{start: 40, end: 90, lines: lines})
+	if same.SymbolName != "Ledger" {
+		t.Fatalf("a body with no symbol record rewrote the result identity: %#v", same)
 	}
 }
 

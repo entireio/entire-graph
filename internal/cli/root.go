@@ -118,7 +118,7 @@ Usage:
   entire graph symbols --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
   entire graph edges --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
   entire graph index --repo . [--profile syntax-only|fast|full] [--cache-dir path] [--format json] [--head] [--ignore-file path] [--include-file path]
-  entire graph search --query "issue or concept" --repo . [--format json|ndjson|text|agent] [--top-k 20] [--max-context-bytes 16384] [--head] [--profile syntax-only|fast|full] [--max-indexed-files n|--index-all-files] [--cache-dir path|--no-cache]
+  entire graph search --query "issue or concept" --repo . [--format json|ndjson|text|agent] [--top-k 20] [--max-context-bytes 24576] [--head] [--profile syntax-only|fast|full] [--max-indexed-files n|--index-all-files] [--cache-dir path|--no-cache]
   entire graph neighbors --symbol NAME --repo . [--file path] [--relation CALLS] [--direction both|in|out] [--depth 1|2] [--limit 20] [--format json|text|agent] [--max-context-bytes 16384] [--head] [--cache-dir path|--no-cache] [--internal-only] [--exclude-tests]
   entire graph impact --symbol NAME --repo . [--file path] [--depth 1|2] [--limit 15] [--format text|json] [--max-context-bytes 4096] [--head] [--profile fast|full] [--cache-dir path|--no-cache] [--exclude-tests]
   entire graph stats [--repo .] [--since 30d|7d|all] [--format text|json] [--sessions-dir path|--transcript path]

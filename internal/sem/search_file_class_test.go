@@ -14,8 +14,17 @@ func TestClassifySearchFile(t *testing.T) {
 		{"plain source", "src/policy.ts", searchFileClassSource},
 		{"nested source", "packages/docusaurus-utils/src/markdownUtils.ts", searchFileClassSource},
 		{"source named like a doc dir sibling", "internal/docparser/parse.go", searchFileClassSource},
-		{"config yaml is not documentation", ".github/workflows/test.yml", searchFileClassSource},
 		{"header", "include/fmt/ranges.h", searchFileClassSource},
+
+		{"config yaml is data, not documentation", ".github/workflows/test.yml", searchFileClassData},
+		{"package manifest", "axum-extra/Cargo.toml", searchFileClassData},
+		{"command schema", "src/commands/bitcount.json", searchFileClassData},
+		{"maven pom", "pom.xml", searchFileClassData},
+		{"ini config", "setup.cfg", searchFileClassData},
+		// Executable program text stays source even when it configures something: a fix
+		// really can live in a config script, unlike in a serialized table.
+		{"config written in code is source", "packages/app/vite.config.ts", searchFileClassSource},
+		{"gradle build script is source", "build.gradle", searchFileClassSource},
 
 		{"markdown anywhere", "src/policy.md", searchFileClassDoc},
 		{"mdx anywhere", "src/policy.mdx", searchFileClassDoc},
@@ -65,6 +74,8 @@ func TestSearchFileClassPriorDemotesNonSourceForCodeQueries(t *testing.T) {
 		{"doc halved", "website/versioned_docs/version-2.x/i18n/i18n-tutorial.mdx", searchNonSourceClassPrior},
 		{"vendored halved", "vendor/github.com/pkg/errors/errors.go", searchNonSourceClassPrior},
 		{"generated halved", "dist/bundle.js", searchNonSourceClassPrior},
+		{"data halved", "src/commands/bitcount.json", searchNonSourceClassPrior},
+		{"manifest halved", "axum-extra/Cargo.toml", searchNonSourceClassPrior},
 		{"example softened", "examples/basic/main.go", searchSecondaryClassPrior},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -87,6 +98,9 @@ func TestSearchFileClassPriorRespectsExplicitClassIntent(t *testing.T) {
 		{"vendor task", "refresh the vendored dependency", "vendor/x/y.go"},
 		{"generated task", "regenerate the dist bundle", "dist/bundle.js"},
 		{"example task", "fix the example program", "examples/basic/main.go"},
+		{"config task", "the yaml config parses the wrong timeout", "deploy/values.yaml"},
+		{"schema task", "the command schema declares the wrong arity", "src/commands/bitcount.json"},
+		{"dependency task", "bump the dependency in the manifest", "axum-extra/Cargo.toml"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got := searchFileClassPrior(buildSearchQuery(test.query), test.path)

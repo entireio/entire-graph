@@ -15,30 +15,42 @@ Default flags to remember: pass `--repo .` when you're not inside an Entire sess
 Reach for the smallest tool that answers your question.
 
 ### 🔍 search — *find the code for a task* (your first move)
-Ranked source regions for a plain-language description, with the source and `file:line` inline. Hybrid ranking over bodies, identifiers (camelCase/snake_case aware), signatures, paths, and graph neighbors. Output is budgeted (16 KiB by default) to drop straight into context.
+Ranked source regions for a plain-language description, with the source and `file:line` inline. Hybrid ranking over bodies, identifiers (camelCase/snake_case aware), signatures, paths, and graph neighbors. Output is budgeted (24 KiB by default) to drop straight into context.
 
 ```sh
 entire graph search --repo . --query "<the task or bug in one plain sentence>" --format text --top-k 8
 ```
 
 - `--format agent` for compact ranked output with latency telemetry; `json`/`ndjson` for the full schema (completeness, partial failures, diagnostics).
-- `--top-k N` result count; `--max-context-bytes N` byte budget (`0` = unbounded).
+- `--top-k N` result count; `--max-context-bytes N` byte budget (`0` = unbounded, default 24576 — see "the budget is sized in turns" below).
 - Working tree by default; add `--head` for committed-tree + cache reuse.
 - `--profile syntax-only|fast|full` (default `syntax-only`); `--index-all-files` or `--max-indexed-files N` to widen/bound cold-search parsing.
 
 **Ranking priors you should expect (they are deliberate, not bugs):**
 
-- **Source outranks non-source.** Prose documentation (`.md`/`.mdx`/`.rst`/`.adoc`/`.txt`, `docs/`, `website/`, `versioned_docs/`, README/CHANGELOG), vendored trees (`vendor/`, `node_modules/`, `third_party/`), generated artifacts (`dist/`, `single_include/`, lock files) and `examples/` carry a **multiplicative** relevance prior below 1, so they must be clearly more relevant than the best source hit to outrank it. Nothing is filtered: a documentation hit still ranks first when it is the only match, and the prior switches off entirely when your query asks for that class ("update the **docs** for…", "fix the **example**", "regenerate the **dist** bundle"). Demoted hits are labelled with a `doc-prior` / `vendored-prior` / `generated-prior` / `example-prior` signal.
+- **Source outranks non-source.** Prose documentation (`.md`/`.mdx`/`.rst`/`.adoc`/`.txt`, `docs/`, `website/`, `versioned_docs/`, README/CHANGELOG), vendored trees (`vendor/`, `node_modules/`, `third_party/`), generated artifacts (`dist/`, `single_include/`, lock files), serialized data and configuration (`.json`/`.yaml`/`.toml`/`.xml`/`.ini` — package manifests, command schemas, option tables) and `examples/` carry a **multiplicative** relevance prior below 1, so they must be clearly more relevant than the best source hit to outrank it. Nothing is filtered: a documentation hit still ranks first when it is the only match, and the prior switches off entirely when your query asks for that class ("update the **docs** for…", "fix the **example**", "regenerate the **dist** bundle", "the **yaml** **config** parses the wrong timeout"). Demoted hits are labelled with a `doc-prior` / `vendored-prior` / `generated-prior` / `data-prior` / `example-prior` signal.
+- **Intent is read from the words you wrote.** The switch-off above triggers on words, not on fragments of identifiers you happen to quote: mentioning `NamedByteArrayTest.java` does not turn off the test-file demotion, and "a **regression** in routing" is a report about behaviour, not a request for the regression suite. Write "add a **test**", "fix the **docs**" when you do mean the artifact.
 - **Near-duplicate copies are collapsed.** Two hits that are the same content in different files — versioned documentation trees, vendored snapshots, generated mirrors — are merged into the best-ranked copy, which then reports a `+N similar` signal. The freed result slots go to genuinely different code.
+- **A hit is named after the smallest thing that contains it.** A matching region deep inside a 3,000-line class is attributed to the method it actually lies in, not to the class — so the class name cannot lend its score to every region in the file, and `symbol_name` describes what you are looking at.
 
-**Snippets are allocated by rank, not spread evenly.** Where the byte budget allows, a hit is
-returned as the **complete body of its enclosing function/method** — snapped to the graph's own
-symbol bounds, marked with the `complete-symbol` signal, and counted in
+**Snippets are allocated by rank, not spread evenly.** The **top 5 hits** come back as the
+**complete body of their enclosing function/method** — snapped to the graph's own symbol
+bounds, marked with the `complete-symbol` signal, and counted in
 `stats.complete_symbol_snippets`. Those results need no follow-up read: `snippet_start_line` ..
-`snippet_end_line` is the whole callable, verbatim. To pay for that, results further down the
-ranking may be reduced to a two-line **locator** window (counted in `stats.locator_snippets`) —
-still exact `file:line` + symbol identity, just not reading material. Symbols too large to
-return whole keep their focused window.
+`snippet_end_line` is the whole callable, verbatim. **Edit straight from the search output.**
+To pay for that, results below the head are reduced to a two-line **locator** window (counted
+in `stats.locator_snippets`) — still exact `file:line` + symbol identity, just not reading
+material. Symbols too large to return whole (>160 lines) keep their focused window.
+
+**The budget is sized in turns, not in bytes.** A search payload is ~0.6% of what a session
+spends; one extra agent turn is ~42.5k tokens, because 95.9% of billed tokens are context
+re-read. A search that stops one Read short of an edit therefore costs about 40x the whole
+payload that caused it. The 24 KiB default exists so the ceiling is never the reason a head
+result comes back as half a function — it is a ceiling, not a target: payloads only grow to
+buy complete head bodies, and the allocator always picks the cheapest plan that delivers them
+(measured across 14 repos: mean payload 11.8 KiB, half the ceiling). Pass
+`--max-context-bytes` to tighten it; bodies then degrade to focused windows, shallowest ranks
+kept last.
 
 **When:** the start of essentially every task. One good query lands you on the fix area.
 
@@ -169,6 +181,13 @@ possible (every turn re-reads your whole context — that is the token cost). Ha
 more searches. (3) NEVER read a whole file to explore; pass a line range. (4) NEVER search outside
 this repo. Apply the minimal fix and STOP the moment you can justify it.
 ```
+
+The block above is reproduced verbatim as the one that produced those numbers. Since it was
+measured, search began returning the **top 5 hits as complete function bodies**, which makes its
+"then open the top hit's file" step optional: if the hit you want carries the `complete-symbol`
+signal, edit straight from the search output and skip the Read entirely. That read was ~3.8 turns
+per session at ~42.5k tokens each — the largest remaining cost the tool can remove. (The
+benchmark number above has not been re-measured with the change.)
 
 For bug-fix/locate tasks, run search at `--profile full` (call-graph expansion active) with default
 text output (tiered: full snippet for the top hits, terse locators after). Measured detail that

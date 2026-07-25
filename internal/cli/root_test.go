@@ -294,7 +294,7 @@ func TestSearchCommandReturnsRankedJSON(t *testing.T) {
 	if len(response.Results) == 0 || response.Results[0].Rank != 1 || response.Results[0].FilePath != "auth.py" || response.Results[0].SymbolName != "validate_token" {
 		t.Fatalf("search response = %#v", response)
 	}
-	if response.Stats.ContextBudgetBytes != 16*1024 || response.Stats.ResultBytes > response.Stats.ContextBudgetBytes {
+	if response.Stats.ContextBudgetBytes != defaultSearchContextBytes || response.Stats.ResultBytes > response.Stats.ContextBudgetBytes {
 		t.Fatalf("search context budget = %#v", response.Stats)
 	}
 	if response.Stats.SearchLatencyMS != response.Stats.TotalLatencyMS || response.Stats.TotalLatencyMS < response.Stats.QueryLatencyMS {

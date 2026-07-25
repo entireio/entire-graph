@@ -75,13 +75,15 @@ one transcript).
 
 | agent workflow | before | with Entire Graph |
 |---|---|---|
-| **Locate a fix** | grep → open files → grep again (~90% of session tokens) | one `entire graph search` → read a line range → edit |
+| **Locate a fix** | grep → open files → grep again (~90% of session tokens) | one `entire graph search` → edit (the top 5 hits come back as complete function bodies) |
 | **Impact of a change** | repo-wide grep for callers | `entire graph impact --symbol X` — callers, type consumers, data flow, co-change in one shot |
 | **Review a diff** | file-by-file reading | `entire graph diff` — entity-level changes with dependent counts |
 
 The search understands natural language ("XTRIM trims wrong stream entries"), ranks real
-implementation code above tests and docs, bridges vocabulary gaps through the call graph, and
-returns budgeted output designed to drop straight into an agent's context.
+implementation code above tests, docs and config, bridges vocabulary gaps through the call
+graph, and returns budgeted output designed to drop straight into an agent's context — the
+top-ranked hits arrive as complete function bodies, so the common case is search → edit with
+no follow-up file read at all.
 
 Want the exact agent instructions? `entire graph agent-guide` prints them; they also live in
 [AGENTS.md](AGENTS.md), including the copy-paste prompt block that produced the benchmark numbers.
