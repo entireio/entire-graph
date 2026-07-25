@@ -116,11 +116,19 @@ type SearchStats struct {
 	ResultBytes        int   `json:"result_bytes"`
 	ContextBudgetBytes int   `json:"context_budget_bytes,omitempty"`
 	ResultsDropped     int   `json:"results_dropped_by_budget,omitempty"`
-	SnippetsTruncated  int   `json:"snippets_truncated_by_budget,omitempty"`
-	IndexCacheHit      bool  `json:"index_cache_hit"`
-	IndexLatencyMS     int64 `json:"index_latency_ms"`
-	QueryLatencyMS     int64 `json:"query_latency_ms"`
-	TotalLatencyMS     int64 `json:"total_latency_ms"`
+	// SnippetsTruncated counts results carrying LESS source than the ranker produced for
+	// them, whether the byte fitter compacted them or the snippet allocator demoted them to
+	// a locator. A result grown to a complete symbol body is not truncated.
+	SnippetsTruncated int `json:"snippets_truncated_by_budget,omitempty"`
+	// CompleteSymbols counts results returned as the complete body of their enclosing
+	// symbol; LocatorSnippets counts tail results demoted to a locator window to pay for
+	// them. Together they report how the byte budget was allocated (schema 1.x additive).
+	CompleteSymbols int   `json:"complete_symbol_snippets,omitempty"`
+	LocatorSnippets int   `json:"locator_snippets,omitempty"`
+	IndexCacheHit   bool  `json:"index_cache_hit"`
+	IndexLatencyMS  int64 `json:"index_latency_ms"`
+	QueryLatencyMS  int64 `json:"query_latency_ms"`
+	TotalLatencyMS  int64 `json:"total_latency_ms"`
 	// SearchLatencyMS is retained as the backwards-compatible name for total
 	// retrieval latency. New consumers should use TotalLatencyMS and the
 	// separate preselection, index, and query phases.
@@ -577,8 +585,23 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		}
 		results = append(results, selected[i].result)
 	}
-	results, resultBytes, dropped, truncated := fitSearchResultsToBudget(results, q, options.MaxContextBytes)
+	ranked := append([]SearchResult(nil), results...)
+	results, resultBytes, dropped, _ := fitSearchResultsToBudget(results, q, options.MaxContextBytes)
+	// The fitter decides HOW MANY results fit; the allocator decides how the bytes they are
+	// allowed are spent. It runs second, on the already-seated results, so a hit whose
+	// complete enclosing symbol fits is returned whole — removing the follow-up file read
+	// an agent would otherwise pay a whole turn for — funded, when the budget is tight, by
+	// demoting the tail of the ranking to locators.
+	enclosures := planSearchEnclosures(results, symbolsByID, symbolsByFile, read, defaultSearchEnclosureMaxLines)
+	results, completeSymbols, locators := allocateSearchSnippets(
+		results, enclosures, options.MaxContextBytes, searchEnclosureGrowthBytes,
+		searchEnclosureHeadRanks, minInt(searchEnclosureTailSnippetLines, options.MaxSnippetLines),
+	)
+	stats.CompleteSymbols = completeSymbols
+	stats.LocatorSnippets = locators
 	stats.CandidatesSelected = len(results)
+	resultBytes = serializedSearchResultBytes(results)
+	truncated := countBudgetTruncatedResults(ranked, results)
 	stats.ResultBytes = resultBytes
 	stats.ContextBudgetBytes = options.MaxContextBytes
 	stats.ResultsDropped = dropped
@@ -658,6 +681,15 @@ func fitSearchResultsToBudget(results []SearchResult, q searchQuery, budget int)
 	}
 
 	for count := len(results); count > 0; count-- {
+		// The per-result share is a CAP as well as a floor: no single result may eat the
+		// budget, which is what keeps a huge signature or region from starving the rest of
+		// the ranking. Deliberate whole-body snippets are added afterwards, by
+		// allocateSearchSnippets, which is bounded separately.
+		//
+		// The per-result floor is a fixed 256 bytes, not budget/count: below that a result
+		// degrades to a single truncated line and stops being usable, so the fitter drops
+		// whole results (reported in results_dropped_by_budget) rather than keeping a
+		// larger number of unusable ones.
 		perResult := maxInt(256, (budget-2-(count-1))/count)
 		compacted := make([]SearchResult, count)
 		truncated := 0
@@ -1457,11 +1489,24 @@ func attachSparseCandidateSymbols(candidates []searchCandidate, symbolsByFile ma
 }
 
 func smallestSearchSymbolContainingLine(symbols []SymbolRecord, line int) (SymbolRecord, bool) {
+	return smallestSearchSymbolContainingLineWhere(symbols, line, nil)
+}
+
+// smallestSearchSymbolContainingLineWhere is smallestSearchSymbolContainingLine restricted to
+// the symbols a caller accepts (a nil filter accepts every symbol). It lets snippet allocation
+// ask for the smallest enclosing CALLABLE while ranking keeps asking for the smallest symbol
+// of any kind.
+func smallestSearchSymbolContainingLineWhere(
+	symbols []SymbolRecord, line int, keep func(SymbolRecord) bool,
+) (SymbolRecord, bool) {
 	bestSpan := int(^uint(0) >> 1)
 	var best SymbolRecord
 	found := false
 	for _, symbol := range symbols {
 		if symbol.ID == "" || line < symbol.StartLine || line > symbol.EndLine {
+			continue
+		}
+		if keep != nil && !keep(symbol) {
 			continue
 		}
 		span := symbol.EndLine - symbol.StartLine
@@ -1919,7 +1964,12 @@ func searchSymbolNameMatchesQueryTerm(q searchQuery, symbol SymbolRecord) bool {
 
 func searchExpansionRelation(relation string) bool {
 	switch relation {
-	case "CALLS", "CONSTRUCTS", "ASYNC_CALLS", "IMPORTS", "EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "TESTS", "CONFIGURES":
+	case "CALLS", "CONSTRUCTS", "ASYNC_CALLS", "IMPORTS", "EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "TESTS", "CONFIGURES",
+		// SIMILAR_TO is a near-duplicate body (MinHash >= 0.82). Copy-pasted code is the
+		// classic reason a fix has to be applied in more than one place, so the twin of a
+		// strong hit is exactly the second site an agent would otherwise discover only
+		// after its patch failed review. The relation is emitted at profile fast/full only.
+		"SIMILAR_TO":
 		return true
 	default:
 		return false

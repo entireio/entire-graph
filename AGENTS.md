@@ -31,6 +31,15 @@ entire graph search --repo . --query "<the task or bug in one plain sentence>" -
 - **Source outranks non-source.** Prose documentation (`.md`/`.mdx`/`.rst`/`.adoc`/`.txt`, `docs/`, `website/`, `versioned_docs/`, README/CHANGELOG), vendored trees (`vendor/`, `node_modules/`, `third_party/`), generated artifacts (`dist/`, `single_include/`, lock files) and `examples/` carry a **multiplicative** relevance prior below 1, so they must be clearly more relevant than the best source hit to outrank it. Nothing is filtered: a documentation hit still ranks first when it is the only match, and the prior switches off entirely when your query asks for that class ("update the **docs** for…", "fix the **example**", "regenerate the **dist** bundle"). Demoted hits are labelled with a `doc-prior` / `vendored-prior` / `generated-prior` / `example-prior` signal.
 - **Near-duplicate copies are collapsed.** Two hits that are the same content in different files — versioned documentation trees, vendored snapshots, generated mirrors — are merged into the best-ranked copy, which then reports a `+N similar` signal. The freed result slots go to genuinely different code.
 
+**Snippets are allocated by rank, not spread evenly.** Where the byte budget allows, a hit is
+returned as the **complete body of its enclosing function/method** — snapped to the graph's own
+symbol bounds, marked with the `complete-symbol` signal, and counted in
+`stats.complete_symbol_snippets`. Those results need no follow-up read: `snippet_start_line` ..
+`snippet_end_line` is the whole callable, verbatim. To pay for that, results further down the
+ranking may be reduced to a two-line **locator** window (counted in `stats.locator_snippets`) —
+still exact `file:line` + symbol identity, just not reading material. Symbols too large to
+return whole keep their focused window.
+
 **When:** the start of essentially every task. One good query lands you on the fix area.
 
 ### 🕸️ neighbors — *who calls this / what does it call* (targeted relations)
