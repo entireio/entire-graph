@@ -116,9 +116,11 @@ reads only the header and relations, for example, should skip `file`, `symbol`,
 
 ### Indexing profiles
 
-`--profile full|fast|syntax-only` selects indexing depth (default `full`). The
-snapshot header reports the selected `profile`, its `profile_limits` (evidence,
-call resolution), the emitted `relation_set`, and the
+`--profile full|fast|syntax-only` selects indexing depth. Provider snapshot
+commands (`snapshot`, `symbols`, and `edges`) default to `full`; search defaults
+to `fast` unless the caller selects a profile explicitly. The snapshot header
+reports the selected `profile`, its `profile_limits` (evidence, call
+resolution), the emitted `relation_set`, and the
 `skipped_relation_families`; capabilities reports `relation_support_by_profile`.
 Skipped families are always declared (in the header and capabilities) — a
 profile never silently drops a relation family.

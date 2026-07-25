@@ -1877,7 +1877,7 @@ func searchBodyOnlyEvidence(signals []string) bool {
 		switch signal {
 		case "body", "sparse-region":
 			sawBody = true
-		case "path", "symbol-name", "exact-symbol", "signature", "exact-code-token", "all-query-terms":
+		case "path", "symbol-name", "exact-symbol", "signature":
 			return false
 		}
 	}

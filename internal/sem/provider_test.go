@@ -3710,6 +3710,26 @@ func buildInvalidCrossPackageValue() any {
 	}
 }
 
+func TestFastProfileDropsAmbiguousImportedOverloads(t *testing.T) {
+	from := SymbolRecord{ID: "caller", Kind: "function", Name: "run", FilePath: "src/caller.ts", Language: "TypeScript"}
+	overloads := []SymbolRecord{
+		{ID: "parse-string", Kind: "function", Name: "parse", FilePath: "src/lib.ts", Language: "TypeScript", Signature: "parse(value: string)"},
+		{ID: "parse-number", Kind: "function", Name: "parse", FilePath: "src/lib.ts", Language: "TypeScript", Signature: "parse(value: number)"},
+	}
+	targets := resolveImportedCallTargets("parse", from, overloads, map[string][]string{"parse": {"./lib"}}, false)
+	if len(targets) != 2 {
+		t.Fatalf("imported overload targets = %#v, want two", targets)
+	}
+	for _, target := range targets {
+		if target.Resolution != "name_only" {
+			t.Fatalf("ambiguous imported overload resolution = %q, want name_only: %#v", target.Resolution, target)
+		}
+		if shallowRelationRetained("CALLS", target.Resolution) {
+			t.Fatalf("fast profile would retain ambiguous imported overload: %#v", target)
+		}
+	}
+}
+
 // Regression for the jdx/mise report: a test whose conventional subject name
 // matches symbols in several packages must bind to the same-directory one, and
 // with no local or import evidence must not bind at all — the old

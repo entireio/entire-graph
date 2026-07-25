@@ -1740,6 +1740,17 @@ func resolveImportedCallTargets(name string, from SymbolRecord, candidates []Sym
 	if len(imported) == 0 {
 		imported = jsExportedImportFallbackTargets(name, from, candidates, importsByName[name], allowMethodTargets)
 	}
+	if len(imported) > 1 {
+		for index := range imported {
+			imported[index].Confidence = minFloat(imported[index].Confidence, 0.62)
+			imported[index].Reason = fmt.Sprintf("ambiguous imported call: candidate among %d same-name declarations", len(imported))
+			// Fast-profile shallow resolution retains only single-target
+			// import_resolved edges. Keep the candidates in full snapshots,
+			// but classify this fanout with the existing broad-resolution value
+			// so it cannot inflate caller-degree ranking in fast search graphs.
+			imported[index].Resolution = "name_only"
+		}
+	}
 	return imported
 }
 

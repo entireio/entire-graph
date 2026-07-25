@@ -1679,6 +1679,25 @@ func TestApplySearchCallerBoostsHalvesSparseBodyEvidence(t *testing.T) {
 	}
 }
 
+func TestApplySearchCallerBoostsHalvesBodyDerivedSignals(t *testing.T) {
+	for _, signals := range [][]string{
+		{"body", "exact-code-token"},
+		{"body", "all-query-terms"},
+		{"body", "exact-code-token", "all-query-terms"},
+	} {
+		candidates := []searchCandidate{{
+			result: SearchResult{SymbolID: "impl", Signals: signals},
+			score:  10,
+		}}
+		if boosted := applySearchCallerBoosts(candidates, map[string]float64{"impl": 4}); boosted != 1 {
+			t.Fatalf("signals %#v: boosted = %d, want 1", signals, boosted)
+		}
+		if candidates[0].score != 12 {
+			t.Fatalf("signals %#v: score = %v, want 12 with half caller boost", signals, candidates[0].score)
+		}
+	}
+}
+
 func TestExpandGraphCandidatesDoesNotBoostZeroEvidenceHub(t *testing.T) {
 	q := buildSearchQuery("quorum replication")
 	seeds := []searchCandidate{{
