@@ -328,15 +328,26 @@ if [ "${ENTIRE_GRAPH_STATUSLINE_CACHE:-1}" != "0" ]; then
 	STAMP=$(stat -f '%z-%m' "$TRANSCRIPT" 2>/dev/null || stat -c '%s-%Y' "$TRANSCRIPT" 2>/dev/null) || STAMP=
 	if [ -n "$STAMP" ]; then
 		CACHE_DIR=${TMPDIR:-/tmp}/entire-graph-statusline
-		SAFE=$(printf '%s' "$SESSION" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-64)
-		CACHE_FILE=$CACHE_DIR/$SAFE.line
-		CACHE_CONFIG="v2 $SCOPE $SINCE color${NO_COLOR:+-off} $REPO"
+		# The key must identify the TRANSCRIPT, not just the session id. session_id is absent in
+		# some invocations and then degenerates to "-", so keying on it alone made every such
+		# session share one cache file and overwrite each other's badge (observed in the wild:
+		# a single "-.line" plus 1-char keys). Appending a digest of the transcript path makes the
+		# key unique even when session_id is missing, empty or truncated. cksum is POSIX, so this
+		# needs no sha/md5 binary.
+		SAFE=$(printf '%s' "$SESSION" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-40)
+		DIGEST=$(printf '%s' "$TRANSCRIPT" | cksum | awk '{print $1}') || DIGEST=
+		[ -n "$DIGEST" ] || DIGEST=0
+		CACHE_FILE=$CACHE_DIR/$SAFE-$DIGEST.line
+		# v3: cache-key scheme changed, so lines written by an older script must not be served.
+		CACHE_CONFIG="v3 $SCOPE $SINCE color${NO_COLOR:+-off} $REPO"
 	fi
 fi
 
 store() { # store <line>
 	[ -n "$CACHE_FILE" ] || return 0
 	mkdir -p "$CACHE_DIR" 2>/dev/null || return 0
+	# One cache file per transcript accumulates forever otherwise; drop week-old lines.
+	find "$CACHE_DIR" -name '*.line' -mtime +7 -delete 2>/dev/null
 	tmp=$CACHE_FILE.$$
 	if printf '%s\t%s\t%s\n' "$CACHE_CONFIG" "$STAMP" "$1" >"$tmp" 2>/dev/null; then
 		mv -f "$tmp" "$CACHE_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
