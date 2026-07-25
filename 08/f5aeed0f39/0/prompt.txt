@@ -1,0 +1,116 @@
+<task-notification>
+<task-id>a92ca0a281ef5d47f</task-id>
+<tool-use-id>toolu_01LSTLAJRWzf6C1WttBA71Vr</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/122fdde1-dcfa-4112-99f8-87d34a87d42c/tasks/a92ca0a281ef5d47f.output</output-file>
+<status>completed</status>
+<summary>Agent "Fix graph search ranking defects" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## PROBE JSON
+
+**BEFORE** (`eg-base` = main @ `6922847`; task's `7c3e695` is an ancestor — main moved 2 statusline commits, neither touches search):
+```json
+{"progress": 0.4446, "progress_ungated_audit": 0.4446, "guards_ok": 1, "guards": {"tests_ok": 1, "tests_ran": 1, "all_instances_ok": 1, "recall_ok": 1, "byte_ok": 1, "recall_floor": 0.5, "hard_cap_bytes": 30000}, "gold_top3_rate": 0.6429, "gold_any_rate": 0.7857, "encl_cov_rate": 0.0, "sib_cov_rate": 0.25, "byte_score": 1.0, "budget_bytes": 10000, "mean_bytes": 9690, "median_bytes": 9020, "max_bytes": 15404, "counts": {"n": 14, "gold_top3": 9, "gold_any": 11, "encl_cov": 0, "sib_cov": 3, "sib_applicable": 12, "errors": 0, "mean_results": 10.0}, "encl_frac_mean_audit": 0.068, "bin_sha12": "026465634ad2", "extra_args": "", "elapsed_s": 38.4}
+```
+
+**AFTER** (`eg-new` = `7c2d7bc`):
+```json
+{"progress": 0.4446, "progress_ungated_audit": 0.4446, "guards_ok": 1, "guards": {"tests_ok": 1, "tests_ran": 1, "all_instances_ok": 1, "recall_ok": 1, "byte_ok": 1, "recall_floor": 0.5, "hard_cap_bytes": 30000}, "gold_top3_rate": 0.6429, "gold_any_rate": 0.8571, "encl_cov_rate": 0.0, "sib_cov_rate": 0.25, "byte_score": 1.0, "budget_bytes": 10000, "mean_bytes": 9765, "median_bytes": 9292, "max_bytes": 15404, "counts": {"n": 14, "gold_top3": 9, "gold_any": 12, "encl_cov": 0, "sib_cov": 3, "sib_applicable": 12, "errors": 0, "mean_results": 10.0}, "encl_frac_mean_audit": 0.0723, "bin_sha12": "698802da265a", "extra_args": "", "elapsed_s": 38.6}
+```
+
+**gold_top3_rate did NOT move (0.6429 → 0.6429).** It is flat, not up. Read below before shipping.
+
+## DOCUSAURUS-9897 REPRO
+Query `"CRLF line ending normalization in markdown/MDX processing"`, `--profile full --top-k 10 --max-snippet-lines 6`.
+
+- BEFORE: gold `packages/docusaurus-utils/src/markdownUtils.ts` = **rank 4**. Ranks 1/2/3 = `versioned_docs/version-2.x|3.0.1|3.1.1/i18n/i18n-tutorial.mdx`, all score 22.8525.
+- AFTER: gold = **rank 2** (score 13.5653). Zero `.mdx` in the top 10.
+- Dedup proof (same repo, doc-intent query `"documentation guide for CRLF…"`): BEFORE ranks 1-4 = four copies of `i18n-tutorial.mdx` @22.408. AFTER = one hit, `signals=body,exact-code-token,+3 similar`, identical score 22.408 (prior correctly OFF for a doc-intent query). Three slots freed.
+
+## WHY gold_top3 IS FLAT (metric artifact, not a null result)
+`graph_quality_score.py` scores `gold_files` = every non-test file in the SWE-bench patch. 3/14 gold sets contain **prose**: `phpspreadsheet→CHANGELOG.md`, `axum→axum/CHANGELOG.md`, `gson→UserGuide.md`. The probe pays for ranking a changelog.
+
+Net top3: `docusaurus-9183` null→2 (**+1**), `phpspreadsheet-4214` 1→6 (**−1**, and rank-1 before was `CHANGELOG.md`, not the fix). Sum 0.
+
+Supplementary read-only view (identical invocation, scores rank of `gold["primary"]["file"]` = the actual fix site; nothing under `$AS` modified):
+
+| | before | after |
+|---|---|---|
+| primary_top3_rate | 0.4286 | **0.5714** |
+| primary_any_rate | 0.7857 | **0.8571** |
+
+Per-instance primary rank (before→after): carbon 1→1, ripgrep ∅→∅, caddy 2→**1**, docusaurus-9183 ∅→**2**, fluentd 1→1, fmt 1→1, gin ∅→∅, gson 1→1, phpspreadsheet 7→**6**, preact 5→5, lombok 8→**7**, redis 2→2, axum 4→**3**, vue 10→**9**. **Six improve, zero regress.**
+
+## WHAT THE PRIOR KEYS ON
+Whole path **segments** + extension + basename. No repo/file/symbol/query names anywhere.
+
+| class | trigger | prior |
+|---|---|---|
+| source | default | 1.0 |
+| doc | `.md .markdown .mdx .mdoc .rst .adoc .asciidoc .txt .text .org .pod .rdoc .textile .creole .wiki`, man pages `.1`–`.9`/`.roff`/`.man`; segments `doc docs documentation man manual(s) website(s) wiki handbook guide(s) tutorial(s) versioned_docs versioned_sidebars changelog(s) javadoc godoc`; basenames `readme changelog changes history news contributing authors maintainers code_of_conduct license copying notice governance upgrading` | 0.5 |
+| vendored | segments `vendor(s) _vendor third_party third-party thirdparty dependencies node_modules bower_components jspm_packages site-packages dist-packages godeps .venv venv virtualenv eggs .eggs external(s)` | 0.5 |
+| generated | existing `searchGeneratedArtifactPath` + lock manifests (`package-lock.json yarn.lock Cargo.lock go.sum poetry.lock …`) | 0.5 |
+| example | segments `example(s) sample(s) demo(s) cookbook(s) recipes playground` | 0.75 |
+
+Multiplier on the **positive** part of score only (negative scores untouched — scaling them would *undo* an existing demotion). **Not a filter**: doc still ranks #1 when it is the only match (unit-tested). Prior → 1.0 when the query names the class (`documentation`, `readme`, `changelog`, `vendored`, `dist`, `example`, …). Applied once, post-dedupe, pre-selection, on both the semantic and sparse lists. Disclosed as `doc-prior`/`vendored-prior`/`generated-prior`/`example-prior` in `signals`.
+
+`0.5` chosen a priori = "a non-editable hit must be **2×** as relevant as the best source hit to outrank it". `0.75` = mild tilt for example code. Also folded `searchDocumentationArtifactPath` onto the same taxonomy, so the pre-existing additive `−6` and the new multiplier can never disagree on "documentation" (this is what fixes `.mdx` + `versioned_docs/`, which the old `strings.Contains("/docs/")` substring test missed entirely).
+
+## DEDUP RULE
+Collapse requires **all** of: distinct files, same basename, not different monorepo units (reuses existing `searchMonorepoUnit`), normalized text ≥ 96 chars, and (identical normalized text **OR** path-equal-modulo-version-segments with token Jaccard ≥ 0.9). Survivor = highest-scoring, gets `+N similar`. Version segments = `version-2.x`, `v2`, `3.0.1`, `2.x`, `release-1.2`, `latest/next/stable/current/unreleased`. Genuinely different `client/v2` vs `client/v3` code is preserved by the Jaccard gate (tested).
+
+## SENSITIVITY — AND WHAT I REFUSED
+Non-source prior swept 0.35 / 0.5 / 0.65:
+
+| prior | progress | gold_top3 | gold_any | **primary_top3** |
+|---|---|---|---|---|
+| 0.35 | 0.4446 | 0.6429 | 0.8571 | 0.5714 |
+| **0.5 (shipped)** | 0.4446 | 0.6429 | 0.8571 | **0.5714** |
+| 0.65 | **0.4732** | **0.7143** | 0.8571 | 0.5000 |
+
+**I refused to ship 0.65 even though it hits the stated target.** Its extra point comes entirely from `phpspreadsheet-4214`, where `rank_gold=3` is `CHANGELOG.md` while the real fix site `Round.php` sinks to 7 (vs 6 at 0.5), and axum's fix site goes 3→4. The weaker prior scores better *by doing more of the thing this ticket asks me to stop doing*. That is metric-tuning, so `0.5` stands. 0.35↔0.5 is a plateau — behavior is insensitive across that range.
+
+Also refused:
+- A `locale/` `i18n/` `.po` `.properties` "localization resource" class. It is arguably a general class, but in this set it moves exactly one instance (phpspreadsheet 6→~4, still not top-3). Zero measured benefit, non-zero risk → not shipped.
+- Exempting `CHANGELOG` from the doc prior. That would recover the phpspreadsheet/axum probe points and is pure overfit — a changelog entry is a project convention, not the fix.
+- Any conditional on repo, path literal, symbol, or query string. There are none in the diff.
+
+Not addressed (out of scope, not this defect class — I inspected all of them): `ripgrep-2209`, `gin-3227`, `preact-3689`, `vuejs-core-11870` misses are genuine semantic-ranking limits with no doc/duplicate noise in their top 10. Hand-tuning for them would be overfitting.
+
+## TESTS / GATES
+- `go test ./...` → **983 passed, 19 packages** (main = 922; **+61** new: 49 file-class, 12 dedup). Table-driven across source/doc/vendored/generated/example, class-intent escape, negative-score safety, "doc still wins when it is the only match", and an end-to-end `SearchRepository` test asserting source-over-versioned-docs + collapse.
+- `go test ./internal/sem/ -race` → 876 passed.
+- `gofmt -l .` clean, `go vet ./...` clean. Probe `guards_ok: 1`, `tests_ok: 1`.
+
+## BRANCH / SHAS / FILES
+- worktree `/Users/suhaan/devenv/entire-graph/.claude/worktrees/agent-a92ca0a281ef5d47f`, branch **`fix/search-file-class-prior`**, commit **`7c2d7bc`**, base **`6922847`** (main tip). Nothing committed to main.
+- Touched (**ranking only** — no snippet/enclosing-function code, so the concurrent worktree merges cleanly):
+  - `internal/sem/search.go` — **+18/−24**, two hunks only: 4 added lines in `SearchRepository` (lines ~546-560) and the `searchDocumentationArtifactPath` body (line ~3105).
+  - `internal/sem/search_file_class.go` *(new)*
+  - `internal/sem/search_near_dupe.go` *(new)*
+  - `internal/sem/search_file_class_test.go` *(new)*
+  - `internal/sem/search_near_dupe_test.go` *(new)*
+  - `AGENTS.md`, `docs/DETAILS.md` — documented both behaviors.
+- Temp docusaurus worktree created under `$AS/repo-cache/facebook_docusaurus` was removed; probe/gold/`$AS` unmodified. (A pre-existing `/private/tmp/replay_doc` worktree registered on that cache is not mine — left alone.) No processes killed, no docker.</result>
+<usage><subagent_tokens>179913</subagent_tokens><tool_uses>94</tool_uses><duration_ms>1628185</duration_ms></usage>
+<worktree><worktreePath>/Users/suhaan/devenv/entire-graph/.claude/worktrees/agent-a92ca0a281ef5d47f</worktreePath><worktreeBranch>worktree-agent-a92ca0a281ef5d47f</worktreeBranch></worktree>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bm60lt06n</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/122fdde1-dcfa-4112-99f8-87d34a87d42c/tasks/bm60lt06n.output</output-file>
+<status>completed</status>
+<summary>Background command "Run eg+cmm smoke in background" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>b6zpyxqaw</task-id>
+<tool-use-id>toolu_014grkPuFs71B92GW7Fzn78z</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/122fdde1-dcfa-4112-99f8-87d34a87d42c/tasks/b6zpyxqaw.output</output-file>
+<status>completed</status>
+<summary>Background command "Rerun cmm smoke with visible log" completed (exit code 0)</summary>
+</task-notification>
