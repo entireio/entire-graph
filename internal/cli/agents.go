@@ -28,15 +28,20 @@ Your FIRST action on any task that requires finding code must be ONE search:
 
     entire graph search --repo . --profile full --query "<the task or bug in one sentence>"
 
-Then open the top hit's file with your file-read tool (pass a line range around the reported
-line), make the minimal edit, and STOP. The top hit is the fix site on most tasks — go straight
-there and edit; do NOT re-search or grep to "confirm".
+The first five hits come back as the COMPLETE body of their enclosing function/method (marked
+` + "`complete-symbol`" + `; ` + "`snippet_start_line`..`snippet_end_line`" + ` is the whole callable, verbatim).
+When the hit you want is one of them, EDIT DIRECTLY FROM THE SEARCH OUTPUT — you already have
+the entire function, and opening the file costs a whole extra turn for nothing. Only when the
+hit you want carries a two-line locator window instead, open its file at the reported line
+range. Either way: make the minimal edit and STOP. The top hit is the fix site on most tasks —
+go straight there; do NOT re-search or grep to "confirm".
 
 ## Hard rules (each violation costs real money)
 
 1. SEARCH FIRST — never grep/find/cat to locate code before you have searched.
 2. ONE search, then act. Do not run a second search unless the first clearly missed.
-3. After search, READ a line range and EDIT. Do not chain more graph commands to "explore".
+3. Do NOT re-read what search already gave you. A ` + "`complete-symbol`" + ` hit is the whole function:
+   edit it. Read a line range only for hits search returned as locators.
 4. NEVER read a whole file; read at most ~120 lines around the reported line.
 5. Impact question ("who calls X" / "what could this change break")? ONE targeted query:
        entire graph impact --repo . --symbol X

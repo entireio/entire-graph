@@ -12,6 +12,25 @@ import (
 	"github.com/entireio/entire-graph/internal/sem"
 )
 
+// defaultSearchContextBytes is the default `--max-context-bytes` ceiling for one search call.
+//
+// It is sized by TURN economics, not by payload economics. Measured on real agentic sessions,
+// the search payload is ~0.6% of what a session spends, while a single extra agent turn costs
+// ~42.5k tokens (95.9% of billed tokens are context re-read). A search that stops one Read
+// short of an edit therefore costs about 40x more than the entire payload that caused it, so
+// the ceiling's job is NOT to be small — it is to never be the reason a head result comes back
+// as half a function.
+//
+// 24 kB ≈ 6k tokens: it clears the largest ranked payloads observed (~15 kB) with room for the
+// five complete head bodies the allocator may buy, so the allocator is bounded by what bodies
+// actually cost rather than silently truncated by the ceiling. The old 16 kB default could not
+// fit even one complete body on top of a large ranking. In practice payloads do NOT expand to
+// fill it: the allocator only spends bytes on complete head bodies and always picks the
+// cheapest plan that delivers them (measured on a 14-repo probe: mean payload 11.8 kB, i.e.
+// half the ceiling). `--max-context-bytes` remains honored exactly, so a caller who wants the
+// old behaviour passes `--max-context-bytes 16384`.
+const defaultSearchContextBytes = 24 * 1024
+
 type searchFlags struct {
 	Repo              string
 	Query             string
@@ -125,19 +144,31 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 	}
 }
 
-// writeTextSearch renders the default `--format text` output. It is tiered: the
-// first two ranks are where an agent actually reads the match, so they keep the
-// full snippet + signals rendering. Every lower rank is overwhelmingly used only
-// to decide "is this worth opening", so a full snippet there is pure token waste
-// that crowds out the context an agent still has to load — collapse rank 3+ to a
-// single terse "N. path:line symbol" locator line instead.
+// searchTextFullRanks is how deep `--format text` renders a full snippet for a result the
+// snippet allocator did NOT upgrade to a complete body. Below it a hit is used only to decide
+// "is this worth opening", so a full window there is token waste.
+const searchTextFullRanks = 2
+
+// writeTextSearch renders the default `--format text` output. It is tiered, and the tier is
+// decided by what the result CARRIES, not by rank alone: a result the allocator spent budget
+// to return as a complete function body is always printed in full — dropping it here would
+// throw away the very bytes that let an agent edit without opening the file — while an
+// ordinary window is printed only for the first `searchTextFullRanks` ranks and collapsed to a
+// terse "N. path:line symbol" locator below that.
 func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse) error {
 	for _, result := range response.Results {
 		name := result.QualifiedName
 		if name == "" {
 			name = result.SymbolName
 		}
-		if result.Rank > 2 {
+		complete := false
+		for _, signal := range result.Signals {
+			if signal == sem.CompleteSymbolSignal {
+				complete = true
+				break
+			}
+		}
+		if result.Rank > searchTextFullRanks && !complete {
 			line := result.FocusLine
 			if line <= 0 {
 				line = result.StartLine
@@ -485,7 +516,7 @@ func minIntCLI(left, right int) int {
 }
 
 func parseSearchFlags(args []string) (searchFlags, []string, error) {
-	flags := searchFlags{Format: "json", Profile: "syntax-only", Worktree: true, MaxContextBytes: 16 * 1024}
+	flags := searchFlags{Format: "json", Profile: "syntax-only", Worktree: true, MaxContextBytes: defaultSearchContextBytes}
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {

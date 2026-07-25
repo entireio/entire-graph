@@ -16,6 +16,9 @@ import (
 //     wins BM25 against the code that expresses the same idea in identifiers;
 //   - vendored / third-party trees are an upstream copy — editing them is wrong;
 //   - generated artifacts are overwritten by the next codegen run;
+//   - serialized data and configuration (JSON/YAML/TOML/XML/INI) DECLARE the names an
+//     issue talks about — the package, the command, the option — so they match the
+//     issue's vocabulary exactly while containing no behaviour to fix;
 //   - examples/samples are real code, but secondary to the library they exercise.
 //
 // The correction is a MULTIPLICATIVE prior on the positive part of a candidate's
@@ -45,8 +48,22 @@ const (
 	searchFileClassDoc       searchFileClass = "doc"
 	searchFileClassVendored  searchFileClass = "vendored"
 	searchFileClassGenerated searchFileClass = "generated"
+	searchFileClassData      searchFileClass = "data"
 	searchFileClassExample   searchFileClass = "example"
 )
+
+// Serialized-data / configuration file types. These hold declarations, not behaviour:
+// a package manifest names the very package an issue is about, a command schema names
+// the very command, an option table names the very option — so on a body match they
+// outrank the implementation that the reported behaviour actually lives in. Deliberately
+// NOT here: file types that are executable program text even when used for configuration
+// (`.js`, `.ts`, `.py`, `.rb`, `.gradle`, `Package.swift`, `*.cmake`) — those are code and
+// a fix really can live in them.
+var searchDataExtensions = []string{
+	".json", ".jsonc", ".json5", ".yaml", ".yml", ".toml",
+	".ini", ".cfg", ".conf", ".properties", ".plist", ".xml",
+	".csv", ".tsv",
+}
 
 // Path segments that mark a documentation tree. Matched as whole path SEGMENTS
 // (so `versioned_docs/` and `website/` are caught while `my-docs-parser.go` is
@@ -121,6 +138,14 @@ var (
 		"example", "examples", "sample", "samples", "demo", "demos",
 		"snippet", "snippets", "cookbook", "recipe", "recipes", "playground",
 	}
+	// Words that mean "I am asking about a config/data file". Kept narrow on purpose:
+	// terms like "package", "version" or "data" appear in almost every bug report
+	// (issue templates ask for a version) and would switch the prior off universally.
+	searchDataIntentTerms = []string{
+		"config", "configs", "configuration", "configure", "setting", "settings",
+		"json", "yaml", "yml", "toml", "xml", "ini", "manifest", "manifests",
+		"schema", "schemas", "metadata", "dependency", "dependencies", "lockfile",
+	}
 )
 
 // classifySearchFile maps a repository-relative path to its content class.
@@ -145,6 +170,11 @@ func classifySearchFile(filePath string) searchFileClass {
 	}
 	if searchDocumentationClassPath(lower, base, dirs) {
 		return searchFileClassDoc
+	}
+	for _, ext := range searchDataExtensions {
+		if strings.HasSuffix(lower, ext) {
+			return searchFileClassData
+		}
 	}
 	for _, segment := range dirs {
 		if searchExampleDirSegments[segment] {
@@ -213,6 +243,11 @@ func searchFileClassPrior(q searchQuery, filePath string) float64 {
 		return searchNonSourceClassPrior
 	case searchFileClassGenerated:
 		if searchQuerySupplied(q, searchGeneratedIntentTerms...) {
+			return 1
+		}
+		return searchNonSourceClassPrior
+	case searchFileClassData:
+		if searchQuerySupplied(q, searchDataIntentTerms...) {
 			return 1
 		}
 		return searchNonSourceClassPrior

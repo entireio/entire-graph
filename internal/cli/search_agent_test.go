@@ -78,6 +78,31 @@ func TestAgentSearchReportsDisplayedSpanAndFocusAfterCompaction(t *testing.T) {
 	}
 }
 
+// TestSearchDefaultContextBytesIsTwentyFourKiB pins the shipped ceiling. It is sized by TURN
+// economics — a search that stops one Read short of an edit costs ~42.5k tokens, ~40x the
+// entire payload — so it must clear the largest ranked payload plus the complete head bodies
+// the allocator may buy. Lowering it back to 16 KiB reintroduces the failure it fixes: a
+// large ranking leaves no room to complete even one body. Explicit callers still win.
+func TestSearchDefaultContextBytesIsTwentyFourKiB(t *testing.T) {
+	if defaultSearchContextBytes != 24*1024 {
+		t.Fatalf("defaultSearchContextBytes = %d, want %d", defaultSearchContextBytes, 24*1024)
+	}
+	flags, _, err := parseSearchFlags([]string{"--query", "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flags.MaxContextBytes != 24*1024 {
+		t.Fatalf("default --max-context-bytes = %d, want %d", flags.MaxContextBytes, 24*1024)
+	}
+	override, _, err := parseSearchFlags([]string{"--query", "x", "--max-context-bytes", "16384"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if override.MaxContextBytes != 16384 {
+		t.Fatalf("explicit --max-context-bytes = %d, want 16384", override.MaxContextBytes)
+	}
+}
+
 func TestSearchMaxContextBytesMustBePositive(t *testing.T) {
 	_, _, err := parseSearchFlags([]string{"--query", "x", "--max-context-bytes", "0"})
 	if err == nil || !strings.Contains(err.Error(), "must be positive") {
@@ -117,5 +142,36 @@ func TestWriteTextSearchTiersRankOneAndTwoFullRestTerse(t *testing.T) {
 	}
 	if !strings.Contains(out, "4. src/fourth.go:40\n") {
 		t.Fatalf("rank 4 terse line should fall back to StartLine when FocusLine unset:\n%s", out)
+	}
+}
+
+// TestWriteTextSearchAlwaysPrintsCompleteBodies guards the one exception to the tiering: the
+// allocator spends real budget to return the head as whole callables, and the default renderer
+// throwing those away below rank 2 would put the follow-up file read straight back.
+func TestWriteTextSearchAlwaysPrintsCompleteBodies(t *testing.T) {
+	body := "func rounded(v float64) float64 {\n\treturn math.Floor(v)\n}"
+	response := sem.SearchResponse{Results: []sem.SearchResult{
+		{Rank: 1, FilePath: "a.go", StartLine: 1, EndLine: 2, FocusLine: 1, Signals: []string{"body"}, Snippet: "one"},
+		{Rank: 2, FilePath: "b.go", StartLine: 1, EndLine: 2, FocusLine: 1, Signals: []string{"body"}, Snippet: "two"},
+		{Rank: 5, FilePath: "src/round.go", StartLine: 30, EndLine: 32, FocusLine: 31, SymbolName: "rounded",
+			Signals: []string{"body", sem.CompleteSymbolSignal}, Snippet: body},
+		{Rank: 6, FilePath: "src/other.go", StartLine: 40, EndLine: 42, FocusLine: 41, SymbolName: "other",
+			Signals: []string{"body"}, Snippet: "func other() {\n\t// window\n}"},
+	}}
+
+	var buf bytes.Buffer
+	if err := writeTextSearch(&buf, response); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+
+	if !strings.Contains(out, body) {
+		t.Fatalf("a complete body below the full-snippet tier was collapsed to a locator:\n%s", out)
+	}
+	if strings.Contains(out, "// window") {
+		t.Fatalf("an ordinary window below the tier kept its snippet:\n%s", out)
+	}
+	if !strings.Contains(out, "6. src/other.go:41 other\n") {
+		t.Fatalf("ordinary rank 6 lost its locator line:\n%s", out)
 	}
 }
