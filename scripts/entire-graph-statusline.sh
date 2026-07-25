@@ -330,6 +330,7 @@ render() {
 # recompute; refreshing the mtime on every cache HIT would instead put a fork on the hottest
 # path in this script — one per keystroke — which costs more than the recompute it avoids.
 CACHE_DIR=
+CACHE_DIR_OK=
 CACHE_FILE=
 CACHE_CONFIG=
 STAMP=
@@ -374,16 +375,30 @@ if [ "${ENTIRE_GRAPH_STATUSLINE_CACHE:-1}" != "0" ]; then
 	fi
 fi
 
-# Create $CACHE_DIR, private to this user, refusing a symlinked directory. Any failure means
-# "no cache" — never an error on the status line.
+# Create $CACHE_DIR, private to this user, refusing a symlinked directory AND any directory this
+# user does not own. Any failure means "no cache" — never an error on the status line.
+#
+# The chmod is deliberately OUTSIDE the creation branch and is REQUIRED to succeed. $TMPDIR is
+# usually unset, so the path is predictable (/tmp/entire-graph-statusline-<uid>) and /tmp is
+# cleared on boot: another user can win the create race and then own the directory this script
+# reads its badge out of. Per-uid naming does not help — the victim's uid is in the name — and the
+# symlink checks do not help either, because a real directory is not a symlink. `chmod` on a
+# foreign-owned directory fails with EPERM, so insisting on it is what actually refuses the
+# hostile directory before a single byte of it is read. Without this, a planted record's bytes
+# reach the terminal verbatim (verified: \033[2J\033]0;OWNED\007 clears the screen and rewrites
+# the window title), and only the guessable CONFIG field has to match, not the stamp.
+#
+# Memoised on success so a render pays at most one chmod fork, not one per call site.
 cache_dir_ok() {
 	[ -n "$CACHE_DIR" ] || return 1
+	[ "$CACHE_DIR_OK" = 1 ] && return 0
 	[ ! -L "$CACHE_DIR" ] || return 1
 	if [ ! -d "$CACHE_DIR" ]; then
 		mkdir -p "$CACHE_DIR" 2>/dev/null || return 1
-		chmod 700 "$CACHE_DIR" 2>/dev/null
 		[ ! -L "$CACHE_DIR" ] || return 1
 	fi
+	chmod 700 "$CACHE_DIR" 2>/dev/null || return 1
+	CACHE_DIR_OK=1
 	return 0
 }
 
@@ -395,8 +410,13 @@ cache_dir_ok() {
 prune() {
 	[ -n "$CACHE_DIR" ] || return 0
 	sentinel=$CACHE_DIR/.pruned
-	if [ -f "$sentinel" ] && [ -z "$(find "$sentinel" -maxdepth 0 -mmin +1440 2>/dev/null)" ]; then
-		return 0
+	if [ -f "$sentinel" ] && [ ! -L "$sentinel" ]; then
+		[ -z "$(find "$sentinel" -maxdepth 0 -mmin +1440 2>/dev/null)" ] && return 0
+	elif [ -e "$sentinel" ] || [ -L "$sentinel" ]; then
+		# Anything but a regular file here — a directory, a symlink — would make the ": >" below
+		# fail on every store, disabling prune permanently and letting the cache grow forever.
+		# Clear it and carry on rather than wedging.
+		rmdir "$sentinel" 2>/dev/null || rm -f "$sentinel" 2>/dev/null
 	fi
 	: >"$sentinel" 2>/dev/null || return 0
 	find "$CACHE_DIR" -maxdepth 1 -type f -name '*.line' -mtime +7 -delete 2>/dev/null
@@ -404,7 +424,12 @@ prune() {
 	# write takes, so an in-flight tmp file is never in range.
 	find "$CACHE_DIR" -maxdepth 1 -type f -name '*.line.*' -mmin +2 -delete 2>/dev/null
 	# Orphaned "<key>.line.lock" directories, on the same 2-minute deadline as the lock reaper
-	# below, so a live refresh is never unlocked underneath itself.
+	# below. ACCEPTED BEHAVIOUR, not an oversight: a refresh that itself runs longer than two
+	# minutes has its own lock reaped and a second refresh may then start concurrently. Both write
+	# via "<tmp> then mv -f", which is atomic, so the outcome is last-write-wins on a
+	# monotonically-growing counter — never a torn entry — and the deliberate alternative (probing
+	# whether the holder is still alive) would need the pid in the lock plus a kill(0) per render,
+	# which costs more than the duplicated scan it would prevent.
 	find "$CACHE_DIR" -maxdepth 1 -type d -name '*.line.lock' -mmin +2 -exec rmdir {} \; 2>/dev/null
 	return 0
 }
@@ -422,7 +447,9 @@ store() { # store <line>
 	prune
 }
 
-if [ -n "$CACHE_FILE" ] && [ ! -L "$CACHE_DIR" ] && [ -f "$CACHE_FILE" ] && [ ! -L "$CACHE_FILE" ]; then
+# cache_dir_ok comes BEFORE the file tests on purpose: it is the ownership gate, so it has to run
+# before anything inside the directory is read, not only before a write.
+if [ -n "$CACHE_FILE" ] && cache_dir_ok && [ -f "$CACHE_FILE" ] && [ ! -L "$CACHE_FILE" ]; then
 	CACHED=$(head -c 4096 "$CACHE_FILE" 2>/dev/null)
 	CACHED_LINE=${CACHED#*	}    # drop config
 	CACHED_LINE=${CACHED_LINE#*	} # drop stamp
@@ -436,7 +463,10 @@ if [ -n "$CACHE_FILE" ] && [ ! -L "$CACHE_DIR" ] && [ -f "$CACHE_FILE" ] && [ ! 
 		# is the atomic test-and-set that stops a burst of renders spawning a herd of scans.
 		LOCK=$CACHE_FILE.lock
 		if [ -d "$LOCK" ]; then
-			# Reap a lock orphaned by a killed refresh so the badge cannot freeze forever.
+			# Reap a lock orphaned by a killed refresh so the badge cannot freeze forever. Same
+			# accepted trade as in prune(): a refresh slower than two minutes can be unlocked
+			# underneath itself, and the worst case is two concurrent scans whose atomic `mv -f`
+			# resolves to last-write-wins.
 			find "$LOCK" -maxdepth 0 -mmin +2 -exec rmdir {} \; 2>/dev/null
 		fi
 		if cache_dir_ok && mkdir "$LOCK" 2>/dev/null; then

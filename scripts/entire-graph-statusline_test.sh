@@ -16,7 +16,10 @@ set -u
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 SCRIPT=$ROOT/scripts/entire-graph-statusline.sh
 WORK=$(mktemp -d) || exit 1
-trap 'rm -rf "$WORK"' EXIT INT TERM
+# chflags is how the foreign-cache-directory case below makes chmod fail; clear it unconditionally
+# so an aborted run cannot leave an undeletable directory behind (no-op where chflags does not
+# exist).
+trap 'chflags -R nouchg "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT INT TERM
 
 PASS=0
 FAIL=0
@@ -124,15 +127,17 @@ stdin_json_nosid() { # stdin_json_nosid <transcript> <cwd>
 		"$1" "$2" "$2"
 }
 
-# The suite must not inherit the developer's own ENTIRE_GRAPH_STATUSLINE_* settings: with
+# The suite must not inherit the developer's own settings for anything the script reads: with
 # SCOPE=project exported, every case scans the real ~/.claude/projects tree and five assertions
-# fail with a badge full of real data. Every invocation therefore goes through clean_env, which
-# clears those three vars; a case that wants one sets it explicitly (its assignment is appended
-# after the -u flags and wins). One definition, so a fourth variable is one edit.
+# fail with a badge full of real data; with NO_COLOR exported, the three colour cases fail because
+# the "coloured by default" default is gone. Every invocation therefore goes through clean_env,
+# which clears all four; a case that wants one sets it explicitly (its assignment is appended after
+# the -u flags and wins).
 clean_env() { # clean_env [env assignments...] <command...>
 	env -u ENTIRE_GRAPH_STATUSLINE_SCOPE \
 		-u ENTIRE_GRAPH_STATUSLINE_SINCE \
-		-u ENTIRE_GRAPH_STATUSLINE_CACHE "$@"
+		-u ENTIRE_GRAPH_STATUSLINE_CACHE \
+		-u NO_COLOR "$@"
 }
 
 # run_json <stdin-json> [env assignments...] -> stdout of the status line
@@ -269,11 +274,30 @@ assert_empty 'empty stdin prints nothing' "$OUT"
 OUT=$(run_json '{"session_id":"x"}')
 assert_empty 'stdin without transcript_path prints nothing' "$OUT"
 
-# Missing binary: no override, nothing on PATH, no ~/go/bin.
+# Missing binary: an override pointing nowhere, no entire-graph on PATH, no $HOME/go/bin, and
+# env -i to clear GOBIN / CLAUDE_PLUGIN_ROOT. PATH must stay REAL: with PATH=/nonexistent the
+# script loses awk and dies at the stdin parse, so the empty-BIN guard is never reached and the
+# empty output proves nothing about it.
+mkdir -p "$WORK/nohome"
+NOBIN_ENV="PATH=/usr/bin:/bin HOME=$WORK/nohome TMPDIR=$WORK/cache"
+# shellcheck disable=SC2086 # deliberate: NOBIN_ENV is a list of assignments for env
 OUT=$(stdin_json s-nobin "$T" "$REPO" |
-	env -i HOME="$WORK/nohome" PATH=/nonexistent TMPDIR="$WORK/cache" \
-		ENTIRE_GRAPH_BIN=/nonexistent/entire-graph /bin/sh "$SCRIPT")
+	env -i $NOBIN_ENV ENTIRE_GRAPH_BIN=/nonexistent/entire-graph /bin/sh "$SCRIPT")
 assert_empty 'missing binary prints nothing' "$OUT"
+
+# Positive control for the case above: the SAME stripped environment with a working binary must
+# render. Without it, "prints nothing" is satisfied by any earlier exit.
+cat >"$WORK/minstub" <<'STUB'
+#!/bin/sh
+cat <<'JSON'
+{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":100,"estimated_savings_pct_of_session_tokens":1}
+JSON
+STUB
+chmod +x "$WORK/minstub"
+# shellcheck disable=SC2086 # deliberate: NOBIN_ENV is a list of assignments for env
+OUT=$(stdin_json s-nobin-ok "$T" "$REPO" |
+	env -i $NOBIN_ENV NO_COLOR=1 ENTIRE_GRAPH_BIN="$WORK/minstub" /bin/sh "$SCRIPT")
+assert_has 'the stripped environment reaches the binary lookup at all' '100 saved' "$OUT"
 
 # A binary that exits non-zero must not leak an error onto the status line.
 cat >"$WORK/broken" <<'STUB'
@@ -549,6 +573,84 @@ awk -F'\t' 'BEGIN{OFS="\t"} {print $1, $2, "PLANTED-BADGE"}' "$(cache_file s-dir
 OUT=$(run s-dirlink "$T" "$REPO" NO_COLOR=1 TMPDIR="$WORK/evil-tmp")
 assert_lacks 'a symlinked cache directory is never read' 'PLANTED-BADGE' "$OUT"
 assert_has 'a symlinked cache directory falls back to a real render' '500 saved' "$OUT"
+# ...and the WRITE path refuses it too. This needs a session with NO planted record: the case above
+# is served straight from the (refused) entry and exits before store() is ever reached, so it says
+# nothing about writing. A fresh key forces the miss -> render -> store path, and nothing may then
+# appear through the symlink in a directory this user does not control.
+run s-dirwrite "$T" "$REPO" NO_COLOR=1 TMPDIR="$WORK/evil-tmp" >/dev/null
+assert_absent 'a symlinked cache directory is never written into' \
+	"$WORK/evil-target/$(cache_key s-dirwrite "$T").line"
+
+# A cache directory this user cannot chmod is a directory another user owns. $TMPDIR is normally
+# unset, so /tmp/entire-graph-statusline-<uid> is predictable and /tmp is cleared on boot: another
+# user can win the create race and then dictate what this script prints. Per-uid naming does not
+# help (the victim's uid is in the name) and neither symlink guard fires (it is a real directory),
+# so the refusal has to come from `chmod 700` failing with EPERM — which means the chmod must run
+# on a directory that ALREADY EXISTS, and must be required to succeed. chflags uchg makes chmod
+# fail the same way while leaving the planted record readable; skipped where that cannot be done.
+FOREIGN_TMP=$WORK/foreign-tmp
+FOREIGN_DIR=$FOREIGN_TMP/entire-graph-statusline-$(id -u)
+mkdir -p "$FOREIGN_TMP"
+run s-foreign "$T" "$REPO" NO_COLOR=1 TMPDIR="$FOREIGN_TMP" >/dev/null
+FOREIGN_LINE=$FOREIGN_DIR/$(cache_key s-foreign "$T").line
+assert_present 'a usable cache directory is still created and written' "$FOREIGN_LINE"
+if [ -f "$FOREIGN_LINE" ]; then
+	awk -F'\t' 'BEGIN{OFS="\t"} {print $1, $2, "\033[2J\033]0;OWNED\007HOSTILE-BADGE"}' \
+		"$FOREIGN_LINE" >"$FOREIGN_LINE.x"
+	mv "$FOREIGN_LINE.x" "$FOREIGN_LINE"
+fi
+# 755 first, then immutable: a hostile directory MUST be readable by its victim to be worth
+# planting in, so `chmod 700` always has real work to do on one. (chmod(1) elides the syscall when
+# the mode already matches, and a foreign directory that is already 700 is one this user cannot
+# read or write at all — no cache, nothing to inject.)
+chmod 755 "$FOREIGN_DIR" 2>/dev/null
+if chflags uchg "$FOREIGN_DIR" 2>/dev/null && ! chmod 700 "$FOREIGN_DIR" 2>/dev/null; then
+	OUT=$(run s-foreign "$T" "$REPO" NO_COLOR=1 TMPDIR="$FOREIGN_TMP")
+	chflags nouchg "$FOREIGN_DIR" 2>/dev/null
+	assert_lacks 'a cache directory this user cannot chmod is never read' 'HOSTILE-BADGE' "$OUT"
+	assert_lacks 'an adopted cache directory cannot inject an escape' "$(printf '\033')" "$OUT"
+	assert_has 'an unchmodable cache directory falls back to a real render' '500 saved' "$OUT"
+else
+	chflags nouchg "$FOREIGN_DIR" 2>/dev/null
+	printf 'skip  platform cannot make chmod fail; foreign cache directory unverified\n'
+fi
+
+# --- cache record: field hygiene ---------------------------------------------------------------
+# $SCOPE, $SINCE and $REPO all reach a TAB-delimited cache record. A tab in any of them shifts the
+# field split, and the "line" served on the next render then starts with the STAMP — the badge
+# grows a stray number that was never rendered.
+TABREPO=$WORK/tab$(printf '\t')repo
+mkdir -p "$TABREPO"
+TAB_JSON=$(stdin_json s-tabrepo "$T" "$TABREPO")
+TAB_FIRST=$(run_json "$TAB_JSON" NO_COLOR=1)
+TAB_SECOND=$(run_json "$TAB_JSON" NO_COLOR=1)
+TAB_STAMP=$(stat -f '%z-%m' "$T" 2>/dev/null || stat -c '%s-%Y' "$T" 2>/dev/null)
+assert_has 'a tab in the repo path still renders' '500 saved' "$TAB_FIRST"
+assert_eq 'a tab in the repo path does not shift the cached record' "$TAB_FIRST" "$TAB_SECOND"
+assert_lacks 'the cache stamp never leaks into the served badge' "$TAB_STAMP" "$TAB_SECOND"
+
+# --- cache key: hostile session ids ------------------------------------------------------------
+# $SESSION arrives from outside and becomes a FILENAME. Unsanitised, "../../../.." walks the cache
+# file clean out of $CACHE_DIR and "/etc/shadow" turns the key into a path; untruncated, an
+# unbounded id becomes an unbounded filename. cache_key() mirrors the same tr + cut, so asserting
+# the file landed exactly there asserts both.
+ESC_TMP=$WORK/escape-tmp
+ESC_DIR=$ESC_TMP/entire-graph-statusline-$(id -u)
+mkdir -p "$ESC_TMP"
+for hostile in '../../../../escaped' '/etc/shadow'; do
+	OUT=$(run "$hostile" "$T" "$REPO" NO_COLOR=1 TMPDIR="$ESC_TMP")
+	assert_has "hostile session id still renders ($hostile)" '500 saved' "$OUT"
+	assert_lacks "hostile session id leaves no separator in the key ($hostile)" \
+		'/' "$(cache_key "$hostile" "$T")"
+	assert_present "hostile session id cannot leave the cache dir ($hostile)" \
+		"$ESC_DIR/$(cache_key "$hostile" "$T").line"
+done
+LONGSID=0123456789012345678901234567890123456789TAIL
+OUT=$(run "$LONGSID" "$T" "$REPO" NO_COLOR=1 TMPDIR="$ESC_TMP")
+assert_has 'an over-long session id still renders' '500 saved' "$OUT"
+assert_present 'an over-long session id is cut to 40 characters' \
+	"$ESC_DIR/$(cache_key "$LONGSID" "$T").line"
+assert_lacks 'an over-long session id leaves no untruncated key behind' 'TAIL' "$(ls -a "$ESC_DIR")"
 
 # --- cache key: no session_id ------------------------------------------------------------------
 # session_id is absent from some status-line invocations, where the JSON reader yields "-".
@@ -593,6 +695,30 @@ assert_has 'duplicate session_id: no flip-flop between the two transcripts' '111
 assert_two_files 'duplicate session_id: two transcripts get two cache files' \
 	"$(cache_file s-dup "$WORK/perA.jsonl")" "$(cache_file s-dup "$WORK/perB.jsonl")"
 
+# --- cache key: no cksum -----------------------------------------------------------------------
+# cksum is POSIX but a shim/stripped image can still take it away. The fallback must derive the
+# digest FROM THE PATH: a constant would put every transcript back onto one key — the exact
+# collision the digest exists to prevent — and the two sessions above would resume overwriting each
+# other's badge. It must also be STABLE, or every render writes a new file and nothing is cached.
+mkdir -p "$WORK/shim"
+printf '#!/bin/sh\nexit 127\n' >"$WORK/shim/cksum"
+chmod +x "$WORK/shim/cksum"
+NOCK_TMP=$WORK/nocksum-tmp
+NOCK_DIR=$NOCK_TMP/entire-graph-statusline-$(id -u)
+mkdir -p "$NOCK_TMP"
+nocksum_lines() { ls -a "$NOCK_DIR" 2>/dev/null | grep -c '\.line$'; }
+OUT=$(run_json "$(stdin_json_nosid "$WORK/perA.jsonl" "$REPO")" NO_COLOR=1 \
+	TMPDIR="$NOCK_TMP" PATH="$WORK/shim:$PATH")
+assert_has 'no cksum: the badge still renders' '111 saved' "$OUT"
+OUT=$(run_json "$(stdin_json_nosid "$WORK/perA.jsonl" "$REPO")" NO_COLOR=1 \
+	TMPDIR="$NOCK_TMP" PATH="$WORK/shim:$PATH")
+assert_has 'no cksum: one transcript keeps one key across renders' '111 saved' "$OUT"
+assert_eq 'no cksum: one transcript, one cache file' 1 "$(nocksum_lines)"
+OUT=$(run_json "$(stdin_json_nosid "$WORK/perB.jsonl" "$REPO")" NO_COLOR=1 \
+	TMPDIR="$NOCK_TMP" PATH="$WORK/shim:$PATH")
+assert_has 'no cksum: a second transcript renders its own numbers' '222 saved' "$OUT"
+assert_eq 'no cksum: two transcripts, two cache files' 2 "$(nocksum_lines)"
+
 # --- prune -------------------------------------------------------------------------------------
 # A store drops the garbage the script leaks — week-old lines, tmp files abandoned by a killed
 # write, lock DIRECTORIES orphaned by a killed refresh — and touches nothing that is live.
@@ -621,6 +747,17 @@ assert_present 'prune leaves its throttle sentinel' "$CDIR/.pruned"
 touch -t "$OLD" "$CDIR/throttled-0-0.line"
 run s-prune2 "$T" "$REPO" NO_COLOR=1 >/dev/null
 assert_present 'prune is throttled behind its sentinel' "$CDIR/throttled-0-0.line"
+
+# A sentinel that is not a regular file — a planted DIRECTORY — used to disable prune permanently:
+# [ -f ] is false, so the throttle never short-circuits, but ": >" then fails on the directory and
+# the function returns before scanning. Self-heal instead.
+rm -rf "$CDIR/.pruned"
+mkdir -p "$CDIR/.pruned"
+: >"$CDIR/wedged-0-0.line"
+touch -t "$OLD" "$CDIR/wedged-0-0.line"
+run s-prune3 "$T" "$REPO" NO_COLOR=1 >/dev/null
+assert_absent 'a directory sentinel does not wedge prune forever' "$CDIR/wedged-0-0.line"
+assert_present 'a directory sentinel is replaced by a real sentinel' "$CDIR/.pruned"
 
 # --- result -----------------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
