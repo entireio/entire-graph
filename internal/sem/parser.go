@@ -310,6 +310,7 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if spec.language == "JavaScript" || spec.language == "TypeScript" {
 		entities = appendMissingEntities(entities, javascriptExportedVariableEntities(content)...)
 		entities = appendMissingEntities(entities, javascriptAssignmentMethodEntities(content)...)
+		entities = appendMissingEntities(entities, javascriptDefaultExportEntities(path, content)...)
 		entities = append(entities, graphqlResolverEntities(path, content)...)
 	}
 	if spec.language == "SQL" {
@@ -6597,6 +6598,61 @@ func javascriptExportedVariableEntities(content string) []Entity {
 		})
 	}
 	return entities
+}
+
+// jsDefaultExportPattern matches an ANONYMOUS default export whose value is a
+// function, arrow, or class — `export default function(){…}`, `export default
+// () => {…}`, `export default async (x) => {…}`, `export default class {…}`.
+// These carry no name, so the tree-sitter walk (which needs a name node) emits
+// nothing and modules written this way (axios helper files) get zero symbols,
+// leaving search with nothing to anchor. Named default exports are handled by
+// the walk / other extractors and are excluded here (the alternation requires
+// the value to begin with `(`, `function(`, `function*(`, `async ... =>`, or a
+// braceless `class {`), so a named `function foo` / `class Foo` never matches.
+var jsDefaultExportPattern = regexp.MustCompile(`(?m)^\s*export\s+default\s+(async\s+)?(function\s*\*?\s*\(|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>|class\s*\{)`)
+
+func javascriptDefaultExportEntities(path, content string) []Entity {
+	loc := jsDefaultExportPattern.FindStringIndex(content)
+	if loc == nil {
+		return nil
+	}
+	base := filepath.Base(path)
+	if dot := strings.IndexByte(base, '.'); dot > 0 {
+		base = base[:dot]
+	}
+	if base == "" {
+		return nil
+	}
+	kind := "function"
+	if strings.Contains(content[loc[0]:loc[1]], "class") {
+		kind = "class"
+	}
+	startLine := countLinesBefore(content, loc[0]) + 1
+	endLine := startLine
+	blockEnd := loc[1]
+	if openBrace := strings.IndexByte(content[loc[0]:], '{'); openBrace >= 0 {
+		openBrace += loc[0]
+		if closeBrace := matchingDelimiterOffset(content, openBrace, '{', '}'); closeBrace >= 0 {
+			endLine = countLinesBefore(content, closeBrace) + 1
+			blockEnd = closeBrace + 1
+		}
+	}
+	lineEndRel := strings.IndexByte(content[loc[0]:], '\n')
+	lineEnd := len(content)
+	if lineEndRel >= 0 {
+		lineEnd = loc[0] + lineEndRel
+	}
+	signature := strings.TrimSpace(content[loc[0]:lineEnd])
+	block := content[loc[0]:minInt(blockEnd, len(content))]
+	return []Entity{{
+		Kind:        kind,
+		Name:        base,
+		Signature:   signature,
+		StartLine:   startLine,
+		EndLine:     endLine,
+		BodyHash:    hash(normalize(block)),
+		Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: base, Signature: signature}, block))),
+	}}
 }
 
 func javascriptAssignmentMethodEntities(content string) []Entity {
