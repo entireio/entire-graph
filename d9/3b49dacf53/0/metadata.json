@@ -1,0 +1,100 @@
+{
+  "cli_version": "dev",
+  "checkpoint_id": "d93b49dacf53",
+  "session_id": "663ded39-44ae-49ad-b87b-f75916778180",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-25T16:33:02.503255Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "scripts/entire-graph-statusline.sh",
+    "scripts/entire-graph-statusline_test.sh"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "e66dd4f80aa0",
+  "token_usage": {
+    "input_tokens": 1025,
+    "cache_creation_tokens": 14576042,
+    "cache_read_tokens": 170423429,
+    "output_tokens": 603684,
+    "api_call_count": 353
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_019ixp7BWUXmoh3PG7K2Jn5d",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "audit"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "e66dd4f80aa0",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 502,
+        "end": 503,
+        "entry_ids": [
+          "67c710c4-992d-423e-bfcd-e2dfea3d149f"
+        ],
+        "tool_use_id": "toolu_019ixp7BWUXmoh3PG7K2Jn5d"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_019ixp7BWUXmoh3PG7K2Jn5d"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: audit",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01ERsfVVZenxtgsmsZ4PQnqy",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "deep-research"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "e66dd4f80aa0",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 1720,
+        "end": 1721,
+        "entry_ids": [
+          "237185ba-9bf8-4ccb-a43f-733d7fed6465"
+        ],
+        "tool_use_id": "toolu_01ERsfVVZenxtgsmsZ4PQnqy"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01ERsfVVZenxtgsmsZ4PQnqy"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: deep-research",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "initial_attribution": {
+    "calculated_at": "2026-07-25T16:33:02.288535Z",
+    "agent_lines": 0,
+    "agent_removed": 16,
+    "human_added": 234,
+    "human_modified": 39,
+    "human_removed": 0,
+    "total_committed": 256,
+    "total_lines_changed": 289,
+    "agent_percentage": 5.536332179930796,
+    "metric_version": 2
+  }
+}
