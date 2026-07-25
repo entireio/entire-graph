@@ -75,6 +75,8 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runNeighbors(ctx, opts, args[1:])
 	case "impact":
 		return runImpact(ctx, opts, args[1:])
+	case "stats":
+		return runStats(ctx, opts, args[1:])
 	case "agent-guide":
 		return runAgentGuide(opts, args[1:])
 	case "init-agents":
@@ -119,8 +121,13 @@ Usage:
   entire graph search --query "issue or concept" --repo . [--format json|ndjson|text|agent] [--top-k 20] [--max-context-bytes 16384] [--head] [--profile syntax-only|fast|full] [--max-indexed-files n|--index-all-files] [--cache-dir path|--no-cache]
   entire graph neighbors --symbol NAME --repo . [--file path] [--relation CALLS] [--direction both|in|out] [--depth 1|2] [--limit 20] [--format json|text|agent] [--max-context-bytes 16384] [--head] [--cache-dir path|--no-cache] [--internal-only] [--exclude-tests]
   entire graph impact --symbol NAME --repo . [--file path] [--depth 1|2] [--limit 15] [--format text|json] [--max-context-bytes 4096] [--head] [--profile fast|full] [--cache-dir path|--no-cache] [--exclude-tests]
+  entire graph stats [--repo .] [--since 30d|7d|all] [--format text|json] [--sessions-dir path]
 
 Notes:
+  stats is a local read-only report for humans: it reads the coding-agent session transcripts
+  already on disk (~/.claude/projects/<path-slug>/*.jsonl) and reports graph usage vs
+  grep/read exploration, bytes each pulled into context, and an ESTIMATED token saving whose
+  assumption is printed with the number.
   --include-file contains gitignore-style rules that re-include ignored paths; it is not an allowlist.
   Streaming NDJSON writes aggregate stats and completeness in the trailing summary record.
   commit/diff/analyze stop cleanly after --max-seconds (default 120; 0 = unlimited) and emit the

@@ -57,6 +57,7 @@ by eliminating exploration; when there is nothing to explore, skip it.
     callers ->  entire graph neighbors --repo . --symbol X --relation CALLS --direction in
     change  ->  entire graph diff --base A --head B --json
     detect  ->  entire graph capabilities --json   (inventory-only languages have no relations)
+    stats   ->  entire graph stats --repo .        (human-facing token-savings report; not part of your workflow — do not run it unless asked)
 `
 
 // agentPointerBegin/End delimit the block init-agents manages inside AGENTS.md / CLAUDE.md,
