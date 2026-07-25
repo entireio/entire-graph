@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAnalyzeGitRange(t *testing.T) {
@@ -42,6 +43,99 @@ def format_date(value):
 	if len(result.Files[0].Changes) != 2 {
 		t.Fatalf("changes = %#v", result.Files[0].Changes)
 	}
+}
+
+func TestAnalyzeGitRangeSurfacesModuleScopeChange(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	write(t, repo, "auth.py", `def validate_token(token):
+    return bool(token)
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	// Only module-scope code changes: a trailing top-level comment is added
+	// while validate_token stays byte-for-byte identical. Without module-scope
+	// attribution this diff would collapse to an empty (null) files list.
+	write(t, repo, "auth.py", `def validate_token(token):
+    return bool(token)
+
+
+# module-level configuration note
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "module-scope edit")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 {
+		t.Fatalf("files = %#v", result.Files)
+	}
+	file := result.Files[0]
+	if file.Path != "auth.py" {
+		t.Fatalf("path = %q", file.Path)
+	}
+	if len(file.Changes) != 1 {
+		t.Fatalf("changes = %#v", file.Changes)
+	}
+	change := file.Changes[0]
+	if change.Kind != moduleKind {
+		t.Fatalf("kind = %q, want %q", change.Kind, moduleKind)
+	}
+	if change.Type != "body_changed" {
+		t.Fatalf("type = %q, want body_changed", change.Type)
+	}
+	if change.Name != "auth.py" {
+		t.Fatalf("name = %q, want auth.py", change.Name)
+	}
+}
+
+func TestAnalyzeGitRangeReportsProgress(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	write(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "auth.py", "def validate_token(token, issuer=None):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "change")
+	head := rev(t, repo, "HEAD")
+
+	var phases []string
+	_, err := AnalyzeGitRangeWithOptions(t.Context(), repo, base, head, nil, AnalyzeOptions{
+		Progress: func(event AnalyzeProgressEvent) {
+			phases = append(phases, event.Phase)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"discover", "parse", "reconcile", "dependents", "complete"} {
+		if !containsPhase(phases, want) {
+			t.Fatalf("progress phases %v missing %q", phases, want)
+		}
+	}
+}
+
+func containsPhase(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAnalyzeGitRangeReconcilesCrossFileMove(t *testing.T) {
@@ -313,6 +407,145 @@ jobs:
 	}
 	if !sawJob || !sawTrigger {
 		t.Fatalf("workflow changes missing job=%v trigger=%v in %#v", sawJob, sawTrigger, file.Changes)
+	}
+}
+
+// Regression for the jdx/mise report: a changed file with no parser support
+// (a PowerShell test script there) silently disappeared from the result, so an
+// empty diff was indistinguishable from "not analyzed". It must surface as a
+// machine-readable skipped marker.
+func TestAnalyzeGitRangeMarksUnsupportedChangedFiles(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	write(t, repo, "auth.py", `def validate_token(token):
+    return bool(token)
+`)
+	write(t, repo, "shim.Tests.ps1", `Describe "shim" {
+    It "runs" { $true | Should -BeTrue }
+}
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "auth.py", `def validate_token(token, *, issuer=None):
+    return bool(token)
+`)
+	write(t, repo, "shim.Tests.ps1", `Describe "shim" {
+    It "runs" { $false | Should -BeFalse }
+}
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "change both")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "auth.py" {
+		t.Fatalf("files = %#v", result.Files)
+	}
+	var marker *ProviderWarning
+	for i, w := range result.Warnings {
+		if w.Code == "W_UNSUPPORTED_FILE" {
+			marker = &result.Warnings[i]
+		}
+	}
+	if marker == nil {
+		t.Fatalf("missing W_UNSUPPORTED_FILE warning: %#v", result.Warnings)
+	}
+	if marker.FilePath != "shim.Tests.ps1" || marker.Severity != "info" {
+		t.Fatalf("unexpected marker %#v", marker)
+	}
+}
+
+func TestAnalyzeGitRangeKeepsShebangRoutableChangedFiles(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	write(t, repo, "bin/tool", `#!/usr/bin/env python3
+
+def run(value):
+    return value
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "bin/tool", `#!/usr/bin/env python3
+
+def run(value, strict=False):
+    return value
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "change signature")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "bin/tool" || result.Files[0].Language != "Python" {
+		t.Fatalf("shebang-routable file was not analyzed: %#v", result)
+	}
+	for _, warning := range result.Warnings {
+		if warning.Code == "W_UNSUPPORTED_FILE" {
+			t.Fatalf("shebang-routable file marked unsupported: %#v", warning)
+		}
+	}
+}
+
+func TestAnalyzeGitRangeMarksMixedSupportRenames(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		fromPath string
+		toPath   string
+		warnPath string
+	}{
+		{name: "supported to unsupported", fromPath: "sample.go", toPath: "sample.ps1", warnPath: "sample.ps1"},
+		{name: "unsupported to supported", fromPath: "sample.ps1", toPath: "sample.go", warnPath: "sample.ps1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			git(t, repo, "init")
+			git(t, repo, "config", "user.name", "Entire Graph Test")
+			git(t, repo, "config", "user.email", "graph@example.com")
+			write(t, repo, tc.fromPath, "package sample\n\nfunc Run() {}\n")
+			git(t, repo, "add", ".")
+			git(t, repo, "commit", "-m", "initial")
+			base := rev(t, repo, "HEAD")
+
+			if err := os.Rename(filepath.Join(repo, tc.fromPath), filepath.Join(repo, tc.toPath)); err != nil {
+				t.Fatal(err)
+			}
+			git(t, repo, "add", "-A")
+			git(t, repo, "commit", "-m", "rename across parser boundary")
+			head := rev(t, repo, "HEAD")
+
+			result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Files) != 0 {
+				t.Fatalf("mixed-support rename produced a one-sided delta: %#v", result.Files)
+			}
+			var marker *ProviderWarning
+			for i, warning := range result.Warnings {
+				if warning.Code == "W_UNSUPPORTED_FILE" {
+					marker = &result.Warnings[i]
+					break
+				}
+			}
+			if marker == nil || marker.FilePath != tc.warnPath || !strings.Contains(marker.EffectOnCompleteness, "diff suppressed") {
+				t.Fatalf("missing mixed-support marker: %#v", result.Warnings)
+			}
+		})
 	}
 }
 
@@ -905,4 +1138,83 @@ func rev(t *testing.T, repo, value string) string {
 		t.Fatalf("git rev-parse %s: %v\n%s", value, err, out)
 	}
 	return string(out[:len(out)-1])
+}
+
+// TestAnalyzeGitRangeBudgetExceededEmitsPartialResult pins the time-budget
+// contract: when MaxDuration runs out, the analysis returns cleanly (no
+// error) and enumerates every skipped changed file with a machine-readable
+// W_ANALYSIS_BUDGET_EXCEEDED warning instead of producing nothing.
+func TestAnalyzeGitRangeBudgetExceededEmitsPartialResult(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
+	write(t, repo, "other.py", "def helper(value):\n    return value\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+	write(t, repo, "auth.py", "def validate_token(token, issuer=None):\n    return bool(token)\n")
+	write(t, repo, "other.py", "def helper(value):\n    return value + 1\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "change")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRangeWithOptions(t.Context(), repo, base, head, nil, AnalyzeOptions{
+		MaxDuration: time.Nanosecond, // expires before the first changed file
+	})
+	if err != nil {
+		t.Fatalf("budget exhaustion must not error, got %v", err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("no file should have been analyzed under an expired budget, got %#v", result.Files)
+	}
+	skipped := map[string]bool{}
+	for _, warning := range result.Warnings {
+		if warning.Code != "W_ANALYSIS_BUDGET_EXCEEDED" {
+			t.Fatalf("unexpected warning %#v", warning)
+		}
+		if warning.Severity != "warning" {
+			t.Fatalf("severity = %q, want warning", warning.Severity)
+		}
+		if warning.EffectOnCompleteness == "" || warning.Detail == "" {
+			t.Fatalf("budget warning must carry effect and detail, got %#v", warning)
+		}
+		skipped[warning.FilePath] = true
+	}
+	for _, want := range []string{"auth.py", "other.py"} {
+		if !skipped[want] {
+			t.Fatalf("skipped files %v missing %q", skipped, want)
+		}
+	}
+}
+
+// TestAnalyzeGitRangeNoBudgetKeepsFullResult pins that MaxDuration == 0 keeps
+// the historical unbounded behavior: full result, no budget warnings.
+func TestAnalyzeGitRangeNoBudgetKeepsFullResult(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+	write(t, repo, "auth.py", "def validate_token(token, issuer=None):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "change")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRangeWithOptions(t.Context(), repo, base, head, nil, AnalyzeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 {
+		t.Fatalf("files = %#v, want the changed file analyzed", result.Files)
+	}
+	for _, warning := range result.Warnings {
+		if warning.Code == "W_ANALYSIS_BUDGET_EXCEEDED" {
+			t.Fatalf("no budget warning expected without MaxDuration, got %#v", warning)
+		}
+	}
 }

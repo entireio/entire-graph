@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -71,6 +73,14 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runIndex(ctx, opts, args[1:])
 	case "neighbors":
 		return runNeighbors(ctx, opts, args[1:])
+	case "impact":
+		return runImpact(ctx, opts, args[1:])
+	case "stats":
+		return runStats(ctx, opts, args[1:])
+	case "agent-guide":
+		return runAgentGuide(opts, args[1:])
+	case "init-agents":
+		return runInitAgents(opts, args[1:])
 	case "version", "--version", "-v":
 		if len(args) > 1 && args[1] == "--json" {
 			return json.NewEncoder(opts.Stdout).Encode(map[string]string{
@@ -91,12 +101,17 @@ func Run(ctx context.Context, opts Options, args []string) error {
 func printHelp(out io.Writer) {
 	fmt.Fprintln(out, `entire-graph adds entity-level context to Entire checkpoints.
 
+For coding agents: run 'entire graph agent-guide' (search-first doctrine — measured to
+roughly halve agent token usage) or 'entire graph init-agents' to install it into a project.
+
 Usage:
-  entire graph commit [rev] [--json] [--repo path]
+  entire graph commit [rev] [--json] [--progress] [--max-seconds n] [--repo path]
   entire graph checkpoint <checkpoint-id> [--json] [--repo path]
-  entire graph diff --base <rev> --head <rev> [--json] [--repo path] [-- path...]
-  entire graph analyze [--base <rev>] [--head <rev>] [--json] [--repo path] [-- path...]
+  entire graph diff --base <rev> --head <rev> [--json] [--progress] [--max-seconds n] [--repo path] [-- path...]
+  entire graph analyze [--base <rev>] [--head <rev>] [--json] [--progress] [--max-seconds n] [--repo path] [-- path...]
   entire graph doctor [--json]
+  entire graph agent-guide                 # print the coding-agent operating guide
+  entire graph init-agents [--repo path]   # install the guide into a project's AGENTS.md/CLAUDE.md
   entire graph version [--json]
   entire graph capabilities --json
   entire graph snapshot --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
@@ -104,7 +119,20 @@ Usage:
   entire graph edges --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
   entire graph index --repo . [--profile syntax-only|fast|full] [--cache-dir path] [--format json] [--head] [--ignore-file path] [--include-file path]
   entire graph search --query "issue or concept" --repo . [--format json|ndjson|text|agent] [--top-k 20] [--max-context-bytes 16384] [--head] [--profile syntax-only|fast|full] [--max-indexed-files n|--index-all-files] [--cache-dir path|--no-cache]
-  entire graph neighbors --symbol NAME --repo . [--file path] [--relation CALLS] [--direction both|in|out] [--depth 1|2] [--limit 20] [--format json|text|agent] [--max-context-bytes 16384] [--head] [--cache-dir path|--no-cache] [--internal-only] [--exclude-tests]`)
+  entire graph neighbors --symbol NAME --repo . [--file path] [--relation CALLS] [--direction both|in|out] [--depth 1|2] [--limit 20] [--format json|text|agent] [--max-context-bytes 16384] [--head] [--cache-dir path|--no-cache] [--internal-only] [--exclude-tests]
+  entire graph impact --symbol NAME --repo . [--file path] [--depth 1|2] [--limit 15] [--format text|json] [--max-context-bytes 4096] [--head] [--profile fast|full] [--cache-dir path|--no-cache] [--exclude-tests]
+  entire graph stats [--repo .] [--since 30d|7d|all] [--format text|json] [--sessions-dir path|--transcript path]
+
+Notes:
+  stats is a local read-only report for humans: it reads the coding-agent session transcripts
+  already on disk (~/.claude/projects/<path-slug>/*.jsonl) and reports graph usage vs
+  grep/read exploration, bytes each pulled into context, and an ESTIMATED token saving whose
+  assumption is printed with the number. --transcript narrows it to ONE session transcript
+  (plus that session's subagent transcripts) instead of a whole project directory.
+  --include-file contains gitignore-style rules that re-include ignored paths; it is not an allowlist.
+  Streaming NDJSON writes aggregate stats and completeness in the trailing summary record.
+  commit/diff/analyze stop cleanly after --max-seconds (default 120; 0 = unlimited) and emit the
+  partial result with W_ANALYSIS_BUDGET_EXCEEDED warnings listing what was skipped.`)
 }
 
 func runDoctor(ctx context.Context, opts Options, args []string) error {
@@ -231,12 +259,130 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	// relation count on large repositories.
 	encoder := json.NewEncoder(opts.Stdout)
 	encoder.SetEscapeHTML(false) // match json.Marshal used elsewhere (no < escaping)
-	return sem.StreamSnapshot(ctx, repo, opts.Version, options, func(record any) error {
+
+	// Targeted edge query: when --to/--from/--relation is set, emit only matching
+	// relations (plus header/summary), never files/symbols. Turns "callers of X"
+	// into a tiny reply instead of dumping the whole graph for the caller to grep.
+	// Streaming-safe: idMatches keys off the stable ID's trailing name segment, so
+	// no in-memory symbol table is needed. Only meaningful in edges/snapshot modes.
+	// Capture the summary as it streams past so we can loudly warn on a partial
+	// parse. Without this the CLI discards the summary and a run that silently
+	// parsed only a fraction of the repo (e.g. a mis-scoped subdir) looks clean.
+	var summary *sem.SnapshotSummary
+	capture := func(record any) {
+		if s, ok := record.(sem.SnapshotSummary); ok {
+			s := s
+			summary = &s
+		}
+	}
+
+	filterActive := flags.To != "" || flags.From != "" || len(flags.Relation) > 0
+	if filterActive && mode == "symbols" {
+		return fmt.Errorf("--to/--from/--relation filter relations; use `edges` (not `symbols`)")
+	}
+	if filterActive {
+		var matched int
+		if err := sem.StreamSnapshot(ctx, repo, opts.Version, options, func(record any) error {
+			capture(record)
+			switch r := record.(type) {
+			case sem.RelationRecord:
+				if !relationMatches(r, flags) {
+					return nil
+				}
+				matched++
+				return encoder.Encode(r)
+			case sem.FileRecord, sem.ExternalRecord, sem.SymbolRecord:
+				return nil // suppressed for a targeted edge query
+			default: // header, summary
+				return encoder.Encode(record)
+			}
+		}); err != nil {
+			return err
+		}
+		warnIfPartial(opts.Stderr, flags.Worktree, summary)
+		fmt.Fprintf(opts.Stderr, "graph: %d edge(s) matched (--to=%q --from=%q --relation=%s)\n",
+			matched, flags.To, flags.From, strings.Join(flags.Relation, ","))
+		return nil
+	}
+
+	// Whole-graph dump (no targeted filter): serve from the tree-hash record
+	// cache when possible. The cache is keyed on the HEAD tree, the mode, and the
+	// output-affecting options, so a repeat call on an unchanged HEAD skips the
+	// expensive re-index. It is deliberately bypassed for --worktree (the working
+	// tree may differ from HEAD) and, by returning above, for targeted queries.
+	cacheDir := flags.CacheDir
+	if cacheDir == "" {
+		cacheDir = opts.Env.PluginDataDir
+	}
+	useCache := !flags.DisableCache && !flags.Worktree && cacheDir != ""
+	var tree string
+	if useCache {
+		if t, err := gitutil.RevParse(ctx, repo, "HEAD^{tree}"); err == nil && t != "" {
+			tree = t
+		} else {
+			useCache = false
+		}
+	}
+	if useCache {
+		if records, cachedSummary, hit, err := sem.LoadProviderRecords(repo, opts.Version, tree, mode, cacheDir, options); err == nil && hit {
+			if _, err := opts.Stdout.Write(records); err != nil {
+				return err
+			}
+			warnIfPartial(opts.Stderr, flags.Worktree, cachedSummary)
+			return nil
+		}
+	}
+
+	// On a miss, tee the streamed NDJSON into a buffer so we can persist it after
+	// a successful run without a second pass over the graph.
+	var recordBuf bytes.Buffer
+	if useCache {
+		encoder = json.NewEncoder(io.MultiWriter(opts.Stdout, &recordBuf))
+		encoder.SetEscapeHTML(false)
+	}
+	if err := sem.StreamSnapshot(ctx, repo, opts.Version, options, func(record any) error {
+		capture(record)
 		if !includeRecord(mode, record) {
 			return nil
 		}
 		return encoder.Encode(record)
-	})
+	}); err != nil {
+		return err
+	}
+	warnIfPartial(opts.Stderr, flags.Worktree, summary)
+	if useCache {
+		// Best effort: a failed cache write never fails the command.
+		_ = sem.StoreProviderRecords(repo, opts.Version, tree, mode, cacheDir, options, recordBuf.Bytes(), summary)
+	}
+	return nil
+}
+
+// warnIfPartial prints a loud stderr banner when the snapshot did not fully cover
+// the repository, so a silent partial parse (the #1 sharp edge: running in a
+// mis-scoped subdir without --worktree, which indexes only a stray config file
+// and reports "ok") becomes impossible to miss. Silent on a clean "ok" run.
+func warnIfPartial(w io.Writer, worktree bool, s *sem.SnapshotSummary) {
+	if s == nil {
+		return
+	}
+	level := s.Stats.CompletenessLevel
+	if level == "" || level == "ok" {
+		return
+	}
+	fmt.Fprintf(w, "\n⚠️  graph is %s: parsed %d/%d files, %d symbols, %d relations (languages: %s).\n",
+		strings.ToUpper(level), s.Stats.ParsedFiles, s.Stats.Files, s.Stats.Symbols,
+		s.Stats.Relations, strings.Join(s.Languages, ", "))
+	switch {
+	case s.Stats.Files <= 2 && !worktree:
+		fmt.Fprintf(w, "   Only %d file(s) were discovered — you may be indexing a subdirectory or an\n"+
+			"   unexpected commit. Run from the repo root, or pass --worktree to index the\n"+
+			"   working tree instead of HEAD.\n", s.Stats.Files)
+	case s.Stats.ParsedFiles*2 < s.Stats.Files:
+		fmt.Fprintf(w, "   Over half the discovered files were not parsed (unsupported language or\n"+
+			"   parse errors). Graph queries will miss code in those files.\n")
+	default:
+		fmt.Fprintf(w, "   The graph is incomplete; treat query results as partial.\n")
+	}
 }
 
 // includeRecord filters streamed records for the symbols and edges modes, which
@@ -254,9 +400,21 @@ func includeRecord(mode string, record any) bool {
 	}
 }
 
+// defaultMaxSeconds is the wall-clock budget applied to diff/commit/analyze
+// when --max-seconds is not given. Large repos with hot changed names can
+// otherwise grind for many minutes and produce nothing; with the budget the
+// command stops cleanly at the limit and emits the partial result plus
+// machine-readable W_ANALYSIS_BUDGET_EXCEEDED warnings. --max-seconds 0
+// disables the budget.
+const defaultMaxSeconds = 120
+
 type commonFlags struct {
-	Repo string
-	JSON bool
+	Repo     string
+	JSON     bool
+	Progress bool
+	// MaxSeconds is the overall analysis budget in seconds; -1 means the flag
+	// was not given (commands apply their default), 0 means unlimited.
+	MaxSeconds int
 }
 
 type providerFlags struct {
@@ -268,6 +426,51 @@ type providerFlags struct {
 	Progress     bool
 	IgnoreFiles  []string
 	IncludeFiles []string
+	// Targeted edge filters (edges mode). When any is set the command emits only
+	// the matching relation records (plus header/summary) instead of the whole
+	// graph, so "callers of X" is a tiny reply rather than a 50MB dump that the
+	// caller then greps client-side. --to/--from match a symbol by full stable ID
+	// or by trailing name segment (IDs are `...:kind:name`); --relation is one or
+	// more edge types (comma-separated, case-insensitive), e.g. CALLS,REFERENCES.
+	To       string
+	From     string
+	Relation []string
+	// CacheDir/DisableCache control the tree-hash record cache. Empty CacheDir
+	// falls back to ENTIRE_PLUGIN_DATA_DIR; --no-cache disables it entirely.
+	CacheDir     string
+	DisableCache bool
+}
+
+// idMatches reports whether a stable symbol ID matches a user-supplied selector:
+// either the exact ID, or a trailing name segment (IDs end `...:kind:name`, so
+// `getConfPath` or `function:getConfPath` both select it). Streaming-safe — no
+// symbol table needed.
+func idMatches(id, sel string) bool {
+	return id == sel || strings.HasSuffix(id, ":"+sel)
+}
+
+// relationMatches applies the --to/--from/--relation predicate to one edge.
+func relationMatches(r sem.RelationRecord, f providerFlags) bool {
+	if f.To != "" && !idMatches(r.ToID, f.To) {
+		return false
+	}
+	if f.From != "" && !idMatches(r.FromID, f.From) {
+		return false
+	}
+	if len(f.Relation) > 0 {
+		t := strings.ToUpper(r.Type)
+		hit := false
+		for _, want := range f.Relation {
+			if t == want {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			return false
+		}
+	}
+	return true
 }
 
 // parseProfile validates the --profile value. Empty defaults to full.
@@ -325,6 +528,36 @@ func parseProviderFlags(args []string) (providerFlags, []string, error) {
 				return flags, nil, errors.New("--include-file requires a value")
 			}
 			flags.IncludeFiles = append(flags.IncludeFiles, args[i])
+		case "--cache-dir":
+			i++
+			if i >= len(args) {
+				return flags, nil, errors.New("--cache-dir requires a value")
+			}
+			flags.CacheDir = args[i]
+		case "--no-cache":
+			flags.DisableCache = true
+		case "--to":
+			i++
+			if i >= len(args) {
+				return flags, nil, errors.New("--to requires a value")
+			}
+			flags.To = args[i]
+		case "--from":
+			i++
+			if i >= len(args) {
+				return flags, nil, errors.New("--from requires a value")
+			}
+			flags.From = args[i]
+		case "--relation":
+			i++
+			if i >= len(args) {
+				return flags, nil, errors.New("--relation requires a value")
+			}
+			for _, part := range strings.Split(args[i], ",") {
+				if part = strings.ToUpper(strings.TrimSpace(part)); part != "" {
+					flags.Relation = append(flags.Relation, part)
+				}
+			}
 		default:
 			rest = append(rest, args[i])
 		}
@@ -333,13 +566,25 @@ func parseProviderFlags(args []string) (providerFlags, []string, error) {
 }
 
 func parseCommonFlags(args []string) (commonFlags, []string, error) {
-	var flags commonFlags
+	flags := commonFlags{MaxSeconds: -1}
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch arg {
 		case "--json":
 			flags.JSON = true
+		case "--progress":
+			flags.Progress = true
+		case "--max-seconds":
+			i++
+			if i >= len(args) {
+				return flags, nil, errors.New("--max-seconds requires a value")
+			}
+			seconds, err := strconv.Atoi(args[i])
+			if err != nil || seconds < 0 {
+				return flags, nil, fmt.Errorf("--max-seconds requires a non-negative integer, got %q", args[i])
+			}
+			flags.MaxSeconds = seconds
 		case "--repo":
 			i++
 			if i >= len(args) {
@@ -376,13 +621,19 @@ func runCommit(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	return analyzeAndPrint(ctx, opts.Stdout, repo, base, rev, nil, flags.JSON)
+	return analyzeAndPrint(ctx, opts, repo, base, rev, nil, flags)
 }
 
 func runCheckpoint(ctx context.Context, opts Options, args []string) error {
 	flags, rest, err := parseCommonFlags(args)
 	if err != nil {
 		return err
+	}
+	if flags.Progress {
+		return errors.New("checkpoint does not support --progress")
+	}
+	if flags.MaxSeconds >= 0 {
+		return errors.New("checkpoint does not support --max-seconds")
 	}
 	if len(rest) != 1 {
 		return errors.New("checkpoint requires exactly one checkpoint ID")
@@ -434,7 +685,7 @@ func runDiff(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	return analyzeAndPrint(ctx, opts.Stdout, repo, base, head, paths, flags.JSON)
+	return analyzeAndPrint(ctx, opts, repo, base, head, paths, flags)
 }
 
 func resolveRepo(ctx context.Context, env EntireEnv, explicit string) (string, error) {
@@ -447,12 +698,33 @@ func resolveRepo(ctx context.Context, env EntireEnv, explicit string) (string, e
 	return gitutil.RepoRoot(ctx, ".")
 }
 
-func analyzeAndPrint(ctx context.Context, out io.Writer, repo, base, head string, paths []string, asJSON bool) error {
-	result, err := sem.AnalyzeGitRange(ctx, repo, base, head, paths)
+func analyzeAndPrint(ctx context.Context, opts Options, repo, base, head string, paths []string, flags commonFlags) error {
+	maxSeconds := flags.MaxSeconds
+	if maxSeconds < 0 {
+		maxSeconds = defaultMaxSeconds
+	}
+	analyzeOptions := sem.AnalyzeOptions{
+		MaxDuration: time.Duration(maxSeconds) * time.Second,
+	}
+	if flags.Progress {
+		analyzeOptions.Progress = func(event sem.AnalyzeProgressEvent) {
+			line := fmt.Sprintf("graph diff progress phase=%s files=%d/%d elapsed=%s",
+				event.Phase,
+				event.FilesDone,
+				event.FilesTotal,
+				event.Elapsed.Round(time.Millisecond),
+			)
+			if event.Path != "" {
+				line += " file=" + event.Path
+			}
+			fmt.Fprintln(opts.Stderr, line)
+		}
+	}
+	result, err := sem.AnalyzeGitRangeWithOptions(ctx, repo, base, head, paths, analyzeOptions)
 	if err != nil {
 		return err
 	}
-	return printResult(out, result, asJSON)
+	return printResult(opts.Stdout, result, flags.JSON)
 }
 
 func printResult(out io.Writer, result sem.Result, asJSON bool) error {
