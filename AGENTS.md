@@ -26,6 +26,11 @@ entire graph search --repo . --query "<the task or bug in one plain sentence>" -
 - Working tree by default; add `--head` for committed-tree + cache reuse.
 - `--profile syntax-only|fast|full` (default `syntax-only`); `--index-all-files` or `--max-indexed-files N` to widen/bound cold-search parsing.
 
+**Ranking priors you should expect (they are deliberate, not bugs):**
+
+- **Source outranks non-source.** Prose documentation (`.md`/`.mdx`/`.rst`/`.adoc`/`.txt`, `docs/`, `website/`, `versioned_docs/`, README/CHANGELOG), vendored trees (`vendor/`, `node_modules/`, `third_party/`), generated artifacts (`dist/`, `single_include/`, lock files) and `examples/` carry a **multiplicative** relevance prior below 1, so they must be clearly more relevant than the best source hit to outrank it. Nothing is filtered: a documentation hit still ranks first when it is the only match, and the prior switches off entirely when your query asks for that class ("update the **docs** for…", "fix the **example**", "regenerate the **dist** bundle"). Demoted hits are labelled with a `doc-prior` / `vendored-prior` / `generated-prior` / `example-prior` signal.
+- **Near-duplicate copies are collapsed.** Two hits that are the same content in different files — versioned documentation trees, vendored snapshots, generated mirrors — are merged into the best-ranked copy, which then reports a `+N similar` signal. The freed result slots go to genuinely different code.
+
 **When:** the start of essentially every task. One good query lands you on the fix area.
 
 ### 🕸️ neighbors — *who calls this / what does it call* (targeted relations)

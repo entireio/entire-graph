@@ -544,15 +544,23 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	candidates = append(candidates, neighbors...)
 	candidates = append(candidates, bridges...)
 	candidates = dedupeSemanticMirrorCandidates(candidates, q, symbolsByID)
+	// File-class prior then near-duplicate collapse, in that order: the prior
+	// decides WHICH copy of a duplicated document survives, the collapse frees
+	// the budget the other copies would have spent. Both run before selection so
+	// the reclaimed result slots go to genuinely different code.
+	applySearchFileClassPrior(candidates, q)
 	sortSearchCandidates(candidates)
+	candidates = collapseNearDuplicateCandidates(candidates)
 	semantic := selectDiverseCandidates(candidates, options.TopK, options.MaxRegionsPerFile)
 	selected := semantic
 	if len(sparseCandidates) > 0 {
 		attachSparseCandidateSymbols(sparseCandidates, symbolsByFile)
 		scoreSparseCandidates(sparseCandidates, sparseQuery, sparseDF, sparseDocumentCount, sparseDocumentLength)
+		applySearchFileClassPrior(sparseCandidates, q)
 		sortSearchCandidates(sparseCandidates)
 		sparseCandidates = dedupeSemanticMirrorCandidates(sparseCandidates, q, symbolsByID)
 		sortSearchCandidates(sparseCandidates)
+		sparseCandidates = collapseNearDuplicateCandidates(sparseCandidates)
 		selected = selectHybridCandidates(semantic, sparseCandidates, options.TopK)
 		for index := range selected {
 			selected[index].score = 1 / float64(index+1)
@@ -3097,32 +3105,18 @@ func searchTestArtifactPath(lower string) bool {
 		strings.HasSuffix(lower, "_test.go") || strings.HasSuffix(lower, ".test")
 }
 
+// searchDocumentationArtifactPath reports whether a path is prose documentation.
+// The taxonomy lives in search_file_class.go so the additive prior here and the
+// multiplicative file-class prior applied at ranking time can never disagree
+// about what "documentation" means (segment-aware, so `versioned_docs/` and
+// `website/` count, and .mdx counts alongside .md/.rst/.adoc/.txt).
 func searchDocumentationArtifactPath(lower string) bool {
-	base := filepath.Base(lower)
-	if strings.Contains(lower, "/docs/") || strings.Contains(lower, "/doc/") ||
-		strings.Contains(lower, "/man/") || strings.Contains(lower, "/manual/") ||
-		strings.HasPrefix(base, "readme") || strings.HasPrefix(base, "changelog") {
-		return true
+	segments := searchPathSegments(lower)
+	dirs := segments
+	if len(dirs) > 0 {
+		dirs = dirs[:len(dirs)-1]
 	}
-	// Documentation / prose / man-page file types. These frequently describe a
-	// feature in the SAME words as the issue text (e.g. "--nul-output"), so they
-	// out-score the code that actually implements it on a body-text match. The
-	// agent's task is to edit SOURCE, so these must never outrank code.
-	// Note: .yml/.yaml are NOT here — they're usually config/CI (e.g. workflow files),
-	// not docs. Documentation YAML (manual.yml) is caught by the /docs/ /manual/ dir checks above.
-	for _, ext := range []string{".md", ".markdown", ".rst", ".adoc", ".txt"} {
-		if strings.HasSuffix(lower, ext) {
-			return true
-		}
-	}
-	// man pages: foo.1 .. foo.9, and pre-rendered .prebuilt / .roff / .man / .1.prebuilt
-	if strings.HasSuffix(lower, ".prebuilt") || strings.HasSuffix(lower, ".roff") || strings.HasSuffix(lower, ".man") {
-		return true
-	}
-	if n := len(base); n >= 2 && base[n-2] == '.' && base[n-1] >= '1' && base[n-1] <= '9' {
-		return true
-	}
-	return false
+	return searchDocumentationClassPath(lower, filepath.Base(lower), dirs)
 }
 
 func searchGeneratedArtifactPath(lower string) bool {
