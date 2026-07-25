@@ -17,6 +17,11 @@ run = "go vet ./..."
 description = "Run tests with race detection"
 run = "go test -race ./..."
 
+[tasks."test:statusline"]
+description = "Test the Claude Code status line script"
+depends = ["build"]
+run = "sh scripts/entire-graph-statusline_test.sh"
+
 [tasks.build]
 description = "Build the plugin binary"
 run = "go build -o entire-graph ./cmd/entire-graph"

@@ -38,16 +38,26 @@ func TestSearchSnapshotCachePreservesSymbolByteRanges(t *testing.T) {
 	}
 }
 
-func TestSearchSnapshotProvenanceIgnoresRepoKeyDrift(t *testing.T) {
-	header := SnapshotHeader{RepoKey: "local/fallback-after-transient-remote-failure", Commit: "commit", Tree: "tree"}
-	if searchSnapshotProvenanceChanged(header, "commit", "tree") {
-		t.Fatal("repo-key drift alone must not abort a build whose commit/tree provenance is intact")
+func TestValidCachedSearchSnapshotKeysRepoAndIgnoresCommit(t *testing.T) {
+	options := ProviderSnapshotOptions{Profile: ProfileFull}
+	snapshot := ProviderSnapshot{Header: SnapshotHeader{
+		RepoKey:  "github.com/example/repo",
+		Commit:   "old-commit",
+		Tree:     "tree",
+		Provider: ProviderName,
+		Profile:  string(ProfileFull),
+	}}
+	cache := newCachedSearchSnapshot("test-version", "old-commit", "tree", options, snapshot)
+	if !validCachedSearchSnapshot(cache, snapshot.Header.RepoKey, "test-version", "tree", options) {
+		t.Fatal("same-repository, same-tree cache entry must be valid")
 	}
-	if !searchSnapshotProvenanceChanged(header, "other-commit", "tree") {
-		t.Fatal("commit change must still be detected")
+	if validCachedSearchSnapshot(cache, "github.com/example/other", "test-version", "tree", options) {
+		t.Fatal("cache entry from another repository identity must not be reused")
 	}
-	if !searchSnapshotProvenanceChanged(header, "commit", "other-tree") {
-		t.Fatal("tree change must still be detected")
+	cache.Commit = "different-commit"
+	cache.Snapshot.Header.Commit = "different-commit"
+	if !validCachedSearchSnapshot(cache, snapshot.Header.RepoKey, "test-version", "tree", options) {
+		t.Fatal("commit-only drift must not invalidate a tree-keyed cache entry")
 	}
 }
 
@@ -327,7 +337,7 @@ func NeedleTarget() bool { return true }
 		Profile:   ProfileSyntaxOnly,
 		OnlyFiles: []string{"target/needle.go"},
 	}
-	selectiveKey, err := searchSnapshotKey(repo, preindexed.Header.RepoKey, "test-version", preindexed.Header.Commit, preindexed.Header.Tree, selectiveProviderOptions)
+	selectiveKey, err := searchSnapshotKey(repo, preindexed.Header.RepoKey, "test-version", preindexed.Header.Tree, selectiveProviderOptions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +479,7 @@ func NeedleTarget() bool { return true }
 		Profile:   ProfileSyntaxOnly,
 		OnlyFiles: []string{"target/needle.go"},
 	}
-	selectiveKey, err := searchSnapshotKey(repo, preindexed.Header.RepoKey, "test-version", preindexed.Header.Commit, preindexed.Header.Tree, selectiveOptions)
+	selectiveKey, err := searchSnapshotKey(repo, preindexed.Header.RepoKey, "test-version", preindexed.Header.Tree, selectiveOptions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -517,7 +527,7 @@ func NeedleTarget() bool { return true }
 
 	// With the complete preindex entry gone, re-derivation is impossible: only
 	// the persisted per-query entry can keep the third identical search a hit.
-	fullKey, err := searchSnapshotKey(repo, preindexed.Header.RepoKey, "test-version", preindexed.Header.Commit, preindexed.Header.Tree, ProviderSnapshotOptions{
+	fullKey, err := searchSnapshotKey(repo, preindexed.Header.RepoKey, "test-version", preindexed.Header.Tree, ProviderSnapshotOptions{
 		Profile: ProfileSyntaxOnly,
 	})
 	if err != nil {
@@ -572,9 +582,12 @@ func helper() {}
 	}
 
 	// This directly exercises the state reached when SearchRepository probes the
-	// complete cache successfully and HEAD then advances before derivation: the
-	// stale in-memory snapshot must not fail the search.
-	git(t, repo, "commit", "--allow-empty", "-m", "advance HEAD after preindex probe")
+	// complete cache successfully and HEAD's tree then changes before derivation:
+	// the stale in-memory snapshot must not fail the search. A same-tree empty
+	// commit remains a valid tree-keyed hit and therefore is not a mismatch.
+	write(t, repo, "unrelated.go", "package target\nfunc Unrelated() {}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "change tree after preindex probe")
 	selectiveOptions := ProviderSnapshotOptions{
 		Profile:   ProfileFull,
 		OnlyFiles: []string{"target/entry.go"},
@@ -856,7 +869,7 @@ func TestPreindexProviderSnapshotSurfacesPersistenceFailure(t *testing.T) {
 	}
 }
 
-func TestPreindexProviderSnapshotDoesNotReuseSameTreeAcrossCommits(t *testing.T) {
+func TestPreindexProviderSnapshotReusesSameTreeAcrossCommits(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
@@ -880,6 +893,10 @@ func TestPreindexProviderSnapshotDoesNotReuseSameTreeAcrossCommits(t *testing.T)
 		first[profile] = snapshot
 	}
 	git(t, repo, "commit", "--allow-empty", "-m", "same tree")
+	newHead := rev(t, repo, "HEAD")
+	if newHead == first[ProfileFull].Header.Commit {
+		t.Fatal("test setup did not advance HEAD to a new commit")
+	}
 	for _, profile := range []Profile{ProfileFast, ProfileFull} {
 		second, cacheHit, err := PreindexProviderSnapshot(t.Context(), repo, "test", ProviderSnapshotOptions{
 			Profile: profile,
@@ -887,16 +904,57 @@ func TestPreindexProviderSnapshotDoesNotReuseSameTreeAcrossCommits(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cacheHit {
-			t.Fatalf("same-tree but different-commit %s snapshot reused cache", profile)
+		if !cacheHit {
+			t.Fatalf("same-tree but different-commit %s snapshot did not reuse cache", profile)
 		}
-		if second.Header.Tree != first[profile].Header.Tree || second.Header.Commit == first[profile].Header.Commit {
-			t.Fatalf("%s snapshot provenance mismatch: first=%s/%s second=%s/%s",
-				profile,
-				first[profile].Header.Commit, first[profile].Header.Tree,
-				second.Header.Commit, second.Header.Tree,
+		if second.Header.Tree != first[profile].Header.Tree {
+			t.Fatalf("%s snapshot tree changed across an empty commit: first=%s second=%s",
+				profile, first[profile].Header.Tree, second.Header.Tree,
 			)
 		}
+		// The parsed graph is reused from the old commit's cache entry, but the
+		// commit we report must be the one we are actually serving right now,
+		// not the stale commit recorded when the cache entry was built.
+		if second.Header.Commit != newHead {
+			t.Fatalf("%s snapshot commit was not re-stamped to serving HEAD: got %s, want %s",
+				profile, second.Header.Commit, newHead,
+			)
+		}
+	}
+}
+
+func TestSearchReusesSameTreeCacheAcrossCommitsAndReportsCurrentHEAD(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "auth.go", "package auth\n\nfunc ValidateToken(token string) bool { return token != \"\" }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cacheDir := t.TempDir()
+	options := SearchOptions{Profile: ProfileFull, TopK: 5, CacheDir: cacheDir}
+	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Profile: ProfileFull,
+	}, cacheDir); err != nil {
+		t.Fatal(err)
+	}
+
+	git(t, repo, "commit", "--allow-empty", "-m", "same tree")
+	newHead := rev(t, repo, "HEAD")
+
+	response, err := SearchRepository(t.Context(), repo, "test-version", "ValidateToken", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !response.Stats.IndexCacheHit {
+		t.Fatal("search after an empty commit did not reuse the same-tree cache")
+	}
+	if response.Commit != newHead {
+		t.Fatalf("search response commit = %q, want current HEAD %q", response.Commit, newHead)
+	}
+	if len(response.Results) == 0 || response.Results[0].SymbolName != "ValidateToken" {
+		t.Fatalf("search lost target after cache reuse across commits: %#v", response.Results)
 	}
 }
 
@@ -1011,11 +1069,11 @@ func TestSearchSnapshotCacheKeyPreservesIgnoreFileOrder(t *testing.T) {
 
 	ignoreTarget := includeTarget
 	ignoreTarget.IgnoreFiles = []string{".reinclude-target", ".ignore-target"}
-	includeKey, err := searchSnapshotKey(repo, first.Header.RepoKey, "test-version", first.Header.Commit, first.Header.Tree, includeTarget)
+	includeKey, err := searchSnapshotKey(repo, first.Header.RepoKey, "test-version", first.Header.Tree, includeTarget)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ignoreKey, err := searchSnapshotKey(repo, first.Header.RepoKey, "test-version", first.Header.Commit, first.Header.Tree, ignoreTarget)
+	ignoreKey, err := searchSnapshotKey(repo, first.Header.RepoKey, "test-version", first.Header.Tree, ignoreTarget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1035,5 +1093,59 @@ func TestSearchSnapshotCacheKeyPreservesIgnoreFileOrder(t *testing.T) {
 	}
 	if !snapshotHasSymbol(second, "Control") {
 		t.Fatalf("reversed-rule snapshot lost control symbol: %#v", second.Symbols)
+	}
+}
+
+// TestOnlyFilesDerivationReStampsCommitAfterSameTreeCommit pins the re-stamp
+// on the OnlyFiles-derivation branch of loadOrBuildSearchSnapshot: a selective
+// snapshot derived from a complete same-tree cache entry built at an older
+// commit must report the commit it is actually serving right now, not the
+// stale commit recorded when the complete entry was written.
+func TestOnlyFilesDerivationReStampsCommitAfterSameTreeCommit(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "selected.go", "package sample\nfunc Selected() bool { return true }\n")
+	write(t, repo, "other.go", "package sample\nfunc Other() bool { return false }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cacheDir := t.TempDir()
+	full, cacheHit, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Profile: ProfileFull,
+	}, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cacheHit {
+		t.Fatal("first preindex unexpectedly hit cache")
+	}
+
+	git(t, repo, "commit", "--allow-empty", "-m", "same tree")
+	newHead := rev(t, repo, "HEAD")
+	if newHead == full.Header.Commit {
+		t.Fatal("test setup did not advance HEAD to a new commit")
+	}
+
+	selective, cacheHit, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Profile:   ProfileFull,
+		OnlyFiles: []string{"selected.go"},
+	}, cacheDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cacheHit {
+		t.Fatal("selective build did not derive from the complete same-tree preindex")
+	}
+	if selective.Header.Tree != full.Header.Tree {
+		t.Fatalf("derived selective snapshot tree changed across an empty commit: got %s, want %s",
+			selective.Header.Tree, full.Header.Tree,
+		)
+	}
+	if selective.Header.Commit != newHead {
+		t.Fatalf("derived selective snapshot commit was not re-stamped to serving HEAD: got %s, want %s",
+			selective.Header.Commit, newHead,
+		)
 	}
 }

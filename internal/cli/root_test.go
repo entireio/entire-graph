@@ -435,6 +435,37 @@ func TestHelpDocumentsNeighborAgentContextCap(t *testing.T) {
 	}
 }
 
+func TestDiffProgressReportsToStderr(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	write(t, repo, "auth.py", "def validate_token(token, issuer=None):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "change")
+
+	var stdout, stderr bytes.Buffer
+	err := Run(t.Context(), Options{
+		Env:    EntireEnv{RepoRoot: repo},
+		Stdout: &stdout,
+		Stderr: &stderr,
+	}, []string{"diff", "--base", "HEAD~1", "--head", "HEAD", "--progress"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"phase=discover", "phase=parse", "phase=reconcile", "phase=dependents", "phase=complete"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("progress output missing %q:\n%s", want, stderr.String())
+		}
+	}
+	if strings.Contains(stdout.String(), "graph diff progress") {
+		t.Fatalf("progress leaked to stdout:\n%s", stdout.String())
+	}
+}
+
 func TestNeighborsAgentFormatReturnsBoundedCallGraphAndPaths(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "calls.go", `package calls
@@ -752,5 +783,45 @@ func git(t *testing.T, repo string, args ...string) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// TestMaxSecondsFlagValidation pins --max-seconds parsing: non-numeric and
+// negative values are rejected, 0 (unlimited) is accepted, and checkpoint
+// refuses the flag like it refuses --progress.
+func TestMaxSecondsFlagValidation(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	write(t, repo, "auth.py", "def validate_token(token, issuer=None):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "change")
+
+	run := func(args ...string) error {
+		var stdout, stderr bytes.Buffer
+		return Run(t.Context(), Options{Env: EntireEnv{RepoRoot: repo}, Stdout: &stdout, Stderr: &stderr}, args)
+	}
+
+	if err := run("diff", "--base", "HEAD~1", "--head", "HEAD", "--max-seconds", "abc"); err == nil {
+		t.Fatal("non-numeric --max-seconds must be rejected")
+	}
+	if err := run("diff", "--base", "HEAD~1", "--head", "HEAD", "--max-seconds", "-5"); err == nil {
+		t.Fatal("negative --max-seconds must be rejected")
+	}
+	if err := run("diff", "--base", "HEAD~1", "--head", "HEAD", "--max-seconds"); err == nil {
+		t.Fatal("--max-seconds without a value must be rejected")
+	}
+	if err := run("diff", "--base", "HEAD~1", "--head", "HEAD", "--max-seconds", "0"); err != nil {
+		t.Fatalf("--max-seconds 0 (unlimited) must be accepted, got %v", err)
+	}
+	if err := run("commit", "--max-seconds", "300"); err != nil {
+		t.Fatalf("commit --max-seconds must be accepted, got %v", err)
+	}
+	if err := run("checkpoint", "some-id", "--max-seconds", "10"); err == nil || !strings.Contains(err.Error(), "--max-seconds") {
+		t.Fatalf("checkpoint must reject --max-seconds, got %v", err)
 	}
 }

@@ -1,0 +1,9 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "entire-graph",
+  "description": "Entire Graph — deterministic local code graph for coding agents (search, impact, stats).",
+  "owner": { "name": "Entire", "url": "https://github.com/entireio/entire-graph" },
+  "plugins": [
+    { "name": "entire-graph", "description": "Search-first code navigation + token-savings stats.", "source": "./", "category": "productivity" }
+  ]
+}

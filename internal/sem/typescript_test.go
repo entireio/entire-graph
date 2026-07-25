@@ -1337,6 +1337,53 @@ declare const helper: string;
 	}
 }
 
+// An arrow function (or function expression) assigned to a variable or class
+// field must carry only its parameter list (plus return-type annotation and
+// `=>`) as its Signature, never the whole function body — otherwise any body
+// edit reads as a signature change in entity diffs.
+func TestTypeScriptArrowFunctionSignatureExcludesBody(t *testing.T) {
+	entities, language := TreeSitterParser{}.Parse("handlers.ts", `const handle = (a: number, b: string): boolean => {
+  const x = a + 1;
+  console.log(b);
+  doSomethingExpensive(x);
+  return x > 0;
+};
+
+class Service {
+  create = (name: string) => {
+    const trimmed = name.trim();
+    return new Thing(trimmed);
+  };
+}
+`)
+	if language != "TypeScript" {
+		t.Fatalf("language = %q", language)
+	}
+	seen := map[string]Entity{}
+	for _, entity := range entities {
+		seen[entity.Name] = entity
+	}
+
+	handle, ok := seen["handle"]
+	if !ok {
+		t.Fatalf("missing arrow-function variable %q in %#v", "handle", entities)
+	}
+	if want := "handle = (a: number, b: string): boolean =>"; handle.Signature != want {
+		t.Fatalf("arrow-function signature = %q, want %q", handle.Signature, want)
+	}
+	if strings.Contains(handle.Signature, "return") || strings.Contains(handle.Signature, "doSomethingExpensive") {
+		t.Fatalf("arrow-function signature leaked the body: %q", handle.Signature)
+	}
+
+	create, ok := seen["Service.create"]
+	if !ok {
+		t.Fatalf("missing class-field arrow method %q in %#v", "Service.create", entities)
+	}
+	if want := "create = (name: string) =>"; create.Signature != want {
+		t.Fatalf("class-field arrow signature = %q, want %q", create.Signature, want)
+	}
+}
+
 func TestTypeScriptTypeInferenceDropsConflictingProperties(t *testing.T) {
 	content := `class A {
   private readonly service = inject(ServiceA);

@@ -4,42 +4,151 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
 func AnalyzeGitRange(ctx context.Context, repo, base, head string, paths []string) (Result, error) {
+	return AnalyzeGitRangeWithOptions(ctx, repo, base, head, paths, AnalyzeOptions{})
+}
+
+// AnalyzeOptions configures optional semantic diff behavior.
+type AnalyzeOptions struct {
+	Progress func(AnalyzeProgressEvent)
+	// MaxDuration is the overall wall-clock budget for the analysis. When it
+	// runs out the analysis stops cleanly and returns the partial result built
+	// so far, with machine-readable W_ANALYSIS_BUDGET_EXCEEDED warnings
+	// enumerating what was skipped. Zero means no budget (historical
+	// behavior).
+	MaxDuration time.Duration
+}
+
+// AnalyzeProgressEvent reports coarse progress for a semantic diff.
+type AnalyzeProgressEvent struct {
+	Phase      string
+	FilesDone  int
+	FilesTotal int
+	// Path is the file currently being processed ("" on phase boundaries).
+	Path    string
+	Elapsed time.Duration
+}
+
+// AnalyzeGitRangeWithOptions analyzes a Git range with optional progress reporting.
+func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, paths []string, options AnalyzeOptions) (Result, error) {
+	started := time.Now()
+	var deadline time.Time
+	if options.MaxDuration > 0 {
+		deadline = started.Add(options.MaxDuration)
+	}
+	overBudget := func() bool {
+		return !deadline.IsZero() && time.Now().After(deadline)
+	}
+	var lastEmit time.Time
+	// force emits phase boundaries unconditionally; per-file events are
+	// throttled to roughly one per second so slow files stay visible without
+	// flooding stderr on fast ones.
+	emitProgressEvent := func(phase string, filesDone, filesTotal int, path string, force bool) {
+		if options.Progress == nil {
+			return
+		}
+		if !force && time.Since(lastEmit) < time.Second {
+			return
+		}
+		lastEmit = time.Now()
+		options.Progress(AnalyzeProgressEvent{
+			Phase:      phase,
+			FilesDone:  filesDone,
+			FilesTotal: filesTotal,
+			Path:       path,
+			Elapsed:    time.Since(started),
+		})
+	}
+	emitProgress := func(phase string, filesDone, filesTotal int) {
+		emitProgressEvent(phase, filesDone, filesTotal, "", true)
+	}
+
+	emitProgress("discover", 0, 0)
 	changed, err := gitutil.ChangedFiles(ctx, repo, base, head, paths)
 	if err != nil {
 		return Result{}, err
 	}
+	emitProgress("parse", 0, len(changed))
 	parser := TreeSitterParser{}
 	result := Result{Base: base, Head: head}
 	var deltas []*fileDelta
-	for _, file := range changed {
+	for i, file := range changed {
+		if overBudget() {
+			// Stop cleanly: keep everything analyzed so far and enumerate each
+			// skipped changed file with a machine-readable warning, so the
+			// partial result is never silently incomplete.
+			for _, skipped := range changed[i:] {
+				result.Warnings = append(result.Warnings, budgetSkippedFileWarning(skipped.Path, i, len(changed), options.MaxDuration))
+			}
+			break
+		}
+		emitProgressEvent("parse", i, len(changed), file.Path, i > 0 && i%100 == 0)
 		path := file.Path
 		oldPath := file.OldPath
 		if oldPath == "" {
 			oldPath = path
 		}
-		if !Supported(path) && !Supported(oldPath) {
-			continue
-		}
 
 		var before, after string
 		var beforeOK, afterOK bool
-		if file.Status != "A" {
-			before, beforeOK, err = gitutil.ShowFile(ctx, repo, base, oldPath)
-			if err != nil {
-				return Result{}, err
+		// Fast-path: a file WITH a recognized-unsupported extension classifies without reading
+		// its blobs — shebang sniffing only matters for extensionless files. Avoids loading a
+		// large binary twice just to conclude "unsupported"; the marker below needs no content.
+		if extensionUnsupported(oldPath) && extensionUnsupported(path) {
+			beforeOK = file.Status != "A"
+			afterOK = file.Status != "D"
+		} else {
+			if file.Status != "A" {
+				before, beforeOK, err = gitutil.ShowFile(ctx, repo, base, oldPath)
+				if err != nil {
+					return Result{}, err
+				}
+			}
+			if file.Status != "D" {
+				after, afterOK, err = gitutil.ShowFile(ctx, repo, head, path)
+				if err != nil {
+					return Result{}, err
+				}
 			}
 		}
-		if file.Status != "D" {
-			after, afterOK, err = gitutil.ShowFile(ctx, repo, head, path)
-			if err != nil {
-				return Result{}, err
+
+		// Support is content-aware: extensionless executables can still route to a
+		// parser through their shebang. Classify each existing side independently
+		// so a rename across the parser boundary cannot become a one-sided phantom
+		// remove/add. Any unsupported side suppresses the delta and leaves a
+		// machine-readable completeness marker instead.
+		_, beforeSupported := languageForContent(oldPath, before)
+		_, afterSupported := languageForContent(path, after)
+		beforeUnsupported := beforeOK && !beforeSupported
+		afterUnsupported := afterOK && !afterSupported
+		if beforeUnsupported || afterUnsupported {
+			warningPath := path
+			detail := "head version has no supported parser"
+			if beforeUnsupported && !afterUnsupported {
+				warningPath = oldPath
+				detail = "base version has no supported parser"
+			} else if beforeUnsupported && afterUnsupported {
+				detail = "base and head versions have no supported parser"
 			}
+			effect := "file skipped; no parser for this file type, so its changes are not analyzed"
+			if beforeOK && afterOK && beforeUnsupported != afterUnsupported {
+				effect = "file diff suppressed; one side has no parser, so changes cannot be compared safely"
+			}
+			result.Warnings = append(result.Warnings, ProviderWarning{
+				Code:                 "W_UNSUPPORTED_FILE",
+				Severity:             "info",
+				FilePath:             warningPath,
+				EffectOnCompleteness: effect,
+				Detail:               detail,
+			})
+			continue
 		}
 
 		beforeEntities, language, beforeStatus := parser.ParseWithStatus(oldPath, before)
@@ -83,7 +192,14 @@ func AnalyzeGitRange(ctx context.Context, repo, base, head string, paths []strin
 
 		changes, removed, added := compareEntities(beforeEntities, afterEntities)
 		if len(changes) == 0 && len(removed) == 0 && len(added) == 0 {
-			continue
+			// The file changed but no named symbol did: the edit lives at
+			// module scope (top-level statements, imports, comments). Surface
+			// it as a synthetic module-level change instead of dropping it.
+			mod, ok := moduleScopeChange(path, before, after, beforeOK, afterOK)
+			if !ok {
+				continue
+			}
+			changes = append(changes, mod)
 		}
 		deltas = append(deltas, &fileDelta{
 			path:     path,
@@ -95,7 +211,9 @@ func AnalyzeGitRange(ctx context.Context, repo, base, head string, paths []strin
 			added:    added,
 		})
 	}
+	emitProgress("parse", len(changed), len(changed))
 
+	emitProgress("reconcile", len(changed), len(changed))
 	result.Warnings = append(result.Warnings, reconcileMoves(deltas)...)
 
 	for _, delta := range deltas {
@@ -119,10 +237,35 @@ func AnalyzeGitRange(ctx context.Context, repo, base, head string, paths []strin
 		})
 	}
 
-	if err := addDependentCounts(ctx, repo, head, &result); err != nil {
+	if err := addDependentCountsWithProgress(ctx, repo, head, &result, dependentsScanOptions{
+		progress: func(done, total int, path string) {
+			emitProgressEvent("dependents", done, total, path, path == "")
+		},
+		deadline: deadline,
+		budget:   options.MaxDuration,
+	}); err != nil {
 		return Result{}, err
 	}
+	emitProgress("complete", len(changed), len(changed))
 	return result, nil
+}
+
+// budgetSkippedFileWarning marks one changed file that was never analyzed
+// because the overall wall-clock budget (AnalyzeOptions.MaxDuration) ran out
+// first. It shares the W_ANALYSIS_BUDGET_EXCEEDED code with the dependents
+// scan's early-stop warning; FilePath distinguishes the per-file skips.
+func budgetSkippedFileWarning(path string, done, total int, budget time.Duration) ProviderWarning {
+	detail := fmt.Sprintf("analysis time budget ran out after %d of %d changed files", done, total)
+	if budget > 0 {
+		detail += fmt.Sprintf(" (budget %s)", budget)
+	}
+	return ProviderWarning{
+		Code:                 "W_ANALYSIS_BUDGET_EXCEEDED",
+		Severity:             "warning",
+		FilePath:             path,
+		EffectOnCompleteness: "file skipped; analysis time budget ran out before this changed file was analyzed",
+		Detail:               detail,
+	}
 }
 
 // parseFailureWarning builds the warning emitted when a changed file fails to
@@ -387,6 +530,24 @@ const (
 	// rather than guessing.
 	ambiguityMargin = 0.05
 )
+
+// moduleScopeChange builds a synthetic change for a file whose contents changed
+// but where no named symbol changed. Attributing the edit to a module-level
+// entity (keyed by the file path) keeps module-scope changes visible in the diff
+// rather than emitting a null/empty entry. It returns false when there is no
+// observable content change to report (e.g. a pure rename).
+func moduleScopeChange(path, before, after string, beforeOK, afterOK bool) (EntityChange, bool) {
+	switch {
+	case afterOK && !beforeOK:
+		return EntityChange{Type: "added", Kind: moduleKind, Name: path, AfterStartLine: 1}, true
+	case beforeOK && !afterOK:
+		return EntityChange{Type: "removed", Kind: moduleKind, Name: path, BeforeStartLine: 1}, true
+	case beforeOK && afterOK && before != after:
+		return EntityChange{Type: "body_changed", Kind: moduleKind, Name: path, BeforeStartLine: 1, AfterStartLine: 1}, true
+	default:
+		return EntityChange{}, false
+	}
+}
 
 func removedChange(oldEntity Entity) EntityChange {
 	return EntityChange{
@@ -742,4 +903,15 @@ func tokenSet(value string) map[string]bool {
 		out[token] = true
 	}
 	return out
+}
+
+// extensionUnsupported reports whether the path carries an extension and that extension has
+// no supported parser. Extensionless files return false — they may still route to a parser
+// via shebang, which requires reading content.
+func extensionUnsupported(path string) bool {
+	if filepath.Ext(path) == "" {
+		return false
+	}
+	_, ok := languageForContent(path, "")
+	return !ok
 }
