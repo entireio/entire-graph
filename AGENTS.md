@@ -26,6 +26,15 @@ entire graph search --repo . --query "<the task or bug in one plain sentence>" -
 - Working tree by default; add `--head` for committed-tree + cache reuse.
 - `--profile syntax-only|fast|full` (default `syntax-only`); `--index-all-files` or `--max-indexed-files N` to widen/bound cold-search parsing.
 
+**Snippets are allocated by rank, not spread evenly.** Where the byte budget allows, a hit is
+returned as the **complete body of its enclosing function/method** — snapped to the graph's own
+symbol bounds, marked with the `complete-symbol` signal, and counted in
+`stats.complete_symbol_snippets`. Those results need no follow-up read: `snippet_start_line` ..
+`snippet_end_line` is the whole callable, verbatim. To pay for that, results further down the
+ranking may be reduced to a two-line **locator** window (counted in `stats.locator_snippets`) —
+still exact `file:line` + symbol identity, just not reading material. Symbols too large to
+return whole keep their focused window.
+
 **When:** the start of essentially every task. One good query lands you on the fix area.
 
 ### 🕸️ neighbors — *who calls this / what does it call* (targeted relations)
