@@ -582,3 +582,39 @@ func gitOutput(t *testing.T, repo string, args ...string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+// TestGrepTreePathsCaseSensitiveIncludingBinary pins the identifier-prefilter
+// semantics: case-sensitive substring matching. A file containing the name
+// only in a different case must not be selected, while substring occurrences
+// still are (the result must stay a strict superset of an exact-token check;
+// substring false positives are filtered later by the caller's token screen).
+func TestGrepTreePathsCaseSensitiveIncludingBinary(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	files := map[string]string{
+		"exact.py":     "value = Foo(1)\n",
+		"case.py":      "value = foo(1)\n",
+		"substring.py": "value = myFooBar\n",
+		"dollar.js":    "value = $Foo;\n",
+	}
+	for path, content := range files {
+		if err := os.WriteFile(filepath.Join(repo, path), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	commit := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	got, err := GrepTreePathsCaseSensitiveIncludingBinary(t.Context(), repo, commit, []string{"Foo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(got)
+	want := []string{"dollar.js", "exact.py", "substring.py"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("case-sensitive grep = %#v, want %#v", got, want)
+	}
+}

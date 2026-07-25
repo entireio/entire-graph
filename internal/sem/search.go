@@ -19,10 +19,13 @@ import (
 )
 
 const (
-	defaultSearchTopK              = 20
+	// Benchmark-calibrated: the graphmark suites (official SWE-bench Multilingual 300 among
+	// them) measured top-k 10 with 6-line snippets as the best agent config; the old defaults
+	// (20 / 40) produced ~15KB search outputs that get re-read every subsequent turn.
+	defaultSearchTopK              = 10
 	defaultSearchContextLines      = 8
 	defaultSearchMaxRegionLines    = 80
-	defaultSearchMaxSnippetLines   = 40
+	defaultSearchMaxSnippetLines   = 6
 	defaultSearchMaxRegionsPerFile = 3
 	defaultSearchMaxIndexedFiles   = 96
 	deepSearchMaxIndexedFiles      = 256
@@ -541,8 +544,8 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	semantic := selectDiverseCandidates(candidates, options.TopK, options.MaxRegionsPerFile)
 	selected := semantic
 	if len(sparseCandidates) > 0 {
-		scoreSparseCandidates(sparseCandidates, sparseQuery, sparseDF, sparseDocumentCount, sparseDocumentLength)
 		attachSparseCandidateSymbols(sparseCandidates, symbolsByFile)
+		scoreSparseCandidates(sparseCandidates, sparseQuery, sparseDF, sparseDocumentCount, sparseDocumentLength)
 		stats.CallerBoostedCandidates += applySearchCallerBoosts(sparseCandidates, callerBoosts)
 		sortSearchCandidates(sparseCandidates)
 		sparseCandidates = dedupeSemanticMirrorCandidates(sparseCandidates, q, symbolsByID)
@@ -1546,6 +1549,22 @@ func scoreSparseCandidates(
 	for i := range candidates {
 		candidate := &candidates[i]
 		candidate.score += searchPathPrior(q, candidate.result.FilePath)
+		// cmm parity: score a sparse window on its symbol identity (name / qualified-name)
+		// and path tokens, not only body-BM25 + path-prior. This is what lets a fix file whose
+		// domain nouns live in its path/identifiers surface as a genuine ranked hit instead of
+		// relevance-free RRF filler (measured whiffs: fmt core.h on_zero, druid *PostAggregator.java).
+		// attachSparseCandidateSymbols now runs before this, so the symbol fields are populated.
+		candidate.score += pathSearchScore(q, candidate.result.FilePath)
+		if candidate.result.SymbolID != "" {
+			nameScore, nameSignals := symbolSearchScore(q, SymbolRecord{
+				Name:          candidate.result.SymbolName,
+				QualifiedName: candidate.result.QualifiedName,
+				Signature:     candidate.result.Signature,
+				Kind:          candidate.result.Kind,
+			})
+			candidate.score += nameScore
+			candidate.result.Signals = appendUnique(candidate.result.Signals, nameSignals...)
+		}
 		for _, term := range q.terms {
 			frequency := candidate.termCounts[term]
 			if frequency == 0 {
@@ -1629,6 +1648,12 @@ func makeSearchCandidate(q searchQuery, filePath, language string, lines []strin
 	if symbol.ID != "" {
 		focus = maxInt(focus, symbol.StartLine)
 	}
+	// symbol.StartLine can fall outside [start, end] when the caller passed a truncated
+	// window (e.g. a same-container-neighbor candidate clipped to a tiny --max-snippet-lines).
+	// Clamp so FocusLine always satisfies the SearchResponse.Validate invariant
+	// (StartLine <= FocusLine <= EndLine); otherwise the whole response is rejected with
+	// "invalid search result at rank N" (reproducible with --max-snippet-lines 1).
+	focus = minInt(maxInt(focus, start), end)
 	snippetStart, snippetEnd := focusedSnippetRegion(start, end, focus, maxSnippetLines)
 	snippet := strings.Join(lines[snippetStart-1:snippetEnd], "\n")
 	pathScore := pathSearchScore(q, filePath)
@@ -1951,13 +1976,21 @@ func expandGraphCandidates(seeds []searchCandidate, q searchQuery, relations []R
 			callerBoost := 0.0
 			regionText := strings.Join(lines[start-1:end], "\n")
 			counts, _ := searchTermCounts(regionText, q.termSet)
-			symbolMatch := searchSymbolMatchesAnyTerm(q, symbol)
+			symbolMatch := searchSymbolNameMatchesQueryTerm(q, symbol)
 			if len(counts) > 0 || symbolMatch {
 				inherit = 0.55 * seedScore
 				callerBoost = callerBoosts[symbol.ID]
 				if !symbolMatch {
 					callerBoost *= 0.5
 				}
+			}
+			// Preserve main's vocabulary-gap bridge: a high-confidence call-like
+			// neighbor whose own symbol name shares a query term should sit just
+			// below its seed even when its body uses different vocabulary.
+			if relation.Confidence >= 0.8 &&
+				(relation.Type == "CALLS" || relation.Type == "ASYNC_CALLS" || relation.Type == "CONSTRUCTS") &&
+				symbolMatch {
+				inherit = 0.85 * seedScore
 			}
 			candidate.score = derivedSearchScore(
 				seedScore,
@@ -1984,10 +2017,15 @@ func expandGraphCandidates(seeds []searchCandidate, q searchQuery, relations []R
 	return out
 }
 
-func searchSymbolMatchesAnyTerm(q searchQuery, symbol SymbolRecord) bool {
+// searchSymbolNameMatchesQueryTerm reports whether a symbol's name/qualified-name shares a
+// (non-trivial) query term — used to gate the graph-expansion boost to textually-plausible callees.
+func searchSymbolNameMatchesQueryTerm(q searchQuery, symbol SymbolRecord) bool {
 	name := strings.ToLower(symbol.Name)
 	qualified := strings.ToLower(symbol.QualifiedName)
 	for _, term := range q.terms {
+		if len(term) < 3 {
+			continue
+		}
 		if strings.Contains(name, term) || strings.Contains(qualified, term) {
 			return true
 		}
@@ -2372,7 +2410,11 @@ func expandSameContainerNeighborCandidates(
 				}
 				candidate.result.Signals = nil
 			}
-			candidate.result.FocusLine = neighbor.StartLine
+			// neighbor.StartLine is the meaningful focus point, but under a small
+			// options.MaxSnippetLines the emitted region above can be truncated to a window
+			// that no longer contains it. Clamp into the candidate's own region so FocusLine
+			// never escapes [StartLine, EndLine] and trips SearchResponse.Validate.
+			candidate.result.FocusLine = minInt(maxInt(neighbor.StartLine, candidate.result.StartLine), candidate.result.EndLine)
 			candidate.result.Signals = appendUnique(candidate.result.Signals, "same-container-neighbor")
 			candidate.score = derivedSearchScore(seed.score, 0.85*seed.score)
 			candidate.baseScore = candidate.score
@@ -3126,30 +3168,46 @@ func searchPathPrior(q searchQuery, filePath string) float64 {
 	if strings.Contains(lower, "/.github/workflows/") && !searchQuerySupplied(q, "workflow", "pipeline", "ci", "action") {
 		score -= 6
 	}
+	// .github/ metadata (ISSUE_TEMPLATE, PULL_REQUEST_TEMPLATE, CONTRIBUTING, FUNDING, etc.)
+	// is NEVER a code fix site, yet issue-template prose matches the problem statement's own
+	// filled-in fields (version/expected/actual boilerplate) and body-BM25-outranks the real
+	// source (measured: briannesbitt .github/ISSUE_TEMPLATE.md ranked #1 over src/Carbon/*).
+	// Hard-demote all non-workflow .github/ paths so template prose can never top the list.
+	if strings.Contains(lower, "/.github/") && !strings.Contains(lower, "/.github/workflows/") {
+		score -= 12
+	}
 	if strings.Contains(lower, "/dependencies/") || strings.Contains(lower, "/third_party/") || strings.Contains(lower, "/third-party/") {
 		score -= 5
 	}
 	if searchTestArtifactPath(lower) && !searchQuerySupplied(q,
 		"test", "tests", "testing", "spec", "specs", "regression", "regressions", "fixture", "fixtures",
 	) {
-		// Strong enough to matter against incidental lexical advantages test
-		// scaffolding accumulates on conceptual queries (concept words in the
-		// test path and assertion messages, "work" matching "workload"), but
-		// well under the ~9 points a genuinely better-matching test region
-		// scores over an implementation (full coverage + all-query-terms), so
-		// tests still surface when they are the real answer — and the penalty
-		// lifts entirely when the query asks about tests.
-		score -= 4
+		// Strong demotion (was -1.5 — far too weak): a test file that exercises the buggy
+		// function matches the issue's exact code tokens (function name + behaviour keywords),
+		// so it out-scores the real source at ~26-47 while the implementation sits at ~13.
+		// A bug-fix task never edits a test, so tests are pure exploration noise. -12 reliably
+		// sinks the test below the editable source (measured: briannesbitt RoundTest.php crowded
+		// out src/Carbon/Traits/Rounding.php; php-cs-fixer's 13 test files buried the fix). Not
+		// excluded outright — a test still surfaces if it is the only match.
+		score -= 12
 	}
 	if searchDocumentationArtifactPath(lower) && !searchQuerySupplied(q,
 		"doc", "docs", "documentation", "readme", "readmes", "guide", "guides", "example", "examples",
 	) {
-		score -= 1.25
+		// Strong demotion: docs describe features in the issue's own vocabulary and
+		// otherwise out-score the implementing code on a body-text match. A "fix the
+		// bug" query wants code, not the manual. (Was -1.25 — too weak to flip a ~9.9
+		// doc match below the ~5-8 code match; -6 reliably ranks code first.)
+		score -= 6
 	}
 	if searchGeneratedArtifactPath(lower) && !searchQuerySupplied(q,
 		"generated", "generator", "generators", "codegen", "codegens", "build", "builds", "dist", "bundle", "bundles",
+		"amalgamation", "amalgamated", "single", "onefile",
 	) {
-		score -= 2
+		// Strong demotion (was -2): an amalgamation scores as high as the real source
+		// (it IS the source, concatenated) so -2 leaves it competitive; -6 ranks the
+		// editable per-file source first so the agent's edit actually sticks.
+		score -= 6
 	}
 	return score
 }
@@ -3196,12 +3254,44 @@ func searchTestArtifactPath(lower string) bool {
 
 func searchDocumentationArtifactPath(lower string) bool {
 	base := filepath.Base(lower)
-	return strings.Contains(lower, "/docs/") || strings.HasSuffix(lower, ".md") ||
-		strings.HasPrefix(base, "readme") || strings.HasPrefix(base, "changelog")
+	if strings.Contains(lower, "/docs/") || strings.Contains(lower, "/doc/") ||
+		strings.Contains(lower, "/man/") || strings.Contains(lower, "/manual/") ||
+		strings.HasPrefix(base, "readme") || strings.HasPrefix(base, "changelog") {
+		return true
+	}
+	// Documentation / prose / man-page file types. These frequently describe a
+	// feature in the SAME words as the issue text (e.g. "--nul-output"), so they
+	// out-score the code that actually implements it on a body-text match. The
+	// agent's task is to edit SOURCE, so these must never outrank code.
+	// Note: .yml/.yaml are NOT here — they're usually config/CI (e.g. workflow files),
+	// not docs. Documentation YAML (manual.yml) is caught by the /docs/ /manual/ dir checks above.
+	for _, ext := range []string{".md", ".markdown", ".rst", ".adoc", ".txt"} {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	// man pages: foo.1 .. foo.9, and pre-rendered .prebuilt / .roff / .man / .1.prebuilt
+	if strings.HasSuffix(lower, ".prebuilt") || strings.HasSuffix(lower, ".roff") || strings.HasSuffix(lower, ".man") {
+		return true
+	}
+	if n := len(base); n >= 2 && base[n-2] == '.' && base[n-1] >= '1' && base[n-1] <= '9' {
+		return true
+	}
+	return false
 }
 
 func searchGeneratedArtifactPath(lower string) bool {
 	base := filepath.Base(lower)
+	// Amalgamated / single-header / concatenated build artifacts: a generated COPY of
+	// the real per-file source (e.g. nlohmann's single_include/nlohmann/json.hpp is a
+	// concatenation of include/nlohmann/**). They match the query as well as the real
+	// source AND duplicate it, so an agent that edits the amalgamation makes a change
+	// that gets overwritten by the next codegen — always steer to the real source.
+	if strings.Contains(lower, "/single_include/") || strings.Contains(lower, "/single-include/") ||
+		strings.Contains(lower, "amalgamat") || strings.Contains(lower, "/onefile/") ||
+		strings.Contains(lower, "/amalgamation/") {
+		return true
+	}
 	return strings.Contains(lower, "/generated/") || strings.Contains(lower, "/dist/") ||
 		strings.Contains(lower, "/build/") || strings.Contains(lower, "/gen/") ||
 		strings.Contains(base, ".generated.") || strings.Contains(base, "_generated.") ||
