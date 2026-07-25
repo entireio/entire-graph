@@ -3,6 +3,7 @@ package sem
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1372,6 +1373,44 @@ export function caller<T extends (value: string) => void>() {
 	if hasRelationBySymbolName(snapshot, "DATA_FLOWS", "caller", "sink") {
 		t.Fatalf("generic-clause identifier leaked from an AST-confirmed empty parameter list: %#v", relationsOfType(snapshot.Relations, "DATA_FLOWS"))
 	}
+}
+
+func TestTypeScriptClassFieldParametersDriveDataFlowAndSurviveCache(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/flow.ts", `export function sink(value: string) {}
+export class Runner {
+  invoke = (input: string) => {
+    sink(input);
+  };
+}
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationBySymbolName(snapshot, "DATA_FLOWS", "invoke", "sink") {
+		t.Fatalf("class-field parameter did not drive argument-forward flow: %#v", relationsOfType(snapshot.Relations, "DATA_FLOWS"))
+	}
+
+	cache := newCachedSearchSnapshot("test-version", "commit", "tree", ProviderSnapshotOptions{Profile: ProfileFull}, snapshot)
+	cachePath := filepath.Join(t.TempDir(), "snapshot.json.gz")
+	if err := writeSearchSnapshot(cachePath, cache); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := readSearchSnapshot(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, symbol := range restored.Snapshot.Symbols {
+		if symbol.Name != "invoke" {
+			continue
+		}
+		if !symbol.parameterNamesKnown || len(symbol.parameterNames) != 1 || symbol.parameterNames[0] != "input" {
+			t.Fatalf("cached class-field parameter metadata = known %t, names %#v", symbol.parameterNamesKnown, symbol.parameterNames)
+		}
+		return
+	}
+	t.Fatalf("cached class-field symbol missing: %#v", restored.Snapshot.Symbols)
 }
 
 // An arrow function (or function expression) assigned to a variable or class

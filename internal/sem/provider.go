@@ -1438,7 +1438,7 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 		}
 		if language == "JavaScript" || language == "TypeScript" {
 			symbol.parameterNames = append([]string(nil), entity.parameterNames...)
-			symbol.parameterNamesKnown = entity.Kind == "function" || entity.Kind == "method"
+			symbol.parameterNamesKnown = entity.parameterNamesKnown
 		}
 		symbols = append(symbols, symbol)
 		byName[qualified] = id

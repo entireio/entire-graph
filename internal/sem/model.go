@@ -29,7 +29,8 @@ type Entity struct {
 	// declaration's formal_parameters AST node (internal parse metadata, like
 	// the byte range). Signature-string parsing cannot recover these reliably:
 	// generic clauses may themselves contain parenthesized function types.
-	parameterNames []string
+	parameterNames      []string
+	parameterNamesKnown bool
 }
 
 type EntityChange struct {

@@ -3653,6 +3653,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		setEntitySourceRange(&entity, node, language, src)
 		if (language == "JavaScript" || language == "TypeScript") && (entity.Kind == "function" || entity.Kind == "method") {
 			entity.parameterNames = jsEntityParameterNames(node, src)
+			entity.parameterNamesKnown = true
 		}
 		if inFunc && (entity.Kind == "function" || entity.Kind == "method") {
 			entity.Local = true // nested inside another function
@@ -4030,16 +4031,18 @@ func fieldEntities(node *sitter.Node, src []byte, language, scope string, inFunc
 	// part of the method inventory. Classify it as a method, named like one.
 	switch node.Type() {
 	case "public_field_definition", "field_definition":
-		if functionLikeValue(node.ChildByFieldName("value")) {
+		if value := node.ChildByFieldName("value"); functionLikeValue(value) {
 			if names := fieldDeclNames(node, src); len(names) == 1 {
 				return []Entity{{
-					Kind:        "method",
-					Name:        qualify(scope, names[0]),
-					Signature:   signatureFromNode(node, src),
-					StartLine:   int(node.StartPoint().Row) + 1,
-					EndLine:     int(node.EndPoint().Row) + 1,
-					BodyHash:    hash(normalize(node.Content(src))),
-					Fingerprint: hash(normalize(signatureFromNode(node, src))),
+					Kind:                "method",
+					Name:                qualify(scope, names[0]),
+					Signature:           signatureFromNode(node, src),
+					StartLine:           int(node.StartPoint().Row) + 1,
+					EndLine:             int(node.EndPoint().Row) + 1,
+					BodyHash:            hash(normalize(node.Content(src))),
+					Fingerprint:         hash(normalize(signatureFromNode(node, src))),
+					parameterNames:      jsEntityParameterNames(value, src),
+					parameterNamesKnown: true,
 				}}, true
 			}
 		}
