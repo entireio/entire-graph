@@ -180,11 +180,13 @@ func (s *jsScanState) lineOf(position int) int {
 
 // namespaceMergesDeclaration reports whether a function/class/enum declaration
 // merges with a namespace of the same canonical name declared in the same
-// lexical scope (TypeScript declaration merging). Merged declarations must not
-// register a shadow binding: the name still resolves to the namespace.
+// lexical scope (TypeScript declaration merging). A dotted namespace also
+// implicitly declares each prefix (`namespace A.B` declares `A`), so a
+// declaration named A merges with it. Merged declarations must not register a
+// shadow binding: the name still resolves to the namespace.
 func (s *jsScanState) namespaceMergesDeclaration(declaration jsDeclarationBinding) bool {
 	for _, scope := range s.namespaces {
-		if scope.Name == declaration.canonical &&
+		if (scope.Name == declaration.canonical || strings.HasPrefix(scope.Name, declaration.canonical+".")) &&
 			scope.declScopeStart == declaration.scopeStart && scope.declScopeEnd == declaration.scopeEnd {
 			return true
 		}

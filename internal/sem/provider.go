@@ -3772,6 +3772,12 @@ func lookupMethodUpChain(start, name string, methodsByContainer map[string]map[s
 }
 
 func typeScriptReceiverTypeResolvesElsewhere(typeName string, from SymbolRecord, importsByName map[string][]string, symbolsByShortName map[string][]SymbolRecord, superContainerByID map[string]string) bool {
+	if constraint, generic := typeScriptGenericTypeConstraints(from.Signature)[typeName]; generic {
+		if constraint == "" {
+			return false
+		}
+		typeName = constraint
+	}
 	if len(importsByName[typeName]) > 0 {
 		return true
 	}
@@ -3784,6 +3790,116 @@ func typeScriptReceiverTypeResolvesElsewhere(typeName string, from SymbolRecord,
 		}
 	}
 	return false
+}
+
+// typeScriptGenericTypeConstraints maps method/function type parameters to the
+// first named type in their constraint. Presence with an empty value records an
+// unconstrained (or structurally constrained) generic. Receiver resolution
+// must consult this lexical binding before a coincidentally same-named
+// workspace type (`run<T>(item: T)` beside `interface T {}`).
+func typeScriptGenericTypeConstraints(signature string) map[string]string {
+	out := map[string]string{}
+	open := strings.IndexByte(signature, '<')
+	firstParen := strings.IndexByte(signature, '(')
+	if open < 0 || (firstParen >= 0 && open > firstParen) {
+		return out
+	}
+	depth := 0
+	close := -1
+	for index := open; index < len(signature); index++ {
+		switch signature[index] {
+		case '<':
+			depth++
+		case '>':
+			if index > open && signature[index-1] == '=' {
+				continue
+			}
+			depth--
+			if depth == 0 {
+				close = index
+			}
+		}
+		if close >= 0 {
+			break
+		}
+	}
+	if close <= open {
+		return out
+	}
+	for _, clause := range splitTypeScriptGenericClauses(signature[open+1 : close]) {
+		clause = strings.TrimSpace(clause)
+		if clause == "" || !(clause[0] == '_' || clause[0] == '$' || clause[0] >= 'A' && clause[0] <= 'Z' || clause[0] >= 'a' && clause[0] <= 'z') {
+			continue
+		}
+		nameEnd := 1
+		for nameEnd < len(clause) && isASCIIIdentifierByte(clause[nameEnd]) {
+			nameEnd++
+		}
+		name := clause[:nameEnd]
+		out[name] = ""
+		rest := strings.TrimSpace(clause[nameEnd:])
+		if !strings.HasPrefix(rest, "extends ") {
+			continue
+		}
+		constraint := strings.TrimSpace(strings.TrimPrefix(rest, "extends "))
+		if constraint == "" || !(constraint[0] == '_' || constraint[0] == '$' || constraint[0] >= 'A' && constraint[0] <= 'Z' || constraint[0] >= 'a' && constraint[0] <= 'z') {
+			continue
+		}
+		end := 0
+		for end < len(constraint) {
+			ch := constraint[end]
+			if isASCIIIdentifierByte(ch) || ch == '.' {
+				end++
+				continue
+			}
+			break
+		}
+		if end > 0 {
+			out[name] = lastTypeSegment(constraint[:end])
+		}
+	}
+	return out
+}
+
+func splitTypeScriptGenericClauses(clause string) []string {
+	var out []string
+	start := 0
+	angleDepth, parenDepth, bracketDepth, braceDepth := 0, 0, 0, 0
+	for index := 0; index < len(clause); index++ {
+		switch clause[index] {
+		case '<':
+			angleDepth++
+		case '>':
+			if angleDepth > 0 {
+				angleDepth--
+			}
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		case '{':
+			braceDepth++
+		case '}':
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case ',':
+			if angleDepth == 0 && parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
+				out = append(out, clause[start:index])
+				start = index + 1
+			}
+		}
+	}
+	out = append(out, clause[start:])
+	return out
 }
 
 func containerChainContains(start, target string, superContainerByID map[string]string) bool {

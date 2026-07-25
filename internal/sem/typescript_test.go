@@ -530,9 +530,13 @@ func TestTypeScriptNamespaceQualifiedMissingMemberDoesNotResolveUnrelatedGlobal(
 	}
 }
 
-func TestTypeScriptGenericReceiverKeepsInheritedMethodFallback(t *testing.T) {
+func TestTypeScriptGenericReceiverConstraintBeatsCollidingType(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, repo, "src/worker.ts", `class Base {
+	writeFile(t, repo, "src/worker.ts", `interface T {
+  unrelated(): void;
+}
+
+class Base {
   helper(): void {}
 }
 
@@ -548,7 +552,7 @@ class Worker extends Base {
 		t.Fatal(err)
 	}
 	if !hasRelationByLastSegment(snapshot.Relations, "CALLS", "Worker.run", "Base.helper") {
-		t.Fatalf("generic receiver suppressed inheritance-chain fallback: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+		t.Fatalf("colliding workspace type suppressed constrained generic receiver fallback: %#v", relationsOfType(snapshot.Relations, "CALLS"))
 	}
 }
 
@@ -1053,6 +1057,25 @@ export function caller() {
 			t.Fatalf("merged-receiver fallback fabricated a bare-name workspace edge: %#v", relationsOfType(snapshot.Relations, "CALLS"))
 		}
 	})
+}
+
+func TestTypeScriptDottedNamespacePrefixMergesClassDeclaration(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/merged.ts", `class A {}
+namespace A.B {
+  export function f() {}
+}
+export function run() {
+  A.B.f();
+}
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRelationBySymbolName(snapshot, "CALLS", "run", "f") {
+		t.Fatalf("dotted namespace prefix did not merge with same-scope class declaration: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
 }
 
 func TestTypeScriptDottedNamespaceSiblingBeatsFileBindingShadow(t *testing.T) {
