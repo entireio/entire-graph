@@ -21,7 +21,8 @@
 #   .transcript_path        path to this session's JSONL transcript  (required)
 #   .workspace.current_dir  repo to resolve the savings counterfactual against
 #   .cwd                    fallback for the above
-#   .session_id             cache key
+#   .session_id             one half of the render-cache key; a digest of the transcript path
+#                           is the other half, because session_id is absent in some invocations
 #
 # Every number comes from `entire graph stats --transcript <path> --format json`, so the
 # accounting is exactly internal/cli/stats.go — command-position-only graph verbs against a
@@ -306,46 +307,122 @@ render() {
 }
 
 # --- cache ---------------------------------------------------------------------------------
-# Keyed on the transcript's size+mtime, so it invalidates the moment the session advances and
-# there is no staleness window to reason about.
+# Keyed on the session id AND a digest of the transcript path — so two sessions can never share
+# an entry — and stamped with the transcript's size+mtime, so an entry invalidates the moment the
+# session advances and there is no staleness window to reason about.
 #
 # A cache MISS serves the previous line and recomputes in the background (stale-while-
 # revalidate). A 50 MB orchestrator transcript takes ~450 ms to re-scan, which is far too long
 # to hold up a keystroke; the badge is then at most one render behind, which for a
 # slowly-accumulating counter is invisible. Only the very first render of a session — when
 # there is nothing to serve — computes in line.
-# The key has two halves, stored as "<config>\t<stamp>\t<line>":
+# An entry is stored as "<config>\t<stamp>\t<line>":
 #   config — everything that changes WHAT is rendered (scope, window, colour, repo), behind a
-#            format version that is bumped whenever the badge layout changes so lines written by
-#            an older script are never served. A mismatch here means the cached line answers a
-#            different question, so it must never be shown.
+#            format version that is bumped whenever the badge layout or the key scheme changes,
+#            so lines written by an older script are never served. A mismatch here means the
+#            cached line answers a different question, so it must never be shown.
 #   stamp  — the transcript's size+mtime. A mismatch here means only that the session moved on,
 #            which is exactly when serving the previous line is safe and useful.
+#
+# Eviction policy: last WRITE wins, not last read. An entry is rewritten on every render where
+# the transcript advanced, so "untouched for a week" means the session itself has not advanced
+# for a week. A session held open but idle that long loses its entry and pays one in-line
+# recompute; refreshing the mtime on every cache HIT would instead put a fork on the hottest
+# path in this script — one per keystroke — which costs more than the recompute it avoids.
+CACHE_DIR=
 CACHE_FILE=
 CACHE_CONFIG=
 STAMP=
 if [ "${ENTIRE_GRAPH_STATUSLINE_CACHE:-1}" != "0" ]; then
 	STAMP=$(stat -f '%z-%m' "$TRANSCRIPT" 2>/dev/null || stat -c '%s-%Y' "$TRANSCRIPT" 2>/dev/null) || STAMP=
 	if [ -n "$STAMP" ]; then
-		CACHE_DIR=${TMPDIR:-/tmp}/entire-graph-statusline
-		SAFE=$(printf '%s' "$SESSION" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-64)
-		CACHE_FILE=$CACHE_DIR/$SAFE.line
-		CACHE_CONFIG="v2 $SCOPE $SINCE color${NO_COLOR:+-off} $REPO"
+		# Namespaced per uid: $TMPDIR is shared on some systems, and a cache directory another
+		# user can write is a cache another user can dictate the contents of.
+		CACHE_DIR=${TMPDIR:-/tmp}/entire-graph-statusline-$(id -u 2>/dev/null || printf 0)
+		if [ -L "$CACHE_DIR" ]; then
+			# Every read below, and mkdir -p, follow a symlinked DIRECTORY. A file planted in
+			# the target is then a regular file: it passes the per-file [ ! -L ] check and its
+			# bytes reach the terminal verbatim, terminal escapes included. Refuse it outright —
+			# no cache for this render.
+			CACHE_DIR=
+		else
+			# The key must identify the TRANSCRIPT, not just the session id. session_id is
+			# absent in some invocations (field() yields "-"), can repeat across worktrees, and
+			# is squashed by the sanitising below — every 1-char non-alnum id becomes "_", "a/b"
+			# and "a:b" both become "a_b", and anything past 40 chars is cut. Colliding keys
+			# overwrite each other's badge on every render, so the digest is ALWAYS appended,
+			# not only in the degenerate case.
+			SAFE=$(printf '%s' "$SESSION" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-40)
+			# cksum is POSIX, so this needs no sha/md5 binary. BOTH of its fields are used —
+			# the CRC32 and the byte count — because CRC32 alone collides on ~1.2% of 10k paths.
+			DIGEST=$(printf '%s' "$TRANSCRIPT" | cksum 2>/dev/null | awk '{ print $1 "-" $2; exit }')
+			case $DIGEST in
+			'' | '-' | *[!0-9-]*)
+				# No usable cksum. A constant fallback ("0") would put every transcript back
+				# onto one key, which is the exact bug this digest exists to fix, so derive it
+				# from the path itself instead.
+				DIGEST=$(printf '%s' "$TRANSCRIPT" | tr -c 'A-Za-z0-9' '_' | tail -c 40)
+				;;
+			esac
+			CACHE_FILE=$CACHE_DIR/$SAFE-$DIGEST.line
+			# v3: the key scheme changed, so entries written by an older script must not be
+			# served. Sanitised in one pass because $SCOPE, $SINCE and $REPO all reach a
+			# TAB-delimited record, and a tab or newline in any of them shifts the field split.
+			CACHE_CONFIG=$(printf 'v3 %s %s color%s %s' \
+				"$SCOPE" "$SINCE" "${NO_COLOR:+-off}" "$REPO" | tr '\t\n' '__')
+		fi
 	fi
 fi
 
+# Create $CACHE_DIR, private to this user, refusing a symlinked directory. Any failure means
+# "no cache" — never an error on the status line.
+cache_dir_ok() {
+	[ -n "$CACHE_DIR" ] || return 1
+	[ ! -L "$CACHE_DIR" ] || return 1
+	if [ ! -d "$CACHE_DIR" ]; then
+		mkdir -p "$CACHE_DIR" 2>/dev/null || return 1
+		chmod 700 "$CACHE_DIR" 2>/dev/null
+		[ ! -L "$CACHE_DIR" ] || return 1
+	fi
+	return 0
+}
+
+# Drop the garbage this script leaks: week-old lines, tmp files abandoned by a killed write, and
+# lock DIRECTORIES orphaned by a killed refresh (find -delete cannot remove a directory, so they
+# would otherwise survive forever and freeze the badge). Throttled behind a sentinel — a full
+# scan of the directory costs 2.84 ms at 200 entries and 21.58 ms at 20000, which is not a price
+# to pay on every store.
+prune() {
+	[ -n "$CACHE_DIR" ] || return 0
+	sentinel=$CACHE_DIR/.pruned
+	if [ -f "$sentinel" ] && [ -z "$(find "$sentinel" -maxdepth 0 -mmin +1440 2>/dev/null)" ]; then
+		return 0
+	fi
+	: >"$sentinel" 2>/dev/null || return 0
+	find "$CACHE_DIR" -maxdepth 1 -type f -name '*.line' -mtime +7 -delete 2>/dev/null
+	# Abandoned "<key>.line.<pid>" writes. Two minutes is orders of magnitude longer than a
+	# write takes, so an in-flight tmp file is never in range.
+	find "$CACHE_DIR" -maxdepth 1 -type f -name '*.line.*' -mmin +2 -delete 2>/dev/null
+	# Orphaned "<key>.line.lock" directories, on the same 2-minute deadline as the lock reaper
+	# below, so a live refresh is never unlocked underneath itself.
+	find "$CACHE_DIR" -maxdepth 1 -type d -name '*.line.lock' -mmin +2 -exec rmdir {} \; 2>/dev/null
+	return 0
+}
+
 store() { # store <line>
 	[ -n "$CACHE_FILE" ] || return 0
-	mkdir -p "$CACHE_DIR" 2>/dev/null || return 0
+	cache_dir_ok || return 0
 	tmp=$CACHE_FILE.$$
 	if printf '%s\t%s\t%s\n' "$CACHE_CONFIG" "$STAMP" "$1" >"$tmp" 2>/dev/null; then
 		mv -f "$tmp" "$CACHE_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
 	else
 		rm -f "$tmp" 2>/dev/null
 	fi
+	# After the write, never before: the entry this render paid for must not wait on maintenance.
+	prune
 }
 
-if [ -n "$CACHE_FILE" ] && [ -f "$CACHE_FILE" ] && [ ! -L "$CACHE_FILE" ]; then
+if [ -n "$CACHE_FILE" ] && [ ! -L "$CACHE_DIR" ] && [ -f "$CACHE_FILE" ] && [ ! -L "$CACHE_FILE" ]; then
 	CACHED=$(head -c 4096 "$CACHE_FILE" 2>/dev/null)
 	CACHED_LINE=${CACHED#*	}    # drop config
 	CACHED_LINE=${CACHED_LINE#*	} # drop stamp
@@ -362,7 +439,7 @@ if [ -n "$CACHE_FILE" ] && [ -f "$CACHE_FILE" ] && [ ! -L "$CACHE_FILE" ]; then
 			# Reap a lock orphaned by a killed refresh so the badge cannot freeze forever.
 			find "$LOCK" -maxdepth 0 -mmin +2 -exec rmdir {} \; 2>/dev/null
 		fi
-		if mkdir -p "$CACHE_DIR" 2>/dev/null && mkdir "$LOCK" 2>/dev/null; then
+		if cache_dir_ok && mkdir "$LOCK" 2>/dev/null; then
 			(
 				line=$(render) && [ -n "$line" ] && store "$line"
 				rmdir "$LOCK" 2>/dev/null
@@ -376,5 +453,7 @@ fi
 
 LINE=$(render) || exit 0
 [ -n "$LINE" ] || exit 0
-store "$LINE"
+# Print BEFORE storing: this is the first render of a session, already paying the full in-line
+# scan, and store() may run the prune. The badge must not wait on cache maintenance.
 printf '%s\n' "$LINE"
+store "$LINE"

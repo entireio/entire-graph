@@ -54,6 +54,26 @@ assert_empty() {
 assert_eq() {
 	if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "want: $2" "got:  $3"; fi
 }
+# assert_present <name> <path>
+assert_present() {
+	if [ -e "$2" ]; then pass "$1"; else fail "$1" "want present: $2"; fi
+}
+# assert_absent <name> <path>
+assert_absent() {
+	if [ -e "$2" ]; then fail "$1" "want gone: $2"; else pass "$1"; fi
+}
+# assert_two_files <name> <path-a> <path-b>: distinct paths, both written.
+assert_two_files() {
+	if [ "$2" = "$3" ]; then
+		fail "$1" "want two distinct cache files" "got one: $2"
+	elif [ ! -f "$2" ]; then
+		fail "$1" "missing cache file: $2"
+	elif [ ! -f "$3" ]; then
+		fail "$1" "missing cache file: $3"
+	else
+		pass "$1"
+	fi
+}
 # Visible width of a NO_COLOR line: bytes minus UTF-8 continuation bytes, i.e. characters.
 vwidth() { printf '%s' "$1" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c | tr -d ' '; }
 # assert_within <name> <max> <line>
@@ -98,15 +118,50 @@ stdin_json() { # stdin_json <session-id> <transcript> <cwd>
 	printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","workspace":{"current_dir":"%s"},"model":{"id":"m","display_name":"M"},"version":"2.1.219"}' \
 		"$1" "$2" "$3" "$3"
 }
+# The same payload with session_id absent, as Claude Code sends it in some invocations.
+stdin_json_nosid() { # stdin_json_nosid <transcript> <cwd>
+	printf '{"transcript_path":"%s","cwd":"%s","workspace":{"current_dir":"%s"},"model":{"id":"m","display_name":"M"},"version":"2.1.219"}' \
+		"$1" "$2" "$2"
+}
 
+# The suite must not inherit the developer's own ENTIRE_GRAPH_STATUSLINE_* settings: with
+# SCOPE=project exported, every case scans the real ~/.claude/projects tree and five assertions
+# fail with a badge full of real data. Every invocation therefore goes through clean_env, which
+# clears those three vars; a case that wants one sets it explicitly (its assignment is appended
+# after the -u flags and wins). One definition, so a fourth variable is one edit.
+clean_env() { # clean_env [env assignments...] <command...>
+	env -u ENTIRE_GRAPH_STATUSLINE_SCOPE \
+		-u ENTIRE_GRAPH_STATUSLINE_SINCE \
+		-u ENTIRE_GRAPH_STATUSLINE_CACHE "$@"
+}
+
+# run_json <stdin-json> [env assignments...] -> stdout of the status line
+run_json() {
+	json=$1
+	shift
+	printf '%s' "$json" |
+		clean_env TMPDIR="$WORK/cache" ENTIRE_GRAPH_BIN="$RUN_BIN" "$@" sh "$SCRIPT"
+}
 # run <session-id> <transcript> <cwd> [env assignments...] -> stdout of the status line
 run() {
 	sid=$1
 	transcript=$2
 	cwd=$3
 	shift 3
-	stdin_json "$sid" "$transcript" "$cwd" |
-		env TMPDIR="$WORK/cache" ENTIRE_GRAPH_BIN="$RUN_BIN" "$@" sh "$SCRIPT"
+	run_json "$(stdin_json "$sid" "$transcript" "$cwd")" "$@"
+}
+
+# The render-cache path the script computes, mirrored here so a change to the key scheme does not
+# have to be paid for in test edits (and so a test can never pin the key to a WEAKER scheme).
+# Keep in sync with the CACHE_DIR / SAFE / DIGEST block in the script.
+cache_dir() { printf '%s/entire-graph-statusline-%s' "$WORK/cache" "$(id -u)"; }
+cache_key() { # cache_key <session-id> <transcript> -> "<safe-session>-<digest>"
+	ck_safe=$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-40)
+	ck_digest=$(printf '%s' "$2" | cksum | awk '{ print $1 "-" $2; exit }')
+	printf '%s-%s' "$ck_safe" "$ck_digest"
+}
+cache_file() { # cache_file <session-id> <transcript> -> absolute path
+	printf '%s/%s.line' "$(cache_dir)" "$(cache_key "$1" "$2")"
 }
 
 RUN_BIN=$BIN
@@ -205,13 +260,13 @@ printf 'not json at all\n' >"$WORK/garbage.jsonl"
 OUT=$(run s-garbage "$WORK/garbage.jsonl" "$REPO")
 assert_empty 'transcript of garbage prints nothing' "$OUT"
 
-OUT=$(printf 'this is not json' | env TMPDIR="$WORK/cache" ENTIRE_GRAPH_BIN="$BIN" sh "$SCRIPT")
+OUT=$(run_json 'this is not json')
 assert_empty 'garbage on stdin prints nothing' "$OUT"
 
-OUT=$(printf '' | env TMPDIR="$WORK/cache" ENTIRE_GRAPH_BIN="$BIN" sh "$SCRIPT")
+OUT=$(run_json '')
 assert_empty 'empty stdin prints nothing' "$OUT"
 
-OUT=$(printf '{"session_id":"x"}' | env TMPDIR="$WORK/cache" ENTIRE_GRAPH_BIN="$BIN" sh "$SCRIPT")
+OUT=$(run_json '{"session_id":"x"}')
 assert_empty 'stdin without transcript_path prints nothing' "$OUT"
 
 # Missing binary: no override, nothing on PATH, no ~/go/bin.
@@ -363,6 +418,31 @@ stub '{"sessions":7,"graph_calls":10,"exploration_calls":10,"sessions_with_locat
 OUT=$(run s-multi "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_SCOPE=project)
 assert_has 'multi-session renders a graph-first rate' 'graph-first 86%' "$OUT"
 
+# ...and scope=project must actually ASK the CLI a project-wide question: the whole session
+# directory over the requested window, not this one transcript. An arg-recording stub is the only
+# way to assert that; the rendered badge looks the same either way.
+cat >"$WORK/argstub" <<STUB
+#!/bin/sh
+printf '%s\n' "\$*" >"$WORK/args"
+cat <<'JSON'
+{"sessions":7,"graph_calls":10,"exploration_calls":10,"sessions_with_locate":7,"graph_first_sessions":6,"graph_calls_by_verb":[{"name":"search","calls":10,"returned_bytes":1}],"estimated_savings_est_tokens":900,"estimated_savings_pct_of_session_tokens":3}
+JSON
+STUB
+chmod +x "$WORK/argstub"
+RUN_BIN=$WORK/argstub
+OUT=$(run s-projectargs "$T" "$REPO" NO_COLOR=1 ENTIRE_GRAPH_STATUSLINE_SCOPE=project ENTIRE_GRAPH_STATUSLINE_SINCE=7d)
+ARGS=$(cat "$WORK/args")
+assert_has 'scope=project scans the session directory' "--sessions-dir $(dirname "$T")" "$ARGS"
+assert_has 'scope=project honours the requested window' '--since 7d' "$ARGS"
+assert_lacks 'scope=project does not narrow to one transcript' '--transcript' "$ARGS"
+assert_has 'scope=project still renders the rate' 'graph-first 86%' "$OUT"
+
+OUT=$(run s-sessionargs "$T" "$REPO" NO_COLOR=1)
+ARGS=$(cat "$WORK/args")
+assert_has 'scope=session narrows to this transcript' "--transcript $T" "$ARGS"
+assert_has 'scope=session ignores the window' '--since all' "$ARGS"
+assert_lacks 'scope=session does not scan the session directory' '--sessions-dir' "$ARGS"
+
 # Escape hygiene: a verb name carrying ANSI/control bytes must never reach the terminal.
 stub '{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":100,"estimated_savings_pct_of_session_tokens":1}'
 OUT=$(run s-clean "$T" "$REPO" NO_COLOR=1)
@@ -414,7 +494,7 @@ assert_eq 'cache can be disabled' 2 "$(wc -l <"$WORK/calls" | tr -d ' ')"
 # A stale cache entry (same config, older transcript stamp) is served immediately and refreshed
 # behind the render. The entry is produced by a real run, then only its stamp+line are aged, so
 # the test cannot drift out of sync with the key format.
-CACHE_LINE=$WORK/cache/entire-graph-statusline/s-stale.line
+CACHE_LINE=$(cache_file s-stale "$T")
 run s-stale "$T" "$REPO" NO_COLOR=1 >/dev/null
 awk -F'\t' 'BEGIN{OFS="\t"} {print $1, "0-0", "STALE-BADGE"}' "$CACHE_LINE" >"$CACHE_LINE.aged"
 mv "$CACHE_LINE.aged" "$CACHE_LINE"
@@ -435,7 +515,7 @@ assert_has 'stale cache is refreshed in the background' '500 saved' "$OUT"
 
 # A cache entry written for a DIFFERENT question (other repo/scope/colour) must be recomputed,
 # never served — that is what makes the NO_COLOR case above safe.
-CACHE_LINE2=$WORK/cache/entire-graph-statusline/s-otherconfig.line
+CACHE_LINE2=$(cache_file s-otherconfig "$T")
 run s-otherconfig "$T" "$REPO" NO_COLOR=1 >/dev/null
 awk -F'\t' 'BEGIN{OFS="\t"} {print "v1 session 30d color /somewhere/else", $2, "WRONG-QUESTION"}' "$CACHE_LINE2" >"$CACHE_LINE2.x"
 mv "$CACHE_LINE2.x" "$CACHE_LINE2"
@@ -443,12 +523,104 @@ OUT=$(run s-otherconfig "$T" "$REPO" NO_COLOR=1)
 assert_lacks 'cache from a different question is not served' 'WRONG-QUESTION' "$OUT"
 assert_has 'cache from a different question is recomputed' '500 saved' "$OUT"
 
-# A symlinked cache file is refused rather than rendered (it could point anywhere).
-ln -sf /etc/passwd "$WORK/cache/entire-graph-statusline/s-symlink.line"
+# A symlinked cache file is refused rather than rendered (it could point anywhere). The payload
+# must be a VALID entry for exactly this render — right config in the first tab field, right
+# stamp in the second — or the config gate rejects it on its own and the test proves nothing
+# about the symlink guard. (Pointing the link at /etc/passwd is exactly that vacuous case.)
+run s-symsrc "$T" "$REPO" NO_COLOR=1 >/dev/null
+SYM_TARGET=$WORK/symlink-target.line
+awk -F'\t' 'BEGIN{OFS="\t"} {print $1, $2, "SYMLINKED-BADGE root:x:0:0"}' \
+	"$(cache_file s-symsrc "$T")" >"$SYM_TARGET"
+ln -sf "$SYM_TARGET" "$(cache_file s-symlink "$T")"
 : >"$WORK/calls"
 OUT=$(run s-symlink "$T" "$REPO" NO_COLOR=1)
-assert_has 'symlinked cache is ignored, not rendered' '500 saved' "$OUT"
+assert_lacks 'a symlinked cache entry is never served' 'SYMLINKED-BADGE' "$OUT"
 assert_lacks 'symlinked cache contents never leak' 'root:' "$OUT"
+assert_has 'symlinked cache is recomputed instead' '500 saved' "$OUT"
+
+# A symlinked cache DIRECTORY is the same attack one level up: mkdir -p follows it, and a file
+# planted in the target is a regular file, so it passes the per-file guard above and its bytes
+# would be printed verbatim — terminal escapes included.
+mkdir -p "$WORK/evil-tmp" "$WORK/evil-target"
+ln -sf "$WORK/evil-target" "$WORK/evil-tmp/entire-graph-statusline-$(id -u)"
+run s-dirlink "$T" "$REPO" NO_COLOR=1 >/dev/null
+awk -F'\t' 'BEGIN{OFS="\t"} {print $1, $2, "PLANTED-BADGE"}' "$(cache_file s-dirlink "$T")" \
+	>"$WORK/evil-target/$(cache_key s-dirlink "$T").line"
+OUT=$(run s-dirlink "$T" "$REPO" NO_COLOR=1 TMPDIR="$WORK/evil-tmp")
+assert_lacks 'a symlinked cache directory is never read' 'PLANTED-BADGE' "$OUT"
+assert_has 'a symlinked cache directory falls back to a real render' '500 saved' "$OUT"
+
+# --- cache key: no session_id ------------------------------------------------------------------
+# session_id is absent from some status-line invocations, where the JSON reader yields "-".
+# Keying on that alone put every such session on one "-.line": two sessions overwrote each
+# other's badge on every render. The stub's numbers depend on the transcript it is pointed at, so
+# an entry served for the WRONG transcript is visible in the badge rather than merely suspected.
+printf 'a\n' >"$WORK/perA.jsonl"
+printf 'bbbb\n' >"$WORK/perB.jsonl"
+cat >"$WORK/pertranscript" <<'STUB'
+#!/bin/sh
+saved=9
+for arg in "$@"; do
+	case $arg in
+	*/perA.jsonl) saved=111 ;;
+	*/perB.jsonl) saved=222 ;;
+	esac
+done
+printf '{"sessions":1,"graph_calls":1,"exploration_calls":0,"sessions_with_locate":1,"graph_first_sessions":1,"graph_calls_by_verb":[{"name":"search","calls":1,"returned_bytes":1}],"estimated_savings_est_tokens":%s,"estimated_savings_pct_of_session_tokens":1}\n' "$saved"
+STUB
+chmod +x "$WORK/pertranscript"
+RUN_BIN=$WORK/pertranscript
+
+OUT=$(run_json "$(stdin_json_nosid "$WORK/perA.jsonl" "$REPO")" NO_COLOR=1)
+assert_has 'no session_id: first transcript renders its own numbers' '111 saved' "$OUT"
+OUT=$(run_json "$(stdin_json_nosid "$WORK/perB.jsonl" "$REPO")" NO_COLOR=1)
+assert_has 'no session_id: second transcript renders its own numbers' '222 saved' "$OUT"
+OUT=$(run_json "$(stdin_json_nosid "$WORK/perA.jsonl" "$REPO")" NO_COLOR=1)
+assert_has 'no session_id: the second transcript did not overwrite the first' '111 saved' "$OUT"
+assert_two_files 'no session_id: two transcripts get two cache files' \
+	"$(cache_file - "$WORK/perA.jsonl")" "$(cache_file - "$WORK/perB.jsonl")"
+
+# --- cache key: duplicate session_id -----------------------------------------------------------
+# The same session_id can arrive with two different transcripts (a resumed session, a second
+# worktree, or two ids the sanitising squashes onto one key). Keying on the id alone made the two
+# flip-flop each other's badge on every render.
+OUT=$(run s-dup "$WORK/perA.jsonl" "$REPO" NO_COLOR=1)
+assert_has 'duplicate session_id: first transcript renders its own numbers' '111 saved' "$OUT"
+OUT=$(run s-dup "$WORK/perB.jsonl" "$REPO" NO_COLOR=1)
+assert_has 'duplicate session_id: second transcript renders its own numbers' '222 saved' "$OUT"
+OUT=$(run s-dup "$WORK/perA.jsonl" "$REPO" NO_COLOR=1)
+assert_has 'duplicate session_id: no flip-flop between the two transcripts' '111 saved' "$OUT"
+assert_two_files 'duplicate session_id: two transcripts get two cache files' \
+	"$(cache_file s-dup "$WORK/perA.jsonl")" "$(cache_file s-dup "$WORK/perB.jsonl")"
+
+# --- prune -------------------------------------------------------------------------------------
+# A store drops the garbage the script leaks — week-old lines, tmp files abandoned by a killed
+# write, lock DIRECTORIES orphaned by a killed refresh — and touches nothing that is live.
+RUN_BIN=$WORK/counter
+CDIR=$(cache_dir)
+OLD=202001010000
+rm -f "$CDIR/.pruned"
+: >"$CDIR/gone-0-0.line"
+: >"$CDIR/gone-0-0.line.4242"
+mkdir -p "$CDIR/gone-0-0.line.lock"
+touch -t "$OLD" "$CDIR/gone-0-0.line" "$CDIR/gone-0-0.line.4242" "$CDIR/gone-0-0.line.lock"
+: >"$CDIR/kept-0-0.line"
+: >"$CDIR/kept-0-0.line.9999"
+mkdir -p "$CDIR/kept-0-0.line.lock"
+run s-prune "$T" "$REPO" NO_COLOR=1 >/dev/null
+assert_absent 'prune drops a week-old cache line' "$CDIR/gone-0-0.line"
+assert_absent 'prune drops an abandoned tmp write' "$CDIR/gone-0-0.line.4242"
+assert_absent 'prune drops an orphaned lock directory' "$CDIR/gone-0-0.line.lock"
+assert_present 'prune keeps a fresh cache line' "$CDIR/kept-0-0.line"
+assert_present 'prune keeps an in-flight tmp write' "$CDIR/kept-0-0.line.9999"
+assert_present 'prune keeps a live lock directory' "$CDIR/kept-0-0.line.lock"
+assert_present 'prune leaves its throttle sentinel' "$CDIR/.pruned"
+
+# ...and it does not re-scan on the next store: the sentinel is the throttle.
+: >"$CDIR/throttled-0-0.line"
+touch -t "$OLD" "$CDIR/throttled-0-0.line"
+run s-prune2 "$T" "$REPO" NO_COLOR=1 >/dev/null
+assert_present 'prune is throttled behind its sentinel' "$CDIR/throttled-0-0.line"
 
 # --- result -----------------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
