@@ -3249,7 +3249,8 @@ func searchTestArtifactPath(lower string) bool {
 	}
 	return strings.HasPrefix(base, "test_") || strings.HasPrefix(base, "test-") ||
 		strings.HasPrefix(base, "test.") || strings.HasPrefix(base, "spec_") ||
-		strings.HasPrefix(base, "spec-") || strings.HasPrefix(base, "spec.")
+		strings.HasPrefix(base, "spec-") || strings.HasPrefix(base, "spec.") ||
+		strings.HasSuffix(base, ".test") || strings.HasSuffix(base, ".spec")
 }
 
 func searchDocumentationArtifactPath(lower string) bool {

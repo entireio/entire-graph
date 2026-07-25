@@ -1782,6 +1782,8 @@ func TestSearchTestArtifactPathCommonLayouts(t *testing.T) {
 		"store/quorum_test.py",
 		"Store.Tests/Quorum.cs",
 		"src/__tests__/quorum.test.ts",
+		"src/quorum.test",
+		"src/quorum.spec",
 	} {
 		if !searchTestArtifactPath(path) {
 			t.Errorf("searchTestArtifactPath(%q) = false, want true", path)
