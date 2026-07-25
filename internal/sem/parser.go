@@ -4865,6 +4865,30 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 			return Entity{}, false
 		}
 		name = nodeName(node, src)
+	case "function_expression", "generator_function":
+		// A NAMED function expression that is not the value of a
+		// variable_declarator (that case already captures it) carries a
+		// meaningful, body-spanning symbol — module main functions written as
+		// `export default cond && function name(cfg){…}` or named IIFEs. Plain
+		// anonymous callbacks have no name and are skipped, so this does not
+		// flood the graph. Without it these functions (often the module's whole
+		// logic) get no symbol and search cannot anchor inside their bodies.
+		if language != "JavaScript" && language != "TypeScript" {
+			return Entity{}, false
+		}
+		nameNode := node.ChildByFieldName("name")
+		if !validNode(nameNode) {
+			return Entity{}, false
+		}
+		if p := node.Parent(); validNode(p) && p.Type() == "variable_declarator" {
+			return Entity{}, false
+		}
+		name = strings.TrimSpace(nameNode.Content(src))
+		kind = "function"
+		if scope != "" {
+			kind = "method"
+			name = qualify(scope, name)
+		}
 	default:
 		return Entity{}, false
 	}
