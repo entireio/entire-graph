@@ -30,6 +30,47 @@ That's it. `init-agents` drops the operating guide into your project's `AGENTS.m
 so Claude Code, Codex, Gemini, Cursor, Pi — any agent that reads those files — picks up the
 search-first workflow automatically. No config, no MCP server, no daemon.
 
+## Status line: what the graph is saving you, live
+
+A one-line Claude Code badge, updated as the session runs:
+
+```text
+[GRAPH] ↗ 2.1M saved · 28 search · 9 impact · graph-first ✓ · 75% of locates · 12% of session
+```
+
+- **saved** — estimated tokens, same model as `entire graph stats` (see the caveats there).
+- **verb split** — top three graph verbs by call count for this session.
+- **graph-first** — did the session open with a graph call rather than grep/read.
+- **of locates** — share of all locate-ish calls (graph vs `Read`/`Grep`/`Glob`/shell `grep|find|cat`)
+  that went to the graph.
+- **of session** — the estimate as a share of billed session tokens.
+
+Before any graph call it reads `[GRAPH] no graph calls yet · 35 explore`, and if the binary or
+transcript is missing it prints nothing at all.
+
+Enable it in `~/.claude/settings.json` (or `.claude/settings.json` for one project):
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "sh /path/to/entire-graph/scripts/entire-graph-statusline.sh"
+  }
+}
+```
+
+Installed as a plugin, the path is `sh "$CLAUDE_PLUGIN_ROOT/scripts/entire-graph-statusline.sh"`.
+The plugin manifest declares the same block under `settings`, but Claude Code only merges an
+allowlisted subset of plugin-provided settings (`agent`, `subagentStatusLine` as of 2.1.219) and
+drops `statusLine` — so today the settings.json entry above is what actually turns it on. The
+manifest entry costs nothing and starts working if that allowlist widens.
+
+Knobs: `ENTIRE_GRAPH_BIN` (explicit binary path), `NO_COLOR`,
+`ENTIRE_GRAPH_STATUSLINE_CACHE=0` (disable the render cache),
+`ENTIRE_GRAPH_STATUSLINE_SCOPE=project` (whole-project totals instead of this session — it
+re-scans the entire transcript directory, which is far slower; the default `session` scope reads
+one transcript).
+
 ## What your agents get
 
 | agent workflow | before | with Entire Graph |

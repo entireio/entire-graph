@@ -657,3 +657,112 @@ func TestStatsMedianFallbackWhenTopHitUnresolvable(t *testing.T) {
 		t.Fatalf("median tracked file bytes = %d, want 500", report.MedianTrackedFileBytes)
 	}
 }
+
+func TestStatsTranscriptScopesToOneSession(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+
+	// The session we want.
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --query "x"`}),
+		toolResultLine(t, now, "g1", "hits"),
+		usageLine(t, now, 10, 20, 30, 40),
+	)
+	// A sibling session in the same directory that must NOT be counted.
+	writeTranscript(t, sessions, "s2.jsonl",
+		toolUseLine(t, now, "Bash", "g2", map[string]any{"command": `entire graph impact --symbol Y`}),
+		toolResultLine(t, now, "g2", "blast radius"),
+		usageLine(t, now, 1000, 1000, 1000, 1000),
+	)
+
+	report := runStatsJSON(t, "--repo", repo,
+		"--transcript", filepath.Join(sessions, "s1.jsonl"), "--format", "json", "--since", "all")
+
+	if report.Sessions != 1 || report.Transcripts != 1 {
+		t.Fatalf("sessions/transcripts = %d/%d, want 1/1", report.Sessions, report.Transcripts)
+	}
+	if report.GraphCalls != 1 {
+		t.Fatalf("graph calls = %d, want 1 (%+v)", report.GraphCalls, report.GraphByVerb)
+	}
+	if _, ok := findCount(report.GraphByVerb, "impact"); ok {
+		t.Fatalf("sibling session leaked into the report: %+v", report.GraphByVerb)
+	}
+	if report.SessionTokens.Total != 10+20+30+40 {
+		t.Fatalf("session tokens = %d, want 100", report.SessionTokens.Total)
+	}
+	if report.SessionsDir != filepath.Join(sessions, "s1.jsonl") || !report.SessionsDirFound {
+		t.Fatalf("sessions_dir = %q found=%v", report.SessionsDir, report.SessionsDirFound)
+	}
+}
+
+func TestStatsTranscriptFoldsSubagents(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+
+	writeTranscript(t, sessions, "s1.jsonl",
+		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --query "x"`}),
+		toolResultLine(t, now, "g1", "hits"),
+	)
+	// Delegated work lives under <session>/subagents/ and belongs to the same session.
+	writeTranscript(t, sessions, filepath.Join("s1", "subagents", "agent-1.jsonl"),
+		toolUseLine(t, now, "Grep", "e1", map[string]any{"pattern": "x"}),
+		toolResultLine(t, now, "e1", "matches"),
+	)
+
+	report := runStatsJSON(t, "--repo", repo,
+		"--transcript", filepath.Join(sessions, "s1.jsonl"), "--format", "json", "--since", "all")
+
+	if report.Sessions != 1 {
+		t.Fatalf("sessions = %d, want 1 (subagent must fold into its owner)", report.Sessions)
+	}
+	if report.Transcripts != 2 {
+		t.Fatalf("transcripts = %d, want 2", report.Transcripts)
+	}
+	if report.GraphCalls != 1 || report.ExplorationCalls != 1 {
+		t.Fatalf("graph/exploration = %d/%d, want 1/1", report.GraphCalls, report.ExplorationCalls)
+	}
+	// Graph call came first in the owner, so the folded session is still graph-first.
+	if report.GraphFirstSessions != 1 || report.SessionsWithLocate != 1 {
+		t.Fatalf("graph-first = %d/%d, want 1/1", report.GraphFirstSessions, report.SessionsWithLocate)
+	}
+}
+
+func TestStatsTranscriptMissingReportsNotFound(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "nope.jsonl")
+
+	report := runStatsJSON(t, "--repo", repo, "--transcript", missing, "--format", "json")
+	if report.SessionsDirFound {
+		t.Fatal("missing transcript must report sessions_dir_found=false")
+	}
+	if report.Sessions != 0 || report.GraphCalls != 0 {
+		t.Fatalf("missing transcript produced data: %+v", report)
+	}
+}
+
+func TestStatsTranscriptRejectsSessionsDir(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	err := Run(t.Context(), Options{Version: "test", Stdout: &out, Stderr: &out},
+		[]string{"stats", "--transcript", "/tmp/a.jsonl", "--sessions-dir", "/tmp"})
+	if err == nil {
+		t.Fatal("--transcript with --sessions-dir must be rejected")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestStatsTranscriptDirectoryIsNotATranscript(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	report := runStatsJSON(t, "--repo", t.TempDir(), "--transcript", dir, "--format", "json")
+	if report.SessionsDirFound {
+		t.Fatal("a directory passed to --transcript must report sessions_dir_found=false")
+	}
+}
