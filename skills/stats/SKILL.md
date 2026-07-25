@@ -18,10 +18,13 @@ report the numbers that matter and what they mean.
 entire graph stats --repo .            # last 30 days (default)
 entire graph stats --repo . --since all
 entire graph stats --repo . --format json   # for scripting
+entire graph stats --repo . --transcript ~/.claude/projects/<slug>/<session>.jsonl
 ```
 
 `--since 7d|30d|all` windows the sessions. `--sessions-dir <path>` overrides transcript
-discovery. Requires the `entire-graph` plugin on PATH (`entire graph version`).
+discovery. `--transcript <path>` narrows the report to ONE session — that transcript plus its
+`<session>/subagents/*.jsonl` — instead of a whole project directory; mutually exclusive with
+`--sessions-dir`. Requires the `entire-graph` plugin on PATH (`entire graph version`).
 
 ## What it reads
 
@@ -74,3 +77,31 @@ Two consequences worth stating to the user:
   so agents in this repo actually use it.
 - Never present the estimate as billed savings; the billed number in the same report is the
   session total, not a saving.
+
+## Status line
+
+The same numbers render as a live one-line Claude Code badge:
+
+```text
+[GRAPH] ↗ 2.1M saved · 28 search · 9 impact · graph-first ✓ · 75% of locates · 12% of session
+```
+
+If the user wants it on, add to `~/.claude/settings.json` (project-local: `.claude/settings.json`):
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "sh /path/to/entire-graph/scripts/entire-graph-statusline.sh"
+  }
+}
+```
+
+Under the plugin, the path is `sh "$CLAUDE_PLUGIN_ROOT/scripts/entire-graph-statusline.sh"`.
+The plugin manifest declares the same block, but Claude Code drops non-allowlisted
+plugin-provided settings (`statusLine` is not on the list as of 2.1.219), so the settings.json
+entry is what actually enables it.
+
+The badge is scoped to the CURRENT session via `--transcript` and is cached on the transcript's
+size+mtime, so it costs one bounded transcript scan rather than a re-scan of every session in the
+project. Its savings number carries exactly the caveats above — same estimator, same assumption.

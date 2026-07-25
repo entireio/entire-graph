@@ -114,7 +114,7 @@ entire graph version [--json]       # provider name + plugin version
 
 ### 📊 stats — *did the graph actually save anything?* (for humans, not for you)
 ```sh
-entire graph stats --repo . [--since 30d|7d|all] [--format text|json] [--sessions-dir path]
+entire graph stats --repo . [--since 30d|7d|all] [--format text|json] [--sessions-dir path|--transcript path]
 ```
 
 Local, read-only report over the coding-agent session transcripts already on disk
@@ -126,7 +126,9 @@ tool call was a graph call), and an **estimated** token saving. The savings mode
 assumption printed next to the number: each `search`/`neighbors`/`impact` call is credited with the
 one whole-file read it replaced — on-disk size of the top-hit file it pointed at (repo median
 tracked-file size when unresolvable) minus the bytes that call returned, floored at 0, at 4 bytes =
-1 token. It is not a measured counterfactual. No network, no writes.
+1 token. It is not a measured counterfactual. No network, no writes. `--transcript <path>` narrows
+the whole report to one session (that transcript plus its `<session>/subagents/*.jsonl`), which is
+what `scripts/entire-graph-statusline.sh` renders as a live Claude Code status line badge.
 
 **When:** a human asks what the graph is buying them. Agents should not run it as part of a coding task.
 

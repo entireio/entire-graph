@@ -100,6 +100,7 @@ type statsFlags struct {
 	Since       string
 	Format      string
 	SessionsDir string
+	Transcript  string
 }
 
 type statsCount struct {
@@ -162,13 +163,16 @@ func runStats(ctx context.Context, opts Options, args []string) error {
 	default:
 		return fmt.Errorf("stats --format must be text or json, got %q", flags.Format)
 	}
+	if flags.Transcript != "" && flags.SessionsDir != "" {
+		return fmt.Errorf("stats --transcript and --sessions-dir are mutually exclusive")
+	}
 	window, err := parseSince(flags.Since)
 	if err != nil {
 		return err
 	}
 
 	repo, repoErr := resolveRepo(ctx, opts.Env, flags.Repo)
-	if repoErr != nil && flags.SessionsDir == "" {
+	if repoErr != nil && flags.SessionsDir == "" && flags.Transcript == "" {
 		return repoErr
 	}
 	if repo != "" {
@@ -179,10 +183,21 @@ func runStats(ctx context.Context, opts Options, args []string) error {
 
 	sessionsDir := flags.SessionsDir
 	found := true
-	if sessionsDir == "" {
+	switch {
+	case flags.Transcript != "":
+		// Single-session scope: the caller already knows exactly which transcript it wants
+		// (a status line rendering the live session, say). Reported as sessions_dir so the
+		// JSON shape stays identical.
+		sessionsDir = flags.Transcript
+		if info, err := os.Stat(sessionsDir); err != nil || !info.Mode().IsRegular() {
+			found = false
+		}
+	case sessionsDir == "":
 		sessionsDir, found = resolveSessionsDir(repo)
-	} else if info, err := os.Stat(sessionsDir); err != nil || !info.IsDir() {
-		found = false
+	default:
+		if info, err := os.Stat(sessionsDir); err != nil || !info.IsDir() {
+			found = false
+		}
 	}
 
 	report := statsResponse{
@@ -200,7 +215,11 @@ func runStats(ctx context.Context, opts Options, args []string) error {
 
 	if found {
 		collector := newStatsCollector(ctx, repo)
-		if err := collector.scan(sessionsDir); err != nil {
+		scan := collector.scan
+		if flags.Transcript != "" {
+			scan = collector.scanTranscript
+		}
+		if err := scan(sessionsDir); err != nil {
 			return err
 		}
 		collector.finish(&report, window)
@@ -244,6 +263,12 @@ func parseStatsFlags(args []string) (statsFlags, []string, error) {
 				return flags, nil, err
 			}
 			flags.SessionsDir, index = value, next
+		case "--transcript":
+			value, next, err := searchFlagValue(args, index)
+			if err != nil {
+				return flags, nil, err
+			}
+			flags.Transcript, index = value, next
 		default:
 			rest = append(rest, args[index])
 		}
@@ -417,6 +442,46 @@ func (c *statsCollector) scan(dir string) error {
 	sort.Strings(files)
 	for _, path := range files {
 		if err := c.scanFile(dir, path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// scanTranscript is scan narrowed to ONE session: the named `<session>.jsonl` plus the
+// `<session>/` sibling directory holding its subagent transcripts. Both are keyed to the same
+// session by sessionKeyForPath, so the accounting is byte-for-byte what scan would produce for
+// that session. It exists because a project's transcript directory can reach hundreds of MB,
+// which a per-render caller (status line) cannot afford to walk.
+func (c *statsCollector) scanTranscript(path string) error {
+	root := filepath.Dir(path)
+	if err := c.scanFile(root, path); err != nil {
+		return err
+	}
+	subagents := strings.TrimSuffix(path, ".jsonl")
+	if subagents == path {
+		return nil
+	}
+	if info, err := os.Stat(subagents); err != nil || !info.IsDir() {
+		return nil //nolint:nilerr // a session without subagent transcripts is the common case
+	}
+	var files []string
+	err := filepath.WalkDir(subagents, func(current string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return nil //nolint:nilerr // an unreadable subtree must not fail the whole report
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			return nil
+		}
+		files = append(files, current)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	sort.Strings(files)
+	for _, file := range files {
+		if err := c.scanFile(root, file); err != nil {
 			return err
 		}
 	}
