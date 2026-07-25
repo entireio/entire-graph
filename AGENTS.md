@@ -112,6 +112,24 @@ entire graph version [--json]       # provider name + plugin version
 
 **When:** before assuming a language is semantically parsed, or to confirm the no-egress environment.
 
+### 📊 stats — *did the graph actually save anything?* (for humans, not for you)
+```sh
+entire graph stats --repo . [--since 30d|7d|all] [--format text|json] [--sessions-dir path]
+```
+
+Local, read-only report over the coding-agent session transcripts already on disk
+(`~/.claude/projects/<path-slug>/*.jsonl`; `--sessions-dir` overrides the lookup). Reports graph
+calls per verb vs. exploration calls (`Read` whole-file / `Read` line-range / `Grep` / `Glob` /
+shell `grep|find|cat|head|tail|sed|awk`), the bytes each path pulled into context, billed session
+tokens read from transcript `usage`, a graph-first rate (share of sessions whose first locate-ish
+tool call was a graph call), and an **estimated** token saving. The savings model is an explicit
+assumption printed next to the number: each `search`/`neighbors`/`impact` call is credited with the
+one whole-file read it replaced — on-disk size of the top-hit file it pointed at (repo median
+tracked-file size when unresolvable) minus the bytes that call returned, floored at 0, at 4 bytes =
+1 token. It is not a measured counterfactual. No network, no writes.
+
+**When:** a human asks what the graph is buying them. Agents should not run it as part of a coding task.
+
 ---
 
 ## The measured-best agent prompt (copy-paste this)
@@ -160,6 +178,7 @@ impact  →  entire graph impact --symbol X              (one-shot blast radius:
 callers →  entire graph neighbors --symbol X ...       (targeted callers/callees of X)
 change  →  entire graph diff --base A --head B          (entity-level, with dependents)
 ingest  →  entire graph snapshot --format ndjson        (whole graph)
+report  →  entire graph stats --repo .                  (human-facing: graph vs grep/read usage + estimated token savings)
 ```
 
 ---
