@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "78bddd24a0d0",
+  "strategy": "manual-commit",
+  "branch": "feat/retrieval-followups",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/model.go",
+    "internal/sem/parser.go",
+    "internal/sem/provider.go",
+    "internal/sem/typescript_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/78/bddd24a0d0/0/metadata.json",
+      "transcript": "/78/bddd24a0d0/0/full.jsonl",
+      "compact_transcript": "/78/bddd24a0d0/0/transcript.jsonl",
+      "content_hash": "/78/bddd24a0d0/0/content_hash.txt",
+      "prompt": "/78/bddd24a0d0/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 523369,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 30948352,
+    "output_tokens": 53355,
+    "api_call_count": 246
+  }
+}
