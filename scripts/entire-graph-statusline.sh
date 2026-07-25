@@ -3,7 +3,17 @@
 #
 # Renders one line summarising what the code graph bought you in THIS session:
 #
-#   [GRAPH] ↗ 2.1M saved · 34 search · 7 impact · graph-first ✓ · 61% of locates · 12% of session
+#   [GRAPH] ↗ 6.6K saved · 13 search · 3 impact · 1 nbrs · vs 2.6K explore · 1.5M explore tok ·
+#   graph-first ✗ · 2% of locates · 0.2% of session
+#
+# Segment order is fixed; any segment whose value is missing or zero is dropped rather than
+# rendered as a zero. Only WORK verbs are named (locate verbs search/neighbors/impact first,
+# then diff/analyze/commit/checkpoint/symbols/edges/snapshot/index). The self-reporting meta
+# verbs — stats, version, help, doctor, init-agents, agent-guide, capabilities — replace no
+# exploration, so they are struck from the verb split AND from the residual "other" count.
+#
+# The line is held under 150 visible characters. When it would overflow, whole segments are
+# dropped from the right — session %, then explore tok, then explore calls — never truncated.
 #
 # Claude Code invokes a status line command with the session JSON on stdin and takes stdout as
 # the badge (ANSI colour is allowed). The fields consumed here:
@@ -153,8 +163,31 @@ render() {
 			gsub(/[^a-z-]/, "", name)
 			return substr(name, 1, 16)
 		}
+		# Self-reporting verbs: they answer questions ABOUT the graph and replace no
+		# exploration, so they must never be named in the badge nor counted as work.
+		function isMeta(n) {
+			return index(" stats version help doctor init-agents agent-guide capabilities ", " " n " ") > 0
+		}
+		# Verbs that do work on the codebase. Locate verbs rank first in the split.
+		function isWork(n) {
+			return index(" search neighbors impact diff analyze commit checkpoint symbols edges snapshot index ", " " n " ") > 0
+		}
+		function isLocate(n) { return index(" search neighbors impact ", " " n " ") > 0 }
+		# Segments are accumulated with their VISIBLE width (colour codes and multi-byte
+		# glyphs excluded, counted by the caller) and a drop rank: 0 never drops, 1 drops
+		# first. Overflow is handled by dropping whole segments, never by truncating one.
+		function addseg(text, width, rank) {
+			nseg++
+			stext[nseg] = text
+			swidth[nseg] = width
+			srank[nseg] = rank
+			wtotal += width
+		}
+		# A plain (ASCII) segment preceded by the " \302\267 " separator: 3 visible chars.
+		function addplain(text, rank) { addseg(sep() text, 3 + length(text), rank) }
 		{ blob = blob $0 }
 		END {
+			maxw = 150
 			sessions = number("sessions")
 			graph    = number("graph_calls")
 			explore  = number("exploration_calls")
@@ -162,26 +195,15 @@ render() {
 
 			label = paint("[GRAPH]", "38;5;45")
 
-			if (graph <= 0) {
-				out = label " " paint("no graph calls yet", "2")
-				if (explore > 0) out = out sep() paint(explore " explore", "2")
-				print out
-				exit 0
-			}
-
-			saved    = number("estimated_savings_est_tokens")
-			savedPct = number("estimated_savings_pct_of_session_tokens")
-			gfHit    = number("graph_first_sessions")
-			gfTotal  = number("sessions_with_locate")
-
-			out = label " " paint("\342\206\227 " human(saved) " saved", "38;5;78")
-
 			# Verb split. graph_calls_by_verb is already ordered calls-desc by the CLI.
+			# Meta verbs are subtracted from the call total outright; names outside the
+			# closed set are never rendered but still count as work, so a verb this script
+			# has not learned about yet degrades to "other" rather than vanishing.
+			nverb = 0
+			meta = 0
 			if (match(blob, /"graph_calls_by_verb"[ \t]*:[ \t]*\[[^]]*\]/)) {
 				verbs = substr(blob, RSTART, RLENGTH)
-				shown = 0
-				counted = 0
-				while (shown < 3 && match(verbs, /"name"[ \t]*:[ \t]*"[a-z-]+"[ \t]*,[ \t]*"calls"[ \t]*:[ \t]*[0-9]+/)) {
+				while (match(verbs, /"name"[ \t]*:[ \t]*"[a-z-]+"[ \t]*,[ \t]*"calls"[ \t]*:[ \t]*[0-9]+/)) {
 					entry = substr(verbs, RSTART, RLENGTH)
 					verbs = substr(verbs, RSTART + RLENGTH)
 					name = entry
@@ -192,33 +214,92 @@ render() {
 					calls = calls + 0
 					name = clean(name)
 					if (name == "" || calls <= 0) continue
-					if (name == "neighbors") name = "nbrs"
-					out = out sep() calls " " name
-					counted += calls
+					if (isMeta(name)) { meta += calls; continue }
+					if (!isWork(name)) continue
+					nverb++
+					vname[nverb] = name
+					vcalls[nverb] = calls
+				}
+			}
+			work = graph - meta
+
+			if (work <= 0) {
+				out = label " " paint("no graph calls yet", "2")
+				if (explore > 0) out = out sep() paint(human(explore) " explore", "2")
+				print out
+				exit 0
+			}
+
+			saved    = number("estimated_savings_est_tokens")
+			savedPct = number("estimated_savings_pct_of_session_tokens")
+			expTok   = number("exploration_returned_est_tokens")
+			gfHit    = number("graph_first_sessions")
+			gfTotal  = number("sessions_with_locate")
+
+			if (saved > 0) {
+				text = human(saved)
+				# "[GRAPH] " = 8, "\342\206\227 " = 2, " saved" = 6.
+				addseg(label " " paint("\342\206\227 " text " saved", "38;5;78"), 16 + length(text), 0)
+			} else {
+				addseg(label, 7, 0)
+			}
+
+			# Locate verbs first, then the remaining work verbs; calls-desc within each.
+			shown = 0
+			counted = 0
+			for (pass = 1; pass <= 2; pass++) {
+				for (i = 1; i <= nverb; i++) {
+					if (shown >= 3) break
+					if (pass == 1 && !isLocate(vname[i])) continue
+					if (pass == 2 && isLocate(vname[i])) continue
+					disp = vname[i]
+					if (disp == "neighbors") disp = "nbrs"
+					addplain(vcalls[i] " " disp, 0)
+					counted += vcalls[i]
 					shown++
 				}
-				if (counted > 0 && counted < graph) out = out sep() (graph - counted) " other"
-				if (shown == 0) out = out sep() graph " graph"
-			} else {
-				out = out sep() graph " graph"
 			}
+			if (shown == 0) addplain(work " graph", 0)
+			else if (counted < work) addplain((work - counted) " other", 0)
+
+			# What the graph was measured against: the exploration it did not replace.
+			if (explore > 0) addplain("vs " human(explore) " explore", 3)
+			if (expTok > 0) addplain(human(expTok) " explore tok", 2)
 
 			# graph-first: did the session OPEN with the graph rather than grep/read. One
 			# session is a yes/no; a multi-session scope is a rate, as `entire graph stats`
 			# reports it.
 			if (gfTotal > 0) {
 				if (sessions == 1)
-					out = out sep() "graph-first " (gfHit > 0 ? "\342\234\223" : "\342\234\227")
+					# "graph-first " = 12 plus the one-glyph tick.
+					addseg(sep() "graph-first " (gfHit > 0 ? "\342\234\223" : "\342\234\227"), 16, 0)
 				else
-					out = out sep() "graph-first " sprintf("%d%%", (gfHit * 100 / gfTotal) + 0.5)
+					addplain(sprintf("graph-first %d%%", (gfHit * 100 / gfTotal) + 0.5), 0)
 			}
 
 			# Share of all locate-ish calls that went to the graph instead of grep/read.
+			# A share that rounds to 0% would read as "no graph calls", which is false
+			# whenever we got this far — say "<1%" instead.
 			locates = graph + (explore > 0 ? explore : 0)
-			if (locates > 0) out = out sep() sprintf("%d%% of locates", (graph * 100 / locates) + 0.5)
+			if (locates > 0) {
+				share = graph * 100 / locates
+				if (share < 0.5) addplain("<1% of locates", 0)
+				else addplain(sprintf("%d%% of locates", share + 0.5), 0)
+			}
 
-			if (savedPct > 0) out = out sep() pct(savedPct) " of session"
+			# Below 0.005% every format rounds to "0.00%", which is a zero — drop it.
+			if (savedPct >= 0.005) addplain(pct(savedPct) " of session", 1)
 
+			for (rank = 1; rank <= 3 && wtotal > maxw; rank++) {
+				for (i = 1; i <= nseg; i++) {
+					if (srank[i] != rank || gone[i]) continue
+					gone[i] = 1
+					wtotal -= swidth[i]
+				}
+			}
+
+			out = ""
+			for (i = 1; i <= nseg; i++) if (!gone[i]) out = out stext[i]
 			print out
 		}
 	'
@@ -234,8 +315,10 @@ render() {
 # slowly-accumulating counter is invisible. Only the very first render of a session — when
 # there is nothing to serve — computes in line.
 # The key has two halves, stored as "<config>\t<stamp>\t<line>":
-#   config — everything that changes WHAT is rendered (scope, window, colour, repo). A mismatch
-#            here means the cached line answers a different question, so it must never be shown.
+#   config — everything that changes WHAT is rendered (scope, window, colour, repo), behind a
+#            format version that is bumped whenever the badge layout changes so lines written by
+#            an older script are never served. A mismatch here means the cached line answers a
+#            different question, so it must never be shown.
 #   stamp  — the transcript's size+mtime. A mismatch here means only that the session moved on,
 #            which is exactly when serving the previous line is safe and useful.
 CACHE_FILE=
@@ -247,7 +330,7 @@ if [ "${ENTIRE_GRAPH_STATUSLINE_CACHE:-1}" != "0" ]; then
 		CACHE_DIR=${TMPDIR:-/tmp}/entire-graph-statusline
 		SAFE=$(printf '%s' "$SESSION" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-64)
 		CACHE_FILE=$CACHE_DIR/$SAFE.line
-		CACHE_CONFIG="v1 $SCOPE $SINCE color${NO_COLOR:+-off} $REPO"
+		CACHE_CONFIG="v2 $SCOPE $SINCE color${NO_COLOR:+-off} $REPO"
 	fi
 fi
 
