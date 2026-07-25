@@ -1,0 +1,5 @@
+{
+  "name": "entire-graph",
+  "description": "Search-first code navigation for coding agents, plus a local token-savings report. Deterministic code graph, no network.",
+  "author": { "name": "Entire", "url": "https://github.com/entireio/entire-graph" }
+}
