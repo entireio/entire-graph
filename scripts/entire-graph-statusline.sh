@@ -378,25 +378,43 @@ fi
 # Create $CACHE_DIR, private to this user, refusing a symlinked directory AND any directory this
 # user does not own. Any failure means "no cache" — never an error on the status line.
 #
-# The chmod is deliberately OUTSIDE the creation branch and is REQUIRED to succeed. $TMPDIR is
-# usually unset, so the path is predictable (/tmp/entire-graph-statusline-<uid>) and /tmp is
-# cleared on boot: another user can win the create race and then own the directory this script
-# reads its badge out of. Per-uid naming does not help — the victim's uid is in the name — and the
-# symlink checks do not help either, because a real directory is not a symlink. `chmod` on a
-# foreign-owned directory fails with EPERM, so insisting on it is what actually refuses the
-# hostile directory before a single byte of it is read. Without this, a planted record's bytes
-# reach the terminal verbatim (verified: \033[2J\033]0;OWNED\007 clears the screen and rewrites
-# the window title), and only the guessable CONFIG field has to match, not the stamp.
+# The gate is an OWNERSHIP TEST, not "chmod exited 0". $TMPDIR is usually unset, so the path is
+# predictable (/tmp/entire-graph-statusline-<uid>) and /tmp is world-writable and cleared on boot:
+# another user can win the create race and then own the directory this script reads its badge out
+# of. Per-uid naming does not help — the victim's uid is in the name — and the symlink checks do not
+# help either, because a real directory is not a symlink. Requiring `chmod 700` to succeed is NOT
+# sufficient on its own, which was the hole this gate had:
 #
-# Memoised on success so a render pays at most one chmod fork, not one per call site.
+#   * chmod(1) ELIDES the chmod(2) call when the mode already matches, so a foreign directory that
+#     is already at 0700 exits 0 and gets adopted (asserted on the platform by the test suite).
+#     Mode 0700 does not make such a directory unreadable to its victim either: a macOS ACL
+#     (`chmod +a "<victim> allow list,search,read,add_file"`) is evaluated independently of the
+#     mode bits.
+#   * For a uid-0 victim chmod succeeds on EVERY directory, so the check degenerates to a no-op.
+#
+# `[ -O "$CACHE_DIR" ]` compares st_uid with the effective uid, which is the actual question; it is
+# also a shell builtin, so it costs no fork, and it is what refuses an attacker-owned directory when
+# the victim is root. The chmod stays behind it, still required, but now only as mode REPAIR on a
+# directory we already know is ours (one created by an older version of this script under a loose
+# umask). Without this gate a planted record's bytes reach the terminal verbatim (verified:
+# \033[2J\033]0;OWNED\007 clears the screen and rewrites the window title), and only the guessable
+# CONFIG field has to match, not the stamp.
+#
+# Memoised on success so a render pays at most one chmod fork, not one per call site. The memo is
+# set only after BOTH checks pass: setting it any earlier would hand a REFUSED directory to the next
+# caller — store() — as though it had been approved.
+#
+# `mkdir -m 700` rather than `mkdir -p` + chmod: -p publishes the directory at the umask mode first,
+# so under `umask 000` there is a window in which it is drwxrwxrwx.
 cache_dir_ok() {
 	[ -n "$CACHE_DIR" ] || return 1
 	[ "$CACHE_DIR_OK" = 1 ] && return 0
 	[ ! -L "$CACHE_DIR" ] || return 1
 	if [ ! -d "$CACHE_DIR" ]; then
-		mkdir -p "$CACHE_DIR" 2>/dev/null || return 1
+		mkdir -m 700 -p "$CACHE_DIR" 2>/dev/null || return 1
 		[ ! -L "$CACHE_DIR" ] || return 1
 	fi
+	[ -O "$CACHE_DIR" ] || return 1
 	chmod 700 "$CACHE_DIR" 2>/dev/null || return 1
 	CACHE_DIR_OK=1
 	return 0
@@ -413,12 +431,25 @@ prune() {
 	if [ -f "$sentinel" ] && [ ! -L "$sentinel" ]; then
 		[ -z "$(find "$sentinel" -maxdepth 0 -mmin +1440 2>/dev/null)" ] && return 0
 	elif [ -e "$sentinel" ] || [ -L "$sentinel" ]; then
-		# Anything but a regular file here — a directory, a symlink — would make the ": >" below
-		# fail on every store, disabling prune permanently and letting the cache grow forever.
-		# Clear it and carry on rather than wedging.
-		rmdir "$sentinel" 2>/dev/null || rm -f "$sentinel" 2>/dev/null
+		# Anything but a regular file here — a directory (empty or NOT), a symlink, a fifo — would
+		# make the truncation below fail on every store, disabling prune permanently and letting the cache
+		# grow forever. `rm -rf` clears every one of those shapes; `rmdir` covered only EMPTY
+		# directories, so a planted directory with anything inside it wedged prune for good. On a
+		# symlink `rm -rf` still removes the link, never what it points at.
+		rm -rf "$sentinel" 2>/dev/null
 	fi
-	: >"$sentinel" 2>/dev/null || return 0
+	# `true >file`, never `: >file`: ":" is a POSIX SPECIAL built-in, and a redirection error on a
+	# special built-in terminates a non-interactive shell outright (XCU 2.8.1) — dash does exactly
+	# that, exiting 2 mid-store, and /bin/sh IS dash on most Linux distributions. "true" is a regular
+	# built-in, so a failed redirection merely fails the command and the self-heal below can run.
+	if ! true >"$sentinel" 2>/dev/null; then
+		# The shape check above cannot catch an unwritable REGULAR file (mode 444, left behind by a
+		# killed run or by an older uid): [ -f ] is true, so the throttle arm is taken, and the write
+		# then fails with EACCES on every store — prune wedged just as permanently. Replace the file
+		# once rather than wedge; give up quietly if even that fails.
+		rm -f "$sentinel" 2>/dev/null
+		true >"$sentinel" 2>/dev/null || return 0
+	fi
 	find "$CACHE_DIR" -maxdepth 1 -type f -name '*.line' -mtime +7 -delete 2>/dev/null
 	# Abandoned "<key>.line.<pid>" writes. Two minutes is orders of magnitude longer than a
 	# write takes, so an in-flight tmp file is never in range.
@@ -469,6 +500,10 @@ if [ -n "$CACHE_FILE" ] && cache_dir_ok && [ -f "$CACHE_FILE" ] && [ ! -L "$CACH
 			# resolves to last-write-wins.
 			find "$LOCK" -maxdepth 0 -mmin +2 -exec rmdir {} \; 2>/dev/null
 		fi
+		# cache_dir_ok here is defence in depth, not a second gate: this arm is only reachable
+		# because the gate at the top of this block already passed, and the result is memoised, so
+		# the call is a builtin no-op. It stays so that a future edit which reorders this block
+		# cannot create a lock inside a directory that was never vetted.
 		if cache_dir_ok && mkdir "$LOCK" 2>/dev/null; then
 			(
 				line=$(render) && [ -n "$line" ] && store "$line"

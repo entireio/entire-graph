@@ -36,4 +36,4 @@ run = "scripts/release.sh"
 
 [tasks.check]
 description = "Run formatting, vet, tests, and build"
-depends = ["fmt", "vet", "test:ci", "build"]
+depends = ["fmt", "vet", "test:ci", "test:statusline", "build"]

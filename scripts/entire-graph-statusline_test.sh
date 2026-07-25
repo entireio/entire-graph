@@ -65,6 +65,19 @@ assert_present() {
 assert_absent() {
 	if [ -e "$2" ]; then fail "$1" "want gone: $2"; else pass "$1"; fi
 }
+# assert_regular <name> <path>: exists AND is a regular file AND is not a symlink. [ -e ] alone is
+# satisfied by a still-planted directory, which is the exact shape these cases are about.
+assert_regular() {
+	if [ -f "$2" ] && [ ! -L "$2" ]; then
+		pass "$1"
+	else
+		fail "$1" "want a regular file: $2" "got: $(ls -ld "$2" 2>&1)"
+	fi
+}
+# assert_writable <name> <path>
+assert_writable() {
+	if [ -w "$2" ]; then pass "$1"; else fail "$1" "want writable: $2" "got: $(ls -ld "$2" 2>&1)"; fi
+}
 # assert_two_files <name> <path-a> <path-b>: distinct paths, both written.
 assert_two_files() {
 	if [ "$2" = "$3" ]; then
@@ -278,12 +291,21 @@ assert_empty 'stdin without transcript_path prints nothing' "$OUT"
 # env -i to clear GOBIN / CLAUDE_PLUGIN_ROOT. PATH must stay REAL: with PATH=/nonexistent the
 # script loses awk and dies at the stdin parse, so the empty-BIN guard is never reached and the
 # empty output proves nothing about it.
-mkdir -p "$WORK/nohome"
-NOBIN_ENV="PATH=/usr/bin:/bin HOME=$WORK/nohome TMPDIR=$WORK/cache"
-# shellcheck disable=SC2086 # deliberate: NOBIN_ENV is a list of assignments for env
+mkdir -p "$WORK/nohome" "$WORK/nobin-tmp"
+# env -i needs its assignments as separate WORDS. Holding them in one string and relying on unquoted
+# word-splitting is not shell-agnostic: /bin/zsh does not split unquoted parameters, so the whole
+# list arrived as one argv entry and the suite died 128/1 under zsh. Positional parameters carry the
+# list verbatim in every shell.
+set -- "PATH=/usr/bin:/bin" "HOME=$WORK/nohome"
 OUT=$(stdin_json s-nobin "$T" "$REPO" |
-	env -i $NOBIN_ENV ENTIRE_GRAPH_BIN=/nonexistent/entire-graph /bin/sh "$SCRIPT")
+	env -i "$@" TMPDIR="$WORK/nobin-tmp" ENTIRE_GRAPH_BIN=/nonexistent/entire-graph /bin/sh "$SCRIPT")
 assert_empty 'missing binary prints nothing' "$OUT"
+# ...and it stops AT `[ -n "$BIN" ] || exit 0`, which the empty output alone does not pin: with that
+# guard deleted, an empty $BIN merely 127s inside render() and the output is empty anyway. What the
+# guard buys is that NOTHING downstream of it runs — so assert the cache block never ran, i.e. no
+# cache directory was created under this case's private TMPDIR.
+assert_absent 'missing binary exits before the cache block' \
+	"$WORK/nobin-tmp/entire-graph-statusline-$(id -u)"
 
 # Positive control for the case above: the SAME stripped environment with a working binary must
 # render. Without it, "prints nothing" is satisfied by any earlier exit.
@@ -294,9 +316,9 @@ cat <<'JSON'
 JSON
 STUB
 chmod +x "$WORK/minstub"
-# shellcheck disable=SC2086 # deliberate: NOBIN_ENV is a list of assignments for env
+set -- "PATH=/usr/bin:/bin" "HOME=$WORK/nohome"
 OUT=$(stdin_json s-nobin-ok "$T" "$REPO" |
-	env -i $NOBIN_ENV NO_COLOR=1 ENTIRE_GRAPH_BIN="$WORK/minstub" /bin/sh "$SCRIPT")
+	env -i "$@" TMPDIR="$WORK/cache" NO_COLOR=1 ENTIRE_GRAPH_BIN="$WORK/minstub" /bin/sh "$SCRIPT")
 assert_has 'the stripped environment reaches the binary lookup at all' '100 saved' "$OUT"
 
 # A binary that exits non-zero must not leak an error onto the status line.
@@ -581,13 +603,13 @@ run s-dirwrite "$T" "$REPO" NO_COLOR=1 TMPDIR="$WORK/evil-tmp" >/dev/null
 assert_absent 'a symlinked cache directory is never written into' \
 	"$WORK/evil-target/$(cache_key s-dirwrite "$T").line"
 
-# A cache directory this user cannot chmod is a directory another user owns. $TMPDIR is normally
-# unset, so /tmp/entire-graph-statusline-<uid> is predictable and /tmp is cleared on boot: another
-# user can win the create race and then dictate what this script prints. Per-uid naming does not
-# help (the victim's uid is in the name) and neither symlink guard fires (it is a real directory),
-# so the refusal has to come from `chmod 700` failing with EPERM — which means the chmod must run
-# on a directory that ALREADY EXISTS, and must be required to succeed. chflags uchg makes chmod
-# fail the same way while leaving the planted record readable; skipped where that cannot be done.
+# A cache directory another user owns is a directory that dictates what this script prints. $TMPDIR
+# is normally unset, so /tmp/entire-graph-statusline-<uid> is predictable and /tmp is world-writable
+# and cleared on boot: another user can win the create race. Per-uid naming does not help (the
+# victim's uid is in the name) and neither symlink guard fires (it is a real directory), so the
+# refusal has to come from an OWNERSHIP test. chflags uchg is this platform's way of making a
+# directory this user owns behave like one it does not — `chmod 700` returns EPERM on it — while
+# leaving the planted record readable; skipped where that cannot be done.
 FOREIGN_TMP=$WORK/foreign-tmp
 FOREIGN_DIR=$FOREIGN_TMP/entire-graph-statusline-$(id -u)
 mkdir -p "$FOREIGN_TMP"
@@ -599,20 +621,131 @@ if [ -f "$FOREIGN_LINE" ]; then
 		"$FOREIGN_LINE" >"$FOREIGN_LINE.x"
 	mv "$FOREIGN_LINE.x" "$FOREIGN_LINE"
 fi
-# 755 first, then immutable: a hostile directory MUST be readable by its victim to be worth
-# planting in, so `chmod 700` always has real work to do on one. (chmod(1) elides the syscall when
-# the mode already matches, and a foreign directory that is already 700 is one this user cannot
-# read or write at all — no cache, nothing to inject.)
+
+# The PREMISE of the ownership gate, asserted on the platform rather than assumed: chmod(1) exits 0
+# on a directory whose mode it cannot change at all, provided the mode already matches — it elides
+# the chmod(2) call. That is exactly why "chmod exited 0" was never "we own it" (the other half being
+# uid 0, for which chmod succeeds everywhere), and why the gate is now `[ -O ]`.
+if chflags uchg "$FOREIGN_DIR" 2>/dev/null; then
+	chmod 700 "$FOREIGN_DIR" 2>/dev/null
+	ELIDE_RC=$?
+	chmod 755 "$FOREIGN_DIR" 2>/dev/null
+	ELIDE_DIFF_RC=$?
+	chflags nouchg "$FOREIGN_DIR" 2>/dev/null
+	assert_eq 'chmod exits 0 on an immutable directory already at the requested mode' 0 "$ELIDE_RC"
+	assert_eq 'chmod fails on the same directory once the mode differs' 1 "$ELIDE_DIFF_RC"
+else
+	printf 'skip  platform has no chflags; chmod(1) mode-match elision unasserted\n'
+fi
+
+# 755 first, then immutable: a hostile directory MUST be readable by its victim to be worth planting
+# in, so `chmod 700` has real work to do on one and genuinely fails.
 chmod 755 "$FOREIGN_DIR" 2>/dev/null
 if chflags uchg "$FOREIGN_DIR" 2>/dev/null && ! chmod 700 "$FOREIGN_DIR" 2>/dev/null; then
+	FOREIGN_BEFORE=$(cksum <"$FOREIGN_LINE")
 	OUT=$(run s-foreign "$T" "$REPO" NO_COLOR=1 TMPDIR="$FOREIGN_TMP")
+	FOREIGN_AFTER=$(cksum <"$FOREIGN_LINE")
 	chflags nouchg "$FOREIGN_DIR" 2>/dev/null
 	assert_lacks 'a cache directory this user cannot chmod is never read' 'HOSTILE-BADGE' "$OUT"
 	assert_lacks 'an adopted cache directory cannot inject an escape' "$(printf '\033')" "$OUT"
 	assert_has 'an unchmodable cache directory falls back to a real render' '500 saved' "$OUT"
+	# The write half. NB: uchg also blocks writes inside the directory, so this assertion cannot
+	# distinguish "the gate refused" from "the flag refused" — the non-vacuous version of it is the
+	# shimmed-chmod case below, where the directory stays fully writable.
+	assert_eq 'an unchmodable cache directory is not rewritten' "$FOREIGN_BEFORE" "$FOREIGN_AFTER"
 else
 	chflags nouchg "$FOREIGN_DIR" 2>/dev/null
 	printf 'skip  platform cannot make chmod fail; foreign cache directory unverified\n'
+fi
+
+# --- cache directory: ownership, not "chmod exited 0" -------------------------------------------
+# The two cases below are the ones the chflags case above cannot express, because this suite runs as
+# ONE uid and cannot create a directory owned by somebody else. Both shim `chmod` on the PATH the
+# SCRIPT sees (the suite's own PATH is untouched), which is the only deterministic way to reproduce
+# "chmod exits 0 / non-zero without proving anything about ownership" — the two real-world shapes
+# being chmod(1)'s mode-match elision (asserted above) and uid 0, for which chmod always succeeds.
+mkdir -p "$WORK/shim-chmod-ok" "$WORK/shim-chmod-fail"
+printf '#!/bin/sh\nexit 0\n' >"$WORK/shim-chmod-ok/chmod"
+printf '#!/bin/sh\nexit 1\n' >"$WORK/shim-chmod-fail/chmod"
+chmod +x "$WORK/shim-chmod-ok/chmod" "$WORK/shim-chmod-fail/chmod"
+
+# (A) chmod fails, the way it does with EPERM on a foreign directory — but here the directory stays
+# fully readable AND writable, so both halves of the refusal are observable: the planted record must
+# not be served, and it must not be overwritten either. This is what pins store()'s own
+# `cache_dir_ok || return 0`, and it pins the memo too: CACHE_DIR_OK must not be set on a path that
+# returned 1, or the read gate refuses the directory and store() writes into it moments later.
+EPERM_TMP=$WORK/eperm-tmp
+EPERM_DIR=$EPERM_TMP/entire-graph-statusline-$(id -u)
+mkdir -p "$EPERM_TMP"
+run s-eperm "$T" "$REPO" NO_COLOR=1 TMPDIR="$EPERM_TMP" >/dev/null
+EPERM_LINE=$EPERM_DIR/$(cache_key s-eperm "$T").line
+assert_present 'a writable cache directory is still created and written' "$EPERM_LINE"
+awk -F'\t' 'BEGIN{OFS="\t"} {print $1, $2, "\033[2J\033]0;OWNED\007EPERM-BADGE"}' \
+	"$EPERM_LINE" >"$EPERM_LINE.x"
+mv "$EPERM_LINE.x" "$EPERM_LINE"
+EPERM_BEFORE=$(cksum <"$EPERM_LINE")
+OUT=$(run s-eperm "$T" "$REPO" NO_COLOR=1 TMPDIR="$EPERM_TMP" PATH="$WORK/shim-chmod-fail:$PATH")
+assert_lacks 'a cache directory chmod refuses is never read' 'EPERM-BADGE' "$OUT"
+assert_lacks 'a chmod-refused cache directory cannot inject an escape' "$(printf '\033')" "$OUT"
+assert_has 'a chmod-refused cache directory falls back to a real render' '500 saved' "$OUT"
+assert_eq 'a chmod-refused cache directory is never written into' \
+	"$EPERM_BEFORE" "$(cksum <"$EPERM_LINE")"
+# ...and on a key with no entry at all, which is the only path that reaches store() (the case above
+# is refused at the read gate, so a memo set on that failure is what store() would act on).
+EPERM_WRITE=$EPERM_DIR/$(cache_key s-epermwrite "$T").line
+rm -f "$EPERM_WRITE"
+run s-epermwrite "$T" "$REPO" NO_COLOR=1 TMPDIR="$EPERM_TMP" PATH="$WORK/shim-chmod-fail:$PATH" \
+	>/dev/null
+assert_absent 'a chmod-refused cache directory gets no new entry' "$EPERM_WRITE"
+
+# (B) chmod exits 0 on a directory this user does NOT own — the elision / uid-0 case, and the one
+# thing only `[ -O ]` can refuse: the mode bits (1777) are wide open, chmod says 0, and it is not a
+# symlink, so every other guard in the script waves it through. It needs a real foreign-owned
+# directory that is nevertheless readable and writable, i.e. a world-writable system temp directory
+# (drwxrwxrwt, root-owned). CACHE_DIR is ${TMPDIR}/entire-graph-statusline-$(id -u), so a shimmed
+# `id` is what retargets the leaf onto it; the surplus ".." components collapse at "/", so the chain
+# does not depend on how deep $WORK happens to be. /tmp is skipped on macOS because it is a SYMLINK
+# to /private/tmp, and the script's own symlink guard would then refuse the directory for the wrong
+# reason, making the case vacuous.
+NOTOWNED=
+for candidate in /private/tmp /tmp /var/tmp; do
+	if [ -d "$candidate" ] && [ ! -L "$candidate" ] && [ ! -O "$candidate" ] && [ -w "$candidate" ]; then
+		NOTOWNED=$candidate
+		break
+	fi
+done
+if [ -n "$NOTOWNED" ]; then
+	NOTOWNED_TMP=$WORK/notowned-tmp
+	mkdir -p "$NOTOWNED_TMP/entire-graph-statusline-0" "$WORK/shim-notowned"
+	cp "$WORK/shim-chmod-ok/chmod" "$WORK/shim-notowned/chmod"
+	printf '#!/bin/sh\nprintf %%s "0/%s%s"\n' \
+		'../../../../../../../../../../../../../../../../../../../..' \
+		"$NOTOWNED" >"$WORK/shim-notowned/id"
+	chmod +x "$WORK/shim-notowned/id"
+
+	# The planted record is produced by a real run in a directory this user DOES own, then copied to
+	# the foreign one, so its config and stamp are valid for exactly this render.
+	run s-notowned "$T" "$REPO" NO_COLOR=1 >/dev/null
+	NOTOWNED_PLANT=$NOTOWNED/$(cache_key s-notowned "$T").line
+	awk -F'\t' 'BEGIN{OFS="\t"} {print $1, $2, "\033[2J\033]0;OWNED\007NOTOWNED-BADGE"}' \
+		"$(cache_file s-notowned "$T")" >"$NOTOWNED_PLANT"
+	NOTOWNED_BEFORE=$(cksum <"$NOTOWNED_PLANT")
+	OUT=$(run s-notowned "$T" "$REPO" NO_COLOR=1 \
+		TMPDIR="$NOTOWNED_TMP" PATH="$WORK/shim-notowned:$PATH")
+	assert_lacks 'a cache directory this user does not own is never read' 'NOTOWNED-BADGE' "$OUT"
+	assert_lacks 'an unowned cache directory cannot inject an escape' "$(printf '\033')" "$OUT"
+	assert_has 'an unowned cache directory falls back to a real render' '500 saved' "$OUT"
+	assert_eq 'an unowned cache directory is never written into' \
+		"$NOTOWNED_BEFORE" "$(cksum <"$NOTOWNED_PLANT")"
+	rm -f "$NOTOWNED_PLANT"
+	NOTOWNED_WRITE=$NOTOWNED/$(cache_key s-notownedwrite "$T").line
+	rm -f "$NOTOWNED_WRITE"
+	run s-notownedwrite "$T" "$REPO" NO_COLOR=1 \
+		TMPDIR="$NOTOWNED_TMP" PATH="$WORK/shim-notowned:$PATH" >/dev/null
+	assert_absent 'an unowned cache directory gets no new entry' "$NOTOWNED_WRITE"
+	rm -f "$NOTOWNED_WRITE"
+else
+	printf 'skip  no foreign-owned writable directory available; ownership gate unverified\n'
 fi
 
 # --- cache record: field hygiene ---------------------------------------------------------------
@@ -750,14 +883,64 @@ assert_present 'prune is throttled behind its sentinel' "$CDIR/throttled-0-0.lin
 
 # A sentinel that is not a regular file — a planted DIRECTORY — used to disable prune permanently:
 # [ -f ] is false, so the throttle never short-circuits, but ": >" then fails on the directory and
-# the function returns before scanning. Self-heal instead.
+# the function returns before scanning. Self-heal instead. The sentinel must come back as a REGULAR
+# FILE, not merely exist: [ -e ] is satisfied by the planted directory that was never cleared.
 rm -rf "$CDIR/.pruned"
 mkdir -p "$CDIR/.pruned"
 : >"$CDIR/wedged-0-0.line"
 touch -t "$OLD" "$CDIR/wedged-0-0.line"
 run s-prune3 "$T" "$REPO" NO_COLOR=1 >/dev/null
 assert_absent 'a directory sentinel does not wedge prune forever' "$CDIR/wedged-0-0.line"
-assert_present 'a directory sentinel is replaced by a real sentinel' "$CDIR/.pruned"
+assert_regular 'a directory sentinel is replaced by a real sentinel' "$CDIR/.pruned"
+
+# The same wedge with a NON-EMPTY directory. `rmdir` only removes empty directories, so this shape
+# survived every store: prune never ran again and the cache grew without bound.
+rm -rf "$CDIR/.pruned"
+mkdir -p "$CDIR/.pruned/child"
+: >"$CDIR/.pruned/child/junk"
+: >"$CDIR/wedged2-0-0.line"
+touch -t "$OLD" "$CDIR/wedged2-0-0.line"
+run s-prune4 "$T" "$REPO" NO_COLOR=1 >/dev/null
+assert_absent 'a NON-EMPTY directory sentinel does not wedge prune forever' "$CDIR/wedged2-0-0.line"
+assert_regular 'a non-empty directory sentinel is replaced by a real sentinel' "$CDIR/.pruned"
+
+# ...and a sentinel that IS a regular file but is unwritable (mode 444 — a killed run, an older uid,
+# a botched restore). The shape branch cannot catch it: [ -f ] is true, so the throttle arm is taken,
+# the file is stale so prune proceeds, and ": >" then fails with EACCES on every store — wedged just
+# as permanently. The write self-heals: remove and recreate once.
+rm -rf "$CDIR/.pruned"
+: >"$CDIR/.pruned"
+touch -t "$OLD" "$CDIR/.pruned"
+chmod 444 "$CDIR/.pruned"
+: >"$CDIR/wedged3-0-0.line"
+touch -t "$OLD" "$CDIR/wedged3-0-0.line"
+run s-prune5 "$T" "$REPO" NO_COLOR=1 >/dev/null
+assert_absent 'a read-only sentinel does not wedge prune forever' "$CDIR/wedged3-0-0.line"
+assert_regular 'a read-only sentinel is replaced by a real sentinel' "$CDIR/.pruned"
+assert_writable 'the replacement sentinel is writable, so the next store is not wedged either' \
+	"$CDIR/.pruned"
+
+# The same case with dash EXECUTING the script, which is not a formality: ":" is a POSIX SPECIAL
+# built-in, and a redirection error on a special built-in terminates a non-interactive shell (XCU
+# 2.8.1). dash does exactly that — `: >unwritable-sentinel` exits 2 in the middle of store(), so no
+# self-heal can run — while bash merely fails the command, which is why `sh` on macOS hides the bug
+# entirely. /bin/sh IS dash on most Linux distributions, i.e. on CI. The script therefore truncates
+# with the regular built-in `true`, and this case is what pins it.
+if [ -x /bin/dash ]; then
+	rm -rf "$CDIR/.pruned"
+	: >"$CDIR/.pruned"
+	touch -t "$OLD" "$CDIR/.pruned"
+	chmod 444 "$CDIR/.pruned"
+	: >"$CDIR/wedged4-0-0.line"
+	touch -t "$OLD" "$CDIR/wedged4-0-0.line"
+	stdin_json s-prune6 "$T" "$REPO" |
+		clean_env TMPDIR="$WORK/cache" ENTIRE_GRAPH_BIN="$RUN_BIN" NO_COLOR=1 \
+			/bin/dash "$SCRIPT" >/dev/null
+	assert_absent 'the sentinel self-heal survives dash, not just bash' "$CDIR/wedged4-0-0.line"
+	assert_regular 'dash leaves a real sentinel behind' "$CDIR/.pruned"
+else
+	printf 'skip  no /bin/dash; the special-built-in redirection trap is unpinned\n'
+fi
 
 # --- result -----------------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
