@@ -1,0 +1,238 @@
+[rpgress, also verify uou and cmm have the same instriuons so u not cheating
+
+---
+
+<task-notification>
+<task-id>brguutdtd</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/122fdde1-dcfa-4112-99f8-87d34a87d42c/tasks/brguutdtd.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for all three Sonnet arms" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+nah this is false czu eveyrone knows cmm saves stuff; can't we have our agent propmt etc into it which is in main etc ultrathink and com eup with soltuion plan
+
+---
+
+can u remive fhtis from my inut text box; [CAVEMAN:ULTRA] ⛏  34.4M btw
+
+---
+
+and rmmeber if u every hit a dead end; ur js not looking enough cuz we can do anyhting and we never apccepct no for an answer!
+
+---
+
+<task-notification>
+<task-id>a3598751d2775b33f</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/122fdde1-dcfa-4112-99f8-87d34a87d42c/tasks/a3598751d2775b33f.output</output-file>
+<status>completed</status>
+<summary>Agent "Docker-eval 3-arm Sonnet run" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>DONE. all 3 graded. no cheat, no patch edit.
+
+**(a) RAW**
+| arm | run_id | submitted | completed | resolved | err | empty |
+|---|---|---|---|---|---|---|
+| baseline | s30base_eval | 28 | 28 | **23** | 0 | 0 |
+| cmm | s30cmm_eval | 29 | 29 | **23** | 0 | 0 |
+| eg | s30eg_eval | 28 | 28 | **23** | 0 | 0 |
+
+denominators differ. of 30 dirs each: nushell__nushell-13831 excluded all 3 (docker img 404, upstream missing). baseline lost rubocop__rubocop-13396 (patch.diff 0 bytes → gate). eg lost sharkdp__bat-1892 (no run dir at all, 29 dirs not 30). cost gate passed everywhere else (all cc_out.json total_cost_usd &gt; 0).
+
+**(b) THE TABLE — common graded set n=27**
+| arm | resolved | % |
+|---|---|---|
+| baseline | 22/27 | 81.5% |
+| cmm | 21/27 | 77.8% |
+| **eg** | **22/27** | **81.5%** |
+
+eg TIES baseline. eg +1 over cmm. all within noise (±1 instance = 3.7pt).
+
+**(c) DELTAS (common set)**
+- eg✓ base✗: `apache__lucene-12212`, `projectlombok__lombok-3350`
+- base✓ eg✗: `facebook__docusaurus-9897`, `preactjs__preact-3567`
+- eg✓ cmm✗: `apache__lucene-12212`, `projectlombok__lombok-3350`, `redis__redis-9733`
+- cmm✓ eg✗: `facebook__docusaurus-9897`, `preactjs__preact-3345`
+
+net eg vs base = 2 win / 2 loss = 0. eg vs cmm = 3 win / 2 loss = +1.
+
+**(d) ALL THREE FAILED** (n=2, set ceiling 25/27 = 92.6%)
+- `facebook__docusaurus-9183`
+- `prometheus__prometheus-10633`
+
+all-three-resolved = 19. so only 6 of 27 discriminate at all.
+
+**off-common (excluded from table)**
+- `rubocop__rubocop-13396`: base NOT GRADED (empty patch), cmm RESOLVED, eg RESOLVED
+- `sharkdp__bat-1892`: base RESOLVED, cmm RESOLVED, eg NOT GRADED
+
+**DOCKER**
+- `docker builder prune -f` → freed 0B (cache already empty)
+- dangling images → 0 present
+- orphan overlay2 audit → 7 dirs, 280KB total. left alone.
+- `sweb.eval.*` images NOT in `.elig_val30.txt` → **NONE**. all 29 local swebench images are eligible instances. nothing removed.
+- VM disk sat at 58.4G/100% used, 0 avail (ext4 root reserve ~2.9GB only). ran anyway → **no ENOSPC, 0 error_instances across all 3 runs**. all 28-29 instance images reused, no builds/pulls.
+- touched no non-swebench image/container/volume. daemon never stopped. 5 pre-existing devenv containers untouched. no processes killed.
+
+**FAILURES / NOISE**
+- urllib3 socket-close Tracebacks in logs = benign HF-download teardown noise, not eval errors.
+- harness `incomplete_ids` field = the 271-272 dataset instances never submitted. ignored; graded set = resolved ∪ unresolved.
+
+**FILES**
+- subs: `$AS/sub_s30_baseline.json`, `$AS/sub_s30_cmm.json`, `$AS/sub_s30_eg.json` + `$AS/sub_s30_gate_summary.json`
+- harness reports (outside $AS): `/private/tmp/claude-501/-Users-suhaan-devenv/7e3deab1-a028-46d5-9bf1-3318de93a0b6/scratchpad/evalwork/sonnet-{baseline,cmm,eg}-s30.s30{base,cmm,eg}_eval.json`
+- three-way: `/private/tmp/claude-501/-Users-suhaan-devenv/7e3deab1-a028-46d5-9bf1-3318de93a0b6/scratchpad/s30_three_way.json`
+
+**VERDICT**: eg = baseline on accuracy at n=27. no accuracy lever, consistent with prior measured verdict. n too small to separate arms — 2-instance spread, 19/27 instances identical across all three.</result>
+<usage><subagent_tokens>94650</subagent_tokens><tool_uses>39</tool_uses><duration_ms>1830538</duration_ms></usage>
+</task-notification>
+
+---
+
+caveman thign stillt herm; how where we getting 50% before explain; smth not right cuz i CMM saves tokens for sure btw and u made all entire grpahs and brian and are usign them rn to asve tokens right?
+
+---
+
+for eg the agnet should have a contxt rpoptm on ho wto use entire grpah preorply right?
+
+---
+
+even on restart cavemna still there; we js maek js meet our goal; and think
+
+---
+
+ok js a tip think we losing look at the logs; adn if its gnefiuly fix iin grpah
+
+---
+
+<task-notification>
+<task-id>a904e23bc4d7fb277</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/122fdde1-dcfa-4112-99f8-87d34a87d42c/tasks/a904e23bc4d7fb277.output</output-file>
+<status>completed</status>
+<summary>Agent "Build fair per-tool proper prompts" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Done. Caveman-ultra report:
+
+## 1. cmm-q upgrade (was 4 crippled verbs, now full vendor doctrine)
+
+Extracted 8 tool schemas from binary via MCP `tools/list` (`codebase-memory-mcp` stdio) + `cli &lt;tool&gt; --help`. Added:
+
+- **semantic (vector cosine)** merged with BM25 in ONE call → `~sem &lt;score&gt;` tag
+- **`--name &lt;regex&gt;`** = third mode (`name_pattern`)
+- **`--offset N`** + honest `total`/`has_more` truncation footer
+- **`callers`/`impact`** = `trace_path(mode=calls)`, not raw Cypher. `impact` = direction both, depth 3, risk labels
+- **`def`** = documented order (search_graph → exact qualified_name → get_code_snippet)
+- **`grep`** = `search_code` with `total_grep_matches`/`total_results` disclosure (also fixed pre-existing bug: it read `name`, cmm returns `node` → symbol column was always blank)
+- semantic/name_pattern/trace_path rows carry no `start_line` → one `query_graph` Cypher enriches them (wrapper-internal, still 1 agent turn)
+- noise labels (File/Folder/Module/Variable/Package) filtered — BM25 drops them server-side, other modes don't
+
+**Real output** (gin @2ee0e96, `index_repository --mode moderate --name ginmod`):
+
+```
+$ cmm-q search "render a JSON response"
+render/json.go:69  Function WriteJSON
+context.go:858  Method JSON
+response_writer.go:94  Method Size
+... (7 more BM25)
+context.go:230  Method Get   ~sem 0.99
+render/data.go:23  Method WriteContentType   ~sem 0.99
+context.go:807  Method Render   ~sem 0.99
+context.go:891  Method String   ~sem 0.99
+context.go:76  Method reset   ~sem 0.98
+(10 shown from a 45-result window; 156 total matches server-side; TRUNCATED at this window — re-run the same search with --offset 45 for the next one)
+
+$ cmm-q impact WriteJSON
+callers of WriteJSON (what breaks if you change it):
+  render/data.go:16  Render  (hop 1) [CRITICAL]
+callees of WriteJSON (what it depends on):
+  render/render.go:36  writeContentType  (hop 1) [CRITICAL]
+(1 callers, 1 callees; depth 3)
+
+$ cmm-q callers WriteJSON            $ cmm-q search --name "^Render$"
+  render/data.go:16  Render  (hop 1)   context.go:807  Method Render
+(1 non-test callers)                   render/data.go:16  Method Render
+                                       render/render.go:12  Method Render
+$ cmm-q grep "WriteContentType"        (3 shown from a 45-result window; 4 total matches server-side)
+render/data.go:16  Render  | lines 17
+context.go:807  Render  | lines 811
+render/data.go:23  WriteContentType  | lines 23
+render/render.go:14  WriteContentType  | lines 14
+(4 shown after dropping test files; 55 raw grep matches deduplicated into 15 functions — TRUNCATED at limit 15; ...)
+```
+
+**Semantic beats BM25 — yes, one real case.** `search "middleware should stop the handler chain"`: BM25 top-10 is all `Handler*`/`ShouldBind*`; semantic adds `routergroup.go:22 Use` + `gin.go:231 Use` (0.99) — the actual middleware-registration sites BM25 never returns.
+
+**Two vendor-doc claims that DO NOT reproduce (said plainly):**
+1. "*three modes … can be combined in a single call*" — FALSE. Set `query` and the response is `"search_mode":"bm25"`, `semantic_results` gone. Wrapper issues 2 back-to-back cli calls, still 1 agent turn.
+2. "*bridges vocabulary — finds 'publish' when you search 'send'*" — FALSE on gin. Multi-keyword arrays (per-keyword **min**-cosine over ALL) collapse to ~0.00. Single in-corpus keywords score 0.98+; out-of-vocabulary words (`send`, `publish`, `cancel`, `halt`, `terminate`) score ~0.00–0.10. So it's name/lexical-embedding recall, not vocabulary bridging. Wrapper compensates: 1 call per content word, union above cosine 0.5.
+
+**Index mode fixed:** harness indexed `--mode fast` = vendor doc says "*fast: filtered files, NO similarity/semantic*" → one of cmm's three modes was silently deleted. Now `CMM_INDEX_MODE=moderate` default. On fast the wrapper says so out loud:
+```
+(vector search: no hit above cosine 0.50 for ['render','json','response'] — either this index was built without embeddings (fast mode) or those words are not in the corpus vocabulary)
+```
+
+## 2. eg-q — added `impact`, and found a bug that was zeroing eg's search
+
+- Added `impact` (AGENTS.md's one-shot blast radius, eg's trace_path analogue). `callers` now routes through `neighbors` (doctrine: "*Never `edges` for this*"). Degrade chain: `impact → neighbors → edges`.
+- **BUG (pre-existing, fairness-critical):** `prof=(); ... "${prof[@]}"` under bash 3.2 + `set -u` (macOS `/bin/bash`) → `prof[@]: unbound variable`. Harness exports `EG_PROFILE=""`. **Every eg run that didn't set EG_PROFILE returned an EMPTY search, silently.** Now `prof=(--profile "${EG_PROFILE:-full}")`; `full` is what AGENTS.md prescribes for bug-fix/locate. Verified end-to-end: eg/frugal now returns real hits and lands the correct 14-line `render/reader.go` nil-map patch.
+- `/Users/suhaan/devenv/entire-graph` **untouched**; its built binary copied to `/tmp/graphmark-bin/entire-graph-doctrine`. Relation verbs use `$EGI`; search/def/grep stay on `$EG` so measured search behaviour is unchanged.
+
+## 3. PROMPT_FAMILY — parity proof
+
+6/6 rendered (`gin-gonic__gin-2121`, haiku, 600s, tags `promptcheck_&lt;arm&gt;_&lt;family&gt;`), all 6 produced 14L patches. `bash -n` clean on all 3 scripts, `py_compile` clean.
+
+```
+$ shared(){ sed -n '/^How to work (this applies whatever tools you use):$/,$p' "$1" \
+    | sed -e "s#$AS/graphs/[^ ]*##g" \
+          -e 's/\b\(eg-q\|cmm-q\|entire-graph\|codebase-memory-mcp\)\b//g'; }
+
+$ diff /tmp/sh_base_frugal /tmp/sh_eg_frugal        ; echo rc=$?   → rc=0
+$ diff /tmp/sh_eg_frugal   /tmp/sh_cmm_frugal       ; echo rc=$?   → rc=0
+$ diff /tmp/sh_base_thorough /tmp/sh_eg_thorough    ; echo rc=$?   → rc=0
+$ diff /tmp/sh_eg_thorough /tmp/sh_cmm_thorough     ; echo rc=$?   → rc=0
+(no output from any diff)
+
+$ md5 -q  base_frugal eg_frugal cmm_frugal       → 33c3cdf4d3f451dd610487e3c1cc1092  ×3
+          base_thorough eg_thorough cmm_thorough → 08c7818f3d1aa94fde7ab40cc9122f59  ×3
+
+$ diff -q /tmp/tb_${arm}_frugal /tmp/tb_${arm}_thorough   # TOOL block vs family
+  baseline → IDENTICAL   eg → IDENTICAL   cmm → IDENTICAL
+```
+
+SHARED block contains zero tool names/paths by construction (single quoted heredoc keyed only on `PROMPT_FAMILY`) — the strip sed is belt-and-braces, diffs are empty either way. Legacy variants (SEARCH_ONLY/EG_VERIFY/EG_SWEEP/EG_BATCH/BASE_FRUGAL/BASE_VERIFY) unchanged when `PROMPT_FAMILY` unset.
+
+## 4. Three TOOL blocks — printed above in full
+
+Sizes with path collapsed: baseline **1220 B / 15 lines**, eg **1429 B / 17**, cmm **1541 B / 18**.
+
+**Justification:** each block is a verb roster + that vendor's own operating rationale, nothing else. eg's extra prose is determinism ("trust it, don't re-confirm"); cmm's is its three search modes + pagination contract; baseline's is grep-narrowing craft. None names the issue, a file, a symbol, a fix strategy, or a turn/frugality/correctness policy — all of that lives in the byte-identical SHARED block. cmm is 8% longer than eg purely because it has 3 search modes to name vs eg's 1.
+
+## 5. Byte cost per call (gin, non-test filtered, both wrappers)
+
+| call | eg | cmm |
+|---|---|---|
+| search "render a JSON response" | 3115 | 728 |
+| search "DataFromReader with nil extraHeaders crashes" | 4495 | 545 |
+| search "bind a JSON request body into a struct" | 3273 | 743 |
+| search "abort the middleware chain early" | 3040 | 445 |
+| **search MEAN** | **3480** | **615** |
+| impact WriteJSON | 1348 | 236 |
+| callers WriteJSON | 259 | 58 |
+| def WriteJSON | 214 | 214 |
+| grep WriteContentType | 1223 | 343 |
+
+**cmm is 5.7× cheaper per search.** Structural, not a wrapper choice: eg's `search --format text` returns ranked regions **with source snippets** (`--max-snippet-lines 6`); cmm's `search_graph` returns locators only (its source lives behind `get_code_snippet`). Faithful to both vendors — eg is not winning on terse output, and cmm is not being flooded.
+
+## Commits (`$SP/graphmark`, branch `graph-savings-iterate`, no AI footers)
+
+- `464a17a` bench: use codebase-memory-mcp the way its own docs prescribe
+- `8bfd5ac` bench: give entire-graph its documented verbs, and fix a silent search failure
+- `282b8e0` bench: split the arm prompts into a shared block and a per-tool block
+
+**Caveat worth flagging:** every prior eg-vs-baseline number on this machine is suspect — `8bfd5ac` shows the eg arm's search returned nothing whenever `EG_PROFILE` was unset.</result>
+<usage><subagent_tokens>193319</subagent_tokens><tool_uses>94</tool_uses><duration_ms>1799638</duration_ms></usage>
+</task-notification>
