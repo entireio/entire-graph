@@ -146,6 +146,10 @@ type searchQuery struct {
 	terms    []string
 	termSet  map[string]bool
 	weights  map[string]float64
+	// dottedCallMentions holds lowercased "container.member" pairs the query
+	// wrote as explicit calls ("Type.method(...)") — a direct naming of the
+	// symbol the query is about.
+	dottedCallMentions []string
 }
 
 type searchCandidate struct {
@@ -1730,6 +1734,22 @@ func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF m
 			denominator := float64(frequency) + 1.2*(0.25+0.75*float64(maxInt(1, candidate.docLength))/averageLength)
 			bm25 += weight * (float64(frequency) * 2.2 / denominator)
 		}
+		// Data declarations (fields/constants) are near-degenerate BM25 docs: a
+		// one-line declaration that repeats the query identifier outscores the
+		// method whose body actually misbehaves (a caller's `private final Foo
+		// foo;` outranking `Foo.go()`'s error handler). The declaration names
+		// the thing; the defect lives in executable code — damp text evidence
+		// from data declarations rather than banning them outright. Exception:
+		// when the query is ABOUT this declaration — its name covers most of
+		// the query's terms (definition-lookup intent) — the declaration is
+		// the target, not a bystander.
+		if searchKindClass(candidate.result.Kind) == searchKindData &&
+			candidate.result.EndLine-candidate.result.StartLine <= 3 &&
+			!searchResultHasSignal(candidate.result, "exact-symbol") &&
+			!searchNameCoversQuery(candidate.result, q) {
+			bm25 *= 0.4
+			codeTokenBonus *= 0.5
+		}
 		coverage := 0.0
 		if queryWeight > 0 {
 			coverage = coveredWeight / queryWeight
@@ -1746,6 +1766,7 @@ func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF m
 			}
 		}
 		candidate.score = candidate.baseScore + bm25 + 7*coverage + minFloat64(24, codeTokenBonus) + centrality
+		candidate.score += searchStructuralAdjustment(candidate, q)
 		if codeTokenBonus > 0 {
 			candidate.result.Signals = appendUnique(candidate.result.Signals, "exact-code-token")
 		}
@@ -1754,6 +1775,110 @@ func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF m
 			candidate.result.Signals = appendUnique(candidate.result.Signals, "all-query-terms")
 		}
 	}
+}
+
+// searchNameCoversQuery reports whether the symbol's own name path matches at
+// least half of the query's terms — the signature of a query that is about the
+// symbol itself (find/define intent) rather than one that merely mentions it.
+func searchNameCoversQuery(result SearchResult, q searchQuery) bool {
+	name := strings.ToLower(result.QualifiedName)
+	if name == "" {
+		name = strings.ToLower(result.SymbolName)
+	}
+	if name == "" || len(q.terms) == 0 {
+		return false
+	}
+	matched := 0
+	for _, term := range q.terms {
+		if strings.Contains(name, term) {
+			matched++
+		}
+	}
+	return float64(matched) >= 0.5*float64(len(q.terms))
+}
+
+func searchResultHasSignal(result SearchResult, signal string) bool {
+	for _, s := range result.Signals {
+		if s == signal {
+			return true
+		}
+	}
+	return false
+}
+
+type searchKindClassValue int
+
+const (
+	searchKindOther searchKindClassValue = iota
+	searchKindExec
+	searchKindData
+	searchKindContainer
+)
+
+func searchKindClass(kind string) searchKindClassValue {
+	switch kind {
+	case "function", "method", "constructor":
+		return searchKindExec
+	case "field", "constant", "variable", "property":
+		return searchKindData
+	case "class", "struct", "interface", "trait", "enum", "record", "object", "protocol", "module", "type":
+		return searchKindContainer
+	}
+	return searchKindOther
+}
+
+// searchStructuralAdjustment tilts ranking toward the code an agent edits.
+// Three effects, each grounded in an observed retrieval failure:
+//   - executable definitions outrank everything else at equal text evidence
+//     (the fix for "X misbehaves" is in X's code, not in references to X);
+//   - container chunks yield to their members: a class-spanning region absorbs
+//     its members' matched text and then suppresses the member candidate via
+//     overlap dedup, anchoring agents at class heads/constructors instead of
+//     the method carrying the signal;
+//   - symbols the query names directly (identifier-like terms matching the
+//     qualified name path) outrank incidental body matches — issues name
+//     their subject far more reliably than they describe its mechanism.
+func searchStructuralAdjustment(candidate *searchCandidate, q searchQuery) float64 {
+	adjustment := 0.0
+	switch searchKindClass(candidate.result.Kind) {
+	case searchKindExec:
+		adjustment += 3
+	case searchKindContainer:
+		adjustment -= 3
+	}
+	// Subject bonus: when the symbol's own name covers most of the query, the
+	// query is about this symbol (find/define intent) — any kind wins that.
+	if searchNameCoversQuery(candidate.result, q) {
+		adjustment += 4
+	}
+	qualified := strings.ToLower(candidate.result.QualifiedName)
+	if qualified == "" {
+		qualified = strings.ToLower(candidate.result.SymbolName)
+	}
+	if qualified != "" {
+		matched := 0
+		for _, term := range q.terms {
+			if q.weights[term] >= 2 && strings.Contains(qualified, term) {
+				matched++
+			}
+		}
+		switch {
+		case matched >= 2:
+			adjustment += 8
+		case matched == 1:
+			adjustment += 2
+		}
+		// A dotted call mention in the query ("Type.method(...)") names the
+		// fix site outright; the named symbol must not lose to neighbors whose
+		// bodies merely repeat the query's data words.
+		for _, call := range q.dottedCallMentions {
+			if strings.HasSuffix(qualified, call) {
+				adjustment += 15
+				break
+			}
+		}
+	}
+	return adjustment
 }
 
 func minFloat64(left, right float64) float64 {
@@ -2785,11 +2910,23 @@ func buildSearchQuery(query string) searchQuery {
 		weights = trimmedWeights
 	}
 	return searchQuery{
-		rawLower: strings.ToLower(strings.TrimSpace(query)),
-		terms:    terms,
-		termSet:  termSet,
-		weights:  weights,
+		rawLower:           strings.ToLower(strings.TrimSpace(query)),
+		terms:              terms,
+		termSet:            termSet,
+		weights:            weights,
+		dottedCallMentions: dottedCallMentionsIn(query),
 	}
+}
+
+// dottedCallMentionsIn extracts lowercased container.member pairs the query
+// names as explicit calls, e.g. "SegmentInfos.replace()" -> "segmentinfos.replace".
+func dottedCallMentionsIn(query string) []string {
+	matches := dottedCallMentionPattern.FindAllStringSubmatch(strings.ToLower(query), -1)
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, m[1]+"."+m[2])
+	}
+	return out
 }
 
 func buildSparseSearchQuery(query string) searchQuery {
@@ -3244,3 +3381,5 @@ func (response SearchResponse) Validate() error {
 	}
 	return nil
 }
+
+var dottedCallMentionPattern = regexp.MustCompile(`([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\s*\(`)

@@ -144,11 +144,14 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 			}
 			// Score included so downstream consumers can confidence-gate on any
 			// rank, not just the snippet ranks (post-filters may promote these).
+			fmt.Fprintf(out, "%d. %s:%d", result.Rank, result.FilePath, line)
 			if name != "" {
-				fmt.Fprintf(out, "%d. %s:%d %s score=%.4f\n", result.Rank, result.FilePath, line, name, result.Score)
-			} else {
-				fmt.Fprintf(out, "%d. %s:%d score=%.4f\n", result.Rank, result.FilePath, line, result.Score)
+				fmt.Fprintf(out, " %s", name)
 			}
+			if result.Kind != "" {
+				fmt.Fprintf(out, " kind=%s", result.Kind)
+			}
+			fmt.Fprintf(out, " score=%.4f\n", result.Score)
 			continue
 		}
 		// Anchor the top ranks on the exact best-match line, not the enclosing
@@ -163,6 +166,9 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 		fmt.Fprintf(out, "%d. %s:%d score=%.4f", result.Rank, result.FilePath, focus, result.Score)
 		if name != "" {
 			fmt.Fprintf(out, " symbol=%s", name)
+		}
+		if result.Kind != "" {
+			fmt.Fprintf(out, " kind=%s", result.Kind)
 		}
 		fmt.Fprintf(out, " lines=%d-%d signals=%s\n%s\n", result.StartLine, result.EndLine, strings.Join(result.Signals, ","), result.Snippet)
 		readFrom := focus - 15
