@@ -509,6 +509,26 @@ func TestTypeScriptCrossFileNamespaceMergeCallResolves(t *testing.T) {
 	}
 }
 
+func TestTypeScriptNamespaceQualifiedMissingMemberDoesNotResolveUnrelatedGlobal(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/a.ts", `namespace Foo {
+  export function caller() {
+    Foo.target();
+  }
+}
+`)
+	writeFile(t, repo, "src/unrelated.ts", `export function target() {}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasRelationBySymbolNameAndFile(snapshot, "CALLS", "caller", "src/a.ts", "target", "src/unrelated.ts") {
+		t.Fatalf("namespace-qualified call resolved to unrelated global: %#v", relationsOfType(snapshot.Relations, "CALLS"))
+	}
+}
+
 func TestTypeScriptGenericReceiverKeepsInheritedMethodFallback(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "src/worker.ts", `class Base {
@@ -1334,6 +1354,23 @@ declare const helper: string;
 	}
 	if hasRelationBySymbolName(snapshot, "DATA_FLOWS", "run", "sink") {
 		t.Fatalf("generic-clause function type identifier leaked in as a phantom parameter flow: %#v", relationsOfType(snapshot.Relations, "DATA_FLOWS"))
+	}
+}
+
+func TestTypeScriptASTEmptyParameterListPreventsGenericClauseDataFlow(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/flow.ts", `export function sink(value: string) {}
+export function caller<T extends (value: string) => void>() {
+  const value = "local";
+  sink(value);
+}
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasRelationBySymbolName(snapshot, "DATA_FLOWS", "caller", "sink") {
+		t.Fatalf("generic-clause identifier leaked from an AST-confirmed empty parameter list: %#v", relationsOfType(snapshot.Relations, "DATA_FLOWS"))
 	}
 }
 

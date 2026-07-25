@@ -239,6 +239,10 @@ type SymbolRecord struct {
 	sourceStartByte int
 	sourceEndByte   int
 	parameterNames  []string
+	// parameterNamesKnown distinguishes an AST-confirmed empty parameter list
+	// from missing parser metadata. This stays private to preserve the frozen
+	// provider schema.
+	parameterNamesKnown bool
 }
 
 type RelationRecord struct {
@@ -1434,6 +1438,7 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 		}
 		if language == "JavaScript" || language == "TypeScript" {
 			symbol.parameterNames = append([]string(nil), entity.parameterNames...)
+			symbol.parameterNamesKnown = entity.Kind == "function" || entity.Kind == "method"
 		}
 		symbols = append(symbols, symbol)
 		byName[qualified] = id
@@ -1845,22 +1850,22 @@ func resolveJSMergedDeclarationMemberTargets(qualifiedName string, from SymbolRe
 //  1. same-file namespace members (resolveJSNamespaceCallTargets);
 //  2. members of a same-file value declaration merged with the receiver
 //     (resolveJSMergedDeclarationMemberTargets);
-//  3. terminal-name fallback for namespaces reopened in other files —
+//  3. namespace-confined fallback for namespaces reopened in other files —
 //     declaration merging leaves no same-file member to match.
 //
-// When the receiver also names a merged same-file declaration, step 3 stays
-// confined to symbols that actually sit in a namespace matching the receiver
-// path in their own file (foreignNamespaceOf): the merged declaration proves
-// the receiver is not a plain identifier, so a bare-name workspace match to a
-// symbol unrelated to the receiver's namespace would fabricate a false edge.
+// Step 3 always stays confined to symbols that actually sit in a namespace
+// matching the receiver path in their own file (foreignNamespaceOf). This
+// function is called only for entries recognized as namespace calls, so
+// dropping the receiver and resolving a globally unique bare terminal would
+// fabricate an edge to an unrelated declaration.
 // skipTerminal, when non-nil, suppresses step 3 for terminals the call site
 // already excludes from bare-name resolution (self-calls, member names).
-func resolveJSNamespaceCallChain(name string, from SymbolRecord, sameFile []SymbolRecord, namespacesBySymbolID map[string]string, symbolsByShortName map[string][]SymbolRecord, importsByName map[string][]string, foreignNamespaceOf func(SymbolRecord) string, skipTerminal func(string) bool) []resolvedCallTarget {
+func resolveJSNamespaceCallChain(name string, from SymbolRecord, sameFile []SymbolRecord, namespacesBySymbolID map[string]string, symbolsByShortName map[string][]SymbolRecord, foreignNamespaceOf func(SymbolRecord) string, skipTerminal func(string) bool) []resolvedCallTarget {
 	targets, matched := resolveJSNamespaceCallTargets(name, from, sameFile, namespacesBySymbolID)
 	if matched {
 		return targets
 	}
-	targets, matched, receiverMerged := resolveJSMergedDeclarationMemberTargets(name, from, sameFile, namespacesBySymbolID)
+	targets, matched, _ = resolveJSMergedDeclarationMemberTargets(name, from, sameFile, namespacesBySymbolID)
 	if matched {
 		return targets
 	}
@@ -1868,30 +1873,27 @@ func resolveJSNamespaceCallChain(name string, from SymbolRecord, sameFile []Symb
 	if skipTerminal != nil && skipTerminal(terminal) {
 		return nil
 	}
-	if receiverMerged {
-		receiver := name[:strings.LastIndex(name, ".")]
-		var related []resolvedCallTarget
-		for _, to := range symbolsByShortName[terminal] {
-			if to.ID == from.ID || to.FilePath == from.FilePath || !callableTargetKind(to.Kind) || to.Kind == "method" || !localReachable(from, to) {
-				continue
-			}
-			if foreignNamespaceOf == nil || foreignNamespaceOf(to) != receiver {
-				continue
-			}
-			related = append(related, resolvedCallTarget{
-				SymbolRecord: to,
-				Confidence:   0.8,
-				Reason:       "namespace-qualified call resolved to namespace member reopened in another file",
-				Resolution:   "name_only",
-				Scope:        "workspace",
-			})
+	receiver := name[:strings.LastIndex(name, ".")]
+	var related []resolvedCallTarget
+	for _, to := range symbolsByShortName[terminal] {
+		if to.ID == from.ID || to.FilePath == from.FilePath || !callableTargetKind(to.Kind) || to.Kind == "method" || !localReachable(from, to) {
+			continue
 		}
-		if len(related) == 1 {
-			return related
+		if foreignNamespaceOf == nil || foreignNamespaceOf(to) != receiver {
+			continue
 		}
-		return nil
+		related = append(related, resolvedCallTarget{
+			SymbolRecord: to,
+			Confidence:   0.8,
+			Reason:       "namespace-qualified call resolved to namespace member reopened in another file",
+			Resolution:   "name_only",
+			Scope:        "workspace",
+		})
 	}
-	return resolveCallTargets(terminal, from, symbolsByShortName[terminal], sameFile, importsByName, false)
+	if len(related) == 1 {
+		return related
+	}
+	return nil
 }
 
 // jsCrossFileNamespaceLookup returns a lazy, memoizing lookup of the
@@ -3004,7 +3006,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						// fallback stays scope-accurate; self-calls and the caller's
 						// own member names stay excluded from it, matching the
 						// bare-name path.
-						targets = resolveJSNamespaceCallChain(name, from, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, callImportsByName, foreignJSNamespaceOf, func(terminal string) bool {
+						targets = resolveJSNamespaceCallChain(name, from, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, func(terminal string) bool {
 							return terminal == from.Name || childNamesByContainer[from.ID][terminal]
 						})
 					} else {
@@ -3411,7 +3413,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 						// Same chain as the per-symbol namespace path above; the
 						// file-level pseudo-symbol has no self-call or member names
 						// to exclude, so the terminal fallback is unguarded.
-						targets = resolveJSNamespaceCallChain(name, fileSource, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, importsByName, foreignJSNamespaceOf, nil)
+						targets = resolveJSNamespaceCallChain(name, fileSource, currentFileSymbols, jsSymbolNamespaces, symbolsByShortName, foreignJSNamespaceOf, nil)
 					} else {
 						targets = resolveCallTargets(name, fileSource, symbolsByShortName[name], currentFileSymbols, importsByName, false)
 					}

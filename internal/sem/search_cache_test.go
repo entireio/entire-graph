@@ -10,13 +10,20 @@ import (
 	"testing"
 )
 
-func TestSearchSnapshotCachePreservesSymbolByteRanges(t *testing.T) {
-	snapshot := ProviderSnapshot{Symbols: []SymbolRecord{{
-		ID:              "symbol-id",
-		sourceStartByte: 17,
-		sourceEndByte:   43,
-		parameterNames:  []string{"B", "value"},
-	}}}
+func TestSearchSnapshotCachePreservesPrivateSymbolMetadata(t *testing.T) {
+	snapshot := ProviderSnapshot{Symbols: []SymbolRecord{
+		{
+			ID:                  "symbol-id",
+			sourceStartByte:     17,
+			sourceEndByte:       43,
+			parameterNames:      []string{"B", "value"},
+			parameterNamesKnown: true,
+		},
+		{
+			ID:                  "zero-parameter-symbol",
+			parameterNamesKnown: true,
+		},
+	}}
 	cache := newCachedSearchSnapshot("test-version", "commit", "tree", ProviderSnapshotOptions{Profile: ProfileFull}, snapshot)
 	path := filepath.Join(t.TempDir(), "snapshot.json.gz")
 	if err := writeSearchSnapshot(path, cache); err != nil {
@@ -26,7 +33,7 @@ func TestSearchSnapshotCachePreservesSymbolByteRanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(restored.Snapshot.Symbols) != 1 {
+	if len(restored.Snapshot.Symbols) != 2 {
 		t.Fatalf("restored symbols = %#v", restored.Snapshot.Symbols)
 	}
 	symbol := restored.Snapshot.Symbols[0]
@@ -35,6 +42,13 @@ func TestSearchSnapshotCachePreservesSymbolByteRanges(t *testing.T) {
 	}
 	if !reflect.DeepEqual(symbol.parameterNames, []string{"B", "value"}) {
 		t.Fatalf("restored private parameter names = %#v", symbol.parameterNames)
+	}
+	if !symbol.parameterNamesKnown {
+		t.Fatal("restored symbol lost known parameter metadata")
+	}
+	zeroParameterSymbol := restored.Snapshot.Symbols[1]
+	if !zeroParameterSymbol.parameterNamesKnown || len(zeroParameterSymbol.parameterNames) != 0 {
+		t.Fatalf("restored zero-parameter metadata = known %t, names %#v", zeroParameterSymbol.parameterNamesKnown, zeroParameterSymbol.parameterNames)
 	}
 }
 

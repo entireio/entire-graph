@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-const searchSnapshotCacheVersion = "search-snapshot-v5"
+const searchSnapshotCacheVersion = "search-snapshot-v6"
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`
@@ -34,10 +34,11 @@ type cachedSearchSnapshot struct {
 	// intentionally absent from the public wire format, but relation resolution
 	// consumes them. Preserve those internal fields so a complete preindex can
 	// derive an exact selective view without reparsing source files.
-	FileLines            map[string]int                   `json:"file_lines,omitempty"`
-	LocalSymbolIDs       []string                         `json:"local_symbol_ids,omitempty"`
-	SymbolByteRanges     map[string]cachedSymbolByteRange `json:"symbol_byte_ranges,omitempty"`
-	SymbolParameterNames map[string][]string              `json:"symbol_parameter_names,omitempty"`
+	FileLines                    map[string]int                   `json:"file_lines,omitempty"`
+	LocalSymbolIDs               []string                         `json:"local_symbol_ids,omitempty"`
+	SymbolByteRanges             map[string]cachedSymbolByteRange `json:"symbol_byte_ranges,omitempty"`
+	SymbolParameterNames         map[string][]string              `json:"symbol_parameter_names,omitempty"`
+	SymbolParameterNamesKnownIDs []string                         `json:"symbol_parameter_names_known_ids,omitempty"`
 }
 
 // loadOrBuildSearchGraphSnapshot preserves the exact candidate-file scope even
@@ -304,6 +305,9 @@ func newCachedSearchSnapshot(providerVersion, commit, tree string, options Provi
 				End:   symbol.sourceEndByte,
 			}
 		}
+		if symbol.parameterNamesKnown {
+			cache.SymbolParameterNamesKnownIDs = append(cache.SymbolParameterNamesKnownIDs, symbol.ID)
+		}
 		if len(symbol.parameterNames) > 0 {
 			if cache.SymbolParameterNames == nil {
 				cache.SymbolParameterNames = make(map[string][]string)
@@ -322,6 +326,10 @@ func restoreCachedSearchInternals(cache *cachedSearchSnapshot) {
 	for _, id := range cache.LocalSymbolIDs {
 		localIDs[id] = true
 	}
+	parameterNamesKnownIDs := make(map[string]bool, len(cache.SymbolParameterNamesKnownIDs))
+	for _, id := range cache.SymbolParameterNamesKnownIDs {
+		parameterNamesKnownIDs[id] = true
+	}
 	for index := range cache.Snapshot.Symbols {
 		symbol := &cache.Snapshot.Symbols[index]
 		symbol.Local = localIDs[symbol.ID]
@@ -330,6 +338,7 @@ func restoreCachedSearchInternals(cache *cachedSearchSnapshot) {
 			symbol.sourceEndByte = sourceRange.End
 		}
 		symbol.parameterNames = append([]string(nil), cache.SymbolParameterNames[symbol.ID]...)
+		symbol.parameterNamesKnown = parameterNamesKnownIDs[symbol.ID]
 	}
 }
 

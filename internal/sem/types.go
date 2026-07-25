@@ -1810,10 +1810,11 @@ func localCollectionVars(block string) map[string]bool {
 // parser recorded (JS/TS declarations), which are immune to generic clauses
 // containing parenthesized function types — `run<T extends (x: number) =>
 // void>(input: string)` — that the signature-string parse below misreads as
-// the parameter list. Symbols without AST parameter metadata (other
-// languages, synthesized entities) keep the signature-string fallback.
+// the parameter list. An AST-confirmed empty parameter list is authoritative;
+// only symbols without AST parameter metadata (other languages, synthesized
+// entities) keep the signature-string fallback.
 func symbolFlowParameterNames(symbol SymbolRecord) map[string]bool {
-	if len(symbol.parameterNames) == 0 {
+	if !symbol.parameterNamesKnown {
 		return parameterNames(symbol.Signature)
 	}
 	out := make(map[string]bool, len(symbol.parameterNames))
