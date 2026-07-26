@@ -332,6 +332,12 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		// only brace-backed implementation methods; header prototypes end in ';'.
 		entities = appendMissingEntities(entities, objectiveCMethodEntities(content)...)
 	}
+	// A name binding and the function expression that initialises it are ONE entity. The
+	// tree-sitter walk classifies such a declarator by its VALUE while the regex recovery
+	// passes above classify it by its DECLARATOR, so both can emit a record with the same
+	// qualified name for the same source location. Collapse them onto the function record
+	// (real span, real signature) LAST, after every pass has contributed.
+	entities = collapseFunctionValueBindings(entities)
 	if entityLineOffset > 0 {
 		for index := range entities {
 			entities[index].StartLine -= entityLineOffset
@@ -6540,8 +6546,13 @@ func functionLikeValue(node *sitter.Node) bool {
 	}
 }
 
-var jsExportedVariablePattern = regexp.MustCompile(`(?m)^\s*export\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=`)
-var jsAssignmentMethodPattern = regexp.MustCompile(`(?m)^\s*((?:[A-Za-z_$][A-Za-z0-9_$]*\s*\.\s*)+[A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s+)?function(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s*\(`)
+// Leading indentation is matched with `[ \t]*`, NOT `\s*`: `\s` matches `\n`, so a
+// `(?m)^\s*` anchor can start the match at the END of an earlier blank line and every
+// line number derived from the match offset then lands one line too high. That is how
+// `export const f = () => {}` preceded by a blank line reported its declaration on the
+// blank line above it.
+var jsExportedVariablePattern = regexp.MustCompile(`(?m)^[ \t]*export\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=`)
+var jsAssignmentMethodPattern = regexp.MustCompile(`(?m)^[ \t]*((?:[A-Za-z_$][A-Za-z0-9_$]*\s*\.\s*)+[A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s+)?function(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s*\(`)
 var luaFunctionLinePattern = regexp.MustCompile(`(?m)^[ \t]*(?:local[ \t]+)?function[ \t]+([A-Za-z_][A-Za-z0-9_]*(?:(?:[.:])[A-Za-z_][A-Za-z0-9_]*)*)[ \t]*\(`)
 var luaBlockTokenPattern = regexp.MustCompile(`\b(function|if|for|while|repeat|do|end|until)\b`)
 var objectiveCMethodNamePattern = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)`)
@@ -6817,6 +6828,84 @@ func objectiveCMethodHeaderName(header string) string {
 		return ""
 	}
 	return match[1]
+}
+
+// functionValueBindingKinds are the entity kinds that describe a NAME BINDING rather
+// than a definition of its own: `const f = () => {}`, `$f = function () {}`,
+// `f = lambda x: x`. When the value bound is a function expression the binding and the
+// function are ONE entity, so a binding record that sits on top of a same-named
+// function-like record is a duplicate, not a second symbol.
+func functionValueBindingKind(kind string) bool {
+	switch kind {
+	case "variable", "constant", "const":
+		return true
+	default:
+		return false
+	}
+}
+
+// functionValueEntityKind reports the kinds a function-expression initialiser is
+// extracted as. Keeping this narrow is what makes the collapse safe: a `class`/`type`
+// value (`const S = class {}`) is a different entity from its binding in a way that
+// matters to container resolution, so it is deliberately absent.
+func functionValueEntityKind(kind string) bool {
+	switch kind {
+	case "function", "method", "lambda", "closure", "generator":
+		return true
+	default:
+		return false
+	}
+}
+
+// collapseFunctionValueBindings drops a variable/constant binding record when a
+// function-like record with the SAME qualified name occupies the same source location.
+//
+// Two extraction passes can legitimately see the same `export const f = () => {}`: the
+// tree-sitter walk classifies it by its VALUE (a function) while a regex recovery pass
+// classifies it by its DECLARATOR (a variable). Both records then carry the same name and
+// the same qualified name, which made the symbol unaddressable — `impact`/`neighbors`
+// reported it as ambiguous and neither `--file` nor a qualified `--symbol` could separate
+// byte-identical qualified names in one file.
+//
+// The function record wins: it carries the real span (the whole body, not the declaration
+// line) and the real signature. Overlap is required, so a genuinely different same-named
+// variable elsewhere in the file is never collapsed away.
+func collapseFunctionValueBindings(entities []Entity) []Entity {
+	functions := make(map[string][]Entity)
+	bindings := 0
+	for _, entity := range entities {
+		switch {
+		case functionValueEntityKind(entity.Kind):
+			functions[entity.Name] = append(functions[entity.Name], entity)
+		case functionValueBindingKind(entity.Kind):
+			bindings++
+		}
+	}
+	if bindings == 0 || len(functions) == 0 {
+		return entities
+	}
+	out := entities[:0]
+	for _, entity := range entities {
+		if functionValueBindingKind(entity.Kind) && bindingOverlapsFunctionValue(entity, functions[entity.Name]) {
+			continue
+		}
+		out = append(out, entity)
+	}
+	return out
+}
+
+// bindingOverlapsFunctionValue reports whether a binding record describes the same source
+// location as one of the function-like records it shares a name with. A one-line
+// declarator record is accepted one line ABOVE the function's start as well, so a binding
+// whose line attribution is off by one (a defect this package has shipped) still collapses
+// instead of surviving as a phantom symbol.
+func bindingOverlapsFunctionValue(binding Entity, functions []Entity) bool {
+	for _, function := range functions {
+		if binding.StartLine >= function.StartLine-1 && binding.StartLine <= maxInt(function.StartLine, function.EndLine) {
+			return true
+		}
+	}
+	return false
 }
 
 func appendMissingEntities(entities []Entity, candidates ...Entity) []Entity {

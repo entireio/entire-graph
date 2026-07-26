@@ -1,6 +1,9 @@
 package sem
 
-import "strings"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // Result sections
 // ===============
@@ -37,6 +40,62 @@ const (
 	SearchSectionRelated = searchSectionRelated
 	SearchSectionDocs    = searchSectionDocs
 )
+
+// NonProgramTextPath reports whether a path holds no program text at all: prose
+// documentation or serialized data/configuration.
+//
+// A name that appears in prose or in a serialized document is a MENTION, not a dependency:
+// neither can execute, so neither breaks when the behavior it names changes. Relation
+// consumers use this to keep name-only matches on such files out of call-chain reasoning.
+//
+// It asks the two questions directly rather than reusing classifySearchFile's
+// mutually-exclusive class, because "generated" wins that classification and spans both
+// kinds: `dist/bundle.js` and `internal/gen/client.go` ARE program text and can break,
+// while `docs/generated/api.md` and `gen/schema.json` are not. Only lock files are admitted
+// out of the generated set, since they are pure serialized data.
+func NonProgramTextPath(path string) bool {
+	lower := strings.ToLower(filepath.ToSlash(path))
+	base := filepath.Base(lower)
+	dirs := searchPathSegments(lower)
+	if len(dirs) > 0 {
+		dirs = dirs[:len(dirs)-1]
+	}
+	if searchDocumentationClassPath(lower, base, dirs) {
+		return true
+	}
+	if searchGeneratedBases[base] {
+		return true
+	}
+	for _, ext := range searchDataExtensions {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// inventoryOnlyLanguages is the set of language NAMES that are parsed for inventory only,
+// inverted once from the extension/filename tables so the lookup is O(1) per edge.
+var inventoryOnlyLanguages = func() map[string]bool {
+	names := make(map[string]bool, len(inventoryLanguageExtensions))
+	for _, table := range []map[string]languageSpec{
+		inventoryLanguageExtensions, inventoryLanguageFilenames,
+	} {
+		for _, spec := range table {
+			if spec.inventoryOnly {
+				names[spec.language] = true
+			}
+		}
+	}
+	return names
+}()
+
+// InventoryOnlyLanguage reports whether a language is parsed for inventory only, i.e. it
+// contributes file records but no semantic relations. A name-only "call" attributed to such
+// a file was matched lexically, never resolved.
+func InventoryOnlyLanguage(language string) bool {
+	return language != "" && inventoryOnlyLanguages[language]
+}
 
 // searchRelatedSignalPrefix carries WHY a related site is related in the result's signals, so
 // the reason survives every serialization the payload already has instead of needing a field.

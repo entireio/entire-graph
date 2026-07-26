@@ -24,6 +24,8 @@ type neighborFlags struct {
 	Repo            string
 	Symbol          string
 	File            string
+	Line            int
+	Kind            string
 	Format          string
 	Profile         string
 	Relation        string
@@ -82,6 +84,7 @@ type neighborResponse struct {
 	Relation               string                 `json:"relation"`
 	Query                  string                 `json:"query"`
 	File                   string                 `json:"file,omitempty"`
+	Line                   int                    `json:"line,omitempty"`
 	IndexCacheHit          bool                   `json:"index_cache_hit"`
 	IndexLatencyMS         int64                  `json:"index_latency_ms"`
 	QueryLatencyMS         int64                  `json:"query_latency_ms"`
@@ -187,6 +190,18 @@ func parseNeighborFlags(args []string) (neighborFlags, error) {
 				return flags, valueErr
 			}
 			flags.File = item
+		case "--line":
+			parsed, next, parseErr := searchPositiveIntFlag(args, index)
+			if parseErr != nil {
+				return flags, parseErr
+			}
+			flags.Line, index = parsed, next
+		case "--kind":
+			item, valueErr := value()
+			if valueErr != nil {
+				return flags, valueErr
+			}
+			flags.Kind = item
 		case "--format":
 			item, valueErr := value()
 			if valueErr != nil {
@@ -287,17 +302,8 @@ func buildNeighborResponse(snapshot sem.ProviderSnapshot, flags neighborFlags) n
 	for _, external := range snapshot.Externals {
 		endpoints[external.ID] = endpointForExternal(external)
 	}
-	focuses := make([]sem.SymbolRecord, 0)
-	query := strings.TrimSpace(flags.Symbol)
-	for _, symbol := range snapshot.Symbols {
-		if !strings.EqualFold(symbol.Name, query) && !strings.EqualFold(symbol.QualifiedName, query) {
-			continue
-		}
-		if flags.File != "" && !strings.EqualFold(symbol.FilePath, flags.File) {
-			continue
-		}
-		focuses = append(focuses, symbol)
-	}
+	ref := parseSymbolRef(flags.Symbol, flags.File, flags.Line, flags.Kind, snapshotFilePaths(snapshot))
+	focuses := resolveFocusSymbols(snapshot.Symbols, ref)
 	sort.Slice(focuses, func(left, right int) bool {
 		if focuses[left].FilePath != focuses[right].FilePath {
 			return focuses[left].FilePath < focuses[right].FilePath
@@ -324,7 +330,8 @@ func buildNeighborResponse(snapshot sem.ProviderSnapshot, flags neighborFlags) n
 		Profile:               snapshot.Header.Profile,
 		Relation:              flags.Relation,
 		Query:                 flags.Symbol,
-		File:                  flags.File,
+		File:                  ref.File,
+		Line:                  ref.Line,
 		Truncated:             focusMatchesTruncated,
 		FocusMatchesTotal:     focusMatchesTotal,
 		FocusMatchesTruncated: focusMatchesTruncated,
@@ -617,27 +624,20 @@ func writeAgentNeighborsFull(out io.Writer, response neighborResponse) error {
 	)
 	writeAgentNeighborCompleteness(out, response)
 	if len(response.Matches) == 0 {
-		_, err := fmt.Fprintf(out, "No symbols matched %q. Add --file to disambiguate a known definition.\n", response.Query)
-		return err
+		writeNoFocusMatch(out, response.Query, response.File, response.Line)
+		return nil
 	}
 	if response.DisambiguationRequired {
-		fmt.Fprintf(out,
-			"Ambiguous symbol %q matched %d definitions; rerun with --file and, if needed, a qualified --symbol.\n",
-			response.Query, response.FocusMatchesTotal,
-		)
+		definitions := make([]neighborEndpoint, 0, len(response.Matches))
 		for _, match := range response.Matches {
-			fmt.Fprintf(out, "- %s\n", formatNeighborEndpoint(match.Symbol))
+			definitions = append(definitions, match.Symbol)
 		}
-		if response.FocusMatchesTruncated {
-			fmt.Fprintf(out, "- ... %d more definitions; increase --limit to list them\n",
-				response.FocusMatchesTotal-len(response.Matches),
-			)
-		}
+		writeDisambiguationListing(out, response.Query, response.FocusMatchesTotal, definitions)
 		return nil
 	}
 	if response.FocusMatchesTruncated {
 		fmt.Fprintf(out,
-			"Focus matches truncated: showing the first %d of %d in file/line order; use --file to select a definition.\n",
+			"Focus matches truncated: showing the first %d of %d in file/line order; use --symbol <file>:<line> to select a definition.\n",
 			len(response.Matches), response.FocusMatchesTotal,
 		)
 	}
@@ -690,16 +690,26 @@ func compactAgentNeighbors(response neighborResponse, budget int) []byte {
 
 	if len(response.Matches) == 0 {
 		appendVariant(
-			fmt.Sprintf("No symbols matched %q; try --file.\n", response.Query),
+			fmt.Sprintf("No symbols matched %q; check the name with `search`.\n", response.Query),
 			fmt.Sprintf("No match: %s\n", response.Query),
 		)
 	} else if response.DisambiguationRequired {
 		appendVariant(
-			fmt.Sprintf("Ambiguous %q: %d definitions; use --file.\n", response.Query, response.FocusMatchesTotal),
-			fmt.Sprintf("Ambiguous: %d; use --file.\n", response.FocusMatchesTotal),
+			fmt.Sprintf("Ambiguous %q: %d definitions; rerun with the selector shown.\n", response.Query, response.FocusMatchesTotal),
+			fmt.Sprintf("Ambiguous: %d; use --symbol <file>:<line>.\n", response.FocusMatchesTotal),
 		)
+		definitions := make([]neighborEndpoint, 0, len(response.Matches))
 		for _, match := range response.Matches {
-			appendVariant("- " + formatNeighborEndpoint(match.Symbol) + "\n")
+			definitions = append(definitions, match.Symbol)
+		}
+		selectors := disambiguationSelectors(definitions)
+		for index, definition := range definitions {
+			line := "- " + formatNeighborEndpoint(definition)
+			if selectors[index] != "" {
+				appendVariant(line+"  "+selectors[index]+"\n", line+"\n")
+				continue
+			}
+			appendVariant(line + "\n")
 		}
 	} else {
 		focus := response.Matches[0].Symbol
