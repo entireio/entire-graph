@@ -26,6 +26,8 @@ type impactFlags struct {
 	Repo            string
 	Symbol          string
 	File            string
+	Line            int
+	Kind            string
 	Format          string
 	Profile         string
 	Depth           int
@@ -72,6 +74,7 @@ type impactResponse struct {
 	Profile                string                 `json:"profile"`
 	Query                  string                 `json:"query"`
 	File                   string                 `json:"file,omitempty"`
+	Line                   int                    `json:"line,omitempty"`
 	Depth                  int                    `json:"depth"`
 	IndexCacheHit          bool                   `json:"index_cache_hit"`
 	IndexLatencyMS         int64                  `json:"index_latency_ms"`
@@ -177,6 +180,18 @@ func parseImpactFlags(args []string) (impactFlags, error) {
 				return flags, valueErr
 			}
 			flags.File = item
+		case "--line":
+			parsed, next, parseErr := searchPositiveIntFlag(args, index)
+			if parseErr != nil {
+				return flags, parseErr
+			}
+			flags.Line, index = parsed, next
+		case "--kind":
+			item, valueErr := value()
+			if valueErr != nil {
+				return flags, valueErr
+			}
+			flags.Kind = item
 		case "--format":
 			item, valueErr := value()
 			if valueErr != nil {
@@ -257,29 +272,48 @@ func impactTypeRelation(relationType string) bool {
 	return relationType == "USES_TYPE" || relationType == "PARAM_TYPE" || relationType == "RETURNS_TYPE"
 }
 
+// impactMentionDetail labels a caller entry that is a documented mention rather than a
+// resolved call, so the distinction the graph already records (resolution="name_only" on a
+// non-code file) survives into `impact`'s presentation instead of being discarded.
+const impactMentionDetail = "doc-mention, name_only"
+
+// impactNonCodeMention reports whether an incoming edge is a NAME-ONLY match attributed to
+// a file that holds no program text — prose, serialized data, generated artifacts — or to a
+// language parsed for inventory only.
+//
+// Both halves are required. A resolved edge from a documentation file (a doc-tool script
+// living under docs/) is a real call. A name-only edge between two source files is a real,
+// if lower-confidence, call. Only the conjunction — "this file cannot execute, and the
+// match was lexical" — identifies a mention.
+func impactNonCodeMention(relation sem.RelationRecord, endpoint neighborEndpoint, languages map[string]string) bool {
+	if relation.Resolution != "name_only" {
+		return false
+	}
+	if endpoint.FilePath != "" && sem.NonProgramTextPath(endpoint.FilePath) {
+		return true
+	}
+	return sem.InventoryOnlyLanguage(languages[endpoint.ID])
+}
+
 func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impactResponse {
 	endpoints := make(map[string]neighborEndpoint, len(snapshot.Symbols)+len(snapshot.Externals))
+	// Relation records carry no language, and file endpoints carry no kind beyond
+	// "file", so the language an edge came from has to be looked up by endpoint ID.
+	endpointLanguages := make(map[string]string, len(snapshot.Files)+len(snapshot.Symbols))
 	for _, file := range snapshot.Files {
 		endpoints[file.ID] = endpointForFile(file)
+		endpointLanguages[file.ID] = file.Language
 	}
 	for _, symbol := range snapshot.Symbols {
 		endpoints[symbol.ID] = endpointForSymbol(symbol)
+		endpointLanguages[symbol.ID] = symbol.Language
 	}
 	for _, external := range snapshot.Externals {
 		endpoints[external.ID] = endpointForExternal(external)
 	}
 
-	focuses := make([]sem.SymbolRecord, 0)
-	query := strings.TrimSpace(flags.Symbol)
-	for _, symbol := range snapshot.Symbols {
-		if !strings.EqualFold(symbol.Name, query) && !strings.EqualFold(symbol.QualifiedName, query) {
-			continue
-		}
-		if flags.File != "" && !strings.EqualFold(symbol.FilePath, flags.File) {
-			continue
-		}
-		focuses = append(focuses, symbol)
-	}
+	ref := parseSymbolRef(flags.Symbol, flags.File, flags.Line, flags.Kind, snapshotFilePaths(snapshot))
+	focuses := resolveFocusSymbols(snapshot.Symbols, ref)
 	sort.Slice(focuses, func(left, right int) bool {
 		if focuses[left].FilePath != focuses[right].FilePath {
 			return focuses[left].FilePath < focuses[right].FilePath
@@ -301,7 +335,8 @@ func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impac
 		Tree:              snapshot.Header.Tree,
 		Profile:           snapshot.Header.Profile,
 		Query:             flags.Symbol,
-		File:              flags.File,
+		File:              ref.File,
+		Line:              ref.Line,
 		Depth:             flags.Depth,
 		FocusMatchesTotal: len(focuses),
 		Warnings:          snapshot.Header.Warnings,
@@ -417,6 +452,14 @@ func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impac
 	// Breadth-first caller walk: depth 1 is direct callers, depth 2 their
 	// callers. Each symbol is reported once at its shallowest depth; Via names
 	// the first-seen intermediate for transitive entries.
+	//
+	// A name-only match on a file that holds no program text (a design document, a
+	// changelog, a recorded fixture) is a MENTION of the symbol, not a call of it: the
+	// document does not break when behavior changes. Such an edge is kept as a
+	// direct caller — it IS evidence that the name is written down somewhere, and the
+	// user may need to update the prose — but it is labelled, sorted to the end so it can
+	// never displace a real caller under --limit, and NEVER traversed: expanding it a
+	// second hop manufactures "callers" that do not contain the symbol's name at all.
 	type callerNode struct {
 		id   string
 		name string
@@ -435,12 +478,22 @@ func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impac
 				if !ok || !allowed(endpoint) {
 					continue
 				}
+				mention := impactNonCodeMention(relation, endpoint, endpointLanguages)
+				if mention && depth > 1 {
+					// Not marked seen: a later real edge to the same node must still land.
+					continue
+				}
 				seenCaller[relation.FromID] = true
 				entry := impactEntry{
 					Endpoint: endpoint, Relation: relation.Type, Direction: "in", Depth: depth,
 				}
 				if depth > 1 {
 					entry.Via = node.name
+				}
+				if mention {
+					entry.Detail = impactMentionDetail
+					callers = append(callers, entry)
+					continue
 				}
 				callers = append(callers, entry)
 				next = append(next, callerNode{id: relation.FromID, name: endpointDisplayName(endpoint)})
@@ -476,6 +529,14 @@ func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impac
 // per-section entry cap.
 func impactSectionOf(entries []impactEntry, limit int) impactSection {
 	sort.Slice(entries, func(left, right int) bool {
+		// Documented mentions sort behind every resolved entry, ahead of every other
+		// key: the per-section cap must spend its slots on entries that can break.
+		// Only caller entries ever carry this detail, so no other section is affected.
+		leftMention := entries[left].Detail == impactMentionDetail
+		rightMention := entries[right].Detail == impactMentionDetail
+		if leftMention != rightMention {
+			return rightMention
+		}
 		if entries[left].Depth != entries[right].Depth {
 			return entries[left].Depth < entries[right].Depth
 		}
@@ -583,20 +644,11 @@ func writeImpactText(out io.Writer, response impactResponse) {
 	)
 	writeCompletenessBlock(out, response.Warnings, response.PartialFailures, response.Stats)
 	if response.FocusMatchesTotal == 0 {
-		fmt.Fprintf(out, "No symbols matched %q. Add --file to disambiguate a known definition.\n", response.Query)
+		writeNoFocusMatch(out, response.Query, response.File, response.Line)
 		return
 	}
 	if response.DisambiguationRequired {
-		fmt.Fprintf(out,
-			"Ambiguous symbol %q matched %d definitions; rerun with --file and, if needed, a qualified --symbol.\n",
-			response.Query, response.FocusMatchesTotal,
-		)
-		for _, definition := range response.Definitions {
-			fmt.Fprintf(out, "- %s\n", formatNeighborEndpoint(definition))
-		}
-		if omitted := response.FocusMatchesTotal - len(response.Definitions); omitted > 0 {
-			fmt.Fprintf(out, "- ... %d more definitions; raise --limit to list them\n", omitted)
-		}
+		writeDisambiguationListing(out, response.Query, response.FocusMatchesTotal, response.Definitions)
 		return
 	}
 
@@ -674,6 +726,9 @@ func writeImpactSection(out io.Writer, header string, section impactSection, arr
 		}
 		if entry.Detail == "member" {
 			annotations = append(annotations, "member")
+		}
+		if entry.Detail == impactMentionDetail {
+			annotations = append(annotations, impactMentionDetail)
 		}
 		if len(annotations) > 0 {
 			fmt.Fprintf(out, " [%s]", strings.Join(annotations, ", "))

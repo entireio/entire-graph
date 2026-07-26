@@ -22,7 +22,8 @@ entire graph search --repo . --query "<the task or bug in one plain sentence>" -
 ```
 
 - `--format agent` for compact ranked output with latency telemetry; `json`/`ndjson` for the full schema (completeness, partial failures, diagnostics).
-- `--top-k N` result count; `--max-context-bytes N` byte budget (`0` = unbounded, default 24576 — see "the budget is sized in turns" below).
+- `--top-k N` result count (default 10). It changes ONLY how many results come back — never the retrieval strategy or the meaning of `score`. `--deep` opts into the exhaustive sparse (BM25) pass fused with the semantic ranking: better recall on long tails, but it reads every eligible file and is much slower.
+- `--max-context-bytes N` byte budget (`0` = unbounded, default 24576 — see "the budget is sized in turns" below).
 - Working tree by default; add `--head` for committed-tree + cache reuse.
 - `--profile syntax-only|fast|full` (default `syntax-only`); `--index-all-files` or `--max-indexed-files N` to widen/bound cold-search parsing.
 
@@ -74,6 +75,13 @@ buy complete head bodies, and the allocator always picks the cheapest plan that 
 `--max-context-bytes` to tighten it; bodies then degrade to focused windows, shallowest ranks
 kept last.
 
+**A weak payload says so.** Every ranked block carries its relevance score (`s=<n>` in
+`--format agent`), and when the top score is weak AND the head of the ranking agrees on
+nothing, the payload is prefixed with a `LOW CONFIDENCE:` line. Calibrated over 14 repos in 9
+languages: it never fired on a query whose target existed, and caught 64% of queries naming a
+technology the repo did not contain. Treat it as "check that this repo really does what you
+asked about before editing", not as "no results".
+
 **When:** the start of essentially every task. One good query lands you on the fix area.
 
 ### 🕸️ neighbors — *who calls this / what does it call* (targeted relations)
@@ -84,7 +92,7 @@ entire graph neighbors --repo . --symbol NAME --relation CALLS --direction in   
 entire graph neighbors --repo . --symbol NAME --relation CALLS --direction out  # what NAME calls
 ```
 
-- `--file path` — **required** when the symbol name is ambiguous (multiple defs); the graph returns definitions only until you disambiguate.
+- Ambiguous names (multiple defs) return the definition list only, each line ending in the exact selector that picks it: `--symbol NAME --file <path> --line <n>`, plus `--kind <kind>` when two records sit on the same line. **Copy that selector verbatim.** `--file` alone is not enough when two definitions share a file, and a qualified `--symbol` is not enough when they share a qualified name; name + location + kind always separates them. `--symbol <file>:<line>` is also accepted as a positional shorthand, but it selects EVERY definition on that line.
 - `--relation CALLS` (default is the call family) — pick another relation to follow it instead.
 - `--direction both|in|out`, `--depth 1|2`, `--limit N`.
 - `--internal-only` drops unresolved external endpoints; `--exclude-tests` drops test-only neighbors.
@@ -96,10 +104,11 @@ entire graph neighbors --repo . --symbol NAME --relation CALLS --direction out  
 Everything the graph knows about changing **one** symbol, in a single bounded explanation: direct + transitive callers (depth ≤ 2), callees, type consumers (`USES_TYPE`/`PARAM_TYPE`/`RETURNS_TYPE`), data flows, files that historically change together with the symbol's file, and same-container siblings. Text output is sectioned, `file:line` per entry, capped per section and ~4 KB total.
 
 ```sh
-entire graph impact --repo . --symbol NAME [--file path] [--depth 1|2] [--format text|json]
+entire graph impact --repo . --symbol NAME|<file>:<line> [--file path] [--line n] [--kind kind] [--depth 1|2] [--format text|json]
 ```
 
-- Ambiguous names return the definition list — rerun with `--file` to pick one.
+- Ambiguous names return the definition list, with a working selector printed beside each one (see `neighbors` above).
+- Callers matched only by NAME in a file that holds no program text (a design doc, a changelog, a recorded fixture) are labelled `[doc-mention, name_only]`, sorted behind every resolved caller, and never expanded transitively — a document cannot break when behavior changes, so treating it as an intermediate invents callers that never mention the symbol.
 - `--limit N` per-section entry cap; `--max-context-bytes N` total text budget; `--exclude-tests`; `--head` / `--profile` as in `neighbors`.
 
 **When:** before changing behavior of a specific function/type — "you're changing ordering: here is every place results are ordered, limited, or consumed downstream" — one command instead of chaining neighbors + edges + git log.

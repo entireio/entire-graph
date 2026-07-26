@@ -117,7 +117,7 @@ func TestNeighborsLimitBoundsAmbiguousFocusMatchesDeterministically(t *testing.T
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), `Ambiguous symbol "Target" matched 3 definitions`) ||
-		!strings.Contains(out.String(), "rerun with --file") ||
+		!strings.Contains(out.String(), "rerun with the selector printed beside the one you mean") ||
 		strings.Contains(out.String(), "c.go:1") || strings.Contains(out.String(), "Callers:") {
 		t.Fatalf("agent ambiguity output was not deterministically bounded:\n%s", out.String())
 	}

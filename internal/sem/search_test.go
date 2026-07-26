@@ -211,6 +211,7 @@ func TestSearchRepositoryBuildsSparseRegionsOnlyForDeepSearch(t *testing.T) {
 		Worktree: true,
 		Profile:  ProfileSyntaxOnly,
 		TopK:     defaultSearchTopK + 1,
+		Deep:     true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -318,6 +319,7 @@ func TestSearchRepositorySkipsSparsePassWithoutSparseTerms(t *testing.T) {
 		Worktree: true,
 		Profile:  ProfileSyntaxOnly,
 		TopK:     defaultSearchTopK + 1,
+		Deep:     true,
 	})
 	if err != nil {
 		t.Fatal(err)

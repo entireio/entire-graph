@@ -49,6 +49,7 @@ type searchFlags struct {
 	MaxIndexedFiles   int
 	IndexAllFiles     bool
 	MaxContextBytes   int
+	Deep              bool
 }
 
 func runSearch(ctx context.Context, opts Options, args []string) error {
@@ -95,6 +96,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		MaxIndexedFiles:   flags.MaxIndexedFiles,
 		IndexAllFiles:     flags.IndexAllFiles,
 		MaxContextBytes:   flags.MaxContextBytes,
+		Deep:              flags.Deep,
 	})
 	if err != nil {
 		return err
@@ -172,6 +174,11 @@ const (
 // Ranks are the payload's own, unchanged, so a rank missing from the primary group is a visible
 // signal that it was sectioned rather than dropped.
 func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse) error {
+	if notice, _ := searchLowConfidenceNotices(response); len(notice) > 0 {
+		if _, err := out.Write(notice); err != nil {
+			return err
+		}
+	}
 	primary, related, docs := partitionSearchSections(response.Results)
 	for index, result := range primary {
 		writeTextSearchResult(out, result, index < searchTextFullRanks)
@@ -301,9 +308,11 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 		stats.TotalLatencyMS,
 	))
 	fullDiagnostics, compactDiagnostics := agentSearchDiagnostics(response)
+	fullConfidence, compactConfidence := searchLowConfidenceNotices(response)
 	if budget <= 0 {
 		payload := append([]byte{}, fullHeader...)
 		payload = append(payload, fullDiagnostics...)
+		payload = append(payload, fullConfidence...)
 		if len(results) == 0 {
 			payload = append(payload, "No search results.\n"...)
 		} else {
@@ -330,26 +339,41 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	if !bytes.Equal(fullDiagnostics, compactDiagnostics) {
 		diagnosticVariants = append(diagnosticVariants, compactDiagnostics)
 	}
+	// The low-confidence marker degrades like the coverage diagnostic and, when the budget
+	// cannot hold even its compact form, is dropped rather than displacing the ranking: a
+	// caller that got no results at all does not need to be told they are weak.
+	confidenceVariants := [][]byte{fullConfidence}
+	if !bytes.Equal(fullConfidence, compactConfidence) {
+		confidenceVariants = append(confidenceVariants, compactConfidence)
+	}
+	if len(fullConfidence) > 0 {
+		confidenceVariants = append(confidenceVariants, nil)
+	}
 	for _, header := range [][]byte{fullHeader, compactHeader, legacyHeader} {
 		for _, diagnostics := range diagnosticVariants {
-			remaining := budget - len(header) - len(diagnostics)
-			if remaining <= 0 {
-				continue
-			}
-			if len(results) == 0 {
-				noResults := []byte("No search results.\n")
-				if len(noResults) <= remaining {
-					payload := append(append([]byte{}, header...), diagnostics...)
-					_, err := out.Write(append(payload, noResults...))
+			for _, confidence := range confidenceVariants {
+				remaining := budget - len(header) - len(diagnostics) - len(confidence)
+				if remaining <= 0 {
+					continue
+				}
+				prefix := func() []byte {
+					payload := append([]byte{}, header...)
+					payload = append(payload, diagnostics...)
+					return append(payload, confidence...)
+				}
+				if len(results) == 0 {
+					noResults := []byte("No search results.\n")
+					if len(noResults) <= remaining {
+						_, err := out.Write(append(prefix(), noResults...))
+						return err
+					}
+					continue
+				}
+				formatted := fitAgentSearchResults(results, remaining)
+				if len(formatted) > 0 {
+					_, err := out.Write(append(prefix(), formatted...))
 					return err
 				}
-				continue
-			}
-			formatted := fitAgentSearchResults(results, remaining)
-			if len(formatted) > 0 {
-				payload := append(append([]byte{}, header...), diagnostics...)
-				_, err := out.Write(append(payload, formatted...))
-				return err
 			}
 		}
 	}
@@ -375,6 +399,25 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	}
 	_, err := out.Write(payload)
 	return err
+}
+
+// searchLowConfidenceNotices renders the low-confidence marker in a full and a compact
+// form. Both are empty when the payload is not weak, so a good query pays nothing.
+//
+// The wording states what to DO, because the failure it exists to prevent is an agent
+// reading a plausible-looking hit as the fix site in a repo that never contained the thing
+// it asked about.
+func searchLowConfidenceNotices(response sem.SearchResponse) ([]byte, []byte) {
+	assessment := sem.AssessSearchConfidence(response)
+	if !assessment.Low {
+		return nil, nil
+	}
+	full := []byte(fmt.Sprintf(
+		"LOW CONFIDENCE: top score %.1f (weak, below %.0f) and %s. This repo may not contain what you asked for; verify before editing.\n",
+		assessment.TopScore, sem.LowConfidenceScoreCeiling(), assessment.Reason,
+	))
+	compact := []byte(fmt.Sprintf("!LOW s=%.1f\n", assessment.TopScore))
+	return full, compact
 }
 
 func agentSearchDiagnostics(response sem.SearchResponse) ([]byte, []byte) {
@@ -508,9 +551,21 @@ func renderAgentSearchResults(results []sem.SearchResult, budgets []int) []byte 
 	return output.Bytes()
 }
 
+// agentSearchScoreTag renders the ` s=<n>` suffix for a block, or "" when the score carries
+// no meaning. Related sites are not ranked answers — they are the other places the top hit's
+// change usually has to land — and they carry no relevance score, so printing `s=0.0` beside
+// one would read as "worthless" rather than "not applicable".
+func agentSearchScoreTag(result sem.SearchResult) string {
+	if result.Section == sem.SearchSectionRelated {
+		return ""
+	}
+	return fmt.Sprintf(" s=%.1f", result.Score)
+}
+
 func agentSearchBlock(result sem.SearchResult, budget int) []byte {
 	name := searchResultDisplayName(result)
 	tag := agentSearchSectionTag(result)
+	scored := agentSearchScoreTag(result)
 	lines := strings.Split(result.Snippet, "\n")
 	if len(lines) > 1 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
@@ -532,7 +587,7 @@ func agentSearchBlock(result sem.SearchResult, budget int) []byte {
 		focusLine = snippetStart + focus
 	}
 	if len(lines) == 0 {
-		return fitAgentSearchLocation(result.Rank, result.FilePath, focusLine, name, tag, budget)
+		return fitAgentSearchLocation(result.Rank, result.FilePath, focusLine, name, tag, scored, budget)
 	}
 
 	// Prefer the widest balanced span containing the focus line. The location
@@ -553,7 +608,7 @@ func agentSearchBlock(result sem.SearchResult, budget int) []byte {
 			right := left + span - 1
 			text := strings.Join(lines[left:right+1], "\n")
 			startLine, endLine := snippetStart+left, snippetStart+right
-			for _, header := range agentSearchLocationHeaders(result.Rank, result.FilePath, startLine, endLine, focusLine, name, tag) {
+			for _, header := range agentSearchLocationHeaders(result.Rank, result.FilePath, startLine, endLine, focusLine, name, tag, scored) {
 				candidate := []byte(header + text + "\n")
 				if budget <= 0 || len(candidate) <= budget {
 					balance := focus - left - (right - focus)
@@ -571,13 +626,19 @@ func agentSearchBlock(result sem.SearchResult, budget int) []byte {
 			return best
 		}
 	}
-	return fitAgentSearchLocation(result.Rank, result.FilePath, focusLine, name, tag, budget)
+	return fitAgentSearchLocation(result.Rank, result.FilePath, focusLine, name, tag, scored, budget)
 }
 
 // agentSearchLocationHeaders builds the location line in decreasing cost. `tag` labels a block
 // that is not a candidate fix site; it rides on the two roomier variants and is dropped by the
 // minimal one, which exists for caps too small to hold a rank and a name at all.
-func agentSearchLocationHeaders(rank int, path string, start, end, focus int, name, tag string) []string {
+//
+// `scored` is the pre-rendered relevance-score suffix (see agentSearchScoreTag). It is NOT
+// an optional decoration: the score is the only per-result signal that separates a real hit
+// from the best of a bad lot, and its absence from this format let a query about a technology
+// absent from a repo come back as six confident-looking hits. It rides on the two roomier
+// variants at ~7 bytes each and is dropped by the minimal one along with rank and name.
+func agentSearchLocationHeaders(rank int, path string, start, end, focus int, name, tag, scored string) []string {
 	location := fmt.Sprintf("%d. %s:%d", rank, path, start)
 	if end != start {
 		location += fmt.Sprintf("-%d", end)
@@ -589,7 +650,7 @@ func agentSearchLocationHeaders(rank int, path string, start, end, focus int, na
 	if tag != "" {
 		rich += " " + tag
 	}
-	rich += fmt.Sprintf(" [focus:%d]\n", focus)
+	rich += scored + fmt.Sprintf(" [focus:%d]\n", focus)
 	compact := location
 	if name != "" {
 		compact += " " + name
@@ -597,13 +658,13 @@ func agentSearchLocationHeaders(rank int, path string, start, end, focus int, na
 	if tag != "" {
 		compact += " " + tag
 	}
-	compact += " *\n"
+	compact += scored + " *\n"
 	minimal := fmt.Sprintf("%s:%d *\n", path, focus)
 	return []string{rich, compact, minimal}
 }
 
-func fitAgentSearchLocation(rank int, path string, focus int, name, tag string, budget int) []byte {
-	for _, header := range agentSearchLocationHeaders(rank, path, focus, focus, focus, name, tag) {
+func fitAgentSearchLocation(rank int, path string, focus int, name, tag, scored string, budget int) []byte {
+	for _, header := range agentSearchLocationHeaders(rank, path, focus, focus, focus, name, tag, scored) {
 		if budget <= 0 || len(header) <= budget {
 			return []byte(header)
 		}
@@ -705,6 +766,8 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 			flags.MaxIndexedFiles, i = value, next
 		case "--index-all-files":
 			flags.IndexAllFiles = true
+		case "--deep":
+			flags.Deep = true
 		case "--max-context-bytes":
 			value, next, err := searchPositiveIntFlag(args, i)
 			if err != nil {

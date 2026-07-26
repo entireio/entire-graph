@@ -65,6 +65,16 @@ type SearchOptions struct {
 	MaxIndexedFiles   int
 	IndexAllFiles     bool
 	MaxContextBytes   int
+	// Deep enables the exhaustive sparse (BM25 chunk) retrieval pass and its
+	// reciprocal-rank fusion with the semantic ranking.
+	//
+	// It used to be switched on IMPLICITLY by `TopK > 10`, which made every observable
+	// property of a search discontinuous at that boundary: the git-tree-grep preselector
+	// was disabled, every file in the repo was read, the indexed-file pool shrank, region
+	// deduplication stopped and the reported score stopped being a relevance score. Asking
+	// for one more result is not a request to change retrieval strategy, so the strategy is
+	// now an explicit choice and top-k only changes how many rows come back.
+	Deep bool
 }
 
 // SearchResult is a ranked source region suitable for direct agent context.
@@ -497,7 +507,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	rereadFiles := queryReads.files - statisticsPassFiles
 	rereadBytes := queryReads.bytes - statisticsPassBytes
 	sparseFilesRead := selection.sparseFilesContentRead
-	if options.TopK > defaultSearchTopK && len(sparseQuery.terms) > 0 {
+	if options.Deep && len(sparseQuery.terms) > 0 {
 		for _, filePath := range selection.sparseFiles {
 			if selection.sparsePrecomputedFiles[filePath] {
 				continue
@@ -584,7 +594,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	identifierUsages := expandIdentifierUsageCandidates(
 		ctx, expansionSeeds, q, symbolsByID, symbolsByFile, read, fileLanguages, options,
 		committedUsageFileSelector(
-			repo, selection.commit, useHead, fileLanguages, options.TopK, selection.filesScanned, &usagePreselection,
+			repo, selection.commit, useHead, fileLanguages, options.Deep, selection.filesScanned, &usagePreselection,
 		),
 	)
 	usageFilesRead := queryReads.files - usageFilesBefore
@@ -627,10 +637,16 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		sparseCandidates = dedupeSemanticMirrorCandidates(sparseCandidates, q, symbolsByID)
 		sortSearchCandidates(sparseCandidates)
 		sparseCandidates = collapseNearDuplicateCandidates(sparseCandidates)
-		selected = selectHybridCandidates(semantic, sparseCandidates, options.TopK)
-		for index := range selected {
-			selected[index].score = 1 / float64(index+1)
-		}
+		// Fusion decides the ORDER. The reported score stays a relevance score on the
+		// semantic scale (sparse rows are rescaled onto it by rescaleFusedCandidateScores),
+		// because the score is the only signal a caller has for "is this a real hit or is
+		// the repo simply missing what I asked for". Overwriting it with 1/rank — which the
+		// deep path used to do — destroyed exactly that signal: every payload came back
+		// looking like 1, 0.5, 0.333 whether the top hit was perfect or worthless.
+		selected = rescaleFusedCandidateScores(
+			selectHybridCandidates(semantic, sparseCandidates, options.TopK),
+			semantic, sparseCandidates,
+		)
 	}
 	sparseHydrationReads := hydrateSparseCandidates(selected, read)
 	stats.SparseFilesRead += sparseHydrationReads
@@ -979,7 +995,7 @@ func preselectSearchFiles(
 	exactFullPreindex := preindexCacheHit &&
 		preindexedSnapshot.Header.Tree == source.tree
 	grepPatterns, grepSafe := searchGitGrepPatterns(q.terms)
-	if exactFullPreindex && !options.Worktree && options.TopK <= defaultSearchTopK && grepSafe {
+	if exactFullPreindex && !options.Worktree && !options.Deep && grepSafe {
 		matches, grepErr := gitutil.GrepTreePaths(ctx, source.absRepo, source.commit, grepPatterns)
 		if grepErr == nil {
 			selection.files = committedSearchFiles(source.paths, matches, q)
@@ -1103,7 +1119,7 @@ func preselectSearchFiles(
 		if !ok || strings.IndexByte(content, 0) >= 0 {
 			return searchFileCandidate{}, false
 		}
-		if options.TopK > defaultSearchTopK && len(sparseQuery.terms) > 0 && len(content) <= maxSparseSearchFileBytes {
+		if options.Deep && len(sparseQuery.terms) > 0 && len(content) <= maxSparseSearchFileBytes {
 			lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
 			if len(lines) > 1 || lines[0] != "" {
 				language := ""
@@ -2130,11 +2146,11 @@ func committedUsageFileSelector(
 	treeish string,
 	useHead bool,
 	languages map[string]string,
-	topK int,
+	deep bool,
 	filesExamined int,
 	telemetry *searchScanTelemetry,
 ) usageFileSelector {
-	if !useHead || topK > defaultSearchTopK {
+	if !useHead || deep {
 		return nil
 	}
 	return func(ctx context.Context, identifiers []string) ([]string, bool) {
@@ -2682,8 +2698,26 @@ func selectHybridCandidates(semantic, sparse []searchCandidate, topK int) []sear
 	)
 	sparseTarget := minInt(len(fusedSparse), topK*deepSearchSparseNumerator/deepSearchSparseDenominator)
 	selected := make([]searchCandidate, 0, minInt(topK, len(semantic)+len(fusedSparse)))
-	selected = append(selected, semantic[:semanticHead]...)
-	selected = append(selected, fusedSparse[:minInt(sparseTarget, topK-len(selected))]...)
+	// Every append goes through the region-dedup guard, INCLUDING the two head blocks.
+	// The head blocks used to append unchecked, so a region the semantic ranking and the
+	// sparse ranking both found was seated twice — observed as one symbol holding ranks 1,
+	// 2 and 3 of an 11-row payload that contained only 9 distinct locations.
+	appendUnique := func(candidates []searchCandidate, limit int) {
+		for _, candidate := range candidates {
+			if limit >= 0 && len(selected) >= limit {
+				return
+			}
+			if len(selected) >= topK {
+				return
+			}
+			if containsSearchCandidate(selected, candidate) {
+				continue
+			}
+			selected = append(selected, candidate)
+		}
+	}
+	appendUnique(semantic[:semanticHead], -1)
+	appendUnique(fusedSparse, minInt(topK, len(selected)+sparseTarget))
 
 	// Prefer one representative for every additional semantic file. This is a
 	// coverage reserve, so cross-modality region overlap is intentionally not a
@@ -2696,28 +2730,14 @@ func selectHybridCandidates(semantic, sparse []searchCandidate, topK int) []sear
 		if len(selected) == topK {
 			break
 		}
-		if seenFiles[candidate.result.FilePath] {
+		if seenFiles[candidate.result.FilePath] || containsSearchCandidate(selected, candidate) {
 			continue
 		}
 		seenFiles[candidate.result.FilePath] = true
 		selected = append(selected, candidate)
 	}
-	for _, candidate := range semantic[semanticHead:] {
-		if len(selected) == topK {
-			break
-		}
-		if !containsSearchCandidate(selected, candidate) {
-			selected = append(selected, candidate)
-		}
-	}
-	for _, candidate := range fusedSparse[sparseTarget:] {
-		if len(selected) == topK {
-			break
-		}
-		if !containsSearchCandidate(selected, candidate) {
-			selected = append(selected, candidate)
-		}
-	}
+	appendUnique(semantic[semanticHead:], -1)
+	appendUnique(fusedSparse[minInt(sparseTarget, len(fusedSparse)):], -1)
 	return selected
 }
 
@@ -2730,6 +2750,60 @@ func containsSearchCandidate(candidates []searchCandidate, target searchCandidat
 		}
 	}
 	return false
+}
+
+// searchCandidateLocationKey identifies the source region a candidate occupies. Two
+// candidates with the same key are the same region reached by different retrieval
+// modalities, never two answers.
+func searchCandidateLocationKey(candidate searchCandidate) string {
+	return fmt.Sprintf("%s\x00%d\x00%d", candidate.result.FilePath, candidate.result.StartLine, candidate.result.EndLine)
+}
+
+// rescaleFusedCandidateScores restores a relevance score on a fused ranking.
+//
+// Reciprocal-rank fusion works on ranks, so the intermediate scores it computes are rank
+// artifacts (1/(k+rank)) with no relation to how well anything matched. Reporting those —
+// or, worse, a bare 1/rank — leaves a caller unable to tell a strong hit from a repo that
+// simply does not contain what was asked for. Each selected row therefore gets its OWN
+// retrieval score back: the semantic score when the region was retrieved semantically,
+// otherwise its BM25 score linearly rescaled so the sparse block's maximum lines up with
+// the semantic maximum. Ordering is untouched — only the reported number changes.
+func rescaleFusedCandidateScores(selected, semantic, sparse []searchCandidate) []searchCandidate {
+	if len(selected) == 0 {
+		return selected
+	}
+	semanticScores, maxSemantic := bestSearchCandidateScores(semantic)
+	sparseScores, maxSparse := bestSearchCandidateScores(sparse)
+	scale := 1.0
+	if maxSparse > 0 && maxSemantic > 0 {
+		scale = maxSemantic / maxSparse
+	}
+	for index := range selected {
+		key := searchCandidateLocationKey(selected[index])
+		if score, ok := semanticScores[key]; ok {
+			selected[index].score = score
+			continue
+		}
+		if score, ok := sparseScores[key]; ok {
+			selected[index].score = score * scale
+		}
+	}
+	return selected
+}
+
+func bestSearchCandidateScores(candidates []searchCandidate) (map[string]float64, float64) {
+	scores := make(map[string]float64, len(candidates))
+	best := 0.0
+	for _, candidate := range candidates {
+		key := searchCandidateLocationKey(candidate)
+		if existing, exists := scores[key]; !exists || candidate.score > existing {
+			scores[key] = candidate.score
+		}
+		if candidate.score > best {
+			best = candidate.score
+		}
+	}
+	return scores, best
 }
 
 func selectDiverseCandidates(candidates []searchCandidate, topK, maxPerFile int) []searchCandidate {
