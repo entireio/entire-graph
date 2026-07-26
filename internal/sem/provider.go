@@ -229,6 +229,11 @@ type SymbolRecord struct {
 	BodyHash        string `json:"body_hash"`
 	Language        string `json:"language"`
 	ContainerID     string `json:"container_id,omitempty"`
+	// Aliases are searchable alternate names for this symbol that never appear in
+	// its body — e.g. a command verb bound to a handler through a registration
+	// table (commands/<name>.json -> "function": handler). Additive & schema-safe:
+	// omitempty keeps symbols without aliases serializing unchanged.
+	Aliases []string `json:"aliases,omitempty"`
 	// Local: a callable defined inside another function (nested/closure). Only
 	// callable within its enclosing function, so it is excluded from cross-scope
 	// name-match call resolution. Not serialized (internal to resolution).
@@ -693,6 +698,59 @@ func BuildProviderSnapshotWithOptions(ctx context.Context, repo, providerVersion
 	return snapshot, nil
 }
 
+// registrationFunctionPattern extracts the handler name from a command-table
+// entry like {"function": "getrangeCommand"}.
+var registrationFunctionPattern = regexp.MustCompile(`"function"\s*:\s*"([A-Za-z_][A-Za-z0-9_]*)"`)
+
+// collectRegistrationAliases builds a handler -> command-alias index from the
+// structured command tables in the source (files matching commands/<name>.json).
+// The command verb (the file's basename without .json) never appears in the
+// handler body, so it is indexed as a searchable alias of the handler symbol.
+// Only paths matching commands/*.json are touched; no generic scan is performed.
+func collectRegistrationAliases(paths []string, read contentReader) map[string][]string {
+	aliasesByHandler := map[string][]string{}
+	for _, p := range paths {
+		slash := filepath.ToSlash(p)
+		if !strings.HasSuffix(slash, ".json") {
+			continue
+		}
+		dir := path.Dir(slash)
+		if dir != "commands" && !strings.HasSuffix(dir, "/commands") {
+			continue
+		}
+		content, ok := read(p)
+		if !ok {
+			continue
+		}
+		m := registrationFunctionPattern.FindStringSubmatch(content)
+		if m == nil {
+			continue
+		}
+		handler := m[1]
+		alias := strings.TrimSuffix(path.Base(slash), ".json")
+		aliasesByHandler[handler] = append(aliasesByHandler[handler], alias)
+	}
+	for handler, aliases := range aliasesByHandler {
+		sort.Strings(aliases)
+		aliasesByHandler[handler] = dedupeSortedStrings(aliases)
+	}
+	return aliasesByHandler
+}
+
+// dedupeSortedStrings removes adjacent duplicates from a sorted slice in place.
+func dedupeSortedStrings(sorted []string) []string {
+	if len(sorted) < 2 {
+		return sorted
+	}
+	out := sorted[:1]
+	for _, v := range sorted[1:] {
+		if v != out[len(out)-1] {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // StreamSnapshot emits a snapshot as a stream of records with bounded memory.
 // Phase 1 lists the files, then parses each one and emits its file and symbol
 // records immediately while building compact metadata indexes — file contents
@@ -753,6 +811,11 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	symbolCount := 0
 	relationCount := 0
 	parsedFileCount := 0
+
+	// Command verbs bound to handlers through registration tables
+	// (commands/<name>.json) never appear in the handler body; index them once as
+	// searchable aliases so they can be attached to the handler symbol below.
+	aliasesByHandler := collectRegistrationAliases(sc.paths, sc.read)
 
 	// Phase 1: parse + emit file/symbol records, build indexes, discard content.
 	for i, path := range sc.paths {
@@ -893,6 +956,11 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 		parsedFileCount++
 		fileSymbols := entitySymbols(sc.key, path, language, entities)
 		fileSymbols = append(fileSymbols, syntheticBoundarySymbols(sc.key, path, language, content, fileSymbols)...)
+		for i := range fileSymbols {
+			if aliases := aliasesByHandler[fileSymbols[i].Name]; len(aliases) > 0 {
+				fileSymbols[i].Aliases = aliases
+			}
+		}
 		for _, symbol := range fileSymbols {
 			if err := emit(symbol); err != nil {
 				return err
