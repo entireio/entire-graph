@@ -169,7 +169,11 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 		if result.Kind != "" {
 			fmt.Fprintf(out, " kind=%s", result.Kind)
 		}
-		fmt.Fprintf(out, " lines=%d-%d signals=%s\n%s\n\n", result.StartLine, result.EndLine, strings.Join(result.Signals, ","), result.Snippet)
+		fmt.Fprintf(out, " lines=%d-%d signals=%s\n%s\n", result.StartLine, result.EndLine, strings.Join(result.Signals, ","), result.Snippet)
+		if len(result.Neighbors) > 0 {
+			fmt.Fprintf(out, "   NEIGHBORS: %s\n", strings.Join(result.Neighbors, "; "))
+		}
+		fmt.Fprint(out, "\n")
 	}
 	return nil
 }

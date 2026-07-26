@@ -1974,3 +1974,59 @@ func gamma() {
 		}
 	}
 }
+
+func TestComputeSearchNeighborsFoldsDefinedTypeAndImplNeighbors(t *testing.T) {
+	// A struct MethodRouter implements a repo-defined trait Handler and has a
+	// method with_state that constructs/returns a repo-defined type Route.
+	methodRouter := SymbolRecord{ID: "sym:MethodRouter", Name: "MethodRouter", QualifiedName: "MethodRouter", Kind: "struct", FilePath: "src/routing.rs", StartLine: 10, EndLine: 40}
+	withState := SymbolRecord{ID: "sym:with_state", Name: "with_state", QualifiedName: "MethodRouter.with_state", Kind: "method", FilePath: "src/routing.rs", StartLine: 20, EndLine: 30}
+	handler := SymbolRecord{ID: "sym:Handler", Name: "Handler", QualifiedName: "Handler", Kind: "trait", FilePath: "src/handler.rs", StartLine: 5, EndLine: 15}
+	route := SymbolRecord{ID: "sym:Route", Name: "Route", QualifiedName: "Route", Kind: "struct", FilePath: "src/route.rs", StartLine: 1, EndLine: 8}
+	testRoute := SymbolRecord{ID: "sym:TestRoute", Name: "TestRoute", QualifiedName: "TestRoute", Kind: "struct", FilePath: "tests/route_test.rs", StartLine: 1, EndLine: 3}
+
+	symbolsByID := map[string]SymbolRecord{
+		methodRouter.ID: methodRouter,
+		withState.ID:    withState,
+		handler.ID:      handler,
+		route.ID:        route,
+		testRoute.ID:    testRoute,
+	}
+	relations := []RelationRecord{
+		{Type: "IMPLEMENTS", FromID: methodRouter.ID, ToID: handler.ID},
+		{Type: "CONSTRUCTS", FromID: withState.ID, ToID: route.ID},
+		{Type: "RETURNS_TYPE", FromID: withState.ID, ToID: route.ID},
+		{Type: "CALLS", FromID: withState.ID, ToID: "external:tower::layer"}, // external, dropped
+		{Type: "PARAM_TYPE", FromID: withState.ID, ToID: testRoute.ID},       // test file, dropped
+	}
+
+	results := []SearchResult{{Rank: 1, SymbolID: withState.ID, SymbolName: "with_state", QualifiedName: "MethodRouter.with_state", Kind: "method", FilePath: "src/routing.rs"}}
+	computeSearchNeighbors(results, symbolsByID, relations)
+
+	neighbors := results[0].Neighbors
+	if len(neighbors) == 0 {
+		t.Fatalf("expected neighbors, got none")
+	}
+	foundRoute := false
+	for _, n := range neighbors {
+		if strings.Contains(n, "Route") && strings.Contains(n, "src/route.rs:1") {
+			foundRoute = true
+		}
+		if strings.Contains(n, "TestRoute") {
+			t.Fatalf("test-file neighbor should be skipped: %q", n)
+		}
+		if strings.Contains(n, "external:") {
+			t.Fatalf("external neighbor should be skipped: %q", n)
+		}
+	}
+	if !foundRoute {
+		t.Fatalf("expected a Route (src/route.rs:1) neighbor, got %#v", neighbors)
+	}
+	// The trait implemented by the container type is surfaced too.
+	if !containsString(neighbors, "implements Handler (src/handler.rs:5)") {
+		t.Fatalf("expected implements Handler neighbor, got %#v", neighbors)
+	}
+	// Type edges (implements/constructs/returns) come before any CALLS.
+	if !strings.HasPrefix(neighbors[0], "implements ") && !strings.HasPrefix(neighbors[0], "constructs ") && !strings.HasPrefix(neighbors[0], "returns ") {
+		t.Fatalf("expected a type edge first, got %#v", neighbors)
+	}
+}

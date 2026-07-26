@@ -85,6 +85,11 @@ type SearchResult struct {
 	Signature        string   `json:"signature,omitempty"`
 	Signals          []string `json:"signals"`
 	Snippet          string   `json:"snippet"`
+	// Neighbors are defined-in-repo graph neighbors of the hit's symbol and its
+	// container type (CALLS/IMPLEMENTS/RETURNS_TYPE/CONSTRUCTS/PARAM_TYPE),
+	// each resolved to "<verb> Name (file:line)". Populated only for top hits so
+	// an agent can see the relevant types + impl location without grep-spidering.
+	Neighbors []string `json:"neighbors,omitempty"`
 }
 
 type SearchStats struct {
@@ -583,6 +588,10 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		}
 		results = append(results, selected[i].result)
 	}
+	// Fold neighbors BEFORE budgeting so their bytes are accounted for (the budget
+	// fit + ResultBytes accounting + SearchResponse.Validate all serialize the full
+	// result, Neighbors included). Rank is already assigned above, which the fold uses.
+	computeSearchNeighbors(results, symbolsByID, snapshot.Relations)
 	results, resultBytes, dropped, truncated := fitSearchResultsToBudget(results, q, options.MaxContextBytes)
 	stats.CandidatesSelected = len(results)
 	stats.ResultBytes = resultBytes
@@ -3402,6 +3411,153 @@ func searchPathPrior(q searchQuery, filePath string) float64 {
 		score -= 6
 	}
 	return score
+}
+
+// searchNeighborVerbs maps the graph relation types surfaced as hit neighbors to
+// a short lowercase label for the text output.
+var searchNeighborVerbs = map[string]string{
+	"IMPLEMENTS":   "implements",
+	"RETURNS_TYPE": "returns",
+	"CONSTRUCTS":   "constructs",
+	"PARAM_TYPE":   "param",
+	"CALLS":        "calls",
+}
+
+// searchNeighborContainer derives the container type name from a qualified name
+// by stripping a trailing ".<member>" (e.g. "MethodRouter.with_state" ->
+// "MethodRouter"). A qualified name with no dot names a type/free symbol and is
+// returned unchanged.
+func searchNeighborContainer(qualifiedName string) string {
+	if idx := strings.LastIndex(qualifiedName, "."); idx > 0 {
+		return qualifiedName[:idx]
+	}
+	return qualifiedName
+}
+
+func searchNeighborShortName(name string) string {
+	if idx := strings.LastIndex(name, "."); idx >= 0 {
+		return name[idx+1:]
+	}
+	return name
+}
+
+func searchNeighborIsTypeKind(kind string) bool {
+	switch strings.ToLower(kind) {
+	case "class", "struct", "trait", "interface", "enum", "type", "object":
+		return true
+	}
+	return false
+}
+
+// computeSearchNeighbors folds each top-2 hit's defined-in-repo graph neighbors
+// (via CALLS/IMPLEMENTS/RETURNS_TYPE/CONSTRUCTS/PARAM_TYPE) into result.Neighbors,
+// so an agent doing a trait/type-shaped fix sees the relevant types + impl
+// location instead of grep-spidering. Only edges whose target resolves to a
+// defined, non-test symbol in this repo are surfaced (external: targets and test
+// files are skipped). It mutates results in place.
+func computeSearchNeighbors(results []SearchResult, symbolsByID map[string]SymbolRecord, relations []RelationRecord) {
+	// Build the from-name / from-container indexes once, so per-result work is a
+	// map lookup rather than a full relations rescan.
+	byFromName := make(map[string][]RelationRecord)
+	byFromContainer := make(map[string][]RelationRecord)
+	for _, rel := range relations {
+		if _, ok := searchNeighborVerbs[rel.Type]; !ok {
+			continue
+		}
+		from, ok := symbolsByID[rel.FromID]
+		if !ok {
+			continue
+		}
+		if from.Name != "" {
+			byFromName[from.Name] = append(byFromName[from.Name], rel)
+		}
+		if container := searchNeighborContainer(from.QualifiedName); container != "" {
+			byFromContainer[container] = append(byFromContainer[container], rel)
+		}
+	}
+	for i := range results {
+		result := &results[i]
+		if result.Rank < 1 || result.Rank > 2 {
+			continue
+		}
+		hitName := result.SymbolName
+		if hitName == "" {
+			if sym, ok := symbolsByID[result.SymbolID]; ok {
+				hitName = sym.Name
+			}
+		}
+		// Container = the hit itself when it is a type, else the type derived from
+		// its qualified name by stripping the trailing ".<method>".
+		container := searchNeighborContainer(result.QualifiedName)
+		if searchNeighborIsTypeKind(result.Kind) {
+			container = result.QualifiedName
+		}
+		containerShort := searchNeighborShortName(container)
+		// Gather candidate edges: those from the hit symbol itself (by short name)
+		// plus those from any method whose container is the hit's type.
+		seenRel := make(map[string]bool)
+		var candidates []RelationRecord
+		add := func(rels []RelationRecord) {
+			for _, rel := range rels {
+				key := rel.Type + "\x00" + rel.FromID + "\x00" + rel.ToID
+				if seenRel[key] {
+					continue
+				}
+				seenRel[key] = true
+				candidates = append(candidates, rel)
+			}
+		}
+		if hitName != "" {
+			add(byFromName[hitName])
+		}
+		if container != "" {
+			add(byFromContainer[container])
+		}
+		if len(candidates) == 0 {
+			continue
+		}
+		// Type edges first so type context isn't crowded out by CALLS, then CALLS.
+		var typeNeighbors, callNeighbors []string
+		seen := make(map[string]bool)
+		for _, rel := range candidates {
+			verb := searchNeighborVerbs[rel.Type]
+			target, ok := symbolsByID[rel.ToID]
+			if !ok {
+				continue // external / unresolved target
+			}
+			if searchTestArtifactPath(strings.ToLower(target.FilePath)) {
+				continue
+			}
+			if containerShort != "" && target.Name == containerShort {
+				continue // self: neighbor type == container
+			}
+			dedupKey := verb + "\x00" + target.Name
+			if seen[dedupKey] {
+				continue
+			}
+			seen[dedupKey] = true
+			entry := fmt.Sprintf("%s %s (%s:%d)", verb, target.Name, target.FilePath, target.StartLine)
+			if rel.Type == "CALLS" {
+				callNeighbors = append(callNeighbors, entry)
+			} else {
+				typeNeighbors = append(typeNeighbors, entry)
+			}
+		}
+		// Balanced view: keep up to 4 type edges AND up to 2 CALLS, so a single verb
+		// (usually plentiful RETURNS_TYPE) can't crowd out the call targets — e.g. a
+		// future/wrapper type reached via CALLS on a sibling method (axum RouteFuture).
+		if len(typeNeighbors) > 4 {
+			typeNeighbors = typeNeighbors[:4]
+		}
+		if len(callNeighbors) > 2 {
+			callNeighbors = callNeighbors[:2]
+		}
+		ordered := append(typeNeighbors, callNeighbors...)
+		if len(ordered) == 0 {
+			continue
+		}
+		result.Neighbors = ordered
+	}
 }
 
 func searchTestArtifactPath(lower string) bool {
