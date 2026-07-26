@@ -3605,7 +3605,7 @@ func symbolSearchScore(q searchQuery, symbol SymbolRecord) (float64, []string) {
 	}
 	var signals []string
 	if matchesExactSymbolForm(q, compactName) {
-		score += exactSymbolBonus(q, symbol.Kind)
+		score += exactSymbolBonus(q, symbol)
 		signals = append(signals, "exact-symbol")
 	}
 	for _, term := range q.terms {
@@ -3635,16 +3635,51 @@ func symbolSearchScore(q searchQuery, symbol SymbolRecord) (float64, []string) {
 // A callable, by contrast, is where a fix lands, so it keeps the full bonus. When the caller
 // asks for the container by itself — the whole query is that one name — it is the answer, and
 // the full bonus applies again.
-func exactSymbolBonus(q searchQuery, kind string) float64 {
-	switch kind {
+//
+// A CONSTRUCTOR is the one callable that belongs in the container tier. It is named after its
+// own type (Java `GsonBuilder.GsonBuilder`, C++ `Foo::Foo`), so an exact match on it is a
+// type-name match wearing a callable's clothes — the very thing the container tier exists to
+// hold back. At the callable bonus it outranks the type it constructs (14 vs 6) and buries real
+// methods: measured on 43 Java instances, `JsonElement.JsonElement` and `GsonBuilder.GsonBuilder`
+// took ranks 1-2 from GsonBuilder.registerTypeAdapter on a query that named both types.
+func exactSymbolBonus(q searchQuery, symbol SymbolRecord) float64 {
+	switch symbol.Kind {
 	case "class", "interface", "struct", "trait", "type", "enum", "record", "object", "protocol",
 		"annotation", "const", "constant", "variable", "field", "property",
 		"module", "namespace", "package":
 		if len(q.wordSequence) > 1 {
 			return 6
 		}
+	default:
+		if namedAfterOwnContainer(symbol) && len(q.wordSequence) > 1 {
+			// The type this constructor is named after is itself a candidate in the same
+			// file, and it earns this bonus. Paying it twice for one name is what lifts the
+			// constructor over the methods a fix lands in — a method whose own name is a
+			// single word (`replace`) cannot earn the bonus at all inside a multi-word
+			// query, so the duplicate is the whole margin. Spend the name once, on the type.
+			return 0
+		}
 	}
 	return 14
+}
+
+// namedAfterOwnContainer reports whether a member's own name repeats the name of the type that
+// contains it — the constructor shape, in every language that spells constructors that way. It
+// compares the last two segments of the qualified name (`GsonBuilder.GsonBuilder`,
+// `Mode.FAST.FAST`) so a plain method that merely shares a name with some OTHER type is
+// unaffected.
+func namedAfterOwnContainer(symbol SymbolRecord) bool {
+	qualified := symbol.QualifiedName
+	cut := strings.LastIndex(qualified, ".")
+	if cut <= 0 {
+		return false
+	}
+	member := qualified[cut+1:]
+	container := qualified[:cut]
+	if inner := strings.LastIndex(container, "."); inner >= 0 {
+		container = container[inner+1:]
+	}
+	return member != "" && member == container
 }
 
 // matchesExactSymbolForm reports whether the query spells this symbol out by name.
