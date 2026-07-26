@@ -101,8 +101,9 @@ func Run(ctx context.Context, opts Options, args []string) error {
 func printHelp(out io.Writer) {
 	fmt.Fprintln(out, `entire-graph adds entity-level context to Entire checkpoints.
 
-For coding agents: run 'entire graph agent-guide' (search-first doctrine — measured to
-roughly halve agent token usage) or 'entire graph init-agents' to install it into a project.
+For coding agents: run 'entire graph agent-guide' (the search-first, verify-once doctrine:
+locate with one search instead of grepping, then verify the edit once) or
+'entire graph init-agents' to install it into a project.
 
 Usage:
   entire graph commit [rev] [--json] [--progress] [--max-seconds n] [--repo path]

@@ -12,15 +12,25 @@ import (
 // graph in a CONSUMING project (not this repo). It ships inside the binary so every install
 // carries the current doctrine; `init-agents` distributes it into a project's AGENTS.md /
 // CLAUDE.md via a small pointer block, and `agent-guide` prints it for any agent or human.
-// The prompt block is the exact instruction set that won the official SWE-bench Multilingual
-// benchmark (300 instances / 9 languages: 54.9% weighted token savings vs a no-tool agent,
-// double the next-best tool's 27.4%, 8/9 languages; Sonnet 3x replication 57.7% vs 36.6% —
-// see the graphmark repo for methodology, prompts, and caveats).
+//
+// The search-first half of this guide is what produced the official SWE-bench Multilingual
+// token result (300 instances / 9 languages: 54.9% weighted token savings vs a no-tool agent,
+// double the next-best tool's 27.4%, 8/9 languages; Sonnet 3x replication 57.7% vs 36.6%).
+// The verification half is a correction to that same run: the frugality clamp it carried ("do
+// not run builds or test suites", "one edit, then STOP") measurably cost correctness — 131/300
+// resolved (43.7%) vs the baseline's 150/300 (50.0%), McNemar p=0.013, and on the 31 paired
+// losses where both agents found the right file the graph agent ran zero builds/tests on 22 and
+// made a single edit on 22 (baseline 26/31 and 8/31), with two patches that could not compile.
+// The rules below therefore keep the token discipline (search instead of grepping, line ranges
+// instead of whole files, no re-confirming a deterministic index) and drop the clamp: verify
+// once, bounded, and check the sibling sites before finishing. See the graphmark repo for
+// methodology, the as-measured prompt, and caveats.
 const agentGuide = `# entire-graph — instructions for coding agents (follow directly)
 
 You have a deterministic local code graph: ` + "`entire graph`" + ` (functions, classes, methods,
 types, routes + call/inheritance relations; no network). These instructions are FOR YOU, the
-agent reading this file. Following them is measured to cut session tokens roughly in half.
+agent reading this file. Following them is measured to cut session tokens roughly in half —
+while still shipping a patch that compiles.
 
 ## The workflow (mandatory for locate/fix/change tasks)
 
@@ -33,8 +43,23 @@ The first five hits come back as the COMPLETE body of their enclosing function/m
 When the hit you want is one of them, EDIT DIRECTLY FROM THE SEARCH OUTPUT — you already have
 the entire function, and opening the file costs a whole extra turn for nothing. Only when the
 hit you want carries a two-line locator window instead, open its file at the reported line
-range. Either way: make the minimal edit and STOP. The top hit is the fix site on most tasks —
-go straight there; do NOT re-search or grep to "confirm".
+range. Either way: make the minimal edit that fixes the root cause. The top hit is the fix site
+on most tasks — go straight there; do NOT re-search or grep to "confirm".
+
+Then finish the job. Two bounded steps, not a loop:
+
+**1. Complete the fix.** A fix is often not one edit in one place. Before you call it done, ask
+the graph once for the sites that share the defect:
+
+    entire graph impact --repo . --symbol X
+
+One shot: callers, callees, type consumers, data flow, co-change files, and same-container
+siblings. Apply the same change to the ones that carry the same bug; ignore the rest.
+
+**2. Verify once.** Compile what you touched, or run the nearest existing test. This is NOT
+optional overhead. An unverified edit is how a patch ships an unused variable, a wrong field or
+method name, or the wrong arity — and a patch that does not build fails 100% of the task. One
+verification turn costs one turn; a patch that does not compile costs everything.
 
 ## Hard rules (each violation costs real money)
 
@@ -43,17 +68,24 @@ go straight there; do NOT re-search or grep to "confirm".
 3. Do NOT re-read what search already gave you. A ` + "`complete-symbol`" + ` hit is the whole function:
    edit it. Read a line range only for hits search returned as locators.
 4. NEVER read a whole file; read at most ~120 lines around the reported line.
-5. Impact question ("who calls X" / "what could this change break")? ONE targeted query:
+5. Impact question ("who calls X" / "what could this change break" / "where else needs this
+   same change")? ONE targeted query:
        entire graph impact --repo . --symbol X
    (one shot: callers, callees, type consumers, data flow, co-change files, siblings)
-6. Do not run builds or test suites unless the task explicitly requires it.
-7. Every extra turn re-reads your whole context — that is the token cost. Reach the edit in as
-   few turns as possible and stop the moment you can justify the fix.
+6. ALWAYS verify your edit at least once before you finish: build/compile it, or run the nearest
+   existing test. Pick the narrowest command that would still catch a syntax, type, name, or
+   arity error (one package, one file, one test — not the whole suite).
+7. VERIFY, DON'T CHASE. Verification is bounded: run it, read the error, fix exactly what the
+   error names, re-run — a couple of iterations, not more. Do NOT enter an edit->test->edit loop
+   hunting a green suite, and do not "fix" failures that were already failing before you started.
+8. Every extra turn re-reads your whole context — that is the token cost. Reach the edit in as
+   few turns as possible, then spend the one turn that proves it builds, and stop.
 
 ## When NOT to use the graph
 
 If the task already names the exact file and it is small, just read it — the graph saves tokens
-by eliminating exploration; when there is nothing to explore, skip it.
+by eliminating exploration; when there is nothing to explore, skip it. Verification still
+applies: it is about the edit you made, not about how you found it.
 
 ## Reference
 
@@ -62,6 +94,8 @@ by eliminating exploration; when there is nothing to explore, skip it.
     callers ->  entire graph neighbors --repo . --symbol X --relation CALLS --direction in
     change  ->  entire graph diff --base A --head B --json
     detect  ->  entire graph capabilities --json   (inventory-only languages have no relations)
+    verify  ->  this project's own narrowest build/test command, once, after editing
+                (e.g. ` + "`go build ./internal/foo/...`" + `, ` + "`pytest tests/test_foo.py -k name`" + `, ` + "`cargo check -p crate`" + `)
     stats   ->  entire graph stats --repo .        (human-facing token-savings report; not part of your workflow — do not run it unless asked)
 `
 
@@ -112,8 +146,9 @@ func runInitAgents(opts Options, args []string) error {
 
 	pointer := agentPointerBegin + "\n" +
 		"This repo has the entire-graph code graph installed. Before exploring code with\n" +
-		"grep/find/whole-file reads, read .entire/graph-agent.md — search-first doctrine for\n" +
-		"coding agents (measured to cut agent token usage roughly in half on SWE-bench tasks).\n" +
+		"grep/find/whole-file reads, read .entire/graph-agent.md — the search-first, verify-once\n" +
+		"doctrine for coding agents: search instead of grepping, then check the sibling sites and\n" +
+		"compile (or run the nearest existing test) once before you finish.\n" +
 		"@.entire/graph-agent.md\n" +
 		agentPointerEnd + "\n"
 
