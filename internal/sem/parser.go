@@ -3638,6 +3638,22 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 	// descended into (their name nodes would otherwise look like field accesses).
 	if fields, ok := fieldEntities(node, src, language, scope, inFunc); ok {
 		*entities = append(*entities, fields...)
+		// A field whose initializer is an anonymous/nested type still declares
+		// callables: `static final Comparator<T> C = new Comparator<T>() {
+		// public int compare(...) {...} };`. The declaration as a whole is not
+		// descended into (its name nodes would look like field accesses), so
+		// descend into the initializer's TYPE BODIES only. Java's constant
+		// tables are built entirely this way (gson's `TypeAdapters.BYTE`,
+		// lucene's `IntervalBuilder.NO_INTERVALS`) and they are common fix
+		// sites; without this their methods have no symbol at all, so the graph
+		// cannot locate them and a bare call to one of their names mis-resolves
+		// to a same-named method elsewhere in the file. Members are marked
+		// function-local (inFunc=true) exactly like the same idiom written
+		// inside a method body, so localReachable keeps them scoped to the
+		// declaration instead of name-colliding with real members.
+		for _, body := range initializerTypeBodies(node) {
+			walkEntitiesScoped(body, src, language, scope, true, entities)
+		}
 		return
 	}
 	entity, ok := entityFromNode(node, src, language, scope)
@@ -3648,7 +3664,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 			entity.Local = true // nested inside another function
 		}
 		*entities = append(*entities, entity)
-		if scopesChildren(entity.Kind) {
+		if scopesChildren(language, entity.Kind) {
 			childScope = entity.Name
 		}
 		if entity.Kind == "function" || entity.Kind == "method" {
@@ -4718,17 +4734,59 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		kind = "interface"
 		name = nodeName(node, src)
 	case "record_declaration":
-		// C# `record` / `record struct` types. Without this case a record is
-		// invisible: no type symbol, and its properties/methods get no container
-		// (dropping e.g. every EF Core `*Dependencies` parameter object), so
-		// property-typed receiver calls through a record can never resolve.
-		// Gated to C# so the same node name in other grammars (e.g. Java
-		// records, currently unextracted) keeps its existing behavior.
-		if language != "C#" {
+		// C# `record` / `record struct` and Java `record` types. Without this
+		// case a record is invisible: no type symbol, and its
+		// properties/methods get no container (dropping e.g. every EF Core
+		// `*Dependencies` parameter object), so property-typed receiver calls
+		// through a record can never resolve. For Java the same hole orphaned
+		// every record accessor as a bare, container-less method name.
+		if language != "C#" && language != "Java" {
 			return Entity{}, false
 		}
 		kind = "class"
 		name = nodeName(node, src)
+	// Java `annotation_type_declaration` (`@interface Foo`) is deliberately NOT
+	// extracted. It is a type, so emitting it looks correct, but it is a
+	// declaration with no executable body, and its name is the noun the issue
+	// prose repeats ("@NonNull on a primitive array field isn't working"). On a
+	// 43-instance Java locate measurement, emitting it took rank 1 from the fix
+	// site on 6 instances (lombok's @NonNull/@SuperBuilder/@UtilityClass/
+	// @Generated/@Helper marker files, each a one-symbol file whose base name is
+	// also the query term) and improved none. The handler that implements the
+	// annotation is the fix site; the marker never is.
+	case "constructor_declaration", "compact_constructor_declaration":
+		// Java constructors had no case at all, so a constructor was not a
+		// symbol: it could not be located by search, it had no container, and
+		// the graph reported the enclosing class as the tightest symbol around
+		// a constructor fix site. A constructor is a callable member, so it
+		// emits the canonical `method` kind (overloaded constructors are
+		// separated by the signature-hash id like any other overload set).
+		// Gated to Java so other grammars sharing the node type keep their
+		// existing behavior.
+		if language != "Java" {
+			return Entity{}, false
+		}
+		kind = "method"
+		name = nodeName(node, src)
+		if scope != "" {
+			name = qualify(scope, name)
+		}
+	case "enum_constant":
+		// A Java enum constant with a class body (`IDENTITY { @Override String
+		// translateName(Field f) {...} }`) is a singleton subclass, and its
+		// body is a frequent fix site. Emitting it as a container gives those
+		// members a real parent (`FieldNamingPolicy.IDENTITY.translateName`)
+		// instead of attributing them to the enclosing type. Constants without
+		// a body carry no code of their own and are left to the enum's symbol,
+		// so large constant tables do not flood the snapshot.
+		if language != "Java" || !validNode(node.ChildByFieldName("body")) {
+			return Entity{}, false
+		}
+		kind = "class"
+		name = nodeName(node, src)
+		if scope != "" {
+			name = qualify(scope, name)
+		}
 	case "struct_item", "struct_specifier", "struct_declaration":
 		// Zig struct literals are anonymous (`const Point = struct {...}`); the
 		// symbol is extracted at the enclosing variable_declaration, which carries
@@ -7008,16 +7066,51 @@ func isExportedTopLevelJSVariable(node *sitter.Node, language string) bool {
 	return validNode(root) && root.Type() == "program"
 }
 
-func scopesChildren(kind string) bool {
+func scopesChildren(language, kind string) bool {
 	switch kind {
 	// "type" scopes children so Go struct fields qualify under the struct
 	// (Go structs parse as type_spec -> kind "type"). Interface/alias bodies
 	// have no field declarations, so this only affects struct fields.
 	case "class", "interface", "message", "module", "service", "struct", "trait", "type":
 		return true
+	case "enum":
+		// A Java enum IS a class: it declares methods, fields and constants
+		// with bodies, and those are members of the enum type. Not scoping
+		// them emitted bare, container-less names (`translateName` rather than
+		// `FieldNamingPolicy.translateName`), which collide across files and
+		// are unreachable by container-based resolution because
+		// containerName("translateName") is empty. Gated to Java so grammars
+		// whose enums carry no member declarations are unchanged.
+		return language == "Java"
 	default:
 		return false
 	}
+}
+
+// initializerTypeBodies returns the type-body nodes nested inside a
+// field/property declaration's initializer — the anonymous-class idiom. The
+// search stops at the outermost body found on each branch; walkEntitiesScoped
+// handles anything nested inside it.
+func initializerTypeBodies(node *sitter.Node) []*sitter.Node {
+	var out []*sitter.Node
+	var walk func(n *sitter.Node)
+	walk = func(n *sitter.Node) {
+		if !validNode(n) {
+			return
+		}
+		switch n.Type() {
+		case "class_body", "interface_body", "enum_body":
+			out = append(out, n)
+			return
+		}
+		for i := 0; i < int(n.NamedChildCount()); i++ {
+			walk(n.NamedChild(i))
+		}
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		walk(node.NamedChild(i))
+	}
+	return out
 }
 
 // rAssignmentEntity extracts an R definition from an assignment. The r-lib
