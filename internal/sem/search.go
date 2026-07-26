@@ -169,6 +169,20 @@ type searchQuery struct {
 	// mined out of identifiers, which are evidence for matching but not for intent.
 	// See searchQuerySupplied.
 	words map[string]bool
+	// wordSequence is the same words in the order the caller wrote them, duplicates kept.
+	// Reconstructing the identifier a caller typed ("update market sizes" ->
+	// updateMarketSizes) is order-dependent, so the set above cannot do it.
+	wordSequence []string
+	// matchableWords is wordSequence without the words that cannot contribute a match to
+	// any document in this corpus — words that never became search terms (stop words) and
+	// terms no indexed file contains. Scoring reads the query through this sequence so an
+	// unmatchable word cannot revoke a bonus the matchable ones earned.
+	// Populated by withCorpusPresence once document frequencies are known.
+	matchableWords []string
+	// identifierTokens holds the compaction of every raw token the caller wrote in
+	// identifier shape (mixed case, or containing `_` `.` `/` `:`). Such a token IS the
+	// caller naming a symbol, whatever else the query says around it.
+	identifierTokens map[string]bool
 }
 
 type searchCandidate struct {
@@ -223,6 +237,11 @@ var searchStopWords = map[string]bool{
 	"code": true, "did": true, "does": true, "for": true, "from": true, "how": true,
 	"i": true, "in": true, "into": true, "is": true, "it": true,
 	"make": true, "not": true, "of": true, "on": true, "or": true, "our": true,
+	// Politeness is addressed to the tool, never to the corpus: a word like these carries
+	// no retrieval intent, so indexing it can only add noise. This is a refinement, not the
+	// mechanism — see matchesExactSymbolForm and scoreSearchCandidates, which make ANY
+	// unmatchable word inert, listed or not.
+	"kindly": true, "please": true, "pls": true, "thanks": true,
 	"should": true, "support": true, "that": true, "the": true,
 	"this": true, "to": true, "use": true, "uses": true, "using": true,
 	"we": true, "what": true, "when": true, "where": true, "which": true, "while": true,
@@ -433,6 +452,14 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	sparseDocumentLength := selection.sparseDocumentLength
 	var candidates []searchCandidate
 	sparseCandidates := append([]searchCandidate(nil), selection.sparseCandidates...)
+	// Corpus statistics come first, in their own pass. Scoring has to know which query
+	// words this repository can match at all before a single candidate is built: the
+	// all-or-nothing bonuses (exact-symbol, all-query-terms) are otherwise judged against
+	// words nothing contains, which silently penalizes the documents that matched the rest
+	// of the query. The content reader is memoized, so the second pass normally re-reads
+	// nothing; a selection larger than the content cache can fall back to disk for the
+	// overflow, which rereadFiles/rereadBytes below keep out of the read telemetry.
+	indexableFiles := make([]string, 0, len(selectedFiles))
 	for _, filePath := range selectedFiles {
 		if err := ctx.Err(); err != nil {
 			return SearchResponse{}, err
@@ -441,6 +468,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		if !ok || strings.IndexByte(content, 0) >= 0 {
 			continue
 		}
+		indexableFiles = append(indexableFiles, filePath)
 		lowerContent := strings.ToLower(content)
 		lowerPath := strings.ToLower(filepath.ToSlash(filePath))
 		for _, term := range q.terms {
@@ -448,11 +476,26 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 				fileDF[term]++
 			}
 		}
+	}
+	q = q.withCorpusPresence(fileDF)
+	statisticsPassFiles, statisticsPassBytes := queryReads.files, queryReads.bytes
+	for _, filePath := range indexableFiles {
+		if err := ctx.Err(); err != nil {
+			return SearchResponse{}, err
+		}
+		content, ok := read(filePath)
+		if !ok {
+			continue
+		}
 		lines := strings.Split(content, "\n")
 		candidates = append(candidates, candidatesForFile(
 			q, filePath, fileLanguages[filePath], lines, symbolsByFile[filePath], options,
 		)...)
 	}
+	// Re-reading a file the content cache had to drop pulls in the same file, not another
+	// one, so it must not inflate what the query is reported to have read.
+	rereadFiles := queryReads.files - statisticsPassFiles
+	rereadBytes := queryReads.bytes - statisticsPassBytes
 	sparseFilesRead := selection.sparseFilesContentRead
 	if options.TopK > defaultSearchTopK && len(sparseQuery.terms) > 0 {
 		for _, filePath := range selection.sparseFiles {
@@ -635,8 +678,8 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	stats.SnippetsTruncated = truncated
 	// Query and usage counters are disjoint physical reads. Identifier lookups
 	// already satisfied by the shared content cache add zero usage bytes.
-	stats.QueryFilesRead = queryReads.files - usageFilesRead
-	stats.QueryBytesRead = queryReads.bytes - usageBytesRead
+	stats.QueryFilesRead = queryReads.files - usageFilesRead - rereadFiles
+	stats.QueryBytesRead = queryReads.bytes - usageBytesRead - rereadBytes
 	stats.UsageFilesRead = usageFilesRead
 	stats.UsageBytesRead = usageBytesRead
 	stats.QueryLatencyMS = time.Since(queryStarted).Milliseconds()
@@ -838,6 +881,30 @@ func serializedSearchResultBytes(value any) int {
 type searchFileCandidate struct {
 	path  string
 	score float64
+	// matchedWeight is the query weight this file matched, kept so the coverage share of
+	// the file score can be normalized AFTER the scan — by then the terms no file matched
+	// are known and can be left out of the denominator. See applySearchFileCoverage.
+	matchedWeight float64
+}
+
+// applySearchFileCoverage adds the query-coverage share of the preselection score once the
+// scan is done. The denominator is the weight of the terms at least one file matched, not of
+// everything the caller typed: a term the corpus does not contain would otherwise shrink the
+// coverage share of every file and re-order them against their path evidence, which is how a
+// single nonsense word used to change which files got indexed at all.
+func applySearchFileCoverage(files []searchFileCandidate, q searchQuery, matchedTerms []bool) {
+	queryWeight := 0.0
+	for index, term := range q.terms {
+		if index < len(matchedTerms) && matchedTerms[index] {
+			queryWeight += q.weights[term]
+		}
+	}
+	if queryWeight <= 0 {
+		return
+	}
+	for index := range files {
+		files[index].score += 4 * files[index].matchedWeight / queryWeight
+	}
 }
 
 type searchFileSelection struct {
@@ -927,10 +994,10 @@ func preselectSearchFiles(
 		selection.files = append([]string(nil), source.paths...)
 		return selection, nil
 	}
-	queryWeight := 0.0
-	for _, weight := range q.weights {
-		queryWeight += weight
-	}
+	// Which terms any file matches is not known until the scan is done, so the coverage
+	// share of every file score is added afterwards, over the matched terms only
+	// (applySearchFileCoverage). Until then a file carries its matched weight unnormalized.
+	matchedAnywhere := make([]bool, len(q.terms))
 	matcher := newSearchTermMatcher(q.terms)
 	scanPaths := source.paths
 	usedGitIndexPreselection := false
@@ -962,19 +1029,21 @@ func preselectSearchFiles(
 				termMatches[match.Path] = seen
 			}
 			provisional := make([]searchFileCandidate, 0, len(termMatches)+16)
+			grepMatchedAnywhere := make([]bool, len(q.terms))
 			for filePath, seen := range termMatches {
 				matchedWeight := 0.0
 				for index, matched := range seen {
 					if matched {
 						matchedWeight += q.weights[q.terms[index]]
+						grepMatchedAnywhere[index] = true
 					}
 				}
 				pathScore := pathSearchScore(q, filePath)
-				score := 2*pathScore + matchedWeight + searchPathPrior(q, filePath)
-				if queryWeight > 0 {
-					score += 4 * matchedWeight / queryWeight
-				}
-				provisional = append(provisional, searchFileCandidate{path: filePath, score: score})
+				provisional = append(provisional, searchFileCandidate{
+					path:          filePath,
+					score:         2*pathScore + matchedWeight + searchPathPrior(q, filePath),
+					matchedWeight: matchedWeight,
+				})
 			}
 			untracked := make([]string, 0, 16)
 			for _, filePath := range source.paths {
@@ -991,6 +1060,7 @@ func preselectSearchFiles(
 					}
 				}
 			}
+			applySearchFileCoverage(provisional, q, grepMatchedAnywhere)
 			sort.Slice(provisional, func(i, j int) bool {
 				if provisional[i].score != provisional[j].score {
 					return provisional[i].score > provisional[j].score
@@ -1018,6 +1088,7 @@ func preselectSearchFiles(
 	}
 	var sparseMu sync.Mutex
 	var contentReadMu sync.Mutex
+	var matchedMu sync.Mutex
 	contentReads := 0
 	scoreFile := func(filePath string) (searchFileCandidate, bool) {
 		if err := ctx.Err(); err != nil {
@@ -1058,21 +1129,25 @@ func preselectSearchFiles(
 		}
 		pathScore := pathSearchScore(q, filePath)
 		matchedWeight := 0.0
-		for index, matched := range matcher.match(content) {
-			if matched {
-				term := q.terms[index]
-				weight := q.weights[term]
-				matchedWeight += weight
+		matched := matcher.match(content)
+		for index, hit := range matched {
+			if hit {
+				matchedWeight += q.weights[q.terms[index]]
 			}
 		}
 		if pathScore == 0 && matchedWeight == 0 {
 			return searchFileCandidate{}, false
 		}
-		score := 2*pathScore + matchedWeight + searchPathPrior(q, filePath)
-		if queryWeight > 0 {
-			score += 4 * matchedWeight / queryWeight
+		matchedMu.Lock()
+		for index, hit := range matched {
+			matchedAnywhere[index] = matchedAnywhere[index] || hit
 		}
-		return searchFileCandidate{path: filePath, score: score}, true
+		matchedMu.Unlock()
+		return searchFileCandidate{
+			path:          filePath,
+			score:         2*pathScore + matchedWeight + searchPathPrior(q, filePath),
+			matchedWeight: matchedWeight,
+		}, true
 	}
 	workers := 1
 	if options.Worktree {
@@ -1082,6 +1157,7 @@ func preselectSearchFiles(
 	if err := ctx.Err(); err != nil {
 		return searchFileSelection{}, err
 	}
+	applySearchFileCoverage(files, q, matchedAnywhere)
 	sort.Slice(files, func(i, j int) bool {
 		if files[i].score != files[j].score {
 			return files[i].score > files[j].score
@@ -1825,6 +1901,15 @@ func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF m
 		df := fileDF[term]
 		weight := math.Log(1+(float64(fileCount-df)+0.5)/(float64(df)+0.5)) * q.weights[term]
 		idf[term] = weight
+		if df == 0 {
+			// No indexed file contains this term, so no candidate can ever match it —
+			// and, being maximally rare, it would carry the LARGEST idf of the query.
+			// Charging it to the query weight would put full coverage out of reach and
+			// tax every document that matched the rest of the query, purely because the
+			// caller wrote one word the repository has never heard of. An unmatched term
+			// contributes zero (BM25), never a penalty.
+			continue
+		}
 		queryWeight += weight
 	}
 	for i := range candidates {
@@ -2858,8 +2943,27 @@ func buildSearchQuery(query string) searchQuery {
 			weights[term] = weight
 		}
 	}
-	for _, raw := range searchWordPattern.FindAllString(query, -1) {
+	// Case folding has to be score-neutral. codeLikeSearchToken reads consecutive capitals
+	// as an identifier signal (SCREAMING_SNAKE constants, acronyms), which made a SHOUTED
+	// prose query score the same symbol far above the identical lowercase query. When every
+	// letter-bearing word of a multi-word query is uppercase, the capitals distinguish
+	// nothing — they are emphasis, not identifier structure — so fold the query before
+	// reading code-likeness out of it. A single-word query (`ENOENT`), any mixed-case query,
+	// and separator-bearing tokens (`MAX_SIZE` stays code-like after folding) are untouched.
+	rawTokens := searchWordPattern.FindAllString(query, -1)
+	if searchQueryIsShouted(rawTokens) {
+		for index := range rawTokens {
+			rawTokens[index] = strings.ToLower(rawTokens[index])
+		}
+	}
+	identifierTokens := map[string]bool{}
+	for _, raw := range rawTokens {
 		codeLike := codeLikeSearchToken(raw)
+		if identifierShapedToken(raw) {
+			if compacted := compactSearchIdentifier(raw); compacted != "" {
+				identifierTokens[compacted] = true
+			}
+		}
 		for index, term := range searchTokenVariants(raw) {
 			weight := 1.0
 			if codeLike && index == 0 {
@@ -2905,13 +3009,102 @@ func buildSearchQuery(query string) searchQuery {
 		weights = trimmedWeights
 	}
 	rawLower := strings.ToLower(strings.TrimSpace(query))
+	wordSequence := searchQueryWordSequence(rawLower)
 	return searchQuery{
-		rawLower: rawLower,
-		terms:    terms,
-		termSet:  termSet,
-		weights:  weights,
-		words:    searchQueryWords(rawLower),
+		rawLower:         rawLower,
+		terms:            terms,
+		termSet:          termSet,
+		weights:          weights,
+		words:            searchQueryWords(rawLower),
+		wordSequence:     wordSequence,
+		matchableWords:   matchableQueryWords(wordSequence, termSet, nil),
+		identifierTokens: identifierTokens,
 	}
+}
+
+// identifierShapedToken reports whether a token was written the way code spells names: it
+// carries a separator (`_ . / : $ + #`) or a case hump inside the word (fooBar, NonNull).
+// It is deliberately stricter than codeLikeSearchToken, which also accepts any run of
+// capitals — issue prose is full of shouted words (BUG, TODO, API, JSON) that are not the
+// caller naming a symbol, and only this stricter shape may claim an exact name match.
+func identifierShapedToken(raw string) bool {
+	trimmed := strings.Trim(raw, "./:-")
+	if strings.ContainsAny(trimmed, "_./:$+#") {
+		return true
+	}
+	humped, lowercase := false, false
+	for index, character := range trimmed {
+		switch {
+		case unicode.IsUpper(character):
+			humped = humped || index > 0
+		case unicode.IsLower(character):
+			lowercase = true
+		}
+	}
+	return humped && lowercase
+}
+
+// searchQueryIsShouted reports whether the capitals in a query carry no information: at
+// least two letter-bearing words and not one lowercase letter among them. One all-caps word
+// is an identifier a caller typed; a whole all-caps sentence is emphasis.
+func searchQueryIsShouted(tokens []string) bool {
+	lettered := 0
+	for _, token := range tokens {
+		hasLetter := false
+		for _, character := range token {
+			if !unicode.IsLetter(character) {
+				continue
+			}
+			hasLetter = true
+			if unicode.IsLower(character) {
+				return false
+			}
+		}
+		if hasLetter {
+			lettered++
+		}
+	}
+	return lettered >= 2
+}
+
+// searchQueryUnmatchableWord returns the predicate "this query word cannot contribute a
+// match to ANY document in the corpus": either it never became a search term (a stop word,
+// or too short to index), or it is a term no indexed file contains. Such a word is inert
+// evidence, and inert evidence may not cost a document points it already earned.
+// documentFrequency may be nil before corpus statistics exist, in which case only the
+// never-became-a-term half of the test applies.
+func searchQueryUnmatchableWord(termSet map[string]bool, documentFrequency map[string]int) func(string) bool {
+	return func(word string) bool {
+		if !termSet[word] {
+			return true
+		}
+		if documentFrequency == nil {
+			return false
+		}
+		return documentFrequency[word] == 0
+	}
+}
+
+// matchableQueryWords drops from the written word order every word that cannot contribute a
+// match to any document, so the phrase the caller meant survives the noise words around it.
+func matchableQueryWords(wordSequence []string, termSet map[string]bool, documentFrequency map[string]int) []string {
+	unmatchable := searchQueryUnmatchableWord(termSet, documentFrequency)
+	matchable := make([]string, 0, len(wordSequence))
+	for _, word := range wordSequence {
+		if unmatchable(word) {
+			continue
+		}
+		matchable = append(matchable, word)
+	}
+	return matchable
+}
+
+// withCorpusPresence returns a copy of q that knows which of its words the corpus can
+// actually match, so scoring stops charging documents for words nothing contains.
+// documentFrequency is keyed by term over the indexed file set.
+func (q searchQuery) withCorpusPresence(documentFrequency map[string]int) searchQuery {
+	q.matchableWords = matchableQueryWords(q.wordSequence, q.termSet, documentFrequency)
+	return q
 }
 
 func buildSparseSearchQuery(query string) searchQuery {
@@ -2930,12 +3123,15 @@ func buildSparseSearchQuery(query string) searchQuery {
 		}
 	}
 	rawLower := strings.ToLower(strings.TrimSpace(query))
+	wordSequence := searchQueryWordSequence(rawLower)
 	return searchQuery{
-		rawLower: rawLower,
-		terms:    terms,
-		termSet:  termSet,
-		weights:  weights,
-		words:    searchQueryWords(rawLower),
+		rawLower:       rawLower,
+		terms:          terms,
+		termSet:        termSet,
+		weights:        weights,
+		words:          searchQueryWords(rawLower),
+		wordSequence:   wordSequence,
+		matchableWords: matchableQueryWords(wordSequence, termSet, nil),
 	}
 }
 
@@ -3290,10 +3486,19 @@ func searchQuerySupplied(q searchQuery, terms ...string) bool {
 // so `docs/api.md` contributes `docs`, while `NamedByteArrayTest` contributes only itself.
 func searchQueryWords(rawLower string) map[string]bool {
 	words := map[string]bool{}
+	for _, word := range searchQueryWordSequence(rawLower) {
+		words[word] = true
+	}
+	return words
+}
+
+// searchQueryWordSequence is searchQueryWords in written order, duplicates kept.
+func searchQueryWordSequence(rawLower string) []string {
+	var words []string
 	current := make([]rune, 0, 16)
 	flush := func() {
 		if len(current) > 0 {
-			words[string(current)] = true
+			words = append(words, string(current))
 			current = current[:0]
 		}
 	}
@@ -3312,7 +3517,6 @@ func symbolSearchScore(q searchQuery, symbol SymbolRecord) (float64, []string) {
 	name := strings.ToLower(symbol.Name)
 	qualified := strings.ToLower(symbol.QualifiedName)
 	signature := strings.ToLower(symbol.Signature)
-	compactQuery := compactSearchIdentifier(q.rawLower)
 	compactName := compactSearchIdentifier(name)
 	score := 0.0
 	switch symbol.Kind {
@@ -3326,8 +3530,8 @@ func symbolSearchScore(q searchQuery, symbol SymbolRecord) (float64, []string) {
 		score -= 0.5
 	}
 	var signals []string
-	if compactQuery != "" && compactQuery == compactName {
-		score += 14
+	if matchesExactSymbolForm(q, compactName) {
+		score += exactSymbolBonus(q, symbol.Kind)
 		signals = append(signals, "exact-symbol")
 	}
 	for _, term := range q.terms {
@@ -3345,6 +3549,85 @@ func symbolSearchScore(q searchQuery, symbol SymbolRecord) (float64, []string) {
 		}
 	}
 	return score, appendUnique(nil, signals...)
+}
+
+// exactSymbolBonus weights an exact name match by what the named thing is.
+//
+// A container — a class, an interface, an enum, a module-level constant — is a NOUN issue
+// prose is full of, and reading it as the edit site crowds the head of the ranking with
+// declarations. Measured: "GsonBuilder should throw when registering an adapter for Object or
+// JsonElement" named three types, and at the flat bonus the classes GsonBuilder, JsonElement
+// and the constant JSON_ELEMENT took ranks 1-3 from the method the patch actually changes.
+// A callable, by contrast, is where a fix lands, so it keeps the full bonus. When the caller
+// asks for the container by itself — the whole query is that one name — it is the answer, and
+// the full bonus applies again.
+func exactSymbolBonus(q searchQuery, kind string) float64 {
+	switch kind {
+	case "class", "interface", "struct", "trait", "type", "enum", "record", "object", "protocol",
+		"annotation", "const", "constant", "variable", "field", "property",
+		"module", "namespace", "package":
+		if len(q.wordSequence) > 1 {
+			return 6
+		}
+	}
+	return 14
+}
+
+// matchesExactSymbolForm reports whether the query spells this symbol out by name.
+//
+// It used to compare the symbol against the compaction of the WHOLE query, which made the
+// bonus all-or-nothing over every token the caller typed: appending one more word — a
+// politeness ("please"), a word the repository has never heard of ("xyzzy"), an article
+// ("update THE market sizes") — revoked a bonus the symbol had already earned from the words
+// that did match. That is the opposite of how a term-scoring model must behave: a term the
+// document cannot match contributes zero, never a penalty.
+//
+// So the test is now local to the words that name the symbol. The bonus is earned when the
+// symbol's name is spelled out by
+//   - a contiguous run of two or more query words, in written order ("update market sizes"
+//     inside a longer sentence, and "get the value" for a name really spelled get_the_value);
+//   - the same over the matchable words only, so stop words and words nothing in the corpus
+//     contains cannot break the run apart ("update THE market sizes PLEASE");
+//   - one token the caller wrote in identifier shape, whatever surrounds it
+//     ("buildGroupIndex please");
+//   - or a single-word query equal to the name, which is the original whole-query rule.
+//
+// Every clause only ADDS a way to earn the bonus, so no word can take one away.
+func matchesExactSymbolForm(q searchQuery, compactName string) bool {
+	if compactName == "" {
+		return false
+	}
+	if q.identifierTokens[compactName] {
+		return true
+	}
+	if len(q.wordSequence) == 1 {
+		return q.wordSequence[0] == compactName
+	}
+	return spellsCompactIdentifier(q.wordSequence, compactName) ||
+		spellsCompactIdentifier(q.matchableWords, compactName)
+}
+
+// spellsCompactIdentifier reports whether two or more consecutive words of the sequence
+// concatenate to exactly compact. Word boundaries are what keep this honest: a run must
+// consume whole words, so "buildGroupIndexEntry" (one word) never spells buildGroupIndex.
+func spellsCompactIdentifier(words []string, compact string) bool {
+	for start := 0; start+1 < len(words); start++ {
+		if !strings.HasPrefix(compact, words[start]) {
+			continue
+		}
+		length := len(words[start])
+		for end := start + 1; end < len(words); end++ {
+			if length+len(words[end]) > len(compact) ||
+				compact[length:length+len(words[end])] != words[end] {
+				break
+			}
+			length += len(words[end])
+			if length == len(compact) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func compactSearchIdentifier(value string) string {
