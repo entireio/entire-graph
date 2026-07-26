@@ -4,7 +4,7 @@ Hand this to any coding agent working in a repo where the `entire graph` plugin 
 
 ## What this gives you
 
-A precomputed, **deterministic** code graph is available through the `entire graph` command — functions, classes, methods, types, routes, and the calls/inheritance/field/service relations between them, parsed with tree-sitter, 100% locally (no network, no model, no keys). Use it to **LOCATE** and **UNDERSTAND** code *before* any grep / find / cat / whole-file read. Every command is no-egress and safe to run inside a sandboxed session. The same commit always yields the same graph, so once the graph shows you something, you can trust it and act — no need to re-confirm with a second tool.
+A precomputed, **deterministic** code graph is available through the `entire graph` command — functions, classes, methods, types, routes, and the calls/inheritance/field/service relations between them, parsed with tree-sitter, 100% locally (no network, no model, no keys). Use it to **LOCATE** and **UNDERSTAND** code *before* any grep / find / cat / whole-file read. Every command is no-egress and safe to run inside a sandboxed session. The same commit always yields the same graph, so once the graph shows you *where* code is, you can trust that and act — no need to re-confirm the location with a second tool. (That is a licence to skip re-grepping, not to skip checking that the edit you then write actually builds — see the doctrine below.)
 
 Default flags to remember: pass `--repo .` when you're not inside an Entire session; the graph reads your **working tree by default** (your uncommitted edits are visible), and `--head` switches to committed-tree semantics with a cached, reusable index.
 
@@ -160,40 +160,59 @@ what `scripts/entire-graph-statusline.sh` renders as a live Claude Code status l
 
 ---
 
-## The measured-best agent prompt (copy-paste this)
+## The agent prompt (copy-paste this)
 
-This exact instruction block is what won the **official SWE-bench Multilingual benchmark** (300
-instances, 9 languages, Haiku): **54.9% weighted token savings vs a no-tool agent** — double
-codebase-memory-mcp's 27.4% — winning 8/9 languages and 216/293 instances, with identical task
-completion. Replicated on Sonnet (3×: 57.7% vs 36.6%) and on open-source models (31–73% via the
-Pi agent). Give it to any coding agent that has `entire graph` available — substitute your search
+Give this to any coding agent that has `entire graph` available — substitute your search
 invocation for `<search-cmd>`:
 
 ```text
 A precomputed code-search tool is available: <search-cmd> . Use it to LOCATE the fix BEFORE any
 grep/find. Your FIRST action must be ONE search:
   <search-cmd> "<the bug in one sentence>"   <-- ranked relevant code (file:line + source)
-Then open the top hit's file with your native Read tool (pass a line range around the reported
-line), make the minimal edit, and STOP. The search top hit is the fix site on most tasks — go
-straight there and edit; do NOT re-search or grep to 'confirm'. Reach the edit in as FEW turns as
-possible (every turn re-reads your whole context — that is the token cost). Hard rules:
-(1) SEARCH FIRST. (2) After search, READ the file directly (line range) and EDIT — do not chain
-more searches. (3) NEVER read a whole file to explore; pass a line range. (4) NEVER search outside
-this repo. Apply the minimal fix and STOP the moment you can justify it.
+The top hits come back as COMPLETE function bodies — edit straight from the search output. Only
+when the hit you want is a two-line locator, open its file with your native Read tool at the
+reported line range. The search top hit is the fix site on most tasks — go straight there and
+edit; do NOT re-search or grep to 'confirm'. Reach the edit in as FEW turns as possible (every
+turn re-reads your whole context — that is the token cost). Hard rules:
+(1) SEARCH FIRST. (2) After search, edit from the returned body, or READ one line range and edit
+— do not chain more searches. (3) NEVER read a whole file to explore; pass a line range.
+(4) NEVER search outside this repo. (5) A fix is often not one edit in one place: before you
+finish, check the sibling / duplicate / caller sites that need the same change — 'impact --symbol
+X' returns callers, type consumers, co-change files and siblings in one shot. (6) VERIFY ONCE,
+DON'T CHASE: after editing, compile the package you touched or run the nearest existing test.
+This is not optional overhead — an edit that does not build fails 100% of the task, which costs
+far more than the one turn the check costs. Read the error, fix exactly what it names, re-run;
+a couple of iterations, not more. Do NOT loop edit->test->edit chasing a green suite, and do not
+'fix' failures that were already failing before you started. Then stop.
 ```
 
-The block above is reproduced verbatim as the one that produced those numbers. Since it was
-measured, search began returning the **top 5 hits as complete function bodies**, which makes its
-"then open the top hit's file" step optional: if the hit you want carries the `complete-symbol`
-signal, edit straight from the search output and skip the Read entirely. That read was ~3.8 turns
-per session at ~42.5k tokens each — the largest remaining cost the tool can remove. (The
-benchmark number above has not been re-measured with the change.)
+**What was measured, and the caveat.** The token figure comes from the **official SWE-bench
+Multilingual benchmark** (300 instances, 9 languages, Haiku): **54.9% weighted token savings vs a
+no-tool agent** — double codebase-memory-mcp's 27.4% — winning 8/9 languages and 216/293
+instances. Replicated on Sonnet (3×: 57.7% vs 36.6%) and on open-source models (31–73% via the Pi
+agent). **Caveat:** that 54.9% was measured with the frugality clamp active (the earlier prompt's
+"one search, minimal edit, STOP" plus "do not run builds or test suites") and against a baseline
+that received *no working-policy instructions at all*; the same configuration resolved **131/300
+(43.7%)** against the baseline's **150/300 (50.0%)** on those same 300 instances — 127 vs 146 on
+the 273 both agents submitted a patch for, McNemar p=0.013.
+
+Paired analysis of the 31 losses where the baseline fixed the bug and the graph-assisted agent did
+not, both having found the correct file, shows the clamp was the cause: the graph agent ran **zero
+builds or tests on 22 of the 31** (baseline ran them on 26/31) and made a **single edit on 22/31**
+(baseline 8/31), and two of the losing patches could not compile at all (a left-behind
+`declared and not used` variable; a member access missing its required index). Rules (5) and (6)
+above exist to remove that cost. The savings figure has **not** been re-measured with them — nor
+with search's later change to return the **top 5 hits as complete function bodies**, which
+removed the "then open the top hit's file" Read (~3.8 turns per session at ~42.5k tokens each).
+The clamp prompt exactly as measured is preserved in the graphmark repo for reproduction only —
+do not use it for real work.
 
 For bug-fix/locate tasks, run search at `--profile full` (call-graph expansion active) with default
 text output (tiered: full snippet for the top hits, terse locators after). Measured detail that
 matters: chaining `search -> def -> callers` to "explore the tool" was the #1 measured token
-waste — prefer the search-only fast path above. (Full methodology, prompts, fairness controls and
-caveats: the graphmark repo, `agentic-swebench/REPRODUCE.md` + `BEAT-CMM-VERDICT.md`.)
+waste — prefer the search-only fast path above, then verify. (Full methodology, prompts, fairness
+controls and caveats: the graphmark repo, `agentic-swebench/REPRODUCE.md` +
+`BEAT-CMM-VERDICT.md`.)
 
 ## Operating doctrine (the token-saving rules)
 
@@ -202,8 +221,11 @@ caveats: the graphmark repo, `agentic-swebench/REPRODUCE.md` + `BEAT-CMM-VERDICT
 3. **Trust the graph.** Once search or neighbors shows you the function and its source, **edit it**. Do not re-read the whole file or re-grep to "confirm" what the graph already showed — the graph is deterministic.
 4. **Never read a whole file to explore.** If you must read, read the line range around the symbol. To understand a type/class, query it — don't open its file.
 5. **Impact = one targeted query.** For "what breaks if I change X", use `neighbors --symbol X --relation CALLS --direction in` — not a whole-graph `snapshot`/`edges` dump, and not a repo-wide grep.
-6. **Minimise turns.** Token cost is roughly turns × context. Prefer one precise query over three broad ones. Stop discovery once you can defend the edit with a focused hypothesis (ideally a failing test).
-7. **Feature-detect before you trust.** If a language might be inventory-only, check `capabilities --json` first — inventory-only files have file records but no semantic relations.
+6. **Minimise turns — in discovery, not in verification.** Token cost is roughly turns × context, so prefer one precise query over three broad ones and stop *discovery* once you can defend the edit with a focused hypothesis. Turn economy applies to finding code; it is not a licence to skip the check that your edit builds.
+7. **Complete the fix.** A fix is often not one edit in one place. Before finishing, run one `impact --symbol X` and apply the same change to the sibling / duplicate / caller sites that carry the same defect. Measured: single-edit patches were 22 of 31 paired losses (baseline 8/31).
+8. **Verify once — always.** After editing, compile what you touched or run the nearest existing test, at the narrowest scope that would still catch a syntax, type, name, or arity error. Measured: the clamped agent ran zero builds/tests on 22 of 31 paired losses, two of which could not compile. One verification turn is far cheaper than a wrong patch.
+9. **Verify, don't chase.** Verification is bounded: run it, read the error, fix exactly what the error names, re-run — a couple of iterations, not fifty. Do not enter an edit→test→edit loop hunting a green suite, and do not "fix" failures that predate your change.
+10. **Feature-detect before you trust.** If a language might be inventory-only, check `capabilities --json` first — inventory-only files have file records but no semantic relations.
 
 Quick mental model:
 
@@ -214,6 +236,7 @@ callers →  entire graph neighbors --symbol X ...       (targeted callers/calle
 change  →  entire graph diff --base A --head B          (entity-level, with dependents)
 ingest  →  entire graph snapshot --format ndjson        (whole graph)
 report  →  entire graph stats --repo .                  (human-facing: graph vs grep/read usage + estimated token savings)
+verify  →  the project's own narrowest build/test cmd    (not a graph command — run it once, after editing)
 ```
 
 ---

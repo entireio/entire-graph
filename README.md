@@ -28,7 +28,7 @@ entire graph init-agents
 
 That's it. `init-agents` drops the operating guide into your project's `AGENTS.md` and `CLAUDE.md`,
 so Claude Code, Codex, Gemini, Cursor, Pi — any agent that reads those files — picks up the
-search-first workflow automatically. No config, no MCP server, no daemon.
+search-first, verify-once workflow automatically. No config, no MCP server, no daemon.
 
 ## Status line: what the graph is saving you, live
 
@@ -86,7 +86,8 @@ top-ranked hits arrive as complete function bodies, so the common case is search
 no follow-up file read at all.
 
 Want the exact agent instructions? `entire graph agent-guide` prints them; they also live in
-[AGENTS.md](AGENTS.md), including the copy-paste prompt block that produced the benchmark numbers.
+[AGENTS.md](AGENTS.md), including the copy-paste prompt block and what the benchmark did and did
+not measure about it.
 
 ## Where it fits in Entire
 
@@ -113,6 +114,18 @@ code-memory tool and the closest comparable.
 | Claude Code · Sonnet — 23 instances, 3× replicated | **57.7%** | 36.6% |
 | Pi agent · open-source models (gpt-oss, Kimi K2.6, DeepSeek V4, GLM-5.2) | **31–73%** | — |
 | Task completion (patch produced) | parity with baseline in every suite | parity |
+
+**Caveat on the headline row.** The 54.9% was measured with the agent prompt's frugality clamp
+active ("one search, minimal edit, stop" plus "do not run builds or test suites") and against a
+baseline that received *no working-policy instructions at all*. On those same 300 instances that
+configuration **resolved 131/300 (43.7%) against the baseline's 150/300 (50.0%)** — 127 vs 146 on
+the 273 both agents submitted a patch for, McNemar p=0.013 — so the "task completion" row above is
+patch-produced parity, not resolved parity. The clamp was the cause: on the 31 paired losses where
+the baseline fixed the bug and the graph agent did not, both having found the correct file, the
+graph agent ran zero builds or tests on 22 and made a single edit on 22. The shipped agent
+guidance now requires completing the sibling sites and one bounded verification pass after editing
+(see [AGENTS.md](AGENTS.md) / `entire graph agent-guide`); the token figure has not been
+re-measured with it.
 
 Methodology, prompts, harness, and every caveat (variance bands, fairness controls, per-model
 configs) will be public soon.
