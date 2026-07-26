@@ -61,6 +61,16 @@ optional overhead. An unverified edit is how a patch ships an unused variable, a
 method name, or the wrong arity — and a patch that does not build fails 100% of the task. One
 verification turn costs one turn; a patch that does not compile costs everything.
 
+The output is grouped, and the groups mean different things:
+
+* the ranked list is **candidate fix sites** — start at the top.
+* **RELATED SITES** (` + "`section: \"related\"`" + `) are the other places this change usually has to
+  land: a near-duplicate body needs the SAME edit, a sibling implementation needs the same edit
+  in its own terms, a caller needs adjusting to the changed contract. Before you finish, check
+  them — a patch applied to one site of a family is the commonest way a correct fix still fails.
+* **DOCS & FIXTURES** (` + "`section: \"docs-and-fixtures\"`" + `) matched your words but hold no program
+  text. Do not spend a read there looking for the bug unless the task IS the document.
+
 ## Hard rules (each violation costs real money)
 
 1. SEARCH FIRST — never grep/find/cat to locate code before you have searched.

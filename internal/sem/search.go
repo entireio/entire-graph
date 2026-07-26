@@ -84,7 +84,11 @@ type SearchResult struct {
 	QualifiedName    string   `json:"qualified_name,omitempty"`
 	Signature        string   `json:"signature,omitempty"`
 	Signals          []string `json:"signals"`
-	Snippet          string   `json:"snippet"`
+	// Section groups a result for presentation. Empty (omitted) means the primary list of
+	// candidate fix sites; see search_section.go for the other values and why the grouping is
+	// a label rather than a filter.
+	Section string `json:"section,omitempty"`
+	Snippet string `json:"snippet"`
 }
 
 type SearchStats struct {
@@ -123,12 +127,17 @@ type SearchStats struct {
 	// CompleteSymbols counts results returned as the complete body of their enclosing
 	// symbol; LocatorSnippets counts tail results demoted to a locator window to pay for
 	// them. Together they report how the byte budget was allocated (schema 1.x additive).
-	CompleteSymbols int   `json:"complete_symbol_snippets,omitempty"`
-	LocatorSnippets int   `json:"locator_snippets,omitempty"`
-	IndexCacheHit   bool  `json:"index_cache_hit"`
-	IndexLatencyMS  int64 `json:"index_latency_ms"`
-	QueryLatencyMS  int64 `json:"query_latency_ms"`
-	TotalLatencyMS  int64 `json:"total_latency_ms"`
+	CompleteSymbols int `json:"complete_symbol_snippets,omitempty"`
+	LocatorSnippets int `json:"locator_snippets,omitempty"`
+	// RelatedSites counts entries in the related-site block: the other places the top hit's
+	// change usually has to land (callers, sibling implementations, near-duplicate bodies).
+	// They are funded out of the tail of the ranking, so this count also says how much of the
+	// ranking's tail was worth less than a structural neighbour of the top hit.
+	RelatedSites   int   `json:"related_sites,omitempty"`
+	IndexCacheHit  bool  `json:"index_cache_hit"`
+	IndexLatencyMS int64 `json:"index_latency_ms"`
+	QueryLatencyMS int64 `json:"query_latency_ms"`
+	TotalLatencyMS int64 `json:"total_latency_ms"`
 	// SearchLatencyMS is retained as the backwards-compatible name for total
 	// retrieval latency. New consumers should use TotalLatencyMS and the
 	// separate preselection, index, and query phases.
@@ -605,9 +614,21 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	)
 	stats.CompleteSymbols = completeSymbols
 	stats.LocatorSnippets = locators
+	// Truncation is measured against the ranking, by rank, so it has to be read off the
+	// allocator's output BEFORE the related-site block renumbers the payload.
+	truncated := countBudgetTruncatedResults(ranked, results)
+	// Sectioning first: it decides which hit anchors the related-site block, because a
+	// docs-and-fixtures hit at rank 1 is not a fix site and its neighbourhood is not the
+	// neighbourhood of the change.
+	results = assignSearchSections(results, q)
+	if anchors := searchRelatedAnchors(results, symbolsByID, symbolsByFile, searchEnclosureHeadRanks); len(anchors) > 0 {
+		sites := selectSearchRelatedSites(
+			results, anchors, q, snapshot.Relations, symbolsByID, symbolsByFile, read, searchRelatedSiteLimit,
+		)
+		results, stats.RelatedSites = mergeSearchRelatedSites(results, sites, read, options.MaxContextBytes)
+	}
 	stats.CandidatesSelected = len(results)
 	resultBytes = serializedSearchResultBytes(results)
-	truncated := countBudgetTruncatedResults(ranked, results)
 	stats.ResultBytes = resultBytes
 	stats.ContextBudgetBytes = options.MaxContextBytes
 	stats.ResultsDropped = dropped

@@ -149,48 +149,144 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 // "is this worth opening", so a full window there is token waste.
 const searchTextFullRanks = 2
 
-// writeTextSearch renders the default `--format text` output. It is tiered, and the tier is
-// decided by what the result CARRIES, not by rank alone: a result the allocator spent budget
-// to return as a complete function body is always printed in full — dropping it here would
-// throw away the very bytes that let an agent edit without opening the file — while an
-// ordinary window is printed only for the first `searchTextFullRanks` ranks and collapsed to a
-// terse "N. path:line symbol" locator below that.
+// Section headers for `--format text`. They label what the group IS, because the failure they
+// exist to prevent is an agent treating a non-fix-site as the fix site.
+const (
+	searchTextRelatedHeader = "RELATED SITES (the same change usually also lands here):"
+	searchTextDocsHeader    = "DOCS & FIXTURES (matched the query; not fix sites):"
+)
+
+// writeTextSearch renders the default `--format text` output, grouped by section.
+//
+// The primary group is the only one presented as candidate fix sites. It is tiered, and the
+// tier is decided by what the result CARRIES rather than by rank alone: a result the allocator
+// spent budget to return as a complete function body is always printed in full — dropping it
+// here would throw away the very bytes that let an agent edit without opening the file — while
+// an ordinary window is printed for the first `searchTextFullRanks` entries of the group and
+// collapsed to a terse "N. path:line symbol" locator below that.
+//
+// The tier counts POSITION IN THE GROUP, not absolute rank. A non-code hit that outranks the
+// code is sectioned away, and charging its rank against the full-snippet tier would leave the
+// agent one full window short for no reason.
+//
+// Ranks are the payload's own, unchanged, so a rank missing from the primary group is a visible
+// signal that it was sectioned rather than dropped.
 func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse) error {
-	for _, result := range response.Results {
-		name := result.QualifiedName
-		if name == "" {
-			name = result.SymbolName
-		}
-		complete := false
-		for _, signal := range result.Signals {
-			if signal == sem.CompleteSymbolSignal {
-				complete = true
-				break
-			}
-		}
-		if result.Rank > searchTextFullRanks && !complete {
-			line := result.FocusLine
-			if line <= 0 {
-				line = result.StartLine
-			}
+	primary, related, docs := partitionSearchSections(response.Results)
+	for index, result := range primary {
+		writeTextSearchResult(out, result, index < searchTextFullRanks)
+	}
+	if len(related) > 0 {
+		fmt.Fprintf(out, "%s\n", searchTextRelatedHeader)
+		for _, result := range related {
+			name := searchResultDisplayName(result)
+			fmt.Fprintf(out, "%d. %s:%d", result.Rank, result.FilePath, searchResultLocatorLine(result))
 			if name != "" {
-				fmt.Fprintf(out, "%d. %s:%d %s\n", result.Rank, result.FilePath, line, name)
-			} else {
-				fmt.Fprintf(out, "%d. %s:%d\n", result.Rank, result.FilePath, line)
+				fmt.Fprintf(out, " symbol=%s", name)
 			}
-			continue
+			fmt.Fprintf(out, " (%s)\n", sem.RelatedSiteKind(result))
 		}
-		fmt.Fprintf(out, "%d. %s:%d-%d score=%.4f", result.Rank, result.FilePath, result.StartLine, result.EndLine, result.Score)
-		if name != "" {
-			fmt.Fprintf(out, " symbol=%s", name)
+	}
+	if len(docs) > 0 {
+		fmt.Fprintf(out, "%s\n", searchTextDocsHeader)
+		for _, result := range docs {
+			writeTextSearchResult(out, result, false)
 		}
-		fmt.Fprintf(out, " signals=%s\n%s\n\n", strings.Join(result.Signals, ","), result.Snippet)
 	}
 	return nil
 }
 
+func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result sem.SearchResult, full bool) {
+	name := searchResultDisplayName(result)
+	if !full && !searchResultCarriesCompleteBody(result) {
+		if name != "" {
+			fmt.Fprintf(out, "%d. %s:%d %s\n", result.Rank, result.FilePath, searchResultLocatorLine(result), name)
+		} else {
+			fmt.Fprintf(out, "%d. %s:%d\n", result.Rank, result.FilePath, searchResultLocatorLine(result))
+		}
+		return
+	}
+	fmt.Fprintf(out, "%d. %s:%d-%d score=%.4f", result.Rank, result.FilePath, result.StartLine, result.EndLine, result.Score)
+	if name != "" {
+		fmt.Fprintf(out, " symbol=%s", name)
+	}
+	fmt.Fprintf(out, " signals=%s\n%s\n\n", strings.Join(result.Signals, ","), result.Snippet)
+}
+
+// partitionSearchSections splits a payload into its presentation groups while preserving rank
+// order inside each. Results carrying an unknown section label are treated as primary: a
+// renderer that silently hid a group it did not recognize would lose recall on upgrade.
+func partitionSearchSections(results []sem.SearchResult) (primary, related, docs []sem.SearchResult) {
+	for _, result := range results {
+		switch result.Section {
+		case sem.SearchSectionRelated:
+			related = append(related, result)
+		case sem.SearchSectionDocs:
+			docs = append(docs, result)
+		default:
+			primary = append(primary, result)
+		}
+	}
+	return primary, related, docs
+}
+
+func searchResultDisplayName(result sem.SearchResult) string {
+	if result.QualifiedName != "" {
+		return result.QualifiedName
+	}
+	return result.SymbolName
+}
+
+func searchResultLocatorLine(result sem.SearchResult) int {
+	if result.FocusLine > 0 {
+		return result.FocusLine
+	}
+	return result.StartLine
+}
+
+func searchResultCarriesCompleteBody(result sem.SearchResult) bool {
+	for _, signal := range result.Signals {
+		if signal == sem.CompleteSymbolSignal {
+			return true
+		}
+	}
+	return false
+}
+
+// orderAgentSearchResults groups a payload for `--format agent`: candidate fix sites, then the
+// related-site block, then docs and fixtures. The agent format is a hard byte cap that fits
+// results one block at a time, so a group HEADER is the one thing it cannot afford — the label
+// rides on each block's own location line instead (see agentSearchSectionTag), and grouping is
+// expressed by order. Docs and fixtures sort last, so under a tight cap the entries dropped
+// first are the ones that were never fix sites.
+func orderAgentSearchResults(results []sem.SearchResult) []sem.SearchResult {
+	primary, related, docs := partitionSearchSections(results)
+	if len(related) == 0 && len(docs) == 0 {
+		return results
+	}
+	ordered := make([]sem.SearchResult, 0, len(results))
+	ordered = append(ordered, primary...)
+	ordered = append(ordered, related...)
+	return append(ordered, docs...)
+}
+
+// agentSearchSectionTag labels a block that is not a candidate fix site. Primary results carry
+// no tag: the common case must cost zero bytes.
+func agentSearchSectionTag(result sem.SearchResult) string {
+	switch result.Section {
+	case sem.SearchSectionRelated:
+		if kind := sem.RelatedSiteKind(result); kind != "" {
+			return "(" + kind + ")"
+		}
+		return "(related)"
+	case sem.SearchSectionDocs:
+		return "(docs)"
+	}
+	return ""
+}
+
 func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse, budget int) error {
-	results := response.Results
+	results := orderAgentSearchResults(response.Results)
 	stats := response.Stats
 	cacheState := "miss"
 	if stats.IndexCacheHit {
@@ -413,10 +509,8 @@ func renderAgentSearchResults(results []sem.SearchResult, budgets []int) []byte 
 }
 
 func agentSearchBlock(result sem.SearchResult, budget int) []byte {
-	name := result.QualifiedName
-	if name == "" {
-		name = result.SymbolName
-	}
+	name := searchResultDisplayName(result)
+	tag := agentSearchSectionTag(result)
 	lines := strings.Split(result.Snippet, "\n")
 	if len(lines) > 1 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
@@ -438,7 +532,7 @@ func agentSearchBlock(result sem.SearchResult, budget int) []byte {
 		focusLine = snippetStart + focus
 	}
 	if len(lines) == 0 {
-		return fitAgentSearchLocation(result.Rank, result.FilePath, focusLine, name, budget)
+		return fitAgentSearchLocation(result.Rank, result.FilePath, focusLine, name, tag, budget)
 	}
 
 	// Prefer the widest balanced span containing the focus line. The location
@@ -459,7 +553,7 @@ func agentSearchBlock(result sem.SearchResult, budget int) []byte {
 			right := left + span - 1
 			text := strings.Join(lines[left:right+1], "\n")
 			startLine, endLine := snippetStart+left, snippetStart+right
-			for _, header := range agentSearchLocationHeaders(result.Rank, result.FilePath, startLine, endLine, focusLine, name) {
+			for _, header := range agentSearchLocationHeaders(result.Rank, result.FilePath, startLine, endLine, focusLine, name, tag) {
 				candidate := []byte(header + text + "\n")
 				if budget <= 0 || len(candidate) <= budget {
 					balance := focus - left - (right - focus)
@@ -477,10 +571,13 @@ func agentSearchBlock(result sem.SearchResult, budget int) []byte {
 			return best
 		}
 	}
-	return fitAgentSearchLocation(result.Rank, result.FilePath, focusLine, name, budget)
+	return fitAgentSearchLocation(result.Rank, result.FilePath, focusLine, name, tag, budget)
 }
 
-func agentSearchLocationHeaders(rank int, path string, start, end, focus int, name string) []string {
+// agentSearchLocationHeaders builds the location line in decreasing cost. `tag` labels a block
+// that is not a candidate fix site; it rides on the two roomier variants and is dropped by the
+// minimal one, which exists for caps too small to hold a rank and a name at all.
+func agentSearchLocationHeaders(rank int, path string, start, end, focus int, name, tag string) []string {
 	location := fmt.Sprintf("%d. %s:%d", rank, path, start)
 	if end != start {
 		location += fmt.Sprintf("-%d", end)
@@ -489,18 +586,24 @@ func agentSearchLocationHeaders(rank int, path string, start, end, focus int, na
 	if name != "" {
 		rich += " " + name
 	}
+	if tag != "" {
+		rich += " " + tag
+	}
 	rich += fmt.Sprintf(" [focus:%d]\n", focus)
 	compact := location
 	if name != "" {
 		compact += " " + name
+	}
+	if tag != "" {
+		compact += " " + tag
 	}
 	compact += " *\n"
 	minimal := fmt.Sprintf("%s:%d *\n", path, focus)
 	return []string{rich, compact, minimal}
 }
 
-func fitAgentSearchLocation(rank int, path string, focus int, name string, budget int) []byte {
-	for _, header := range agentSearchLocationHeaders(rank, path, focus, focus, focus, name) {
+func fitAgentSearchLocation(rank int, path string, focus int, name, tag string, budget int) []byte {
+	for _, header := range agentSearchLocationHeaders(rank, path, focus, focus, focus, name, tag) {
 		if budget <= 0 || len(header) <= budget {
 			return []byte(header)
 		}
