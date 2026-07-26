@@ -42,6 +42,28 @@ To pay for that, results below the head are reduced to a two-line **locator** wi
 in `stats.locator_snippets`) — still exact `file:line` + symbol identity, just not reading
 material. Symbols too large to return whole (>160 lines) keep their focused window.
 
+**Results are grouped, and the groups answer different questions.** Every hit stays in
+`results` with its rank; a `section` field says how to read it, and the text renderer prints
+each group under its own header.
+
+- **(no `section`) — candidate fix sites.** The ranked answer to "where is it?".
+- **`section: "related"` — RELATED SITES.** Not a second ranking: the other places the change
+  usually has to land, one graph hop from the head of the ranking. Each entry is a one-line
+  locator (`file:line`, symbol, and a `related:<kind>` signal saying why): **near-dupe** — a
+  near-duplicate body, which needs the *identical* edit; **sibling** — the same member on a
+  sibling implementation, or a member declared beside the anchor in a small unit; **caller** —
+  an incoming call, reported at the **call site**, which needs adjusting to a changed contract.
+  Check the block before you finish: a patch applied to one site of a family is the commonest
+  way a correct fix still fails review. The block is funded out of the tail of the ranking, so
+  it costs no extra bytes and never displaces the head or the only mention of a file; its size
+  is in `stats.related_sites`.
+- **`section: "docs-and-fixtures"`.** Hits that matched your words but hold no program text
+  (prose, HTML templates, changelogs, serialized config, recorded fixtures). They are never
+  suppressed, dropped or re-ranked — a fixture or a rule document is sometimes exactly the file
+  that has to change — but they are not presented as fix sites, so do not spend a read there
+  looking for the bug. When a payload has *nothing but* non-code hits, they stay the primary
+  list: they are the answer.
+
 **The budget is sized in turns, not in bytes.** A search payload is ~0.6% of what a session
 spends; one extra agent turn is ~42.5k tokens, because 95.9% of billed tokens are context
 re-read. A search that stops one Read short of an edit therefore costs about 40x the whole
