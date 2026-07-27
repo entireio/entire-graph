@@ -8841,25 +8841,7 @@ func isVendoredScanDir(rel, name string) bool {
 	switch name {
 	case ".git", "node_modules", "vendor", ".next",
 		"third_party", "third-party", "thirdparty", "3rdparty",
-		"Pods", "Carthage",
-		// Installed-dependency and tool-cache trees. A project's exclude rules
-		// normally keep these out, but the rules are not always where a scanner
-		// can see them (a nested .gitignore, an untracked clone, a stray
-		// checkout), and these names never denote first-party source, so the
-		// scan does not depend on being told.
-		".venv", "venv", "site-packages", "__pycache__", ".pytest_cache",
-		".mypy_cache", ".ruff_cache", ".tox", ".nox", ".eggs",
-		".gradle", ".terraform", ".yarn", ".pnpm-store", "bower_components",
-		".stack-work", ".dart_tool", ".svelte-kit", ".nuxt", ".parcel-cache",
-		".turbo", ".idea", ".vs", "DerivedData":
-		return true
-	}
-	// Entire's own per-repository state: session transcripts, checkpoint scratch
-	// space and caches, which are Entire's records of the work rather than the
-	// project's source. Matched by path so a project's own `.entire/*.md`
-	// documentation stays visible.
-	switch rel {
-	case ".entire/metadata", ".entire/tmp", ".entire/cache", ".entire/checkpoints":
+		"Pods", "Carthage":
 		return true
 	}
 	// Nested bundled-runtime trees: require a parent segment so the project's own
@@ -8887,6 +8869,37 @@ func isAmbiguousVendoredDirName(name string) bool {
 	return false
 }
 
+// isInstalledDependencyDirName reports whether a directory name denotes an
+// installed-dependency tree or a tool cache: a virtual environment, a package
+// cache, a build-tool scratch directory, or Entire's own per-repository state.
+//
+// A project's exclude rules normally keep these out, but the rules are not always
+// where a scanner can see them (a nested .gitignore, an untracked clone, a stray
+// checkout) — that gap is what let a `.venv` full of site-packages into the graph.
+// Like the ambiguous generated-output names, these are skipped only when the
+// directory is NOT tracked in git: a project that commits such a tree as test
+// data (terraform commits `.terraform/modules` fixtures) means it, and dropping
+// tracked content would change what `--head` sees too.
+func isInstalledDependencyDirName(rel, name string) bool {
+	switch name {
+	case ".venv", "venv", "site-packages", "__pycache__", ".pytest_cache",
+		".mypy_cache", ".ruff_cache", ".tox", ".nox", ".eggs",
+		".gradle", ".terraform", ".yarn", ".pnpm-store", "bower_components",
+		".stack-work", ".dart_tool", ".svelte-kit", ".nuxt", ".parcel-cache",
+		".turbo", ".idea", ".vs", "DerivedData":
+		return true
+	}
+	// Entire's own state: session transcripts, checkpoint scratch space and
+	// caches, which are Entire's records of the work rather than the project's
+	// source. Matched by path so a project's own `.entire/*.md` documentation
+	// stays visible.
+	switch rel {
+	case ".entire/metadata", ".entire/tmp", ".entire/cache", ".entire/checkpoints":
+		return true
+	}
+	return false
+}
+
 // skipVendoredDir is the single vendored-directory decision for both the
 // working-tree walk and the HEAD-tree listing: skip unambiguous vendored names
 // always, and ambiguous generated-output names only when the directory is not
@@ -8894,8 +8907,8 @@ func isAmbiguousVendoredDirName(name string) bool {
 // descendant (see ReincludesDescendant) keep the tree walked in either case;
 // the ignore rules themselves then filter its contents.
 func skipVendoredDir(rel, name string, ignores ignoreMatcher, dirTracked func(string) bool) bool {
-	vendored := isVendoredScanDir(rel, name) ||
-		(isAmbiguousVendoredDirName(name) && !dirTracked(rel))
+	untrackedOnly := isAmbiguousVendoredDirName(name) || isInstalledDependencyDirName(rel, name)
+	vendored := isVendoredScanDir(rel, name) || (untrackedOnly && !dirTracked(rel))
 	return vendored && !ignores.ReincludesDescendant(rel)
 }
 
