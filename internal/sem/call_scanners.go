@@ -9,7 +9,6 @@ var (
 	clojureCallHeadRe       = regexp.MustCompile(`\(\s*([A-Za-z0-9_.$!?*+\-<>=/]+)`)
 	sqlRoutineCallRe        = regexp.MustCompile(`(?i)\b((?:@?[A-Za-z_][A-Za-z0-9_]*@?|"[^"]+")(?:\s*\.\s*(?:@?[A-Za-z_][A-Za-z0-9_]*@?|"[^"]+"))*)\s*\(`)
 	objectiveCMessageSendRe = regexp.MustCompile(`\[\s*([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)`)
-	jsDottedCallRe          = regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*)+)\s*\(`)
 	fsharpDottedCallRe      = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_']*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_']*)+)\s*\(`)
 	fsharpDottedApplyRe     = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_']*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_']*)+)\s+[A-Za-z_({\["'0-9]`)
 	juliaCallRe             = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:!)?)\s*(?:\{[^{}\n;()]*\})?\s*\(`)
@@ -82,44 +81,6 @@ func sqlCallNameIgnored(name string) bool {
 	default:
 		return false
 	}
-}
-
-func jsDottedCallIdentifiers(content string) map[string]struct{} {
-	return dottedCallIdentifiers(stripCodeLiteralsAndComments(content), jsDottedCallRe)
-}
-
-// jsNamespaceCallIdentifiers returns terminal call names only when the dotted
-// receiver is a namespace declared in the same file. Imported module receivers
-// are resolved separately by importedReceiverCallRelations, while ordinary
-// object receivers belong to receiverCallRelations. Treating every `obj.name()`
-// as a bare `name()` loses the receiver and can fabricate a workspace-global
-// edge to an unrelated function with the same name.
-func jsNamespaceCallIdentifiers(content, fileContent string) map[string]struct{} {
-	strippedFile := stripCodeLiteralsAndComments(fileContent)
-	namespaceRe := regexp.MustCompile(`\b(?:namespace|module)\s+([A-Za-z_$][A-Za-z0-9_$]*)\b`)
-	namespaces := map[string]bool{}
-	for _, match := range namespaceRe.FindAllStringSubmatch(strippedFile, -1) {
-		if len(match) > 1 {
-			namespaces[match[1]] = true
-		}
-	}
-
-	out := map[string]struct{}{}
-	stripped := stripCodeLiteralsAndComments(content)
-	for _, match := range jsDottedCallRe.FindAllStringSubmatch(stripped, -1) {
-		if len(match) < 2 {
-			continue
-		}
-		parts := strings.FieldsFunc(match[1], func(r rune) bool { return r == '.' })
-		if len(parts) < 2 || !namespaces[strings.TrimSpace(parts[0])] {
-			continue
-		}
-		name := strings.TrimSpace(parts[len(parts)-1])
-		if name != "" {
-			out[name] = struct{}{}
-		}
-	}
-	return out
 }
 
 func jsCallableArgumentIdentifiers(content string) map[string]struct{} {

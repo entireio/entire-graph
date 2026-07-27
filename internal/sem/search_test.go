@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1497,7 +1498,7 @@ func TestExpandGraphCandidatesSkipsOutOfRangeSymbolLines(t *testing.T) {
 	// Pre-fix, clampRegion returns (0,0) for the out-of-range target and the
 	// unguarded lines[snippetStart-1:snippetEnd] slice panics with
 	// "slice bounds out of range [-1:]".
-	out := expandGraphCandidates(seeds, searchQuery{}, relations, symbolsByID, read, nil, options)
+	out := expandGraphCandidates(seeds, searchQuery{}, relations, symbolsByID, nil, read, nil, options)
 
 	for _, candidate := range out {
 		if candidate.result.SymbolID == "target" {
@@ -1529,7 +1530,7 @@ func TestExpandGraphCandidatesIncludesInRangeSymbol(t *testing.T) {
 	}
 	options := SearchOptions{MaxRegionLines: 40, MaxSnippetLines: 40}
 
-	out := expandGraphCandidates(seeds, searchQuery{}, relations, symbolsByID, read, nil, options)
+	out := expandGraphCandidates(seeds, searchQuery{}, relations, symbolsByID, nil, read, nil, options)
 
 	found := false
 	for _, candidate := range out {
@@ -1572,7 +1573,7 @@ func TestExpandGraphCandidatesClampsNonPositiveRegionLines(t *testing.T) {
 		// (end = start+MaxRegionLines-1) and the snippet slice panics with
 		// "slice bounds out of range" (low > high).
 		options := SearchOptions{MaxRegionLines: maxRegionLines, MaxSnippetLines: -1}
-		out := expandGraphCandidates(seeds, searchQuery{}, relations, symbolsByID, read, nil, options)
+		out := expandGraphCandidates(seeds, searchQuery{}, relations, symbolsByID, nil, read, nil, options)
 
 		found := false
 		for _, candidate := range out {
@@ -1591,6 +1592,345 @@ func TestExpandGraphCandidatesClampsNonPositiveRegionLines(t *testing.T) {
 			t.Fatalf("MaxRegionLines=%d: expected in-range target candidate to be included, got %d candidates",
 				maxRegionLines, len(out))
 		}
+	}
+}
+
+func TestSearchGraphCallerBoostsCountDistinctProductionCallers(t *testing.T) {
+	symbolsByID := map[string]SymbolRecord{
+		"impl":       {ID: "impl", Name: "checkQuorum", FilePath: "store/quorum.go"},
+		"caller1":    {ID: "caller1", Name: "replicateObject", FilePath: "store/replicate.go"},
+		"caller2":    {ID: "caller2", Name: "storeQuarantine", FilePath: "store/quarantine.go"},
+		"testfn":     {ID: "testfn", Name: "TestQuorum", FilePath: "test/workloads/push_quorum.go"},
+		"unitfile":   {ID: "unitfile", Name: "TestCheck", FilePath: "store/quorum_test.go"},
+		"rubyspec":   {ID: "rubyspec", Name: "checks quorum", FilePath: "spec/store/quorum_spec.rb"},
+		"pythontest": {ID: "pythontest", Name: "test_quorum", FilePath: "store/quorum_test.py"},
+		"dottedtest": {ID: "dottedtest", Name: "ChecksQuorum", FilePath: "Store.Tests/Quorum.cs"},
+	}
+	relations := []RelationRecord{
+		{FromID: "caller1", ToID: "impl", Type: "CALLS", Confidence: 0.8},
+		// Duplicate edge from the same caller must not count twice.
+		{FromID: "caller1", ToID: "impl", Type: "CALLS", Confidence: 0.8},
+		{FromID: "caller2", ToID: "impl", Type: "CALLS", Confidence: 0.92},
+		// Test-path callers carry no production signal.
+		{FromID: "testfn", ToID: "impl", Type: "CALLS", Confidence: 0.92},
+		{FromID: "unitfile", ToID: "impl", Type: "CALLS", Confidence: 0.92},
+		{FromID: "rubyspec", ToID: "impl", Type: "CALLS", Confidence: 0.92},
+		{FromID: "pythontest", ToID: "impl", Type: "CALLS", Confidence: 0.92},
+		{FromID: "dottedtest", ToID: "impl", Type: "CALLS", Confidence: 0.92},
+		// Below the confidence floor.
+		{FromID: "caller1", ToID: "caller2", Type: "CALLS", Confidence: 0.5},
+		// Structural relations are not caller evidence.
+		{FromID: "caller1", ToID: "caller2", Type: "CONTAINS", Confidence: 1.0},
+		// Self-edges are ignored.
+		{FromID: "impl", ToID: "impl", Type: "CALLS", Confidence: 1.0},
+	}
+
+	boosts := searchGraphCallerBoosts(relations, symbolsByID)
+
+	want := searchCallerBoostUnit * math.Log2(3) // two distinct production callers
+	if got := boosts["impl"]; math.Abs(got-want) > 1e-9 {
+		t.Fatalf("impl boost = %v, want %v", got, want)
+	}
+	if _, ok := boosts["caller2"]; ok {
+		t.Fatalf("low-confidence edge produced a boost: %v", boosts)
+	}
+}
+
+func TestApplySearchCallerBoostsTagsAndCounts(t *testing.T) {
+	candidates := []searchCandidate{
+		{result: SearchResult{SymbolID: "impl"}, score: 10},
+		{result: SearchResult{SymbolID: "other"}, score: 12},
+		{result: SearchResult{}, score: 9},
+	}
+	boosted := applySearchCallerBoosts(candidates, map[string]float64{"impl": 3, "": 99})
+	if boosted != 1 {
+		t.Fatalf("boosted = %d, want 1", boosted)
+	}
+	if candidates[0].score != 13 || !containsString(candidates[0].result.Signals, "graph:callers") {
+		t.Fatalf("boosted candidate = %+v", candidates[0])
+	}
+	if candidates[1].score != 12 || candidates[2].score != 9 {
+		t.Fatalf("unboosted candidates changed: %+v", candidates[1:])
+	}
+}
+
+func TestApplySearchCallerBoostsHalvesSparseBodyEvidence(t *testing.T) {
+	candidates := []searchCandidate{
+		{
+			result: SearchResult{SymbolID: "impl", Signals: []string{"sparse-region"}},
+			score:  10,
+		},
+		{
+			result: SearchResult{SymbolID: "impl", Signals: []string{"sparse-region", "path"}},
+			score:  10,
+		},
+	}
+
+	boosted := applySearchCallerBoosts(candidates, map[string]float64{"impl": 4})
+
+	if boosted != 2 {
+		t.Fatalf("boosted = %d, want 2", boosted)
+	}
+	if candidates[0].score != 12 {
+		t.Fatalf("sparse body-only score = %v, want 12", candidates[0].score)
+	}
+	if candidates[1].score != 14 {
+		t.Fatalf("sparse path score = %v, want 14", candidates[1].score)
+	}
+}
+
+func TestApplySearchCallerBoostsHalvesBodyDerivedSignals(t *testing.T) {
+	for _, signals := range [][]string{
+		{"body", "exact-code-token"},
+		{"body", "all-query-terms"},
+		{"body", "exact-code-token", "all-query-terms"},
+	} {
+		candidates := []searchCandidate{{
+			result: SearchResult{SymbolID: "impl", Signals: signals},
+			score:  10,
+		}}
+		if boosted := applySearchCallerBoosts(candidates, map[string]float64{"impl": 4}); boosted != 1 {
+			t.Fatalf("signals %#v: boosted = %d, want 1", signals, boosted)
+		}
+		if candidates[0].score != 12 {
+			t.Fatalf("signals %#v: score = %v, want 12 with half caller boost", signals, candidates[0].score)
+		}
+	}
+}
+
+func TestExpandGraphCandidatesDoesNotBoostZeroEvidenceHub(t *testing.T) {
+	q := buildSearchQuery("quorum replication")
+	seeds := []searchCandidate{{
+		result: SearchResult{SymbolID: "seed"},
+		score:  15,
+	}}
+	relations := []RelationRecord{{
+		FromID:     "seed",
+		ToID:       "hub",
+		Type:       "CALLS",
+		Confidence: 0.8,
+	}}
+	symbolsByID := map[string]SymbolRecord{
+		"seed": {ID: "seed", Name: "replicateObject", FilePath: "replicate.go", StartLine: 1, EndLine: 1},
+		"hub":  {ID: "hub", Name: "logValue", FilePath: "logging.go", StartLine: 1, EndLine: 3},
+	}
+	read := func(path string) (string, bool) {
+		if path == "logging.go" {
+			return "func logValue(value any) {\n\tfmt.Println(value)\n}", true
+		}
+		return "", false
+	}
+
+	candidates := expandGraphCandidates(
+		seeds,
+		q,
+		relations,
+		symbolsByID,
+		map[string]float64{"hub": searchCallerBoostCap},
+		read,
+		map[string]string{"logging.go": "Go"},
+		SearchOptions{},
+	)
+
+	if len(candidates) != 1 {
+		t.Fatalf("graph candidates = %#v, want one hub", candidates)
+	}
+	want := 0.28*15 + 2.2*0.8
+	if got := candidates[0].score; math.Abs(got-want) > 1e-9 {
+		t.Fatalf("zero-evidence hub score = %v, want %v without caller boost", got, want)
+	}
+	if containsString(candidates[0].result.Signals, "graph:callers") {
+		t.Fatalf("zero-evidence hub signals = %#v, must not include graph:callers", candidates[0].result.Signals)
+	}
+}
+
+func TestExpandGraphCandidatesHalvesBodyOnlyCallerBoost(t *testing.T) {
+	q := buildSearchQuery("quorum replication")
+	seeds := []searchCandidate{{
+		result: SearchResult{SymbolID: "seed"},
+		score:  15,
+	}}
+	relations := []RelationRecord{{
+		FromID:     "seed",
+		ToID:       "hub",
+		Type:       "CALLS",
+		Confidence: 0.8,
+	}}
+	symbolsByID := map[string]SymbolRecord{
+		"seed": {ID: "seed", Name: "replicateObject", FilePath: "replicate.go", StartLine: 1, EndLine: 1},
+		"hub":  {ID: "hub", Name: "logValue", FilePath: "logging.go", StartLine: 1, EndLine: 3},
+	}
+	read := func(path string) (string, bool) {
+		if path == "logging.go" {
+			return "func logValue(value any) {\n\tfmt.Println(\"quorum replication\", value)\n}", true
+		}
+		return "", false
+	}
+
+	candidates := expandGraphCandidates(
+		seeds,
+		q,
+		relations,
+		symbolsByID,
+		map[string]float64{"hub": searchCallerBoostCap},
+		read,
+		map[string]string{"logging.go": "Go"},
+		SearchOptions{},
+	)
+
+	if len(candidates) != 1 {
+		t.Fatalf("graph candidates = %#v, want one hub", candidates)
+	}
+	want := 0.55*15 + 2.2*0.8 + 0.5*searchCallerBoostCap
+	if got := candidates[0].score; math.Abs(got-want) > 1e-9 {
+		t.Fatalf("body-only hub score = %v, want %v with half caller boost", got, want)
+	}
+	if !containsString(candidates[0].result.Signals, "graph:callers") {
+		t.Fatalf("body-only hub signals = %#v, want graph:callers", candidates[0].result.Signals)
+	}
+	if got := countSearchCandidatesWithSignal(candidates, "graph:callers"); got != 1 {
+		t.Fatalf("boosted graph candidate count = %d, want 1", got)
+	}
+}
+
+func TestSearchTestArtifactPathCommonLayouts(t *testing.T) {
+	for _, path := range []string{
+		"test/workloads/push_quorum.go",
+		"store/quorum_test.go",
+		"spec/store/quorum_spec.rb",
+		"store/quorum_test.py",
+		"Store.Tests/Quorum.cs",
+		"src/__tests__/quorum.test.ts",
+		"src/quorum.test",
+		"src/quorum.spec",
+	} {
+		if !searchTestArtifactPath(path) {
+			t.Errorf("searchTestArtifactPath(%q) = false, want true", path)
+		}
+	}
+	for _, path := range []string{
+		"internal/contest/score.go",
+		"internal/latest/value.go",
+		"internal/speculator/run.go",
+		"internal/testingutil/helper.go",
+		".github/workflows/test.yml",
+	} {
+		if searchTestArtifactPath(path) {
+			t.Errorf("searchTestArtifactPath(%q) = true, want false", path)
+		}
+	}
+}
+
+func TestSearchRanksCalledImplementationAboveTestScaffolding(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "store/quorum.go", `package store
+
+// checkQuorum validates that enough providers succeeded to meet quorum and
+// availability-zone coverage requirements.
+func checkQuorum(outcomes []int) bool {
+	return len(outcomes) > 1
+}
+`)
+	write(t, repo, "store/replicate.go", `package store
+
+// replicateObject fans the object out to every target and fails when the
+// cluster-wide quorum check fails.
+func replicateObject(outcomes []int) bool {
+	return checkQuorum(outcomes)
+}
+`)
+	write(t, repo, "store/quarantine.go", `package store
+
+// storeQuarantine stages a pack and verifies quorum before commit.
+func storeQuarantine(outcomes []int) bool {
+	return checkQuorum(outcomes)
+}
+`)
+	write(t, repo, "store/repair.go", `package store
+
+// repairScan re-verifies quorum for under-replicated objects.
+func repairScan(outcomes []int) bool {
+	return checkQuorum(outcomes)
+}
+`)
+	// The test workload matches the query about as well as the implementation
+	// does lexically (concept terms in path, type doc, and assertion doc), the
+	// shape the entiredb feedback reported: without graph signal it outranks
+	// the implementation, which has no production path/doc advantage — only
+	// real callers.
+	write(t, repo, "test/workloads/push_quorum.go", `package workloads
+
+// PushQuorumWorkload drives a push and asserts replication behavior.
+type PushQuorumWorkload struct{}
+
+// Check asserts that the push met quorum requirements.
+func (w PushQuorumWorkload) Check(outcomes []int) bool {
+	return len(outcomes) >= 0
+}
+`)
+
+	// Default options: the profile must resolve to fast so same-package CALLS
+	// edges exist for caller-degree ranking.
+	response, err := SearchRepository(t.Context(), repo, "test", "quorum replication", SearchOptions{
+		Worktree: true,
+		TopK:     10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Profile != string(ProfileFast) {
+		t.Fatalf("default search profile = %q, want %q", response.Profile, ProfileFast)
+	}
+	implRank, testRank := 0, 0
+	var implSignals []string
+	for _, result := range response.Results {
+		if result.SymbolName == "checkQuorum" && implRank == 0 {
+			implRank = result.Rank
+			implSignals = result.Signals
+		}
+		if strings.HasPrefix(result.FilePath, "test/") && testRank == 0 {
+			testRank = result.Rank
+		}
+	}
+	if implRank == 0 {
+		t.Fatalf("checkQuorum missing from results: %#v", response.Results)
+	}
+	if !containsString(implSignals, "graph:callers") {
+		t.Fatalf("checkQuorum signals = %#v, want graph:callers", implSignals)
+	}
+	if testRank != 0 && implRank > testRank {
+		t.Fatalf("implementation ranked %d below test scaffolding at %d", implRank, testRank)
+	}
+	if response.Stats.CallerBoostedCandidates == 0 {
+		t.Fatalf("stats did not record caller-boosted candidates: %#v", response.Stats)
+	}
+}
+
+func TestSortSearchCandidatesBreaksLocationTiesBySemanticIdentity(t *testing.T) {
+	location := SearchResult{FilePath: "same.go", StartLine: 10, EndLine: 20}
+	candidates := []searchCandidate{
+		{score: 5, result: func() SearchResult {
+			result := location
+			result.SymbolID = "symbol-b"
+			return result
+		}()},
+		{score: 5, result: func() SearchResult {
+			result := location
+			result.SymbolID = "symbol-a"
+			return result
+		}()},
+	}
+
+	sortSearchCandidates(candidates)
+	if candidates[0].result.SymbolID != "symbol-a" || candidates[1].result.SymbolID != "symbol-b" {
+		t.Fatalf("location-tied candidates were not ordered by stable symbol identity: %#v", candidates)
+	}
+
+	left, right := searchCandidate{result: location}, searchCandidate{result: location}
+	left.result.QualifiedName = "Alpha.Run"
+	right.result.QualifiedName = "Beta.Run"
+	if !searchCandidateLess(left, right) || searchCandidateLess(right, left) {
+		t.Fatalf("qualified-name tie breaker is not deterministic: left=%#v right=%#v", left, right)
 	}
 }
 
