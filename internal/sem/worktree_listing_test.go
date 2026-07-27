@@ -288,9 +288,19 @@ func TestHeadSnapshotNeverMaterializesOversizeBlob(t *testing.T) {
 
 	wantHash, wantLines := fileSHA256(t, filepath.Join(repo, "app/generated_huge.py"))
 
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
 	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{})
 	if err != nil {
 		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&after)
+	// Materializing the blob once costs 48 MiB, and the string conversion costs it
+	// again; no implementation that holds it can come in under this ceiling.
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 32<<20 {
+		t.Fatalf("committed-tree snapshot allocated %d bytes for a %d-byte blob, want under %d",
+			allocated, oversize, 32<<20)
 	}
 	var record *FileRecord
 	for i := range snapshot.Files {
