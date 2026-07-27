@@ -142,18 +142,34 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 			if line <= 0 {
 				line = result.StartLine
 			}
+			fmt.Fprintf(out, "%d. %s:%d", result.Rank, result.FilePath, line)
 			if name != "" {
-				fmt.Fprintf(out, "%d. %s:%d %s\n", result.Rank, result.FilePath, line, name)
-			} else {
-				fmt.Fprintf(out, "%d. %s:%d\n", result.Rank, result.FilePath, line)
+				fmt.Fprintf(out, " %s", name)
 			}
+			if result.Kind != "" {
+				fmt.Fprintf(out, " kind=%s", result.Kind)
+			}
+			fmt.Fprint(out, "\n")
 			continue
 		}
-		fmt.Fprintf(out, "%d. %s:%d-%d score=%.4f", result.Rank, result.FilePath, result.StartLine, result.EndLine, result.Score)
+		// Anchor the top ranks on the exact best-match line (FocusLine) rather than
+		// the enclosing symbol's span start, so an agent Reads at the match, not
+		// dozens of lines above it. The printed lines=Start-End gives the region to
+		// open; no separate READ window is emitted — post-calibration snippets are
+		// small enough that such a window equals the region in nearly all cases and
+		// only adds bytes (PR #61 review).
+		focus := result.FocusLine
+		if focus <= 0 {
+			focus = result.StartLine
+		}
+		fmt.Fprintf(out, "%d. %s:%d score=%.4f", result.Rank, result.FilePath, focus, result.Score)
 		if name != "" {
 			fmt.Fprintf(out, " symbol=%s", name)
 		}
-		fmt.Fprintf(out, " signals=%s\n%s\n\n", strings.Join(result.Signals, ","), result.Snippet)
+		if result.Kind != "" {
+			fmt.Fprintf(out, " kind=%s", result.Kind)
+		}
+		fmt.Fprintf(out, " lines=%d-%d signals=%s\n%s\n\n", result.StartLine, result.EndLine, strings.Join(result.Signals, ","), result.Snippet)
 	}
 	return nil
 }
