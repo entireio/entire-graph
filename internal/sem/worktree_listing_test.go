@@ -381,3 +381,36 @@ func TestWorktreeListingSkipsInstalledDependencyDirNames(t *testing.T) {
 		}
 	}
 }
+
+// TestTrackedToolCacheFixturesAreKept is the other side of that heuristic: a
+// project that COMMITS such a tree as test data means it. Terraform commits
+// `.terraform/modules` fixtures, and dropping them would silently shrink the
+// graph of a first-party test corpus (and diverge from what --head sees).
+func TestTrackedToolCacheFixturesAreKept(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, "app/keep.py", "def keep_me():\n    return True\n")
+	writeFile(t, repo, "testdata/example/.terraform/modules/child/mod.py",
+		"def committed_fixture():\n    return True\n")
+	git(t, repo, "add", "-f", ".")
+	git(t, repo, "commit", "-m", "commit a tool-cache-shaped fixture")
+
+	// Untracked, same directory name: still skipped.
+	writeFile(t, repo, "scratch/.terraform/modules/other/mod.py",
+		"def untracked_cache():\n    return True\n")
+
+	for _, worktree := range []bool{true, false} {
+		snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+			Worktree: worktree,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !snapshotHasSymbol(snapshot, "committed_fixture") {
+			t.Fatalf("worktree=%v dropped a tracked tool-cache fixture: %#v", worktree, snapshot.Files)
+		}
+		if worktree && snapshotHasSymbol(snapshot, "untracked_cache") {
+			t.Fatalf("worktree listing kept an untracked tool-cache tree: %#v", snapshot.Files)
+		}
+	}
+}
