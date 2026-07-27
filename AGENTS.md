@@ -80,6 +80,17 @@ each group under its own header.
   looking for the bug. When a payload has *nothing but* non-code hits, they stay the primary
   list: they are the answer.
 
+**The types in the top hit's signature come with it.** A located symbol is not usable on its
+own: `Edit::range_replacement(content: String, range: TextRange) -> Self` says nothing about what
+else can build an `Edit`. A **TYPES IN THIS SIGNATURE** block (`signature_types` in JSON) resolves
+the types named in the anchor's OWN signature — the declaring type first — to their declaration,
+and lists their fields plus their members' SIGNATURES, no bodies, capped per type with the omitted
+count. It is deliberately **not transitive**: in a language with rich generic types the transitive
+closure is hundreds of kilobytes, replayed on every later turn. It is **funded, not added** — it
+is only seated when redundant tail locators can be displaced to pay for it, so a payload carrying
+the block is never larger than the same payload without it, and the last mention of a file is
+never displaced.
+
 **The budget is sized in turns, not in bytes.** A search payload is ~0.6% of what a session
 spends; one extra agent turn is ~42.5k tokens, because 95.9% of billed tokens are context
 re-read. A search that stops one Read short of an edit therefore costs about 40x the whole
@@ -98,6 +109,23 @@ technology the repo did not contain. Treat it as "check that this repo really do
 asked about before editing", not as "no results".
 
 **When:** the start of essentially every task. One good query lands you on the fix area.
+
+### 🧾 def — *what is this name, and what can I do with it* (structural declaration lookup)
+One declaration, with everything the graph structurally attaches to it. For a **type**: its fields and the SIGNATURES of its associated functions and methods — including the ones written outside the type declaration, which is where most languages actually put a type's API. For a **method**: its owning type, so `deletion` reports as `Edit::deletion`. For a **trait/interface**: who implements it.
+
+```sh
+entire graph def --repo . Edit          # fields + impl surface of a type
+entire graph def --repo . Edit::deletion  # a member, with its owning type
+entire graph def --repo . Ranged       # a trait, with its implementors
+```
+
+- Membership is **structural, never a name match**. A member belongs to a type because a `CONTAINS` edge or a `container_id` says so, or because the type acquires it from a supertype one hop up. Asking for `Edit` can never return members of `Fix` because `edits` happens to contain `edit`.
+- The member set is joined across every place a language writes it: Rust inherent `impl` and `impl Trait for Type` blocks, Go receiver methods, Swift extensions, C# extension methods and further `partial` declarations, Kotlin extension functions/properties, PHP `use SomeTrait`, Ruby `include SomeModule` and `def self.name`. Acquired members are labelled `[via Super]`, extension members `[ext]`, and a member that satisfies a trait/interface declaration `[impl Trait]`.
+- Inheritance is followed **one hop only** and never transitively: the point is this type's surface, and a transitive walk in a deep hierarchy is unbounded.
+- Ambiguous names list each declaration separately (bounded, with a count). Partial declarations of ONE type are merged; two unrelated types that share a name are not.
+- `--members N` caps each member list (default 15, truncated lists report the omitted count); `--max-context-bytes N` is a ceiling that shrinks member lists before dropping the identity line; `--file`/`--line`/`--kind` select one declaration; `--format text|json`.
+
+**When:** you have a type or member name and need its API before writing the patch — instead of opening its file. Not a routine follow-up to every search: search's own `TYPES IN THIS SIGNATURE` block already carries the surface of the types the top hit's signature names.
 
 ### 🕸️ neighbors — *who calls this / what does it call* (targeted relations)
 Direct incoming/outgoing relations for **one** symbol, with definition locations, plus bounded two-hop paths at `--depth 2`. For the full blast radius of a change, prefer `impact`; use `neighbors` when you want one specific relation/direction. Never `edges` for this (full stream).
@@ -286,6 +314,7 @@ Quick mental model:
 
 ```text
 locate  →  entire graph search --query "..."          (ranked code + file:line)
+surface →  entire graph def NAME                       (what a name IS: a type's fields + member signatures, a method's owning type, a trait's implementors)
 impact  →  entire graph impact --symbol X              (one-shot blast radius: callers, types, data flow, co-change)
 callers →  entire graph neighbors --symbol X ...       (targeted callers/callees of X)
 change  →  entire graph diff --base A --head B          (entity-level, with dependents)

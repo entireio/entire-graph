@@ -78,6 +78,11 @@ The output is grouped, and the groups mean different things:
   them — a patch applied to one site of a family is the commonest way a correct fix still fails.
 * **DOCS & FIXTURES** (` + "`section: \"docs-and-fixtures\"`" + `) matched your words but hold no program
   text. Do not spend a read there looking for the bug unless the task IS the document.
+* **TYPES IN THIS SIGNATURE** are the declarations of the types the top hit's own signature
+  names — their fields and the SIGNATURES of their members, no bodies. That is the answer to
+  "what else can build one of these / what can I call on it", so you do not have to open the
+  type's file to write the patch. It is funded out of redundant tail locators, so it costs no
+  extra bytes, and it is deliberately NOT transitive.
 
 ## Hard rules (each violation costs real money)
 
@@ -108,6 +113,11 @@ applies: it is about the edit you made, not about how you found it.
 ## Reference
 
     locate  ->  entire graph search --repo . --profile full --query "..."
+    surface ->  entire graph def --repo . NAME    (what a name IS: for a type its fields + member
+                signatures — impl blocks, receiver methods, extension members, partial parts, one
+                hop of trait/module/base acquisition; for a method its OWNING type; for a
+                trait/interface WHO IMPLEMENTS it. Use it when you need a type's API, not as a
+                routine follow-up to search.)
     impact  ->  entire graph impact --repo . --symbol X   (one shot: callers, callees, type consumers, data flow, co-change, siblings)
     callers ->  entire graph neighbors --repo . --symbol X --relation CALLS --direction in
     change  ->  entire graph diff --base A --head B --json

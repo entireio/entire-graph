@@ -144,15 +144,23 @@ type SearchStats struct {
 	// They are funded out of the tail of the ranking, so this count also says how much of the
 	// ranking's tail was worth less than a structural neighbour of the top hit.
 	RelatedSites int `json:"related_sites,omitempty"`
+	// SignatureTypes counts entries in the signature-type block: the types named in the top
+	// hit's own signature. Like the related sites it is funded by displacement, so it costs
+	// the payload nothing beyond the tail locators it replaced.
+	SignatureTypes int `json:"signature_types,omitempty"`
 	// ContainerMapBytes is what the container map cost. It is reported separately from
 	// ResultBytes because the map is NOT funded out of the ranking: a payload that spent its
 	// budget on complete head bodies must not lose one to buy the map, so the map is additive
 	// and its cost is stated rather than hidden.
-	ContainerMapBytes int   `json:"container_map_bytes,omitempty"`
-	IndexCacheHit     bool  `json:"index_cache_hit"`
-	IndexLatencyMS    int64 `json:"index_latency_ms"`
-	QueryLatencyMS    int64 `json:"query_latency_ms"`
-	TotalLatencyMS    int64 `json:"total_latency_ms"`
+	ContainerMapBytes int `json:"container_map_bytes,omitempty"`
+	// SignatureTypeBytes is what the signature-type block cost serialized. The block lives
+	// outside `results`, so ResultBytes cannot account for it and the combined-budget check in
+	// Validate needs it stated explicitly. See the context-block budget in search_blocks.go.
+	SignatureTypeBytes int   `json:"signature_type_bytes,omitempty"`
+	IndexCacheHit      bool  `json:"index_cache_hit"`
+	IndexLatencyMS     int64 `json:"index_latency_ms"`
+	QueryLatencyMS     int64 `json:"query_latency_ms"`
+	TotalLatencyMS     int64 `json:"total_latency_ms"`
 	// SearchLatencyMS is retained as the backwards-compatible name for total
 	// retrieval latency. New consumers should use TotalLatencyMS and the
 	// separate preselection, index, and query phases.
@@ -167,6 +175,11 @@ type SearchResponse struct {
 	Tree     string         `json:"tree,omitempty"`
 	Profile  string         `json:"profile"`
 	Results  []SearchResult `json:"results"`
+	// SignatureTypes holds the declarations of the types named in the top hit's
+	// own signature (fields and member signatures, never bodies, never a
+	// transitive walk). It is funded by displacing redundant tail locators, so
+	// its presence never grows the payload — see search_sigtypes.go.
+	SignatureTypes []SearchSignatureType `json:"signature_types,omitempty"`
 	// ContainerMap maps the top hit's enclosing container — the file's extent and the
 	// container's members with their line ranges — so a range read can be sized from this one
 	// response instead of by reading the whole file. Nil when the payload has no ranked code
@@ -696,9 +709,24 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		)
 		results, stats.RelatedSites = mergeSearchRelatedSites(results, sites, read, options.MaxContextBytes)
 	}
+	// The types the top hit's own signature names, resolved to fields + member
+	// signatures. Funded by displacing redundant tail locators so the payload cannot grow to
+	// carry it. It runs BEFORE the container map because it is the block that mutates
+	// `results`, and the map's anchor has to be read off the final ranking.
+	var signatureTypes []SearchSignatureType
+	if anchors := searchRelatedAnchors(results, symbolsByID, symbolsByFile, 1); len(anchors) == 1 {
+		block := searchSignatureTypeSurface(
+			anchors[0], symbolsByID, symbolsByFile, snapshot.Relations, searchSignatureTypeLimit,
+		)
+		results, signatureTypes = fundSearchSignatureTypes(results, block, searchEnclosureHeadRanks)
+	}
+	stats.SignatureTypes = len(signatureTypes)
+	if len(signatureTypes) > 0 {
+		stats.SignatureTypeBytes = serializedSearchResultBytes(signatureTypes)
+	}
 	// The map is built LAST, from the payload that is actually going out: its anchor must be
-	// the hit the caller will read, after sectioning and the related-site merge have decided
-	// which result that is.
+	// the hit the caller will read, after sectioning, the related-site merge and the
+	// signature-type funding have decided which result that is.
 	containerMap := fitSearchContainerMap(
 		buildSearchContainerMap(results, symbolsByID, symbolsByFile, read),
 		searchContainerMapMaxBytes,
@@ -740,6 +768,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		Warnings:        snapshot.Header.Warnings,
 		PartialFailures: partialFailures,
 		Completeness:    snapshot.Header.Completeness,
+		SignatureTypes:  signatureTypes,
 	}, nil
 }
 

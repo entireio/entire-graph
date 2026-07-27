@@ -73,15 +73,19 @@ var relationTypes = []string{
 // OVERRIDES is derived from a resolved supertype's methods, so it is advertised
 // only for class-based languages with clear method containers.
 var ooRelationSupport = map[string][]string{
-	"Java":             {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
-	"TypeScript":       {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "HANDLES_GRAPHQL", "HANDLES_TRPC", "ASYNC_CALLS", "DATA_FLOWS"},
-	"JavaScript":       {"EXTENDS", "INHERITS", "HANDLES_GRAPHQL", "HANDLES_TRPC", "ASYNC_CALLS", "DATA_FLOWS"},
-	"Kotlin":           {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD"},
-	"C#":               {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
-	"PHP":              {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
-	"Python":           {"EXTENDS", "INHERITS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "HANDLES_GRAPHQL", "ASYNC_CALLS", "DATA_FLOWS"},
-	"Rust":             {"EXTENDS", "INHERITS", "IMPLEMENTS", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
-	"Go":               {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
+	"Java":       {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
+	"TypeScript": {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "HANDLES_GRAPHQL", "HANDLES_TRPC", "ASYNC_CALLS", "DATA_FLOWS"},
+	"JavaScript": {"EXTENDS", "INHERITS", "HANDLES_GRAPHQL", "HANDLES_TRPC", "ASYNC_CALLS", "DATA_FLOWS"},
+	"Kotlin":     {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD"},
+	"C#":         {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
+	"PHP":        {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
+	"Python":     {"EXTENDS", "INHERITS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "HANDLES_GRAPHQL", "ASYNC_CALLS", "DATA_FLOWS"},
+	"Rust":       {"EXTENDS", "INHERITS", "IMPLEMENTS", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
+	"Go":         {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
+	// Ruby states member acquisition with `include`/`prepend`/`extend` in the
+	// class body, which the provider now reads; header inheritance
+	// (`class A < B`) is not parsed yet, so only INHERITS is advertised.
+	"Ruby":             {"INHERITS"},
 	"HCL":              {"CONFIGURES", "RESOURCE_DEPENDS_ON"},
 	"GraphQL":          {"HANDLES_GRAPHQL"},
 	"Protocol Buffers": {"HANDLES_GRPC"},
@@ -1991,6 +1995,12 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	needsFields := spec.emits("READS_FIELD") || spec.emits("WRITES_FIELD") || spec.emits("ACCESSES")
 	needsTypes := spec.emits("EXTENDS") || spec.emits("INHERITS") || spec.emits("IMPLEMENTS") || spec.emits("OVERRIDES")
 	needsOverrides := spec.emits("OVERRIDES")
+	// C# extension methods and Kotlin extension functions/properties are members
+	// of the type they extend for every purpose except where they are written.
+	// The extra CONTAINS edge is what makes them answer "what can I do with an
+	// Edit?". It resolves same-file first, so it still works at profiles that
+	// build no cross-file type index.
+	needsExtensionMembers := spec.emits("CONTAINS")
 	needsAsyncCalls := spec.emits("ASYNC_CALLS")
 	needsDataFlow := spec.emits("DATA_FLOWS")
 	needsServiceRelations := spec.emits("HANDLES_GRPC") || spec.emits("HANDLES_GRAPHQL") || spec.emits("HANDLES_TRPC")
@@ -2042,6 +2052,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			}
 		}
 	}
+	partialContainerCanonical, partialContainerFile := partialTypeCanonicalIDs(files, recordsByFile)
 	// Iterate files in their (stable) slice order, not the recordsByFile map, so
 	// structural relations stream deterministically.
 	for _, file := range files {
@@ -2054,6 +2065,17 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				return
 			}
 			containsScope := "file"
+			// A partial type is ONE type written in several declarations. Each
+			// part owned only the members it happened to declare, so the type's
+			// member set was split and "what does this type have?" returned a
+			// slice of it. Point every part's members at the canonical part.
+			if canonical, ok := partialContainerCanonical[symbol.ContainerID]; ok && canonical != symbol.ContainerID {
+				symbol.ContainerID = canonical
+				records[si].ContainerID = canonical
+				if partialContainerFile[canonical] != symbol.FilePath {
+					containsScope = "module"
+				}
+			}
 			if crossFileContainers && symbol.ContainerID == "" && (symbol.Kind == "method" || symbol.Kind == "field") {
 				if parent := containerName(symbol.QualifiedName); parent != "" {
 					if container, ok := resolveContainerAcrossFiles(parent, symbol.FilePath, typeLikeByShortName); ok && container.ID != symbol.ID {
@@ -3139,6 +3161,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				emit(r)
 			}
 		}
+		if needsExtensionMembers {
+			for _, r := range extensionMemberRelations(repoKey, recordsByFile[file.Path], symbolsByFile[file.Path], symbolsByShortName) {
+				emit(r)
+			}
+		}
 	}
 
 	if needsOverrides {
@@ -3387,6 +3414,22 @@ func typeRelationsForFile(repoKey string, file FileRecord, content string, fileS
 			}
 		}
 	}
+	// Horizontal member reuse stated in the type BODY, not its header: a PHP
+	// `use SomeTrait;` or a Ruby `include SomeModule`. Without this edge the
+	// members a class really answers to are unreachable from the class, which
+	// is the same join failure as an unlinked impl block.
+	if file.Language == "PHP" || file.Language == "Ruby" {
+		lines := strings.Split(content, "\n")
+		for _, symbol := range fileSymbols {
+			if !typeLikeKind(symbol.Kind) {
+				continue
+			}
+			body := directTypeBodyLines(lines, symbol, fileSymbols)
+			for _, edge := range mixinSupertypeEdges(symbol.Language, body) {
+				relations = append(relations, buildMixinRelation(repoKey, symbol, edge, sameFileSymbols, symbolsByShortName))
+			}
+		}
+	}
 	if file.Language == "Rust" {
 		for _, edge := range rustSupertypeEdges(content) {
 			anchor, ok := firstTypeLikeNamed(fileSymbols, edge.Anchor)
@@ -3398,6 +3441,175 @@ func typeRelationsForFile(repoKey string, file FileRecord, content string, fileS
 				relations = append(relations, buildTypeRelation(repoKey, anchor, edge.Super, "INHERITS", edge.Confidence, sameFileSymbols, symbolsByShortName))
 			}
 		}
+	}
+	return relations
+}
+
+// buildMixinRelation resolves a body-stated member-acquisition edge (a PHP trait
+// `use`, a Ruby `include`) to its declaration.
+//
+// It cannot go through buildTypeRelation, for two reasons the languages force:
+// the supplier of the members is often a MODULE (Ruby), which is not a type-like
+// kind, and short-name resolution across the whole workspace is not
+// language-aware — a Ruby `include Ranged` would happily bind to a Rust trait
+// called `Ranged` in the same repo, which is a confidently wrong edge. Candidates
+// are therefore restricted to the same language, and an unresolved supplier
+// becomes an external endpoint exactly as elsewhere.
+func buildMixinRelation(repoKey string, anchor SymbolRecord, edge rawSupertype, sameFileSymbols []SymbolRecord, symbolsByShortName map[string][]SymbolRecord) RelationRecord {
+	accepts := func(symbol SymbolRecord) bool {
+		return symbol.Name == edge.Super && symbol.ID != anchor.ID &&
+			symbol.Language == anchor.Language &&
+			(typeLikeKind(symbol.Kind) || symbol.Kind == "module")
+	}
+	toID := externalID("type", edge.Super)
+	targetKind, resolution, scope := "external", "name_only", "external"
+	confidence := minFloat(edge.Confidence, 0.8)
+	for _, symbol := range sameFileSymbols {
+		if accepts(symbol) {
+			toID, targetKind, resolution, scope, confidence = symbol.ID, "symbol", "exact", "file", edge.Confidence
+			break
+		}
+	}
+	if targetKind == "external" {
+		for _, symbol := range symbolsByShortName[edge.Super] {
+			if accepts(symbol) {
+				toID, targetKind, resolution, scope, confidence = symbol.ID, "symbol", "name_only", "module", minFloat(edge.Confidence, 0.85)
+				break
+			}
+		}
+	}
+	return RelationRecord{
+		RecordType:    "relation",
+		FromID:        anchor.ID,
+		ToID:          toID,
+		Type:          edge.Relation,
+		Confidence:    confidence,
+		Reason:        typeRelationReason(edge.Relation, resolution),
+		RelationScope: scope,
+		Resolution:    resolution,
+		TargetKind:    targetKind,
+		Evidence: []Evidence{{
+			Kind:      "mixin_declaration",
+			FilePath:  anchor.FilePath,
+			StartLine: anchor.StartLine,
+			EndLine:   anchor.EndLine,
+			Detail:    edge.Super,
+		}},
+		WarningCodes: []string{},
+	}
+}
+
+// partialTypeCanonicalIDs maps every declaration of a partial type to the one
+// that stands for the whole type — the first part in file order. C# (and F#)
+// let a single type be written as several `partial` declarations; each parses
+// as its own symbol, so a member's container was whichever part happened to
+// declare it and the type's member set was split across parts. Callers rewrite
+// member containers through this map so the type has one member set again.
+//
+// Parts are matched on kind + qualified name + language, and ONLY when the
+// declaration says `partial`: two same-named classes that are not partial are
+// two different types (different namespaces, different assemblies) and must
+// stay separate. The second return value gives each canonical part's file, so
+// callers can scope a cross-file CONTAINS edge correctly.
+func partialTypeCanonicalIDs(files []FileRecord, recordsByFile map[string][]SymbolRecord) (map[string]string, map[string]string) {
+	canonicalByKey := map[string]SymbolRecord{}
+	var parts []SymbolRecord
+	for _, file := range files {
+		for _, symbol := range recordsByFile[file.Path] {
+			if !typeLikeKind(symbol.Kind) || !declaresPartialType(symbol) {
+				continue
+			}
+			key := symbol.Language + "\x00" + symbol.Kind + "\x00" + symbol.QualifiedName
+			parts = append(parts, symbol)
+			if existing, ok := canonicalByKey[key]; !ok ||
+				symbol.FilePath < existing.FilePath ||
+				(symbol.FilePath == existing.FilePath && symbol.StartLine < existing.StartLine) {
+				canonicalByKey[key] = symbol
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return nil, nil
+	}
+	canonical := make(map[string]string, len(parts))
+	canonicalFile := make(map[string]string, len(canonicalByKey))
+	for _, symbol := range parts {
+		key := symbol.Language + "\x00" + symbol.Kind + "\x00" + symbol.QualifiedName
+		anchor := canonicalByKey[key]
+		canonical[symbol.ID] = anchor.ID
+		canonicalFile[anchor.ID] = anchor.FilePath
+	}
+	return canonical, canonicalFile
+}
+
+// declaresPartialType reports whether a type symbol's declaration carries the
+// `partial` modifier, read from the signature the parser captured.
+func declaresPartialType(symbol SymbolRecord) bool {
+	if symbol.Language != "C#" && symbol.Language != "F#" {
+		return false
+	}
+	for _, field := range strings.Fields(stripGenerics(symbol.Signature)) {
+		if field == "partial" {
+			return true
+		}
+	}
+	return false
+}
+
+// extensionMemberRelations emits the membership edge for callables declared
+// outside the type they extend: C# `static bool IsEmpty(this Edit edit)` and
+// Kotlin `fun Edit.isEmpty()`. Their container_id points at the static class or
+// the file, which is where they are WRITTEN — so the type's own member set was
+// missing them, and a caller asking what a value of that type supports got an
+// incomplete answer that looked complete.
+//
+// The edge is CONTAINS with relation_scope "extension", so consumers can tell an
+// acquired member from a declared one, and `neighbors --symbol T --relation
+// CONTAINS --direction out` returns the whole surface either way. The receiver
+// type is resolved same-file first (the usual case: extensions ship beside the
+// type) and then through the workspace short-name index; unresolvable receivers
+// emit nothing rather than an external endpoint, because a membership edge to a
+// type the graph never saw cannot be navigated.
+func extensionMemberRelations(repoKey string, fileSymbols, sameFileSymbols []SymbolRecord, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
+	var relations []RelationRecord
+	for _, symbol := range fileSymbols {
+		if symbol.Kind != "function" && symbol.Kind != "method" && symbol.Kind != "property" {
+			continue
+		}
+		receiver := extensionReceiverTypeName(symbol.Language, symbol.Signature)
+		if receiver == "" {
+			continue
+		}
+		// Same-language only: a Kotlin `fun Edit.isEmpty()` must not attach to a
+		// Rust struct that happens to also be called Edit.
+		target, ok := firstTypeLikeNamedInLanguage(sameFileSymbols, receiver, symbol.Language)
+		resolution, confidence := "exact", 0.9
+		if !ok || target.ID == symbol.ID {
+			target, ok = firstTypeLikeNamedInLanguage(symbolsByShortName[receiver], receiver, symbol.Language)
+			resolution, confidence = "name_only", 0.8
+		}
+		if !ok || target.ID == symbol.ID || target.ID == symbol.ContainerID {
+			continue
+		}
+		relations = append(relations, RelationRecord{
+			RecordType:    "relation",
+			FromID:        target.ID,
+			ToID:          symbol.ID,
+			Type:          "CONTAINS",
+			Confidence:    confidence,
+			Reason:        "extension member declared on the receiver type",
+			RelationScope: "extension",
+			Resolution:    resolution,
+			TargetKind:    "symbol",
+			Evidence: []Evidence{{
+				Kind:      "extension_receiver",
+				FilePath:  symbol.FilePath,
+				StartLine: symbol.StartLine,
+				EndLine:   symbol.EndLine,
+				Detail:    receiver,
+			}},
+			WarningCodes: []string{},
+		})
 	}
 	return relations
 }
@@ -8295,6 +8507,18 @@ func overrideRelations(relations []RelationRecord, methodsByContainer map[string
 		}
 	}
 	return overrides
+}
+
+// firstTypeLikeNamedInLanguage is firstTypeLikeNamed restricted to one language,
+// for joins where a cross-language short-name collision would produce a
+// confidently wrong edge rather than a missing one.
+func firstTypeLikeNamedInLanguage(records []SymbolRecord, name, language string) (SymbolRecord, bool) {
+	for _, symbol := range records {
+		if symbol.Name == name && symbol.Language == language && typeLikeKind(symbol.Kind) {
+			return symbol, true
+		}
+	}
+	return SymbolRecord{}, false
 }
 
 func firstTypeLikeNamed(records []SymbolRecord, name string) (SymbolRecord, bool) {
@@ -16203,6 +16427,42 @@ func symbolBlockFromLines(lines []string, symbol SymbolRecord) string {
 		return ""
 	}
 	return strings.Join(lines[start:end], "\n")
+}
+
+// directTypeBodyLines returns a type declaration's own source with the bodies of
+// nested type declarations blanked out. Body-scanned member-acquisition
+// statements (`use SomeTrait;`, `include SomeModule`) must be attributed to the
+// type that actually wrote them, so a nested class's mixin cannot be credited to
+// the class around it. Line numbering is preserved (nested lines become empty,
+// they are not removed) so offsets stay comparable to the original block.
+func directTypeBodyLines(lines []string, symbol SymbolRecord, fileSymbols []SymbolRecord) string {
+	start := symbol.StartLine - 1
+	if start < 0 {
+		start = 0
+	}
+	end := symbol.EndLine
+	if end > len(lines) {
+		end = len(lines)
+	}
+	if end <= start {
+		return ""
+	}
+	body := make([]string, end-start)
+	copy(body, lines[start:end])
+	for _, other := range fileSymbols {
+		if other.ID == symbol.ID || !typeLikeKind(other.Kind) {
+			continue
+		}
+		if other.StartLine <= symbol.StartLine || other.EndLine > symbol.EndLine {
+			continue
+		}
+		for line := other.StartLine; line <= other.EndLine && line-1 < end; line++ {
+			if index := line - 1 - start; index >= 0 && index < len(body) {
+				body[index] = ""
+			}
+		}
+	}
+	return strings.Join(body, "\n")
 }
 
 func completenessLevel(failures, files, parsedFiles, symbols int) string {

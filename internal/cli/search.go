@@ -164,6 +164,9 @@ const searchTextFullRanks = 2
 const (
 	searchTextRelatedHeader = "RELATED SITES (the same change usually also lands here):"
 	searchTextDocsHeader    = "DOCS & FIXTURES (matched the query; not fix sites):"
+	// The types the top hit's signature names. Placed last: it is reference
+	// material for writing the patch, not a place the patch might land.
+	searchTextSignatureTypesHeader = "TYPES IN THIS SIGNATURE (fields & impl surface; names and signatures only):"
 )
 
 // writeTextSearch renders the default `--format text` output, grouped by section.
@@ -216,7 +219,42 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 			writeTextSearchResult(out, result, false)
 		}
 	}
+	if block := renderSignatureTypes(response.SignatureTypes); len(block) > 0 {
+		if _, err := out.Write(block); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// renderSignatureTypes prints the declarations of the types the top hit's own
+// signature names. It answers "what can I do with one of these" without a file
+// read: names and signatures only, capped per type, with the omitted count so a
+// truncated list can never be mistaken for a complete one.
+func renderSignatureTypes(types []sem.SearchSignatureType) []byte {
+	if len(types) == 0 {
+		return nil
+	}
+	var buffer strings.Builder
+	buffer.WriteString(searchTextSignatureTypesHeader + "\n")
+	for _, entry := range types {
+		fmt.Fprintf(&buffer, "  %s  %s:%d\n", entry.Name, entry.FilePath, entry.StartLine)
+		if len(entry.Fields) > 0 {
+			line := "    fields: " + strings.Join(entry.Fields, ", ")
+			if omitted := entry.FieldsTotal - len(entry.Fields); omitted > 0 {
+				line += fmt.Sprintf(" (+%d more)", omitted)
+			}
+			fmt.Fprintln(&buffer, line)
+		}
+		if len(entry.Methods) > 0 {
+			line := fmt.Sprintf("    impl %s: %s", entry.Name, strings.Join(entry.Methods, ", "))
+			if omitted := entry.MethodsTotal - len(entry.Methods); omitted > 0 {
+				line += fmt.Sprintf(" (+%d more)", omitted)
+			}
+			fmt.Fprintln(&buffer, line)
+		}
+	}
+	return []byte(buffer.String())
 }
 
 func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result sem.SearchResult, full bool) {

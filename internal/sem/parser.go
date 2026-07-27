@@ -4707,7 +4707,12 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 			return Entity{}, false
 		}
 		name = nodeName(node, src)
-	case "method":
+	// `singleton_method` is Ruby's `def self.name` — the language's associated
+	// function (constructors and factories live there: `Edit.deletion(a, b)`).
+	// It had no case, so the whole static surface of every Ruby class was
+	// missing from the graph, and "what can I call on Edit?" could not be
+	// answered even though the instance methods were joined correctly.
+	case "method", "singleton_method":
 		kind = "function"
 		name = nodeName(node, src)
 		if scope != "" {
@@ -4840,7 +4845,13 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		}
 		kind = "class"
 		name = nodeName(node, src)
-	case "trait_definition", "trait_item":
+	// trait_definition = Scala, trait_item = Rust, trait_declaration = PHP.
+	// PHP had no case, so a trait was not a symbol at all: its methods were
+	// emitted with an empty container_id and a bare qualified name, which is
+	// exactly the "the type's members are not joined to the type" hole — a PHP
+	// trait IS the declaration of a reusable member set, and classes acquire
+	// those members with `use`.
+	case "trait_definition", "trait_item", "trait_declaration":
 		kind = "trait"
 		name = nodeName(node, src)
 	case "value_definition":
