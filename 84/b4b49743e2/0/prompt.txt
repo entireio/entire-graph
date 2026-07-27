@@ -198,3 +198,85 @@ keep actively working, don't stop, think, iterate, and make move things that whi
 ---
 
 progress?
+
+---
+
+<task-notification>
+<task-id>a15a89436f7adb038</task-id>
+<tool-use-id>toolu_016u2to6CJmYJoHa2oSchok4</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/122fdde1-dcfa-4112-99f8-87d34a87d42c/tasks/a15a89436f7adb038.output</output-file>
+<status>completed</status>
+<summary>Agent "Surface covering tests and type cards" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Branch pushed. Report:
+
+## what each feature keys on
+
+**A — covering test** (`internal/sem/search_covertest.go`, section `covering-test`, appended last, never in primary list)
+- inbound `CALLS`/`TESTS` edge from a test-file symbol
+- mirror test file = file-STEM match after stripping test affix (`_test`/`Test`/`Tests`/`.spec`/`test_`/`_spec`/`IT`), **or** same stem inside a test tree (`tests/unit/bitops.tcl` ← `src/bitops.c`). No per-language path table.
+- test name or body names the anchor (case-fold substring, then separator-insensitive)
+- bar: edge OR name OR (mirror AND body-mention). Mirror alone admits nothing (names a FILE, not which method).
+- window = contiguous verbatim lines centred on the **LAST** assertion, `defer`/cleanup blocks skipped
+- gates: anchor already a test → off; query asked for tests → off; test already in payload → off
+- allowance 448 B. Ranker's test demotion untouched.
+
+**B — declaration card** (`internal/sem/search_typecard.go`, top-level `type_card`)
+- outgoing edges from ONE anchor: `READS/WRITES_FIELD|ACCESSES` → field decl; `RETURNS/PARAM/USES_TYPE|CONSTRUCTS` → type decl; `CALLS` → signature; conf ≥ 0.65
+- body-local bindings (`:=`, `var/let/const/final/my/local`) used on ≥1 other line; **fewer uses ranks higher** (the one a deletion orphans). Bare `x =` rejected (not a declaration).
+- one closure hop: entry decl names a container → that container's decl next (`headChunks *memChunk` → `memChunk{… prev *memChunk}`)
+- verbatim decl preferred; multi-line containers rendered from own lines, comment-only lines dropped
+- correctness guards: decl must name its symbol before `{` and outside any `(`; declaration re-picked by (has-members, locality, span) not by the edge's own target; test-file targets rejected from production anchors
+- cap 384 B / 4 entries
+
+Renderers: json, ndjson (summary), text (2 labelled headers), agent (`D:` lines, dropped first under a tight cap). Stats `covering_tests`/`type_card_entries`/`type_card_bytes`; `Validate()` enforces card accounting + allowance.
+
+## byte delta per search
+- probe 14: **12107 → 12604 = +497** (+4.1%)
+- 17-instance set: **12633 → 13111 = +478**
+- hard ceiling 832 B (448+384); never past `--max-context-bytes`. Tail-locator displacement exists but **never fired** on these instances (payloads ~12 kB vs 24 kB ceiling), so +497 is real growth, not a swap.
+
+## probe before/after
+| | main | new |
+|---|---|---|
+| progress | 0.5668 | 0.5619 |
+| gold_top3 | 0.7143 (10/14) | **0.7143 (10/14)** |
+| gold_any | 0.8571 (12/14) | **0.8571 (12/14)** |
+| encl_cov | 5/14 | **5/14** |
+| sib_cov | 4/12 | **4/12** |
+| byte_score | 0.8259 | 0.7933 |
+| guards_ok | 1 | 1 |
+
+Only the byte term moved. No regression.
+
+## feature-specific counts (14 probe + 3 named = 17)
+- covering test present: **5/17** (main 0) — fmt, gin, gson, preact, axum
+- type card present: **17/17** (main 0)
+
+## the 3 named identifiers
+End-to-end, deterministic derived query: **0/3** — the derived query does not put the gold site in the returned head on any of the three.
+
+Capability probe (query names the gold symbol so the head anchors on it): **2/3**
+- `extNotCaddyfileOrJSON` **FOUND** — `cmd/main.go:122`, `use_lines:[133]` (the exact coupling the failed patch broke)
+- `memChunk` + `prev` **FOUND** — `headChunks *memChunk` → closure `type memChunk struct { … prev *memChunk }`
+- `shared.nullarray` **NOT FOUND**, structurally unreachable: the C provider emits no `field` symbols and `shared` is not indexed, so no declaration exists to point at. The fallback target `lookupKeyWriteOrReply` (whose `robj *reply` param is what makes the bare array wrong) is a 0.68 name-only callee and loses all call slots to four 0.92 exact ones.
+
+## tests
+1256 → **1327** (+71). `gofmt -s` clean, `go vet` clean. Mutation check: **20/20 killed** (script: `scratchpad/mutate_contract.py`).
+
+## branch
+`feat/covering-test-and-type-card` @ **cce462a**, pushed to `/Users/suhaan/devenv/entire-graph`. `main` untouched at 810ce30. Work clone: `/private/tmp/claude-501/-Users-suhaan-devenv/7e3deab1-a028-46d5-9bf1-3318de93a0b6/scratchpad/eg`.
+
+## deviations / refused
+- **Card scope**: spec said top hit only. Implemented as ONE anchor = the top hit, walking down the head (≤5) *only when the top hit yields nothing* — rank 1 is frequently a one-line field stub or a whole class. Same cost, one block.
+- **Card cap 320 → 384 B**: at 320 the field+closure pair answering the prometheus failure serialized to 326 B and was silently dropped. 320 was a 6-byte cliff in Go, not a budget.
+- **Covering-test allowance 448 B, not ~350**: one entry is ~330 B of schema before any source in Java (54-byte path, 44-byte qualified name). At 384 the block produced **zero** entries on every Java/Kotlin instance. Also dropped the redundant second name field and the card's `kind` field to claw bytes back.
+- Did **not** proactively cut tail locators: funding sells them only when the ceiling binds, matching the existing related-block contract. Last mention of a file never for sale.
+- No docker, no network, no `*.orig`/patch/diff artifacts read by the tool; no SWE-bench-specific layout special-casing.
+- The probe does not measure either feature, so the **only measured effect here is the byte cost**; the resolve-rate benefit is unverified by this run.</result>
+<usage><subagent_tokens>456164</subagent_tokens><tool_uses>228</tool_uses><duration_ms>4683028</duration_ms></usage>
+</task-notification>
+
+---
+
+how abt some gold feedback. Go and check out what the agent would want for it to save less tokens; stop mreiging to main first meet the goal no more merginign, nce goal met make pr
