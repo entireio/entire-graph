@@ -143,18 +143,11 @@ type SearchStats struct {
 	// change usually has to land (callers, sibling implementations, near-duplicate bodies).
 	// They are funded out of the tail of the ranking, so this count also says how much of the
 	// ranking's tail was worth less than a structural neighbour of the top hit.
-	RelatedSites int `json:"related_sites,omitempty"`
-	// CoveringTests counts entries in the covering-test section (0 or 1), TypeCardEntries the
-	// declarations in the type card, and TypeCardBytes what the card cost serialized — the card
-	// lives outside `results`, so ResultBytes cannot account for it. Together they report what
-	// the two contract blocks spent (schema 1.x additive).
-	CoveringTests   int   `json:"covering_tests,omitempty"`
-	TypeCardEntries int   `json:"type_card_entries,omitempty"`
-	TypeCardBytes   int   `json:"type_card_bytes,omitempty"`
-	IndexCacheHit   bool  `json:"index_cache_hit"`
-	IndexLatencyMS  int64 `json:"index_latency_ms"`
-	QueryLatencyMS  int64 `json:"query_latency_ms"`
-	TotalLatencyMS  int64 `json:"total_latency_ms"`
+	RelatedSites   int   `json:"related_sites,omitempty"`
+	IndexCacheHit  bool  `json:"index_cache_hit"`
+	IndexLatencyMS int64 `json:"index_latency_ms"`
+	QueryLatencyMS int64 `json:"query_latency_ms"`
+	TotalLatencyMS int64 `json:"total_latency_ms"`
 	// SearchLatencyMS is retained as the backwards-compatible name for total
 	// retrieval latency. New consumers should use TotalLatencyMS and the
 	// separate preselection, index, and query phases.
@@ -163,16 +156,12 @@ type SearchStats struct {
 }
 
 type SearchResponse struct {
-	Query    string         `json:"query"`
-	RepoRoot string         `json:"repo_root"`
-	Commit   string         `json:"commit,omitempty"`
-	Tree     string         `json:"tree,omitempty"`
-	Profile  string         `json:"profile"`
-	Results  []SearchResult `json:"results"`
-	// TypeCard carries the declarations behind the names the head body uses — the compact
-	// answer to "what is this identifier", which a snippet full of USES never contains. It is
-	// not a ranking and holds no fix sites; see search_typecard.go.
-	TypeCard        []TypeCardEntry    `json:"type_card,omitempty"`
+	Query           string             `json:"query"`
+	RepoRoot        string             `json:"repo_root"`
+	Commit          string             `json:"commit,omitempty"`
+	Tree            string             `json:"tree,omitempty"`
+	Profile         string             `json:"profile"`
+	Results         []SearchResult     `json:"results"`
 	Stats           SearchStats        `json:"stats"`
 	Warnings        []ProviderWarning  `json:"warnings"`
 	PartialFailures []PartialFailure   `json:"partial_failures"`
@@ -697,24 +686,9 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		)
 		results, stats.RelatedSites = mergeSearchRelatedSites(results, sites, read, options.MaxContextBytes)
 	}
-	// Contract context last, on the payload as it will actually be returned: what is already in
-	// view decides what the covering test and the type card have left to add, and both are
-	// funded against the final byte ceiling rather than against an intermediate one.
-	var typeCard []TypeCardEntry
-	if anchors := searchTypeCardAnchor(results, symbolsByID, symbolsByFile, searchEnclosureHeadRanks); len(anchors) > 0 {
-		context := buildSearchContractContext(
-			results, anchors, q, snapshot.Relations, symbolsByID, symbolsByFile, read,
-		)
-		results, typeCard, stats.CoveringTests, stats.TypeCardEntries = mergeSearchContractContext(
-			results, context, options.MaxContextBytes,
-		)
-	}
 	stats.CandidatesSelected = len(results)
 	resultBytes = serializedSearchResultBytes(results)
 	stats.ResultBytes = resultBytes
-	if len(typeCard) > 0 {
-		stats.TypeCardBytes = serializedSearchResultBytes(typeCard)
-	}
 	stats.ContextBudgetBytes = options.MaxContextBytes
 	stats.ResultsDropped = dropped
 	stats.SnippetsTruncated = truncated
@@ -741,7 +715,6 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		Tree:            snapshot.Header.Tree,
 		Profile:         string(options.Profile),
 		Results:         results,
-		TypeCard:        typeCard,
 		Stats:           stats,
 		Warnings:        snapshot.Header.Warnings,
 		PartialFailures: partialFailures,
@@ -3808,22 +3781,6 @@ func (response SearchResponse) Validate() error {
 	}
 	if response.Stats.ContextBudgetBytes > 0 && response.Stats.ResultBytes > response.Stats.ContextBudgetBytes {
 		return fmt.Errorf("search result context exceeds byte budget: %d > %d", response.Stats.ResultBytes, response.Stats.ContextBudgetBytes)
-	}
-	// The type card lives outside `results`, so it gets its own accounting: a block that could
-	// grow unmeasured is a block that can silently break the byte contract it was built under.
-	if len(response.TypeCard) > 0 {
-		cardBytes := serializedSearchResultBytes(response.TypeCard)
-		if response.Stats.TypeCardBytes != cardBytes {
-			return fmt.Errorf("search type card byte accounting mismatch: %d != %d", response.Stats.TypeCardBytes, cardBytes)
-		}
-		if cardBytes > searchTypeCardBytes {
-			return fmt.Errorf("search type card exceeds its allowance: %d > %d", cardBytes, searchTypeCardBytes)
-		}
-		if response.Stats.ContextBudgetBytes > 0 &&
-			response.Stats.ResultBytes+cardBytes > response.Stats.ContextBudgetBytes {
-			return fmt.Errorf("search context exceeds byte budget: %d > %d",
-				response.Stats.ResultBytes+cardBytes, response.Stats.ContextBudgetBytes)
-		}
 	}
 	for index, result := range response.Results {
 		if result.Rank != index+1 {

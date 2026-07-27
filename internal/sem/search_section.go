@@ -29,24 +29,16 @@ import (
 // Sectioning is therefore a LABEL, not a filter: every hit stays in `results`, keeps its rank
 // and stays reachable. Renderers group by section, so the list an agent reads as "candidate
 // fix sites" contains only entries that could be one.
-//   - The covering test (searchSectionCoveringTest): the test that exercises the top hit. It is
-//     the one entry in the payload whose file the ranker deliberately DEMOTES, and it is here
-//     precisely because a test is not a fix site — it is the statement of what the fix has to
-//     achieve. Labelling it away from the primary list is what makes it safe to include at all.
-//     See search_covertest.go.
 const (
-	searchSectionPrimary      = ""
-	searchSectionRelated      = "related"
-	searchSectionDocs         = "docs-and-fixtures"
-	searchSectionCoveringTest = "covering-test"
+	searchSectionPrimary = ""
+	searchSectionRelated = "related"
+	searchSectionDocs    = "docs-and-fixtures"
 )
 
-// SearchSectionRelated, SearchSectionDocs and SearchSectionCoveringTest are the section labels
-// exported for renderers.
+// SearchSectionRelated and SearchSectionDocs are the section labels exported for renderers.
 const (
-	SearchSectionRelated      = searchSectionRelated
-	SearchSectionDocs         = searchSectionDocs
-	SearchSectionCoveringTest = searchSectionCoveringTest
+	SearchSectionRelated = searchSectionRelated
+	SearchSectionDocs    = searchSectionDocs
 )
 
 // NonProgramTextPath reports whether a path holds no program text at all: prose
