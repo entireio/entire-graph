@@ -142,8 +142,6 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 			if line <= 0 {
 				line = result.StartLine
 			}
-			// Score included so downstream consumers can confidence-gate on any
-			// rank, not just the snippet ranks (post-filters may promote these).
 			fmt.Fprintf(out, "%d. %s:%d", result.Rank, result.FilePath, line)
 			if name != "" {
 				fmt.Fprintf(out, " %s", name)
@@ -151,14 +149,15 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 			if result.Kind != "" {
 				fmt.Fprintf(out, " kind=%s", result.Kind)
 			}
-			fmt.Fprintf(out, " score=%.4f\n", result.Score)
+			fmt.Fprint(out, "\n")
 			continue
 		}
-		// Anchor the top ranks on the exact best-match line, not the enclosing
-		// symbol's span: agents Read at the range start, and for a class-level
-		// symbol that can be 60+ lines above the match (a wasted Read + recovery
-		// turn). Keep the span as secondary context and emit an explicit READ
-		// window so the follow-up Read needs no offset arithmetic.
+		// Anchor the top ranks on the exact best-match line (FocusLine) rather than
+		// the enclosing symbol's span start, so an agent Reads at the match, not
+		// dozens of lines above it. The printed lines=Start-End gives the region to
+		// open; no separate READ window is emitted — post-calibration snippets are
+		// small enough that such a window equals the region in nearly all cases and
+		// only adds bytes (PR #61 review).
 		focus := result.FocusLine
 		if focus <= 0 {
 			focus = result.StartLine
@@ -170,16 +169,7 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 		if result.Kind != "" {
 			fmt.Fprintf(out, " kind=%s", result.Kind)
 		}
-		fmt.Fprintf(out, " lines=%d-%d signals=%s\n%s\n", result.StartLine, result.EndLine, strings.Join(result.Signals, ","), result.Snippet)
-		readFrom := focus - 15
-		if readFrom < result.StartLine {
-			readFrom = result.StartLine
-		}
-		readTo := focus + 25
-		if readTo > result.EndLine {
-			readTo = result.EndLine
-		}
-		fmt.Fprintf(out, "   READ: %s lines %d-%d\n\n", result.FilePath, readFrom, readTo)
+		fmt.Fprintf(out, " lines=%d-%d signals=%s\n%s\n\n", result.StartLine, result.EndLine, strings.Join(result.Signals, ","), result.Snippet)
 	}
 	return nil
 }
