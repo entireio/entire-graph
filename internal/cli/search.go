@@ -138,13 +138,20 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 				return err
 			}
 		}
-		return encoder.Encode(map[string]any{
+		summary := map[string]any{
 			"record_type":      "search_summary",
 			"stats":            response.Stats,
 			"warnings":         response.Warnings,
 			"partial_failures": response.PartialFailures,
 			"completeness":     response.Completeness,
-		})
+		}
+		// The declaration card rides on the summary rather than on a record of its own: it is
+		// one block about the whole payload, and a streaming consumer that does not know the key
+		// keeps working.
+		if len(response.TypeCard) > 0 {
+			summary["type_card"] = response.TypeCard
+		}
+		return encoder.Encode(summary)
 	case "text":
 		return writeTextSearch(opts.Stdout, response)
 	case "agent":
@@ -164,7 +171,9 @@ const searchTextFullRanks = 2
 const (
 	searchTextRelatedHeader = "RELATED SITES (the same change usually also lands here):"
 	searchTextDocsHeader    = "DOCS & FIXTURES (matched the query; not fix sites):"
-	// The types the top hit's signature names. Placed last: it is reference
+	searchTextTestHeader    = "COVERING TEST (what hit 1 is supposed to do; not a fix site):"
+	searchTextTypesHeader   = "DECLARATIONS (names hit 1 uses; edit against these):"
+	// The types the top hit's signature names. Placed last of the reference blocks: it is
 	// material for writing the patch, not a place the patch might land.
 	searchTextSignatureTypesHeader = "TYPES IN THIS SIGNATURE (fields & impl surface; names and signatures only):"
 )
@@ -198,10 +207,30 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 			return err
 		}
 	}
-	primary, related, docs := partitionSearchSections(response.Results)
+	primary, related, docs, tests := partitionSearchSections(response.Results)
 	for index, result := range primary {
 		writeTextSearchResult(out, result, index < searchTextFullRanks)
 	}
+	// Contract context before the related and docs groups: it is about the hit the reader has
+	// just read, and it is the part that decides whether the edit is the right SHAPE.
+	if len(tests) > 0 {
+		fmt.Fprintf(out, "%s\n", searchTextTestHeader)
+		for _, result := range tests {
+			writeTextSearchResult(out, result, true)
+		}
+	}
+	// The two reference blocks stay ADJACENT and both stay ahead of the related and docs
+	// groups. They answer the same kind of question about the same subject — "what are the
+	// names hit 1 is written in terms of" — so splitting them across the related-site block
+	// would make the reader hold hit 1 in mind across two unrelated groups. Signature types
+	// come first of the two: they are the anchor's own CONTRACT (what callers depend on and a
+	// patch must not break), while the declaration card is about identifiers inside its body.
+	if block := renderSignatureTypes(response.SignatureTypes); len(block) > 0 {
+		if _, err := out.Write(block); err != nil {
+			return err
+		}
+	}
+	writeTextSearchTypeCard(out, response.TypeCard)
 	if len(related) > 0 {
 		fmt.Fprintf(out, "%s\n", searchTextRelatedHeader)
 		for _, result := range related {
@@ -217,11 +246,6 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 		fmt.Fprintf(out, "%s\n", searchTextDocsHeader)
 		for _, result := range docs {
 			writeTextSearchResult(out, result, false)
-		}
-	}
-	if block := renderSignatureTypes(response.SignatureTypes); len(block) > 0 {
-		if _, err := out.Write(block); err != nil {
-			return err
 		}
 	}
 	return nil
@@ -267,7 +291,13 @@ func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result s
 		}
 		return
 	}
-	fmt.Fprintf(out, "%d. %s:%d-%d score=%.4f", result.Rank, result.FilePath, result.StartLine, result.EndLine, result.Score)
+	fmt.Fprintf(out, "%d. %s:%d-%d", result.Rank, result.FilePath, result.StartLine, result.EndLine)
+	// A block that carries no relevance score must not print one. The covering test is not a
+	// ranked answer — it is the statement of what the fix has to achieve — and `score=0.0000`
+	// beside it reads as "worthless" rather than "not applicable".
+	if result.Section != sem.SearchSectionCoveringTest {
+		fmt.Fprintf(out, " score=%.4f", result.Score)
+	}
 	if name != "" {
 		fmt.Fprintf(out, " symbol=%s", name)
 	}
@@ -277,18 +307,45 @@ func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result s
 // partitionSearchSections splits a payload into its presentation groups while preserving rank
 // order inside each. Results carrying an unknown section label are treated as primary: a
 // renderer that silently hid a group it did not recognize would lose recall on upgrade.
-func partitionSearchSections(results []sem.SearchResult) (primary, related, docs []sem.SearchResult) {
+func partitionSearchSections(results []sem.SearchResult) (primary, related, docs, tests []sem.SearchResult) {
 	for _, result := range results {
 		switch result.Section {
 		case sem.SearchSectionRelated:
 			related = append(related, result)
 		case sem.SearchSectionDocs:
 			docs = append(docs, result)
+		case sem.SearchSectionCoveringTest:
+			tests = append(tests, result)
 		default:
 			primary = append(primary, result)
 		}
 	}
-	return primary, related, docs
+	return primary, related, docs, tests
+}
+
+// writeTextSearchTypeCard renders the declaration card, one line per entry. A binding entry —
+// a name the hit's own body creates — also prints where else that body uses it, because the
+// coupling is the whole reason it is listed.
+func writeTextSearchTypeCard(out interface{ Write([]byte) (int, error) }, card []sem.TypeCardEntry) {
+	if len(card) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "%s\n", searchTextTypesHeader)
+	for _, entry := range card {
+		fmt.Fprintf(out, "  %s %s:%d", entry.Name, entry.FilePath, entry.Line)
+		if len(entry.UseLines) > 0 {
+			fmt.Fprintf(out, " (used %s)", joinSearchUseLines(entry.UseLines))
+		}
+		fmt.Fprintf(out, "  %s\n", entry.Decl)
+	}
+}
+
+func joinSearchUseLines(lines []int) string {
+	parts := make([]string, 0, len(lines))
+	for _, line := range lines {
+		parts = append(parts, strconv.Itoa(line))
+	}
+	return strings.Join(parts, ",")
 }
 
 func searchResultDisplayName(result sem.SearchResult) string {
@@ -321,12 +378,16 @@ func searchResultCarriesCompleteBody(result sem.SearchResult) bool {
 // expressed by order. Docs and fixtures sort last, so under a tight cap the entries dropped
 // first are the ones that were never fix sites.
 func orderAgentSearchResults(results []sem.SearchResult) []sem.SearchResult {
-	primary, related, docs := partitionSearchSections(results)
-	if len(related) == 0 && len(docs) == 0 {
+	primary, related, docs, tests := partitionSearchSections(results)
+	if len(related) == 0 && len(docs) == 0 && len(tests) == 0 {
 		return results
 	}
 	ordered := make([]sem.SearchResult, 0, len(results))
 	ordered = append(ordered, primary...)
+	// The covering test sorts ahead of the related and docs groups but behind every candidate
+	// fix site: under a tight cap what is dropped first must still be the entries that were
+	// never fix sites, and the test is the one non-fix-site entry that changes the edit.
+	ordered = append(ordered, tests...)
 	ordered = append(ordered, related...)
 	return append(ordered, docs...)
 }
@@ -342,6 +403,8 @@ func agentSearchSectionTag(result sem.SearchResult) string {
 		return "(related)"
 	case sem.SearchSectionDocs:
 		return "(docs)"
+	case sem.SearchSectionCoveringTest:
+		return "(covers)"
 	}
 	return ""
 }
@@ -365,6 +428,7 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	fullConfidence, compactConfidence := searchLowConfidenceNotices(response)
 	fullMap := sem.RenderSearchContainerMap(response.ContainerMap, false)
 	compactMap := sem.RenderSearchContainerMap(response.ContainerMap, true)
+	typeCard := agentSearchTypeCard(response.TypeCard)
 	if budget <= 0 {
 		payload := append([]byte{}, fullHeader...)
 		payload = append(payload, fullDiagnostics...)
@@ -375,6 +439,7 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 		} else {
 			payload = append(payload, fitAgentSearchResults(results, 0)...)
 		}
+		payload = append(payload, typeCard...)
 		_, err := out.Write(payload)
 		return err
 	}
@@ -431,17 +496,28 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 						payload = append(payload, confidence...)
 						return append(payload, containerMap...)
 					}
+					// The two blocks sit on opposite sides of the ranking and degrade
+					// differently, which is why they compose without a further nested
+					// variant loop: the container map is part of the PREFIX and has its
+					// own full/compact/absent ladder above, while the declaration card
+					// is a SUFFIX that rides along only when the fitted payload leaves
+					// room for it (fitAgentSearchTypeCard). Neither can cost the caller
+					// a ranked location.
 					if len(results) == 0 {
 						noResults := []byte("No search results.\n")
 						if len(noResults) <= remaining {
-							_, err := out.Write(append(prefix(), noResults...))
+							_, err := out.Write(fitAgentSearchTypeCard(
+								append(prefix(), noResults...), typeCard, budget,
+							))
 							return err
 						}
 						continue
 					}
 					formatted := fitAgentSearchResults(results, remaining)
 					if len(formatted) > 0 {
-						_, err := out.Write(append(prefix(), formatted...))
+						_, err := out.Write(fitAgentSearchTypeCard(
+							append(prefix(), formatted...), typeCard, budget,
+						))
 						return err
 					}
 				}
@@ -489,6 +565,39 @@ func searchLowConfidenceNotices(response sem.SearchResponse) ([]byte, []byte) {
 	))
 	compact := []byte(fmt.Sprintf("!LOW s=%.1f\n", assessment.TopScore))
 	return full, compact
+}
+
+// fitAgentSearchTypeCard appends the declaration card only if the cap still has room for it after
+// the ranking has been fitted.
+//
+// That order is the point. The ranking is what an agent cannot reconstruct — a location it never
+// sees is a file it never opens — while a declaration it can always go and read. So the card is
+// pure surplus in this format: it rides along when the cap is roomy and is silently absent when
+// the cap is tight, and it never costs the ranking a single location.
+func fitAgentSearchTypeCard(payload, card []byte, budget int) []byte {
+	if len(card) == 0 || budget <= 0 || len(payload)+len(card) > budget {
+		return payload
+	}
+	return append(payload, card...)
+}
+
+// agentSearchTypeCard renders the declaration card for `--format agent`: one line per entry,
+// `D:` tagged so it cannot be mistaken for a ranked location. There is no compact variant — the
+// card is already the compact form of a file read, and there is nothing left to abbreviate that
+// would not make it unusable. See fitAgentSearchTypeCard for when it is dropped instead.
+func agentSearchTypeCard(card []sem.TypeCardEntry) []byte {
+	if len(card) == 0 {
+		return nil
+	}
+	var output bytes.Buffer
+	for _, entry := range card {
+		fmt.Fprintf(&output, "D: %s %s:%d", entry.Name, entry.FilePath, entry.Line)
+		if len(entry.UseLines) > 0 {
+			fmt.Fprintf(&output, " used=%s", joinSearchUseLines(entry.UseLines))
+		}
+		fmt.Fprintf(&output, " | %s\n", entry.Decl)
+	}
+	return output.Bytes()
 }
 
 func agentSearchDiagnostics(response sem.SearchResponse) ([]byte, []byte) {
@@ -627,7 +736,7 @@ func renderAgentSearchResults(results []sem.SearchResult, budgets []int) []byte 
 // change usually has to land — and they carry no relevance score, so printing `s=0.0` beside
 // one would read as "worthless" rather than "not applicable".
 func agentSearchScoreTag(result sem.SearchResult) string {
-	if result.Section == sem.SearchSectionRelated {
+	if result.Section == sem.SearchSectionRelated || result.Section == sem.SearchSectionCoveringTest {
 		return ""
 	}
 	return fmt.Sprintf(" s=%.1f", result.Score)

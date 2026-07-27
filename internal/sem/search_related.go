@@ -898,6 +898,15 @@ func searchRelatedMergedPlan(results, entries []SearchResult, displaced []int) [
 // funded out of redundant fragments is simply smaller. (Measured: without this rule one instance
 // lost the only mention of its gold file, which sat at rank 9 behind a duplicate fragment of an
 // already-shown file at rank 7; with it, file-level recall across the probe is unchanged.)
+//
+// A covering-test entry is never offered, whatever its file count. This is the one shared
+// displacement pool, and the blocks that draw on it now run in sequence: the covering test is
+// seated first and sits at the very END of `results`, which makes it the first index this
+// function would otherwise hand to the NEXT block. Displacement exists to reclaim redundant tail
+// LOCATORS — a bare path:line naming a file the payload names elsewhere — and the covering test
+// is neither redundant nor a locator. Without this guard, a later block silently buys itself with
+// the highest-value context block in the payload, and the yield order documented in
+// search_blocks.go is inverted exactly when bytes are tight enough for it to matter.
 func searchRelatedDisplacementOrder(results []SearchResult, floor int) []int {
 	counts := make(map[string]int, len(results))
 	for _, result := range results {
@@ -905,6 +914,9 @@ func searchRelatedDisplacementOrder(results []SearchResult, floor int) []int {
 	}
 	order := make([]int, 0, len(results))
 	for index := len(results) - 1; index >= floor; index-- {
+		if results[index].Section == searchSectionCoveringTest {
+			continue
+		}
 		if counts[results[index].FilePath] <= 1 {
 			continue
 		}

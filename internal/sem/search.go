@@ -148,19 +148,31 @@ type SearchStats struct {
 	// hit's own signature. Like the related sites it is funded by displacement, so it costs
 	// the payload nothing beyond the tail locators it replaced.
 	SignatureTypes int `json:"signature_types,omitempty"`
-	// ContainerMapBytes is what the container map cost. It is reported separately from
-	// ResultBytes because the map is NOT funded out of the ranking: a payload that spent its
-	// budget on complete head bodies must not lose one to buy the map, so the map is additive
-	// and its cost is stated rather than hidden.
+	// CoveringTests counts entries in the covering-test section (0 or 1) and TypeCardEntries the
+	// declarations in the type card.
+	CoveringTests   int `json:"covering_tests,omitempty"`
+	TypeCardEntries int `json:"type_card_entries,omitempty"`
+	// The four *Bytes counters below are the per-section cost breakdown. Every one of these
+	// blocks lives OUTSIDE `results`, so ResultBytes cannot account for it, and a block that
+	// could grow unmeasured is a block that can silently break the byte contract it was built
+	// under. They exist so the combined ceiling in Validate can be checked and so the cost of
+	// each section is attributable. See search_blocks.go for the one budget policy that spends
+	// them and the order in which they yield.
+	TypeCardBytes      int `json:"type_card_bytes,omitempty"`
+	SignatureTypeBytes int `json:"signature_type_bytes,omitempty"`
+	// ContainerMapBytes is what the container map cost. It is the ONE deliberately additive
+	// block: a payload that spent its budget on complete head bodies must not lose one to buy
+	// the map, so the map is capped (searchContainerMapMaxBytes) and its cost is stated rather
+	// than hidden. Every other block above is funded from within the ceiling.
 	ContainerMapBytes int `json:"container_map_bytes,omitempty"`
-	// SignatureTypeBytes is what the signature-type block cost serialized. The block lives
-	// outside `results`, so ResultBytes cannot account for it and the combined-budget check in
-	// Validate needs it stated explicitly. See the context-block budget in search_blocks.go.
-	SignatureTypeBytes int   `json:"signature_type_bytes,omitempty"`
-	IndexCacheHit      bool  `json:"index_cache_hit"`
-	IndexLatencyMS     int64 `json:"index_latency_ms"`
-	QueryLatencyMS     int64 `json:"query_latency_ms"`
-	TotalLatencyMS     int64 `json:"total_latency_ms"`
+	// ContextBlockBytes is the sum of the four counters above: the whole cost of everything
+	// outside `results`, in one number, so a caller can see the payload's true size without
+	// re-deriving it.
+	ContextBlockBytes int   `json:"context_block_bytes,omitempty"`
+	IndexCacheHit     bool  `json:"index_cache_hit"`
+	IndexLatencyMS    int64 `json:"index_latency_ms"`
+	QueryLatencyMS    int64 `json:"query_latency_ms"`
+	TotalLatencyMS    int64 `json:"total_latency_ms"`
 	// SearchLatencyMS is retained as the backwards-compatible name for total
 	// retrieval latency. New consumers should use TotalLatencyMS and the
 	// separate preselection, index, and query phases.
@@ -175,11 +187,18 @@ type SearchResponse struct {
 	Tree     string         `json:"tree,omitempty"`
 	Profile  string         `json:"profile"`
 	Results  []SearchResult `json:"results"`
+	// The three blocks below live outside `results`, and they are declared in the order they
+	// are rendered — see the section order documented in search_blocks.go.
+	//
 	// SignatureTypes holds the declarations of the types named in the top hit's
 	// own signature (fields and member signatures, never bodies, never a
 	// transitive walk). It is funded by displacing redundant tail locators, so
 	// its presence never grows the payload — see search_sigtypes.go.
 	SignatureTypes []SearchSignatureType `json:"signature_types,omitempty"`
+	// TypeCard carries the declarations behind the names the head body uses — the compact
+	// answer to "what is this identifier", which a snippet full of USES never contains. It is
+	// not a ranking and holds no fix sites; see search_typecard.go.
+	TypeCard []TypeCardEntry `json:"type_card,omitempty"`
 	// ContainerMap maps the top hit's enclosing container — the file's extent and the
 	// container's members with their line ranges — so a range read can be sized from this one
 	// response instead of by reading the whole file. Nil when the payload has no ranked code
@@ -709,10 +728,29 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		)
 		results, stats.RelatedSites = mergeSearchRelatedSites(results, sites, read, options.MaxContextBytes)
 	}
-	// The types the top hit's own signature names, resolved to fields + member
-	// signatures. Funded by displacing redundant tail locators so the payload cannot grow to
-	// carry it. It runs BEFORE the container map because it is the block that mutates
-	// `results`, and the map's anchor has to be read off the final ranking.
+	// The three context blocks below share one budget. Their construction order is FIXED and
+	// load-bearing — see the policy in search_blocks.go. In short:
+	//
+	//  1. Contract context (covering test + type card) runs FIRST. It is the only block that
+	//     GROWS the payload, so it must claim its bytes against the untouched ceiling; and the
+	//     covering test is the block that yields last, so it gets first call on funding.
+	//  2. Signature types run SECOND. fundSearchSignatureTypes is strictly byte-neutral — it
+	//     seats the block only out of locators it displaces — so running it after step 1
+	//     cannot breach the ceiling step 1 just satisfied. Running it BEFORE step 1 would:
+	//     step 1's ceiling check does not know about bytes already committed outside
+	//     `results`, so it would re-spend them and overshoot by exactly the block's size.
+	//  3. The container map runs LAST, on the payload that is actually going out: its anchor
+	//     must be the hit the caller will read, after every block above has decided which
+	//     result that is.
+	var typeCard []TypeCardEntry
+	if anchors := searchTypeCardAnchor(results, symbolsByID, symbolsByFile, searchEnclosureHeadRanks); len(anchors) > 0 {
+		context := buildSearchContractContext(
+			results, anchors, q, snapshot.Relations, symbolsByID, symbolsByFile, read,
+		)
+		results, typeCard, stats.CoveringTests, stats.TypeCardEntries = mergeSearchContractContext(
+			results, context, options.MaxContextBytes,
+		)
+	}
 	var signatureTypes []SearchSignatureType
 	if anchors := searchRelatedAnchors(results, symbolsByID, symbolsByFile, 1); len(anchors) == 1 {
 		block := searchSignatureTypeSurface(
@@ -724,9 +762,6 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	if len(signatureTypes) > 0 {
 		stats.SignatureTypeBytes = serializedSearchResultBytes(signatureTypes)
 	}
-	// The map is built LAST, from the payload that is actually going out: its anchor must be
-	// the hit the caller will read, after sectioning, the related-site merge and the
-	// signature-type funding have decided which result that is.
 	containerMap := fitSearchContainerMap(
 		buildSearchContainerMap(results, symbolsByID, symbolsByFile, read),
 		searchContainerMapMaxBytes,
@@ -737,6 +772,12 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	stats.CandidatesSelected = len(results)
 	resultBytes = serializedSearchResultBytes(results)
 	stats.ResultBytes = resultBytes
+	if len(typeCard) > 0 {
+		stats.TypeCardBytes = serializedSearchResultBytes(typeCard)
+	}
+	// One number for everything outside `results`, so the payload's true size never has to be
+	// re-derived from three separate counters. See search_blocks.go.
+	stats.ContextBlockBytes = searchContextBlockBytes(stats)
 	stats.ContextBudgetBytes = options.MaxContextBytes
 	stats.ResultsDropped = dropped
 	stats.SnippetsTruncated = truncated
@@ -763,12 +804,13 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		Tree:            snapshot.Header.Tree,
 		Profile:         string(options.Profile),
 		Results:         results,
+		SignatureTypes:  signatureTypes,
+		TypeCard:        typeCard,
 		ContainerMap:    containerMap,
 		Stats:           stats,
 		Warnings:        snapshot.Header.Warnings,
 		PartialFailures: partialFailures,
 		Completeness:    snapshot.Header.Completeness,
-		SignatureTypes:  signatureTypes,
 	}, nil
 }
 
@@ -3831,6 +3873,12 @@ func (response SearchResponse) Validate() error {
 	}
 	if response.Stats.ContextBudgetBytes > 0 && response.Stats.ResultBytes > response.Stats.ContextBudgetBytes {
 		return fmt.Errorf("search result context exceeds byte budget: %d > %d", response.Stats.ResultBytes, response.Stats.ContextBudgetBytes)
+	}
+	// Every block outside `results` — signature types, type card, container map — is accounted
+	// and held to one combined ceiling in one place, because each block's own funder can only
+	// see its own bytes. See search_blocks.go for the policy and the yield order.
+	if err := validateSearchContextBlockBudget(response); err != nil {
+		return err
 	}
 	for index, result := range response.Results {
 		if result.Rank != index+1 {
