@@ -13,24 +13,95 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"time"
+
+	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
 const searchSnapshotCacheVersion = "search-snapshot-v4"
 
 type cachedSearchSnapshot struct {
-	CacheVersion    string           `json:"cache_version"`
-	ProviderVersion string           `json:"provider_version"`
-	Commit          string           `json:"commit"`
-	Tree            string           `json:"tree"`
-	Profile         Profile          `json:"profile"`
-	MaxParseBytes   int              `json:"max_parse_bytes"`
-	Snapshot        ProviderSnapshot `json:"snapshot"`
+	CacheVersion    string  `json:"cache_version"`
+	ProviderVersion string  `json:"provider_version"`
+	Commit          string  `json:"commit"`
+	Tree            string  `json:"tree"`
+	Profile         Profile `json:"profile"`
+	MaxParseBytes   int     `json:"max_parse_bytes"`
+	// Worktree records which view produced this entry. Working-tree snapshots
+	// carry provenance a committed-tree snapshot does not (W_WORKTREE_SNAPSHOT),
+	// so the two views never share an entry even when their content is equal.
+	Worktree bool             `json:"worktree,omitempty"`
+	Snapshot ProviderSnapshot `json:"snapshot"`
 	// FileRecord.Lines and SymbolRecord.Local are intentionally absent from the
 	// public wire format, but relation resolution consumes them. Preserve those
 	// internal fields so a complete preindex can derive an exact selective view
 	// without reparsing source files.
 	FileLines      map[string]int `json:"file_lines,omitempty"`
 	LocalSymbolIDs []string       `json:"local_symbol_ids,omitempty"`
+}
+
+// worktreeCleanTTL bounds how stale a working-tree cleanliness verdict may be.
+// One command issues several snapshot lookups (graph scope, complete preindex,
+// selective build) and must not pay for a `git status` each time; a window this
+// short cannot span an edit that happens between two of them, while a
+// long-lived library consumer still re-checks on every new command.
+const worktreeCleanTTL = 2 * time.Second
+
+type worktreeCleanVerdict struct {
+	clean     bool
+	checkedAt time.Time
+}
+
+var worktreeCleanVerdicts sync.Map // absRepo -> worktreeCleanVerdict
+
+// absOrRepo resolves repo to an absolute path, falling back to the input when
+// that is impossible. It exists so a cleanliness verdict is memoized under the
+// same key the cache lookups use.
+func absOrRepo(repo string) string {
+	if abs, err := filepath.Abs(repo); err == nil {
+		return abs
+	}
+	return repo
+}
+
+// worktreeSnapshotCacheable reports whether these options may be served from,
+// and stored in, the tree-keyed snapshot cache.
+//
+// Committed-tree snapshots always could. A working-tree snapshot may too, but
+// only while the working tree is byte-identical to HEAD: then the tree hash
+// names its content exactly, which is the whole premise of the cache key. This
+// is what makes the relation verbs (neighbors/impact, which index the whole
+// repository) warm on their second call instead of re-indexing from scratch —
+// and it never hides a dirty edit, because a dirty tree fails the check and
+// bypasses the cache exactly as before.
+func worktreeSnapshotCacheable(ctx context.Context, absRepo string, options ProviderSnapshotOptions) bool {
+	if !options.Worktree {
+		return true
+	}
+	if cached, ok := worktreeCleanVerdicts.Load(absRepo); ok {
+		verdict := cached.(worktreeCleanVerdict)
+		if time.Since(verdict.checkedAt) < worktreeCleanTTL {
+			return verdict.clean
+		}
+	}
+	clean, err := gitutil.WorktreeMatchesHEAD(ctx, absRepo)
+	if err != nil {
+		clean = false
+	}
+	worktreeCleanVerdicts.Store(absRepo, worktreeCleanVerdict{clean: clean, checkedAt: time.Now()})
+	return clean
+}
+
+// InvalidateWorktreeCleanVerdicts drops the memoized cleanliness verdicts. A
+// one-shot command never needs it (the memo cannot outlive the process), but a
+// long-lived embedder that has just written to a working tree can call it to
+// force the next query to re-check rather than wait out the TTL.
+func InvalidateWorktreeCleanVerdicts() {
+	worktreeCleanVerdicts.Range(func(key, _ any) bool {
+		worktreeCleanVerdicts.Delete(key)
+		return true
+	})
 }
 
 // loadOrBuildSearchGraphSnapshot keeps the query's candidate file scope from
@@ -45,7 +116,8 @@ func loadOrBuildSearchGraphSnapshot(
 	cacheDir string,
 	disableCache bool,
 ) (ProviderSnapshot, bool, error) {
-	if !disableCache && cacheDir != "" && !options.Worktree && len(options.OnlyFiles) > 0 {
+	if !disableCache && cacheDir != "" && len(options.OnlyFiles) > 0 &&
+		worktreeSnapshotCacheable(ctx, absOrRepo(repo), options) {
 		if snapshot, cacheHit, err := loadCachedCompleteSearchSnapshot(
 			ctx, repo, providerVersion, options, cacheDir,
 		); err != nil || cacheHit {
@@ -61,12 +133,15 @@ func loadCachedCompleteSearchSnapshot(
 	options ProviderSnapshotOptions,
 	cacheDir string,
 ) (ProviderSnapshot, bool, error) {
-	if cacheDir == "" || options.Worktree {
+	if cacheDir == "" {
 		return ProviderSnapshot{}, false, nil
 	}
 	absRepo, err := filepath.Abs(repo)
 	if err != nil {
 		return ProviderSnapshot{}, false, err
+	}
+	if !worktreeSnapshotCacheable(ctx, absRepo, options) {
+		return ProviderSnapshot{}, false, nil
 	}
 	commit, tree, headErr := resolveCommittedHEAD(ctx, absRepo)
 	if headErr != nil {
@@ -103,13 +178,17 @@ func loadOrBuildSearchSnapshot(
 	if options.Profile == "" {
 		options.Profile = ProfileFull
 	}
-	if disableCache || cacheDir == "" || options.Worktree {
+	if disableCache || cacheDir == "" {
 		snapshot, err := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, options)
 		return snapshot, false, err
 	}
 	absRepo, err := filepath.Abs(repo)
 	if err != nil {
 		return ProviderSnapshot{}, false, err
+	}
+	if !worktreeSnapshotCacheable(ctx, absRepo, options) {
+		snapshot, buildErr := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, options)
+		return snapshot, false, buildErr
 	}
 	commit, tree, headErr := resolveCommittedHEAD(ctx, absRepo)
 	if headErr != nil {
@@ -241,6 +320,7 @@ func newCachedSearchSnapshot(providerVersion, commit, tree string, options Provi
 		Tree:            tree,
 		Profile:         options.Profile,
 		MaxParseBytes:   options.MaxParseBytes,
+		Worktree:        options.Worktree,
 		Snapshot:        snapshot,
 	}
 	for _, file := range snapshot.Files {
@@ -505,6 +585,12 @@ func searchSnapshotKey(absRepo, providerVersion, tree string, options ProviderSn
 	writePart(tree)
 	writePart(string(options.Profile))
 	writePart(fmt.Sprintf("%d", options.MaxParseBytes))
+	// Working-tree entries live in their own key space. The marker is only
+	// written for them so committed-tree keys — and every cache already on disk
+	// built under them — stay byte-identical.
+	if options.Worktree {
+		writePart("worktree")
+	}
 	onlyFiles := append([]string(nil), options.OnlyFiles...)
 	sort.Strings(onlyFiles)
 	writePart("only-files")
@@ -549,6 +635,7 @@ func validCachedSearchSnapshot(cache cachedSearchSnapshot, providerVersion, tree
 		cache.Tree == tree &&
 		cache.Profile == options.Profile &&
 		cache.MaxParseBytes == options.MaxParseBytes &&
+		cache.Worktree == options.Worktree &&
 		cache.Snapshot.Header.Tree == tree &&
 		cache.Snapshot.Header.Provider == ProviderName &&
 		cache.Snapshot.Header.Profile == string(options.Profile)

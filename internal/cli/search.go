@@ -213,11 +213,29 @@ func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result s
 		}
 		return
 	}
-	fmt.Fprintf(out, "%d. %s:%d-%d score=%.4f", result.Rank, result.FilePath, result.StartLine, result.EndLine, result.Score)
+	start, end := searchResultPrintedRange(result)
+	fmt.Fprintf(out, "%d. %s:%d-%d score=%.4f", result.Rank, result.FilePath, start, end, result.Score)
 	if name != "" {
 		fmt.Fprintf(out, " symbol=%s", name)
 	}
 	fmt.Fprintf(out, " signals=%s\n%s\n\n", strings.Join(result.Signals, ","), result.Snippet)
+}
+
+// searchResultPrintedRange is the range of the source that follows on the next
+// lines — the SNIPPET's range, not the ranked region's.
+//
+// Those differ: a matched region can start a line or two above the definition
+// (a blank line, a doc comment) while the snippet is snapped to the symbol's own
+// bounds. Printing the region above the symbol's source made one symbol look
+// like it had two different definition lines within one session — `:779-848`
+// here against `:781` from a relation answer — with nothing saying which was
+// which. The header now describes exactly the lines printed under it, so both
+// verbs report the symbol's own span, and the number costs nothing extra.
+func searchResultPrintedRange(result sem.SearchResult) (int, int) {
+	if result.SnippetStartLine > 0 && result.SnippetEndLine >= result.SnippetStartLine {
+		return result.SnippetStartLine, result.SnippetEndLine
+	}
+	return result.StartLine, result.EndLine
 }
 
 // partitionSearchSections splits a payload into its presentation groups while preserving rank
