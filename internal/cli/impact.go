@@ -511,7 +511,10 @@ func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impac
 						callFile = endpoint.FilePath
 					}
 					entry.callFile, entry.callStart, entry.callEnd = callFile, callStart, callEnd
-					entry.callToken = callTokenFromDetail(detail, endpointDisplayName(endpoints[relation.ToID]))
+					// The callee as written is normally in the evidence detail; the
+					// callee endpoint's own NAME (not its qualified name) is the
+					// fallback, because that is what appears at a call site.
+					entry.callToken = callTokenFromDetail(detail, endpoints[relation.ToID].Name)
 				}
 				if depth > 1 {
 					entry.Via = node.name

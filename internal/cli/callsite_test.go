@@ -208,6 +208,78 @@ func TestResolveCallSiteIgnoresCommentsAndStringLiterals(t *testing.T) {
 	}
 }
 
+// A `'` is not always a literal. Rust lifetimes and loop labels are program text,
+// and treating one as an unterminated char literal would blank the rest of the
+// line — losing any call written on it.
+func TestResolveCallSiteHandlesLifetimesAndLabels(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		path     string
+		content  string
+		wantLine int
+	}{
+		{
+			name:     "lifetime on the call's own line",
+			path:     "a.rs",
+			content:  "fn outer<'a>(x: &'a str) { target(x); }\n",
+			wantLine: 1,
+		},
+		{
+			name:     "single lifetime with no partner quote",
+			path:     "b.rs",
+			content:  "fn outer() {\n    let v: Vec<&'static str> = target();\n}\n",
+			wantLine: 2,
+		},
+		{
+			name:     "loop label",
+			path:     "c.rs",
+			content:  "fn outer() {\n    'outer: loop { target(1); }\n}\n",
+			wantLine: 2,
+		},
+		{
+			// A real char literal must still be masked.
+			name:     "char literal mentioning the callee is not a call",
+			path:     "d.rs",
+			content:  "fn outer() {\n    let c = 't';\n    target(c);\n}\n",
+			wantLine: 3,
+		},
+		{
+			// In a language where `'` opens a STRING, a long single-quoted string
+			// must still be masked — the lifetime exemption must not leak there.
+			name:     "long single-quoted javascript string is still masked",
+			path:     "e.js",
+			content:  "function outer() {\n  log('target(x) failed with a long explanatory message');\n  target(x);\n}\n",
+			wantLine: 3,
+		},
+		{
+			name:     "long single-quoted python string is still masked",
+			path:     "f.py",
+			content:  "def outer():\n    log('target(x) failed with a long explanatory message')\n    target(x)\n",
+			wantLine: 3,
+		},
+		{
+			name:     "long single-quoted php string is still masked",
+			path:     "g.php",
+			content:  "function outer() {\n  log('target($x) failed with a long explanatory message');\n  target($x);\n}\n",
+			wantLine: 3,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			read := staticLineReader(map[string]string{testCase.path: testCase.content})
+			site, ok := resolveCallSite(read, testCase.path, "target", 1, len(linesOf(testCase.content)))
+			if !ok {
+				t.Fatalf("resolveCallSite reported no site (a lifetime blanked the line?)")
+			}
+			if site.Line != testCase.wantLine {
+				t.Fatalf("call line = %d, want %d", site.Line, testCase.wantLine)
+			}
+		})
+	}
+}
+
 // The guard chain is the highest-value part of the answer: it is what makes a
 // patch provably safe. It must be verbatim source, in source order, and must
 // include the pattern bindings that constrain the call's inputs.
@@ -401,6 +473,49 @@ func TestCallContextIsWindowedAndBudgeted(t *testing.T) {
 	}
 	if blocks := strings.Count(out.String(), "conditions in force at this call"); blocks > callContextBlocks {
 		t.Fatalf("rendered %d context blocks, cap %d", blocks, callContextBlocks)
+	}
+}
+
+// The byte ceiling must bind independently of the block count: three blocks of
+// deeply nested, wide source would otherwise be allowed through on block count
+// alone and blow the answer's size.
+func TestCallContextByteBudgetBindsBeforeBlockCount(t *testing.T) {
+	t.Parallel()
+	var builder strings.Builder
+	builder.WriteString("fn outer() {\n")
+	for depth := 0; depth < callContextGuardLimit; depth++ {
+		builder.WriteString(strings.Repeat("    ", depth+1) +
+			"if condition_" + string(rune('a'+depth)) + " == " + strings.Repeat("w", 60) + " {\n")
+	}
+	indent := strings.Repeat("    ", callContextGuardLimit+1)
+	builder.WriteString(indent + "target(1);\n")
+	for index := 0; index < 12; index++ {
+		builder.WriteString(indent + "let after_" + string(rune('a'+index)) + " = " + strings.Repeat("v", 60) + ";\n")
+	}
+	source := builder.String()
+	read := staticLineReader(map[string]string{"wide.rs": source})
+	site, ok := resolveCallSite(read, "wide.rs", "target", 1, len(linesOf(source)))
+	if !ok {
+		t.Fatal("resolveCallSite reported no site")
+	}
+	blockSize := len(renderCallContext(&site))
+	if blockSize*callContextBlocks <= callContextBudget {
+		t.Fatalf("fixture too small to exercise the byte cap: %d bytes x %d blocks", blockSize, callContextBlocks)
+	}
+	budget := newCallContextBudgeter()
+	var out bytes.Buffer
+	for index := 0; index < callContextBlocks; index++ {
+		writeCallContext(&out, &site, budget)
+	}
+	if out.Len() > callContextBudget {
+		t.Fatalf("byte cap did not bind: %d bytes, budget %d", out.Len(), callContextBudget)
+	}
+	blocks := strings.Count(out.String(), "conditions in force at this call")
+	if blocks >= callContextBlocks {
+		t.Fatalf("emitted %d blocks; the byte cap should have stopped before the block cap", blocks)
+	}
+	if blocks == 0 {
+		t.Fatalf("byte cap suppressed every block:\n%s", out.String())
 	}
 }
 

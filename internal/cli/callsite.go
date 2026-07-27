@@ -207,7 +207,7 @@ func resolveCallSite(read lineReader, relPath, token string, spanStart, spanEnd 
 	if spanStart > len(lines) {
 		return callSite{}, false
 	}
-	masked := maskedSourceLines(lines, hashCommentLanguage(relPath), tripleQuoteLanguage(relPath))
+	masked := maskedSourceLines(lines, maskingRules(relPath))
 	hits := callTokenLines(masked, token, spanStart, spanEnd)
 	if len(hits) == 0 {
 		return callSite{}, false
@@ -476,7 +476,7 @@ func callWindow(raw []string, spanStart, spanEnd, callLine int) ([]sourceLine, i
 // preserving every line and column. Brace counting, guard detection and call
 // matching all run on the masked text, so a `{` in a doc comment cannot open a
 // block and a callee named in a log message cannot look like a call.
-func maskedSourceLines(lines []string, hashComments, tripleQuotes bool) []string {
+func maskedSourceLines(lines []string, rules sourceMaskingRules) []string {
 	masked := make([]string, len(lines))
 	inBlockComment := false
 	inTripleQuote := byte(0)
@@ -511,15 +511,15 @@ func maskedSourceLines(lines []string, hashComments, tripleQuotes bool) []string
 				out[column], out[column+1] = ' ', ' '
 				column += 2
 				inBlockComment = true
-			case hashComments && character == '#':
+			case rules.hashComments && character == '#':
 				blankFrom(out, column)
 				column = len(out)
-			case tripleQuotes && (character == '"' || character == '\'') && tripleQuoteAt(out, column, character):
+			case rules.tripleQuotes && (character == '"' || character == '\'') && tripleQuoteAt(out, column, character):
 				out[column], out[column+1], out[column+2] = ' ', ' ', ' '
 				inTripleQuote = character
 				column += 3
 			case character == '"' || character == '\'' || character == '`':
-				column = blankStringLiteral(out, column)
+				column = blankStringLiteral(out, column, rules.singleQuoteIsChar)
 			default:
 				column++
 			}
@@ -539,13 +539,26 @@ func blankFrom(out []byte, from int) {
 	}
 }
 
+// charLiteralWidth bounds how far a `'` may be from its partner to still be a
+// character literal (`'x'`, `'\n'`, `'\u{1F600}'`). Beyond that the quote is
+// almost certainly not a literal at all — a Rust or C++ lifetime/label (`&'a
+// str`, `'outer: loop`) — and must not blank the rest of the line, which could
+// contain the call.
+const charLiteralWidth = 12
+
 // blankStringLiteral blanks a single-line string/char literal starting at the
-// opening quote and returns the column just past it. An unterminated literal
-// (a raw or multi-line string this scanner does not model) blanks to end of
+// opening quote and returns the column just past it. An unterminated string
+// (a raw or multi-line form this scanner does not model) blanks to end of
 // line, which is the conservative direction: masked text can only lose call
 // candidates, never invent them.
-func blankStringLiteral(out []byte, open int) int {
+func blankStringLiteral(out []byte, open int, singleQuoteIsChar bool) int {
 	quote := out[open]
+	if quote == '\'' && singleQuoteIsChar && !closesWithin(out, open, charLiteralWidth) {
+		// A lifetime or loop label, not a literal. Leave the line alone. This
+		// only applies where `'` cannot open a string: in Python/JS/PHP a long
+		// single-quoted string is exactly what must be masked.
+		return open + 1
+	}
 	out[open] = ' '
 	for column := open + 1; column < len(out); column++ {
 		if out[column] == '\\' {
@@ -563,6 +576,55 @@ func blankStringLiteral(out []byte, open int) int {
 		out[column] = ' '
 	}
 	return len(out)
+}
+
+// closesWithin reports whether the quote opened at `open` has a matching quote
+// within `width` bytes, honouring backslash escapes.
+func closesWithin(out []byte, open, width int) bool {
+	quote := out[open]
+	limit := open + width
+	if limit >= len(out) {
+		limit = len(out) - 1
+	}
+	for column := open + 1; column <= limit; column++ {
+		if out[column] == '\\' {
+			column++
+			continue
+		}
+		if out[column] == quote {
+			return true
+		}
+	}
+	return false
+}
+
+// sourceMaskingRules are the per-language details of what counts as a comment or
+// a string literal, resolved once per file from its extension.
+type sourceMaskingRules struct {
+	hashComments      bool
+	tripleQuotes      bool
+	singleQuoteIsChar bool
+}
+
+func maskingRules(path string) sourceMaskingRules {
+	return sourceMaskingRules{
+		hashComments:      hashCommentLanguage(path),
+		tripleQuotes:      tripleQuoteLanguage(path),
+		singleQuoteIsChar: singleQuoteIsCharLiteral(path),
+	}
+}
+
+// singleQuoteIsCharLiteral reports whether `'` opens a CHARACTER literal rather
+// than a string. Only in those languages can an unpaired `'` be program text (a
+// Rust lifetime, a loop label), and only there may the scanner decline to mask it.
+func singleQuoteIsCharLiteral(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".rs", ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".go", ".java",
+		".cs", ".swift", ".kt", ".kts", ".scala", ".zig", ".m", ".mm", ".dart":
+		return true
+	default:
+		return false
+	}
 }
 
 // bracedLanguage reports whether a path's language delimits blocks with braces.

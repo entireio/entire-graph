@@ -490,6 +490,14 @@ func annotateNeighborCallSites(response *neighborResponse, read lineReader) {
 		return
 	}
 	for matchIndex := range response.Matches {
+		// The callee as written at the call site is normally in the evidence
+		// detail; when it is absent, the focus symbol's own name is what a
+		// caller must have written, not the raw --symbol argument (which may be
+		// a `<file>:<line>` selector).
+		focusName := response.Matches[matchIndex].Symbol.Name
+		if focusName == "" {
+			focusName = response.Query
+		}
 		for edgeIndex := range response.Matches[matchIndex].Incoming {
 			edge := &response.Matches[matchIndex].Incoming[edgeIndex]
 			if !isCallRelation(edge.Relation) {
@@ -502,7 +510,7 @@ func annotateNeighborCallSites(response *neighborResponse, read lineReader) {
 			if filePath == "" {
 				filePath = edge.Endpoint.FilePath
 			}
-			token := callTokenFromDetail(detail, response.Query)
+			token := callTokenFromDetail(detail, focusName)
 			if site, resolved := resolveCallSite(read, filePath, token, start, end); resolved {
 				edge.CallSite = &site
 			}
