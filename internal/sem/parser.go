@@ -333,6 +333,12 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		// only brace-backed implementation methods; header prototypes end in ';'.
 		entities = appendMissingEntities(entities, objectiveCMethodEntities(content)...)
 	}
+	// A name binding and the function expression that initialises it are ONE entity. The
+	// tree-sitter walk classifies such a declarator by its VALUE while the regex recovery
+	// passes above classify it by its DECLARATOR, so both can emit a record with the same
+	// qualified name for the same source location. Collapse them onto the function record
+	// (real span, real signature) LAST, after every pass has contributed.
+	entities = collapseFunctionValueBindings(entities)
 	if entityLineOffset > 0 {
 		for index := range entities {
 			entities[index].StartLine -= entityLineOffset
@@ -3645,6 +3651,22 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 			setEntitySourceRange(&fields[index], node, language, src)
 		}
 		*entities = append(*entities, fields...)
+		// A field whose initializer is an anonymous/nested type still declares
+		// callables: `static final Comparator<T> C = new Comparator<T>() {
+		// public int compare(...) {...} };`. The declaration as a whole is not
+		// descended into (its name nodes would look like field accesses), so
+		// descend into the initializer's TYPE BODIES only. Java's constant
+		// tables are built entirely this way (gson's `TypeAdapters.BYTE`,
+		// lucene's `IntervalBuilder.NO_INTERVALS`) and they are common fix
+		// sites; without this their methods have no symbol at all, so the graph
+		// cannot locate them and a bare call to one of their names mis-resolves
+		// to a same-named method elsewhere in the file. Members are marked
+		// function-local (inFunc=true) exactly like the same idiom written
+		// inside a method body, so localReachable keeps them scoped to the
+		// declaration instead of name-colliding with real members.
+		for _, body := range initializerTypeBodies(node) {
+			walkEntitiesScoped(body, src, language, scope, true, entities)
+		}
 		return
 	}
 	entity, ok := entityFromNode(node, src, language, scope)
@@ -3660,7 +3682,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 			entity.Local = true // nested inside another function
 		}
 		*entities = append(*entities, entity)
-		if scopesChildren(entity.Kind) {
+		if scopesChildren(language, entity.Kind) {
 			childScope = entity.Name
 		}
 		if entity.Kind == "function" || entity.Kind == "method" {
@@ -4726,7 +4748,12 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 			return Entity{}, false
 		}
 		name = nodeName(node, src)
-	case "method":
+	// `singleton_method` is Ruby's `def self.name` — the language's associated
+	// function (constructors and factories live there: `Edit.deletion(a, b)`).
+	// It had no case, so the whole static surface of every Ruby class was
+	// missing from the graph, and "what can I call on Edit?" could not be
+	// answered even though the instance methods were joined correctly.
+	case "method", "singleton_method":
 		kind = "function"
 		name = nodeName(node, src)
 		if scope != "" {
@@ -4753,17 +4780,59 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		kind = "interface"
 		name = nodeName(node, src)
 	case "record_declaration":
-		// C# `record` / `record struct` types. Without this case a record is
-		// invisible: no type symbol, and its properties/methods get no container
-		// (dropping e.g. every EF Core `*Dependencies` parameter object), so
-		// property-typed receiver calls through a record can never resolve.
-		// Gated to C# so the same node name in other grammars (e.g. Java
-		// records, currently unextracted) keeps its existing behavior.
-		if language != "C#" {
+		// C# `record` / `record struct` and Java `record` types. Without this
+		// case a record is invisible: no type symbol, and its
+		// properties/methods get no container (dropping e.g. every EF Core
+		// `*Dependencies` parameter object), so property-typed receiver calls
+		// through a record can never resolve. For Java the same hole orphaned
+		// every record accessor as a bare, container-less method name.
+		if language != "C#" && language != "Java" {
 			return Entity{}, false
 		}
 		kind = "class"
 		name = nodeName(node, src)
+	// Java `annotation_type_declaration` (`@interface Foo`) is deliberately NOT
+	// extracted. It is a type, so emitting it looks correct, but it is a
+	// declaration with no executable body, and its name is the noun the issue
+	// prose repeats ("@NonNull on a primitive array field isn't working"). On a
+	// 43-instance Java locate measurement, emitting it took rank 1 from the fix
+	// site on 6 instances (lombok's @NonNull/@SuperBuilder/@UtilityClass/
+	// @Generated/@Helper marker files, each a one-symbol file whose base name is
+	// also the query term) and improved none. The handler that implements the
+	// annotation is the fix site; the marker never is.
+	case "constructor_declaration", "compact_constructor_declaration":
+		// Java constructors had no case at all, so a constructor was not a
+		// symbol: it could not be located by search, it had no container, and
+		// the graph reported the enclosing class as the tightest symbol around
+		// a constructor fix site. A constructor is a callable member, so it
+		// emits the canonical `method` kind (overloaded constructors are
+		// separated by the signature-hash id like any other overload set).
+		// Gated to Java so other grammars sharing the node type keep their
+		// existing behavior.
+		if language != "Java" {
+			return Entity{}, false
+		}
+		kind = "method"
+		name = nodeName(node, src)
+		if scope != "" {
+			name = qualify(scope, name)
+		}
+	case "enum_constant":
+		// A Java enum constant with a class body (`IDENTITY { @Override String
+		// translateName(Field f) {...} }`) is a singleton subclass, and its
+		// body is a frequent fix site. Emitting it as a container gives those
+		// members a real parent (`FieldNamingPolicy.IDENTITY.translateName`)
+		// instead of attributing them to the enclosing type. Constants without
+		// a body carry no code of their own and are left to the enum's symbol,
+		// so large constant tables do not flood the snapshot.
+		if language != "Java" || !validNode(node.ChildByFieldName("body")) {
+			return Entity{}, false
+		}
+		kind = "class"
+		name = nodeName(node, src)
+		if scope != "" {
+			name = qualify(scope, name)
+		}
 	case "struct_item", "struct_specifier", "struct_declaration":
 		// Zig struct literals are anonymous (`const Point = struct {...}`); the
 		// symbol is extracted at the enclosing variable_declaration, which carries
@@ -4817,7 +4886,13 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		}
 		kind = "class"
 		name = nodeName(node, src)
-	case "trait_definition", "trait_item":
+	// trait_definition = Scala, trait_item = Rust, trait_declaration = PHP.
+	// PHP had no case, so a trait was not a symbol at all: its methods were
+	// emitted with an empty container_id and a bare qualified name, which is
+	// exactly the "the type's members are not joined to the type" hole — a PHP
+	// trait IS the declaration of a reusable member set, and classes acquire
+	// those members with `use`.
+	case "trait_definition", "trait_item", "trait_declaration":
 		kind = "trait"
 		name = nodeName(node, src)
 	case "value_definition":
@@ -6613,8 +6688,13 @@ func functionLikeValue(node *sitter.Node) bool {
 	}
 }
 
-var jsExportedVariablePattern = regexp.MustCompile(`(?m)^\s*export\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=`)
-var jsAssignmentMethodPattern = regexp.MustCompile(`(?m)^\s*((?:[A-Za-z_$][A-Za-z0-9_$]*\s*\.\s*)+[A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s+)?function(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s*\(`)
+// Leading indentation is matched with `[ \t]*`, NOT `\s*`: `\s` matches `\n`, so a
+// `(?m)^\s*` anchor can start the match at the END of an earlier blank line and every
+// line number derived from the match offset then lands one line too high. That is how
+// `export const f = () => {}` preceded by a blank line reported its declaration on the
+// blank line above it.
+var jsExportedVariablePattern = regexp.MustCompile(`(?m)^[ \t]*export\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=`)
+var jsAssignmentMethodPattern = regexp.MustCompile(`(?m)^[ \t]*((?:[A-Za-z_$][A-Za-z0-9_$]*\s*\.\s*)+[A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s+)?function(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s*\(`)
 var luaFunctionLinePattern = regexp.MustCompile(`(?m)^[ \t]*(?:local[ \t]+)?function[ \t]+([A-Za-z_][A-Za-z0-9_]*(?:(?:[.:])[A-Za-z_][A-Za-z0-9_]*)*)[ \t]*\(`)
 var luaBlockTokenPattern = regexp.MustCompile(`\b(function|if|for|while|repeat|do|end|until)\b`)
 var objectiveCMethodNamePattern = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)`)
@@ -6994,6 +7074,84 @@ func objectiveCMethodHeaderName(header string) string {
 	return match[1]
 }
 
+// functionValueBindingKinds are the entity kinds that describe a NAME BINDING rather
+// than a definition of its own: `const f = () => {}`, `$f = function () {}`,
+// `f = lambda x: x`. When the value bound is a function expression the binding and the
+// function are ONE entity, so a binding record that sits on top of a same-named
+// function-like record is a duplicate, not a second symbol.
+func functionValueBindingKind(kind string) bool {
+	switch kind {
+	case "variable", "constant", "const":
+		return true
+	default:
+		return false
+	}
+}
+
+// functionValueEntityKind reports the kinds a function-expression initialiser is
+// extracted as. Keeping this narrow is what makes the collapse safe: a `class`/`type`
+// value (`const S = class {}`) is a different entity from its binding in a way that
+// matters to container resolution, so it is deliberately absent.
+func functionValueEntityKind(kind string) bool {
+	switch kind {
+	case "function", "method", "lambda", "closure", "generator":
+		return true
+	default:
+		return false
+	}
+}
+
+// collapseFunctionValueBindings drops a variable/constant binding record when a
+// function-like record with the SAME qualified name occupies the same source location.
+//
+// Two extraction passes can legitimately see the same `export const f = () => {}`: the
+// tree-sitter walk classifies it by its VALUE (a function) while a regex recovery pass
+// classifies it by its DECLARATOR (a variable). Both records then carry the same name and
+// the same qualified name, which made the symbol unaddressable — `impact`/`neighbors`
+// reported it as ambiguous and neither `--file` nor a qualified `--symbol` could separate
+// byte-identical qualified names in one file.
+//
+// The function record wins: it carries the real span (the whole body, not the declaration
+// line) and the real signature. Overlap is required, so a genuinely different same-named
+// variable elsewhere in the file is never collapsed away.
+func collapseFunctionValueBindings(entities []Entity) []Entity {
+	functions := make(map[string][]Entity)
+	bindings := 0
+	for _, entity := range entities {
+		switch {
+		case functionValueEntityKind(entity.Kind):
+			functions[entity.Name] = append(functions[entity.Name], entity)
+		case functionValueBindingKind(entity.Kind):
+			bindings++
+		}
+	}
+	if bindings == 0 || len(functions) == 0 {
+		return entities
+	}
+	out := entities[:0]
+	for _, entity := range entities {
+		if functionValueBindingKind(entity.Kind) && bindingOverlapsFunctionValue(entity, functions[entity.Name]) {
+			continue
+		}
+		out = append(out, entity)
+	}
+	return out
+}
+
+// bindingOverlapsFunctionValue reports whether a binding record describes the same source
+// location as one of the function-like records it shares a name with. A one-line
+// declarator record is accepted one line ABOVE the function's start as well, so a binding
+// whose line attribution is off by one (a defect this package has shipped) still collapses
+// instead of surviving as a phantom symbol.
+func bindingOverlapsFunctionValue(binding Entity, functions []Entity) bool {
+	for _, function := range functions {
+		if binding.StartLine >= function.StartLine-1 && binding.StartLine <= maxInt(function.StartLine, function.EndLine) {
+			return true
+		}
+	}
+	return false
+}
+
 func appendMissingEntities(entities []Entity, candidates ...Entity) []Entity {
 	seen := make(map[string]bool, len(entities))
 	for _, entity := range entities {
@@ -7094,16 +7252,51 @@ func isExportedTopLevelJSVariable(node *sitter.Node, language string) bool {
 	return validNode(root) && root.Type() == "program"
 }
 
-func scopesChildren(kind string) bool {
+func scopesChildren(language, kind string) bool {
 	switch kind {
 	// "type" scopes children so Go struct fields qualify under the struct
 	// (Go structs parse as type_spec -> kind "type"). Interface/alias bodies
 	// have no field declarations, so this only affects struct fields.
 	case "class", "interface", "message", "module", "service", "struct", "trait", "type":
 		return true
+	case "enum":
+		// A Java enum IS a class: it declares methods, fields and constants
+		// with bodies, and those are members of the enum type. Not scoping
+		// them emitted bare, container-less names (`translateName` rather than
+		// `FieldNamingPolicy.translateName`), which collide across files and
+		// are unreachable by container-based resolution because
+		// containerName("translateName") is empty. Gated to Java so grammars
+		// whose enums carry no member declarations are unchanged.
+		return language == "Java"
 	default:
 		return false
 	}
+}
+
+// initializerTypeBodies returns the type-body nodes nested inside a
+// field/property declaration's initializer — the anonymous-class idiom. The
+// search stops at the outermost body found on each branch; walkEntitiesScoped
+// handles anything nested inside it.
+func initializerTypeBodies(node *sitter.Node) []*sitter.Node {
+	var out []*sitter.Node
+	var walk func(n *sitter.Node)
+	walk = func(n *sitter.Node) {
+		if !validNode(n) {
+			return
+		}
+		switch n.Type() {
+		case "class_body", "interface_body", "enum_body":
+			out = append(out, n)
+			return
+		}
+		for i := 0; i < int(n.NamedChildCount()); i++ {
+			walk(n.NamedChild(i))
+		}
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		walk(node.NamedChild(i))
+	}
+	return out
 }
 
 // rAssignmentEntity extracts an R definition from an assignment. The r-lib

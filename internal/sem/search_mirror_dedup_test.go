@@ -43,6 +43,7 @@ func TestSearchRepositoryDeepSearchDoesNotReintroduceTrackedSemanticMirror(t *te
 		Worktree: true,
 		Profile:  ProfileSyntaxOnly,
 		TopK:     defaultSearchTopK + 1,
+		Deep:     true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -70,6 +71,7 @@ func TestSearchRepositoryDeepSearchPreservesExplicitMirrorPathQuery(t *testing.T
 		Worktree: true,
 		Profile:  ProfileSyntaxOnly,
 		TopK:     defaultSearchTopK + 1,
+		Deep:     true,
 	})
 	if err != nil {
 		t.Fatal(err)

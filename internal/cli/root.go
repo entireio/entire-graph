@@ -71,6 +71,8 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runSearch(ctx, opts, args[1:])
 	case "index":
 		return runIndex(ctx, opts, args[1:])
+	case "def":
+		return runDef(ctx, opts, args[1:])
 	case "neighbors":
 		return runNeighbors(ctx, opts, args[1:])
 	case "impact":
@@ -101,8 +103,9 @@ func Run(ctx context.Context, opts Options, args []string) error {
 func printHelp(out io.Writer) {
 	fmt.Fprintln(out, `entire-graph adds entity-level context to Entire checkpoints.
 
-For coding agents: run 'entire graph agent-guide' (search-first doctrine — measured to
-roughly halve agent token usage) or 'entire graph init-agents' to install it into a project.
+For coding agents: run 'entire graph agent-guide' (the search-first, verify-once doctrine:
+locate with one search instead of grepping, then verify the edit once) or
+'entire graph init-agents' to install it into a project.
 
 Usage:
   entire graph commit [rev] [--json] [--progress] [--max-seconds n] [--repo path]
@@ -118,12 +121,32 @@ Usage:
   entire graph symbols --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
   entire graph edges --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
   entire graph index --repo . [--profile syntax-only|fast|full] [--cache-dir path] [--format json] [--head] [--ignore-file path] [--include-file path]
-  entire graph search --query "issue or concept" --repo . [--format json|ndjson|text|agent] [--top-k 20] [--max-context-bytes 16384] [--head] [--profile syntax-only|fast|full] [--max-indexed-files n|--index-all-files] [--cache-dir path|--no-cache]
-  entire graph neighbors --symbol NAME_OR_ID --repo . [--file path] [--relation CALLS] [--direction both|in|out] [--depth 1|2] [--limit 20] [--format json|text|agent] [--max-context-bytes 16384] [--head] [--cache-dir path|--no-cache] [--internal-only] [--exclude-tests]
-  entire graph impact --symbol NAME --repo . [--file path] [--depth 1|2] [--limit 15] [--format text|json] [--max-context-bytes 4096] [--head] [--profile fast|full] [--cache-dir path|--no-cache] [--exclude-tests]
+  entire graph search --query "issue or concept" --repo . [--format json|ndjson|text|agent] [--top-k 10] [--deep] [--max-context-bytes 24576] [--head] [--profile syntax-only|fast|full] [--max-indexed-files n|--index-all-files] [--cache-dir path|--no-cache] [--reference-blocks all|container-map,signature-types,type-card]
+  entire graph def NAME|<file>:<line> --repo . [--file path] [--line n] [--kind kind] [--members 15] [--format text|json] [--max-context-bytes 4096] [--head] [--profile fast|full] [--cache-dir path|--no-cache]
+  entire graph neighbors --symbol NAME|<file>:<line> --repo . [--file path] [--line n] [--kind kind] [--relation CALLS] [--direction both|in|out] [--depth 1|2] [--limit 20] [--format json|text|agent] [--max-context-bytes 16384] [--head] [--cache-dir path|--no-cache] [--internal-only] [--exclude-tests]
+  entire graph impact --symbol NAME|<file>:<line> --repo . [--file path] [--line n] [--kind kind] [--depth 1|2] [--limit 15] [--format text|json] [--max-context-bytes 4096] [--head] [--profile fast|full] [--cache-dir path|--no-cache] [--exclude-tests]
   entire graph stats [--repo .] [--since 30d|7d|all] [--format text|json] [--sessions-dir path|--transcript path]
 
 Notes:
+  search returns, by default: ranked candidate fix sites (top hits as complete function bodies),
+  RELATED SITES, the COVERING TEST plus the other tests that cover the same code (ALSO COVERING —
+  they all have to keep passing), SAME-CONCEPT LITERALS (every place the queried concept is
+  named, tagged EDIT/CONSUMER/DOC — the sweep, so you need no grep), VERIFY (the narrowest test
+  command for the file, derived from the repo's own build files) and a CLOSED-SET WARNING when a
+  switch over an enum/sealed set would throw at runtime rather than fail to compile. The three
+  reference blocks — container map, signature types, declaration card — are OFF by default because
+  they measurably cost turns in agent sessions; --reference-blocks all (or the individual flags,
+  or ENTIRE_GRAPH_REFERENCE_BLOCKS) turns them back on for interactive reading.
+  search --top-k only changes how many results come back; --deep additionally runs the
+  exhaustive sparse (BM25) pass and fuses it with the semantic ranking (slower, reads every
+  eligible file). neighbors/impact take --symbol <file>:<line>, or --symbol NAME with
+  --file/--line/--kind, to select one definition when a name is ambiguous; the ambiguity
+  error prints the exact selector for each definition it found.
+  def is the structural declaration lookup: what a name IS, and — for a type — its fields and
+  its associated-function/method surface, drawn from the graph's own membership edges (inherent
+  impl blocks, receiver methods, extension members, partial parts, one hop of trait/module/base
+  acquisition). It reports a method's owning type, and for a trait/interface it reports who
+  implements it. Membership is never inferred from a name resembling another name.
   stats is a local read-only report for humans: it reads the coding-agent session transcripts
   already on disk (~/.claude/projects/<path-slug>/*.jsonl) and reports graph usage vs
   grep/read exploration, bytes each pulled into context, and an ESTIMATED token saving whose

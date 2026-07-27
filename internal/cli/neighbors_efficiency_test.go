@@ -117,8 +117,11 @@ func TestNeighborsLimitBoundsAmbiguousFocusMatchesDeterministically(t *testing.T
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), `Ambiguous symbol "Target" matched 3 definitions`) ||
-		!strings.Contains(out.String(), "rerun with --symbol <id>") ||
-		!strings.Contains(out.String(), "[id: focus-a-early]") ||
+		// The listing prints the MINIMAL selector per definition rather than each full stable
+		// ID: an ID is `repoKey:language:path:kind:qualifiedName`, so printing one repeats the
+		// path and name the same line already shows. IDs remain accepted as INPUT — see
+		// TestNeighborsExactSymbolIDDisambiguatesSameFileOverloads below.
+		!strings.Contains(out.String(), "rerun with the selector printed beside the one you mean") ||
 		strings.Contains(out.String(), "c.go:1") || strings.Contains(out.String(), "Callers:") {
 		t.Fatalf("agent ambiguity output was not deterministically bounded:\n%s", out.String())
 	}
@@ -177,9 +180,32 @@ func TestNeighborsExactSymbolIDDisambiguatesSameFileOverloads(t *testing.T) {
 	if err := writeAgentNeighbors(&out, ambiguous); err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"--symbol <id>", "[id: process-string]", "[id: process-int]"} {
+	// The listing prints the MINIMAL selector that separates each definition, not each full
+	// stable ID: an ID is `repoKey:language:path:kind:qualifiedName`, so printing one repeats the
+	// path and the name the same line already carries. Here the two overloads share a file and a
+	// qualified name and differ only in line, so `--line` is what the listing must add.
+	for _, expected := range []string{
+		"--symbol Service.Process --file service.go --line 10",
+		"--symbol Service.Process --file service.go --line 20",
+	} {
 		if !strings.Contains(out.String(), expected) {
-			t.Fatalf("ambiguity output omitted selectable ID %q:\n%s", expected, out.String())
+			t.Fatalf("ambiguity output omitted selector %q:\n%s", expected, out.String())
+		}
+	}
+	// Every selector printed must actually resolve to exactly the definition it sits beside —
+	// a remedy the tool prints and then cannot honour is worse than no remedy.
+	for _, selector := range []struct {
+		line int
+		want string
+	}{{line: 10, want: "process-string"}, {line: 20, want: "process-int"}} {
+		resolved := buildNeighborResponse(snapshot, neighborFlags{
+			Symbol: "Service.Process", File: "service.go", Line: selector.line,
+			Relation: "CALLS", Direction: "out", Depth: 1, Limit: 20,
+		})
+		if resolved.DisambiguationRequired || len(resolved.Matches) != 1 ||
+			resolved.Matches[0].Symbol.ID != selector.want {
+			t.Fatalf("printed selector --line %d did not resolve to %q: %#v",
+				selector.line, selector.want, resolved)
 		}
 	}
 }
@@ -496,7 +522,9 @@ func TestAgentNeighborsExactByteCapPreservesCoverageAndTruncationMarkers(t *test
 	if out.Len() > capBytes {
 		t.Fatalf("agent output used %d bytes, cap %d:\n%s", out.Len(), capBytes, out.String())
 	}
-	for _, want := range []string{"!output-truncated/coverage", "Focus: Focus (src/focus.go:10)", "Coverage: degraded", "W W_DIRTY", "F E_PARSE_ERROR"} {
+	// The coverage verdict is now scoped, so the compact banner reports the
+	// query's own failed/total plus one count for what cannot affect it.
+	for _, want := range []string{"!output-truncated/coverage", "Focus: Focus (src/focus.go:10)", "C:degraded 1/5 W1 F0-other", "W W_DIRTY", "F E_PARSE_ERROR"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("bounded agent output omitted %q:\n%s", want, out.String())
 		}

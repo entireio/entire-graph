@@ -26,6 +26,8 @@ type impactFlags struct {
 	Repo            string
 	Symbol          string
 	File            string
+	Line            int
+	Kind            string
 	Format          string
 	Profile         string
 	Depth           int
@@ -50,6 +52,17 @@ type impactEntry struct {
 	Depth     int              `json:"depth,omitempty"`
 	Via       string           `json:"via,omitempty"`
 	Detail    string           `json:"detail,omitempty"`
+	// CallSite is where a caller actually writes the call. `impact` is a bounded
+	// overview, so it reports the LINE only and never quotes source; use
+	// `neighbors --direction in` for the conditions around a call.
+	CallSite *callSite `json:"call_site,omitempty"`
+
+	// Evidence span and written call text, kept only to resolve CallSite after
+	// the graph query. Not part of the wire format.
+	callFile  string
+	callStart int
+	callEnd   int
+	callToken string
 }
 
 // impactSection is one bounded facet of the blast radius. Total counts every
@@ -72,8 +85,10 @@ type impactResponse struct {
 	Profile                string                 `json:"profile"`
 	Query                  string                 `json:"query"`
 	File                   string                 `json:"file,omitempty"`
+	Line                   int                    `json:"line,omitempty"`
 	Depth                  int                    `json:"depth"`
 	IndexCacheHit          bool                   `json:"index_cache_hit"`
+	IndexCacheDisabled     bool                   `json:"index_cache_disabled,omitempty"`
 	IndexLatencyMS         int64                  `json:"index_latency_ms"`
 	QueryLatencyMS         int64                  `json:"query_latency_ms"`
 	TotalLatencyMS         int64                  `json:"total_latency_ms"`
@@ -92,6 +107,8 @@ type impactResponse struct {
 	PartialFailures        []sem.PartialFailure   `json:"partial_failures"`
 	Stats                  sem.ProviderStats      `json:"stats"`
 	Completeness           sem.CompletenessReport `json:"completeness"`
+	// CompletenessScope is the query-relative reading of the diagnostics above.
+	CompletenessScope completenessScope `json:"completeness_scope"`
 }
 
 func runImpact(ctx context.Context, opts Options, args []string) error {
@@ -126,8 +143,10 @@ func runImpact(ctx context.Context, opts Options, args []string) error {
 	indexLatency := time.Since(indexStarted)
 	queryStarted := time.Now()
 	response := buildImpactResponse(snapshot, flags)
+	annotateImpactCallSites(&response, newRepoLineReader(snapshot.Header.RepoRoot))
 	queryLatency := time.Since(queryStarted)
 	response.IndexCacheHit = cacheHit
+	response.IndexCacheDisabled = cacheDir == "" || flags.DisableCache
 	response.IndexLatencyMS = indexLatency.Milliseconds()
 	response.QueryLatencyMS = queryLatency.Milliseconds()
 	response.TotalLatencyMS = time.Since(totalStarted).Milliseconds()
@@ -177,6 +196,18 @@ func parseImpactFlags(args []string) (impactFlags, error) {
 				return flags, valueErr
 			}
 			flags.File = item
+		case "--line":
+			parsed, next, parseErr := searchPositiveIntFlag(args, index)
+			if parseErr != nil {
+				return flags, parseErr
+			}
+			flags.Line, index = parsed, next
+		case "--kind":
+			item, valueErr := value()
+			if valueErr != nil {
+				return flags, valueErr
+			}
+			flags.Kind = item
 		case "--format":
 			item, valueErr := value()
 			if valueErr != nil {
@@ -257,29 +288,48 @@ func impactTypeRelation(relationType string) bool {
 	return relationType == "USES_TYPE" || relationType == "PARAM_TYPE" || relationType == "RETURNS_TYPE"
 }
 
+// impactMentionDetail labels a caller entry that is a documented mention rather than a
+// resolved call, so the distinction the graph already records (resolution="name_only" on a
+// non-code file) survives into `impact`'s presentation instead of being discarded.
+const impactMentionDetail = "doc-mention, name_only"
+
+// impactNonCodeMention reports whether an incoming edge is a NAME-ONLY match attributed to
+// a file that holds no program text — prose, serialized data, generated artifacts — or to a
+// language parsed for inventory only.
+//
+// Both halves are required. A resolved edge from a documentation file (a doc-tool script
+// living under docs/) is a real call. A name-only edge between two source files is a real,
+// if lower-confidence, call. Only the conjunction — "this file cannot execute, and the
+// match was lexical" — identifies a mention.
+func impactNonCodeMention(relation sem.RelationRecord, endpoint neighborEndpoint, languages map[string]string) bool {
+	if relation.Resolution != "name_only" {
+		return false
+	}
+	if endpoint.FilePath != "" && sem.NonProgramTextPath(endpoint.FilePath) {
+		return true
+	}
+	return sem.InventoryOnlyLanguage(languages[endpoint.ID])
+}
+
 func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impactResponse {
 	endpoints := make(map[string]neighborEndpoint, len(snapshot.Symbols)+len(snapshot.Externals))
+	// Relation records carry no language, and file endpoints carry no kind beyond
+	// "file", so the language an edge came from has to be looked up by endpoint ID.
+	endpointLanguages := make(map[string]string, len(snapshot.Files)+len(snapshot.Symbols))
 	for _, file := range snapshot.Files {
 		endpoints[file.ID] = endpointForFile(file)
+		endpointLanguages[file.ID] = file.Language
 	}
 	for _, symbol := range snapshot.Symbols {
 		endpoints[symbol.ID] = endpointForSymbol(symbol)
+		endpointLanguages[symbol.ID] = symbol.Language
 	}
 	for _, external := range snapshot.Externals {
 		endpoints[external.ID] = endpointForExternal(external)
 	}
 
-	focuses := make([]sem.SymbolRecord, 0)
-	query := strings.TrimSpace(flags.Symbol)
-	for _, symbol := range snapshot.Symbols {
-		if !strings.EqualFold(symbol.Name, query) && !strings.EqualFold(symbol.QualifiedName, query) {
-			continue
-		}
-		if flags.File != "" && !strings.EqualFold(symbol.FilePath, flags.File) {
-			continue
-		}
-		focuses = append(focuses, symbol)
-	}
+	ref := parseSymbolRef(flags.Symbol, flags.File, flags.Line, flags.Kind, snapshot.Header.RepoRoot, snapshotFilePaths(snapshot))
+	focuses := resolveFocusSymbols(snapshot.Symbols, ref)
 	sort.Slice(focuses, func(left, right int) bool {
 		if focuses[left].FilePath != focuses[right].FilePath {
 			return focuses[left].FilePath < focuses[right].FilePath
@@ -301,13 +351,15 @@ func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impac
 		Tree:              snapshot.Header.Tree,
 		Profile:           snapshot.Header.Profile,
 		Query:             flags.Symbol,
-		File:              flags.File,
+		File:              ref.File,
+		Line:              ref.Line,
 		Depth:             flags.Depth,
 		FocusMatchesTotal: len(focuses),
 		Warnings:          snapshot.Header.Warnings,
 		PartialFailures:   partialFailures,
 		Stats:             snapshot.Header.Stats,
 		Completeness:      snapshot.Header.Completeness,
+		CompletenessScope: buildCompletenessScope(snapshot, focusQueryLanguage(focuses)),
 	}
 	if len(focuses) == 0 {
 		return response
@@ -417,6 +469,14 @@ func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impac
 	// Breadth-first caller walk: depth 1 is direct callers, depth 2 their
 	// callers. Each symbol is reported once at its shallowest depth; Via names
 	// the first-seen intermediate for transitive entries.
+	//
+	// A name-only match on a file that holds no program text (a design document, a
+	// changelog, a recorded fixture) is a MENTION of the symbol, not a call of it: the
+	// document does not break when behavior changes. Such an edge is kept as a
+	// direct caller — it IS evidence that the name is written down somewhere, and the
+	// user may need to update the prose — but it is labelled, sorted to the end so it can
+	// never displace a real caller under --limit, and NEVER traversed: expanding it a
+	// second hop manufactures "callers" that do not contain the symbol's name at all.
 	type callerNode struct {
 		id   string
 		name string
@@ -435,12 +495,34 @@ func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impac
 				if !ok || !allowed(endpoint) {
 					continue
 				}
+				mention := impactNonCodeMention(relation, endpoint, endpointLanguages)
+				if mention && depth > 1 {
+					// Not marked seen: a later real edge to the same node must still land.
+					continue
+				}
 				seenCaller[relation.FromID] = true
 				entry := impactEntry{
 					Endpoint: endpoint, Relation: relation.Type, Direction: "in", Depth: depth,
 				}
+				// Keep the caller-body span and written call text so the call
+				// LINE can replace the definition line in the answer.
+				if callFile, callStart, callEnd, detail, ok := callEvidenceSpan(relation.Evidence); ok {
+					if callFile == "" {
+						callFile = endpoint.FilePath
+					}
+					entry.callFile, entry.callStart, entry.callEnd = callFile, callStart, callEnd
+					// The callee as written is normally in the evidence detail; the
+					// callee endpoint's own NAME (not its qualified name) is the
+					// fallback, because that is what appears at a call site.
+					entry.callToken = callTokenFromDetail(detail, endpoints[relation.ToID].Name)
+				}
 				if depth > 1 {
 					entry.Via = node.name
+				}
+				if mention {
+					entry.Detail = impactMentionDetail
+					callers = append(callers, entry)
+					continue
 				}
 				callers = append(callers, entry)
 				next = append(next, callerNode{id: relation.FromID, name: endpointDisplayName(endpoint)})
@@ -471,11 +553,51 @@ func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impac
 	return response
 }
 
+// annotateImpactCallSites resolves the concrete call line for every caller entry
+// that carried call evidence. `impact` stays a bounded overview: it upgrades the
+// LOCATION (a caller's definition line points at the wrong place in a long
+// function) but never quotes source, which would blow its byte budget and push
+// real sections out of the answer.
+func annotateImpactCallSites(response *impactResponse, read lineReader) {
+	if response == nil || read == nil {
+		return
+	}
+	for index := range response.Callers.Entries {
+		entry := &response.Callers.Entries[index]
+		if entry.callFile == "" || entry.callToken == "" {
+			continue
+		}
+		site, ok := resolveCallSite(read, entry.callFile, entry.callToken, entry.callStart, entry.callEnd)
+		if !ok {
+			continue
+		}
+		// The window and guards are the neighbors verb's job; drop them so an
+		// impact JSON payload does not carry source it never renders.
+		site.Window, site.WindowStart, site.WindowEnd, site.Guards = nil, 0, 0, nil
+		entry.CallSite = &site
+	}
+}
+
+// formatImpactEntryLocation reports a caller at its call site, with the
+// definition line kept alongside; every other section keeps its endpoint
+// location, which is already the right one.
+func formatImpactEntryLocation(entry impactEntry) string {
+	return formatCallSiteLocation(entry.Endpoint, entry.CallSite)
+}
+
 // impactSectionOf sorts entries deterministically (depth, then file/line/name),
 // records the pre-cap totals and direction breakdowns, and applies the
 // per-section entry cap.
 func impactSectionOf(entries []impactEntry, limit int) impactSection {
 	sort.Slice(entries, func(left, right int) bool {
+		// Documented mentions sort behind every resolved entry, ahead of every other
+		// key: the per-section cap must spend its slots on entries that can break.
+		// Only caller entries ever carry this detail, so no other section is affected.
+		leftMention := entries[left].Detail == impactMentionDetail
+		rightMention := entries[right].Detail == impactMentionDetail
+		if leftMention != rightMention {
+			return rightMention
+		}
 		if entries[left].Depth != entries[right].Depth {
 			return entries[left].Depth < entries[right].Depth
 		}
@@ -581,26 +703,20 @@ func writeImpactText(out io.Writer, response impactResponse) {
 	fmt.Fprintf(out, "Index: cache-%s (%dms) | Query: %dms | Total: %dms\n",
 		cacheState, response.IndexLatencyMS, response.QueryLatencyMS, response.TotalLatencyMS,
 	)
-	writeCompletenessBlock(out, response.Warnings, response.PartialFailures, response.Stats)
+	writeIndexCostNotice(out, response.IndexCacheHit, response.IndexCacheDisabled)
+	writeScopedCompletenessBlock(out,
+		completenessScopeOrAll(response.CompletenessScope, response.Warnings, response.PartialFailures, response.Stats),
+		response.Warnings, response.PartialFailures, response.Stats)
 	if response.FocusMatchesTotal == 0 {
-		fmt.Fprintf(out, "No symbols matched %q. Add --file to disambiguate a known definition.\n", response.Query)
+		writeNoFocusMatch(out, response.Query, response.File, response.Line)
 		return
 	}
 	if response.DisambiguationRequired {
-		fmt.Fprintf(out,
-			"Ambiguous symbol %q matched %d definitions; rerun with --file and, if needed, a qualified --symbol.\n",
-			response.Query, response.FocusMatchesTotal,
-		)
-		for _, definition := range response.Definitions {
-			fmt.Fprintf(out, "- %s\n", formatNeighborEndpoint(definition))
-		}
-		if omitted := response.FocusMatchesTotal - len(response.Definitions); omitted > 0 {
-			fmt.Fprintf(out, "- ... %d more definitions; raise --limit to list them\n", omitted)
-		}
+		writeDisambiguationListing(out, response.Query, response.FocusMatchesTotal, response.Definitions)
 		return
 	}
 
-	focusLine := formatNeighborEndpoint(*response.Focus)
+	focusLine := formatNeighborFocus(*response.Focus)
 	if response.Focus.Kind != "" {
 		annotation := response.Focus.Kind
 		if response.Container != nil {
@@ -662,8 +778,12 @@ func writeImpactSection(out io.Writer, header string, section impactSection, arr
 			fmt.Fprintf(out, "- %s [%s]\n", entry.Endpoint.FilePath, entry.Detail)
 			continue
 		}
-		fmt.Fprintf(out, "- %s%s", prefix, formatNeighborEndpoint(entry.Endpoint))
-		annotations := make([]string, 0, 3)
+		fmt.Fprintf(out, "- %s%s", prefix, formatImpactEntryLocation(entry))
+		annotations := make([]string, 0, 4)
+		if entry.CallSite != nil && entry.CallSite.AdditionalSites > 0 {
+			annotations = append(annotations,
+				fmt.Sprintf("+%d more call site%s", entry.CallSite.AdditionalSites, pluralSuffix(entry.CallSite.AdditionalSites)))
+		}
 		// CALLS is the section default and DATA_FLOWS is its whole section's
 		// relation, so annotating either would be noise.
 		if entry.Relation != "" && entry.Relation != "CALLS" && entry.Relation != "DATA_FLOWS" {
@@ -674,6 +794,9 @@ func writeImpactSection(out io.Writer, header string, section impactSection, arr
 		}
 		if entry.Detail == "member" {
 			annotations = append(annotations, "member")
+		}
+		if entry.Detail == impactMentionDetail {
+			annotations = append(annotations, impactMentionDetail)
 		}
 		if len(annotations) > 0 {
 			fmt.Fprintf(out, " [%s]", strings.Join(annotations, ", "))

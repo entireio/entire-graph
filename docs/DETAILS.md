@@ -175,11 +175,49 @@ Running outside an Entire session? Point the plugin at a repo with `--repo .` (o
 | `entire graph doctor --json` | Environment, repo resolution, plugin data dir, `no_egress=true` |
 | `entire graph version [--json]` | Provider name and plugin version |
 
+### 🔍 How `search` ranks (file-class prior + duplicate collapsing)
+
+`search` answers a *code* question: the caller's next action is an edit to a source file. Two
+classes of result are systematically over-scored by a body-text match and almost never the edit
+site, so both are corrected explicitly:
+
+| Class | Examples | Prior |
+|---|---|---|
+| source | `src/**`, headers, any parsed language file | `1.0` |
+| documentation | `.md` `.mdx` `.rst` `.adoc` `.txt`, `docs/`, `website/`, `versioned_docs/`, README, CHANGELOG, man pages | `0.5` |
+| vendored | `vendor/`, `node_modules/`, `third_party/`, `site-packages/` | `0.5` |
+| generated | `dist/`, `generated/`, `single_include/`, `*-lock.json`, `Cargo.lock` | `0.5` |
+| example | `examples/`, `samples/`, `demo/` | `0.75` |
+
+The prior is a **multiplier on the positive part of a hit's score, never a filter**. `0.5` means
+"a documentation hit has to be twice as relevant as the best source hit to outrank it" — a doc
+still ranks first when it is genuinely the only match, and the prior is switched off completely
+when the query itself asks for that class (`documentation`, `readme`, `changelog`, `example`,
+`dist`, `vendored`, …). Demoted hits are labelled `doc-prior` / `vendored-prior` /
+`generated-prior` / `example-prior` in `signals`.
+
+**Near-duplicate collapsing.** Repositories carry deliberate copies of the same content —
+versioned documentation trees (`version-2.x/x` beside `version-3.0.1/x`), vendored snapshots,
+generated mirrors — and every copy scores identically, so one document can consume the whole
+result budget. Copies are merged into the best-ranked one, which reports a `+N similar` signal;
+the freed slots go to genuinely different code. Collapsing requires distinct files with the same
+basename, outside different monorepo units, and either identical normalized region text or
+paths equal modulo version-like segments with ≥ 90% token overlap.
+
 Full flags and the agent-facing operating guide are in **[AGENTS.md](AGENTS.md)**. Diff commands print human-readable text by default and structured output with `--json`:
 
-When a neighbor lookup by name is ambiguous, the result includes each
-definition's stable `compound-v1` ID. Pass that ID back to `--symbol` to select
-an overload that a file path or qualified name cannot distinguish.
+When a neighbor lookup by name is ambiguous, each definition is listed with the
+narrowest selector that picks it out — `--symbol NAME --file <path> --line <n>`,
+plus `--kind <kind>` when two records share a name and a line. Copy that
+selector verbatim.
+
+`--symbol` also accepts a definition's stable `compound-v1` ID
+(`repoKey:language:path:kind:qualifiedName`, with a `#sig:` suffix for
+overloads), which `symbols --format ndjson` emits. An exact ID match wins over
+every other filter — it already encodes the file and kind, so a stale `--file`
+cannot veto it — and it is the one selector that survives edits shifting line
+numbers. The ambiguity listing prints selectors rather than IDs because an ID
+repeats the path and name the same line already shows.
 
 ```text
 Semantic changes HEAD~1..HEAD
