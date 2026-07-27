@@ -106,9 +106,18 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 	readFile := func(path string) (string, bool, error) {
 		return gitutil.ShowFile(ctx, repo, head, path)
 	}
+	// oversizeBytes reports a file the reader declined because it exceeds the
+	// parse limit, so the scan can warn about it (below) without the read that
+	// would have cost the file's size twice for a file it refuses to parse anyway.
+	oversizeBytes := func(string) (int64, bool) { return 0, false }
 	if batch, batchErr := gitutil.NewBatchFileReader(ctx, repo, head); batchErr == nil {
 		defer func() { _ = batch.Close() }()
+		batch.SetMaxBytes(defaultMaxParseBytes)
 		readFile = batch.ReadFile
+		oversizeBytes = func(path string) (int64, bool) {
+			blob, ok := batch.OversizeBlob(path)
+			return blob.Bytes, ok
+		}
 	}
 
 	// When the grep prefilter ran, every file below already matched a changed
@@ -137,6 +146,9 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 			return nil, nil, err
 		}
 		if !ok {
+			if size, oversize := oversizeBytes(path); oversize {
+				warnings = append(warnings, dependentsFileTooLargeWarning(path, int(size)))
+			}
 			continue
 		}
 		// Size parity with the provider's default MaxParseBytes eligibility:

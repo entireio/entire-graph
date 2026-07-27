@@ -980,6 +980,9 @@ func openSearchContentReader(
 		if err != nil {
 			return nil, nil, err
 		}
+		// Snippet and body reads never need a file the indexer refuses to parse,
+		// so the reader declines it rather than materializing it twice over.
+		batch.SetMaxBytes(defaultMaxParseBytes)
 		read := func(path string) (string, bool) {
 			if strings.Contains(path, "\n") {
 				content, ok, err := gitutil.ShowFile(ctx, repo, commit, path)
@@ -990,8 +993,15 @@ func openSearchContentReader(
 		}
 		return read, batch.Close, nil
 	}
-	_, read, _, closeSource, err := openSource(ctx, repo, "", ignoreFiles, includeFiles)
-	return read, closeSource, err
+	opened, err := openSource(ctx, repo, "", sourceOptions{
+		ignoreFiles:  ignoreFiles,
+		includeFiles: includeFiles,
+		maxReadBytes: defaultMaxParseBytes,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return opened.read, opened.close, nil
 }
 
 func defaultSearchIndexedFiles(topK int) int {
