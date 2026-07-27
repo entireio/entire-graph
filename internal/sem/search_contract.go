@@ -21,12 +21,17 @@ package sem
 //     elsewhere. The protections the related-site block established hold unchanged: the head is
 //     never displaced, and the LAST mention of a file is not for sale at any price, so file
 //     recall cannot be traded for contract context.
-const searchContractAllowanceBytes = searchCoveringTestGrowthBytes + searchTypeCardBytes
+const searchContractAllowanceBytes = searchCoveringTestGrowthBytes + searchTypeCardBytes +
+	searchCoverageNoteBytes
 
 // searchContractContext is what the two blocks contribute to one payload.
 type searchContractContext struct {
 	// test is the covering-test entry, already rendered and already inside its allowance.
 	test *SearchResult
+	// note states how many tests cover the same anchor, and names the ones `test` does not show.
+	// It rides with the test because it is meaningless without it, and it is budgeted separately
+	// because it must not be able to shrink the test's body.
+	note *SearchCoverageNote
 	// card is the type/signature card, already inside its allowance.
 	card []TypeCardEntry
 }
@@ -54,7 +59,7 @@ func buildSearchContractContext(
 	// with one answer. Stopping at the first anchor that HAS a covering test keeps the block one
 	// entry about one body, at no extra cost — the search stops as soon as it succeeds.
 	for _, anchor := range anchors {
-		test, found := selectSearchCoveringTest(
+		test, peers, found := selectSearchCoveringTest(
 			results, anchor, q, relations, symbolsByID, symbolsByFile, cache,
 		)
 		if !found {
@@ -69,6 +74,7 @@ func buildSearchContractContext(
 			continue
 		}
 		context.test = &entry
+		context.note = buildSearchCoverageNote(anchor, test, peers, searchCoverageNoteBytes)
 		break
 	}
 	// The declaration card is a REFERENCE block and is off unless the caller asked for it; the
@@ -97,17 +103,21 @@ func mergeSearchContractContext(
 	results []SearchResult,
 	context searchContractContext,
 	hardBudget int,
-) ([]SearchResult, []TypeCardEntry, int, int) {
+) ([]SearchResult, []TypeCardEntry, *SearchCoverageNote, int, int) {
 	if context.test == nil && len(context.card) == 0 {
-		return results, nil, 0, 0
+		return results, nil, nil, 0, 0
+	}
+	// The note says something only about the test it accompanies, so it cannot outlive it.
+	if context.test == nil {
+		context.note = nil
 	}
 	baseline := serializedSearchResultBytes(results)
 	ceiling := baseline + searchContractAllowanceBytes
 	if hardBudget > 0 && hardBudget < ceiling {
 		ceiling = hardBudget
 	}
-	// The card lives outside `results`, so it is charged against the same ceiling explicitly
-	// rather than being invisible to it.
+	// The card and the note live outside `results`, so they are charged against the same ceiling
+	// explicitly rather than being invisible to it.
 	card := context.card
 	cardBytes := serializedSearchResultBytes(card)
 	if len(card) == 0 {
@@ -116,19 +126,25 @@ func mergeSearchContractContext(
 	floor := minInt(len(results), searchEnclosureHeadRanks)
 	order := searchRelatedDisplacementOrder(results, floor)
 	for {
+		outside := cardBytes + searchCoverageNoteCost(context.note)
 		for drop := 0; drop <= len(order); drop++ {
 			merged := searchContractMergedPlan(results, context.test, order[:drop])
-			if serializedSearchResultBytes(merged)+cardBytes <= ceiling {
+			if serializedSearchResultBytes(merged)+outside <= ceiling {
 				tests := 0
 				if context.test != nil {
 					tests = 1
 				}
-				return merged, card, tests, len(card)
+				return merged, card, context.note, tests, len(card)
 			}
 		}
-		// Nothing fits with the card at this size. Give up the card's LAST entry first: it is
-		// the weakest declaration in it, and the covering test is the block with the larger
-		// measured effect.
+		// Nothing fits at this size. The note goes first: it is the only block here whose whole
+		// content is a restatement of a COUNT, so losing it loses the least.
+		if context.note != nil {
+			context.note = nil
+			continue
+		}
+		// Then the card's LAST entry: it is the weakest declaration in it, and the covering test
+		// is the block with the larger measured effect.
 		if len(card) > 0 {
 			card = card[:len(card)-1]
 			cardBytes = 0
@@ -141,7 +157,7 @@ func mergeSearchContractContext(
 			context.test = nil
 			continue
 		}
-		return results, nil, 0, 0
+		return results, nil, nil, 0, 0
 	}
 }
 

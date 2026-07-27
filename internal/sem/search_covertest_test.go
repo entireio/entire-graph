@@ -71,7 +71,7 @@ func selectCoveringTestForTest(t *testing.T, fixture relatedFixture, query, anch
 	t.Helper()
 	byID, byFile := fixture.indexes()
 	cache := newSearchRelatedFileCache(fixture.reader(), searchCoveringTestFileReads)
-	test, found := selectSearchCoveringTest(
+	test, _, found := selectSearchCoveringTest(
 		nil, fixture.symbol(t, anchorID), buildSearchQuery(query), fixture.relations, byID, byFile, cache,
 	)
 	if !found {
@@ -222,7 +222,7 @@ func TestSelectSearchCoveringTestSkipsAlreadySurfaced(t *testing.T) {
 		FocusLine: 5, SnippetStartLine: 3, SnippetEndLine: 6,
 	}}
 	cache := newSearchRelatedFileCache(fixture.reader(), searchCoveringTestFileReads)
-	if _, found := selectSearchCoveringTest(
+	if _, _, found := selectSearchCoveringTest(
 		results, fixture.symbol(t, "src:normalizePath"), buildSearchQuery("normalize path"),
 		fixture.relations, byID, byFile, cache,
 	); found {

@@ -175,6 +175,19 @@ func newSearchRelatedFileCache(read contentReader, limit int) *searchRelatedFile
 	return &searchRelatedFileCache{read: read, lines: map[string][]string{}, limit: limit}
 }
 
+// cached reports whether a path has already been hydrated (or already been found unreadable), so
+// a caller can tell a FREE read from one that spends the hydration allowance. Callers that bound
+// their own work by "how many candidates may I inspect" need this: when twenty candidates live in
+// one already-hydrated file, inspecting them costs no IO at all, and a per-candidate cap there is
+// not a budget, it is a silent rejection of the other nineteen.
+func (cache *searchRelatedFileCache) cached(path string) bool {
+	if cache == nil {
+		return false
+	}
+	_, ok := cache.lines[path]
+	return ok
+}
+
 // get returns a file's lines, or false when the file is unreadable, binary, or beyond the
 // cache's hydration allowance. The allowance is what keeps the block's IO bounded on a symbol
 // with dozens of implementations.

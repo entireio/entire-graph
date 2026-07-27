@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -69,10 +70,32 @@ const (
 	// mention checks below, plus the winner's own file.
 	searchCoveringTestFileReads = 6
 
-	// searchCoveringTestMentionChecks bounds how many candidate BODIES are read to look for the
-	// anchor's name. Reading a file is the expensive part of this block, and it only ever changes
-	// the outcome for a candidate the graph resolved no edge for.
+	// searchCoveringTestMentionChecks bounds how many candidate bodies in a NOT-YET-HYDRATED file
+	// are read to look for the anchor's name. Reading a file is the expensive part of this block,
+	// and it only ever changes the outcome for a candidate the graph resolved no edge for.
+	//
+	// It counts hydrations, not candidates. It used to count candidates, and that was a silent
+	// correctness bug rather than a budget: a Java or C# mirror test file declares its twenty test
+	// methods in ONE file, so after the first candidate the file is in the cache and every further
+	// mention check is free — yet the counter stopped at four and the remaining sixteen candidates
+	// were rejected for "no evidence" they would have passed. Measured on
+	// `DruidLeaderClientTest`, that discarded the test the change actually broke and left the block
+	// naming an unrelated method that happened to be scored inside the first four.
 	searchCoveringTestMentionChecks = 4
+
+	// searchCoveragePeerLimit is the hard cap on how many OTHER covering tests the note names. It is
+	// a work guard, not the budget: the byte allowance below decides how many actually fit. Six
+	// covers a typical mirror test file whole, and past that the count says the rest.
+	searchCoveragePeerLimit = 6
+
+	// searchCoverageNoteBytes is the note's whole serialized allowance.
+	//
+	// Sized off a real mirror file, not off a wish. A Java test path is ~68 bytes and a test method
+	// name ~25, so 224 named THREE of five siblings on `DruidLeaderClientTest` — and the one the
+	// wrong fix went on to break was the fourth. A note that names a strict subset of the tests that
+	// must pass invites exactly the mistake it exists to prevent, so the allowance is the size of the
+	// whole answer for a normal test class.
+	searchCoverageNoteBytes = 320
 
 	// searchCoveringTestNameScanLimit bounds the name-convention scan over test-file symbols. It
 	// is a work guard, not a quality knob: past this many symbols the repo's test suite is large
@@ -112,7 +135,31 @@ var searchAssertionMarkers = []string{
 	"t.error", "t.fatal", "throws", "raises", "must_", ".to.", ".tobe", "ok(",
 }
 
-// selectSearchCoveringTest picks the test that covers an anchor, or reports that none does.
+// SearchCoverageNote states how WIDE the covering-test evidence is: how many tests exercise the
+// anchor the covering-test entry is about, and what the others are called.
+//
+// The covering-test entry answers "what is this code supposed to do". It does not answer "what
+// else must keep working", and a wrong fix that passes the one test it was shown while breaking a
+// sibling test in the same file is a resolved-to-unresolved swing that no snippet can prevent.
+// Naming the peers cannot pick wrong: it makes no claim about which test matters, only that the
+// edit is under coverage the entry does not show.
+type SearchCoverageNote struct {
+	// Symbol is the anchor whose coverage this is.
+	Symbol string `json:"symbol"`
+	// Total counts every test that qualified as covering the anchor, the shown one included.
+	Total int `json:"total"`
+	// Peers names the qualifying tests the covering-test entry does NOT show, bounded.
+	Peers []string `json:"peers,omitempty"`
+	// More is how many qualifying tests are neither shown nor named.
+	More int `json:"more,omitempty"`
+	// FilePath is where the peers live, present only when they all share one file — the case
+	// where a single path is the truthful answer to "where do I run them".
+	FilePath string `json:"file_path,omitempty"`
+}
+
+// selectSearchCoveringTest picks the test that covers an anchor, or reports that none does. The
+// second return is every OTHER qualifying test, best first: the block shows one body, and the
+// coverage note is built from the rest.
 func selectSearchCoveringTest(
 	results []SearchResult,
 	anchor SymbolRecord,
@@ -121,25 +168,37 @@ func selectSearchCoveringTest(
 	symbolsByID map[string]SymbolRecord,
 	symbolsByFile map[string][]SymbolRecord,
 	cache *searchRelatedFileCache,
-) (searchCoveringTest, bool) {
+) (searchCoveringTest, []searchCoveringTest, bool) {
 	if anchor.ID == "" || anchor.Name == "" {
-		return searchCoveringTest{}, false
+		return searchCoveringTest{}, nil, false
+	}
+	// A field, a property or a constant has no BEHAVIOUR, so nothing can cover it — and anchoring
+	// here is worse than returning nothing, because the routes below match on the anchor's NAME and
+	// a field is very often named after the type it holds. Measured on `apache/druid`: rank 1 for
+	// "DruidLeaderClient should refresh cache for non-200 responses" was the one-line field
+	// `private final DruidLeaderClient druidLeaderClient;` in an unrelated extension, and the block
+	// anchored there, matched a test HELPER called `TestDruidLeaderClient` in a third file by name
+	// alone, and never reached `DruidLeaderClient` itself — whose mirror test file holds the very
+	// test the change went on to break. Skipping the field lets the walk continue down the head to
+	// the declaration that does have a contract.
+	if !searchCoveringTestAnchorKind(anchor.Kind) {
+		return searchCoveringTest{}, nil, false
 	}
 	// A top hit that is ITSELF a test needs no covering test: the caller is already reading
 	// one, and the block would name the thing it is looking at.
 	if searchTestArtifactPath(searchLowerPath(anchor.FilePath)) {
-		return searchCoveringTest{}, false
+		return searchCoveringTest{}, nil, false
 	}
 	// A caller who ASKED for tests already gets them ranked at full strength — the additive
 	// test demotion is switched off for exactly these words — so the block would spend its
 	// bytes re-stating the primary list. The gate is the same one the ranker uses, so the two
 	// can never disagree about what "asked for tests" means.
 	if searchQuerySupplied(q, "test", "tests", "testing", "spec", "specs", "fixture", "fixtures") {
-		return searchCoveringTest{}, false
+		return searchCoveringTest{}, nil, false
 	}
 	candidates := searchCoveringTestCandidates(anchor, relations, symbolsByID, symbolsByFile)
 	if len(candidates) == 0 {
-		return searchCoveringTest{}, false
+		return searchCoveringTest{}, nil, false
 	}
 	scored := make([]searchCoveringTest, 0, len(candidates))
 	// File hydration is the expensive part of this block, so it is spent in one place only: on
@@ -151,12 +210,34 @@ func selectSearchCoveringTest(
 	for _, candidate := range candidates {
 		mirror := searchCoveringTestMirror(anchor.FilePath, candidate.symbol.FilePath)
 		named := searchNameMentions(candidate.symbol.Name, anchor.Name)
-		mentions := false
-		if !candidate.edge && !named && mirror && mentionChecks < searchCoveringTestMentionChecks {
-			mentionChecks++
-			if lines, ok := cache.get(candidate.symbol.FilePath); ok {
-				mentions = searchCoveringTestBodyMentions(lines, candidate.symbol, anchor.Name)
+		// A candidate that is neither a resolved caller nor a member of the mirror test file is
+		// held together by its NAME alone, and a name is a naming convention, not evidence that
+		// anything is asserted. Such a candidate must show an expectation in its own body.
+		//
+		// This is what keeps test INPUT out of the block. A linter's fixture tree is full of files
+		// under `resources/test/fixtures/**` declaring `def test_list_expressions(param1, param2)`:
+		// test-shaped path, test-shaped name, no assertion anywhere, and nothing whatever to say
+		// about what the code under change is supposed to do. Measured on `astral-sh/ruff`, exactly
+		// such a fixture won the block over the repo's real tests.
+		requireAssertion := !candidate.edge && !mirror
+		mentions, asserts := false, false
+		if !candidate.edge && (requireAssertion || !named) {
+			// The budget is spent on HYDRATIONS. A candidate whose file the cache already holds
+			// costs nothing to inspect, so it is never charged and never skipped: that is what makes
+			// every method of one mirror test file eligible instead of only the first four.
+			free := cache.cached(candidate.symbol.FilePath)
+			if free || mentionChecks < searchCoveringTestMentionChecks {
+				if !free {
+					mentionChecks++
+				}
+				if lines, ok := cache.get(candidate.symbol.FilePath); ok {
+					mentions = searchCoveringTestBodyMentions(lines, candidate.symbol, anchor.Name)
+					asserts = searchCoveringTestBodyAsserts(lines, candidate.symbol)
+				}
 			}
+		}
+		if requireAssertion && !asserts {
+			continue
 		}
 		score, ok := searchCoveringTestScore(candidate, mirror, named, mentions)
 		if !ok {
@@ -167,7 +248,7 @@ func selectSearchCoveringTest(
 		})
 	}
 	if len(scored) == 0 {
-		return searchCoveringTest{}, false
+		return searchCoveringTest{}, nil, false
 	}
 	sort.SliceStable(scored, func(left, right int) bool {
 		if scored[left].score != scored[right].score {
@@ -181,14 +262,120 @@ func selectSearchCoveringTest(
 	best := scored[0]
 	lines, readable := cache.get(best.symbol.FilePath)
 	if !readable {
-		return searchCoveringTest{}, false
+		return searchCoveringTest{}, nil, false
 	}
 	best.line = searchCoveringTestFocusLine(lines, best.symbol)
 	// A test the payload already prints is not worth a slot: the caller can read it where it is.
 	if searchCoveringTestAlreadySurfaced(results, best) {
-		return searchCoveringTest{}, false
+		return searchCoveringTest{}, nil, false
 	}
-	return best, true
+	return best, scored[1:], true
+}
+
+// buildSearchCoverageNote states how many tests cover the anchor and names the ones the entry does
+// not show. Returns nil when the shown test is the only one: "1 test covers this" is what the
+// block already says by existing, and a note that repeats it is pure cost.
+func buildSearchCoverageNote(
+	anchor SymbolRecord,
+	shown searchCoveringTest,
+	peers []searchCoveringTest,
+	budget int,
+) *SearchCoverageNote {
+	if len(peers) == 0 || anchor.Name == "" {
+		return nil
+	}
+	note := &SearchCoverageNote{Symbol: anchor.Name, Total: len(peers) + 1}
+	sharedFile := shown.symbol.FilePath
+	for _, peer := range peers {
+		if peer.symbol.FilePath != sharedFile {
+			sharedFile = ""
+			break
+		}
+	}
+	note.FilePath = sharedFile
+	// Declaration order, not score order. Score answers "which test states the contract best",
+	// which is the shown entry's question; the note's question is "what else must still pass", and
+	// for that the list should read the way the file reads — and be stable across runs.
+	ordered := append([]searchCoveringTest(nil), peers...)
+	sort.SliceStable(ordered, func(left, right int) bool {
+		if ordered[left].symbol.FilePath != ordered[right].symbol.FilePath {
+			return ordered[left].symbol.FilePath < ordered[right].symbol.FilePath
+		}
+		if ordered[left].symbol.StartLine != ordered[right].symbol.StartLine {
+			return ordered[left].symbol.StartLine < ordered[right].symbol.StartLine
+		}
+		return ordered[left].symbol.ID < ordered[right].symbol.ID
+	})
+	named := map[string]bool{}
+	for _, peer := range ordered {
+		if len(note.Peers) >= searchCoveragePeerLimit {
+			break
+		}
+		name := peer.symbol.Name
+		if name == "" {
+			name = peer.symbol.QualifiedName
+		}
+		// Two same-named tests in two files read as one name repeated, which looks like a bug and
+		// spends a slot saying nothing. The count still includes both.
+		if name == "" || named[name] {
+			continue
+		}
+		named[name] = true
+		note.Peers = append(note.Peers, name)
+	}
+	note.More = note.Total - 1 - len(note.Peers)
+	if len(note.Peers) == 0 {
+		return nil
+	}
+	// The note obeys the same rule as every other block here: what does not fit is smaller, and
+	// what cannot be made smaller is absent. Names are given up before the count is, because the
+	// count is the part that cannot be got anywhere else.
+	for budget > 0 && searchCoverageNoteCost(note) > budget {
+		if len(note.Peers) == 0 {
+			return nil
+		}
+		note.Peers = note.Peers[:len(note.Peers)-1]
+		note.More = note.Total - 1 - len(note.Peers)
+		if len(note.Peers) == 0 {
+			return nil
+		}
+	}
+	return note
+}
+
+// searchCoverageNoteCost is the note's serialized size in the same currency the rest of search is
+// budgeted in.
+func searchCoverageNoteCost(note *SearchCoverageNote) int {
+	if note == nil {
+		return 0
+	}
+	return serializedSearchResultBytes(note)
+}
+
+// RenderSearchCoverageNote renders the note as one line under the covering-test entry. It names
+// the anchor, the count, and the peers, in that order: the count is the part a reader must not be
+// able to miss.
+func RenderSearchCoverageNote(note *SearchCoverageNote) []byte {
+	if note == nil || len(note.Peers) == 0 {
+		return nil
+	}
+	line := fmt.Sprintf("  ALSO COVERING %s (%d tests cover it; all must still pass): %s",
+		note.Symbol, note.Total, strings.Join(note.Peers, ", "))
+	if note.More > 0 {
+		line += fmt.Sprintf(" +%d more", note.More)
+	}
+	if note.FilePath != "" {
+		line += " in " + note.FilePath
+	}
+	return []byte(line + "\n")
+}
+
+// searchCoveringTestAnchorKind reports whether a symbol kind has behaviour a test can exercise: a
+// callable, or a container whose members are callables. Everything else — a field, a property, a
+// constant, a bare variable, an unparsed region hit — is a name, not a contract.
+func searchCoveringTestAnchorKind(kind string) bool {
+	return searchEnclosableSymbolKind(kind) || typeLikeKind(kind) || kind == "module" ||
+		kind == "namespace" || kind == "package"
 }
 
 // searchCoveringTestCandidate is a test symbol under consideration, plus whether the graph
@@ -504,6 +691,25 @@ func searchCoveringTestBodyMentions(lines []string, symbol SymbolRecord, name st
 	return false
 }
 
+// searchCoveringTestBodyAsserts reports whether a candidate's body states an expectation anywhere.
+// It reuses searchCoveringTestFocusLine's own marker vocabulary, so "has an assertion" and "the
+// line the window is centred on" can never disagree about what an assertion is.
+func searchCoveringTestBodyAsserts(lines []string, symbol SymbolRecord) bool {
+	start, end := clampRegion(symbol.StartLine, symbol.EndLine, len(lines))
+	if start == 0 {
+		return false
+	}
+	for offset := start; offset <= end; offset++ {
+		lower := strings.ToLower(strings.TrimSpace(lines[offset-1]))
+		for _, marker := range searchAssertionMarkers {
+			if strings.Contains(lower, marker) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // searchCoveringTestFocusLine picks the line the window is built around: the LAST line of the
 // body that states an expectation, which is the line that says what the code is supposed to do.
 //
@@ -628,6 +834,20 @@ func searchCoveringTestResult(test searchCoveringTest, lines []string, budget in
 		if budget <= 0 || serializedSearchResultBytes([]SearchResult{candidate}) <= budget {
 			return candidate, true
 		}
+	}
+	// Not even ONE line of body fits. Naming the test is still most of the answer — "which test
+	// covers the code I am about to change, and where is it" is a question the caller cannot get
+	// anywhere else — so the entry degrades to a locator instead of vanishing.
+	//
+	// This is not a nicety either: the allowance is a fixed byte count and a path is not, so
+	// without this step the block silently did not exist for long paths. Measured on `apache/druid`,
+	// `server/src/test/java/org/apache/druid/discovery/DruidLeaderClientTest.java` plus a qualified
+	// member name left too little for one line of an assertion, and the whole block — the covering
+	// test AND the coverage note that names its siblings — disappeared from the payload.
+	locator := build(focus, focus)
+	locator.Snippet = ""
+	if budget <= 0 || serializedSearchResultBytes([]SearchResult{locator}) <= budget {
+		return locator, true
 	}
 	return SearchResult{}, false
 }

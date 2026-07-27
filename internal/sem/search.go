@@ -252,11 +252,16 @@ type SearchResponse struct {
 	// ClosedSet warns when the top hit belongs to a closed variant set whose switch/match sites
 	// will fail at RUNTIME, not at compile time, if a variant is added without an arm. See
 	// search_closedset.go.
-	ClosedSet       *SearchClosedSet   `json:"closed_set,omitempty"`
-	Stats           SearchStats        `json:"stats"`
-	Warnings        []ProviderWarning  `json:"warnings"`
-	PartialFailures []PartialFailure   `json:"partial_failures"`
-	Completeness    CompletenessReport `json:"completeness"`
+	ClosedSet *SearchClosedSet `json:"closed_set,omitempty"`
+	// CoverageNote reports how many tests exercise the anchor the covering-test entry is about, and
+	// names the ones that entry does not show. It exists because "the fix passed the test I was
+	// shown and broke its neighbour" is a measured wrong-fix shape that no single test body can
+	// prevent. Nil whenever exactly one test covers the anchor. See search_covertest.go.
+	CoverageNote    *SearchCoverageNote `json:"coverage_note,omitempty"`
+	Stats           SearchStats         `json:"stats"`
+	Warnings        []ProviderWarning   `json:"warnings"`
+	PartialFailures []PartialFailure    `json:"partial_failures"`
+	Completeness    CompletenessReport  `json:"completeness"`
 }
 
 type searchQuery struct {
@@ -809,14 +814,14 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	//     must be the hit the caller will read, after every block above has decided which
 	//     result that is.
 	var typeCard []TypeCardEntry
+	var coverageNote *SearchCoverageNote
 	if anchors := searchTypeCardAnchor(results, symbolsByID, symbolsByFile, searchEnclosureHeadRanks); len(anchors) > 0 {
 		context := buildSearchContractContext(
 			results, anchors, q, snapshot.Relations, symbolsByID, symbolsByFile, read,
 			options.IncludeTypeCard,
 		)
-		results, typeCard, stats.CoveringTests, stats.TypeCardEntries = mergeSearchContractContext(
-			results, context, options.MaxContextBytes,
-		)
+		results, typeCard, coverageNote, stats.CoveringTests, stats.TypeCardEntries =
+			mergeSearchContractContext(results, context, options.MaxContextBytes)
 	}
 	var signatureTypes []SearchSignatureType
 	if options.IncludeSignatureTypes {
@@ -924,6 +929,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		LiteralCluster:  literalCluster,
 		VerifyCommand:   verifyCommand,
 		ClosedSet:       closedSet,
+		CoverageNote:    coverageNote,
 		Stats:           stats,
 		Warnings:        snapshot.Header.Warnings,
 		PartialFailures: partialFailures,

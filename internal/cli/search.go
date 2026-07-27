@@ -235,6 +235,9 @@ func writeNdjsonSearch(out interface{ Write([]byte) (int, error) }, response sem
 		if response.LiteralCluster != nil {
 			summary["literal_cluster"] = response.LiteralCluster
 		}
+		if response.CoverageNote != nil {
+			summary["coverage_note"] = response.CoverageNote
+		}
 		return encoder.Encode(summary)
 	}
 }
@@ -303,6 +306,14 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 		fmt.Fprintf(out, "%s\n", searchTextTestHeader)
 		for _, result := range tests {
 			writeTextSearchResult(out, result, true)
+		}
+		// Directly under the body it qualifies: "this is what the code must do" and "these are the
+		// other tests that say so" are one thought, and a reader who has taken the contract off the
+		// body above will not scroll for the second half.
+		if block := sem.RenderSearchCoverageNote(response.CoverageNote); len(block) > 0 {
+			if _, err := out.Write(block); err != nil {
+				return err
+			}
 		}
 	}
 	// VERIFY immediately after the test it was derived from: what the edit has to achieve and the
@@ -401,6 +412,13 @@ func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result s
 	}
 	if name != "" {
 		fmt.Fprintf(out, " symbol=%s", name)
+	}
+	// A section entry may carry no source at all — the covering test degrades to a locator when its
+	// byte allowance cannot hold one line of body. Printing the empty string as if it were source
+	// costs two blank lines and reads as a truncation bug.
+	if result.Snippet == "" {
+		fmt.Fprintf(out, " signals=%s\n", strings.Join(result.Signals, ","))
+		return
 	}
 	fmt.Fprintf(out, " signals=%s\n%s\n\n", strings.Join(result.Signals, ","), result.Snippet)
 }

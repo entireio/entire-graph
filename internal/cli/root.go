@@ -129,7 +129,8 @@ Usage:
 
 Notes:
   search returns, by default: ranked candidate fix sites (top hits as complete function bodies),
-  RELATED SITES, the COVERING TEST, SAME-CONCEPT LITERALS (every place the queried concept is
+  RELATED SITES, the COVERING TEST plus the other tests that cover the same code (ALSO COVERING —
+  they all have to keep passing), SAME-CONCEPT LITERALS (every place the queried concept is
   named, tagged EDIT/CONSUMER/DOC — the sweep, so you need no grep), VERIFY (the narrowest test
   command for the file, derived from the repo's own build files) and a CLOSED-SET WARNING when a
   switch over an enum/sealed set would throw at runtime rather than fail to compile. The three

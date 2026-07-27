@@ -76,21 +76,30 @@ var searchSignatureTypeKeywords = map[string]bool{
 // `Self`/`self`/`this` resolve to the declaring type, which is the single most
 // useful entry for a method — it is the answer to "what else can I build one of
 // these from", which is what a caller who found one constructor still needs.
-func searchSignatureTypeNames(signature, ownName, ownerName string) []string {
-	var names []string
+// searchSignatureTypeRef is one type name read out of a signature, plus whether the USE SITE
+// applied type arguments to it. The flag is what disambiguates a name several declarations share:
+// `&ast::ExprCall` cannot mean `pub struct ExprCall<'a>`, because that declaration has a parameter
+// the use site does not bind.
+type searchSignatureTypeRef struct {
+	name    string
+	generic bool
+}
+
+func searchSignatureTypeNames(signature, ownName, ownerName string) []searchSignatureTypeRef {
+	var names []searchSignatureTypeRef
 	seen := map[string]bool{}
-	add := func(name string) {
+	add := func(name string, generic bool) {
 		if name == "" || seen[name] || name == ownName {
 			return
 		}
 		seen[name] = true
-		names = append(names, name)
+		names = append(names, searchSignatureTypeRef{name: name, generic: generic})
 	}
 	// The declaring type leads. When only one entry can be afforded, the type the
 	// located member BELONGS to is the one worth spending it on: it carries the
 	// other constructors and accessors, which is the question a caller who found
 	// one factory still has ("what else can build one of these?").
-	add(ownerName)
+	add(ownerName, false)
 	// Only the part of the signature after the declared name can hold parameter
 	// and result types; a leading `pub const fn` cannot.
 	scan := signature
@@ -99,21 +108,53 @@ func searchSignatureTypeNames(signature, ownName, ownerName string) []string {
 			scan = signature[index+len(ownName):]
 		}
 	}
-	for _, token := range searchSignatureIdentifierRe.FindAllString(scan, -1) {
+	for _, match := range searchSignatureIdentifierRe.FindAllStringIndex(scan, -1) {
+		token := scan[match[0]:match[1]]
 		lower := strings.ToLower(token)
 		if searchSignatureTypeKeywords[lower] {
 			continue
 		}
 		if lower == "self" || lower == "this" {
-			add(ownerName)
+			add(ownerName, false)
 			continue
 		}
 		if token[0] >= 'a' && token[0] <= 'z' {
 			continue
 		}
-		add(token)
+		add(token, searchSignatureTypeArgsApplied(scan, match[1]))
 	}
 	return names
+}
+
+// searchSignatureTypeArgsApplied reports whether the use site immediately applies type arguments
+// to the token that ends at `offset` — `Map<K, V>`, `ExprCall<'a>`, `List<Foo>`. Only `<` counts:
+// it is the type-argument bracket in Rust, Java, C#, Kotlin, Scala, Swift and TypeScript, while
+// `[` would also match an array suffix and a subscript and would say the opposite of the truth.
+func searchSignatureTypeArgsApplied(scan string, offset int) bool {
+	for offset < len(scan) {
+		switch scan[offset] {
+		case ' ', '\t':
+			offset++
+		case '<':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// searchSignatureTypeDeclaresParams reports whether a type DECLARATION takes type parameters, read
+// off its own signature: `pub struct ExprCall<'a>` does, `pub struct ExprCall` does not.
+func searchSignatureTypeDeclaresParams(symbol SymbolRecord) bool {
+	if symbol.Name == "" || symbol.Signature == "" {
+		return false
+	}
+	index := strings.Index(symbol.Signature, symbol.Name)
+	if index < 0 {
+		return false
+	}
+	return searchSignatureTypeArgsApplied(symbol.Signature, index+len(symbol.Name))
 }
 
 // searchSignatureTypeSurface builds the block for one anchor. Types are resolved
@@ -146,11 +187,11 @@ func searchSignatureTypeSurface(
 	}
 	resolved := make([]SymbolRecord, 0, limit)
 	seen := map[string]bool{}
-	for _, name := range candidates {
+	for _, ref := range candidates {
 		if len(resolved) == limit {
 			break
 		}
-		symbol, ok := searchSignatureTypeDeclaration(name, anchor.FilePath, symbolsByFile, byShortName)
+		symbol, ok := searchSignatureTypeDeclaration(ref, anchor.FilePath, symbolsByFile, byShortName)
 		if !ok || seen[symbol.ID] || symbol.ID == anchor.ID {
 			continue
 		}
@@ -196,21 +237,49 @@ func searchSignatureTypeSurface(
 	return out
 }
 
+// searchSignatureTypeDeclaration resolves one name to the declaration the signature means.
+//
+// Same file first, then a unique short name. When several declarations share the name, the type
+// PARAMETERS decide: a declaration that takes them cannot be what a bare `&ast::ExprCall` names,
+// and one that takes none cannot be what `Arguments<'fmt, Context>` names. Only a set that arity
+// narrows to exactly one resolves — an ambiguity that survives is still dropped, because an entry
+// pointing at the wrong declaration is worse than no entry.
+//
+// This is not a nicety. Real repositories carry a second declaration of their central types on
+// purpose — ruff's `comparable.rs` mirrors every AST node as `ExprCall<'a>` beside `nodes.rs`'s
+// `ExprCall`, and generated, `Any*`, `Comparable*` and partial-class mirrors do the same elsewhere
+// — so uniqueness alone silently deleted the anchor's own parameter types on exactly the anchors
+// that matter most. Measured on `astral-sh/ruff`, the block resolved `Locator` and dropped
+// `ast::ExprCall`, so the payload named every type in the signature EXCEPT the one the fix was
+// about.
 func searchSignatureTypeDeclaration(
-	name, anchorFile string,
+	ref searchSignatureTypeRef,
+	anchorFile string,
 	symbolsByFile map[string][]SymbolRecord,
 	byShortName map[string][]SymbolRecord,
 ) (SymbolRecord, bool) {
 	for _, symbol := range symbolsByFile[anchorFile] {
-		if typeLikeKind(symbol.Kind) && symbol.Name == name {
+		if typeLikeKind(symbol.Kind) && symbol.Name == ref.name {
 			return symbol, true
 		}
 	}
-	candidates := byShortName[name]
-	if len(candidates) != 1 {
+	candidates := byShortName[ref.name]
+	if len(candidates) == 1 {
+		return candidates[0], true
+	}
+	if len(candidates) == 0 {
 		return SymbolRecord{}, false
 	}
-	return candidates[0], true
+	var narrowed []SymbolRecord
+	for _, candidate := range candidates {
+		if searchSignatureTypeDeclaresParams(candidate) == ref.generic {
+			narrowed = append(narrowed, candidate)
+		}
+	}
+	if len(narrowed) != 1 {
+		return SymbolRecord{}, false
+	}
+	return narrowed[0], true
 }
 
 // searchSignatureTypeMembers collects the declared surface of the resolved types

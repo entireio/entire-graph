@@ -110,6 +110,9 @@ The output is grouped, and the groups mean different things:
 * **COVERING TEST** (` + "`section: \"covering-test\"`" + `) is the existing test that exercises hit 1 — the
   statement of what your fix has to ACHIEVE. It is not a fix site, and the VERIFY command above is
   derived from its path.
+* **ALSO COVERING** names the OTHER tests that exercise the same code and states how many there
+  are. They all have to keep passing, so a change whose justification only satisfies the one test
+  printed above is not finished. Run them together — the VERIFY command already does.
 
 ## Hard rules (each violation costs real money)
 

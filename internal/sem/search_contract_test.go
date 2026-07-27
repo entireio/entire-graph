@@ -55,7 +55,7 @@ func TestMergeSearchContractContextAppendsAfterEverything(t *testing.T) {
 	t.Parallel()
 	results := contractPayload()
 	entry := contractTestEntry()
-	merged, card, tests, cardEntries := mergeSearchContractContext(
+	merged, card, _, tests, cardEntries := mergeSearchContractContext(
 		results, searchContractContext{test: &entry, card: contractCard()}, 0,
 	)
 	if tests != 1 || cardEntries != len(contractCard()) {
@@ -84,7 +84,7 @@ func TestMergeSearchContractContextRespectsAllowance(t *testing.T) {
 	results := contractPayload()
 	baseline := serializedSearchResultBytes(results)
 	entry := contractTestEntry()
-	merged, card, _, _ := mergeSearchContractContext(
+	merged, card, _, _, _ := mergeSearchContractContext(
 		results, searchContractContext{test: &entry, card: contractCard()}, 0,
 	)
 	growth := contractTotalBytes(merged, card) - baseline
@@ -107,7 +107,7 @@ func TestMergeSearchContractContextFundsFromRedundantTail(t *testing.T) {
 	blocks := searchContractContext{test: &entry, card: contractCard()}
 
 	// A ceiling exactly at the baseline: nothing may be added without something being given up.
-	merged, card, tests, entries := mergeSearchContractContext(results, blocks, baseline)
+	merged, card, _, tests, entries := mergeSearchContractContext(results, blocks, baseline)
 	total := contractTotalBytes(merged, card)
 	if total > baseline {
 		t.Fatalf("payload is %d bytes (%d tests, %d card entries), over the %d ceiling",
@@ -123,7 +123,7 @@ func TestMergeSearchContractContextFundsFromRedundantTail(t *testing.T) {
 
 	// A ceiling far below the baseline cannot be met at all: the blocks are dropped and the
 	// ranking is returned untouched rather than mutilated.
-	untouched, none, tests, entries := mergeSearchContractContext(results, blocks, baseline/2)
+	untouched, none, _, tests, entries := mergeSearchContractContext(results, blocks, baseline/2)
 	if len(none) != 0 || tests != 0 || entries != 0 {
 		t.Fatalf("blocks were attached under an impossible ceiling: %d tests, %d entries", tests, entries)
 	}
@@ -137,7 +137,7 @@ func TestMergeSearchContractContextFundsFromRedundantTail(t *testing.T) {
 func TestMergeSearchContractContextNoBlocksIsIdentity(t *testing.T) {
 	t.Parallel()
 	results := contractPayload()
-	merged, card, tests, entries := mergeSearchContractContext(results, searchContractContext{}, 0)
+	merged, card, _, tests, entries := mergeSearchContractContext(results, searchContractContext{}, 0)
 	if len(card) != 0 || tests != 0 || entries != 0 {
 		t.Fatalf("empty context produced %d card entries and %d tests", entries, tests)
 	}

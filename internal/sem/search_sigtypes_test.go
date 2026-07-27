@@ -49,14 +49,120 @@ func TestSearchSignatureTypeNames(t *testing.T) {
 			owner:     "",
 			want:      nil,
 		},
+		{
+			name:      "type arguments at the use site are recorded",
+			signature: "fn render(items: Vec<Edit>, ctx: Arguments<'fmt, Context>) -> Result<Edit>",
+			own:       "render",
+			owner:     "",
+			want:      []string{"Vec<>", "Edit", "Arguments<>", "Context", "Result<>"},
+		},
+		{
+			name:      "a path-qualified bare use is not generic",
+			signature: "pub(crate) fn fix(call: &ast::ExprCall, locator: &Locator) -> Result<Edit>",
+			own:       "fix",
+			owner:     "",
+			want:      []string{"ExprCall", "Locator", "Result<>", "Edit"},
+		},
 	}
 	for _, testCase := range cases {
 		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 			got := searchSignatureTypeNames(testCase.signature, testCase.own, testCase.owner)
-			if strings.Join(got, ",") != strings.Join(testCase.want, ",") {
-				t.Errorf("searchSignatureTypeNames(%q) = %v, want %v", testCase.signature, got, testCase.want)
+			if renderSigTypeRefs(got) != strings.Join(testCase.want, ",") {
+				t.Errorf("searchSignatureTypeNames(%q) = %s, want %v",
+					testCase.signature, renderSigTypeRefs(got), testCase.want)
+			}
+		})
+	}
+}
+
+// renderSigTypeRefs renders refs as `Name` or `Name<>` so one comparison covers both the name and
+// the type-argument flag that disambiguates it.
+func renderSigTypeRefs(refs []searchSignatureTypeRef) string {
+	parts := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if ref.generic {
+			parts = append(parts, ref.name+"<>")
+			continue
+		}
+		parts = append(parts, ref.name)
+	}
+	return strings.Join(parts, ",")
+}
+
+// TestSearchSignatureTypeDeclarationDisambiguatesByTypeParameters pins the resolution rule that
+// stopped a repo's central types from silently vanishing: when several declarations share a name,
+// the one whose type-parameter arity matches the use site wins, and an ambiguity arity cannot
+// settle is still refused rather than guessed.
+func TestSearchSignatureTypeDeclarationDisambiguatesByTypeParameters(t *testing.T) {
+	t.Parallel()
+	decl := func(id, file, name, signature string) SymbolRecord {
+		return SymbolRecord{ID: id, Kind: "struct", Name: name, FilePath: file, StartLine: 10,
+			EndLine: 14, Signature: signature}
+	}
+	nodes := decl("nodes:ExprCall", "ast/nodes.rs", "ExprCall", "pub struct ExprCall")
+	comparable := decl("cmp:ExprCall", "ast/comparable.rs", "ExprCall", "pub struct ExprCall<'a>")
+	shadow := decl("gen:ExprCall", "ast/generated.rs", "ExprCall", "pub struct ExprCall")
+	cases := []struct {
+		name       string
+		ref        searchSignatureTypeRef
+		candidates []SymbolRecord
+		want       string
+	}{
+		{
+			name:       "bare use picks the declaration without type parameters",
+			ref:        searchSignatureTypeRef{name: "ExprCall"},
+			candidates: []SymbolRecord{comparable, nodes},
+			want:       "nodes:ExprCall",
+		},
+		{
+			name:       "parameterized use picks the declaration with type parameters",
+			ref:        searchSignatureTypeRef{name: "ExprCall", generic: true},
+			candidates: []SymbolRecord{comparable, nodes},
+			want:       "cmp:ExprCall",
+		},
+		{
+			name:       "a unique name still resolves without consulting arity",
+			ref:        searchSignatureTypeRef{name: "ExprCall", generic: true},
+			candidates: []SymbolRecord{nodes},
+			want:       "nodes:ExprCall",
+		},
+		{
+			name:       "an ambiguity arity cannot settle is refused",
+			ref:        searchSignatureTypeRef{name: "ExprCall"},
+			candidates: []SymbolRecord{nodes, shadow},
+			want:       "",
+		},
+		{
+			name:       "no candidate resolves to nothing",
+			ref:        searchSignatureTypeRef{name: "Missing"},
+			candidates: nil,
+			want:       "",
+		},
+	}
+	for _, testCase := range cases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			byShortName := map[string][]SymbolRecord{}
+			for _, candidate := range testCase.candidates {
+				byShortName[candidate.Name] = append(byShortName[candidate.Name], candidate)
+			}
+			got, ok := searchSignatureTypeDeclaration(
+				testCase.ref, "src/fix.rs", map[string][]SymbolRecord{}, byShortName,
+			)
+			if !ok {
+				if testCase.want != "" {
+					t.Fatalf("resolution refused, want %s", testCase.want)
+				}
+				return
+			}
+			if testCase.want == "" {
+				t.Fatalf("resolved to %s, want a refusal", got.ID)
+			}
+			if got.ID != testCase.want {
+				t.Fatalf("resolved to %s, want %s", got.ID, testCase.want)
 			}
 		})
 	}
@@ -141,7 +247,9 @@ func TestSearchSignatureTypeSurfaceSkipsAmbiguousNames(t *testing.T) {
 	anchorElsewhere.ContainerID = ""
 	anchorElsewhere.Signature = "pub fn range_replacement(content: String, range: TextRange) -> Edit"
 	byFile["src/apply.rs"] = []SymbolRecord{anchorElsewhere}
-	if names := searchSignatureTypeNames(anchorElsewhere.Signature, anchorElsewhere.Name, ""); !containsName(names, "Edit") {
+	if names := renderSigTypeRefs(
+		searchSignatureTypeNames(anchorElsewhere.Signature, anchorElsewhere.Name, ""),
+	); !strings.Contains(names, "Edit") {
 		t.Fatalf("test setup: %v does not offer Edit as a candidate", names)
 	}
 	block := searchSignatureTypeSurface(anchorElsewhere, byID, byFile, relations, searchSignatureTypeLimit)
