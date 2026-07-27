@@ -122,6 +122,14 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		}); err != nil {
 			return err
 		}
+		if response.ContainerMap != nil {
+			if err := encoder.Encode(struct {
+				RecordType string `json:"record_type"`
+				*sem.SearchContainerMap
+			}{RecordType: "search_container_map", SearchContainerMap: response.ContainerMap}); err != nil {
+				return err
+			}
+		}
 		for _, result := range response.Results {
 			if err := encoder.Encode(struct {
 				RecordType string `json:"record_type"`
@@ -176,6 +184,14 @@ const (
 func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse) error {
 	if notice, _ := searchLowConfidenceNotices(response); len(notice) > 0 {
 		if _, err := out.Write(notice); err != nil {
+			return err
+		}
+	}
+	// The map is printed FIRST, before any body: it is what tells the reader whether the ranked
+	// bodies below it are the whole change, and an agent that has already decided to read the
+	// file will not scroll back for it.
+	if block := sem.RenderSearchContainerMap(response.ContainerMap, false); len(block) > 0 {
+		if _, err := out.Write(block); err != nil {
 			return err
 		}
 	}
@@ -309,10 +325,13 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	))
 	fullDiagnostics, compactDiagnostics := agentSearchDiagnostics(response)
 	fullConfidence, compactConfidence := searchLowConfidenceNotices(response)
+	fullMap := sem.RenderSearchContainerMap(response.ContainerMap, false)
+	compactMap := sem.RenderSearchContainerMap(response.ContainerMap, true)
 	if budget <= 0 {
 		payload := append([]byte{}, fullHeader...)
 		payload = append(payload, fullDiagnostics...)
 		payload = append(payload, fullConfidence...)
+		payload = append(payload, fullMap...)
 		if len(results) == 0 {
 			payload = append(payload, "No search results.\n"...)
 		} else {
@@ -349,30 +368,44 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	if len(fullConfidence) > 0 {
 		confidenceVariants = append(confidenceVariants, nil)
 	}
+	// The container map degrades like the diagnostics: full, then names-and-ranges only, then
+	// dropped. It is tried BEFORE the ranking shrinks because a map plus the top hit answers
+	// "what do I read" better than one more ranked block does — but it is never the reason a
+	// caller gets no result at all, hence the final nil variant.
+	mapVariants := [][]byte{fullMap}
+	if !bytes.Equal(fullMap, compactMap) {
+		mapVariants = append(mapVariants, compactMap)
+	}
+	if len(fullMap) > 0 {
+		mapVariants = append(mapVariants, nil)
+	}
 	for _, header := range [][]byte{fullHeader, compactHeader, legacyHeader} {
 		for _, diagnostics := range diagnosticVariants {
 			for _, confidence := range confidenceVariants {
-				remaining := budget - len(header) - len(diagnostics) - len(confidence)
-				if remaining <= 0 {
-					continue
-				}
-				prefix := func() []byte {
-					payload := append([]byte{}, header...)
-					payload = append(payload, diagnostics...)
-					return append(payload, confidence...)
-				}
-				if len(results) == 0 {
-					noResults := []byte("No search results.\n")
-					if len(noResults) <= remaining {
-						_, err := out.Write(append(prefix(), noResults...))
+				for _, containerMap := range mapVariants {
+					remaining := budget - len(header) - len(diagnostics) - len(confidence) - len(containerMap)
+					if remaining <= 0 {
+						continue
+					}
+					prefix := func() []byte {
+						payload := append([]byte{}, header...)
+						payload = append(payload, diagnostics...)
+						payload = append(payload, confidence...)
+						return append(payload, containerMap...)
+					}
+					if len(results) == 0 {
+						noResults := []byte("No search results.\n")
+						if len(noResults) <= remaining {
+							_, err := out.Write(append(prefix(), noResults...))
+							return err
+						}
+						continue
+					}
+					formatted := fitAgentSearchResults(results, remaining)
+					if len(formatted) > 0 {
+						_, err := out.Write(append(prefix(), formatted...))
 						return err
 					}
-					continue
-				}
-				formatted := fitAgentSearchResults(results, remaining)
-				if len(formatted) > 0 {
-					_, err := out.Write(append(prefix(), formatted...))
-					return err
 				}
 			}
 		}

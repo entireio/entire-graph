@@ -61,6 +61,14 @@ optional overhead. An unverified edit is how a patch ships an unused variable, a
 method name, or the wrong arity — and a patch that does not build fails 100% of the task. One
 verification turn costs one turn; a patch that does not compile costs everything.
 
+Above the ranking sits the **CONTAINER MAP** of the top hit: the file's total line count and the
+enclosing class/module's members, each with its line range and a one-line identity, with the hit's
+own member marked ` + "`*`" + `. Read it before you decide to open anything. It is what lets you size a
+RANGE read instead of reading the file — and it is the only place the payload names the members a
+member-ranked list cannot rank, such as a private nested enum whose constants are the variant set
+you have to extend. A member marked ` + "`NESTED`" + ` with a ` + "`+N members`" + ` count is a type declared inside
+this one; its range is exactly where it is.
+
 The output is grouped, and the groups mean different things:
 
 * the ranked list is **candidate fix sites** — start at the top.
