@@ -15,6 +15,11 @@ import (
 	"strings"
 )
 
+// searchSnapshotCacheVersion names the on-disk cache directory and is hashed
+// into every entry key, so bumping it moves new entries to a fresh directory
+// and any prior-version directory can simply be deleted wholesale — cleanup is
+// "remove old version dirs" instead of per-entry reachability analysis.
+// (v5 isolated the tree-only key layout; v6, on main, supersedes it.)
 const searchSnapshotCacheVersion = "search-snapshot-v6"
 
 type cachedSymbolByteRange struct {
@@ -251,8 +256,8 @@ func PreindexProviderSnapshot(
 	}
 	if snapshot.Header.Tree != tree {
 		return ProviderSnapshot{}, false, fmt.Errorf(
-			"preindex snapshot provenance mismatch: got commit %q tree %q, want commit %q tree %q",
-			snapshot.Header.Commit, snapshot.Header.Tree, commit, tree,
+			"preindex snapshot provenance mismatch: got tree %q (commit %q), want tree %q (commit %q); only tree identity is checked",
+			snapshot.Header.Tree, snapshot.Header.Commit, tree, commit,
 		)
 	}
 	// Query-time caching is deliberately best effort, but an explicit preindex
@@ -364,8 +369,8 @@ func selectiveSearchSnapshotFromFull(
 	// derivation source: two different commits sharing a tree parse identically.
 	if sc.tree != full.Header.Tree || sc.key != full.Header.RepoKey {
 		return ProviderSnapshot{}, fmt.Errorf(
-			"cached full snapshot provenance mismatch: got repo %q commit %q tree %q, want repo %q commit %q tree %q",
-			full.Header.RepoKey, full.Header.Commit, full.Header.Tree, sc.key, sc.commit, sc.tree,
+			"cached full snapshot provenance mismatch: got repo %q tree %q, want repo %q tree %q; commit is not part of the check",
+			full.Header.RepoKey, full.Header.Tree, sc.key, sc.tree,
 		)
 	}
 
