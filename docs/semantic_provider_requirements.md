@@ -401,6 +401,29 @@ files dominating large-repo runs. Files above the cap still emit file records,
 but symbol parsing is skipped and an `E_FILE_TOO_LARGE` partial failure is
 reported.
 
+## Listing And Memory Bounds
+
+A snapshot's memory must be set by the caller's limits, not by what happens to be
+on disk. Two bounds are enforced, and both are visible in the output:
+
+- **Per-file read cap** — the same limit as the parser input cap (`MaxParseBytes`,
+  4 MiB by default). A file above it is never materialized in memory: its size,
+  content hash and line count come from a constant-memory streamed digest, it
+  emits a file record plus `E_FILE_TOO_LARGE`, and no consumer (including search
+  preselection, which scans every listed file concurrently) can read it. Without
+  this cap a repository's peak memory is set by its largest file, at twice that
+  file's size per read.
+- **Listing cap** — `MaxFiles` (200,000 by default, `ENTIRE_GRAPH_MAX_FILES`
+  overrides; negative removes it). Truncation is deterministic in sorted path
+  order and always reported as `W_FILE_LIMIT`, naming the real count, the limit
+  and the override.
+
+The working-tree listing is Git's own view of the working tree (tracked files plus
+untracked files no exclude rule covers). Every exclude source Git applies — nested
+`.gitignore` files, `.git/info/exclude`, per-worktree excludes, `core.excludesFile`
+— therefore applies to the graph. A filesystem walk that honours the ignore stack
+per directory is the fallback for a tree Git cannot enumerate.
+
 ## Capability Reporting
 
 `entire graph capabilities --json` should report:

@@ -134,6 +134,48 @@ func TestWorktreeSnapshotHonorsEveryGitExcludeSource(t *testing.T) {
 	}
 }
 
+// TestWorktreeIncludeFileReopensGitIgnoredTree covers the include-file escape
+// hatch in a real git repository: because the listing now comes from Git, a path
+// Git excludes has to be asked for explicitly, and an include file's negation is
+// the one thing that may ask.
+func TestWorktreeIncludeFileReopensGitIgnoredTree(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, ".gitignore", "cache/\ncache/skip.py\n")
+	writeFile(t, repo, ".graphinclude", "cache/\n")
+	writeFile(t, repo, "app/keep.py", "def keep_me():\n    return True\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "first-party source")
+	writeFile(t, repo, "cache/include.py", "def include_me():\n    return True\n")
+	writeFile(t, repo, "cache/skip.py", "def skip_me():\n    return True\n")
+
+	withInclude, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Worktree:     true,
+		IncludeFiles: []string{".graphinclude"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshotHasSymbol(withInclude, "include_me") {
+		t.Fatalf("include file did not reopen the git-ignored tree: %#v", withInclude.Files)
+	}
+	// The include file reopened the directory; a rule naming one file inside it
+	// still wins.
+	if snapshotHasSymbol(withInclude, "skip_me") {
+		t.Fatalf("include file overrode a rule naming one file: %#v", withInclude.Files)
+	}
+
+	without, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Worktree: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshotHasSymbol(without, "include_me") {
+		t.Fatalf("git-ignored tree entered the listing without an include file: %#v", without.Files)
+	}
+}
+
 // TestWorktreeSnapshotFileCeilingOnVendoredTree is the file-count ceiling: a
 // vendored tree an order of magnitude larger than the source must not enlarge the
 // graph at all. Under the root-.gitignore-only listing every one of these files
