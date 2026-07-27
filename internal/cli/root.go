@@ -121,13 +121,21 @@ Usage:
   entire graph symbols --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
   entire graph edges --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
   entire graph index --repo . [--profile syntax-only|fast|full] [--cache-dir path] [--format json] [--head] [--ignore-file path] [--include-file path]
-  entire graph search --query "issue or concept" --repo . [--format json|ndjson|text|agent] [--top-k 10] [--deep] [--max-context-bytes 24576] [--head] [--profile syntax-only|fast|full] [--max-indexed-files n|--index-all-files] [--cache-dir path|--no-cache]
+  entire graph search --query "issue or concept" --repo . [--format json|ndjson|text|agent] [--top-k 10] [--deep] [--max-context-bytes 24576] [--head] [--profile syntax-only|fast|full] [--max-indexed-files n|--index-all-files] [--cache-dir path|--no-cache] [--reference-blocks all|container-map,signature-types,type-card]
   entire graph def NAME|<file>:<line> --repo . [--file path] [--line n] [--kind kind] [--members 15] [--format text|json] [--max-context-bytes 4096] [--head] [--profile fast|full] [--cache-dir path|--no-cache]
   entire graph neighbors --symbol NAME|<file>:<line> --repo . [--file path] [--line n] [--kind kind] [--relation CALLS] [--direction both|in|out] [--depth 1|2] [--limit 20] [--format json|text|agent] [--max-context-bytes 16384] [--head] [--cache-dir path|--no-cache] [--internal-only] [--exclude-tests]
   entire graph impact --symbol NAME|<file>:<line> --repo . [--file path] [--line n] [--kind kind] [--depth 1|2] [--limit 15] [--format text|json] [--max-context-bytes 4096] [--head] [--profile fast|full] [--cache-dir path|--no-cache] [--exclude-tests]
   entire graph stats [--repo .] [--since 30d|7d|all] [--format text|json] [--sessions-dir path|--transcript path]
 
 Notes:
+  search returns, by default: ranked candidate fix sites (top hits as complete function bodies),
+  RELATED SITES, the COVERING TEST, SAME-CONCEPT LITERALS (every place the queried concept is
+  named, tagged EDIT/CONSUMER/DOC — the sweep, so you need no grep), VERIFY (the narrowest test
+  command for the file, derived from the repo's own build files) and a CLOSED-SET WARNING when a
+  switch over an enum/sealed set would throw at runtime rather than fail to compile. The three
+  reference blocks — container map, signature types, declaration card — are OFF by default because
+  they measurably cost turns in agent sessions; --reference-blocks all (or the individual flags,
+  or ENTIRE_GRAPH_REFERENCE_BLOCKS) turns them back on for interactive reading.
   search --top-k only changes how many results come back; --deep additionally runs the
   exhaustive sparse (BM25) pass and fuses it with the semantic ranking (slower, reads every
   eligible file). neighbors/impact take --symbol <file>:<line>, or --symbol NAME with

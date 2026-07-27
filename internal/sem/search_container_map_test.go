@@ -664,7 +664,7 @@ public class Agg
 `)
 	response, err := SearchRepository(t.Context(), repo, "test-version",
 		"preserve field order in the cache key for the arithmetic operation",
-		SearchOptions{Worktree: true, Profile: ProfileFull, CacheDir: t.TempDir()})
+		SearchOptions{Worktree: true, Profile: ProfileFull, CacheDir: t.TempDir(), IncludeContainerMap: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -713,7 +713,7 @@ func TestSearchContainerMapRespectsCeilingOnWideContainer(t *testing.T) {
 
 	response, err := SearchRepository(t.Context(), repo, "test-version",
 		"decorate the aggregator factory with the column inspector",
-		SearchOptions{Worktree: true, Profile: ProfileFull, CacheDir: t.TempDir()})
+		SearchOptions{Worktree: true, Profile: ProfileFull, CacheDir: t.TempDir(), IncludeContainerMap: true})
 	if err != nil {
 		t.Fatal(err)
 	}

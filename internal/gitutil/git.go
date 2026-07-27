@@ -134,6 +134,9 @@ func GrepTreeMatches(ctx context.Context, repo, treeish string, patterns []strin
 // every possible match in the tree -- callers that need every matching file
 // regardless of Git's binary heuristic must use GrepTreePathsIncludingBinary.
 func GrepTreePaths(ctx context.Context, repo, treeish string, patterns []string) ([]string, error) {
+	if treeish == "" {
+		return nil, errors.New("git grep treeish cannot be empty")
+	}
 	return grepTreePaths(ctx, repo, treeish, patterns, true, false)
 }
 
@@ -146,6 +149,9 @@ func GrepTreePaths(ctx context.Context, repo, treeish string, patterns []string)
 // raw file content directly and does not care whether Git thinks the file is
 // binary.
 func GrepTreePathsIncludingBinary(ctx context.Context, repo, treeish string, patterns []string) ([]string, error) {
+	if treeish == "" {
+		return nil, errors.New("git grep treeish cannot be empty")
+	}
 	return grepTreePaths(ctx, repo, treeish, patterns, false, false)
 }
 
@@ -158,13 +164,27 @@ func GrepTreePathsIncludingBinary(ctx context.Context, repo, treeish string, pat
 // path and is orders of magnitude slower with hundreds of patterns (measured
 // 5s vs 0.06s on a ~2.6k-file tree with 234 patterns).
 func GrepTreePathsCaseSensitiveIncludingBinary(ctx context.Context, repo, treeish string, patterns []string) ([]string, error) {
-	return grepTreePaths(ctx, repo, treeish, patterns, false, true)
-}
-
-func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string, textOnly, caseSensitive bool) ([]string, error) {
 	if treeish == "" {
 		return nil, errors.New("git grep treeish cannot be empty")
 	}
+	return grepTreePaths(ctx, repo, treeish, patterns, false, true)
+}
+
+// GrepFixedStringPaths returns every file containing one exact, case-sensitive string. An empty
+// treeish greps the working tree (what a worktree search indexes); a non-empty one greps that
+// immutable tree.
+//
+// It exists for the repository-wide literal lookup in search: one needle, exact case, and the
+// caller reads the matched files itself to get line numbers, so no output parsing beyond the
+// NUL-delimited path list this package already does.
+func GrepFixedStringPaths(ctx context.Context, repo, treeish, pattern string) ([]string, error) {
+	if pattern == "" {
+		return []string{}, nil
+	}
+	return grepTreePaths(ctx, repo, treeish, []string{pattern}, false, true)
+}
+
+func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string, textOnly, caseSensitive bool) ([]string, error) {
 	if strings.HasPrefix(treeish, "-") || strings.ContainsRune(treeish, '\x00') {
 		return nil, fmt.Errorf("invalid git grep treeish %q", treeish)
 	}
@@ -191,7 +211,12 @@ func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string,
 	if patternCount == 0 {
 		return []string{}, nil
 	}
-	args = append(args, treeish, "--")
+	// An empty treeish means the working tree: Git is given no revision at all, and the paths it
+	// prints then carry no `<treeish>:` display prefix.
+	if treeish != "" {
+		args = append(args, treeish)
+	}
+	args = append(args, "--")
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = repo
 	var stdout bytes.Buffer
@@ -209,7 +234,10 @@ func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string,
 		}
 		return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
 	}
-	prefix := treeish + ":"
+	prefix := ""
+	if treeish != "" {
+		prefix = treeish + ":"
+	}
 	data := stdout.Bytes()
 	paths := make([]string, 0, bytes.Count(data, []byte{0}))
 	for len(data) > 0 {
@@ -218,7 +246,7 @@ func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string,
 			return nil, errors.New("git grep returned a non-NUL-terminated path")
 		}
 		displayed := string(data[:pathEnd])
-		if !strings.HasPrefix(displayed, prefix) {
+		if prefix != "" && !strings.HasPrefix(displayed, prefix) {
 			return nil, fmt.Errorf("git grep returned path %q without treeish prefix %q", displayed, prefix)
 		}
 		paths = append(paths, strings.TrimPrefix(displayed, prefix))

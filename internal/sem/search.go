@@ -65,6 +65,24 @@ type SearchOptions struct {
 	MaxIndexedFiles   int
 	IndexAllFiles     bool
 	MaxContextBytes   int
+	// The three REFERENCE blocks below are OFF by default, and the default is the measurement's
+	// verdict rather than a taste call. Six session-level runs on real agents added the container
+	// map (1119 B), the signature-type block (197 B) and the declaration card (300 B) to the first
+	// search response and made sessions MORE expensive at no gain: turns up (23.1 vs 21.0 on one
+	// model, 30.1 vs 26.8 on another), cost up 14-19%, resolve rate flat to worse. A leaner
+	// competing tool answering the same prompt finished in 18.5 turns for less money.
+	//
+	// The discriminator that separated the blocks that paid from the blocks that did not was NOT
+	// how informative they read. It was whether a block REPLACES A TOOL CALL the agent would
+	// otherwise have made. These three answer questions an agent was not about to ask, so their
+	// bytes are re-read on every later turn for nothing.
+	//
+	// They are kept, and kept tested, because that measurement is about AGENT sessions. A human
+	// reading one search interactively pays for the bytes once and may well want the map.
+	// See search_blocks.go for the default payload and why each other block is in it.
+	IncludeContainerMap   bool
+	IncludeSignatureTypes bool
+	IncludeTypeCard       bool
 	// Deep enables the exhaustive sparse (BM25 chunk) retrieval pass and its
 	// reciprocal-rank fusion with the semantic ranking.
 	//
@@ -112,24 +130,30 @@ type SearchStats struct {
 	// Content-read counters report blobs hydrated into the Go process. Git's
 	// own immutable-tree scans are represented by the backend/pass/examined
 	// counters above; their internal byte IO is deliberately not estimated.
-	FilesContentRead   int   `json:"files_content_read_during_preselection"`
-	QueryFilesRead     int   `json:"files_content_read_during_query"`
-	QueryBytesRead     int64 `json:"bytes_content_read_during_query"`
-	UsageFilesRead     int   `json:"files_content_read_for_identifier_usage,omitempty"`
-	UsageBytesRead     int64 `json:"bytes_content_read_for_identifier_usage,omitempty"`
-	FilesIndexed       int   `json:"files_indexed"`
-	SymbolsConsidered  int   `json:"symbols_considered"`
-	LexicalCandidates  int   `json:"lexical_candidates"`
-	GraphCandidates    int   `json:"graph_candidates"`
-	IdentifierUsages   int   `json:"identifier_usage_candidates,omitempty"`
-	NeighborCandidates int   `json:"same_container_neighbor_candidates,omitempty"`
-	BridgeCandidates   int   `json:"same_file_bridge_candidates,omitempty"`
-	SparseCandidates   int   `json:"sparse_candidates"`
-	SparseFilesRead    int   `json:"sparse_files_content_read"`
-	CandidatesSelected int   `json:"candidates_selected"`
-	ResultBytes        int   `json:"result_bytes"`
-	ContextBudgetBytes int   `json:"context_budget_bytes,omitempty"`
-	ResultsDropped     int   `json:"results_dropped_by_budget,omitempty"`
+	FilesContentRead int   `json:"files_content_read_during_preselection"`
+	QueryFilesRead   int   `json:"files_content_read_during_query"`
+	QueryBytesRead   int64 `json:"bytes_content_read_during_query"`
+	UsageFilesRead   int   `json:"files_content_read_for_identifier_usage,omitempty"`
+	UsageBytesRead   int64 `json:"bytes_content_read_for_identifier_usage,omitempty"`
+	// ContextBlockFilesRead/BytesRead is the IO the agent-asked blocks added: files the RANKING never
+	// asked for, read to locate one literal, to find the switch sites over a variant set, and to
+	// identify the build system above the top hit. It is reported separately because the query
+	// counters answer a different question — how tightly selective indexing bounded the ranking.
+	ContextBlockFilesRead int   `json:"files_content_read_for_context_blocks,omitempty"`
+	ContextBlockBytesRead int64 `json:"bytes_content_read_for_context_blocks,omitempty"`
+	FilesIndexed          int   `json:"files_indexed"`
+	SymbolsConsidered     int   `json:"symbols_considered"`
+	LexicalCandidates     int   `json:"lexical_candidates"`
+	GraphCandidates       int   `json:"graph_candidates"`
+	IdentifierUsages      int   `json:"identifier_usage_candidates,omitempty"`
+	NeighborCandidates    int   `json:"same_container_neighbor_candidates,omitempty"`
+	BridgeCandidates      int   `json:"same_file_bridge_candidates,omitempty"`
+	SparseCandidates      int   `json:"sparse_candidates"`
+	SparseFilesRead       int   `json:"sparse_files_content_read"`
+	CandidatesSelected    int   `json:"candidates_selected"`
+	ResultBytes           int   `json:"result_bytes"`
+	ContextBudgetBytes    int   `json:"context_budget_bytes,omitempty"`
+	ResultsDropped        int   `json:"results_dropped_by_budget,omitempty"`
 	// SnippetsTruncated counts results carrying LESS source than the ranker produced for
 	// them, whether the byte fitter compacted them or the snippet allocator demoted them to
 	// a locator. A result grown to a complete symbol body is not truncated.
@@ -167,7 +191,15 @@ type SearchStats struct {
 	// is capped (searchContainerMapMaxBytes) and its cost is stated rather than hidden. Every
 	// other block above is funded from within the ceiling.
 	ContainerMapBytes int `json:"container_map_bytes,omitempty"`
-	// ContextBlockBytes is the sum of the three block counters above: the whole cost of
+	// The three counters below are the agent-asked blocks' cost, measured — like the container
+	// map's — on the LARGER of their two wire forms, so a JSON consumer is never told it paid half
+	// of what it actually paid. LiteralClusterHits is how many occurrences the literal block
+	// listed; the block's own hits_total says how many exist.
+	LiteralClusterBytes int `json:"literal_cluster_bytes,omitempty"`
+	LiteralClusterHits  int `json:"literal_cluster_hits,omitempty"`
+	VerifyCommandBytes  int `json:"verify_command_bytes,omitempty"`
+	ClosedSetBytes      int `json:"closed_set_bytes,omitempty"`
+	// ContextBlockBytes is the sum of every block counter above: the whole cost of
 	// everything outside `results`, in one number, so a caller can see the payload's true size
 	// without re-deriving it.
 	ContextBlockBytes int   `json:"context_block_bytes,omitempty"`
@@ -205,11 +237,26 @@ type SearchResponse struct {
 	// container's members with their line ranges — so a range read can be sized from this one
 	// response instead of by reading the whole file. Nil when the payload has no ranked code
 	// hit whose container the graph knows. See search_container_map.go.
-	ContainerMap    *SearchContainerMap `json:"container_map,omitempty"`
-	Stats           SearchStats         `json:"stats"`
-	Warnings        []ProviderWarning   `json:"warnings"`
-	PartialFailures []PartialFailure    `json:"partial_failures"`
-	Completeness    CompletenessReport  `json:"completeness"`
+	ContainerMap *SearchContainerMap `json:"container_map,omitempty"`
+	// The three blocks below are the DEFAULT reference material, and each one exists because it
+	// replaces a tool call the measurement says an agent makes anyway.
+	//
+	// LiteralCluster is `grep` folded into `search`: every occurrence of the one distinctive
+	// literal that names the queried concept, each annotated with its enclosing symbol and whether
+	// that site defines the concept or merely passes it. See search_literals.go.
+	LiteralCluster *SearchLiteralCluster `json:"literal_cluster,omitempty"`
+	// VerifyCommand is the narrowest test invocation for the top hit's file, derived from the
+	// repository's own build files. Nil whenever it could not be derived with confidence: a wrong
+	// command costs more than no command. See search_verify.go.
+	VerifyCommand *SearchVerifyCommand `json:"verify_command,omitempty"`
+	// ClosedSet warns when the top hit belongs to a closed variant set whose switch/match sites
+	// will fail at RUNTIME, not at compile time, if a variant is added without an arm. See
+	// search_closedset.go.
+	ClosedSet       *SearchClosedSet   `json:"closed_set,omitempty"`
+	Stats           SearchStats        `json:"stats"`
+	Warnings        []ProviderWarning  `json:"warnings"`
+	PartialFailures []PartialFailure   `json:"partial_failures"`
+	Completeness    CompletenessReport `json:"completeness"`
 }
 
 type searchQuery struct {
@@ -475,6 +522,18 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	queryReads := &searchContentReadTracker{read: read}
 	read = cachedContentReader(queryReads.Read)
+	// The repository-wide literal lookup two blocks share. It reuses the per-term posting lists
+	// preselection already built, so it adds no corpus pass; see search_needle.go for the three
+	// sources and why it answers nothing when none of them is exact.
+	needleIndex := &searchNeedleIndex{read: read, corpus: selection.allFiles}
+	needleIndex.termFiles, needleIndex.termFileTotals = selection.termPostings.snapshot()
+	if selection.gitGrepUsable {
+		treeish := selection.gitGrepTreeish
+		needleIndex.grep = func(pattern string) ([]string, bool) {
+			paths, grepErr := gitutil.GrepFixedStringPaths(ctx, selection.repoRoot, treeish, pattern)
+			return paths, grepErr == nil
+		}
+	}
 
 	symbolsByFile := make(map[string][]SymbolRecord)
 	symbolsByID := make(map[string]SymbolRecord, len(snapshot.Symbols))
@@ -669,6 +728,10 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// the budget the other copies would have spent. Both run before selection so
 	// the reclaimed result slots go to genuinely different code.
 	applySearchFileClassPrior(candidates, q)
+	// The boilerplate prior sits beside the file-class prior for the same reason: both correct a
+	// score that term overlap got right about the TEXT and wrong about the FIX SITE. See
+	// search_boilerplate.go.
+	applySearchBoilerplatePrior(candidates, q)
 	sortSearchCandidates(candidates)
 	candidates = collapseNearDuplicateCandidates(candidates)
 	semantic := selectDiverseCandidates(candidates, options.TopK, options.MaxRegionsPerFile)
@@ -677,6 +740,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		attachSparseCandidateSymbols(sparseCandidates, symbolsByFile)
 		scoreSparseCandidates(sparseCandidates, sparseQuery, sparseDF, sparseDocumentCount, sparseDocumentLength)
 		applySearchFileClassPrior(sparseCandidates, q)
+		applySearchBoilerplatePrior(sparseCandidates, q)
 		sortSearchCandidates(sparseCandidates)
 		sparseCandidates = dedupeSemanticMirrorCandidates(sparseCandidates, q, symbolsByID)
 		sortSearchCandidates(sparseCandidates)
@@ -748,26 +812,69 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	if anchors := searchTypeCardAnchor(results, symbolsByID, symbolsByFile, searchEnclosureHeadRanks); len(anchors) > 0 {
 		context := buildSearchContractContext(
 			results, anchors, q, snapshot.Relations, symbolsByID, symbolsByFile, read,
+			options.IncludeTypeCard,
 		)
 		results, typeCard, stats.CoveringTests, stats.TypeCardEntries = mergeSearchContractContext(
 			results, context, options.MaxContextBytes,
 		)
 	}
 	var signatureTypes []SearchSignatureType
-	if anchors := searchRelatedAnchors(results, symbolsByID, symbolsByFile, 1); len(anchors) == 1 {
-		block := searchSignatureTypeSurface(
-			anchors[0], symbolsByID, symbolsByFile, snapshot.Relations, searchSignatureTypeLimit,
-		)
-		results, signatureTypes = fundSearchSignatureTypes(results, block, searchEnclosureHeadRanks)
+	if options.IncludeSignatureTypes {
+		if anchors := searchRelatedAnchors(results, symbolsByID, symbolsByFile, 1); len(anchors) == 1 {
+			block := searchSignatureTypeSurface(
+				anchors[0], symbolsByID, symbolsByFile, snapshot.Relations, searchSignatureTypeLimit,
+			)
+			results, signatureTypes = fundSearchSignatureTypes(results, block, searchEnclosureHeadRanks)
+		}
 	}
 	stats.SignatureTypes = len(signatureTypes)
 	if len(signatureTypes) > 0 {
 		stats.SignatureTypeBytes = serializedSearchResultBytes(signatureTypes)
 	}
-	containerMap := fitSearchContainerMap(
-		buildSearchContainerMap(results, symbolsByID, symbolsByFile, read),
-		searchContainerMapMaxBytes,
+	// The three agent-asked blocks. Each one replaces a specific tool call an agent measurably
+	// makes anyway — a repo-wide grep, a fumbled test invocation, and the read that discovers a
+	// switch it forgot to extend — which is the property the reference blocks above lack. They are
+	// additive and separately capped; see search_blocks.go.
+	verifyEvidence := searchVerifyEvidence{read: read}
+	// The three agent-asked blocks read files the RANKING never asked for: a bounded set of files
+	// containing one literal, a handful of switch sites, and the build manifests above the top hit.
+	// Their IO is bracketed here and reported under its own counter rather than folded into the query
+	// counters, which document how tightly selective indexing bounded the ranking's own reads. Two
+	// different questions, two different numbers.
+	blockFilesBefore, blockBytesBefore := queryReads.files, queryReads.bytes
+	// The closed-set warning is built BEFORE the literal cluster, and the order is a budget decision
+	// rather than a preference: both draw on the needle index's shared read budget, the warning needs
+	// only a handful of files, and it is the block whose absence can make a patch wrong. Building it
+	// first guarantees it is never starved by a literal lookup that spent the budget and then failed
+	// its own distinctiveness test.
+	closedSet := buildSearchClosedSet(
+		results, symbolsByID, symbolsByFile, needleIndex, searchClosedSetMaxBytes,
 	)
+	if closedSet != nil {
+		stats.ClosedSetBytes = searchClosedSetCost(closedSet)
+	}
+	literalCluster := buildSearchLiteralCluster(
+		results, q, symbolsByFile, needleIndex, searchLiteralClusterMaxBytes,
+	)
+	if literalCluster != nil {
+		stats.LiteralClusterBytes = searchLiteralClusterCost(literalCluster)
+		stats.LiteralClusterHits = len(literalCluster.Hits)
+	}
+	verifyCommand := buildSearchVerifyCommand(results, verifyEvidence)
+	if verifyCommand != nil {
+		stats.VerifyCommandBytes = searchVerifyCommandCost(verifyCommand)
+	}
+	blockFilesRead := queryReads.files - blockFilesBefore
+	blockBytesRead := queryReads.bytes - blockBytesBefore
+	stats.ContextBlockFilesRead = blockFilesRead
+	stats.ContextBlockBytesRead = blockBytesRead
+	var containerMap *SearchContainerMap
+	if options.IncludeContainerMap {
+		containerMap = fitSearchContainerMap(
+			buildSearchContainerMap(results, symbolsByID, symbolsByFile, read),
+			searchContainerMapMaxBytes,
+		)
+	}
 	if containerMap != nil {
 		// searchContainerMapCost, not the text length: the block is CAPPED on the larger of its
 		// two wire forms (the JSON object runs about twice the rendered text), so reporting the
@@ -790,8 +897,8 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	stats.SnippetsTruncated = truncated
 	// Query and usage counters are disjoint physical reads. Identifier lookups
 	// already satisfied by the shared content cache add zero usage bytes.
-	stats.QueryFilesRead = queryReads.files - usageFilesRead - rereadFiles
-	stats.QueryBytesRead = queryReads.bytes - usageBytesRead - rereadBytes
+	stats.QueryFilesRead = queryReads.files - usageFilesRead - rereadFiles - blockFilesRead
+	stats.QueryBytesRead = queryReads.bytes - usageBytesRead - rereadBytes - blockBytesRead
 	stats.UsageFilesRead = usageFilesRead
 	stats.UsageBytesRead = usageBytesRead
 	stats.QueryLatencyMS = time.Since(queryStarted).Milliseconds()
@@ -814,6 +921,9 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		SignatureTypes:  signatureTypes,
 		TypeCard:        typeCard,
 		ContainerMap:    containerMap,
+		LiteralCluster:  literalCluster,
+		VerifyCommand:   verifyCommand,
+		ClosedSet:       closedSet,
 		Stats:           stats,
 		Warnings:        snapshot.Header.Warnings,
 		PartialFailures: partialFailures,
@@ -1040,6 +1150,20 @@ type searchFileSelection struct {
 	preselectionBackend       string
 	preselectionPasses        int
 	preselectionFilesExamined int
+	// allFiles is every file preselection discovered, kept so a repository-wide literal lookup has
+	// a corpus to fall back on when it is small enough to read (search_needle.go). It costs one
+	// slice of paths, which the sparse file list already pays for.
+	allFiles []string
+	// termPostings is the per-query-term path index, filled in ONLY when the content pass saw the
+	// whole corpus. When preselection short-circuited through Git it is empty and the lookup uses
+	// Git instead — a truncated posting list would let a block state a repository-wide total it
+	// cannot know.
+	termPostings *searchTermPostings
+	// gitGrepUsable records that Git answered a grep for this repository, so the lookup may ask it
+	// again for a needle the posting lists do not cover. gitGrepTreeish is the tree that grep must
+	// run against — empty means the working tree, which is what a worktree search indexes.
+	gitGrepUsable  bool
+	gitGrepTreeish string
 }
 
 type searchScanTelemetry struct {
@@ -1080,6 +1204,15 @@ func preselectSearchFiles(
 		sparseFiles:               append([]string(nil), source.paths...),
 		sparseDF:                  make(map[string]int, len(sparseQuery.terms)),
 		sparsePrecomputedFiles:    make(map[string]bool),
+		allFiles:                  append([]string(nil), source.paths...),
+		termPostings:              newSearchTermPostings(),
+		// A resolved commit is what says "this is a Git repository", so a needle the posting lists
+		// cannot price can be answered exactly by one `git grep`. An empty treeish means the working
+		// tree, which is what a worktree search indexes; a HEAD search must grep the commit itself.
+		gitGrepUsable: source.commit != "",
+	}
+	if !options.Worktree {
+		selection.gitGrepTreeish = source.commit
 	}
 	// Interactive committed-tree search can ask Git's optimized object-store
 	// scanner for every eligible content match in one fixed-string batch. Keep
@@ -1102,6 +1235,10 @@ func preselectSearchFiles(
 			selection.preselectionBackend = "git-tree-grep"
 			selection.preselectionPasses = 1
 			selection.preselectionFilesExamined = len(source.paths)
+			// This path never reads content, so there are no posting lists. Git answered once, so
+			// it can answer again for a single needle.
+			selection.gitGrepUsable = true
+			selection.gitGrepTreeish = source.commit
 			return selection, nil
 		}
 	}
@@ -1258,6 +1395,9 @@ func preselectSearchFiles(
 			matchedAnywhere[index] = matchedAnywhere[index] || hit
 		}
 		matchedMu.Unlock()
+		// The posting lists are a by-product of a match this loop already computed. Recording them
+		// here is what makes a repository-wide literal lookup free later on.
+		selection.termPostings.record(filePath, matched, q.terms)
 		return searchFileCandidate{
 			path:          filePath,
 			score:         2*pathScore + matchedWeight + searchPathPrior(q, filePath),
@@ -1295,6 +1435,12 @@ func preselectSearchFiles(
 		selection.preselectionBackend = "git-index-grep+go-content"
 		selection.preselectionPasses++
 		selection.preselectionFilesExamined += len(source.paths)
+		// The content pass ran over a Git-narrowed pool, so the posting lists cover only part of
+		// the corpus. Discard them rather than let a block compute a repository-wide total from a
+		// subset — Git is here, so the exact answer is one grep away.
+		selection.termPostings = newSearchTermPostings()
+		selection.gitGrepUsable = true
+		selection.gitGrepTreeish = ""
 	}
 	return selection, nil
 }

@@ -42,6 +42,7 @@ func buildSearchContractContext(
 	symbolsByID map[string]SymbolRecord,
 	symbolsByFile map[string][]SymbolRecord,
 	read contentReader,
+	includeCard bool,
 ) searchContractContext {
 	context := searchContractContext{}
 	if len(anchors) == 0 {
@@ -70,9 +71,14 @@ func buildSearchContractContext(
 		context.test = &entry
 		break
 	}
-	context.card = selectSearchTypeCard(
-		results, anchors, relations, symbolsByID, symbolsByFile, read, searchTypeCardBytes,
-	)
+	// The declaration card is a REFERENCE block and is off unless the caller asked for it; the
+	// covering test above is not, and stays. See SearchOptions in search.go for the measurement that
+	// separates them, and search_verify.go for the block that now depends on the test's path.
+	if includeCard {
+		context.card = selectSearchTypeCard(
+			results, anchors, relations, symbolsByID, symbolsByFile, read, searchTypeCardBytes,
+		)
+	}
 	return context
 }
 

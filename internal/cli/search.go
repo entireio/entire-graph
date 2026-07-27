@@ -31,6 +31,19 @@ import (
 // old behaviour passes `--max-context-bytes 16384`.
 const defaultSearchContextBytes = 24 * 1024
 
+// searchReferenceBlocks names the three off-by-default reference blocks. They are addressable
+// individually because they were measured individually: a caller who wants the navigation aid should
+// not have to pay for the declaration card as well.
+//
+// `all` is accepted as shorthand. An unknown name is an error rather than a silent no-op — a flag
+// that quietly does nothing is how a measurement gets attributed to the wrong build.
+const (
+	searchReferenceBlockContainerMap   = "container-map"
+	searchReferenceBlockSignatureTypes = "signature-types"
+	searchReferenceBlockTypeCard       = "type-card"
+	searchReferenceBlocksAll           = "all"
+)
+
 type searchFlags struct {
 	Repo              string
 	Query             string
@@ -50,12 +63,49 @@ type searchFlags struct {
 	IndexAllFiles     bool
 	MaxContextBytes   int
 	Deep              bool
+	// The reference blocks, off unless asked for. See SearchOptions in internal/sem/search.go for
+	// the session measurement that made OFF the default.
+	ContainerMap   bool
+	SignatureTypes bool
+	TypeCard       bool
+}
+
+// applySearchReferenceBlocks turns a comma-separated block list into flags. It is used for both the
+// `--reference-blocks` flag and the ENTIRE_GRAPH_REFERENCE_BLOCKS environment variable, so the two
+// cannot drift.
+func applySearchReferenceBlocks(flags *searchFlags, value string) error {
+	for _, name := range strings.Split(value, ",") {
+		name = strings.ToLower(strings.TrimSpace(name))
+		switch name {
+		case "":
+		case searchReferenceBlocksAll:
+			flags.ContainerMap, flags.SignatureTypes, flags.TypeCard = true, true, true
+		case searchReferenceBlockContainerMap:
+			flags.ContainerMap = true
+		case searchReferenceBlockSignatureTypes:
+			flags.SignatureTypes = true
+		case searchReferenceBlockTypeCard:
+			flags.TypeCard = true
+		default:
+			return fmt.Errorf("unknown search reference block %q: want %s, %s, %s, or %s",
+				name, searchReferenceBlockContainerMap, searchReferenceBlockSignatureTypes,
+				searchReferenceBlockTypeCard, searchReferenceBlocksAll)
+		}
+	}
+	return nil
 }
 
 func runSearch(ctx context.Context, opts Options, args []string) error {
 	flags, rest, err := parseSearchFlags(args)
 	if err != nil {
 		return err
+	}
+	// The environment sets a session-wide default; the flags then add to it. A flag can only ever
+	// turn a block ON, so the two compose without either having to override the other.
+	if value := strings.TrimSpace(opts.Env.ReferenceBlocks); value != "" {
+		if err := applySearchReferenceBlocks(&flags, value); err != nil {
+			return fmt.Errorf("%s: %w", envReferenceBlocks, err)
+		}
 	}
 	if len(rest) != 0 {
 		return fmt.Errorf("search received unexpected arguments: %s", strings.Join(rest, " "))
@@ -97,6 +147,10 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		IndexAllFiles:     flags.IndexAllFiles,
 		MaxContextBytes:   flags.MaxContextBytes,
 		Deep:              flags.Deep,
+
+		IncludeContainerMap:   flags.ContainerMap,
+		IncludeSignatureTypes: flags.SignatureTypes,
+		IncludeTypeCard:       flags.TypeCard,
 	})
 	if err != nil {
 		return err
@@ -110,7 +164,21 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		encoder.SetEscapeHTML(false)
 		return encoder.Encode(response)
 	case "ndjson":
-		encoder := json.NewEncoder(opts.Stdout)
+		return writeNdjsonSearch(opts.Stdout, response)
+	case "text":
+		return writeTextSearch(opts.Stdout, response)
+	case "agent":
+		return writeAgentSearch(opts.Stdout, response, contextBudget)
+	default:
+		return fmt.Errorf("search --format must be json, ndjson, text, or agent, got %q", flags.Format)
+	}
+}
+
+// writeNdjsonSearch streams a payload as one record per line: a header, the blocks that are their own
+// records, every ranked result, and a summary that carries the rest.
+func writeNdjsonSearch(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse) error {
+	{
+		encoder := json.NewEncoder(out)
 		encoder.SetEscapeHTML(false)
 		if err := encoder.Encode(map[string]any{
 			"record_type": "search_header",
@@ -121,6 +189,16 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 			"profile":     response.Profile,
 		}); err != nil {
 			return err
+		}
+		// The closed-set warning leads the stream for the same reason it leads the text output: it is
+		// the one record that changes what the patch has to contain.
+		if response.ClosedSet != nil {
+			if err := encoder.Encode(struct {
+				RecordType string `json:"record_type"`
+				*sem.SearchClosedSet
+			}{RecordType: "search_closed_set", SearchClosedSet: response.ClosedSet}); err != nil {
+				return err
+			}
 		}
 		if response.ContainerMap != nil {
 			if err := encoder.Encode(struct {
@@ -147,17 +225,17 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		}
 		// The declaration card rides on the summary rather than on a record of its own: it is
 		// one block about the whole payload, and a streaming consumer that does not know the key
-		// keeps working.
+		// keeps working. The verify command and the literal cluster ride along for the same reason.
 		if len(response.TypeCard) > 0 {
 			summary["type_card"] = response.TypeCard
 		}
+		if response.VerifyCommand != nil {
+			summary["verify_command"] = response.VerifyCommand
+		}
+		if response.LiteralCluster != nil {
+			summary["literal_cluster"] = response.LiteralCluster
+		}
 		return encoder.Encode(summary)
-	case "text":
-		return writeTextSearch(opts.Stdout, response)
-	case "agent":
-		return writeAgentSearch(opts.Stdout, response, contextBudget)
-	default:
-		return fmt.Errorf("search --format must be json, ndjson, text, or agent, got %q", flags.Format)
 	}
 }
 
@@ -199,7 +277,15 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 			return err
 		}
 	}
-	// The map is printed FIRST, before any body: it is what tells the reader whether the ranked
+	// The closed-set warning precedes everything, including the map: it is the only block that
+	// changes what the patch has to CONTAIN, and a reader who has already written the edit will not
+	// come back for it.
+	if block := sem.RenderSearchClosedSet(response.ClosedSet); len(block) > 0 {
+		if _, err := out.Write(block); err != nil {
+			return err
+		}
+	}
+	// The map is printed before any body: it is what tells the reader whether the ranked
 	// bodies below it are the whole change, and an agent that has already decided to read the
 	// file will not scroll back for it.
 	if block := sem.RenderSearchContainerMap(response.ContainerMap, false); len(block) > 0 {
@@ -217,6 +303,18 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 		fmt.Fprintf(out, "%s\n", searchTextTestHeader)
 		for _, result := range tests {
 			writeTextSearchResult(out, result, true)
+		}
+	}
+	// VERIFY immediately after the test it was derived from: what the edit has to achieve and the
+	// command that proves it are one thought.
+	if block := sem.RenderSearchVerifyCommand(response.VerifyCommand); len(block) > 0 {
+		if _, err := out.Write(block); err != nil {
+			return err
+		}
+	}
+	if block := sem.RenderSearchLiteralCluster(response.LiteralCluster); len(block) > 0 {
+		if _, err := out.Write(block); err != nil {
+			return err
 		}
 	}
 	// The two reference blocks stay ADJACENT and both stay ahead of the related and docs
@@ -448,18 +546,29 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	fullConfidence, compactConfidence := searchLowConfidenceNotices(response)
 	fullMap := sem.RenderSearchContainerMap(response.ContainerMap, false)
 	compactMap := sem.RenderSearchContainerMap(response.ContainerMap, true)
-	typeCard := agentSearchTypeCard(response.TypeCard)
+	closedSet := sem.RenderSearchClosedSet(response.ClosedSet)
+	// Suffix blocks in priority order. VERIFY comes first because it is the one an agent acts on
+	// immediately; the literal cluster next because it can end the search; the declaration card last
+	// because it is pure reference and is off by default anyway.
+	suffixes := [][]byte{
+		sem.RenderSearchVerifyCommand(response.VerifyCommand),
+		sem.RenderSearchLiteralCluster(response.LiteralCluster),
+		agentSearchTypeCard(response.TypeCard),
+	}
 	if budget <= 0 {
 		payload := append([]byte{}, fullHeader...)
 		payload = append(payload, fullDiagnostics...)
 		payload = append(payload, fullConfidence...)
+		payload = append(payload, closedSet...)
 		payload = append(payload, fullMap...)
 		if len(results) == 0 {
 			payload = append(payload, "No search results.\n"...)
 		} else {
 			payload = append(payload, fitAgentSearchResults(results, 0)...)
 		}
-		payload = append(payload, typeCard...)
+		for _, suffix := range suffixes {
+			payload = append(payload, suffix...)
+		}
 		_, err := out.Write(payload)
 		return err
 	}
@@ -502,43 +611,52 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	if len(fullMap) > 0 {
 		mapVariants = append(mapVariants, nil)
 	}
+	// The closed-set warning degrades to absent last of the prefix blocks and only when the cap
+	// cannot hold it at all: it is the only prefix block whose absence can make a patch wrong.
+	closedSetVariants := [][]byte{closedSet}
+	if len(closedSet) > 0 {
+		closedSetVariants = append(closedSetVariants, nil)
+	}
 	for _, header := range [][]byte{fullHeader, compactHeader, legacyHeader} {
 		for _, diagnostics := range diagnosticVariants {
 			for _, confidence := range confidenceVariants {
-				for _, containerMap := range mapVariants {
-					remaining := budget - len(header) - len(diagnostics) - len(confidence) - len(containerMap)
-					if remaining <= 0 {
-						continue
-					}
-					prefix := func() []byte {
-						payload := append([]byte{}, header...)
-						payload = append(payload, diagnostics...)
-						payload = append(payload, confidence...)
-						return append(payload, containerMap...)
-					}
-					// The two blocks sit on opposite sides of the ranking and degrade
-					// differently, which is why they compose without a further nested
-					// variant loop: the container map is part of the PREFIX and has its
-					// own full/compact/absent ladder above, while the declaration card
-					// is a SUFFIX that rides along only when the fitted payload leaves
-					// room for it (fitAgentSearchTypeCard). Neither can cost the caller
-					// a ranked location.
-					if len(results) == 0 {
-						noResults := []byte("No search results.\n")
-						if len(noResults) <= remaining {
-							_, err := out.Write(fitAgentSearchTypeCard(
-								append(prefix(), noResults...), typeCard, budget,
+				for _, warning := range closedSetVariants {
+					for _, containerMap := range mapVariants {
+						remaining := budget - len(header) - len(diagnostics) - len(confidence) -
+							len(warning) - len(containerMap)
+						if remaining <= 0 {
+							continue
+						}
+						prefix := func() []byte {
+							payload := append([]byte{}, header...)
+							payload = append(payload, diagnostics...)
+							payload = append(payload, confidence...)
+							payload = append(payload, warning...)
+							return append(payload, containerMap...)
+						}
+						// The blocks sit on opposite sides of the ranking and degrade
+						// differently, which is why they compose without a further nested
+						// variant loop: every prefix block has its own full/compact/absent
+						// ladder above, while a suffix block rides along only when the
+						// fitted payload leaves room for it (fitAgentSearchSuffixes).
+						// Neither can cost the caller a ranked location.
+						if len(results) == 0 {
+							noResults := []byte("No search results.\n")
+							if len(noResults) <= remaining {
+								_, err := out.Write(fitAgentSearchSuffixes(
+									append(prefix(), noResults...), suffixes, budget,
+								))
+								return err
+							}
+							continue
+						}
+						formatted := fitAgentSearchResults(results, remaining)
+						if len(formatted) > 0 {
+							_, err := out.Write(fitAgentSearchSuffixes(
+								append(prefix(), formatted...), suffixes, budget,
 							))
 							return err
 						}
-						continue
-					}
-					formatted := fitAgentSearchResults(results, remaining)
-					if len(formatted) > 0 {
-						_, err := out.Write(fitAgentSearchTypeCard(
-							append(prefix(), formatted...), typeCard, budget,
-						))
-						return err
 					}
 				}
 			}
@@ -587,18 +705,27 @@ func searchLowConfidenceNotices(response sem.SearchResponse) ([]byte, []byte) {
 	return full, compact
 }
 
-// fitAgentSearchTypeCard appends the declaration card only if the cap still has room for it after
-// the ranking has been fitted.
+// fitAgentSearchSuffixes appends the suffix blocks that still fit after the ranking has been fitted,
+// in the caller's priority order, and skips the ones that do not.
 //
 // That order is the point. The ranking is what an agent cannot reconstruct — a location it never
-// sees is a file it never opens — while a declaration it can always go and read. So the card is
-// pure surplus in this format: it rides along when the cap is roomy and is silently absent when
-// the cap is tight, and it never costs the ranking a single location.
-func fitAgentSearchTypeCard(payload, card []byte, budget int) []byte {
-	if len(card) == 0 || budget <= 0 || len(payload)+len(card) > budget {
+// sees is a file it never opens — while every suffix block names something it could go and get. So
+// the suffixes are surplus in this format: they ride along when the cap is roomy and are silently
+// absent when the cap is tight, and they never cost the ranking a single location.
+//
+// A block that does not fit does not stop the ones after it: the blocks are independent, and a long
+// literal cluster must not suppress a two-line verify command that would have fitted.
+func fitAgentSearchSuffixes(payload []byte, suffixes [][]byte, budget int) []byte {
+	if budget <= 0 {
 		return payload
 	}
-	return append(payload, card...)
+	for _, suffix := range suffixes {
+		if len(suffix) == 0 || len(payload)+len(suffix) > budget {
+			continue
+		}
+		payload = append(payload, suffix...)
+	}
+	return payload
 }
 
 // agentSearchTypeCard renders the declaration card for `--format agent`: one line per entry,
@@ -968,6 +1095,21 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 			flags.IndexAllFiles = true
 		case "--deep":
 			flags.Deep = true
+		case "--container-map":
+			flags.ContainerMap = true
+		case "--signature-types":
+			flags.SignatureTypes = true
+		case "--type-card":
+			flags.TypeCard = true
+		case "--reference-blocks":
+			value, next, err := searchFlagValue(args, i)
+			if err != nil {
+				return flags, nil, err
+			}
+			if err := applySearchReferenceBlocks(&flags, value); err != nil {
+				return flags, nil, err
+			}
+			i = next
 		case "--max-context-bytes":
 			value, next, err := searchPositiveIntFlag(args, i)
 			if err != nil {

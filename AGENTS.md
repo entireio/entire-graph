@@ -24,6 +24,7 @@ entire graph search --repo . --query "<the task or bug in one plain sentence>" -
 - `--format agent` for compact ranked output with latency telemetry; `json`/`ndjson` for the full schema (completeness, partial failures, diagnostics).
 - `--top-k N` result count (default 10). It changes ONLY how many results come back — never the retrieval strategy or the meaning of `score`. `--deep` opts into the exhaustive sparse (BM25) pass fused with the semantic ranking: better recall on long tails, but it reads every eligible file and is much slower.
 - `--max-context-bytes N` byte budget (`0` = unbounded, default 24576 — see "the budget is sized in turns" below).
+- `--container-map`, `--signature-types`, `--type-card`, `--reference-blocks all` re-enable the three reference blocks that are OFF by default (env `ENTIRE_GRAPH_REFERENCE_BLOCKS` for a session). See "the reference blocks are OFF by default" below for the measurement behind the default.
 - Working tree by default; add `--head` for committed-tree + cache reuse.
 - `--profile syntax-only|fast|full` (default `syntax-only`); `--index-all-files` or `--max-indexed-files N` to widen/bound cold-search parsing.
 
@@ -43,8 +44,56 @@ To pay for that, results below the head are reduced to a two-line **locator** wi
 in `stats.locator_snippets`) — still exact `file:line` + symbol identity, just not reading
 material. Symbols too large to return whole (>160 lines) keep their focused window.
 
+**Three blocks each replace a tool call you would otherwise spend a turn on.** They are the default
+payload's reason to exist, and they are instructions rather than background reading.
+
+- **SAME-CONCEPT LITERALS** (`literal_cluster` in JSON, `stats.literal_cluster_bytes`) is `grep`
+  folded into `search`. When the top hit contains one distinctive literal that names the queried
+  concept — an enum constant's value, an option string, a compound identifier — the block lists every
+  occurrence of it in the repository, each annotated with its enclosing symbol and one of three
+  roles: **`EDIT`** (a declaration or registry position — this is where a change to the concept
+  lands), **`CONSUMER`** (inside a callable body; the code only passes or reads it, so it needs no
+  change), **`DOC`** (prose or serialized data). The header states the repository's own totals
+  (`N in M files repo-wide`), so **this IS your sweep** — fix the `EDIT` sites, ignore the
+  `CONSUMER` ones, do not grep for either. The block refuses far more often than it fires: it needs
+  a literal that shares a word with your query, that occurs in few enough files to be a concept name
+  rather than a lexical magnet, and whose repository-wide total is EXACT. A total it cannot know
+  would destroy the block's only value, so in that case there is no block. Occurrences inside source
+  the payload already printed are counted but not repeated.
+- **VERIFY** (`verify_command` in JSON) is the narrowest test invocation for the file the top hit is
+  in, derived from the repository's own build evidence — a `Cargo.toml` workspace member, a `go.mod`
+  module root, a `pom.xml` module, a `package.json` test runner, a `phpunit.xml`, a pytest config, a
+  `Rakefile`/`.rspec`, a `Makefile` target — plus the test file the payload identified. It carries
+  the command, what it targets and `derived_from` so you can judge it instead of trusting it, and it
+  is always runnable from the repository root (it carries its own `cd` when the manifest is not at
+  the root). **Silence is the design:** when the build files do not license a narrow command there is
+  no block, because a wrong command costs strictly more than none — you run it, read a failure about
+  the invocation rather than the code, and do the discovery anyway.
+- **CLOSED-SET WARNING** (`closed_set` in JSON) fires when the top hit is, or belongs to, a closed
+  variant set: an `enum` (Java, Kotlin, C#, C, C++, Rust, PHP, TypeScript, Swift), a TypeScript/Flow
+  string-union alias, a Java `sealed ... permits` hierarchy, or a Go typed const group. It names the
+  switch/match sites over that set — found from their ARMS, which is direct textual evidence and
+  needs no type inference — and reports for each whether it is exhaustive, what its fall-through arm
+  does (`throws` / `absent` / `silent`), and whether a missing arm is caught by the **compiler** or
+  only at **runtime**. Rust `match` without a wildcard, an exhaustive Kotlin `when` expression and a
+  TypeScript `never` assertion are compiler-checked; `switch` in Java/C#/Go/JS/TS/PHP/C/C++ is not.
+  The block exists ONLY for the runtime cases: adding a variant there compiles and then throws in
+  production, so if you are adding one, add the missing arm before you finish. Its silence on a Rust
+  `match` is a verdict, not a gap.
+
+**The reference blocks are OFF by default.** Six session-level runs on real agents added the
+container map (1119 B), the signature-type block (197 B) and the declaration card (300 B) to the
+first search response: turns went UP (23.1 vs 21.0 on one model, 30.1 vs 26.8 on another), cost rose
+14–19%, and resolve rate was flat to worse, while a leaner competing tool answered the same prompt in
+18.5 turns for less money. The discriminator was not how informative a block reads — it is whether
+the block REPLACES A TOOL CALL the agent was going to make. These three answer questions an agent was
+not about to ask, and their bytes are replayed on every later turn. They are kept, and kept tested,
+for interactive human reading: `--container-map`, `--signature-types`, `--type-card`, or
+`--reference-blocks all`; `ENTIRE_GRAPH_REFERENCE_BLOCKS=all` sets it for a whole session. Everything
+below about those three blocks describes what you get when you ask for them.
+
 **The top hit comes with a CONTAINER MAP, so a range read can be sized without opening the
-file.** Ahead of the ranking the payload carries `container_map`: the file's total line count,
+file.** *(off by default; `--container-map`)* Ahead of the ranking the payload carries `container_map`: the file's total line count,
 the enclosing container (class / struct / module / file top level) with its own line range, its
 data members collapsed to `name:Type`, and every other member as `start-end name(params)` plus at
 most two structural flags — with the hit's own member marked. It prints **no source**: every
@@ -80,7 +129,7 @@ each group under its own header.
   looking for the bug. When a payload has *nothing but* non-code hits, they stay the primary
   list: they are the answer.
 
-**The types in the top hit's signature come with it.** A located symbol is not usable on its
+**The types in the top hit's signature come with it.** *(off by default; `--signature-types`)* A located symbol is not usable on its
 own: `Edit::range_replacement(content: String, range: TextRange) -> Self` says nothing about what
 else can build an `Edit`. A **TYPES IN THIS SIGNATURE** block (`signature_types` in JSON) resolves
 the types named in the anchor's OWN signature — the declaring type first — to their declaration,
@@ -97,32 +146,44 @@ existing test that exercises hit 1 — the statement of what your fix has to *ac
 ranker deliberately demotes and which is therefore the one entry in the payload whose file nothing
 else names. It is labelled away from the fix sites, prints no relevance score (it is not a ranked
 answer), and is always appended after every ranked hit, so it can never be read as "where do I
-edit". A **DECLARATIONS** block (`type_card` in JSON, `stats.type_card_entries`) is the compact
-answer to "what is this identifier" for the names hit 1's body uses — one line each, with the lines
-that body uses them on, which a snippet full of *uses* never tells you. Neither is a fix site.
+edit". It stays ON by default, both on its own measured merit and because the VERIFY command is
+derived from its path. A **DECLARATIONS** block (`type_card` in JSON, `stats.type_card_entries`,
+*off by default; `--type-card`*) is the compact answer to "what is this identifier" for the names
+hit 1's body uses — one line each, with the lines that body uses them on, which a snippet full of
+*uses* never tells you. Neither is a fix site.
 
-**One budget covers every one of those blocks, and it yields in a fixed order.** Four blocks live
-outside `results` — container map, signature types, declarations, covering test — and they all spend
-the same scarce thing: bytes replayed into the model on every later turn. There is ONE ceiling,
-`--max-context-bytes`, and everything except the container map is funded from inside it. The
-container map is the single documented exception: it is additive and separately capped at 1.5 kB,
-because a payload that spent its budget on complete head bodies must not lose one to buy a
-navigation aid. `stats.context_block_bytes` reports the total of everything outside `results`, and
-each block reports its own cost (`container_map_bytes`, `signature_type_bytes`, `type_card_bytes`),
-so the price of every section is attributable rather than emergent.
+**One budget covers every one of those blocks, and it yields in a fixed order.** Seven blocks can
+live outside `results` — closed set, container map, literal cluster, verify command, signature types,
+declarations, covering test — and they all spend the same scarce thing: bytes replayed into the model
+on every later turn. There is ONE ceiling, `--max-context-bytes`. The ranking, the covering test, the
+declaration card and the signature types are funded from inside it; the container map, the literal
+cluster, the verify command and the closed-set warning are additive and each separately capped
+(1.5 kB / 560 B / 320 B / 420 B), because a payload that spent its budget on complete head bodies
+must not lose one to buy a navigation aid or a warning. `stats.context_block_bytes` reports the total
+of everything outside `results`, and each block reports its own cost (`container_map_bytes`,
+`signature_type_bytes`, `type_card_bytes`, `literal_cluster_bytes`, `verify_command_bytes`,
+`closed_set_bytes`), so the price of every section is attributable rather than emergent. The extra
+file reads the three agent-asked blocks need are reported separately too
+(`files_content_read_for_context_blocks`), because the query read counters answer a different
+question — how tightly selective indexing bounded the ranking's own reads.
 
-Section order, which is a *reading* order — navigate, edit, check the goal, check the contract,
-check the names, check the neighbours:
+Section order, which is a *reading* order — be warned, navigate, edit, check the goal, check how to
+prove it, sweep the concept, check the contract, check the names, check the neighbours:
 
 ```text
-LOW CONFIDENCE  ->  CONTAINER MAP  ->  candidate fix sites  ->  COVERING TEST
-                ->  TYPES IN THIS SIGNATURE  ->  DECLARATIONS  ->  RELATED SITES  ->  DOCS & FIXTURES
+LOW CONFIDENCE  ->  CLOSED SET  ->  [CONTAINER MAP]  ->  candidate fix sites  ->  COVERING TEST
+                ->  VERIFY  ->  SAME-CONCEPT LITERALS  ->  [TYPES IN THIS SIGNATURE]
+                ->  [DECLARATIONS]  ->  RELATED SITES  ->  DOCS & FIXTURES
 ```
 
-Blocks 4-6 are all about hit 1, so they stay together and stay ahead of the last two, which are
-about other places; the signature types precede the declaration card because a signature is what
-callers can see and your patch must not break, while the card is about identifiers internal to the
-body.
+(`[bracketed]` = off by default.) Two placements are load-bearing rather than aesthetic. The
+closed-set warning comes FIRST of the content blocks: it is the only block that changes what the
+patch has to *contain*, and a warning read after the edit is written has already failed. VERIFY sits
+immediately after the COVERING TEST it is derived from — what the edit has to achieve and the command
+that proves it are one thought. The rest are all about hit 1, so they stay together and stay ahead of
+the last two, which are about other places; the signature types precede the declaration card because
+a signature is what callers can see and your patch must not break, while the card is about
+identifiers internal to the body.
 
 When bytes run short, sections yield in this order, and the rule behind it is **a block yields in
 proportion to how cheaply you could get it back** — bytes buy avoided turns, so what survives is
@@ -339,25 +400,34 @@ what `scripts/entire-graph-statusline.sh` renders as a live Claude Code status l
 Give this to any coding agent that has `entire graph` available — substitute your search
 invocation for `<search-cmd>`:
 
+This is the wording the harness measures (`agentic-swebench/tools/run_3arm.sh`,
+`ops_clamp_eg_prompt`, `PROMPT_FAMILY=briefed`). Keep the two in step — a prompt that promises
+blocks the tool no longer returns is worse than no prompt.
+
 ```text
-A precomputed code-search tool is available: <search-cmd> . Use it to LOCATE the fix BEFORE any
-grep/find. Your FIRST action must be ONE search:
-  <search-cmd> "<the bug in one sentence>"   <-- ranked relevant code (file:line + source)
-The top hits come back as COMPLETE function bodies — edit straight from the search output. Only
-when the hit you want is a two-line locator, open its file with your native Read tool at the
-reported line range. The search top hit is the fix site on most tasks — go straight there and
-edit; do NOT re-search or grep to 'confirm'. Reach the edit in as FEW turns as possible (every
-turn re-reads your whole context — that is the token cost). Hard rules:
-(1) SEARCH FIRST. (2) After search, edit from the returned body, or READ one line range and edit
-— do not chain more searches. (3) NEVER read a whole file to explore; pass a line range.
-(4) NEVER search outside this repo. (5) A fix is often not one edit in one place: before you
-finish, check the sibling / duplicate / caller sites that need the same change — 'impact --symbol
-X' returns callers, type consumers, co-change files and siblings in one shot. (6) VERIFY ONCE,
-DON'T CHASE: after editing, compile the package you touched or run the nearest existing test.
-This is not optional overhead — an edit that does not build fails 100% of the task, which costs
-far more than the one turn the check costs. Read the error, fix exactly what it names, re-run;
-a couple of iterations, not more. Do NOT loop edit->test->edit chasing a green suite, and do not
-'fix' failures that were already failing before you started. Then stop.
+A precomputed code graph is available: <search-cmd> . Use it to LOCATE before any grep/find.
+Your FIRST action is ONE search:
+  <search-cmd> "<the bug in one sentence>"
+Then go straight to the top hit and edit from the body it printed — do not re-read the file to
+confirm what you were just shown, and do not re-search to 'make sure'. Reach the edit in as FEW
+turns as you can: every turn re-reads your whole context, and that replay is what this task costs.
+The result also hands you three things that each replace a round-trip you would otherwise spend:
+  SAME-CONCEPT LITERALS - every place this concept is spelled out, each tagged EDIT / CONSUMER /
+      DOC. This IS your sweep: fix the EDIT sites, ignore the CONSUMER ones. Do not grep for them.
+  VERIFY - the narrowest command that exercises the file you are changing. Run it ONCE when your
+      edits are in. Read the error, fix exactly what it names, re-run at most once. Never hunt a
+      green suite, never write a throwaway test script. A patch that does not build fails the
+      whole task.
+  CLOSED-SET WARNING - when you are adding a variant to an enum/sealed set, the switches over it
+      that will throw at RUNTIME rather than fail to compile. Add the missing arm before you stop.
+Because the search already named every location — the fix site, the EDIT-tagged literals, the
+related sites — none of your reads or edits depend on each other. Ask for them ALL IN ONE MESSAGE:
+every range you need to see, then every edit you need to make. That is the difference between two
+turns and ten, and turns are the entire cost.
+Then STOP. No further searching, no grep to double-check, no re-reading your own edits.
+If the top hit is clearly wrong - a LOW CONFIDENCE marker, or a body that does not match the issue -
+search ONCE more with different words. If that misses too, fall back to the shell in ONE batched
+call rather than staying stuck.
 ```
 
 **What was measured, and the caveat.** The token figure comes from the **official SWE-bench
@@ -396,8 +466,9 @@ controls and caveats: the graphmark repo, `agentic-swebench/REPRODUCE.md` +
 4. **Never read a whole file to explore.** If you must read, read the line range around the symbol. To understand a type/class, query it — don't open its file.
 5. **Impact = one targeted query.** For "what breaks if I change X", use `neighbors --symbol X --relation CALLS --direction in` — not a whole-graph `snapshot`/`edges` dump, and not a repo-wide grep.
 6. **Minimise turns — in discovery, not in verification.** Token cost is roughly turns × context, so prefer one precise query over three broad ones and stop *discovery* once you can defend the edit with a focused hypothesis. Turn economy applies to finding code; it is not a licence to skip the check that your edit builds.
-7. **Complete the fix.** A fix is often not one edit in one place. Before finishing, run one `impact --symbol X` and apply the same change to the sibling / duplicate / caller sites that carry the same defect. Measured: single-edit patches were 22 of 31 paired losses (baseline 8/31).
-8. **Verify once — always.** After editing, compile what you touched or run the nearest existing test, at the narrowest scope that would still catch a syntax, type, name, or arity error. Measured: the clamped agent ran zero builds/tests on 22 of 31 paired losses, two of which could not compile. One verification turn is far cheaper than a wrong patch.
+7. **Complete the fix.** A fix is often not one edit in one place. The **SAME-CONCEPT LITERALS** block is your repo-wide sweep — fix its `EDIT` sites, ignore its `CONSUMER` sites, and do not grep for either; its header states the repository's own totals, so when the block is there you have seen the whole set. For structural neighbours (callers, siblings, near-duplicates) the RELATED SITES block is already in the payload; one `impact --symbol X` covers anything it missed. Measured: single-edit patches were 22 of 31 paired losses (baseline 8/31).
+8. **Verify once — always, with the command you were given.** Run the **VERIFY** line the search printed; when there was none, compile what you touched or run the nearest existing test, at the narrowest scope that would still catch a syntax, type, name, or arity error. Measured: the clamped agent ran zero builds/tests on 22 of 31 paired losses, two of which could not compile. One verification turn is far cheaper than a wrong patch. Measured separately: test/build accounts for 3.79 turns per session, much of it spent finding the right invocation rather than running it — which is what the VERIFY block removes.
+8b. **Adding a variant? Read the CLOSED-SET WARNING first.** When it reports a switch/match site as `checked at runtime`, add the missing arm before you finish: that failure is a runtime throw, not a compile error, so verification will not catch it either. The block only appears when the compiler would not catch it.
 9. **Verify, don't chase.** Verification is bounded: run it, read the error, fix exactly what the error names, re-run — a couple of iterations, not fifty. Do not enter an edit→test→edit loop hunting a green suite, and do not "fix" failures that predate your change.
 10. **Feature-detect before you trust.** If a language might be inventory-only, check `capabilities --json` first — inventory-only files have file records but no semantic relations.
 11. **Read the `Completeness:` line as scoped, and believe it.** A relation answer's coverage banner is relative to the language of the symbol you asked about, because relations here do not cross language boundaries. `Completeness: no parse failures in Rust ...; 273 elsewhere (Python 273) cannot affect this answer` means the answer is complete — that is not a warning, and it is not a reason to fall back to grep. Failures that *could* have removed a fact your query needed are itemized instead, and every diagnostic is always in `--format json` in full.
@@ -412,7 +483,8 @@ callers →  entire graph neighbors --symbol X ...       (targeted callers/calle
 change  →  entire graph diff --base A --head B          (entity-level, with dependents)
 ingest  →  entire graph snapshot --format ndjson        (whole graph)
 report  →  entire graph stats --repo .                  (human-facing: graph vs grep/read usage + estimated token savings)
-verify  →  the project's own narrowest build/test cmd    (not a graph command — run it once, after editing)
+verify  →  the VERIFY line search printed, run once      (else the project's own narrowest build/test cmd)
+extras  →  entire graph search ... --reference-blocks all (container map, signature types, declaration card — off by default)
 ```
 
 ---

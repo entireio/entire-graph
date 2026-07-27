@@ -78,6 +78,37 @@ func TestAgentGuideRequiresBoundedVerification(t *testing.T) {
 		}
 	}
 
+	// The three blocks that replace a tool call have to be taught as INSTRUCTIONS, in the order an
+	// agent uses them, and each with the specific action that removes the round-trip. Their wording
+	// is pinned because it has to stay consistent with the measured harness prompt.
+	for _, want := range []string{
+		"SAME-CONCEPT LITERALS",
+		"This IS your sweep",
+		"Do not grep for any of them",
+		"It is a\ncommand, not a suggestion",
+		"Run it ONCE when your edits are in",
+		"Never hunt a green suite",
+		"CLOSED-SET WARNING",
+		"add the missing arm before you stop",
+		"not a build error",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("agent-guide missing agent-asked block doctrine %q:\n%s", want, got)
+		}
+	}
+
+	// The reference blocks are off by default, and the guide has to say so honestly — an agent that
+	// expects a container map and does not get one will go and read the file instead.
+	for _, want := range []string{
+		"Reference blocks (off by default)",
+		"--reference-blocks all",
+		"cost turns and money without improving the result",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("agent-guide missing the reference-block gating note %q:\n%s", want, got)
+		}
+	}
+
 	// regression guard: the exact clamp wording, and its softer variants, must stay gone
 	for _, banned := range []string{
 		"Do not run builds or test suites",

@@ -61,13 +61,42 @@ optional overhead. An unverified edit is how a patch ships an unused variable, a
 method name, or the wrong arity — and a patch that does not build fails 100% of the task. One
 verification turn costs one turn; a patch that does not compile costs everything.
 
-Above the ranking sits the **CONTAINER MAP** of the top hit: the file's total line count and the
-enclosing class/module's members, each with its line range and a one-line identity, with the hit's
-own member marked ` + "`*`" + `. Read it before you decide to open anything. It is what lets you size a
-RANGE read instead of reading the file — and it is the only place the payload names the members a
-member-ranked list cannot rank, such as a private nested enum whose constants are the variant set
-you have to extend. A member marked ` + "`NESTED`" + ` with a ` + "`+N members`" + ` count is a type declared inside
-this one; its range is exactly where it is.
+## The three blocks that replace a tool call
+
+One search returns three more blocks, and each one exists because it removes a round-trip that was
+measured out of real sessions. Use them as instructions, not as background reading.
+
+**SAME-CONCEPT LITERALS** — every place in the repository where the one distinctive literal that
+names this concept is spelled out, each tagged ` + "`EDIT`" + `, ` + "`CONSUMER`" + ` or ` + "`DOC`" + `, with the header stating
+the repository-wide totals. **This IS your sweep.** Fix the ` + "`EDIT`" + ` sites — they declare or register
+the concept. Ignore the ` + "`CONSUMER`" + ` ones — they only pass the string, so they need no change. ` + "`DOC`" + ` is
+prose that usually has to be updated with the behaviour. Do not grep for any of them: the totals in
+the header are the repository's own counts, so when the block is present you have already seen the
+whole set. A site the payload already printed is not repeated in the list.
+
+**VERIFY** — the narrowest command that exercises the file you are changing, derived from the
+repository's own build files, with the test file it targets and the evidence it came from. It is a
+command, not a suggestion. Run it ONCE when your edits are in. Read the error, fix exactly what it
+names, re-run at most once. Never hunt a green suite, and never write a throwaway test script. A
+patch that does not build fails 100% of the task, which costs far more than the one turn this takes.
+When the block is absent the repository's build files did not license a narrow command — use the
+narrowest one you know for the file you touched.
+
+**CLOSED-SET WARNING** — when the top hit is, or belongs to, a closed variant set (an enum, a sealed
+hierarchy, a union type, a typed const group), this names the switch/match sites over it and says
+for each whether it is exhaustive, what its fall-through arm does, and whether a missing arm is
+caught by the COMPILER or only at RUNTIME. If you are adding a variant and the block says
+` + "`checked at runtime`" + `, **add the missing arm before you stop** — that failure is a throw in
+production, not a build error, so nothing else in your workflow will catch it. The block only
+appears when the compiler would not catch it; its silence means the compiler has you covered.
+
+## Reference blocks (off by default)
+
+The CONTAINER MAP, TYPES IN THIS SIGNATURE and DECLARATIONS blocks are OFF by default. Measured on
+real sessions they cost turns and money without improving the result — they answer questions an
+agent was not about to ask, and their bytes are replayed on every later turn. They are still there
+for interactive use: ` + "`--container-map`" + `, ` + "`--signature-types`" + `, ` + "`--type-card`" + `, or
+` + "`--reference-blocks all`" + ` (env ` + "`ENTIRE_GRAPH_REFERENCE_BLOCKS`" + ` for a whole session).
 
 The output is grouped, and the groups mean different things:
 
@@ -78,11 +107,9 @@ The output is grouped, and the groups mean different things:
   them — a patch applied to one site of a family is the commonest way a correct fix still fails.
 * **DOCS & FIXTURES** (` + "`section: \"docs-and-fixtures\"`" + `) matched your words but hold no program
   text. Do not spend a read there looking for the bug unless the task IS the document.
-* **TYPES IN THIS SIGNATURE** are the declarations of the types the top hit's own signature
-  names — their fields and the SIGNATURES of their members, no bodies. That is the answer to
-  "what else can build one of these / what can I call on it", so you do not have to open the
-  type's file to write the patch. It is funded out of redundant tail locators, so it costs no
-  extra bytes, and it is deliberately NOT transitive.
+* **COVERING TEST** (` + "`section: \"covering-test\"`" + `) is the existing test that exercises hit 1 — the
+  statement of what your fix has to ACHIEVE. It is not a fix site, and the VERIFY command above is
+  derived from its path.
 
 ## Hard rules (each violation costs real money)
 
@@ -105,9 +132,15 @@ The output is grouped, and the groups mean different things:
    candidate files); after that it is cached and sub-second, so ask twice rather than batching.
    A ` + "`Completeness:`" + ` line scoped to another language ("no parse failures in Rust; N elsewhere")
    means the answer is complete — it is not a reason to fall back to grep.
-6. ALWAYS verify your edit at least once before you finish: build/compile it, or run the nearest
-   existing test. Pick the narrowest command that would still catch a syntax, type, name, or
-   arity error (one package, one file, one test — not the whole suite).
+6. ALWAYS verify your edit at least once before you finish: run the VERIFY command the payload
+   gave you, or — when it gave none — build/compile what you touched or run the nearest existing
+   test. Pick the narrowest command that would still catch a syntax, type, name, or arity error
+   (one package, one file, one test — not the whole suite).
+6b. The SAME-CONCEPT LITERALS block IS your repo-wide sweep: fix its ` + "`EDIT`" + ` sites, ignore its
+   ` + "`CONSUMER`" + ` sites, and do not grep for either. Its header states the repository's own totals.
+6c. Adding a variant to an enum / sealed set / union / const group? If the CLOSED-SET WARNING says
+   ` + "`checked at runtime`" + `, add the missing switch arm before you finish. That failure is a runtime
+   throw, not a compile error, so verification will not catch it either.
 7. VERIFY, DON'T CHASE. Verification is bounded: run it, read the error, fix exactly what the
    error names, re-run — a couple of iterations, not more. Do NOT enter an edit->test->edit loop
    hunting a green suite, and do not "fix" failures that were already failing before you started.
@@ -132,8 +165,12 @@ applies: it is about the edit you made, not about how you found it.
     callers ->  entire graph neighbors --repo . --symbol X --relation CALLS --direction in
     change  ->  entire graph diff --base A --head B --json
     detect  ->  entire graph capabilities --json   (inventory-only languages have no relations)
-    verify  ->  this project's own narrowest build/test command, once, after editing
+    verify  ->  the VERIFY line the search printed, run once, after editing. When there was none,
+                this project's own narrowest build/test command
                 (e.g. ` + "`go build ./internal/foo/...`" + `, ` + "`pytest tests/test_foo.py -k name`" + `, ` + "`cargo check -p crate`" + `)
+    extras  ->  entire graph search ... --reference-blocks all   (container map, signature types,
+                declaration card — off by default; measured to cost turns in agent sessions, kept
+                for interactive reading)
     stats   ->  entire graph stats --repo .        (human-facing token-savings report; not part of your workflow — do not run it unless asked)
 `
 
