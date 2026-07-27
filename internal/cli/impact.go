@@ -52,6 +52,17 @@ type impactEntry struct {
 	Depth     int              `json:"depth,omitempty"`
 	Via       string           `json:"via,omitempty"`
 	Detail    string           `json:"detail,omitempty"`
+	// CallSite is where a caller actually writes the call. `impact` is a bounded
+	// overview, so it reports the LINE only and never quotes source; use
+	// `neighbors --direction in` for the conditions around a call.
+	CallSite *callSite `json:"call_site,omitempty"`
+
+	// Evidence span and written call text, kept only to resolve CallSite after
+	// the graph query. Not part of the wire format.
+	callFile  string
+	callStart int
+	callEnd   int
+	callToken string
 }
 
 // impactSection is one bounded facet of the blast radius. Total counts every
@@ -77,6 +88,7 @@ type impactResponse struct {
 	Line                   int                    `json:"line,omitempty"`
 	Depth                  int                    `json:"depth"`
 	IndexCacheHit          bool                   `json:"index_cache_hit"`
+	IndexCacheDisabled     bool                   `json:"index_cache_disabled,omitempty"`
 	IndexLatencyMS         int64                  `json:"index_latency_ms"`
 	QueryLatencyMS         int64                  `json:"query_latency_ms"`
 	TotalLatencyMS         int64                  `json:"total_latency_ms"`
@@ -95,6 +107,8 @@ type impactResponse struct {
 	PartialFailures        []sem.PartialFailure   `json:"partial_failures"`
 	Stats                  sem.ProviderStats      `json:"stats"`
 	Completeness           sem.CompletenessReport `json:"completeness"`
+	// CompletenessScope is the query-relative reading of the diagnostics above.
+	CompletenessScope completenessScope `json:"completeness_scope"`
 }
 
 func runImpact(ctx context.Context, opts Options, args []string) error {
@@ -129,8 +143,10 @@ func runImpact(ctx context.Context, opts Options, args []string) error {
 	indexLatency := time.Since(indexStarted)
 	queryStarted := time.Now()
 	response := buildImpactResponse(snapshot, flags)
+	annotateImpactCallSites(&response, newRepoLineReader(snapshot.Header.RepoRoot))
 	queryLatency := time.Since(queryStarted)
 	response.IndexCacheHit = cacheHit
+	response.IndexCacheDisabled = cacheDir == "" || flags.DisableCache
 	response.IndexLatencyMS = indexLatency.Milliseconds()
 	response.QueryLatencyMS = queryLatency.Milliseconds()
 	response.TotalLatencyMS = time.Since(totalStarted).Milliseconds()
@@ -343,6 +359,7 @@ func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impac
 		PartialFailures:   partialFailures,
 		Stats:             snapshot.Header.Stats,
 		Completeness:      snapshot.Header.Completeness,
+		CompletenessScope: buildCompletenessScope(snapshot, focusQueryLanguage(focuses)),
 	}
 	if len(focuses) == 0 {
 		return response
@@ -487,6 +504,18 @@ func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impac
 				entry := impactEntry{
 					Endpoint: endpoint, Relation: relation.Type, Direction: "in", Depth: depth,
 				}
+				// Keep the caller-body span and written call text so the call
+				// LINE can replace the definition line in the answer.
+				if callFile, callStart, callEnd, detail, ok := callEvidenceSpan(relation.Evidence); ok {
+					if callFile == "" {
+						callFile = endpoint.FilePath
+					}
+					entry.callFile, entry.callStart, entry.callEnd = callFile, callStart, callEnd
+					// The callee as written is normally in the evidence detail; the
+					// callee endpoint's own NAME (not its qualified name) is the
+					// fallback, because that is what appears at a call site.
+					entry.callToken = callTokenFromDetail(detail, endpoints[relation.ToID].Name)
+				}
 				if depth > 1 {
 					entry.Via = node.name
 				}
@@ -522,6 +551,38 @@ func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impac
 	response.CoChanges = impactSectionOf(cochangeEntries, flags.Limit)
 	response.Siblings = impactSectionOf(siblings, flags.Limit)
 	return response
+}
+
+// annotateImpactCallSites resolves the concrete call line for every caller entry
+// that carried call evidence. `impact` stays a bounded overview: it upgrades the
+// LOCATION (a caller's definition line points at the wrong place in a long
+// function) but never quotes source, which would blow its byte budget and push
+// real sections out of the answer.
+func annotateImpactCallSites(response *impactResponse, read lineReader) {
+	if response == nil || read == nil {
+		return
+	}
+	for index := range response.Callers.Entries {
+		entry := &response.Callers.Entries[index]
+		if entry.callFile == "" || entry.callToken == "" {
+			continue
+		}
+		site, ok := resolveCallSite(read, entry.callFile, entry.callToken, entry.callStart, entry.callEnd)
+		if !ok {
+			continue
+		}
+		// The window and guards are the neighbors verb's job; drop them so an
+		// impact JSON payload does not carry source it never renders.
+		site.Window, site.WindowStart, site.WindowEnd, site.Guards = nil, 0, 0, nil
+		entry.CallSite = &site
+	}
+}
+
+// formatImpactEntryLocation reports a caller at its call site, with the
+// definition line kept alongside; every other section keeps its endpoint
+// location, which is already the right one.
+func formatImpactEntryLocation(entry impactEntry) string {
+	return formatCallSiteLocation(entry.Endpoint, entry.CallSite)
 }
 
 // impactSectionOf sorts entries deterministically (depth, then file/line/name),
@@ -642,7 +703,10 @@ func writeImpactText(out io.Writer, response impactResponse) {
 	fmt.Fprintf(out, "Index: cache-%s (%dms) | Query: %dms | Total: %dms\n",
 		cacheState, response.IndexLatencyMS, response.QueryLatencyMS, response.TotalLatencyMS,
 	)
-	writeCompletenessBlock(out, response.Warnings, response.PartialFailures, response.Stats)
+	writeIndexCostNotice(out, response.IndexCacheHit, response.IndexCacheDisabled)
+	writeScopedCompletenessBlock(out,
+		completenessScopeOrAll(response.CompletenessScope, response.Warnings, response.PartialFailures, response.Stats),
+		response.Warnings, response.PartialFailures, response.Stats)
 	if response.FocusMatchesTotal == 0 {
 		writeNoFocusMatch(out, response.Query, response.File, response.Line)
 		return
@@ -652,7 +716,7 @@ func writeImpactText(out io.Writer, response impactResponse) {
 		return
 	}
 
-	focusLine := formatNeighborEndpoint(*response.Focus)
+	focusLine := formatNeighborFocus(*response.Focus)
 	if response.Focus.Kind != "" {
 		annotation := response.Focus.Kind
 		if response.Container != nil {
@@ -714,8 +778,12 @@ func writeImpactSection(out io.Writer, header string, section impactSection, arr
 			fmt.Fprintf(out, "- %s [%s]\n", entry.Endpoint.FilePath, entry.Detail)
 			continue
 		}
-		fmt.Fprintf(out, "- %s%s", prefix, formatNeighborEndpoint(entry.Endpoint))
-		annotations := make([]string, 0, 3)
+		fmt.Fprintf(out, "- %s%s", prefix, formatImpactEntryLocation(entry))
+		annotations := make([]string, 0, 4)
+		if entry.CallSite != nil && entry.CallSite.AdditionalSites > 0 {
+			annotations = append(annotations,
+				fmt.Sprintf("+%d more call site%s", entry.CallSite.AdditionalSites, pluralSuffix(entry.CallSite.AdditionalSites)))
+		}
 		// CALLS is the section default and DATA_FLOWS is its whole section's
 		// relation, so annotating either would be noise.
 		if entry.Relation != "" && entry.Relation != "CALLS" && entry.Relation != "DATA_FLOWS" {

@@ -95,6 +95,16 @@ The output is grouped, and the groups mean different things:
    same change")? ONE targeted query:
        entire graph impact --repo . --symbol X
    (one shot: callers, callees, type consumers, data flow, co-change files, siblings)
+   A caller is reported at its CALL SITE: ` + "`- f (path:476, def :24)`" + ` means the call is on line 476
+   inside a function starting at line 24 — go to the first number. For the conditions in force at
+   that call (the enclosing ` + "`if let`" + ` / ` + "`match`" + ` chain, verbatim, plus a ~10-line window), ask
+       entire graph neighbors --repo . --symbol X --relation CALLS --direction in
+   which is enough to patch safely without reading the caller's body. A direction you did not ask
+   for is reported as "not queried", never as empty; use ` + "`--direction both`" + ` when you want both.
+   The first relation query on a repo indexes the WHOLE repository (search parses only its
+   candidate files); after that it is cached and sub-second, so ask twice rather than batching.
+   A ` + "`Completeness:`" + ` line scoped to another language ("no parse failures in Rust; N elsewhere")
+   means the answer is complete — it is not a reason to fall back to grep.
 6. ALWAYS verify your edit at least once before you finish: build/compile it, or run the nearest
    existing test. Pick the narrowest command that would still catch a syntax, type, name, or
    arity error (one package, one file, one test — not the whole suite).

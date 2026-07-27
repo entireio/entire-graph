@@ -414,7 +414,9 @@ func TestAgentNeighborsExactByteCapPreservesCoverageAndTruncationMarkers(t *test
 	if out.Len() > capBytes {
 		t.Fatalf("agent output used %d bytes, cap %d:\n%s", out.Len(), capBytes, out.String())
 	}
-	for _, want := range []string{"!output-truncated/coverage", "Focus: Focus (src/focus.go:10)", "Coverage: degraded", "W W_DIRTY", "F E_PARSE_ERROR"} {
+	// The coverage verdict is now scoped, so the compact banner reports the
+	// query's own failed/total plus one count for what cannot affect it.
+	for _, want := range []string{"!output-truncated/coverage", "Focus: Focus (src/focus.go:10)", "C:degraded 1/5 W1 F0-other", "W W_DIRTY", "F E_PARSE_ERROR"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("bounded agent output omitted %q:\n%s", want, out.String())
 		}

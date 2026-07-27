@@ -141,6 +141,27 @@ entire graph neighbors --repo . --symbol NAME --relation CALLS --direction out  
 - `--internal-only` drops unresolved external endpoints; `--exclude-tests` drops test-only neighbors.
 - `--format agent|text|json`; `--head` for cached committed-tree; `--profile fast` for shallow call resolution (default `full` favors correctness).
 
+**A caller is reported at its CALL SITE, not at its definition.** `- expression
+(checkers/ast/analyze/expression.rs:476, def :24)` means the call is written on line 476 inside a
+function that starts on line 24. Go to the first number; the second is only there so you can find
+the caller as a symbol. (When the two coincide, only one is printed.) Repeated calls of the same
+callee in one caller are reported as `+N more call sites`.
+
+**Incoming calls also come with the conditions in force at the call** — the enclosing `if let` /
+`match` / `else if` / arm-pattern chain, verbatim with line numbers, plus a ~10-line window around
+the call. That block is what tells you which branch you are in and what the call's inputs are
+already narrowed to, which is usually the thing a patch has to stay correct under. The chain is
+quoted, never summarized: no invariant is asserted for you. The caller's **body is never inlined**
+(a dispatch function can be thousands of lines); the window is bounded and so is the total.
+
+**A direction you did not ask for is reported as not queried, never as empty.** `--direction in`
+prints `Callees: not queried (--direction in)`. Use `--direction both` when you want both halves —
+it costs nothing extra once the index is loaded.
+
+**The focus line labels both of its numbers:** `Focus: name (file.rs:781) def=781 span=781-848`.
+`def=` is the line the definition starts on; `span=` is the range it covers, which is what a ranked
+`search` result prints for the same symbol. They are one fact, not two.
+
 **When:** "what breaks if I change X", "who uses this", tracing a call chain — after search has given you a concrete symbol name.
 
 ### 💥 impact — *one-shot blast radius for a change*
@@ -153,6 +174,9 @@ entire graph impact --repo . --symbol NAME|<file>:<line> [--file path] [--line n
 - Ambiguous names return the definition list, with a working selector printed beside each one (see `neighbors` above).
 - Callers matched only by NAME in a file that holds no program text (a design doc, a changelog, a recorded fixture) are labelled `[doc-mention, name_only]`, sorted behind every resolved caller, and never expanded transitively — a document cannot break when behavior changes, so treating it as an intermediate invents callers that never mention the symbol.
 - `--limit N` per-section entry cap; `--max-context-bytes N` total text budget; `--exclude-tests`; `--head` / `--profile` as in `neighbors`.
+- Callers are reported at their **call site** with the definition line alongside, exactly as in
+  `neighbors`. `impact` stays a bounded overview and does **not** quote source; for the conditions
+  around a specific call, run `neighbors --symbol X --direction in`.
 
 **When:** before changing behavior of a specific function/type — "you're changing ordering: here is every place results are ordered, limited, or consumed downstream" — one command instead of chaining neighbors + edges + git log.
 
@@ -211,6 +235,17 @@ entire graph index --repo . --head --profile full --cache-dir /path/to/cache --f
 ```
 
 **When:** once, up front, on a large repo before a batch of `--head` searches/neighbors queries. Re-running it is also how you "refresh" a committed-tree cache — same tree hits, changed tree rebuilds.
+
+**Budget the first relation query, not the rest.** `search` parses only the files its query
+preselects, so it is fast cold. `neighbors` and `impact` need the whole call graph, so they index
+the **whole repository** — tens of seconds on a large repo. That cost is now paid once: a working
+tree byte-identical to HEAD reuses the tree-keyed index, so the second and later relation queries
+are sub-second (measured on ruff, 4,340 files: 27s cold, 0.8s warm, and `impact` warms off
+`neighbors`' index). A dirty working tree deliberately keeps re-indexing, because a cached
+committed-tree graph would hide your uncommitted edits. Two things to know: pass `--cache-dir` (or
+set `ENTIRE_PLUGIN_DATA_DIR`) or there is nowhere to store it and every call is cold — the output
+says so when that happens; and do NOT batch several questions into one command to "amortize" the
+index, which costs more turns, not fewer.
 
 ### 🧭 capabilities / doctor / version — *feature-detect*
 ```sh
@@ -309,6 +344,7 @@ controls and caveats: the graphmark repo, `agentic-swebench/REPRODUCE.md` +
 8. **Verify once — always.** After editing, compile what you touched or run the nearest existing test, at the narrowest scope that would still catch a syntax, type, name, or arity error. Measured: the clamped agent ran zero builds/tests on 22 of 31 paired losses, two of which could not compile. One verification turn is far cheaper than a wrong patch.
 9. **Verify, don't chase.** Verification is bounded: run it, read the error, fix exactly what the error names, re-run — a couple of iterations, not fifty. Do not enter an edit→test→edit loop hunting a green suite, and do not "fix" failures that predate your change.
 10. **Feature-detect before you trust.** If a language might be inventory-only, check `capabilities --json` first — inventory-only files have file records but no semantic relations.
+11. **Read the `Completeness:` line as scoped, and believe it.** A relation answer's coverage banner is relative to the language of the symbol you asked about, because relations here do not cross language boundaries. `Completeness: no parse failures in Rust ...; 273 elsewhere (Python 273) cannot affect this answer` means the answer is complete — that is not a warning, and it is not a reason to fall back to grep. Failures that *could* have removed a fact your query needed are itemized instead, and every diagnostic is always in `--format json` in full.
 
 Quick mental model:
 
