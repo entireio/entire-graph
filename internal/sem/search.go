@@ -160,14 +160,16 @@ type SearchStats struct {
 	// them and the order in which they yield.
 	TypeCardBytes      int `json:"type_card_bytes,omitempty"`
 	SignatureTypeBytes int `json:"signature_type_bytes,omitempty"`
-	// ContainerMapBytes is what the container map cost. It is the ONE deliberately additive
-	// block: a payload that spent its budget on complete head bodies must not lose one to buy
-	// the map, so the map is capped (searchContainerMapMaxBytes) and its cost is stated rather
-	// than hidden. Every other block above is funded from within the ceiling.
+	// ContainerMapBytes is what the container map cost, measured — like its cap — on the LARGER
+	// of its two wire forms, because a caller pays whichever one it asked for and the JSON form
+	// runs about twice the rendered text. It is the ONE deliberately additive block: a payload
+	// that spent its budget on complete head bodies must not lose one to buy the map, so the map
+	// is capped (searchContainerMapMaxBytes) and its cost is stated rather than hidden. Every
+	// other block above is funded from within the ceiling.
 	ContainerMapBytes int `json:"container_map_bytes,omitempty"`
-	// ContextBlockBytes is the sum of the four counters above: the whole cost of everything
-	// outside `results`, in one number, so a caller can see the payload's true size without
-	// re-deriving it.
+	// ContextBlockBytes is the sum of the three block counters above: the whole cost of
+	// everything outside `results`, in one number, so a caller can see the payload's true size
+	// without re-deriving it.
 	ContextBlockBytes int   `json:"context_block_bytes,omitempty"`
 	IndexCacheHit     bool  `json:"index_cache_hit"`
 	IndexLatencyMS    int64 `json:"index_latency_ms"`
@@ -767,7 +769,12 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		searchContainerMapMaxBytes,
 	)
 	if containerMap != nil {
-		stats.ContainerMapBytes = len(RenderSearchContainerMap(containerMap, false))
+		// searchContainerMapCost, not the text length: the block is CAPPED on the larger of its
+		// two wire forms (the JSON object runs about twice the rendered text), so reporting the
+		// text length told a JSON consumer it had paid roughly half what it actually paid.
+		// stats.context_block_bytes is only attributable if every counter feeding it measures
+		// what the caller was actually charged.
+		stats.ContainerMapBytes = searchContainerMapCost(containerMap)
 	}
 	stats.CandidatesSelected = len(results)
 	resultBytes = serializedSearchResultBytes(results)

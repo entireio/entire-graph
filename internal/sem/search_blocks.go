@@ -22,14 +22,14 @@ import "fmt"
 // Section order (the order the text renderer prints, and the order the JSON fields are declared)
 // -----------------------------------------------------------------------------------------------
 //
-//	 0. LOW CONFIDENCE            — is this payload worth reading at all
-//	 1. CONTAINER MAP             — what to read, and how much of it (sizes a range read)
-//	 2. candidate fix sites       — where to edit (the ranking; complete bodies at the head)
-//	 3. COVERING TEST             — what the edit has to achieve
-//	 4. TYPES IN THIS SIGNATURE   — the anchor's own contract: what callers depend on
-//	 5. DECLARATIONS              — the names the anchor's body uses
-//	 6. RELATED SITES             — where else the same change lands
-//	 7. DOCS & FIXTURES           — matched the query, but are not fix sites
+//  0. LOW CONFIDENCE            — is this payload worth reading at all
+//  1. CONTAINER MAP             — what to read, and how much of it (sizes a range read)
+//  2. candidate fix sites       — where to edit (the ranking; complete bodies at the head)
+//  3. COVERING TEST             — what the edit has to achieve
+//  4. TYPES IN THIS SIGNATURE   — the anchor's own contract: what callers depend on
+//  5. DECLARATIONS              — the names the anchor's body uses
+//  6. RELATED SITES             — where else the same change lands
+//  7. DOCS & FIXTURES           — matched the query, but are not fix sites
 //
 // The order is a reading order, not a value order: navigate, edit, check the goal, check the
 // contract, check the names, check the neighbours. Blocks 3-5 are all about hit 1 and therefore
@@ -100,16 +100,13 @@ import "fmt"
 // ceiling: a different command, a different response, a different set of blocks. The two are
 // deliberately kept apart, and a single combined "context bytes" number across both would be
 // meaningless.
-const (
-	// searchContextBlockAllowance is what the funded blocks may add to a payload before the
-	// hard ceiling is even consulted. It is the sum of the individual allowances, stated here
-	// so the total is one reviewable number rather than an emergent property of three files.
-	searchContextBlockAllowance = searchCoveringTestGrowthBytes + searchTypeCardBytes
-
-	// searchContextBlockAdditiveCap is the container map's cap: the one block outside the
-	// ceiling. Kept at ~1% of one agent turn.
-	searchContextBlockAdditiveCap = searchContainerMapMaxBytes
-)
+// searchContextBlockAdditiveCap is the container map's cap: the one block outside the ceiling.
+// Kept at ~1% of one agent turn.
+//
+// The funded blocks' own allowance — what they may add before the hard ceiling is consulted at all
+// — is searchContractAllowanceBytes in search_contract.go; the signature-type block has no
+// allowance of its own because it is displacement-funded and so can never grow a payload.
+const searchContextBlockAdditiveCap = searchContainerMapMaxBytes
 
 // searchContextBlockBytes totals every byte a response carries outside `results`. It is what
 // stats.context_block_bytes reports, and it is the number Validate checks the ceiling against.

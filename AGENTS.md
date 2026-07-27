@@ -91,6 +91,62 @@ is only seated when redundant tail locators can be displaced to pay for it, so a
 the block is never larger than the same payload without it, and the last mention of a file is
 never displaced.
 
+**The top hit also comes with the test that covers it and the declarations its body uses.** A
+**COVERING TEST** block (`section: "covering-test"`, counted in `stats.covering_tests`) carries the
+existing test that exercises hit 1 — the statement of what your fix has to *achieve*, which the
+ranker deliberately demotes and which is therefore the one entry in the payload whose file nothing
+else names. It is labelled away from the fix sites, prints no relevance score (it is not a ranked
+answer), and is always appended after every ranked hit, so it can never be read as "where do I
+edit". A **DECLARATIONS** block (`type_card` in JSON, `stats.type_card_entries`) is the compact
+answer to "what is this identifier" for the names hit 1's body uses — one line each, with the lines
+that body uses them on, which a snippet full of *uses* never tells you. Neither is a fix site.
+
+**One budget covers every one of those blocks, and it yields in a fixed order.** Four blocks live
+outside `results` — container map, signature types, declarations, covering test — and they all spend
+the same scarce thing: bytes replayed into the model on every later turn. There is ONE ceiling,
+`--max-context-bytes`, and everything except the container map is funded from inside it. The
+container map is the single documented exception: it is additive and separately capped at 1.5 kB,
+because a payload that spent its budget on complete head bodies must not lose one to buy a
+navigation aid. `stats.context_block_bytes` reports the total of everything outside `results`, and
+each block reports its own cost (`container_map_bytes`, `signature_type_bytes`, `type_card_bytes`),
+so the price of every section is attributable rather than emergent.
+
+Section order, which is a *reading* order — navigate, edit, check the goal, check the contract,
+check the names, check the neighbours:
+
+```text
+LOW CONFIDENCE  ->  CONTAINER MAP  ->  candidate fix sites  ->  COVERING TEST
+                ->  TYPES IN THIS SIGNATURE  ->  DECLARATIONS  ->  RELATED SITES  ->  DOCS & FIXTURES
+```
+
+Blocks 4-6 are all about hit 1, so they stay together and stay ahead of the last two, which are
+about other places; the signature types precede the declaration card because a signature is what
+callers can see and your patch must not break, while the card is about identifiers internal to the
+body.
+
+When bytes run short, sections yield in this order, and the rule behind it is **a block yields in
+proportion to how cheaply you could get it back** — bytes buy avoided turns, so what survives is
+whatever costs the most extra tool calls to replace:
+
+| yields | section | why it goes first / survives |
+|---|---|---|
+| 1st | **DECLARATIONS** | every entry is one `def NAME` away, and it is the block loosest to the edit — it names identifiers the snippet already shows in use. Sheds its last entry first, so pressure shortens the card before removing it. |
+| 2nd | **CONTAINER MAP** | reproducible with one `def`/`neighbors` on the container, and being the additive block it is the only one whose loss returns bytes without costing the ranking. Degrades full → names-and-ranges → absent. |
+| 3rd | **TYPES IN THIS SIGNATURE** | one `def` per named type recovers it, and at ~286 B median there is little to win by dropping it. Shrinks per-type member lists (15 → 8 → 5 → 3 → 2) before dropping entries. |
+| 4th | **COVERING TEST** | yields **last**. It is the only block naming a file and range nothing else in the payload names, so replacing it costs a search *and* a read — and it is a single entry, cheap to keep. |
+| never | **candidate fix sites** | ranks 1..5, plus the last mention of *any* file at any rank. A location you never see is a file you never open, and no other block can compensate for that. |
+
+Truncation is honest, never silent: a block that does not fit is **smaller** first (fewer entries,
+narrower windows, shorter member lists) and says what it omitted; only a block that cannot shrink
+further is dropped whole, and its `stats` counter then reads 0 so the absence is visible. No block
+is ever quietly traded for another.
+
+**The relation commands have a separate budget — do not add the two together.** `neighbors` and
+`impact` spend bytes on call-site guard blocks, capped independently of the search payload: **6
+guards** per chain, a **10-line** window around the call, **3 blocks** per response, **2000 B**
+total, and `impact` quotes no source at all. That is a different command with a different response,
+so a single combined "context bytes" figure across search and relations would be meaningless.
+
 **The budget is sized in turns, not in bytes.** A search payload is ~0.6% of what a session
 spends; one extra agent turn is ~42.5k tokens, because 95.9% of billed tokens are context
 re-read. A search that stops one Read short of an edit therefore costs about 40x the whole
