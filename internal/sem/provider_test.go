@@ -11638,6 +11638,77 @@ func writeFile(t *testing.T, repo, path, content string) {
 	}
 }
 
+// A command verb reaches its handler only through a registration table
+// (commands/<name>.json -> "function": handler); the verb never appears in the
+// handler body. This verifies the command name is indexed as a searchable alias
+// of the handler symbol end to end: the emitted SymbolRecord carries the alias,
+// and a search whose term is the verb scores the handler with an "alias" signal.
+func TestRegistrationTableAliasIndexing(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/commands/substr.json", `{"function":"getrangeCommand"}`)
+	writeFile(t, repo, "src/t_string.go", `package src
+
+func getrangeCommand() {}
+`)
+
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var handler *SymbolRecord
+	for i := range snapshot.Symbols {
+		if snapshot.Symbols[i].Name == "getrangeCommand" && snapshot.Symbols[i].Kind == "function" {
+			handler = &snapshot.Symbols[i]
+			break
+		}
+	}
+	if handler == nil {
+		t.Fatalf("getrangeCommand symbol not emitted; symbols: %d", len(snapshot.Symbols))
+	}
+	if !slices.Contains(handler.Aliases, "substr") {
+		t.Fatalf("getrangeCommand aliases = %v, want to contain %q", handler.Aliases, "substr")
+	}
+
+	score, signals := symbolSearchScore(buildSearchQuery("substr"), *handler)
+	if score <= 0 {
+		t.Fatalf("symbolSearchScore for alias query = %v, want > 0", score)
+	}
+	if !slices.Contains(signals, "alias") {
+		t.Fatalf("symbolSearchScore signals = %v, want to contain %q", signals, "alias")
+	}
+}
+
+// collectRegistrationAliases maps a handler to the sorted, de-duplicated command
+// verbs bound to it, touching only commands/*.json paths.
+func TestCollectRegistrationAliases(t *testing.T) {
+	contents := map[string]string{
+		"src/commands/substr.json":   `{"function":"getrangeCommand"}`,
+		"src/commands/getrange.json": `{"function": "getrangeCommand", "arity": 4}`,
+		"commands/get.json":          `{"function":"getCommand"}`,
+		"src/commands/noop.json":     `{"summary":"no function field"}`,
+		"src/t_string.go":            "package src",
+		"README.md":                  `"function":"ignored"`,
+	}
+	paths := make([]string, 0, len(contents))
+	for p := range contents {
+		paths = append(paths, p)
+	}
+	read := func(p string) (string, bool) {
+		c, ok := contents[p]
+		return c, ok
+	}
+
+	got := collectRegistrationAliases(paths, read)
+	want := map[string][]string{
+		"getrangeCommand": {"getrange", "substr"},
+		"getCommand":      {"get"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("collectRegistrationAliases = %v, want %v", got, want)
+	}
+}
+
 func snapshotHasSymbol(snapshot ProviderSnapshot, qualifiedName string) bool {
 	for _, symbol := range snapshot.Symbols {
 		if symbol.QualifiedName == qualifiedName {

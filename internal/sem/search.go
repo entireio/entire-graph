@@ -3536,6 +3536,21 @@ func symbolSearchScore(q searchQuery, symbol SymbolRecord) (float64, []string) {
 			signals = append(signals, "signature")
 		}
 	}
+	// Registration-table aliases (e.g. a command verb bound to this handler) match
+	// like an exact symbol name — the verb never appears in the body otherwise.
+	aliasMatched := false
+	for _, alias := range symbol.Aliases {
+		aliasLower := strings.ToLower(alias)
+		for _, term := range q.terms {
+			if aliasLower == term {
+				score += 6 * q.weights[term]
+				aliasMatched = true
+			}
+		}
+	}
+	if aliasMatched {
+		signals = append(signals, "alias")
+	}
 	return score, appendUnique(nil, signals...)
 }
 
