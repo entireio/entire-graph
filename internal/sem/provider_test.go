@@ -11198,10 +11198,11 @@ func TestOpenSourceBindsListingContentAndGitignoreToExactRevision(t *testing.T) 
 	git(t, repo, "add", "-f", ".")
 	git(t, repo, "commit", "-m", "move HEAD")
 
-	paths, read, _, closeSource, err := openSource(t.Context(), repo, firstCommit, nil, nil)
+	opened, err := openSource(t.Context(), repo, firstCommit, sourceOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	paths, read, closeSource := opened.paths, opened.read, opened.close
 	if closeSource != nil {
 		defer closeSource()
 	}

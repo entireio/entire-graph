@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/entireio/entire-graph/internal/filedigest"
 )
 
 type ChangedFile struct {
@@ -98,6 +100,53 @@ func ListIndexFiles(ctx context.Context, repo string) ([]string, error) {
 		}
 	}
 	return files, nil
+}
+
+// ListWorktreeFiles lists the working tree the way Git itself sees it: tracked
+// files plus untracked files that no exclude rule covers
+// (`git ls-files --cached --others --exclude-standard`). Delegating the exclude
+// decision to Git is the point — it applies nested .gitignore files,
+// .git/info/exclude, per-worktree excludes, and core.excludesFile (global and
+// system), none of which a hand-rolled reader of the repository-root .gitignore
+// can see. Paths are relative to repo and returned in Git's order with
+// duplicates removed; a non-git directory returns an error so callers can fall
+// back to a filesystem walk.
+func ListWorktreeFiles(ctx context.Context, repo string) ([]string, error) {
+	out, err := run(ctx, repo, "git", "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+	if err != nil {
+		return nil, err
+	}
+	return splitNULPaths(out), nil
+}
+
+// ListIgnoredWorktreeFiles lists the untracked working-tree files Git's exclude
+// rules *do* cover (`git ls-files --others --ignored --exclude-standard`). It
+// exists for one caller: an explicit include-file whose negations re-include
+// paths the project gitignores. Nothing else should enumerate ignored content —
+// that is the tree whose size is the reason the exclude rules exist.
+func ListIgnoredWorktreeFiles(ctx context.Context, repo string) ([]string, error) {
+	out, err := run(ctx, repo, "git", "ls-files", "-z", "--others", "--ignored", "--exclude-standard")
+	if err != nil {
+		return nil, err
+	}
+	return splitNULPaths(out), nil
+}
+
+func splitNULPaths(out string) []string {
+	fields := strings.Split(out, "\x00")
+	files := make([]string, 0, len(fields))
+	seen := make(map[string]struct{}, len(fields))
+	for _, path := range fields {
+		if path == "" {
+			continue
+		}
+		if _, exists := seen[path]; exists {
+			continue
+		}
+		seen[path] = struct{}{}
+		files = append(files, path)
+	}
+	return files
 }
 
 // GrepIndexMatches returns a bounded sample of matched terms per tracked
@@ -469,13 +518,47 @@ func isMissingPathDiagnostic(stderr string) bool {
 // `git cat-file --batch` process. It avoids spawning one git process per file
 // while preserving HEAD-tree snapshot semantics.
 type BatchFileReader struct {
-	rev    string
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Reader
-	stderr *bytes.Buffer
-	mu     sync.Mutex
-	closed bool
+	rev      string
+	cmd      *exec.Cmd
+	stdin    io.WriteCloser
+	stdout   *bufio.Reader
+	stderr   *bytes.Buffer
+	mu       sync.Mutex
+	closed   bool
+	maxBytes int64
+	oversize map[string]OversizeBlob
+}
+
+// OversizeBlob describes a blob ReadFile refused to materialize because it
+// exceeds the reader's cap. The hash and line count are computed while the blob
+// is streamed past and discarded, so a caller can still record the file's
+// identity and shape without ever holding its bytes.
+type OversizeBlob struct {
+	Bytes int64
+	Hash  string
+	Lines int
+}
+
+// SetMaxBytes caps the blob size ReadFile will materialize. A larger blob is
+// streamed past the reader into a digest and discarded: ReadFile reports it as
+// unavailable and OversizeBlob then returns its size, content hash and line
+// count. Without a cap one oversized blob costs its own size twice (the byte
+// slice plus the string conversion), so the reader's memory is set by the
+// largest object in the revision rather than by anything the caller chose. Zero
+// or negative removes the cap.
+func (r *BatchFileReader) SetMaxBytes(maxBytes int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.maxBytes = maxBytes
+}
+
+// OversizeBlob returns what ReadFile learned about a blob it refused to
+// materialize, so the caller can record the file without its content.
+func (r *BatchFileReader) OversizeBlob(path string) (OversizeBlob, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	blob, ok := r.oversize[path]
+	return blob, ok
 }
 
 func NewBatchFileReader(ctx context.Context, repo, rev string) (*BatchFileReader, error) {
@@ -533,6 +616,20 @@ func (r *BatchFileReader) ReadFile(path string) (string, bool, error) {
 		if _, err := io.CopyN(io.Discard, r.stdout, size+1); err != nil {
 			return "", false, err
 		}
+		return "", false, nil
+	}
+	if r.maxBytes > 0 && size > r.maxBytes {
+		digest, err := filedigest.Stream(io.LimitReader(r.stdout, size))
+		if err != nil {
+			return "", false, err
+		}
+		if _, err := io.CopyN(io.Discard, r.stdout, 1); err != nil {
+			return "", false, err
+		}
+		if r.oversize == nil {
+			r.oversize = map[string]OversizeBlob{}
+		}
+		r.oversize[path] = OversizeBlob{Bytes: digest.Bytes, Hash: digest.Hash, Lines: digest.Lines}
 		return "", false, nil
 	}
 	content := make([]byte, size)
