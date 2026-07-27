@@ -337,6 +337,15 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		for index := range entities {
 			entities[index].StartLine -= entityLineOffset
 			entities[index].EndLine -= entityLineOffset
+			// prepareProtocolBuffersParseSource prepends one synthetic syntax
+			// declaration to both parser and entity views. Byte metadata must point
+			// back into the authored content just like the adjusted line metadata.
+			entities[index].sourceStartByte -= len(protobufSyntheticSyntax)
+			entities[index].sourceEndByte -= len(protobufSyntheticSyntax)
+			if entities[index].sourceStartByte < 0 || entities[index].sourceEndByte <= entities[index].sourceStartByte {
+				entities[index].sourceStartByte = 0
+				entities[index].sourceEndByte = 0
+			}
 		}
 	}
 	sort.Slice(entities, func(i, j int) bool {
@@ -3632,6 +3641,9 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 	// Field/property declarations emit one entity per declared name and are not
 	// descended into (their name nodes would otherwise look like field accesses).
 	if fields, ok := fieldEntities(node, src, language, scope, inFunc); ok {
+		for index := range fields {
+			setEntitySourceRange(&fields[index], node, language, src)
+		}
 		*entities = append(*entities, fields...)
 		return
 	}
@@ -3639,6 +3651,11 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 	childScope := scope
 	childInFunc := inFunc
 	if ok {
+		setEntitySourceRange(&entity, node, language, src)
+		if (language == "JavaScript" || language == "TypeScript") && (entity.Kind == "function" || entity.Kind == "method") {
+			entity.parameterNames = jsEntityParameterNames(node, src)
+			entity.parameterNamesKnown = true
+		}
 		if inFunc && (entity.Kind == "function" || entity.Kind == "method") {
 			entity.Local = true // nested inside another function
 		}
@@ -3687,6 +3704,27 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		walkEntitiesScoped(node.NamedChild(i), src, language, childScope, childInFunc, entities)
 	}
+}
+
+// setEntitySourceRange records the exact source extent supplied by the parser
+// in one place, including declaration shapes returned through specialized
+// entity extractors. Dart declaration heads are the exception: their body is a
+// following sibling rather than part of the signature node.
+func setEntitySourceRange(entity *Entity, node *sitter.Node, language string, src []byte) {
+	if entity == nil || !validNode(node) {
+		return
+	}
+	start, end := int(node.StartByte()), int(node.EndByte())
+	if language == "Dart" {
+		if body := dartSignatureBody(node); validNode(body) {
+			end = int(body.EndByte())
+		}
+	}
+	if start < 0 || end <= start || end > len(src) {
+		return
+	}
+	entity.sourceStartByte = start
+	entity.sourceEndByte = end
 }
 
 // swiftExtensionDeclaration reports whether a tree-sitter-swift
@@ -3994,16 +4032,18 @@ func fieldEntities(node *sitter.Node, src []byte, language, scope string, inFunc
 	// part of the method inventory. Classify it as a method, named like one.
 	switch node.Type() {
 	case "public_field_definition", "field_definition":
-		if functionLikeValue(node.ChildByFieldName("value")) {
+		if value := node.ChildByFieldName("value"); functionLikeValue(value) {
 			if names := fieldDeclNames(node, src); len(names) == 1 {
 				return []Entity{{
-					Kind:        "method",
-					Name:        qualify(scope, names[0]),
-					Signature:   signatureFromNode(node, src),
-					StartLine:   int(node.StartPoint().Row) + 1,
-					EndLine:     int(node.EndPoint().Row) + 1,
-					BodyHash:    hash(normalize(node.Content(src))),
-					Fingerprint: hash(normalize(signatureFromNode(node, src))),
+					Kind:                "method",
+					Name:                qualify(scope, names[0]),
+					Signature:           signatureFromNode(node, src),
+					StartLine:           int(node.StartPoint().Row) + 1,
+					EndLine:             int(node.EndPoint().Row) + 1,
+					BodyHash:            hash(normalize(node.Content(src))),
+					Fingerprint:         hash(normalize(signatureFromNode(node, src))),
+					parameterNames:      jsEntityParameterNames(value, src),
+					parameterNamesKnown: true,
 				}}, true
 			}
 		}
@@ -4803,12 +4843,18 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 	case "message":
 		kind = "message"
 		name = nodeName(node, src)
+		if language == "Protocol Buffers" && scope != "" {
+			name = qualify(scope, name)
+		}
 	case "enum":
 		if language != "Protocol Buffers" {
 			return Entity{}, false
 		}
 		kind = "enum"
 		name = nodeName(node, src)
+		if scope != "" {
+			name = qualify(scope, name)
+		}
 	case "service":
 		kind = "service"
 		name = nodeName(node, src)
@@ -5888,13 +5934,15 @@ func appendGraphQLResolverRootEntities(entities []Entity, seen map[string]bool, 
 		block := content[start:end]
 		signature := "GraphQL resolver " + strings.ToLower(typeName) + " " + field.Name
 		entities = append(entities, Entity{
-			Kind:        "graphql_resolver",
-			Name:        name,
-			Signature:   signature,
-			StartLine:   countLinesBefore(content, start) + 1,
-			EndLine:     countLinesBefore(content, end) + 1,
-			BodyHash:    hash(normalize(block)),
-			Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+			Kind:            "graphql_resolver",
+			Name:            name,
+			Signature:       signature,
+			StartLine:       countLinesBefore(content, start) + 1,
+			EndLine:         countLinesBefore(content, end) + 1,
+			BodyHash:        hash(normalize(block)),
+			Fingerprint:     hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+			sourceStartByte: start,
+			sourceEndByte:   end,
 		})
 	}
 	return entities
@@ -6546,7 +6594,7 @@ func firstBodyLikeChild(node *sitter.Node) *sitter.Node {
 			continue
 		}
 		switch child.Type() {
-		case "block", "statement_block", "class_body", "declaration_list", "field_declaration_list", "interface_body", "compound_statement", "closure", "do_block", "function_body", "message_body", "service_body", "template_body":
+		case "block", "statement_block", "class_body", "declaration_list", "enum_body", "field_declaration_list", "interface_body", "compound_statement", "closure", "do_block", "function_body", "message_body", "service_body", "template_body":
 			return child
 		}
 	}
@@ -6587,14 +6635,20 @@ func javascriptExportedVariableEntities(content string) []Entity {
 		}
 		signature := strings.TrimSpace(content[lineStart:lineEnd])
 		startLine := strings.Count(content[:match[0]], "\n") + 1
+		sourceEnd := javascriptVariableDeclaratorEnd(content, match[3])
+		if sourceEnd <= match[0] {
+			sourceEnd = lineEnd
+		}
 		entities = append(entities, Entity{
-			Kind:        "variable",
-			Name:        name,
-			Signature:   signature,
-			StartLine:   startLine,
-			EndLine:     startLine,
-			BodyHash:    hash(normalize(signature)),
-			Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, signature))),
+			Kind:            "variable",
+			Name:            name,
+			Signature:       signature,
+			StartLine:       startLine,
+			EndLine:         startLine,
+			BodyHash:        hash(normalize(signature)),
+			Fingerprint:     hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, signature))),
+			sourceStartByte: match[0],
+			sourceEndByte:   sourceEnd,
 		})
 	}
 	return entities
@@ -6655,6 +6709,45 @@ func javascriptDefaultExportEntities(path, content string) []Entity {
 	}}
 }
 
+func javascriptVariableDeclaratorEnd(content string, valueStart int) int {
+	if valueStart < 0 || valueStart >= len(content) {
+		return -1
+	}
+	stripped := stripCodeLiteralsAndComments(content)
+	parenDepth, bracketDepth, braceDepth := 0, 0, 0
+	for index := valueStart; index < len(stripped); index++ {
+		switch stripped[index] {
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		case '{':
+			braceDepth++
+		case '}':
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case ',', ';':
+			if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
+				return index
+			}
+		case '\n':
+			if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
+				return index
+			}
+		}
+	}
+	return len(content)
+}
+
 func javascriptAssignmentMethodEntities(content string) []Entity {
 	matches := jsAssignmentMethodPattern.FindAllStringSubmatchIndex(content, -1)
 	entities := make([]Entity, 0, len(matches))
@@ -6692,13 +6785,15 @@ func javascriptAssignmentMethodEntities(content string) []Entity {
 		}
 		block := content[match[0]:minInt(blockEnd, len(content))]
 		entities = append(entities, Entity{
-			Kind:        "method",
-			Name:        name,
-			Signature:   signature,
-			StartLine:   startLine,
-			EndLine:     endLine,
-			BodyHash:    hash(normalize(block)),
-			Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+			Kind:            "method",
+			Name:            name,
+			Signature:       signature,
+			StartLine:       startLine,
+			EndLine:         endLine,
+			BodyHash:        hash(normalize(block)),
+			Fingerprint:     hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signature}, block))),
+			sourceStartByte: match[0],
+			sourceEndByte:   minInt(blockEnd, len(content)),
 		})
 	}
 	return entities

@@ -78,10 +78,31 @@ func TestAgentSearchReportsDisplayedSpanAndFocusAfterCompaction(t *testing.T) {
 	}
 }
 
-func TestSearchMaxContextBytesMustBePositive(t *testing.T) {
-	_, _, err := parseSearchFlags([]string{"--query", "x", "--max-context-bytes", "0"})
-	if err == nil || !strings.Contains(err.Error(), "must be positive") {
-		t.Fatalf("zero max context bytes error = %v", err)
+func TestSearchMaxContextBytesZeroIsUnbounded(t *testing.T) {
+	flags, rest, err := parseSearchFlags([]string{"--query", "x", "--max-context-bytes", "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rest) != 0 || flags.MaxContextBytes != 0 {
+		t.Fatalf("zero max context flags = %#v, rest = %#v", flags, rest)
+	}
+
+	response := sem.SearchResponse{Results: []sem.SearchResult{{
+		Rank: 1, FilePath: "src/service.go", StartLine: 1, EndLine: 3,
+		FocusLine: 2, SnippetStartLine: 1, SnippetEndLine: 3,
+		SymbolName: "serve", Snippet: "line one\nline two\nline three",
+	}}}
+	var out bytes.Buffer
+	if err := writeAgentSearch(&out, response, flags.MaxContextBytes); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "line one\nline two\nline three") {
+		t.Fatalf("zero context budget truncated agent output:\n%s", out.String())
+	}
+
+	if _, _, err := parseSearchFlags([]string{"--query", "x", "--max-context-bytes", "-1"}); err == nil ||
+		!strings.Contains(err.Error(), "non-negative integer") {
+		t.Fatalf("negative max context bytes error = %v", err)
 	}
 }
 
@@ -109,13 +130,25 @@ func TestWriteTextSearchTiersRankOneAndTwoFullRestTerse(t *testing.T) {
 	if strings.Contains(out, "func method()") || strings.Contains(out, "// long") {
 		t.Fatalf("rank 3 must NOT carry its snippet:\n%s", out)
 	}
-	if !strings.Contains(out, "3. src/third.go:22 Third.method score=8.0000\n") {
-		t.Fatalf("rank 3 terse line missing/wrong shape:\n%s", out)
+	// Terse lines carry no score= (PR #61 review: no consumer; 39% of added bytes).
+	if !strings.Contains(out, "3. src/third.go:22 Third.method\n") {
+		t.Fatalf("rank 3 terse line missing/wrong shape (no score expected):\n%s", out)
+	}
+	if strings.Contains(out, "src/third.go:22 Third.method score=") {
+		t.Fatalf("rank 3 terse line must NOT carry a score:\n%s", out)
 	}
 	if strings.Contains(out, "func fourth() {}") {
 		t.Fatalf("rank 4 must NOT carry its snippet:\n%s", out)
 	}
-	if !strings.Contains(out, "4. src/fourth.go:40 score=7.0000\n") {
-		t.Fatalf("rank 4 terse line should fall back to StartLine when FocusLine unset:\n%s", out)
+	if !strings.Contains(out, "4. src/fourth.go:40\n") {
+		t.Fatalf("rank 4 terse line should fall back to StartLine when FocusLine unset (no score):\n%s", out)
+	}
+	// PR #61 review: the redundant READ window hint is dropped — the top ranks
+	// carry FocusLine in the header + lines=Start-End, which is the region to open.
+	if strings.Contains(out, "READ:") {
+		t.Fatalf("no READ window hint should be emitted:\n%s", out)
+	}
+	if !strings.Contains(out, "1. src/service.go:10 score=12.5000 symbol=serve") || !strings.Contains(out, "lines=10-14") {
+		t.Fatalf("rank 1 must anchor on FocusLine with score + lines=Start-End header:\n%s", out)
 	}
 }

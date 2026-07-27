@@ -163,7 +163,7 @@ Running outside an Entire session? Point the plugin at a repo with `--repo .` (o
 | Command | What it does |
 |---|---|
 | `entire graph search --query "..."` | 🔍 Ranked source regions for a natural-language task |
-| `entire graph neighbors --symbol NAME` | Callers / callees / relations for one symbol (impact) |
+| `entire graph neighbors --symbol NAME_OR_ID` | Callers / callees / relations for one symbol (impact) |
 | `entire graph symbols --format ndjson` | Full stream of symbol definitions |
 | `entire graph edges --format ndjson` | Full stream of relations (all 30 types) |
 | `entire graph snapshot --format ndjson` | 🕸️ Full graph: header + files + symbols + relations |
@@ -176,6 +176,10 @@ Running outside an Entire session? Point the plugin at a repo with `--repo .` (o
 | `entire graph version [--json]` | Provider name and plugin version |
 
 Full flags and the agent-facing operating guide are in **[AGENTS.md](AGENTS.md)**. Diff commands print human-readable text by default and structured output with `--json`:
+
+When a neighbor lookup by name is ambiguous, the result includes each
+definition's stable `compound-v1` ID. Pass that ID back to `--symbol` to select
+an overload that a file path or qualified name cannot distinguish.
 
 ```text
 Semantic changes HEAD~1..HEAD
@@ -247,7 +251,7 @@ Savings scale with symbol connectivity: single-digit for narrow symbols, 280x+ f
 - **Semantic diff:** about 0.1s for a typical `HEAD~1..HEAD` on redis.
 - **Full-graph build:** linear in repository size; 23K relations in 1.5s up to 2.27M relations in 25.6s across the repos above.
 - **Streaming output:** `snapshot` emits records as it parses, so memory stays bounded on very large repositories.
-- **Cached committed-tree search:** reuses a tree-keyed compressed index across invocations when `ENTIRE_PLUGIN_DATA_DIR` is set, so repeated queries on an unchanged tree skip re-parsing.
+- **Cached committed-tree search:** reuses a tree-keyed compressed index across invocations when `ENTIRE_PLUGIN_DATA_DIR` is set, so repeated queries on an unchanged tree skip re-parsing. A complete prepared index derives the exact query-selected view, so relation expansion cannot escape that file set.
 - **Explicit preindex:** `index --head` builds and verifies that query-independent artifact before latency-sensitive work; cached `search` and `neighbors` calls then report the hit directly.
 
 Absolute numbers are environment-sensitive (measured on Apple Silicon). Read them as relative signals and reproduce locally with the harness.
