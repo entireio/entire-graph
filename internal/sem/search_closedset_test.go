@@ -182,6 +182,96 @@ func TestSearchClosedSetSiteRiskOnlyFlagsWhatTheCompilerMisses(t *testing.T) {
 	}
 }
 
+func TestSearchClosedSetScanBlockNeedsTwoArmsOfTheSameSet(t *testing.T) {
+	t.Parallel()
+	set := searchClosedVariantSet{name: "Ops", kind: "enum", language: "Java",
+		members: []string{"PLUS", "MINUS", "QUOT"}}
+	for _, testCase := range []struct {
+		name        string
+		lines       []string
+		wantFound   bool
+		wantArms    int
+		wantExh     bool
+		wantDefault string
+	}{
+		{
+			name: "exhaustive with a throwing default",
+			lines: []string{
+				"    switch (op) {",
+				"      case PLUS: return \"p\";",
+				"      case MINUS: return \"m\";",
+				"      case QUOT: return \"q\";",
+				"      default: throw new IllegalStateException(\"unknown\");",
+				"    }",
+			},
+			wantFound: true, wantArms: 3, wantExh: true, wantDefault: searchClosedSetDefaultThrows,
+		},
+		{
+			name: "partial with no default",
+			lines: []string{
+				"    switch (op) {",
+				"      case PLUS: return \"p\";",
+				"      case MINUS: return \"m\";",
+				"    }",
+			},
+			wantFound: true, wantArms: 2, wantDefault: searchClosedSetDefaultAbsent,
+		},
+		{
+			name: "a default that returns something is not fatal",
+			lines: []string{
+				"    switch (op) {",
+				"      case PLUS: return \"p\";",
+				"      case MINUS: return \"m\";",
+				"      case QUOT: return \"q\";",
+				"      default: return \"unknown\";",
+				"    }",
+			},
+			wantFound: true, wantArms: 3, wantExh: true, wantDefault: searchClosedSetDefaultSilent,
+		},
+		{
+			// One shared name is a coincidence: this switch dispatches on something else and merely
+			// mentions a variant inside an arm body. Without two arms there is no evidence.
+			name: "one mention is not a switch over the set",
+			lines: []string{
+				"    switch (verb) {",
+				"      case \"get\": return PLUS;",
+				"      default: throw new IllegalStateException(\"unknown verb\");",
+				"    }",
+			},
+		},
+		{
+			// Indentation bounds the block, so the arms of a LATER switch cannot be counted here.
+			name: "a following switch is a different block",
+			lines: []string{
+				"    switch (verb) {",
+				"      case \"get\": return PLUS;",
+				"    }",
+				"    switch (op) {",
+				"      case MINUS: return \"m\";",
+				"      case QUOT: return \"q\";",
+				"    }",
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			site, found := searchClosedSetScanBlock(set, "switch", testCase.lines, 0)
+			if found != testCase.wantFound {
+				t.Fatalf("found = %v, want %v (%+v)", found, testCase.wantFound, site)
+			}
+			if !found {
+				return
+			}
+			if site.Arms != testCase.wantArms || site.Exhaustive != testCase.wantExh ||
+				site.Default != testCase.wantDefault {
+				t.Fatalf("site = %d arms / exhaustive %v / default %s, want %d / %v / %s",
+					site.Arms, site.Exhaustive, site.Default,
+					testCase.wantArms, testCase.wantExh, testCase.wantDefault)
+			}
+		})
+	}
+}
+
 func TestSearchClosedSetEndToEndAcrossLanguages(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {

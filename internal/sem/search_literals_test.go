@@ -338,27 +338,70 @@ public class AvgAggregator
 	}
 }
 
+// searchLiteralMagnetFixture builds a corpus where one literal occurs in `files` files, all of them
+// outside anything the payload printed, plus the anchor the literal is mined from.
+func searchLiteralMagnetFixture(files int) (
+	[]SearchResult, searchQuery, map[string][]SymbolRecord, *searchNeedleIndex,
+) {
+	sources := map[string]string{
+		"anchor.go": "package demo\n\nfunc build() string {\n\treturn helperName()\n}\n",
+	}
+	symbolsByFile := map[string][]SymbolRecord{
+		"anchor.go": {{ID: "build", Kind: "function", Name: "build", QualifiedName: "build",
+			FilePath: "anchor.go", StartLine: 3, EndLine: 5}},
+	}
+	corpus := []string{"anchor.go"}
+	for index := 0; index < files; index++ {
+		path := "pkg" + strconv.Itoa(index) + "/thing.go"
+		sources[path] = "package p\n\nfunc call() string {\n\treturn helperName()\n}\n"
+		symbolsByFile[path] = []SymbolRecord{{ID: path, Kind: "function", Name: "call",
+			QualifiedName: "call", FilePath: path, StartLine: 3, EndLine: 5}}
+		corpus = append(corpus, path)
+	}
+	results := []SearchResult{{
+		Rank: 1, FilePath: "anchor.go", StartLine: 3, EndLine: 5, FocusLine: 4,
+		SnippetStartLine: 3, SnippetEndLine: 5,
+	}}
+	index := &searchNeedleIndex{
+		read: func(path string) (string, bool) {
+			content, ok := sources[path]
+			return content, ok
+		},
+		corpus: corpus,
+	}
+	return results, buildSearchQuery("helperName is wrong"), symbolsByFile, index
+}
+
 func TestSearchLiteralClusterRefusesALexicalMagnet(t *testing.T) {
 	t.Parallel()
-	repo := t.TempDir()
-	// The concept word is in far more files than a concept name ever is, so there is nothing
-	// distinctive to report and the block must not exist.
-	for index := 0; index < searchLiteralMaxFiles+6; index++ {
-		writeFile(t, repo, "pkg"+strconv.Itoa(index)+"/thing.go", `package pkg`+strconv.Itoa(index)+`
-
-// helperName is boilerplate in every package.
-func helperName() string { return "helperName" }
-`)
-	}
-	response, err := SearchRepository(t.Context(), repo, "test-version",
-		"helperName is wrong",
-		SearchOptions{Worktree: true, Profile: ProfileFull, CacheDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if response.LiteralCluster != nil {
-		t.Fatalf("a literal in %d files is a magnet, not a concept: %s",
-			response.LiteralCluster.FilesTotal, RenderSearchLiteralCluster(response.LiteralCluster))
+	for _, testCase := range []struct {
+		name  string
+		files int
+		want  bool
+	}{
+		{
+			// A name in a handful of files is a concept name, and the block is worth its bytes.
+			name: "a concept name is in few files", files: 6, want: true,
+		},
+		{
+			// The same name spread past the cap is a lexical magnet, and there is nothing distinctive
+			// to report — so there must be no block, however relevant the word looks.
+			name: "a magnet is in many files", files: searchLiteralMaxFiles + 2, want: false,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			results, q, symbolsByFile, index := searchLiteralMagnetFixture(testCase.files)
+			cluster := buildSearchLiteralCluster(results, q, symbolsByFile, index,
+				searchLiteralClusterMaxBytes)
+			if (cluster != nil) != testCase.want {
+				t.Fatalf("cluster present = %v, want %v (%s)", cluster != nil, testCase.want,
+					RenderSearchLiteralCluster(cluster))
+			}
+			if cluster != nil && cluster.FilesTotal != testCase.files+1 {
+				t.Fatalf("files_total = %d, want %d", cluster.FilesTotal, testCase.files+1)
+			}
+		})
 	}
 }
 
