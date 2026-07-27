@@ -98,29 +98,33 @@ type SearchStats struct {
 	// Content-read counters report blobs hydrated into the Go process. Git's
 	// own immutable-tree scans are represented by the backend/pass/examined
 	// counters above; their internal byte IO is deliberately not estimated.
-	FilesContentRead   int   `json:"files_content_read_during_preselection"`
-	QueryFilesRead     int   `json:"files_content_read_during_query"`
-	QueryBytesRead     int64 `json:"bytes_content_read_during_query"`
-	UsageFilesRead     int   `json:"files_content_read_for_identifier_usage,omitempty"`
-	UsageBytesRead     int64 `json:"bytes_content_read_for_identifier_usage,omitempty"`
-	FilesIndexed       int   `json:"files_indexed"`
-	SymbolsConsidered  int   `json:"symbols_considered"`
-	LexicalCandidates  int   `json:"lexical_candidates"`
-	GraphCandidates    int   `json:"graph_candidates"`
-	IdentifierUsages   int   `json:"identifier_usage_candidates,omitempty"`
-	NeighborCandidates int   `json:"same_container_neighbor_candidates,omitempty"`
-	BridgeCandidates   int   `json:"same_file_bridge_candidates,omitempty"`
-	SparseCandidates   int   `json:"sparse_candidates"`
-	SparseFilesRead    int   `json:"sparse_files_content_read"`
-	CandidatesSelected int   `json:"candidates_selected"`
-	ResultBytes        int   `json:"result_bytes"`
-	ContextBudgetBytes int   `json:"context_budget_bytes,omitempty"`
-	ResultsDropped     int   `json:"results_dropped_by_budget,omitempty"`
-	SnippetsTruncated  int   `json:"snippets_truncated_by_budget,omitempty"`
-	IndexCacheHit      bool  `json:"index_cache_hit"`
-	IndexLatencyMS     int64 `json:"index_latency_ms"`
-	QueryLatencyMS     int64 `json:"query_latency_ms"`
-	TotalLatencyMS     int64 `json:"total_latency_ms"`
+	FilesContentRead  int   `json:"files_content_read_during_preselection"`
+	QueryFilesRead    int   `json:"files_content_read_during_query"`
+	QueryBytesRead    int64 `json:"bytes_content_read_during_query"`
+	UsageFilesRead    int   `json:"files_content_read_for_identifier_usage,omitempty"`
+	UsageBytesRead    int64 `json:"bytes_content_read_for_identifier_usage,omitempty"`
+	FilesIndexed      int   `json:"files_indexed"`
+	SymbolsConsidered int   `json:"symbols_considered"`
+	LexicalCandidates int   `json:"lexical_candidates"`
+	GraphCandidates   int   `json:"graph_candidates"`
+	// CallerBoostedCandidates counts scored candidate regions across the
+	// lexical, graph-expanded, and sparse pools that received the call-graph
+	// caller-degree signal (the "graph:callers" result signal).
+	CallerBoostedCandidates int   `json:"caller_boosted_candidates,omitempty"`
+	IdentifierUsages        int   `json:"identifier_usage_candidates,omitempty"`
+	NeighborCandidates      int   `json:"same_container_neighbor_candidates,omitempty"`
+	BridgeCandidates        int   `json:"same_file_bridge_candidates,omitempty"`
+	SparseCandidates        int   `json:"sparse_candidates"`
+	SparseFilesRead         int   `json:"sparse_files_content_read"`
+	CandidatesSelected      int   `json:"candidates_selected"`
+	ResultBytes             int   `json:"result_bytes"`
+	ContextBudgetBytes      int   `json:"context_budget_bytes,omitempty"`
+	ResultsDropped          int   `json:"results_dropped_by_budget,omitempty"`
+	SnippetsTruncated       int   `json:"snippets_truncated_by_budget,omitempty"`
+	IndexCacheHit           bool  `json:"index_cache_hit"`
+	IndexLatencyMS          int64 `json:"index_latency_ms"`
+	QueryLatencyMS          int64 `json:"query_latency_ms"`
+	TotalLatencyMS          int64 `json:"total_latency_ms"`
 	// SearchLatencyMS is retained as the backwards-compatible name for total
 	// retrieval latency. New consumers should use TotalLatencyMS and the
 	// separate preselection, index, and query phases.
@@ -249,7 +253,11 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		options.MaxIndexedFiles = defaultSearchIndexedFiles(options.TopK)
 	}
 	if options.Profile == "" {
-		options.Profile = ProfileSyntaxOnly
+		// Fast, not syntax-only: graph-aware ranking (caller-degree boosts and
+		// relation expansion) needs call/construct edges over the indexed
+		// subset. Syntax-only emits none, which silently disables the graph
+		// half of hybrid search (graph_candidates is always 0).
+		options.Profile = ProfileFast
 	}
 	sparseQuery := buildSparseSearchQuery(query)
 	searchStarted := time.Now()
@@ -502,26 +510,14 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		IndexLatencyMS:            indexLatency.Milliseconds(),
 		PreselectLatencyMS:        preselectLatency.Milliseconds(),
 	}
-	// Graph centrality: inbound CALLS/IMPLEMENTS degree per symbol. Implementation code is called
-	// by many sites; leaf/trait-dispatch/trivial methods (and most test helpers) are not. Ranking
-	// with this signal lets the real fix site outrank a flood of common-named leaves — the graph
-	// already resolves the callers, search just wasn't using them (field feedback: search behaved
-	// like keyword BM25 with graph_candidates:0, ranking tests/leaves over the implementation).
-	// Requires CALLS in the snapshot (profile fast/full); empty at syntax-only, so the bonus no-ops.
-	inboundDegree := make(map[string]int)
-	for _, rel := range snapshot.Relations {
-		switch rel.Type {
-		case "CALLS", "ASYNC_CALLS", "IMPLEMENTS", "OVERRIDES":
-			if rel.ToID != "" {
-				inboundDegree[rel.ToID]++
-			}
-		}
-	}
-	scoreSearchCandidates(candidates, q, fileDF, maxInt(1, len(selectedFiles)), inboundDegree)
+	scoreSearchCandidates(candidates, q, fileDF, maxInt(1, len(selectedFiles)))
+	callerBoosts := searchGraphCallerBoosts(snapshot.Relations, symbolsByID)
+	stats.CallerBoostedCandidates += applySearchCallerBoosts(candidates, callerBoosts)
 	sortSearchCandidates(candidates)
 
-	graphCandidates := expandGraphCandidates(candidates, q, snapshot.Relations, symbolsByID, read, fileLanguages, options)
+	graphCandidates := expandGraphCandidates(candidates, q, snapshot.Relations, symbolsByID, callerBoosts, read, fileLanguages, options)
 	stats.GraphCandidates = len(graphCandidates)
+	stats.CallerBoostedCandidates += countSearchCandidatesWithSignal(graphCandidates, "graph:callers")
 	candidates = append(candidates, graphCandidates...)
 	sortSearchCandidates(candidates)
 	expansionSeeds := append([]searchCandidate(nil), candidates...)
@@ -563,6 +559,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	if len(sparseCandidates) > 0 {
 		attachSparseCandidateSymbols(sparseCandidates, symbolsByFile)
 		scoreSparseCandidates(sparseCandidates, sparseQuery, sparseDF, sparseDocumentCount, sparseDocumentLength)
+		stats.CallerBoostedCandidates += applySearchCallerBoosts(sparseCandidates, callerBoosts)
 		sortSearchCandidates(sparseCandidates)
 		sparseCandidates = dedupeSemanticMirrorCandidates(sparseCandidates, q, symbolsByID)
 		sortSearchCandidates(sparseCandidates)
@@ -1382,6 +1379,7 @@ func sparseCandidatesForFile(
 	}
 	chunkLines := maxInt(1, options.MaxRegionLines)
 	stride := minInt(sparseSearchChunkStrideLines, chunkLines)
+	pathCounts, _ := sparseSearchTermCounts(filepath.ToSlash(filePath), sparseQuery.termSet)
 	documentCount := 0
 	documentLength := 0
 	var out []searchCandidate
@@ -1394,6 +1392,10 @@ func sparseCandidatesForFile(
 		if len(counts) > 0 {
 			focus := sparseSearchFocusLine(sparseQuery, lines, start, end)
 			snippetStart, snippetEnd := focusedSnippetRegion(start, end, focus, options.MaxSnippetLines)
+			signals := []string{"sparse-region"}
+			if len(pathCounts) > 0 {
+				signals = append(signals, "path")
+			}
 			out = append(out, searchCandidate{
 				result: SearchResult{
 					FilePath:         filePath,
@@ -1403,7 +1405,7 @@ func sparseCandidatesForFile(
 					SnippetStartLine: snippetStart,
 					SnippetEndLine:   snippetEnd,
 					Language:         language,
-					Signals:          []string{"sparse-region"},
+					Signals:          signals,
 					Snippet:          "",
 				},
 				termCounts: counts,
@@ -1708,7 +1710,7 @@ func makeSearchCandidate(q searchQuery, filePath, language string, lines []strin
 	}, true
 }
 
-func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF map[string]int, fileCount int, inboundDegree map[string]int) {
+func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF map[string]int, fileCount int) {
 	if len(candidates) == 0 {
 		return
 	}
@@ -1747,18 +1749,7 @@ func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF m
 		if queryWeight > 0 {
 			coverage = coveredWeight / queryWeight
 		}
-		// Centrality: reward well-connected implementation symbols (many inbound callers/impls) so
-		// they outrank leaf/trait-dispatch/trivial methods that merely share a common query term.
-		// log-scaled + capped so it tilts ties toward the implementation without overriding a strong
-		// direct match. Only meaningful when the candidate matched the query at all (bm25>0 or a
-		// name/base signal), so it can't drag in unrelated high-degree symbols.
-		centrality := 0.0
-		if len(inboundDegree) > 0 && candidate.result.SymbolID != "" && (bm25 > 0 || candidate.baseScore > 0) {
-			if deg := inboundDegree[candidate.result.SymbolID]; deg > 0 {
-				centrality = minFloat64(6, 1.6*math.Log(1+float64(deg)))
-			}
-		}
-		candidate.score = candidate.baseScore + bm25 + 7*coverage + minFloat64(24, codeTokenBonus) + centrality
+		candidate.score = candidate.baseScore + bm25 + 7*coverage + minFloat64(24, codeTokenBonus)
 		if codeTokenBonus > 0 {
 			candidate.result.Signals = appendUnique(candidate.result.Signals, "exact-code-token")
 		}
@@ -1787,7 +1778,126 @@ func derivedSearchScore(parent, proposed float64) float64 {
 	return minFloat64(parent-0.01, proposed)
 }
 
-func expandGraphCandidates(seeds []searchCandidate, q searchQuery, relations []RelationRecord, symbolsByID map[string]SymbolRecord, read contentReader, languages map[string]string, options SearchOptions) []searchCandidate {
+const (
+	// searchCallerBoostUnit and searchCallerBoostCap shape the caller-degree
+	// ranking boost: unit * log2(1 + distinct production callers), capped so
+	// hub symbols (loggers, error helpers) cannot bury strong lexical
+	// evidence. One caller ≈ +2.6, three ≈ +5.2, cap reached near seven.
+	searchCallerBoostUnit = 2.6
+	searchCallerBoostCap  = 8.0
+	// searchCallerBoostMinConfidence mirrors the graph-expansion confidence
+	// floor: only high-precision call edges contribute ranking signal.
+	searchCallerBoostMinConfidence = 0.7
+)
+
+// searchGraphCallerBoosts derives a per-symbol ranking boost from the call
+// graph: a symbol invoked by distinct non-test callers is likelier to be the
+// implementation an agent wants than same-named test scaffolding, which has
+// no production in-edges. Callers under test paths are excluded so test
+// harnesses do not vote for each other.
+func searchGraphCallerBoosts(relations []RelationRecord, symbolsByID map[string]SymbolRecord) map[string]float64 {
+	if len(relations) == 0 {
+		return nil
+	}
+	callers := map[string]map[string]struct{}{}
+	for _, relation := range relations {
+		if relation.Confidence < searchCallerBoostMinConfidence || !searchCallerRelation(relation.Type) {
+			continue
+		}
+		if relation.FromID == relation.ToID {
+			continue
+		}
+		from, ok := symbolsByID[relation.FromID]
+		if !ok {
+			continue
+		}
+		if _, ok := symbolsByID[relation.ToID]; !ok {
+			continue
+		}
+		if searchTestArtifactPath("/" + strings.ToLower(filepath.ToSlash(from.FilePath))) {
+			continue
+		}
+		set, ok := callers[relation.ToID]
+		if !ok {
+			set = map[string]struct{}{}
+			callers[relation.ToID] = set
+		}
+		set[relation.FromID] = struct{}{}
+	}
+	if len(callers) == 0 {
+		return nil
+	}
+	boosts := make(map[string]float64, len(callers))
+	for id, set := range callers {
+		boosts[id] = minFloat64(searchCallerBoostCap, searchCallerBoostUnit*math.Log2(1+float64(len(set))))
+	}
+	return boosts
+}
+
+func searchCallerRelation(relationType string) bool {
+	switch relationType {
+	case "CALLS", "ASYNC_CALLS", "CONSTRUCTS":
+		return true
+	default:
+		return false
+	}
+}
+
+// applySearchCallerBoosts lifts scored candidates by their symbol's caller
+// degree and tags them with the "graph:callers" signal. Returns how many
+// candidates were boosted. Candidates whose only evidence is a body text
+// match receive half the boost: caller degree is meant to break ties between
+// plausibly-named results (a test workload versus the implementation it
+// exercises), not to lift well-connected symbols that merely mention a query
+// word past results with name or path evidence.
+func applySearchCallerBoosts(candidates []searchCandidate, boosts map[string]float64) int {
+	if len(boosts) == 0 {
+		return 0
+	}
+	boosted := 0
+	for i := range candidates {
+		candidate := &candidates[i]
+		boost, ok := boosts[candidate.result.SymbolID]
+		if !ok || candidate.result.SymbolID == "" {
+			continue
+		}
+		if searchBodyOnlyEvidence(candidate.result.Signals) {
+			boost *= 0.5
+		}
+		candidate.score += boost
+		candidate.result.Signals = appendUnique(candidate.result.Signals, "graph:callers")
+		boosted++
+	}
+	return boosted
+}
+
+func countSearchCandidatesWithSignal(candidates []searchCandidate, signal string) int {
+	count := 0
+	for _, candidate := range candidates {
+		for _, candidateSignal := range candidate.result.Signals {
+			if candidateSignal == signal {
+				count++
+				break
+			}
+		}
+	}
+	return count
+}
+
+func searchBodyOnlyEvidence(signals []string) bool {
+	sawBody := false
+	for _, signal := range signals {
+		switch signal {
+		case "body", "sparse-region":
+			sawBody = true
+		case "path", "symbol-name", "exact-symbol", "signature":
+			return false
+		}
+	}
+	return sawBody
+}
+
+func expandGraphCandidates(seeds []searchCandidate, q searchQuery, relations []RelationRecord, symbolsByID map[string]SymbolRecord, callerBoosts map[string]float64, read contentReader, languages map[string]string, options SearchOptions) []searchCandidate {
 	if len(seeds) == 0 || len(relations) == 0 {
 		return nil
 	}
@@ -1863,33 +1973,47 @@ func expandGraphCandidates(seeds []searchCandidate, q searchQuery, relations []R
 					Snippet:          strings.Join(lines[snippetStart-1:snippetEnd], "\n"),
 				},
 			}
-			// A high-confidence, type-resolved CALLS/CONSTRUCTS edge from a strongly-matched seed
-			// is very likely the collaborator that implements the query's behaviour — the vocab-gap
-			// bridge: the query matches the caller by name while the fix lives in the differently-
-			// named callee (e.g. rule "binary_operator_spaces" -> BinaryOperatorSpacesFixer ->CALLS->
-			// TokensAnalyzer.getLastTokenIndexOfArrowFunction, the gold). The default 0.28 seed
-			// fraction buries such a callee ~7 pts down, below prose/tests; score it just below the
-			// seed so it enters the top-K. derivedSearchScore's parent-0.01 cap keeps it under the
-			// caller, and best[]/dedup/diversity selection bound the added candidates.
-			// Vocab-gap bridge: boost a high-confidence CALLS/CONSTRUCTS callee to just below its
-			// caller ONLY when the callee is itself textually plausible for the query (its name shares
-			// a query term). This promotes a buried-but-relevant collaborator — e.g. the query
-			// "...arrow function..." reaches TokensAnalyzer.getLastTokenIndexOfArrowFunction (shares
-			// "arrow"/"function") from the caller BinaryOperatorSpacesFixer — while NOT surfacing the
-			// arbitrary callees of a strong direct hit (e.g. sympy's Point.__new__ callees don't match
-			// "imaginary/coordinates", so they stay unboosted and add no exploration noise).
-			seedFraction := 0.28
+			// A graph neighbor of a strong seed must be able to compete with
+			// mid-ranked lexical candidates: the previous 0.28*seed+confidence
+			// formula scored neighbors of a ~15-point seed near 5, below every
+			// direct match, so expansion never surfaced the implementation
+			// behind a well-matching type or doc heading. Inherit most of the
+			// seed's evidence, then add edge confidence and the target's own
+			// caller-degree signal; derivedSearchScore still caps the result
+			// below the seed itself. The generous inheritance is reserved for
+			// neighbors that carry at least one query term themselves —
+			// zero-evidence neighbors (a utility helper the seed happens to
+			// call) keep the old conservative score so they cannot displace
+			// direct matches.
+			inherit := 0.28 * seedScore
+			callerBoost := 0.0
+			regionText := strings.Join(lines[start-1:end], "\n")
+			counts, _ := searchTermCounts(regionText, q.termSet)
+			symbolMatch := searchSymbolNameMatchesQueryTerm(q, symbol)
+			if len(counts) > 0 || symbolMatch {
+				inherit = 0.55 * seedScore
+				callerBoost = callerBoosts[symbol.ID]
+				if !symbolMatch {
+					callerBoost *= 0.5
+				}
+			}
+			// Preserve main's vocabulary-gap bridge: a high-confidence call-like
+			// neighbor whose own symbol name shares a query term should sit just
+			// below its seed even when its body uses different vocabulary.
 			if relation.Confidence >= 0.8 &&
 				(relation.Type == "CALLS" || relation.Type == "ASYNC_CALLS" || relation.Type == "CONSTRUCTS") &&
-				searchSymbolNameMatchesQueryTerm(q, symbol) {
-				seedFraction = 0.85
+				symbolMatch {
+				inherit = 0.85 * seedScore
 			}
 			candidate.score = derivedSearchScore(
 				seedScore,
-				seedFraction*seedScore+relation.Confidence+searchPathPrior(q, symbol.FilePath),
+				inherit+2.2*relation.Confidence+searchPathPrior(q, symbol.FilePath)+callerBoost,
 			)
 			candidate.baseScore = candidate.score
 			candidate.result.Signals = appendUnique(candidate.result.Signals, "graph:"+strings.ToLower(relation.Type), "graph:"+pair[2])
+			if callerBoost > 0 {
+				candidate.result.Signals = appendUnique(candidate.result.Signals, "graph:callers")
+			}
 			if previous, exists := best[symbol.ID]; !exists || candidate.score > previous.score {
 				best[symbol.ID] = candidate
 			}
@@ -3140,12 +3264,44 @@ func searchPathPrior(q searchQuery, filePath string) float64 {
 }
 
 func searchTestArtifactPath(lower string) bool {
-	return strings.Contains(lower, "/test/") || strings.Contains(lower, "/tests/") ||
-		strings.Contains(lower, "/testdata/") || strings.Contains(lower, "/fixtures/") ||
-		strings.Contains(lower, "/__tests__/") || strings.Contains(lower, "/spec/") ||
-		strings.Contains(lower, ".test.") || strings.Contains(lower, ".spec.") ||
-		strings.Contains(lower, "_test.") || strings.Contains(lower, "_spec.") ||
-		strings.HasSuffix(lower, "_test.go") || strings.HasSuffix(lower, ".test")
+	normalized := strings.Trim(strings.ToLower(filepath.ToSlash(lower)), "/")
+	if normalized == "" {
+		return false
+	}
+	if strings.HasPrefix(normalized, ".github/workflows/") {
+		return false
+	}
+	parts := strings.Split(normalized, "/")
+	for index, part := range parts {
+		if index == len(parts)-1 {
+			break
+		}
+		switch part {
+		case "test", "tests", "testdata", "fixture", "fixtures", "__tests__", "__fixtures__", "spec", "specs":
+			return true
+		}
+		for _, suffix := range []string{
+			".test", ".tests", "-test", "-tests", "_test", "_tests",
+			".spec", ".specs", "-spec", "-specs", "_spec", "_specs",
+		} {
+			if strings.HasSuffix(part, suffix) {
+				return true
+			}
+		}
+	}
+	base := parts[len(parts)-1]
+	for _, marker := range []string{
+		".test.", ".spec.", "_test.", "_tests.", "_spec.", "_specs.",
+		"-test.", "-tests.", "-spec.", "-specs.",
+	} {
+		if strings.Contains(base, marker) {
+			return true
+		}
+	}
+	return strings.HasPrefix(base, "test_") || strings.HasPrefix(base, "test-") ||
+		strings.HasPrefix(base, "test.") || strings.HasPrefix(base, "spec_") ||
+		strings.HasPrefix(base, "spec-") || strings.HasPrefix(base, "spec.") ||
+		strings.HasSuffix(base, ".test") || strings.HasSuffix(base, ".spec")
 }
 
 func searchDocumentationArtifactPath(lower string) bool {

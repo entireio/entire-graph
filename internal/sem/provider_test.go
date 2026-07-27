@@ -3647,6 +3647,89 @@ func TestNothingHere(t *testing.T) {}
 	// TestNothingHere has no matching subject -> no edge.
 }
 
+func TestFastProfileKeepsSamePackageCalls(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "store/quorum.go", `package store
+
+type quorumState []int
+
+func checkQuorum(outcomes []int) bool {
+	return len(outcomes) > 1
+}
+`)
+	writeFile(t, repo, "store/replicate.go", `package store
+
+func replicateObject(outcomes []int) bool {
+	state := quorumState(outcomes)
+	return checkQuorum(state)
+}
+`)
+	writeFile(t, repo, "other/invalid.go", `package other
+
+func buildInvalidCrossPackageValue() any {
+	return quorumState(nil)
+}
+`)
+
+	var callLike []RelationRecord
+	err := StreamSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{Profile: ProfileFast}, func(rec any) error {
+		if r, ok := rec.(RelationRecord); ok && (r.Type == "CALLS" || r.Type == "CONSTRUCTS") {
+			callLike = append(callLike, r)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	foundConstruct := false
+	for _, relation := range callLike {
+		if relation.Resolution == "name_only" {
+			t.Fatalf("fast profile retained name-only call-like relation: %#v", relation)
+		}
+		if strings.Contains(relation.FromID, "replicateObject") && strings.Contains(relation.ToID, "checkQuorum") {
+			found = true
+			if relation.Resolution != "package" {
+				t.Fatalf("cross-file same-package call resolution = %q, want package", relation.Resolution)
+			}
+		}
+		if relation.Type == "CONSTRUCTS" &&
+			strings.Contains(relation.FromID, "replicateObject") &&
+			strings.Contains(relation.ToID, "quorumState") {
+			foundConstruct = true
+			if relation.Resolution != "package" {
+				t.Fatalf("cross-file same-package construction resolution = %q, want package", relation.Resolution)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("fast profile dropped the cross-file same-package call: %#v", callLike)
+	}
+	if !foundConstruct {
+		t.Fatalf("fast profile dropped the cross-file same-package construction: %#v", callLike)
+	}
+}
+
+func TestFastProfileDropsAmbiguousImportedOverloads(t *testing.T) {
+	from := SymbolRecord{ID: "caller", Kind: "function", Name: "run", FilePath: "src/caller.ts", Language: "TypeScript"}
+	overloads := []SymbolRecord{
+		{ID: "parse-string", Kind: "function", Name: "parse", FilePath: "src/lib.ts", Language: "TypeScript", Signature: "parse(value: string)"},
+		{ID: "parse-number", Kind: "function", Name: "parse", FilePath: "src/lib.ts", Language: "TypeScript", Signature: "parse(value: number)"},
+	}
+	targets := resolveImportedCallTargets("parse", from, overloads, map[string][]string{"parse": {"./lib"}}, false)
+	if len(targets) != 2 {
+		t.Fatalf("imported overload targets = %#v, want two", targets)
+	}
+	for _, target := range targets {
+		if target.Resolution != "name_only" {
+			t.Fatalf("ambiguous imported overload resolution = %q, want name_only: %#v", target.Resolution, target)
+		}
+		if shallowRelationRetained("CALLS", target.Resolution) {
+			t.Fatalf("fast profile would retain ambiguous imported overload: %#v", target)
+		}
+	}
+}
+
 // Regression for the jdx/mise report: a test whose conventional subject name
 // matches symbols in several packages must bind to the same-directory one, and
 // with no local or import evidence must not bind at all — the old

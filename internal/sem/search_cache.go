@@ -429,7 +429,7 @@ func selectiveSearchSnapshotFromFull(
 		if !spec.emits(relation.Type) {
 			return
 		}
-		if relation.Type == "CALLS" && spec.callResolution == "shallow" && relation.Resolution != "exact" {
+		if spec.callResolution == "shallow" && !shallowRelationRetained(relation.Type, relation.Resolution) {
 			return
 		}
 		if !spec.includeEvidence {
