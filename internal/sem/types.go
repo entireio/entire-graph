@@ -17,6 +17,52 @@ func typeLikeKind(kind string) bool {
 	return false
 }
 
+// CallableSignatureTail returns the part of a callable's signature that starts at
+// its OWN parameter list — `(start: TextSize, end: TextSize) -> Self` for
+// `pub const fn deletion(...)`.
+//
+// It cannot simply take the first `(`: a Go method signature opens with its
+// RECEIVER (`func (e *Edit) Deletion(start, end uint32) *Edit`), so the first
+// parenthesis belongs to the receiver and slicing there renders the member as
+// `Deletion(e *Edit) Deletion(...)`. The parameter list is the one that opens
+// immediately after the member's own name.
+func CallableSignatureTail(name, signature string) (string, bool) {
+	if name == "" {
+		return "", false
+	}
+	for offset := 0; ; {
+		index := strings.Index(signature[offset:], name)
+		if index < 0 {
+			break
+		}
+		index += offset
+		offset = index + len(name)
+		// The occurrence must be the whole identifier, not a substring of a
+		// longer one, and it must be followed by a parameter list.
+		if index > 0 && isIdentifierByte(signature[index-1]) {
+			continue
+		}
+		rest := strings.TrimLeft(signature[offset:], " \t")
+		if strings.HasPrefix(rest, "(") || strings.HasPrefix(rest, "<") {
+			return rest, true
+		}
+	}
+	if index := strings.Index(signature, "("); index >= 0 {
+		return signature[index:], true
+	}
+	return "", false
+}
+
+func isIdentifierByte(b byte) bool {
+	return b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+// IsTypeLikeKind reports whether a symbol kind names a type — something whose
+// members are its public surface. Query-side consumers need the same predicate
+// the extractor uses, so the classification of "is this a container of members"
+// cannot drift between what the graph builds and what a lookup reads out of it.
+func IsTypeLikeKind(kind string) bool { return typeLikeKind(kind) }
+
 // rawSupertype is an unresolved supertype reference parsed from a declaration.
 type rawSupertype struct {
 	Super      string
@@ -139,6 +185,92 @@ func rustSupertypeEdges(content string) []rustSupertypeEdge {
 		}
 	}
 	return edges
+}
+
+var (
+	phpUseTraitRe   = regexp.MustCompile(`(?m)^[ \t]*use[ \t]+([A-Za-z_\\][\w\\]*(?:[ \t]*,[ \t]*[A-Za-z_\\][\w\\]*)*)[ \t]*[;{]`)
+	rubyMixinRe     = regexp.MustCompile(`(?m)^[ \t]*(include|prepend|extend)[ \t]+([A-Z][\w:]*(?:[ \t]*,[ \t]*[A-Z][\w:]*)*)[ \t]*(?:#.*)?$`)
+	csharpExtRecvRe = regexp.MustCompile(`\(\s*this\s+(?:(?:in|ref|out|scoped)\s+)*([A-Za-z_][\w.]*)`)
+	kotlinExtRecvRe = regexp.MustCompile(`\b(?:fun|val|var)\s+(?:<[^>]*>\s*)?([A-Za-z_][\w.]*(?:<[^>]*>)?)\s*\.\s*[A-Za-z_]\w*`)
+)
+
+// mixinSupertypeEdges parses "this type acquires the members of that type"
+// declarations that live in a type's BODY instead of its header. Header
+// inheritance is covered by supertypesFromSignature; horizontal reuse is not,
+// and it is how two languages state the member join:
+//
+//	PHP   `class Edit { use HasContent; }`  — trait composition
+//	Ruby  `class Edit; include Ranged; end` — module mixin
+//
+// Both were invisible, so the members a class really answers to could not be
+// reached from the class. The edge is INHERITS (member acquisition), not
+// IMPLEMENTS: a trait/module supplies bodies, it is not a contract.
+//
+// body is the source of the type declaration, header included. It is scanned
+// line-anchored so `function () use ($captured)` (a closure capture, which has
+// a `(`/`$` on the line) and top-level namespace imports (outside any type
+// body, so never passed here) cannot be mistaken for composition.
+func mixinSupertypeEdges(language, body string) []rawSupertype {
+	var edges []rawSupertype
+	seen := map[string]bool{}
+	add := func(name string) {
+		name = lastTypeSegment(strings.TrimSpace(name))
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		edges = append(edges, rawSupertype{Super: name, Relation: "INHERITS", Confidence: 0.85})
+	}
+	switch language {
+	case "PHP":
+		for _, match := range phpUseTraitRe.FindAllStringSubmatch(body, -1) {
+			if strings.ContainsAny(match[0], "($") {
+				continue
+			}
+			for _, name := range strings.Split(match[1], ",") {
+				add(name)
+			}
+		}
+	case "Ruby":
+		for _, match := range rubyMixinRe.FindAllStringSubmatch(body, -1) {
+			for _, name := range strings.Split(match[2], ",") {
+				add(name)
+			}
+		}
+	}
+	return edges
+}
+
+// extensionReceiverTypeName reports the type an extension callable attaches to,
+// or "" when the signature declares no receiver. C# extension methods and
+// Kotlin extension functions/properties are declared OUTSIDE the type they
+// extend, so their container is the static class or the file — correct for
+// "where is this declared", useless for "what can I do with an Edit?", which is
+// the question the join exists to answer. Callers turn a non-empty result into
+// a membership edge from the receiver type to the callable.
+//
+// Only the receiver is read, never a qualified prefix of the member name: the
+// last dotted segment of `com.example.Edit.isEmpty` is the member, so the
+// receiver is everything the regex captured before the final `.`.
+func extensionReceiverTypeName(language, signature string) string {
+	switch language {
+	case "C#":
+		if !strings.Contains(signature, "static") {
+			return ""
+		}
+		match := csharpExtRecvRe.FindStringSubmatch(signature)
+		if match == nil {
+			return ""
+		}
+		return lastTypeSegment(match[1])
+	case "Kotlin":
+		match := kotlinExtRecvRe.FindStringSubmatch(signature)
+		if match == nil {
+			return ""
+		}
+		return lastTypeSegment(stripGenerics(match[1]))
+	}
+	return ""
 }
 
 // testSubjectName derives the name of the unit a test symbol covers from the

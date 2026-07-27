@@ -71,6 +71,8 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runSearch(ctx, opts, args[1:])
 	case "index":
 		return runIndex(ctx, opts, args[1:])
+	case "def":
+		return runDef(ctx, opts, args[1:])
 	case "neighbors":
 		return runNeighbors(ctx, opts, args[1:])
 	case "impact":
@@ -120,6 +122,7 @@ Usage:
   entire graph edges --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
   entire graph index --repo . [--profile syntax-only|fast|full] [--cache-dir path] [--format json] [--head] [--ignore-file path] [--include-file path]
   entire graph search --query "issue or concept" --repo . [--format json|ndjson|text|agent] [--top-k 10] [--deep] [--max-context-bytes 24576] [--head] [--profile syntax-only|fast|full] [--max-indexed-files n|--index-all-files] [--cache-dir path|--no-cache]
+  entire graph def NAME|<file>:<line> --repo . [--file path] [--line n] [--kind kind] [--members 15] [--format text|json] [--max-context-bytes 4096] [--head] [--profile fast|full] [--cache-dir path|--no-cache]
   entire graph neighbors --symbol NAME|<file>:<line> --repo . [--file path] [--line n] [--kind kind] [--relation CALLS] [--direction both|in|out] [--depth 1|2] [--limit 20] [--format json|text|agent] [--max-context-bytes 16384] [--head] [--cache-dir path|--no-cache] [--internal-only] [--exclude-tests]
   entire graph impact --symbol NAME|<file>:<line> --repo . [--file path] [--line n] [--kind kind] [--depth 1|2] [--limit 15] [--format text|json] [--max-context-bytes 4096] [--head] [--profile fast|full] [--cache-dir path|--no-cache] [--exclude-tests]
   entire graph stats [--repo .] [--since 30d|7d|all] [--format text|json] [--sessions-dir path|--transcript path]
@@ -130,6 +133,11 @@ Notes:
   eligible file). neighbors/impact take --symbol <file>:<line>, or --symbol NAME with
   --file/--line/--kind, to select one definition when a name is ambiguous; the ambiguity
   error prints the exact selector for each definition it found.
+  def is the structural declaration lookup: what a name IS, and — for a type — its fields and
+  its associated-function/method surface, drawn from the graph's own membership edges (inherent
+  impl blocks, receiver methods, extension members, partial parts, one hop of trait/module/base
+  acquisition). It reports a method's owning type, and for a trait/interface it reports who
+  implements it. Membership is never inferred from a name resembling another name.
   stats is a local read-only report for humans: it reads the coding-agent session transcripts
   already on disk (~/.claude/projects/<path-slug>/*.jsonl) and reports graph usage vs
   grep/read exploration, bytes each pulled into context, and an ESTIMATED token saving whose

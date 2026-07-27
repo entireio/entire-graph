@@ -144,6 +144,7 @@ type SearchStats struct {
 	// They are funded out of the tail of the ranking, so this count also says how much of the
 	// ranking's tail was worth less than a structural neighbour of the top hit.
 	RelatedSites   int   `json:"related_sites,omitempty"`
+	SignatureTypes int   `json:"signature_types,omitempty"`
 	IndexCacheHit  bool  `json:"index_cache_hit"`
 	IndexLatencyMS int64 `json:"index_latency_ms"`
 	QueryLatencyMS int64 `json:"query_latency_ms"`
@@ -166,6 +167,11 @@ type SearchResponse struct {
 	Warnings        []ProviderWarning  `json:"warnings"`
 	PartialFailures []PartialFailure   `json:"partial_failures"`
 	Completeness    CompletenessReport `json:"completeness"`
+	// SignatureTypes holds the declarations of the types named in the top hit's
+	// own signature (fields and member signatures, never bodies, never a
+	// transitive walk). It is funded by displacing redundant tail locators, so
+	// its presence never grows the payload — see search_sigtypes.go.
+	SignatureTypes []SearchSignatureType `json:"signature_types,omitempty"`
 }
 
 type searchQuery struct {
@@ -686,6 +692,17 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		)
 		results, stats.RelatedSites = mergeSearchRelatedSites(results, sites, read, options.MaxContextBytes)
 	}
+	// The types the top hit's own signature names, resolved to fields + member
+	// signatures. Computed last, on the final ranking, and funded by displacing
+	// redundant tail locators so the payload cannot grow to carry it.
+	var signatureTypes []SearchSignatureType
+	if anchors := searchRelatedAnchors(results, symbolsByID, symbolsByFile, 1); len(anchors) == 1 {
+		block := searchSignatureTypeSurface(
+			anchors[0], symbolsByID, symbolsByFile, snapshot.Relations, searchSignatureTypeLimit,
+		)
+		results, signatureTypes = fundSearchSignatureTypes(results, block, searchEnclosureHeadRanks)
+	}
+	stats.SignatureTypes = len(signatureTypes)
 	stats.CandidatesSelected = len(results)
 	resultBytes = serializedSearchResultBytes(results)
 	stats.ResultBytes = resultBytes
@@ -719,6 +736,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		Warnings:        snapshot.Header.Warnings,
 		PartialFailures: partialFailures,
 		Completeness:    snapshot.Header.Completeness,
+		SignatureTypes:  signatureTypes,
 	}, nil
 }
 
