@@ -143,11 +143,16 @@ type SearchStats struct {
 	// change usually has to land (callers, sibling implementations, near-duplicate bodies).
 	// They are funded out of the tail of the ranking, so this count also says how much of the
 	// ranking's tail was worth less than a structural neighbour of the top hit.
-	RelatedSites   int   `json:"related_sites,omitempty"`
-	IndexCacheHit  bool  `json:"index_cache_hit"`
-	IndexLatencyMS int64 `json:"index_latency_ms"`
-	QueryLatencyMS int64 `json:"query_latency_ms"`
-	TotalLatencyMS int64 `json:"total_latency_ms"`
+	RelatedSites int `json:"related_sites,omitempty"`
+	// ContainerMapBytes is what the container map cost. It is reported separately from
+	// ResultBytes because the map is NOT funded out of the ranking: a payload that spent its
+	// budget on complete head bodies must not lose one to buy the map, so the map is additive
+	// and its cost is stated rather than hidden.
+	ContainerMapBytes int   `json:"container_map_bytes,omitempty"`
+	IndexCacheHit     bool  `json:"index_cache_hit"`
+	IndexLatencyMS    int64 `json:"index_latency_ms"`
+	QueryLatencyMS    int64 `json:"query_latency_ms"`
+	TotalLatencyMS    int64 `json:"total_latency_ms"`
 	// SearchLatencyMS is retained as the backwards-compatible name for total
 	// retrieval latency. New consumers should use TotalLatencyMS and the
 	// separate preselection, index, and query phases.
@@ -156,16 +161,21 @@ type SearchStats struct {
 }
 
 type SearchResponse struct {
-	Query           string             `json:"query"`
-	RepoRoot        string             `json:"repo_root"`
-	Commit          string             `json:"commit,omitempty"`
-	Tree            string             `json:"tree,omitempty"`
-	Profile         string             `json:"profile"`
-	Results         []SearchResult     `json:"results"`
-	Stats           SearchStats        `json:"stats"`
-	Warnings        []ProviderWarning  `json:"warnings"`
-	PartialFailures []PartialFailure   `json:"partial_failures"`
-	Completeness    CompletenessReport `json:"completeness"`
+	Query    string         `json:"query"`
+	RepoRoot string         `json:"repo_root"`
+	Commit   string         `json:"commit,omitempty"`
+	Tree     string         `json:"tree,omitempty"`
+	Profile  string         `json:"profile"`
+	Results  []SearchResult `json:"results"`
+	// ContainerMap maps the top hit's enclosing container — the file's extent and the
+	// container's members with their line ranges — so a range read can be sized from this one
+	// response instead of by reading the whole file. Nil when the payload has no ranked code
+	// hit whose container the graph knows. See search_container_map.go.
+	ContainerMap    *SearchContainerMap `json:"container_map,omitempty"`
+	Stats           SearchStats         `json:"stats"`
+	Warnings        []ProviderWarning   `json:"warnings"`
+	PartialFailures []PartialFailure    `json:"partial_failures"`
+	Completeness    CompletenessReport  `json:"completeness"`
 }
 
 type searchQuery struct {
@@ -686,6 +696,16 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		)
 		results, stats.RelatedSites = mergeSearchRelatedSites(results, sites, read, options.MaxContextBytes)
 	}
+	// The map is built LAST, from the payload that is actually going out: its anchor must be
+	// the hit the caller will read, after sectioning and the related-site merge have decided
+	// which result that is.
+	containerMap := fitSearchContainerMap(
+		buildSearchContainerMap(results, symbolsByID, symbolsByFile, read),
+		searchContainerMapMaxBytes,
+	)
+	if containerMap != nil {
+		stats.ContainerMapBytes = len(RenderSearchContainerMap(containerMap, false))
+	}
 	stats.CandidatesSelected = len(results)
 	resultBytes = serializedSearchResultBytes(results)
 	stats.ResultBytes = resultBytes
@@ -715,6 +735,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		Tree:            snapshot.Header.Tree,
 		Profile:         string(options.Profile),
 		Results:         results,
+		ContainerMap:    containerMap,
 		Stats:           stats,
 		Warnings:        snapshot.Header.Warnings,
 		PartialFailures: partialFailures,

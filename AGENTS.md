@@ -43,6 +43,21 @@ To pay for that, results below the head are reduced to a two-line **locator** wi
 in `stats.locator_snippets`) — still exact `file:line` + symbol identity, just not reading
 material. Symbols too large to return whole (>160 lines) keep their focused window.
 
+**The top hit comes with a CONTAINER MAP, so a range read can be sized without opening the
+file.** Ahead of the ranking the payload carries `container_map`: the file's total line count,
+the enclosing container (class / struct / module / file top level) with its own line range, its
+data members collapsed to `name:Type`, and every other member as `start-end name(params)` plus at
+most two structural flags — with the hit's own member marked. It prints **no source**: every
+region in the payload appears exactly once, and the map is an index, not a second copy.
+
+This is the one place a member-ranked list can tell you about members it cannot rank. A private
+nested enum whose constants are the variant set an issue asks you to extend never wins a
+relevance contest against the method that consumes it, but it appears in the map as
+`213-282 enum Ops  NESTED,PRIVATE  +12 members` — an exact range you can read. Bounded to 1.5 kB
+(~1% of one agent turn) and reported in `stats.container_map_bytes`; when a container is too wide
+for that, parameter lists go first, then flags, then rows furthest from the hit, and the block
+says how many members it dropped. Names, line ranges and the file extent survive every stage.
+
 **Results are grouped, and the groups answer different questions.** Every hit stays in
 `results` with its rank; a `section` field says how to read it, and the text renderer prints
 each group under its own header.
@@ -115,6 +130,15 @@ entire graph impact --repo . --symbol NAME|<file>:<line> [--file path] [--line n
 
 ### 📇 symbols — *definitions*
 Full stream of symbol records (stable `compound-v1` ID, kind, qualified name, source range, signature, language, container). This is a **bulk NDJSON stream of the whole repo**, filtered to the symbol record type — there is **no positional name argument** and no server-side name filter; grep the stream client-side, or prefer `search`/`neighbors` for a targeted single-symbol lookup.
+
+`container_id` is set from a symbol's qualified-name prefix where the source spells one out, and
+otherwise from **lexical containment** — the smallest symbol of the same file that strictly
+encloses it. That second rule is what makes a nested declaration a member of the thing it sits
+in: a Java/C#/Kotlin nested or inner type, a Python or Ruby inner class, a Go or Rust type
+declared inside a function, and the method set of a JS/TS object literal all take their name
+verbatim from the source, so none of them names an owner. The CONTAINS relation says which rule
+applied (`symbol qualified name is nested in container` vs `symbol is lexically nested in
+container`).
 
 ```sh
 entire graph symbols --repo . --format ndjson [--worktree]

@@ -1356,8 +1356,11 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 	for _, entity := range entities {
 		baseCounts[symbolID(repoKey, language, path, entity.Kind, entity.Name)]++
 	}
-	var symbols []SymbolRecord
-	for _, entity := range entities {
+	// One symbol is emitted per entity, in order, so an entity's index is also its symbol's
+	// index — which is what lets a lexical parent be looked up as symbols[parents[index]].
+	lexicalParents := lexicalEntityParents(entities)
+	symbols := make([]SymbolRecord, 0, len(entities))
+	for index, entity := range entities {
 		qualified := entity.Name
 		id := symbolID(repoKey, language, path, entity.Kind, qualified)
 		if baseCounts[id] > 1 {
@@ -1379,6 +1382,11 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 			if parentID, ok := byName[containerName]; ok {
 				containerID = parentID
 			}
+		} else if parent := lexicalParents[index]; parent >= 0 && parent < len(symbols) {
+			// The parser gave this declaration no owner at all, so fall back to the declaration
+			// that lexically encloses it — see nested_containers.go for why that is the only way
+			// a nested type becomes a member of the type it sits in.
+			containerID = symbols[parent].ID
 		}
 		symbol := SymbolRecord{
 			RecordType:      "symbol",
@@ -2089,7 +2097,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					ToID:          symbol.ID,
 					Type:          "CONTAINS",
 					Confidence:    1,
-					Reason:        "symbol qualified name is nested in container",
+					Reason:        containmentReason(symbol),
 					RelationScope: containsScope,
 					Resolution:    "exact",
 					TargetKind:    "symbol",
