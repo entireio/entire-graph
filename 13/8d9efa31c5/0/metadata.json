@@ -1,0 +1,165 @@
+{
+  "cli_version": "dev",
+  "checkpoint_id": "138d9efa31c5",
+  "session_id": "7e3deab1-a028-46d5-9bf1-3318de93a0b6",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-27T02:18:25.399716Z",
+  "branch": "integ/agent-feedback-stack",
+  "checkpoints_count": 7,
+  "save_step_count": 1,
+  "files_touched": [
+    "internal/sem/search.go"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "b3122d6e7489",
+  "token_usage": {
+    "input_tokens": 243497,
+    "cache_creation_tokens": 38737395,
+    "cache_read_tokens": 1602508867,
+    "output_tokens": 3053383,
+    "api_call_count": 3073
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_017Tmby7MbN5vCAcb8YCx76L",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "dataviz"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "b3122d6e7489",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 1087,
+        "end": 1088,
+        "entry_ids": [
+          "cbae06fd-53a0-47c4-8ec4-b768696ba450"
+        ],
+        "tool_use_id": "toolu_017Tmby7MbN5vCAcb8YCx76L"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_017Tmby7MbN5vCAcb8YCx76L"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: dataviz",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01WfgDSAergJizeQb8mSTHeC",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "artifact-design"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "b3122d6e7489",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 1091,
+        "end": 1092,
+        "entry_ids": [
+          "895b5d36-54d4-4f34-9d2c-4504483f4bf2"
+        ],
+        "tool_use_id": "toolu_01WfgDSAergJizeQb8mSTHeC"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01WfgDSAergJizeQb8mSTHeC"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: artifact-design",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01ShN4n3c2iUEoVr2QAjtrpp",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "artifact-design"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "b3122d6e7489",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 13200,
+        "end": 13201,
+        "entry_ids": [
+          "cb596b8a-95a1-43d6-b601-7c4cae96b119"
+        ],
+        "tool_use_id": "toolu_01ShN4n3c2iUEoVr2QAjtrpp"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01ShN4n3c2iUEoVr2QAjtrpp"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: artifact-design",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01GFk3qP1Re8gAEGChvBwMAi",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "caveman:caveman"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "b3122d6e7489",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 16223,
+        "end": 16224,
+        "entry_ids": [
+          "e6d97e83-fa91-4bca-bea3-d0fdcc1de38c"
+        ],
+        "tool_use_id": "toolu_01GFk3qP1Re8gAEGChvBwMAi"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01GFk3qP1Re8gAEGChvBwMAi"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: caveman:caveman",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 25
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-27T02:18:24.478844Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 331,
+    "human_modified": 8,
+    "human_removed": 0,
+    "total_committed": 331,
+    "total_lines_changed": 357,
+    "agent_percentage": 0,
+    "metric_version": 2
+  }
+}
