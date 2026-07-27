@@ -1594,6 +1594,34 @@ func TestExpandGraphCandidatesClampsNonPositiveRegionLines(t *testing.T) {
 	}
 }
 
+func TestSortSearchCandidatesBreaksLocationTiesBySemanticIdentity(t *testing.T) {
+	location := SearchResult{FilePath: "same.go", StartLine: 10, EndLine: 20}
+	candidates := []searchCandidate{
+		{score: 5, result: func() SearchResult {
+			result := location
+			result.SymbolID = "symbol-b"
+			return result
+		}()},
+		{score: 5, result: func() SearchResult {
+			result := location
+			result.SymbolID = "symbol-a"
+			return result
+		}()},
+	}
+
+	sortSearchCandidates(candidates)
+	if candidates[0].result.SymbolID != "symbol-a" || candidates[1].result.SymbolID != "symbol-b" {
+		t.Fatalf("location-tied candidates were not ordered by stable symbol identity: %#v", candidates)
+	}
+
+	left, right := searchCandidate{result: location}, searchCandidate{result: location}
+	left.result.QualifiedName = "Alpha.Run"
+	right.result.QualifiedName = "Beta.Run"
+	if !searchCandidateLess(left, right) || searchCandidateLess(right, left) {
+		t.Fatalf("qualified-name tie breaker is not deterministic: left=%#v right=%#v", left, right)
+	}
+}
+
 // TestSearchRepositorySurvivesMaxSnippetLinesOne is a regression test for the
 // --max-snippet-lines 1 crash: a same-container-neighbor result's FocusLine was set
 // to neighbor.StartLine even when the emitted region (truncated by the tiny snippet
