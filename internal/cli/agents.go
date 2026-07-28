@@ -118,6 +118,14 @@ The output is grouped, and the groups mean different things:
 
 1. SEARCH FIRST — never grep/find/cat to locate code before you have searched.
 2. ONE search, then act. Do not run a second search unless the first clearly missed.
+2a. TWO SEARCHES MAXIMUM, THEN SWITCH TOOLS. If two searches have not put you on the fix site,
+   the wording is not the problem and a third phrasing will not help — grep for a LITERAL from
+   the issue instead (an error message, an identifier, a flag, a rule or error code, a constant),
+   then read around the hit. Rephrasing the same question is the single most expensive way to
+   fail: measured on SWE-bench Multilingual, sessions that ran away did 8.4 searches on average
+   against 2.7 for normal sessions (worst case 23 near-identical rephrasings), and those runaway
+   sessions cost 2.2x what a no-tool agent spent on the same task. Search is how you start; it
+   is not how you recover.
 3. Do NOT re-read what search already gave you. A ` + "`complete-symbol`" + ` hit is the whole function:
    edit it. Read a line range only for hits search returned as locators.
 4. NEVER read a whole file; read at most ~120 lines around the reported line.
@@ -155,6 +163,23 @@ The output is grouped, and the groups mean different things:
 If the task already names the exact file and it is small, just read it — the graph saves tokens
 by eliminating exploration; when there is nothing to explore, skip it. Verification still
 applies: it is about the edit you made, not about how you found it.
+
+That is not a minor caveat, so here is the measurement behind it. A search payload enters the
+context and is re-read on every later turn, which costs roughly 10-20% more per turn. The graph
+therefore only pays when it DELETES turns you would otherwise spend grepping and reading. Measured
+on SWE-bench Multilingual, same instances, same prompt discipline, comparing against an agent with
+no tool at all:
+
+	baseline turns   turns the graph removed   total tokens
+	30.2             6.3                       -32.3%   (CI excludes zero)
+	15.6             -0.6 (it ADDED turns)     +13.9%   (not significant, n=19)
+	10.1             -0.9 (it ADDED turns)     +31.4%   (CI excludes zero)
+
+Break-even is near a 20-turn baseline. So: reach for the graph when you expect to hunt — an
+unfamiliar or large repository, a symptom whose cause is somewhere you cannot name, a change whose
+sibling sites you cannot enumerate. Skip it when you already know where to go, because on a task
+you would have solved in ten turns the payload is pure overhead. This is a property of the TASK,
+not of the tool being good or bad.
 
 ## Reference
 

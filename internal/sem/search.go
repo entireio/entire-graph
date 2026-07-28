@@ -19,10 +19,32 @@ import (
 )
 
 const (
-	// Benchmark-calibrated: the graphmark suites (official SWE-bench Multilingual 300 among
-	// them) measured top-k 10 with 6-line snippets as the best agent config; the old defaults
-	// (20 / 40) produced ~15KB search outputs that get re-read every subsequent turn.
-	defaultSearchTopK              = 10
+	// Benchmark-calibrated. Breadth and depth are separate knobs and must be tuned separately:
+	// the old 20/40 default was expensive because of its 40-line snippets, not its 20 results.
+	// Lowering top-k to 10 alongside the snippet fix cost recall for no real byte saving.
+	//
+	// Measured on 53 SWE-bench Multilingual instances (21 repos, 9 languages) disjoint from the
+	// suite the agent configs were tuned on — share of instances where the file the gold patch
+	// edits appears anywhere in the search payload.
+	//
+	// Query wording dominates this metric, so the number is only meaningful next to the query
+	// style it was measured with. Real agents send short distilled queries (measured over 155
+	// live search calls: mean 43 chars, none above 84), NOT pasted issue text:
+	//
+	//	                          top-k 10   top-k 20   delta
+	//	distilled queries           69.2%      75.0%    +5.8 pt   (+1.5% bytes)
+	//	raw issue-text prefixes     53.8%      69.2%   +15.4 pt   (+10% bytes)
+	//
+	// Take the distilled row as the expected effect; the raw-prefix row is what the tool does
+	// when a caller pastes template boilerplate, and it overstates the gain. top-k 30 adds
+	// nothing over 20 in either regime. No instance regressed at 20 in either regime.
+	//
+	// Breadth is cheap because the byte budget spreads across results — extra hits arrive as
+	// one-line locators, not extra bodies — so per-turn re-read cost barely moves.
+	//
+	// Not fixed by breadth: Rust stays at 33% and JavaScript at 50% under distilled queries.
+	// Those are ranking/type-resolution misses, not truncation.
+	defaultSearchTopK              = 20
 	defaultSearchContextLines      = 8
 	defaultSearchMaxRegionLines    = 80
 	defaultSearchMaxSnippetLines   = 6
@@ -1008,6 +1030,20 @@ func defaultSearchIndexedFiles(topK int) int {
 	// Shallow interactive searches keep the original cold-start bound. Deeper
 	// rankings need a wider file pool or preselection becomes the recall limit
 	// before TopK and per-file diversity can take effect.
+	//
+	// Do NOT raise these bounds hoping for recall: MEASURED THE OPPOSITE. On 52
+	// SWE-bench Multilingual instances disjoint from the tuning suite, distilled
+	// queries, top-k 20 — gold-file recall by pool size:
+	//
+	//	 96 (default)  76.9%
+	//	256            73.1%   (-2 instances)
+	//	1024           69.2%   (-4 instances)
+	//
+	// Preselection is a useful FILTER, not the recall limit. A wider pool adds
+	// weakly-matching candidates that compete for the same TopK slots and displace
+	// the gold file: at 1024 the losses were PHP/laravel, Java/lucene, Ruby/fastlane,
+	// Ruby/fluentd and TS/vue. Rust alone improves (33% -> 50%), so the tradeoff is
+	// per-language and negative on aggregate.
 	return minInt(
 		deepSearchMaxIndexedFiles,
 		maxInt(
