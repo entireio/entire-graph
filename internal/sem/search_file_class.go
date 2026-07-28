@@ -50,6 +50,7 @@ const (
 	searchFileClassGenerated searchFileClass = "generated"
 	searchFileClassData      searchFileClass = "data"
 	searchFileClassExample   searchFileClass = "example"
+	searchFileClassFixture   searchFileClass = "fixture"
 )
 
 // Serialized-data / configuration file types. These hold declarations, not behaviour:
@@ -109,6 +110,37 @@ var searchExampleDirSegments = map[string]bool{
 	"recipes": true, "playground": true,
 }
 
+// Snapshot / golden-output file types. These are machine-written RECORDINGS of expected
+// output, so they quote the reported symptom — error codes, messages, rule identifiers —
+// verbatim, which is exactly what a query built from an issue matches on. That makes them
+// outrank the implementation whose behaviour the issue is actually about: measured on
+// astral-sh/ruff, a query naming rule code SIM201 ranked two
+// `snapshots/..._SIM201_SIM201.py.snap` files above the rule source `ast_unary_op.rs`,
+// which contains the same literal and is the file the fix edits.
+//
+// Scope, measured — this is a small win, not a fix for that ruff case. On 52 disjoint
+// SWE-bench Multilingual instances with agent-realistic queries at top-k 20, gold-file
+// recall went 75.0% -> 76.9% (+1 instance, no regressions), and mean rank of the gold file
+// was unchanged within noise (4.59 -> 4.74; improved on 11, worsened on 12, equal on 16).
+// The ruff rule-code queries it was built for did NOT recover: Rust stayed at 33%.
+// Demoting a snapshot only reorders candidates, and in those cases the gold file was
+// missing from the ranking for an unrelated reason (an exact rare-literal match in real
+// source scoring below generic word matches elsewhere). That scoring gap is the open
+// issue; this class only stops recorded expectations from occupying ranked slots.
+var searchFixtureExtensions = []string{
+	".snap", ".snapshot", ".golden", ".ambr", ".approved", ".expected", ".received",
+}
+
+// Path segments that mark a test-fixture / golden-output tree.
+var searchFixtureDirSegments = map[string]bool{
+	"fixture": true, "fixtures": true, "__fixtures__": true,
+	"snapshot": true, "snapshots": true, "__snapshots__": true,
+	"testdata": true, "test-data": true, "test_data": true,
+	"test-fixtures": true, "test_fixtures": true,
+	"golden": true, "goldens": true, "baseline": true, "baselines": true,
+	"expected": true, "__expected__": true,
+}
+
 // Basenames that are machine-written lock/manifest artifacts.
 var searchGeneratedBases = map[string]bool{
 	"package-lock.json": true, "npm-shrinkwrap.json": true, "yarn.lock": true,
@@ -138,6 +170,10 @@ var (
 		"example", "examples", "sample", "samples", "demo", "demos",
 		"snippet", "snippets", "cookbook", "recipe", "recipes", "playground",
 	}
+	searchFixtureIntentTerms = []string{
+		"fixture", "fixtures", "snapshot", "snapshots", "golden", "goldens",
+		"testdata", "baseline", "baselines", "expected", "insta", "approvals",
+	}
 	// Words that mean "I am asking about a config/data file". Kept narrow on purpose:
 	// terms like "package", "version" or "data" appear in almost every bug report
 	// (issue templates ask for a version) and would switch the prior off universally.
@@ -147,6 +183,22 @@ var (
 		"schema", "schemas", "metadata", "dependency", "dependencies", "lockfile",
 	}
 )
+
+// searchFixtureClassPath reports whether a path is a snapshot / golden-output artifact,
+// either by extension (.snap, .ambr, ...) or by living in a fixture/snapshot/testdata tree.
+func searchFixtureClassPath(lower string, dirs []string) bool {
+	for _, ext := range searchFixtureExtensions {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	for _, segment := range dirs {
+		if searchFixtureDirSegments[segment] {
+			return true
+		}
+	}
+	return false
+}
 
 // classifySearchFile maps a repository-relative path to its content class.
 // Precedence runs from "definitely not editable by this task" downwards so a
@@ -170,6 +222,9 @@ func classifySearchFile(filePath string) searchFileClass {
 	}
 	if searchDocumentationClassPath(lower, base, dirs) {
 		return searchFileClassDoc
+	}
+	if searchFixtureClassPath(lower, dirs) {
+		return searchFileClassFixture
 	}
 	for _, ext := range searchDataExtensions {
 		if strings.HasSuffix(lower, ext) {
@@ -255,6 +310,14 @@ func searchFileClassPrior(q searchQuery, filePath string) float64 {
 		if searchQuerySupplied(q, searchExampleIntentTerms...) {
 			return 1
 		}
+		return searchSecondaryClassPrior
+	case searchFileClassFixture:
+		if searchQuerySupplied(q, searchFixtureIntentTerms...) {
+			return 1
+		}
+		// Milder than the non-source prior: a fix legitimately updates a fixture
+		// alongside the code, so these must be demoted below the implementation
+		// without being pushed out of the ranking altogether.
 		return searchSecondaryClassPrior
 	}
 	return 1
