@@ -15,10 +15,21 @@ no network, no model calls, no keys.
 
 ## Install (one minute)
 
+**You need Go 1.24+ and a working C compiler.** The parsers are tree-sitter grammars, which are C,
+so `go install` builds with cgo — on macOS that means the Xcode command line tools
+(`xcode-select --install`), on Debian/Ubuntu `build-essential`. Without a compiler the install fails
+in the linker rather than telling you why.
+
 ```sh
 go install github.com/entireio/entire-graph/cmd/entire-graph@main
 entire plugin install "$(go env GOBIN | grep . || echo "$(go env GOPATH)/bin")/entire-graph" --force
 ```
+
+The second line registers the binary as a subcommand of the [Entire CLI](https://github.com/entireio/cli),
+which is what gives you `entire graph …`. **It is optional.** The binary is self-contained: if you do
+not have the Entire CLI, skip that line and call it directly — `entire-graph search`,
+`entire-graph impact`, `entire-graph capabilities --json` all work standalone. Everything below is
+written as `entire graph <verb>`; substitute `entire-graph <verb>` if you installed only the binary.
 
 Then, in any repo your agents work in:
 
