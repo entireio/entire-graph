@@ -546,15 +546,16 @@ func isMissingPathDiagnostic(stderr string) bool {
 // `git cat-file --batch` process. It avoids spawning one git process per file
 // while preserving HEAD-tree snapshot semantics.
 type BatchFileReader struct {
-	rev      string
-	cmd      *exec.Cmd
-	stdin    io.WriteCloser
-	stdout   *bufio.Reader
-	stderr   *bytes.Buffer
-	mu       sync.Mutex
-	closed   bool
-	maxBytes int64
-	oversize map[string]OversizeBlob
+	rev          string
+	cmd          *exec.Cmd
+	stdin        io.WriteCloser
+	stdout       *bufio.Reader
+	stderr       *bytes.Buffer
+	mu           sync.Mutex
+	closed       bool
+	maxBytes     int64
+	oversize     map[string]OversizeBlob
+	oversizeScan func(path string, chunk []byte)
 }
 
 // OversizeBlob describes a blob ReadFile refused to materialize because it
@@ -565,6 +566,18 @@ type OversizeBlob struct {
 	Bytes int64
 	Hash  string
 	Lines int
+}
+
+// SetOversizeScanner registers a callback invoked with successive chunks of an OVERSIZE blob as it
+// streams past the reader and is discarded. It exists so a caller can decide whether a blob it will
+// never hold was nonetheless relevant: the dependents scan needs to know whether an oversized file
+// contained a changed name, because warning about a file that never was a candidate is noise. The
+// bytes are BORROWED - the callback must not retain the slice. Chunks arrive in order and may split
+// a token, so a caller matching multi-byte patterns must carry its own overlap.
+func (r *BatchFileReader) SetOversizeScanner(scan func(path string, chunk []byte)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.oversizeScan = scan
 }
 
 // SetMaxBytes caps the blob size ReadFile will materialize. A larger blob is
@@ -647,7 +660,13 @@ func (r *BatchFileReader) ReadFile(path string) (string, bool, error) {
 		return "", false, nil
 	}
 	if r.maxBytes > 0 && size > r.maxBytes {
-		digest, err := filedigest.Stream(io.LimitReader(r.stdout, size))
+		var src io.Reader = io.LimitReader(r.stdout, size)
+		if scan := r.oversizeScan; scan != nil {
+			// The same single pass the digest already makes: the scanner sees the bytes on their
+			// way to being discarded, so relevance costs no extra read and no retained memory.
+			src = io.TeeReader(src, oversizeScanWriter{path: path, scan: scan})
+		}
+		digest, err := filedigest.Stream(src)
 		if err != nil {
 			return "", false, err
 		}
@@ -761,4 +780,16 @@ func runWithStderr(ctx context.Context, dir, name string, args ...string) (strin
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 	return stdout.String(), strings.TrimSpace(stderr.String()), err
+}
+
+// oversizeScanWriter adapts a chunk callback to io.Writer so it can sit in the TeeReader on the
+// oversize path. Write must not retain p, and the callback is documented not to.
+type oversizeScanWriter struct {
+	path string
+	scan func(path string, chunk []byte)
+}
+
+func (w oversizeScanWriter) Write(p []byte) (int, error) {
+	w.scan(w.path, p)
+	return len(p), nil
 }
