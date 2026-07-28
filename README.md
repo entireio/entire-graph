@@ -6,12 +6,15 @@ Entire Graph gives coding agents a precomputed, deterministic map of your codeba
 function, type, route, and call relationship — so they stop burning your budget on grep-and-read
 exploration and go straight to the fix.
 
-On the official **SWE-bench Multilingual** benchmark (300 real issues, 9 languages), a
-**Claude Code agent running Haiku** with Entire Graph used **55% fewer tokens** than the same
-agent working with no tool at all — same tasks, same model, identical completion rate. It also
-roughly doubled the savings of [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)
-(an open-source code-memory tool we benchmarked against as the closest comparable). 100% local,
-no network, no model calls, no keys.
+On **SWE-bench Multilingual**, a **Claude Code agent running Haiku** with Entire Graph used
+**31.6% fewer tokens** than the same agent with no tool at all, and resolved slightly more
+(22.3 vs 20.0 of 50, ahead in all three runs, not statistically separable). It reached the fix in
+**23.9 turns against 30.2** — the saving is turns removed from the locate phase, not a cheaper
+per-turn cost. 100% local, no network, no model calls, no keys.
+
+Read [Numbers, honestly](#numbers-honestly) before quoting any of that: the figure is
+model-dependent, an earlier 55% claim did not survive a fair baseline, and the comparable tool did
+not measurably beat no-tool at all.
 
 ## Install (one minute)
 
@@ -140,24 +143,60 @@ no code tool at all. For scale, the same suites also ran
 [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) ("cmm"), an open-source
 code-memory tool and the closest comparable.
 
-| agent + model | Entire Graph savings vs baseline | cmm on the same suite |
-|---|---|---|
-| Claude Code · Haiku — official SWE-bench Multilingual 300 | **54.9%** | 27.4% |
-| Claude Code · Sonnet — 23 instances, 3× replicated | **57.7%** | 36.6% |
-| Pi agent · open-source models (gpt-oss, Kimi K2.6, DeepSeek V4, GLM-5.2) | **31–73%** | — |
-| Task completion (patch produced) | parity with baseline in every suite | parity |
+The numbers below replace an earlier set that claimed 54.9% on Haiku and 57.7% on Sonnet. Those
+were withdrawn after an adversarial audit of our own harness; what the audit found is listed under
+*What was wrong with the old numbers*.
 
-**Caveat on the headline row.** The 54.9% was measured with the agent prompt's frugality clamp
-active ("one search, minimal edit, stop" plus "do not run builds or test suites") and against a
-baseline that received *no working-policy instructions at all*. On those same 300 instances that
-configuration **resolved 131/300 (43.7%) against the baseline's 150/300 (50.0%)** — 127 vs 146 on
-the 273 both agents submitted a patch for, McNemar p=0.013 — so the "task completion" row above is
-patch-produced parity, not resolved parity. The clamp was the cause: on the 31 paired losses where
-the baseline fixed the bug and the graph agent did not, both having found the correct file, the
-graph agent ran zero builds or tests on 22 and made a single edit on 22. The shipped agent
-guidance now requires completing the sibling sites and one bounded verification pass after editing
-(see [AGENTS.md](AGENTS.md) / `entire graph agent-guide`); the token figure has not been
-re-measured with it.
+Current measurement — 50 language-stratified instances (8 languages, max 4 per repo), 3 runs per
+arm, matched prompt discipline across arms, tokens taken from the billing-truth field:
+
+| Claude Code · Haiku | Entire Graph | baseline (no tool) | cmm |
+|---|---|---|---|
+| tokens vs baseline | **−31.6%**  CI [−20.8, −41.3] | — | +5.1%, CI crosses zero |
+| resolved (mean of 3 runs, of 50) | **22.3** | 20.0 | 20.3 |
+| turns | **23.9** | 30.2 | 29.6 |
+| USD per resolved instance | **$0.474** | $0.513 | $0.641 |
+
+Entire Graph vs cmm on tokens: **−35.7%**, CI [−25.8, −44.3].
+
+**The saving is model-dependent, and on stronger models it reverses.** It comes from deleting
+grep-and-read turns, so it only pays when the agent would otherwise have spent them:
+
+| model | baseline turns | turns Entire Graph removed | tokens |
+|---|---|---|---|
+| Haiku | 30.2 | **6.3** | **−31.6%** (CI excludes zero) |
+| Sonnet | 15.6 | −0.6 (it added turns) | +13.9% (not significant, n=20, 1 run) |
+| Fable | 10.1 | −0.9 (it added turns) | +31.4% (CI excludes zero) |
+
+Break-even is near a 20-turn baseline. Reach for the graph when the agent would have to hunt; on a
+task it would have finished in ten turns the payload is overhead. That is a property of the task,
+not a verdict on the tool.
+
+**What was wrong with the old numbers.** An audit of our own harness found eight defects, and every
+one of them distorted the comparison rather than the tool:
+
+- The old 54.9% was measured with a frugality clamp on the graph arm against a baseline given **no
+  working-policy instructions at all**. With matched discipline the figure is 31.6%.
+- "Identical completion rate" was wrong: that configuration resolved **131/300 against the
+  baseline's 150/300** (McNemar p=0.013). It lost on accuracy and the headline said parity.
+- The cmm comparison was rigged by our own prompt and wrapper: cmm was missing three discipline
+  clauses the other arms had, its source snippets were clamped to 6 lines while ours returned whole
+  function bodies (19.4 lines mean), and a concurrency fix had been applied to our arm only.
+- Tokens were summed from a lossy accumulator that undercounted cmm by ~25%.
+- A grading race submitted 7 real graph-arm patches as empty and 0 baseline patches.
+
+cmm's 27.4%/36.6% "savings" do not survive any of that. On the corrected harness cmm is **+5.1%
+against no tool with a confidence interval crossing zero** — it does not measurably save tokens.
+
+The Pi / open-source row (31–73%) was measured on the same withdrawn methodology and is not
+restated here.
+
+**Still open, stated plainly.** These numbers come from a harness that had two known asymmetries
+live during the run (our arm carried 4.3% test-path hits where cmm carried none; token accounting was
+corrected afterwards in the reporter). A fully symmetric re-run is in progress and will replace this
+table. The accuracy lead in particular rests partly on fixing the grading race described above, which
+restored patches to our arm and none to the baseline — legitimate, because the baseline had none
+voided, but it is a corrected error rather than a newly measured advantage.
 
 Methodology, prompts, harness, and every caveat (variance bands, fairness controls, per-model
 configs) will be public soon.

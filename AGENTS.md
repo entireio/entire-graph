@@ -229,6 +229,11 @@ languages: it never fired on a query whose target existed, and caught 64% of que
 technology the repo did not contain. Treat it as "check that this repo really does what you
 asked about before editing", not as "no results".
 
+**In practice it almost never fires.** Measured over 143 real benchmark sessions on issue-derived
+queries: **0 firings**, because the lowest top score observed was 20.3 against a ceiling of 12.0. It
+is calibrated for queries naming things the repo does not contain, which is not what a bug report
+looks like. Do not treat its silence as confirmation that the top hit is right.
+
 **When:** the start of essentially every task. One good query lands you on the fix area.
 
 ### 🧾 def — *what is this name, and what can I do with it* (structural declaration lookup)
@@ -435,15 +440,27 @@ search ONCE more with different words. If that misses too, fall back to the shel
 call rather than staying stuck.
 ```
 
-**What was measured, and the caveat.** The token figure comes from the **official SWE-bench
-Multilingual benchmark** (300 instances, 9 languages, Haiku): **54.9% weighted token savings vs a
-no-tool agent** — double codebase-memory-mcp's 27.4% — winning 8/9 languages and 216/293
-instances. Replicated on Sonnet (3×: 57.7% vs 36.6%) and on open-source models (31–73% via the Pi
-agent). **Caveat:** that 54.9% was measured with the frugality clamp active (the earlier prompt's
-"one search, minimal edit, STOP" plus "do not run builds or test suites") and against a baseline
-that received *no working-policy instructions at all*; the same configuration resolved **131/300
-(43.7%)** against the baseline's **150/300 (50.0%)** on those same 300 instances — 127 vs 146 on
-the 273 both agents submitted a patch for, McNemar p=0.013.
+**What was measured. The 54.9% figure is WITHDRAWN.** It was measured with a frugality clamp on the
+graph arm against a baseline that received *no working-policy instructions at all*, and the same
+configuration resolved **131/300 (43.7%)** against the baseline's **150/300 (50.0%)** (McNemar
+p=0.013) — it lost on accuracy while the headline claimed parity. An adversarial audit of the harness
+then found eight further defects, every one of which distorted the comparison rather than the tool:
+the cmm arm was missing three discipline clauses the other arms had, its source snippets were clamped
+to 6 lines while ours returned whole function bodies (19.4 lines mean), a concurrency fix had been
+applied to our arm only, tokens were summed from a lossy accumulator that undercounted cmm ~25%, and
+a grading race submitted 7 real graph-arm patches as empty and 0 baseline patches.
+
+Current measurement — 50 language-stratified instances, 3 runs per arm, matched prompt discipline,
+billing-truth tokens, Haiku: **31.6% fewer tokens than a no-tool agent** (CI [20.8, 41.3]), resolving
+**22.3 vs 20.0** of 50 (ahead in all three runs, not statistically separable), in **23.9 turns against
+30.2**, at **$0.474 per resolved instance against $0.513**. Against codebase-memory-mcp: **35.7%**
+fewer tokens. cmm itself does **not** measurably beat no-tool (+5.1%, CI crosses zero), so its
+27.4%/36.6% figures are withdrawn too.
+
+**The saving is model-dependent and reverses on stronger models**, because it comes from deleting
+grep-and-read turns that a capable agent never spends: Haiku baseline 30.2 turns, graph removes 6.3,
+−31.6%; Sonnet baseline 15.6, graph ADDS 0.6, +13.9% (not significant); Fable baseline 10.1, graph
+ADDS 0.9, +31.4% (CI excludes zero). Break-even is near a 20-turn baseline.
 
 Paired analysis of the 31 losses where the baseline fixed the bug and the graph-assisted agent did
 not, both having found the correct file, shows the clamp was the cause: the graph agent ran **zero
