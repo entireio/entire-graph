@@ -246,6 +246,11 @@ public enum Ops
 `)
 	// More files name the concept than the ranking has room for, which is the situation the block
 	// exists for: the sites past the last rank are exactly the ones an agent would grep to find.
+	//
+	// TopK is pinned below rather than inherited from defaultSearchTopK: this fixture writes 15
+	// naming files, so at the current default of 20 every site would be printed, there would be
+	// nothing left over, and an empty cluster would be the CORRECT answer — the test would pass
+	// or fail on the default's value instead of on the mechanism it is here to check.
 	for index := 0; index < 14; index++ {
 		writeFile(t, repo, "handlers/Handler"+strconv.Itoa(index)+".java", `package demo;
 
@@ -260,7 +265,7 @@ public class Handler`+strconv.Itoa(index)+`
 	}
 	response, err := SearchRepository(t.Context(), repo, "test-version",
 		"the quotient post-aggregator is missing from the registry",
-		SearchOptions{Worktree: true, Profile: ProfileFull, CacheDir: t.TempDir()})
+		SearchOptions{Worktree: true, Profile: ProfileFull, CacheDir: t.TempDir(), TopK: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
