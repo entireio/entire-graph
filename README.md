@@ -14,7 +14,7 @@ roughly doubled the savings of [codebase-memory-mcp](https://github.com/DeusData
 no network, no model calls, no keys.
 
 ## Install (one minute)
-
+Go 1.24+ and a C compiler required first
 ```sh
 go install github.com/entireio/entire-graph/cmd/entire-graph@main
 entire plugin install "$(go env GOBIN | grep . || echo "$(go env GOPATH)/bin")/entire-graph" --force
