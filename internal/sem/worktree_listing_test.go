@@ -210,6 +210,53 @@ func TestWorktreeSnapshotFileCeilingOnVendoredTree(t *testing.T) {
 	assertSnapshotOmitsPathPrefix(t, snapshot, "backend/node_env/")
 }
 
+// TestSnapshotHonorsNestedGitignoreReinclusion is the regression guard for the
+// vendored-directory heuristic's escape hatch. A project that keeps one of its own
+// packages inside a vendored-looking tree says so in the ignore file beside that
+// tree, which is where Git expects it — and the heuristic read only the
+// repository-root .gitignore, so it saw no re-inclusion and silently dropped
+// TRACKED first-party source from both `--head` and the working tree. Moving the
+// identical negation to the root kept the same file, which is what made the
+// root-only read the cause rather than the vendored name.
+//
+// Both directions matter: the re-included package must come back, and the rest of
+// the vendored tree must stay out, or the fix is just a disabled heuristic.
+func TestSnapshotHonorsNestedGitignoreReinclusion(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, "app.py", "def app_entrypoint():\n    return True\n")
+	writeFile(t, repo, "vendor/.gitignore", "*\n!.gitignore\n!mypkg/\n!mypkg/**\n")
+	writeFile(t, repo, "vendor/mypkg/lib.py", "def vendored_first_party():\n    return True\n")
+	writeFile(t, repo, "vendor/other/dep.py", "def real_dependency():\n    return True\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "keep one package inside vendor/")
+
+	for _, worktree := range []bool{false, true} {
+		mode := "head"
+		if worktree {
+			mode = "worktree"
+		}
+		t.Run(mode, func(t *testing.T) {
+			snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+				Worktree: worktree,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"app_entrypoint", "vendored_first_party"} {
+				if !snapshotHasSymbol(snapshot, name) {
+					t.Fatalf("%s snapshot dropped %q re-included by a nested .gitignore: %#v",
+						mode, name, snapshot.Files)
+				}
+			}
+			if snapshotHasSymbol(snapshot, "real_dependency") {
+				t.Fatalf("%s snapshot included the vendored tree the project did not re-include: %#v",
+					mode, snapshot.Files)
+			}
+		})
+	}
+}
+
 // TestWorktreeWalkFallbackHonorsNestedGitignore covers the non-git fallback: a
 // directory Git cannot enumerate is still filtered by the nested ignore files the
 // project wrote.
