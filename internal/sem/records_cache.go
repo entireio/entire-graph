@@ -2,6 +2,7 @@ package sem
 
 import (
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,7 +19,7 @@ import (
 // set of options. Recomputing them on every call is expensive on large repos, so
 // we cache the raw NDJSON bytes keyed on the HEAD tree hash plus everything else
 // that changes the output. This mirrors the search-snapshot cache next door.
-const providerRecordsCacheVersion = "provider-records-v1"
+const providerRecordsCacheVersion = "provider-records-v2"
 
 // cachedProviderRecords is the on-disk envelope for a cached record stream. The
 // key alone is authoritative (sha256 over version+tree+mode+profile+options+
@@ -42,7 +43,7 @@ type cachedProviderRecords struct {
 // cache. OnlyFiles is included for completeness even though the record commands
 // do not expose it. Callers must NOT use this for --worktree runs (the working
 // tree can differ from HEAD) or for targeted --to/--from/--relation queries.
-func providerRecordsKey(absRepo, providerVersion, tree, mode string, options ProviderSnapshotOptions) (string, error) {
+func providerRecordsKey(absRepo, repositoryKey, providerVersion, tree, mode string, options ProviderSnapshotOptions) (string, error) {
 	hash := sha256.New()
 	writePart := func(value string) {
 		_, _ = io.WriteString(hash, value)
@@ -50,11 +51,19 @@ func providerRecordsKey(absRepo, providerVersion, tree, mode string, options Pro
 	}
 	writePart(providerRecordsCacheVersion)
 	writePart(absRepo)
+	// Repo identity PREFIXES EVERY SYMBOL ID this cache stores, so serving one repository's records
+	// to another hands back IDs attributed to the wrong project. Reproduced by re-pointing a remote:
+	// the warm run still reported gh/entireio/entire-graph after the checkout had become a fork.
+	// searchSnapshotKey already folds this in; this key did not.
+	writePart(repositoryKey)
 	writePart(providerVersion)
 	writePart(tree)
 	writePart(mode)
 	writePart(string(options.Profile))
 	writePart(fmt.Sprintf("%d", options.MaxParseBytes))
+	// Same graph-shaping argument as searchSnapshotKey: a capped build must not answer an uncapped
+	// caller. This cache is the one that is ON BY DEFAULT, so the hole mattered more here.
+	writePart(fmt.Sprintf("max-files=%d", options.MaxFiles))
 	onlyFiles := append([]string(nil), options.OnlyFiles...)
 	sort.Strings(onlyFiles)
 	writePart("only-files")
@@ -95,7 +104,7 @@ func providerRecordsPath(cacheDir, key string) string {
 // The returned summary (when present) lets the caller reproduce the partial-parse
 // warning without re-indexing. A missing/corrupt cache is a miss, not an error;
 // only a key-derivation failure (an unreadable ignore/include file) errors.
-func LoadProviderRecords(repo, providerVersion, tree, mode, cacheDir string, options ProviderSnapshotOptions) ([]byte, *SnapshotSummary, bool, error) {
+func LoadProviderRecords(ctx context.Context, repo, providerVersion, tree, mode, cacheDir string, options ProviderSnapshotOptions) ([]byte, *SnapshotSummary, bool, error) {
 	if cacheDir == "" || tree == "" || options.Worktree {
 		return nil, nil, false, nil
 	}
@@ -103,7 +112,7 @@ func LoadProviderRecords(repo, providerVersion, tree, mode, cacheDir string, opt
 	if err != nil {
 		return nil, nil, false, err
 	}
-	key, err := providerRecordsKey(absRepo, providerVersion, tree, mode, options)
+	key, err := providerRecordsKey(absRepo, repoKey(ctx, absRepo), providerVersion, tree, mode, options)
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -117,7 +126,7 @@ func LoadProviderRecords(repo, providerVersion, tree, mode, cacheDir string, opt
 // StoreProviderRecords persists a freshly built record stream. Persistence is
 // best effort: retrieval correctness never depends on a writable cache dir, so
 // callers may ignore the returned error.
-func StoreProviderRecords(repo, providerVersion, tree, mode, cacheDir string, options ProviderSnapshotOptions, records []byte, summary *SnapshotSummary) error {
+func StoreProviderRecords(ctx context.Context, repo, providerVersion, tree, mode, cacheDir string, options ProviderSnapshotOptions, records []byte, summary *SnapshotSummary) error {
 	if cacheDir == "" || tree == "" || options.Worktree {
 		return nil
 	}
@@ -125,7 +134,7 @@ func StoreProviderRecords(repo, providerVersion, tree, mode, cacheDir string, op
 	if err != nil {
 		return err
 	}
-	key, err := providerRecordsKey(absRepo, providerVersion, tree, mode, options)
+	key, err := providerRecordsKey(absRepo, repoKey(ctx, absRepo), providerVersion, tree, mode, options)
 	if err != nil {
 		return err
 	}

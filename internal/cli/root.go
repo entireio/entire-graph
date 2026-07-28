@@ -347,7 +347,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		}
 	}
 	if useCache {
-		if records, cachedSummary, hit, err := sem.LoadProviderRecords(repo, opts.Version, tree, mode, cacheDir, options); err == nil && hit {
+		if records, cachedSummary, hit, err := sem.LoadProviderRecords(ctx, repo, opts.Version, tree, mode, cacheDir, options); err == nil && hit {
 			if _, err := opts.Stdout.Write(records); err != nil {
 				return err
 			}
@@ -375,7 +375,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	warnIfPartial(opts.Stderr, flags.Worktree, summary)
 	if useCache {
 		// Best effort: a failed cache write never fails the command.
-		_ = sem.StoreProviderRecords(repo, opts.Version, tree, mode, cacheDir, options, recordBuf.Bytes(), summary)
+		_ = sem.StoreProviderRecords(ctx, repo, opts.Version, tree, mode, cacheDir, options, recordBuf.Bytes(), summary)
 	}
 	return nil
 }
