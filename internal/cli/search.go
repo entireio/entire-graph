@@ -610,6 +610,14 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 		stats.PreselectLatencyMS,
 		stats.TotalLatencyMS,
 	))
+	// Two further rungs between the compact header and the legacy one, shedding the latency
+	// fields in order of least diagnostic value (preselect, then query, then total) while
+	// keeping the "I:<state>/<index-ms>" shape every consumer keys off. Without these the only
+	// way to buy bytes back for the ranking was the legacy "Index: cache-miss (113ms)" form,
+	// which changes the prefix — so a slow machine had to choose between losing the snippet and
+	// losing the machine-readable header. It now loses neither.
+	timedHeader := []byte(fmt.Sprintf("I:%s/%d T:%d\n", cacheState, stats.IndexLatencyMS, stats.TotalLatencyMS))
+	terseHeader := []byte(fmt.Sprintf("I:%s/%d\n", cacheState, stats.IndexLatencyMS))
 	legacyHeader := []byte(fmt.Sprintf("Index: cache-%s (%dms)\n", cacheState, stats.IndexLatencyMS))
 	diagnosticVariants := [][]byte{fullDiagnostics}
 	if !bytes.Equal(fullDiagnostics, compactDiagnostics) {
@@ -642,45 +650,77 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	if len(closedSet) > 0 {
 		closedSetVariants = append(closedSetVariants, nil)
 	}
-	for _, header := range [][]byte{fullHeader, compactHeader, legacyHeader} {
-		for _, diagnostics := range diagnosticVariants {
-			for _, confidence := range confidenceVariants {
-				for _, warning := range closedSetVariants {
-					for _, containerMap := range mapVariants {
-						remaining := budget - len(header) - len(diagnostics) - len(confidence) -
-							len(warning) - len(containerMap)
-						if remaining <= 0 {
-							continue
-						}
-						prefix := func() []byte {
-							payload := append([]byte{}, header...)
-							payload = append(payload, diagnostics...)
-							payload = append(payload, confidence...)
-							payload = append(payload, warning...)
-							return append(payload, containerMap...)
-						}
-						// The blocks sit on opposite sides of the ranking and degrade
-						// differently, which is why they compose without a further nested
-						// variant loop: every prefix block has its own full/compact/absent
-						// ladder above, while a suffix block rides along only when the
-						// fitted payload leaves room for it (fitAgentSearchSuffixes).
-						// Neither can cost the caller a ranked location.
-						if len(results) == 0 {
-							noResults := []byte("No search results.\n")
-							if len(noResults) <= remaining {
+	// TELEMETRY PRECISION MUST NOT COST RETRIEVAL CONTENT. The header carries measured
+	// latencies, so its WIDTH depends on how fast this machine is: "I:miss/21 Q:12 P:25 T:59"
+	// is 25 bytes on a warm laptop and "I:miss/113 Q:60 P:112 T:287" is 28 on a loaded CI
+	// runner. Because the header ladder is the outermost loop, those 3 bytes used to be taken
+	// out of the ranking instead of out of the diagnostic — at --max-context-bytes 64 the top
+	// hit's snippet line ("def target():", 14 bytes) survived on the fast machine and vanished
+	// on the slow one. Same repo, same query, same budget, less useful answer because the box
+	// was busy. That is a real defect for an agent, and it is what made
+	// TestSearchCommandAgentFormatKeepsTopLocationUnderTightBudget fail on windows-latest only.
+	//
+	// So make one pass that refuses to accept a plan unless it can hold the top hit's COMPLETE
+	// block, degrading the header to buy it. Only if no header variant can does the second pass
+	// fall back to the old best-effort behaviour, so a caller never loses a result outright.
+	// The bar is "the top hit carries SOURCE", not "the top hit is complete": demanding the whole
+	// body would be unbuyable at these budgets, so the pass would never fire. A one-byte budget
+	// renders the location line alone, which is exactly the degraded form we are trying to avoid,
+	// so anything longer than that means at least one line of source survived.
+	topHitLocationOnly := 0
+	if len(results) > 0 {
+		topHitLocationOnly = len(renderAgentSearchResults(results[:1], []int{1}))
+	}
+	for _, protectTopHit := range []bool{true, false} {
+		if protectTopHit && topHitLocationOnly == 0 {
+			continue // nothing to protect; the fallback pass is the only pass
+		}
+		for _, header := range [][]byte{fullHeader, compactHeader, timedHeader, terseHeader, legacyHeader} {
+			for _, diagnostics := range diagnosticVariants {
+				for _, confidence := range confidenceVariants {
+					for _, warning := range closedSetVariants {
+						for _, containerMap := range mapVariants {
+							remaining := budget - len(header) - len(diagnostics) - len(confidence) -
+								len(warning) - len(containerMap)
+							if remaining <= 0 {
+								continue
+							}
+							prefix := func() []byte {
+								payload := append([]byte{}, header...)
+								payload = append(payload, diagnostics...)
+								payload = append(payload, confidence...)
+								payload = append(payload, warning...)
+								return append(payload, containerMap...)
+							}
+							// The blocks sit on opposite sides of the ranking and degrade
+							// differently, which is why they compose without a further nested
+							// variant loop: every prefix block has its own full/compact/absent
+							// ladder above, while a suffix block rides along only when the
+							// fitted payload leaves room for it (fitAgentSearchSuffixes).
+							// Neither can cost the caller a ranked location.
+							if len(results) == 0 {
+								noResults := []byte("No search results.\n")
+								if len(noResults) <= remaining {
+									_, err := out.Write(fitAgentSearchSuffixes(
+										append(prefix(), noResults...), suffixes, budget,
+									))
+									return err
+								}
+								continue
+							}
+							formatted := fitAgentSearchResults(results, remaining)
+							if protectTopHit && len(formatted) <= topHitLocationOnly {
+								// This prefix is too wide to leave room for the top hit's complete block.
+								// Degrade the prefix and try again rather than handing back a truncated
+								// answer: the caller can afford a shorter latency line, not a missing snippet.
+								continue
+							}
+							if len(formatted) > 0 {
 								_, err := out.Write(fitAgentSearchSuffixes(
-									append(prefix(), noResults...), suffixes, budget,
+									append(prefix(), formatted...), suffixes, budget,
 								))
 								return err
 							}
-							continue
-						}
-						formatted := fitAgentSearchResults(results, remaining)
-						if len(formatted) > 0 {
-							_, err := out.Write(fitAgentSearchSuffixes(
-								append(prefix(), formatted...), suffixes, budget,
-							))
-							return err
 						}
 					}
 				}
