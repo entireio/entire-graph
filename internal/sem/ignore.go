@@ -349,6 +349,76 @@ func (s *nestedIgnoreStack) MayIncludeDescendant(rel string) bool {
 	return s.base.MayIncludeDescendant(rel)
 }
 
+// ReincludesDescendant answers the vendored-directory heuristic over the whole
+// stack: a negation in any ignore file on the current path — root or nested —
+// declares part of that tree first-party.
+func (s *nestedIgnoreStack) ReincludesDescendant(rel string) bool {
+	if s.base.ReincludesDescendant(rel) {
+		return true
+	}
+	for _, level := range s.levels {
+		if level.matcher.reincludesDescendantUnder(level.dir, rel) {
+			return true
+		}
+	}
+	return false
+}
+
+// maxNestedIgnoreFiles bounds how many per-directory .gitignore files one listing
+// merges. A repository with more ignore files than this is not a repository whose
+// vendored-tree verdict hinges on the last one.
+const maxNestedIgnoreFiles = 512
+
+// nestedIgnoreRules merges the repository's per-directory .gitignore files for a
+// listing that is not a walk — the committed-tree listing and Git's own
+// working-tree listing both arrive as a flat path set, so there is no walk
+// position to hang a stack off.
+//
+// It exists for one question: whether the project's own exclude rules re-include
+// part of a tree the vendored-directory heuristic would otherwise skip. Reading
+// only the root .gitignore answered "no" for every project that keeps those rules
+// where Git expects them — beside the tree — which silently dropped tracked
+// first-party source (`vendor/.gitignore` holding `*` and `!mypkg/` lost
+// `vendor/mypkg/**` from both `--head` and the working tree, while the identical
+// negation at the root kept it).
+type nestedIgnoreRules struct {
+	base   ignoreMatcher
+	levels []nestedIgnoreLevel
+}
+
+func newNestedIgnoreRules(base ignoreMatcher) *nestedIgnoreRules {
+	return &nestedIgnoreRules{base: base}
+}
+
+// addFile registers the parsed content of the .gitignore at repo-relative path
+// file. Content that does not parse, or one file past the cap, is skipped: this
+// is a heuristic's escape hatch, not a correctness boundary.
+func (r *nestedIgnoreRules) addFile(file, content string) {
+	dir := cleanIgnorePath(path.Dir(filepath.ToSlash(file)))
+	if dir == "" || len(r.levels) >= maxNestedIgnoreFiles {
+		return
+	}
+	var matcher ignoreMatcher
+	if err := matcher.loadContent(content, false); err != nil {
+		return
+	}
+	r.levels = append(r.levels, nestedIgnoreLevel{dir: dir, matcher: matcher})
+}
+
+// ReincludesDescendant reports whether the root rules or any nested .gitignore
+// negate a path at or below rel.
+func (r *nestedIgnoreRules) ReincludesDescendant(rel string) bool {
+	if r.base.ReincludesDescendant(rel) {
+		return true
+	}
+	for _, level := range r.levels {
+		if level.matcher.reincludesDescendantUnder(level.dir, rel) {
+			return true
+		}
+	}
+	return false
+}
+
 // pathUnder returns rel expressed relative to dir when dir contains it.
 func pathUnder(dir, rel string) (string, bool) {
 	if dir == "" {
@@ -381,10 +451,20 @@ func (m ignoreMatcher) MayIncludeDescendant(rel string) bool {
 // ignore rules themselves keep the fetched dependencies out. Basename-only
 // negations (e.g. `!.keep`) carry no path and are not treated as a signal.
 func (m ignoreMatcher) ReincludesDescendant(rel string) bool {
+	return m.reincludesDescendantUnder("", rel)
+}
+
+// reincludesDescendantUnder is ReincludesDescendant for an ignore file that lives
+// in dir rather than at the repository root: its patterns are relative to dir, so
+// each literal prefix is resolved against dir before being compared to rel.
+// Basename-only negations carry no path in either position and are skipped in
+// both, exactly as before.
+func (m ignoreMatcher) reincludesDescendantUnder(dir, rel string) bool {
 	rel = cleanIgnorePath(rel)
 	if rel == "" {
 		return false
 	}
+	dir = cleanIgnorePath(dir)
 	for _, rule := range m.rules {
 		if rule.ignore || rule.includeFile || rule.basenameOnly {
 			continue
@@ -392,6 +472,9 @@ func (m ignoreMatcher) ReincludesDescendant(rel string) bool {
 		prefix := literalPatternPrefix(rule.pattern)
 		if prefix == "" {
 			continue
+		}
+		if dir != "" {
+			prefix = dir + "/" + prefix
 		}
 		if prefix == rel || strings.HasPrefix(prefix, rel+"/") {
 			return true

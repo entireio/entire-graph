@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -18,6 +19,11 @@ type indexFlags struct {
 	Format       string
 	IgnoreFiles  []string
 	IncludeFiles []string
+	// Report is where to write the human-readable GRAPH_REPORT.md rendering of the
+	// snapshot this run built or loaded. Empty writes no report. It rides on index
+	// rather than on a command of its own because index is already the command that
+	// materializes a whole committed-tree snapshot for a human to act on.
+	Report string
 }
 
 type indexResponse struct {
@@ -55,12 +61,9 @@ func runIndex(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	cacheDir := flags.CacheDir
+	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
 	if cacheDir == "" {
-		cacheDir = opts.Env.PluginDataDir
-	}
-	if cacheDir == "" {
-		return errors.New("index requires --cache-dir or ENTIRE_PLUGIN_DATA_DIR")
+		return errors.New("index requires --cache-dir or ENTIRE_PLUGIN_DATA_DIR: this platform has no resolvable per-user cache directory")
 	}
 	started := time.Now()
 	snapshot, cacheHit, err := sem.PreindexProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
@@ -95,6 +98,11 @@ func runIndex(ctx context.Context, opts Options, args []string) error {
 		PartialFailures: partialFailures,
 		Completeness:    snapshot.Header.Completeness,
 	}
+	if flags.Report != "" {
+		if err := os.WriteFile(flags.Report, []byte(renderGraphReport(snapshot)), 0o644); err != nil {
+			return fmt.Errorf("write graph report %q: %w", flags.Report, err)
+		}
+	}
 	encoder := json.NewEncoder(opts.Stdout)
 	encoder.SetEscapeHTML(false)
 	return encoder.Encode(response)
@@ -123,6 +131,12 @@ func parseIndexFlags(args []string) (indexFlags, []string, error) {
 				return flags, nil, err
 			}
 			flags.CacheDir, index = value, next
+		case "--report":
+			value, next, err := searchFlagValue(args, index)
+			if err != nil {
+				return flags, nil, err
+			}
+			flags.Report, index = value, next
 		case "--ignore-file":
 			value, next, err := searchFlagValue(args, index)
 			if err != nil {
