@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 )
 
 type ignoreMatcher struct {
@@ -37,11 +38,18 @@ func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 	if err := matcher.loadOptional(filepath.Join(repo, ".gitignore"), false); err != nil {
 		return ignoreMatcher{}, err
 	}
-	// .git/info/exclude is the repository's private exclude list: same syntax and
-	// same authority as the root .gitignore, and Git applies both. Reading only
+	// info/exclude is the repository's private exclude list: same syntax and same
+	// authority as the root .gitignore, and Git applies both. Reading only
 	// .gitignore silently pulled excluded trees into the working-tree scan.
-	if err := matcher.loadOptional(filepath.Join(repo, ".git", "info", "exclude"), false); err != nil {
-		return ignoreMatcher{}, err
+	//
+	// It is NOT always at <repo>/.git/info/exclude. In a linked worktree, <repo>/.git
+	// is a regular file holding "gitdir: <path>", so that join names a path under a
+	// non-directory: os.Stat returns ENOTDIR rather than ErrNotExist, and treating
+	// that as fatal aborted the entire search with zero results in every worktree.
+	if exclude := gitInfoExcludePath(repo); exclude != "" {
+		if err := matcher.loadOptional(exclude, false); err != nil {
+			return ignoreMatcher{}, err
+		}
 	}
 	if err := matcher.loadExplicit(repo, ignoreFiles, includeFiles); err != nil {
 		return ignoreMatcher{}, err
@@ -79,10 +87,54 @@ func (m *ignoreMatcher) loadExplicit(repo string, ignoreFiles, includeFiles []st
 	return nil
 }
 
+// gitInfoExcludePath resolves the info/exclude that Git itself would apply to a
+// working tree, or "" when there is no git directory to consult.
+//
+// <repo>/.git is a directory in an ordinary clone but a regular file in a linked
+// worktree, where it holds "gitdir: <path to .git/worktrees/<name>>". Git shares
+// info/ across worktrees via that gitdir's commondir pointer, so the exclude file
+// lives under the common directory, not under <repo>/.git.
+func gitInfoExcludePath(repo string) string {
+	dotGit := filepath.Join(repo, ".git")
+	info, err := os.Stat(dotGit)
+	if err != nil {
+		return ""
+	}
+	if info.IsDir() {
+		return filepath.Join(dotGit, "info", "exclude")
+	}
+	if !info.Mode().IsRegular() {
+		return ""
+	}
+	raw, err := os.ReadFile(dotGit)
+	if err != nil {
+		return ""
+	}
+	gitDir := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(raw)), "gitdir:"))
+	if gitDir == "" {
+		return ""
+	}
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(repo, gitDir)
+	}
+	// commondir points at the shared .git that owns info/; it may be relative to gitDir.
+	if common, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
+		if c := strings.TrimSpace(string(common)); c != "" {
+			if !filepath.IsAbs(c) {
+				c = filepath.Join(gitDir, c)
+			}
+			gitDir = filepath.Clean(c)
+		}
+	}
+	return filepath.Join(gitDir, "info", "exclude")
+}
+
 func (m *ignoreMatcher) loadOptional(file string, includeMode bool) error {
 	label := ignoreFileLabel(includeMode)
 	info, err := os.Stat(file)
-	if errors.Is(err, os.ErrNotExist) {
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+		// ENOTDIR: a parent component is not a directory, so the file cannot exist.
+		// For an OPTIONAL exclude file that is absence, never a hard failure.
 		return nil
 	}
 	if err != nil {
