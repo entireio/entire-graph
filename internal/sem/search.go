@@ -1030,6 +1030,20 @@ func defaultSearchIndexedFiles(topK int) int {
 	// Shallow interactive searches keep the original cold-start bound. Deeper
 	// rankings need a wider file pool or preselection becomes the recall limit
 	// before TopK and per-file diversity can take effect.
+	//
+	// Do NOT raise these bounds hoping for recall: MEASURED THE OPPOSITE. On 52
+	// SWE-bench Multilingual instances disjoint from the tuning suite, distilled
+	// queries, top-k 20 — gold-file recall by pool size:
+	//
+	//	 96 (default)  76.9%
+	//	256            73.1%   (-2 instances)
+	//	1024           69.2%   (-4 instances)
+	//
+	// Preselection is a useful FILTER, not the recall limit. A wider pool adds
+	// weakly-matching candidates that compete for the same TopK slots and displace
+	// the gold file: at 1024 the losses were PHP/laravel, Java/lucene, Ruby/fastlane,
+	// Ruby/fluentd and TS/vue. Rust alone improves (33% -> 50%), so the tradeoff is
+	// per-language and negative on aggregate.
 	return minInt(
 		deepSearchMaxIndexedFiles,
 		maxInt(
