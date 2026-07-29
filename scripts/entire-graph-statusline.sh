@@ -335,7 +335,30 @@ CACHE_FILE=
 CACHE_CONFIG=
 STAMP=
 if [ "${ENTIRE_GRAPH_STATUSLINE_CACHE:-1}" != "0" ]; then
-	STAMP=$(stat -f '%z-%m' "$TRANSCRIPT" 2>/dev/null || stat -c '%s-%Y' "$TRANSCRIPT" 2>/dev/null) || STAMP=
+	# size-mtime, from whichever stat this platform has. The GNU form is tried FIRST and the
+	# result is VALIDATED, because the obvious `bsd || gnu` one-liner is broken on Linux:
+	# GNU stat reads -f as --file-system, so `stat -f '%z-%m' file` treats the format as a
+	# FILE name, prints multi-line filesystem info for the real file, and only THEN exits
+	# non-zero. Inside $( ), the stdout of a failing first command is still captured, so the
+	# fallback's correct value arrived appended to a block of "Namelen / Type: ext2/ext3 /
+	# Block size" noise. A stamp like that never equals the cached one, so every render missed
+	# the cache and re-scanned the transcript (CI: "cache collapses 3 renders to 1 scan",
+	# want 1, got 3), and the garbage also reached the badge value itself.
+	#
+	# BSD stat has no -c, so on macOS the GNU probe fails cleanly with no stdout and the BSD
+	# form runs. The case guard is the real defence: anything that is not digits-dash-digits
+	# is discarded, so no future stat flavour can leak a multi-line value into the key.
+	STAMP=$(stat -c '%s-%Y' "$TRANSCRIPT" 2>/dev/null) || STAMP=
+	case $STAMP in
+	'' | *[!0-9-]*)
+		STAMP=$(stat -f '%z-%m' "$TRANSCRIPT" 2>/dev/null) || STAMP=
+		;;
+	esac
+	case $STAMP in
+	'' | *[!0-9-]* | -* | *- | *-*-*)
+		STAMP=
+		;;
+	esac
 	if [ -n "$STAMP" ]; then
 		# Namespaced per uid: $TMPDIR is shared on some systems, and a cache directory another
 		# user can write is a cache another user can dictate the contents of.
