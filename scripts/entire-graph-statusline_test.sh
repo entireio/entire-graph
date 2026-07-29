@@ -757,7 +757,13 @@ mkdir -p "$TABREPO"
 TAB_JSON=$(stdin_json s-tabrepo "$T" "$TABREPO")
 TAB_FIRST=$(run_json "$TAB_JSON" NO_COLOR=1)
 TAB_SECOND=$(run_json "$TAB_JSON" NO_COLOR=1)
-TAB_STAMP=$(stat -f '%z-%m' "$T" 2>/dev/null || stat -c '%s-%Y' "$T" 2>/dev/null)
+# GNU first, then BSD — same ordering as the script, and for the same reason: on Linux
+# `stat -f '<fmt>' file` prints filesystem info to stdout before failing, so the BSD-first
+# form yields a multi-line stamp. A multi-line needle would make the assert below vacuous.
+TAB_STAMP=$(stat -c '%s-%Y' "$T" 2>/dev/null) || TAB_STAMP=
+case $TAB_STAMP in
+'' | *[!0-9-]*) TAB_STAMP=$(stat -f '%z-%m' "$T" 2>/dev/null) || TAB_STAMP= ;;
+esac
 assert_has 'a tab in the repo path still renders' '500 saved' "$TAB_FIRST"
 assert_eq 'a tab in the repo path does not shift the cached record' "$TAB_FIRST" "$TAB_SECOND"
 assert_lacks 'the cache stamp never leaks into the served badge' "$TAB_STAMP" "$TAB_SECOND"
