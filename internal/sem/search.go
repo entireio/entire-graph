@@ -19,32 +19,29 @@ import (
 )
 
 const (
-	// Benchmark-calibrated. Breadth and depth are separate knobs and must be tuned separately:
-	// the old 20/40 default was expensive because of its 40-line snippets, not its 20 results.
-	// Lowering top-k to 10 alongside the snippet fix cost recall for no real byte saving.
+	// Benchmark-calibrated, and the calibration REVERSED once it was measured end-to-end.
 	//
-	// Measured on 53 SWE-bench Multilingual instances (21 repos, 9 languages) disjoint from the
-	// suite the agent configs were tuned on — share of instances where the file the gold patch
-	// edits appears anywhere in the search payload.
+	// A payload-level probe said breadth was nearly free: on 53 SWE-bench Multilingual instances
+	// disjoint from the tuning suite, raising top-k from 10 to 20 lifted gold-file-in-payload from
+	// 69.2% to 75.0% for +1.9% bytes, and no instance regressed. That probe holds the QUERY fixed
+	// and asks only whether the right file appears somewhere in the payload.
 	//
-	// Query wording dominates this metric, so the number is only meaningful next to the query
-	// style it was measured with. Real agents send short distilled queries (measured over 155
-	// live search calls: mean 43 chars, none above 84), NOT pasted issue text:
+	// Measured with an agent in the loop, on the same haiku-30 pilot, the ordering inverts — a
+	// locator is an INVITATION TO OPEN A FILE, and 15 extra locators buy 15 invitations:
 	//
-	//	                          top-k 10   top-k 20   delta
-	//	distilled queries           69.2%      75.0%    +5.8 pt   (+1.5% bytes)
-	//	raw issue-text prefixes     53.8%      69.2%   +15.4 pt   (+10% bytes)
+	//	top-k   gold-file recall   ranked lines/session   payload/session   tokens
+	//	 6      96.6% (28/29)      24.1                   15,789 B          -16.8%
+	//	20      93.1% (27/29)      64.8                   16,918 B          baseline
 	//
-	// Take the distilled row as the expected effect; the raw-prefix row is what the tool does
-	// when a caller pastes template boilerplate, and it overstates the gain. top-k 30 adds
-	// nothing over 20 in either regime. No instance regressed at 20 in either regime.
+	// At 6 the payload is SMALLER than the comparison tool's (15,789 B vs 16,729 B) and shows
+	// fewer ranked lines than it (24.1 vs 37.5) while retrieving more. So breadth past ~6-10 is
+	// self-inflicted cost, and the default stays at 10: it is the value the agent configs were
+	// measured with, and the 6-vs-10 difference is inside the harness's +/-20% run-to-run noise.
 	//
-	// Breadth is cheap because the byte budget spreads across results — extra hits arrive as
-	// one-line locators, not extra bodies — so per-turn re-read cost barely moves.
-	//
-	// Not fixed by breadth: Rust stays at 33% and JavaScript at 50% under distilled queries.
-	// Those are ranking/type-resolution misses, not truncation.
-	defaultSearchTopK              = 20
+	// Do NOT raise this on the strength of a payload-presence probe alone. Recall measured without
+	// an agent is not the same quantity as tokens measured with one, and this constant is where
+	// that distinction bites.
+	defaultSearchTopK              = 10
 	defaultSearchContextLines      = 8
 	defaultSearchMaxRegionLines    = 80
 	defaultSearchMaxSnippetLines   = 6
