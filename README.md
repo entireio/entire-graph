@@ -7,14 +7,20 @@ function, type, route, and call relationship — so they stop burning your budge
 exploration and go straight to the fix.
 
 On **SWE-bench Multilingual**, a **Claude Code agent running Haiku** with Entire Graph used
-**31.6% fewer tokens** than the same agent with no tool at all, and resolved slightly more
-(22.3 vs 20.0 of 50, ahead in all three runs, not statistically separable). It reached the fix in
-**23.9 turns against 30.2** — the saving is turns removed from the locate phase, not a cheaper
-per-turn cost. 100% local, no network, no model calls, no keys.
+**17.4% fewer tokens** than the same agent with no tool at all (CI [−27.8, −6.5], 48 instances × 3
+replicate runs, matched prompt discipline in every arm) at **no loss of resolved issues** (54 vs 57
+of 144 matched runs, McNemar p=0.42). Cost per resolved issue: **−6.9%**. The saving is turns
+removed from the locate phase, not a cheaper per-turn cost. 100% local, no network, no model calls,
+no keys.
 
-Read [Numbers, honestly](#numbers-honestly) before quoting any of that: the figure is
-model-dependent, an earlier 55% claim did not survive a fair baseline, and the comparable tool did
-not measurably beat no-tool at all.
+The most robust result is retrieval, which is measured without an agent and so is noise-free: the
+file the gold patch edits reaches the agent in **96.3%** of sessions versus **81.5%** for the
+closest comparable tool, at equal payload bytes and with fewer search calls.
+
+Read [Numbers, honestly](#numbers-honestly) before quoting any of that. In short: the figure is
+Haiku-specific and we **cannot** measure it on stronger models at these sample sizes; a **≥35%**
+saving is *refuted*, not merely unproven; two earlier claims (55%, then 31.6%) were withdrawn after
+we audited our own harness and found the advantage was coming from our prompt, not our index.
 
 ## Install (one minute)
 
@@ -147,36 +153,77 @@ The numbers below replace an earlier set that claimed 54.9% on Haiku and 57.7% o
 were withdrawn after an adversarial audit of our own harness; what the audit found is listed under
 *What was wrong with the old numbers*.
 
-Current measurement — 50 language-stratified instances (8 languages, max 4 per repo), 3 runs per
-arm, matched prompt discipline across arms, tokens taken from the billing-truth field:
+Current measurement — 48 language-stratified instances × **3 replicate runs per arm** (144 matched
+instance-runs), matched prompt discipline across all three arms, tokens from the billing-truth
+field:
 
 | Claude Code · Haiku | Entire Graph | baseline (no tool) | cmm |
 |---|---|---|---|
-| tokens vs baseline | **−31.6%**  CI [−20.8, −41.3] | — | +5.1%, CI crosses zero |
-| resolved (mean of 3 runs, of 50) | **22.3** | 20.0 | 20.3 |
-| turns | **23.9** | 30.2 | 29.6 |
-| USD per resolved instance | **$0.474** | $0.513 | $0.641 |
+| total tokens vs baseline | **−17.4%**  CI [−27.8, −6.5] | — | +7.0%, CI crosses zero |
+| geomean of per-instance ratios | **−32.0%**  CI [−41.5, −21.2] | — | −5.7%, CI crosses zero |
+| USD vs baseline | **−11.8%** | — | +8.0% |
+| resolved (of 144 matched runs) | 54 | 57 | 57 |
+| **USD per resolved instance** | **$0.539** (−6.9%) | $0.579 | $0.625 |
 
-Entire Graph vs cmm on tokens: **−35.7%**, CI [−25.8, −44.3].
+Entire Graph vs cmm on tokens: **−22.8%** total, **−27.1%** geomean CI [−36.8, −15.8].
 
-**The saving is model-dependent, and on stronger models it reverses.** It comes from deleting
-grep-and-read turns, so it only pays when the agent would otherwise have spent them:
+Read the last two rows together, because they are the honest headline: the token saving is real and
+its CI excludes zero, but eg resolved **54 against the baseline's 57** (McNemar p=0.42 — a tie, not
+a loss), so **cost per resolved issue improves by 6.9%, not by 17%**. A token cut that costs you
+resolves is not a saving, and the per-resolved figure is the one to quote.
 
-| model | baseline turns | turns Entire Graph removed | tokens |
+**Retrieval is the part that holds up best**, because it is measured without an agent in the loop
+and so is not subject to the noise below. Pooled over two haiku-30 cells (54 arm-instance pairs
+where both tools issued a search), the file the gold patch edits appears in Entire Graph's payload
+in **52/54 = 96.3%** of sessions against cmm's **44/54 = 81.5%** — 10 instances we surface that cmm
+misses, 2 the reverse, sign test p = 0.0386 — at comparable payload bytes and with **fewer** search
+calls (81 vs 112). Caveats that belong with that number: the two arms wrote entirely different
+queries (0/27 exact overlap), so it measures each arm end-to-end rather than the retriever alone;
+part of cmm's deficit is our own wrapper capping it at 10 BM25 + 5 semantic hits; and in the
+second cell the gap narrows to 92.6% vs 88.9% (p = 1.000).
+
+**The saving is model-dependent, and outside Haiku we cannot measure it.** It comes from deleting
+grep-and-read turns, so it only pays when the agent would otherwise spend them:
+
+| model | baseline turns | tokens | can this sample detect an effect? |
 |---|---|---|---|
-| Haiku | 30.2 | **6.3** | **−31.6%** (CI excludes zero) |
-| Sonnet | 15.6 | −0.6 (it added turns) | +13.9% (not significant, n=20, 1 run) |
-| Fable | 10.1 | −0.9 (it added turns) | +31.4% (CI excludes zero) |
+| Haiku | 28–30 | **−17.4%** total, CI excludes zero | yes (n=48 × 3 runs) |
+| Sonnet | 12–18 | +0.9% geomean, CI [−33, +41] | no — inside noise |
+| Opus | 11 | −6.4%, CI crosses zero | no — MDE is 59% at n=10 |
+| Fable | 8 | +6.7%, CI crosses zero | no — MDE is 93% at n=5 |
 
 Break-even is near a 20-turn baseline. Reach for the graph when the agent would have to hunt; on a
 task it would have finished in ten turns the payload is overhead. That is a property of the task,
 not a verdict on the tool.
 
+**The noise floor, so you can judge every figure above.** Re-running a *byte-identical*
+configuration moves total tokens by up to **±20%** (paired per-instance log-ratio sd 0.525 across
+replicate baseline cells; ±26% observed between three replicates of the same no-tool arm). With
+80% power that is a minimum detectable effect of **31% at n=29, 59% at n=10, 93% at n=5**. Any
+single-run claim on a 5- or 10-instance sample is unfalsifiable at this scale, including ours —
+which is why only the 3-replicate Haiku row is stated as a result.
+
+**A ≥35% token saving is refuted, not merely unmeasured.** In the best-controlled cell the
+favourable bound of the confidence interval on total tokens is −27.8%. Configurations that produced
+35%+ did so by giving the graph arm prompt discipline the other arms did not have; removing that
+advantage twice erased the win both times.
+
 **What was wrong with the old numbers.** An audit of our own harness found eight defects, and every
 one of them distorted the comparison rather than the tool:
 
 - The old 54.9% was measured with a frugality clamp on the graph arm against a baseline given **no
-  working-policy instructions at all**. With matched discipline the figure is 31.6%.
+  working-policy instructions at all**.
+- The 31.6% that replaced it was *also* contaminated: the graph arm's prompt carried a 119-word
+  operating-rules paragraph the comparison arm never got, on top of a frugality block all three
+  arms already shared. Deleting that redundant restatement moved the same cell from −18.9% to
+  **+26.9%** — a ~45-point swing from prompt text alone.
+- The graph arm was being measured on an easier subsample: the harness skipped an instance **for the
+  graph arm only** when its prebuilt dump was missing, which silently dropped 10 of 30 — and they
+  were the large repos. All 10 dumps build fine; restoring them changed the cell by 7 points.
+- One model's instance list was not SWE-bench Multilingual at all (it contained a Python
+  SWE-bench instance), so that cell was ungradeable and its figure is withdrawn.
+- Run-to-run noise on a byte-identical configuration is **±20%**, which is larger than most of the
+  effects we had been reporting. Single-run cells at n=5 and n=10 cannot detect anything here.
 - "Identical completion rate" was wrong: that configuration resolved **131/300 against the
   baseline's 150/300** (McNemar p=0.013). It lost on accuracy and the headline said parity.
 - The cmm comparison was rigged by our own prompt and wrapper: cmm was missing three discipline

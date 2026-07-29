@@ -450,17 +450,35 @@ to 6 lines while ours returned whole function bodies (19.4 lines mean), a concur
 applied to our arm only, tokens were summed from a lossy accumulator that undercounted cmm ~25%, and
 a grading race submitted 7 real graph-arm patches as empty and 0 baseline patches.
 
-Current measurement — 50 language-stratified instances, 3 runs per arm, matched prompt discipline,
-billing-truth tokens, Haiku: **31.6% fewer tokens than a no-tool agent** (CI [20.8, 41.3]), resolving
-**22.3 vs 20.0** of 50 (ahead in all three runs, not statistically separable), in **23.9 turns against
-30.2**, at **$0.474 per resolved instance against $0.513**. Against codebase-memory-mcp: **35.7%**
-fewer tokens. cmm itself does **not** measurably beat no-tool (+5.1%, CI crosses zero), so its
-27.4%/36.6% figures are withdrawn too.
+**The 31.6% figure is ALSO withdrawn** — it was measured with a 119-word operating-rules paragraph
+in the graph arm's prompt that the comparison arm never received, *on top of* a frugality block all
+three arms already shared. Removing that redundant restatement moved the same cell from −18.9% to
++26.9%: a ~45-point swing from prompt text. The advantage was our prompt, not our index.
 
-**The saving is model-dependent and reverses on stronger models**, because it comes from deleting
-grep-and-read turns that a capable agent never spends: Haiku baseline 30.2 turns, graph removes 6.3,
-−31.6%; Sonnet baseline 15.6, graph ADDS 0.6, +13.9% (not significant); Fable baseline 10.1, graph
-ADDS 0.9, +31.4% (CI excludes zero). Break-even is near a 20-turn baseline.
+Current measurement — 48 language-stratified instances × **3 replicate runs** (144 matched
+instance-runs), matched prompt discipline in every arm, billing-truth tokens, Haiku:
+**−17.4% total tokens** (CI [−27.8, −6.5]), **−32.0% geomean** (CI [−41.5, −21.2]), **−11.8% USD**,
+resolving **54 vs the baseline's 57** of 144 (McNemar p=0.42 — a tie), so **cost per resolved issue
+−6.9%** ($0.539 vs $0.579). Against codebase-memory-mcp: **−22.8%** total, **−27.1%** geomean.
+cmm does not measurably beat no-tool either (+7.0% total, CI crosses zero).
+
+Quote the **per-resolved** figure, not the raw token cut: a token saving that costs resolves is not
+a saving.
+
+**The most robust result is retrieval**, because no agent is in the loop: the file the gold patch
+edits reaches the payload in **96.3%** of sessions (52/54) against cmm's **81.5%** (44/54), 10
+exclusive wins to 2, sign test p=0.0386, at comparable bytes and with fewer search calls (81 vs
+112). It is an end-to-end arm comparison, not a retriever-isolated one — the arms wrote different
+queries — and part of cmm's deficit is our wrapper's own hit cap.
+
+**Outside Haiku we cannot measure the effect at all.** Re-running a byte-identical configuration
+moves total tokens by up to **±20%**; at 80% power the minimum detectable effect is **31% at n=29,
+59% at n=10, 93% at n=5**. Sonnet (+0.9% geomean, CI [−33, +41]), Opus (−6.4%) and Fable (+6.7%)
+are all inside that noise, so treat them as unmeasured rather than as results. Break-even on turns
+is near a 20-turn baseline: the graph pays by deleting locate turns, and a capable agent on a small
+task never spends them.
+
+**A ≥35% saving is refuted, not unproven**: the favourable CI bound on total tokens is −27.8%.
 
 Paired analysis of the 31 losses where the baseline fixed the bug and the graph-assisted agent did
 not, both having found the correct file, shows the clamp was the cause: the graph agent ran **zero
