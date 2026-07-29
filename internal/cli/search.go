@@ -663,16 +663,18 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	// So make one pass that refuses to accept a plan unless it can hold the top hit's COMPLETE
 	// block, degrading the header to buy it. Only if no header variant can does the second pass
 	// fall back to the old best-effort behaviour, so a caller never loses a result outright.
-	// The bar is "the top hit carries SOURCE", not "the top hit is complete": demanding the whole
-	// body would be unbuyable at these budgets, so the pass would never fire. A one-byte budget
-	// renders the location line alone, which is exactly the degraded form we are trying to avoid,
-	// so anything longer than that means at least one line of source survived.
-	topHitLocationOnly := 0
-	if len(results) > 0 {
-		topHitLocationOnly = len(renderAgentSearchResults(results[:1], []int{1}))
-	}
+	// The bar is "the head carries SOURCE", tested STRUCTURALLY.
+	//
+	// The first attempt derived a byte threshold by rendering the top hit at a one-byte budget
+	// and requiring the real plan to beat it. That probe returns EMPTY (nothing fits in one
+	// byte), so the threshold was 0, the `== 0` guard below skipped the whole pass, and only the
+	// fallback ever ran — the protection was dead code. Confirmed by instrumentation:
+	// `FIT protect=false header=26 diag=14 remaining=20 formatted=9 locOnly=0`.
+	//
+	// A rendered block is location-only when every line is a `N. path:line …` header, so ask
+	// that question of the bytes instead of guessing a size.
 	for _, protectTopHit := range []bool{true, false} {
-		if protectTopHit && topHitLocationOnly == 0 {
+		if protectTopHit && len(results) == 0 {
 			continue // nothing to protect; the fallback pass is the only pass
 		}
 		for _, header := range [][]byte{fullHeader, compactHeader, timedHeader, terseHeader, legacyHeader} {
@@ -709,7 +711,7 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 								continue
 							}
 							formatted := fitAgentSearchResults(results, remaining)
-							if protectTopHit && len(formatted) <= topHitLocationOnly {
+							if protectTopHit && !agentSearchBlockCarriesSource(formatted) {
 								// This prefix is too wide to leave room for the top hit's complete block.
 								// Degrade the prefix and try again rather than handing back a truncated
 								// answer: the caller can afford a shorter latency line, not a missing snippet.
@@ -876,6 +878,50 @@ func agentDiagnosticPath(path string) string {
 		return ""
 	}
 	return ": " + path
+}
+
+// agentSearchBlockCarriesSource reports whether a rendered ranked block contains any source,
+// as opposed to being nothing but locator lines.
+//
+// The shape matters and cost two wrong attempts. The AGENT format's locator is `path:line *`,
+// with no `N. ` rank prefix (that is the TEXT format), so a prefix test classified the locator
+// itself as source, the protection accepted a locator-only plan, and it stayed dead. A locator
+// line is therefore recognised by its structure: a first token of `<path>:<digits>`.
+func agentSearchBlockCarriesSource(block []byte) bool {
+	for _, line := range bytes.Split(block, []byte("\n")) {
+		trimmed := bytes.TrimRight(line, " \t")
+		if len(bytes.TrimSpace(trimmed)) == 0 {
+			continue
+		}
+		if !agentSearchLineIsLocator(trimmed) {
+			return true
+		}
+	}
+	return false
+}
+
+// agentSearchLineIsLocator matches `<path>:<digits>` at the head of a line, where <path> has no
+// whitespace. Source lines fail it: `def target():` has a space before its colon, and an indented
+// body line does not start with a path at all.
+func agentSearchLineIsLocator(line []byte) bool {
+	first := line
+	if i := bytes.IndexAny(line, " \t"); i >= 0 {
+		first = line[:i]
+	}
+	// leading whitespace means an indented body line, never a locator
+	if len(first) == 0 {
+		return false
+	}
+	colon := bytes.LastIndexByte(first, ':')
+	if colon <= 0 || colon == len(first)-1 {
+		return false
+	}
+	for _, c := range first[colon+1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func fitAgentSearchResults(results []sem.SearchResult, budget int) []byte {
