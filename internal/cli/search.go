@@ -610,6 +610,14 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 		stats.PreselectLatencyMS,
 		stats.TotalLatencyMS,
 	))
+	// Two further rungs between the compact header and the legacy one, shedding the latency
+	// fields in order of least diagnostic value (preselect, then query, then total) while
+	// keeping the "I:<state>/<index-ms>" shape every consumer keys off. Without these the only
+	// way to buy bytes back for the ranking was the legacy "Index: cache-miss (113ms)" form,
+	// which changes the prefix — so a slow machine had to choose between losing the snippet and
+	// losing the machine-readable header. It now loses neither.
+	timedHeader := []byte(fmt.Sprintf("I:%s/%d T:%d\n", cacheState, stats.IndexLatencyMS, stats.TotalLatencyMS))
+	terseHeader := []byte(fmt.Sprintf("I:%s/%d\n", cacheState, stats.IndexLatencyMS))
 	legacyHeader := []byte(fmt.Sprintf("Index: cache-%s (%dms)\n", cacheState, stats.IndexLatencyMS))
 	diagnosticVariants := [][]byte{fullDiagnostics}
 	if !bytes.Equal(fullDiagnostics, compactDiagnostics) {
@@ -642,45 +650,79 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	if len(closedSet) > 0 {
 		closedSetVariants = append(closedSetVariants, nil)
 	}
-	for _, header := range [][]byte{fullHeader, compactHeader, legacyHeader} {
-		for _, diagnostics := range diagnosticVariants {
-			for _, confidence := range confidenceVariants {
-				for _, warning := range closedSetVariants {
-					for _, containerMap := range mapVariants {
-						remaining := budget - len(header) - len(diagnostics) - len(confidence) -
-							len(warning) - len(containerMap)
-						if remaining <= 0 {
-							continue
-						}
-						prefix := func() []byte {
-							payload := append([]byte{}, header...)
-							payload = append(payload, diagnostics...)
-							payload = append(payload, confidence...)
-							payload = append(payload, warning...)
-							return append(payload, containerMap...)
-						}
-						// The blocks sit on opposite sides of the ranking and degrade
-						// differently, which is why they compose without a further nested
-						// variant loop: every prefix block has its own full/compact/absent
-						// ladder above, while a suffix block rides along only when the
-						// fitted payload leaves room for it (fitAgentSearchSuffixes).
-						// Neither can cost the caller a ranked location.
-						if len(results) == 0 {
-							noResults := []byte("No search results.\n")
-							if len(noResults) <= remaining {
+	// TELEMETRY PRECISION MUST NOT COST RETRIEVAL CONTENT. The header carries measured
+	// latencies, so its WIDTH depends on how fast this machine is: "I:miss/21 Q:12 P:25 T:59"
+	// is 25 bytes on a warm laptop and "I:miss/113 Q:60 P:112 T:287" is 28 on a loaded CI
+	// runner. Because the header ladder is the outermost loop, those 3 bytes used to be taken
+	// out of the ranking instead of out of the diagnostic — at --max-context-bytes 64 the top
+	// hit's snippet line ("def target():", 14 bytes) survived on the fast machine and vanished
+	// on the slow one. Same repo, same query, same budget, less useful answer because the box
+	// was busy. That is a real defect for an agent, and it is what made
+	// TestSearchCommandAgentFormatKeepsTopLocationUnderTightBudget fail on windows-latest only.
+	//
+	// So make one pass that refuses to accept a plan unless it can hold the top hit's COMPLETE
+	// block, degrading the header to buy it. Only if no header variant can does the second pass
+	// fall back to the old best-effort behaviour, so a caller never loses a result outright.
+	// The bar is "the head carries SOURCE", tested STRUCTURALLY.
+	//
+	// The first attempt derived a byte threshold by rendering the top hit at a one-byte budget
+	// and requiring the real plan to beat it. That probe returns EMPTY (nothing fits in one
+	// byte), so the threshold was 0, the `== 0` guard below skipped the whole pass, and only the
+	// fallback ever ran — the protection was dead code. Confirmed by instrumentation:
+	// `FIT protect=false header=26 diag=14 remaining=20 formatted=9 locOnly=0`.
+	//
+	// A rendered block is location-only when every line is a `N. path:line …` header, so ask
+	// that question of the bytes instead of guessing a size.
+	for _, protectTopHit := range []bool{true, false} {
+		if protectTopHit && len(results) == 0 {
+			continue // nothing to protect; the fallback pass is the only pass
+		}
+		for _, header := range [][]byte{fullHeader, compactHeader, timedHeader, terseHeader, legacyHeader} {
+			for _, diagnostics := range diagnosticVariants {
+				for _, confidence := range confidenceVariants {
+					for _, warning := range closedSetVariants {
+						for _, containerMap := range mapVariants {
+							remaining := budget - len(header) - len(diagnostics) - len(confidence) -
+								len(warning) - len(containerMap)
+							if remaining <= 0 {
+								continue
+							}
+							prefix := func() []byte {
+								payload := append([]byte{}, header...)
+								payload = append(payload, diagnostics...)
+								payload = append(payload, confidence...)
+								payload = append(payload, warning...)
+								return append(payload, containerMap...)
+							}
+							// The blocks sit on opposite sides of the ranking and degrade
+							// differently, which is why they compose without a further nested
+							// variant loop: every prefix block has its own full/compact/absent
+							// ladder above, while a suffix block rides along only when the
+							// fitted payload leaves room for it (fitAgentSearchSuffixes).
+							// Neither can cost the caller a ranked location.
+							if len(results) == 0 {
+								noResults := []byte("No search results.\n")
+								if len(noResults) <= remaining {
+									_, err := out.Write(fitAgentSearchSuffixes(
+										append(prefix(), noResults...), suffixes, budget,
+									))
+									return err
+								}
+								continue
+							}
+							formatted := fitAgentSearchResults(results, remaining)
+							if protectTopHit && !agentSearchBlockCarriesSource(formatted) {
+								// This prefix is too wide to leave room for the top hit's complete block.
+								// Degrade the prefix and try again rather than handing back a truncated
+								// answer: the caller can afford a shorter latency line, not a missing snippet.
+								continue
+							}
+							if len(formatted) > 0 {
 								_, err := out.Write(fitAgentSearchSuffixes(
-									append(prefix(), noResults...), suffixes, budget,
+									append(prefix(), formatted...), suffixes, budget,
 								))
 								return err
 							}
-							continue
-						}
-						formatted := fitAgentSearchResults(results, remaining)
-						if len(formatted) > 0 {
-							_, err := out.Write(fitAgentSearchSuffixes(
-								append(prefix(), formatted...), suffixes, budget,
-							))
-							return err
 						}
 					}
 				}
@@ -836,6 +878,50 @@ func agentDiagnosticPath(path string) string {
 		return ""
 	}
 	return ": " + path
+}
+
+// agentSearchBlockCarriesSource reports whether a rendered ranked block contains any source,
+// as opposed to being nothing but locator lines.
+//
+// The shape matters and cost two wrong attempts. The AGENT format's locator is `path:line *`,
+// with no `N. ` rank prefix (that is the TEXT format), so a prefix test classified the locator
+// itself as source, the protection accepted a locator-only plan, and it stayed dead. A locator
+// line is therefore recognised by its structure: a first token of `<path>:<digits>`.
+func agentSearchBlockCarriesSource(block []byte) bool {
+	for _, line := range bytes.Split(block, []byte("\n")) {
+		trimmed := bytes.TrimRight(line, " \t")
+		if len(bytes.TrimSpace(trimmed)) == 0 {
+			continue
+		}
+		if !agentSearchLineIsLocator(trimmed) {
+			return true
+		}
+	}
+	return false
+}
+
+// agentSearchLineIsLocator matches `<path>:<digits>` at the head of a line, where <path> has no
+// whitespace. Source lines fail it: `def target():` has a space before its colon, and an indented
+// body line does not start with a path at all.
+func agentSearchLineIsLocator(line []byte) bool {
+	first := line
+	if i := bytes.IndexAny(line, " \t"); i >= 0 {
+		first = line[:i]
+	}
+	// leading whitespace means an indented body line, never a locator
+	if len(first) == 0 {
+		return false
+	}
+	colon := bytes.LastIndexByte(first, ':')
+	if colon <= 0 || colon == len(first)-1 {
+		return false
+	}
+	for _, c := range first[colon+1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func fitAgentSearchResults(results []sem.SearchResult, budget int) []byte {
