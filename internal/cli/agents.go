@@ -66,7 +66,7 @@ verification turn costs one turn; a patch that does not compile costs everything
 One search returns three more blocks, and each one exists because it removes a round-trip that was
 measured out of real sessions. Use them as instructions, not as background reading.
 
-**SAME-CONCEPT LITERALS** — every place in the repository where the one distinctive literal that
+**SAME-CONCEPT LITERAL** — every place in the repository where the one distinctive literal that
 names this concept is spelled out, each tagged ` + "`EDIT`" + `, ` + "`CONSUMER`" + ` or ` + "`DOC`" + `, with the header stating
 the repository-wide totals. **This IS your sweep.** Fix the ` + "`EDIT`" + ` sites — they declare or register
 the concept. Ignore the ` + "`CONSUMER`" + ` ones — they only pass the string, so they need no change. ` + "`DOC`" + ` is
@@ -147,7 +147,7 @@ The output is grouped, and the groups mean different things:
    gave you, or — when it gave none — build/compile what you touched or run the nearest existing
    test. Pick the narrowest command that would still catch a syntax, type, name, or arity error
    (one package, one file, one test — not the whole suite).
-6b. The SAME-CONCEPT LITERALS block IS your repo-wide sweep: fix its ` + "`EDIT`" + ` sites, ignore its
+6b. The SAME-CONCEPT LITERAL block IS your repo-wide sweep: fix its ` + "`EDIT`" + ` sites, ignore its
    ` + "`CONSUMER`" + ` sites, and do not grep for either. Its header states the repository's own totals.
 6c. Adding a variant to an enum / sealed set / union / const group? If the CLOSED-SET WARNING says
    ` + "`checked at runtime`" + `, add the missing switch arm before you finish. That failure is a runtime

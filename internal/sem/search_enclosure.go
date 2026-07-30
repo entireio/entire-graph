@@ -124,6 +124,8 @@ func planSearchEnclosures(
 	symbolsByFile map[string][]SymbolRecord,
 	read contentReader,
 	maxLines int,
+	contextLines int,
+	bodyHeadRanks int,
 ) []searchEnclosure {
 	if len(results) == 0 {
 		return nil
@@ -131,10 +133,19 @@ func planSearchEnclosures(
 	if maxLines <= 0 {
 		maxLines = defaultSearchEnclosureMaxLines
 	}
+	if bodyHeadRanks <= 0 {
+		bodyHeadRanks = searchEnclosureHeadRanks
+	}
 	enclosures := make([]searchEnclosure, len(results))
 	fileLines := map[string][]string{}
 	unreadable := map[string]bool{}
 	for index, result := range results {
+		// A rank the allocator can never upgrade needs no enclosure planned for it, and planning
+		// one costs a file read. This is the only place that read happens, so bounding it here
+		// bounds it everywhere.
+		if index >= bodyHeadRanks {
+			continue
+		}
 		symbol, ok := enclosingCallableForResult(result, symbolsByID, symbolsByFile)
 		if !ok {
 			continue
@@ -163,6 +174,21 @@ func planSearchEnclosures(
 		}
 		if result.SnippetStartLine <= start && result.SnippetEndLine >= end {
 			continue
+		}
+		// The margin is rank-1 only and never widens the reported symbol: `symbol` still names the
+		// callable, so a padded body cannot misattribute itself to its neighbours. It is capped by
+		// maxLines like any other body, so a padded body can never exceed the unpadded ceiling.
+		if index == 0 && contextLines > 0 {
+			padStart, padEnd := start-contextLines, end+contextLines
+			if padStart < 1 {
+				padStart = 1
+			}
+			if padEnd > len(lines) {
+				padEnd = len(lines)
+			}
+			if padEnd-padStart+1 <= maxLines {
+				start, end = padStart, padEnd
+			}
 		}
 		enclosures[index] = searchEnclosure{start: start, end: end, lines: lines, symbol: symbol}
 	}

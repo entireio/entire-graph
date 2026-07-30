@@ -45,24 +45,26 @@ const (
 )
 
 type searchFlags struct {
-	Repo              string
-	Query             string
-	Format            string
-	Profile           string
-	Worktree          bool
-	TopK              int
-	ContextLines      int
-	MaxRegionLines    int
-	MaxSnippetLines   int
-	MaxRegionsPerFile int
-	IgnoreFiles       []string
-	IncludeFiles      []string
-	CacheDir          string
-	DisableCache      bool
-	MaxIndexedFiles   int
-	IndexAllFiles     bool
-	MaxContextBytes   int
-	Deep              bool
+	Repo                  string
+	Query                 string
+	Format                string
+	Profile               string
+	Worktree              bool
+	TopK                  int
+	ContextLines          int
+	MaxRegionLines        int
+	MaxSnippetLines       int
+	MaxRegionsPerFile     int
+	IgnoreFiles           []string
+	IncludeFiles          []string
+	CacheDir              string
+	DisableCache          bool
+	MaxIndexedFiles       int
+	IndexAllFiles         bool
+	MaxContextBytes       int
+	BodyHeadRanks         int
+	EnclosureContextLines int
+	Deep                  bool
 	// The reference blocks, off unless asked for. See SearchOptions in internal/sem/search.go for
 	// the session measurement that made OFF the default.
 	ContainerMap   bool
@@ -129,21 +131,23 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		flags.MaxContextBytes = 0
 	}
 	response, err := sem.SearchRepository(ctx, repo, opts.Version, flags.Query, sem.SearchOptions{
-		Worktree:          flags.Worktree,
-		IgnoreFiles:       flags.IgnoreFiles,
-		IncludeFiles:      flags.IncludeFiles,
-		Profile:           profile,
-		TopK:              flags.TopK,
-		ContextLines:      flags.ContextLines,
-		MaxRegionLines:    flags.MaxRegionLines,
-		MaxSnippetLines:   flags.MaxSnippetLines,
-		MaxRegionsPerFile: flags.MaxRegionsPerFile,
-		CacheDir:          cacheDir,
-		DisableCache:      flags.DisableCache,
-		MaxIndexedFiles:   flags.MaxIndexedFiles,
-		IndexAllFiles:     flags.IndexAllFiles,
-		MaxContextBytes:   flags.MaxContextBytes,
-		Deep:              flags.Deep,
+		Worktree:              flags.Worktree,
+		IgnoreFiles:           flags.IgnoreFiles,
+		IncludeFiles:          flags.IncludeFiles,
+		Profile:               profile,
+		TopK:                  flags.TopK,
+		ContextLines:          flags.ContextLines,
+		MaxRegionLines:        flags.MaxRegionLines,
+		MaxSnippetLines:       flags.MaxSnippetLines,
+		MaxRegionsPerFile:     flags.MaxRegionsPerFile,
+		CacheDir:              cacheDir,
+		DisableCache:          flags.DisableCache,
+		MaxIndexedFiles:       flags.MaxIndexedFiles,
+		IndexAllFiles:         flags.IndexAllFiles,
+		MaxContextBytes:       flags.MaxContextBytes,
+		BodyHeadRanks:         flags.BodyHeadRanks,
+		EnclosureContextLines: flags.EnclosureContextLines,
+		Deep:                  flags.Deep,
 
 		IncludeContainerMap:   flags.ContainerMap,
 		IncludeSignatureTypes: flags.SignatureTypes,
@@ -1171,6 +1175,18 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 				return flags, nil, err
 			}
 			flags.MaxSnippetLines, i = value, next
+		case "--body-head-ranks":
+			value, next, err := searchPositiveIntFlag(args, i)
+			if err != nil {
+				return flags, nil, err
+			}
+			flags.BodyHeadRanks, i = value, next
+		case "--enclosure-context-lines":
+			value, next, err := searchPositiveIntFlag(args, i)
+			if err != nil {
+				return flags, nil, err
+			}
+			flags.EnclosureContextLines, i = value, next
 		case "--max-regions-per-file":
 			value, next, err := searchPositiveIntFlag(args, i)
 			if err != nil {

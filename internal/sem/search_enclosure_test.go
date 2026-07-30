@@ -124,7 +124,7 @@ func TestPlanSearchEnclosuresResolvesTrueSymbolBounds(t *testing.T) {
 				byFile[record.FilePath] = []SymbolRecord{record}
 			}
 			enclosures := planSearchEnclosures(
-				[]SearchResult{testCase.result}, byID, byFile, reader, testCase.maxLines,
+				[]SearchResult{testCase.result}, byID, byFile, reader, testCase.maxLines, 0, 0,
 			)
 			if len(enclosures) != 1 {
 				t.Fatalf("enclosures = %d, want 1", len(enclosures))
@@ -679,5 +679,96 @@ func TestFitSearchResultsToBudgetPerResultFloor(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestPlanSearchEnclosuresBodyHeadRanksBoundsBodies pins the split between the BODY head and the
+// locator head. Measured on sonnet (config 9, 20 instances): of the files a payload showed, rank 1
+// was later read 62% / edited 54% and rank 2 read 27% / edited 20%, but ranks 3, 4 and 5 were read
+// 0% / 7% / 0% and edited 11% / 7% / 0% — while still being charged for 21 complete bodies whose
+// bytes are replayed on every subsequent turn. Narrowing the body head must therefore stop planning
+// enclosures past the cap, WITHOUT dropping the results themselves: a tail entry is the only mention
+// of its file, and the gold file sits at rank 6-8 on 17% of instances.
+func TestPlanSearchEnclosuresBodyHeadRanksBoundsBodies(t *testing.T) {
+	t.Parallel()
+	lines, symbol := enclosureTestFile(200, 40, 90, "function")
+	reader := enclosureTestReader(lines)
+	byID := map[string]SymbolRecord{symbol.ID: symbol}
+	result := SearchResult{
+		FilePath: "pkg/file.go", StartLine: 60, EndLine: 64, FocusLine: 62,
+		SnippetStartLine: 60, SnippetEndLine: 64, SymbolID: symbol.ID,
+	}
+	results := []SearchResult{result, result, result, result, result}
+
+	enclosures := planSearchEnclosures(results, byID, nil, reader, 0, 0, 2)
+	if len(enclosures) != len(results) {
+		t.Fatalf("enclosures = %d, want %d — narrowing the body head must not drop results",
+			len(enclosures), len(results))
+	}
+	for index, enclosure := range enclosures {
+		if index < 2 {
+			if !enclosure.available() {
+				t.Fatalf("rank %d: want a body inside the head", index+1)
+			}
+			continue
+		}
+		if enclosure.available() {
+			t.Fatalf("rank %d: got a body past bodyHeadRanks=2, want none", index+1)
+		}
+	}
+
+	// 0 means "use the built-in depth", so the default behaviour is unchanged.
+	for index, enclosure := range planSearchEnclosures(results, byID, nil, reader, 0, 0, 0) {
+		if !enclosure.available() {
+			t.Fatalf("rank %d: default depth should still plan a body", index+1)
+		}
+	}
+}
+
+// TestPlanSearchEnclosuresContextLinesPadsRankOneOnly pins the margin. Measured over 65 sessions: of
+// the reads that re-open a file whose complete body the payload ALREADY printed, only 3.8% ask for
+// lines inside that body while 80% ask for lines outside it (median gap 42 lines). The body is the
+// right unit to edit and the wrong unit to understand. The margin is rank-1 only, is capped by
+// maxLines like any other body, and never renames the symbol.
+func TestPlanSearchEnclosuresContextLinesPadsRankOneOnly(t *testing.T) {
+	t.Parallel()
+	lines, symbol := enclosureTestFile(200, 40, 90, "function")
+	reader := enclosureTestReader(lines)
+	byID := map[string]SymbolRecord{symbol.ID: symbol}
+	result := SearchResult{
+		FilePath: "pkg/file.go", StartLine: 60, EndLine: 64, FocusLine: 62,
+		SnippetStartLine: 60, SnippetEndLine: 64, SymbolID: symbol.ID,
+	}
+
+	got := planSearchEnclosures([]SearchResult{result, result}, byID, nil, reader, 0, 10, 0)
+	if got[0].start != 30 || got[0].end != 100 {
+		t.Fatalf("rank 1 = %d-%d, want 30-100 (symbol 40-90 padded by 10)", got[0].start, got[0].end)
+	}
+	if got[0].symbol.Name != symbol.Name {
+		t.Fatalf("padded body renamed the symbol to %q", got[0].symbol.Name)
+	}
+	if got[1].start != 40 || got[1].end != 90 {
+		t.Fatalf("rank 2 = %d-%d, want the unpadded 40-90", got[1].start, got[1].end)
+	}
+
+	// A margin that would push the body past the line cap is refused, not truncated: the cap is
+	// what guarantees a padded body can never cost more than an unpadded one was allowed to.
+	capped := planSearchEnclosures([]SearchResult{result}, byID, nil, reader, 60, 40, 0)
+	if capped[0].start != 40 || capped[0].end != 90 {
+		t.Fatalf("capped = %d-%d, want the unpadded 40-90", capped[0].start, capped[0].end)
+	}
+
+	// The margin clamps at the file edges rather than running off them.
+	edgeLines, edgeSymbol := enclosureTestFile(50, 3, 47, "function")
+	edge := planSearchEnclosures(
+		[]SearchResult{{
+			FilePath: "pkg/file.go", StartLine: 20, EndLine: 24, FocusLine: 22,
+			SnippetStartLine: 20, SnippetEndLine: 24, SymbolID: edgeSymbol.ID,
+		}},
+		map[string]SymbolRecord{edgeSymbol.ID: edgeSymbol}, nil,
+		enclosureTestReader(edgeLines), 0, 25, 0,
+	)
+	if edge[0].start != 1 || edge[0].end != 50 {
+		t.Fatalf("edge = %d-%d, want 1-50 (clamped to the file)", edge[0].start, edge[0].end)
 	}
 }

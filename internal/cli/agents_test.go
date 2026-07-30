@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"github.com/entireio/entire-graph/internal/sem"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,7 +83,7 @@ func TestAgentGuideRequiresBoundedVerification(t *testing.T) {
 	// agent uses them, and each with the specific action that removes the round-trip. Their wording
 	// is pinned because it has to stay consistent with the measured harness prompt.
 	for _, want := range []string{
-		"SAME-CONCEPT LITERALS",
+		sem.LiteralClusterBlockName,
 		"This IS your sweep",
 		"Do not grep for any of them",
 		"It is a\ncommand, not a suggestion",

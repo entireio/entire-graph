@@ -654,10 +654,18 @@ func searchLiteralClusterCost(cluster *SearchLiteralCluster) int {
 	return maxInt(len(encoded), len(RenderSearchLiteralCluster(cluster)))
 }
 
+// LiteralClusterBlockName is the label the literal-cluster block prints. It is exported because the
+// coding-agent guide TELLS an agent to look for this block by name, and the two spellings drifted:
+// the guide said "SAME-CONCEPT LITERALS" while the payload printed "SAME-CONCEPT LITERAL". Measured
+// cost of that drift: a grep-based audit of 65 agent sessions reported the block firing 0/65 when it
+// actually fired 43/65, because it searched for the documented name rather than the emitted one. One
+// exported constant, asserted by the guide's test, is what keeps them in step.
+const LiteralClusterBlockName = "SAME-CONCEPT LITERAL"
+
 // searchLiteralClusterHeader is the block's label. It states the count so a truncated list can
 // never read as the whole picture.
 func searchLiteralClusterHeader(cluster *SearchLiteralCluster) string {
-	header := fmt.Sprintf("SAME-CONCEPT LITERAL %q — %d in %d file",
+	header := fmt.Sprintf(LiteralClusterBlockName+" %q — %d in %d file",
 		cluster.Literal, cluster.HitsTotal, cluster.FilesTotal)
 	if cluster.FilesTotal != 1 {
 		header += "s"
