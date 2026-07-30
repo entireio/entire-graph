@@ -88,6 +88,19 @@ type SearchOptions struct {
 	// locator head. 0 means the built-in depth (searchEnclosureHeadRanks). It may only narrow
 	// the head, never widen it, so the growth allowance stays sized for the bodies it funds.
 	BodyHeadRanks int
+	// MEASURED SESSION RESULT — READ BEFORE ENABLING. On haiku 30 with the prompt and the baseline
+	// block held constant, turning this on together with --top-k 20 cost +18.9 pt of total_tokens,
+	// +17.7 pt of turns and +14.6 pt of billed_new against the same cell with shipped defaults
+	// (-23.5% -> -4.6% total_tokens). eg's turns rose 32.10 -> 35.37 against an unchanged baseline.
+	// graphmark's resolution-anchored eval independently found the same combination cost CORRECTNESS:
+	// the terser edit-from-payload path stops short of a complete fix on harder tasks.
+	//
+	// The $0 payload screen that cleared it (gold recall 22->26/30, code-less gold 8->6, no instance
+	// regressing) was measuring the PAYLOAD, not the SESSION. A payload-shape win is not evidence of a
+	// session win -- that has now been measured four times, and this is the first time it actively hurt.
+	//
+	// It stays here, opt-in and default 0, because the mechanism is sound and a narrower use may pay.
+	// Do not enable it in a measured cell without re-running the attribution.
 	// HeadWindowLines makes a HEAD rank that has no enclosable callable come back as a bounded
 	// read window of this many lines instead of a two-line locator. 0 = off (previous behaviour).
 	//
