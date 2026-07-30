@@ -65,6 +65,7 @@ type searchFlags struct {
 	BodyHeadRanks         int
 	EnclosureContextLines int
 	HeadWindowLines       int
+	FileOutline           bool
 	Deep                  bool
 	// The reference blocks, off unless asked for. See SearchOptions in internal/sem/search.go for
 	// the session measurement that made OFF the default.
@@ -149,6 +150,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		BodyHeadRanks:         flags.BodyHeadRanks,
 		EnclosureContextLines: flags.EnclosureContextLines,
 		HeadWindowLines:       flags.HeadWindowLines,
+		IncludeFileOutline:    flags.FileOutline,
 		Deep:                  flags.Deep,
 
 		IncludeContainerMap:   flags.ContainerMap,
@@ -325,6 +327,10 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 		if _, err := out.Write(block); err != nil {
 			return err
 		}
+	}
+	if block := sem.RenderSearchFileOutline(response.FileOutlines); len(block) > 0 {
+		out.Write(block)
+		fmt.Fprintln(out)
 	}
 	if block := sem.RenderSearchLiteralCluster(response.LiteralCluster); len(block) > 0 {
 		if _, err := out.Write(block); err != nil {
@@ -1183,6 +1189,8 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 				return flags, nil, err
 			}
 			flags.BodyHeadRanks, i = value, next
+		case "--file-outline":
+			flags.FileOutline, i = true, i
 		case "--head-window-lines":
 			value, next, err := searchPositiveIntFlag(args, i)
 			if err != nil {

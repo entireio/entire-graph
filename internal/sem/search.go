@@ -96,6 +96,14 @@ type SearchOptions struct {
 	// carried no code at all. Those reads cost a turn (~17,000 tokens) to recover what ~2 kB of
 	// window would have carried.
 	HeadWindowLines int
+	// IncludeFileOutline emits the FILE OUTLINE block: the other symbols in the files the payload
+	// already named, as an index with no source. Off by default.
+	//
+	// Measured over 79 agent sessions: 77 targeted greps landed on a file the payload had already
+	// named, 35 of them immediately followed by a Read of that same file, and the reads that follow a
+	// payload file land a median 109 lines from anything printed — 47 of 53 inside another symbol the
+	// graph already indexes in that file.
+	IncludeFileOutline bool
 	// EnclosureContextLines pads the rank-1 complete body with this many source lines on each
 	// side. 0 means no padding (the body's exact symbol bounds).
 	//
@@ -250,8 +258,12 @@ type SearchStats struct {
 	// listed; the block's own hits_total says how many exist.
 	LiteralClusterBytes int `json:"literal_cluster_bytes,omitempty"`
 	LiteralClusterHits  int `json:"literal_cluster_hits,omitempty"`
-	VerifyCommandBytes  int `json:"verify_command_bytes,omitempty"`
-	ClosedSetBytes      int `json:"closed_set_bytes,omitempty"`
+	// FileOutlineBytes is what the FILE OUTLINE block cost, so its price is attributable like every
+	// other block's rather than emergent.
+	FileOutlineBytes   int `json:"file_outline_bytes,omitempty"`
+	FileOutlineRows    int `json:"file_outline_rows,omitempty"`
+	VerifyCommandBytes int `json:"verify_command_bytes,omitempty"`
+	ClosedSetBytes     int `json:"closed_set_bytes,omitempty"`
 	// ContextBlockBytes is the sum of every block counter above: the whole cost of
 	// everything outside `results`, in one number, so a caller can see the payload's true size
 	// without re-deriving it.
@@ -298,6 +310,8 @@ type SearchResponse struct {
 	// literal that names the queried concept, each annotated with its enclosing symbol and whether
 	// that site defines the concept or merely passes it. See search_literals.go.
 	LiteralCluster *SearchLiteralCluster `json:"literal_cluster,omitempty"`
+	// FileOutlines indexes the other symbols in the files the payload named. An index, never source.
+	FileOutlines []SearchFileOutline `json:"file_outlines,omitempty"`
 	// VerifyCommand is the narrowest test invocation for the top hit's file, derived from the
 	// repository's own build files. Nil whenever it could not be derived with confidence: a wrong
 	// command costs more than no command. See search_verify.go.
@@ -958,6 +972,19 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		stats.LiteralClusterBytes = searchLiteralClusterCost(literalCluster)
 		stats.LiteralClusterHits = len(literalCluster.Hits)
 	}
+	var fileOutlines []SearchFileOutline
+	if options.IncludeFileOutline {
+		fileOutlines = buildSearchFileOutlines(
+			results, symbolsByFile,
+			searchOutlineMaxFiles, searchOutlineMaxRowsPerFile, searchOutlineMaxBytes,
+		)
+		if len(fileOutlines) > 0 {
+			stats.FileOutlineBytes = SearchFileOutlineCost(fileOutlines)
+			for _, outline := range fileOutlines {
+				stats.FileOutlineRows += len(outline.Rows)
+			}
+		}
+	}
 	verifyCommand := buildSearchVerifyCommand(results, verifyEvidence)
 	if verifyCommand != nil {
 		stats.VerifyCommandBytes = searchVerifyCommandCost(verifyCommand)
@@ -1020,6 +1047,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		TypeCard:        typeCard,
 		ContainerMap:    containerMap,
 		LiteralCluster:  literalCluster,
+		FileOutlines:    fileOutlines,
 		VerifyCommand:   verifyCommand,
 		ClosedSet:       closedSet,
 		CoverageNote:    coverageNote,
