@@ -47,7 +47,7 @@ material. Symbols too large to return whole (>160 lines) keep their focused wind
 **Three blocks each replace a tool call you would otherwise spend a turn on.** They are the default
 payload's reason to exist, and they are instructions rather than background reading.
 
-- **SAME-CONCEPT LITERALS** (`literal_cluster` in JSON, `stats.literal_cluster_bytes`) is `grep`
+- **SAME-CONCEPT LITERAL** (`literal_cluster` in JSON, `stats.literal_cluster_bytes`) is `grep`
   folded into `search`. When the top hit contains one distinctive literal that names the queried
   concept — an enum constant's value, an option string, a compound identifier — the block lists every
   occurrence of it in the repository, each annotated with its enclosing symbol and one of three
@@ -176,7 +176,7 @@ prove it, sweep the concept, check the contract, check the names, check the neig
 
 ```text
 LOW CONFIDENCE  ->  CLOSED SET  ->  [CONTAINER MAP]  ->  candidate fix sites  ->  COVERING TEST
-                ->  VERIFY  ->  SAME-CONCEPT LITERALS  ->  [TYPES IN THIS SIGNATURE]
+                ->  VERIFY  ->  SAME-CONCEPT LITERAL  ->  [TYPES IN THIS SIGNATURE]
                 ->  [DECLARATIONS]  ->  RELATED SITES  ->  DOCS & FIXTURES
 ```
 
@@ -422,7 +422,7 @@ Then go straight to the top hit and edit from the body it printed — do not re-
 confirm what you were just shown, and do not re-search to 'make sure'. Reach the edit in as FEW
 turns as you can: every turn re-reads your whole context, and that replay is what this task costs.
 The result also hands you three things that each replace a round-trip you would otherwise spend:
-  SAME-CONCEPT LITERALS - every place this concept is spelled out, each tagged EDIT / CONSUMER /
+  SAME-CONCEPT LITERAL - every place this concept is spelled out, each tagged EDIT / CONSUMER /
       DOC. This IS your sweep: fix the EDIT sites, ignore the CONSUMER ones. Do not grep for them.
   VERIFY - the narrowest command that exercises the file you are changing. Run it ONCE when your
       edits are in. Read the error, fix exactly what it names, re-run at most once. Never hunt a
@@ -506,7 +506,7 @@ controls and caveats: the graphmark repo, `agentic-swebench/REPRODUCE.md` +
 4. **Never read a whole file to explore.** If you must read, read the line range around the symbol. To understand a type/class, query it — don't open its file.
 5. **Impact = one targeted query.** For "what breaks if I change X", use `neighbors --symbol X --relation CALLS --direction in` — not a whole-graph `snapshot`/`edges` dump, and not a repo-wide grep.
 6. **Minimise turns — in discovery, not in verification.** Token cost is roughly turns × context, so prefer one precise query over three broad ones and stop *discovery* once you can defend the edit with a focused hypothesis. Turn economy applies to finding code; it is not a licence to skip the check that your edit builds.
-7. **Complete the fix.** A fix is often not one edit in one place. The **SAME-CONCEPT LITERALS** block is your repo-wide sweep — fix its `EDIT` sites, ignore its `CONSUMER` sites, and do not grep for either; its header states the repository's own totals, so when the block is there you have seen the whole set. For structural neighbours (callers, siblings, near-duplicates) the RELATED SITES block is already in the payload; one `impact --symbol X` covers anything it missed. Measured: single-edit patches were 22 of 31 paired losses (baseline 8/31).
+7. **Complete the fix.** A fix is often not one edit in one place. The **SAME-CONCEPT LITERAL** block is your repo-wide sweep — fix its `EDIT` sites, ignore its `CONSUMER` sites, and do not grep for either; its header states the repository's own totals, so when the block is there you have seen the whole set. For structural neighbours (callers, siblings, near-duplicates) the RELATED SITES block is already in the payload; one `impact --symbol X` covers anything it missed. Measured: single-edit patches were 22 of 31 paired losses (baseline 8/31).
 8. **Verify once — always, with the command you were given.** Run the **VERIFY** line the search printed; when there was none, compile what you touched or run the nearest existing test, at the narrowest scope that would still catch a syntax, type, name, or arity error. Measured: the clamped agent ran zero builds/tests on 22 of 31 paired losses, two of which could not compile. One verification turn is far cheaper than a wrong patch. Measured separately: test/build accounts for 3.79 turns per session, much of it spent finding the right invocation rather than running it — which is what the VERIFY block removes.
 8b. **Adding a variant? Read the CLOSED-SET WARNING first.** When it reports a switch/match site as `checked at runtime`, add the missing arm before you finish: that failure is a runtime throw, not a compile error, so verification will not catch it either. The block only appears when the compiler would not catch it.
 9. **Verify, don't chase.** Verification is bounded: run it, read the error, fix exactly what the error names, re-run — a couple of iterations, not fifty. Do not enter an edit→test→edit loop hunting a green suite, and do not "fix" failures that predate your change.
