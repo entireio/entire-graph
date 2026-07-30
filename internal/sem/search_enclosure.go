@@ -55,6 +55,17 @@ const (
 	// searchCompleteSymbolSignal marks a result whose snippet is the complete source of its
 	// enclosing symbol, so an agent (and the tests) can tell a whole body from a window.
 	searchCompleteSymbolSignal = "complete-symbol"
+
+	// searchHeadWindowSignal marks a head result widened to a bounded READ WINDOW because no
+	// enclosable callable was available for it. It is code you can read, but it is not a whole
+	// body, so it never carries searchCompleteSymbolSignal.
+	searchHeadWindowSignal = "head-window"
+
+	// searchHeadWindowLines is how wide that window is. Sized from what the agents actually
+	// asked for: over 128 post-search reads of a payload file, the MEDIAN requested window was
+	// 50 lines and the median gap from the printed body was 42 lines. 60 lines centred on the
+	// hit covers the median request while costing ~2 kB against a ~17,000-token turn.
+	searchHeadWindowLines = 60
 )
 
 // CompleteSymbolSignal is searchCompleteSymbolSignal exported for renderers: a result carrying
@@ -75,6 +86,18 @@ type searchEnclosure struct {
 	// from ranking, and reporting `class Foo` above the source of one method inside it is
 	// wrong in the one field an agent uses to decide what it is looking at.
 	symbol SymbolRecord
+	// window marks an enclosure that is NOT a complete callable: a bounded read window centred
+	// on the hit, used when no enclosable callable exists for a head rank (an unenclosable kind,
+	// a body past the line cap, a hit outside its own symbol, a document/template). Such an
+	// enclosure must never claim the complete-symbol signal — it is readable code, not a whole
+	// body, and saying otherwise would be a lie in the one field an agent trusts.
+	//
+	// Why it exists, measured over 79 agent sessions: the gold file was present in the payload as
+	// a LOCATOR ONLY (no code at all) in 20 of 74 sessions, 24 of those at rank <= 3, and 61
+	// post-search Reads targeted a ranked file that carried no code. A rank-1 hit that shows two
+	// lines is an instruction to spend a turn opening the file — ~17,000 tokens to recover what
+	// ~700 bytes would have carried.
+	window bool
 }
 
 func (enclosure searchEnclosure) available() bool {
@@ -126,6 +149,7 @@ func planSearchEnclosures(
 	maxLines int,
 	contextLines int,
 	bodyHeadRanks int,
+	windowLines int,
 ) []searchEnclosure {
 	if len(results) == 0 {
 		return nil
@@ -146,10 +170,8 @@ func planSearchEnclosures(
 		if index >= bodyHeadRanks {
 			continue
 		}
-		symbol, ok := enclosingCallableForResult(result, symbolsByID, symbolsByFile)
-		if !ok {
-			continue
-		}
+		symbol, hasCallable := enclosingCallableForResult(result, symbolsByID, symbolsByFile)
+		// The file has to be readable either way: a window needs its lines just as a body does.
 		lines, cached := fileLines[result.FilePath]
 		if !cached {
 			if unreadable[result.FilePath] {
@@ -163,8 +185,23 @@ func planSearchEnclosures(
 			lines = strings.Split(content, "\n")
 			fileLines[result.FilePath] = lines
 		}
+		if !hasCallable {
+			if windowLines > 0 {
+				if window, ok := planSearchHeadWindow(result, lines, windowLines); ok {
+					enclosures[index] = window
+				}
+			}
+			continue
+		}
 		start, end := clampRegion(symbol.StartLine, symbol.EndLine, len(lines))
 		if start == 0 || end-start+1 > maxLines {
+			// Too large to return whole. A head rank still must not come back as two lines, so
+			// fall back to the bounded window rather than to a locator.
+			if windowLines > 0 {
+				if window, ok := planSearchHeadWindow(result, lines, windowLines); ok {
+					enclosures[index] = window
+				}
+			}
 			continue
 		}
 		// The symbol must actually contain the hit, and there must be something to gain:
@@ -195,6 +232,41 @@ func planSearchEnclosures(
 	return enclosures
 }
 
+// planSearchHeadWindow builds the fallback read window for a head rank that has no enclosable
+// callable: a document or template, an unenclosable container kind, a body past the line cap, or a
+// hit that lies outside its own recorded symbol span. It centres `windowLines` on the focus line and
+// clamps to the file, so the snippet stays a verbatim, correctly-numbered slice.
+//
+// It returns false when the result already shows at least this much source — a window must only ever
+// ADD readable lines, never re-cut a snippet the ranker already made wider.
+func planSearchHeadWindow(result SearchResult, lines []string, windowLines int) (searchEnclosure, bool) {
+	if len(lines) == 0 || windowLines <= 0 {
+		return searchEnclosure{}, false
+	}
+	focus := result.FocusLine
+	if focus <= 0 {
+		focus = result.SnippetStartLine
+	}
+	if focus <= 0 {
+		return searchEnclosure{}, false
+	}
+	half := windowLines / 2
+	start, end := focus-half, focus+half
+	if start < 1 {
+		start = 1
+	}
+	if end > len(lines) {
+		end = len(lines)
+	}
+	if start > end {
+		return searchEnclosure{}, false
+	}
+	if have := result.SnippetEndLine - result.SnippetStartLine + 1; have >= end-start+1 {
+		return searchEnclosure{}, false
+	}
+	return searchEnclosure{start: start, end: end, lines: lines, window: true}, true
+}
+
 // widenSearchResultToEnclosure rewrites a result to carry the complete body of its enclosing
 // symbol. The reported region is widened along with the snippet so the response invariant
 // StartLine <= SnippetStartLine <= SnippetEndLine <= EndLine keeps holding.
@@ -208,6 +280,14 @@ func widenSearchResultToEnclosure(result SearchResult, enclosure searchEnclosure
 	result.SnippetEndLine = enclosure.end
 	result.Snippet = strings.Join(enclosure.lines[enclosure.start-1:enclosure.end], "\n")
 	result.FocusLine = minInt(maxInt(result.FocusLine, result.StartLine), result.EndLine)
+	if enclosure.window {
+		// A window is readable code but not a whole callable. It gets its own signal so an agent
+		// (and the tests) can tell the two apart, and it deliberately does NOT get
+		// complete-symbol: that signal is the promise "you need no follow-up read", and a window
+		// cannot make it.
+		result.Signals = appendUnique(result.Signals, searchHeadWindowSignal)
+		return result
+	}
 	result.Signals = appendUnique(result.Signals, searchCompleteSymbolSignal)
 	if enclosure.symbol.ID != "" && enclosure.symbol.ID != result.SymbolID {
 		result.Kind = enclosure.symbol.Kind
@@ -335,11 +415,14 @@ func allocateSearchSnippets(
 	// A ranking shorter than the protected head still needs the no-demotion plan evaluated,
 	// hence the clamp: without it a 1- or 2-result payload would never be allocated at all.
 	for demoteFrom := len(results); demoteFrom >= minInt(headRanks, len(results)); demoteFrom-- {
-		plan, bodies, size := planWithDemotionFrom(results, enclosures, budget, headRanks, tailLines, demoteFrom)
-		if bodies == 0 {
+		plan, bodies, windows, size := planWithDemotionFrom(results, enclosures, budget, headRanks, tailLines, demoteFrom)
+		// A plan that delivered only WINDOWS is still worth taking: a head rank with 60 readable
+		// lines beats the same rank with two. So the "did this plan buy anything" test counts both,
+		// while the reported body count and the plan score still count complete bodies only.
+		if bodies+windows == 0 {
 			continue
 		}
-		value := completeBodyValue(plan)
+		value := completeBodyValue(plan) + searchHeadWindowValue(plan)
 		if best == nil || value > bestValue || (value == bestValue && size < bestSize) {
 			best, bestValue, bestBodies, bestSize = plan, value, bodies, size
 			bestDemoted = maxInt(0, len(results)-maxInt(demoteFrom, headRanks))
@@ -349,6 +432,20 @@ func allocateSearchSnippets(
 		return results, 0, 0
 	}
 	return best, bestBodies, bestDemoted
+}
+
+// searchHeadWindowValue scores the read windows in a plan. A window is worth strictly less than a
+// complete body at the same rank — it does not carry the "no follow-up read needed" promise — so it
+// is discounted to a quarter. That keeps a plan that completes a body always preferred over one that
+// merely widens the same rank to a window, while still ranking a window above nothing.
+func searchHeadWindowValue(plan []SearchResult) float64 {
+	value := 0.0
+	for index, result := range plan {
+		if hasSearchSignal(result, searchHeadWindowSignal) {
+			value += 0.25 / float64(index+1)
+		}
+	}
+	return value
 }
 
 // completeBodyValue scores an allocation plan by which ranks it managed to complete, with the
@@ -381,7 +478,7 @@ func planWithDemotionFrom(
 	results []SearchResult,
 	enclosures []searchEnclosure,
 	budget, headRanks, tailLines, demoteFrom int,
-) ([]SearchResult, int, int) {
+) ([]SearchResult, int, int, int) {
 	plan := append([]SearchResult(nil), results...)
 	cut := maxInt(demoteFrom, headRanks)
 	sizes := make([]int, len(plan))
@@ -392,7 +489,7 @@ func planWithDemotionFrom(
 		sizes[index] = serializedSearchResultBytes(plan[index])
 	}
 	total := searchResultsSize(sizes)
-	bodies := 0
+	bodies, windows := 0, 0
 	// The body upgrade is a head-only privilege; see allocateSearchSnippets' contract.
 	bodyLimit := headRanks
 	if bodyLimit > len(plan) {
@@ -409,7 +506,14 @@ func planWithDemotionFrom(
 		}
 		total += size - sizes[index]
 		plan[index], sizes[index] = widened, size
-		bodies++
+		// A window is readable code but not a complete body. Counting it as a body would
+		// inflate stats.complete_symbol_snippets, which is the number every measurement of
+		// this allocator is read against.
+		if enclosures[index].window {
+			windows++
+		} else {
+			bodies++
+		}
 	}
-	return plan, bodies, total
+	return plan, bodies, windows, total
 }

@@ -64,6 +64,7 @@ type searchFlags struct {
 	MaxContextBytes       int
 	BodyHeadRanks         int
 	EnclosureContextLines int
+	HeadWindowLines       int
 	Deep                  bool
 	// The reference blocks, off unless asked for. See SearchOptions in internal/sem/search.go for
 	// the session measurement that made OFF the default.
@@ -147,6 +148,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		MaxContextBytes:       flags.MaxContextBytes,
 		BodyHeadRanks:         flags.BodyHeadRanks,
 		EnclosureContextLines: flags.EnclosureContextLines,
+		HeadWindowLines:       flags.HeadWindowLines,
 		Deep:                  flags.Deep,
 
 		IncludeContainerMap:   flags.ContainerMap,
@@ -1181,6 +1183,12 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 				return flags, nil, err
 			}
 			flags.BodyHeadRanks, i = value, next
+		case "--head-window-lines":
+			value, next, err := searchPositiveIntFlag(args, i)
+			if err != nil {
+				return flags, nil, err
+			}
+			flags.HeadWindowLines, i = value, next
 		case "--enclosure-context-lines":
 			value, next, err := searchPositiveIntFlag(args, i)
 			if err != nil {

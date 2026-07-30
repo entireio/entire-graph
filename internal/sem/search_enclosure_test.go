@@ -124,7 +124,7 @@ func TestPlanSearchEnclosuresResolvesTrueSymbolBounds(t *testing.T) {
 				byFile[record.FilePath] = []SymbolRecord{record}
 			}
 			enclosures := planSearchEnclosures(
-				[]SearchResult{testCase.result}, byID, byFile, reader, testCase.maxLines, 0, 0,
+				[]SearchResult{testCase.result}, byID, byFile, reader, testCase.maxLines, 0, 0, 0,
 			)
 			if len(enclosures) != 1 {
 				t.Fatalf("enclosures = %d, want 1", len(enclosures))
@@ -700,7 +700,7 @@ func TestPlanSearchEnclosuresBodyHeadRanksBoundsBodies(t *testing.T) {
 	}
 	results := []SearchResult{result, result, result, result, result}
 
-	enclosures := planSearchEnclosures(results, byID, nil, reader, 0, 0, 2)
+	enclosures := planSearchEnclosures(results, byID, nil, reader, 0, 0, 2, 0)
 	if len(enclosures) != len(results) {
 		t.Fatalf("enclosures = %d, want %d — narrowing the body head must not drop results",
 			len(enclosures), len(results))
@@ -718,7 +718,7 @@ func TestPlanSearchEnclosuresBodyHeadRanksBoundsBodies(t *testing.T) {
 	}
 
 	// 0 means "use the built-in depth", so the default behaviour is unchanged.
-	for index, enclosure := range planSearchEnclosures(results, byID, nil, reader, 0, 0, 0) {
+	for index, enclosure := range planSearchEnclosures(results, byID, nil, reader, 0, 0, 0, 0) {
 		if !enclosure.available() {
 			t.Fatalf("rank %d: default depth should still plan a body", index+1)
 		}
@@ -740,7 +740,7 @@ func TestPlanSearchEnclosuresContextLinesPadsRankOneOnly(t *testing.T) {
 		SnippetStartLine: 60, SnippetEndLine: 64, SymbolID: symbol.ID,
 	}
 
-	got := planSearchEnclosures([]SearchResult{result, result}, byID, nil, reader, 0, 10, 0)
+	got := planSearchEnclosures([]SearchResult{result, result}, byID, nil, reader, 0, 10, 0, 0)
 	if got[0].start != 30 || got[0].end != 100 {
 		t.Fatalf("rank 1 = %d-%d, want 30-100 (symbol 40-90 padded by 10)", got[0].start, got[0].end)
 	}
@@ -753,7 +753,7 @@ func TestPlanSearchEnclosuresContextLinesPadsRankOneOnly(t *testing.T) {
 
 	// A margin that would push the body past the line cap is refused, not truncated: the cap is
 	// what guarantees a padded body can never cost more than an unpadded one was allowed to.
-	capped := planSearchEnclosures([]SearchResult{result}, byID, nil, reader, 60, 40, 0)
+	capped := planSearchEnclosures([]SearchResult{result}, byID, nil, reader, 60, 40, 0, 0)
 	if capped[0].start != 40 || capped[0].end != 90 {
 		t.Fatalf("capped = %d-%d, want the unpadded 40-90", capped[0].start, capped[0].end)
 	}
@@ -766,9 +766,63 @@ func TestPlanSearchEnclosuresContextLinesPadsRankOneOnly(t *testing.T) {
 			SnippetStartLine: 20, SnippetEndLine: 24, SymbolID: edgeSymbol.ID,
 		}},
 		map[string]SymbolRecord{edgeSymbol.ID: edgeSymbol}, nil,
-		enclosureTestReader(edgeLines), 0, 25, 0,
+		enclosureTestReader(edgeLines), 0, 25, 0, 0,
 	)
 	if edge[0].start != 1 || edge[0].end != 50 {
 		t.Fatalf("edge = %d-%d, want 1-50 (clamped to the file)", edge[0].start, edge[0].end)
+	}
+}
+
+// TestPlanSearchEnclosuresHeadWindowNeverClaimsCompleteSymbol pins the fallback for a head rank that
+// has no enclosable callable. Measured over 79 agent sessions: the gold file appeared in the payload
+// as a LOCATOR ONLY (zero code) in 20 of 74 sessions, 24 of those at rank <= 3, and 61 post-search
+// Reads targeted a ranked file that carried no code — each costing a turn (~17,000 tokens) to recover
+// what ~2 kB of window would have carried.
+//
+// The window must be readable code AND must never claim `complete-symbol`, because that signal is the
+// promise "no follow-up read needed" and a window cannot make it.
+func TestPlanSearchEnclosuresHeadWindowNeverClaimsCompleteSymbol(t *testing.T) {
+	t.Parallel()
+	lines, symbol := enclosureTestFile(400, 40, 90, "class") // a CONTAINER: not enclosable
+	reader := enclosureTestReader(lines)
+	byID := map[string]SymbolRecord{symbol.ID: symbol}
+	byFile := map[string][]SymbolRecord{symbol.FilePath: {symbol}}
+	result := SearchResult{
+		FilePath: "pkg/file.go", StartLine: 60, EndLine: 61, FocusLine: 60,
+		SnippetStartLine: 60, SnippetEndLine: 61, SymbolID: symbol.ID,
+	}
+
+	// windowLines=0 keeps the old behaviour: a container yields no enclosure at all.
+	if got := planSearchEnclosures([]SearchResult{result}, byID, byFile, reader, 0, 0, 0, 0); got[0].available() {
+		t.Fatalf("windowLines=0 must not synthesise an enclosure: %+v", got[0])
+	}
+
+	got := planSearchEnclosures([]SearchResult{result}, byID, byFile, reader, 0, 0, 0, 60)
+	if !got[0].available() {
+		t.Fatal("want a window enclosure for an unenclosable head rank")
+	}
+	if !got[0].window {
+		t.Fatal("the fallback must be marked as a window, not as a body")
+	}
+	if got[0].start != 30 || got[0].end != 90 {
+		t.Fatalf("window = %d-%d, want 30-90 (60 lines centred on focus 60)", got[0].start, got[0].end)
+	}
+	widened := widenSearchResultToEnclosure(result, got[0])
+	if containsString(widened.Signals, searchCompleteSymbolSignal) {
+		t.Fatalf("a window must NEVER claim %q: %#v", searchCompleteSymbolSignal, widened.Signals)
+	}
+	if !containsString(widened.Signals, searchHeadWindowSignal) {
+		t.Fatalf("a window must carry %q: %#v", searchHeadWindowSignal, widened.Signals)
+	}
+	if widened.Snippet != strings.Join(lines[29:90], "\n") {
+		t.Fatal("window snippet is not a verbatim slice of the file")
+	}
+
+	// A result that already shows MORE than the window must be left alone — a window may only add
+	// readable lines, never re-cut a wider snippet.
+	wide := result
+	wide.SnippetStartLine, wide.SnippetEndLine = 1, 200
+	if got := planSearchEnclosures([]SearchResult{wide}, byID, byFile, reader, 0, 0, 0, 60); got[0].available() {
+		t.Fatalf("window must not shrink an already-wider snippet: %+v", got[0])
 	}
 }

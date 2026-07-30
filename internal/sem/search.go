@@ -88,6 +88,14 @@ type SearchOptions struct {
 	// locator head. 0 means the built-in depth (searchEnclosureHeadRanks). It may only narrow
 	// the head, never widen it, so the growth allowance stays sized for the bodies it funds.
 	BodyHeadRanks int
+	// HeadWindowLines makes a HEAD rank that has no enclosable callable come back as a bounded
+	// read window of this many lines instead of a two-line locator. 0 = off (previous behaviour).
+	//
+	// Measured over 79 agent sessions: the gold file was in the payload as a LOCATOR ONLY in 20 of
+	// 74 sessions (24 of them at rank <= 3), and 61 post-search Reads targeted a ranked file that
+	// carried no code at all. Those reads cost a turn (~17,000 tokens) to recover what ~2 kB of
+	// window would have carried.
+	HeadWindowLines int
 	// EnclosureContextLines pads the rank-1 complete body with this many source lines on each
 	// side. 0 means no padding (the body's exact symbol bounds).
 	//
@@ -858,9 +866,12 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	if options.BodyHeadRanks > 0 && options.BodyHeadRanks < bodyHeadRanks {
 		bodyHeadRanks = options.BodyHeadRanks
 	}
+	// HeadWindowLines: a head rank with no enclosable callable falls back to a bounded read
+	// window instead of a two-line locator. 0 disables it (previous behaviour exactly).
+	headWindowLines := options.HeadWindowLines
 	enclosures := planSearchEnclosures(
 		results, symbolsByID, symbolsByFile, read,
-		defaultSearchEnclosureMaxLines, options.EnclosureContextLines, bodyHeadRanks,
+		defaultSearchEnclosureMaxLines, options.EnclosureContextLines, bodyHeadRanks, headWindowLines,
 	)
 	results, completeSymbols, locators := allocateSearchSnippets(
 		results, enclosures, options.MaxContextBytes, searchEnclosureGrowthBytes,
