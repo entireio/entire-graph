@@ -424,17 +424,21 @@ turns as you can: every turn re-reads your whole context, and that replay is wha
 The result also hands you three things that each replace a round-trip you would otherwise spend:
   SAME-CONCEPT LITERAL - every place this concept is spelled out, each tagged EDIT / CONSUMER /
       DOC. This IS your sweep: fix the EDIT sites, ignore the CONSUMER ones. Do not grep for them.
-  VERIFY - the narrowest command that exercises the file you are changing. Run it ONCE when your
-      edits are in. Read the error, fix exactly what it names, re-run at most once. Never hunt a
-      green suite, never write a throwaway test script. A patch that does not build fails the
-      whole task.
+  VERIFY - the narrowest command that exercises the file you are changing (when the payload could
+      not name a per-file command it gives the repository's whole-suite command instead). You are
+      NOT done until you have actually RUN this and seen it pass: run it once your edits are in,
+      read the error, fix exactly what it names, re-run at most once. NEVER claim "tests pass"
+      without having run the command — a confident patch that was never executed is the single
+      largest measured cause of a wrong fix. Never hunt a green suite, never write a throwaway test
+      script. A patch that does not build fails the whole task.
   CLOSED-SET WARNING - when you are adding a variant to an enum/sealed set, the switches over it
       that will throw at RUNTIME rather than fail to compile. Add the missing arm before you stop.
 Because the search already named every location — the fix site, the EDIT-tagged literals, the
 related sites — none of your reads or edits depend on each other. Ask for them ALL IN ONE MESSAGE:
 every range you need to see, then every edit you need to make. That is the difference between two
 turns and ten, and turns are the entire cost.
-Then STOP. No further searching, no grep to double-check, no re-reading your own edits.
+Then — and only once VERIFY has actually run and passed — STOP. No further searching, no grep to
+double-check, no re-reading your own edits.
 If the top hit is clearly wrong - a LOW CONFIDENCE marker, or a body that does not match the issue -
 search ONCE more with different words. If that misses too, fall back to the shell in ONE batched
 call rather than staying stuck.
@@ -525,7 +529,7 @@ controls and caveats: the graphmark repo, `agentic-swebench/REPRODUCE.md` +
 5. **Impact = one targeted query.** For "what breaks if I change X", use `neighbors --symbol X --relation CALLS --direction in` — not a whole-graph `snapshot`/`edges` dump, and not a repo-wide grep.
 6. **Minimise turns — in discovery, not in verification.** Token cost is roughly turns × context, so prefer one precise query over three broad ones and stop *discovery* once you can defend the edit with a focused hypothesis. Turn economy applies to finding code; it is not a licence to skip the check that your edit builds.
 7. **Complete the fix.** A fix is often not one edit in one place. The **SAME-CONCEPT LITERAL** block is your repo-wide sweep — fix its `EDIT` sites, ignore its `CONSUMER` sites, and do not grep for either; its header states the repository's own totals, so when the block is there you have seen the whole set. For structural neighbours (callers, siblings, near-duplicates) the RELATED SITES block is already in the payload; one `impact --symbol X` covers anything it missed. Measured: single-edit patches were 22 of 31 paired losses (baseline 8/31).
-8. **Verify once — always, with the command you were given.** Run the **VERIFY** line the search printed; when there was none, compile what you touched or run the nearest existing test, at the narrowest scope that would still catch a syntax, type, name, or arity error. Measured: the clamped agent ran zero builds/tests on 22 of 31 paired losses, two of which could not compile. One verification turn is far cheaper than a wrong patch. Measured separately: test/build accounts for 3.79 turns per session, much of it spent finding the right invocation rather than running it — which is what the VERIFY block removes.
+8. **Verify before you stop — always, with the command you were given.** Running the **VERIFY** line is a *precondition for declaring the task done*, not an optional last step: you have not earned STOP until you have executed it and watched the failing behaviour go green. Run the line the search printed (now always populated — a per-file command when one can be derived, the repository's whole-suite command otherwise); when there was genuinely none, compile what you touched or run the nearest existing test, at the narrowest scope that would still catch a syntax, type, name, or arity error. **Never report that tests pass without having run them** — measured on a 30-instance resolution audit, 2 of 3 regressions vs the prior binary declared success (one literally "All tests pass") having run *zero* tests; the earlier clamp study saw the same shape (zero builds/tests on 22 of 31 paired losses, two of which could not compile). One verification turn is far cheaper than a wrong patch. Measured separately: test/build accounts for 3.79 turns per session, much of it spent finding the right invocation rather than running it — which is what the VERIFY block removes.
 8b. **Adding a variant? Read the CLOSED-SET WARNING first.** When it reports a switch/match site as `checked at runtime`, add the missing arm before you finish: that failure is a runtime throw, not a compile error, so verification will not catch it either. The block only appears when the compiler would not catch it.
 9. **Verify, don't chase.** Verification is bounded: run it, read the error, fix exactly what the error names, re-run — a couple of iterations, not fifty. Do not enter an edit→test→edit loop hunting a green suite, and do not "fix" failures that predate your change.
 10. **Feature-detect before you trust.** If a language might be inventory-only, check `capabilities --json` first — inventory-only files have file records but no semantic relations.

@@ -130,6 +130,18 @@ func buildSearchVerifyCommand(
 	}
 	command := deriveSearchVerifyCommand(subject, &evidence)
 	if command == nil {
+		// No narrow command could be derived — most often because the payload found no covering test
+		// (a `test_<name>` minitest file the mirror lookup cannot name, a suite with no per-file
+		// selector). Rather than emit nothing — which, paired with the stop-early doctrine, is what
+		// lets an agent skip verification and ship a confident-but-wrong patch — fall back to the
+		// repository's own WHOLE-SUITE invocation. These are canonical commands (`go test ./...`,
+		// `bundle exec rake test`) that are guaranteed to RUN, so the "silence over a wrong command"
+		// rule still holds: the failure mode it guards against (an error about the invocation, not
+		// the code) cannot happen here. The command is slower and unfiltered, so it is labeled as the
+		// whole suite; a slow-but-real verification beats a whole failed task.
+		command = deriveSearchVerifySuiteCommand(subject, &evidence)
+	}
+	if command == nil {
 		return nil
 	}
 	if searchVerifyCommandCost(command) > searchVerifyCommandMaxBytes {
@@ -321,6 +333,172 @@ var searchVerifyDerivations = []func(string, searchVerifySubject, *searchVerifyE
 	deriveSearchVerifyPytest,
 	deriveSearchVerifyRuby,
 	deriveSearchVerifyMake,
+}
+
+// deriveSearchVerifySuiteCommand is the whole-suite fallback consulted only when no narrow command
+// exists. It walks from the subject's directory towards the root exactly like the narrow derivation
+// and returns the first recognized ecosystem's canonical suite command. Unlike the narrow tier it
+// does NOT require a covering test: its whole point is the case where the payload found none.
+func deriveSearchVerifySuiteCommand(subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	dir := path.Dir(subject.sourcePath)
+	if dir == "." || dir == "/" {
+		dir = ""
+	}
+	for depth := 0; depth <= searchVerifyMaxDepth; depth++ {
+		for _, derive := range searchVerifySuiteDerivations {
+			if command := derive(dir, evidence); command != nil {
+				return command
+			}
+		}
+		if dir == "" {
+			break
+		}
+		parent := path.Dir(dir)
+		if parent == "." || parent == "/" || parent == dir {
+			dir = ""
+			continue
+		}
+		dir = parent
+	}
+	return nil
+}
+
+// searchVerifySuiteDerivations mirrors searchVerifyDerivations, language-specific before generic, so
+// a Rust crate with a convenience Makefile still yields `cargo test`, not `make test`.
+var searchVerifySuiteDerivations = []func(string, *searchVerifyEvidence) *SearchVerifyCommand{
+	deriveSearchVerifySuiteCargo,
+	deriveSearchVerifySuiteGo,
+	deriveSearchVerifySuiteMaven,
+	deriveSearchVerifySuiteGradle,
+	deriveSearchVerifySuiteNode,
+	deriveSearchVerifySuiteComposer,
+	deriveSearchVerifySuitePytest,
+	deriveSearchVerifySuiteRuby,
+	deriveSearchVerifySuiteMake,
+}
+
+// searchVerifySuiteCommand builds a whole-suite command, labeling both the target (no covering test
+// was found) and the derivation (whole suite) so the reader knows it is unfiltered and slow.
+func searchVerifySuiteCommand(dir, command, derived string) *SearchVerifyCommand {
+	return &SearchVerifyCommand{
+		Command:     searchVerifyRunIn(dir, command),
+		Targets:     "whole test suite (no covering test identified)",
+		DerivedFrom: derived + " (whole suite)",
+	}
+}
+
+func deriveSearchVerifySuiteCargo(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	manifest := searchVerifyJoin(dir, "Cargo.toml")
+	content, ok := evidence.file(manifest)
+	if !ok || (!strings.Contains(content, "[package]") && !strings.Contains(content, "[workspace]")) {
+		return nil
+	}
+	return searchVerifySuiteCommand(dir, "cargo test", manifest)
+}
+
+func deriveSearchVerifySuiteGo(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	manifest := searchVerifyJoin(dir, "go.mod")
+	if !evidence.exists(manifest) {
+		return nil
+	}
+	return searchVerifySuiteCommand(dir, "go test ./...", manifest+" module")
+}
+
+func deriveSearchVerifySuiteMaven(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	manifest := searchVerifyJoin(dir, "pom.xml")
+	if !evidence.exists(manifest) {
+		return nil
+	}
+	return searchVerifySuiteCommand(dir, "mvn -q test", manifest)
+}
+
+func deriveSearchVerifySuiteGradle(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	manifest := ""
+	for _, name := range []string{"build.gradle", "build.gradle.kts"} {
+		if evidence.exists(searchVerifyJoin(dir, name)) {
+			manifest = searchVerifyJoin(dir, name)
+			break
+		}
+	}
+	if manifest == "" || !evidence.exists("gradlew") {
+		return nil
+	}
+	return searchVerifySuiteCommand(dir, "./gradlew test", manifest+" + gradlew")
+}
+
+func deriveSearchVerifySuiteNode(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	manifest := searchVerifyJoin(dir, "package.json")
+	content, ok := evidence.file(manifest)
+	if !ok {
+		return nil
+	}
+	var parsed struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		return nil
+	}
+	if strings.TrimSpace(parsed.Scripts["test"]) == "" {
+		return nil
+	}
+	return searchVerifySuiteCommand(dir, "npm test", manifest+" scripts.test")
+}
+
+func deriveSearchVerifySuiteComposer(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	if !evidence.exists(searchVerifyJoin(dir, "composer.json")) {
+		return nil
+	}
+	for _, name := range []string{"phpunit.xml", "phpunit.xml.dist"} {
+		if evidence.exists(searchVerifyJoin(dir, name)) {
+			return searchVerifySuiteCommand(dir, "vendor/bin/phpunit", searchVerifyJoin(dir, name))
+		}
+	}
+	return nil
+}
+
+func deriveSearchVerifySuitePytest(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	for _, name := range searchVerifyPytestConfigs {
+		candidate := searchVerifyJoin(dir, name)
+		content, ok := evidence.file(candidate)
+		if ok && strings.Contains(content, "pytest") {
+			return searchVerifySuiteCommand(dir, "python -m pytest", candidate+" pytest config")
+		}
+	}
+	return nil
+}
+
+// deriveSearchVerifySuiteRuby prefers RSpec when the tree is configured for it (`.rspec`), otherwise
+// falls to `rake test` when the Rakefile names a test task — the same order the narrow Ruby
+// derivation uses, decided by the repository's own layout.
+func deriveSearchVerifySuiteRuby(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	hasGemfile := evidence.exists(searchVerifyJoin(dir, "Gemfile"))
+	hasRakefile := evidence.exists(searchVerifyJoin(dir, "Rakefile"))
+	if !hasGemfile && !hasRakefile {
+		return nil
+	}
+	if evidence.exists(searchVerifyJoin(dir, ".rspec")) {
+		return searchVerifySuiteCommand(dir, "bundle exec rspec", searchVerifyJoin(dir, ".rspec"))
+	}
+	if hasRakefile {
+		content, _ := evidence.file(searchVerifyJoin(dir, "Rakefile"))
+		if strings.Contains(content, "test") || strings.Contains(content, "TestTask") {
+			return searchVerifySuiteCommand(dir, "bundle exec rake test", searchVerifyJoin(dir, "Rakefile")+" test task")
+		}
+	}
+	return nil
+}
+
+func deriveSearchVerifySuiteMake(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	content, ok := evidence.file(searchVerifyJoin(dir, "Makefile"))
+	if !ok {
+		return nil
+	}
+	for _, target := range []string{"test", "check", "tests"} {
+		if searchMakefileHasTarget(content, target) {
+			return searchVerifySuiteCommand(dir, "make "+target, searchVerifyJoin(dir, "Makefile")+" target "+target)
+		}
+	}
+	return nil
 }
 
 // searchVerifyJoin builds a repository-relative path inside a directory.
