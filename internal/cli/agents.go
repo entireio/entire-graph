@@ -12,15 +12,13 @@ import (
 // graph in a CONSUMING project (not this repo). It ships inside the binary so every install
 // carries the current doctrine; `init-agents` distributes it into a project's AGENTS.md /
 // CLAUDE.md via a small pointer block, and `agent-guide` prints it for any agent or human.
-// The prompt block is the exact instruction set that won the official SWE-bench Multilingual
-// benchmark (300 instances / 9 languages: 54.9% weighted token savings vs a no-tool agent,
-// double the next-best tool's 27.4%, 8/9 languages; Sonnet 3x replication 57.7% vs 36.6% —
-// see the graphmark repo for methodology, prompts, and caveats).
+// It is resolution-first: graph retrieval narrows exploration, but source inspection and
+// focused verification remain required before an agent declares the task complete.
 const agentGuide = `# entire-graph — instructions for coding agents (follow directly)
 
 You have a deterministic local code graph: ` + "`entire graph`" + ` (functions, classes, methods,
 types, routes + call/inheritance relations; no network). These instructions are FOR YOU, the
-agent reading this file. Following them is measured to cut session tokens roughly in half.
+agent reading this file. Use the graph to narrow exploration without trading away correctness.
 
 ## The workflow (mandatory for locate/fix/change tasks)
 
@@ -29,21 +27,22 @@ Your FIRST action on any task that requires finding code must be ONE search:
     entire graph search --repo . --profile full --query "<the task or bug in one sentence>"
 
 Then open the top hit's file with your file-read tool (pass a line range around the reported
-line), make the minimal edit, and STOP. The top hit is the fix site on most tasks — go straight
-there and edit; do NOT re-search or grep to "confirm".
+line), inspect enough surrounding behavior to justify the change, and make the smallest complete
+edit. Treat graph output as evidence, not an oracle.
 
-## Hard rules (each violation costs real money)
+## Hard rules
 
 1. SEARCH FIRST — never grep/find/cat to locate code before you have searched.
-2. ONE search, then act. Do not run a second search unless the first clearly missed.
-3. After search, READ a line range and EDIT. Do not chain more graph commands to "explore".
-4. NEVER read a whole file; read at most ~120 lines around the reported line.
-5. Impact question ("who calls X" / "what could this change break")? ONE targeted query:
+2. READ focused source around the result. Widen the check when aliases, generated code, dynamic
+   dispatch, or related implementations could matter.
+3. Use graph follow-ups only when they answer a real question. For impact or callers, prefer:
        entire graph impact --repo . --symbol X
-   (one shot: callers, callees, type consumers, data flow, co-change files, siblings)
-6. Do not run builds or test suites unless the task explicitly requires it.
-7. Every extra turn re-reads your whole context — that is the token cost. Reach the edit in as
-   few turns as possible and stop the moment you can justify the fix.
+4. Make the smallest complete edit and check sibling sites or contracts when the task implies them.
+5. VERIFY before stopping. Run the most focused relevant test, build, or reproduction available.
+   If execution is unavailable, perform a bounded source-level verification and state the limit.
+6. Prefer precise queries and line ranges, but never trade resolution for fewer turns.
+7. Feature-detect before relying on semantic relations:
+       entire graph capabilities --json
 
 ## When NOT to use the graph
 
@@ -107,8 +106,8 @@ func runInitAgents(opts Options, args []string) error {
 
 	pointer := agentPointerBegin + "\n" +
 		"This repo has the entire-graph code graph installed. Before exploring code with\n" +
-		"grep/find/whole-file reads, read .entire/graph-agent.md — search-first doctrine for\n" +
-		"coding agents (measured to cut agent token usage roughly in half on SWE-bench tasks).\n" +
+		"grep/find/whole-file reads, read .entire/graph-agent.md — resolution-first guidance\n" +
+		"for using graph retrieval, focused source inspection, and verification.\n" +
 		"@.entire/graph-agent.md\n" +
 		agentPointerEnd + "\n"
 

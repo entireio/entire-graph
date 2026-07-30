@@ -14,9 +14,20 @@ func TestAgentGuidePrintsDoctrine(t *testing.T) {
 	if err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"agent-guide"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"SEARCH FIRST", "entire graph search", "--profile full", "neighbors"} {
+	for _, want := range []string{
+		"SEARCH FIRST",
+		"entire graph search",
+		"--profile full",
+		"VERIFY before stopping",
+		"never trade resolution for fewer turns",
+	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("agent-guide output missing %q:\n%s", want, out.String())
+		}
+	}
+	for _, withdrawn := range []string{"54.9%", "57.7%", "roughly in half", "make the minimal edit, and STOP"} {
+		if strings.Contains(out.String(), withdrawn) {
+			t.Fatalf("agent-guide output retained withdrawn guidance %q:\n%s", withdrawn, out.String())
 		}
 	}
 }
@@ -54,6 +65,10 @@ func TestInitAgentsInstallsAndIsIdempotent(t *testing.T) {
 	}
 	if !strings.Contains(string(agents), agentPointerBegin) || !strings.Contains(string(agents), ".entire/graph-agent.md") {
 		t.Fatalf("pointer block missing from AGENTS.md:\n%s", agents)
+	}
+	if !strings.Contains(string(agents), "resolution-first guidance") ||
+		strings.Contains(string(agents), "roughly in half") {
+		t.Fatalf("pointer block retained withdrawn doctrine:\n%s", agents)
 	}
 
 	claude, err := os.ReadFile(filepath.Join(repo, "CLAUDE.md"))

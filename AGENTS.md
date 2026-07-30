@@ -1,10 +1,13 @@
 # AGENTS.md — operating guide for coding agents
 
-Hand this to any coding agent working in a repo where the `entire graph` plugin is installed. It is the difference between the graph saving tokens and not: it moves you from grep/read exploration to graph queries, which is where most of a session's token budget goes.
+Hand this to any coding agent working in a repo where the `entire graph` plugin
+is installed. It moves initial code-location work from broad grep/read
+exploration to targeted graph queries; token impact depends on the task and
+model, and no end-to-end savings claim is current.
 
 ## What this gives you
 
-A precomputed, **deterministic** code graph is available through the `entire graph` command — functions, classes, methods, types, routes, and the calls/inheritance/field/service relations between them, parsed with tree-sitter, 100% locally (no network, no model, no keys). Use it to **LOCATE** and **UNDERSTAND** code *before* any grep / find / cat / whole-file read. Every command is no-egress and safe to run inside a sandboxed session. The same commit always yields the same graph, so once the graph shows you something, you can trust it and act — no need to re-confirm with a second tool.
+A precomputed, **deterministic** code graph is available through the `entire graph` command — functions, classes, methods, types, routes, and the calls/inheritance/field/service relations between them, parsed with tree-sitter, 100% locally (no network, no model, no keys). Use it to **LOCATE** and **UNDERSTAND** code *before* broad grep / find / cat / whole-file exploration. Every command is no-egress and safe to run inside a sandboxed session. The same commit yields the same graph, but static relations can be heuristic or incomplete; inspect focused source and verify the resulting change.
 
 Default flags to remember: pass `--repo .` when you're not inside an Entire session; the graph reads your **working tree by default** (your uncommitted edits are visible), and `--head` switches to committed-tree semantics with a cached, reusable index.
 
@@ -134,42 +137,37 @@ what `scripts/entire-graph-statusline.sh` renders as a live Claude Code status l
 
 ---
 
-## The measured-best agent prompt (copy-paste this)
+## Resolution-first agent prompt (copy-paste this)
 
-This exact instruction block is what won the **official SWE-bench Multilingual benchmark** (300
-instances, 9 languages, Haiku): **54.9% weighted token savings vs a no-tool agent** — double
-codebase-memory-mcp's 27.4% — winning 8/9 languages and 216/293 instances, with identical task
-completion. Replicated on Sonnet (3×: 57.7% vs 36.6%) and on open-source models (31–73% via the
-Pi agent). Give it to any coding agent that has `entire graph` available — substitute your search
-invocation for `<search-cmd>`:
+The former “measured-best” early-stop prompt and its 54.9%/57.7% token claims
+are withdrawn. It optimized token use without preserving resolution parity and
+could reward a cheap wrong patch. Use this correctness-first guidance instead;
+substitute your search invocation for `<search-cmd>`:
 
 ```text
 A precomputed code-search tool is available: <search-cmd> . Use it to LOCATE the fix BEFORE any
 grep/find. Your FIRST action must be ONE search:
   <search-cmd> "<the bug in one sentence>"   <-- ranked relevant code (file:line + source)
 Then open the top hit's file with your native Read tool (pass a line range around the reported
-line), make the minimal edit, and STOP. The search top hit is the fix site on most tasks — go
-straight there and edit; do NOT re-search or grep to 'confirm'. Reach the edit in as FEW turns as
-possible (every turn re-reads your whole context — that is the token cost). Hard rules:
-(1) SEARCH FIRST. (2) After search, READ the file directly (line range) and EDIT — do not chain
-more searches. (3) NEVER read a whole file to explore; pass a line range. (4) NEVER search outside
-this repo. Apply the minimal fix and STOP the moment you can justify it.
+line), inspect enough surrounding behavior to justify the change, and make the smallest complete
+edit. Treat graph output as evidence, not an oracle. Check callers/impact when the change can affect
+other sites. Run the most focused relevant test or verification available; if that cannot be run,
+state why and perform a bounded source-level check. Optimize turns only after correctness.
 ```
 
 For bug-fix/locate tasks, run search at `--profile full` (call-graph expansion active) with default
-text output (tiered: full snippet for the top hits, terse locators after). Measured detail that
-matters: chaining `search -> def -> callers` to "explore the tool" was the #1 measured token
-waste — prefer the search-only fast path above. (Full methodology, prompts, fairness controls and
-caveats: the graphmark repo, `agentic-swebench/REPRODUCE.md` + `BEAT-CMM-VERDICT.md`.)
+text output (tiered: full snippet for the top hits, terse locators after). Prefer
+targeted follow-up queries over whole-graph dumps, but use the graph and source
+checks needed to make and verify a complete fix.
 
-## Operating doctrine (the token-saving rules)
+## Operating doctrine
 
-1. **Search first — always.** Your first move on any task is one `entire graph search --query "<task>"`. Do **not** grep / find / cat to locate code before you have searched. Exploration is where ~90% of a session's tokens are wasted.
-2. **Then narrow, only as needed.** Search exposes concrete identifiers → use at most one `impact --symbol X` (blast radius) or read the returned line ranges. Don't fan out.
-3. **Trust the graph.** Once search or neighbors shows you the function and its source, **edit it**. Do not re-read the whole file or re-grep to "confirm" what the graph already showed — the graph is deterministic.
-4. **Never read a whole file to explore.** If you must read, read the line range around the symbol. To understand a type/class, query it — don't open its file.
-5. **Impact = one targeted query.** For "what breaks if I change X", use `neighbors --symbol X --relation CALLS --direction in` — not a whole-graph `snapshot`/`edges` dump, and not a repo-wide grep.
-6. **Minimise turns.** Token cost is roughly turns × context. Prefer one precise query over three broad ones. Stop discovery once you can defend the edit with a focused hypothesis (ideally a failing test).
+1. **Search first for location tasks.** Start with one `entire graph search --query "<task>"` before broad grep/find exploration.
+2. **Treat results as evidence, not truth.** Read focused source around the result and widen the check when behavior, aliases, generated code, or dynamic dispatch could matter.
+3. **Use graph follow-ups when they answer a real question.** `impact`, `callers`, and `neighbors` are appropriate for blast radius and related-site checks; avoid exploratory whole-graph dumps.
+4. **Make the smallest complete change.** Check sibling sites and contracts when the task implies them.
+5. **Verify before stopping.** Run a focused test, build, or reproduction when available. If execution is unavailable, perform a bounded source-level verification and disclose the limitation.
+6. **Optimize context after correctness.** Prefer precise queries and line ranges, but never trade resolution for fewer turns.
 7. **Feature-detect before you trust.** If a language might be inventory-only, check `capabilities --json` first — inventory-only files have file records but no semantic relations.
 
 Quick mental model:

@@ -19,9 +19,9 @@ import (
 )
 
 const (
-	// Benchmark-calibrated: the graphmark suites (official SWE-bench Multilingual 300 among
-	// them) measured top-k 10 with 6-line snippets as the best agent config; the old defaults
-	// (20 / 40) produced ~15KB search outputs that get re-read every subsequent turn.
+	// Keep default search responses compact enough for agent context. Larger top-k and snippet
+	// defaults produced ~15KB responses that are repeatedly carried through later turns; this
+	// output-budget choice is not evidence of end-to-end task savings.
 	defaultSearchTopK              = 10
 	defaultSearchContextLines      = 8
 	defaultSearchMaxRegionLines    = 80
