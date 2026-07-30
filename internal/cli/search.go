@@ -121,10 +121,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	cacheDir := flags.CacheDir
-	if cacheDir == "" {
-		cacheDir = opts.Env.PluginDataDir
-	}
+	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
 	contextBudget := flags.MaxContextBytes
 	// Agent output has a much smaller wire representation than the public JSON
 	// response. Keep full snippets until that representation is budgeted below.

@@ -125,7 +125,7 @@ entire-graph has **no watch mode, no daemon, and no file-watcher**, and it needs
 There are two modes, and neither can go stale on you:
 
 - **Working tree (default).** Every `search`, `neighbors`, and `snapshot` re-reads your live files, so results always include your uncommitted edits. Nothing to refresh — just run the command again.
-- **Committed tree (`--head`).** Results are cached by the git **tree hash** (under `ENTIRE_PLUGIN_DATA_DIR`, or an explicit `--cache-dir`). Make a new commit and the tree hash changes, so the cache **automatically misses and rebuilds** — you can never read a committed-tree answer that is stale for that commit. `--no-cache` disables the cache entirely.
+- **Committed tree (`--head`).** Results are cached by the git **tree hash**. The cache directory defaults to the platform's per-user cache directory (`~/Library/Caches/entire-graph` on macOS, `$XDG_CACHE_HOME/entire-graph` or `~/.cache/entire-graph` elsewhere); `--cache-dir` and `ENTIRE_PLUGIN_DATA_DIR` override it, in that order. Make a new commit and the tree hash changes, so the cache **automatically misses and rebuilds** — you can never read a committed-tree answer that is stale for that commit. `--no-cache` disables the cache entirely. Caching only ever changes latency, never results: measured on this repository, a cold `--head --profile full` search is 9.2s wall and the same query warm is 1.0s, with output byte-identical to `--no-cache`.
 
 To warm the cache for a large repo before a latency-sensitive session, prebuild it once:
 
@@ -289,7 +289,7 @@ Savings scale with symbol connectivity: single-digit for narrow symbols, 280x+ f
 - **Semantic diff:** about 0.1s for a typical `HEAD~1..HEAD` on redis.
 - **Full-graph build:** linear in repository size; 23K relations in 1.5s up to 2.27M relations in 25.6s across the repos above.
 - **Streaming output:** `snapshot` emits records as it parses, so memory stays bounded on very large repositories.
-- **Cached committed-tree search:** reuses a tree-keyed compressed index across invocations when `ENTIRE_PLUGIN_DATA_DIR` is set, so repeated queries on an unchanged tree skip re-parsing. A complete prepared index derives the exact query-selected view, so relation expansion cannot escape that file set.
+- **Cached committed-tree search:** reuses a tree-keyed compressed index across invocations, in the platform's per-user cache directory unless `--cache-dir`/`ENTIRE_PLUGIN_DATA_DIR` redirect it, so repeated queries on an unchanged tree skip re-parsing. The working tree is never cached. A complete prepared index derives the exact query-selected view, so relation expansion cannot escape that file set.
 - **Explicit preindex:** `index --head` builds and verifies that query-independent artifact before latency-sensitive work; cached `search` and `neighbors` calls then report the hit directly.
 
 Absolute numbers are environment-sensitive (measured on Apple Silicon). Read them as relative signals and reproduce locally with the harness.

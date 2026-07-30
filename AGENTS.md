@@ -480,6 +480,24 @@ task never spends them.
 
 **A ≥35% saving is refuted, not unproven**: the favourable CI bound on total tokens is −27.8%.
 
+**Correction (measured later, 3 runs on 50 language-stratified instances, Haiku).** The block
+above says "do NOT re-search or grep to 'confirm'". That is right for the common case and wrong for
+the tail, and the tail is expensive. Of 135 instance-run pairs, **8 (6%)** were sessions where the
+no-tool baseline finished comfortably and the graph-assisted agent hit the 50-turn cap at **2.2x the
+baseline's tokens**. Those 8 alone cost **4.8 points** of the headline token saving (-33.5% with
+them, -38.3% without). Cause, from the wrapper call logs: they ran a mean of **8.4 searches** against
+2.7 for normal sessions (worst case **23**), each a near-identical rephrasing — e.g. "zero padding
+applied to infinity and NaN" then "zero padding NaN format spec" then "write nan padding zeros".
+The agent used search as a synonym generator because nothing told it when to stop.
+
+Hence rule **2a** in `entire graph agent-guide`: **two searches maximum, then switch tools** — grep
+for a literal from the issue (error text, identifier, flag, rule or error code, a constant) and read
+around the hit. Distribution over 142 sessions: 59.2% use exactly ONE search, 87.3% use <=4, and the
+>4 tail averages **38.5 turns against 22.2** for the rest. Search is how you start; it is not how
+you recover. A worked case: ruff `SIM201` — the gold file `flake8_simplify/rules/ast_unary_op.rs`
+ranked outside the top 20 in *every* ranking configuration tried (higher top-k, a fixture-class
+prior, a wider preselection pool), and a single `grep SIM201` returns it in 4 hits.
+
 Paired analysis of the 31 losses where the baseline fixed the bug and the graph-assisted agent did
 not, both having found the correct file, shows the clamp was the cause: the graph agent ran **zero
 builds or tests on 22 of the 31** (baseline ran them on 26/31) and made a **single edit on 22/31**

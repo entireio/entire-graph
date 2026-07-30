@@ -9445,7 +9445,7 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		if err != nil {
 			return openedSource{}, err
 		}
-		paths = filterVendoredPaths(paths, headIgnoreMatcher(ctx, repo, committedRevision))
+		paths = filterVendoredPaths(paths, headVendorIgnoreRules(ctx, repo, committedRevision, paths))
 		paths = filterIgnoredPaths(paths, ignores)
 		paths, warnings := capSourceFiles(paths, options.maxFiles)
 		batch, err := gitutil.NewBatchFileReader(ctx, repo, committedRevision)
@@ -9717,13 +9717,21 @@ func isInstalledDependencyDirName(rel, name string) bool {
 	return false
 }
 
+// vendorIgnoreRules is the one question the vendored-directory heuristic asks of
+// a project's exclude rules: does the project re-include part of this tree, and
+// therefore mean to keep it? Both a root-only matcher and a set of per-directory
+// .gitignore files can answer it.
+type vendorIgnoreRules interface {
+	ReincludesDescendant(rel string) bool
+}
+
 // skipVendoredDir is the single vendored-directory decision for both the
 // working-tree walk and the HEAD-tree listing: skip unambiguous vendored names
 // always, and ambiguous generated-output names only when the directory is not
 // tracked in git (dirTracked). Gitignore negations that re-include a
 // descendant (see ReincludesDescendant) keep the tree walked in either case;
 // the ignore rules themselves then filter its contents.
-func skipVendoredDir(rel, name string, ignores ignoreMatcher, dirTracked func(string) bool) bool {
+func skipVendoredDir(rel, name string, ignores vendorIgnoreRules, dirTracked func(string) bool) bool {
 	untrackedOnly := isAmbiguousVendoredDirName(name) || isInstalledDependencyDirName(rel, name)
 	vendored := isVendoredScanDir(rel, name) || (untrackedOnly && !dirTracked(rel))
 	return vendored && !ignores.ReincludesDescendant(rel)
@@ -9797,6 +9805,10 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 			}
 		}
 	}
+	// The vendored-directory heuristic consults the project's own re-inclusion
+	// rules wherever they live, not only at the root, so a tree the project
+	// deliberately keeps under a vendored-looking name is not dropped.
+	vendorRules := worktreeVendorIgnoreRules(repo, ignores, listed)
 	paths := make([]string, 0, len(listed))
 	seen := make(map[string]struct{}, len(listed))
 	for _, entry := range listed {
@@ -9804,7 +9816,7 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 		if _, exists := seen[rel]; exists {
 			continue
 		}
-		if vendoredScanPath(rel, ignores, dirTracked) {
+		if vendoredScanPath(rel, vendorRules, dirTracked) {
 			continue
 		}
 		// Explicit ignore/include rules still arbitrate: an include file may have
@@ -9845,11 +9857,13 @@ func walkWorktreeFiles(repo string, ignores ignoreMatcher, dirTracked func(strin
 					return relErr
 				}
 				rel = filepath.ToSlash(relPath)
-				if skipVendoredDir(rel, name, ignores, dirTracked) {
-					return filepath.SkipDir
-				}
 			}
+			// Enter first: this directory's own .gitignore is part of the evidence
+			// for whether the project re-includes something inside it.
 			stack.enter(rel)
+			if rel != "" && skipVendoredDir(rel, name, stack, dirTracked) {
+				return filepath.SkipDir
+			}
 			if rel != "" && stack.Ignored(rel, true) && !stack.MayIncludeDescendant(rel) {
 				return filepath.SkipDir
 			}
@@ -9876,7 +9890,7 @@ func walkWorktreeFiles(repo string, ignores ignoreMatcher, dirTracked func(strin
 	return paths, err
 }
 
-func filterVendoredPaths(paths []string, ignores ignoreMatcher) []string {
+func filterVendoredPaths(paths []string, ignores vendorIgnoreRules) []string {
 	filtered := paths[:0]
 	for _, rel := range paths {
 		if vendoredPath(rel, ignores) {
@@ -9899,6 +9913,59 @@ func filterIgnoredPaths(paths []string, ignores ignoreMatcher) []string {
 	return filtered
 }
 
+// headVendorIgnoreRules parses every .gitignore in the committed tree — the root
+// one and each per-directory one — at the same exact revision used for listing
+// and content reads, so the vendored-directory heuristic can neither observe a
+// newer HEAD nor miss a project's re-inclusion rules because they sit beside the
+// tree they describe, which is where Git expects them. The tracked listing
+// already in hand is reused to find them, so this costs no extra listing.
+func headVendorIgnoreRules(ctx context.Context, repo, committedRevision string, paths []string) *nestedIgnoreRules {
+	rules := newNestedIgnoreRules(headIgnoreMatcher(ctx, repo, committedRevision))
+	for _, entry := range paths {
+		rel := filepath.ToSlash(entry)
+		if path.Base(rel) != ".gitignore" || !strings.Contains(rel, "/") {
+			continue
+		}
+		if len(rules.levels) >= maxNestedIgnoreFiles {
+			break
+		}
+		content, ok, err := gitutil.ShowFile(ctx, repo, committedRevision, rel)
+		if err != nil || !ok || len(content) > maxNestedIgnoreFileBytes {
+			continue
+		}
+		rules.addFile(rel, content)
+	}
+	return rules
+}
+
+// worktreeVendorIgnoreRules is headVendorIgnoreRules for the working tree: the
+// per-directory .gitignore files Git's own listing reports (one inside an
+// excluded tree is not listed, and that tree is excluded anyway) are read from
+// disk and merged over the root rules.
+func worktreeVendorIgnoreRules(repo string, base ignoreMatcher, listed []string) *nestedIgnoreRules {
+	rules := newNestedIgnoreRules(base)
+	for _, entry := range listed {
+		rel := filepath.ToSlash(entry)
+		if path.Base(rel) != ".gitignore" || !strings.Contains(rel, "/") {
+			continue
+		}
+		if len(rules.levels) >= maxNestedIgnoreFiles {
+			break
+		}
+		full := filepath.Join(repo, filepath.FromSlash(rel))
+		info, err := os.Stat(full)
+		if err != nil || !info.Mode().IsRegular() || info.Size() > maxNestedIgnoreFileBytes {
+			continue
+		}
+		content, err := os.ReadFile(full)
+		if err != nil {
+			continue
+		}
+		rules.addFile(rel, string(content))
+	}
+	return rules
+}
+
 // headIgnoreMatcher parses the repository's root .gitignore at the same exact
 // committed revision used for listing and content reads, so the vendored-
 // directory heuristic cannot observe a newer HEAD.
@@ -9918,14 +9985,14 @@ func headIgnoreMatcher(ctx context.Context, repo, committedRevision string) igno
 // tracked by construction, so ambiguous generated-output directory names
 // (build, dist, external, deps) are never vendored here — headTracked reports
 // every directory as tracked; only the unambiguous vendored names are skipped.
-func vendoredPath(rel string, ignores ignoreMatcher) bool {
+func vendoredPath(rel string, ignores vendorIgnoreRules) bool {
 	headTracked := func(string) bool { return true }
 	return vendoredScanPath(rel, ignores, headTracked)
 }
 
 // vendoredScanPath applies the vendored-directory and vendored-file heuristics to
 // a listed path, consulting dirTracked for the ambiguous generated-output names.
-func vendoredScanPath(rel string, ignores ignoreMatcher, dirTracked func(string) bool) bool {
+func vendoredScanPath(rel string, ignores vendorIgnoreRules, dirTracked func(string) bool) bool {
 	rel = filepath.ToSlash(rel)
 	parts := strings.Split(rel, "/")
 	if len(parts) == 0 {

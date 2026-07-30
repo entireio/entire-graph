@@ -24,7 +24,7 @@ import (
 // and any prior-version directory can simply be deleted wholesale — cleanup is
 // "remove old version dirs" instead of per-entry reachability analysis.
 // (v5 isolated the tree-only key layout; v6, on main, supersedes it.)
-const searchSnapshotCacheVersion = "search-snapshot-v6"
+const searchSnapshotCacheVersion = "search-snapshot-v7"
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`
@@ -674,6 +674,12 @@ func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, opt
 	writePart(tree)
 	writePart(string(options.Profile))
 	writePart(fmt.Sprintf("%d", options.MaxParseBytes))
+	// The resolved file cap SHAPES THE GRAPH: a run capped at N files produces a snapshot missing
+	// everything past N, and without the cap in the key that truncated snapshot is served to a later
+	// uncapped caller. Measured on this repo: a cap-5 build wrote 28 symbols, and the next uncapped
+	// search was served those 28 instead of rebuilding to 5740 — 99.5% of the graph silently absent.
+	// One capped ingest therefore poisons every later query on the same tree.
+	writePart(fmt.Sprintf("max-files=%d", options.MaxFiles))
 	// Working-tree entries live in their own key space. The marker is only
 	// written for them so committed-tree keys — and every cache already on disk
 	// built under them — stay byte-identical.
