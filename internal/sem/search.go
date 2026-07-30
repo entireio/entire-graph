@@ -65,6 +65,19 @@ type SearchOptions struct {
 	MaxIndexedFiles   int
 	IndexAllFiles     bool
 	MaxContextBytes   int
+	// BodyHeadRanks caps how deep the COMPLETE-BODY upgrade reaches, independently of the
+	// locator head. 0 means the built-in depth (searchEnclosureHeadRanks). It may only narrow
+	// the head, never widen it, so the growth allowance stays sized for the bodies it funds.
+	BodyHeadRanks int
+	// EnclosureContextLines pads the rank-1 complete body with this many source lines on each
+	// side. 0 means no padding (the body's exact symbol bounds).
+	//
+	// Measured on 65 sessions: of the reads that re-open a file whose complete body the payload
+	// ALREADY printed, only 3.8% ask for lines inside that body — 80% ask for lines outside it
+	// (file head 15.6%, within 40 lines 41.4%), median gap 42 lines, median window 50 lines. The
+	// body is the right unit to EDIT and the wrong unit to UNDERSTAND, so a bounded margin buys
+	// back the follow-up read that the unpadded body provokes.
+	EnclosureContextLines int
 	// The three REFERENCE blocks below are OFF by default, and the default is the measurement's
 	// verdict rather than a taste call. Six session-level runs on real agents added the container
 	// map (1119 B), the signature-type block (197 B) and the declaration card (300 B) to the first
@@ -811,10 +824,28 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// complete enclosing symbol fits is returned whole — removing the follow-up file read
 	// an agent would otherwise pay a whole turn for — funded, when the budget is tight, by
 	// demoting the tail of the ranking to locators.
-	enclosures := planSearchEnclosures(results, symbolsByID, symbolsByFile, read, defaultSearchEnclosureMaxLines)
+	// How deep the COMPLETE-BODY head reaches is separable from how deep the "never demoted to a
+	// locator" head reaches, and on a capable model they want different depths. Measured on sonnet
+	// (20 instances, config 9): of the files the payload showed, rank 1 was later read 62% of the
+	// time and edited 54%, rank 2 read 27%/edited 20%, but ranks 3/4/5 were read 0%/7%/0% and
+	// edited 11%/7%/0% — while still being charged for 21 complete bodies. Those bytes are replayed
+	// on every later turn and buy nothing on that tier.
+	//
+	// So BodyHeadRanks narrows only the body upgrade. The locator head is deliberately left on
+	// searchEnclosureHeadRanks: a tail locator is the only mention of its file, and the gold file
+	// sits at rank 6-8 on 17% of instances, so shortening the ranking itself loses fix sites (that
+	// is why cutting --top-k to 5 was rejected). Bodies are what cost bytes; locators are not.
+	bodyHeadRanks := searchEnclosureHeadRanks
+	if options.BodyHeadRanks > 0 && options.BodyHeadRanks < bodyHeadRanks {
+		bodyHeadRanks = options.BodyHeadRanks
+	}
+	enclosures := planSearchEnclosures(
+		results, symbolsByID, symbolsByFile, read,
+		defaultSearchEnclosureMaxLines, options.EnclosureContextLines, bodyHeadRanks,
+	)
 	results, completeSymbols, locators := allocateSearchSnippets(
 		results, enclosures, options.MaxContextBytes, searchEnclosureGrowthBytes,
-		searchEnclosureHeadRanks, minInt(searchEnclosureTailSnippetLines, options.MaxSnippetLines),
+		bodyHeadRanks, minInt(searchEnclosureTailSnippetLines, options.MaxSnippetLines),
 	)
 	stats.CompleteSymbols = completeSymbols
 	stats.LocatorSnippets = locators
