@@ -45,6 +45,8 @@ const (
 )
 
 type searchFlags struct {
+	// VerifyExplain is appended to the emitted VERIFY line as `... 2>&1 | <cmd>`.
+	VerifyExplain         string
 	Repo                  string
 	Query                 string
 	Format                string
@@ -151,6 +153,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		EnclosureContextLines: flags.EnclosureContextLines,
 		HeadWindowLines:       flags.HeadWindowLines,
 		IncludeFileOutline:    flags.FileOutline,
+		VerifyExplainCommand:  flags.VerifyExplain,
 		Deep:                  flags.Deep,
 
 		IncludeContainerMap:   flags.ContainerMap,
@@ -402,10 +405,20 @@ func renderSignatureTypes(types []sem.SearchSignatureType) []byte {
 func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result sem.SearchResult, full bool) {
 	name := searchResultDisplayName(result)
 	if !full && !searchResultCarriesCompleteBody(result) {
+		// A locator is a single line number. Where the graph knows the named symbol's true extent,
+		// print it: `main.c:638 umain` invites a blind sweep of the file, while
+		// `main.c:638 umain (270-725, 456L)` is a read instruction. This is the cheapest possible
+		// fix for the most expensive measured behaviour — jq swept 26,873 B across three reads to
+		// recover what one anchored read would have given.
+		span := ""
+		if result.SymbolStartLine > 0 && result.SymbolEndLine >= result.SymbolStartLine {
+			span = fmt.Sprintf(" (%d-%d, %dL)", result.SymbolStartLine, result.SymbolEndLine,
+				result.SymbolEndLine-result.SymbolStartLine+1)
+		}
 		if name != "" {
-			fmt.Fprintf(out, "%d. %s:%d %s\n", result.Rank, result.FilePath, searchResultLocatorLine(result), name)
+			fmt.Fprintf(out, "%d. %s:%d %s%s\n", result.Rank, result.FilePath, searchResultLocatorLine(result), name, span)
 		} else {
-			fmt.Fprintf(out, "%d. %s:%d\n", result.Rank, result.FilePath, searchResultLocatorLine(result))
+			fmt.Fprintf(out, "%d. %s:%d%s\n", result.Rank, result.FilePath, searchResultLocatorLine(result), span)
 		}
 		return
 	}
@@ -421,6 +434,22 @@ func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result s
 	}
 	if name != "" {
 		fmt.Fprintf(out, " symbol=%s", name)
+		// When the printed lines are only a SHARD of the named symbol, say so and give the symbol's
+		// true extent. Otherwise `main.c:578-583 symbol=umain` reads as "umain is six lines", and an
+		// agent that needs the rest has no anchor to read from.
+		//
+		// Measured on jqlang/jq-2235: `umain` spans 270-725 (456 lines) and the payload showed lines
+		// 578-583 with no indication of that. The agent then swept main.c in three reads totalling
+		// 26,873 B (lines 1-697, effectively the whole file) while the no-tool baseline used `grep -n`
+		// anchors and read 17,536 B. The same shape cost php-cs-fixer 77,718 B of blind sweeps against
+		// the baseline's 10,784 B of anchored reads.
+		if result.SymbolStartLine > 0 && result.SymbolEndLine >= result.SymbolStartLine &&
+			(result.SymbolStartLine < start || result.SymbolEndLine > end) {
+			fmt.Fprintf(out, " span=%d-%d (%dL, body elided - read %d-%d for the rest)",
+				result.SymbolStartLine, result.SymbolEndLine,
+				result.SymbolEndLine-result.SymbolStartLine+1,
+				result.SymbolStartLine, result.SymbolEndLine)
+		}
 	}
 	// `kind=` says what sort of declaration the reader is looking at (function / method /
 	// class / enum / route). A name alone does not: `Ops` reads the same whether it is the
@@ -1190,7 +1219,7 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 			}
 			flags.BodyHeadRanks, i = value, next
 		case "--file-outline":
-			flags.FileOutline, i = true, i
+			flags.FileOutline = true
 		case "--head-window-lines":
 			value, next, err := searchPositiveIntFlag(args, i)
 			if err != nil {
@@ -1254,6 +1283,12 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 				return flags, nil, err
 			}
 			i = next
+		case "--verify-explain":
+			value, next, err := searchFlagValue(args, i)
+			if err != nil {
+				return flags, nil, err
+			}
+			flags.VerifyExplain, i = value, next
 		case "--max-context-bytes":
 			value, next, err := searchNonNegativeIntFlag(args, i)
 			if err != nil {

@@ -116,7 +116,12 @@ type SearchOptions struct {
 	// named, 35 of them immediately followed by a Read of that same file, and the reads that follow a
 	// payload file land a median 109 lines from anything printed — 47 of 53 inside another symbol the
 	// graph already indexes in that file.
-	IncludeFileOutline bool
+	// VerifyExplainCommand, when set, is appended to the emitted VERIFY line as
+	// `<test cmd> 2>&1 | <this>`, so an agent that runs VERIFY verbatim also gets the declarations
+	// for whatever the failure names. Measured: 0 of 27 agents typed that pipe when the PROMPT asked
+	// them to, while 79 VERIFY-style commands were run.
+	VerifyExplainCommand string
+	IncludeFileOutline   bool
 	// EnclosureContextLines pads the rank-1 complete body with this many source lines on each
 	// side. 0 means no padding (the body's exact symbol bounds).
 	//
@@ -158,21 +163,29 @@ type SearchOptions struct {
 
 // SearchResult is a ranked source region suitable for direct agent context.
 type SearchResult struct {
-	Rank             int      `json:"rank"`
-	Score            float64  `json:"score"`
-	FilePath         string   `json:"file_path"`
-	StartLine        int      `json:"start_line"`
-	EndLine          int      `json:"end_line"`
-	FocusLine        int      `json:"focus_line"`
-	SnippetStartLine int      `json:"snippet_start_line"`
-	SnippetEndLine   int      `json:"snippet_end_line"`
-	Language         string   `json:"language,omitempty"`
-	Kind             string   `json:"kind,omitempty"`
-	SymbolID         string   `json:"symbol_id,omitempty"`
-	SymbolName       string   `json:"symbol_name,omitempty"`
-	QualifiedName    string   `json:"qualified_name,omitempty"`
-	Signature        string   `json:"signature,omitempty"`
-	Signals          []string `json:"signals"`
+	Rank             int     `json:"rank"`
+	Score            float64 `json:"score"`
+	FilePath         string  `json:"file_path"`
+	StartLine        int     `json:"start_line"`
+	EndLine          int     `json:"end_line"`
+	FocusLine        int     `json:"focus_line"`
+	SnippetStartLine int     `json:"snippet_start_line"`
+	SnippetEndLine   int     `json:"snippet_end_line"`
+	// SymbolStartLine/SymbolEndLine are the ENCLOSING symbol's true bounds, which differ from the
+	// snippet bounds whenever the body was elided (too long for the enclosure cap, or a bounded
+	// window). Without them a payload can say `main.c:578-583 symbol=umain` while `umain` actually
+	// spans 270-725, and the agent cannot tell it is holding a 6-line shard of a 456-line function.
+	// Measured on jqlang/jq-2235: that omission produced three sweeping reads (26,873 B, covering
+	// main.c lines 1-697) where the no-tool baseline's `grep -n` gave exact anchors and read 17,536 B.
+	SymbolStartLine int      `json:"symbol_start_line,omitempty"`
+	SymbolEndLine   int      `json:"symbol_end_line,omitempty"`
+	Language        string   `json:"language,omitempty"`
+	Kind            string   `json:"kind,omitempty"`
+	SymbolID        string   `json:"symbol_id,omitempty"`
+	SymbolName      string   `json:"symbol_name,omitempty"`
+	QualifiedName   string   `json:"qualified_name,omitempty"`
+	Signature       string   `json:"signature,omitempty"`
+	Signals         []string `json:"signals"`
 	// Section groups a result for presentation. Empty (omitted) means the primary list of
 	// candidate fix sites; see search_section.go for the other values and why the grouping is
 	// a label rather than a filter.
@@ -276,7 +289,11 @@ type SearchStats struct {
 	FileOutlineBytes   int `json:"file_outline_bytes,omitempty"`
 	FileOutlineRows    int `json:"file_outline_rows,omitempty"`
 	VerifyCommandBytes int `json:"verify_command_bytes,omitempty"`
-	ClosedSetBytes     int `json:"closed_set_bytes,omitempty"`
+	// VerifyExplainSuffixBytes is the caller-configured `| <explain cmd>` tail appended to the verify
+	// command. It is reported separately because it is fixed overhead the caller opted into, so it is
+	// added to the block's allowance instead of competing with the command the ranking derived.
+	VerifyExplainSuffixBytes int `json:"verify_explain_suffix_bytes,omitempty"`
+	ClosedSetBytes           int `json:"closed_set_bytes,omitempty"`
 	// ContextBlockBytes is the sum of every block counter above: the whole cost of
 	// everything outside `results`, in one number, so a caller can see the payload's true size
 	// without re-deriving it.
@@ -999,6 +1016,19 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		}
 	}
 	verifyCommand := buildSearchVerifyCommand(results, verifyEvidence)
+	if verifyCommand != nil && options.VerifyExplainCommand != "" {
+		// Compose here, in the emitted string, rather than asking the agent to compose. `explain`
+		// passes the build output through before appending declarations, so this stays a superset of
+		// what the bare command printed — the agent loses nothing by running the longer line.
+		suffix := " 2>&1 | " + options.VerifyExplainCommand
+		verifyCommand.Command += suffix
+		// The suffix is caller-configured FIXED overhead, not content the ranking produced, so it is
+		// added to the block's allowance rather than charged against it. Without this the composed
+		// command overflows the 320-byte cap and search_blocks fails the whole response — measured:
+		// "search verify command exceeds its allowance: 373 > 320", which returned ZERO-BYTE payloads
+		// on 7 of 17 sessions before it was caught.
+		stats.VerifyExplainSuffixBytes = len(suffix)
+	}
 	if verifyCommand != nil {
 		stats.VerifyCommandBytes = searchVerifyCommandCost(verifyCommand)
 	}
@@ -2053,6 +2083,8 @@ func attachSparseCandidateSymbols(candidates []searchCandidate, symbolsByFile ma
 		candidate.result.SymbolName = symbol.Name
 		candidate.result.QualifiedName = symbol.QualifiedName
 		candidate.result.Signature = symbol.Signature
+		candidate.result.SymbolStartLine = symbol.StartLine
+		candidate.result.SymbolEndLine = symbol.EndLine
 	}
 }
 
@@ -2307,6 +2339,8 @@ func makeSearchCandidate(q searchQuery, filePath, language string, lines []strin
 			SymbolName:       symbol.Name,
 			QualifiedName:    symbol.QualifiedName,
 			Signature:        symbol.Signature,
+			SymbolStartLine:  symbol.StartLine,
+			SymbolEndLine:    symbol.EndLine,
 			Signals:          appendUnique(nil, signals...),
 			Snippet:          snippet,
 		},
@@ -2381,6 +2415,7 @@ func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF m
 			coverage = coveredWeight / queryWeight
 		}
 		candidate.score = candidate.baseScore + bm25 + 7*coverage + minFloat64(24, codeTokenBonus)
+		candidate.score += searchNameCoverageWeight * searchNameTermCoverage(candidate.result, q, idf)
 		// trail 18's kind/subject/dotted-call structural bonuses (orthogonal to the
 		// caller-degree boost that trail 10 applies as a separate step). Centrality was
 		// dropped in the merge: trail 10's caller-boost is the reviewed successor of the
@@ -2399,6 +2434,76 @@ func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF m
 // searchNameCoversQuery reports whether the symbol's own name path matches at
 // least half of the query's terms — the signature of a query that is about the
 // symbol itself (find/define intent) rather than one that merely mentions it.
+// searchNameTermCoverage is the idf-weighted share of the query's terms that the SYMBOL'S OWN NAME
+// carries. It is separate from BM25 coverage, which is computed over the whole indexed document and
+// therefore treats a word in a 400-line body as equal evidence to the same word in the identifier a
+// developer chose.
+//
+// Measured on gohugoio/hugo#12171 with the query form our own doctrine mandates ("the bug in one
+// sentence"): the gold site `pageMap.getPagesInSection` was ABSENT from the top 20, while rank 1-5
+// were Pages.Reverse (22.48), Site.Sections (20.76), sortKeys (20.24), pageTree.Sections (19.53) and
+// AddLeadingSlash (19.01) — a five-point spread across the entire head, i.e. no usable rank 1. Four
+// independent models each abandoned the prose form and re-queried in code vocabulary.
+//
+// The discriminating fact was already present and unscored: `getPagesInSection` carries TWO of the
+// query's domain terms (pages, section) where `Site.Sections` and `Pages.Reverse` carry one. A name
+// is a deliberate, dense label; prose in a body is incidental. Rewarding name coverage separates a
+// head that BM25 alone collapses.
+//
+// Plural-tolerant on purpose: the issue says "sections" and the symbol says "Section", and an exact
+// substring test scores that as a miss — which is precisely how the gold site lost.
+func searchNameTermCoverage(result SearchResult, q searchQuery, _ map[string]float64) float64 {
+	name := strings.ToLower(result.QualifiedName)
+	if name == "" {
+		name = strings.ToLower(result.SymbolName)
+	}
+	if name == "" || len(q.terms) == 0 {
+		return 0
+	}
+	// Deliberately NOT idf-weighted. Weighting by rarity is right for a document, where a rare word
+	// is the discriminating one; it is wrong for an identifier, where the discriminating words are
+	// the DOMAIN nouns a developer would put in a name. On the hugo issue sentence the rare terms are
+	// "similarly", "adjacent", "incorrect" — none of which any identifier contains — so idf weighting
+	// pushed the denominator onto words the name could never carry and scored `getPagesInSection`
+	// (pages + section) barely above `Pages.Reverse` (pages). Counting DISTINCT matched terms is the
+	// signal: two domain terms in one name is strong evidence, three is decisive, and beyond that the
+	// extra matches say little, so it saturates.
+	matched := 0
+	for _, term := range q.terms {
+		if searchNameContainsTerm(name, term) {
+			matched++
+		}
+	}
+	if matched == 0 {
+		return 0
+	}
+	return minFloat64(float64(matched), 3) / 3
+}
+
+// searchNameContainsTerm matches a query term against an identifier, tolerating the one
+// morphological difference that dominates issue text: a plural in the prose against a singular in
+// the identifier ("sections" vs getPagesInSection).
+func searchNameContainsTerm(lowerName, term string) bool {
+	if len(term) < 3 {
+		return false
+	}
+	if strings.Contains(lowerName, term) {
+		return true
+	}
+	if strings.HasSuffix(term, "es") && len(term) > 4 && strings.Contains(lowerName, term[:len(term)-2]) {
+		return true
+	}
+	if strings.HasSuffix(term, "s") && len(term) > 3 && strings.Contains(lowerName, term[:len(term)-1]) {
+		return true
+	}
+	return false
+}
+
+// searchNameCoverageWeight is how much a fully name-covering candidate gains. Sized against the
+// existing document-coverage weight of 7: the identifier is the stronger evidence, and the head it
+// has to separate spans about five points on a prose query.
+const searchNameCoverageWeight = 10.0
+
 func searchNameCoversQuery(result SearchResult, q searchQuery) bool {
 	name := strings.ToLower(result.QualifiedName)
 	if name == "" {
@@ -2710,6 +2815,8 @@ func expandGraphCandidates(seeds []searchCandidate, q searchQuery, relations []R
 					SymbolName:       symbol.Name,
 					QualifiedName:    symbol.QualifiedName,
 					Signature:        symbol.Signature,
+					SymbolStartLine:  symbol.StartLine,
+					SymbolEndLine:    symbol.EndLine,
 					Snippet:          strings.Join(lines[snippetStart-1:snippetEnd], "\n"),
 				},
 			}

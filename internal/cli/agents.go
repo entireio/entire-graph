@@ -152,6 +152,18 @@ The output is grouped, and the groups mean different things:
 6c. Adding a variant to an enum / sealed set / union / const group? If the CLOSED-SET WARNING says
    ` + "`checked at runtime`" + `, add the missing switch arm before you finish. That failure is a runtime
    throw, not a compile error, so verification will not catch it either.
+6d. WHEN THE BUILD FAILS, PIPE IT — do not grep. Run the verify command with the declaration
+   lookup already attached, as ONE command, so the failure and the declarations it names arrive
+   together:
+       <the VERIFY command> 2>&1 | entire graph explain --repo .
+   For every name the error mentions — unknown identifier, wrong signature, missing field or
+   method, wrong arity — that prints where it is declared and its signature, read from your
+   WORKING TREE, so it reflects the edit you just made. A name the repository does not define is
+   reported as such, which is the answer when you have invented a method. This exists because it
+   is the phase the graph was losing: measured on a 30-instance paired run, pre-edit exploration
+   fell 9.43 -> 1.34 turns per session while post-edit exploration only moved 8.60 -> 6.76 and
+   post-edit reads went the wrong way, 3.57 -> 4.07. Piping costs no turn of its own; grepping the
+   same answer costs three.
 7. VERIFY, DON'T CHASE. Verification is bounded: run it, read the error, fix exactly what the
    error names, re-run — a couple of iterations, not more. Do NOT enter an edit->test->edit loop
    hunting a green suite, and do not "fix" failures that were already failing before you started.
@@ -196,6 +208,9 @@ not of the tool being good or bad.
     verify  ->  the VERIFY line the search printed, run once, after editing. When there was none,
                 this project's own narrowest build/test command
                 (e.g. ` + "`go build ./internal/foo/...`" + `, ` + "`pytest tests/test_foo.py -k name`" + `, ` + "`cargo check -p crate`" + `)
+    explain ->  <verify command> 2>&1 | entire graph explain --repo .   (declarations for every
+                symbol the FAILURE names, from the working tree so your own edits are included;
+                run it as one command with the build — never grep a compiler error)
     extras  ->  entire graph search ... --reference-blocks all   (container map, signature types,
                 declaration card — off by default; measured to cost turns in agent sessions, kept
                 for interactive reading)

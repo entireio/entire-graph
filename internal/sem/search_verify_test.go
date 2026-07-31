@@ -1,16 +1,85 @@
 package sem
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 )
 
 // searchVerifyTestEvidence builds an evidence view over a fixed set of repository files.
 func searchVerifyTestEvidence(files map[string]string) searchVerifyEvidence {
-	return searchVerifyEvidence{read: func(path string) (string, bool) {
-		content, ok := files[path]
-		return content, ok
-	}}
+	return searchVerifyTestEvidenceWithout(files)
+}
+
+// searchVerifyTestEvidenceWithout builds the same view, but reports the named executables as absent
+// from PATH so the probe can be exercised deterministically.
+func searchVerifyTestEvidenceWithout(files map[string]string, missing ...string) searchVerifyEvidence {
+	absent := make(map[string]bool, len(missing))
+	for _, name := range missing {
+		absent[name] = true
+	}
+	return searchVerifyEvidence{
+		lookPath: func(name string) (string, error) {
+			if absent[name] {
+				return "", exec.ErrNotFound
+			}
+			return "/usr/bin/" + name, nil
+		},
+		read: func(path string) (string, bool) {
+			content, ok := files[path]
+			return content, ok
+		},
+	}
+}
+
+// A known test FILE with no known test NAME used to degrade to `go test ./pkg` — a whole-package run,
+// which is the measured expensive case (6.86 build turns against 5.11 for commands carrying a
+// selector, +31% session tokens). The name is recoverable from the file itself.
+func TestDeriveSearchVerifyGoRecoversTestNameFromTheTestFile(t *testing.T) {
+	t.Parallel()
+	evidence := searchVerifyTestEvidence(map[string]string{
+		"go.mod": "module x\n",
+		// TestUnrelatedThing is declared FIRST and is the shorter name, so it wins on both tie-breaks
+		// unless the generic word "test" is excluded from matching.
+		"internal/configs/parser_config_dir_test.go": "package configs\n\n" +
+			"func TestUnrelatedThing(t *testing.T) {}\n\n" +
+			"func TestParserLoadTestFiles(t *testing.T) {}\n",
+	})
+	results := []SearchResult{
+		{Rank: 1, FilePath: "internal/configs/parser_config_dir.go", SymbolName: "Parser.loadTestFiles", Section: searchSectionPrimary},
+		{Rank: 2, FilePath: "internal/configs/parser_config_dir_test.go", Section: searchSectionPrimary},
+	}
+	got := buildSearchVerifyCommand(results, evidence)
+	if got == nil {
+		t.Fatal("expected a command")
+	}
+	if want := "go test ./internal/configs -run '^TestParserLoadTestFiles$'"; got.Command != want {
+		t.Fatalf("command:\n got %q\nwant %q", got.Command, want)
+	}
+	if !strings.Contains(got.DerivedFrom, "test name read from parser_config_dir_test.go") {
+		t.Fatalf("derivation should say the name was read from the file, got %q", got.DerivedFrom)
+	}
+}
+
+// Narrowing must never point at an unrelated test: a wrong narrow command costs more than the broad
+// run it replaced, because the failure it reports is about code the agent never touched.
+func TestDeriveSearchVerifyGoKeepsPackageScopeWhenNoTestNameMatches(t *testing.T) {
+	t.Parallel()
+	evidence := searchVerifyTestEvidence(map[string]string{
+		"go.mod": "module x\n",
+		"internal/configs/parser_config_dir_test.go": "package configs\n\nfunc TestSomethingElseEntirely(t *testing.T) {}\n",
+	})
+	results := []SearchResult{
+		{Rank: 1, FilePath: "internal/configs/parser_config_dir.go", SymbolName: "Parser.loadFiles", Section: searchSectionPrimary},
+		{Rank: 2, FilePath: "internal/configs/parser_config_dir_test.go", Section: searchSectionPrimary},
+	}
+	got := buildSearchVerifyCommand(results, evidence)
+	if got == nil {
+		t.Fatal("expected a command")
+	}
+	if want := "go test ./internal/configs"; got.Command != want {
+		t.Fatalf("command:\n got %q\nwant %q", got.Command, want)
+	}
 }
 
 func TestDeriveSearchVerifyCommandFromBuildEvidence(t *testing.T) {
@@ -193,8 +262,11 @@ func TestDeriveSearchVerifyCommandFromBuildEvidence(t *testing.T) {
 		{
 			name: "phpunit needs a configuration file next to composer.json",
 			files: map[string]string{
-				"composer.json":                   `{}`,
-				"phpunit.xml.dist":                "<phpunit/>",
+				"composer.json":    `{}`,
+				"phpunit.xml.dist": "<phpunit/>",
+				// The runner must be INSTALLED, not merely configured: a fresh checkout with no
+				// `composer install` has no vendor/ and the command cannot run.
+				"vendor/bin/phpunit":              "#!/usr/bin/env php\n",
 				"src/Calculation/Round.php":       "",
 				"tests/Calculation/RoundTest.php": "",
 			},
@@ -495,5 +567,277 @@ func TestBuildSearchVerifyCommandNeedsACandidateFixSite(t *testing.T) {
 	docsOnly := []SearchResult{{Rank: 1, FilePath: "docs/guide.md", Section: searchSectionDocs}}
 	if got := buildSearchVerifyCommand(docsOnly, evidence); got != nil {
 		t.Fatalf("expected silence, got %q", got.Command)
+	}
+}
+
+// A composer.json + phpunit.xml means the project USES phpunit, not that the binary is installed.
+// In a fresh checkout `vendor/` does not exist and the command cannot run. Measured on
+// phpoffice/phpspreadsheet-3463: the unrunnable command cost SIX turns of environment archaeology.
+func TestComposerVerifyRequiresTheInstalledRunner(t *testing.T) {
+	t.Parallel()
+	base := map[string]string{
+		"composer.json":         "{}\n",
+		"phpunit.xml":           "<phpunit/>\n",
+		"tests/Foo/BarTest.php": "<?php class BarTest {}\n",
+	}
+	results := []SearchResult{
+		{Rank: 1, FilePath: "src/Foo/Bar.php", SymbolName: "Bar.baz", Section: searchSectionPrimary},
+		{Rank: 2, FilePath: "tests/Foo/BarTest.php", Section: searchSectionPrimary},
+	}
+	// vendor/ absent -> silence
+	if got := buildSearchVerifyCommand(results, searchVerifyTestEvidence(base)); got != nil {
+		t.Fatalf("expected silence when vendor/bin/phpunit is absent, got %q", got.Command)
+	}
+	// vendor/ present -> command emitted
+	withVendor := map[string]string{}
+	for k, v := range base {
+		withVendor[k] = v
+	}
+	withVendor["vendor/bin/phpunit"] = "#!/usr/bin/env php\n"
+	got := buildSearchVerifyCommand(results, searchVerifyTestEvidence(withVendor))
+	if got == nil || !strings.Contains(got.Command, "vendor/bin/phpunit tests/Foo/BarTest.php") {
+		t.Fatalf("expected the phpunit command once the runner exists, got %+v", got)
+	}
+}
+
+// C/C++ had NO verify inference at all, and a missing VERIFY block is the largest measured effect in
+// the benchmark: VERIFY present n=11 -> eg -35.3%; VERIFY absent n=16 -> eg -14.9%, with every
+// >200k-token regression falling in the absent group. fmtlib/fmt-2457 was the only C++ instance and
+// got nothing.
+func TestCMakeVerifyIsSelfConfiguringAndTargetScoped(t *testing.T) {
+	t.Parallel()
+	files := map[string]string{
+		"CMakeLists.txt":       "project(fmt)\nenable_testing()\nadd_subdirectory(test)\n",
+		"test/CMakeLists.txt":  "add_fmt_test(ranges-test)\n",
+		"include/fmt/ranges.h": "template <typename T> struct formatter {};\n",
+		"test/ranges-test.cc":  "TEST(ranges_test, join_tuple) {}\n",
+	}
+	results := []SearchResult{
+		{Rank: 1, FilePath: "include/fmt/ranges.h", SymbolName: "formatter.format_args", Section: searchSectionPrimary},
+		{Rank: 2, FilePath: "test/ranges-test.cc", Section: searchSectionPrimary},
+	}
+	got := buildSearchVerifyCommand(results, searchVerifyTestEvidence(files))
+	if got == nil {
+		t.Fatal("expected a CMake command for a project declaring enable_testing()")
+	}
+	// The configure step must be IN the string: a bare `cmake --build build` fails in a fresh
+	// checkout, which is what cost fmt a cold build plus five turns re-finding the directory.
+	for _, want := range []string{"cmake -S . -B build", "--target ranges-test", "ctest --test-dir build -R ranges-test"} {
+		if !strings.Contains(got.Command, want) {
+			t.Fatalf("command missing %q:\n%s", want, got.Command)
+		}
+	}
+	// No enable_testing() -> silence, never an invented ctest run.
+	quiet := map[string]string{
+		"CMakeLists.txt":      "project(fmt)\n",
+		"test/CMakeLists.txt": "add_fmt_test(ranges-test)\n",
+		"test/ranges-test.cc": "",
+	}
+	if got := buildSearchVerifyCommand(results, searchVerifyTestEvidence(quiet)); got != nil {
+		t.Fatalf("expected silence without enable_testing(), got %q", got.Command)
+	}
+	// A target the CMake sources never declare -> silence rather than a guess.
+	undeclared := map[string]string{
+		"CMakeLists.txt":      "project(fmt)\nenable_testing()\n",
+		"test/CMakeLists.txt": "add_fmt_test(other-test)\n",
+		"test/ranges-test.cc": "",
+	}
+	if got := buildSearchVerifyCommand(results, searchVerifyTestEvidence(undeclared)); got != nil {
+		t.Fatalf("expected silence for an undeclared target, got %q", got.Command)
+	}
+}
+
+// Sessions whose payload carried no VERIFY block spent 15.2% fewer tokens than the no-tool baseline
+// against 30.6% for sessions that had one, and every test derivation requires a covering test, so
+// 16 of 30 measured sessions got nothing. The build check closes that gap without pretending to be
+// a test run.
+func TestDeriveSearchVerifyBuildCheckFiresWhenNoCoveringTestExists(t *testing.T) {
+	t.Parallel()
+	evidence := searchVerifyTestEvidence(map[string]string{
+		"composer.json":          "{\"require\":{}}\n",
+		"src/Illuminate/Bus.php": "<?php\n",
+	})
+	results := []SearchResult{
+		{Rank: 1, FilePath: "src/Illuminate/Bus.php", SymbolName: "Bus::dispatch", Section: searchSectionPrimary},
+	}
+	got := buildSearchVerifyCommand(results, evidence)
+	if got == nil {
+		t.Fatal("expected a build check when no covering test exists")
+	}
+	if want := "php -l src/Illuminate/Bus.php"; got.Command != want {
+		t.Fatalf("command:\n got %q\nwant %q", got.Command, want)
+	}
+	if !strings.Contains(got.DerivedFrom, "runs no tests") {
+		t.Fatalf("derivation must say it is not a test run, got %q", got.DerivedFrom)
+	}
+}
+
+// The build check is a fallback, never a replacement: a payload that found a real covering test must
+// still emit the test command, or the fix would trade behaviour coverage for a parse check.
+func TestDeriveSearchVerifyBuildCheckYieldsToARealTestCommand(t *testing.T) {
+	t.Parallel()
+	evidence := searchVerifyTestEvidence(map[string]string{
+		"go.mod":               "module x\n",
+		"internal/a/a.go":      "package a\n",
+		"internal/a/a_test.go": "package a\n\nfunc TestDispatch(t *testing.T) {}\n",
+	})
+	results := []SearchResult{
+		{Rank: 1, FilePath: "internal/a/a.go", SymbolName: "Dispatch", Section: searchSectionPrimary},
+		{Rank: 2, FilePath: "internal/a/a_test.go", Section: searchSectionPrimary},
+	}
+	got := buildSearchVerifyCommand(results, evidence)
+	if got == nil {
+		t.Fatal("expected a command")
+	}
+	if strings.Contains(got.Command, "py_compile") || strings.Contains(got.DerivedFrom, "runs no tests") {
+		t.Fatalf("build check displaced a real test command: %q (%s)", got.Command, got.DerivedFrom)
+	}
+}
+
+// A language with no safe single-file check must stay silent rather than guess an invocation: javac
+// needs a classpath and gcc needs include paths, and a command that fails on its own invocation is
+// the failure mode the whole block is designed to avoid.
+func TestDeriveSearchVerifyBuildCheckStaysSilentWithoutASafeCheck(t *testing.T) {
+	t.Parallel()
+	evidence := searchVerifyTestEvidence(map[string]string{
+		"pom.xml":           "<project></project>\n",
+		"src/main/App.java": "class App {}\n",
+	})
+	results := []SearchResult{
+		{Rank: 1, FilePath: "src/main/App.java", SymbolName: "App.run", Section: searchSectionPrimary},
+	}
+	// Maven legitimately emits a whole-suite `mvn -q test` here without a covering test; what must
+	// not happen is a fabricated per-file Java check, which has no safe single-file form.
+	got := buildSearchVerifyCommand(results, evidence)
+	if got != nil && strings.Contains(got.DerivedFrom, "runs no tests") {
+		t.Fatalf("build check fabricated a Java command: %q", got.Command)
+	}
+	if got != nil && strings.Contains(got.Command, "App.java") {
+		t.Fatalf("emitted a per-file Java compile command: %q", got.Command)
+	}
+}
+
+// Two models wanted opposite things from a command whose runner is missing: suppressing it moved
+// Sonnet -40.7% -> -25.5% (helped) and Haiku -42.5% -> -49.5% (hurt). One caller wants something to
+// run, the other wants to be told to stop. The block serves both by emitting the command AND flagging
+// the runner — no branch, no model named.
+func TestSearchVerifyAnnotatesAMissingRunnerInsteadOfSuppressing(t *testing.T) {
+	t.Parallel()
+	files := map[string]string{
+		"go.mod":               "module x\n",
+		"internal/a/a.go":      "package a\n",
+		"internal/a/a_test.go": "package a\n\nfunc TestDispatch(t *testing.T) {}\n",
+	}
+	results := []SearchResult{
+		{Rank: 1, FilePath: "internal/a/a.go", SymbolName: "Dispatch", Section: searchSectionPrimary},
+		{Rank: 2, FilePath: "internal/a/a_test.go", Section: searchSectionPrimary},
+	}
+	present := searchVerifyTestEvidenceWithout(files)
+	got := buildSearchVerifyCommand(results, present)
+	if got == nil {
+		t.Fatal("expected a command when the runner is present")
+	}
+	if got.RunnerMissing {
+		t.Fatal("runner is on PATH; must not be flagged missing")
+	}
+	if strings.Contains(string(RenderSearchVerifyCommand(got)), "not installed") {
+		t.Fatal("no note should render when the runner resolves")
+	}
+
+	absent := searchVerifyTestEvidenceWithout(files, "go")
+	got = buildSearchVerifyCommand(results, absent)
+	if got == nil {
+		t.Fatal("the command must still be EMITTED when the runner is missing, not suppressed")
+	}
+	if !got.RunnerMissing {
+		t.Fatal("expected RunnerMissing to be set when `go` is absent")
+	}
+	rendered := string(RenderSearchVerifyCommand(got))
+	if !strings.Contains(rendered, "go test ./internal/a") {
+		t.Fatalf("command must still be present and runnable-as-written: %q", rendered)
+	}
+	if !strings.Contains(rendered, "do NOT go looking for a toolchain") {
+		t.Fatalf("expected the stop-hunting note, got %q", rendered)
+	}
+}
+
+// The launcher forms resolve their tool themselves, so probing only the launcher misses the cases that
+// cost the most turns: `bundle exec rspec` with bundle installed but rspec absent from the lockfile.
+func TestSearchVerifyRunnerMissingLooksThroughLaunchers(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		command string
+		files   map[string]string
+		want    bool
+	}{
+		{"bundler resolves the gem", "bundle exec rspec spec/a_spec.rb",
+			map[string]string{"Gemfile.lock": "GEM\n  specs:\n    rspec-core (3.13.0)\n"}, false},
+		{"bundler cannot resolve the gem", "bundle exec rspec spec/a_spec.rb",
+			map[string]string{"Gemfile.lock": "GEM\n  specs:\n    rake (13.0.6)\n"}, true},
+		{"npx finds the local binary", "npx jest src/a.test.ts",
+			map[string]string{"node_modules/.bin/jest": "#!/usr/bin/env node\n"}, false},
+		{"npx has nothing to run", "npx jest src/a.test.ts", map[string]string{}, true},
+		{"vendored binary present", "vendor/bin/phpunit --filter A",
+			map[string]string{"vendor/bin/phpunit": "#!/usr/bin/env php\n"}, false},
+		{"vendored binary absent", "vendor/bin/phpunit --filter A", map[string]string{}, true},
+		{"cd prefix does not confuse the runner", "cd fuzz && cargo test", map[string]string{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			evidence := searchVerifyTestEvidenceWithout(tc.files)
+			if got := searchVerifyRunnerMissing(tc.command, &evidence); got != tc.want {
+				t.Fatalf("searchVerifyRunnerMissing(%q) = %v, want %v", tc.command, got, tc.want)
+			}
+		})
+	}
+}
+
+// A generic suffix must not out-rank the specific match. Measured on caddyserver/caddy-4943:
+// `CookieFilter.Filter` yields {cookie, filter}; `TestHashFilter` matches only the generic `filter`
+// and is shorter than `TestCookieFilter`, so a shortest-name tie-break emitted a command exercising an
+// unrelated filter. The instance regressed on BOTH Haiku (+6.4% usd) and Sonnet (+75.3% usd).
+func TestDeriveSearchVerifyPrefersTheTestMatchingMostOfTheSymbol(t *testing.T) {
+	t.Parallel()
+	evidence := searchVerifyTestEvidence(map[string]string{
+		"go.mod": "module caddy\n",
+		// TestHashFilter is declared FIRST and is SHORTER, so it wins on both old tie-breaks.
+		"modules/logging/filters_test.go": "package logging\n\n" +
+			"func TestHashFilter(t *testing.T) {}\n\n" +
+			"func TestCookieFilter(t *testing.T) {}\n",
+	})
+	results := []SearchResult{
+		{Rank: 1, FilePath: "modules/logging/filters.go", SymbolName: "CookieFilter.Filter", Section: searchSectionPrimary},
+		{Rank: 2, FilePath: "modules/logging/filters_test.go", Section: searchSectionPrimary},
+	}
+	got := buildSearchVerifyCommand(results, evidence)
+	if got == nil {
+		t.Fatal("expected a command")
+	}
+	if !strings.Contains(got.Command, "TestCookieFilter") {
+		t.Fatalf("expected the test matching BOTH words of CookieFilter.Filter, got %q", got.Command)
+	}
+}
+
+// Length must remain the tie-break WITHIN an equal match count, so a narrow test still beats a
+// long variant of the same behaviour.
+func TestDeriveSearchVerifyStillPrefersTheShorterNameAtEqualCoverage(t *testing.T) {
+	t.Parallel()
+	evidence := searchVerifyTestEvidence(map[string]string{
+		"go.mod": "module x\n",
+		"internal/a/a_test.go": "package a\n\n" +
+			"func TestDispatchWithUnrelatedOptionAndTimeout(t *testing.T) {}\n\n" +
+			"func TestDispatch(t *testing.T) {}\n",
+	})
+	results := []SearchResult{
+		{Rank: 1, FilePath: "internal/a/a.go", SymbolName: "Dispatch", Section: searchSectionPrimary},
+		{Rank: 2, FilePath: "internal/a/a_test.go", Section: searchSectionPrimary},
+	}
+	got := buildSearchVerifyCommand(results, evidence)
+	if got == nil {
+		t.Fatal("expected a command")
+	}
+	if !strings.Contains(got.Command, "'^TestDispatch$'") {
+		t.Fatalf("expected the shorter equal-coverage name, got %q", got.Command)
 	}
 }

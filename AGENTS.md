@@ -253,6 +253,45 @@ entire graph def --repo . Ranged       # a trait, with its implementors
 
 **When:** you have a type or member name and need its API before writing the patch — instead of opening its file. Not a routine follow-up to every search: search's own `TYPES IN THIS SIGNATURE` block already carries the surface of the types the top hit's signature names.
 
+### 🧯 explain — *my build just failed; what are these names?* (pipe, don't grep)
+Reads a failing build or test run on **stdin** and prints the declaration of every symbol the error
+names — `file:line`, kind, owning type, signature — resolved against your **working tree**, so it
+reflects the edit you just made. A name the repository does not define is reported as such, which is
+exactly the answer when you have invented a method or misspelled one.
+
+```sh
+<the VERIFY command> 2>&1 | entire graph explain --repo .
+```
+
+Run it **as one command with the build**, not as a follow-up. That is the whole design: it is not a
+tool you decide to reach for after reading an error, it is part of the command that produces the error.
+
+- Recognises the "cannot resolve this name" shape in Go, Rust, Java/Kotlin, TypeScript/JavaScript,
+  Python, PHP and Ruby — `undefined:`, `has no field or method`, `cannot find function`, `no method
+  named`, `cannot find symbol`, `Property 'x' does not exist`, `is not defined`, `has no attribute`,
+  `Call to undefined method`, `undefined method`, plus arity complaints that still name the callee.
+- Bounded: `--max-symbols` (default 8 — a cascading failure names the cause first and consequences
+  after) and `--max-context-bytes` (default 2048). `--head` switches to committed-tree semantics,
+  which is almost never what you want here.
+- Silent when the output names nothing it can resolve. A header over an empty list would assert that
+  the build named symbols when it did not.
+
+**Why it exists.** Measured on a 30-instance paired run against a no-tool baseline, the graph had
+already won the locate phase and was doing nothing for the rest:
+
+| turns/session | baseline | graph arm |
+|---|---|---|
+| pre-edit exploration | 9.43 | **1.34** |
+| post-edit exploration | 8.60 | 6.76 |
+| post-edit file reads | 3.57 | **4.07** |
+
+Half the assisted session is the edit→build→fix loop, and `def` — which already had the answer — was
+used **0.04 times per session across 28 sessions** when the prompt offered it for exactly this case.
+An agent whose build just failed is already in the shell; it does not stop to choose a tool. So the
+fix is not another instruction, it is a command that composes with the build.
+
+**When:** every failing verify run. Never grep a compiler error.
+
 ### 🕸️ neighbors — *who calls this / what does it call* (targeted relations)
 Direct incoming/outgoing relations for **one** symbol, with definition locations, plus bounded two-hop paths at `--depth 2`. For the full blast radius of a change, prefer `impact`; use `neighbors` when you want one specific relation/direction. Never `edges` for this (full stream).
 
@@ -408,37 +447,75 @@ what `scripts/entire-graph-statusline.sh` renders as a live Claude Code status l
 ## The agent prompt (copy-paste this)
 
 Give this to any coding agent that has `entire graph` available — substitute your search
-invocation for `<search-cmd>`:
+invocation for `<search-cmd>`, the VERIFY line the payload printed for `<verify-cmd>`, and your
+explain invocation for `<explain-cmd>`:
 
 This is the wording the harness measures (`agentic-swebench/tools/run_3arm.sh`,
 `ops_clamp_eg_prompt`, `PROMPT_FAMILY=briefed`). Keep the two in step — a prompt that promises
 blocks the tool no longer returns is worse than no prompt.
 
 ```text
-A precomputed code graph is available: <search-cmd> . Use it to LOCATE before any grep/find.
-Your FIRST action is ONE search:
-  <search-cmd> "<the bug in one sentence>"
-Then go straight to the top hit and edit from the body it printed — do not re-read the file to
-confirm what you were just shown, and do not re-search to 'make sure'. Reach the edit in as FEW
-turns as you can: every turn re-reads your whole context, and that replay is what this task costs.
-The result also hands you three things that each replace a round-trip you would otherwise spend:
-  SAME-CONCEPT LITERAL - every place this concept is spelled out, each tagged EDIT / CONSUMER /
-      DOC. This IS your sweep: fix the EDIT sites, ignore the CONSUMER ones. Do not grep for them.
-  VERIFY - the narrowest command that exercises the file you are changing. Run it ONCE when your
-      edits are in. Read the error, fix exactly what it names, re-run at most once. Never hunt a
-      green suite, never write a throwaway test script. A patch that does not build fails the
-      whole task.
-  CLOSED-SET WARNING - when you are adding a variant to an enum/sealed set, the switches over it
-      that will throw at RUNTIME rather than fail to compile. Add the missing arm before you stop.
-Because the search already named every location — the fix site, the EDIT-tagged literals, the
-related sites — none of your reads or edits depend on each other. Ask for them ALL IN ONE MESSAGE:
-every range you need to see, then every edit you need to make. That is the difference between two
-turns and ten, and turns are the entire cost.
-Then STOP. No further searching, no grep to double-check, no re-reading your own edits.
-If the top hit is clearly wrong - a LOW CONFIDENCE marker, or a body that does not match the issue -
-search ONCE more with different words. If that misses too, fall back to the shell in ONE batched
-call rather than staying stuck.
+A precomputed code graph is available: <search-cmd>
+(1) FIRST ACTION: one search.
+      <search-cmd> "<the bug in one sentence>"
+(2) EDIT from the body it printed. Do not re-read that file. Do not search again to confirm.
+(3) SAME-CONCEPT LITERAL block is your repo-wide sweep. Fix its EDIT sites. Ignore its CONSUMER
+    sites. Do not grep for either.
+(4) CLOSED-SET WARNING block: add the missing switch arm before you finish.
+(5) VERIFY block is the command for the file you changed. Run it once when your edits are in. Read
+    the error. Fix exactly what it names. Re-run at most once. Never hunt a green suite. Never write
+    a throwaway test script. A patch that does not build fails the whole task.
+(6) Build failed on a name you did not write? Do not grep it. Do not open its file. Run:
+      <verify-cmd> 2>&1 | <explain-cmd>
+(7) Reads and edits the search already located do not depend on each other. Ask for them in one
+    message.
+(8) Top hit clearly wrong (LOW CONFIDENCE, or a body that does not match the issue)? Search once
+    more with different words. If that misses, fall back to the shell in one batched call.
 ```
+
+**Why this is written as bare imperatives, and why that is not a cosmetic choice.** An earlier version
+of this block said the same things in explanatory prose — 446 words, 34 sentences, 24% of them opening
+with a directive. Measured against a no-tool baseline whose own block was 310 words / 21 sentences /
+38% imperative, on 29 paired haiku sessions:
+
+| assistant messages per session | baseline | graph arm |
+|---|---|---|
+| tool calls | 39.31 | 31.03 |
+| thinking-only | 39.93 | 31.72 |
+| **text-only, no tool call** | **11.93** | **21.79** |
+| text-only per tool call | **0.30** | **0.70** |
+
+The graph arm cut tool calls by 19% and then gave the saving back as narration: 9.86 extra prose
+messages per session, each replaying the whole context (~41k tokens) — roughly 404k tokens, larger
+than the entire measured saving. The effect is uniform after every tool (24-27% following Bash, Read,
+Edit and search alike), so it is not the payload: a variant that halved payload bytes via `--top-k 5`
+still narrated at 0.74. It is register. A weak model mirrors the voice it is given, and prose invites
+prose. Sonnet (0.24 vs 0.23), opus (0.28 vs 0.21) and fable (0.28 vs 0.21) barely move, so this is a
+small-model failure mode specifically.
+
+Rule parity with the prose version is exact — nothing was added. In particular no "do not narrate"
+clause appears here: that instruction already lives in the tool-agnostic block both arms receive, and
+adding it only to this one would be the asymmetric-discipline defect that withdrew the 31.6% figure.
+
+
+
+**Why the prompt now permits `def` after the edit.** The earlier wording ended "Then STOP. No further
+searching", which suppressed every graph call once the first edit landed — and could not suppress the
+shell. Measured on a 30-instance language-stratified haiku run, paired against the no-tool baseline on
+the same instances:
+
+| turns/session | baseline | graph arm |
+|---|---|---|
+| exploration BEFORE the first edit | 7.87 | **2.67** |
+| search calls (all of them pre-edit) | 0 | 3.27 |
+| exploration AFTER the first edit | 8.93 | **8.57** |
+| graph calls after the first edit | — | **0.00** |
+
+The locate half is close to saturated: 7.87 shell turns become 2.67. The other half is untouched —
+8.57 turns of `grep`/`cat` after the first edit (4.40 symbol greps, 3.63 file reads), hunting
+identifiers in the file the agent had just edited, while the tool that answers exactly that question
+in one call went unused because this prompt forbade it. That is now the single largest remaining cost
+in a graph-assisted session, which is why the rule above redirects it to `def` rather than banning it.
 
 **What was measured. The 54.9% figure is WITHDRAWN.** It was measured with a frugality clamp on the
 graph arm against a baseline that received *no working-policy instructions at all*, and the same
@@ -542,6 +619,8 @@ change  →  entire graph diff --base A --head B          (entity-level, with de
 ingest  →  entire graph snapshot --format ndjson        (whole graph)
 report  →  entire graph stats --repo .                  (human-facing: graph vs grep/read usage + estimated token savings)
 verify  →  the VERIFY line search printed, run once      (else the project's own narrowest build/test cmd)
+explain →  <verify cmd> 2>&1 | entire graph explain     (declarations for every name the FAILURE printed, from
+           the working tree — run it WITH the build; never grep a compiler error)
 extras  →  entire graph search ... --reference-blocks all (container map, signature types, declaration card — off by default)
 ```
 

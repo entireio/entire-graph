@@ -191,7 +191,7 @@ func validateSearchContextBlockBudget(response SearchResponse) error {
 		cap   int
 	}{
 		{name: "literal cluster", bytes: stats.LiteralClusterBytes, cap: searchLiteralClusterMaxBytes},
-		{name: "verify command", bytes: stats.VerifyCommandBytes, cap: searchVerifyCommandMaxBytes},
+		{name: "verify command", bytes: stats.VerifyCommandBytes, cap: searchVerifyCommandMaxBytes + stats.VerifyExplainSuffixBytes},
 		{name: "closed set", bytes: stats.ClosedSetBytes, cap: searchClosedSetMaxBytes},
 	} {
 		if additive.bytes > additive.cap {

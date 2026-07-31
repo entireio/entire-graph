@@ -109,7 +109,7 @@ no follow-up file read at all.
 
 - **candidate fix sites**, the top hits as complete function bodies, plus **RELATED SITES**
   (callers, siblings, near-duplicate bodies) and the **COVERING TEST** that exercises the fix site.
-- **SAME-CONCEPT LITERALS** — every place in the repository the queried concept is spelled out,
+- **SAME-CONCEPT LITERAL** — every place in the repository the queried concept is spelled out,
   each tagged `EDIT` (declares or registers it), `CONSUMER` (only passes it) or `DOC`, with the
   repository's own totals. That is the sweep, so there is no grep to run.
 - **VERIFY** — the narrowest test command for the file being changed, derived from the repository's

@@ -280,6 +280,12 @@ func widenSearchResultToEnclosure(result SearchResult, enclosure searchEnclosure
 	result.SnippetEndLine = enclosure.end
 	result.Snippet = strings.Join(enclosure.lines[enclosure.start-1:enclosure.end], "\n")
 	result.FocusLine = minInt(maxInt(result.FocusLine, result.StartLine), result.EndLine)
+	// Record the enclosing symbol's true extent whenever we know it, so a shard can announce what it
+	// is a shard OF. Harmless when the body was returned whole: the bounds then equal the snippet's.
+	if enclosure.symbol.StartLine > 0 && enclosure.symbol.EndLine >= enclosure.symbol.StartLine {
+		result.SymbolStartLine = enclosure.symbol.StartLine
+		result.SymbolEndLine = enclosure.symbol.EndLine
+	}
 	if enclosure.window {
 		// A window is readable code but not a whole callable. It gets its own signal so an agent
 		// (and the tests) can tell the two apart, and it deliberately does NOT get

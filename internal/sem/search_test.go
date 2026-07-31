@@ -2083,3 +2083,38 @@ func gamma() {
 // fields and member signatures, is funded by displacing tail locators so it can never shrink a
 // complete head body, and is gated off by default. Its exclusions are covered there too:
 // external targets and test files cannot enter the block.
+
+// Regression for the four-model field test on gohugoio/hugo#12171. All four models were given the
+// query form our own doctrine mandates ("the bug in one sentence") and all four abandoned it: the
+// gold site pageMap.getPagesInSection sat at position 87 of 101 while the head was five points wide.
+// The discriminating fact was unscored — the gold NAME carries two of the query's domain terms
+// (pages, section) where its competitors carry one — and an exact substring test scored the plural
+// "sections" against the singular identifier as a miss.
+func TestSearchNameTermCoverageIsPluralTolerantAndSaturates(t *testing.T) {
+	t.Parallel()
+	q := buildSearchQuery("parent pages collection filter by section path prefix")
+	gold := SearchResult{QualifiedName: "pageMap.getPagesInSection"}
+	rival := SearchResult{QualifiedName: "Site.Sections"}
+	g := searchNameTermCoverage(gold, q, nil)
+	r := searchNameTermCoverage(rival, q, nil)
+	if !(g > r) {
+		t.Fatalf("gold name coverage %v must exceed single-term rival %v", g, r)
+	}
+	// "sections" (plural, from the issue) must match "Section" inside the identifier.
+	if !searchNameContainsTerm("pagemap.getpagesinsection", "sections") {
+		t.Fatal("plural query term must match the singular identifier")
+	}
+	// Saturation: a name carrying many terms is not unboundedly better than one carrying three.
+	many := SearchResult{QualifiedName: "parentPagesCollectionFilterSectionPathPrefix"}
+	if got := searchNameTermCoverage(many, q, nil); got != 1 {
+		t.Fatalf("coverage should saturate at 1, got %v", got)
+	}
+	// A name sharing nothing scores zero, so the signal cannot lift unrelated code.
+	if got := searchNameTermCoverage(SearchResult{QualifiedName: "imaging.newFilterOpts"}, buildSearchQuery("zzz qqq"), nil); got != 0 {
+		t.Fatalf("unrelated name must score 0, got %v", got)
+	}
+	// Short tokens must not match: a 2-char fragment appears in almost any identifier.
+	if searchNameContainsTerm("pagemap.getpagesinsection", "in") {
+		t.Fatal("short tokens must not count as name coverage")
+	}
+}

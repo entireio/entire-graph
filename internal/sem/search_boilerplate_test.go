@@ -287,3 +287,46 @@ func TestSearchSplitTopLevelIgnoresNestedCommas(t *testing.T) {
 		t.Fatalf("split = %q", got)
 	}
 }
+
+// A rule-configuration array is a DATA TABLE, not behaviour. Measured on php-cs-fixer-7523: two
+// `getRules()` bodies tied at rank 1-2 (score 37.1786 each) and pushed the gold tokenizer file off
+// the list; the agent then blind-swept it for 77,718 B.
+func TestLiteralTableBodyIsTreatedAsBoilerplate(t *testing.T) {
+	t.Parallel()
+	table := SearchResult{
+		SymbolName: "PSR12Set.getRules", Kind: "method",
+		Snippet: "return [\n" +
+			"    'binary_operator_spaces' => true,\n" +
+			"    'blank_line_after_opening_tag' => true,\n" +
+			"    'compact_nullable_typehint' => true,\n" +
+			"    'declare_equal_normalize' => ['space' => 'none'],\n" +
+			"    'lowercase_cast' => true,\n" +
+			"    'no_blank_lines_after_class_opening' => true,\n" +
+			"    'no_leading_import_slash' => true,\n" +
+			"];",
+	}
+	if !searchLiteralTableBody(table) {
+		t.Fatal("a dense branch-free literal table must be detected")
+	}
+	// A body with control flow is a decision, never a table — this is where fixes live.
+	decision := SearchResult{
+		SymbolName: "Analyzer.isBinaryOperator", Kind: "method",
+		Snippet: "if ($token->isGivenKind(T_STRING)) {\n" +
+			"    return false,\n" +
+			"}\n" +
+			"foreach ($tokens as $index => $token) {\n" +
+			"    $prev = $tokens->getPrevMeaningfulToken($index),\n" +
+			"    $next = $tokens->getNextMeaningfulToken($index),\n" +
+			"    $result = $this->check($prev, $next),\n" +
+			"}\n" +
+			"return $result;",
+	}
+	if searchLiteralTableBody(decision) {
+		t.Fatal("a body containing control flow must NOT be treated as a table")
+	}
+	// Too short to be a table: a two-entry return is an ordinary early return.
+	short := SearchResult{SymbolName: "x", Kind: "method", Snippet: "return [\n  'a' => 1,\n  'b' => 2,\n];"}
+	if searchLiteralTableBody(short) {
+		t.Fatal("a short literal must not be treated as a table")
+	}
+}

@@ -3,6 +3,7 @@ package sem
 import (
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"path"
 	"strings"
 )
@@ -53,6 +54,10 @@ type SearchVerifyCommand struct {
 	// DerivedFrom names the repository evidence behind the command, so a reader can judge it
 	// instead of trusting it.
 	DerivedFrom string `json:"derived_from"`
+	// RunnerMissing reports that the executable this command invokes could not be resolved here. The
+	// command is still emitted — see the note in buildSearchVerifyCommand — but a caller that would
+	// otherwise go hunting for a toolchain is told, in the block itself, not to.
+	RunnerMissing bool `json:"runner_missing,omitempty"`
 }
 
 // searchVerifyEvidence is the bounded view of the repository the derivation is allowed to consult.
@@ -62,6 +67,9 @@ type searchVerifyEvidence struct {
 	cache map[string]string
 	miss  map[string]bool
 	reads int
+	// lookPath resolves an executable on PATH. nil means exec.LookPath. Injected so tests state which
+	// runners a machine has rather than inheriting whatever the test box happens to install.
+	lookPath func(string) (string, error)
 }
 
 // file returns a repository file's content, or false. It never reads more than
@@ -108,6 +116,10 @@ type searchVerifySubject struct {
 	// testEvidence names where testPath came from, so the derivation the block reports is the truth
 	// rather than a label: the payload's covering test, or a conventional mirror file that exists.
 	testEvidence string
+	// sourceSymbol is the top hit's own symbol: the thing being changed. It is what a recovered test
+	// name has to share a word with, so that narrowing a command can never silently point the agent
+	// at an unrelated test.
+	sourceSymbol string
 }
 
 // buildSearchVerifyCommand derives the command, or returns nil.
@@ -135,6 +147,33 @@ func buildSearchVerifyCommand(
 	if searchVerifyCommandCost(command) > searchVerifyCommandMaxBytes {
 		return nil
 	}
+	command.RunnerMissing = searchVerifyRunnerMissing(command.Command, &evidence)
+	// NOTE ON WHY THIS ANNOTATES RATHER THAN SUPPRESSES.
+	//
+	// The prior was strong: sessions whose emitted VERIFY then failed spent a mean 4.50 turns hunting
+	// for a toolchain against 0.00 when it ran clean, on all four models. Suppressing the command when
+	// the runner was absent made things WORSE on both models measured:
+	//
+	//   Sonnet, instances whose VERIFY was silenced (n=3):  +87.3% -> +103.9%   (worse 16.6pt)
+	//   Haiku,  instances whose VERIFY was silenced (n=4):  -62.3% ->  -30.1%   (worse 32.1pt)
+	//
+	// carbon-2752 is the clean case: silencing `php -l` moved it -75.6% -> -23.4% and 15 -> 34 turns.
+	// The env-hunt correlation was real but the causation ran the other way. A command that FAILS is a
+	// cheap dead end — the agent runs it once, reads the error, and stops. NO command is an open-ended
+	// question, and the prompt rule telling it not to look for a runner does not hold. Emitting a
+	// best-effort command is therefore better than silence even when it cannot run here.
+	//
+	// But suppression and silence are not the only options, and the two failures point in opposite
+	// directions rather than at one answer:
+	//
+	//   suppressing a command whose runner is missing   Sonnet -40.7% -> -25.5%  (helped)
+	//                                                   Haiku  -42.5% -> -49.5%  (hurt)
+	//
+	// One caller wants something to run; the other wants to be told to stop. Those are not
+	// contradictory demands — they are one emission carrying more information. So the command is
+	// always emitted AND flagged when its runner cannot be resolved. Neither behaviour is chosen for
+	// the caller, and no model is named anywhere: the flag is a fact about this checkout's PATH and
+	// manifests, which is the same class of evidence every other part of this derivation uses.
 	return command
 }
 
@@ -172,6 +211,7 @@ func searchVerifySubjectFor(results []SearchResult) (searchVerifySubject, bool) 
 			}
 			if subject.sourcePath == "" {
 				subject.sourcePath = filePathToSlash(result.FilePath)
+				subject.sourceSymbol = searchVerifyTestName(result)
 			}
 		case searchSectionCoveringTest:
 			if subject.testPath == "" && result.FilePath != "" {
@@ -207,6 +247,162 @@ func searchVerifyTestName(result SearchResult) string {
 		return ""
 	}
 	return name
+}
+
+// searchVerifyRecoveredTestName recovers a test function name from the covering test FILE when the
+// payload knew the file but not a name. Without it the command degrades to a whole-package run, and
+// that is the expensive failure mode rather than a cosmetic one: over the 16 sessions of a 30-instance
+// haiku run that were offered a VERIFY line, the 7 package-scope commands spent 6.86 build/test turns
+// against 5.11 for the 9 that carried a selector, at +31% session tokens. A package sweep in a
+// monorepo surfaces failures that predate the patch, and the agent then debugs those instead of its
+// own edit — the edit->test->edit loop this block exists to prevent.
+//
+// It is deliberately conservative. A narrow run of the WRONG test reports a failure about code the
+// agent never touched, which costs strictly more than the broad run it replaced, so a recovered name
+// is used ONLY when it shares a whole word with the symbol being changed. When nothing matches, the
+// caller keeps its package-scope command: this function widens what can be narrowed, it never
+// invents a selector.
+func searchVerifyRecoveredTestName(
+	testPath, symbol string,
+	evidence *searchVerifyEvidence,
+	declared func(string) []string,
+) string {
+	if testPath == "" || symbol == "" {
+		return ""
+	}
+	content, ok := evidence.file(testPath)
+	if !ok {
+		return ""
+	}
+	words := searchVerifyNameWords(symbol)
+	if len(words) == 0 {
+		return ""
+	}
+	// Rank by HOW MUCH of the symbol a candidate matches, not by whether it matches at all.
+	//
+	// Accepting any single word and then preferring the shortest name actively selects the wrong test
+	// whenever the symbol ends in a common suffix. Measured on caddyserver/caddy-4943, where
+	// `CookieFilter.Filter` yields the words {cookie, filter}: `TestHashFilter` matches only the
+	// generic `filter` and is SHORTER than `TestCookieFilter`, which matches both — so the old
+	// tie-break emitted a command exercising an unrelated filter. The same shape appears on
+	// hashicorp/terraform-34580. Both instances lose on Haiku AND Sonnet, so this is not a
+	// model-specific effect.
+	//
+	// Counting distinct matched words fixes it without a vocabulary list: a candidate that covers more
+	// of the symbol is more specific to it, and length remains the tie-break WITHIN an equal count, so
+	// "TestFoo" still beats "TestFooWithUnrelatedOptionAndTimeout".
+	best, bestMatches := "", 0
+	for _, name := range declared(content) {
+		lower := strings.ToLower(name)
+		matches := 0
+		for _, word := range words {
+			if strings.Contains(lower, word) {
+				matches++
+			}
+		}
+		if matches == 0 {
+			continue
+		}
+		if matches > bestMatches || (matches == bestMatches && len(name) < len(best)) {
+			best, bestMatches = name, matches
+		}
+	}
+	return best
+}
+
+// searchVerifyNameWords splits an identifier into lowercase words of four characters or more, on both
+// camelCase boundaries and separators, so `Parser.loadTestFiles` yields load/files. Short words are
+// dropped because a two-character fragment matches almost any test name, which would defeat the whole
+// point of requiring a match.
+//
+// The test vocabulary itself is dropped for the same reason, and it is the sharper trap: a symbol
+// named `loadTestFiles` contributes the word "test", which matches EVERY name in a Go test file — so
+// the match would succeed on an unrelated test and the shortest-name rule would then prefer it.
+func searchVerifyNameWords(symbol string) []string {
+	generic := map[string]bool{"test": true, "tests": true, "spec": true, "specs": true, "case": true, "cases": true}
+	var words []string
+	var current strings.Builder
+	flush := func() {
+		if current.Len() >= 4 {
+			if word := strings.ToLower(current.String()); !generic[word] {
+				words = append(words, word)
+			}
+		}
+		current.Reset()
+	}
+	for _, letter := range symbol {
+		switch {
+		case letter == '_' || letter == '-' || letter == '.' || letter == ':':
+			flush()
+		case letter >= 'A' && letter <= 'Z':
+			flush()
+			current.WriteRune(letter)
+		default:
+			current.WriteRune(letter)
+		}
+	}
+	flush()
+	return words
+}
+
+// searchVerifyGoTestNames are the `func TestXxx` declarations in a Go test file. Only the `Test`
+// prefix is accepted, because that is the only prefix `go test -run` selects.
+func searchVerifyGoTestNames(content string) []string {
+	var names []string
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "func Test") {
+			continue
+		}
+		rest := strings.TrimPrefix(trimmed, "func ")
+		open := strings.Index(rest, "(")
+		if open <= 0 {
+			continue
+		}
+		name := rest[:open]
+		if strings.ContainsAny(name, " \t*[]") {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// searchVerifyRustTestNames are the functions declared under a `#[test]` (or `#[tokio::test]`)
+// attribute. Cargo's positional filter is a substring over the test's path, so the bare function
+// name is a valid selector.
+func searchVerifyRustTestNames(content string) []string {
+	var names []string
+	marked := false
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#[test") || strings.HasPrefix(trimmed, "#[tokio::test") {
+			marked = true
+			continue
+		}
+		if !marked {
+			continue
+		}
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#[") {
+			// Another attribute on the same item — still the same test.
+			continue
+		}
+		marked = false
+		start := strings.Index(trimmed, "fn ")
+		if start < 0 {
+			continue
+		}
+		rest := trimmed[start+len("fn "):]
+		end := strings.IndexAny(rest, "(<")
+		if end <= 0 {
+			continue
+		}
+		names = append(names, rest[:end])
+	}
+	return names
 }
 
 // searchVerifyTestAffixes are the ways a test file is named after the file it tests, and
@@ -320,7 +516,58 @@ var searchVerifyDerivations = []func(string, searchVerifySubject, *searchVerifyE
 	deriveSearchVerifyComposer,
 	deriveSearchVerifyPytest,
 	deriveSearchVerifyRuby,
+	deriveSearchVerifyCMake,
 	deriveSearchVerifyMake,
+	deriveSearchVerifyBuildCheck,
+}
+
+// searchVerifyBuildChecks maps a source extension to a check that compiles or parses THAT ONE FILE.
+// Every entry is a pure syntax/bytecode check: it needs no build directory, no classpath, no test
+// fixture and no network, so it cannot fail for a reason unrelated to the edit. Anything needing a
+// resolved build graph (javac, gcc, tsc) is deliberately absent — a command that fails on its own
+// invocation costs strictly more than no command, which is why the test derivations above stay
+// silent rather than guess.
+var searchVerifyBuildChecks = map[string]string{
+	".php": "php -l ",
+	".rb":  "ruby -c ",
+	".js":  "node --check ",
+	".jsx": "node --check ",
+	".mjs": "node --check ",
+	".cjs": "node --check ",
+	".py":  "python -m py_compile ",
+}
+
+// deriveSearchVerifyBuildCheck is the last tier, and the only one that fires when the payload found
+// no covering test. It answers a different question from the derivations above — "does what I just
+// wrote parse?" rather than "does it behave?" — and it is labelled as such so the block is never
+// read as a test run.
+//
+// Measured on 30 paired haiku sessions: sessions whose payload carried a VERIFY block spent 30.6%
+// fewer tokens than the no-tool baseline, sessions without one only 15.2%. Every derivation above
+// requires subject.testPath, so 16 of 30 sessions got nothing and paid the difference re-deriving an
+// invocation by hand. Operating rule 8 already tells the agent to "compile what you touched" in that
+// case; this emits the command for it instead of leaving it a shell hunt.
+func deriveSearchVerifyBuildCheck(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	// Only the root pass may emit: the check names an absolute repo-relative path, so walking to a
+	// parent directory would re-emit the identical command once per level.
+	if dir != "" {
+		return nil
+	}
+	if subject.testPath != "" {
+		return nil // a covering test exists; a parse check would be a downgrade, not a fallback
+	}
+	if subject.sourcePath == "" || !evidence.exists(subject.sourcePath) {
+		return nil
+	}
+	check, ok := searchVerifyBuildChecks[strings.ToLower(path.Ext(subject.sourcePath))]
+	if !ok {
+		return nil
+	}
+	return &SearchVerifyCommand{
+		Command:     check + subject.sourcePath,
+		Targets:     subject.sourcePath,
+		DerivedFrom: "build check only - no covering test found; this parses the file, it runs no tests",
+	}
 }
 
 // searchVerifyJoin builds a repository-relative path inside a directory.
@@ -393,8 +640,14 @@ func deriveSearchVerifyCargo(dir string, subject searchVerifySubject, evidence *
 		}
 		if target != "" {
 			targets = subject.testPath
-			if subject.testName != "" {
-				filter = " " + subject.testName
+			testName := subject.testName
+			if testName == "" {
+				// Same reasoning as the Go derivation: `cargo test -p <crate>` builds and runs the
+				// crate's whole test set, which is where the pre-existing failures live.
+				testName = searchVerifyRecoveredTestName(subject.testPath, subject.sourceSymbol, evidence, searchVerifyRustTestNames)
+			}
+			if testName != "" {
+				filter = " " + testName
 			}
 		}
 	}
@@ -452,12 +705,20 @@ func deriveSearchVerifyGo(dir string, subject searchVerifySubject, evidence *sea
 	packagePath := path.Dir(subject.sourcePath)
 	targets := "package ./" + packagePath
 	filter := ""
+	recovered := false
 	if subject.testPath != "" {
 		if _, inside := searchVerifyRelative(dir, subject.testPath); inside {
 			packagePath = path.Dir(subject.testPath)
 			targets = subject.testPath
-			if strings.HasPrefix(subject.testName, "Test") {
-				filter = fmt.Sprintf(" -run '^%s$'", subject.testName)
+			name := subject.testName
+			if !strings.HasPrefix(name, "Test") {
+				// The test FILE is known but not its function name — recover it from the file rather
+				// than degrading to `go test ./pkg`, which runs every test in the package.
+				name = searchVerifyRecoveredTestName(subject.testPath, subject.sourceSymbol, evidence, searchVerifyGoTestNames)
+				recovered = name != ""
+			}
+			if strings.HasPrefix(name, "Test") {
+				filter = fmt.Sprintf(" -run '^%s$'", name)
 			}
 		}
 	}
@@ -474,7 +735,13 @@ func deriveSearchVerifyGo(dir string, subject searchVerifySubject, evidence *sea
 	}
 	derived := manifest + " module root"
 	if filter != "" {
-		derived += " + " + subject.testEvidence + " name"
+		if recovered {
+			// Say where the name came from. A recovered name is weaker evidence than a covering-test
+			// name and the agent is entitled to judge it rather than trust it.
+			derived += " + test name read from " + path.Base(subject.testPath)
+		} else {
+			derived += " + " + subject.testEvidence + " name"
+		}
 	}
 	return &SearchVerifyCommand{
 		Command:     searchVerifyRunIn(dir, "go test "+selector+filter),
@@ -632,6 +899,18 @@ func deriveSearchVerifyComposer(dir string, subject searchVerifySubject, evidenc
 	if !inside {
 		return nil
 	}
+	// PROBE THE RUNNER. A `composer.json` plus a `phpunit.xml` says the project USES phpunit; it does
+	// not say the binary is installed. In a fresh checkout with no `composer install`, `vendor/` does
+	// not exist and this command cannot run.
+	//
+	// Measured on phpoffice/phpspreadsheet-3463: the emitted `vendor/bin/phpunit ...` failed, and the
+	// agent spent SIX consecutive turns on environment archaeology (`ls -la`, `which phpunit`,
+	// `cat composer.json | grep scripts`, `php -v`, `php -m`, `find -name phpunit.xml*`) before
+	// giving up on tests entirely. Silence would have cost none of them: the block's own contract is
+	// that a wrong command costs strictly more than no command.
+	if !evidence.exists(searchVerifyJoin(dir, "vendor/bin/phpunit")) {
+		return nil
+	}
 	return &SearchVerifyCommand{
 		Command:     searchVerifyRunIn(dir, "vendor/bin/phpunit "+relative),
 		Targets:     subject.testPath,
@@ -713,6 +992,64 @@ func deriveSearchVerifyRuby(dir string, subject searchVerifySubject, evidence *s
 	return nil
 }
 
+// deriveSearchVerifyCMake derives a self-configuring CMake/CTest invocation.
+//
+// entire-graph had NO C/C++ verify inference, and a missing VERIFY block is the largest single
+// measured effect in the benchmark:
+//
+//	VERIFY present   n=11   eg -35.3% vs baseline
+//	VERIFY absent    n=16   eg -14.9% vs baseline
+//
+// Every regression above 200k tokens was a no-VERIFY cell. On fmtlib/fmt-2457 (the only C++ instance,
+// worst regression at +107%) the agent got no command, edited blind for ten turns before its first
+// compile, adopted the whole pre-test-patch suite as its oracle, read "PASSED 20" as success, and
+// shipped a patch with zero functional change.
+//
+// The CONFIGURE STEP IS PART OF THE STRING deliberately: a bare `cmake --build build` fails in a
+// fresh checkout because build/ does not exist, which is exactly what happened -- a cold 13,085-char
+// build, then five turns lost re-finding the directory after `cd build` did not persist.
+func deriveSearchVerifyCMake(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	manifest := searchVerifyJoin(dir, "CMakeLists.txt")
+	content, ok := evidence.file(manifest)
+	if !ok {
+		return nil
+	}
+	// Only when the project declares tests: `enable_testing()` / `include(CTest)` is the repository's
+	// own statement that ctest means something here. Without it a test command would be invented.
+	if !strings.Contains(content, "enable_testing") && !strings.Contains(content, "include(CTest") {
+		return nil
+	}
+	if subject.testPath == "" {
+		return nil
+	}
+	relative, inside := searchVerifyRelative(dir, subject.testPath)
+	if !inside {
+		return nil
+	}
+	// The target is the test file's stem by CMake convention (test/ranges-test.cc -> ranges-test),
+	// and it is VERIFIED against the CMake sources rather than guessed: no declared target, no block.
+	target := searchVerifyStem(relative)
+	if target == "" {
+		return nil
+	}
+	declared := strings.Contains(content, target)
+	if !declared {
+		if nested, found := evidence.file(searchVerifyJoin(dir, "test/CMakeLists.txt")); found && strings.Contains(nested, target) {
+			declared = true
+		}
+	}
+	if !declared {
+		return nil
+	}
+	command := "cmake -S . -B build >/dev/null && cmake --build build --target " + target +
+		" -j4 && ctest --test-dir build -R " + target + " --output-on-failure"
+	return &SearchVerifyCommand{
+		Command:     searchVerifyRunIn(dir, command),
+		Targets:     subject.testPath,
+		DerivedFrom: manifest + " enable_testing + " + subject.testEvidence + " target",
+	}
+}
+
 // deriveSearchVerifyMake derives `make <target>` and is the coarsest derivation here: a Makefile
 // states that a target exists, not how to narrow it. It is still emitted, because the measured cost
 // is agents fumbling the INVOCATION, and it is emitted only when a covering test exists — otherwise
@@ -768,11 +1105,18 @@ func searchVerifyCommandCost(command *SearchVerifyCommand) int {
 	if command == nil {
 		return 0
 	}
-	encoded, err := json.Marshal(command)
+	// The missing-runner note is deliberately EXCLUDED from the cost. It is a fixed addendum that
+	// exists to stop a caller hunting for a toolchain, and letting its bytes push a command over
+	// searchVerifyCommandMaxBytes would delete the whole block — reintroducing, through a byte
+	// budget, exactly the suppression that measured worse on Haiku (-42.5% -> -49.5%). The cap
+	// governs the command, its target and its derivation; the note rides along.
+	bare := *command
+	bare.RunnerMissing = false
+	encoded, err := json.Marshal(&bare)
 	if err != nil {
 		return 0
 	}
-	return maxInt(len(encoded), len(RenderSearchVerifyCommand(command)))
+	return maxInt(len(encoded), len(RenderSearchVerifyCommand(&bare)))
 }
 
 // RenderSearchVerifyCommand renders the block for a text reader: the command on its own line so it
@@ -781,8 +1125,88 @@ func RenderSearchVerifyCommand(command *SearchVerifyCommand) []byte {
 	if command == nil || command.Command == "" {
 		return nil
 	}
-	return []byte(fmt.Sprintf("VERIFY: %s\n  targets %s (from %s)\n",
-		command.Command, command.Targets, command.DerivedFrom))
+	note := ""
+	if command.RunnerMissing {
+		note = "\n  NOTE: this command's runner is not installed in this checkout. Run it once; if it fails" +
+			" on the invocation rather than on your code, do NOT go looking for a toolchain — syntax-check" +
+			" the file you changed and stop."
+	}
+	return []byte(fmt.Sprintf("VERIFY: %s\n  targets %s (from %s)%s\n",
+		command.Command, command.Targets, command.DerivedFrom, note))
+}
+
+// searchVerifyRunner extracts the executable a command actually invokes: the first token of the first
+// stage, after any `cd <dir> &&` prefixes the derivation added to reach a manifest.
+func searchVerifyRunner(command string) string {
+	remainder := strings.TrimSpace(command)
+	for strings.HasPrefix(remainder, "cd ") {
+		separator := strings.Index(remainder, "&&")
+		if separator < 0 {
+			return ""
+		}
+		remainder = strings.TrimSpace(remainder[separator+2:])
+	}
+	fields := strings.Fields(remainder)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+// searchVerifyRunnerMissing reports whether the command's runner cannot be executed here. A
+// path-shaped runner (`vendor/bin/phpunit`, `./gradlew`) is answered by the repository itself;
+// a bare name is resolved on PATH. `bundle exec X` and `npx X` resolve X themselves, so the launcher
+// being present says nothing — look through it at the tool it is asked to run.
+func searchVerifyRunnerMissing(command string, evidence *searchVerifyEvidence) bool {
+	runner := searchVerifyRunner(command)
+	if runner == "" {
+		return false
+	}
+	if strings.ContainsRune(runner, '/') {
+		return !evidence.exists(strings.TrimPrefix(runner, "./"))
+	}
+	lookPath := evidence.lookPath
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
+	if _, err := lookPath(runner); err != nil {
+		return true
+	}
+	inner := searchVerifyLaunchedTool(command, runner)
+	if inner == "" {
+		return false
+	}
+	switch runner {
+	case "bundle", "bundler":
+		lock, ok := evidence.file("Gemfile.lock")
+		return !ok || !strings.Contains(lock, inner)
+	case "npx", "pnpm", "yarn":
+		return !evidence.exists("node_modules/.bin/" + inner)
+	}
+	return false
+}
+
+// searchVerifyLaunchedTool returns the tool a launcher is being asked to run — `rspec` for
+// `bundle exec rspec` — or "" when the command is not of that shape.
+func searchVerifyLaunchedTool(command, runner string) string {
+	fields := strings.Fields(strings.TrimSpace(command))
+	for index, field := range fields {
+		if field != runner {
+			continue
+		}
+		rest := fields[index+1:]
+		if len(rest) > 0 && rest[0] == "exec" {
+			rest = rest[1:]
+		}
+		for _, candidate := range rest {
+			if strings.HasPrefix(candidate, "-") {
+				continue
+			}
+			return candidate
+		}
+		return ""
+	}
+	return ""
 }
 
 // filePathToSlash normalizes a repository path for the string handling above. Repository paths are
