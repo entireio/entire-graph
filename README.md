@@ -7,13 +7,6 @@ function, type, route, and call relationship — so they can start from ranked
 structural evidence instead of broad grep-and-read exploration. It is 100% local:
 no network, no model calls, no keys.
 
-> **Evidence correction (2026-07-30):** earlier versions of this README claimed
-> 54.9%/57.7% end-to-end token savings and task-completion parity. Those claims
-> are withdrawn. The evaluations did not make official resolution the primary
-> outcome and used asymmetric early-stop guidance; resolution grading
-> contradicted the parity claim. No replacement end-to-end savings number is
-> current.
-
 ## Install (one minute)
 
 Go 1.24+ and a C compiler required first
