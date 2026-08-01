@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -117,6 +118,12 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 	if strings.TrimSpace(flags.Query) == "" {
 		return errors.New("search requires --query")
 	}
+	// ZERO-TOLL DELIVERY. When the caller has already computed this session's payload and handed it
+	// to the agent inside context the session pays for anyway, this call must cost nothing: echo
+	// those bytes and return, before the profile, the repo, the cache and the index are touched.
+	if path := strings.TrimSpace(opts.Env.PresearchPath); path != "" {
+		return echoPresearchPayload(opts.Stdout, path)
+	}
 	profile, err := parseProfile(flags.Profile)
 	if err != nil {
 		return err
@@ -177,6 +184,47 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 	default:
 		return fmt.Errorf("search --format must be json, ndjson, text, or agent, got %q", flags.Format)
 	}
+}
+
+// echoPresearchPayload returns a payload that was computed before the agent started, verbatim.
+//
+// The toll this removes is the MESSAGE, not the bytes. Measured over 178 gated benchmark pairs,
+// the number of graph calls a session makes is invariant — 1.00 / 1.03 / 1.00 per session across
+// baseline-exploration bands <10 / 10-19 / >=20 turns — while what the call buys back is not:
+// greps displaced go 1.35 / 2.16 / 3.74 over the same bands, and the cost ratio with it (1.140 CI
+// [1.063,1.224] n=51 / 0.950 n=108 / 0.841 CI [0.704,0.998] n=19). Split by outcome instead of by
+// band, the two cohorts separate cleanly: sessions where the call displaced no grep at all (n=43)
+// cost 1.165 CI [1.073,1.264] and ran +1.21 turns, sessions where it displaced greps (n=135) cost
+// 0.938 CI [0.889,0.990] and ran -2.07 turns. corr(turn delta, log cost ratio) = +0.735 CI
+// [0.661,0.800] pair-level, +0.802 CI [0.662,0.885] repo-level — the strongest correlate in the
+// set. Independently, a regression holding call count fixed still prices a +7.0% CI [1.9,13.2]
+// tax on merely having made the call, and prices one call at 1.61 messages rather than 1.
+//
+// The toll is also unpredictable: no static feature of a payload predicts that its call will turn
+// out to be a no-op (AUC 0.553 top score, 0.560 spread, 0.563 gap, 0.690 entropy, at a 28% base
+// rate). Selective skipping is therefore not implementable — pre-delivery is the only form the
+// fix can take, and it must be universal.
+//
+// Echoing rather than re-querying is what makes the delivery free: a call the agent still makes
+// costs one message and adds zero information, so it cannot re-open the phase the pre-delivery
+// closed. Retrieval is unaffected because the agent's own query adds almost nothing over the
+// issue text the payload was derived from: of 188 pre-edit greps not covered by the payload, 2
+// (1.1%) named a literal that was in the agent's query and not in the issue.
+//
+// A caller that names a payload it cannot produce gets an error, not a live query. Falling back
+// silently would leave the arm measuring whichever mode each session happened to land in — the
+// same reason an unknown --reference-blocks name is an error rather than a no-op.
+//
+// Note for whoever wires the caller: the payload must be computed with the SAME binary, flags and
+// cached graph the session would have used, and the instruction telling the agent to search first
+// has to go with it — the tool cannot be left un-called while that directive stands.
+func echoPresearchPayload(out interface{ Write([]byte) (int, error) }, path string) error {
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("%s: %w", envPresearch, err)
+	}
+	_, err = out.Write(payload)
+	return err
 }
 
 // writeNdjsonSearch streams a payload as one record per line: a header, the blocks that are their own
