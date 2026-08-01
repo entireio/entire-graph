@@ -1,0 +1,13 @@
+When calling entire-graph or entire graph, the standard output is not nicely formatted. Check how other tools are doing that, especially the entire CLI itself, but also gh or mise, and create a plan to improve the help for all commands, sub commands, and parameters. Organize the main list by what the users needs for the basic setup with his agent, for inspecting the graph, and other commands.
+
+---
+
+Did you build and install the new entire graph plugin with the entire CLI?
+
+---
+
+Remove it
+
+---
+
+In the help output, I'd move doctor, version, and help into a separate 4th section. You figure out the name.
