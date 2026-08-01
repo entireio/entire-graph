@@ -1,9 +1,8 @@
 {
-  "cli_version": "0.6.3-nightly.202605190723.fd212937",
-  "checkpoint_id": "5b2d0fa11f2c",
-  "strategy": "manual-commit",
   "branch": "pr-72",
-  "checkpoints_count": 0,
+  "checkpoint_id": "5b2d0fa11f2c",
+  "checkpoints_count": 2,
+  "cli_version": "0.6.3-nightly.202605190723.fd212937",
   "files_touched": [
     "AGENTS.md",
     "internal/cli/root.go",
@@ -12,19 +11,27 @@
     "internal/sem/search_verify.go",
     "internal/sem/search_verify_test.go"
   ],
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/5b/2d0fa11f2c/0/metadata.json",
       "transcript": "/5b/2d0fa11f2c/0/full.jsonl",
       "content_hash": "/5b/2d0fa11f2c/0/content_hash.txt",
       "prompt": "/5b/2d0fa11f2c/0/prompt.txt"
+    },
+    {
+      "content_hash": "/5b/2d0fa11f2c/1/content_hash.txt",
+      "metadata": "/5b/2d0fa11f2c/1/metadata.json",
+      "prompt": "/5b/2d0fa11f2c/1/prompt.txt",
+      "transcript": "/5b/2d0fa11f2c/1/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 567321,
+    "input_tokens": 618483,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 12371968,
-    "output_tokens": 38672,
-    "api_call_count": 105
+    "cache_read_tokens": 12604045,
+    "output_tokens": 44637,
+    "api_call_count": 114
   }
 }
