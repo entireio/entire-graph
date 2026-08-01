@@ -370,16 +370,13 @@ var (
 )
 
 // serviceBoundaryScanLanguage reports whether a language's symbol bodies should
-// be scanned with the loose GraphQL operation patterns. It mirrors the set that
-// declares HANDLES_GRAPHQL in ooRelationSupport, so the scan cannot emit an
-// edge the capability report says the language does not produce.
+// be scanned with the loose GraphQL operation patterns. It reads the capability
+// table directly rather than repeating the language list: a second copy of
+// "who supports HANDLES_GRAPHQL" is the very drift this change set exists to
+// remove, and it would let the scan emit an edge the capability report says the
+// language cannot produce.
 func serviceBoundaryScanLanguage(language string) bool {
-	switch language {
-	case "TypeScript", "JavaScript", "Python", "GraphQL":
-		return true
-	default:
-		return false
-	}
+	return languageSupportsRelation(language, "HANDLES_GRAPHQL")
 }
 
 func serviceBoundaries(symbol SymbolRecord, block string) []serviceBoundary {

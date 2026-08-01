@@ -392,3 +392,55 @@ func TestJavaScriptReexportCandidateGatesNonJSPaths(t *testing.T) {
 		}
 	}
 }
+
+// TestGraphQLBodyScanHonoursCapabilityTable pins the gate to one source of
+// truth. The body patterns match ordinary prose and code — `query the columns`
+// in a Python docstring, `subscription cancel() {` in Java — so running them
+// everywhere emitted 1,245 edges in cli-cli and 1,057 in spring-framework that
+// `capabilities --json` said those languages could not produce. The gate reads
+// the capability table rather than repeating the language list, so the two
+// cannot drift apart again.
+func TestGraphQLBodyScanHonoursCapabilityTable(t *testing.T) {
+	for _, language := range []string{"TypeScript", "JavaScript", "Python", "GraphQL"} {
+		if !serviceBoundaryScanLanguage(language) {
+			t.Errorf("%s declares HANDLES_GRAPHQL and must be scanned", language)
+		}
+	}
+	for _, language := range []string{"Go", "Java", "Ruby", "Rust", "Zig", "C#"} {
+		if serviceBoundaryScanLanguage(language) {
+			t.Errorf("%s does not declare HANDLES_GRAPHQL and must not be scanned", language)
+		}
+		if languageSupportsRelation(language, "HANDLES_GRAPHQL") {
+			t.Errorf("capability table unexpectedly declares HANDLES_GRAPHQL for %s", language)
+		}
+	}
+	// The gate and the table are the same question, so they cannot disagree.
+	for _, language := range []string{"TypeScript", "Go", "Python", "Java", "Zig"} {
+		if serviceBoundaryScanLanguage(language) != languageSupportsRelation(language, "HANDLES_GRAPHQL") {
+			t.Errorf("gate and capability table disagree for %s", language)
+		}
+	}
+}
+
+// TestGraphQLBodyScanSkipsProseInUndeclaredLanguages is the end-to-end form:
+// Go source whose comments read like GraphQL must produce no boundary.
+func TestGraphQLBodyScanSkipsProseInUndeclaredLanguages(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "store.go", `package store
+
+// Load runs a query string against the index and will mutation-test the
+// result. Callers subscription cancel semantics are documented above.
+func Load(name string) string {
+	return name
+}
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "HANDLES_GRAPHQL" {
+			t.Fatalf("Go prose produced a GraphQL boundary: %+v", relation)
+		}
+	}
+}
