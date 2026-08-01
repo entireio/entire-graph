@@ -1,0 +1,1 @@
+For entire-graph index, can you show a progress bar while it's running? And not sure about the JSON output at the end, is that for agents?
