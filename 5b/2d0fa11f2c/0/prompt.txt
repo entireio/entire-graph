@@ -1,13 +1,1 @@
-Review PR #71, fix the merge conflicts, and CI/CD errors
-
----
-
-Great. Run a review loop with Copilot, address and resolve its feedback, and keep going until Copilot has no further finding.
-
----
-
-Ok, just merge it then
-
----
-
 Next, 72. Review and then merge to main.
