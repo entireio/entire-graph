@@ -203,6 +203,7 @@ type SearchResult struct {
 }
 
 type SearchStats struct {
+	QueryConstraintsTruncated      bool   `json:"query_constraints_truncated,omitempty"`
 	FilesScanned                   int    `json:"files_scanned"`
 	PreselectionBackend            string `json:"preselection_backend,omitempty"`
 	PreselectionPasses             int    `json:"preselection_passes,omitempty"`
@@ -362,10 +363,12 @@ type SearchResponse struct {
 }
 
 type searchQuery struct {
-	rawLower string
-	terms    []string
-	termSet  map[string]bool
-	weights  map[string]float64
+	raw         string
+	rawLower    string
+	constraints searchConstraints
+	terms       []string
+	termSet     map[string]bool
+	weights     map[string]float64
 	// dottedCallMentions holds lowercased "container.member" pairs the query
 	// wrote as explicit calls ("Type.method(...)") — a direct naming of the
 	// symbol the query is about.
@@ -394,6 +397,7 @@ type searchQuery struct {
 
 type searchCandidate struct {
 	result     SearchResult
+	aliases    []string
 	termCounts map[string]int
 	docLength  int
 	baseScore  float64
@@ -573,6 +577,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 			Profile:  string(options.Profile),
 			Results:  []SearchResult{},
 			Stats: SearchStats{
+				QueryConstraintsTruncated: q.constraints.Truncated,
 				FilesScanned:              selection.filesScanned,
 				PreselectionBackend:       selection.preselectionBackend,
 				PreselectionPasses:        selection.preselectionPasses,
@@ -777,6 +782,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 
 	stats := SearchStats{
+		QueryConstraintsTruncated: q.constraints.Truncated,
 		FilesScanned:              selection.filesScanned,
 		PreselectionBackend:       selection.preselectionBackend,
 		PreselectionPasses:        selection.preselectionPasses,
@@ -850,6 +856,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	if len(sparseCandidates) > 0 {
 		attachSparseCandidateSymbols(sparseCandidates, symbolsByFile)
 		scoreSparseCandidates(sparseCandidates, sparseQuery, sparseDF, sparseDocumentCount, sparseDocumentLength)
+		applySearchCandidateAgreement(sparseCandidates, q.constraints)
 		// Caller boost FIRST, then the priors — the same order the semantic pool uses
 		// above (boost at searchGraphCallerBoosts, priors before selectDiverseCandidates),
 		// and it is load-bearing rather than incidental. The caller boost is ADDITIVE
@@ -2083,6 +2090,7 @@ func attachSparseCandidateSymbols(candidates []searchCandidate, symbolsByFile ma
 		candidate.result.SymbolName = symbol.Name
 		candidate.result.QualifiedName = symbol.QualifiedName
 		candidate.result.Signature = symbol.Signature
+		candidate.aliases = append([]string(nil), symbol.Aliases...)
 		candidate.result.SymbolStartLine = symbol.StartLine
 		candidate.result.SymbolEndLine = symbol.EndLine
 	}
@@ -2347,6 +2355,7 @@ func makeSearchCandidate(q searchQuery, filePath, language string, lines []strin
 		termCounts: counts,
 		docLength:  length,
 		baseScore:  base,
+		aliases:    append([]string(nil), symbol.Aliases...),
 	}, true
 }
 
@@ -2421,6 +2430,9 @@ func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF m
 		// dropped in the merge: trail 10's caller-boost is the reviewed successor of the
 		// same inbound-degree signal, so keeping both would double-count it.
 		candidate.score += searchStructuralAdjustment(candidate, q)
+		bonus, signals := searchCandidateAgreement(*candidate, q.constraints)
+		candidate.score += bonus
+		candidate.result.Signals = appendUnique(candidate.result.Signals, signals...)
 		if codeTokenBonus > 0 {
 			candidate.result.Signals = appendUnique(candidate.result.Signals, "exact-code-token")
 		}
@@ -2819,6 +2831,7 @@ func expandGraphCandidates(seeds []searchCandidate, q searchQuery, relations []R
 					SymbolEndLine:    symbol.EndLine,
 					Snippet:          strings.Join(lines[snippetStart-1:snippetEnd], "\n"),
 				},
+				aliases: append([]string(nil), symbol.Aliases...),
 			}
 			// A graph neighbor of a strong seed must be able to compete with
 			// mid-ranked lexical candidates: the previous 0.28*seed+confidence
@@ -3823,6 +3836,7 @@ func buildSearchQuery(query string) searchQuery {
 			weights[term] = weight
 		}
 	}
+	constraints := parseSearchConstraints(query)
 	// Case folding has to be score-neutral. codeLikeSearchToken reads consecutive capitals
 	// as an identifier signal (SCREAMING_SNAKE constants, acronyms), which made a SHOUTED
 	// prose query score the same symbol far above the identical lowercase query. When every
@@ -3852,6 +3866,14 @@ func buildSearchQuery(query string) searchQuery {
 				weight = 1.1
 			}
 			add(term, weight)
+		}
+	}
+	for _, entity := range constraints.Entities {
+		add(entity.Normalized, 1.0)
+	}
+	for _, phrase := range constraints.Phrases {
+		for _, word := range phrase.Words {
+			add(word, 1.0)
 		}
 	}
 	originalTerms := make([]string, 0, len(weights))
@@ -3891,7 +3913,9 @@ func buildSearchQuery(query string) searchQuery {
 	rawLower := strings.ToLower(strings.TrimSpace(query))
 	wordSequence := searchQueryWordSequence(rawLower)
 	return searchQuery{
+		raw:                query,
 		rawLower:           rawLower,
+		constraints:        constraints,
 		terms:              terms,
 		termSet:            termSet,
 		weights:            weights,
