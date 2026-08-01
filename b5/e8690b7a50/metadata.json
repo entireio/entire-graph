@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "b5e8690b7a50",
+  "strategy": "manual-commit",
+  "branch": "claude/dataflow-evidence-determinism",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/sem/golden_test.go",
+    "internal/sem/types.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b5/e8690b7a50/0/metadata.json",
+      "transcript": "/b5/e8690b7a50/0/full.jsonl",
+      "compact_transcript": "/b5/e8690b7a50/0/transcript.jsonl",
+      "content_hash": "/b5/e8690b7a50/0/content_hash.txt",
+      "prompt": "/b5/e8690b7a50/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 105,
+    "cache_creation_tokens": 85472,
+    "cache_read_tokens": 4075091,
+    "output_tokens": 27012,
+    "api_call_count": 56
+  }
+}

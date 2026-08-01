@@ -1,0 +1,6 @@
+A user reported the following issue:
+Output is not byte-deterministic. Two runs on an identical tigerbeetle tree produced different bytes — 51 relations differed, same count, after sorting. All were DATA_FLOWS where evidence.detail names an arbitrary one of several forwarded params (a -> f() vs b -> f()), i.e. Go map order leaking out. ~0.14% of records. Relation identity is stable; only the evidence payload varies. This contradicts AGENTS.md's "The same commit yields the same graph."
+
+---
+
+I approve that you clone tigerbeetle
