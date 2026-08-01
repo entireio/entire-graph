@@ -203,14 +203,19 @@ type SearchResult struct {
 }
 
 type SearchStats struct {
-	QueryConstraintsTruncated      bool   `json:"query_constraints_truncated,omitempty"`
-	FilesScanned                   int    `json:"files_scanned"`
-	PreselectionBackend            string `json:"preselection_backend,omitempty"`
-	PreselectionPasses             int    `json:"preselection_passes,omitempty"`
-	PreselectionFilesExamined      int    `json:"preselection_files_examined,omitempty"`
-	UsagePreselectionBackend       string `json:"identifier_usage_preselection_backend,omitempty"`
-	UsagePreselectionPasses        int    `json:"identifier_usage_preselection_passes,omitempty"`
-	UsagePreselectionFilesExamined int    `json:"identifier_usage_preselection_files_examined,omitempty"`
+	QueryConstraintsTruncated      bool    `json:"query_constraints_truncated,omitempty"`
+	FilesScanned                   int     `json:"files_scanned"`
+	PreselectionBackend            string  `json:"preselection_backend,omitempty"`
+	PreselectionPasses             int     `json:"preselection_passes,omitempty"`
+	PreselectionFilesExamined      int     `json:"preselection_files_examined,omitempty"`
+	PreselectionConfidence         float64 `json:"preselection_confidence,omitempty"`
+	PreselectionCoverage           float64 `json:"preselection_coverage,omitempty"`
+	PreselectionDiversity          float64 `json:"preselection_diversity,omitempty"`
+	PreselectionWidened            bool    `json:"preselection_widened,omitempty"`
+	PreselectionBounded            bool    `json:"preselection_bounded,omitempty"`
+	UsagePreselectionBackend       string  `json:"identifier_usage_preselection_backend,omitempty"`
+	UsagePreselectionPasses        int     `json:"identifier_usage_preselection_passes,omitempty"`
+	UsagePreselectionFilesExamined int     `json:"identifier_usage_preselection_files_examined,omitempty"`
 	// Content-read counters report blobs hydrated into the Go process. Git's
 	// own immutable-tree scans are represented by the backend/pass/examined
 	// counters above; their internal byte IO is deliberately not estimated.
@@ -582,6 +587,11 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 				PreselectionBackend:       selection.preselectionBackend,
 				PreselectionPasses:        selection.preselectionPasses,
 				PreselectionFilesExamined: selection.preselectionFilesExamined,
+				PreselectionConfidence:    selection.preselectionConfidence,
+				PreselectionCoverage:      selection.preselectionCoverage,
+				PreselectionDiversity:     selection.preselectionDiversity,
+				PreselectionWidened:       selection.preselectionWidened,
+				PreselectionBounded:       selection.preselectionBounded,
 				FilesContentRead:          selection.filesContentRead,
 				FilesIndexed:              0,
 				SymbolsConsidered:         symbolsConsidered,
@@ -787,6 +797,11 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		PreselectionBackend:       selection.preselectionBackend,
 		PreselectionPasses:        selection.preselectionPasses,
 		PreselectionFilesExamined: selection.preselectionFilesExamined,
+		PreselectionConfidence:    selection.preselectionConfidence,
+		PreselectionCoverage:      selection.preselectionCoverage,
+		PreselectionDiversity:     selection.preselectionDiversity,
+		PreselectionWidened:       selection.preselectionWidened,
+		PreselectionBounded:       selection.preselectionBounded,
 		FilesContentRead:          selection.filesContentRead,
 		FilesIndexed:              len(selectedFiles),
 		SymbolsConsidered:         len(snapshot.Symbols),
@@ -1305,8 +1320,12 @@ func serializedSearchResultBytes(value any) int {
 }
 
 type searchFileCandidate struct {
-	path  string
-	score float64
+	path            string
+	score           float64
+	pathScore       float64
+	contentScore    float64
+	constraintScore float64
+	matchedTerms    []bool
 	// matchedWeight is the query weight this file matched, kept so the coverage share of
 	// the file score can be normalized AFTER the scan — by then the terms no file matched
 	// are known and can be left out of the denominator. See applySearchFileCoverage.
@@ -1329,7 +1348,9 @@ func applySearchFileCoverage(files []searchFileCandidate, q searchQuery, matched
 		return
 	}
 	for index := range files {
-		files[index].score += 4 * files[index].matchedWeight / queryWeight
+		files[index].contentScore += 4 * files[index].matchedWeight / queryWeight
+		files[index].score = files[index].pathScore + files[index].contentScore +
+			files[index].constraintScore + searchPathPrior(q, files[index].path)
 	}
 }
 
@@ -1351,6 +1372,11 @@ type searchFileSelection struct {
 	preselectionBackend       string
 	preselectionPasses        int
 	preselectionFilesExamined int
+	preselectionConfidence    float64
+	preselectionCoverage      float64
+	preselectionDiversity     float64
+	preselectionWidened       bool
+	preselectionBounded       bool
 	// allFiles is every file preselection discovered, kept so a repository-wide literal lookup has
 	// a corpus to fall back on when it is small enough to read (search_needle.go). It costs one
 	// slice of paths, which the sparse file list already pays for.
@@ -1492,9 +1518,13 @@ func preselectSearchFiles(
 					}
 				}
 				pathScore := pathSearchScore(q, filePath)
+				contentScore := matchedWeight
 				provisional = append(provisional, searchFileCandidate{
 					path:          filePath,
-					score:         2*pathScore + matchedWeight + searchPathPrior(q, filePath),
+					pathScore:     2 * pathScore,
+					contentScore:  contentScore,
+					matchedTerms:  append([]bool(nil), seen...),
+					score:         2*pathScore + contentScore + searchPathPrior(q, filePath),
 					matchedWeight: matchedWeight,
 				})
 			}
@@ -1507,8 +1537,9 @@ func preselectSearchFiles(
 				if _, exists := termMatches[filePath]; !exists {
 					if pathScore := pathSearchScore(q, filePath); pathScore > 0 {
 						provisional = append(provisional, searchFileCandidate{
-							path:  filePath,
-							score: 2*pathScore + searchPathPrior(q, filePath),
+							path:      filePath,
+							pathScore: 2 * pathScore,
+							score:     2*pathScore + searchPathPrior(q, filePath),
 						})
 					}
 				}
@@ -1518,7 +1549,7 @@ func preselectSearchFiles(
 				if provisional[i].score != provisional[j].score {
 					return provisional[i].score > provisional[j].score
 				}
-				return provisional[i].path < provisional[j].path
+				return canonicalSearchPathLess(provisional[i].path, provisional[j].path)
 			})
 			poolLimit := len(provisional)
 			if threshold := (len(provisional)-1)/4 + 1; options.MaxIndexedFiles < threshold {
@@ -1580,7 +1611,7 @@ func preselectSearchFiles(
 				sparseMu.Unlock()
 			}
 		}
-		pathScore := pathSearchScore(q, filePath)
+		pathScore := 2 * pathSearchScore(q, filePath)
 		matchedWeight := 0.0
 		matched := matcher.match(content)
 		for index, hit := range matched {
@@ -1588,7 +1619,9 @@ func preselectSearchFiles(
 				matchedWeight += q.weights[q.terms[index]]
 			}
 		}
-		if pathScore == 0 && matchedWeight == 0 {
+		contentScore := matchedWeight
+		constraintScore := searchFileConstraintEvidence(filePath+"\n"+content, q.constraints)
+		if pathScore == 0 && contentScore == 0 && constraintScore == 0 {
 			return searchFileCandidate{}, false
 		}
 		matchedMu.Lock()
@@ -1600,9 +1633,13 @@ func preselectSearchFiles(
 		// here is what makes a repository-wide literal lookup free later on.
 		selection.termPostings.record(filePath, matched, q.terms)
 		return searchFileCandidate{
-			path:          filePath,
-			score:         2*pathScore + matchedWeight + searchPathPrior(q, filePath),
-			matchedWeight: matchedWeight,
+			path:            filePath,
+			pathScore:       pathScore,
+			contentScore:    contentScore,
+			constraintScore: constraintScore,
+			matchedTerms:    append([]bool(nil), matched...),
+			score:           pathScore + contentScore + constraintScore + searchPathPrior(q, filePath),
+			matchedWeight:   matchedWeight,
 		}, true
 	}
 	workers := 1
@@ -1614,27 +1651,32 @@ func preselectSearchFiles(
 		return searchFileSelection{}, err
 	}
 	applySearchFileCoverage(files, q, matchedAnywhere)
-	sort.Slice(files, func(i, j int) bool {
-		if files[i].score != files[j].score {
-			return files[i].score > files[j].score
+	evidence := make([]searchPreselectionEvidence, len(files))
+	for index, file := range files {
+		evidence[index] = searchPreselectionEvidence{
+			Path:            file.path,
+			OriginalScore:   file.score,
+			PathScore:       file.pathScore,
+			ContentScore:    file.contentScore,
+			ConstraintScore: file.constraintScore,
+			MatchedTerms:    append([]bool(nil), file.matchedTerms...),
 		}
-		return files[i].path < files[j].path
-	})
-	if len(files) > options.MaxIndexedFiles {
-		files = files[:options.MaxIndexedFiles]
 	}
-	selected := make([]string, len(files))
-	for i, file := range files {
-		selected[i] = file.path
-	}
-	selection.files = selected
+	assessment := selectProgressiveSearchFiles(
+		fuseSearchPreselectionEvidence(evidence), matchedAnywhere, q, options.MaxIndexedFiles,
+	)
+	selection.files = assessment.Files
 	selection.filesContentRead = contentReads
 	selection.preselectionBackend = "go-content"
-	selection.preselectionPasses = 1
+	selection.preselectionPasses = assessment.Passes
 	selection.preselectionFilesExamined = len(scanPaths)
+	selection.preselectionConfidence = assessment.Confidence
+	selection.preselectionCoverage = assessment.Coverage
+	selection.preselectionDiversity = assessment.Diversity
+	selection.preselectionWidened = assessment.Widened
+	selection.preselectionBounded = assessment.Bounded
 	if usedGitIndexPreselection {
 		selection.preselectionBackend = "git-index-grep+go-content"
-		selection.preselectionPasses++
 		selection.preselectionFilesExamined += len(source.paths)
 		// The content pass ran over a Git-narrowed pool, so the posting lists cover only part of
 		// the corpus. Discard them rather than let a block compute a repository-wide total from a

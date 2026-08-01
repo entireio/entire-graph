@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -64,6 +65,42 @@ func TestSearchRepositorySupportsPunctuatedLanguageQuery(t *testing.T) {
 	}
 	if len(response.Results) == 0 || response.Results[0].FilePath != "native/bridge.cpp" {
 		t.Fatalf("C++ search results = %#v", response.Results)
+	}
+}
+
+func TestSearchRepositoryProgressivePreselectionIsDeterministicAndBounded(t *testing.T) {
+	repo := t.TempDir()
+	for index := 0; index < 12; index++ {
+		write(t, repo, fmt.Sprintf("src/part%02d.go", index), fmt.Sprintf(`package sample
+
+func Match%02d() string { return "needle" }
+`, index))
+	}
+	var first SearchResponse
+	for run := 0; run < 20; run++ {
+		response, err := SearchRepository(t.Context(), repo, "test", "needle", SearchOptions{
+			Worktree:          true,
+			Profile:           ProfileSyntaxOnly,
+			TopK:              8,
+			MaxIndexedFiles:   2,
+			MaxRegionsPerFile: 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.Stats.PreselectionPasses != 3 || !response.Stats.PreselectionWidened || !response.Stats.PreselectionBounded {
+			t.Fatalf("stats = %#v, want a deterministic capped progressive selection", response.Stats)
+		}
+		if response.Stats.FilesIndexed > 8 {
+			t.Fatalf("indexed files = %d, want at most four times the base", response.Stats.FilesIndexed)
+		}
+		if run == 0 {
+			first = response
+			continue
+		}
+		if !reflect.DeepEqual(response.Results, first.Results) {
+			t.Fatalf("run %d results = %#v, first = %#v", run, response.Results, first.Results)
+		}
 	}
 }
 
@@ -937,8 +974,8 @@ func TestCommittedPreselectionRequiresExactFullPreindexForUnboundedCandidates(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cold.Stats.FilesIndexed > 1 {
-		t.Fatalf("cold committed search bypassed MaxIndexedFiles: %#v", cold.Stats)
+	if cold.Stats.FilesIndexed > searchPreselectionMaxWideningFactor {
+		t.Fatalf("cold committed search exceeded the progressive cap: %#v", cold.Stats)
 	}
 	if cold.Stats.PreselectionBackend != "go-content" || cold.Stats.FilesContentRead == 0 {
 		t.Fatalf("cold committed search did not retain bounded content preselection: %#v", cold.Stats)
