@@ -497,3 +497,142 @@ func TestBuildSearchVerifyCommandNeedsACandidateFixSite(t *testing.T) {
 		t.Fatalf("expected silence, got %q", got.Command)
 	}
 }
+
+// TestSearchVerifySuiteFallback covers the whole-suite fallback: when no narrow command can be
+// derived (typically because the payload found no covering test the mirror lookup could name — the
+// faker `test_<name>.rb` minitest case that shipped an EMPTY verify command), the block still emits
+// the repository's own canonical suite command rather than nothing.
+func TestSearchVerifySuiteFallback(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name        string
+		files       map[string]string
+		subject     searchVerifySubject
+		wantCommand string
+	}{
+		{
+			name: "ruby minitest repo with no covering test falls back to rake test",
+			files: map[string]string{
+				"Gemfile":                       "source 'https://rubygems.org'\n",
+				"Rakefile":                      "task default: %w[test rubocop]\n",
+				"lib/faker/default/internet.rb": "module Faker\nend\n",
+			},
+			subject:     searchVerifySubject{sourcePath: "lib/faker/default/internet.rb"},
+			wantCommand: "bundle exec rake test",
+		},
+		{
+			name: "ruby rspec repo falls back to bundle exec rspec",
+			files: map[string]string{
+				"Gemfile":      "source 'x'\n",
+				".rspec":       "--require spec_helper\n",
+				"lib/thing.rb": "class Thing; end\n",
+			},
+			subject:     searchVerifySubject{sourcePath: "lib/thing.rb"},
+			wantCommand: "bundle exec rspec",
+		},
+		{
+			name: "node repo with a test script falls back to npm test",
+			files: map[string]string{
+				"package.json": "{\"scripts\":{\"test\":\"jest\"}}",
+				"src/a.js":     "",
+			},
+			subject:     searchVerifySubject{sourcePath: "src/a.js"},
+			wantCommand: "npm test",
+		},
+		{
+			name: "node leaf default test script defers to root runner",
+			files: map[string]string{
+				"package.json":              "{\"scripts\":{\"test\":\"jest\"}}",
+				"packages/ui/package.json":  "{\"scripts\":{\"test\":\"echo \\\"Error: no test specified\\\" && exit 1\"}}",
+				"packages/ui/src/Button.js": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "packages/ui/src/Button.js"},
+			wantCommand: "npm test",
+		},
+		{
+			name: "node package with an unrecognized test script stays silent",
+			files: map[string]string{
+				"packages/ui/package.json":  "{\"scripts\":{\"test\":\"custom-test\"}}",
+				"packages/ui/src/Button.js": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "packages/ui/src/Button.js"},
+			wantCommand: "",
+		},
+		{
+			name: "gradle nested module uses root wrapper",
+			files: map[string]string{
+				"gradlew":                  "",
+				"lib/build.gradle":         "",
+				"lib/src/main/kotlin/A.kt": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "lib/src/main/kotlin/A.kt"},
+			wantCommand: "./gradlew test",
+		},
+		{
+			name: "gradle nested wrapper runs from module directory",
+			files: map[string]string{
+				"lib/gradlew":              "",
+				"lib/build.gradle":         "",
+				"lib/src/main/kotlin/A.kt": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "lib/src/main/kotlin/A.kt"},
+			wantCommand: "cd lib && ./gradlew test",
+		},
+		{
+			name: "an unrecognized build system stays silent",
+			files: map[string]string{
+				"CMakeLists.txt": "project(x)\n",
+				"src/a.c":        "",
+			},
+			subject:     searchVerifySubject{sourcePath: "src/a.c"},
+			wantCommand: "",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			evidence := searchVerifyTestEvidence(testCase.files)
+			got := deriveSearchVerifySuiteCommand(testCase.subject, &evidence)
+			if testCase.wantCommand == "" {
+				if got != nil {
+					t.Fatalf("expected silence, got %q", got.Command)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected a whole-suite command, got silence")
+			}
+			if got.Command != testCase.wantCommand {
+				t.Fatalf("command = %q, want %q", got.Command, testCase.wantCommand)
+			}
+			if !strings.Contains(got.Targets, "whole test suite") {
+				t.Fatalf("targets must flag the whole suite, got %q", got.Targets)
+			}
+			if searchVerifyCommandCost(got) > searchVerifyCommandMaxBytes {
+				t.Fatalf("cost %d exceeds the cap %d", searchVerifyCommandCost(got), searchVerifyCommandMaxBytes)
+			}
+		})
+	}
+}
+
+// TestBuildSearchVerifyCommandPrefersNarrowOverSuite guards the ordering: a narrow single-file
+// command always wins over the whole-suite fallback when a covering test exists.
+func TestBuildSearchVerifyCommandPrefersNarrowOverSuite(t *testing.T) {
+	t.Parallel()
+	files := map[string]string{
+		"Gemfile":            "source 'x'\n",
+		"Rakefile":           "task default: %w[test]\n",
+		"lib/thing.rb":       "class Thing; end\n",
+		"test/thing_test.rb": "",
+	}
+	results := []SearchResult{
+		{Rank: 1, FilePath: "lib/thing.rb", Section: searchSectionPrimary},
+		{Rank: 2, FilePath: "test/thing_test.rb", Section: searchSectionCoveringTest},
+	}
+	got := buildSearchVerifyCommand(results, searchVerifyTestEvidence(files))
+	if got == nil {
+		t.Fatal("expected a command")
+	}
+	if !strings.Contains(got.Command, "ruby -Itest") {
+		t.Fatalf("expected the narrow single-file command, got %q", got.Command)
+	}
+}

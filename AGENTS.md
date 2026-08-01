@@ -151,8 +151,11 @@ grep/find. Your FIRST action must be ONE search:
 Then open the top hit's file with your native Read tool (pass a line range around the reported
 line), inspect enough surrounding behavior to justify the change, and make the smallest complete
 edit. Treat graph output as evidence, not an oracle. Check callers/impact when the change can affect
-other sites. Run the most focused relevant test or verification available; if that cannot be run,
-state why and perform a bounded source-level check. Optimize turns only after correctness.
+other sites. If the result prints a `VERIFY:` line, run that exact command after editing before
+claiming the task is done; it may be a per-file command or a whole-suite fallback when no narrow
+command can be derived. Never report that tests pass without executing the command. If verification
+cannot be run, state why and perform a bounded source-level check. Optimize turns only after
+correctness.
 ```
 
 For bug-fix/locate tasks, run search at `--profile full` (call-graph expansion active) with default
@@ -166,7 +169,7 @@ checks needed to make and verify a complete fix.
 2. **Treat results as evidence, not truth.** Read focused source around the result and widen the check when behavior, aliases, generated code, or dynamic dispatch could matter.
 3. **Use graph follow-ups when they answer a real question.** `impact`, `callers`, and `neighbors` are appropriate for blast radius and related-site checks; avoid exploratory whole-graph dumps.
 4. **Make the smallest complete change.** Check sibling sites and contracts when the task implies them.
-5. **Verify before stopping.** Run a focused test, build, or reproduction when available. If execution is unavailable, perform a bounded source-level verification and disclose the limitation.
+5. **Verify before stopping.** Run the `VERIFY:` command when search prints one; it may be a whole-suite fallback when no narrow command exists. Never report that tests pass without having run them. If execution is unavailable, perform a bounded source-level verification and disclose the limitation.
 6. **Optimize context after correctness.** Prefer precise queries and line ranges, but never trade resolution for fewer turns.
 7. **Feature-detect before you trust.** If a language might be inventory-only, check `capabilities --json` first — inventory-only files have file records but no semantic relations.
 
