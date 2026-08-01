@@ -919,11 +919,26 @@ func returnFlowCalls(block string, params map[string]bool) []returnFlowCall {
 	for _, flow := range flows {
 		out = append(out, flow)
 	}
+	// The comparator must be a total order over every field: `flows` is keyed by
+	// name+kind+detail, so several entries can share a name and evidence kind and
+	// differ only in detail (`a -> f()` vs `b -> f()` when both params are
+	// forwarded to the same callee). Ordering only by name and kind would leave
+	// those tied, letting Go's randomized map iteration decide which one survives
+	// the later relation dedupe — the evidence payload would then vary run to run.
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Name != out[j].Name {
 			return out[i].Name < out[j].Name
 		}
-		return out[i].EvidenceKind < out[j].EvidenceKind
+		if out[i].EvidenceKind != out[j].EvidenceKind {
+			return out[i].EvidenceKind < out[j].EvidenceKind
+		}
+		if out[i].Detail != out[j].Detail {
+			return out[i].Detail < out[j].Detail
+		}
+		if out[i].Direction != out[j].Direction {
+			return out[i].Direction < out[j].Direction
+		}
+		return out[i].Reason < out[j].Reason
 	})
 	return out
 }

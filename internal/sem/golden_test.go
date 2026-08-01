@@ -31,6 +31,16 @@ func bravo()   {}
 func charlie() {}
 func delta()   {}
 `)
+	// Several parameters forwarded into the same callee: the relation identity is
+	// one DATA_FLOWS edge, but multiple flows compete to supply its evidence.
+	writeFile(t, repo, "flows.go", `package p
+
+func forwardAll(alpha string, bravo string, charlie string) string {
+	return sink(alpha, bravo, charlie)
+}
+
+func sink(a string, b string, c string) string { return a + b + c }
+`)
 	writeFile(t, repo, "Animals.java", `class Animal {
 	String describe() { return "animal"; }
 	String sound() { return "?"; }
@@ -61,13 +71,48 @@ class Dog extends Animal {
 		return buf.String()
 	}
 
-	first, second := capture(), capture()
-	if first != second {
-		t.Fatalf("stream output is not deterministic across runs")
+	// Repeat: a single second run can match by luck when only two orderings
+	// exist, so sample enough runs to make a map-order leak surface.
+	first := capture()
+	for i := 0; i < 8; i++ {
+		if next := capture(); next != first {
+			t.Fatalf("stream output is not deterministic across runs (run %d differs)", i+2)
+		}
 	}
 	// Sanity: the fixture actually produced the relation kinds we want stable.
 	if !strings.Contains(first, `"type":"CALLS"`) || !strings.Contains(first, `"type":"OVERRIDES"`) {
 		t.Fatalf("fixture did not exercise CALLS/OVERRIDES ordering")
+	}
+	if !strings.Contains(first, `"type":"DATA_FLOWS"`) {
+		t.Fatalf("fixture did not exercise DATA_FLOWS evidence ordering")
+	}
+}
+
+// TestReturnFlowCallsOrderIsTotal guards the ordering that decides which flow
+// supplies a DATA_FLOWS relation's evidence. Several parameters forwarded into
+// one callee produce flows that share a name and evidence kind and differ only
+// in detail; the relation dedupe keeps the first, so a comparator that leaves
+// them tied would let Go's map iteration pick the evidence payload.
+func TestReturnFlowCallsOrderIsTotal(t *testing.T) {
+	block := "func handler(alpha string, bravo string, charlie string) string {\n\treturn forward(alpha, bravo, charlie)\n}\n"
+	params := map[string]bool{"alpha": true, "bravo": true, "charlie": true}
+
+	first := returnFlowCalls(block, params)
+	forwards := 0
+	for _, flow := range first {
+		if flow.EvidenceKind == "argument_forward_flow" && flow.Name == "forward" {
+			forwards++
+		}
+	}
+	if forwards < 3 {
+		t.Fatalf("fixture produced %d competing argument forward flows, want 3", forwards)
+	}
+
+	for i := 0; i < 200; i++ {
+		got := returnFlowCalls(block, params)
+		if !reflect.DeepEqual(got, first) {
+			t.Fatalf("returnFlowCalls order varies across calls: run %d got %+v want %+v", i+2, got, first)
+		}
 	}
 }
 
