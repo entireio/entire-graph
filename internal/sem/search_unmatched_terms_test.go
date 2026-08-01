@@ -199,6 +199,15 @@ func TestApplySearchFileCoverageChargesOnlyMatchedTerms(t *testing.T) {
 	if baseline[0].score-4 <= baseline[1].score-6 {
 		t.Fatalf("file matching more query weight did not gain more coverage: %#v", baseline)
 	}
+	matchedByFirst := []bool{true, false}
+	owned := []searchFileCandidate{{
+		path: "market/owned.go", score: 2, matchedWeight: 1, matchedTerms: matchedByFirst,
+	}}
+	applySearchFileCoverage(owned, q, []bool{true, true})
+	matchedByFirst[0] = false
+	if !owned[0].matchedTerms[0] {
+		t.Fatalf("coverage did not retain an owned matched-term slice: %#v", owned[0])
+	}
 }
 
 func TestSearchRepositoryIgnoresCorpusAbsentQueryTokens(t *testing.T) {

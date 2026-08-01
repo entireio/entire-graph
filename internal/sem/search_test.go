@@ -68,7 +68,7 @@ func TestSearchRepositorySupportsPunctuatedLanguageQuery(t *testing.T) {
 	}
 }
 
-func TestSearchRepositoryProgressivePreselectionIsDeterministicAndBounded(t *testing.T) {
+func TestColdRepositoryProgressivePreselectionIsDeterministicAndBounded(t *testing.T) {
 	repo := t.TempDir()
 	for index := 0; index < 12; index++ {
 		write(t, repo, fmt.Sprintf("src/part%02d.go", index), fmt.Sprintf(`package sample
@@ -76,30 +76,32 @@ func TestSearchRepositoryProgressivePreselectionIsDeterministicAndBounded(t *tes
 func Match%02d() string { return "needle" }
 `, index))
 	}
-	var first SearchResponse
+	q := buildSearchQuery("needle")
+	sparseQuery := buildSparseSearchQuery("needle")
+	var first []string
 	for run := 0; run < 20; run++ {
-		response, err := SearchRepository(t.Context(), repo, "test", "needle", SearchOptions{
-			Worktree:          true,
-			Profile:           ProfileSyntaxOnly,
-			TopK:              8,
-			MaxIndexedFiles:   2,
-			MaxRegionsPerFile: 1,
-		})
+		selection, err := preselectSearchFiles(
+			t.Context(), repo, q, sparseQuery, SearchOptions{
+				Worktree:                true,
+				Profile:                 ProfileSyntaxOnly,
+				MaxIndexedFiles:         2,
+				progressivePreselection: true,
+			}, ProviderSnapshot{}, false)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if response.Stats.PreselectionPasses != 3 || !response.Stats.PreselectionWidened || !response.Stats.PreselectionBounded {
-			t.Fatalf("stats = %#v, want a deterministic capped progressive selection", response.Stats)
+		if selection.preselectionPasses != 3 || !selection.preselectionWidened || !selection.preselectionBounded {
+			t.Fatalf("selection = %#v, want a deterministic capped progressive selection", selection)
 		}
-		if response.Stats.FilesIndexed > 8 {
-			t.Fatalf("indexed files = %d, want at most four times the base", response.Stats.FilesIndexed)
+		if len(selection.files) > 8 {
+			t.Fatalf("selected files = %d, want at most four times the base", len(selection.files))
 		}
 		if run == 0 {
-			first = response
+			first = append([]string(nil), selection.files...)
 			continue
 		}
-		if !reflect.DeepEqual(response.Results, first.Results) {
-			t.Fatalf("run %d results = %#v, first = %#v", run, response.Results, first.Results)
+		if !reflect.DeepEqual(selection.files, first) {
+			t.Fatalf("run %d files = %#v, first = %#v", run, selection.files, first)
 		}
 	}
 }
@@ -905,6 +907,9 @@ func TestSearchRepositoryAppliesAdaptiveAndExplicitFileLimits(t *testing.T) {
 	if adaptive.Stats.FilesIndexed != 120 {
 		t.Fatalf("adaptive files indexed = %d, want 120", adaptive.Stats.FilesIndexed)
 	}
+	if adaptive.Stats.PreselectionWidened || adaptive.Stats.PreselectionBounded {
+		t.Fatalf("adaptive hard limit unexpectedly widened: %#v", adaptive.Stats)
+	}
 
 	explicit, err := SearchRepository(t.Context(), repo, "test", "adaptive retrieval needle", SearchOptions{
 		Worktree:        true,
@@ -917,6 +922,9 @@ func TestSearchRepositoryAppliesAdaptiveAndExplicitFileLimits(t *testing.T) {
 	}
 	if explicit.Stats.FilesIndexed != 4 {
 		t.Fatalf("explicit files indexed = %d, want 4", explicit.Stats.FilesIndexed)
+	}
+	if explicit.Stats.PreselectionWidened || explicit.Stats.PreselectionBounded {
+		t.Fatalf("explicit hard limit unexpectedly widened: %#v", explicit.Stats)
 	}
 }
 

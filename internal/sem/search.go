@@ -84,6 +84,10 @@ type SearchOptions struct {
 	MaxIndexedFiles   int
 	IndexAllFiles     bool
 	MaxContextBytes   int
+	// progressivePreselection is internal policy, not a caller override. The
+	// standard cold default may widen adaptively; explicit and TopK-adaptive
+	// MaxIndexedFiles values remain exact compatibility limits.
+	progressivePreselection bool
 	// BodyHeadRanks caps how deep the COMPLETE-BODY upgrade reaches, independently of the
 	// locator head. 0 means the built-in depth (searchEnclosureHeadRanks). It may only narrow
 	// the head, never widen it, so the growth allowance stays sized for the bodies it funds.
@@ -505,6 +509,9 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	if options.MaxIndexedFiles <= 0 {
 		options.MaxIndexedFiles = defaultSearchIndexedFiles(options.TopK)
+		options.progressivePreselection = options.MaxIndexedFiles == defaultSearchMaxIndexedFiles
+	} else {
+		options.progressivePreselection = false
 	}
 	if options.Profile == "" {
 		// Fast, not syntax-only: graph-aware ranking (caller-degree boosts and
@@ -1350,10 +1357,11 @@ func applySearchFileCoverage(files []searchFileCandidate, q searchQuery, matched
 		return
 	}
 	for index := range files {
-		files[index].contentScore += 4 * files[index].matchedWeight / queryWeight
-		files[index].legacyScore = files[index].pathScore + files[index].contentScore +
-			searchPathPrior(q, files[index].path)
-		files[index].score = files[index].legacyScore + files[index].constraintScore
+		coverageBonus := 4 * files[index].matchedWeight / queryWeight
+		files[index].matchedTerms = append([]bool(nil), files[index].matchedTerms...)
+		files[index].contentScore += coverageBonus
+		files[index].legacyScore += coverageBonus
+		files[index].score += coverageBonus
 	}
 }
 
@@ -1664,7 +1672,7 @@ func preselectSearchFiles(
 			legacyFiles = append(legacyFiles, file)
 		}
 	}
-	progressive := len(legacyFiles) > options.MaxIndexedFiles
+	progressive := options.progressivePreselection && len(legacyFiles) > options.MaxIndexedFiles
 	if progressive {
 		evidence := make([]searchPreselectionEvidence, len(files))
 		for index, file := range files {
@@ -1694,6 +1702,9 @@ func preselectSearchFiles(
 			}
 			return legacyFiles[i].path < legacyFiles[j].path
 		})
+		if len(legacyFiles) > options.MaxIndexedFiles {
+			legacyFiles = legacyFiles[:options.MaxIndexedFiles]
+		}
 		selection.files = make([]string, len(legacyFiles))
 		for index, file := range legacyFiles {
 			selection.files[index] = file.path
