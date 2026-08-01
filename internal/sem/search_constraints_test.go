@@ -3,8 +3,8 @@ package sem
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -69,12 +69,60 @@ func TestParseSearchConstraintsBoundsAndSentenceStarts(t *testing.T) {
 }
 
 func TestParseSearchConstraintsRetainsEscapedQuotedPhrase(t *testing.T) {
-	got := parseSearchConstraints(`Find "stale token order" after the review.`)
-	if !containsSearchConstraintPhrase(got.Phrases, []string{"stale", "token", "order"}) {
+	got := parseSearchConstraints("Find \"stale \\\"token\\\" order\" after the review.")
+	if len(got.Phrases) == 0 || !slices.Equal(got.Phrases[0].Words, []string{"stale", "token", "order"}) {
 		t.Fatalf("quoted phrase was not retained: %#v", got.Phrases)
 	}
 	if !got.Phrases[0].Explicit {
 		t.Fatalf("first phrase is not explicit: %#v", got.Phrases[0])
+	}
+}
+
+func TestSearchCandidateAgreementRequiresWholeEntityToken(t *testing.T) {
+	constraints := parseSearchConstraints(`What did Ann recommend?`)
+	candidate := searchCandidate{result: SearchResult{Snippet: "Hannah recommended it."}}
+	if bonus, signals := searchCandidateAgreement(candidate, constraints); bonus != 0 || len(signals) != 0 {
+		t.Fatalf("substring entity matched as a whole token: %f %v", bonus, signals)
+	}
+}
+
+func TestExplicitPhraseMatchingRequiresExactNormalizedWords(t *testing.T) {
+	phrase := searchPhraseConstraint{Words: []string{"recommend", "book"}, Explicit: true}
+	if !orderedSearchPhraseMatch("recommend book", phrase) {
+		t.Fatal("exact explicit phrase did not match")
+	}
+	if orderedSearchPhraseMatch("recommended book", phrase) {
+		t.Fatal("explicit phrase accepted a morphological variant")
+	}
+}
+
+func TestAutomaticPhraseMorphologyIsSymmetric(t *testing.T) {
+	forward, forwardSignals := searchCandidateAgreement(
+		searchCandidate{result: SearchResult{Snippet: "Avery recommended the book."}},
+		parseSearchConstraints(`What book did Avery recommend?`),
+	)
+	reverse, reverseSignals := searchCandidateAgreement(
+		searchCandidate{result: SearchResult{Snippet: "Avery recommend the book."}},
+		parseSearchConstraints(`What book did Avery recommended?`),
+	)
+	if forward == 0 || reverse == 0 || forward != reverse ||
+		!containsString(forwardSignals, "constraint:relationship") ||
+		!containsString(reverseSignals, "constraint:relationship") {
+		t.Fatalf("automatic morphology = forward %f %v, reverse %f %v", forward, forwardSignals, reverse, reverseSignals)
+	}
+}
+
+func TestExplicitPhraseAgreementScoresExactOrderWithoutEntity(t *testing.T) {
+	constraints := parseSearchConstraints(`"stale token order"`)
+	exact := searchCandidate{result: SearchResult{Snippet: "the stale token order is rejected"}}
+	reversed := searchCandidate{result: SearchResult{Snippet: "the order token stale is rejected"}}
+	exactBonus, exactSignals := searchCandidateAgreement(exact, constraints)
+	reversedBonus, reversedSignals := searchCandidateAgreement(reversed, constraints)
+	if exactBonus <= 0 || exactBonus > 1.5 || !containsString(exactSignals, "constraint:phrase") {
+		t.Fatalf("exact phrase bonus = %f %v", exactBonus, exactSignals)
+	}
+	if reversedBonus != 0 || len(reversedSignals) != 0 {
+		t.Fatalf("reversed phrase bonus = %f %v, want zero", reversedBonus, reversedSignals)
 	}
 }
 
@@ -121,6 +169,33 @@ func Second() string { return "Blake recommended the movie Arrival." }
 	}
 	if !seenSecond {
 		t.Fatalf("non-agreeing candidate was removed: %#v", response.Results)
+	}
+}
+
+func TestSearchRepositoryRanksExactQuotedOrderWithoutFilteringReverse(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "notes/ordered.go", `package notes
+func Ordered() string { return "stale token order" }
+`)
+	write(t, repo, "notes/reversed.go", `package notes
+func Reversed() string { return "order token stale" }
+`)
+	response, err := SearchRepository(context.Background(), repo, "test", `"stale token order"`, SearchOptions{
+		Worktree: true, Profile: ProfileSyntaxOnly, TopK: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) < 2 || response.Results[0].SymbolName != "Ordered" ||
+		!containsString(response.Results[0].Signals, "constraint:phrase") {
+		t.Fatalf("exact quoted order did not rank first: %#v", response.Results)
+	}
+	reversedFound := false
+	for _, result := range response.Results {
+		reversedFound = reversedFound || result.SymbolName == "Reversed"
+	}
+	if !reversedFound {
+		t.Fatalf("reversed candidate was filtered: %#v", response.Results)
 	}
 }
 
@@ -182,15 +257,24 @@ func TestSearchStatsReportsTruncatedConstraints(t *testing.T) {
 	}
 }
 
-func TestSearchAgreementDoesNotContainFixtureVocabulary(t *testing.T) {
-	source, err := os.ReadFile(filepath.Join("search_constraints.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, fixtureWord := range []string{"Avery", "Blake"} {
-		if string(source) != "" && containsString([]string{string(source)}, fixtureWord) {
-			t.Fatalf("production scorer contains fixture vocabulary %q", fixtureWord)
+func TestSearchTaskOneProductionContainsNoBenchmarkLeakage(t *testing.T) {
+	sources := map[string]string{}
+	for _, path := range []string{"search.go", "search_constraints.go"} {
+		source, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
 		}
+		sources[path] = string(source)
+	}
+	if leaks := searchTaskOneProductionLeakage(sources); len(leaks) != 0 {
+		t.Fatalf("task-one production leakage = %v", leaks)
+	}
+}
+
+func TestSearchTaskOneProductionLeakageCheckerHasCaseFoldedPositiveControl(t *testing.T) {
+	leaks := searchTaskOneProductionLeakage(map[string]string{"synthetic.go": "const tag = \"SeSsIoN_example\""})
+	if len(leaks) != 1 || leaks[0] != "synthetic.go:session_" {
+		t.Fatalf("positive-control leakage = %v", leaks)
 	}
 }
 
@@ -201,4 +285,22 @@ func containsSearchConstraintPhrase(phrases []searchPhraseConstraint, want []str
 		}
 	}
 	return false
+}
+
+func searchTaskOneProductionLeakage(sources map[string]string) []string {
+	markers := []string{
+		"graphify", "graphmark", "locomo", "longmemeval", "erpnext",
+		"case_", "session_", "qa:",
+	}
+	var leaks []string
+	for path, source := range sources {
+		folded := strings.ToLower(source)
+		for _, marker := range markers {
+			if strings.Contains(folded, marker) {
+				leaks = append(leaks, path+":"+marker)
+			}
+		}
+	}
+	slices.Sort(leaks)
+	return leaks
 }

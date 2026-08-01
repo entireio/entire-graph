@@ -92,7 +92,7 @@ type SearchOptions struct {
 	// block held constant, turning this on together with --top-k 20 cost +18.9 pt of total_tokens,
 	// +17.7 pt of turns and +14.6 pt of billed_new against the same cell with shipped defaults
 	// (-23.5% -> -4.6% total_tokens). eg's turns rose 32.10 -> 35.37 against an unchanged baseline.
-	// graphmark's resolution-anchored eval independently found the same combination cost CORRECTNESS:
+	// A separate resolution-anchored evaluation found the same combination cost CORRECTNESS:
 	// the terser edit-from-payload path stops short of a complete fix on harder tasks.
 	//
 	// The $0 payload screen that cleared it (gold recall 22->26/30, code-less gold 8->6, no instance

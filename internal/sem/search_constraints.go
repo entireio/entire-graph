@@ -164,15 +164,19 @@ func utf8FirstRune(value string) (rune, bool) {
 // orderedSearchPhraseMatch is the strict predicate used for quoted spans and
 // direct callers: every normalized word must be adjacent and in written order.
 func orderedSearchPhraseMatch(text string, phrase searchPhraseConstraint) bool {
-	return searchOrderedPhraseMatch(searchQueryWordSequence(strings.ToLower(text)), phrase.Words, 0)
+	return searchOrderedPhraseMatch(searchQueryWordSequence(strings.ToLower(text)), phrase.Words, 0, false)
 }
 
-func searchOrderedPhraseMatch(words, phrase []string, maxInterveningContent int) bool {
+func searchOrderedPhraseMatch(words, phrase []string, maxInterveningContent int, looseMorphology bool) bool {
 	if len(phrase) == 0 {
 		return false
 	}
+	equal := func(left, right string) bool { return left == right }
+	if looseMorphology {
+		equal = searchConstraintWordsLooselyEqual
+	}
 	for start := range words {
-		if !searchConstraintWordsEqual(words[start], phrase[0]) {
+		if !equal(words[start], phrase[0]) {
 			continue
 		}
 		at := start + 1
@@ -181,7 +185,7 @@ func searchOrderedPhraseMatch(words, phrase []string, maxInterveningContent int)
 			intervening := 0
 			found := false
 			for at < len(words) {
-				if searchConstraintWordsEqual(words[at], phrase[want]) {
+				if equal(words[at], phrase[want]) {
 					found = true
 					at++
 					break
@@ -206,12 +210,13 @@ func searchOrderedPhraseMatch(words, phrase []string, maxInterveningContent int)
 	return false
 }
 
-func searchConstraintWordsEqual(got, want string) bool {
+func searchConstraintWordsLooselyEqual(got, want string) bool {
 	if got == want {
 		return true
 	}
 	for _, suffix := range []string{"ed", "ing", "s"} {
-		if strings.HasSuffix(got, suffix) && len(got) > len(suffix)+2 && strings.TrimSuffix(got, suffix) == want {
+		if strings.HasSuffix(got, suffix) && len(got) > len(suffix)+2 && strings.TrimSuffix(got, suffix) == want ||
+			strings.HasSuffix(want, suffix) && len(want) > len(suffix)+2 && strings.TrimSuffix(want, suffix) == got {
 			return true
 		}
 	}
@@ -219,7 +224,13 @@ func searchConstraintWordsEqual(got, want string) bool {
 }
 
 func searchCandidateAgreement(candidate searchCandidate, constraints searchConstraints) (float64, []string) {
-	if len(constraints.Entities) == 0 {
+	explicitPhrases := 0
+	for _, phrase := range constraints.Phrases {
+		if phrase.Explicit {
+			explicitPhrases++
+		}
+	}
+	if len(constraints.Entities) == 0 && explicitPhrases == 0 {
 		return 0, nil
 	}
 	text := strings.Join([]string{
@@ -238,9 +249,14 @@ func searchCandidateAgreement(candidate searchCandidate, constraints searchConst
 		}
 	}
 	matchedPhrases := 0
+	eligiblePhrases := 0
 	for _, phrase := range constraints.Phrases {
+		if len(constraints.Entities) == 0 && !phrase.Explicit {
+			continue
+		}
+		eligiblePhrases++
 		if phrase.Explicit && orderedSearchPhraseMatch(text, phrase) ||
-			!phrase.Explicit && searchOrderedPhraseMatch(words, phrase.Words, 2) {
+			!phrase.Explicit && searchOrderedPhraseMatch(words, phrase.Words, 2, true) {
 			matchedPhrases++
 		}
 	}
@@ -254,7 +270,7 @@ func searchCandidateAgreement(candidate searchCandidate, constraints searchConst
 		signals = append(signals, "constraint:entity")
 	}
 	if matchedPhrases > 0 {
-		bonus += 1.5 * float64(matchedPhrases) / float64(len(constraints.Phrases))
+		bonus += 1.5 * float64(matchedPhrases) / float64(eligiblePhrases)
 		signals = append(signals, "constraint:phrase")
 	}
 	if matchedEntities > 0 && matchedPhrases > 0 {
