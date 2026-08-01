@@ -64,6 +64,24 @@ func TestFuseSearchPreselectionEvidenceSkipsZeroChannelsAndBreaksTiesByPath(t *t
 	}
 }
 
+func TestFuseSearchPreselectionEvidenceUsesOriginalScoreBeforePathTieBreak(t *testing.T) {
+	fused := fuseSearchPreselectionEvidence([]searchPreselectionEvidence{
+		{Path: "zeta/high.go", OriginalScore: 10, PathScore: 2},
+		{Path: "alpha/high.go", OriginalScore: 10, PathScore: 2},
+		{Path: "middle/low.go", OriginalScore: 1, PathScore: 2},
+	})
+	wantPaths := []string{"alpha/high.go", "zeta/high.go", "middle/low.go"}
+	if got := evidencePaths(fused); !reflect.DeepEqual(got, wantPaths) {
+		t.Fatalf("fused paths = %#v, want score before path tie-break %#v", got, wantPaths)
+	}
+	wantScores := []float64{1.0 / 61, 1.0 / 62, 1.0 / 63}
+	for index, item := range fused {
+		if math.Abs(item.rrfScore-wantScores[index]) > 1e-15 {
+			t.Fatalf("%s RRF = %.17g, want %.17g", item.Path, item.rrfScore, wantScores[index])
+		}
+	}
+}
+
 func TestProgressivePreselectionStopsAtConfidentCoveredDiverseBase(t *testing.T) {
 	q := preselectionTestQuery("alpha", "beta")
 	evidence := fuseSearchPreselectionEvidence([]searchPreselectionEvidence{

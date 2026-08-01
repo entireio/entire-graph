@@ -136,6 +136,37 @@ func TestColdPreselectionKeepsLegacyOrderAndStatsWhenEligibleSetFitsBase(t *test
 	}
 }
 
+func TestColdPreselectionExcludesConstraintOnlyDistractorWhenLegacySetFitsBase(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "src/target.go", "package sample\n// needle\nfunc Target() {}\n")
+	write(t, repo, "src/distractor.go", "package sample\n// NamedWidget follows ordered phrase.\nfunc Distractor() {}\n")
+	for index := 0; index < 3; index++ {
+		write(t, repo, fmt.Sprintf("noise/file%02d.go", index), fmt.Sprintf(
+			"package noise\nfunc Unrelated%02d() {}\n", index,
+		))
+	}
+	q := preselectionTestQuery("needle")
+	q.constraints = searchConstraints{
+		Entities: []searchEntityConstraint{{Raw: "NamedWidget", Normalized: "namedwidget"}},
+		Phrases:  []searchPhraseConstraint{{Words: []string{"ordered", "phrase"}, Explicit: true}},
+	}
+	selection, err := preselectSearchFiles(
+		t.Context(), repo, q, buildSparseSearchQuery("needle"),
+		SearchOptions{Worktree: true, MaxIndexedFiles: 2}, ProviderSnapshot{}, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(selection.files, []string{"src/target.go"}) {
+		t.Fatalf("selected files = %#v, want only the ordinary path/content match", selection.files)
+	}
+	if selection.preselectionPasses != 1 || selection.preselectionConfidence != 0 ||
+		selection.preselectionCoverage != 0 || selection.preselectionDiversity != 0 ||
+		selection.preselectionWidened || selection.preselectionBounded {
+		t.Fatalf("constraint-only file incorrectly activated progressive selection: %#v", selection)
+	}
+}
+
 func TestSearchRepositoryFindsConceptualBodyText(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "encoding/serializer.go", `package encoding

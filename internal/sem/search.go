@@ -1322,6 +1322,8 @@ func serializedSearchResultBytes(value any) int {
 type searchFileCandidate struct {
 	path            string
 	score           float64
+	legacyScore     float64
+	legacyEligible  bool
 	pathScore       float64
 	contentScore    float64
 	constraintScore float64
@@ -1349,8 +1351,9 @@ func applySearchFileCoverage(files []searchFileCandidate, q searchQuery, matched
 	}
 	for index := range files {
 		files[index].contentScore += 4 * files[index].matchedWeight / queryWeight
-		files[index].score = files[index].pathScore + files[index].contentScore +
-			files[index].constraintScore + searchPathPrior(q, files[index].path)
+		files[index].legacyScore = files[index].pathScore + files[index].contentScore +
+			searchPathPrior(q, files[index].path)
+		files[index].score = files[index].legacyScore + files[index].constraintScore
 	}
 }
 
@@ -1621,7 +1624,8 @@ func preselectSearchFiles(
 		}
 		contentScore := matchedWeight
 		constraintScore := searchFileConstraintEvidence(filePath+"\n"+content, q.constraints)
-		if pathScore == 0 && contentScore == 0 && constraintScore == 0 {
+		legacyEligible := pathScore > 0 || contentScore > 0
+		if !legacyEligible && constraintScore == 0 {
 			return searchFileCandidate{}, false
 		}
 		matchedMu.Lock()
@@ -1632,13 +1636,16 @@ func preselectSearchFiles(
 		// The posting lists are a by-product of a match this loop already computed. Recording them
 		// here is what makes a repository-wide literal lookup free later on.
 		selection.termPostings.record(filePath, matched, q.terms)
+		legacyScore := pathScore + contentScore + searchPathPrior(q, filePath)
 		return searchFileCandidate{
 			path:            filePath,
+			legacyScore:     legacyScore,
+			legacyEligible:  legacyEligible,
 			pathScore:       pathScore,
 			contentScore:    contentScore,
 			constraintScore: constraintScore,
 			matchedTerms:    append([]bool(nil), matched...),
-			score:           pathScore + contentScore + constraintScore + searchPathPrior(q, filePath),
+			score:           legacyScore + constraintScore,
 			matchedWeight:   matchedWeight,
 		}, true
 	}
@@ -1651,7 +1658,13 @@ func preselectSearchFiles(
 		return searchFileSelection{}, err
 	}
 	applySearchFileCoverage(files, q, matchedAnywhere)
-	progressive := len(files) > options.MaxIndexedFiles
+	legacyFiles := make([]searchFileCandidate, 0, len(files))
+	for _, file := range files {
+		if file.legacyEligible {
+			legacyFiles = append(legacyFiles, file)
+		}
+	}
+	progressive := len(legacyFiles) > options.MaxIndexedFiles
 	if progressive {
 		evidence := make([]searchPreselectionEvidence, len(files))
 		for index, file := range files {
@@ -1675,14 +1688,14 @@ func preselectSearchFiles(
 		selection.preselectionWidened = assessment.Widened
 		selection.preselectionBounded = assessment.Bounded
 	} else {
-		sort.Slice(files, func(i, j int) bool {
-			if files[i].score != files[j].score {
-				return files[i].score > files[j].score
+		sort.Slice(legacyFiles, func(i, j int) bool {
+			if legacyFiles[i].legacyScore != legacyFiles[j].legacyScore {
+				return legacyFiles[i].legacyScore > legacyFiles[j].legacyScore
 			}
-			return files[i].path < files[j].path
+			return legacyFiles[i].path < legacyFiles[j].path
 		})
-		selection.files = make([]string, len(files))
-		for index, file := range files {
+		selection.files = make([]string, len(legacyFiles))
+		for index, file := range legacyFiles {
 			selection.files[index] = file.path
 		}
 		selection.preselectionPasses = 1
