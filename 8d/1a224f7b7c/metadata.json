@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "8d1a224f7b7c",
+  "strategy": "manual-commit",
+  "branch": "claude/read-path-no-follow-open",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "internal/sem/opensource_nofollow.go",
+    "internal/sem/opensource_portable.go",
+    "internal/sem/opensource_read_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/8d/1a224f7b7c/0/metadata.json",
+      "transcript": "/8d/1a224f7b7c/0/full.jsonl",
+      "compact_transcript": "/8d/1a224f7b7c/0/transcript.jsonl",
+      "content_hash": "/8d/1a224f7b7c/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 30,
+    "cache_creation_tokens": 12747,
+    "cache_read_tokens": 8505876,
+    "output_tokens": 10334,
+    "api_call_count": 15
+  }
+}

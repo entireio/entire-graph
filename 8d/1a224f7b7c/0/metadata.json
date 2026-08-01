@@ -1,0 +1,42 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "8d1a224f7b7c",
+  "session_id": "abd994f2-6ae7-45b2-817c-91022c359288",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-01T23:22:44.029149Z",
+  "branch": "claude/read-path-no-follow-open",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "internal/sem/opensource_nofollow.go",
+    "internal/sem/opensource_portable.go",
+    "internal/sem/opensource_read_test.go"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-5[1m]",
+  "turn_id": "f3d04d2cbfe4",
+  "checkpoint_transcript_start": 4369,
+  "transcript_lines_at_start": 4369,
+  "compact_transcript_start": 542,
+  "token_usage": {
+    "input_tokens": 30,
+    "cache_creation_tokens": 12747,
+    "cache_read_tokens": 8505876,
+    "output_tokens": 10334,
+    "api_call_count": 15
+  },
+  "session_metrics": {
+    "turn_count": 18
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-01T23:22:43.738903Z",
+    "agent_lines": 157,
+    "agent_removed": 0,
+    "human_added": 33,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 190,
+    "total_lines_changed": 198,
+    "agent_percentage": 79.29292929292929,
+    "metric_version": 2
+  }
+}
