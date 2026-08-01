@@ -13148,8 +13148,29 @@ func resolveImportSpecPath(importingPath, module string, manifestImports manifes
 	return "", false
 }
 
+// javaScriptReexportCandidate reports whether a path can carry JS/TS re-export
+// syntax. Declaration files are included: `export { X } from "./y"` in a .d.ts
+// is exactly the chain this resolution follows.
+func javaScriptReexportCandidate(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts":
+		return true
+	default:
+		return false
+	}
+}
+
 func resolvedJavaScriptReexportTargets(path, name string, manifestImports manifestImportResolver, knownFiles map[string]bool, readContent contentReader, seen map[string]bool, cache map[string][]string, depth int) []string {
 	if path == "" || depth > 8 || seen[path] {
+		return nil
+	}
+	// Only a JS/TS module can re-export (`export { x } from "./y"`), but this
+	// ran for every resolved import in every language: it opened the target
+	// file and scanned it for re-export syntax, recursing up to eight levels.
+	// On a Rust repository that was 32% of a fast-profile snapshot spent
+	// looking for JavaScript in `use` targets. Nothing downstream changes for
+	// JS/TS, which still takes the same path.
+	if !javaScriptReexportCandidate(path) {
 		return nil
 	}
 	cacheKey := path + "\x00" + name
@@ -13178,6 +13199,12 @@ func resolvedJavaScriptReexportTargets(path, name string, manifestImports manife
 
 func resolvedJavaScriptStarReexportClosure(path string, manifestImports manifestImportResolver, knownFiles map[string]bool, readContent contentReader, seen map[string]bool, cache map[string][]string, depth int) []string {
 	if path == "" || depth > 8 || seen[path] {
+		return nil
+	}
+	// Guarded like resolvedJavaScriptReexportTargets: today every caller is
+	// already behind that gate, but this recurses into resolved targets and is
+	// the other entry point, so it should not depend on the caller for it.
+	if !javaScriptReexportCandidate(path) {
 		return nil
 	}
 	cacheKey := "\x00star\x00" + path

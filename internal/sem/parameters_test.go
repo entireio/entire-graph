@@ -368,3 +368,27 @@ func slicesContain(values []string, want string) bool {
 	}
 	return false
 }
+
+// TestJavaScriptReexportCandidateGatesNonJSPaths pins the language gate on the
+// re-export resolution. It used to run for every resolved import in every
+// language — opening the target file and scanning it for `export … from`
+// syntax, recursing up to eight levels — which on a Rust repository was 32% of
+// a fast-profile snapshot spent looking for JavaScript in `use` targets.
+func TestJavaScriptReexportCandidateGatesNonJSPaths(t *testing.T) {
+	for _, path := range []string{
+		"src/index.ts", "src/index.tsx", "lib/mod.js", "lib/mod.jsx",
+		"lib/mod.mjs", "lib/mod.cjs", "types/api.d.ts",
+	} {
+		if !javaScriptReexportCandidate(path) {
+			t.Errorf("%s should be scanned for re-exports", path)
+		}
+	}
+	for _, path := range []string{
+		"src/main.rs", "src/main.go", "src/main.zig", "src/main.py",
+		"src/Main.java", "src/main.c", "Cargo.toml", "README.md",
+	} {
+		if javaScriptReexportCandidate(path) {
+			t.Errorf("%s cannot carry JS re-export syntax and must not be opened for it", path)
+		}
+	}
+}
