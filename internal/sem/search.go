@@ -159,6 +159,12 @@ type SearchResult struct {
 	// a label rather than a filter.
 	Section string `json:"section,omitempty"`
 	Snippet string `json:"snippet"`
+	// MergedRanks lists the PRE-merge ranks whose spans this one result now covers, set when
+	// several near hits in one file were folded into a single contiguous region
+	// (search_span_merge.go). Present only on a merged span, so its absence is the ordinary
+	// case; when it is present the snippet is the verbatim, unelided text of the whole range,
+	// which is the fact that stops a reader spending a turn bridging the gap itself.
+	MergedRanks []int `json:"merged_ranks,omitempty"`
 	// There is deliberately no per-result `Neighbors` list here. "The types this hit is
 	// written in terms of" is answered once, by the signature-type block (search_sigtypes.go),
 	// and "the other places this change lands" by the related-site block
@@ -218,6 +224,10 @@ type SearchStats struct {
 	// them. Together they report how the byte budget was allocated (schema 1.x additive).
 	CompleteSymbols int `json:"complete_symbol_snippets,omitempty"`
 	LocatorSnippets int `json:"locator_snippets,omitempty"`
+	// MergedSpans counts ranked hits collapsed into a contiguous same-file span
+	// (search_span_merge.go). It is reported for the same reason every other allocation
+	// decision is: a payload that shows fewer blocks than the ranking produced must say so.
+	MergedSpans int `json:"merged_spans,omitempty"`
 	// RelatedSites counts entries in the related-site block: the other places the top hit's
 	// change usually has to land (callers, sibling implementations, near-duplicate bodies).
 	// They are funded out of the tail of the ranking, so this count also says how much of the
@@ -890,6 +900,19 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// Truncation is measured against the ranking, by rank, so it has to be read off the
 	// allocator's output BEFORE the related-site block renumbers the payload.
 	truncated := countBudgetTruncatedResults(ranked, results)
+	// Two printed bodies of one file with a small hole between them are one region as far as the
+	// reader is concerned, and the hole is what it spends a turn closing: measured over 113 Opus
+	// payloads, 40% carry such a pair, and the tool makes +19.6% MORE Read calls than the no-tool
+	// baseline while total tool calls fall 14.5%. Folding them into one contiguous, explicitly
+	// unelided span runs here — after truncation has been measured against the ranking, so the
+	// counter still describes what the allocator did, and before sectioning, so it can only ever
+	// touch candidate fix sites. See search_span_merge.go for the bounds that keep it from
+	// evicting a hit to pay for a bridge.
+	if merged, spans, absorbed := mergeSameFileSearchSpans(results, read, options.MaxContextBytes); spans > 0 {
+		results = merged
+		stats.MergedSpans = spans
+		stats.CompleteSymbols = maxInt(0, stats.CompleteSymbols-absorbed)
+	}
 	// Sectioning first: it decides which hit anchors the related-site block, because a
 	// docs-and-fixtures hit at rank 1 is not a fix site and its neighbourhood is not the
 	// neighbourhood of the change.

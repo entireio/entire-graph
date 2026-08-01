@@ -461,6 +461,14 @@ func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result s
 	// span the snippet does not contain sends the reader to the wrong lines.
 	start, end := searchResultPrintedRange(result)
 	fmt.Fprintf(out, "%d. %s:%d-%d", result.Rank, result.FilePath, start, end)
+	// A merged span says so, and says the one thing that decides whether the reader re-reads the
+	// region anyway: that the range is contiguous and nothing between the hits it absorbed has
+	// been left out. Without that, a wide range reads exactly like a stitched-together excerpt,
+	// which is what an agent opens the file to check — the measured turn-2 behaviour this merge
+	// exists to remove (fluentd-3328: `sed -n '330,470p'` over a superset of what it already had).
+	if len(result.MergedRanks) > 0 {
+		fmt.Fprintf(out, " [contains ranks %s - contiguous, nothing elided]", joinSearchRanks(result.MergedRanks))
+	}
 	// A block that carries no relevance score must not print one. The covering test is not a
 	// ranked answer — it is the statement of what the fix has to achieve — and `score=0.0000`
 	// beside it reads as "worthless" rather than "not applicable".
@@ -538,6 +546,17 @@ func writeTextSearchTypeCard(out interface{ Write([]byte) (int, error) }, card [
 		}
 		fmt.Fprintf(out, "  %s\n", entry.Decl)
 	}
+}
+
+// joinSearchRanks renders the pre-merge ranks a contiguous span absorbed. They are the ranking's
+// own numbers from BEFORE the merge renumbered it, which is what makes a rank that no longer
+// prints on its own account for itself instead of just going missing.
+func joinSearchRanks(ranks []int) string {
+	parts := make([]string, 0, len(ranks))
+	for _, rank := range ranks {
+		parts = append(parts, strconv.Itoa(rank))
+	}
+	return strings.Join(parts, ",")
 }
 
 func joinSearchUseLines(lines []int) string {
