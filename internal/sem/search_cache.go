@@ -55,6 +55,16 @@ type cachedSearchSnapshot struct {
 	SymbolByteRanges             map[string]cachedSymbolByteRange `json:"symbol_byte_ranges,omitempty"`
 	SymbolParameterNames         map[string][]string              `json:"symbol_parameter_names,omitempty"`
 	SymbolParameterNamesKnownIDs []string                         `json:"symbol_parameter_names_known_ids,omitempty"`
+	// Signature types travel with the same reasoning as parameter names: they
+	// are AST metadata the type passes consume, so a cache hit must reproduce
+	// them or a cached run would fall back to the signature-string split and
+	// emit different type relations than a cold one.
+	SymbolSignatureTypes map[string]cachedSignatureTypes `json:"symbol_signature_types,omitempty"`
+}
+
+type cachedSignatureTypes struct {
+	Params  string `json:"params,omitempty"`
+	Returns string `json:"returns,omitempty"`
 }
 
 // worktreeCleanTTL bounds how stale a working-tree cleanliness verdict may be.
@@ -400,6 +410,15 @@ func newCachedSearchSnapshot(providerVersion, commit, tree string, options Provi
 		if symbol.parameterNamesKnown {
 			cache.SymbolParameterNamesKnownIDs = append(cache.SymbolParameterNamesKnownIDs, symbol.ID)
 		}
+		if symbol.signatureTypesKnown {
+			if cache.SymbolSignatureTypes == nil {
+				cache.SymbolSignatureTypes = make(map[string]cachedSignatureTypes)
+			}
+			cache.SymbolSignatureTypes[symbol.ID] = cachedSignatureTypes{
+				Params:  symbol.paramTypeText,
+				Returns: symbol.returnTypeText,
+			}
+		}
 		if len(symbol.parameterNames) > 0 {
 			if cache.SymbolParameterNames == nil {
 				cache.SymbolParameterNames = make(map[string][]string)
@@ -431,6 +450,11 @@ func restoreCachedSearchInternals(cache *cachedSearchSnapshot) {
 		}
 		symbol.parameterNames = append([]string(nil), cache.SymbolParameterNames[symbol.ID]...)
 		symbol.parameterNamesKnown = parameterNamesKnownIDs[symbol.ID]
+		if types, ok := cache.SymbolSignatureTypes[symbol.ID]; ok {
+			symbol.paramTypeText = types.Params
+			symbol.returnTypeText = types.Returns
+			symbol.signatureTypesKnown = true
+		}
 	}
 }
 

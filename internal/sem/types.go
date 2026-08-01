@@ -369,6 +369,19 @@ var (
 	trpcProcedureRe             = regexp.MustCompile(`(?m)([A-Za-z_$][\w$]*)\s*:\s*(?:publicProcedure|protectedProcedure|procedure)\s*\.\s*(query|mutation|subscription)\s*\(`)
 )
 
+// serviceBoundaryScanLanguage reports whether a language's symbol bodies should
+// be scanned with the loose GraphQL operation patterns. It mirrors the set that
+// declares HANDLES_GRAPHQL in ooRelationSupport, so the scan cannot emit an
+// edge the capability report says the language does not produce.
+func serviceBoundaryScanLanguage(language string) bool {
+	switch language {
+	case "TypeScript", "JavaScript", "Python", "GraphQL":
+		return true
+	default:
+		return false
+	}
+}
+
 func serviceBoundaries(symbol SymbolRecord, block string) []serviceBoundary {
 	var out []serviceBoundary
 	seen := map[string]bool{}
@@ -422,25 +435,38 @@ func serviceBoundaries(symbol SymbolRecord, block string) []serviceBoundary {
 			}
 		}
 	}
-	for _, match := range graphqlOperationRe.FindAllStringSubmatch(block, -1) {
-		add(serviceBoundary{
-			Relation:     "HANDLES_GRAPHQL",
-			Kind:         "graphql",
-			Name:         strings.ToLower(match[1]) + " " + match[2],
-			Confidence:   0.75,
-			Reason:       "GraphQL operation literal detected in symbol body",
-			EvidenceKind: "graphql_operation",
-		})
-	}
-	for _, op := range graphqlOperationRootFieldSelections(block) {
-		add(serviceBoundary{
-			Relation:     "HANDLES_GRAPHQL",
-			Kind:         "graphql",
-			Name:         op.Root + " " + op.Field,
-			Confidence:   0.78,
-			Reason:       "GraphQL operation root field detected in operation literal",
-			EvidenceKind: "graphql_operation_field",
-		})
+	// The body-text scans below match prose as readily as code: the operation
+	// pattern is `(query|mutation|subscription) <identifier>`, case-insensitive,
+	// so a Go doc comment saying "query the cache" or a Java method named
+	// `queryString` reads as a GraphQL operation. Restricting them to the
+	// languages that declare HANDLES_GRAPHQL — which is also what
+	// `capabilities --json` promises — removed 1,245 such edges from cli-cli and
+	// 1,057 from spring-framework, targeting names like "query the".
+	//
+	// The symbol-kind branches above stay ungated: `graphql_resolver` and
+	// `graphql_schema_field` are produced only by the GraphQL/JS extractors, so
+	// they carry their own evidence of being GraphQL.
+	if serviceBoundaryScanLanguage(symbol.Language) {
+		for _, match := range graphqlOperationRe.FindAllStringSubmatch(block, -1) {
+			add(serviceBoundary{
+				Relation:     "HANDLES_GRAPHQL",
+				Kind:         "graphql",
+				Name:         strings.ToLower(match[1]) + " " + match[2],
+				Confidence:   0.75,
+				Reason:       "GraphQL operation literal detected in symbol body",
+				EvidenceKind: "graphql_operation",
+			})
+		}
+		for _, op := range graphqlOperationRootFieldSelections(block) {
+			add(serviceBoundary{
+				Relation:     "HANDLES_GRAPHQL",
+				Kind:         "graphql",
+				Name:         op.Root + " " + op.Field,
+				Confidence:   0.78,
+				Reason:       "GraphQL operation root field detected in operation literal",
+				EvidenceKind: "graphql_operation_field",
+			})
+		}
 	}
 	for _, match := range trpcProcedureRe.FindAllStringSubmatch(block, -1) {
 		add(serviceBoundary{
@@ -2058,6 +2084,20 @@ func sortedStringSet(seen map[string]struct{}) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// symbolTypeReferences reports the types a callable's signature names, using
+// the parse tree's own delimitation of the parameter list and return type when
+// the parser recorded it, and the signature-string split otherwise. See
+// astSignatureTypeTexts for what the string split gets wrong.
+func symbolTypeReferences(symbol SymbolRecord) map[string][]string {
+	if !symbol.signatureTypesKnown {
+		return signatureTypeReferences(symbol.Language, symbol.Signature)
+	}
+	return map[string][]string{
+		"PARAM_TYPE":   typeNamesFromText(symbol.paramTypeText),
+		"RETURNS_TYPE": typeNamesFromText(symbol.returnTypeText),
+	}
 }
 
 func signatureTypeReferences(language, signature string) map[string][]string {

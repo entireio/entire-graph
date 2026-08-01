@@ -92,8 +92,11 @@ var ooRelationSupport = map[string][]string{
 	"C#":         {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
 	"PHP":        {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
 	"Python":     {"EXTENDS", "INHERITS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "HANDLES_GRAPHQL", "ASYNC_CALLS", "DATA_FLOWS"},
-	"Rust":       {"EXTENDS", "INHERITS", "IMPLEMENTS", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
-	"Go":         {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
+	// OVERRIDES: a trait impl's method resolves against the trait's declaration
+	// (`impl Shape for Circle { fn area(..) }`), which the supertype pass
+	// already emits — see the rust-oo fixture.
+	"Rust": {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
+	"Go":   {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
 	// Ruby states member acquisition with `include`/`prepend`/`extend` in the
 	// class body, which the provider now reads; header inheritance
 	// (`class A < B`) is not parsed yet, so only INHERITS is advertised.
@@ -264,6 +267,12 @@ type SymbolRecord struct {
 	// from missing parser metadata. This stays private to preserve the frozen
 	// provider schema.
 	parameterNamesKnown bool
+	// paramTypeText/returnTypeText carry the parse tree's own view of the
+	// callable's declared types; signatureTypesKnown gates their use so a
+	// grammar the parser could not read falls back to the signature string.
+	paramTypeText       string
+	returnTypeText      string
+	signatureTypesKnown bool
 }
 
 type RelationRecord struct {
@@ -625,6 +634,11 @@ func mergeLanguageSupport(support map[string][]string, language string, spec lan
 	}
 	if supportsCallExtraction(spec) {
 		set["CALLS"] = true
+		// CONSTRUCTS comes off the same pass as CALLS — the call site relabels
+		// the edge when the callee resolves to a type rather than a callable —
+		// so it is available wherever calls are, and advertising one without
+		// the other under-reported it for every language.
+		set["CONSTRUCTS"] = true
 	}
 	if importCapable {
 		set["IMPORTS"] = true
@@ -640,12 +654,21 @@ func mergeLanguageSupport(support map[string][]string, language string, spec lan
 	support[language] = types
 }
 
+// supportsCallExtraction reports whether the generic call pass produces CALLS
+// for a language. It is a list rather than a derivation because a grammar alone
+// does not imply call syntax worth extracting — a data or markup grammar parses
+// fine and has no calls to find. The hazard is the opposite direction: a
+// grammar that DOES resolve calls but is missing here is advertised as
+// inventory-grade while emitting call edges, which is what happened to Julia
+// and R (their CALLS output is pinned by tests in provider_test.go while the
+// capability report denied it). TestCapabilityMatrixCoversEmittedRelations
+// fails on any recurrence.
 func supportsCallExtraction(spec languageSpec) bool {
 	if spec.inventoryOnly {
 		return false
 	}
 	switch spec.language {
-	case "Bash", "C", "C++", "C#", "Clojure", "ClojureScript", "Dart", "Elixir", "Erlang", "F#", "Go", "Groovy", "Haskell", "Java", "JavaScript", "Kotlin", "Lua", "Objective-C", "OCaml", "Perl", "PHP", "Python", "Ruby", "Rust", "Scala", "SQL", "Swift", "TypeScript", "Zig", "Zsh":
+	case "Bash", "C", "C++", "C#", "Clojure", "ClojureScript", "Dart", "Elixir", "Erlang", "F#", "Go", "Groovy", "Haskell", "Java", "JavaScript", "Julia", "Kotlin", "Lua", "Objective-C", "OCaml", "Perl", "PHP", "Python", "R", "Ruby", "Rust", "Scala", "SQL", "Swift", "TypeScript", "Zig", "Zsh":
 		return true
 	default:
 		return false
@@ -1334,16 +1357,43 @@ func skipFastCFamilyCallScan(spec profileSpec, language string) bool {
 	return spec.name == ProfileFast && (language == "C" || language == "C++")
 }
 
+// fastProfileScanLanguages returns the languages whose per-symbol pass runs
+// under the fast profile: every semantically-parsed language, plus the config
+// and data languages whose CONFIGURES/RESOURCE_DEPENDS_ON scans live in the
+// same loop. It is computed from the capability report rather than listed, so a
+// newly added grammar inherits the scan instead of silently opting out of it.
+var fastProfileScanLanguages = sync.OnceValue(func() map[string]bool {
+	languages := map[string]bool{
+		// Config/data languages: parsed as inventory, but the per-symbol loop is
+		// where their CONFIGURES and RESOURCE_DEPENDS_ON edges come from.
+		"Dockerfile": true, "HCL": true, "JSON": true, "JSON5": true,
+		"Kustomize": true, "Protocol Buffers": true, "TOML": true,
+		"XML": true, "YAML": true,
+	}
+	for _, language := range Capabilities().SemanticLanguages {
+		languages[language] = true
+	}
+	return languages
+})
+
+// skipFastProfilePerSymbolScan reports whether the fast profile should skip the
+// per-symbol relation pass — the loop that produces CALLS, field access, data
+// flow, routes and HTTP edges — for a language.
+//
+// This used to be an allowlist of 17 languages, which meant the other 22
+// call-capable languages emitted almost no relations under the profile that
+// `search` defaults to, while both the per-language and per-profile capability
+// matrices advertised CALLS for them (Rust measured 21,509 CALLS at --profile
+// full against 14 at --profile fast). The gate is now an opt-out: anything the
+// provider parses semantically is scanned, and only languages with nothing for
+// the pass to walk are skipped. The expensive C/C++ call scan keeps its own
+// separate opt-out in skipFastCFamilyCallScan, which is where the original
+// benchmark pressure actually was.
 func skipFastProfilePerSymbolScan(spec profileSpec, language string) bool {
 	if spec.name != ProfileFast {
 		return false
 	}
-	switch language {
-	case "C#", "Dockerfile", "Go", "HCL", "Java", "JavaScript", "JSON", "JSON5", "Kustomize", "PHP", "Protocol Buffers", "Python", "Ruby", "TOML", "TypeScript", "XML", "YAML":
-		return false
-	default:
-		return true
-	}
+	return !fastProfileScanLanguages()[language]
 }
 
 func routeScanLanguage(language string) bool {
@@ -1658,6 +1708,9 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 		// downstream rather than reporting an empty list as authoritative.
 		symbol.parameterNames = append([]string(nil), entity.parameterNames...)
 		symbol.parameterNamesKnown = entity.parameterNamesKnown
+		symbol.paramTypeText = entity.paramTypeText
+		symbol.returnTypeText = entity.returnTypeText
+		symbol.signatureTypesKnown = entity.signatureTypesKnown
 		symbols = append(symbols, symbol)
 		byName[qualified] = id
 	}
@@ -2656,7 +2709,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 			}
 			if needsReceiverCalls && !typeLikeKind(symbol.Kind) {
-				for _, typeName := range signatureTypeReferences(symbol.Language, symbol.Signature)["RETURNS_TYPE"] {
+				for _, typeName := range symbolTypeReferences(symbol)["RETURNS_TYPE"] {
 					if returnTypesBySymbolNameAndFile[symbol.Name] == nil {
 						returnTypesBySymbolNameAndFile[symbol.Name] = map[string][]string{}
 					}
@@ -6316,7 +6369,7 @@ func receiverQualifiedOverloadByArgReturnType(from SymbolRecord, call receiverCa
 	}
 	var matches []SymbolRecord
 	for _, candidate := range candidates {
-		params := signatureTypeReferences(candidate.Language, candidate.Signature)["PARAM_TYPE"]
+		params := symbolTypeReferences(candidate)["PARAM_TYPE"]
 		if typeListIntersects(params, argTypes) {
 			matches = append(matches, candidate)
 		}
@@ -8814,7 +8867,7 @@ func signatureTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFi
 			}
 			importsByName := resolvedImportsByFile[path]
 			qualifiedImportsByName := qualifiedTypeImports(symbol.Signature, importsByName)
-			refs := signatureTypeReferences(symbol.Language, symbol.Signature)
+			refs := symbolTypeReferences(symbol)
 			for _, relationType := range []string{"PARAM_TYPE", "RETURNS_TYPE"} {
 				if !spec.emits(relationType) {
 					continue
@@ -10021,23 +10074,14 @@ func firstError(errs ...error) error {
 	return nil
 }
 
-// importCapableExtension reports whether importsFor has a dedicated import
-// scanner for the extension. It must mirror the non-nil cases in importsFor;
-// TestCapabilitiesReportRelationSupportPerLanguage guards key cases against
-// drift. Extensions that fall through importsFor's default (or explicitly
-// return nil, like .hcl/.tf/.tfvars/.sql/.yaml) are not import-capable.
+// importCapableExtension reports whether a dedicated import scanner exists for
+// the extension. It reads the same registry importsFor dispatches through, so
+// the two can no longer disagree — previously each was its own switch and the
+// comment here asked editors to keep them mirrored by hand. Extensions with no
+// entry (.hcl/.tf/.tfvars/.sql/.yaml) are not import-capable.
 func importCapableExtension(ext string) bool {
-	switch ext {
-	case ".bash", ".sh", ".zsh",
-		".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx",
-		".cs", ".cue", ".ex", ".exs", ".go", ".gradle", ".groovy", ".gvy",
-		".java", ".kt", ".kts", ".scala", ".sc", ".sbt", ".py",
-		".js", ".jsx", ".ts", ".tsx", ".lua", ".ml", ".mli", ".php",
-		".proto", ".rb", ".rs", ".swift":
-		return true
-	default:
-		return false
-	}
+	_, ok := importScanners[strings.ToLower(ext)]
+	return ok
 }
 
 // isRelativeImportSpec reports whether an import spec is a repo-relative path
@@ -12573,51 +12617,87 @@ func normalizeRustCrateName(name string) string {
 	return strings.ReplaceAll(name, "-", "_")
 }
 
+var (
+	shellSourceRe     = regexp.MustCompile(`(?m)^\s*(?:source|\.)\s+["']?([^"'\s]+)`)
+	cIncludeRe        = regexp.MustCompile(`(?m)^\s*#\s*include\s+[<"]([^>"]+)[>"]`)
+	csharpUsingRe     = regexp.MustCompile(`(?m)^\s*using\s+([A-Za-z0-9_\.]+)\s*;`)
+	cueImportRe       = regexp.MustCompile(`(?m)^\s*import\s+(?:\(\s*)?["]([^"]+)["]`)
+	elixirImportRe    = regexp.MustCompile(`(?m)^\s*(?:alias|import|require|use)\s+([A-Za-z0-9_\.]+)`)
+	groovyImportRe    = regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z0-9_\.]+)`)
+	jvmImportRe       = regexp.MustCompile(`(?m)^\s*import\s+(?:static\s+)?([A-Za-z0-9_\.\*]+)`)
+	luaRequireRe      = regexp.MustCompile(`(?m)require\s*(?:\(|\s)\s*["']([^"']+)["']`)
+	ocamlImportOpenRe = regexp.MustCompile(`(?m)^\s*open\s+([A-Za-z0-9_\.]+)`)
+	phpUseRe          = regexp.MustCompile(`(?m)^\s*(?:use|include|require|include_once|require_once)\s+['"]?([^'";]+)`)
+	protoImportRe     = regexp.MustCompile(`(?m)^\s*import\s+["]([^"]+)["]`)
+	rubyRequireRe     = regexp.MustCompile(`(?m)^\s*require(?:_relative)?\s+['"]([^'"]+)['"]`)
+	rustUseRe         = regexp.MustCompile(`(?m)^\s*use\s+([^;]+);`)
+	swiftImportRe     = regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z0-9_]+)`)
+	pythonImportFn    = scanPythonImports
+	jsImportFn        = scanJSImports
+	goImportFn        = scanGoImports
+	regexImportScan   = func(re *regexp.Regexp) func(string) []string {
+		return func(content string) []string { return scanImports(content, re) }
+	}
+)
+
+// importScanners maps a file extension to the scanner that reads its import
+// statements. It is the SINGLE source of truth for import support: importsFor
+// dispatches through it and importCapableExtension reports membership, so a
+// scanner cannot be added or removed without the capability report following.
+// The two used to be parallel switch statements that a comment asked future
+// editors to keep in sync by hand — the same drift hazard that let Julia and R
+// emit calls the capability report denied.
+//
+// An extension that is recognized but genuinely carries no imports (.hcl, .sql)
+// is deliberately absent rather than mapped to a nil-returning scanner, so that
+// membership and capability stay the same question.
+var importScanners = map[string]func(content string) []string{
+	".bash":   regexImportScan(shellSourceRe),
+	".sh":     regexImportScan(shellSourceRe),
+	".zsh":    regexImportScan(shellSourceRe),
+	".c":      regexImportScan(cIncludeRe),
+	".h":      regexImportScan(cIncludeRe),
+	".cc":     regexImportScan(cIncludeRe),
+	".cpp":    regexImportScan(cIncludeRe),
+	".cxx":    regexImportScan(cIncludeRe),
+	".hh":     regexImportScan(cIncludeRe),
+	".hpp":    regexImportScan(cIncludeRe),
+	".hxx":    regexImportScan(cIncludeRe),
+	".cs":     regexImportScan(csharpUsingRe),
+	".cue":    regexImportScan(cueImportRe),
+	".ex":     regexImportScan(elixirImportRe),
+	".exs":    regexImportScan(elixirImportRe),
+	".go":     goImportFn,
+	".gradle": regexImportScan(groovyImportRe),
+	".groovy": regexImportScan(groovyImportRe),
+	".gvy":    regexImportScan(groovyImportRe),
+	".java":   regexImportScan(jvmImportRe),
+	".kt":     regexImportScan(jvmImportRe),
+	".kts":    regexImportScan(jvmImportRe),
+	".scala":  regexImportScan(jvmImportRe),
+	".sc":     regexImportScan(jvmImportRe),
+	".sbt":    regexImportScan(jvmImportRe),
+	".py":     pythonImportFn,
+	".js":     jsImportFn,
+	".jsx":    jsImportFn,
+	".ts":     jsImportFn,
+	".tsx":    jsImportFn,
+	".lua":    regexImportScan(luaRequireRe),
+	".ml":     regexImportScan(ocamlImportOpenRe),
+	".mli":    regexImportScan(ocamlImportOpenRe),
+	".php":    regexImportScan(phpUseRe),
+	".proto":  regexImportScan(protoImportRe),
+	".rb":     regexImportScan(rubyRequireRe),
+	".rs":     regexImportScan(rustUseRe),
+	".swift":  regexImportScan(swiftImportRe),
+}
+
 func importsFor(path, content string) []string {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".bash", ".sh", ".zsh":
-		return scanImports(content, regexp.MustCompile(`(?m)^\s*(?:source|\.)\s+["']?([^"'\s]+)`))
-	case ".c", ".h":
-		return scanImports(content, regexp.MustCompile(`(?m)^\s*#\s*include\s+[<"]([^>"]+)[>"]`))
-	case ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx":
-		return scanImports(content, regexp.MustCompile(`(?m)^\s*#\s*include\s+[<"]([^>"]+)[>"]`))
-	case ".cs":
-		return scanImports(content, regexp.MustCompile(`(?m)^\s*using\s+([A-Za-z0-9_\.]+)\s*;`))
-	case ".cue":
-		return scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+(?:\(\s*)?["]([^"]+)["]`))
-	case ".ex", ".exs":
-		return scanImports(content, regexp.MustCompile(`(?m)^\s*(?:alias|import|require|use)\s+([A-Za-z0-9_\.]+)`))
-	case ".go":
-		return scanGoImports(content)
-	case ".gradle", ".groovy", ".gvy":
-		return scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z0-9_\.]+)`))
-	case ".hcl", ".tf", ".tfvars":
-		return nil
-	case ".java", ".kt", ".kts", ".scala", ".sc", ".sbt":
-		return scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+(?:static\s+)?([A-Za-z0-9_\.\*]+)`))
-	case ".py":
-		return scanPythonImports(content)
-	case ".js", ".jsx", ".ts", ".tsx":
-		return scanJSImports(content)
-	case ".lua":
-		return scanImports(content, regexp.MustCompile(`(?m)require\s*(?:\(|\s)\s*["']([^"']+)["']`))
-	case ".ml", ".mli":
-		return scanImports(content, regexp.MustCompile(`(?m)^\s*open\s+([A-Za-z0-9_\.]+)`))
-	case ".php":
-		return scanImports(content, regexp.MustCompile(`(?m)^\s*(?:use|include|require|include_once|require_once)\s+['"]?([^'";]+)`))
-	case ".proto":
-		return scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+["]([^"]+)["]`))
-	case ".rb":
-		return scanImports(content, regexp.MustCompile(`(?m)^\s*require(?:_relative)?\s+['"]([^'"]+)['"]`))
-	case ".rs":
-		return scanImports(content, regexp.MustCompile(`(?m)^\s*use\s+([^;]+);`))
-	case ".sql":
-		return nil
-	case ".swift":
-		return scanImports(content, regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z0-9_]+)`))
-	default:
+	scan, ok := importScanners[strings.ToLower(filepath.Ext(path))]
+	if !ok {
 		return nil
 	}
+	return scan(content)
 }
 
 func scanPythonImports(content string) []string {

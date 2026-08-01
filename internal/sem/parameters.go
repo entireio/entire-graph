@@ -48,6 +48,97 @@ func astParameterNames(node *sitter.Node, src []byte) ([]string, bool) {
 	return names, true
 }
 
+// astSignatureTypeTexts returns the parameter-type and return-type source text
+// of a callable, read from the parse tree. It reports false when the grammar
+// exposes no parameter list, leaving the caller on splitSignatureTypes.
+//
+// The signature-string parser it replaces anchors on the FIRST `(` and, for
+// languages it has no case for, guesses the return type as the second-to-last
+// whitespace-delimited word before that paren. Both assumptions fail loudly:
+//
+//	Swift `func f(a: Int) -> Result`   -> return type "func"   (the keyword)
+//	Zig   `fn f(a: u8) Result`         -> return type "fn"
+//	Scala `def f(a: Int): Result`      -> return type "def"
+//	Go    `func (r *R) B(i In) Out`    -> params from the RECEIVER, and the
+//	                                      method name and param type read as
+//	                                      return types
+//
+// Zig emitted zero RETURNS_TYPE edges across a whole repository as a result.
+func astSignatureTypeTexts(node *sitter.Node, src []byte) (string, string, bool) {
+	list := parameterListNode(node)
+	entries := []*sitter.Node{}
+	if list != nil {
+		for index := 0; index < int(list.NamedChildCount()); index++ {
+			entries = append(entries, list.NamedChild(index))
+		}
+	} else {
+		for index := 0; index < int(node.NamedChildCount()); index++ {
+			if child := node.NamedChild(index); validNode(child) && child.Type() == "parameter" {
+				entries = append(entries, child)
+			}
+		}
+		if len(entries) == 0 {
+			return "", "", false
+		}
+	}
+	var paramTypes []string
+	for _, entry := range entries {
+		if text := parameterTypeText(entry, src); text != "" {
+			paramTypes = append(paramTypes, text)
+		}
+	}
+	returnText := ""
+	if node := callableReturnTypeNode(node, list); validNode(node) {
+		returnText = strings.TrimSpace(node.Content(src))
+		// TypeScript keeps the annotation colon inside the node; Rust and Swift
+		// keep the arrow outside it, but trim defensively for both.
+		returnText = strings.TrimSpace(strings.TrimPrefix(returnText, ":"))
+		returnText = strings.TrimSpace(strings.TrimPrefix(returnText, "->"))
+	}
+	return strings.Join(paramTypes, ", "), returnText, true
+}
+
+func parameterTypeText(entry *sitter.Node, src []byte) string {
+	if !validNode(entry) || !isParameterNode(entry) {
+		return ""
+	}
+	if typeNode := entry.ChildByFieldName("type"); validNode(typeNode) {
+		return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(typeNode.Content(src)), ":"))
+	}
+	// Swift reuses the `name` field for the type, so fall back to the first
+	// type-shaped child rather than trusting field names here.
+	for index := 0; index < int(entry.NamedChildCount()); index++ {
+		if child := entry.NamedChild(index); isTypeNode(child) {
+			return strings.TrimSpace(child.Content(src))
+		}
+	}
+	return ""
+}
+
+// callableReturnTypeNode finds the declared return type. Grammars name the
+// field differently (`result`, `return_type`, `returns`, `type`); Swift, Kotlin
+// and Dart give it no field at all and leave a bare type node among the
+// declaration's children, which is why the field lookup falls back to scanning
+// for a type-shaped child outside the parameter list.
+func callableReturnTypeNode(node *sitter.Node, list *sitter.Node) *sitter.Node {
+	for _, field := range []string{"result", "return_type", "returns", "type"} {
+		if found := node.ChildByFieldName(field); validNode(found) {
+			return found
+		}
+	}
+	for index := 0; index < int(node.NamedChildCount()); index++ {
+		child := node.NamedChild(index)
+		if !isTypeNode(child) {
+			continue
+		}
+		if list != nil && child.StartByte() >= list.StartByte() && child.EndByte() <= list.EndByte() {
+			continue // a parameter's own type, not the result
+		}
+		return child
+	}
+	return nil
+}
+
 // parameterListNodeTypes are the node types grammars use for a formal parameter
 // list. Most expose it under the `parameters` field; the ones that do not still
 // name the node recognizably.

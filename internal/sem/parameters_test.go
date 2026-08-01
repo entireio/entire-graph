@@ -3,6 +3,7 @@ package sem
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	sitter "github.com/smacker/go-tree-sitter"
@@ -206,4 +207,164 @@ func TestCleanParameterNameKeepsUnicodeIdentifiers(t *testing.T) {
 	if got := cleanParameterName("$php"); got != "php" {
 		t.Errorf("sigil handling changed: got %q", got)
 	}
+}
+
+// astSignatureTypeTextsFor mirrors astParameterNamesFor for the type extractor.
+func astSignatureTypeTextsFor(t *testing.T, path, src string) (string, string, bool) {
+	t.Helper()
+	spec, ok := languageForPath(path)
+	if !ok {
+		t.Fatalf("no language spec for %s", path)
+	}
+	parser := sitter.NewParser()
+	defer parser.Close()
+	parser.SetLanguage(spec.grammar)
+	tree, err := parser.ParseCtx(context.Background(), nil, []byte(src))
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	defer tree.Close()
+	var params, returns string
+	var known bool
+	var walk func(node *sitter.Node)
+	walk = func(node *sitter.Node) {
+		if known || !validNode(node) {
+			return
+		}
+		if p, r, ok := astSignatureTypeTexts(node, []byte(src)); ok {
+			params, returns, known = p, r, true
+			return
+		}
+		for index := 0; index < int(node.NamedChildCount()); index++ {
+			walk(node.NamedChild(index))
+		}
+	}
+	walk(tree.RootNode())
+	return params, returns, known
+}
+
+// TestASTSignatureTypesAcrossGrammars pins the type extraction the signature
+// string could not do. The string split anchors on the first `(` — the receiver
+// for a Go method — and, for languages it has no case for, guesses the return
+// type as the second-to-last word before that paren, which is the declaration
+// KEYWORD. Zig emitted no RETURNS_TYPE edge anywhere as a result.
+func TestASTSignatureTypesAcrossGrammars(t *testing.T) {
+	for _, testCase := range []struct {
+		name        string
+		path, src   string
+		wantParams  string
+		wantReturns string
+	}{
+		{
+			name:        "go method reads past the receiver",
+			path:        "a.go",
+			src:         "package p\nfunc (c *Client) Do(a Input) Output { return Output{} }\n",
+			wantParams:  "Input",
+			wantReturns: "Output",
+		},
+		{
+			name:        "go multi-value result",
+			path:        "a.go",
+			src:         "package p\nfunc Multi(a Input) (Output, error) { return Output{}, nil }\n",
+			wantParams:  "Input",
+			wantReturns: "(Output, error)",
+		},
+		{
+			name:        "swift return type is not the func keyword",
+			path:        "a.swift",
+			src:         "func f(a: Int) -> Result {}\n",
+			wantParams:  "Int",
+			wantReturns: "Result",
+		},
+		{
+			name:        "zig return type is not the fn keyword",
+			path:        "a.zig",
+			src:         "fn f(a: u8) Result {}\n",
+			wantParams:  "u8",
+			wantReturns: "Result",
+		},
+		{
+			name:        "scala return type is not the def keyword",
+			path:        "a.scala",
+			src:         "def f(a: Int): Result = a\n",
+			wantParams:  "Int",
+			wantReturns: "Result",
+		},
+		{
+			name:        "kotlin return type has no field to read",
+			path:        "a.kt",
+			src:         "fun f(a: Int): Result {}\n",
+			wantParams:  "Int",
+			wantReturns: "Result",
+		},
+		{
+			name:        "dart states the return type before the name",
+			path:        "a.dart",
+			src:         "Result f(int a) => null;\n",
+			wantParams:  "int",
+			wantReturns: "Result",
+		},
+		{
+			name:        "typescript annotation colon is trimmed",
+			path:        "a.ts",
+			src:         "function f(a: number): Result {}\n",
+			wantParams:  "number",
+			wantReturns: "Result",
+		},
+		{
+			name:        "rust arrow return",
+			path:        "a.rs",
+			src:         "fn f(a: u8) -> Result { a }\n",
+			wantParams:  "u8",
+			wantReturns: "Result",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			params, returns, known := astSignatureTypeTextsFor(t, testCase.path, testCase.src)
+			if !known {
+				t.Fatalf("expected the grammar to expose a parameter list")
+			}
+			if params != testCase.wantParams {
+				t.Errorf("parameter types: got %q want %q", params, testCase.wantParams)
+			}
+			if returns != testCase.wantReturns {
+				t.Errorf("return types: got %q want %q", returns, testCase.wantReturns)
+			}
+		})
+	}
+}
+
+// TestASTSignatureTypesRejectKeywordReturns is the regression proper: the
+// signature-string path reports a language keyword as the return type for every
+// language it has no explicit case for.
+func TestASTSignatureTypesRejectKeywordReturns(t *testing.T) {
+	for _, testCase := range []struct{ language, path, src, keyword string }{
+		{"Swift", "a.swift", "func f(a: Int) -> Result {}\n", "func"},
+		{"Zig", "a.zig", "fn f(a: u8) Result {}\n", "fn"},
+		{"Scala", "a.scala", "def f(a: Int): Result = a\n", "def"},
+	} {
+		t.Run(testCase.language, func(t *testing.T) {
+			stale := signatureTypeReferences(testCase.language, strings.TrimSuffix(strings.SplitN(testCase.src, "{", 2)[0], " "))
+			if !slicesContain(stale["RETURNS_TYPE"], testCase.keyword) {
+				t.Fatalf("expected the signature split to report %q as a return type (the bug under test), got %v",
+					testCase.keyword, stale["RETURNS_TYPE"])
+			}
+			_, returns, known := astSignatureTypeTextsFor(t, testCase.path, testCase.src)
+			if !known {
+				t.Fatalf("expected parse-tree extraction to apply")
+			}
+			if returns == testCase.keyword {
+				t.Fatalf("parse-tree extraction still reports the %q keyword as a return type", testCase.keyword)
+			}
+		})
+	}
+}
+
+func slicesContain(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

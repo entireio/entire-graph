@@ -50,7 +50,7 @@
     "INHERITS": 9,
     "LISTENS_ON": 1,
     "OVERRIDES": 10,
-    "PARAM_TYPE": 6,
+    "PARAM_TYPE": 4,
     "READS_FIELD": 9,
     "RESOURCE_DEPENDS_ON": 4,
     "RETURNS_TYPE": 6,
