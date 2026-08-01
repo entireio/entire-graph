@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "7dc870b63e32",
+  "strategy": "manual-commit",
+  "branch": "claude/language-capability-generalization",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "internal/sem/provider.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/7d/c870b63e32/0/metadata.json",
+      "transcript": "/7d/c870b63e32/0/full.jsonl",
+      "compact_transcript": "/7d/c870b63e32/0/transcript.jsonl",
+      "content_hash": "/7d/c870b63e32/0/content_hash.txt",
+      "prompt": "/7d/c870b63e32/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 97,
+    "cache_creation_tokens": 963432,
+    "cache_read_tokens": 24098888,
+    "output_tokens": 24713,
+    "api_call_count": 52
+  }
+}
