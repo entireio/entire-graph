@@ -250,6 +250,18 @@ configs) will be public soon.
 
 ## More
 
+### Compact snapshot artifact
+
+`entire graph snapshot --repo . --format ndjson` remains the interoperable default: it is the existing object-per-line stream. For a complete, local compact artifact, use:
+
+```sh
+entire graph snapshot --repo . --format compact-ndjson > graph.compact.ndjson
+entire graph snapshot-query --input graph.compact.ndjson --symbol Cache.Refresh --format ndjson
+entire graph snapshot-query --input graph.compact.ndjson --from '<stable-id>' --relation CALLS --format ndjson
+```
+
+Compact NDJSON v1 is full-snapshot-only; targeted `--to`, `--from`, and `--relation` output stays native NDJSON. Its first `h` line is the only version marker, dictionary `d` lines are part of the artifact and its raw byte count, and unknown versions are rejected. The compact and native streams must have the same decoded public projection and canonical semantic SHA-256; hash equality alone is not a losslessness proof. Compact cache entries use a separate namespace from native snapshot entries.
+
 - [AGENTS.md](AGENTS.md) — the agent operating guide (also: `entire graph agent-guide`)
 - [docs/DETAILS.md](docs/DETAILS.md) — full command reference, architecture, language support,
   performance and accuracy benchmarks, security model

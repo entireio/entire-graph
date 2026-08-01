@@ -15,6 +15,8 @@ It ships as an **Entire CLI plugin**, invoked as `entire graph ...`, and doubles
 ```sh
 entire graph search   --repo . --query "where is webhook retry handled?"   # 🔍 ranked code for a task
 entire graph snapshot --repo . --format ndjson                             # 🕸️  full symbol + relation graph
+entire graph snapshot --repo . --format compact-ndjson > graph.compact.ndjson # compact full graph artifact
+entire graph snapshot-query --input graph.compact.ndjson --symbol Cache.Refresh --format ndjson
 entire graph diff     --base main --head HEAD                               # 🧬 what changed, at the entity level
 entire graph capabilities --json                                           # 🧭 languages + relation types
 ```
@@ -291,6 +293,20 @@ Savings scale with symbol connectivity: single-digit for narrow symbols, 280x+ f
 - **Streaming output:** `snapshot` emits records as it parses, so memory stays bounded on very large repositories.
 - **Cached committed-tree search:** reuses a tree-keyed compressed index across invocations, in the platform's per-user cache directory unless `--cache-dir`/`ENTIRE_PLUGIN_DATA_DIR` redirect it, so repeated queries on an unchanged tree skip re-parsing. The working tree is never cached. A complete prepared index derives the exact query-selected view, so relation expansion cannot escape that file set.
 - **Explicit preindex:** `index --head` builds and verifies that query-independent artifact before latency-sensitive work; cached `search` and `neighbors` calls then report the hit directly.
+
+### Compact snapshot NDJSON v1
+
+Normal `snapshot --format ndjson` remains the interoperable default and retains its object-per-line schema. `snapshot --format compact-ndjson` is a separate, complete-snapshot-only native artifact: positional rows tagged `f`, `x`, `s`, and `r` reference deterministic first-seen dictionaries emitted as `d` rows; `h` is the required first header row and carries the sole v1 version marker; `m` is the required final summary. A decoder rejects unknown versions, malformed arity, duplicate headers, and missing summaries.
+
+Every header, dictionary, data, and summary line counts toward raw compact bytes—size claims never subtract dictionary overhead. Compact output uses a separate cache namespace. Consumers load it through `snapshot-query`, which returns deterministic native NDJSON symbol/relation records:
+
+```sh
+entire graph snapshot --repo . --format compact-ndjson > graph.compact.ndjson
+entire graph snapshot-query --input graph.compact.ndjson --symbol Cache.Refresh --format ndjson
+entire graph snapshot-query --input graph.compact.ndjson --from '<stable-id>' --relation CALLS --format ndjson
+```
+
+The canonical SHA-256 is calculated from normalized native records in record order, not compact bytes. A valid compact artifact must match native NDJSON in both that hash and decoded public projection; a matching hash alone is not a proof of losslessness.
 
 Absolute numbers are environment-sensitive (measured on Apple Silicon). Read them as relative signals and reproduce locally with the harness.
 

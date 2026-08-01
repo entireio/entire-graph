@@ -1,13 +1,18 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/entireio/entire-graph/internal/sem"
 )
 
 func TestDoctorPrintsEntireEnvironment(t *testing.T) {
@@ -100,6 +105,9 @@ func TestProviderJSONCommands(t *testing.T) {
 	}
 	if !strings.Contains(capabilitiesOut.String(), `"supported_relation_types"`) {
 		t.Fatalf("capabilities output:\n%s", capabilitiesOut.String())
+	}
+	if !strings.Contains(capabilitiesOut.String(), `"compact_snapshot_ndjson_v1":true`) {
+		t.Fatalf("capabilities omit compact snapshot support:\n%s", capabilitiesOut.String())
 	}
 }
 
@@ -241,6 +249,172 @@ func TestSnapshotAcceptsWorktree(t *testing.T) {
 	if !strings.Contains(out.String(), `"schema_version":"1.1"`) {
 		t.Fatalf("snapshot output:\n%s", out.String())
 	}
+}
+
+func TestSnapshotCompactNDJSONRoundTripsToNativeRecords(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "main.go", "package sample\n\nfunc caller() { callee() }\nfunc callee() {}\n")
+
+	var native, compact bytes.Buffer
+	opts := Options{Version: "compact-test", Env: EntireEnv{RepoRoot: repo}, Stderr: io.Discard}
+	opts.Stdout = &native
+	if err := Run(t.Context(), opts, []string{"snapshot", "--repo", repo, "--worktree"}); err != nil {
+		t.Fatal(err)
+	}
+	opts.Stdout = &compact
+	if err := Run(t.Context(), opts, []string{"snapshot", "--repo", repo, "--worktree", "--format", "compact-ndjson"}); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(compact.Bytes(), []byte(`["h",1,`)) {
+		t.Fatalf("compact stream did not start with v1 header: %q", compact.Bytes())
+	}
+	index, err := sem.LoadCompactSnapshot(bytes.NewReader(compact.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeRecords := decodeNativeSnapshotRecords(t, native.Bytes())
+	if got, want := index.CanonicalSemanticHash, snapshotSemanticHash(t, nativeRecords); got != want {
+		t.Fatalf("canonical semantic hash = %s, want %s", got, want)
+	}
+	var decoded []any
+	if err := sem.DecodeCompactSnapshot(bytes.NewReader(compact.Bytes()), func(record any) error {
+		decoded = append(decoded, record)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := snapshotPublicProjection(t, decoded), snapshotPublicProjection(t, nativeRecords); !reflect.DeepEqual(got, want) {
+		t.Fatalf("compact public projection differs\n got=%s\nwant=%s", got, want)
+	}
+}
+
+func TestSnapshotNDJSONRemainsDefaultObjectFormat(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "main.go", "package sample\nfunc main() {}\n")
+	var out bytes.Buffer
+	if err := Run(t.Context(), Options{Env: EntireEnv{RepoRoot: repo}, Stdout: &out, Stderr: io.Discard}, []string{"snapshot", "--repo", repo, "--worktree"}); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(out.Bytes(), []byte("{")) {
+		t.Fatalf("default snapshot is not object NDJSON: %q", out.Bytes())
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(out.Bytes()), []byte("\n")) {
+		var object map[string]any
+		if err := json.Unmarshal(line, &object); err != nil {
+			t.Fatalf("default snapshot line is not an object: %v", err)
+		}
+		if object["record_type"] == nil && object["schema_version"] == nil {
+			t.Fatalf("default snapshot object is neither header nor record: %s", line)
+		}
+	}
+}
+
+func TestCompactNDJSONIsSnapshotOnly(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "main.go", "package sample\nfunc main() {}\n")
+	for _, command := range []string{"symbols", "edges"} {
+		err := Run(t.Context(), Options{Env: EntireEnv{RepoRoot: repo}, Stdout: io.Discard}, []string{command, "--repo", repo, "--worktree", "--format", "compact-ndjson"})
+		if err == nil || !strings.Contains(err.Error(), "only valid for snapshot") {
+			t.Fatalf("%s compact format error = %v", command, err)
+		}
+	}
+}
+
+func TestCompactNDJSONRejectsTargetedRelationFilters(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "main.go", "package sample\nfunc caller() { callee() }\nfunc callee() {}\n")
+	err := Run(t.Context(), Options{Env: EntireEnv{RepoRoot: repo}, Stdout: io.Discard}, []string{"snapshot", "--repo", repo, "--worktree", "--format", "compact-ndjson", "--from", "caller"})
+	if err == nil || !strings.Contains(err.Error(), "requires a complete snapshot") {
+		t.Fatalf("targeted compact format error = %v", err)
+	}
+}
+
+func decodeNativeSnapshotRecords(t *testing.T, data []byte) []any {
+	t.Helper()
+	var records []any
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		var envelope struct {
+			RecordType    string `json:"record_type"`
+			SchemaVersion string `json:"schema_version"`
+		}
+		if err := json.Unmarshal(line, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		var record any
+		if envelope.SchemaVersion != "" {
+			var decoded sem.SnapshotHeader
+			if err := json.Unmarshal(line, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			record = decoded
+		} else {
+			switch envelope.RecordType {
+			case "file":
+				var decoded sem.FileRecord
+				if err := json.Unmarshal(line, &decoded); err != nil {
+					t.Fatal(err)
+				}
+				record = decoded
+			case "external":
+				var decoded sem.ExternalRecord
+				if err := json.Unmarshal(line, &decoded); err != nil {
+					t.Fatal(err)
+				}
+				record = decoded
+			case "symbol":
+				var decoded sem.SymbolRecord
+				if err := json.Unmarshal(line, &decoded); err != nil {
+					t.Fatal(err)
+				}
+				record = decoded
+			case "relation":
+				var decoded sem.RelationRecord
+				if err := json.Unmarshal(line, &decoded); err != nil {
+					t.Fatal(err)
+				}
+				record = decoded
+			case "summary":
+				var decoded sem.SnapshotSummary
+				if err := json.Unmarshal(line, &decoded); err != nil {
+					t.Fatal(err)
+				}
+				record = decoded
+			default:
+				t.Fatalf("unexpected record type %q", envelope.RecordType)
+			}
+		}
+		records = append(records, record)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return records
+}
+
+func snapshotSemanticHash(t *testing.T, records []any) string {
+	t.Helper()
+	hash := sem.NewSnapshotSemanticHasher()
+	for _, record := range records {
+		if err := hash.Add(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return hash.SumHex()
+}
+
+func snapshotPublicProjection(t *testing.T, records []any) []json.RawMessage {
+	t.Helper()
+	projection := make([]json.RawMessage, 0, len(records))
+	for _, record := range records {
+		data, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		projection = append(projection, data)
+	}
+	return projection
 }
 
 func TestSearchCommandReturnsRankedJSON(t *testing.T) {

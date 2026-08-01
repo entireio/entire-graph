@@ -103,6 +103,12 @@ the summary omits. The in-memory `BuildProviderSnapshot` path does exactly this
 merge internally, so its single emitted header is fully populated. For any
 aggregate total, read the summary, never the lean header.
 
+### Compact snapshot NDJSON v1
+
+`snapshot --format ndjson` remains the default interoperable object stream. `snapshot --format compact-ndjson` is a public, full-snapshot-only artifact with a separate cache mode, `snapshot:compact-ndjson-v1`; it is rejected for `symbols`, `edges`, and targeted `--to`/`--from`/`--relation` output. Its first line is `["h", 1, header]`, and the version appears nowhere else. Deterministic first-seen dictionary lines `d` precede positional `f` (file), `x` (external), `s` (symbol), and `r` (relation) rows; a trailing `m` summary is mandatory. Consumers must reject unknown versions, malformed row arity, non-first or duplicate headers, and missing summaries.
+
+All `h`, `d`, data, and `m` bytes count as raw compact artifact bytes; dictionary overhead must never be subtracted. Compact output is loaded only through the production compact loader and queried with `snapshot-query --input <file> --symbol <id-or-name> [--from <stable-id> --relation <TYPE>] --format ndjson`, which writes deterministically ordered native symbol/relation records. Its decoded public projection and canonical semantic SHA-256 (normalized native records in record order) must equal the normal NDJSON snapshot. Matching only the hash is not sufficient evidence of losslessness.
+
 **Ordering.** For a fixed input and profile the stream is deterministic and
 stable (file, symbol, and relation order are reproducible across runs), but it
 is not globally sorted the way the in-memory path sorts relations. Consumers
