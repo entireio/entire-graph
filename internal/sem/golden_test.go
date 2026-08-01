@@ -195,6 +195,14 @@ var updateGolden = flag.Bool("update", false, "regenerate golden NDJSON baseline
 // its name here, and running the test with -update to create the baseline.
 var goldenFixtures = []string{
 	"csharp-basic",
+	// julia-r-basic exists so the capability contract test covers Julia and R.
+	// Both resolve calls and both were advertised as inventory-grade; with no
+	// fixture in either language the guard could not have seen it.
+	"julia-r-basic",
+	// multilang-relations covers the semantic languages whose relation support
+	// the capability matrix under-reported (Zig, C, Kotlin, Ruby): each emits
+	// call, type and data-flow edges the matrix did not declare.
+	"multilang-relations",
 	"csharp-fields",
 	"csharp-oo",
 	"go-basic",
