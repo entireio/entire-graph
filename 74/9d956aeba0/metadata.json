@@ -1,28 +1,35 @@
 {
-  "cli_version": "0.6.3-nightly.202605190723.fd212937",
-  "checkpoint_id": "749d956aeba0",
-  "strategy": "manual-commit",
   "branch": "claude/graph-help-restructure",
-  "checkpoints_count": 0,
+  "checkpoint_id": "749d956aeba0",
+  "checkpoints_count": 2,
+  "cli_version": "0.6.3-nightly.202605190723.fd212937",
   "files_touched": [
     "internal/cli/help.go",
     "internal/cli/index.go",
     "internal/cli/progressbar.go",
     "internal/cli/progressbar_test.go"
   ],
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/74/9d956aeba0/0/metadata.json",
       "transcript": "/74/9d956aeba0/0/full.jsonl",
       "content_hash": "/74/9d956aeba0/0/content_hash.txt",
       "prompt": "/74/9d956aeba0/0/prompt.txt"
+    },
+    {
+      "content_hash": "/74/9d956aeba0/1/content_hash.txt",
+      "metadata": "/74/9d956aeba0/1/metadata.json",
+      "prompt": "/74/9d956aeba0/1/prompt.txt",
+      "transcript": "/74/9d956aeba0/1/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 4124,
+    "input_tokens": 63571,
     "cache_creation_tokens": 35376,
-    "cache_read_tokens": 3854708,
-    "output_tokens": 24377,
-    "api_call_count": 26
+    "cache_read_tokens": 4479580,
+    "output_tokens": 29988,
+    "api_call_count": 43
   }
 }
