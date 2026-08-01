@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "0f05a74b1350",
+  "strategy": "manual-commit",
+  "branch": "claude/language-capability-generalization",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/sem/golden_test.go",
+    "internal/sem/provider.go",
+    "internal/sem/testdata/fixtures/julia-r-basic.ndjson.golden",
+    "internal/sem/testdata/fixtures/julia-r-basic/analysis.jl",
+    "internal/sem/testdata/fixtures/julia-r-basic/summarize.R",
+    "internal/sem/testdata/fixtures/multilang-relations.ndjson.golden",
+    "internal/sem/testdata/fixtures/multilang-relations/Cache.cpp",
+    "internal/sem/testdata/fixtures/multilang-relations/Ledger.swift",
+    "internal/sem/testdata/fixtures/multilang-relations/Report.groovy",
+    "internal/sem/testdata/fixtures/multilang-relations/Router.scala",
+    "internal/sem/testdata/fixtures/multilang-relations/Session.kt",
+    "internal/sem/testdata/fixtures/multilang-relations/account.rb",
+    "internal/sem/testdata/fixtures/multilang-relations/buffer.c",
+    "internal/sem/testdata/fixtures/multilang-relations/store.zig",
+    "internal/sem/testdata/fixtures/quality_coverage.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0f/05a74b1350/0/metadata.json",
+      "transcript": "/0f/05a74b1350/0/full.jsonl",
+      "compact_transcript": "/0f/05a74b1350/0/transcript.jsonl",
+      "content_hash": "/0f/05a74b1350/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 32,
+    "cache_creation_tokens": 16637,
+    "cache_read_tokens": 7167610,
+    "output_tokens": 11683,
+    "api_call_count": 16
+  }
+}
