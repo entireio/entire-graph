@@ -103,9 +103,8 @@ func Run(ctx context.Context, opts Options, args []string) error {
 func printHelp(out io.Writer) {
 	fmt.Fprintln(out, `entire-graph adds entity-level context to Entire checkpoints.
 
-For coding agents: run 'entire graph agent-guide' (the search-first, verify-once doctrine:
-locate with one search instead of grepping, then verify the edit once) or
-'entire graph init-agents' to install it into a project.
+For coding agents: run 'entire graph agent-guide' (resolution-first graph retrieval,
+focused source inspection, and verification) or 'entire graph init-agents' to install it.
 
 Usage:
   entire graph commit [rev] [--json] [--progress] [--max-seconds n] [--repo path]
@@ -130,7 +129,7 @@ Usage:
 Notes:
   search returns, by default: ranked candidate fix sites (top hits as complete function bodies),
   RELATED SITES, the COVERING TEST plus the other tests that cover the same code (ALSO COVERING —
-  they all have to keep passing), SAME-CONCEPT LITERALS (every place the queried concept is
+  they all have to keep passing), SAME-CONCEPT LITERAL (every place the queried concept is
   named, tagged EDIT/CONSUMER/DOC — the sweep, so you need no grep), VERIFY (the narrowest test
   command for the file, derived from the repo's own build files) and a CLOSED-SET WARNING when a
   switch over an enum/sealed set would throw at runtime rather than fail to compile. The three

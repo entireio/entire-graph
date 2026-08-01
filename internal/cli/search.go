@@ -1190,7 +1190,7 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 			}
 			flags.BodyHeadRanks, i = value, next
 		case "--file-outline":
-			flags.FileOutline, i = true, i
+			flags.FileOutline = true
 		case "--head-window-lines":
 			value, next, err := searchPositiveIntFlag(args, i)
 			if err != nil {
