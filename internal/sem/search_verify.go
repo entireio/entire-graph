@@ -420,10 +420,14 @@ func deriveSearchVerifySuiteGradle(dir string, evidence *searchVerifyEvidence) *
 			break
 		}
 	}
-	if manifest == "" || !evidence.exists("gradlew") {
+	if manifest == "" {
 		return nil
 	}
-	return searchVerifySuiteCommand(dir, "./gradlew test", manifest+" + gradlew")
+	wrapperDir, wrapperPath, ok := searchVerifyAncestorFile(dir, "gradlew", evidence)
+	if !ok {
+		return nil
+	}
+	return searchVerifySuiteCommand(wrapperDir, "./gradlew test", manifest+" + "+wrapperPath)
 }
 
 func deriveSearchVerifySuiteNode(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
@@ -432,13 +436,11 @@ func deriveSearchVerifySuiteNode(dir string, evidence *searchVerifyEvidence) *Se
 	if !ok {
 		return nil
 	}
-	var parsed struct {
-		Scripts map[string]string `json:"scripts"`
-	}
+	var parsed searchVerifyNodeManifest
 	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
 		return nil
 	}
-	if strings.TrimSpace(parsed.Scripts["test"]) == "" {
+	if _, ok := searchVerifyNodeRunnerFromScript(parsed.Scripts["test"]); !ok {
 		return nil
 	}
 	return searchVerifySuiteCommand(dir, "npm test", manifest+" scripts.test")
@@ -517,6 +519,25 @@ func searchVerifyRunIn(dir, command string) string {
 		return command
 	}
 	return "cd " + dir + " && " + command
+}
+
+func searchVerifyAncestorFile(dir, name string, evidence *searchVerifyEvidence) (string, string, bool) {
+	for depth := 0; depth <= searchVerifyMaxDepth; depth++ {
+		candidate := searchVerifyJoin(dir, name)
+		if evidence.exists(candidate) {
+			return dir, candidate, true
+		}
+		if dir == "" {
+			break
+		}
+		parent := path.Dir(dir)
+		if parent == "." || parent == "/" || parent == dir {
+			dir = ""
+			continue
+		}
+		dir = parent
+	}
+	return "", "", false
 }
 
 // searchVerifyRelative expresses a path relative to a directory, or reports false when the path is
@@ -743,6 +764,36 @@ var searchVerifyNodeRunners = []struct {
 	{name: "mocha", command: "npx mocha"},
 }
 
+type searchVerifyNodeManifest struct {
+	Scripts         map[string]string `json:"scripts"`
+	DevDependencies map[string]string `json:"devDependencies"`
+	Dependencies    map[string]string `json:"dependencies"`
+}
+
+func searchVerifyNodeRunnerFromManifest(parsed searchVerifyNodeManifest) (string, string) {
+	if runner, ok := searchVerifyNodeRunnerFromScript(parsed.Scripts["test"]); ok {
+		return runner, "scripts.test"
+	}
+	for _, candidate := range searchVerifyNodeRunners {
+		if _, declared := parsed.DevDependencies[candidate.name]; declared {
+			return candidate.command, "devDependencies"
+		}
+		if _, declared := parsed.Dependencies[candidate.name]; declared {
+			return candidate.command, "dependencies"
+		}
+	}
+	return "", ""
+}
+
+func searchVerifyNodeRunnerFromScript(script string) (string, bool) {
+	for _, candidate := range searchVerifyNodeRunners {
+		if strings.Contains(script, candidate.name) {
+			return candidate.command, true
+		}
+	}
+	return "", false
+}
+
 // deriveSearchVerifyNode derives a JS/TS command from the nearest package.json that actually names
 // a test runner. A monorepo leaf package with no runner in it is skipped, which is what sends the
 // walk out to the workspace root where the runner is configured.
@@ -752,29 +803,11 @@ func deriveSearchVerifyNode(dir string, subject searchVerifySubject, evidence *s
 	if !ok {
 		return nil
 	}
-	var parsed struct {
-		Scripts         map[string]string `json:"scripts"`
-		DevDependencies map[string]string `json:"devDependencies"`
-		Dependencies    map[string]string `json:"dependencies"`
-	}
+	var parsed searchVerifyNodeManifest
 	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
 		return nil
 	}
-	runner, evidenceKind := "", ""
-	for _, candidate := range searchVerifyNodeRunners {
-		if strings.Contains(parsed.Scripts["test"], candidate.name) {
-			runner, evidenceKind = candidate.command, "scripts.test"
-			break
-		}
-		if _, declared := parsed.DevDependencies[candidate.name]; declared {
-			runner, evidenceKind = candidate.command, "devDependencies"
-			break
-		}
-		if _, declared := parsed.Dependencies[candidate.name]; declared {
-			runner, evidenceKind = candidate.command, "dependencies"
-			break
-		}
-	}
+	runner, evidenceKind := searchVerifyNodeRunnerFromManifest(parsed)
 	if runner == "" || subject.testPath == "" {
 		return nil
 	}

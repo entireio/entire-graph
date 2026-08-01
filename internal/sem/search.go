@@ -19,28 +19,9 @@ import (
 )
 
 const (
-	// Benchmark-calibrated, and the calibration REVERSED once it was measured end-to-end.
-	//
-	// A payload-level probe said breadth was nearly free: on 53 SWE-bench Multilingual instances
-	// disjoint from the tuning suite, raising top-k from 10 to 20 lifted gold-file-in-payload from
-	// 69.2% to 75.0% for +1.9% bytes, and no instance regressed. That probe holds the QUERY fixed
-	// and asks only whether the right file appears somewhere in the payload.
-	//
-	// Measured with an agent in the loop, on the same haiku-30 pilot, the ordering inverts — a
-	// locator is an INVITATION TO OPEN A FILE, and 15 extra locators buy 15 invitations:
-	//
-	//	top-k   gold-file recall   ranked lines/session   payload/session   tokens
-	//	 6      96.6% (28/29)      24.1                   15,789 B          -16.8%
-	//	20      93.1% (27/29)      64.8                   16,918 B          baseline
-	//
-	// At 6 the payload is SMALLER than the comparison tool's (15,789 B vs 16,729 B) and shows
-	// fewer ranked lines than it (24.1 vs 37.5) while retrieving more. So breadth past ~6-10 is
-	// self-inflicted cost, and the default stays at 10: it is the value the agent configs were
-	// measured with, and the 6-vs-10 difference is inside the harness's +/-20% run-to-run noise.
-	//
-	// Do NOT raise this on the strength of a payload-presence probe alone. Recall measured without
-	// an agent is not the same quantity as tokens measured with one, and this constant is where
-	// that distinction bites.
+	// Keep default search responses compact enough for agent context. Larger top-k and snippet
+	// defaults produced ~15KB responses that are repeatedly carried through later turns; this
+	// output-budget choice is not evidence of end-to-end task savings.
 	defaultSearchTopK              = 10
 	defaultSearchContextLines      = 8
 	defaultSearchMaxRegionLines    = 80
@@ -88,6 +69,19 @@ type SearchOptions struct {
 	// locator head. 0 means the built-in depth (searchEnclosureHeadRanks). It may only narrow
 	// the head, never widen it, so the growth allowance stays sized for the bodies it funds.
 	BodyHeadRanks int
+	// MEASURED SESSION RESULT — READ BEFORE ENABLING. On haiku 30 with the prompt and the baseline
+	// block held constant, turning this on together with --top-k 20 cost +18.9 pt of total_tokens,
+	// +17.7 pt of turns and +14.6 pt of billed_new against the same cell with shipped defaults
+	// (-23.5% -> -4.6% total_tokens). eg's turns rose 32.10 -> 35.37 against an unchanged baseline.
+	// graphmark's resolution-anchored eval independently found the same combination cost CORRECTNESS:
+	// the terser edit-from-payload path stops short of a complete fix on harder tasks.
+	//
+	// The $0 payload screen that cleared it (gold recall 22->26/30, code-less gold 8->6, no instance
+	// regressing) was measuring the PAYLOAD, not the SESSION. A payload-shape win is not evidence of a
+	// session win -- that has now been measured four times, and this is the first time it actively hurt.
+	//
+	// It stays here, opt-in and default 0, because the mechanism is sound and a narrower use may pay.
+	// Do not enable it in a measured cell without re-running the attribution.
 	// HeadWindowLines makes a HEAD rank that has no enclosable callable come back as a bounded
 	// read window of this many lines instead of a two-line locator. 0 = off (previous behaviour).
 	//
