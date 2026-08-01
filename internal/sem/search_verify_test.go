@@ -540,6 +540,45 @@ func TestSearchVerifySuiteFallback(t *testing.T) {
 			wantCommand: "npm test",
 		},
 		{
+			name: "node leaf default test script defers to root runner",
+			files: map[string]string{
+				"package.json":              "{\"scripts\":{\"test\":\"jest\"}}",
+				"packages/ui/package.json":  "{\"scripts\":{\"test\":\"echo \\\"Error: no test specified\\\" && exit 1\"}}",
+				"packages/ui/src/Button.js": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "packages/ui/src/Button.js"},
+			wantCommand: "npm test",
+		},
+		{
+			name: "node package with an unrecognized test script stays silent",
+			files: map[string]string{
+				"packages/ui/package.json":  "{\"scripts\":{\"test\":\"custom-test\"}}",
+				"packages/ui/src/Button.js": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "packages/ui/src/Button.js"},
+			wantCommand: "",
+		},
+		{
+			name: "gradle nested module uses root wrapper",
+			files: map[string]string{
+				"gradlew":                  "",
+				"lib/build.gradle":         "",
+				"lib/src/main/kotlin/A.kt": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "lib/src/main/kotlin/A.kt"},
+			wantCommand: "./gradlew test",
+		},
+		{
+			name: "gradle nested wrapper runs from module directory",
+			files: map[string]string{
+				"lib/gradlew":              "",
+				"lib/build.gradle":         "",
+				"lib/src/main/kotlin/A.kt": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "lib/src/main/kotlin/A.kt"},
+			wantCommand: "cd lib && ./gradlew test",
+		},
+		{
 			name: "an unrecognized build system stays silent",
 			files: map[string]string{
 				"CMakeLists.txt": "project(x)\n",
