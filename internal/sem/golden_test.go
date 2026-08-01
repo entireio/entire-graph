@@ -132,6 +132,63 @@ func TestStreamSnapshotStreamsIncrementally(t *testing.T) {
 	}
 }
 
+// TestStreamSnapshotCompactRoundTrip keeps the compact consumer tied to the
+// public provider stream: the artifact must be deterministic, queryable, and
+// semantically identical after decoding.
+func TestStreamSnapshotCompactRoundTrip(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "main.go", `package sample
+
+func caller() { callee() }
+func callee() {}
+`)
+	var records []any
+	err := StreamSnapshot(t.Context(), repo, "compact-test", ProviderSnapshotOptions{Worktree: true}, func(record any) error {
+		records = append(records, record)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encode := func() []byte {
+		var out bytes.Buffer
+		encoder := NewCompactSnapshotEncoder(&out)
+		for _, record := range records {
+			if err := encoder.Encode(record); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return out.Bytes()
+	}
+	first, second := encode(), encode()
+	if !bytes.Equal(first, second) {
+		t.Fatal("compact stream is not deterministic")
+	}
+	index, err := LoadCompactSnapshot(bytes.NewReader(first))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded := make([]any, 0, len(records))
+	if err := DecodeCompactSnapshot(bytes.NewReader(first), func(record any) error {
+		decoded = append(decoded, record)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := publicRecordJSON(t, decoded), publicRecordJSON(t, records); !reflect.DeepEqual(got, want) {
+		t.Fatalf("compact round trip changed public records\n got=%s\nwant=%s", got, want)
+	}
+	if got, want := index.CanonicalSemanticHash, hashRecords(t, records); got != want {
+		t.Fatalf("compact semantic hash = %s, want %s", got, want)
+	}
+	if len(index.Snapshot.Symbols) == 0 {
+		t.Fatal("fixture produced no symbols")
+	}
+	if got := index.Query(CompactSnapshotQuery{Symbol: index.Snapshot.Symbols[0].ID}).Symbols; len(got) != 1 {
+		t.Fatalf("exact symbol query returned %#v", got)
+	}
+}
+
 // updateGolden regenerates the committed NDJSON baselines instead of asserting
 // against them. Run:
 //
