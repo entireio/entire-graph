@@ -24,7 +24,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
@@ -78,31 +77,18 @@ func main() {
 		profile       = flag.String("profile", "full", "indexing profile to measure: full, fast, or syntax-only")
 		progress      = flag.Bool("progress", false, "print provider phase progress to stderr")
 		minLOCPerSec  = flag.Float64("min-loc-per-sec", 0, "fail if successful aggregate LOC/s is below this floor")
-		maxRSSBytes   = flag.Uint64("max-rss-bytes", 0, "fail if process peak RSS bytes exceeds this ceiling")
+		maxRSSBytes   = flag.Uint64("max-rss-bytes", 0, "fail if any repository cold peak RSS exceeds this ceiling")
 		exactOutput   = flag.Bool("exact-output-bytes", false, "marshal every streamed record for exact NDJSON output bytes; slower on large repos")
-		cpuProfile    = flag.String("cpuprofile", "", "write a Go CPU profile for the benchmark process")
+		cpuProfile    = flag.String("cpuprofile", "", "unsupported with mandatory isolated measurement workers")
 		measureWorker = flag.Bool("measure-worker", false, "serve one isolated measurement request on stdin")
 	)
 	flag.Parse()
 	if *measureWorker {
 		os.Exit(bench.RunMeasureWorker(context.Background(), os.Stdin, os.Stdout))
 	}
-
-	if *cpuProfile != "" {
-		f, err := os.Create(*cpuProfile)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "graph-bench:", err)
-			os.Exit(1)
-		}
-		if err := pprof.StartCPUProfile(f); err != nil {
-			_ = f.Close()
-			fmt.Fprintln(os.Stderr, "graph-bench:", err)
-			os.Exit(1)
-		}
-		defer func() {
-			pprof.StopCPUProfile()
-			_ = f.Close()
-		}()
+	if err := validateExecutionMode(*cpuProfile); err != nil {
+		fmt.Fprintln(os.Stderr, "graph-bench:", err)
+		os.Exit(1)
 	}
 
 	if err := run(*manifestPath, *cacheDir, *outDir, *lockPath, *languages, *profile, *limit, *jobs, *depth, *skipClone, *updateLock, *providerVer, *progress, *minLOCPerSec, *maxRSSBytes, *exactOutput); err != nil {
@@ -111,7 +97,22 @@ func main() {
 	}
 }
 
+func validateExecutionMode(cpuProfile string) error {
+	if strings.TrimSpace(cpuProfile) != "" {
+		return fmt.Errorf("-cpuprofile is not supported with mandatory isolated measurement workers; parent-only profiles would omit provider work")
+	}
+	return nil
+}
+
 func run(manifestPath, cacheDir, outDir, lockPath, languages, profileName string, limit, jobs, depth int, skipClone, updateLock bool, providerVer string, progress bool, minLOCPerSec float64, maxRSSBytes uint64, exactOutputBytes bool) error {
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve graph-bench executable: %w", err)
+	}
+	return runWithWorkerCommand(manifestPath, cacheDir, outDir, lockPath, languages, profileName, limit, jobs, depth, skipClone, updateLock, providerVer, progress, minLOCPerSec, maxRSSBytes, exactOutputBytes, []string{executable, "-measure-worker"})
+}
+
+func runWithWorkerCommand(manifestPath, cacheDir, outDir, lockPath, languages, profileName string, limit, jobs, depth int, skipClone, updateLock bool, providerVer string, progress bool, minLOCPerSec float64, maxRSSBytes uint64, exactOutputBytes bool, workerCommand []string) error {
 	profile, err := parseProfile(profileName)
 	if err != nil {
 		return err
@@ -151,10 +152,6 @@ func run(manifestPath, cacheDir, outDir, lockPath, languages, profileName string
 	}
 
 	fmt.Fprintf(os.Stderr, "Measuring (no-egress, profile=%s)...\n", profile)
-	executable, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("resolve graph-bench executable: %w", err)
-	}
 	var metrics []bench.RepoMetrics
 	for _, spec := range specs {
 		dir := filepath.Join(cacheDir, spec.language, spec.dirName())
@@ -169,7 +166,7 @@ func run(manifestPath, cacheDir, outDir, lockPath, languages, profileName string
 				fmt.Fprint(os.Stderr, formatProgress(spec.repoPath, event))
 			}
 		}
-		m, measureErr := bench.MeasureRepoIsolated(ctx, spec.repoPath, spec.language, dir, providerVer, profile, opts, []string{executable, "-measure-worker"})
+		m, measureErr := bench.MeasureRepoIsolated(ctx, spec.repoPath, spec.language, dir, providerVer, profile, opts, workerCommand)
 		if measureErr != nil {
 			fmt.Fprintf(os.Stderr, "  FAIL %-40s %v\n", spec.repoPath, measureErr)
 		} else {
@@ -186,8 +183,14 @@ func run(manifestPath, cacheDir, outDir, lockPath, languages, profileName string
 	if minLOCPerSec > 0 && report.Totals.LOCPerSec < minLOCPerSec {
 		return fmt.Errorf("performance guardrail failed: total LOC/s %.2f below floor %.2f", report.Totals.LOCPerSec, minLOCPerSec)
 	}
-	if maxRSSBytes > 0 && report.MaxRSSBytes > maxRSSBytes {
-		return fmt.Errorf("memory guardrail failed: max RSS %d exceeds ceiling %d", report.MaxRSSBytes, maxRSSBytes)
+	maxObservedRSS := uint64(0)
+	for _, metric := range metrics {
+		if metric.MaxRSSBytes > maxObservedRSS {
+			maxObservedRSS = metric.MaxRSSBytes
+		}
+	}
+	if maxRSSBytes > 0 && maxObservedRSS > maxRSSBytes {
+		return fmt.Errorf("memory guardrail failed: max cold RSS %d exceeds ceiling %d", maxObservedRSS, maxRSSBytes)
 	}
 	return nil
 }

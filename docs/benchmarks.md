@@ -30,6 +30,11 @@ go run ./cmd/graph-bench -profile syntax-only -languages Go -limit 1 \
   -min-loc-per-sec 50000 -max-rss-bytes 1000000000
 ```
 
+`-cpuprofile` is intentionally rejected while per-repository process isolation
+is mandatory. A parent-only profile would contain orchestration and waiting but
+omit provider work in the child processes. Per-worker profile collection and
+deterministic merging must be implemented before this flag can be enabled.
+
 ### Per-profile examples
 
 Each profile measures the production streaming path at a different depth. Small
@@ -88,6 +93,10 @@ and performs exact symbol/relation queries through the production query index.
 It adds worker runtime but never contaminates the cold wall/RSS measurement. Raw
 compact bytes include headers, every dictionary line, data records, and the
 summary; the dictionary count is a breakdown, not a subtraction.
+Worker start/crash/protocol errors retain repository name, language, profile,
+and error text in their report row. Error rows remain excluded from score and
+throughput aggregates, but an RSS guard violation still fails the run after the
+report is written using the captured cold RSS from every requested row.
 
 ## Comparing across phases
 
@@ -104,12 +113,14 @@ rising wall time.
 
 ## Metrics
 
-Every report includes the profile, hardware (OS/arch/CPUs), process peak RSS,
-provider version, and schema version at the run level, and per repository the
-relation set, languages, files/LOC, wall time, and output size. Full breakdown:
+Every report includes the profile, hardware (OS/arch/CPUs), maximum successful
+repository cold RSS, provider version, and schema version at the run level, and
+per repository the relation set, languages, files/LOC, wall time, and output
+size. Full breakdown:
 
-Run-level: profile, hardware (OS/arch/CPUs), process peak RSS, provider version,
-schema version. Per repository (and aggregated per language and overall):
+Run-level: profile, hardware (OS/arch/CPUs), maximum successful repository cold
+RSS, provider version, schema version. Per repository (and aggregated per
+language and overall):
 
 - **Performance:** wall time, `phase_ms`, files, lines of code, files/sec,
   LOC/sec, output bytes (of the streamed NDJSON), exact native and compact raw

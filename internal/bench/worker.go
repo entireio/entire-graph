@@ -41,12 +41,30 @@ type measureWorkerMessage struct {
 func MeasureRepoIsolated(ctx context.Context, name, language, dir, providerVersion string, profile sem.Profile, opts MeasureOptions, command []string) (RepoMetrics, error) {
 	response, err := measureRepoIsolatedWithCommand(ctx, name, language, dir, providerVersion, profile, opts, command, nil)
 	if err != nil {
-		return RepoMetrics{}, err
+		return failedRepoMetrics(name, language, profile, err), err
 	}
+	response.Metrics.Name = name
+	response.Metrics.Language = language
+	if profile == "" {
+		profile = sem.ProfileFull
+	}
+	response.Metrics.Profile = string(profile)
 	if response.Error != "" {
+		response.Metrics.Error = response.Error
 		return response.Metrics, errors.New(response.Error)
 	}
 	return response.Metrics, nil
+}
+
+func failedRepoMetrics(name, language string, profile sem.Profile, err error) RepoMetrics {
+	if profile == "" {
+		profile = sem.ProfileFull
+	}
+	message := "isolated measurement failed"
+	if err != nil {
+		message = err.Error()
+	}
+	return RepoMetrics{Name: name, Language: language, Profile: string(profile), Error: message}
 }
 
 func measureRepoIsolatedWithCommand(ctx context.Context, name, language, dir, providerVersion string, profile sem.Profile, opts MeasureOptions, command, environment []string) (measureWorkerResponse, error) {

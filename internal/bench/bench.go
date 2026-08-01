@@ -147,6 +147,9 @@ func measureRepoWithPreflight(ctx context.Context, name, language, dir, provider
 	})
 	wall := time.Since(start)
 	stopRSSGuard()
+	// Capture the worker-local cold peak before either returning a guard error or
+	// entering compact preflight. Error rows retain this value for guard checks.
+	metrics.MaxRSSBytes = maxRSSBytesCurrent()
 	if len(phaseEvents) > 0 && phaseEvents[len(phaseEvents)-1].Phase == sem.BuildPhaseFinalize {
 		// The final provider event partitions all cold provider work while
 		// excluding synchronous progress telemetry/callback overhead.
@@ -162,7 +165,6 @@ func measureRepoWithPreflight(ctx context.Context, name, language, dir, provider
 	runtime.ReadMemStats(&after)
 
 	metrics.WallMS = round2(float64(wall.Microseconds()) / 1000)
-	metrics.MaxRSSBytes = maxRSSBytesCurrent()
 	metrics.PhaseMS = reducePhaseEvents(phaseEvents)
 	metrics.OutputBytes = outputBytes
 	metrics.OutputEstimated = !opts.ExactOutputBytes

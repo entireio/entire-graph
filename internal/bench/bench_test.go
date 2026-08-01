@@ -90,6 +90,49 @@ func TestRunMeasureWorkerRejectsMalformedRequest(t *testing.T) {
 	}
 }
 
+func TestMeasureRepoIsolatedPreservesIdentityOnWorkerFailures(t *testing.T) {
+	cases := []struct {
+		name    string
+		command []string
+	}{
+		{name: "start", command: []string{filepath.Join(t.TempDir(), "missing-worker")}},
+		{name: "crash", command: []string{"/bin/sh", "-c", "exit 7"}},
+		{name: "malformed", command: []string{"/bin/sh", "-c", "printf 'not-json\\n'"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			metrics, err := MeasureRepoIsolated(t.Context(), "owner/repo", "Go", t.TempDir(), "test", "", MeasureOptions{}, tc.command)
+			if err == nil {
+				t.Fatalf("expected %s worker failure", tc.name)
+			}
+			if metrics.Name != "owner/repo" || metrics.Language != "Go" || metrics.Profile != "full" || metrics.Error == "" {
+				t.Fatalf("worker failure lost row identity: %#v, error=%v", metrics, err)
+			}
+		})
+	}
+}
+
+func TestIsolatedWorkerTransportsColdRSSOnGuardFailure(t *testing.T) {
+	if maxRSSBytesCurrent() == 0 {
+		t.Skip("process RSS is not available on this platform")
+	}
+	dir := t.TempDir()
+	writeFile(t, dir, "main.go", "package main\nfunc main() {}\n")
+	response, err := measureRepoIsolatedWithCommand(t.Context(), "guarded", "Go", dir, "test", sem.ProfileFast, MeasureOptions{MaxRSSBytes: 1}, []string{os.Args[0], "-test.run=^TestMeasureRepoIsolatedWorker$"}, append(os.Environ(),
+		"ENTIRE_GRAPH_BENCH_TEST_WORKER=1",
+		"ENTIRE_GRAPH_BENCH_TEST_PREFLIGHT_BYTES=0",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Error == "" || response.Metrics.Error == "" {
+		t.Fatalf("worker did not transport guard error: %#v", response)
+	}
+	if response.Metrics.MaxRSSBytes <= 1 {
+		t.Fatalf("worker lost measured RSS on guard error: %#v", response)
+	}
+}
+
 func TestReducePhaseEventsKeepsMaximumPhaseDuration(t *testing.T) {
 	got := reducePhaseEvents([]sem.ProgressEvent{
 		{Phase: sem.BuildPhaseInventory, PhaseElapsed: 5 * time.Millisecond},
@@ -244,6 +287,9 @@ func main() {}
 	}
 	if !strings.Contains(metrics.Error, "memory guardrail failed during measurement") {
 		t.Fatalf("metrics error not recorded: %#v", metrics)
+	}
+	if metrics.MaxRSSBytes <= 1 {
+		t.Fatalf("cold max RSS was not recorded before guard failure: %#v", metrics)
 	}
 }
 

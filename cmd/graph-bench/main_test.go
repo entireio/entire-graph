@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -41,6 +42,53 @@ func TestWriteSummaryPrintsPhaseSharesAndArtifactMetrics(t *testing.T) {
 			t.Fatalf("summary missing %q:\n%s", want, got)
 		}
 	}
+}
+
+func TestValidateExecutionModeRejectsParentOnlyCPUProfile(t *testing.T) {
+	err := validateExecutionMode("cpu.out")
+	if err == nil || !strings.Contains(err.Error(), "isolated") || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("CPU profile validation error = %v", err)
+	}
+	if err := validateExecutionMode(""); err != nil {
+		t.Fatalf("empty CPU profile unexpectedly rejected: %v", err)
+	}
+}
+
+func TestMaxRSSGuardFailsRunEvenWhenViolatingRowIsExcludedFromAggregates(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "manifest.json")
+	if err := os.WriteFile(manifestPath, []byte(`{"languages":{"Go":["owner/repo"]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cacheDir := filepath.Join(dir, "cache")
+	repoDir := filepath.Join(cacheDir, "Go", "owner__repo")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ENTIRE_GRAPH_BENCH_MAIN_TEST_WORKER", "1")
+	worker := []string{os.Args[0], "-test.run=^TestGraphBenchMeasureWorker$"}
+	outDir := filepath.Join(dir, "out")
+	err := runWithWorkerCommand(manifestPath, cacheDir, outDir, filepath.Join(dir, "lock.json"), "", "fast", 0, 1, 1, true, false, "test", false, 0, 1, false, worker)
+	if err == nil || !strings.Contains(err.Error(), "memory guardrail failed") {
+		t.Fatalf("run guard error = %v", err)
+	}
+	report := readOnlyReport(t, outDir)
+	if len(report.Repos) != 1 || report.Repos[0].Error == "" || report.Repos[0].MaxRSSBytes <= 1 {
+		t.Fatalf("guard failure row lost from report: %#v", report.Repos)
+	}
+	if report.Totals.Repos != 0 {
+		t.Fatalf("guard failure row should remain excluded from aggregates: %#v", report.Totals)
+	}
+}
+
+func TestGraphBenchMeasureWorker(t *testing.T) {
+	if os.Getenv("ENTIRE_GRAPH_BENCH_MAIN_TEST_WORKER") != "1" {
+		return
+	}
+	os.Exit(bench.RunMeasureWorker(context.Background(), os.Stdin, os.Stdout))
 }
 
 func TestParseProfile(t *testing.T) {
