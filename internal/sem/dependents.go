@@ -106,9 +106,47 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 	readFile := func(path string) (string, bool, error) {
 		return gitutil.ShowFile(ctx, repo, head, path)
 	}
+	// oversizeBytes reports a file the reader declined because it exceeds the
+	// parse limit, so the scan can warn about it (below) without the read that
+	// would have cost the file's size twice for a file it refuses to parse anyway.
+	// Set for an oversized blob whose streamed bytes contained a changed name.
+	oversizeMatched := map[string]bool{}
+	oversizeBytes := func(string) (int64, bool) { return 0, false }
 	if batch, batchErr := gitutil.NewBatchFileReader(ctx, repo, head); batchErr == nil {
 		defer func() { _ = batch.Close() }()
+		batch.SetMaxBytes(defaultMaxParseBytes)
 		readFile = batch.ReadFile
+		oversizeBytes = func(path string) (int64, bool) {
+			blob, ok := batch.OversizeBlob(path)
+			return blob.Bytes, ok
+		}
+		// An oversized blob is streamed past and discarded, so its content is never available to
+		// isCandidate below. Decide relevance during that same pass: if none of the changed names
+		// appears in the blob, it was never a candidate and must not produce a warning (the fallback
+		// scan would otherwise spray E_FILE_TOO_LARGE over every huge vendored blob in the tree).
+		// Chunks may split an identifier, so carry maxNameLen-1 bytes of overlap between them.
+		maxNameLen := 0
+		for name := range names {
+			if len(name) > maxNameLen {
+				maxNameLen = len(name)
+			}
+		}
+		carry := map[string]string{}
+		batch.SetOversizeScanner(func(path string, chunk []byte) {
+			if oversizeMatched[path] {
+				return
+			}
+			window := carry[path] + string(chunk)
+			if containsAnyName(window, names) {
+				oversizeMatched[path] = true
+				delete(carry, path)
+				return
+			}
+			if keep := maxNameLen - 1; keep > 0 && len(window) > keep {
+				window = window[len(window)-keep:]
+			}
+			carry[path] = window
+		})
 	}
 
 	// When the grep prefilter ran, every file below already matched a changed
@@ -137,6 +175,9 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 			return nil, nil, err
 		}
 		if !ok {
+			if size, oversize := oversizeBytes(path); oversize && (prefiltered || oversizeMatched[path]) {
+				warnings = append(warnings, dependentsFileTooLargeWarning(path, int(size)))
+			}
 			continue
 		}
 		// Size parity with the provider's default MaxParseBytes eligibility:

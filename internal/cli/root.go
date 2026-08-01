@@ -71,6 +71,8 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runSearch(ctx, opts, args[1:])
 	case "index":
 		return runIndex(ctx, opts, args[1:])
+	case "def":
+		return runDef(ctx, opts, args[1:])
 	case "neighbors":
 		return runNeighbors(ctx, opts, args[1:])
 	case "impact":
@@ -117,18 +119,44 @@ Usage:
   entire graph snapshot --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
   entire graph symbols --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
   entire graph edges --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
-  entire graph index --repo . [--profile syntax-only|fast|full] [--cache-dir path] [--format json] [--head] [--ignore-file path] [--include-file path]
-  entire graph search --query "issue or concept" --repo . [--format json|ndjson|text|agent] [--top-k 20] [--max-context-bytes 16384] [--head] [--profile syntax-only|fast|full] [--max-indexed-files n|--index-all-files] [--cache-dir path|--no-cache]
-  entire graph neighbors --symbol NAME_OR_ID --repo . [--file path] [--relation CALLS] [--direction both|in|out] [--depth 1|2] [--limit 20] [--format json|text|agent] [--max-context-bytes 16384] [--head] [--cache-dir path|--no-cache] [--internal-only] [--exclude-tests]
-  entire graph impact --symbol NAME --repo . [--file path] [--depth 1|2] [--limit 15] [--format text|json] [--max-context-bytes 4096] [--head] [--profile fast|full] [--cache-dir path|--no-cache] [--exclude-tests]
+  entire graph index --repo . [--profile syntax-only|fast|full] [--cache-dir path] [--format json] [--head] [--report GRAPH_REPORT.md] [--ignore-file path] [--include-file path]
+  entire graph search --query "issue or concept" --repo . [--format json|ndjson|text|agent] [--top-k 10] [--deep] [--max-context-bytes 24576] [--head] [--profile syntax-only|fast|full] [--max-indexed-files n|--index-all-files] [--cache-dir path|--no-cache] [--reference-blocks all|container-map,signature-types,type-card]
+  entire graph def NAME|<file>:<line> --repo . [--file path] [--line n] [--kind kind] [--members 15] [--format text|json] [--max-context-bytes 4096] [--head] [--profile fast|full] [--cache-dir path|--no-cache]
+  entire graph neighbors --symbol NAME|<file>:<line> --repo . [--file path] [--line n] [--kind kind] [--relation CALLS] [--direction both|in|out] [--depth 1|2] [--limit 20] [--format json|text|agent] [--max-context-bytes 16384] [--head] [--cache-dir path|--no-cache] [--internal-only] [--exclude-tests]
+  entire graph impact --symbol NAME|<file>:<line> --repo . [--file path] [--line n] [--kind kind] [--depth 1|2] [--limit 15] [--format text|json] [--max-context-bytes 4096] [--head] [--profile fast|full] [--cache-dir path|--no-cache] [--exclude-tests]
   entire graph stats [--repo .] [--since 30d|7d|all] [--format text|json] [--sessions-dir path|--transcript path]
 
 Notes:
+  search returns, by default: ranked candidate fix sites (top hits as complete function bodies),
+  RELATED SITES, the COVERING TEST plus the other tests that cover the same code (ALSO COVERING —
+  they all have to keep passing), SAME-CONCEPT LITERAL (every place the queried concept is
+  named, tagged EDIT/CONSUMER/DOC — the sweep, so you need no grep), VERIFY (the narrowest test
+  command for the file, derived from the repo's own build files) and a CLOSED-SET WARNING when a
+  switch over an enum/sealed set would throw at runtime rather than fail to compile. The three
+  reference blocks — container map, signature types, declaration card — are OFF by default because
+  they measurably cost turns in agent sessions; --reference-blocks all (or the individual flags,
+  or ENTIRE_GRAPH_REFERENCE_BLOCKS) turns them back on for interactive reading.
+  search --top-k only changes how many results come back; --deep additionally runs the
+  exhaustive sparse (BM25) pass and fuses it with the semantic ranking (slower, reads every
+  eligible file). neighbors/impact take --symbol <file>:<line>, or --symbol NAME with
+  --file/--line/--kind, to select one definition when a name is ambiguous; the ambiguity
+  error prints the exact selector for each definition it found.
+  def is the structural declaration lookup: what a name IS, and — for a type — its fields and
+  its associated-function/method surface, drawn from the graph's own membership edges (inherent
+  impl blocks, receiver methods, extension members, partial parts, one hop of trait/module/base
+  acquisition). It reports a method's owning type, and for a trait/interface it reports who
+  implements it. Membership is never inferred from a name resembling another name.
   stats is a local read-only report for humans: it reads the coding-agent session transcripts
   already on disk (~/.claude/projects/<path-slug>/*.jsonl) and reports graph usage vs
   grep/read exploration, bytes each pulled into context, and an ESTIMATED token saving whose
   assumption is printed with the number. --transcript narrows it to ONE session transcript
   (plus that session's subagent transcripts) instead of a whole project directory.
+  index --report writes a human-readable GRAPH_REPORT.md beside the JSON summary: what the
+  graph found in this tree (languages and their tier, symbol kinds, relations, top files,
+  warnings) rendered from the snapshot itself, so the same tree always renders the same bytes.
+  The committed-tree cache defaults to the platform's per-user cache directory (macOS
+  ~/Library/Caches/entire-graph, XDG_CACHE_HOME or ~/.cache elsewhere); --cache-dir and
+  ENTIRE_PLUGIN_DATA_DIR override it and --no-cache disables it. --worktree is never cached.
   --include-file contains gitignore-style rules that re-include ignored paths; it is not an allowlist.
   Streaming NDJSON writes aggregate stats and completeness in the trailing summary record.
   commit/diff/analyze stop cleanly after --max-seconds (default 120; 0 = unlimited) and emit the
@@ -310,10 +338,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	// output-affecting options, so a repeat call on an unchanged HEAD skips the
 	// expensive re-index. It is deliberately bypassed for --worktree (the working
 	// tree may differ from HEAD) and, by returning above, for targeted queries.
-	cacheDir := flags.CacheDir
-	if cacheDir == "" {
-		cacheDir = opts.Env.PluginDataDir
-	}
+	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
 	useCache := !flags.DisableCache && !flags.Worktree && cacheDir != ""
 	var tree string
 	if useCache {
@@ -324,7 +349,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		}
 	}
 	if useCache {
-		if records, cachedSummary, hit, err := sem.LoadProviderRecords(repo, opts.Version, tree, mode, cacheDir, options); err == nil && hit {
+		if records, cachedSummary, hit, err := sem.LoadProviderRecords(ctx, repo, opts.Version, tree, mode, cacheDir, options); err == nil && hit {
 			if _, err := opts.Stdout.Write(records); err != nil {
 				return err
 			}
@@ -352,7 +377,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	warnIfPartial(opts.Stderr, flags.Worktree, summary)
 	if useCache {
 		// Best effort: a failed cache write never fails the command.
-		_ = sem.StoreProviderRecords(repo, opts.Version, tree, mode, cacheDir, options, recordBuf.Bytes(), summary)
+		_ = sem.StoreProviderRecords(ctx, repo, opts.Version, tree, mode, cacheDir, options, recordBuf.Bytes(), summary)
 	}
 	return nil
 }

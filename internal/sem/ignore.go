@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 )
 
 type ignoreMatcher struct {
@@ -36,6 +37,19 @@ func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 	var matcher ignoreMatcher
 	if err := matcher.loadOptional(filepath.Join(repo, ".gitignore"), false); err != nil {
 		return ignoreMatcher{}, err
+	}
+	// info/exclude is the repository's private exclude list: same syntax and same
+	// authority as the root .gitignore, and Git applies both. Reading only
+	// .gitignore silently pulled excluded trees into the working-tree scan.
+	//
+	// It is NOT always at <repo>/.git/info/exclude. In a linked worktree, <repo>/.git
+	// is a regular file holding "gitdir: <path>", so that join names a path under a
+	// non-directory: os.Stat returns ENOTDIR rather than ErrNotExist, and treating
+	// that as fatal aborted the entire search with zero results in every worktree.
+	if exclude := gitInfoExcludePath(repo); exclude != "" {
+		if err := matcher.loadOptional(exclude, false); err != nil {
+			return ignoreMatcher{}, err
+		}
 	}
 	if err := matcher.loadExplicit(repo, ignoreFiles, includeFiles); err != nil {
 		return ignoreMatcher{}, err
@@ -73,10 +87,54 @@ func (m *ignoreMatcher) loadExplicit(repo string, ignoreFiles, includeFiles []st
 	return nil
 }
 
+// gitInfoExcludePath resolves the info/exclude that Git itself would apply to a
+// working tree, or "" when there is no git directory to consult.
+//
+// <repo>/.git is a directory in an ordinary clone but a regular file in a linked
+// worktree, where it holds "gitdir: <path to .git/worktrees/<name>>". Git shares
+// info/ across worktrees via that gitdir's commondir pointer, so the exclude file
+// lives under the common directory, not under <repo>/.git.
+func gitInfoExcludePath(repo string) string {
+	dotGit := filepath.Join(repo, ".git")
+	info, err := os.Stat(dotGit)
+	if err != nil {
+		return ""
+	}
+	if info.IsDir() {
+		return filepath.Join(dotGit, "info", "exclude")
+	}
+	if !info.Mode().IsRegular() {
+		return ""
+	}
+	raw, err := os.ReadFile(dotGit)
+	if err != nil {
+		return ""
+	}
+	gitDir := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(raw)), "gitdir:"))
+	if gitDir == "" {
+		return ""
+	}
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(repo, gitDir)
+	}
+	// commondir points at the shared .git that owns info/; it may be relative to gitDir.
+	if common, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
+		if c := strings.TrimSpace(string(common)); c != "" {
+			if !filepath.IsAbs(c) {
+				c = filepath.Join(gitDir, c)
+			}
+			gitDir = filepath.Clean(c)
+		}
+	}
+	return filepath.Join(gitDir, "info", "exclude")
+}
+
 func (m *ignoreMatcher) loadOptional(file string, includeMode bool) error {
 	label := ignoreFileLabel(includeMode)
 	info, err := os.Stat(file)
-	if errors.Is(err, os.ErrNotExist) {
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+		// ENOTDIR: a parent component is not a directory, so the file cannot exist.
+		// For an OPTIONAL exclude file that is absence, never a hard failure.
 		return nil
 	}
 	if err != nil {
@@ -177,9 +235,20 @@ func parseIgnoreRule(line string, includeMode bool) (ignoreRule, bool) {
 }
 
 func (m ignoreMatcher) Ignored(rel string, isDir bool) bool {
+	matched, ignored := m.decide(rel, isDir)
+	return matched && ignored
+}
+
+// decide reports whether any rule matched rel and, when one did, the verdict of
+// the winning rule (a rule matching the path itself beats one matching only an
+// ancestor directory; within each of those, the last rule loaded wins). The
+// caller needs "matched" separately from "ignored" so a stack of per-directory
+// ignore files can let the deepest file that has an opinion decide, exactly as
+// Git does.
+func (m ignoreMatcher) decide(rel string, isDir bool) (bool, bool) {
 	rel = cleanIgnorePath(rel)
 	if rel == "" {
-		return false
+		return false, false
 	}
 	selfMatched := false
 	selfIgnored := false
@@ -196,12 +265,221 @@ func (m ignoreMatcher) Ignored(rel string, isDir bool) bool {
 		}
 	}
 	if selfMatched {
-		return selfIgnored
+		return true, selfIgnored
 	}
 	if ancestorMatched {
-		return ancestorIgnored
+		return true, ancestorIgnored
+	}
+	return false, false
+}
+
+// decideSelf reports the verdict of the last rule that names the path itself
+// rather than one of its ancestor directories — the most specific kind of rule,
+// whichever file it came from.
+func (m ignoreMatcher) decideSelf(rel string, isDir bool) (bool, bool) {
+	rel = cleanIgnorePath(rel)
+	if rel == "" {
+		return false, false
+	}
+	matched := false
+	ignored := false
+	for _, rule := range m.rules {
+		if rule.matchKind(rel, isDir) == ignoreSelfMatch {
+			matched = true
+			ignored = rule.ignore
+		}
+	}
+	return matched, ignored
+}
+
+// Reincluded reports whether an explicit include file re-includes rel, which is
+// the only way a path Git's own exclude rules cover may enter a listing at all.
+// It gates whether such a path is considered; the merged ignore rules then make
+// the final call, so an include file that reopens a directory does not override a
+// rule naming one file inside it.
+func (m ignoreMatcher) Reincluded(rel string, isDir bool) bool {
+	rel = cleanIgnorePath(rel)
+	if rel == "" {
+		return false
+	}
+	for _, rule := range m.rules {
+		if !rule.includeFile || rule.ignore {
+			continue
+		}
+		if rule.matchKind(rel, isDir) != ignoreNoMatch {
+			return true
+		}
 	}
 	return false
+}
+
+// maxNestedIgnoreFileBytes bounds one .gitignore read during a walk. Real ignore
+// files are a few kilobytes; anything past this is not an ignore file and must
+// not be materialized just because it is named like one.
+const maxNestedIgnoreFileBytes = 1 << 20
+
+// nestedIgnoreStack applies per-directory .gitignore files during a walk the way
+// Git does: a .gitignore governs its own subtree, and the deepest file with an
+// opinion about a path wins. It is the filesystem-walk fallback's answer to the
+// gap that put vendored dependency trees in the graph — a tree ignored by
+// `backend/.gitignore` is invisible to a reader that only ever parsed the
+// repository root's .gitignore.
+type nestedIgnoreStack struct {
+	repo   string
+	base   ignoreMatcher
+	levels []nestedIgnoreLevel
+}
+
+type nestedIgnoreLevel struct {
+	dir     string
+	matcher ignoreMatcher
+}
+
+func newNestedIgnoreStack(repo string, base ignoreMatcher) *nestedIgnoreStack {
+	return &nestedIgnoreStack{repo: repo, base: base}
+}
+
+// enter registers the directory the walk is about to descend into (repo-relative,
+// slash-separated; "" for the repository root) and loads its .gitignore, if any.
+// Levels the walk has left are dropped, so the stack holds one matcher per
+// ancestor directory of the current position.
+func (s *nestedIgnoreStack) enter(dir string) {
+	dir = cleanIgnorePath(dir)
+	kept := s.levels[:0]
+	for _, level := range s.levels {
+		if level.dir == dir || strings.HasPrefix(dir, level.dir+"/") {
+			kept = append(kept, level)
+		}
+	}
+	s.levels = kept
+	if dir == "" {
+		// The root .gitignore is already part of base, alongside the explicit
+		// ignore/include files that must keep overriding it.
+		return
+	}
+	file := filepath.Join(s.repo, filepath.FromSlash(dir), ".gitignore")
+	info, err := os.Stat(file)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxNestedIgnoreFileBytes {
+		return
+	}
+	var matcher ignoreMatcher
+	if err := matcher.loadFile(file, false); err != nil {
+		return
+	}
+	s.levels = append(s.levels, nestedIgnoreLevel{dir: dir, matcher: matcher})
+}
+
+// Ignored reports the stack's verdict for a repo-relative path.
+//
+// Precedence, most specific first: a rule that names the path itself (from the
+// root .gitignore, .git/info/exclude, or an explicit ignore/include file), then
+// the deepest nested .gitignore with an opinion, then the remaining
+// directory-level rules of the root set. That ordering is what lets a project
+// ignore `cache/` and still name `cache/skip.py`, while a nested
+// `backend/.gitignore` keeps its own subtree's verdict.
+func (s *nestedIgnoreStack) Ignored(rel string, isDir bool) bool {
+	if matched, ignored := s.base.decideSelf(rel, isDir); matched {
+		return ignored
+	}
+	rel = cleanIgnorePath(rel)
+	for i := len(s.levels) - 1; i >= 0; i-- {
+		level := s.levels[i]
+		sub, ok := pathUnder(level.dir, rel)
+		if !ok {
+			continue
+		}
+		if matched, ignored := level.matcher.decide(sub, isDir); matched {
+			return ignored
+		}
+	}
+	return s.base.Ignored(rel, isDir)
+}
+
+// MayIncludeDescendant defers to the explicit include files: only they can pull a
+// path back out of an ignored directory, so only they can keep one walked.
+func (s *nestedIgnoreStack) MayIncludeDescendant(rel string) bool {
+	return s.base.MayIncludeDescendant(rel)
+}
+
+// ReincludesDescendant answers the vendored-directory heuristic over the whole
+// stack: a negation in any ignore file on the current path — root or nested —
+// declares part of that tree first-party.
+func (s *nestedIgnoreStack) ReincludesDescendant(rel string) bool {
+	if s.base.ReincludesDescendant(rel) {
+		return true
+	}
+	for _, level := range s.levels {
+		if level.matcher.reincludesDescendantUnder(level.dir, rel) {
+			return true
+		}
+	}
+	return false
+}
+
+// maxNestedIgnoreFiles bounds how many per-directory .gitignore files one listing
+// merges. A repository with more ignore files than this is not a repository whose
+// vendored-tree verdict hinges on the last one.
+const maxNestedIgnoreFiles = 512
+
+// nestedIgnoreRules merges the repository's per-directory .gitignore files for a
+// listing that is not a walk — the committed-tree listing and Git's own
+// working-tree listing both arrive as a flat path set, so there is no walk
+// position to hang a stack off.
+//
+// It exists for one question: whether the project's own exclude rules re-include
+// part of a tree the vendored-directory heuristic would otherwise skip. Reading
+// only the root .gitignore answered "no" for every project that keeps those rules
+// where Git expects them — beside the tree — which silently dropped tracked
+// first-party source (`vendor/.gitignore` holding `*` and `!mypkg/` lost
+// `vendor/mypkg/**` from both `--head` and the working tree, while the identical
+// negation at the root kept it).
+type nestedIgnoreRules struct {
+	base   ignoreMatcher
+	levels []nestedIgnoreLevel
+}
+
+func newNestedIgnoreRules(base ignoreMatcher) *nestedIgnoreRules {
+	return &nestedIgnoreRules{base: base}
+}
+
+// addFile registers the parsed content of the .gitignore at repo-relative path
+// file. Content that does not parse, or one file past the cap, is skipped: this
+// is a heuristic's escape hatch, not a correctness boundary.
+func (r *nestedIgnoreRules) addFile(file, content string) {
+	dir := cleanIgnorePath(path.Dir(filepath.ToSlash(file)))
+	if dir == "" || len(r.levels) >= maxNestedIgnoreFiles {
+		return
+	}
+	var matcher ignoreMatcher
+	if err := matcher.loadContent(content, false); err != nil {
+		return
+	}
+	r.levels = append(r.levels, nestedIgnoreLevel{dir: dir, matcher: matcher})
+}
+
+// ReincludesDescendant reports whether the root rules or any nested .gitignore
+// negate a path at or below rel.
+func (r *nestedIgnoreRules) ReincludesDescendant(rel string) bool {
+	if r.base.ReincludesDescendant(rel) {
+		return true
+	}
+	for _, level := range r.levels {
+		if level.matcher.reincludesDescendantUnder(level.dir, rel) {
+			return true
+		}
+	}
+	return false
+}
+
+// pathUnder returns rel expressed relative to dir when dir contains it.
+func pathUnder(dir, rel string) (string, bool) {
+	if dir == "" {
+		return rel, true
+	}
+	if !strings.HasPrefix(rel, dir+"/") {
+		return "", false
+	}
+	return strings.TrimPrefix(rel, dir+"/"), true
 }
 
 func (m ignoreMatcher) MayIncludeDescendant(rel string) bool {
@@ -225,10 +503,20 @@ func (m ignoreMatcher) MayIncludeDescendant(rel string) bool {
 // ignore rules themselves keep the fetched dependencies out. Basename-only
 // negations (e.g. `!.keep`) carry no path and are not treated as a signal.
 func (m ignoreMatcher) ReincludesDescendant(rel string) bool {
+	return m.reincludesDescendantUnder("", rel)
+}
+
+// reincludesDescendantUnder is ReincludesDescendant for an ignore file that lives
+// in dir rather than at the repository root: its patterns are relative to dir, so
+// each literal prefix is resolved against dir before being compared to rel.
+// Basename-only negations carry no path in either position and are skipped in
+// both, exactly as before.
+func (m ignoreMatcher) reincludesDescendantUnder(dir, rel string) bool {
 	rel = cleanIgnorePath(rel)
 	if rel == "" {
 		return false
 	}
+	dir = cleanIgnorePath(dir)
 	for _, rule := range m.rules {
 		if rule.ignore || rule.includeFile || rule.basenameOnly {
 			continue
@@ -236,6 +524,9 @@ func (m ignoreMatcher) ReincludesDescendant(rel string) bool {
 		prefix := literalPatternPrefix(rule.pattern)
 		if prefix == "" {
 			continue
+		}
+		if dir != "" {
+			prefix = dir + "/" + prefix
 		}
 		if prefix == rel || strings.HasPrefix(prefix, rel+"/") {
 			return true

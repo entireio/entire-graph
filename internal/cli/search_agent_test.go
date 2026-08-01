@@ -78,6 +78,36 @@ func TestAgentSearchReportsDisplayedSpanAndFocusAfterCompaction(t *testing.T) {
 	}
 }
 
+// TestSearchDefaultContextBytesIsTwentyFourKiB pins the shipped ceiling. It is sized by TURN
+// economics — a search that stops one Read short of an edit costs ~42.5k tokens, ~40x the
+// entire payload — so it must clear the largest ranked payload plus the complete head bodies
+// the allocator may buy. Lowering it back to 16 KiB reintroduces the failure it fixes: a
+// large ranking leaves no room to complete even one body. Explicit callers still win.
+func TestSearchDefaultContextBytesIsTwentyFourKiB(t *testing.T) {
+	if defaultSearchContextBytes != 24*1024 {
+		t.Fatalf("defaultSearchContextBytes = %d, want %d", defaultSearchContextBytes, 24*1024)
+	}
+	flags, _, err := parseSearchFlags([]string{"--query", "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flags.MaxContextBytes != 24*1024 {
+		t.Fatalf("default --max-context-bytes = %d, want %d", flags.MaxContextBytes, 24*1024)
+	}
+	override, _, err := parseSearchFlags([]string{"--query", "x", "--max-context-bytes", "16384"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if override.MaxContextBytes != 16384 {
+		t.Fatalf("explicit --max-context-bytes = %d, want 16384", override.MaxContextBytes)
+	}
+}
+
+// TestSearchMaxContextBytesZeroIsUnbounded keeps `0` meaning "no ceiling", which the whole
+// block pipeline already implements (fitSearchResultsToBudget returns early on budget <= 0,
+// allocateSearchSnippets only clamps when hardBudget > 0, and the block funders all guard on
+// hardBudget > 0). A bulk or JSON consumer asking for the complete payload is the case it
+// exists for; only a NEGATIVE value is an error.
 func TestSearchMaxContextBytesZeroIsUnbounded(t *testing.T) {
 	flags, rest, err := parseSearchFlags([]string{"--query", "x", "--max-context-bytes", "0"})
 	if err != nil {
@@ -148,7 +178,48 @@ func TestWriteTextSearchTiersRankOneAndTwoFullRestTerse(t *testing.T) {
 	if strings.Contains(out, "READ:") {
 		t.Fatalf("no READ window hint should be emitted:\n%s", out)
 	}
-	if !strings.Contains(out, "1. src/service.go:10 score=12.5000 symbol=serve") || !strings.Contains(out, "lines=10-14") {
-		t.Fatalf("rank 1 must anchor on FocusLine with score + lines=Start-End header:\n%s", out)
+	// The full-snippet header names the range of the source PRINTED UNDER IT — the snippet's own
+	// span — not the ranked region's. The two differ (a matched region can open a line or two
+	// above the definition, while the snippet is snapped to the symbol's bounds), and a header
+	// naming lines the snippet does not contain made one symbol appear to have two different
+	// definition lines inside one session. There is therefore no separate `lines=` field: one
+	// range, and it is the one on screen. A jump target is redundant here anyway, since the head
+	// carries the complete body — which is also why the READ hint was dropped upstream.
+	if !strings.Contains(out, "1. src/service.go:10-14 score=12.5000 symbol=serve") {
+		t.Fatalf("rank 1 must print the snippet's own range with the score:\n%s", out)
+	}
+	if strings.Contains(out, "lines=") {
+		t.Fatalf("the printed range replaces a second lines= field:\n%s", out)
+	}
+}
+
+// TestWriteTextSearchAlwaysPrintsCompleteBodies guards the one exception to the tiering: the
+// allocator spends real budget to return the head as whole callables, and the default renderer
+// throwing those away below rank 2 would put the follow-up file read straight back.
+func TestWriteTextSearchAlwaysPrintsCompleteBodies(t *testing.T) {
+	body := "func rounded(v float64) float64 {\n\treturn math.Floor(v)\n}"
+	response := sem.SearchResponse{Results: []sem.SearchResult{
+		{Rank: 1, FilePath: "a.go", StartLine: 1, EndLine: 2, FocusLine: 1, Signals: []string{"body"}, Snippet: "one"},
+		{Rank: 2, FilePath: "b.go", StartLine: 1, EndLine: 2, FocusLine: 1, Signals: []string{"body"}, Snippet: "two"},
+		{Rank: 5, FilePath: "src/round.go", StartLine: 30, EndLine: 32, FocusLine: 31, SymbolName: "rounded",
+			Signals: []string{"body", sem.CompleteSymbolSignal}, Snippet: body},
+		{Rank: 6, FilePath: "src/other.go", StartLine: 40, EndLine: 42, FocusLine: 41, SymbolName: "other",
+			Signals: []string{"body"}, Snippet: "func other() {\n\t// window\n}"},
+	}}
+
+	var buf bytes.Buffer
+	if err := writeTextSearch(&buf, response); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+
+	if !strings.Contains(out, body) {
+		t.Fatalf("a complete body below the full-snippet tier was collapsed to a locator:\n%s", out)
+	}
+	if strings.Contains(out, "// window") {
+		t.Fatalf("an ordinary window below the tier kept its snippet:\n%s", out)
+	}
+	if !strings.Contains(out, "6. src/other.go:41 other\n") {
+		t.Fatalf("ordinary rank 6 lost its locator line:\n%s", out)
 	}
 }

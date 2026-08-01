@@ -142,8 +142,9 @@ func TestImpactAmbiguousSymbolListsDefinitionsAndFileDisambiguates(t *testing.T)
 	var text bytes.Buffer
 	writeImpactText(&text, ambiguous)
 	if !strings.Contains(text.String(), `Ambiguous symbol "Target" matched 2 definitions`) ||
-		!strings.Contains(text.String(), "rerun with --file") ||
-		!strings.Contains(text.String(), "Target (a.go:9)") {
+		!strings.Contains(text.String(), "rerun with the selector printed beside the one you mean") ||
+		!strings.Contains(text.String(), "Target (a.go:9)") ||
+		!strings.Contains(text.String(), "--symbol Target --file a.go --line 9") {
 		t.Fatalf("ambiguous text output:\n%s", text.String())
 	}
 

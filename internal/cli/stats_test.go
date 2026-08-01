@@ -62,6 +62,35 @@ func usageLine(t *testing.T, ts string, in, cacheWrite, cacheRead, out int64) st
 	return encodeLine(t, record)
 }
 
+// usageBlocksLine writes ONE transcript record the way Claude Code actually does it: an
+// assistant record carries a `message.id`, one slice of that message's content, and a repeat of
+// the whole message's `usage`. Passing id == "" reproduces a record with no id.
+func usageBlocksLine(t *testing.T, ts, id string, blocks []any, in, cacheWrite, cacheRead, out int64) string {
+	t.Helper()
+	message := map[string]any{
+		"role":    "assistant",
+		"content": blocks,
+		"usage": map[string]any{
+			"input_tokens":                in,
+			"cache_creation_input_tokens": cacheWrite,
+			"cache_read_input_tokens":     cacheRead,
+			"output_tokens":               out,
+		},
+	}
+	if id != "" {
+		message["id"] = id
+	}
+	return encodeLine(t, map[string]any{"type": "assistant", "timestamp": ts, "message": message})
+}
+
+func textBlock(text string) any {
+	return map[string]any{"type": "text", "text": text}
+}
+
+func toolUseBlock(name, id string, input map[string]any) any {
+	return map[string]any{"type": "tool_use", "id": id, "name": name, "input": input}
+}
+
 func encodeLine(t *testing.T, value any) string {
 	t.Helper()
 	raw, err := json.Marshal(value)
@@ -212,6 +241,92 @@ func TestStatsGraphFirstRate(t *testing.T) {
 	}
 	if report.SessionTokens.Total != 100 {
 		t.Fatalf("session tokens total = %d, want 100 (%+v)", report.SessionTokens.Total, report.SessionTokens)
+	}
+}
+
+// TestStatsDeduplicatesUsageByMessageID pins the billed-token accounting rule. Claude Code
+// writes one transcript record per content block of an assistant message and repeats that
+// message's whole `usage` block on every one of them, so per-record summing bills a turn once
+// per block. Usage must be counted once per unique `message.id` (last record wins, because the
+// earlier records carry partial output_tokens), while records with no id keep counting per
+// record so their tokens are never silently dropped.
+func TestStatsDeduplicatesUsageByMessageID(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(-time.Hour)
+
+	writeTranscript(t, sessions, "s1.jsonl",
+		// One message split over three records: identical input/cache figures, output_tokens
+		// partial on the first two and complete on the last. Counts ONCE, at 10/100/1000/50.
+		usageBlocksLine(t, now, "msg_dup", []any{textBlock("thinking")}, 10, 100, 1000, 5),
+		usageBlocksLine(t, now, "msg_dup", []any{textBlock("more")}, 10, 100, 1000, 5),
+		usageBlocksLine(t, now, "msg_dup", []any{toolUseBlock("Grep", "t1", map[string]any{"pattern": "x"})}, 10, 100, 1000, 50),
+		toolResultLine(t, now, "t1", "hit"),
+		// A normal single-record message.
+		usageBlocksLine(t, now, "msg_solo", []any{textBlock("done")}, 2, 20, 200, 7),
+		// Two records with no id at all: not deduplicable, so both must still be counted.
+		usageBlocksLine(t, now, "", []any{textBlock("legacy")}, 1, 10, 100, 3),
+		usageBlocksLine(t, now, "", []any{textBlock("legacy")}, 1, 10, 100, 3),
+	)
+
+	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+
+	want := statsTokens{
+		Input:      10 + 2 + 1 + 1,         // 14
+		CacheWrite: 100 + 20 + 10 + 10,     // 140
+		CacheRead:  1000 + 200 + 100 + 100, // 1400
+		Output:     50 + 7 + 3 + 3,         // 63
+		Total:      14 + 140 + 1400 + 63,   // 1617
+	}
+	if report.SessionTokens != want {
+		t.Fatalf("session tokens = %+v, want %+v", report.SessionTokens, want)
+	}
+	// Guard the regression direction: the naive per-record sum would be materially larger.
+	const naiveTotal = (10+100+1000+5)*2 + (10 + 100 + 1000 + 50) + (2 + 20 + 200 + 7) + (1+10+100+3)*2
+	if report.SessionTokens.Total >= naiveTotal {
+		t.Fatalf("session tokens %d did not fall below the per-record sum %d", report.SessionTokens.Total, naiveTotal)
+	}
+	// The tool_use blocks live in distinct records, so call counting is per block and unchanged
+	// by the dedup: one Grep, counted once.
+	if report.ExplorationCalls != 1 {
+		t.Fatalf("exploration calls = %d, want 1", report.ExplorationCalls)
+	}
+	entry, ok := findCount(report.ExplorationByKind, kindGrep)
+	if !ok || entry.Calls != 1 || entry.ReturnedBytes != int64(len("hit")) {
+		t.Fatalf("grep entry = %+v (found=%v), want 1 call / %d bytes", entry, ok, len("hit"))
+	}
+}
+
+// TestStatsUsageDedupIsPerSession keeps the dedup scoped to a session: two different sessions
+// are separate transcripts and must both be counted, and a session's subagent transcripts fold
+// into the owning session without re-billing its parent's messages.
+func TestStatsUsageDedupIsPerSession(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(-time.Hour)
+
+	writeTranscript(t, sessions, "s1.jsonl",
+		usageBlocksLine(t, now, "msg_a", []any{textBlock("a")}, 1, 10, 100, 1),
+		usageBlocksLine(t, now, "msg_a", []any{textBlock("a")}, 1, 10, 100, 4),
+	)
+	writeTranscript(t, sessions, "s2.jsonl",
+		usageBlocksLine(t, now, "msg_b", []any{textBlock("b")}, 1, 10, 100, 4),
+	)
+	// Subagent transcript of s1: its own message, folded into s1's totals.
+	writeTranscript(t, filepath.Join(sessions, "s1", "subagents"), "agent-1.jsonl",
+		usageBlocksLine(t, now, "msg_c", []any{textBlock("c")}, 1, 10, 100, 4),
+	)
+
+	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+
+	if report.Sessions != 2 {
+		t.Fatalf("sessions = %d, want 2", report.Sessions)
+	}
+	want := statsTokens{Input: 3, CacheWrite: 30, CacheRead: 300, Output: 12, Total: 345}
+	if report.SessionTokens != want {
+		t.Fatalf("session tokens = %+v, want %+v", report.SessionTokens, want)
 	}
 }
 

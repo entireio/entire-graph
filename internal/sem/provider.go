@@ -19,8 +19,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/entireio/entire-graph/internal/filedigest"
 	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
@@ -33,6 +35,16 @@ const (
 	ProviderName          = "entire-graph"
 	StableSymbolIDVersion = "compound-v1"
 	defaultMaxParseBytes  = 4 * 1024 * 1024
+	// defaultMaxSourceFiles bounds how many files one snapshot will list. The
+	// per-file indexes a snapshot keeps (one file record and its retained symbols)
+	// are the only memory that grows with repository size, so this is the ceiling
+	// on that growth. It is deliberately far above any real source tree — the
+	// largest repositories in the wild list tens of thousands of files — so it
+	// reads as a runaway guard, not a working limit, and it is never silent:
+	// truncation emits W_FILE_LIMIT naming the limit and the count. Override with
+	// ENTIRE_GRAPH_MAX_FILES (0 or negative removes the cap).
+	defaultMaxSourceFiles = 200_000
+	maxSourceFilesEnv     = "ENTIRE_GRAPH_MAX_FILES"
 )
 
 var relationTypes = []string{
@@ -73,15 +85,19 @@ var relationTypes = []string{
 // OVERRIDES is derived from a resolved supertype's methods, so it is advertised
 // only for class-based languages with clear method containers.
 var ooRelationSupport = map[string][]string{
-	"Java":             {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
-	"TypeScript":       {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "HANDLES_GRAPHQL", "HANDLES_TRPC", "ASYNC_CALLS", "DATA_FLOWS"},
-	"JavaScript":       {"EXTENDS", "INHERITS", "HANDLES_GRAPHQL", "HANDLES_TRPC", "ASYNC_CALLS", "DATA_FLOWS"},
-	"Kotlin":           {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD"},
-	"C#":               {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
-	"PHP":              {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
-	"Python":           {"EXTENDS", "INHERITS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "HANDLES_GRAPHQL", "ASYNC_CALLS", "DATA_FLOWS"},
-	"Rust":             {"EXTENDS", "INHERITS", "IMPLEMENTS", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
-	"Go":               {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
+	"Java":       {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
+	"TypeScript": {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "HANDLES_GRAPHQL", "HANDLES_TRPC", "ASYNC_CALLS", "DATA_FLOWS"},
+	"JavaScript": {"EXTENDS", "INHERITS", "HANDLES_GRAPHQL", "HANDLES_TRPC", "ASYNC_CALLS", "DATA_FLOWS"},
+	"Kotlin":     {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD"},
+	"C#":         {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
+	"PHP":        {"EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "DATA_FLOWS"},
+	"Python":     {"EXTENDS", "INHERITS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "HANDLES_GRAPHQL", "ASYNC_CALLS", "DATA_FLOWS"},
+	"Rust":       {"EXTENDS", "INHERITS", "IMPLEMENTS", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
+	"Go":         {"USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES", "ASYNC_CALLS", "DATA_FLOWS"},
+	// Ruby states member acquisition with `include`/`prepend`/`extend` in the
+	// class body, which the provider now reads; header inheritance
+	// (`class A < B`) is not parsed yet, so only INHERITS is advertised.
+	"Ruby":             {"INHERITS"},
 	"HCL":              {"CONFIGURES", "RESOURCE_DEPENDS_ON"},
 	"GraphQL":          {"HANDLES_GRAPHQL"},
 	"Protocol Buffers": {"HANDLES_GRPC"},
@@ -308,10 +324,16 @@ type ProviderSnapshotOptions struct {
 	// Empty means all discovered files. It is intended for query-time selective
 	// indexing; ignore and vendored-file rules still apply first.
 	OnlyFiles []string
-	// MaxParseBytes caps parser input per file. Zero uses the provider default;
+	// MaxParseBytes caps parser input per file, and with it how large a file the
+	// content reader will materialize at all. Zero uses the provider default;
 	// negative disables the cap. Oversized files still emit file records and a
-	// partial failure, but symbol parsing is skipped.
+	// partial failure, but their content is never held: the record's blob hash and
+	// line count come from a streamed digest, and symbol parsing is skipped.
 	MaxParseBytes int
+	// MaxFiles caps how many files one snapshot lists. Zero uses the provider
+	// default (see defaultMaxSourceFiles and ENTIRE_GRAPH_MAX_FILES); negative
+	// removes the cap. Truncation is reported as W_FILE_LIMIT, never silent.
+	MaxFiles int
 	// Profile selects the indexing depth: full (all relations), fast (symbol
 	// inventory, imports, shallow local calls, boundaries, IaC, no evidence), or
 	// syntax-only (file/symbol inventory and structure only). Empty means full.
@@ -643,6 +665,21 @@ type contentReader func(path string) (string, bool)
 // without reading whole files.
 type prefixReader func(path string, limit int) (string, bool)
 
+// oversizeFile describes a file the content reader refused to materialize
+// because it exceeds the read cap. The size, content hash and line count are
+// computed by streaming the file in a fixed window, so a snapshot can still
+// record the file exactly without its bytes ever being held.
+type oversizeFile struct {
+	Bytes int64
+	Hash  string
+	Lines int
+}
+
+// oversizeReader reports why a content read came back empty: a file above the
+// read cap was refused rather than missing. Callers use it to record the file
+// (and say so in a partial failure) instead of guessing that it was unreadable.
+type oversizeReader func(path string) (oversizeFile, bool)
+
 // sourceContext is the repository state needed to stream a snapshot: identity,
 // the file list, a per-file content reader, and git-state warnings. It holds no
 // file content itself.
@@ -654,8 +691,17 @@ type sourceContext struct {
 	paths      []string
 	read       contentReader
 	readPrefix prefixReader
+	oversize   oversizeReader
 	close      func() error
 	warnings   []ProviderWarning
+}
+
+// oversizeAt reports the oversize record for path when the source has one.
+func (sc sourceContext) oversizeAt(path string) (oversizeFile, bool) {
+	if sc.oversize == nil {
+		return oversizeFile{}, false
+	}
+	return sc.oversize(path)
 }
 
 // leanHeader is the streaming preamble emitted before any file is parsed. It
@@ -827,10 +873,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 		defer sc.close()
 	}
 	spec := resolveProfile(options.Profile)
-	maxParseBytes := options.MaxParseBytes
-	if maxParseBytes == 0 {
-		maxParseBytes = defaultMaxParseBytes
-	}
+	maxParseBytes := resolveMaxParseBytes(options.MaxParseBytes)
 	progressStart := time.Now()
 	progressEvery := 1024
 	emitProgress := func(phase string, filesDone int, symbols int, relations int) {
@@ -894,6 +937,59 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 		}
 		content, ok := sc.read(path)
 		if !ok {
+			// A refused read is not a failed one: the reader declines files above
+			// the byte cap so no single file can set the snapshot's memory
+			// ceiling. Such a file is still recorded exactly — size, blob hash and
+			// line count come from a streamed digest — with the same
+			// E_FILE_TOO_LARGE the post-read check reports.
+			if over, isOversize := sc.oversizeAt(path); isOversize {
+				// The language comes from the path, or from a bounded prefix read
+				// for an extensionless script — never from the whole file.
+				langSpec, langOK := languageForPath(path)
+				if !langOK {
+					if prefix, prefixOK := sc.readPrefix(path, shebangSniffLimit); prefixOK {
+						langSpec, langOK = languageForShebang(prefix)
+					}
+				}
+				if !langOK {
+					failures = append(failures, PartialFailure{
+						Code:                 "E_UNSUPPORTED_LANGUAGE",
+						Severity:             "warning",
+						FilePath:             path,
+						EffectOnCompleteness: "file omitted because no parser is available",
+					})
+					continue
+				}
+				language := langSpec.language
+				file := FileRecord{
+					RecordType: "file",
+					ID:         fileID(sc.key, path),
+					Path:       path,
+					Blob:       over.Hash,
+					Language:   language,
+					Bytes:      int(over.Bytes),
+					Lines:      over.Lines,
+				}
+				languageSet[language] = struct{}{}
+				if err := emit(file); err != nil {
+					return err
+				}
+				files = append(files, file)
+				lc := completenessLangs[language]
+				lc.Files++
+				completenessLangs[language] = lc
+				failures = append(failures, PartialFailure{
+					Code:                 "E_FILE_TOO_LARGE",
+					Severity:             "warning",
+					FilePath:             path,
+					EffectOnCompleteness: "file record emitted but symbol parsing skipped",
+					Detail: fmt.Sprintf(
+						"file is %d bytes, above max parser input %d bytes; content was never held in memory",
+						over.Bytes, maxParseBytes,
+					),
+				})
+				continue
+			}
 			failures = append(failures, PartialFailure{
 				Code:                 "E_FILE_READ",
 				Severity:             "error",
@@ -1362,10 +1458,16 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 	if !options.Worktree && headErr == nil {
 		committedRevision = commit
 	}
-	paths, read, readPrefix, closeSource, err := openSource(ctx, absRepo, committedRevision, options.IgnoreFiles, options.IncludeFiles)
+	opened, err := openSource(ctx, absRepo, committedRevision, sourceOptions{
+		ignoreFiles:  options.IgnoreFiles,
+		includeFiles: options.IncludeFiles,
+		maxReadBytes: resolveMaxParseBytes(options.MaxParseBytes),
+		maxFiles:     options.MaxFiles,
+	})
 	if err != nil {
 		return sourceContext{}, err
 	}
+	paths := opened.paths
 	if len(options.OnlyFiles) > 0 {
 		allowed := make(map[string]bool, len(options.OnlyFiles))
 		for _, filePath := range options.OnlyFiles {
@@ -1380,7 +1482,7 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		paths = filtered
 	}
 
-	var warnings []ProviderWarning
+	warnings := append([]ProviderWarning(nil), opened.warnings...)
 	if options.Worktree {
 		warnings = append(warnings, ProviderWarning{
 			Code:                 "W_WORKTREE_SNAPSHOT",
@@ -1401,11 +1503,23 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		commit:     commit,
 		tree:       tree,
 		paths:      paths,
-		read:       read,
-		readPrefix: readPrefix,
-		close:      closeSource,
+		read:       opened.read,
+		readPrefix: opened.readPrefix,
+		oversize:   opened.oversize,
+		close:      opened.close,
 		warnings:   warnings,
 	}, nil
+}
+
+// resolveMaxParseBytes resolves the per-file byte cap shared by the content
+// reader and the parser: the caller's value, else the provider default. A
+// negative value removes the cap, which is the documented escape hatch for a
+// caller that really wants a whole file of any size in memory.
+func resolveMaxParseBytes(requested int) int {
+	if requested != 0 {
+		return requested
+	}
+	return defaultMaxParseBytes
 }
 
 // resolveCommittedHEAD binds a repository view to one immutable commit. The
@@ -1488,8 +1602,11 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 	for _, entity := range entities {
 		baseCounts[symbolID(repoKey, language, path, entity.Kind, entity.Name)]++
 	}
-	var symbols []SymbolRecord
-	for _, entity := range entities {
+	// One symbol is emitted per entity, in order, so an entity's index is also its symbol's
+	// index — which is what lets a lexical parent be looked up as symbols[parents[index]].
+	lexicalParents := lexicalEntityParents(entities)
+	symbols := make([]SymbolRecord, 0, len(entities))
+	for index, entity := range entities {
 		qualified := entity.Name
 		id := symbolID(repoKey, language, path, entity.Kind, qualified)
 		if baseCounts[id] > 1 {
@@ -1511,6 +1628,11 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 			if parentID, ok := byName[containerName]; ok {
 				containerID = parentID
 			}
+		} else if parent := lexicalParents[index]; parent >= 0 && parent < len(symbols) {
+			// The parser gave this declaration no owner at all, so fall back to the declaration
+			// that lexically encloses it — see nested_containers.go for why that is the only way
+			// a nested type becomes a member of the type it sits in.
+			containerID = symbols[parent].ID
 		}
 		symbol := SymbolRecord{
 			RecordType:      "symbol",
@@ -2339,6 +2461,12 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	needsFields := spec.emits("READS_FIELD") || spec.emits("WRITES_FIELD") || spec.emits("ACCESSES")
 	needsTypes := spec.emits("EXTENDS") || spec.emits("INHERITS") || spec.emits("IMPLEMENTS") || spec.emits("OVERRIDES")
 	needsOverrides := spec.emits("OVERRIDES")
+	// C# extension methods and Kotlin extension functions/properties are members
+	// of the type they extend for every purpose except where they are written.
+	// The extra CONTAINS edge is what makes them answer "what can I do with an
+	// Edit?". It resolves same-file first, so it still works at profiles that
+	// build no cross-file type index.
+	needsExtensionMembers := spec.emits("CONTAINS")
 	needsAsyncCalls := spec.emits("ASYNC_CALLS")
 	needsDataFlow := spec.emits("DATA_FLOWS")
 	needsServiceRelations := spec.emits("HANDLES_GRPC") || spec.emits("HANDLES_GRAPHQL") || spec.emits("HANDLES_TRPC")
@@ -2402,6 +2530,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			}
 		}
 	}
+	partialContainerCanonical, partialContainerFile := partialTypeCanonicalIDs(files, recordsByFile)
 	// Iterate files in their (stable) slice order, not the recordsByFile map, so
 	// structural relations stream deterministically.
 	for _, file := range files {
@@ -2414,6 +2543,17 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				return
 			}
 			containsScope := "file"
+			// A partial type is ONE type written in several declarations. Each
+			// part owned only the members it happened to declare, so the type's
+			// member set was split and "what does this type have?" returned a
+			// slice of it. Point every part's members at the canonical part.
+			if canonical, ok := partialContainerCanonical[symbol.ContainerID]; ok && canonical != symbol.ContainerID {
+				symbol.ContainerID = canonical
+				records[si].ContainerID = canonical
+				if partialContainerFile[canonical] != symbol.FilePath {
+					containsScope = "module"
+				}
+			}
 			if crossFileContainers && symbol.ContainerID == "" && (symbol.Kind == "method" || symbol.Kind == "field") {
 				if parent := containerName(symbol.QualifiedName); parent != "" {
 					if container, ok := resolveContainerAcrossFiles(parent, symbol.FilePath, typeLikeByShortName); ok && container.ID != symbol.ID {
@@ -2457,7 +2597,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 					ToID:          symbol.ID,
 					Type:          "CONTAINS",
 					Confidence:    1,
-					Reason:        "symbol qualified name is nested in container",
+					Reason:        containmentReason(symbol),
 					RelationScope: containsScope,
 					Resolution:    "exact",
 					TargetKind:    "symbol",
@@ -3568,6 +3708,11 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				emit(r)
 			}
 		}
+		if needsExtensionMembers {
+			for _, r := range extensionMemberRelations(repoKey, recordsByFile[file.Path], symbolsByFile[file.Path], symbolsByShortName) {
+				emit(r)
+			}
+		}
 	}
 
 	if needsOverrides {
@@ -3816,6 +3961,22 @@ func typeRelationsForFile(repoKey string, file FileRecord, content string, fileS
 			}
 		}
 	}
+	// Horizontal member reuse stated in the type BODY, not its header: a PHP
+	// `use SomeTrait;` or a Ruby `include SomeModule`. Without this edge the
+	// members a class really answers to are unreachable from the class, which
+	// is the same join failure as an unlinked impl block.
+	if file.Language == "PHP" || file.Language == "Ruby" {
+		lines := strings.Split(content, "\n")
+		for _, symbol := range fileSymbols {
+			if !typeLikeKind(symbol.Kind) {
+				continue
+			}
+			body := directTypeBodyLines(lines, symbol, fileSymbols)
+			for _, edge := range mixinSupertypeEdges(symbol.Language, body) {
+				relations = append(relations, buildMixinRelation(repoKey, symbol, edge, sameFileSymbols, symbolsByShortName))
+			}
+		}
+	}
 	if file.Language == "Rust" {
 		for _, edge := range rustSupertypeEdges(content) {
 			anchor, ok := firstTypeLikeNamed(fileSymbols, edge.Anchor)
@@ -3827,6 +3988,175 @@ func typeRelationsForFile(repoKey string, file FileRecord, content string, fileS
 				relations = append(relations, buildTypeRelation(repoKey, anchor, edge.Super, "INHERITS", edge.Confidence, sameFileSymbols, symbolsByShortName))
 			}
 		}
+	}
+	return relations
+}
+
+// buildMixinRelation resolves a body-stated member-acquisition edge (a PHP trait
+// `use`, a Ruby `include`) to its declaration.
+//
+// It cannot go through buildTypeRelation, for two reasons the languages force:
+// the supplier of the members is often a MODULE (Ruby), which is not a type-like
+// kind, and short-name resolution across the whole workspace is not
+// language-aware — a Ruby `include Ranged` would happily bind to a Rust trait
+// called `Ranged` in the same repo, which is a confidently wrong edge. Candidates
+// are therefore restricted to the same language, and an unresolved supplier
+// becomes an external endpoint exactly as elsewhere.
+func buildMixinRelation(repoKey string, anchor SymbolRecord, edge rawSupertype, sameFileSymbols []SymbolRecord, symbolsByShortName map[string][]SymbolRecord) RelationRecord {
+	accepts := func(symbol SymbolRecord) bool {
+		return symbol.Name == edge.Super && symbol.ID != anchor.ID &&
+			symbol.Language == anchor.Language &&
+			(typeLikeKind(symbol.Kind) || symbol.Kind == "module")
+	}
+	toID := externalID("type", edge.Super)
+	targetKind, resolution, scope := "external", "name_only", "external"
+	confidence := minFloat(edge.Confidence, 0.8)
+	for _, symbol := range sameFileSymbols {
+		if accepts(symbol) {
+			toID, targetKind, resolution, scope, confidence = symbol.ID, "symbol", "exact", "file", edge.Confidence
+			break
+		}
+	}
+	if targetKind == "external" {
+		for _, symbol := range symbolsByShortName[edge.Super] {
+			if accepts(symbol) {
+				toID, targetKind, resolution, scope, confidence = symbol.ID, "symbol", "name_only", "module", minFloat(edge.Confidence, 0.85)
+				break
+			}
+		}
+	}
+	return RelationRecord{
+		RecordType:    "relation",
+		FromID:        anchor.ID,
+		ToID:          toID,
+		Type:          edge.Relation,
+		Confidence:    confidence,
+		Reason:        typeRelationReason(edge.Relation, resolution),
+		RelationScope: scope,
+		Resolution:    resolution,
+		TargetKind:    targetKind,
+		Evidence: []Evidence{{
+			Kind:      "mixin_declaration",
+			FilePath:  anchor.FilePath,
+			StartLine: anchor.StartLine,
+			EndLine:   anchor.EndLine,
+			Detail:    edge.Super,
+		}},
+		WarningCodes: []string{},
+	}
+}
+
+// partialTypeCanonicalIDs maps every declaration of a partial type to the one
+// that stands for the whole type — the first part in file order. C# (and F#)
+// let a single type be written as several `partial` declarations; each parses
+// as its own symbol, so a member's container was whichever part happened to
+// declare it and the type's member set was split across parts. Callers rewrite
+// member containers through this map so the type has one member set again.
+//
+// Parts are matched on kind + qualified name + language, and ONLY when the
+// declaration says `partial`: two same-named classes that are not partial are
+// two different types (different namespaces, different assemblies) and must
+// stay separate. The second return value gives each canonical part's file, so
+// callers can scope a cross-file CONTAINS edge correctly.
+func partialTypeCanonicalIDs(files []FileRecord, recordsByFile map[string][]SymbolRecord) (map[string]string, map[string]string) {
+	canonicalByKey := map[string]SymbolRecord{}
+	var parts []SymbolRecord
+	for _, file := range files {
+		for _, symbol := range recordsByFile[file.Path] {
+			if !typeLikeKind(symbol.Kind) || !declaresPartialType(symbol) {
+				continue
+			}
+			key := symbol.Language + "\x00" + symbol.Kind + "\x00" + symbol.QualifiedName
+			parts = append(parts, symbol)
+			if existing, ok := canonicalByKey[key]; !ok ||
+				symbol.FilePath < existing.FilePath ||
+				(symbol.FilePath == existing.FilePath && symbol.StartLine < existing.StartLine) {
+				canonicalByKey[key] = symbol
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return nil, nil
+	}
+	canonical := make(map[string]string, len(parts))
+	canonicalFile := make(map[string]string, len(canonicalByKey))
+	for _, symbol := range parts {
+		key := symbol.Language + "\x00" + symbol.Kind + "\x00" + symbol.QualifiedName
+		anchor := canonicalByKey[key]
+		canonical[symbol.ID] = anchor.ID
+		canonicalFile[anchor.ID] = anchor.FilePath
+	}
+	return canonical, canonicalFile
+}
+
+// declaresPartialType reports whether a type symbol's declaration carries the
+// `partial` modifier, read from the signature the parser captured.
+func declaresPartialType(symbol SymbolRecord) bool {
+	if symbol.Language != "C#" && symbol.Language != "F#" {
+		return false
+	}
+	for _, field := range strings.Fields(stripGenerics(symbol.Signature)) {
+		if field == "partial" {
+			return true
+		}
+	}
+	return false
+}
+
+// extensionMemberRelations emits the membership edge for callables declared
+// outside the type they extend: C# `static bool IsEmpty(this Edit edit)` and
+// Kotlin `fun Edit.isEmpty()`. Their container_id points at the static class or
+// the file, which is where they are WRITTEN — so the type's own member set was
+// missing them, and a caller asking what a value of that type supports got an
+// incomplete answer that looked complete.
+//
+// The edge is CONTAINS with relation_scope "extension", so consumers can tell an
+// acquired member from a declared one, and `neighbors --symbol T --relation
+// CONTAINS --direction out` returns the whole surface either way. The receiver
+// type is resolved same-file first (the usual case: extensions ship beside the
+// type) and then through the workspace short-name index; unresolvable receivers
+// emit nothing rather than an external endpoint, because a membership edge to a
+// type the graph never saw cannot be navigated.
+func extensionMemberRelations(repoKey string, fileSymbols, sameFileSymbols []SymbolRecord, symbolsByShortName map[string][]SymbolRecord) []RelationRecord {
+	var relations []RelationRecord
+	for _, symbol := range fileSymbols {
+		if symbol.Kind != "function" && symbol.Kind != "method" && symbol.Kind != "property" {
+			continue
+		}
+		receiver := extensionReceiverTypeName(symbol.Language, symbol.Signature)
+		if receiver == "" {
+			continue
+		}
+		// Same-language only: a Kotlin `fun Edit.isEmpty()` must not attach to a
+		// Rust struct that happens to also be called Edit.
+		target, ok := firstTypeLikeNamedInLanguage(sameFileSymbols, receiver, symbol.Language)
+		resolution, confidence := "exact", 0.9
+		if !ok || target.ID == symbol.ID {
+			target, ok = firstTypeLikeNamedInLanguage(symbolsByShortName[receiver], receiver, symbol.Language)
+			resolution, confidence = "name_only", 0.8
+		}
+		if !ok || target.ID == symbol.ID || target.ID == symbol.ContainerID {
+			continue
+		}
+		relations = append(relations, RelationRecord{
+			RecordType:    "relation",
+			FromID:        target.ID,
+			ToID:          symbol.ID,
+			Type:          "CONTAINS",
+			Confidence:    confidence,
+			Reason:        "extension member declared on the receiver type",
+			RelationScope: "extension",
+			Resolution:    resolution,
+			TargetKind:    "symbol",
+			Evidence: []Evidence{{
+				Kind:      "extension_receiver",
+				FilePath:  symbol.FilePath,
+				StartLine: symbol.StartLine,
+				EndLine:   symbol.EndLine,
+				Detail:    receiver,
+			}},
+			WarningCodes: []string{},
+		})
 	}
 	return relations
 }
@@ -8874,6 +9204,18 @@ func overrideRelations(relations []RelationRecord, methodsByContainer map[string
 	return overrides
 }
 
+// firstTypeLikeNamedInLanguage is firstTypeLikeNamed restricted to one language,
+// for joins where a cross-language short-name collision would produce a
+// confidently wrong edge rather than a missing one.
+func firstTypeLikeNamedInLanguage(records []SymbolRecord, name, language string) (SymbolRecord, bool) {
+	for _, symbol := range records {
+		if symbol.Name == name && symbol.Language == language && typeLikeKind(symbol.Kind) {
+			return symbol, true
+		}
+	}
+	return SymbolRecord{}, false
+}
+
 func firstTypeLikeNamed(records []SymbolRecord, name string) (SymbolRecord, bool) {
 	for _, symbol := range records {
 		if symbol.Name == name && typeLikeKind(symbol.Kind) {
@@ -9057,26 +9399,60 @@ func externalParts(id string) (string, string) {
 	return kind, value
 }
 
+// sourceOptions are the listing and reading bounds openSource enforces.
+type sourceOptions struct {
+	ignoreFiles  []string
+	includeFiles []string
+	// maxReadBytes caps how large a file the content reader will materialize.
+	// Zero or negative removes the cap.
+	maxReadBytes int
+	// maxFiles caps how many paths the listing returns. Zero uses the provider
+	// default; negative removes the cap.
+	maxFiles int
+}
+
+// openedSource is what openSource resolves: the file list, the per-file readers,
+// the oversize registry that explains refused reads, a closer, and any
+// listing-level warnings.
+type openedSource struct {
+	paths      []string
+	read       contentReader
+	readPrefix prefixReader
+	oversize   oversizeReader
+	close      func() error
+	warnings   []ProviderWarning
+}
+
 // openSource lists the repository's files and returns a per-file content reader
 // that fetches one file at a time from an exact committed revision (when
 // non-empty) or the working tree, so the snapshot never holds all source
 // content in memory.
-func openSource(ctx context.Context, repo, committedRevision string, ignoreFiles, includeFiles []string) ([]string, contentReader, prefixReader, func() error, error) {
+//
+// Two bounds make that claim true rather than aspirational. Reads are capped at
+// sourceOptions.maxReadBytes: a file above the cap is never materialized (it
+// costs its own size twice — the byte slice plus the string conversion — and the
+// snapshot cannot parse it anyway), and is instead recorded in the oversize
+// registry from a streamed digest. Listings are capped at
+// sourceOptions.maxFiles, with a W_FILE_LIMIT warning when that truncates.
+func openSource(ctx context.Context, repo, committedRevision string, options sourceOptions) (openedSource, error) {
+	maxReadBytes := int64(options.maxReadBytes)
 	if committedRevision != "" {
-		ignores, err := loadExplicitIgnoreMatcher(repo, ignoreFiles, includeFiles)
+		ignores, err := loadExplicitIgnoreMatcher(repo, options.ignoreFiles, options.includeFiles)
 		if err != nil {
-			return nil, nil, nil, nil, err
+			return openedSource{}, err
 		}
 		paths, err := gitutil.ListFiles(ctx, repo, committedRevision)
 		if err != nil {
-			return nil, nil, nil, nil, err
+			return openedSource{}, err
 		}
-		paths = filterVendoredPaths(paths, headIgnoreMatcher(ctx, repo, committedRevision))
+		paths = filterVendoredPaths(paths, headVendorIgnoreRules(ctx, repo, committedRevision, paths))
 		paths = filterIgnoredPaths(paths, ignores)
+		paths, warnings := capSourceFiles(paths, options.maxFiles)
 		batch, err := gitutil.NewBatchFileReader(ctx, repo, committedRevision)
 		if err != nil {
-			return nil, nil, nil, nil, err
+			return openedSource{}, err
 		}
+		batch.SetMaxBytes(maxReadBytes)
 		read := func(path string) (string, bool) {
 			if strings.Contains(path, "\n") {
 				content, ok, err := gitutil.ShowFile(ctx, repo, committedRevision, path)
@@ -9091,6 +9467,13 @@ func openSource(ctx context.Context, repo, committedRevision string, ignoreFiles
 			}
 			return content, true
 		}
+		oversize := func(path string) (oversizeFile, bool) {
+			blob, ok := batch.OversizeBlob(path)
+			if !ok {
+				return oversizeFile{}, false
+			}
+			return oversizeFile{Bytes: blob.Bytes, Hash: blob.Hash, Lines: blob.Lines}, true
+		}
 		// Git blob reads are all-or-nothing, so the HEAD-tree prefix reader
 		// fetches the blob and truncates.
 		readPrefix := func(path string, limit int) (string, bool) {
@@ -9103,20 +9486,33 @@ func openSource(ctx context.Context, repo, committedRevision string, ignoreFiles
 			}
 			return content, true
 		}
-		return paths, read, readPrefix, batch.Close, nil
+		return openedSource{
+			paths:      paths,
+			read:       read,
+			readPrefix: readPrefix,
+			oversize:   oversize,
+			close:      batch.Close,
+			warnings:   warnings,
+		}, nil
 	}
-	ignores, err := loadWorktreeIgnoreMatcher(repo, ignoreFiles, includeFiles)
+	ignores, err := loadWorktreeIgnoreMatcher(repo, options.ignoreFiles, options.includeFiles)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return openedSource{}, err
 	}
-	paths, err := workingTreeFiles(repo, ignores, trackedDirSet(ctx, repo))
+	paths, err := worktreeSourceFiles(ctx, repo, ignores, len(options.includeFiles) > 0)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return openedSource{}, err
 	}
+	paths, warnings := capSourceFiles(paths, options.maxFiles)
+	registry := newOversizeRegistry()
 	read := func(path string) (string, bool) {
 		full := filepath.Join(repo, filepath.FromSlash(path))
 		info, err := os.Lstat(full)
 		if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return "", false
+		}
+		if maxReadBytes > 0 && info.Size() > maxReadBytes {
+			registry.note(path, full, info.Size())
 			return "", false
 		}
 		content, err := os.ReadFile(full)
@@ -9143,7 +9539,102 @@ func openSource(ctx context.Context, repo, committedRevision string, ignoreFiles
 		}
 		return string(buf[:n]), true
 	}
-	return paths, read, readPrefix, nil, nil
+	return openedSource{
+		paths:      paths,
+		read:       read,
+		readPrefix: readPrefix,
+		oversize:   registry.lookup,
+		warnings:   warnings,
+	}, nil
+}
+
+// oversizeRegistry remembers the working-tree files the reader refused, and
+// digests each one at most once. The digest is deferred until a caller actually
+// asks: preselection only needs to know the file is out of reach, and paying a
+// streaming pass over a multi-gigabyte file to answer a question nobody asked
+// would trade the memory blow-up for an I/O one.
+type oversizeRegistry struct {
+	mu      sync.Mutex
+	pending map[string]oversizePending
+	digests map[string]oversizeFile
+}
+
+type oversizePending struct {
+	full  string
+	bytes int64
+}
+
+func newOversizeRegistry() *oversizeRegistry {
+	return &oversizeRegistry{
+		pending: map[string]oversizePending{},
+		digests: map[string]oversizeFile{},
+	}
+}
+
+func (r *oversizeRegistry) note(path, full string, size int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, done := r.digests[path]; done {
+		return
+	}
+	r.pending[path] = oversizePending{full: full, bytes: size}
+}
+
+func (r *oversizeRegistry) lookup(path string) (oversizeFile, bool) {
+	r.mu.Lock()
+	if record, ok := r.digests[path]; ok {
+		r.mu.Unlock()
+		return record, true
+	}
+	pending, ok := r.pending[path]
+	r.mu.Unlock()
+	if !ok {
+		return oversizeFile{}, false
+	}
+	record := oversizeFile{Bytes: pending.bytes}
+	if digest, err := filedigest.File(pending.full); err == nil {
+		record = oversizeFile{Bytes: digest.Bytes, Hash: digest.Hash, Lines: digest.Lines}
+	}
+	r.mu.Lock()
+	r.digests[path] = record
+	delete(r.pending, path)
+	r.mu.Unlock()
+	return record, true
+}
+
+// resolveMaxSourceFiles resolves the listing cap: the caller's value, else the
+// ENTIRE_GRAPH_MAX_FILES override, else the provider default. A negative value
+// removes the cap.
+func resolveMaxSourceFiles(requested int) int {
+	if requested != 0 {
+		return requested
+	}
+	if raw := strings.TrimSpace(os.Getenv(maxSourceFilesEnv)); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			return parsed
+		}
+	}
+	return defaultMaxSourceFiles
+}
+
+// capSourceFiles truncates an over-long listing and says so. Truncation is
+// deterministic (the listing is already sorted) and always reported, so a
+// snapshot of a runaway tree is visibly partial instead of quietly wrong.
+func capSourceFiles(paths []string, requested int) ([]string, []ProviderWarning) {
+	limit := resolveMaxSourceFiles(requested)
+	if limit <= 0 || len(paths) <= limit {
+		return paths, nil
+	}
+	total := len(paths)
+	return paths[:limit], []ProviderWarning{{
+		Code:                 "W_FILE_LIMIT",
+		Severity:             "warning",
+		EffectOnCompleteness: "snapshot lists only the first files of this repository; symbols and relations in the remainder are absent",
+		Detail: fmt.Sprintf(
+			"repository lists %d files, above the %d-file limit (%s overrides it); the listing was truncated in sorted path order",
+			total, limit, maxSourceFilesEnv,
+		),
+	}}
 }
 
 // bundledRuntimeDirNames are directory basenames of third-party C/C++ runtime,
@@ -9195,15 +9686,54 @@ func isAmbiguousVendoredDirName(name string) bool {
 	return false
 }
 
+// isInstalledDependencyDirName reports whether a directory name denotes an
+// installed-dependency tree or a tool cache: a virtual environment, a package
+// cache, a build-tool scratch directory, or Entire's own per-repository state.
+//
+// A project's exclude rules normally keep these out, but the rules are not always
+// where a scanner can see them (a nested .gitignore, an untracked clone, a stray
+// checkout) — that gap is what let a `.venv` full of site-packages into the graph.
+// Like the ambiguous generated-output names, these are skipped only when the
+// directory is NOT tracked in git: a project that commits such a tree as test
+// data (terraform commits `.terraform/modules` fixtures) means it, and dropping
+// tracked content would change what `--head` sees too.
+func isInstalledDependencyDirName(rel, name string) bool {
+	switch name {
+	case ".venv", "venv", "site-packages", "__pycache__", ".pytest_cache",
+		".mypy_cache", ".ruff_cache", ".tox", ".nox", ".eggs",
+		".gradle", ".terraform", ".yarn", ".pnpm-store", "bower_components",
+		".stack-work", ".dart_tool", ".svelte-kit", ".nuxt", ".parcel-cache",
+		".turbo", ".idea", ".vs", "DerivedData":
+		return true
+	}
+	// Entire's own state: session transcripts, checkpoint scratch space and
+	// caches, which are Entire's records of the work rather than the project's
+	// source. Matched by path so a project's own `.entire/*.md` documentation
+	// stays visible.
+	switch rel {
+	case ".entire/metadata", ".entire/tmp", ".entire/cache", ".entire/checkpoints":
+		return true
+	}
+	return false
+}
+
+// vendorIgnoreRules is the one question the vendored-directory heuristic asks of
+// a project's exclude rules: does the project re-include part of this tree, and
+// therefore mean to keep it? Both a root-only matcher and a set of per-directory
+// .gitignore files can answer it.
+type vendorIgnoreRules interface {
+	ReincludesDescendant(rel string) bool
+}
+
 // skipVendoredDir is the single vendored-directory decision for both the
 // working-tree walk and the HEAD-tree listing: skip unambiguous vendored names
 // always, and ambiguous generated-output names only when the directory is not
 // tracked in git (dirTracked). Gitignore negations that re-include a
 // descendant (see ReincludesDescendant) keep the tree walked in either case;
 // the ignore rules themselves then filter its contents.
-func skipVendoredDir(rel, name string, ignores ignoreMatcher, dirTracked func(string) bool) bool {
-	vendored := isVendoredScanDir(rel, name) ||
-		(isAmbiguousVendoredDirName(name) && !dirTracked(rel))
+func skipVendoredDir(rel, name string, ignores vendorIgnoreRules, dirTracked func(string) bool) bool {
+	untrackedOnly := isAmbiguousVendoredDirName(name) || isInstalledDependencyDirName(rel, name)
+	vendored := isVendoredScanDir(rel, name) || (untrackedOnly && !dirTracked(rel))
 	return vendored && !ignores.ReincludesDescendant(rel)
 }
 
@@ -9239,11 +9769,80 @@ func isVendoredScanFile(rel, name string) bool {
 	return strings.HasSuffix(rel, ".map")
 }
 
-func workingTreeFiles(repo string, ignores ignoreMatcher, trackedDirs map[string]struct{}) ([]string, error) {
+// worktreeSourceFiles lists the working tree's source files.
+//
+// Git's own view of the working tree — tracked files plus untracked files no
+// exclude rule covers — is the listing, because only Git applies the whole
+// exclude stack: nested .gitignore files, .git/info/exclude, per-worktree
+// excludes and core.excludesFile. A reader that parses only the repository-root
+// .gitignore misses every one of those, which is how a vendored dependency tree
+// excluded by `backend/.gitignore` (a virtual environment, a checked-out package
+// cache) ended up listed, parsed, and read into memory while `--head` on the same
+// repository listed only the tracked source.
+//
+// The filesystem walk remains the fallback for a directory Git cannot enumerate
+// (not a repository at all, or no usable git binary), and it now applies nested
+// .gitignore files itself.
+func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher, hasIncludeFiles bool) ([]string, error) {
+	trackedDirs := trackedDirSet(ctx, repo)
 	dirTracked := func(rel string) bool {
 		_, ok := trackedDirs[rel]
 		return ok
 	}
+	listed, err := gitutil.ListWorktreeFiles(ctx, repo)
+	if err != nil {
+		return walkWorktreeFiles(repo, ignores, dirTracked)
+	}
+	if hasIncludeFiles {
+		// An explicit include file's negations are allowed to reach into ignored
+		// content; nothing else is, so the ignored listing is only ever requested
+		// when such a file was supplied.
+		if ignored, ignoredErr := gitutil.ListIgnoredWorktreeFiles(ctx, repo); ignoredErr == nil {
+			for _, rel := range ignored {
+				if ignores.Reincluded(filepath.ToSlash(rel), false) {
+					listed = append(listed, rel)
+				}
+			}
+		}
+	}
+	// The vendored-directory heuristic consults the project's own re-inclusion
+	// rules wherever they live, not only at the root, so a tree the project
+	// deliberately keeps under a vendored-looking name is not dropped.
+	vendorRules := worktreeVendorIgnoreRules(repo, ignores, listed)
+	paths := make([]string, 0, len(listed))
+	seen := make(map[string]struct{}, len(listed))
+	for _, entry := range listed {
+		rel := filepath.ToSlash(entry)
+		if _, exists := seen[rel]; exists {
+			continue
+		}
+		if vendoredScanPath(rel, vendorRules, dirTracked) {
+			continue
+		}
+		// Explicit ignore/include rules still arbitrate: an include file may have
+		// pulled this path back in, and its own rules may then exclude part of
+		// what it re-included.
+		if ignores.Ignored(rel, false) {
+			continue
+		}
+		// Git lists index entries for files staged as deleted and can list a
+		// symlink; the snapshot reads neither.
+		info, statErr := os.Lstat(filepath.Join(repo, filepath.FromSlash(rel)))
+		if statErr != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			continue
+		}
+		seen[rel] = struct{}{}
+		paths = append(paths, rel)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+// walkWorktreeFiles is the non-git fallback listing. It honours the ignore stack
+// per directory (root .gitignore plus every nested one on the path) so a
+// directory Git cannot enumerate is still filtered the way the project asked.
+func walkWorktreeFiles(repo string, ignores ignoreMatcher, dirTracked func(string) bool) ([]string, error) {
+	stack := newNestedIgnoreStack(repo, ignores)
 	var paths []string
 	err := filepath.WalkDir(repo, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -9251,18 +9850,22 @@ func workingTreeFiles(repo string, ignores ignoreMatcher, trackedDirs map[string
 		}
 		name := entry.Name()
 		if entry.IsDir() {
+			rel := ""
 			if path != repo {
-				rel, err := filepath.Rel(repo, path)
-				if err != nil {
-					return err
+				relPath, relErr := filepath.Rel(repo, path)
+				if relErr != nil {
+					return relErr
 				}
-				rel = filepath.ToSlash(rel)
-				if skipVendoredDir(rel, name, ignores, dirTracked) {
-					return filepath.SkipDir
-				}
-				if ignores.Ignored(rel, true) && !ignores.MayIncludeDescendant(rel) {
-					return filepath.SkipDir
-				}
+				rel = filepath.ToSlash(relPath)
+			}
+			// Enter first: this directory's own .gitignore is part of the evidence
+			// for whether the project re-includes something inside it.
+			stack.enter(rel)
+			if rel != "" && skipVendoredDir(rel, name, stack, dirTracked) {
+				return filepath.SkipDir
+			}
+			if rel != "" && stack.Ignored(rel, true) && !stack.MayIncludeDescendant(rel) {
+				return filepath.SkipDir
 			}
 			return nil
 		}
@@ -9277,7 +9880,7 @@ func workingTreeFiles(repo string, ignores ignoreMatcher, trackedDirs map[string
 		if isVendoredScanFile(rel, name) {
 			return nil
 		}
-		if ignores.Ignored(rel, false) {
+		if stack.Ignored(rel, false) {
 			return nil
 		}
 		paths = append(paths, rel)
@@ -9287,7 +9890,7 @@ func workingTreeFiles(repo string, ignores ignoreMatcher, trackedDirs map[string
 	return paths, err
 }
 
-func filterVendoredPaths(paths []string, ignores ignoreMatcher) []string {
+func filterVendoredPaths(paths []string, ignores vendorIgnoreRules) []string {
 	filtered := paths[:0]
 	for _, rel := range paths {
 		if vendoredPath(rel, ignores) {
@@ -9310,6 +9913,59 @@ func filterIgnoredPaths(paths []string, ignores ignoreMatcher) []string {
 	return filtered
 }
 
+// headVendorIgnoreRules parses every .gitignore in the committed tree — the root
+// one and each per-directory one — at the same exact revision used for listing
+// and content reads, so the vendored-directory heuristic can neither observe a
+// newer HEAD nor miss a project's re-inclusion rules because they sit beside the
+// tree they describe, which is where Git expects them. The tracked listing
+// already in hand is reused to find them, so this costs no extra listing.
+func headVendorIgnoreRules(ctx context.Context, repo, committedRevision string, paths []string) *nestedIgnoreRules {
+	rules := newNestedIgnoreRules(headIgnoreMatcher(ctx, repo, committedRevision))
+	for _, entry := range paths {
+		rel := filepath.ToSlash(entry)
+		if path.Base(rel) != ".gitignore" || !strings.Contains(rel, "/") {
+			continue
+		}
+		if len(rules.levels) >= maxNestedIgnoreFiles {
+			break
+		}
+		content, ok, err := gitutil.ShowFile(ctx, repo, committedRevision, rel)
+		if err != nil || !ok || len(content) > maxNestedIgnoreFileBytes {
+			continue
+		}
+		rules.addFile(rel, content)
+	}
+	return rules
+}
+
+// worktreeVendorIgnoreRules is headVendorIgnoreRules for the working tree: the
+// per-directory .gitignore files Git's own listing reports (one inside an
+// excluded tree is not listed, and that tree is excluded anyway) are read from
+// disk and merged over the root rules.
+func worktreeVendorIgnoreRules(repo string, base ignoreMatcher, listed []string) *nestedIgnoreRules {
+	rules := newNestedIgnoreRules(base)
+	for _, entry := range listed {
+		rel := filepath.ToSlash(entry)
+		if path.Base(rel) != ".gitignore" || !strings.Contains(rel, "/") {
+			continue
+		}
+		if len(rules.levels) >= maxNestedIgnoreFiles {
+			break
+		}
+		full := filepath.Join(repo, filepath.FromSlash(rel))
+		info, err := os.Stat(full)
+		if err != nil || !info.Mode().IsRegular() || info.Size() > maxNestedIgnoreFileBytes {
+			continue
+		}
+		content, err := os.ReadFile(full)
+		if err != nil {
+			continue
+		}
+		rules.addFile(rel, string(content))
+	}
+	return rules
+}
+
 // headIgnoreMatcher parses the repository's root .gitignore at the same exact
 // committed revision used for listing and content reads, so the vendored-
 // directory heuristic cannot observe a newer HEAD.
@@ -9329,8 +9985,14 @@ func headIgnoreMatcher(ctx context.Context, repo, committedRevision string) igno
 // tracked by construction, so ambiguous generated-output directory names
 // (build, dist, external, deps) are never vendored here — headTracked reports
 // every directory as tracked; only the unambiguous vendored names are skipped.
-func vendoredPath(rel string, ignores ignoreMatcher) bool {
+func vendoredPath(rel string, ignores vendorIgnoreRules) bool {
 	headTracked := func(string) bool { return true }
+	return vendoredScanPath(rel, ignores, headTracked)
+}
+
+// vendoredScanPath applies the vendored-directory and vendored-file heuristics to
+// a listed path, consulting dirTracked for the ambiguous generated-output names.
+func vendoredScanPath(rel string, ignores vendorIgnoreRules, dirTracked func(string) bool) bool {
 	rel = filepath.ToSlash(rel)
 	parts := strings.Split(rel, "/")
 	if len(parts) == 0 {
@@ -9341,7 +10003,7 @@ func vendoredPath(rel string, ignores ignoreMatcher) bool {
 	}
 	for i, part := range parts[:len(parts)-1] {
 		dirRel := strings.Join(parts[:i+1], "/")
-		if skipVendoredDir(dirRel, part, ignores, headTracked) {
+		if skipVendoredDir(dirRel, part, ignores, dirTracked) {
 			return true
 		}
 	}
@@ -16787,6 +17449,42 @@ func symbolBlockFromLines(lines []string, symbol SymbolRecord) string {
 		return ""
 	}
 	return strings.Join(lines[start:end], "\n")
+}
+
+// directTypeBodyLines returns a type declaration's own source with the bodies of
+// nested type declarations blanked out. Body-scanned member-acquisition
+// statements (`use SomeTrait;`, `include SomeModule`) must be attributed to the
+// type that actually wrote them, so a nested class's mixin cannot be credited to
+// the class around it. Line numbering is preserved (nested lines become empty,
+// they are not removed) so offsets stay comparable to the original block.
+func directTypeBodyLines(lines []string, symbol SymbolRecord, fileSymbols []SymbolRecord) string {
+	start := symbol.StartLine - 1
+	if start < 0 {
+		start = 0
+	}
+	end := symbol.EndLine
+	if end > len(lines) {
+		end = len(lines)
+	}
+	if end <= start {
+		return ""
+	}
+	body := make([]string, end-start)
+	copy(body, lines[start:end])
+	for _, other := range fileSymbols {
+		if other.ID == symbol.ID || !typeLikeKind(other.Kind) {
+			continue
+		}
+		if other.StartLine <= symbol.StartLine || other.EndLine > symbol.EndLine {
+			continue
+		}
+		for line := other.StartLine; line <= other.EndLine && line-1 < end; line++ {
+			if index := line - 1 - start; index >= 0 && index < len(body) {
+				body[index] = ""
+			}
+		}
+	}
+	return strings.Join(body, "\n")
 }
 
 func completenessLevel(failures, files, parsedFiles, symbols int) string {

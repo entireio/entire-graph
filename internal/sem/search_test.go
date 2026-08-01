@@ -169,9 +169,21 @@ func TestSearchRepositoryUsesFocusedDefaultRegions(t *testing.T) {
 	const (
 		wantMaxLines = 80
 		needleLine   = 94
+		// LargeHandler's own bounds: `func` on line 3, closing brace on line 95.
+		bodyStart = 3
+		bodyEnd   = 95
 	)
 	for _, result := range response.Results {
-		if lines := result.EndLine - result.StartLine + 1; lines > wantMaxLines {
+		// The region cap bounds what RANKING may emit. A result the snippet allocator
+		// upgraded to a complete body is deliberately exempt — it reports the callable's
+		// true bounds, which is the whole point of the upgrade — so it is held to the
+		// stricter standard instead: exactly the enclosing function, not a bigger window.
+		if containsString(result.Signals, searchCompleteSymbolSignal) {
+			if result.SnippetStartLine != bodyStart || result.SnippetEndLine != bodyEnd {
+				t.Fatalf("complete body spans %d-%d, want %d-%d: %#v",
+					result.SnippetStartLine, result.SnippetEndLine, bodyStart, bodyEnd, result)
+			}
+		} else if lines := result.EndLine - result.StartLine + 1; lines > wantMaxLines {
 			t.Fatalf("default result spans %d lines, want at most %d: %#v", lines, wantMaxLines, result)
 		}
 		if result.StartLine > needleLine || result.EndLine < needleLine {
@@ -200,6 +212,7 @@ func TestSearchRepositoryBuildsSparseRegionsOnlyForDeepSearch(t *testing.T) {
 		Worktree: true,
 		Profile:  ProfileSyntaxOnly,
 		TopK:     defaultSearchTopK + 1,
+		Deep:     true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -307,6 +320,7 @@ func TestSearchRepositorySkipsSparsePassWithoutSparseTerms(t *testing.T) {
 		Worktree: true,
 		Profile:  ProfileSyntaxOnly,
 		TopK:     defaultSearchTopK + 1,
+		Deep:     true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1019,6 +1033,93 @@ func TestSearchPathPriorIsQueryAwareAcrossArtifacts(t *testing.T) {
 		if got := searchPathPrior(buildSearchQuery(test.query), test.artifact); got != 0 {
 			t.Fatalf("plural artifact query %q retained a prior for %q: %v", test.query, test.artifact, got)
 		}
+	}
+}
+
+// TestSearchQuerySuppliedReadsWrittenWordsOnly pins the rule that class intent comes from the
+// words a caller wrote, never from fragments the tokenizer mined out of an identifier they
+// merely mentioned. Without it, quoting a reproduction file name in a bug report silently
+// switched off the demotion for that whole class of file.
+func TestSearchQuerySuppliedReadsWrittenWordsOnly(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		query string
+		term  string
+		want  bool
+	}{
+		{"standalone word is intent", "please add a test for this", "test", true},
+		{"word inside a path is intent", "the bug is in docs/api.md", "docs", true},
+		{"snake_case segment is intent", "read_bytes_limit is wrong", "bytes", true},
+		{"camelCase fragment is not intent", "NamedByteArrayTest.java reproduces it", "test", false},
+		{"identifier suffix is not intent", "parseSpec returns nil", "spec", false},
+		{"morphological variant is not intent", "documented behaviour differs", "documentation", false},
+		{"unrelated query has no intent", "the timezone shift is wrong", "test", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := searchQuerySupplied(buildSearchQuery(test.query), test.term); got != test.want {
+				t.Fatalf("searchQuerySupplied(%q, %q) = %v, want %v", test.query, test.term, got, test.want)
+			}
+		})
+	}
+}
+
+// TestSearchPathPriorTreatsRegressionAsBehaviour guards the word-sense call: "a regression" in a
+// bug report is behaviour that broke, not a request for the regression suite, so it must not
+// switch off the test-artifact demotion.
+func TestSearchPathPriorTreatsRegressionAsBehaviour(t *testing.T) {
+	t.Parallel()
+	regression := buildSearchQuery("nested fallback routes regression with merge")
+	if got := searchPathPrior(regression, "src/routing/tests/fallback.rs"); got >= 0 {
+		t.Fatalf("test artifact prior under a regression report = %v, want a demotion", got)
+	}
+	asked := buildSearchQuery("add a regression test for nested fallback routes")
+	if got, plain := searchPathPrior(asked, "src/routing/tests/fallback.rs"),
+		searchPathPrior(asked, "src/routing/fallback.rs"); got != plain {
+		t.Fatalf("explicit test request kept a demotion: %v vs %v for a non-test sibling", got, plain)
+	}
+}
+
+// TestAttributeSearchRegionPrefersInnerCallable covers the container-attribution rule: a matching
+// region that does not contain the declaration it is named after is credited to the smallest
+// callable it actually lies in, so a huge class cannot lend its name score to every region in it.
+func TestAttributeSearchRegionPrefersInnerCallable(t *testing.T) {
+	t.Parallel()
+	container := SymbolRecord{ID: "c", Kind: "class", Name: "Calculation", StartLine: 1, EndLine: 400}
+	method := SymbolRecord{ID: "m", Kind: "method", Name: "roundDown", StartLine: 200, EndLine: 240}
+	fn := SymbolRecord{ID: "f", Kind: "function", Name: "helper", StartLine: 20, EndLine: 60}
+	symbols := []SymbolRecord{container, method, fn}
+	lines := make([]string, 400)
+	for index := range lines {
+		lines[index] = "// filler"
+	}
+	lines[29] = "// rounddown needle"  // inside `helper`
+	lines[219] = "// rounddown needle" // inside `roundDown`
+	q := buildSearchQuery("rounddown needle")
+
+	for _, test := range []struct {
+		name       string
+		start, end int
+		symbol     SymbolRecord
+		want       string
+	}{
+		{"region inside a member is credited to the member", 210, 230, container, "m"},
+		// The region opens on `class Calculation` itself, so the name really did match
+		// here — it keeps the container even though it also spans an inner callable.
+		{"region holding the declaration keeps the container", 1, 60, container, "c"},
+		{"region with no inner callable keeps the container", 300, 340, container, "c"},
+		{"a callable is already the smallest unit", 30, 50, fn, "f"},
+		{"a symbol-less region is untouched", 210, 230, SymbolRecord{}, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := attributeSearchRegion(q, lines, test.start, test.end, test.symbol, symbols)
+			if got.ID != test.want {
+				t.Fatalf("attributeSearchRegion(%d-%d, %q) = %q, want %q",
+					test.start, test.end, test.symbol.ID, got.ID, test.want)
+			}
+		})
 	}
 }
 
@@ -1975,58 +2076,10 @@ func gamma() {
 	}
 }
 
-func TestComputeSearchNeighborsFoldsDefinedTypeAndImplNeighbors(t *testing.T) {
-	// A struct MethodRouter implements a repo-defined trait Handler and has a
-	// method with_state that constructs/returns a repo-defined type Route.
-	methodRouter := SymbolRecord{ID: "sym:MethodRouter", Name: "MethodRouter", QualifiedName: "MethodRouter", Kind: "struct", FilePath: "src/routing.rs", StartLine: 10, EndLine: 40}
-	withState := SymbolRecord{ID: "sym:with_state", Name: "with_state", QualifiedName: "MethodRouter.with_state", Kind: "method", FilePath: "src/routing.rs", StartLine: 20, EndLine: 30}
-	handler := SymbolRecord{ID: "sym:Handler", Name: "Handler", QualifiedName: "Handler", Kind: "trait", FilePath: "src/handler.rs", StartLine: 5, EndLine: 15}
-	route := SymbolRecord{ID: "sym:Route", Name: "Route", QualifiedName: "Route", Kind: "struct", FilePath: "src/route.rs", StartLine: 1, EndLine: 8}
-	testRoute := SymbolRecord{ID: "sym:TestRoute", Name: "TestRoute", QualifiedName: "TestRoute", Kind: "struct", FilePath: "tests/route_test.rs", StartLine: 1, EndLine: 3}
-
-	symbolsByID := map[string]SymbolRecord{
-		methodRouter.ID: methodRouter,
-		withState.ID:    withState,
-		handler.ID:      handler,
-		route.ID:        route,
-		testRoute.ID:    testRoute,
-	}
-	relations := []RelationRecord{
-		{Type: "IMPLEMENTS", FromID: methodRouter.ID, ToID: handler.ID},
-		{Type: "CONSTRUCTS", FromID: withState.ID, ToID: route.ID},
-		{Type: "RETURNS_TYPE", FromID: withState.ID, ToID: route.ID},
-		{Type: "CALLS", FromID: withState.ID, ToID: "external:tower::layer"}, // external, dropped
-		{Type: "PARAM_TYPE", FromID: withState.ID, ToID: testRoute.ID},       // test file, dropped
-	}
-
-	results := []SearchResult{{Rank: 1, SymbolID: withState.ID, SymbolName: "with_state", QualifiedName: "MethodRouter.with_state", Kind: "method", FilePath: "src/routing.rs"}}
-	computeSearchNeighbors(results, symbolsByID, relations)
-
-	neighbors := results[0].Neighbors
-	if len(neighbors) == 0 {
-		t.Fatalf("expected neighbors, got none")
-	}
-	foundRoute := false
-	for _, n := range neighbors {
-		if strings.Contains(n, "Route") && strings.Contains(n, "src/route.rs:1") {
-			foundRoute = true
-		}
-		if strings.Contains(n, "TestRoute") {
-			t.Fatalf("test-file neighbor should be skipped: %q", n)
-		}
-		if strings.Contains(n, "external:") {
-			t.Fatalf("external neighbor should be skipped: %q", n)
-		}
-	}
-	if !foundRoute {
-		t.Fatalf("expected a Route (src/route.rs:1) neighbor, got %#v", neighbors)
-	}
-	// The trait implemented by the container type is surfaced too.
-	if !containsString(neighbors, "implements Handler (src/handler.rs:5)") {
-		t.Fatalf("expected implements Handler neighbor, got %#v", neighbors)
-	}
-	// Type edges (implements/constructs/returns) come before any CALLS.
-	if !strings.HasPrefix(neighbors[0], "implements ") && !strings.HasPrefix(neighbors[0], "constructs ") && !strings.HasPrefix(neighbors[0], "returns ") {
-		t.Fatalf("expected a type edge first, got %#v", neighbors)
-	}
-}
+// TestComputeSearchNeighborsFoldsDefinedTypeAndImplNeighbors was removed with the per-result
+// neighbor fold it covered. The question it asked — "which repo-defined types is this hit
+// written in terms of, and where are they" — is answered by the signature-type block
+// (search_sigtypes_test.go), which resolves those types to their declarations WITH their
+// fields and member signatures, is funded by displacing tail locators so it can never shrink a
+// complete head body, and is gated off by default. Its exclusions are covered there too:
+// external targets and test files cannot enter the block.

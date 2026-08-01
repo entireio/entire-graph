@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/entireio/entire-graph/internal/filedigest"
 )
 
 type ChangedFile struct {
@@ -100,6 +102,53 @@ func ListIndexFiles(ctx context.Context, repo string) ([]string, error) {
 	return files, nil
 }
 
+// ListWorktreeFiles lists the working tree the way Git itself sees it: tracked
+// files plus untracked files that no exclude rule covers
+// (`git ls-files --cached --others --exclude-standard`). Delegating the exclude
+// decision to Git is the point — it applies nested .gitignore files,
+// .git/info/exclude, per-worktree excludes, and core.excludesFile (global and
+// system), none of which a hand-rolled reader of the repository-root .gitignore
+// can see. Paths are relative to repo and returned in Git's order with
+// duplicates removed; a non-git directory returns an error so callers can fall
+// back to a filesystem walk.
+func ListWorktreeFiles(ctx context.Context, repo string) ([]string, error) {
+	out, err := run(ctx, repo, "git", "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+	if err != nil {
+		return nil, err
+	}
+	return splitNULPaths(out), nil
+}
+
+// ListIgnoredWorktreeFiles lists the untracked working-tree files Git's exclude
+// rules *do* cover (`git ls-files --others --ignored --exclude-standard`). It
+// exists for one caller: an explicit include-file whose negations re-include
+// paths the project gitignores. Nothing else should enumerate ignored content —
+// that is the tree whose size is the reason the exclude rules exist.
+func ListIgnoredWorktreeFiles(ctx context.Context, repo string) ([]string, error) {
+	out, err := run(ctx, repo, "git", "ls-files", "-z", "--others", "--ignored", "--exclude-standard")
+	if err != nil {
+		return nil, err
+	}
+	return splitNULPaths(out), nil
+}
+
+func splitNULPaths(out string) []string {
+	fields := strings.Split(out, "\x00")
+	files := make([]string, 0, len(fields))
+	seen := make(map[string]struct{}, len(fields))
+	for _, path := range fields {
+		if path == "" {
+			continue
+		}
+		if _, exists := seen[path]; exists {
+			continue
+		}
+		seen[path] = struct{}{}
+		files = append(files, path)
+	}
+	return files
+}
+
 // GrepIndexMatches returns a bounded sample of matched terms per tracked
 // worktree file. Fixed strings and NUL-delimited paths keep query terms and
 // unusual paths from changing grep semantics.
@@ -134,6 +183,9 @@ func GrepTreeMatches(ctx context.Context, repo, treeish string, patterns []strin
 // every possible match in the tree -- callers that need every matching file
 // regardless of Git's binary heuristic must use GrepTreePathsIncludingBinary.
 func GrepTreePaths(ctx context.Context, repo, treeish string, patterns []string) ([]string, error) {
+	if treeish == "" {
+		return nil, errors.New("git grep treeish cannot be empty")
+	}
 	return grepTreePaths(ctx, repo, treeish, patterns, true, false)
 }
 
@@ -146,6 +198,9 @@ func GrepTreePaths(ctx context.Context, repo, treeish string, patterns []string)
 // raw file content directly and does not care whether Git thinks the file is
 // binary.
 func GrepTreePathsIncludingBinary(ctx context.Context, repo, treeish string, patterns []string) ([]string, error) {
+	if treeish == "" {
+		return nil, errors.New("git grep treeish cannot be empty")
+	}
 	return grepTreePaths(ctx, repo, treeish, patterns, false, false)
 }
 
@@ -158,13 +213,27 @@ func GrepTreePathsIncludingBinary(ctx context.Context, repo, treeish string, pat
 // path and is orders of magnitude slower with hundreds of patterns (measured
 // 5s vs 0.06s on a ~2.6k-file tree with 234 patterns).
 func GrepTreePathsCaseSensitiveIncludingBinary(ctx context.Context, repo, treeish string, patterns []string) ([]string, error) {
-	return grepTreePaths(ctx, repo, treeish, patterns, false, true)
-}
-
-func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string, textOnly, caseSensitive bool) ([]string, error) {
 	if treeish == "" {
 		return nil, errors.New("git grep treeish cannot be empty")
 	}
+	return grepTreePaths(ctx, repo, treeish, patterns, false, true)
+}
+
+// GrepFixedStringPaths returns every file containing one exact, case-sensitive string. An empty
+// treeish greps the working tree (what a worktree search indexes); a non-empty one greps that
+// immutable tree.
+//
+// It exists for the repository-wide literal lookup in search: one needle, exact case, and the
+// caller reads the matched files itself to get line numbers, so no output parsing beyond the
+// NUL-delimited path list this package already does.
+func GrepFixedStringPaths(ctx context.Context, repo, treeish, pattern string) ([]string, error) {
+	if pattern == "" {
+		return []string{}, nil
+	}
+	return grepTreePaths(ctx, repo, treeish, []string{pattern}, false, true)
+}
+
+func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string, textOnly, caseSensitive bool) ([]string, error) {
 	if strings.HasPrefix(treeish, "-") || strings.ContainsRune(treeish, '\x00') {
 		return nil, fmt.Errorf("invalid git grep treeish %q", treeish)
 	}
@@ -191,7 +260,12 @@ func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string,
 	if patternCount == 0 {
 		return []string{}, nil
 	}
-	args = append(args, treeish, "--")
+	// An empty treeish means the working tree: Git is given no revision at all, and the paths it
+	// prints then carry no `<treeish>:` display prefix.
+	if treeish != "" {
+		args = append(args, treeish)
+	}
+	args = append(args, "--")
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = repo
 	var stdout bytes.Buffer
@@ -209,7 +283,10 @@ func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string,
 		}
 		return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
 	}
-	prefix := treeish + ":"
+	prefix := ""
+	if treeish != "" {
+		prefix = treeish + ":"
+	}
 	data := stdout.Bytes()
 	paths := make([]string, 0, bytes.Count(data, []byte{0}))
 	for len(data) > 0 {
@@ -218,7 +295,7 @@ func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string,
 			return nil, errors.New("git grep returned a non-NUL-terminated path")
 		}
 		displayed := string(data[:pathEnd])
-		if !strings.HasPrefix(displayed, prefix) {
+		if prefix != "" && !strings.HasPrefix(displayed, prefix) {
 			return nil, fmt.Errorf("git grep returned path %q without treeish prefix %q", displayed, prefix)
 		}
 		paths = append(paths, strings.TrimPrefix(displayed, prefix))
@@ -469,13 +546,60 @@ func isMissingPathDiagnostic(stderr string) bool {
 // `git cat-file --batch` process. It avoids spawning one git process per file
 // while preserving HEAD-tree snapshot semantics.
 type BatchFileReader struct {
-	rev    string
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Reader
-	stderr *bytes.Buffer
-	mu     sync.Mutex
-	closed bool
+	rev          string
+	cmd          *exec.Cmd
+	stdin        io.WriteCloser
+	stdout       *bufio.Reader
+	stderr       *bytes.Buffer
+	mu           sync.Mutex
+	closed       bool
+	maxBytes     int64
+	oversize     map[string]OversizeBlob
+	oversizeScan func(path string, chunk []byte)
+}
+
+// OversizeBlob describes a blob ReadFile refused to materialize because it
+// exceeds the reader's cap. The hash and line count are computed while the blob
+// is streamed past and discarded, so a caller can still record the file's
+// identity and shape without ever holding its bytes.
+type OversizeBlob struct {
+	Bytes int64
+	Hash  string
+	Lines int
+}
+
+// SetOversizeScanner registers a callback invoked with successive chunks of an OVERSIZE blob as it
+// streams past the reader and is discarded. It exists so a caller can decide whether a blob it will
+// never hold was nonetheless relevant: the dependents scan needs to know whether an oversized file
+// contained a changed name, because warning about a file that never was a candidate is noise. The
+// bytes are BORROWED - the callback must not retain the slice. Chunks arrive in order and may split
+// a token, so a caller matching multi-byte patterns must carry its own overlap.
+func (r *BatchFileReader) SetOversizeScanner(scan func(path string, chunk []byte)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.oversizeScan = scan
+}
+
+// SetMaxBytes caps the blob size ReadFile will materialize. A larger blob is
+// streamed past the reader into a digest and discarded: ReadFile reports it as
+// unavailable and OversizeBlob then returns its size, content hash and line
+// count. Without a cap one oversized blob costs its own size twice (the byte
+// slice plus the string conversion), so the reader's memory is set by the
+// largest object in the revision rather than by anything the caller chose. Zero
+// or negative removes the cap.
+func (r *BatchFileReader) SetMaxBytes(maxBytes int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.maxBytes = maxBytes
+}
+
+// OversizeBlob returns what ReadFile learned about a blob it refused to
+// materialize, so the caller can record the file without its content.
+func (r *BatchFileReader) OversizeBlob(path string) (OversizeBlob, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	blob, ok := r.oversize[path]
+	return blob, ok
 }
 
 func NewBatchFileReader(ctx context.Context, repo, rev string) (*BatchFileReader, error) {
@@ -533,6 +657,26 @@ func (r *BatchFileReader) ReadFile(path string) (string, bool, error) {
 		if _, err := io.CopyN(io.Discard, r.stdout, size+1); err != nil {
 			return "", false, err
 		}
+		return "", false, nil
+	}
+	if r.maxBytes > 0 && size > r.maxBytes {
+		var src io.Reader = io.LimitReader(r.stdout, size)
+		if scan := r.oversizeScan; scan != nil {
+			// The same single pass the digest already makes: the scanner sees the bytes on their
+			// way to being discarded, so relevance costs no extra read and no retained memory.
+			src = io.TeeReader(src, oversizeScanWriter{path: path, scan: scan})
+		}
+		digest, err := filedigest.Stream(src)
+		if err != nil {
+			return "", false, err
+		}
+		if _, err := io.CopyN(io.Discard, r.stdout, 1); err != nil {
+			return "", false, err
+		}
+		if r.oversize == nil {
+			r.oversize = map[string]OversizeBlob{}
+		}
+		r.oversize[path] = OversizeBlob{Bytes: digest.Bytes, Hash: digest.Hash, Lines: digest.Lines}
 		return "", false, nil
 	}
 	content := make([]byte, size)
@@ -636,4 +780,16 @@ func runWithStderr(ctx context.Context, dir, name string, args ...string) (strin
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 	return stdout.String(), strings.TrimSpace(stderr.String()), err
+}
+
+// oversizeScanWriter adapts a chunk callback to io.Writer so it can sit in the TeeReader on the
+// oversize path. Write must not retain p, and the callback is documented not to.
+type oversizeScanWriter struct {
+	path string
+	scan func(path string, chunk []byte)
+}
+
+func (w oversizeScanWriter) Write(p []byte) (int, error) {
+	w.scan(w.path, p)
+	return len(p), nil
 }

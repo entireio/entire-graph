@@ -125,7 +125,7 @@ entire-graph has **no watch mode, no daemon, and no file-watcher**, and it needs
 There are two modes, and neither can go stale on you:
 
 - **Working tree (default).** Every `search`, `neighbors`, and `snapshot` re-reads your live files, so results always include your uncommitted edits. Nothing to refresh — just run the command again.
-- **Committed tree (`--head`).** Results are cached by the git **tree hash** (under `ENTIRE_PLUGIN_DATA_DIR`, or an explicit `--cache-dir`). Make a new commit and the tree hash changes, so the cache **automatically misses and rebuilds** — you can never read a committed-tree answer that is stale for that commit. `--no-cache` disables the cache entirely.
+- **Committed tree (`--head`).** Results are cached by the git **tree hash**. The cache directory defaults to the platform's per-user cache directory (`~/Library/Caches/entire-graph` on macOS, `$XDG_CACHE_HOME/entire-graph` or `~/.cache/entire-graph` elsewhere); `--cache-dir` and `ENTIRE_PLUGIN_DATA_DIR` override it, in that order. Make a new commit and the tree hash changes, so the cache **automatically misses and rebuilds** — you can never read a committed-tree answer that is stale for that commit. `--no-cache` disables the cache entirely. Caching only ever changes latency, never results: measured on this repository, a cold `--head --profile full` search is 9.2s wall and the same query warm is 1.0s, with output byte-identical to `--no-cache`.
 
 To warm the cache for a large repo before a latency-sensitive session, prebuild it once:
 
@@ -175,11 +175,49 @@ Running outside an Entire session? Point the plugin at a repo with `--repo .` (o
 | `entire graph doctor --json` | Environment, repo resolution, plugin data dir, `no_egress=true` |
 | `entire graph version [--json]` | Provider name and plugin version |
 
+### 🔍 How `search` ranks (file-class prior + duplicate collapsing)
+
+`search` answers a *code* question: the caller's next action is an edit to a source file. Two
+classes of result are systematically over-scored by a body-text match and almost never the edit
+site, so both are corrected explicitly:
+
+| Class | Examples | Prior |
+|---|---|---|
+| source | `src/**`, headers, any parsed language file | `1.0` |
+| documentation | `.md` `.mdx` `.rst` `.adoc` `.txt`, `docs/`, `website/`, `versioned_docs/`, README, CHANGELOG, man pages | `0.5` |
+| vendored | `vendor/`, `node_modules/`, `third_party/`, `site-packages/` | `0.5` |
+| generated | `dist/`, `generated/`, `single_include/`, `*-lock.json`, `Cargo.lock` | `0.5` |
+| example | `examples/`, `samples/`, `demo/` | `0.75` |
+
+The prior is a **multiplier on the positive part of a hit's score, never a filter**. `0.5` means
+"a documentation hit has to be twice as relevant as the best source hit to outrank it" — a doc
+still ranks first when it is genuinely the only match, and the prior is switched off completely
+when the query itself asks for that class (`documentation`, `readme`, `changelog`, `example`,
+`dist`, `vendored`, …). Demoted hits are labelled `doc-prior` / `vendored-prior` /
+`generated-prior` / `example-prior` in `signals`.
+
+**Near-duplicate collapsing.** Repositories carry deliberate copies of the same content —
+versioned documentation trees (`version-2.x/x` beside `version-3.0.1/x`), vendored snapshots,
+generated mirrors — and every copy scores identically, so one document can consume the whole
+result budget. Copies are merged into the best-ranked one, which reports a `+N similar` signal;
+the freed slots go to genuinely different code. Collapsing requires distinct files with the same
+basename, outside different monorepo units, and either identical normalized region text or
+paths equal modulo version-like segments with ≥ 90% token overlap.
+
 Full flags and the agent-facing operating guide are in **[AGENTS.md](AGENTS.md)**. Diff commands print human-readable text by default and structured output with `--json`:
 
-When a neighbor lookup by name is ambiguous, the result includes each
-definition's stable `compound-v1` ID. Pass that ID back to `--symbol` to select
-an overload that a file path or qualified name cannot distinguish.
+When a neighbor lookup by name is ambiguous, each definition is listed with the
+narrowest selector that picks it out — `--symbol NAME --file <path> --line <n>`,
+plus `--kind <kind>` when two records share a name and a line. Copy that
+selector verbatim.
+
+`--symbol` also accepts a definition's stable `compound-v1` ID
+(`repoKey:language:path:kind:qualifiedName`, with a `#sig:` suffix for
+overloads), which `symbols --format ndjson` emits. An exact ID match wins over
+every other filter — it already encodes the file and kind, so a stale `--file`
+cannot veto it — and it is the one selector that survives edits shifting line
+numbers. The ambiguity listing prints selectors rather than IDs because an ID
+repeats the path and name the same line already shows.
 
 ```text
 Semantic changes HEAD~1..HEAD
@@ -251,7 +289,7 @@ Savings scale with symbol connectivity: single-digit for narrow symbols, 280x+ f
 - **Semantic diff:** about 0.1s for a typical `HEAD~1..HEAD` on redis.
 - **Full-graph build:** linear in repository size; 23K relations in 1.5s up to 2.27M relations in 25.6s across the repos above.
 - **Streaming output:** `snapshot` emits records as it parses, so memory stays bounded on very large repositories.
-- **Cached committed-tree search:** reuses a tree-keyed compressed index across invocations when `ENTIRE_PLUGIN_DATA_DIR` is set, so repeated queries on an unchanged tree skip re-parsing. A complete prepared index derives the exact query-selected view, so relation expansion cannot escape that file set.
+- **Cached committed-tree search:** reuses a tree-keyed compressed index across invocations, in the platform's per-user cache directory unless `--cache-dir`/`ENTIRE_PLUGIN_DATA_DIR` redirect it, so repeated queries on an unchanged tree skip re-parsing. The working tree is never cached. A complete prepared index derives the exact query-selected view, so relation expansion cannot escape that file set.
 - **Explicit preindex:** `index --head` builds and verifies that query-independent artifact before latency-sensitive work; cached `search` and `neighbors` calls then report the hit directly.
 
 Absolute numbers are environment-sensitive (measured on Apple Silicon). Read them as relative signals and reproduce locally with the harness.

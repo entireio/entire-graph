@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -25,6 +24,8 @@ type neighborFlags struct {
 	Repo            string
 	Symbol          string
 	File            string
+	Line            int
+	Kind            string
 	Format          string
 	Profile         string
 	Relation        string
@@ -48,7 +49,12 @@ type neighborEndpoint struct {
 	Kind          string `json:"kind,omitempty"`
 	FilePath      string `json:"file_path,omitempty"`
 	StartLine     int    `json:"start_line,omitempty"`
-	External      bool   `json:"external,omitempty"`
+	// EndLine closes the definition span. Reported so one answer can state both
+	// the definition line and the span it covers, instead of leaving a reader to
+	// reconcile a bare line number here against a line range from `search`.
+	EndLine  int    `json:"end_line,omitempty"`
+	Language string `json:"language,omitempty"`
+	External bool   `json:"external,omitempty"`
 }
 
 type neighborEdge struct {
@@ -59,6 +65,10 @@ type neighborEdge struct {
 	Resolution string           `json:"resolution,omitempty"`
 	Reason     string           `json:"reason,omitempty"`
 	Evidence   []sem.Evidence   `json:"evidence,omitempty"`
+	// CallSite is where the call is actually written, resolved from the caller's
+	// body. Nil when it could not be resolved, in which case the endpoint's
+	// definition line is all this answer knows.
+	CallSite *callSite `json:"call_site,omitempty"`
 }
 
 type neighborPath struct {
@@ -75,15 +85,25 @@ type neighborFocus struct {
 }
 
 type neighborResponse struct {
-	FormatVersion          int                    `json:"format_version"`
-	RepoRoot               string                 `json:"repo_root"`
-	Commit                 string                 `json:"commit,omitempty"`
-	Tree                   string                 `json:"tree,omitempty"`
-	Profile                string                 `json:"profile"`
-	Relation               string                 `json:"relation"`
-	Query                  string                 `json:"query"`
-	File                   string                 `json:"file,omitempty"`
-	IndexCacheHit          bool                   `json:"index_cache_hit"`
+	FormatVersion int    `json:"format_version"`
+	RepoRoot      string `json:"repo_root"`
+	Commit        string `json:"commit,omitempty"`
+	Tree          string `json:"tree,omitempty"`
+	Profile       string `json:"profile"`
+	Relation      string `json:"relation"`
+	// Direction echoes which half of the adjacency was asked for. Without it a
+	// reader cannot tell an empty section from a section that was never queried.
+	Direction     string `json:"direction"`
+	Query         string `json:"query"`
+	File          string `json:"file,omitempty"`
+	Line          int    `json:"line,omitempty"`
+	IndexCacheHit bool   `json:"index_cache_hit"`
+	// IndexCacheDisabled records that this run had nowhere to store the index it
+	// built, so the next relation query pays the same cost again. Relation verbs
+	// index the WHOLE repository (search only parses its candidate files), which
+	// makes that difference tens of seconds on a large repo — a cost the CLI
+	// surface otherwise never states.
+	IndexCacheDisabled     bool                   `json:"index_cache_disabled,omitempty"`
 	IndexLatencyMS         int64                  `json:"index_latency_ms"`
 	QueryLatencyMS         int64                  `json:"query_latency_ms"`
 	TotalLatencyMS         int64                  `json:"total_latency_ms"`
@@ -96,6 +116,9 @@ type neighborResponse struct {
 	PartialFailures        []sem.PartialFailure   `json:"partial_failures"`
 	Stats                  sem.ProviderStats      `json:"stats"`
 	Completeness           sem.CompletenessReport `json:"completeness"`
+	// CompletenessScope is the query-relative reading of the diagnostics above.
+	// The full lists stay untouched; this says which of them can matter here.
+	CompletenessScope completenessScope `json:"completeness_scope"`
 
 	// endpointTruncated distinguishes a bounded neighbor list from the JSON-only
 	// explicit path expansion. Agent output can express the full Cartesian path
@@ -116,10 +139,7 @@ func runNeighbors(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	cacheDir := flags.CacheDir
-	if cacheDir == "" {
-		cacheDir = opts.Env.PluginDataDir
-	}
+	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
 	totalStarted := time.Now()
 	indexStarted := totalStarted
 	snapshot, cacheHit, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
@@ -135,8 +155,12 @@ func runNeighbors(ctx context.Context, opts Options, args []string) error {
 	indexLatency := time.Since(indexStarted)
 	queryStarted := time.Now()
 	response := buildNeighborResponse(snapshot, flags)
+	// Call-site resolution reads the caller's source, so it needs the repo on
+	// disk. It runs after the graph query and is bounded by the answer's size.
+	annotateNeighborCallSites(&response, newRepoLineReader(snapshot.Header.RepoRoot))
 	queryLatency := time.Since(queryStarted)
 	response.IndexCacheHit = cacheHit
+	response.IndexCacheDisabled = cacheDir == "" || flags.DisableCache
 	response.IndexLatencyMS = indexLatency.Milliseconds()
 	response.QueryLatencyMS = queryLatency.Milliseconds()
 	response.TotalLatencyMS = time.Since(totalStarted).Milliseconds()
@@ -188,6 +212,18 @@ func parseNeighborFlags(args []string) (neighborFlags, error) {
 				return flags, valueErr
 			}
 			flags.File = item
+		case "--line":
+			parsed, next, parseErr := searchPositiveIntFlag(args, index)
+			if parseErr != nil {
+				return flags, parseErr
+			}
+			flags.Line, index = parsed, next
+		case "--kind":
+			item, valueErr := value()
+			if valueErr != nil {
+				return flags, valueErr
+			}
+			flags.Kind = item
 		case "--format":
 			item, valueErr := value()
 			if valueErr != nil {
@@ -289,33 +325,8 @@ func buildNeighborResponse(snapshot sem.ProviderSnapshot, flags neighborFlags) n
 	for _, external := range snapshot.Externals {
 		endpoints[external.ID] = endpointForExternal(external)
 	}
-	focuses := make([]sem.SymbolRecord, 0)
-	query := strings.TrimSpace(flags.Symbol)
-	fileFilter := normalizeNeighborFileFilter(flags.File, snapshot.Header.RepoRoot)
-	exactIDFound := false
-	for _, symbol := range snapshot.Symbols {
-		if symbol.ID != query {
-			continue
-		}
-		// A stable symbol ID already encodes its defining file, so a stale or
-		// differently spelled --file must never veto the definition the ID
-		// names: the ID is the more precise selector, and an ID the tool
-		// itself printed has to keep resolving. --file only narrows name and
-		// qualified-name lookups below.
-		exactIDFound = true
-		focuses = append(focuses, symbol)
-	}
-	if !exactIDFound {
-		for _, symbol := range snapshot.Symbols {
-			if !strings.EqualFold(symbol.Name, query) && !strings.EqualFold(symbol.QualifiedName, query) {
-				continue
-			}
-			if fileFilter != "" && !strings.EqualFold(symbol.FilePath, fileFilter) {
-				continue
-			}
-			focuses = append(focuses, symbol)
-		}
-	}
+	ref := parseSymbolRef(flags.Symbol, flags.File, flags.Line, flags.Kind, snapshot.Header.RepoRoot, snapshotFilePaths(snapshot))
+	focuses := resolveFocusSymbols(snapshot.Symbols, ref)
 	sort.Slice(focuses, func(left, right int) bool {
 		if focuses[left].FilePath != focuses[right].FilePath {
 			return focuses[left].FilePath < focuses[right].FilePath
@@ -341,8 +352,10 @@ func buildNeighborResponse(snapshot sem.ProviderSnapshot, flags neighborFlags) n
 		Tree:                  snapshot.Header.Tree,
 		Profile:               snapshot.Header.Profile,
 		Relation:              flags.Relation,
+		Direction:             flags.Direction,
 		Query:                 flags.Symbol,
-		File:                  flags.File,
+		File:                  ref.File,
+		Line:                  ref.Line,
 		Truncated:             focusMatchesTruncated,
 		FocusMatchesTotal:     focusMatchesTotal,
 		FocusMatchesTruncated: focusMatchesTruncated,
@@ -351,6 +364,7 @@ func buildNeighborResponse(snapshot sem.ProviderSnapshot, flags neighborFlags) n
 		PartialFailures:       partialFailures,
 		Stats:                 snapshot.Header.Stats,
 		Completeness:          snapshot.Header.Completeness,
+		CompletenessScope:     buildCompletenessScope(snapshot, focusQueryLanguage(focuses)),
 	}
 	if focusMatchesTotal > 1 {
 		response.DisambiguationRequired = true
@@ -443,39 +457,80 @@ func endpointForSymbol(symbol sem.SymbolRecord) neighborEndpoint {
 	return neighborEndpoint{
 		ID: symbol.ID, Name: symbol.Name, QualifiedName: symbol.QualifiedName,
 		Kind: symbol.Kind, FilePath: symbol.FilePath, StartLine: symbol.StartLine,
+		EndLine: symbol.EndLine, Language: symbol.Language,
 	}
 }
 
 func endpointForFile(file sem.FileRecord) neighborEndpoint {
 	return neighborEndpoint{
 		ID: file.ID, Name: filepath.Base(file.Path), Kind: "file", FilePath: file.Path,
+		Language: file.Language,
 	}
 }
 
-// normalizeNeighborFileFilter canonicalizes a user-supplied --file argument to
-// the repo-relative slash form snapshot symbol paths use: backslashes become
-// forward slashes, "./" prefixes and redundant separators are cleaned away,
-// and an absolute path inside the repository is made repo-relative.
-func normalizeNeighborFileFilter(raw, repoRoot string) string {
-	cleaned := strings.ReplaceAll(strings.TrimSpace(raw), `\`, "/")
-	if cleaned == "" {
+// focusQueryLanguage is the language a relation answer is about: the language of
+// the focus symbol. It scopes the coverage report, because relations in this
+// graph do not cross language boundaries, so a failure in another language
+// cannot have removed a fact this answer needed.
+func focusQueryLanguage(focuses []sem.SymbolRecord) string {
+	if len(focuses) != 1 {
 		return ""
 	}
-	cleaned = path.Clean(cleaned)
-	root := path.Clean(strings.ReplaceAll(strings.TrimSpace(repoRoot), `\`, "/"))
-	if root != "" && root != "." && root != "/" {
-		if strings.EqualFold(cleaned, root) {
-			return ""
-		}
-		if len(cleaned) > len(root) && strings.EqualFold(cleaned[:len(root)], root) && cleaned[len(root)] == '/' {
-			cleaned = cleaned[len(root)+1:]
-		}
-	}
-	if cleaned == "." {
-		return ""
-	}
-	return cleaned
+	return focuses[0].Language
 }
+
+// annotateNeighborCallSites resolves, for every incoming call edge, the line the
+// call is actually written on plus the conditions in force there. Outgoing edges
+// are deliberately left alone: their endpoint's definition line IS the useful
+// location, and the call site is inside the focus symbol the reader already has.
+func annotateNeighborCallSites(response *neighborResponse, read lineReader) {
+	if response == nil || read == nil {
+		return
+	}
+	for matchIndex := range response.Matches {
+		// The callee as written at the call site is normally in the evidence
+		// detail; when it is absent, the focus symbol's own name is what a
+		// caller must have written, not the raw --symbol argument (which may be
+		// a `<file>:<line>` selector).
+		focusName := response.Matches[matchIndex].Symbol.Name
+		if focusName == "" {
+			focusName = response.Query
+		}
+		for edgeIndex := range response.Matches[matchIndex].Incoming {
+			edge := &response.Matches[matchIndex].Incoming[edgeIndex]
+			if !isCallRelation(edge.Relation) {
+				continue
+			}
+			filePath, start, end, detail, ok := callEvidenceSpan(edge.Evidence)
+			if !ok {
+				continue
+			}
+			if filePath == "" {
+				filePath = edge.Endpoint.FilePath
+			}
+			token := callTokenFromDetail(detail, focusName)
+			if site, resolved := resolveCallSite(read, filePath, token, start, end); resolved {
+				edge.CallSite = &site
+			}
+		}
+	}
+}
+
+// isCallRelation reports whether a relation type is a call, so only call edges
+// get a call site. The set mirrors neighborRelationMatches' call family.
+func isCallRelation(relationType string) bool {
+	switch relationType {
+	case "CALLS", "CONSTRUCTS", "ASYNC_CALLS":
+		return true
+	default:
+		return false
+	}
+}
+
+// The --file canonicalizer that used to live here is now normalizeSymbolRefFile in
+// symbolref.go: `def`, `neighbors` and `impact` all resolve one definition through the same
+// symbolRef, so the path spellings a caller might type have to normalize identically for all
+// three rather than only for the verb that grew the fix.
 
 func neighborEndpointAllowed(endpoint neighborEndpoint, flags neighborFlags) bool {
 	if flags.InternalOnly && endpoint.External {
@@ -658,39 +713,45 @@ func writeAgentNeighborsFull(out io.Writer, response neighborResponse) error {
 	fmt.Fprintf(out, "Index: cache-%s (%dms) | Query: %dms | Total: %dms\n",
 		cacheState, response.IndexLatencyMS, response.QueryLatencyMS, response.TotalLatencyMS,
 	)
+	writeIndexCostNotice(out, response.IndexCacheHit, response.IndexCacheDisabled)
 	writeAgentNeighborCompleteness(out, response)
 	if len(response.Matches) == 0 {
-		_, err := fmt.Fprintf(out, "No symbols matched %q. If a --file filter is set, drop it or rerun with --symbol <id> from a search result.\n", response.Query)
-		return err
+		writeNoFocusMatch(out, response.Query, response.File, response.Line)
+		return nil
 	}
 	if response.DisambiguationRequired {
-		fmt.Fprintf(out,
-			"Ambiguous symbol %q matched %d definitions; rerun with --symbol <id> using an ID shown below.\n",
-			response.Query, response.FocusMatchesTotal,
-		)
+		definitions := make([]neighborEndpoint, 0, len(response.Matches))
 		for _, match := range response.Matches {
-			fmt.Fprintf(out, "- %s [id: %s]\n", formatNeighborEndpoint(match.Symbol), match.Symbol.ID)
+			definitions = append(definitions, match.Symbol)
 		}
-		if response.FocusMatchesTruncated {
-			fmt.Fprintf(out, "- ... %d more definitions; increase --limit to list them\n",
-				response.FocusMatchesTotal-len(response.Matches),
-			)
-		}
+		writeDisambiguationListing(out, response.Query, response.FocusMatchesTotal, definitions)
 		return nil
 	}
 	if response.FocusMatchesTruncated {
 		fmt.Fprintf(out,
-			"Focus matches truncated: showing the first %d of %d in file/line order; use --file to select a definition.\n",
+			"Focus matches truncated: showing the first %d of %d in file/line order; use --symbol <file>:<line> to select a definition.\n",
 			len(response.Matches), response.FocusMatchesTotal,
 		)
 	}
+	budget := newCallContextBudgeter()
 	for index, match := range response.Matches {
 		if index > 0 {
 			fmt.Fprintln(out)
 		}
-		fmt.Fprintf(out, "Focus: %s\n", formatNeighborEndpoint(match.Symbol))
-		writeNeighborEdgeList(out, "Callers", match.Incoming)
-		writeNeighborEdgeList(out, "Callees", match.Outgoing)
+		fmt.Fprintf(out, "Focus: %s\n", formatNeighborFocus(match.Symbol))
+		// A section that was never queried must not be printed as an empty
+		// result: "Callees: none" for a --direction in query is a false
+		// statement about the graph, and the reader has no way to tell.
+		if neighborDirectionQueried(response.Direction, "in") {
+			writeNeighborEdgeList(out, "Callers", match.Incoming, budget)
+		} else {
+			writeNeighborSectionNotQueried(out, "Callers", "out")
+		}
+		if neighborDirectionQueried(response.Direction, "out") {
+			writeNeighborEdgeList(out, "Callees", match.Outgoing, budget)
+		} else {
+			writeNeighborSectionNotQueried(out, "Callees", "in")
+		}
 		if len(match.Paths) > 0 {
 			writeNeighborPathFamily(out, match)
 		}
@@ -705,8 +766,11 @@ func compactAgentNeighbors(response neighborResponse, budget int) []byte {
 	if budget <= 0 {
 		return nil
 	}
-	coverageIssue := len(response.Warnings) > 0 || len(response.PartialFailures) > 0 ||
-		(response.Stats.CompletenessLevel != "" && response.Stats.CompletenessLevel != "ok")
+	// The coverage marker is scoped: a parse failure in a language this answer
+	// cannot contain a relation from is not a reason to distrust the answer.
+	scope := completenessScopeOrAll(response.CompletenessScope,
+		response.Warnings, response.PartialFailures, response.Stats)
+	coverageIssue := len(scope.InScopeWarnings) > 0 || scope.LanguageFailed > 0
 	marker := "!output-truncated"
 	if coverageIssue {
 		marker += "/coverage"
@@ -733,16 +797,26 @@ func compactAgentNeighbors(response neighborResponse, budget int) []byte {
 
 	if len(response.Matches) == 0 {
 		appendVariant(
-			fmt.Sprintf("No symbols matched %q; try --file.\n", response.Query),
+			fmt.Sprintf("No symbols matched %q; check the name with `search`.\n", response.Query),
 			fmt.Sprintf("No match: %s\n", response.Query),
 		)
 	} else if response.DisambiguationRequired {
 		appendVariant(
-			fmt.Sprintf("Ambiguous %q: %d definitions; use --symbol <id> below.\n", response.Query, response.FocusMatchesTotal),
-			fmt.Sprintf("Ambiguous: %d; use an ID below.\n", response.FocusMatchesTotal),
+			fmt.Sprintf("Ambiguous %q: %d definitions; rerun with the selector shown.\n", response.Query, response.FocusMatchesTotal),
+			fmt.Sprintf("Ambiguous: %d; use --symbol <file>:<line>.\n", response.FocusMatchesTotal),
 		)
+		definitions := make([]neighborEndpoint, 0, len(response.Matches))
 		for _, match := range response.Matches {
-			appendVariant(fmt.Sprintf("- %s [id: %s]\n", formatNeighborEndpoint(match.Symbol), match.Symbol.ID))
+			definitions = append(definitions, match.Symbol)
+		}
+		selectors := disambiguationSelectors(definitions)
+		for index, definition := range definitions {
+			line := "- " + formatNeighborEndpoint(definition)
+			if selectors[index] != "" {
+				appendVariant(line+"  "+selectors[index]+"\n", line+"\n")
+				continue
+			}
+			appendVariant(line + "\n")
 		}
 	} else {
 		focus := response.Matches[0].Symbol
@@ -753,19 +827,14 @@ func compactAgentNeighbors(response neighborResponse, budget int) []byte {
 		)
 	}
 
+	// Under a hard byte cap, only the diagnostics that could have affected THIS
+	// answer are worth a line; the rest is one count.
+	appendVariant(compactCompletenessLine(scope, response.Stats))
 	if coverageIssue {
-		level := response.Stats.CompletenessLevel
-		if level == "" {
-			level = "degraded"
-		}
-		appendVariant(
-			fmt.Sprintf("Coverage: %s %d/%d files W%d F%d\n", level, response.Stats.ParsedFiles, response.Stats.Files, len(response.Warnings), len(response.PartialFailures)),
-			fmt.Sprintf("C:%s %d/%d W%d F%d\n", level, response.Stats.ParsedFiles, response.Stats.Files, len(response.Warnings), len(response.PartialFailures)),
-		)
-		for _, warning := range response.Warnings {
+		for _, warning := range scope.InScopeWarnings {
 			appendVariant(fmt.Sprintf("W %s%s\n", warning.Code, agentDiagnosticPath(warning.FilePath)))
 		}
-		for _, failure := range response.PartialFailures {
+		for _, failure := range scope.InScopeFailures {
 			appendVariant(fmt.Sprintf("F %s%s\n", failure.Code, agentDiagnosticPath(failure.FilePath)))
 		}
 	}
@@ -786,6 +855,15 @@ func compactAgentNeighbors(response neighborResponse, budget int) []byte {
 		for _, edge := range match.Outgoing {
 			appendVariant(compactNeighborEdge(">", edge))
 		}
+		// Even at the tightest cap, an unqueried direction must not read as an
+		// empty one. `<-only` / `>-only` costs 8 bytes and prevents the reader
+		// concluding the graph has no callees.
+		if !neighborDirectionQueried(response.Direction, "out") {
+			appendVariant(">?not-queried\n")
+		}
+		if !neighborDirectionQueried(response.Direction, "in") {
+			appendVariant("<?not-queried\n")
+		}
 		if len(match.Paths) > 0 {
 			pathCount := len(match.Incoming) * len(match.Outgoing)
 			appendVariant(fmt.Sprintf("Paths: %dx1x%d=%d (endpoints above)\n", len(match.Incoming), len(match.Outgoing), pathCount))
@@ -799,58 +877,34 @@ func compactNeighborEdge(direction string, edge neighborEdge) string {
 	if edge.Resolution != "" {
 		annotation = " [" + edge.Resolution + "]"
 	}
-	return fmt.Sprintf("%s %s%s\n", direction, formatNeighborEndpoint(edge.Endpoint), annotation)
+	// The call site is the location a reader needs; the definition line is
+	// still reported so the caller can be found as a symbol.
+	return fmt.Sprintf("%s %s%s\n", direction, formatCallSiteLocation(edge.Endpoint, edge.CallSite), annotation)
 }
 
 func writeAgentNeighborCompleteness(out io.Writer, response neighborResponse) {
-	writeCompletenessBlock(out, response.Warnings, response.PartialFailures, response.Stats)
+	writeScopedCompletenessBlock(out,
+		completenessScopeOrAll(response.CompletenessScope, response.Warnings, response.PartialFailures, response.Stats),
+		response.Warnings, response.PartialFailures, response.Stats)
 }
 
-// writeCompletenessBlock prints the shared coverage banner used by the
-// neighbors and impact text outputs. Silent on a clean "ok" run.
-func writeCompletenessBlock(out io.Writer, warnings []sem.ProviderWarning, partialFailures []sem.PartialFailure, stats sem.ProviderStats) {
-	if len(warnings) == 0 && len(partialFailures) == 0 &&
-		(stats.CompletenessLevel == "" || stats.CompletenessLevel == "ok") {
-		return
+// neighborDirectionQueried reports whether a --direction value asked for the
+// given half of the adjacency.
+func neighborDirectionQueried(requested, half string) bool {
+	if requested == "" {
+		// Absent direction means the caller did not scope the query (the flag
+		// default is "both"), so both halves were computed.
+		return true
 	}
-	level := stats.CompletenessLevel
-	if level == "" {
-		level = "degraded"
-	}
-	if stats.Files > 0 {
-		fmt.Fprintf(out, "Completeness: %s (%d/%d files parsed; %d warning%s; %d partial failure%s)\n",
-			level, stats.ParsedFiles, stats.Files,
-			len(warnings), pluralSuffix(len(warnings)),
-			len(partialFailures), pluralSuffix(len(partialFailures)),
-		)
-	} else {
-		fmt.Fprintf(out, "Completeness: %s (%d warning%s; %d partial failure%s)\n",
-			level, len(warnings), pluralSuffix(len(warnings)),
-			len(partialFailures), pluralSuffix(len(partialFailures)),
-		)
-	}
-	const maxAgentFailures = 3
-	warningsVisible, failuresVisible := agentDiagnosticVisibility(
-		len(warnings), len(partialFailures), maxAgentFailures,
-	)
-	for _, warning := range warnings[:warningsVisible] {
-		if warning.FilePath == "" {
-			fmt.Fprintf(out, "- warning %s\n", warning.Code)
-		} else {
-			fmt.Fprintf(out, "- warning %s: %s\n", warning.Code, warning.FilePath)
-		}
-	}
-	for _, failure := range partialFailures[:failuresVisible] {
-		if failure.FilePath == "" {
-			fmt.Fprintf(out, "- partial %s\n", failure.Code)
-		} else {
-			fmt.Fprintf(out, "- partial %s: %s\n", failure.Code, failure.FilePath)
-		}
-	}
-	visible := warningsVisible + failuresVisible
-	if omitted := len(warnings) + len(partialFailures) - visible; omitted > 0 {
-		fmt.Fprintf(out, "- ... %d more diagnostic%s in JSON output\n", omitted, pluralSuffix(omitted))
-	}
+	return requested == "both" || requested == half
+}
+
+// writeNeighborSectionNotQueried states that a section holds no result because
+// it was not asked for. It names the flag that would fill it, so a reader who
+// wanted both halves can get them in one more call rather than concluding the
+// graph is missing edges.
+func writeNeighborSectionNotQueried(out io.Writer, label, other string) {
+	fmt.Fprintf(out, "%s: not queried (--direction %s); rerun with --direction both to include them\n", label, other)
 }
 
 func writeNeighborPathFamily(out io.Writer, match neighborFocus) {
@@ -879,20 +933,24 @@ func pluralSuffix(count int) string {
 	return "s"
 }
 
-func writeNeighborEdgeList(out io.Writer, label string, edges []neighborEdge) {
+func writeNeighborEdgeList(out io.Writer, label string, edges []neighborEdge, budget *callContextBudgeter) {
 	fmt.Fprintf(out, "%s:\n", label)
 	if len(edges) == 0 {
 		fmt.Fprintln(out, "- none")
 		return
 	}
 	for _, edge := range edges {
-		fmt.Fprintf(out, "- %s", formatNeighborEndpoint(edge.Endpoint))
-		annotations := make([]string, 0, 3)
+		fmt.Fprintf(out, "- %s", formatNeighborEdgeLocation(edge))
+		annotations := make([]string, 0, 4)
 		if edge.Endpoint.Kind == "file" {
 			annotations = append(annotations, "file-level")
 		}
 		if edge.Relation != "CALLS" {
 			annotations = append(annotations, edge.Relation)
+		}
+		if edge.CallSite != nil && edge.CallSite.AdditionalSites > 0 {
+			annotations = append(annotations,
+				fmt.Sprintf("+%d more call site%s", edge.CallSite.AdditionalSites, pluralSuffix(edge.CallSite.AdditionalSites)))
 		}
 		if edge.Resolution != "" {
 			annotations = append(annotations, edge.Resolution)
@@ -901,7 +959,32 @@ func writeNeighborEdgeList(out io.Writer, label string, edges []neighborEdge) {
 			fmt.Fprintf(out, " [%s]", strings.Join(annotations, ", "))
 		}
 		fmt.Fprintln(out)
+		// Never inline a caller's body: a dispatch function can be thousands of
+		// lines. A window plus the enclosing conditions is orders of magnitude
+		// cheaper and answers the question the body was going to be read for.
+		writeCallContext(out, edge.CallSite, budget)
 	}
+}
+
+// formatNeighborEdgeLocation puts the CALL SITE in the primary location slot when
+// one was resolved, and still reports the definition line so the endpoint can be
+// looked up as a symbol.
+func formatNeighborEdgeLocation(edge neighborEdge) string {
+	return formatCallSiteLocation(edge.Endpoint, edge.CallSite)
+}
+
+// formatCallSiteLocation renders an endpoint at its call site, keeping the
+// definition line alongside — and only when the two differ, so a short function
+// that calls on its own definition line does not carry a duplicate number.
+func formatCallSiteLocation(endpoint neighborEndpoint, site *callSite) string {
+	if site == nil {
+		return formatNeighborEndpoint(endpoint)
+	}
+	name := endpointDisplayName(endpoint)
+	if site.Line == endpoint.StartLine && site.FilePath == endpoint.FilePath {
+		return fmt.Sprintf("%s (%s:%d)", name, site.FilePath, site.Line)
+	}
+	return fmt.Sprintf("%s (%s:%d, def :%d)", name, site.FilePath, site.Line, endpoint.StartLine)
 }
 
 func formatNeighborEndpoint(endpoint neighborEndpoint) string {
@@ -913,6 +996,19 @@ func formatNeighborEndpoint(endpoint neighborEndpoint) string {
 		return fmt.Sprintf("%s (%s:%d)", name, endpoint.FilePath, endpoint.StartLine)
 	}
 	return fmt.Sprintf("%s (%s)", name, endpoint.FilePath)
+}
+
+// formatNeighborFocus renders the symbol under query with BOTH numbers a reader
+// might see for it elsewhere, each labelled: `def=` is the line the definition
+// starts on (what a relation answer reports), `span=` is the range it covers
+// (what a ranked search result reports). Two unlabelled numbers for one symbol
+// in one session read as a contradiction; labelled, they are one fact.
+func formatNeighborFocus(endpoint neighborEndpoint) string {
+	base := formatNeighborEndpoint(endpoint)
+	if endpoint.StartLine <= 0 || endpoint.EndLine < endpoint.StartLine {
+		return base
+	}
+	return fmt.Sprintf("%s def=%d span=%d-%d", base, endpoint.StartLine, endpoint.StartLine, endpoint.EndLine)
 }
 
 func endpointDisplayName(endpoint neighborEndpoint) string {
