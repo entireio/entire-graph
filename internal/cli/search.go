@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -124,6 +125,21 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 	if path := strings.TrimSpace(opts.Env.PresearchPath); path != "" {
 		return echoPresearchPayload(opts.Stdout, path)
 	}
+	// The echo is decided before any work: a replayed payload must not pay for a repo resolution or
+	// an index build either. See searchSession for what the cap is worth and why it is an echo.
+	session, err := newSearchSession(opts.Env, opts.Stderr)
+	if err != nil {
+		return err
+	}
+	if session != nil {
+		if state, ok := session.echo(); ok {
+			if _, err := io.WriteString(opts.Stdout, searchEchoHeader(flags.Query, state.Query)); err != nil {
+				return err
+			}
+			_, err := io.WriteString(opts.Stdout, state.Payload)
+			return err
+		}
+	}
 	profile, err := parseProfile(flags.Profile)
 	if err != nil {
 		return err
@@ -170,19 +186,36 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 	if err := response.Validate(); err != nil {
 		return err
 	}
-	switch flags.Format {
+	// With a session active the payload is teed, so the echo replays the exact bytes this call
+	// handed the agent — the stored answer is the rendered output, not a re-render of the response.
+	out := opts.Stdout
+	var payload bytes.Buffer
+	if session != nil {
+		out = io.MultiWriter(opts.Stdout, &payload)
+	}
+	if err := writeSearchResponse(out, response, flags.Format, contextBudget); err != nil {
+		return err
+	}
+	if session != nil {
+		session.record(flags.Query, payload.Bytes())
+	}
+	return nil
+}
+
+func writeSearchResponse(out io.Writer, response sem.SearchResponse, format string, contextBudget int) error {
+	switch format {
 	case "json":
-		encoder := json.NewEncoder(opts.Stdout)
+		encoder := json.NewEncoder(out)
 		encoder.SetEscapeHTML(false)
 		return encoder.Encode(response)
 	case "ndjson":
-		return writeNdjsonSearch(opts.Stdout, response)
+		return writeNdjsonSearch(out, response)
 	case "text":
-		return writeTextSearch(opts.Stdout, response)
+		return writeTextSearch(out, response)
 	case "agent":
-		return writeAgentSearch(opts.Stdout, response, contextBudget)
+		return writeAgentSearch(out, response, contextBudget)
 	default:
-		return fmt.Errorf("search --format must be json, ndjson, text, or agent, got %q", flags.Format)
+		return fmt.Errorf("search --format must be json, ndjson, text, or agent, got %q", format)
 	}
 }
 
