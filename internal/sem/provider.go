@@ -343,15 +343,25 @@ type ProviderSnapshotOptions struct {
 	Progress func(ProgressEvent)
 }
 
+type BuildPhase string
+
+const (
+	BuildPhaseInventory BuildPhase = "inventory"
+	BuildPhaseParse     BuildPhase = "parse"
+	BuildPhaseRelations BuildPhase = "relations"
+	BuildPhaseFinalize  BuildPhase = "finalize"
+)
+
 type ProgressEvent struct {
-	Phase       string
-	FilesTotal  int
-	FilesDone   int
-	Symbols     int
-	Relations   int
-	HeapAlloc   uint64
-	MaxRSSBytes uint64
-	Elapsed     time.Duration
+	Phase        BuildPhase
+	FilesTotal   int
+	FilesDone    int
+	Symbols      int
+	Relations    int
+	HeapAlloc    uint64
+	MaxRSSBytes  uint64
+	PhaseElapsed time.Duration
+	Elapsed      time.Duration
 }
 
 // Profile names the indexing depth a snapshot is produced at.
@@ -866,6 +876,7 @@ func mergePartialFailures(failures, extra []PartialFailure) []PartialFailure {
 // relation dedup key set; it does not scale with held relation records or held
 // file contents.
 func StreamSnapshot(ctx context.Context, repo, providerVersion string, options ProviderSnapshotOptions, emit func(record any) error) error {
+	started := time.Now()
 	sc, err := prepareSource(ctx, repo, options)
 	if err != nil {
 		return err
@@ -873,28 +884,32 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	if sc.close != nil {
 		defer sc.close()
 	}
-	spec := resolveProfile(options.Profile)
-	maxParseBytes := resolveMaxParseBytes(options.MaxParseBytes)
-	progressStart := time.Now()
 	progressEvery := 1024
-	emitProgress := func(phase string, filesDone int, symbols int, relations int) {
+	phaseStart := started
+	emitProgress := func(phase BuildPhase, filesDone int, symbols int, relations int) {
 		if options.Progress == nil {
 			return
 		}
+		now := time.Now()
 		var mem runtime.MemStats
 		runtime.ReadMemStats(&mem)
 		options.Progress(ProgressEvent{
-			Phase:       phase,
-			FilesTotal:  len(sc.paths),
-			FilesDone:   filesDone,
-			Symbols:     symbols,
-			Relations:   relations,
-			HeapAlloc:   mem.HeapAlloc,
-			MaxRSSBytes: maxRSSBytes(),
-			Elapsed:     time.Since(progressStart),
+			Phase:        phase,
+			FilesTotal:   len(sc.paths),
+			FilesDone:    filesDone,
+			Symbols:      symbols,
+			Relations:    relations,
+			HeapAlloc:    mem.HeapAlloc,
+			MaxRSSBytes:  maxRSSBytes(),
+			PhaseElapsed: now.Sub(phaseStart),
+			Elapsed:      now.Sub(started),
 		})
 	}
-	emitProgress("start", 0, 0, 0)
+	emitProgress(BuildPhaseInventory, 0, 0, 0)
+	// Do not charge synchronous callback work to the parse phase.
+	phaseStart = time.Now()
+	spec := resolveProfile(options.Profile)
+	maxParseBytes := resolveMaxParseBytes(options.MaxParseBytes)
 	if err := emit(leanHeader(sc, providerVersion, spec)); err != nil {
 		return err
 	}
@@ -917,6 +932,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	aliasesByHandler := collectRegistrationAliases(sc.paths, sc.read)
 
 	// Phase 1: parse + emit file/symbol records, build indexes, discard content.
+	phaseStart = time.Now()
 	for i, path := range sc.paths {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -1129,10 +1145,10 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 		lc.Symbols += len(fileSymbols)
 		completenessLangs[language] = lc
 		if (i+1)%progressEvery == 0 {
-			emitProgress("parse", i+1, symbolCount, relationCount)
+			emitProgress(BuildPhaseParse, i+1, symbolCount, relationCount)
 		}
 	}
-	emitProgress("parse", len(sc.paths), symbolCount, relationCount)
+	emitProgress(BuildPhaseParse, len(sc.paths), symbolCount, relationCount)
 
 	// Phase 2: resolve relations from indexes, re-reading content per file.
 	// Relation dedup uses compact 64-bit hashed keys rather than the full
@@ -1140,6 +1156,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	// relation instead of a ~100-byte key. The set is bounded by the unique
 	// relation count (== the relations reported in the summary). FNV-1a/64
 	// collisions across realistic relation counts are negligible.
+	phaseStart = time.Now()
 	seenRelation := map[uint64]struct{}{}
 	externalsByID := map[string]ExternalRecord{}
 	relationsByType := map[string]int{}
@@ -1180,7 +1197,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 		relationsByType[r.Type]++
 		relationCount++
 		if relationCount%progressEvery == 0 {
-			emitProgress("relations", len(sc.paths), symbolCount, relationCount)
+			emitProgress(BuildPhaseRelations, len(sc.paths), symbolCount, relationCount)
 		}
 		emitErr = emit(r)
 	}
@@ -1220,8 +1237,9 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	if emitErr != nil {
 		return emitErr
 	}
-	emitProgress("relations", len(sc.paths), symbolCount, relationCount)
+	emitProgress(BuildPhaseRelations, len(sc.paths), symbolCount, relationCount)
 
+	phaseStart = time.Now()
 	externalIDs := make([]string, 0, len(externalsByID))
 	for id := range externalsByID {
 		externalIDs = append(externalIDs, id)
@@ -1235,8 +1253,6 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 			return err
 		}
 	}
-	emitProgress("summary", len(sc.paths), symbolCount, relationCount)
-
 	warnings := sc.warnings
 	if warnings == nil {
 		warnings = []ProviderWarning{}
@@ -1244,7 +1260,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	if failures == nil {
 		failures = []PartialFailure{}
 	}
-	return emit(SnapshotSummary{
+	summary := SnapshotSummary{
 		RecordType:      "summary",
 		Languages:       sortedKeys(languageSet),
 		LanguageTiers:   languageTiers(languageSet),
@@ -1259,7 +1275,9 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 			CompletenessLevel: completenessLevel(len(failures), len(files), parsedFileCount, symbolCount),
 		},
 		Completeness: CompletenessReport{Languages: completenessLangs, Relations: relationsByType},
-	})
+	}
+	emitProgress(BuildPhaseFinalize, len(sc.paths), symbolCount, relationCount)
+	return emit(summary)
 }
 
 func parseWithProfile(parser TreeSitterParser, spec profileSpec, langSpec languageSpec, path, content string) ([]Entity, string, ParseStatus) {

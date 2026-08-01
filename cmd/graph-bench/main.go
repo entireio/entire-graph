@@ -157,17 +157,7 @@ func run(manifestPath, cacheDir, outDir, lockPath, languages, profileName string
 		opts := bench.MeasureOptions{MaxRSSBytes: maxRSSBytes, ExactOutputBytes: exactOutputBytes}
 		if progress {
 			opts.Progress = func(event sem.ProgressEvent) {
-				fmt.Fprintf(os.Stderr, "  progress %-40s phase=%s files=%d/%d symbols=%d relations=%d heap=%d rss=%d elapsed=%s\n",
-					spec.repoPath,
-					event.Phase,
-					event.FilesDone,
-					event.FilesTotal,
-					event.Symbols,
-					event.Relations,
-					event.HeapAlloc,
-					event.MaxRSSBytes,
-					event.Elapsed.Round(time.Millisecond),
-				)
+				fmt.Fprint(os.Stderr, formatProgress(spec.repoPath, event))
 			}
 		}
 		m, measureErr := bench.MeasureRepoWithOptions(ctx, spec.repoPath, spec.language, dir, providerVer, profile, opts)
@@ -191,6 +181,21 @@ func run(manifestPath, cacheDir, outDir, lockPath, languages, profileName string
 		return fmt.Errorf("memory guardrail failed: max RSS %d exceeds ceiling %d", report.MaxRSSBytes, maxRSSBytes)
 	}
 	return nil
+}
+
+func formatProgress(repoPath string, event sem.ProgressEvent) string {
+	return fmt.Sprintf("  progress %-40s phase=%s files=%d/%d symbols=%d relations=%d heap=%d rss=%d phase_elapsed=%s elapsed=%s\n",
+		repoPath,
+		event.Phase,
+		event.FilesDone,
+		event.FilesTotal,
+		event.Symbols,
+		event.Relations,
+		event.HeapAlloc,
+		event.MaxRSSBytes,
+		event.PhaseElapsed.Round(time.Millisecond),
+		event.Elapsed.Round(time.Millisecond),
+	)
 }
 
 func loadSpecs(manifestPath, languages string, limit int) ([]repoSpec, error) {

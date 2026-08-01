@@ -5,7 +5,61 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/entireio/entire-graph/internal/sem"
 )
+
+func TestReducePhaseEventsKeepsMaximumPhaseDuration(t *testing.T) {
+	got := reducePhaseEvents([]sem.ProgressEvent{
+		{Phase: sem.BuildPhaseInventory, PhaseElapsed: 5 * time.Millisecond},
+		{Phase: sem.BuildPhaseParse, PhaseElapsed: 10 * time.Millisecond},
+		{Phase: sem.BuildPhaseParse, PhaseElapsed: 25 * time.Millisecond},
+		{Phase: sem.BuildPhaseRelations, PhaseElapsed: 7 * time.Millisecond},
+		{Phase: sem.BuildPhaseFinalize, PhaseElapsed: 3 * time.Millisecond},
+	})
+	want := map[string]float64{"inventory": 5, "parse": 25, "relations": 7, "finalize": 3}
+	if len(got) != len(want) {
+		t.Fatalf("phase count = %#v, want %#v", got, want)
+	}
+	for phase, duration := range want {
+		if got[phase] != duration {
+			t.Fatalf("phase %q = %v, want %v; all=%#v", phase, got[phase], duration, got)
+		}
+	}
+}
+
+func TestBuildReportAggregatesPhaseMetricsFromSuccessfulReposOnly(t *testing.T) {
+	report := BuildReport("2026-08-01T00:00:00Z", "test", sem.ProfileFull, []RepoMetrics{
+		{Name: "ok-a", Language: "Go", WallMS: 20, PhaseMS: map[string]float64{"inventory": 2, "parse": 11}},
+		{Name: "bad", Language: "Go", Error: "failed", PhaseMS: map[string]float64{"inventory": 99, "parse": 99}},
+		{Name: "ok-b", Language: "Go", WallMS: 30, PhaseMS: map[string]float64{"inventory": 3, "relations": 8}},
+	})
+	want := map[string]float64{"inventory": 5, "parse": 11, "relations": 8}
+	for phase, duration := range want {
+		if got := report.Totals.PhaseMS[phase]; got != duration {
+			t.Fatalf("total phase %q = %v, want %v; all=%#v", phase, got, duration, report.Totals.PhaseMS)
+		}
+	}
+	if _, ok := report.Totals.PhaseMS["finalize"]; ok {
+		t.Fatalf("unexpected phase from errored repo: %#v", report.Totals.PhaseMS)
+	}
+}
+
+func TestBuildReportRecomputesRawBytesPerProjectedFact(t *testing.T) {
+	report := BuildReport("2026-08-01T00:00:00Z", "test", sem.ProfileFull, []RepoMetrics{
+		{Name: "small", Language: "Go", NDJSONRawBytes: 100, CompactRawBytes: 50, CompactDictionaryBytes: 10, ProjectedFacts: 10, NDJSONBytesPerProjectedFact: 10, CompactBytesPerProjectedFact: 5},
+		{Name: "large", Language: "Go", NDJSONRawBytes: 1000, CompactRawBytes: 500, CompactDictionaryBytes: 100, ProjectedFacts: 10, NDJSONBytesPerProjectedFact: 100, CompactBytesPerProjectedFact: 50},
+		{Name: "failed", Language: "Go", Error: "failed", NDJSONRawBytes: 999, CompactRawBytes: 999, ProjectedFacts: 1},
+	})
+	got := report.Totals
+	if got.NDJSONRawBytes != 1100 || got.CompactRawBytes != 550 || got.CompactDictionaryBytes != 110 || got.ProjectedFacts != 20 {
+		t.Fatalf("aggregate raw bytes/facts = %#v", got)
+	}
+	if got.NDJSONBytesPerProjectedFact != 55 || got.CompactBytesPerProjectedFact != 27.5 {
+		t.Fatalf("aggregate ratios were averaged instead of recomputed: %#v", got)
+	}
+}
 
 func writeFile(t *testing.T, dir, path, content string) {
 	t.Helper()

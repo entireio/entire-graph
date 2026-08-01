@@ -12,9 +12,83 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
 )
+
+func TestStreamSnapshotReportsTypedBuildPhases(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "main.go", `package main
+
+func helper() {}
+func main() { helper() }
+`)
+
+	var events []ProgressEvent
+	err := StreamSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Progress: func(event ProgressEvent) { events = append(events, event) },
+	}, func(any) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected progress events")
+	}
+
+	wantOrder := map[BuildPhase]int{
+		BuildPhaseInventory: 0,
+		BuildPhaseParse:     1,
+		BuildPhaseRelations: 2,
+		BuildPhaseFinalize:  3,
+	}
+	seen := map[BuildPhase]bool{}
+	lastPhase, lastElapsed := -1, time.Duration(0)
+	for _, event := range events {
+		order, ok := wantOrder[event.Phase]
+		if !ok {
+			t.Fatalf("unexpected phase %q", event.Phase)
+		}
+		if order < lastPhase {
+			t.Fatalf("phase order regressed: %#v", events)
+		}
+		if event.PhaseElapsed < 0 {
+			t.Fatalf("negative phase elapsed: %#v", event)
+		}
+		if event.Elapsed < lastElapsed {
+			t.Fatalf("elapsed regressed: %#v", events)
+		}
+		seen[event.Phase] = true
+		lastPhase, lastElapsed = order, event.Elapsed
+	}
+	for phase := range wantOrder {
+		if !seen[phase] {
+			t.Fatalf("missing phase %q in %#v", phase, events)
+		}
+	}
+}
+
+func TestStreamSnapshotKeepsTypedPhaseForPeriodicProgress(t *testing.T) {
+	repo := t.TempDir()
+	for i := 0; i < 1025; i++ {
+		writeFile(t, repo, fmt.Sprintf("pkg/f%04d.go", i), fmt.Sprintf("package pkg\nfunc F%04d() {}\n", i))
+	}
+
+	var events []ProgressEvent
+	err := StreamSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Progress: func(event ProgressEvent) { events = append(events, event) },
+	}, func(any) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[BuildPhase]int{}
+	for _, event := range events {
+		counts[event.Phase]++
+	}
+	if counts[BuildPhaseParse] < 2 || counts[BuildPhaseRelations] < 2 {
+		t.Fatalf("periodic progress did not retain parse/relations phases: %#v", events)
+	}
+}
 
 func TestLanguageTiersClassifiesSemanticAndInventory(t *testing.T) {
 	tiers := languageTiers(map[string]struct{}{"Go": {}, "Zig": {}, "Bicep": {}})

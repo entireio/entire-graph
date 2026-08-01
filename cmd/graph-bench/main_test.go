@@ -4,11 +4,26 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/entireio/entire-graph/internal/bench"
 	"github.com/entireio/entire-graph/internal/sem"
 )
+
+func TestFormatProgressIncludesTypedPhaseElapsedAndTotalElapsed(t *testing.T) {
+	got := formatProgress("owner/repo", sem.ProgressEvent{
+		Phase:        sem.BuildPhaseParse,
+		FilesDone:    3,
+		FilesTotal:   5,
+		PhaseElapsed: 12 * time.Millisecond,
+		Elapsed:      30 * time.Millisecond,
+	})
+	if !strings.Contains(got, "phase=parse") || !strings.Contains(got, "phase_elapsed=12ms") || !strings.Contains(got, "elapsed=30ms") {
+		t.Fatalf("progress = %q", got)
+	}
+}
 
 func TestParseProfile(t *testing.T) {
 	cases := map[string]sem.Profile{

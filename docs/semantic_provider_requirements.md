@@ -109,6 +109,16 @@ aggregate total, read the summary, never the lean header.
 
 All `h`, `d`, data, and `m` bytes count as raw compact artifact bytes; dictionary overhead must never be subtracted. Compact output is loaded only through the production compact loader and queried with `snapshot-query --input <file> --symbol <id-or-name> [--from <stable-id> --relation <TYPE>] --format ndjson`, which writes deterministically ordered native symbol/relation records. Its decoded public projection and canonical semantic SHA-256 (normalized native records in record order) must equal the normal NDJSON snapshot. Matching only the hash is not sufficient evidence of losslessness.
 
+### Process-local cold-build telemetry
+
+The optional provider progress callback exposes only process-local performance
+telemetry. Its typed phases are `inventory`, `parse`, `relations`, and
+`finalize`; each event carries both elapsed time since that phase began and total
+elapsed time since snapshot entry. The callback is synchronous and a new phase
+clock starts after the prior terminal callback returns, so callback overhead is
+not assigned to the next phase. These telemetry fields are not snapshot schema
+fields and must never alter emitted semantic records.
+
 **Ordering.** For a fixed input and profile the stream is deterministic and
 stable (file, symbol, and relation order are reproducible across runs), but it
 is not globally sorted the way the in-memory path sorts relations. Consumers
