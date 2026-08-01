@@ -19,9 +19,10 @@ func compactFixtureRecords() []any {
 		LanguageVersions: map[string]string{"parser": "v"}, Profile: "full",
 		ProfileLimits: ProfileLimits{Evidence: "full", CallResolution: "full"}, RelationSet: []string{"CALLS"},
 		SkippedRelations: []string{}, Warnings: []ProviderWarning{{Code: "W", Severity: "warning", FilePath: "main.go", EffectOnCompleteness: "partial", Detail: "detail"}},
-		PartialFailures: []PartialFailure{{Code: "E", Severity: "error", FilePath: "bad.go", EffectOnCompleteness: "partial", Detail: "detail"}},
-		Stats:           ProviderStats{Files: 1, ParsedFiles: 1, Symbols: 2, Relations: 1, CompletenessLevel: "ok"},
-		Completeness:    CompletenessReport{Languages: map[string]LanguageCompleteness{"Go": {Files: 1, Symbols: 2}}, Relations: map[string]int{"CALLS": 1}},
+		PartialFailures:  []PartialFailure{{Code: "E", Severity: "error", FilePath: "bad.go", EffectOnCompleteness: "partial", Detail: "detail"}},
+		Stats:            ProviderStats{Files: 1, ParsedFiles: 1, Symbols: 2, Relations: 2, CompletenessLevel: "ok"},
+		Completeness:     CompletenessReport{Languages: map[string]LanguageCompleteness{"Go": {Files: 1, Symbols: 2}}, Relations: map[string]int{"CALLS": 1, "IMPORTS": 1}},
+		BenchmarkProfile: "generic-profile",
 	}
 	return []any{
 		header,
@@ -30,7 +31,8 @@ func compactFixtureRecords() []any {
 		SymbolRecord{RecordType: "symbol", ID: "symbol-id", StableIDVersion: "v1", Kind: "function", Name: "same", QualifiedName: "pkg.same", FilePath: "main.go", StartLine: 5, EndLine: 9, Signature: "func same()", BodyHash: "hash", Language: "Go", ContainerID: "container", Aliases: []string{"alias"}},
 		SymbolRecord{RecordType: "symbol", ID: "symbol-id-2", StableIDVersion: "v1", Kind: "method", Name: "same", QualifiedName: "other.same", FilePath: "other.go", StartLine: 1, EndLine: 2, Signature: "func same()", BodyHash: "hash2", Language: "Go", ContainerID: "other", Aliases: []string{}},
 		RelationRecord{RecordType: "relation", FromID: "symbol-id", ToID: "symbol-id-2", Type: "CALLS", Confidence: 0.75, Reason: "reason", RelationScope: "scope", Resolution: "resolved", TargetKind: "method", Evidence: []Evidence{{Kind: "call", FilePath: "main.go", StartLine: 6, EndLine: 6, Detail: "detail"}}, WarningCodes: []string{"W1"}},
-		SnapshotSummary{RecordType: "summary", Languages: []string{"Go"}, LanguageTiers: map[string]string{"Go": "semantic"}, Warnings: []ProviderWarning{}, PartialFailures: []PartialFailure{}, Stats: ProviderStats{Files: 1, ParsedFiles: 1, Symbols: 2, Relations: 1, CompletenessLevel: "ok"}, Completeness: CompletenessReport{Languages: map[string]LanguageCompleteness{"Go": {Files: 1, Symbols: 2}}, Relations: map[string]int{"CALLS": 1}}},
+		RelationRecord{RecordType: "relation", FromID: "symbol-id", ToID: "external-target", Type: "IMPORTS", Confidence: 1, Reason: "import", WarningCodes: []string{}},
+		SnapshotSummary{RecordType: "summary", Languages: []string{"Go"}, LanguageTiers: map[string]string{"Go": "semantic"}, Warnings: []ProviderWarning{}, PartialFailures: []PartialFailure{}, Stats: ProviderStats{Files: 1, ParsedFiles: 1, Symbols: 2, Relations: 2, CompletenessLevel: "ok"}, Completeness: CompletenessReport{Languages: map[string]LanguageCompleteness{"Go": {Files: 1, Symbols: 2}}, Relations: map[string]int{"CALLS": 1, "IMPORTS": 1}}},
 	}
 }
 
@@ -90,17 +92,28 @@ func TestCompactSnapshotEncodingIsDeterministic(t *testing.T) {
 
 func TestCompactSnapshotDictionariesAreMeasuredInRawBytes(t *testing.T) {
 	data, encoder := encodeCompactFixture(t, compactFixtureRecords())
-	var dictionaryBytes int64
+	var headerBytes, dictionaryBytes, dataBytes, summaryBytes int64
 	for _, line := range bytes.Split(data, []byte("\n")) {
-		if bytes.HasPrefix(line, []byte(`["d",`)) {
-			dictionaryBytes += int64(len(line) + 1)
+		if len(line) == 0 {
+			continue
+		}
+		size := int64(len(line) + 1)
+		switch {
+		case bytes.HasPrefix(line, []byte(`["h",`)):
+			headerBytes += size
+		case bytes.HasPrefix(line, []byte(`["d",`)):
+			dictionaryBytes += size
+		case bytes.HasPrefix(line, []byte(`["m",`)):
+			summaryBytes += size
+		default:
+			dataBytes += size
 		}
 	}
 	if got := encoder.DictionaryBytes(); got != dictionaryBytes {
 		t.Fatalf("dictionary bytes = %d, want %d", got, dictionaryBytes)
 	}
-	if int64(len(data)) < encoder.DictionaryBytes() {
-		t.Fatalf("total bytes excludes dictionary bytes: total=%d dictionary=%d", len(data), encoder.DictionaryBytes())
+	if got, want := int64(len(data)), headerBytes+dictionaryBytes+dataBytes+summaryBytes; got != want {
+		t.Fatalf("total bytes = %d, want component sum %d (header=%d dictionary=%d data=%d summary=%d)", got, want, headerBytes, dictionaryBytes, dataBytes, summaryBytes)
 	}
 }
 
@@ -135,7 +148,6 @@ func TestCompactSnapshotIsSmallerThanNDJSONIncludingDictionaries(t *testing.T) {
 			t.Fatal(err)
 		}
 		native.Write(data)
-		native.WriteByte('\n')
 	}
 	if float64(len(compact)) >= 0.80*float64(native.Len()) {
 		t.Fatalf("compact size = %d, native size = %d", len(compact), native.Len())
@@ -143,20 +155,61 @@ func TestCompactSnapshotIsSmallerThanNDJSONIncludingDictionaries(t *testing.T) {
 }
 
 func TestCompactSnapshotDecoderRejectsUnknownVersion(t *testing.T) {
-	if err := DecodeCompactSnapshot(strings.NewReader(`["h",2,{}]\n`), func(any) error { return nil }); err == nil {
-		t.Fatal("expected version error")
-	}
+	requireCompactDecodeError(t, "[\"h\",2,{}]\n", "unsupported compact snapshot version 2")
 }
 func TestCompactSnapshotDecoderRejectsWrongArity(t *testing.T) {
-	if err := DecodeCompactSnapshot(strings.NewReader(`["h",1,{}]\n["d",1]\n`), func(any) error { return nil }); err == nil {
-		t.Fatal("expected arity error")
-	}
+	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"d\",1]\n", "dictionary has invalid placement or arity")
 }
 func TestCompactSnapshotDecoderRequiresHeaderDictionaryThenSummary(t *testing.T) {
-	for _, text := range []string{`["d",1,["x"]]\n`, `["h",1,{}]\n["f",0,0,0,0,0]\n["m",{}]\n`, `["h",1,{}]\n["d",1,["x"]]\n`} {
-		if err := DecodeCompactSnapshot(strings.NewReader(text), func(any) error { return nil }); err == nil {
-			t.Fatalf("expected ordering error for %q", text)
-		}
+	requireCompactDecodeError(t, "[\"d\",1,[\"x\"]]\n", "dictionary has invalid placement")
+	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"d\",1,[\"x\"]]\n", "missing summary")
+}
+
+func TestCompactSnapshotDecoderAllowsIndexZeroOnlyDataWithoutDictionaryLine(t *testing.T) {
+	records := []any{SnapshotHeader{}, FileRecord{RecordType: "file", Bytes: 7}, SnapshotSummary{RecordType: "summary"}}
+	data, _ := encodeCompactFixture(t, records)
+	if bytes.Contains(data, []byte(`["d",`)) {
+		t.Fatalf("index-zero-only record unexpectedly emitted dictionary: %s", data)
+	}
+	decoded := decodedCompactRecords(t, data)
+	if got, want := publicRecordJSON(t, decoded), publicRecordJSON(t, records); !reflect.DeepEqual(got, want) {
+		t.Fatalf("index-zero round trip changed projection\n got=%s\nwant=%s", got, want)
+	}
+}
+
+func TestCompactSnapshotDecoderRejectsUnknownTag(t *testing.T) {
+	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"z\"]\n", `unknown compact snapshot tag "z"`)
+}
+func TestCompactSnapshotDecoderRejectsOutOfBoundsDictionaryIndex(t *testing.T) {
+	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"f\",1,0,0,0,0]\n", "dictionary index 1 is out of range")
+}
+func TestCompactSnapshotDecoderRejectsDuplicateDictionaryString(t *testing.T) {
+	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"d\",1,[\"dup\"]]\n[\"d\",2,[\"dup\"]]\n", `dictionary duplicates "dup"`)
+}
+func TestCompactSnapshotDecoderRejectsNoncontiguousDictionaryBase(t *testing.T) {
+	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"d\",2,[\"value\"]]\n", "dictionary base 2 does not equal 1")
+}
+func TestCompactSnapshotDecoderRejectsDuplicateHeader(t *testing.T) {
+	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"h\",1,{}]\n", "header must be first")
+}
+func TestCompactSnapshotDecoderRejectsRecordAfterSummary(t *testing.T) {
+	requireCompactDecodeError(t, "[\"h\",1,{}]\n[\"m\",{}]\n[\"f\",0,0,0,0,0]\n", "record after summary")
+}
+func TestCompactSnapshotDecoderRejectsMissingSummary(t *testing.T) {
+	requireCompactDecodeError(t, "[\"h\",1,{}]\n", "missing summary")
+}
+func TestCompactSnapshotDecoderRejectsLineOverLimit(t *testing.T) {
+	requireCompactDecodeError(t, strings.Repeat("x", 16*1024*1024+1), "compact snapshot scan:")
+}
+
+func requireCompactDecodeError(t *testing.T, input, want string) {
+	t.Helper()
+	err := DecodeCompactSnapshot(strings.NewReader(input), func(any) error { return nil })
+	if err == nil {
+		t.Fatalf("expected %q error", want)
+	}
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("decode error = %q, want category containing %q", err, want)
 	}
 }
 

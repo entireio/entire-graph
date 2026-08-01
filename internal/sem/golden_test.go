@@ -187,6 +187,13 @@ func callee() {}
 	if got := index.Query(CompactSnapshotQuery{Symbol: index.Snapshot.Symbols[0].ID}).Symbols; len(got) != 1 {
 		t.Fatalf("exact symbol query returned %#v", got)
 	}
+	if len(index.Snapshot.Relations) == 0 {
+		t.Fatal("fixture produced no relations")
+	}
+	relation := index.Snapshot.Relations[0]
+	if got := index.Query(CompactSnapshotQuery{FromID: relation.FromID, Relation: relation.Type}).Relations; len(got) == 0 {
+		t.Fatalf("exact relation query returned %#v", got)
+	}
 }
 
 // updateGolden regenerates the committed NDJSON baselines instead of asserting

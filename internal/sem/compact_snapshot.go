@@ -197,7 +197,7 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) error {
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	dictionary := []string{""}
 	known := map[string]bool{"": true}
-	seenHeader, seenDictionary, seenSummary := false, false, false
+	seenHeader, seenSummary := false, false
 	lineNumber := 0
 	for scanner.Scan() {
 		lineNumber++
@@ -267,10 +267,9 @@ func DecodeCompactSnapshot(in io.Reader, emit func(any) error) error {
 				known[value] = true
 				dictionary = append(dictionary, value)
 			}
-			seenDictionary = true
 		case "f", "x", "s", "r":
-			if !seenHeader || !seenDictionary {
-				return errors.New("compact snapshot data requires header and dictionary")
+			if !seenHeader {
+				return errors.New("compact snapshot data requires header")
 			}
 			record, err := decodeCompactData(tag, fields, dictionary)
 			if err != nil {

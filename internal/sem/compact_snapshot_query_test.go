@@ -32,6 +32,10 @@ func TestLoadCompactSnapshotQueriesSymbolsAndRelations(t *testing.T) {
 	if len(got) != 1 || got[0].Type != "CALLS" {
 		t.Fatalf("relation lookup = %#v", got)
 	}
+	got = index.Query(CompactSnapshotQuery{FromID: "symbol-id"}).Relations
+	if len(got) != 2 || got[0].Type != "CALLS" || got[1].Type != "IMPORTS" {
+		t.Fatalf("relation sort = %#v", got)
+	}
 }
 
 func TestCompactSnapshotQueryResultsAreDeterministic(t *testing.T) {
