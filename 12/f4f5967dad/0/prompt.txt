@@ -1,0 +1,53 @@
+You are reviewing the Go repo at /Users/thomi/Projects/entire-graph (a tree-sitter code-graph
+provider). I just fixed a defect and want to find OTHER instances of the same CLASS, then agree
+on a plan. Push back where you disagree.
+
+THE DEFECT CLASS: "a capability is gated to a hand-maintained per-language list, while the real
+behavior is generic — so the two drift, and languages silently get a worse path or a wrong answer."
+
+INSTANCE ALREADY FIXED (for calibration):
+`symbolFlowParameterNames` (internal/sem/types.go) used AST parameter names only when
+`parameterNamesKnown` was set, and that flag was set in exactly ONE place (parser.go), gated on
+`language == "JavaScript" || language == "TypeScript"`. Every other language fell back to a regex
+that splits a signature on commas and takes the first token. Consequences, measured:
+ - type-first languages got the TYPE as the parameter name (`check(String token)` -> [String]),
+   so Java/C#/C/C++/PHP never matched their own params: 7,867 DATA_FLOWS edges missing in
+   spring-framework alone.
+ - nested punctuation leaked in: Zig `options: struct { scripts: u8, git_commit: u8 }` produced
+   params `git_commit` and `}`, fabricating false edges.
+There was ALSO a second gate (provider.go entitySymbols) dropping the names on the entity->symbol
+copy for non-JS/TS. Fix: read params from the parse tree for any grammar exposing a parameter
+list; grammars that expose none report unknown and keep the regex.
+
+CANDIDATE I FOUND (want your verdict + better ideas):
+`capabilities --json` under-reports what the provider actually emits. `mergeLanguageSupport`
+(provider.go) builds the advertised matrix from CONTAINS/DEFINES + supportsCallExtraction +
+importCapable + a hand-maintained `ooRelationSupport` table. But EMISSION is driven by a profile
+spec (`spec.emits(...)`) plus extractors that run generically per parsed body. Two sources of
+truth. Measured advertised-vs-actually-emitted over 6 real repos:
+  Zig:    advertised [CALLS CONTAINS DEFINES]; actually emits also CONSTRUCTS, DATA_FLOWS,
+          PARAM_TYPE, READS_FIELD, SIMILAR_TO, TESTS, USES_TYPE
+  C:      under-reports CONSTRUCTS, DATA_FLOWS, PARAM_TYPE, RETURNS_TYPE, SIMILAR_TO, USES_TYPE
+  Groovy: under-reports EXTENDS, IMPLEMENTS, INHERITS, OVERRIDES, PARAM_TYPE, READS_FIELD,
+          USES_TYPE, WRITES_FIELD, SIMILAR_TO
+  Go:     under-reports CONSTRUCTS, HANDLES_GRAPHQL, HANDLES_ROUTE, HANDLES_TOOL, HTTP_CALLS,
+          LISTENS_ON, SIMILAR_TO, TESTS
+  Every language under-reports SIMILAR_TO and CONSTRUCTS.
+This matters because the repo's own AGENTS.md instructs agents: "Feature-detect before you trust...
+check `capabilities --json` first". Existing tests (provider_test.go ~10719) only check the
+matrix's INTERNAL consistency (every language present, CALLS/IMPORTS where expected) — nothing
+compares it to actual emitted output.
+Also `supportsCallExtraction` is a hardcoded 30-language switch statement — same manual-list smell.
+
+WHAT I WANT FROM YOU:
+1. Do you agree the capabilities drift is the same defect class and worth fixing? Any reason the
+   under-reporting is INTENTIONAL (e.g. "advertise only what is reliable, not what leaks out")?
+   That is my main uncertainty — SIMILAR_TO/CONSTRUCTS/TESTS may be deliberately unadvertised.
+2. Search the repo for OTHER instances of this class that I have not found. Concretely check for:
+   AST-vs-regex asymmetries like the one fixed; other hand-maintained per-language tables that
+   gate behavior; capabilities/feature flags that do not match runtime; anything where adding a
+   new grammar silently degrades a feature.
+3. Propose a concrete prioritized plan. Be specific about which fix is worth it and which is not.
+
+Constraints that matter: schema 1.x is frozen and additive-only; provider must stay no-egress;
+compound-v1 symbol IDs must stay stable. Reply with findings + a plan, and flag disagreements.
