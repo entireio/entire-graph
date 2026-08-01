@@ -68,19 +68,24 @@ remains valid NDJSON.
 ### Cold-build phase boundaries
 
 The benchmark reports four synchronous, process-local phases: `inventory`
-(source preparation and file discovery), `parse` (per-file file/symbol output
-and index construction), `relations` (relation/external resolution), and
-`finalize` (external sorting/output and summary preparation). Phase durations
-are diagnostics for performance analysis; they are not semantic provider schema
-fields. A phase callback is terminal before the next phase clock begins, so
-callback time is not attributed to the following phase.
+(source preparation and file discovery), `parse` (header output, registration
+alias indexing, and per-file file/symbol output plus index construction),
+`relations` (relation resolution), and `finalize` (external sorting/output,
+summary preparation, and summary serialization). These boundaries partition
+provider cold work from snapshot entry through trailing-summary output exactly
+once. Progress telemetry and the caller's synchronous callback are measurement
+overhead, excluded from both phase duration and `wall_ms`; the CLI prints phase
+shares using the sum of the four phases. Phase durations are process-local
+performance diagnostics, not semantic provider schema fields.
 
-After the measured cold `wall_ms` interval, each successful repository runs a
-separate compact-artifact preflight. The preflight serializes native NDJSON and
+Each repository is measured in a fresh child process. The worker captures that
+repository's cold peak RSS and `wall_ms` before compact preflight, preventing a
+preflight peak from contaminating the current cold values or any later
+repository. After the measured interval, preflight serializes native NDJSON and
 compact NDJSON, loads compact bytes through the production loader, verifies its
 canonical semantic SHA-256 and decoded public projection against native output,
 and performs exact symbol/relation queries through the production query index.
-It adds harness runtime but never contaminates the cold wall measurement. Raw
+It adds worker runtime but never contaminates the cold wall/RSS measurement. Raw
 compact bytes include headers, every dictionary line, data records, and the
 summary; the dictionary count is a breakdown, not a subtraction.
 

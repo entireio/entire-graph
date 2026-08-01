@@ -886,6 +886,8 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	}
 	progressEvery := 1024
 	phaseStart := started
+	var progressOverhead time.Duration
+	var phaseProgressOverhead time.Duration
 	emitProgress := func(phase BuildPhase, filesDone int, symbols int, relations int) {
 		if options.Progress == nil {
 			return
@@ -901,13 +903,23 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 			Relations:    relations,
 			HeapAlloc:    mem.HeapAlloc,
 			MaxRSSBytes:  maxRSSBytes(),
-			PhaseElapsed: now.Sub(phaseStart),
-			Elapsed:      now.Sub(started),
+			PhaseElapsed: now.Sub(phaseStart) - phaseProgressOverhead,
+			Elapsed:      now.Sub(started) - progressOverhead,
 		})
+		overhead := time.Since(now)
+		progressOverhead += overhead
+		phaseProgressOverhead += overhead
+	}
+	startPhase := func() {
+		phaseStart = time.Now()
+		phaseProgressOverhead = 0
 	}
 	emitProgress(BuildPhaseInventory, 0, 0, 0)
-	// Do not charge synchronous callback work to the parse phase.
-	phaseStart = time.Now()
+	// Do not charge synchronous progress telemetry or caller callback work to
+	// the parse phase. The parse clock includes header emission and alias-index
+	// construction so no provider work between inventory and the file loop is
+	// left unassigned.
+	startPhase()
 	spec := resolveProfile(options.Profile)
 	maxParseBytes := resolveMaxParseBytes(options.MaxParseBytes)
 	if err := emit(leanHeader(sc, providerVersion, spec)); err != nil {
@@ -931,8 +943,8 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	// searchable aliases so they can be attached to the handler symbol below.
 	aliasesByHandler := collectRegistrationAliases(sc.paths, sc.read)
 
-	// Phase 1: parse + emit file/symbol records, build indexes, discard content.
-	phaseStart = time.Now()
+	// Phase 1: emit the header, build registration aliases, then parse + emit
+	// file/symbol records and build indexes while discarding source content.
 	for i, path := range sc.paths {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -1156,7 +1168,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	// relation instead of a ~100-byte key. The set is bounded by the unique
 	// relation count (== the relations reported in the summary). FNV-1a/64
 	// collisions across realistic relation counts are negligible.
-	phaseStart = time.Now()
+	startPhase()
 	seenRelation := map[uint64]struct{}{}
 	externalsByID := map[string]ExternalRecord{}
 	relationsByType := map[string]int{}
@@ -1239,7 +1251,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	}
 	emitProgress(BuildPhaseRelations, len(sc.paths), symbolCount, relationCount)
 
-	phaseStart = time.Now()
+	startPhase()
 	externalIDs := make([]string, 0, len(externalsByID))
 	for id := range externalsByID {
 		externalIDs = append(externalIDs, id)
@@ -1276,8 +1288,11 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 		},
 		Completeness: CompletenessReport{Languages: completenessLangs, Relations: relationsByType},
 	}
+	if err := emit(summary); err != nil {
+		return err
+	}
 	emitProgress(BuildPhaseFinalize, len(sc.paths), symbolCount, relationCount)
-	return emit(summary)
+	return nil
 }
 
 func parseWithProfile(parser TreeSitterParser, spec profileSpec, langSpec languageSpec, path, content string) ([]Entity, string, ParseStatus) {

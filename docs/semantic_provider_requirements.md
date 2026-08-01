@@ -112,12 +112,16 @@ All `h`, `d`, data, and `m` bytes count as raw compact artifact bytes; dictionar
 ### Process-local cold-build telemetry
 
 The optional provider progress callback exposes only process-local performance
-telemetry. Its typed phases are `inventory`, `parse`, `relations`, and
-`finalize`; each event carries both elapsed time since that phase began and total
-elapsed time since snapshot entry. The callback is synchronous and a new phase
-clock starts after the prior terminal callback returns, so callback overhead is
-not assigned to the next phase. These telemetry fields are not snapshot schema
-fields and must never alter emitted semantic records.
+telemetry. Its typed phases are `inventory` (source preparation/file discovery),
+`parse` (header output, registration aliases, file/symbol output, and index
+construction), `relations` (relation resolution), and `finalize` (external
+output plus trailing-summary construction and serialization). Each event carries
+both elapsed time since that phase began and total provider-work time since
+snapshot entry. Progress sampling and the synchronous caller callback are
+measurement overhead and are excluded from both durations; the next phase clock
+starts only after the prior terminal callback returns. The final event is sent
+after the trailing summary has been emitted. These telemetry fields are not
+snapshot schema fields and must never alter emitted semantic records.
 
 **Ordering.** For a fixed input and profile the stream is deterministic and
 stable (file, symbol, and relation order are reproducible across runs), but it

@@ -90,6 +90,49 @@ func TestStreamSnapshotKeepsTypedPhaseForPeriodicProgress(t *testing.T) {
 	}
 }
 
+func TestStreamSnapshotPhaseDurationsPartitionColdWorkAndFinalizeAfterSummary(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "main.go", "package main\nfunc main() {}\n")
+
+	var events []ProgressEvent
+	var order []string
+	err := StreamSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Progress: func(event ProgressEvent) {
+			events = append(events, event)
+			order = append(order, "phase:"+string(event.Phase))
+			time.Sleep(10 * time.Millisecond)
+		},
+	}, func(record any) error {
+		if _, ok := record.(SnapshotSummary); ok {
+			order = append(order, "summary")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := map[BuildPhase]time.Duration{}
+	var total time.Duration
+	for _, event := range events {
+		if event.PhaseElapsed > last[event.Phase] {
+			last[event.Phase] = event.PhaseElapsed
+		}
+		if event.Phase == BuildPhaseFinalize {
+			total = event.Elapsed
+		}
+	}
+	var phases time.Duration
+	for _, duration := range last {
+		phases += duration
+	}
+	if delta := total - phases; delta < -time.Millisecond || delta > time.Millisecond {
+		t.Fatalf("phase durations do not partition cold work: phases=%s total=%s delta=%s events=%#v", phases, total, delta, events)
+	}
+	if len(order) < 2 || order[len(order)-2] != "summary" || order[len(order)-1] != "phase:finalize" {
+		t.Fatalf("finalize must be terminal after summary emission: %#v", order)
+	}
+}
+
 func TestLanguageTiersClassifiesSemanticAndInventory(t *testing.T) {
 	tiers := languageTiers(map[string]struct{}{"Go": {}, "Zig": {}, "Bicep": {}})
 	if tiers["Go"] != "semantic" {

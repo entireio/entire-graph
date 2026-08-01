@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -22,6 +23,23 @@ func TestFormatProgressIncludesTypedPhaseElapsedAndTotalElapsed(t *testing.T) {
 	})
 	if !strings.Contains(got, "phase=parse") || !strings.Contains(got, "phase_elapsed=12ms") || !strings.Contains(got, "elapsed=30ms") {
 		t.Fatalf("progress = %q", got)
+	}
+}
+
+func TestWriteSummaryPrintsPhaseSharesAndArtifactMetrics(t *testing.T) {
+	report := bench.Report{Totals: bench.Aggregate{
+		Repos: 1, Files: 2, LOC: 10, Symbols: 3, Relations: 4, WallMS: 100,
+		PhaseMS:        map[string]float64{"inventory": 10, "parse": 50, "relations": 30, "finalize": 10},
+		NDJSONRawBytes: 1000, CompactRawBytes: 500, CompactDictionaryBytes: 100,
+		ProjectedFacts: 10, NDJSONBytesPerProjectedFact: 100, CompactBytesPerProjectedFact: 50,
+	}}
+	var out bytes.Buffer
+	writeSummary(&out, report)
+	got := out.String()
+	for _, want := range []string{"PHASE", "inventory", "50.00%", "native_raw=1000", "compact_raw=500", "native_bytes/fact=100.00", "compact_bytes/fact=50.00"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("summary missing %q:\n%s", want, got)
+		}
 	}
 }
 

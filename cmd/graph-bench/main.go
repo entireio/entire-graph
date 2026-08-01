@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,25 +64,29 @@ func (r repoSpec) dirName() string  { return strings.ReplaceAll(r.repoPath, "/",
 
 func main() {
 	var (
-		manifestPath = flag.String("manifest", "bench/repos.json", "path to the repo manifest")
-		cacheDir     = flag.String("cache", "bench/.cache", "directory for cloned repos (gitignored)")
-		outDir       = flag.String("out", "bench/results", "directory for the JSON report, or - for stdout")
-		lockPath     = flag.String("lock", "bench/repos.lock.json", "path to the commit lock file")
-		languages    = flag.String("languages", "", "comma-separated language filter (default: all)")
-		limit        = flag.Int("limit", 0, "max repos per language (0 = all)")
-		jobs         = flag.Int("jobs", 4, "concurrent clone jobs")
-		depth        = flag.Int("depth", 1, "git clone depth")
-		skipClone    = flag.Bool("skip-clone", false, "do not clone; measure repos already in cache")
-		updateLock   = flag.Bool("update-lock", false, "resolve current commits and rewrite the lock file")
-		providerVer  = flag.String("provider-version", "dev", "provider version label recorded in the report")
-		profile      = flag.String("profile", "full", "indexing profile to measure: full, fast, or syntax-only")
-		progress     = flag.Bool("progress", false, "print provider phase progress to stderr")
-		minLOCPerSec = flag.Float64("min-loc-per-sec", 0, "fail if successful aggregate LOC/s is below this floor")
-		maxRSSBytes  = flag.Uint64("max-rss-bytes", 0, "fail if process peak RSS bytes exceeds this ceiling")
-		exactOutput  = flag.Bool("exact-output-bytes", false, "marshal every streamed record for exact NDJSON output bytes; slower on large repos")
-		cpuProfile   = flag.String("cpuprofile", "", "write a Go CPU profile for the benchmark process")
+		manifestPath  = flag.String("manifest", "bench/repos.json", "path to the repo manifest")
+		cacheDir      = flag.String("cache", "bench/.cache", "directory for cloned repos (gitignored)")
+		outDir        = flag.String("out", "bench/results", "directory for the JSON report, or - for stdout")
+		lockPath      = flag.String("lock", "bench/repos.lock.json", "path to the commit lock file")
+		languages     = flag.String("languages", "", "comma-separated language filter (default: all)")
+		limit         = flag.Int("limit", 0, "max repos per language (0 = all)")
+		jobs          = flag.Int("jobs", 4, "concurrent clone jobs")
+		depth         = flag.Int("depth", 1, "git clone depth")
+		skipClone     = flag.Bool("skip-clone", false, "do not clone; measure repos already in cache")
+		updateLock    = flag.Bool("update-lock", false, "resolve current commits and rewrite the lock file")
+		providerVer   = flag.String("provider-version", "dev", "provider version label recorded in the report")
+		profile       = flag.String("profile", "full", "indexing profile to measure: full, fast, or syntax-only")
+		progress      = flag.Bool("progress", false, "print provider phase progress to stderr")
+		minLOCPerSec  = flag.Float64("min-loc-per-sec", 0, "fail if successful aggregate LOC/s is below this floor")
+		maxRSSBytes   = flag.Uint64("max-rss-bytes", 0, "fail if process peak RSS bytes exceeds this ceiling")
+		exactOutput   = flag.Bool("exact-output-bytes", false, "marshal every streamed record for exact NDJSON output bytes; slower on large repos")
+		cpuProfile    = flag.String("cpuprofile", "", "write a Go CPU profile for the benchmark process")
+		measureWorker = flag.Bool("measure-worker", false, "serve one isolated measurement request on stdin")
 	)
 	flag.Parse()
+	if *measureWorker {
+		os.Exit(bench.RunMeasureWorker(context.Background(), os.Stdin, os.Stdout))
+	}
 
 	if *cpuProfile != "" {
 		f, err := os.Create(*cpuProfile)
@@ -146,6 +151,10 @@ func run(manifestPath, cacheDir, outDir, lockPath, languages, profileName string
 	}
 
 	fmt.Fprintf(os.Stderr, "Measuring (no-egress, profile=%s)...\n", profile)
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve graph-bench executable: %w", err)
+	}
 	var metrics []bench.RepoMetrics
 	for _, spec := range specs {
 		dir := filepath.Join(cacheDir, spec.language, spec.dirName())
@@ -160,7 +169,7 @@ func run(manifestPath, cacheDir, outDir, lockPath, languages, profileName string
 				fmt.Fprint(os.Stderr, formatProgress(spec.repoPath, event))
 			}
 		}
-		m, measureErr := bench.MeasureRepoWithOptions(ctx, spec.repoPath, spec.language, dir, providerVer, profile, opts)
+		m, measureErr := bench.MeasureRepoIsolated(ctx, spec.repoPath, spec.language, dir, providerVer, profile, opts, []string{executable, "-measure-worker"})
 		if measureErr != nil {
 			fmt.Fprintf(os.Stderr, "  FAIL %-40s %v\n", spec.repoPath, measureErr)
 		} else {
@@ -368,7 +377,11 @@ func emitReport(report bench.Report, outDir string) error {
 }
 
 func printSummary(report bench.Report) {
-	w := tabwriter.NewWriter(os.Stderr, 0, 2, 2, ' ', 0)
+	writeSummary(os.Stderr, report)
+}
+
+func writeSummary(output io.Writer, report bench.Report) {
+	w := tabwriter.NewWriter(output, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(w, "\nLANGUAGE\tREPOS\tFILES\tLOC\tSYMBOLS\tRELATIONS\tLOC/S\tPARSE_FAIL")
 	languages := make([]string, 0, len(report.ByLanguage))
 	for language := range report.ByLanguage {
@@ -381,5 +394,26 @@ func printSummary(report bench.Report) {
 	}
 	t := report.Totals
 	fmt.Fprintf(w, "TOTAL\t%d\t%d\t%d\t%d\t%d\t%.0f\t%d\n", t.Repos, t.Files, t.LOC, t.Symbols, t.Relations, t.LOCPerSec, t.ParseFailures)
+	fmt.Fprintln(w, "\nPHASE\tMS\tSHARE")
+	phaseTotal := 0.0
+	for _, elapsed := range t.PhaseMS {
+		phaseTotal += elapsed
+	}
+	for _, phase := range []string{"inventory", "parse", "relations", "finalize"} {
+		elapsed := t.PhaseMS[phase]
+		share := 0.0
+		if phaseTotal > 0 {
+			share = elapsed * 100 / phaseTotal
+		}
+		fmt.Fprintf(w, "%s\t%.2f\t%.2f%%\n", phase, elapsed, share)
+	}
 	w.Flush()
+	fmt.Fprintf(output, "ARTIFACT native_raw=%d compact_raw=%d compact_dictionary=%d projected_facts=%d native_bytes/fact=%.2f compact_bytes/fact=%.2f\n",
+		t.NDJSONRawBytes,
+		t.CompactRawBytes,
+		t.CompactDictionaryBytes,
+		t.ProjectedFacts,
+		t.NDJSONBytesPerProjectedFact,
+		t.CompactBytesPerProjectedFact,
+	)
 }

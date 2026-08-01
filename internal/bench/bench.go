@@ -25,6 +25,7 @@ type RepoMetrics struct {
 	Profile                      string             `json:"profile"`
 	Commit                       string             `json:"commit,omitempty"`
 	WallMS                       float64            `json:"wall_ms"`
+	MaxRSSBytes                  uint64             `json:"max_rss_bytes"`
 	Files                        int                `json:"files"`
 	ParsedFiles                  int                `json:"parsed_files"`
 	LOC                          int                `json:"loc"`
@@ -73,6 +74,12 @@ func MeasureRepo(ctx context.Context, name, language, dir, providerVersion strin
 }
 
 func MeasureRepoWithOptions(ctx context.Context, name, language, dir, providerVersion string, profile sem.Profile, opts MeasureOptions) (RepoMetrics, error) {
+	return measureRepoWithPreflight(ctx, name, language, dir, providerVersion, profile, opts, runCompactPreflight)
+}
+
+type compactPreflightRunner func(context.Context, string, string, sem.Profile) (compactPreflight, error)
+
+func measureRepoWithPreflight(ctx context.Context, name, language, dir, providerVersion string, profile sem.Profile, opts MeasureOptions, preflightRunner compactPreflightRunner) (RepoMetrics, error) {
 	if profile == "" {
 		profile = sem.ProfileFull
 	}
@@ -140,6 +147,11 @@ func MeasureRepoWithOptions(ctx context.Context, name, language, dir, providerVe
 	})
 	wall := time.Since(start)
 	stopRSSGuard()
+	if len(phaseEvents) > 0 && phaseEvents[len(phaseEvents)-1].Phase == sem.BuildPhaseFinalize {
+		// The final provider event partitions all cold provider work while
+		// excluding synchronous progress telemetry/callback overhead.
+		wall = phaseEvents[len(phaseEvents)-1].Elapsed
+	}
 	if rss := rssExceeded.Load(); rss > 0 {
 		err = fmt.Errorf("memory guardrail failed during measurement: max RSS %d exceeds ceiling %d", rss, opts.MaxRSSBytes)
 	}
@@ -150,6 +162,7 @@ func MeasureRepoWithOptions(ctx context.Context, name, language, dir, providerVe
 	runtime.ReadMemStats(&after)
 
 	metrics.WallMS = round2(float64(wall.Microseconds()) / 1000)
+	metrics.MaxRSSBytes = maxRSSBytesCurrent()
 	metrics.PhaseMS = reducePhaseEvents(phaseEvents)
 	metrics.OutputBytes = outputBytes
 	metrics.OutputEstimated = !opts.ExactOutputBytes
@@ -164,7 +177,7 @@ func MeasureRepoWithOptions(ctx context.Context, name, language, dir, providerVe
 		metrics.AllocBytes = after.TotalAlloc - before.TotalAlloc
 	}
 
-	preflight, preflightErr := runCompactPreflight(ctx, dir, providerVersion, profile)
+	preflight, preflightErr := preflightRunner(ctx, dir, providerVersion, profile)
 	if preflightErr != nil {
 		metrics.Error = preflightErr.Error()
 		return metrics, preflightErr
@@ -300,12 +313,6 @@ type Hardware struct {
 	CPUs int    `json:"cpus"`
 }
 
-// maxRSSBytes returns the process peak resident set size (best-effort). It is a
-// process-wide peak, not per-repo; Linux reports kilobytes, macOS reports bytes.
-func maxRSSBytes() uint64 {
-	return maxRSSBytesCurrent()
-}
-
 // Aggregate summarizes a set of repo metrics for a language or the whole run.
 type Aggregate struct {
 	Repos                        int                `json:"repos"`
@@ -315,6 +322,7 @@ type Aggregate struct {
 	Relations                    int                `json:"relations"`
 	ParseFailures                int                `json:"parse_failures"`
 	WallMS                       float64            `json:"wall_ms"`
+	MaxRSSBytes                  uint64             `json:"max_rss_bytes"`
 	OutputBytes                  int                `json:"output_bytes"`
 	PhaseMS                      map[string]float64 `json:"phase_ms"`
 	NDJSONRawBytes               int                `json:"ndjson_raw_bytes"`
@@ -341,6 +349,9 @@ func aggregate(metrics []RepoMetrics) Aggregate {
 		agg.Relations += m.Relations
 		agg.ParseFailures += m.ParseFailures
 		agg.WallMS += m.WallMS
+		if m.MaxRSSBytes > agg.MaxRSSBytes {
+			agg.MaxRSSBytes = m.MaxRSSBytes
+		}
 		agg.OutputBytes += m.OutputBytes
 		agg.NDJSONRawBytes += m.NDJSONRawBytes
 		agg.CompactRawBytes += m.CompactRawBytes
@@ -406,7 +417,7 @@ func BuildReport(generatedAt, providerVersion string, profile sem.Profile, metri
 		SchemaVersion:   sem.SchemaVersion,
 		Profile:         string(profile),
 		Hardware:        Hardware{OS: runtime.GOOS, Arch: runtime.GOARCH, CPUs: runtime.NumCPU()},
-		MaxRSSBytes:     maxRSSBytes(),
+		MaxRSSBytes:     aggregate(metrics).MaxRSSBytes,
 		Repos:           sorted,
 		ByLanguage:      aggByLanguage,
 		Totals:          aggregate(metrics),
