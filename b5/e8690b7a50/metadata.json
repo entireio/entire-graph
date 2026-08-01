@@ -1,13 +1,13 @@
 {
-  "cli_version": "0.9.0",
-  "checkpoint_id": "b5e8690b7a50",
-  "strategy": "manual-commit",
   "branch": "claude/dataflow-evidence-determinism",
-  "checkpoints_count": 2,
+  "checkpoint_id": "b5e8690b7a50",
+  "checkpoints_count": 4,
+  "cli_version": "0.9.0",
   "files_touched": [
     "internal/sem/golden_test.go",
     "internal/sem/types.go"
   ],
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/b5/e8690b7a50/0/metadata.json",
@@ -15,13 +15,20 @@
       "compact_transcript": "/b5/e8690b7a50/0/transcript.jsonl",
       "content_hash": "/b5/e8690b7a50/0/content_hash.txt",
       "prompt": "/b5/e8690b7a50/0/prompt.txt"
+    },
+    {
+      "content_hash": "/b5/e8690b7a50/1/content_hash.txt",
+      "metadata": "/b5/e8690b7a50/1/metadata.json",
+      "prompt": "/b5/e8690b7a50/1/prompt.txt",
+      "transcript": "/b5/e8690b7a50/1/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 105,
+    "input_tokens": 46155,
     "cache_creation_tokens": 85472,
-    "cache_read_tokens": 4075091,
-    "output_tokens": 27012,
-    "api_call_count": 56
+    "cache_read_tokens": 4607337,
+    "output_tokens": 29823,
+    "api_call_count": 72
   }
 }
