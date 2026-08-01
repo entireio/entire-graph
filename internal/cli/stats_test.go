@@ -725,12 +725,21 @@ func TestStatsClassifiesPathLookalikeAsExploration(t *testing.T) {
 
 func TestStatsIsAdvertisedInHelp(t *testing.T) {
 	t.Parallel()
-	var out bytes.Buffer
-	if err := Run(t.Context(), Options{Stdout: &out, Stderr: &out}, []string{"help"}); err != nil {
+	// The root listing advertises the stats command...
+	var root bytes.Buffer
+	if err := Run(t.Context(), Options{Stdout: &root, Stderr: &root}, []string{"help"}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "entire graph stats") {
-		t.Fatalf("help does not advertise stats:\n%s", out.String())
+	if !strings.Contains(root.String(), "\n  stats ") {
+		t.Fatalf("root help does not advertise stats:\n%s", root.String())
+	}
+	// ...and `stats --help` shows its usage line.
+	var detail bytes.Buffer
+	if err := Run(t.Context(), Options{Stdout: &detail, Stderr: &detail}, []string{"stats", "--help"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(detail.String(), "entire graph stats") {
+		t.Fatalf("stats --help does not show its usage:\n%s", detail.String())
 	}
 }
 
