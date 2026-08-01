@@ -1,0 +1,1 @@
+Push and open a draft PR. Then review the whole codebase for similar scenarios where a language specific behavior should be generalized. If you are unsure, brainstorm with Codex until you both agree on a plan.
