@@ -104,6 +104,38 @@ func Match%02d() string { return "needle" }
 	}
 }
 
+func TestColdPreselectionKeepsLegacyOrderAndStatsWhenEligibleSetFitsBase(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "src/zeta.go", "package sample\n// quasar nebula\nfunc Zeta() {}\n")
+	write(t, repo, "src/alpha.go", "package sample\n// quasar nebula\nfunc Alpha() {}\n")
+	write(t, repo, "src/lower.go", "package sample\n// quasar\nfunc Lower() {}\n")
+	for index := 0; index < 5; index++ {
+		write(t, repo, fmt.Sprintf("noise/file%02d.go", index), fmt.Sprintf(
+			"package noise\nfunc Unrelated%02d() {}\n", index,
+		))
+	}
+	q := buildSearchQuery("quasar nebula")
+	selection, err := preselectSearchFiles(
+		t.Context(), repo, q, buildSparseSearchQuery("quasar nebula"),
+		SearchOptions{Worktree: true, MaxIndexedFiles: 3}, ProviderSnapshot{}, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFiles := []string{"src/alpha.go", "src/zeta.go", "src/lower.go"}
+	if !reflect.DeepEqual(selection.files, wantFiles) {
+		t.Fatalf("selected files = %#v, want legacy score/path order %#v", selection.files, wantFiles)
+	}
+	if selection.preselectionBackend != "go-content" || selection.preselectionPasses != 1 ||
+		selection.preselectionFilesExamined != 8 || selection.filesContentRead != 8 {
+		t.Fatalf("legacy scan stats changed: %#v", selection)
+	}
+	if selection.preselectionConfidence != 0 || selection.preselectionCoverage != 0 ||
+		selection.preselectionDiversity != 0 || selection.preselectionWidened || selection.preselectionBounded {
+		t.Fatalf("small eligible set unexpectedly reported progressive metrics: %#v", selection)
+	}
+}
+
 func TestSearchRepositoryFindsConceptualBodyText(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "encoding/serializer.go", `package encoding

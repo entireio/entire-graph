@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"math"
 	"math/rand"
 	"reflect"
 	"testing"
@@ -22,6 +23,43 @@ func TestFuseSearchPreselectionEvidenceUsesStableRRFAndPathTieBreak(t *testing.T
 		got := evidencePaths(fused)
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("seed %d fused paths = %#v, want %#v", seed, got, want)
+		}
+	}
+}
+
+func TestFuseSearchPreselectionEvidenceUsesExactRRFChannelRanks(t *testing.T) {
+	fused := fuseSearchPreselectionEvidence([]searchPreselectionEvidence{
+		{Path: "zeta/early.go", OriginalScore: 3, PathScore: 3, ContentScore: 1},
+		{Path: "alpha/middle.go", OriginalScore: 3, PathScore: 2, ContentScore: 3},
+		{Path: "middle/late.go", OriginalScore: 3, PathScore: 1, ContentScore: 2, ConstraintScore: 3},
+	})
+	want := map[string]float64{
+		"zeta/early.go":   1.0/61 + 1.0/63,
+		"alpha/middle.go": 1.0/62 + 1.0/61,
+		"middle/late.go":  1.0/63 + 1.0/62 + 1.0/61,
+	}
+	for _, item := range fused {
+		if math.Abs(item.rrfScore-want[item.Path]) > 1e-15 {
+			t.Fatalf("%s RRF = %.17g, want %.17g", item.Path, item.rrfScore, want[item.Path])
+		}
+	}
+}
+
+func TestFuseSearchPreselectionEvidenceSkipsZeroChannelsAndBreaksTiesByPath(t *testing.T) {
+	fused := fuseSearchPreselectionEvidence([]searchPreselectionEvidence{
+		{Path: "zeta/tied.go", OriginalScore: 2, PathScore: 2},
+		{Path: "alpha/tied.go", OriginalScore: 2, PathScore: 2},
+		{Path: "middle/content.go", OriginalScore: 1, ContentScore: 3},
+		{Path: "first/zero.go", OriginalScore: 100},
+	})
+	wantPaths := []string{"alpha/tied.go", "middle/content.go", "zeta/tied.go", "first/zero.go"}
+	if got := evidencePaths(fused); !reflect.DeepEqual(got, wantPaths) {
+		t.Fatalf("fused paths = %#v, want %#v", got, wantPaths)
+	}
+	wantScores := []float64{1.0 / 61, 1.0 / 61, 1.0 / 62, 0}
+	for index, item := range fused {
+		if math.Abs(item.rrfScore-wantScores[index]) > 1e-15 {
+			t.Fatalf("%s RRF = %.17g, want %.17g", item.Path, item.rrfScore, wantScores[index])
 		}
 	}
 }
@@ -59,7 +97,7 @@ func TestProgressivePreselectionWidensForLowConfidence(t *testing.T) {
 		})
 	}
 	got := selectProgressiveSearchFiles(fuseSearchPreselectionEvidence(evidence), []bool{true}, q, 4)
-	if got.Passes != 2 || !got.Widened || got.Bounded || len(got.Files) != 8 {
+	if got.Passes != 2 || got.Examined != 12 || !got.Widened || got.Bounded || len(got.Files) != 8 {
 		t.Fatalf("assessment = %#v, want widths 4 then 8", got)
 	}
 }
@@ -112,7 +150,7 @@ func TestProgressivePreselectionStopsAtFourXBound(t *testing.T) {
 		})
 	}
 	got := selectProgressiveSearchFiles(fuseSearchPreselectionEvidence(evidence), []bool{true, true}, q, 2)
-	if len(got.Files) != 8 || !got.Bounded || got.Coverage >= 1 {
+	if len(got.Files) != 8 || got.Examined != 14 || !got.Bounded || got.Coverage >= 1 {
 		t.Fatalf("assessment = %#v, want the four-times cap with incomplete coverage", got)
 	}
 }

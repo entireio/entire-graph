@@ -1651,32 +1651,50 @@ func preselectSearchFiles(
 		return searchFileSelection{}, err
 	}
 	applySearchFileCoverage(files, q, matchedAnywhere)
-	evidence := make([]searchPreselectionEvidence, len(files))
-	for index, file := range files {
-		evidence[index] = searchPreselectionEvidence{
-			Path:            file.path,
-			OriginalScore:   file.score,
-			PathScore:       file.pathScore,
-			ContentScore:    file.contentScore,
-			ConstraintScore: file.constraintScore,
-			MatchedTerms:    append([]bool(nil), file.matchedTerms...),
+	progressive := len(files) > options.MaxIndexedFiles
+	if progressive {
+		evidence := make([]searchPreselectionEvidence, len(files))
+		for index, file := range files {
+			evidence[index] = searchPreselectionEvidence{
+				Path:            file.path,
+				OriginalScore:   file.score,
+				PathScore:       file.pathScore,
+				ContentScore:    file.contentScore,
+				ConstraintScore: file.constraintScore,
+				MatchedTerms:    append([]bool(nil), file.matchedTerms...),
+			}
 		}
+		assessment := selectProgressiveSearchFiles(
+			fuseSearchPreselectionEvidence(evidence), matchedAnywhere, q, options.MaxIndexedFiles,
+		)
+		selection.files = assessment.Files
+		selection.preselectionPasses = assessment.Passes
+		selection.preselectionConfidence = assessment.Confidence
+		selection.preselectionCoverage = assessment.Coverage
+		selection.preselectionDiversity = assessment.Diversity
+		selection.preselectionWidened = assessment.Widened
+		selection.preselectionBounded = assessment.Bounded
+	} else {
+		sort.Slice(files, func(i, j int) bool {
+			if files[i].score != files[j].score {
+				return files[i].score > files[j].score
+			}
+			return files[i].path < files[j].path
+		})
+		selection.files = make([]string, len(files))
+		for index, file := range files {
+			selection.files[index] = file.path
+		}
+		selection.preselectionPasses = 1
 	}
-	assessment := selectProgressiveSearchFiles(
-		fuseSearchPreselectionEvidence(evidence), matchedAnywhere, q, options.MaxIndexedFiles,
-	)
-	selection.files = assessment.Files
 	selection.filesContentRead = contentReads
 	selection.preselectionBackend = "go-content"
-	selection.preselectionPasses = assessment.Passes
 	selection.preselectionFilesExamined = len(scanPaths)
-	selection.preselectionConfidence = assessment.Confidence
-	selection.preselectionCoverage = assessment.Coverage
-	selection.preselectionDiversity = assessment.Diversity
-	selection.preselectionWidened = assessment.Widened
-	selection.preselectionBounded = assessment.Bounded
 	if usedGitIndexPreselection {
 		selection.preselectionBackend = "git-index-grep+go-content"
+		if !progressive {
+			selection.preselectionPasses++
+		}
 		selection.preselectionFilesExamined += len(source.paths)
 		// The content pass ran over a Git-narrowed pool, so the posting lists cover only part of
 		// the corpus. Discard them rather than let a block compute a repository-wide total from a
