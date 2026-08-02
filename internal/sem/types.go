@@ -394,8 +394,8 @@ func serviceBoundaryScanLanguage(language string) bool {
 // Whole literals are returned rather than spans because the callers match
 // against the document, and a returned literal is the unit that either is or is
 // not a GraphQL operation.
-func hostLanguageLiterals(block string) []string {
-	var out []string
+func hostLanguageLiterals(block string) []hostLanguageLiteral {
+	var out []hostLanguageLiteral
 	runes := []rune(block)
 	for index := 0; index < len(runes); index++ {
 		quote := runes[index]
@@ -406,7 +406,7 @@ func hostLanguageLiterals(block string) []string {
 		// embedded operation is not cut at an interior newline.
 		if quote != '`' && index+2 < len(runes) && runes[index+1] == quote && runes[index+2] == quote {
 			if end := indexRunes(runes, index+3, string([]rune{quote, quote, quote})); end >= 0 {
-				out = append(out, string(runes[index+3:end]))
+				out = append(out, hostLanguageLiteral{Text: string(runes[index+3 : end])})
 				index = end + 2
 				continue
 			}
@@ -430,10 +430,33 @@ func hostLanguageLiterals(block string) []string {
 		if end < 0 {
 			continue
 		}
-		out = append(out, string(runes[index+1:end]))
+		out = append(out, hostLanguageLiteral{Text: string(runes[index+1 : end]), Tag: templateLiteralTag(runes, index)})
 		index = end
 	}
 	return out
+}
+
+// hostLanguageLiteral is a string or template literal lifted out of a symbol
+// body, with the template's tag when it has one. The tag is what distinguishes
+// a GraphQL shorthand operation from an object literal that happens to be in a
+// string: `gql`+"`"+`{ viewer { id } }`+"`"+` is an operation, "{ foo: 1 }" is not.
+type hostLanguageLiteral struct {
+	Text string
+	Tag  string
+}
+
+// templateLiteralTag returns the identifier immediately preceding a backtick,
+// which is the tag of a tagged template (`gql`, `graphql`, `graphql.experimental`
+// and so on reduce to their last segment).
+func templateLiteralTag(runes []rune, backtick int) string {
+	if backtick <= 0 || runes[backtick] != '`' {
+		return ""
+	}
+	end := backtick
+	for end > 0 && isJSIdentifierPart(byte(runes[end-1])) && runes[end-1] < 128 {
+		end--
+	}
+	return string(runes[end:backtick])
 }
 
 func indexRunes(runes []rune, from int, want string) int {
@@ -451,6 +474,33 @@ func indexRunes(runes []rune, from int, want string) int {
 		}
 	}
 	return -1
+}
+
+// graphqlDocumentTag reports whether a template tag marks its contents as a
+// GraphQL document.
+func graphqlDocumentTag(tag string) bool {
+	switch strings.ToLower(tag) {
+	case "gql", "graphql":
+		return true
+	default:
+		return false
+	}
+}
+
+// graphqlShorthandRootFields reads the root fields of a shorthand operation —
+// a document that is nothing but a selection set. It returns nothing when the
+// literal names an operation, because that shape is handled by the keyword
+// scan and would otherwise be reported twice.
+func graphqlShorthandRootFields(text string) []string {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "{") {
+		return nil
+	}
+	close := matchingBraceOffset(trimmed, 0)
+	if close < 0 {
+		return nil
+	}
+	return graphqlRootSelectionFields(trimmed[1:close])
 }
 
 func serviceBoundaries(symbol SymbolRecord, block string) []serviceBoundary {
@@ -519,12 +569,28 @@ func serviceBoundaries(symbol SymbolRecord, block string) []serviceBoundary {
 	// they carry their own evidence of being GraphQL.
 	if serviceBoundaryScanLanguage(symbol.Language) {
 		for _, literal := range hostLanguageLiterals(block) {
-			for _, match := range graphqlOperationRe.FindAllStringSubmatch(literal, -1) {
+			// GraphQL query shorthand omits both the keyword and the name:
+			// `{ viewer { id } }` is a query. Only a gql/graphql-tagged
+			// template is read that way, because a bare braced string is far
+			// more often an object or JSON blob than an operation.
+			if graphqlDocumentTag(literal.Tag) {
+				for _, field := range graphqlShorthandRootFields(literal.Text) {
+					add(serviceBoundary{
+						Relation:     "HANDLES_GRAPHQL",
+						Kind:         "graphql",
+						Name:         "query " + field,
+						Confidence:   0.78,
+						Reason:       "GraphQL shorthand operation root field detected in tagged literal",
+						EvidenceKind: "graphql_operation_field",
+					})
+				}
+			}
+			for _, match := range graphqlOperationRe.FindAllStringSubmatch(literal.Text, -1) {
 				// The operation NAME edge is derived from an operation that also
 				// carries a selection set, rather than from an independent
 				// substring match: `query GetViewer($id: ID!) { … }` names an
 				// operation, `query the columns` in a docstring does not.
-				if !graphqlOperationSelectionRe.MatchString(literal) {
+				if !graphqlOperationSelectionRe.MatchString(literal.Text) {
 					continue
 				}
 				add(serviceBoundary{
@@ -536,7 +602,7 @@ func serviceBoundaries(symbol SymbolRecord, block string) []serviceBoundary {
 					EvidenceKind: "graphql_operation",
 				})
 			}
-			for _, op := range graphqlOperationRootFieldSelections(literal) {
+			for _, op := range graphqlOperationRootFieldSelections(literal.Text) {
 				add(serviceBoundary{
 					Relation:     "HANDLES_GRAPHQL",
 					Kind:         "graphql",
@@ -784,6 +850,15 @@ func graphqlRootSelectionFields(body string) []string {
 			}
 			name = body[fieldStart:cursor]
 			i = cursor - 1
+		} else {
+			// Step back so the loop's increment lands on the character after
+			// the name. Without this the following byte is skipped, and when
+			// that byte is the `(` of an argument list the depth counter never
+			// rises: `updateUser(id: $id)` was then read at depth 0, where
+			// `id: $id` looks like an alias and yielded a field named `$id`.
+			// The alias branch above already compensates, which is why only
+			// argument-carrying fields were affected.
+			i--
 		}
 		switch name {
 		case "fragment", "on":
