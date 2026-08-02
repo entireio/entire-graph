@@ -7,8 +7,10 @@ import (
 )
 
 // dispatchCommands mirrors the real command tokens handled by Run's switch in
-// root.go (excluding the help/version meta aliases: help, --help, -h, --version,
-// -v). If you add a command to the switch, add it here and give it a commandDoc.
+// root.go. `help` and `version` are included — they are commands with their own
+// doc entries; only the flag aliases (--help, -h, --version, -v) are left out,
+// since they carry no command word. If you add a command to the switch, add it
+// here and give it a commandDoc.
 var dispatchCommands = []string{
 	"diff", "commit", "checkpoint", "analyze", "doctor", "capabilities",
 	"snapshot", "symbols", "edges", "search", "index", "def", "neighbors",
