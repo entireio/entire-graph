@@ -1277,7 +1277,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 			Symbols:           symbolCount,
 			Relations:         relationCount,
 			PartialFailures:   len(failures),
-			CompletenessLevel: completenessLevel(len(failures), len(files), parsedFileCount, symbolCount),
+			CompletenessLevel: completenessLevel(completenessFailureCount(failures), len(files), parsedFileCount, symbolCount),
 		},
 		Completeness: CompletenessReport{Languages: completenessLangs, Relations: relationsByType},
 	})
@@ -17507,6 +17507,33 @@ func directTypeBodyLines(lines []string, symbol SymbolRecord, fileSymbols []Symb
 		}
 	}
 	return strings.Join(body, "\n")
+}
+
+// intentionalSkipFailureCodes are partial-failure codes that mean the graph
+// deliberately chose NOT to parse a file (it still emits a file record) rather
+// than tried and failed. Exceeding the parser-input cap or detecting a minified
+// blob is a policy skip, not an inability to understand parseable code, so a
+// handful of them — typically vendored or generated sources — should not drag an
+// otherwise-complete graph to "degraded". The parsed-file ratio and zero-symbol
+// guards in completenessLevel still catch a repo that is genuinely mostly
+// unparsed, and the skips remain visible in PartialFailures for transparency.
+var intentionalSkipFailureCodes = map[string]bool{
+	"E_FILE_TOO_LARGE": true,
+	"E_MINIFIED":       true,
+}
+
+// completenessFailureCount counts only the partial failures that reflect a real
+// gap in understanding code the graph attempted — the input to completenessLevel.
+// Intentional skips (see intentionalSkipFailureCodes) are excluded.
+func completenessFailureCount(failures []PartialFailure) int {
+	n := 0
+	for _, failure := range failures {
+		if intentionalSkipFailureCodes[failure.Code] {
+			continue
+		}
+		n++
+	}
+	return n
 }
 
 func completenessLevel(failures, files, parsedFiles, symbols int) string {
