@@ -2,6 +2,7 @@ package sem
 
 import (
 	"strings"
+	"unicode"
 
 	sitter "github.com/smacker/go-tree-sitter"
 )
@@ -243,9 +244,14 @@ func cleanParameterName(raw string) string {
 	if name == "" || name == "self" || name == "this" || name == "_" {
 		return ""
 	}
+	// Reject punctuation the signature regex used to invent (a bare `}`, a
+	// stray `]`) without rejecting the many supported languages that allow
+	// Unicode identifiers — Go, Kotlin, Swift and Python among them. An ASCII
+	// -only rule dropped every parameter of `func f(café string, naïve int)`,
+	// and because the parser still reported the list as AST-confirmed, the
+	// signature fallback did not run and the function contributed no flows.
 	for _, char := range name {
-		if !(char == '_' || char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' ||
-			char >= '0' && char <= '9') {
+		if char != '_' && !unicode.IsLetter(char) && !unicode.IsDigit(char) {
 			return ""
 		}
 	}

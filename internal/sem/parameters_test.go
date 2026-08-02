@@ -177,3 +177,27 @@ func TestASTParameterNamesRejectsSignatureRegexArtifacts(t *testing.T) {
 		}
 	}
 }
+
+// TestCleanParameterNameKeepsUnicodeIdentifiers guards a rule that was too
+// strict: rejecting every non-ASCII rune also rejected legitimate identifiers
+// in the many supported languages that allow them. `func f(café string, naïve
+// int)` lost BOTH parameters, and because the list was still reported as
+// AST-confirmed the signature fallback never ran, so the function contributed
+// no data flows at all. Punctuation must still be rejected — that is what keeps
+// the old regex artifacts out.
+func TestCleanParameterNameKeepsUnicodeIdentifiers(t *testing.T) {
+	for _, name := range []string{"café", "naïve", "数値", "ünter", "_private", "a1"} {
+		if got := cleanParameterName(name); got != name {
+			t.Errorf("identifier %q was rejected (got %q)", name, got)
+		}
+	}
+	for _, artifact := range []string{"}", "]", ")", "{", "a-b", "a.b", "a b", "", "self", "this", "_"} {
+		if got := cleanParameterName(artifact); got != "" {
+			t.Errorf("non-identifier %q was accepted as %q", artifact, got)
+		}
+	}
+	// Sigils are still stripped rather than rejected.
+	if got := cleanParameterName("$php"); got != "php" {
+		t.Errorf("sigil handling changed: got %q", got)
+	}
+}
