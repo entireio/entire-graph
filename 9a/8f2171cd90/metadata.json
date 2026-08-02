@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "9a8f2171cd90",
+  "strategy": "manual-commit",
+  "branch": "claude/language-capability-generalization",
+  "checkpoints_count": 3,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/9a/8f2171cd90/0/metadata.json",
+      "transcript": "/9a/8f2171cd90/0/full.jsonl",
+      "compact_transcript": "/9a/8f2171cd90/0/transcript.jsonl",
+      "content_hash": "/9a/8f2171cd90/0/content_hash.txt",
+      "prompt": "/9a/8f2171cd90/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 58,
+    "cache_creation_tokens": 613483,
+    "cache_read_tokens": 16478559,
+    "output_tokens": 21502,
+    "api_call_count": 29
+  }
+}

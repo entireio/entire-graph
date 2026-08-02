@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b17bf2nce</task-id>
+<tool-use-id>toolu_01Esiv2JtSgfSEiwftw1suXC</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/abd994f2-6ae7-45b2-817c-91022c359288/tasks/b17bf2nce.output</output-file>
+<status>completed</status>
+<summary>Background command "Benchmark the read-path change with spread" completed (exit code 0)</summary>
+</task-notification>
