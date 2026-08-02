@@ -1,0 +1,18 @@
+Where is the graph cached on this machine?
+
+---
+
+Why ENTIRE_PLUGIN_DATA_DIR unset, given I called entire graph as plugin?
+
+---
+
+You keep guessing. Instead, inspect those folders.
+
+---
+
+Clear it. Also check if there are old
+entire-sem cache dirs are still on this computer.
+
+---
+
+Push an empty commit to wrap up this Entire session
