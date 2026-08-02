@@ -1210,3 +1210,39 @@ func TestOnlyFilesDerivationReStampsCommitAfterSameTreeCommit(t *testing.T) {
 		)
 	}
 }
+
+// TestSearchSnapshotKeyIncludesGraphIgnore pins that the implicitly-loaded
+// .graphignore keys the cache entry, exactly as an explicit --ignore-file does.
+// Without it, editing .graphignore against an unchanged tree hit the previous
+// entry and the new rules silently did nothing — verified before the fix by an
+// index run that reported a cache hit and the full file count while
+// .graphignore excluded one of the files.
+func TestSearchSnapshotKeyIncludesGraphIgnore(t *testing.T) {
+	repo := t.TempDir()
+	options := ProviderSnapshotOptions{Profile: ProfileFull}
+
+	absent, err := searchSnapshotKey(repo, "repo", "v", "tree", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, graphIgnoreFileName), []byte("vendor/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	present, err := searchSnapshotKey(repo, "repo", "v", "tree", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if absent == present {
+		t.Fatal("adding .graphignore must change the cache key")
+	}
+	if err := os.WriteFile(filepath.Join(repo, graphIgnoreFileName), []byte("dist/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	edited, err := searchSnapshotKey(repo, "repo", "v", "tree", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edited == present {
+		t.Fatal("editing .graphignore must change the cache key")
+	}
+}

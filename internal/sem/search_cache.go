@@ -728,6 +728,21 @@ func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, opt
 			writePart("")
 		}
 	}
+	// The repo-root .graphignore is applied implicitly, so it must key the entry
+	// exactly as an explicit --ignore-file does. Without it, editing
+	// .graphignore against an unchanged tree hits the old entry and the new
+	// rules silently do nothing.
+	writePart("graphignore")
+	graphIgnore := filepath.Join(absRepo, graphIgnoreFileName)
+	switch content, err := os.ReadFile(graphIgnore); {
+	case err == nil:
+		_, _ = hash.Write(content)
+		writePart("")
+	case errors.Is(err, os.ErrNotExist):
+		writePart("missing")
+	default:
+		return "", err
+	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
