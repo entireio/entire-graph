@@ -1,25 +1,1712 @@
-/goal after u udnerstadn fully ;  make entire graph meet this goal as it has already been beaten,  might be graphmark benchmark harness etc problem if not, then acutaly improve  grpah itself;   1. Give the agent a proper prompt for entire-graph, and a proper prompt for cmm too — then rerun against
-  baseline and report.
-  2. Don't stop until: accuracy vs baseline is a win or a tie, AND tokens beat both baseline and cmm, AND
-  tokens beat baseline by ≥35%.
-  3. No cheating at all.
-  4. Use the loop plugin if it's useful.
-  5. Results on 5/300 fable, 10/300 opus, 20/300 sonnet, 30/300 haiku.
+/loop come up with definitive plan that will get us to a thirty five percent token savings maintain the same accuracy. Keep looping and verify that this is not already implemented and that this will work across all four models. We can stop the loop when you have a verified plan. One thing, look through the session transcripts, see how we can improve as the agents. If you keep thinking, we will get to our solution and meet our goal finally. It's been four days. lung. So I expect our goal to be met very soon. So you better start thinking and you better get a definitive plan that will work.
 
 ---
 
-once all doen give new stabele branch fro opu anget to test on i have sonnet agnet coming up and fix all the sonnet isues to, cuz u said we can get 33% so get it
+/loop every 10min;  come up with definitive plan that will get us to a thirty five percent token savings maintain the same accuracy. Keep looping and verify that this is not already implemented and that this will work across all four models. We can stop the loop when you have a verified plan. One thing, look through the session transcripts, see how we can improve as the agents. If you keep thinking, we will get to our solution and meet our goal finally. It's been four days. lung. So I expect our goal to be met very soon. So you better start thinking and you better get a definitive plan that will work.
+
+---
+
+come up with definitive plan that will get us to a thirty five percent token savings maintain the same accuracy. Keep looping and verify that this is not already implemented and that this will work across all four models. One thing, look through the session transcripts, see how we can improve as the agents. Stop the loop when you have a verified plan.
+
+---
+
+are we ready for run?
+
+---
+
+and U use all the token saivngs, brain eneitre graph, rtk and caveman , so i can have more usgae with u. js not in benchamrks
 
 ---
 
 <task-notification>
-<task-id>b29xijpwi</task-id>
-<tool-use-id>REDACTED</tool-use-id>
-<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/b29xijpwi.output</output-file>
+<task-id>a272b9d959cad235e</task-id>
+<tool-use-id>toolu_015Upak9jofkTJ8oRccHrecy</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/a272b9d959cad235e.output</output-file>
 <status>completed</status>
-<summary>Background command "Wait for genuine v16 completion" completed (exit code 0)</summary>
+<summary>Agent "Investigate PHP losses" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## 1. MSGCOUNT vs CONTEXT
+
+| inst | nmsg e/b | meanctx e/b | tok e/b | Δtok | from msgcount | from ctxsize |
+|---|---|---|---|---|---|---|
+| phpspreadsheet-3463 | 32/19 = **1.684** | 38188/29346 = 1.301 | 1,248,490/569,692 = **2.192** | +664,442 | +381,498 (57%) | +282,944 (43%) |
+| phpspreadsheet-**3570** (= your "3462"; 3462 does not exist, 3570 is the +11.5% cell) | 19/19 = 1.000 | 27619/24803 = 1.114 | 531,315/476,612 = 1.115 | +53,504 | 0 (0%) | +53,504 (**100%**) |
+| php-cs-fixer-7523 | 43/49 = **0.878** | 58803/44463 = **1.323** | 2,544,321/2,195,185 = 1.159 | +349,842 | −266,778 | +616,620 (**176%**) |
+| laravel-46234 | 19/21 = 0.905 | 34098/32705 = 1.043 | 663,765/700,769 = 0.947 | −38,943 | −65,410 | +26,467 |
+
+**Aggregate 3 losers: Δ = +1,067,788. msgcount = +114,720 (10.7%). ctxsize = +953,068 (89.3%).**
+→ **BIGGER CONTEXT dominates.** eg loses even when it uses FEWER messages (pcf: −6 msgs, still +350k).
+
+First-message ctx: eg 17939/17872/17607/17657 vs base 18001/17934/17654/17731. **eg system prompt is 47–62 tok SMALLER.** Zero of the loss is prompt size. 100% is downstream tool-result accumulation.
+
+## 2. Tool-result bytes / session
+
+| inst | arm | total | Read-full | Read-ranged | Bash | eg-q |
+|---|---|---|---|---|---|---|
+| 3463 | eg | 24,163 | 8,316 /2 | 3,746 /6 | 6,786 /19 | 4,657 /2 |
+| 3463 | base | 21,561 | 8,316 /2 | 4,576 /1 | 7,989 /13 | — |
+| 3570 | eg | 29,707 | 11,702 /4 | 7,145 /3 | 4,271 /8 | 6,254 /2 |
+| 3570 | base | 19,261 | 14,277 /4 | 1,212 /1 | 3,426 /12 | — |
+| pcf-7523 | eg | **154,911** | 39,611 /2 | **92,834 /11** | 15,902 /24 | 5,616 /2 |
+| pcf-7523 | base | 76,529 | 36,762 /2 | 21,561 /13 | 17,212 /30 | — |
+| lar-46234 | eg | 41,161 | 25,098 /1 | 4,524 /3 | 6,849 /11 | 4,377 /2 |
+| lar-46234 | base | 41,412 | 25,098 /1 | 9,031 /5 | 6,959 /13 | — |
+
+**eg reads more in 3/4.** pcf = 2.02×. Per-file, pcf `src/Tokenizer/TokensAnalyzer.php` (the GOLD file):
+- eg: 5 blind sweeps `lim=200,400,650,570,420,565` → **77,718 B**
+- base: 6 tight reads `lim=100,80,40,15,15,20` → **10,784 B**
+- 7.2× ratio. Δ78,382 B ≈ 21.8k tok injected mid-run, replayed ~20× ≈ **~430k tok** ≥ pcf's entire +350k.
+
+Payload break-even math (payload_tok × (nmsg−1) ÷ meanctx = turns it must save):
+- 3463: 4,657 B → 40,102 tok replay → needs 1.05 turns saved; **actual −13**
+- 3570: 6,254 B → 31,270 tok replay → needs 1.13; **actual 0**
+- pcf: 5,616 B → 65,520 tok replay → needs 1.11; actual +6 turns but +78 KB reads
+- lar: 4,377 B → 9,345 tok replay → needs 0.64; **actual +2 → net win**
+
+## 3. Gold file in payload?
+
+| inst | gold | in payload? | rank |
+|---|---|---|---|
+| 3463 | `src/PhpSpreadsheet/Writer/Xlsx/FunctionPrefix.php` | **NO — 0 occurrences** | ∞ |
+| 3570 | `.../LookupRef/HLookup.php`, `VLookup.php` | YES | **2 and 3** |
+| pcf-7523 | `src/Tokenizer/TokensAnalyzer.php` | **NO — 0 occurrences** | ∞ |
+| lar-46234 | `src/Illuminate/Routing/UrlGenerator.php` | YES (right file, WRONG method: `to` not `previous`) | **3** |
+
+Top-2 of each payload:
+
+- **3463**: `1. src/PhpSpreadsheet/Calculation/DateTime.php:401-404 score=46.66 DateTime.NETWORKDAYS` / `2. src/PhpSpreadsheet/Calculation/DateTimeExcel/NetworkDays.php:36-83 score=44.57 NetworkDays.count` — both are runtime evaluation; bug is in the **Xlsx writer**.
+- **3570**: `1. .../LookupBase.php:21-42 score=114.39 LookupBase.validateIndexLookup` / `2. .../HLookup.php:28-61 score=103.45 HLookup.lookup` — correct.
+- **pcf-7523**: `1. src/RuleSet/Sets/PSR12Set.php:24-70 score=37.18 PSR12Set.getRules` / `2. src/RuleSet/Sets/SymfonySet.php:30-34 score=37.18 SymfonySet.getRules` — both are rule-config **boilerplate lists** (`signals=boilerplate-prior`), zero relation to the tokenizer bug. rank 4 = `BinaryOperatorSpacesFixer.php` (the file, not the fix site).
+- **lar-46234**: `1. src/Illuminate/Contracts/Routing/UrlGenerator.php:15-20 score=35.55 UrlGenerator.previous` (interface stub, no body) / `2. src/Illuminate/Session/Store.php:702-705 score=34.90 Store.previousUrl`.
+
+## 4. Turn-by-turn, 3463
+
+**BASE (18 tool calls / 19 msgs)** — batched `;`-joined shell in 3 turns:
+```
+1 Bash  find FunctionPrefix.php; grep -r addXlfnPrefix          301B
+2 Read  FunctionPrefix.php (whole)                             5604B
+3 Bash  find *FunctionPrefix*; grep -r NETWORKDAYS|addXlfn...   2991B
+4 Read  FunctionPrefixTest.php                                 2712B
+5 Edit  XLFNREGEXP                                              340B
+6 Edit  XLWSREGEXP                                              340B
+7 Bash  php vendor/bin/phpunit ...FunctionPrefixTest.php   FAIL   46B
+8 Bash  ls -la; which php; find phpunit.xml|composer.json      1225B
+9 Bash  which phpunit; find -name phpunit                        17B
+10 Bash cat &gt; /tmp/test_regex.php &lt;&lt;EOF                          47B
+11 Bash cat &gt; /tmp/verify_fix.php &lt;&lt;EOF                         389B
+12 Read FunctionPrefix.php [1,165]                             4576B
+13-15 Bash 3× grep sweeps                            31/747/972B
+16 Bash php -l                                                   72B
+17 Bash git diff                                                829B
+18 Bash git status                                              322B
+```
+
+**EG (31 tool calls / 32 msgs)**:
+```
+1  Bash  eg-q search "NETWORKDAYS ... xlfn"                     4193B   &lt;- WRONG hits
+2  Bash  eg-q search "addXlfnPrefix DAYS regex"                  464B   &lt;- "SEARCH BUDGET
+                                                                          EXHAUSTED" refusal
+                                                                          + fallback grep that
+                                                                          FOUND FunctionPrefix.php
+3  Read  FunctionPrefix.php (whole)                             5604B
+4  Edit  XLFNREGEXP                                              329B
+5  Bash  vendor/bin/phpunit ...NetworkDaysTest.php   FAIL         69B   &lt;- payload's VERIFY: line
+6  Bash  ls -la | head -20                                      1176B  ┐
+7  Bash  which phpunit || find -name phpunit                      17B  │ 5 turns
+8  Bash  cat composer.json | grep scripts || php -v              333B  │ env
+9  Bash  php -r phpversion; php -m | grep pdo                     46B  │ archaeology
+10 Bash  find -name phpunit.xml* -o -name .php-cs-fixer*          43B  ┘
+11 Read  FunctionPrefix.php [.,15]                               406B
+12 Read  FunctionPrefix.php [150,20]                             605B
+13 Bash  find *FunctionPrefix* -path */test*                      62B
+14 Read  FunctionPrefixTest.php                                 2712B
+15 Bash  grep -n const XLFNREGEXP|XLWSREGEXP|addXlfnPrefix        443B  ┐
+16 Bash  sed -n '7,154p'                                         225B  │
+17 Bash  grep -r NETWORKDAYS|DAYS src/ tests/                   2147B  │
+18 Bash  sed -n '9,153p'                                          31B  │
+19 Bash  head -n 194                                             169B  │
+20 Bash  grep -n NETWORKDAYS|'days'|DAYS                          31B  │ 17 turns
+21 Bash  grep -rn preg_replace.*XLFNREGEXP                       279B  │ self-verify
+22 Read  FunctionPrefix.php [156,5]                              162B  │ of its own
+23 Edit  XLWSREGEXP                                              329B  │ regex edit,
+24 Read  FunctionPrefix.php [1,20]                               561B  │ ONE shell
+25 Read  FunctionPrefix.php [150,25]                             797B  │ cmd per
+26 Bash  git diff FunctionPrefix.php | head -100                1037B  │ turn
+27 Read  FunctionPrefix.php [162,35]                            1215B  │
+28 Bash  git diff --stat src/                                    112B  │
+29 Bash  grep -A5 const XLFNREGEXP|XLWSREGEXP                    357B  │
+30 Bash  grep -B5 ')\b))\s*\(/Umui'                               86B  │
+31 Bash  sed -n '150,155p'                                       123B  ┘
+```
+
+**The 13 extra turns =** 1 wasted budget-exhausted search (turn 2) + 5 env-archaeology turns triggered by the payload's unrunnable `VERIFY:` command (turns 6–10) + 7 net extra single-command self-verification probes of its own regex (turns 15–31 vs base 12–18). Zero of the 13 produced new information. Both arms are **1 tool call per message** — neither batches; batching prompts had no effect in either arm.
+
+`vendor/` does not exist in the checkout. `VERIFY: vendor/bin/phpunit ...` is unrunnable in every PHP cell.
+
+## 5. Root cause + class
+
+- **3463**: payload ranked the runtime `NETWORKDAYS` evaluator; gold is the Xlsx writer's regex — gold file absent (0 hits); the *fallback grep after the budget refusal* is what located it; then an unrunnable `VERIFY:` sent it into 5 env turns + 12 self-verify turns. → **LOCATE failure, cascading into BEHAVIOUR** (payload also caused 2 wasted turns and a bad VERIFY).
+- **3570**: payload was CORRECT (rank 1 = exact fix helper, gold at 2/3), turns identical 19→19, and eg still lost 11.5% because the 6,254 B payload alone replays to 31.3k tok and saved 0 turns; +10.4 KB extra reads on top. → **BLOAT failure** (pure; correct answer, negative ROI).
+- **pcf-7523**: payload returned two `boilerplate-prior` rule-config `getRules()` bodies, gold `TokensAnalyzer.php` never mentioned; with no line anchor the agent blind-swept the file at `lim=200/400/650/570/420/565` = 77.7 KB vs baseline's 10.8 KB of anchored reads. → **LOCATE failure → BLOAT** (locate miss is the cause, read bloat is the 89% of the token damage).
+- **lar-46234** (the win): payload put the right file at rank 3 and the interface stub at rank 1; good enough to save 2 turns; smallest payload (1.9 KB) so break-even was only 0.64 turns. → success only because the payload was **small**.
+
+## 6. Tool-side fixes, ranked by expected recovery
+
+1. **Kill the "SEARCH BUDGET EXHAUSTED" refusal text; just run the fallback silently — or let search #2 run.** (`GQ_SEARCH_CAP=1`). Fired in 3/4 instances. In 3463 the fallback grep is what found the gold file, but it was preceded by 300 B of refusal prose ("Search will not run again - rephrasing the same question does not help") that (a) burned a full turn and (b) replays 30×. In pcf the fallback produced literally nothing (`pattern too broad — 177 matches`, no results) — a 100%-waste turn. Est. recovery: ~40–65k tok/instance on the losers.
+2. **Emit a runnable VERIFY, or emit none.** Probe for the runner binary before printing it. `vendor/bin/phpunit` with no `vendor/` directory cost 3463 six turns (~230k tok replayed). Fallback should be `php -l &lt;edited file&gt;` or an explicit "no test runner installed — do not attempt to run tests." Est. recovery: 150–230k on 3463, similar on any PHP/JS/Ruby cell without installed deps.
+3. **Suppress `boilerplate-prior` / rule-config / registry-list hits from the top-3.** pcf's ranks 1–2 were two `getRules()` arrays whose only tie to the query was the literal `'binary_operator_spaces' =&gt;` in a config list; they scored identically (37.1786) and pushed the real fixer to rank 4 and the gold file off the list. A `boilerplate-prior` signal should be a rank *penalty*, not a neutral tag. Est. recovery: the whole pcf +350k class of failures.
+4. **Cap payload bytes as a function of expected session length, and pin the budget explicitly.** Current `EG_MAXBYTES=24576`, `EG_SNIPPET=6`, `EG_TOPK=5` produced 1.9–6.2 KB. 3570 shows a *correct* 6.2 KB payload is still net-negative at 19 turns. Target ≤ 2 KB (the size that won laravel). Ship line-ranges + one-line signatures for ranks 2–5, full bodies only for rank 1. Est. recovery: ~15–20k tok/instance across every cell, and turns 3570 from −11.5% to roughly break-even.
+5. **When gold-file confidence is low, emit an EXPLICIT NARROW-READ directive with line ranges instead of a body.** pcf burned 78 KB because it had a file name (from its own grep) and no line anchor. Emitting `TokensAnalyzer.php:552-560 isBinaryOperator` would have replaced 77.7 KB of reads with ~1 KB.
+6. **Add a `verify` subcommand (or rename the `VERIFY:` label).** 3570 turn 12 wasted a full turn on `eg-q.run verify &lt;path&gt;` → `Exit code 2 / usage: eg-q search|def|callers|impact|grep`. The payload's own label names a subcommand that does not exist.
+
+**Deprioritised: prompt-instruction fixes.** Both arms ran at exactly 1 tool call per message (3463: 31 tools/32 msgs eg, 18/19 base; pcf: 42/43 eg, 48/49 base) despite both prompts carrying "A TURN IS A MESSAGE… ask for them ALL IN ONE MESSAGE" and "Never spend a turn on a lone shell command (join them with ';')". Zero uptake, both arms, all four instances — consistent with the prior measurements in this project. Also note the eg system prompt is already 47–62 tokens *smaller* than baseline's, so there is no prompt-size lever left. All remaining recovery is in what the tool emits.</result>
+<usage><subagent_tokens>82954</subagent_tokens><tool_uses>20</tool_uses><duration_ms>355972</duration_ms></usage>
 </task-notification>
 
 ---
 
-make stbael coy brnachw ith allf ixes to test
+<task-notification>
+<task-id>ab6326ac3ac268108</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/ab6326ac3ac268108.output</output-file>
+<status>completed</status>
+<summary>Agent "Investigate turn-cap and Rust losses" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## 1. BOTH-CAPPED SUBSET
+
+`num_turns&gt;=48` AND `terminal_reason==max_turns` — same 4 instances either way:
+
+```
+astral-sh__ruff-15330            51/51
+micropython__micropython-10095   51/51
+rubocop__rubocop-13362           51/51
+tokio-rs__tokio-4384             51/51
+```
+
+Aggregate tokens (input+cache_create+cache_read+output):
+
+```
+subset          n   eg          bl          delta        pct
+ALL29          29   39,353,801  51,798,885  -12,445,084  -24.03%
+BOTH-capped     4    9,241,275   8,959,883     +281,392   +3.14%
+NOT-both       25   30,112,526  42,839,002  -12,726,476  -29.71%
+  EG-only-cap   1    2,073,916   3,111,180   -1,037,264  -33.34%  (fmtlib__fmt-2457)
+  BL-only-cap   8   14,412,511  19,093,055   -4,680,544  -24.51%
+  NEITHER      16   13,626,099  20,634,767   -7,008,668  -33.97%
+```
+
+HYPOTHESIS CONFIRMED. Cap-truncation is ASYMMETRIC, against eg:
+- eg hit max_turns 5/29; baseline hit it 12/29.
+- Cap censors baseline 2.4x more often. Current -24.03% is a FLOOR, not a ceiling.
+- (druid = eg `api_error` at 4 turns, content-filter; ex-druid ALL29 = -21.74%)
+
+## 2. AT-THE-CAP BEHAVIOR (eg, last 8 calls)
+
+Exact-duplicate tool calls: **0** in all 4. Thrash is near-dup, not exact.
+
+```
+ruff       PROGRESS.  msg46 Edit / 47 cargo test / 48 Edit / 49 cargo test / 50 cargo clean+build.
+                      Cut mid verify-fix loop. re-read same file 4/10.
+tokio      PROGRESS.  msg43-47 grep named_pipe.rs, 48-49 Read same file 2x, msg50 = Edit.
+                      Cut MID-EDIT. re-read same file 3/12.
+micropython THRASH.   last Edit @24; msgs 25-50 = 26 msgs of failed builds (ports/unix,
+                      minimal, qemu-arm, gcc -E, py_compile on a .c file) then 4 near-identical
+                      greps for the same string: msg3 "got multiple values", msg47 same in
+                      objnamedtuple.c, msg49 "got multiple values for argument",
+                      msg50 "multiple values for argument". re-read same file 7/10.
+rubocop    THRASH.    ONE Edit @12, then 38 msgs of verification. 2 hand-rolled
+                      `ruby &lt;&lt;EOF ... class MockNode` harnesses (msg43, msg47) +
+                      repeat greps. re-read same file 5/12.
+```
+
+2 of 4 were still productive at the cap; 2 were burning turns post-fix.
+
+## 3. PATCHES (all non-empty)
+
+```
+iid                      eg lines/files  bl lines/files  gold hit?      resolved eg/bl*
+ruff-15330               69 / 1          31 / 1          eg HIT bl HIT   Y / Y
+micropython-10095        55 / 1          33 / 1          BOTH MISS**     Y / Y
+rubocop-13362            19 / 1          17 / 1          eg HIT bl HIT   Y / Y
+tokio-4384               88 / 6         147 / 7          BOTH MISS***    N / N
+coreutils-6377          114 / 1         156 / 1          eg HIT bl HIT   err / N
+axum-1119                45 / 1          45 / 1          eg HIT bl HIT   Y / Y
+```
+\* vs regraded baseline `R30hkbaseL2_rg` (14 resolved) — the raw `R30hkbaseL2_r1.json` has 25 `error_ids` and only 1 resolved; do not use it. eg `R30hkL2_r1` = 14 resolved.
+\*\* both edited `py/runtime.c`, gold `py/bc.c` — resolved anyway.
+\*\*\* eg edited 6 `net/*` files, bl edited 6 `loom/std/atomic_*` files; gold `io/poll_evented.rs`.
+
+## 4. CONTEXT PER MESSAGE (unique API message-id; num_turns is inflated by content-block splitting)
+
+```
+subset      msgs eg/bl    ctx/msg eg   ctx/msg bl   ratio
+CAPPED-4    50.0 / 50.0      45,815      44,412     1.032
+REST-25     26.3 / 38.3      40,332      41,906     0.962
+```
+
+Answer: **NO, eg's per-message context is not systematically bigger** (0.962 on uncapped). eg's entire lever is MESSAGE COUNT (-31% on uncapped). Pin the message count and only the residual +3.2% payload cost survives — and 1.032 reproduces the observed +3.14% almost exactly.
+
+Residual = graph payload replay. `eg-q.run` output enters at msg 1-2 and is cache-replayed every remaining turn:
+
+```
+iid              payloadB  ~tok  replay tok  % of eg total
+ruff-15330         11,355  3,154   154,012      5.9%
+micropython-10095   5,280  1,467    71,654      3.8%
+rubocop-13362       2,355    654    32,054      1.8%
+tokio-4384          2,234    621    21,503      0.7%
+coreutils-6377      7,011  1,948    89,585      3.8%
+(all29 range 0.7% – 7.9%)
+```
+Prompt.txt is NOT the vector — eg prompt is 72B *smaller* per instance (233,703 vs 235,799 total). Cost is 100% tool-result replay.
+
+## 5. COREUTILS 51-&gt;47, +6.6% (+145,597 tok)
+
+```
+        msgs  calls  toolres bytes   Read           Bash              Edit         ctx/msg  slope
+eg       47     46      86,950     8 x 59,222   28 x 24,402 (871av)  10 x 3,326    49,675   1,023
+bl       50     50      71,694     6 x 50,546   30 x 16,892 (563av)  14 x 4,256    43,824     831
+delta    -3     -4     +15,256     +2 +8,676     -2  +7,510 (+55%)   -4  -930     +13.4%   +23%
+```
+
+Where tokens went:
+- eg saved 3 messages (-6%) but paid +13.4% per-message context → net +6.6%.
+- +8,676B from 2 extra Reads (avg 7.4KB each — big whole-file reads).
+- +7,510B from Bash: same call count, **+55% bytes per call** (871 vs 563).
+- +7,011B graph payload replayed x46 = 89,585 tok = 3.8% of eg total.
+- output_tokens eg 18,266 vs bl 16,193.
+
+eg's 4-turn saving (~4 x 49k ≈ 200k) was outweighed by 47 turns x +5,851 tok/msg ≈ +275k.
+
+## 6. RECOMMENDATION
+
+**YES, raise it. And it moves the result IN EG'S FAVOR, not against.**
+
+Projection (worst case: every capped session uses the full extra allowance at its observed final-message context; BL-only-cap baselines mean 64,413 tok/turn, EG-only 64,552):
+
+```
+CC_MAX_TURNS   projected ALL29 delta
+50 (current)         -24.03%
+55                   -26.42%
+60                   -28.50%
+70                   -31.95%
+```
+Independent corroboration: the never-capped subset (n=16) already runs **-33.97%**, and NOT-both (n=25) is **-29.71%**. Both bracket the projection. The true uncensored number is ~-28% to -34%, vs -24% reported.
+
+**Set CC_MAX_TURNS=75.** Not 100+ — see (c).
+
+Symmetry hazards to control:
+
+- (a) Env must be set on both harness invocations from one variable. Currently confirmed symmetric (both arms max_turns at 51).
+- (b) Prompt is already fair: both `prompt.txt` carry the identical "A TURN IS A MESSAGE, NOT A TOOL CALL" batching lecture; eg's is 72B smaller. No bias there.
+- (c) **Context-window confound — the real risk.** 200k window, mean growth ~600-1,200 tok/msg, final contexts already at 47k-107k by turn 50 (`fmtlib bl=106,855`, `fastlane bl=94,891`). At turn ~90-100 the heaviest sessions hit 200k and trigger auto-compaction, which fires at DIFFERENT turns per arm (different growth slopes) and resets cache_read — that silently rewrites the token metric asymmetrically. 75 keeps every observed session under ~150k. If going higher, log and exclude any session that compacts.
+- (d) Report `num_turns` + `terminal_reason` per instance and publish the delta split three ways: both-completed / one-capped / both-capped. The +3.14% both-capped number is not a tool measurement and should be labelled censored.
+- (e) Re-run the regrade — the raw `R30hkbaseL2_r1.json` baseline eval (1 resolved, 25 errors) is broken; only `_rg` (14 resolved) is comparable to eg's 14.</result>
+<usage><subagent_tokens>85799</subagent_tokens><tool_uses>19</tool_uses><duration_ms>389061</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>ad613cc1f7fc3b0f2</task-id>
+<tool-use-id>toolu_017J1cqvN1GyzzGXqQCZW5EC</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/ad613cc1f7fc3b0f2.output</output-file>
+<status>completed</status>
+<summary>Agent "Investigate short-session and added-turn losses" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># CAVEMAN FINDINGS
+
+## 0. HEADLINE: fluentd `+247.8%` IS A MEASUREMENT BUG. NOT REAL.
+
+`$SUITE/results/R30hkbaseL2_r1/baseline/fluent__fluentd-3328/cc_out.json`
+
+- `usage.cache_read` = 136,821 / `num_turns` = 4
+- `modelUsage["claude-haiku-4-5"].cacheReadInputTokens` = **589,815** / real turns = **21**
+- 136,821 = exact sum of the LAST 4 turns (33,135+34,254+34,592+34,840). Session was resumed; `usage` covers only the tail segment. `modelUsage` has the truth.
+- Only file in all 60 with `"origin":{"kind":"task-notification"}`. 1/60 sessions affected. All other 59: transcript == `usage`.
+- Reproduce the bogus number: eg 486,554 / 139,907 = 3.4776 → **+247.76%**. Exact.
+- **Corrected: bl 21 turns / 618,671 tok vs eg 15 turns / 486,554 tok = −21.4%. eg WON.**
+
+Aggregate over 30 instances recomputed from transcripts: **−24.7% (sum), mean −19.6%, median −15.1%**.
+
+---
+
+## 1. FLUENTD — full sequences (corrected: 15 vs 21, not 15 vs 4)
+
+**EG (15):**
+```
+T01 Bash[eg-q search ...]                     -&gt;4410B
+T02 Read in_tail.rb                          -&gt;20084B
+T03 Bash grep -n "class TargetInfo" in_tail.rb   -&gt;31B (empty)
+T04 Bash find lib -exec grep -l class TargetInfo -&gt;31B (empty)
+T05 Bash grep -n TargetInfo in_tail.rb|head-20  -&gt;556B
+T06 Bash grep -n TargetInfo position_file.rb    -&gt;44B
+T07 Edit in_tail.rb                            -&gt;298B   &lt;-- FIX
+T08 Bash grep -n stop_watchers                 -&gt;446B
+T09 Bash ruby -c in_tail.rb                      -&gt;9B
+T10 Bash ruby -I lib:test test_in_tail.rb|tail -50 -&gt;467B
+T11 Bash tail -f &lt;bg output&gt;                   -&gt;467B
+T12 Read &lt;bg output&gt;                          -&gt;1779B
+T13 Bash cd + rerun check                      -&gt;620B
+T14 Bash git diff in_tail.rb                   -&gt;702B
+T15 summary
+```
+**BASELINE (21):**
+```
+T01 Bash find in_tail.rb; grep -r each_value    -&gt;467B
+T02 Read in_tail.rb                            -&gt;3471B
+T03 Bash grep -n start_watchers\|stop_watchers  -&gt;645B
+T04 Read                                        -&gt;170B
+T05 Read                                       -&gt;4729B
+T06 Read                                       -&gt;4272B
+T07 Read                                       -&gt;2152B
+T08 Edit in_tail.rb                             -&gt;309B  &lt;-- FIX (turn 8)
+T09 Read                                        -&gt;329B
+T10 Bash find test files                         -&gt;31B
+T11 Bash find test*.rb|grep tail                -&gt;149B
+T12 Bash ruby -I lib -I test test_in_tail.rb    -&gt;478B
+T13 Bash ruby -c                                  -&gt;9B
+T14 Read                                        -&gt;668B
+T15 Read                                        -&gt;504B
+T16 Bash ruby -c &amp;&amp; echo passed                  -&gt;29B
+T17 "Summary" (declares done)
+T18 Read bg output                              -&gt;236B
+T19 Bash find bxsnhmwvm.output                  -&gt;258B
+T20 Read bg output                             -&gt;1779B
+T21 summary #2
+```
+**First search useful: YES. Gold `lib/fluent/plugin/in_tail.rb` at RANK 1** (also ranks 2, 3 — 3 of 5 hits are the gold file). eg reached Edit at T07 vs baseline T08, with 1 Read (20,084 B) vs 6 Reads (15,123 B). eg's 4 dead grep turns (T03-T06, 662 B combined) are the only waste. eg spent 15 on: 1 locate + 1 read + 4 dead greps + 1 edit + 8 verify.
+
+---
+
+## 2. TERRAFORM — eg 16 vs bl 12, +37.8%
+
+Aligned:
+| slot | EG | BL |
+|---|---|---|
+|locate|T01 `eg-q search` →4308B|T01 `find\|grep -r "Only .tf, .tfvars"` →2959B|
+|read|T02 Read fmt.go →**18887B**|T02 Read fmt.go →**18887B** (identical)|
+|—|—|T03 Read →2427B (bl-only)|
+|fix|T03,04,05 Edit×3|T04,05,06 Edit×3|
+|**T06 `go build ./internal/command`**|**EXTRA**|—|
+|test|T07 `go test -run Fmt -v`|T07 same|
+|manual|T08 heredoc, T09 build+fmt, T10 unsupported ext, T11 invalid ext|T08 heredoc, T09 build+fmt, T10 cat, T11 unsupported ext|
+|**T12 `terraform fmt --help`**|**EXTRA**|—|
+|**T13 recursive subdir .tfmock test**|**EXTRA**|—|
+|**T14 re-run `go test`**|**EXTRA**|—|
+|**T15 `git diff fmt.go`**|**EXTRA**|—|
+|end|T16 summary|T12 summary|
+
+**eg's 4 net extra turns = `go build`, `fmt --help`, recursive-subdir test, re-run tests, `git diff` (5 extra) minus bl's 1 extra Read.** All post-fix verification. **Zero of them are locate.**
+
+Gold `internal/command/fmt.go` at **RANK 5 of 5** — ranks 1-4 all wrong dir (`internal/configs`: MockDataLoader, LoadMockDataDir, IsIgnoredFile, LoadExternalMockData). eg still went straight to fmt.go at T02 anyway.
+
+Cost split: excess = +125,221 tok. 4 extra turns × ~30,180 avg ctx = **120,720 (96.4%)**. Payload replay = 351 tok/turn × 14 = **4,914 (3.9%)**.
+
+---
+
+## 3. LOMBOK — 39 turns, +2.0% (bl 50 real turns, `num_turns` 51 = cap)
+
+Decompose:
+- messages: 39/50 = **0.780** (−22.0%)
+- tokens/message: 59,199 / 45,290 = **1.307** (+30.7%)
+- product 0.780 × 1.307 = **1.020** ✓ (+2.0%)
+
+tool_result bytes:
+| tool | EG n / bytes / avg | BL n / bytes / avg | Δ bytes |
+|---|---|---|---|
+|Bash|23 / **50,641** / 2,202|31 / **18,976** / 612|**+31,665 (78% of Δ)**|
+|Read|13 / **72,804** / 5,600|17 / **63,940** / 3,761|+8,864 (22%)|
+|Edit|1 / 318|1 / 329|−11|
+|Write|1 / 96|1 / 126|−30|
+|**TOTAL**|**123,859**|**83,371**|**+40,488 (+48.6%)**|
+
+Where eg's Bash bytes came from (50,641 B):
+- **T09 `find test/... -name "*.java"` with NO `| head` → 23,169 B (46% of all eg Bash bytes)**. Baseline's equivalent T06 used `| head -20` → 1,221 B.
+- graph calls T01 8,375 B + T02 1,608 B = 9,983 B (20%)
+- T21 `javac` error dump 5,831 B (12%)
+
+Payload replay cost: 2,156 tok/turn × 37 = **79,772 tok = 3.5% of baseline = 180% of the +44,243 excess.** Without the payload, eg would land at **−1.6%**. Everything else eg did was net-cheaper; the payload plus one unbounded `find` ate the 11-turn saving.
+
+Gold `HandleVal.java` **NOT in payload** (ranks: HandleExtensionMethod, AnnotationValues, PatchVal, JavacResolution, HandleDelegate). Both arms edited the wrong file (`JavacResolution.java`). Both lose.
+
+---
+
+## 4. OVERHEAD vs BEHAVIOUR → **BEHAVIOUR**, ~95%
+
+Fixed overhead measured directly (persistent context delta at T3 = `cr_eg(T3) − cr_bl(T3)`):
+- eg system prompt is **364 tokens SMALLER** than baseline L2 prompt at T1 (14,587 vs 14,951) — every instance. Static cost is **negative**.
+- payload persistent cost: **median 1,113 tok/turn**, replayed → **median 1.39% of baseline session total**. Range 0.06%–6.41%.
+- Payload → token rate ≈ 3.0–3.9 B/tok.
+
+Share of the *excess* attributable to fixed overhead, per loser:
+```
+ruff             1.9%     terraform      3.9%
+phpspreadsheet-3463 5.4%  php-cs-fixer  13.1%
+phpspreadsheet-3570 53.6% uutils        56.2%
+lombok          180.3%    redis         -5.4%   tokio -3.6%
+median ≈ 5.4%
+```
+**Verdict: fixed overhead is 1.4% of a session and ~4-13% of the loss on most losers. The loss is behaviour** — extra verification turns (terraform), unbounded shell commands (lombok), wrong-file rabbit holes (phpspreadsheet-3463: 19→32 turns). Only lombok/uutils/phpspreadsheet-3570 are payload-dominated, and those all have ≥6.2 KB payloads.
+
+---
+
+## 5. CONTRAST WINNERS vs LOSERS + THRESHOLD
+
+| instance | blT | egT | d% | payload B | gold rank |
+|---|---|---|---|---|---|
+|docusaurus-10130|47|14|**−79.7**|4,855|**1**|
+|caddy-4943|50|21|**−63.1**|1,757|miss (gold `filters.go`; payload returned `filterencoder.go` — adjacent-file, still routed correctly)|
+|gson-1014|39|20|**−55.0**|3,884|**2** (rank1 = `JsonReader.skipValue`, score 87.3, the sibling of gold)|
+|druid-14092|36|**5**|−94.4|1,581|3|
+|jekyll-8167|27|13|−63.2|2,005|1|
+|— losers —|
+|terraform-34580|**12**|16|+37.8|4,308|5|
+|phpspreadsheet-3463|**19**|32|+119.2|4,657|miss|
+|phpspreadsheet-3570|**19**|19|+11.5|6,254|2|
+|ruff-15330|50|50|+16.4|**11,355**|miss|
+|lombok-2792|50|39|+2.0|**9,983**|miss|
+
+Splits (n=29 paired):
+```
+blTurns &lt; 20   n= 4  mean +28.1%  median +24.7%  3/4 LOSE  egT/blT = 1.12
+blTurns &gt;= 20  n=25  mean -27.2%  median -17.3%  6/25 lose egT/blT = 0.71
+blTurns &lt; 25   n= 6  mean +14.3%  median  +3.1%
+blTurns &gt;= 25  n=23  mean -28.4%  median -17.3%
+```
+**THRESHOLD = 20 baseline turns.** Below it the mechanism inverts: eg uses **1.12×** the turns instead of 0.71×. There is nothing to delete, so it adds.
+
+Gold-rank split:
+```
+rank 1-2  n=12  mean -29.4%  2 losers
+rank 3-5  n= 6  mean -21.0%  2 losers
+miss      n=11  mean  -8.1%  5 losers
+```
+
+Correlations with d%: `nQueries` **+0.405** (strongest), `blTurns` −0.271, `goldRankHit` −0.208, `payloadBytes` +0.163 (weak).
+
+---
+
+## 6. TOOL-SIDE LEVER — YES, ONE, AND IT IS NOT A GATE
+
+**The dominant tool-side signal is number of graph calls, not payload size, not task difficulty:**
+```
+nq = 1  n=12  mean d% = -40.4%  median -55.5%  mean payload 4,285 B
+nq = 2  n=17  mean d% =  -4.9%  median  -4.5%  mean payload 5,526 B
+```
+**35.5 points of swing.** All 5 big winners are nq=1. 7 of 9 losers are nq=2. The second query is where the money goes: it costs a full turn AND a second payload AND (lombok, phpspreadsheet-3463) signals to the model "the graph didn't answer, go explore" — which is what produces the runaway `find`s and rabbit holes.
+
+Concrete, tool-side, measurable:
+1. **Make the second call a no-op / return the cached first result with a "no new info" marker.** Removes 1 turn + ~1.1k persistent tokens per re-query. Applies to 17/29 instances. Not a task-difficulty gate — a *tool-state* gate, orthogonal to the +45.0% dead end.
+2. **Clamp payload to ~4 KB.** Losers' mean payload 6,073 B vs winners' 3,743 B. ruff 11,355 B and lombok 9,983 B are the two worst clamp candidates; on lombok a 4 KB clamp removes ~46k of the 79.8k replay = flips +2.0% → ~−1.3%. Small effect (corr only +0.163) but free.
+3. **Emit a bounded-command hint in the payload footer, not the prompt** (payload is read, prompt is not — the ZERO-uptake result is about prompts). lombok's single unbounded `find` = 23,169 B = 57% of eg's Bash-byte excess on that instance.
+
+**Not an irreducible floor.** Floor is: prompt −364 tok, payload ~1,113 tok/turn ≈ 1.39% of session. That floor is ~5% of the observed loss. The other 95% is the second query and downstream behaviour, both addressable tool-side.
+
+**Highest-value action first: fix the fluentd accounting bug (use `modelUsage`, not `usage`) and re-derive the headline.** That single instance is currently reporting a +247.8% regression that is actually a −21.4% win.</result>
+<usage><subagent_tokens>106669</subagent_tokens><tool_uses>22</tool_uses><duration_ms>466883</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a3b260f5fd873ea0b</task-id>
+<tool-use-id>toolu_015vUxEipakyhEoGiEpKVETn</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/a3b260f5fd873ea0b.output</output-file>
+<status>completed</status>
+<summary>Agent "Investigate C context bloat" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## VERDICT
+
+**Premise wrong on 2/3. eg reads MORE only on jq. Real cost = retained THINKING blocks replayed every turn, not tool_results.**
+
+Reproduced headline totals exactly (input+cache_create+cache_read+output, dedup assistant msgs by `message.id`):
+
+| inst | eg total | base total | Δ |
+|---|---|---|---|
+| redis-10068 | 2,465,387 | 1,884,034 | **+30.9%** |
+| jq-2235 | 1,499,705 | 1,570,274 | **−4.5%** |
+| mpy-10095 | 1,887,726 | 1,919,072 | **−1.6%** |
+
+---
+
+## 5. WHERE THE CONTEXT COMES FROM (answer first, drives everything)
+
+tool_result bytes by tool:
+
+| inst/arm | Read | Bash | Edit | Write | TOTAL |
+|---|---|---|---|---|---|
+| redis EG | 38,749 | 18,069 | 3,289 | 0 | 60,107 |
+| redis BASE | 45,827 | 22,003 | 586 | 289 | **68,705** |
+| jq EG | **30,661** | 11,474 | 550 | – | 42,685 |
+| jq BASE | 17,536 | 14,156 | 286 | – | 31,978 |
+| mpy EG | 37,380 | 15,538 | 1,168 | – | 54,086 |
+| mpy BASE | 31,756 | 50,164 | 303 | – | **82,223** |
+
+redis eg tool bytes **−12.5%**. mpy eg **−34%**. Yet redis +30.9% tokens. So tool_results ≠ cause.
+
+Cause: every assistant msg carries a `thinking` block with **empty text + huge `signature`** (encrypted extended thinking). It is replayed verbatim into context on every later turn. Visible text+tool_use chars are ~9% of output tokens; ~91% is thinking.
+
+Replayed-token decomposition (`Σ_i out_i × (N−1−i)`), exact, sums to Δtotal:
+
+| term | redis EG | redis BASE | Δ |
+|---|---|---|---|
+| **output(thinking) replay** | **1,344,254** | 577,602 | **+766,652** |
+| tool_result replay | 444,771 | 574,458 | −129,687 |
+| sysprompt+tools × N | 597,828 | 691,334 | −93,506 |
+| output tokens (once) | 78,552 | 40,640 | +37,912 |
+| **Σ** | | | **+581,371** (actual +581,353 ✓) |
+
+Thinking-replay = **132%** of the entire redis regression. Single worst turn:
+
+- redis EG turn **12/33**, out=**21,232 tok**, replayed ×21 = **445,872 tok = 18% of the whole run**. Its visible content: 396 chars (one `text` + one `Read`). `signature` len = 91,716 B.
+- jq EG turn 6/31 out=8,531 ×25 = 213,275; turn 8/31 out=7,096 ×23 = 163,208.
+- redis EG sig bytes total 306,052 vs BASE 142,316 (2.15×). jq EG 108,572 vs 41,952 (2.59×).
+
+jq breakdown: eg won on turn count (−337,230 from 31 vs 50 turns), gave back +261,047 in thinking-replay, ended −4.5%.
+mpy: everything within ±5%, both capped at 50 turns.
+
+---
+
+## 1. READ COMPARISON
+
+All eg reads are **ranged** (offset+limit) except one. Same file as baseline in all 3.
+
+**redis** — eg 10 reads / 38,749 B, all `src/t_stream.c`, max limit 160. base 17 reads / 45,827 B, 16× t_stream.c + 1× stream.tcl, max limit 200. **eg −15.4% read bytes.** Not the problem.
+
+**jq** — eg 7 reads / 30,661 B, all `src/main.c`. Three sweeps dominate:
+`(off=1,lim=100)=3,945B`, `(off=100,lim=300)=10,863B`, `(off=398,lim=300)=12,065B` → **26,873 B = 88%**, covering main.c lines **1–697 ≈ whole file**.
+base 8 reads / 17,536 B (17,252 on main.c), max limit 150, union ≈330 distinct lines.
+**eg +13,409 B on the gold file.** Cause in §2.
+
+**mpy** — eg 10 reads / 37,380 B; **`py/bc.c` read with offset=None limit=None (whole file) = 15,530 B = 41.5%** — the only unranged read in the whole corpus. Remaining 9 reads all ranged on `py/runtime.c`, sweeping 700→936 in 6 overlapping windows. base 7 reads / 31,756 B, all ranged.
+
+---
+
+## 2. `complete-symbol` IN C PAYLOADS
+
+Per-payload counts (delivered payload = **1 search only**; `GQ_SEARCH_CAP=1`, `gq_calls.log.capped` = "capped after 1"):
+
+| inst | payload B | blocks | full-body | locators | **complete-symbol** | **gold-file bytes** |
+|---|---|---|---|---|---|---|
+| redis | 2,206 | 5 | 2 | 3 | **1** | 2,009 (**91%**) |
+| jq | 4,843 | 5 | 4 | 1 | **3** | 998 (**21%**) |
+| mpy | 4,517 | 5 | 4 | 1 | **3** | 0 (**0%**) |
+
+So `complete-symbol` is **present, not rare** — it is aimed at the wrong symbols.
+
+Block-level, vs true spans from `graph.symbols.ndjson`:
+
+```
+redis #1 t_stream.c:3291-3324 xtrimCommand   34L  COMPLETE  gold FILE, wrong FUNCTION
+redis #2 t_stream.c:676-681   streamAddTrimArgs true 672-690(19L) shown 6L  FRAGMENT
+jq    #1 jv_print.c:118-183   jvp_dump_string 66L COMPLETE  OFF-TARGET (1,873B)
+jq    #2 main.c:578-583       umain  true 270-725 (456L)  shown 6L  FRAGMENT  OVER-CAP
+jq    #4 jv_print.c:215       jv_dump_term true 193-372 (180L) shown 1L FRAGMENT OVER-CAP
+jq    #5 jv_unicode.c:29-75   jvp_utf8_next 47L COMPLETE OFF-TARGET (1,934B)
+mpy   #5 lib/oofatfs/ff.c:1119-1186 get_fat 68L COMPLETE  VENDORED FAT DRIVER (3,058B = 68% of payload)
+```
+
+**Enclosure cap.** `defaultSearchEnclosureMaxLines = 160`, `searchEnclosureHeadRanks = 5` (`/Users/suhaan/devenv/eg-consolidated/internal/sem/search_enclosure.go:32,38`).
+
+Gold symbol spans measured in-repo:
+
+| inst | gold symbol | span | lines | vs cap |
+|---|---|---|---|---|
+| redis | `streamTrim` src/t_stream.c | 719–870 | **152** | under (eligible) |
+| redis | `lpGetEdgeStreamID` | 281–336 | 56 | under |
+| jq | **`umain` src/main.c** | 270–725 | **456** | **OVER (2.85×)** |
+| jq | `isoptish` | 107–109 | 3 | under |
+| mpy | **`mp_call_prepare_args_n_kw_var` py/runtime.c** | 716–915 | **200** | **OVER (1.25×)** |
+
+C function-length distribution from the graphs:
+
+| repo | C funcs | &gt;160L | % | p50 | p90 | **p99** | max |
+|---|---|---|---|---|---|---|---|
+| redis | 6,182 | 101 | 1.6% | 12 | 47 | **198** | 1,284 |
+| jq | 920 | 30 | 3.3% | 10 | 57 | **343** | 1,950 |
+| mpy | 9,647 | 94 | 1.0% | 10 | 46 | **157** | 1,279 |
+
+**Cap sits exactly at C's p99.** Only 1–3.3% of C functions exceed it — but the gold symbol is in that 1–3.3% in **2 of 3** instances. C SWE bugs live in the giant arg-parse/dispatch functions.
+
+Direct causal chain on jq: payload printed `main.c:578-583 symbol=umain` with **no** indication umain spans 270–725. Header formatter prints the *printed* range only (`internal/cli/search.go:418-427`), and `sem.SearchResult` (`internal/sem/search.go:165-195`) has no enclosing-symbol-bounds field. Agent could not tell it held a 6-line shard of a 456-line function → swept main.c 1-100/100-399/398-697. Baseline's `grep -n` gave exact line numbers → read 330 lines.
+
+---
+
+## 3. `/tmp/eg-p0b search` WITH THE AGENTS' OWN QUERIES
+
+(redis on the surviving checkout; jq/mpy checkouts deleted → repo-cache HEAD, so line numbers drift)
+
+| query | bytes | results | full | locators | **complete-symbol** | **gold file rank** |
+|---|---|---|---|---|---|---|
+| redis "XTRIM MINID deletes messages with higher IDs than threshold" | 3,793 | 5 | 2 | 3 | 1 | **#1** (t_stream.c, but symbol=xtrimCommand) |
+| redis "streamTrim MINID comparison logic" | **8,042** | 5 | 4 | 1 | **3** | **#1 = `streamTrim` 719-870 COMPLETE-SYMBOL** |
+| jq "add -0 option for ASCII NUL output separator" | 7,271 | 5 | 3 | 2 | 3 | **#2** (main.c `process`), #3 locator `main.c:638 umain` |
+| jq "raw output -r option parsing" | 3,560 | 5 | 4 | 1 | 3 | **none** (0/5) |
+| mpy "kwargs unpacking duplicate keys error" | 2,049 | 5 | 3 | 2 | 3 | **none** |
+| mpy "multiple values for keyword argument" | 6,089 | 5 | 5 | 0 | 4 | **none** (#2 = py/bc.c) |
+
+**Parser produces usable bounds: YES.** `streamTrim` returned whole (152L ≤ 160), rank 1, score 105.13, signals `exact-symbol,complete-symbol`. C bounds are correct on every block checked against ndjson.
+
+**But the agent never got that query.** Search #2 was refused:
+```
+SEARCH BUDGET EXHAUSTED: 1 searches already run on this task.
+Running the fallback for you - literal grep for the most distinctive term: streamTrim
+```
+The correct 8,042-B answer was **one uncapped search away**. Instead: 10 Reads / 38,749 B + a 21,232-token thinking turn at 12/33.
+
+Fallback term picker also picked stopwords: jq→`parsing` (returned ChangeLog + manual.yml docs), mpy→`multiple` (`pattern too broad — 243 matches across 178 symbols / 167 files`, hottest symbols = `docs/reference/isr_rules.rst`, `tools/uncrustify.cfg`).
+
+---
+
+## 4. `capabilities --json`
+
+- C is in `semantic_languages` (not inventory-only). C++ too. **Semantically parsed.**
+- `relation_support_by_language["C"] = [CALLS, CONTAINS, DEFINES, IMPORTS]` — **4 of 30** relation types.
+  Compare Go 12, Java 16, TypeScript 17, Python 13, Rust 15, C# 16.
+  C has **no** `USES_TYPE / PARAM_TYPE / RETURNS_TYPE / READS_FIELD / WRITES_FIELD / DATA_FLOWS / ACCESSES / EXTENDS`.
+  → C ranking degenerates to lexical/body signals. Explains mpy payload = stm32 `.py`, bluetooth stack, and a vendored FAT12 driver.
+- `partial_failures: []` on **all three** graphs. `completeness: {languages: null, relations: null}`. No parse errors, `graph_symbols.err`/`graph_edges.err` = 0 B.
+- Graph sizes: redis 7.4 MB sym / 24.2 MB edges; jq 1.1/3.2; mpy 24.0/47.4.
+
+---
+
+## 6. TOOL-SIDE FIXES, RANKED BY EXPECTED TOKEN RECOVERY
+
+**P0 — lift `GQ_SEARCH_CAP=1` for C (or make the cap adaptive: allow search #2 when search #1 returned &lt;50% gold-file bytes / zero `exact-symbol`).**
+Evidence: the refused redis query #2 returns `streamTrim` rank-1 complete-symbol in 8,042 B. Recovers the 21,232-tok thinking turn (**445,872 replayed tok = 18% of the redis run**) plus most of the 38,749 B of Reads. This alone flips redis from +30.9%.
+Cheap self-check to gate on: payload contains ≥1 `exact-symbol` signal, or ≥50% bytes in one file.
+
+**P1 — print enclosing-symbol TRUE span on every fragment block.**
+Site: `internal/cli/search.go:418-427`; needs `SymbolStartLine/SymbolEndLine` on `sem.SearchResult` (`internal/sem/search.go:165`), already available inside `search_enclosure.go`.
+Emit: `2. src/main.c:578-583 symbol=umain kind=function span=270-725 (456L, body elided — read 270-725)`.
+Converts jq's 3 sweeping reads (26,873 B) into 1 targeted read (~13,000 B). Saves **~13.4 kB × replay**. Also kills the mpy 6-window sweep of `mp_call_prepare_args_n_kw_var` (716–915).
+
+**P2 — raise/soften the 160-line cap for C, or add a skeleton mode for over-cap C bodies.**
+160 = C p99 (redis 198 / jq 343 / mpy 157). Options, in order:
+ a. skeleton: signature + top-level `if/else/switch/for` scaffold + matched hunk ±20L → bounded ~60 lines for a 456-line function, still tells the agent the shape;
+ b. per-language cap: C = 260 (covers mpy 200, redis 198; still excludes jq's 456);
+ c. hard: never emit a `symbol=X` fragment without X's bounds (that's P1, which is strictly cheaper).
+2 of 3 C golds are over-cap.
+
+**P3 — vendored/third-party path demotion in ranking.**
+`lib/oofatfs/ff.c` alone = 3,058 B = **68%** of the mpy payload; `ports/*/boards/*.py`, `extmod/btstack/`, `ports/cc3200/FreeRTOS/` also surfaced. Rule: demote `lib/`, `third_party/`, `vendor/`, `deps/`, `extmod/*/&lt;upstream&gt;/`, and files with no in-repo git churn. Would free ~3 kB of the 4.5 kB mpy payload for `py/runtime.c`.
+
+**P4 — suppress `SAME-CONCEPT LITERAL` when the literal is a dictionary word or &gt;50% of shown hits are `DOC`.**
+jq's block: literal `"ASCII"`, 41 hits / 14 files, all 6 shown were `docs/content/manual/*.yml DOC`. Zero value, pure payload tax. redis's (`"xtrim"`) was useful → gate, don't remove.
+
+**P5 — fallback grep term selection: pick the rarest identifier-shaped token, not the "most distinctive word".**
+Current picks: `parsing`, `multiple`, `streamTrim`. Two of three were stopwords producing a docs dump and a "pattern too broad" refusal. Require `[A-Za-z_][A-Za-z0-9_]*` present in ≥1 symbol name and with repo frequency &lt; 100.
+
+**P6 — C relation coverage (`USES_TYPE`/`PARAM_TYPE`/`RETURNS_TYPE`/struct-field edges) + macro-string attribution.**
+Biggest ceiling raise, biggest effort. Would let `"got multiple values for argument"` (an `MP_ERROR_TEXT(...)` macro literal) resolve to its enclosing function. Currently C gets 4/30 relations, and 2 of 3 C searches returned 0% gold-file bytes.
+
+**DEPRIORITISED — prompt/instruction fixes.** Zero measured uptake in this project. Specifically do NOT bother with: "tell the agent to read the whole enclosing function", "tell it not to sweep", "tell it to re-query". The jq agent already had `symbol=umain` in front of it and still swept the file. Every fix above is a change to bytes emitted by entire-graph, not to words in the prompt.
+
+**NON-FIX, but flag it:** thinking-token volume is the dominant lever (2.15–2.59× more signature bytes in the eg arm) and is not directly controllable from the tool. The tool-side proxy is P0+P1: give a resolving answer on the first search so the model has nothing to deliberate about.</result>
+<usage><subagent_tokens>121157</subagent_tokens><tool_uses>38</tool_uses><duration_ms>699797</duration_ms></usage>
+</task-notification>
+
+---
+
+no need for scoring and cmm till we meet our token goal, which is very much achviel now investage all red and fix; and prevent any green from becoming red; look deply into the tnacript of the session etc
+
+---
+
+<task-notification>
+<task-id>ad191bb0b5614e0fa</task-id>
+<tool-use-id>toolu_015reDUgNNo43QCRDcjTVCyy</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/ad191bb0b5614e0fa.output</output-file>
+<status>completed</status>
+<summary>Agent "Diagnose persistent phpspreadsheet red" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## 1. NEW eg vs NEW baseline — where the +42.1% lives
+
+| | eg | base | Δ |
+|---|---|---|---|
+| num_turns (messages) | **26** | **18** | **+8 / +44.4%** |
+| tool calls | 25 | 17 | +8 |
+| total tokens (max) | **996,374** | **701,336** | **+42.1%** |
+| Σ ctx across msgs | 970,263 | 677,079 | +43.3% |
+| **avg ctx / message** | **37,318** | **37,615** | **−0.8%** |
+| cost | $0.2931 | $0.2424 | +21% |
+
+**100% MORE MESSAGES. 0% bigger context** — eg's per-message context is actually 0.8% *smaller* than baseline. Payload size is not the problem.
+
+Old cell for reference: eg 32t/1,250,678 vs base 19t/571,713 = +118.8%.
+
+## 2. VERIFY suppressed? YES in payload, NO in prompt. 6 env turns NOT gone.
+
+- `grep '^VERIFY:'` new payload → **0 hits** (old payload had it at line 74). Payload suppression WORKED.
+- But `prompt.txt` lines **69-71** still say *"VERIFY block is the command for the file you changed. Run it once…"* and lines **83-87** repeat *"VERIFY ONCE. compile the change or run the nearest existing test"*. The eg prompt carries **both** the eg 8-point block **and** the generic 8-point block → VERIFY ordered **twice**, while the payload delivered zero VERIFY blocks.
+- Agent re-derived the command itself at turn 5: `php -v &amp;&amp; vendor/bin/phpunit tests/…/FunctionPrefixTest.php` → `Exit code 127: command not found: php`.
+
+**eg 25 tool calls:**
+
+| # | tool | first ~80ch | class |
+|---|---|---|---|
+|1|Bash|`eg-q.run search "NETWORKDAYS function wrongly converted by addXlfnPrefix regex"`|LOCATE|
+|2|Read|`src/…/Writer/Xlsx/FunctionPrefix.php`|LOCATE|
+|3|Edit|`FunctionPrefix.php` (XLFNREGEXP)|**FIX @ turn 3**|
+|4|Bash|`find tests -name "*FunctionPrefix*" -o -name "*Xlsx*"`|test hunt|
+|5|Bash|`php -v &amp;&amp; vendor/bin/phpunit …` → **127**|ENV ARCH|
+|6|Bash|`which php \|\| which composer \|\| which python3` → php not found|ENV ARCH|
+|7|Bash|`cat &gt; /tmp/test_regex.php &lt;&lt;EOF` (3302 out tok)|throwaway|
+|8|Read|`FunctionPrefixTest.php`|re-read|
+|9|Read|`FunctionPrefix.php`|**re-read #2**|
+|10|Read|`FunctionPrefix.php`|**re-read #3**|
+|11|Edit|`FunctionPrefix.php` (adds XLWSREGEXP)|fix#2|
+|12|Read|`FunctionPrefix.php`|**re-read #4**|
+|13|Bash|`ls -la \| grep -E "composer\|Makefile\|\.php"`|ENV ARCH|
+|14|Bash|`cat composer.json \| head -30`|ENV ARCH|
+|15|Bash|`ls -la vendor/bin/` → no output|ENV ARCH|
+|16|Bash|`cat &gt; /tmp/test_fix.php` → "PHP not available for testing"|throwaway|
+|17|Read|`FunctionPrefix.php`|**re-read #5**|
+|18|Bash|`grep -r "NETWORKDAYS" tests/`|no-op|
+|19|Bash|`find /usr -name "php*"` → only vim syntax files|ENV ARCH|
+|20|Bash|`git diff …FunctionPrefix.php`|reassurance|
+|21|Bash|`grep -r "preg_replace" src/…/Xlsx/`|no-op|
+|22|Read|`FunctionPrefixTest.php`|reassurance|
+|23|Bash|`git status`|reassurance|
+|24|Bash|`git diff …FunctionPrefix.php \| head -30`|reassurance|
+|25|Bash|`rm -f /tmp/test_fix.php /tmp/test_regex.php`|cleanup|
+
+**ENV-ARCH turns = 5,6,13,14,15,19 = 6. Old cell was also exactly 6. Recovery from fix (a) = ZERO.**
+
+**The 8 extra turns are:** locate+fix cost eg 3 turns vs base 4 (**−1**), then post-edit eg 22 turns vs base 13 (**+9**). Composition of the +9:
+- **+6 env archaeology** (identical count to old cell, self-generated not payload-generated)
+- **+2 throwaway PHP scripts** written to /tmp that could never execute, **+1 rm** cleanup
+- **+6 no-op reassurance** (turns 17,20,21,22,23,24: re-read, git diff, grep, re-read, git status, git diff again)
+- offset by eg reading the gold 1 turn faster.
+
+**Why baseline escaped:** turn 13 `docker --version` → **Docker 29.5.3**; turn 14 `docker run --rm -v $(pwd):/app php:8.2 …`; turn 16 real output `✓ SUCCESS: NETWORKDAYS is not incorrectly converted!`. Baseline bought **ground truth in 3 turns**. eg never tried docker, got no ground truth, and paid for it with the 6-turn reassurance tail.
+
+## 3. 2nd search: DID NOT FIRE
+
+No `gq_calls.log.capped` file exists in the new dir. `gq_calls.log` = **1 line**. The 1st search **resolved** (gold at rank 1), so the adaptive cap was never exercised. **Fix (b) has zero measured effect on this task.**
+
+Top-3 comparison:
+
+**OLD payload** (query `NETWORKDAYS function incorrectly prefixed with xlfn`) — gold ABSENT:
+1. `src/PhpSpreadsheet/Calculation/DateTime.php:401-404` DateTime.NETWORKDAYS score=46.66
+2. `src/PhpSpreadsheet/Calculation/DateTimeExcel/NetworkDays.php:36-83` NetworkDays.count score=44.57
+3. `src/PhpSpreadsheet/Calculation/Calculation.php:1886`
+
+**NEW payload** (query `NETWORKDAYS function wrongly converted by addXlfnPrefix regex`) — gold at 1,2,4:
+1. `src/PhpSpreadsheet/Writer/Xlsx/FunctionPrefix.php:165-168` FunctionPrefix.addXlfnPrefix score=109.44 ← **GOLD**
+2. `src/PhpSpreadsheet/Writer/Xlsx/FunctionPrefix.php:181-184` addFunctionPrefix score=99.63 ← **GOLD**
+3. `src/PhpSpreadsheet/Writer/Xlsx/Worksheet.php:488-518` writeOtherCondElements score=90.16
+
+**Gold: `src/PhpSpreadsheet/Writer/Xlsx/FunctionPrefix.php`** (gold patch touches only `const XLFNREGEXP`, adding `\b`).
+
+**The delta is the agent's QUERY, not the tool.** The issue text literally names `Writer/Xlsx/FunctionPrefix.php` and `addXlfnPrefix`; the new run happened to copy `addXlfnPrefix` into the query, the old run did not. That is LUCK, not a fix.
+
+## 4. eg-f5b run myself — bimodal ranker
+
+| query | bytes | complete-symbols | **gold rank** |
+|---|---|---|---|
+| `NETWORKDAYS function wrongly converted by addXlfnPrefix regex` (agent NEW) | 6056 | 4 | **1** |
+| `NETWORKDAYS function incorrectly prefixed with xlfn` (agent OLD) | 4189 | 2 | **absent (&gt;5)** |
+| `NETWORKDAYS function erroneously being converted to NETWORK_xlfn.DAYS by phpspreadsheet` (= issue TITLE verbatim) | 3168 | 2 | **absent (&gt;5)** |
+| `Excel function NETWORKDAYS in a cell is replaced with NETWORK_xlfn.DAYS when writing XLSX` | 3163 | 2 | **absent (&gt;5)** |
+| `writer xlsx preg_replace adds _xlfn prefix inside longer function name` | 6388 | 3 | **1** |
+| `_xlfn prefix regex word boundary DAYS matches inside NETWORKDAYS` | 4264 | 3 | **2** |
+| `addXlfnPrefix` | 5913 | 4 | **1** |
+| `XLFNREGEXP list of function names days networkdays intl` | 6100 | 3 | **1** |
+| `NETWORK_xlfn.DAYS` | — | — | 2 |
+| `_xlfn.` | — | — | 1 |
+| `networkdays intl` | — | — | **absent** |
+
+Sharp threshold: **any query containing `xlfn`/`XLFNREGEXP`/`addXlfnPrefix`/`preg_replace`+`prefix` → gold rank 1-2. Any query in the issue's own vocabulary (`NETWORKDAYS`, `NETWORK_xlfn.DAYS`, `converted`, `replaced`) → gold absent, ranker lands in `Calculation/DateTimeExcel/`.**
+
+The **verbatim issue title** — the single most natural query an agent will write — **cannot** reach the gold. The ranker can reach it, but only if the agent has already half-solved the problem.
+
+## 5. Why gold is hard — unindexed const body
+
+`src/PhpSpreadsheet/Writer/Xlsx/FunctionPrefix.php`: **220 lines / 5,594 bytes**. Symbols:
+- `class FunctionPrefix` (7-220)
+- `const XLFNREGEXP` (**9-175, 167 lines** = **76% of the file**)
+- `const XLWSREGEXP` (176-181)
+- `addXlfnPrefix` (185-188, 4L), `addXlwsPrefix` (193-196), `addFunctionPrefix` (201-210), `addFunctionPrefixStripEquals` (216-219)
+
+**NOT a lexical mismatch — the file DOES contain the issue's vocabulary.** Line 42 `. '|networkdays[.]intl'`, line 85 `. '|days'`. The problem is those tokens live **inside the 167-line class const, which is not a retrievable chunk.**
+
+Proof: `bitlshift csch valuetotext` — three literals that appear in `FunctionPrefix.php` **only** inside `const XLFNREGEXP` — returns **zero hits from FunctionPrefix.php** (goes to `BitWise.php`, `Cosecant.php`, `Format.php`). Same for `imcosh imcot imcsc` and `networkdays intl`. And the class-header chunk that *does* rank prints `span=7-220 (214L, body elided)`.
+
+So the only searchable surface in the gold file is **four methods totaling ~26 lines**, whose bodies contain `_xlfn`, `_xlws`, `preg_replace`, `XLFNREGEXP` — and contain **no function names at all**. The issue is 90% function-name vocabulary. The 167 lines that would match the issue are invisible to the ranker.
+
+## 6. ROOT CAUSE + tool-side fixes
+
+**ROOT CAUSE (one line): the 167-line `const XLFNREGEXP` body — the only text in the gold file that shares vocabulary with the issue, and the exact line the gold patch edits — is elided from the index, so retrieval only works when the agent guesses a method name; and separately, the eg prompt template still orders VERIFY unconditionally after the payload correctly suppressed it, so the agent re-derives a nonexistent runner and burns the same 6 env turns as before.**
+
+Tool-side fixes, ranked by expected recovery:
+
+1. **Index large class-level const / field / array-literal initializers as their own retrievable chunks** (or emit a `LITERAL-TABLE` chunk when a const initializer exceeds N lines). Recovers the LOCATE failure at its source: the verbatim issue title would hit `FunctionPrefix.php:XLFNREGEXP` instead of `DateTimeExcel/NetworkDays.php`. This is the difference between the old cell (+118.8%, locate miss, 32 turns) and the new one (+42.1%, lucky hit) — currently decided by whether the agent copies `addXlfnPrefix` into the query. **Est. recovery: converts the ~+77pt locate-miss tax from luck to deterministic.**
+
+2. **Gate the prompt's VERIFY paragraph on the same runner-availability signal that already gates the payload.** The generator knows the runner is absent (it dropped `VERIFY:` from the payload) but prompt lines 69-71 and 83-87 still command "Run it once", so the agent invents `vendor/bin/phpunit`. **Est. recovery: 6 turns of 26 ≈ 23% (~230k tok).** Not a wording change — a wiring change in prompt generation.
+
+3. **When no native runner exists, emit the runner that DOES: `RUNTIME:` line with the detected container fallback** (`docker run --rm -v $(pwd):/app php:8.2 …`). Baseline found this unaided in 3 turns and got real verification; eg never did and paid a 6-turn reassurance tail (git diff ×2, git status, 3 re-reads) plus 2 unexecutable throwaway scripts. **Est. recovery: 8-9 turns ≈ 33%.**
+
+4. **De-duplicate the eg prompt** — it currently ships both the eg-specific 8-point block and the generic 8-point block, stating VERIFY twice (lines 69-71 and 83-87). Removing the duplicate removes the second re-arm of the verify hunt. **Est. recovery: reinforces #2.**
+
+5. **When a class-header chunk with `body elided` scores top-3, auto-promote it to an explicit read locator** (`READ 9-175 — 167L elided, contains the query terms`). The new payload's TRUE-span feature (fix c) already *prints* `span=7-220 (214L, body elided)` but treats it as a footnote; the answer was inside the elided region. **Est. recovery: partial backstop for #1 without a reindex.**
+
+6. **Adaptive cap (fix b): unexercised here** — 1 search, resolved, no `.capped` marker. Do not credit it on this task; needs a case where search 1 misses.</result>
+<usage><subagent_tokens>66166</subagent_tokens><tool_uses>24</tool_uses><duration_ms>429999</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>ac2889b44ca9d274f</task-id>
+<tool-use-id>toolu_01EC3YXm1p989tBYXWrtrf8p</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/ac2889b44ca9d274f.output</output-file>
+<status>completed</status>
+<summary>Agent "Inventory all four models' cells" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Inventory complete. Findings below.
+
+```
+SUITES SCANNED
+  ROOT (superset, authoritative): /private/tmp/claude-501/-Users-suhaan-devenv/7e3deab1-a028-46d5-9bf1-3318de93a0b6/scratchpad/graphmark/agentic-swebench/results  -&gt; 444 cells / 470 cell-arm rows
+  /Users/suhaan/devenv/graphmark/agentic-swebench/results -&gt; 382 cells, all but 8 are the same names as ROOT (git-tracked subset). 8 ROOT-absent: G5* (below)
+  /Users/suhaan/devenv/graphmark-gatefindings/agentic-swebench/results -&gt; 1 cell (sonnet, dup of ROOT `sonnet`, 07-29)
+  competitive-eval/results (both repos, 345 files) -&gt; retrieval scoring JSON/MD, NOT agentic cells, no cc_out.json. Excluded.
+  results / results-heldout / results-py / results-rust / results-ts -&gt; oracle fixture dirs, no cc_out.json. Excluded.
+```
+
+```
+CELLS  (name/arm  model  n=instances with non-empty cc_out.json  date)
+```
+
+**HAIKU (claude-haiku-4-5-20251001)** — 130 cell-arms
+- R80eg/eg 30, R80cmm/cmm 30 — 07-31 | R79base/baseline 30, R79eg/eg 28 — 07-31
+- R75base 30, R75eg 30 — 07-30
+- R30hkbaseline 30, R30hkeg 30, R30hkT 30, R30hkW 30, R30hkL2 29, R30hkbaseL2 29, R30hkNbase 19, R30hkNeg 17, R30hkFULL 7 — 07-30
+- C13hkbaseline 30, C13hkeg 30, C12hkbaseline 30, C12hkeg 30 — 07-30 | B100hkbaseline 9, B100hkeg 8, Bhk30eg 16 — 07-30
+- P4hkbaseline_r1 30, P4hkcmm_r1 30, P4hkeg_r1 30, P4hkeg_r2 26, P4hkbaseline_r2 16 — 07-29 | P3hk{baseline,cmm,eg} 30 — 07-29 | P2hk{baseline,cmm,eg} 30 — 07-29 | P1hk{baseline 18,cmm 19,eg 19} — 07-29
+- P1h30{baseline,cmm,eg} 30, P1SM{baseline,cmm,eg} 3 — 07-28
+- PF{baseline,cmm,eg}_r1+_r2 29 ea, PV{baseline,cmm,eg}_r1+_r2 29 ea, PP{baseline 29,cmm 29,eg 19}, DH/FR/KH/NH {baseline,cmm,eg} 29 ea, RR{base 21,cmm 16,eg 23} — 07-28
+- S1{base,cmm}50/eg 48, S2{base,cmm}_r2 50/eg 48, S3{base,cmm}_r3 50/eg 48 — 07-27
+- bc29 29, bh29base 28, bh29cmm 29, bh29eg 29, bh29lean 28, cl29eg 29, clops29 29, cvfix29 29, ops29eg 29, pay29 29, sc6base/sc6eg 6, stock29 17, stockf5 1, mx_h29cmm 14 — 07-26/27
+- scr100base 100, scr100cmm 99, scr100eg 98, stack29 29, hoeg_v7clamp 29 — 07-26
+- t30{base,cmm,cmmv4} 30, t30{eg,eglean,egv4} 29; v30{base,cmm,cmmdisc} 30, v30{eg,egdoc,egmax} 29; h30base 30, h30cmm 30, h30eg 20, h30egc 29; val30base_r1/_r2 30, val30basefx 15, val30v3rep_r1/_r2 29, val30v9 29 — 07-25
+- ml300_r1 299, ml300base_r1 300, ml300cmm_r1 300; val30_r1/v3/v4/v5/v6/v7/v8 30 ea; fix12 12 — 07-24
+- hk30_r1 30, hk30base 30, hk30cmm 30 — 07-23
+- REPO-ONLY (not in ROOT): G5cleanbaseline 5, G5cleaneg 5, G5cleancmm 3, G5hkbaseline 5, G5hkeg 3, G5smoke 1, G5thinsmoke 1 — 07-29
+- 1-instance smokes: bsmoke(3 arms), isoafter(3), isobefore(3), mx_smoke(3), parity_v3(3), promptcheck_{baseline,cmm,eg}_{frugal,thorough}, patchsmoke, pfx_a, pfx_b, sweepsmoke
+
+**SONNET (claude-sonnet-5)** — 130 cell-arms
+- s30base 56, s30eg 55 — 07-31 | s30cmm 30 — 07-25
+- R30snbaseline 30, R30sneg 30, C12snbaseline 30, C12sneg 30, C13snbaseline 30, C13sncmm 30, C13sneg 30, C14sncmm 30 — 07-30 | S20L2base 20, S20L2eg 13, Bsn20eg 16 — 07-30
+- C11snbaseline 30, C11sneg 30, C10snbaseline 14, C10sneg 13 — 07-29
+- P4sn{baseline,cmm,eg} 20 — 07-29
+- SF/PS/SN/TS/DS/FS/LS families {baseline,cmm,eg} 9–20 ea, tscmm_r1 20 — 07-28
+- sonnet/baseline 30 + sonnet/treated 30 — 07-25 (dup in gatefindings 07-29) | f30base 12, f30cmm 9, f30eg 10 — 07-25
+- bs20{base,cmm,eg} 20, cls20eg 20, mx_s20base 17 — 07-27 | sn20_r1 20, sn20base 20, sn20cmm 20 — 07-24
+- e3c/e5/e6/e7/e8/e9 _r1..r3 eg 20 ea; snap20_r1..r3 eg 23 ea, snap20base 20, snap20cmm_r1..r3 20, snapcmmSO_r1..r3 20; dtctl/dton/dton2 _r1..r3 eg 4; l3*/g2on/rby/rgC/tieT/tier2/ts5/py* families 1–5 — 07-22/23
+- t3a{base 20,eg 15}, t3b/t3c 20×3 arms, t3g{cmm,eg} 20, t3h 20, t3i 20, t3d eg 5, t3lean eg 6, smoke3 1×3 — 07-22
+- db1 20, db2 20, sonnet_bl1/bl2 20, sonnet_i3/baseline 9, sonnet_i4 17, sonnet_i5 20, sonnet_s1/s2 20, tg1/tg2 20, mc1 20, mn1 20, mn2 20, mn1fix 3, mn_smoke 3, tg_smoke 3 — 07-21/22
+
+**OPUS (claude-opus-5)** — 25 cell-arms
+- C15opbaseline 30, C15opeg 29 — 07-30 | C13opbaseline 10, C13opeg 10 — 07-30 | O10L2base 8, O10L2eg 10 — 07-30 | R30opbaseline 5, R30opeg 4 — 07-30
+- P4op{baseline,cmm,eg} 10 — 07-29
+- MXopus{base,cmm,eg}_r1/_r2/_r3 10 ea, ON{baseline,cmm,eg}_r1/_r2 10 ea, OF{baseline,cmm,eg} 10 — 07-28
+- mo10base 10, mo10eg 10 — 07-27
+
+**OPUS-4-8 (legacy)** — op10_r1/eg 10, op10base_r1 10, op10cmm_r1 10 — 07-23
+
+**FABLE (claude-fable-5)** — 37 cell-arms
+- C15fbbaseline 30, C15fbeg 30 — 07-30 | Bfb30base 16, Bfb30eg 17 — 07-30 | C13fbbaseline 5, C13fbeg 5 — 07-30 | F5L2base 5, F5L2eg 5 — 07-30
+- P4fb{baseline,cmm,eg} 5 — 07-29
+- MXfable{base,cmm,eg}_r1/_r2/_r3 5 ea, FF{baseline,cmm,eg} 5, FN{baseline,cmm,eg}_r1/_r2 5 ea — 07-28
+- clf5eg 2 — 07-27
+- fb5base_r1 5, fb5cmm 5, fb5eg_r1 5, fb5base_r2/_r3 1, fb5eg_r2/_r3 1, fb5eg{direct,lean,top1} 1, pf4_baseline(+_r2/_r3) 1, pf4_eg(+_r2/_r3) 1, pf_{baseline,cmm,eg} 1 — 07-24
+
+**ZERO-DATA cells (dirs exist, 0 non-empty cc_out.json)**: PROBE(14), clf5base_r1(2), clf5cmm_r1(2), pismoke{base,eg}, pi_dsv4{base,eg}, pi_dsv42, pi_glm{base,eg}, pi_glm2, pi_kimi{base,eg}, pi_kimi2/3/3r2/3r3/4, pi_kimiB2/B3/BL, pi_oss{base,eg}, pi_oss2 (all 6 dirs each — non-Claude provider probes, never produced output), sonnet_i1(7), sonnet_i2(7), sonnet_i3/treated(14), sonnet_macro_a/b(1), G5thinbaseline_r1(1), R80probe(1, no modelUsage).
+
+**CONFIG (from `eg-q.run` shims; baselines have no shim and 0 gq_calls.log — confirmed clean)**
+| eg binary | cells | EG_TOPK | GQ_SEARCH_CAP |
+|---|---|---|---|
+| `/tmp/eg-f8` | R80eg, R79eg, s30eg | 5 | 1 |
+| `/tmp/eg-f5` | R75eg | 5 | 1 |
+| `/tmp/eg-p0b`,`/tmp/eg-final` | R30hkNeg, R30hkW, R30hkT, R30hkFULL | 5 | 1 |
+| `eg-measure` | Bhk30eg, Bsn20eg, Bfb30eg | 5 | 1 |
+| `eg-integ-measure-2026-07-28` | P4{hk,sn,op,fb}eg | 10 | — |
+| `eg-v2` | C13/C15 all models, R30{hk,sn,op}eg, C12hkeg, B100hkeg | 10–20 | — |
+| `eg-turnkill2` | C10/C11/C12 sneg | 10 | — |
+| `eg-l1l2` | R30hkL2, O10L2eg, S20L2eg, F5L2eg | 10 | — |
+
+All shims: `EG_SEARCH_LEAN=0 EG_DROP_TESTS=0 EG_LOCATIONS=0 EG_PROFILE=full EG_TIER=0 EG_SNIPPET=6 EG_MAXBYTES=24576`.
+
+```
+PAIRS   (valid = BOTH arms len(result)&gt;=200 AND not is_error; tokens = max(sum usage.*_token*, sum modelUsage.*); red = per-instance ratio &gt; 1.00)
+```
+
+| model | eg cell | base cell | n | total% | geomean% | turns b→e | red |
+|---|---|---|---|---|---|---|---|
+| haiku | **R80eg_r1** | **R79base_r1** ✱ | 28 | **-35.1** | **-42.9** | 39.0→27.0 | 4/28 |
+| haiku | R80eg_r1 | R75base_r1 ✱ | 24 | -39.6 | -51.1 | 35.2→24.1 | 3/24 |
+| haiku | ml300_r1 | ml300base_r1 | 168 | -57.8 | -66.6 | 31.6→15.6 | 15/168 |
+| haiku | P2hkeg_r1 | P2hkbaseline_r1 | 19 | -31.9 | -36.3 | 36.2→26.0 | 1/19 |
+| haiku | P4hkeg_r1 | P4hkbaseline_r1 | 24 | -31.7 | -36.1 | 25.3→17.2 | 8/24 |
+| haiku | R30hkW_r1 | R30hkbaseline_r1 ✱ | 20 | -35.0 | -36.6 | 32.8→23.5 | 3/20 |
+| haiku | R75eg_r1 | R75base_r1 | 24 | -20.2 | -30.4 | 35.2→28.5 | 4/24 |
+| haiku | R30hkL2_r1 | R30hkbaseL2_r1 | 14 | -13.6 | -24.1 | 28.9→23.0 | 5/14 |
+| haiku | B100hkeg_r1 | B100hkbaseline_r1 | 2 | -20.3 | -23.0 | 39.5→30.5 | 0/2 |
+| haiku | R30hkT_r1 | R30hkbaseline_r1 ✱ | 20 | -16.0 | -22.9 | 31.8→24.6 | 5/20 |
+| haiku | scr100eg_r1 | scr100base_r1 | 52 | -14.4 | -21.0 | 29.2→25.7 | 19/52 |
+| haiku | R30hkeg_r1 | R30hkbaseline_r1 | 18 | -18.6 | -19.2 | 30.4→27.0 | 7/18 |
+| haiku | R30hkNeg_r1 | R30hkNbase_r1 | 12 | -11.9 | -16.1 | 31.2→25.3 | 4/12 |
+| haiku | C13hkeg_r1 | C13hkbaseline_r1 | 19 | -11.2 | -10.3 | 32.3→29.4 | 8/19 |
+| haiku | C12hkeg_r1 | C12hkbaseline_r1 | 17 | -7.0 | -9.8 | 30.8→26.9 | 5/17 |
+| haiku | P3hkeg_r1 | P3hkbaseline_r1 | 18 | +1.7 | -2.7 | 34.0→32.5 | 9/18 |
+| haiku | P1h30eg_r1 | P1h30baseline_r1 | 24 | +0.6 | +19.0 | 19.6→19.6 | 12/24 |
+| haiku | R79eg_r1 ☠ | R79base_r1 | 4 | +19.9 | +23.3 | 47.5→50.8 | 3/4 |
+| sonnet | C13sneg_r1 | C13snbaseline_r1 | 27 | -4.4 | -18.0 | 22.3→18.7 | 13/27 |
+| sonnet | C12sneg_r1 | C12snbaseline_r1 | 22 | -10.3 | -16.4 | 21.3→18.4 | 8/22 |
+| sonnet | Bsn20eg_r1 | R30snbaseline_r1 ✱ | 5 | -1.3 | -8.4 | 26.4→24.2 | 2/5 |
+| sonnet | R30sneg_r1 | R30snbaseline_r1 | 25 | +1.0 | -7.9 | 22.1→20.5 | 11/25 |
+| sonnet | C10sneg_r1 | C10snbaseline_r1 | 9 | +6.7 | -0.7 | 18.6→17.7 | 4/9 |
+| sonnet | **s30eg_r1** | **s30base_r1** | 35 | **+9.4** | **+0.1** | 21.1→21.4 | 21/35 |
+| sonnet | P4sneg_r1 | P4snbaseline_r1 | 14 | +6.3 | +2.9 | 15.6→14.6 | 7/14 |
+| sonnet | bs20eg_r1 | bs20base_r1 | 13 | +28.2 | +14.1 | 26.0→29.0 | 11/13 |
+| sonnet | S20L2eg_r1 | S20L2base_r1 ⚠ | 10 | +45.6 | +22.6 | 17.1→20.8 | 8/10 |
+| sonnet | C11sneg_r1 | C11snbaseline_r1 | 19 | +98.7 | +152.8 | 19.5→31.6 | 15/19 |
+| opus | mo10eg_r1 | mo10base_r1 | 10 | -46.5 | -58.0 | 14.4→8.3 | 2/10 |
+| opus | C13opeg_r1 | C13opbaseline_r1 | 8 | -32.1 | -30.1 | 14.1→10.9 | 1/8 |
+| opus | **C15opeg_r1** | **C15opbaseline_r1** | 26 | **-31.0** | **-27.2** | 13.6→11.1 | 9/26 |
+| opus | O10L2eg_r1 | O10L2base_r1 | 8 | -16.9 | -12.5 | 12.1→11.6 | 2/8 |
+| opus | ONeg_r1 | ONbaseline_r1 | 10 | -12.0 | -6.6 | 11.2→8.8 | 6/10 |
+| opus | MXopuseg_r1 | MXopusbase_r1 | 10 | -5.6 | -2.3 | 13.6→12.3 | 5/10 |
+| opus | OFeg_r1 | OFbaseline_r1 | 10 | +15.2 | +13.4 | 8.7→8.7 | 8/10 |
+| opus | R30opeg_r1 | R30opbaseline_r1 | 4 | +52.1 | +19.0 | 12.2→14.2 | 2/4 |
+| opus | P4opeg_r1 | P4opbaseline_r1 | 10 | +25.6 | +25.4 | 12.8→12.7 | 7/10 |
+| opus-4-8 | op10_r1 | op10base_r1 | 8 | -53.4 | -48.2 | 19.8→10.9 | 1/8 |
+| fable | fb5eg_r1 | fb5base_r1 | 5 | -46.3 | -30.0 | 12.2→7.0 | 2/5 |
+| fable | C13fbeg_r1 | C13fbbaseline_r1 | 5 | -31.9 | -33.8 | 12.0→9.4 | 0/5 |
+| fable | **C15fbeg_r1** | **C15fbbaseline_r1** | 28 | **-23.1** | **-19.8** | 10.4→8.1 | 8/28 |
+| fable | P4fbeg_r1 | P4fbbaseline_r1 | 5 | -14.0 | -10.6 | 11.8→8.6 | 3/5 |
+| fable | F5L2eg_r1 | F5L2base_r1 | 5 | -12.1 | -8.8 | 10.6→9.0 | 2/5 |
+| fable | Bfb30eg_r1 | Bfb30base_r1 | 14 | -18.1 | -6.5 | 9.6→8.1 | 7/14 |
+| fable | FNeg_r1 | FNbaseline_r1 | 5 | +7.6 | +7.4 | 8.0→7.8 | 2/5 |
+| fable | FFeg_r1 | FFbaseline_r1 | 5 | +13.7 | +18.1 | 5.6→6.6 | 4/5 |
+| fable | MXfableeg_r1 | MXfablebase_r1 | 5 | +28.2 | +18.4 | 11.8→11.8 | 4/5 |
+
+✱ = cross-cell pair (arm names differ but instance sets are identical/near-identical). `R80eg_r1` and `R79base_r1` share all 31 instance dirs — R80 has no own baseline arm (only cmm).
+☠ = crashed cell, number is meaningless (see CONTAMINATED).
+⚠ = instance-set mismatch (see CONTAMINATED).
+
+```
+MISSING MODELS
+```
+- No model is entirely without a usable eg+baseline pair. Haiku, sonnet, opus-5, fable-5 all have ≥1 matched pair.
+- **Real gaps at the newest config (`eg-f8`, TOPK=5, GQ_SEARCH_CAP=1):** only haiku (R79/R80) and sonnet (s30). **No opus-5 cell and no fable-5 cell exists at eg-f8/eg-f5/eg-final/eg-p0b.** Newest opus/fable data is `eg-v2` (07-30, TOPK=20) and `eg-measure` (Bfb30, TOPK=5+cap).
+- **No opus-5 baseline pair exceeds n=26** (C15op) and **no fable pair exceeds n=28** (C15fb). No 100+ or 300-instance cell exists for opus or fable at any config.
+- Opus-4-8 has only one 10-instance triplet (07-23, legacy binary).
+- Non-Claude providers (kimi, glm, dsv4, oss) — 19 cells, **zero data produced**.
+
+```
+CONTAMINATED
+```
+- **R79eg_r1** — 22/30 sessions contain `"Prompt is too long"`, 24/30 `is_error=true`, 2 empty cc_out.json, only 6/30 have a non-empty gq_calls.log. Leaves 4 valid pairs. This cell is a crash, not data. It is the ONLY cell in the whole tree with prompt-too-long sessions (plus 1 in `R80probe`).
+- **ml300base_r1** — 1 of 300 sessions ran on `claude-sonnet-5` inside a haiku cell (genuine wrong-model session).
+- **S20L2eg_r1** — 13 instance dirs vs S20L2base_r1's 20; 1 instance present in eg that is absent from baseline, 8 baseline-only. Only 10 valid pairs from a nominal 20-instance cell.
+- **C15opeg_r1 / C15opbaseline_r1 / C13opbaseline_r1 / C13sncmm_r1** — flagged "mixed" by modelUsage keys, but the minority key is `haiku-only` (session died before the main model was ever called). Crashes, not model contamination.
+- **O10L2eg_r1** (10) has 2 instances absent from O10L2base_r1 (8). **R30opeg_r1** (4) vs **R30opbaseline_r1** (5), **B100hkeg_r1** (8) vs **B100hkbaseline_r1** (9): partial cells, tiny n.
+- High baseline crash rates inflate/deflate several pairs: scr100base 43/100 crashed, scr100eg 31/98; ml300base 75/300 crashed vs ml300eg 23/299 — the eg arm surviving more often than baseline biases the surviving-subset comparison.
+- Cells named `*cmm*` are a third arm (context-management-mode), not baseline. R80 has only eg+cmm.
+
+```
+NOTES
+```
+- "red cell" is not defined anywhere in the repo (no scoring script found). I used **per-instance token ratio &gt; 1.00** (eg spent more than baseline on that instance). Say the word if you meant a different threshold.
+- Token metric per session = `max(sum of *token*-named leaves in usage, sum of inputTokens+outputTokens+cacheRead+cacheCreation across modelUsage)`. modelUsage was the larger figure in essentially every session.
+- Every non-haiku cell shows a small `claude-haiku-4-5-*` entry in modelUsage (side/utility model, ~0.5–2% of tokens). Dominant-model share was ≥0.98 in all cells. That haiku sliver is included in the token sums for both arms, so it does not bias the ratio.
+- Baseline arms have **zero** gq_calls.log files across all checked cells and no `eg-q.run` shim — the arms are genuinely separated.
+- Turn counts for opus/fable are far lower than haiku (8–14 vs 25–40), so opus/fable percentages move on much less data per session and are noisier at n=5–10.
+- The two headline discrepancies worth attention: **haiku at eg-f8 is -35%/-43% (n=28)** while **sonnet at the same eg-f8 config is +9.4% total / +0.1% geomean with 21/35 red (n=35)**. Same binary, same era, opposite sign.
+- `C11sneg_r1` (+98.7% / +152.8%, turns 19.5→31.6) is an extreme outlier vs every other sonnet cell; it used `eg-turnkill2`. Treat as a broken config, not a measurement.
+- Dates are cc_out.json mtimes (latest in cell). No run metadata file records the actual launch time.
+- Nothing was modified, launched, or killed.</result>
+<usage><subagent_tokens>86896</subagent_tokens><tool_uses>25</tool_uses><duration_ms>410294</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>ac5219ab5671702a0</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/ac5219ab5671702a0.output</output-file>
+<status>completed</status>
+<summary>Agent "Turn-phase attribution across models" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Analysis complete — I ran all instances (not a sample), so counts are full-population.
+
+```
+SAMPLED: ALL instances, not 8/cell. Haiku 30 eg / 30 base (paired, same 30 iids).
+         Sonnet 55 eg / 56 base -&gt; 55 paired. Transcripts located for 171/171 via
+         cc_out.json:session_id -&gt; ~/.claude/projects/*/&lt;sid&gt;.jsonl. Zero misses.
+         Unit = tool-call. tool-calls ~= num_turns (H-eg 26.07 calls vs 27.07 turns).
+
+PHASE TABLE (mean per instance, paired)
+model  | arm  | locate-pre | edit | verify | explore-post | env-hunt | other | TOTAL
+Haiku  | eg   |       7.40 | 2.83 |   5.07 |         9.60 |     0.23 |  0.93 | 26.07
+Haiku  | base |      11.60 | 3.27 |   5.40 |        16.50 |     0.37 |  2.07 | 39.20
+Haiku  | DELTA|      -4.20 |-0.43 |  -0.33 |        -6.90 |    -0.13 | -1.13 |-13.13  (-33.5%)
+Sonnet | eg   |       9.42 | 2.44 |   2.44 |         5.02 |     1.18 |  0.73 | 21.22
+Sonnet | base |       8.82 | 2.44 |   3.00 |         4.93 |     1.20 |  0.36 | 20.75
+Sonnet | DELTA|      +0.60 | 0.00 |  -0.56 |        +0.09 |    -0.02 | +0.36 | +0.47  (+2.3%)
+
+EG REDUCES:
+  Haiku  -&gt; EXPLORE-post is the real win (-6.90, 53% of the total -13.13).
+            LOCATE-pre second (-4.20). Edit/verify/env-hunt ~flat.
+  Sonnet -&gt; NOTHING. Net +0.47 turns. Only verify moves (-0.56), inside noise.
+            eg is NOT broken on Sonnet: wrapper used in 52/55 instances, 2.75 calls/inst.
+            It fires, the payload lands, and Sonnet re-derives anyway.
+
+  WHY (LOCATE-pre tool mix, per instance) -- this is the whole story:
+                Bash-search  Read   eg-wrapper   sum
+    H-base           7.70    4.23        -      11.93
+    H-eg             2.23    3.13      2.03      7.39   &lt;- search -5.47, wrapper costs +2.03, nets -4.54
+    S-base           6.55    2.93        -       9.48
+    S-eg             4.27    3.35      2.53     10.15   &lt;- search -2.28, wrapper costs +2.53, Read +0.42 -&gt; NET ZERO
+  The eg wrapper's own turn cost exactly eats its search savings on Sonnet. Sonnet's
+  baseline grep budget is already lean (6.55 vs Haiku 7.70) and it calls eg MORE times
+  (2.53 vs 2.03) for less return. Grep/Glob tools = 0.00 in every cell; all search is Bash.
+
+SONNET HEADROOM: LOCATE-pre, 9.42 turns/inst = 44% of the 21.22 eg total.
+  EXPLORE-post is only 5.02 on Sonnet vs 16.50 on Haiku-base -- Sonnet never had the
+  post-edit thrash that eg killed on Haiku. There is no Haiku-style win left to copy.
+  To get 33% (-7.0 turns) it has to come out of LOCATE-pre (9.42) + ENV-HUNT (1.18).
+  Worst offenders (eg locate-pre / base locate-pre / eg total):
+    redis__redis-9733           31 / 26 / 50
+    apache__lucene-12022        30 / 25 / 36
+    projectlombok__lombok-3350  26 / 10 / 39   &lt;- eg 2.4x WORSE than baseline
+    facebook__docusaurus-9897   24 / 14 / 46   &lt;- eg worse
+    rubocop__rubocop-13396      22 / 30 / 50
+    rubocop__rubocop-13687      19 / 15 / 43
+    uutils__coreutils-6377      19 / 14 / 59   &lt;- eg worse
+    caddyserver__caddy-4943     18 / 11 / 29   &lt;- eg worse
+  Two concrete levers: (a) cut wrapper invocations from 2.53 -&gt; 1 (tail is 8/11/13 calls
+  on single instances); (b) the 3.40 search-tool calls Sonnet makes BETWEEN the first eg
+  call and the first Edit (Haiku: 3.13) -- it is re-verifying the payload it was handed.
+
+ENV-HUNT (turns/inst, total, instances affected):
+  H-eg   0.23   7/30 inst      H-base  0.37  10/30
+  S-eg   1.18  65 turns 15/55  S-base  1.18  66 turns 21/56
+  Haiku env-hunt is a non-issue. Sonnet burns 5.6% of all turns on it, and it is
+  EXTREMELY concentrated: 5 instances hold 39 of 65 turns (rubocop-13362=13,
+  rubocop-13396=11, coreutils-6377=6, rubocop-13687=5, caddy-4943=4).
+
+  YES -- strongly correlated with a payload VERIFY command that then failed.
+  Sonnet-eg, grouped by gq_calls.log.payload VERIFY: line outcome:
+    VERIFY present AND that exact cmd FAILED   n=4   mean env-hunt = 4.50
+    VERIFY present AND ran clean               n=11  mean env-hunt = 0.00
+    VERIFY present but never run               n=2   mean env-hunt = 3.00
+    no VERIFY line in payload                  n=38  mean env-hunt = 1.08
+  0.00 vs 4.50 is the cleanest split in this whole analysis. A payload VERIFY naming a
+  runner that isn't installed is a turn bomb. The four:
+    rubocop-13362  VERIFY: bundle exec rspec ...  -&gt; env=13
+      "bundler: command not found: rspec | Install missing gem executables with `bundle install`"
+      then: which ruby3.3 / ls /opt/homebrew/bin/ruby* / gem list -i / find / -name ruby
+    caddy-4943     VERIFY: go test ./modules/logging ... -&gt; env=4
+      "quic-go@v0.28.1/internal/qtls/go120.go:6:13: cannot use ..."  (toolchain/go version skew)
+    laravel-46234  VERIFY: php -l ...              -&gt; env=1
+    fluentd-3328   VERIFY: bundle exec ruby -Itest ... -&gt; env=0 (failed, did not spiral)
+  coreutils-6377 (env=6) had VERIFY: cd fuzz &amp;&amp; cargo test which was NEVER RUN -- Sonnet
+  instead did `find / -maxdepth 8 -path "*registry/src*clap-4*"` and `rustc --print sysroot`.
+  Caveat: Haiku's same-payload instances did NOT spiral (pv+fail n=7, mean env-hunt 0.29),
+  so the failure mode is Sonnet-specific behavior, not the payload alone.
+  Also 11 Sonnet-eg env-hunt turns come from rubocop-13396 which has NO VERIFY line at all.
+
+THROWAWAY SCRIPTS (prompt forbids; /tmp/*.{rs,rb,py,js,go,php,...}, &gt;/tmp/, php -r, ruby -e, python -c, node -e):
+  Haiku : eg 1.70/inst (51 total, 18/30 inst)  vs base 3.60/inst (108, 18/30)  -&gt; eg 53% FEWER
+  Sonnet: eg 2.84/inst (156 total, 36/55 inst) vs base 1.95/inst (109, 32/56)  -&gt; eg 46% MORE
+  Split: S-eg tmp_file 2.33 + inline_eval 0.51 ; S-base 1.64 + 0.30. eg makes it worse on
+  Sonnet on both sub-kinds. Same instances that env-hunt also write scratch files, e.g.
+  rubocop-13396: `ruby -v &amp;&amp; cat &gt; /tmp/t1.rb &lt;&lt;'EOF' ...` -- it could not run rspec so it
+  hand-rolled a repro. Throwaway-script violation and env-hunt are the same failure.
+
+UNKNOWN:
+  - No Sonnet eval/grading artifact exists. sub_s30_{eg,baseline}.json + sub_s30_gate_summary.json
+    are submission/gate files only (eg n=28 after drops, base n=28; nushell-13831 excluded,
+    rubocop-13396 dropped from baseline for empty patch.diff). No resolved_ids anywhere for S30,
+    so I could NOT split Sonnet by winner/loser. Sonnet numbers above are all-instance means.
+  - Haiku IS graded: R80eg 10/30 resolved, R79base 10/30 resolved (eg 23 completed, base 24).
+    Equal pass rate, -33.5% turns -- that is the Haiku result.
+  - VERIFY-before-first-Edit is folded into VERIFY, not LOCATE-pre (spec said LOCATE-pre =
+    "any tool call before first Edit"; I gave build/test cmds priority so the verify column
+    isn't hidden). Haiku LOCATE-pre would be ~+1-2 higher under the literal reading; the
+    eg-minus-base deltas are unaffected.
+  - ENV-HUNT vs VERIFY correlation on Sonnet rests on n=4 failing-VERIFY instances. Direction
+    is unambiguous (4.50 vs 0.00) but the magnitude is a 4-instance estimate.
+```</result>
+<usage><subagent_tokens>71656</subagent_tokens><tool_uses>26</tool_uses><duration_ms>393111</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a59ed8872c5a269e3</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/a59ed8872c5a269e3.output</output-file>
+<status>completed</status>
+<summary>Agent "Test query-length retrieval hypothesis" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>SETUP:
+```
+binary=/tmp/eg-f8 (entire graph search, --format text --top-k 5 --profile full --no-cache)
+checkouts=S30eg_r1/R80eg_r1 checkouts are DELETED (0 bytes). Substituted surviving checkouts of the
+  SAME instance_id at the SAME base_commit from other cells (verified rev-parse HEAD == dataset base_commit):
+  druid-14092      -&gt; checkouts/C10sneg_r1/eg/           (4fffee1776)
+  ruff-15330       -&gt; checkouts/R79eg_r1/eg/             (b2a0d68d70, clean)
+  axios-4731       -&gt; checkouts/R78eg_r1/eg/             (c30252f, clean)
+  carbon-2752      -&gt; checkouts/R79base_r1/baseline/     (09acf641)
+  caddy-4943       -&gt; checkouts/R79base_r1/baseline/     (7f6a328b)
+  docusaurus-10130 -&gt; checkouts/LSbaseline_r1/baseline/  (02e38d8ccf)
+  fmt-2457         -&gt; checkouts/R30opeg_r1/eg/           (4b8bda25)
+  jq-2235          -&gt; checkouts/R30opbaseline_r1/baseline/ (b8816ca)
+  laravel-46234    -&gt; checkouts/Bfb30base_r1/baseline/   (3799f7f311, clean)
+  micropython-10095-&gt; checkouts/R30opbaseline_r1/baseline/ (cc26bf740)
+  redis-10068      -&gt; checkouts/R30hkT_r1/eg/            (e88f6acb9)
+  lucene-12022     -&gt; DROPPED (checkouts/R80cmm_r1/cmm/ is an empty stub, 0 .java files, search returns 0 bytes)
+goldsource=$SUITE/tasks/{pilot,multilingual_300,balanced100}_tasks.json -&gt; instance.patch -&gt; diff --git paths
+  (no S30/R80 eval report JSON exists; base_commit in tasks matched every checkout HEAD)
+```
+
+TABLE (rank of gold file in top-5; `-` = not in top-5):
+```
+iid                       | qlen S/H/C  | rank(a) | rank(b) | rank(c) | bytes a/b/c      | blocks a -&gt; c
+apache__druid-14092       | 105/60/87   |    3    |    3    |    3    | 1620/1620/1620   | C -&gt; C
+astral-sh__ruff-15330     |  75/72/75   |    1    |    -    |    1    | 4361/3160/4361   | VS -&gt; VS
+axios__axios-4731         |  75/64/65   |    1    |    1    |    1    | 1164/1164/1164   | VS -&gt; VS
+briannesbitt__carbon-2752 |  52/40/49   |    -    |    2    |    -    | 2925/2415/2327   | VS -&gt; VS
+caddyserver__caddy-4943   | 158/42/151  |    1    |    1    |    1    | 4098/3302/4098   | VSC -&gt; VSC
+facebook__docusaurus-10130| 161/56/156  |    1    |    4    |    1    | 3568/5090/3568   | V -&gt; V
+fmtlib__fmt-2457          |  38/42/38   |    1    |    1    |    1    | 3323/2315/3323   | VC -&gt; VC
+jqlang__jq-2235           |  79/52/62   |    -    |    -    |    -    | 2063/1800/2063   | - -&gt; -
+laravel__framework-46234  |  83/79/70   |    5    |    5    |    5    | 2163/2163/2163   | VS -&gt; VS
+micropython__micropython-10095| 84/57/79|    3    |    -    |    3    | 1780/2295/1780   | S -&gt; S
+redis__redis-10068        |  97/78/94   |    1    |    1    |    1    | 8124/7522/8124   | S -&gt; S
+(apache__lucene-12022     | 111/79/96   |  n/a — dead checkout, all three runs 0 bytes)
+```
+V=VERIFY, S=SAME-CONCEPT LITERAL, C=COVERING TEST, L=LOW CONFIDENCE (never fired in any of 33 runs).
+
+VERDICT: **Hypothesis is WRONG — plainly.** Two independent reasons.
+
+1. **The direction is backwards.** Long Sonnet queries beat short Haiku queries 3-1 on gold-file rank: Sonnet wins on ruff-15330 (1 vs miss), docusaurus-10130 (1 vs 4), micropython-10095 (3 vs miss); Haiku wins only on carbon-2752 (2 vs miss); 7/11 are exact ties. Mean rank (miss=6): a=2.5, b=3.0. Retrieval does not degrade on long queries in this sample.
+
+2. **(c) is a no-op, not a fix.** Mechanically stripping the stopword list from Sonnet's query changed the rank in **0 of 11** instances, and produced a **byte-identical payload in 10 of 11** (the 11th, carbon-2752, changed 2925 -&gt; 2327 bytes but kept the same miss). Block firing was identical a -&gt; c in 11/11. The retriever already discards those tokens; there is nothing for "query normalization" to normalize. It cannot recover (b)'s rank in the one case where (b) won (carbon: b=2, c=miss) because what made Haiku's carbon query win was different *semantic content* ("returns true for wrong month" -&gt; the comparison branch), not fewer characters.
+
+The real signal in the misses is lexical/semantic, not length: jq-2235 misses for all three query forms and returns vendored `src/decNumber/*` noise for a `-0` / NUL-separator issue — a symbol-anchoring failure, not a phrasing failure.
+
+CONFOUNDS:
+- Original S30/R80 checkouts are gone; I substituted same-instance checkouts from other cells. Base commits match exactly, so the indexed tree is correct, but 8 of 11 had 1-2 dirty files (the other cell's agent patch) — that can move a gold file's own body slightly. It cannot explain a null result, since a/b/c all ran against the identical dirty tree.
+- I used only the **first** `search` line per instance. Both agents issue more: Sonnet 148 searches / 55 instances (2.7 avg), Haiku 60 / 30 (2.0 avg). Haiku also falls back to `grep` far more (18/30 instances vs 6/55) and issues follow-up reformulations (e.g. ruff: 4 calls incl. a grep). So end-to-end retrieval quality is partly a *number-of-attempts and fallback* story that this single-query replay does not capture.
+- The premise's length ranges are overstated. Measured over all search calls: Sonnet n=148 min=18 med=61 mean=70 max=278; Haiku n=60 min=15 med=46 mean=47 max=91. The distributions overlap heavily; 4 of my 11 pairs have Sonnet within 12 chars of Haiku (ruff 75/72, laravel 83/79, carbon 52/40, fmt 38/42 where Sonnet is *shorter*). So the two cells are not cleanly separated by length in the first place.
+- n=11, ranks are coarse (top-5 only), single run each. 3-1 is not statistically meaningful on its own — but the (c)==(a) null is, because it is 11/11 with byte-identical payloads.
+- Cells differ in instance set size (S30 has 55 instances, R80 has 30), so any aggregate quality gap between cells is also partly an instance-mix effect.
+
+UNKNOWN:
+- Whether Sonnet's *later* queries (calls 2-3) behave differently from its first — not tested.
+- apache__lucene-12022: no usable checkout anywhere on the machine (only stub); untested.
+- Why `LOW CONFIDENCE` never fired in 33 runs — either the threshold is unreachable at `--profile full` or the block is inert. Worth a separate look, since jq-2235 returning vendored `decNumber` code at score=22 is exactly the case that block should catch.
+- Whether the actual eg-vs-baseline score gap between S30 and R80 is driven by retrieval at all, versus Haiku's higher grep-fallback rate and shorter tool-use chains.</result>
+<usage><subagent_tokens>61964</subagent_tokens><tool_uses>30</tool_uses><duration_ms>903576</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>adc9379f35117c3fa</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/adc9379f35117c3fa.output</output-file>
+<status>completed</status>
+<summary>Agent "Phase-attribute Opus and Fable" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All 120 sessions resolved. Report:
+
+## 0. Coverage
+- Transcripts found for **120/120** sessions (30 per cell), all paired: **n=30 opus, n=30 fable** (not 26/28 — every instance has a transcript).
+- 29/30 opus-eg via `cc_out.json` `session_id`; `apache__druid-15402` has a 0-byte `cc_out.json`, recovered via the project dir `...checkouts-C15opeg-r1-eg-apache--druid-15402/` (single jsonl). No fallback to `gq_calls.log` needed.
+- Notable: **zero Grep/Glob tool calls in all 120 sessions.** Opus and Fable do 100% of search through Bash. Tool inventory: Bash 734, Edit 249, Read 159, Write 9, ScheduleWakeup 3.
+
+## 1. PHASE TABLE (mean tool calls/instance, paired)
+
+| model | arm | locate-pre | edit | verify | explore-post | env-hunt | other | TOTAL |
+|---|---|---|---|---|---|---|---|---|
+| Opus | eg | 3.87 | 2.37 | 2.43 | 0.83 | 0.17 | 0.03 | **9.70** |
+| Opus | base | 5.33 | 2.53 | 2.87 | 1.20 | 0.23 | 0.07 | **12.23** |
+| **Opus** | **DELTA** | **-1.47** | -0.17 | -0.43 | **-0.37** | -0.07 | -0.03 | **-2.53** |
+| Fable | eg | 2.80 | 1.77 | 1.53 | 0.37 | 0.20 | 0.47 | **7.13** |
+| Fable | base | 4.37 | 1.87 | 2.13 | 0.57 | 0.27 | 0.20 | **9.40** |
+| **Fable** | **DELTA** | **-1.57** | -0.10 | -0.60 | **-0.20** | -0.07 | +0.27 | **-2.27** |
+
+Paired signs (eg&lt;base / tie / eg&gt;base): Opus TOTAL 23/1/6, locate 21/2/7, explore 13/9/8. Fable TOTAL 22/2/6, locate 15/8/7, explore 7/20/3.
+95% CI: Opus locate **[-2.44, -0.50]** (excludes 0); Opus explore [-0.85, +0.12] (includes 0); Fable locate [-3.05, -0.09]; Fable explore [-0.95, +0.55]; Fable verify [-0.96, -0.24].
+Robustness: flipping ENV/VERIFY priority, or dropping `git diff/status/show` from Bash-search, moves nothing by more than 0.07.
+
+## 2. LOCATE-pre TOOL MIX (mean/instance)
+
+| model | arm | Bash-search | Read | eg-wrapper | sum |
+|---|---|---|---|---|---|
+| Opus | eg | 1.80 | 1.07 | 1.00 | 3.87 |
+| Opus | base | 4.57 | 0.77 | 0.00 | 5.33 |
+| Fable | eg | 0.63 | 1.17 | 1.00 | 2.80 |
+| Fable | base | 2.60 | 1.77 | 0.00 | 4.37 |
+
+(My mix is an exact partition of locate-pre, so sums match the phase table. The reference H-base 7.70+4.23=11.93 vs 11.60 and S-eg 10.15 vs 9.42 do not, so the old mix was slightly looser — treat cross-model mix comparisons as directional.)
+
+Bash-search **anywhere** (pre+post): Opus 5.70 → 2.40 (**-3.30**); Fable 3.00 → 0.93 (**-2.07**). Reads pre-edit go *up* for Opus (0.77 → 1.07), down for Fable (1.77 → 1.17).
+
+## 3. VERDICT — where the win lives
+
+**Opus: LOCATE-pre, not EXPLORE-post.** Of the -2.53 total tool-call delta, locate-pre is -1.47 (**58%**), verify -0.43 (17%), explore-post -0.37 (**15%**), edit -0.17. Only the locate-pre delta has a CI excluding zero. Opus is the opposite of Haiku, whose -13.13 total was -6.90 explore-post (53%) vs -4.20 locate-pre (32%).
+
+**Fable: even more so — LOCATE-pre.** Of -2.27 total, locate-pre is -1.57 (**69%**), verify -0.60 (26%), explore-post -0.20 (**9%**, median 0, 20/30 instances tied at zero).
+
+Mechanism is identical in both: one eg call replaces ~2.8 (opus) / ~2.0 (fable) Bash greps before the first edit. Neither model has a post-edit flailing loop for eg to shut down — Opus explore-post is 1.20 at baseline and Fable 0.57, versus Haiku's 16.50. There is nothing there to win.
+
+## 4. eg-wrapper calls per instance
+
+| model | eg calls/inst | dist |
+|---|---|---|
+| Opus | **1.00** | 28×1, 1×0, 1×2 |
+| Fable | **1.00** | 30×1 |
+| Haiku (ref) | 2.03 | — |
+| Sonnet (ref) | 2.53 | — |
+
+Cross-checked against `gq_calls.log` line counts: mean 1.00 both cells, identical distribution. **100% of eg calls occur before the first edit** (post-edit eg = 0.00 in both models). Opus/Fable query the graph once, then stop.
+
+## 5. ENV-HUNT vs payload `VERIFY:` outcome
+
+Env-hunt turns are rare: opus eg 5, opus base 7, fable eg 6, fable base 8 (raw totals over 30 instances each). Payload `VERIFY:` lines exist only in eg arms: 19/30 opus, 21/30 fable.
+
+| model | group | n | env-hunt/inst | instances w/ env&gt;0 |
+|---|---|---|---|---|
+| Opus | VERIFY failed | 7 | **0.57** | 3/7 |
+| Opus | VERIFY ran clean | 3 | 0.00 | 0/3 |
+| Opus | VERIFY present, never run verbatim | 9 | 0.00 | 0/9 |
+| Opus | VERIFY absent | 11 | 0.09 | 1/11 |
+| Fable | VERIFY failed | 4 | **0.75** | 2/4 |
+| Fable | VERIFY ran clean | 6 | 0.00 | 0/6 |
+| Fable | VERIFY present, never run verbatim | 11 | 0.00 | 0/11 |
+| Fable | VERIFY absent | 9 | 0.33 | 3/9 |
+
+Correlation is clean and one-directional: **every env-hunt turn in an eg arm sits in a "VERIFY failed" or "VERIFY absent" instance; zero in "ran clean" or "never run."** Failure classified as tool_result `is_error` or a narrow marker (`Exit code N`, `BUILD FAILURE`, `command not found`, `error[E`, `Failures: [1-9]`, `.go:N:M:`, etc.). Driver is host toolchain, not arm: env-hunt appears only in briannesbitt/carbon (no `php`), faker-ruby (no system `ruby`), caddyserver (Go toolchain version), babel (`yarn install`), docusaurus, fastlane — same repos in baseline arms too. Broader definition (adding `go version`/`node -v`/`ls /opt/homebrew`-style probes) roughly doubles the counts (opus eg 0.40, base 0.70; fable eg 0.37, base 0.43) without changing the grouping pattern.
+
+## 6. Throwaway scripts per instance
+
+| model | arm | throwaway/inst | raw total |
+|---|---|---|---|
+| Opus | eg | **0.23** | 7 |
+| Opus | base | **0.63** | 19 |
+| Fable | eg | **0.23** | 7 |
+| Fable | base | **0.57** | 17 |
+
+Roughly 2.5x fewer scratch repros under eg for both models. Patterns matched: `/tmp/*.{rs,rb,py,js,go,php,java,ts,c,cc,cpp}`, `&gt;/tmp/`, `php -r`, `ruby -e`, `python -c`, `node -e`, `perl -e`, plus Write/Edit to a real `/tmp/` path. The suite root is itself under `/private/tmp/...`, so all commands were masked before matching — without that mask every path in the run false-positives.
+
+Caveats worth carrying: (a) the `verify` column uses the literal runner list plus obvious equivalents (javac, g++/c++, tsc, phpunit, gradle, `ruby -c`, `ruby -Itest ...`); repro one-liners like `node -e`/`ruby -e` land in OTHER, which is why Fable-eg OTHER is 0.47 (also includes 3 ScheduleWakeup calls). (b) One opus-eg instance (druid-15402) issued a failed Edit to a path outside the checkout; it is counted as OTHER and the *next*, successful edit sets the phase boundary.</result>
+<usage><subagent_tokens>108554</subagent_tokens><tool_uses>41</tool_uses><duration_ms>847475</duration_ms></usage>
+</task-notification>
+
+---
+
+so then ivnestaging each one and eedpy utrlathink on each one; amek subagents to inesvtage each one and then see what o do and then make the plans idk why u rushing so fast ultrathink - exactly where we losing think
+
+---
+
+<task-notification>
+<task-id>ae4c9cf47a6b3010e</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/ae4c9cf47a6b3010e.output</output-file>
+<status>completed</status>
+<summary>Agent "Measure out-of-repo search share" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## 1. Mean search calls per instance (Bash-search classified by target path; Read shown separately)
+
+Calibration: my pre-edit Bash totals reproduce the headline metric — haiku-base 7.67 (vs 7.70), haiku-eg 2.20 (vs 2.23), sonnet-eg 4.20 (vs 4.27), sonnet-base 6.41 (vs 6.55). n = 55/30/56/30, zero missing transcripts.
+
+| model | arm | phase | in-repo | dep-source | toolchain | other | BASH total | (graph calls) | (Read in-repo) |
+|---|---|---|---|---|---|---|---|---|---|
+| Sonnet | eg | pre | **3.27** | 0.18 | 0.55 | 0.20 | **4.20** | 2.53 | 3.29 |
+| Sonnet | eg | post | 3.98 | 0.16 | 0.64 | 0.62 | 5.40 | 0.22 | 1.04 |
+| Sonnet | base | pre | 5.52 | 0.23 | 0.41 | 0.25 | 6.41 | — | 2.80 |
+| Sonnet | base | post | 5.21 | 0.12 | 0.48 | 0.70 | 6.52 | — | 1.04 |
+| Haiku | eg | pre | **2.17** | 0.00 | 0.00 | 0.03 | **2.20** | 2.03 | 3.13 |
+| Haiku | eg | post | 8.13 | 0.00 | 0.20 | 0.40 | 8.73 | 0.23 | 3.23 |
+| Haiku | base | pre | 7.57 | 0.00 | 0.00 | 0.10 | 7.67 | — | 4.20 |
+| Haiku | base | post | 12.73 | 0.10 | 0.43 | 1.33 | 14.60 | — | 4.83 |
+
+## 2. The key number
+
+**Sonnet-eg, 4.20 pre-edit Bash-searches: 3.27 IN-REPO (78%), 0.93 out-of-repo (22%) = 0.55 toolchain + 0.18 dep-source + 0.20 other.**
+
+**Haiku-eg, 2.20 pre-edit: 2.17 IN-REPO (98.6%), 0.03 out-of-repo (1 call total across 30 instances).**
+
+Out-of-repo is a **flat floor, not graph-induced**: sonnet-base 0.89 -&gt; sonnet-eg 0.93 (unchanged), while in-repo drops 5.52 -&gt; 3.27 (-41%). The graph only bites on in-repo search, and everything it cannot serve survives untouched.
+
+Concentration: 51 of Sonnet-eg's 55 out-of-repo pre-edit calls come from **12 of 55 instances** (median instance = 0). Drivers: `rubocop-13396` (17), `rubocop-13687` (9), `coreutils-6377` (5, `~/.cargo/registry`), `caddy-4943` (4, `~/go/pkg/mod`), `docusaurus-9897` (4, `node_modules`/yarn), `redis-10068` (4). Almost all are "where is my gem/crate/module + which interpreter exists" probes (`/opt/homebrew/lib/ruby/gems/...`, `find / -ipath "*rubocop-ast*"`, `which php`).
+
+## 3. Of the IN-REPO residual pre-edit searches, how many hit a file the payload already named
+
+| model | tool | total in-repo pre | payload-named file | new file | repo-wide / dir sweep (no file target) |
+|---|---|---|---|---|---|
+| Sonnet-eg | Bash | 180 (3.27/inst) | **39 (22%)** | 49 (27%) | **92 (51%)** |
+| Sonnet-eg | Read | 181 (3.29/inst) | **139 (77%)** | 42 (23%) | — |
+| Haiku-eg | Bash | 65 (2.17/inst) | **17 (26%)** | 6 (9%) | 42 (65%) |
+| Haiku-eg | Read | 94 (3.13/inst) | **67 (71%)** | 27 (29%) | — |
+
+Reading: Sonnet's in-repo residual Bash is dominated by **repo-wide sweeps (51%)** — exactly the `grep -rn ... --include=*.java &lt;dir&gt;` shape the prompt's SAME-CONCEPT LITERAL block was supposed to replace — plus 22% re-grepping a file the payload had already named. Only 27% target a file the payload never mentioned. The Read channel is even starker: **77% of pre-edit in-repo Reads re-open a file the payload already printed**, despite "Do not re-read that file."
+
+## 4. Grepped for a symbol whose full body the payload had already printed
+
+Strict match (payload entry with `kind=function/method/class`, body present, not elided; grep pattern literal == symbol name):
+
+- `caddyserver__caddy-4943` (Sonnet) — `grep -n "TestCookieFilter" -A 40 modules/logging/filters_test.go`; payload had printed `TestCookieFilter` body.
+- `jekyll__jekyll-8167` (Sonnet) — `grep -rn "slugify" &lt;checkout&gt;`; payload had printed the `slugify` method body.
+- `caddyserver__caddy-4943` (Haiku) — `find . -name "*.go" | xargs grep -l "headers" | xargs grep -l "Filter"`; payload had printed the `Filter` method body.
+
+Only 2 Sonnet instances and 1 Haiku instance under the strict test (12 / 3 calls under a looser field-and-variable match, e.g. `apache__druid-14092` re-grepping `druidLeaderClient.go(`, `apache__lucene-12212` re-grepping `DrillSidewaysScorer` internals three times). So verbatim symbol re-lookup is rare; the residual is broader than that.
+
+## Verdict
+
+**Trust problem, not structural — 78% of Sonnet-eg's residual pre-edit search is IN-REPO (half of it repo-wide sweeps the literal block already covered, a fifth re-grepping payload-named files, and 77% of its pre-edit Reads reopen files the payload already printed); the genuinely unanswerable out-of-repo share is only 0.93 calls/instance, is unchanged by the graph (0.89 baseline -&gt; 0.93 eg), and is concentrated in 12 of 55 instances with external gem/crate/module dependencies.**</result>
+<usage><subagent_tokens>59922</subagent_tokens><tool_uses>20</tool_uses><duration_ms>346784</duration_ms></usage>
+</task-notification>
+
+---
+
+make the new artfiact
+
+---
+
+/goal fix all losers on sonnet and haiku go deep look and fix
+
+---
+
+progress on hakiu and sonnet all green?
+
+---
+
+<task-notification>
+<task-id>w0k0qg1e0</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/w0k0qg1e0.output</output-file>
+<status>completed</status>
+<summary>Dynamic workflow "Evidence-gather, propose, adversarially verify, and synthesize a plan to get Opus to &gt;=33% token savings" completed</summary>
+<result>{"plan":"# FINAL PLAN — Opus ≥33% via entire-graph\n\n## 1. VERDICT\n\n**No. Not reachable as a tool change — and the premise the target rests on does not reproduce.**\n\nI re-ran the project's own measurement tool (`agentic-swebench/tools/metrics.py`, self-testing, read-only) on the exact cells named in the brief. The brief's `-31.0% total / -27.2% geomean / 9 red` reproduces under **no unit the tool computes**:\n\n```\nmetrics.py  --ref C15opbaseline_r1/baseline --treat C15opeg_r1/eg  --tasks multilingual_300.json\nGATE  ref 29/30  treat 28/30  |  both-gated 27  |  clean pairs 26  |  degenerate 1 (carbon-2665, eg is_error)\n\nunit          set         n     geo     pooled    geo 95% CI          geo LOO\nusd           clean      26   -7.2%    -11.8%   [-18.5, +6.0]      [-9.9, -4.7]\nbilled_new    clean      26   +4.7%     +1.0%   [-7.0, +18.3]      [+1.9, +7.2]\ntotal_tokens  clean      26  -29.7%    -33.0%   [-42.0, -15.1]    [-32.0, -26.4]\ntotal_tokens  all_gated  27  -34.4%    -35.6%   [-48.2, -18.3]    [-36.7, -29.7]\nper-resolved  total_tokens  -35.9%             [-47.5, -21.9]\nmacro/lang -32.6%   macro/repo -26.6%\nRESOLVED  ref 22/30  treat 22/30  delta +0  McNemar p = 1.0000\n```\n\nThree consequences, in order of importance:\n\n**(a) On the pooled total-token metric the target is already met.** Clean pooled **−32.97%**, all-gated pooled **−35.63%**, per-resolved **−35.91%**. Only the *geometric mean* on the clean set (−29.65%) is below 33%, and the all-gated geomean is −34.43%. Accuracy parity already holds (22/22, McNemar p=1.0). Whether \"≥33% total\" is met is a **choice of aggregation variant**, not an engineering gap.\n\n**(b) The 2-point gap is far inside the measurement noise.** Geo bootstrap CI width = **26.9 pt** (20,000 draws). Leave-one-out swing from dropping a *single* instance: geo **5.6 pt** (`loo_geo` [−31.96, −26.41]), pooled **7.6 pt** (`loo_pooled` [−37.81, −30.19]). A 2-point target at n=26 is below the resolution of the instrument by a factor of 3–13.\n\n**(c) The ceiling of any tool-side intervention is +4.4 pt on geomean.** The cell has exactly 7 red instances, total excess **670,431 tok** against 4,771,202 tok of green savings (recomputed; matches the evidence base exactly):\n\n| instance | excess | ratio | share | cum |\n|---|---|---|---|---|\n| fluent__fluentd-3466 | +373,423 | 1.62 | 55.7% | 55.7% |\n| astral-sh__ruff-15309 | +115,884 | 1.25 | 17.3% | 73.0% |\n| axios__axios-4738 | +63,491 | 1.51 | 9.5% | 82.5% |\n| babel__babel-14532 | +61,152 | 1.27 | 9.1% | 91.6% |\n| fastlane__fastlane-19304 | +37,251 | 1.23 | 5.6% | 97.1% |\n| caddyserver__caddy-5404 | +11,134 | 1.05 | 1.7% | 98.8% |\n| gin-gonic__gin-1805 | +8,096 | 1.06 | 1.2% | 100.0% |\n\nNeutralising **all seven** (ratio→1.00) yields pooled −38.36% / geo −34.01%. That is the absolute ceiling. The largest slice any of the three lenses could actually name was **17.5% of the excess at 71% break-even uptake**.\n\n**Why the ceiling is structural, with three new facts I established:**\n\n1. **eg fires exactly once per session, at turn 0.** `wc -l` over all `gq_calls.log` in `C15opeg_r1/eg` = **30 lines across 30 instances** (28 instances × 1 call, `fmtlib__fmt-2310` × 2, `druid-15402` × 0). Post-edit graph uptake is literally zero.\n2. **100% of the Opus excess is post-first-edit.** In the 7 reds, locate is still **−7,172** and edit **−6,754**; the entire +95,776 mean excess is verify+post+env (+100,914). eg never loses at retrieval. A turn-0 payload can only reach the post-edit phase through one surviving artifact: the VERIFY line.\n3. **VERIFY-selector uptake is ~0 — now confirmed across two languages, which closes the last lens.** The agent keeps the emitted *stem* and substitutes its own selector on its **first** post-edit run, every time:\n   - `fluentd-3466` (top loser, 56% of excess). Tool emitted `bundle exec ruby -Itest test/plugin/test_in_tail.rb`. Agent's first verify call was `bundle exec ruby -Itest test/plugin/test_in_tail.rb -n \"/rotate|inode|read_bytes|expand_paths/\"` — its own filter, kept for four rounds. **This is new**: it means the un-narrowed Ruby derivation (`deriveSearchVerifyRuby`, `internal/sem/search_verify.go:951-982`, which never applies `subject.testName` unlike pytest `-k`, Go `-run`, Maven `-Dtest=`) is *also* a non-lever, by the same law that killed the cargo proposal.\n   - `ruff-15309`: emitted `cargo test -p ruff_linter`; agent ran `cargo test -p ruff_linter F523`.\n   - Greens `ruff-15330` / `ruff-15356`: same pattern (`eradicate`, `--lib pycodestyle`).\n4. **The top loser's cost is edit size, not information.** `fluentd-3466` eg patch = **4 hunks / 60 lines**; baseline = **2 hunks / 22 lines** (2.7×). The repair loop is priced by a self-chosen larger rewrite. No payload controls that.\n\nGiven (2)+(3), a retrieval tool that runs once before the first edit has **no surface** on the phase where 100% of the loss lives. That is the ceiling, and it is not a tuning problem.\n\n---\n\n## 2. THE PLAN\n\nOrdered. **No step claims to reach 33%.** Steps 1–3 are free; step 4 is the only one that costs benchmark spend and it is an experiment with a pre-registered kill rule, not a shipping decision.\n\n### Step 1 — Re-baseline the target on `metrics.py` before spending anything (0 sessions, 0 tokens)\n\n- **What**: Reconcile the brief's `-31.0% / -27.2% / 9 red` against the tool output above. Decide, in writing, which of `{clean geo, clean pooled, all-gated geo, all-gated pooled, per-resolved}` the \"≥33%\" target names.\n- **Mechanism**: none — measurement hygiene. `tools/metrics.py` gates on `total_cost_usd&gt;0 AND non-empty patch`, excludes degenerate sessions from token stats only, and prints CLEAN and ALL-GATED side by side precisely because the exclusion is not neutral.\n- **Expected movement**: −29.65% → −35.91% depending on the variant chosen. **This is 6.3 points — three times the size of the entire engineering gap — and it costs nothing.**\n- **Gate**: the reconciliation itself. Do not fund step 4 until this is settled.\n\n### Step 2 — Fix the FILE OUTLINE byte-accounting and shrink-order defects (0 sessions, 0 tokens; block is off by default)\n\n- **File/function**: `internal/sem/search_blocks.go:148` `searchContextBlockBytes`; `:181` `validateSearchContextBlockBudget`; `internal/sem/search_outline.go:86-101` (shrink loop) and `:155` (final sort).\n- **Mechanism**:\n  - `searchContextBlockBytes` sums `SignatureTypeBytes + TypeCardBytes + ContainerMapBytes + LiteralClusterBytes + VerifyCommandBytes + ClosedSetBytes` — **`FileOutlineBytes` is absent**, and the additive-cap loop in `validateSearchContextBlockBudget` covers only literal cluster / verify / closed set. The outline escapes both, directly contradicting its own doc at `internal/sem/search.go:287-289` (\"so its price is attributable like every other block\"). Add it to both.\n  - The shrink loop's comment at `search_outline.go:93-94` says \"Rows are already ordered by distance from the hit, so truncating keeps the nearest ones.\" **False.** `outlineForFile` re-sorts into file order at `:155` before returning, so `Rows = Rows[:len-1]` at `:97` drops the **highest line number** first. Under byte pressure the block deletes the bottom of the file, which is exactly where the far-from-hit hunks live. Either shrink on the distance-ordered slice before the file-order sort, or correct the comment and accept file-tail truncation as the documented behaviour.\n- **Expected movement**: **0 tokens on every model** (block ships off). This is a correctness prerequisite: without it, step 4's result is uninterpretable, because the payload could exceed the stated ceiling without tripping the contract check.\n- **Offline validation**: unit tests. There are currently **zero** — `grep -rln \"buildSearchFileOutlines|RenderSearchFileOutline|outlineForFile|FileOutline\" internal/` returns only `search_outline.go`, `search.go`, `cli/search.go`; none of the 66 `_test.go` files in `intern
+... (truncated 17448 chars, full result in /private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/w0k0qg1e0.output)</result>
+<diagnostics>Per-agent results: /Users/suhaan/.claude/projects/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/subagents/workflows/wf_45a15739-59b/journal.jsonl — one {"type":"result",...} line per completed agent with its full return value.
+If the result above is empty or unexpected, Read this file BEFORE diagnosing — do not assume agents returned non-empty results.
+To re-run with edited post-processing: Workflow({scriptPath: '/Users/suhaan/.claude/projects/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/workflows/scripts/opus-goal-plan-wf_45a15739-59b.js', resumeFromRunId: 'wf_45a15739-59b'}) — agents whose (prompt, opts) are unchanged replay from cache.</diagnostics>
+<usage><agent_count>13</agent_count><agents_done>13</agents_done><agents_error>0</agents_error><agents_skipped>0</agents_skipped><agents_empty_result>0</agents_empty_result><subagent_tokens>1569640</subagent_tokens><tool_uses>492</tool_uses><duration_ms>2882607</duration_ms></usage>
+</task-notification>
+
+---
+
+Finish
+
+---
+
+<task-notification>
+<task-id>bmdh6q1fq</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/bmdh6q1fq.output</output-file>
+<status>completed</status>
+<summary>Background command "Arm the reproduction on the original sample" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+i said stop it
+
+---
+
+Listen. Meet meet our goal with a fair and representative symp, and we can still do it. you need to meet it and find out how. So first, go deeply into Haiku. Let's first meet it on Haiku and see each rapport and then investigate how we went wrong in each rapport and adapt entire graph to make it fixed on Haiku. And after that, repeat the same cycle and song, but then you need to change this, and then you need the thirty five percent on both. So then how do we meet that? You need to launch a workflow to see how we can meet on Haiku and Sonnet together so we can get our goal, and we need to make sure that we maintain the same accuracy Also, on the side, then launch a soft agent so... and ask it to use graph and ask it for feedback for how we can save it and keep on looping this process so that we can meet our freaking goal. I don't know why you're still stopping. I told you to keep on going.ultrathink, ur js not trying hard enough
+
+---
+
+<task-notification>
+<task-id>b05gjrg0d</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/b05gjrg0d.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for Haiku v5" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>abff830482a04f3dd</task-id>
+<tool-use-id>toolu_013GPgXX2fTX9EFewnCi1nVe</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/abff830482a04f3dd.output</output-file>
+<status>completed</status>
+<summary>Agent "Add constant extraction PHP/Python/Ruby" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Done. Full suite green, all three languages retrievable end-to-end.
+
+## Files changed
+
+| file | change |
+|---|---|
+| `/Users/suhaan/devenv/eg-consolidated/internal/sem/constants.go` | **new** — the extractor (`constantEntities` + per-language producers) |
+| `/Users/suhaan/devenv/eg-consolidated/internal/sem/constants_test.go` | **new** — table tests, 3 languages + 2 invariants |
+| `/Users/suhaan/devenv/eg-consolidated/internal/sem/parser.go:3672` | +6: hook in `walkEntitiesScoped` (appends, does **not** stop the walk — a constant initializer can still declare callables) |
+| `/Users/suhaan/devenv/eg-consolidated/internal/sem/parser.go:7273` | +9: comment only, recording why PHP is *not* added to `scopesChildren` |
+
+`search.go` / `search_verify.go` / `search_verify_test.go` in that tree are **not mine** — pre-existing uncommitted work, and `search_verify_test.go` changed *underneath me* mid-session (something else is editing this worktree). Untouched.
+
+## Rules implemented
+
+- **PHP** — `const_declaration` (one node type serves top-level *and* class/interface/trait scope; one `const_element` per name, so `const A = 1, B = 2;` emits two symbols with distinct ranges). Class members qualify like methods: `CarbonInterface.MICROSECONDS_PER_SECOND`. Plus `define('NAME', …)`, never qualified (it binds globally even when called inside a function); a computed name is rejected.
+- **Python** — module/class-level `assignment`, ALL_CAPS (`^_*[A-Z][A-Z0-9_]*$`) **or** `Final`-annotated. Tuple targets split. `inFunc` excludes locals; attribute/subscript stores excluded.
+- **Ruby** — `assignment` with a `constant` LHS at module/class scope (Ruby marks constants syntactically, so no convention re-derivation), plus `Some::CONST` which keeps its own path.
+
+## Census (before → after, constants, share)
+
+| repo | lang | before | after | constants | share | non-test share |
+|---|---|---|---|---|---|---|
+| carbon-3098 | PHP | 5740 | 7488 | 1748 | **23.3%** | 5.1% |
+| phpspreadsheet-4214 | PHP | 13357 | 14922 | 1565 | 10.5% | 16.6% |
+| laravel-48636 | PHP | 25702 | 25746 | 44 | 0.2% | 0.3% |
+| django-13821 | Py | 35902 | 37620 | 1718 | 4.6% | 12.2% |
+| pylint-7080 | Py | 9030 | 10129 | 1099 | 10.9% | 11.3% |
+| rubocop-13680 | Rb | 11921 | 13395 | 1474 | 11.0% | 11.1% |
+| faker-2970 | Rb | 6919 | 7000 | 81 | 1.2% | 1.5% |
+
+## Regression guard — I did **not** tighten further, and here's why
+
+Carbon breaks the ~15% line at 23.3%, but **1665 of its 1748 constants (95%) are two names — `LOCALE` and `CASES` — in 830 generated `tests/Localization/*Test.php` files**. Non-test source is 5.1%. phpspreadsheet's 16.6% is genuine density: `PageSetup.php` declares 73 paper-size/orientation constants, `XlsBase.php` 88 BIFF record codes — those *are* the fix sites for a spreadsheet library.
+
+The stated harm is displacement, so I measured it. Ran each repo's **real benchmark issue query** through the before and after binaries and diffed the ranked lists:
+
+```
+== carbon   IDENTICAL
+== rubocop  IDENTICAL
+== django   IDENTICAL
+```
+
+Zero displacement. The only available tightenings would be wrong: ALL_CAPS-for-PHP doesn't fire (`LOCALE`/`CASES` are ALL_CAPS), and skipping test files would drop real fix sites while still leaving phpspreadsheet over the line. Python already carries the prompt's suggested ALL_CAPS clamp — that's why django sits at 4.6%.
+
+## Acceptance — rank 1 in all three
+
+```
+carbon:   1. src/Carbon/CarbonInterface.php:933-933 score=82.7 symbol=CarbonInterface.MICROSECONDS_PER_SECOND
+             kind=constant signals=body,exact-symbol,symbol-name,exact-code-token
+                 public const MICROSECONDS_PER_SECOND = 1_000_000;
+django:   1. django/conf/__init__.py:23 score=86.3 symbol=ENVIRONMENT_VARIABLE kind=constant
+rubocop:  1. lib/rubocop/cli.rb:10 score=87.9 symbol=CLI.STATUS_OFFENSES kind=constant
+```
+
+The grep the agent ran is now a rank-1 exact-symbol hit.
+
+## Tests
+
+`go build ./cmd/entire-graph` ✓ · `go test ./internal/sem/ -count=1` **ok, 57.5s** · `go test ./...` **all 6 packages ok** · `gofmt` clean · `go vet` clean.
+
+One thing I found and deliberately did not fix: the vendored **tree-sitter-php grammar closes `enum_declaration_list` after the last `case`**, so an enum's constants *and its methods* parse as siblings of the enum, not children. Enum constants are still extracted, just unqualified (`DEFAULT_STATUS`, not `Status.DEFAULT_STATUS`). I tried adding PHP to `scopesChildren` — inert, because those nodes never reach it. Pre-existing (it already orphaned PHP enum methods), a grammar fix, out of scope. Test asserts the truthful behaviour with the evidence in the comment.
+
+---
+
+## On the spend — straight answer
+
+**Did I use the graph?** Yes, first action, as instructed. It missed. It returned `php.go`'s call-idiom helpers, because the extraction site is `walkEntitiesScoped` in the 280 KB `parser.go`, and my query described the *feature* rather than the *defect*. Per the documented rule (two searches max, then switch tools), I fell back to `rg` for node-type literals and found it in one call. Net: the graph cost ~1 turn and saved ~0 here. Locate was ~3 turns either way — it was never the expensive part.
+
+**What actually burned it, ranked:**
+
+1. **A stale-cache false negative — the single biggest avoidable chunk (~5 turns).** `entire graph symbols` reuses a tree-keyed index, and the baseline binary had already written one for those worktrees. My first census reported **0 constants** on all four repos with `before == after` exactly. I then spent five turns proving the parser was fine before realising the cache was lying to me. Fix for next time, and worth writing down: **always pass a fresh `ENTIRE_PLUGIN_DATA_DIR` when A/B-ing two binaries of this tool.**
+2. **Verification, which the task required** — 4 CGO builds (~75 MB binary each), 3 full `go test` runs at ~60s, and a 7-repo before/after census. Not waste; it's the acceptance criteria.
+3. **Context re-read, which is the real multiplier.** Every turn replays this repo's own always-injected preamble (`CLAUDE.md` → `AGENTS.md`, 53 KB ≈ 15k tokens) plus everything prior. That is what the 1.6b cache-read number mostly is: turns × a large fixed context, not any single big read. The ~800 lines I read out of `parser.go` were all bounded ≤240-line windows.
+
+**Where I was genuinely sloppy:** I ran the census, the displacement check and the acceptance searches as separate round-trips instead of batching them, and I spent a `git stash` cycle proving the `search_verify` failure was pre-existing when `git diff --stat` — which I had already run — showed the file was dirty before I touched anything. Call it 6-8 turns I could have kept.</result>
+<usage><subagent_tokens>167212</subagent_tokens><tool_uses>88</tool_uses><duration_ms>1863411</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bvcy804dc</task-id>
+<tool-use-id>toolu_01PcHkvabU2FaWbYPRScYWW2</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/bvcy804dc.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for corrected replay" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+peofewaa?
+
+---
+
+<task-notification>
+<task-id>bgmcvhzvz</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/bgmcvhzvz.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for v10 cell completion" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+bru give me preort on by algnuage savigns and by repo savings; artfict
+
+---
+
+/goal make sonnet get at least 25% token savings js use /graph-bench-forensics and investaige each repo and language like we did for haiku and let us meet our goal ultrathink and look deep enough u will find the answer; my friend alreayd fdid this remmeber
+
+---
+
+<task-notification>
+<task-id>b16q7qcmt</task-id>
+<tool-use-id>toolu_019CcA2oaQq9LhKkrTdhwuR9</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/b16q7qcmt.output</output-file>
+<status>completed</status>
+<summary>Background command "Test whether the graph can resolve the hunted identifiers" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+no my friend js did it; u can too, liar, ur js not trying hard enough, come on, ur fricking opus, or do i need to go to fable ur older brother; hint; look into the logs deeply see where exactly it is slacking off; and how voerall we can change that in entire gpah and keep other stuff; goal still active; don't stop till done; maybe web search etc; always a way; we never take no fro an answer write than down adn do it ultrathink, look deep in teh trnascirpts, tool uage per repo exactly wher egoing wrong etc
+
+---
+
+<task-notification>
+<task-id>b85jpqec4</task-id>
+<tool-use-id>toolu_01H198661vwDsbT6yxkkF8Ka</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/b85jpqec4.output</output-file>
+<status>completed</status>
+<summary>Background command "Index memory and wait for v11" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bfkkx79cj</task-id>
+<tool-use-id>toolu_015fuBe2o2bhLCr2fQadBXEg</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/bfkkx79cj.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for v13 completion" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+progress?
+
+---
+
+<task-notification>
+<task-id>bk6he21r7</task-id>
+<tool-use-id>toolu_018RT8T3wYBfUuzcqAQS1Mue</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/bk6he21r7.output</output-file>
+<status>completed</status>
+<summary>Background command "Index memory and wait for v14" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+launch a sonnet usbange to use grpah to do the eact stasks and give teh proerp feeback u sneed how tosav tokens etc
+
+---
+
+<task-notification>
+<task-id>a8a4b59d0b7cb7494</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/a8a4b59d0b7cb7494.output</output-file>
+<status>completed</status>
+<summary>Agent "Sonnet probe: lucene easy-task loss" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Fix applied. Per task instructions, not running the build. Here is the report.
+
+## 1. CALL LOG
+
+1. **Read** `/private/tmp/.../probe/apache__lucene-13170.issue` — mandatory, to get the bug description (not the tool under test).
+2. **Bash**: `/tmp/eg-f18 search --repo ... --profile full --top-k 8 --cache-dir /tmp/egcache-old --format text --query "ArrayIndexOutOfBoundsException in OpenNLPSentenceBreakIterator preceding function..."` — the mandated first action; needed to locate the buggy line.
+3. **Read** `OpenNLPSentenceBreakIterator.java` lines 135-161 — NOT redundant in the strict sense (I already had the exact text from the search payload's hit 3), but I did it to get tool-confirmed absolute line numbers before calling Edit, since the payload's line range (135-161) covers the whole method and I wanted to pin down line 151 specifically before editing. Arguably this could have been skipped and I could have used the exact-string match in Edit directly from the payload text — the search output's snippet text was already character-identical to the file.
+4. **Edit** — applied the one-line fix: `sentenceStarts.length / 2` → `(sentenceStarts.length - 1) / 2` at line 151.
+
+No build run (per instructions). No grep, no second search.
+
+## 2. WHAT THE PAYLOAD GAVE YOU THAT YOU USED
+
+- Hit 3: `OpenNLPSentenceBreakIterator.java:135-161 symbol=OpenNLPSentenceBreakIterator.preceding ... complete-symbol`, full body including the exact buggy line:
+  `currentSentence = sentenceStarts.length / 2; // start search from the middle`
+  This is the fix site — used directly.
+- Hit 1: `OpenNLPSentenceBreakIterator.following` (74-94), showing the *already-correct* pattern:
+  `currentSentence = (sentenceStarts.length - 1) / 2; // start search from the middle`
+  This confirmed the exact replacement text to use, straight from the issue's own suggestion — no need to independently derive or trust my own arithmetic.
+- The "SAME-CONCEPT LITERAL" block and "RELATED SITES" block told me the only other `sentenceStarts`-length-based midpoint computations are in unrelated highlighter classes (`CustomSeparatorBreakIterator`, `WholeBreakIterator`, etc.) — different concern (different iterator implementations), so I correctly did NOT touch them.
+- The VERIFY line named the exact gradle test target, though I didn't run it per task constraints.
+
+## 3. WHAT THE PAYLOAD SHOULD HAVE CONTAINED BUT DID NOT
+
+**Most valuable missing thing:** a direct pointer/annotation flagging hit 3 as "not yet fixed" vs hit 1 "already fixed" — i.e., a diff-style callout since these two methods are structurally near-duplicates and the whole bug IS the asymmetry between them. The payload showed both bodies side by side and left me to notice the discrepancy myself (trivial here, but it's exactly the kind of pattern-matching the tool could flag mechanically, e.g. "sibling method X uses `(length-1)/2`, this one uses `length/2`").
+
+Ranked next 3 (none of these actually cost me extra calls this run, since the payload was otherwise sufficient — noting them as near-misses):
+1. Exact 1-indexed line number for the buggy statement (payload gives a range 135-161 for the whole method, not the specific line of the token). Cost: 1 Read call (call #3) to pin it down before Edit. If the payload had said `line=151` next to the token, I'd have skipped that Read.
+2. No confirmation of char-for-char match against the live working tree (search results could in principle be from a stale cache). Same Read call (#3) also served this purpose.
+3. Nothing else was missing — the rest of the payload (related sites, covering tests, verify command) was more than adequate and unused mostly because the task said not to run the build.
+
+## 4. WHY WAS THE GREP PATH CHEAPER
+
+One `grep -n "sentenceStarts.length / 2"` would have returned exactly one line: `135:      currentSentence = sentenceStarts.length / 2; // start search from the middle` (or similar with the real line number), directly answering "where" and "what line" in one shot, zero ambiguity, minimal tokens.
+
+The search payload gave far more: both the buggy method AND its correct sibling AND covering tests AND related sibling classes AND a same-literal census AND a verify command — genuinely useful context (confirms correct replacement text, confirms no other call sites need the same fix) that grep would not have surfaced. But for the narrow "find and fix one line" task, that's a lot of payload weight (10+ hits, ~80 lines of text) versus grep's single line. Honestly: grep is cheaper to eyeball; the search tool is more thorough but heavier. Given the fix was genuinely two near-identical functions, the search payload's inclusion of the sibling `following` method was worth more than grep alone would give (grep for the literal wouldn't have shown me the correct pattern to copy — I'd have had to derive `(length-1)/2` myself, or grep separately for `following`). So it's a wash on call count (both got me there in effectively 1 useful lookup + 1 edit) but grep is lighter weight per call, while search de-risked "did I copy the right replacement" for free.
+
+Should the tool have just shown the literal's occurrences? For a "fix this exact reported line" issue with a literal quoted verbatim in the report, yes — a literal-occurrence view (like grep -n but symbol-boundary-aware) as a fast-path alongside the semantic ranking would let an agent verify-and-edit in one glance rather than parsing method bodies to find the token.
+
+## 5. THE ONE CHANGE
+
+Add a line-precise pointer to the specific matched token/line within each complete-symbol hit, not just the enclosing method's start-end range — e.g., when the query text or issue contains a literal code fragment, annotate the hit with `matched_line=151` (or bold/mark the matching line inside the printed body) so the agent can act without a follow-up Read to confirm the exact line number for the Edit's old_string anchor. Concretely: prefix the matching line inside the snippet with something like `&gt;&gt;&gt; 151:` instead of leaving it plain, so the payload doubles as both "here's the function" and "here's the precise line to change" in one glance.
+
+## 6. DID YOU FIND THE RIGHT FIX SITE
+
+`lucene/analysis/opennlp/src/java/org/apache/lucene/analysis/opennlp/OpenNLPSentenceBreakIterator.java:151` — changed `currentSentence = sentenceStarts.length / 2;` to `currentSentence = (sentenceStarts.length - 1) / 2;` inside `preceding(int pos)`. Confidence: high — this is exactly the line and exact fix quoted in the issue report, verified against file content directly.</result>
+<usage><subagent_tokens>49425</subagent_tokens><tool_uses>4</tool_uses><duration_ms>63784</duration_ms></usage>
+</task-notification>
+
+---
+
+alright so what is the best savings so far
+
+---
+
+alright elts get it to its goal fix all the lsoing repos and see and make sure it doesn;t hurt other or haku need to make am mdoel dyanmicl r maybe diff treris of grpah But then you can't hard code that by model. The model should be able to choose. There should there should be some mathematical complex formula to adapt to each model's needs agency and how each model works and to program it to be the best for them. Get all the feedback you can, find all the defects, analyze all the tool calls, see that probably graph isn't being used as much, and maybe see where tool call we can add for graph that can enhance it. Overall, you need to get to your goals so ultrathink and get to it
+
+---
+
+so then fix that; we should met goal then right
+
+---
+
+<task-notification>
+<task-id>bdlarxy7o</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/bdlarxy7o.output</output-file>
+<status>completed</status>
+<summary>Background command "Record def refutation and wait for the thorough cell" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+and on sonnet make artifact on full baseline vs eg toolc all breaks down adn where grpah could ahv ebeen used btu nto and fix that etc - might help; wat happened to this???w hy anre;t u acitivly workign to our goal
+
+---
+
+alrught maek sure to fix this and try it out what ur set token saivng sith this 50%
+
+---
+
+idk abt exploratio heavy; then make sonnet hit 33% holy
+
+---
+
+it rwuqires u to ameks ure all eg savings call aren;t wasted what- and chek this out might help fro all agents;/Users/suhaan/devenv/entire-graph/ISSUE.md; from opus agent
+
+---
+
+what is the full poetenital for sonnet?
+
+---
+
+then get it
