@@ -1,12 +1,12 @@
 {
-  "cli_version": "0.9.0",
-  "checkpoint_id": "12f4f5967dad",
-  "strategy": "manual-commit",
   "branch": "claude/tree-sitter-parameter-names",
-  "checkpoints_count": 2,
+  "checkpoint_id": "12f4f5967dad",
+  "checkpoints_count": 4,
+  "cli_version": "0.9.0",
   "files_touched": [
     "internal/sem/types.go"
   ],
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/12/f4f5967dad/0/metadata.json",
@@ -21,13 +21,20 @@
       "compact_transcript": "/12/f4f5967dad/1/transcript.jsonl",
       "content_hash": "/12/f4f5967dad/1/content_hash.txt",
       "prompt": "/12/f4f5967dad/1/prompt.txt"
+    },
+    {
+      "content_hash": "/12/f4f5967dad/2/content_hash.txt",
+      "metadata": "/12/f4f5967dad/2/metadata.json",
+      "prompt": "/12/f4f5967dad/2/prompt.txt",
+      "transcript": "/12/f4f5967dad/2/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 28675,
+    "input_tokens": 127438,
     "cache_creation_tokens": 34746,
-    "cache_read_tokens": 8770209,
-    "output_tokens": 22864,
-    "api_call_count": 40
+    "cache_read_tokens": 9712091,
+    "output_tokens": 29979,
+    "api_call_count": 57
   }
 }
