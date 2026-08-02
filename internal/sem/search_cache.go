@@ -346,7 +346,15 @@ func PreindexProviderSnapshot(
 		return ProviderSnapshot{}, false, fmt.Errorf("resolve committed HEAD for preindex: %w", err)
 	}
 	repositoryKey := repoKey(ctx, absRepo)
-	snapshot, cacheHit, err := loadOrBuildSearchSnapshot(ctx, absRepo, providerVersion, options, cacheDir, false, nil)
+	var snapshot ProviderSnapshot
+	var cacheHit bool
+	if options.ForceRebuild {
+		// --force: rebuild from HEAD regardless of any cached entry. The fresh
+		// snapshot overwrites that entry below so later queries serve it.
+		snapshot, err = BuildProviderSnapshotWithOptions(ctx, absRepo, providerVersion, options)
+	} else {
+		snapshot, cacheHit, err = loadOrBuildSearchSnapshot(ctx, absRepo, providerVersion, options, cacheDir, false, nil)
+	}
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
@@ -356,16 +364,22 @@ func PreindexProviderSnapshot(
 			snapshot.Header.Tree, snapshot.Header.Commit, tree, commit,
 		)
 	}
+	if options.ForceRebuild {
+		// Match loadOrBuildSearchSnapshot's re-stamp: report the commit this call
+		// serves, not whatever HEAD happened to be mid-build on a same-tree race.
+		snapshot.Header.Commit = commit
+	}
 	// Query-time caching is deliberately best effort, but an explicit preindex
 	// command promises a durable artifact. Verify that the entry exists and, if
-	// the best-effort write failed, retry while surfacing the persistence error.
+	// the best-effort write failed (or --force asked for a rewrite), persist while
+	// surfacing any persistence error.
 	key, err := searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree, options)
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
 	path := filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, key+".json.gz")
 	persisted, readErr := readSearchSnapshot(path)
-	if readErr != nil || !validCachedSearchSnapshot(persisted, repositoryKey, providerVersion, tree, options) {
+	if options.ForceRebuild || readErr != nil || !validCachedSearchSnapshot(persisted, repositoryKey, providerVersion, tree, options) {
 		cache := newCachedSearchSnapshot(providerVersion, commit, tree, options, snapshot)
 		if err := writeSearchSnapshot(path, cache); err != nil {
 			return ProviderSnapshot{}, false, fmt.Errorf("persist preindex snapshot: %w", err)
@@ -639,7 +653,7 @@ func selectiveSearchSnapshotFromFull(
 		Symbols:           len(selective.Symbols),
 		Relations:         len(selective.Relations),
 		PartialFailures:   len(failures),
-		CompletenessLevel: completenessLevel(len(failures), len(selective.Files), parsedFiles, len(selective.Symbols)),
+		CompletenessLevel: completenessLevel(completenessFailureCount(failures), len(selective.Files), parsedFiles, len(selective.Symbols)),
 	}
 	selective.Header.Completeness = CompletenessReport{
 		Languages: completenessLanguages,
@@ -737,6 +751,21 @@ func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, opt
 			_, _ = hash.Write(content)
 			writePart("")
 		}
+	}
+	// The repo-root .graphignore is applied implicitly, so it must key the entry
+	// exactly as an explicit --ignore-file does. Without it, editing
+	// .graphignore against an unchanged tree hits the old entry and the new
+	// rules silently do nothing.
+	writePart("graphignore")
+	graphIgnore := filepath.Join(absRepo, graphIgnoreFileName)
+	switch content, err := os.ReadFile(graphIgnore); {
+	case err == nil:
+		_, _ = hash.Write(content)
+		writePart("")
+	case errors.Is(err, os.ErrNotExist):
+		writePart("missing")
+	default:
+		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }

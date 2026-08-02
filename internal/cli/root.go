@@ -48,6 +48,18 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return nil
 	}
 
+	// Per-command help: `entire graph <cmd> --help` prints that command's detail
+	// view and exits, without touching each runX. Only fires for commands that
+	// have a doc entry — which includes `help` itself, so `help --help` prints
+	// help's own detail view rather than the root listing. A bare `--help` has
+	// no command word and is handled above.
+	if wantsHelp(args[1:]) {
+		if _, ok := findCommandDoc(args[0]); ok {
+			renderCommandHelp(opts.Stdout, args[0])
+			return nil
+		}
+	}
+
 	switch args[0] {
 	case "diff":
 		return runDiff(ctx, opts, args[1:])
@@ -96,71 +108,14 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		printHelp(opts.Stdout)
 		return nil
 	default:
-		return fmt.Errorf("unknown command %q", args[0])
+		return fmt.Errorf("unknown command %q; run \"entire graph help\" to list commands", args[0])
 	}
 }
 
+// printHelp renders the grouped root listing. Per-command detail lives in
+// renderCommandHelp; both read from the commandDocs registry in help.go.
 func printHelp(out io.Writer) {
-	fmt.Fprintln(out, `entire-graph adds entity-level context to Entire checkpoints.
-
-For coding agents: run 'entire graph agent-guide' (resolution-first graph retrieval,
-focused source inspection, and verification) or 'entire graph init-agents' to install it.
-
-Usage:
-  entire graph commit [rev] [--json] [--progress] [--max-seconds n] [--repo path]
-  entire graph checkpoint <checkpoint-id> [--json] [--repo path]
-  entire graph diff --base <rev> --head <rev> [--json] [--progress] [--max-seconds n] [--repo path] [-- path...]
-  entire graph analyze [--base <rev>] [--head <rev>] [--json] [--progress] [--max-seconds n] [--repo path] [-- path...]
-  entire graph doctor [--json]
-  entire graph agent-guide                 # print the coding-agent operating guide
-  entire graph init-agents [--repo path]   # install the guide into a project's AGENTS.md/CLAUDE.md
-  entire graph version [--json]
-  entire graph capabilities --json
-  entire graph snapshot --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
-  entire graph symbols --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
-  entire graph edges --repo . --format ndjson [--worktree] [--progress] [--ignore-file path] [--include-file path]
-  entire graph index --repo . [--profile syntax-only|fast|full] [--cache-dir path] [--format json] [--head] [--report GRAPH_REPORT.md] [--ignore-file path] [--include-file path]
-  entire graph search --query "issue or concept" --repo . [--format json|ndjson|text|agent] [--top-k 10] [--deep] [--max-context-bytes 24576] [--head] [--profile syntax-only|fast|full] [--max-indexed-files n|--index-all-files] [--cache-dir path|--no-cache] [--reference-blocks all|container-map,signature-types,type-card]
-  entire graph def NAME|<file>:<line> --repo . [--file path] [--line n] [--kind kind] [--members 15] [--format text|json] [--max-context-bytes 4096] [--head] [--profile fast|full] [--cache-dir path|--no-cache]
-  entire graph neighbors --symbol NAME|<file>:<line> --repo . [--file path] [--line n] [--kind kind] [--relation CALLS] [--direction both|in|out] [--depth 1|2] [--limit 20] [--format json|text|agent] [--max-context-bytes 16384] [--head] [--cache-dir path|--no-cache] [--internal-only] [--exclude-tests]
-  entire graph impact --symbol NAME|<file>:<line> --repo . [--file path] [--line n] [--kind kind] [--depth 1|2] [--limit 15] [--format text|json] [--max-context-bytes 4096] [--head] [--profile fast|full] [--cache-dir path|--no-cache] [--exclude-tests]
-  entire graph stats [--repo .] [--since 30d|7d|all] [--format text|json] [--sessions-dir path|--transcript path]
-
-Notes:
-  search returns, by default: ranked candidate fix sites (top hits as complete function bodies),
-  RELATED SITES, the COVERING TEST plus the other tests that cover the same code (ALSO COVERING —
-  they all have to keep passing), SAME-CONCEPT LITERAL (every place the queried concept is
-  named, tagged EDIT/CONSUMER/DOC — the sweep, so you need no grep), VERIFY (the narrowest test
-  command for the file, derived from the repo's own build files) and a CLOSED-SET WARNING when a
-  switch over an enum/sealed set would throw at runtime rather than fail to compile. The three
-  reference blocks — container map, signature types, declaration card — are OFF by default because
-  they measurably cost turns in agent sessions; --reference-blocks all (or the individual flags,
-  or ENTIRE_GRAPH_REFERENCE_BLOCKS) turns them back on for interactive reading.
-  search --top-k only changes how many results come back; --deep additionally runs the
-  exhaustive sparse (BM25) pass and fuses it with the semantic ranking (slower, reads every
-  eligible file). neighbors/impact take --symbol <file>:<line>, or --symbol NAME with
-  --file/--line/--kind, to select one definition when a name is ambiguous; the ambiguity
-  error prints the exact selector for each definition it found.
-  def is the structural declaration lookup: what a name IS, and — for a type — its fields and
-  its associated-function/method surface, drawn from the graph's own membership edges (inherent
-  impl blocks, receiver methods, extension members, partial parts, one hop of trait/module/base
-  acquisition). It reports a method's owning type, and for a trait/interface it reports who
-  implements it. Membership is never inferred from a name resembling another name.
-  stats is a local read-only report for humans: it reads the coding-agent session transcripts
-  already on disk (~/.claude/projects/<path-slug>/*.jsonl) and reports graph usage vs
-  grep/read exploration, bytes each pulled into context, and an ESTIMATED token saving whose
-  assumption is printed with the number. --transcript narrows it to ONE session transcript
-  (plus that session's subagent transcripts) instead of a whole project directory.
-  index --report writes a human-readable GRAPH_REPORT.md beside the JSON summary: what the
-  graph found in this tree (languages and their tier, symbol kinds, relations, top files,
-  warnings) rendered from the snapshot itself, so the same tree always renders the same bytes.
-  The committed-tree cache defaults to the platform's per-user cache directory (macOS
-  ~/Library/Caches/entire-graph, XDG_CACHE_HOME or ~/.cache elsewhere); --cache-dir and
-  ENTIRE_PLUGIN_DATA_DIR override it and --no-cache disables it. --worktree is never cached.
-  --include-file contains gitignore-style rules that re-include ignored paths; it is not an allowlist.
-  Streaming NDJSON writes aggregate stats and completeness in the trailing summary record.
-  commit/diff/analyze stop cleanly after --max-seconds (default 120; 0 = unlimited) and emit the
-  partial result with W_ANALYSIS_BUDGET_EXCEEDED warnings listing what was skipped.`)
+	renderRootHelp(out)
 }
 
 func runDoctor(ctx context.Context, opts Options, args []string) error {
