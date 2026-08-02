@@ -1954,11 +1954,15 @@ func localCollectionVars(block string) map[string]bool {
 
 // symbolFlowParameterNames returns the caller's formal parameter name set for
 // data-flow scanning. It prefers the AST-derived parameter identifiers the
-// parser recorded (JS/TS declarations), which are immune to generic clauses
-// containing parenthesized function types — `run<T extends (x: number) =>
-// void>(input: string)` — that the signature-string parse below misreads as
-// the parameter list. An AST-confirmed empty parameter list is authoritative;
-// only symbols without AST parameter metadata (other languages, synthesized
+// parser recorded — for JS/TS via jsEntityParameterNames, and for every other
+// grammar exposing a parameter list via astParameterNames. Those are immune to
+// what the signature-string parse below misreads: a generic clause containing a
+// parenthesized function type (`run<T extends (x: number) => void>(input:
+// string)`), a type-first parameter whose TYPE it would report as the name
+// (`check(String token)` → `String`), and nested punctuation it would invent
+// parameters out of (a Zig anonymous struct's fields, a stray `}`).
+// An AST-confirmed empty parameter list is authoritative; only symbols without
+// AST parameter metadata (grammars exposing no parameter list, synthesized
 // entities) keep the signature-string fallback.
 func symbolFlowParameterNames(symbol SymbolRecord) map[string]bool {
 	if !symbol.parameterNamesKnown {

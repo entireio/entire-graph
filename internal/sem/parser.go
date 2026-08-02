@@ -3674,9 +3674,17 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 	childInFunc := inFunc
 	if ok {
 		setEntitySourceRange(&entity, node, language, src)
-		if (language == "JavaScript" || language == "TypeScript") && (entity.Kind == "function" || entity.Kind == "method") {
-			entity.parameterNames = jsEntityParameterNames(node, src)
-			entity.parameterNamesKnown = true
+		if entity.Kind == "function" || entity.Kind == "method" {
+			if language == "JavaScript" || language == "TypeScript" {
+				entity.parameterNames = jsEntityParameterNames(node, src)
+				entity.parameterNamesKnown = true
+			} else if names, known := astParameterNames(node, src); known {
+				// Grammars that expose no parameter list we recognize (Elixir
+				// models `def f(a, b)` as a macro call) stay on the signature
+				// regex rather than reporting an empty list as authoritative.
+				entity.parameterNames = names
+				entity.parameterNamesKnown = true
+			}
 		}
 		if inFunc && (entity.Kind == "function" || entity.Kind == "method") {
 			entity.Local = true // nested inside another function

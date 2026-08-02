@@ -1652,10 +1652,12 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 			sourceStartByte: entity.sourceStartByte,
 			sourceEndByte:   entity.sourceEndByte,
 		}
-		if language == "JavaScript" || language == "TypeScript" {
-			symbol.parameterNames = append([]string(nil), entity.parameterNames...)
-			symbol.parameterNamesKnown = entity.parameterNamesKnown
-		}
+		// Carried for every language: the parser marks parameterNamesKnown only
+		// when it actually read the names off the parse tree, so a grammar with
+		// no recognizable parameter list still falls back to the signature regex
+		// downstream rather than reporting an empty list as authoritative.
+		symbol.parameterNames = append([]string(nil), entity.parameterNames...)
+		symbol.parameterNamesKnown = entity.parameterNamesKnown
 		symbols = append(symbols, symbol)
 		byName[qualified] = id
 	}
