@@ -1,23 +1,30 @@
 {
-  "cli_version": "0.6.3-nightly.202605190723.fd212937",
-  "checkpoint_id": "09931d0b3315",
-  "strategy": "manual-commit",
   "branch": "claude/graph-help-restructure",
-  "checkpoints_count": 0,
+  "checkpoint_id": "09931d0b3315",
+  "checkpoints_count": 2,
+  "cli_version": "0.6.3-nightly.202605190723.fd212937",
   "files_touched": null,
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/09/931d0b3315/0/metadata.json",
       "transcript": "/09/931d0b3315/0/full.jsonl",
       "content_hash": "/09/931d0b3315/0/content_hash.txt",
       "prompt": "/09/931d0b3315/0/prompt.txt"
+    },
+    {
+      "content_hash": "/09/931d0b3315/1/content_hash.txt",
+      "metadata": "/09/931d0b3315/1/metadata.json",
+      "prompt": "/09/931d0b3315/1/prompt.txt",
+      "transcript": "/09/931d0b3315/1/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 463,
+    "input_tokens": 71955,
     "cache_creation_tokens": 577958,
-    "cache_read_tokens": 4164439,
-    "output_tokens": 18574,
-    "api_call_count": 16
+    "cache_read_tokens": 5390128,
+    "output_tokens": 26657,
+    "api_call_count": 46
   }
 }
