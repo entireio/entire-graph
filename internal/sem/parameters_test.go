@@ -608,3 +608,38 @@ query postsConnection {
 		}
 	}
 }
+
+// TestGraphQLOperationGateIsPerMatch pins that the selection-set requirement is
+// evaluated at each match, not across the whole literal. Checking the literal
+// as a unit let one real operation vouch for every other keyword in it, so a
+// docstring holding both a query and the words "query the cache" emitted all of
+// them — the precision fix only appeared to work because the corpora had no
+// literal mixing the two.
+func TestGraphQLOperationGateIsPerMatch(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "mix.py", `def fetch(client):
+    return client.execute("""
+        Run this query against the API and query the cache.
+        query ListUsers { users { id } }
+    """)
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "HANDLES_GRAPHQL" {
+			to := relation.ToID
+			names = append(names, to[strings.Index(to, "graphql:")+len("graphql:"):])
+		}
+	}
+	if !slicesContain(names, "query ListUsers") {
+		t.Errorf("the real operation was lost: %v", names)
+	}
+	for _, prose := range []string{"query against", "query the"} {
+		if slicesContain(names, prose) {
+			t.Errorf("prose in the same literal as a real operation still emitted %q: %v", prose, names)
+		}
+	}
+}

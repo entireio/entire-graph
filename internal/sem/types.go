@@ -609,18 +609,23 @@ func serviceBoundaries(symbol SymbolRecord, block string) []serviceBoundary {
 					})
 				}
 			}
-			for _, match := range graphqlOperationRe.FindAllStringSubmatch(literal.Text, -1) {
-				// The operation NAME edge is derived from an operation that also
-				// carries a selection set, rather than from an independent
-				// substring match: `query GetViewer($id: ID!) { … }` names an
-				// operation, `query the columns` in a docstring does not.
-				if !graphqlOperationSelectionRe.MatchString(literal.Text) {
+			for _, loc := range graphqlOperationRe.FindAllStringSubmatchIndex(literal.Text, -1) {
+				if len(loc) < 6 {
+					continue
+				}
+				// The selection set must follow THIS match, not merely exist
+				// somewhere in the literal. Checking the whole literal meant one
+				// real operation vouched for every other keyword in it, so a
+				// docstring holding both `query ListUsers { users { id } }` and
+				// the words "query the cache" emitted all three.
+				rest := literal.Text[loc[0]:]
+				if at := graphqlOperationSelectionRe.FindStringIndex(rest); at == nil || at[0] != 0 {
 					continue
 				}
 				add(serviceBoundary{
 					Relation:     "HANDLES_GRAPHQL",
 					Kind:         "graphql",
-					Name:         strings.ToLower(match[1]) + " " + match[2],
+					Name:         strings.ToLower(literal.Text[loc[2]:loc[3]]) + " " + literal.Text[loc[4]:loc[5]],
 					Confidence:   0.75,
 					Reason:       "GraphQL operation literal detected in symbol body",
 					EvidenceKind: "graphql_operation",
