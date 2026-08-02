@@ -159,12 +159,28 @@ func withSplatSpelling(node *sitter.Node, src []byte, names []string) []string {
 	if prefix == "" && strings.HasPrefix(raw, "...") {
 		prefix = "..."
 	}
-	if prefix == "" {
+	if prefix != "" {
+		for _, name := range names {
+			if spelled := prefix + name; spelled != name {
+				names = append(names, spelled)
+			}
+		}
+		return names
+	}
+	// Go puts the ellipsis between the name and the type (`args ...string`) and
+	// forwards it after the name (`sink(args...)`), so neither the bare name nor
+	// a leading-sigil spelling matches the call site and the flow was missed
+	// entirely. Carry the trailing spelling — but only where the ellipsis
+	// actually follows the name. Java writes `String... c`, attaching it to the
+	// TYPE, and calls that parameter as plain `c`; emitting `c...` there would
+	// invent a spelling no Java call site uses.
+	ellipsis := strings.Index(raw, "...")
+	if ellipsis < 0 {
 		return names
 	}
 	for _, name := range names {
-		if spelled := prefix + name; spelled != name {
-			names = append(names, spelled)
+		if at := strings.Index(raw, name); at >= 0 && at < ellipsis {
+			names = append(names, name+"...")
 		}
 	}
 	return names

@@ -64,6 +64,12 @@ func TestASTParameterNamesAcrossGrammars(t *testing.T) {
 			want: []string{"c", "ctx", "name", "urlStr", "opts"},
 		},
 		{
+			name: "go variadic keeps the trailing spelling the call site writes",
+			path: "a.go",
+			src:  "package p\nfunc f(prefix string, args ...string) string { return sink(args...) }\n",
+			want: []string{"prefix", "args", "args..."},
+		},
+		{
 			name: "python keeps both spellings of a splat",
 			path: "a.py",
 			src:  "def f(a, b=1, c: int = 2, *args, **kw):\n    pass\n",
