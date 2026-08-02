@@ -64,7 +64,12 @@ func (b *progressBar) update(e sem.ProgressEvent) {
 
 	var line string
 	switch e.Phase {
-	case "relations", "summary":
+	case "summary":
+		// Relations are already linked by this tick; saying otherwise makes the
+		// bar read as stuck at the moment the run is actually finishing.
+		line = fmt.Sprintf("%s %c finishing · %s relations · %s symbols · %s",
+			b.label, spin, humanInt(int64(e.Relations)), humanInt(int64(e.Symbols)), elapsed)
+	case "relations":
 		line = fmt.Sprintf("%s %c linking relations · %s relations · %s symbols · %s",
 			b.label, spin, humanInt(int64(e.Relations)), humanInt(int64(e.Symbols)), elapsed)
 	default: // start, parse — file parsing, with a known total

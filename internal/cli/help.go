@@ -93,7 +93,7 @@ var commandDocs = []commandDoc{
 			"A repo-root .graphignore (gitignore syntax) is honored by every graph command, on top of .gitignore. Use it for tracked-but-vendored/generated sources — e.g. tree-sitter parser.c blobs — that otherwise surface as E_FILE_TOO_LARGE/E_PARSE_ERROR partial failures and a \"degraded\" completeness. Oversized/minified skips also no longer count toward \"degraded\" on their own.",
 		flags: []flagDoc{
 			{name: "--repo", arg: "path", desc: "Repository to index (default: current repo)"},
-			{name: "--head", desc: "Index the committed tree (cached, reusable) instead of the working tree"},
+			{name: "--head", desc: "Accepted for symmetry with the query commands; index is always HEAD-only, so this is a no-op"},
 			{name: "--force", desc: "Rebuild from scratch and overwrite the cache even if the tree is unchanged"},
 			{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Parsing depth; full favors call-graph correctness"},
 			{name: "--cache-dir", arg: "path", desc: "Override the committed-tree cache directory"},
