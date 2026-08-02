@@ -1,0 +1,27 @@
+{
+  "cli_version": "dev",
+  "checkpoint_version": "branch-v1",
+  "checkpoint_id": "2893461866fb",
+  "strategy": "manual-commit",
+  "branch": "test/all-agent-fixes",
+  "checkpoints_count": 116,
+  "files_touched": [
+    "internal/cli/search.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/28/93461866fb/0/metadata.json",
+      "transcript": "/28/93461866fb/0/full.jsonl",
+      "compact_transcript": "/28/93461866fb/0/transcript.jsonl",
+      "content_hash": "/28/93461866fb/0/content_hash.txt",
+      "prompt": "/28/93461866fb/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 5926,
+    "cache_creation_tokens": 97376962,
+    "cache_read_tokens": 1491356229,
+    "output_tokens": 3699278,
+    "api_call_count": 3204
+  }
+}
