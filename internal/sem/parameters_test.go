@@ -563,3 +563,48 @@ func TestGraphQLShorthandRequiresDocumentTag(t *testing.T) {
 		}
 	}
 }
+
+// TestGraphQLDocumentFileNeedsNoLiteral guards a regression the unit tests
+// missed and a real repository caught: requiring a host-language literal
+// silently dropped every operation in a standalone .graphql/.gql document,
+// where the whole file IS the document and there is no literal to look inside.
+//
+// The shape is taken from a Tina-generated queries.gql in the next.js examples,
+// which is also the case that used to report the variable `$relativePath` as a
+// root field.
+func TestGraphQLDocumentFileNeedsNoLiteral(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "queries.gql", `query posts($relativePath: String!) {
+  posts(relativePath: $relativePath) {
+    id
+  }
+}
+
+query postsConnection {
+  postsConnection {
+    totalCount
+  }
+}
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "HANDLES_GRAPHQL" {
+			to := relation.ToID
+			found[to[strings.Index(to, "graphql:")+len("graphql:"):]] = true
+		}
+	}
+	for _, want := range []string{"query posts", "query postsConnection"} {
+		if !found[want] {
+			t.Errorf("missing %q from a standalone GraphQL document; got %v", want, sortedKeysOf(found))
+		}
+	}
+	for name := range found {
+		if strings.Contains(name, "$") {
+			t.Errorf("a GraphQL variable was reported as a root field: %q", name)
+		}
+	}
+}

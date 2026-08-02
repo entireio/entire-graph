@@ -568,7 +568,16 @@ func serviceBoundaries(symbol SymbolRecord, block string) []serviceBoundary {
 	// `graphql_schema_field` are produced only by the GraphQL/JS extractors, so
 	// they carry their own evidence of being GraphQL.
 	if serviceBoundaryScanLanguage(symbol.Language) {
-		for _, literal := range hostLanguageLiterals(block) {
+		// In a GraphQL file the whole body IS the document, so there is no
+		// literal to look inside — requiring one silently dropped every
+		// operation in a standalone .graphql/.gql document. Host languages
+		// still need the literal, because that is where their prose and code
+		// false positives come from.
+		scanned := hostLanguageLiterals(block)
+		if symbol.Language == "GraphQL" {
+			scanned = []hostLanguageLiteral{{Text: block, Tag: "gql"}}
+		}
+		for _, literal := range scanned {
 			// GraphQL query shorthand omits both the keyword and the name:
 			// `{ viewer { id } }` is a query. Only a gql/graphql-tagged
 			// template is read that way, because a bare braced string is far
