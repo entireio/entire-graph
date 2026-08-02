@@ -341,6 +341,12 @@ type ProviderSnapshotOptions struct {
 	// Progress, when non-nil, receives coarse local-only indexing telemetry.
 	// Callbacks run synchronously and should return quickly.
 	Progress func(ProgressEvent)
+	// ForceRebuild is honored only by PreindexProviderSnapshot: it rebuilds the
+	// committed-tree snapshot from scratch even when a valid cache entry exists,
+	// then overwrites that entry. It is deliberately NOT part of the cache key
+	// (see searchSnapshotKey), so a forced rebuild refreshes the same entry every
+	// other reader serves.
+	ForceRebuild bool
 }
 
 type ProgressEvent struct {
@@ -875,7 +881,23 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	spec := resolveProfile(options.Profile)
 	maxParseBytes := resolveMaxParseBytes(options.MaxParseBytes)
 	progressStart := time.Now()
-	progressEvery := 1024
+	// emitProgress calls runtime.ReadMemStats (a stop-the-world memory scan), so
+	// we bound how often it fires. A single fixed absolute cadence (the old
+	// hard-coded 1024) doesn't scale down: files and relations differ by ~two
+	// orders of magnitude, so a threshold tuned for the ~100k relations of a
+	// large repo means a repo with fewer than 1024 files gets ZERO mid-parse
+	// updates — the bar sits at 0 through the whole parse, then jumps to 100%.
+	//
+	// Files: target ~100 updates across the parse (floor 1 → every file on small
+	// repos), which bounds the callback count regardless of repo size. Relations
+	// stream with no known total, so we can't target a fixed number of updates; a
+	// bounded fixed cadence keeps ReadMemStats cheap on huge repos while still
+	// animating (relations are numerous, so 512 yields plenty of ticks).
+	fileProgressEvery := len(sc.paths) / 100
+	if fileProgressEvery < 1 {
+		fileProgressEvery = 1
+	}
+	relationProgressEvery := 512
 	emitProgress := func(phase string, filesDone int, symbols int, relations int) {
 		if options.Progress == nil {
 			return
@@ -1127,7 +1149,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 		lc.Files++
 		lc.Symbols += len(fileSymbols)
 		completenessLangs[language] = lc
-		if (i+1)%progressEvery == 0 {
+		if (i+1)%fileProgressEvery == 0 {
 			emitProgress("parse", i+1, symbolCount, relationCount)
 		}
 	}
@@ -1178,7 +1200,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 		}
 		relationsByType[r.Type]++
 		relationCount++
-		if relationCount%progressEvery == 0 {
+		if relationCount%relationProgressEvery == 0 {
 			emitProgress("relations", len(sc.paths), symbolCount, relationCount)
 		}
 		emitErr = emit(r)

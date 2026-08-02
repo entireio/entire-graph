@@ -863,6 +863,53 @@ func TestPreindexProviderSnapshotRejectsWorktreeAndMissingCache(t *testing.T) {
 	}
 }
 
+// TestPreindexForceRebuildsDespiteValidCache pins the --force contract: a forced
+// preindex rebuilds and overwrites the entry even when a valid one exists for the
+// same tree, and never reports a cache hit — while leaving the entry refreshed so
+// a subsequent ordinary run hits again.
+func TestPreindexForceRebuildsDespiteValidCache(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "a.go", "package a\n\nfunc A() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cacheDir := t.TempDir()
+	opts := func() ProviderSnapshotOptions { return ProviderSnapshotOptions{Profile: ProfileFast} }
+
+	if _, hit, err := PreindexProviderSnapshot(t.Context(), repo, "v", opts(), cacheDir); err != nil {
+		t.Fatal(err)
+	} else if hit {
+		t.Fatal("first preindex unexpectedly hit cache")
+	}
+	if _, hit, err := PreindexProviderSnapshot(t.Context(), repo, "v", opts(), cacheDir); err != nil {
+		t.Fatal(err)
+	} else if !hit {
+		t.Fatal("second preindex (no force) should hit the warmed cache")
+	}
+
+	forced := opts()
+	forced.ForceRebuild = true
+	snapshot, hit, err := PreindexProviderSnapshot(t.Context(), repo, "v", forced, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hit {
+		t.Fatal("forced preindex must not report a cache hit")
+	}
+	if snapshot.Header.Stats.Symbols == 0 {
+		t.Fatal("forced rebuild produced an empty snapshot")
+	}
+
+	if _, hit, err := PreindexProviderSnapshot(t.Context(), repo, "v", opts(), cacheDir); err != nil {
+		t.Fatal(err)
+	} else if !hit {
+		t.Fatal("ordinary preindex after --force should hit the refreshed entry")
+	}
+}
+
 func TestPreindexProviderSnapshotSurfacesPersistenceFailure(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")

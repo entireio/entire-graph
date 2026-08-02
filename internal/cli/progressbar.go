@@ -33,31 +33,45 @@ type progressBar struct {
 	w        io.Writer
 	label    string
 	rendered bool
+	tick     int
 }
 
 func newProgressBar(w io.Writer, label string) *progressBar {
 	return &progressBar{w: w, label: label}
 }
 
-// update redraws the bar for one progress event. With a known file total it
-// shows a filled bar and a ratio; before the total is known (the "start" phase)
-// it shows a running count.
+// spinnerFrames animates the indeterminate phases (relations linking, and the
+// pre-total "start" tick) where there is no denominator to fill a bar with.
+var spinnerFrames = []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'}
+
+// update redraws the bar for one progress event. Parsing files has a known total,
+// so it shows a real filled bar and ratio. The relations phase streams with no
+// total (files are already at 100%), so a full bar there would look "done" while
+// work continues — instead it shows a spinner and the climbing relation count.
 func (b *progressBar) update(e sem.ProgressEvent) {
+	b.tick++
 	elapsed := e.Elapsed.Round(100 * time.Millisecond)
+	spin := spinnerFrames[b.tick%len(spinnerFrames)]
+
 	var line string
-	if e.FilesTotal > 0 {
-		const width = 24
-		filled := e.FilesDone * width / e.FilesTotal
-		if filled > width {
-			filled = width
+	switch e.Phase {
+	case "relations", "summary":
+		line = fmt.Sprintf("%s %c linking relations · %s relations · %s symbols · %s",
+			b.label, spin, humanInt(int64(e.Relations)), humanInt(int64(e.Symbols)), elapsed)
+	default: // start, parse — file parsing, with a known total
+		if e.FilesTotal > 0 {
+			const width = 24
+			filled := e.FilesDone * width / e.FilesTotal
+			if filled > width {
+				filled = width
+			}
+			bar := repeat('█', filled) + repeat('░', width-filled)
+			line = fmt.Sprintf("%s [%s] %d/%d files · %s symbols · %s",
+				b.label, bar, e.FilesDone, e.FilesTotal, humanInt(int64(e.Symbols)), elapsed)
+		} else {
+			line = fmt.Sprintf("%s %c parsing · %s files · %s symbols · %s",
+				b.label, spin, humanInt(int64(e.FilesDone)), humanInt(int64(e.Symbols)), elapsed)
 		}
-		bar := repeat('█', filled) + repeat('░', width-filled)
-		line = fmt.Sprintf("%s [%s] %d/%d files · %s symbols · %s relations · %s",
-			b.label, bar, e.FilesDone, e.FilesTotal,
-			humanInt(int64(e.Symbols)), humanInt(int64(e.Relations)), elapsed)
-	} else {
-		line = fmt.Sprintf("%s… %s symbols · %s relations · %s",
-			b.label, humanInt(int64(e.Symbols)), humanInt(int64(e.Relations)), elapsed)
 	}
 	fmt.Fprintf(b.w, "\r%s\033[K", line)
 	b.rendered = true

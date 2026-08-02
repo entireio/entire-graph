@@ -17,17 +17,17 @@ func TestIsTerminalFalseForBuffer(t *testing.T) {
 	}
 }
 
-func TestProgressBarRendersAndClears(t *testing.T) {
+func TestProgressBarParsePhaseShowsFileBar(t *testing.T) {
 	var out bytes.Buffer
 	bar := newProgressBar(&out, "indexing")
 	bar.update(sem.ProgressEvent{
 		Phase: "parse", FilesTotal: 100, FilesDone: 50,
-		Symbols: 1200, Relations: 3400, Elapsed: 2 * time.Second,
+		Symbols: 1200, Relations: 0, Elapsed: 2 * time.Second,
 	})
 	got := out.String()
-	for _, want := range []string{"\r", "indexing", "50/100 files", "1,200 symbols", "3,400 relations", "\033[K"} {
+	for _, want := range []string{"\r", "indexing", "50/100 files", "1,200 symbols", "█", "░", "\033[K"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("bar output missing %q:\n%q", want, got)
+			t.Errorf("parse-phase output missing %q:\n%q", want, got)
 		}
 	}
 
@@ -35,6 +35,25 @@ func TestProgressBarRendersAndClears(t *testing.T) {
 	bar.clear()
 	if got := out.String(); !strings.Contains(got, "\033[K") {
 		t.Errorf("clear did not erase the line: %q", got)
+	}
+}
+
+func TestProgressBarRelationsPhaseShowsCountNotFullBar(t *testing.T) {
+	// During the relations phase files are already at 100%; a full bar would read
+	// as "done" while work continues, so we show the climbing relation count.
+	var out bytes.Buffer
+	newProgressBar(&out, "indexing").update(sem.ProgressEvent{
+		Phase: "relations", FilesTotal: 100, FilesDone: 100,
+		Symbols: 1200, Relations: 3400, Elapsed: 4 * time.Second,
+	})
+	got := out.String()
+	for _, want := range []string{"indexing", "linking relations", "3,400 relations"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("relations-phase output missing %q:\n%q", want, got)
+		}
+	}
+	if strings.Contains(got, "100/100 files") {
+		t.Errorf("relations phase should not show a full file bar:\n%q", got)
 	}
 }
 
@@ -47,13 +66,13 @@ func TestProgressBarClearNoopWhenUnrendered(t *testing.T) {
 	}
 }
 
-func TestProgressBarUnknownTotalShowsCount(t *testing.T) {
+func TestProgressBarUnknownTotalShowsSpinner(t *testing.T) {
 	var out bytes.Buffer
 	newProgressBar(&out, "indexing").update(sem.ProgressEvent{
 		Phase: "start", FilesTotal: 0, Symbols: 0, Relations: 0,
 	})
-	if got := out.String(); !strings.Contains(got, "indexing…") {
-		t.Errorf("expected a running count before the total is known, got %q", got)
+	if got := out.String(); !strings.Contains(got, "parsing") {
+		t.Errorf("expected a running indicator before the total is known, got %q", got)
 	}
 }
 

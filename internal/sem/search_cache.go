@@ -336,7 +336,15 @@ func PreindexProviderSnapshot(
 		return ProviderSnapshot{}, false, fmt.Errorf("resolve committed HEAD for preindex: %w", err)
 	}
 	repositoryKey := repoKey(ctx, absRepo)
-	snapshot, cacheHit, err := loadOrBuildSearchSnapshot(ctx, absRepo, providerVersion, options, cacheDir, false, nil)
+	var snapshot ProviderSnapshot
+	var cacheHit bool
+	if options.ForceRebuild {
+		// --force: rebuild from HEAD regardless of any cached entry. The fresh
+		// snapshot overwrites that entry below so later queries serve it.
+		snapshot, err = BuildProviderSnapshotWithOptions(ctx, absRepo, providerVersion, options)
+	} else {
+		snapshot, cacheHit, err = loadOrBuildSearchSnapshot(ctx, absRepo, providerVersion, options, cacheDir, false, nil)
+	}
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
@@ -346,16 +354,22 @@ func PreindexProviderSnapshot(
 			snapshot.Header.Tree, snapshot.Header.Commit, tree, commit,
 		)
 	}
+	if options.ForceRebuild {
+		// Match loadOrBuildSearchSnapshot's re-stamp: report the commit this call
+		// serves, not whatever HEAD happened to be mid-build on a same-tree race.
+		snapshot.Header.Commit = commit
+	}
 	// Query-time caching is deliberately best effort, but an explicit preindex
 	// command promises a durable artifact. Verify that the entry exists and, if
-	// the best-effort write failed, retry while surfacing the persistence error.
+	// the best-effort write failed (or --force asked for a rewrite), persist while
+	// surfacing any persistence error.
 	key, err := searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree, options)
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
 	path := filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, key+".json.gz")
 	persisted, readErr := readSearchSnapshot(path)
-	if readErr != nil || !validCachedSearchSnapshot(persisted, repositoryKey, providerVersion, tree, options) {
+	if options.ForceRebuild || readErr != nil || !validCachedSearchSnapshot(persisted, repositoryKey, providerVersion, tree, options) {
 		cache := newCachedSearchSnapshot(providerVersion, commit, tree, options, snapshot)
 		if err := writeSearchSnapshot(path, cache); err != nil {
 			return ProviderSnapshot{}, false, fmt.Errorf("persist preindex snapshot: %w", err)

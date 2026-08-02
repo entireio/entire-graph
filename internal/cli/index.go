@@ -25,6 +25,9 @@ type indexFlags struct {
 	// rather than on a command of its own because index is already the command that
 	// materializes a whole committed-tree snapshot for a human to act on.
 	Report string
+	// Force rebuilds the committed-tree snapshot from scratch and overwrites the
+	// cache entry even when a valid one already exists for this tree.
+	Force bool
 }
 
 type indexResponse struct {
@@ -82,6 +85,7 @@ func runIndex(ctx context.Context, opts Options, args []string) error {
 		Profile:      profile,
 		IgnoreFiles:  flags.IgnoreFiles,
 		IncludeFiles: flags.IncludeFiles,
+		ForceRebuild: flags.Force,
 	}
 	// Draw a live progress bar on stderr when it's a terminal. It only fires on a
 	// cache miss (the build emits the events); a cache hit returns instantly with
@@ -222,6 +226,8 @@ func parseIndexFlags(args []string) (indexFlags, []string, error) {
 				return flags, nil, err
 			}
 			flags.Format, index = value, next
+		case "--force":
+			flags.Force = true
 		case "--head", "--no-network":
 			// Indexing is always local-only and always targets committed HEAD.
 		case "--worktree":

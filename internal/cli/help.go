@@ -87,12 +87,13 @@ var commandDocs = []commandDoc{
 		name:    "index",
 		group:   groupSetup,
 		summary: "Build/warm the committed-tree cache before a batch of queries",
-		usage:   []string{"entire graph index --repo . [--head] [--profile syntax-only|fast|full] [--cache-dir path] [--report GRAPH_REPORT.md] [--format text|json]"},
-		long: "Prebuilds the durable, query-independent committed-tree index so latency-sensitive --head searches/neighbors reuse it. Re-running index is also how you refresh a committed-tree cache: an unchanged tree hits, a changed tree rebuilds.\n\n" +
-			"At a terminal it draws a live progress bar on stderr (only on a cache miss — a hit returns instantly) and prints a readable summary; piped or with --format json it emits the schema-versioned JSON summary that agents and CI consume. --report writes a human-readable GRAPH_REPORT.md rendered from the snapshot, so the same tree always renders the same bytes. The cache defaults to the platform per-user cache dir (macOS ~/Library/Caches/entire-graph; XDG_CACHE_HOME or ~/.cache elsewhere); --cache-dir and ENTIRE_PLUGIN_DATA_DIR override it.",
+		usage:   []string{"entire graph index --repo . [--head] [--force] [--profile syntax-only|fast|full] [--cache-dir path] [--report GRAPH_REPORT.md] [--format text|json]"},
+		long: "Prebuilds the durable, query-independent committed-tree index so latency-sensitive --head searches/neighbors reuse it. Re-running index is also how you refresh a committed-tree cache: an unchanged tree hits, a changed tree rebuilds. Pass --force to rebuild and overwrite the entry even when the tree is unchanged.\n\n" +
+			"At a terminal it draws a live progress bar on stderr (only when it actually builds — a cache hit returns instantly) and prints a readable summary; piped or with --format json it emits the schema-versioned JSON summary that agents and CI consume. --report writes a human-readable GRAPH_REPORT.md rendered from the snapshot, so the same tree always renders the same bytes. The cache defaults to the platform per-user cache dir (macOS ~/Library/Caches/entire-graph; XDG_CACHE_HOME or ~/.cache elsewhere); --cache-dir and ENTIRE_PLUGIN_DATA_DIR override it.",
 		flags: []flagDoc{
 			{name: "--repo", arg: "path", desc: "Repository to index (default: current repo)"},
 			{name: "--head", desc: "Index the committed tree (cached, reusable) instead of the working tree"},
+			{name: "--force", desc: "Rebuild from scratch and overwrite the cache even if the tree is unchanged"},
 			{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Parsing depth; full favors call-graph correctness"},
 			{name: "--cache-dir", arg: "path", desc: "Override the committed-tree cache directory"},
 			{name: "--report", arg: "path", desc: "Also write a human-readable GRAPH_REPORT.md"},
