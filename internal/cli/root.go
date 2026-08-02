@@ -50,7 +50,9 @@ func Run(ctx context.Context, opts Options, args []string) error {
 
 	// Per-command help: `entire graph <cmd> --help` prints that command's detail
 	// view and exits, without touching each runX. Only fires for commands that
-	// have a doc entry, so `help`/`--help` still fall through to the root help.
+	// have a doc entry — which includes `help` itself, so `help --help` prints
+	// help's own detail view rather than the root listing. A bare `--help` has
+	// no command word and is handled above.
 	if wantsHelp(args[1:]) {
 		if _, ok := findCommandDoc(args[0]); ok {
 			renderCommandHelp(opts.Stdout, args[0])

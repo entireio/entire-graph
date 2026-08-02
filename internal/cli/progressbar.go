@@ -22,7 +22,16 @@ func isTerminal(w io.Writer) bool {
 	if err != nil {
 		return false
 	}
-	return info.Mode()&os.ModeCharDevice != 0
+	if info.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	// /dev/null is a character device too, so the mode bit alone would call a
+	// redirect to it "interactive" and pick text output for a caller that asked
+	// for none. Name-check it rather than take a terminal dependency.
+	if name := f.Name(); name == os.DevNull {
+		return false
+	}
+	return true
 }
 
 // progressBar renders indexing progress as a single self-overwriting line on a

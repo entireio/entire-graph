@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -129,5 +130,39 @@ func TestWriteIndexTextSummary(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestIsTerminalRejectsDevNull pins a distinction the character-device bit
+// alone cannot make: /dev/null is a character device, so redirecting there
+// would otherwise be read as "interactive" and pick the human summary for a
+// caller who asked for no output at all.
+func TestIsTerminalRejectsDevNull(t *testing.T) {
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Skipf("cannot open %s: %v", os.DevNull, err)
+	}
+	defer devNull.Close()
+	if isTerminal(devNull) {
+		t.Errorf("%s must not be reported as a terminal", os.DevNull)
+	}
+
+	// A regular file and a pipe are not terminals either.
+	regular, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer regular.Close()
+	if isTerminal(regular) {
+		t.Error("a regular file must not be reported as a terminal")
+	}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	if isTerminal(writer) {
+		t.Error("a pipe must not be reported as a terminal")
 	}
 }
