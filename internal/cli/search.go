@@ -485,6 +485,25 @@ func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result s
 	if result.Kind != "" {
 		fmt.Fprintf(out, " kind=%s", result.Kind)
 	}
+	// THE LINE THE QUERY ACTUALLY MATCHED, not just the range that contains it.
+	//
+	// FocusLine is computed for every hit and has always been in the JSON. The text payload — which
+	// is what an agent reads — printed only the snippet's range, so a hit on a 27-line method said
+	// "the answer is somewhere in 135-161" and made the reader find the line itself. Asked what one
+	// change to the returned payload would let it finish in the fewest calls, a Sonnet agent that had
+	// just fixed apache/lucene-13170 from this tool named exactly this: its only non-essential call
+	// was a Read of 135-161 to "pin down line 151 specifically before editing", and it wanted the
+	// matched line marked so "the payload doubles as both 'here's the function' and 'here's the
+	// precise line to change'". Re-reading a file the payload already printed is 10.1% of all
+	// post-payload tool calls in the measured Sonnet sessions.
+	//
+	// It goes in the HEADER rather than as an inline `>>> 151:` marker on the snippet line, which is
+	// what the agent literally asked for. Agents copy snippet text verbatim as the `old_string` anchor
+	// of an edit, so decorating a body line would make that anchor fail to match the file and turn a
+	// navigation aid into a broken patch.
+	if result.FocusLine >= start && result.FocusLine <= end && end > start {
+		fmt.Fprintf(out, " focus=%d", result.FocusLine)
+	}
 	// A section entry may carry no source at all — the covering test degrades to a locator when its
 	// byte allowance cannot hold one line of body. Printing the empty string as if it were source
 	// costs two blank lines and reads as a truncation bug.
