@@ -3685,6 +3685,11 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 				entity.parameterNames = names
 				entity.parameterNamesKnown = true
 			}
+			if paramText, returnText, known := astSignatureTypeTexts(node, src); known {
+				entity.paramTypeText = paramText
+				entity.returnTypeText = returnText
+				entity.signatureTypesKnown = true
+			}
 		}
 		if inFunc && (entity.Kind == "function" || entity.Kind == "method") {
 			entity.Local = true // nested inside another function

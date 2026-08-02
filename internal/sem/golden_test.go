@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -194,6 +195,14 @@ var updateGolden = flag.Bool("update", false, "regenerate golden NDJSON baseline
 // its name here, and running the test with -update to create the baseline.
 var goldenFixtures = []string{
 	"csharp-basic",
+	// julia-r-basic exists so the capability contract test covers Julia and R.
+	// Both resolve calls and both were advertised as inventory-grade; with no
+	// fixture in either language the guard could not have seen it.
+	"julia-r-basic",
+	// multilang-relations covers the semantic languages whose relation support
+	// the capability matrix under-reported (Zig, C, Kotlin, Ruby): each emits
+	// call, type and data-flow edges the matrix did not declare.
+	"multilang-relations",
 	"csharp-fields",
 	"csharp-oo",
 	"go-basic",
@@ -378,4 +387,150 @@ func copyFixtureTree(t *testing.T, src, dst string) {
 func normalizeFixtureData(data []byte) []byte {
 	data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 	return bytes.ReplaceAll(data, []byte("\r"), []byte("\n"))
+}
+
+// TestCapabilityMatrixCoversEmittedRelations is the contract behind
+// `capabilities --json`: AGENTS.md tells agents to feature-detect with it
+// before trusting a language, so every relation the provider actually emits for
+// a language must be declared — either per-language in
+// RelationSupportByLanguage, or as one of the globally-heuristic types that are
+// deliberately not attributed per language.
+//
+// The check runs in one direction only. Absence of a relation in a fixture is
+// not evidence the language cannot produce it (a fixture simply may not contain
+// the construct), so an advertised-but-unseen relation is fine. An emitted-but-
+// undeclared relation is not: that is the provider doing something it told
+// agents it could not do.
+//
+// This is the guard for two defects it would have caught: CONSTRUCTS was
+// emitted for every call-capable language and declared for none, and Julia/R
+// emitted CALLS (pinned by their own tests) while advertising inventory-grade
+// support only.
+func TestCapabilityMatrixCoversEmittedRelations(t *testing.T) {
+	capabilities := Capabilities()
+	global := map[string]bool{}
+	for _, relation := range capabilities.HeuristicRelationTypes {
+		global[relation] = true
+	}
+	declared := map[string]map[string]bool{}
+	for language, relations := range capabilities.RelationSupportByLanguage {
+		set := make(map[string]bool, len(relations))
+		for _, relation := range relations {
+			set[relation] = true
+		}
+		declared[language] = set
+	}
+
+	type undeclared struct{ language, relation, fixture string }
+	var violations []undeclared
+	seen := map[string]bool{}
+	for _, fixture := range goldenFixtures {
+		for _, line := range strings.Split(buildFixtureNDJSON(t, fixture), "\n") {
+			if !strings.Contains(line, `"record_type":"relation"`) {
+				continue
+			}
+			var record struct {
+				FromID string `json:"from_id"`
+				Type   string `json:"type"`
+			}
+			if err := json.Unmarshal([]byte(line), &record); err != nil {
+				t.Fatalf("%s: parse relation: %v", fixture, err)
+			}
+			// from_id is repoKey:language:path:kind:name for symbols and
+			// repoKey:file:path for files; only the former carries a language.
+			parts := strings.Split(record.FromID, ":")
+			if len(parts) < 3 || parts[1] == "file" {
+				continue
+			}
+			language := parts[1]
+			if global[record.Type] || declared[language][record.Type] {
+				continue
+			}
+			key := language + "\x00" + record.Type
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			violations = append(violations, undeclared{language, record.Type, fixture})
+		}
+	}
+	sort.Slice(violations, func(i, j int) bool {
+		if violations[i].language != violations[j].language {
+			return violations[i].language < violations[j].language
+		}
+		return violations[i].relation < violations[j].relation
+	})
+	for _, violation := range violations {
+		t.Errorf("%s emits %s (fixture %s) but capabilities declares neither it per-language nor as a global heuristic",
+			violation.language, violation.relation, violation.fixture)
+	}
+}
+
+// TestImportCapabilityMatchesScannerRegistry pins the property that replaced a
+// hand-maintained mirror: every extension with an import scanner is reported as
+// import-capable, and every extension without one is not. The two used to be
+// separate switch statements kept in sync by a comment.
+func TestImportCapabilityMatchesScannerRegistry(t *testing.T) {
+	for extension := range importScanners {
+		if !importCapableExtension(extension) {
+			t.Errorf("%s has an import scanner but is not reported import-capable", extension)
+		}
+		// Empty content must yield no imports rather than panicking: the scanners
+		// run over whatever the reader returns, including a file it could not read.
+		if got := importsFor("file"+extension, ""); len(got) != 0 {
+			t.Errorf("%s scanner returned %v for empty content", extension, got)
+		}
+	}
+	// Extensions that parse but carry no imports must stay non-capable; a
+	// nil-returning scanner entry would silently make them capable.
+	for _, extension := range []string{".hcl", ".tf", ".tfvars", ".sql", ".yaml", ".md", ".json"} {
+		if importCapableExtension(extension) {
+			t.Errorf("%s has no import scanner but is reported import-capable", extension)
+		}
+		if got := importsFor("file"+extension, "import x\nuse y;\n#include <z>\n"); len(got) != 0 {
+			t.Errorf("%s returned imports %v despite having no scanner", extension, got)
+		}
+	}
+}
+
+// TestHeuristicRelationTypesMatchDocumentation pins docs/baseline-report.md to
+// the executable heuristic list. The two had drifted: the prose named
+// HANDLES_GRPC, HANDLES_GRAPHQL, HANDLES_TRPC and CONFIGURES as globally
+// heuristic while all four are attributed per language, which left readers with
+// no reliable answer for whether to trust the per-language matrix for them.
+func TestHeuristicRelationTypesMatchDocumentation(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "baseline-report.md"))
+	if err != nil {
+		t.Fatalf("read baseline report: %v", err)
+	}
+	const marker = "`heuristic_relation_types` ("
+	index := bytes.Index(doc, []byte(marker))
+	if index < 0 {
+		t.Fatalf("baseline report no longer documents heuristic_relation_types")
+	}
+	rest := doc[index+len(marker):]
+	end := bytes.IndexByte(rest, ')')
+	if end < 0 {
+		t.Fatalf("heuristic_relation_types list is unterminated")
+	}
+	documented := map[string]bool{}
+	for _, field := range strings.Split(string(rest[:end]), ",") {
+		if name := strings.Trim(strings.TrimSpace(field), "`"); name != "" {
+			documented[name] = true
+		}
+	}
+	actual := map[string]bool{}
+	for _, relation := range Capabilities().HeuristicRelationTypes {
+		actual[relation] = true
+	}
+	for relation := range documented {
+		if !actual[relation] {
+			t.Errorf("docs list %s as globally heuristic but capabilities does not", relation)
+		}
+	}
+	for relation := range actual {
+		if !documented[relation] {
+			t.Errorf("capabilities reports %s as globally heuristic but the docs omit it", relation)
+		}
+	}
 }

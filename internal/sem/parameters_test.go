@@ -3,6 +3,7 @@ package sem
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	sitter "github.com/smacker/go-tree-sitter"
@@ -205,5 +206,440 @@ func TestCleanParameterNameKeepsUnicodeIdentifiers(t *testing.T) {
 	// Sigils are still stripped rather than rejected.
 	if got := cleanParameterName("$php"); got != "php" {
 		t.Errorf("sigil handling changed: got %q", got)
+	}
+}
+
+// astSignatureTypeTextsFor mirrors astParameterNamesFor for the type extractor.
+func astSignatureTypeTextsFor(t *testing.T, path, src string) (string, string, bool) {
+	t.Helper()
+	spec, ok := languageForPath(path)
+	if !ok {
+		t.Fatalf("no language spec for %s", path)
+	}
+	parser := sitter.NewParser()
+	defer parser.Close()
+	parser.SetLanguage(spec.grammar)
+	tree, err := parser.ParseCtx(context.Background(), nil, []byte(src))
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	defer tree.Close()
+	var params, returns string
+	var known bool
+	var walk func(node *sitter.Node)
+	walk = func(node *sitter.Node) {
+		if known || !validNode(node) {
+			return
+		}
+		if p, r, ok := astSignatureTypeTexts(node, []byte(src)); ok {
+			params, returns, known = p, r, true
+			return
+		}
+		for index := 0; index < int(node.NamedChildCount()); index++ {
+			walk(node.NamedChild(index))
+		}
+	}
+	walk(tree.RootNode())
+	return params, returns, known
+}
+
+// TestASTSignatureTypesAcrossGrammars pins the type extraction the signature
+// string could not do. The string split anchors on the first `(` — the receiver
+// for a Go method — and, for languages it has no case for, guesses the return
+// type as the second-to-last word before that paren, which is the declaration
+// KEYWORD. Zig emitted no RETURNS_TYPE edge anywhere as a result.
+func TestASTSignatureTypesAcrossGrammars(t *testing.T) {
+	for _, testCase := range []struct {
+		name        string
+		path, src   string
+		wantParams  string
+		wantReturns string
+	}{
+		{
+			name:        "go method reads past the receiver",
+			path:        "a.go",
+			src:         "package p\nfunc (c *Client) Do(a Input) Output { return Output{} }\n",
+			wantParams:  "Input",
+			wantReturns: "Output",
+		},
+		{
+			name:        "go multi-value result",
+			path:        "a.go",
+			src:         "package p\nfunc Multi(a Input) (Output, error) { return Output{}, nil }\n",
+			wantParams:  "Input",
+			wantReturns: "(Output, error)",
+		},
+		{
+			name:        "swift return type is not the func keyword",
+			path:        "a.swift",
+			src:         "func f(a: Int) -> Result {}\n",
+			wantParams:  "Int",
+			wantReturns: "Result",
+		},
+		{
+			name:        "zig return type is not the fn keyword",
+			path:        "a.zig",
+			src:         "fn f(a: u8) Result {}\n",
+			wantParams:  "u8",
+			wantReturns: "Result",
+		},
+		{
+			name:        "scala return type is not the def keyword",
+			path:        "a.scala",
+			src:         "def f(a: Int): Result = a\n",
+			wantParams:  "Int",
+			wantReturns: "Result",
+		},
+		{
+			name:        "kotlin return type has no field to read",
+			path:        "a.kt",
+			src:         "fun f(a: Int): Result {}\n",
+			wantParams:  "Int",
+			wantReturns: "Result",
+		},
+		{
+			name:        "dart states the return type before the name",
+			path:        "a.dart",
+			src:         "Result f(int a) => null;\n",
+			wantParams:  "int",
+			wantReturns: "Result",
+		},
+		{
+			name:        "typescript annotation colon is trimmed",
+			path:        "a.ts",
+			src:         "function f(a: number): Result {}\n",
+			wantParams:  "number",
+			wantReturns: "Result",
+		},
+		{
+			name:        "rust arrow return",
+			path:        "a.rs",
+			src:         "fn f(a: u8) -> Result { a }\n",
+			wantParams:  "u8",
+			wantReturns: "Result",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			params, returns, known := astSignatureTypeTextsFor(t, testCase.path, testCase.src)
+			if !known {
+				t.Fatalf("expected the grammar to expose a parameter list")
+			}
+			if params != testCase.wantParams {
+				t.Errorf("parameter types: got %q want %q", params, testCase.wantParams)
+			}
+			if returns != testCase.wantReturns {
+				t.Errorf("return types: got %q want %q", returns, testCase.wantReturns)
+			}
+		})
+	}
+}
+
+// TestASTSignatureTypesRejectKeywordReturns is the regression proper: the
+// signature-string path reports a language keyword as the return type for every
+// language it has no explicit case for.
+func TestASTSignatureTypesRejectKeywordReturns(t *testing.T) {
+	for _, testCase := range []struct{ language, path, src, keyword string }{
+		{"Swift", "a.swift", "func f(a: Int) -> Result {}\n", "func"},
+		{"Zig", "a.zig", "fn f(a: u8) Result {}\n", "fn"},
+		{"Scala", "a.scala", "def f(a: Int): Result = a\n", "def"},
+	} {
+		t.Run(testCase.language, func(t *testing.T) {
+			stale := signatureTypeReferences(testCase.language, strings.TrimSuffix(strings.SplitN(testCase.src, "{", 2)[0], " "))
+			if !slicesContain(stale["RETURNS_TYPE"], testCase.keyword) {
+				t.Fatalf("expected the signature split to report %q as a return type (the bug under test), got %v",
+					testCase.keyword, stale["RETURNS_TYPE"])
+			}
+			_, returns, known := astSignatureTypeTextsFor(t, testCase.path, testCase.src)
+			if !known {
+				t.Fatalf("expected parse-tree extraction to apply")
+			}
+			if returns == testCase.keyword {
+				t.Fatalf("parse-tree extraction still reports the %q keyword as a return type", testCase.keyword)
+			}
+		})
+	}
+}
+
+func slicesContain(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestJavaScriptReexportCandidateGatesNonJSPaths pins the language gate on the
+// re-export resolution. It used to run for every resolved import in every
+// language — opening the target file and scanning it for `export … from`
+// syntax, recursing up to eight levels — which on a Rust repository was 32% of
+// a fast-profile snapshot spent looking for JavaScript in `use` targets.
+func TestJavaScriptReexportCandidateGatesNonJSPaths(t *testing.T) {
+	for _, path := range []string{
+		"src/index.ts", "src/index.tsx", "lib/mod.js", "lib/mod.jsx",
+		"lib/mod.mjs", "lib/mod.cjs", "types/api.d.ts",
+	} {
+		if !javaScriptReexportCandidate(path) {
+			t.Errorf("%s should be scanned for re-exports", path)
+		}
+	}
+	for _, path := range []string{
+		"src/main.rs", "src/main.go", "src/main.zig", "src/main.py",
+		"src/Main.java", "src/main.c", "Cargo.toml", "README.md",
+	} {
+		if javaScriptReexportCandidate(path) {
+			t.Errorf("%s cannot carry JS re-export syntax and must not be opened for it", path)
+		}
+	}
+}
+
+// TestGraphQLBodyScanHonoursCapabilityTable pins the gate to one source of
+// truth. The body patterns match ordinary prose and code — `query the columns`
+// in a Python docstring, `subscription cancel() {` in Java — so running them
+// everywhere emitted 1,245 edges in cli-cli and 1,057 in spring-framework that
+// `capabilities --json` said those languages could not produce. The gate reads
+// the capability table rather than repeating the language list, so the two
+// cannot drift apart again.
+func TestGraphQLBodyScanHonoursCapabilityTable(t *testing.T) {
+	for _, language := range []string{"TypeScript", "JavaScript", "Python", "GraphQL"} {
+		if !serviceBoundaryScanLanguage(language) {
+			t.Errorf("%s declares HANDLES_GRAPHQL and must be scanned", language)
+		}
+	}
+	for _, language := range []string{"Go", "Java", "Ruby", "Rust", "Zig", "C#"} {
+		if serviceBoundaryScanLanguage(language) {
+			t.Errorf("%s does not declare HANDLES_GRAPHQL and must not be scanned", language)
+		}
+		if languageSupportsRelation(language, "HANDLES_GRAPHQL") {
+			t.Errorf("capability table unexpectedly declares HANDLES_GRAPHQL for %s", language)
+		}
+	}
+	// The gate and the table are the same question, so they cannot disagree.
+	for _, language := range []string{"TypeScript", "Go", "Python", "Java", "Zig"} {
+		if serviceBoundaryScanLanguage(language) != languageSupportsRelation(language, "HANDLES_GRAPHQL") {
+			t.Errorf("gate and capability table disagree for %s", language)
+		}
+	}
+}
+
+// TestGraphQLBodyScanSkipsProseInUndeclaredLanguages is the end-to-end form:
+// Go source whose comments read like GraphQL must produce no boundary.
+func TestGraphQLBodyScanSkipsProseInUndeclaredLanguages(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "store.go", `package store
+
+// Load runs a query string against the index and will mutation-test the
+// result. Callers subscription cancel semantics are documented above.
+func Load(name string) string {
+	return name
+}
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "HANDLES_GRAPHQL" {
+			t.Fatalf("Go prose produced a GraphQL boundary: %+v", relation)
+		}
+	}
+}
+
+// TestGraphQLOperationsRequireLiteralContext pins the precision fix. The
+// operation patterns used to run over whole symbol bodies, so they matched
+// three kinds of non-GraphQL text: prose ("query the columns" in a docstring),
+// comments, and — for the selection-set pattern, which looks for
+// `<keyword> <name>? (args)? {` — an ordinary method declared as `query() {}`.
+// Confining them to string and template literals removes the code and comment
+// cases; requiring a selection set inside the literal removes the prose.
+func TestGraphQLOperationsRequireLiteralContext(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "client.ts", `export function loadViewer(id: string): unknown {
+  return gql`+"`"+`query GetViewer($id: ID!) { viewer { id } }`+"`"+`;
+}
+
+export function plainString(): unknown {
+  return request("mutation UpdateUser($id: ID!) { updateUser(id: $id) { id } }");
+}
+
+export class Repo {
+  query() {
+    return 1;
+  }
+}
+`)
+	writeFile(t, repo, "client.py", `def fetch(client):
+    """Run a query against the API and query the cache for results."""
+    return client.execute("""
+        query ListUsers { users { id } }
+    """)
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, relation := range snapshot.Relations {
+		if relation.Type != "HANDLES_GRAPHQL" {
+			continue
+		}
+		from := relation.FromID[strings.LastIndex(relation.FromID, ":")+1:]
+		to := relation.ToID
+		found[from+" => "+to[strings.Index(to, "graphql:")+len("graphql:"):]] = true
+	}
+	// A tagged template, a plain string argument and a Python triple-quoted
+	// literal are all real embeddings and must be found.
+	for _, want := range []string{
+		"loadViewer => query GetViewer",
+		"loadViewer => query viewer",
+		"plainString => mutation UpdateUser",
+		"fetch => query ListUsers",
+		"fetch => query users",
+	} {
+		if !found[want] {
+			t.Errorf("missing real GraphQL boundary %q; got %v", want, sortedKeysOf(found))
+		}
+	}
+	// Prose in the same docstring, and a method that merely looks like an
+	// operation, must produce nothing.
+	for key := range found {
+		for _, forbidden := range []string{"query the", "query against", "query return", "query cache"} {
+			if strings.Contains(key, forbidden) {
+				t.Errorf("non-GraphQL text produced a boundary: %q", key)
+			}
+		}
+	}
+}
+
+// TestHostLanguageLiteralsSpansQuotingStyles covers the literal scanner the
+// precision fix depends on.
+func TestHostLanguageLiteralsSpansQuotingStyles(t *testing.T) {
+	literals := literalTexts(hostLanguageLiterals("a = `tpl\nspans lines`; b = \"double\"; c = 'single'; d = \"esc\\\"aped\";"))
+	for _, want := range []string{"tpl\nspans lines", "double", "single"} {
+		if !slicesContain(literals, want) {
+			t.Errorf("missing literal %q in %v", want, literals)
+		}
+	}
+	// A quoted literal does not run past its line, so an unterminated quote
+	// cannot swallow the rest of a body.
+	if got := literalTexts(hostLanguageLiterals("x = \"unterminated\nquery Nope { a }")); slicesContain(got, "unterminated\nquery Nope { a }") {
+		t.Errorf("an unterminated quote swallowed following lines: %v", got)
+	}
+	// Python triple quotes are one literal, newlines included.
+	if got := literalTexts(hostLanguageLiterals(`x = """query Doc { a }"""`)); !slicesContain(got, "query Doc { a }") {
+		t.Errorf("triple-quoted literal not captured: %v", got)
+	}
+}
+
+func literalTexts(literals []hostLanguageLiteral) []string {
+	out := make([]string, 0, len(literals))
+	for _, literal := range literals {
+		out = append(out, literal.Text)
+	}
+	return out
+}
+
+// TestGraphQLShorthandRequiresDocumentTag covers query shorthand — a document
+// that is only a selection set. It is read as an operation solely inside a
+// gql/graphql-tagged template, because a bare braced string is far more often
+// an object or JSON blob.
+func TestGraphQLShorthandRequiresDocumentTag(t *testing.T) {
+	if got := graphqlShorthandRootFields("{ viewer { id } settings { theme } }"); !reflect.DeepEqual(got, []string{"settings", "viewer"}) {
+		t.Errorf("shorthand root fields: got %v", got)
+	}
+	// A named operation is handled by the keyword scan; reporting it here too
+	// would double-count it.
+	if got := graphqlShorthandRootFields("query GetViewer { viewer { id } }"); len(got) != 0 {
+		t.Errorf("named operation must not be read as shorthand: %v", got)
+	}
+	for _, tag := range []string{"gql", "graphql", "GraphQL"} {
+		if !graphqlDocumentTag(tag) {
+			t.Errorf("%s should mark a GraphQL document", tag)
+		}
+	}
+	for _, tag := range []string{"", "css", "html", "sql", "run"} {
+		if graphqlDocumentTag(tag) {
+			t.Errorf("%s must not mark a GraphQL document", tag)
+		}
+	}
+}
+
+// TestGraphQLDocumentFileNeedsNoLiteral guards a regression the unit tests
+// missed and a real repository caught: requiring a host-language literal
+// silently dropped every operation in a standalone .graphql/.gql document,
+// where the whole file IS the document and there is no literal to look inside.
+//
+// The shape is taken from a Tina-generated queries.gql in the next.js examples,
+// which is also the case that used to report the variable `$relativePath` as a
+// root field.
+func TestGraphQLDocumentFileNeedsNoLiteral(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "queries.gql", `query posts($relativePath: String!) {
+  posts(relativePath: $relativePath) {
+    id
+  }
+}
+
+query postsConnection {
+  postsConnection {
+    totalCount
+  }
+}
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "HANDLES_GRAPHQL" {
+			to := relation.ToID
+			found[to[strings.Index(to, "graphql:")+len("graphql:"):]] = true
+		}
+	}
+	for _, want := range []string{"query posts", "query postsConnection"} {
+		if !found[want] {
+			t.Errorf("missing %q from a standalone GraphQL document; got %v", want, sortedKeysOf(found))
+		}
+	}
+	for name := range found {
+		if strings.Contains(name, "$") {
+			t.Errorf("a GraphQL variable was reported as a root field: %q", name)
+		}
+	}
+}
+
+// TestGraphQLOperationGateIsPerMatch pins that the selection-set requirement is
+// evaluated at each match, not across the whole literal. Checking the literal
+// as a unit let one real operation vouch for every other keyword in it, so a
+// docstring holding both a query and the words "query the cache" emitted all of
+// them — the precision fix only appeared to work because the corpora had no
+// literal mixing the two.
+func TestGraphQLOperationGateIsPerMatch(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "mix.py", `def fetch(client):
+    return client.execute("""
+        Run this query against the API and query the cache.
+        query ListUsers { users { id } }
+    """)
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, relation := range snapshot.Relations {
+		if relation.Type == "HANDLES_GRAPHQL" {
+			to := relation.ToID
+			names = append(names, to[strings.Index(to, "graphql:")+len("graphql:"):])
+		}
+	}
+	if !slicesContain(names, "query ListUsers") {
+		t.Errorf("the real operation was lost: %v", names)
+	}
+	for _, prose := range []string{"query against", "query the"} {
+		if slicesContain(names, prose) {
+			t.Errorf("prose in the same literal as a real operation still emitted %q: %v", prose, names)
+		}
 	}
 }

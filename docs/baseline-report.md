@@ -123,8 +123,15 @@ Confidence bands follow the v2-plan schema section (`0.90-1.00 exact`,
 `capabilities --json` reports per-language relation support
 (`relation_support_by_language`) and pattern-driven relations separately in
 `heuristic_relation_types` (`HANDLES_ROUTE`, `HTTP_CALLS`, `EMITS`,
-`LISTENS_ON`, `HANDLES_TOOL`, `HANDLES_GRPC`, `HANDLES_GRAPHQL`,
-`HANDLES_TRPC`, `CONFIGURES`, `SIMILAR_TO`, `TESTS`).
+`LISTENS_ON`, `HANDLES_TOOL`, `SIMILAR_TO`, `TESTS`).
+
+`HANDLES_GRPC`, `HANDLES_GRAPHQL`, `HANDLES_TRPC`, and `CONFIGURES` are **not**
+in that list: each is attributed per language in `relation_support_by_language`
+(gRPC to Protocol Buffers, GraphQL to TypeScript/JavaScript/Python/GraphQL,
+tRPC to TypeScript/JavaScript, CONFIGURES to the IaC and config languages), and
+`CONFIGURES` is additionally gated on that declaration at emission time.
+`TestHeuristicRelationTypesMatchDocumentation` keeps this paragraph and the
+executable list in agreement.
 
 Field access (`READS_FIELD`/`WRITES_FIELD`/`ACCESSES`) is emitted for accesses
 resolved through the receiver's type (see "Field-access relations" below).

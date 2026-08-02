@@ -18,10 +18,14 @@ func TestSearchSnapshotCachePreservesPrivateSymbolMetadata(t *testing.T) {
 			sourceEndByte:       43,
 			parameterNames:      []string{"B", "value"},
 			parameterNamesKnown: true,
+			paramTypeText:       "Input, int",
+			returnTypeText:      "Output",
+			signatureTypesKnown: true,
 		},
 		{
 			ID:                  "zero-parameter-symbol",
 			parameterNamesKnown: true,
+			signatureTypesKnown: true,
 		},
 	}}
 	cache := newCachedSearchSnapshot("test-version", "commit", "tree", ProviderSnapshotOptions{Profile: ProfileFull}, snapshot)
@@ -46,7 +50,18 @@ func TestSearchSnapshotCachePreservesPrivateSymbolMetadata(t *testing.T) {
 	if !symbol.parameterNamesKnown {
 		t.Fatal("restored symbol lost known parameter metadata")
 	}
+	// Signature types must survive too: a cache hit that lost them would fall
+	// back to the signature-string split and emit different type relations than
+	// the cold run that produced the cache.
+	if symbol.paramTypeText != "Input, int" || symbol.returnTypeText != "Output" || !symbol.signatureTypesKnown {
+		t.Fatalf("restored signature types = params %q, returns %q, known %t",
+			symbol.paramTypeText, symbol.returnTypeText, symbol.signatureTypesKnown)
+	}
 	zeroParameterSymbol := restored.Snapshot.Symbols[1]
+	if !zeroParameterSymbol.signatureTypesKnown || zeroParameterSymbol.returnTypeText != "" {
+		t.Fatalf("restored no-return-type metadata = known %t, returns %q",
+			zeroParameterSymbol.signatureTypesKnown, zeroParameterSymbol.returnTypeText)
+	}
 	if !zeroParameterSymbol.parameterNamesKnown || len(zeroParameterSymbol.parameterNames) != 0 {
 		t.Fatalf("restored zero-parameter metadata = known %t, names %#v", zeroParameterSymbol.parameterNamesKnown, zeroParameterSymbol.parameterNames)
 	}
