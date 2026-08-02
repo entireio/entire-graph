@@ -1,10 +1,10 @@
 {
-  "cli_version": "0.9.0",
-  "checkpoint_id": "e14023fde4ef",
-  "strategy": "manual-commit",
   "branch": "claude/language-capability-generalization",
-  "checkpoints_count": 1,
+  "checkpoint_id": "e14023fde4ef",
+  "checkpoints_count": 3,
+  "cli_version": "0.9.0",
   "files_touched": null,
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/e1/4023fde4ef/0/metadata.json",
@@ -12,13 +12,20 @@
       "compact_transcript": "/e1/4023fde4ef/0/transcript.jsonl",
       "content_hash": "/e1/4023fde4ef/0/content_hash.txt",
       "prompt": "/e1/4023fde4ef/0/prompt.txt"
+    },
+    {
+      "content_hash": "/e1/4023fde4ef/1/content_hash.txt",
+      "metadata": "/e1/4023fde4ef/1/metadata.json",
+      "prompt": "/e1/4023fde4ef/1/prompt.txt",
+      "transcript": "/e1/4023fde4ef/1/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 1350,
+    "input_tokens": 116543,
     "cache_creation_tokens": 4065353,
-    "cache_read_tokens": 277504103,
-    "output_tokens": 442644,
-    "api_call_count": 704
+    "cache_read_tokens": 279957533,
+    "output_tokens": 452984,
+    "api_call_count": 744
   }
 }
