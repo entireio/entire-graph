@@ -1,0 +1,5 @@
+Ok, better. When indexing this repo, it always shows "completeness: degraded". Why?
+
+---
+
+I say 3 and 4
