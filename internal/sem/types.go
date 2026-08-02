@@ -379,6 +379,80 @@ func serviceBoundaryScanLanguage(language string) bool {
 	return languageSupportsRelation(language, "HANDLES_GRAPHQL")
 }
 
+// hostLanguageLiterals returns the string and template-literal contents of a
+// symbol body. A GraphQL document is always embedded as a literal — a tagged
+// template (gql`…`), a plain quoted string passed to a client, or a Python
+// triple-quoted string — never as bare host-language code.
+//
+// Scanning bodies wholesale is what made the operation patterns match prose:
+// `query the columns` in a docstring, `query string` in a comment, and — for
+// the selection-set pattern, which looks for `<keyword> <name>? (…)? {` — an
+// ordinary method named `query() { … }`. Confining the scan to literals removes
+// the code and comment cases structurally, and requiring a selection set inside
+// the literal removes the prose ones.
+//
+// Whole literals are returned rather than spans because the callers match
+// against the document, and a returned literal is the unit that either is or is
+// not a GraphQL operation.
+func hostLanguageLiterals(block string) []string {
+	var out []string
+	runes := []rune(block)
+	for index := 0; index < len(runes); index++ {
+		quote := runes[index]
+		if quote != '`' && quote != '"' && quote != '\'' {
+			continue
+		}
+		// Python triple quotes: take the whole docstring as one literal so an
+		// embedded operation is not cut at an interior newline.
+		if quote != '`' && index+2 < len(runes) && runes[index+1] == quote && runes[index+2] == quote {
+			if end := indexRunes(runes, index+3, string([]rune{quote, quote, quote})); end >= 0 {
+				out = append(out, string(runes[index+3:end]))
+				index = end + 2
+				continue
+			}
+		}
+		end := -1
+		for scan := index + 1; scan < len(runes); scan++ {
+			if runes[scan] == '\\' {
+				scan++
+				continue
+			}
+			if runes[scan] == quote {
+				end = scan
+				break
+			}
+			// A single- or double-quoted literal cannot span a line; a template
+			// literal can.
+			if quote != '`' && runes[scan] == '\n' {
+				break
+			}
+		}
+		if end < 0 {
+			continue
+		}
+		out = append(out, string(runes[index+1:end]))
+		index = end
+	}
+	return out
+}
+
+func indexRunes(runes []rune, from int, want string) int {
+	target := []rune(want)
+	for index := from; index+len(target) <= len(runes); index++ {
+		match := true
+		for offset, char := range target {
+			if runes[index+offset] != char {
+				match = false
+				break
+			}
+		}
+		if match {
+			return index
+		}
+	}
+	return -1
+}
+
 func serviceBoundaries(symbol SymbolRecord, block string) []serviceBoundary {
 	var out []serviceBoundary
 	seen := map[string]bool{}
@@ -444,25 +518,34 @@ func serviceBoundaries(symbol SymbolRecord, block string) []serviceBoundary {
 	// `graphql_schema_field` are produced only by the GraphQL/JS extractors, so
 	// they carry their own evidence of being GraphQL.
 	if serviceBoundaryScanLanguage(symbol.Language) {
-		for _, match := range graphqlOperationRe.FindAllStringSubmatch(block, -1) {
-			add(serviceBoundary{
-				Relation:     "HANDLES_GRAPHQL",
-				Kind:         "graphql",
-				Name:         strings.ToLower(match[1]) + " " + match[2],
-				Confidence:   0.75,
-				Reason:       "GraphQL operation literal detected in symbol body",
-				EvidenceKind: "graphql_operation",
-			})
-		}
-		for _, op := range graphqlOperationRootFieldSelections(block) {
-			add(serviceBoundary{
-				Relation:     "HANDLES_GRAPHQL",
-				Kind:         "graphql",
-				Name:         op.Root + " " + op.Field,
-				Confidence:   0.78,
-				Reason:       "GraphQL operation root field detected in operation literal",
-				EvidenceKind: "graphql_operation_field",
-			})
+		for _, literal := range hostLanguageLiterals(block) {
+			for _, match := range graphqlOperationRe.FindAllStringSubmatch(literal, -1) {
+				// The operation NAME edge is derived from an operation that also
+				// carries a selection set, rather than from an independent
+				// substring match: `query GetViewer($id: ID!) { … }` names an
+				// operation, `query the columns` in a docstring does not.
+				if !graphqlOperationSelectionRe.MatchString(literal) {
+					continue
+				}
+				add(serviceBoundary{
+					Relation:     "HANDLES_GRAPHQL",
+					Kind:         "graphql",
+					Name:         strings.ToLower(match[1]) + " " + match[2],
+					Confidence:   0.75,
+					Reason:       "GraphQL operation literal detected in symbol body",
+					EvidenceKind: "graphql_operation",
+				})
+			}
+			for _, op := range graphqlOperationRootFieldSelections(literal) {
+				add(serviceBoundary{
+					Relation:     "HANDLES_GRAPHQL",
+					Kind:         "graphql",
+					Name:         op.Root + " " + op.Field,
+					Confidence:   0.78,
+					Reason:       "GraphQL operation root field detected in operation literal",
+					EvidenceKind: "graphql_operation_field",
+				})
+			}
 		}
 	}
 	for _, match := range trpcProcedureRe.FindAllStringSubmatch(block, -1) {

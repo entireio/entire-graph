@@ -444,3 +444,89 @@ func Load(name string) string {
 		}
 	}
 }
+
+// TestGraphQLOperationsRequireLiteralContext pins the precision fix. The
+// operation patterns used to run over whole symbol bodies, so they matched
+// three kinds of non-GraphQL text: prose ("query the columns" in a docstring),
+// comments, and — for the selection-set pattern, which looks for
+// `<keyword> <name>? (args)? {` — an ordinary method declared as `query() {}`.
+// Confining them to string and template literals removes the code and comment
+// cases; requiring a selection set inside the literal removes the prose.
+func TestGraphQLOperationsRequireLiteralContext(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "client.ts", `export function loadViewer(id: string): unknown {
+  return gql`+"`"+`query GetViewer($id: ID!) { viewer { id } }`+"`"+`;
+}
+
+export function plainString(): unknown {
+  return request("mutation UpdateUser($id: ID!) { updateUser(id: $id) { id } }");
+}
+
+export class Repo {
+  query() {
+    return 1;
+  }
+}
+`)
+	writeFile(t, repo, "client.py", `def fetch(client):
+    """Run a query against the API and query the cache for results."""
+    return client.execute("""
+        query ListUsers { users { id } }
+    """)
+`)
+	snapshot, err := BuildProviderSnapshot(t.Context(), repo, "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, relation := range snapshot.Relations {
+		if relation.Type != "HANDLES_GRAPHQL" {
+			continue
+		}
+		from := relation.FromID[strings.LastIndex(relation.FromID, ":")+1:]
+		to := relation.ToID
+		found[from+" => "+to[strings.Index(to, "graphql:")+len("graphql:"):]] = true
+	}
+	// A tagged template, a plain string argument and a Python triple-quoted
+	// literal are all real embeddings and must be found.
+	for _, want := range []string{
+		"loadViewer => query GetViewer",
+		"loadViewer => query viewer",
+		"plainString => mutation UpdateUser",
+		"fetch => query ListUsers",
+		"fetch => query users",
+	} {
+		if !found[want] {
+			t.Errorf("missing real GraphQL boundary %q; got %v", want, sortedKeysOf(found))
+		}
+	}
+	// Prose in the same docstring, and a method that merely looks like an
+	// operation, must produce nothing.
+	for key := range found {
+		for _, forbidden := range []string{"query the", "query against", "query return", "query cache"} {
+			if strings.Contains(key, forbidden) {
+				t.Errorf("non-GraphQL text produced a boundary: %q", key)
+			}
+		}
+	}
+}
+
+// TestHostLanguageLiteralsSpansQuotingStyles covers the literal scanner the
+// precision fix depends on.
+func TestHostLanguageLiteralsSpansQuotingStyles(t *testing.T) {
+	literals := hostLanguageLiterals("a = `tpl\nspans lines`; b = \"double\"; c = 'single'; d = \"esc\\\"aped\";")
+	for _, want := range []string{"tpl\nspans lines", "double", "single"} {
+		if !slicesContain(literals, want) {
+			t.Errorf("missing literal %q in %v", want, literals)
+		}
+	}
+	// A quoted literal does not run past its line, so an unterminated quote
+	// cannot swallow the rest of a body.
+	if got := hostLanguageLiterals("x = \"unterminated\nquery Nope { a }"); slicesContain(got, "unterminated\nquery Nope { a }") {
+		t.Errorf("an unterminated quote swallowed following lines: %v", got)
+	}
+	// Python triple quotes are one literal, newlines included.
+	if got := hostLanguageLiterals(`x = """query Doc { a }"""`); !slicesContain(got, "query Doc { a }") {
+		t.Errorf("triple-quoted literal not captured: %v", got)
+	}
+}
