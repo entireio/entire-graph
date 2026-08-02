@@ -50,7 +50,8 @@ func astParameterNames(node *sitter.Node, src []byte) ([]string, bool) {
 
 // astSignatureTypeTexts returns the parameter-type and return-type source text
 // of a callable, read from the parse tree. It reports false when the grammar
-// exposes no parameter list, leaving the caller on splitSignatureTypes.
+// exposes neither a parameter list nor the bare `parameter` children Swift uses
+// in place of one, leaving the caller on splitSignatureTypes.
 //
 // The signature-string parser it replaces anchors on the FIRST `(` and, for
 // languages it has no case for, guesses the return type as the second-to-last

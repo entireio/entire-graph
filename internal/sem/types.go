@@ -460,7 +460,9 @@ func templateLiteralTag(runes []rune, backtick int) string {
 		return ""
 	}
 	end := backtick
-	for end > 0 && isJSIdentifierPart(byte(runes[end-1])) && runes[end-1] < 128 {
+	// The ASCII check comes first: isJSIdentifierPart takes a byte, so a
+	// non-ASCII rune would be truncated before it is rejected.
+	for end > 0 && runes[end-1] < 128 && isJSIdentifierPart(byte(runes[end-1])) {
 		end--
 	}
 	return string(runes[end:backtick])
