@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "68a02039f76d",
+  "strategy": "manual-commit",
+  "branch": "claude/tree-sitter-parameter-names",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/68/a02039f76d/0/metadata.json",
+      "transcript": "/68/a02039f76d/0/full.jsonl",
+      "compact_transcript": "/68/a02039f76d/0/transcript.jsonl",
+      "content_hash": "/68/a02039f76d/0/content_hash.txt",
+      "prompt": "/68/a02039f76d/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1322,
+    "cache_creation_tokens": 4053132,
+    "cache_read_tokens": 267371368,
+    "output_tokens": 432198,
+    "api_call_count": 690
+  }
+}
