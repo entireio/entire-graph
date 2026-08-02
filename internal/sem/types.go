@@ -388,8 +388,14 @@ func serviceBoundaryScanLanguage(language string) bool {
 // `query the columns` in a docstring, `query string` in a comment, and — for
 // the selection-set pattern, which looks for `<keyword> <name>? (…)? {` — an
 // ordinary method named `query() { … }`. Confining the scan to literals removes
-// the code and comment cases structurally, and requiring a selection set inside
-// the literal removes the prose ones.
+// the bare-code case structurally, and requiring a selection set inside the
+// literal removes the prose.
+//
+// It does NOT remove comments: this walks raw source, so a quoted string inside
+// a comment is still a literal to it, and a commented-out operation complete
+// with a selection set would still be reported. Stripping comments first was
+// rejected as the cure being worse — a `//` inside a URL in a string would
+// truncate the literal that carries the operation.
 //
 // Whole literals are returned rather than spans because the callers match
 // against the document, and a returned literal is the unit that either is or is
@@ -446,8 +452,9 @@ type hostLanguageLiteral struct {
 }
 
 // templateLiteralTag returns the identifier immediately preceding a backtick,
-// which is the tag of a tagged template (`gql`, `graphql`, `graphql.experimental`
-// and so on reduce to their last segment).
+// which is the tag of a tagged template. Only the final identifier segment is
+// read, so a dotted tag such as `graphql.experimental` reports `experimental`
+// and is therefore NOT treated as a GraphQL document — see graphqlDocumentTag.
 func templateLiteralTag(runes []rune, backtick int) string {
 	if backtick <= 0 || runes[backtick] != '`' {
 		return ""
@@ -498,6 +505,12 @@ func graphqlShorthandRootFields(text string) []string {
 	}
 	close := matchingBraceOffset(trimmed, 0)
 	if close < 0 {
+		return nil
+	}
+	// "Nothing but a selection set" has to mean it: content after the closing
+	// brace makes this something else, and treating it as shorthand anyway
+	// would reintroduce the false positives the literal rule just removed.
+	if strings.TrimSpace(trimmed[close+1:]) != "" {
 		return nil
 	}
 	return graphqlRootSelectionFields(trimmed[1:close])

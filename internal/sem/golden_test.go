@@ -475,8 +475,10 @@ func TestImportCapabilityMatchesScannerRegistry(t *testing.T) {
 		if !importCapableExtension(extension) {
 			t.Errorf("%s has an import scanner but is not reported import-capable", extension)
 		}
-		if got := importsFor("file"+extension, ""); got == nil && len(got) != 0 {
-			t.Errorf("%s scanner returned a malformed result", extension)
+		// Empty content must yield no imports rather than panicking: the scanners
+		// run over whatever the reader returns, including a file it could not read.
+		if got := importsFor("file"+extension, ""); len(got) != 0 {
+			t.Errorf("%s scanner returned %v for empty content", extension, got)
 		}
 	}
 	// Extensions that parse but carry no imports must stay non-capable; a
