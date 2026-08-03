@@ -67,6 +67,8 @@ type searchFlags struct {
 	BodyHeadRanks         int
 	EnclosureContextLines int
 	HeadWindowLines       int
+	FullUnitTop           int
+	EditSiteBodies        bool
 	FileOutline           bool
 	Deep                  bool
 	// The reference blocks, off unless asked for. See SearchOptions in internal/sem/search.go for
@@ -173,6 +175,8 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		BodyHeadRanks:         flags.BodyHeadRanks,
 		EnclosureContextLines: flags.EnclosureContextLines,
 		HeadWindowLines:       flags.HeadWindowLines,
+		FullUnitTop:           flags.FullUnitTop,
+		EditSiteBodies:        flags.EditSiteBodies,
 		IncludeFileOutline:    flags.FileOutline,
 		Deep:                  flags.Deep,
 
@@ -544,7 +548,14 @@ func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result s
 		fmt.Fprintf(out, " signals=%s\n", strings.Join(result.Signals, ","))
 		return
 	}
-	fmt.Fprintf(out, " signals=%s\n%s\n\n", strings.Join(result.Signals, ","), result.Snippet)
+	fmt.Fprintf(out, " signals=%s\n%s\n", strings.Join(result.Signals, ","), result.Snippet)
+	// A forced unit the safety cap clipped says which of its own lines are missing, on its OWN line
+	// after the body. Never interleaved: agents copy body text verbatim as an Edit anchor (see the
+	// focus= comment above), so a marker inside the source turns a navigation aid into a broken patch.
+	if note := sem.SearchUnitElisionNote(start, end, result.UnitStartLine, result.UnitEndLine); note != "" {
+		fmt.Fprintf(out, "%s\n", note)
+	}
+	fmt.Fprintln(out)
 }
 
 // searchResultPrintedRange is the range of the source that follows on the next
@@ -633,9 +644,21 @@ func searchResultLocatorLine(result sem.SearchResult) int {
 	return result.StartLine
 }
 
+// The test is "did the allocator deliberately widen this result", not "is it a whole callable", and
+// the three signals below are the three ways it can have done so. Two of them were being dropped:
+//
+//   - full-unit: --full-unit-top may reach a rank below the full-snippet tier, and a clipped forced
+//     unit carries full-unit WITHOUT complete-symbol.
+//   - head-window: the allocator's fallback for a head rank with no enclosable callable. Measured on
+//     fmtlib__fmt-2457 the allocator seated a 60-line window (1,709 B) at rank 3 and this function
+//     then reported "no body", so the renderer printed `include/fmt/ranges.h:682` and threw the whole
+//     window away — bytes spent, budget charged, nothing delivered.
+//
+// Both only ever occur when a flag asked for them, so the default payload is unchanged.
 func searchResultCarriesCompleteBody(result sem.SearchResult) bool {
 	for _, signal := range result.Signals {
-		if signal == sem.CompleteSymbolSignal {
+		switch signal {
+		case sem.CompleteSymbolSignal, sem.FullUnitSignal, sem.HeadWindowSignal:
 			return true
 		}
 	}
@@ -1322,6 +1345,18 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 				return flags, nil, err
 			}
 			flags.EnclosureContextLines, i = value, next
+		// --full-unit-top N: render the first N ranks as their complete enclosing unit whatever the
+		// opportunistic body upgrade would have done. 0 (the default) is today's payload exactly.
+		// See SearchOptions.FullUnitTop and the editability comment in internal/sem/search_enclosure.go.
+		case "--full-unit-top":
+			value, next, err := searchNonNegativeIntFlag(args, i)
+			if err != nil {
+				return flags, nil, err
+			}
+			flags.FullUnitTop, i = value, next
+		// --edit-site-bodies: give the SAME-CONCEPT LITERAL block's EDIT sites their source.
+		case "--edit-site-bodies":
+			flags.EditSiteBodies = true
 		case "--max-regions-per-file":
 			value, next, err := searchPositiveIntFlag(args, i)
 			if err != nil {

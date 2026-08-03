@@ -98,6 +98,28 @@ type SearchOptions struct {
 	// payload file land a median 109 lines from anything printed — 47 of 53 inside another symbol the
 	// graph already indexes in that file.
 	IncludeFileOutline bool
+	// FullUnitTop makes the first N ranks come back as their COMPLETE enclosing unit — function,
+	// method, or type/container declaration — bypassing every condition the opportunistic body
+	// upgrade applies (see the editability comment in search_enclosure.go). 0 = off, and off is
+	// byte-for-byte today's payload.
+	//
+	// It is the editability lever, and editability is a different measurement from recall: on the
+	// R30PUB benchmark payloads the share of needed edits whose replaced text appears VERBATIM in
+	// the payload is ~11%, while the gold FILE is usually ranked. The misses are the three
+	// suppression conditions (no enclosable callable, the 160-line cap, and no demotable tail at
+	// small --top-k), not the ranking.
+	//
+	// N >= 2 reaches rank 2 only when rank 2's score is still within searchFullUnitGapRatio of
+	// rank 1's: one forced unit per genuinely ambiguous answer, not N bodies per search.
+	FullUnitTop int
+	// EditSiteBodies attaches source to the EDIT-role sites of the SAME-CONCEPT LITERAL block: the
+	// enclosing unit when one is resolvable, else a bounded window around the site. CONSUMER and DOC
+	// sites stay file:line-only — a consumer is listed precisely so an agent does NOT open it.
+	//
+	// Off by default because it is an additive block and the default block is sized at 560 B. When
+	// it is on, the block's cap rises to searchLiteralEditBodyClusterMaxBytes and its cost is
+	// reported in stats.literal_cluster_bytes like every other block's.
+	EditSiteBodies bool
 	// EnclosureContextLines pads the rank-1 complete body with this many source lines on each
 	// side. 0 means no padding (the body's exact symbol bounds).
 	//
@@ -165,6 +187,13 @@ type SearchResult struct {
 	// case; when it is present the snippet is the verbatim, unelided text of the whole range,
 	// which is the fact that stops a reader spending a turn bridging the gap itself.
 	MergedRanks []int `json:"merged_ranks,omitempty"`
+	// UnitStartLine/UnitEndLine are the TRUE span of the enclosing unit when --full-unit-top asked
+	// for that unit whole and searchFullUnitMaxLines clipped it. They are set ONLY on a clipped
+	// forced unit — their absence is the ordinary case and means the printed span IS the unit — and
+	// they exist so a reader can be told which of the unit's own lines are missing rather than
+	// discovering it by opening the file. Schema 1.x additive.
+	UnitStartLine int `json:"unit_start_line,omitempty"`
+	UnitEndLine   int `json:"unit_end_line,omitempty"`
 	// There is deliberately no per-result `Neighbors` list here. "The types this hit is
 	// written in terms of" is answered once, by the signature-type block (search_sigtypes.go),
 	// and "the other places this change lands" by the related-site block
@@ -887,9 +916,14 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// HeadWindowLines: a head rank with no enclosable callable falls back to a bounded read
 	// window instead of a two-line locator. 0 disables it (previous behaviour exactly).
 	headWindowLines := options.HeadWindowLines
+	// FullUnitTop: the first N ranks come back as their complete enclosing unit whatever the
+	// opportunistic conditions say. Resolved against the SEATED ranking, because the gap heuristic
+	// that admits rank 2 is a statement about the scores the caller will actually read.
+	fullUnitRanks := searchFullUnitForceRanks(results, options.FullUnitTop)
 	enclosures := planSearchEnclosures(
 		results, symbolsByID, symbolsByFile, read,
 		defaultSearchEnclosureMaxLines, options.EnclosureContextLines, bodyHeadRanks, headWindowLines,
+		fullUnitRanks,
 	)
 	results, completeSymbols, locators := allocateSearchSnippets(
 		results, enclosures, options.MaxContextBytes, searchEnclosureGrowthBytes,
@@ -983,7 +1017,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		stats.ClosedSetBytes = searchClosedSetCost(closedSet)
 	}
 	literalCluster := buildSearchLiteralCluster(
-		results, q, symbolsByFile, needleIndex, searchLiteralClusterMaxBytes,
+		results, q, symbolsByFile, needleIndex, searchLiteralClusterMaxBytes, options.EditSiteBodies,
 	)
 	if literalCluster != nil {
 		stats.LiteralClusterBytes = searchLiteralClusterCost(literalCluster)

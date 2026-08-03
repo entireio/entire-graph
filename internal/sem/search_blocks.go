@@ -190,7 +190,14 @@ func validateSearchContextBlockBudget(response SearchResponse) error {
 		bytes int
 		cap   int
 	}{
-		{name: "literal cluster", bytes: stats.LiteralClusterBytes, cap: searchLiteralClusterMaxBytes},
+		// The literal cluster's cap depends on what the block CARRIES, not on what the caller asked
+		// for: --edit-site-bodies raises it to searchLiteralEditBodyClusterMaxBytes, and the same
+		// derivation the fitter used is applied here so the two can never disagree.
+		{
+			name:  "literal cluster",
+			bytes: stats.LiteralClusterBytes,
+			cap:   searchLiteralClusterCap(response.LiteralCluster, searchLiteralClusterMaxBytes),
+		},
 		{name: "verify command", bytes: stats.VerifyCommandBytes, cap: searchVerifyCommandMaxBytes},
 		{name: "closed set", bytes: stats.ClosedSetBytes, cap: searchClosedSetMaxBytes},
 	} {

@@ -398,7 +398,7 @@ func TestSearchLiteralClusterRefusesALexicalMagnet(t *testing.T) {
 			t.Parallel()
 			results, q, symbolsByFile, index := searchLiteralMagnetFixture(testCase.files)
 			cluster := buildSearchLiteralCluster(results, q, symbolsByFile, index,
-				searchLiteralClusterMaxBytes)
+				searchLiteralClusterMaxBytes, false)
 			if (cluster != nil) != testCase.want {
 				t.Fatalf("cluster present = %v, want %v (%s)", cluster != nil, testCase.want,
 					RenderSearchLiteralCluster(cluster))
