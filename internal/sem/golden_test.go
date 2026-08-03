@@ -71,6 +71,93 @@ class Dog extends Animal {
 	}
 }
 
+// TestSnapshotFormatsAreByteDeterministicWhenRelationsDeduplicate exercises
+// the streaming dedup boundary with several DATA_FLOWS candidates that share
+// one public relation identity. The chosen evidence must be canonical, not the
+// first value encountered while ranging a Go map, because both native and
+// first-seen-dictionary compact output inherit that choice byte for byte.
+func TestSnapshotFormatsAreByteDeterministicWhenRelationsDeduplicate(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "flow.go", `package flow
+
+func sink(alpha, bravo, charlie, delta, echo, foxtrot, golf, hotel int) {}
+
+func caller(alpha, bravo, charlie, delta, echo, foxtrot, golf, hotel int) {
+	sink(alpha, bravo, charlie, delta, echo, foxtrot, golf, hotel)
+}
+`)
+
+	type capture struct {
+		bytes        []byte
+		hash         string
+		summary      SnapshotSummary
+		flowEvidence string
+	}
+	captureFormat := func(t *testing.T, compact bool) capture {
+		t.Helper()
+		var out bytes.Buffer
+		var encode func(any) error
+		if compact {
+			encode = NewCompactSnapshotEncoder(&out).Encode
+		} else {
+			encoder := json.NewEncoder(&out)
+			encoder.SetEscapeHTML(false)
+			encode = encoder.Encode
+		}
+		hasher := NewSnapshotSemanticHasher()
+		var summary SnapshotSummary
+		var flowEvidence string
+		err := StreamSnapshot(t.Context(), repo, "determinism-test", ProviderSnapshotOptions{Worktree: true, Profile: ProfileFull}, func(record any) error {
+			switch typed := record.(type) {
+			case SnapshotSummary:
+				summary = typed
+			case RelationRecord:
+				if typed.Type == "DATA_FLOWS" && lastSegment(typed.FromID) == "caller" && lastSegment(typed.ToID) == "sink" && len(typed.Evidence) == 1 {
+					flowEvidence = typed.Evidence[0].Detail
+				}
+			}
+			if err := hasher.Add(record); err != nil {
+				return err
+			}
+			return encode(record)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return capture{bytes: append([]byte(nil), out.Bytes()...), hash: hasher.SumHex(), summary: summary, flowEvidence: flowEvidence}
+	}
+
+	for _, testCase := range []struct {
+		name    string
+		compact bool
+	}{
+		{name: "native", compact: false},
+		{name: "compact", compact: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			first := captureFormat(t, testCase.compact)
+			if first.summary.Stats.Symbols != 2 || first.summary.Stats.Relations == 0 {
+				t.Fatalf("fixture stats = %#v, want 2 symbols and at least one relation", first.summary.Stats)
+			}
+			if first.flowEvidence != "alpha -> sink()" {
+				t.Fatalf("canonical DATA_FLOWS evidence = %q, want %q", first.flowEvidence, "alpha -> sink()")
+			}
+			for run := 2; run <= 32; run++ {
+				next := captureFormat(t, testCase.compact)
+				if !reflect.DeepEqual(next.summary, first.summary) {
+					t.Fatalf("run %d summary changed\n got=%#v\nwant=%#v", run, next.summary, first.summary)
+				}
+				if next.hash != first.hash {
+					t.Fatalf("run %d semantic hash = %s, want %s", run, next.hash, first.hash)
+				}
+				if !bytes.Equal(next.bytes, first.bytes) {
+					t.Fatalf("run %d output differs from run 1", run)
+				}
+			}
+		})
+	}
+}
+
 // TestStreamSnapshotStreamsIncrementally proves the streaming contract: a lean
 // header is emitted first (before parsing finishes), file and symbol records are
 // emitted before relation resolution produces any relation, and a trailing
