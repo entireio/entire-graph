@@ -1,0 +1,5 @@
+When I look at https://github.com/entireio/entire-graph, GitHub says "Your main branch isn't protected". Fix this.
+
+---
+
+Push an empty commit to wrap this session
