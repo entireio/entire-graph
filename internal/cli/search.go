@@ -69,6 +69,7 @@ type searchFlags struct {
 	HeadWindowLines       int
 	FullUnitTop           int
 	EditSiteBodies        bool
+	CalleeHop             bool
 	FileOutline           bool
 	Deep                  bool
 	// The reference blocks, off unless asked for. See SearchOptions in internal/sem/search.go for
@@ -177,6 +178,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		HeadWindowLines:       flags.HeadWindowLines,
 		FullUnitTop:           flags.FullUnitTop,
 		EditSiteBodies:        flags.EditSiteBodies,
+		CalleeHop:             flags.CalleeHop,
 		IncludeFileOutline:    flags.FileOutline,
 		Deep:                  flags.Deep,
 
@@ -509,7 +511,10 @@ func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result s
 	// A block that carries no relevance score must not print one. The covering test is not a
 	// ranked answer — it is the statement of what the fix has to achieve — and `score=0.0000`
 	// beside it reads as "worthless" rather than "not applicable".
-	if result.Section != sem.SearchSectionCoveringTest {
+	// A callee-hop entry is excluded for the same reason: it was admitted by a CALLS edge, not by
+	// relevance, so it carries no ranked score and `score=0.0000` beside it would read as
+	// "worthless" rather than "not applicable". The signals list already says why it is here.
+	if result.Section != sem.SearchSectionCoveringTest && !searchResultIsCalleeHop(result) {
 		fmt.Fprintf(out, " score=%.4f", result.Score)
 	}
 	if name != "" {
@@ -655,10 +660,19 @@ func searchResultLocatorLine(result sem.SearchResult) int {
 //     window away — bytes spent, budget charged, nothing delivered.
 //
 // Both only ever occur when a flag asked for them, so the default payload is unchanged.
+func searchResultIsCalleeHop(result sem.SearchResult) bool {
+	for _, signal := range result.Signals {
+		if signal == sem.CalleeHopSignal {
+			return true
+		}
+	}
+	return false
+}
+
 func searchResultCarriesCompleteBody(result sem.SearchResult) bool {
 	for _, signal := range result.Signals {
 		switch signal {
-		case sem.CompleteSymbolSignal, sem.FullUnitSignal, sem.HeadWindowSignal:
+		case sem.CompleteSymbolSignal, sem.FullUnitSignal, sem.HeadWindowSignal, sem.CalleeHopSignal:
 			return true
 		}
 	}
@@ -1357,6 +1371,11 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 		// --edit-site-bodies: give the SAME-CONCEPT LITERAL block's EDIT sites their source.
 		case "--edit-site-bodies":
 			flags.EditSiteBodies = true
+		// --callee-hop: admit the top hit's outgoing CALLS targets as candidate fix sites. See
+		// internal/sem/search_callee.go for the measured miss it closes and why the related-sites
+		// block cannot.
+		case "--callee-hop":
+			flags.CalleeHop = true
 		case "--max-regions-per-file":
 			value, next, err := searchPositiveIntFlag(args, i)
 			if err != nil {

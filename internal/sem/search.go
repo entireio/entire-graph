@@ -112,6 +112,17 @@ type SearchOptions struct {
 	// N >= 2 reaches rank 2 only when rank 2's score is still within searchFullUnitGapRatio of
 	// rank 1's: one forced unit per genuinely ambiguous answer, not N bodies per search.
 	FullUnitTop int
+	// CalleeHop admits the top hit's OUTGOING CALLS targets as candidate fix sites — up to three,
+	// same-repo and resolved only. Off by default.
+	//
+	// It is the answer to what --full-unit-top could not reach. Measured over eight R30PUB instances
+	// with the unit levers on, 8 of 12 code-gold files were ranked and 0 carried the gold hunk
+	// verbatim, and in every ranked case the printed unit and the gold unit were different callables
+	// of the same file — usually the ranked hit being a thin entry point and the gold being the
+	// helper it calls (redis__redis-10095: lpopCommand ranked, gold inside popGenericCommand, one
+	// CALLS edge away in the same file). search_related.go excludes outgoing CALLS by design; see
+	// search_callee.go for why its stated substitute (co-members of the same unit) cannot cover this.
+	CalleeHop bool
 	// EditSiteBodies attaches source to the EDIT-role sites of the SAME-CONCEPT LITERAL block: the
 	// enclosing unit when one is resolvable, else a bounded window around the site. CONSUMER and DOC
 	// sites stay file:line-only — a consumer is listed precisely so an agent does NOT open it.
@@ -257,6 +268,11 @@ type SearchStats struct {
 	// (search_span_merge.go). It is reported for the same reason every other allocation
 	// decision is: a payload that shows fewer blocks than the ranking produced must say so.
 	MergedSpans int `json:"merged_spans,omitempty"`
+	// CalleeHopSites counts candidate fix sites admitted by the callee hop (--callee-hop): units the
+	// top hit CALLS. It is reported separately from RelatedSites because it is a separate, gated
+	// route with a different funding rule — see search_callee.go — and because a payload has to be
+	// attributable to the lever that shaped it.
+	CalleeHopSites int `json:"callee_hop_sites,omitempty"`
 	// RelatedSites counts entries in the related-site block: the other places the top hit's
 	// change usually has to land (callers, sibling implementations, near-duplicate bodies).
 	// They are funded out of the tail of the ranking, so this count also says how much of the
@@ -934,6 +950,41 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// Truncation is measured against the ranking, by rank, so it has to be read off the
 	// allocator's output BEFORE the related-site block renumbers the payload.
 	truncated := countBudgetTruncatedResults(ranked, results)
+	// The callee hop runs HERE, and the position is load-bearing at both ends. After the truncation
+	// counter, so that counter still describes what the ALLOCATOR did (it is read by rank, and the
+	// hop only inserts new ranks, so an inserted entry is skipped rather than miscounted). Before the
+	// span merge, so a callee in the anchor's own file — the commonest and most useful case — can be
+	// folded into one contiguous span with its caller instead of arriving as a second excerpt of the
+	// same file with a hole between them.
+	if options.CalleeHop {
+		hopCache := newSearchRelatedFileCache(read, searchRelatedCandidateLimit)
+		sites := selectSearchCalleeHopSites(
+			results, q, snapshot.Relations, symbolsByID, symbolsByFile, hopCache,
+			searchCalleeHopRanks(results), searchCalleeHopSiteLimit,
+		)
+		// Bodies follow the other levers rather than inventing a third policy; see
+		// searchCalleeHopResult.
+		withBody := fullUnitRanks > 0 || options.EditSiteBodies
+		entries := make([]SearchResult, 0, len(sites))
+		anchorIndexes := make([]int, 0, len(sites))
+		for _, site := range sites {
+			lines, ok := hopCache.get(site.symbol.FilePath)
+			if !ok {
+				continue
+			}
+			entry, ok := searchCalleeHopResult(site, lines, withBody)
+			if !ok {
+				continue
+			}
+			entries = append(entries, entry)
+			anchorIndexes = append(anchorIndexes, site.anchorIndex)
+		}
+		results, stats.CalleeHopSites = mergeSearchCalleeHopSites(
+			results, entries, anchorIndexes, options.MaxContextBytes,
+			minInt(searchEnclosureTailSnippetLines, options.MaxSnippetLines),
+			maxInt(fullUnitRanks, 1),
+		)
+	}
 	// Two printed bodies of one file with a small hole between them are one region as far as the
 	// reader is concerned, and the hole is what it spends a turn closing: measured over 113 Opus
 	// payloads, 40% carry such a pair, and the tool makes +19.6% MORE Read calls than the no-tool

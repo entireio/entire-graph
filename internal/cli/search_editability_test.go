@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -231,5 +232,113 @@ func handle(code string) string {
 	// And the flag must be accepted and change nothing else about the run.
 	if got := run("--edit-site-bodies"); got == "" {
 		t.Fatal("--edit-site-bodies produced no payload")
+	}
+}
+
+func TestParseSearchFlagsLeavesTheCalleeHopOff(t *testing.T) {
+	t.Parallel()
+	off, _, err := parseSearchFlags([]string{"--query", "x"})
+	if err != nil {
+		t.Fatalf("parseSearchFlags: %v", err)
+	}
+	if off.CalleeHop {
+		t.Fatal("--callee-hop is on by default")
+	}
+	on, _, err := parseSearchFlags([]string{"--query", "x", "--callee-hop"})
+	if err != nil || !on.CalleeHop {
+		t.Fatalf("--callee-hop did not take: err=%v value=%v", err, on.CalleeHop)
+	}
+}
+
+// TestSearchTextPrintsNoScoreOnACalleeHop pins the header. A callee-hop entry was admitted by a CALLS
+// edge, not by relevance, so it carries no ranked score — and `score=0.0000` beside a real fix site
+// reads as "worthless" rather than "not applicable", which is exactly why the covering test is
+// excluded from the score column too.
+func TestSearchTextPrintsNoScoreOnACalleeHop(t *testing.T) {
+	t.Parallel()
+	hop := sem.SearchResult{
+		Rank: 2, FilePath: "src/t_list.c", StartLine: 489, EndLine: 535, FocusLine: 489,
+		SnippetStartLine: 489, SnippetEndLine: 535, Snippet: "void popGenericCommand(client *c) {\n}",
+		SymbolName: "popGenericCommand", Kind: "function",
+		Signals: []string{sem.CalleeHopSignal, sem.FullUnitSignal, sem.CompleteSymbolSignal},
+	}
+	var out bytes.Buffer
+	writeTextSearchResult(&out, hop, true)
+	rendered := out.String()
+	if strings.Contains(rendered, "score=") {
+		t.Fatalf("a callee hop printed a ranked score:\n%s", rendered)
+	}
+	for _, want := range []string{
+		"2. src/t_list.c:489-535 symbol=popGenericCommand", sem.CalleeHopSignal, "void popGenericCommand",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("render is missing %q:\n%s", want, rendered)
+		}
+	}
+	// It also survives the tier a rank past the second gets — the entry was paid for, so it must
+	// never come back as a bare locator.
+	var terse bytes.Buffer
+	writeTextSearchResult(&terse, hop, false)
+	if !strings.Contains(terse.String(), "void popGenericCommand") {
+		t.Fatalf("a callee hop past the full-snippet tier lost its body:\n%s", terse.String())
+	}
+}
+
+// TestSearchCommandCalleeHopReachesTheCalledHelper runs the whole command on the measured shape: a
+// thin entry point ranked, the gold inside the helper it calls, in a file with far more top-level
+// members than searchRelatedUnitMemberLimit so the related block's co-member route is off.
+func TestSearchCommandCalleeHopReachesTheCalledHelper(t *testing.T) {
+	repo := t.TempDir()
+	// The entry point first, the helper it delegates to at the far end of the file, and enough
+	// unrelated members between them that (a) the co-member route switches off — its limit is
+	// searchRelatedUnitMemberLimit — and (b) the span merge cannot bridge the two, which is the
+	// arrangement the measured instance has (88 lines and ~40 functions apart in src/t_list.c).
+	var source strings.Builder
+	source.WriteString("package pop\n\n")
+	source.WriteString("func lpopCommand() string {\n\treturn popGenericCommand(0)\n}\n\n")
+	for filler := 0; filler < 40; filler++ {
+		source.WriteString("func filler" + strconv.Itoa(filler) + "() int {\n\treturn " +
+			strconv.Itoa(filler) + "\n}\n\n")
+	}
+	source.WriteString("// popGenericCommand does the work for every pop entry point.\n")
+	source.WriteString("func popGenericCommand(where int) string {\n")
+	source.WriteString("\tif where == 0 {\n")
+	source.WriteString("\t\treturn sharedNullBulk // the line an edit has to replace\n")
+	source.WriteString("\t}\n")
+	source.WriteString("\treturn sharedNullArray\n")
+	source.WriteString("}\n")
+	write(t, repo, "pop.go", source.String())
+	write(t, repo, "shared.go", "package pop\n\nvar sharedNullBulk = \"$-1\"\nvar sharedNullArray = \"*-1\"\n")
+
+	run := func(extra ...string) string {
+		var out bytes.Buffer
+		args := append([]string{
+			"search", "--repo", repo, "--query", "lpopCommand returns null bulk instead of null array",
+			// --top-k 1 is the point of the test, not a convenience: on a two-file fixture the
+			// ranker's own graph:calls expansion reaches the callee by itself, so the only way to
+			// exercise THIS route is a ranking that has room for the entry point and nothing else —
+			// which is also the real shape, where the expansion is candidate-limited and the callee
+			// did not survive it.
+			"--format", "text", "--profile", "full", "--worktree", "--top-k", "1",
+			"--index-all-files", "--max-snippet-lines", "2",
+		}, extra...)
+		if err := Run(t.Context(), Options{
+			Version: "0.1.0", Env: EntireEnv{RepoRoot: repo}, Stdout: &out,
+		}, args); err != nil {
+			t.Fatalf("search %v: %v", extra, err)
+		}
+		return out.String()
+	}
+
+	hopped := run("--full-unit-top", "1", "--callee-hop")
+	if !strings.Contains(hopped, sem.CalleeHopSignal) {
+		t.Fatalf("--callee-hop admitted nothing:\n%s", hopped)
+	}
+	// The whole point: the line an edit replaces is in the payload verbatim.
+	if !strings.Contains(hopped, "return sharedNullBulk // the line an edit has to replace") {
+		t.Fatalf("the called helper's gold line is absent:\n%s", hopped)
+	}
+	if strings.Contains(run("--full-unit-top", "1"), sem.CalleeHopSignal) {
+		t.Fatal("a callee hop appeared without --callee-hop")
 	}
 }
