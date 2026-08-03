@@ -923,7 +923,16 @@ func returnFlowCalls(block string, params map[string]bool) []returnFlowCall {
 		if out[i].Name != out[j].Name {
 			return out[i].Name < out[j].Name
 		}
-		return out[i].EvidenceKind < out[j].EvidenceKind
+		if out[i].EvidenceKind != out[j].EvidenceKind {
+			return out[i].EvidenceKind < out[j].EvidenceKind
+		}
+		if out[i].Detail != out[j].Detail {
+			return out[i].Detail < out[j].Detail
+		}
+		if out[i].Direction != out[j].Direction {
+			return out[i].Direction < out[j].Direction
+		}
+		return out[i].Reason < out[j].Reason
 	})
 	return out
 }
