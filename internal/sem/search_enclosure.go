@@ -115,6 +115,68 @@ const (
 	// searchFullUnitElidedSignal marks a forced unit the safety cap clipped.
 	searchFullUnitElidedSignal = "unit-elided"
 
+	// MEASURED FAILURE THAT SIZED THE TWO BOUNDS BELOW. On a 50-instance replay, --full-unit-top 2
+	// with --edit-site-bodies made gold coverage WORSE (losers 28% -> 16% against the control), and the
+	// mechanism was funding, not retrieval: forcing a unit on a non-gold rank 1/2 exhausted the 24 kB
+	// ceiling and demoted a LOWER rank that had been carrying a complete gold-covering body down to a
+	// bare locator. On redis__redis-11734 the control gave rank 4 the whole `bitposCommand`
+	// (src/bitops.c:882-1008, complete-symbol) and the forced run turned it into
+	// `4. src/bitops.c:882 bitposCommand` with no source at all, losing three gold hunks — paid for by
+	// a 273-line type at rank 2 on another instance and a 61-line header window here.
+	//
+	// The fix is an INVARIANT, enforced in seatForcedSearchUnits: a forced unit may never reduce any
+	// other rank's rendered source. These two bounds are the second half of it — they stop the
+	// pathological growth at the source rather than only refusing to pay for it.
+
+	// searchForcedContainerMaxLines admits a NON-CALLABLE unit (a class, a type, a config section, a
+	// table) only when the whole thing is this small. A container is the unit an agent edits only when
+	// it is small enough to read as one thing: the win this route was built for is
+	// rubocop__rubocop-13680, where rank 1 is a FIVE-line `Style/RedundantLineContinuation` section of
+	// config/default.yml that the opportunistic path refuses because its kind is not callable. The loss
+	// is facebook__docusaurus-9183, where the same bypass expanded the `DocusaurusConfig` type from 6
+	// lines to 273. 60 lines keeps the first and refuses the second.
+	searchForcedContainerMaxLines = 60
+
+	// searchForcedUnitMinLines is the floor on a forced unit that has to be CLIPPED to fit inside
+	// non-destructive funding. Below it the caller is being handed a window, which the ordinary
+	// allocator already provides for free and without the trade — so a unit that cannot reach this
+	// much is not forced at all and the pre-existing allocation stands.
+	searchForcedUnitMinLines = 40
+
+	// BUDGET-DRIVEN RENDERING. The no-demotion invariant above is necessary and not sufficient: with the
+	// levers on, redis__redis-11734's payload SHRANK to 6,435 B while 74% of the 24,576 B ceiling sat
+	// UNSPENT — rank 4's 127-line gold body rendered as a 34 B locator with 18 kB free. Nothing was
+	// competing for those bytes; the allocator simply had no rule that says "spend them". Two rules were
+	// missing, and --max-snippet-lines was being read as the wrong one of the two.
+	//
+	//   - --max-snippet-lines is the FLOOR (the minimum context a hit carries), never a ceiling on how
+	//     far the allocator may expand it. Verified independently: the same query at
+	//     --max-snippet-lines 40 returns all 19 gold lines inside the same 24,576 B ceiling.
+	//   - a ranked hit must never render as a BARE LOCATOR while the budget can still hold its unit, or
+	//     a clipped window of at least searchBudgetWindowMinLines.
+	//
+	// So under any payload-shape lever the allocator plans an enclosure for EVERY ranked hit and then
+	// spends the remaining ceiling in rank order. It is still non-destructive: expansion only ever uses
+	// budget nothing else had claimed.
+
+	// searchBudgetWindowMinLines is the smallest window worth printing in place of a locator. Below it
+	// the reader gets neither the declaration nor the neighbourhood, and the locator at least costs
+	// nothing.
+	searchBudgetWindowMinLines = 20
+
+	// searchDeclarationWindowLines caps a window over DECLARATION-ONLY content — a prototype block, a
+	// header's extern list, an interface's member list. Such a region has no body to understand, so a
+	// wide window buys nothing: on redis__redis-11734 a src/server.h prototype block ballooned to 61
+	// lines / 2,156 B in the same payload that dropped a real function body.
+	searchDeclarationWindowLines = 10
+
+	// searchRenderedSnippetHeadRanks is how deep the TEXT renderer prints a snippet for a result the
+	// allocator did not upgrade. It mirrors internal/cli's searchTextFullRanks, and the duplication is
+	// deliberate: the allocator has to know which of its bytes the reader will actually SEE in order to
+	// tell dead weight from source, and internal/cli imports this package rather than the reverse.
+	// RenderedSnippetHeadRanks is exported so the renderer's own test asserts the two agree.
+	searchRenderedSnippetHeadRanks = 2
+
 	// searchFullUnitGapRatio decides whether --full-unit-top 2 actually reaches rank 2. A second
 	// forced unit is worth its bytes only when the ranking did NOT separate the two candidates: if
 	// rank 1 is clearly ahead, rank 2's body is a second answer to a question that already has one.
@@ -125,6 +187,11 @@ const (
 // FullUnitSignal is searchFullUnitSignal exported for renderers: a result carrying it was returned
 // as its enclosing unit on the caller's orders and must never be abbreviated on the way out.
 const FullUnitSignal = searchFullUnitSignal
+
+// RenderedSnippetHeadRanks is searchRenderedSnippetHeadRanks exported so the text renderer's test can
+// assert that the depth the allocator ASSUMES is printed is the depth that actually is. If the two
+// drift, the allocator starts reclaiming bytes a reader can see.
+const RenderedSnippetHeadRanks = searchRenderedSnippetHeadRanks
 
 // SearchUnitElisionNote renders the note a clipped unit carries: which of the unit's own lines are
 // NOT printed above it, and that the unit continues past what is. It returns "" when nothing was
@@ -371,6 +438,7 @@ func planSearchEnclosures(
 	bodyHeadRanks int,
 	windowLines int,
 	forceRanks int,
+	budgetDriven bool,
 ) []searchEnclosure {
 	if len(results) == 0 {
 		return nil
@@ -387,6 +455,15 @@ func planSearchEnclosures(
 	// A forced rank is planned even when it sits past the body head: the caller asked for that
 	// rank's unit, and the body-head depth is a budget judgement about the OPPORTUNISTIC upgrade.
 	planRanks := maxInt(bodyHeadRanks, forceRanks)
+	// BUDGET-DRIVEN RENDERING plans an enclosure for EVERY ranked hit, not just the head. The pool it
+	// operates over is the caller's own --top-k: budget decides which of those get bodies, so a caller
+	// who wants the gold unit that sits at rank 6-8 raises --top-k rather than relying on a hidden
+	// second pool. (Measured: gold appears by exact name at ranks 6-8 and is cut by --top-k 5 on
+	// astral-sh__ruff-15626 and faker-ruby__faker-2970, while 0 of 50 replayed payloads used even half
+	// the byte ceiling.) The extra planning costs one cached file read per rank and nothing else.
+	if budgetDriven {
+		planRanks = len(results)
+	}
 	enclosures := make([]searchEnclosure, len(results))
 	fileLines := map[string][]string{}
 	unreadable := map[string]bool{}
@@ -430,9 +507,33 @@ func planSearchEnclosures(
 			continue
 		}
 		if index >= bodyHeadRanks {
+			// Past the opportunistic head the ordinary allocator offers nothing. Under budget-driven
+			// rendering such a rank must still not come back as a bare locator while the ceiling can
+			// hold its unit, so it is planned exactly like a head rank: the enclosing callable when
+			// there is one, a worthwhile window when there is not.
+			if !budgetDriven {
+				continue
+			}
+			if hasCallable {
+				if start, end := clampRegion(symbol.StartLine, symbol.EndLine, len(lines)); start > 0 &&
+					end-start+1 <= maxLines && result.FocusLine >= start && result.FocusLine <= end &&
+					!(result.SnippetStartLine <= start && result.SnippetEndLine >= end) {
+					enclosures[index] = searchEnclosure{start: start, end: end, lines: lines, symbol: symbol}
+					continue
+				}
+			}
+			if window, ok := planBudgetSearchWindow(result, lines, windowLines); ok {
+				enclosures[index] = window
+			}
 			continue
 		}
 		if !hasCallable {
+			if budgetDriven {
+				if window, ok := planBudgetSearchWindow(result, lines, windowLines); ok {
+					enclosures[index] = window
+				}
+				continue
+			}
 			if windowLines > 0 {
 				if window, ok := planSearchHeadWindow(result, lines, windowLines); ok {
 					enclosures[index] = window
@@ -444,6 +545,12 @@ func planSearchEnclosures(
 		if start == 0 || end-start+1 > maxLines {
 			// Too large to return whole. A head rank still must not come back as two lines, so
 			// fall back to the bounded window rather than to a locator.
+			if budgetDriven {
+				if window, ok := planBudgetSearchWindow(result, lines, windowLines); ok {
+					enclosures[index] = window
+				}
+				continue
+			}
 			if windowLines > 0 {
 				if window, ok := planSearchHeadWindow(result, lines, windowLines); ok {
 					enclosures[index] = window
@@ -503,6 +610,15 @@ func planForcedSearchUnit(
 	if start == 0 {
 		return searchEnclosure{}, false
 	}
+	// SIZE-AWARE ADMISSION for the container bypass. Widening past searchEnclosableSymbolKind is what
+	// makes this route reach a config section or a small value type; it is also what let a 273-line
+	// interface declaration in and cost another rank its gold body. A container is the unit an agent
+	// edits only while it reads as one thing, so past searchForcedContainerMaxLines the caller falls
+	// back to whatever the ordinary path offers. Callables keep the far larger searchFullUnitMaxLines
+	// cap: a long function is still one editable thing.
+	if !searchEnclosableSymbolKind(symbol.Kind) && end-start+1 > searchForcedContainerMaxLines {
+		return searchEnclosure{}, false
+	}
 	// A forced unit must never print LESS source than the ranking already did. A symbol's recorded
 	// span starts at its declaration, while a ranked region routinely starts a line or two above it
 	// (the doc comment, a decorator, an attribute) — and that preamble is often the most useful thing
@@ -557,6 +673,43 @@ func planSearchHeadWindow(result SearchResult, lines []string, windowLines int) 
 		return searchEnclosure{}, false
 	}
 	return searchEnclosure{start: start, end: end, lines: lines, window: true}, true
+}
+
+// searchDeclarationOnlyRegion reports whether a span is declarations rather than code: a prototype
+// block, an extern list, an interface body. The test is structural and language-agnostic — a region
+// with essentially no block openers has no control flow, so there is nothing in it a wider window
+// would explain. It is deliberately conservative (a real body opens a block on its very first line),
+// so ordinary code is never mistaken for a declaration list.
+func searchDeclarationOnlyRegion(lines []string, start, end int) bool {
+	if start < 1 || end > len(lines) || end-start+1 < searchDeclarationWindowLines+2 {
+		return false
+	}
+	openers := 0
+	for _, line := range lines[start-1 : end] {
+		openers += strings.Count(line, "{")
+	}
+	return openers <= 1
+}
+
+// planBudgetSearchWindow is the fallback for a rank with no enclosable unit under budget-driven
+// rendering: a window wide enough to be worth printing instead of a locator, narrowed to
+// searchDeclarationWindowLines when the region is a declaration list.
+func planBudgetSearchWindow(result SearchResult, lines []string, windowLines int) (searchEnclosure, bool) {
+	if windowLines < searchBudgetWindowMinLines {
+		windowLines = searchBudgetWindowMinLines
+	}
+	window, ok := planSearchHeadWindow(result, lines, windowLines)
+	if !ok {
+		return searchEnclosure{}, false
+	}
+	if searchDeclarationOnlyRegion(lines, window.start, window.end) {
+		narrow, narrowed := planSearchHeadWindow(result, lines, searchDeclarationWindowLines)
+		if !narrowed {
+			return searchEnclosure{}, false
+		}
+		return narrow, true
+	}
+	return window, true
 }
 
 // widenSearchResultToEnclosure rewrites a result to carry the complete body of its enclosing
@@ -685,9 +838,14 @@ func searchResultsSize(sizes []int) int {
 //   - Among the plans that deliver the most complete bodies, the CHEAPEST is chosen, so the
 //     tail pays for a body before the growth allowance does and demotion never happens
 //     without buying something. Ties go to the plan that demotes fewest results.
+//   - `plain` is the enclosure plan the SAME inputs produce with --full-unit-top off. It is what makes
+//     the forced route non-destructive: the control allocation is computed from it, and a forced unit
+//     may then only spend what that allocation left. nil is accepted (the forced ranks simply get no
+//     control upgrade), so a caller that is not forcing passes nil.
 func allocateSearchSnippets(
 	results []SearchResult,
 	enclosures []searchEnclosure,
+	plain []searchEnclosure,
 	hardBudget, growth, headRanks, tailLines int,
 ) ([]SearchResult, int, int) {
 	if len(results) == 0 || len(enclosures) != len(results) {
@@ -699,11 +857,16 @@ func allocateSearchSnippets(
 	if growth < 0 {
 		growth = 0
 	}
-	// A forced unit is not a candidate the allocator prices; it is a decision the caller already
-	// made. It therefore gets its own seating pass, which pays out of the tail before it consults
-	// the growth allowance, and only then hands the remaining budget back to the greedy fill below.
+	// A forced unit is not a candidate the allocator prices; it is a decision the caller already made.
+	// It is therefore seated ON TOP OF the allocation this function would have produced WITHOUT it —
+	// `control` below — and may only spend budget the control plan left unused. See
+	// seatForcedSearchUnits for the invariant and the measurement that forced it.
 	if forcedEnd := forcedSearchEnclosureEnd(enclosures); forcedEnd > 0 {
-		return allocateForcedSearchUnits(results, enclosures, hardBudget, growth, headRanks, tailLines, forcedEnd)
+		control, bodies, demoted := allocateSearchSnippets(
+			results, unforcedSearchEnclosures(enclosures, plain), nil,
+			hardBudget, growth, headRanks, tailLines,
+		)
+		return seatForcedSearchUnits(control, results, enclosures, hardBudget, forcedEnd, bodies, demoted)
 	}
 	sizes := make([]int, len(results))
 	for index := range results {
@@ -757,96 +920,223 @@ func forcedSearchEnclosureEnd(enclosures []searchEnclosure) int {
 	return end
 }
 
-// allocateForcedSearchUnits seats the --full-unit-top bodies and then spends what is left exactly as
-// the default allocator would.
+// unforcedSearchEnclosures is the enclosure plan the control allocation is computed from: `plain` when
+// the caller supplied it, and otherwise `enclosures` with the forced entries blanked out.
 //
-// The order is the whole contract, and it is the inverse of the opportunistic allocator's:
+// The fallback is a degradation, not an equivalent: a rank whose forced unit was blanked gets no
+// control upgrade at all, so the control plan understates what the ordinary path would have delivered
+// and the invariant protects slightly less than it could. It exists so that direct API callers and
+// tests cannot accidentally get the OLD destructive behaviour by omitting an argument.
+func unforcedSearchEnclosures(enclosures, plain []searchEnclosure) []searchEnclosure {
+	if len(plain) == len(enclosures) {
+		return plain
+	}
+	out := make([]searchEnclosure, len(enclosures))
+	for index, enclosure := range enclosures {
+		if !enclosure.forced {
+			out[index] = enclosure
+		}
+	}
+	return out
+}
+
+// seatForcedSearchUnits adds the --full-unit-top bodies to an allocation that is already final,
+// without ever taking anything away from it.
 //
-//  1. The forced units go in FIRST, unpriced. They are the reason the caller passed the flag.
-//  2. If that breaches --max-context-bytes, the TAIL pays — deepest rank first, down to (but never
-//     into) the forced prefix. A tail result's job is to say "also look here", and path, line and
-//     symbol name all survive demotion; the head's job is to deliver text an agent can edit.
-//  3. If the ceiling is still breached with the whole tail reduced to locators, the ceiling WINS:
-//     forced ranks hand their ranked snippets back, deepest forced rank first, so rank 1 is the
-//     last thing in the payload to yield. `--max-context-bytes` is a promise, not a preference.
-//  4. Whatever budget remains funds the ordinary head bodies at the ranks the flag did not cover,
-//     so turning the flag on can only ever ADD source, never remove an upgrade that already fit.
-func allocateForcedSearchUnits(
-	results []SearchResult,
+// THE INVARIANT: a forced unit may not reduce the source any other rank renders. Not its body, not its
+// enclosure, not its head window, not its snippet — nothing a reader would have seen. This is the
+// whole fix for the measured regression documented above the constants: the previous version demoted
+// the tail to locators FIRST and then let the leftover fund the non-forced head, which is how
+// redis__redis-11734's rank-4 `bitposCommand` body became a bare locator to pay for a header window at
+// rank 2.
+//
+// So a forced unit is funded from exactly two places:
+//
+//  1. FREE BUDGET — whatever the control plan left under --max-context-bytes.
+//  2. DEAD WEIGHT — the snippet bytes of tail ranks the text renderer does not print anyway. A result
+//     below searchRenderedSnippetHeadRanks that the allocator did not upgrade renders as
+//     `N. path:line symbol`, so its snippet is bytes the reader never sees; reclaiming them costs
+//     nothing visible. Reclaiming is LAZY: it stops as soon as the unit fits.
+//
+// If the whole unit does not fit in those, the WIDEST clipped form that does is seated instead — but
+// only while it stays above searchForcedUnitMinLines and still covers everything control delivered at
+// that rank. Otherwise the rank is left exactly as control had it.
+func seatForcedSearchUnits(
+	control, ranked []SearchResult,
 	enclosures []searchEnclosure,
-	hardBudget, growth, headRanks, tailLines, forcedEnd int,
+	hardBudget, forcedEnd, bodies, demoted int,
 ) ([]SearchResult, int, int) {
-	plan := append([]SearchResult(nil), results...)
+	plan := append([]SearchResult(nil), control...)
 	sizes := make([]int, len(plan))
 	for index := range plan {
 		sizes[index] = serializedSearchResultBytes(plan[index])
 	}
-	rankedSize := searchResultsSize(sizes)
-
-	bodies := 0
-	// Every available enclosure inside the prefix is seated, not only the forced ones: a forced rank
-	// whose unit did not resolve carries the fallback read window instead, and skipping it here would
-	// leave that rank with the six-line snippet the flag exists to remove.
-	for index := 0; index < forcedEnd; index++ {
-		if !enclosures[index].available() {
+	total := searchResultsSize(sizes)
+	for index := 0; index < forcedEnd && index < len(plan); index++ {
+		enclosure := enclosures[index]
+		if !enclosure.available() {
 			continue
 		}
-		plan[index] = widenSearchResultToEnclosure(results[index], enclosures[index])
-		sizes[index] = serializedSearchResultBytes(plan[index])
-		if hasSearchSignal(plan[index], searchCompleteSymbolSignal) {
+		// Non-destructive at the rank itself. Control may already show MORE than the unit spans — a
+		// budget-driven window, a padded body, a merged region — and widening to the unit alone would
+		// then SHRINK the rank. So the enclosure is extended to the UNION instead: never fewer lines
+		// than control, still named and signalled as the unit it contains. That is the same trade
+		// EnclosureContextLines already makes when it pads a complete body with its margin.
+		if enclosure.start > control[index].SnippetStartLine || enclosure.end < control[index].SnippetEndLine {
+			union := enclosure
+			union.start = minInt(enclosure.start, maxInt(1, control[index].SnippetStartLine))
+			union.end = maxInt(enclosure.end, control[index].SnippetEndLine)
+			if union.end > len(enclosure.lines) || union.end-union.start+1 > searchFullUnitMaxLines {
+				continue
+			}
+			enclosure = union
+		}
+		trialPlan := append([]SearchResult(nil), plan...)
+		trialSizes := append([]int(nil), sizes...)
+		trialTotal, trialDemoted := total, 0
+		need := serializedSearchResultBytes(widenSearchResultToEnclosure(ranked[index], enclosure))
+		for tail := len(trialPlan) - 1; tail > index; tail-- {
+			if hardBudget <= 0 || trialTotal-trialSizes[index]+need <= hardBudget {
+				break
+			}
+			if searchResultRendersSource(control, tail) {
+				continue
+			}
+			terse := tersifySearchResult(trialPlan[tail], searchEnclosureTailSnippetLines)
+			size := serializedSearchResultBytes(terse)
+			if size >= trialSizes[tail] {
+				continue
+			}
+			trialTotal += size - trialSizes[tail]
+			trialPlan[tail], trialSizes[tail] = terse, size
+			trialDemoted++
+		}
+		widened, ok := widestAffordableForcedUnit(
+			ranked[index], control[index], enclosure, hardBudget, trialTotal-trialSizes[index],
+		)
+		if !ok {
+			continue
+		}
+		size := serializedSearchResultBytes(widened)
+		trialTotal += size - trialSizes[index]
+		trialPlan[index], trialSizes[index] = widened, size
+		if hasSearchSignal(widened, searchCompleteSymbolSignal) &&
+			!hasSearchSignal(control[index], searchCompleteSymbolSignal) {
 			bodies++
 		}
+		plan, sizes, total = trialPlan, trialSizes, trialTotal
+		demoted += trialDemoted
+	}
+	return plan, maxInt(0, bodies), demoted
+}
+
+// spendRemainingSearchBudget is rule 1 of budget-driven rendering: after everything else has been
+// seated, keep expanding ranked hits IN RANK ORDER while the ceiling can hold the next one.
+//
+// It is purely additive — it never demotes, never drops, never reorders — so it cannot break the
+// no-demotion invariant or the "every rank present without flags stays present" guarantee. What it
+// fixes is the opposite failure: a payload that renders a 127-line gold body as a 34 B locator while
+// 74% of its byte ceiling is unspent. Rank order is the spend order because rank order is the order an
+// agent reads, and an unspent byte is worth nothing at all.
+func spendRemainingSearchBudget(
+	plan, ranked []SearchResult,
+	enclosures []searchEnclosure,
+	hardBudget int,
+) ([]SearchResult, int) {
+	if hardBudget <= 0 || len(plan) != len(enclosures) || len(plan) != len(ranked) {
+		return plan, 0
+	}
+	sizes := make([]int, len(plan))
+	for index := range plan {
+		sizes[index] = serializedSearchResultBytes(plan[index])
 	}
 	total := searchResultsSize(sizes)
-	demoted := 0
-	if hardBudget > 0 {
-		for index := len(plan) - 1; index >= forcedEnd && total > hardBudget; index-- {
-			terse := tersifySearchResult(plan[index], tailLines)
-			size := serializedSearchResultBytes(terse)
-			if size >= sizes[index] {
-				continue
-			}
-			total += size - sizes[index]
-			plan[index], sizes[index] = terse, size
-			demoted++
-		}
-		for index := forcedEnd - 1; index >= 0 && total > hardBudget; index-- {
-			size := serializedSearchResultBytes(results[index])
-			if size >= sizes[index] {
-				continue
-			}
-			if hasSearchSignal(plan[index], searchCompleteSymbolSignal) {
-				bodies--
-			}
-			total += size - sizes[index]
-			plan[index], sizes[index] = results[index], size
-		}
-	}
-	// The remaining head ranks are funded from the same allowance the default allocator uses, floored
-	// at what the forced units already cost so step 3's verdict is never re-litigated here.
-	budget := rankedSize + growth
-	if hardBudget > 0 && hardBudget < budget {
-		budget = hardBudget
-	}
-	if budget < total {
-		budget = total
-	}
-	for index := forcedEnd; index < minInt(headRanks, len(plan)); index++ {
-		if !enclosures[index].available() {
+	added := 0
+	for index := range plan {
+		if !enclosures[index].available() || searchResultRendersSource(plan, index) {
 			continue
 		}
-		widened := widenSearchResultToEnclosure(results[index], enclosures[index])
+		widened, ok := widestAffordableForcedUnit(
+			ranked[index], plan[index], enclosures[index], hardBudget, total-sizes[index],
+		)
+		if !ok {
+			continue
+		}
 		size := serializedSearchResultBytes(widened)
-		if total-sizes[index]+size > budget {
-			continue
-		}
 		total += size - sizes[index]
 		plan[index], sizes[index] = widened, size
 		if !enclosures[index].window {
-			bodies++
+			added++
 		}
 	}
-	return plan, maxInt(0, bodies), demoted
+	return plan, added
+}
+
+// searchResultRendersSource reports whether a reader will SEE this rank's snippet, which is what makes
+// its bytes reclaimable or not. Two ways to be visible: sitting in the head the text renderer prints
+// unconditionally, or carrying one of the signals that tells the renderer the allocator paid for this
+// source on purpose. Everything else renders as a locator, so its snippet bytes are dead weight.
+func searchResultRendersSource(plan []SearchResult, index int) bool {
+	if index < searchRenderedSnippetHeadRanks {
+		return true
+	}
+	for _, signal := range plan[index].Signals {
+		switch signal {
+		case searchCompleteSymbolSignal, searchFullUnitSignal, searchHeadWindowSignal, searchCalleeHopSignal:
+			return true
+		}
+	}
+	return false
+}
+
+// widestAffordableForcedUnit returns the largest form of a forced unit that fits `hardBudget` given
+// `otherBytes` already spent on every other rank, or ok=false when nothing worth seating does.
+//
+// A read window is all-or-nothing: it is already a bounded excerpt, and clipping an excerpt produces a
+// smaller excerpt rather than a different kind of answer. A real unit degrades instead — the clip is
+// anchored the same way planForcedSearchUnit anchors it and reports the same elision — but never below
+// searchForcedUnitMinLines and never below what control already showed at that rank, because a clipped
+// unit that is smaller than the window it replaced is a pure loss.
+func widestAffordableForcedUnit(
+	ranked, control SearchResult,
+	enclosure searchEnclosure,
+	hardBudget, otherBytes int,
+) (SearchResult, bool) {
+	fits := func(candidate SearchResult) bool {
+		return hardBudget <= 0 || otherBytes+serializedSearchResultBytes(candidate) <= hardBudget
+	}
+	if full := widenSearchResultToEnclosure(ranked, enclosure); fits(full) {
+		return full, true
+	}
+	if enclosure.window {
+		return SearchResult{}, false
+	}
+	unitLines := enclosure.end - enclosure.start + 1
+	// The floor is searchForcedUnitMinLines for a FORCED unit (a trade the caller asked for, so it has
+	// to buy something substantial) and searchBudgetWindowMinLines for a budget-greedy expansion (which
+	// trades nothing away, so anything better than a bare locator is a gain).
+	minimum := searchForcedUnitMinLines
+	if !enclosure.forced {
+		minimum = searchBudgetWindowMinLines
+	}
+	floor := maxInt(minimum, control.SnippetEndLine-control.SnippetStartLine+1)
+	for lines := unitLines * 3 / 4; lines >= floor; lines = lines * 3 / 4 {
+		trial := enclosure
+		if trial.unitStart == 0 {
+			trial.unitStart, trial.unitEnd = enclosure.start, enclosure.end
+		}
+		trial.start, trial.end = clipSearchUnitToCap(enclosure.start, enclosure.end, ranked.FocusLine, lines)
+		if trial.start > control.SnippetStartLine || trial.end < control.SnippetEndLine {
+			return SearchResult{}, false
+		}
+		if candidate := widenSearchResultToEnclosure(ranked, trial); fits(candidate) {
+			return candidate, true
+		}
+		if next := lines * 3 / 4; next >= lines {
+			break
+		}
+	}
+	return SearchResult{}, false
 }
 
 // searchHeadWindowValue scores the read windows in a plan. A window is worth strictly less than a
@@ -931,4 +1221,16 @@ func planWithDemotionFrom(
 		}
 	}
 	return plan, bodies, windows, total
+}
+
+// removeSearchSignal drops one signal from a list, returning a fresh slice so a caller degrading a
+// result cannot mutate the signals of the version it degraded from.
+func removeSearchSignal(signals []string, drop string) []string {
+	out := make([]string, 0, len(signals))
+	for _, signal := range signals {
+		if signal != drop {
+			out = append(out, signal)
+		}
+	}
+	return out
 }

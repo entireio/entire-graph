@@ -930,6 +930,16 @@ func searchRelatedDisplacementOrder(results []SearchResult, floor int) []int {
 		if results[index].Section == searchSectionCoveringTest {
 			continue
 		}
+		// A result carrying SOURCE the reader will see is not a redundant locator, and this function
+		// only ever meant to reclaim redundant locators (see the paragraph above). It used to offer
+		// them anyway, and the cost is measurable: on redis__redis-11734 the payload's rank-4
+		// `bitposCommand` body (src/bitops.c:882-1008, complete-symbol, three gold hunks) was handed
+		// to this block and dropped outright to seat four caller locators, because its file was named
+		// elsewhere so the "last mention" rule did not protect it. Losing a body to buy a locator
+		// inverts the block's own stated value order, whatever the byte arithmetic says.
+		if searchResultRendersSource(results, index) {
+			continue
+		}
 		if counts[results[index].FilePath] <= 1 {
 			continue
 		}

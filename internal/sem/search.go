@@ -936,15 +936,39 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// opportunistic conditions say. Resolved against the SEATED ranking, because the gap heuristic
 	// that admits rank 2 is a statement about the scores the caller will actually read.
 	fullUnitRanks := searchFullUnitForceRanks(results, options.FullUnitTop)
+	// BUDGET-DRIVEN RENDERING is enabled by the payload-shape levers, never by default: the shipped
+	// payload is what every prior measurement was taken against, and this changes how the whole ceiling
+	// is spent. --edit-site-bodies is excluded because it only touches the literal block, so its effect
+	// stays isolated and separately measurable.
+	budgetDriven := fullUnitRanks > 0 || options.CalleeHop
 	enclosures := planSearchEnclosures(
 		results, symbolsByID, symbolsByFile, read,
 		defaultSearchEnclosureMaxLines, options.EnclosureContextLines, bodyHeadRanks, headWindowLines,
-		fullUnitRanks,
+		fullUnitRanks, budgetDriven,
 	)
+	// The UNFORCED plan for the same inputs. It is what the allocator computes its control allocation
+	// from, and that control is the floor a forced unit may not push anything below — see
+	// seatForcedSearchUnits for the regression that made this necessary. Planning it twice costs no IO:
+	// `read` is the shared content cache, so the second pass re-reads nothing.
+	var plainEnclosures []searchEnclosure
+	if fullUnitRanks > 0 {
+		plainEnclosures = planSearchEnclosures(
+			results, symbolsByID, symbolsByFile, read,
+			defaultSearchEnclosureMaxLines, options.EnclosureContextLines, bodyHeadRanks, headWindowLines,
+			0, budgetDriven,
+		)
+	}
 	results, completeSymbols, locators := allocateSearchSnippets(
-		results, enclosures, options.MaxContextBytes, searchEnclosureGrowthBytes,
+		results, enclosures, plainEnclosures, options.MaxContextBytes, searchEnclosureGrowthBytes,
 		bodyHeadRanks, minInt(searchEnclosureTailSnippetLines, options.MaxSnippetLines),
 	)
+	// Rule 1 of budget-driven rendering, applied last of the ranking passes: spend whatever ceiling is
+	// still unclaimed on the ranks that are still locators, in rank order. Purely additive.
+	if budgetDriven {
+		var expanded int
+		results, expanded = spendRemainingSearchBudget(results, results, enclosures, options.MaxContextBytes)
+		completeSymbols += expanded
+	}
 	stats.CompleteSymbols = completeSymbols
 	stats.LocatorSnippets = locators
 	// Truncation is measured against the ranking, by rank, so it has to be read off the

@@ -108,11 +108,13 @@ func TestPlanForcedSearchUnitBypassesTheOpportunisticConditions(t *testing.T) {
 			// A CONTAINER. searchEnclosableSymbolKind excludes it on purpose, so the default path has
 			// no body to offer — and a hit inside a class body, a constant table or a type declaration
 			// is exactly where the measured editability misses are.
+			// Sized inside searchForcedContainerMaxLines; past that bound a container is refused, which
+			// TestPlanForcedSearchUnitRefusesALargeContainer covers.
 			name:      "a container kind the default path refuses",
-			lineCount: 200, unitStart: 40, unitEnd: 120, kind: "class",
+			lineCount: 200, unitStart: 40, unitEnd: 95, kind: "class",
 			result: SearchResult{FilePath: "pkg/file.go", StartLine: 60, EndLine: 65, FocusLine: 62,
 				SnippetStartLine: 60, SnippetEndLine: 65, SymbolID: "unit-1"},
-			wantStart: 40, wantEnd: 120,
+			wantStart: 40, wantEnd: 95,
 		},
 		{
 			// PAST THE 160-LINE CAP. The default path degrades to a window here, which is the case
@@ -174,7 +176,7 @@ func TestPlanForcedSearchUnitBypassesTheOpportunisticConditions(t *testing.T) {
 			reader := editabilityReader(lines)
 			results := []SearchResult{testCase.result}
 
-			forced := planSearchEnclosures(results, byID, byFile, reader, 0, 0, 0, 0, 1)
+			forced := planSearchEnclosures(results, byID, byFile, reader, 0, 0, 0, 0, 1, false)
 			if !forced[0].available() || !forced[0].forced {
 				t.Fatalf("forced enclosure = %+v, want an available forced unit", forced[0])
 			}
@@ -192,7 +194,7 @@ func TestPlanForcedSearchUnitBypassesTheOpportunisticConditions(t *testing.T) {
 
 			// The flag is only a lever if the default path does something DIFFERENT here. Without it
 			// the payload either keeps the ranker's window or offers no body at all.
-			plain := planSearchEnclosures(results, byID, byFile, reader, 0, 0, 0, 0, 0)
+			plain := planSearchEnclosures(results, byID, byFile, reader, 0, 0, 0, 0, 0, false)
 			if plain[0].available() &&
 				plain[0].start == testCase.wantStart && plain[0].end == testCase.wantEnd {
 				t.Fatalf("the default path already returns %d-%d, so --full-unit-top is a no-op here",
@@ -212,7 +214,7 @@ func TestPlanForcedSearchUnitFallsBackToAWindowWithoutASymbol(t *testing.T) {
 	result := SearchResult{FilePath: "pkg/file.go", StartLine: 100, EndLine: 105, FocusLine: 102,
 		SnippetStartLine: 100, SnippetEndLine: 105}
 
-	got := planSearchEnclosures([]SearchResult{result}, nil, nil, editabilityReader(lines), 0, 0, 0, 0, 1)
+	got := planSearchEnclosures([]SearchResult{result}, nil, nil, editabilityReader(lines), 0, 0, 0, 0, 1, false)
 	if !got[0].available() {
 		t.Fatal("a forced rank with no symbol must still get a read window")
 	}
@@ -339,25 +341,26 @@ func forcedAllocationFixture() ([]SearchResult, []searchEnclosure) {
 	return results, enclosures
 }
 
-// TestAllocateForcedSearchUnitsPaysOutOfTheTail pins the funding order: the tail is demoted to
-// locators to seat the forced unit, and the forced rank itself is never the thing that yields first.
+// TestSeatForcedSearchUnitsPaysOnlyFromDeadWeight pins the funding sources: free budget under the
+// ceiling, plus the snippet bytes of tail ranks the text renderer does not print anyway.
 //
 // It also pins the reason the flag was needed at all. The opportunistic allocator only evaluates cuts
 // down to minInt(headRanks, len(results)), so with --top-k 5 and headRanks 5 the ONLY cut it can
-// consider is "demote nothing" — the entire body budget is the growth allowance. The forced path can
-// reach the tail.
-func TestAllocateForcedSearchUnitsPaysOutOfTheTail(t *testing.T) {
+// consider is "demote nothing" — the entire body budget is the growth allowance.
+func TestSeatForcedSearchUnitsPaysOnlyFromDeadWeight(t *testing.T) {
 	t.Parallel()
 	results, enclosures := forcedAllocationFixture()
-	rankedBytes := 0
-	for _, result := range results {
-		rankedBytes += serializedSearchResultBytes(result)
+	// The ceiling is the EXACT size of the plan being asserted: rank 1 whole, rank 2 (inside the
+	// rendered head) untouched, and ranks 3-5 reduced to the locators the renderer already prints them
+	// as. So the unit can only be seated by reclaiming dead weight, and by nothing else.
+	want := append([]SearchResult(nil), results...)
+	want[0] = widenSearchResultToEnclosure(results[0], enclosures[0])
+	for index := searchRenderedSnippetHeadRanks; index < len(want); index++ {
+		want[index] = tersifySearchResult(want[index], 2)
 	}
-	// A ceiling that cannot hold the unit alongside five full windows, but can hold it alongside
-	// five locators.
-	budget := serializedSearchResultBytes(widenSearchResultToEnclosure(results[0], enclosures[0])) + 900
+	budget := searchResultsSize(planSizes(want))
 
-	plan, bodies, demoted := allocateSearchSnippets(results, enclosures, budget, 0, 5, 2)
+	plan, bodies, demoted := allocateSearchSnippets(results, enclosures, nil, budget, 0, 5, 2)
 	if bodies != 1 {
 		t.Fatalf("bodies = %d, want 1 (the forced unit)", bodies)
 	}
@@ -366,19 +369,23 @@ func TestAllocateForcedSearchUnitsPaysOutOfTheTail(t *testing.T) {
 			plan[0].SnippetStartLine, plan[0].SnippetEndLine)
 	}
 	if demoted == 0 {
-		t.Fatal("nothing was demoted, so the forced unit was funded out of thin air")
+		t.Fatal("nothing was reclaimed, so the forced unit was funded out of thin air")
 	}
 	if got := searchResultsSize(planSizes(plan)); got > budget {
 		t.Fatalf("plan is %d bytes over a %d-byte ceiling — --max-context-bytes must be exact", got, budget)
 	}
-	// The tail keeps its locator: path, line and symbol name survive demotion, which is a tail
-	// result's whole job.
+	// Only ranks the renderer would NOT have printed may be reclaimed. Rank 2 sits inside
+	// searchRenderedSnippetHeadRanks, so its snippet is visible and must survive intact.
+	if plan[1].Snippet != results[1].Snippet {
+		t.Fatal("a rank inside the rendered head lost snippet bytes a reader would have seen")
+	}
+	// The tail keeps its locator: path, line and symbol name survive, which is a tail result's job.
 	if plan[4].FilePath == "" || plan[4].SnippetStartLine == 0 {
 		t.Fatalf("rank 5 lost its locator: %+v", plan[4])
 	}
 
-	// With no ceiling at all the same call must still seat the unit and demote nothing.
-	unbounded, bodiesFree, demotedFree := allocateSearchSnippets(results, enclosures, 0, 0, 5, 2)
+	// With no ceiling at all the same call must seat the unit and reclaim nothing.
+	unbounded, bodiesFree, demotedFree := allocateSearchSnippets(results, enclosures, nil, 0, 0, 5, 2)
 	if bodiesFree != 1 || demotedFree != 0 {
 		t.Fatalf("unbounded: bodies=%d demoted=%d, want 1 and 0", bodiesFree, demotedFree)
 	}
@@ -387,28 +394,155 @@ func TestAllocateForcedSearchUnitsPaysOutOfTheTail(t *testing.T) {
 	}
 }
 
-// TestAllocateForcedSearchUnitsYieldsToTheCeilingLast pins the other half of the contract:
-// --max-context-bytes is a promise, not a preference. When the ceiling cannot hold the forced unit
-// even with the whole tail reduced to locators, the forced rank hands its ranked snippet back rather
-// than the payload breaching its budget.
-func TestAllocateForcedSearchUnitsYieldsToTheCeilingLast(t *testing.T) {
+// TestSeatForcedSearchUnitsNeverDemotesAnExistingBody is the regression test for the measured failure.
+//
+// Shape taken from redis__redis-11734: the control allocation gives a LOWER rank a complete body that
+// covers the gold, and forcing a unit on rank 1 used to demote it to a bare locator to pay for itself.
+// Three gold hunks were lost that way. The forced unit must now yield instead.
+func TestSeatForcedSearchUnitsNeverDemotesAnExistingBody(t *testing.T) {
+	t.Parallel()
+	lines, forcedSymbol := editabilityFile(1400, 10, 400, "function")
+	goldSymbol := SymbolRecord{
+		RecordType: "symbol", ID: "gold", Kind: "function", Name: "bitposCommand",
+		QualifiedName: "bitposCommand", FilePath: "pkg/file.go", StartLine: 882, EndLine: 1008,
+	}
+	results := make([]SearchResult, 0, 5)
+	for rank := 1; rank <= 5; rank++ {
+		start := 500 + rank*10
+		results = append(results, SearchResult{
+			Rank: rank, FilePath: "pkg/file.go", StartLine: start, EndLine: start + 5,
+			FocusLine: start + 1, SnippetStartLine: start, SnippetEndLine: start + 5,
+			Snippet: strings.Join(lines[start-1:start+5], "\n"), Signals: []string{},
+		})
+	}
+	// Rank 4 is the gold-covering body the ordinary path would allocate.
+	results[3].StartLine, results[3].EndLine = 882, 887
+	results[3].FocusLine, results[3].SnippetStartLine, results[3].SnippetEndLine = 883, 882, 887
+	results[3].Snippet = strings.Join(lines[881:887], "\n")
+	results[3].SymbolID = goldSymbol.ID
+
+	plain := make([]searchEnclosure, len(results))
+	plain[3] = searchEnclosure{start: 882, end: 1008, lines: lines, symbol: goldSymbol}
+	forced := make([]searchEnclosure, len(results))
+	forced[3] = plain[3]
+	forced[0] = searchEnclosure{start: 10, end: 400, lines: lines, symbol: forcedSymbol, forced: true}
+
+	// A ceiling that fits the control allocation (with rank 4's body) but NOT that plus rank 1's unit.
+	control, controlBodies, _ := allocateSearchSnippets(results, plain, nil, 0, searchEnclosureGrowthBytes, 5, 2)
+	if controlBodies != 1 || control[3].SnippetEndLine != 1008 {
+		t.Fatalf("control did not deliver the gold body: bodies=%d rank4=%d-%d",
+			controlBodies, control[3].SnippetStartLine, control[3].SnippetEndLine)
+	}
+	budget := serializedSearchResultBytes(control)
+
+	plan, bodies, _ := allocateSearchSnippets(results, forced, plain, budget, searchEnclosureGrowthBytes, 5, 2)
+	if plan[3].SnippetStartLine != 882 || plan[3].SnippetEndLine != 1008 {
+		t.Fatalf("rank 4 = %d-%d, want the gold body 882-1008 intact — a forced unit must never "+
+			"demote another rank's existing allocation", plan[3].SnippetStartLine, plan[3].SnippetEndLine)
+	}
+	if !hasSearchSignal(plan[3], searchCompleteSymbolSignal) {
+		t.Fatalf("rank 4 lost its complete-symbol signal: %v", plan[3].Signals)
+	}
+	if bodies < controlBodies {
+		t.Fatalf("bodies fell from %d to %d — forcing may only add", controlBodies, bodies)
+	}
+	if got := serializedSearchResultBytes(plan); got > budget {
+		t.Fatalf("plan is %d bytes over a %d-byte ceiling", got, budget)
+	}
+	// Whatever rank 1 ended up with, it must be at least what control gave it and no other rank may
+	// have lost visible source.
+	for index := range control {
+		if plan[index].SnippetStartLine > control[index].SnippetStartLine ||
+			plan[index].SnippetEndLine < control[index].SnippetEndLine {
+			t.Fatalf("rank %d shrank from %d-%d to %d-%d", index+1,
+				control[index].SnippetStartLine, control[index].SnippetEndLine,
+				plan[index].SnippetStartLine, plan[index].SnippetEndLine)
+		}
+	}
+}
+
+// TestSeatForcedSearchUnitsRefusesAUselesslySmallClip pins the floor. When non-destructive funding
+// cannot buy a unit worth having, the pre-existing allocation stands — a clipped unit smaller than
+// searchForcedUnitMinLines is a window, which the ordinary allocator already provides without the trade.
+func TestSeatForcedSearchUnitsRefusesAUselesslySmallClip(t *testing.T) {
 	t.Parallel()
 	results, enclosures := forcedAllocationFixture()
 	ranked := searchResultsSize(planSizes(results))
 
-	plan, bodies, _ := allocateSearchSnippets(results, enclosures, ranked, 0, 5, 2)
+	plan, bodies, _ := allocateSearchSnippets(results, enclosures, nil, ranked, 0, 5, 2)
 	if got := searchResultsSize(planSizes(plan)); got > ranked {
 		t.Fatalf("plan is %d bytes over a %d-byte ceiling", got, ranked)
 	}
 	if bodies != 0 {
-		t.Fatalf("bodies = %d, want 0: the unit does not fit and must not be reported as delivered", bodies)
+		t.Fatalf("bodies = %d, want 0: nothing worth seating fits", bodies)
 	}
-	if plan[0].SnippetEndLine != results[0].SnippetEndLine {
-		t.Fatalf("rank 1 = %d-%d, want its ranked snippet back",
+	if plan[0].SnippetStartLine != results[0].SnippetStartLine ||
+		plan[0].SnippetEndLine != results[0].SnippetEndLine {
+		t.Fatalf("rank 1 = %d-%d, want its control allocation untouched",
 			plan[0].SnippetStartLine, plan[0].SnippetEndLine)
 	}
 	if hasSearchSignal(plan[0], searchFullUnitSignal) {
-		t.Fatalf("a revoked unit still claimed full-unit: %v", plan[0].Signals)
+		t.Fatalf("a unit that was never seated claimed full-unit: %v", plan[0].Signals)
+	}
+
+	// A ceiling between the two: too tight for the whole 291-line unit, wide enough for a clip above
+	// the floor. The clip is seated, reports its elision, and stays inside the ceiling.
+	clipped := enclosures[0]
+	clipped.start, clipped.end = clipSearchUnitToCap(10, 300, results[0].FocusLine, searchForcedUnitMinLines+20)
+	mid := ranked + serializedSearchResultBytes(widenSearchResultToEnclosure(results[0], clipped))
+	midPlan, midBodies, _ := allocateSearchSnippets(results, enclosures, nil, mid, 0, 5, 2)
+	if span := midPlan[0].SnippetEndLine - midPlan[0].SnippetStartLine + 1; span < searchForcedUnitMinLines {
+		t.Fatalf("seated span = %d lines, want >= the %d-line floor or nothing",
+			span, searchForcedUnitMinLines)
+	}
+	if span := midPlan[0].SnippetEndLine - midPlan[0].SnippetStartLine + 1; span > 291 {
+		t.Fatalf("seated span = %d lines, wider than the unit", span)
+	}
+	if midBodies == 0 && !hasSearchSignal(midPlan[0], searchFullUnitSignal) {
+		t.Fatalf("nothing was seated at a ceiling sized for a clip: %v", midPlan[0].Signals)
+	}
+	if got := searchResultsSize(planSizes(midPlan)); got > mid {
+		t.Fatalf("clip plan is %d bytes over a %d-byte ceiling", got, mid)
+	}
+}
+
+// TestPlanForcedSearchUnitRefusesALargeContainer pins the size-aware admission. The rubocop win (a
+// 5-line config section, a non-callable kind the opportunistic path refuses) must survive; the
+// docusaurus loss (a 273-line type declaration expanded from a 6-line snippet) must not happen.
+func TestPlanForcedSearchUnitRefusesALargeContainer(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name      string
+		kind      string
+		unitLines int
+		want      bool
+	}{
+		{name: "a small config section is the win this route was built for",
+			kind: "section", unitLines: 5, want: true},
+		{name: "a container at the bound is still admitted",
+			kind: "type", unitLines: searchForcedContainerMaxLines, want: true},
+		{name: "a 273-line type declaration is refused",
+			kind: "type", unitLines: 273, want: false},
+		{name: "a long CALLABLE is still admitted — a function is one editable thing",
+			kind: "function", unitLines: 273, want: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			lines, symbol := editabilityFile(600, 100, 99+testCase.unitLines, testCase.kind)
+			byID := map[string]SymbolRecord{symbol.ID: symbol}
+			byFile := map[string][]SymbolRecord{symbol.FilePath: {symbol}}
+			result := SearchResult{
+				FilePath: "pkg/file.go", StartLine: 100, EndLine: 101, FocusLine: 100,
+				SnippetStartLine: 100, SnippetEndLine: 101, SymbolID: symbol.ID,
+			}
+			got, ok := planForcedSearchUnit(result, byID, byFile, lines)
+			if ok != testCase.want {
+				t.Fatalf("forced = %v (%d-%d), want %v", ok, got.start, got.end, testCase.want)
+			}
+			if ok && got.end-got.start+1 != minInt(testCase.unitLines, searchFullUnitMaxLines) {
+				t.Fatalf("span = %d lines, want the whole unit", got.end-got.start+1)
+			}
+		})
 	}
 }
 

@@ -342,3 +342,16 @@ func TestSearchCommandCalleeHopReachesTheCalledHelper(t *testing.T) {
 		t.Fatal("a callee hop appeared without --callee-hop")
 	}
 }
+
+// TestRenderedSnippetHeadRanksMatchesTheRenderer pins the one number internal/sem duplicates from this
+// file. The allocator reclaims the snippet bytes of ranks it believes the renderer prints as bare
+// locators (seatForcedSearchUnits); if this tier ever gets deeper, those bytes become visible and the
+// reclaim silently starts destroying source the reader would have seen.
+func TestRenderedSnippetHeadRanksMatchesTheRenderer(t *testing.T) {
+	t.Parallel()
+	if sem.RenderedSnippetHeadRanks != searchTextFullRanks {
+		t.Fatalf("sem.RenderedSnippetHeadRanks = %d but searchTextFullRanks = %d — the allocator's "+
+			"notion of which snippets a reader sees has drifted from the renderer's",
+			sem.RenderedSnippetHeadRanks, searchTextFullRanks)
+	}
+}

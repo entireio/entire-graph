@@ -124,7 +124,7 @@ func TestPlanSearchEnclosuresResolvesTrueSymbolBounds(t *testing.T) {
 				byFile[record.FilePath] = []SymbolRecord{record}
 			}
 			enclosures := planSearchEnclosures(
-				[]SearchResult{testCase.result}, byID, byFile, reader, testCase.maxLines, 0, 0, 0, 0,
+				[]SearchResult{testCase.result}, byID, byFile, reader, testCase.maxLines, 0, 0, 0, 0, false,
 			)
 			if len(enclosures) != 1 {
 				t.Fatalf("enclosures = %d, want 1", len(enclosures))
@@ -350,7 +350,7 @@ func TestAllocateSearchSnippetsSpendsBudgetByRank(t *testing.T) {
 			}
 			before := serializedSearchResultBytes(results)
 			allocated, bodies, demoted := allocateSearchSnippets(
-				results, enclosures, testCase.hardBudget, testCase.growth, testCase.headRanks, testCase.tailLines,
+				results, enclosures, nil, testCase.hardBudget, testCase.growth, testCase.headRanks, testCase.tailLines,
 			)
 			after := serializedSearchResultBytes(allocated)
 
@@ -428,7 +428,7 @@ func TestSearchEnclosureHeadRanksIsFiveDeep(t *testing.T) {
 	}
 	results, enclosures, _ := makeAllocatorResults(8, 6, 30)
 	_, bodies, _ := allocateSearchSnippets(
-		results, enclosures, 1<<20, searchEnclosureGrowthBytes,
+		results, enclosures, nil, 1<<20, searchEnclosureGrowthBytes,
 		searchEnclosureHeadRanks, searchEnclosureTailSnippetLines,
 	)
 	if bodies != searchEnclosureHeadRanks {
@@ -700,7 +700,7 @@ func TestPlanSearchEnclosuresBodyHeadRanksBoundsBodies(t *testing.T) {
 	}
 	results := []SearchResult{result, result, result, result, result}
 
-	enclosures := planSearchEnclosures(results, byID, nil, reader, 0, 0, 2, 0, 0)
+	enclosures := planSearchEnclosures(results, byID, nil, reader, 0, 0, 2, 0, 0, false)
 	if len(enclosures) != len(results) {
 		t.Fatalf("enclosures = %d, want %d — narrowing the body head must not drop results",
 			len(enclosures), len(results))
@@ -718,7 +718,7 @@ func TestPlanSearchEnclosuresBodyHeadRanksBoundsBodies(t *testing.T) {
 	}
 
 	// 0 means "use the built-in depth", so the default behaviour is unchanged.
-	for index, enclosure := range planSearchEnclosures(results, byID, nil, reader, 0, 0, 0, 0, 0) {
+	for index, enclosure := range planSearchEnclosures(results, byID, nil, reader, 0, 0, 0, 0, 0, false) {
 		if !enclosure.available() {
 			t.Fatalf("rank %d: default depth should still plan a body", index+1)
 		}
@@ -740,7 +740,7 @@ func TestPlanSearchEnclosuresContextLinesPadsRankOneOnly(t *testing.T) {
 		SnippetStartLine: 60, SnippetEndLine: 64, SymbolID: symbol.ID,
 	}
 
-	got := planSearchEnclosures([]SearchResult{result, result}, byID, nil, reader, 0, 10, 0, 0, 0)
+	got := planSearchEnclosures([]SearchResult{result, result}, byID, nil, reader, 0, 10, 0, 0, 0, false)
 	if got[0].start != 30 || got[0].end != 100 {
 		t.Fatalf("rank 1 = %d-%d, want 30-100 (symbol 40-90 padded by 10)", got[0].start, got[0].end)
 	}
@@ -753,7 +753,7 @@ func TestPlanSearchEnclosuresContextLinesPadsRankOneOnly(t *testing.T) {
 
 	// A margin that would push the body past the line cap is refused, not truncated: the cap is
 	// what guarantees a padded body can never cost more than an unpadded one was allowed to.
-	capped := planSearchEnclosures([]SearchResult{result}, byID, nil, reader, 60, 40, 0, 0, 0)
+	capped := planSearchEnclosures([]SearchResult{result}, byID, nil, reader, 60, 40, 0, 0, 0, false)
 	if capped[0].start != 40 || capped[0].end != 90 {
 		t.Fatalf("capped = %d-%d, want the unpadded 40-90", capped[0].start, capped[0].end)
 	}
@@ -766,7 +766,7 @@ func TestPlanSearchEnclosuresContextLinesPadsRankOneOnly(t *testing.T) {
 			SnippetStartLine: 20, SnippetEndLine: 24, SymbolID: edgeSymbol.ID,
 		}},
 		map[string]SymbolRecord{edgeSymbol.ID: edgeSymbol}, nil,
-		enclosureTestReader(edgeLines), 0, 25, 0, 0, 0,
+		enclosureTestReader(edgeLines), 0, 25, 0, 0, 0, false,
 	)
 	if edge[0].start != 1 || edge[0].end != 50 {
 		t.Fatalf("edge = %d-%d, want 1-50 (clamped to the file)", edge[0].start, edge[0].end)
@@ -793,11 +793,11 @@ func TestPlanSearchEnclosuresHeadWindowNeverClaimsCompleteSymbol(t *testing.T) {
 	}
 
 	// windowLines=0 keeps the old behaviour: a container yields no enclosure at all.
-	if got := planSearchEnclosures([]SearchResult{result}, byID, byFile, reader, 0, 0, 0, 0, 0); got[0].available() {
+	if got := planSearchEnclosures([]SearchResult{result}, byID, byFile, reader, 0, 0, 0, 0, 0, false); got[0].available() {
 		t.Fatalf("windowLines=0 must not synthesise an enclosure: %+v", got[0])
 	}
 
-	got := planSearchEnclosures([]SearchResult{result}, byID, byFile, reader, 0, 0, 0, 60, 0)
+	got := planSearchEnclosures([]SearchResult{result}, byID, byFile, reader, 0, 0, 0, 60, 0, false)
 	if !got[0].available() {
 		t.Fatal("want a window enclosure for an unenclosable head rank")
 	}
@@ -822,7 +822,7 @@ func TestPlanSearchEnclosuresHeadWindowNeverClaimsCompleteSymbol(t *testing.T) {
 	// readable lines, never re-cut a wider snippet.
 	wide := result
 	wide.SnippetStartLine, wide.SnippetEndLine = 1, 200
-	if got := planSearchEnclosures([]SearchResult{wide}, byID, byFile, reader, 0, 0, 0, 60, 0); got[0].available() {
+	if got := planSearchEnclosures([]SearchResult{wide}, byID, byFile, reader, 0, 0, 0, 60, 0, false); got[0].available() {
 		t.Fatalf("window must not shrink an already-wider snippet: %+v", got[0])
 	}
 }

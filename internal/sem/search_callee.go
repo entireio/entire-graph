@@ -375,12 +375,17 @@ func searchCalleeHopResult(site searchCalleeHopSite, lines []string, withBody bo
 //  1. the head the editability levers already seated is NEVER touched. A callee body is worth less
 //     than the unit the agent is actually looking at, and this route exists to add a second site, not
 //     to trade away the first.
-//  2. callee bodies are paid for by TERSIFYING the tail — deepest rank first, down to but never into
-//     the protected head. Nothing is DROPPED: the last mention of a file is not for sale, which is
-//     the same rule searchRelatedDisplacementOrder enforces by a different mechanism, and shrinking a
-//     snippet keeps path, line and symbol name where dropping a result loses the file entirely.
-//  3. if the ceiling still cannot hold them, FEWER callees are seated, down to none. --max-context-bytes
-//     is exact at every step: the returned plan is only ever one that measured under it.
+//  2. a hop-inserted site has the LOWEST funding priority in the payload. It may spend only budget no
+//     ranked hit claimed, and it may never reduce what a ranked hit renders — not to a locator, not by
+//     a line. Measured cost of getting this wrong: with --edit-site-bodies --callee-hop the hop
+//     entries were seated as full bodies and EVICTED ranked bodies, so redis__redis-11734's rank-4
+//     `bitposCommand` (a 127-line gold body in the control) had zero mentions in the payload, and the
+//     losing cohort's gold coverage fell 31.1% -> 24.4%. Only ranks that render as bare locators
+//     anyway may give up their invisible snippet bytes.
+//  3. if the ceiling cannot hold a hop BODY, the body is clipped to at least
+//     searchBudgetWindowMinLines, and failing that the site is emitted as a LOCATOR. Never the other
+//     way around: a hop is a pointer first and source second. --max-context-bytes is exact at every
+//     step — the returned plan is only ever one that measured under it.
 func mergeSearchCalleeHopSites(
 	results []SearchResult,
 	entries []SearchResult,
@@ -394,15 +399,85 @@ func mergeSearchCalleeHopSites(
 		protectRanks = 1
 	}
 	floor := minInt(protectRanks, len(results))
-	for count := len(entries); count >= 1; count-- {
-		for demoteFrom := len(results); demoteFrom >= floor; demoteFrom-- {
-			plan := planSearchCalleeHopRanking(results, entries[:count], anchorIndexes[:count], demoteFrom, tailLines)
-			if hardBudget <= 0 || serializedSearchResultBytes(plan) <= hardBudget {
-				return plan, count
+	// Degradation ladder, widest first: full bodies, then bodies clipped to the smallest window worth
+	// printing, then locators. A hop always prefers to shrink ITSELF before it asks the payload for
+	// anything, which is what makes it the lowest-priority claim on the budget.
+	for _, forms := range [][]SearchResult{entries, clipSearchCalleeHopEntries(entries), locatorSearchCalleeHopEntries(entries)} {
+		for count := len(forms); count >= 1; count-- {
+			for demoteFrom := len(results); demoteFrom >= floor; demoteFrom-- {
+				plan := planSearchCalleeHopRanking(results, forms[:count], anchorIndexes[:count], demoteFrom, tailLines)
+				if hardBudget <= 0 || serializedSearchResultBytes(plan) <= hardBudget {
+					return plan, count
+				}
 			}
 		}
 	}
 	return results, 0
+}
+
+// clipSearchCalleeHopEntries narrows every hop body to searchBudgetWindowMinLines around its focus,
+// keeping the entry a verbatim slice and reporting the elision. An entry already at or below that width
+// is returned unchanged.
+func clipSearchCalleeHopEntries(entries []SearchResult) []SearchResult {
+	out := make([]SearchResult, len(entries))
+	for index, entry := range entries {
+		out[index] = entry
+		span := entry.SnippetEndLine - entry.SnippetStartLine + 1
+		if span <= searchBudgetWindowMinLines || entry.Snippet == "" {
+			continue
+		}
+		lines := strings.Split(entry.Snippet, "\n")
+		if len(lines) != span {
+			continue
+		}
+		start, end := clipSearchUnitToCap(
+			entry.SnippetStartLine, entry.SnippetEndLine, entry.FocusLine, searchBudgetWindowMinLines,
+		)
+		offset := start - entry.SnippetStartLine
+		clipped := entry
+		if clipped.UnitStartLine == 0 {
+			clipped.UnitStartLine, clipped.UnitEndLine = entry.SnippetStartLine, entry.SnippetEndLine
+		}
+		clipped.Snippet = strings.Join(lines[offset:offset+(end-start+1)], "\n")
+		clipped.SnippetStartLine, clipped.SnippetEndLine = start, end
+		clipped.StartLine = minInt(clipped.StartLine, start)
+		clipped.EndLine = maxInt(clipped.EndLine, end)
+		clipped.FocusLine = minInt(maxInt(clipped.FocusLine, start), end)
+		clipped.Signals = appendUnique(
+			removeSearchSignal(clipped.Signals, searchCompleteSymbolSignal), searchFullUnitElidedSignal,
+		)
+		out[index] = clipped
+	}
+	return out
+}
+
+// locatorSearchCalleeHopEntries reduces every hop entry to its declaration line. The site is still
+// worth listing — it is a grep the agent does not have to run — so the last rung of the ladder keeps
+// the pointer and drops only the source.
+func locatorSearchCalleeHopEntries(entries []SearchResult) []SearchResult {
+	out := make([]SearchResult, len(entries))
+	for index, entry := range entries {
+		out[index] = entry
+		if entry.Snippet == "" {
+			continue
+		}
+		span := entry.SnippetEndLine - entry.SnippetStartLine + 1
+		lines := strings.Split(entry.Snippet, "\n")
+		if len(lines) != span {
+			continue
+		}
+		locator := entry
+		locator.Snippet = lines[0]
+		locator.SnippetEndLine = locator.SnippetStartLine
+		locator.FocusLine = locator.SnippetStartLine
+		locator.UnitStartLine, locator.UnitEndLine = 0, 0
+		locator.Signals = removeSearchSignal(
+			removeSearchSignal(removeSearchSignal(locator.Signals, searchCompleteSymbolSignal),
+				searchFullUnitSignal), searchFullUnitElidedSignal,
+		)
+		out[index] = locator
+	}
+	return out
 }
 
 // planSearchCalleeHopRanking builds one seating plan: the ranking with `demoteFrom` onwards tersified,
@@ -419,7 +494,9 @@ func planSearchCalleeHopRanking(
 	}
 	plan := make([]SearchResult, 0, len(results)+len(entries))
 	for index, result := range results {
-		if index >= demoteFrom {
+		// Only a rank the renderer prints as a bare locator anyway may give up its snippet bytes. A hop
+		// is the lowest-priority claim in the payload and must never reduce what a ranked hit renders.
+		if index >= demoteFrom && !searchResultRendersSource(results, index) {
 			result = tersifySearchResult(result, tailLines)
 		}
 		plan = append(plan, result)
