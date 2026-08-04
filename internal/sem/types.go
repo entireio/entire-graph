@@ -3008,6 +3008,11 @@ func isTypeName(name string) bool {
 var (
 	// `buf *bytes.Buffer`, `r []pkg.Type` — a name bound to a package-qualified type.
 	qualifiedTypedDeclRe = regexp.MustCompile(`\b([A-Za-z_]\w*)\s+[*&\[\]]*([a-z]\w*)\.[A-Z]\w*`)
+	// Same shape, keeping the TYPE as well: `comm communicator.Communicator`,
+	// `var c *ssh.Communicator`. Used to type a receiver whose declared type is
+	// package-qualified — parameterVarTypes only understands bare type names, so
+	// before this a parameter of an imported type had no receiver type at all.
+	qualifiedTypedDeclWithTypeRe = regexp.MustCompile(`\b([A-Za-z_]\w*)\s+[*&\[\]]*([a-z]\w*)\.([A-Z]\w*)`)
 	// `c := svc.New(...)`, `c = &pkg.Thing{...}` — a name bound to a package value.
 	qualifiedAssignRe = regexp.MustCompile(`\b([A-Za-z_]\w*)\s*:?=\s*&?([a-z]\w*)\.`)
 )
@@ -3050,6 +3055,46 @@ func importedReceiverVarTypes(signature, block string, importsByName map[string]
 	add(qualifiedAssignRe.FindAllStringSubmatch(stripped, -1))
 	delete(out, "this")
 	delete(out, "self")
+	return out
+}
+
+// goInModuleQualifiedReceiverTypes maps each Go parameter or local whose declared
+// type is package-qualified by an IN-MODULE import (`comm
+// communicator.Communicator`) to that {package alias, type} pair.
+//
+// parameterVarTypes requires a bare, capitalised type name, so a parameter of an
+// imported type was never typed at all: terraform's
+// `runScripts(..., comm communicator.Communicator, ...)` left `comm` untyped, and
+// every `comm.Connect/Disconnect/Upload` call fell through to the
+// globally-unique-name tier, which cannot fire because the interface and each of
+// its implementations share the method name. External (stdlib/third-party)
+// qualifiers are excluded — their methods are not local symbols, and
+// importedReceiverVarTypes already records them for suppression.
+func goInModuleQualifiedReceiverTypes(signature, block string, importsByName map[string][]string, goModule string) map[string]pkgQualType {
+	out := map[string]pkgQualType{}
+	if goModule == "" {
+		return out
+	}
+	add := func(text string) {
+		for _, m := range qualifiedTypedDeclWithTypeRe.FindAllStringSubmatch(text, -1) {
+			if len(m) != 4 {
+				continue
+			}
+			name, pkg, typeName := m[1], m[2], m[3]
+			if name == "this" || name == "self" || name == "func" {
+				continue
+			}
+			if _, exists := out[name]; exists {
+				continue
+			}
+			if !importPathsInModule(importsByName[pkg], goModule) {
+				continue
+			}
+			out[name] = pkgQualType{alias: pkg, typeName: typeName}
+		}
+	}
+	add(signature)
+	add(stripCodeLiteralsAndComments(block))
 	return out
 }
 
