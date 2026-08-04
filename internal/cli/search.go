@@ -71,6 +71,7 @@ type searchFlags struct {
 	EditSiteBodies        bool
 	CalleeHop             bool
 	VerifyPrefix          string
+	VerifyPreFixStatus    string
 	FileOutline           bool
 	Deep                  bool
 	// The reference blocks, off unless asked for. See SearchOptions in internal/sem/search.go for
@@ -181,6 +182,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		EditSiteBodies:        flags.EditSiteBodies,
 		CalleeHop:             flags.CalleeHop,
 		VerifyPrefix:          flags.VerifyPrefix,
+		VerifyPreFixStatus:    flags.VerifyPreFixStatus,
 		IncludeFileOutline:    flags.FileOutline,
 		Deep:                  flags.Deep,
 
@@ -1477,6 +1479,14 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 				return flags, nil, err
 			}
 			flags.VerifyPrefix, i = value, next
+		// --verify-prefix-status <text>: one caller-computed line rendered verbatim under VERIFY:. The
+		// harness validates the pristine tree; the binary must not invent a status for a run it never made.
+		case "--verify-prefix-status":
+			value, next, err := searchFlagValue(args, i)
+			if err != nil {
+				return flags, nil, err
+			}
+			flags.VerifyPreFixStatus, i = value, next
 		case "--max-regions-per-file":
 			value, next, err := searchPositiveIntFlag(args, i)
 			if err != nil {

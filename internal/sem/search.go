@@ -115,6 +115,9 @@ type SearchOptions struct {
 	// VerifyPrefix is a decorator baked into the emitted VERIFY command, after any `cd <dir> &&` the
 	// derivation added, so a harness can grep its own token out of a transcript.
 	VerifyPrefix string
+	// VerifyPreFixStatus is one caller-computed line rendered verbatim as `PRE-FIX:` under the emitted
+	// command, capped at searchVerifyPreFixStatusMaxBytes.
+	VerifyPreFixStatus string
 	// CalleeHop admits the top hit's OUTGOING CALLS targets as candidate fix sites — up to three,
 	// same-repo and resolved only. Off by default.
 	//
@@ -1079,7 +1082,9 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// makes anyway — a repo-wide grep, a fumbled test invocation, and the read that discovers a
 	// switch it forgot to extend — which is the property the reference blocks above lack. They are
 	// additive and separately capped; see search_blocks.go.
-	verifyEvidence := searchVerifyEvidence{read: read, prefix: options.VerifyPrefix}
+	verifyEvidence := searchVerifyEvidence{
+		read: read, prefix: options.VerifyPrefix, preFixStatus: options.VerifyPreFixStatus,
+	}
 	// The three agent-asked blocks read files the RANKING never asked for: a bounded set of files
 	// containing one literal, a handful of switch sites, and the build manifests above the top hit.
 	// Their IO is bracketed here and reported under its own counter rather than folded into the query

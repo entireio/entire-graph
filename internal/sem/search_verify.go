@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path"
 	"strings"
+	"unicode/utf8"
 )
 
 // The verify command
@@ -37,7 +38,11 @@ const (
 	// in the payload measured against what it prevents: post-edit verify churn cost +$4.11 across three
 	// sessions, and on google__gson-1014 a hand-assembled javac/JUnit classpath was 55.6% of the whole
 	// session's output tokens.
-	searchVerifyCommandMaxBytes = 640
+	// 768: the guard clause and the `+ guard X` provenance are a fixed addition on top of the contract
+	// note, and at 640 they degraded the DERIVATION away on exactly the instance the guard work was for.
+	// Losing provenance to keep a define is the wrong trade — the define is on the command line either
+	// way, and the derivation is what lets a reader judge it.
+	searchVerifyCommandMaxBytes = 768
 
 	// searchVerifyContractNote is the CONTRACT on the emitted command, and every clause is a measured
 	// failure mode rather than general advice:
@@ -88,6 +93,10 @@ const (
 		" on the invocation rather than on your code, do NOT go looking for a toolchain — syntax-check" +
 		" the file you changed and stop."
 
+	// searchVerifyPreFixStatusMaxBytes caps the caller-supplied PRE-FIX line. It is rendered verbatim,
+	// so the cap is the only thing standing between a wrapper bug and an unbounded payload.
+	searchVerifyPreFixStatusMaxBytes = 200
+
 	// searchVerifyMaxReads bounds manifest and mirror-test probes. Most of them MISS, and a miss is a
 	// path lookup rather than a file, which is why the bound can be generous: it buys a build system
 	// identified exactly and a test file that provably exists.
@@ -112,6 +121,12 @@ type SearchVerifyCommand struct {
 	// Prefix is a caller-supplied decorator inserted after any `cd <dir> &&` the derivation added, so
 	// a harness can bake in a grep-able token without changing the "VERIFY: " line start.
 	Prefix string `json:"prefix,omitempty"`
+	// Guard is the conditional-compilation guard the covering test sits inside, as written. Reported so
+	// a reader can see WHY a define is on the command line, or why coverage is not claimed.
+	Guard string `json:"guard,omitempty"`
+	// PreFixStatus is caller-supplied text rendered verbatim as a `PRE-FIX:` line under the command.
+	// The harness computes it (it already validates the pristine tree); the binary only renders it.
+	PreFixStatus string `json:"pre_fix_status,omitempty"`
 }
 
 // searchVerifyEvidence is the bounded view of the repository the derivation is allowed to consult.
@@ -124,6 +139,8 @@ type searchVerifyEvidence struct {
 	// lookPath resolves an executable name the way exec.LookPath does. Injected so the runner check is
 	// a pure function of its inputs in tests instead of a fact about the machine running them.
 	lookPath func(string) (string, error)
+	// preFixStatus is the caller's --verify-prefix-status line, rendered verbatim and capped.
+	preFixStatus string
 	// prefix is the caller's --verify-prefix decorator, carried here because the derivations build the
 	// command string and the renderer must not have to re-parse it.
 	prefix string
@@ -189,7 +206,7 @@ func buildSearchVerifyCommand(
 		// absence is the worst outcome available: it is indistinguishable from a deriver bug, and paired
 		// with the stop-early doctrine it lets an agent ship unverified. Measured on three.js-25687,
 		// whose every ranked hit is a generated bundle and which emitted no VERIFY line at all.
-		return searchVerifyResidualFloor("", evidence.prefix)
+		return searchVerifyResidualFloor("", evidence.prefix, evidence.preFixStatus)
 	}
 	if subject.testPath == "" {
 		// The payload found no covering test, but the repository's own layout often names one anyway.
@@ -225,9 +242,9 @@ func buildSearchVerifyCommand(
 		command = deriveSearchVerifyBuildCheck("", subject, &evidence)
 	}
 	if command == nil {
-		return searchVerifyResidualFloor(subject.sourcePath, evidence.prefix)
+		return searchVerifyResidualFloor(subject.sourcePath, evidence.prefix, evidence.preFixStatus)
 	}
-	command.Prefix = evidence.prefix
+	command.Prefix, command.PreFixStatus = evidence.prefix, evidence.preFixStatus
 	// The runner check ANNOTATES; it never suppresses. See searchVerifyRunnerNote.
 	command.RunnerMissing = searchVerifyRunnerMissing(command.Command, &evidence)
 	// DEGRADE, never delete. Returning nil on overflow reintroduced silent absence through a byte
@@ -244,17 +261,18 @@ func buildSearchVerifyCommand(
 
 // searchVerifyResidualFloor is the last rung: no manifest, no test file, no single-file checker. It
 // states the fact and prescribes the fallback, which is strictly better than the silence it replaces.
-func searchVerifyResidualFloor(sourcePath, prefix string) *SearchVerifyCommand {
+func searchVerifyResidualFloor(sourcePath, prefix, preFixStatus string) *SearchVerifyCommand {
 	targets := sourcePath
 	if targets == "" {
 		targets = "the file you edited"
 	}
 	return &SearchVerifyCommand{
-		Command:     searchVerifyNoneCommand,
-		Targets:     targets,
-		DerivedFrom: "no manifest, no test file, no single-file checker for this language",
-		Tier:        searchVerifyTierNone,
-		Prefix:      prefix,
+		Command:      searchVerifyNoneCommand,
+		Targets:      targets,
+		DerivedFrom:  "no manifest, no test file, no single-file checker for this language",
+		Tier:         searchVerifyTierNone,
+		Prefix:       prefix,
+		PreFixStatus: preFixStatus,
 	}
 }
 
@@ -735,6 +753,7 @@ func deriveSearchVerifyCargo(dir string, subject searchVerifySubject, evidence *
 		selector = " -p " + name
 	}
 	target, filter, targets := "", "", "package "+name
+	guardNote := searchVerifyGuard{}
 	if relative, inside := searchVerifyRelative(dir, subject.testPath); inside && subject.testPath != "" {
 		switch {
 		case strings.HasPrefix(relative, "tests/"):
@@ -757,6 +776,17 @@ func deriveSearchVerifyCargo(dir string, subject searchVerifySubject, evidence *
 			if testName != "" {
 				filter = " " + testName
 			}
+			// A `#[cfg(feature = "x")]` test is compiled out unless the feature is on, and Cargo can turn
+			// it on — but only if the manifest declares it. An undeclared feature is a hard cargo error,
+			// so an unsatisfiable guard is reported instead of guessed at.
+			if guard := searchVerifyGuardForSubject(subject, evidence); guard.present() {
+				guardNote = guard
+				if guard.feature != "" && strings.Contains(content, guard.feature) &&
+					strings.Contains(content, "[features]") {
+					selector += " --features " + guard.feature
+					guardNote.satisfied = true
+				}
+			}
 		}
 	}
 	command := "cargo test" + selector + target + filter
@@ -770,7 +800,15 @@ func deriveSearchVerifyCargo(dir string, subject searchVerifySubject, evidence *
 	if target != "" {
 		derived += " + " + subject.testEvidence + " path"
 	}
-	return &SearchVerifyCommand{Command: command, Targets: targets, DerivedFrom: derived}
+	switch {
+	case guardNote.satisfied:
+		derived += " + feature " + guardNote.feature
+	case guardNote.present():
+		derived += fmt.Sprintf(searchVerifyGuardUnsatisfied, guardNote.raw)
+	}
+	return &SearchVerifyCommand{
+		Command: command, Targets: targets, DerivedFrom: derived, Guard: guardNote.raw,
+	}
 }
 
 // searchVerifyTomlPackageName reads `name` out of a Cargo manifest's `[package]` table. It is a
@@ -1185,6 +1223,18 @@ func RenderSearchVerifyCommand(command *SearchVerifyCommand) []byte {
 		evidenceLine += searchVerifyRunnerNote
 	}
 	rendered += evidenceLine + "\n"
+	// The guard the covering test sits inside, as written. One line, and it is the answer to the two
+	// questions the command otherwise invites: why is there a -D on my cmake line, or why does the
+	// derivation say coverage is not claimed.
+	if command.Guard != "" {
+		rendered += "  guarded by: " + command.Guard + "\n"
+	}
+	// PRE-FIX status is computed by the CALLER (it already validates the pristine tree) and rendered
+	// verbatim here, capped. The binary deliberately does not interpret it: a status the tool invented
+	// would be a claim about a run it never made.
+	if status := searchVerifyTruncate(command.PreFixStatus, searchVerifyPreFixStatusMaxBytes); status != "" {
+		rendered += "  PRE-FIX: " + status + "\n"
+	}
 	if command.Tier == searchVerifyTierNone {
 		// The residual floor prescribes its own action; the full contract note would be advice about a
 		// command that does not exist.
@@ -1428,13 +1478,26 @@ func deriveSearchVerifyCMake(dir string, subject searchVerifySubject, evidence *
 	if !declared {
 		return nil
 	}
-	command := "cmake -S . -B build >/dev/null && cmake --build build --target " + target +
+	// GUARD. The covering test may be compiled out by default (fmt-2457: the whole join_tuple case sits
+	// inside `#ifdef FMT_RANGES_TEST_ENABLE_JOIN`), in which case a correct-looking ctest command passes
+	// while exercising nothing. A simple macro guard is satisfiable from the configure step.
+	guard, derived := searchVerifyGuardForSubject(subject, evidence), manifest+" enable_testing + "+subject.testEvidence+" target"
+	configure := "cmake -S . -B build >/dev/null"
+	switch {
+	case guard.define != "":
+		configure = "cmake -S . -B build -DCMAKE_CXX_FLAGS=-D" + guard.define + " >/dev/null"
+		derived += " + guard " + guard.define
+	case guard.present():
+		derived += fmt.Sprintf(searchVerifyGuardUnsatisfied, guard.raw)
+	}
+	command := configure + " && cmake --build build --target " + target +
 		" -j4 && ctest --test-dir build -R " + target + " --output-on-failure"
 	return &SearchVerifyCommand{
 		Command:     searchVerifyRunIn(dir, command),
 		Targets:     subject.testPath,
-		DerivedFrom: manifest + " enable_testing + " + subject.testEvidence + " target",
+		DerivedFrom: derived,
 		Tier:        searchVerifyTierNarrow,
+		Guard:       guard.raw,
 	}
 }
 
@@ -1551,4 +1614,254 @@ func searchVerifyDecorated(command *SearchVerifyCommand) string {
 		remainder = strings.TrimSpace(remainder[separator+2:])
 	}
 	return head + command.Prefix + " " + remainder
+}
+
+// GUARD-AWARE DERIVATION
+// =====================
+//
+// MEASURED (fmtlib__fmt-2457). The covering test `ranges_test.join_tuple` lives at
+// test/ranges-test.cc:202, inside `#ifdef FMT_RANGES_TEST_ENABLE_JOIN`. The derivation produced a
+// perfectly shaped `ctest -R ranges-test` command that CANNOT run that test: the guard is undefined by
+// default, so the case is compiled out and the command passes without exercising the edit at all. A
+// command that silently verifies nothing is worse than the suite command it displaced, because it
+// reports success.
+//
+// The guard is mechanically discoverable — it is a preprocessor line above the test in the same file —
+// and mechanically satisfiable for the two ecosystems that use guards this way: a C/C++ `#ifdef X`
+// becomes a compile definition, and a Rust `#[cfg(feature = "x")]` becomes `--features x` when the
+// manifest declares that feature. Where it cannot be satisfied, the command is still emitted and the
+// derivation SAYS the guard is unsatisfied, because "here is the command, and here is why it may not
+// cover your edit" is honest where a silent pass is not.
+const (
+	// searchVerifyGuardMaxLookback is how far above the test the guard scan reaches. A guard applies to
+	// a block, and the block's opening line is what matters; 400 lines covers a whole test file's worth
+	// of nesting without turning the scan into a parse.
+	searchVerifyGuardMaxLookback = 400
+
+	// searchVerifyGuardUnsatisfied is appended to the derivation when a guard was found and could not be
+	// satisfied mechanically. The command still ships; the claim of coverage does not.
+	searchVerifyGuardUnsatisfied = "; NOTE guard %s is not satisfied by this command - the case may be compiled out"
+)
+
+// searchVerifyGuard is the conditional-compilation guard a test sits inside.
+type searchVerifyGuard struct {
+	// raw is the guard line as written, for the payload's "guarded by:" line.
+	raw string
+	// define is the C/C++ macro the guard tests, empty when the guard is not a simple macro test.
+	define string
+	// feature is the Rust cargo feature the guard tests, empty otherwise.
+	feature string
+
+	// satisfied records that the command was amended to turn the guard on, so the derivation can say
+	// which of the two things happened rather than leaving the reader to infer it.
+	satisfied bool
+}
+
+func (guard searchVerifyGuard) present() bool { return guard.raw != "" }
+
+// searchVerifyGuardForSubject resolves the guard around the subject's covering test: the test's own
+// declaration line when a name is known, and otherwise the file's first guarded region, which is what
+// a file-level command would run into.
+func searchVerifyGuardForSubject(subject searchVerifySubject, evidence *searchVerifyEvidence) searchVerifyGuard {
+	if subject.testPath == "" {
+		return searchVerifyGuard{}
+	}
+	content, ok := evidence.file(subject.testPath)
+	if !ok {
+		return searchVerifyGuard{}
+	}
+	name := subject.testName
+	if name == "" {
+		name = subject.symbolName
+	}
+	line, exact := searchVerifyTestLineExact(content, name)
+	if line == 0 {
+		return searchVerifyGuard{}
+	}
+	guard := searchVerifyGuardFor(content, line)
+	if !guard.present() || exact {
+		return guard
+	}
+	// The test line was matched by WORDS, not by name, so the guard around it is a guess — and defining
+	// the wrong macro is the worst outcome available: it claims coverage the command does not have.
+	// Measured on fmt-2457, where a word match landed on the C_STYLE_ARRAY-guarded case while the gold
+	// test is guarded by ENABLE_JOIN. Report the guard, satisfy nothing.
+	return searchVerifyGuard{raw: guard.raw}
+}
+
+// searchVerifyTestLineExact is searchVerifyTestLine plus whether the match was the name as written.
+func searchVerifyTestLineExact(content, testName string) (int, bool) {
+	line := searchVerifyTestLine(content, testName)
+	if line == 0 {
+		return 0, false
+	}
+	// UNIQUE, not merely present. `TEST(ranges_test, join_tuple)` and `TEST(ranges_test, c_style_array)`
+	// both contain `ranges_test` verbatim, so a payload whose symbol is the SUITE name matches every
+	// case in the file — and picking one of them attributes its guard to a different test. Measured on
+	// fmt-2457: that is how FMT_RANGES_TEST_ENABLE_C_STYLE_ARRAY got defined for a case guarded by
+	// FMT_RANGES_TEST_ENABLE_JOIN. Ambiguous means unsatisfiable.
+	matches := 0
+	for _, candidate := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(candidate)
+		if searchVerifyDeclarationLine(trimmed) && strings.Contains(trimmed, testName) {
+			matches++
+		}
+	}
+	return line, matches == 1
+}
+
+// searchVerifyGuardFor finds the innermost unsatisfied-by-default guard above `line` in a file.
+//
+// It is a LINE SCAN, deliberately, not a parse: the shapes that matter are `#ifdef X`,
+// `#if defined(X)` and `#[cfg(feature = "x")]`, all of which are recognisable from the line alone, and
+// a scan cannot be wrong about a language it does not understand — it simply finds nothing. Balanced
+// `#endif` closes a guard, so a guard that ended before the test is never attributed to it.
+func searchVerifyGuardFor(content string, line int) searchVerifyGuard {
+	if content == "" || line <= 0 {
+		return searchVerifyGuard{}
+	}
+	lines := strings.Split(content, "\n")
+	if line > len(lines) {
+		line = len(lines)
+	}
+	start := line - searchVerifyGuardMaxLookback
+	if start < 0 {
+		start = 0
+	}
+	// Walk DOWN from the lookback point tracking open guards, so the innermost one still open at `line`
+	// is what the test is actually inside of.
+	var open []searchVerifyGuard
+	for index := start; index < line; index++ {
+		trimmed := strings.TrimSpace(lines[index])
+		switch {
+		case strings.HasPrefix(trimmed, "#endif"):
+			if len(open) > 0 {
+				open = open[:len(open)-1]
+			}
+		case strings.HasPrefix(trimmed, "#ifdef ") || strings.HasPrefix(trimmed, "#if defined"):
+			open = append(open, searchVerifyGuard{raw: trimmed, define: searchVerifyGuardMacro(trimmed)})
+		case strings.HasPrefix(trimmed, "#if ") || strings.HasPrefix(trimmed, "#ifndef "):
+			// Tracked so the #endif accounting stays balanced, but never satisfiable: `#ifndef` is
+			// satisfied BY DEFAULT and a general `#if` expression is not a macro switch.
+			open = append(open, searchVerifyGuard{raw: trimmed})
+		case strings.HasPrefix(trimmed, "#[cfg(feature"):
+			// Rust attributes are not block-scoped: the attribute applies to the item that follows, so
+			// it is only this test's guard when it is within a couple of lines of it.
+			if line-index <= 3 {
+				return searchVerifyGuard{raw: trimmed, feature: searchVerifyGuardFeature(trimmed)}
+			}
+		}
+	}
+	for index := len(open) - 1; index >= 0; index-- {
+		if open[index].define != "" {
+			return open[index]
+		}
+	}
+	if len(open) > 0 {
+		return open[len(open)-1]
+	}
+	return searchVerifyGuard{}
+}
+
+// searchVerifyGuardMacro extracts the macro from `#ifdef X` / `#if defined(X)` / `#if defined X`.
+func searchVerifyGuardMacro(line string) string {
+	rest := strings.TrimSpace(strings.TrimPrefix(line, "#ifdef"))
+	if strings.HasPrefix(line, "#if defined") {
+		rest = strings.TrimSpace(strings.TrimPrefix(line, "#if defined"))
+		rest = strings.TrimPrefix(rest, "(")
+		if close := strings.IndexAny(rest, ")&| \t"); close > 0 {
+			rest = rest[:close]
+		}
+	}
+	if fields := strings.Fields(rest); len(fields) > 0 {
+		rest = fields[0]
+	}
+	rest = strings.Trim(rest, "()")
+	// A macro is an identifier. Anything else came from an expression this scan should not claim.
+	for _, letter := range rest {
+		if !(letter == '_' || (letter >= '0' && letter <= '9') ||
+			(letter >= 'a' && letter <= 'z') || (letter >= 'A' && letter <= 'Z')) {
+			return ""
+		}
+	}
+	return rest
+}
+
+// searchVerifyGuardFeature extracts `x` from `#[cfg(feature = "x")]`.
+func searchVerifyGuardFeature(line string) string {
+	open := strings.Index(line, `"`)
+	if open < 0 {
+		return ""
+	}
+	rest := line[open+1:]
+	close := strings.Index(rest, `"`)
+	if close <= 0 {
+		return ""
+	}
+	return rest[:close]
+}
+
+// searchVerifyTestLine finds the line a named test is declared on, so the guard scan has a position to
+// work back from. Returns 0 when the name is not in the file.
+func searchVerifyTestLine(content, testName string) int {
+	if content == "" || testName == "" {
+		return 0
+	}
+	// DECLARATION lines only, and among them the one that spells out most of the name. The first
+	// occurrence of a substring is the wrong answer here: on fmt-2457 the payload's symbol appears in an
+	// earlier test's body, so a first-match scan attributed that test's guard
+	// (FMT_RANGES_TEST_ENABLE_C_STYLE_ARRAY) to a case guarded by FMT_RANGES_TEST_ENABLE_JOIN — a define
+	// that satisfies the wrong condition, which is a worse failure than finding no guard at all.
+	words := searchVerifyNameWords(testName)
+	best, bestMatches := 0, -1
+	for index, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !searchVerifyDeclarationLine(trimmed) {
+			continue
+		}
+		lowered := strings.ToLower(trimmed)
+		matches := 0
+		if strings.Contains(trimmed, testName) {
+			matches = len(words) + 1 // an exact spelling beats any word count
+		} else {
+			for _, word := range words {
+				if strings.Contains(lowered, word) {
+					matches++
+				}
+			}
+		}
+		if matches > 0 && matches > bestMatches {
+			best, bestMatches = index+1, matches
+		}
+	}
+	return best
+}
+
+// searchVerifyDeclarationLine reports whether a line DECLARES a test, across the shapes the guard scan
+// has to work with: gtest/catch macros, Go and Rust functions, Python/Ruby methods, JS specs.
+func searchVerifyDeclarationLine(trimmed string) bool {
+	for _, shape := range []string{
+		"TEST(", "TEST_F(", "TEST_CASE(", "TYPED_TEST(", "BOOST_AUTO_TEST_CASE(",
+		"func Test", "fn ", "def ", "it(", "test(", "describe(",
+	} {
+		if strings.HasPrefix(trimmed, shape) {
+			return true
+		}
+	}
+	return false
+}
+
+// searchVerifyTruncate bounds a caller-supplied string to a byte cap without splitting a rune, and
+// collapses newlines: the PRE-FIX status is ONE line by contract, and a wrapper that embeds a newline
+// must not be able to inject extra lines into the block.
+func searchVerifyTruncate(value string, maxBytes int) string {
+	value = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(value, "\r", " "), "\n", " "))
+	if len(value) <= maxBytes {
+		return value
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+	return strings.TrimSpace(value[:cut])
 }
