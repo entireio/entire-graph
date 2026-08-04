@@ -984,6 +984,79 @@ func unforcedSearchEnclosures(enclosures, plain []searchEnclosure) []searchEnclo
 	return out
 }
 
+// unreanchoredSearchEnclosures is the enclosure plan the re-anchor's CONTROL allocation is computed
+// from: `enclosures` with every entry blanked that exists only because its hit was re-anchored onto
+// code (search_reanchor.go). It also returns the mask of those ranks — they are the ones exempt from
+// the comparison, being the whole point of the trial — and whether there was anything to gate at
+// all, so the ordinary payload pays for no second allocation.
+func unreanchoredSearchEnclosures(
+	results []SearchResult, enclosures []searchEnclosure,
+) ([]searchEnclosure, []bool, bool) {
+	if len(results) != len(enclosures) {
+		return nil, nil, false
+	}
+	gated := false
+	mask := make([]bool, len(enclosures))
+	out := make([]searchEnclosure, len(enclosures))
+	for index, enclosure := range enclosures {
+		if results[index].CommentFocusLine > 0 && enclosure.available() && !enclosure.forced {
+			mask[index], gated = true, true
+			continue
+		}
+		out[index] = enclosure
+	}
+	return out, mask, gated
+}
+
+// markSearchReanchorGainedBodies flags the ranks whose source exists ONLY because the hit was
+// re-anchored — the control allocation showed nothing there and the accepted one does.
+//
+// The distinction is the whole reason this is computed here rather than inferred from
+// CommentFocusLine downstream: a re-anchored hit very often had a body ALREADY (the anchor moved a
+// line or two inside a body the allocator had already bought), and gating that body would evict
+// source the re-anchor never paid for. Measured on fluent__fluentd-4655 and facebook__docusaurus-9183:
+// treating every re-anchored hit as a debtor turned two 30-line method bodies into locators.
+func markSearchReanchorGainedBodies(candidate, control []SearchResult, exempt []bool) {
+	if len(candidate) != len(control) {
+		return
+	}
+	for index := range candidate {
+		if index >= len(exempt) || !exempt[index] {
+			continue
+		}
+		if !searchResultRendersSource(control, index) && searchResultRendersSource(candidate, index) {
+			candidate[index].BodyFromReanchor = true
+		}
+	}
+}
+
+// searchAllocationPreservesSource reports whether `candidate` shows every rank at least as much
+// source as `control` does. Ranks named by `exempt` are skipped: they are the ranks the trial was
+// run to improve, and they are allowed to gain.
+//
+// "At least as much" is measured on the PRINTED span, not on the signals, because that is what a
+// reader loses: a rank that keeps `complete-symbol` while its snippet narrows has still been
+// demoted.
+func searchAllocationPreservesSource(control, candidate []SearchResult, exempt []bool) bool {
+	if len(control) != len(candidate) {
+		return false
+	}
+	for index := range control {
+		if index < len(exempt) && exempt[index] {
+			continue
+		}
+		if !searchResultRendersSource(control, index) {
+			continue
+		}
+		if !searchResultRendersSource(candidate, index) ||
+			candidate[index].SnippetStartLine > control[index].SnippetStartLine ||
+			candidate[index].SnippetEndLine < control[index].SnippetEndLine {
+			return false
+		}
+	}
+	return true
+}
+
 // seatForcedSearchUnits adds the --full-unit-top bodies to an allocation that is already final,
 // without ever taking anything away from it.
 //

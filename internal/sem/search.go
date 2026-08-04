@@ -217,6 +217,12 @@ type SearchResult struct {
 	// because the prose line is still the evidence for why the hit is here, and a reader who is told
 	// only the code line cannot tell a re-anchored hit from a direct one. Schema 1.x additive.
 	CommentFocusLine int `json:"comment_focus_line,omitempty"`
+	// BodyFromReanchor marks a result whose source exists ONLY because the re-anchor moved its
+	// anchor onto code: the allocation computed WITHOUT the re-anchored enclosures showed nothing at
+	// this rank. It is what lets the renderer fund such a body out of spare slots only, and it is
+	// deliberately NOT the same test as `CommentFocusLine > 0` — most re-anchored hits already
+	// carried a body, and gating those would evict source the re-anchor never paid for.
+	BodyFromReanchor bool `json:"body_from_reanchor,omitempty"`
 	// There is deliberately no per-result `Neighbors` list here. "The types this hit is
 	// written in terms of" is answered once, by the signature-type block (search_sigtypes.go),
 	// and "the other places this change lands" by the related-site block
@@ -982,10 +988,37 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 			0, budgetDriven,
 		)
 	}
+	tailSnippetLines := minInt(searchEnclosureTailSnippetLines, options.MaxSnippetLines)
+	seated := results
 	results, completeSymbols, locators := allocateSearchSnippets(
-		results, enclosures, plainEnclosures, options.MaxContextBytes, searchEnclosureGrowthBytes,
-		bodyHeadRanks, minInt(searchEnclosureTailSnippetLines, options.MaxSnippetLines),
+		seated, enclosures, plainEnclosures, options.MaxContextBytes, searchEnclosureGrowthBytes,
+		bodyHeadRanks, tailSnippetLines,
 	)
+	// THE RE-ANCHOR FUNDING INVARIANT, the same one seatForcedSearchUnits enforces for forced units: a
+	// body a hit gained only because it was re-anchored may be paid for out of free budget, never out of
+	// another rank's existing allocation. Re-anchoring moves the ANCHOR; it is not a licence to
+	// re-decide who gets source.
+	//
+	// Measured on vuejs__core-11870: `arrayInstrumentations.ts:10→12` picked up a complete body and the
+	// allocator funded it by demoting `runtime-core/src/helpers/renderList.ts:54-107` — 54 lines of the
+	// production helper the issue is actually about — to a bare locator. Net: the payload traded a body
+	// it had for a body it did not need.
+	//
+	// So the re-anchored enclosures are planned, priced and then ACCEPTED ONLY IF the resulting
+	// allocation still shows every other rank everything the control allocation showed it. When it does
+	// not, control stands: the hit keeps its re-anchored `focus=`, which is the larger part of the win
+	// and costs nothing.
+	if control, exempt, gated := unreanchoredSearchEnclosures(seated, enclosures); gated {
+		plan, bodies, demoted := allocateSearchSnippets(
+			seated, control, plainEnclosures, options.MaxContextBytes, searchEnclosureGrowthBytes,
+			bodyHeadRanks, tailSnippetLines,
+		)
+		if !searchAllocationPreservesSource(plan, results, exempt) {
+			results, completeSymbols, locators = plan, bodies, demoted
+		} else {
+			markSearchReanchorGainedBodies(results, plan, exempt)
+		}
+	}
 	// Rule 1 of budget-driven rendering, applied last of the ranking passes: spend whatever ceiling is
 	// still unclaimed on the ranks that are still locators, in rank order. Purely additive.
 	if budgetDriven {

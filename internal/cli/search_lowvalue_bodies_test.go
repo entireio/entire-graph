@@ -137,6 +137,84 @@ func TestWriteTextSearchKeepsALowValueBodyWhenItIsAllThereIs(t *testing.T) {
 	}
 }
 
+// The vuejs__core-11870 shape: three ordinary hits already claim the diet's three body slots, and the
+// re-anchored hit at rank 3 also carries a complete body. It must NOT take rank 5's slot.
+func reanchorFundingResponse() sem.SearchResponse {
+	return sem.SearchResponse{Results: []sem.SearchResult{
+		{
+			Rank: 1, FilePath: "packages/reactivity/src/reactive.ts", StartLine: 140, EndLine: 150,
+			FocusLine: 140, SnippetStartLine: 140, SnippetEndLine: 150, Score: 78,
+			SymbolName: "shallowReactive", Kind: "function", Signals: []string{"body", "complete-symbol"},
+			Snippet: "export function shallowReactive(target) {\n\treturn createReactiveObject(target)\n}",
+		},
+		{
+			Rank: 2, FilePath: "packages/reactivity/src/reactive.ts", StartLine: 257, EndLine: 298,
+			FocusLine: 257, SnippetStartLine: 257, SnippetEndLine: 298, Score: 74,
+			SymbolName: "createReactiveObject", Kind: "function", Signals: []string{"complete-symbol"},
+			Snippet: "function createReactiveObject(target) {\n\treturn new Proxy(target, handlers)\n}",
+		},
+		{
+			Rank: 3, FilePath: "packages/reactivity/src/arrayInstrumentations.ts", StartLine: 12, EndLine: 17,
+			FocusLine: 12, CommentFocusLine: 10, BodyFromReanchor: true,
+			SnippetStartLine: 12, SnippetEndLine: 17, Score: 70,
+			SymbolName: "reactiveReadArray", Kind: "function", Signals: []string{"body", "symbol-usage", "complete-symbol"},
+			Snippet: "export function reactiveReadArray(array) {\n\tconst raw = toRaw(array)\n}",
+		},
+		{
+			Rank: 4, FilePath: "packages/reactivity/src/index.ts", StartLine: 28, EndLine: 32,
+			FocusLine: 30, SnippetStartLine: 28, SnippetEndLine: 32, Score: 69,
+			Signals: []string{"body", "symbol-usage"}, Snippet: "export { shallowReactive }",
+		},
+		{
+			Rank: 5, FilePath: "packages/runtime-core/src/helpers/renderList.ts", StartLine: 54, EndLine: 107,
+			FocusLine: 54, SnippetStartLine: 54, SnippetEndLine: 107, Score: 69,
+			SymbolName: "renderList", Kind: "function", Signals: []string{"path", "body", "complete-symbol"},
+			Snippet: "export function renderList(source, renderItem) {\n\tlet ret\n\treturn ret\n}",
+		},
+	}}
+}
+
+func TestWriteTextSearchNeverFundsAReanchoredBodyByEvictingOne(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	if err := writeTextSearch(&buf, reanchorFundingResponse()); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	// The body that already existed survives, whole.
+	if !strings.Contains(out, "5. packages/runtime-core/src/helpers/renderList.ts:54-107 ") ||
+		!strings.Contains(out, "export function renderList(source, renderItem)") {
+		t.Fatalf("the re-anchored hit evicted an existing body:\n%s", out)
+	}
+	// The re-anchored hit yields the slot and keeps the anchor move, which is the part that costs
+	// nothing: its locator points at the code line, not at the comment.
+	if strings.Contains(out, "export function reactiveReadArray(array)") {
+		t.Fatalf("the re-anchored hit took a slot it could not fund:\n%s", out)
+	}
+	if !strings.Contains(out, "3. packages/reactivity/src/arrayInstrumentations.ts:12 reactiveReadArray\n") {
+		t.Fatalf("the re-anchored locator lost its code anchor:\n%s", out)
+	}
+}
+
+func TestWriteTextSearchGivesAReanchoredHitAFreeSlot(t *testing.T) {
+	t.Parallel()
+	// Same shape with rank 5's body removed: one slot is now genuinely free, so the re-anchored hit
+	// takes it. The rule is "never evict", not "never fund".
+	response := reanchorFundingResponse()
+	response.Results[4].Signals = []string{"path", "body"}
+	var buf bytes.Buffer
+	if err := writeTextSearch(&buf, response); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "export function reactiveReadArray(array)") {
+		t.Fatalf("a free slot was not given to the re-anchored hit:\n%s", out)
+	}
+	if !strings.Contains(out, "focus=10→12") {
+		t.Fatalf("the re-anchored body lost its origin line:\n%s", out)
+	}
+}
+
 func TestWriteTextSearchIsUnchangedWithoutLowValuePaths(t *testing.T) {
 	t.Parallel()
 	// The regression guard for the tier change: with no low-value hit in the group, the body diet

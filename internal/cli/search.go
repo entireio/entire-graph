@@ -417,6 +417,21 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 	// byte-identical.
 	position := 0
 	demoteLowValue := searchTextDemotesLowValueBodies(primary)
+	// THE RE-ANCHOR FUNDING INVARIANT, the renderer's half. A body a hit can only claim because it was
+	// re-anchored onto code (sem/search_reanchor.go) is funded out of SPARE slots, never out of a slot an
+	// ordinary hit would have taken — the same rule seatForcedSearchUnits applies to forced units, and
+	// the diet's three slots are the currency here rather than bytes.
+	//
+	// Measured on vuejs__core-11870: `arrayInstrumentations.ts:10→12` picked up a complete body, became
+	// the third body in rank order, and pushed `runtime-core/src/helpers/renderList.ts:54-107` — 54 lines
+	// of the production helper the issue is actually about — out of the payload as a bare locator. Net:
+	// the payload traded a body it had for a body it did not need.
+	//
+	// So the ordinary hits' demand is counted FIRST and the re-anchored ones take what is left. A denied
+	// re-anchored hit keeps its re-anchored `focus=`, which is the larger part of the win and costs
+	// nothing. It still charges a tier position, in this pass and in the demand count above, because the
+	// two loops have to walk the same queue to agree.
+	reanchorSlots := searchTextMaxFullBodies - searchTextOrdinaryBodyDemand(primary, demoteLowValue)
 	for _, result := range primary {
 		if demoteLowValue && searchLowValueBodyPath(result.FilePath) && !searchResultForcedByFlag(result) {
 			writeTextSearchLocator(out, result)
@@ -424,6 +439,13 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 		}
 		full := position < searchTextFullRanks || searchResultCarriesCompleteBody(result)
 		position++
+		if full && searchResultBodyIsReanchorGained(result) {
+			if reanchorSlots <= 0 {
+				full = false
+			} else {
+				reanchorSlots--
+			}
+		}
 		if full && bodies >= searchTextMaxFullBodies && !searchResultForcedByFlag(result) {
 			full = false
 		}
@@ -595,6 +617,35 @@ func searchTextDemotesLowValueBodies(primary []sem.SearchResult) bool {
 		}
 	}
 	return false
+}
+
+// searchResultBodyIsReanchorGained reports whether this hit's body exists only because the payload
+// moved its anchor onto code. The flag is set by the allocator's own control comparison, NOT inferred
+// from CommentFocusLine: most re-anchored hits already carried a body, and gating those would evict
+// source the re-anchor never paid for. A hit the CALLER forced is never gated either — a flag that
+// silently stops producing what it promises is worse than no flag.
+func searchResultBodyIsReanchorGained(result sem.SearchResult) bool {
+	return result.BodyFromReanchor && !searchResultForcedByFlag(result)
+}
+
+// searchTextOrdinaryBodyDemand counts the body slots the NON-re-anchored hits will claim, walking the
+// same queue the render loop walks so the two agree on every tier position.
+func searchTextOrdinaryBodyDemand(primary []sem.SearchResult, demoteLowValue bool) int {
+	demand, position := 0, 0
+	for _, result := range primary {
+		if demoteLowValue && searchLowValueBodyPath(result.FilePath) && !searchResultForcedByFlag(result) {
+			continue
+		}
+		full := position < searchTextFullRanks || searchResultCarriesCompleteBody(result)
+		position++
+		if !full || searchResultBodyIsReanchorGained(result) {
+			continue
+		}
+		if demand++; demand >= searchTextMaxFullBodies {
+			return searchTextMaxFullBodies
+		}
+	}
+	return demand
 }
 
 // writeTextSearchLocator prints a hit as its one-line locator unconditionally. It is the form the body

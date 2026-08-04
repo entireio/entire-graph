@@ -241,6 +241,65 @@ func TestReanchorSearchDocCommentsFallsBackToANearbyEnclosingUnit(t *testing.T) 
 	}
 }
 
+// The BYTE-level half of the funding invariant. The renderer's slot cap is what caught
+// vuejs__core-11870, but the allocator can starve a later rank the same way when a re-anchored hit's
+// new enclosure eats the growth allowance, so the control comparison is pinned here directly.
+func TestReanchoredEnclosuresAreGatedAndComparedAgainstControl(t *testing.T) {
+	t.Parallel()
+	results := []SearchResult{
+		{Rank: 1, FilePath: "a.ts", SnippetStartLine: 1, SnippetEndLine: 9},
+		{Rank: 2, FilePath: "b.ts", CommentFocusLine: 10, SnippetStartLine: 12, SnippetEndLine: 17},
+		{Rank: 3, FilePath: "c.ts", SnippetStartLine: 54, SnippetEndLine: 107, Signals: []string{"complete-symbol"}},
+	}
+	lines := make([]string, 200)
+	enclosures := []searchEnclosure{
+		{start: 1, end: 9, lines: lines},
+		{start: 12, end: 17, lines: lines},
+		{start: 54, end: 107, lines: lines},
+	}
+	control, exempt, gated := unreanchoredSearchEnclosures(results, enclosures)
+	if !gated || !exempt[1] || exempt[0] || exempt[2] {
+		t.Fatalf("gate = %v, exempt = %v", gated, exempt)
+	}
+	if control[1].available() {
+		t.Fatal("the re-anchored enclosure survived into the control plan")
+	}
+	if !control[0].available() || !control[2].available() {
+		t.Fatal("the control plan lost an enclosure it should have kept")
+	}
+	// A candidate that keeps every other rank's source is accepted.
+	if !searchAllocationPreservesSource(results, results, exempt) {
+		t.Fatal("an identical allocation was rejected")
+	}
+	// A candidate that demotes rank 3 to a locator to pay for rank 2 is refused — this is the
+	// vuejs regression, expressed on the allocator's own terms.
+	evicted := append([]SearchResult(nil), results...)
+	evicted[2] = SearchResult{Rank: 3, FilePath: "c.ts", SnippetStartLine: 54, SnippetEndLine: 55}
+	if searchAllocationPreservesSource(results, evicted, exempt) {
+		t.Fatal("an allocation that evicted an existing body was accepted")
+	}
+	// So is one that merely NARROWS it: a rank that keeps complete-symbol while losing lines has
+	// still been demoted.
+	narrowed := append([]SearchResult(nil), results...)
+	narrowed[2] = results[2]
+	narrowed[2].SnippetEndLine = 90
+	if searchAllocationPreservesSource(results, narrowed, exempt) {
+		t.Fatal("an allocation that narrowed an existing body was accepted")
+	}
+	// The exempt rank itself is free to gain.
+	gainedAtExempt := append([]SearchResult(nil), results...)
+	gainedAtExempt[1] = results[1]
+	gainedAtExempt[1].Signals = []string{"complete-symbol"}
+	if !searchAllocationPreservesSource(results, gainedAtExempt, exempt) {
+		t.Fatal("the re-anchored rank was not allowed to gain")
+	}
+	// Nothing re-anchored means no second allocation is paid for at all.
+	if _, _, stillGated := unreanchoredSearchEnclosures(
+		[]SearchResult{{Rank: 1, FilePath: "a.ts"}}, enclosures[:1]); stillGated {
+		t.Fatal("an ordinary payload was gated")
+	}
+}
+
 // SAME-CONCEPT LITERAL mines the anchor's own reported region (searchLiteralAnchorLines), so
 // re-anchoring before the block is built is what stops the literal being lifted out of `@param`
 // prose. This pins that wiring: the same anchor, before and after the pass.
