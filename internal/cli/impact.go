@@ -332,15 +332,22 @@ func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impac
 
 	ref := parseSymbolRef(flags.Symbol, flags.File, flags.Line, flags.Kind, snapshot.Header.RepoRoot, snapshotFilePaths(snapshot))
 	focuses, matchTier, fuzzyMatch := resolveFocusSymbolsOrFuzzy(snapshot.Symbols, ref, symbolFuzzyCandidateLimit)
-	sort.Slice(focuses, func(left, right int) bool {
-		if focuses[left].FilePath != focuses[right].FilePath {
-			return focuses[left].FilePath < focuses[right].FilePath
-		}
-		if focuses[left].StartLine != focuses[right].StartLine {
-			return focuses[left].StartLine < focuses[right].StartLine
-		}
-		return focuses[left].ID < focuses[right].ID
-	})
+	// File/line order is right for EXACT matches — several definitions of one name are equally valid
+	// answers, so a stable positional order is the honest presentation. It is wrong for a FUZZY answer,
+	// where the order IS the answer: resolveFocusSymbolsOrFuzzy already sorted by how well each
+	// candidate matched, and re-sorting alphabetically buried the correct
+	// `Functions.flattenSingleValue` under a `Single` class that merely shares one token.
+	if !fuzzyMatch {
+		sort.Slice(focuses, func(left, right int) bool {
+			if focuses[left].FilePath != focuses[right].FilePath {
+				return focuses[left].FilePath < focuses[right].FilePath
+			}
+			if focuses[left].StartLine != focuses[right].StartLine {
+				return focuses[left].StartLine < focuses[right].StartLine
+			}
+			return focuses[left].ID < focuses[right].ID
+		})
+	}
 
 	partialFailures := snapshot.Header.PartialFailures
 	if partialFailures == nil {

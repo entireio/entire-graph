@@ -197,3 +197,11 @@ mise run check   # fmt + vet + race tests + build
 ```
 
 Contract rules that must not break: schema `1.x` is frozen and additive-only (`docs/adr/0001-ga-schema-contract.md`); the provider is **no-egress** (never add remote fetches, hosted API calls, telemetry, or runtime grammar downloads); `compound-v1` symbol IDs must stay stable across ordinary edits; unsupported/unparseable files must surface as machine-readable partial failures, never silent drops. All logic lives under `internal/` (`sem` = parsing/graph/search, `cli` = hand-rolled dispatch, `gitutil` = git subprocess); `cmd/entire-graph/main.go` is a thin entry point. The plugin manifest (`entire-plugin.yml`) registers the subcommand `graph`, so users type `entire graph ...`. This project was **previously named `entire-sem`** — do not reintroduce the old name. **Entire Brain** (`entire-brain`) is the separate downstream consumer of this provider's NDJSON — not an old name for this project.
+
+<!-- entire-graph:begin -->
+This repo has the entire-graph code graph installed. Before exploring code with
+grep/find/whole-file reads, read .entire/graph-agent.md — the search-first, verify-once
+doctrine for coding agents: search instead of grepping, then check the sibling sites and
+compile (or run the nearest existing test) once before you finish.
+@.entire/graph-agent.md
+<!-- entire-graph:end -->

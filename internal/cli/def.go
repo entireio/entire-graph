@@ -461,6 +461,11 @@ func (index *defIndex) resolve(flags defFlags) []sem.SymbolRecord {
 			matches = fuzzy
 		}
 	}
+	// A fuzzy answer keeps the relevance order resolveFocusSymbolsOrFuzzy produced; only exact matches
+	// are re-sorted positionally. See the same reasoning in buildNeighborResponse.
+	if index.fuzzyKind != "" {
+		return matches
+	}
 	sort.Slice(matches, func(left, right int) bool {
 		if matches[left].FilePath != matches[right].FilePath {
 			return matches[left].FilePath < matches[right].FilePath

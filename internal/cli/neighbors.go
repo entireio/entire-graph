@@ -338,15 +338,22 @@ func buildNeighborResponse(snapshot sem.ProviderSnapshot, flags neighborFlags) n
 	focuses, matchTier, fuzzyMatch := resolveFocusSymbolsOrFuzzy(
 		snapshot.Symbols, ref, symbolFuzzyCandidateLimit,
 	)
-	sort.Slice(focuses, func(left, right int) bool {
-		if focuses[left].FilePath != focuses[right].FilePath {
-			return focuses[left].FilePath < focuses[right].FilePath
-		}
-		if focuses[left].StartLine != focuses[right].StartLine {
-			return focuses[left].StartLine < focuses[right].StartLine
-		}
-		return focuses[left].ID < focuses[right].ID
-	})
+	// File/line order is right for EXACT matches — several definitions of one name are equally valid
+	// answers, so a stable positional order is the honest presentation. It is wrong for a FUZZY answer,
+	// where the order IS the answer: resolveFocusSymbolsOrFuzzy already sorted by how well each
+	// candidate matched, and re-sorting alphabetically buried the correct
+	// `Functions.flattenSingleValue` under a `Single` class that merely shares one token.
+	if !fuzzyMatch {
+		sort.Slice(focuses, func(left, right int) bool {
+			if focuses[left].FilePath != focuses[right].FilePath {
+				return focuses[left].FilePath < focuses[right].FilePath
+			}
+			if focuses[left].StartLine != focuses[right].StartLine {
+				return focuses[left].StartLine < focuses[right].StartLine
+			}
+			return focuses[left].ID < focuses[right].ID
+		})
+	}
 	focusMatchesTotal := len(focuses)
 	matchBodies := []symbolMatchBody(nil)
 	if fuzzyMatch || focusMatchesTotal > 1 {
