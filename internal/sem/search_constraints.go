@@ -27,6 +27,11 @@ type searchConstraints struct {
 	Truncated bool
 }
 
+type searchConstraintSurface struct {
+	words       []string
+	wholeTokens map[string]bool
+}
+
 var searchConstraintInterrogatives = map[string]bool{
 	"what": true, "when": true, "where": true, "who": true, "why": true, "how": true,
 }
@@ -223,28 +228,76 @@ func searchConstraintWordsLooselyEqual(got, want string) bool {
 	return false
 }
 
-func searchCandidateAgreement(candidate searchCandidate, constraints searchConstraints) (float64, []string) {
-	explicitPhrases := 0
+func searchConstraintsRequireAgreement(constraints searchConstraints) bool {
+	if len(constraints.Entities) > 0 {
+		return true
+	}
 	for _, phrase := range constraints.Phrases {
 		if phrase.Explicit {
-			explicitPhrases++
+			return true
 		}
 	}
-	if len(constraints.Entities) == 0 && explicitPhrases == 0 {
+	return false
+}
+
+func buildSearchConstraintSurface(parts ...string) searchConstraintSurface {
+	surface := searchConstraintSurface{
+		wholeTokens: map[string]bool{},
+	}
+	word := make([]rune, 0, 16)
+	raw := make([]byte, 0, 16)
+	flushWord := func() {
+		if len(word) == 0 {
+			return
+		}
+		token := string(word)
+		surface.words = append(surface.words, token)
+		surface.wholeTokens[token] = true
+		word = word[:0]
+	}
+	flushRaw := func() {
+		if len(raw) == 0 {
+			return
+		}
+		surface.wholeTokens[string(raw)] = true
+		raw = raw[:0]
+	}
+	for _, part := range parts {
+		for _, character := range part {
+			if unicode.IsLetter(character) || unicode.IsDigit(character) {
+				word = append(word, unicode.ToLower(character))
+			} else {
+				flushWord()
+			}
+
+			// Go regexp POSIX character classes are ASCII. This is the exact
+			// character set of searchWordPattern, accumulated during the same
+			// scan as the Unicode word sequence above.
+			if character >= 'A' && character <= 'Z' {
+				raw = append(raw, byte(character-'A'+'a'))
+			} else if character >= 'a' && character <= 'z' ||
+				character >= '0' && character <= '9' ||
+				strings.ContainsRune("_./:+#-", character) {
+				raw = append(raw, byte(character))
+			} else {
+				flushRaw()
+			}
+		}
+		// The old implementation joined parts with a newline, which terminates
+		// both token classes between metadata fields.
+		flushWord()
+		flushRaw()
+	}
+	return surface
+}
+
+func searchCandidateAgreementSurface(surface searchConstraintSurface, constraints searchConstraints) (float64, []string) {
+	if !searchConstraintsRequireAgreement(constraints) {
 		return 0, nil
 	}
-	text := strings.Join([]string{
-		candidate.result.SymbolName,
-		candidate.result.QualifiedName,
-		candidate.result.Signature,
-		candidate.result.Snippet,
-		strings.Join(candidate.aliases, "\n"),
-	}, "\n")
-	words := searchQueryWordSequence(strings.ToLower(text))
-	whole := searchConstraintWholeTokens(text, words)
 	matchedEntities := 0
 	for _, entity := range constraints.Entities {
-		if whole[entity.Normalized] {
+		if surface.wholeTokens[entity.Normalized] {
 			matchedEntities++
 		}
 	}
@@ -255,8 +308,13 @@ func searchCandidateAgreement(candidate searchCandidate, constraints searchConst
 			continue
 		}
 		eligiblePhrases++
-		if phrase.Explicit && orderedSearchPhraseMatch(text, phrase) ||
-			!phrase.Explicit && searchOrderedPhraseMatch(words, phrase.Words, 2, true) {
+		maxInterveningContent := 2
+		looseMorphology := true
+		if phrase.Explicit {
+			maxInterveningContent = 0
+			looseMorphology = false
+		}
+		if searchOrderedPhraseMatch(surface.words, phrase.Words, maxInterveningContent, looseMorphology) {
 			matchedPhrases++
 		}
 	}
@@ -280,6 +338,68 @@ func searchCandidateAgreement(candidate searchCandidate, constraints searchConst
 	return minFloat64(maxSearchAgreementBonus, bonus), signals
 }
 
+func buildSearchCandidateConstraintSurface(candidate searchCandidate) searchConstraintSurface {
+	return buildSearchConstraintSurface(
+		candidate.result.SymbolName,
+		candidate.result.QualifiedName,
+		candidate.result.Signature,
+		candidate.result.Snippet,
+		strings.Join(candidate.aliases, "\n"),
+	)
+}
+
+func searchCandidateConstraintMayMatch(candidate searchCandidate, constraints searchConstraints) bool {
+	text := strings.ToLower(strings.Join([]string{
+		candidate.result.SymbolName,
+		candidate.result.QualifiedName,
+		candidate.result.Signature,
+		candidate.result.Snippet,
+		strings.Join(candidate.aliases, "\n"),
+	}, "\n"))
+	for _, entity := range constraints.Entities {
+		if strings.Contains(text, entity.Normalized) {
+			return true
+		}
+	}
+	for _, phrase := range constraints.Phrases {
+		if len(phrase.Words) == 0 || len(constraints.Entities) == 0 && !phrase.Explicit {
+			continue
+		}
+		first := phrase.Words[0]
+		if strings.Contains(text, first) {
+			return true
+		}
+		if phrase.Explicit {
+			continue
+		}
+		for _, suffix := range []string{"ed", "ing", "s"} {
+			if strings.HasSuffix(first, suffix) && len(first) > len(suffix)+2 &&
+				strings.Contains(text, strings.TrimSuffix(first, suffix)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func searchCandidateAgreementCached(candidate *searchCandidate, constraints searchConstraints) (float64, []string) {
+	if !searchConstraintsRequireAgreement(constraints) {
+		return 0, nil
+	}
+	if candidate.constraintSurface == nil {
+		if !searchCandidateConstraintMayMatch(*candidate, constraints) {
+			return 0, nil
+		}
+		surface := buildSearchCandidateConstraintSurface(*candidate)
+		candidate.constraintSurface = &surface
+	}
+	return searchCandidateAgreementSurface(*candidate.constraintSurface, constraints)
+}
+
+func searchCandidateAgreement(candidate searchCandidate, constraints searchConstraints) (float64, []string) {
+	return searchCandidateAgreementCached(&candidate, constraints)
+}
+
 func searchConstraintWholeTokens(text string, words []string) map[string]bool {
 	tokens := make(map[string]bool, len(words))
 	for _, word := range words {
@@ -293,7 +413,7 @@ func searchConstraintWholeTokens(text string, words []string) map[string]bool {
 
 func applySearchCandidateAgreement(candidates []searchCandidate, constraints searchConstraints) {
 	for index := range candidates {
-		bonus, signals := searchCandidateAgreement(candidates[index], constraints)
+		bonus, signals := searchCandidateAgreementCached(&candidates[index], constraints)
 		if bonus == 0 {
 			continue
 		}

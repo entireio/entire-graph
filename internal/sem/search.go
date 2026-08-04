@@ -405,12 +405,13 @@ type searchQuery struct {
 }
 
 type searchCandidate struct {
-	result     SearchResult
-	aliases    []string
-	termCounts map[string]int
-	docLength  int
-	baseScore  float64
-	score      float64
+	result            SearchResult
+	aliases           []string
+	termCounts        map[string]int
+	docLength         int
+	baseScore         float64
+	score             float64
+	constraintSurface *searchConstraintSurface
 }
 
 type searchContentReadTracker struct {
@@ -2514,7 +2515,7 @@ func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF m
 		// dropped in the merge: trail 10's caller-boost is the reviewed successor of the
 		// same inbound-degree signal, so keeping both would double-count it.
 		candidate.score += searchStructuralAdjustment(candidate, q)
-		bonus, signals := searchCandidateAgreement(*candidate, q.constraints)
+		bonus, signals := searchCandidateAgreementCached(candidate, q.constraints)
 		candidate.score += bonus
 		candidate.result.Signals = appendUnique(candidate.result.Signals, signals...)
 		if codeTokenBonus > 0 {

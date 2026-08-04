@@ -3,6 +3,7 @@ package sem
 import (
 	"context"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -43,6 +44,234 @@ func TestSearchCandidateAgreementRequiresEntityAndRelationshipOnOneCandidate(t *
 	entityBonus, _ := searchCandidateAgreement(entityOnly, constraints)
 	if matchBonus <= entityBonus || wrongBonus != 0 || matchBonus > maxSearchAgreementBonus {
 		t.Fatalf("bonuses = match %f wrong %f entity-only %f", matchBonus, wrongBonus, entityBonus)
+	}
+}
+
+func TestSearchCandidateAgreementSurfacePreservesConstraintSemantics(t *testing.T) {
+	tests := []struct {
+		name        string
+		parts       []string
+		constraints searchConstraints
+		wantBonus   float64
+		wantSignals []string
+	}{
+		{
+			name:  "unicode entity",
+			parts: []string{"Élodie proposed the archive."},
+			constraints: searchConstraints{Entities: []searchEntityConstraint{
+				{Raw: "Élodie", Normalized: "élodie"},
+			}},
+			wantBonus:   1.5,
+			wantSignals: []string{"constraint:entity"},
+		},
+		{
+			name:  "explicit phrase",
+			parts: []string{"the stale token order is rejected"},
+			constraints: searchConstraints{Phrases: []searchPhraseConstraint{
+				{Words: []string{"stale", "token", "order"}, Explicit: true},
+			}},
+			wantBonus:   1.5,
+			wantSignals: []string{"constraint:phrase"},
+		},
+		{
+			name:  "alias whole token",
+			parts: []string{"", "", "", "", "Ledger.Entry"},
+			constraints: searchConstraints{Entities: []searchEntityConstraint{
+				{Raw: "Ledger.Entry", Normalized: "ledger.entry"},
+			}},
+			wantBonus:   1.5,
+			wantSignals: []string{"constraint:entity"},
+		},
+		{
+			name:  "automatic phrase morphology and relationship",
+			parts: []string{"Avery recommended the book."},
+			constraints: searchConstraints{
+				Entities: []searchEntityConstraint{{Raw: "Avery", Normalized: "avery"}},
+				Phrases:  []searchPhraseConstraint{{Words: []string{"recommend", "book"}}},
+			},
+			wantBonus:   4,
+			wantSignals: []string{"constraint:entity", "constraint:phrase", "constraint:relationship"},
+		},
+		{
+			name:  "truncated constraints retain bounded scoring",
+			parts: []string{"Avery"},
+			constraints: searchConstraints{
+				Entities:  []searchEntityConstraint{{Raw: "Avery", Normalized: "avery"}},
+				Truncated: true,
+			},
+			wantBonus:   1.5,
+			wantSignals: []string{"constraint:entity"},
+		},
+		{
+			name:        "empty metadata",
+			parts:       []string{"", "", "", "", ""},
+			constraints: searchConstraints{Entities: []searchEntityConstraint{{Raw: "Avery", Normalized: "avery"}}},
+			wantSignals: []string{},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			surface := buildSearchConstraintSurface(test.parts...)
+			bonus, signals := searchCandidateAgreementSurface(surface, test.constraints)
+			if bonus != test.wantBonus || !slices.Equal(signals, test.wantSignals) {
+				t.Fatalf("agreement = %f %v, want %f %v", bonus, signals, test.wantBonus, test.wantSignals)
+			}
+		})
+	}
+}
+
+func TestScoreSearchCandidatesUsesPrebuiltConstraintSurfaceWithoutChangingResults(t *testing.T) {
+	q := buildSearchQuery(`What book did Avery recommend?`)
+	base := searchCandidate{
+		result: SearchResult{
+			FilePath:      "notes/books.go",
+			StartLine:     1,
+			EndLine:       1,
+			SymbolName:    "Recommendation",
+			QualifiedName: "notes.Recommendation",
+			Signature:     "func Recommendation() string",
+			Snippet:       "Avery recommended the book.",
+		},
+		termCounts: map[string]int{"avery": 1, "book": 1, "recommend": 1},
+		docLength:  4,
+	}
+	legacy := []searchCandidate{base}
+	optimized := []searchCandidate{base}
+	surface := buildSearchConstraintSurface(
+		base.result.SymbolName,
+		base.result.QualifiedName,
+		base.result.Signature,
+		base.result.Snippet,
+		strings.Join(base.aliases, "\n"),
+	)
+	optimized[0].constraintSurface = &surface
+
+	scoreSearchCandidates(legacy, q, map[string]int{"avery": 1, "book": 1, "recommend": 1}, 1)
+	scoreSearchCandidates(optimized, q, map[string]int{"avery": 1, "book": 1, "recommend": 1}, 1)
+	if !reflect.DeepEqual(optimized, legacy) {
+		t.Fatalf("prebuilt surface changed scored candidate:\noptimized = %#v\nlegacy = %#v", optimized, legacy)
+	}
+}
+
+func TestSearchCandidateConstraintMayMatchNeverRejectsAgreementEvidence(t *testing.T) {
+	tests := []struct {
+		name        string
+		candidate   searchCandidate
+		constraints searchConstraints
+		want        bool
+	}{
+		{
+			name:        "unicode entity",
+			candidate:   searchCandidate{result: SearchResult{Snippet: "Élodie proposed it."}},
+			constraints: searchConstraints{Entities: []searchEntityConstraint{{Normalized: "élodie"}}},
+			want:        true,
+		},
+		{
+			name:        "compound alias",
+			candidate:   searchCandidate{aliases: []string{"Ledger.Entry"}},
+			constraints: searchConstraints{Entities: []searchEntityConstraint{{Normalized: "ledger.entry"}}},
+			want:        true,
+		},
+		{
+			name:      "explicit phrase",
+			candidate: searchCandidate{result: SearchResult{Snippet: "stale token order"}},
+			constraints: searchConstraints{Phrases: []searchPhraseConstraint{
+				{Words: []string{"stale", "token", "order"}, Explicit: true},
+			}},
+			want: true,
+		},
+		{
+			name:      "automatic candidate suffix",
+			candidate: searchCandidate{result: SearchResult{Snippet: "recommended the book"}},
+			constraints: searchConstraints{
+				Entities: []searchEntityConstraint{{Normalized: "avery"}},
+				Phrases:  []searchPhraseConstraint{{Words: []string{"recommend", "book"}}},
+			},
+			want: true,
+		},
+		{
+			name:      "automatic query suffix",
+			candidate: searchCandidate{result: SearchResult{Snippet: "recommend the book"}},
+			constraints: searchConstraints{
+				Entities: []searchEntityConstraint{{Normalized: "avery"}},
+				Phrases:  []searchPhraseConstraint{{Words: []string{"recommended", "book"}}},
+			},
+			want: true,
+		},
+		{
+			name:        "proven miss",
+			candidate:   searchCandidate{result: SearchResult{Snippet: "unrelated stock ledger code"}},
+			constraints: searchConstraints{Entities: []searchEntityConstraint{{Normalized: "avery"}}},
+			want:        false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := searchCandidateConstraintMayMatch(test.candidate, test.constraints); got != test.want {
+				t.Fatalf("may match = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestSearchCandidateAgreementSkipsSurfaceForProvenMiss(t *testing.T) {
+	candidate := searchCandidate{result: SearchResult{Snippet: "unrelated stock ledger code"}}
+	constraints := searchConstraints{Entities: []searchEntityConstraint{{Normalized: "avery"}}}
+	bonus, signals := searchCandidateAgreementCached(&candidate, constraints)
+	if bonus != 0 || len(signals) != 0 {
+		t.Fatalf("agreement = %f %v, want zero", bonus, signals)
+	}
+	if candidate.constraintSurface != nil {
+		t.Fatal("proven miss allocated a constraint surface")
+	}
+}
+
+func BenchmarkSearchCandidateAgreement(b *testing.B) {
+	constraints := parseSearchConstraints(`What book did Avery recommend after reviewing the archive transaction?`)
+	for _, test := range []struct {
+		name       string
+		count      int
+		matchEvery int
+	}{
+		{name: "60000_candidates_5_percent_match", count: 60_000, matchEvery: 20},
+		{name: "90000_candidates_5_percent_match", count: 90_000, matchEvery: 20},
+		{name: "60000_candidates_all_match", count: 60_000, matchEvery: 1},
+	} {
+		b.Run(test.name, func(b *testing.B) {
+			candidates := make([]searchCandidate, test.count)
+			for index := range candidates {
+				result := SearchResult{
+					SymbolName:    "StockLedger",
+					QualifiedName: "stock.StockLedger",
+					Signature:     "func ValidateStockLedger() error",
+					Snippet:       "validate stock ledger posting and warehouse balance",
+				}
+				aliases := []string{"stock ledger", "warehouse balance"}
+				if index%test.matchEvery == 0 {
+					result = SearchResult{
+						SymbolName:    "Recommendation",
+						QualifiedName: "notes.Recommendation",
+						Signature:     "func Recommendation() string",
+						Snippet:       "Avery recommended the book after reviewing the archive transaction.",
+					}
+					aliases = []string{"recommendation", "archive review"}
+				}
+				candidates[index] = searchCandidate{
+					result:  result,
+					aliases: aliases,
+				}
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for iteration := 0; iteration < b.N; iteration++ {
+				for index := range candidates {
+					candidates[index].constraintSurface = nil
+					searchCandidateAgreementCached(&candidates[index], constraints)
+				}
+			}
+		})
 	}
 }
 
