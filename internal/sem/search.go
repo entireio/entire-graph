@@ -874,7 +874,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	applySearchBoilerplatePrior(candidates, q)
 	sortSearchCandidates(candidates)
 	candidates = collapseNearDuplicateCandidates(candidates)
-	semantic := selectDiverseCandidates(candidates, options.TopK, options.MaxRegionsPerFile)
+	semantic := selectSearchCandidates(candidates, q, options.TopK, options.MaxRegionsPerFile)
 	selected := semantic
 	if len(sparseCandidates) > 0 {
 		attachSparseCandidateSymbols(sparseCandidates, symbolsByFile)
