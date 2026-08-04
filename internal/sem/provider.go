@@ -876,6 +876,13 @@ func mergePartialFailures(failures, extra []PartialFailure) []PartialFailure {
 // relation dedup key set; it does not scale with held relation records or held
 // file contents.
 func StreamSnapshot(ctx context.Context, repo, providerVersion string, options ProviderSnapshotOptions, emit func(record any) error) error {
+	return streamSnapshotWithWorkerCount(ctx, repo, providerVersion, options, defaultProviderWorkerCount(), emit)
+}
+
+// streamSnapshotWithWorkerCount is the private deterministic parallelism seam
+// used by tests to compare one-worker output with bounded parallel output. The
+// public provider always uses defaultProviderWorkerCount.
+func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion string, options ProviderSnapshotOptions, workers int, emit func(record any) error) error {
 	started := time.Now()
 	sc, err := prepareSource(ctx, repo, options)
 	if err != nil {
@@ -926,7 +933,6 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 		return err
 	}
 
-	parser := TreeSitterParser{}
 	languageSet := map[string]struct{}{}
 	completenessLangs := map[string]LanguageCompleteness{}
 	var failures []PartialFailure
@@ -943,222 +949,59 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	// searchable aliases so they can be attached to the handler symbol below.
 	aliasesByHandler := collectRegistrationAliases(sc.paths, sc.read)
 
-	// Phase 1: emit the header, build registration aliases, then parse + emit
-	// file/symbol records and build indexes while discarding source content.
-	for i, path := range sc.paths {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		// Path-based routing first; files the path cannot classify (extensionless
-		// executables like pyenv's libexec/* scripts) get one bounded prefix read
-		// to route by shebang before being declared unsupported.
-		if !Supported(path) && !shebangRoutable(sc.readPrefix, path) {
-			if hint := unsupportedLanguageHint(path); hint != "" {
-				failures = append(failures, PartialFailure{
-					Code:                 "E_UNSUPPORTED_LANGUAGE",
-					Severity:             "warning",
-					FilePath:             path,
-					EffectOnCompleteness: "file omitted because no parser is available",
-					Detail:               hint,
-				})
+	// Phase 1: workers independently read, classify, and parse files. Only this
+	// reducer mutates graph indexes or calls emit, and it consumes the original
+	// path order, so worker timing cannot change snapshot bytes.
+	err = runProviderFilePipeline(ctx, sc.paths, workers,
+		func(workerCtx context.Context, index int, path string) providerFileResult {
+			return processProviderFile(workerCtx, sc, spec, maxParseBytes, index, path)
+		},
+		func(result providerFileResult) error {
+			failures = append(failures, result.failures...)
+			if result.hasPrecomputedImports {
+				precomputedImports[result.path] = result.precomputedImports
 			}
-			continue
-		}
-		content, ok := sc.read(path)
-		if !ok {
-			// A refused read is not a failed one: the reader declines files above
-			// the byte cap so no single file can set the snapshot's memory
-			// ceiling. Such a file is still recorded exactly — size, blob hash and
-			// line count come from a streamed digest — with the same
-			// E_FILE_TOO_LARGE the post-read check reports.
-			if over, isOversize := sc.oversizeAt(path); isOversize {
-				// The language comes from the path, or from a bounded prefix read
-				// for an extensionless script — never from the whole file.
-				langSpec, langOK := languageForPath(path)
-				if !langOK {
-					if prefix, prefixOK := sc.readPrefix(path, shebangSniffLimit); prefixOK {
-						langSpec, langOK = languageForShebang(prefix)
+			if result.file == nil {
+				return nil
+			}
+
+			languageSet[result.language] = struct{}{}
+			if err := emit(*result.file); err != nil {
+				return err
+			}
+			files = append(files, *result.file)
+			lc := completenessLangs[result.language]
+			lc.Files++
+
+			if result.parsed {
+				parsedFileCount++
+				for i := range result.symbols {
+					if aliases := aliasesByHandler[result.symbols[i].Name]; len(aliases) > 0 {
+						result.symbols[i].Aliases = aliases
 					}
 				}
-				if !langOK {
-					failures = append(failures, PartialFailure{
-						Code:                 "E_UNSUPPORTED_LANGUAGE",
-						Severity:             "warning",
-						FilePath:             path,
-						EffectOnCompleteness: "file omitted because no parser is available",
-					})
-					continue
+				for _, symbol := range result.symbols {
+					if err := emit(symbol); err != nil {
+						return err
+					}
 				}
-				language := langSpec.language
-				file := FileRecord{
-					RecordType: "file",
-					ID:         fileID(sc.key, path),
-					Path:       path,
-					Blob:       over.Hash,
-					Language:   language,
-					Bytes:      int(over.Bytes),
-					Lines:      over.Lines,
+				if spec.name == ProfileSyntaxOnly {
+					structuralByFile[result.path] = compactStructuralSymbols(result.symbols)
+				} else {
+					recordsByFile[result.path] = retainedSymbolsForProfile(result.symbols, spec)
 				}
-				languageSet[language] = struct{}{}
-				if err := emit(file); err != nil {
-					return err
+				symbolCount += len(result.symbols)
+				lc.Symbols += len(result.symbols)
+				if (result.index+1)%progressEvery == 0 {
+					emitProgress(BuildPhaseParse, result.index+1, symbolCount, relationCount)
 				}
-				files = append(files, file)
-				lc := completenessLangs[language]
-				lc.Files++
-				completenessLangs[language] = lc
-				failures = append(failures, PartialFailure{
-					Code:                 "E_FILE_TOO_LARGE",
-					Severity:             "warning",
-					FilePath:             path,
-					EffectOnCompleteness: "file record emitted but symbol parsing skipped",
-					Detail: fmt.Sprintf(
-						"file is %d bytes, above max parser input %d bytes; content was never held in memory",
-						over.Bytes, maxParseBytes,
-					),
-				})
-				continue
 			}
-			failures = append(failures, PartialFailure{
-				Code:                 "E_FILE_READ",
-				Severity:             "error",
-				FilePath:             path,
-				EffectOnCompleteness: "file omitted from semantic snapshot",
-				Detail:               "file listed but content was unavailable",
-			})
-			continue
-		}
-		contentBytes := []byte(content)
-		langSpec, ok := languageForContent(path, content)
-		if !ok {
-			failures = append(failures, PartialFailure{
-				Code:                 "E_UNSUPPORTED_LANGUAGE",
-				Severity:             "warning",
-				FilePath:             path,
-				EffectOnCompleteness: "file omitted because no parser is available",
-			})
-			continue
-		}
-		language := langSpec.language
-		// Skip Go files the default build excludes (build-tag / _GOOS_GOARCH), so
-		// the snapshot matches what the compiler compiles and alternate-tag files
-		// don't poison cross-file type inference.
-		if language == "Go" && !goFileMatchesDefaultBuild(path, content) {
-			continue
-		}
-		file := FileRecord{
-			RecordType: "file",
-			ID:         fileID(sc.key, path),
-			Path:       path,
-			Blob:       contentHash(contentBytes),
-			Language:   language,
-			Bytes:      len(contentBytes),
-			Lines:      sourceLineCount(content),
-		}
-		if skipFastProfilePerSymbolScan(spec, language) {
-			precomputedImports[path] = importsFor(path, content)
-		}
-		if maxParseBytes > 0 && len(contentBytes) > maxParseBytes {
-			languageSet[language] = struct{}{}
-			if err := emit(file); err != nil {
-				return err
-			}
-			files = append(files, file)
-			lc := completenessLangs[language]
-			lc.Files++
-			completenessLangs[language] = lc
-			failures = append(failures, PartialFailure{
-				Code:                 "E_FILE_TOO_LARGE",
-				Severity:             "warning",
-				FilePath:             path,
-				EffectOnCompleteness: "file record emitted but symbol parsing skipped",
-				Detail:               fmt.Sprintf("file is %d bytes, above max parser input %d bytes", len(contentBytes), maxParseBytes),
-			})
-			continue
-		}
-		// Skip minified/bundled files (e.g. site assets like main.js / *.min.js):
-		// their thousands of single-letter symbols in one file form a near-complete
-		// same-file call graph (the dominant relation-count + time blow-up on repos
-		// that vendor web assets), and they are not meaningful source to analyze.
-		// Overlong lines must dominate the file; a few giant data lines embedded
-		// in otherwise ordinary source do not disqualify it.
-		if looksMinified(content) {
-			languageSet[language] = struct{}{}
-			if err := emit(file); err != nil {
-				return err
-			}
-			files = append(files, file)
-			lc := completenessLangs[language]
-			lc.Files++
-			completenessLangs[language] = lc
-			failures = append(failures, PartialFailure{
-				Code:                 "E_MINIFIED",
-				Severity:             "warning",
-				FilePath:             path,
-				EffectOnCompleteness: "file record emitted but symbol parsing skipped",
-				Detail:               "file appears minified/bundled (very long lines); not analyzed as source",
-			})
-			continue
-		}
-		entities, language, parseStatus := parseWithProfile(parser, spec, langSpec, path, content)
-		if language == "" {
-			failures = append(failures, PartialFailure{
-				Code:                 "E_UNSUPPORTED_LANGUAGE",
-				Severity:             "warning",
-				FilePath:             path,
-				EffectOnCompleteness: "file omitted because no parser is available",
-			})
-			continue
-		}
-		if parseStatus.ParseError {
-			code := parseStatus.Code
-			if code == "" {
-				code = "E_PARSE_ERROR"
-			}
-			effect := "file parsed with syntax errors; semantic facts may be incomplete"
-			if code == "E_PARSE_TIMEOUT" {
-				effect = "file record emitted but symbol parsing skipped because parser time budget was exceeded"
-			}
-			failures = append(failures, PartialFailure{
-				Code:                 code,
-				Severity:             "warning",
-				FilePath:             path,
-				EffectOnCompleteness: effect,
-				Detail:               parseStatus.Detail,
-			})
-		}
-		file.Language = language
-		languageSet[language] = struct{}{}
-		if err := emit(file); err != nil {
-			return err
-		}
-		files = append(files, file)
-		parsedFileCount++
-		fileSymbols := entitySymbols(sc.key, path, language, entities)
-		fileSymbols = append(fileSymbols, syntheticBoundarySymbols(sc.key, path, language, content, fileSymbols)...)
-		for i := range fileSymbols {
-			if aliases := aliasesByHandler[fileSymbols[i].Name]; len(aliases) > 0 {
-				fileSymbols[i].Aliases = aliases
-			}
-		}
-		for _, symbol := range fileSymbols {
-			if err := emit(symbol); err != nil {
-				return err
-			}
-		}
-		if spec.name == ProfileSyntaxOnly {
-			structuralByFile[path] = compactStructuralSymbols(fileSymbols)
-		} else {
-			recordsByFile[path] = retainedSymbolsForProfile(fileSymbols, spec)
-		}
-		symbolCount += len(fileSymbols)
-		lc := completenessLangs[language]
-		lc.Files++
-		lc.Symbols += len(fileSymbols)
-		completenessLangs[language] = lc
-		if (i+1)%progressEvery == 0 {
-			emitProgress(BuildPhaseParse, i+1, symbolCount, relationCount)
-		}
+			completenessLangs[result.language] = lc
+			return nil
+		},
+	)
+	if err != nil {
+		return err
 	}
 	emitProgress(BuildPhaseParse, len(sc.paths), symbolCount, relationCount)
 
