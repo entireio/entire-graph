@@ -137,6 +137,22 @@ const (
 	// lines to 273. 60 lines keeps the first and refuses the second.
 	searchForcedContainerMaxLines = 60
 
+	// searchClippedUnitFocusLines is the half-width of the window a clipped unit is re-centred on.
+	//
+	// MEASURED CORRECTNESS BUG (briannesbitt__carbon-2752). The payload ranked Comparison.php #1 tagged
+	// `full-unit,complete-symbol` while the printed body ELIDED lines 630-1125 — and the focus line, the
+	// region the edit had to land in, was 989. The tag asserted "this is the whole unit, you need no
+	// follow-up read" about a body that did not contain the line the payload itself had pointed at. An
+	// agent that trusts the tag edits the wrong place; one that does not trust it re-reads the file, and
+	// then the tag cost bytes for nothing.
+	//
+	// The anchor was the cause: a clip anchored at the unit's START shows the declaration and drops
+	// whatever the hit was about, which for a 1,200-line class is everything that matters. A clipped
+	// unit is now always CENTRED on the focus line, and the complete-body signals are withheld
+	// whenever the printed span does not contain it — see widenSearchResultToEnclosure, where the
+	// invariant is enforced rather than merely intended.
+	searchClippedUnitFocusLines = 60
+
 	// searchForcedUnitMinLines is the floor on a forced unit that has to be CLIPPED to fit inside
 	// non-destructive funding. Below it the caller is being handed a window, which the ordinary
 	// allocator already provides for free and without the trade — so a unit that cannot reach this
@@ -258,17 +274,29 @@ func clipSearchUnitToCap(start, end, focus, cap int) (int, int) {
 	if focus < start || focus > end {
 		focus = start
 	}
-	clipStart := start
-	if focus > start+cap-1 {
-		clipStart = focus - cap/2
-		if clipStart < start {
-			clipStart = start
-		}
-		if clipStart+cap-1 > end {
-			clipStart = end - cap + 1
-		}
+	// CENTRED ON THE FOCUS, always. The old rule anchored at the unit's start and slid only when the
+	// focus would otherwise fall outside the window, which is how carbon-2752 came back showing a
+	// class's opening declaration while eliding the line the payload was pointing at. A window that
+	// does not contain the hit is not a smaller answer, it is a different and wrong one.
+	clipStart := focus - cap/2
+	if clipStart < start {
+		clipStart = start
 	}
-	return clipStart, clipStart + cap - 1
+	if clipStart+cap-1 > end {
+		clipStart = end - cap + 1
+	}
+	if clipStart < start {
+		clipStart = start
+	}
+	return clipStart, minInt(end, clipStart+cap-1)
+}
+
+// clipSearchUnitToFocusWindow is the clip a FORCED unit gets when it is too large to return whole: a
+// bounded window centred on the focus line. It is deliberately much narrower than
+// searchFullUnitMaxLines, because a clipped unit cannot make the complete-body promise at any width —
+// so the only thing extra width buys is bytes.
+func clipSearchUnitToFocusWindow(start, end, focus int) (int, int) {
+	return clipSearchUnitToCap(start, end, focus, 2*searchClippedUnitFocusLines+1)
 }
 
 // clipSearchUnitToBytes is the backstop a LINE cap cannot provide: a window of 25 lines is 700 bytes
@@ -634,7 +662,7 @@ func planForcedSearchUnit(
 	enclosure := searchEnclosure{lines: lines, symbol: symbol, forced: true}
 	if end-start+1 > searchFullUnitMaxLines {
 		enclosure.unitStart, enclosure.unitEnd = start, end
-		start, end = clipSearchUnitToCap(start, end, result.FocusLine, searchFullUnitMaxLines)
+		start, end = clipSearchUnitToFocusWindow(start, end, result.FocusLine)
 	}
 	enclosure.start, enclosure.end = start, end
 	return enclosure, true
@@ -719,6 +747,9 @@ func widenSearchResultToEnclosure(result SearchResult, enclosure searchEnclosure
 	if !enclosure.available() {
 		return result
 	}
+	// Captured before anything is rewritten: the clamp below moves the focus into the new range, which
+	// would hide exactly the violation the elision contract has to detect.
+	incomingFocus := result.FocusLine
 	result.StartLine = minInt(maxInt(1, result.StartLine), enclosure.start)
 	result.EndLine = maxInt(result.EndLine, enclosure.end)
 	result.SnippetStartLine = enclosure.start
@@ -731,6 +762,19 @@ func widenSearchResultToEnclosure(result SearchResult, enclosure searchEnclosure
 		// complete-symbol: that signal is the promise "you need no follow-up read", and a window
 		// cannot make it.
 		result.Signals = appendUnique(result.Signals, searchHeadWindowSignal)
+		return result
+	}
+	// THE ELISION CONTRACT. `full-unit` and `complete-symbol` both assert that the reader is looking at
+	// the whole unit and needs no follow-up read. Neither may be attached to a body that does not even
+	// contain the focus line the payload is pointing at — that is the carbon-2752 bug, and it is a
+	// correctness bug rather than a sizing one: the signal was false. The test is made against the
+	// INCOMING focus, before the clamp below rewrites it into range and hides the violation.
+	if focus := incomingFocus; focus > 0 && (focus < enclosure.start || focus > enclosure.end) {
+		result.Signals = appendUnique(result.Signals, searchHeadWindowSignal)
+		if enclosure.unitStart > 0 {
+			result.UnitStartLine, result.UnitEndLine = enclosure.unitStart, enclosure.unitEnd
+			result.Signals = appendUnique(result.Signals, searchFullUnitElidedSignal)
+		}
 		return result
 	}
 	// A forced unit the safety cap clipped is source the reader can act on, but it is not the whole

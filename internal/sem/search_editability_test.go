@@ -152,7 +152,8 @@ func TestPlanForcedSearchUnitBypassesTheOpportunisticConditions(t *testing.T) {
 			lineCount: 1200, unitStart: 100, unitEnd: 900, kind: "function",
 			result: SearchResult{FilePath: "pkg/file.go", StartLine: 150, EndLine: 155, FocusLine: 152,
 				SnippetStartLine: 150, SnippetEndLine: 155, SymbolID: "unit-1"},
-			wantStart: 100, wantEnd: 100 + searchFullUnitMaxLines - 1,
+			// Focus 152 is within 60 lines of the unit start, so the centred window clamps there.
+			wantStart: 100, wantEnd: 100 + 2*searchClippedUnitFocusLines,
 			wantElidedOf: [2]int{100, 900},
 		},
 		{
@@ -162,9 +163,8 @@ func TestPlanForcedSearchUnitBypassesTheOpportunisticConditions(t *testing.T) {
 			lineCount: 1200, unitStart: 100, unitEnd: 900, kind: "function",
 			result: SearchResult{FilePath: "pkg/file.go", StartLine: 800, EndLine: 805, FocusLine: 802,
 				SnippetStartLine: 800, SnippetEndLine: 805, SymbolID: "unit-1"},
-			// Centring on 802 would run past the unit's end, so the window is pushed back to end
-			// exactly at it: 501-900, still containing the hit and never leaving the unit.
-			wantStart: 501, wantEnd: 900,
+			// A clipped unit is CENTRED on the focus (carbon-2752): 802 +/- 60.
+			wantStart: 742, wantEnd: 862,
 			wantElidedOf: [2]int{100, 900},
 		},
 	} {
@@ -271,7 +271,11 @@ func TestWidenSearchResultToEnclosureReportsWhatAForcedUnitActuallyIs(t *testing
 			lineCount, whole.SnippetStartLine, whole.SnippetEndLine)
 	}
 
-	clipped := widenSearchResultToEnclosure(result, searchEnclosure{
+	// A clip that still CONTAINS the focus is a full-unit answer minus the elided tail: it keeps
+	// full-unit, reports the elision, and withholds complete-symbol.
+	inside := result
+	inside.FocusLine = 50
+	clipped := widenSearchResultToEnclosure(inside, searchEnclosure{
 		start: 40, end: 60, lines: lines, symbol: symbol, forced: true, unitStart: 40, unitEnd: 90,
 	})
 	for _, want := range []string{searchFullUnitSignal, searchFullUnitElidedSignal} {
@@ -284,6 +288,68 @@ func TestWidenSearchResultToEnclosureReportsWhatAForcedUnitActuallyIs(t *testing
 	}
 	if clipped.UnitStartLine != 40 || clipped.UnitEndLine != 90 {
 		t.Fatalf("clipped unit span = %d-%d, want 40-90", clipped.UnitStartLine, clipped.UnitEndLine)
+	}
+}
+
+// TestWidenSearchResultToEnclosureNeverTagsABodyMissingItsFocus is the carbon-2752 regression.
+//
+// The payload ranked Comparison.php #1 tagged `full-unit,complete-symbol` while the printed body
+// ELIDED lines 630-1125 — and the focus line, the region the edit had to land in, was 989. The tag was
+// simply false, which is worse than a small body: an agent that trusts it edits the wrong place, and
+// one that does not trust it re-reads the file, so the bytes bought nothing either way.
+func TestWidenSearchResultToEnclosureNeverTagsABodyMissingItsFocus(t *testing.T) {
+	t.Parallel()
+	// The carbon shape: a 1,200-line unit, the hit deep inside it at 989. Kind is callable, because a
+	// container that large is refused outright by searchForcedContainerMaxLines — the clip path this
+	// pins is the one a genuinely huge FUNCTION takes.
+	lines, symbol := editabilityFile(1400, 100, 1300, "method")
+	result := SearchResult{
+		FilePath: symbol.FilePath, StartLine: 986, EndLine: 992, FocusLine: 989,
+		SnippetStartLine: 986, SnippetEndLine: 992, SymbolID: symbol.ID,
+	}
+
+	// 1. The PLANNER must not hand back a window anchored at the unit start.
+	forced, ok := planForcedSearchUnit(result, map[string]SymbolRecord{symbol.ID: symbol},
+		map[string][]SymbolRecord{symbol.FilePath: {symbol}}, lines)
+	if !ok {
+		t.Fatal("no forced unit planned for the carbon shape")
+	}
+	if forced.start > 989 || forced.end < 989 {
+		t.Fatalf("clipped span = %d-%d, does NOT contain the focus line 989 — this is the carbon bug",
+			forced.start, forced.end)
+	}
+	if span := forced.end - forced.start + 1; span > 2*searchClippedUnitFocusLines+1 {
+		t.Fatalf("clipped span = %d lines, want the focus window", span)
+	}
+
+	// 2. The clip is honest about what it dropped, and does NOT claim a complete body.
+	widened := widenSearchResultToEnclosure(result, forced)
+	if !hasSearchSignal(widened, searchFullUnitElidedSignal) {
+		t.Fatalf("a clipped unit did not report its elision: %v", widened.Signals)
+	}
+	if hasSearchSignal(widened, searchCompleteSymbolSignal) {
+		t.Fatalf("a clipped unit claimed complete-symbol: %v", widened.Signals)
+	}
+	if widened.SnippetStartLine > 989 || widened.SnippetEndLine < 989 {
+		t.Fatalf("printed span = %d-%d excludes the focus", widened.SnippetStartLine, widened.SnippetEndLine)
+	}
+	if note := SearchUnitElisionNote(widened.SnippetStartLine, widened.SnippetEndLine,
+		widened.UnitStartLine, widened.UnitEndLine); note == "" {
+		t.Fatal("no elision note for a clipped unit")
+	}
+
+	// 3. THE INVARIANT ITSELF: hand the widener a span that excludes the focus and it must refuse both
+	//    complete-body signals, whatever the enclosure claims about itself.
+	lying := widenSearchResultToEnclosure(result, searchEnclosure{
+		start: 100, end: 629, lines: lines, symbol: symbol, forced: true, unitStart: 100, unitEnd: 1300,
+	})
+	for _, forbidden := range []string{searchCompleteSymbolSignal, searchFullUnitSignal} {
+		if hasSearchSignal(lying, forbidden) {
+			t.Fatalf("a body that excludes its focus claimed %s: %v", forbidden, lying.Signals)
+		}
+	}
+	if !hasSearchSignal(lying, searchHeadWindowSignal) {
+		t.Fatalf("signals = %v, want the honest %s", lying.Signals, searchHeadWindowSignal)
 	}
 }
 

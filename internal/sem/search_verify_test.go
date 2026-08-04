@@ -476,15 +476,32 @@ func TestRenderSearchVerifyCommandIsOneCopyableLine(t *testing.T) {
 		DerivedFrom: "Cargo.toml [package] name + covering test path",
 	}))
 	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("expected two lines, got %d:\n%s", len(lines), rendered)
-	}
+	// The COMMAND is still exactly one line, on the first line, so it stays copy-pasteable. The lines
+	// below it are the contract on using it, and they are asserted separately.
 	if lines[0] != "VERIFY: cargo test -p grep-printer --lib test_trim" {
 		t.Fatalf("first line = %q", lines[0])
 	}
 	if !strings.Contains(lines[1], "crates/printer/src/util.rs") ||
 		!strings.Contains(lines[1], "Cargo.toml [package] name") {
 		t.Fatalf("second line must state target and derivation: %q", lines[1])
+	}
+	if len(lines) > 5 {
+		t.Fatalf("VERIFY block grew past five lines, got %d:\n%s", len(lines), rendered)
+	}
+	// The three measured churn modes must each be named. Post-edit verify churn cost +$4.11 across
+	// three sessions, and a hand-built classpath was 55.6% of one session's output tokens.
+	contract := strings.Join(lines[2:], " ")
+	for _, want := range []string{"ONCE", "re-run THIS command", "classpath", "reverting"} {
+		if !strings.Contains(contract, want) {
+			t.Fatalf("contract does not name %q:\n%s", want, rendered)
+		}
+	}
+	if cost := searchVerifyCommandCost(&SearchVerifyCommand{
+		Command:     "cargo test -p grep-printer --lib test_trim",
+		Targets:     "crates/printer/src/util.rs",
+		DerivedFrom: "Cargo.toml [package] name + covering test path",
+	}); cost > searchVerifyCommandMaxBytes {
+		t.Fatalf("VERIFY block costs %d bytes, over its own cap of %d", cost, searchVerifyCommandMaxBytes)
 	}
 }
 

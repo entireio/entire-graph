@@ -32,7 +32,26 @@ import (
 const (
 	// searchVerifyCommandMaxBytes caps the block on the larger of its two wire forms. One command
 	// line, one target line, one short derivation.
-	searchVerifyCommandMaxBytes = 320
+	// Raised from 320 to hold searchVerifyContractNote, a fixed-size addition. It is the cheapest block
+	// in the payload measured against what it prevents: post-edit verify churn cost +$4.11 across three
+	// sessions, and on google__gson-1014 a hand-assembled javac/JUnit classpath was 55.6% of the whole
+	// session's output tokens.
+	searchVerifyCommandMaxBytes = 640
+
+	// searchVerifyContractNote is the CONTRACT on the emitted command, and every clause is a measured
+	// failure mode rather than general advice:
+	//
+	//   - "once, then fix and re-run the same command" — sessions ran the command, hit an environment
+	//     error, and started looking for a different way to test instead of reading the failure.
+	//   - "no alternative harness or hand-assembled classpath" — gson-1014 built its own javac +
+	//     JUnit invocation from scratch; that one detour was 55.6% of its output tokens.
+	//   - "no revert-and-reapply confirmation" — several sessions undid a correct edit to "prove" it
+	//     was the cause, then reapplied it, paying twice for no new information.
+	//
+	// It does not change WHEN a VERIFY line is emitted, only what the line promises about how to use it.
+	searchVerifyContractNote = "  run it ONCE after editing; if it fails, fix the code and re-run THIS command.\n" +
+		"  do not build an alternative test harness, hand-assemble a classpath, or re-verify by\n" +
+		"  reverting and reapplying the edit.\n"
 
 	// searchVerifyMaxDepth bounds the ancestor walk for a build manifest. Deeper than this and the
 	// "nearest module" is not a module, it is a directory.
@@ -992,8 +1011,8 @@ func RenderSearchVerifyCommand(command *SearchVerifyCommand) []byte {
 	if command == nil || command.Command == "" {
 		return nil
 	}
-	return []byte(fmt.Sprintf("VERIFY: %s\n  targets %s (from %s)\n",
-		command.Command, command.Targets, command.DerivedFrom))
+	return []byte(fmt.Sprintf("VERIFY: %s\n  targets %s (from %s)\n%s",
+		command.Command, command.Targets, command.DerivedFrom, searchVerifyContractNote))
 }
 
 // filePathToSlash normalizes a repository path for the string handling above. Repository paths are
