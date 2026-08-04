@@ -387,9 +387,14 @@ const (
 	// the measured shape of the failure (a method declared once per backend, once per AST flavour).
 	symbolAmbiguousBodyLimit = 2
 
-	// symbolMatchBodyMaxLines caps one printed body. A compact body is the point — the caller asked
-	// which definition it wanted, not for a file dump.
-	symbolMatchBodyMaxLines = 40
+	// symbolMatchBodyMaxLines caps one printed body.
+	//
+	// 40 -> 400. MEASURED (briannesbitt/carbon): the agent called def, got a body cut off before the
+	// line it needed, piped it through `head -80` — which cut AGAIN, at the bug line — and abandoned the
+	// tool for 87 turns of grep. A navigation answer that stops mid-symbol is worse than no answer: it
+	// looks complete. 400 lines is the same safety ceiling the search allocator uses for a forced unit,
+	// and anything past it says exactly where it stopped and how to resume.
+	symbolMatchBodyMaxLines = 400
 )
 
 // symbolMatchTier ranks how a fuzzy candidate matched, lowest (best) first. It is reported so the
@@ -609,6 +614,9 @@ type symbolMatchBody struct {
 	EndLine   int    `json:"end_line"`
 	Source    string `json:"source,omitempty"`
 	Elided    bool   `json:"elided,omitempty"`
+	// UnitEndLine is the symbol's true last line when the cap clipped the body, so the note can tell
+	// the caller where to resume instead of only that something is missing.
+	UnitEndLine int `json:"unit_end_line,omitempty"`
 }
 
 // symbolMatchBodies reads a compact body for the first `limit` records. A body that cannot be read
@@ -639,19 +647,21 @@ func symbolMatchBodies(repoRoot string, matches []sem.SymbolRecord, limit int) [
 		if end > len(lines) {
 			end = len(lines)
 		}
-		elided := false
+		elided, unitEnd := false, 0
 		if end-start+1 > symbolMatchBodyMaxLines {
+			unitEnd = end
 			end = start + symbolMatchBodyMaxLines - 1
 			elided = true
 		}
 		bodies = append(bodies, symbolMatchBody{
-			Name:      symbolRefDisplayName(symbol),
-			Kind:      symbol.Kind,
-			FilePath:  symbol.FilePath,
-			StartLine: start,
-			EndLine:   end,
-			Source:    strings.Join(lines[start-1:end], "\n"),
-			Elided:    elided,
+			Name:        symbolRefDisplayName(symbol),
+			Kind:        symbol.Kind,
+			FilePath:    symbol.FilePath,
+			StartLine:   start,
+			EndLine:     end,
+			Source:      strings.Join(lines[start-1:end], "\n"),
+			Elided:      elided,
+			UnitEndLine: unitEnd,
 		})
 	}
 	if len(bodies) == 0 {
@@ -667,8 +677,13 @@ func minSymbolInt(left, right int) int {
 	return right
 }
 
-// writeSymbolMatchBodies prints the bodies under a locator list. Source is printed verbatim and
-// unnumbered, for the same reason the search payload does it: agents copy it as an edit anchor.
+// writeSymbolMatchBodies prints the bodies under a locator list, each line in a NUMBERED gutter.
+//
+// The search payload's bodies are deliberately unnumbered — an agent copies them verbatim as an Edit
+// anchor, and a gutter breaks the anchor. These are not those. `def`, `callers` and `neighbors` answer
+// "where is it", and the measured failure mode is the opposite one: carbon's agent got an unnumbered
+// body, could not tell which line was which, piped it through `head -80` and lost the line it needed.
+// A navigation answer wants coordinates; an edit source wants fidelity. Two outputs, two rules.
 func writeSymbolMatchBodies(out interface {
 	Write([]byte) (int, error)
 }, bodies []symbolMatchBody) {
@@ -678,10 +693,24 @@ func writeSymbolMatchBodies(out interface {
 			fmt.Fprintf(out, " [%s]", body.Kind)
 		}
 		fmt.Fprintln(out)
-		fmt.Fprintln(out, body.Source)
+		writeNumberedSource(out, body.Source, body.StartLine)
 		if body.Elided {
-			fmt.Fprintf(out, "... body continues past %d lines\n", symbolMatchBodyMaxLines)
+			// Actionable, not merely honest: the caller is told where the body continues AND the exact
+			// invocation that resumes it, because "output truncated" is what sent carbon to grep.
+			fmt.Fprintf(out, "  …continues to line %d — rerun with --from %d\n",
+				body.UnitEndLine, body.EndLine+1)
 		}
+	}
+}
+
+// writeNumberedSource prints source with a right-aligned line-number gutter starting at `first`.
+func writeNumberedSource(out interface {
+	Write([]byte) (int, error)
+}, source string, first int) {
+	lines := strings.Split(source, "\n")
+	width := len(strconv.Itoa(first + len(lines) - 1))
+	for offset, line := range lines {
+		fmt.Fprintf(out, "  %*d→ %s\n", width, first+offset, line)
 	}
 }
 

@@ -161,7 +161,9 @@ func TestWriteTextSearchTiersRankOneAndTwoFullRestTerse(t *testing.T) {
 		t.Fatalf("rank 3 must NOT carry its snippet:\n%s", out)
 	}
 	// Terse lines carry no score= (PR #61 review: no consumer; 39% of added bytes).
-	if !strings.Contains(out, "3. src/third.go:22 Third.method\n") {
+	// The locator now names the verb that fetches the body it does not carry: redis's agent
+	// hand-sed-ranged exactly this shape, and fmt's blind-Read a 200-line window off one.
+	if !strings.Contains(out, "3. src/third.go:22 Third.method  [body: def Third.method]\n") {
 		t.Fatalf("rank 3 terse line missing/wrong shape (no score expected):\n%s", out)
 	}
 	if strings.Contains(out, "src/third.go:22 Third.method score=") {
@@ -219,7 +221,7 @@ func TestWriteTextSearchAlwaysPrintsCompleteBodies(t *testing.T) {
 	if strings.Contains(out, "// window") {
 		t.Fatalf("an ordinary window below the tier kept its snippet:\n%s", out)
 	}
-	if !strings.Contains(out, "6. src/other.go:41 other\n") {
+	if !strings.Contains(out, "6. src/other.go:41 other  [body: def other]\n") {
 		t.Fatalf("ordinary rank 6 lost its locator line:\n%s", out)
 	}
 }

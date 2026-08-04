@@ -84,10 +84,12 @@ func TestWriteTextSearchDeniesBodySlotsToLowValuePaths(t *testing.T) {
 	}
 	out := buf.String()
 	// The benchmark and the config script keep their rank and their locator, and lose their body.
-	if !strings.Contains(out, "1. benches/src/keyed-children/index.js:12 render\n") {
+	// The locator also names the verb that would fetch the body it was denied — a demoted hit is still
+	// reachable, and the point of the demotion is the byte cost of the body, not hiding the symbol.
+	if !strings.Contains(out, "1. benches/src/keyed-children/index.js:12 render  [body: def render]\n") {
 		t.Fatalf("rank 1 should be a locator:\n%s", out)
 	}
-	if !strings.Contains(out, "2. karma.conf.js:95 subPkgPath\n") {
+	if !strings.Contains(out, "2. karma.conf.js:95 subPkgPath  [body: def subPkgPath]\n") {
 		t.Fatalf("rank 2 should be a locator:\n%s", out)
 	}
 	if strings.Contains(out, "getComponents(framework)") || strings.Contains(out, "subPkgPath = pkgName") {
@@ -191,7 +193,7 @@ func TestWriteTextSearchNeverFundsAReanchoredBodyByEvictingOne(t *testing.T) {
 	if strings.Contains(out, "export function reactiveReadArray(array)") {
 		t.Fatalf("the re-anchored hit took a slot it could not fund:\n%s", out)
 	}
-	if !strings.Contains(out, "3. packages/reactivity/src/arrayInstrumentations.ts:12 reactiveReadArray\n") {
+	if !strings.Contains(out, "3. packages/reactivity/src/arrayInstrumentations.ts:12 reactiveReadArray  [body: def reactiveReadArray]\n") {
 		t.Fatalf("the re-anchored locator lost its code anchor:\n%s", out)
 	}
 }

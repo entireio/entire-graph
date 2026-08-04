@@ -651,13 +651,31 @@ func searchTextOrdinaryBodyDemand(primary []sem.SearchResult, demoteLowValue boo
 // writeTextSearchLocator prints a hit as its one-line locator unconditionally. It is the form the body
 // diet collapses to, and it exists as its own function precisely because writeTextSearchResult must
 // keep refusing to do this on its own account.
+// searchLocatorFollowUp names the verb that fetches what a bodyless hit did not carry.
+//
+// MEASURED: redis's agent hand-`sed`-ranged the exact locator the payload printed, and fmt's agent
+// blind-`Read` a 200-line window off another one. Both had the location and neither knew the tool could
+// hand them the body — so they reconstructed it with shell commands, which is the expensive half of
+// every session this payload exists to shorten. The suffix costs ~22 bytes on the hits that have no
+// body and nothing at all on the hits that do.
+func searchLocatorFollowUp(result sem.SearchResult) string {
+	// A symbol name is what `def` takes. Without one there is nothing to suggest, and a suffix naming a
+	// verb that cannot be run would be worse than silence.
+	name := searchResultDisplayName(result)
+	if name == "" {
+		return ""
+	}
+	return "  [body: def " + name + "]"
+}
+
 func writeTextSearchLocator(out interface{ Write([]byte) (int, error) }, result sem.SearchResult) {
 	// Byte-identical to the locator writeTextSearchResult already emits below the rank tier. Two
 	// different locator shapes in one payload would be a second thing for a reader to learn for no
 	// gain, and the existing shape is what every consumer and test already reads.
 	name := searchResultDisplayName(result)
 	if name != "" {
-		fmt.Fprintf(out, "%d. %s:%d %s\n", result.Rank, result.FilePath, searchResultLocatorLine(result), name)
+		fmt.Fprintf(out, "%d. %s:%d %s%s\n", result.Rank, result.FilePath,
+			searchResultLocatorLine(result), name, searchLocatorFollowUp(result))
 		return
 	}
 	fmt.Fprintf(out, "%d. %s:%d\n", result.Rank, result.FilePath, searchResultLocatorLine(result))
@@ -667,7 +685,8 @@ func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result s
 	name := searchResultDisplayName(result)
 	if !full && !searchResultCarriesCompleteBody(result) {
 		if name != "" {
-			fmt.Fprintf(out, "%d. %s:%d %s\n", result.Rank, result.FilePath, searchResultLocatorLine(result), name)
+			fmt.Fprintf(out, "%d. %s:%d %s%s\n", result.Rank, result.FilePath,
+				searchResultLocatorLine(result), name, searchLocatorFollowUp(result))
 		} else {
 			fmt.Fprintf(out, "%d. %s:%d\n", result.Rank, result.FilePath, searchResultLocatorLine(result))
 		}

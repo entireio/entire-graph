@@ -258,7 +258,21 @@ func TestParseDefFlags(t *testing.T) {
 			},
 		},
 		{name: "no name", args: nil, wantErr: true},
-		{name: "two names", args: []string{"Edit", "Fix"}, wantErr: true},
+		// SUPERSEDED: `def A B` is now the multi-query form. Agents batch shell calls under the prompt's
+		// batching rule (laravel chained three greps into one Bash call), and a tool that answers one
+		// name per invocation cannot compete with that.
+		{
+			name: "two names is a multi-query", args: []string{"Edit", "Fix"}, wantErr: false,
+			check: func(flags defFlags) string {
+				if len(flags.Symbols) != 2 || flags.Symbols[0] != "Edit" || flags.Symbols[1] != "Fix" {
+					return "both names must survive parsing"
+				}
+				if flags.Symbol != "Edit" {
+					return "Symbol must stay the first name for single-query callers"
+				}
+				return ""
+			},
+		},
 		{name: "unknown flag", args: []string{"Edit", "--nope"}, wantErr: true},
 		{name: "missing value", args: []string{"--symbol"}, wantErr: true},
 		{name: "zero members", args: []string{"Edit", "--members", "0"}, wantErr: true},
