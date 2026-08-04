@@ -9101,7 +9101,10 @@ func fieldAccessRelations(from SymbolRecord, block string, fieldsByContainer map
 		if id, ok := selfContainers[access.Receiver]; ok {
 			containerID = id
 		} else if typeName, ok := varTypes[access.Receiver]; ok {
-			if sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName); ok {
+			// Nearest-package preference, not first-match: a module that declares
+			// one `SDConfig` per sibling package would otherwise attribute every
+			// field read to whichever package sorted first.
+			if sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath); ok {
 				containerID = sym.ID
 				confidence = 0.85
 				if _, ok := paramTypes[access.Receiver]; ok {
@@ -9225,6 +9228,60 @@ func firstTypeLikeNamed(records []SymbolRecord, name string) (SymbolRecord, bool
 	return SymbolRecord{}, false
 }
 
+// pathProximityRank scores how close a candidate declaration is to the site that
+// references it. Lower is nearer:
+//
+//	0            the same file
+//	1            the same directory — a Go package IS a directory, and a Go
+//	             module routinely reuses one type name across sibling packages
+//	             (prometheus declares 14 `Discovery` types with a `refresh`
+//	             method, one per discovery/<provider>/), so "same package" is the
+//	             decisive tier for receiver-method resolution
+//	2 + n        a shared module-path prefix, n = the number of path segments
+//	             that separate the two directories; a nearer sibling package wins
+//	             over a distant one
+//
+// Callers keep input order for equal ranks, so an unscoped tie still falls back
+// to whatever the previous first-match behaviour picked.
+func pathProximityRank(candidateFile, siteFile string) int {
+	candidate := filepath.ToSlash(candidateFile)
+	site := filepath.ToSlash(siteFile)
+	if candidate == site {
+		return 0
+	}
+	candidateDir := path.Dir(candidate)
+	siteDir := path.Dir(site)
+	if candidateDir == siteDir {
+		return 1
+	}
+	candidateSegments := strings.Split(candidateDir, "/")
+	siteSegments := strings.Split(siteDir, "/")
+	shared := 0
+	for shared < len(candidateSegments) && shared < len(siteSegments) && candidateSegments[shared] == siteSegments[shared] {
+		shared++
+	}
+	return 2 + (len(candidateSegments) - shared) + (len(siteSegments) - shared)
+}
+
+// nearestToSite picks the candidate whose declaration lives closest to the
+// referencing file, by pathProximityRank. Selection is stable: equal-rank
+// candidates keep the order the caller supplied, which is snapshot-deterministic,
+// so this only ever changes which of several equally-named declarations wins —
+// never whether one is found.
+func nearestToSite(candidates []SymbolRecord, siteFile string) (SymbolRecord, bool) {
+	if len(candidates) == 0 {
+		return SymbolRecord{}, false
+	}
+	best := candidates[0]
+	bestRank := pathProximityRank(best.FilePath, siteFile)
+	for _, candidate := range candidates[1:] {
+		if rank := pathProximityRank(candidate.FilePath, siteFile); rank < bestRank {
+			best, bestRank = candidate, rank
+		}
+	}
+	return best, true
+}
+
 // firstTypeLikeNamedPreferFile resolves a type name to a symbol, preferring a
 // declaration in the given file before falling back to the first global match.
 // Same-file preference matters when a repo vendors a mirror copy of its sources
@@ -9249,8 +9306,13 @@ func enclosingTypeShortName(from SymbolRecord) string {
 // the method (roslyn's Contract.InterpolatedStringHandlers.cs sorts before
 // Contract.cs, which defines ThrowIfFalse); probing only the first
 // candidate dropped every such static call. Preference order: a same-file
-// declaration defining the method, any declaration defining it (directly
-// or up its supertype chain), then the plain prefer-file lookup.
+// declaration defining the method, the nearest-package declaration defining it
+// (directly or up its supertype chain), then the plain prefer-file lookup.
+//
+// Package scoping is what keeps this honest across a module that reuses one type
+// name per sibling package: before it, `d.refresh(ctx)` in
+// discovery/puppetdb/puppetdb_test.go bound to discovery/azure's identically
+// named Discovery.refresh purely because azure sorted first.
 func typeLikeNamedWithMethod(records []SymbolRecord, name, file, method string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string) (SymbolRecord, bool) {
 	var withMethod []SymbolRecord
 	for _, symbol := range records {
@@ -9262,23 +9324,22 @@ func typeLikeNamedWithMethod(records []SymbolRecord, name, file, method string, 
 		}
 	}
 	if len(withMethod) > 0 {
-		for _, symbol := range withMethod {
-			if symbol.FilePath == file {
-				return symbol, true
-			}
-		}
-		return withMethod[0], true
+		return nearestToSite(withMethod, file)
 	}
 	return firstTypeLikeNamedPreferFile(records, name, file)
 }
 
+// firstTypeLikeNamedPreferFile resolves a type name to a declaration, preferring
+// the referencing file, then the nearest package (see pathProximityRank), and
+// only then the first global match.
 func firstTypeLikeNamedPreferFile(records []SymbolRecord, name, file string) (SymbolRecord, bool) {
+	var named []SymbolRecord
 	for _, symbol := range records {
-		if symbol.Name == name && symbol.FilePath == file && typeLikeKind(symbol.Kind) {
-			return symbol, true
+		if symbol.Name == name && typeLikeKind(symbol.Kind) {
+			named = append(named, symbol)
 		}
 	}
-	return firstTypeLikeNamed(records, name)
+	return nearestToSite(named, file)
 }
 
 func typeRelationReason(relation, resolution string) string {
