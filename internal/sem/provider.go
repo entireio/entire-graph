@@ -1112,6 +1112,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 				fileSymbols[i].Aliases = aliases
 			}
 		}
+		applyCppSpecializationAliases(fileSymbols)
 		for _, symbol := range fileSymbols {
 			if err := emit(symbol); err != nil {
 				return err
