@@ -211,6 +211,12 @@ type SearchResult struct {
 	// discovering it by opening the file. Schema 1.x additive.
 	UnitStartLine int `json:"unit_start_line,omitempty"`
 	UnitEndLine   int `json:"unit_end_line,omitempty"`
+	// CommentFocusLine is the COMMENT line the query originally matched, recorded only when the
+	// payload re-anchored this hit onto the code that comment documents (search_reanchor.go). Its
+	// absence is the ordinary case and means FocusLine is where the match itself landed. It is kept
+	// because the prose line is still the evidence for why the hit is here, and a reader who is told
+	// only the code line cannot tell a re-anchored hit from a direct one. Schema 1.x additive.
+	CommentFocusLine int `json:"comment_focus_line,omitempty"`
 	// There is deliberately no per-result `Neighbors` list here. "The types this hit is
 	// written in terms of" is answered once, by the signature-type block (search_sigtypes.go),
 	// and "the other places this change lands" by the related-site block
@@ -270,6 +276,10 @@ type SearchStats struct {
 	// them. Together they report how the byte budget was allocated (schema 1.x additive).
 	CompleteSymbols int `json:"complete_symbol_snippets,omitempty"`
 	LocatorSnippets int `json:"locator_snippets,omitempty"`
+	// DocReanchored counts ranked hits whose anchor landed in a doc comment and was moved onto the
+	// code that comment documents (search_reanchor.go). It is reported like every other rendering
+	// decision: a payload that describes a hit at a line the query did not match must say so.
+	DocReanchored int `json:"doc_reanchored_hits,omitempty"`
 	// MergedSpans counts ranked hits collapsed into a contiguous same-file span
 	// (search_span_merge.go). It is reported for the same reason every other allocation
 	// decision is: a payload that shows fewer blocks than the ranking produced must say so.
@@ -916,6 +926,11 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		}
 		results = append(results, selected[i].result)
 	}
+	// A hit whose anchor landed in a doc comment is moved onto the code that comment documents
+	// BEFORE anything prices or plans it: the byte fitter then charges for the code it will print,
+	// the enclosure planner looks for a callable at the code line rather than in the prose above it,
+	// and the literal block mines program text. Ranking is untouched — see search_reanchor.go.
+	results, stats.DocReanchored = reanchorSearchDocComments(results, symbolsByFile, read, options.MaxSnippetLines)
 	ranked := append([]SearchResult(nil), results...)
 	results, resultBytes, dropped, _ := fitSearchResultsToBudget(results, q, options.MaxContextBytes)
 	// The fitter decides HOW MANY results fit; the allocator decides how the bytes they are

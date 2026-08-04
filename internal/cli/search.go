@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -408,8 +409,21 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 	// explicitly forced (full-unit / callee-hop) are exempt: asking for a unit and being handed a
 	// locator would make the flag a no-op.
 	bodies := 0
-	for index, result := range primary {
-		full := index < searchTextFullRanks || searchResultCarriesCompleteBody(result)
+	// POSITION IN THE BODY QUEUE, not index in the group. A low-value path that is demoted below
+	// spends no body slot AND no rank tier: charging its rank against the full-snippet tier would
+	// leave the agent one full window short for exactly the hits that are real source, which is the
+	// same reason a sectioned-away non-code hit does not charge its rank either (see the doc comment
+	// above). Without low-value hits in the group this is the group index, so the ordinary payload is
+	// byte-identical.
+	position := 0
+	demoteLowValue := searchTextDemotesLowValueBodies(primary)
+	for _, result := range primary {
+		if demoteLowValue && searchLowValueBodyPath(result.FilePath) && !searchResultForcedByFlag(result) {
+			writeTextSearchLocator(out, result)
+			continue
+		}
+		full := position < searchTextFullRanks || searchResultCarriesCompleteBody(result)
+		position++
 		if full && bodies >= searchTextMaxFullBodies && !searchResultForcedByFlag(result) {
 			full = false
 		}
@@ -519,6 +533,70 @@ func renderSignatureTypes(types []sem.SearchSignatureType) []byte {
 	return []byte(buffer.String())
 }
 
+// searchLowValueBodyDirSegments are path segments whose files are program text a fix essentially
+// never lands in: the benchmark harness, the demo app, the example gallery. They are real code, so
+// the ranker is right to score them and the payload is right to LIST them — a benchmark that
+// exercises the broken API is a legitimate lead — but a body from one of them costs the same bytes
+// as a body from the library and answers a different question.
+//
+// Measured on preactjs__preact-3010: `benches/src/keyed-children/index.js` and `karma.conf.js` took
+// two of the three body slots (the third went to `src/component.js`) while the gold file,
+// `src/diff/children.js`, arrived as a bodyless two-line locator.
+var searchLowValueBodyDirSegments = map[string]bool{
+	"bench": true, "benches": true, "benchmark": true, "benchmarks": true,
+	"demo": true, "demos": true, "example": true, "examples": true,
+}
+
+// searchLowValueBodySuffixes are build/test-runner configuration scripts. They are `.js`/`.ts`, so
+// they are program text and no data-file rule catches them, and they name the very packages and
+// entry points a query is built from — which is how `karma.conf.js` outranked the library it
+// configures.
+var searchLowValueBodySuffixes = []string{".conf.js", ".config.js", ".karma.js"}
+
+// searchLowValueBodyPath reports whether a path's bodies must yield their slot to real source.
+// Directory names are matched as whole path SEGMENTS, so `benches/` is caught and
+// `src/benchmarks_test_helper.js` is not.
+func searchLowValueBodyPath(filePath string) bool {
+	if filePath == "" {
+		return false
+	}
+	lower := strings.ToLower(filepath.ToSlash(filePath))
+	for _, suffix := range searchLowValueBodySuffixes {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	segments := strings.Split(strings.Trim(lower, "/"), "/")
+	if len(segments) > 0 {
+		segments = segments[:len(segments)-1]
+	}
+	for _, segment := range segments {
+		if searchLowValueBodyDirSegments[segment] {
+			return true
+		}
+	}
+	return false
+}
+
+// searchTextDemotesLowValueBodies reports whether the group holds enough real source for the
+// demotion to be safe. A payload whose only program text IS the benchmark or the config script must
+// still print it: the rule is "never outrank real source for a body slot", not "never show a body".
+// Two is the threshold because the body diet's own tier is two full windows — below that the
+// demotion would be taking bytes away from a reader with nothing to read instead.
+func searchTextDemotesLowValueBodies(primary []sem.SearchResult) bool {
+	real := 0
+	for _, result := range primary {
+		if searchLowValueBodyPath(result.FilePath) || result.Snippet == "" {
+			continue
+		}
+		real++
+		if real >= 2 {
+			return true
+		}
+	}
+	return false
+}
+
 // writeTextSearchLocator prints a hit as its one-line locator unconditionally. It is the form the body
 // diet collapses to, and it exists as its own function precisely because writeTextSearchResult must
 // keep refusing to do this on its own account.
@@ -592,7 +670,14 @@ func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result s
 	// of an edit, so decorating a body line would make that anchor fail to match the file and turn a
 	// navigation aid into a broken patch.
 	if result.FocusLine >= start && result.FocusLine <= end && end > start {
-		fmt.Fprintf(out, " focus=%d", result.FocusLine)
+		// A re-anchored hit prints BOTH lines. The comment line is the evidence for why the hit is
+		// in the payload at all, and a reader told only the code line cannot tell a hit the query
+		// matched directly from one the payload moved (see sem/search_reanchor.go).
+		if result.CommentFocusLine > 0 && result.CommentFocusLine != result.FocusLine {
+			fmt.Fprintf(out, " focus=%d→%d", result.CommentFocusLine, result.FocusLine)
+		} else {
+			fmt.Fprintf(out, " focus=%d", result.FocusLine)
+		}
 	}
 	// A section entry may carry no source at all — the covering test degrades to a locator when its
 	// byte allowance cannot hold one line of body. Printing the empty string as if it were source
