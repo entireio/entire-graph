@@ -919,7 +919,13 @@ func impactDegenerateReason(response impactResponse) string {
 		}
 		return impactDegenerateBundleOnly
 	}
-	structural := response.Callers.Total + response.Callees.Total + response.TypeConsumers.Total
+	// The gate is callers + callees + CO-CHANGE, not callers + callees + type consumers. Turn-level
+	// forensics of 12 sessions found impact asserting authority on the wrong symbol in 11 of them, and
+	// the shape was always the same: a section set that is empty except for a heuristic one, printed as
+	// though it were a blast radius. Co-change joins the numerator because it is the one heuristic that
+	// names FILES a reader can act on; type consumers stay in it because they are structural.
+	structural := response.Callers.Total + response.Callees.Total +
+		response.TypeConsumers.Total + response.CoChanges.Total
 	if structural == 0 {
 		return impactDegenerateNoRelations
 	}

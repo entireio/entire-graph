@@ -70,6 +70,7 @@ type searchFlags struct {
 	FullUnitTop           int
 	EditSiteBodies        bool
 	CalleeHop             bool
+	VerifyPrefix          string
 	FileOutline           bool
 	Deep                  bool
 	// The reference blocks, off unless asked for. See SearchOptions in internal/sem/search.go for
@@ -179,6 +180,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		FullUnitTop:           flags.FullUnitTop,
 		EditSiteBodies:        flags.EditSiteBodies,
 		CalleeHop:             flags.CalleeHop,
+		VerifyPrefix:          flags.VerifyPrefix,
 		IncludeFileOutline:    flags.FileOutline,
 		Deep:                  flags.Deep,
 
@@ -339,6 +341,16 @@ func writeNdjsonSearch(out interface{ Write([]byte) (int, error) }, response sem
 // "is this worth opening", so a full window there is token waste.
 const searchTextFullRanks = 2
 
+// searchTextMaxFullBodies caps how many BODIES the default text payload prints, however many the
+// allocator upgraded.
+//
+// Turn-level forensics of 12 real sessions: payloads were 45-75% noise by byte, and the bodies past
+// the third were never referenced — not once across the 12. The allocator is still right to buy them
+// (it is optimising the ranking, and --full-unit-top/--callee-hop callers want them), so this is a
+// RENDERING cap: everything past the third body degrades to its one-line locator, which is the part
+// that was actually used. The flags keep working; they raise this ceiling for the ranks they force.
+const searchTextMaxFullBodies = 3
+
 // Section headers for `--format text`. They label what the group IS, because the failure they
 // exist to prevent is an agent treating a non-fix-site as the fix site.
 const (
@@ -389,8 +401,27 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 		}
 	}
 	primary, related, docs, tests := partitionSearchSections(response.Results)
+	// THE DIET. A body is printed for the first searchTextMaxFullBodies entries that carry source, and
+	// every entry after that prints as a locator whatever the allocator gave it. Ranks the caller
+	// explicitly forced (full-unit / callee-hop) are exempt: asking for a unit and being handed a
+	// locator would make the flag a no-op.
+	bodies := 0
 	for index, result := range primary {
-		writeTextSearchResult(out, result, index < searchTextFullRanks)
+		full := index < searchTextFullRanks || searchResultCarriesCompleteBody(result)
+		if full && bodies >= searchTextMaxFullBodies && !searchResultForcedByFlag(result) {
+			full = false
+		}
+		if full {
+			bodies++
+			writeTextSearchResult(out, result, true)
+			continue
+		}
+		// The diet has to write the locator ITSELF. writeTextSearchResult re-checks
+		// searchResultCarriesCompleteBody and prints a body whenever the signal is present, which
+		// silently neutralised the cap: on carbon-2752 all five hits still came back bodied. That
+		// re-check exists so the RANK TIER cannot throw away source the allocator paid for, and it is
+		// right for that job — but a cap the caller set is a decision, not an accident.
+		writeTextSearchLocator(out, result)
 	}
 	// Contract context before the related and docs groups: it is about the hit the reader has
 	// just read, and it is the part that decides whether the edit is the right SHAPE.
@@ -484,6 +515,21 @@ func renderSignatureTypes(types []sem.SearchSignatureType) []byte {
 		}
 	}
 	return []byte(buffer.String())
+}
+
+// writeTextSearchLocator prints a hit as its one-line locator unconditionally. It is the form the body
+// diet collapses to, and it exists as its own function precisely because writeTextSearchResult must
+// keep refusing to do this on its own account.
+func writeTextSearchLocator(out interface{ Write([]byte) (int, error) }, result sem.SearchResult) {
+	// Byte-identical to the locator writeTextSearchResult already emits below the rank tier. Two
+	// different locator shapes in one payload would be a second thing for a reader to learn for no
+	// gain, and the existing shape is what every consumer and test already reads.
+	name := searchResultDisplayName(result)
+	if name != "" {
+		fmt.Fprintf(out, "%d. %s:%d %s\n", result.Rank, result.FilePath, searchResultLocatorLine(result), name)
+		return
+	}
+	fmt.Fprintf(out, "%d. %s:%d\n", result.Rank, result.FilePath, searchResultLocatorLine(result))
 }
 
 func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result sem.SearchResult, full bool) {
@@ -660,6 +706,18 @@ func searchResultLocatorLine(result sem.SearchResult) int {
 //     window away — bytes spent, budget charged, nothing delivered.
 //
 // Both only ever occur when a flag asked for them, so the default payload is unchanged.
+// searchResultForcedByFlag reports whether the CALLER asked for this rank's source by name, which is
+// what exempts it from the body diet. A flag that silently stops producing what it promises is worse
+// than no flag.
+func searchResultForcedByFlag(result sem.SearchResult) bool {
+	for _, signal := range result.Signals {
+		if signal == sem.FullUnitSignal || signal == sem.CalleeHopSignal {
+			return true
+		}
+	}
+	return false
+}
+
 func searchResultIsCalleeHop(result sem.SearchResult) bool {
 	for _, signal := range result.Signals {
 		if signal == sem.CalleeHopSignal {
@@ -740,8 +798,22 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	// Suffix blocks in priority order. VERIFY comes first because it is the one an agent acts on
 	// immediately; the literal cluster next because it can end the search; the declaration card last
 	// because it is pure reference and is off by default anyway.
+	// VERIFY is NOT in the droppable suffix set. Everything else here names something the agent could
+	// go and get; the verify command is the one block whose absence is measured to change behaviour
+	// (sessions without one spent 15.2% fewer tokens than the baseline against 30.6% with one), and it
+	// is two lines. It is prepended to the RANKING instead, where the byte fitter cannot silently drop
+	// it — see fitAgentSearchSuffixes for why the rest stay surplus.
+	verifyBlock := sem.RenderSearchVerifyCommand(response.VerifyCommand)
+	// VERIFY is undroppable in every budget that can afford it, and the LAST thing tried before the
+	// caller would get no ranked location at all. Those two rules are both load-bearing and they can
+	// conflict at a tight cap, so the block gets its own variant rung: present, then absent. The
+	// standing invariant "a suffix block never costs the caller a ranked location" still holds — this
+	// is the only ordering in which promoting VERIFY does not violate it.
+	verifyVariants := [][]byte{verifyBlock}
+	if len(verifyBlock) > 0 {
+		verifyVariants = append(verifyVariants, nil)
+	}
 	suffixes := [][]byte{
-		sem.RenderSearchVerifyCommand(response.VerifyCommand),
 		sem.RenderSearchLiteralCluster(response.LiteralCluster),
 		agentSearchTypeCard(response.TypeCard),
 	}
@@ -751,6 +823,7 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 		payload = append(payload, fullConfidence...)
 		payload = append(payload, closedSet...)
 		payload = append(payload, fullMap...)
+		payload = append(payload, verifyBlock...)
 		if len(results) == 0 {
 			payload = append(payload, "No search results.\n"...)
 		} else {
@@ -847,46 +920,52 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 				for _, confidence := range confidenceVariants {
 					for _, warning := range closedSetVariants {
 						for _, containerMap := range mapVariants {
-							remaining := budget - len(header) - len(diagnostics) - len(confidence) -
-								len(warning) - len(containerMap)
-							if remaining <= 0 {
-								continue
-							}
-							prefix := func() []byte {
-								payload := append([]byte{}, header...)
-								payload = append(payload, diagnostics...)
-								payload = append(payload, confidence...)
-								payload = append(payload, warning...)
-								return append(payload, containerMap...)
-							}
-							// The blocks sit on opposite sides of the ranking and degrade
-							// differently, which is why they compose without a further nested
-							// variant loop: every prefix block has its own full/compact/absent
-							// ladder above, while a suffix block rides along only when the
-							// fitted payload leaves room for it (fitAgentSearchSuffixes).
-							// Neither can cost the caller a ranked location.
-							if len(results) == 0 {
-								noResults := []byte("No search results.\n")
-								if len(noResults) <= remaining {
+							for _, verify := range verifyVariants {
+								remaining := budget - len(header) - len(diagnostics) - len(confidence) -
+									len(warning) - len(containerMap) - len(verify)
+								if remaining <= 0 {
+									continue
+								}
+								prefix := func() []byte {
+									payload := append([]byte{}, header...)
+									payload = append(payload, diagnostics...)
+									payload = append(payload, confidence...)
+									payload = append(payload, warning...)
+									payload = append(payload, containerMap...)
+									// VERIFY rides in the PREFIX, not the droppable suffixes: it is the one
+									// block whose absence measurably changes behaviour, and two lines of it
+									// must never be traded for one more ranked locator.
+									return append(payload, verify...)
+								}
+								// The blocks sit on opposite sides of the ranking and degrade
+								// differently, which is why they compose without a further nested
+								// variant loop: every prefix block has its own full/compact/absent
+								// ladder above, while a suffix block rides along only when the
+								// fitted payload leaves room for it (fitAgentSearchSuffixes).
+								// Neither can cost the caller a ranked location.
+								if len(results) == 0 {
+									noResults := []byte("No search results.\n")
+									if len(noResults) <= remaining {
+										_, err := out.Write(fitAgentSearchSuffixes(
+											append(prefix(), noResults...), agentVerifyFirstSuffixes(verify, verifyBlock, suffixes), budget,
+										))
+										return err
+									}
+									continue
+								}
+								formatted := fitAgentSearchResults(results, remaining)
+								if protectTopHit && !agentSearchBlockCarriesSource(formatted) {
+									// This prefix is too wide to leave room for the top hit's complete block.
+									// Degrade the prefix and try again rather than handing back a truncated
+									// answer: the caller can afford a shorter latency line, not a missing snippet.
+									continue
+								}
+								if len(formatted) > 0 {
 									_, err := out.Write(fitAgentSearchSuffixes(
-										append(prefix(), noResults...), suffixes, budget,
+										append(prefix(), formatted...), agentVerifyFirstSuffixes(verify, verifyBlock, suffixes), budget,
 									))
 									return err
 								}
-								continue
-							}
-							formatted := fitAgentSearchResults(results, remaining)
-							if protectTopHit && !agentSearchBlockCarriesSource(formatted) {
-								// This prefix is too wide to leave room for the top hit's complete block.
-								// Degrade the prefix and try again rather than handing back a truncated
-								// answer: the caller can afford a shorter latency line, not a missing snippet.
-								continue
-							}
-							if len(formatted) > 0 {
-								_, err := out.Write(fitAgentSearchSuffixes(
-									append(prefix(), formatted...), suffixes, budget,
-								))
-								return err
 							}
 						}
 					}
@@ -947,6 +1026,19 @@ func searchLowConfidenceNotices(response sem.SearchResponse) ([]byte, []byte) {
 //
 // A block that does not fit does not stop the ones after it: the blocks are independent, and a long
 // literal cluster must not suppress a two-line verify command that would have fitted.
+// agentVerifyFirstSuffixes re-offers the verify block as the HIGHEST-priority suffix when it had to be
+// dropped from the prefix to fit the ranking.
+//
+// Without this the priority inverts at exactly one cap: VERIFY yields to the ranking (correctly), and
+// then the leftover bytes go to a droppable suffix that VERIFY outranks. Re-offering it first means the
+// only thing that can ever displace VERIFY is a ranked location.
+func agentVerifyFirstSuffixes(seated, verifyBlock []byte, suffixes [][]byte) [][]byte {
+	if len(seated) > 0 || len(verifyBlock) == 0 {
+		return suffixes
+	}
+	return append([][]byte{verifyBlock}, suffixes...)
+}
+
 func fitAgentSearchSuffixes(payload []byte, suffixes [][]byte, budget int) []byte {
 	if budget <= 0 {
 		return payload
@@ -1376,6 +1468,15 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 		// block cannot.
 		case "--callee-hop":
 			flags.CalleeHop = true
+		// --verify-prefix <token>: a decorator baked into the emitted VERIFY command, after any
+		// `cd <dir> &&` the derivation added, so a harness can grep its own token out of a session
+		// transcript. "VERIFY: " stays byte-identical at line start.
+		case "--verify-prefix":
+			value, next, err := searchFlagValue(args, i)
+			if err != nil {
+				return flags, nil, err
+			}
+			flags.VerifyPrefix, i = value, next
 		case "--max-regions-per-file":
 			value, next, err := searchPositiveIntFlag(args, i)
 			if err != nil {

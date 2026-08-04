@@ -505,20 +505,34 @@ func TestRenderSearchVerifyCommandIsOneCopyableLine(t *testing.T) {
 	}
 }
 
-func TestBuildSearchVerifyCommandNeedsACandidateFixSite(t *testing.T) {
+func TestBuildSearchVerifyCommandFallsBackToTheResidualFloor(t *testing.T) {
 	t.Parallel()
 	evidence := searchVerifyTestEvidence(map[string]string{"go.mod": "module x\n"})
-	// A payload whose only entry is documentation names no file a patch can land in.
+	// SUPERSEDES the previous expectation of SILENCE for a payload with no candidate fix site.
+	// Silent absence is indistinguishable from a deriver bug and, paired with the stop-early doctrine,
+	// lets an agent ship unverified — measured as a non-derivable VERIFY in 12 of 12 sessions. The
+	// residual floor states the fact and prescribes the fallback in one line.
 	docsOnly := []SearchResult{{Rank: 1, FilePath: "docs/guide.md", Section: searchSectionDocs}}
-	if got := buildSearchVerifyCommand(docsOnly, evidence); got != nil {
-		t.Fatalf("expected silence, got %q", got.Command)
+	command := buildSearchVerifyCommand(docsOnly, evidence)
+	if command == nil {
+		t.Fatal("no VERIFY block at all — the residual floor must make this impossible")
+	}
+	if command.Tier != searchVerifyTierNone {
+		t.Fatalf("tier = %q, want %q", command.Tier, searchVerifyTierNone)
+	}
+	if command.Command != searchVerifyNoneCommand {
+		t.Fatalf("command = %q, want the residual floor", command.Command)
+	}
+	// The floor carries no contract note: the note is advice about running a command, and there is
+	// no command to run.
+	rendered := string(RenderSearchVerifyCommand(command))
+	if strings.Contains(rendered, "run it ONCE") {
+		t.Fatalf("the floor carried the contract note:\n%s", rendered)
+	}
+	if !strings.HasPrefix(rendered, "VERIFY: ") {
+		t.Fatalf("the line start must stay byte-identical:\n%s", rendered)
 	}
 }
-
-// TestSearchVerifySuiteFallback covers the whole-suite fallback: when no narrow command can be
-// derived (typically because the payload found no covering test the mirror lookup could name — the
-// faker `test_<name>.rb` minitest case that shipped an EMPTY verify command), the block still emits
-// the repository's own canonical suite command rather than nothing.
 func TestSearchVerifySuiteFallback(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {

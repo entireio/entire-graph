@@ -112,6 +112,9 @@ type SearchOptions struct {
 	// N >= 2 reaches rank 2 only when rank 2's score is still within searchFullUnitGapRatio of
 	// rank 1's: one forced unit per genuinely ambiguous answer, not N bodies per search.
 	FullUnitTop int
+	// VerifyPrefix is a decorator baked into the emitted VERIFY command, after any `cd <dir> &&` the
+	// derivation added, so a harness can grep its own token out of a transcript.
+	VerifyPrefix string
 	// CalleeHop admits the top hit's OUTGOING CALLS targets as candidate fix sites — up to three,
 	// same-repo and resolved only. Off by default.
 	//
@@ -312,7 +315,10 @@ type SearchStats struct {
 	FileOutlineBytes   int `json:"file_outline_bytes,omitempty"`
 	FileOutlineRows    int `json:"file_outline_rows,omitempty"`
 	VerifyCommandBytes int `json:"verify_command_bytes,omitempty"`
-	ClosedSetBytes     int `json:"closed_set_bytes,omitempty"`
+	// VerifyTier is which rung of the ladder produced the emitted command: narrow, suite, build-check
+	// or none. See the tier constants in search_verify.go.
+	VerifyTier     string `json:"verify_tier,omitempty"`
+	ClosedSetBytes int    `json:"closed_set_bytes,omitempty"`
 	// ContextBlockBytes is the sum of every block counter above: the whole cost of
 	// everything outside `results`, in one number, so a caller can see the payload's true size
 	// without re-deriving it.
@@ -1073,7 +1079,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// makes anyway — a repo-wide grep, a fumbled test invocation, and the read that discovers a
 	// switch it forgot to extend — which is the property the reference blocks above lack. They are
 	// additive and separately capped; see search_blocks.go.
-	verifyEvidence := searchVerifyEvidence{read: read}
+	verifyEvidence := searchVerifyEvidence{read: read, prefix: options.VerifyPrefix}
 	// The three agent-asked blocks read files the RANKING never asked for: a bounded set of files
 	// containing one literal, a handful of switch sites, and the build manifests above the top hit.
 	// Their IO is bracketed here and reported under its own counter rather than folded into the query
@@ -1114,6 +1120,9 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	verifyCommand := buildSearchVerifyCommand(results, verifyEvidence)
 	if verifyCommand != nil {
 		stats.VerifyCommandBytes = searchVerifyCommandCost(verifyCommand)
+		// The tier is reported so a harness can bucket sessions by which rung answered them; that is
+		// how "the VERIFY command is unrunnable or non-covering in 12/12 sessions" was measured.
+		stats.VerifyTier = verifyCommand.Tier
 	}
 	blockFilesRead := queryReads.files - blockFilesBefore
 	blockBytesRead := queryReads.bytes - blockBytesBefore

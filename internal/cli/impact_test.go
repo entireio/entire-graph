@@ -380,12 +380,22 @@ func TestImpactDegenerateReplacesEmptyScaffolding(t *testing.T) {
 			want: "",
 		},
 		{
-			// Co-change and siblings are heuristics; a payload carrying only those has still said
-			// nothing about what the change breaks.
-			name: "heuristic sections alone do not rescue it",
+			// SUPERSEDES the round-4 expectation, which said co-change does not rescue a degenerate
+			// answer. Turn-level forensics of 12 sessions moved co-change INTO the numerator: it is the
+			// one heuristic section that names FILES a reader can act on, so a payload carrying it has
+			// told the caller something. Siblings alone still do not.
+			name: "co-change files are actionable, so they do rescue it",
 			response: impactResponse{Query: "isLongYear", Focus: &focus,
 				CoChanges: impactSection{Total: 3, Entries: []impactEntry{
 					{Endpoint: neighborEndpoint{FilePath: "src/Carbon/Carbon.php"}},
+				}}},
+			want: "",
+		},
+		{
+			name: "siblings alone do not rescue it",
+			response: impactResponse{Query: "isLongYear", Focus: &focus,
+				Siblings: impactSection{Total: 4, Entries: []impactEntry{
+					{Endpoint: neighborEndpoint{FilePath: "src/Carbon/Traits/Date.php"}},
 				}}},
 			want: impactDegenerateNoRelations,
 		},

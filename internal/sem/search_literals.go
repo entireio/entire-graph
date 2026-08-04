@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -709,6 +710,15 @@ func classifySearchLiteralHits(
 		})
 	}
 	cluster.Unclassified = len(unclassifiedFiles)
+	// AT LEAST ONE LIVE EDIT SITE, or the block does not exist.
+	//
+	// The block's promise is "these are the other places this concept is named, and the EDIT ones are
+	// where a change lands". Measured on nushell: all three EDIT sites were COMMENTED-OUT code, so the
+	// block sent the agent to patch a comment. A commented or string-literal occurrence is real text and
+	// a useless fix site, and the distinction is cheap to make from the line itself.
+	if !searchLiteralClusterHasLiveEditSite(cluster, scan) {
+		return nil
+	}
 	// One listed site is enough once the repository-wide totals are in the header: the totals are the
 	// answer to "have I seen everywhere this concept is named", and a single site the payload did not
 	// already print is still a grep the agent does not have to run.
@@ -890,4 +900,58 @@ func RenderSearchLiteralCluster(cluster *SearchLiteralCluster) []byte {
 		buffer.WriteString("\n")
 	}
 	return []byte(buffer.String())
+}
+
+// searchLiteralClusterHasLiveEditSite reports whether any EDIT-role site is LIVE CODE rather than a
+// comment, a docstring or the inside of a string literal.
+//
+// The test is on the occurrence's own line text, which the needle scan already carries, so it costs no
+// IO. It is deliberately about the LINE and not the language: a comment lead-in is a comment in every
+// language in scope, and a line whose only content is a quoted string is data. Both are places the
+// concept is NAMED and neither is a place a patch lands.
+func searchLiteralClusterHasLiveEditSite(cluster *SearchLiteralCluster, scan searchNeedleScan) bool {
+	text := make(map[string]string, len(scan.hits))
+	for _, hit := range scan.hits {
+		text[hit.filePath+":"+strconv.Itoa(hit.line)] = hit.text
+	}
+	sawEdit := false
+	for _, hit := range cluster.Hits {
+		if hit.Role != SearchLiteralRoleEdit {
+			continue
+		}
+		sawEdit = true
+		if searchLiteralLineIsLiveCode(text[hit.FilePath+":"+strconv.Itoa(hit.Line)]) {
+			return true
+		}
+	}
+	// A cluster with no EDIT site at all is unaffected: it is a CONSUMER/DOC listing, which is a
+	// legitimate answer to "where else is this named" and never claimed to name a fix site.
+	return !sawEdit
+}
+
+// searchLiteralCommentLeads are the line lead-ins that make a line a comment in every language this
+// package indexes. Docstring delimiters are included because a Python or Ruby docstring is prose.
+var searchLiteralCommentLeads = []string{"//", "#", "--", "*", "/*", "%", ";;", `"""`, `'''`}
+
+// searchLiteralLineIsLiveCode reports whether a source line is executable text. An UNKNOWN line is
+// treated as live: the scan is the authority on where the occurrence is, and refusing to classify is
+// safer than suppressing a real block on missing evidence.
+func searchLiteralLineIsLiveCode(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return true
+	}
+	for _, lead := range searchLiteralCommentLeads {
+		if strings.HasPrefix(trimmed, lead) {
+			return false
+		}
+	}
+	// A line that is nothing but a quoted string (with an optional trailing comma) is data, not code.
+	if body := strings.TrimRight(trimmed, ","); len(body) > 1 {
+		first, last := body[0], body[len(body)-1]
+		if (first == byte('"') || first == byte(0x27) || first == byte('`')) && first == last {
+			return false
+		}
+	}
+	return true
 }
