@@ -863,6 +863,49 @@ func TestPreindexProviderSnapshotRejectsWorktreeAndMissingCache(t *testing.T) {
 	}
 }
 
+func TestPreindexWarmCacheHitDoesNotRevalidatePersistedSnapshot(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "auth.go", "package auth\nfunc ValidateToken() bool { return true }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cacheDir := t.TempDir()
+	options := ProviderSnapshotOptions{Profile: ProfileSyntaxOnly}
+	cold, cacheHit, err := PreindexProviderSnapshot(
+		t.Context(), repo, "test-version", options, cacheDir,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cacheHit {
+		t.Fatal("cold preindex unexpectedly hit cache")
+	}
+
+	persistenceReads := 0
+	warm, cacheHit, err := preindexProviderSnapshotWithPersistenceReader(
+		t.Context(), repo, "test-version", options, cacheDir,
+		func(path string) (cachedSearchSnapshot, error) {
+			persistenceReads++
+			return readSearchSnapshot(path)
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cacheHit {
+		t.Fatal("warm preindex did not hit cache")
+	}
+	if !reflect.DeepEqual(warm, cold) {
+		t.Fatalf("warm cache hit changed snapshot:\nwarm=%#v\ncold=%#v", warm, cold)
+	}
+	if persistenceReads != 0 {
+		t.Fatalf("warm cache hit redundantly revalidated persisted snapshot %d time(s)", persistenceReads)
+	}
+}
+
 func TestPreindexProviderSnapshotSurfacesPersistenceFailure(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
