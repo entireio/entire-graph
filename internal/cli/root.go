@@ -77,6 +77,8 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runNeighbors(ctx, opts, args[1:])
 	case "impact":
 		return runImpact(ctx, opts, args[1:])
+	case "verify":
+		return runVerify(ctx, opts, args[1:])
 	case "stats":
 		return runStats(ctx, opts, args[1:])
 	case "agent-guide":
@@ -124,9 +126,17 @@ Usage:
   entire graph def NAME|<file>:<line> --repo . [--file path] [--line n] [--kind kind] [--members 15] [--format text|json] [--max-context-bytes 4096] [--head] [--profile fast|full] [--cache-dir path|--no-cache]
   entire graph neighbors --symbol NAME|<file>:<line> --repo . [--file path] [--line n] [--kind kind] [--relation CALLS] [--direction both|in|out] [--depth 1|2] [--limit 20] [--format json|text|agent] [--max-context-bytes 16384] [--head] [--cache-dir path|--no-cache] [--internal-only] [--exclude-tests]
   entire graph impact --symbol NAME|<file>:<line> --repo . [--file path] [--line n] [--kind kind] [--depth 1|2] [--limit 15] [--format text|json] [--max-context-bytes 4096] [--head] [--profile fast|full] [--cache-dir path|--no-cache] [--exclude-tests]
+  entire graph verify --test "<cmd>" --repo . [--setup "<cmd>"] [--record-baseline path | --pre-edit-baseline path] [--max-bytes 2048]
   entire graph stats [--repo .] [--since 30d|7d|all] [--format text|json] [--sessions-dir path|--transcript path]
 
 Notes:
+  verify runs your test command and returns an ADJUDICATED VERDICT rather than test output: which tests
+  newly pass, which newly fail, and which were ALREADY failing before the edit (labelled PRE-EXISTING).
+  Record a baseline on the pristine tree first (--record-baseline), then pass it as --pre-edit-baseline
+  after editing. Raw runner output is never forwarded; id lists are capped at 20 with a count. Parsers:
+  pytest, jest/vitest, cargo test, go test, phpunit, rspec, minitest, maven/gradle surefire, ctest —
+  an unrecognised format degrades to an exit-code-only verdict and says so.
+
   search returns, by default: ranked candidate fix sites (top hits as complete function bodies),
   RELATED SITES, the COVERING TEST plus the other tests that cover the same code (ALSO COVERING —
   they all have to keep passing), SAME-CONCEPT LITERAL (every place the queried concept is
