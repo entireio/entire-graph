@@ -4695,6 +4695,27 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 			kind = "method"
 			name = qualify(scope, name)
 		}
+	case "method_elem", "method_spec":
+		// A Go interface method requirement (`Disconnect() error` inside
+		// `type Communicator interface { ... }`; `method_elem` in current
+		// tree-sitter-go, `method_spec` in older grammars). Without a symbol for
+		// it, a call through an interface-typed receiver has nothing to bind to,
+		// so the interface is a dead end in the call graph: terraform's
+		// communicator.Communicator had ZERO incoming CALLS even though every
+		// provisioner drives its remote work through it.
+		//
+		// The declaration is only a member when it is scoped under its interface;
+		// an unscoped method_elem (a generic constraint written inline) declares
+		// nothing addressable and stays unextracted.
+		if language != "Go" || scope == "" {
+			return Entity{}, false
+		}
+		name = firstChildOfType(node, src, "field_identifier")
+		if name == "" {
+			return Entity{}, false
+		}
+		kind = "method"
+		name = qualify(scope, name)
 	case "method_declaration":
 		// An Objective-C method_declaration is a prototype in an @interface /
 		// category head; the @implementation's method_definition carries the
