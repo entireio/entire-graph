@@ -103,12 +103,19 @@ type neighborResponse struct {
 	// index the WHOLE repository (search only parses its candidate files), which
 	// makes that difference tens of seconds on a large repo — a cost the CLI
 	// surface otherwise never states.
-	IndexCacheDisabled     bool                   `json:"index_cache_disabled,omitempty"`
-	IndexLatencyMS         int64                  `json:"index_latency_ms"`
-	QueryLatencyMS         int64                  `json:"query_latency_ms"`
-	TotalLatencyMS         int64                  `json:"total_latency_ms"`
-	Truncated              bool                   `json:"truncated"`
-	FocusMatchesTotal      int                    `json:"focus_matches_total"`
+	IndexCacheDisabled bool  `json:"index_cache_disabled,omitempty"`
+	IndexLatencyMS     int64 `json:"index_latency_ms"`
+	QueryLatencyMS     int64 `json:"query_latency_ms"`
+	TotalLatencyMS     int64 `json:"total_latency_ms"`
+	Truncated          bool  `json:"truncated"`
+	FocusMatchesTotal  int   `json:"focus_matches_total"`
+	// FuzzyMatch reports that no EXACT match existed and these candidates came from the fuzzy ladder.
+	// FuzzyMatchKind names the rung, so a consumer is never misled about what it asked for.
+	FuzzyMatch     bool   `json:"fuzzy_match,omitempty"`
+	FuzzyMatchKind string `json:"fuzzy_match_kind,omitempty"`
+	// MatchBodies carries source for the first few matched definitions, so an ambiguous or fuzzy
+	// answer removes the follow-up read instead of prescribing one.
+	MatchBodies            []symbolMatchBody      `json:"match_bodies,omitempty"`
 	FocusMatchesTruncated  bool                   `json:"focus_matches_truncated"`
 	DisambiguationRequired bool                   `json:"disambiguation_required"`
 	Matches                []neighborFocus        `json:"matches"`
@@ -326,7 +333,11 @@ func buildNeighborResponse(snapshot sem.ProviderSnapshot, flags neighborFlags) n
 		endpoints[external.ID] = endpointForExternal(external)
 	}
 	ref := parseSymbolRef(flags.Symbol, flags.File, flags.Line, flags.Kind, snapshot.Header.RepoRoot, snapshotFilePaths(snapshot))
-	focuses := resolveFocusSymbols(snapshot.Symbols, ref)
+	// FIX B: an exact miss degrades to the fuzzy ladder rather than returning nothing. See
+	// resolveFocusSymbolsOrFuzzy for the measured cost of the empty answer.
+	focuses, matchTier, fuzzyMatch := resolveFocusSymbolsOrFuzzy(
+		snapshot.Symbols, ref, symbolFuzzyCandidateLimit,
+	)
 	sort.Slice(focuses, func(left, right int) bool {
 		if focuses[left].FilePath != focuses[right].FilePath {
 			return focuses[left].FilePath < focuses[right].FilePath
@@ -337,6 +348,10 @@ func buildNeighborResponse(snapshot sem.ProviderSnapshot, flags neighborFlags) n
 		return focuses[left].ID < focuses[right].ID
 	})
 	focusMatchesTotal := len(focuses)
+	matchBodies := []symbolMatchBody(nil)
+	if fuzzyMatch || focusMatchesTotal > 1 {
+		matchBodies = symbolMatchBodies(snapshot.Header.RepoRoot, focuses, symbolAmbiguousBodyLimit)
+	}
 	focusMatchesTruncated := focusMatchesTotal > flags.Limit
 	if focusMatchesTruncated {
 		focuses = focuses[:flags.Limit]
@@ -347,6 +362,8 @@ func buildNeighborResponse(snapshot sem.ProviderSnapshot, flags neighborFlags) n
 	}
 	response := neighborResponse{
 		FormatVersion:         1,
+		FuzzyMatch:            fuzzyMatch,
+		FuzzyMatchKind:        fuzzyKindLabel(fuzzyMatch, matchTier),
 		RepoRoot:              snapshot.Header.RepoRoot,
 		Commit:                snapshot.Header.Commit,
 		Tree:                  snapshot.Header.Tree,
@@ -359,6 +376,7 @@ func buildNeighborResponse(snapshot sem.ProviderSnapshot, flags neighborFlags) n
 		Truncated:             focusMatchesTruncated,
 		FocusMatchesTotal:     focusMatchesTotal,
 		FocusMatchesTruncated: focusMatchesTruncated,
+		MatchBodies:           matchBodies,
 		Matches:               make([]neighborFocus, 0, len(focuses)),
 		Warnings:              snapshot.Header.Warnings,
 		PartialFailures:       partialFailures,
@@ -719,12 +737,23 @@ func writeAgentNeighborsFull(out io.Writer, response neighborResponse) error {
 		writeNoFocusMatch(out, response.Query, response.File, response.Line)
 		return nil
 	}
-	if response.DisambiguationRequired {
+	if response.FuzzyMatch {
 		definitions := make([]neighborEndpoint, 0, len(response.Matches))
 		for _, match := range response.Matches {
 			definitions = append(definitions, match.Symbol)
 		}
-		writeDisambiguationListing(out, response.Query, response.FocusMatchesTotal, definitions)
+		writeFuzzyMatchListing(out, response.Query, symbolMatchTierFromLabel(response.FuzzyMatchKind),
+			definitions, response.MatchBodies)
+		if response.DisambiguationRequired {
+			return nil
+		}
+	} else if response.DisambiguationRequired {
+		definitions := make([]neighborEndpoint, 0, len(response.Matches))
+		for _, match := range response.Matches {
+			definitions = append(definitions, match.Symbol)
+		}
+		writeDisambiguationListing(out, response.Query, response.FocusMatchesTotal, definitions,
+			response.MatchBodies)
 		return nil
 	}
 	if response.FocusMatchesTruncated {

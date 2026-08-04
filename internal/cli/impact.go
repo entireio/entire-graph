@@ -78,21 +78,26 @@ type impactSection struct {
 }
 
 type impactResponse struct {
-	FormatVersion          int                    `json:"format_version"`
-	RepoRoot               string                 `json:"repo_root"`
-	Commit                 string                 `json:"commit,omitempty"`
-	Tree                   string                 `json:"tree,omitempty"`
-	Profile                string                 `json:"profile"`
-	Query                  string                 `json:"query"`
-	File                   string                 `json:"file,omitempty"`
-	Line                   int                    `json:"line,omitempty"`
-	Depth                  int                    `json:"depth"`
-	IndexCacheHit          bool                   `json:"index_cache_hit"`
-	IndexCacheDisabled     bool                   `json:"index_cache_disabled,omitempty"`
-	IndexLatencyMS         int64                  `json:"index_latency_ms"`
-	QueryLatencyMS         int64                  `json:"query_latency_ms"`
-	TotalLatencyMS         int64                  `json:"total_latency_ms"`
-	FocusMatchesTotal      int                    `json:"focus_matches_total"`
+	FormatVersion      int    `json:"format_version"`
+	RepoRoot           string `json:"repo_root"`
+	Commit             string `json:"commit,omitempty"`
+	Tree               string `json:"tree,omitempty"`
+	Profile            string `json:"profile"`
+	Query              string `json:"query"`
+	File               string `json:"file,omitempty"`
+	Line               int    `json:"line,omitempty"`
+	Depth              int    `json:"depth"`
+	IndexCacheHit      bool   `json:"index_cache_hit"`
+	IndexCacheDisabled bool   `json:"index_cache_disabled,omitempty"`
+	IndexLatencyMS     int64  `json:"index_latency_ms"`
+	QueryLatencyMS     int64  `json:"query_latency_ms"`
+	TotalLatencyMS     int64  `json:"total_latency_ms"`
+	FocusMatchesTotal  int    `json:"focus_matches_total"`
+	// See neighborResponse for what these three report; impact resolves its focus through the same
+	// shared resolver, so it answers a misspelled or ambiguous query the same way.
+	FuzzyMatch             bool                   `json:"fuzzy_match,omitempty"`
+	FuzzyMatchKind         string                 `json:"fuzzy_match_kind,omitempty"`
+	MatchBodies            []symbolMatchBody      `json:"match_bodies,omitempty"`
 	DisambiguationRequired bool                   `json:"disambiguation_required"`
 	Definitions            []neighborEndpoint     `json:"definitions,omitempty"`
 	Focus                  *neighborEndpoint      `json:"focus,omitempty"`
@@ -326,7 +331,7 @@ func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impac
 	}
 
 	ref := parseSymbolRef(flags.Symbol, flags.File, flags.Line, flags.Kind, snapshot.Header.RepoRoot, snapshotFilePaths(snapshot))
-	focuses := resolveFocusSymbols(snapshot.Symbols, ref)
+	focuses, matchTier, fuzzyMatch := resolveFocusSymbolsOrFuzzy(snapshot.Symbols, ref, symbolFuzzyCandidateLimit)
 	sort.Slice(focuses, func(left, right int) bool {
 		if focuses[left].FilePath != focuses[right].FilePath {
 			return focuses[left].FilePath < focuses[right].FilePath
@@ -352,6 +357,14 @@ func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impac
 		Line:              ref.Line,
 		Depth:             flags.Depth,
 		FocusMatchesTotal: len(focuses),
+		FuzzyMatch:        fuzzyMatch,
+		FuzzyMatchKind:    fuzzyKindLabel(fuzzyMatch, matchTier),
+		MatchBodies: func() []symbolMatchBody {
+			if !fuzzyMatch && len(focuses) <= 1 {
+				return nil
+			}
+			return symbolMatchBodies(snapshot.Header.RepoRoot, focuses, symbolAmbiguousBodyLimit)
+		}(),
 		Warnings:          snapshot.Header.Warnings,
 		PartialFailures:   partialFailures,
 		Stats:             snapshot.Header.Stats,
@@ -708,8 +721,15 @@ func writeImpactText(out io.Writer, response impactResponse) {
 		writeNoFocusMatch(out, response.Query, response.File, response.Line)
 		return
 	}
-	if response.DisambiguationRequired {
-		writeDisambiguationListing(out, response.Query, response.FocusMatchesTotal, response.Definitions)
+	if response.FuzzyMatch {
+		writeFuzzyMatchListing(out, response.Query, symbolMatchTierFromLabel(response.FuzzyMatchKind),
+			response.Definitions, response.MatchBodies)
+		if response.DisambiguationRequired {
+			return
+		}
+	} else if response.DisambiguationRequired {
+		writeDisambiguationListing(out, response.Query, response.FocusMatchesTotal, response.Definitions,
+			response.MatchBodies)
 		return
 	}
 

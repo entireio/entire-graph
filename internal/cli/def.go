@@ -118,12 +118,16 @@ type defDeclaration struct {
 }
 
 type defResponse struct {
-	FormatVersion    int                    `json:"format_version"`
-	RepoRoot         string                 `json:"repo_root"`
-	Commit           string                 `json:"commit,omitempty"`
-	Tree             string                 `json:"tree,omitempty"`
-	Profile          string                 `json:"profile,omitempty"`
-	Query            string                 `json:"query"`
+	FormatVersion int    `json:"format_version"`
+	RepoRoot      string `json:"repo_root"`
+	Commit        string `json:"commit,omitempty"`
+	Tree          string `json:"tree,omitempty"`
+	Profile       string `json:"profile,omitempty"`
+	Query         string `json:"query"`
+	// FuzzyMatchKind names the rung of the fuzzy ladder these declarations came from, empty on an
+	// exact match. See resolveFocusSymbolsOrFuzzy: `def` answers a misspelled name rather than
+	// returning nothing.
+	FuzzyMatchKind   string                 `json:"fuzzy_match_kind,omitempty"`
 	Declarations     []defDeclaration       `json:"declarations"`
 	DeclarationTotal int                    `json:"declarations_total"`
 	Truncated        bool                   `json:"truncated"`
@@ -304,6 +308,7 @@ func buildDefResponse(snapshot sem.ProviderSnapshot, flags defFlags) defResponse
 	}
 	index := newDefIndex(snapshot)
 	matches := index.resolve(flags)
+	response.FuzzyMatchKind = index.fuzzyKind
 	groups := index.groupPartials(matches)
 	response.DeclarationTotal = len(groups)
 	if len(groups) > defDeclarationLimit {
@@ -333,6 +338,10 @@ type defIndex struct {
 	symbols        []sem.SymbolRecord
 	filePaths      []string
 	repoRoot       string
+	// fuzzyKind names the rung of the fuzzy ladder that produced the matches, empty when the exact
+	// lookup succeeded. It is set by resolve and reported so the caller knows it did not get what it
+	// literally asked for.
+	fuzzyKind string
 }
 
 type defOwnedMember struct {
@@ -440,6 +449,16 @@ func (index *defIndex) resolve(flags defFlags) []sem.SymbolRecord {
 		matches = resolveFocusSymbols(index.symbols, ref)
 		if len(matches) > 0 {
 			break
+		}
+	}
+	// FIX B: every spelling of the name missed, so degrade to the fuzzy ladder rather than answering
+	// "(no symbol named X)". The ref is rebuilt from the caller's ORIGINAL spelling: the qualified-name
+	// forms above are exact-match aids and would only narrow the fuzzy search.
+	if len(matches) == 0 {
+		ref := parseSymbolRef(flags.Symbol, flags.File, flags.Line, flags.Kind, index.repoRoot, index.filePaths)
+		if fuzzy, tier, ok := resolveFocusSymbolsOrFuzzy(index.symbols, ref, symbolFuzzyCandidateLimit); ok {
+			index.fuzzyKind = tier.label()
+			matches = fuzzy
 		}
 	}
 	sort.Slice(matches, func(left, right int) bool {
@@ -711,6 +730,12 @@ func renderDefText(response defResponse, limit int) []byte {
 	if len(response.Declarations) == 0 {
 		writeNoFocusMatch(&buffer, response.Query, "", 0)
 		return []byte(buffer.String())
+	}
+	// A fuzzy answer says so, once, above the cards. Silently returning a different symbol's
+	// declaration than the one asked for would be worse than the empty answer this replaced.
+	if response.FuzzyMatchKind != "" {
+		fmt.Fprintf(&buffer, "No exact match for %q; showing the closest %d by %s match.\n",
+			response.Query, len(response.Declarations), response.FuzzyMatchKind)
 	}
 	for index, declaration := range response.Declarations {
 		if index > 0 {

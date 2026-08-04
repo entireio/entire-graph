@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/entireio/entire-graph/internal/sem"
 )
@@ -305,11 +307,12 @@ func writeNoFocusMatch(out interface {
 // definition. `total` is the pre-cap match count.
 func writeDisambiguationListing(out interface {
 	Write([]byte) (int, error)
-}, query string, total int, definitions []neighborEndpoint) {
-	fmt.Fprintf(out,
-		"Ambiguous symbol %q matched %d definitions; rerun with the selector printed beside the one you mean.\n",
-		query, total,
-	)
+}, query string, total int, definitions []neighborEndpoint, bodies []symbolMatchBody) {
+	// FIX A: this is an ANSWER, not an error. Ambiguity means the tool found more than it was asked
+	// for, and every definition it found is listed below with a selector for narrowing NEXT time — but
+	// the caller is never told to re-run, because re-running is what cost $2.22 on lombok-3486.
+	fmt.Fprintf(out, "%q matches %d definitions; all are listed, the first %d with source.\n",
+		query, total, minSymbolInt(symbolAmbiguousBodyLimit, len(definitions)))
 	selectors := disambiguationSelectors(definitions)
 	for index, definition := range definitions {
 		line := "- " + formatNeighborEndpoint(definition)
@@ -324,4 +327,384 @@ func writeDisambiguationListing(out interface {
 	if omitted := total - len(definitions); omitted > 0 {
 		fmt.Fprintf(out, "- ... %d more definitions; raise --limit to list them\n", omitted)
 	}
+	writeSymbolMatchBodies(out, bodies)
+}
+
+// writeFuzzyMatchListing is FIX B's renderer: the candidates an exact miss degraded to, labelled with
+// HOW they matched so the caller is never misled into thinking it asked for them.
+func writeFuzzyMatchListing(out interface {
+	Write([]byte) (int, error)
+}, query string, tier symbolMatchTier, definitions []neighborEndpoint, bodies []symbolMatchBody) {
+	fmt.Fprintf(out, "No exact match for %q. Closest %d by %s match:\n",
+		query, len(definitions), tier.label())
+	selectors := disambiguationSelectors(definitions)
+	for index, definition := range definitions {
+		line := "- " + formatNeighborEndpoint(definition)
+		if definition.Kind != "" {
+			line += " [" + definition.Kind + "]"
+		}
+		if selectors[index] != "" {
+			line += "  " + selectors[index]
+		}
+		fmt.Fprintln(out, line)
+	}
+	writeSymbolMatchBodies(out, bodies)
+}
+
+// ANSWERING INSTEAD OF REFUSING
+// ============================
+//
+// Session-level forensics of 19 paid sessions found that the tool's most expensive failures were not
+// wrong answers — they were REFUSALS to answer a live query at all. Two messages account for both
+// measured blow-ups, and in each case the agent spent the money doing by hand what the tool declined
+// to do:
+//
+//   - "Ambiguous symbol %q matched N definitions; rerun with the selector printed beside the one you
+//     mean." — projectlombok__lombok-3486, +$2.22, 78 pre-edit operations while the agent manually
+//     disambiguated two same-named methods it had already been told the locations of.
+//   - "No symbols matched %q" — phpoffice__phpspreadsheet-3570, +$1.23, BOTH live queries empty and
+//     shell greps 18 -> 39, because the query spelled the name in a different but obvious way.
+//
+// Neither refusal is necessary. Ambiguity means the tool found MORE than it was asked for, which is
+// information, not an error; and an exact-match miss on an identifier is a spelling question the graph
+// can answer itself. So:
+//
+//   FIX A  every definition is listed, and the top ones come back WITH SOURCE. No rerun instruction.
+//   FIX B  an exact miss degrades to a fuzzy ladder (case, separators, tokens, substring) and returns
+//          the best candidates, clearly labelled as fuzzy so the caller is never misled about what
+//          matched.
+//
+// Both are implemented HERE, on the one resolver and the two renderers that `def`, `neighbors` and
+// `impact` all share, so no verb can drift back to refusing.
+
+const (
+	// symbolFuzzyCandidateLimit is how many fuzzy candidates are returned. Three is the widest list
+	// that still reads as "did you mean"; past that the honest answer is `search`.
+	symbolFuzzyCandidateLimit = 3
+
+	// symbolAmbiguousBodyLimit is how many of several matching definitions come back with source. The
+	// list of locations is cheap and complete; bodies are what remove the follow-up read, and two is
+	// the measured shape of the failure (a method declared once per backend, once per AST flavour).
+	symbolAmbiguousBodyLimit = 2
+
+	// symbolMatchBodyMaxLines caps one printed body. A compact body is the point — the caller asked
+	// which definition it wanted, not for a file dump.
+	symbolMatchBodyMaxLines = 40
+)
+
+// symbolMatchTier ranks how a fuzzy candidate matched, lowest (best) first. It is reported so the
+// label can say WHY something matched rather than just that it did.
+type symbolMatchTier int
+
+const (
+	symbolMatchExact symbolMatchTier = iota
+	symbolMatchCaseInsensitive
+	symbolMatchSeparatorInsensitive
+	symbolMatchTokenSubset
+	symbolMatchSubstring
+)
+
+func (tier symbolMatchTier) label() string {
+	switch tier {
+	case symbolMatchCaseInsensitive:
+		return "case-insensitive"
+	case symbolMatchSeparatorInsensitive:
+		return "separator-insensitive"
+	case symbolMatchTokenSubset:
+		return "identifier-token"
+	case symbolMatchSubstring:
+		return "substring"
+	}
+	return "exact"
+}
+
+// compactSymbolIdentifier reduces a name to letters and digits, lowercased, so that
+// `Functions.flattenSingleValue`, `flatten_single_value` and `FLATTEN-SINGLE-VALUE` all compare equal.
+// Separator style is a spelling convention, not an identity.
+func compactSymbolIdentifier(value string) string {
+	var out strings.Builder
+	for _, r := range value {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			out.WriteRune(unicode.ToLower(r))
+		}
+	}
+	return out.String()
+}
+
+// symbolIdentifierTokens splits a name into lowercase word tokens across camelCase, snake_case,
+// kebab-case, `::` and `.`, so `flattenSingleValue` and `flatten_single_value` yield the same set.
+func symbolIdentifierTokens(value string) map[string]bool {
+	tokens := map[string]bool{}
+	var current strings.Builder
+	flush := func() {
+		if current.Len() > 0 {
+			tokens[strings.ToLower(current.String())] = true
+			current.Reset()
+		}
+	}
+	runes := []rune(value)
+	for index, r := range runes {
+		switch {
+		case unicode.IsUpper(r):
+			// A new word starts at a lower->upper boundary and at the last capital of a run
+			// ("HTTPServer" -> http, server).
+			if index > 0 && (unicode.IsLower(runes[index-1]) || unicode.IsDigit(runes[index-1]) ||
+				(index+1 < len(runes) && unicode.IsLower(runes[index+1]))) {
+				flush()
+			}
+			current.WriteRune(r)
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			current.WriteRune(r)
+		default:
+			flush()
+		}
+	}
+	flush()
+	return tokens
+}
+
+// resolveFocusSymbolsOrFuzzy is FIX B. It returns the exact matches when there are any, and otherwise
+// the best fuzzy candidates for the name — never an empty answer when the graph holds something the
+// caller plausibly meant. `fuzzy` says which happened, so every renderer can label it.
+//
+// The ladder is ordered by how much it assumes. Case and separator differences are spelling; a token
+// subset is the caller naming the same concept with a qualifier dropped; a substring is the weakest
+// claim and comes last. Any narrowing the caller supplied (--file/--kind) still applies, because a
+// fuzzy NAME plus an exact file is a much better answer than a fuzzy name alone.
+func resolveFocusSymbolsOrFuzzy(
+	symbols []sem.SymbolRecord, ref symbolRef, limit int,
+) (matches []sem.SymbolRecord, tier symbolMatchTier, fuzzy bool) {
+	if exact := resolveFocusSymbols(symbols, ref); len(exact) > 0 {
+		return exact, symbolMatchExact, false
+	}
+	if ref.Name == "" || limit <= 0 {
+		return nil, symbolMatchExact, false
+	}
+	wantCompact := compactSymbolIdentifier(ref.Name)
+	if wantCompact == "" {
+		return nil, symbolMatchExact, false
+	}
+	wantTokens := symbolIdentifierTokens(ref.Name)
+	type scored struct {
+		symbol sem.SymbolRecord
+		tier   symbolMatchTier
+	}
+	var pool []scored
+	for _, symbol := range symbols {
+		if ref.File != "" && !strings.EqualFold(symbol.FilePath, ref.File) {
+			continue
+		}
+		if ref.Kind != "" && !strings.EqualFold(symbol.Kind, ref.Kind) {
+			continue
+		}
+		best := symbolMatchTier(-1)
+		for _, candidate := range []string{symbol.Name, symbol.QualifiedName} {
+			if candidate == "" {
+				continue
+			}
+			if tier, ok := symbolNameMatchTier(candidate, ref.Name, wantCompact, wantTokens); ok &&
+				(best < 0 || tier < best) {
+				best = tier
+			}
+		}
+		if best < 0 {
+			continue
+		}
+		pool = append(pool, scored{symbol: symbol, tier: best})
+	}
+	if len(pool) == 0 {
+		return nil, symbolMatchExact, false
+	}
+	sort.SliceStable(pool, func(left, right int) bool {
+		if pool[left].tier != pool[right].tier {
+			return pool[left].tier < pool[right].tier
+		}
+		// Among equally-matched candidates the shortest name is the closest spelling, then the
+		// declaration order, so the answer is deterministic across runs.
+		leftName, rightName := symbolRefDisplayName(pool[left].symbol), symbolRefDisplayName(pool[right].symbol)
+		if len(leftName) != len(rightName) {
+			return len(leftName) < len(rightName)
+		}
+		if pool[left].symbol.FilePath != pool[right].symbol.FilePath {
+			return pool[left].symbol.FilePath < pool[right].symbol.FilePath
+		}
+		if pool[left].symbol.StartLine != pool[right].symbol.StartLine {
+			return pool[left].symbol.StartLine < pool[right].symbol.StartLine
+		}
+		return pool[left].symbol.ID < pool[right].symbol.ID
+	})
+	if len(pool) > limit {
+		pool = pool[:limit]
+	}
+	matches = make([]sem.SymbolRecord, 0, len(pool))
+	for _, entry := range pool {
+		matches = append(matches, entry.symbol)
+	}
+	return matches, pool[0].tier, true
+}
+
+// symbolNameMatchTier scores one candidate name against the query. Exact is excluded: the caller has
+// already tried it, so reporting it here would hide a real miss behind a tier that cannot happen.
+func symbolNameMatchTier(
+	candidate, want, wantCompact string, wantTokens map[string]bool,
+) (symbolMatchTier, bool) {
+	if strings.EqualFold(candidate, want) {
+		return symbolMatchCaseInsensitive, true
+	}
+	candidateCompact := compactSymbolIdentifier(candidate)
+	if candidateCompact == "" {
+		return 0, false
+	}
+	if candidateCompact == wantCompact {
+		return symbolMatchSeparatorInsensitive, true
+	}
+	// A token subset in either direction: `flattenSingleValue` for a query of `flatten_single_value`
+	// (equal sets), and `Functions.flattenSingleValue` for a query of `flattenSingleValue` (superset).
+	if len(wantTokens) > 0 {
+		candidateTokens := symbolIdentifierTokens(candidate)
+		if len(candidateTokens) > 0 && (symbolTokensContain(candidateTokens, wantTokens) ||
+			symbolTokensContain(wantTokens, candidateTokens)) {
+			return symbolMatchTokenSubset, true
+		}
+	}
+	// The weakest claim, and bounded hard. `def` has a standing invariant that a short fragment must
+	// NEVER resolve to a longer name (TestDefNeverMatchesASubstring: "dele" is not "deletion"), and
+	// that invariant is right — a four-letter fragment matches half a codebase. Eight characters is
+	// past any accidental fragment while still admitting the case this rung exists for, a fully spelled
+	// identifier whose qualifier differs. The rungs above already cover separator and token spelling,
+	// so nothing real depends on relaxing this.
+	if len(wantCompact) >= 8 &&
+		(strings.Contains(candidateCompact, wantCompact) || strings.Contains(wantCompact, candidateCompact)) {
+		return symbolMatchSubstring, true
+	}
+	return 0, false
+}
+
+func symbolTokensContain(outer, inner map[string]bool) bool {
+	if len(inner) == 0 {
+		return false
+	}
+	for token := range inner {
+		if !outer[token] {
+			return false
+		}
+	}
+	return true
+}
+
+func symbolRefDisplayName(symbol sem.SymbolRecord) string {
+	if symbol.QualifiedName != "" {
+		return symbol.QualifiedName
+	}
+	return symbol.Name
+}
+
+// symbolMatchBody is the source of one matched definition, read for the answers FIX A and FIX B
+// return in place of a refusal.
+type symbolMatchBody struct {
+	Name      string `json:"name"`
+	Kind      string `json:"kind,omitempty"`
+	FilePath  string `json:"file_path"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	Source    string `json:"source,omitempty"`
+	Elided    bool   `json:"elided,omitempty"`
+}
+
+// symbolMatchBodies reads a compact body for the first `limit` records. A body that cannot be read
+// (file gone, binary, oversized) is simply omitted: the locator list above it is still a complete
+// answer, and a missing body must never turn an answer back into a refusal.
+func symbolMatchBodies(repoRoot string, matches []sem.SymbolRecord, limit int) []symbolMatchBody {
+	if repoRoot == "" || limit <= 0 || len(matches) == 0 {
+		return nil
+	}
+	read := newRepoLineReader(repoRoot)
+	bodies := make([]symbolMatchBody, 0, minSymbolInt(limit, len(matches)))
+	for _, symbol := range matches {
+		if len(bodies) >= limit {
+			break
+		}
+		if symbol.FilePath == "" || symbol.StartLine <= 0 {
+			continue
+		}
+		lines, ok := read(symbol.FilePath)
+		if !ok || symbol.StartLine > len(lines) {
+			continue
+		}
+		start := symbol.StartLine
+		end := symbol.EndLine
+		if end < start {
+			end = start
+		}
+		if end > len(lines) {
+			end = len(lines)
+		}
+		elided := false
+		if end-start+1 > symbolMatchBodyMaxLines {
+			end = start + symbolMatchBodyMaxLines - 1
+			elided = true
+		}
+		bodies = append(bodies, symbolMatchBody{
+			Name:      symbolRefDisplayName(symbol),
+			Kind:      symbol.Kind,
+			FilePath:  symbol.FilePath,
+			StartLine: start,
+			EndLine:   end,
+			Source:    strings.Join(lines[start-1:end], "\n"),
+			Elided:    elided,
+		})
+	}
+	if len(bodies) == 0 {
+		return nil
+	}
+	return bodies
+}
+
+func minSymbolInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
+}
+
+// writeSymbolMatchBodies prints the bodies under a locator list. Source is printed verbatim and
+// unnumbered, for the same reason the search payload does it: agents copy it as an edit anchor.
+func writeSymbolMatchBodies(out interface {
+	Write([]byte) (int, error)
+}, bodies []symbolMatchBody) {
+	for _, body := range bodies {
+		fmt.Fprintf(out, "\n%s:%d-%d %s", body.FilePath, body.StartLine, body.EndLine, body.Name)
+		if body.Kind != "" {
+			fmt.Fprintf(out, " [%s]", body.Kind)
+		}
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, body.Source)
+		if body.Elided {
+			fmt.Fprintf(out, "... body continues past %d lines\n", symbolMatchBodyMaxLines)
+		}
+	}
+}
+
+// fuzzyKindLabel is the label a response carries, empty when the match was exact. Keeping the
+// conversion in one place is what stops "exact" from ever being reported as a fuzzy rung.
+func fuzzyKindLabel(fuzzy bool, tier symbolMatchTier) string {
+	if !fuzzy {
+		return ""
+	}
+	return tier.label()
+}
+
+// symbolMatchTierFromLabel is the inverse, for renderers that only have the response. An unknown
+// label degrades to the weakest rung rather than to "exact", so a wrong label can never overstate
+// how well something matched.
+func symbolMatchTierFromLabel(label string) symbolMatchTier {
+	for _, tier := range []symbolMatchTier{
+		symbolMatchCaseInsensitive, symbolMatchSeparatorInsensitive,
+		symbolMatchTokenSubset, symbolMatchSubstring,
+	} {
+		if tier.label() == label {
+			return tier
+		}
+	}
+	return symbolMatchSubstring
 }
