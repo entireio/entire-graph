@@ -4,9 +4,10 @@
   "checkpoint_id": "3eabe9fc89ff",
   "strategy": "manual-commit",
   "branch": "fix/typescript-bodyless-declaration-extraction",
-  "checkpoints_count": 23,
+  "checkpoints_count": 64,
   "files_touched": [
-    "internal/sem/parser.go"
+    "internal/sem/parser.go",
+    "internal/sem/parser_typescript_regression_test.go"
   ],
   "sessions": [
     {
@@ -15,13 +16,20 @@
       "compact_transcript": "/3e/abe9fc89ff/0/transcript.jsonl",
       "content_hash": "/3e/abe9fc89ff/0/content_hash.txt",
       "prompt": "/3e/abe9fc89ff/0/prompt.txt"
+    },
+    {
+      "metadata": "/3e/abe9fc89ff/1/metadata.json",
+      "transcript": "/3e/abe9fc89ff/1/full.jsonl",
+      "compact_transcript": "/3e/abe9fc89ff/1/transcript.jsonl",
+      "content_hash": "/3e/abe9fc89ff/1/content_hash.txt",
+      "prompt": "/3e/abe9fc89ff/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 8398,
-    "cache_creation_tokens": 149820375,
-    "cache_read_tokens": 2182631341,
-    "output_tokens": 5150140,
-    "api_call_count": 4528
+    "input_tokens": 214657,
+    "cache_creation_tokens": 213900764,
+    "cache_read_tokens": 3107717357,
+    "output_tokens": 8335891,
+    "api_call_count": 6514
   }
 }
