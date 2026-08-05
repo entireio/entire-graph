@@ -1,0 +1,35 @@
+/goal after u udnerstadn fully ;  make entire graph meet this goal as it has already been beaten,  might be graphmark benchmark harness etc problem if not, then acutaly improve  grpah itself;   1. Give the agent a proper prompt for entire-graph, and a proper prompt for cmm too — then rerun against
+  baseline and report.
+  2. Don't stop until: accuracy vs baseline is a win or a tie, AND tokens beat both baseline and cmm, AND
+  tokens beat baseline by ≥35%.
+  3. No cheating at all.
+  4. Use the loop plugin if it's useful.
+  5. Results on 5/300 fable, 10/300 opus, 20/300 sonnet, 30/300 haiku.
+
+---
+
+once all doen give new stabele branch fro opu anget to test on i have sonnet agnet coming up and fix all the sonnet isues to, cuz u said we can get 33% so get it
+
+---
+
+<task-notification>
+<task-id>b29xijpwi</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/b29xijpwi.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for genuine v16 completion" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+make stbael coy brnachw ith allf ixes to test
+
+---
+
+<task-notification>
+<task-id>b4ovfo031</task-id>
+<tool-use-id>toolu_0167eftf3KWLqSbeYR2g18qL</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/b4ovfo031.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for the invocation gate" completed (exit code 0)</summary>
+</task-notification>

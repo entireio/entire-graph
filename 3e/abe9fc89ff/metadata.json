@@ -1,0 +1,27 @@
+{
+  "cli_version": "dev",
+  "checkpoint_version": "branch-v1",
+  "checkpoint_id": "3eabe9fc89ff",
+  "strategy": "manual-commit",
+  "branch": "fix/typescript-bodyless-declaration-extraction",
+  "checkpoints_count": 23,
+  "files_touched": [
+    "internal/sem/parser.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/3e/abe9fc89ff/0/metadata.json",
+      "transcript": "/3e/abe9fc89ff/0/full.jsonl",
+      "compact_transcript": "/3e/abe9fc89ff/0/transcript.jsonl",
+      "content_hash": "/3e/abe9fc89ff/0/content_hash.txt",
+      "prompt": "/3e/abe9fc89ff/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 8398,
+    "cache_creation_tokens": 149820375,
+    "cache_read_tokens": 2182631341,
+    "output_tokens": 5150140,
+    "api_call_count": 4528
+  }
+}
