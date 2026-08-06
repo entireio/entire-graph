@@ -1,14 +1,26 @@
 {
-  "cli_version": "dev",
-  "checkpoint_version": "branch-v1",
-  "checkpoint_id": "3da7aa60f961",
-  "strategy": "manual-commit",
   "branch": "fix/graph-retrieval-and-typescript",
-  "checkpoints_count": 64,
+  "checkpoint_id": "3da7aa60f961",
+  "checkpoint_version": "branch-v1",
+  "checkpoints_count": 66,
+  "cli_version": "dev",
+  "combined_attribution": {
+    "calculated_at": "2026-08-06T01:54:02.32007Z",
+    "agent_lines": 27,
+    "agent_removed": 3,
+    "human_added": 1068,
+    "human_modified": 0,
+    "human_removed": 11,
+    "total_committed": 1095,
+    "total_lines_changed": 1109,
+    "agent_percentage": 2.7051397655545535,
+    "metric_version": 2
+  },
   "files_touched": [
     "internal/cli/search.go",
     "internal/sem/search.go"
   ],
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/3d/a7aa60f961/0/metadata.json",
@@ -23,25 +35,20 @@
       "compact_transcript": "/3d/a7aa60f961/1/transcript.jsonl",
       "content_hash": "/3d/a7aa60f961/1/content_hash.txt",
       "prompt": "/3d/a7aa60f961/1/prompt.txt"
+    },
+    {
+      "content_hash": "/3d/a7aa60f961/2/content_hash.txt",
+      "metadata": "/3d/a7aa60f961/2/metadata.json",
+      "prompt": "/3d/a7aa60f961/2/prompt.txt",
+      "transcript": "/3d/a7aa60f961/2/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 214657,
+    "input_tokens": 308618,
     "cache_creation_tokens": 213900764,
-    "cache_read_tokens": 3107717357,
-    "output_tokens": 8335891,
-    "api_call_count": 6514
-  },
-  "combined_attribution": {
-    "calculated_at": "2026-08-06T01:54:02.32007Z",
-    "agent_lines": 27,
-    "agent_removed": 3,
-    "human_added": 1068,
-    "human_modified": 0,
-    "human_removed": 11,
-    "total_committed": 1095,
-    "total_lines_changed": 1109,
-    "agent_percentage": 2.7051397655545535,
-    "metric_version": 2
+    "cache_read_tokens": 3109200099,
+    "output_tokens": 8345956,
+    "api_call_count": 6545
   }
 }
