@@ -1,0 +1,25 @@
+{
+  "cli_version": "dev",
+  "checkpoint_version": "branch-v1",
+  "checkpoint_id": "60e2a884c54c",
+  "strategy": "manual-commit",
+  "branch": "fix/graph-retrieval-and-typescript",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/60/e2a884c54c/0/metadata.json",
+      "transcript": "/60/e2a884c54c/0/full.jsonl",
+      "compact_transcript": "/60/e2a884c54c/0/transcript.jsonl",
+      "content_hash": "/60/e2a884c54c/0/content_hash.txt",
+      "prompt": "/60/e2a884c54c/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 5665,
+    "cache_creation_tokens": 8789964,
+    "cache_read_tokens": 1679495508,
+    "output_tokens": 2315306,
+    "api_call_count": 2837
+  }
+}
