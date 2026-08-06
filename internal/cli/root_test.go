@@ -420,18 +420,13 @@ func TestAgentSearchBudgetsFavorHigherRanks(t *testing.T) {
 
 func TestHelpDocumentsNeighborAgentContextCap(t *testing.T) {
 	var out bytes.Buffer
-	printHelp(&out)
-	lineStart := strings.Index(out.String(), "entire graph neighbors")
-	if lineStart < 0 {
-		t.Fatal("help omitted neighbors command")
+	renderCommandHelp(&out, "neighbors")
+	help := out.String()
+	if !strings.Contains(help, "--max-context-bytes") {
+		t.Fatalf("neighbors help omitted --max-context-bytes flag:\n%s", help)
 	}
-	lineEnd := strings.Index(out.String()[lineStart:], "\n")
-	line := out.String()[lineStart:]
-	if lineEnd >= 0 {
-		line = line[:lineEnd]
-	}
-	if !strings.Contains(line, "--max-context-bytes 16384") {
-		t.Fatalf("neighbors help omitted agent context cap: %q", line)
+	if !strings.Contains(help, "16384") {
+		t.Fatalf("neighbors help omitted agent context cap default 16384:\n%s", help)
 	}
 }
 

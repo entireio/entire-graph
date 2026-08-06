@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -24,6 +25,9 @@ type indexFlags struct {
 	// rather than on a command of its own because index is already the command that
 	// materializes a whole committed-tree snapshot for a human to act on.
 	Report string
+	// Force rebuilds the committed-tree snapshot from scratch and overwrites the
+	// cache entry even when a valid one already exists for this tree.
+	Force bool
 }
 
 type indexResponse struct {
@@ -50,8 +54,19 @@ func runIndex(ctx context.Context, opts Options, args []string) error {
 	if len(rest) != 0 {
 		return fmt.Errorf("index received unexpected arguments: %s", strings.Join(rest, " "))
 	}
-	if flags.Format != "json" {
-		return fmt.Errorf("index --format must be json, got %q", flags.Format)
+	// Format resolution: an explicit --format wins; otherwise pick by audience —
+	// a human at a terminal gets the readable summary, a pipe/CI gets the
+	// schema-versioned JSON (the machine contract, unchanged).
+	var outputText bool
+	switch flags.Format {
+	case "json":
+		outputText = false
+	case "text":
+		outputText = true
+	case "", "auto":
+		outputText = isTerminal(opts.Stdout)
+	default:
+		return fmt.Errorf("index --format must be json, text, or auto, got %q", flags.Format)
 	}
 	profile, err := parseProfile(flags.Profile)
 	if err != nil {
@@ -65,13 +80,26 @@ func runIndex(ctx context.Context, opts Options, args []string) error {
 	if cacheDir == "" {
 		return errors.New("index requires --cache-dir or ENTIRE_PLUGIN_DATA_DIR: this platform has no resolvable per-user cache directory")
 	}
-	started := time.Now()
-	snapshot, cacheHit, err := sem.PreindexProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
+	snapOptions := sem.ProviderSnapshotOptions{
 		NoNetwork:    true,
 		Profile:      profile,
 		IgnoreFiles:  flags.IgnoreFiles,
 		IncludeFiles: flags.IncludeFiles,
-	}, cacheDir)
+		ForceRebuild: flags.Force,
+	}
+	// Draw a live progress bar on stderr when it's a terminal. It only fires on a
+	// cache miss (the build emits the events); a cache hit returns instantly with
+	// nothing drawn. stdout is left untouched so piped JSON stays clean.
+	var bar *progressBar
+	if isTerminal(opts.Stderr) {
+		bar = newProgressBar(opts.Stderr, "indexing")
+		snapOptions.Progress = func(e sem.ProgressEvent) { bar.update(e) }
+	}
+	started := time.Now()
+	snapshot, cacheHit, err := sem.PreindexProviderSnapshot(ctx, repo, opts.Version, snapOptions, cacheDir)
+	if bar != nil {
+		bar.clear()
+	}
 	if err != nil {
 		return err
 	}
@@ -103,13 +131,56 @@ func runIndex(ctx context.Context, opts Options, args []string) error {
 			return fmt.Errorf("write graph report %q: %w", flags.Report, err)
 		}
 	}
+	if outputText {
+		return writeIndexText(opts.Stdout, response, flags.Report)
+	}
 	encoder := json.NewEncoder(opts.Stdout)
 	encoder.SetEscapeHTML(false)
 	return encoder.Encode(response)
 }
 
+// writeIndexText renders the human-facing summary shown when index runs at a
+// terminal. It reads the same indexResponse the JSON contract carries, so the
+// two never diverge.
+func writeIndexText(w io.Writer, r indexResponse, reportPath string) error {
+	commit := r.Commit
+	if len(commit) > 12 {
+		commit = commit[:12]
+	}
+	fmt.Fprintf(w, "Indexed %s", r.RepoRoot)
+	if commit != "" {
+		fmt.Fprintf(w, " @ %s", commit)
+	}
+	fmt.Fprintf(w, " (%s profile)\n", r.Profile)
+
+	if r.IndexCacheHit {
+		fmt.Fprintf(w, "  cache hit — reused in %s\n", time.Duration(r.IndexLatencyMS)*time.Millisecond)
+	} else {
+		fmt.Fprintf(w, "  built in %s\n", time.Duration(r.IndexLatencyMS)*time.Millisecond)
+	}
+
+	c := r.Counts
+	fmt.Fprintf(w, "  %s of %s files parsed · %s symbols · %s relations\n",
+		humanInt(int64(c.ParsedFiles)), humanInt(int64(c.Files)),
+		humanInt(int64(c.Symbols)), humanInt(int64(c.Relations)))
+
+	level := c.CompletenessLevel
+	if level == "" {
+		level = "unknown"
+	}
+	fmt.Fprintf(w, "  completeness: %s\n", level)
+
+	if n := len(r.Warnings); n > 0 {
+		fmt.Fprintf(w, "  ⚠️  %d warning(s) — run with --format json for detail\n", n)
+	}
+	if reportPath != "" {
+		fmt.Fprintf(w, "  report written to %s\n", reportPath)
+	}
+	return nil
+}
+
 func parseIndexFlags(args []string) (indexFlags, []string, error) {
-	flags := indexFlags{Profile: "full", Format: "json"}
+	flags := indexFlags{Profile: "full"}
 	var rest []string
 	for index := 0; index < len(args); index++ {
 		switch args[index] {
@@ -155,6 +226,8 @@ func parseIndexFlags(args []string) (indexFlags, []string, error) {
 				return flags, nil, err
 			}
 			flags.Format, index = value, next
+		case "--force":
+			flags.Force = true
 		case "--head", "--no-network":
 			// Indexing is always local-only and always targets committed HEAD.
 		case "--worktree":

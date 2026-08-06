@@ -2,7 +2,7 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "Task",
+        "matcher": "Agent",
         "hooks": [
           {
             "type": "command",
@@ -11,7 +11,7 @@
         ]
       },
       {
-        "matcher": "TodoWrite",
+        "matcher": "TaskCreate|TaskUpdate",
         "hooks": [
           {
             "type": "command",
@@ -22,7 +22,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Task",
+        "matcher": "Agent",
         "hooks": [
           {
             "type": "command",

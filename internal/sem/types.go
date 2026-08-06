@@ -369,6 +369,155 @@ var (
 	trpcProcedureRe             = regexp.MustCompile(`(?m)([A-Za-z_$][\w$]*)\s*:\s*(?:publicProcedure|protectedProcedure|procedure)\s*\.\s*(query|mutation|subscription)\s*\(`)
 )
 
+// serviceBoundaryScanLanguage reports whether a language's symbol bodies should
+// be scanned with the loose GraphQL operation patterns. It reads the capability
+// table directly rather than repeating the language list: a second copy of
+// "who supports HANDLES_GRAPHQL" is the very drift this change set exists to
+// remove, and it would let the scan emit an edge the capability report says the
+// language cannot produce.
+func serviceBoundaryScanLanguage(language string) bool {
+	return languageSupportsRelation(language, "HANDLES_GRAPHQL")
+}
+
+// hostLanguageLiterals returns the string and template-literal contents of a
+// symbol body. A GraphQL document is always embedded as a literal — a tagged
+// template (gql`…`), a plain quoted string passed to a client, or a Python
+// triple-quoted string — never as bare host-language code.
+//
+// Scanning bodies wholesale is what made the operation patterns match prose:
+// `query the columns` in a docstring, `query string` in a comment, and — for
+// the selection-set pattern, which looks for `<keyword> <name>? (…)? {` — an
+// ordinary method named `query() { … }`. Confining the scan to literals removes
+// the bare-code case structurally, and requiring a selection set inside the
+// literal removes the prose.
+//
+// It does NOT remove comments: this walks raw source, so a quoted string inside
+// a comment is still a literal to it, and a commented-out operation complete
+// with a selection set would still be reported. Stripping comments first was
+// rejected as the cure being worse — a `//` inside a URL in a string would
+// truncate the literal that carries the operation.
+//
+// Whole literals are returned rather than spans because the callers match
+// against the document, and a returned literal is the unit that either is or is
+// not a GraphQL operation.
+func hostLanguageLiterals(block string) []hostLanguageLiteral {
+	var out []hostLanguageLiteral
+	runes := []rune(block)
+	for index := 0; index < len(runes); index++ {
+		quote := runes[index]
+		if quote != '`' && quote != '"' && quote != '\'' {
+			continue
+		}
+		// Python triple quotes: take the whole docstring as one literal so an
+		// embedded operation is not cut at an interior newline.
+		if quote != '`' && index+2 < len(runes) && runes[index+1] == quote && runes[index+2] == quote {
+			if end := indexRunes(runes, index+3, string([]rune{quote, quote, quote})); end >= 0 {
+				out = append(out, hostLanguageLiteral{Text: string(runes[index+3 : end])})
+				index = end + 2
+				continue
+			}
+		}
+		end := -1
+		for scan := index + 1; scan < len(runes); scan++ {
+			if runes[scan] == '\\' {
+				scan++
+				continue
+			}
+			if runes[scan] == quote {
+				end = scan
+				break
+			}
+			// A single- or double-quoted literal cannot span a line; a template
+			// literal can.
+			if quote != '`' && runes[scan] == '\n' {
+				break
+			}
+		}
+		if end < 0 {
+			continue
+		}
+		out = append(out, hostLanguageLiteral{Text: string(runes[index+1 : end]), Tag: templateLiteralTag(runes, index)})
+		index = end
+	}
+	return out
+}
+
+// hostLanguageLiteral is a string or template literal lifted out of a symbol
+// body, with the template's tag when it has one. The tag is what distinguishes
+// a GraphQL shorthand operation from an object literal that happens to be in a
+// string: `gql`+"`"+`{ viewer { id } }`+"`"+` is an operation, "{ foo: 1 }" is not.
+type hostLanguageLiteral struct {
+	Text string
+	Tag  string
+}
+
+// templateLiteralTag returns the identifier immediately preceding a backtick,
+// which is the tag of a tagged template. Only the final identifier segment is
+// read, so a dotted tag such as `graphql.experimental` reports `experimental`
+// and is therefore NOT treated as a GraphQL document — see graphqlDocumentTag.
+func templateLiteralTag(runes []rune, backtick int) string {
+	if backtick <= 0 || runes[backtick] != '`' {
+		return ""
+	}
+	end := backtick
+	// The ASCII check comes first: isJSIdentifierPart takes a byte, so a
+	// non-ASCII rune would be truncated before it is rejected.
+	for end > 0 && runes[end-1] < 128 && isJSIdentifierPart(byte(runes[end-1])) {
+		end--
+	}
+	return string(runes[end:backtick])
+}
+
+func indexRunes(runes []rune, from int, want string) int {
+	target := []rune(want)
+	for index := from; index+len(target) <= len(runes); index++ {
+		match := true
+		for offset, char := range target {
+			if runes[index+offset] != char {
+				match = false
+				break
+			}
+		}
+		if match {
+			return index
+		}
+	}
+	return -1
+}
+
+// graphqlDocumentTag reports whether a template tag marks its contents as a
+// GraphQL document.
+func graphqlDocumentTag(tag string) bool {
+	switch strings.ToLower(tag) {
+	case "gql", "graphql":
+		return true
+	default:
+		return false
+	}
+}
+
+// graphqlShorthandRootFields reads the root fields of a shorthand operation —
+// a document that is nothing but a selection set. It returns nothing when the
+// literal names an operation, because that shape is handled by the keyword
+// scan and would otherwise be reported twice.
+func graphqlShorthandRootFields(text string) []string {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "{") {
+		return nil
+	}
+	close := matchingBraceOffset(trimmed, 0)
+	if close < 0 {
+		return nil
+	}
+	// "Nothing but a selection set" has to mean it: content after the closing
+	// brace makes this something else, and treating it as shorthand anyway
+	// would reintroduce the false positives the literal rule just removed.
+	if strings.TrimSpace(trimmed[close+1:]) != "" {
+		return nil
+	}
+	return graphqlRootSelectionFields(trimmed[1:close])
+}
+
 func serviceBoundaries(symbol SymbolRecord, block string) []serviceBoundary {
 	var out []serviceBoundary
 	seen := map[string]bool{}
@@ -422,25 +571,77 @@ func serviceBoundaries(symbol SymbolRecord, block string) []serviceBoundary {
 			}
 		}
 	}
-	for _, match := range graphqlOperationRe.FindAllStringSubmatch(block, -1) {
-		add(serviceBoundary{
-			Relation:     "HANDLES_GRAPHQL",
-			Kind:         "graphql",
-			Name:         strings.ToLower(match[1]) + " " + match[2],
-			Confidence:   0.75,
-			Reason:       "GraphQL operation literal detected in symbol body",
-			EvidenceKind: "graphql_operation",
-		})
-	}
-	for _, op := range graphqlOperationRootFieldSelections(block) {
-		add(serviceBoundary{
-			Relation:     "HANDLES_GRAPHQL",
-			Kind:         "graphql",
-			Name:         op.Root + " " + op.Field,
-			Confidence:   0.78,
-			Reason:       "GraphQL operation root field detected in operation literal",
-			EvidenceKind: "graphql_operation_field",
-		})
+	// The body-text scans below match prose as readily as code: the operation
+	// pattern is `(query|mutation|subscription) <identifier>`, case-insensitive,
+	// so a Go doc comment saying "query the cache" or a Java method named
+	// `queryString` reads as a GraphQL operation. Restricting them to the
+	// languages that declare HANDLES_GRAPHQL — which is also what
+	// `capabilities --json` promises — removed 1,245 such edges from cli-cli and
+	// 1,057 from spring-framework, targeting names like "query the".
+	//
+	// The symbol-kind branches above stay ungated: `graphql_resolver` and
+	// `graphql_schema_field` are produced only by the GraphQL/JS extractors, so
+	// they carry their own evidence of being GraphQL.
+	if serviceBoundaryScanLanguage(symbol.Language) {
+		// In a GraphQL file the whole body IS the document, so there is no
+		// literal to look inside — requiring one silently dropped every
+		// operation in a standalone .graphql/.gql document. Host languages
+		// still need the literal, because that is where their prose and code
+		// false positives come from.
+		scanned := hostLanguageLiterals(block)
+		if symbol.Language == "GraphQL" {
+			scanned = []hostLanguageLiteral{{Text: block, Tag: "gql"}}
+		}
+		for _, literal := range scanned {
+			// GraphQL query shorthand omits both the keyword and the name:
+			// `{ viewer { id } }` is a query. Only a gql/graphql-tagged
+			// template is read that way, because a bare braced string is far
+			// more often an object or JSON blob than an operation.
+			if graphqlDocumentTag(literal.Tag) {
+				for _, field := range graphqlShorthandRootFields(literal.Text) {
+					add(serviceBoundary{
+						Relation:     "HANDLES_GRAPHQL",
+						Kind:         "graphql",
+						Name:         "query " + field,
+						Confidence:   0.78,
+						Reason:       "GraphQL shorthand operation root field detected in tagged literal",
+						EvidenceKind: "graphql_operation_field",
+					})
+				}
+			}
+			for _, loc := range graphqlOperationRe.FindAllStringSubmatchIndex(literal.Text, -1) {
+				if len(loc) < 6 {
+					continue
+				}
+				// The selection set must follow THIS match, not merely exist
+				// somewhere in the literal. Checking the whole literal meant one
+				// real operation vouched for every other keyword in it, so a
+				// docstring holding both `query ListUsers { users { id } }` and
+				// the words "query the cache" emitted all three.
+				rest := literal.Text[loc[0]:]
+				if at := graphqlOperationSelectionRe.FindStringIndex(rest); at == nil || at[0] != 0 {
+					continue
+				}
+				add(serviceBoundary{
+					Relation:     "HANDLES_GRAPHQL",
+					Kind:         "graphql",
+					Name:         strings.ToLower(literal.Text[loc[2]:loc[3]]) + " " + literal.Text[loc[4]:loc[5]],
+					Confidence:   0.75,
+					Reason:       "GraphQL operation literal detected in symbol body",
+					EvidenceKind: "graphql_operation",
+				})
+			}
+			for _, op := range graphqlOperationRootFieldSelections(literal.Text) {
+				add(serviceBoundary{
+					Relation:     "HANDLES_GRAPHQL",
+					Kind:         "graphql",
+					Name:         op.Root + " " + op.Field,
+					Confidence:   0.78,
+					Reason:       "GraphQL operation root field detected in operation literal",
+					EvidenceKind: "graphql_operation_field",
+				})
+			}
+		}
 	}
 	for _, match := range trpcProcedureRe.FindAllStringSubmatch(block, -1) {
 		add(serviceBoundary{
@@ -678,6 +879,15 @@ func graphqlRootSelectionFields(body string) []string {
 			}
 			name = body[fieldStart:cursor]
 			i = cursor - 1
+		} else {
+			// Step back so the loop's increment lands on the character after
+			// the name. Without this the following byte is skipped, and when
+			// that byte is the `(` of an argument list the depth counter never
+			// rises: `updateUser(id: $id)` was then read at depth 0, where
+			// `id: $id` looks like an alias and yielded a field named `$id`.
+			// The alias branch above already compensates, which is why only
+			// argument-carrying fields were affected.
+			i--
 		}
 		switch name {
 		case "fragment", "on":
@@ -1954,11 +2164,15 @@ func localCollectionVars(block string) map[string]bool {
 
 // symbolFlowParameterNames returns the caller's formal parameter name set for
 // data-flow scanning. It prefers the AST-derived parameter identifiers the
-// parser recorded (JS/TS declarations), which are immune to generic clauses
-// containing parenthesized function types — `run<T extends (x: number) =>
-// void>(input: string)` — that the signature-string parse below misreads as
-// the parameter list. An AST-confirmed empty parameter list is authoritative;
-// only symbols without AST parameter metadata (other languages, synthesized
+// parser recorded — for JS/TS via jsEntityParameterNames, and for every other
+// grammar exposing a parameter list via astParameterNames. Those are immune to
+// what the signature-string parse below misreads: a generic clause containing a
+// parenthesized function type (`run<T extends (x: number) => void>(input:
+// string)`), a type-first parameter whose TYPE it would report as the name
+// (`check(String token)` → `String`), and nested punctuation it would invent
+// parameters out of (a Zig anonymous struct's fields, a stray `}`).
+// An AST-confirmed empty parameter list is authoritative; only symbols without
+// AST parameter metadata (grammars exposing no parameter list, synthesized
 // entities) keep the signature-string fallback.
 func symbolFlowParameterNames(symbol SymbolRecord) map[string]bool {
 	if !symbol.parameterNamesKnown {
@@ -2054,6 +2268,20 @@ func sortedStringSet(seen map[string]struct{}) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// symbolTypeReferences reports the types a callable's signature names, using
+// the parse tree's own delimitation of the parameter list and return type when
+// the parser recorded it, and the signature-string split otherwise. See
+// astSignatureTypeTexts for what the string split gets wrong.
+func symbolTypeReferences(symbol SymbolRecord) map[string][]string {
+	if !symbol.signatureTypesKnown {
+		return signatureTypeReferences(symbol.Language, symbol.Signature)
+	}
+	return map[string][]string{
+		"PARAM_TYPE":   typeNamesFromText(symbol.paramTypeText),
+		"RETURNS_TYPE": typeNamesFromText(symbol.returnTypeText),
+	}
 }
 
 func signatureTypeReferences(language, signature string) map[string][]string {

@@ -53,6 +53,7 @@ var inventoryLanguageExtensions = map[string]languageSpec{
 	".glsl":        {language: "GLSL", inventoryOnly: true},
 	".gml":         {language: "GameMaker Language", inventoryOnly: true},
 	".gnuplot":     {language: "Gnuplot", inventoryOnly: true},
+	".gql":         {language: "GraphQL", inventoryOnly: true},
 	".graphql":     {language: "GraphQL", inventoryOnly: true},
 	".graphqls":    {language: "GraphQL", inventoryOnly: true},
 	".hack":        {language: "Hack", inventoryOnly: true},

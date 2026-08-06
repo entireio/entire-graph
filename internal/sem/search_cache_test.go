@@ -18,10 +18,14 @@ func TestSearchSnapshotCachePreservesPrivateSymbolMetadata(t *testing.T) {
 			sourceEndByte:       43,
 			parameterNames:      []string{"B", "value"},
 			parameterNamesKnown: true,
+			paramTypeText:       "Input, int",
+			returnTypeText:      "Output",
+			signatureTypesKnown: true,
 		},
 		{
 			ID:                  "zero-parameter-symbol",
 			parameterNamesKnown: true,
+			signatureTypesKnown: true,
 		},
 	}}
 	cache := newCachedSearchSnapshot("test-version", "commit", "tree", ProviderSnapshotOptions{Profile: ProfileFull}, snapshot)
@@ -46,7 +50,18 @@ func TestSearchSnapshotCachePreservesPrivateSymbolMetadata(t *testing.T) {
 	if !symbol.parameterNamesKnown {
 		t.Fatal("restored symbol lost known parameter metadata")
 	}
+	// Signature types must survive too: a cache hit that lost them would fall
+	// back to the signature-string split and emit different type relations than
+	// the cold run that produced the cache.
+	if symbol.paramTypeText != "Input, int" || symbol.returnTypeText != "Output" || !symbol.signatureTypesKnown {
+		t.Fatalf("restored signature types = params %q, returns %q, known %t",
+			symbol.paramTypeText, symbol.returnTypeText, symbol.signatureTypesKnown)
+	}
 	zeroParameterSymbol := restored.Snapshot.Symbols[1]
+	if !zeroParameterSymbol.signatureTypesKnown || zeroParameterSymbol.returnTypeText != "" {
+		t.Fatalf("restored no-return-type metadata = known %t, returns %q",
+			zeroParameterSymbol.signatureTypesKnown, zeroParameterSymbol.returnTypeText)
+	}
 	if !zeroParameterSymbol.parameterNamesKnown || len(zeroParameterSymbol.parameterNames) != 0 {
 		t.Fatalf("restored zero-parameter metadata = known %t, names %#v", zeroParameterSymbol.parameterNamesKnown, zeroParameterSymbol.parameterNames)
 	}
@@ -863,6 +878,53 @@ func TestPreindexProviderSnapshotRejectsWorktreeAndMissingCache(t *testing.T) {
 	}
 }
 
+// TestPreindexForceRebuildsDespiteValidCache pins the --force contract: a forced
+// preindex rebuilds and overwrites the entry even when a valid one exists for the
+// same tree, and never reports a cache hit — while leaving the entry refreshed so
+// a subsequent ordinary run hits again.
+func TestPreindexForceRebuildsDespiteValidCache(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "a.go", "package a\n\nfunc A() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cacheDir := t.TempDir()
+	opts := func() ProviderSnapshotOptions { return ProviderSnapshotOptions{Profile: ProfileFast} }
+
+	if _, hit, err := PreindexProviderSnapshot(t.Context(), repo, "v", opts(), cacheDir); err != nil {
+		t.Fatal(err)
+	} else if hit {
+		t.Fatal("first preindex unexpectedly hit cache")
+	}
+	if _, hit, err := PreindexProviderSnapshot(t.Context(), repo, "v", opts(), cacheDir); err != nil {
+		t.Fatal(err)
+	} else if !hit {
+		t.Fatal("second preindex (no force) should hit the warmed cache")
+	}
+
+	forced := opts()
+	forced.ForceRebuild = true
+	snapshot, hit, err := PreindexProviderSnapshot(t.Context(), repo, "v", forced, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hit {
+		t.Fatal("forced preindex must not report a cache hit")
+	}
+	if snapshot.Header.Stats.Symbols == 0 {
+		t.Fatal("forced rebuild produced an empty snapshot")
+	}
+
+	if _, hit, err := PreindexProviderSnapshot(t.Context(), repo, "v", opts(), cacheDir); err != nil {
+		t.Fatal(err)
+	} else if !hit {
+		t.Fatal("ordinary preindex after --force should hit the refreshed entry")
+	}
+}
+
 func TestPreindexProviderSnapshotSurfacesPersistenceFailure(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
@@ -1161,5 +1223,41 @@ func TestOnlyFilesDerivationReStampsCommitAfterSameTreeCommit(t *testing.T) {
 		t.Fatalf("derived selective snapshot commit was not re-stamped to serving HEAD: got %s, want %s",
 			selective.Header.Commit, newHead,
 		)
+	}
+}
+
+// TestSearchSnapshotKeyIncludesGraphIgnore pins that the implicitly-loaded
+// .graphignore keys the cache entry, exactly as an explicit --ignore-file does.
+// Without it, editing .graphignore against an unchanged tree hit the previous
+// entry and the new rules silently did nothing — verified before the fix by an
+// index run that reported a cache hit and the full file count while
+// .graphignore excluded one of the files.
+func TestSearchSnapshotKeyIncludesGraphIgnore(t *testing.T) {
+	repo := t.TempDir()
+	options := ProviderSnapshotOptions{Profile: ProfileFull}
+
+	absent, err := searchSnapshotKey(repo, "repo", "v", "tree", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, graphIgnoreFileName), []byte("vendor/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	present, err := searchSnapshotKey(repo, "repo", "v", "tree", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if absent == present {
+		t.Fatal("adding .graphignore must change the cache key")
+	}
+	if err := os.WriteFile(filepath.Join(repo, graphIgnoreFileName), []byte("dist/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	edited, err := searchSnapshotKey(repo, "repo", "v", "tree", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edited == present {
+		t.Fatal("editing .graphignore must change the cache key")
 	}
 }
