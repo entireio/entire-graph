@@ -482,6 +482,51 @@ func cachedContentReader(read contentReader) contentReader {
 var searchWordPattern = regexp.MustCompile(`[[:alnum:]_./:+#-]+`)
 var sparseSearchWordPattern = regexp.MustCompile(`[[:alpha:]][[:alnum:]_]*|[[:digit:]]+`)
 
+// searchQueryURLPattern matches an absolute URL written inside a query. The run stops at
+// whitespace and at the delimiters that end a URL in prose and Markdown — `<>"'` + backtick,
+// and the closing `)]}` of a `[text](url)` link — so a linked URL does not swallow the
+// sentence punctuation that follows it.
+var searchQueryURLPattern = regexp.MustCompile("(?i)[a-z][a-z0-9+.-]*://[^\\s<>\"'`)\\]}]+")
+
+// stripSearchQueryURLState removes the query string and fragment of every URL in a query,
+// leaving the scheme, host and path in place.
+//
+// Those two components are the web application's own state, never a name in this repository,
+// and both mint tokens that outrank the words the caller actually wrote:
+//
+//   - `?file=/index.js` (the codesandbox/StackBlitz "open this file" parameter) tokenizes to
+//     the standalone path token `index.js`, which is identifier-shaped, so it earns the
+//     code-like weight 2.5 and then a +6.25 pathSearchScore on EVERY `index.js` in the tree.
+//     Measured on preactjs/preact: `hooks/src/index.js` took rank 1 with signal `path` and
+//     `karma.conf.js` rank 4, on the strength of a path that exists on codesandbox.io.
+//   - a playground permalink encodes the whole reproduction program in its fragment
+//     (`https://play.vuejs.org/#eNp9UsFOAjEQ...`). `#` is inside searchWordPattern's class and
+//     base64 uses `+` and `/`, so the fragment is one enormous token whose camel-hump and
+//     separator variants become dozens of terms — each mixed-case, so each reads as code-like
+//     at weight 1.1. Measured on vuejs/core: 40 of 48 terms were base64 debris, and because
+//     the term list is sorted by weight and truncated at maxSearchQueryTerms, that debris
+//     EVICTED every plain prose word of the issue (`array`, `item`, `object`, `converted`,
+//     `incorrectly`) from the query entirely.
+//
+// The path component is deliberately kept: a "the bug is here" link into the repository's own
+// source (`https://github.com/o/r/blob/main/src/options.ts`) is the one part of a URL that does
+// name a file, and dropping it would discard real evidence. A `#L42` line anchor or a `#issues`
+// heading anchor is not a name in the tree, so removing the fragment costs nothing there.
+func stripSearchQueryURLState(query string) string {
+	if !strings.Contains(query, "://") {
+		return query
+	}
+	return searchQueryURLPattern.ReplaceAllStringFunc(query, func(url string) string {
+		cut := strings.IndexAny(url, "?#")
+		if cut < 0 {
+			return url
+		}
+		// A space, not "": the stripped tail must still end the URL token so the word that
+		// follows it in the text cannot fuse onto the host/path.
+		return url[:cut] + " "
+	})
+}
+
 var searchStopWords = map[string]bool{
 	"a": true, "an": true, "and": true, "are": true, "as": true,
 	"at": true, "be": true, "but": true, "by": true, "can": true, "change": true,
@@ -3879,6 +3924,9 @@ func regionsAroundHits(hits []int, lower, upper, context, maxLines int) [][2]int
 }
 
 func buildSearchQuery(query string) searchQuery {
+	// Strip before anything reads the text, so terms, words and rawLower are all derived from
+	// the same URL-state-free query. SearchResponse.Query still echoes the caller's original.
+	query = stripSearchQueryURLState(query)
 	weights := map[string]float64{}
 	add := func(term string, weight float64) {
 		if len(term) < 2 || searchStopWords[term] {
@@ -4075,6 +4123,10 @@ func (q searchQuery) withCorpusPresence(documentFrequency map[string]int) search
 }
 
 func buildSparseSearchQuery(query string) searchQuery {
+	// Same strip as buildSearchQuery: the sparse half of hybrid search must not be scored
+	// against a term set the dense half never sees, and its own cap
+	// (maxSparseSearchQueryTerms) is filled first-come, so URL debris starves it too.
+	query = stripSearchQueryURLState(query)
 	terms := make([]string, 0, maxSparseSearchQueryTerms)
 	termSet := make(map[string]bool, maxSparseSearchQueryTerms)
 	weights := make(map[string]float64, maxSparseSearchQueryTerms)
