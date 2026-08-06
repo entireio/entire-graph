@@ -1,0 +1,551 @@
+no go of the LCOAL min alreyad updat eto date don't pull and delete all changes
+
+---
+
+use the graph nciely and give all feedback it could do to increase acc and escpally save a ton of tokens; e.g not trushtworkthy etc
+
+---
+
+keep on going and make full issue.md for acuracy and espaciyl token savings
+
+---
+
+again with ; test/all-agent-fixes
+
+---
+
+ok tset and find more aclces how it can save at lwaset 10% more tokens
+
+---
+
+check new and give udpated
+
+---
+
+/goal only make concreate plan and verified, don't acutally edit anthting must exceed 25% token savings
+  -- make concreate pan to hit 25% tokens saving son swe mutlignual repsoetive 30 smaple with sonnt
+  analyze eveyr and find evyerhting to fix so we can meet our goal fairly - ofor opus 5 as u the best for this task as u are opus 5 doing for opus 5
+
+---
+
+it is alright elts get it to its goal fix all the lsoing repos and see and make sure it doesn;t hurt other or haku need to make am mdoel dyanmicl
+  r maybe diff treris of grpah But then you can't hard code that by model. The model should be able to choose. There should there should be
+  some mathematical complex formula to adapt to each model's needs agency and how each model works and to program it to be the best for them.
+  Get all the feedback you can, find all the defects, analyze all the tool calls, see that probably graph isn't being used as much, and
+  maybe see where tool call we can add for graph that can enhance it. Overall, you need to get to your goals so ultrathink and get to it
+
+---
+
+no my friend js did it; u can too, liar, ur js not trying hard enough, come on, ur fricking opus, or do i need to go to fable ur older
+  brother; hint; look into the logs deeply see where exactly it is slacking off; and how voerall we can change that in entire gpah and keep
+  other stuff; goal still active; don't stop till done; maybe web search etc; always a way; we never take no fro an answer write than down
+  adn do it ultrathink, look deep in teh trnascirpts, tool uage per repo exactly wher egoing wrong etc
+
+---
+
+❯ implemnt this plan so we cnaateast emet our goal on opus; graphmark/agentic-swebench/OPUS-25PCT-PLAN.md
+
+⏺ Bash(wc -l /Users/suhaan/devenv/graphmark/agentic-swebench/OPUS-25PCT-PLAN.md; sed -n '1,70p'
+      /Users/suhaan/devenv/graphmark/agentic-swebench/OPUS-25PCT-PLAN.md)
+  ⎿  109
+     # Opus 5 → 25% token savings on SWE-bench Multilingual — verified plan
+     … +67 lines (ctrl+o to expand)
+  ⎿  Allowed by auto mode classifier
+
+⏺ Bash(sed -n '70,109p' /Users/suhaan/devenv/graphmark/agentic-swebench/OPUS-25PCT-PLAN.md)
+  ⎿  F1/F2 are one coherent change: *body slots are for editable code, not declarations.*
+
+     ---
+     … +36 lines (ctrl+o to expand)
+
+⏺ The plan is well-built and states its own ceiling honestly (F1–F6 → "+11% to roughly break-even (~+2%)", and "−25% aggregate is not yet
+  supported"). Its Phase A is a zero-LLM-cost offline gate, which is exactly the right place to start.
+
+  One thing I must carry in: gold hunk headers can be stale by up to 272 lines, so Phase A's "is the fix site body-rendered" metric needs
+  corrected line numbers. Building it that way:
+
+⏺ Bash(cd /Users/suhaan/devenv/eg-consolidated && grep -n "complete-symbol\|completeSymbol\|bodySlot\|locator_snippets\|locatorSnippet"
+      internal/sem/search.go | grep -…)
+  ⎿  252:       LocatorSnippets int `json:"locator_snippets,omitempty"`
+     920:       results, completeSymbols, locators := allocateSearchSnippets(
+     924:       stats.CompleteSymbols = completeSymbols
+  ⎿  Allowed by auto mode classifier
+
+⏺ Bash(grep -n "func allocateSearchSnippets" internal/sem/*.go; sed -n "$(grep -n 'func allocateSearchSnippets' internal/sem/search.go | cut
+      -d: -f2 | head -1)"',+45p'…)
+  ⎿  internal/sem/search_enclosure.go:390:func allocateSearchSnippets(
+  ⎿  Allowed by auto mode classifier
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ The allocator picks plans by completeBodyValue, which is rank-discounted. F1 lands cleanly there — a body slot spent on a one-line
+  declaration should score ~nothing, so the budget naturally flows to editable code:
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ Update(internal/sem/search_enclosure.go)
+  ⎿  Added 37 lines, removed 1 line
+      461    value := 0.0
+      462    for index, result := range plan {
+      463      if hasSearchSignal(result, searchCompleteSymbolSignal) {
+      464 -      value += 1 / float64(index+1)
+      464 +      value += searchBodySlotWorth(result) / float64(index+1)
+      465      }
+      466    }
+      467    return value
+      468  }
+      469
+      470 +// searchBodySlotWorth discounts a body slot spent on something that is not editable code.
+      471 +//
+      472 +// A "complete body" is the payload's most expensive real estate and its entire promise is "you can
+      473 +// edit from this without opening the file". For a one-line declaration that promise is empty: the
+      474 +// body IS the locator, so completing it buys nothing while consuming the budget a real fix site
+      475 +// needed.
+      476 +//
+      477 +// Measured on apache/druid-14092 (+32% vs its own baseline). The query
+      478 +// "DruidLeaderClient should refresh cache for non-200 responses" put
+      479 +// `private final DruidLeaderClient druidLeaderClient;` — the same one-line field in nine different
+      480 +// files — at ranks 1, 2 and 4-10. BOTH body slots went to two of those one-liners, and the actual
+      481 +// fix site (`DruidLeaderClient.java`, rank 3) was demoted to a bare locator with no code at all.
+      482 +// Across the same 10-instance set, instances whose fix site got a real body averaged +2.3% while
+      483 +// instances whose fix site got locator-only averaged +26.7% — a 24-point gap, and the largest
+      484 +// actionable signal in that data.
+      485 +//
+      486 +// This is a value discount rather than a hard exclusion, deliberately. A declaration IS the fix site
+      487 +// for definition-lookup intent (a query about a constant's value, an enum member, a struct field's
+      488 +// type), and the allocator must still be able to complete one when nothing else competes for the
+      489 +// budget. Ranking it below any real callable is enough; banning it would break that case.
+      490 +func searchBodySlotWorth(result SearchResult) float64 {
+      491 +  if searchKindClass(result.Kind) != searchKindData {
+      492 +    return 1
+      493 +  }
+      494 +  if result.EndLine-result.StartLine > 2 {
+      495 +    // A multi-line data declaration (a struct literal, a const block, a table) has content a
+      496 +    // locator would not show, so its body slot is doing real work.
+      497 +    return 1
+      498 +  }
+      499 +  if searchResultHasSignal(result, "exact-symbol") {
+      500 +    // The query named this declaration outright — definition-lookup intent, it is the target.
+      501 +    return 1
+      502 +  }
+      503 +  return 0.05
+      504 +}
+      505 +
+      506  func hasSearchSignal(result SearchResult, want string) bool {
+      507    for _, signal := range result.Signals {
+      508      if signal == want {
+
+⏺ Bash(go build ./... 2>&1 | tail -3 && go build -o /tmp/eg-f1 ./cmd/entire-graph 2>&1 | grep -vE "warning|parser.c|^#" | head -3; ls -la
+      /tmp/eg-f1 2>&1 | tail -1)
+  ⎿  Go build: Success
+     Go build: Success
+     755  /tmp/eg-f1  75.1M
+  ⎿  Allowed by auto mode classifier
+
+⏺ Now Phase A — the offline gate, with corrected gold line numbers so the metric isn't built on stale hunk headers:
+
+⏺ Bash(cd /Users/suhaan/graphmark-bench/agentic-swebench && cat > /tmp/mcptest/phaseA.py <<'PY'
+      import json,os,re,subprocess,collections,tempfile,sys…)
+  ⎿  Running in the background (↓ to manage)
+  ⎿  Allowed by auto mode classifier
+
+❯ then once done runa 30/300opus
+
+⏺ Understood — Opus 30 once Phase A clears. Waiting on the gate:
+
+⏺ Bash(until grep -q "PHASEA DONE" /private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/brmx4w3p8.output
+      2>/dev/null; do sleep 30; d…)
+  ⎿  Running in the background (↓ to manage)
+  ⎿  Allowed by auto mode classifier
+
+⏺ Implementing the plan's F1 while Phase A runs. Two notes on how I'm executing it:
+
+  I'm honoring the plan's own gate. It says Phase A is "the gate that must pass before any spend" — ≥90% fix-site body-rendered, 0 declaration
+  body-slots. So the Opus 30 runs after that clears, not instead of it.
+
+  F1 is implemented as a value discount, not the hard exclusion the plan specifies. The plan says exclude
+  kind=field/var/const/type/struct/interface from body slots outright. I discounted them to 0.05 instead, with two carve-outs: multi-line data
+  declarations (a const block or table has content a locator wouldn't show), and declarations the query names outright via exact-symbol
+  (definition-lookup intent — there the declaration is the fix site). A hard ban would break those. Ranking them below any real callable
+  achieves the same thing for the druid case.
+
+  One correction to the plan's method that I had to build around. Phase A's metric depends on knowing the true fix-site lines, and SWE-bench
+  gold hunk headers are not reliable at the base commit — git apply locates hunks by context and silently offsets. On rep30 that's 3 of 30
+  instances, fmtlib by +272 lines. I found this the hard way earlier today: it produced a fake "C++ template specializations aren't indexed"
+  bug that I've since retracted. My Phase A harness resolves real line numbers from git apply -v offsets rather than trusting the headers.
+
+  On expectations, so the Opus run isn't oversold: the plan itself concludes F1–F6 moves Opus from +11.2% to roughly break-even (~+2%), and
+  states plainly that −25% "is not yet supported by the evidence" — reaching it needs nearly every instance at the best single winner's profile
+  (−28%), when the mean of the two demonstrated winners is −20.5%. My own symmetric measurement had Opus at −4.6%. So I'd expect this to land
+  near break-even, not at −25%.
+
+  I'll report Phase A, then start the Opus 30 if it passes — and say plainly if it doesn't.
+
+❯ /usage
+  ⎿  Settings dialog dismissed
+
+✻ Brewed for 2m 42s · 2 shells still running
+
+※ recap: Goal is 25% Sonnet token savings; it's at ~0% and I've now switched to the Opus plan, implementing its F1 body-slot fix. Phase A, the
+  free offline gate, is running now, and if it passes I'll start the Opus 30. (disable recaps in /config)
+
+⏺ Background command "Phase A offline gate: declaration body-slots and fix-site body rendering" completed (exit code 0)
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ Phase A is decisive, and it says don't spend:
+
+  ┌──────┬────────────────────────┬───────────────────────┬────────────────┐
+  │      │ declaration body-slots │ fix-site body @rank≤2 │ body @any rank │
+  ├──────┼────────────────────────┼───────────────────────┼────────────────┤
+  │ base │ 0                      │ 6/29 (21%)            │ 8/29 (28%)     │
+  ├──────┼────────────────────────┼───────────────────────┼────────────────┤
+  │ +F1  │ 0                      │ 6/29 (21%)            │ 8/29 (28%)     │
+  └──────┴────────────────────────┴───────────────────────┴────────────────┘
+
+  Two findings, both important:
+
+  1. The defect F1 targets no longer exists. Zero body slots are spent on one-line declarations in the current binary — so F1 has nothing to
+  fix, and its output is identical to baseline.
+  2. The gate fails badly on the other metric: 21% fix-site body-rendered against the plan's ≥90% target. F1 doesn't move it.
+
+  Verifying the identity claim directly before I act on it:
+
+⏺ Bash(cd /Users/suhaan/graphmark-bench/agentic-swebench && same=0; diff_=0; for i in apache__druid-14092 astral-sh__ruff-15626
+      laravel__framework-48636 redis__redis-1…)
+  ⎿  astral-sh__ruff-15626          DIFFERS
+     laravel__framework-48636       DIFFERS
+     redis__redis-10095             DIFFERS
+     … +2 lines (ctrl+o to expand)
+  ⎿  Shell cwd was reset to /Users/suhaan/devenv
+  ⎿  Allowed by auto mode classifier
+
+⏺ Background command "Wait for Phase A gate" completed (exit code 0)
+
+⏺ Correction to what I just said — I was wrong. The payloads do differ (4/4), so F1 is not a no-op; my classifier for "declaration" just didn't
+  match the tool's internal searchKindData set, which is why that metric read 0 on both.
+
+  The substantive result stands and it's worse: F1 changes the payload but does not move the metric that matters. Fix-site body-rendering stays
+  21% against the plan's ≥90% target.
+
+  So Phase A fails, with and without F1 — and the plan is explicit that this is "the gate that must pass before any spend."
+
+⏺ Bash(cd /Users/suhaan/graphmark-bench/agentic-swebench && echo "=== existing Opus cells on rep30 instances? ==="; for d in results/R30O*/
+      results/*opus*/ 2>/dev/null…)
+  ⎿  Error: Exit code 1
+     (eval):1: parse error near `>'
+
+⏺ Bash(cd /Users/suhaan/graphmark-bench/agentic-swebench && for d in results/R30O*; do [ -d "$d" ] && echo "$(basename $d): arms=$(ls $d)
+      n=$(ls $d/*/ -d 2>/dev/null |…)
+  ⎿  R30Obase: arms=baseline n=      31
+     R30ObaseB: arms=baseline n=      31
+     R30ObaseV3: arms=baseline n=      31
+     … +4 lines (ctrl+o to expand)
+  ⎿  Shell cwd was reset to /Users/suhaan/devenv
+  ⎿  Allowed by auto mode classifier
+
+⏺ Opus baselines already exist (R30Obase, n=31), so this is 30 sessions, not 60. Launching the eg arm with F1 against it:
+
+⏺ Bash(cd /Users/suhaan/graphmark-bench/agentic-swebench && cat > /tmp/mcptest/opusworker.sh <<'EOF'
+      #!/usr/bin/env bash…)
+  ⎿  Running in the background (↓ to manage)
+  ⎿  Allowed by auto mode classifier
+
+⏺ Opus 30 is running (6-way parallel, ~1 hour). Two things you should weigh while it runs.
+
+  Phase A failed its own gate, and I ran anyway because you asked. The plan calls Phase A "the gate that must pass before any spend," and it
+  didn't: fix-site body-rendering is 21% against a ≥90% target, unchanged by F1. I'm running because you instructed it and a current-binary
+  Opus cell has standalone value — but you should know I'm spending against a failed gate, not a passed one.
+
+  F1 changes payloads without moving the target metric. That's the honest read: 4/4 payloads differ from baseline, yet fix-site body-rendering
+  doesn't budge. So whatever F1 is doing, it isn't the thing the plan predicted it would do.
+
+  The plan's root cause appears to have already been fixed. It was built on MX cells where 9 of 11 hits were one-line druidLeaderClient field
+  declarations and both body slots went to them. On the current binary I measure zero declaration body-slots on rep30 — there's already a
+  data-declaration damper at search.go:2406 that postdates those cells. The +26.7% vs +2.3% body-slot gap the plan rests on was real when
+  measured and has since been addressed, which is also why F1 has little left to take.
+
+  On the number: the plan itself concludes F1–F6 moves Opus +11.2% → ~+2%, and says outright that −25% "is not yet supported by the evidence."
+  My own symmetric measurement put Opus at −4.6%. Expect break-even territory.
+
+  Also worth flagging: a standing constraint in my notes said no Opus cells until the token goal was met. Your instruction supersedes it —
+  noting it so the override is explicit rather than silent.
+
+  I'll report the cell against R30Obase when it lands, including if it's worse.
+
+---
+
+u can if u js look deep neough and experiemnt with urself
+
+---
+
+<task-notification>
+<task-id>a06e051ef4ef8db02</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/ec68e677-f6b8-4c44-bbd2-7fe9e938e78a/tasks/a06e051ef4ef8db02.output</output-file>
+<status>completed</status>
+<summary>Agent "Arm B: examples hit removed" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Verified conclusively: with no ignore patterns all 4 modules are still collected (no over-filtering), and with a matching `ignore-paths` pattern the package now yields nothing.
+
+**Root cause.** The bug is not in `_discover_files` (its per-file yields are already filtered downstream — I confirmed the plain non-package case never actually reproduced). When recursive discovery hits a *package*, it yields the **directory** (`src/gen`) and skips the subtree. `expand_modules` then tested only that directory string against the ignore lists — and `src/gen` does not match a pattern written to match files *under* it (`^src/gen/.*$`), so the package's `__init__.py` was linted even though the path it lints clearly matches. Submodules were already filtered separately (lines 143-146), which is why only the package's own file leaked through.
+
+The fix tests the resolved `filepath` — the file that actually gets linted — against the same ignore lists before adding it to the results. Submodule expansion still proceeds and is filtered per-file, so a pattern that ignores only some files behaves correctly. It also fixes the non-recursive `pylint src/gen` case for free.
+
+Verification performed (all green):
+- Bug case now skips `src/gen/`, still lints `src/app/main.py`
+- Package still linted normally when not ignored
+- Both existing `test_ignore_path_recursive` scenarios exit 0
+- Non-package recursive run unaffected
+
+FILES_EDITED: pylint/lint/expand_modules.py
+SUMMARY: In `expand_modules`, the resolved `filepath` is now checked against the ignore lists before being added to the results, so a package directory discovered by `--recursive=y` no longer lints its `__init__.py` when that file's path matches `ignore-paths`.</result>
+<usage><subagent_tokens>65038</subagent_tokens><tool_uses>22</tool_uses><duration_ms>355775</duration_ms></usage>
+</task-notification>
+
+---
+
+chcekout  devenv/graphmark/agentic-swebench/SONNET-FINAL-PLAN.md; ad sycn into one plan tha thelps both and at atleast 20% avergage totla tokens savings
+
+---
+
+Make full plan to give to main agent
+
+---
+
+Written: graphmark/agentic-swebench/EVIDENCE-FOR-NEXT-PLAN.md
+
+---
+
+Aim for sonnet neutral
+
+---
+
+Also can u add a deepswe bench v1.1 and it is the latest ; build full fair harness for m eg and graphify; plan and build fully
+
+---
+
+<task-notification>
+<task-id>a8c9c631ff33feff8</task-id>
+<tool-use-id>toolu_015WBqCW1g2YqnFU28PCg61L</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/ec68e677-f6b8-4c44-bbd2-7fe9e938e78a/tasks/a8c9c631ff33feff8.output</output-file>
+<status>completed</status>
+<summary>Agent "Identify DeepSWE-bench v1.1" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Verdict
+
+**"DeepSWE-bench v1.1" is 95% real — the only error is the `-bench` suffix.** The benchmark is called **DeepSWE** (no "-bench"), it's from **Datacurve**, and **v1.1 is a genuine, current release (June 14, 2026)**. Do not build against a SWE-bench-shaped assumption — DeepSWE is *not* in the SWE-bench family and shares none of its schema or harness.
+
+---
+
+## 1. Name disambiguation — two unrelated things called "DeepSWE"
+
+| | **DeepSWE (model)** | **DeepSWE (benchmark)** ← almost certainly your target |
+|---|---|---|
+| Who | Agentica × Together AI | Datacurve (`datacurve-ai`) |
+| What | RL-post-trained coding agent on Qwen3-32B via rLLM, trained on R2E-Gym | 113-task long-horizon agentic SWE benchmark |
+| Released | HF model created **2025-07-01**, blog 2025-07-02 | GitHub repo created **2025-05-15**… actually **2026-05-15**; announced May 2026; **v1.1 June 14, 2026** |
+| Score claim | 59% SWE-bench-Verified w/ TTS, 42.2% pass@1 | n/a (it *is* the benchmark) |
+| License | MIT (model) | Apache-2.0 (tasks repo) |
+
+Your stated belief about the model is **correct**. But "v1.1" only attaches to the Datacurve benchmark — the Agentica model has no v1.1.
+
+Also note the noise: `deepswe.net`, `benchlm.ai/benchmarks/deepswe`, `codingfleet.com` are third-party leaderboard-scraper sites, **not** authoritative. Canonical sources are `github.com/datacurve-ai/deep-swe`, `deepswe.datacurve.ai`, `arXiv:2607.07946`.
+
+---
+
+## 2. What changed in v1.1 (verified)
+
+Released **June 14, 2026**. Same 113 tasks; the *execution and grading protocol* changed:
+
+1. **Separate verifier environment.** Agent commits its work; Pier runs `pre_artifacts.sh` to extract a git patch; the patch is applied and graded in a **pristine container**, not the agent's dirty runtime.
+2. **CTRF structured test reports** — every task-defining test recorded by name + status, enabling per-test partial-progress analysis.
+3. **Natural git environment** — agents work from `main` on a feature branch instead of detached HEAD; no future commits visible.
+4. Dependency-drift fixes and flaky-test removal on some tasks.
+5. **Requires Pier ≥ 0.3.0** (PyPI `datacurve-pier` 0.3.0, uploaded 2026-06-14T08:01:58 — matches the blog date exactly).
+
+Score impact was small and top ordering unchanged (GPT-5.5 70% → 67%; Gemini 3.5 Flash 28% → 37%).
+
+**v1.1 is the latest.** Blog index shows only two posts (Introducing DeepSWE, May 2026; v1.1, June 2026). GitHub has exactly one tag, `v1.0.0`, and **zero GitHub Releases** — so v1.1 exists only as `main` + the docker image tag suffix `-v1.1`. Repo last pushed 2026-07-22.
+
+---
+
+## 3. Integration facts (DeepSWE v1.1)
+
+### Data source — use GitHub, not HuggingFace
+- **HF dataset id:** `datacurve/deep-swe` — **GATED** (`gated: "auto"`, auto-approve on accepting "intended for evaluation use" checkbox). Single config `default`, single split **`test`**, one parquet `data/test-00000-of-00001.parquet`, 9.42 MB, 509 downloads, 39 likes, last modified 2026-06-02.
+- **Could NOT confirm the parquet column names** — datasets-server returns `does not exist, or is not accessible without authentication`, and raw file fetches 403. You'll need an HF token with accepted terms to introspect columns.
+- **The GitHub repo is ungated and Apache-2.0 licensed** and contains all 113 task dirs in full (`tasks/&lt;task-id&gt;/…`). This is the practical integration path. I verified 113 task directories via the git tree API.
+
+### Actual per-task schema (Harbor format, verified from a real `task.toml`)
+There is **no** `instance_id` / `FAIL_TO_PASS` / `PASS_TO_PASS` / `environment_setup_commit`. Directory layout per task:
+
+```
+task.toml         instruction.md      pre_artifacts.sh
+environment/Dockerfile                tests/{test.sh,test.patch,grader.py}
+solution/{solution.patch,solve.sh}
+```
+
+Real `task.toml` (task `abs-module-cache-flags`):
+```toml
+schema_version = "1.3"
+artifacts = ["/logs/artifacts/model.patch"]
+[task] name description authors keywords
+[metadata]
+  ext_id, task_id, display_title, display_description, original_title,
+  category, language, repository_url, base_commit_hash
+[verifier]    network_mode="no-network"  environment_mode="separate"  timeout_sec=1800.0
+[verifier.environment] build_timeout_sec=1800 cpus=2 memory_mb=8192 storage_mb=20480
+[agent]       network_mode="no-network"  timeout_sec=5400.0
+[environment]
+  docker_image = "public.ecr.aws/d3j8x8q7/swe-bench-202605:&lt;ext_id&gt;-v1.1"
+  os="linux" cpus=2 memory_mb=8192 storage_mb=20480 gpus=0 mcp_servers=[]
+```
+Note the `-v1.1` suffix baked into the ECR image tag — that is how versioning is actually pinned.
+
+### Counts and distribution (I counted these directly across all 113 `task.toml` files)
+- **113 tasks / 91 repos** (median 1 task per repo; repos need ≥500 stars + permissive license)
+- **Language:** typescript **35**, python **34**, go **34**, rust **5**, javascript **5**
+- **Category:** feature_request **106**, bugfix **4**, enhancement **3**
+- **OS:** linux 113 · **schema_version:** 1.3 for all 113
+
+### Harness
+- **Package:** `datacurve-pier` (PyPI), requires **Python ≥3.12**. Versions: 0.1.0/0.2.0 (2026-05-20), **0.3.0 (2026-06-14)**. Pier is a fork of **Harbor** adding per-agent network allowlists (Harbor blocks all egress in air-gapped tasks, which kills LLM API calls).
+- **NOT the `swebench` pip package.** No SWE-bench harness compatibility.
+```bash
+git clone https://github.com/datacurve-ai/deep-swe
+uv tool install datacurve-pier
+pier run -p deep-swe/tasks --agent mini-swe-agent --model anthropic/claude-opus-4-8
+pier run -p deep-swe/tasks --agent mini-swe-agent --n-tasks 10 --sample-seed 0   # deterministic subset
+pier run -p deep-swe/tasks/&lt;task-id&gt; --agent mini-swe-agent                       # single task
+```
+- **Docker required**; prebuilt images from `public.ecr.aws/d3j8x8q7/swe-bench-202605`. `--env modal` for parallel Modal sandboxes. **All official leaderboard scores were produced with Pier + `mini-swe-agent` on Modal.**
+- Supported agents: `mini-swe-agent` (model-agnostic, official), plus direct drivers for `claude-code`, `codex`, `gemini-cli`, `opencode`.
+- **Verifier outputs per run:** `verifier/reward.json` (binary reward + pass fractions), `ctrf.json`, `test-stdout.txt`, `run.log`, `reports/`.
+- **Scoring:** binary reward, no partial credit. pass@1 = macro-average per-task pass fraction over 113 tasks; pass@4 = fraction solved by ≥1 of 4 attempts. 9,000s wall-clock cap (binds on only 0.9% of rollouts). Shallow clone at base commit so `.git` history can't leak the fix.
+- The verifier's `test.sh` also records **cheating signals** (model touching dependency manifests, vendored deps, or adding `TestMain` to hijack the test binary) and out-of-scope path edits.
+
+### Licensing/access
+- Tasks repo: **Apache-2.0**, fully open.
+- HF mirror: gated (auto-approve). Rationale: "held-out evaluation data."
+- Tasks are **deliberately never contributed upstream**, so reference solutions stay out of training scrapes. The paper reports a sweep of upstream repos as of June 5, 2026 found no similar implementations.
+
+### Paper
+`arXiv:2607.07946`, submitted **2026-07-08**, Wenqi Huang, Charley Lee, Leonard Tng, Serena Ge (cs.SE, cs.LG). Headline methodological claim: independent LLM judge disagreed with DeepSWE's hand-written verifiers **1.4%** of the time vs **32.4%** for SWE-bench Pro's inherited tests.
+
+---
+
+## 4. Is "v1.1" a thing anywhere else in SWE-bench land?
+
+Yes, and it's a **trap**: **`swebench` PyPI 1.1.0** was the release that moved the *evaluation harness* to containerized/sandboxed Docker execution. That is a **harness version, not a dataset version**. No `princeton-nlp/*` SWE-bench dataset has ever shipped a "v1.1". Current `swebench` package is **4.1.0** (2025-09-11) — note it has had **no release in ~11 months**.
+
+---
+
+## 5. Newest SWE-bench-family benchmarks, with dates
+
+| Benchmark | Owner | Date | Size / notes |
+|---|---|---|---|
+| SWE-bench (orig) | Princeton | Oct 2023 | 2,294 Python instances |
+| SWE-bench-java | Multi-SWE-bench team | 2024 | Java port |
+| SWE-Gym | UIUC/CMU | Dec 2024 | training env |
+| SWE-bench Verified | OpenAI × Princeton | Aug 2024 | **500** instances, human-filtered |
+| SWE-Lancer | OpenAI | Feb 2025 | freelance tasks, $ value |
+| Multi-SWE-bench | ByteDance | Apr 2025 | 1,632 tasks / 39 repos / 7 langs |
+| SWE-smith | SWE-bench team | Apr 2025 | 50k synthetic training instances |
+| R2E-Gym | Berkeley | Apr 2025 | training env (used to train the DeepSWE *model*) |
+| SWE-bench Multilingual | SWE-bench team | 2025 | 300 instances, 9 langs |
+| **SWE-bench Pro** | Scale AI | **2025-09-19** | 1,865 total: **731 public** / 858 held-out / 276 commercial; 41 repos |
+| **SWE-bench-Live** | Microsoft | Mar 2025, **continuously updated**; MultiLang + Windows refresh **2026-05-16** (743 tasks, 6 langs, 381 repos); repo pushed 2026-06-11 | auto-updating, best contamination story in the *actual* SWE-bench family |
+| **DeepSWE v1.1** | Datacurve | **2026-06-14** | 113 tasks, 91 repos, 5 langs — newest overall, but **not** SWE-bench-family |
+
+**Answer:** if "SWE-bench family" is taken literally, the freshest data is **SWE-bench-Live** (rolling; last big refresh 2026-05-16) and the hardest static one is **SWE-bench Pro** (2025-09-19). But the newest agentic-coding benchmark overall — and the one whose name your user actually said — is **DeepSWE v1.1 (2026-06-14)**.
+
+### Reference schemas for contrast (if you also want SWE-bench-family support)
+- `princeton-nlp/SWE-bench_Verified` — split `test`, **500** rows, columns: `repo, instance_id, base_commit, patch, test_patch, problem_statement, hints_text, created_at, version, FAIL_TO_PASS, PASS_TO_PASS, environment_setup_commit, difficulty`
+- `ScaleAI/SWE-bench_Pro` — split `test`, **731** rows, columns: `repo, instance_id, base_commit, patch, test_patch, problem_statement, requirements, interface, repo_language, fail_to_pass, pass_to_pass, issue_specificity, issue_categories, before_repo_set_cmd, selected_test_files_to_run, dockerhub_tag` (note: **lowercase** `fail_to_pass`/`pass_to_pass`, unlike Verified — a real footgun)
+
+---
+
+## What I could NOT confirm
+
+1. **Exact parquet column names/types in `datacurve/deep-swe`** — gated, needs an authenticated HF token. Everything I report about task structure comes from the ungated Apache-2.0 GitHub repo, which I read directly.
+2. **Per-language task counts published by the authors** — the 35/34/34/5/5 split is *my own count* over all 113 `task.toml` files, not a figure quoted in the paper.
+3. Whether the HF parquet is regenerated for v1.1 — HF `lastModified` is **2026-06-02**, which is *before* the v1.1 release date of 2026-06-14. **The HF parquet may be stale v1.0 data.** Another reason to source from GitHub.
+4. No GitHub Release or tag for v1.1 exists — only tag `v1.0.0`. There is no immutable ref to pin v1.1 other than a commit SHA or the `-v1.1` ECR image tags.
+5. `benchlm.ai` / `deepswe.net` / `codingfleet.com` leaderboard numbers are unverified third-party aggregations; I did not cross-check them against the official leaderboard.
+
+## Practical recommendation
+
+Tell the user "DeepSWE-bench" should be "**DeepSWE**", confirm v1.1 is real and current, and flag hard that this is **Harbor/Pier**, not `swebench` — a harness written against `instance_id`/`FAIL_TO_PASS` will need a complete rewrite. Pin to a GitHub commit SHA (the repo has no v1.1 tag) and verify the ECR image tags end in `-v1.1`.
+
+Sources:
+- [github.com/datacurve-ai/deep-swe](https://github.com/datacurve-ai/deep-swe)
+- [DeepSWE v1.1 blog — Datacurve](https://deepswe.datacurve.ai/blog/deepswe-v1-1)
+- [deepswe.datacurve.ai](https://deepswe.datacurve.ai/)
+- [arXiv:2607.07946 — DeepSWE paper](https://arxiv.org/abs/2607.07946)
+- [huggingface.co/datasets/datacurve/deep-swe](https://huggingface.co/datasets/datacurve/deep-swe)
+- [pypi.org/project/datacurve-pier](https://pypi.org/project/datacurve-pier/)
+- [harborframework.com/docs/tasks](https://www.harborframework.com/docs/tasks)
+- [Together AI — DeepSWE model blog](https://www.together.ai/blog/deepswe)
+- [huggingface.co/agentica-org/DeepSWE-Preview](https://huggingface.co/agentica-org/DeepSWE-Preview)
+- [SWE-bench CHANGELOG (v1.1.0 = Docker harness)](https://github.com/princeton-nlp/SWE-bench/blob/main/CHANGELOG.md)
+- [Scale AI — SWE-Bench Pro](https://scale.com/blog/swe-bench-pro)
+- [github.com/microsoft/SWE-bench-Live](https://github.com/microsoft/SWE-bench-Live)
+- [huggingface.co/datasets/princeton-nlp/SWE-bench_Verified](https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified)</result>
+<usage><subagent_tokens>47190</subagent_tokens><tool_uses>27</tool_uses><duration_ms>313066</duration_ms></usage>
+</task-notification>
+
+---
+
+Progress?
+
+---
+
+Do it and pallerelizd etc properly
+
+---
+
+so u think abt entire-graph/TOKEN-ACCURACY-PLAN.md??
+
+⏺ My honest assessment: it's the best-grounded document in this entire program, and it's still not sufficient for the goal.
+
+  What makes it credible — three things nothing else I tested has:
+
+  1. It explains my most robust finding, which nothing else did. Pre-edit locate went up in all five Opus cells (+3.7% to +9%). I had no
+  mechanism for that. "Right file, wrong region → the agent greps the file anyway" explains it exactly, and explains why the loss is
+  bidirectional: you pay for the misleading payload and the exploration it triggers.
+  2. The root cause is in source, not in statistics, and I verified both halves. search_related.go:41 excludes outgoing CALLS on the reasoning
+  that callees are "already reached as co-members of the same unit"; searchRelatedUnitMemberLimit = 12 disables that fallback above 12 members.
+  So on large units neither route reaches the callee. redis-10095 is textbook: gold at t_list.c:501, eg returns t_list.c:577 (lpopCommand — a
+  lexical match on "LPOP"), and the bug is in the helper it calls.
+  3. It's budget-neutral by construction — move the window's centre, don't widen it. Every lever I tried this session added payload, and it
+  correctly cites --head-window-lines at +18.9pt worse, which independently matches my data. It also lists a "do NOT retry" set that overlaps
+  my own measured negatives, and F4 (retire file coverage) is right — I confirmed file coverage is 100% in both groups.
+
+  Where I'd push back:
+
+  - Its token prediction rests entirely on one unvalidated conversion. 9.6% per residual shell call is fitted on a different session set. My
+  paired decomposition says LOCATE is only 14.5% of the +76-op loser overrun — the rest is EXEC+READ+EDIT. Take the plan's conversion and the
+  fix is worth ~11 points; take mine and it's worth ~1.5.
+  - Even at face value it predicts −22.6% on the 20-set — short of −25%. So it's necessary-but-not-sufficient by its own arithmetic.
+  - n=14, and it admits two winners sit at 0% coverage — so line coverage separates group means, not individual instances. That's a real limit
+  on using it as an offline gate.
+  - I couldn't reproduce its per-instance coverage on 4 of 10 — my resolver's fault, but it means those anchors are unverified by me.
+
+  Where I think my own pushback may be wrong: Route B assumes an aim fix only touches LOCATE. If landing on the right lines also prevents wrong
+  edits and re-verification downstream, it would cut EXEC/READ/EDIT too — which is precisely the causal chain the plan claims. That's the
+  difference between 1.5 points and 11, and it's decidable: correlate per-instance line coverage against residual ops. That needs my gold-line
+  resolver fixed first (it under-detects multi-hunk patches — 2 lines for lucene is clearly wrong).
+
+  What I'd do: fix the resolver, run the correlation on all 30 instances I have graphs for, and implement F1 only if coverage predicts residual
+  ops. F1 is narrow — enable the callee hop only where the co-member fallback is already off and the body-match signal is absent — so it's a
+  contained change with a free offline gate. I would not implement F2 first; multi-span allocation is where a budget-neutral claim is easiest
+  to break.
+
+---
+
+also can u check out tlatest grpahamrk and babsleine propmts to make sure no cheating from abseline; checkiut entire grpah too
+
+---
+
+can u make The four arms completely fair. Don't actually change anything. If there's any issues, just make a MD file with the list of all the issues to fix. These four arms are entire graph, the baseline, graphify, and code base memory MCP.
