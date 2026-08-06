@@ -17,11 +17,13 @@ type guideClaim struct {
 }
 
 var (
-	guideCommandRE  = regexp.MustCompile(`\bentire graph ([a-z][a-z0-9-]*)`)
-	guideFlagRE     = regexp.MustCompile(`--[a-z][a-z0-9-]*`)
-	guideInlineRE   = regexp.MustCompile("`([^`]+)`")
-	guideHeadingRE  = regexp.MustCompile(`^### .*?([a-z][a-z0-9-]*) —`)
-	guideNegativeRE = regexp.MustCompile(
+	guideCommandRE   = regexp.MustCompile(`\bentire graph ([a-z][a-z0-9-]*)`)
+	guideFlagRE      = regexp.MustCompile(`--[a-z][a-z0-9-]*`)
+	guideClaimFlagRE = regexp.MustCompile(`(?:^|[\s\[])(--[a-z][a-z0-9-]*)`)
+	guideInlineRE    = regexp.MustCompile("`([^`]+)`")
+	guideHeadingRE   = regexp.MustCompile(`^### .*?([a-z][a-z0-9-]*) —`)
+	guideSectionRE   = regexp.MustCompile(`^#{1,3}\s`)
+	guideNegativeRE  = regexp.MustCompile(
 		"there is (?:\\*\\*)?no ((?:`--[a-z][a-z0-9-]*`(?:/)*)+) filter",
 	)
 	guideDefaultRE = regexp.MustCompile("`(--[a-z][a-z0-9-]*)`[^\\n]*\\(default: ([^)]+)\\)")
@@ -104,6 +106,29 @@ func TestParseGuideDefaultClaims(t *testing.T) {
 	}
 }
 
+func TestParseGuideProseFlagClaims(t *testing.T) {
+	guide := strings.Join([]string{
+		"### neighbors — relations",
+		"- `--internal-only` drops external endpoints.",
+		"- `entire graph impact --depth 1` names another command explicitly.",
+		"- `ordinary prose` is not a flag claim.",
+		"- `not--a-flag` is not a flag token.",
+		"## Operating doctrine",
+		"Use `--outside-section` only as an example.",
+	}, "\n")
+
+	_, flags, _, _ := parseGuideClaims(guide)
+	if len(flags) != 2 {
+		t.Fatalf("flag claims = %#v, want exactly two", flags)
+	}
+	if flags[0].command != "neighbors" || flags[0].flag != "--internal-only" {
+		t.Errorf("section claim = %#v, want neighbors --internal-only", flags[0])
+	}
+	if flags[1].command != "impact" || flags[1].flag != "--depth" {
+		t.Errorf("explicit claim = %#v, want impact --depth", flags[1])
+	}
+}
+
 func TestParserAcceptsFlag(t *testing.T) {
 	tests := []struct {
 		command   string
@@ -132,8 +157,11 @@ func parseGuideClaims(guide string) (commands, flags, negatives, defaults []guid
 	sectionCommand := ""
 	for index, line := range strings.Split(guide, "\n") {
 		lineNumber := index + 1
-		if match := guideHeadingRE.FindStringSubmatch(line); match != nil {
-			sectionCommand = match[1]
+		if guideSectionRE.MatchString(line) {
+			sectionCommand = ""
+			if match := guideHeadingRE.FindStringSubmatch(line); match != nil {
+				sectionCommand = match[1]
+			}
 		}
 
 		for _, match := range guideCommandRE.FindAllStringSubmatch(line, -1) {
@@ -146,10 +174,10 @@ func parseGuideClaims(guide string) (commands, flags, negatives, defaults []guid
 			continue
 		}
 		if inFence {
-			flags = append(flags, invocationFlagClaims(line, lineNumber)...)
+			flags = append(flags, invocationFlagClaims(line, sectionCommand, lineNumber)...)
 		} else {
 			for _, match := range guideInlineRE.FindAllStringSubmatch(line, -1) {
-				flags = append(flags, invocationFlagClaims(match[1], lineNumber)...)
+				flags = append(flags, invocationFlagClaims(match[1], sectionCommand, lineNumber)...)
 			}
 		}
 
@@ -165,14 +193,18 @@ func parseGuideClaims(guide string) (commands, flags, negatives, defaults []guid
 	return commands, flags, negatives, defaults
 }
 
-func invocationFlagClaims(invocation string, line int) []guideClaim {
+func invocationFlagClaims(invocation, sectionCommand string, line int) []guideClaim {
 	match := guideCommandRE.FindStringSubmatch(invocation)
-	if match == nil {
+	command := sectionCommand
+	if match != nil {
+		command = match[1]
+	}
+	if command == "" {
 		return nil
 	}
 	var claims []guideClaim
-	for _, flag := range guideFlagRE.FindAllString(invocation, -1) {
-		claims = append(claims, guideClaim{command: match[1], flag: flag, line: line})
+	for _, flagMatch := range guideClaimFlagRE.FindAllStringSubmatch(invocation, -1) {
+		claims = append(claims, guideClaim{command: command, flag: flagMatch[1], line: line})
 	}
 	return claims
 }

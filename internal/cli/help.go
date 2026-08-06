@@ -170,6 +170,7 @@ var commandDocs = []commandDoc{
 			{name: "--internal-only", desc: "Drop unresolved external endpoints"},
 			{name: "--exclude-tests", desc: "Drop test-only neighbors"},
 			{name: "--head", desc: "Query the committed tree (cached)"},
+			{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Parsing depth"},
 		},
 		examples: []string{
 			"entire graph neighbors --repo . --symbol validateToken --relation CALLS --direction in",
@@ -195,6 +196,7 @@ var commandDocs = []commandDoc{
 			{name: "--max-context-bytes", arg: "n", def: "4096", desc: "Total text budget"},
 			{name: "--exclude-tests", desc: "Drop test-only entries"},
 			{name: "--head", desc: "Query the committed tree (cached)"},
+			{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Parsing depth"},
 		},
 		examples: []string{"entire graph impact --repo . --symbol WriteText"},
 	},
