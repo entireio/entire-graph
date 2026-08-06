@@ -678,6 +678,25 @@ func writeTextSearchLocator(out interface{ Write([]byte) (int, error) }, result 
 			searchResultLocatorLine(result), name, searchLocatorFollowUp(result))
 		return
 	}
+	// NO NAME MEANS NO LOCATOR. The demotion contract above is "path, line and symbol name all
+	// survive", and a hit whose focus line has no enclosing indexed symbol has no name to survive
+	// with — see sem.SearchLocatorWindow for what lands here and how often. `searchLocatorFollowUp`
+	// has already refused for the same reason, so the line would carry no source, no symbol and no
+	// verb: coordinates and an obligatory file read. It keeps the bounded window the ranker already
+	// computed for it instead, which costs only bytes the ranker had already allocated.
+	//
+	// The shape is the bodied shape with the fields a nameless hit does not have left off, so this
+	// is not a third thing to learn: a range header, the matched line, then the source under it.
+	// `focus=` is not optional here — the bare locator's ONE piece of information was the matched
+	// line, and a range that silently replaced it would trade information for bytes.
+	if start, end, window := sem.SearchLocatorWindow(result); window != "" {
+		fmt.Fprintf(out, "%d. %s:%d-%d", result.Rank, result.FilePath, start, end)
+		if result.FocusLine >= start && result.FocusLine <= end && end > start {
+			fmt.Fprintf(out, " focus=%d", result.FocusLine)
+		}
+		fmt.Fprintf(out, "\n%s\n\n", window)
+		return
+	}
 	fmt.Fprintf(out, "%d. %s:%d\n", result.Rank, result.FilePath, searchResultLocatorLine(result))
 }
 

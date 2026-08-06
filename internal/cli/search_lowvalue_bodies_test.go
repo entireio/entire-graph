@@ -234,12 +234,21 @@ func TestWriteTextSearchIsUnchangedWithoutLowValuePaths(t *testing.T) {
 			t.Fatalf("expected %q in the ordinary payload:\n%s", want, out)
 		}
 	}
-	// Three bodies is the cap, so rank 4 stays a locator and rank 5 keeps the body the allocator
-	// bought for it (complete-symbol is exempt from the rank tier, not from the cap).
-	if strings.Contains(out, "export function diffChildren(") {
-		t.Fatalf("the body cap was breached:\n%s", out)
+	// Three bodies is the cap, so ranks 4 and 5 are both demoted (complete-symbol is exempt from the
+	// rank tier, not from the cap). The cap is counted on the BODIED renders themselves, not on a
+	// substring of one of them: rank 4 has no symbol name, so its demotion keeps the ≤6-line window
+	// the ranker allocated it instead of collapsing to coordinates, and that window opens with the
+	// same line its body would have (see sem.SearchLocatorWindow).
+	if got := strings.Count(out, "score="); got != 3 {
+		t.Fatalf("the body cap was breached: %d bodied hits\n%s", got, out)
 	}
-	if !strings.Contains(out, "4. src/diff/children.js:26\n") {
-		t.Fatalf("rank 4 should be a plain locator:\n%s", out)
+	if !strings.Contains(out, "5. src/diff/index.js:264 commitRoot  [body: def commitRoot]\n") {
+		t.Fatalf("rank 5 should be demoted to a named locator:\n%s", out)
+	}
+	// The nameless demotion keeps its window and its matched line, and nothing more: the allocator
+	// gave rank 4 lines 26-30 and that is exactly what is printed, not the 26-30 ranked region of a
+	// body it was denied.
+	if !strings.Contains(out, "4. src/diff/children.js:26-30 focus=26\n") {
+		t.Fatalf("rank 4 nameless demotion lost its window or its focus line:\n%s", out)
 	}
 }

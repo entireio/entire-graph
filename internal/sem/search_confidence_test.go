@@ -213,3 +213,29 @@ func TestLowConfidenceCalibrationHolds(t *testing.T) {
 			got, len(good)+len(diffuse)+len(absent))
 	}
 }
+
+// A promoted fix site legitimately carries a LOWER score than the test it displaced, because
+// promoteFixSiteOverLeadingTest reorders without rescoring. The tie test asks whether the top two
+// scores are indistinguishable, and that question has no direction — reading it as a signed
+// subtraction made the marker fire on every reordered payload, which is the false positive this
+// file's own calibration explicitly rejects ("a marker that always fires teaches the reader to
+// ignore it").
+func TestAssessSearchConfidenceIgnoresTheDirectionOfTheTopTwoGap(t *testing.T) {
+	t.Parallel()
+	// The measured sharkdp__bat-2260 payload: rank 1 is the promoted source at 73.3157, rank 2 the
+	// displaced test at 77.3391 — 4.02 points apart, which is nobody's idea of a tie.
+	promoted := confidenceResponse(
+		[]float64{73.3157, 77.3391, 40.0},
+		[]string{"src/a.go", "tests/a_test.go", "src/a.go"}, "")
+	if assessment := AssessSearchConfidence(promoted); assessment.Low {
+		t.Fatalf("a 4.02-point separation was reported as low confidence: %q", assessment.Reason)
+	}
+	// A genuine near-tie still fires, in either direction.
+	for _, scores := range [][]float64{{40.0, 40.01, 20.0}, {40.01, 40.0, 20.0}} {
+		assessment := AssessSearchConfidence(
+			confidenceResponse(scores, []string{"src/a.go", "src/a.go", "src/a.go"}, ""))
+		if !assessment.Low {
+			t.Fatalf("a 0.01-point tie at %v was not reported", scores)
+		}
+	}
+}

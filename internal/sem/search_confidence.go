@@ -2,6 +2,7 @@ package sem
 
 import (
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -186,7 +187,14 @@ func AssessSearchConfidence(response SearchResponse) SearchConfidence {
 	// coin flip presented as a choice; a high top score on a doc comment is a hit the reader has to
 	// back out of. Neither is visible to a score threshold.
 	if !assessment.Low && len(results) > 1 && results[0].Score > 0 {
-		if gap := results[0].Score - results[1].Score; gap < lowConfidenceTieGap {
+		// MAGNITUDE, not the signed difference. Rank 2 may legitimately carry the HIGHER score:
+		// promoteFixSiteOverLeadingTest reorders without rescoring, so a payload whose rank-1 test
+		// was displaced reports rank 2 above rank 1 on purpose. A signed subtraction reads that as
+		// a negative gap, which is below any threshold, so the marker fired on exactly the payloads
+		// where the ranking made a deliberate choice — the false positive this file's own
+		// calibration says is worse than having no marker at all. What the test is asking is
+		// whether the two scores are indistinguishable, and that question has no direction.
+		if gap := math.Abs(results[0].Score - results[1].Score); gap < lowConfidenceTieGap {
 			assessment.Low = true
 			assessment.Reason = fmt.Sprintf(
 				"ranks 1 and 2 are tied (%.4f apart) - the ranking did not choose", gap)

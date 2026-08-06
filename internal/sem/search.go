@@ -923,6 +923,13 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	sparseHydrationReads := hydrateSparseCandidates(selected, read)
 	stats.SparseFilesRead += sparseHydrationReads
+	// A test file is never a fix site, and rank 1 is the slot an agent reads and edits from. When
+	// the flat -12 in searchPathPrior was not enough to sink one, lift the best editable hit over
+	// it rather than subtracting harder — subtraction can eject the test from the payload, and the
+	// VERIFY deriver reads that test. Runs before ranks are numbered so the byte fitter, the
+	// enclosure planner and the VERIFY deriver all see one consistent order.
+	// See search_testrank.go.
+	selected = promoteFixSiteOverLeadingTest(selected, q)
 	results := make([]SearchResult, 0, len(selected))
 	for i := range selected {
 		selected[i].result.Rank = i + 1
@@ -4340,9 +4347,7 @@ func searchPathPrior(q searchQuery, filePath string) float64 {
 	// suite; a caller who does want tests writes "test"/"spec"/"fixture", and the phrase
 	// "regression test" already contains "test". Keeping them here let the commonest word
 	// in a bug report switch off the test demotion for the whole query.
-	if searchTestArtifactPath(lower) && !searchQuerySupplied(q,
-		"test", "tests", "testing", "spec", "specs", "fixture", "fixtures",
-	) {
+	if searchTestArtifactPath(lower) && !searchQuerySupplied(q, searchTestIntentWords...) {
 		// Strong demotion (was -1.5 — far too weak): a test file that exercises the buggy
 		// function matches the issue's exact code tokens (function name + behaviour keywords),
 		// so it out-scores the real source at ~26-47 while the implementation sits at ~13.

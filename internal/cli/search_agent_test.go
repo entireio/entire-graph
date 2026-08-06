@@ -143,6 +143,10 @@ func TestWriteTextSearchTiersRankOneAndTwoFullRestTerse(t *testing.T) {
 		{Rank: 2, FilePath: "src/other.go", StartLine: 1, EndLine: 3, FocusLine: 1, Score: 9.0, SymbolName: "other", Signals: []string{"body"}, Snippet: "func other() {}"},
 		{Rank: 3, FilePath: "src/third.go", StartLine: 20, EndLine: 30, FocusLine: 22, Score: 8.0, QualifiedName: "Third.method", Signals: []string{"body"}, Snippet: "func method() {\n\t// long\n}"},
 		{Rank: 4, FilePath: "src/fourth.go", StartLine: 40, EndLine: 44, FocusLine: 0, Score: 7.0, Signals: []string{"body"}, Snippet: "func fourth() {}"},
+		// Rank 5 carries the StartLine fallback for a NAMED demotion, which is the shape rank 4 used
+		// to cover before a nameless demotion stopped collapsing to coordinates (see
+		// sem.SearchLocatorWindow and TestWriteTextSearchKeepsSourceForANamelessLocator).
+		{Rank: 5, FilePath: "src/fifth.go", StartLine: 50, EndLine: 54, FocusLine: 0, Score: 6.0, SymbolName: "fifth", Signals: []string{"body"}, Snippet: "func fifth() {}"},
 	}}
 
 	var buf bytes.Buffer
@@ -169,11 +173,21 @@ func TestWriteTextSearchTiersRankOneAndTwoFullRestTerse(t *testing.T) {
 	if strings.Contains(out, "src/third.go:22 Third.method score=") {
 		t.Fatalf("rank 3 terse line must NOT carry a score:\n%s", out)
 	}
-	if strings.Contains(out, "func fourth() {}") {
-		t.Fatalf("rank 4 must NOT carry its snippet:\n%s", out)
+	// Rank 4 has NO symbol name, so the terse form has nothing to be terse WITH: no name, and
+	// therefore no `[body: def NAME]` follow-up either. It keeps the window the ranker already
+	// allocated it rather than collapsing to coordinates, capped at sem's own ceiling. The tier is
+	// unchanged for every hit that has a name — rank 3 above is still terse.
+	if !strings.Contains(out, "4. src/fourth.go:40-40\nfunc fourth() {}\n") {
+		t.Fatalf("rank 4 nameless demotion lost its window:\n%s", out)
 	}
-	if !strings.Contains(out, "4. src/fourth.go:40\n") {
-		t.Fatalf("rank 4 terse line should fall back to StartLine when FocusLine unset (no score):\n%s", out)
+	if strings.Contains(out, "src/fourth.go:40-40 score=") {
+		t.Fatalf("a demoted line must NOT carry a score:\n%s", out)
+	}
+	if !strings.Contains(out, "5. src/fifth.go:50 fifth  [body: def fifth]\n") {
+		t.Fatalf("rank 5 terse line should fall back to StartLine when FocusLine unset (no score):\n%s", out)
+	}
+	if strings.Contains(out, "func fifth() {}") {
+		t.Fatalf("rank 5 must NOT carry its snippet:\n%s", out)
 	}
 	// PR #61 review: the redundant READ window hint is dropped — the top ranks
 	// carry FocusLine in the header + lines=Start-End, which is the region to open.
