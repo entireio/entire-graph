@@ -181,7 +181,7 @@ that public Markdown path, not its quality on programming-language graphs.
 
 The full protocol, fairness explanation, exact artifact hashes, 1%/10%/100% sequence, and results
 are in [GraphMark PR #63](https://github.com/entirehq/graphmark/pull/63). The benchmarked binary is
-from `dea450b`; this documentation-only commit does not change it.
+from `dea450b`; these documentation changes do not change it.
 
 See [docs/benchmarks.md](docs/benchmarks.md#external-native-memory-comparison) for the frozen
 identities and integrity record.

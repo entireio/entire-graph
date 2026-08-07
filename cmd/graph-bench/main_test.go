@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +56,9 @@ func TestValidateExecutionModeRejectsParentOnlyCPUProfile(t *testing.T) {
 }
 
 func TestMaxRSSGuardFailsRunEvenWhenViolatingRowIsExcludedFromAggregates(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process RSS is not available on this platform")
+	}
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "manifest.json")
 	if err := os.WriteFile(manifestPath, []byte(`{"languages":{"Go":["owner/repo"]}}`), 0o644); err != nil {
