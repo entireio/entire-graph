@@ -89,7 +89,7 @@ func selectSearchCandidates(
 		return true
 	}
 
-	headParents := (topK + 1) / 2
+	headParents := proseParentHeadCount(q, topK)
 	for _, candidate := range baseline {
 		if len(selected) == headParents {
 			break
@@ -128,6 +128,63 @@ func selectSearchCandidates(
 		appendParent(parents[candidate.result.FilePath], candidate)
 	}
 	return selected
+}
+
+func proseQueryRequestsMultipleParents(q searchQuery) bool {
+	words := q.words
+	if words == nil {
+		words = searchQueryWords(q.rawLower)
+	}
+	if words["else"] || (words["other"] && words["than"]) {
+		return true
+	}
+	written := q.wordSequence
+	if len(written) == 0 {
+		written = searchQueryWordSequence(q.rawLower)
+	}
+	for index, word := range written {
+		if word == "which" && proseWhichListFrame(written, index) {
+			return true
+		}
+		if (word == "what" || word == "where") && index+1 < len(written) && written[index+1] == "are" &&
+			safeASCIIWrittenPlural(written[len(written)-1]) {
+			return true
+		}
+	}
+	return false
+}
+
+func proseWhichListFrame(written []string, whichIndex int) bool {
+	for headOffset := 1; headOffset <= 2; headOffset++ {
+		headIndex := whichIndex + headOffset
+		predicateIndex := headIndex + 1
+		if predicateIndex >= len(written) || !safeASCIIWrittenPlural(written[headIndex]) {
+			continue
+		}
+		if proseListPredicate(written[predicateIndex]) {
+			return true
+		}
+	}
+	return false
+}
+
+func proseListPredicate(word string) bool {
+	switch word {
+	case "are", "contain", "cover", "describe", "have", "hold", "include", "list", "match", "mention", "show", "store", "use":
+		return true
+	default:
+		return false
+	}
+}
+
+func proseParentHeadCount(q searchQuery, topK int) int {
+	if topK <= 0 {
+		return 0
+	}
+	if proseQueryRequestsMultipleParents(q) {
+		return maxInt(1, topK/3)
+	}
+	return (topK + 1) / 2
 }
 
 func proseParents(candidates []searchCandidate) map[string]*proseParent {
@@ -253,7 +310,105 @@ func safeProseInflectionMatch(left, right string) bool {
 	if plural, ok := safeASCIIPlural(right); ok && plural == left {
 		return true
 	}
+	for _, form := range safeASCIIProseVerbForms(left) {
+		if form == right {
+			return true
+		}
+	}
+	for _, form := range safeASCIIProseVerbForms(right) {
+		if form == left {
+			return true
+		}
+	}
+	if safeASCIIProseDerivation(left, right) || safeASCIIProseDerivation(right, left) {
+		return true
+	}
+	return safeASCIIProseEdgeCompound(left, right)
+}
+
+func safeASCIIProseVerbForms(word string) []string {
+	if len(word) < 5 || !proseASCIIWord(word) {
+		return nil
+	}
+	if strings.HasSuffix(word, "e") {
+		return []string{word + "d", strings.TrimSuffix(word, "e") + "ing"}
+	}
+	return []string{word + "ed", word + "ing"}
+}
+
+func safeASCIIProseDerivation(base, derived string) bool {
+	if len(base) < 6 || !proseASCIIWord(base) || !proseASCIIWord(derived) {
+		return false
+	}
+	if strings.HasSuffix(base, "ate") {
+		return derived == strings.TrimSuffix(base, "ate")+"ation"
+	}
+	if strings.HasSuffix(base, "ize") {
+		return derived == strings.TrimSuffix(base, "e")+"ation"
+	}
 	return false
+}
+
+// safeASCIIProseEdgeCompound is directional: queryTerm is the word the caller
+// wrote and evidenceToken is the corpus token. A longer query compound may
+// expose an exact standalone evidence word at either edge; a longer evidence
+// token cannot manufacture coverage for a shorter query.
+func safeASCIIProseEdgeCompound(queryTerm, evidenceToken string) bool {
+	if !proseASCIIWord(queryTerm) || !proseASCIIWord(evidenceToken) {
+		return false
+	}
+	difference := len(queryTerm) - len(evidenceToken)
+	if len(evidenceToken) < 8 || difference < 2 || difference > 5 || len(evidenceToken)*3 < len(queryTerm)*2 {
+		return false
+	}
+	if strings.HasPrefix(queryTerm, evidenceToken) {
+		suffix := strings.TrimPrefix(queryTerm, evidenceToken)
+		return !safeASCIIProseOpposingSuffix(suffix)
+	}
+	if !strings.HasSuffix(queryTerm, evidenceToken) {
+		return false
+	}
+	prefix := strings.TrimSuffix(queryTerm, evidenceToken)
+	return !safeASCIIProseOpposingPrefix(prefix)
+}
+
+func safeASCIIProseOpposingSuffix(suffix string) bool {
+	switch suffix {
+	case "free", "less":
+		return true
+	default:
+		return false
+	}
+}
+
+func safeASCIIProseOpposingPrefix(prefix string) bool {
+	switch prefix {
+	case "anti", "counter", "de", "dis", "il", "im", "in", "ir", "mis", "non", "un":
+		return true
+	default:
+		return false
+	}
+}
+
+// safeASCIIWrittenPlural recognizes only forms that can be reversed without
+// treating common singular s-ending words as list intent. It is deliberately
+// conservative: missing an irregular plural keeps the ordinary allocation,
+// while a false plural silently changes how much of top-k is reserved.
+func safeASCIIWrittenPlural(word string) bool {
+	if len(word) <= 4 || !proseASCIIWord(word) || !strings.HasSuffix(word, "s") || strings.HasSuffix(word, "ss") {
+		return false
+	}
+	for _, singularSuffix := range []string{"as", "is", "us"} {
+		if strings.HasSuffix(word, singularSuffix) {
+			return false
+		}
+	}
+	singular := strings.TrimSuffix(word, "s")
+	if len(singular) == 0 || strings.ContainsRune("aiu", rune(singular[len(singular)-1])) {
+		return false
+	}
+	plural, ok := safeASCIIPlural(singular)
+	return ok && plural == word
 }
 
 func safeASCIIPlural(word string) (string, bool) {
