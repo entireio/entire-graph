@@ -253,7 +253,46 @@ func safeProseInflectionMatch(left, right string) bool {
 	if plural, ok := safeASCIIPlural(right); ok && plural == left {
 		return true
 	}
-	return false
+	for _, form := range safeASCIIProseVerbForms(left) {
+		if form == right {
+			return true
+		}
+	}
+	for _, form := range safeASCIIProseVerbForms(right) {
+		if form == left {
+			return true
+		}
+	}
+	return safeASCIIProsePrefixFamily(left, right)
+}
+
+func safeASCIIProseVerbForms(word string) []string {
+	if len(word) < 5 || !proseASCIIWord(word) {
+		return nil
+	}
+	if strings.HasSuffix(word, "e") {
+		return []string{word + "d", strings.TrimSuffix(word, "e") + "ing"}
+	}
+	return []string{word + "ed", word + "ing"}
+}
+
+func safeASCIIProsePrefixFamily(left, right string) bool {
+	if len(left) < 6 || len(right) < 6 || !proseASCIIWord(left) || !proseASCIIWord(right) {
+		return false
+	}
+	difference := len(left) - len(right)
+	if difference < 0 {
+		difference = -difference
+	}
+	if difference > 5 {
+		return false
+	}
+	common := 0
+	for common < len(left) && common < len(right) && left[common] == right[common] {
+		common++
+	}
+	shorter := minInt(len(left), len(right))
+	return shorter >= 8 && common >= 5 && common*3 >= shorter*2
 }
 
 func safeASCIIPlural(word string) (string, bool) {

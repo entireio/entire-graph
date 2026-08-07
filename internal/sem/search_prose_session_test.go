@@ -166,6 +166,59 @@ func TestSearchRepositoryRanksSafeSingularEvidenceForPluralQuery(t *testing.T) {
 	t.Fatalf("safe singular-evidence session missing from top 10: %#v", response.Results)
 }
 
+func TestSafeProseInflectionMatchSupportsBoundedWordFamilies(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		left  string
+		right string
+		want  bool
+	}{
+		{left: "archive", right: "archived", want: true},
+		{left: "archive", right: "archiving", want: true},
+		{left: "navigate", right: "navigation", want: true},
+		{left: "orchard", right: "orchards", want: true},
+		{left: "gas", right: "gases", want: false},
+		{left: "archive", right: "architect", want: false},
+		{left: "plan", right: "planet", want: false},
+	}
+	for _, testCase := range tests {
+		if got := safeProseInflectionMatch(testCase.left, testCase.right); got != testCase.want {
+			t.Errorf("safeProseInflectionMatch(%q, %q) = %t, want %t",
+				testCase.left, testCase.right, got, testCase.want)
+		}
+	}
+}
+
+func TestSearchRepositoryRanksDerivedWordFamilyMarkdownSession(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "sessions/focus.md", `# Navigation archive
+
+The expedition was carefully navigated and archived after sunset.
+`)
+	for index := 0; index < 11; index++ {
+		write(t, repo, fmt.Sprintf("sessions/distractor-%02d.md", index), fmt.Sprintf(
+			"# Navigation marker%d ridge%d vessel%d\n\nUnrelated archive index.\n",
+			index, index, index,
+		))
+	}
+
+	response, err := SearchRepository(
+		t.Context(), repo, "test", "navigate archive sunset", SearchOptions{
+			Worktree: true, Profile: ProfileSyntaxOnly, TopK: 10, MaxIndexedFiles: 32,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range response.Results {
+		if result.FilePath == "sessions/focus.md" &&
+			containsString(result.Signals, proseParentRetrievalSignal) {
+			return
+		}
+	}
+	t.Fatalf("derived word-family session missing from top 10: %#v", response.Results)
+}
+
 func TestSearchRepositoryDoesNotConflateUnsafeProseSuffixes(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "sessions/focus.md", `# Gases
