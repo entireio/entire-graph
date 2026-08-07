@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -53,7 +54,7 @@ closing note
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertSearchResultGolden(t, response.Results, "cf344af38c8181f2713419a5dbe1dbb6e678cc80388655d9ae45b48d10210cd2")
+	assertSearchResultGolden(t, response.Results, "99546bd7e78ef6654ee0eb48784c6ff2ee8a641f445dbc320b72c9be742171ba")
 	wantHead := []string{
 		"sessions/distractor-00.md",
 		"sessions/distractor-01.md",
@@ -114,7 +115,7 @@ func TestSearchRepositoryRanksSafePluralMarkdownSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertSearchResultGolden(t, response.Results, "ee130bf86f3530092984cb8afecaf562587ac92df82d2cb3e22753058d2de3d9")
+	assertSearchResultGolden(t, response.Results, "40b819912d24c7954b58f3e45baa7f212efe42d54e18901e1cc4f1384bd676da")
 	for _, result := range response.Results {
 		if result.FilePath == "sessions/focus.md" &&
 			containsString(result.Signals, "retrieval_mode=prose-parent") {
@@ -157,7 +158,7 @@ func TestSearchRepositoryRanksSafeSingularEvidenceForPluralQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertSearchResultGolden(t, response.Results, "96dc692b46c9aaa610615524728b09c0b30a75ed9ee865c724919c4fd0f7d482")
+	assertSearchResultGolden(t, response.Results, "77e366da57cc87094703b5d6e62677f2f5fb3bc3abc0748c80a4651a23a2557b")
 	for _, result := range response.Results {
 		if result.FilePath == "sessions/focus.md" &&
 			containsString(result.Signals, "retrieval_mode=prose-parent") {
@@ -197,7 +198,7 @@ func TestSearchRepositoryDoesNotConflateUnsafeProseSuffixes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertSearchResultGolden(t, response.Results, "62fb330f73720bf8aee6aecc090f2058069ca41c54e158e0633923ac22370143")
+	assertSearchResultGolden(t, response.Results, "f656311a14a2817e340eaa0fdeae3abc4f36c9f481712684c722c830c2f725b3")
 	for _, result := range response.Results {
 		if result.FilePath == "sessions/focus.md" {
 			t.Fatalf("unsafe gas/gases suffix promoted focus session: %#v", response.Results)
@@ -259,6 +260,59 @@ func %sDelivery() {}
 	}
 }
 
+func TestSearchRepositoryProseParentReturnsBoundedNativeContextByDefault(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "sessions/00-melanie.md", `# Melanie music preferences
+
+Melanie often talks about the music she enjoys listening to.
+
+`+strings.Repeat("A neutral diary line with no additional preference.\n", 42)+`
+Her lasting preference is classical music by composers such as Bach and Mozart.
+`)
+	for index := 1; index < 5; index++ {
+		write(t, repo, fmt.Sprintf("sessions/%02d-peer.md", index), fmt.Sprintf(`
+# Melanie music archive %d
+
+This unrelated session records a concert ticket number %d.
+`, index, index))
+	}
+
+	response, err := SearchRepository(
+		t.Context(), repo, "test", "melanie music preferences", SearchOptions{
+			Worktree: true, Profile: ProfileSyntaxOnly, TopK: 5,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) == 0 || response.Results[0].FilePath != "sessions/00-melanie.md" {
+		t.Fatalf("focus session is not the top result: %#v", response.Results)
+	}
+	result := response.Results[0]
+	if !containsString(result.Signals, proseParentRetrievalSignal) {
+		t.Fatalf("focus result lacks prose-parent mode: %#v", result.Signals)
+	}
+	if !containsString(result.Signals, searchHeadWindowSignal) {
+		t.Fatalf("focus result lacks native head window: %#v", result.Signals)
+	}
+	if !strings.Contains(result.Snippet, "classical music by composers such as Bach and Mozart") {
+		t.Fatalf("native prose context omits the distant answer-bearing fact:\n%s", result.Snippet)
+	}
+}
+
+func TestResolvedSearchHeadWindowLinesIsProseOnlyAndHonorsExplicitValue(t *testing.T) {
+	prose := []SearchResult{{Signals: []string{proseParentRetrievalSignal}}}
+	if got := resolvedSearchHeadWindowLines(prose, 0); got != defaultProseParentHeadWindowLines {
+		t.Fatalf("prose default = %d, want %d", got, defaultProseParentHeadWindowLines)
+	}
+	if got := resolvedSearchHeadWindowLines(prose, 23); got != 23 {
+		t.Fatalf("explicit prose window = %d, want 23", got)
+	}
+	if got := resolvedSearchHeadWindowLines([]SearchResult{{Signals: []string{"path"}}}, 0); got != 0 {
+		t.Fatalf("ordinary code window = %d, want disabled", got)
+	}
+}
+
 func TestSearchRepositoryProseLaneRequiresEightyPercentProseParents(t *testing.T) {
 	repo := t.TempDir()
 	for index := 0; index < 4; index++ {
@@ -312,7 +366,7 @@ func TestSearchRepositoryProseParentOrderIsExactlyDeterministic(t *testing.T) {
 		}
 		if run == 0 {
 			first = encoded
-			assertSearchResultGolden(t, response.Results, "9a910ba484b55dbbb18922249dcd2cb1c934bbcd29a1c5d924f3eb8607d13977")
+			assertSearchResultGolden(t, response.Results, "3e0c28f472059df45dd2ffaf2528bbf0c28fc6de55336f19591315f28f4a5c7c")
 			continue
 		}
 		if !reflect.DeepEqual(encoded, first) {

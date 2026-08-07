@@ -5,7 +5,10 @@ import (
 	"strings"
 )
 
-const proseParentRetrievalSignal = "retrieval_mode=prose-parent"
+const (
+	proseParentRetrievalSignal        = "retrieval_mode=prose-parent"
+	defaultProseParentHeadWindowLines = 80
+)
 
 type proseParent struct {
 	path string
@@ -15,6 +18,21 @@ type proseParent struct {
 type proseParentSeed struct {
 	parent    *proseParent
 	candidate *searchCandidate
+}
+
+// resolvedSearchHeadWindowLines preserves an explicit caller choice. Otherwise,
+// a native prose-parent result receives enough bounded source to answer from the
+// selected session instead of returning only its best local locator.
+func resolvedSearchHeadWindowLines(results []SearchResult, requested int) int {
+	if requested > 0 {
+		return requested
+	}
+	for _, result := range results {
+		if hasSearchSignal(result, proseParentRetrievalSignal) {
+			return defaultProseParentHeadWindowLines
+		}
+	}
+	return 0
 }
 
 // selectSearchCandidates preserves the ordinary region ranking unless the

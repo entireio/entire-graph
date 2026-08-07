@@ -804,8 +804,8 @@ func TestPlanSearchEnclosuresHeadWindowNeverClaimsCompleteSymbol(t *testing.T) {
 	if !got[0].window {
 		t.Fatal("the fallback must be marked as a window, not as a body")
 	}
-	if got[0].start != 30 || got[0].end != 90 {
-		t.Fatalf("window = %d-%d, want 30-90 (60 lines centred on focus 60)", got[0].start, got[0].end)
+	if got[0].start != 30 || got[0].end != 89 {
+		t.Fatalf("window = %d-%d, want 30-89 (60 lines centred on focus 60)", got[0].start, got[0].end)
 	}
 	widened := widenSearchResultToEnclosure(result, got[0])
 	if containsString(widened.Signals, searchCompleteSymbolSignal) {
@@ -814,7 +814,7 @@ func TestPlanSearchEnclosuresHeadWindowNeverClaimsCompleteSymbol(t *testing.T) {
 	if !containsString(widened.Signals, searchHeadWindowSignal) {
 		t.Fatalf("a window must carry %q: %#v", searchHeadWindowSignal, widened.Signals)
 	}
-	if widened.Snippet != strings.Join(lines[29:90], "\n") {
+	if widened.Snippet != strings.Join(lines[29:89], "\n") {
 		t.Fatal("window snippet is not a verbatim slice of the file")
 	}
 

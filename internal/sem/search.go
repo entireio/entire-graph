@@ -106,7 +106,8 @@ type SearchOptions struct {
 	// It stays here, opt-in and default 0, because the mechanism is sound and a narrower use may pay.
 	// Do not enable it in a measured cell without re-running the attribution.
 	// HeadWindowLines makes a HEAD rank that has no enclosable callable come back as a bounded
-	// read window of this many lines instead of a two-line locator. 0 = off (previous behaviour).
+	// read window of this many lines instead of a two-line locator. 0 leaves ordinary code
+	// search off and lets native prose-parent retrieval use its measured default.
 	//
 	// Measured over 79 agent sessions: the gold file was in the payload as a LOCATOR ONLY in 20 of
 	// 74 sessions (24 of them at rank <= 3), and 61 post-search Reads targeted a ranked file that
@@ -940,9 +941,9 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	if options.BodyHeadRanks > 0 && options.BodyHeadRanks < bodyHeadRanks {
 		bodyHeadRanks = options.BodyHeadRanks
 	}
-	// HeadWindowLines: a head rank with no enclosable callable falls back to a bounded read
-	// window instead of a two-line locator. 0 disables it (previous behaviour exactly).
-	headWindowLines := options.HeadWindowLines
+	// HeadWindowLines: an explicit caller value wins. Prose-parent retrieval otherwise uses
+	// its measured native default; ordinary code search keeps the previous disabled behaviour.
+	headWindowLines := resolvedSearchHeadWindowLines(results, options.HeadWindowLines)
 	enclosures := planSearchEnclosures(
 		results, symbolsByID, symbolsByFile, read,
 		defaultSearchEnclosureMaxLines, options.EnclosureContextLines, bodyHeadRanks, headWindowLines,

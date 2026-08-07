@@ -251,12 +251,14 @@ func planSearchHeadWindow(result SearchResult, lines []string, windowLines int) 
 		return searchEnclosure{}, false
 	}
 	half := windowLines / 2
-	start, end := focus-half, focus+half
+	start, end := focus-half, focus-half+windowLines-1
 	if start < 1 {
 		start = 1
+		end = minInt(len(lines), start+windowLines-1)
 	}
 	if end > len(lines) {
 		end = len(lines)
+		start = maxInt(1, end-windowLines+1)
 	}
 	if start > end {
 		return searchEnclosure{}, false
