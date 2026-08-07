@@ -31,6 +31,14 @@ type Entity struct {
 	// generic clauses may themselves contain parenthesized function types.
 	parameterNames      []string
 	parameterNamesKnown bool
+	// paramTypeText/returnTypeText hold the callable's declared types as the
+	// parse tree delimits them, so the type passes do not have to re-guess
+	// where a signature's parameter list ends. signatureTypesKnown separates
+	// "the grammar says this callable declares no return type" from "no parser
+	// metadata"; both stay private to preserve the frozen schema.
+	paramTypeText       string
+	returnTypeText      string
+	signatureTypesKnown bool
 }
 
 type EntityChange struct {

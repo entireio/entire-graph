@@ -53,6 +53,18 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return nil
 	}
 
+	// Per-command help: `entire graph <cmd> --help` prints that command's detail
+	// view and exits, without touching each runX. Only fires for commands that
+	// have a doc entry — which includes `help` itself, so `help --help` prints
+	// help's own detail view rather than the root listing. A bare `--help` has
+	// no command word and is handled above.
+	if wantsHelp(args[1:]) {
+		if _, ok := findCommandDoc(args[0]); ok {
+			renderCommandHelp(opts.Stdout, args[0])
+			return nil
+		}
+	}
+
 	switch args[0] {
 	case "diff":
 		return runDiff(ctx, opts, args[1:])
@@ -105,10 +117,12 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		printHelp(opts.Stdout)
 		return nil
 	default:
-		return fmt.Errorf("unknown command %q", args[0])
+		return fmt.Errorf("unknown command %q; run \"entire graph help\" to list commands", args[0])
 	}
 }
 
+// printHelp renders the grouped root listing. Per-command detail lives in
+// renderCommandHelp; both read from the commandDocs registry in help.go.
 func printHelp(out io.Writer) {
 	fmt.Fprintln(out, `entire-graph adds entity-level context to Entire checkpoints.
 

@@ -33,9 +33,22 @@ const (
 	ignoreSelfMatch
 )
 
+// graphIgnoreFileName is a repo-root ignore list the graph honors in addition to
+// .gitignore, using the same gitignore syntax. It exists for paths that are
+// tracked in git on purpose (so .gitignore cannot exclude them) yet should be
+// kept out of the code graph — e.g. vendored or generated sources such as the
+// multi-MB tree-sitter parser.c blobs, which only ever produce E_FILE_TOO_LARGE /
+// E_PARSE_ERROR noise and a false "degraded" completeness. It is loaded with the
+// same authority as the root .gitignore, before any explicit --ignore-file, so a
+// caller's --include-file can still override it.
+const graphIgnoreFileName = ".graphignore"
+
 func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) (ignoreMatcher, error) {
 	var matcher ignoreMatcher
 	if err := matcher.loadOptional(filepath.Join(repo, ".gitignore"), false); err != nil {
+		return ignoreMatcher{}, err
+	}
+	if err := matcher.loadOptional(filepath.Join(repo, graphIgnoreFileName), false); err != nil {
 		return ignoreMatcher{}, err
 	}
 	// info/exclude is the repository's private exclude list: same syntax and same
@@ -59,6 +72,9 @@ func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 
 func loadExplicitIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) (ignoreMatcher, error) {
 	var matcher ignoreMatcher
+	if err := matcher.loadOptional(filepath.Join(repo, graphIgnoreFileName), false); err != nil {
+		return ignoreMatcher{}, err
+	}
 	if err := matcher.loadExplicit(repo, ignoreFiles, includeFiles); err != nil {
 		return ignoreMatcher{}, err
 	}

@@ -12,25 +12,13 @@ import (
 // graph in a CONSUMING project (not this repo). It ships inside the binary so every install
 // carries the current doctrine; `init-agents` distributes it into a project's AGENTS.md /
 // CLAUDE.md via a small pointer block, and `agent-guide` prints it for any agent or human.
-//
-// The search-first half of this guide is what produced the official SWE-bench Multilingual
-// token result (300 instances / 9 languages: 54.9% weighted token savings vs a no-tool agent,
-// double the next-best tool's 27.4%, 8/9 languages; Sonnet 3x replication 57.7% vs 36.6%).
-// The verification half is a correction to that same run: the frugality clamp it carried ("do
-// not run builds or test suites", "one edit, then STOP") measurably cost correctness — 131/300
-// resolved (43.7%) vs the baseline's 150/300 (50.0%), McNemar p=0.013, and on the 31 paired
-// losses where both agents found the right file the graph agent ran zero builds/tests on 22 and
-// made a single edit on 22 (baseline 26/31 and 8/31), with two patches that could not compile.
-// The rules below therefore keep the token discipline (search instead of grepping, line ranges
-// instead of whole files, no re-confirming a deterministic index) and drop the clamp: verify
-// once, bounded, and check the sibling sites before finishing. See the graphmark repo for
-// methodology, the as-measured prompt, and caveats.
+// It is resolution-first: graph retrieval narrows exploration, but source inspection and
+// focused verification remain required before an agent declares the task complete.
 const agentGuide = `# entire-graph — instructions for coding agents (follow directly)
 
 You have a deterministic local code graph: ` + "`entire graph`" + ` (functions, classes, methods,
 types, routes + call/inheritance relations; no network). These instructions are FOR YOU, the
-agent reading this file. Following them is measured to cut session tokens roughly in half —
-while still shipping a patch that compiles.
+agent reading this file. Use the graph to narrow exploration without trading away correctness.
 
 ## The workflow (mandatory for locate/fix/change tasks)
 
@@ -38,99 +26,16 @@ Your FIRST action on any task that requires finding code must be ONE search:
 
     entire graph search --repo . --profile full --query "<the task or bug in one sentence>"
 
-The first five hits come back as the COMPLETE body of their enclosing function/method (marked
-` + "`complete-symbol`" + `; ` + "`snippet_start_line`..`snippet_end_line`" + ` is the whole callable, verbatim).
-When the hit you want is one of them, EDIT DIRECTLY FROM THE SEARCH OUTPUT — you already have
-the entire function, and opening the file costs a whole extra turn for nothing. Only when the
-hit you want carries a two-line locator window instead, open its file at the reported line
-range. Either way: make the minimal edit that fixes the root cause. The top hit is the fix site
-on most tasks — go straight there; do NOT re-search or grep to "confirm".
+Then open the top hit's file with your file-read tool (pass a line range around the reported
+line), inspect enough surrounding behavior to justify the change, and make the smallest complete
+edit. Treat graph output as evidence, not an oracle.
 
-Then finish the job. Two bounded steps, not a loop:
-
-**1. Complete the fix.** A fix is often not one edit in one place. Before you call it done, ask
-the graph once for the sites that share the defect:
-
-    entire graph impact --repo . --symbol X
-
-One shot: callers, callees, type consumers, data flow, co-change files, and same-container
-siblings. Apply the same change to the ones that carry the same bug; ignore the rest.
-
-**2. Verify once.** Compile what you touched, or run the nearest existing test. This is NOT
-optional overhead. An unverified edit is how a patch ships an unused variable, a wrong field or
-method name, or the wrong arity — and a patch that does not build fails 100% of the task. One
-verification turn costs one turn; a patch that does not compile costs everything.
-
-## The three blocks that replace a tool call
-
-One search returns three more blocks, and each one exists because it removes a round-trip that was
-measured out of real sessions. Use them as instructions, not as background reading.
-
-**SAME-CONCEPT LITERAL** — every place in the repository where the one distinctive literal that
-names this concept is spelled out, each tagged ` + "`EDIT`" + `, ` + "`CONSUMER`" + ` or ` + "`DOC`" + `, with the header stating
-the repository-wide totals. **This IS your sweep.** Fix the ` + "`EDIT`" + ` sites — they declare or register
-the concept. Ignore the ` + "`CONSUMER`" + ` ones — they only pass the string, so they need no change. ` + "`DOC`" + ` is
-prose that usually has to be updated with the behaviour. Do not grep for any of them: the totals in
-the header are the repository's own counts, so when the block is present you have already seen the
-whole set. A site the payload already printed is not repeated in the list.
-
-**VERIFY** — the narrowest command that exercises the file you are changing, derived from the
-repository's own build files, with the test file it targets and the evidence it came from. It is a
-command, not a suggestion. Run it ONCE when your edits are in. Read the error, fix exactly what it
-names, re-run at most once. Never hunt a green suite, and never write a throwaway test script. A
-patch that does not build fails 100% of the task, which costs far more than the one turn this takes.
-When the block is absent the repository's build files did not license a narrow command — use the
-narrowest one you know for the file you touched.
-
-**CLOSED-SET WARNING** — when the top hit is, or belongs to, a closed variant set (an enum, a sealed
-hierarchy, a union type, a typed const group), this names the switch/match sites over it and says
-for each whether it is exhaustive, what its fall-through arm does, and whether a missing arm is
-caught by the COMPILER or only at RUNTIME. If you are adding a variant and the block says
-` + "`checked at runtime`" + `, **add the missing arm before you stop** — that failure is a throw in
-production, not a build error, so nothing else in your workflow will catch it. The block only
-appears when the compiler would not catch it; its silence means the compiler has you covered.
-
-## Reference blocks (off by default)
-
-The CONTAINER MAP, TYPES IN THIS SIGNATURE and DECLARATIONS blocks are OFF by default. Measured on
-real sessions they cost turns and money without improving the result — they answer questions an
-agent was not about to ask, and their bytes are replayed on every later turn. They are still there
-for interactive use: ` + "`--container-map`" + `, ` + "`--signature-types`" + `, ` + "`--type-card`" + `, or
-` + "`--reference-blocks all`" + ` (env ` + "`ENTIRE_GRAPH_REFERENCE_BLOCKS`" + ` for a whole session).
-
-The output is grouped, and the groups mean different things:
-
-* the ranked list is **candidate fix sites** — start at the top.
-* **RELATED SITES** (` + "`section: \"related\"`" + `) are the other places this change usually has to
-  land: a near-duplicate body needs the SAME edit, a sibling implementation needs the same edit
-  in its own terms, a caller needs adjusting to the changed contract. Before you finish, check
-  them — a patch applied to one site of a family is the commonest way a correct fix still fails.
-* **DOCS & FIXTURES** (` + "`section: \"docs-and-fixtures\"`" + `) matched your words but hold no program
-  text. Do not spend a read there looking for the bug unless the task IS the document.
-* **COVERING TEST** (` + "`section: \"covering-test\"`" + `) is the existing test that exercises hit 1 — the
-  statement of what your fix has to ACHIEVE. It is not a fix site, and the VERIFY command above is
-  derived from its path.
-* **ALSO COVERING** names the OTHER tests that exercise the same code and states how many there
-  are. They all have to keep passing, so a change whose justification only satisfies the one test
-  printed above is not finished. Run them together — the VERIFY command already does.
-
-## Hard rules (each violation costs real money)
+## Hard rules
 
 1. SEARCH FIRST — never grep/find/cat to locate code before you have searched.
-2. ONE search, then act. Do not run a second search unless the first clearly missed.
-2a. TWO SEARCHES MAXIMUM, THEN SWITCH TOOLS. If two searches have not put you on the fix site,
-   the wording is not the problem and a third phrasing will not help — grep for a LITERAL from
-   the issue instead (an error message, an identifier, a flag, a rule or error code, a constant),
-   then read around the hit. Rephrasing the same question is the single most expensive way to
-   fail: measured on SWE-bench Multilingual, sessions that ran away did 8.4 searches on average
-   against 2.7 for normal sessions (worst case 23 near-identical rephrasings), and those runaway
-   sessions cost 2.2x what a no-tool agent spent on the same task. Search is how you start; it
-   is not how you recover.
-3. Do NOT re-read what search already gave you. A ` + "`complete-symbol`" + ` hit is the whole function:
-   edit it. Read a line range only for hits search returned as locators.
-4. NEVER read a whole file; read at most ~120 lines around the reported line.
-5. Impact question ("who calls X" / "what could this change break" / "where else needs this
-   same change")? ONE targeted query:
+2. READ focused source around the result. Widen the check when aliases, generated code, dynamic
+   dispatch, or related implementations could matter.
+3. Use graph follow-ups only when they answer a real question. For impact or callers, prefer:
        entire graph impact --repo . --symbol X
    (one shot: callers, callees, type consumers, data flow, co-change files, siblings)
    A caller is reported at its CALL SITE: ` + "`- f (path:476, def :24)`" + ` means the call is on line 476
@@ -173,34 +78,11 @@ The output is grouped, and the groups mean different things:
 ## When NOT to use the graph
 
 If the task already names the exact file and it is small, just read it — the graph saves tokens
-by eliminating exploration; when there is nothing to explore, skip it. Verification still
-applies: it is about the edit you made, not about how you found it.
-
-That is not a minor caveat, so here is the measurement behind it. A search payload enters the
-context and is re-read on every later turn, which costs roughly 10-20% more per turn. The graph
-therefore only pays when it DELETES turns you would otherwise spend grepping and reading. Measured
-on SWE-bench Multilingual, same instances, same prompt discipline, comparing against an agent with
-no tool at all:
-
-	baseline turns   turns the graph removed   total tokens
-	30.2             6.3                       -32.3%   (CI excludes zero)
-	15.6             -0.6 (it ADDED turns)     +13.9%   (not significant, n=19)
-	10.1             -0.9 (it ADDED turns)     +31.4%   (CI excludes zero)
-
-Break-even is near a 20-turn baseline. So: reach for the graph when you expect to hunt — an
-unfamiliar or large repository, a symptom whose cause is somewhere you cannot name, a change whose
-sibling sites you cannot enumerate. Skip it when you already know where to go, because on a task
-you would have solved in ten turns the payload is pure overhead. This is a property of the TASK,
-not of the tool being good or bad.
+by eliminating exploration; when there is nothing to explore, skip it.
 
 ## Reference
 
     locate  ->  entire graph search --repo . --profile full --query "..."
-    surface ->  entire graph def --repo . NAME    (what a name IS: for a type its fields + member
-                signatures — impl blocks, receiver methods, extension members, partial parts, one
-                hop of trait/module/base acquisition; for a method its OWNING type; for a
-                trait/interface WHO IMPLEMENTS it. Use it when you need a type's API, not as a
-                routine follow-up to search.)
     impact  ->  entire graph impact --repo . --symbol X   (one shot: callers, callees, type consumers, data flow, co-change, siblings)
     callers ->  entire graph neighbors --repo . --symbol X --relation CALLS --direction in
     change  ->  entire graph diff --base A --head B --json
@@ -264,9 +146,8 @@ func runInitAgents(opts Options, args []string) error {
 
 	pointer := agentPointerBegin + "\n" +
 		"This repo has the entire-graph code graph installed. Before exploring code with\n" +
-		"grep/find/whole-file reads, read .entire/graph-agent.md — the search-first, verify-once\n" +
-		"doctrine for coding agents: search instead of grepping, then check the sibling sites and\n" +
-		"compile (or run the nearest existing test) once before you finish.\n" +
+		"grep/find/whole-file reads, read .entire/graph-agent.md — resolution-first guidance\n" +
+		"for using graph retrieval, focused source inspection, and verification.\n" +
 		"@.entire/graph-agent.md\n" +
 		agentPointerEnd + "\n"
 
