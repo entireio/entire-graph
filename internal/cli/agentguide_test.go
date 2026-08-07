@@ -24,7 +24,7 @@ var (
 	guideHeadingRE   = regexp.MustCompile(`^### .*?([a-z][a-z0-9-]*) —`)
 	guideSectionRE   = regexp.MustCompile(`^#{1,3}\s`)
 	guideNegativeRE  = regexp.MustCompile(
-		"there is (?:\\*\\*)?no ((?:`--[a-z][a-z0-9-]*`(?:/)*)+) filter",
+		"(?i)there is (?:\\*\\*)?no ((?:`--[a-z][a-z0-9-]*`(?:/)*)+) filter",
 	)
 	guideDefaultRE = regexp.MustCompile("`(--[a-z][a-z0-9-]*)`[^\\n]*\\(default: ([^)]+)\\)")
 )
