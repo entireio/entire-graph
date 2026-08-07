@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"sort"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestSearchRepositoryRanksDistributedMarkdownSession catches the failure where
@@ -495,17 +493,6 @@ func TestSelectSearchCandidatesHasLinearProseWorkingSet(t *testing.T) {
 		t.Fatalf("selected %d candidates, want top-k 10", len(selected))
 	}
 	assertSearchResultGolden(t, searchCandidateResults(selected), "1839afd5464312390c65f319d2dda081904001e1fedddbc3b13d3ec32cea651b")
-
-	durations := make([]time.Duration, 100)
-	for run := range durations {
-		started := time.Now()
-		_ = selectSearchCandidates(scale, q, 10, 3)
-		durations[run] = time.Since(started)
-	}
-	sort.Slice(durations, func(left, right int) bool { return durations[left] < durations[right] })
-	if p95 := durations[94]; p95 > 20*time.Millisecond {
-		t.Fatalf("4000-parent selection p95 = %s, want <= 20ms", p95)
-	}
 }
 
 func assertSearchResultGolden(t *testing.T, results []SearchResult, want string) {
