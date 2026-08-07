@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -93,6 +94,47 @@ const (
 	// searchLiteralAnchorMaxLines bounds how much of the top hit's region is mined for literals. A
 	// whole-file "symbol" must not turn this into a corpus scan.
 	searchLiteralAnchorMaxLines = 200
+
+	// EDIT-SITE BODIES (--edit-site-bodies, off by default)
+	// -----------------------------------------------------
+	//
+	// The block's default form is a list of locations, and that is the right default: it exists to
+	// replace a repo-wide grep, and a grep's answer is locations. But an EDIT-role site is not
+	// listed for navigation — it is listed because "a change to the concept normally lands here",
+	// which means the agent's next action is an edit, and an edit needs the text it replaces. So
+	// under this flag the EDIT sites carry source and the others do not: a CONSUMER is listed
+	// precisely so the agent can decide NOT to open it, and printing its body would spend bytes
+	// arguing against the block's own advice.
+	//
+	// searchLiteralEditBodyMaxLines caps ONE site. It is deliberately a third of the ranked head's
+	// safety cap: a literal site is a place to look, and 60 lines is the measured median window an
+	// agent asks for when it re-opens a payload file.
+	searchLiteralEditBodyMaxLines = 60
+
+	// searchLiteralEditBodySites caps how many sites get a body, independently of how many the block
+	// lists. searchLiteralHitLimit already bounds the list below this in the default configuration;
+	// the separate cap is what keeps that a tuning decision rather than the only thing standing
+	// between this block and an unbounded payload.
+	searchLiteralEditBodySites = 8
+
+	// searchLiteralEditBodyMaxBytes is the per-site BYTE backstop, and it exists because the line cap
+	// above is not one. redis's src/commands.c is one command per line at ~400 B a line, so the
+	// literal's EDIT site there is a 25-line window worth 9.5 kB — a third of the whole payload
+	// ceiling spent on one grep result. 3 kB holds roughly a 60-line ordinary body, which is what the
+	// line cap was sized for, and clips a generated table to the rows around the hit instead.
+	searchLiteralEditBodyMaxBytes = 3072
+
+	// searchLiteralEditBodyContextLines is the window when NO indexed unit encloses the site. That
+	// happens on exactly the sites this flag is for — an unindented top-level line in a constant
+	// table or a generated registry, which searchLiteralRole calls EDIT from the text alone.
+	searchLiteralEditBodyContextLines = 12
+
+	// searchLiteralEditBodyClusterMaxBytes is the block's cap once bodies are attached. The default
+	// 560 B cap is sized for a list of locations and would drop every body; this one is sized for
+	// the worst case the two caps above allow (8 sites x 60 lines) and is applied instead — never
+	// as well — so the block still has exactly one stated ceiling. It is opt-in, additive, and its
+	// cost is reported in stats.literal_cluster_bytes like every other block's.
+	searchLiteralEditBodyClusterMaxBytes = 12 * 1024
 )
 
 // Literal roles. Three words, because three is what the agent's own account needed: where the
@@ -134,6 +176,17 @@ type SearchLiteralHit struct {
 	// Symbol is the enclosing symbol's name, empty for a documentation hit.
 	Symbol string `json:"symbol,omitempty"`
 	Role   string `json:"role"`
+	// Body is the site's source, present only on an EDIT-role site and only under
+	// --edit-site-bodies. It is a VERBATIM slice of the file with no line-number prefixes: agents
+	// copy it as the `old_string` anchor of an edit, and an inline number breaks that anchor. The
+	// range lives in BodyStartLine/BodyEndLine, which is where the header prints it from.
+	Body          string `json:"body,omitempty"`
+	BodyStartLine int    `json:"body_start_line,omitempty"`
+	BodyEndLine   int    `json:"body_end_line,omitempty"`
+	// BodyUnitStartLine/BodyUnitEndLine are the enclosing unit's TRUE span when the per-site line cap
+	// clipped the printed body out of a larger unit. Set only when something was elided.
+	BodyUnitStartLine int `json:"body_unit_start_line,omitempty"`
+	BodyUnitEndLine   int `json:"body_unit_end_line,omitempty"`
 }
 
 // buildSearchLiteralCluster picks the literal and locates it, or returns nil.
@@ -141,12 +194,15 @@ type SearchLiteralHit struct {
 // It returns nil far more often than not, and every one of those refusals is deliberate: no
 // distinctive literal in the top hit, no query word inside it, no exact repository-wide count
 // available, or a count that proves the literal is a magnet.
+// editBodies is --edit-site-bodies: attach source to the EDIT-role sites and price the block under
+// its own, larger cap.
 func buildSearchLiteralCluster(
 	results []SearchResult,
 	q searchQuery,
 	symbolsByFile map[string][]SymbolRecord,
 	index *searchNeedleIndex,
 	maxBytes int,
+	editBodies bool,
 ) *SearchLiteralCluster {
 	if index == nil || maxBytes <= 0 {
 		return nil
@@ -176,11 +232,109 @@ func buildSearchLiteralCluster(
 		if cluster == nil {
 			continue
 		}
+		if editBodies {
+			attachSearchLiteralEditBodies(cluster, symbolsByFile, index)
+		}
+		// The fitter derives the applicable cap from the cluster itself, so it is the same number
+		// here and in validateSearchContextBlockBudget: a block sized under one ceiling and checked
+		// against another is how a byte contract silently breaks.
 		if fitted := fitSearchLiteralCluster(cluster, maxBytes); fitted != nil {
 			return fitted
 		}
 	}
 	return nil
+}
+
+// searchLiteralClusterCap is the ceiling that applies to one cluster: the caller's default for a list
+// of locations, and searchLiteralEditBodyClusterMaxBytes once any site carries source. It is a
+// function of the cluster so every place that has to know the cap agrees on it.
+func searchLiteralClusterCap(cluster *SearchLiteralCluster, defaultMaxBytes int) int {
+	if searchLiteralClusterHasBodies(cluster) {
+		return searchLiteralEditBodyClusterMaxBytes
+	}
+	return defaultMaxBytes
+}
+
+func searchLiteralClusterHasBodies(cluster *SearchLiteralCluster) bool {
+	if cluster == nil {
+		return false
+	}
+	for _, hit := range cluster.Hits {
+		if hit.Body != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// attachSearchLiteralEditBodies gives every EDIT-role site its source, up to
+// searchLiteralEditBodySites sites. Files are read through the needle index's shared read budget, so
+// a site whose file the literal scan already hydrated costs no extra IO and a site past the budget is
+// simply left as a locator — a missing body degrades the block, it never fails the search.
+func attachSearchLiteralEditBodies(
+	cluster *SearchLiteralCluster,
+	symbolsByFile map[string][]SymbolRecord,
+	index *searchNeedleIndex,
+) {
+	if cluster == nil || index == nil {
+		return
+	}
+	sites := 0
+	for position := range cluster.Hits {
+		if sites >= searchLiteralEditBodySites {
+			return
+		}
+		hit := &cluster.Hits[position]
+		if hit.Role != SearchLiteralRoleEdit {
+			continue
+		}
+		lines, ok := index.readLines(hit.FilePath)
+		if !ok {
+			continue
+		}
+		body, ok := searchLiteralEditBody(symbolsByFile[hit.FilePath], hit.Line, lines)
+		if !ok {
+			continue
+		}
+		hit.Body = body.Body
+		hit.BodyStartLine, hit.BodyEndLine = body.BodyStartLine, body.BodyEndLine
+		hit.BodyUnitStartLine, hit.BodyUnitEndLine = body.BodyUnitStartLine, body.BodyUnitEndLine
+		sites++
+	}
+}
+
+// searchLiteralEditBody cuts one EDIT site's source.
+//
+// The unit wins when the graph has one — ANY enclosing symbol, not just a callable, because an EDIT
+// site is by construction outside a callable body (that is what makes it an EDIT rather than a
+// CONSUMER). When no indexed symbol covers the line the site is a top-level line the parser did not
+// resolve, and a bounded window around it is the widest honest answer.
+func searchLiteralEditBody(symbols []SymbolRecord, line int, lines []string) (SearchLiteralHit, bool) {
+	start, end := 0, 0
+	if unit, found := smallestSearchSymbolContainingLineWhere(symbols, line, nil); found {
+		start, end = clampRegion(unit.StartLine, unit.EndLine, len(lines))
+	}
+	if start == 0 {
+		start, end = clampRegion(
+			line-searchLiteralEditBodyContextLines, line+searchLiteralEditBodyContextLines, len(lines),
+		)
+	}
+	if start == 0 {
+		return SearchLiteralHit{}, false
+	}
+	body := SearchLiteralHit{}
+	unitStart, unitEnd := start, end
+	start, end = clipSearchUnitToCap(start, end, line, searchLiteralEditBodyMaxLines)
+	start, end = clipSearchUnitToBytes(lines, start, end, line, searchLiteralEditBodyMaxBytes)
+	if unitStart < start || unitEnd > end {
+		body.BodyUnitStartLine, body.BodyUnitEndLine = unitStart, unitEnd
+	}
+	body.BodyStartLine, body.BodyEndLine = start, end
+	body.Body = strings.Join(lines[start-1:end], "\n")
+	if strings.TrimSpace(body.Body) == "" {
+		return SearchLiteralHit{}, false
+	}
+	return body, true
 }
 
 // searchLiteralCandidate is a candidate literal together with the file set that can contain it.
@@ -556,6 +710,15 @@ func classifySearchLiteralHits(
 		})
 	}
 	cluster.Unclassified = len(unclassifiedFiles)
+	// AT LEAST ONE LIVE EDIT SITE, or the block does not exist.
+	//
+	// The block's promise is "these are the other places this concept is named, and the EDIT ones are
+	// where a change lands". Measured on nushell: all three EDIT sites were COMMENTED-OUT code, so the
+	// block sent the agent to patch a comment. A commented or string-literal occurrence is real text and
+	// a useless fix site, and the distinction is cheap to make from the line itself.
+	if !searchLiteralClusterHasLiveEditSite(cluster, scan) {
+		return nil
+	}
 	// One listed site is enough once the repository-wide totals are in the header: the totals are the
 	// answer to "have I seen everywhere this concept is named", and a single site the payload did not
 	// already print is still a grep the agent does not have to run.
@@ -631,14 +794,39 @@ func searchLiteralSymbolName(symbol SymbolRecord) string {
 // fitSearchLiteralCluster shrinks the block until it fits its cap, dropping hits from the END so
 // the earliest (path-ordered, hence definition-first in most layouts) survive. It never rewrites
 // HitsTotal: the whole point is that the count stays the repository's count while the list shrinks.
+// Bodies yield BEFORE hits do: a site is a grep the agent does not have to run whether or not its
+// source is printed, so dropping a body costs less than dropping the site itself. They yield from the
+// END for the same reason hits do — the earliest sites are the definition-first ones.
+// maxBytes is the cap for a cluster of LOCATIONS. A cluster carrying bodies is held to
+// searchLiteralEditBodyClusterMaxBytes instead, and the applicable cap is re-derived after every
+// reduction — so a cluster that loses its last body falls back under the location cap here rather
+// than shipping over it and failing the contract check.
 func fitSearchLiteralCluster(cluster *SearchLiteralCluster, maxBytes int) *SearchLiteralCluster {
+	for searchLiteralClusterCost(cluster) > searchLiteralClusterCap(cluster, maxBytes) {
+		position := lastSearchLiteralBody(cluster)
+		if position < 0 {
+			break
+		}
+		cluster.Hits[position].Body = ""
+		cluster.Hits[position].BodyStartLine, cluster.Hits[position].BodyEndLine = 0, 0
+		cluster.Hits[position].BodyUnitStartLine, cluster.Hits[position].BodyUnitEndLine = 0, 0
+	}
 	for len(cluster.Hits) >= 1 {
-		if searchLiteralClusterCost(cluster) <= maxBytes {
+		if searchLiteralClusterCost(cluster) <= searchLiteralClusterCap(cluster, maxBytes) {
 			return cluster
 		}
 		cluster.Hits = cluster.Hits[:len(cluster.Hits)-1]
 	}
 	return nil
+}
+
+func lastSearchLiteralBody(cluster *SearchLiteralCluster) int {
+	for position := len(cluster.Hits) - 1; position >= 0; position-- {
+		if cluster.Hits[position].Body != "" {
+			return position
+		}
+	}
+	return -1
 }
 
 // searchLiteralClusterCost measures the block on the LARGER of its two wire forms, exactly as the
@@ -679,6 +867,11 @@ func searchLiteralClusterHeader(cluster *SearchLiteralCluster) string {
 
 // RenderSearchLiteralCluster renders the block for a text reader. One line per hit, the role last
 // so the column an agent scans is the one that says "do I have to open this".
+//
+// A site carrying a body (EDIT role, --edit-site-bodies) prints its RANGE rather than its single
+// line — `path:START-END symbol EDIT` — because the range is what describes the source underneath,
+// and then the source itself, unprefixed and verbatim, followed by the elision note when the line
+// cap clipped it. Sites without a body keep the single-line locator form exactly as before.
 func RenderSearchLiteralCluster(cluster *SearchLiteralCluster) []byte {
 	if cluster == nil || len(cluster.Hits) == 0 {
 		return nil
@@ -686,11 +879,79 @@ func RenderSearchLiteralCluster(cluster *SearchLiteralCluster) []byte {
 	var buffer strings.Builder
 	buffer.WriteString(searchLiteralClusterHeader(cluster) + "\n")
 	for _, hit := range cluster.Hits {
-		fmt.Fprintf(&buffer, "  %s:%d", hit.FilePath, hit.Line)
+		if hit.Body != "" {
+			fmt.Fprintf(&buffer, "  %s:%d-%d", hit.FilePath, hit.BodyStartLine, hit.BodyEndLine)
+		} else {
+			fmt.Fprintf(&buffer, "  %s:%d", hit.FilePath, hit.Line)
+		}
 		if hit.Symbol != "" {
 			fmt.Fprintf(&buffer, " %s", hit.Symbol)
 		}
 		fmt.Fprintf(&buffer, " %s\n", hit.Role)
+		if hit.Body == "" {
+			continue
+		}
+		buffer.WriteString(hit.Body + "\n")
+		if note := SearchUnitElisionNote(
+			hit.BodyStartLine, hit.BodyEndLine, hit.BodyUnitStartLine, hit.BodyUnitEndLine,
+		); note != "" {
+			buffer.WriteString(note + "\n")
+		}
+		buffer.WriteString("\n")
 	}
 	return []byte(buffer.String())
+}
+
+// searchLiteralClusterHasLiveEditSite reports whether any EDIT-role site is LIVE CODE rather than a
+// comment, a docstring or the inside of a string literal.
+//
+// The test is on the occurrence's own line text, which the needle scan already carries, so it costs no
+// IO. It is deliberately about the LINE and not the language: a comment lead-in is a comment in every
+// language in scope, and a line whose only content is a quoted string is data. Both are places the
+// concept is NAMED and neither is a place a patch lands.
+func searchLiteralClusterHasLiveEditSite(cluster *SearchLiteralCluster, scan searchNeedleScan) bool {
+	text := make(map[string]string, len(scan.hits))
+	for _, hit := range scan.hits {
+		text[hit.filePath+":"+strconv.Itoa(hit.line)] = hit.text
+	}
+	sawEdit := false
+	for _, hit := range cluster.Hits {
+		if hit.Role != SearchLiteralRoleEdit {
+			continue
+		}
+		sawEdit = true
+		if searchLiteralLineIsLiveCode(text[hit.FilePath+":"+strconv.Itoa(hit.Line)]) {
+			return true
+		}
+	}
+	// A cluster with no EDIT site at all is unaffected: it is a CONSUMER/DOC listing, which is a
+	// legitimate answer to "where else is this named" and never claimed to name a fix site.
+	return !sawEdit
+}
+
+// searchLiteralCommentLeads are the line lead-ins that make a line a comment in every language this
+// package indexes. Docstring delimiters are included because a Python or Ruby docstring is prose.
+var searchLiteralCommentLeads = []string{"//", "#", "--", "*", "/*", "%", ";;", `"""`, `'''`}
+
+// searchLiteralLineIsLiveCode reports whether a source line is executable text. An UNKNOWN line is
+// treated as live: the scan is the authority on where the occurrence is, and refusing to classify is
+// safer than suppressing a real block on missing evidence.
+func searchLiteralLineIsLiveCode(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return true
+	}
+	for _, lead := range searchLiteralCommentLeads {
+		if strings.HasPrefix(trimmed, lead) {
+			return false
+		}
+	}
+	// A line that is nothing but a quoted string (with an optional trailing comma) is data, not code.
+	if body := strings.TrimRight(trimmed, ","); len(body) > 1 {
+		first, last := body[0], body[len(body)-1]
+		if (first == byte('"') || first == byte(0x27) || first == byte('`')) && first == last {
+			return false
+		}
+	}
+	return true
 }

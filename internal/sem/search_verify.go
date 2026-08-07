@@ -3,8 +3,10 @@ package sem
 import (
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"path"
 	"strings"
+	"unicode/utf8"
 )
 
 // The verify command
@@ -32,11 +34,68 @@ import (
 const (
 	// searchVerifyCommandMaxBytes caps the block on the larger of its two wire forms. One command
 	// line, one target line, one short derivation.
-	searchVerifyCommandMaxBytes = 320
+	// Raised from 320 to hold searchVerifyContractNote, a fixed-size addition. It is the cheapest block
+	// in the payload measured against what it prevents: post-edit verify churn cost +$4.11 across three
+	// sessions, and on google__gson-1014 a hand-assembled javac/JUnit classpath was 55.6% of the whole
+	// session's output tokens.
+	// 768: the guard clause and the `+ guard X` provenance are a fixed addition on top of the contract
+	// note, and at 640 they degraded the DERIVATION away on exactly the instance the guard work was for.
+	// Losing provenance to keep a define is the wrong trade — the define is on the command line either
+	// way, and the derivation is what lets a reader judge it.
+	searchVerifyCommandMaxBytes = 768
 
-	// searchVerifyMaxDepth bounds the ancestor walk for a build manifest. Deeper than this and the
-	// "nearest module" is not a module, it is a directory.
-	searchVerifyMaxDepth = 8
+	// searchVerifyContractNote is the CONTRACT on the emitted command, and every clause is a measured
+	// failure mode rather than general advice:
+	//
+	//   - "once, then fix and re-run the same command" — sessions ran the command, hit an environment
+	//     error, and started looking for a different way to test instead of reading the failure.
+	//   - "no alternative harness or hand-assembled classpath" — gson-1014 built its own javac +
+	//     JUnit invocation from scratch; that one detour was 55.6% of its output tokens.
+	//   - "no revert-and-reapply confirmation" — several sessions undid a correct edit to "prove" it
+	//     was the cause, then reapplied it, paying twice for no new information.
+	//
+	// It does not change WHEN a VERIFY line is emitted, only what the line promises about how to use it.
+	searchVerifyContractNote = "  run it ONCE after editing; if it fails, fix the code and re-run THIS command.\n" +
+		"  do not build an alternative test harness, hand-assemble a classpath, or re-verify by\n" +
+		"  reverting and reapplying the edit.\n"
+
+	// searchVerifyMaxDepth bounds the ancestor walk for a build manifest.
+	//
+	// Raised 8 -> 32. Eight levels is not "deep enough to be a directory rather than a module" in the
+	// repositories this actually runs on: monorepo test trees reach 9-14 segments
+	// (packages/docusaurus-theme-classic/src/theme/CodeBlock/Content/String.tsx is 7 before the file,
+	// and Java's src/test/java/<group>/<artifact>/... routinely passes 12), and the walk terminating
+	// early is indistinguishable from "no build system here" — which is one of the four measured causes
+	// of VERIFY being non-derivable. The walk is cheap: each level is a handful of cached path probes
+	// bounded by searchVerifyMaxReads, and it stops at the first manifest that licenses a command.
+	searchVerifyMaxDepth = 32
+
+	// VERIFY TIERS. The block reports which rung of the ladder produced it, because "does this behave"
+	// and "does this parse" are different claims and a reader that cannot tell them apart has to
+	// re-derive the command to find out. The harness also buckets sessions by tier, which is how the
+	// 12/12 unrunnable-command finding was measured in the first place.
+	searchVerifyTierNarrow     = "narrow"
+	searchVerifyTierSuite      = "suite"
+	searchVerifyTierBuildCheck = "build-check"
+	searchVerifyTierNone       = "none"
+
+	// searchVerifyNoneCommand is the residual floor. A payload with ranked results and no derivable
+	// command used to emit NOTHING, and silent absence is the worst outcome available: paired with the
+	// stop-early doctrine it lets an agent ship unverified, and it is indistinguishable from a bug in
+	// the deriver. One line that states the fact and prescribes the fallback costs 96 bytes.
+	searchVerifyNoneCommand = "none derivable (no build manifest found) - syntax-check the file you edited and stop."
+
+	// searchVerifyRunnerNote annotates a command whose runner is not installed HERE. It is an
+	// annotation and never a suppression: the command is still the right one, and a caller who cannot
+	// run it needs to be told to stop rather than to go toolchain-hunting. Measured: suppressing such
+	// commands instead of annotating them moved Haiku from -49.5% to -42.5%.
+	searchVerifyRunnerNote = "\n  NOTE: this command's runner is not installed in this checkout. Run it once; if it fails" +
+		" on the invocation rather than on your code, do NOT go looking for a toolchain — syntax-check" +
+		" the file you changed and stop."
+
+	// searchVerifyPreFixStatusMaxBytes caps the caller-supplied PRE-FIX line. It is rendered verbatim,
+	// so the cap is the only thing standing between a wrapper bug and an unbounded payload.
+	searchVerifyPreFixStatusMaxBytes = 200
 
 	// searchVerifyMaxReads bounds manifest and mirror-test probes. Most of them MISS, and a miss is a
 	// path lookup rather than a file, which is why the bound can be generous: it buys a build system
@@ -53,6 +112,21 @@ type SearchVerifyCommand struct {
 	// DerivedFrom names the repository evidence behind the command, so a reader can judge it
 	// instead of trusting it.
 	DerivedFrom string `json:"derived_from"`
+	// Tier is which rung of the ladder produced this command: narrow, suite, build-check or none.
+	Tier string `json:"tier,omitempty"`
+	// RunnerMissing marks a command whose executable is not present in this checkout. It is rendered
+	// as a NOTE beside the command and is deliberately excluded from the byte cap — see
+	// searchVerifyCommandCost.
+	RunnerMissing bool `json:"runner_missing,omitempty"`
+	// Prefix is a caller-supplied decorator inserted after any `cd <dir> &&` the derivation added, so
+	// a harness can bake in a grep-able token without changing the "VERIFY: " line start.
+	Prefix string `json:"prefix,omitempty"`
+	// Guard is the conditional-compilation guard the covering test sits inside, as written. Reported so
+	// a reader can see WHY a define is on the command line, or why coverage is not claimed.
+	Guard string `json:"guard,omitempty"`
+	// PreFixStatus is caller-supplied text rendered verbatim as a `PRE-FIX:` line under the command.
+	// The harness computes it (it already validates the pristine tree); the binary only renders it.
+	PreFixStatus string `json:"pre_fix_status,omitempty"`
 }
 
 // searchVerifyEvidence is the bounded view of the repository the derivation is allowed to consult.
@@ -62,6 +136,14 @@ type searchVerifyEvidence struct {
 	cache map[string]string
 	miss  map[string]bool
 	reads int
+	// lookPath resolves an executable name the way exec.LookPath does. Injected so the runner check is
+	// a pure function of its inputs in tests instead of a fact about the machine running them.
+	lookPath func(string) (string, error)
+	// preFixStatus is the caller's --verify-prefix-status line, rendered verbatim and capped.
+	preFixStatus string
+	// prefix is the caller's --verify-prefix decorator, carried here because the derivations build the
+	// command string and the renderer must not have to re-parse it.
+	prefix string
 }
 
 // file returns a repository file's content, or false. It never reads more than
@@ -108,6 +190,9 @@ type searchVerifySubject struct {
 	// testEvidence names where testPath came from, so the derivation the block reports is the truth
 	// rather than a label: the payload's covering test, or a conventional mirror file that exists.
 	testEvidence string
+	// symbolName is the top hit's own symbol, used only to recover a test CASE name out of a test file
+	// when the payload's covering-test section could not supply one.
+	symbolName string
 }
 
 // buildSearchVerifyCommand derives the command, or returns nil.
@@ -117,7 +202,11 @@ func buildSearchVerifyCommand(
 ) *SearchVerifyCommand {
 	subject, ok := searchVerifySubjectFor(results)
 	if !ok {
-		return nil
+		// ZERO PRIMARY RESULTS (or all of them non-program text) still gets the residual floor. Silent
+		// absence is the worst outcome available: it is indistinguishable from a deriver bug, and paired
+		// with the stop-early doctrine it lets an agent ship unverified. Measured on three.js-25687,
+		// whose every ranked hit is a generated bundle and which emitted no VERIFY line at all.
+		return searchVerifyResidualFloor("", evidence.prefix, evidence.preFixStatus)
 	}
 	if subject.testPath == "" {
 		// The payload found no covering test, but the repository's own layout often names one anyway.
@@ -129,6 +218,9 @@ func buildSearchVerifyCommand(
 		}
 	}
 	command := deriveSearchVerifyCommand(subject, &evidence)
+	if command != nil && command.Tier == "" {
+		command.Tier = searchVerifyTierNarrow
+	}
 	if command == nil {
 		// No narrow command could be derived — most often because the payload found no covering test
 		// (a `test_<name>` minitest file the mirror lookup cannot name, a suite with no per-file
@@ -140,14 +232,48 @@ func buildSearchVerifyCommand(
 		// the code) cannot happen here. The command is slower and unfiltered, so it is labeled as the
 		// whole suite; a slow-but-real verification beats a whole failed task.
 		command = deriveSearchVerifySuiteCommand(subject, &evidence)
+		if command != nil {
+			command.Tier = searchVerifyTierSuite
+		}
 	}
 	if command == nil {
-		return nil
+		// Third rung: does what I just wrote PARSE? A different question from "does it behave", labelled
+		// as such, and the only rung that fires when no manifest in the tree licenses a test command.
+		command = deriveSearchVerifyBuildCheck("", subject, &evidence)
+	}
+	if command == nil {
+		return searchVerifyResidualFloor(subject.sourcePath, evidence.prefix, evidence.preFixStatus)
+	}
+	command.Prefix, command.PreFixStatus = evidence.prefix, evidence.preFixStatus
+	// The runner check ANNOTATES; it never suppresses. See searchVerifyRunnerNote.
+	command.RunnerMissing = searchVerifyRunnerMissing(command.Command, &evidence)
+	// DEGRADE, never delete. Returning nil on overflow reintroduced silent absence through a byte
+	// budget — the exact failure the residual floor exists to prevent. The command line is the
+	// irreducible part, so provenance yields first and the target second.
+	if searchVerifyCommandCost(command) > searchVerifyCommandMaxBytes {
+		command.DerivedFrom = "(derivation omitted for length)"
 	}
 	if searchVerifyCommandCost(command) > searchVerifyCommandMaxBytes {
-		return nil
+		command.Targets = ""
 	}
 	return command
+}
+
+// searchVerifyResidualFloor is the last rung: no manifest, no test file, no single-file checker. It
+// states the fact and prescribes the fallback, which is strictly better than the silence it replaces.
+func searchVerifyResidualFloor(sourcePath, prefix, preFixStatus string) *SearchVerifyCommand {
+	targets := sourcePath
+	if targets == "" {
+		targets = "the file you edited"
+	}
+	return &SearchVerifyCommand{
+		Command:      searchVerifyNoneCommand,
+		Targets:      targets,
+		DerivedFrom:  "no manifest, no test file, no single-file checker for this language",
+		Tier:         searchVerifyTierNone,
+		Prefix:       prefix,
+		PreFixStatus: preFixStatus,
+	}
 }
 
 // searchVerifySubjectFor reads the subject out of the payload: the top candidate fix site, and
@@ -184,6 +310,12 @@ func searchVerifySubjectFor(results []SearchResult) (searchVerifySubject, bool) 
 			}
 			if subject.sourcePath == "" {
 				subject.sourcePath = filePathToSlash(result.FilePath)
+				if subject.symbolName == "" {
+					subject.symbolName = result.QualifiedName
+					if subject.symbolName == "" {
+						subject.symbolName = result.SymbolName
+					}
+				}
 			}
 		case searchSectionCoveringTest:
 			if subject.testPath == "" && result.FilePath != "" {
@@ -226,8 +358,15 @@ func searchVerifyTestName(result SearchResult) string {
 // `src/Foo.php` -> `tests/FooTest.php` and `hooks/src/index.js` -> `hooks/test/index.test.js` are the
 // same rule rather than two.
 var (
+	// SUFFIX affixes: `parser_test.go`, `parser.test.ts`, `ParserTest.java`, `parser_spec.rb`.
 	searchVerifyTestAffixes = []string{"_test", ".test", "Test", "_spec", ".spec", "Spec", "-test"}
-	searchVerifyTestDirs    = [][2]string{
+	// PREFIX affixes are the other half of the world's conventions and were entirely missing, which is
+	// one of the four measured causes of a non-derivable VERIFY: Python and Ruby name the file
+	// `test_<stem>.py` / `test_<stem>.rb`, JUnit and xUnit ports name the class `Test<Stem>`, and RSpec
+	// uses `<stem>_spec` under spec/ but `spec_<stem>` in some layouts. A suffix-only probe finds none
+	// of them, so a repository with a perfectly conventional test tree reported "no covering test".
+	searchVerifyTestPrefixes = []string{"test_", "test-", "Test", "spec_", "spec-"}
+	searchVerifyTestDirs     = [][2]string{
 		{"src/main/java/", "src/test/java/"},
 		{"src/main/kotlin/", "src/test/kotlin/"},
 		{"src/main/", "src/test/"},
@@ -236,6 +375,15 @@ var (
 		{"src/", "spec/"},
 		{"lib/", "test/"},
 		{"lib/", "spec/"},
+		// test/ <-> spec/ in BOTH directions, and at any depth: a source file already under `test/`
+		// (a fixture, a helper) has its real spec under `spec/`, and Ruby/Elixir projects mix the two
+		// conventions inside one tree. Without these the mirror lookup could only ever walk src -> test.
+		{"test/", "spec/"},
+		{"spec/", "test/"},
+		{"tests/", "spec/"},
+		{"spec/", "tests/"},
+		{"app/", "spec/"},
+		{"app/", "test/"},
 	}
 )
 
@@ -256,13 +404,28 @@ func searchVerifyMirrorTest(sourcePath string, evidence *searchVerifyEvidence) s
 	if stem == "" || extension == "" {
 		return ""
 	}
+	// Every affix is probed in BOTH positions. `names` is the affixed basenames to look for; the
+	// candidate directories below are the same in either case, so prefix support costs one extra loop
+	// over a bounded list and no new IO shape.
+	names := make([]string, 0, len(searchVerifyTestAffixes)+len(searchVerifyTestPrefixes))
 	for _, affix := range searchVerifyTestAffixes {
+		names = append(names, stem+affix)
+	}
+	for _, prefix := range searchVerifyTestPrefixes {
+		names = append(names, prefix+stem)
+		// `Test<Stem>` needs the stem's own capital: `parser` -> `TestParser`, not `Testparser`.
+		if prefix == "Test" && stem != "" {
+			names = append(names, prefix+strings.ToUpper(stem[:1])+stem[1:])
+		}
+	}
+	for _, affixed := range names {
 		candidates := []string{
-			searchVerifyJoin(dir, stem+affix+"."+extension),
-			searchVerifyJoin(searchVerifyJoin(dir, "__tests__"), stem+affix+"."+extension),
+			searchVerifyJoin(dir, affixed+"."+extension),
+			searchVerifyJoin(searchVerifyJoin(dir, "__tests__"), affixed+"."+extension),
 			searchVerifyJoin(searchVerifyJoin(dir, "__tests__"), stem+"."+extension),
-			searchVerifyJoin(searchVerifyJoin(dir, "test"), stem+affix+"."+extension),
-			searchVerifyJoin(searchVerifyJoin(dir, "tests"), stem+affix+"."+extension),
+			searchVerifyJoin(searchVerifyJoin(dir, "test"), affixed+"."+extension),
+			searchVerifyJoin(searchVerifyJoin(dir, "tests"), affixed+"."+extension),
+			searchVerifyJoin(searchVerifyJoin(dir, "spec"), affixed+"."+extension),
 		}
 		for _, swap := range searchVerifyTestDirs {
 			if !strings.HasPrefix(sourcePath, swap[0]) && !strings.Contains(sourcePath, "/"+swap[0]) {
@@ -274,7 +437,7 @@ func searchVerifyMirrorTest(sourcePath string, evidence *searchVerifyEvidence) s
 				mirrorDir = ""
 			}
 			candidates = append(candidates,
-				searchVerifyJoin(mirrorDir, stem+affix+"."+extension),
+				searchVerifyJoin(mirrorDir, affixed+"."+extension),
 				searchVerifyJoin(mirrorDir, stem+"."+extension),
 			)
 		}
@@ -332,6 +495,7 @@ var searchVerifyDerivations = []func(string, searchVerifySubject, *searchVerifyE
 	deriveSearchVerifyComposer,
 	deriveSearchVerifyPytest,
 	deriveSearchVerifyRuby,
+	deriveSearchVerifyCMake,
 	deriveSearchVerifyMake,
 }
 
@@ -374,6 +538,7 @@ var searchVerifySuiteDerivations = []func(string, *searchVerifyEvidence) *Search
 	deriveSearchVerifySuiteComposer,
 	deriveSearchVerifySuitePytest,
 	deriveSearchVerifySuiteRuby,
+	deriveSearchVerifySuiteCMake,
 	deriveSearchVerifySuiteMake,
 }
 
@@ -440,10 +605,15 @@ func deriveSearchVerifySuiteNode(dir string, evidence *searchVerifyEvidence) *Se
 	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
 		return nil
 	}
-	if _, ok := searchVerifyNodeRunnerFromScript(parsed.Scripts["test"]); !ok {
+	// devDeps-aware, matching the NARROW tier. A package.json whose scripts.test is `echo "no test"` or
+	// absent still declares jest/mocha/vitest in devDependencies, and that declaration is the
+	// repository's own statement of its runner. Reading only scripts.test made the suite tier silent on
+	// exactly the manifests the narrow tier could already read — a parity gap, not a policy.
+	runner, evidenceKind := searchVerifyNodeRunnerFromManifest(parsed)
+	if runner == "" {
 		return nil
 	}
-	return searchVerifySuiteCommand(dir, "npm test", manifest+" scripts.test")
+	return searchVerifySuiteCommand(dir, "npm test", manifest+" "+evidenceKind)
 }
 
 func deriveSearchVerifySuiteComposer(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
@@ -583,6 +753,7 @@ func deriveSearchVerifyCargo(dir string, subject searchVerifySubject, evidence *
 		selector = " -p " + name
 	}
 	target, filter, targets := "", "", "package "+name
+	guardNote := searchVerifyGuard{}
 	if relative, inside := searchVerifyRelative(dir, subject.testPath); inside && subject.testPath != "" {
 		switch {
 		case strings.HasPrefix(relative, "tests/"):
@@ -592,8 +763,29 @@ func deriveSearchVerifyCargo(dir string, subject searchVerifySubject, evidence *
 		}
 		if target != "" {
 			targets = subject.testPath
-			if subject.testName != "" {
-				filter = " " + subject.testName
+			// RECOVER the case name from the test file itself when the payload could not supply one. A
+			// file-level command re-runs everything in the file; a named case is what makes VERIFY
+			// narrow. The recovery reads the file's own `#[test]` declarations and picks the one
+			// covering MOST of the symbol's words, so it can only ever name a test that exists.
+			testName := subject.testName
+			if testName == "" {
+				testName = searchVerifyRecoveredTestName(
+					subject.testPath, subject.symbolName, evidence, searchVerifyRustTestNames,
+				)
+			}
+			if testName != "" {
+				filter = " " + testName
+			}
+			// A `#[cfg(feature = "x")]` test is compiled out unless the feature is on, and Cargo can turn
+			// it on — but only if the manifest declares it. An undeclared feature is a hard cargo error,
+			// so an unsatisfiable guard is reported instead of guessed at.
+			if guard := searchVerifyGuardForSubject(subject, evidence); guard.present() {
+				guardNote = guard
+				if guard.feature != "" && strings.Contains(content, guard.feature) &&
+					strings.Contains(content, "[features]") {
+					selector += " --features " + guard.feature
+					guardNote.satisfied = true
+				}
 			}
 		}
 	}
@@ -608,7 +800,15 @@ func deriveSearchVerifyCargo(dir string, subject searchVerifySubject, evidence *
 	if target != "" {
 		derived += " + " + subject.testEvidence + " path"
 	}
-	return &SearchVerifyCommand{Command: command, Targets: targets, DerivedFrom: derived}
+	switch {
+	case guardNote.satisfied:
+		derived += " + feature " + guardNote.feature
+	case guardNote.present():
+		derived += fmt.Sprintf(searchVerifyGuardUnsatisfied, guardNote.raw)
+	}
+	return &SearchVerifyCommand{
+		Command: command, Targets: targets, DerivedFrom: derived, Guard: guardNote.raw,
+	}
 }
 
 // searchVerifyTomlPackageName reads `name` out of a Cargo manifest's `[package]` table. It is a
@@ -655,8 +855,15 @@ func deriveSearchVerifyGo(dir string, subject searchVerifySubject, evidence *sea
 		if _, inside := searchVerifyRelative(dir, subject.testPath); inside {
 			packagePath = path.Dir(subject.testPath)
 			targets = subject.testPath
-			if strings.HasPrefix(subject.testName, "Test") {
-				filter = fmt.Sprintf(" -run '^%s$'", subject.testName)
+			testName := subject.testName
+			if testName == "" {
+				// Same recovery as Cargo: `go test -run` needs a name, and the test file declares them.
+				testName = searchVerifyRecoveredTestName(
+					subject.testPath, subject.symbolName, evidence, searchVerifyGoTestNames,
+				)
+			}
+			if strings.HasPrefix(testName, "Test") {
+				filter = fmt.Sprintf(" -run '^%s$'", testName)
 			}
 		}
 	}
@@ -979,11 +1186,18 @@ func searchVerifyCommandCost(command *SearchVerifyCommand) int {
 	if command == nil {
 		return 0
 	}
-	encoded, err := json.Marshal(command)
+	// The missing-runner NOTE is excluded from the cost. It is a fixed addendum that exists to stop a
+	// caller hunting for a toolchain, and letting its bytes push a command over the cap would delete the
+	// whole block — reintroducing, through a byte budget, exactly the suppression that measured worse on
+	// Haiku (-49.5% -> -42.5%). The cap governs the command, its target and its derivation; the note
+	// rides along.
+	bare := *command
+	bare.RunnerMissing = false
+	encoded, err := json.Marshal(&bare)
 	if err != nil {
 		return 0
 	}
-	return maxInt(len(encoded), len(RenderSearchVerifyCommand(command)))
+	return maxInt(len(encoded), len(RenderSearchVerifyCommand(&bare)))
 }
 
 // RenderSearchVerifyCommand renders the block for a text reader: the command on its own line so it
@@ -992,12 +1206,662 @@ func RenderSearchVerifyCommand(command *SearchVerifyCommand) []byte {
 	if command == nil || command.Command == "" {
 		return nil
 	}
-	return []byte(fmt.Sprintf("VERIFY: %s\n  targets %s (from %s)\n",
-		command.Command, command.Targets, command.DerivedFrom))
+	// "VERIFY: " stays byte-identical at line start whatever else changes — every harness and every
+	// prior measurement keys on that prefix.
+	rendered := "VERIFY: " + searchVerifyDecorated(command) + "\n"
+	evidenceLine := "  targets " + command.Targets
+	if command.Targets == "" {
+		evidenceLine = "  targets (omitted for length)"
+	}
+	if command.DerivedFrom != "" {
+		evidenceLine += " (from " + command.DerivedFrom + ")"
+	}
+	if command.Tier != "" {
+		evidenceLine += " tier=" + command.Tier
+	}
+	if command.RunnerMissing {
+		evidenceLine += searchVerifyRunnerNote
+	}
+	rendered += evidenceLine + "\n"
+	// The guard the covering test sits inside, as written. One line, and it is the answer to the two
+	// questions the command otherwise invites: why is there a -D on my cmake line, or why does the
+	// derivation say coverage is not claimed.
+	if command.Guard != "" {
+		rendered += "  guarded by: " + command.Guard + "\n"
+	}
+	// PRE-FIX status is computed by the CALLER (it already validates the pristine tree) and rendered
+	// verbatim here, capped. The binary deliberately does not interpret it: a status the tool invented
+	// would be a claim about a run it never made.
+	if status := searchVerifyTruncate(command.PreFixStatus, searchVerifyPreFixStatusMaxBytes); status != "" {
+		rendered += "  PRE-FIX: " + status + "\n"
+	}
+	if command.Tier == searchVerifyTierNone {
+		// The residual floor prescribes its own action; the full contract note would be advice about a
+		// command that does not exist.
+		return []byte(rendered)
+	}
+	return []byte(rendered + searchVerifyContractNote)
 }
 
 // filePathToSlash normalizes a repository path for the string handling above. Repository paths are
 // already slash-separated everywhere in this package; this states it at the boundary.
 func filePathToSlash(filePath string) string {
 	return strings.ReplaceAll(filePath, "\\", "/")
+}
+
+func searchVerifyRecoveredTestName(
+	testPath, symbol string,
+	evidence *searchVerifyEvidence,
+	declared func(string) []string,
+) string {
+	if testPath == "" || symbol == "" {
+		return ""
+	}
+	content, ok := evidence.file(testPath)
+	if !ok {
+		return ""
+	}
+	words := searchVerifyNameWords(symbol)
+	if len(words) == 0 {
+		return ""
+	}
+	// Rank by HOW MUCH of the symbol a candidate matches, not by whether it matches at all.
+	//
+	// Accepting any single word and then preferring the shortest name actively selects the wrong test
+	// whenever the symbol ends in a common suffix. Measured on caddyserver/caddy-4943, where
+	// `CookieFilter.Filter` yields the words {cookie, filter}: `TestHashFilter` matches only the
+	// generic `filter` and is SHORTER than `TestCookieFilter`, which matches both — so the old
+	// tie-break emitted a command exercising an unrelated filter. The same shape appears on
+	// hashicorp/terraform-34580. Both instances lose on Haiku AND Sonnet, so this is not a
+	// model-specific effect.
+	//
+	// Counting distinct matched words fixes it without a vocabulary list: a candidate that covers more
+	// of the symbol is more specific to it, and length remains the tie-break WITHIN an equal count, so
+	// "TestFoo" still beats "TestFooWithUnrelatedOptionAndTimeout".
+	best, bestMatches := "", 0
+	for _, name := range declared(content) {
+		lower := strings.ToLower(name)
+		matches := 0
+		for _, word := range words {
+			if strings.Contains(lower, word) {
+				matches++
+			}
+		}
+		if matches == 0 {
+			continue
+		}
+		if matches > bestMatches || (matches == bestMatches && len(name) < len(best)) {
+			best, bestMatches = name, matches
+		}
+	}
+	return best
+}
+
+// searchVerifyNameWords splits an identifier into lowercase words of four characters or more, on both
+// camelCase boundaries and separators, so `Parser.loadTestFiles` yields load/files. Short words are
+// dropped because a two-character fragment matches almost any test name, which would defeat the whole
+// point of requiring a match.
+//
+// The test vocabulary itself is dropped for the same reason, and it is the sharper trap: a symbol
+// named `loadTestFiles` contributes the word "test", which matches EVERY name in a Go test file — so
+// the match would succeed on an unrelated test and the shortest-name rule would then prefer it.
+func searchVerifyNameWords(symbol string) []string {
+	generic := map[string]bool{"test": true, "tests": true, "spec": true, "specs": true, "case": true, "cases": true}
+	var words []string
+	var current strings.Builder
+	flush := func() {
+		if current.Len() >= 4 {
+			if word := strings.ToLower(current.String()); !generic[word] {
+				words = append(words, word)
+			}
+		}
+		current.Reset()
+	}
+	for _, letter := range symbol {
+		switch {
+		case letter == '_' || letter == '-' || letter == '.' || letter == ':':
+			flush()
+		case letter >= 'A' && letter <= 'Z':
+			flush()
+			current.WriteRune(letter)
+		default:
+			current.WriteRune(letter)
+		}
+	}
+	flush()
+	return words
+}
+
+// searchVerifyGoTestNames are the `func TestXxx` declarations in a Go test file. Only the `Test`
+// prefix is accepted, because that is the only prefix `go test -run` selects.
+func searchVerifyGoTestNames(content string) []string {
+	var names []string
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "func Test") {
+			continue
+		}
+		rest := strings.TrimPrefix(trimmed, "func ")
+		open := strings.Index(rest, "(")
+		if open <= 0 {
+			continue
+		}
+		name := rest[:open]
+		if strings.ContainsAny(name, " \t*[]") {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// searchVerifyRustTestNames are the functions declared under a `#[test]` (or `#[tokio::test]`)
+// attribute. Cargo's positional filter is a substring over the test's path, so the bare function
+// name is a valid selector.
+func searchVerifyRustTestNames(content string) []string {
+	var names []string
+	marked := false
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#[test") || strings.HasPrefix(trimmed, "#[tokio::test") {
+			marked = true
+			continue
+		}
+		if !marked {
+			continue
+		}
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#[") {
+			// Another attribute on the same item — still the same test.
+			continue
+		}
+		marked = false
+		start := strings.Index(trimmed, "fn ")
+		if start < 0 {
+			continue
+		}
+		rest := trimmed[start+len("fn "):]
+		end := strings.IndexAny(rest, "(<")
+		if end <= 0 {
+			continue
+		}
+		names = append(names, rest[:end])
+	}
+	return names
+}
+
+// searchVerifyBuildChecks maps a source extension to a check that compiles or parses THAT ONE FILE.
+// Every entry is a pure syntax/bytecode check: it needs no build directory, no classpath, no test
+// fixture and no network, so it cannot fail for a reason unrelated to the edit. Anything needing a
+// resolved build graph (javac, gcc, tsc) is deliberately absent — a command that fails on its own
+// invocation costs strictly more than no command, which is why the test derivations above stay
+// silent rather than guess.
+var searchVerifyBuildChecks = map[string]string{
+	".php": "php -l ",
+	".rb":  "ruby -c ",
+	".js":  "node --check ",
+	".jsx": "node --check ",
+	".mjs": "node --check ",
+	".cjs": "node --check ",
+	".py":  "python -m py_compile ",
+}
+
+// deriveSearchVerifyBuildCheck is the last tier, and the only one that fires when the payload found
+// no covering test. It answers a different question from the derivations above — "does what I just
+// wrote parse?" rather than "does it behave?" — and it is labelled as such so the block is never
+// read as a test run.
+//
+// Measured on 30 paired haiku sessions: sessions whose payload carried a VERIFY block spent 30.6%
+// fewer tokens than the no-tool baseline, sessions without one only 15.2%. Every derivation above
+// requires subject.testPath, so 16 of 30 sessions got nothing and paid the difference re-deriving an
+// invocation by hand. Operating rule 8 already tells the agent to "compile what you touched" in that
+// case; this emits the command for it instead of leaving it a shell hunt.
+func deriveSearchVerifyBuildCheck(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	// Only the root pass may emit: the check names an absolute repo-relative path, so walking to a
+	// parent directory would re-emit the identical command once per level.
+	if dir != "" {
+		return nil
+	}
+	// NOTE: the sibling implementation returned early when subject.testPath != "", on the reasoning
+	// that a parse check would be a downgrade from a real test. That is true of the NARROW tier and
+	// false here: this function is only ever reached after both the narrow and the suite tier declined,
+	// so a covering test existing does not mean any runnable command was derivable from it. Keeping the
+	// early return is one of the four measured causes of a non-derivable VERIFY — a repository with a
+	// test file but no recognised manifest got nothing at all.
+	if subject.sourcePath == "" || !evidence.exists(subject.sourcePath) {
+		return nil
+	}
+	check, ok := searchVerifyBuildChecks[strings.ToLower(path.Ext(subject.sourcePath))]
+	if !ok {
+		return nil
+	}
+	return &SearchVerifyCommand{
+		Command:     check + subject.sourcePath,
+		Targets:     subject.sourcePath,
+		DerivedFrom: "build check only - no runnable test command derivable; this parses the file, it runs no tests",
+		Tier:        searchVerifyTierBuildCheck,
+	}
+}
+
+func deriveSearchVerifyCMake(dir string, subject searchVerifySubject, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	manifest := searchVerifyJoin(dir, "CMakeLists.txt")
+	content, ok := evidence.file(manifest)
+	if !ok {
+		return nil
+	}
+	// Only when the project declares tests: `enable_testing()` / `include(CTest)` is the repository's
+	// own statement that ctest means something here. Without it a test command would be invented.
+	if !strings.Contains(content, "enable_testing") && !strings.Contains(content, "include(CTest") {
+		return nil
+	}
+	if subject.testPath == "" {
+		return nil
+	}
+	relative, inside := searchVerifyRelative(dir, subject.testPath)
+	if !inside {
+		return nil
+	}
+	// The target is the test file's stem by CMake convention (test/ranges-test.cc -> ranges-test),
+	// and it is VERIFIED against the CMake sources rather than guessed: no declared target, no block.
+	target := searchVerifyStem(relative)
+	if target == "" {
+		return nil
+	}
+	declared := strings.Contains(content, target)
+	if !declared {
+		if nested, found := evidence.file(searchVerifyJoin(dir, "test/CMakeLists.txt")); found && strings.Contains(nested, target) {
+			declared = true
+		}
+	}
+	if !declared {
+		return nil
+	}
+	// GUARD. The covering test may be compiled out by default (fmt-2457: the whole join_tuple case sits
+	// inside `#ifdef FMT_RANGES_TEST_ENABLE_JOIN`), in which case a correct-looking ctest command passes
+	// while exercising nothing. A simple macro guard is satisfiable from the configure step.
+	guard, derived := searchVerifyGuardForSubject(subject, evidence), manifest+" enable_testing + "+subject.testEvidence+" target"
+	configure := "cmake -S . -B build >/dev/null"
+	switch {
+	case guard.define != "":
+		configure = "cmake -S . -B build -DCMAKE_CXX_FLAGS=-D" + guard.define + " >/dev/null"
+		derived += " + guard " + guard.define
+	case guard.present():
+		derived += fmt.Sprintf(searchVerifyGuardUnsatisfied, guard.raw)
+	}
+	command := configure + " && cmake --build build --target " + target +
+		" -j4 && ctest --test-dir build -R " + target + " --output-on-failure"
+	return &SearchVerifyCommand{
+		Command:     searchVerifyRunIn(dir, command),
+		Targets:     subject.testPath,
+		DerivedFrom: derived,
+		Tier:        searchVerifyTierNarrow,
+		Guard:       guard.raw,
+	}
+}
+
+// searchVerifyRunner extracts the executable a command actually invokes: the first token of the first
+// stage, after any `cd <dir> &&` prefixes the derivation added to reach a manifest.
+func searchVerifyRunner(command string) string {
+	remainder := strings.TrimSpace(command)
+	for strings.HasPrefix(remainder, "cd ") {
+		separator := strings.Index(remainder, "&&")
+		if separator < 0 {
+			return ""
+		}
+		remainder = strings.TrimSpace(remainder[separator+2:])
+	}
+	fields := strings.Fields(remainder)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+// searchVerifyRunnerMissing reports whether the command's runner cannot be executed here. A
+// path-shaped runner (`vendor/bin/phpunit`, `./gradlew`) is answered by the repository itself;
+// a bare name is resolved on PATH. `bundle exec X` and `npx X` resolve X themselves, so the launcher
+// being present says nothing — look through it at the tool it is asked to run.
+func searchVerifyRunnerMissing(command string, evidence *searchVerifyEvidence) bool {
+	runner := searchVerifyRunner(command)
+	if runner == "" {
+		return false
+	}
+	if strings.ContainsRune(runner, '/') {
+		return !evidence.exists(strings.TrimPrefix(runner, "./"))
+	}
+	lookPath := evidence.lookPath
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
+	if _, err := lookPath(runner); err != nil {
+		return true
+	}
+	inner := searchVerifyLaunchedTool(command, runner)
+	if inner == "" {
+		return false
+	}
+	switch runner {
+	case "bundle", "bundler":
+		lock, ok := evidence.file("Gemfile.lock")
+		return !ok || !strings.Contains(lock, inner)
+	case "npx", "pnpm", "yarn":
+		return !evidence.exists("node_modules/.bin/" + inner)
+	}
+	return false
+}
+
+// searchVerifyLaunchedTool returns the tool a launcher is being asked to run — `rspec` for
+// `bundle exec rspec` — or "" when the command is not of that shape.
+func searchVerifyLaunchedTool(command, runner string) string {
+	fields := strings.Fields(strings.TrimSpace(command))
+	for index, field := range fields {
+		if field != runner {
+			continue
+		}
+		rest := fields[index+1:]
+		if len(rest) > 0 && rest[0] == "exec" {
+			rest = rest[1:]
+		}
+		for _, candidate := range rest {
+			if strings.HasPrefix(candidate, "-") {
+				continue
+			}
+			return candidate
+		}
+		return ""
+	}
+	return ""
+}
+
+// deriveSearchVerifySuiteCMake is the CMake suite twin. It is the whole reason C and C++ had NO verify
+// tier at all: neither ecosystem has a package manifest the other derivations recognise, so
+// fmtlib/fmt, three.js's native bits and preact's build tooling all fell through every rung to nothing.
+//
+// Gated on the project's own `enable_testing()` / `include(CTest)` exactly like the narrow twin — that
+// declaration is what makes `ctest` mean something here rather than a command invented for the reader.
+func deriveSearchVerifySuiteCMake(dir string, evidence *searchVerifyEvidence) *SearchVerifyCommand {
+	manifest := searchVerifyJoin(dir, "CMakeLists.txt")
+	content, ok := evidence.file(manifest)
+	if !ok {
+		return nil
+	}
+	if !strings.Contains(content, "enable_testing") && !strings.Contains(content, "include(CTest") {
+		return nil
+	}
+	return searchVerifySuiteCommand(dir,
+		"cmake -S . -B build >/dev/null && cmake --build build -j4 && ctest --test-dir build --output-on-failure",
+		manifest+" enable_testing")
+}
+
+// searchVerifyDecorated inserts the caller's --verify-prefix token AFTER any `cd <dir> &&` stages the
+// derivation added, so the decorator lands on the command that actually runs rather than on the `cd`.
+// The "VERIFY: " line start is untouched, which is what lets a harness grep for its own token without
+// changing how anything else parses the block.
+func searchVerifyDecorated(command *SearchVerifyCommand) string {
+	if command.Prefix == "" {
+		return command.Command
+	}
+	remainder := command.Command
+	head := ""
+	for strings.HasPrefix(remainder, "cd ") {
+		separator := strings.Index(remainder, "&&")
+		if separator < 0 {
+			break
+		}
+		head += remainder[:separator+2] + " "
+		remainder = strings.TrimSpace(remainder[separator+2:])
+	}
+	return head + command.Prefix + " " + remainder
+}
+
+// GUARD-AWARE DERIVATION
+// =====================
+//
+// MEASURED (fmtlib__fmt-2457). The covering test `ranges_test.join_tuple` lives at
+// test/ranges-test.cc:202, inside `#ifdef FMT_RANGES_TEST_ENABLE_JOIN`. The derivation produced a
+// perfectly shaped `ctest -R ranges-test` command that CANNOT run that test: the guard is undefined by
+// default, so the case is compiled out and the command passes without exercising the edit at all. A
+// command that silently verifies nothing is worse than the suite command it displaced, because it
+// reports success.
+//
+// The guard is mechanically discoverable — it is a preprocessor line above the test in the same file —
+// and mechanically satisfiable for the two ecosystems that use guards this way: a C/C++ `#ifdef X`
+// becomes a compile definition, and a Rust `#[cfg(feature = "x")]` becomes `--features x` when the
+// manifest declares that feature. Where it cannot be satisfied, the command is still emitted and the
+// derivation SAYS the guard is unsatisfied, because "here is the command, and here is why it may not
+// cover your edit" is honest where a silent pass is not.
+const (
+	// searchVerifyGuardMaxLookback is how far above the test the guard scan reaches. A guard applies to
+	// a block, and the block's opening line is what matters; 400 lines covers a whole test file's worth
+	// of nesting without turning the scan into a parse.
+	searchVerifyGuardMaxLookback = 400
+
+	// searchVerifyGuardUnsatisfied is appended to the derivation when a guard was found and could not be
+	// satisfied mechanically. The command still ships; the claim of coverage does not.
+	searchVerifyGuardUnsatisfied = "; NOTE guard %s is not satisfied by this command - the case may be compiled out"
+)
+
+// searchVerifyGuard is the conditional-compilation guard a test sits inside.
+type searchVerifyGuard struct {
+	// raw is the guard line as written, for the payload's "guarded by:" line.
+	raw string
+	// define is the C/C++ macro the guard tests, empty when the guard is not a simple macro test.
+	define string
+	// feature is the Rust cargo feature the guard tests, empty otherwise.
+	feature string
+
+	// satisfied records that the command was amended to turn the guard on, so the derivation can say
+	// which of the two things happened rather than leaving the reader to infer it.
+	satisfied bool
+}
+
+func (guard searchVerifyGuard) present() bool { return guard.raw != "" }
+
+// searchVerifyGuardForSubject resolves the guard around the subject's covering test: the test's own
+// declaration line when a name is known, and otherwise the file's first guarded region, which is what
+// a file-level command would run into.
+func searchVerifyGuardForSubject(subject searchVerifySubject, evidence *searchVerifyEvidence) searchVerifyGuard {
+	if subject.testPath == "" {
+		return searchVerifyGuard{}
+	}
+	content, ok := evidence.file(subject.testPath)
+	if !ok {
+		return searchVerifyGuard{}
+	}
+	name := subject.testName
+	if name == "" {
+		name = subject.symbolName
+	}
+	line, exact := searchVerifyTestLineExact(content, name)
+	if line == 0 {
+		return searchVerifyGuard{}
+	}
+	guard := searchVerifyGuardFor(content, line)
+	if !guard.present() || exact {
+		return guard
+	}
+	// The test line was matched by WORDS, not by name, so the guard around it is a guess — and defining
+	// the wrong macro is the worst outcome available: it claims coverage the command does not have.
+	// Measured on fmt-2457, where a word match landed on the C_STYLE_ARRAY-guarded case while the gold
+	// test is guarded by ENABLE_JOIN. Report the guard, satisfy nothing.
+	return searchVerifyGuard{raw: guard.raw}
+}
+
+// searchVerifyTestLineExact is searchVerifyTestLine plus whether the match was the name as written.
+func searchVerifyTestLineExact(content, testName string) (int, bool) {
+	line := searchVerifyTestLine(content, testName)
+	if line == 0 {
+		return 0, false
+	}
+	// UNIQUE, not merely present. `TEST(ranges_test, join_tuple)` and `TEST(ranges_test, c_style_array)`
+	// both contain `ranges_test` verbatim, so a payload whose symbol is the SUITE name matches every
+	// case in the file — and picking one of them attributes its guard to a different test. Measured on
+	// fmt-2457: that is how FMT_RANGES_TEST_ENABLE_C_STYLE_ARRAY got defined for a case guarded by
+	// FMT_RANGES_TEST_ENABLE_JOIN. Ambiguous means unsatisfiable.
+	matches := 0
+	for _, candidate := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(candidate)
+		if searchVerifyDeclarationLine(trimmed) && strings.Contains(trimmed, testName) {
+			matches++
+		}
+	}
+	return line, matches == 1
+}
+
+// searchVerifyGuardFor finds the innermost unsatisfied-by-default guard above `line` in a file.
+//
+// It is a LINE SCAN, deliberately, not a parse: the shapes that matter are `#ifdef X`,
+// `#if defined(X)` and `#[cfg(feature = "x")]`, all of which are recognisable from the line alone, and
+// a scan cannot be wrong about a language it does not understand — it simply finds nothing. Balanced
+// `#endif` closes a guard, so a guard that ended before the test is never attributed to it.
+func searchVerifyGuardFor(content string, line int) searchVerifyGuard {
+	if content == "" || line <= 0 {
+		return searchVerifyGuard{}
+	}
+	lines := strings.Split(content, "\n")
+	if line > len(lines) {
+		line = len(lines)
+	}
+	start := line - searchVerifyGuardMaxLookback
+	if start < 0 {
+		start = 0
+	}
+	// Walk DOWN from the lookback point tracking open guards, so the innermost one still open at `line`
+	// is what the test is actually inside of.
+	var open []searchVerifyGuard
+	for index := start; index < line; index++ {
+		trimmed := strings.TrimSpace(lines[index])
+		switch {
+		case strings.HasPrefix(trimmed, "#endif"):
+			if len(open) > 0 {
+				open = open[:len(open)-1]
+			}
+		case strings.HasPrefix(trimmed, "#ifdef ") || strings.HasPrefix(trimmed, "#if defined"):
+			open = append(open, searchVerifyGuard{raw: trimmed, define: searchVerifyGuardMacro(trimmed)})
+		case strings.HasPrefix(trimmed, "#if ") || strings.HasPrefix(trimmed, "#ifndef "):
+			// Tracked so the #endif accounting stays balanced, but never satisfiable: `#ifndef` is
+			// satisfied BY DEFAULT and a general `#if` expression is not a macro switch.
+			open = append(open, searchVerifyGuard{raw: trimmed})
+		case strings.HasPrefix(trimmed, "#[cfg(feature"):
+			// Rust attributes are not block-scoped: the attribute applies to the item that follows, so
+			// it is only this test's guard when it is within a couple of lines of it.
+			if line-index <= 3 {
+				return searchVerifyGuard{raw: trimmed, feature: searchVerifyGuardFeature(trimmed)}
+			}
+		}
+	}
+	for index := len(open) - 1; index >= 0; index-- {
+		if open[index].define != "" {
+			return open[index]
+		}
+	}
+	if len(open) > 0 {
+		return open[len(open)-1]
+	}
+	return searchVerifyGuard{}
+}
+
+// searchVerifyGuardMacro extracts the macro from `#ifdef X` / `#if defined(X)` / `#if defined X`.
+func searchVerifyGuardMacro(line string) string {
+	rest := strings.TrimSpace(strings.TrimPrefix(line, "#ifdef"))
+	if strings.HasPrefix(line, "#if defined") {
+		rest = strings.TrimSpace(strings.TrimPrefix(line, "#if defined"))
+		rest = strings.TrimPrefix(rest, "(")
+		if close := strings.IndexAny(rest, ")&| \t"); close > 0 {
+			rest = rest[:close]
+		}
+	}
+	if fields := strings.Fields(rest); len(fields) > 0 {
+		rest = fields[0]
+	}
+	rest = strings.Trim(rest, "()")
+	// A macro is an identifier. Anything else came from an expression this scan should not claim.
+	for _, letter := range rest {
+		if !(letter == '_' || (letter >= '0' && letter <= '9') ||
+			(letter >= 'a' && letter <= 'z') || (letter >= 'A' && letter <= 'Z')) {
+			return ""
+		}
+	}
+	return rest
+}
+
+// searchVerifyGuardFeature extracts `x` from `#[cfg(feature = "x")]`.
+func searchVerifyGuardFeature(line string) string {
+	open := strings.Index(line, `"`)
+	if open < 0 {
+		return ""
+	}
+	rest := line[open+1:]
+	close := strings.Index(rest, `"`)
+	if close <= 0 {
+		return ""
+	}
+	return rest[:close]
+}
+
+// searchVerifyTestLine finds the line a named test is declared on, so the guard scan has a position to
+// work back from. Returns 0 when the name is not in the file.
+func searchVerifyTestLine(content, testName string) int {
+	if content == "" || testName == "" {
+		return 0
+	}
+	// DECLARATION lines only, and among them the one that spells out most of the name. The first
+	// occurrence of a substring is the wrong answer here: on fmt-2457 the payload's symbol appears in an
+	// earlier test's body, so a first-match scan attributed that test's guard
+	// (FMT_RANGES_TEST_ENABLE_C_STYLE_ARRAY) to a case guarded by FMT_RANGES_TEST_ENABLE_JOIN — a define
+	// that satisfies the wrong condition, which is a worse failure than finding no guard at all.
+	words := searchVerifyNameWords(testName)
+	best, bestMatches := 0, -1
+	for index, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !searchVerifyDeclarationLine(trimmed) {
+			continue
+		}
+		lowered := strings.ToLower(trimmed)
+		matches := 0
+		if strings.Contains(trimmed, testName) {
+			matches = len(words) + 1 // an exact spelling beats any word count
+		} else {
+			for _, word := range words {
+				if strings.Contains(lowered, word) {
+					matches++
+				}
+			}
+		}
+		if matches > 0 && matches > bestMatches {
+			best, bestMatches = index+1, matches
+		}
+	}
+	return best
+}
+
+// searchVerifyDeclarationLine reports whether a line DECLARES a test, across the shapes the guard scan
+// has to work with: gtest/catch macros, Go and Rust functions, Python/Ruby methods, JS specs.
+func searchVerifyDeclarationLine(trimmed string) bool {
+	for _, shape := range []string{
+		"TEST(", "TEST_F(", "TEST_CASE(", "TYPED_TEST(", "BOOST_AUTO_TEST_CASE(",
+		"func Test", "fn ", "def ", "it(", "test(", "describe(",
+	} {
+		if strings.HasPrefix(trimmed, shape) {
+			return true
+		}
+	}
+	return false
+}
+
+// searchVerifyTruncate bounds a caller-supplied string to a byte cap without splitting a rune, and
+// collapses newlines: the PRE-FIX status is ONE line by contract, and a wrapper that embeds a newline
+// must not be able to inject extra lines into the block.
+func searchVerifyTruncate(value string, maxBytes int) string {
+	value = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(value, "\r", " "), "\n", " "))
+	if len(value) <= maxBytes {
+		return value
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+	return strings.TrimSpace(value[:cut])
 }

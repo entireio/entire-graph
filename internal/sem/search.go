@@ -98,6 +98,45 @@ type SearchOptions struct {
 	// payload file land a median 109 lines from anything printed — 47 of 53 inside another symbol the
 	// graph already indexes in that file.
 	IncludeFileOutline bool
+	// FullUnitTop makes the first N ranks come back as their COMPLETE enclosing unit — function,
+	// method, or type/container declaration — bypassing every condition the opportunistic body
+	// upgrade applies (see the editability comment in search_enclosure.go). 0 = off, and off is
+	// byte-for-byte today's payload.
+	//
+	// It is the editability lever, and editability is a different measurement from recall: on the
+	// R30PUB benchmark payloads the share of needed edits whose replaced text appears VERBATIM in
+	// the payload is ~11%, while the gold FILE is usually ranked. The misses are the three
+	// suppression conditions (no enclosable callable, the 160-line cap, and no demotable tail at
+	// small --top-k), not the ranking.
+	//
+	// N >= 2 reaches rank 2 only when rank 2's score is still within searchFullUnitGapRatio of
+	// rank 1's: one forced unit per genuinely ambiguous answer, not N bodies per search.
+	FullUnitTop int
+	// VerifyPrefix is a decorator baked into the emitted VERIFY command, after any `cd <dir> &&` the
+	// derivation added, so a harness can grep its own token out of a transcript.
+	VerifyPrefix string
+	// VerifyPreFixStatus is one caller-computed line rendered verbatim as `PRE-FIX:` under the emitted
+	// command, capped at searchVerifyPreFixStatusMaxBytes.
+	VerifyPreFixStatus string
+	// CalleeHop admits the top hit's OUTGOING CALLS targets as candidate fix sites — up to three,
+	// same-repo and resolved only. Off by default.
+	//
+	// It is the answer to what --full-unit-top could not reach. Measured over eight R30PUB instances
+	// with the unit levers on, 8 of 12 code-gold files were ranked and 0 carried the gold hunk
+	// verbatim, and in every ranked case the printed unit and the gold unit were different callables
+	// of the same file — usually the ranked hit being a thin entry point and the gold being the
+	// helper it calls (redis__redis-10095: lpopCommand ranked, gold inside popGenericCommand, one
+	// CALLS edge away in the same file). search_related.go excludes outgoing CALLS by design; see
+	// search_callee.go for why its stated substitute (co-members of the same unit) cannot cover this.
+	CalleeHop bool
+	// EditSiteBodies attaches source to the EDIT-role sites of the SAME-CONCEPT LITERAL block: the
+	// enclosing unit when one is resolvable, else a bounded window around the site. CONSUMER and DOC
+	// sites stay file:line-only — a consumer is listed precisely so an agent does NOT open it.
+	//
+	// Off by default because it is an additive block and the default block is sized at 560 B. When
+	// it is on, the block's cap rises to searchLiteralEditBodyClusterMaxBytes and its cost is
+	// reported in stats.literal_cluster_bytes like every other block's.
+	EditSiteBodies bool
 	// EnclosureContextLines pads the rank-1 complete body with this many source lines on each
 	// side. 0 means no padding (the body's exact symbol bounds).
 	//
@@ -159,6 +198,31 @@ type SearchResult struct {
 	// a label rather than a filter.
 	Section string `json:"section,omitempty"`
 	Snippet string `json:"snippet"`
+	// MergedRanks lists the PRE-merge ranks whose spans this one result now covers, set when
+	// several near hits in one file were folded into a single contiguous region
+	// (search_span_merge.go). Present only on a merged span, so its absence is the ordinary
+	// case; when it is present the snippet is the verbatim, unelided text of the whole range,
+	// which is the fact that stops a reader spending a turn bridging the gap itself.
+	MergedRanks []int `json:"merged_ranks,omitempty"`
+	// UnitStartLine/UnitEndLine are the TRUE span of the enclosing unit when --full-unit-top asked
+	// for that unit whole and searchFullUnitMaxLines clipped it. They are set ONLY on a clipped
+	// forced unit — their absence is the ordinary case and means the printed span IS the unit — and
+	// they exist so a reader can be told which of the unit's own lines are missing rather than
+	// discovering it by opening the file. Schema 1.x additive.
+	UnitStartLine int `json:"unit_start_line,omitempty"`
+	UnitEndLine   int `json:"unit_end_line,omitempty"`
+	// CommentFocusLine is the COMMENT line the query originally matched, recorded only when the
+	// payload re-anchored this hit onto the code that comment documents (search_reanchor.go). Its
+	// absence is the ordinary case and means FocusLine is where the match itself landed. It is kept
+	// because the prose line is still the evidence for why the hit is here, and a reader who is told
+	// only the code line cannot tell a re-anchored hit from a direct one. Schema 1.x additive.
+	CommentFocusLine int `json:"comment_focus_line,omitempty"`
+	// BodyFromReanchor marks a result whose source exists ONLY because the re-anchor moved its
+	// anchor onto code: the allocation computed WITHOUT the re-anchored enclosures showed nothing at
+	// this rank. It is what lets the renderer fund such a body out of spare slots only, and it is
+	// deliberately NOT the same test as `CommentFocusLine > 0` — most re-anchored hits already
+	// carried a body, and gating those would evict source the re-anchor never paid for.
+	BodyFromReanchor bool `json:"body_from_reanchor,omitempty"`
 	// There is deliberately no per-result `Neighbors` list here. "The types this hit is
 	// written in terms of" is answered once, by the signature-type block (search_sigtypes.go),
 	// and "the other places this change lands" by the related-site block
@@ -218,6 +282,19 @@ type SearchStats struct {
 	// them. Together they report how the byte budget was allocated (schema 1.x additive).
 	CompleteSymbols int `json:"complete_symbol_snippets,omitempty"`
 	LocatorSnippets int `json:"locator_snippets,omitempty"`
+	// DocReanchored counts ranked hits whose anchor landed in a doc comment and was moved onto the
+	// code that comment documents (search_reanchor.go). It is reported like every other rendering
+	// decision: a payload that describes a hit at a line the query did not match must say so.
+	DocReanchored int `json:"doc_reanchored_hits,omitempty"`
+	// MergedSpans counts ranked hits collapsed into a contiguous same-file span
+	// (search_span_merge.go). It is reported for the same reason every other allocation
+	// decision is: a payload that shows fewer blocks than the ranking produced must say so.
+	MergedSpans int `json:"merged_spans,omitempty"`
+	// CalleeHopSites counts candidate fix sites admitted by the callee hop (--callee-hop): units the
+	// top hit CALLS. It is reported separately from RelatedSites because it is a separate, gated
+	// route with a different funding rule — see search_callee.go — and because a payload has to be
+	// attributable to the lever that shaped it.
+	CalleeHopSites int `json:"callee_hop_sites,omitempty"`
 	// RelatedSites counts entries in the related-site block: the other places the top hit's
 	// change usually has to land (callers, sibling implementations, near-duplicate bodies).
 	// They are funded out of the tail of the ranking, so this count also says how much of the
@@ -257,7 +334,10 @@ type SearchStats struct {
 	FileOutlineBytes   int `json:"file_outline_bytes,omitempty"`
 	FileOutlineRows    int `json:"file_outline_rows,omitempty"`
 	VerifyCommandBytes int `json:"verify_command_bytes,omitempty"`
-	ClosedSetBytes     int `json:"closed_set_bytes,omitempty"`
+	// VerifyTier is which rung of the ladder produced the emitted command: narrow, suite, build-check
+	// or none. See the tier constants in search_verify.go.
+	VerifyTier     string `json:"verify_tier,omitempty"`
+	ClosedSetBytes int    `json:"closed_set_bytes,omitempty"`
 	// ContextBlockBytes is the sum of every block counter above: the whole cost of
 	// everything outside `results`, in one number, so a caller can see the payload's true size
 	// without re-deriving it.
@@ -401,6 +481,51 @@ func cachedContentReader(read contentReader) contentReader {
 
 var searchWordPattern = regexp.MustCompile(`[[:alnum:]_./:+#-]+`)
 var sparseSearchWordPattern = regexp.MustCompile(`[[:alpha:]][[:alnum:]_]*|[[:digit:]]+`)
+
+// searchQueryURLPattern matches an absolute URL written inside a query. The run stops at
+// whitespace and at the delimiters that end a URL in prose and Markdown — `<>"'` + backtick,
+// and the closing `)]}` of a `[text](url)` link — so a linked URL does not swallow the
+// sentence punctuation that follows it.
+var searchQueryURLPattern = regexp.MustCompile("(?i)[a-z][a-z0-9+.-]*://[^\\s<>\"'`)\\]}]+")
+
+// stripSearchQueryURLState removes the query string and fragment of every URL in a query,
+// leaving the scheme, host and path in place.
+//
+// Those two components are the web application's own state, never a name in this repository,
+// and both mint tokens that outrank the words the caller actually wrote:
+//
+//   - `?file=/index.js` (the codesandbox/StackBlitz "open this file" parameter) tokenizes to
+//     the standalone path token `index.js`, which is identifier-shaped, so it earns the
+//     code-like weight 2.5 and then a +6.25 pathSearchScore on EVERY `index.js` in the tree.
+//     Measured on preactjs/preact: `hooks/src/index.js` took rank 1 with signal `path` and
+//     `karma.conf.js` rank 4, on the strength of a path that exists on codesandbox.io.
+//   - a playground permalink encodes the whole reproduction program in its fragment
+//     (`https://play.vuejs.org/#eNp9UsFOAjEQ...`). `#` is inside searchWordPattern's class and
+//     base64 uses `+` and `/`, so the fragment is one enormous token whose camel-hump and
+//     separator variants become dozens of terms — each mixed-case, so each reads as code-like
+//     at weight 1.1. Measured on vuejs/core: 40 of 48 terms were base64 debris, and because
+//     the term list is sorted by weight and truncated at maxSearchQueryTerms, that debris
+//     EVICTED every plain prose word of the issue (`array`, `item`, `object`, `converted`,
+//     `incorrectly`) from the query entirely.
+//
+// The path component is deliberately kept: a "the bug is here" link into the repository's own
+// source (`https://github.com/o/r/blob/main/src/options.ts`) is the one part of a URL that does
+// name a file, and dropping it would discard real evidence. A `#L42` line anchor or a `#issues`
+// heading anchor is not a name in the tree, so removing the fragment costs nothing there.
+func stripSearchQueryURLState(query string) string {
+	if !strings.Contains(query, "://") {
+		return query
+	}
+	return searchQueryURLPattern.ReplaceAllStringFunc(query, func(url string) string {
+		cut := strings.IndexAny(url, "?#")
+		if cut < 0 {
+			return url
+		}
+		// A space, not "": the stripped tail must still end the URL token so the word that
+		// follows it in the text cannot fuse onto the host/path.
+		return url[:cut] + " "
+	})
+}
 
 var searchStopWords = map[string]bool{
 	"a": true, "an": true, "and": true, "are": true, "as": true,
@@ -843,6 +968,13 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	sparseHydrationReads := hydrateSparseCandidates(selected, read)
 	stats.SparseFilesRead += sparseHydrationReads
+	// A test file is never a fix site, and rank 1 is the slot an agent reads and edits from. When
+	// the flat -12 in searchPathPrior was not enough to sink one, lift the best editable hit over
+	// it rather than subtracting harder — subtraction can eject the test from the payload, and the
+	// VERIFY deriver reads that test. Runs before ranks are numbered so the byte fitter, the
+	// enclosure planner and the VERIFY deriver all see one consistent order.
+	// See search_testrank.go.
+	selected = promoteFixSiteOverLeadingTest(selected, q)
 	results := make([]SearchResult, 0, len(selected))
 	for i := range selected {
 		selected[i].result.Rank = i + 1
@@ -852,6 +984,11 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		}
 		results = append(results, selected[i].result)
 	}
+	// A hit whose anchor landed in a doc comment is moved onto the code that comment documents
+	// BEFORE anything prices or plans it: the byte fitter then charges for the code it will print,
+	// the enclosure planner looks for a callable at the code line rather than in the prose above it,
+	// and the literal block mines program text. Ranking is untouched — see search_reanchor.go.
+	results, stats.DocReanchored = reanchorSearchDocComments(results, symbolsByFile, read, options.MaxSnippetLines)
 	ranked := append([]SearchResult(nil), results...)
 	results, resultBytes, dropped, _ := fitSearchResultsToBudget(results, q, options.MaxContextBytes)
 	// The fitter decides HOW MANY results fit; the allocator decides how the bytes they are
@@ -877,19 +1014,123 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// HeadWindowLines: a head rank with no enclosable callable falls back to a bounded read
 	// window instead of a two-line locator. 0 disables it (previous behaviour exactly).
 	headWindowLines := options.HeadWindowLines
+	// FullUnitTop: the first N ranks come back as their complete enclosing unit whatever the
+	// opportunistic conditions say. Resolved against the SEATED ranking, because the gap heuristic
+	// that admits rank 2 is a statement about the scores the caller will actually read.
+	fullUnitRanks := searchFullUnitForceRanks(results, options.FullUnitTop)
+	// BUDGET-DRIVEN RENDERING is enabled by the payload-shape levers, never by default: the shipped
+	// payload is what every prior measurement was taken against, and this changes how the whole ceiling
+	// is spent. --edit-site-bodies is excluded because it only touches the literal block, so its effect
+	// stays isolated and separately measurable.
+	budgetDriven := fullUnitRanks > 0 || options.CalleeHop
 	enclosures := planSearchEnclosures(
 		results, symbolsByID, symbolsByFile, read,
 		defaultSearchEnclosureMaxLines, options.EnclosureContextLines, bodyHeadRanks, headWindowLines,
+		fullUnitRanks, budgetDriven,
 	)
+	// The UNFORCED plan for the same inputs. It is what the allocator computes its control allocation
+	// from, and that control is the floor a forced unit may not push anything below — see
+	// seatForcedSearchUnits for the regression that made this necessary. Planning it twice costs no IO:
+	// `read` is the shared content cache, so the second pass re-reads nothing.
+	var plainEnclosures []searchEnclosure
+	if fullUnitRanks > 0 {
+		plainEnclosures = planSearchEnclosures(
+			results, symbolsByID, symbolsByFile, read,
+			defaultSearchEnclosureMaxLines, options.EnclosureContextLines, bodyHeadRanks, headWindowLines,
+			0, budgetDriven,
+		)
+	}
+	tailSnippetLines := minInt(searchEnclosureTailSnippetLines, options.MaxSnippetLines)
+	seated := results
 	results, completeSymbols, locators := allocateSearchSnippets(
-		results, enclosures, options.MaxContextBytes, searchEnclosureGrowthBytes,
-		bodyHeadRanks, minInt(searchEnclosureTailSnippetLines, options.MaxSnippetLines),
+		seated, enclosures, plainEnclosures, options.MaxContextBytes, searchEnclosureGrowthBytes,
+		bodyHeadRanks, tailSnippetLines,
 	)
+	// THE RE-ANCHOR FUNDING INVARIANT, the same one seatForcedSearchUnits enforces for forced units: a
+	// body a hit gained only because it was re-anchored may be paid for out of free budget, never out of
+	// another rank's existing allocation. Re-anchoring moves the ANCHOR; it is not a licence to
+	// re-decide who gets source.
+	//
+	// Measured on vuejs__core-11870: `arrayInstrumentations.ts:10→12` picked up a complete body and the
+	// allocator funded it by demoting `runtime-core/src/helpers/renderList.ts:54-107` — 54 lines of the
+	// production helper the issue is actually about — to a bare locator. Net: the payload traded a body
+	// it had for a body it did not need.
+	//
+	// So the re-anchored enclosures are planned, priced and then ACCEPTED ONLY IF the resulting
+	// allocation still shows every other rank everything the control allocation showed it. When it does
+	// not, control stands: the hit keeps its re-anchored `focus=`, which is the larger part of the win
+	// and costs nothing.
+	if control, exempt, gated := unreanchoredSearchEnclosures(seated, enclosures); gated {
+		plan, bodies, demoted := allocateSearchSnippets(
+			seated, control, plainEnclosures, options.MaxContextBytes, searchEnclosureGrowthBytes,
+			bodyHeadRanks, tailSnippetLines,
+		)
+		if !searchAllocationPreservesSource(plan, results, exempt) {
+			results, completeSymbols, locators = plan, bodies, demoted
+		} else {
+			markSearchReanchorGainedBodies(results, plan, exempt)
+		}
+	}
+	// Rule 1 of budget-driven rendering, applied last of the ranking passes: spend whatever ceiling is
+	// still unclaimed on the ranks that are still locators, in rank order. Purely additive.
+	if budgetDriven {
+		var expanded int
+		results, expanded = spendRemainingSearchBudget(results, results, enclosures, options.MaxContextBytes)
+		completeSymbols += expanded
+	}
 	stats.CompleteSymbols = completeSymbols
 	stats.LocatorSnippets = locators
 	// Truncation is measured against the ranking, by rank, so it has to be read off the
 	// allocator's output BEFORE the related-site block renumbers the payload.
 	truncated := countBudgetTruncatedResults(ranked, results)
+	// The callee hop runs HERE, and the position is load-bearing at both ends. After the truncation
+	// counter, so that counter still describes what the ALLOCATOR did (it is read by rank, and the
+	// hop only inserts new ranks, so an inserted entry is skipped rather than miscounted). Before the
+	// span merge, so a callee in the anchor's own file — the commonest and most useful case — can be
+	// folded into one contiguous span with its caller instead of arriving as a second excerpt of the
+	// same file with a hole between them.
+	if options.CalleeHop {
+		hopCache := newSearchRelatedFileCache(read, searchRelatedCandidateLimit)
+		sites := selectSearchCalleeHopSites(
+			results, q, snapshot.Relations, symbolsByID, symbolsByFile, hopCache,
+			searchCalleeHopRanks(results), searchCalleeHopSiteLimit,
+		)
+		// Bodies follow the other levers rather than inventing a third policy; see
+		// searchCalleeHopResult.
+		withBody := fullUnitRanks > 0 || options.EditSiteBodies
+		entries := make([]SearchResult, 0, len(sites))
+		anchorIndexes := make([]int, 0, len(sites))
+		for _, site := range sites {
+			lines, ok := hopCache.get(site.symbol.FilePath)
+			if !ok {
+				continue
+			}
+			entry, ok := searchCalleeHopResult(site, lines, withBody)
+			if !ok {
+				continue
+			}
+			entries = append(entries, entry)
+			anchorIndexes = append(anchorIndexes, site.anchorIndex)
+		}
+		results, stats.CalleeHopSites = mergeSearchCalleeHopSites(
+			results, entries, anchorIndexes, options.MaxContextBytes,
+			minInt(searchEnclosureTailSnippetLines, options.MaxSnippetLines),
+			maxInt(fullUnitRanks, 1),
+		)
+	}
+	// Two printed bodies of one file with a small hole between them are one region as far as the
+	// reader is concerned, and the hole is what it spends a turn closing: measured over 113 Opus
+	// payloads, 40% carry such a pair, and the tool makes +19.6% MORE Read calls than the no-tool
+	// baseline while total tool calls fall 14.5%. Folding them into one contiguous, explicitly
+	// unelided span runs here — after truncation has been measured against the ranking, so the
+	// counter still describes what the allocator did, and before sectioning, so it can only ever
+	// touch candidate fix sites. See search_span_merge.go for the bounds that keep it from
+	// evicting a hit to pay for a bridge.
+	if merged, spans, absorbed := mergeSameFileSearchSpans(results, read, options.MaxContextBytes); spans > 0 {
+		results = merged
+		stats.MergedSpans = spans
+		stats.CompleteSymbols = maxInt(0, stats.CompleteSymbols-absorbed)
+	}
 	// Sectioning first: it decides which hit anchors the related-site block, because a
 	// docs-and-fixtures hit at rank 1 is not a fix site and its neighbourhood is not the
 	// neighbourhood of the change.
@@ -941,7 +1182,9 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// makes anyway — a repo-wide grep, a fumbled test invocation, and the read that discovers a
 	// switch it forgot to extend — which is the property the reference blocks above lack. They are
 	// additive and separately capped; see search_blocks.go.
-	verifyEvidence := searchVerifyEvidence{read: read}
+	verifyEvidence := searchVerifyEvidence{
+		read: read, prefix: options.VerifyPrefix, preFixStatus: options.VerifyPreFixStatus,
+	}
 	// The three agent-asked blocks read files the RANKING never asked for: a bounded set of files
 	// containing one literal, a handful of switch sites, and the build manifests above the top hit.
 	// Their IO is bracketed here and reported under its own counter rather than folded into the query
@@ -960,7 +1203,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		stats.ClosedSetBytes = searchClosedSetCost(closedSet)
 	}
 	literalCluster := buildSearchLiteralCluster(
-		results, q, symbolsByFile, needleIndex, searchLiteralClusterMaxBytes,
+		results, q, symbolsByFile, needleIndex, searchLiteralClusterMaxBytes, options.EditSiteBodies,
 	)
 	if literalCluster != nil {
 		stats.LiteralClusterBytes = searchLiteralClusterCost(literalCluster)
@@ -982,6 +1225,9 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	verifyCommand := buildSearchVerifyCommand(results, verifyEvidence)
 	if verifyCommand != nil {
 		stats.VerifyCommandBytes = searchVerifyCommandCost(verifyCommand)
+		// The tier is reported so a harness can bucket sessions by which rung answered them; that is
+		// how "the VERIFY command is unrunnable or non-covering in 12/12 sessions" was measured.
+		stats.VerifyTier = verifyCommand.Tier
 	}
 	blockFilesRead := queryReads.files - blockFilesBefore
 	blockBytesRead := queryReads.bytes - blockBytesBefore
@@ -3678,6 +3924,9 @@ func regionsAroundHits(hits []int, lower, upper, context, maxLines int) [][2]int
 }
 
 func buildSearchQuery(query string) searchQuery {
+	// Strip before anything reads the text, so terms, words and rawLower are all derived from
+	// the same URL-state-free query. SearchResponse.Query still echoes the caller's original.
+	query = stripSearchQueryURLState(query)
 	weights := map[string]float64{}
 	add := func(term string, weight float64) {
 		if len(term) < 2 || searchStopWords[term] {
@@ -3874,6 +4123,10 @@ func (q searchQuery) withCorpusPresence(documentFrequency map[string]int) search
 }
 
 func buildSparseSearchQuery(query string) searchQuery {
+	// Same strip as buildSearchQuery: the sparse half of hybrid search must not be scored
+	// against a term set the dense half never sees, and its own cap
+	// (maxSparseSearchQueryTerms) is filled first-come, so URL debris starves it too.
+	query = stripSearchQueryURLState(query)
 	terms := make([]string, 0, maxSparseSearchQueryTerms)
 	termSet := make(map[string]bool, maxSparseSearchQueryTerms)
 	weights := make(map[string]float64, maxSparseSearchQueryTerms)
@@ -4146,9 +4399,7 @@ func searchPathPrior(q searchQuery, filePath string) float64 {
 	// suite; a caller who does want tests writes "test"/"spec"/"fixture", and the phrase
 	// "regression test" already contains "test". Keeping them here let the commonest word
 	// in a bug report switch off the test demotion for the whole query.
-	if searchTestArtifactPath(lower) && !searchQuerySupplied(q,
-		"test", "tests", "testing", "spec", "specs", "fixture", "fixtures",
-	) {
+	if searchTestArtifactPath(lower) && !searchQuerySupplied(q, searchTestIntentWords...) {
 		// Strong demotion (was -1.5 — far too weak): a test file that exercises the buggy
 		// function matches the issue's exact code tokens (function name + behaviour keywords),
 		// so it out-scores the real source at ~26-47 while the implementation sits at ~13.

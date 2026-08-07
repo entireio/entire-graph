@@ -89,6 +89,8 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runNeighbors(ctx, opts, args[1:])
 	case "impact":
 		return runImpact(ctx, opts, args[1:])
+	case "verify":
+		return runVerify(ctx, opts, args[1:])
 	case "stats":
 		return runStats(ctx, opts, args[1:])
 	case "agent-guide":
@@ -119,9 +121,36 @@ func printHelp(out io.Writer) {
 }
 
 func runDoctor(ctx context.Context, opts Options, args []string) error {
-	asJSON := len(args) == 1 && args[0] == "--json"
-	if len(args) > 1 || (len(args) == 1 && !asJSON) {
-		return errors.New("doctor accepts only --json")
+	asJSON := false
+	var asserts []string
+	for index := 0; index < len(args); index++ {
+		switch args[index] {
+		case "--json":
+			asJSON = true
+		case "--assert":
+			// Repeatable: a harness usually drives more than one verb, and finding out about the
+			// second one only after the first has been fixed costs another whole run.
+			if index+1 >= len(args) {
+				return errors.New("doctor --assert needs a command line, for example --assert \"search --profile full\"")
+			}
+			index++
+			asserts = append(asserts, args[index])
+		default:
+			return errors.New("doctor accepts only --json and --assert \"<command line>\"")
+		}
+	}
+	// The assertions run FIRST and stop the report: a caller that asked whether this binary can
+	// serve its command line wants that answer, and printing an otherwise-healthy environment
+	// report above the failure buries it.
+	for _, spec := range asserts {
+		if err := checkPreflight(opts.Version, spec); err != nil {
+			return err
+		}
+	}
+	if len(asserts) > 0 && !asJSON {
+		for _, spec := range asserts {
+			fmt.Fprintf(opts.Stdout, "assert_ok=%q\n", spec)
+		}
 	}
 	report := map[string]any{
 		"provider":  sem.ProviderName,
@@ -140,6 +169,11 @@ func runDoctor(ctx context.Context, opts Options, args []string) error {
 			"call_remote_embedding_provider": false,
 			"perform_network_discovery":      false,
 		},
+	}
+	if len(asserts) > 0 {
+		// Reaching here means every assertion parsed, so the JSON says so explicitly rather than
+		// leaving a caller to infer success from the absence of an error.
+		report["asserted_command_lines"] = asserts
 	}
 	if !asJSON {
 		fmt.Fprintf(opts.Stdout, "ENTIRE_CLI_VERSION=%s\n", valueOrUnset(opts.Env.CLIVersion))
@@ -201,7 +235,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		return err
 	}
 	if len(rest) != 0 {
-		return fmt.Errorf("%s received unexpected arguments: %s", mode, strings.Join(rest, " "))
+		return unexpectedArgumentsError(mode, opts.Version, rest)
 	}
 	if flags.Format != "ndjson" {
 		return fmt.Errorf("%s requires --format ndjson", mode)

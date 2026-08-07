@@ -99,7 +99,11 @@ func TestScopedCompletenessItemizesInScopeFailures(t *testing.T) {
 	rendered := out.String()
 	for _, want := range []string{
 		"degraded for Rust",
-		"5 of 2 Rust file",
+		// The fixture has 5 failures against 2 successfully-parsed files, so there IS no honest
+		// fraction: "5 of 2 ... failed to parse" is a number that cannot be true and it discredits
+		// every other count on the line (measured as "35 of 0" on three.js, "6 of 0" on terraform).
+		// The count alone is the truthful form.
+		"5 Rust files failed to parse",
 		"broken_a.rs",
 		"... 2 more in Rust",
 		"plus 273 diagnostics in other languages",

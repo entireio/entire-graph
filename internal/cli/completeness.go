@@ -174,11 +174,25 @@ func writeScopedCompletenessBlock(
 	if level == "" {
 		level = "degraded"
 	}
-	fmt.Fprintf(out, "Completeness: %s for %s (%d of %d %s file%s failed to parse; %d total diagnostic%s in this snapshot)\n",
-		level, scopeLanguageLabel(scope),
-		scope.LanguageFailed, scope.LanguageFiles, scopeLanguageLabel(scope), pluralSuffix(scope.LanguageFiles),
-		len(warnings)+len(partialFailures), pluralSuffix(len(warnings)+len(partialFailures)),
-	)
+	// A FRACTION only when the denominator is real. `LanguageFiles` counts files that parsed, so a
+	// language whose files all failed reports 0 — and "35 of 0 files failed to parse" (three.js),
+	// "6 of 0" (terraform) is not a small error, it is a number that cannot be true and it discredits
+	// every other count on the line. When the denominator is missing or smaller than the numerator, the
+	// honest form is the count alone.
+	total := len(warnings) + len(partialFailures)
+	if scope.LanguageFiles <= 0 || scope.LanguageFailed > scope.LanguageFiles {
+		fmt.Fprintf(out, "Completeness: %s for %s (%d %s file%s failed to parse; %d total diagnostic%s in this snapshot)\n",
+			level, scopeLanguageLabel(scope),
+			scope.LanguageFailed, scopeLanguageLabel(scope), pluralSuffix(scope.LanguageFailed),
+			total, pluralSuffix(total),
+		)
+	} else {
+		fmt.Fprintf(out, "Completeness: %s for %s (%d of %d %s file%s failed to parse; %d total diagnostic%s in this snapshot)\n",
+			level, scopeLanguageLabel(scope),
+			scope.LanguageFailed, scope.LanguageFiles, scopeLanguageLabel(scope), pluralSuffix(scope.LanguageFiles),
+			total, pluralSuffix(total),
+		)
+	}
 	for _, warning := range scope.InScopeWarnings {
 		if warning.FilePath == "" {
 			fmt.Fprintf(out, "- warning %s\n", warning.Code)

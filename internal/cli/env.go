@@ -13,6 +13,22 @@ const (
 	// interactive user does not have to add flags to every call. Its value is a comma-separated list
 	// of `container-map`, `signature-types`, `type-card`, or `all`. See searchReferenceBlocks.
 	envReferenceBlocks = "ENTIRE_GRAPH_REFERENCE_BLOCKS"
+	// envPresearch names a file holding the payload for this session, computed BEFORE the agent
+	// started. When it is set, `search` echoes those bytes instead of querying — see
+	// echoPresearchPayload for the measurement that motivates it.
+	//
+	// envPresearchAlias is the same knob under the prefix the benchmark harness already uses for
+	// every one of its search knobs (EG_TOPK, EG_DEEP, EG_MAXBYTES, EG_PROFILE), so the harness can
+	// set it beside them; the ENTIRE_GRAPH_ name is the one this repo documents, and it wins.
+	envPresearch      = "ENTIRE_GRAPH_PRESEARCH"
+	envPresearchAlias = "EG_PRESEARCH"
+	// envSearchSession names the file that carries ONE task's search state between calls. The CLI is
+	// one-shot, so nothing else can tell the second search of a task from the first; setting it is
+	// what turns the search echo on. See searchSession.
+	envSearchSession = "EG_SEARCH_SESSION"
+	// envMaxSearches is how many searches of that session actually run a query (default 1, `0`
+	// disables the echo). See searchSession for the measurement.
+	envMaxSearches = "EG_MAX_SEARCHES"
 )
 
 // cacheDirName is this provider's directory inside the platform's per-user cache
@@ -58,14 +74,28 @@ type EntireEnv struct {
 	PluginDataDir string
 	// ReferenceBlocks is the session-wide default for the off-by-default search reference blocks.
 	ReferenceBlocks string
+	// PresearchPath is the file holding this session's pre-computed search payload, or "" when the
+	// caller has not pre-delivered one. See envPresearch.
+	PresearchPath string
+	// SearchSession is the state file for one task's searches; empty means the echo is off.
+	SearchSession string
+	// MaxSearches is how many of that task's searches run a query; empty means the default of 1.
+	MaxSearches string
 }
 
 func EnvFromOS() EntireEnv {
+	presearch := os.Getenv(envPresearch)
+	if presearch == "" {
+		presearch = os.Getenv(envPresearchAlias)
+	}
 	return EntireEnv{
 		CLIVersion:      os.Getenv(envCLIVersion),
 		RepoRoot:        os.Getenv(envRepoRoot),
 		PluginDataDir:   os.Getenv(envPluginDataDir),
 		ReferenceBlocks: os.Getenv(envReferenceBlocks),
+		PresearchPath:   presearch,
+		SearchSession:   os.Getenv(envSearchSession),
+		MaxSearches:     os.Getenv(envMaxSearches),
 	}
 }
 

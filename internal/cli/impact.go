@@ -78,21 +78,30 @@ type impactSection struct {
 }
 
 type impactResponse struct {
-	FormatVersion          int                    `json:"format_version"`
-	RepoRoot               string                 `json:"repo_root"`
-	Commit                 string                 `json:"commit,omitempty"`
-	Tree                   string                 `json:"tree,omitempty"`
-	Profile                string                 `json:"profile"`
-	Query                  string                 `json:"query"`
-	File                   string                 `json:"file,omitempty"`
-	Line                   int                    `json:"line,omitempty"`
-	Depth                  int                    `json:"depth"`
-	IndexCacheHit          bool                   `json:"index_cache_hit"`
-	IndexCacheDisabled     bool                   `json:"index_cache_disabled,omitempty"`
-	IndexLatencyMS         int64                  `json:"index_latency_ms"`
-	QueryLatencyMS         int64                  `json:"query_latency_ms"`
-	TotalLatencyMS         int64                  `json:"total_latency_ms"`
-	FocusMatchesTotal      int                    `json:"focus_matches_total"`
+	FormatVersion      int    `json:"format_version"`
+	RepoRoot           string `json:"repo_root"`
+	Commit             string `json:"commit,omitempty"`
+	Tree               string `json:"tree,omitempty"`
+	Profile            string `json:"profile"`
+	Query              string `json:"query"`
+	File               string `json:"file,omitempty"`
+	Line               int    `json:"line,omitempty"`
+	Depth              int    `json:"depth"`
+	IndexCacheHit      bool   `json:"index_cache_hit"`
+	IndexCacheDisabled bool   `json:"index_cache_disabled,omitempty"`
+	IndexLatencyMS     int64  `json:"index_latency_ms"`
+	QueryLatencyMS     int64  `json:"query_latency_ms"`
+	TotalLatencyMS     int64  `json:"total_latency_ms"`
+	FocusMatchesTotal  int    `json:"focus_matches_total"`
+	// See neighborResponse for what these three report; impact resolves its focus through the same
+	// shared resolver, so it answers a misspelled or ambiguous query the same way.
+	FuzzyMatch     bool   `json:"fuzzy_match,omitempty"`
+	FuzzyMatchKind string `json:"fuzzy_match_kind,omitempty"`
+	// Degenerate reports that the answer carries no blast radius worth reading, with the reason. It is
+	// the same verdict the text marker prints, so a JSON consumer can act on it without parsing text.
+	Degenerate             bool                   `json:"degenerate,omitempty"`
+	DegenerateReason       string                 `json:"degenerate_reason,omitempty"`
+	MatchBodies            []symbolMatchBody      `json:"match_bodies,omitempty"`
 	DisambiguationRequired bool                   `json:"disambiguation_required"`
 	Definitions            []neighborEndpoint     `json:"definitions,omitempty"`
 	Focus                  *neighborEndpoint      `json:"focus,omitempty"`
@@ -141,6 +150,11 @@ func runImpact(ctx context.Context, opts Options, args []string) error {
 	queryStarted := time.Now()
 	response := buildImpactResponse(snapshot, flags)
 	annotateImpactCallSites(&response, newRepoLineReader(snapshot.Header.RepoRoot))
+	// The verdict is computed once, on the finished response, so the text marker and the JSON fields
+	// can never disagree about whether this answer was worth reading.
+	if reason := impactDegenerateReason(response); reason != "" {
+		response.Degenerate, response.DegenerateReason = true, reason
+	}
 	queryLatency := time.Since(queryStarted)
 	response.IndexCacheHit = cacheHit
 	response.IndexCacheDisabled = cacheDir == "" || flags.DisableCache
@@ -326,16 +340,23 @@ func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impac
 	}
 
 	ref := parseSymbolRef(flags.Symbol, flags.File, flags.Line, flags.Kind, snapshot.Header.RepoRoot, snapshotFilePaths(snapshot))
-	focuses := resolveFocusSymbols(snapshot.Symbols, ref)
-	sort.Slice(focuses, func(left, right int) bool {
-		if focuses[left].FilePath != focuses[right].FilePath {
-			return focuses[left].FilePath < focuses[right].FilePath
-		}
-		if focuses[left].StartLine != focuses[right].StartLine {
-			return focuses[left].StartLine < focuses[right].StartLine
-		}
-		return focuses[left].ID < focuses[right].ID
-	})
+	focuses, matchTier, fuzzyMatch := resolveFocusSymbolsOrFuzzy(snapshot.Symbols, ref, symbolFuzzyCandidateLimit)
+	// File/line order is right for EXACT matches — several definitions of one name are equally valid
+	// answers, so a stable positional order is the honest presentation. It is wrong for a FUZZY answer,
+	// where the order IS the answer: resolveFocusSymbolsOrFuzzy already sorted by how well each
+	// candidate matched, and re-sorting alphabetically buried the correct
+	// `Functions.flattenSingleValue` under a `Single` class that merely shares one token.
+	if !fuzzyMatch {
+		sort.Slice(focuses, func(left, right int) bool {
+			if focuses[left].FilePath != focuses[right].FilePath {
+				return focuses[left].FilePath < focuses[right].FilePath
+			}
+			if focuses[left].StartLine != focuses[right].StartLine {
+				return focuses[left].StartLine < focuses[right].StartLine
+			}
+			return focuses[left].ID < focuses[right].ID
+		})
+	}
 
 	partialFailures := snapshot.Header.PartialFailures
 	if partialFailures == nil {
@@ -352,6 +373,14 @@ func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impac
 		Line:              ref.Line,
 		Depth:             flags.Depth,
 		FocusMatchesTotal: len(focuses),
+		FuzzyMatch:        fuzzyMatch,
+		FuzzyMatchKind:    fuzzyKindLabel(fuzzyMatch, matchTier),
+		MatchBodies: func() []symbolMatchBody {
+			if !fuzzyMatch && len(focuses) <= 1 {
+				return nil
+			}
+			return symbolMatchBodies(snapshot.Header.RepoRoot, focuses, symbolAmbiguousBodyLimit)
+		}(),
 		Warnings:          snapshot.Header.Warnings,
 		PartialFailures:   partialFailures,
 		Stats:             snapshot.Header.Stats,
@@ -708,8 +737,23 @@ func writeImpactText(out io.Writer, response impactResponse) {
 		writeNoFocusMatch(out, response.Query, response.File, response.Line)
 		return
 	}
-	if response.DisambiguationRequired {
-		writeDisambiguationListing(out, response.Query, response.FocusMatchesTotal, response.Definitions)
+	if response.FuzzyMatch {
+		writeFuzzyMatchListing(out, response.Query, symbolMatchTierFromLabel(response.FuzzyMatchKind),
+			response.Definitions, response.MatchBodies)
+		if response.DisambiguationRequired {
+			return
+		}
+	} else if response.DisambiguationRequired {
+		writeDisambiguationListing(out, response.Query, response.FocusMatchesTotal, response.Definitions,
+			response.MatchBodies)
+		return
+	}
+
+	// A degenerate answer says so in one line instead of printing zero-filled scaffolding that reads
+	// like an answer. The verdict is the one computed on the finished response, so text and JSON agree.
+	// See the block at the bottom of this file for the measurement.
+	if response.Degenerate {
+		writeImpactDegenerate(out, response, response.DegenerateReason)
 		return
 	}
 
@@ -803,4 +847,118 @@ func writeImpactSection(out io.Writer, header string, section impactSection, arr
 	if omitted := section.Total - len(section.Entries); omitted > 0 {
 		fmt.Fprintf(out, "- ... +%d more (use --format json for the full list)\n", omitted)
 	}
+}
+
+// DEGENERATE IMPACT
+// =================
+//
+// `impact` on an anchor with no relations still printed the full scaffolding: a focus line, a blast
+// radius reading all zeros, and one empty section header per relation kind. Measured over 8 sessions,
+// every one of the 3 retrieval-miss instances produced exactly that — briannesbitt__carbon-2752
+// (`isLongYear`, 0 callers / 0 callees), prometheus (`Config.ScrapeConfigs`, 0/0/0) and three.js
+// (hits only under `build/`) — and 0 of the 5 instances whose payload actually hit produced it. The
+// scaffolding is expensive in the only currency that matters here: it looks like an answer, so the
+// agent reads it, and the bytes are replayed on every later turn for nothing.
+//
+// So a degenerate result says so in ONE machine-readable line. The marker is for the caller as much as
+// the reader: a harness can key on it to drop the impact payload entirely and fall back to a lean
+// prefetch, which is not something it can do from "Blast radius: 0 callers, 0 callees".
+const (
+	// impactDegenerateMarker is the stable prefix a consumer matches on. It is a constant because a
+	// harness greps for it; changing the wording after the prefix is safe, changing the prefix is not.
+	impactDegenerateMarker = "IMPACT DEGENERATE"
+
+	// impactDegenerateNoRelations is the 0/0/0 case: the graph holds the symbol but nothing reaches it
+	// and it reaches nothing, so there is no blast radius to report.
+	impactDegenerateNoRelations = "no callers, callees or type consumers"
+
+	// impactDegenerateBundleOnly is the case where every hit is in built or vendored output. Such a
+	// path is not a fix site: editing it is overwritten by the next build.
+	impactDegenerateBundleOnly = "every relation lands in built or vendored output"
+)
+
+// impactBundlePathSegments are the directory names that mark generated or vendored output. Kept
+// deliberately short and unambiguous — a false positive here suppresses a real answer, so the list
+// holds only names whose contents are by definition not hand-edited.
+var impactBundlePathSegments = []string{
+	"/build/", "/dist/", "/vendor/", "/node_modules/", "/target/", "/out/", "/.next/", "/coverage/",
+}
+
+// impactBundlePath reports whether a path is generated or vendored output.
+func impactBundlePath(filePath string) bool {
+	if filePath == "" {
+		return false
+	}
+	lower := "/" + strings.ToLower(strings.ReplaceAll(filePath, "\\", "/"))
+	for _, segment := range impactBundlePathSegments {
+		if strings.Contains(lower, segment) {
+			return true
+		}
+	}
+	return strings.HasSuffix(lower, ".min.js") || strings.HasSuffix(lower, ".bundle.js")
+}
+
+// impactDegenerateReason returns the reason an impact answer is degenerate, or "" when it is a real
+// answer. Sections beyond the three structural ones are deliberately NOT consulted: co-change and
+// sibling entries are heuristics, and a payload carrying only those has still told the caller nothing
+// about what its change breaks.
+func impactDegenerateReason(response impactResponse) string {
+	if response.Focus == nil {
+		// An AMBIGUOUS anchor is normally answered rather than suppressed (see FIX A in symbolref.go),
+		// but not when every definition it found is generated output. That is the measured three.js
+		// case: `WebGLRenderer` resolves to 7 definitions, and the ones outside src/ are copies inside
+		// build/three.module.js and build/three.cjs. Listing bundle copies with their bodies would
+		// spend the payload on code no patch can land in.
+		if len(response.Definitions) == 0 {
+			return ""
+		}
+		for _, definition := range response.Definitions {
+			if definition.FilePath == "" || !impactBundlePath(definition.FilePath) {
+				return ""
+			}
+		}
+		return impactDegenerateBundleOnly
+	}
+	// The gate is callers + callees + CO-CHANGE, not callers + callees + type consumers. Turn-level
+	// forensics of 12 sessions found impact asserting authority on the wrong symbol in 11 of them, and
+	// the shape was always the same: a section set that is empty except for a heuristic one, printed as
+	// though it were a blast radius. Co-change joins the numerator because it is the one heuristic that
+	// names FILES a reader can act on; type consumers stay in it because they are structural.
+	structural := response.Callers.Total + response.Callees.Total +
+		response.TypeConsumers.Total + response.CoChanges.Total
+	if structural == 0 {
+		return impactDegenerateNoRelations
+	}
+	// Every hit in built output, and there has to BE at least one hit — an all-empty section set is the
+	// case above, not this one.
+	seen := false
+	for _, section := range []impactSection{
+		response.Callers, response.Callees, response.TypeConsumers, response.DataFlows,
+	} {
+		for _, entry := range section.Entries {
+			if entry.Endpoint.FilePath == "" {
+				continue
+			}
+			seen = true
+			if !impactBundlePath(entry.Endpoint.FilePath) {
+				return ""
+			}
+		}
+	}
+	if seen {
+		return impactDegenerateBundleOnly
+	}
+	return ""
+}
+
+// writeImpactDegenerate emits the marker. One line, prefix first, so a consumer can match it without
+// parsing anything else, and the anchor is named so a human still knows which query it answers.
+func writeImpactDegenerate(out io.Writer, response impactResponse, reason string) {
+	name := response.Query
+	if response.Focus != nil {
+		if display := endpointDisplayName(*response.Focus); display != "" {
+			name = display
+		}
+	}
+	fmt.Fprintf(out, "%s: %s has %s\n", impactDegenerateMarker, name, reason)
 }

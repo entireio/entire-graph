@@ -116,12 +116,15 @@ func TestNeighborsLimitBoundsAmbiguousFocusMatchesDeterministically(t *testing.T
 	if err := writeAgentNeighbors(&out, response); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), `Ambiguous symbol "Target" matched 3 definitions`) ||
+	if !strings.Contains(out.String(), `"Target" matches 3 definitions`) ||
 		// The listing prints the MINIMAL selector per definition rather than each full stable
 		// ID: an ID is `repoKey:language:path:kind:qualifiedName`, so printing one repeats the
 		// path and name the same line already shows. IDs remain accepted as INPUT — see
 		// TestNeighborsExactSymbolIDDisambiguatesSameFileOverloads below.
-		!strings.Contains(out.String(), "rerun with the selector printed beside the one you mean") ||
+		!strings.Contains(out.String(), "--symbol Target --file a.go --line 5") ||
+		// And it must never TELL THE CALLER TO RE-RUN. Ambiguity is an answer, not an error:
+		// re-running by hand cost $2.22 of pre-edit operations on lombok-3486.
+		strings.Contains(out.String(), "rerun with the selector") ||
 		strings.Contains(out.String(), "c.go:1") || strings.Contains(out.String(), "Callers:") {
 		t.Fatalf("agent ambiguity output was not deterministically bounded:\n%s", out.String())
 	}

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/entireio/entire-graph/internal/sem"
@@ -52,7 +51,7 @@ func runIndex(ctx context.Context, opts Options, args []string) error {
 		return err
 	}
 	if len(rest) != 0 {
-		return fmt.Errorf("index received unexpected arguments: %s", strings.Join(rest, " "))
+		return unexpectedArgumentsError("index", opts.Version, rest)
 	}
 	// Format resolution: an explicit --format wins; otherwise pick by audience —
 	// a human at a terminal gets the readable summary, a pipe/CI gets the
