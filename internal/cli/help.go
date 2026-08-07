@@ -220,6 +220,32 @@ var commandDocs = []commandDoc{
 		examples: []string{"entire graph def Result --repo ."},
 	},
 	{
+		name:    "explain",
+		group:   groupInspect,
+		summary: "Resolve symbols named by a failing build or test",
+		usage: []string{
+			"entire graph explain --repo . [--profile full] [--format text|json|agent] [--max-symbols 8] [--max-context-bytes 2048]",
+		},
+		long: "Reads failing build or test output from stdin, passes that output through by default, and appends declarations for the symbols named by the failure. It queries the working tree by default so the declarations match the code that just failed. The command is local and deterministic; it does not call a model or network service.",
+		flags: []flagDoc{
+			{name: "--repo", arg: "path", desc: "Repository (default: current repo)"},
+			{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Parsing depth"},
+			{name: "--cache-dir", arg: "path", desc: "Override the committed-tree cache directory"},
+			{name: "--format", arg: "text|json|agent", def: "text", desc: "Output format for resolved declarations"},
+			{name: "--head", desc: "Resolve declarations from HEAD instead of the working tree"},
+			{name: "--worktree", desc: "Resolve declarations from the working tree (default)"},
+			{name: "--no-cache", desc: "Disable the committed-tree cache"},
+			{name: "--no-echo", desc: "Do not pass the input build output through before declarations"},
+			{name: "--max-symbols", arg: "n", def: "8", desc: "Maximum distinct symbol names to resolve"},
+			{name: "--max-context-bytes", arg: "n", def: "2048", desc: "Byte budget for the declaration block"},
+			{name: "--ignore-file", arg: "path", desc: "Extra gitignore-style exclude rules (repeatable)"},
+			{name: "--include-file", arg: "path", desc: "Re-include ignored paths (gitignore-style; not an allowlist)"},
+		},
+		examples: []string{
+			"go test ./internal/configs -run '^TestX$' 2>&1 | entire graph explain --repo .",
+		},
+	},
+	{
 		name:     "symbols",
 		group:    groupInspect,
 		summary:  "Stream every symbol definition (bulk NDJSON)",
@@ -238,13 +264,37 @@ var commandDocs = []commandDoc{
 		examples: []string{"entire graph edges --repo . --format ndjson"},
 	},
 	{
-		name:     "snapshot",
-		group:    groupInspect,
-		summary:  "Stream the whole graph: files, symbols, and relations (bulk NDJSON)",
-		usage:    []string{"entire graph snapshot --repo . --format ndjson [--worktree]"},
-		long:     "One header record, then file, external-endpoint, symbol, and relation records, streamed so memory stays bounded. Superset of symbols + edges + files — use it to ingest the full graph into an agent memory or a store such as Entire Brain.",
-		flags:    providerFlagDocs,
-		examples: []string{"entire graph snapshot --repo . --format ndjson"},
+		name:    "snapshot",
+		group:   groupInspect,
+		summary: "Stream the whole graph: files, symbols, and relations (bulk NDJSON)",
+		usage:   []string{"entire graph snapshot --repo . --format ndjson|compact-ndjson [--worktree]"},
+		long:    "One header record, then file, external-endpoint, symbol, and relation records, streamed so memory stays bounded. Superset of symbols + edges + files — use it to ingest the full graph into an agent memory or a store such as Entire Brain. compact-ndjson is a complete-snapshot-only local artifact that can be read by snapshot-query.",
+		flags:   snapshotFlagDocs,
+		examples: []string{
+			"entire graph snapshot --repo . --format ndjson",
+			"entire graph snapshot --repo . --format compact-ndjson > graph.compact.ndjson",
+		},
+	},
+	{
+		name:    "snapshot-query",
+		group:   groupInspect,
+		summary: "Query a compact snapshot without rebuilding the graph",
+		usage: []string{
+			"entire graph snapshot-query --input graph.compact.ndjson --symbol NAME [--format ndjson]",
+			"entire graph snapshot-query --input graph.compact.ndjson --from STABLE_ID [--relation TYPE] [--format ndjson]",
+		},
+		long: "Loads a compact-ndjson v1 snapshot from disk and emits deterministically ordered native NDJSON symbol or relation records. At least one of --symbol or --from is required; --relation narrows a --from query and cannot be used alone.",
+		flags: []flagDoc{
+			{name: "--input", arg: "path", desc: "Compact snapshot file to query (required)"},
+			{name: "--symbol", arg: "name", desc: "Return symbols matching a stable ID, qualified name, or name"},
+			{name: "--from", arg: "stable-id", desc: "Return relations whose source has this stable ID"},
+			{name: "--relation", arg: "type", desc: "Restrict a --from query to one relation type"},
+			{name: "--format", arg: "ndjson", def: "ndjson", desc: "Required output format"},
+		},
+		examples: []string{
+			"entire graph snapshot-query --input graph.compact.ndjson --symbol Cache.Refresh --format ndjson",
+			"entire graph snapshot-query --input graph.compact.ndjson --from '<stable-id>' --relation CALLS --format ndjson",
+		},
 	},
 
 	// ── Analyze changes & more ───────────────────────────────────────────
@@ -347,6 +397,17 @@ var commandDocs = []commandDoc{
 var providerFlagDocs = []flagDoc{
 	{name: "--repo", arg: "path", desc: "Repository (default: current repo)"},
 	{name: "--format", arg: "ndjson", def: "ndjson", desc: "Required output format"},
+	{name: "--worktree", desc: "Stream the working tree instead of HEAD (never cached)"},
+	{name: "--progress", desc: "Emit progress events to stderr"},
+	{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Parsing depth"},
+	{name: "--ignore-file", arg: "path", desc: "Extra gitignore-style exclude rules (repeatable)"},
+	{name: "--include-file", arg: "path", desc: "Re-include ignored paths (gitignore-style; not an allowlist)"},
+}
+
+// snapshotFlagDocs extend the bulk provider flags with the compact full-snapshot format.
+var snapshotFlagDocs = []flagDoc{
+	{name: "--repo", arg: "path", desc: "Repository (default: current repo)"},
+	{name: "--format", arg: "ndjson|compact-ndjson", def: "ndjson", desc: "Output format; compact requires a complete snapshot"},
 	{name: "--worktree", desc: "Stream the working tree instead of HEAD (never cached)"},
 	{name: "--progress", desc: "Emit progress events to stderr"},
 	{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Parsing depth"},
