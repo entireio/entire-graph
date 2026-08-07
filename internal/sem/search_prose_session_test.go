@@ -176,13 +176,20 @@ func TestSafeProseInflectionMatchSupportsBoundedWordFamilies(t *testing.T) {
 		{left: "archive", right: "archived", want: true},
 		{left: "archive", right: "archiving", want: true},
 		{left: "navigate", right: "navigation", want: true},
-		{left: "authorization", right: "preauthorization", want: true},
+		{left: "preauthorization", right: "authorization", want: true},
+		{left: "authorization", right: "preauthorization", want: false},
 		{left: "orchard", right: "orchards", want: true},
 		{left: "gas", right: "gases", want: false},
 		{left: "archive", right: "architect", want: false},
 		{left: "plan", right: "planet", want: false},
 		{left: "universe", right: "university", want: false},
 		{left: "conserve", right: "conservatory", want: false},
+		{left: "possible", right: "impossible", want: false},
+		{left: "impossible", right: "possible", want: false},
+		{left: "complete", right: "incomplete", want: false},
+		{left: "incomplete", right: "complete", want: false},
+		{left: "authorized", right: "unauthorized", want: false},
+		{left: "unauthorized", right: "authorized", want: false},
 	}
 	for _, testCase := range tests {
 		if got := safeProseInflectionMatch(testCase.left, testCase.right); got != testCase.want {
@@ -217,10 +224,16 @@ func TestProseParentHeadCountReservesMoreTailForListQuestions(t *testing.T) {
 		{query: "what records exist other than the ledger", want: 3},
 		{query: "what item exists other than the ledger", want: 3},
 		{query: "where are the travel notes", want: 3},
+		{query: "what are the projects", want: 3},
 		{query: "what else is recorded", want: 3},
 		{query: "what is the status", want: 5},
 		{query: "what does the analysis show", want: 5},
 		{query: "where is the atlas", want: 5},
+		{query: "what happens after deployment", want: 5},
+		{query: "what occurs after deployment", want: 5},
+		{query: "what always follows deployment", want: 5},
+		{query: "what series covers deployment", want: 5},
+		{query: "what physics explains motion", want: 5},
 	}
 	for _, testCase := range tests {
 		if got := proseParentHeadCount(buildSearchQuery(testCase.query), 10); got != testCase.want {
@@ -242,7 +255,7 @@ func TestSearchRepositoryAdmitsSafeProseFamilyForTemporalListQuery(t *testing.T)
 	}{
 		{name: "past tense", query: "archive", evidence: "Archived"},
 		{name: "derivation", query: "navigate", evidence: "Navigation"},
-		{name: "end compound", query: "authorization", evidence: "Preauthorization"},
+		{name: "end compound", query: "preauthorization", evidence: "Authorization"},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -259,7 +272,7 @@ The approval was recorded in this session.
 			}
 
 			response, err := SearchRepository(
-				t.Context(), repo, "test", fmt.Sprintf("which %s notes were before the third review", testCase.query), SearchOptions{
+				t.Context(), repo, "test", fmt.Sprintf("which notes about %s were before the third review", testCase.query), SearchOptions{
 					Worktree: true, Profile: ProfileSyntaxOnly, TopK: 10, MaxIndexedFiles: 32,
 				},
 			)
@@ -283,6 +296,34 @@ The approval was recorded in this session.
 			}
 			t.Fatalf("safe family evidence session missing: %#v", response.Results)
 		})
+	}
+}
+
+func TestSearchRepositoryDoesNotAdmitNegatingEdgeCompound(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "sessions/focus.md", `# Possible review entry
+
+The fallback note was recorded in this session.
+`)
+	for index := 0; index < 12; index++ {
+		write(t, repo, fmt.Sprintf("sessions/distractor-%02d.md", index), fmt.Sprintf(
+			"# Third review notes before marker%d ridge%d vessel%d\n",
+			index, index, index,
+		))
+	}
+
+	response, err := SearchRepository(
+		t.Context(), repo, "test", "which notes about impossible were before the third review", SearchOptions{
+			Worktree: true, Profile: ProfileSyntaxOnly, TopK: 10, MaxIndexedFiles: 32,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range response.Results {
+		if result.FilePath == "sessions/focus.md" {
+			t.Fatalf("negating edge compound admitted opposing evidence: %#v", response.Results)
+		}
 	}
 }
 
@@ -378,6 +419,50 @@ func TestSearchRepositorySingularSEndingQuestionPreservesOrdinaryHead(t *testing
 
 	response, err := SearchRepository(
 		t.Context(), repo, "test", "what is the status of amber orchard ledger braided lantern", SearchOptions{
+			Worktree: true, Profile: ProfileSyntaxOnly, TopK: 10, MaxIndexedFiles: 32,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 5; index++ {
+		want := fmt.Sprintf("sessions/distractor-%02d.md", index)
+		if response.Results[index].FilePath != want {
+			t.Fatalf("ordinary head[%d] = %q, want %q", index, response.Results[index].FilePath, want)
+		}
+	}
+	for _, result := range response.Results {
+		if result.FilePath == "sessions/focus.md" {
+			if result.Rank != 6 {
+				t.Fatalf("distributed session rank = %d, want ordinary first-tail slot 6", result.Rank)
+			}
+			return
+		}
+	}
+	t.Fatalf("distributed session missing from ordinary tail: %#v", response.Results)
+}
+
+func TestSearchRepositoryVerbSEndingQuestionPreservesOrdinaryHead(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "sessions/focus.md", `# Amber
+
+## Orchard
+
+## Ledger
+
+## Braided
+
+## Lantern
+`)
+	for index := 0; index < 12; index++ {
+		write(t, repo, fmt.Sprintf("sessions/distractor-%02d.md", index), fmt.Sprintf(
+			"# Happens after deployment amber orchard ledger braided marker%d ridge%d vessel%d\n",
+			index, index, index,
+		))
+	}
+
+	response, err := SearchRepository(
+		t.Context(), repo, "test", "what happens after deployment with amber orchard ledger braided lantern", SearchOptions{
 			Worktree: true, Profile: ProfileSyntaxOnly, TopK: 10, MaxIndexedFiles: 32,
 		},
 	)

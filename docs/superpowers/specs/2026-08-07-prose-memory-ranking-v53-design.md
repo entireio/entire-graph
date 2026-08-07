@@ -81,7 +81,8 @@ matching while retaining its current callers. It may match:
 - singular and plural forms already supported;
 - conservative ASCII `-ed` and `-ing` forms in either direction; and
 - a standalone evidence word contained at the beginning or end of a longer
-  prose query token, subject to minimum-length and length-ratio guards.
+  prose query token, subject to minimum-length and length-ratio guards and a
+  rejection rule for negating or opposing prefixes.
 
 The helper must reject short stems and known unsafe suffix collisions. It is
 used only when ordinary exact term counts have not already matched.
@@ -90,7 +91,9 @@ used only when ordinary exact term counts have not already matched.
 
 Do not create a world-knowledge ontology. Instead, preserve more independent
 session candidates when a prose query contains a bounded generic cue such as an
-ordinal, `before`/`after`, or a plural/list interrogative. Admission must still
+ordinal, `before`/`after`, an explicit `else`/`other than` cue, or a conservative
+plural syntactic frame. A plural-looking token elsewhere in an interrogative is
+not enough. Admission must still
 come from ordinary lexical/entity retrieval; the cue may affect diversity or a
 small additive score, never manufacture a candidate.
 

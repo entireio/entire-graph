@@ -135,10 +135,6 @@ func proseQueryRequestsMultipleParents(q searchQuery) bool {
 	if words == nil {
 		words = searchQueryWords(q.rawLower)
 	}
-	interrogative := words["what"] || words["which"] || words["where"]
-	if !interrogative {
-		return false
-	}
 	if words["else"] || (words["other"] && words["than"]) {
 		return true
 	}
@@ -146,8 +142,12 @@ func proseQueryRequestsMultipleParents(q searchQuery) bool {
 	if len(written) == 0 {
 		written = searchQueryWordSequence(q.rawLower)
 	}
-	for _, word := range written {
-		if safeASCIIWrittenPlural(word) {
+	for index, word := range written {
+		if word == "which" && index+1 < len(written) && safeASCIIWrittenPlural(written[index+1]) {
+			return true
+		}
+		if (word == "what" || word == "where") && index+1 < len(written) && written[index+1] == "are" &&
+			safeASCIIWrittenPlural(written[len(written)-1]) {
 			return true
 		}
 	}
@@ -326,19 +326,35 @@ func safeASCIIProseDerivation(base, derived string) bool {
 	return false
 }
 
-func safeASCIIProseEdgeCompound(left, right string) bool {
-	if !proseASCIIWord(left) || !proseASCIIWord(right) {
+// safeASCIIProseEdgeCompound is directional: queryTerm is the word the caller
+// wrote and evidenceToken is the corpus token. A longer query compound may
+// expose an exact standalone evidence word at either edge; a longer evidence
+// token cannot manufacture coverage for a shorter query.
+func safeASCIIProseEdgeCompound(queryTerm, evidenceToken string) bool {
+	if !proseASCIIWord(queryTerm) || !proseASCIIWord(evidenceToken) {
 		return false
 	}
-	shorter, longer := left, right
-	if len(shorter) > len(longer) {
-		shorter, longer = longer, shorter
-	}
-	difference := len(longer) - len(shorter)
-	if len(shorter) < 8 || difference < 2 || difference > 5 || len(shorter)*3 < len(longer)*2 {
+	difference := len(queryTerm) - len(evidenceToken)
+	if len(evidenceToken) < 8 || difference < 2 || difference > 5 || len(evidenceToken)*3 < len(queryTerm)*2 {
 		return false
 	}
-	return strings.HasPrefix(longer, shorter) || strings.HasSuffix(longer, shorter)
+	if strings.HasPrefix(queryTerm, evidenceToken) {
+		return true
+	}
+	if !strings.HasSuffix(queryTerm, evidenceToken) {
+		return false
+	}
+	prefix := strings.TrimSuffix(queryTerm, evidenceToken)
+	return !safeASCIIProseOpposingPrefix(prefix)
+}
+
+func safeASCIIProseOpposingPrefix(prefix string) bool {
+	switch prefix {
+	case "anti", "counter", "de", "dis", "il", "im", "in", "ir", "mis", "non", "un":
+		return true
+	default:
+		return false
+	}
 }
 
 // safeASCIIWrittenPlural recognizes only forms that can be reversed without
