@@ -145,12 +145,21 @@ func safeASCIIProseEdgeCompound(queryTerm, evidenceToken string) bool {
 		return false
 	}
 	if strings.HasPrefix(queryTerm, evidenceToken) {
-		return true
+		return !safeASCIIProseOpposingSuffix(strings.TrimPrefix(queryTerm, evidenceToken))
 	}
 	if !strings.HasSuffix(queryTerm, evidenceToken) {
 		return false
 	}
 	return !safeASCIIProseOpposingPrefix(strings.TrimSuffix(queryTerm, evidenceToken))
+}
+
+func safeASCIIProseOpposingSuffix(suffix string) bool {
+	switch suffix {
+	case "free", "less":
+		return true
+	default:
+		return false
+	}
 }
 
 func safeASCIIProseOpposingPrefix(prefix string) bool {
@@ -265,7 +274,7 @@ func proseQueryRequestsMultipleParents(q searchQuery) bool {
 		written = searchQueryWordSequence(q.rawLower)
 	}
 	for index, word := range written {
-		if word == "which" && index+1 < len(written) && safeASCIIWrittenPlural(written[index+1]) {
+		if word == "which" && proseWhichListFrame(written, index) {
 			return true
 		}
 		if (word == "what" || word == "where") && index+1 < len(written) && written[index+1] == "are" &&
@@ -274,6 +283,29 @@ func proseQueryRequestsMultipleParents(q searchQuery) bool {
 		}
 	}
 	return false
+}
+
+func proseWhichListFrame(written []string, whichIndex int) bool {
+	for headOffset := 1; headOffset <= 2; headOffset++ {
+		headIndex := whichIndex + headOffset
+		predicateIndex := headIndex + 1
+		if predicateIndex >= len(written) || !safeASCIIWrittenPlural(written[headIndex]) {
+			continue
+		}
+		if proseListPredicate(written[predicateIndex]) {
+			return true
+		}
+	}
+	return false
+}
+
+func proseListPredicate(word string) bool {
+	switch word {
+	case "are", "contain", "cover", "describe", "have", "hold", "include", "list", "match", "mention", "show", "store", "use":
+		return true
+	default:
+		return false
+	}
 }
 
 func proseParentHeadCount(q searchQuery, topK int) int {

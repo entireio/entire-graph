@@ -190,6 +190,8 @@ func TestSafeProseInflectionMatchSupportsBoundedWordFamilies(t *testing.T) {
 		{left: "incomplete", right: "complete", want: false},
 		{left: "authorized", right: "unauthorized", want: false},
 		{left: "unauthorized", right: "authorized", want: false},
+		{left: "permissionless", right: "permission", want: false},
+		{left: "authorizationfree", right: "authorization", want: false},
 	}
 	for _, testCase := range tests {
 		if got := safeProseInflectionMatch(testCase.left, testCase.right); got != testCase.want {
@@ -221,6 +223,8 @@ func TestProseParentHeadCountReservesMoreTailForListQuestions(t *testing.T) {
 	}{
 		{query: "find the archive implementation", want: 5},
 		{query: "which archives contain lanterns", want: 3},
+		{query: "which archive records contain lanterns", want: 3},
+		{query: "which old archives contain lanterns", want: 3},
 		{query: "what records exist other than the ledger", want: 3},
 		{query: "what item exists other than the ledger", want: 3},
 		{query: "where are the travel notes", want: 3},
@@ -234,6 +238,10 @@ func TestProseParentHeadCountReservesMoreTailForListQuestions(t *testing.T) {
 		{query: "what always follows deployment", want: 5},
 		{query: "what series covers deployment", want: 5},
 		{query: "what physics explains motion", want: 5},
+		{query: "which status happens after deployment", want: 5},
+		{query: "which analysis occurs after deployment", want: 5},
+		{query: "which series always follows deployment", want: 5},
+		{query: "which physics explains motion", want: 5},
 	}
 	for _, testCase := range tests {
 		if got := proseParentHeadCount(buildSearchQuery(testCase.query), 10); got != testCase.want {
@@ -272,7 +280,7 @@ The approval was recorded in this session.
 			}
 
 			response, err := SearchRepository(
-				t.Context(), repo, "test", fmt.Sprintf("which notes about %s were before the third review", testCase.query), SearchOptions{
+				t.Context(), repo, "test", fmt.Sprintf("which notes contain %s before the third review", testCase.query), SearchOptions{
 					Worktree: true, Profile: ProfileSyntaxOnly, TopK: 10, MaxIndexedFiles: 32,
 				},
 			)
@@ -313,7 +321,7 @@ The fallback note was recorded in this session.
 	}
 
 	response, err := SearchRepository(
-		t.Context(), repo, "test", "which notes about impossible were before the third review", SearchOptions{
+		t.Context(), repo, "test", "which notes contain impossible before the third review", SearchOptions{
 			Worktree: true, Profile: ProfileSyntaxOnly, TopK: 10, MaxIndexedFiles: 32,
 		},
 	)
@@ -323,6 +331,34 @@ The fallback note was recorded in this session.
 	for _, result := range response.Results {
 		if result.FilePath == "sessions/focus.md" {
 			t.Fatalf("negating edge compound admitted opposing evidence: %#v", response.Results)
+		}
+	}
+}
+
+func TestSearchRepositoryDoesNotAdmitOpposingEdgeSuffix(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "sessions/focus.md", `# Permission review entry
+
+The fallback note was recorded in this session.
+`)
+	for index := 0; index < 12; index++ {
+		write(t, repo, fmt.Sprintf("sessions/distractor-%02d.md", index), fmt.Sprintf(
+			"# Third review notes before marker%d ridge%d vessel%d\n",
+			index, index, index,
+		))
+	}
+
+	response, err := SearchRepository(
+		t.Context(), repo, "test", "which notes contain permissionless before the third review", SearchOptions{
+			Worktree: true, Profile: ProfileSyntaxOnly, TopK: 10, MaxIndexedFiles: 32,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range response.Results {
+		if result.FilePath == "sessions/focus.md" {
+			t.Fatalf("opposing edge suffix admitted contradictory evidence: %#v", response.Results)
 		}
 	}
 }
@@ -386,10 +422,17 @@ func TestSearchRepositoryListInterrogativeReservesTailForDistinctParents(t *test
 		}
 	}
 	wantPaths := map[string]bool{"sessions/lantern.md": false, "sessions/vessel.md": false}
+	firstEvidenceRank := 0
 	for _, result := range response.Results {
 		if _, ok := wantPaths[result.FilePath]; ok {
 			wantPaths[result.FilePath] = true
+			if firstEvidenceRank == 0 || result.Rank < firstEvidenceRank {
+				firstEvidenceRank = result.Rank
+			}
 		}
+	}
+	if firstEvidenceRank != 4 {
+		t.Fatalf("first fair-tail evidence rank = %d, want 4: %#v", firstEvidenceRank, response.Results)
 	}
 	for path, found := range wantPaths {
 		if !found {

@@ -82,7 +82,7 @@ matching while retaining its current callers. It may match:
 - conservative ASCII `-ed` and `-ing` forms in either direction; and
 - a standalone evidence word contained at the beginning or end of a longer
   prose query token, subject to minimum-length and length-ratio guards and a
-  rejection rule for negating or opposing prefixes.
+  rejection rules for negating or opposing prefixes and suffixes.
 
 The helper must reject short stems and known unsafe suffix collisions. It is
 used only when ordinary exact term counts have not already matched.
@@ -92,8 +92,9 @@ used only when ordinary exact term counts have not already matched.
 Do not create a world-knowledge ontology. Instead, preserve more independent
 session candidates when a prose query contains a bounded generic cue such as an
 ordinal, `before`/`after`, an explicit `else`/`other than` cue, or a conservative
-plural syntactic frame. A plural-looking token elsewhere in an interrogative is
-not enough. Admission must still
+plural syntactic frame. A `which` frame permits at most one modifier before its
+plural head and requires a bounded list predicate immediately after that head.
+A plural-looking token elsewhere in an interrogative is not enough. Admission must still
 come from ordinary lexical/entity retrieval; the cue may affect diversity or a
 small additive score, never manufacture a candidate.
 
