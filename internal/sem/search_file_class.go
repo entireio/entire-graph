@@ -37,6 +37,21 @@ import (
 const (
 	searchNonSourceClassPrior = 0.5
 	searchSecondaryClassPrior = 0.75
+
+	// searchReferenceDeclPrior demotes a one-line declaration that names a type without initialising
+	// it — `private final DruidLeaderClient druidLeaderClient;`. Such a line is a REFERENCE to the
+	// concept, never a place a behavioural bug can live: it holds no value and runs no code.
+	//
+	// It is below the secondary prior because a fixture or a benchmark is real code a fix may edit,
+	// whereas an uninitialised declaration can only change if its TYPE changes, which the query would
+	// have had to ask about.
+	//
+	// Measured on apache/druid-14092: four such lines (two of them `private final DruidLeaderClient
+	// druidLeaderClient;` in unrelated modules) took the two HIGHEST scores at 78.32, with the actual
+	// fix site at rank 3. The agent read the ranked list as an edit set and patched 5 files across 4
+	// Maven modules, paying a separate compile for each: 31 -> 48 turns, the single largest excess in
+	// the cell. Haiku, given the same payload, edited one file.
+	searchReferenceDeclPrior = 0.6
 )
 
 // searchFileClass is the content class a path belongs to, from the point of view
@@ -44,13 +59,15 @@ const (
 type searchFileClass string
 
 const (
-	searchFileClassSource    searchFileClass = "source"
-	searchFileClassDoc       searchFileClass = "doc"
-	searchFileClassVendored  searchFileClass = "vendored"
-	searchFileClassGenerated searchFileClass = "generated"
-	searchFileClassData      searchFileClass = "data"
-	searchFileClassExample   searchFileClass = "example"
-	searchFileClassFixture   searchFileClass = "fixture"
+	searchFileClassSource      searchFileClass = "source"
+	searchFileClassDoc         searchFileClass = "doc"
+	searchFileClassVendored    searchFileClass = "vendored"
+	searchFileClassGenerated   searchFileClass = "generated"
+	searchFileClassData        searchFileClass = "data"
+	searchFileClassExample     searchFileClass = "example"
+	searchFileClassFixture     searchFileClass = "fixture"
+	searchFileClassDeclaration searchFileClass = "declaration"
+	searchFileClassHarness     searchFileClass = "harness"
 )
 
 // Serialized-data / configuration file types. These hold declarations, not behaviour:
@@ -64,6 +81,43 @@ var searchDataExtensions = []string{
 	".json", ".jsonc", ".json5", ".yaml", ".yml", ".toml",
 	".ini", ".cfg", ".conf", ".properties", ".plist", ".xml",
 	".csv", ".tsv",
+}
+
+// Ambient DECLARATION MIRRORS: files that restate an API's shape with no executable statements —
+// TypeScript `.d.ts` family and Python `.pyi` stubs. They are the same hazard the data class exists
+// for, in program-text clothing: a declaration names the very option an issue is about, in one line,
+// so on a body match it outranks the implementation whose behaviour the issue actually describes.
+//
+// Measured on axios#4731, an issue about `maxBodyLength` handling in the http adapter. Ranked:
+//
+//  1. index.d.ts:340   score 66.2  AxiosRequestConfig.maxRedirects  kind=field  `maxRedirects?: number;`
+//  2. lib/adapters/http.js:449     score 61.3  dispatchHttpRequest   <- the gold fix site
+//
+// A one-line type field beat the fix site, and the damage compounds three ways: the head body is one
+// line, so the whole payload came to 1,194 bytes carrying no code; the SAME-CONCEPT LITERAL block
+// anchored on `maxRedirects` instead of `maxBodyLength`; and ranks 3 and 6 were declaration mirrors
+// too. The agent then read the file and grepped twice for the literal the block should have swept —
+// on that instance the graph arm spent 1.62x the no-tool baseline's tokens for the same 8 tool calls.
+//
+// Demoted at the SECONDARY strength, not the non-source strength, for the same reason fixtures are:
+// a real fix often updates the declaration alongside the implementation, so these must sit below the
+// code without being pushed out of the ranking. Asking about types switches the prior off entirely.
+var searchDeclarationSuffixes = []string{".d.ts", ".d.tsx", ".d.cts", ".d.mts", ".pyi"}
+
+// searchDeclarationIntentTerms turn the prior off: when the query is about the declared surface
+// itself, the mirror IS the fix site.
+var searchDeclarationIntentTerms = []string{
+	"type", "types", "typing", "typings", "typed", "declaration", "declarations",
+	"d.ts", "pyi", "stub", "stubs", "typescript type", "type definition", "type definitions",
+}
+
+func searchDeclarationClassPath(lower string) bool {
+	for _, suffix := range searchDeclarationSuffixes {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // Path segments that mark a documentation tree. Matched as whole path SEGMENTS
@@ -104,6 +158,19 @@ var searchVendoredDirSegments = map[string]bool{
 }
 
 // Path segments that mark example / sample code.
+// searchHarnessDirSegments name trees that EXERCISE the code rather than implement it. A fuzz target
+// or a benchmark mentions the API under test as densely as the implementation does, so it competes on
+// pure lexical grounds and sometimes wins — measured: a query about signal handling in uutils/coreutils
+// returned `fuzz/fuzz_targets/fuzz_env.rs` at ranks 1 AND 2, which then produced the derived command
+// `cd fuzz && cargo test` pointing at a separate workspace, and the session ran 40 -> 60 turns.
+//
+// They are demoted, not filtered: a fix legitimately updates a fuzz target or a benchmark alongside
+// the code, so they must rank below the implementation without leaving the ranking.
+var searchHarnessDirSegments = map[string]bool{
+	"fuzz": true, "fuzzing": true, "fuzz_targets": true, "fuzz-targets": true,
+	"bench": true, "benches": true, "benchmark": true, "benchmarks": true,
+}
+
 var searchExampleDirSegments = map[string]bool{
 	"example": true, "examples": true, "sample": true, "samples": true,
 	"demo": true, "demos": true, "cookbook": true, "cookbooks": true,
@@ -166,6 +233,13 @@ var (
 		"build", "builds", "dist", "bundle", "bundles",
 		"amalgamation", "amalgamated", "single", "onefile", "lockfile", "lock",
 	}
+	// searchHarnessIntentTerms switch the harness prior off, exactly as every other class prior can be
+	// switched off by asking for that class.
+	searchHarnessIntentTerms = []string{
+		"fuzz", "fuzzer", "fuzzing", "bench", "benches", "benchmark", "benchmarks",
+		"harness", "profiling", "profiler",
+	}
+
 	searchExampleIntentTerms = []string{
 		"example", "examples", "sample", "samples", "demo", "demos",
 		"snippet", "snippets", "cookbook", "recipe", "recipes", "playground",
@@ -226,9 +300,17 @@ func classifySearchFile(filePath string) searchFileClass {
 	if searchFixtureClassPath(lower, dirs) {
 		return searchFileClassFixture
 	}
+	if searchDeclarationClassPath(lower) {
+		return searchFileClassDeclaration
+	}
 	for _, ext := range searchDataExtensions {
 		if strings.HasSuffix(lower, ext) {
 			return searchFileClassData
+		}
+	}
+	for _, segment := range dirs {
+		if searchHarnessDirSegments[segment] {
+			return searchFileClassHarness
 		}
 	}
 	for _, segment := range dirs {
@@ -311,6 +393,21 @@ func searchFileClassPrior(q searchQuery, filePath string) float64 {
 			return 1
 		}
 		return searchSecondaryClassPrior
+	case searchFileClassDeclaration:
+		if searchQuerySupplied(q, searchDeclarationIntentTerms...) {
+			return 1
+		}
+		// Same strength as a fixture, and for the same reason: a fix often updates the declared
+		// surface alongside the implementation, so the mirror must rank below the code without
+		// leaving the ranking.
+		return searchSecondaryClassPrior
+	case searchFileClassHarness:
+		if searchQuerySupplied(q, searchHarnessIntentTerms...) {
+			return 1
+		}
+		// Same strength as a fixture: a fuzz target or benchmark is real, compiled code that a fix may
+		// well touch, so it is demoted below the implementation rather than pushed out of the ranking.
+		return searchSecondaryClassPrior
 	case searchFileClassFixture:
 		if searchQuerySupplied(q, searchFixtureIntentTerms...) {
 			return 1
@@ -326,6 +423,64 @@ func searchFileClassPrior(q searchQuery, filePath string) float64 {
 // applySearchFileClassPrior scales the positive part of every candidate score by
 // its file-class prior. Negative scores are left alone: they are already the
 // result of an explicit demotion and multiplying them would UNDO it.
+// searchReferenceDeclaration reports whether a hit is a one-line declaration that only names a type.
+// A declaration WITH an initialiser is excluded: `static final int MAX = 5;` is a constant whose value
+// is exactly the kind of thing a fix changes, and multi-line declarations are excluded because a
+// constant LIST — lombok's NONNULL_ANNOTATIONS, say — is a genuine fix site.
+func searchReferenceDeclaration(result SearchResult) bool {
+	body := result.Snippet
+	if index := strings.Index(body, "//"); index >= 0 {
+		body = body[:index]
+	}
+	switch result.Kind {
+	case "field", "variable", "property", "member", "constant":
+		start, end := result.SymbolStartLine, result.SymbolEndLine
+		if start == 0 && end == 0 {
+			start, end = result.StartLine, result.EndLine
+		}
+		if end > start {
+			return false
+		}
+		return !strings.ContainsRune(body, '=')
+	case "method", "function":
+		// A callable with no body is a CONTRACT, not an implementation: an interface or abstract
+		// method, or a header prototype. It cannot hold a behavioural bug, and ranking it displaces the
+		// implementation that can.
+		//
+		// Measured on laravel/framework-46234 (+308.7% usd on Sonnet, 20.5% of that cell's excess): the
+		// payload carried `Contracts/Routing/UrlGenerator.php:20 UrlGenerator.previous` — one line, the
+		// interface declaration — at rank 3 and `Contracts/Session/Session.php previousUrl` at rank 2,
+		// while the file the agent actually had to edit, `Routing/UrlGenerator.php::previous`, never
+		// appeared at all. redis-10068 shows the C form: `src/server.h:3328`, a bare prototype line.
+		//
+		// Detection needs no language table: a definition that opens no block has no body to contain a
+		// bug. Anything with a brace, or a Python/Ruby style body under a colon, is a real definition
+		// and keeps full weight.
+		// NARROWED after this rule caused a regression. The first version accepted any single-line
+		// method snippet, or one ending in `)`, as a declaration. Both are true of a real method whose
+		// snippet was rendered short or cut mid-signature, so it demoted implementations: on
+		// apache/lucene-12022 the correct geo hits (Line2D, SpatialQuery, Circle2D) were pushed out and
+		// the payload came back holding store/index classes instead, on BOTH models.
+		//
+		// A declaration is now only recognised on positive evidence: the symbol occupies at most two
+		// lines, the snippet shows the WHOLE symbol rather than a window into it, and it opens no block.
+		// Anything truncated is treated as an implementation, because a truncated body is still a body.
+		start, end := result.SymbolStartLine, result.SymbolEndLine
+		if start == 0 || end == 0 || end-start > 1 {
+			return false
+		}
+		if result.SnippetStartLine != 0 && result.SnippetEndLine != 0 &&
+			(result.SnippetStartLine > start || result.SnippetEndLine < end) {
+			return false
+		}
+		if strings.ContainsRune(body, '{') {
+			return false
+		}
+		return strings.TrimSpace(body) != ""
+	}
+	return false
+}
+
 func applySearchFileClassPrior(candidates []searchCandidate, q searchQuery) {
 	priors := make(map[string]float64, len(candidates))
 	for index := range candidates {
@@ -339,10 +494,13 @@ func applySearchFileClassPrior(candidates []searchCandidate, q searchQuery) {
 			prior = searchFileClassPrior(q, path)
 			priors[path] = prior
 		}
-		if prior >= 1 {
-			continue
+		if prior < 1 {
+			candidate.score *= prior
+			candidate.result.Signals = appendUnique(candidate.result.Signals, string(classifySearchFile(path))+"-prior")
 		}
-		candidate.score *= prior
-		candidate.result.Signals = appendUnique(candidate.result.Signals, string(classifySearchFile(path))+"-prior")
+		if searchReferenceDeclaration(candidate.result) {
+			candidate.score *= searchReferenceDeclPrior
+			candidate.result.Signals = appendUnique(candidate.result.Signals, "reference-decl-prior")
+		}
 	}
 }

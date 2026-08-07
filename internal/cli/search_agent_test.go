@@ -78,6 +78,25 @@ func TestAgentSearchReportsDisplayedSpanAndFocusAfterCompaction(t *testing.T) {
 	}
 }
 
+func TestAgentSearchDropsAdditionalPassageBeforePrimaryUnderTightCap(t *testing.T) {
+	result := sem.SearchResult{
+		Rank: 1, FilePath: "sessions/focus.md", StartLine: 40, EndLine: 42, FocusLine: 41,
+		SnippetStartLine: 40, SnippetEndLine: 42, Snippet: "primary one\nprimary focus\nprimary three",
+		Passages: []sem.SearchPassage{{
+			StartLine: 100, EndLine: 101, FocusLine: 100,
+			Snippet: "additional one\nadditional two",
+		}},
+	}
+	roomy := string(agentSearchBlock(result, 512))
+	if !strings.Contains(roomy, "sessions/focus.md:100-101") || !strings.Contains(roomy, "additional one") {
+		t.Fatalf("roomy agent block omitted additional passage: %q", roomy)
+	}
+	tight := string(agentSearchBlock(result, 72))
+	if !strings.Contains(tight, "primary focus") || strings.Contains(tight, "additional one") {
+		t.Fatalf("tight block must keep primary focus before an additional passage: %q", tight)
+	}
+}
+
 // TestSearchDefaultContextBytesIsTwentyFourKiB pins the shipped ceiling. It is sized by TURN
 // economics — a search that stops one Read short of an edit costs ~42.5k tokens, ~40x the
 // entire payload — so it must clear the largest ranked payload plus the complete head bodies

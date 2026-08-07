@@ -4,6 +4,34 @@ Reproducible performance and quality measurement for `entire-graph`, per v2-plan
 WP10. The harness lives in `cmd/graph-bench` (driver) and `internal/bench`
 (measurement core); see `bench/README.md` for layout and flags.
 
+## External native-memory comparison
+
+GraphMark's verified `memory-native-v52` release pairs the production prose
+search path with Graphify on 300 LOCOMO and 50 LongMemEval-S questions. Entire
+Graph scored 0.914 vs. Graphify 0.787 on LOCOMO recall@10, 77.2% vs. 59.3% on
+LOCOMO QA accuracy, and 76.0% vs. 68.0% on LongMemEval-S QA accuracy. All
+systems used zero build-time LLM credits. Codebase Memory MCP is present in the
+release as an off-domain native diagnostic: v0.9.0 indexes the Markdown content
+as `Section` nodes but excludes that node type from its public natural-language
+BM25 route, so its column is not a third apples-to-apples memory comparison.
+
+The product under test is commit
+`c9641bf1caaf41d64ce8a4a421f041939feecca3`. Its native JSON result contains a
+backward-compatible primary `snippet` plus optional exact, non-overlapping
+same-file `passages`. The neutral GraphMark adapter validates the primary
+locator, validates every additive passage's path, line range, and text against
+the materialized corpus, and reapplies the shared byte cap. It performs no
+answer-aware selection or adapter-side source expansion.
+
+Release evidence is bound to protocol
+`beb891c8985ef3d4565c7fc32b6b06478b4384a0975fbe82592715e8c6f7c02d`
+and full completion
+`0d85eafde84ad52480454cab1906e2ce37e6d2003d3f0f537835228c733c07e7`.
+The GraphMark publication bundle records exact inputs, revisions, retry ledger,
+statistics, costs, artifact hashes, and limitations. Call the result a
+**public-protocol reimplementation**: Graphify does not publish the original
+memory harness or selectors behind its historical README numbers.
+
 ## Running
 
 ```sh
@@ -29,6 +57,11 @@ after writing the report:
 go run ./cmd/graph-bench -profile syntax-only -languages Go -limit 1 \
   -min-loc-per-sec 50000 -max-rss-bytes 1000000000
 ```
+
+`-cpuprofile` is intentionally rejected while per-repository process isolation
+is mandatory. A parent-only profile would contain orchestration and waiting but
+omit provider work in the child processes. Per-worker profile collection and
+deterministic merging must be implemented before this flag can be enabled.
 
 ### Per-profile examples
 
@@ -62,7 +95,36 @@ peak RSS.
 
 The provider CLI also accepts `--progress` on `snapshot`, `symbols`, and
 `edges`. Progress lines are written to stderr and include phase, file/symbol/
-relation counts, heap, RSS, and elapsed time; stdout remains valid NDJSON.
+relation counts, heap, RSS, phase elapsed time, and total elapsed time; stdout
+remains valid NDJSON.
+
+### Cold-build phase boundaries
+
+The benchmark reports four synchronous, process-local phases: `inventory`
+(source preparation and file discovery), `parse` (header output, registration
+alias indexing, and per-file file/symbol output plus index construction),
+`relations` (relation resolution), and `finalize` (external sorting/output,
+summary preparation, and summary serialization). These boundaries partition
+provider cold work from snapshot entry through trailing-summary output exactly
+once. Progress telemetry and the caller's synchronous callback are measurement
+overhead, excluded from both phase duration and `wall_ms`; the CLI prints phase
+shares using the sum of the four phases. Phase durations are process-local
+performance diagnostics, not semantic provider schema fields.
+
+Each repository is measured in a fresh child process. The worker captures that
+repository's cold peak RSS and `wall_ms` before compact preflight, preventing a
+preflight peak from contaminating the current cold values or any later
+repository. After the measured interval, preflight serializes native NDJSON and
+compact NDJSON, loads compact bytes through the production loader, verifies its
+canonical semantic SHA-256 and decoded public projection against native output,
+and performs exact symbol/relation queries through the production query index.
+It adds worker runtime but never contaminates the cold wall/RSS measurement. Raw
+compact bytes include headers, every dictionary line, data records, and the
+summary; the dictionary count is a breakdown, not a subtraction.
+Worker start/crash/protocol errors retain repository name, language, profile,
+and error text in their report row. Error rows remain excluded from score and
+throughput aggregates, but an RSS guard violation still fails the run after the
+report is written using the captured cold RSS from every requested row.
 
 ## Comparing across phases
 
@@ -79,15 +141,19 @@ rising wall time.
 
 ## Metrics
 
-Every report includes the profile, hardware (OS/arch/CPUs), process peak RSS,
-provider version, and schema version at the run level, and per repository the
-relation set, languages, files/LOC, wall time, and output size. Full breakdown:
+Every report includes the profile, hardware (OS/arch/CPUs), maximum successful
+repository cold RSS, provider version, and schema version at the run level, and
+per repository the relation set, languages, files/LOC, wall time, and output
+size. Full breakdown:
 
-Run-level: profile, hardware (OS/arch/CPUs), process peak RSS, provider version,
-schema version. Per repository (and aggregated per language and overall):
+Run-level: profile, hardware (OS/arch/CPUs), maximum successful repository cold
+RSS, provider version, schema version. Per repository (and aggregated per
+language and overall):
 
-- **Performance:** wall time, files, lines of code, files/sec, LOC/sec, output
-  bytes (of the streamed NDJSON), Go allocation bytes, profile, relation set.
+- **Performance:** wall time, `phase_ms`, files, lines of code, files/sec,
+  LOC/sec, output bytes (of the streamed NDJSON), exact native and compact raw
+  artifact bytes, compact dictionary bytes, bytes per projected fact, Go
+  allocation bytes, profile, relation set.
 - **Quality:** symbols, relations by type, resolution distribution
   (`exact`/`import_resolved`/`type_inferred`/`name_only`/`pattern`), confidence
   bands (`exact`/`strong`/`heuristic`/`weak`), parse-failure codes, unresolved

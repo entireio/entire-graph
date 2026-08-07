@@ -73,6 +73,10 @@ const (
 
 	// searchLiteralCandidateLimit bounds how many candidate literals are looked up. Each lookup
 	// costs file reads, and the needle index enforces its own global read budget on top.
+	//
+	// Measured 2026-07-31: raising this to 8 changed the block's firing rate on 12 replayed benchmark
+	// queries by exactly nothing (7/12 before, 7/12 after). The refusals are quality judgements from the
+	// distinctiveness, occurrence and fit gates, not candidates starved of a lookup slot. Left at 3.
 	searchLiteralCandidateLimit = 3
 
 	// searchLiteralRankedCandidates bounds how many candidates are PRICED before one is looked up.

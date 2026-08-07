@@ -266,6 +266,44 @@ func makeAllocatorResults(count, window, bodyLines int) ([]SearchResult, []searc
 	return results, enclosures, lines
 }
 
+func TestAllocateSearchSnippetsFallsBackToLargestFittingHeadWindow(t *testing.T) {
+	t.Parallel()
+	lines := make([]string, 80)
+	for index := range lines {
+		lines[index] = fmt.Sprintf("line-%02d %s", index+1, strings.Repeat("archive detail ", 18))
+	}
+	result := SearchResult{
+		Rank: 1, FilePath: "sessions/long.md", StartLine: 40, EndLine: 40,
+		FocusLine: 40, SnippetStartLine: 40, SnippetEndLine: 40,
+		Snippet: lines[39], Signals: []string{proseParentRetrievalSignal},
+	}
+	enclosure := searchEnclosure{start: 1, end: len(lines), lines: lines, window: true}
+	before := serializedSearchResultBytes([]SearchResult{result})
+	hardBudget := before + 3_000
+
+	allocated, bodies, _ := allocateSearchSnippets(
+		[]SearchResult{result}, []searchEnclosure{enclosure}, nil, hardBudget, hardBudget, 1, 1,
+	)
+	if bodies != 0 {
+		t.Fatalf("adaptive read window counted as %d complete bodies", bodies)
+	}
+	got := allocated[0]
+	if !containsString(got.Signals, searchHeadWindowSignal) {
+		t.Fatalf("oversized window degraded to locator: %#v", got.Signals)
+	}
+	if got.SnippetStartLine >= got.SnippetEndLine {
+		t.Fatalf("adaptive window did not add readable lines: %d-%d", got.SnippetStartLine, got.SnippetEndLine)
+	}
+	if got.SnippetStartLine > result.SnippetStartLine || got.SnippetEndLine < result.SnippetEndLine {
+		t.Fatalf("adaptive window %d-%d dropped original snippet %d-%d",
+			got.SnippetStartLine, got.SnippetEndLine, result.SnippetStartLine, result.SnippetEndLine)
+	}
+	if size := serializedSearchResultBytes(allocated); size > hardBudget {
+		t.Fatalf("adaptive payload %d exceeds hard budget %d", size, hardBudget)
+	}
+	assertVerbatimSnippet(t, got, lines)
+}
+
 func TestAllocateSearchSnippetsSpendsBudgetByRank(t *testing.T) {
 	t.Parallel()
 
@@ -804,8 +842,8 @@ func TestPlanSearchEnclosuresHeadWindowNeverClaimsCompleteSymbol(t *testing.T) {
 	if !got[0].window {
 		t.Fatal("the fallback must be marked as a window, not as a body")
 	}
-	if got[0].start != 30 || got[0].end != 90 {
-		t.Fatalf("window = %d-%d, want 30-90 (60 lines centred on focus 60)", got[0].start, got[0].end)
+	if got[0].start != 30 || got[0].end != 89 {
+		t.Fatalf("window = %d-%d, want 30-89 (60 lines centred on focus 60)", got[0].start, got[0].end)
 	}
 	widened := widenSearchResultToEnclosure(result, got[0])
 	if containsString(widened.Signals, searchCompleteSymbolSignal) {
@@ -814,7 +852,7 @@ func TestPlanSearchEnclosuresHeadWindowNeverClaimsCompleteSymbol(t *testing.T) {
 	if !containsString(widened.Signals, searchHeadWindowSignal) {
 		t.Fatalf("a window must carry %q: %#v", searchHeadWindowSignal, widened.Signals)
 	}
-	if widened.Snippet != strings.Join(lines[29:90], "\n") {
+	if widened.Snippet != strings.Join(lines[29:89], "\n") {
 		t.Fatal("window snippet is not a verbatim slice of the file")
 	}
 

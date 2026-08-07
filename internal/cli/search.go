@@ -49,6 +49,8 @@ const (
 )
 
 type searchFlags struct {
+	// VerifyExplain is appended to the emitted VERIFY line as `... 2>&1 | <cmd>`.
+	VerifyExplain         string
 	Repo                  string
 	Query                 string
 	Format                string
@@ -193,6 +195,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		VerifyPrefix:          flags.VerifyPrefix,
 		VerifyPreFixStatus:    flags.VerifyPreFixStatus,
 		IncludeFileOutline:    flags.FileOutline,
+		VerifyExplainCommand:  flags.VerifyExplain,
 		Deep:                  flags.Deep,
 
 		IncludeContainerMap:   flags.ContainerMap,
@@ -746,11 +749,21 @@ func writeTextSearchLocator(out interface{ Write([]byte) (int, error) }, result 
 func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result sem.SearchResult, full bool) {
 	name := searchResultDisplayName(result)
 	if !full && !searchResultCarriesCompleteBody(result) {
+		// A locator is a single line number. Where the graph knows the named symbol's true extent,
+		// print it: `main.c:638 umain` invites a blind sweep of the file, while
+		// `main.c:638 umain (270-725, 456L)` is a read instruction. This is the cheapest possible
+		// fix for the most expensive measured behaviour — jq swept 26,873 B across three reads to
+		// recover what one anchored read would have given.
+		span := ""
+		if result.SymbolStartLine > 0 && result.SymbolEndLine >= result.SymbolStartLine {
+			span = fmt.Sprintf(" (%d-%d, %dL)", result.SymbolStartLine, result.SymbolEndLine,
+				result.SymbolEndLine-result.SymbolStartLine+1)
+		}
 		if name != "" {
-			fmt.Fprintf(out, "%d. %s:%d %s%s\n", result.Rank, result.FilePath,
-				searchResultLocatorLine(result), name, searchLocatorFollowUp(result))
+			fmt.Fprintf(out, "%d. %s:%d %s%s%s\n", result.Rank, result.FilePath,
+				searchResultLocatorLine(result), name, span, searchLocatorFollowUp(result))
 		} else {
-			fmt.Fprintf(out, "%d. %s:%d\n", result.Rank, result.FilePath, searchResultLocatorLine(result))
+			fmt.Fprintf(out, "%d. %s:%d%s\n", result.Rank, result.FilePath, searchResultLocatorLine(result), span)
 		}
 		return
 	}
@@ -777,6 +790,22 @@ func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result s
 	}
 	if name != "" {
 		fmt.Fprintf(out, " symbol=%s", name)
+		// When the printed lines are only a SHARD of the named symbol, say so and give the symbol's
+		// true extent. Otherwise `main.c:578-583 symbol=umain` reads as "umain is six lines", and an
+		// agent that needs the rest has no anchor to read from.
+		//
+		// Measured on jqlang/jq-2235: `umain` spans 270-725 (456 lines) and the payload showed lines
+		// 578-583 with no indication of that. The agent then swept main.c in three reads totalling
+		// 26,873 B (lines 1-697, effectively the whole file) while the no-tool baseline used `grep -n`
+		// anchors and read 17,536 B. The same shape cost php-cs-fixer 77,718 B of blind sweeps against
+		// the baseline's 10,784 B of anchored reads.
+		if result.SymbolStartLine > 0 && result.SymbolEndLine >= result.SymbolStartLine &&
+			(result.SymbolStartLine < start || result.SymbolEndLine > end) {
+			fmt.Fprintf(out, " span=%d-%d (%dL, body elided - read %d-%d for the rest)",
+				result.SymbolStartLine, result.SymbolEndLine,
+				result.SymbolEndLine-result.SymbolStartLine+1,
+				result.SymbolStartLine, result.SymbolEndLine)
+		}
 	}
 	// `kind=` says what sort of declaration the reader is looking at (function / method /
 	// class / enum / route). A name alone does not: `Ops` reads the same whether it is the
@@ -816,6 +845,7 @@ func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result s
 	// costs two blank lines and reads as a truncation bug.
 	if result.Snippet == "" {
 		fmt.Fprintf(out, " signals=%s\n", strings.Join(result.Signals, ","))
+		writeTextSearchPassages(out, result)
 		return
 	}
 	fmt.Fprintf(out, " signals=%s\n%s\n", strings.Join(result.Signals, ","), result.Snippet)
@@ -825,7 +855,15 @@ func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result s
 	if note := sem.SearchUnitElisionNote(start, end, result.UnitStartLine, result.UnitEndLine); note != "" {
 		fmt.Fprintf(out, "%s\n", note)
 	}
+	writeTextSearchPassages(out, result)
 	fmt.Fprintln(out)
+}
+
+func writeTextSearchPassages(out interface{ Write([]byte) (int, error) }, result sem.SearchResult) {
+	for _, passage := range result.Passages {
+		fmt.Fprintf(out, "additional %s:%d-%d focus=%d\n%s\n",
+			result.FilePath, passage.StartLine, passage.EndLine, passage.FocusLine, passage.Snippet)
+	}
 }
 
 // searchResultPrintedRange is the range of the source that follows on the next
@@ -1477,6 +1515,49 @@ func agentSearchScoreTag(result sem.SearchResult) string {
 }
 
 func agentSearchBlock(result sem.SearchResult, budget int) []byte {
+	if len(result.Passages) == 0 {
+		return agentSearchPrimaryBlock(result, budget)
+	}
+	for count := len(result.Passages); count >= 0; count-- {
+		passages := renderAgentSearchPassages(result.FilePath, result.Passages[:count])
+		primaryBudget := budget
+		if budget > 0 && len(passages) > 0 {
+			primaryBudget -= len(passages) + 1
+			if primaryBudget <= 0 {
+				continue
+			}
+		}
+		primary := agentSearchPrimaryBlock(result, primaryBudget)
+		if len(primary) == 0 {
+			continue
+		}
+		if len(passages) == 0 {
+			return primary
+		}
+		combined := make([]byte, 0, len(primary)+1+len(passages))
+		combined = append(combined, primary...)
+		combined = append(combined, '\n')
+		combined = append(combined, passages...)
+		if budget <= 0 || len(combined) <= budget {
+			return combined
+		}
+	}
+	return nil
+}
+
+func renderAgentSearchPassages(path string, passages []sem.SearchPassage) []byte {
+	var output bytes.Buffer
+	for index, passage := range passages {
+		if index > 0 {
+			output.WriteByte('\n')
+		}
+		fmt.Fprintf(&output, "%s:%d-%d [additional focus:%d]\n%s",
+			path, passage.StartLine, passage.EndLine, passage.FocusLine, passage.Snippet)
+	}
+	return output.Bytes()
+}
+
+func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
 	name := searchResultDisplayName(result)
 	tag := agentSearchSectionTag(result)
 	scored := agentSearchScoreTag(result)
@@ -1755,6 +1836,12 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 				return flags, nil, err
 			}
 			i = next
+		case "--verify-explain":
+			value, next, err := searchFlagValue(args, i)
+			if err != nil {
+				return flags, nil, err
+			}
+			flags.VerifyExplain, i = value, next
 		case "--max-context-bytes":
 			value, next, err := searchNonNegativeIntFlag(args, i)
 			if err != nil {

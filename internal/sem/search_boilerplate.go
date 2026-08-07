@@ -47,6 +47,12 @@ const (
 	// rather than being an unexplained score.
 	searchBoilerplateSignal = "boilerplate-prior"
 
+	// A data table must be long, dense and branch-free before it is treated as one. Sized from the
+	// php-cs-fixer rule sets: those bodies run 40+ lines of `'rule' => value,` with no control flow.
+	searchLiteralTableMinLines   = 8
+	searchLiteralTableMinEntries = 5
+	searchLiteralTableDensity    = 0.6
+
 	// searchAccessorMaxSpanLines is how long a `get`/`set`/`is` member may be and still be trivial.
 	// Past it the accessor is doing something — validation, lazy construction, a computed view — and
 	// is a legitimate fix site.
@@ -59,6 +65,9 @@ const (
 //
 // Receivers are not counted: `self`, `this` and Rust's `&self` are dropped before the count, so one
 // entry covers a language whether or not it spells the receiver in the signature.
+// searchControlFlowKeywords are the line openers that make a body a DECISION rather than a table.
+var searchControlFlowKeywords = []string{"if", "for", "while", "switch", "match", "case", "try", "foreach", "elseif", "else"}
+
 var searchProtocolMembers = map[string]int{
 	// Java, Kotlin, Scala, JavaScript, TypeScript
 	"toString": 0,
@@ -133,7 +142,56 @@ func searchBoilerplateSymbol(result SearchResult, q searchQuery) bool {
 	if arity, protocol := searchProtocolMembers[name]; protocol {
 		return known && parameters == arity
 	}
+	if searchLiteralTableBody(result) {
+		return true
+	}
 	return searchTrivialAccessor(name, result, parameters, known, q)
+}
+
+// searchLiteralTableBody reports whether a callable's body is a DATA TABLE rather than behaviour: a
+// long literal collection with no control flow. It is the multi-line sibling of the one-line data
+// declaration already damped in scoreSearchCandidates, and it fails the same way — the table spells
+// out every name the issue uses, so term overlap scores it like the implementation while containing
+// nothing to fix.
+//
+// Measured on php-cs-fixer/php-cs-fixer-7523 (a tokenizer bug): ranks 1 and 2 were
+// `PSR12Set.getRules` and `SymfonySet.getRules`, two rule-configuration arrays, at identical scores
+// (37.1786). They pushed the real fixer to rank 4 and the gold file `src/Tokenizer/TokensAnalyzer.php`
+// off the list entirely. With no line anchor the agent then blind-swept that file for 77,718 B where
+// the no-tool baseline used anchored reads totalling 10,784 B.
+//
+// Deliberately conservative: a table must be long enough to be a table (not a two-entry early
+// return), dense in entry separators, and free of the control flow that would make it a decision.
+func searchLiteralTableBody(result SearchResult) bool {
+	body := result.Snippet
+	if body == "" {
+		return false
+	}
+	lines := strings.Split(body, "\n")
+	if len(lines) < searchLiteralTableMinLines {
+		return false
+	}
+	entries, control := 0, 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.Contains(trimmed, "=>") || strings.HasSuffix(trimmed, ",") {
+			entries++
+		}
+		for _, keyword := range searchControlFlowKeywords {
+			if strings.HasPrefix(trimmed, keyword) {
+				control++
+				break
+			}
+		}
+	}
+	if control > 0 {
+		return false
+	}
+	return entries >= searchLiteralTableMinEntries &&
+		float64(entries) >= searchLiteralTableDensity*float64(len(lines))
 }
 
 // searchTrivialAccessor reports whether a member is a plain field accessor: the conventional prefix

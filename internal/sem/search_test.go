@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -64,6 +65,107 @@ func TestSearchRepositorySupportsPunctuatedLanguageQuery(t *testing.T) {
 	}
 	if len(response.Results) == 0 || response.Results[0].FilePath != "native/bridge.cpp" {
 		t.Fatalf("C++ search results = %#v", response.Results)
+	}
+}
+
+func TestColdRepositoryProgressivePreselectionIsDeterministicAndBounded(t *testing.T) {
+	repo := t.TempDir()
+	for index := 0; index < 12; index++ {
+		write(t, repo, fmt.Sprintf("src/part%02d.go", index), fmt.Sprintf(`package sample
+
+func Match%02d() string { return "needle" }
+`, index))
+	}
+	q := buildSearchQuery("needle")
+	sparseQuery := buildSparseSearchQuery("needle")
+	var first []string
+	for run := 0; run < 20; run++ {
+		selection, err := preselectSearchFiles(
+			t.Context(), repo, q, sparseQuery, SearchOptions{
+				Worktree:                true,
+				Profile:                 ProfileSyntaxOnly,
+				MaxIndexedFiles:         2,
+				progressivePreselection: true,
+			}, ProviderSnapshot{}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if selection.preselectionPasses != 3 || !selection.preselectionWidened || !selection.preselectionBounded {
+			t.Fatalf("selection = %#v, want a deterministic capped progressive selection", selection)
+		}
+		if len(selection.files) > 8 {
+			t.Fatalf("selected files = %d, want at most four times the base", len(selection.files))
+		}
+		if run == 0 {
+			first = append([]string(nil), selection.files...)
+			continue
+		}
+		if !reflect.DeepEqual(selection.files, first) {
+			t.Fatalf("run %d files = %#v, first = %#v", run, selection.files, first)
+		}
+	}
+}
+
+func TestColdPreselectionKeepsLegacyOrderAndStatsWhenEligibleSetFitsBase(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "src/zeta.go", "package sample\n// quasar nebula\nfunc Zeta() {}\n")
+	write(t, repo, "src/alpha.go", "package sample\n// quasar nebula\nfunc Alpha() {}\n")
+	write(t, repo, "src/lower.go", "package sample\n// quasar\nfunc Lower() {}\n")
+	for index := 0; index < 5; index++ {
+		write(t, repo, fmt.Sprintf("noise/file%02d.go", index), fmt.Sprintf(
+			"package noise\nfunc Unrelated%02d() {}\n", index,
+		))
+	}
+	q := buildSearchQuery("quasar nebula")
+	selection, err := preselectSearchFiles(
+		t.Context(), repo, q, buildSparseSearchQuery("quasar nebula"),
+		SearchOptions{Worktree: true, MaxIndexedFiles: 3}, ProviderSnapshot{}, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFiles := []string{"src/alpha.go", "src/zeta.go", "src/lower.go"}
+	if !reflect.DeepEqual(selection.files, wantFiles) {
+		t.Fatalf("selected files = %#v, want legacy score/path order %#v", selection.files, wantFiles)
+	}
+	if selection.preselectionBackend != "go-content" || selection.preselectionPasses != 1 ||
+		selection.preselectionFilesExamined != 8 || selection.filesContentRead != 8 {
+		t.Fatalf("legacy scan stats changed: %#v", selection)
+	}
+	if selection.preselectionConfidence != 0 || selection.preselectionCoverage != 0 ||
+		selection.preselectionDiversity != 0 || selection.preselectionWidened || selection.preselectionBounded {
+		t.Fatalf("small eligible set unexpectedly reported progressive metrics: %#v", selection)
+	}
+}
+
+func TestColdPreselectionExcludesConstraintOnlyDistractorWhenLegacySetFitsBase(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "src/target.go", "package sample\n// needle\nfunc Target() {}\n")
+	write(t, repo, "src/distractor.go", "package sample\n// NamedWidget follows ordered phrase.\nfunc Distractor() {}\n")
+	for index := 0; index < 3; index++ {
+		write(t, repo, fmt.Sprintf("noise/file%02d.go", index), fmt.Sprintf(
+			"package noise\nfunc Unrelated%02d() {}\n", index,
+		))
+	}
+	q := preselectionTestQuery("needle")
+	q.constraints = searchConstraints{
+		Entities: []searchEntityConstraint{{Raw: "NamedWidget", Normalized: "namedwidget"}},
+		Phrases:  []searchPhraseConstraint{{Words: []string{"ordered", "phrase"}, Explicit: true}},
+	}
+	selection, err := preselectSearchFiles(
+		t.Context(), repo, q, buildSparseSearchQuery("needle"),
+		SearchOptions{Worktree: true, MaxIndexedFiles: 2}, ProviderSnapshot{}, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(selection.files, []string{"src/target.go"}) {
+		t.Fatalf("selected files = %#v, want only the ordinary path/content match", selection.files)
+	}
+	if selection.preselectionPasses != 1 || selection.preselectionConfidence != 0 ||
+		selection.preselectionCoverage != 0 || selection.preselectionDiversity != 0 ||
+		selection.preselectionWidened || selection.preselectionBounded {
+		t.Fatalf("constraint-only file incorrectly activated progressive selection: %#v", selection)
 	}
 }
 
@@ -805,6 +907,9 @@ func TestSearchRepositoryAppliesAdaptiveAndExplicitFileLimits(t *testing.T) {
 	if adaptive.Stats.FilesIndexed != 120 {
 		t.Fatalf("adaptive files indexed = %d, want 120", adaptive.Stats.FilesIndexed)
 	}
+	if adaptive.Stats.PreselectionWidened || adaptive.Stats.PreselectionBounded {
+		t.Fatalf("adaptive hard limit unexpectedly widened: %#v", adaptive.Stats)
+	}
 
 	explicit, err := SearchRepository(t.Context(), repo, "test", "adaptive retrieval needle", SearchOptions{
 		Worktree:        true,
@@ -817,6 +922,9 @@ func TestSearchRepositoryAppliesAdaptiveAndExplicitFileLimits(t *testing.T) {
 	}
 	if explicit.Stats.FilesIndexed != 4 {
 		t.Fatalf("explicit files indexed = %d, want 4", explicit.Stats.FilesIndexed)
+	}
+	if explicit.Stats.PreselectionWidened || explicit.Stats.PreselectionBounded {
+		t.Fatalf("explicit hard limit unexpectedly widened: %#v", explicit.Stats)
 	}
 }
 
@@ -937,8 +1045,8 @@ func TestCommittedPreselectionRequiresExactFullPreindexForUnboundedCandidates(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cold.Stats.FilesIndexed > 1 {
-		t.Fatalf("cold committed search bypassed MaxIndexedFiles: %#v", cold.Stats)
+	if cold.Stats.FilesIndexed > searchPreselectionMaxWideningFactor {
+		t.Fatalf("cold committed search exceeded the progressive cap: %#v", cold.Stats)
 	}
 	if cold.Stats.PreselectionBackend != "go-content" || cold.Stats.FilesContentRead == 0 {
 		t.Fatalf("cold committed search did not retain bounded content preselection: %#v", cold.Stats)
@@ -2083,3 +2191,38 @@ func gamma() {
 // fields and member signatures, is funded by displacing tail locators so it can never shrink a
 // complete head body, and is gated off by default. Its exclusions are covered there too:
 // external targets and test files cannot enter the block.
+
+// Regression for the four-model field test on gohugoio/hugo#12171. All four models were given the
+// query form our own doctrine mandates ("the bug in one sentence") and all four abandoned it: the
+// gold site pageMap.getPagesInSection sat at position 87 of 101 while the head was five points wide.
+// The discriminating fact was unscored — the gold NAME carries two of the query's domain terms
+// (pages, section) where its competitors carry one — and an exact substring test scored the plural
+// "sections" against the singular identifier as a miss.
+func TestSearchNameTermCoverageIsPluralTolerantAndSaturates(t *testing.T) {
+	t.Parallel()
+	q := buildSearchQuery("parent pages collection filter by section path prefix")
+	gold := SearchResult{QualifiedName: "pageMap.getPagesInSection"}
+	rival := SearchResult{QualifiedName: "Site.Sections"}
+	g := searchNameTermCoverage(gold, q, nil)
+	r := searchNameTermCoverage(rival, q, nil)
+	if !(g > r) {
+		t.Fatalf("gold name coverage %v must exceed single-term rival %v", g, r)
+	}
+	// "sections" (plural, from the issue) must match "Section" inside the identifier.
+	if !searchNameContainsTerm("pagemap.getpagesinsection", "sections") {
+		t.Fatal("plural query term must match the singular identifier")
+	}
+	// Saturation: a name carrying many terms is not unboundedly better than one carrying three.
+	many := SearchResult{QualifiedName: "parentPagesCollectionFilterSectionPathPrefix"}
+	if got := searchNameTermCoverage(many, q, nil); got != 1 {
+		t.Fatalf("coverage should saturate at 1, got %v", got)
+	}
+	// A name sharing nothing scores zero, so the signal cannot lift unrelated code.
+	if got := searchNameTermCoverage(SearchResult{QualifiedName: "imaging.newFilterOpts"}, buildSearchQuery("zzz qqq"), nil); got != 0 {
+		t.Fatalf("unrelated name must score 0, got %v", got)
+	}
+	// Short tokens must not match: a 2-char fragment appears in almost any identifier.
+	if searchNameContainsTerm("pagemap.getpagesinsection", "in") {
+		t.Fatal("short tokens must not count as name coverage")
+	}
+}

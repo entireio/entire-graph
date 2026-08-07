@@ -13,8 +13,9 @@ import (
 // here and give it a commandDoc.
 var dispatchCommands = []string{
 	"diff", "commit", "checkpoint", "analyze", "doctor", "capabilities",
-	"snapshot", "symbols", "edges", "search", "index", "def", "neighbors",
-	"impact", "verify", "stats", "agent-guide", "init-agents", "version", "help",
+	"snapshot", "snapshot-query", "symbols", "edges", "search", "index", "def",
+	"explain", "neighbors", "impact", "verify", "stats", "agent-guide",
+	"init-agents", "version", "help",
 }
 
 // TestUnknownFlagNamesTheVersion pins that a flag-shaped argument this binary does not know reads
@@ -90,6 +91,44 @@ func TestEveryCommandDocResolvesToUsage(t *testing.T) {
 		if !strings.Contains(out.String(), "Usage:") {
 			t.Errorf("%s --help produced no Usage block:\n%s", name, out.String())
 		}
+	}
+}
+
+func TestNewPublicCommandsRenderSpecificHelp(t *testing.T) {
+	tests := []struct {
+		name string
+		want []string
+	}{
+		{
+			name: "snapshot-query",
+			want: []string{
+				"Usage:\n  entire graph snapshot-query",
+				"--input", "--symbol", "--from", "--relation", "--format",
+			},
+		},
+		{
+			name: "explain",
+			want: []string{
+				"Usage:\n  entire graph explain",
+				"--repo", "--profile", "--format", "--max-symbols", "--max-context-bytes",
+			},
+		},
+		{
+			name: "snapshot",
+			want: []string{"--format ndjson|compact-ndjson"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			renderCommandHelp(&out, tt.name)
+			for _, want := range tt.want {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("%s --help missing %q:\n%s", tt.name, want, out.String())
+				}
+			}
+		})
 	}
 }
 

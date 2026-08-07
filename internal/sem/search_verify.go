@@ -851,6 +851,7 @@ func deriveSearchVerifyGo(dir string, subject searchVerifySubject, evidence *sea
 	packagePath := path.Dir(subject.sourcePath)
 	targets := "package ./" + packagePath
 	filter := ""
+	recovered := false
 	if subject.testPath != "" {
 		if _, inside := searchVerifyRelative(dir, subject.testPath); inside {
 			packagePath = path.Dir(subject.testPath)
@@ -861,6 +862,7 @@ func deriveSearchVerifyGo(dir string, subject searchVerifySubject, evidence *sea
 				testName = searchVerifyRecoveredTestName(
 					subject.testPath, subject.symbolName, evidence, searchVerifyGoTestNames,
 				)
+				recovered = testName != ""
 			}
 			if strings.HasPrefix(testName, "Test") {
 				filter = fmt.Sprintf(" -run '^%s$'", testName)
@@ -880,7 +882,13 @@ func deriveSearchVerifyGo(dir string, subject searchVerifySubject, evidence *sea
 	}
 	derived := manifest + " module root"
 	if filter != "" {
-		derived += " + " + subject.testEvidence + " name"
+		if recovered {
+			// Say where the name came from. A recovered name is weaker evidence than a covering-test
+			// name and the agent is entitled to judge it rather than trust it.
+			derived += " + test name read from " + path.Base(subject.testPath)
+		} else {
+			derived += " + " + subject.testEvidence + " name"
+		}
 	}
 	return &SearchVerifyCommand{
 		Command:     searchVerifyRunIn(dir, "go test "+selector+filter),

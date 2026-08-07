@@ -687,12 +687,14 @@ func planSearchHeadWindow(result SearchResult, lines []string, windowLines int) 
 		return searchEnclosure{}, false
 	}
 	half := windowLines / 2
-	start, end := focus-half, focus+half
+	start, end := focus-half, focus-half+windowLines-1
 	if start < 1 {
 		start = 1
+		end = minInt(len(lines), start+windowLines-1)
 	}
 	if end > len(lines) {
 		end = len(lines)
+		start = maxInt(1, end-windowLines+1)
 	}
 	if start > end {
 		return searchEnclosure{}, false
@@ -756,6 +758,12 @@ func widenSearchResultToEnclosure(result SearchResult, enclosure searchEnclosure
 	result.SnippetEndLine = enclosure.end
 	result.Snippet = strings.Join(enclosure.lines[enclosure.start-1:enclosure.end], "\n")
 	result.FocusLine = minInt(maxInt(result.FocusLine, result.StartLine), result.EndLine)
+	// Record the enclosing symbol's true extent whenever we know it, so a shard can announce what it
+	// is a shard OF. Harmless when the body was returned whole: the bounds then equal the snippet's.
+	if enclosure.symbol.StartLine > 0 && enclosure.symbol.EndLine >= enclosure.symbol.StartLine {
+		result.SymbolStartLine = enclosure.symbol.StartLine
+		result.SymbolEndLine = enclosure.symbol.EndLine
+	}
 	if enclosure.window {
 		// A window is readable code but not a whole callable. It gets its own signal so an agent
 		// (and the tests) can tell the two apart, and it deliberately does NOT get
@@ -1323,8 +1331,13 @@ func planWithDemotionFrom(
 		}
 		widened := widenSearchResultToEnclosure(results[index], enclosures[index])
 		size := serializedSearchResultBytes(widened)
-		if total-sizes[index]+size > budget {
-			continue
+		if maxResultBytes := budget - (total - sizes[index]); size > maxResultBytes {
+			var ok bool
+			widened, ok = largestFittingSearchHeadWindow(results[index], enclosures[index], maxResultBytes)
+			if !ok {
+				continue
+			}
+			size = serializedSearchResultBytes(widened)
 		}
 		total += size - sizes[index]
 		plan[index], sizes[index] = widened, size
@@ -1338,6 +1351,60 @@ func planWithDemotionFrom(
 		}
 	}
 	return plan, bodies, windows, total
+}
+
+// largestFittingSearchHeadWindow degrades an oversized read window to the widest
+// verbatim window that fits one result's remaining serialized-byte allowance. It
+// applies only to windows, never complete callables, and always retains the focus
+// and the source span the ranker already returned.
+func largestFittingSearchHeadWindow(
+	result SearchResult,
+	enclosure searchEnclosure,
+	maxResultBytes int,
+) (SearchResult, bool) {
+	if !enclosure.window || !enclosure.available() || maxResultBytes <= 0 {
+		return result, false
+	}
+	originalStart, originalEnd := result.SnippetStartLine, result.SnippetEndLine
+	if originalStart < enclosure.start || originalEnd > enclosure.end || originalStart > originalEnd {
+		return result, false
+	}
+	focus := result.FocusLine
+	if focus < originalStart || focus > originalEnd {
+		return result, false
+	}
+	originalLines := originalEnd - originalStart + 1
+	fullLines := enclosure.end - enclosure.start + 1
+	for width := fullLines - 1; width > originalLines; width-- {
+		start := focus - width/2
+		end := start + width - 1
+		if start < enclosure.start {
+			start = enclosure.start
+			end = start + width - 1
+		}
+		if end > enclosure.end {
+			end = enclosure.end
+			start = end - width + 1
+		}
+		if start > originalStart {
+			start = originalStart
+			end = start + width - 1
+		}
+		if end < originalEnd {
+			end = originalEnd
+			start = end - width + 1
+		}
+		if start < enclosure.start || end > enclosure.end || start > originalStart || end < originalEnd {
+			continue
+		}
+		candidate := enclosure
+		candidate.start, candidate.end = start, end
+		widened := widenSearchResultToEnclosure(result, candidate)
+		if serializedSearchResultBytes(widened) <= maxResultBytes {
+			return widened, true
+		}
+	}
+	return result, false
 }
 
 // removeSearchSignal drops one signal from a list, returning a fresh slice so a caller degrading a

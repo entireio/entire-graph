@@ -37,8 +37,9 @@ type cachedProviderRecords struct {
 }
 
 // providerRecordsKey derives the cache key for a record stream. It intentionally
-// folds in the indexing mode (snapshot|symbols|edges) and the profile so the
-// three modes and three profiles never collide, and it hashes the contents of
+// folds in the caller-selected output mode (including
+// snapshot:compact-ndjson-v1) and the profile so native and compact snapshots
+// never collide, and it hashes the contents of
 // any --ignore-file / --include-file inputs so an edit to those files misses the
 // cache. OnlyFiles is included for completeness even though the record commands
 // do not expose it. Callers must NOT use this for --worktree runs (the working

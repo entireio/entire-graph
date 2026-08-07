@@ -1,11 +1,188 @@
 package bench
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/entireio/entire-graph/internal/sem"
 )
+
+func TestMeasureRepoIsolatedKeepsPreflightPeakOutOfColdRSSAndNextRepo(t *testing.T) {
+	if maxRSSBytesCurrent() == 0 {
+		t.Skip("process RSS is not available on this platform")
+	}
+	dir := t.TempDir()
+	writeFile(t, dir, "main.go", "package main\nfunc main() {}\n")
+	command := []string{os.Args[0], "-test.run=^TestMeasureRepoIsolatedWorker$"}
+
+	first, err := measureRepoIsolatedWithCommand(t.Context(), "first", "Go", dir, "test", sem.ProfileFast, MeasureOptions{}, command, append(os.Environ(),
+		"ENTIRE_GRAPH_BENCH_TEST_WORKER=1",
+		"ENTIRE_GRAPH_BENCH_TEST_PREFLIGHT_BYTES="+strconv.Itoa(128<<20),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := measureRepoIsolatedWithCommand(t.Context(), "second", "Go", dir, "test", sem.ProfileFast, MeasureOptions{}, command, append(os.Environ(),
+		"ENTIRE_GRAPH_BENCH_TEST_WORKER=1",
+		"ENTIRE_GRAPH_BENCH_TEST_PREFLIGHT_BYTES=0",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const minimumGap = uint64(32 << 20)
+	if first.WorkerMaxRSSBytes <= first.Metrics.MaxRSSBytes+minimumGap {
+		t.Fatalf("preflight allocation did not raise worker peak above captured cold RSS: %#v", first)
+	}
+	if second.Metrics.MaxRSSBytes+minimumGap >= first.WorkerMaxRSSBytes {
+		t.Fatalf("second repository inherited first worker's preflight peak: first=%#v second=%#v", first, second)
+	}
+	if len(first.Events) != 4 || first.Events[0].Phase != sem.BuildPhaseInventory || first.Events[len(first.Events)-1].Phase != sem.BuildPhaseFinalize {
+		t.Fatalf("isolated worker did not stream typed progress: %#v", first.Events)
+	}
+}
+
+func TestMeasureRepoIsolatedWorker(t *testing.T) {
+	if os.Getenv("ENTIRE_GRAPH_BENCH_TEST_WORKER") != "1" {
+		return
+	}
+	allocation, err := strconv.Atoi(os.Getenv("ENTIRE_GRAPH_BENCH_TEST_PREFLIGHT_BYTES"))
+	if err != nil {
+		os.Exit(2)
+	}
+	preflight := func(ctx context.Context, dir, providerVersion string, profile sem.Profile) (compactPreflight, error) {
+		memory := make([]byte, allocation)
+		for i := 0; i < len(memory); i += 4096 {
+			memory[i] = 1
+		}
+		result, err := runCompactPreflight(ctx, dir, providerVersion, profile)
+		runtime.KeepAlive(memory)
+		return result, err
+	}
+	os.Exit(runMeasureWorker(context.Background(), os.Stdin, os.Stdout, preflight))
+}
+
+func TestMeasureRepoWithOptionsForwardsCallerProgress(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "main.go", "package main\nfunc main() {}\n")
+	var phases []sem.BuildPhase
+	_, err := MeasureRepoWithOptions(t.Context(), "local", "Go", dir, "test", sem.ProfileFast, MeasureOptions{
+		Progress: func(event sem.ProgressEvent) { phases = append(phases, event.Phase) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(phases) != 4 || phases[0] != sem.BuildPhaseInventory || phases[len(phases)-1] != sem.BuildPhaseFinalize {
+		t.Fatalf("caller progress was not preserved: %#v", phases)
+	}
+}
+
+func TestRunMeasureWorkerRejectsMalformedRequest(t *testing.T) {
+	var out bytes.Buffer
+	if code := runMeasureWorker(context.Background(), strings.NewReader("not-json"), &out, runCompactPreflight); code == 0 {
+		t.Fatalf("malformed worker request unexpectedly succeeded: %s", out.String())
+	}
+}
+
+func TestMeasureRepoIsolatedPreservesIdentityOnWorkerFailures(t *testing.T) {
+	cases := []struct {
+		name    string
+		command []string
+	}{
+		{name: "start", command: []string{filepath.Join(t.TempDir(), "missing-worker")}},
+		{name: "crash", command: []string{"/bin/sh", "-c", "exit 7"}},
+		{name: "malformed", command: []string{"/bin/sh", "-c", "printf 'not-json\\n'"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			metrics, err := MeasureRepoIsolated(t.Context(), "owner/repo", "Go", t.TempDir(), "test", "", MeasureOptions{}, tc.command)
+			if err == nil {
+				t.Fatalf("expected %s worker failure", tc.name)
+			}
+			if metrics.Name != "owner/repo" || metrics.Language != "Go" || metrics.Profile != "full" || metrics.Error == "" {
+				t.Fatalf("worker failure lost row identity: %#v, error=%v", metrics, err)
+			}
+		})
+	}
+}
+
+func TestIsolatedWorkerTransportsColdRSSOnGuardFailure(t *testing.T) {
+	if maxRSSBytesCurrent() == 0 {
+		t.Skip("process RSS is not available on this platform")
+	}
+	dir := t.TempDir()
+	writeFile(t, dir, "main.go", "package main\nfunc main() {}\n")
+	response, err := measureRepoIsolatedWithCommand(t.Context(), "guarded", "Go", dir, "test", sem.ProfileFast, MeasureOptions{MaxRSSBytes: 1}, []string{os.Args[0], "-test.run=^TestMeasureRepoIsolatedWorker$"}, append(os.Environ(),
+		"ENTIRE_GRAPH_BENCH_TEST_WORKER=1",
+		"ENTIRE_GRAPH_BENCH_TEST_PREFLIGHT_BYTES=0",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Error == "" || response.Metrics.Error == "" {
+		t.Fatalf("worker did not transport guard error: %#v", response)
+	}
+	if response.Metrics.MaxRSSBytes <= 1 {
+		t.Fatalf("worker lost measured RSS on guard error: %#v", response)
+	}
+}
+
+func TestReducePhaseEventsKeepsMaximumPhaseDuration(t *testing.T) {
+	got := reducePhaseEvents([]sem.ProgressEvent{
+		{Phase: sem.BuildPhaseInventory, PhaseElapsed: 5 * time.Millisecond},
+		{Phase: sem.BuildPhaseParse, PhaseElapsed: 10 * time.Millisecond},
+		{Phase: sem.BuildPhaseParse, PhaseElapsed: 25 * time.Millisecond},
+		{Phase: sem.BuildPhaseRelations, PhaseElapsed: 7 * time.Millisecond},
+		{Phase: sem.BuildPhaseFinalize, PhaseElapsed: 3 * time.Millisecond},
+	})
+	want := map[string]float64{"inventory": 5, "parse": 25, "relations": 7, "finalize": 3}
+	if len(got) != len(want) {
+		t.Fatalf("phase count = %#v, want %#v", got, want)
+	}
+	for phase, duration := range want {
+		if got[phase] != duration {
+			t.Fatalf("phase %q = %v, want %v; all=%#v", phase, got[phase], duration, got)
+		}
+	}
+}
+
+func TestBuildReportAggregatesPhaseMetricsFromSuccessfulReposOnly(t *testing.T) {
+	report := BuildReport("2026-08-01T00:00:00Z", "test", sem.ProfileFull, []RepoMetrics{
+		{Name: "ok-a", Language: "Go", WallMS: 20, PhaseMS: map[string]float64{"inventory": 2, "parse": 11}},
+		{Name: "bad", Language: "Go", Error: "failed", PhaseMS: map[string]float64{"inventory": 99, "parse": 99}},
+		{Name: "ok-b", Language: "Go", WallMS: 30, PhaseMS: map[string]float64{"inventory": 3, "relations": 8}},
+	})
+	want := map[string]float64{"inventory": 5, "parse": 11, "relations": 8}
+	for phase, duration := range want {
+		if got := report.Totals.PhaseMS[phase]; got != duration {
+			t.Fatalf("total phase %q = %v, want %v; all=%#v", phase, got, duration, report.Totals.PhaseMS)
+		}
+	}
+	if _, ok := report.Totals.PhaseMS["finalize"]; ok {
+		t.Fatalf("unexpected phase from errored repo: %#v", report.Totals.PhaseMS)
+	}
+}
+
+func TestBuildReportRecomputesRawBytesPerProjectedFact(t *testing.T) {
+	report := BuildReport("2026-08-01T00:00:00Z", "test", sem.ProfileFull, []RepoMetrics{
+		{Name: "small", Language: "Go", NDJSONRawBytes: 100, CompactRawBytes: 50, CompactDictionaryBytes: 10, ProjectedFacts: 10, NDJSONBytesPerProjectedFact: 10, CompactBytesPerProjectedFact: 5},
+		{Name: "large", Language: "Go", NDJSONRawBytes: 1000, CompactRawBytes: 500, CompactDictionaryBytes: 100, ProjectedFacts: 10, NDJSONBytesPerProjectedFact: 100, CompactBytesPerProjectedFact: 50},
+		{Name: "failed", Language: "Go", Error: "failed", NDJSONRawBytes: 999, CompactRawBytes: 999, ProjectedFacts: 1},
+	})
+	got := report.Totals
+	if got.NDJSONRawBytes != 1100 || got.CompactRawBytes != 550 || got.CompactDictionaryBytes != 110 || got.ProjectedFacts != 20 {
+		t.Fatalf("aggregate raw bytes/facts = %#v", got)
+	}
+	if got.NDJSONBytesPerProjectedFact != 55 || got.CompactBytesPerProjectedFact != 27.5 {
+		t.Fatalf("aggregate ratios were averaged instead of recomputed: %#v", got)
+	}
+}
 
 func writeFile(t *testing.T, dir, path, content string) {
 	t.Helper()
@@ -69,6 +246,13 @@ func Check(token string) bool {
 	if metrics.OutputBytes == 0 {
 		t.Fatalf("output bytes not measured: %#v", metrics)
 	}
+	phaseTotal := 0.0
+	for _, elapsed := range metrics.PhaseMS {
+		phaseTotal += elapsed
+	}
+	if delta := metrics.WallMS - phaseTotal; delta < -1 || delta > 1 {
+		t.Fatalf("phase milliseconds do not partition cold wall: wall=%v phases=%#v", metrics.WallMS, metrics.PhaseMS)
+	}
 	if metrics.RelationsByType["DEFINES"] == 0 {
 		t.Fatalf("relations_by_type missing DEFINES: %#v", metrics.RelationsByType)
 	}
@@ -104,14 +288,17 @@ func main() {}
 	if !strings.Contains(metrics.Error, "memory guardrail failed during measurement") {
 		t.Fatalf("metrics error not recorded: %#v", metrics)
 	}
+	if metrics.MaxRSSBytes <= 1 {
+		t.Fatalf("cold max RSS was not recorded before guard failure: %#v", metrics)
+	}
 }
 
 func TestBuildReportAggregatesByLanguage(t *testing.T) {
 	metrics := []RepoMetrics{
-		{Name: "a", Language: "Go", Files: 10, LOC: 1000, Symbols: 50, Relations: 80, WallMS: 100},
-		{Name: "b", Language: "Go", Files: 5, LOC: 500, Symbols: 20, Relations: 30, WallMS: 50},
+		{Name: "a", Language: "Go", Files: 10, LOC: 1000, Symbols: 50, Relations: 80, WallMS: 100, MaxRSSBytes: 100},
+		{Name: "b", Language: "Go", Files: 5, LOC: 500, Symbols: 20, Relations: 30, WallMS: 50, MaxRSSBytes: 200},
 		{Name: "c", Language: "Python", Files: 8, LOC: 800, Symbols: 40, Relations: 60, WallMS: 80},
-		{Name: "broken", Language: "Python", Error: "boom"},
+		{Name: "broken", Language: "Python", Error: "boom", MaxRSSBytes: 999},
 	}
 
 	report := BuildReport("2026-06-18T00:00:00Z", "bench-test", "fast", metrics)
@@ -134,6 +321,9 @@ func TestBuildReportAggregatesByLanguage(t *testing.T) {
 	}
 	if report.Totals.Repos != 3 {
 		t.Fatalf("totals repos = %d, want 3", report.Totals.Repos)
+	}
+	if report.MaxRSSBytes != 200 || report.Totals.MaxRSSBytes != 200 {
+		t.Fatalf("cold max RSS included an error row or parent/preflight peak: report=%#v totals=%#v", report.MaxRSSBytes, report.Totals.MaxRSSBytes)
 	}
 	if report.Totals.LOCPerSec <= 0 {
 		t.Fatalf("totals loc/sec = %v", report.Totals.LOCPerSec)

@@ -83,6 +83,31 @@ func TestProviderRecordsCacheWorktreeBypassed(t *testing.T) {
 	}
 }
 
+func TestCompactAndNativeRecordCachesDoNotCollide(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	cacheDir := t.TempDir()
+	opts := ProviderSnapshotOptions{Profile: ProfileFull}
+	const (
+		version     = "test-v1"
+		tree        = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		nativeMode  = "snapshot"
+		compactMode = "snapshot:compact-ndjson-v1"
+	)
+	if err := StoreProviderRecords(context.Background(), repo, version, tree, nativeMode, cacheDir, opts, []byte("native\n"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := StoreProviderRecords(context.Background(), repo, version, tree, compactMode, cacheDir, opts, []byte("compact\n"), nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ mode, want string }{{nativeMode, "native\n"}, {compactMode, "compact\n"}} {
+		got, _, hit, err := LoadProviderRecords(context.Background(), repo, version, tree, tc.mode, cacheDir, opts)
+		if err != nil || !hit || string(got) != tc.want {
+			t.Fatalf("load %s = %q hit=%t err=%v", tc.mode, got, hit, err)
+		}
+	}
+}
+
 func TestProviderRecordsCacheKeyIncludesIgnoreFileContent(t *testing.T) {
 	t.Parallel()
 

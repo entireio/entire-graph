@@ -378,15 +378,25 @@ type ProviderSnapshotOptions struct {
 	ForceRebuild bool
 }
 
+type BuildPhase string
+
+const (
+	BuildPhaseInventory BuildPhase = "inventory"
+	BuildPhaseParse     BuildPhase = "parse"
+	BuildPhaseRelations BuildPhase = "relations"
+	BuildPhaseFinalize  BuildPhase = "finalize"
+)
+
 type ProgressEvent struct {
-	Phase       string
-	FilesTotal  int
-	FilesDone   int
-	Symbols     int
-	Relations   int
-	HeapAlloc   uint64
-	MaxRSSBytes uint64
-	Elapsed     time.Duration
+	Phase        BuildPhase
+	FilesTotal   int
+	FilesDone    int
+	Symbols      int
+	Relations    int
+	HeapAlloc    uint64
+	MaxRSSBytes  uint64
+	PhaseElapsed time.Duration
+	Elapsed      time.Duration
 }
 
 // Profile names the indexing depth a snapshot is produced at.
@@ -546,14 +556,15 @@ func Capabilities() CapabilityReport {
 		RelationSupportByProfile:        relationSupportByProfile(),
 		HeuristicRelationTypes:          []string{"HANDLES_ROUTE", "HTTP_CALLS", "EMITS", "LISTENS_ON", "HANDLES_TOOL", "SIMILAR_TO", "TESTS"},
 		OptionalLocalOnlyFeatures: map[string]bool{
-			"stable_symbol_ids":    true,
-			"semantic_diff":        true,
-			"ndjson_snapshot":      true,
-			"hybrid_source_search": true,
-			"near_clone_detection": true,
-			"git_cochange_edges":   true,
-			"durable_preindex":     true,
-			"focused_neighbors":    true,
+			"stable_symbol_ids":          true,
+			"semantic_diff":              true,
+			"ndjson_snapshot":            true,
+			"compact_snapshot_ndjson_v1": true,
+			"hybrid_source_search":       true,
+			"near_clone_detection":       true,
+			"git_cochange_edges":         true,
+			"durable_preindex":           true,
+			"focused_neighbors":          true,
 		},
 		FeaturesRequiringNetworkAccess: map[string]bool{
 			"grammar_download":  false,
@@ -914,6 +925,14 @@ func mergePartialFailures(failures, extra []PartialFailure) []PartialFailure {
 // relation dedup key set; it does not scale with held relation records or held
 // file contents.
 func StreamSnapshot(ctx context.Context, repo, providerVersion string, options ProviderSnapshotOptions, emit func(record any) error) error {
+	return streamSnapshotWithWorkerCount(ctx, repo, providerVersion, options, defaultProviderWorkerCount(), emit)
+}
+
+// streamSnapshotWithWorkerCount is the private deterministic parallelism seam
+// used by tests to compare one-worker output with bounded parallel output. The
+// public provider always uses defaultProviderWorkerCount.
+func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion string, options ProviderSnapshotOptions, workers int, emit func(record any) error) error {
+	started := time.Now()
 	sc, err := prepareSource(ctx, repo, options)
 	if err != nil {
 		return err
@@ -921,49 +940,52 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	if sc.close != nil {
 		defer sc.close()
 	}
-	spec := resolveProfile(options.Profile)
-	maxParseBytes := resolveMaxParseBytes(options.MaxParseBytes)
-	progressStart := time.Now()
-	// emitProgress calls runtime.ReadMemStats (a stop-the-world memory scan), so
-	// we bound how often it fires. A single fixed absolute cadence (the old
-	// hard-coded 1024) doesn't scale down: files and relations differ by ~two
-	// orders of magnitude, so a threshold tuned for the ~100k relations of a
-	// large repo means a repo with fewer than 1024 files gets ZERO mid-parse
-	// updates — the bar sits at 0 through the whole parse, then jumps to 100%.
-	//
-	// Files: target ~100 updates across the parse (floor 1 → every file on small
-	// repos), which bounds the callback count regardless of repo size. Relations
-	// stream with no known total, so we can't target a fixed number of updates; a
-	// bounded fixed cadence keeps ReadMemStats cheap on huge repos while still
-	// animating (relations are numerous, so 512 yields plenty of ticks).
 	fileProgressEvery := len(sc.paths) / 100
 	if fileProgressEvery < 1 {
 		fileProgressEvery = 1
 	}
 	relationProgressEvery := 512
-	emitProgress := func(phase string, filesDone int, symbols int, relations int) {
+	phaseStart := started
+	var progressOverhead time.Duration
+	var phaseProgressOverhead time.Duration
+	emitProgress := func(phase BuildPhase, filesDone int, symbols int, relations int) {
 		if options.Progress == nil {
 			return
 		}
+		now := time.Now()
 		var mem runtime.MemStats
 		runtime.ReadMemStats(&mem)
 		options.Progress(ProgressEvent{
-			Phase:       phase,
-			FilesTotal:  len(sc.paths),
-			FilesDone:   filesDone,
-			Symbols:     symbols,
-			Relations:   relations,
-			HeapAlloc:   mem.HeapAlloc,
-			MaxRSSBytes: maxRSSBytes(),
-			Elapsed:     time.Since(progressStart),
+			Phase:        phase,
+			FilesTotal:   len(sc.paths),
+			FilesDone:    filesDone,
+			Symbols:      symbols,
+			Relations:    relations,
+			HeapAlloc:    mem.HeapAlloc,
+			MaxRSSBytes:  maxRSSBytes(),
+			PhaseElapsed: now.Sub(phaseStart) - phaseProgressOverhead,
+			Elapsed:      now.Sub(started) - progressOverhead,
 		})
+		overhead := time.Since(now)
+		progressOverhead += overhead
+		phaseProgressOverhead += overhead
 	}
-	emitProgress("start", 0, 0, 0)
+	startPhase := func() {
+		phaseStart = time.Now()
+		phaseProgressOverhead = 0
+	}
+	emitProgress(BuildPhaseInventory, 0, 0, 0)
+	// Do not charge synchronous progress telemetry or caller callback work to
+	// the parse phase. The parse clock includes header emission and alias-index
+	// construction so no provider work between inventory and the file loop is
+	// left unassigned.
+	startPhase()
+	spec := resolveProfile(options.Profile)
+	maxParseBytes := resolveMaxParseBytes(options.MaxParseBytes)
 	if err := emit(leanHeader(sc, providerVersion, spec)); err != nil {
 		return err
 	}
 
-	parser := TreeSitterParser{}
 	languageSet := map[string]struct{}{}
 	completenessLangs := map[string]LanguageCompleteness{}
 	var failures []PartialFailure
@@ -980,224 +1002,62 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	// searchable aliases so they can be attached to the handler symbol below.
 	aliasesByHandler := collectRegistrationAliases(sc.paths, sc.read)
 
-	// Phase 1: parse + emit file/symbol records, build indexes, discard content.
-	for i, path := range sc.paths {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		// Path-based routing first; files the path cannot classify (extensionless
-		// executables like pyenv's libexec/* scripts) get one bounded prefix read
-		// to route by shebang before being declared unsupported.
-		if !Supported(path) && !shebangRoutable(sc.readPrefix, path) {
-			if hint := unsupportedLanguageHint(path); hint != "" {
-				failures = append(failures, PartialFailure{
-					Code:                 "E_UNSUPPORTED_LANGUAGE",
-					Severity:             "warning",
-					FilePath:             path,
-					EffectOnCompleteness: "file omitted because no parser is available",
-					Detail:               hint,
-				})
+	// Phase 1: workers independently read, classify, and parse files. Only this
+	// reducer mutates graph indexes or calls emit, and it consumes the original
+	// path order, so worker timing cannot change snapshot bytes.
+	err = runProviderFilePipeline(ctx, sc.paths, workers,
+		func(workerCtx context.Context, index int, path string) providerFileResult {
+			return processProviderFile(workerCtx, sc, spec, maxParseBytes, index, path)
+		},
+		func(result providerFileResult) error {
+			failures = append(failures, result.failures...)
+			if result.hasPrecomputedImports {
+				precomputedImports[result.path] = result.precomputedImports
 			}
-			continue
-		}
-		content, ok := sc.read(path)
-		if !ok {
-			// A refused read is not a failed one: the reader declines files above
-			// the byte cap so no single file can set the snapshot's memory
-			// ceiling. Such a file is still recorded exactly — size, blob hash and
-			// line count come from a streamed digest — with the same
-			// E_FILE_TOO_LARGE the post-read check reports.
-			if over, isOversize := sc.oversizeAt(path); isOversize {
-				// The language comes from the path, or from a bounded prefix read
-				// for an extensionless script — never from the whole file.
-				langSpec, langOK := languageForPath(path)
-				if !langOK {
-					if prefix, prefixOK := sc.readPrefix(path, shebangSniffLimit); prefixOK {
-						langSpec, langOK = languageForShebang(prefix)
+			if result.file == nil {
+				return nil
+			}
+
+			languageSet[result.language] = struct{}{}
+			if err := emit(*result.file); err != nil {
+				return err
+			}
+			files = append(files, *result.file)
+			lc := completenessLangs[result.language]
+			lc.Files++
+
+			if result.parsed {
+				parsedFileCount++
+				for i := range result.symbols {
+					if aliases := aliasesByHandler[result.symbols[i].Name]; len(aliases) > 0 {
+						result.symbols[i].Aliases = aliases
 					}
 				}
-				if !langOK {
-					failures = append(failures, PartialFailure{
-						Code:                 "E_UNSUPPORTED_LANGUAGE",
-						Severity:             "warning",
-						FilePath:             path,
-						EffectOnCompleteness: "file omitted because no parser is available",
-					})
-					continue
+				applyCppSpecializationAliases(result.symbols)
+				for _, symbol := range result.symbols {
+					if err := emit(symbol); err != nil {
+						return err
+					}
 				}
-				language := langSpec.language
-				file := FileRecord{
-					RecordType: "file",
-					ID:         fileID(sc.key, path),
-					Path:       path,
-					Blob:       over.Hash,
-					Language:   language,
-					Bytes:      int(over.Bytes),
-					Lines:      over.Lines,
+				if spec.name == ProfileSyntaxOnly {
+					structuralByFile[result.path] = compactStructuralSymbols(result.symbols)
+				} else {
+					recordsByFile[result.path] = retainedSymbolsForProfile(result.symbols, spec)
 				}
-				languageSet[language] = struct{}{}
-				if err := emit(file); err != nil {
-					return err
+				symbolCount += len(result.symbols)
+				lc.Symbols += len(result.symbols)
+				if result.index+1 < len(sc.paths) && (result.index+1)%fileProgressEvery == 0 {
+					emitProgress(BuildPhaseParse, result.index+1, symbolCount, relationCount)
 				}
-				files = append(files, file)
-				lc := completenessLangs[language]
-				lc.Files++
-				completenessLangs[language] = lc
-				failures = append(failures, PartialFailure{
-					Code:                 "E_FILE_TOO_LARGE",
-					Severity:             "warning",
-					FilePath:             path,
-					EffectOnCompleteness: "file record emitted but symbol parsing skipped",
-					Detail: fmt.Sprintf(
-						"file is %d bytes, above max parser input %d bytes; content was never held in memory",
-						over.Bytes, maxParseBytes,
-					),
-				})
-				continue
 			}
-			failures = append(failures, PartialFailure{
-				Code:                 "E_FILE_READ",
-				Severity:             "error",
-				FilePath:             path,
-				EffectOnCompleteness: "file omitted from semantic snapshot",
-				Detail:               "file listed but content was unavailable",
-			})
-			continue
-		}
-		contentBytes := []byte(content)
-		langSpec, ok := languageForContent(path, content)
-		if !ok {
-			failures = append(failures, PartialFailure{
-				Code:                 "E_UNSUPPORTED_LANGUAGE",
-				Severity:             "warning",
-				FilePath:             path,
-				EffectOnCompleteness: "file omitted because no parser is available",
-			})
-			continue
-		}
-		language := langSpec.language
-		// Skip Go files the default build excludes (build-tag / _GOOS_GOARCH), so
-		// the snapshot matches what the compiler compiles and alternate-tag files
-		// don't poison cross-file type inference.
-		if language == "Go" && !goFileMatchesDefaultBuild(path, content) {
-			continue
-		}
-		file := FileRecord{
-			RecordType: "file",
-			ID:         fileID(sc.key, path),
-			Path:       path,
-			Blob:       contentHash(contentBytes),
-			Language:   language,
-			Bytes:      len(contentBytes),
-			Lines:      sourceLineCount(content),
-		}
-		if skipFastProfilePerSymbolScan(spec, language) {
-			precomputedImports[path] = importsFor(path, content)
-		}
-		if maxParseBytes > 0 && len(contentBytes) > maxParseBytes {
-			languageSet[language] = struct{}{}
-			if err := emit(file); err != nil {
-				return err
-			}
-			files = append(files, file)
-			lc := completenessLangs[language]
-			lc.Files++
-			completenessLangs[language] = lc
-			failures = append(failures, PartialFailure{
-				Code:                 "E_FILE_TOO_LARGE",
-				Severity:             "warning",
-				FilePath:             path,
-				EffectOnCompleteness: "file record emitted but symbol parsing skipped",
-				Detail:               fmt.Sprintf("file is %d bytes, above max parser input %d bytes", len(contentBytes), maxParseBytes),
-			})
-			continue
-		}
-		// Skip minified/bundled files (e.g. site assets like main.js / *.min.js):
-		// their thousands of single-letter symbols in one file form a near-complete
-		// same-file call graph (the dominant relation-count + time blow-up on repos
-		// that vendor web assets), and they are not meaningful source to analyze.
-		// Overlong lines must dominate the file; a few giant data lines embedded
-		// in otherwise ordinary source do not disqualify it.
-		if looksMinified(content) {
-			languageSet[language] = struct{}{}
-			if err := emit(file); err != nil {
-				return err
-			}
-			files = append(files, file)
-			lc := completenessLangs[language]
-			lc.Files++
-			completenessLangs[language] = lc
-			failures = append(failures, PartialFailure{
-				Code:                 "E_MINIFIED",
-				Severity:             "warning",
-				FilePath:             path,
-				EffectOnCompleteness: "file record emitted but symbol parsing skipped",
-				Detail:               "file appears minified/bundled (very long lines); not analyzed as source",
-			})
-			continue
-		}
-		entities, language, parseStatus := parseWithProfile(parser, spec, langSpec, path, content)
-		if language == "" {
-			failures = append(failures, PartialFailure{
-				Code:                 "E_UNSUPPORTED_LANGUAGE",
-				Severity:             "warning",
-				FilePath:             path,
-				EffectOnCompleteness: "file omitted because no parser is available",
-			})
-			continue
-		}
-		if parseStatus.ParseError {
-			code := parseStatus.Code
-			if code == "" {
-				code = "E_PARSE_ERROR"
-			}
-			effect := "file parsed with syntax errors; semantic facts may be incomplete"
-			if code == "E_PARSE_TIMEOUT" {
-				effect = "file record emitted but symbol parsing skipped because parser time budget was exceeded"
-			}
-			failures = append(failures, PartialFailure{
-				Code:                 code,
-				Severity:             "warning",
-				FilePath:             path,
-				EffectOnCompleteness: effect,
-				Detail:               parseStatus.Detail,
-			})
-		}
-		file.Language = language
-		languageSet[language] = struct{}{}
-		if err := emit(file); err != nil {
-			return err
-		}
-		files = append(files, file)
-		parsedFileCount++
-		fileSymbols := entitySymbols(sc.key, path, language, entities)
-		fileSymbols = append(fileSymbols, syntheticBoundarySymbols(sc.key, path, language, content, fileSymbols)...)
-		for i := range fileSymbols {
-			if aliases := aliasesByHandler[fileSymbols[i].Name]; len(aliases) > 0 {
-				fileSymbols[i].Aliases = aliases
-			}
-		}
-		applyCppSpecializationAliases(fileSymbols)
-		for _, symbol := range fileSymbols {
-			if err := emit(symbol); err != nil {
-				return err
-			}
-		}
-		if spec.name == ProfileSyntaxOnly {
-			structuralByFile[path] = compactStructuralSymbols(fileSymbols)
-		} else {
-			recordsByFile[path] = retainedSymbolsForProfile(fileSymbols, spec)
-		}
-		symbolCount += len(fileSymbols)
-		lc := completenessLangs[language]
-		lc.Files++
-		lc.Symbols += len(fileSymbols)
-		completenessLangs[language] = lc
-		if (i+1)%fileProgressEvery == 0 {
-			emitProgress("parse", i+1, symbolCount, relationCount)
-		}
+			completenessLangs[result.language] = lc
+			return nil
+		},
+	)
+	if err != nil {
+		return err
 	}
-	emitProgress("parse", len(sc.paths), symbolCount, relationCount)
+	emitProgress(BuildPhaseParse, len(sc.paths), symbolCount, relationCount)
 
 	// Phase 2: resolve relations from indexes, re-reading content per file.
 	// Relation dedup uses compact 64-bit hashed keys rather than the full
@@ -1205,6 +1065,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	// relation instead of a ~100-byte key. The set is bounded by the unique
 	// relation count (== the relations reported in the summary). FNV-1a/64
 	// collisions across realistic relation counts are negligible.
+	startPhase()
 	seenRelation := map[uint64]struct{}{}
 	externalsByID := map[string]ExternalRecord{}
 	relationsByType := map[string]int{}
@@ -1245,7 +1106,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 		relationsByType[r.Type]++
 		relationCount++
 		if relationCount%relationProgressEvery == 0 {
-			emitProgress("relations", len(sc.paths), symbolCount, relationCount)
+			emitProgress(BuildPhaseRelations, len(sc.paths), symbolCount, relationCount)
 		}
 		emitErr = emit(r)
 	}
@@ -1285,8 +1146,9 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	if emitErr != nil {
 		return emitErr
 	}
-	emitProgress("relations", len(sc.paths), symbolCount, relationCount)
+	emitProgress(BuildPhaseRelations, len(sc.paths), symbolCount, relationCount)
 
+	startPhase()
 	externalIDs := make([]string, 0, len(externalsByID))
 	for id := range externalsByID {
 		externalIDs = append(externalIDs, id)
@@ -1300,8 +1162,6 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 			return err
 		}
 	}
-	emitProgress("summary", len(sc.paths), symbolCount, relationCount)
-
 	warnings := sc.warnings
 	if warnings == nil {
 		warnings = []ProviderWarning{}
@@ -1309,7 +1169,7 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 	if failures == nil {
 		failures = []PartialFailure{}
 	}
-	return emit(SnapshotSummary{
+	summary := SnapshotSummary{
 		RecordType:      "summary",
 		Languages:       sortedKeys(languageSet),
 		LanguageTiers:   languageTiers(languageSet),
@@ -1324,7 +1184,12 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 			CompletenessLevel: completenessLevel(completenessFailureCount(failures), len(files), parsedFileCount, symbolCount),
 		},
 		Completeness: CompletenessReport{Languages: completenessLangs, Relations: relationsByType},
-	})
+	}
+	if err := emit(summary); err != nil {
+		return err
+	}
+	emitProgress(BuildPhaseFinalize, len(sc.paths), symbolCount, relationCount)
+	return nil
 }
 
 func parseWithProfile(parser TreeSitterParser, spec profileSpec, langSpec languageSpec, path, content string) ([]Entity, string, ParseStatus) {

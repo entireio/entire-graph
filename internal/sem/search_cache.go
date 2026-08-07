@@ -332,6 +332,18 @@ func PreindexProviderSnapshot(
 	options ProviderSnapshotOptions,
 	cacheDir string,
 ) (ProviderSnapshot, bool, error) {
+	return preindexProviderSnapshotWithPersistenceReader(
+		ctx, repo, providerVersion, options, cacheDir, readSearchSnapshot,
+	)
+}
+
+func preindexProviderSnapshotWithPersistenceReader(
+	ctx context.Context,
+	repo, providerVersion string,
+	options ProviderSnapshotOptions,
+	cacheDir string,
+	readPersisted func(string) (cachedSearchSnapshot, error),
+) (ProviderSnapshot, bool, error) {
 	if options.Worktree {
 		return ProviderSnapshot{}, false, errors.New("preindex requires a committed HEAD snapshot")
 	}
@@ -370,6 +382,12 @@ func PreindexProviderSnapshot(
 			snapshot.Header.Tree, snapshot.Header.Commit, tree, commit,
 		)
 	}
+	if cacheHit {
+		// A hit is returned only after the persisted entry has been fully decoded
+		// and validated, so reading the same artifact again cannot strengthen the
+		// durability guarantee.
+		return snapshot, true, nil
+	}
 	if options.ForceRebuild {
 		// Match loadOrBuildSearchSnapshot's re-stamp: report the commit this call
 		// serves, not whatever HEAD happened to be mid-build on a same-tree race.
@@ -384,7 +402,7 @@ func PreindexProviderSnapshot(
 		return ProviderSnapshot{}, false, err
 	}
 	path := filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, key+".json.gz")
-	persisted, readErr := readSearchSnapshot(path)
+	persisted, readErr := readPersisted(path)
 	if options.ForceRebuild || readErr != nil || !validCachedSearchSnapshot(persisted, repositoryKey, providerVersion, tree, options) {
 		cache := newCachedSearchSnapshot(providerVersion, commit, tree, options, snapshot)
 		if err := writeSearchSnapshot(path, cache); err != nil {

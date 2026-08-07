@@ -20,33 +20,42 @@ import (
 // It is emitted verbatim in the JSON report so trends can be compared across
 // work phases.
 type RepoMetrics struct {
-	Name              string         `json:"name"`
-	Language          string         `json:"language"`
-	Profile           string         `json:"profile"`
-	Commit            string         `json:"commit,omitempty"`
-	WallMS            float64        `json:"wall_ms"`
-	Files             int            `json:"files"`
-	ParsedFiles       int            `json:"parsed_files"`
-	LOC               int            `json:"loc"`
-	SourceBytes       int            `json:"source_bytes"`
-	OutputBytes       int            `json:"output_bytes"`
-	OutputEstimated   bool           `json:"output_bytes_estimated,omitempty"`
-	Symbols           int            `json:"symbols"`
-	Relations         int            `json:"relations"`
-	Externals         int            `json:"externals"`
-	ParseFailures     int            `json:"parse_failures"`
-	CompletenessLevel string         `json:"completeness_level"`
-	FilesPerSec       float64        `json:"files_per_sec"`
-	LOCPerSec         float64        `json:"loc_per_sec"`
-	AllocBytes        uint64         `json:"alloc_bytes"`
-	Languages         []string       `json:"languages"`
-	RelationSet       []string       `json:"relation_set"`
-	RelationsByType   map[string]int `json:"relations_by_type"`
-	ResolutionCounts  map[string]int `json:"resolution_counts"`
-	ConfidenceBands   map[string]int `json:"confidence_bands"`
-	FailureCodes      map[string]int `json:"failure_codes"`
-	UnresolvedImports int            `json:"unresolved_relative_imports"`
-	Error             string         `json:"error,omitempty"`
+	Name                         string             `json:"name"`
+	Language                     string             `json:"language"`
+	Profile                      string             `json:"profile"`
+	Commit                       string             `json:"commit,omitempty"`
+	WallMS                       float64            `json:"wall_ms"`
+	MaxRSSBytes                  uint64             `json:"max_rss_bytes"`
+	Files                        int                `json:"files"`
+	ParsedFiles                  int                `json:"parsed_files"`
+	LOC                          int                `json:"loc"`
+	SourceBytes                  int                `json:"source_bytes"`
+	OutputBytes                  int                `json:"output_bytes"`
+	OutputEstimated              bool               `json:"output_bytes_estimated,omitempty"`
+	PhaseMS                      map[string]float64 `json:"phase_ms"`
+	NDJSONRawBytes               int                `json:"ndjson_raw_bytes"`
+	CompactRawBytes              int                `json:"compact_raw_bytes"`
+	CompactDictionaryBytes       int                `json:"compact_dictionary_bytes"`
+	ProjectedFacts               int                `json:"projected_facts"`
+	NDJSONBytesPerProjectedFact  float64            `json:"ndjson_bytes_per_projected_fact"`
+	CompactBytesPerProjectedFact float64            `json:"compact_bytes_per_projected_fact"`
+	CanonicalSemanticHash        string             `json:"canonical_semantic_hash"`
+	Symbols                      int                `json:"symbols"`
+	Relations                    int                `json:"relations"`
+	Externals                    int                `json:"externals"`
+	ParseFailures                int                `json:"parse_failures"`
+	CompletenessLevel            string             `json:"completeness_level"`
+	FilesPerSec                  float64            `json:"files_per_sec"`
+	LOCPerSec                    float64            `json:"loc_per_sec"`
+	AllocBytes                   uint64             `json:"alloc_bytes"`
+	Languages                    []string           `json:"languages"`
+	RelationSet                  []string           `json:"relation_set"`
+	RelationsByType              map[string]int     `json:"relations_by_type"`
+	ResolutionCounts             map[string]int     `json:"resolution_counts"`
+	ConfidenceBands              map[string]int     `json:"confidence_bands"`
+	FailureCodes                 map[string]int     `json:"failure_codes"`
+	UnresolvedImports            int                `json:"unresolved_relative_imports"`
+	Error                        string             `json:"error,omitempty"`
 }
 
 type MeasureOptions struct {
@@ -65,6 +74,12 @@ func MeasureRepo(ctx context.Context, name, language, dir, providerVersion strin
 }
 
 func MeasureRepoWithOptions(ctx context.Context, name, language, dir, providerVersion string, profile sem.Profile, opts MeasureOptions) (RepoMetrics, error) {
+	return measureRepoWithPreflight(ctx, name, language, dir, providerVersion, profile, opts, runCompactPreflight)
+}
+
+type compactPreflightRunner func(context.Context, string, string, sem.Profile) (compactPreflight, error)
+
+func measureRepoWithPreflight(ctx context.Context, name, language, dir, providerVersion string, profile sem.Profile, opts MeasureOptions, preflightRunner compactPreflightRunner) (RepoMetrics, error) {
 	if profile == "" {
 		profile = sem.ProfileFull
 	}
@@ -76,6 +91,7 @@ func MeasureRepoWithOptions(ctx context.Context, name, language, dir, providerVe
 		ResolutionCounts: map[string]int{},
 		ConfidenceBands:  map[string]int{},
 		FailureCodes:     map[string]int{},
+		PhaseMS:          map[string]float64{},
 	}
 
 	runtime.GC()
@@ -86,8 +102,14 @@ func MeasureRepoWithOptions(ctx context.Context, name, language, dir, providerVe
 	outputBytes := 0
 	start := time.Now()
 	measureCtx, stopRSSGuard, rssExceeded := startRSSGuard(ctx, opts.MaxRSSBytes)
-	defer stopRSSGuard()
-	err := sem.StreamSnapshot(measureCtx, dir, providerVersion, sem.ProviderSnapshotOptions{NoNetwork: true, Profile: profile, Progress: opts.Progress}, func(record any) error {
+	var phaseEvents []sem.ProgressEvent
+	progress := func(event sem.ProgressEvent) {
+		phaseEvents = append(phaseEvents, event)
+		if opts.Progress != nil {
+			opts.Progress(event)
+		}
+	}
+	err := sem.StreamSnapshot(measureCtx, dir, providerVersion, sem.ProviderSnapshotOptions{NoNetwork: true, Profile: profile, Progress: progress}, func(record any) error {
 		if rss := rssExceeded.Load(); rss > 0 {
 			return fmt.Errorf("memory guardrail failed during measurement: max RSS %d exceeds ceiling %d", rss, opts.MaxRSSBytes)
 		}
@@ -124,6 +146,15 @@ func MeasureRepoWithOptions(ctx context.Context, name, language, dir, providerVe
 		return nil
 	})
 	wall := time.Since(start)
+	stopRSSGuard()
+	// Capture the worker-local cold peak before either returning a guard error or
+	// entering compact preflight. Error rows retain this value for guard checks.
+	metrics.MaxRSSBytes = maxRSSBytesCurrent()
+	if len(phaseEvents) > 0 && phaseEvents[len(phaseEvents)-1].Phase == sem.BuildPhaseFinalize {
+		// The final provider event partitions all cold provider work while
+		// excluding synchronous progress telemetry/callback overhead.
+		wall = phaseEvents[len(phaseEvents)-1].Elapsed
+	}
 	if rss := rssExceeded.Load(); rss > 0 {
 		err = fmt.Errorf("memory guardrail failed during measurement: max RSS %d exceeds ceiling %d", rss, opts.MaxRSSBytes)
 	}
@@ -134,6 +165,7 @@ func MeasureRepoWithOptions(ctx context.Context, name, language, dir, providerVe
 	runtime.ReadMemStats(&after)
 
 	metrics.WallMS = round2(float64(wall.Microseconds()) / 1000)
+	metrics.PhaseMS = reducePhaseEvents(phaseEvents)
 	metrics.OutputBytes = outputBytes
 	metrics.OutputEstimated = !opts.ExactOutputBytes
 	metrics.ParsedFiles = summary.Stats.ParsedFiles
@@ -146,6 +178,19 @@ func MeasureRepoWithOptions(ctx context.Context, name, language, dir, providerVe
 	if after.TotalAlloc >= before.TotalAlloc {
 		metrics.AllocBytes = after.TotalAlloc - before.TotalAlloc
 	}
+
+	preflight, preflightErr := preflightRunner(ctx, dir, providerVersion, profile)
+	if preflightErr != nil {
+		metrics.Error = preflightErr.Error()
+		return metrics, preflightErr
+	}
+	metrics.NDJSONRawBytes = preflight.NDJSONRawBytes
+	metrics.CompactRawBytes = preflight.CompactRawBytes
+	metrics.CompactDictionaryBytes = preflight.CompactDictionaryBytes
+	metrics.ProjectedFacts = preflight.ProjectedFacts
+	metrics.NDJSONBytesPerProjectedFact = preflight.NDJSONBytesPerProjectedFact
+	metrics.CompactBytesPerProjectedFact = preflight.CompactBytesPerProjectedFact
+	metrics.CanonicalSemanticHash = preflight.CanonicalSemanticHash
 
 	if seconds := wall.Seconds(); seconds > 0 {
 		metrics.FilesPerSec = round2(float64(metrics.Files) / seconds)
@@ -248,6 +293,21 @@ func round2(value float64) float64 {
 	return float64(int64(value*100+0.5)) / 100
 }
 
+func reducePhaseEvents(events []sem.ProgressEvent) map[string]float64 {
+	phaseMS := map[string]float64{}
+	for _, event := range events {
+		if event.Phase == "" {
+			continue
+		}
+		elapsed := round2(float64(event.PhaseElapsed.Microseconds()) / 1000)
+		phase := string(event.Phase)
+		if elapsed > phaseMS[phase] {
+			phaseMS[phase] = elapsed
+		}
+	}
+	return phaseMS
+}
+
 // Hardware records the machine the benchmark ran on, for comparing results.
 type Hardware struct {
 	OS   string `json:"os"`
@@ -255,29 +315,31 @@ type Hardware struct {
 	CPUs int    `json:"cpus"`
 }
 
-// maxRSSBytes returns the process peak resident set size (best-effort). It is a
-// process-wide peak, not per-repo; Linux reports kilobytes, macOS reports bytes.
-func maxRSSBytes() uint64 {
-	return maxRSSBytesCurrent()
-}
-
 // Aggregate summarizes a set of repo metrics for a language or the whole run.
 type Aggregate struct {
-	Repos             int     `json:"repos"`
-	Files             int     `json:"files"`
-	LOC               int     `json:"loc"`
-	Symbols           int     `json:"symbols"`
-	Relations         int     `json:"relations"`
-	ParseFailures     int     `json:"parse_failures"`
-	WallMS            float64 `json:"wall_ms"`
-	OutputBytes       int     `json:"output_bytes"`
-	LOCPerSec         float64 `json:"loc_per_sec"`
-	FilesPerSec       float64 `json:"files_per_sec"`
-	UnresolvedImports int     `json:"unresolved_relative_imports"`
+	Repos                        int                `json:"repos"`
+	Files                        int                `json:"files"`
+	LOC                          int                `json:"loc"`
+	Symbols                      int                `json:"symbols"`
+	Relations                    int                `json:"relations"`
+	ParseFailures                int                `json:"parse_failures"`
+	WallMS                       float64            `json:"wall_ms"`
+	MaxRSSBytes                  uint64             `json:"max_rss_bytes"`
+	OutputBytes                  int                `json:"output_bytes"`
+	PhaseMS                      map[string]float64 `json:"phase_ms"`
+	NDJSONRawBytes               int                `json:"ndjson_raw_bytes"`
+	CompactRawBytes              int                `json:"compact_raw_bytes"`
+	CompactDictionaryBytes       int                `json:"compact_dictionary_bytes"`
+	ProjectedFacts               int                `json:"projected_facts"`
+	NDJSONBytesPerProjectedFact  float64            `json:"ndjson_bytes_per_projected_fact"`
+	CompactBytesPerProjectedFact float64            `json:"compact_bytes_per_projected_fact"`
+	LOCPerSec                    float64            `json:"loc_per_sec"`
+	FilesPerSec                  float64            `json:"files_per_sec"`
+	UnresolvedImports            int                `json:"unresolved_relative_imports"`
 }
 
 func aggregate(metrics []RepoMetrics) Aggregate {
-	var agg Aggregate
+	agg := Aggregate{PhaseMS: map[string]float64{}}
 	for _, m := range metrics {
 		if m.Error != "" {
 			continue
@@ -289,9 +351,25 @@ func aggregate(metrics []RepoMetrics) Aggregate {
 		agg.Relations += m.Relations
 		agg.ParseFailures += m.ParseFailures
 		agg.WallMS += m.WallMS
+		if m.MaxRSSBytes > agg.MaxRSSBytes {
+			agg.MaxRSSBytes = m.MaxRSSBytes
+		}
 		agg.OutputBytes += m.OutputBytes
+		agg.NDJSONRawBytes += m.NDJSONRawBytes
+		agg.CompactRawBytes += m.CompactRawBytes
+		agg.CompactDictionaryBytes += m.CompactDictionaryBytes
+		agg.ProjectedFacts += m.ProjectedFacts
+		for phase, elapsed := range m.PhaseMS {
+			agg.PhaseMS[phase] += elapsed
+		}
 		agg.UnresolvedImports += m.UnresolvedImports
 	}
+	for phase, elapsed := range agg.PhaseMS {
+		agg.PhaseMS[phase] = round2(elapsed)
+	}
+	facts := max(1, agg.ProjectedFacts)
+	agg.NDJSONBytesPerProjectedFact = round2(float64(agg.NDJSONRawBytes) / float64(facts))
+	agg.CompactBytesPerProjectedFact = round2(float64(agg.CompactRawBytes) / float64(facts))
 	if seconds := agg.WallMS / 1000; seconds > 0 {
 		agg.LOCPerSec = round2(float64(agg.LOC) / seconds)
 		agg.FilesPerSec = round2(float64(agg.Files) / seconds)
@@ -341,7 +419,7 @@ func BuildReport(generatedAt, providerVersion string, profile sem.Profile, metri
 		SchemaVersion:   sem.SchemaVersion,
 		Profile:         string(profile),
 		Hardware:        Hardware{OS: runtime.GOOS, Arch: runtime.GOARCH, CPUs: runtime.NumCPU()},
-		MaxRSSBytes:     maxRSSBytes(),
+		MaxRSSBytes:     aggregate(metrics).MaxRSSBytes,
 		Repos:           sorted,
 		ByLanguage:      aggByLanguage,
 		Totals:          aggregate(metrics),

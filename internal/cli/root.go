@@ -21,6 +21,10 @@ type Options struct {
 	Env     EntireEnv
 	Stdout  io.Writer
 	Stderr  io.Writer
+	// Stdin is where `explain` reads a failing build's output from. It is the only command that takes
+	// piped input, because it is the only one whose question ("what are these names the build is
+	// complaining about") is asked by composing with another command rather than by naming a symbol.
+	Stdin io.Reader
 }
 
 func Execute(version string, args []string) error {
@@ -29,6 +33,7 @@ func Execute(version string, args []string) error {
 		Env:     EnvFromOS(),
 		Stdout:  os.Stdout,
 		Stderr:  os.Stderr,
+		Stdin:   os.Stdin,
 	}, args)
 }
 
@@ -75,6 +80,8 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runCapabilities(opts, args[1:])
 	case "snapshot":
 		return runProviderRecords(ctx, opts, args[1:], "snapshot")
+	case "snapshot-query":
+		return runSnapshotQuery(opts, args[1:])
 	case "symbols":
 		return runProviderRecords(ctx, opts, args[1:], "symbols")
 	case "edges":
@@ -85,6 +92,8 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runIndex(ctx, opts, args[1:])
 	case "def":
 		return runDef(ctx, opts, args[1:])
+	case "explain":
+		return runExplain(ctx, opts, args[1:])
 	case "neighbors":
 		return runNeighbors(ctx, opts, args[1:])
 	case "impact":
@@ -237,15 +246,26 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	if len(rest) != 0 {
 		return unexpectedArgumentsError(mode, opts.Version, rest)
 	}
-	if flags.Format != "ndjson" {
+	if mode != "snapshot" && mode != "symbols" && mode != "edges" {
+		return fmt.Errorf("unknown provider record mode %q", mode)
+	}
+	filterActive := flags.To != "" || flags.From != "" || len(flags.Relation) > 0
+	compact := flags.Format == "compact-ndjson"
+	if flags.Format != "ndjson" && !compact {
+		if mode == "snapshot" {
+			return fmt.Errorf("%s requires --format ndjson or compact-ndjson", mode)
+		}
 		return fmt.Errorf("%s requires --format ndjson", mode)
+	}
+	if compact && mode != "snapshot" {
+		return errors.New("--format compact-ndjson is only valid for snapshot")
+	}
+	if compact && filterActive {
+		return errors.New("--format compact-ndjson requires a complete snapshot; remove --to/--from/--relation")
 	}
 	repo, err := resolveRepo(ctx, opts.Env, flags.Repo)
 	if err != nil {
 		return err
-	}
-	if mode != "snapshot" && mode != "symbols" && mode != "edges" {
-		return fmt.Errorf("unknown provider record mode %q", mode)
 	}
 	profile, err := parseProfile(flags.Profile)
 	if err != nil {
@@ -274,8 +294,15 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	}
 	// Stream records straight to stdout so peak memory does not scale with the
 	// relation count on large repositories.
-	encoder := json.NewEncoder(opts.Stdout)
-	encoder.SetEscapeHTML(false) // match json.Marshal used elsewhere (no < escaping)
+	newRecordEncoder := func(out io.Writer) func(any) error {
+		if compact {
+			return sem.NewCompactSnapshotEncoder(out).Encode
+		}
+		encoder := json.NewEncoder(out)
+		encoder.SetEscapeHTML(false) // match json.Marshal used elsewhere (no < escaping)
+		return encoder.Encode
+	}
+	encodeRecord := newRecordEncoder(opts.Stdout)
 
 	// Targeted edge query: when --to/--from/--relation is set, emit only matching
 	// relations (plus header/summary), never files/symbols. Turns "callers of X"
@@ -293,7 +320,6 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		}
 	}
 
-	filterActive := flags.To != "" || flags.From != "" || len(flags.Relation) > 0
 	if filterActive && mode == "symbols" {
 		return fmt.Errorf("--to/--from/--relation filter relations; use `edges` (not `symbols`)")
 	}
@@ -307,11 +333,11 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 					return nil
 				}
 				matched++
-				return encoder.Encode(r)
+				return encodeRecord(r)
 			case sem.FileRecord, sem.ExternalRecord, sem.SymbolRecord:
 				return nil // suppressed for a targeted edge query
 			default: // header, summary
-				return encoder.Encode(record)
+				return encodeRecord(record)
 			}
 		}); err != nil {
 			return err
@@ -337,8 +363,12 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 			useCache = false
 		}
 	}
+	cacheMode := mode
+	if compact {
+		cacheMode = "snapshot:compact-ndjson-v1"
+	}
 	if useCache {
-		if records, cachedSummary, hit, err := sem.LoadProviderRecords(ctx, repo, opts.Version, tree, mode, cacheDir, options); err == nil && hit {
+		if records, cachedSummary, hit, err := sem.LoadProviderRecords(ctx, repo, opts.Version, tree, cacheMode, cacheDir, options); err == nil && hit {
 			if _, err := opts.Stdout.Write(records); err != nil {
 				return err
 			}
@@ -347,26 +377,25 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		}
 	}
 
-	// On a miss, tee the streamed NDJSON into a buffer so we can persist it after
+	// On a miss, tee the serialized record stream into a buffer so we can persist it after
 	// a successful run without a second pass over the graph.
 	var recordBuf bytes.Buffer
 	if useCache {
-		encoder = json.NewEncoder(io.MultiWriter(opts.Stdout, &recordBuf))
-		encoder.SetEscapeHTML(false)
+		encodeRecord = newRecordEncoder(io.MultiWriter(opts.Stdout, &recordBuf))
 	}
 	if err := sem.StreamSnapshot(ctx, repo, opts.Version, options, func(record any) error {
 		capture(record)
 		if !includeRecord(mode, record) {
 			return nil
 		}
-		return encoder.Encode(record)
+		return encodeRecord(record)
 	}); err != nil {
 		return err
 	}
 	warnIfPartial(opts.Stderr, flags.Worktree, summary)
 	if useCache {
 		// Best effort: a failed cache write never fails the command.
-		_ = sem.StoreProviderRecords(ctx, repo, opts.Version, tree, mode, cacheDir, options, recordBuf.Bytes(), summary)
+		_ = sem.StoreProviderRecords(ctx, repo, opts.Version, tree, cacheMode, cacheDir, options, recordBuf.Bytes(), summary)
 	}
 	return nil
 }

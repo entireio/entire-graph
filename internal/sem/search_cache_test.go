@@ -878,50 +878,46 @@ func TestPreindexProviderSnapshotRejectsWorktreeAndMissingCache(t *testing.T) {
 	}
 }
 
-// TestPreindexForceRebuildsDespiteValidCache pins the --force contract: a forced
-// preindex rebuilds and overwrites the entry even when a valid one exists for the
-// same tree, and never reports a cache hit — while leaving the entry refreshed so
-// a subsequent ordinary run hits again.
-func TestPreindexForceRebuildsDespiteValidCache(t *testing.T) {
+func TestPreindexWarmCacheHitDoesNotRevalidatePersistedSnapshot(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
 	git(t, repo, "config", "user.email", "graph@example.com")
-	write(t, repo, "a.go", "package a\n\nfunc A() int { return 1 }\n")
+	write(t, repo, "auth.go", "package auth\nfunc ValidateToken() bool { return true }\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "initial")
 
 	cacheDir := t.TempDir()
-	opts := func() ProviderSnapshotOptions { return ProviderSnapshotOptions{Profile: ProfileFast} }
-
-	if _, hit, err := PreindexProviderSnapshot(t.Context(), repo, "v", opts(), cacheDir); err != nil {
-		t.Fatal(err)
-	} else if hit {
-		t.Fatal("first preindex unexpectedly hit cache")
-	}
-	if _, hit, err := PreindexProviderSnapshot(t.Context(), repo, "v", opts(), cacheDir); err != nil {
-		t.Fatal(err)
-	} else if !hit {
-		t.Fatal("second preindex (no force) should hit the warmed cache")
-	}
-
-	forced := opts()
-	forced.ForceRebuild = true
-	snapshot, hit, err := PreindexProviderSnapshot(t.Context(), repo, "v", forced, cacheDir)
+	options := ProviderSnapshotOptions{Profile: ProfileSyntaxOnly}
+	cold, cacheHit, err := PreindexProviderSnapshot(
+		t.Context(), repo, "test-version", options, cacheDir,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hit {
-		t.Fatal("forced preindex must not report a cache hit")
-	}
-	if snapshot.Header.Stats.Symbols == 0 {
-		t.Fatal("forced rebuild produced an empty snapshot")
+	if cacheHit {
+		t.Fatal("cold preindex unexpectedly hit cache")
 	}
 
-	if _, hit, err := PreindexProviderSnapshot(t.Context(), repo, "v", opts(), cacheDir); err != nil {
+	persistenceReads := 0
+	warm, cacheHit, err := preindexProviderSnapshotWithPersistenceReader(
+		t.Context(), repo, "test-version", options, cacheDir,
+		func(path string) (cachedSearchSnapshot, error) {
+			persistenceReads++
+			return readSearchSnapshot(path)
+		},
+	)
+	if err != nil {
 		t.Fatal(err)
-	} else if !hit {
-		t.Fatal("ordinary preindex after --force should hit the refreshed entry")
+	}
+	if !cacheHit {
+		t.Fatal("warm preindex did not hit cache")
+	}
+	if !reflect.DeepEqual(warm, cold) {
+		t.Fatalf("warm cache hit changed snapshot:\nwarm=%#v\ncold=%#v", warm, cold)
+	}
+	if persistenceReads != 0 {
+		t.Fatalf("warm cache hit redundantly revalidated persisted snapshot %d time(s)", persistenceReads)
 	}
 }
 
@@ -1259,6 +1255,49 @@ func TestSearchSnapshotKeyIncludesGraphIgnore(t *testing.T) {
 	}
 	if edited == present {
 		t.Fatal("editing .graphignore must change the cache key")
+	}
+}
+
+func TestPreindexForceRebuildsDespiteValidCache(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "a.go", "package a\n\nfunc A() int { return 1 }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cacheDir := t.TempDir()
+	opts := func() ProviderSnapshotOptions { return ProviderSnapshotOptions{Profile: ProfileFast} }
+
+	if _, hit, err := PreindexProviderSnapshot(t.Context(), repo, "v", opts(), cacheDir); err != nil {
+		t.Fatal(err)
+	} else if hit {
+		t.Fatal("first preindex unexpectedly hit cache")
+	}
+	if _, hit, err := PreindexProviderSnapshot(t.Context(), repo, "v", opts(), cacheDir); err != nil {
+		t.Fatal(err)
+	} else if !hit {
+		t.Fatal("second preindex (no force) should hit the warmed cache")
+	}
+
+	forced := opts()
+	forced.ForceRebuild = true
+	snapshot, hit, err := PreindexProviderSnapshot(t.Context(), repo, "v", forced, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hit {
+		t.Fatal("forced preindex must not report a cache hit")
+	}
+	if snapshot.Header.Stats.Symbols == 0 {
+		t.Fatal("forced rebuild produced an empty snapshot")
+	}
+
+	if _, hit, err := PreindexProviderSnapshot(t.Context(), repo, "v", opts(), cacheDir); err != nil {
+		t.Fatal(err)
+	} else if !hit {
+		t.Fatal("ordinary preindex after --force should hit the refreshed entry")
 	}
 }
 

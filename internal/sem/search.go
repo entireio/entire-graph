@@ -65,6 +65,10 @@ type SearchOptions struct {
 	MaxIndexedFiles   int
 	IndexAllFiles     bool
 	MaxContextBytes   int
+	// progressivePreselection is internal policy, not a caller override. The
+	// standard cold default may widen adaptively; explicit and TopK-adaptive
+	// MaxIndexedFiles values remain exact compatibility limits.
+	progressivePreselection bool
 	// BodyHeadRanks caps how deep the COMPLETE-BODY upgrade reaches, independently of the
 	// locator head. 0 means the built-in depth (searchEnclosureHeadRanks). It may only narrow
 	// the head, never widen it, so the growth allowance stays sized for the bodies it funds.
@@ -73,7 +77,7 @@ type SearchOptions struct {
 	// block held constant, turning this on together with --top-k 20 cost +18.9 pt of total_tokens,
 	// +17.7 pt of turns and +14.6 pt of billed_new against the same cell with shipped defaults
 	// (-23.5% -> -4.6% total_tokens). eg's turns rose 32.10 -> 35.37 against an unchanged baseline.
-	// graphmark's resolution-anchored eval independently found the same combination cost CORRECTNESS:
+	// A separate resolution-anchored evaluation found the same combination cost CORRECTNESS:
 	// the terser edit-from-payload path stops short of a complete fix on harder tasks.
 	//
 	// The $0 payload screen that cleared it (gold recall 22->26/30, code-less gold 8->6, no instance
@@ -83,7 +87,8 @@ type SearchOptions struct {
 	// It stays here, opt-in and default 0, because the mechanism is sound and a narrower use may pay.
 	// Do not enable it in a measured cell without re-running the attribution.
 	// HeadWindowLines makes a HEAD rank that has no enclosable callable come back as a bounded
-	// read window of this many lines instead of a two-line locator. 0 = off (previous behaviour).
+	// read window of this many lines instead of a two-line locator. 0 leaves ordinary code
+	// search off and lets native prose-parent retrieval use its measured default.
 	//
 	// Measured over 79 agent sessions: the gold file was in the payload as a LOCATOR ONLY in 20 of
 	// 74 sessions (24 of them at rank <= 3), and 61 post-search Reads targeted a ranked file that
@@ -97,7 +102,12 @@ type SearchOptions struct {
 	// named, 35 of them immediately followed by a Read of that same file, and the reads that follow a
 	// payload file land a median 109 lines from anything printed — 47 of 53 inside another symbol the
 	// graph already indexes in that file.
-	IncludeFileOutline bool
+	// VerifyExplainCommand, when set, is appended to the emitted VERIFY line as
+	// `<test cmd> 2>&1 | <this>`, so an agent that runs VERIFY verbatim also gets the declarations
+	// for whatever the failure names. Measured: 0 of 27 agents typed that pipe when the PROMPT asked
+	// them to, while 79 VERIFY-style commands were run.
+	VerifyExplainCommand string
+	IncludeFileOutline   bool
 	// FullUnitTop makes the first N ranks come back as their COMPLETE enclosing unit — function,
 	// method, or type/container declaration — bypassing every condition the opportunistic body
 	// upgrade applies (see the editability comment in search_enclosure.go). 0 = off, and off is
@@ -176,28 +186,50 @@ type SearchOptions struct {
 	Deep bool
 }
 
+// SearchPassage is an additional, non-overlapping source region from the same file as its
+// parent result. It lets prose retrieval return two distant answer-bearing turns without
+// pretending the unrelated text between them was one contiguous snippet.
+type SearchPassage struct {
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	FocusLine int    `json:"focus_line"`
+	Snippet   string `json:"snippet"`
+}
+
 // SearchResult is a ranked source region suitable for direct agent context.
 type SearchResult struct {
-	Rank             int      `json:"rank"`
-	Score            float64  `json:"score"`
-	FilePath         string   `json:"file_path"`
-	StartLine        int      `json:"start_line"`
-	EndLine          int      `json:"end_line"`
-	FocusLine        int      `json:"focus_line"`
-	SnippetStartLine int      `json:"snippet_start_line"`
-	SnippetEndLine   int      `json:"snippet_end_line"`
-	Language         string   `json:"language,omitempty"`
-	Kind             string   `json:"kind,omitempty"`
-	SymbolID         string   `json:"symbol_id,omitempty"`
-	SymbolName       string   `json:"symbol_name,omitempty"`
-	QualifiedName    string   `json:"qualified_name,omitempty"`
-	Signature        string   `json:"signature,omitempty"`
-	Signals          []string `json:"signals"`
+	Rank             int     `json:"rank"`
+	Score            float64 `json:"score"`
+	FilePath         string  `json:"file_path"`
+	StartLine        int     `json:"start_line"`
+	EndLine          int     `json:"end_line"`
+	FocusLine        int     `json:"focus_line"`
+	SnippetStartLine int     `json:"snippet_start_line"`
+	SnippetEndLine   int     `json:"snippet_end_line"`
+	// SymbolStartLine/SymbolEndLine are the ENCLOSING symbol's true bounds, which differ from the
+	// snippet bounds whenever the body was elided (too long for the enclosure cap, or a bounded
+	// window). Without them a payload can say `main.c:578-583 symbol=umain` while `umain` actually
+	// spans 270-725, and the agent cannot tell it is holding a 6-line shard of a 456-line function.
+	// Measured on jqlang/jq-2235: that omission produced three sweeping reads (26,873 B, covering
+	// main.c lines 1-697) where the no-tool baseline's `grep -n` gave exact anchors and read 17,536 B.
+	SymbolStartLine int      `json:"symbol_start_line,omitempty"`
+	SymbolEndLine   int      `json:"symbol_end_line,omitempty"`
+	Language        string   `json:"language,omitempty"`
+	Kind            string   `json:"kind,omitempty"`
+	SymbolID        string   `json:"symbol_id,omitempty"`
+	SymbolName      string   `json:"symbol_name,omitempty"`
+	QualifiedName   string   `json:"qualified_name,omitempty"`
+	Signature       string   `json:"signature,omitempty"`
+	Signals         []string `json:"signals"`
 	// Section groups a result for presentation. Empty (omitted) means the primary list of
 	// candidate fix sites; see search_section.go for the other values and why the grouping is
 	// a label rather than a filter.
 	Section string `json:"section,omitempty"`
 	Snippet string `json:"snippet"`
+	// Passages are additional source slices from FilePath. The primary snippet stays unchanged
+	// for backward-compatible consumers; clients that understand this additive field can avoid
+	// a follow-up read when relevant prose is split across a long session.
+	Passages []SearchPassage `json:"passages,omitempty"`
 	// MergedRanks lists the PRE-merge ranks whose spans this one result now covers, set when
 	// several near hits in one file were folded into a single contiguous region
 	// (search_span_merge.go). Present only on a merged span, so its absence is the ordinary
@@ -235,13 +267,19 @@ type SearchResult struct {
 }
 
 type SearchStats struct {
-	FilesScanned                   int    `json:"files_scanned"`
-	PreselectionBackend            string `json:"preselection_backend,omitempty"`
-	PreselectionPasses             int    `json:"preselection_passes,omitempty"`
-	PreselectionFilesExamined      int    `json:"preselection_files_examined,omitempty"`
-	UsagePreselectionBackend       string `json:"identifier_usage_preselection_backend,omitempty"`
-	UsagePreselectionPasses        int    `json:"identifier_usage_preselection_passes,omitempty"`
-	UsagePreselectionFilesExamined int    `json:"identifier_usage_preselection_files_examined,omitempty"`
+	QueryConstraintsTruncated      bool    `json:"query_constraints_truncated,omitempty"`
+	FilesScanned                   int     `json:"files_scanned"`
+	PreselectionBackend            string  `json:"preselection_backend,omitempty"`
+	PreselectionPasses             int     `json:"preselection_passes,omitempty"`
+	PreselectionFilesExamined      int     `json:"preselection_files_examined,omitempty"`
+	PreselectionConfidence         float64 `json:"preselection_confidence,omitempty"`
+	PreselectionCoverage           float64 `json:"preselection_coverage,omitempty"`
+	PreselectionDiversity          float64 `json:"preselection_diversity,omitempty"`
+	PreselectionWidened            bool    `json:"preselection_widened,omitempty"`
+	PreselectionBounded            bool    `json:"preselection_bounded,omitempty"`
+	UsagePreselectionBackend       string  `json:"identifier_usage_preselection_backend,omitempty"`
+	UsagePreselectionPasses        int     `json:"identifier_usage_preselection_passes,omitempty"`
+	UsagePreselectionFilesExamined int     `json:"identifier_usage_preselection_files_examined,omitempty"`
 	// Content-read counters report blobs hydrated into the Go process. Git's
 	// own immutable-tree scans are represented by the backend/pass/examined
 	// counters above; their internal byte IO is deliberately not estimated.
@@ -271,6 +309,8 @@ type SearchStats struct {
 	SparseFilesRead         int `json:"sparse_files_content_read"`
 	CandidatesSelected      int `json:"candidates_selected"`
 	ResultBytes             int `json:"result_bytes"`
+	ProsePassages           int `json:"prose_passages,omitempty"`
+	ProsePassageBytes       int `json:"prose_passage_bytes,omitempty"`
 	ContextBudgetBytes      int `json:"context_budget_bytes,omitempty"`
 	ResultsDropped          int `json:"results_dropped_by_budget,omitempty"`
 	// SnippetsTruncated counts results carrying LESS source than the ranker produced for
@@ -334,6 +374,10 @@ type SearchStats struct {
 	FileOutlineBytes   int `json:"file_outline_bytes,omitempty"`
 	FileOutlineRows    int `json:"file_outline_rows,omitempty"`
 	VerifyCommandBytes int `json:"verify_command_bytes,omitempty"`
+	// VerifyExplainSuffixBytes is the caller-configured `| <explain cmd>` tail appended to the verify
+	// command. It is reported separately because it is fixed overhead the caller opted into, so it is
+	// added to the block's allowance instead of competing with the command the ranking derived.
+	VerifyExplainSuffixBytes int `json:"verify_explain_suffix_bytes,omitempty"`
 	// VerifyTier is which rung of the ladder produced the emitted command: narrow, suite, build-check
 	// or none. See the tier constants in search_verify.go.
 	VerifyTier     string `json:"verify_tier,omitempty"`
@@ -406,10 +450,12 @@ type SearchResponse struct {
 }
 
 type searchQuery struct {
-	rawLower string
-	terms    []string
-	termSet  map[string]bool
-	weights  map[string]float64
+	raw         string
+	rawLower    string
+	constraints searchConstraints
+	terms       []string
+	termSet     map[string]bool
+	weights     map[string]float64
 	// dottedCallMentions holds lowercased "container.member" pairs the query
 	// wrote as explicit calls ("Type.method(...)") — a direct naming of the
 	// symbol the query is about.
@@ -437,11 +483,14 @@ type searchQuery struct {
 }
 
 type searchCandidate struct {
-	result     SearchResult
-	termCounts map[string]int
-	docLength  int
-	baseScore  float64
-	score      float64
+	result            SearchResult
+	aliases           []string
+	termCounts        map[string]int
+	docLength         int
+	baseScore         float64
+	score             float64
+	constraintSurface *searchConstraintSurface
+	prosePassagePlan  []SearchPassage
 }
 
 type searchContentReadTracker struct {
@@ -585,6 +634,9 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	if options.MaxIndexedFiles <= 0 {
 		options.MaxIndexedFiles = defaultSearchIndexedFiles(options.TopK)
+		options.progressivePreselection = options.MaxIndexedFiles == defaultSearchMaxIndexedFiles
+	} else {
+		options.progressivePreselection = false
 	}
 	if options.Profile == "" {
 		// Fast, not syntax-only: graph-aware ranking (caller-degree boosts and
@@ -662,10 +714,16 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 			Profile:  string(options.Profile),
 			Results:  []SearchResult{},
 			Stats: SearchStats{
+				QueryConstraintsTruncated: q.constraints.Truncated,
 				FilesScanned:              selection.filesScanned,
 				PreselectionBackend:       selection.preselectionBackend,
 				PreselectionPasses:        selection.preselectionPasses,
 				PreselectionFilesExamined: selection.preselectionFilesExamined,
+				PreselectionConfidence:    selection.preselectionConfidence,
+				PreselectionCoverage:      selection.preselectionCoverage,
+				PreselectionDiversity:     selection.preselectionDiversity,
+				PreselectionWidened:       selection.preselectionWidened,
+				PreselectionBounded:       selection.preselectionBounded,
 				FilesContentRead:          selection.filesContentRead,
 				FilesIndexed:              0,
 				SymbolsConsidered:         symbolsConsidered,
@@ -866,10 +924,16 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 
 	stats := SearchStats{
+		QueryConstraintsTruncated: q.constraints.Truncated,
 		FilesScanned:              selection.filesScanned,
 		PreselectionBackend:       selection.preselectionBackend,
 		PreselectionPasses:        selection.preselectionPasses,
 		PreselectionFilesExamined: selection.preselectionFilesExamined,
+		PreselectionConfidence:    selection.preselectionConfidence,
+		PreselectionCoverage:      selection.preselectionCoverage,
+		PreselectionDiversity:     selection.preselectionDiversity,
+		PreselectionWidened:       selection.preselectionWidened,
+		PreselectionBounded:       selection.preselectionBounded,
 		FilesContentRead:          selection.filesContentRead,
 		FilesIndexed:              len(selectedFiles),
 		SymbolsConsidered:         len(snapshot.Symbols),
@@ -934,11 +998,12 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	applySearchBoilerplatePrior(candidates, q)
 	sortSearchCandidates(candidates)
 	candidates = collapseNearDuplicateCandidates(candidates)
-	semantic := selectDiverseCandidates(candidates, options.TopK, options.MaxRegionsPerFile)
+	semantic := selectSearchCandidates(candidates, q, options.TopK, options.MaxRegionsPerFile)
 	selected := semantic
 	if len(sparseCandidates) > 0 {
 		attachSparseCandidateSymbols(sparseCandidates, symbolsByFile)
 		scoreSparseCandidates(sparseCandidates, sparseQuery, sparseDF, sparseDocumentCount, sparseDocumentLength)
+		applySearchCandidateAgreement(sparseCandidates, q.constraints)
 		// Caller boost FIRST, then the priors — the same order the semantic pool uses
 		// above (boost at searchGraphCallerBoosts, priors before selectDiverseCandidates),
 		// and it is load-bearing rather than incidental. The caller boost is ADDITIVE
@@ -976,11 +1041,15 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// See search_testrank.go.
 	selected = promoteFixSiteOverLeadingTest(selected, q)
 	results := make([]SearchResult, 0, len(selected))
+	prosePassagePlans := make(map[int][]SearchPassage)
 	for i := range selected {
 		selected[i].result.Rank = i + 1
 		selected[i].result.Score = math.Round(selected[i].score*10000) / 10000
 		if selected[i].result.Signals == nil {
 			selected[i].result.Signals = []string{}
+		}
+		if len(selected[i].prosePassagePlan) > 0 {
+			prosePassagePlans[i+1] = append([]SearchPassage(nil), selected[i].prosePassagePlan...)
 		}
 		results = append(results, selected[i].result)
 	}
@@ -1013,7 +1082,9 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	// HeadWindowLines: a head rank with no enclosable callable falls back to a bounded read
 	// window instead of a two-line locator. 0 disables it (previous behaviour exactly).
-	headWindowLines := options.HeadWindowLines
+	// An explicit caller value wins. Prose-parent retrieval otherwise uses its measured native
+	// default; ordinary code search keeps the previous disabled behaviour.
+	headWindowLines := resolvedSearchHeadWindowLines(results, options.HeadWindowLines)
 	// FullUnitTop: the first N ranks come back as their complete enclosing unit whatever the
 	// opportunistic conditions say. Resolved against the SEATED ranking, because the gap heuristic
 	// that admits rank 2 is a statement about the scores the caller will actually read.
@@ -1043,7 +1114,8 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	tailSnippetLines := minInt(searchEnclosureTailSnippetLines, options.MaxSnippetLines)
 	seated := results
 	results, completeSymbols, locators := allocateSearchSnippets(
-		seated, enclosures, plainEnclosures, options.MaxContextBytes, searchEnclosureGrowthBytes,
+		seated, enclosures, plainEnclosures, options.MaxContextBytes,
+		resolvedSearchSnippetGrowth(seated, options.MaxContextBytes),
 		bodyHeadRanks, tailSnippetLines,
 	)
 	// THE RE-ANCHOR FUNDING INVARIANT, the same one seatForcedSearchUnits enforces for forced units: a
@@ -1080,6 +1152,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	stats.CompleteSymbols = completeSymbols
 	stats.LocatorSnippets = locators
+	results, _, _ = allocateProseParentPassages(results, prosePassagePlans, options.MaxContextBytes)
 	// Truncation is measured against the ranking, by rank, so it has to be read off the
 	// allocator's output BEFORE the related-site block renumbers the payload.
 	truncated := countBudgetTruncatedResults(ranked, results)
@@ -1223,6 +1296,19 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		}
 	}
 	verifyCommand := buildSearchVerifyCommand(results, verifyEvidence)
+	if verifyCommand != nil && options.VerifyExplainCommand != "" {
+		// Compose here, in the emitted string, rather than asking the agent to compose. `explain`
+		// passes the build output through before appending declarations, so this stays a superset of
+		// what the bare command printed — the agent loses nothing by running the longer line.
+		suffix := " 2>&1 | " + options.VerifyExplainCommand
+		verifyCommand.Command += suffix
+		// The suffix is caller-configured FIXED overhead, not content the ranking produced, so it is
+		// added to the block's allowance rather than charged against it. Without this the composed
+		// command overflows the 320-byte cap and search_blocks fails the whole response — measured:
+		// "search verify command exceeds its allowance: 373 > 320", which returned ZERO-BYTE payloads
+		// on 7 of 17 sessions before it was caught.
+		stats.VerifyExplainSuffixBytes = len(suffix)
+	}
 	if verifyCommand != nil {
 		stats.VerifyCommandBytes = searchVerifyCommandCost(verifyCommand)
 		// The tier is reported so a harness can bucket sessions by which rung answered them; that is
@@ -1249,6 +1335,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		stats.ContainerMapBytes = searchContainerMapCost(containerMap)
 	}
 	stats.CandidatesSelected = len(results)
+	stats.ProsePassages, stats.ProsePassageBytes = searchPassageStats(results)
 	resultBytes = serializedSearchResultBytes(results)
 	stats.ResultBytes = resultBytes
 	if len(typeCard) > 0 {
@@ -1495,8 +1582,14 @@ func serializedSearchResultBytes(value any) int {
 }
 
 type searchFileCandidate struct {
-	path  string
-	score float64
+	path            string
+	score           float64
+	legacyScore     float64
+	legacyEligible  bool
+	pathScore       float64
+	contentScore    float64
+	constraintScore float64
+	matchedTerms    []bool
 	// matchedWeight is the query weight this file matched, kept so the coverage share of
 	// the file score can be normalized AFTER the scan — by then the terms no file matched
 	// are known and can be left out of the denominator. See applySearchFileCoverage.
@@ -1519,7 +1612,11 @@ func applySearchFileCoverage(files []searchFileCandidate, q searchQuery, matched
 		return
 	}
 	for index := range files {
-		files[index].score += 4 * files[index].matchedWeight / queryWeight
+		coverageBonus := 4 * files[index].matchedWeight / queryWeight
+		files[index].matchedTerms = append([]bool(nil), files[index].matchedTerms...)
+		files[index].contentScore += coverageBonus
+		files[index].legacyScore += coverageBonus
+		files[index].score += coverageBonus
 	}
 }
 
@@ -1541,6 +1638,11 @@ type searchFileSelection struct {
 	preselectionBackend       string
 	preselectionPasses        int
 	preselectionFilesExamined int
+	preselectionConfidence    float64
+	preselectionCoverage      float64
+	preselectionDiversity     float64
+	preselectionWidened       bool
+	preselectionBounded       bool
 	// allFiles is every file preselection discovered, kept so a repository-wide literal lookup has
 	// a corpus to fall back on when it is small enough to read (search_needle.go). It costs one
 	// slice of paths, which the sparse file list already pays for.
@@ -1682,9 +1784,13 @@ func preselectSearchFiles(
 					}
 				}
 				pathScore := pathSearchScore(q, filePath)
+				contentScore := matchedWeight
 				provisional = append(provisional, searchFileCandidate{
 					path:          filePath,
-					score:         2*pathScore + matchedWeight + searchPathPrior(q, filePath),
+					pathScore:     2 * pathScore,
+					contentScore:  contentScore,
+					matchedTerms:  append([]bool(nil), seen...),
+					score:         2*pathScore + contentScore + searchPathPrior(q, filePath),
 					matchedWeight: matchedWeight,
 				})
 			}
@@ -1697,8 +1803,9 @@ func preselectSearchFiles(
 				if _, exists := termMatches[filePath]; !exists {
 					if pathScore := pathSearchScore(q, filePath); pathScore > 0 {
 						provisional = append(provisional, searchFileCandidate{
-							path:  filePath,
-							score: 2*pathScore + searchPathPrior(q, filePath),
+							path:      filePath,
+							pathScore: 2 * pathScore,
+							score:     2*pathScore + searchPathPrior(q, filePath),
 						})
 					}
 				}
@@ -1708,7 +1815,7 @@ func preselectSearchFiles(
 				if provisional[i].score != provisional[j].score {
 					return provisional[i].score > provisional[j].score
 				}
-				return provisional[i].path < provisional[j].path
+				return canonicalSearchPathLess(provisional[i].path, provisional[j].path)
 			})
 			poolLimit := len(provisional)
 			if threshold := (len(provisional)-1)/4 + 1; options.MaxIndexedFiles < threshold {
@@ -1770,7 +1877,7 @@ func preselectSearchFiles(
 				sparseMu.Unlock()
 			}
 		}
-		pathScore := pathSearchScore(q, filePath)
+		pathScore := 2 * pathSearchScore(q, filePath)
 		matchedWeight := 0.0
 		matched := matcher.match(content)
 		for index, hit := range matched {
@@ -1778,7 +1885,10 @@ func preselectSearchFiles(
 				matchedWeight += q.weights[q.terms[index]]
 			}
 		}
-		if pathScore == 0 && matchedWeight == 0 {
+		contentScore := matchedWeight
+		constraintScore := searchFileConstraintEvidence(filePath+"\n"+content, q.constraints)
+		legacyEligible := pathScore > 0 || contentScore > 0
+		if !legacyEligible && constraintScore == 0 {
 			return searchFileCandidate{}, false
 		}
 		matchedMu.Lock()
@@ -1789,10 +1899,17 @@ func preselectSearchFiles(
 		// The posting lists are a by-product of a match this loop already computed. Recording them
 		// here is what makes a repository-wide literal lookup free later on.
 		selection.termPostings.record(filePath, matched, q.terms)
+		legacyScore := pathScore + contentScore + searchPathPrior(q, filePath)
 		return searchFileCandidate{
-			path:          filePath,
-			score:         2*pathScore + matchedWeight + searchPathPrior(q, filePath),
-			matchedWeight: matchedWeight,
+			path:            filePath,
+			legacyScore:     legacyScore,
+			legacyEligible:  legacyEligible,
+			pathScore:       pathScore,
+			contentScore:    contentScore,
+			constraintScore: constraintScore,
+			matchedTerms:    append([]bool(nil), matched...),
+			score:           legacyScore + constraintScore,
+			matchedWeight:   matchedWeight,
 		}, true
 	}
 	workers := 1
@@ -1804,27 +1921,59 @@ func preselectSearchFiles(
 		return searchFileSelection{}, err
 	}
 	applySearchFileCoverage(files, q, matchedAnywhere)
-	sort.Slice(files, func(i, j int) bool {
-		if files[i].score != files[j].score {
-			return files[i].score > files[j].score
+	legacyFiles := make([]searchFileCandidate, 0, len(files))
+	for _, file := range files {
+		if file.legacyEligible {
+			legacyFiles = append(legacyFiles, file)
 		}
-		return files[i].path < files[j].path
-	})
-	if len(files) > options.MaxIndexedFiles {
-		files = files[:options.MaxIndexedFiles]
 	}
-	selected := make([]string, len(files))
-	for i, file := range files {
-		selected[i] = file.path
+	progressive := options.progressivePreselection && len(legacyFiles) > options.MaxIndexedFiles
+	if progressive {
+		evidence := make([]searchPreselectionEvidence, len(files))
+		for index, file := range files {
+			evidence[index] = searchPreselectionEvidence{
+				Path:            file.path,
+				OriginalScore:   file.score,
+				PathScore:       file.pathScore,
+				ContentScore:    file.contentScore,
+				ConstraintScore: file.constraintScore,
+				MatchedTerms:    append([]bool(nil), file.matchedTerms...),
+			}
+		}
+		assessment := selectProgressiveSearchFiles(
+			fuseSearchPreselectionEvidence(evidence), matchedAnywhere, q, options.MaxIndexedFiles,
+		)
+		selection.files = assessment.Files
+		selection.preselectionPasses = assessment.Passes
+		selection.preselectionConfidence = assessment.Confidence
+		selection.preselectionCoverage = assessment.Coverage
+		selection.preselectionDiversity = assessment.Diversity
+		selection.preselectionWidened = assessment.Widened
+		selection.preselectionBounded = assessment.Bounded
+	} else {
+		sort.Slice(legacyFiles, func(i, j int) bool {
+			if legacyFiles[i].legacyScore != legacyFiles[j].legacyScore {
+				return legacyFiles[i].legacyScore > legacyFiles[j].legacyScore
+			}
+			return legacyFiles[i].path < legacyFiles[j].path
+		})
+		if len(legacyFiles) > options.MaxIndexedFiles {
+			legacyFiles = legacyFiles[:options.MaxIndexedFiles]
+		}
+		selection.files = make([]string, len(legacyFiles))
+		for index, file := range legacyFiles {
+			selection.files[index] = file.path
+		}
+		selection.preselectionPasses = 1
 	}
-	selection.files = selected
 	selection.filesContentRead = contentReads
 	selection.preselectionBackend = "go-content"
-	selection.preselectionPasses = 1
 	selection.preselectionFilesExamined = len(scanPaths)
 	if usedGitIndexPreselection {
 		selection.preselectionBackend = "git-index-grep+go-content"
-		selection.preselectionPasses++
+		if !progressive {
+			selection.preselectionPasses++
+		}
 		selection.preselectionFilesExamined += len(source.paths)
 		// The content pass ran over a Git-narrowed pool, so the posting lists cover only part of
 		// the corpus. Discard them rather than let a block compute a repository-wide total from a
@@ -2280,6 +2429,9 @@ func attachSparseCandidateSymbols(candidates []searchCandidate, symbolsByFile ma
 		candidate.result.SymbolName = symbol.Name
 		candidate.result.QualifiedName = symbol.QualifiedName
 		candidate.result.Signature = symbol.Signature
+		candidate.aliases = append([]string(nil), symbol.Aliases...)
+		candidate.result.SymbolStartLine = symbol.StartLine
+		candidate.result.SymbolEndLine = symbol.EndLine
 	}
 }
 
@@ -2534,12 +2686,15 @@ func makeSearchCandidate(q searchQuery, filePath, language string, lines []strin
 			SymbolName:       symbol.Name,
 			QualifiedName:    symbol.QualifiedName,
 			Signature:        symbol.Signature,
+			SymbolStartLine:  symbol.StartLine,
+			SymbolEndLine:    symbol.EndLine,
 			Signals:          appendUnique(nil, signals...),
 			Snippet:          snippet,
 		},
 		termCounts: counts,
 		docLength:  length,
 		baseScore:  base,
+		aliases:    append([]string(nil), symbol.Aliases...),
 	}, true
 }
 
@@ -2608,11 +2763,15 @@ func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF m
 			coverage = coveredWeight / queryWeight
 		}
 		candidate.score = candidate.baseScore + bm25 + 7*coverage + minFloat64(24, codeTokenBonus)
+		candidate.score += searchNameCoverageWeight * searchNameTermCoverage(candidate.result, q, idf)
 		// trail 18's kind/subject/dotted-call structural bonuses (orthogonal to the
 		// caller-degree boost that trail 10 applies as a separate step). Centrality was
 		// dropped in the merge: trail 10's caller-boost is the reviewed successor of the
 		// same inbound-degree signal, so keeping both would double-count it.
 		candidate.score += searchStructuralAdjustment(candidate, q)
+		bonus, signals := searchCandidateAgreementCached(candidate, q.constraints)
+		candidate.score += bonus
+		candidate.result.Signals = appendUnique(candidate.result.Signals, signals...)
 		if codeTokenBonus > 0 {
 			candidate.result.Signals = appendUnique(candidate.result.Signals, "exact-code-token")
 		}
@@ -2626,6 +2785,76 @@ func scoreSearchCandidates(candidates []searchCandidate, q searchQuery, fileDF m
 // searchNameCoversQuery reports whether the symbol's own name path matches at
 // least half of the query's terms — the signature of a query that is about the
 // symbol itself (find/define intent) rather than one that merely mentions it.
+// searchNameTermCoverage is the idf-weighted share of the query's terms that the SYMBOL'S OWN NAME
+// carries. It is separate from BM25 coverage, which is computed over the whole indexed document and
+// therefore treats a word in a 400-line body as equal evidence to the same word in the identifier a
+// developer chose.
+//
+// Measured on gohugoio/hugo#12171 with the query form our own doctrine mandates ("the bug in one
+// sentence"): the gold site `pageMap.getPagesInSection` was ABSENT from the top 20, while rank 1-5
+// were Pages.Reverse (22.48), Site.Sections (20.76), sortKeys (20.24), pageTree.Sections (19.53) and
+// AddLeadingSlash (19.01) — a five-point spread across the entire head, i.e. no usable rank 1. Four
+// independent models each abandoned the prose form and re-queried in code vocabulary.
+//
+// The discriminating fact was already present and unscored: `getPagesInSection` carries TWO of the
+// query's domain terms (pages, section) where `Site.Sections` and `Pages.Reverse` carry one. A name
+// is a deliberate, dense label; prose in a body is incidental. Rewarding name coverage separates a
+// head that BM25 alone collapses.
+//
+// Plural-tolerant on purpose: the issue says "sections" and the symbol says "Section", and an exact
+// substring test scores that as a miss — which is precisely how the gold site lost.
+func searchNameTermCoverage(result SearchResult, q searchQuery, _ map[string]float64) float64 {
+	name := strings.ToLower(result.QualifiedName)
+	if name == "" {
+		name = strings.ToLower(result.SymbolName)
+	}
+	if name == "" || len(q.terms) == 0 {
+		return 0
+	}
+	// Deliberately NOT idf-weighted. Weighting by rarity is right for a document, where a rare word
+	// is the discriminating one; it is wrong for an identifier, where the discriminating words are
+	// the DOMAIN nouns a developer would put in a name. On the hugo issue sentence the rare terms are
+	// "similarly", "adjacent", "incorrect" — none of which any identifier contains — so idf weighting
+	// pushed the denominator onto words the name could never carry and scored `getPagesInSection`
+	// (pages + section) barely above `Pages.Reverse` (pages). Counting DISTINCT matched terms is the
+	// signal: two domain terms in one name is strong evidence, three is decisive, and beyond that the
+	// extra matches say little, so it saturates.
+	matched := 0
+	for _, term := range q.terms {
+		if searchNameContainsTerm(name, term) {
+			matched++
+		}
+	}
+	if matched == 0 {
+		return 0
+	}
+	return minFloat64(float64(matched), 3) / 3
+}
+
+// searchNameContainsTerm matches a query term against an identifier, tolerating the one
+// morphological difference that dominates issue text: a plural in the prose against a singular in
+// the identifier ("sections" vs getPagesInSection).
+func searchNameContainsTerm(lowerName, term string) bool {
+	if len(term) < 3 {
+		return false
+	}
+	if strings.Contains(lowerName, term) {
+		return true
+	}
+	if strings.HasSuffix(term, "es") && len(term) > 4 && strings.Contains(lowerName, term[:len(term)-2]) {
+		return true
+	}
+	if strings.HasSuffix(term, "s") && len(term) > 3 && strings.Contains(lowerName, term[:len(term)-1]) {
+		return true
+	}
+	return false
+}
+
+// searchNameCoverageWeight is how much a fully name-covering candidate gains. Sized against the
+// existing document-coverage weight of 7: the identifier is the stronger evidence, and the head it
+// has to separate spans about five points on a prose query.
+const searchNameCoverageWeight = 10.0
+
 func searchNameCoversQuery(result SearchResult, q searchQuery) bool {
 	name := strings.ToLower(result.QualifiedName)
 	if name == "" {
@@ -2937,8 +3166,11 @@ func expandGraphCandidates(seeds []searchCandidate, q searchQuery, relations []R
 					SymbolName:       symbol.Name,
 					QualifiedName:    symbol.QualifiedName,
 					Signature:        symbol.Signature,
+					SymbolStartLine:  symbol.StartLine,
+					SymbolEndLine:    symbol.EndLine,
 					Snippet:          strings.Join(lines[snippetStart-1:snippetEnd], "\n"),
 				},
+				aliases: append([]string(nil), symbol.Aliases...),
 			}
 			// A graph neighbor of a strong seed must be able to compete with
 			// mid-ranked lexical candidates: the previous 0.28*seed+confidence
@@ -3946,6 +4178,7 @@ func buildSearchQuery(query string) searchQuery {
 			weights[term] = weight
 		}
 	}
+	constraints := parseSearchConstraints(query)
 	// Case folding has to be score-neutral. codeLikeSearchToken reads consecutive capitals
 	// as an identifier signal (SCREAMING_SNAKE constants, acronyms), which made a SHOUTED
 	// prose query score the same symbol far above the identical lowercase query. When every
@@ -3975,6 +4208,14 @@ func buildSearchQuery(query string) searchQuery {
 				weight = 1.1
 			}
 			add(term, weight)
+		}
+	}
+	for _, entity := range constraints.Entities {
+		add(entity.Normalized, 1.0)
+	}
+	for _, phrase := range constraints.Phrases {
+		for _, word := range phrase.Words {
+			add(word, 1.0)
 		}
 	}
 	originalTerms := make([]string, 0, len(weights))
@@ -4014,7 +4255,9 @@ func buildSearchQuery(query string) searchQuery {
 	rawLower := strings.ToLower(strings.TrimSpace(query))
 	wordSequence := searchQueryWordSequence(rawLower)
 	return searchQuery{
+		raw:                query,
 		rawLower:           rawLower,
+		constraints:        constraints,
 		terms:              terms,
 		termSet:            termSet,
 		weights:            weights,
@@ -4774,6 +5017,11 @@ func (response SearchResponse) Validate() error {
 	if actual := serializedSearchResultBytes(response.Results); response.Stats.ResultBytes != actual {
 		return fmt.Errorf("search result byte accounting mismatch: %d != %d", response.Stats.ResultBytes, actual)
 	}
+	passages, passageBytes := searchPassageStats(response.Results)
+	if response.Stats.ProsePassages != passages || response.Stats.ProsePassageBytes != passageBytes {
+		return fmt.Errorf("search prose passage accounting mismatch: %d/%d != %d/%d",
+			response.Stats.ProsePassages, response.Stats.ProsePassageBytes, passages, passageBytes)
+	}
 	if response.Stats.ContextBudgetBytes > 0 && response.Stats.ResultBytes > response.Stats.ContextBudgetBytes {
 		return fmt.Errorf("search result context exceeds byte budget: %d > %d", response.Stats.ResultBytes, response.Stats.ContextBudgetBytes)
 	}
@@ -4789,6 +5037,9 @@ func (response SearchResponse) Validate() error {
 		}
 		if result.FilePath == "" || result.StartLine < 1 || result.EndLine < result.StartLine || result.FocusLine < result.StartLine || result.FocusLine > result.EndLine || result.SnippetStartLine < result.StartLine || result.SnippetEndLine > result.EndLine || result.SnippetEndLine < result.SnippetStartLine {
 			return fmt.Errorf("invalid search result at rank %d", result.Rank)
+		}
+		if err := validateSearchResultPassages(result); err != nil {
+			return fmt.Errorf("invalid search result at rank %d: %w", result.Rank, err)
 		}
 	}
 	return nil
