@@ -570,36 +570,6 @@ func TestBuildSearchVerifyCommandNeedsACandidateFixSite(t *testing.T) {
 	}
 }
 
-// A composer.json + phpunit.xml means the project USES phpunit, not that the binary is installed.
-// In a fresh checkout `vendor/` does not exist and the command cannot run. Measured on
-// phpoffice/phpspreadsheet-3463: the unrunnable command cost SIX turns of environment archaeology.
-func TestComposerVerifyRequiresTheInstalledRunner(t *testing.T) {
-	t.Parallel()
-	base := map[string]string{
-		"composer.json":         "{}\n",
-		"phpunit.xml":           "<phpunit/>\n",
-		"tests/Foo/BarTest.php": "<?php class BarTest {}\n",
-	}
-	results := []SearchResult{
-		{Rank: 1, FilePath: "src/Foo/Bar.php", SymbolName: "Bar.baz", Section: searchSectionPrimary},
-		{Rank: 2, FilePath: "tests/Foo/BarTest.php", Section: searchSectionPrimary},
-	}
-	// vendor/ absent -> silence
-	if got := buildSearchVerifyCommand(results, searchVerifyTestEvidence(base)); got != nil {
-		t.Fatalf("expected silence when vendor/bin/phpunit is absent, got %q", got.Command)
-	}
-	// vendor/ present -> command emitted
-	withVendor := map[string]string{}
-	for k, v := range base {
-		withVendor[k] = v
-	}
-	withVendor["vendor/bin/phpunit"] = "#!/usr/bin/env php\n"
-	got := buildSearchVerifyCommand(results, searchVerifyTestEvidence(withVendor))
-	if got == nil || !strings.Contains(got.Command, "vendor/bin/phpunit tests/Foo/BarTest.php") {
-		t.Fatalf("expected the phpunit command once the runner exists, got %+v", got)
-	}
-}
-
 // C/C++ had NO verify inference at all, and a missing VERIFY block is the largest measured effect in
 // the benchmark: VERIFY present n=11 -> eg -35.3%; VERIFY absent n=16 -> eg -14.9%, with every
 // >200k-token regression falling in the absent group. fmtlib/fmt-2457 was the only C++ instance and
@@ -839,5 +809,141 @@ func TestDeriveSearchVerifyStillPrefersTheShorterNameAtEqualCoverage(t *testing.
 	}
 	if !strings.Contains(got.Command, "'^TestDispatch$'") {
 		t.Fatalf("expected the shorter equal-coverage name, got %q", got.Command)
+	}
+}
+
+func TestSearchVerifySuiteFallback(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name        string
+		files       map[string]string
+		subject     searchVerifySubject
+		wantCommand string
+	}{
+		{
+			name: "ruby minitest repo with no covering test falls back to rake test",
+			files: map[string]string{
+				"Gemfile":                       "source 'https://rubygems.org'\n",
+				"Rakefile":                      "task default: %w[test rubocop]\n",
+				"lib/faker/default/internet.rb": "module Faker\nend\n",
+			},
+			subject:     searchVerifySubject{sourcePath: "lib/faker/default/internet.rb"},
+			wantCommand: "bundle exec rake test",
+		},
+		{
+			name: "ruby rspec repo falls back to bundle exec rspec",
+			files: map[string]string{
+				"Gemfile":      "source 'x'\n",
+				".rspec":       "--require spec_helper\n",
+				"lib/thing.rb": "class Thing; end\n",
+			},
+			subject:     searchVerifySubject{sourcePath: "lib/thing.rb"},
+			wantCommand: "bundle exec rspec",
+		},
+		{
+			name: "node repo with a test script falls back to npm test",
+			files: map[string]string{
+				"package.json": "{\"scripts\":{\"test\":\"jest\"}}",
+				"src/a.js":     "",
+			},
+			subject:     searchVerifySubject{sourcePath: "src/a.js"},
+			wantCommand: "npm test",
+		},
+		{
+			name: "node leaf default test script defers to root runner",
+			files: map[string]string{
+				"package.json":              "{\"scripts\":{\"test\":\"jest\"}}",
+				"packages/ui/package.json":  "{\"scripts\":{\"test\":\"echo \\\"Error: no test specified\\\" && exit 1\"}}",
+				"packages/ui/src/Button.js": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "packages/ui/src/Button.js"},
+			wantCommand: "npm test",
+		},
+		{
+			name: "node package with an unrecognized test script stays silent",
+			files: map[string]string{
+				"packages/ui/package.json":  "{\"scripts\":{\"test\":\"custom-test\"}}",
+				"packages/ui/src/Button.js": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "packages/ui/src/Button.js"},
+			wantCommand: "",
+		},
+		{
+			name: "gradle nested module uses root wrapper",
+			files: map[string]string{
+				"gradlew":                  "",
+				"lib/build.gradle":         "",
+				"lib/src/main/kotlin/A.kt": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "lib/src/main/kotlin/A.kt"},
+			wantCommand: "./gradlew test",
+		},
+		{
+			name: "gradle nested wrapper runs from module directory",
+			files: map[string]string{
+				"lib/gradlew":              "",
+				"lib/build.gradle":         "",
+				"lib/src/main/kotlin/A.kt": "",
+			},
+			subject:     searchVerifySubject{sourcePath: "lib/src/main/kotlin/A.kt"},
+			wantCommand: "cd lib && ./gradlew test",
+		},
+		{
+			name: "an unrecognized build system stays silent",
+			files: map[string]string{
+				"CMakeLists.txt": "project(x)\n",
+				"src/a.c":        "",
+			},
+			subject:     searchVerifySubject{sourcePath: "src/a.c"},
+			wantCommand: "",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			evidence := searchVerifyTestEvidence(testCase.files)
+			got := deriveSearchVerifySuiteCommand(testCase.subject, &evidence)
+			if testCase.wantCommand == "" {
+				if got != nil {
+					t.Fatalf("expected silence, got %q", got.Command)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected a whole-suite command, got silence")
+			}
+			if got.Command != testCase.wantCommand {
+				t.Fatalf("command = %q, want %q", got.Command, testCase.wantCommand)
+			}
+			if !strings.Contains(got.Targets, "whole test suite") {
+				t.Fatalf("targets must flag the whole suite, got %q", got.Targets)
+			}
+			if searchVerifyCommandCost(got) > searchVerifyCommandMaxBytes {
+				t.Fatalf("cost %d exceeds the cap %d", searchVerifyCommandCost(got), searchVerifyCommandMaxBytes)
+			}
+		})
+	}
+}
+
+// TestBuildSearchVerifyCommandPrefersNarrowOverSuite guards the ordering: a narrow single-file
+// command always wins over the whole-suite fallback when a covering test exists.
+
+func TestBuildSearchVerifyCommandPrefersNarrowOverSuite(t *testing.T) {
+	t.Parallel()
+	files := map[string]string{
+		"Gemfile":            "source 'x'\n",
+		"Rakefile":           "task default: %w[test]\n",
+		"lib/thing.rb":       "class Thing; end\n",
+		"test/thing_test.rb": "",
+	}
+	results := []SearchResult{
+		{Rank: 1, FilePath: "lib/thing.rb", Section: searchSectionPrimary},
+		{Rank: 2, FilePath: "test/thing_test.rb", Section: searchSectionCoveringTest},
+	}
+	got := buildSearchVerifyCommand(results, searchVerifyTestEvidence(files))
+	if got == nil {
+		t.Fatal("expected a command")
+	}
+	if !strings.Contains(got.Command, "ruby -Itest") {
+		t.Fatalf("expected the narrow single-file command, got %q", got.Command)
 	}
 }

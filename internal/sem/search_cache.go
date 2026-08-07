@@ -382,6 +382,11 @@ func preindexProviderSnapshotWithPersistenceReader(
 		// durability guarantee.
 		return snapshot, true, nil
 	}
+	if options.ForceRebuild {
+		// Match loadOrBuildSearchSnapshot's re-stamp: report the commit this call
+		// serves, not whatever HEAD happened to be mid-build on a same-tree race.
+		snapshot.Header.Commit = commit
+	}
 	// Query-time caching is deliberately best effort, but an explicit preindex
 	// command promises a durable artifact. Verify that the entry exists and, if
 	// the best-effort write failed (or --force asked for a rewrite), persist while
@@ -392,7 +397,7 @@ func preindexProviderSnapshotWithPersistenceReader(
 	}
 	path := filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, key+".json.gz")
 	persisted, readErr := readPersisted(path)
-	if readErr != nil || !validCachedSearchSnapshot(persisted, repositoryKey, providerVersion, tree, options) {
+	if options.ForceRebuild || readErr != nil || !validCachedSearchSnapshot(persisted, repositoryKey, providerVersion, tree, options) {
 		cache := newCachedSearchSnapshot(providerVersion, commit, tree, options, snapshot)
 		if err := writeSearchSnapshot(path, cache); err != nil {
 			return ProviderSnapshot{}, false, fmt.Errorf("persist preindex snapshot: %w", err)

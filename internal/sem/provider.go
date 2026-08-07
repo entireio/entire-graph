@@ -934,7 +934,11 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	if sc.close != nil {
 		defer sc.close()
 	}
-	progressEvery := 1024
+	fileProgressEvery := len(sc.paths) / 100
+	if fileProgressEvery < 1 {
+		fileProgressEvery = 1
+	}
+	relationProgressEvery := 512
 	phaseStart := started
 	var progressOverhead time.Duration
 	var phaseProgressOverhead time.Duration
@@ -1035,7 +1039,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 				}
 				symbolCount += len(result.symbols)
 				lc.Symbols += len(result.symbols)
-				if (result.index+1)%progressEvery == 0 {
+				if result.index+1 < len(sc.paths) && (result.index+1)%fileProgressEvery == 0 {
 					emitProgress(BuildPhaseParse, result.index+1, symbolCount, relationCount)
 				}
 			}
@@ -1094,7 +1098,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		}
 		relationsByType[r.Type]++
 		relationCount++
-		if relationCount%progressEvery == 0 {
+		if relationCount%relationProgressEvery == 0 {
 			emitProgress(BuildPhaseRelations, len(sc.paths), symbolCount, relationCount)
 		}
 		emitErr = emit(r)

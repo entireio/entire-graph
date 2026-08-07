@@ -182,7 +182,7 @@ QA accuracy means the share of questions answered correctly. Recall@10 means
 the share for which the evidence-bearing conversation appears among the first
 ten retrieved results. A score such as 0.914 is 91.4%.
 
-## Numbers, honestly
+## Evidence status
 
 The former 54.9% Haiku, 57.7% Sonnet, and 31–73% open-model token-savings
 figures are withdrawn. They were token-first measurements under a prompt policy
