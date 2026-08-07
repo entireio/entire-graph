@@ -17,6 +17,12 @@ The most robust result is retrieval, which is measured without an agent and so i
 file the gold patch edits reaches the agent in **96.3%** of sessions versus **81.5%** for the
 closest comparable tool, at equal payload bytes and with fewer search calls.
 
+In a separate full conversational-memory comparison, Entire Graph leads Graphify on LOCOMO
+recall@10 (**0.918 vs 0.844**) but trails on final-answer accuracy: LOCOMO **51.0% vs 67.4%** and
+LongMemEval-S **44.7% vs 62.7%**. That split matters: better evidence-session retrieval did not
+translate into better answers under the shared reader. See [Numbers, honestly](#numbers-honestly)
+for the exact public-protocol boundary.
+
 Read [Numbers, honestly](#numbers-honestly) before quoting any of that. In short: the figure is
 Haiku-specific and we **cannot** measure it on stronger models at these sample sizes; a **≥35%**
 saving is *refuted*, not merely unproven; two earlier claims (55%, then 31.6%) were withdrawn after
@@ -143,6 +149,42 @@ workflow to learn:
 You (a human) will mostly experience it *through* those surfaces. Your agents call it directly.
 
 ## Numbers, honestly
+
+### Native conversational-memory retrieval
+
+The frozen candidate at `dea450b` was evaluated against Graphify v8/v0.9.34 at `07b9143` and
+Codebase Memory MCP v0.9.0 on the same official 300 LOCOMO and 50 cleaned LongMemEval-S cases,
+three repetitions per case. Kimi K3 was the shared reader and blinded primary grader; Opus 5
+audited a deterministic 20%. Every arm had top 10 and a 128,000-byte ceiling, separate caches,
+identical questions, and no shared source reread.
+
+| Full native-memory run | Entire Graph | Graphify | cmm |
+|---|---:|---:|---:|
+| LOCOMO recall@10 (n=300) | **0.918** | 0.844 | 0.000 |
+| LOCOMO QA accuracy (n=300) | 51.0% | **67.4%** | 22.3% |
+| LongMemEval-S QA accuracy (n=50) | 44.7% | **62.7%** | 6.0% |
+| graph-build LLM credits | 0 | 0 | 0 |
+
+There is no blanket winner. Entire Graph retrieves the evidence session more often; Graphify
+answers more questions correctly. All 3,150 raw cells, 3,150 Kimi grades, and 630 Opus audits
+passed the sealed gates with zero invalid attempts; audit agreement was 97.94% (kappa 0.9583).
+The list-price equivalent for reader, grading, and audit was $50.82. Provider-billed spend was not
+available for every Fireworks cell, so the smaller known-actual subtotal is not reported as total
+spend.
+
+This is a **public-protocol reimplementation**, not a reproduction of Graphify's historical
+claims. Graphify's advertised memory harness and selectors are not public. The Graphify reader
+received its native BFS-rendered graph text; a separate projection of the same traversal onto
+session files supplied recall@10. Entire Graph supplied only native search snippets and locator
+headers. cmm's shipped Markdown search excludes `Section` nodes from BM25, so its result describes
+that public Markdown path, not its quality on programming-language graphs.
+
+The full protocol, fairness explanation, exact artifact hashes, 1%/10%/100% sequence, and results
+are in [GraphMark PR #63](https://github.com/entirehq/graphmark/pull/63). The benchmarked binary is
+from `dea450b`; this documentation-only commit does not change it.
+
+See [docs/benchmarks.md](docs/benchmarks.md#external-native-memory-comparison) for the frozen
+identities and integrity record.
 
 All savings are measured against the **baseline**: the same agent, same model, same task, with
 no code tool at all. For scale, the same suites also ran

@@ -171,6 +171,56 @@ Treat the numbers as historical; re-run with the current streaming benchmark
   tiny constant per relation rather than the full payload, which is what kept
   the in-memory path from finishing on the largest repos.
 
+## External native-memory comparison
+
+GraphMark's `memory-native-v2` suite evaluated this repository's candidate
+commit `dea450b924e0ba4e9b5a7dc3ae5db72cf3aa857a` alongside Graphify and
+Codebase Memory MCP. This is an external public-protocol reimplementation of
+Graphify's advertised memory surfaces, not a `cmd/graph-bench` run and not a
+reproduction of Graphify's unpublished harness.
+
+Frozen product identities:
+
+- Entire Graph candidate: `dea450b924e0ba4e9b5a7dc3ae5db72cf3aa857a`
+- Entire Graph stable reference: `90a3346a624d76f7fee21bd894721e5438dd9ac2`
+- Graphify v8/v0.9.34: `07b9143d4b90b1e1cb88dc71423f742a501efd29`
+- Codebase Memory MCP v0.9.0: `b637e3330c96cfe452da623db068c241aaa3ec01`
+- GraphMark harness: `09d14f2f149e8459d98b30ecf6bf1a31c757f04d`
+- protocol SHA-256: `524e64ce2b0e8c888169d68d990466bed71336e2d7cd30b2723a78ba679fdb1b`
+- full completion SHA-256: `30c8c19c24d7077abc28b30bb5853391b3f86700801f5e9a371acec0c1938a76`
+
+The full run used 300 LOCOMO and 50 LongMemEval-S cases, three repetitions,
+Kimi K3 reader/grader, a deterministic 20% Opus 5 audit, top 10, and a shared
+128,000-byte context ceiling. It followed a sealed 1% validation and untouched
+10% validity holdout; the full run was outcome-independent. Each product has
+exactly 1,050 raw cells with identical case/question/repetition topology.
+
+Entire Graph receives no benchmark-specific query rewrite. For each original
+question the adapter executes `entire graph search --format json --top-k 10`
+and gives the shared reader only the returned native snippets and neutral
+locator headers. It does not open surrounding files after search. The build and
+query cache is isolated from every other arm.
+
+The verified full result is:
+
+| Metric | Entire Graph | Graphify | cmm |
+|---|---:|---:|---:|
+| LOCOMO recall@10 | **0.918** | 0.844 | 0.000 |
+| LOCOMO QA accuracy | 51.0% | **67.4%** | 22.3% |
+| LongMemEval-S QA accuracy | 44.7% | **62.7%** | 6.0% |
+| graph-build LLM credits | 0 | 0 | 0 |
+
+Integrity record: 3,150/3,150/630 raw/grade/audit cells, zero invalid
+attempts, promotion passed with zero findings, final artifact verification
+passed, and Opus agreement was 97.94% (kappa 0.9583). Five transient raw-reader
+timeouts and two transient grader timeouts were recorded and recovered within
+the sealed retry policy; no audit retry occurred.
+
+The publication bundle and review are in
+[entirehq/graphmark#63](https://github.com/entirehq/graphmark/pull/63). Raw
+artifacts remain outside Git because they occupy about 420 MB; the bundle
+publishes their SHA-256 values and the exact reproduction contract.
+
 ## Notes
 
 - A full-tier run is heavy (the manifest includes linux, tensorflow, vscode,
