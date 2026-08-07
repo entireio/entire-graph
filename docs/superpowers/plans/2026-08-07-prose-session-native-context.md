@@ -12,7 +12,9 @@
    and `go vet ./...`.
 5. Build a pinned candidate binary and run no-API corpus probes to confirm the
    same top-k session membership, larger bounded native passages, deterministic
-   output, and budget compliance.
+   output, and budget compliance. Forward the sealed shared byte ceiling to the
+   native Entire search command in the isolated parity harness, with a regression
+   test that checks the exact value.
 6. Run the fixed development/tune benchmark without touching comparators,
    prompts, readers, graders, or selectors. Iterate only from tune evidence.
 7. Freeze a new protocol and disjoint untouched holdout, then run and score it

@@ -9,8 +9,9 @@ Entire had exact evidence-session recall in 789 of 900 repeated cells but answer
 only 459 correctly. Graphify returned roughly 50 kB of context per case; Entire
 returned roughly 2.3 kB.
 
-This is a native product deficiency, not a reader or grader problem. The fix must
-therefore live in Entire Graph. The benchmark adapter, prompts, model, limits,
+This is a native product deficiency, not a reader or grader problem. The context
+expansion therefore lives in Entire Graph. The benchmark adapter may only forward
+the already-sealed shared byte ceiling to native search; prompts, model, limits,
 Graphify arm, and grader stay unchanged.
 
 ## Design
@@ -25,6 +26,11 @@ The ranking and top-k membership do not change. The existing byte allocator stil
 enforces the caller's context ceiling and demotes lower-ranked results when needed.
 An explicit `HeadWindowLines` value continues to win. Ordinary code search never
 receives the prose-parent signal and remains byte-identical.
+
+The parity harness must pass its shared 128,000-byte ceiling to Entire's native
+`--max-context-bytes` option. This does not read or synthesize source in the
+adapter; it removes an asymmetric 24 KiB inner cap while retaining the shared
+outer truncation and native byte accounting.
 
 ## Fairness and evaluation
 
