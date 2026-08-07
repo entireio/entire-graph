@@ -1,5 +1,11 @@
 package sem
 
+import (
+	"fmt"
+	"math"
+	"strings"
+)
+
 // Telling "nothing matched" from "here is the answer"
 // ==================================================
 //
@@ -64,6 +70,72 @@ const (
 
 	// lowConfidenceWindow is how many head results the dispersion test looks at.
 	lowConfidenceWindow = 3
+
+	// lowConfidenceTieGap is the ABSOLUTE top1-top2 score gap below which the ranking has not actually
+	// CHOSEN. Measured on projectlombok__lombok-3486, which shipped a clean-looking payload at a gap of
+	// 0.0100 and cost $2.22 while the agent worked out by hand which of two same-named methods it meant.
+	//
+	// ABSOLUTE, not relative, and the difference is the whole calibration. Read as a 5% relative gap
+	// this fired on 56 of 56 calibration queries whose target provably exists — a marker that always
+	// fires teaches the reader to ignore it, which is strictly worse than not having one. Real payloads
+	// separate their top two by 4-5% routinely; a gap of 0.05 raw score points is a near-exact tie, which
+	// is the thing lombok actually exhibited.
+	lowConfidenceTieGap = 0.05
+
+	// lowConfidenceWrapperLines is how many comment or literal lines a top hit needs before its CONTENT
+	// is called out as "not an implementation". Deliberately conservative: a false LOW CONFIDENCE on a
+	// real hit teaches the reader to ignore the marker, which is worse than not emitting it.
+	lowConfidenceWrapperLines = 2
+)
+
+// searchConfidenceWrapperReason inspects the top hit's own snippet for the three shapes that look like
+// an answer and are not one: a doc-comment block, an example-usage list, a deprecated forwarder. Each
+// is a hit an agent reads, believes, and then has to back out of. The test is on text the payload
+// already carries, so it needs no extra IO.
+func searchConfidenceWrapperReason(result SearchResult) string {
+	snippet := strings.TrimSpace(result.Snippet)
+	if snippet == "" {
+		return ""
+	}
+	commentPrefixes := []string{"//", "*", "/*", "#", "'''", `"""`}
+	code, comment, literal := 0, 0, 0
+	for _, line := range strings.Split(snippet, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		isComment := false
+		for _, prefix := range commentPrefixes {
+			if strings.HasPrefix(trimmed, prefix) {
+				isComment = true
+				break
+			}
+		}
+		switch {
+		case isComment:
+			comment++
+		case strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") ||
+			strings.HasPrefix(trimmed, "'") || strings.HasPrefix(trimmed, string(rune(34))):
+			literal++
+		default:
+			code++
+		}
+	}
+	if comment > code && comment >= lowConfidenceWrapperLines {
+		return "top hit is a documentation comment, not an implementation"
+	}
+	if literal > code && literal >= lowConfidenceWrapperLines {
+		return "top hit is an example-usage list, not an implementation"
+	}
+	lowered := strings.ToLower(snippet)
+	if (strings.Contains(lowered, "@deprecated") || strings.Contains(lowered, "#[deprecated")) && code <= 4 {
+		return "top hit is a deprecated forwarder, not the implementation"
+	}
+	return ""
+}
+
+const (
+	lowConfidenceUnusedGuard = 0
 )
 
 // SearchConfidence summarises how much a payload's own numbers support treating its top
@@ -109,6 +181,30 @@ func AssessSearchConfidence(response SearchResponse) SearchConfidence {
 	case len(files) >= lowConfidenceTopFiles:
 		assessment.Low = true
 		assessment.Reason = "top results agree on nothing"
+	}
+	// The two MECHANICAL tests below run regardless of the score ladder above, because both describe a
+	// payload that scores WELL and is still not an answer. A high top score with a tied runner-up is a
+	// coin flip presented as a choice; a high top score on a doc comment is a hit the reader has to
+	// back out of. Neither is visible to a score threshold.
+	if !assessment.Low && len(results) > 1 && results[0].Score > 0 {
+		// MAGNITUDE, not the signed difference. Rank 2 may legitimately carry the HIGHER score:
+		// promoteFixSiteOverLeadingTest reorders without rescoring, so a payload whose rank-1 test
+		// was displaced reports rank 2 above rank 1 on purpose. A signed subtraction reads that as
+		// a negative gap, which is below any threshold, so the marker fired on exactly the payloads
+		// where the ranking made a deliberate choice — the false positive this file's own
+		// calibration says is worse than having no marker at all. What the test is asking is
+		// whether the two scores are indistinguishable, and that question has no direction.
+		if gap := math.Abs(results[0].Score - results[1].Score); gap < lowConfidenceTieGap {
+			assessment.Low = true
+			assessment.Reason = fmt.Sprintf(
+				"ranks 1 and 2 are tied (%.4f apart) - the ranking did not choose", gap)
+		}
+	}
+	if !assessment.Low {
+		if reason := searchConfidenceWrapperReason(results[0]); reason != "" {
+			assessment.Low = true
+			assessment.Reason = reason
+		}
 	}
 	return assessment
 }

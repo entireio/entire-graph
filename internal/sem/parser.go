@@ -4350,6 +4350,11 @@ func pythonOverloadStub(node *sitter.Node, src []byte) bool {
 func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Entity, bool) {
 	var kind string
 	var name string
+	// bodyless: this declaration declares a callable without defining it (see
+	// Entity.bodyless). Set only where the grammar guarantees no body — a
+	// TypeScript overload signature or ambient declaration — never for a Dart
+	// declaration head, whose body is a sibling node the walk re-attaches below.
+	var bodyless bool
 	switch node.Type() {
 	case "class", "class_definition", "class_declaration", "class_specifier", "mixin_declaration",
 		"abstract_class_declaration":
@@ -4391,6 +4396,32 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 			name = qualify(scope, name)
 		}
 	case "method_signature", "getter_signature", "setter_signature":
+		// tree-sitter-typescript emits `method_signature` both for an OVERLOAD
+		// declaration inside a class body (`over(a: string): void` immediately
+		// preceding the implementing `method_definition`) and for interface /
+		// type-literal members. A class-body signature is a real declaration of
+		// real code — it is where the parameter types and generics of an
+		// overloaded method live — so it gets its own symbol, exactly like the
+		// `abstract_method_signature` case above. Interface and type-literal
+		// members stay inventory-only: they declare a contract, not a definition,
+		// so emitting them makes every `x.m()` call name-resolvable to a bodyless
+		// interface member. That is not hypothetical — extending this case to
+		// interface_body/object_type members fabricates a CALLS edge in
+		// TestTypeScriptNamespaceCallSkipsParameterReceiverRoots, where a
+		// parameter named `B` shadows a namespace and `B.parse()` then binds to
+		// `Client.parse` instead of resolving to nothing.
+		if language == "TypeScript" {
+			if node.Type() != "method_signature" || !typeScriptClassBodySignature(node) {
+				return Entity{}, false
+			}
+			kind = "method"
+			bodyless = true
+			name = nodeName(node, src)
+			if scope != "" {
+				name = qualify(scope, name)
+			}
+			break
+		}
 		// Dart class members (declaration head; body is a sibling node). Gated to
 		// Dart because `method_signature` also denotes TypeScript interface
 		// members, where extracting them as methods would change TS behavior.
@@ -4410,6 +4441,26 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 			name = qualify(scope, name)
 		}
 	case "function_signature":
+		// tree-sitter-typescript emits `function_signature` for every BODYLESS
+		// function declaration: a TypeScript OVERLOAD signature and an ambient
+		// `declare function`. Both are top-level declarations of the module's
+		// public surface, and an overload set is where the parameter types and
+		// generics live — the implementation's own signature is usually the
+		// erased `(source: any, ...)` catch-all. Dropping them made a file like
+		// vue's renderList.ts (five overloads + one implementation) expose a
+		// single symbol covering only the implementation's lines, so the typed
+		// half of the file was invisible to search and no query phrased in terms
+		// of the declared types could retrieve it.
+		if language == "TypeScript" {
+			kind = "function"
+			bodyless = true
+			name = nodeName(node, src)
+			if scope != "" {
+				kind = "method"
+				name = qualify(scope, name)
+			}
+			break
+		}
 		// Dart top-level / local function declaration head. Gated to Dart because
 		// `function_signature` also denotes TypeScript ambient declarations.
 		if language != "Dart" {
@@ -4708,6 +4759,27 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 			kind = "method"
 			name = qualify(scope, name)
 		}
+	case "method_elem", "method_spec":
+		// A Go interface method requirement (`Disconnect() error` inside
+		// `type Communicator interface { ... }`; `method_elem` in current
+		// tree-sitter-go, `method_spec` in older grammars). Without a symbol for
+		// it, a call through an interface-typed receiver has nothing to bind to,
+		// so the interface is a dead end in the call graph: terraform's
+		// communicator.Communicator had ZERO incoming CALLS even though every
+		// provisioner drives its remote work through it.
+		//
+		// The declaration is only a member when it is scoped under its interface;
+		// an unscoped method_elem (a generic constraint written inline) declares
+		// nothing addressable and stays unextracted.
+		if language != "Go" || scope == "" {
+			return Entity{}, false
+		}
+		name = firstChildOfType(node, src, "field_identifier")
+		if name == "" {
+			return Entity{}, false
+		}
+		kind = "method"
+		name = qualify(scope, name)
 	case "method_declaration":
 		// An Objective-C method_declaration is a prototype in an @interface /
 		// category head; the @implementation's method_definition carries the
@@ -5041,6 +5113,7 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		EndLine:     int(node.EndPoint().Row) + 1,
 		BodyHash:    hash(normalize(block)),
 		Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signatureFromNode(node, src)}, block))),
+		bodyless:    bodyless,
 	}
 	// F# modules and members carry their declarations/body as direct siblings of
 	// the name (no `body` field or body-like wrapper node), so signatureFromNode
@@ -5065,6 +5138,16 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		}
 	}
 	return entity, true
+}
+
+// typeScriptClassBodySignature reports whether a tree-sitter-typescript
+// `method_signature` node is a CLASS member (an overload declaration or an
+// ambient class method) rather than an interface / type-literal member. The
+// grammar reuses one node type for all three; only the class form declares
+// real code, so only it becomes a symbol.
+func typeScriptClassBodySignature(node *sitter.Node) bool {
+	parent := node.Parent()
+	return validNode(parent) && parent.Type() == "class_body"
 }
 
 // dartInnerSignature returns the function/getter/setter signature wrapped by a

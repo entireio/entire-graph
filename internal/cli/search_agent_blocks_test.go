@@ -160,11 +160,81 @@ func TestAgentSearchPutsTheWarningInThePrefixAndTheRestInTheSuffix(t *testing.T)
 	warning := strings.Index(rendered, "CLOSED SET Ops")
 	location := strings.Index(rendered, "1. Ops.java")
 	verify := strings.Index(rendered, "VERIFY:")
+	literal := strings.Index(rendered, sem.LiteralClusterBlockName)
 	if warning < 0 || location < 0 || verify < 0 {
 		t.Fatalf("missing a block:\n%s", rendered)
 	}
-	if !(warning < location && location < verify) {
-		t.Fatalf("agent-format order is wrong:\n%s", rendered)
+	// VERIFY moved into the PREFIX, ahead of the ranking. It is the one block whose absence measurably
+	// changes behaviour (sessions carrying one spent 30.6% fewer tokens than the baseline against
+	// 15.2% without), so it must not sit in the set the byte fitter silently drops. The literal cluster
+	// stays a suffix: it names something the agent could go and grep for itself.
+	if !(warning < verify && verify < location) {
+		t.Fatalf("agent-format order is wrong (want closed-set < verify < ranking):\n%s", rendered)
+	}
+	if literal >= 0 && literal < location {
+		t.Fatalf("the literal cluster left the suffix set:\n%s", rendered)
+	}
+}
+
+// TestAgentSearchVerifyOutranksEverySuffixButNeverTheRanking pins the exact reconciliation of the two
+// invariants that meet here.
+//
+// VERIFY is promoted out of the droppable suffix set because it is the one block whose absence
+// measurably changes behaviour: sessions carrying one spent 30.6% fewer tokens than the no-tool
+// baseline against 15.2% for sessions without. But the standing rule that a non-ranking block never
+// costs the caller a ranked LOCATION is older and stronger — a location an agent never sees is a file
+// it never opens. So VERIFY outranks every other suffix and yields only to the ranking itself, which is
+// what its own variant rung expresses.
+func TestAgentSearchVerifyOutranksEverySuffixButNeverTheRanking(t *testing.T) {
+	t.Parallel()
+	response := searchAgentBlockResponse()
+	// Roomy: VERIFY is present, and it is present AHEAD of the ranking.
+	var roomy bytes.Buffer
+	if err := writeAgentSearch(&roomy, response, 4096); err != nil {
+		t.Fatal(err)
+	}
+	verify, location := strings.Index(roomy.String(), "VERIFY:"), strings.Index(roomy.String(), "1. Ops.java")
+	if verify < 0 || location < 0 || verify > location {
+		t.Fatalf("VERIFY is not seated ahead of the ranking:\n%s", roomy.String())
+	}
+	// FIRST REFUSAL, which is what "outranks" can honestly mean here. VERIFY is offered the leftover
+	// bytes before any other suffix; when it fits it is seated, and a smaller suffix may still use space
+	// VERIFY could not have used anyway — refusing 122 bytes of literal cluster because a 328-byte
+	// verify block did not fit would waste the budget for no gain.
+	verifyBytes := len(sem.RenderSearchVerifyCommand(response.VerifyCommand))
+	for budget := 700; budget <= 1500; budget += 100 {
+		var out bytes.Buffer
+		if err := writeAgentSearch(&out, response, budget); err != nil {
+			t.Fatal(err)
+		}
+		rendered := out.String()
+		if len(rendered) > budget {
+			t.Fatalf("budget %d overrun: %d bytes", budget, len(rendered))
+		}
+		if strings.Contains(rendered, "VERIFY:") {
+			continue
+		}
+		// VERIFY absent: it must be because it genuinely did not fit, not because a lower-priority
+		// block took the space first.
+		if len(rendered)+verifyBytes <= budget {
+			t.Fatalf("budget %d had %d spare bytes for a %d-byte VERIFY and dropped it:\n%s",
+				budget, budget-len(rendered), verifyBytes, rendered)
+		}
+	}
+	// And it never costs the ranking: every budget that produced any output at all must still be able
+	// to show a location, VERIFY or no VERIFY.
+	for budget := 200; budget <= 500; budget += 50 {
+		var out bytes.Buffer
+		if err := writeAgentSearch(&out, response, budget); err != nil {
+			t.Fatal(err)
+		}
+		rendered := out.String()
+		if len(rendered) > budget {
+			t.Fatalf("budget %d overrun: %d bytes", budget, len(rendered))
+		}
+		if strings.Contains(rendered, "VERIFY:") && !strings.Contains(rendered, "Ops.java") {
+			t.Fatalf("budget %d spent the ranking on VERIFY:\n%s", budget, rendered)
+		}
 	}
 }
 

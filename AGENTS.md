@@ -55,7 +55,7 @@ entire graph impact --repo . --symbol NAME [--file path] [--depth 1|2] [--format
 ```
 
 - Ambiguous names return the definition list — rerun with `--file` to pick one.
-- `--limit N` per-section entry cap; `--max-context-bytes N` total text budget; `--exclude-tests`; `--head` / `--profile` as in `neighbors`.
+- `--depth` 1|2 (default: 2); `--limit N` per-section entry cap; `--max-context-bytes N` total text budget; `--exclude-tests`; `--head` / `--profile` as in `neighbors`.
 
 **When:** before changing behavior of a specific function/type — "you're changing ordering: here is every place results are ordered, limited, or consumed downstream" — one command instead of chaining neighbors + edges + git log.
 
@@ -69,13 +69,13 @@ entire graph symbols --repo . --format ndjson [--worktree]
 **When:** you need the complete definition inventory (e.g. ingesting into a store), not a single lookup.
 
 ### 🔗 edges — *relations*
-Full stream of relation records across all 30 types (`CALLS`, `IMPORTS`, `EXTENDS`, `HANDLES_ROUTE`, …), each tagged with resolution and confidence. Like `symbols`, this is the **whole-repo stream** — there is **no `--to`/`--from`/`--relation` filter**; for one symbol's callers/callees use `neighbors`, not `edges`.
+Full stream of relation records across all 30 types (`CALLS`, `IMPORTS`, `EXTENDS`, `HANDLES_ROUTE`, …), each tagged with resolution and confidence. The stream is whole-repo by default; `--to`, `--from`, and `--relation` filter it server-side. For one symbol's callers/callees, prefer `neighbors` because it annotates resolved definitions and call sites from source.
 
 ```sh
-entire graph edges --repo . --format ndjson [--worktree]
+entire graph edges --repo . --format ndjson [--worktree] [--to ID|NAME] [--from ID|NAME] [--relation TYPE[,TYPE...]]
 ```
 
-**When:** you want every relation (bulk export / ingestion). For a targeted question, use `neighbors`.
+**When:** you want every relation (bulk export / ingestion) or a filtered relation stream. For a targeted one-symbol question, use `neighbors`.
 
 ### 🗺️ snapshot — *the whole graph*
 One header record, then file, external-endpoint, symbol, and relation records, streamed so memory stays bounded. Superset of `symbols` + `edges` + files.
@@ -197,3 +197,11 @@ mise run check   # fmt + vet + race tests + build
 ```
 
 Contract rules that must not break: schema `1.x` is frozen and additive-only (`docs/adr/0001-ga-schema-contract.md`); the provider is **no-egress** (never add remote fetches, hosted API calls, telemetry, or runtime grammar downloads); `compound-v1` symbol IDs must stay stable across ordinary edits; unsupported/unparseable files must surface as machine-readable partial failures, never silent drops. All logic lives under `internal/` (`sem` = parsing/graph/search, `cli` = hand-rolled dispatch, `gitutil` = git subprocess); `cmd/entire-graph/main.go` is a thin entry point. The plugin manifest (`entire-plugin.yml`) registers the subcommand `graph`, so users type `entire graph ...`. This project was **previously named `entire-sem`** — do not reintroduce the old name. **Entire Brain** (`entire-brain`) is the separate downstream consumer of this provider's NDJSON — not an old name for this project.
+
+<!-- entire-graph:begin -->
+This repo has the entire-graph code graph installed. Before exploring code with
+grep/find/whole-file reads, read .entire/graph-agent.md — the search-first, verify-once
+doctrine for coding agents: search instead of grepping, then check the sibling sites and
+compile (or run the nearest existing test) once before you finish.
+@.entire/graph-agent.md
+<!-- entire-graph:end -->

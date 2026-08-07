@@ -60,6 +60,12 @@ type cachedSearchSnapshot struct {
 	// them or a cached run would fall back to the signature-string split and
 	// emit different type relations than a cold one.
 	SymbolSignatureTypes map[string]cachedSignatureTypes `json:"symbol_signature_types,omitempty"`
+	// BodylessSymbolIDs travels for the same reason as LocalSymbolIDs: call
+	// resolution reads SymbolRecord.bodyless to tell a TypeScript overload set
+	// apart from two genuinely ambiguous same-name definitions, and the selective
+	// derivation reruns that resolution over cached symbols. Without it a cache
+	// hit would downgrade an overloaded call that a cold run resolves exactly.
+	BodylessSymbolIDs []string `json:"bodyless_symbol_ids,omitempty"`
 }
 
 type cachedSignatureTypes struct {
@@ -430,6 +436,9 @@ func newCachedSearchSnapshot(providerVersion, commit, tree string, options Provi
 		if symbol.Local {
 			cache.LocalSymbolIDs = append(cache.LocalSymbolIDs, symbol.ID)
 		}
+		if symbol.bodyless {
+			cache.BodylessSymbolIDs = append(cache.BodylessSymbolIDs, symbol.ID)
+		}
 		if symbol.sourceEndByte > symbol.sourceStartByte {
 			if cache.SymbolByteRanges == nil {
 				cache.SymbolByteRanges = make(map[string]cachedSymbolByteRange)
@@ -469,6 +478,10 @@ func restoreCachedSearchInternals(cache *cachedSearchSnapshot) {
 	for _, id := range cache.LocalSymbolIDs {
 		localIDs[id] = true
 	}
+	bodylessIDs := make(map[string]bool, len(cache.BodylessSymbolIDs))
+	for _, id := range cache.BodylessSymbolIDs {
+		bodylessIDs[id] = true
+	}
 	parameterNamesKnownIDs := make(map[string]bool, len(cache.SymbolParameterNamesKnownIDs))
 	for _, id := range cache.SymbolParameterNamesKnownIDs {
 		parameterNamesKnownIDs[id] = true
@@ -476,6 +489,7 @@ func restoreCachedSearchInternals(cache *cachedSearchSnapshot) {
 	for index := range cache.Snapshot.Symbols {
 		symbol := &cache.Snapshot.Symbols[index]
 		symbol.Local = localIDs[symbol.ID]
+		symbol.bodyless = bodylessIDs[symbol.ID]
 		if sourceRange, ok := cache.SymbolByteRanges[symbol.ID]; ok && sourceRange.End > sourceRange.Start {
 			symbol.sourceStartByte = sourceRange.Start
 			symbol.sourceEndByte = sourceRange.End

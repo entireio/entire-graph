@@ -1,0 +1,14 @@
+   Compiling ruff_linter v0.9.0
+    Finished test [unoptimized + debuginfo] target(s) in 12.03s
+     Running unittests src/lib.rs
+
+running 4 tests
+test rules::flake8_simplify::tests::negation_with_equal_op ... ok
+test rules::flake8_simplify::tests::negation_with_not_equal_op ... FAILED
+test rules::flake8_simplify::tests::double_negation ... ok
+test rules::flake8_simplify::tests::ignored_case ... ignored
+
+failures:
+    rules::flake8_simplify::tests::negation_with_not_equal_op
+
+test result: FAILED. 2 passed; 1 failed; 1 ignored; 0 measured

@@ -141,8 +141,8 @@ func TestImpactAmbiguousSymbolListsDefinitionsAndFileDisambiguates(t *testing.T)
 	}
 	var text bytes.Buffer
 	writeImpactText(&text, ambiguous)
-	if !strings.Contains(text.String(), `Ambiguous symbol "Target" matched 2 definitions`) ||
-		!strings.Contains(text.String(), "rerun with the selector printed beside the one you mean") ||
+	if !strings.Contains(text.String(), `"Target" matches 2 definitions`) ||
+		strings.Contains(text.String(), "rerun with the selector") ||
 		!strings.Contains(text.String(), "Target (a.go:9)") ||
 		!strings.Contains(text.String(), "--symbol Target --file a.go --line 9") {
 		t.Fatalf("ambiguous text output:\n%s", text.String())
@@ -332,5 +332,119 @@ func route() {
 	}
 	if !response.IndexCacheHit {
 		t.Fatalf("second impact run missed the index cache: %#v", response.Stats)
+	}
+}
+
+// TestImpactDegenerateReplacesEmptyScaffolding is FIX 2. Measured over 8 sessions: all 3
+// retrieval-miss instances produced a zero-filled blast radius that reads like an answer
+// (carbon-2752 isLongYear 0/0, prometheus Config.ScrapeConfigs 0/0/0, three.js build/*-only) and 0 of
+// the 5 payload-hit instances did. The marker is what lets a harness drop the block entirely.
+func TestImpactDegenerateReplacesEmptyScaffolding(t *testing.T) {
+	t.Parallel()
+	focus := neighborEndpoint{Name: "isLongYear", QualifiedName: "Carbon.isLongYear",
+		Kind: "method", FilePath: "src/Carbon/Traits/Date.php", StartLine: 12}
+	for _, testCase := range []struct {
+		name     string
+		response impactResponse
+		want     string
+	}{
+		{
+			name:     "nothing reaches it and it reaches nothing",
+			response: impactResponse{Query: "isLongYear", Focus: &focus},
+			want:     impactDegenerateNoRelations,
+		},
+		{
+			name: "every relation lands in built output",
+			response: impactResponse{Query: "WebGLRenderer", Focus: &focus,
+				Callers: impactSection{Total: 2, Entries: []impactEntry{
+					{Endpoint: neighborEndpoint{FilePath: "build/three.module.js", StartLine: 9}},
+					{Endpoint: neighborEndpoint{FilePath: "build/three.cjs", StartLine: 4}},
+				}}},
+			want: impactDegenerateBundleOnly,
+		},
+		{
+			name: "one real caller among built output is a real answer",
+			response: impactResponse{Query: "WebGLRenderer", Focus: &focus,
+				Callers: impactSection{Total: 2, Entries: []impactEntry{
+					{Endpoint: neighborEndpoint{FilePath: "build/three.module.js", StartLine: 9}},
+					{Endpoint: neighborEndpoint{FilePath: "src/renderers/WebGLRenderer.js", StartLine: 40}},
+				}}},
+			want: "",
+		},
+		{
+			name: "a single caller is enough to be worth reading",
+			response: impactResponse{Query: "isLongYear", Focus: &focus,
+				Callers: impactSection{Total: 1, Entries: []impactEntry{
+					{Endpoint: neighborEndpoint{FilePath: "src/Carbon/Carbon.php", StartLine: 88}},
+				}}},
+			want: "",
+		},
+		{
+			// SUPERSEDES the round-4 expectation, which said co-change does not rescue a degenerate
+			// answer. Turn-level forensics of 12 sessions moved co-change INTO the numerator: it is the
+			// one heuristic section that names FILES a reader can act on, so a payload carrying it has
+			// told the caller something. Siblings alone still do not.
+			name: "co-change files are actionable, so they do rescue it",
+			response: impactResponse{Query: "isLongYear", Focus: &focus,
+				CoChanges: impactSection{Total: 3, Entries: []impactEntry{
+					{Endpoint: neighborEndpoint{FilePath: "src/Carbon/Carbon.php"}},
+				}}},
+			want: "",
+		},
+		{
+			name: "siblings alone do not rescue it",
+			response: impactResponse{Query: "isLongYear", Focus: &focus,
+				Siblings: impactSection{Total: 4, Entries: []impactEntry{
+					{Endpoint: neighborEndpoint{FilePath: "src/Carbon/Traits/Date.php"}},
+				}}},
+			want: impactDegenerateNoRelations,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			got := impactDegenerateReason(testCase.response)
+			if got != testCase.want {
+				t.Fatalf("reason = %q, want %q", got, testCase.want)
+			}
+			var out bytes.Buffer
+			writeImpactDegenerate(&out, testCase.response, got)
+			if testCase.want == "" {
+				return
+			}
+			rendered := strings.TrimRight(out.String(), "\n")
+			if strings.Count(rendered, "\n") != 0 {
+				t.Fatalf("marker is not a single line:\n%s", rendered)
+			}
+			if !strings.HasPrefix(rendered, impactDegenerateMarker+": ") {
+				t.Fatalf("marker prefix is not machine-matchable: %q", rendered)
+			}
+			if !strings.Contains(rendered, testCase.want) {
+				t.Fatalf("marker omits the reason: %q", rendered)
+			}
+		})
+	}
+}
+
+// TestImpactBundlePathNamesOnlyGeneratedOutput guards the predicate: a false positive here suppresses
+// a real answer, so only names whose contents are by definition not hand-edited may match.
+func TestImpactBundlePathNamesOnlyGeneratedOutput(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{
+		"build/three.module.js", "dist/index.js", "vendor/autoload.php",
+		"node_modules/lib/x.js", "target/classes/A.class", "js/app.min.js", "web/app.bundle.js",
+	} {
+		if !impactBundlePath(path) {
+			t.Fatalf("%q was not recognised as generated output", path)
+		}
+	}
+	for _, path := range []string{
+		"src/renderers/WebGLRenderer.js", "src/Carbon/Carbon.php", "internal/sem/search.go",
+		// "builder" and "distance" merely CONTAIN the segment names; matching them would suppress
+		// real answers in ordinary source.
+		"src/builder/Assembler.java", "lib/distance/haversine.rb", "pkg/outbound/client.go",
+	} {
+		if impactBundlePath(path) {
+			t.Fatalf("%q was wrongly treated as generated output", path)
+		}
 	}
 }

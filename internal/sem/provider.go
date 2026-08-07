@@ -276,7 +276,13 @@ type SymbolRecord struct {
 	// frozen provider schema and symbol IDs do not change.
 	sourceStartByte int
 	sourceEndByte   int
-	parameterNames  []string
+	// bodyless: this symbol declares a callable without defining it (a
+	// TypeScript overload signature or ambient declaration; see Entity.bodyless).
+	// Call resolution uses it to tell an overload set apart from genuinely
+	// ambiguous same-name definitions. Private, so the frozen schema and the
+	// compound-v1 IDs are unchanged.
+	bodyless       bool
+	parameterNames []string
 	// parameterNamesKnown distinguishes an AST-confirmed empty parameter list
 	// from missing parser metadata. This stays private to preserve the frozen
 	// provider schema.
@@ -1027,6 +1033,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 						result.symbols[i].Aliases = aliases
 					}
 				}
+				applyCppSpecializationAliases(result.symbols)
 				for _, symbol := range result.symbols {
 					if err := emit(symbol); err != nil {
 						return err
@@ -1548,10 +1555,23 @@ func WriteRelationsNDJSON(out io.Writer, snapshot ProviderSnapshot) error {
 
 func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRecord {
 	byName := map[string]string{}
-	baseCounts := map[string]int{}
+	// definitionCounts counts only entities that DEFINE the name; declarationCounts
+	// counts the bodyless declarations of it (TypeScript overload signatures,
+	// ambient `declare function`). They are kept apart so that adding a signature
+	// above an implementation never renames the implementation: a bodyless
+	// declaration is not a second definition, and compound-v1 IDs must survive
+	// ordinary edits (the same reason Swift extensions are not emitted as classes —
+	// see parser.go's swiftExtensionDeclaration note).
+	definitionCounts := map[string]int{}
+	declarationCounts := map[string]int{}
 	sigOrdinals := map[string]int{}
 	for _, entity := range entities {
-		baseCounts[symbolID(repoKey, language, path, entity.Kind, entity.Name)]++
+		id := symbolID(repoKey, language, path, entity.Kind, entity.Name)
+		if entity.bodyless {
+			declarationCounts[id]++
+			continue
+		}
+		definitionCounts[id]++
 	}
 	// One symbol is emitted per entity, in order, so an entity's index is also its symbol's
 	// index — which is what lets a lexical parent be looked up as symbols[parents[index]].
@@ -1560,7 +1580,17 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 	for index, entity := range entities {
 		qualified := entity.Name
 		id := symbolID(repoKey, language, path, entity.Kind, qualified)
-		if baseCounts[id] > 1 {
+		// A definition collides only with other definitions: overload signatures
+		// above it must not push it onto a suffixed ID. A bodyless declaration
+		// yields the bare ID to the definition whenever anything else shares the
+		// name, and keeps it when it is the only declaration of that name (a lone
+		// ambient `declare function`, an abstract member), so no ID that existed
+		// before overload signatures were emitted changes.
+		colliding := definitionCounts[id] > 1
+		if entity.bodyless {
+			colliding = definitionCounts[id]+declarationCounts[id] > 1
+		}
+		if colliding {
 			// Disambiguate same-name symbols by signature hash plus an ordinal
 			// within the matching-signature group. This is stable across edits
 			// that shift line numbers, unlike the previous line-range scheme;
@@ -1602,6 +1632,7 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 			Local:           entity.Local,
 			sourceStartByte: entity.sourceStartByte,
 			sourceEndByte:   entity.sourceEndByte,
+			bodyless:        entity.bodyless,
 		}
 		// Carried for every language: the parser marks parameterNamesKnown only
 		// when it actually read the names off the parse tree, so a grammar with
@@ -2120,6 +2151,17 @@ func resolveImportedCallTargets(name string, from SymbolRecord, candidates []Sym
 		imported = jsExportedImportFallbackTargets(name, from, candidates, importsByName[name], allowMethodTargets)
 	}
 	if len(imported) > 1 {
+		// An overload set is not ambiguity. `import { renderList }` followed by
+		// `renderList(...)` has exactly one call target — the implementation —
+		// even though the file also declares bodyless signatures for it. Without
+		// this the fanout below downgrades every candidate to "name_only", which
+		// the fast profile then discards wholesale (shallowCallRelationRetained),
+		// so `impact` reports a function with real callers as having none.
+		if implementation, ok := bodylessOverloadImplementation(imported); ok {
+			return []resolvedCallTarget{implementation}
+		}
+	}
+	if len(imported) > 1 {
 		for index := range imported {
 			imported[index].Confidence = minFloat(imported[index].Confidence, 0.62)
 			imported[index].Reason = fmt.Sprintf("ambiguous imported call: candidate among %d same-name declarations", len(imported))
@@ -2250,6 +2292,45 @@ func sqlDerivedScriptPath(path string) bool {
 
 func cFamilyOverloadResolutionEnabled(language string) bool {
 	return language == "C" || language == "C++"
+}
+
+// bodylessOverloadImplementation collapses a multi-candidate call fanout that
+// is really ONE overloaded function: several bodyless declarations (TypeScript
+// overload signatures / ambients) plus the single implementation they belong
+// to, all in the same file under the same qualified name. It returns that
+// implementation, so the call keeps the confidence and reason it resolved with
+// instead of being downgraded as ambiguous.
+//
+// It refuses whenever the set could be genuine ambiguity: two real definitions
+// of the name, candidates spread across files or qualified names, or a set with
+// no implementation at all (a pure ambient declaration file, where nothing says
+// which declaration the call runs).
+func bodylessOverloadImplementation(targets []resolvedCallTarget) (resolvedCallTarget, bool) {
+	if len(targets) < 2 {
+		return resolvedCallTarget{}, false
+	}
+	first := targets[0].SymbolRecord
+	if first.FilePath == "" || first.QualifiedName == "" {
+		return resolvedCallTarget{}, false
+	}
+	implementation := -1
+	for index, target := range targets {
+		if target.FilePath != first.FilePath || target.Language != first.Language ||
+			target.QualifiedName != first.QualifiedName || target.Kind != first.Kind {
+			return resolvedCallTarget{}, false
+		}
+		if target.bodyless {
+			continue
+		}
+		if implementation >= 0 {
+			return resolvedCallTarget{}, false
+		}
+		implementation = index
+	}
+	if implementation < 0 {
+		return resolvedCallTarget{}, false
+	}
+	return targets[implementation], true
 }
 
 func sameFileOverloadSet(candidates []SymbolRecord) ([]SymbolRecord, bool) {
@@ -4797,6 +4878,14 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 		}
 	}
 	importedReceiverVars := importedReceiverVarTypes(from.Signature, block, importsByName, goModule)
+	// Receivers declared with an in-module package-qualified type
+	// (`comm communicator.Communicator`). parameterVarTypes cannot see these, so
+	// without this tier an interface-typed parameter — the ordinary way Go passes
+	// a collaborator — carries no receiver type at all.
+	goQualifiedReceiverVars := map[string]pkgQualType{}
+	if from.Language == "Go" {
+		goQualifiedReceiverVars = goInModuleQualifiedReceiverTypes(from.Signature, block, importsByName, goModule)
+	}
 	deepReturnedCallSuffixes := receiverDeepChainSuffixes(deepChainedReturnCalls, returnedDeepChainCalls)
 	paramTypes := parameterVarTypes(from.Signature)
 	if from.Language == "Swift" {
@@ -4935,6 +5024,20 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 				confidence = 0.82
 				reason = "static method call resolved to the named type"
 				targetID = cls.ID
+			} else if qt, ok := goQualifiedReceiverVars[call.Receiver]; ok {
+				// `comm communicator.Communicator`: resolve the qualifier to the
+				// in-module package's type (alias == directory basename, the Go
+				// convention resolveQualifiedType already encodes) so the method
+				// lookup below runs against the right declaration. For an interface
+				// that declaration's members are its method requirements.
+				sym, ok := resolveQualifiedType(qt, symbolsByShortName)
+				if !ok {
+					continue
+				}
+				targetID = sym.ID
+				receiverTypeKind = sym.Kind
+				confidence = 0.8
+				reason = "method call resolved via package-qualified receiver type"
 			} else if qt, ok := pkgVarTypes[call.Receiver]; ok {
 				// Package-level var of a package-qualified type (alias.Type). Resolve
 				// the specific imported type so an ambiguous bare name (Encoder in
@@ -5985,9 +6088,9 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			resolution := "type_inferred"
 			method, ok := methodsByContainer[sym.ID][call.Method]
 			if !ok && interfaceSignatureDeclaresMethod(sym.Signature, call.Method) {
-				// Interface-typed return: a Go interface declares its methods
-				// inside the type declaration itself (they are not separate
-				// method symbols), so the container lookup above cannot succeed.
+				// Interface-typed return whose requirement carries no method symbol
+				// of its own — an embedded interface (`interface { io.Reader }`)
+				// contributes requirements the local declaration does not spell.
 				// When the locally-known interface names this method and exactly
 				// one method in the workspace carries the name, resolve to that
 				// sole implementation — the same unique-name tier as the
@@ -6186,7 +6289,7 @@ func receiverCallRelations(from SymbolRecord, block string, methodsByContainer m
 			break
 		}
 	}
-	return relations
+	return appendGoInterfaceImplementationCalls(relations, from, symbolsByShortName, methodsByContainer)
 }
 
 func receiverQualifiedMethodTarget(from SymbolRecord, call receiverCall, candidates []SymbolRecord, returnTypesBySymbolNameAndFile map[string]map[string][]string) (SymbolRecord, float64, string, string, string, bool) {
@@ -6226,6 +6329,213 @@ func receiverQualifiedMethodTarget(from SymbolRecord, call receiverCall, candida
 		return target, 0.78, "receiver call overload resolved from nested argument return type", "type_inferred", scope, true
 	}
 	return SymbolRecord{}, 0, "", "", "", false
+}
+
+// goInterfaceImplementationFanoutCap bounds how many concrete implementations a
+// single interface-method call may additionally bind to. Past it the call is
+// genuinely polymorphic and the interface node alone is the honest answer:
+// fanning an `io.Writer.Write` call out to every writer in a repository is noise,
+// not resolution.
+const goInterfaceImplementationFanoutCap = 8
+
+// goInterfaceRequirementMethod reports whether a Go method symbol is an interface
+// method requirement rather than a concrete method with a body. A Go method
+// declaration always spells `func (recv T) Name(...)`; a requirement is written
+// bare inside the interface body (`Disconnect() error`), so the leading `func`
+// keyword is the discriminator and no container lookup is needed.
+func goInterfaceRequirementMethod(symbol SymbolRecord) bool {
+	return symbol.Language == "Go" && symbol.Kind == "method" &&
+		!strings.HasPrefix(strings.TrimSpace(symbol.Signature), "func")
+}
+
+// goInterfaceImplementationMethods carries a call that resolved onto a Go
+// interface method requirement through to the concrete methods that satisfy it.
+//
+// Go interface satisfaction is implicit — there is no `implements` clause to
+// read, so implementersByContainer (which is built from declaration syntax) is
+// empty for every Go interface. Satisfaction is recovered structurally instead: a
+// type implements the interface when it declares a method for every requirement.
+// Two guards keep that from degenerating:
+//
+//   - a single-requirement interface is satisfied by any type that happens to own
+//     a same-named method (`Close`, `String`, `Error` are everywhere), so it only
+//     carries through when the called name is unique in the workspace — the same
+//     conservative tier the pre-interface-symbol code used;
+//   - more than goInterfaceImplementationFanoutCap satisfying types means the
+//     interface edge stands alone.
+//
+// The interface-method edge itself is always emitted by the caller; this is only
+// the extra implementation hop.
+func goInterfaceImplementationMethods(ifaceMethod SymbolRecord, symbolsByShortName map[string][]SymbolRecord, methodsByContainer map[string]map[string]SymbolRecord) []SymbolRecord {
+	if !goInterfaceRequirementMethod(ifaceMethod) || ifaceMethod.ContainerID == "" {
+		return nil
+	}
+	members := methodsByContainer[ifaceMethod.ContainerID]
+	requirements := make([]string, 0, len(members))
+	for name, member := range members {
+		// A container mixing requirement-shaped and body-carrying methods is not
+		// an interface body (a struct with an embedded anonymous interface field,
+		// say), so it declares no satisfaction contract.
+		if !goInterfaceRequirementMethod(member) {
+			return nil
+		}
+		requirements = append(requirements, name)
+	}
+	if len(requirements) == 0 {
+		return nil
+	}
+	sort.Strings(requirements)
+	if len(requirements) == 1 {
+		if _, unique := uniqueGoConcreteMethodByShortName(symbolsByShortName[ifaceMethod.Name]); !unique {
+			return nil
+		}
+	}
+	byContainer := map[string]SymbolRecord{}
+	var order []string
+	for _, candidate := range symbolsByShortName[ifaceMethod.Name] {
+		if candidate.Language != "Go" || candidate.Kind != "method" || candidate.ContainerID == "" {
+			continue
+		}
+		if candidate.ContainerID == ifaceMethod.ContainerID || goInterfaceRequirementMethod(candidate) {
+			continue
+		}
+		if _, seen := byContainer[candidate.ContainerID]; seen {
+			continue
+		}
+		implMembers := methodsByContainer[candidate.ContainerID]
+		satisfied := true
+		for _, requirement := range requirements {
+			if _, ok := implMembers[requirement]; !ok {
+				satisfied = false
+				break
+			}
+		}
+		if !satisfied {
+			continue
+		}
+		byContainer[candidate.ContainerID] = candidate
+		order = append(order, candidate.ContainerID)
+	}
+	if len(order) == 0 || len(order) > goInterfaceImplementationFanoutCap {
+		return nil
+	}
+	out := make([]SymbolRecord, 0, len(order))
+	for _, containerID := range order {
+		out = append(out, byContainer[containerID])
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].FilePath != out[j].FilePath {
+			return out[i].FilePath < out[j].FilePath
+		}
+		return out[i].StartLine < out[j].StartLine
+	})
+	return out
+}
+
+// uniqueGoConcreteMethodByShortName is uniqueMethodByShortName restricted to Go
+// methods that carry a body, so an interface requirement of the same name does
+// not itself count as a second candidate.
+func uniqueGoConcreteMethodByShortName(candidates []SymbolRecord) (SymbolRecord, bool) {
+	var methods []SymbolRecord
+	for _, candidate := range candidates {
+		if candidate.Language == "Go" && candidate.Kind == "method" && !goInterfaceRequirementMethod(candidate) {
+			methods = append(methods, candidate)
+		}
+	}
+	if len(methods) == 1 {
+		return methods[0], true
+	}
+	return SymbolRecord{}, false
+}
+
+// goMethodSymbolByID resolves a symbol ID back to its record using only the
+// short-name index. A method's stable ID ends in `:method:<Container>.<Name>`, so
+// the trailing dotted segment gives the bucket to search; anything else (a file
+// or external target) resolves to nothing.
+func goMethodSymbolByID(id string, symbolsByShortName map[string][]SymbolRecord) (SymbolRecord, bool) {
+	marker := strings.LastIndex(id, ":method:")
+	if marker < 0 {
+		return SymbolRecord{}, false
+	}
+	qualified := id[marker+len(":method:"):]
+	shortName := qualified
+	if dot := strings.LastIndex(qualified, "."); dot >= 0 {
+		shortName = qualified[dot+1:]
+	}
+	for _, candidate := range symbolsByShortName[shortName] {
+		if candidate.ID == id {
+			return candidate, true
+		}
+	}
+	return SymbolRecord{}, false
+}
+
+// appendGoInterfaceImplementationCalls carries every CALLS edge that landed on a
+// Go interface method requirement through to the concrete methods that satisfy
+// it. It runs once over the finished relation list rather than at each of the
+// dozen typed-receiver tiers, so a call reached through a parameter type, a
+// returned type or a constructor chain is treated identically. Existing edges are
+// never rewritten — this is purely additive, and the interface node keeps the
+// incoming edge that used to be impossible (a Go interface had no method symbols
+// at all, so terraform's communicator.Communicator was a dead end).
+func appendGoInterfaceImplementationCalls(relations []RelationRecord, from SymbolRecord, symbolsByShortName map[string][]SymbolRecord, methodsByContainer map[string]map[string]SymbolRecord) []RelationRecord {
+	if from.Language != "Go" || len(relations) == 0 {
+		return relations
+	}
+	existing := map[string]bool{}
+	for _, relation := range relations {
+		if relation.Type == "CALLS" {
+			existing[relation.ToID] = true
+		}
+	}
+	// Deterministic order: walk the relations, not a map.
+	var added []RelationRecord
+	for _, relation := range relations {
+		if relation.Type != "CALLS" {
+			continue
+		}
+		// The target symbol is found through the short-name index the caller
+		// already built (a full by-ID index would cost a workspace scan per
+		// function body); a method ID always ends `:method:Container.Name`.
+		ifaceMethod, ok := goMethodSymbolByID(relation.ToID, symbolsByShortName)
+		if !ok {
+			continue
+		}
+		for _, impl := range goInterfaceImplementationMethods(ifaceMethod, symbolsByShortName, methodsByContainer) {
+			if impl.ID == from.ID || existing[impl.ID] {
+				continue
+			}
+			existing[impl.ID] = true
+			scope := "file"
+			if impl.FilePath != from.FilePath {
+				scope = "module"
+			}
+			detail := ifaceMethod.Name
+			if len(relation.Evidence) > 0 && relation.Evidence[0].Detail != "" {
+				detail = relation.Evidence[0].Detail
+			}
+			added = append(added, RelationRecord{
+				RecordType:    "relation",
+				FromID:        from.ID,
+				ToID:          impl.ID,
+				Type:          "CALLS",
+				Confidence:    minFloat(relation.Confidence, 0.7),
+				Reason:        "interface method call carried to the implementing method",
+				RelationScope: scope,
+				Resolution:    "type_inferred",
+				TargetKind:    "symbol",
+				Evidence: []Evidence{{
+					Kind:      "call_site",
+					FilePath:  from.FilePath,
+					StartLine: from.StartLine,
+					EndLine:   from.EndLine,
+					Detail:    detail,
+				}},
+				WarningCodes: []string{},
+			})
+		}
+	}
+	return append(relations, added...)
 }
 
 // uniqueMethodByShortName returns the sole method whose short name matches, if
@@ -9057,7 +9367,10 @@ func fieldAccessRelations(from SymbolRecord, block string, fieldsByContainer map
 		if id, ok := selfContainers[access.Receiver]; ok {
 			containerID = id
 		} else if typeName, ok := varTypes[access.Receiver]; ok {
-			if sym, ok := firstTypeLikeNamed(symbolsByShortName[typeName], typeName); ok {
+			// Nearest-package preference, not first-match: a module that declares
+			// one `SDConfig` per sibling package would otherwise attribute every
+			// field read to whichever package sorted first.
+			if sym, ok := firstTypeLikeNamedPreferFile(symbolsByShortName[typeName], typeName, from.FilePath); ok {
 				containerID = sym.ID
 				confidence = 0.85
 				if _, ok := paramTypes[access.Receiver]; ok {
@@ -9181,6 +9494,60 @@ func firstTypeLikeNamed(records []SymbolRecord, name string) (SymbolRecord, bool
 	return SymbolRecord{}, false
 }
 
+// pathProximityRank scores how close a candidate declaration is to the site that
+// references it. Lower is nearer:
+//
+//	0            the same file
+//	1            the same directory — a Go package IS a directory, and a Go
+//	             module routinely reuses one type name across sibling packages
+//	             (prometheus declares 14 `Discovery` types with a `refresh`
+//	             method, one per discovery/<provider>/), so "same package" is the
+//	             decisive tier for receiver-method resolution
+//	2 + n        a shared module-path prefix, n = the number of path segments
+//	             that separate the two directories; a nearer sibling package wins
+//	             over a distant one
+//
+// Callers keep input order for equal ranks, so an unscoped tie still falls back
+// to whatever the previous first-match behaviour picked.
+func pathProximityRank(candidateFile, siteFile string) int {
+	candidate := filepath.ToSlash(candidateFile)
+	site := filepath.ToSlash(siteFile)
+	if candidate == site {
+		return 0
+	}
+	candidateDir := path.Dir(candidate)
+	siteDir := path.Dir(site)
+	if candidateDir == siteDir {
+		return 1
+	}
+	candidateSegments := strings.Split(candidateDir, "/")
+	siteSegments := strings.Split(siteDir, "/")
+	shared := 0
+	for shared < len(candidateSegments) && shared < len(siteSegments) && candidateSegments[shared] == siteSegments[shared] {
+		shared++
+	}
+	return 2 + (len(candidateSegments) - shared) + (len(siteSegments) - shared)
+}
+
+// nearestToSite picks the candidate whose declaration lives closest to the
+// referencing file, by pathProximityRank. Selection is stable: equal-rank
+// candidates keep the order the caller supplied, which is snapshot-deterministic,
+// so this only ever changes which of several equally-named declarations wins —
+// never whether one is found.
+func nearestToSite(candidates []SymbolRecord, siteFile string) (SymbolRecord, bool) {
+	if len(candidates) == 0 {
+		return SymbolRecord{}, false
+	}
+	best := candidates[0]
+	bestRank := pathProximityRank(best.FilePath, siteFile)
+	for _, candidate := range candidates[1:] {
+		if rank := pathProximityRank(candidate.FilePath, siteFile); rank < bestRank {
+			best, bestRank = candidate, rank
+		}
+	}
+	return best, true
+}
+
 // firstTypeLikeNamedPreferFile resolves a type name to a symbol, preferring a
 // declaration in the given file before falling back to the first global match.
 // Same-file preference matters when a repo vendors a mirror copy of its sources
@@ -9205,8 +9572,13 @@ func enclosingTypeShortName(from SymbolRecord) string {
 // the method (roslyn's Contract.InterpolatedStringHandlers.cs sorts before
 // Contract.cs, which defines ThrowIfFalse); probing only the first
 // candidate dropped every such static call. Preference order: a same-file
-// declaration defining the method, any declaration defining it (directly
-// or up its supertype chain), then the plain prefer-file lookup.
+// declaration defining the method, the nearest-package declaration defining it
+// (directly or up its supertype chain), then the plain prefer-file lookup.
+//
+// Package scoping is what keeps this honest across a module that reuses one type
+// name per sibling package: before it, `d.refresh(ctx)` in
+// discovery/puppetdb/puppetdb_test.go bound to discovery/azure's identically
+// named Discovery.refresh purely because azure sorted first.
 func typeLikeNamedWithMethod(records []SymbolRecord, name, file, method string, methodsByContainer map[string]map[string]SymbolRecord, superContainerByID map[string]string) (SymbolRecord, bool) {
 	var withMethod []SymbolRecord
 	for _, symbol := range records {
@@ -9218,23 +9590,22 @@ func typeLikeNamedWithMethod(records []SymbolRecord, name, file, method string, 
 		}
 	}
 	if len(withMethod) > 0 {
-		for _, symbol := range withMethod {
-			if symbol.FilePath == file {
-				return symbol, true
-			}
-		}
-		return withMethod[0], true
+		return nearestToSite(withMethod, file)
 	}
 	return firstTypeLikeNamedPreferFile(records, name, file)
 }
 
+// firstTypeLikeNamedPreferFile resolves a type name to a declaration, preferring
+// the referencing file, then the nearest package (see pathProximityRank), and
+// only then the first global match.
 func firstTypeLikeNamedPreferFile(records []SymbolRecord, name, file string) (SymbolRecord, bool) {
+	var named []SymbolRecord
 	for _, symbol := range records {
-		if symbol.Name == name && symbol.FilePath == file && typeLikeKind(symbol.Kind) {
-			return symbol, true
+		if symbol.Name == name && typeLikeKind(symbol.Kind) {
+			named = append(named, symbol)
 		}
 	}
-	return firstTypeLikeNamed(records, name)
+	return nearestToSite(named, file)
 }
 
 func typeRelationReason(relation, resolution string) string {

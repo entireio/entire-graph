@@ -170,6 +170,7 @@ var commandDocs = []commandDoc{
 			{name: "--internal-only", desc: "Drop unresolved external endpoints"},
 			{name: "--exclude-tests", desc: "Drop test-only neighbors"},
 			{name: "--head", desc: "Query the committed tree (cached)"},
+			{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Parsing depth"},
 		},
 		examples: []string{
 			"entire graph neighbors --repo . --symbol validateToken --relation CALLS --direction in",
@@ -189,12 +190,13 @@ var commandDocs = []commandDoc{
 			{name: "--file", arg: "path", desc: "Disambiguate an ambiguous name by file"},
 			{name: "--line", arg: "n", desc: "Disambiguate by line"},
 			{name: "--kind", arg: "kind", desc: "Disambiguate by symbol kind"},
-			{name: "--depth", arg: "1|2", def: "1", desc: "Caller-traversal depth"},
+			{name: "--depth", arg: "1|2", def: "2", desc: "Caller-traversal depth"},
 			{name: "--limit", arg: "n", def: "15", desc: "Max entries per section"},
 			{name: "--format", arg: "text|json", desc: "Output format"},
 			{name: "--max-context-bytes", arg: "n", def: "4096", desc: "Total text budget"},
 			{name: "--exclude-tests", desc: "Drop test-only entries"},
 			{name: "--head", desc: "Query the committed tree (cached)"},
+			{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Parsing depth"},
 		},
 		examples: []string{"entire graph impact --repo . --symbol WriteText"},
 	},
@@ -255,13 +257,20 @@ var commandDocs = []commandDoc{
 		examples: []string{"entire graph symbols --repo . --format ndjson"},
 	},
 	{
-		name:     "edges",
-		group:    groupInspect,
-		summary:  "Stream every relation (bulk NDJSON)",
-		usage:    []string{"entire graph edges --repo . --format ndjson [--worktree]"},
-		long:     "A bulk NDJSON stream of every relation record across all relation types (CALLS, IMPORTS, EXTENDS, HANDLES_ROUTE, ...), each tagged with resolution and confidence. For one symbol's callers/callees use neighbors instead. The trailing summary record carries aggregate stats and completeness.",
-		flags:    providerFlagDocs,
-		examples: []string{"entire graph edges --repo . --format ndjson"},
+		name:    "edges",
+		group:   groupInspect,
+		summary: "Stream every relation (bulk NDJSON)",
+		usage:   []string{"entire graph edges --repo . --format ndjson [--worktree] [--to ID|NAME] [--from ID|NAME] [--relation TYPE[,TYPE...]]"},
+		long:    "A bulk NDJSON stream of every relation record across all relation types (CALLS, IMPORTS, EXTENDS, HANDLES_ROUTE, ...), each tagged with resolution and confidence. For one symbol's callers/callees use neighbors instead. The trailing summary record carries aggregate stats and completeness.",
+		flags: append([]flagDoc{
+			{name: "--to", arg: "ID|NAME", desc: "Keep relations whose destination matches a stable ID or trailing symbol name"},
+			{name: "--from", arg: "ID|NAME", desc: "Keep relations whose source matches a stable ID or trailing symbol name"},
+			{name: "--relation", arg: "TYPE[,TYPE...]", desc: "Keep one or more relation types (case-insensitive)"},
+		}, providerFlagDocs...),
+		examples: []string{
+			"entire graph edges --repo . --format ndjson",
+			"entire graph edges --repo . --to validateToken --relation CALLS",
+		},
 	},
 	{
 		name:    "snapshot",
@@ -344,6 +353,27 @@ var commandDocs = []commandDoc{
 		examples: []string{"entire graph checkpoint abc123 --json"},
 	},
 	{
+		name:    "verify",
+		group:   groupAnalyze,
+		summary: "Run a test command and return an adjudicated verdict, not test output",
+		usage:   []string{`entire graph verify --test "<cmd>" --repo . [--setup "<cmd>"] [--record-baseline path | --pre-edit-baseline path] [--max-bytes 2048]`},
+		long: "verify runs your test command and reports WHICH TESTS CHANGED rather than what the runner printed: which newly pass, which newly fail, and which were ALREADY failing before the edit (labelled PRE-EXISTING). Raw runner output is never forwarded — ids are, text is not — and id lists cap at 20 with a count.\n\n" +
+			"Record a baseline on the pristine tree first (--record-baseline), then pass that file as --pre-edit-baseline after editing. Without a baseline the verdict is a state rather than a delta, so a failure that predates the change cannot be labelled as one.\n\n" +
+			"Parsers: pytest, jest/vitest, cargo test, go test, phpunit, rspec, minitest, maven/gradle surefire, ctest. An unrecognised format degrades to an exit-code-only verdict and says so.",
+		flags: []flagDoc{
+			{name: "--test", arg: "cmd", desc: "The test command to run (required)"},
+			{name: "--repo", arg: "path", desc: "Repository to run in (default: current repo)"},
+			{name: "--setup", arg: "cmd", desc: "Command run before the tests; its output never contributes test ids"},
+			{name: "--record-baseline", arg: "path", desc: "Write the pristine-tree result to this file instead of adjudicating"},
+			{name: "--pre-edit-baseline", arg: "path", desc: "Diff this run against a previously recorded baseline"},
+			{name: "--max-bytes", arg: "n", def: "2048", desc: "Cap the rendered verdict; the verdict clause always survives"},
+		},
+		examples: []string{
+			`entire graph verify --repo . --test "pytest tests/test_parser.py" --record-baseline /tmp/base.json`,
+			`entire graph verify --repo . --test "pytest tests/test_parser.py" --pre-edit-baseline /tmp/base.json`,
+		},
+	},
+	{
 		name:    "stats",
 		group:   groupAnalyze,
 		summary: "Human report: graph usage vs grep/read, and estimated token savings",
@@ -373,12 +403,17 @@ var commandDocs = []commandDoc{
 		name:    "doctor",
 		group:   groupMeta,
 		summary: "Diagnose the environment and confirm no-egress",
-		usage:   []string{"entire graph doctor [--json]"},
-		long:    "Reports the resolved repo, the Entire environment variables, plugin-data-dir writability, and confirms no_egress=true (no remote fetches, hosted APIs, telemetry, or grammar downloads).",
+		usage:   []string{`entire graph doctor [--json] [--assert "<command line>"]`},
+		long: "Reports the resolved repo, the Entire environment variables, plugin-data-dir writability, and confirms no_egress=true (no remote fetches, hosted APIs, telemetry, or grammar downloads).\n\n" +
+			"--assert is the preflight: it parses a command line against this binary and exits non-zero if this binary would reject it, WITHOUT running anything — no repo read, no index build, no writes. Run it once before a batch or a benchmark cell so a flag set built for a different build fails at startup instead of failing the first call of every session and leaving an agent to explore by hand. Repeatable. It runs each command's real parser, so a command that requires a flag will say so; assert the command line you actually intend to run.",
 		flags: []flagDoc{
 			{name: "--json", desc: "Emit the report as JSON"},
+			{name: "--assert", arg: "cmdline", desc: "Verify this binary accepts a command line, without running it (repeatable)"},
 		},
-		examples: []string{"entire graph doctor --json"},
+		examples: []string{
+			"entire graph doctor --json",
+			`entire graph doctor --assert "search --profile full --top-k 10 --format text"`,
+		},
 	},
 	{
 		name:    "version",
@@ -421,6 +456,43 @@ var commonFlagDocs = []flagDoc{
 	{name: "--progress", desc: "Emit progress events to stderr"},
 	{name: "--max-seconds", arg: "n", def: "120", desc: "Analysis budget; 0 = unlimited"},
 	{name: "--repo", arg: "path", desc: "Repository (default: current repo)"},
+}
+
+// unexpectedArgumentsError explains an argument the parser did not recognise, and says the one
+// thing that is usually true when the argument is flag-shaped: this binary is older than whatever
+// wrote the command line.
+//
+// The old message ("search received unexpected arguments: --callee-hop") describes the symptom and
+// not the cause, and the difference matters because of WHO reads it. A harness driving a flag set
+// built for a newer binary gets an exit 1 and an empty payload on every single call, for the whole
+// run — the agent's first mandated action fails, it falls back to exploring by hand, and the cell
+// silently measures a graph arm that never reached the graph. Naming the version turns a run that
+// looks broken into a run that reads as version skew, at the first call rather than the last.
+//
+// A positional argument keeps the plain wording: `search foo` is a typo, not a stale deploy, and
+// telling its author about binary versions would be noise.
+func unexpectedArgumentsError(command, version string, rest []string) error {
+	var flags []string
+	for _, arg := range rest {
+		if strings.HasPrefix(arg, "-") && arg != "-" {
+			flags = append(flags, arg)
+		}
+	}
+	if len(flags) == 0 {
+		return fmt.Errorf("%s received unexpected arguments: %s", command, strings.Join(rest, " "))
+	}
+	return fmt.Errorf(
+		"%s does not accept %s in entire-graph %s: this binary may be older than the caller that built the command line; run \"entire graph %s --help\" for the flags it does accept (unexpected: %s)",
+		command, strings.Join(flags, " "), versionOrUnknown(version), command, strings.Join(rest, " "))
+}
+
+// versionOrUnknown keeps the message honest when the binary was built without a version stamped in:
+// printing an empty string beside "entire-graph" reads as a version rather than the absence of one.
+func versionOrUnknown(version string) string {
+	if strings.TrimSpace(version) == "" {
+		return "(unknown version)"
+	}
+	return version
 }
 
 // findCommandDoc returns the doc for a command name, resolving aliases.

@@ -548,9 +548,8 @@ func TestRenderSearchVerifyCommandIsOneCopyableLine(t *testing.T) {
 		DerivedFrom: "Cargo.toml [package] name + covering test path",
 	}))
 	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("expected two lines, got %d:\n%s", len(lines), rendered)
-	}
+	// The COMMAND is still exactly one line, on the first line, so it stays copy-pasteable. The lines
+	// below it are the contract on using it, and they are asserted separately.
 	if lines[0] != "VERIFY: cargo test -p grep-printer --lib test_trim" {
 		t.Fatalf("first line = %q", lines[0])
 	}
@@ -558,15 +557,23 @@ func TestRenderSearchVerifyCommandIsOneCopyableLine(t *testing.T) {
 		!strings.Contains(lines[1], "Cargo.toml [package] name") {
 		t.Fatalf("second line must state target and derivation: %q", lines[1])
 	}
-}
-
-func TestBuildSearchVerifyCommandNeedsACandidateFixSite(t *testing.T) {
-	t.Parallel()
-	evidence := searchVerifyTestEvidence(map[string]string{"go.mod": "module x\n"})
-	// A payload whose only entry is documentation names no file a patch can land in.
-	docsOnly := []SearchResult{{Rank: 1, FilePath: "docs/guide.md", Section: searchSectionDocs}}
-	if got := buildSearchVerifyCommand(docsOnly, evidence); got != nil {
-		t.Fatalf("expected silence, got %q", got.Command)
+	if len(lines) > 5 {
+		t.Fatalf("VERIFY block grew past five lines, got %d:\n%s", len(lines), rendered)
+	}
+	// The three measured churn modes must each be named. Post-edit verify churn cost +$4.11 across
+	// three sessions, and a hand-built classpath was 55.6% of one session's output tokens.
+	contract := strings.Join(lines[2:], " ")
+	for _, want := range []string{"ONCE", "re-run THIS command", "classpath", "reverting"} {
+		if !strings.Contains(contract, want) {
+			t.Fatalf("contract does not name %q:\n%s", want, rendered)
+		}
+	}
+	if cost := searchVerifyCommandCost(&SearchVerifyCommand{
+		Command:     "cargo test -p grep-printer --lib test_trim",
+		Targets:     "crates/printer/src/util.rs",
+		DerivedFrom: "Cargo.toml [package] name + covering test path",
+	}); cost > searchVerifyCommandMaxBytes {
+		t.Fatalf("VERIFY block costs %d bytes, over its own cap of %d", cost, searchVerifyCommandMaxBytes)
 	}
 }
 
@@ -597,23 +604,37 @@ func TestCMakeVerifyIsSelfConfiguringAndTargetScoped(t *testing.T) {
 			t.Fatalf("command missing %q:\n%s", want, got.Command)
 		}
 	}
-	// No enable_testing() -> silence, never an invented ctest run.
+	// No enable_testing() -> NEVER an invented ctest run. The CMake derivation declines, and since
+	// TestBuildSearchVerifyCommandFallsBackToTheResidualFloor the ladder answers with the residual
+	// floor instead of silence: the assertion that matters here is that nothing was guessed.
 	quiet := map[string]string{
 		"CMakeLists.txt":      "project(fmt)\n",
 		"test/CMakeLists.txt": "add_fmt_test(ranges-test)\n",
 		"test/ranges-test.cc": "",
 	}
-	if got := buildSearchVerifyCommand(results, searchVerifyTestEvidence(quiet)); got != nil {
-		t.Fatalf("expected silence without enable_testing(), got %q", got.Command)
-	}
-	// A target the CMake sources never declare -> silence rather than a guess.
+	assertNoInventedCTest(t, buildSearchVerifyCommand(results, searchVerifyTestEvidence(quiet)))
+	// A target the CMake sources never declare -> the floor rather than a guess.
 	undeclared := map[string]string{
 		"CMakeLists.txt":      "project(fmt)\nenable_testing()\n",
 		"test/CMakeLists.txt": "add_fmt_test(other-test)\n",
 		"test/ranges-test.cc": "",
 	}
-	if got := buildSearchVerifyCommand(results, searchVerifyTestEvidence(undeclared)); got != nil {
-		t.Fatalf("expected silence for an undeclared target, got %q", got.Command)
+	assertNoInventedCTest(t, buildSearchVerifyCommand(results, searchVerifyTestEvidence(undeclared)))
+}
+
+// assertNoInventedCTest pins the CMake derivation's real contract: a TARGET the sources never
+// declare may never be manufactured. What the ladder answers with instead is deliberately not
+// pinned here — the suite tier (`ctest` over whatever `enable_testing()` declared) and the residual
+// floor are both honest answers derived from evidence; `-R ranges-test` against sources that never
+// declared ranges-test is not.
+func assertNoInventedCTest(t *testing.T, got *SearchVerifyCommand) {
+	t.Helper()
+	if got == nil {
+		return
+	}
+	if got.Tier == searchVerifyTierNarrow || strings.Contains(got.Command, "-R ranges-test") ||
+		strings.Contains(got.Command, "--target ranges-test") {
+		t.Fatalf("a target-scoped cmake/ctest command was invented from insufficient evidence: %q", got.Command)
 	}
 }
 
@@ -812,6 +833,34 @@ func TestDeriveSearchVerifyStillPrefersTheShorterNameAtEqualCoverage(t *testing.
 	}
 }
 
+func TestBuildSearchVerifyCommandFallsBackToTheResidualFloor(t *testing.T) {
+	t.Parallel()
+	evidence := searchVerifyTestEvidence(map[string]string{"go.mod": "module x\n"})
+	// SUPERSEDES the previous expectation of SILENCE for a payload with no candidate fix site.
+	// Silent absence is indistinguishable from a deriver bug and, paired with the stop-early doctrine,
+	// lets an agent ship unverified — measured as a non-derivable VERIFY in 12 of 12 sessions. The
+	// residual floor states the fact and prescribes the fallback in one line.
+	docsOnly := []SearchResult{{Rank: 1, FilePath: "docs/guide.md", Section: searchSectionDocs}}
+	command := buildSearchVerifyCommand(docsOnly, evidence)
+	if command == nil {
+		t.Fatal("no VERIFY block at all — the residual floor must make this impossible")
+	}
+	if command.Tier != searchVerifyTierNone {
+		t.Fatalf("tier = %q, want %q", command.Tier, searchVerifyTierNone)
+	}
+	if command.Command != searchVerifyNoneCommand {
+		t.Fatalf("command = %q, want the residual floor", command.Command)
+	}
+	// The floor carries no contract note: the note is advice about running a command, and there is
+	// no command to run.
+	rendered := string(RenderSearchVerifyCommand(command))
+	if strings.Contains(rendered, "run it ONCE") {
+		t.Fatalf("the floor carried the contract note:\n%s", rendered)
+	}
+	if !strings.HasPrefix(rendered, "VERIFY: ") {
+		t.Fatalf("the line start must stay byte-identical:\n%s", rendered)
+	}
+}
 func TestSearchVerifySuiteFallback(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {

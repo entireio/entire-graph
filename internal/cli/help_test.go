@@ -14,8 +14,43 @@ import (
 var dispatchCommands = []string{
 	"diff", "commit", "checkpoint", "analyze", "doctor", "capabilities",
 	"snapshot", "snapshot-query", "symbols", "edges", "search", "index", "def",
-	"explain", "neighbors", "impact", "stats", "agent-guide", "init-agents",
-	"version", "help",
+	"explain", "neighbors", "impact", "verify", "stats", "agent-guide",
+	"init-agents", "version", "help",
+}
+
+// TestUnknownFlagNamesTheVersion pins that a flag-shaped argument this binary does not know reads
+// as version skew rather than as a broken tool.
+//
+// This is the third way a benchmark cell can silently stop calling the graph: a harness whose flag
+// set was built for a newer binary gets exit 1 and an empty payload on EVERY call, the agent's
+// first mandated action fails, and the whole run measures a graph arm that never reached the graph.
+// The message is the only place that failure can be diagnosed from a transcript.
+func TestUnknownFlagNamesTheVersion(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	write(t, repo, "alpha.py", "def alpha_widget():\n    return True\n")
+
+	err := Run(t.Context(), Options{Version: "0.9.9", Env: EntireEnv{RepoRoot: repo}, Stdout: &bytes.Buffer{}},
+		[]string{"search", "--repo", repo, "--query", "alpha", "--flag-from-a-newer-build"})
+	if err == nil {
+		t.Fatal("an unknown flag was accepted")
+	}
+	for _, want := range []string{"0.9.9", "--flag-from-a-newer-build", "--help", "older"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error does not mention %q: %v", want, err)
+		}
+	}
+
+	// A positional argument is a typo, not a stale deploy, and keeps the plain wording — otherwise
+	// every mistyped command would start advertising version numbers.
+	err = Run(t.Context(), Options{Version: "0.9.9", Env: EntireEnv{RepoRoot: repo}, Stdout: &bytes.Buffer{}},
+		[]string{"search", "--repo", repo, "--query", "alpha", "stray"})
+	if err == nil {
+		t.Fatal("a stray positional argument was accepted")
+	}
+	if !strings.Contains(err.Error(), "unexpected arguments") || strings.Contains(err.Error(), "0.9.9") {
+		t.Fatalf("positional argument did not keep the plain wording: %v", err)
+	}
 }
 
 // TestRegistryMatchesDispatch enforces that the help registry and the dispatch

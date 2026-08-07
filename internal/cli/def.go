@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -50,8 +51,11 @@ const (
 )
 
 type defFlags struct {
-	Repo            string
-	Symbol          string
+	Repo    string
+	Symbols []string
+	Symbol  string
+	// From is the line a clipped body resumes at, so the "--from N" the resume note prints is real.
+	From            int
 	File            string
 	Line            int
 	Kind            string
@@ -118,12 +122,16 @@ type defDeclaration struct {
 }
 
 type defResponse struct {
-	FormatVersion    int                    `json:"format_version"`
-	RepoRoot         string                 `json:"repo_root"`
-	Commit           string                 `json:"commit,omitempty"`
-	Tree             string                 `json:"tree,omitempty"`
-	Profile          string                 `json:"profile,omitempty"`
-	Query            string                 `json:"query"`
+	FormatVersion int    `json:"format_version"`
+	RepoRoot      string `json:"repo_root"`
+	Commit        string `json:"commit,omitempty"`
+	Tree          string `json:"tree,omitempty"`
+	Profile       string `json:"profile,omitempty"`
+	Query         string `json:"query"`
+	// FuzzyMatchKind names the rung of the fuzzy ladder these declarations came from, empty on an
+	// exact match. See resolveFocusSymbolsOrFuzzy: `def` answers a misspelled name rather than
+	// returning nothing.
+	FuzzyMatchKind   string                 `json:"fuzzy_match_kind,omitempty"`
 	Declarations     []defDeclaration       `json:"declarations"`
 	DeclarationTotal int                    `json:"declarations_total"`
 	Truncated        bool                   `json:"truncated"`
@@ -166,21 +174,67 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 	}
 	indexLatency := time.Since(totalStarted)
 	queryStarted := time.Now()
-	response := buildDefResponse(snapshot, flags)
-	response.IndexCacheHit = cacheHit
-	response.IndexLatencyMS = indexLatency.Milliseconds()
-	response.QueryLatencyMS = time.Since(queryStarted).Milliseconds()
-	response.TotalLatencyMS = time.Since(totalStarted).Milliseconds()
-	switch flags.Format {
-	case "json":
-		encoder := json.NewEncoder(opts.Stdout)
-		encoder.SetEscapeHTML(false)
-		return encoder.Encode(response)
-	case "text", "agent":
-		return writeDefText(opts.Stdout, response, flags.MaxContextBytes)
-	default:
-		return fmt.Errorf("def --format must be json, text, or agent, got %q", flags.Format)
+	symbols := flags.Symbols
+	if len(symbols) == 0 {
+		symbols = []string{flags.Symbol}
 	}
+	// One index build, N answers. The whole point of the multi-query form is that the second and third
+	// name cost a map lookup rather than another 10-second snapshot load.
+	for position, symbol := range symbols {
+		query := flags
+		query.Symbol = symbol
+		response := buildDefResponse(snapshot, query)
+		response.IndexCacheHit = cacheHit
+		response.IndexLatencyMS = indexLatency.Milliseconds()
+		response.QueryLatencyMS = time.Since(queryStarted).Milliseconds()
+		response.TotalLatencyMS = time.Since(totalStarted).Milliseconds()
+		switch flags.Format {
+		case "json":
+			encoder := json.NewEncoder(opts.Stdout)
+			encoder.SetEscapeHTML(false)
+			if err := encoder.Encode(response); err != nil {
+				return err
+			}
+		case "text", "agent":
+			if position > 0 {
+				// A separator, because several cards in one stream have to be tellable apart.
+				fmt.Fprintln(opts.Stdout)
+			}
+			if len(symbols) > 1 {
+				fmt.Fprintf(opts.Stdout, "== %s ==\n", symbol)
+			}
+			if err := writeDefText(opts.Stdout, response, flags.MaxContextBytes); err != nil {
+				return err
+			}
+			writeDefBodies(opts.Stdout, response, repo, query.From)
+		default:
+			return fmt.Errorf("def --format must be json, text, or agent, got %q", flags.Format)
+		}
+	}
+	return nil
+}
+
+// writeDefBodies prints the SOURCE of each declaration the card describes, numbered.
+//
+// The card answers "what can I do with this"; agents call `def` to answer "show me the code". Measured
+// on carbon: the agent got a body it could not navigate, cut it with `head -80`, lost the line it
+// needed and spent 87 turns grepping instead. The card alone was never the whole answer.
+func writeDefBodies(out io.Writer, response defResponse, repoRoot string, from int) {
+	if len(response.Declarations) == 0 || repoRoot == "" {
+		return
+	}
+	records := make([]sem.SymbolRecord, 0, len(response.Declarations))
+	for _, declaration := range response.Declarations {
+		start := declaration.StartLine
+		if from > start {
+			start = from
+		}
+		records = append(records, sem.SymbolRecord{
+			Name: defDisplayName(declaration), Kind: declaration.Kind,
+			FilePath: declaration.FilePath, StartLine: start, EndLine: declaration.EndLine,
+		})
+	}
+	writeSymbolMatchBodies(out, symbolMatchBodies(repoRoot, records, len(records)))
 }
 
 func parseDefFlags(args []string) (defFlags, error) {
@@ -207,6 +261,16 @@ func parseDefFlags(args []string) (defFlags, error) {
 			flags.File, err = value()
 		case "--kind":
 			flags.Kind, err = value()
+		// --from N resumes a body the 400-line cap clipped. It is the invocation the resume note prints,
+		// so the note is actionable rather than merely apologetic.
+		case "--from":
+			var raw string
+			if raw, err = value(); err == nil {
+				flags.From, err = strconv.Atoi(raw)
+				if err != nil || flags.From < 0 {
+					return flags, fmt.Errorf("def --from requires a non-negative integer, got %q", raw)
+				}
+			}
 		case "--format":
 			flags.Format, err = value()
 		case "--profile":
@@ -249,10 +313,13 @@ func parseDefFlags(args []string) (defFlags, error) {
 			if strings.HasPrefix(arg, "-") {
 				return flags, fmt.Errorf("def received unexpected argument %q", arg)
 			}
-			if flags.Symbol != "" {
-				return flags, fmt.Errorf("def takes one name, got %q and %q", flags.Symbol, arg)
+			// MULTI-QUERY. Agents batch shell calls under the prompt's batching rule — laravel chained
+			// three greps into one Bash call — and a tool that answers one name per invocation cannot
+			// compete with that. `def A B C` returns each body in sequence.
+			flags.Symbols = append(flags.Symbols, arg)
+			if flags.Symbol == "" {
+				flags.Symbol = arg
 			}
-			flags.Symbol = arg
 		}
 		if err != nil {
 			return flags, err
@@ -304,6 +371,7 @@ func buildDefResponse(snapshot sem.ProviderSnapshot, flags defFlags) defResponse
 	}
 	index := newDefIndex(snapshot)
 	matches := index.resolve(flags)
+	response.FuzzyMatchKind = index.fuzzyKind
 	groups := index.groupPartials(matches)
 	response.DeclarationTotal = len(groups)
 	if len(groups) > defDeclarationLimit {
@@ -333,6 +401,10 @@ type defIndex struct {
 	symbols        []sem.SymbolRecord
 	filePaths      []string
 	repoRoot       string
+	// fuzzyKind names the rung of the fuzzy ladder that produced the matches, empty when the exact
+	// lookup succeeded. It is set by resolve and reported so the caller knows it did not get what it
+	// literally asked for.
+	fuzzyKind string
 }
 
 type defOwnedMember struct {
@@ -441,6 +513,21 @@ func (index *defIndex) resolve(flags defFlags) []sem.SymbolRecord {
 		if len(matches) > 0 {
 			break
 		}
+	}
+	// FIX B: every spelling of the name missed, so degrade to the fuzzy ladder rather than answering
+	// "(no symbol named X)". The ref is rebuilt from the caller's ORIGINAL spelling: the qualified-name
+	// forms above are exact-match aids and would only narrow the fuzzy search.
+	if len(matches) == 0 {
+		ref := parseSymbolRef(flags.Symbol, flags.File, flags.Line, flags.Kind, index.repoRoot, index.filePaths)
+		if fuzzy, tier, ok := resolveFocusSymbolsOrFuzzy(index.symbols, ref, symbolFuzzyCandidateLimit); ok {
+			index.fuzzyKind = tier.label()
+			matches = fuzzy
+		}
+	}
+	// A fuzzy answer keeps the relevance order resolveFocusSymbolsOrFuzzy produced; only exact matches
+	// are re-sorted positionally. See the same reasoning in buildNeighborResponse.
+	if index.fuzzyKind != "" {
+		return matches
 	}
 	sort.Slice(matches, func(left, right int) bool {
 		if matches[left].FilePath != matches[right].FilePath {
@@ -711,6 +798,12 @@ func renderDefText(response defResponse, limit int) []byte {
 	if len(response.Declarations) == 0 {
 		writeNoFocusMatch(&buffer, response.Query, "", 0)
 		return []byte(buffer.String())
+	}
+	// A fuzzy answer says so, once, above the cards. Silently returning a different symbol's
+	// declaration than the one asked for would be worse than the empty answer this replaced.
+	if response.FuzzyMatchKind != "" {
+		fmt.Fprintf(&buffer, "No exact match for %q; showing the closest %d by %s match.\n",
+			response.Query, len(response.Declarations), response.FuzzyMatchKind)
 	}
 	for index, declaration := range response.Declarations {
 		if index > 0 {

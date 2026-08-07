@@ -1300,3 +1300,47 @@ func TestPreindexForceRebuildsDespiteValidCache(t *testing.T) {
 		t.Fatal("ordinary preindex after --force should hit the refreshed entry")
 	}
 }
+
+// SymbolRecord.bodyless is private, so it does not survive the cached snapshot's
+// wire format — but the selective derivation RERUNS call resolution over those
+// cached symbols, and resolution reads bodyless to tell a TypeScript overload
+// set apart from genuine ambiguity. Without the sidecar the derived graph
+// downgrades an overloaded call to name_only, which the fast profile then drops:
+// the same query would answer "1 caller" cold and "no callers" warm.
+func TestSelectiveFastSearchSnapshotPreservesCachedBodylessDeclarations(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "src/renderList.ts", `export function renderList(source: number, fn: (i: number) => any): any[]
+export function renderList(source: string, fn: (v: string) => any): any[]
+export function renderList(source: any, fn: (...a: any[]) => any): any[] {
+  return []
+}
+`)
+	write(t, repo, "src/caller.ts", `import { renderList } from './renderList'
+
+export function useList(items: string[]): any[] {
+  return renderList(items, (v) => v)
+}
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	cacheDir := t.TempDir()
+	if _, _, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{Profile: ProfileFast}, cacheDir); err != nil {
+		t.Fatal(err)
+	}
+	selective, cacheHit, err := loadOrBuildSearchGraphSnapshot(t.Context(), repo, "test-version",
+		ProviderSnapshotOptions{Profile: ProfileFast, OnlyFiles: []string{"src/renderList.ts", "src/caller.ts"}}, cacheDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cacheHit {
+		t.Fatal("fast selective snapshot did not derive from complete cache")
+	}
+	calls := runCallsFrom(selective, "useList")
+	if len(calls) != 1 || calls[0].Resolution != "import_resolved" {
+		t.Fatalf("cached fast selective snapshot lost the overload collapse: %#v",
+			relationsOfType(selective.Relations, "CALLS"))
+	}
+}
