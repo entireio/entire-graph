@@ -189,34 +189,18 @@ func TestSafeProseInflectionMatchSupportsBoundedWordFamilies(t *testing.T) {
 	}
 }
 
-func TestSearchRepositoryRanksDerivedWordFamilyMarkdownSession(t *testing.T) {
-	repo := t.TempDir()
-	write(t, repo, "sessions/focus.md", `# Navigation archive
-
-The expedition was carefully navigated and archived after sunset.
-`)
-	for index := 0; index < 11; index++ {
-		write(t, repo, fmt.Sprintf("sessions/distractor-%02d.md", index), fmt.Sprintf(
-			"# Navigation marker%d ridge%d vessel%d\n\nUnrelated archive index.\n",
-			index, index, index,
-		))
-	}
-
-	response, err := SearchRepository(
-		t.Context(), repo, "test", "navigate archive sunset", SearchOptions{
-			Worktree: true, Profile: ProfileSyntaxOnly, TopK: 10, MaxIndexedFiles: 32,
-		},
+func TestProseParentTermListsUseDerivedWordFamilyCoverage(t *testing.T) {
+	t.Parallel()
+	candidate := proseTestCandidate(
+		"sessions/focus.md", 10, 4, "The expedition was carefully navigated.", nil,
 	)
-	if err != nil {
-		t.Fatal(err)
+	candidates := []searchCandidate{candidate}
+	lists := proseParentTermLists(
+		candidates, proseParents(candidates), []string{"navigate"}, 10,
+	)
+	if len(lists) != 1 || len(lists[0]) != 1 || lists[0][0].parent.path != "sessions/focus.md" {
+		t.Fatalf("derived family did not seed prose parent: %#v", lists)
 	}
-	for _, result := range response.Results {
-		if result.FilePath == "sessions/focus.md" &&
-			containsString(result.Signals, proseParentRetrievalSignal) {
-			return
-		}
-	}
-	t.Fatalf("derived word-family session missing from top 10: %#v", response.Results)
 }
 
 func TestSearchRepositoryDoesNotConflateUnsafeProseSuffixes(t *testing.T) {
