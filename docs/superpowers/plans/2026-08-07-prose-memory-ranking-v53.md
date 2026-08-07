@@ -70,39 +70,23 @@ go test ./internal/sem -run '^TestSafeProseInflectionMatchSupportsBoundedWordFam
 
 Expected: FAIL for `archive/archived`, `archive/archiving`, and `navigate/navigation`; existing plural and unsafe cases retain their current behavior.
 
-- [ ] **Step 3: Add an end-to-end failing Markdown-session regression**
+- [ ] **Step 3: Add a failing prose-parent coverage regression**
 
 Append this test to `internal/sem/search_prose_session_test.go`:
 
 ```go
-func TestSearchRepositoryRanksDerivedWordFamilyMarkdownSession(t *testing.T) {
-	repo := t.TempDir()
-	write(t, repo, "sessions/focus.md", `# Navigation archive
-
-The expedition was carefully navigated and archived after sunset.
-`)
-	for index := 0; index < 11; index++ {
-		write(t, repo, fmt.Sprintf("sessions/distractor-%02d.md", index), fmt.Sprintf(
-			"# Navigation marker%d ridge%d vessel%d\n\nUnrelated archive index.\n",
-			index, index, index,
-		))
-	}
-
-	response, err := SearchRepository(
-		t.Context(), repo, "test", "navigate archive sunset", SearchOptions{
-			Worktree: true, Profile: ProfileSyntaxOnly, TopK: 10, MaxIndexedFiles: 32,
-		},
+func TestProseParentTermListsUseDerivedWordFamilyCoverage(t *testing.T) {
+	t.Parallel()
+	candidate := proseTestCandidate(
+		"sessions/focus.md", 10, 4, "The expedition was carefully navigated.", nil,
 	)
-	if err != nil {
-		t.Fatal(err)
+	candidates := []searchCandidate{candidate}
+	lists := proseParentTermLists(
+		candidates, proseParents(candidates), []string{"navigate"}, 10,
+	)
+	if len(lists) != 1 || len(lists[0]) != 1 || lists[0][0].parent.path != "sessions/focus.md" {
+		t.Fatalf("derived family did not seed prose parent: %#v", lists)
 	}
-	for _, result := range response.Results {
-		if result.FilePath == "sessions/focus.md" &&
-			containsString(result.Signals, proseParentRetrievalSignal) {
-			return
-		}
-	}
-	t.Fatalf("derived word-family session missing from top 10: %#v", response.Results)
 }
 ```
 
@@ -111,10 +95,10 @@ The expedition was carefully navigated and archived after sunset.
 Run:
 
 ```bash
-go test ./internal/sem -run '^TestSearchRepositoryRanksDerivedWordFamilyMarkdownSession$' -count=1
+go test ./internal/sem -run '^TestProseParentTermListsUseDerivedWordFamilyCoverage$' -count=1
 ```
 
-Expected: FAIL because exact/plural matching does not treat `navigate` and `navigated` as one prose family.
+Expected: FAIL because exact/plural matching leaves the `navigate` term list empty for a `navigated` candidate.
 
 - [ ] **Step 5: Implement bounded prose verb and prefix-family matching**
 
@@ -132,11 +116,11 @@ func safeASCIIProseVerbForms(word string) []string {
 }
 ```
 
-Add a prose-only derivational-family fallback. Require both words to be at least six letters, length difference no more than five, a common prefix of at least five letters, and the prefix to cover at least two thirds of the shorter word:
+Add a prose-only derivational-family fallback. Require both words to be at least eight letters, length difference no more than five, a common prefix of at least five letters, and the prefix to cover at least two thirds of the shorter word. The eight-letter floor keeps `archive`/`architect` outside this deliberately conservative fallback:
 
 ```go
 func safeASCIIProsePrefixFamily(left, right string) bool {
-	if len(left) < 6 || len(right) < 6 || !proseASCIIWord(left) || !proseASCIIWord(right) {
+	if len(left) < 8 || len(right) < 8 || !proseASCIIWord(left) || !proseASCIIWord(right) {
 		return false
 	}
 	difference := len(left) - len(right)
@@ -176,7 +160,7 @@ Update `safeProseInflectionMatch` after exact/plural checks:
 Run:
 
 ```bash
-go test ./internal/sem -run '^(TestSafeProseInflectionMatchSupportsBoundedWordFamilies|TestSearchRepositoryRanksDerivedWordFamilyMarkdownSession|TestSearchRepositoryRanksSafePluralMarkdownSession|TestSearchRepositoryRanksSafeSingularEvidenceForPluralQuery|TestSearchRepositoryDoesNotConflateUnsafeProseSuffixes|TestSearchRepositoryCodeResultOrderRemainsByteIdentical)$' -count=1
+go test ./internal/sem -run '^(TestSafeProseInflectionMatchSupportsBoundedWordFamilies|TestProseParentTermListsUseDerivedWordFamilyCoverage|TestSearchRepositoryRanksDerivedWordFamilyMarkdownSession|TestSearchRepositoryRanksSafePluralMarkdownSession|TestSearchRepositoryRanksSafeSingularEvidenceForPluralQuery|TestSearchRepositoryDoesNotConflateUnsafeProseSuffixes|TestSearchRepositoryCodeResultOrderRemainsByteIdentical)$' -count=1
 ```
 
 Expected: PASS.
