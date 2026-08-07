@@ -176,10 +176,13 @@ func TestSafeProseInflectionMatchSupportsBoundedWordFamilies(t *testing.T) {
 		{left: "archive", right: "archived", want: true},
 		{left: "archive", right: "archiving", want: true},
 		{left: "navigate", right: "navigation", want: true},
+		{left: "authorization", right: "preauthorization", want: true},
 		{left: "orchard", right: "orchards", want: true},
 		{left: "gas", right: "gases", want: false},
 		{left: "archive", right: "architect", want: false},
 		{left: "plan", right: "planet", want: false},
+		{left: "universe", right: "university", want: false},
+		{left: "conserve", right: "conservatory", want: false},
 	}
 	for _, testCase := range tests {
 		if got := safeProseInflectionMatch(testCase.left, testCase.right); got != testCase.want {
@@ -212,7 +215,12 @@ func TestProseParentHeadCountReservesMoreTailForListQuestions(t *testing.T) {
 		{query: "find the archive implementation", want: 5},
 		{query: "which archives contain lanterns", want: 3},
 		{query: "what records exist other than the ledger", want: 3},
+		{query: "what item exists other than the ledger", want: 3},
 		{query: "where are the travel notes", want: 3},
+		{query: "what else is recorded", want: 3},
+		{query: "what is the status", want: 5},
+		{query: "what does the analysis show", want: 5},
+		{query: "where is the atlas", want: 5},
 	}
 	for _, testCase := range tests {
 		if got := proseParentHeadCount(buildSearchQuery(testCase.query), 10); got != testCase.want {
@@ -220,6 +228,177 @@ func TestProseParentHeadCountReservesMoreTailForListQuestions(t *testing.T) {
 				testCase.query, got, testCase.want)
 		}
 	}
+}
+
+// TestSearchRepositoryAdmitsSafeProseFamilyForTemporalListQuery proves that
+// word-family coverage participates in real prose-parent selection. Each focus
+// session has only a common low-ranked anchor plus the family token; without
+// that admission it stays beyond the top-k term lists.
+func TestSearchRepositoryAdmitsSafeProseFamilyForTemporalListQuery(t *testing.T) {
+	tests := []struct {
+		name     string
+		query    string
+		evidence string
+	}{
+		{name: "past tense", query: "archive", evidence: "Archived"},
+		{name: "derivation", query: "navigate", evidence: "Navigation"},
+		{name: "end compound", query: "authorization", evidence: "Preauthorization"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			repo := t.TempDir()
+			write(t, repo, "sessions/focus.md", fmt.Sprintf(`# %s review entry
+
+The approval was recorded in this session.
+			`, testCase.evidence))
+			for index := 0; index < 12; index++ {
+				write(t, repo, fmt.Sprintf("sessions/distractor-%02d.md", index), fmt.Sprintf(
+					"# Third review notes before marker%d ridge%d vessel%d\n",
+					index, index, index,
+				))
+			}
+
+			response, err := SearchRepository(
+				t.Context(), repo, "test", fmt.Sprintf("which %s notes were before the third review", testCase.query), SearchOptions{
+					Worktree: true, Profile: ProfileSyntaxOnly, TopK: 10, MaxIndexedFiles: 32,
+				},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for index := 0; index < 3; index++ {
+				want := fmt.Sprintf("sessions/distractor-%02d.md", index)
+				if response.Results[index].FilePath != want {
+					t.Fatalf("preserved list head[%d] = %q, want %q", index, response.Results[index].FilePath, want)
+				}
+			}
+			for _, result := range response.Results {
+				if result.FilePath != "sessions/focus.md" {
+					continue
+				}
+				if result.Rank != 4 {
+					t.Fatalf("family evidence rank = %d, want first list-tail slot 4", result.Rank)
+				}
+				return
+			}
+			t.Fatalf("safe family evidence session missing: %#v", response.Results)
+		})
+	}
+}
+
+func TestSearchRepositoryDoesNotAdmitUnrelatedLongPrefixFamily(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "sessions/focus.md", `# University
+
+## Review entry
+
+The campus note was recorded in this session.
+`)
+	for index := 0; index < 12; index++ {
+		write(t, repo, fmt.Sprintf("sessions/distractor-%02d.md", index), fmt.Sprintf(
+			"# Third review notes before marker%d ridge%d vessel%d\n",
+			index, index, index,
+		))
+	}
+
+	response, err := SearchRepository(
+		t.Context(), repo, "test", "which universe notes were before the third review", SearchOptions{
+			Worktree: true, Profile: ProfileSyntaxOnly, TopK: 10, MaxIndexedFiles: 32,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range response.Results {
+		if result.FilePath == "sessions/focus.md" {
+			t.Fatalf("universe/university collision admitted unrelated session: %#v", response.Results)
+		}
+	}
+}
+
+// TestSearchRepositoryListInterrogativeReservesTailForDistinctParents covers
+// the allocation policy through the public repository-search entrypoint rather
+// than only checking its query-shape helper.
+func TestSearchRepositoryListInterrogativeReservesTailForDistinctParents(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "sessions/lantern.md", "# Archive\n\n## Lantern\n")
+	write(t, repo, "sessions/vessel.md", "# Archive\n\n## Vessel\n")
+	for index := 0; index < 12; index++ {
+		write(t, repo, fmt.Sprintf("sessions/distractor-%02d.md", index), fmt.Sprintf(
+			"# Archive records mention marker%d ridge%d route%d\n",
+			index, index, index,
+		))
+	}
+
+	response, err := SearchRepository(
+		t.Context(), repo, "test", "which archive records mention lanterns and vessels", SearchOptions{
+			Worktree: true, Profile: ProfileSyntaxOnly, TopK: 10, MaxIndexedFiles: 32,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 3; index++ {
+		want := fmt.Sprintf("sessions/distractor-%02d.md", index)
+		if response.Results[index].FilePath != want {
+			t.Fatalf("preserved list head[%d] = %q, want %q", index, response.Results[index].FilePath, want)
+		}
+	}
+	wantPaths := map[string]bool{"sessions/lantern.md": false, "sessions/vessel.md": false}
+	for _, result := range response.Results {
+		if _, ok := wantPaths[result.FilePath]; ok {
+			wantPaths[result.FilePath] = true
+		}
+	}
+	for path, found := range wantPaths {
+		if !found {
+			t.Fatalf("list evidence parent %s missing: %#v", path, response.Results)
+		}
+	}
+}
+
+func TestSearchRepositorySingularSEndingQuestionPreservesOrdinaryHead(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "sessions/focus.md", `# Amber
+
+## Orchard
+
+## Ledger
+
+## Braided
+
+## Lantern
+`)
+	for index := 0; index < 12; index++ {
+		write(t, repo, fmt.Sprintf("sessions/distractor-%02d.md", index), fmt.Sprintf(
+			"# Status amber orchard ledger braided marker%d ridge%d vessel%d\n",
+			index, index, index,
+		))
+	}
+
+	response, err := SearchRepository(
+		t.Context(), repo, "test", "what is the status of amber orchard ledger braided lantern", SearchOptions{
+			Worktree: true, Profile: ProfileSyntaxOnly, TopK: 10, MaxIndexedFiles: 32,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 5; index++ {
+		want := fmt.Sprintf("sessions/distractor-%02d.md", index)
+		if response.Results[index].FilePath != want {
+			t.Fatalf("ordinary head[%d] = %q, want %q", index, response.Results[index].FilePath, want)
+		}
+	}
+	for _, result := range response.Results {
+		if result.FilePath == "sessions/focus.md" {
+			if result.Rank != 6 {
+				t.Fatalf("distributed session rank = %d, want ordinary first-tail slot 6", result.Rank)
+			}
+			return
+		}
+	}
+	t.Fatalf("distributed session missing from ordinary tail: %#v", response.Results)
 }
 
 func TestSearchRepositoryDoesNotConflateUnsafeProseSuffixes(t *testing.T) {

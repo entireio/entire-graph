@@ -147,11 +147,7 @@ func proseQueryRequestsMultipleParents(q searchQuery) bool {
 		written = searchQueryWordSequence(q.rawLower)
 	}
 	for _, word := range written {
-		if len(word) <= 4 || !strings.HasSuffix(word, "s") || strings.HasSuffix(word, "ss") {
-			continue
-		}
-		singular := strings.TrimSuffix(word, "s")
-		if plural, ok := safeASCIIPlural(singular); ok && plural == word {
+		if safeASCIIWrittenPlural(word) {
 			return true
 		}
 	}
@@ -301,7 +297,10 @@ func safeProseInflectionMatch(left, right string) bool {
 			return true
 		}
 	}
-	return safeASCIIProsePrefixFamily(left, right)
+	if safeASCIIProseDerivation(left, right) || safeASCIIProseDerivation(right, left) {
+		return true
+	}
+	return safeASCIIProseEdgeCompound(left, right)
 }
 
 func safeASCIIProseVerbForms(word string) []string {
@@ -314,23 +313,53 @@ func safeASCIIProseVerbForms(word string) []string {
 	return []string{word + "ed", word + "ing"}
 }
 
-func safeASCIIProsePrefixFamily(left, right string) bool {
-	if len(left) < 6 || len(right) < 6 || !proseASCIIWord(left) || !proseASCIIWord(right) {
+func safeASCIIProseDerivation(base, derived string) bool {
+	if len(base) < 6 || !proseASCIIWord(base) || !proseASCIIWord(derived) {
 		return false
 	}
-	difference := len(left) - len(right)
-	if difference < 0 {
-		difference = -difference
+	if strings.HasSuffix(base, "ate") {
+		return derived == strings.TrimSuffix(base, "ate")+"ation"
 	}
-	if difference > 5 {
+	if strings.HasSuffix(base, "ize") {
+		return derived == strings.TrimSuffix(base, "e")+"ation"
+	}
+	return false
+}
+
+func safeASCIIProseEdgeCompound(left, right string) bool {
+	if !proseASCIIWord(left) || !proseASCIIWord(right) {
 		return false
 	}
-	common := 0
-	for common < len(left) && common < len(right) && left[common] == right[common] {
-		common++
+	shorter, longer := left, right
+	if len(shorter) > len(longer) {
+		shorter, longer = longer, shorter
 	}
-	shorter := minInt(len(left), len(right))
-	return shorter >= 8 && common >= 5 && common*3 >= shorter*2
+	difference := len(longer) - len(shorter)
+	if len(shorter) < 8 || difference < 2 || difference > 5 || len(shorter)*3 < len(longer)*2 {
+		return false
+	}
+	return strings.HasPrefix(longer, shorter) || strings.HasSuffix(longer, shorter)
+}
+
+// safeASCIIWrittenPlural recognizes only forms that can be reversed without
+// treating common singular s-ending words as list intent. It is deliberately
+// conservative: missing an irregular plural keeps the ordinary allocation,
+// while a false plural silently changes how much of top-k is reserved.
+func safeASCIIWrittenPlural(word string) bool {
+	if len(word) <= 4 || !proseASCIIWord(word) || !strings.HasSuffix(word, "s") || strings.HasSuffix(word, "ss") {
+		return false
+	}
+	for _, singularSuffix := range []string{"as", "is", "us"} {
+		if strings.HasSuffix(word, singularSuffix) {
+			return false
+		}
+	}
+	singular := strings.TrimSuffix(word, "s")
+	if len(singular) == 0 || strings.ContainsRune("aiu", rune(singular[len(singular)-1])) {
+		return false
+	}
+	plural, ok := safeASCIIPlural(singular)
+	return ok && plural == word
 }
 
 func safeASCIIPlural(word string) (string, bool) {

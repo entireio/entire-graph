@@ -100,7 +100,7 @@ go test ./internal/sem -run '^TestProseParentTermListsUseDerivedWordFamilyCovera
 
 Expected: FAIL because exact/plural matching leaves the `navigate` term list empty for a `navigated` candidate.
 
-- [ ] **Step 5: Implement bounded prose verb and prefix-family matching**
+- [ ] **Step 5: Implement bounded prose verb, derivation, and edge-compound matching**
 
 In `internal/sem/search_prose_parent.go`, keep exact and plural logic first. Add conservative verb forms for words of at least five ASCII letters:
 
@@ -116,26 +116,39 @@ func safeASCIIProseVerbForms(word string) []string {
 }
 ```
 
-Add a prose-only derivational-family fallback. Require both words to be at least eight letters, length difference no more than five, a common prefix of at least five letters, and the prefix to cover at least two thirds of the shorter word. The eight-letter floor keeps `archive`/`architect` outside this deliberately conservative fallback:
+Add explicit prose-only derivation and compound fallbacks. The derivation
+recognizes bounded `-ate` and `-ize` to `-ation` forms. The compound fallback requires
+the shorter word to be at least eight letters, to appear exactly at one edge
+of the longer word, to differ by two through five letters, and to cover at
+least two thirds of the longer token:
 
 ```go
-func safeASCIIProsePrefixFamily(left, right string) bool {
-	if len(left) < 8 || len(right) < 8 || !proseASCIIWord(left) || !proseASCIIWord(right) {
+func safeASCIIProseDerivation(base, derived string) bool {
+	if len(base) < 6 || !proseASCIIWord(base) || !proseASCIIWord(derived) {
 		return false
 	}
-	difference := len(left) - len(right)
-	if difference < 0 {
-		difference = -difference
+	if strings.HasSuffix(base, "ate") {
+		return derived == strings.TrimSuffix(base, "ate")+"ation"
 	}
-	if difference > 5 {
+	if strings.HasSuffix(base, "ize") {
+		return derived == strings.TrimSuffix(base, "e")+"ation"
+	}
+	return false
+}
+
+func safeASCIIProseEdgeCompound(left, right string) bool {
+	if !proseASCIIWord(left) || !proseASCIIWord(right) {
 		return false
 	}
-	common := 0
-	for common < len(left) && common < len(right) && left[common] == right[common] {
-		common++
+	shorter, longer := left, right
+	if len(shorter) > len(longer) {
+		shorter, longer = longer, shorter
 	}
-	shorter := minInt(len(left), len(right))
-	return common >= 5 && common*3 >= shorter*2
+	difference := len(longer) - len(shorter)
+	if len(shorter) < 8 || difference < 2 || difference > 5 || len(shorter)*3 < len(longer)*2 {
+		return false
+	}
+	return strings.HasPrefix(longer, shorter) || strings.HasSuffix(longer, shorter)
 }
 ```
 
@@ -152,7 +165,10 @@ Update `safeProseInflectionMatch` after exact/plural checks:
 			return true
 		}
 	}
-	return safeASCIIProsePrefixFamily(left, right)
+	if safeASCIIProseDerivation(left, right) || safeASCIIProseDerivation(right, left) {
+		return true
+	}
+	return safeASCIIProseEdgeCompound(left, right)
 ```
 
 - [ ] **Step 6: Run focused prose tests**
@@ -160,7 +176,7 @@ Update `safeProseInflectionMatch` after exact/plural checks:
 Run:
 
 ```bash
-go test ./internal/sem -run '^(TestSafeProseInflectionMatchSupportsBoundedWordFamilies|TestProseParentTermListsUseDerivedWordFamilyCoverage|TestSearchRepositoryRanksDerivedWordFamilyMarkdownSession|TestSearchRepositoryRanksSafePluralMarkdownSession|TestSearchRepositoryRanksSafeSingularEvidenceForPluralQuery|TestSearchRepositoryDoesNotConflateUnsafeProseSuffixes|TestSearchRepositoryCodeResultOrderRemainsByteIdentical)$' -count=1
+go test ./internal/sem -run '^(TestSafeProseInflectionMatchSupportsBoundedWordFamilies|TestProseParentTermListsUseDerivedWordFamilyCoverage|TestSearchRepositoryRanksSafePluralMarkdownSession|TestSearchRepositoryRanksSafeSingularEvidenceForPluralQuery|TestSearchRepositoryDoesNotConflateUnsafeProseSuffixes|TestSearchRepositoryCodeResultOrderRemainsByteIdentical)$' -count=1
 ```
 
 Expected: PASS.
@@ -242,11 +258,7 @@ func proseQueryRequestsMultipleParents(q searchQuery) bool {
 		written = searchQueryWordSequence(q.rawLower)
 	}
 	for _, word := range written {
-		if len(word) <= 4 || !strings.HasSuffix(word, "s") || strings.HasSuffix(word, "ss") {
-			continue
-		}
-		singular := strings.TrimSuffix(word, "s")
-		if plural, ok := safeASCIIPlural(singular); ok && plural == word {
+		if safeASCIIWrittenPlural(word) {
 			return true
 		}
 	}
