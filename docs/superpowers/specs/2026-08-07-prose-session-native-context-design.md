@@ -39,9 +39,10 @@ ceiling. Ordinary code results serialize exactly as before because the field is
 omitted when empty.
 
 The parity harness must pass its shared 128,000-byte ceiling to Entire's native
-`--max-context-bytes` option. This does not read or synthesize source in the
-adapter; it removes an asymmetric 24 KiB inner cap while retaining the shared
-outer truncation and native byte accounting.
+`--max-context-bytes` option. The adapter performs no source expansion or
+synthesis; it may reread returned ranges solely to validate them against the
+materialized corpus. This removes an asymmetric 24 KiB inner cap while retaining
+the shared outer truncation and native byte accounting.
 
 ## Fairness and evaluation
 

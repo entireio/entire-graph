@@ -112,7 +112,8 @@ bounded 80-line read windows. Prose windows may use the caller's remaining
 `--max-context-bytes` capacity; an oversized window degrades to the largest
 verbatim window that fits instead of collapsing to a one-line locator. Ordinary
 code search keeps its measured growth allowance, explicit caller settings take
-precedence, and Entire Graph performs no adapter-side source read.
+precedence, and search returns the ranges natively without requiring
+adapter-side source expansion.
 
 When useful prose from the same selected parent is split across distant regions,
 JSON and NDJSON results also carry an additive `passages` list. Each passage is
@@ -159,6 +160,42 @@ workflow to learn:
   changed.
 
 You (a human) will mostly experience it *through* those surfaces. Your agents call it directly.
+
+## Long-conversation retrieval, measured fairly
+
+The native prose search path above was evaluated against Graphify and Codebase
+Memory MCP on the same 300 LOCOMO and 50 LongMemEval-S questions, with three
+repetitions, one shared Kimi K3 reader/grader, a deterministic 20% Opus 5 audit,
+top ten, and a 128,000-byte context ceiling.
+
+| Benchmark | Metric | Graphify | Entire Graph | CMM |
+|---|---|---:|---:|---:|
+| LOCOMO (n=300) | recall@10 | 0.787 | **0.914** | 0.000 |
+| LOCOMO (n=300) | QA accuracy | 59.3% | **77.2%** | 22.3% |
+| LongMemEval-S (n=50) | QA accuracy | 68.0% | **76.0%** | 6.0% |
+| Graph build | LLM credits | 0 | 0 | 0 |
+
+All 3,150 raw cells, 3,150 blinded primary grades, and 630 fixed audit cells
+passed the sealed integrity gates. The Opus audit agreed with the primary judge
+on 98.41% of cells (Cohen's kappa 0.9682), and there were zero invalid attempts.
+Across all 350 paired memory cases, Entire minus Graphify semantic accuracy was
++0.1648 (cluster 95% CI +0.1034 to +0.2146; McNemar p=1.70e-11).
+
+This is a **public-protocol reimplementation**, not a reproduction of
+Graphify's historical README run: Graphify's advertised memory harness and
+original selectors are not public. The comparison froze Graphify public `v8`
+at `9f25a3a`, used disjoint precommitted samples, ran an untouched 10% validity
+holdout before the full population, kept prompts/models/limits identical, and
+did not selectively rerun cells. Graphify's reader received its native BFS text;
+Entire's reader received only native snippets and additive passages returned by
+`search`; the neutral adapter source-validates every additive passage, validates
+the primary locator, and reapplies the shared byte cap. Full protocol, bridge
+details, historical references, failed-attempt lineage, and artifact hashes are
+published in GraphMark's `memory-native-v52` result bundle.
+
+QA accuracy means the share of questions answered correctly. Recall@10 means
+the share for which the evidence-bearing conversation appears among the first
+ten retrieved results. A score such as 0.914 is 91.4%.
 
 ## Numbers, honestly
 

@@ -4,6 +4,31 @@ Reproducible performance and quality measurement for `entire-graph`, per v2-plan
 WP10. The harness lives in `cmd/graph-bench` (driver) and `internal/bench`
 (measurement core); see `bench/README.md` for layout and flags.
 
+## External native-memory comparison
+
+GraphMark's verified `memory-native-v52` release compares the production prose
+search path with Graphify and Codebase Memory MCP on 300 LOCOMO and 50
+LongMemEval-S questions. Entire Graph scored 0.914 vs. Graphify 0.787 on LOCOMO
+recall@10, 77.2% vs. 59.3% on LOCOMO QA accuracy, and 76.0% vs. 68.0% on
+LongMemEval-S QA accuracy. All systems used zero build-time LLM credits.
+
+The product under test is commit
+`c9641bf1caaf41d64ce8a4a421f041939feecca3`. Its native JSON result contains a
+backward-compatible primary `snippet` plus optional exact, non-overlapping
+same-file `passages`. The neutral GraphMark adapter validates the primary
+locator, validates every additive passage's path, line range, and text against
+the materialized corpus, and reapplies the shared byte cap. It performs no
+answer-aware selection or adapter-side source expansion.
+
+Release evidence is bound to protocol
+`beb891c8985ef3d4565c7fc32b6b06478b4384a0975fbe82592715e8c6f7c02d`
+and full completion
+`0d85eafde84ad52480454cab1906e2ce37e6d2003d3f0f537835228c733c07e7`.
+The GraphMark publication bundle records exact inputs, revisions, retry ledger,
+statistics, costs, artifact hashes, and limitations. Call the result a
+**public-protocol reimplementation**: Graphify does not publish the original
+memory harness or selectors behind its historical README numbers.
+
 ## Running
 
 ```sh
