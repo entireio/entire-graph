@@ -114,6 +114,15 @@ verbatim window that fits instead of collapsing to a one-line locator. Ordinary
 code search keeps its measured growth allowance, explicit caller settings take
 precedence, and Entire Graph performs no adapter-side source read.
 
+When useful prose from the same selected parent is split across distant regions,
+JSON and NDJSON results also carry an additive `passages` list. Each passage is
+an exact, non-overlapping source range from the result's file. Passages are
+selected by marginal query-term coverage, allocated round-robin across ranked
+parents, source-ordered, and charged to the same `--max-context-bytes` ceiling.
+Existing clients can keep reading the primary `snippet`; text and agent formats
+render the extra ranges automatically. `stats.prose_passages` and
+`stats.prose_passage_bytes` make the additional context auditable.
+
 **One search returns everything the next three turns would have cost:**
 
 - **candidate fix sites**, the top hits as complete function bodies, plus **RELATED SITES**

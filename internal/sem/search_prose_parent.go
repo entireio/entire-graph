@@ -11,8 +11,9 @@ const (
 )
 
 type proseParent struct {
-	path string
-	best *searchCandidate
+	path       string
+	best       *searchCandidate
+	candidates []*searchCandidate
 }
 
 type proseParentSeed struct {
@@ -82,6 +83,7 @@ func selectSearchCandidates(
 			candidate = *parent.best
 		}
 		candidate.result.Signals = appendUnique(candidate.result.Signals, proseParentRetrievalSignal)
+		candidate.prosePassagePlan = planProseParentPassages(parent, candidate, q, maxInt(0, topK-1))
 		selectedPaths[parent.path] = true
 		selected = append(selected, candidate)
 		return true
@@ -138,6 +140,7 @@ func proseParents(candidates []searchCandidate) map[string]*proseParent {
 			parent = &proseParent{path: path, best: candidate}
 			parents[path] = parent
 		}
+		parent.candidates = append(parent.candidates, candidate)
 		if searchCandidateScoreLess(*candidate, *parent.best) {
 			parent.best = candidate
 		}

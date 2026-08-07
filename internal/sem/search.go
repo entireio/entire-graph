@@ -166,6 +166,16 @@ type SearchOptions struct {
 	Deep bool
 }
 
+// SearchPassage is an additional, non-overlapping source region from the same file as its
+// parent result. It lets prose retrieval return two distant answer-bearing turns without
+// pretending the unrelated text between them was one contiguous snippet.
+type SearchPassage struct {
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	FocusLine int    `json:"focus_line"`
+	Snippet   string `json:"snippet"`
+}
+
 // SearchResult is a ranked source region suitable for direct agent context.
 type SearchResult struct {
 	Rank             int     `json:"rank"`
@@ -196,6 +206,10 @@ type SearchResult struct {
 	// a label rather than a filter.
 	Section string `json:"section,omitempty"`
 	Snippet string `json:"snippet"`
+	// Passages are additional source slices from FilePath. The primary snippet stays unchanged
+	// for backward-compatible consumers; clients that understand this additive field can avoid
+	// a follow-up read when relevant prose is split across a long session.
+	Passages []SearchPassage `json:"passages,omitempty"`
 	// There is deliberately no per-result `Neighbors` list here. "The types this hit is
 	// written in terms of" is answered once, by the signature-type block (search_sigtypes.go),
 	// and "the other places this change lands" by the related-site block
@@ -250,6 +264,8 @@ type SearchStats struct {
 	SparseFilesRead         int `json:"sparse_files_content_read"`
 	CandidatesSelected      int `json:"candidates_selected"`
 	ResultBytes             int `json:"result_bytes"`
+	ProsePassages           int `json:"prose_passages,omitempty"`
+	ProsePassageBytes       int `json:"prose_passage_bytes,omitempty"`
 	ContextBudgetBytes      int `json:"context_budget_bytes,omitempty"`
 	ResultsDropped          int `json:"results_dropped_by_budget,omitempty"`
 	// SnippetsTruncated counts results carrying LESS source than the ranker produced for
@@ -413,6 +429,7 @@ type searchCandidate struct {
 	baseScore         float64
 	score             float64
 	constraintSurface *searchConstraintSurface
+	prosePassagePlan  []SearchPassage
 }
 
 type searchContentReadTracker struct {
@@ -911,11 +928,15 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	sparseHydrationReads := hydrateSparseCandidates(selected, read)
 	stats.SparseFilesRead += sparseHydrationReads
 	results := make([]SearchResult, 0, len(selected))
+	prosePassagePlans := make(map[int][]SearchPassage)
 	for i := range selected {
 		selected[i].result.Rank = i + 1
 		selected[i].result.Score = math.Round(selected[i].score*10000) / 10000
 		if selected[i].result.Signals == nil {
 			selected[i].result.Signals = []string{}
+		}
+		if len(selected[i].prosePassagePlan) > 0 {
+			prosePassagePlans[i+1] = append([]SearchPassage(nil), selected[i].prosePassagePlan...)
 		}
 		results = append(results, selected[i].result)
 	}
@@ -954,6 +975,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	)
 	stats.CompleteSymbols = completeSymbols
 	stats.LocatorSnippets = locators
+	results, _, _ = allocateProseParentPassages(results, prosePassagePlans, options.MaxContextBytes)
 	// Truncation is measured against the ranking, by rank, so it has to be read off the
 	// allocator's output BEFORE the related-site block renumbers the payload.
 	truncated := countBudgetTruncatedResults(ranked, results)
@@ -1083,6 +1105,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		stats.ContainerMapBytes = searchContainerMapCost(containerMap)
 	}
 	stats.CandidatesSelected = len(results)
+	stats.ProsePassages, stats.ProsePassageBytes = searchPassageStats(results)
 	resultBytes = serializedSearchResultBytes(results)
 	stats.ResultBytes = resultBytes
 	if len(typeCard) > 0 {
@@ -4759,6 +4782,11 @@ func (response SearchResponse) Validate() error {
 	if actual := serializedSearchResultBytes(response.Results); response.Stats.ResultBytes != actual {
 		return fmt.Errorf("search result byte accounting mismatch: %d != %d", response.Stats.ResultBytes, actual)
 	}
+	passages, passageBytes := searchPassageStats(response.Results)
+	if response.Stats.ProsePassages != passages || response.Stats.ProsePassageBytes != passageBytes {
+		return fmt.Errorf("search prose passage accounting mismatch: %d/%d != %d/%d",
+			response.Stats.ProsePassages, response.Stats.ProsePassageBytes, passages, passageBytes)
+	}
 	if response.Stats.ContextBudgetBytes > 0 && response.Stats.ResultBytes > response.Stats.ContextBudgetBytes {
 		return fmt.Errorf("search result context exceeds byte budget: %d > %d", response.Stats.ResultBytes, response.Stats.ContextBudgetBytes)
 	}
@@ -4774,6 +4802,9 @@ func (response SearchResponse) Validate() error {
 		}
 		if result.FilePath == "" || result.StartLine < 1 || result.EndLine < result.StartLine || result.FocusLine < result.StartLine || result.FocusLine > result.EndLine || result.SnippetStartLine < result.StartLine || result.SnippetEndLine > result.EndLine || result.SnippetEndLine < result.SnippetStartLine {
 			return fmt.Errorf("invalid search result at rank %d", result.Rank)
+		}
+		if err := validateSearchResultPassages(result); err != nil {
+			return fmt.Errorf("invalid search result at rank %d: %w", result.Rank, err)
 		}
 	}
 	return nil

@@ -27,6 +27,17 @@ enforces the caller's context ceiling and demotes lower-ranked results when need
 An explicit `HeadWindowLines` value continues to win. Ordinary code search never
 receives the prose-parent signal and remains byte-identical.
 
+One contiguous window still cannot represent two distant useful turns without
+also returning everything between them. Prose-parent results therefore expose an
+additive `passages` list. The primary `snippet` remains unchanged for backward
+compatibility; every additional passage is an exact non-overlapping line range
+from the same selected file. Candidate regions that add uncovered query terms
+are preferred, ties retain native ranking order, and allocation proceeds by
+passage depth across parents so one session cannot spend all remaining bytes.
+Accepted passages are source-ordered and validated against the same hard byte
+ceiling. Ordinary code results serialize exactly as before because the field is
+omitted when empty.
+
 The parity harness must pass its shared 128,000-byte ceiling to Entire's native
 `--max-context-bytes` option. This does not read or synthesize source in the
 adapter; it removes an asymmetric 24 KiB inner cap while retaining the shared

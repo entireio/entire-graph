@@ -54,7 +54,7 @@ closing note
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertSearchResultGolden(t, response.Results, "99546bd7e78ef6654ee0eb48784c6ff2ee8a641f445dbc320b72c9be742171ba")
+	assertSearchResultGolden(t, response.Results, "6efd6795a9f0d1f2969f167676c81e22f6cd9aaa74ec7270c6d5f98e10ec9878")
 	wantHead := []string{
 		"sessions/distractor-00.md",
 		"sessions/distractor-01.md",
@@ -115,7 +115,7 @@ func TestSearchRepositoryRanksSafePluralMarkdownSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertSearchResultGolden(t, response.Results, "40b819912d24c7954b58f3e45baa7f212efe42d54e18901e1cc4f1384bd676da")
+	assertSearchResultGolden(t, response.Results, "402dfe1fae86d736a735d742dbcbd38871a61d9a4b280349291fe2c88ec72d0b")
 	for _, result := range response.Results {
 		if result.FilePath == "sessions/focus.md" &&
 			containsString(result.Signals, "retrieval_mode=prose-parent") {
@@ -158,7 +158,7 @@ func TestSearchRepositoryRanksSafeSingularEvidenceForPluralQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertSearchResultGolden(t, response.Results, "77e366da57cc87094703b5d6e62677f2f5fb3bc3abc0748c80a4651a23a2557b")
+	assertSearchResultGolden(t, response.Results, "186bc7d9a4265a3cce3f49a7b0d953d64bd37ceeb121de18f91cc5c22baa43aa")
 	for _, result := range response.Results {
 		if result.FilePath == "sessions/focus.md" &&
 			containsString(result.Signals, "retrieval_mode=prose-parent") {
@@ -248,6 +248,9 @@ func %sDelivery() {}
 	assertSearchResultGolden(t, response.Results, "4e88510273830fef30a7aeb44845893c24e723fdf53dfd68f879c44a6f1dbf35")
 	identities := make([][3]any, len(response.Results))
 	for index, result := range response.Results {
+		if len(result.Passages) != 0 {
+			t.Fatalf("ordinary code rank %d received prose passages: %#v", result.Rank, result.Passages)
+		}
 		identities[index] = [3]any{result.FilePath, result.StartLine, result.SymbolName}
 	}
 	got, err := json.Marshal(identities)

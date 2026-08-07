@@ -39,3 +39,21 @@ func TestCompleteBodyIsNotAnnotatedWithSpan(t *testing.T) {
 		t.Fatalf("a complete body must not be annotated as elided, got %q", got)
 	}
 }
+
+func TestTextSearchRendersAdditionalProsePassageWithExactRange(t *testing.T) {
+	t.Parallel()
+	var out strings.Builder
+	writeTextSearchResult(&out, sem.SearchResult{
+		Rank: 1, FilePath: "sessions/focus.md", StartLine: 40, EndLine: 42, FocusLine: 41,
+		SnippetStartLine: 40, SnippetEndLine: 42, Snippet: "primary session source",
+		Signals: []string{"retrieval_mode=prose-parent"},
+		Passages: []sem.SearchPassage{{
+			StartLine: 100, EndLine: 101, FocusLine: 101, Snippet: "distant line one\ndistant line two",
+		}},
+	}, true)
+	got := out.String()
+	if !strings.Contains(got, "additional sessions/focus.md:100-101") ||
+		!strings.Contains(got, "distant line one\ndistant line two") {
+		t.Fatalf("text output omitted additional passage or exact range:\n%s", got)
+	}
+}

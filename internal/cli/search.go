@@ -463,9 +463,19 @@ func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result s
 	// costs two blank lines and reads as a truncation bug.
 	if result.Snippet == "" {
 		fmt.Fprintf(out, " signals=%s\n", strings.Join(result.Signals, ","))
+		writeTextSearchPassages(out, result)
 		return
 	}
-	fmt.Fprintf(out, " signals=%s\n%s\n\n", strings.Join(result.Signals, ","), result.Snippet)
+	fmt.Fprintf(out, " signals=%s\n%s\n", strings.Join(result.Signals, ","), result.Snippet)
+	writeTextSearchPassages(out, result)
+	fmt.Fprintln(out)
+}
+
+func writeTextSearchPassages(out interface{ Write([]byte) (int, error) }, result sem.SearchResult) {
+	for _, passage := range result.Passages {
+		fmt.Fprintf(out, "additional %s:%d-%d focus=%d\n%s\n",
+			result.FilePath, passage.StartLine, passage.EndLine, passage.FocusLine, passage.Snippet)
+	}
 }
 
 // searchResultPrintedRange is the range of the source that follows on the next
@@ -1039,6 +1049,49 @@ func agentSearchScoreTag(result sem.SearchResult) string {
 }
 
 func agentSearchBlock(result sem.SearchResult, budget int) []byte {
+	if len(result.Passages) == 0 {
+		return agentSearchPrimaryBlock(result, budget)
+	}
+	for count := len(result.Passages); count >= 0; count-- {
+		passages := renderAgentSearchPassages(result.FilePath, result.Passages[:count])
+		primaryBudget := budget
+		if budget > 0 && len(passages) > 0 {
+			primaryBudget -= len(passages) + 1
+			if primaryBudget <= 0 {
+				continue
+			}
+		}
+		primary := agentSearchPrimaryBlock(result, primaryBudget)
+		if len(primary) == 0 {
+			continue
+		}
+		if len(passages) == 0 {
+			return primary
+		}
+		combined := make([]byte, 0, len(primary)+1+len(passages))
+		combined = append(combined, primary...)
+		combined = append(combined, '\n')
+		combined = append(combined, passages...)
+		if budget <= 0 || len(combined) <= budget {
+			return combined
+		}
+	}
+	return nil
+}
+
+func renderAgentSearchPassages(path string, passages []sem.SearchPassage) []byte {
+	var output bytes.Buffer
+	for index, passage := range passages {
+		if index > 0 {
+			output.WriteByte('\n')
+		}
+		fmt.Fprintf(&output, "%s:%d-%d [additional focus:%d]\n%s",
+			path, passage.StartLine, passage.EndLine, passage.FocusLine, passage.Snippet)
+	}
+	return output.Bytes()
+}
+
+func agentSearchPrimaryBlock(result sem.SearchResult, budget int) []byte {
 	name := searchResultDisplayName(result)
 	tag := agentSearchSectionTag(result)
 	scored := agentSearchScoreTag(result)
