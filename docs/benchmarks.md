@@ -6,11 +6,14 @@ WP10. The harness lives in `cmd/graph-bench` (driver) and `internal/bench`
 
 ## External native-memory comparison
 
-GraphMark's verified `memory-native-v52` release compares the production prose
-search path with Graphify and Codebase Memory MCP on 300 LOCOMO and 50
-LongMemEval-S questions. Entire Graph scored 0.914 vs. Graphify 0.787 on LOCOMO
-recall@10, 77.2% vs. 59.3% on LOCOMO QA accuracy, and 76.0% vs. 68.0% on
-LongMemEval-S QA accuracy. All systems used zero build-time LLM credits.
+GraphMark's verified `memory-native-v52` release pairs the production prose
+search path with Graphify on 300 LOCOMO and 50 LongMemEval-S questions. Entire
+Graph scored 0.914 vs. Graphify 0.787 on LOCOMO recall@10, 77.2% vs. 59.3% on
+LOCOMO QA accuracy, and 76.0% vs. 68.0% on LongMemEval-S QA accuracy. All
+systems used zero build-time LLM credits. Codebase Memory MCP is present in the
+release as an off-domain native diagnostic: v0.9.0 indexes the Markdown content
+as `Section` nodes but excludes that node type from its public natural-language
+BM25 route, so its column is not a third apples-to-apples memory comparison.
 
 The product under test is commit
 `c9641bf1caaf41d64ce8a4a421f041939feecca3`. Its native JSON result contains a

@@ -163,17 +163,26 @@ You (a human) will mostly experience it *through* those surfaces. Your agents ca
 
 ## Long-conversation retrieval, measured fairly
 
-The native prose search path above was evaluated against Graphify and Codebase
-Memory MCP on the same 300 LOCOMO and 50 LongMemEval-S questions, with three
+The native prose search path above was evaluated in a paired comparison with
+Graphify on the same 300 LOCOMO and 50 LongMemEval-S questions, with three
 repetitions, one shared Kimi K3 reader/grader, a deterministic 20% Opus 5 audit,
-top ten, and a 128,000-byte context ceiling.
+top ten, and a 128,000-byte context ceiling. Codebase Memory MCP is included as
+an off-domain native diagnostic, not as a third apples-to-apples prose-memory
+competitor.
 
-| Benchmark | Metric | Graphify | Entire Graph | CMM |
+| Benchmark | Metric | Graphify | Entire Graph | CMM diagnostic* |
 |---|---|---:|---:|---:|
 | LOCOMO (n=300) | recall@10 | 0.787 | **0.914** | 0.000 |
 | LOCOMO (n=300) | QA accuracy | 59.3% | **77.2%** | 22.3% |
 | LongMemEval-S (n=50) | QA accuracy | 68.0% | **76.0%** | 6.0% |
 | Graph build | LLM credits | 0 | 0 | 0 |
+
+\* CMM v0.9.0 indexed the Markdown conversations as `Section` nodes, but its
+public natural-language `search_graph(query=...)` BM25 path excludes that node
+type. Its separate `search_code` verb can find literal source phrases, but the
+unchanged benchmark question is not a literal source pattern. The CMM column
+therefore reports that public route on an off-domain corpus and is not a claim
+about CMM's code-search quality.
 
 All 3,150 raw cells, 3,150 blinded primary grades, and 630 fixed audit cells
 passed the sealed integrity gates. The Opus audit agreed with the primary judge
