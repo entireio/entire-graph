@@ -96,3 +96,39 @@ func TestSearchRefusesUnreadablePresearchPayload(t *testing.T) {
 		t.Fatalf("stdout is not empty after a refused echo:\n%s", out.String())
 	}
 }
+
+// TestSearchRefusesEmptyPresearchPayload pins the failure that is worse than an unreadable path,
+// because every layer above it reads as success: a zero-byte payload used to be written to stdout
+// and the process exited 0. The agent asks a question, receives nothing, and the harness, the exit
+// code and the transcript all record a healthy call — which is how a whole measured cell can run
+// without its search verb ever answering anything.
+func TestSearchRefusesEmptyPresearchPayload(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "src/auth.py", "def validate_token(token):\n    return bool(token)\n")
+	empty := filepath.Join(t.TempDir(), "empty.txt")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, envName := range []string{envPresearch, envPresearchAlias} {
+		t.Run(envName, func(t *testing.T) {
+			t.Setenv(envName, empty)
+			var out bytes.Buffer
+			err := Run(t.Context(), Options{Version: "test", Env: EnvFromOS(), Stdout: &out, Stderr: &out},
+				[]string{"search", "--repo", repo, "--query", "validate the token", "--format", "text"})
+			if err == nil {
+				t.Fatalf("an empty payload was reported as a successful search:\n%q", out.String())
+			}
+			if !strings.Contains(err.Error(), envPresearch) {
+				t.Fatalf("error does not name the variable that caused it: %v", err)
+			}
+			// The path belongs in the message: the caller has to know WHICH file came back empty.
+			if !strings.Contains(err.Error(), empty) {
+				t.Fatalf("error does not name the empty file: %v", err)
+			}
+			if out.Len() != 0 {
+				t.Fatalf("stdout is not empty after a refused echo:\n%q", out.String())
+			}
+		})
+	}
+}

@@ -344,12 +344,17 @@ var commandDocs = []commandDoc{
 		name:    "doctor",
 		group:   groupMeta,
 		summary: "Diagnose the environment and confirm no-egress",
-		usage:   []string{"entire graph doctor [--json]"},
-		long:    "Reports the resolved repo, the Entire environment variables, plugin-data-dir writability, and confirms no_egress=true (no remote fetches, hosted APIs, telemetry, or grammar downloads).",
+		usage:   []string{`entire graph doctor [--json] [--assert "<command line>"]`},
+		long: "Reports the resolved repo, the Entire environment variables, plugin-data-dir writability, and confirms no_egress=true (no remote fetches, hosted APIs, telemetry, or grammar downloads).\n\n" +
+			"--assert is the preflight: it parses a command line against this binary and exits non-zero if this binary would reject it, WITHOUT running anything — no repo read, no index build, no writes. Run it once before a batch or a benchmark cell so a flag set built for a different build fails at startup instead of failing the first call of every session and leaving an agent to explore by hand. Repeatable. It runs each command's real parser, so a command that requires a flag will say so; assert the command line you actually intend to run.",
 		flags: []flagDoc{
 			{name: "--json", desc: "Emit the report as JSON"},
+			{name: "--assert", arg: "cmdline", desc: "Verify this binary accepts a command line, without running it (repeatable)"},
 		},
-		examples: []string{"entire graph doctor --json"},
+		examples: []string{
+			"entire graph doctor --json",
+			`entire graph doctor --assert "search --profile full --top-k 10 --format text"`,
+		},
 	},
 	{
 		name:    "version",
@@ -381,6 +386,43 @@ var commonFlagDocs = []flagDoc{
 	{name: "--progress", desc: "Emit progress events to stderr"},
 	{name: "--max-seconds", arg: "n", def: "120", desc: "Analysis budget; 0 = unlimited"},
 	{name: "--repo", arg: "path", desc: "Repository (default: current repo)"},
+}
+
+// unexpectedArgumentsError explains an argument the parser did not recognise, and says the one
+// thing that is usually true when the argument is flag-shaped: this binary is older than whatever
+// wrote the command line.
+//
+// The old message ("search received unexpected arguments: --callee-hop") describes the symptom and
+// not the cause, and the difference matters because of WHO reads it. A harness driving a flag set
+// built for a newer binary gets an exit 1 and an empty payload on every single call, for the whole
+// run — the agent's first mandated action fails, it falls back to exploring by hand, and the cell
+// silently measures a graph arm that never reached the graph. Naming the version turns a run that
+// looks broken into a run that reads as version skew, at the first call rather than the last.
+//
+// A positional argument keeps the plain wording: `search foo` is a typo, not a stale deploy, and
+// telling its author about binary versions would be noise.
+func unexpectedArgumentsError(command, version string, rest []string) error {
+	var flags []string
+	for _, arg := range rest {
+		if strings.HasPrefix(arg, "-") && arg != "-" {
+			flags = append(flags, arg)
+		}
+	}
+	if len(flags) == 0 {
+		return fmt.Errorf("%s received unexpected arguments: %s", command, strings.Join(rest, " "))
+	}
+	return fmt.Errorf(
+		"%s does not accept %s in entire-graph %s: this binary may be older than the caller that built the command line; run \"entire graph %s --help\" for the flags it does accept (unexpected: %s)",
+		command, strings.Join(flags, " "), versionOrUnknown(version), command, strings.Join(rest, " "))
+}
+
+// versionOrUnknown keeps the message honest when the binary was built without a version stamped in:
+// printing an empty string beside "entire-graph" reads as a version rather than the absence of one.
+func versionOrUnknown(version string) string {
+	if strings.TrimSpace(version) == "" {
+		return "(unknown version)"
+	}
+	return version
 }
 
 // findCommandDoc returns the doc for a command name, resolving aliases.

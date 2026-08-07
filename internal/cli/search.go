@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/entireio/entire-graph/internal/gitutil"
 	"github.com/entireio/entire-graph/internal/sem"
 )
 
@@ -120,7 +121,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		}
 	}
 	if len(rest) != 0 {
-		return fmt.Errorf("search received unexpected arguments: %s", strings.Join(rest, " "))
+		return unexpectedArgumentsError("search", opts.Version, rest)
 	}
 	if strings.TrimSpace(flags.Query) == "" {
 		return errors.New("search requires --query")
@@ -131,20 +132,16 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 	if path := strings.TrimSpace(opts.Env.PresearchPath); path != "" {
 		return echoPresearchPayload(opts.Stdout, path)
 	}
-	// The echo is decided before any work: a replayed payload must not pay for a repo resolution or
-	// an index build either. See searchSession for what the cap is worth and why it is an echo.
+	// The echo is decided before any INDEXING work: a replayed payload must not pay for an index
+	// build. See searchSession for what the cap is worth and why it is an echo.
+	//
+	// It does now pay for a repo resolution and two `git rev-parse` calls, which is the price of
+	// knowing the payload belongs to the tree in front of it. That is two subprocesses against an
+	// index build, and against the alternative — replaying another repository's answer for the rest
+	// of a run — it is not a close trade. See searchSessionScope.
 	session, err := newSearchSession(opts.Env, opts.Stderr)
 	if err != nil {
 		return err
-	}
-	if session != nil {
-		if state, ok := session.echo(); ok {
-			if _, err := io.WriteString(opts.Stdout, searchEchoHeader(flags.Query, state.Query)); err != nil {
-				return err
-			}
-			_, err := io.WriteString(opts.Stdout, state.Payload)
-			return err
-		}
 	}
 	profile, err := parseProfile(flags.Profile)
 	if err != nil {
@@ -153,6 +150,17 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 	repo, err := resolveRepo(ctx, opts.Env, flags.Repo)
 	if err != nil {
 		return err
+	}
+	var scope searchSessionScope
+	if session != nil {
+		scope = searchSessionScopeFor(ctx, repo)
+		if state, ok := session.echo(scope); ok {
+			if _, err := io.WriteString(opts.Stdout, searchEchoHeader(flags.Query, state.Query)); err != nil {
+				return err
+			}
+			_, err := io.WriteString(opts.Stdout, state.Payload)
+			return err
+		}
 	}
 	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
 	contextBudget := flags.MaxContextBytes
@@ -208,9 +216,32 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		return err
 	}
 	if session != nil {
-		session.record(flags.Query, payload.Bytes())
+		session.record(flags.Query, payload.Bytes(), scope)
 	}
 	return nil
+}
+
+// searchSessionScopeFor describes the tree a payload recorded now would be answering for.
+//
+// Failure is not an error here. A directory git cannot describe still has a resolved path, and a
+// path is enough to separate two checkouts in the common case; when even that is unavailable the
+// zero scope matches nothing, so the echo is refused and the question gets a real answer. The one
+// outcome this must never produce is a confident scope that is wrong.
+func searchSessionScopeFor(ctx context.Context, repo string) searchSessionScope {
+	scope := searchSessionScope{Repo: repo}
+	if resolved, err := filepath.Abs(repo); err == nil {
+		scope.Repo = resolved
+	}
+	commit, err := gitutil.RevParse(ctx, repo, "HEAD")
+	if err != nil {
+		return scope
+	}
+	tree, err := gitutil.RevParse(ctx, repo, commit+"^{tree}")
+	if err != nil {
+		return scope
+	}
+	scope.Tree = tree
+	return scope
 }
 
 func writeSearchResponse(out io.Writer, response sem.SearchResponse, format string, contextBudget int) error {
@@ -259,6 +290,15 @@ func writeSearchResponse(out io.Writer, response sem.SearchResponse, format stri
 // silently would leave the arm measuring whichever mode each session happened to land in — the
 // same reason an unknown --reference-blocks name is an error rather than a no-op.
 //
+// An EMPTY file is that same failure and is treated the same way. A zero-byte payload used to be
+// written to stdout and reported as success, which is the worst available outcome: the agent asked
+// a question, got nothing back, and every layer above — the exit code, the harness, the transcript
+// — recorded a healthy call. A whole measured cell can run that way without anyone noticing, and
+// a cell whose search verb returns nothing is not measuring the graph at all, it is measuring the
+// baseline with extra steps. Whatever produced an empty file (a failed pre-computation, a
+// truncated write, an unset variable expanding to nothing) is a bug in the caller, and the only
+// safe report is a loud one.
+//
 // Note for whoever wires the caller: the payload must be computed with the SAME binary, flags and
 // cached graph the session would have used, and the instruction telling the agent to search first
 // has to go with it — the tool cannot be left un-called while that directive stands.
@@ -266,6 +306,9 @@ func echoPresearchPayload(out interface{ Write([]byte) (int, error) }, path stri
 	payload, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("%s: %w", envPresearch, err)
+	}
+	if len(payload) == 0 {
+		return fmt.Errorf("%s: %s is empty: a pre-delivered payload of zero bytes would answer the agent with nothing and still report success", envPresearch, path)
 	}
 	_, err = out.Write(payload)
 	return err

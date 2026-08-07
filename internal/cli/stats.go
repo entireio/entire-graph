@@ -156,7 +156,7 @@ func runStats(ctx context.Context, opts Options, args []string) error {
 		return err
 	}
 	if len(rest) != 0 {
-		return fmt.Errorf("stats received unexpected arguments: %s", strings.Join(rest, " "))
+		return unexpectedArgumentsError("stats", opts.Version, rest)
 	}
 	switch flags.Format {
 	case "text", "json":

@@ -119,6 +119,40 @@ func TestSearchEchoFailsOpenOnBrokenSessionFile(t *testing.T) {
 	}
 }
 
+// The echo must never answer for a repository it did not search.
+//
+// EG_SEARCH_SESSION is scoped to a task by the CALLER, and nothing used to check that claim. A
+// harness that reuses one path across a run therefore handed every instance after the first the
+// FIRST instance's payload — naming files that do not exist in the tree the agent is looking at —
+// under a header saying its question was not run. An agent reading that stops calling the tool, and
+// the rest of the run measures a graph arm that never touches the graph.
+func TestSearchEchoRefusesAnotherRepositorysPayload(t *testing.T) {
+	t.Parallel()
+	first := t.TempDir()
+	write(t, first, "alpha.py", "def alpha_widget():\n    return True\n")
+	second := t.TempDir()
+	write(t, second, "beta.py", "def beta_gadget():\n    return False\n")
+	// One session file, two repositories — the reuse this guards against.
+	session := filepath.Join(t.TempDir(), "session.json")
+
+	if got := searchInSession(t, first, session, "", "alpha_widget"); !strings.Contains(got, "alpha.py") {
+		t.Fatalf("first repository's search did not answer its own question: %q", got)
+	}
+
+	got := searchInSession(t, second, session, "", "beta_gadget")
+	if strings.Contains(got, "not run") || strings.Contains(got, "alpha.py") {
+		t.Fatalf("second repository was answered with the first repository's payload:\n%s", got)
+	}
+	if !strings.Contains(got, "beta.py") {
+		t.Fatalf("second repository did not get a real search: %q", got)
+	}
+	// The refusal re-scopes rather than merely skipping once: this repository's own second query
+	// still echoes, so the cap is intact for the task that actually owns the file now.
+	if repeat := searchInSession(t, second, session, "", "gamma_thing"); !strings.Contains(repeat, "not run") {
+		t.Fatalf("the cap did not re-arm for the new repository: %q", repeat)
+	}
+}
+
 // An unparseable EG_MAX_SEARCHES is an error, not a silent no-op: a knob that quietly does nothing
 // is how a measurement gets attributed to the wrong build.
 func TestSearchRejectsNonNumericMaxSearches(t *testing.T) {
