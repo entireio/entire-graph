@@ -105,6 +105,15 @@ graph, and returns budgeted output designed to drop straight into an agent's con
 top-ranked hits arrive as complete function bodies, so the common case is search → edit with
 no follow-up file read at all.
 
+For Markdown and other prose-heavy repositories, ranked hits carry
+`retrieval_mode=prose-parent`. Unless the caller explicitly sets
+`--head-window-lines`, `search` widens the highest-ranked parent files to
+bounded 80-line read windows. Prose windows may use the caller's remaining
+`--max-context-bytes` capacity; an oversized window degrades to the largest
+verbatim window that fits instead of collapsing to a one-line locator. Ordinary
+code search keeps its measured growth allowance, explicit caller settings take
+precedence, and Entire Graph performs no adapter-side source read.
+
 **One search returns everything the next three turns would have cost:**
 
 - **candidate fix sites**, the top hits as complete function bodies, plus **RELATED SITES**
