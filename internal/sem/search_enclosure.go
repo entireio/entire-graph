@@ -509,8 +509,13 @@ func planWithDemotionFrom(
 		}
 		widened := widenSearchResultToEnclosure(results[index], enclosures[index])
 		size := serializedSearchResultBytes(widened)
-		if total-sizes[index]+size > budget {
-			continue
+		if maxResultBytes := budget - (total - sizes[index]); size > maxResultBytes {
+			var ok bool
+			widened, ok = largestFittingSearchHeadWindow(results[index], enclosures[index], maxResultBytes)
+			if !ok {
+				continue
+			}
+			size = serializedSearchResultBytes(widened)
 		}
 		total += size - sizes[index]
 		plan[index], sizes[index] = widened, size
@@ -524,4 +529,58 @@ func planWithDemotionFrom(
 		}
 	}
 	return plan, bodies, windows, total
+}
+
+// largestFittingSearchHeadWindow degrades an oversized read window to the widest
+// verbatim window that fits one result's remaining serialized-byte allowance. It
+// applies only to windows, never complete callables, and always retains the focus
+// and the source span the ranker already returned.
+func largestFittingSearchHeadWindow(
+	result SearchResult,
+	enclosure searchEnclosure,
+	maxResultBytes int,
+) (SearchResult, bool) {
+	if !enclosure.window || !enclosure.available() || maxResultBytes <= 0 {
+		return result, false
+	}
+	originalStart, originalEnd := result.SnippetStartLine, result.SnippetEndLine
+	if originalStart < enclosure.start || originalEnd > enclosure.end || originalStart > originalEnd {
+		return result, false
+	}
+	focus := result.FocusLine
+	if focus < originalStart || focus > originalEnd {
+		return result, false
+	}
+	originalLines := originalEnd - originalStart + 1
+	fullLines := enclosure.end - enclosure.start + 1
+	for width := fullLines - 1; width > originalLines; width-- {
+		start := focus - width/2
+		end := start + width - 1
+		if start < enclosure.start {
+			start = enclosure.start
+			end = start + width - 1
+		}
+		if end > enclosure.end {
+			end = enclosure.end
+			start = end - width + 1
+		}
+		if start > originalStart {
+			start = originalStart
+			end = start + width - 1
+		}
+		if end < originalEnd {
+			end = originalEnd
+			start = end - width + 1
+		}
+		if start < enclosure.start || end > enclosure.end || start > originalStart || end < originalEnd {
+			continue
+		}
+		candidate := enclosure
+		candidate.start, candidate.end = start, end
+		widened := widenSearchResultToEnclosure(result, candidate)
+		if serializedSearchResultBytes(widened) <= maxResultBytes {
+			return widened, true
+		}
+	}
+	return result, false
 }

@@ -266,6 +266,44 @@ func makeAllocatorResults(count, window, bodyLines int) ([]SearchResult, []searc
 	return results, enclosures, lines
 }
 
+func TestAllocateSearchSnippetsFallsBackToLargestFittingHeadWindow(t *testing.T) {
+	t.Parallel()
+	lines := make([]string, 80)
+	for index := range lines {
+		lines[index] = fmt.Sprintf("line-%02d %s", index+1, strings.Repeat("archive detail ", 18))
+	}
+	result := SearchResult{
+		Rank: 1, FilePath: "sessions/long.md", StartLine: 40, EndLine: 40,
+		FocusLine: 40, SnippetStartLine: 40, SnippetEndLine: 40,
+		Snippet: lines[39], Signals: []string{proseParentRetrievalSignal},
+	}
+	enclosure := searchEnclosure{start: 1, end: len(lines), lines: lines, window: true}
+	before := serializedSearchResultBytes([]SearchResult{result})
+	hardBudget := before + 3_000
+
+	allocated, bodies, _ := allocateSearchSnippets(
+		[]SearchResult{result}, []searchEnclosure{enclosure}, hardBudget, hardBudget, 1, 1,
+	)
+	if bodies != 0 {
+		t.Fatalf("adaptive read window counted as %d complete bodies", bodies)
+	}
+	got := allocated[0]
+	if !containsString(got.Signals, searchHeadWindowSignal) {
+		t.Fatalf("oversized window degraded to locator: %#v", got.Signals)
+	}
+	if got.SnippetStartLine >= got.SnippetEndLine {
+		t.Fatalf("adaptive window did not add readable lines: %d-%d", got.SnippetStartLine, got.SnippetEndLine)
+	}
+	if got.SnippetStartLine > result.SnippetStartLine || got.SnippetEndLine < result.SnippetEndLine {
+		t.Fatalf("adaptive window %d-%d dropped original snippet %d-%d",
+			got.SnippetStartLine, got.SnippetEndLine, result.SnippetStartLine, result.SnippetEndLine)
+	}
+	if size := serializedSearchResultBytes(allocated); size > hardBudget {
+		t.Fatalf("adaptive payload %d exceeds hard budget %d", size, hardBudget)
+	}
+	assertVerbatimSnippet(t, got, lines)
+}
+
 func TestAllocateSearchSnippetsSpendsBudgetByRank(t *testing.T) {
 	t.Parallel()
 

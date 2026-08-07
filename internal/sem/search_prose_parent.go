@@ -35,6 +35,22 @@ func resolvedSearchHeadWindowLines(results []SearchResult, requested int) int {
 	return 0
 }
 
+// resolvedSearchSnippetGrowth keeps the measured code-search growth allowance
+// for ordinary results. Prose-parent retrieval may spend the caller's explicit
+// hard ceiling because a useful session can be larger than a code body, while
+// the same ceiling still bounds the serialized response.
+func resolvedSearchSnippetGrowth(results []SearchResult, hardBudget int) int {
+	if hardBudget <= 0 {
+		return searchEnclosureGrowthBytes
+	}
+	for _, result := range results {
+		if hasSearchSignal(result, proseParentRetrievalSignal) {
+			return hardBudget
+		}
+	}
+	return searchEnclosureGrowthBytes
+}
+
 // selectSearchCandidates preserves the ordinary region ranking unless the
 // existing candidate universe is overwhelmingly prose. In a prose corpus it
 // protects the baseline head and spends only the tail on deterministic

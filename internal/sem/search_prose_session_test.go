@@ -313,6 +313,74 @@ func TestResolvedSearchHeadWindowLinesIsProseOnlyAndHonorsExplicitValue(t *testi
 	}
 }
 
+func TestResolvedSearchSnippetGrowthLetsProseUseCallerBudget(t *testing.T) {
+	prose := []SearchResult{{Signals: []string{proseParentRetrievalSignal}}}
+	if got := resolvedSearchSnippetGrowth(prose, 128_000); got != 128_000 {
+		t.Fatalf("prose growth = %d, want caller budget", got)
+	}
+	code := []SearchResult{{Signals: []string{"body"}}}
+	if got := resolvedSearchSnippetGrowth(code, 128_000); got != searchEnclosureGrowthBytes {
+		t.Fatalf("code growth = %d, want %d", got, searchEnclosureGrowthBytes)
+	}
+	if got := resolvedSearchSnippetGrowth(prose, 0); got != searchEnclosureGrowthBytes {
+		t.Fatalf("unbounded prose growth = %d, want conservative default %d", got, searchEnclosureGrowthBytes)
+	}
+}
+
+func TestSearchRepositoryProseCanExpandMultipleLongSessionsWithinCallerBudget(t *testing.T) {
+	repo := t.TempDir()
+	filler := strings.Repeat("neutral archive detail ", 18) + "\n"
+	write(t, repo, "sessions/00-orion.md", `# Orion alpha inventory
+
+The Orion alpha inventory is tracked in this session.
+
+`+strings.Repeat(filler, 55)+`
+The final alpha inventory count is 2,000 units.
+`)
+	write(t, repo, "sessions/01-orion.md", `# Orion beta inventory
+
+The Orion beta inventory is tracked in this session.
+
+`+strings.Repeat(filler, 55)+`
+The final beta inventory count is 10,000 units.
+`)
+	for index := 2; index < 5; index++ {
+		write(t, repo, fmt.Sprintf("sessions/%02d-peer.md", index), fmt.Sprintf(`
+# Orion inventory archive %d
+
+This unrelated inventory note contains no alpha or beta count.
+`, index))
+	}
+
+	response, err := SearchRepository(
+		t.Context(), repo, "test", "Orion alpha beta inventory count", SearchOptions{
+			Worktree: true, Profile: ProfileSyntaxOnly, TopK: 5, MaxContextBytes: 128_000,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := make(map[string]SearchResult, len(response.Results))
+	for _, result := range response.Results {
+		byPath[result.FilePath] = result
+	}
+	for path, fact := range map[string]string{
+		"sessions/00-orion.md": "final alpha inventory count is 2,000 units",
+		"sessions/01-orion.md": "final beta inventory count is 10,000 units",
+	} {
+		result, ok := byPath[path]
+		if !ok {
+			t.Fatalf("missing evidence session %s: %#v", path, response.Results)
+		}
+		if !containsString(result.Signals, searchHeadWindowSignal) {
+			t.Fatalf("%s was not expanded under the caller budget: %#v", path, result.Signals)
+		}
+		if !strings.Contains(result.Snippet, fact) {
+			t.Fatalf("%s omitted distant fact %q", path, fact)
+		}
+	}
+}
+
 func TestSearchRepositoryProseLaneRequiresEightyPercentProseParents(t *testing.T) {
 	repo := t.TempDir()
 	for index := 0; index < 4; index++ {

@@ -949,7 +949,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		defaultSearchEnclosureMaxLines, options.EnclosureContextLines, bodyHeadRanks, headWindowLines,
 	)
 	results, completeSymbols, locators := allocateSearchSnippets(
-		results, enclosures, options.MaxContextBytes, searchEnclosureGrowthBytes,
+		results, enclosures, options.MaxContextBytes, resolvedSearchSnippetGrowth(results, options.MaxContextBytes),
 		bodyHeadRanks, minInt(searchEnclosureTailSnippetLines, options.MaxSnippetLines),
 	)
 	stats.CompleteSymbols = completeSymbols
