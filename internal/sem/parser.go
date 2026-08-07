@@ -4350,6 +4350,11 @@ func pythonOverloadStub(node *sitter.Node, src []byte) bool {
 func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Entity, bool) {
 	var kind string
 	var name string
+	// bodyless: this declaration declares a callable without defining it (see
+	// Entity.bodyless). Set only where the grammar guarantees no body — a
+	// TypeScript overload signature or ambient declaration — never for a Dart
+	// declaration head, whose body is a sibling node the walk re-attaches below.
+	var bodyless bool
 	switch node.Type() {
 	case "class", "class_definition", "class_declaration", "class_specifier", "mixin_declaration",
 		"abstract_class_declaration":
@@ -4410,6 +4415,7 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 				return Entity{}, false
 			}
 			kind = "method"
+			bodyless = true
 			name = nodeName(node, src)
 			if scope != "" {
 				name = qualify(scope, name)
@@ -4447,6 +4453,7 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		// of the declared types could retrieve it.
 		if language == "TypeScript" {
 			kind = "function"
+			bodyless = true
 			name = nodeName(node, src)
 			if scope != "" {
 				kind = "method"
@@ -5106,6 +5113,7 @@ func entityFromNode(node *sitter.Node, src []byte, language, scope string) (Enti
 		EndLine:     int(node.EndPoint().Row) + 1,
 		BodyHash:    hash(normalize(block)),
 		Fingerprint: hash(normalize(entityFingerprintSource(Entity{Name: name, Signature: signatureFromNode(node, src)}, block))),
+		bodyless:    bodyless,
 	}
 	// F# modules and members carry their declarations/body as direct siblings of
 	// the name (no `body` field or body-like wrapper node), so signatureFromNode

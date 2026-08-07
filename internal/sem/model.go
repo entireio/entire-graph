@@ -20,6 +20,16 @@ type Entity struct {
 	// def). It is still a real symbol, but it is only callable from within its
 	// enclosing function, so call resolution must not name-match it across scopes.
 	Local bool `json:"-"`
+	// bodyless marks a declaration that declares a callable without defining it:
+	// a TypeScript overload signature or an ambient `declare function`. It is a
+	// real symbol (the declared types live only there), but it is NOT a second
+	// definition of the name — the implementation right below it is. Two rules
+	// depend on the distinction: the implementation must keep the bare
+	// compound-v1 symbol ID no matter how many signatures precede it, and a call
+	// that lands on an overload set must resolve to the implementation instead of
+	// being downgraded as ambiguous. Private, like the other parse metadata, so
+	// the frozen schema is unchanged.
+	bodyless bool
 	// sourceStartByte/sourceEndByte are the exact tree-sitter declaration range.
 	// They are internal parse metadata: public schema and stable symbol identity
 	// intentionally remain line based. A zero start is valid when end > start.

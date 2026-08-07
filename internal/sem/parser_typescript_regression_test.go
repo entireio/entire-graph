@@ -282,3 +282,144 @@ func TestTypeScriptBodylessDeclarationCoverage(t *testing.T) {
 		})
 	}
 }
+
+// An overload set is ONE call target, not an ambiguity.
+//
+// resolveImportedCallTargets downgrades a multi-candidate imported call to
+// confidence 0.62 / resolution "name_only". Once every overload signature
+// became a symbol, an ordinary `import { renderList }` + `renderList(...)`
+// matched three candidates and took that path, and because the fast profile
+// keeps only exact/package/import_resolved edges (shallowCallRelationRetained)
+// it then dropped ALL of them — `impact --profile fast` answered "no callers"
+// for a function with a caller, which is a false negative stated as fact.
+//
+// The set is one implementation plus its own bodyless declarations, so the call
+// resolves to the implementation and keeps the confidence and reason it would
+// have had before the signatures existed.
+func TestTypeScriptOverloadedImportedCallResolvesToImplementation(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/renderList.ts",
+		"export function renderList(source: number, fn: (i: number) => any): any[]\n"+
+			"export function renderList(source: string, fn: (v: string) => any): any[]\n"+
+			"export function renderList(source: any, fn: (...a: any[]) => any): any[] {\n"+
+			"  return []\n"+
+			"}\n")
+	writeFile(t, repo, "src/caller.ts",
+		"import { renderList } from './renderList'\n"+
+			"\n"+
+			"export function useList(items: string[]): any[] {\n"+
+			"  return renderList(items, (v) => v)\n"+
+			"}\n")
+
+	for _, profile := range []Profile{ProfileFull, ProfileFast} {
+		t.Run(string(profile), func(t *testing.T) {
+			snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version",
+				ProviderSnapshotOptions{Profile: profile})
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := runCallsFrom(snapshot, "useList")
+			if len(calls) != 1 {
+				t.Fatalf("useList CALLS = %d, want 1 edge to the implementation: %#v", len(calls), calls)
+			}
+			call := calls[0]
+			if call.Resolution != "import_resolved" || call.Confidence < 0.86 {
+				t.Errorf("call = %s conf %.2f (%s), want import_resolved at 0.86: %#v",
+					call.Resolution, call.Confidence, call.Reason, call)
+			}
+			if strings.Contains(call.Reason, "ambiguous") {
+				t.Errorf("overload set reported as ambiguity: %q", call.Reason)
+			}
+			// The target is the implementation — the declaration that has a body,
+			// which is the one that keeps the bare compound-v1 ID.
+			wantTarget := ""
+			for _, symbol := range snapshot.Symbols {
+				if symbol.FilePath == "src/renderList.ts" && symbol.Name == "renderList" && !symbol.bodyless {
+					wantTarget = symbol.ID
+				}
+			}
+			if wantTarget == "" {
+				t.Fatal("no renderList implementation symbol in the snapshot")
+			}
+			if call.ToID != wantTarget {
+				t.Errorf("call target = %s, want the implementation %s", call.ToID, wantTarget)
+			}
+		})
+	}
+}
+
+// The overload collapse must never resolve a call the tool cannot actually
+// resolve, so its guard is pinned directly: only a set that is one
+// implementation plus its OWN bodyless declarations collapses. Everything else
+// — two real definitions, candidates in different files or under different
+// qualified names, a set with no implementation at all — stays ambiguous and
+// takes the existing downgrade.
+func TestBodylessOverloadImplementationRefusesGenuineAmbiguity(t *testing.T) {
+	target := func(file, qualified, kind string, bodyless bool) resolvedCallTarget {
+		return resolvedCallTarget{
+			SymbolRecord: SymbolRecord{
+				ID:       file + ":" + qualified + ":" + kind + map[bool]string{true: ":decl", false: ":def"}[bodyless],
+				FilePath: file, QualifiedName: qualified, Name: qualified, Kind: kind,
+				Language: "TypeScript", bodyless: bodyless,
+			},
+			Confidence: 0.86, Resolution: "import_resolved",
+		}
+	}
+	for _, testCase := range []struct {
+		name    string
+		targets []resolvedCallTarget
+		want    string // "" means: refuse to collapse
+	}{{
+		name: "overload set collapses to the implementation",
+		targets: []resolvedCallTarget{
+			target("a.ts", "renderList", "function", true),
+			target("a.ts", "renderList", "function", true),
+			target("a.ts", "renderList", "function", false),
+		},
+		want: "a.ts:renderList:function:def",
+	}, {
+		name: "two real definitions stay ambiguous",
+		targets: []resolvedCallTarget{
+			target("a.ts", "renderList", "function", false),
+			target("a.ts", "renderList", "function", false),
+		},
+	}, {
+		name: "declarations with no implementation stay ambiguous",
+		targets: []resolvedCallTarget{
+			target("a.d.ts", "amb", "function", true),
+			target("a.d.ts", "amb", "function", true),
+		},
+	}, {
+		name: "candidates in different files stay ambiguous",
+		targets: []resolvedCallTarget{
+			target("a.ts", "renderList", "function", true),
+			target("b.ts", "renderList", "function", false),
+		},
+	}, {
+		name: "candidates under different qualified names stay ambiguous",
+		targets: []resolvedCallTarget{
+			target("a.ts", "Worker.run", "method", true),
+			target("a.ts", "Other.run", "method", false),
+		},
+	}} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got, ok := bodylessOverloadImplementation(testCase.targets)
+			if testCase.want == "" {
+				if ok {
+					t.Fatalf("collapsed to %s; must stay ambiguous", got.ID)
+				}
+				return
+			}
+			if !ok {
+				t.Fatalf("refused to collapse; want %s", testCase.want)
+			}
+			if got.ID != testCase.want {
+				t.Errorf("collapsed to %s, want %s", got.ID, testCase.want)
+			}
+			if got.Resolution != "import_resolved" || got.Confidence != 0.86 {
+				t.Errorf("target = %s conf %.2f, want the original import_resolved/0.86",
+					got.Resolution, got.Confidence)
+			}
+		})
+	}
+}

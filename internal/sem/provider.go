@@ -276,7 +276,13 @@ type SymbolRecord struct {
 	// frozen provider schema and symbol IDs do not change.
 	sourceStartByte int
 	sourceEndByte   int
-	parameterNames  []string
+	// bodyless: this symbol declares a callable without defining it (a
+	// TypeScript overload signature or ambient declaration; see Entity.bodyless).
+	// Call resolution uses it to tell an overload set apart from genuinely
+	// ambiguous same-name definitions. Private, so the frozen schema and the
+	// compound-v1 IDs are unchanged.
+	bodyless       bool
+	parameterNames []string
 	// parameterNamesKnown distinguishes an AST-confirmed empty parameter list
 	// from missing parser metadata. This stays private to preserve the frozen
 	// provider schema.
@@ -1738,6 +1744,7 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 			Local:           entity.Local,
 			sourceStartByte: entity.sourceStartByte,
 			sourceEndByte:   entity.sourceEndByte,
+			bodyless:        entity.bodyless,
 		}
 		// Carried for every language: the parser marks parameterNamesKnown only
 		// when it actually read the names off the parse tree, so a grammar with
@@ -2256,6 +2263,17 @@ func resolveImportedCallTargets(name string, from SymbolRecord, candidates []Sym
 		imported = jsExportedImportFallbackTargets(name, from, candidates, importsByName[name], allowMethodTargets)
 	}
 	if len(imported) > 1 {
+		// An overload set is not ambiguity. `import { renderList }` followed by
+		// `renderList(...)` has exactly one call target — the implementation —
+		// even though the file also declares bodyless signatures for it. Without
+		// this the fanout below downgrades every candidate to "name_only", which
+		// the fast profile then discards wholesale (shallowCallRelationRetained),
+		// so `impact` reports a function with real callers as having none.
+		if implementation, ok := bodylessOverloadImplementation(imported); ok {
+			return []resolvedCallTarget{implementation}
+		}
+	}
+	if len(imported) > 1 {
 		for index := range imported {
 			imported[index].Confidence = minFloat(imported[index].Confidence, 0.62)
 			imported[index].Reason = fmt.Sprintf("ambiguous imported call: candidate among %d same-name declarations", len(imported))
@@ -2386,6 +2404,45 @@ func sqlDerivedScriptPath(path string) bool {
 
 func cFamilyOverloadResolutionEnabled(language string) bool {
 	return language == "C" || language == "C++"
+}
+
+// bodylessOverloadImplementation collapses a multi-candidate call fanout that
+// is really ONE overloaded function: several bodyless declarations (TypeScript
+// overload signatures / ambients) plus the single implementation they belong
+// to, all in the same file under the same qualified name. It returns that
+// implementation, so the call keeps the confidence and reason it resolved with
+// instead of being downgraded as ambiguous.
+//
+// It refuses whenever the set could be genuine ambiguity: two real definitions
+// of the name, candidates spread across files or qualified names, or a set with
+// no implementation at all (a pure ambient declaration file, where nothing says
+// which declaration the call runs).
+func bodylessOverloadImplementation(targets []resolvedCallTarget) (resolvedCallTarget, bool) {
+	if len(targets) < 2 {
+		return resolvedCallTarget{}, false
+	}
+	first := targets[0].SymbolRecord
+	if first.FilePath == "" || first.QualifiedName == "" {
+		return resolvedCallTarget{}, false
+	}
+	implementation := -1
+	for index, target := range targets {
+		if target.FilePath != first.FilePath || target.Language != first.Language ||
+			target.QualifiedName != first.QualifiedName || target.Kind != first.Kind {
+			return resolvedCallTarget{}, false
+		}
+		if target.bodyless {
+			continue
+		}
+		if implementation >= 0 {
+			return resolvedCallTarget{}, false
+		}
+		implementation = index
+	}
+	if implementation < 0 {
+		return resolvedCallTarget{}, false
+	}
+	return targets[implementation], true
 }
 
 func sameFileOverloadSet(candidates []SymbolRecord) ([]SymbolRecord, bool) {
