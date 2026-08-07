@@ -156,15 +156,24 @@ competitor.
 \* CMM v0.9.0 indexed the Markdown conversations as `Section` nodes, but its
 public natural-language `search_graph(query=...)` BM25 path excludes that node
 type. Its separate `search_code` verb can find literal source phrases, but the
-unchanged benchmark question is not a literal source pattern. The CMM column
-therefore reports that public route on an off-domain corpus and is not a claim
-about CMM's code-search quality.
+unchanged benchmark question is not a literal source pattern. That route
+retrieved nothing at all here: all 1,050 CMM cells returned a byte-identical
+empty context (24 bytes, zero hits), so the CMM QA percentages are the shared
+reader answering from the question alone. The CMM column therefore reports that
+public route on an off-domain corpus and is not a claim about CMM's code-search
+quality.
+
+**Holdout (tune-disjoint).** The 300 + 50 full set is not tune-disjoint: 35 of
+the 350 cases overlap the tune phase. The clean generalization estimate is the
+sealed holdout, where Entire Graph scored 75.6% LOCOMO QA accuracy and 0.900
+recall@10 (n=30; the LongMemEval-S holdout is n=5).
 
 All 3,150 raw cells, 3,150 blinded primary grades, and 630 fixed audit cells
 passed the sealed integrity gates. The Opus audit agreed with the primary judge
 on 98.41% of cells (Cohen's kappa 0.9682), and there were zero invalid attempts.
 Across all 350 paired memory cases, Entire minus Graphify semantic accuracy was
-+0.1648 (cluster 95% CI +0.1034 to +0.2146; McNemar p=1.70e-11).
++0.1648 (95% CI +0.1034 to +0.2146, a bootstrap clustered by conversation over
+10 effective LOCOMO clusters; McNemar p=1.70e-11).
 
 This is a **public-protocol reimplementation**, not a reproduction of
 Graphify's historical README run: Graphify's advertised memory harness and
