@@ -203,6 +203,25 @@ func TestProseParentTermListsUseDerivedWordFamilyCoverage(t *testing.T) {
 	}
 }
 
+func TestProseParentHeadCountReservesMoreTailForListQuestions(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		query string
+		want  int
+	}{
+		{query: "find the archive implementation", want: 5},
+		{query: "which archives contain lanterns", want: 3},
+		{query: "what records exist other than the ledger", want: 3},
+		{query: "where are the travel notes", want: 3},
+	}
+	for _, testCase := range tests {
+		if got := proseParentHeadCount(buildSearchQuery(testCase.query), 10); got != testCase.want {
+			t.Errorf("proseParentHeadCount(%q, 10) = %d, want %d",
+				testCase.query, got, testCase.want)
+		}
+	}
+}
+
 func TestSearchRepositoryDoesNotConflateUnsafeProseSuffixes(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "sessions/focus.md", `# Gases

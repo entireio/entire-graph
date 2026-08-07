@@ -89,7 +89,7 @@ func selectSearchCandidates(
 		return true
 	}
 
-	headParents := (topK + 1) / 2
+	headParents := proseParentHeadCount(q, topK)
 	for _, candidate := range baseline {
 		if len(selected) == headParents {
 			break
@@ -128,6 +128,44 @@ func selectSearchCandidates(
 		appendParent(parents[candidate.result.FilePath], candidate)
 	}
 	return selected
+}
+
+func proseQueryRequestsMultipleParents(q searchQuery) bool {
+	words := q.words
+	if words == nil {
+		words = searchQueryWords(q.rawLower)
+	}
+	interrogative := words["what"] || words["which"] || words["where"]
+	if !interrogative {
+		return false
+	}
+	if words["else"] || (words["other"] && words["than"]) {
+		return true
+	}
+	written := q.wordSequence
+	if len(written) == 0 {
+		written = searchQueryWordSequence(q.rawLower)
+	}
+	for _, word := range written {
+		if len(word) <= 4 || !strings.HasSuffix(word, "s") || strings.HasSuffix(word, "ss") {
+			continue
+		}
+		singular := strings.TrimSuffix(word, "s")
+		if plural, ok := safeASCIIPlural(singular); ok && plural == word {
+			return true
+		}
+	}
+	return false
+}
+
+func proseParentHeadCount(q searchQuery, topK int) int {
+	if topK <= 0 {
+		return 0
+	}
+	if proseQueryRequestsMultipleParents(q) {
+		return maxInt(1, topK/3)
+	}
+	return (topK + 1) / 2
 }
 
 func proseParents(candidates []searchCandidate) map[string]*proseParent {
