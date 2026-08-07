@@ -283,6 +283,85 @@ func TestTypeScriptBodylessDeclarationCoverage(t *testing.T) {
 	}
 }
 
+// A bodyless declaration must never RENAME the implementation it declares.
+//
+// compound-v1 symbol IDs are a published contract: they are stable across
+// ordinary edits, and `stable_id_version` is the only signal a consumer gets
+// when that changes. Emitting overload signatures made the shared base ID
+// non-unique, so the disambiguation branch in entitySymbols fired for the
+// IMPLEMENTATION too and every pinned ID silently moved:
+//
+//	before: local/tsrepo:TypeScript:src/renderList.ts:function:renderList
+//	after:  local/tsrepo:TypeScript:src/renderList.ts:function:renderList#sig:6ece...
+//
+// Adding a signature above a function is an ordinary edit. The implementation
+// keeps the bare ID; only the bodyless declarations take a suffix. Genuine
+// duplicates — two real definitions of one name — must still both be suffixed,
+// which is the case this test pins alongside.
+func TestTypeScriptOverloadSignaturesKeepImplementationSymbolIDStable(t *testing.T) {
+	bareID := func(t *testing.T, path, src string) []string {
+		t.Helper()
+		entities, _, status := TreeSitterParser{}.ParseWithStatus(path, src)
+		if status.ParseError {
+			t.Fatalf("unexpected parse error: %s", status.Detail)
+		}
+		var bare []string
+		for _, symbol := range entitySymbols("local/tsrepo", path, "TypeScript", entities) {
+			if !strings.Contains(symbol.ID, "#sig:") {
+				bare = append(bare, symbol.ID)
+			}
+			if symbol.StableIDVersion != StableSymbolIDVersion {
+				t.Errorf("stable_id_version = %q, want %q", symbol.StableIDVersion, StableSymbolIDVersion)
+			}
+		}
+		return bare
+	}
+
+	const overloaded = "export function renderList(source: string, fn: (v: string) => any): any[]\n" +
+		"export function renderList<T>(source: Iterable<T>, fn: (v: T) => any): any[]\n" +
+		"export function renderList(source: any, fn: (...a: any[]) => any): any[] {\n" +
+		"  return []\n" +
+		"}\n"
+	// The ID the implementation had before overload signatures were symbols, and
+	// therefore the ID it must still have.
+	const implementationID = "local/tsrepo:TypeScript:src/renderList.ts:function:renderList"
+	if got := bareID(t, "src/renderList.ts", overloaded); len(got) != 1 || got[0] != implementationID {
+		t.Errorf("bare IDs = %v, want exactly [%s]", got, implementationID)
+	}
+
+	// A class overload set behaves the same: the method_definition keeps the
+	// bare ID, the method_signature declarations above it are suffixed.
+	const overloadedMethod = "class Worker {\n" +
+		"  run(a: string): void\n" +
+		"  run(a: number): void\n" +
+		"  run(a: any): void {}\n" +
+		"}\n"
+	wantClass := []string{
+		"local/tsrepo:TypeScript:src/worker.ts:class:Worker",
+		"local/tsrepo:TypeScript:src/worker.ts:method:Worker.run",
+	}
+	if got := bareID(t, "src/worker.ts", overloadedMethod); strings.Join(got, ",") != strings.Join(wantClass, ",") {
+		t.Errorf("bare IDs = %v, want %v", got, wantClass)
+	}
+
+	// A lone bodyless declaration is the only declaration of its name, so it
+	// keeps the bare ID — nothing it could collide with, and suffixing it would
+	// be the same churn in the other direction.
+	const ambient = "declare function amb(a: string): void\n"
+	wantAmbient := []string{"local/tsrepo:TypeScript:src/globals.d.ts:function:amb"}
+	if got := bareID(t, "src/globals.d.ts", ambient); strings.Join(got, ",") != strings.Join(wantAmbient, ",") {
+		t.Errorf("bare IDs = %v, want %v", got, wantAmbient)
+	}
+
+	// Genuine ambiguity is unchanged: two real definitions of one name are both
+	// suffixed, exactly as before overload signatures were emitted.
+	const duplicated = "export function dup(a: string): void {\n  return\n}\n" +
+		"export function dup(a: number): void {\n  return\n}\n"
+	if got := bareID(t, "src/dup.ts", duplicated); len(got) != 0 {
+		t.Errorf("two real definitions left a bare ID %v; both must disambiguate", got)
+	}
+}
+
 // An overload set is ONE call target, not an ambiguity.
 //
 // resolveImportedCallTargets downgrades a multi-candidate imported call to

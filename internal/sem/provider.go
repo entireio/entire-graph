@@ -1690,10 +1690,23 @@ func WriteRelationsNDJSON(out io.Writer, snapshot ProviderSnapshot) error {
 
 func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRecord {
 	byName := map[string]string{}
-	baseCounts := map[string]int{}
+	// definitionCounts counts only entities that DEFINE the name; declarationCounts
+	// counts the bodyless declarations of it (TypeScript overload signatures,
+	// ambient `declare function`). They are kept apart so that adding a signature
+	// above an implementation never renames the implementation: a bodyless
+	// declaration is not a second definition, and compound-v1 IDs must survive
+	// ordinary edits (the same reason Swift extensions are not emitted as classes —
+	// see parser.go's swiftExtensionDeclaration note).
+	definitionCounts := map[string]int{}
+	declarationCounts := map[string]int{}
 	sigOrdinals := map[string]int{}
 	for _, entity := range entities {
-		baseCounts[symbolID(repoKey, language, path, entity.Kind, entity.Name)]++
+		id := symbolID(repoKey, language, path, entity.Kind, entity.Name)
+		if entity.bodyless {
+			declarationCounts[id]++
+			continue
+		}
+		definitionCounts[id]++
 	}
 	// One symbol is emitted per entity, in order, so an entity's index is also its symbol's
 	// index — which is what lets a lexical parent be looked up as symbols[parents[index]].
@@ -1702,7 +1715,17 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 	for index, entity := range entities {
 		qualified := entity.Name
 		id := symbolID(repoKey, language, path, entity.Kind, qualified)
-		if baseCounts[id] > 1 {
+		// A definition collides only with other definitions: overload signatures
+		// above it must not push it onto a suffixed ID. A bodyless declaration
+		// yields the bare ID to the definition whenever anything else shares the
+		// name, and keeps it when it is the only declaration of that name (a lone
+		// ambient `declare function`, an abstract member), so no ID that existed
+		// before overload signatures were emitted changes.
+		colliding := definitionCounts[id] > 1
+		if entity.bodyless {
+			colliding = definitionCounts[id]+declarationCounts[id] > 1
+		}
+		if colliding {
 			// Disambiguate same-name symbols by signature hash plus an ordinal
 			// within the matching-signature group. This is stable across edits
 			// that shift line numbers, unlike the previous line-range scheme;
