@@ -1,0 +1,27 @@
+{
+  "cli_version": "dev",
+  "checkpoint_version": "branch-v1",
+  "checkpoint_id": "970796ecbb41",
+  "strategy": "manual-commit",
+  "branch": "fix/graph-retrieval-and-typescript",
+  "checkpoints_count": 23,
+  "files_touched": [
+    "internal/cli/root.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/97/0796ecbb41/0/metadata.json",
+      "transcript": "/97/0796ecbb41/0/full.jsonl",
+      "compact_transcript": "/97/0796ecbb41/0/transcript.jsonl",
+      "content_hash": "/97/0796ecbb41/0/content_hash.txt",
+      "prompt": "/97/0796ecbb41/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 8398,
+    "cache_creation_tokens": 149820375,
+    "cache_read_tokens": 2182631341,
+    "output_tokens": 5150140,
+    "api_call_count": 4528
+  }
+}
