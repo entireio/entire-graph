@@ -871,3 +871,7 @@ Give a PLAN PROGRESS update only — no benchmark status table, no VM polling un
 ---
 
 Give a PLAN PROGRESS update only — no benchmark status table, no VM polling unless a cell is actually running. Report against ~/.claude/plans/stateless-napping-unicorn.md: which of the 13 items are done, in progress, dead (and why), and what is next. Keep it to a short table plus anything that changed since the last update.
+
+---
+
+Give a PLAN PROGRESS update only — no benchmark status table, no VM polling unless a cell is actually running. Report against ~/.claude/plans/stateless-napping-unicorn.md: which of the 13 items are done, in progress, dead (and why), and what is next. Keep it to a short table plus anything that changed since the last update.
