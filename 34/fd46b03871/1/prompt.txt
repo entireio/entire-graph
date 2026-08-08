@@ -1,0 +1,873 @@
+update
+
+---
+
+yes an then make sure fulyl upda te to do and pull from tehre and sore all reuslts in devenv safe adn reyad to be reviewed etc
+
+---
+
+yes an then make sure fulyl upda te to do and pull from tehre and sore all reuslts in devenv safe adn reyad to be reviewed etc
+
+---
+
+stop once eg frsh and ready
+
+---
+
+get grpah amrk up to date with merging etc sma edirll fro allt hese prs; 
+feat(parity): publish v52 and prepare fair CMM locator lane 
+#64 opened 2 hours ago by suhaanthayyil
+
+fix(bench): fairness repairs, the VERIFY damage mechanism, and measurement tooling 
+#61 opened 2 days ago by suhaanthayyil
+
+Resolution-first eval on top of #55 (score resolution, not just tokens) 
+#56 opened last week by ashtom
+ 4
+
+audit(gate): repo-cache repair, outcome-aware leak scan, and measured findings
+
+---
+
+get grpah amrk up to date with merging etc sma edirll fro allt hese prs; 
+feat(parity): publish v52 and prepare fair CMM locator lane 
+#64 opened 2 hours ago by suhaanthayyil
+
+fix(bench): fairness repairs, the VERIFY damage mechanism, and measurement tooling 
+#61 opened 2 days ago by suhaanthayyil
+
+Resolution-first eval on top of #55 (score resolution, not just tokens) 
+#56 opened last week by ashtom
+ 4
+
+audit(gate): repo-cache repair, outcome-aware leak scan, and measured findings
+
+---
+
+then ocen done have rfresh entire grpah and grpahamrk on devenv with separte reuslts driectory with all results a dn then run rep 100 on opus best effort make sure all reuslts we can analyze; and get a big vm if not already should be bale to run 50 connrucrent session so the 100 should finish in a 1hr; what is staus on toher bnchamrkk btws ; also ddelte all useless docs and notes in eg and grphamrk ocne one; have this made and tested in the rep 100 -  The finding worth your attention when you pick this up: the graph pays on MODIFY tasks (+14.35%) and costs on ADD tasks (−3.37%), same sign
+  in all four cells. It's the only thing today that replicated, and because it's a property of the task known before the run, it can't be the
+  division bias that killed session-length routing.
+
+---
+
+k lets get this done in 30 min
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+<task-notification>
+<task-id>b9lu9pgpc</task-id>
+<tool-use-id>28cf4c08-66c1-44a2-9e62-b7cbb900b2bf:inner</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/b9lu9pgpc.output</output-file>
+<status>killed</status>
+<summary>Background command "claude setup-token" was stopped</summary>
+</task-notification>
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+ashtom  [12:02 AM]
+Hm
+[12:02 AM]L1 — expose the executing verify verb (PRIMARY)
+
+ The capability already exists and was never wired up. internal/cli/verify.go:193 runs
+ exec.CommandContext(ctx,"sh","-c",cmd) + CombinedOutput() via runVerifyCommands (:158).[12:02 AM]What does this do?
+Suhaan  [12:03 AM]
+it makes the tool run the tests, instead of the agent running them by hand.
+ashtom  [12:05 AM]
+That seems like cheating then?,Why is baseline able to run the tests cheaper than eg is?
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+js ultrathink and look and veriy u will find the answer also answer to the cheating???
+
+---
+
+what happened to our grouping etc, so then remvoe veirfy etc right? and fix the testing waste
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+<task-notification>
+<task-id>a596646977f5890a8</task-id>
+<tool-use-id>toolu_01Y3vdMakG3UYkdXpewHYuUK</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/a596646977f5890a8.output</output-file>
+<status>completed</status>
+<summary>Agent "Quantify addressable fraction of loser excess" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Reproduction check (before anything else)
+
+| metric | established | my recount | match |
+|---|---|---|---|
+| post-edit **API calls** eg vs base (8 inst) | 370 / 248 → **+122** | **370 / 248 → +122** | exact |
+| post-edit **tool calls** eg vs base | — | 442 / 321 → **+121** | — |
+| post-edit share of ctx delta | 97.7% | 17.21M / 17.65M = **97.5%** | ✓ |
+| turn-effect / density split | 10.95M (62%) / 6.79M (38%) | 11.54M (67%) / 5.67M (33%) | ±5pp, method diff |
+| rep50 total | +1.35% | 145.63M → 143.66M = **+1.35%** (n=49) | exact |
+
+Method: an "API call" = one unique assistant `message.id` (streaming rows merged); split at the first `Edit`/`Write`/`MultiEdit`. Classification is on **tool calls** (n=763 hand-read); I convert to API calls with each instance's own tool/API ratio.
+
+---
+
+## 1. Per-bucket counts, eg vs base, post-edit tool calls
+
+**eg arm**
+
+| instance | A test/build | B poll | C output-recov | D env | E scratch | F code | G | total |
+|---|---|---|---|---|---|---|---|---|
+| carbon-2981 | 7 | 0 | 0 | 2 | 8 | 25 | 2 | 44 |
+| javaparser-4538 | 2 | 0 | 0 | 0 | 7 | 5 | 1 | 15 |
+| bat-3108 | 8 | 0 | 4 | 2 | 10 | 24 | 1 | 49 |
+| bat-1892 | 13 | **7** | **6** | 1 | 8 | 27 | 1 | 63 |
+| valkey-790 | 14 | **8** | 5 | **13** | 16 | 11 | 1 | 68 |
+| lombok-3326 | 2 | 0 | 0 | 5 | 21 | 25 | 1 | 54 |
+| openlibrary-111347 | 7 | 0 | 0 | 1 | **33** | 15 | 0 | 56 |
+| ansible-395 | 9 | 0 | 3 | 6 | 23 | **49** | 3 | 93 |
+| **eg total** | **62** | **15** | **18** | **30** | **126** | **181** | **10** | **442** |
+
+**baseline arm**
+
+| instance | A | B | C | D | E | F | G | total |
+|---|---|---|---|---|---|---|---|---|
+| carbon-2981 | 8 | 0 | 0 | 2 | 6 | 10 | 1 | 27 |
+| javaparser-4538 | 0 | 0 | 0 | 0 | 5 | 4 | 3 | 12 |
+| bat-3108 | 2 | 0 | 0 | 0 | 18 | 13 | 0 | 33 |
+| bat-1892 | 6 | 0 | 0 | 3 | 7 | 28 | 0 | 44 |
+| valkey-790 | 9 | 2 | 0 | 11 | 6 | 6 | 2 | 36 |
+| lombok-3326 | 0 | 0 | 0 | 11 | 32 | 35 | 0 | 78 |
+| openlibrary-111347 | 3 | 0 | 0 | 1 | 7 | 6 | 1 | 18 |
+| ansible-395 | 4 | 0 | 0 | 1 | 19 | 48 | 1 | 73 |
+| **base total** | **32** | **2** | **0** | **29** | **100** | **150** | **8** | **321** |
+
+**EXCESS (eg − base)**
+
+| instance | A | B | C | D | E | F | G | Δtotal |
+|---|---|---|---|---|---|---|---|---|
+| carbon-2981 | −1 | 0 | 0 | 0 | +2 | **+15** | +1 | +17 |
+| javaparser-4538 | +2 | 0 | 0 | 0 | +2 | +1 | −2 | +3 |
+| bat-3108 | +6 | 0 | +4 | +2 | −8 | +11 | +1 | +16 |
+| bat-1892 | +7 | **+7** | **+6** | −2 | +1 | −1 | +1 | +19 |
+| valkey-790 | +5 | **+6** | +5 | +2 | **+10** | +5 | −1 | **+32** |
+| lombok-3326 | +2 | 0 | 0 | −6 | −11 | −10 | +1 | **−24** |
+| openlibrary | +4 | 0 | 0 | 0 | **+26** | +9 | −1 | **+38** |
+| ansible-395 | +5 | 0 | +3 | +5 | +4 | +1 | +2 | +20 |
+| **TOTAL** | **+30** | **+13** | **+18** | **+1** | **+26** | **+31** | **+2** | **+121** |
+
+Excess share: F 26%, A 25%, E 21%, C 15%, B 11%, G 2%, **D 1%**.
+
+**Mean context per post-edit call (computed, not assumed)**
+
+| instance | eg ctx/API-call | base ctx/API-call | eg ctx/tool-call | eg tool/API ratio |
+|---|---|---|---|---|
+| carbon-2981 | 99,489 | 102,305 | 72,356 | 1.375 |
+| ansible-395 | 125,971 | 115,368 | 92,108 | 1.368 |
+| openlibrary | 118,939 | 136,444 | 97,700 | 1.217 |
+| javaparser-4538 | 71,620 | 45,675 | 62,071 | 1.154 |
+| lombok-3326 | 118,404 | 85,544 | 105,248 | 1.125 |
+| bat-1892 | **149,077** | 130,061 | 118,315 | 1.260 |
+| bat-3108 | 86,609 | 90,472 | 83,074 | 1.043 |
+| valkey-790 | 96,397 | 75,949 | 93,562 | 1.030 |
+
+Composition of the post-edit context: **97.8% cache-read** (40.77M of 41.72M eg). Fresh input is 740 tokens total. This matters for §3.
+
+---
+
+## 2. What the verb actually removes, bucket by bucket
+
+**B (+13) — partially. 7 of 13, all in bat-1892.**
+`sharkdp__bat-1892` post-edit idx 45,46,49,50,51,52,56:
+```
+sleep 90;  tail -40 .../tasks/b3dk13p75.output
+sleep 120; wc -c .../b3dk13p75.output; ps aux | grep -c "[c]argo test"
+sleep 150; wc -c ...; pgrep -af "cargo test|bat-"
+pgrep -af "cargo|rustc"; ls -la target/debug/deps/
+ps -o pid,ppid,etime,stat,cmd -g $(ps -o pgid= -p 631719 ...)
+kill 633269 2&gt;/dev/null; sleep 5; wc -c ...
+pkill -f "target/debug/bat"; pkill -f "target-baseline"
+```
+These exist only because `cargo test` was backgrounded (unbounded runtime). A foreground long-timeout call collapses 7 → 1. Credit **+6 net**.
+The valkey B calls (12,13,14,16,17,18,19,59) poll `valkey-server` processes spawned by the agent's *own* `/tmp/w/79eb3c7e/repro.sh`, not by `./runtest` — which ran foreground and worked. The verb does not run repro.sh. **Not addressable.**
+
+**C (+18) — 7 of 18 strictly.**
+Addressable: bat-1892's 6 (`tail`/`cat`/`grep` of its own `tasks/*.output` at idx 1,7,33,38,44,53) and bat-3108 idx 35 — an **identical** `cargo test --offline` re-run back-to-back with a different grep:
+```
+[34] ... cargo test --offline 2&gt;&amp;1 | grep -E "^(test result|error|warning: unused|---- |failures:|running)" -A 3
+[35] ... cargo test --offline 2&gt;&amp;1 | grep -E "^test result|^error" | head -20      &lt;- same run, re-sliced
+```
+Not addressable: bat-3108 idx 9 (Read CHANGELOG after a truncated *grep*), idx 42/43 (`cargo clippy` re-slices — lint, not the test command), valkey 22/23/25/56 (re-slices of the agent's own repro.sh + server logs), ansible 50/51/87 (re-slices of its own `run_units.py` and of `git diff`).
+
+**D (+1) — irrelevant to the delta, and this is the fix's biggest problem.**
+eg spends 30 calls on environment repair; **baseline spends 29**. In absolute terms the verb could delete ~24 eg calls (valkey's 13 port/tmpdir calls, ansible's 6 pytest-hunting/`pip install`, bat's cache-path juggling) — but it deletes ~18 baseline calls at the same time. **Net contribution to the +122: +1.** Fixing D improves both arms and cancels out of the eg-vs-base number entirely.
+Also, per your own strictness rule: lombok's 5 D calls (`jimage extract`, stub `--boot-class-path` construction) are repair of the **repo build**, not the test runner → excluded. And the verb as specced (timeout + cap + exit code + baseline) contains nothing that allocates free ports or shortens a unix-socket path, which is what valkey's 13 D calls actually needed:
+```
+[1] ./runtest --single unit/cluster/zz-repro-shards   -&gt; "couldn't open socket: address already in use"
+[2] ./runtest ... --clientport 25400                  -&gt; "Wrong argument: --clientport"
+[4] ./runtest ... --baseport 25500                    -&gt; "ERROR: No PID detected in log ./tests/tmp/server.116426.1/stdout"
+```
+
+**E (+26) — 5 strictly, ~15 optimistically.**
+Strictly addressable (harness duplicates the real suite AND the suite was reachable): openlibrary `/tmp/mw/simulate_test_patch.py` (idx 35,36,46,47,48). That script exists to guess whether `test_binary[880_arabic_french_many_linkages.mrc]` failing is the agent's fault or a stale reference fixture — **exactly** what the pre-edit-baseline feature answers.
+Not addressable:
+- openlibrary idx 6–16, 30–33 (**15 calls**): diffing against a *second openlibrary checkout at a different commit* (`...-dbbd9d539c...`), which was deleted mid-session (3 of the calls are `No such file or directory`). Pure cross-repo spelunking. The verb has no bearing.
+- ansible `run_units.py`: eg uses it 7×, **baseline uses it 9×**. Removing it makes eg look *worse* by 2.
+- bat-3108 E is **−8** (baseline built two whole `/tmp/clap-probe`/`/tmp/clap-real` mock crates); lombok E is **−11**. Deleting scratch harnesses helps baseline more than eg on 2 of 8 instances.
+- valkey's `repro.sh` (14 calls) only becomes addressable if you *also* assume the verb fixes ports/tmpdir so `./runtest` works first try — scope creep beyond the stated spec. Optimistic only.
+
+**A (+30) — ~4 addressable, and this is real iteration.**
+Only test invocations that failed for env reasons and were re-issued count: bat-3108 idx 22 (cache path), bat-1892 idx 2 and 39 (PATH / `rustup could not choose a version of cargo`), ansible idx 5 (`No module named pytest`) — 6 in eg, 2 in base → **+4 excess**. The other +26 is the eg agent running the compiler and the suite more times than baseline did.
+
+**F (+31) — zero. G (+2) — zero.** Reading and editing repo source, `git diff`, `git status`.
+
+---
+
+## 3. Headline number
+
+| | tool calls | % of +122 | API-call equiv | tokens | share of the 17.21M post-edit excess |
+|---|---|---|---|---|---|
+| **CONSERVATIVE** (verb as specced only) | **17** | **14.0%** | 14.0 | **1.92M** | 11.2% |
+| **OPTIMISTIC** (+ port/tmpdir isolation, + lint output capping, + harness suppression) | **46** | **37.7%** | 40.5 | **4.68M** | 27.2% |
+
+Conservative allocation: bat-1892 14 (B 6, C 6, A 2) × 149,077/1.26 = 1.656M; bat-3108 2 (C 1, A 1) × 86,609/1.043 = 0.166M; valkey 1 (C 1) = 0.094M.
+Optimistic adds: valkey +18 (E 10, D/A 8) = 1.779M; openlibrary +5 (E) = 0.489M; bat-3108 +2, bat-1892 +2, ansible +2.
+
+**What that does to the headline:**
+
+| | rep50 saving | as % |
+|---|---|---|
+| today | 1.97M / 145.63M | +1.35% |
+| conservative | 3.89M | **+2.67%** |
+| optimistic | 6.65M | **+4.57%** |
+
+**Dollar value.** The 8 instances cost eg $44.66 vs baseline $32.21 — **$12.45 excess** (from `cc_out.json → total_cost_usd`). Conservative recovers ~11% of the excess context → **≈$1.40**. Optimistic ≈**$3.30**. Because 97.8% of the removed tokens are cache reads (billed ~0.1×), the dollar recovery is an order of magnitude smaller than the token count suggests. If the funding case is stated in tokens, use 1.92M/4.68M. If it is stated in dollars, use $1.40/$3.30.
+
+---
+
+## 4. What is NOT addressable
+
+| instance | Δ | why no tool removes it |
+|---|---|---|
+| **openlibrary-111347** | **+38** | 15 calls diffing a second openlibrary checkout at a different SHA; +26 E and +9 F. Only 5 calls touch verification. The verb addresses 13% of the single worst instance. |
+| **carbon-2981** | +17 | +15 is bucket F — reading `Difference.php`/`CarbonInterval.php` and 10 edits. A is **−1**: eg ran phpunit *fewer* times than baseline. Nothing to remove. |
+| **ansible-395** | +20 | +1 F, +5 D (pip installs the verb does not perform), +4 E (net of baseline's larger harness). The 28 consecutive `Edit` calls at idx 15–42 are a real `ITERATING_*` → `IteratingStates` enum refactor; baseline did the same in 35 edits. |
+| **lombok-3326** | **−24** | Post-edit calls went *down* 54 vs 78, API calls 48 vs 58 — yet the instance lost 19.4%. The damage is density: 118,404 vs 85,544 ctx/call (**+38%**). A turn-count fix cannot touch it. |
+| **bat-3108** | +16 | +11 F (reading vendored `clap_builder-4.4.12` parser source), −8 E. Genuine multi-run iteration: it edited `clap_app.rs`/`app.rs` 6× and re-ran the suite after each. |
+| **javaparser-4538** | +3 | Too small to matter; and **neither arm ever ran mvn**. |
+
+Real test iteration any tool still pays for: **valkey-790** (14 A calls — `./runtest` on 6 cluster suites, a stash/rebuild control run at idx 43–45 to confirm the bug is the agent's, `runtest-cluster --single 28-cluster-shards`, `--force-resp3`) and **bat-1892** (13 A calls across build, `--lib` filtered, `--test integration_tests`, full suite, rustfmt).
+
+---
+
+## 5. Adversarial check — the strongest evidence against
+
+**(a) The baseline was not verifying at all on half these instances, and that is where eg's "excess" comes from.**
+`javaparser-4538` baseline A = **0**. `lombok-3326` baseline A = **0**. `bat-3108` baseline A = 2 (both rustfmt). `openlibrary` baseline A = 3.
+And the reason is a harness artifact:
+```
+base sharkdp__bat-1892 [9]  cargo build 2&gt;&amp;1 | tail -30
+     RESULT:  netjail: no real 'cargo' found on PATH behind the guard.
+```
+The baseline gave up and hand-rolled `rustc /tmp/mock_check.rs`. The eg agent found `~/.cargo/bin/cargo` and ran the real suite. **A verify verb makes running the suite easy for *both* arms — it would push the baseline's A count up toward eg's, which shrinks nothing and could widen the gap.** This is the single strongest argument against funding.
+
+**(b) The bucket the verb most obviously fixes is a statistical wash.** D: eg 30, base 29, Δ **+1**. You cannot buy back +122 by fixing something the control group pays for equally.
+
+**(c) The agent had a working command and re-ran it anyway — repeatedly, and the cause was not truncation.**
+```
+bat-3108 eg [34],[35],[46]  identical `cargo test --offline`, three times, three different greps.
+                            [35] and [46] both return "74 passed; 0 failed" from a run that already passed.
+valkey  eg [40],[42]        identical `./runtest --single unit/cluster/zz-repro-shards --baseport 25500`,
+                            twice, differing only in `| tail -45` vs `| grep -E "\[ok\]|\[err\]..."`.
+```
+Neither result was truncated (2,231 and 943 bytes; 2,161 and 199 bytes). An output *cap* does not prevent a re-run of a run whose output already fit. Only a structured result the agent trusts on first read does — that is a UX claim, not a timeout/cap claim, and it is unverified.
+
+**(d) The one timeout in the corpus is a genuine hang, which a longer timeout does not fix.**
+```
+bat-1892 eg [55]  cd /tmp/bat_baseline &amp;&amp; ... timeout 900 cargo test --offline ...
+                  Exit code 143 — Command timed out after 10m 0s
+```
+The hanging test is `no_args_doesnt_break` (opens a pty and blocks). The agent's actual fix was `-- --skip no_args_doesnt_break` at idx 59/60. An "ecosystem-aware long timeout for cargo" makes you wait *longer* before learning the same thing. The verb converts 7 polling calls into 1 timeout report — real, but the diagnosis cost remains.
+
+**(e) The verb helps the baseline more than eg on 3 of 8 instances.** E delta is −8 (bat-3108), −11 (lombok); ansible's `run_units.py` is 7 calls in eg vs 9 in base. If the verb suppresses scratch-harness construction uniformly, these three move *against* the eg arm.
+
+**Plain verdict:** the fix is real but small and mis-aimed. It is a **bat-1892-shaped fix**. 14 of the 17 conservative calls come from one instance; drop bat-1892 and conservative addressability falls to **3/122 = 2.5%**. The stated features (timeout, cap, exit code, baseline) target buckets B+C = +31 of +121 (26%), of which only ~7 survive strict scrutiny. The two buckets that actually dominate — A (+30, real iteration) and F (+31, code reading) — are untouched, and E (+26) is 58% one instance's second-checkout expedition.
+
+---
+
+## Confidence and falsifiers
+
+**Confidence: medium-high on the counts, medium-low on the attribution.**
+- Bucket counts: high. Every one of the 763 post-edit tool calls was read; the arithmetic closes exactly (442/321/+121, and the API-call recount hits 370/248/+122 on the nose).
+- Addressability: this is a counterfactual on 8 sessions. n=8, and one instance carries 82% of the conservative estimate.
+
+**What would falsify the conservative 14% (raise it):**
+1. Run the verb against `sharkdp__bat-1892` and `valkey-io__valkey-790` head-to-head and count actual post-edit calls. If eg's bat-1892 drops below 50 tool calls, my 14 is too low.
+2. If the verb turns out to isolate tmpdir + allocate free ports, valkey's 13 D + 14 E calls move in and the conservative figure roughly doubles to ~28%.
+3. If a structured pass/fail summary demonstrably stops the re-slice pattern (bat-3108 [35], valkey [42], bat-3108 [42]/[43]), add ~6 calls.
+
+**What would falsify it downward (make the fix look worse):**
+1. Re-run the **baseline** arm with the verb available. If baseline's A count rises from 32 toward eg's 62 — which the `netjail: no real 'cargo' found` evidence predicts — the delta does not shrink at all and the net effect could be zero or negative.
+2. Check whether the +1.35% is even robust: mean per-instance saving is **−10.52%**, median **−4.16%**. The +1.35% is a total-token number carried by a few large winners. A fix worth +1.3pp on the total is inside the noise of a metric whose per-instance median is negative.
+3. Ship the verb and measure lombok-3326. It lost 19.4% with *fewer* post-edit calls than baseline. If instances like it are common in the other 14 losers, the whole turn-count thesis is the wrong lever.
+
+**Recommendation on the funding question:** fund it as a **~+1.3pp headline / ~$1.40-per-8-instances** intervention with a hard prerequisite — measure the baseline arm with the verb enabled too. Do not fund it on a "+122 excess calls" framing; only 17 of those 122 are provably its territory.</result>
+<usage><subagent_tokens>165956</subagent_tokens><tool_uses>22</tool_uses><duration_ms>976516</duration_ms></usage>
+</task-notification>
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+no idc ab tmgeini when u goign to emet our goal i thoguht we had a plan
+
+---
+
+why eg sessions do more verification than baseline.
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+❯ comibe and symtehms all thoguths f eryhting into a ufll plan ; full plan - also on the grouping if u think ti is useless rn; then why doesn;t evyerhting win if for the task and repo it is alll good that means a harnes sproblem or a eg roblem U hsould find a fix that
+
+---
+
+<task-notification>
+<task-id>a833340527d7617c5</task-id>
+<tool-use-id>toolu_01LeVWSqPm6XBdu6Ps36SzSX</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/a833340527d7617c5.output</output-file>
+<status>completed</status>
+<summary>Agent "Investigate bat-1892 and valkey-790 losses" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I have everything. Here is the forensic account.
+
+## Bottom line up front
+
+The graph payload was **correct in both instances** — top hit was the exact function to edit, both times. Neither loss was caused by the graph. But the two instances differ in whether a graph capability *could* have helped:
+
+- **bat-1892**: graph is innocent **and near-powerless**. 42 of eg's 99 tool calls are environment/answer-leak/hung-test work no code graph can address.
+- **valkey-790**: graph is innocent but **not powerless**. ~31 of the 44 harness calls are *pre-edit* and answer a repo-derivable question.
+
+Cell-wide (49 paired), turn delta is the entire mechanism: winners median **−8 turns**, losers median **+9**. My two are the extremes, and both show the same signature — eg wall-clock ≈2.7× baseline (3258s vs 1192s; 3517s vs 1290s) because **eg actually built and ran the real test suite and baseline did not**.
+
+---
+
+## 1. sharkdp__bat-1892 — ADD
+
+**Task**: add a `--ignored-suffix` CLI option so users can extend the hardcoded `IGNORED_SUFFIXES` list. **ADD** (new flag, new type, new wiring across 8 files).
+
+**Graph payload — correct.** Top hit was the exact function to replace:
+```
+1. src/assets/ignored_suffixes.rs:28-42 score=19.38 symbol=try_with_stripped_suffix
+2. src/assets.rs:280-288 HighlightingAssets.get_syntax_for_file_name
+3. src/assets.rs:290-301 HighlightingAssets.get_syntax_for_file_extension
+SAME-CONCEPT LITERAL "IGNORED_SUFFIXES" — 2 in 1 file: src/assets/ignored_suffixes.rs:6 EDIT
+```
+eg followed it directly (calls 3–4 read exactly those two files) and used **5 fewer** localization calls than baseline (10 vs 15). The graph *won* the localization phase and then lost the session elsewhere.
+
+**Where the +35 calls went** (eg 99 vs base 64):
+
+| bucket | eg | base | Δ |
+|---|---|---|---|
+| sibling-checkout answer-leak mining | 12 | 0 | **+12** |
+| hung-test recovery | 11 | 0 | **+11** |
+| real build runs | 6 | 0 | +6 |
+| env/toolchain discovery | 8 | 5 | +3 |
+| verification | 10 | 7 | +3 |
+| companion doc/completion sites | 10 | 7 | +3 |
+| harness building | 11 | 9 | +2 |
+| graph call | 1 | 0 | +1 |
+| edits | 18 | 19 | −1 |
+| **localization** | **10** | **15** | **−5** |
+
+Three things drove it, none graph-related:
+
+- **Answer leak (12 calls).** Call 9 was a blocked `curl` to `raw.githubusercontent.com` for the upstream file. Call 10 then listed the shared checkouts dir and found **`sharkdp__bat-3108`** — a *later* checkout of the same repo that already contains the implemented feature (`src/syntax_mapping/ignored_suffixes.rs`, `IgnoredSuffixes&lt;'a&gt;`). Calls 11–18, 20, 51, 81 mine it for the reference implementation. Baseline never listed that directory.
+- **Toolchain discovery asymmetry (decisive).** Call 34 (`env | grep -i cargo`) found `CARGO_HOME=.../pkg_iso/cargo` with a populated offline registry. That unlocked ~40 calls of real `cargo build` / `cargo test`. **Baseline had a *larger* registry (198M/147 crates vs eg's 77M/132) and never found it** — it concluded at T069 "no crate registry cache offline" (false), wrote a standalone `rustc` mock (`/tmp/repro/main.rs`) that re-implemented the logic, and **never compiled the bat crate at all**.
+- **Hung pty test (11 calls).** `cargo test` blocked forever on `no_args_doesnt_break` (uses `openpty`). Calls 82–95 are sleeps, `pgrep`, `ps -g`, `kill`, a 10-minute timeout, and source-diving to identify the hanging test, ending in `--skip no_args_doesnt_break`.
+
+**Where a graph capability would have removed turns**: essentially one place. Calls 21, 25–30, 50, 52, 80 (**10 calls**) all ask *"where does the analogous existing flag `--map-syntax` appear, so I can mirror `--ignored-suffix` there?"* — man page, 4 completion files, clap_app, app.rs, CHANGELOG, README. Nothing else in the session is graph-shaped.
+
+**Caused by the payload?** No. Evidence against causation: the payload named 2 files, eg read exactly those 2, and finished localization in **fewer** calls than baseline. The leak was triggered by a blocked `curl`, not by the payload. The build/hang costs began 20+ calls after the last payload-derived read.
+
+---
+
+## 2. valkey-io__valkey-790 — MOD
+
+**Task**: `CLUSTER SHARDS` returns an empty `slots` array for a shard whose primary has failed. **MOD** — note this contradicts the pooled MOD +14.35% trend; a MOD lost 127%.
+
+**Graph payload — outstanding.** Top-2 hits were the command entry point and the buggy function, including the exact defective lines:
+```
+1. src/cluster_legacy.c:5698-5707 score=84.25 clusterCommandShards  signals=...,exact-code-token,all-query-terms
+2. src/cluster_legacy.c:5666-5693 score=83.05 addShardReplyForClusterShards
+     n = clusterNodeGetPrimary(n);              &lt;-- the bug
+     if (n-&gt;slot_info_pairs != NULL) { ... } else { addReplyArrayLen(c, 0); }   &lt;-- the empty array
+```
+That is the patched hunk verbatim. Both arms' final patches modify precisely these lines.
+
+**Where the +39 calls went** (eg 92 vs base 53):
+
+| bucket | eg | base | Δ |
+|---|---|---|---|
+| test-harness wrangling + hand-rolled repro | 48 | 23 | **+25** |
+| verification / regression suites | 17 | 7 | **+10** |
+| blocked commands | 2 | 0 | +2 |
+| style (clang-format) | 3 | 1 | +2 |
+| edits | 2 | 1 | +1 |
+| graph call | 1 | 0 | +1 |
+| build | 3 | 3 | 0 |
+| **localization** | **15** | **17** | **−2** |
+
+Again the graph *saved* localization. The loss is one specific detour:
+
+Both arms hit the same wall — `./runtest` fails because the generated `unixsocket` path under the long checkout dir exceeds the 107-byte `sun_path` limit. **Baseline solved it in one clever call** (#34: build a symlink farm at `/tmp/vk` with a real `tests/tmp`), then ran the project's own tcl suite for the rest of the session. **eg tried a symlink (#31), reverted it (#33), abandoned `runtest` entirely, and hand-rolled a 6-node cluster in bash** (`/tmp/w/79eb3c7e/repro.sh`, calls 35–50: port collisions, backgrounded 300s timeouts, `pkill` loops, and finally discovering it needed `--cluster-replica-validity-factor 0` for failover to fire). Then at calls 60–65 it **came back to `runtest` anyway** and solved the same path problem a second way (patching `tests/support/tmpfile.tcl` `::tmproot`). It solved one environment problem twice, with a 16-call detour in between.
+
+**Where a graph capability would have removed turns** — and critically, **all of this is pre-edit** (first edit = call 53), so it is reachable:
+
+| # | What it was trying to learn | What it did | One-turn answer |
+|---|---|---|---|
+| A | Which existing tests exercise `CLUSTER SHARDS`, and how are they invoked | calls 4, 5, 6, 9, 10, 11 (**6 calls**) | symbol→test-file map + the literal `./runtest --single unit/cluster/&lt;x&gt;` / `./runtest-cluster --single 28-cluster-shards` invocations |
+| B | How do I write a cluster test here — `start_cluster`, `R`, `wait_for_cluster_state`, `default_replica_allocation` | calls 18, 19, 20, **21, 22, 23** (three consecutive failed greps for `proc R`), 24 (**7 calls**) | tcl `proc` definition sites: `start_cluster tests/support/cluster_util.tcl:238`, `R tests/instances.tcl:547`, … |
+| C | What the failover-marking test pattern looks like | call 15, plus base's 13–15 | test-file exemplars for the symbol |
+
+**≈13–15 calls**, all answerable from repo-derived facts. Calls 21/22/23 are the sharpest indictment: three greps failed to find `proc R` because entire-graph indexes no `.tcl` symbols — baseline burned a 4th call on the identical miss.
+
+The remaining ~25 harness calls (socket path length, port collisions, `client-default-*` config errors, process cleanup) are pure environment and **no code graph can touch them**.
+
+**Caused by the payload?** No. The payload was consumed in 2 calls and eg reached the correct edit having used *fewer* localization calls than baseline. The detour started at call 26, twenty-four calls after the payload, and was triggered by a `runtest` port collision.
+
+---
+
+## Proposals, ranked by (turns removed) / (bytes added)
+
+Hard delivery constraint I worked under: **both sessions made exactly one graph call, pre-edit, and never returned.** So the only channel that reaches anyone is the *first `entire graph search` response*. Anything pulled — new verbs, post-edit riders — is dead on arrival, consistent with the 0/66 adoption you already measured.
+
+**1. Test-invocation card, pushed into the first search response — ~14 turns / ~500 B (0.028 turns/byte).**
+For the top hit's symbol, emit repo-derived facts only:
+```
+TESTS REFERENCING clusterCommandShards / addShardReplyForClusterShards:
+  tests/unit/cluster/announce-client-ip.tcl:23   (start_cluster)
+  tests/cluster/tests/28-cluster-shards.tcl:1    (legacy harness)
+RUN: ./runtest --single unit/cluster/&lt;name&gt;  |  ./runtest-cluster --single 28-cluster-shards
+HELPERS: start_cluster tests/support/cluster_util.tcl:238 · R tests/instances.tcl:547 ·
+         wait_for_cluster_state tests/support/cluster_util.tcl:151
+```
+Every line is a file:line fact. Fairness test passes — a no-tool arm cannot obtain it without spending exactly the turns being removed (baseline spent 7 on the same questions). Not a new verb; not post-edit.
+
+**2. Index non-code symbols (tcl `proc`, shell functions, make targets) — ~4 turns / ~0 B.**
+Adds no payload bytes; it is what makes #1 derivable, and it directly kills the `proc R` triple-miss. Should ship folded into #1, not standalone — standalone it only pays on a second call that 42/49 sessions never make.
+
+**3. Companion-site list for ADD tasks — ~8 turns / ~400 B (0.020 turns/byte), low confidence.**
+When the top hit sits in a feature cluster, list every site where the nearest sibling option is declared, including non-source files (man page, 4 completion files, changelog). Would have collapsed bat's 10 doc-site calls. **I rate this low confidence** because I cannot see a clean mechanism for the tool to know that `--map-syntax` is the analogue of `--ignored-suffix` from the query "ignore known backup template filename suffix". The existing literal sweep does not get there — it correctly reports `IGNORED_SUFFIXES` appears in one file, which is true and useless.
+
+**Nothing else in the graph's power helps these two.** 42/99 bat calls (leak 12, hung test 11, env 8, builds 6, dead ends 2, harness 3) and ~25/92 valkey calls are environment and toolchain, not code intelligence.
+
+---
+
+## Two benchmark-integrity findings that should change decisions
+
+- **Answer leak is live.** Concurrent instance checkouts sit in a shared parent directory, and `sharkdp__bat-3108` is a *later revision of the same repo containing the implemented feature*. eg found it and spent 12 calls mining it. Whichever arm happens to run `ls &lt;checkouts-parent&gt;` gets the upstream solution. The checkouts have since been cleaned, so I could not confirm whether baseline's parent held it at run time — but the exposure is structural, not arm-specific.
+- **The token metric is rewarding failure to provision.** On bat, baseline "won" 5.13M vs 9.23M in large part because it never compiled the crate — it verified a re-implementation of the logic in a standalone `rustc` file while a fully usable 198M offline registry sat unfound at `$CARGO_HOME`. Provisioning logged `'cargo fetch' exit=127` for both arms, so no arm was told the toolchain existed. Any pair where one arm builds and the other does not is measuring provisioning luck, not retrieval. Worth auditing how many of the 25 losers share this shape — the four largest all show eg wall-clock ≫ baseline, which is the same signature.
+
+**Files** (on `graphbench-c`): payloads `~/work/graphmark/agentic-swebench/results/REP50_r1_eg/eg/{sharkdp__bat-1892,valkey-io__valkey-790}/gq_calls.log.payload`; transcripts `~/.claude/projects/*/{aa948100-b9a6-4692-a84e-d90048dcf195,06b94d0f-5f62-4666-b2d0-f831ef8b8f7f,aedc5159-3563-4b94-a8ec-faca4ac3d4c0,0240f4fa-3a7d-448f-8661-c1d9b87e0bde}.jsonl`. Local extracts and per-call bucketing: `/private/tmp/claude-501/-Users-suhaan-devenv/73009f6a-a642-4aaa-8da3-51eb6bcc5b49/scratchpad/tc_{BAT_EG,BAT_BASE,VK_EG,VK_BASE}.txt`.</result>
+<usage><subagent_tokens>184092</subagent_tokens><tool_uses>27</tool_uses><duration_ms>585235</duration_ms></usage>
+</task-notification>
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+ok js i q i wil ened to turn off or shut downmy laptop how can we continue/ move into gcp? claud  clodu what is best?
+
+---
+
+so what should we do i can't keep my laptop on foveer?
+
+---
+
+No, wait, this is for like in 24 hrs or smth
+
+---
+
+no we have a ton of time so wait and let slal reuslt coem then nanalyize vyerhitn g don;t miss a thing
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+<task-notification>
+<task-id>wpnth6aws</task-id>
+<tool-use-id>toolu_01NzT7ANk4G4X4qYKGUWHudS</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/wpnth6aws.output</output-file>
+<status>completed</status>
+<summary>Dynamic workflow "Design and offline-validate a fix for each of the three measured loss mechanisms on Opus" completed</summary>
+<result>{"live_count":0,"specs":[{"defect":"DEFECT 1 as stated is mispriced, and in this cell it is not the defect. Re-measured on all 49 REP50_r1 gated pairs from the raw transcripts (cache_read = 94.6% of billed, confirming the cost model): the first graph search lands at assistant turn median 2 (mean 2.09, p90 2) of a median 85-turn session, where cache_read is 12,231 tokens vs the session mean of 63,137/turn. The call is the CHEAPEST message in the session, 5.2x below the price the +4.3-6.0% estimate charged it at. Delivered payload median 2,152 B (27/34 calls already piped through `head`), so moving it to turn 0 costs only (B/4)x(t0+1) ~1.6k tokens — the estimate's error is on the SAVINGS side, not the persist side. The actual drag is turn inflation, not call toll: LOSERS run 862 shell-exploration Bash calls vs baseline 570 (+51%) and 97.3 turns vs 78.2; WINNERS 668 vs 853 (-22%) and 79.6 vs 100.5. corr(saving, turn delta) = -0.900. The call is ~12k tokens against a ~1.2M/session loser drag: R-A targets ~1% of the thing that is actually losing.","verdict":"do-not-build","proposal":"Do not spend a cell on R-A. Land two safety fixes and one pre-registered gate instead; all are tool-output/harness hygiene, no prompt bytes on either arm.\n\n1. /Users/suhaan/devenv/entire-graph/internal/cli/search.go:286-292 — echoPresearchPayload has NO length check (verified live on HEAD 607b2a4; note b669a57b is not in this repo's history). A zero-byte or truncated prefetch.payload yields 0 bytes on stdout with exit 0 — exactly the \"payload announced, none shipped\" failure behind the withdrawn +22% (TokensNotes §7.4, fix exists as 8a4ffb3 but is not on this tree). eg-q's `[ -s ]` guard (tools/eg-q:172) covers only the shell path; EG_PRESEARCH is exported process-wide (run_3arm.sh:703) so any direct binary invocation hits the unguarded Go path.\n\n2. /Users/suhaan/devenv/entire-graph/internal/cli/search.go:134-136 and /Users/suhaan/graphmark-bench/agentic-swebench/tools/eg-q:172-173 — the echo is query-blind and header-less. Any later search on any new symbol returns the turn-0 payload verbatim with no indication it answered a different question, unlike the session-echo path at search.go:141-149 which does emit searchEchoHeader. That makes the 40-word issue-head query (retrieval measured worse: gold-visible@5 0.567 vs the agent's own 0.715) an ABSORBING STATE for the whole session. Fix: echo only when the query matches the prefetch query, else run live; or always prepend searchEchoHeader naming the query actually answered.\n\n3. Pre-registered mechanism gate for any future prefetch-family cell (gate on counts, never tokens at n&lt;50): residual agent search-call rate &gt;= 0.5/session AND displacement rate (eg shell-exploration calls &lt; paired baseline) &gt;= 43% (rep50's current 21/49). TokensNotes §2.11 predicts both fail at 0/49.\n\nAlso flag, if a cell is ever run: run_3arm.sh:750-766 injects \"you do not need to run it yourself\" by default (EG_PREFETCH_NOSUPPRESS=0) — that is instruction-shaped, not output; run with NOSUPPRESS=1 so the delta is output-only. And run_3arm.sh:579-581 swallows prefetch failure with `2&gt;/dev/null || true`, while success flips published_exact_eg_tool's _intro (run_3arm.sh:1377-1387) — one arm then silently mixes two prompt revisions. Shared `$SUITE/.eg_cache/$iid` is warmed by the prefetch and read by concurrent tags (the known A/B cache trap).","expected_pct_low":-0.3,"expected_pct_high":2.2,"fair":true,"fairness_argument":"R-A itself passes the doctrine test: the turn-0 payload is tool OUTPUT, and an arm with no tool has no counterpart to receive — the delta is a capability, not advice. Two caveats. (a) The default framing at run_3arm.sh:754-756, \"A code-graph search has ALREADY been run ... you do not need to run it yourself\", is an instruction about how to behave, not output; it must be dropped (EG_PREFETCH_NOSUPPRESS=1) or the cell carries an eg-only behavioral directive. (b) The search.go:254 design note says the \"search first\" mandate must be removed alongside pre-delivery. That is arm-legal (an eg-only constraint being lifted, same argument as EG_FREE_MSG1), but it is moot here: I read the actual rep50 eg prompt on the VM and it carries NO search-first line — it is the payload-conditional capability wording only. So R-A cannot bank any saving from removing a directive that is not there, which is part of why its measured ceiling collapses. My proposal adds zero prompt bytes to either arm and is pure tool-output plus harness hygiene.","kill_criterion":"Already met, offline, at zero model spend. Pre-registered threshold: R-A must show a pooled persist-model ceiling &gt;= +3% on the rep50 pairs to justify a cell. Measured: pooled +0.96%, bootstrap CI95 [+0.53, +1.38] (n=4000 resamples), with a full sensitivity band of -0.25% (call turn costs only its own cache_read) to +2.16% (whole turn removed). Ceiling is below threshold under every assumption. Second, independent kill: R-A's saving requires a residual agent search call to make free, and the only session-level measurement of payload injection (TokensNotes §2.11) reports 0 of 49 sessions ever queried the tool, with PUB_r1 at 0.20 graph calls vs 24.40 shell greps/session — the zero-toll echo has no surface to act on. Third: prefetch's own paired measurement (run_3arm.sh:486-490, Opus, 3 replicates, n=30) already returned +3.0% WORSE with turns rising 13.40 -&gt; 13.72, in a cell where the agent made ~0 calls, i.e. a cell where zero-toll would have changed nothing. If it is ever revisited, the gate is mechanism-only: residual search-call rate &gt;= 0.5/session and displacement rate &gt;= 43%; do not read tokens below n=50 (n to demonstrate +2% is well past 499 pairs).","offline_evidence":"All numbers recomputed from raw REP50_r1 transcripts on graphbench-c (49 gated pairs, both arms, ~/.claude/projects/*/&lt;sid&gt;.jsonl), zero model spend.\nCOST MODEL CONFIRMED: cache_read = 94.6% of billed tokens; my pooled metric on this cell is +4.35% saved (headline +1.35% uses billed cost).\nCALL PLACEMENT: 33/49 sessions make &gt;=1 `entire graph search` (dist 0:16, 1:32, 2:1; mean 0.69/session). Non-search graph verbs (def/callers/impact/grep) mean 1.41/session — so zero-toll, which covers `search` only, addresses at most 33% of graph-call tolls. First call at assistant turn median 2, mean 2.09, p90 2. Session length median 85 assistant turns (mean 91.2). cache_read AT the call turn median 12,231 vs session mean 63,137/turn.\nPAYLOAD: delivered tool_result median 2,152 B (mean 2,854, max 9,836); full eg-q output median 3,293 B/session (EG_TOPK=5, EG_MAXBYTES=32768); 27/34 calls piped through `head`. Turn-0 relocation penalty = (B/4)x(t0+1) ~ 1.6k tokens — negligible, so the persist charge is NOT what kills R-A.\nR-A PRICED: conservative -0.25%, mid +0.96% CI95[+0.53,+1.38], aggressive +2.16% pooled; mean-of-ratios -0.35/+0.95/+2.25%, median +0.01/+0.98/+1.82%. The published +4.3-6.0% is reproducible only by pricing the removed message at the SESSION-MEAN turn cost (63,137) instead of the actual turn-2 cost (12,231), i.e. a 5.2x overcharge.\nUNIVERSAL DELIVERY COSTS THE LOSERS: 16/49 sessions never call search; universal injection charges them (P/4)xN ~ 45k tokens each for nothing. Those are the losing cohort — non-callers pooled -1.02%, median -24.94%; callers pooled +6.30%, median +12.61%. Caller rate is 0.76 in winners vs 0.58 in losers. The \"+7.0% tax for merely having called\" is inverted in this cell: calling is the WINNING behaviour.\nDISPLACEMENT IS THE DISCRIMINATOR: label nodisp = (eg shell-exploration calls &gt;= baseline). displace&amp;win 19/21 (90.5%); nodisp&amp;win 6/28 (21.4%). AUC(nodisp -&gt; loss) = 0.838. R-A removes the call in exactly the cohort where calling wins.\nQ3 — NO PRE-RUN SIGNAL (design note independently reproduced): AUC for predicting nodisp at 57% base rate — file paths named in issue 0.532, code fences 0.480, backticked identifiers 0.452, ps len
+... (truncated 96612 chars, full result in /private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/wpnth6aws.output)</result>
+<diagnostics>Per-agent results: /Users/suhaan/.claude/projects/-Users-suhaan-devenv/73009f6a-a642-4aaa-8da3-51eb6bcc5b49/subagents/workflows/wf_1a7518dd-cbb/journal.jsonl — one {"type":"result",...} line per completed agent with its full return value.
+If the result above is empty or unexpected, Read this file BEFORE diagnosing — do not assume agents returned non-empty results.
+To re-run with edited post-processing: Workflow({scriptPath: '/Users/suhaan/.claude/projects/-Users-suhaan-devenv/73009f6a-a642-4aaa-8da3-51eb6bcc5b49/workflows/scripts/eg-fix-three-defects-wf_1a7518dd-cbb.js', resumeFromRunId: 'wf_1a7518dd-cbb'}) — agents whose (prompt, opts) are unchanged replay from cache.</diagnostics>
+<usage><agent_count>13</agent_count><agents_done>13</agents_done><agents_error>0</agents_error><agents_skipped>0</agents_skipped><agents_empty_result>0</agents_empty_result><subagent_tokens>1025603</subagent_tokens><tool_uses>211</tool_uses><duration_ms>1269292</duration_ms></usage>
+</task-notification>
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+i thiguth that wirfkwo was meant to find fixes to all hte problems
+
+---
+
+<task-notification>
+<task-id>wqw2zyaob</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/wqw2zyaob.output</output-file>
+<status>completed</status>
+<summary>Dynamic workflow "Read-only audit of every entire-graph artifact and dataset to settle what is true on Opus and what plan survives" completed</summary>
+<result>{"survivors":[{"claim":"EG-FINAL-PLAN §2 states three mutually inconsistent context totals for the same table. (a) 'Baseline 38.6M. eg 38.5M. context-neutral (+0.2%)'. (b) The itemised paragraph gives net 0.97M = +2.51%. (c) The table's own columns sum to baseline 35.01M vs eg 33.44M = 1.57M = +4.07%. The itemised (b) is arithmetically wrong: it omits the harness saving of 0.60M (4.30 → 3.70, which is in the table's 'captured 14%' column but appears in neither the 3.77M gross nor the 2.80M adds); 0.97 + 0.60 = 1.57 exactly. Separately the baseline column sums to 35.01M against a stated 38.6M total, so 3.59M (9.3%) of the budget is unlisted — and that unlisted residual is where the entire difference between (a) and (c) has to live, undisclosed. Finally, if eg really were context-neutral (+0.2%) while cache_read is 95.5% of tokens, the remaining 4.5% would have to fall ~24% to produce +1.35% overall; that is stated nowhere.","evidence":"EG-FINAL-PLAN.md:28 ('38.6M / 38.5M / +0.2%'); :30-40 (table; baseline column sums 10.48+11.67+1.94+3.60+4.30+1.95+0.76+0.31 = 35.01M, eg column 33.44M); :43-44 ('3.77M gross', '2.80M', 'net 0.97M = +2.51%'); :14 ('cache_read is 95.5%')","action":"Rebuild §2 from one reconciled ledger: publish the unclassified residual as its own row, fix the itemised net to 1.57M/+4.07%, and delete the '+0.2% context-neutral' claim or explain the 3.59M gap. §4's 62.4% addressable pool uses 38.6M as denominator and inherits the error.","confidence":"high","contradicts_existing":true,"verdict":{"refuted":false,"reason":"CONFIRMED on its core arithmetic, independently re-derived; two subsidiary sentences are wrong and must be dropped.\n\nVERIFIED EXACTLY (EG-FINAL-PLAN.md:30-40): baseline column = 35.0100M, eg column = 33.4400M, diff 1.5700M = 4.067% of 38.6M. Itemised paragraph (:43-44) parts also check: gross 3.7700M (src 2.23 + wholefile 2.47 - tests 0.93), adds 2.8000M (graph 1.70 + range 0.80 + logs 0.41 - misc 0.11), net 0.9700M = 2.513%. The harness row's 0.60M saving (4.30-&gt;3.70) is in neither the gross nor the adds; 0.97 + 0.60 = 1.57 exactly. Table shares are all computed on 38.6M and sum to 90.70%, so 3.59M (9.30%) is unlisted. Every figure in the claim's EVIDENCE line is real.\n\nSTRONGER THAN THE CLAIM KNEW. Line 60's own calibration ratios reconstruct: 0.54 = 1.35/2.513 (i.e. it is derived FROM the buggy 0.97M) and 7.33 = 1.35/0.1842, which pins the eg full total at 38.529M. That forces eg's unlisted residual to 5.089M vs baseline 3.59M -- a +1.50M (+41.8%) undisclosed growth. This is the missing reconciliation: classified saving 1.57M minus residual growth 1.50M = 0.07M = +0.18%, which rounds to the \"+0.2% context-neutral\" headline. So (a) and (c) are both true but at different scopes, and the fact that reconciles them -- that the entire classified saving is absorbed by growth in an unlisted bucket -- appears nowhere. Cross-checked against predecessor EG-ROUTE-TO-35.md:130-138 (coarser table, classifies 95.9%): the 3.59M residual = 1.60M never-classified + 1.96M lost when \"exploration 17.4M\" was split into five sub-rows summing 15.44M. Reconciles to 4 s.f.\n\nWRONG IN THE CLAIM (drop both): (i) \"§4's 62.4% pool uses 38.6M as denominator and inherits the error\" is FALSE -- 38.6M is the correct full-budget denominator and is conservative (35.01M would give a LARGER pool, 68.8%); §4's rows reconcile exactly against §3 (7.53M = 5.59 + 1.94; 5.18M = 1.29 + 3.89). (ii) The cache_read 95.5% inference is invalid by the document's own stated method at :58-62, which forbids converting model aggregates into token ratios; it also yields ~26%, not ~24%.\n\nCHECKS: (2) not in the closed list -- that list covers levers; §6.1's four open defects do not include this. (3) fairness N/A -- documentation-only, changes no prompt, tool or arm, so it cannot create arm asymmetry. (4) noise floor N/A -- this is arithmetic, not an effect estimate. But DECISION IMPACT IS ZERO: §5.1's +4.3-6.0% is computed from turns x tokens/turn and explicitly needs no calibration, and §4 uses the regression slope 0.822, which the doc already adopted INSTEAD of the contaminated 0.54. Credibility defect in the flagship document, not a conclusion defect. Fix it as a 5th entry in §6.1; do not re-open any lever on account of it.","corrected_action":"Add as §6.1 open defect #5 (documentation integrity, no lever re-opens; zero effect on §5 or §8 recommendations). Rebuild §2 from one ledger with four changes: (1) add an explicit \"unclassified / other\" row -- baseline 3.59M (9.3%), eg 5.09M (13.2%) -- itemised at least into the 1.96M/2.77M that the \"exploration\" sub-split drops relative to EG-ROUTE-TO-35.md:132 and the 1.60M/2.32M never classified by either table; (2) fix the itemised net from 0.97M/+2.51% to 1.57M/+4.07% by including the harness saving of 0.60M, and label it \"classified categories only\"; (3) keep \"+0.2%\" but restate it as the full-budget figure (+0.18%, 38.600M vs 38.529M) and state the reconciliation explicitly -- the 1.57M classified saving is offset by +1.50M growth in the unclassified bucket -- since that offset, not the headline, is the substantive fact; (4) drop the 0.54 aggregate ratio at :60 or re-derive it, since it equals 1.35/2.513 and is computed from the erroneous 0.97M (the correct classified value gives 0.332); this is cosmetic only because the doc already discards 0.54 in favour of the regression slope 0.822. Do NOT touch §4 -- it does not inherit the error, its 38.6M denominator is correct and conservative, and its rows reconcile exactly against §3. Do NOT add the cache_read 95.5% argument -- it violates :58-62. State plainly in the revision that no number in §5 or §8 moves."}},{"claim":"EG-FINAL-PLAN §4 contains an uncaught retraction remnant with its own arithmetic error, and a false summary of the session's corrections. Lines 115 and 140-141 close the coverage lever at '≈ +0.5%. Effectively closed.' Lines 157-159, in the same section, still derive it at '≈ +3.7%' from the pre-retraction chain — and that chain is also wrong on its own terms: 5.6M × 0.404 = 2.26M, ×0.822 = 1.86M = 4.8%, less 0.8M calibrated payload growth = 1.06M = 2.7%, not 3.7%. The two derivations differ only because line 158 silently drops the ×0.11 ranking-limited factor that lines 140-141 apply. Then §4's blockquote claims 'Five consecutive corrections this session, every one downward… Nothing has moved the other way' — false by item 3 of its own list: the 0.54 → 0.822 calibration RAISED every projection by ~52% (the doc itself says at :60-62 that the earlier draft 'understated every projection by ~35%'), and ROUTE §5 is headed 'Revised upward 2026-08-08'.","evidence":"EG-FINAL-PLAN.md:115, :140-141 (+0.5%) vs :157-159 (+3.7%, arithmetic gives +2.7%); :192 ('every one downward… Nothing has moved the other way') vs :60-62 and EG-ROUTE-TO-35.md:199","action":"Delete lines 157-159 (superseded draft text) and correct the blockquote to 'four downward, one upward'. The 'nothing has moved the other way' sentence is the doc's rhetorical anchor and is factually wrong.","confidence":"high","contradicts_existing":false,"verdict":{"refuted":false,"reason":"CONFIRMED on all three limbs; independently reproduced, not accepted on assertion.\n\n(1) EVIDENCE IS REAL. Opened /Users/suhaan/devenv/EG-FINAL-PLAN.md. :115 = \"Coverage work, delivered perfectly and priced honestly: = +0.5%. Effectively closed.\" :140-141 = \"69.1% coverage gap x 40.4% are-symbols x ~11% recoverable = 3% of source-exploration cost, calibrated = +0.5% ... Do not build this.\" :157-159 = \"5.6M x 0.404 = 2.26M raw -&gt; x0.822 = 1.86M -&gt; 4.8%, less ... (~1M raw, 0.8M calibrated) -&gt; = +3.7%\". Two live, unhedged values for the same lever, 17 lines apart, both stated as conclusions.\n\nARITHMETIC RE-DERIVED: 5.6*0.404 = 2.2624; *0.822 = 1.8597; /38.6 = 4.82% (doc's 4.8% checks out); 1.8597-0.8 = 1.0597M = 2.75%. The claim's +2.7% is exact. Alternate orderings also land ~2.7% (subtract 1
+... (truncated 32437 chars, full result in /private/tmp/claude-501/-Users-suhaan-devenv/0d4c4262-2100-4779-8745-e855e0a78208/tasks/wqw2zyaob.output)</result>
+<diagnostics>Per-agent results: /Users/suhaan/.claude/projects/-Users-suhaan-devenv/73009f6a-a642-4aaa-8da3-51eb6bcc5b49/subagents/workflows/wf_731ccf64-c0d/journal.jsonl — one {"type":"result",...} line per completed agent with its full return value.
+If the result above is empty or unexpected, Read this file BEFORE diagnosing — do not assume agents returned non-empty results.
+To re-run with edited post-processing: Workflow({scriptPath: '/Users/suhaan/.claude/projects/-Users-suhaan-devenv/73009f6a-a642-4aaa-8da3-51eb6bcc5b49/workflows/scripts/eg-opus-final-audit-wf_731ccf64-c0d.js', resumeFromRunId: 'wf_731ccf64-c0d'}) — agents whose (prompt, opts) are unchanged replay from cache.</diagnostics>
+<usage><agent_count>36</agent_count><agents_done>36</agents_done><agents_error>0</agents_error><agents_skipped>0</agents_skipped><agents_empty_result>0</agents_empty_result><subagent_tokens>3216715</subagent_tokens><tool_uses>1000</tool_uses><duration_ms>1899611</duration_ms></usage>
+</task-notification>
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+don't skip it; what is progress in plan?
+
+---
+
+don't ship it; what is progress in plan?
+
+---
+
+Give a benchmark status update: rep50 4-arm cell (baseline/eg/cmm/graphify) pair counts and token results per arm, plus Gemini 300 and any remaining rep30 cells. Flag any wt fails, cmm/graphify SKIPs, or arm-asymmetric problems. Keep it short — a table and anything that changed.
+
+---
+
+cancel the loop and js gve me paln rpgoress very 5 min
+
+---
+
+Give a PLAN PROGRESS update only — no benchmark status table, no VM polling unless a cell is actually running. Report against ~/.claude/plans/stateless-napping-unicorn.md: which of the 13 items are done, in progress, dead (and why), and what is next. Keep it to a short table plus anything that changed since the last update.
+
+---
+
+Give a PLAN PROGRESS update only — no benchmark status table, no VM polling unless a cell is actually running. Report against ~/.claude/plans/stateless-napping-unicorn.md: which of the 13 items are done, in progress, dead (and why), and what is next. Keep it to a short table plus anything that changed since the last update.
+
+---
+
+Give a PLAN PROGRESS update only — no benchmark status table, no VM polling unless a cell is actually running. Report against ~/.claude/plans/stateless-napping-unicorn.md: which of the 13 items are done, in progress, dead (and why), and what is next. Keep it to a short table plus anything that changed since the last update.
+
+---
+
+Give a PLAN PROGRESS update only — no benchmark status table, no VM polling unless a cell is actually running. Report against ~/.claude/plans/stateless-napping-unicorn.md: which of the 13 items are done, in progress, dead (and why), and what is next. Keep it to a short table plus anything that changed since the last update.
