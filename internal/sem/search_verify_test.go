@@ -1,7 +1,10 @@
 package sem
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -997,55 +1000,35 @@ func TestBuildSearchVerifyCommandPrefersNarrowOverSuite(t *testing.T) {
 	}
 }
 
-// TestShellQuoteEscapesMetacharacters verifies that shellQuote properly escapes file paths
-// to prevent shell injection attacks when commands are executed via sh -c.
-func TestShellQuoteEscapesMetacharacters(t *testing.T) {
+func TestShellQuotePreservesSafeTokensAndQuotesUnsafeTokens(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
 		name  string
 		input string
 		want  string
 	}{
+		{name: "simple path stays byte-identical", input: "src/file.py", want: "src/file.py"},
+		{name: "cargo package stays byte-identical", input: "grep-printer", want: "grep-printer"},
+		{name: "gradle task stays byte-identical", input: ":lib:test", want: ":lib:test"},
+		{name: "maven property stays byte-identical", input: "-Dtest=GsonBuilderTest", want: "-Dtest=GsonBuilderTest"},
+		{name: "go recursive selector stays byte-identical", input: "./...", want: "./..."},
+		{name: "empty token is retained", input: "", want: "''"},
 		{
-			name:  "simple path",
-			input: "src/file.py",
-			want:  "'src/file.py'",
-		},
-		{
-			name:  "path with semicolon",
+			name:  "semicolon",
 			input: "evil; touch pwned; #.py",
 			want:  "'evil; touch pwned; #.py'",
 		},
 		{
-			name:  "path with single quote",
+			name:  "apostrophe",
 			input: "file's_name.py",
 			want:  "'file'\\''s_name.py'",
 		},
-		{
-			name:  "path with dollar sign",
-			input: "file$var.py",
-			want:  "'file$var.py'",
-		},
-		{
-			name:  "path with backticks",
-			input: "file`cmd`.py",
-			want:  "'file`cmd`.py'",
-		},
-		{
-			name:  "path with command substitution",
-			input: "file$(cmd).py",
-			want:  "'file$(cmd).py'",
-		},
-		{
-			name:  "path with spaces",
-			input: "my file.py",
-			want:  "'my file.py'",
-		},
-		{
-			name:  "path with multiple single quotes",
-			input: "it's'a'test.py",
-			want:  "'it'\\''s'\\''a'\\''test.py'",
-		},
+		{name: "dollar expansion", input: "file$var.py", want: "'file$var.py'"},
+		{name: "backticks", input: "file`cmd`.py", want: "'file`cmd`.py'"},
+		{name: "command substitution", input: "file$(cmd).py", want: "'file$(cmd).py'"},
+		{name: "space", input: "my file.py", want: "'my file.py'"},
+		{name: "newline", input: "first\nsecond", want: "'first\nsecond'"},
+		{name: "non ASCII", input: "café.py", want: "'café.py'"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
@@ -1057,27 +1040,313 @@ func TestShellQuoteEscapesMetacharacters(t *testing.T) {
 	}
 }
 
-// TestDeriveSearchVerifyBuildCheckQuotesFilePath verifies that the build check command
-// properly quotes file paths to prevent shell injection.
 func TestDeriveSearchVerifyBuildCheckQuotesFilePath(t *testing.T) {
 	t.Parallel()
-	evidence := searchVerifyTestEvidence(map[string]string{
-		"evil; touch pwned; #.py": "# malicious file\n",
-	})
-	subject := searchVerifySubject{
-		sourcePath: "evil; touch pwned; #.py",
-	}
-	got := deriveSearchVerifyBuildCheck("", subject, &evidence)
+	const sourcePath = "evil; touch pwned; #.py"
+	evidence := searchVerifyTestEvidence(map[string]string{sourcePath: "# malicious file\n"})
+	got := deriveSearchVerifyBuildCheck("", searchVerifySubject{sourcePath: sourcePath}, &evidence)
 	if got == nil {
 		t.Fatal("expected a build check command")
 	}
-	// The command should contain the quoted path, not the raw path
-	if !strings.Contains(got.Command, "'evil; touch pwned; #.py'") {
-		t.Fatalf("command should contain quoted path, got %q", got.Command)
-	}
-	// The command should NOT contain the unquoted dangerous parts
-	if strings.Contains(got.Command, "python -m py_compile evil; touch pwned") {
-		t.Fatalf("command contains unquoted shell metacharacters: %q", got.Command)
+	if want := "python -m py_compile 'evil; touch pwned; #.py'"; got.Command != want {
+		t.Fatalf("command = %q, want %q", got.Command, want)
 	}
 }
 
+func TestShellQuoteRoundTripsThroughPOSIXShell(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell quoting is exercised on non-Windows platforms")
+	}
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("POSIX shell is not installed")
+	}
+	for _, input := range []string{
+		"plain-token",
+		"two words",
+		"it's still one token",
+		"$(printf injected)",
+		"x; printf injected",
+		"first\nsecond",
+	} {
+		input := input
+		t.Run(input, func(t *testing.T) {
+			t.Parallel()
+			output, err := exec.Command(shell, "-c", "printf %s "+shellQuote(input)).Output()
+			if err != nil {
+				t.Fatalf("shell failed to parse %q: %v", shellQuote(input), err)
+			}
+			if got := string(output); got != input {
+				t.Fatalf("shell decoded %q as %q, want %q", shellQuote(input), got, input)
+			}
+		})
+	}
+}
+
+// TestSearchVerifyCommandsDoNotExecuteRepositoryData exercises the actual command strings through
+// the same POSIX-shell boundary used by `entire graph verify`. Every runner is a no-op stub. If any
+// repository-derived token becomes shell syntax, the redirection in attack creates VERIFY_MARKER.
+func TestSearchVerifyCommandsDoNotExecuteRepositoryData(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell quoting is exercised on non-Windows platforms")
+	}
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("POSIX shell is not installed")
+	}
+	const attack = `x;>"$VERIFY_MARKER";#`
+	const unquotedAttack = `x;>${VERIFY_MARKER};#`
+
+	testCases := []struct {
+		name    string
+		derive  func() *SearchVerifyCommand
+		rejects string
+	}{
+		{
+			name: "working directory",
+			derive: func() *SearchVerifyCommand {
+				evidence := searchVerifyTestEvidence(map[string]string{
+					attack + "/go.mod":   "module example.com/unsafe\n",
+					attack + "/pkg/x.go": "package pkg\n",
+				})
+				return deriveSearchVerifyGo(attack, searchVerifySubject{sourcePath: attack + "/pkg/x.go"}, &evidence)
+			},
+		},
+		{
+			name: "cargo package",
+			derive: func() *SearchVerifyCommand {
+				evidence := searchVerifyTestEvidence(map[string]string{
+					"Cargo.toml":       "[workspace]\nmembers = [\"crate\"]\n",
+					"crate/Cargo.toml": "[package]\nname = \"" + attack + "\"\n",
+					"crate/src/lib.rs": "",
+				})
+				return deriveSearchVerifyCargo("crate", searchVerifySubject{
+					sourcePath: "crate/src/lib.rs", testPath: "crate/src/lib.rs",
+				}, &evidence)
+			},
+		},
+		{
+			name: "cargo integration target",
+			derive: func() *SearchVerifyCommand {
+				evidence := searchVerifyTestEvidence(map[string]string{
+					"Cargo.toml":                    "[workspace]\nmembers = [\"crate\"]\n",
+					"crate/Cargo.toml":              "[package]\nname = \"safe\"\n",
+					"crate/src/lib.rs":              "",
+					"crate/tests/" + attack + ".rs": "",
+				})
+				return deriveSearchVerifyCargo("crate", searchVerifySubject{
+					sourcePath: "crate/src/lib.rs", testPath: "crate/tests/" + attack + ".rs",
+				}, &evidence)
+			},
+		},
+		{
+			name: "cargo test filter",
+			derive: func() *SearchVerifyCommand {
+				evidence := searchVerifyTestEvidence(map[string]string{
+					"Cargo.toml":       "[workspace]\nmembers = [\"crate\"]\n",
+					"crate/Cargo.toml": "[package]\nname = \"safe\"\n",
+					"crate/src/lib.rs": "",
+				})
+				return deriveSearchVerifyCargo("crate", searchVerifySubject{
+					sourcePath: "crate/src/lib.rs", testPath: "crate/src/lib.rs", testName: attack,
+				}, &evidence)
+			},
+		},
+		{
+			name: "cargo feature",
+			derive: func() *SearchVerifyCommand {
+				testFile := "#[cfg(feature = \"" + unquotedAttack + "\")]\n#[test]\nfn test_safe() {}\n"
+				evidence := searchVerifyTestEvidence(map[string]string{
+					"Cargo.toml":       "[workspace]\nmembers = [\"crate\"]\n",
+					"crate/Cargo.toml": "[package]\nname = \"safe\"\n[features]\n" + unquotedAttack + " = []\n",
+					"crate/src/lib.rs": testFile,
+				})
+				return deriveSearchVerifyCargo("crate", searchVerifySubject{
+					sourcePath: "crate/src/lib.rs", testPath: "crate/src/lib.rs", testName: "test_safe",
+				}, &evidence)
+			},
+		},
+		{
+			name: "go package selector",
+			derive: func() *SearchVerifyCommand {
+				evidence := searchVerifyTestEvidence(map[string]string{"go.mod": "module example.com/unsafe\n"})
+				return deriveSearchVerifyGo("", searchVerifySubject{sourcePath: attack + "/x.go"}, &evidence)
+			},
+		},
+		{
+			name: "go run filter",
+			derive: func() *SearchVerifyCommand {
+				evidence := searchVerifyTestEvidence(map[string]string{"go.mod": "module example.com/unsafe\n"})
+				return deriveSearchVerifyGo("", searchVerifySubject{
+					sourcePath: "pkg/x.go", testPath: "pkg/x_test.go", testName: "Test" + attack,
+				}, &evidence)
+			},
+		},
+		{
+			name: "maven module",
+			derive: func() *SearchVerifyCommand {
+				evidence := searchVerifyTestEvidence(map[string]string{attack + "/pom.xml": "<project/>"})
+				return deriveSearchVerifyMaven(attack, searchVerifySubject{sourcePath: attack + "/src/X.java"}, &evidence)
+			},
+		},
+		{
+			name: "maven test property",
+			derive: func() *SearchVerifyCommand {
+				evidence := searchVerifyTestEvidence(map[string]string{"pom.xml": "<project/>"})
+				return deriveSearchVerifyMaven("", searchVerifySubject{
+					sourcePath: "src/main/X.java", testPath: "src/test/" + attack + ".java",
+				}, &evidence)
+			},
+		},
+		{
+			name: "gradle project task",
+			derive: func() *SearchVerifyCommand {
+				evidence := searchVerifyTestEvidence(map[string]string{
+					"gradlew": "", attack + "/build.gradle": "",
+				})
+				return deriveSearchVerifyGradle(attack, searchVerifySubject{
+					sourcePath: attack + "/src/A.kt", testPath: attack + "/src/ATest.kt",
+				}, &evidence)
+			},
+		},
+		{
+			name: "gradle test pattern",
+			derive: func() *SearchVerifyCommand {
+				evidence := searchVerifyTestEvidence(map[string]string{"gradlew": "", "lib/build.gradle": ""})
+				return deriveSearchVerifyGradle("lib", searchVerifySubject{
+					sourcePath: "lib/src/A.kt", testPath: "lib/src/" + attack + ".kt",
+				}, &evidence)
+			},
+		},
+		{
+			name: "node test path",
+			derive: func() *SearchVerifyCommand {
+				evidence := searchVerifyTestEvidence(map[string]string{
+					"package.json": `{"devDependencies":{"jest":"1"}}`,
+				})
+				return deriveSearchVerifyNode("", searchVerifySubject{testPath: "test/" + attack + ".js"}, &evidence)
+			},
+		},
+		{
+			name: "composer test path",
+			derive: func() *SearchVerifyCommand {
+				evidence := searchVerifyTestEvidence(map[string]string{
+					"composer.json": "{}", "phpunit.xml": "<phpunit/>",
+				})
+				return deriveSearchVerifyComposer("", searchVerifySubject{testPath: "test/" + attack + ".php"}, &evidence)
+			},
+		},
+		{
+			name: "pytest test path",
+			derive: func() *SearchVerifyCommand {
+				evidence := searchVerifyTestEvidence(map[string]string{"pytest.ini": "[pytest]\n"})
+				return deriveSearchVerifyPytest("", searchVerifySubject{testPath: "test/" + attack + ".py"}, &evidence)
+			},
+		},
+		{
+			name: "pytest name filter",
+			derive: func() *SearchVerifyCommand {
+				evidence := searchVerifyTestEvidence(map[string]string{"pytest.ini": "[pytest]\n"})
+				return deriveSearchVerifyPytest("", searchVerifySubject{
+					testPath: "test/safe.py", testName: attack,
+				}, &evidence)
+			},
+		},
+		{
+			name: "ruby test path",
+			derive: func() *SearchVerifyCommand {
+				evidence := searchVerifyTestEvidence(map[string]string{"Gemfile": "", ".rspec": ""})
+				return deriveSearchVerifyRuby("", searchVerifySubject{testPath: "spec/" + attack + ".rb"}, &evidence)
+			},
+		},
+		{
+			name: "build check path",
+			derive: func() *SearchVerifyCommand {
+				evidence := searchVerifyTestEvidence(map[string]string{attack + ".py": ""})
+				return deriveSearchVerifyBuildCheck("", searchVerifySubject{sourcePath: attack + ".py"}, &evidence)
+			},
+		},
+		{
+			name: "cmake target",
+			derive: func() *SearchVerifyCommand {
+				evidence := searchVerifyTestEvidence(map[string]string{
+					"CMakeLists.txt": "enable_testing()\nadd_executable(" + attack + " test/x.cc)\n",
+				})
+				return deriveSearchVerifyCMake("", searchVerifySubject{testPath: "test/" + attack + ".cc"}, &evidence)
+			},
+		},
+		{
+			name: "cmake rejects a non-identifier define",
+			derive: func() *SearchVerifyCommand {
+				evidence := searchVerifyTestEvidence(map[string]string{
+					"CMakeLists.txt":    "enable_testing()\nadd_executable(safe-test test/safe-test.cc)\n",
+					"test/safe-test.cc": "#ifdef " + unquotedAttack + "\nTEST(suite, safe_case) {}\n#endif\n",
+				})
+				return deriveSearchVerifyCMake("", searchVerifySubject{
+					testPath: "test/safe-test.cc", testName: "safe_case",
+				}, &evidence)
+			},
+			rejects: "$VERIFY_MARKER",
+		},
+	}
+
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	for _, name := range []string{"bundle", "cargo", "cmake", "ctest", "go", "mvn", "npx", "python"} {
+		writeSearchVerifyShellStub(t, filepath.Join(binDir, name))
+	}
+	writeSearchVerifyShellStub(t, filepath.Join(root, "gradlew"))
+	writeSearchVerifyShellStub(t, filepath.Join(root, "vendor", "bin", "phpunit"))
+	if err := os.MkdirAll(filepath.Join(root, attack), 0o755); err != nil {
+		t.Fatalf("create literal malicious directory: %v", err)
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			marker := filepath.Join(root, "VERIFY_MARKER")
+			if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
+				t.Fatalf("clear marker: %v", err)
+			}
+			command := testCase.derive()
+			if command == nil {
+				t.Fatal("fixture did not derive a command")
+			}
+			if testCase.rejects != "" && strings.Contains(command.Command, testCase.rejects) {
+				t.Fatalf("rejected repository syntax reached the command: %q", command.Command)
+			}
+			process := exec.Command(shell, "-c", command.Command)
+			process.Dir = root
+			process.Env = searchVerifyShellTestEnv(binDir, marker)
+			if output, err := process.CombinedOutput(); err != nil {
+				t.Fatalf("command %q failed: %v\n%s", command.Command, err, output)
+			}
+			if _, err := os.Stat(marker); err == nil {
+				t.Fatalf("repository data executed as shell syntax: %q", command.Command)
+			} else if !os.IsNotExist(err) {
+				t.Fatalf("inspect marker: %v", err)
+			}
+		})
+	}
+}
+
+func writeSearchVerifyShellStub(t *testing.T, filePath string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+		t.Fatalf("create stub directory: %v", err)
+	}
+	if err := os.WriteFile(filePath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write shell stub: %v", err)
+	}
+}
+
+func searchVerifyShellTestEnv(binDir, marker string) []string {
+	environment := make([]string, 0, len(os.Environ())+2)
+	for _, variable := range os.Environ() {
+		if strings.HasPrefix(variable, "PATH=") || strings.HasPrefix(variable, "VERIFY_MARKER=") {
+			continue
+		}
+		environment = append(environment, variable)
+	}
+	return append(environment, "PATH="+binDir, "VERIFY_MARKER="+marker)
+}

@@ -865,7 +865,7 @@ func deriveSearchVerifyGo(dir string, subject searchVerifySubject, evidence *sea
 				recovered = testName != ""
 			}
 			if strings.HasPrefix(testName, "Test") {
-				filter = fmt.Sprintf(" -run '^%s$'", testName)
+				filter = " -run " + shellQuote("^"+testName+"$")
 			}
 		}
 	}
@@ -914,7 +914,7 @@ func deriveSearchVerifyMaven(dir string, subject searchVerifySubject, evidence *
 		if _, inside := searchVerifyRelative(dir, subject.testPath); inside {
 			class := searchVerifyStem(subject.testPath)
 			return &SearchVerifyCommand{
-				Command: "mvn -q" + scope + " -Dtest=" + shellQuote(class) +
+				Command: "mvn -q" + scope + " " + shellQuote("-Dtest="+class) +
 					" -DfailIfNoTests=false test",
 				Targets:     subject.testPath,
 				DerivedFrom: manifest + " module + " + subject.testEvidence + " class",
@@ -961,8 +961,14 @@ func deriveSearchVerifyGradle(dir string, subject searchVerifySubject, evidence 
 		project = ":" + strings.ReplaceAll(dir, "/", ":") + ":"
 	}
 	class := searchVerifyStem(subject.testPath)
+	classArg := shellQuote(class)
+	if classArg == class {
+		// Gradle's established command contract quotes even a shell-safe test pattern. Keep that
+		// byte-for-byte form while routing unsafe patterns through the same token encoder.
+		classArg = "'" + class + "'"
+	}
 	return &SearchVerifyCommand{
-		Command:     fmt.Sprintf("./gradlew %stest --tests '%s'", project, class),
+		Command:     "./gradlew " + shellQuote(project+"test") + " --tests " + classArg,
 		Targets:     subject.testPath,
 		DerivedFrom: manifest + " + gradlew + " + subject.testEvidence + " class",
 	}
@@ -1257,13 +1263,27 @@ func filePathToSlash(filePath string) string {
 	return strings.ReplaceAll(filePath, "\\", "/")
 }
 
-// shellQuote escapes a file path for safe use in a shell command executed via sh -c.
-// It wraps the path in single quotes and escapes any single quotes within the path.
-// This prevents shell metacharacters (;, $, `, etc.) from being interpreted.
-func shellQuote(path string) string {
-	// Replace each single quote with '\'' (end quote, escaped quote, start quote)
-	escaped := strings.ReplaceAll(path, "'", "'\\''")
-	return "'" + escaped + "'"
+// shellQuote encodes one token for a POSIX shell command. Shell-safe ASCII tokens stay unchanged so
+// established VERIFY commands remain byte-identical; everything else is single-quoted, with an
+// apostrophe represented by ending the quote, escaping the apostrophe, and reopening the quote.
+func shellQuote(token string) string {
+	if token != "" {
+		safe := true
+		for _, character := range token {
+			if (character >= 'a' && character <= 'z') ||
+				(character >= 'A' && character <= 'Z') ||
+				(character >= '0' && character <= '9') ||
+				strings.ContainsRune("_@%+=:,./-", character) {
+				continue
+			}
+			safe = false
+			break
+		}
+		if safe {
+			return token
+		}
+	}
+	return "'" + strings.ReplaceAll(token, "'", "'\\''") + "'"
 }
 
 func searchVerifyRecoveredTestName(
@@ -1502,7 +1522,8 @@ func deriveSearchVerifyCMake(dir string, subject searchVerifySubject, evidence *
 	configure := "cmake -S . -B build >/dev/null"
 	switch {
 	case guard.define != "":
-		configure = "cmake -S . -B build -DCMAKE_CXX_FLAGS=-D" + guard.define + " >/dev/null"
+		configure = "cmake -S . -B build " + shellQuote("-DCMAKE_CXX_FLAGS=-D"+guard.define) +
+			" >/dev/null"
 		derived += " + guard " + guard.define
 	case guard.present():
 		derived += fmt.Sprintf(searchVerifyGuardUnsatisfied, guard.raw)
