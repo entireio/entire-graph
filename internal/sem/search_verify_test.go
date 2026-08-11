@@ -996,3 +996,88 @@ func TestBuildSearchVerifyCommandPrefersNarrowOverSuite(t *testing.T) {
 		t.Fatalf("expected the narrow single-file command, got %q", got.Command)
 	}
 }
+
+// TestShellQuoteEscapesMetacharacters verifies that shellQuote properly escapes file paths
+// to prevent shell injection attacks when commands are executed via sh -c.
+func TestShellQuoteEscapesMetacharacters(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "simple path",
+			input: "src/file.py",
+			want:  "'src/file.py'",
+		},
+		{
+			name:  "path with semicolon",
+			input: "evil; touch pwned; #.py",
+			want:  "'evil; touch pwned; #.py'",
+		},
+		{
+			name:  "path with single quote",
+			input: "file's_name.py",
+			want:  "'file'\\''s_name.py'",
+		},
+		{
+			name:  "path with dollar sign",
+			input: "file$var.py",
+			want:  "'file$var.py'",
+		},
+		{
+			name:  "path with backticks",
+			input: "file`cmd`.py",
+			want:  "'file`cmd`.py'",
+		},
+		{
+			name:  "path with command substitution",
+			input: "file$(cmd).py",
+			want:  "'file$(cmd).py'",
+		},
+		{
+			name:  "path with spaces",
+			input: "my file.py",
+			want:  "'my file.py'",
+		},
+		{
+			name:  "path with multiple single quotes",
+			input: "it's'a'test.py",
+			want:  "'it'\\''s'\\''a'\\''test.py'",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			got := shellQuote(testCase.input)
+			if got != testCase.want {
+				t.Fatalf("shellQuote(%q) = %q, want %q", testCase.input, got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestDeriveSearchVerifyBuildCheckQuotesFilePath verifies that the build check command
+// properly quotes file paths to prevent shell injection.
+func TestDeriveSearchVerifyBuildCheckQuotesFilePath(t *testing.T) {
+	t.Parallel()
+	evidence := searchVerifyTestEvidence(map[string]string{
+		"evil; touch pwned; #.py": "# malicious file\n",
+	})
+	subject := searchVerifySubject{
+		sourcePath: "evil; touch pwned; #.py",
+	}
+	got := deriveSearchVerifyBuildCheck("", subject, &evidence)
+	if got == nil {
+		t.Fatal("expected a build check command")
+	}
+	// The command should contain the quoted path, not the raw path
+	if !strings.Contains(got.Command, "'evil; touch pwned; #.py'") {
+		t.Fatalf("command should contain quoted path, got %q", got.Command)
+	}
+	// The command should NOT contain the unquoted dangerous parts
+	if strings.Contains(got.Command, "python -m py_compile evil; touch pwned") {
+		t.Fatalf("command contains unquoted shell metacharacters: %q", got.Command)
+	}
+}
+

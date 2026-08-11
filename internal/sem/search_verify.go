@@ -688,7 +688,7 @@ func searchVerifyRunIn(dir, command string) string {
 	if dir == "" {
 		return command
 	}
-	return "cd " + dir + " && " + command
+	return "cd " + shellQuote(dir) + " && " + command
 }
 
 func searchVerifyAncestorFile(dir, name string, evidence *searchVerifyEvidence) (string, string, bool) {
@@ -750,14 +750,14 @@ func deriveSearchVerifyCargo(dir string, subject searchVerifySubject, evidence *
 	workspace := rootFound && strings.Contains(root, "[workspace]")
 	selector := ""
 	if workspace {
-		selector = " -p " + name
+		selector = " -p " + shellQuote(name)
 	}
 	target, filter, targets := "", "", "package "+name
 	guardNote := searchVerifyGuard{}
 	if relative, inside := searchVerifyRelative(dir, subject.testPath); inside && subject.testPath != "" {
 		switch {
 		case strings.HasPrefix(relative, "tests/"):
-			target = " --test " + searchVerifyStem(relative)
+			target = " --test " + shellQuote(searchVerifyStem(relative))
 		case strings.HasPrefix(relative, "src/"):
 			target = " --lib"
 		}
@@ -774,7 +774,7 @@ func deriveSearchVerifyCargo(dir string, subject searchVerifySubject, evidence *
 				)
 			}
 			if testName != "" {
-				filter = " " + testName
+				filter = " " + shellQuote(testName)
 			}
 			// A `#[cfg(feature = "x")]` test is compiled out unless the feature is on, and Cargo can turn
 			// it on — but only if the manifest declares it. An undeclared feature is a hard cargo error,
@@ -783,7 +783,7 @@ func deriveSearchVerifyCargo(dir string, subject searchVerifySubject, evidence *
 				guardNote = guard
 				if guard.feature != "" && strings.Contains(content, guard.feature) &&
 					strings.Contains(content, "[features]") {
-					selector += " --features " + guard.feature
+					selector += " --features " + shellQuote(guard.feature)
 					guardNote.satisfied = true
 				}
 			}
@@ -891,7 +891,7 @@ func deriveSearchVerifyGo(dir string, subject searchVerifySubject, evidence *sea
 		}
 	}
 	return &SearchVerifyCommand{
-		Command:     searchVerifyRunIn(dir, "go test "+selector+filter),
+		Command:     searchVerifyRunIn(dir, "go test "+shellQuote(selector)+filter),
 		Targets:     targets,
 		DerivedFrom: derived,
 	}
@@ -908,13 +908,13 @@ func deriveSearchVerifyMaven(dir string, subject searchVerifySubject, evidence *
 	}
 	scope := ""
 	if dir != "" {
-		scope = " -pl " + dir + " -am"
+		scope = " -pl " + shellQuote(dir) + " -am"
 	}
 	if subject.testPath != "" {
 		if _, inside := searchVerifyRelative(dir, subject.testPath); inside {
 			class := searchVerifyStem(subject.testPath)
 			return &SearchVerifyCommand{
-				Command: "mvn -q" + scope + " -Dtest=" + class +
+				Command: "mvn -q" + scope + " -Dtest=" + shellQuote(class) +
 					" -DfailIfNoTests=false test",
 				Targets:     subject.testPath,
 				DerivedFrom: manifest + " module + " + subject.testEvidence + " class",
@@ -1031,7 +1031,7 @@ func deriveSearchVerifyNode(dir string, subject searchVerifySubject, evidence *s
 		return nil
 	}
 	return &SearchVerifyCommand{
-		Command:     searchVerifyRunIn(dir, runner+" "+relative),
+		Command:     searchVerifyRunIn(dir, runner+" "+shellQuote(relative)),
 		Targets:     subject.testPath,
 		DerivedFrom: manifest + " " + evidenceKind + " + " + subject.testEvidence + " path",
 	}
@@ -1059,7 +1059,7 @@ func deriveSearchVerifyComposer(dir string, subject searchVerifySubject, evidenc
 		return nil
 	}
 	return &SearchVerifyCommand{
-		Command:     searchVerifyRunIn(dir, "vendor/bin/phpunit "+relative),
+		Command:     searchVerifyRunIn(dir, "vendor/bin/phpunit "+shellQuote(relative)),
 		Targets:     subject.testPath,
 		DerivedFrom: config + " + " + subject.testEvidence + " path",
 	}
@@ -1094,10 +1094,10 @@ func deriveSearchVerifyPytest(dir string, subject searchVerifySubject, evidence 
 	}
 	filter := ""
 	if subject.testName != "" {
-		filter = " -k " + subject.testName
+		filter = " -k " + shellQuote(subject.testName)
 	}
 	return &SearchVerifyCommand{
-		Command:     searchVerifyRunIn(dir, "python -m pytest "+relative+filter),
+		Command:     searchVerifyRunIn(dir, "python -m pytest "+shellQuote(relative)+filter),
 		Targets:     subject.testPath,
 		DerivedFrom: config + " pytest config + " + subject.testEvidence + " path",
 	}
@@ -1125,13 +1125,13 @@ func deriveSearchVerifyRuby(dir string, subject searchVerifySubject, evidence *s
 	switch {
 	case strings.HasPrefix(relative, "spec/") && evidence.exists(searchVerifyJoin(dir, ".rspec")):
 		return &SearchVerifyCommand{
-			Command:     searchVerifyRunIn(dir, "bundle exec rspec "+relative),
+			Command:     searchVerifyRunIn(dir, "bundle exec rspec "+shellQuote(relative)),
 			Targets:     subject.testPath,
 			DerivedFrom: searchVerifyJoin(dir, ".rspec") + " + " + subject.testEvidence + " path",
 		}
 	case strings.HasPrefix(relative, "test/"):
 		return &SearchVerifyCommand{
-			Command:     searchVerifyRunIn(dir, "bundle exec ruby -Itest "+relative),
+			Command:     searchVerifyRunIn(dir, "bundle exec ruby -Itest "+shellQuote(relative)),
 			Targets:     subject.testPath,
 			DerivedFrom: manifest + " + " + subject.testEvidence + " path under test/",
 		}
@@ -1255,6 +1255,15 @@ func RenderSearchVerifyCommand(command *SearchVerifyCommand) []byte {
 // already slash-separated everywhere in this package; this states it at the boundary.
 func filePathToSlash(filePath string) string {
 	return strings.ReplaceAll(filePath, "\\", "/")
+}
+
+// shellQuote escapes a file path for safe use in a shell command executed via sh -c.
+// It wraps the path in single quotes and escapes any single quotes within the path.
+// This prevents shell metacharacters (;, $, `, etc.) from being interpreted.
+func shellQuote(path string) string {
+	// Replace each single quote with '\'' (end quote, escaped quote, start quote)
+	escaped := strings.ReplaceAll(path, "'", "'\\''")
+	return "'" + escaped + "'"
 }
 
 func searchVerifyRecoveredTestName(
@@ -1446,7 +1455,7 @@ func deriveSearchVerifyBuildCheck(dir string, subject searchVerifySubject, evide
 		return nil
 	}
 	return &SearchVerifyCommand{
-		Command:     check + subject.sourcePath,
+		Command:     check + shellQuote(subject.sourcePath),
 		Targets:     subject.sourcePath,
 		DerivedFrom: "build check only - no runnable test command derivable; this parses the file, it runs no tests",
 		Tier:        searchVerifyTierBuildCheck,
@@ -1498,8 +1507,8 @@ func deriveSearchVerifyCMake(dir string, subject searchVerifySubject, evidence *
 	case guard.present():
 		derived += fmt.Sprintf(searchVerifyGuardUnsatisfied, guard.raw)
 	}
-	command := configure + " && cmake --build build --target " + target +
-		" -j4 && ctest --test-dir build -R " + target + " --output-on-failure"
+	command := configure + " && cmake --build build --target " + shellQuote(target) +
+		" -j4 && ctest --test-dir build -R " + shellQuote(target) + " --output-on-failure"
 	return &SearchVerifyCommand{
 		Command:     searchVerifyRunIn(dir, command),
 		Targets:     subject.testPath,
