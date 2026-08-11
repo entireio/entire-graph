@@ -1,9 +1,8 @@
 {
-  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
-  "checkpoint_id": "75ca06ab1141",
-  "strategy": "manual-commit",
   "branch": "codex/pr89-aikido-fix",
-  "checkpoints_count": 1,
+  "checkpoint_id": "75ca06ab1141",
+  "checkpoints_count": 3,
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
   "files_touched": [
     "internal/cli/callsite.go",
     "internal/cli/callsite_test.go",
@@ -18,6 +17,7 @@
     "internal/sem/search_cache.go",
     "internal/sem/search_cache_test.go"
   ],
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/75/ca06ab1141/0/metadata.json",
@@ -25,13 +25,20 @@
       "compact_transcript": "/75/ca06ab1141/0/transcript.jsonl",
       "content_hash": "/75/ca06ab1141/0/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "content_hash": "/75/ca06ab1141/1/content_hash.txt",
+      "metadata": "/75/ca06ab1141/1/metadata.json",
+      "prompt": "/75/ca06ab1141/1/prompt.txt",
+      "transcript": "/75/ca06ab1141/1/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 2501,
+    "input_tokens": 91853,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 218368,
-    "output_tokens": 401,
-    "api_call_count": 3
+    "cache_read_tokens": 800645,
+    "output_tokens": 5769,
+    "api_call_count": 15
   }
 }
