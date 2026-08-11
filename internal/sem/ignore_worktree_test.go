@@ -68,6 +68,41 @@ func TestLoadWorktreeIgnoreMatcher_UnresolvableGitDir(t *testing.T) {
 	}
 }
 
+func TestLoadExplicitIgnoreMatcherAcceptsExternalRuleFiles(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	rules := filepath.Join(root, "rules..outside")
+	for _, dir := range []string{repo, rules} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ignoreFile := filepath.Join(rules, "ignore.rules")
+	includeFile := filepath.Join(rules, "include.rules")
+	if err := os.WriteFile(ignoreFile, []byte("generated/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(includeFile, []byte("generated/keep.go\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	relInclude, err := filepath.Rel(repo, includeFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	matcher, err := loadExplicitIgnoreMatcher(repo, []string{ignoreFile}, []string{relInclude})
+	if err != nil {
+		t.Fatalf("load external ignore/include files: %v", err)
+	}
+	if !matcher.Ignored("generated/drop.go", false) {
+		t.Error("external ignore file was not applied")
+	}
+	if matcher.Ignored("generated/keep.go", false) {
+		t.Error("external include file did not override the ignore rule")
+	}
+}
+
 func TestGitInfoExcludePath(t *testing.T) {
 	t.Parallel()
 

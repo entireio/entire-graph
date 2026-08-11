@@ -10,10 +10,8 @@ package filedigest
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"io"
 	"os"
-	"strings"
 )
 
 // streamBufferBytes is the fixed window a digest holds at any instant,
@@ -68,9 +66,6 @@ func Stream(r io.Reader) (Digest, error) {
 
 // File digests the file at path.
 func File(path string) (Digest, error) {
-	if strings.Contains(path, "..") {
-		return Digest{}, fmt.Errorf("invalid file path")
-	}
 	file, err := os.Open(path)
 	if err != nil {
 		return Digest{}, err

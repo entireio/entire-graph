@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -116,6 +117,30 @@ func TestSearchEchoFailsOpenOnBrokenSessionFile(t *testing.T) {
 	second := searchInSession(t, repo, session, "", "beta_gadget")
 	if !strings.Contains(second, "not run") {
 		t.Fatalf("session did not recover after the broken file: %q", second)
+	}
+}
+
+// EG_SEARCH_SESSION is an explicit caller-selected state file, not a path under
+// the repository. Parent components and names containing ".." remain valid.
+func TestSearchSessionAcceptsCallerSelectedDotDotPath(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	write(t, repo, "alpha.py", "def alpha_widget():\n    return True\n")
+
+	base := t.TempDir()
+	nested := filepath.Join(base, "nested")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	separator := string(filepath.Separator)
+	session := nested + separator + ".." + separator + "..session.json"
+
+	first := searchInSession(t, repo, session, "", "alpha_widget")
+	if !strings.Contains(first, "alpha.py") {
+		t.Fatalf("first search did not write the caller-selected session: %q", first)
+	}
+	if second := searchInSession(t, repo, session, "", "another_widget"); !strings.Contains(second, "not run") {
+		t.Fatalf("caller-selected session path was not reused: %q", second)
 	}
 }
 

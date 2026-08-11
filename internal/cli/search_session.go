@@ -153,9 +153,6 @@ func (s *searchSession) echo(live searchSessionScope) (searchSessionState, bool)
 
 func (s *searchSession) load() (searchSessionState, error) {
 	var state searchSessionState
-	if strings.Contains(s.path, "..") {
-		return searchSessionState{}, fmt.Errorf("invalid file path")
-	}
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		return searchSessionState{}, err

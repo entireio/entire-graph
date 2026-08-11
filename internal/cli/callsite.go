@@ -90,19 +90,29 @@ func newRepoLineReader(repoRoot string) lineReader {
 		if lines, ok := cache[relPath]; ok {
 			return lines, lines != nil
 		}
-		baseClean := filepath.Clean(repoRoot)
-		targetClean := filepath.Clean(filepath.Join(baseClean, filepath.FromSlash(relPath)))
-		rel, err := filepath.Rel(baseClean, targetClean)
-		if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		// A relation's file path may have come from a loaded snapshot. Root.Open
+		// rejects absolute/traversing paths and symlinks that escape repoRoot.
+		root, err := os.OpenRoot(repoRoot)
+		if err != nil {
 			cache[relPath] = nil
 			return nil, false
 		}
-		info, err := os.Lstat(targetClean)
+		defer root.Close()
+		file, err := root.Open(filepath.FromSlash(relPath))
+		if err != nil {
+			cache[relPath] = nil
+			return nil, false
+		}
+		defer file.Close()
+		info, err := file.Stat()
 		if err != nil || !info.Mode().IsRegular() || info.Size() > callSiteMaxFileBytes {
 			cache[relPath] = nil
 			return nil, false
 		}
-		content, err := os.ReadFile(targetClean)
+		content, err := io.ReadAll(io.LimitReader(file, callSiteMaxFileBytes+1))
+		if len(content) > callSiteMaxFileBytes {
+			err = io.ErrUnexpectedEOF
+		}
 		if err != nil || strings.IndexByte(string(content), 0) >= 0 {
 			cache[relPath] = nil
 			return nil, false

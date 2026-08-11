@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -18,6 +20,62 @@ func staticLineReader(files map[string]string) lineReader {
 		}
 		return linesOf(content), true
 	}
+}
+
+func TestRepoLineReaderConfinesSnapshotPathsToRepository(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	outside := t.TempDir()
+	writeFile := func(path, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeFile(filepath.Join(repo, "..config.go"), "package safe\n")
+	writeFile(filepath.Join(repo, "pkg", "inside.go"), "package inside\n")
+	outsideFile := filepath.Join(outside, "secret.go")
+	writeFile(outsideFile, "package secret\n")
+
+	read := newRepoLineReader(repo)
+	for _, safe := range []string{"..config.go", "pkg/inside.go"} {
+		lines, ok := read(safe)
+		if !ok || len(lines) == 0 {
+			t.Errorf("safe repository path %q was rejected", safe)
+		}
+	}
+
+	escape, err := filepath.Rel(repo, outsideFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unsafe := range []string{filepath.ToSlash(escape), outsideFile} {
+		if lines, ok := read(unsafe); ok || lines != nil {
+			t.Errorf("path outside repository %q was read", unsafe)
+		}
+	}
+
+	t.Run("symlinks stay under the root", func(t *testing.T) {
+		insideLink := filepath.Join(repo, "inside-link.go")
+		if err := os.Symlink(filepath.Join("pkg", "inside.go"), insideLink); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		if lines, ok := read("inside-link.go"); !ok || len(lines) == 0 {
+			t.Error("symlink to a repository file was rejected")
+		}
+
+		outsideLink := filepath.Join(repo, "outside-link.go")
+		if err := os.Symlink(outsideFile, outsideLink); err != nil {
+			t.Fatal(err)
+		}
+		if lines, ok := read("outside-link.go"); ok || lines != nil {
+			t.Error("symlink escaping the repository was read")
+		}
+	})
 }
 
 // rustDispatch is shaped like the real fix site that motivated this: a long

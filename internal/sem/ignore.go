@@ -85,17 +85,7 @@ func (m *ignoreMatcher) loadExplicit(repo string, ignoreFiles, includeFiles []st
 	for _, ignoreFile := range ignoreFiles {
 		resolved := ignoreFile
 		if !filepath.IsAbs(resolved) {
-			repoClean := filepath.Clean(repo)
-			resolvedClean := filepath.Clean(filepath.Join(repoClean, resolved))
-			rel, err := filepath.Rel(repoClean, resolvedClean)
-			if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-				return fmt.Errorf("invalid file path")
-			}
-			resolved = resolvedClean
-		} else {
-			if strings.Contains(resolved, "..") {
-				return fmt.Errorf("invalid file path")
-			}
+			resolved = filepath.Join(repo, resolved)
 		}
 		if err := m.loadRequired(resolved, false); err != nil {
 			return err
@@ -104,17 +94,7 @@ func (m *ignoreMatcher) loadExplicit(repo string, ignoreFiles, includeFiles []st
 	for _, includeFile := range includeFiles {
 		resolved := includeFile
 		if !filepath.IsAbs(resolved) {
-			repoClean := filepath.Clean(repo)
-			resolvedClean := filepath.Clean(filepath.Join(repoClean, resolved))
-			rel, err := filepath.Rel(repoClean, resolvedClean)
-			if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-				return fmt.Errorf("invalid file path")
-			}
-			resolved = resolvedClean
-		} else {
-			if strings.Contains(resolved, "..") {
-				return fmt.Errorf("invalid file path")
-			}
+			resolved = filepath.Join(repo, resolved)
 		}
 		if err := m.loadRequired(resolved, true); err != nil {
 			return err
@@ -142,14 +122,7 @@ func gitInfoExcludePath(repo string) string {
 	if !info.Mode().IsRegular() {
 		return ""
 	}
-	// Validate dotGit path is within repo
-	repoClean := filepath.Clean(repo)
-	dotGitClean := filepath.Clean(dotGit)
-	rel, err := filepath.Rel(repoClean, dotGitClean)
-	if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-		return ""
-	}
-	raw, err := os.ReadFile(dotGitClean)
+	raw, err := os.ReadFile(dotGit)
 	if err != nil {
 		return ""
 	}
@@ -157,35 +130,19 @@ func gitInfoExcludePath(repo string) string {
 	if gitDir == "" {
 		return ""
 	}
-	// Validate gitDir for path traversal
-	if strings.Contains(gitDir, "..") {
-		return ""
-	}
 	if !filepath.IsAbs(gitDir) {
 		gitDir = filepath.Join(repo, gitDir)
 	}
-	gitDirClean := filepath.Clean(gitDir)
 	// commondir points at the shared .git that owns info/; it may be relative to gitDir.
-	commonPath := filepath.Join(gitDirClean, "commondir")
-	// Validate commonPath is within gitDirClean
-	commonPathClean := filepath.Clean(commonPath)
-	relCommon, err := filepath.Rel(gitDirClean, commonPathClean)
-	if err != nil || strings.HasPrefix(relCommon, "..") || filepath.IsAbs(relCommon) {
-		return ""
-	}
-	if common, err := os.ReadFile(commonPathClean); err == nil {
+	if common, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
 		if c := strings.TrimSpace(string(common)); c != "" {
-			// Validate c for path traversal
-			if strings.Contains(c, "..") {
-				return ""
-			}
 			if !filepath.IsAbs(c) {
-				c = filepath.Join(gitDirClean, c)
+				c = filepath.Join(gitDir, c)
 			}
-			gitDirClean = filepath.Clean(c)
+			gitDir = filepath.Clean(c)
 		}
 	}
-	return filepath.Join(gitDirClean, "info", "exclude")
+	return filepath.Join(gitDir, "info", "exclude")
 }
 
 func (m *ignoreMatcher) loadOptional(file string, includeMode bool) error {

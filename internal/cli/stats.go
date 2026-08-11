@@ -532,13 +532,7 @@ func (c *statsCollector) scanTranscript(path string) error {
 }
 
 func (c *statsCollector) scanFile(root, path string) error {
-	baseClean := filepath.Clean(root)
-	targetClean := filepath.Clean(path)
-	rel, err := filepath.Rel(baseClean, targetClean)
-	if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-		return nil // skip paths outside the base directory
-	}
-	handle, err := os.Open(targetClean)
+	handle, err := os.Open(path)
 	if err != nil {
 		return nil //nolint:nilerr // skip unreadable transcripts rather than abort the report
 	}

@@ -1168,6 +1168,59 @@ func TestSearchSnapshotCacheKeyPreservesIgnoreFileOrder(t *testing.T) {
 	}
 }
 
+func TestCacheKeysAcceptExternalExplicitRuleFiles(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	rules := filepath.Join(root, "rules..outside")
+	for _, dir := range []string{repo, rules} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ignoreFile := filepath.Join(rules, "ignore.rules")
+	includeFile := filepath.Join(rules, "include.rules")
+	if err := os.WriteFile(ignoreFile, []byte("generated/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(includeFile, []byte("generated/keep.go\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	relInclude, err := filepath.Rel(repo, includeFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := ProviderSnapshotOptions{
+		Profile:      ProfileFull,
+		IgnoreFiles:  []string{ignoreFile},
+		IncludeFiles: []string{relInclude},
+	}
+
+	searchBefore, err := searchSnapshotKey(repo, "repo-key", "v", "tree", options)
+	if err != nil {
+		t.Fatalf("search cache key with external rules: %v", err)
+	}
+	recordsBefore, err := providerRecordsKey(repo, "repo-key", "v", "tree", "snapshot", options)
+	if err != nil {
+		t.Fatalf("records cache key with external rules: %v", err)
+	}
+	if err := os.WriteFile(includeFile, []byte("generated/other.go\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	searchAfter, err := searchSnapshotKey(repo, "repo-key", "v", "tree", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordsAfter, err := providerRecordsKey(repo, "repo-key", "v", "tree", "snapshot", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if searchBefore == searchAfter || recordsBefore == recordsAfter {
+		t.Fatalf("external rule content did not affect both cache keys: search %v, records %v",
+			searchBefore != searchAfter, recordsBefore != recordsAfter)
+	}
+}
+
 // TestOnlyFilesDerivationReStampsCommitAfterSameTreeCommit pins the re-stamp
 // on the OnlyFiles-derivation branch of loadOrBuildSearchSnapshot: a selective
 // snapshot derived from a complete same-tree cache entry built at an older

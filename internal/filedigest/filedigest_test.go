@@ -76,3 +76,25 @@ func TestFileDigestsWithoutHoldingTheFile(t *testing.T) {
 		t.Fatalf("digesting a %d-byte file allocated %d bytes, want under 1 MiB", size, allocated)
 	}
 }
+
+func TestFileAcceptsArbitraryCallerPath(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	nested := filepath.Join(base, "nested")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(base, "..payload.txt")
+	if err := os.WriteFile(target, []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	separator := string(filepath.Separator)
+	callerPath := nested + separator + ".." + separator + "..payload.txt"
+	digest, err := File(callerPath)
+	if err != nil {
+		t.Fatalf("File(%q): %v", callerPath, err)
+	}
+	if digest.Bytes != 8 || digest.Lines != 2 {
+		t.Fatalf("digest = %+v, want 8 bytes and 2 lines", digest)
+	}
+}

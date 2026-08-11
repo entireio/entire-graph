@@ -821,6 +821,22 @@ func TestStatsTranscriptScopesToOneSession(t *testing.T) {
 	}
 }
 
+func TestStatsScansSafeDotDotTranscriptName(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	sessions := t.TempDir()
+	now := statsTime(0)
+	writeTranscript(t, sessions, "..session.jsonl",
+		toolUseLine(t, now, "Bash", "g1", map[string]any{"command": `entire graph search --query "x"`}),
+		toolResultLine(t, now, "g1", "hits"),
+	)
+
+	report := runStatsJSON(t, "--repo", repo, "--sessions-dir", sessions, "--format", "json", "--since", "all")
+	if report.Sessions != 1 || report.Transcripts != 1 || report.GraphCalls != 1 {
+		t.Fatalf("dot-dot transcript name was skipped: %+v", report)
+	}
+}
+
 func TestStatsTranscriptFoldsSubagents(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
