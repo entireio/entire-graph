@@ -96,10 +96,6 @@ func providerRecordsKey(absRepo, repositoryKey, providerVersion, tree, mode stri
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func providerRecordsPath(cacheDir, key string) string {
-	return filepath.Join(cacheDir, "records", providerRecordsCacheVersion, key+".json.gz")
-}
-
 // LoadProviderRecords returns the cached NDJSON record stream for repo at the
 // given tree/mode/options, or hit=false when there is no usable cache entry.
 // The returned summary (when present) lets the caller reproduce the partial-parse
@@ -117,7 +113,11 @@ func LoadProviderRecords(ctx context.Context, repo, providerVersion, tree, mode,
 	if err != nil {
 		return nil, nil, false, err
 	}
-	cache, err := readProviderRecords(providerRecordsPath(cacheDir, key))
+	entry, err := newCacheEntry(cacheDir, "records", providerRecordsCacheVersion, key)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	cache, err := readProviderRecords(entry)
 	if err != nil || !validCachedProviderRecords(cache, providerVersion, tree, mode, options) {
 		return nil, nil, false, nil
 	}
@@ -139,6 +139,10 @@ func StoreProviderRecords(ctx context.Context, repo, providerVersion, tree, mode
 	if err != nil {
 		return err
 	}
+	entry, err := newCacheEntry(cacheDir, "records", providerRecordsCacheVersion, key)
+	if err != nil {
+		return err
+	}
 	cache := cachedProviderRecords{
 		CacheVersion:    providerRecordsCacheVersion,
 		ProviderVersion: providerVersion,
@@ -149,7 +153,7 @@ func StoreProviderRecords(ctx context.Context, repo, providerVersion, tree, mode
 		Records:         records,
 		Summary:         summary,
 	}
-	return writeProviderRecords(providerRecordsPath(cacheDir, key), cache)
+	return writeProviderRecords(entry, cache)
 }
 
 func validCachedProviderRecords(cache cachedProviderRecords, providerVersion, tree, mode string, options ProviderSnapshotOptions) bool {
@@ -161,8 +165,8 @@ func validCachedProviderRecords(cache cachedProviderRecords, providerVersion, tr
 		cache.MaxParseBytes == options.MaxParseBytes
 }
 
-func readProviderRecords(path string) (cachedProviderRecords, error) {
-	file, err := os.Open(path)
+func readProviderRecords(entry cacheEntry) (cachedProviderRecords, error) {
+	file, err := entry.open()
 	if err != nil {
 		return cachedProviderRecords{}, err
 	}
@@ -184,7 +188,8 @@ func readProviderRecords(path string) (cachedProviderRecords, error) {
 	return cache, nil
 }
 
-func writeProviderRecords(path string, cache cachedProviderRecords) error {
+func writeProviderRecords(entry cacheEntry, cache cachedProviderRecords) error {
+	path := entry.writePath()
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err

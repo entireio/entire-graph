@@ -826,16 +826,16 @@ func ValidateToken(token string) bool { return token != "" }
 }
 
 func TestWriteSearchSnapshotReplacesExistingEntry(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "snapshot.json.gz")
+	entry := testCacheEntry(t)
 	first := cachedSearchSnapshot{CacheVersion: searchSnapshotCacheVersion, Tree: "first"}
 	second := cachedSearchSnapshot{CacheVersion: searchSnapshotCacheVersion, Tree: "second"}
-	if err := writeSearchSnapshot(path, first); err != nil {
+	if err := writeSearchSnapshot(entry, first); err != nil {
 		t.Fatalf("write first snapshot: %v", err)
 	}
-	if err := writeSearchSnapshot(path, second); err != nil {
+	if err := writeSearchSnapshot(entry, second); err != nil {
 		t.Fatalf("replace snapshot: %v", err)
 	}
-	got, err := readSearchSnapshot(path)
+	got, err := readSearchSnapshot(entry)
 	if err != nil {
 		t.Fatalf("read replaced snapshot: %v", err)
 	}
