@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 )
 
@@ -137,5 +138,88 @@ func TestWorktreeMatchesHEADErrorsWithoutCommittedHEAD(t *testing.T) {
 	plain := t.TempDir()
 	if clean, err := WorktreeMatchesHEAD(context.Background(), plain); err == nil || clean {
 		t.Fatalf("non-repo = (%v, %v), want (false, error)", clean, err)
+	}
+}
+
+// WorktreeDirtyPaths is the factual half of the cleanliness question: it must
+// name every path that diverges, so a caller can decide which of them it
+// actually reads. A rename spends two records in porcelain -z output and must
+// yield BOTH paths, not a phantom entry parsed out of the source field.
+func TestWorktreeDirtyPaths(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		mutate func(t *testing.T, repo string)
+		want   []string
+	}{
+		{
+			name:   "clean tree reports nothing",
+			mutate: func(*testing.T, string) {},
+			want:   nil,
+		},
+		{
+			name: "untracked file is reported",
+			mutate: func(t *testing.T, repo string) {
+				if err := os.WriteFile(filepath.Join(repo, ".DS_Store"), []byte("\x00"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: []string{".DS_Store"},
+		},
+		{
+			name: "modified tracked file is reported",
+			mutate: func(t *testing.T, repo string) {
+				if err := os.WriteFile(filepath.Join(repo, "app.go"), []byte("package app\n\nfunc Run() { println(1) }\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: []string{"app.go"},
+		},
+		{
+			name: "rename reports both destination and source",
+			mutate: func(t *testing.T, repo string) {
+				git(t, repo, "mv", "app.go", "moved.go")
+			},
+			want: []string{"app.go", "moved.go"},
+		},
+		{
+			name: "ignored file is not reported",
+			mutate: func(t *testing.T, repo string) {
+				if err := os.WriteFile(filepath.Join(repo, "build.log"), []byte("noise\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			repo := newWorktreeRepo(t)
+			tc.mutate(t, repo)
+			got, err := WorktreeDirtyPaths(context.Background(), repo)
+			if err != nil {
+				t.Fatalf("WorktreeDirtyPaths: %v", err)
+			}
+			sort.Strings(got)
+			want := append([]string(nil), tc.want...)
+			sort.Strings(want)
+			if len(got) != len(want) {
+				t.Fatalf("paths = %q, want %q", got, want)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("paths = %q, want %q", got, want)
+				}
+			}
+			// The bool wrapper must stay exactly len(paths)==0.
+			clean, err := WorktreeMatchesHEAD(context.Background(), repo)
+			if err != nil {
+				t.Fatalf("WorktreeMatchesHEAD: %v", err)
+			}
+			if clean != (len(got) == 0) {
+				t.Fatalf("WorktreeMatchesHEAD = %v with dirty paths %q", clean, got)
+			}
+		})
 	}
 }
