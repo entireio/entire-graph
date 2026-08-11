@@ -1,0 +1,41 @@
+{
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
+  "checkpoint_id": "1d70d1820dc8",
+  "session_id": "019ff2ba-87be-7bb3-a567-c8823729741e",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-11T22:24:32.407523Z",
+  "branch": "codex/pr90-aikido-fix",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/search_verify.go",
+    "internal/sem/search_verify_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "ed2b4a3996f3",
+  "checkpoint_transcript_start": 1257,
+  "transcript_lines_at_start": 1257,
+  "compact_transcript_start": 176,
+  "token_usage": {
+    "input_tokens": 2259,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 220416,
+    "output_tokens": 280,
+    "api_call_count": 3
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-11T22:24:32.271039Z",
+    "agent_lines": 404,
+    "agent_removed": 20,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 404,
+    "total_lines_changed": 424,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
