@@ -1,2 +1,1 @@
-On this GitHub repo, a security scanner found the following issue:
-actions/checkout v2 and above persist the default GITHUB_TOKEN in the repository's local git config when persist-credentials is not set to false, during the workflow run. Subsequent workflow steps or third-party actions can read this token from git configuration, increasing the risk of credential theft or misuse within the pipeline. In order to limit the attack surface when external actions are compromised, ensure `persist-credentials` is set to `false`.
+commit/push
