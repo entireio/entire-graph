@@ -1,13 +1,13 @@
 {
-  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
-  "checkpoint_id": "1d70d1820dc8",
-  "strategy": "manual-commit",
   "branch": "codex/pr90-aikido-fix",
-  "checkpoints_count": 1,
+  "checkpoint_id": "1d70d1820dc8",
+  "checkpoints_count": 3,
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
   "files_touched": [
     "internal/sem/search_verify.go",
     "internal/sem/search_verify_test.go"
   ],
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/1d/70d1820dc8/0/metadata.json",
@@ -15,13 +15,20 @@
       "compact_transcript": "/1d/70d1820dc8/0/transcript.jsonl",
       "content_hash": "/1d/70d1820dc8/0/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "content_hash": "/1d/70d1820dc8/1/content_hash.txt",
+      "metadata": "/1d/70d1820dc8/1/metadata.json",
+      "prompt": "/1d/70d1820dc8/1/prompt.txt",
+      "transcript": "/1d/70d1820dc8/1/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 2259,
+    "input_tokens": 59910,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 220416,
-    "output_tokens": 280,
-    "api_call_count": 3
+    "cache_read_tokens": 968649,
+    "output_tokens": 7709,
+    "api_call_count": 25
   }
 }
