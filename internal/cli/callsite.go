@@ -90,13 +90,19 @@ func newRepoLineReader(repoRoot string) lineReader {
 		if lines, ok := cache[relPath]; ok {
 			return lines, lines != nil
 		}
-		full := filepath.Join(repoRoot, filepath.FromSlash(relPath))
-		info, err := os.Lstat(full)
+		baseClean := filepath.Clean(repoRoot)
+		targetClean := filepath.Clean(filepath.Join(baseClean, filepath.FromSlash(relPath)))
+		rel, err := filepath.Rel(baseClean, targetClean)
+		if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+			cache[relPath] = nil
+			return nil, false
+		}
+		info, err := os.Lstat(targetClean)
 		if err != nil || !info.Mode().IsRegular() || info.Size() > callSiteMaxFileBytes {
 			cache[relPath] = nil
 			return nil, false
 		}
-		content, err := os.ReadFile(full)
+		content, err := os.ReadFile(targetClean)
 		if err != nil || strings.IndexByte(string(content), 0) >= 0 {
 			cache[relPath] = nil
 			return nil, false

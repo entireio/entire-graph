@@ -767,12 +767,18 @@ func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, opt
 		// Preserve caller order: ignore matching is last-rule-wins, including
 		// across repeatable ignore/include files within each group.
 		for _, path := range group {
+			baseClean := filepath.Clean(absRepo)
 			resolved := path
 			if !filepath.IsAbs(resolved) {
 				resolved = filepath.Join(absRepo, resolved)
 			}
-			writePart(filepath.Clean(resolved))
-			content, err := os.ReadFile(resolved)
+			targetClean := filepath.Clean(resolved)
+			rel, err := filepath.Rel(baseClean, targetClean)
+			if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+				return "", fmt.Errorf("invalid file path")
+			}
+			writePart(targetClean)
+			content, err := os.ReadFile(targetClean)
 			if err != nil {
 				if errors.Is(err, os.ErrNotExist) {
 					writePart("missing")
