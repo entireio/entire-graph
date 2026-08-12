@@ -1,0 +1,21 @@
+{
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
+  "checkpoint_id": "cf85d34a2bce",
+  "strategy": "manual-commit",
+  "branch": "fix/diff-flag-parser",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/cli/agentguide_test.go",
+    "internal/cli/root.go",
+    "internal/cli/root_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/cf/85d34a2bce/0/metadata.json",
+      "transcript": "/cf/85d34a2bce/0/full.jsonl",
+      "compact_transcript": "/cf/85d34a2bce/0/transcript.jsonl",
+      "content_hash": "/cf/85d34a2bce/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
