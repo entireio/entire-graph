@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -29,6 +30,7 @@ var (
 	guideDefaultRE = regexp.MustCompile("`(--[a-z][a-z0-9-]*)`[^\\n]*\\(default: ([^)]+)\\)")
 	// Markdown's other literal-code form: a 4-space (or tab) indented block. AGENTS.md uses
 	// fences, the shipped agentGuide const uses indented blocks, and both are invocations.
+	// Indentation alone is not enough to make a line one — see parseGuideClaims.
 	guideIndentedCodeRE = regexp.MustCompile(`^(?: {4,}|\t)\S`)
 )
 
@@ -168,6 +170,22 @@ func TestParseGuideIndentedCodeClaims(t *testing.T) {
 	}
 }
 
+// TestParseGuideIndentedProseIsNotAnInvocation pins the other half of the indented-block rule.
+// A wrapped list item is indented exactly like a code block, so an indented line that does not
+// name a command is prose — claiming its flags against the enclosing section would report drift
+// in a command the guide never associated with that flag.
+func TestParseGuideIndentedProseIsNotAnInvocation(t *testing.T) {
+	guide := strings.Join([]string{
+		"### neighbors — relations",
+		"- a bullet whose second line wraps and happens to mention",
+		"    --index-all-files, which belongs to search, not neighbors",
+	}, "\n")
+
+	if _, flags, _, _ := parseGuideClaims(guide); len(flags) != 0 {
+		t.Errorf("flag claims = %#v, want none from indented prose", flags)
+	}
+}
+
 func TestParserAcceptsFlag(t *testing.T) {
 	tests := []struct {
 		command   string
@@ -212,7 +230,11 @@ func parseGuideClaims(guide string) (commands, flags, negatives, defaults []guid
 			inFence = !inFence
 			continue
 		}
-		if inFence || guideIndentedCodeRE.MatchString(line) {
+		// An indented block counts as an invocation only when it names the command outright.
+		// Unlike a fence, indentation is also how Markdown continues a wrapped list item, so
+		// without that second test a bare --flag in continuation prose would be claimed against
+		// whatever heading preceded it, and reported as drift in a command that never had it.
+		if inFence || (guideIndentedCodeRE.MatchString(line) && guideCommandRE.MatchString(line)) {
 			flags = append(flags, invocationFlagClaims(line, sectionCommand, lineNumber)...)
 		} else {
 			for _, match := range guideInlineRE.FindAllStringSubmatch(line, -1) {
@@ -294,6 +316,11 @@ func parserAcceptsFlag(command, flag string) (accepted, reachable bool) {
 	case "def":
 		_, err := parseDefFlags([]string{"contract-test", flag})
 		return parserRecognizedStrictFlag(err), true
+	case "capabilities":
+		// capabilities has no flag parser: runCapabilities IS its argument validator, and it
+		// is side-effect-free apart from the JSON it encodes, so calling it with the discard
+		// writer asks the real acceptor rather than a test-side copy of its rule.
+		return runCapabilities(Options{Stdout: io.Discard}, []string{flag}) == nil, true
 	default:
 		return false, false
 	}
