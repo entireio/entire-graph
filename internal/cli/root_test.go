@@ -994,3 +994,99 @@ func TestMaxSecondsFlagValidation(t *testing.T) {
 		t.Fatalf("checkpoint must reject --max-seconds, got %v", err)
 	}
 }
+
+func TestParseDiffFlagsSeparatesUnknownFlagsFromPaths(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		base    string
+		head    string
+		paths   []string
+		unknown []string
+		json    bool
+	}{
+		{name: "defaults", args: nil, base: "HEAD~1", head: "HEAD"},
+		{
+			name: "base and head",
+			args: []string{"--base", "main", "--head", "HEAD"},
+			base: "main", head: "HEAD",
+		},
+		{
+			name: "bare paths stay paths",
+			args: []string{"--base", "main", "internal/cli", "README.md"},
+			base: "main", head: "HEAD",
+			paths: []string{"internal/cli", "README.md"},
+		},
+		{
+			name: "common flags still parse",
+			args: []string{"--json", "--base", "main"},
+			base: "main", head: "HEAD", json: true,
+		},
+		{
+			// The regression this parser exists for: an unrecognized flag used to be filed
+			// under paths, so the command exited 0 reporting no changes.
+			name: "typo'd flag is unknown, not a path",
+			args: []string{"--base", "main", "--jsonn"},
+			base: "main", head: "HEAD",
+			unknown: []string{"--jsonn"},
+		},
+		{
+			// After `--` a flag-shaped argument is a path again, which is what the separator
+			// is documented to be for.
+			name: "separator makes flag-shaped args literal paths",
+			args: []string{"--base", "main", "--", "--weird-path", "-x"},
+			base: "main", head: "HEAD",
+			paths: []string{"--weird-path", "-x"},
+		},
+		{
+			name: "separator protects a path named like a real flag",
+			args: []string{"--", "--base"},
+			base: "HEAD~1", head: "HEAD",
+			paths: []string{"--base"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parsed, unknown, err := parseDiffFlags(test.args)
+			if err != nil {
+				t.Fatalf("parseDiffFlags(%q): %v", test.args, err)
+			}
+			if parsed.base != test.base || parsed.head != test.head {
+				t.Errorf("base/head = %q/%q, want %q/%q", parsed.base, parsed.head, test.base, test.head)
+			}
+			if !reflect.DeepEqual(parsed.paths, test.paths) {
+				t.Errorf("paths = %#v, want %#v", parsed.paths, test.paths)
+			}
+			if !reflect.DeepEqual(unknown, test.unknown) {
+				t.Errorf("unknown = %#v, want %#v", unknown, test.unknown)
+			}
+			if parsed.common.JSON != test.json {
+				t.Errorf("JSON = %v, want %v", parsed.common.JSON, test.json)
+			}
+		})
+	}
+}
+
+func TestParseDiffFlagsRequiresRevisionValues(t *testing.T) {
+	for _, flag := range []string{"--base", "--head"} {
+		if _, _, err := parseDiffFlags([]string{flag}); err == nil {
+			t.Errorf("parseDiffFlags(%q) succeeded, want a requires-a-value error", flag)
+		}
+	}
+}
+
+// TestDiffRejectsUnknownFlag is the end-to-end half: before parseDiffFlags existed this exited 0
+// and printed an empty change list, so a mistyped flag looked like a clean diff.
+func TestDiffRejectsUnknownFlag(t *testing.T) {
+	repo := t.TempDir()
+	var out, errOut bytes.Buffer
+	opts := Options{Stdout: &out, Stderr: &errOut, Version: "test-version"}
+	err := runDiff(t.Context(), opts, []string{"--repo", repo, "--jsonn"})
+	if err == nil {
+		t.Fatal("runDiff accepted --jsonn; a typo'd flag must not be filed as a path")
+	}
+	if !strings.Contains(err.Error(), "--jsonn") {
+		t.Errorf("error %q does not name the offending flag", err)
+	}
+}
