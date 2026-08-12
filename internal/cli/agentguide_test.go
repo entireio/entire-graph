@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,6 +28,10 @@ var (
 		"(?i)there is (?:\\*\\*)?no ((?:`--[a-z][a-z0-9-]*`(?:/)*)+) filter",
 	)
 	guideDefaultRE = regexp.MustCompile("`(--[a-z][a-z0-9-]*)`[^\\n]*\\(default: ([^)]+)\\)")
+	// Markdown's other literal-code form: a 4-space (or tab) indented block. AGENTS.md uses
+	// fences, the shipped agentGuide const uses indented blocks, and both are invocations.
+	// Indentation alone is not enough to make a line one — see parseGuideClaims.
+	guideIndentedCodeRE = regexp.MustCompile(`^(?: {4,}|\t)\S`)
 )
 
 func TestAgentGuideMatchesFlagRegistry(t *testing.T) {
@@ -35,8 +40,24 @@ func TestAgentGuideMatchesFlagRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s: %v", guidePath, err)
 	}
+	checkGuideClaims(t, "AGENTS.md", string(contents))
+}
 
-	commands, flags, negatives, defaults := parseGuideClaims(string(contents))
+// TestAgentGuideConstMatchesFlagRegistry holds the shipped artifact to the same contract as
+// AGENTS.md: `agent-guide` and `init-agents` hand consuming projects the embedded agentGuide
+// const, not the repo-root file, so a parser change that only AGENTS.md tracked would still
+// reach every install.
+func TestAgentGuideConstMatchesFlagRegistry(t *testing.T) {
+	checkGuideClaims(t, "internal/cli/agents.go agentGuide", agentGuide)
+}
+
+// checkGuideClaims asserts that every command, flag, negative and default claim a guide makes
+// is backed by the real argument parsers and the help.go flag registry. origin labels the
+// source in failure messages so a drift report points at the text that has to change.
+func checkGuideClaims(t *testing.T, origin, source string) {
+	t.Helper()
+
+	commands, flags, negatives, defaults := parseGuideClaims(source)
 	dispatched := make(map[string]bool, len(dispatchCommands))
 	for _, command := range dispatchCommands {
 		dispatched[command] = true
@@ -45,47 +66,47 @@ func TestAgentGuideMatchesFlagRegistry(t *testing.T) {
 	for _, claim := range commands {
 		_, documented := findCommandDoc(claim.command)
 		if !documented || !dispatched[claim.command] {
-			t.Errorf("AGENTS.md:%d names command %q, but commandDocs/Run do not both register it", claim.line, claim.command)
+			t.Errorf("%s:%d names command %q, but commandDocs/Run do not both register it", origin, claim.line, claim.command)
 		}
 	}
 	for _, claim := range flags {
 		accepted, reachable := parserAcceptsFlag(claim.command, claim.flag)
 		if !reachable {
-			t.Logf("SKIP AGENTS.md:%d parser check for %s %s: command parser is not reachable from this test", claim.line, claim.command, claim.flag)
+			t.Logf("SKIP %s:%d parser check for %s %s: command parser is not reachable from this test", origin, claim.line, claim.command, claim.flag)
 		} else if !accepted {
-			t.Errorf("AGENTS.md:%d guide/parser drift: %s uses %s, but its real argument parser does not accept it; fix AGENTS.md or the parser", claim.line, claim.command, claim.flag)
+			t.Errorf("%s:%d guide/parser drift: %s uses %s, but its real argument parser does not accept it; fix %s or the parser", origin, claim.line, claim.command, claim.flag, origin)
 		}
 		if !commandHasFlag(claim.command, claim.flag) {
 			if reachable && accepted {
-				t.Errorf("AGENTS.md:%d parser/help drift: %s parser accepts %s, but internal/cli/help.go does not document it; fix help.go", claim.line, claim.command, claim.flag)
+				t.Errorf("%s:%d parser/help drift: %s parser accepts %s, but internal/cli/help.go does not document it; fix help.go", origin, claim.line, claim.command, claim.flag)
 			} else {
-				t.Errorf("AGENTS.md:%d guide/help drift: %s uses %s, but internal/cli/help.go does not document it; fix AGENTS.md or help.go", claim.line, claim.command, claim.flag)
+				t.Errorf("%s:%d guide/help drift: %s uses %s, but internal/cli/help.go does not document it; fix %s or help.go", origin, claim.line, claim.command, claim.flag, origin)
 			}
 		}
 	}
 	for _, claim := range negatives {
 		accepted, reachable := parserAcceptsFlag(claim.command, claim.flag)
 		if !reachable {
-			t.Logf("SKIP AGENTS.md:%d negative parser check for %s %s: command parser is not reachable from this test", claim.line, claim.command, claim.flag)
+			t.Logf("SKIP %s:%d negative parser check for %s %s: command parser is not reachable from this test", origin, claim.line, claim.command, claim.flag)
 		} else if accepted {
-			t.Errorf("AGENTS.md:%d guide/parser drift: guide says %s has no %s filter, but its real argument parser accepts it; fix AGENTS.md", claim.line, claim.command, claim.flag)
+			t.Errorf("%s:%d guide/parser drift: guide says %s has no %s filter, but its real argument parser accepts it; fix %s", origin, claim.line, claim.command, claim.flag, origin)
 		}
 		if accepted && !commandHasFlag(claim.command, claim.flag) {
-			t.Errorf("AGENTS.md:%d parser/help drift: %s parser accepts %s, but internal/cli/help.go does not document it; fix help.go", claim.line, claim.command, claim.flag)
+			t.Errorf("%s:%d parser/help drift: %s parser accepts %s, but internal/cli/help.go does not document it; fix help.go", origin, claim.line, claim.command, claim.flag)
 		} else if commandHasFlag(claim.command, claim.flag) {
-			t.Errorf("AGENTS.md:%d guide/help drift: guide says %s has no %s filter, but internal/cli/help.go documents it; fix AGENTS.md", claim.line, claim.command, claim.flag)
+			t.Errorf("%s:%d guide/help drift: guide says %s has no %s filter, but internal/cli/help.go documents it; fix %s", origin, claim.line, claim.command, claim.flag, origin)
 		}
 	}
 	for _, claim := range defaults {
 		docDefault, ok := commandFlagDefault(claim.command, claim.flag)
 		if !ok || docDefault != claim.value {
-			t.Errorf("AGENTS.md:%d documents %s %s default %q, but the flag registry says %q", claim.line, claim.command, claim.flag, claim.value, docDefault)
+			t.Errorf("%s:%d documents %s %s default %q, but the flag registry says %q", origin, claim.line, claim.command, claim.flag, claim.value, docDefault)
 		}
 		parserDefault, ok := parserFlagDefault(t, claim.command, claim.flag)
 		if !ok {
-			t.Errorf("AGENTS.md:%d documents a default for %s %s, but the contract test cannot read that parser default", claim.line, claim.command, claim.flag)
+			t.Errorf("%s:%d documents a default for %s %s, but the contract test cannot read that parser default", origin, claim.line, claim.command, claim.flag)
 		} else if parserDefault != claim.value {
-			t.Errorf("AGENTS.md:%d documents %s %s default %q, but the parser uses %q", claim.line, claim.command, claim.flag, claim.value, parserDefault)
+			t.Errorf("%s:%d documents %s %s default %q, but the parser uses %q", origin, claim.line, claim.command, claim.flag, claim.value, parserDefault)
 		}
 	}
 }
@@ -126,6 +147,42 @@ func TestParseGuideProseFlagClaims(t *testing.T) {
 	}
 	if flags[1].command != "impact" || flags[1].flag != "--depth" {
 		t.Errorf("explicit claim = %#v, want impact --depth", flags[1])
+	}
+}
+
+func TestParseGuideIndentedCodeClaims(t *testing.T) {
+	guide := strings.Join([]string{
+		"### search — locate",
+		"Run it like this:",
+		"    entire graph search --repo . --profile full",
+		"Prose mentioning --repo outside a code block is not a claim.",
+	}, "\n")
+
+	_, flags, _, _ := parseGuideClaims(guide)
+	if len(flags) != 2 {
+		t.Fatalf("flag claims = %#v, want exactly two", flags)
+	}
+	if flags[0].command != "search" || flags[0].flag != "--repo" {
+		t.Errorf("first claim = %#v, want search --repo", flags[0])
+	}
+	if flags[1].command != "search" || flags[1].flag != "--profile" {
+		t.Errorf("second claim = %#v, want search --profile", flags[1])
+	}
+}
+
+// TestParseGuideIndentedProseIsNotAnInvocation pins the other half of the indented-block rule.
+// A wrapped list item is indented exactly like a code block, so an indented line that does not
+// name a command is prose — claiming its flags against the enclosing section would report drift
+// in a command the guide never associated with that flag.
+func TestParseGuideIndentedProseIsNotAnInvocation(t *testing.T) {
+	guide := strings.Join([]string{
+		"### neighbors — relations",
+		"- a bullet whose second line wraps and happens to mention",
+		"    --index-all-files, which belongs to search, not neighbors",
+	}, "\n")
+
+	if _, flags, _, _ := parseGuideClaims(guide); len(flags) != 0 {
+		t.Errorf("flag claims = %#v, want none from indented prose", flags)
 	}
 }
 
@@ -173,7 +230,11 @@ func parseGuideClaims(guide string) (commands, flags, negatives, defaults []guid
 			inFence = !inFence
 			continue
 		}
-		if inFence {
+		// An indented block counts as an invocation only when it names the command outright.
+		// Unlike a fence, indentation is also how Markdown continues a wrapped list item, so
+		// without that second test a bare --flag in continuation prose would be claimed against
+		// whatever heading preceded it, and reported as drift in a command that never had it.
+		if inFence || (guideIndentedCodeRE.MatchString(line) && guideCommandRE.MatchString(line)) {
 			flags = append(flags, invocationFlagClaims(line, sectionCommand, lineNumber)...)
 		} else {
 			for _, match := range guideInlineRE.FindAllStringSubmatch(line, -1) {
@@ -255,6 +316,11 @@ func parserAcceptsFlag(command, flag string) (accepted, reachable bool) {
 	case "def":
 		_, err := parseDefFlags([]string{"contract-test", flag})
 		return parserRecognizedStrictFlag(err), true
+	case "capabilities":
+		// capabilities has no flag parser: runCapabilities IS its argument validator, and it
+		// is side-effect-free apart from the JSON it encodes, so calling it with the discard
+		// writer asks the real acceptor rather than a test-side copy of its rule.
+		return runCapabilities(Options{Stdout: io.Discard}, []string{flag}) == nil, true
 	default:
 		return false, false
 	}
