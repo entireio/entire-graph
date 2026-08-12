@@ -1,0 +1,47 @@
+Review the open PRs, one by one
+
+---
+
+Too much at once. Let's start with 86. Suggest the changes to me.
+
+---
+
+1. Make the preferred change.
+2. Ok, make it so>
+3. Ignore, we update this later.
+
+---
+
+Wait wait, but you recommended this change. If you don't have the numbers, you can't make it.
+
+---
+
+I don't have them. I don't want fallback wording either. You are inventing false precision for a work-in-progress repo.
+
+---
+
+Drop it and merge 86.
+
+---
+
+Main moved by whom and what's the commit date?
+
+---
+
+This was yesterday, not "in the meantime". Why did you not pull main before?
+
+---
+
+Ok, 87 next. Give me your review findings.
+
+---
+
+Why would we not fix the 2 things worth noting?
+
+---
+
+Yes
+
+---
+
+Yes
