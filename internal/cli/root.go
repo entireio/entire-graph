@@ -696,39 +696,87 @@ func runAnalyze(ctx context.Context, opts Options, args []string) error {
 	return runDiff(ctx, opts, args)
 }
 
-func runDiff(ctx context.Context, opts Options, args []string) error {
-	flags, rest, err := parseCommonFlags(args)
-	if err != nil {
-		return err
+// diffFlags is the parsed argument set for `diff` and its `analyze` alias.
+type diffFlags struct {
+	common commonFlags
+	base   string
+	head   string
+	paths  []string
+}
+
+// parseDiffFlags parses `diff`/`analyze` arguments, returning any flag-shaped argument it does
+// not recognize separately from the path filters, so the caller can reject it the way every
+// other verb does.
+//
+// Separating the two is the point. The parsing used to live inline in runDiff, whose default
+// branch filed EVERY unrecognized token under paths — so `diff --jsonn` exited 0 having filtered
+// the diff to a path that does not exist, and printed "No semantic entity changes detected". A
+// mistyped flag was answered with a confident empty result, which for a verb whose whole job is
+// telling you what changed is the worst possible way to be wrong.
+//
+// Paths that genuinely look like flags still work: that is what the documented `-- path...`
+// separator is for.
+func parseDiffFlags(args []string) (diffFlags, []string, error) {
+	parsed := diffFlags{base: "HEAD~1", head: "HEAD"}
+
+	// Split on `--` here rather than letting parseCommonFlags consume it: that function flattens
+	// everything after the separator into rest, which would leave a literal path named `--base`
+	// indistinguishable from the real flag.
+	flagArgs, literalPaths := args, []string(nil)
+	for i, arg := range args {
+		if arg == "--" {
+			flagArgs, literalPaths = args[:i], args[i+1:]
+			break
+		}
 	}
 
-	base := "HEAD~1"
-	head := "HEAD"
-	var paths []string
+	common, rest, err := parseCommonFlags(flagArgs)
+	if err != nil {
+		return diffFlags{}, nil, err
+	}
+	parsed.common = common
+
+	var unknown []string
 	for i := 0; i < len(rest); i++ {
 		switch rest[i] {
 		case "--base":
 			i++
 			if i >= len(rest) {
-				return errors.New("--base requires a value")
+				return diffFlags{}, nil, errors.New("--base requires a value")
 			}
-			base = rest[i]
+			parsed.base = rest[i]
 		case "--head":
 			i++
 			if i >= len(rest) {
-				return errors.New("--head requires a value")
+				return diffFlags{}, nil, errors.New("--head requires a value")
 			}
-			head = rest[i]
+			parsed.head = rest[i]
 		default:
-			paths = append(paths, rest[i])
+			if strings.HasPrefix(rest[i], "-") && rest[i] != "-" {
+				unknown = append(unknown, rest[i])
+				continue
+			}
+			parsed.paths = append(parsed.paths, rest[i])
 		}
 	}
+	parsed.paths = append(parsed.paths, literalPaths...)
+	return parsed, unknown, nil
+}
 
-	repo, err := resolveRepo(ctx, opts.Env, flags.Repo)
+func runDiff(ctx context.Context, opts Options, args []string) error {
+	parsed, unknown, err := parseDiffFlags(args)
 	if err != nil {
 		return err
 	}
-	return analyzeAndPrint(ctx, opts, repo, base, head, paths, flags)
+	if len(unknown) != 0 {
+		return unexpectedArgumentsError("diff", opts.Version, unknown)
+	}
+
+	repo, err := resolveRepo(ctx, opts.Env, parsed.common.Repo)
+	if err != nil {
+		return err
+	}
+	return analyzeAndPrint(ctx, opts, repo, parsed.base, parsed.head, parsed.paths, parsed.common)
 }
 
 func resolveRepo(ctx context.Context, env EntireEnv, explicit string) (string, error) {

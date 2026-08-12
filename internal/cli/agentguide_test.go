@@ -316,6 +316,9 @@ func parserAcceptsFlag(command, flag string) (accepted, reachable bool) {
 	case "def":
 		_, err := parseDefFlags([]string{"contract-test", flag})
 		return parserRecognizedStrictFlag(err), true
+	case "diff", "analyze":
+		_, unknown, err := parseDiffFlags([]string{flag})
+		return err != nil || len(unknown) == 0, true
 	case "capabilities":
 		// capabilities has no flag parser: runCapabilities IS its argument validator, and it
 		// is side-effect-free apart from the JSON it encodes, so calling it with the discard
