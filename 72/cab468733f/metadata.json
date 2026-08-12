@@ -1,12 +1,12 @@
 {
-  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
-  "checkpoint_id": "72cab468733f",
-  "strategy": "manual-commit",
   "branch": "test/agent-guide-const-parity",
-  "checkpoints_count": 12,
+  "checkpoint_id": "72cab468733f",
+  "checkpoints_count": 14,
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
   "files_touched": [
     "internal/cli/agentguide_test.go"
   ],
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/72/cab468733f/0/metadata.json",
@@ -21,13 +21,20 @@
       "compact_transcript": "/72/cab468733f/1/transcript.jsonl",
       "content_hash": "/72/cab468733f/1/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "content_hash": "/72/cab468733f/2/content_hash.txt",
+      "metadata": "/72/cab468733f/2/metadata.json",
+      "prompt": "/72/cab468733f/2/prompt.txt",
+      "transcript": "/72/cab468733f/2/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 29147,
+    "input_tokens": 71203,
     "cache_creation_tokens": 146065,
-    "cache_read_tokens": 14883260,
-    "output_tokens": 71334,
-    "api_call_count": 118
+    "cache_read_tokens": 15327106,
+    "output_tokens": 75701,
+    "api_call_count": 135
   }
 }
