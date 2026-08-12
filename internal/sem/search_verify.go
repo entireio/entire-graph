@@ -1286,6 +1286,16 @@ func shellQuote(token string) string {
 	return "'" + strings.ReplaceAll(token, "'", "'\\''") + "'"
 }
 
+// shellQuotePath prevents option-shaped repository filenames from being
+// interpreted as flags by the invoked tool. Shell quoting alone does not
+// change command-line option parsing.
+func shellQuotePath(path string) string {
+	if strings.HasPrefix(path, "-") {
+		path = "./" + path
+	}
+	return shellQuote(path)
+}
+
 func searchVerifyRecoveredTestName(
 	testPath, symbol string,
 	evidence *searchVerifyEvidence,
@@ -1475,7 +1485,7 @@ func deriveSearchVerifyBuildCheck(dir string, subject searchVerifySubject, evide
 		return nil
 	}
 	return &SearchVerifyCommand{
-		Command:     check + shellQuote(subject.sourcePath),
+		Command:     check + shellQuotePath(subject.sourcePath),
 		Targets:     subject.sourcePath,
 		DerivedFrom: "build check only - no runnable test command derivable; this parses the file, it runs no tests",
 		Tier:        searchVerifyTierBuildCheck,
