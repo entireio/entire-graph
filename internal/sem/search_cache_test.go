@@ -151,8 +151,8 @@ func TestSearchCacheLoadersRejectSymlinkEscape(t *testing.T) {
 			persistenceReadErr = err
 			return cached, err
 		},
-	); err != nil {
-		t.Fatal(err)
+	); err == nil {
+		t.Fatal("preindex unexpectedly persisted through a symlink")
 	}
 	if persistenceReadErr == nil {
 		t.Fatal("preindex persistence read followed a symlink outside the opened root")

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // cacheEntry is an internally named artifact beneath a caller-selected cache
@@ -58,6 +59,31 @@ func validSHA256Hex(value string) bool {
 // while reads use os.Root as the file-inclusion boundary.
 func (entry cacheEntry) writePath() string {
 	return filepath.Join(entry.root, entry.relative)
+}
+
+func (entry cacheEntry) validateWritePath() error {
+	current := entry.root
+	parts := strings.Split(filepath.Dir(entry.relative), string(filepath.Separator))
+	for _, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("cache path component %q is a symlink", current)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("cache path component %q is not a directory", current)
+		}
+	}
+	return nil
 }
 
 func (entry cacheEntry) open() (*os.File, error) {

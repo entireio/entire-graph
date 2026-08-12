@@ -881,6 +881,9 @@ func readSearchSnapshot(entry cacheEntry) (cachedSearchSnapshot, error) {
 }
 
 func writeSearchSnapshot(entry cacheEntry, cache cachedSearchSnapshot) error {
+	if err := entry.validateWritePath(); err != nil {
+		return err
+	}
 	path := entry.writePath()
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
