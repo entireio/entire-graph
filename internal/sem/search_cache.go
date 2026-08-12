@@ -790,6 +790,10 @@ func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, opt
 	// rules silently do nothing.
 	writePart("graphignore")
 	graphIgnore := filepath.Join(absRepo, graphIgnoreFileName)
+	graphInfo, statErr := os.Lstat(graphIgnore)
+	if statErr == nil && (graphInfo.Mode()&os.ModeSymlink != 0 || !graphInfo.Mode().IsRegular()) {
+		return "", fmt.Errorf("invalid graphignore file")
+	}
 	switch content, err := os.ReadFile(graphIgnore); {
 	case err == nil:
 		_, _ = hash.Write(content)

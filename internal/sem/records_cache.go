@@ -73,9 +73,7 @@ func providerRecordsKey(absRepo, repositoryKey, providerVersion, tree, mode stri
 	}
 	for groupIndex, group := range [][]string{options.IgnoreFiles, options.IncludeFiles} {
 		writePart(fmt.Sprintf("path-group-%d", groupIndex))
-		paths := append([]string(nil), group...)
-		sort.Strings(paths)
-		for _, path := range paths {
+		for _, path := range group {
 			resolved := path
 			if !filepath.IsAbs(resolved) {
 				resolved = filepath.Join(absRepo, resolved)
@@ -92,6 +90,23 @@ func providerRecordsKey(absRepo, repositoryKey, providerVersion, tree, mode stri
 			_, _ = hash.Write(content)
 			writePart("")
 		}
+	}
+	writePart("graphignore")
+	graphIgnore := filepath.Join(absRepo, graphIgnoreFileName)
+	if info, err := os.Lstat(graphIgnore); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return "", fmt.Errorf("invalid graphignore file")
+		}
+		content, err := os.ReadFile(graphIgnore)
+		if err != nil {
+			return "", err
+		}
+		_, _ = hash.Write(content)
+		writePart("")
+	} else if errors.Is(err, os.ErrNotExist) {
+		writePart("missing")
+	} else {
+		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }

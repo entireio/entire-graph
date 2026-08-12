@@ -147,7 +147,7 @@ func gitInfoExcludePath(repo string) string {
 
 func (m *ignoreMatcher) loadOptional(file string, includeMode bool) error {
 	label := ignoreFileLabel(includeMode)
-	info, err := os.Stat(file)
+	info, err := os.Lstat(file)
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
 		// ENOTDIR: a parent component is not a directory, so the file cannot exist.
 		// For an OPTIONAL exclude file that is absence, never a hard failure.
@@ -164,7 +164,7 @@ func (m *ignoreMatcher) loadOptional(file string, includeMode bool) error {
 
 func (m *ignoreMatcher) loadRequired(file string, includeMode bool) error {
 	label := ignoreFileLabel(includeMode)
-	info, err := os.Stat(file)
+	info, err := os.Lstat(file)
 	if errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("%s %q does not exist", label, file)
 	}

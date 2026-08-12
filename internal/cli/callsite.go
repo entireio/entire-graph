@@ -98,13 +98,18 @@ func newRepoLineReader(repoRoot string) lineReader {
 			return nil, false
 		}
 		defer root.Close()
+		info, err := root.Stat(filepath.FromSlash(relPath))
+		if err != nil || !info.Mode().IsRegular() || info.Size() > callSiteMaxFileBytes {
+			cache[relPath] = nil
+			return nil, false
+		}
 		file, err := root.Open(filepath.FromSlash(relPath))
 		if err != nil {
 			cache[relPath] = nil
 			return nil, false
 		}
 		defer file.Close()
-		info, err := file.Stat()
+		info, err = file.Stat()
 		if err != nil || !info.Mode().IsRegular() || info.Size() > callSiteMaxFileBytes {
 			cache[relPath] = nil
 			return nil, false
