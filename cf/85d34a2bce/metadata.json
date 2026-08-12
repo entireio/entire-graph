@@ -1,7 +1,7 @@
 {
   "branch": "fix/diff-flag-parser",
   "checkpoint_id": "cf85d34a2bce",
-  "checkpoints_count": 5,
+  "checkpoints_count": 7,
   "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
   "files_touched": [
     "internal/cli/agentguide_test.go",
@@ -29,14 +29,20 @@
       "metadata": "/cf/85d34a2bce/2/metadata.json",
       "prompt": "/cf/85d34a2bce/2/prompt.txt",
       "transcript": "/cf/85d34a2bce/2/full.jsonl"
+    },
+    {
+      "content_hash": "/cf/85d34a2bce/3/content_hash.txt",
+      "metadata": "/cf/85d34a2bce/3/metadata.json",
+      "prompt": "/cf/85d34a2bce/3/prompt.txt",
+      "transcript": "/cf/85d34a2bce/3/full.jsonl"
     }
   ],
   "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 50129,
+    "input_tokens": 100705,
     "cache_creation_tokens": 25991,
-    "cache_read_tokens": 4741568,
-    "output_tokens": 24791,
-    "api_call_count": 41
+    "cache_read_tokens": 5328385,
+    "output_tokens": 31109,
+    "api_call_count": 60
   }
 }
