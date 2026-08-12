@@ -13,7 +13,15 @@ LOCOMO QA accuracy, and 76.0% vs. 68.0% on LongMemEval-S QA accuracy. All
 systems used zero build-time LLM credits. Codebase Memory MCP is present in the
 release as an off-domain native diagnostic: v0.9.0 indexes the Markdown content
 as `Section` nodes but excludes that node type from its public natural-language
-BM25 route, so its column is not a third apples-to-apples memory comparison.
+BM25 route, so its column is not a third apples-to-apples memory comparison. On
+that route it retrieved nothing at all — all 1,050 CMM cells returned a
+byte-identical empty context (24 bytes, zero hits), so its QA number is the
+shared reader answering from the question alone.
+
+Those 300 + 50 cases are not tune-disjoint: 35 of the 350 overlap the tune
+phase. The tune-disjoint holdout is the clean generalization estimate — Entire
+Graph scored 75.6% LOCOMO QA accuracy and 0.900 recall@10 on it (n=30; the
+LongMemEval-S holdout is n=5).
 
 The product under test is commit
 `c9641bf1caaf41d64ce8a4a421f041939feecca3`. Its native JSON result contains a
