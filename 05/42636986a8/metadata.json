@@ -1,0 +1,21 @@
+{
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
+  "checkpoint_id": "0542636986a8",
+  "strategy": "manual-commit",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/cli/callsite.go",
+    "internal/sem/ignore.go",
+    "internal/sem/records_cache.go",
+    "internal/sem/search_cache.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/05/42636986a8/0/metadata.json",
+      "transcript": "/05/42636986a8/0/full.jsonl",
+      "compact_transcript": "/05/42636986a8/0/transcript.jsonl",
+      "content_hash": "/05/42636986a8/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
