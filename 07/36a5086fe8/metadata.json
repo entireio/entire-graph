@@ -1,12 +1,12 @@
 {
-  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
-  "checkpoint_id": "0736a5086fe8",
-  "strategy": "manual-commit",
   "branch": "agent/disable-checkout-credentials",
-  "checkpoints_count": 1,
+  "checkpoint_id": "0736a5086fe8",
+  "checkpoints_count": 3,
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
   "files_touched": [
     ".github/workflows/test.yml"
   ],
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/07/36a5086fe8/0/metadata.json",
@@ -14,13 +14,20 @@
       "compact_transcript": "/07/36a5086fe8/0/transcript.jsonl",
       "content_hash": "/07/36a5086fe8/0/content_hash.txt",
       "prompt": "/07/36a5086fe8/0/prompt.txt"
+    },
+    {
+      "content_hash": "/07/36a5086fe8/1/content_hash.txt",
+      "metadata": "/07/36a5086fe8/1/metadata.json",
+      "prompt": "/07/36a5086fe8/1/prompt.txt",
+      "transcript": "/07/36a5086fe8/1/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 52858,
+    "input_tokens": 78503,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 1049344,
-    "output_tokens": 5775,
-    "api_call_count": 37
+    "cache_read_tokens": 1258655,
+    "output_tokens": 8036,
+    "api_call_count": 48
   }
 }
