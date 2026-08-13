@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -81,6 +82,20 @@ type lineReader func(relPath string) ([]string, bool)
 // newRepoLineReader reads files under repoRoot, memoizing per path so several
 // call sites in one file cost one read. It refuses oversized and NUL-bearing
 // files: neither can usefully be quoted.
+//
+// repoRoot is a boundary, not a prefix. Reads go through os.Root, so a relPath
+// containing `..`, an absolute path, or a component that is a symlink pointing
+// outside the tree cannot resolve to a file the caller did not mean to expose.
+// filepath.Join alone gave none of that: it happily normalizes `../secret` into
+// a path above the root, and os.Lstat only guarded the FINAL component, so an
+// intermediate symlink was followed by the subsequent read.
+//
+// Nothing reaches this with an untrusted relPath today — the three callers pass
+// paths from a snapshot this process built, and both snapshot sources omit
+// symlinks. That is a property of today's callers, held by nothing: the
+// signature takes any string, and this package already ships a verb that
+// ingests externally supplied snapshot records. Making the boundary structural
+// costs one syscall per distinct file and removes the question.
 func newRepoLineReader(repoRoot string) lineReader {
 	cache := map[string][]string{}
 	return func(relPath string) ([]string, bool) {
@@ -90,21 +105,46 @@ func newRepoLineReader(repoRoot string) lineReader {
 		if lines, ok := cache[relPath]; ok {
 			return lines, lines != nil
 		}
-		full := filepath.Join(repoRoot, filepath.FromSlash(relPath))
-		info, err := os.Lstat(full)
-		if err != nil || !info.Mode().IsRegular() || info.Size() > callSiteMaxFileBytes {
+		lines, ok := readRepoFileLines(repoRoot, relPath)
+		if !ok {
 			cache[relPath] = nil
 			return nil, false
 		}
-		content, err := os.ReadFile(full)
-		if err != nil || strings.IndexByte(string(content), 0) >= 0 {
-			cache[relPath] = nil
-			return nil, false
-		}
-		lines := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
 		cache[relPath] = lines
 		return lines, true
 	}
+}
+
+// readRepoFileLines performs one contained read. It is separate from the memo so
+// the containment can be tested without reasoning about cache state.
+func readRepoFileLines(repoRoot, relPath string) ([]string, bool) {
+	root, err := os.OpenRoot(repoRoot)
+	if err != nil {
+		return nil, false
+	}
+	defer root.Close()
+
+	// Lstat before Open keeps the previous refusal of a symlinked final component,
+	// so containment is the only behavior this function changes. Root.Lstat does
+	// not traverse the link, and Root.Open would not leave the root anyway.
+	name := filepath.FromSlash(relPath)
+	info, err := root.Lstat(name)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > callSiteMaxFileBytes {
+		return nil, false
+	}
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, false
+	}
+	defer file.Close()
+
+	// Bound the read by the same ceiling rather than trusting the stat: the file
+	// can grow between the two calls.
+	content, err := io.ReadAll(io.LimitReader(file, callSiteMaxFileBytes+1))
+	if err != nil || int64(len(content)) > callSiteMaxFileBytes || bytes.IndexByte(content, 0) >= 0 {
+		return nil, false
+	}
+	return strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n"), true
 }
 
 // callEvidenceSpan extracts the caller-body span and the written call text from

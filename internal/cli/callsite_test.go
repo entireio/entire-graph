@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -546,5 +548,93 @@ func TestCallEvidenceSpanReadsCallSiteEvidence(t *testing.T) {
 	}
 	if _, _, _, _, ok := callEvidenceSpan([]sem.Evidence{{Kind: "import", StartLine: 3}}); ok {
 		t.Fatal("callEvidenceSpan accepted non-call evidence")
+	}
+}
+
+// TestRepoLineReaderConfinesReadsToRepoRoot pins repoRoot as a boundary rather than a prefix.
+// Every case here READ SUCCESSFULLY before os.Root was introduced, because filepath.Join
+// normalizes `..` away and os.Lstat only guarded the final path component. Nothing feeds this
+// an untrusted relPath today; these assertions are what keep that from mattering.
+func TestRepoLineReaderConfinesReadsToRepoRoot(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo")
+	outside := filepath.Join(parent, "outside")
+	for _, dir := range []string{repo, outside} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("SECRET\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "inside.go"), []byte("package a\n\nfunc A() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	read := newRepoLineReader(repo)
+
+	if lines, ok := read("inside.go"); !ok || len(lines) == 0 || lines[0] != "package a" {
+		t.Fatalf("ordinary in-repo read broke: lines=%q ok=%v", lines, ok)
+	}
+
+	for _, name := range []string{
+		"../outside/secret.txt",
+		"./../outside/secret.txt",
+		"sub/../../outside/secret.txt",
+		filepath.Join(outside, "secret.txt"),
+	} {
+		if lines, ok := read(name); ok {
+			t.Errorf("read(%q) escaped the repo root and returned %q", name, lines)
+		}
+	}
+}
+
+// TestRepoLineReaderRefusesSymlinkEscapes covers both halves: a symlinked FINAL component was
+// already refused by the Lstat check and must stay refused, while a symlinked INTERMEDIATE
+// component was silently followed by the read that came after it.
+func TestRepoLineReaderRefusesSymlinkEscapes(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo")
+	outside := filepath.Join(parent, "outside")
+	for _, dir := range []string{repo, outside} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("SECRET\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", "outside"), filepath.Join(repo, "escape")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..", "outside", "secret.txt"), filepath.Join(repo, "direct.txt")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	read := newRepoLineReader(repo)
+	if lines, ok := read("escape/secret.txt"); ok {
+		t.Errorf("intermediate symlink was followed out of the repo: %q", lines)
+	}
+	if lines, ok := read("direct.txt"); ok {
+		t.Errorf("symlinked final component was read: %q", lines)
+	}
+}
+
+// TestRepoLineReaderKeepsSizeAndBinaryRefusals guards the behavior that already existed, since
+// the read now goes through a limit reader rather than os.ReadFile.
+func TestRepoLineReaderKeepsSizeAndBinaryRefusals(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "binary.go"), []byte("package a\x00\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "huge.go"), make([]byte, callSiteMaxFileBytes+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	read := newRepoLineReader(repo)
+	if _, ok := read("binary.go"); ok {
+		t.Error("NUL-bearing file was accepted")
+	}
+	if _, ok := read("huge.go"); ok {
+		t.Error("oversized file was accepted")
 	}
 }
