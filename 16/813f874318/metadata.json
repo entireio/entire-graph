@@ -1,13 +1,13 @@
 {
-  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
-  "checkpoint_id": "16813f874318",
-  "strategy": "manual-commit",
   "branch": "fix/aikido-security-code-audit-86369498-exvw",
-  "checkpoints_count": 5,
+  "checkpoint_id": "16813f874318",
+  "checkpoints_count": 7,
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
   "files_touched": [
     "internal/sem/search_verify.go",
     "internal/sem/search_verify_test.go"
   ],
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/16/813f874318/0/metadata.json",
@@ -22,13 +22,20 @@
       "compact_transcript": "/16/813f874318/1/transcript.jsonl",
       "content_hash": "/16/813f874318/1/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "content_hash": "/16/813f874318/2/content_hash.txt",
+      "metadata": "/16/813f874318/2/metadata.json",
+      "prompt": "/16/813f874318/2/prompt.txt",
+      "transcript": "/16/813f874318/2/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 63,
+    "input_tokens": 60361,
     "cache_creation_tokens": 34474,
-    "cache_read_tokens": 9668411,
-    "output_tokens": 24780,
-    "api_call_count": 34
+    "cache_read_tokens": 10714465,
+    "output_tokens": 31426,
+    "api_call_count": 61
   }
 }
