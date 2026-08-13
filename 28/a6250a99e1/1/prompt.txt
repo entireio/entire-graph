@@ -1,0 +1,9 @@
+Ok, retest the two stale items.
+
+---
+
+On 96, did you add tests as well?
+
+---
+
+Ok, do that, and then also review the PR for any further issues and regressions.
