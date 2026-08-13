@@ -138,9 +138,11 @@ func TestSearchCacheLoadersRejectSymlinkEscape(t *testing.T) {
 		t.Fatal("full-cache fallback followed a symlink outside the opened root")
 	}
 
-	// Force a build so preindex reaches its separate durability read. That read
-	// must reject the escaping symlink even though the caller-owned writer keeps
-	// its existing atomic temp-and-rename behavior.
+	// Force a build so preindex reaches its separate durability read. That READ must reject the
+	// escaping symlink, because it is what decides whether outside content is treated as this
+	// cache's own. The WRITE that follows must still succeed: the cache directory is caller-owned,
+	// operators legitimately symlink parts of it, and refusing to persist there would break a
+	// working setup to defend against someone who already has write access to the directory.
 	var persistenceReadErr error
 	forced := options
 	forced.ForceRebuild = true
@@ -151,11 +153,41 @@ func TestSearchCacheLoadersRejectSymlinkEscape(t *testing.T) {
 			persistenceReadErr = err
 			return cached, err
 		},
-	); err == nil {
-		t.Fatal("preindex unexpectedly persisted through a symlink")
+	); err != nil {
+		t.Fatalf("preindex refused to persist beneath a caller-owned symlinked cache dir: %v", err)
 	}
 	if persistenceReadErr == nil {
 		t.Fatal("preindex persistence read followed a symlink outside the opened root")
+	}
+}
+
+// TestCacheWritesTolerateSymlinkedCacheDirectories pins the deliberate asymmetry: reads are
+// confined to the opened root, writes are not. A cache directory whose family subdirectory is a
+// symlink is a supported operator layout (a larger volume, a shared cache, an escape from a
+// container's writable layer), and the artifact must still be written and read back through it.
+func TestCacheWritesTolerateSymlinkedCacheDirectories(t *testing.T) {
+	parent := t.TempDir()
+	cacheDir := filepath.Join(parent, "cache")
+	backing := filepath.Join(parent, "backing")
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(backing, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", "backing"), filepath.Join(cacheDir, "search")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	entry, err := newCacheEntry(cacheDir, "search", "v1", strings.Repeat("c", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSearchSnapshot(entry, cachedSearchSnapshot{CacheVersion: searchSnapshotCacheVersion, Tree: "through-symlink"}); err != nil {
+		t.Fatalf("write through a caller-owned symlinked cache dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(backing, "v1", strings.Repeat("c", 64)+".json.gz")); err != nil {
+		t.Fatalf("artifact did not land in the symlink target: %v", err)
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // cacheEntry is an internally named artifact beneath a caller-selected cache
@@ -54,36 +53,18 @@ func validSHA256Hex(value string) bool {
 	return true
 }
 
-// writePath is intentionally separate from open: writes retain the existing
-// atomic temp-file-and-rename sequence beneath the caller-owned cache root,
-// while reads use os.Root as the file-inclusion boundary.
+// writePath is intentionally separate from open: writes retain the existing atomic
+// temp-file-and-rename sequence beneath the caller-owned cache root, while reads use os.Root as
+// the file-inclusion boundary.
+//
+// Writes are deliberately NOT confined the same way. The cache directory is caller-owned and
+// operators legitimately symlink parts of it — onto a larger volume, into a shared cache, out of a
+// container's writable layer. Rejecting a symlinked component here would turn each of those into a
+// hard `persist preindex snapshot` failure, and it would buy nothing: anyone who can plant a
+// symlink inside the cache directory can write the artifact directly. Containment belongs on the
+// read side, where the file's CONTENT enters the process.
 func (entry cacheEntry) writePath() string {
 	return filepath.Join(entry.root, entry.relative)
-}
-
-func (entry cacheEntry) validateWritePath() error {
-	current := entry.root
-	parts := strings.Split(filepath.Dir(entry.relative), string(filepath.Separator))
-	for _, part := range parts {
-		if part == "" || part == "." {
-			continue
-		}
-		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("cache path component %q is a symlink", current)
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("cache path component %q is not a directory", current)
-		}
-	}
-	return nil
 }
 
 func (entry cacheEntry) open() (*os.File, error) {
