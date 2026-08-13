@@ -177,3 +177,76 @@ func hasSymbolNamed(symbols []SymbolRecord, name string) bool {
 	}
 	return false
 }
+
+// The complement of the test above: a file no parser ever opens cannot change a
+// snapshot, so its presence must NOT throw the index away. Before this, a single
+// .DS_Store or a compiled binary in the tree made every query re-index the whole
+// repository from scratch.
+func TestWorktreeSnapshotStillCachesWithUnindexableUntrackedFiles(t *testing.T) {
+	repo := cacheTestRepo(t)
+	cacheDir := t.TempDir()
+	options := ProviderSnapshotOptions{Worktree: true, Profile: ProfileFull, NoNetwork: true}
+
+	first, _, err := LoadOrBuildProviderSnapshot(context.Background(), repo, "test", options, cacheDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Every name here must carry an extension that maps to no language.
+	// An EXTENSIONLESS path stays conservative on purpose (a shebang can make it
+	// a script), so it keeps bypassing the cache — see the sibling assertion below.
+	for name, content := range map[string]string{
+		".DS_Store":           "\x00\x00binary junk",
+		"entire-graph.bin":    "\x7fELF not source",
+		"build.output.tar.gz": "\x1f\x8b",
+		"notes.swp":           "vim swap",
+	} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	InvalidateWorktreeCleanVerdicts()
+	second, hit, err := LoadOrBuildProviderSnapshot(context.Background(), repo, "test", options, cacheDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hit {
+		t.Fatal("unindexable untracked files disabled the cache")
+	}
+	if len(second.Symbols) != len(first.Symbols) {
+		t.Fatalf("cached snapshot differs: %d symbols vs %d", len(second.Symbols), len(first.Symbols))
+	}
+
+	// An extensionless untracked file stays conservative: a shebang can make it a
+	// script, so the graph must assume it is indexable and skip the cache.
+	if err := os.WriteFile(filepath.Join(repo, "somebinary"), []byte("\x7fELF"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	InvalidateWorktreeCleanVerdicts()
+	if _, hit, err := LoadOrBuildProviderSnapshot(context.Background(), repo, "test", options, cacheDir, false); err != nil {
+		t.Fatal(err)
+	} else if hit {
+		t.Fatal("extensionless untracked file was forgiven; shebang scripts would be missed")
+	}
+	if err := os.Remove(filepath.Join(repo, "somebinary")); err != nil {
+		t.Fatal(err)
+	}
+	InvalidateWorktreeCleanVerdicts()
+
+	// Adding ONE indexable untracked file alongside them must still bypass: the
+	// forgiveness is per-path, not a blanket "ignore untracked".
+	if err := os.WriteFile(filepath.Join(repo, "extra.go"), []byte("package app\n\nfunc Extra() { Beta() }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	InvalidateWorktreeCleanVerdicts()
+	third, hit, err := LoadOrBuildProviderSnapshot(context.Background(), repo, "test", options, cacheDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hit {
+		t.Fatal("an indexable untracked file was hidden by a cached index")
+	}
+	if !hasSymbolNamed(third.Symbols, "Extra") {
+		t.Fatal("indexable untracked file was not indexed")
+	}
+}

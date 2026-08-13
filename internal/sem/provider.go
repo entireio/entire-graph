@@ -10567,6 +10567,34 @@ type pythonPackageDirMapping struct {
 	Dir     string
 }
 
+// manifestImportFiles are the repo-root manifests whose CONTENT buildManifestImportResolver reads
+// to resolve imports. They are listed separately because a caller deciding whether a working-tree
+// change can be ignored cannot answer that from the file extension alone: go.mod and setup.cfg
+// carry no supported extension, yet editing either changes how every import in the repository
+// resolves. Keep this in sync with the readContent calls below — TestManifestImportFilesCoverReads
+// fails if they drift.
+var manifestImportFiles = []string{
+	"go.mod",
+	"package.json",
+	"tsconfig.json",
+	"pyproject.toml",
+	"setup.cfg",
+	"Cargo.toml",
+	"composer.json",
+	"pom.xml",
+}
+
+// isManifestImportFile reports whether a repo-relative path is one of those manifests.
+func isManifestImportFile(path string) bool {
+	slashed := filepath.ToSlash(path)
+	for _, manifest := range manifestImportFiles {
+		if slashed == manifest {
+			return true
+		}
+	}
+	return false
+}
+
 func buildManifestImportResolver(files []FileRecord, readContent contentReader) manifestImportResolver {
 	resolver := manifestImportResolver{goPackages: map[string]string{}, jsPackageExports: map[string]string{}, jsPackageImports: map[string]string{}, jsImportMap: map[string]string{}, jsModuleFiles: map[string]string{}, pythonSourceRoots: []string{"src"}, pythonModules: map[string]string{}, pythonNamespaces: map[string]bool{}, jvmTypes: map[string]string{}, jvmTypeEvidence: map[string]string{}, csharpNamespaces: map[string]string{}, csharpEvidence: map[string]string{}, csharpAmbiguous: map[string]bool{}, phpTypes: map[string]string{}, phpTypeEvidence: map[string]string{}, phpTypeAmbiguous: map[string]bool{}, rustModules: map[string]string{}, rustAliases: map[string]string{}, rustCrateNames: map[string]bool{}}
 	if content, ok := readContent("go.mod"); ok {

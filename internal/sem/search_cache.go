@@ -101,12 +101,37 @@ func absOrRepo(repo string) string {
 // and stored in, the tree-keyed snapshot cache.
 //
 // Committed-tree snapshots always could. A working-tree snapshot may too, but
-// only while the working tree is byte-identical to HEAD: then the tree hash
-// names its content exactly, which is the whole premise of the cache key. This
-// is what makes the relation verbs (neighbors/impact, which index the whole
-// repository) warm on their second call instead of re-indexing from scratch —
-// and it never hides a dirty edit, because a dirty tree fails the check and
-// bypasses the cache exactly as before.
+// only while the working tree's INDEXABLE content is identical to HEAD: then the
+// tree hash names that content exactly, which is the whole premise of the cache
+// key. This is what makes the relation verbs (neighbors/impact, which index the
+// whole repository) warm on their second call instead of re-indexing from
+// scratch — and it never hides a dirty edit, because a dirty indexable file
+// fails the check and bypasses the cache exactly as before.
+//
+// "Indexable" is the load-bearing word. Requiring a wholly pristine tree made a
+// stray untracked file that no parser ever opens — .DS_Store, a compiled binary,
+// a log, an editor swap file — disable the cache for the entire repository, so
+// every query re-indexed from scratch. A path that cannot contribute a symbol or
+// a relation cannot make a snapshot stale either, so it is not a reason to throw
+// one away.
+//
+// The test is extensionUnsupported, which is what the indexer uses to decide whether to PARSE a
+// file — but parsing is not the only way a file reaches the graph. buildManifestImportResolver
+// also reads the CONTENT of the repo-root manifests, and two of those (go.mod, setup.cfg) carry
+// no supported extension while deciding how every import in the repository resolves. Forgiving
+// them served a snapshot whose call edges were still resolved against the previous module path.
+// They are excluded by name through isManifestImportFile, and TestManifestImportFilesCoverReads
+// fails if that list falls behind the manifests actually read.
+//
+// Otherwise the rule is deliberately conservative in the safe direction: an extensionless path
+// counts as supported, because a shebang can make it a script, and any supported path still
+// bypasses the cache whatever its status.
+//
+// Ignored files never reach this loop: git status omits them, and the provider's walk skips them
+// too, so neither side can serve what the other would have indexed. Note the two do not agree in
+// general — git never ignores a TRACKED file, while the walk applies the ignore stack to every
+// path — but that disagreement only ever reports a path as dirty that the walk would have
+// skipped, which costs a re-index and cannot serve a stale one.
 func worktreeSnapshotCacheable(ctx context.Context, absRepo string, options ProviderSnapshotOptions) bool {
 	if !options.Worktree {
 		return true
@@ -117,9 +142,16 @@ func worktreeSnapshotCacheable(ctx context.Context, absRepo string, options Prov
 			return verdict.clean
 		}
 	}
-	clean, err := gitutil.WorktreeMatchesHEAD(ctx, absRepo)
+	clean := true
+	dirty, err := gitutil.WorktreeDirtyPaths(ctx, absRepo)
 	if err != nil {
 		clean = false
+	}
+	for _, path := range dirty {
+		if !extensionUnsupported(path) || isManifestImportFile(path) {
+			clean = false
+			break
+		}
 	}
 	worktreeCleanVerdicts.Store(absRepo, worktreeCleanVerdict{clean: clean, checkedAt: time.Now()})
 	return clean
