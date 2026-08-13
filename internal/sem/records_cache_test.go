@@ -66,6 +66,35 @@ func TestProviderRecordsCacheHitAndMiss(t *testing.T) {
 	}
 }
 
+func TestProviderRecordsCacheLoadRejectsSymlinkEscape(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo")
+	cacheDir := filepath.Join(parent, "cache")
+	outsideCacheDir := filepath.Join(parent, "outside")
+	for _, dir := range []string{repo, cacheDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const (
+		version = "test-v1"
+		tree    = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		mode    = "snapshot"
+	)
+	opts := ProviderSnapshotOptions{Profile: ProfileFull}
+	if err := StoreProviderRecords(t.Context(), repo, version, tree, mode, outsideCacheDir, opts, []byte("outside\n"), nil); err != nil {
+		t.Fatalf("seed records cache: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..", "outside", "records"), filepath.Join(cacheDir, "records")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, _, hit, err := LoadProviderRecords(t.Context(), repo, version, tree, mode, cacheDir, opts); err != nil {
+		t.Fatal(err)
+	} else if hit {
+		t.Fatal("provider-records loader followed a symlink outside the opened root")
+	}
+}
+
 func TestProviderRecordsCacheWorktreeBypassed(t *testing.T) {
 	t.Parallel()
 

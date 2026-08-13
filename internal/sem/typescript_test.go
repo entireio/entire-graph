@@ -3,7 +3,6 @@ package sem
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1416,11 +1415,11 @@ export class Runner {
 	}
 
 	cache := newCachedSearchSnapshot("test-version", "commit", "tree", ProviderSnapshotOptions{Profile: ProfileFull}, snapshot)
-	cachePath := filepath.Join(t.TempDir(), "snapshot.json.gz")
-	if err := writeSearchSnapshot(cachePath, cache); err != nil {
+	entry := testCacheEntry(t)
+	if err := writeSearchSnapshot(entry, cache); err != nil {
 		t.Fatal(err)
 	}
-	restored, err := readSearchSnapshot(cachePath)
+	restored, err := readSearchSnapshot(entry)
 	if err != nil {
 		t.Fatal(err)
 	}

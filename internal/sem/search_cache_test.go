@@ -10,6 +10,15 @@ import (
 	"testing"
 )
 
+func testCacheEntry(t *testing.T) cacheEntry {
+	t.Helper()
+	entry, err := newCacheEntry(t.TempDir(), "test-cache", "v1", strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entry
+}
+
 func TestSearchSnapshotCachePreservesPrivateSymbolMetadata(t *testing.T) {
 	snapshot := ProviderSnapshot{Symbols: []SymbolRecord{
 		{
@@ -29,11 +38,11 @@ func TestSearchSnapshotCachePreservesPrivateSymbolMetadata(t *testing.T) {
 		},
 	}}
 	cache := newCachedSearchSnapshot("test-version", "commit", "tree", ProviderSnapshotOptions{Profile: ProfileFull}, snapshot)
-	path := filepath.Join(t.TempDir(), "snapshot.json.gz")
-	if err := writeSearchSnapshot(path, cache); err != nil {
+	entry := testCacheEntry(t)
+	if err := writeSearchSnapshot(entry, cache); err != nil {
 		t.Fatal(err)
 	}
-	restored, err := readSearchSnapshot(path)
+	restored, err := readSearchSnapshot(entry)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,6 +73,121 @@ func TestSearchSnapshotCachePreservesPrivateSymbolMetadata(t *testing.T) {
 	}
 	if !zeroParameterSymbol.parameterNamesKnown || len(zeroParameterSymbol.parameterNames) != 0 {
 		t.Fatalf("restored zero-parameter metadata = known %t, names %#v", zeroParameterSymbol.parameterNamesKnown, zeroParameterSymbol.parameterNames)
+	}
+}
+
+func TestSearchCacheLoadersRejectSymlinkEscape(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "target.go", "package target\nfunc Needle() {}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	parent := t.TempDir()
+	cacheDir := filepath.Join(parent, "cache")
+	outsideCacheDir := filepath.Join(parent, "outside")
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	options := ProviderSnapshotOptions{Profile: ProfileSyntaxOnly}
+	full, _, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", options, outsideCacheDir)
+	if err != nil {
+		t.Fatalf("seed complete cache: %v", err)
+	}
+	selectiveOptions := options
+	selectiveOptions.OnlyFiles = []string{"target.go"}
+	if _, _, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test-version", selectiveOptions, outsideCacheDir, false); err != nil {
+		t.Fatalf("seed selective cache: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..", "outside", "search"), filepath.Join(cacheDir, "search")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if _, hit, err := loadCachedCompleteSearchSnapshot(t.Context(), repo, "test-version", options, cacheDir); err != nil {
+		t.Fatal(err)
+	} else if hit {
+		t.Fatal("complete cache loader followed a symlink outside the opened root")
+	}
+
+	// A populated selective entry would be an immediate hit if the primary
+	// load followed the escaping symlink.
+	if _, hit, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test-version", selectiveOptions, cacheDir, false); err != nil {
+		t.Fatal(err)
+	} else if hit {
+		t.Fatal("selective cache loader followed a symlink outside the opened root")
+	}
+
+	// Remove the selective artifact written by that best-effort miss. The full
+	// entry remains outside, so this isolates the full-cache fallback read.
+	selectiveKey, err := searchSnapshotKey(repo, full.Header.RepoKey, "test-version", full.Header.Tree, selectiveOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outsideSelective, err := newCacheEntry(outsideCacheDir, "search", searchSnapshotCacheVersion, selectiveKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(outsideSelective.writePath()); err != nil {
+		t.Fatal(err)
+	}
+	if _, hit, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test-version", selectiveOptions, cacheDir, false); err != nil {
+		t.Fatal(err)
+	} else if hit {
+		t.Fatal("full-cache fallback followed a symlink outside the opened root")
+	}
+
+	// Force a build so preindex reaches its separate durability read. That READ must reject the
+	// escaping symlink, because it is what decides whether outside content is treated as this
+	// cache's own. The WRITE that follows must still succeed: the cache directory is caller-owned,
+	// operators legitimately symlink parts of it, and refusing to persist there would break a
+	// working setup to defend against someone who already has write access to the directory.
+	var persistenceReadErr error
+	forced := options
+	forced.ForceRebuild = true
+	if _, _, err := preindexProviderSnapshotWithPersistenceReader(
+		t.Context(), repo, "test-version", forced, cacheDir,
+		func(entry cacheEntry) (cachedSearchSnapshot, error) {
+			cached, err := readSearchSnapshot(entry)
+			persistenceReadErr = err
+			return cached, err
+		},
+	); err != nil {
+		t.Fatalf("preindex refused to persist beneath a caller-owned symlinked cache dir: %v", err)
+	}
+	if persistenceReadErr == nil {
+		t.Fatal("preindex persistence read followed a symlink outside the opened root")
+	}
+}
+
+// TestCacheWritesTolerateSymlinkedCacheDirectories pins the deliberate asymmetry: reads are
+// confined to the opened root, writes are not. A cache directory whose family subdirectory is a
+// symlink is a supported operator layout (a larger volume, a shared cache, an escape from a
+// container's writable layer), and the artifact must still be written and read back through it.
+func TestCacheWritesTolerateSymlinkedCacheDirectories(t *testing.T) {
+	parent := t.TempDir()
+	cacheDir := filepath.Join(parent, "cache")
+	backing := filepath.Join(parent, "backing")
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(backing, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", "backing"), filepath.Join(cacheDir, "search")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	entry, err := newCacheEntry(cacheDir, "search", "v1", strings.Repeat("c", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSearchSnapshot(entry, cachedSearchSnapshot{CacheVersion: searchSnapshotCacheVersion, Tree: "through-symlink"}); err != nil {
+		t.Fatalf("write through a caller-owned symlinked cache dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(backing, "v1", strings.Repeat("c", 64)+".json.gz")); err != nil {
+		t.Fatalf("artifact did not land in the symlink target: %v", err)
 	}
 }
 
@@ -902,9 +1026,9 @@ func TestPreindexWarmCacheHitDoesNotRevalidatePersistedSnapshot(t *testing.T) {
 	persistenceReads := 0
 	warm, cacheHit, err := preindexProviderSnapshotWithPersistenceReader(
 		t.Context(), repo, "test-version", options, cacheDir,
-		func(path string) (cachedSearchSnapshot, error) {
+		func(entry cacheEntry) (cachedSearchSnapshot, error) {
 			persistenceReads++
-			return readSearchSnapshot(path)
+			return readSearchSnapshot(entry)
 		},
 	)
 	if err != nil {

@@ -217,8 +217,11 @@ func loadCachedCompleteSearchSnapshot(
 	if keyErr != nil {
 		return ProviderSnapshot{}, false, keyErr
 	}
-	fullPath := filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, fullKey+".json.gz")
-	cached, readErr := readSearchSnapshot(fullPath)
+	fullEntry, entryErr := newCacheEntry(cacheDir, "search", searchSnapshotCacheVersion, fullKey)
+	if entryErr != nil {
+		return ProviderSnapshot{}, false, entryErr
+	}
+	cached, readErr := readSearchSnapshot(fullEntry)
 	if readErr != nil || !validCachedSearchSnapshot(cached, repositoryKey, providerVersion, tree, fullOptions) {
 		return ProviderSnapshot{}, false, nil
 	}
@@ -269,8 +272,11 @@ func loadOrBuildSearchSnapshot(
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
-	path := filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, key+".json.gz")
-	if cached, err := readSearchSnapshot(path); err == nil && validCachedSearchSnapshot(cached, repositoryKey, providerVersion, tree, options) {
+	entry, err := newCacheEntry(cacheDir, "search", searchSnapshotCacheVersion, key)
+	if err != nil {
+		return ProviderSnapshot{}, false, err
+	}
+	if cached, err := readSearchSnapshot(entry); err == nil && validCachedSearchSnapshot(cached, repositoryKey, providerVersion, tree, options) {
 		// See loadCachedCompleteSearchSnapshot: tree-only keying means this hit
 		// may belong to a different commit that shares the tree. Re-stamp before
 		// handing it back so no caller ever reports a stale commit.
@@ -291,7 +297,7 @@ func loadOrBuildSearchSnapshot(
 			}
 			// Persisting the exact selective view makes repeated identical queries
 			// a direct cache hit. As with ordinary search caching, this is best effort.
-			_ = writeSearchSnapshot(path, newCachedSearchSnapshot(providerVersion, commit, tree, options, selective))
+			_ = writeSearchSnapshot(entry, newCachedSearchSnapshot(providerVersion, commit, tree, options, selective))
 			return selective, true
 		}
 		if preloadedFull != nil {
@@ -305,8 +311,11 @@ func loadOrBuildSearchSnapshot(
 		if keyErr != nil {
 			return ProviderSnapshot{}, false, keyErr
 		}
-		fullPath := filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, fullKey+".json.gz")
-		if cached, readErr := readSearchSnapshot(fullPath); readErr == nil && validCachedSearchSnapshot(cached, repositoryKey, providerVersion, tree, fullOptions) {
+		fullEntry, entryErr := newCacheEntry(cacheDir, "search", searchSnapshotCacheVersion, fullKey)
+		if entryErr != nil {
+			return ProviderSnapshot{}, false, entryErr
+		}
+		if cached, readErr := readSearchSnapshot(fullEntry); readErr == nil && validCachedSearchSnapshot(cached, repositoryKey, providerVersion, tree, fullOptions) {
 			cached = restampCachedSearchSnapshotCommit(cached, commit)
 			if selective, ok := deriveFromFull(cached.Snapshot); ok {
 				return selective, true, nil
@@ -331,7 +340,7 @@ func loadOrBuildSearchSnapshot(
 	cache := newCachedSearchSnapshot(providerVersion, commit, tree, options, snapshot)
 	// Cache persistence is best effort. Retrieval correctness never depends on
 	// a writable cache directory.
-	_ = writeSearchSnapshot(path, cache)
+	_ = writeSearchSnapshot(entry, cache)
 	return snapshot, false, nil
 }
 
@@ -374,7 +383,7 @@ func preindexProviderSnapshotWithPersistenceReader(
 	repo, providerVersion string,
 	options ProviderSnapshotOptions,
 	cacheDir string,
-	readPersisted func(string) (cachedSearchSnapshot, error),
+	readPersisted func(cacheEntry) (cachedSearchSnapshot, error),
 ) (ProviderSnapshot, bool, error) {
 	if options.Worktree {
 		return ProviderSnapshot{}, false, errors.New("preindex requires a committed HEAD snapshot")
@@ -433,11 +442,14 @@ func preindexProviderSnapshotWithPersistenceReader(
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
-	path := filepath.Join(cacheDir, "search", searchSnapshotCacheVersion, key+".json.gz")
-	persisted, readErr := readPersisted(path)
+	entry, err := newCacheEntry(cacheDir, "search", searchSnapshotCacheVersion, key)
+	if err != nil {
+		return ProviderSnapshot{}, false, err
+	}
+	persisted, readErr := readPersisted(entry)
 	if options.ForceRebuild || readErr != nil || !validCachedSearchSnapshot(persisted, repositoryKey, providerVersion, tree, options) {
 		cache := newCachedSearchSnapshot(providerVersion, commit, tree, options, snapshot)
-		if err := writeSearchSnapshot(path, cache); err != nil {
+		if err := writeSearchSnapshot(entry, cache); err != nil {
 			return ProviderSnapshot{}, false, fmt.Errorf("persist preindex snapshot: %w", err)
 		}
 	}
@@ -876,8 +888,8 @@ func restampCachedSearchSnapshotCommit(cache cachedSearchSnapshot, commit string
 	return cache
 }
 
-func readSearchSnapshot(path string) (cachedSearchSnapshot, error) {
-	file, err := os.Open(path)
+func readSearchSnapshot(entry cacheEntry) (cachedSearchSnapshot, error) {
+	file, err := entry.open()
 	if err != nil {
 		return cachedSearchSnapshot{}, err
 	}
@@ -900,7 +912,8 @@ func readSearchSnapshot(path string) (cachedSearchSnapshot, error) {
 	return cache, nil
 }
 
-func writeSearchSnapshot(path string, cache cachedSearchSnapshot) error {
+func writeSearchSnapshot(entry cacheEntry, cache cachedSearchSnapshot) error {
+	path := entry.writePath()
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
