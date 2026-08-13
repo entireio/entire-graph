@@ -1,0 +1,21 @@
+Review the open PRs with Aikido in the title
+
+---
+
+Fix all three. Also scan the codebase for similar issues that the PR addresses. Also, remove the [Aikido] from the PR titles.
+
+---
+
+Do an adversarial review of all 3 PRs
+
+---
+
+Now what?
+
+---
+
+Any update?
+
+---
+
+Apply the fixes. Check that no regressions happen.
