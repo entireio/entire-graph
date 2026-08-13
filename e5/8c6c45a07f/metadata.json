@@ -3,7 +3,7 @@
   "checkpoint_id": "e58c6c45a07f",
   "strategy": "manual-commit",
   "branch": "fix/terminal-escape-injection",
-  "checkpoints_count": 2,
+  "checkpoints_count": 3,
   "files_touched": null,
   "sessions": [
     {
@@ -11,6 +11,13 @@
       "transcript": "/e5/8c6c45a07f/0/full.jsonl",
       "compact_transcript": "/e5/8c6c45a07f/0/transcript.jsonl",
       "content_hash": "/e5/8c6c45a07f/0/content_hash.txt",
+      "prompt": ""
+    },
+    {
+      "metadata": "/e5/8c6c45a07f/1/metadata.json",
+      "transcript": "/e5/8c6c45a07f/1/full.jsonl",
+      "compact_transcript": "/e5/8c6c45a07f/1/transcript.jsonl",
+      "content_hash": "/e5/8c6c45a07f/1/content_hash.txt",
       "prompt": ""
     }
   ]
