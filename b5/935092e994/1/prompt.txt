@@ -1,0 +1,135 @@
+Review the open PRs, one by one
+
+---
+
+Too much at once. Let's start with 86. Suggest the changes to me.
+
+---
+
+1. Make the preferred change.
+2. Ok, make it so>
+3. Ignore, we update this later.
+
+---
+
+Wait wait, but you recommended this change. If you don't have the numbers, you can't make it.
+
+---
+
+I don't have them. I don't want fallback wording either. You are inventing false precision for a work-in-progress repo.
+
+---
+
+Drop it and merge 86.
+
+---
+
+Main moved by whom and what's the commit date?
+
+---
+
+This was yesterday, not "in the meantime". Why did you not pull main before?
+
+---
+
+Ok, 87 next. Give me your review findings.
+
+---
+
+Why would we not fix the 2 things worth noting?
+
+---
+
+Yes
+
+---
+
+Yes
+
+---
+
+Open the parseDiffFlags extraction and its fix as new PR
+
+---
+
+Merge 87, then continue with 94
+
+---
+
+94 ready now?
+
+---
+
+<task-notification>
+<task-id>b5amufzj8</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/b64ec1e0-575c-4273-ad7d-1dfd709c46c1/tasks/b5amufzj8.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for PR 94 CI" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Merge it
+
+---
+
+91 next then
+
+---
+
+Ready and merge
+
+---
+
+<task-notification>
+<task-id>b7hst5kud</task-id>
+<tool-use-id>toolu_012rUx5ZSJDr628NrFfyaSgZ</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/b64ec1e0-575c-4273-ad7d-1dfd709c46c1/tasks/b7hst5kud.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch main CI on the merged result" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+92 next
+
+---
+
+You wrote "both", but listed three bugs. Which one did you not fix?
+
+---
+
+Yes, pust and update the PR as needed
+
+---
+
+<task-notification>
+<task-id>b23ubxbol</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/b64ec1e0-575c-4273-ad7d-1dfd709c46c1/tasks/b23ubxbol.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for PR 92 CI on the new head" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Merge it, then on to the next one
+
+---
+
+No, instead fix the PR so it's correct to what it is supposed to do
+
+---
+
+<task-notification>
+<task-id>bkh2vmidk</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/b64ec1e0-575c-4273-ad7d-1dfd709c46c1/tasks/bkh2vmidk.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for PR 90 CI" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Merge 90, then what's next
