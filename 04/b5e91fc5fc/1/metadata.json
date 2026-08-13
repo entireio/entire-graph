@@ -1,0 +1,52 @@
+{
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
+  "checkpoint_id": "04b5e91fc5fc",
+  "session_id": "b64ec1e0-575c-4273-ad7d-1dfd709c46c1",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-13T03:57:38.51519Z",
+  "branch": "fix/aikido-security-sast-86359818-jzs3",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/cache_entry.go",
+    "internal/sem/records_cache.go",
+    "internal/sem/search_cache.go",
+    "internal/sem/search_cache_test.go"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-5[1m]",
+  "turn_id": "f647a968babf",
+  "checkpoint_transcript_start": 1047,
+  "transcript_lines_at_start": 1047,
+  "compact_transcript_start": 285,
+  "token_usage": {
+    "input_tokens": 22,
+    "cache_creation_tokens": 12286,
+    "cache_read_tokens": 3936900,
+    "output_tokens": 9540,
+    "api_call_count": 12
+  },
+  "session_metrics": {
+    "turn_count": 27
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-13T03:57:38.421349Z",
+    "agent_lines": 57,
+    "agent_removed": 154,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 57,
+    "total_lines_changed": 211,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
