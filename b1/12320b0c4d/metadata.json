@@ -1,0 +1,21 @@
+{
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
+  "checkpoint_id": "b112320b0c4d",
+  "strategy": "manual-commit",
+  "branch": "fix/terminal-escape-injection",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/cli/callsite.go",
+    "internal/cli/neighbors.go",
+    "internal/cli/termsafe_sinks_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b1/12320b0c4d/0/metadata.json",
+      "transcript": "/b1/12320b0c4d/0/full.jsonl",
+      "compact_transcript": "/b1/12320b0c4d/0/transcript.jsonl",
+      "content_hash": "/b1/12320b0c4d/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
