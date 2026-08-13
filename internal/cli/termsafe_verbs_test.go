@@ -62,6 +62,16 @@ func hostileRepo(t *testing.T) string {
 // human-readable output mode; the machine formats are asserted separately below,
 // because they must NOT be escaped.
 func TestNoVerbLeaksControlSequencesToTheTerminal(t *testing.T) {
+	// The diff renderer emits its OWN SGR sequences when colour is on, so an
+	// assertion of "no ESC at all" would fail on this tool's legitimate output
+	// rather than on any repository byte. Colour is pinned off so the sweep tests
+	// exactly one property: that nothing the REPOSITORY supplied reaches the
+	// terminal as a control sequence. The coloured path has its own test, where
+	// every surviving ESC must be an SGR code this tool wrote —
+	// see sem.TestWriteTextEscapesEntityNameWithColor.
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("FORCE_COLOR", "")
+	t.Setenv("ENTIRE_GRAPH_FORCE_COLOR", "")
 	repo := hostileRepo(t)
 	cacheDir := t.TempDir()
 
@@ -114,6 +124,7 @@ func TestNoVerbLeaksControlSequencesToTheTerminal(t *testing.T) {
 // pipeline: a consumer of the machine formats is entitled to the exact pathname
 // Git reported, and encoding/json already keeps it off the terminal.
 func TestMachineFormatsKeepTheRepositoryBytes(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
 	repo := hostileRepo(t)
 	cacheDir := t.TempDir()
 

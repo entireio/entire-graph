@@ -1024,11 +1024,15 @@ func formatCallSiteLocation(endpoint neighborEndpoint, site *callSite) string {
 	if site == nil {
 		return formatNeighborEndpoint(endpoint)
 	}
-	name := endpointDisplayName(endpoint)
+	// Same one-line contract as formatNeighborEndpoint, which this deliberately
+	// does not delegate to (it names the CALL SITE, not the definition) — so the
+	// escaping has to be repeated rather than inherited.
+	name := termsafe.Line(endpointDisplayName(endpoint))
+	path := termsafe.Line(site.FilePath)
 	if site.Line == endpoint.StartLine && site.FilePath == endpoint.FilePath {
-		return fmt.Sprintf("%s (%s:%d)", name, site.FilePath, site.Line)
+		return fmt.Sprintf("%s (%s:%d)", name, path, site.Line)
 	}
-	return fmt.Sprintf("%s (%s:%d, def :%d)", name, site.FilePath, site.Line, endpoint.StartLine)
+	return fmt.Sprintf("%s (%s:%d, def :%d)", name, path, site.Line, endpoint.StartLine)
 }
 
 // formatNeighborEndpoint is the one place an endpoint becomes display text, for

@@ -267,8 +267,10 @@ func disambiguationSelectors(definitions []neighborEndpoint) []string {
 		if definition.FilePath == "" || definition.StartLine <= 0 {
 			continue
 		}
+		// The selector is printed at the end of a definition's line, so it is a
+		// one-line value like the rest of that line.
 		selector := fmt.Sprintf("--symbol %s --file %s --line %d",
-			endpointDisplayName(definition), definition.FilePath, definition.StartLine)
+			termsafe.Line(endpointDisplayName(definition)), termsafe.Line(definition.FilePath), definition.StartLine)
 		if named[endpointNamedLocationKey(definition)] > 1 && definition.Kind != "" {
 			selector += " --kind " + definition.Kind
 		}

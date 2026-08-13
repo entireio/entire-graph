@@ -248,3 +248,76 @@ func TestExplainEscapesOneLineFields(t *testing.T) {
 	assertNoForgedRecord(t, "RenderExplain", rendered)
 	assertNoRawControl(t, "RenderExplain", strings.ReplaceAll(rendered, "a.go", "evil"))
 }
+
+// TestFormatCallSiteLocationStaysOnOneLine covers the sibling of
+// formatNeighborEndpoint that does NOT delegate to it: it names the call site
+// rather than the definition, so it carries its own copy of the escaping and can
+// drift out of step with the function above it.
+func TestFormatCallSiteLocationStaysOnOneLine(t *testing.T) {
+	t.Parallel()
+	rendered := formatCallSiteLocation(
+		neighborEndpoint{Name: "Merge" + forgedPathName, FilePath: forgedPathName, StartLine: 4},
+		&callSite{FilePath: forgedPathName, Line: 9},
+	)
+	if strings.Contains(rendered, "\n") {
+		t.Errorf("formatCallSiteLocation returned more than one line: %q", rendered)
+	}
+	assertNoForgedRecord(t, "formatCallSiteLocation", rendered)
+}
+
+// TestDisambiguationSelectorsStayOnOneLine covers the selector printed at the end
+// of a definition's line. A forged newline there would not merely add a line, it
+// would offer the reader a --file argument that is not the file.
+func TestDisambiguationSelectorsStayOnOneLine(t *testing.T) {
+	t.Parallel()
+	for _, selector := range disambiguationSelectors([]neighborEndpoint{{
+		Name: "Merge", FilePath: forgedPathName, StartLine: 4, Kind: "function",
+	}}) {
+		if strings.Contains(selector, "\n") {
+			t.Errorf("selector spans more than one line: %q", selector)
+		}
+	}
+}
+
+// TestAgentDiagnosticPathStaysOnOneLine covers the warning and partial-failure
+// records. The file they name is unparseable by definition, which makes its name
+// the most attacker-shaped value in the payload — and these records print ahead
+// of the ranking, where a forged line does the most damage.
+func TestAgentDiagnosticPathStaysOnOneLine(t *testing.T) {
+	t.Parallel()
+	rendered := agentDiagnosticPath(forgedPathName)
+	if strings.Contains(rendered, "\n") {
+		t.Errorf("agentDiagnosticPath spans more than one line: %q", rendered)
+	}
+	assertNoForgedRecord(t, "agentDiagnosticPath", rendered)
+}
+
+func TestDefRelatedLineStaysOnOneLine(t *testing.T) {
+	t.Parallel()
+	rendered := defRelatedLine([]defRelated{{
+		Name: "Router" + forgedPathName, FilePath: forgedPathName, StartLine: 3, Relation: "EXTENDS",
+	}}, "supertypes")
+	if strings.Contains(rendered, "\n") {
+		t.Errorf("defRelatedLine spans more than one line: %q", rendered)
+	}
+	assertNoForgedRecord(t, "defRelatedLine", rendered)
+}
+
+// TestImpactCoChangeEntryStaysOnOneLine covers the co-change section, whose
+// entries are bare pathnames — the one section with no symbol name to anchor a
+// reader's eye if an extra line appears. Driven through writeImpactSection rather
+// than the whole verb, because the co-change branch is what carries the path and
+// a full response fixture would only add ceremony around it.
+func TestImpactCoChangeEntryStaysOnOneLine(t *testing.T) {
+	t.Parallel()
+	var buffer bytes.Buffer
+	writeImpactSection(&buffer, "Co-change coupling (1)", impactSection{
+		Total: 1,
+		Entries: []impactEntry{{
+			Relation: "FILE_CHANGES_WITH",
+			Endpoint: neighborEndpoint{FilePath: forgedPathName},
+			Detail:   "changed together 4 times",
+		}},
+	}, false)
+	assertNoForgedRecord(t, "writeImpactSection co-change", buffer.String())
+}

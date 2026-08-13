@@ -258,7 +258,29 @@ func buildSearchVerifyCommand(
 	if searchVerifyCommandCost(command) > searchVerifyCommandMaxBytes {
 		command.Targets = ""
 	}
+	// A command built around a path holding control bytes cannot be BOTH runnable
+	// and safe to display. Rendering escapes it, which keeps the line honest but
+	// leaves a string that no longer names the file it was derived from — and
+	// "runnable as written" is this field's whole contract. So it is not emitted:
+	// the residual floor already exists to say "nothing derivable here", and that
+	// is the truthful answer for a repository whose filenames cannot be printed.
+	if searchVerifyControlBytes(command.Command) {
+		return searchVerifyResidualFloor("", evidence.prefix, evidence.preFixStatus)
+	}
 	return command
+}
+
+// searchVerifyControlBytes reports whether a derived command carries a byte that
+// the text renderer would have to escape. It checks the COMMAND only: Targets and
+// DerivedFrom are prose about the derivation and are escaped for display without
+// any claim that they can be pasted into a shell.
+func searchVerifyControlBytes(command string) bool {
+	for i := 0; i < len(command); i++ {
+		if command[i] < 0x20 || command[i] == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 // searchVerifyResidualFloor is the last rung: no manifest, no test file, no single-file checker. It

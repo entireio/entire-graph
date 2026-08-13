@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/entireio/entire-graph/internal/sem"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // Completeness reporting is a valued feature and is not reduced here — every
@@ -197,14 +198,14 @@ func writeScopedCompletenessBlock(
 		if warning.FilePath == "" {
 			fmt.Fprintf(out, "- warning %s\n", warning.Code)
 		} else {
-			fmt.Fprintf(out, "- warning %s: %s\n", warning.Code, warning.FilePath)
+			fmt.Fprintf(out, "- warning %s: %s\n", warning.Code, termsafe.Line(warning.FilePath))
 		}
 	}
 	for _, failure := range scope.InScopeFailures {
 		if failure.FilePath == "" {
 			fmt.Fprintf(out, "- partial %s\n", failure.Code)
 		} else {
-			fmt.Fprintf(out, "- partial %s: %s\n", failure.Code, failure.FilePath)
+			fmt.Fprintf(out, "- partial %s: %s\n", failure.Code, termsafe.Line(failure.FilePath))
 		}
 	}
 	if omitted := scope.LanguageFailed - len(scope.InScopeFailures); omitted > 0 {

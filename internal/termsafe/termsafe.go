@@ -136,10 +136,50 @@ type text interface {
 	~string | ~[]byte
 }
 
-// escapedAt reports how the byte at index i must be treated: keep it (0), escape
-// just it (1), or escape it together with the byte that follows (2). Returning
-// the width is what lets the scan and the rewrite share one copy of the rules.
-func escapedAt[T text](data T, i int, keep layout) int {
+// runeWidthAt reports how many bytes form a VALID UTF-8 sequence starting at i,
+// or 0 when the byte there begins no valid sequence.
+//
+// The scan needs this to tell a stray C1 byte from a continuation byte that only
+// looks like one: the middle byte of U+65E5 (0xe6 0x97 0xa5) is 0x97, squarely
+// inside the C1 range, and a per-byte scan would mangle every CJK identifier it
+// met. Knowing the width lets the scan step OVER a valid sequence instead of
+// inspecting its interior.
+func runeWidthAt[T text](data T, i int) int {
+	lead := data[i]
+	switch {
+	case lead < 0x80:
+		return 1
+	case lead < 0xc2:
+		// A continuation byte with no lead, or an overlong two-byte form.
+		return 0
+	case lead < 0xe0:
+		return continuationWidth(data, i, 2)
+	case lead < 0xf0:
+		return continuationWidth(data, i, 3)
+	case lead < 0xf5:
+		return continuationWidth(data, i, 4)
+	default:
+		return 0
+	}
+}
+
+func continuationWidth[T text](data T, i, width int) int {
+	if i+width > len(data) {
+		return 0
+	}
+	for offset := 1; offset < width; offset++ {
+		if data[i+offset] < 0x80 || data[i+offset] > 0xbf {
+			return 0
+		}
+	}
+	return width
+}
+
+// escapedAt reports how the sequence at index i must be treated: its width in
+// bytes, and whether those bytes are escaped rather than copied. Returning the
+// width is what lets the scan and the rewrite share one copy of the rules, and
+// what lets both step over a multi-byte rune without reading its interior.
+func escapedAt[T text](data T, i int, keep layout) (int, bool) {
 	character := data[i]
 	switch {
 	case character == '\n' || character == '\t' || character == '\f' || character == '\v':
@@ -150,35 +190,49 @@ func escapedAt[T text](data T, i int, keep layout) int {
 		// and older Perl separate pages — escaping it would rewrite the bytes of
 		// every such file's snippet and break the verbatim edit anchor this
 		// package promises to preserve.
-		if keep {
-			return 0
-		}
-		return 1
+		return 1, !bool(keep)
 	case character == '\r':
 		// CRLF is the line ending of a Windows-authored file, not an overwrite.
 		if keep && i+1 < len(data) && data[i+1] == '\n' {
-			return 0
+			return 1, false
 		}
-		return 1
+		return 1, true
 	case character < 0x20 || character == 0x7f:
 		// C0 and DEL. ESC (0x1b) is the sequence introducer that matters most,
 		// but BEL, backspace, and the cursor controls all rewrite what is seen.
-		return 1
-	case character == 0xc2 && i+1 < len(data) && data[i+1] >= 0x80 && data[i+1] <= 0x9f:
+		return 1, true
+	case character < 0x80:
+		return 1, false
+	}
+	// Above ASCII the byte is only safe to judge in UTF-8 terms.
+	width := runeWidthAt(data, i)
+	switch {
+	case width == 2 && character == 0xc2 && data[i+1] >= 0x80 && data[i+1] <= 0x9f:
 		// The C1 controls in their two-byte UTF-8 form. U+009B is CSI, which a
 		// terminal in UTF-8 mode acts on exactly as it acts on ESC followed by
 		// '['; escaping only C0 would leave that introducer reachable.
-		return 2
+		return 2, true
+	case width > 0:
+		return width, false
+	case character <= 0x9f:
+		// A STRAY C1 byte — one that begins no valid sequence. A Git pathname is
+		// a byte string, not text, so 0x9b can arrive raw, and a terminal in an
+		// 8-bit locale reads that single byte as CSI. Only 0x80-0x9f is escaped
+		// here: stray bytes above it are not controls in any encoding, and
+		// rewriting them would corrupt Latin-1-encoded sources for no gain.
+		return 1, true
 	default:
-		return 0
+		return 1, false
 	}
 }
 
 func needsEscape[T text](data T, keep layout) bool {
-	for i := 0; i < len(data); i++ {
-		if escapedAt(data, i, keep) > 0 {
+	for i := 0; i < len(data); {
+		width, escape := escapedAt(data, i, keep)
+		if escape {
 			return true
 		}
+		i += width
 	}
 	return false
 }
@@ -187,19 +241,25 @@ func needsEscape[T text](data T, keep layout) bool {
 // literal that denotes it, so a reader who meets the escape in a terminal or a
 // log sees the byte written the way source would write it.
 func appendEscaped[T text](dst []byte, data T, keep layout) []byte {
-	for i := 0; i < len(data); i++ {
-		switch escapedAt(data, i, keep) {
-		case 1:
-			dst = append(dst, '\\', 'x', hexDigits[data[i]>>4], hexDigits[data[i]&0x0f])
-		case 2:
+	for i := 0; i < len(data); {
+		width, escape := escapedAt(data, i, keep)
+		switch {
+		case !escape:
+			for offset := 0; offset < width; offset++ {
+				dst = append(dst, data[i+offset])
+			}
+		case width == 2:
 			// In the two-byte form the trailing byte IS the code point: 0xc2
 			// contributes the 0x80 that its 0x00-0x1f payload is added to.
 			point := data[i+1]
 			dst = append(dst, '\\', 'u', '0', '0', hexDigits[point>>4], hexDigits[point&0x0f])
-			i++
+		case data[i] >= 0x80:
+			// A stray C1 byte denotes the code point of the same value.
+			dst = append(dst, '\\', 'u', '0', '0', hexDigits[data[i]>>4], hexDigits[data[i]&0x0f])
 		default:
-			dst = append(dst, data[i])
+			dst = append(dst, '\\', 'x', hexDigits[data[i]>>4], hexDigits[data[i]&0x0f])
 		}
+		i += width
 	}
 	return dst
 }

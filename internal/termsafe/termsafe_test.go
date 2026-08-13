@@ -30,6 +30,10 @@ var escapeCases = []struct {
 	{"NUL is a control byte like any other", "a\x00b", `a\x00b`},
 	{"FF is a page separator in GNU-style source", "top\n\fbottom", "top\n\fbottom"},
 	{"VT is page whitespace too", "a\vb", "a\vb"},
+	{"a STRAY C1 byte is CSI to an 8-bit terminal", "x\x9b31mred", `x\u009b31mred`},
+	{"a stray byte above C1 is not a control in any encoding", "caf\xe9 latin-1", "caf\xe9 latin-1"},
+	{"continuation bytes inside a valid rune are not stray C1", "\u65e5\u672c\u8a9e", "\u65e5\u672c\u8a9e"},
+	{"a truncated lead byte is left alone when it is not C1", "ok\xf0", "ok\xf0"},
 	{"multi-byte runes survive intact", "héllo → wörld 日本語", "héllo → wörld 日本語"},
 }
 

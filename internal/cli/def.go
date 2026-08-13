@@ -939,9 +939,9 @@ func defFieldType(member defMember) string {
 func defRelatedLine(entries []defRelated, label string) string {
 	parts := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		part := entry.Name
+		part := termsafe.Line(entry.Name)
 		if entry.FilePath != "" && entry.StartLine > 0 {
-			part += fmt.Sprintf(" (%s:%d)", entry.FilePath, entry.StartLine)
+			part += fmt.Sprintf(" (%s:%d)", termsafe.Line(entry.FilePath), entry.StartLine)
 		}
 		if entry.Relation != "" {
 			part += " [" + strings.ToLower(entry.Relation) + "]"

@@ -1421,11 +1421,15 @@ func searchCompletenessCounts(report sem.CompletenessReport) (int, int) {
 	return len(report.Languages), files
 }
 
+// agentDiagnosticPath renders the path a warning or partial failure names. The
+// file is unparseable BY DEFINITION here, so its name is the most attacker-shaped
+// value in the payload — and these records print one per line, ahead of the
+// ranking, which is where a forged line would do the most damage.
 func agentDiagnosticPath(path string) string {
 	if path == "" {
 		return ""
 	}
-	return ": " + path
+	return ": " + termsafe.Line(path)
 }
 
 // agentSearchBlockCarriesSource reports whether a rendered ranked block contains any source,
