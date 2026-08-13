@@ -14,6 +14,16 @@ func newWorktreeRepo(t *testing.T) string {
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
 	git(t, repo, "config", "user.email", "graph@example.com")
+	// Point core.excludesFile at an empty file OUTSIDE the repo. These cases assert exactly which
+	// paths git reports as dirty, and the developer's global ignore is part of that answer: the
+	// stock macOS one lists .DS_Store, which is the fixture the untracked case uses, so without
+	// this the suite is green in CI (runners have no global ignore) and red on the machine of
+	// anyone who followed GitHub's own macOS .gitignore advice.
+	excludes := filepath.Join(t.TempDir(), "empty-global-excludes")
+	if err := os.WriteFile(excludes, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "config", "core.excludesFile", excludes)
 	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("ignored/\n*.log\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

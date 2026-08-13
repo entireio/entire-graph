@@ -115,12 +115,23 @@ func absOrRepo(repo string) string {
 // a relation cannot make a snapshot stale either, so it is not a reason to throw
 // one away.
 //
-// The test is extensionUnsupported, the same predicate the indexer uses to skip
-// a file, so the two can never disagree about what is read. It is deliberately
-// conservative in the safe direction: an extensionless path counts as
-// supported, because a shebang can make it a script, and any supported path
-// still bypasses the cache whatever its status. Only .gitignore'd files are out
-// of scope entirely — git omits them, matching the provider's walk.
+// The test is extensionUnsupported, which is what the indexer uses to decide whether to PARSE a
+// file — but parsing is not the only way a file reaches the graph. buildManifestImportResolver
+// also reads the CONTENT of the repo-root manifests, and two of those (go.mod, setup.cfg) carry
+// no supported extension while deciding how every import in the repository resolves. Forgiving
+// them served a snapshot whose call edges were still resolved against the previous module path.
+// They are excluded by name through isManifestImportFile, and TestManifestImportFilesCoverReads
+// fails if that list falls behind the manifests actually read.
+//
+// Otherwise the rule is deliberately conservative in the safe direction: an extensionless path
+// counts as supported, because a shebang can make it a script, and any supported path still
+// bypasses the cache whatever its status.
+//
+// Ignored files never reach this loop: git status omits them, and the provider's walk skips them
+// too, so neither side can serve what the other would have indexed. Note the two do not agree in
+// general — git never ignores a TRACKED file, while the walk applies the ignore stack to every
+// path — but that disagreement only ever reports a path as dirty that the walk would have
+// skipped, which costs a re-index and cannot serve a stale one.
 func worktreeSnapshotCacheable(ctx context.Context, absRepo string, options ProviderSnapshotOptions) bool {
 	if !options.Worktree {
 		return true
@@ -137,7 +148,7 @@ func worktreeSnapshotCacheable(ctx context.Context, absRepo string, options Prov
 		clean = false
 	}
 	for _, path := range dirty {
-		if !extensionUnsupported(path) {
+		if !extensionUnsupported(path) || isManifestImportFile(path) {
 			clean = false
 			break
 		}
