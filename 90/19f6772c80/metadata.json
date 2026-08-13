@@ -1,0 +1,21 @@
+{
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
+  "checkpoint_id": "9019f6772c80",
+  "strategy": "manual-commit",
+  "branch": "fix/worktree-cache-untracked-noise",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/gitutil/worktree_test.go",
+    "internal/sem/provider.go",
+    "internal/sem/search_cache.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/90/19f6772c80/0/metadata.json",
+      "transcript": "/90/19f6772c80/0/full.jsonl",
+      "compact_transcript": "/90/19f6772c80/0/transcript.jsonl",
+      "content_hash": "/90/19f6772c80/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
