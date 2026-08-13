@@ -824,9 +824,9 @@ func renderDefText(response defResponse, limit int) []byte {
 
 func writeDefDeclarationText(buffer *strings.Builder, declaration defDeclaration, limit int) {
 	fmt.Fprintf(buffer, "%s:%d  %s %s\n", termsafe.Line(declaration.FilePath), declaration.StartLine,
-		declaration.Kind, termsafe.Line(defDisplayName(declaration)))
+		termsafe.Line(declaration.Kind), termsafe.Line(defDisplayName(declaration)))
 	if declaration.Owner != nil {
-		fmt.Fprintf(buffer, "  owner: %s %s (%s:%d)\n", declaration.Owner.Kind, termsafe.Line(declaration.Owner.Name),
+		fmt.Fprintf(buffer, "  owner: %s %s (%s:%d)\n", termsafe.Line(declaration.Owner.Kind), termsafe.Line(declaration.Owner.Name),
 			termsafe.Line(declaration.Owner.FilePath), declaration.Owner.StartLine)
 	}
 	if declaration.Signature != "" {
@@ -878,7 +878,13 @@ func writeDefMemberLine(buffer *strings.Builder, label string, members []defMemb
 		}
 		entries = append(entries, entry)
 	}
-	line := fmt.Sprintf("  %s: %s", label, strings.Join(entries, ", "))
+	// A member list is one line of the card, and every part of it — the label,
+	// which carries the owning type's name, and each entry's name, signature tail
+	// and origin — comes from the scanned repository. Escaped after assembly
+	// because the separators between them are this renderer's own ASCII, so one
+	// pass over the finished line covers every field without a new sink appearing
+	// each time an entry grows a part.
+	line := termsafe.Line(fmt.Sprintf("  %s: %s", label, strings.Join(entries, ", ")))
 	if omitted := total - len(shown); omitted > 0 {
 		line += fmt.Sprintf(" (+%d more)", omitted)
 	}

@@ -71,6 +71,21 @@ func TestRenderSearchFileOutlineEscapesPath(t *testing.T) {
 	}}))
 }
 
+// TestRenderSearchFileOutlineEscapesRows covers the rows under that path. They
+// are one symbol per line, so a name is a one-line value in the same sense the
+// path above it is: escaping only the header would let a symbol index a symbol
+// the file does not contain, which is worse here than elsewhere because the whole
+// point of the block is to be believed without reading the file.
+func TestRenderSearchFileOutlineEscapesRows(t *testing.T) {
+	t.Parallel()
+	assertNoForgedLine(t, "RenderSearchFileOutline rows", RenderSearchFileOutline([]SearchFileOutline{{
+		FilePath: "src/router.go", Lines: 40,
+		Rows: []SearchOutlineRow{{
+			Start: 10, End: 14, Kind: "func" + forgedPath, Name: "merge" + forgedPath, Hit: true,
+		}},
+	}}))
+}
+
 // TestSearchBlocksLeaveCleanInputAlone is the compatibility half: these blocks are
 // budget-sized by the caller, so an escape that fired on ordinary paths would
 // change every payload's length as well as its text.

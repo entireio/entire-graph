@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // This is the guard the per-renderer unit tests cannot be: it drives the REAL
@@ -24,6 +25,14 @@ import (
 // interpreted, it would blank the line the reader had just been shown and leave
 // the terminal recoloured afterwards.
 const escapeSequence = "\x1b[2K\x1b[31m"
+
+// rawC1Sequence is the same primitive written the other way a repository can
+// write it: a LONE 0x9b byte, which a terminal reading 8-bit C1 acts on exactly
+// as it acts on "ESC [". It appears only in file BODIES, never in the fixture's
+// filename, because a filesystem is entitled to reject a name that is not valid
+// UTF-8 — macOS does — and a name that skipped the whole sweep would cost more
+// coverage than this byte buys.
+const rawC1Sequence = "\x9b2K\x9b31m"
 
 // hostileRepo builds a repository that attacks its reader through both channels
 // a scanned repo controls: the name of a file, and the bytes inside one.
@@ -46,7 +55,7 @@ func hostileRepo(t *testing.T) string {
 	// The sequence goes INSIDE the body, not above it. A comment on the line
 	// before a declaration is not part of the source any body-printing renderer
 	// emits, so a fixture that put it there would leave those sinks untested.
-	write(t, repo, "main.go", "package hostile\n\nfunc Merge() int {\n\t// "+escapeSequence+"SPOOFED\n\treturn 1\n}\n")
+	write(t, repo, "main.go", "package hostile\n\nfunc Merge() int {\n\t// "+escapeSequence+"SPOOFED"+rawC1Sequence+"\n\treturn 1\n}\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "initial")
 
@@ -173,9 +182,26 @@ func assertNoEscape(t *testing.T, stream, output string) {
 		start := max(index-120, 0)
 		t.Errorf("raw ESC reached %s at byte %d:\n%q", stream, index, output[start:min(index+120, len(output))])
 	}
-	// C1 CSI is the same primitive in one byte; a terminal in UTF-8 mode acts on
-	// it exactly as it acts on "ESC [".
-	if index := strings.Index(output, "\u009b"); index >= 0 {
-		t.Errorf("raw C1 CSI reached %s at byte %d", stream, index)
+	if index := indexC1(output); index >= 0 {
+		t.Errorf("raw C1 control reached %s at byte %d", stream, index)
 	}
+}
+
+// indexC1 reports the first C1 control in output, in EITHER form a repository can
+// deliver one: the two-byte UTF-8 encoding of U+0080-U+009F, and the lone
+// 0x80-0x9f byte a Git pathname or a source file may carry, which an 8-bit
+// terminal reads as the control itself. Checking only the first — as this sweep
+// once did — leaves the raw-byte half of the rule untested end to end.
+func indexC1(output string) int {
+	for index, character := range output {
+		if character >= 0x80 && character <= 0x9f {
+			return index
+		}
+		// A byte that decodes to no rune is returned as U+FFFD with width 1; the
+		// byte itself is what a terminal would act on.
+		if character == utf8.RuneError && output[index] >= 0x80 && output[index] <= 0x9f {
+			return index
+		}
+	}
+	return -1
 }

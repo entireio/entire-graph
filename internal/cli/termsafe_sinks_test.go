@@ -18,16 +18,19 @@ import (
 
 // hostileESC is a repository-supplied value carrying a real terminal sequence: an
 // erase-line that would blank what the reader already saw, plus a colour change
-// that would outlive the value it is embedded in.
-const hostileESC = "evil\x1b[2K\x1b[31m"
+// that would outlive the value it is embedded in. It carries CSI in both spellings
+// a repository can deliver \u2014 ESC '[' and the lone 0x9b byte an 8-bit terminal
+// reads as the same introducer \u2014 because a guard that handles only the first
+// leaves the other reachable.
+const hostileESC = "evil\x1b[2K\x1b[31m\x9b2K"
 
 func assertNoRawControl(t *testing.T, what, rendered string) {
 	t.Helper()
 	if strings.ContainsRune(rendered, 0x1b) {
 		t.Errorf("%s passed a raw ESC through to the terminal:\n%q", what, rendered)
 	}
-	if strings.Contains(rendered, "\u009b") {
-		t.Errorf("%s passed a raw C1 CSI through to the terminal:\n%q", what, rendered)
+	if index := indexC1(rendered); index >= 0 {
+		t.Errorf("%s passed a raw C1 control through to the terminal at byte %d:\n%q", what, index, rendered)
 	}
 	// The value must still be REPORTED, only defanged: dropping it silently would
 	// hide the file the reader is being warned about.
@@ -290,6 +293,40 @@ func TestAgentDiagnosticPathStaysOnOneLine(t *testing.T) {
 		t.Errorf("agentDiagnosticPath spans more than one line: %q", rendered)
 	}
 	assertNoForgedRecord(t, "agentDiagnosticPath", rendered)
+}
+
+// TestDefMemberLineStaysOnOneLine covers the member lists, the half of the
+// declaration card whose fields the header's escaping does not reach: the label
+// carries the owning type's name, and every entry is a member name plus the tail
+// of its signature, all of it read off the scanned repository and all of it
+// printed as ONE line of the card.
+func TestDefMemberLineStaysOnOneLine(t *testing.T) {
+	t.Parallel()
+	var buffer strings.Builder
+	writeDefMemberLine(&buffer, "impl Router"+forgedPathName, []defMember{{
+		Name:      "merge" + forgedPathName,
+		Kind:      "method",
+		Signature: "func merge(" + forgedPathName + ") error",
+		Origin:    "inherited:Base" + forgedPathName,
+	}}, 1, 8, true)
+	assertNoForgedRecord(t, "writeDefMemberLine", buffer.String())
+}
+
+// TestDefDeclarationCardStaysOnOneLinePerRecord drives the whole card, because
+// the member lists are reached through writeDefDeclarationText and a field added
+// to the card later is only covered here.
+func TestDefDeclarationCardStaysOnOneLinePerRecord(t *testing.T) {
+	t.Parallel()
+	var buffer strings.Builder
+	writeDefDeclarationText(&buffer, defDeclaration{
+		Name: "Router", Kind: "struct" + forgedPathName, FilePath: forgedPathName, StartLine: 12,
+		Owner:        &defRelated{Name: "Server" + forgedPathName, Kind: "class" + forgedPathName, FilePath: forgedPathName, StartLine: 3},
+		Fields:       []defMember{{Name: "inner" + forgedPathName, Signature: "inner Conn"}},
+		FieldsTotal:  1,
+		Methods:      []defMember{{Name: "merge", Signature: "func merge() error", Origin: "extension"}},
+		MethodsTotal: 1,
+	}, 8)
+	assertNoForgedRecord(t, "writeDefDeclarationText", buffer.String())
 }
 
 func TestDefRelatedLineStaysOnOneLine(t *testing.T) {

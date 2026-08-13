@@ -206,11 +206,15 @@ func RenderSearchFileOutline(outlines []SearchFileOutline) []byte {
 			if row.Hit {
 				marker = "*"
 			}
+			// A row is one symbol per line for the same reason the header above is one
+			// file per line, so the kind and the name are one-line values too: a symbol
+			// named "x\n   * 1-9 func Authorize" would otherwise index a symbol the
+			// file does not contain.
 			fmt.Fprintf(&buffer, "   %s %d-%d", marker, row.Start, row.End)
 			if row.Kind != "" {
-				fmt.Fprintf(&buffer, " %s", row.Kind)
+				fmt.Fprintf(&buffer, " %s", termsafe.Line(row.Kind))
 			}
-			fmt.Fprintf(&buffer, " %s\n", row.Name)
+			fmt.Fprintf(&buffer, " %s\n", termsafe.Line(row.Name))
 		}
 	}
 	return []byte(buffer.String())
