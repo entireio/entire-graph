@@ -3,7 +3,7 @@
   "checkpoint_id": "d2893c5f7654",
   "strategy": "manual-commit",
   "branch": "fix/terminal-escape-injection",
-  "checkpoints_count": 3,
+  "checkpoints_count": 6,
   "files_touched": [
     "internal/cli/completeness.go",
     "internal/cli/def.go",
@@ -31,13 +31,20 @@
       "compact_transcript": "/d2/893c5f7654/1/transcript.jsonl",
       "content_hash": "/d2/893c5f7654/1/content_hash.txt",
       "prompt": "/d2/893c5f7654/1/prompt.txt"
+    },
+    {
+      "metadata": "/d2/893c5f7654/2/metadata.json",
+      "transcript": "/d2/893c5f7654/2/full.jsonl",
+      "compact_transcript": "/d2/893c5f7654/2/transcript.jsonl",
+      "content_hash": "/d2/893c5f7654/2/content_hash.txt",
+      "prompt": "/d2/893c5f7654/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 216938,
-    "cache_creation_tokens": 0,
-    "cache_read_tokens": 4956928,
-    "output_tokens": 34840,
-    "api_call_count": 46
+    "input_tokens": 216996,
+    "cache_creation_tokens": 357398,
+    "cache_read_tokens": 15764247,
+    "output_tokens": 59136,
+    "api_call_count": 77
   }
 }
