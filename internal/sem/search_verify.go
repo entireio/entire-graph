@@ -688,7 +688,9 @@ func searchVerifyRunIn(dir, command string) string {
 	if dir == "" {
 		return command
 	}
-	return "cd " + shellQuote(dir) + " && " + command
+	// shellQuotePath, not shellQuote: `cd` reads a leading dash as its own options, so a directory
+	// named `-weird` would never be entered.
+	return "cd " + shellQuotePath(dir) + " && " + command
 }
 
 func searchVerifyAncestorFile(dir, name string, evidence *searchVerifyEvidence) (string, string, bool) {
@@ -908,6 +910,9 @@ func deriveSearchVerifyMaven(dir string, subject searchVerifySubject, evidence *
 	}
 	scope := ""
 	if dir != "" {
+		// Left as shellQuote deliberately: -pl takes a Maven module selector, not a path operand,
+		// and a ./-prefixed selector is not guaranteed to resolve. A module directory whose name
+		// starts with a dash stays shell-safe but may still be read as an option by mvn itself.
 		scope = " -pl " + shellQuote(dir) + " -am"
 	}
 	if subject.testPath != "" {
@@ -1037,7 +1042,7 @@ func deriveSearchVerifyNode(dir string, subject searchVerifySubject, evidence *s
 		return nil
 	}
 	return &SearchVerifyCommand{
-		Command:     searchVerifyRunIn(dir, runner+" "+shellQuote(relative)),
+		Command:     searchVerifyRunIn(dir, runner+" "+shellQuotePath(relative)),
 		Targets:     subject.testPath,
 		DerivedFrom: manifest + " " + evidenceKind + " + " + subject.testEvidence + " path",
 	}
@@ -1065,7 +1070,7 @@ func deriveSearchVerifyComposer(dir string, subject searchVerifySubject, evidenc
 		return nil
 	}
 	return &SearchVerifyCommand{
-		Command:     searchVerifyRunIn(dir, "vendor/bin/phpunit "+shellQuote(relative)),
+		Command:     searchVerifyRunIn(dir, "vendor/bin/phpunit "+shellQuotePath(relative)),
 		Targets:     subject.testPath,
 		DerivedFrom: config + " + " + subject.testEvidence + " path",
 	}
@@ -1103,7 +1108,7 @@ func deriveSearchVerifyPytest(dir string, subject searchVerifySubject, evidence 
 		filter = " -k " + shellQuote(subject.testName)
 	}
 	return &SearchVerifyCommand{
-		Command:     searchVerifyRunIn(dir, "python -m pytest "+shellQuote(relative)+filter),
+		Command:     searchVerifyRunIn(dir, "python -m pytest "+shellQuotePath(relative)+filter),
 		Targets:     subject.testPath,
 		DerivedFrom: config + " pytest config + " + subject.testEvidence + " path",
 	}
@@ -1131,13 +1136,13 @@ func deriveSearchVerifyRuby(dir string, subject searchVerifySubject, evidence *s
 	switch {
 	case strings.HasPrefix(relative, "spec/") && evidence.exists(searchVerifyJoin(dir, ".rspec")):
 		return &SearchVerifyCommand{
-			Command:     searchVerifyRunIn(dir, "bundle exec rspec "+shellQuote(relative)),
+			Command:     searchVerifyRunIn(dir, "bundle exec rspec "+shellQuotePath(relative)),
 			Targets:     subject.testPath,
 			DerivedFrom: searchVerifyJoin(dir, ".rspec") + " + " + subject.testEvidence + " path",
 		}
 	case strings.HasPrefix(relative, "test/"):
 		return &SearchVerifyCommand{
-			Command:     searchVerifyRunIn(dir, "bundle exec ruby -Itest "+shellQuote(relative)),
+			Command:     searchVerifyRunIn(dir, "bundle exec ruby -Itest "+shellQuotePath(relative)),
 			Targets:     subject.testPath,
 			DerivedFrom: manifest + " + " + subject.testEvidence + " path under test/",
 		}

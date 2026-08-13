@@ -1350,3 +1350,60 @@ func searchVerifyShellTestEnv(binDir, marker string) []string {
 	}
 	return append(environment, "PATH="+binDir, "VERIFY_MARKER="+marker)
 }
+
+// TestSearchVerifyCommandsNeutralizeOptionShapedPaths covers the half of the threat model that
+// shell quoting does not reach. A repository path may begin with a dash, and quoting it keeps the
+// SHELL honest while leaving the invoked tool to read it as options: `python -m pytest
+// -weird/test_app.py` hands pytest -w, -e, -i, -r, -d rather than a file. Every derivation that
+// interpolates a repo-relative path routes it through shellQuotePath, which prefixes `./`.
+func TestSearchVerifyCommandsNeutralizeOptionShapedPaths(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		files   map[string]string
+		derive  func(string, searchVerifySubject, *searchVerifyEvidence) *SearchVerifyCommand
+		subject searchVerifySubject
+		want    string
+	}{
+		{
+			name:    "pytest path",
+			files:   map[string]string{"pytest.ini": "[pytest]\n", "-weird/test_app.py": "def test_app():\n    pass\n"},
+			derive:  deriveSearchVerifyPytest,
+			subject: searchVerifySubject{sourcePath: "-weird/app.py", testPath: "-weird/test_app.py", testEvidence: "ranked test"},
+			want:    "python -m pytest ./-weird/test_app.py",
+		},
+		{
+			name:    "phpunit path",
+			files:   map[string]string{"composer.json": "{}", "phpunit.xml": "<phpunit/>", "-src/AppTest.php": "<?php\n"},
+			derive:  deriveSearchVerifyComposer,
+			subject: searchVerifySubject{sourcePath: "-src/App.php", testPath: "-src/AppTest.php", testEvidence: "ranked test"},
+			want:    "vendor/bin/phpunit ./-src/AppTest.php",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			evidence := searchVerifyTestEvidence(test.files)
+			got := test.derive("", test.subject, &evidence)
+			if got == nil {
+				t.Fatalf("no command derived for %+v", test.subject)
+			}
+			if !strings.Contains(got.Command, test.want) {
+				t.Errorf("command = %q, want it to contain %q", got.Command, test.want)
+			}
+		})
+	}
+}
+
+// TestSearchVerifyRunInNeutralizesOptionShapedDir pins the `cd` half: a module directory whose
+// name starts with a dash is read by cd as its own options, so the command would never enter it.
+func TestSearchVerifyRunInNeutralizesOptionShapedDir(t *testing.T) {
+	t.Parallel()
+	if got := searchVerifyRunIn("-weird", "go test ./..."); !strings.HasPrefix(got, "cd ./-weird && ") {
+		t.Errorf("searchVerifyRunIn = %q, want it to cd into ./-weird", got)
+	}
+	if plain := searchVerifyRunIn("sub", "go test ./..."); plain != "cd sub && go test ./..." {
+		t.Errorf("ordinary directory changed shape: %q", plain)
+	}
+}
