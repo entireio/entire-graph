@@ -1,14 +1,14 @@
 {
-  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
-  "checkpoint_id": "9019f6772c80",
-  "strategy": "manual-commit",
   "branch": "fix/worktree-cache-untracked-noise",
-  "checkpoints_count": 12,
+  "checkpoint_id": "9019f6772c80",
+  "checkpoints_count": 14,
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
   "files_touched": [
     "internal/gitutil/worktree_test.go",
     "internal/sem/provider.go",
     "internal/sem/search_cache.go"
   ],
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/90/19f6772c80/0/metadata.json",
@@ -23,13 +23,20 @@
       "compact_transcript": "/90/19f6772c80/1/transcript.jsonl",
       "content_hash": "/90/19f6772c80/1/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "content_hash": "/90/19f6772c80/2/content_hash.txt",
+      "metadata": "/90/19f6772c80/2/metadata.json",
+      "prompt": "/90/19f6772c80/2/prompt.txt",
+      "transcript": "/90/19f6772c80/2/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 117,
+    "input_tokens": 73358,
     "cache_creation_tokens": 283633,
-    "cache_read_tokens": 14289891,
-    "output_tokens": 38914,
-    "api_call_count": 62
+    "cache_read_tokens": 14942036,
+    "output_tokens": 46302,
+    "api_call_count": 79
   }
 }
