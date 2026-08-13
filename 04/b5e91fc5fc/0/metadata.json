@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
+  "checkpoint_id": "04b5e91fc5fc",
+  "session_id": "019ff2ba-87be-7bb3-a567-c8823729741e",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-13T03:57:36.542685Z",
+  "branch": "fix/aikido-security-sast-86359818-jzs3",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/sem/cache_entry.go",
+    "internal/sem/records_cache.go",
+    "internal/sem/search_cache.go",
+    "internal/sem/search_cache_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-luna",
+  "turn_id": "4f495786bf00",
+  "checkpoint_transcript_start": 2183,
+  "transcript_lines_at_start": 2183,
+  "compact_transcript_start": 331,
+  "session_metrics": {
+    "turn_count": 3
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-13T03:57:36.372355Z",
+    "agent_lines": 57,
+    "agent_removed": 154,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 57,
+    "total_lines_changed": 211,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
