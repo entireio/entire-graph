@@ -3,7 +3,7 @@
   "checkpoint_id": "16813f874318",
   "strategy": "manual-commit",
   "branch": "fix/aikido-security-code-audit-86369498-exvw",
-  "checkpoints_count": 2,
+  "checkpoints_count": 5,
   "files_touched": [
     "internal/sem/search_verify.go",
     "internal/sem/search_verify_test.go"
@@ -15,6 +15,20 @@
       "compact_transcript": "/16/813f874318/0/transcript.jsonl",
       "content_hash": "/16/813f874318/0/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "metadata": "/16/813f874318/1/metadata.json",
+      "transcript": "/16/813f874318/1/full.jsonl",
+      "compact_transcript": "/16/813f874318/1/transcript.jsonl",
+      "content_hash": "/16/813f874318/1/content_hash.txt",
+      "prompt": ""
     }
-  ]
+  ],
+  "token_usage": {
+    "input_tokens": 63,
+    "cache_creation_tokens": 34474,
+    "cache_read_tokens": 9668411,
+    "output_tokens": 24780,
+    "api_call_count": 34
+  }
 }
