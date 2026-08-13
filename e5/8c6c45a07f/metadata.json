@@ -1,0 +1,17 @@
+{
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
+  "checkpoint_id": "e58c6c45a07f",
+  "strategy": "manual-commit",
+  "branch": "fix/terminal-escape-injection",
+  "checkpoints_count": 2,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/e5/8c6c45a07f/0/metadata.json",
+      "transcript": "/e5/8c6c45a07f/0/full.jsonl",
+      "compact_transcript": "/e5/8c6c45a07f/0/transcript.jsonl",
+      "content_hash": "/e5/8c6c45a07f/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
