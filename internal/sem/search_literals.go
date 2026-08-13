@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // Same-concept literals: `grep` folded into `search`
@@ -884,12 +886,12 @@ func RenderSearchLiteralCluster(cluster *SearchLiteralCluster) []byte {
 	buffer.WriteString(searchLiteralClusterHeader(cluster) + "\n")
 	for _, hit := range cluster.Hits {
 		if hit.Body != "" {
-			fmt.Fprintf(&buffer, "  %s:%d-%d", hit.FilePath, hit.BodyStartLine, hit.BodyEndLine)
+			fmt.Fprintf(&buffer, "  %s:%d-%d", termsafe.Line(hit.FilePath), hit.BodyStartLine, hit.BodyEndLine)
 		} else {
-			fmt.Fprintf(&buffer, "  %s:%d", hit.FilePath, hit.Line)
+			fmt.Fprintf(&buffer, "  %s:%d", termsafe.Line(hit.FilePath), hit.Line)
 		}
 		if hit.Symbol != "" {
-			fmt.Fprintf(&buffer, " %s", hit.Symbol)
+			fmt.Fprintf(&buffer, " %s", termsafe.Line(hit.Symbol))
 		}
 		fmt.Fprintf(&buffer, " %s\n", hit.Role)
 		if hit.Body == "" {
