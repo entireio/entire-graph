@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
+  "checkpoint_id": "b112320b0c4d",
+  "session_id": "019ffb3b-a03c-7f93-bdcc-3bfed8a7740a",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-13T13:55:35.507411Z",
+  "branch": "fix/terminal-escape-injection",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/callsite.go",
+    "internal/cli/neighbors.go",
+    "internal/cli/termsafe_sinks_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "2b31a53dcd28",
+  "checkpoint_transcript_start": 226,
+  "transcript_lines_at_start": 226,
+  "compact_transcript_start": 48,
+  "initial_attribution": {
+    "calculated_at": "2026-08-13T13:55:35.378576Z",
+    "agent_lines": 58,
+    "agent_removed": 3,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 58,
+    "total_lines_changed": 61,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
