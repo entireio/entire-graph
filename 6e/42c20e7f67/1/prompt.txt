@@ -1,0 +1,27 @@
+Ok, drop 89. On 88, the regression is unacceptable.
+
+---
+
+You do the pull
+
+---
+
+<task-notification>
+<task-id>bd1pkjidk</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/b64ec1e0-575c-4273-ad7d-1dfd709c46c1/tasks/bd1pkjidk.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for PR 88 CI" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+I am confused. You wrote it's a false positive, but further above you said "One loose end worth a follow-up when you want it: the callsite.go os.OpenRoot fix from the closed #89. It's a genuine intermediate-symlink escape (repo/a → /etc with relative path a/b/c.go), and it's the one piece of that PR worth keeping. Say the word and I'll open it standalone."
+
+---
+
+This assume there will never be a caller that exposes this vulnerability, no?
+
+---
+
+Yes
