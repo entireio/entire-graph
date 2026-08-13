@@ -35,6 +35,21 @@ var escapeCases = []struct {
 	{"continuation bytes inside a valid rune are not stray C1", "\u65e5\u672c\u8a9e", "\u65e5\u672c\u8a9e"},
 	{"a truncated lead byte is left alone when it is not C1", "ok\xf0", "ok\xf0"},
 	{"multi-byte runes survive intact", "héllo → wörld 日本語", "héllo → wörld 日本語"},
+	// An ill-formed sequence is not a rune to step over. Each of these carries a
+	// C1 byte in a position that LOOKS like the interior of a longer rune, which is
+	// the shape that would smuggle it past a scan that only checked whether the
+	// following bytes were continuations. The lead byte itself stays: above 0x9f it
+	// is not a control in any encoding.
+	{"an overlong three-byte form hides a CSI byte", "x\xe0\x80\x9by", "x\xe0" + `\u0080\u009b` + "y"},
+	{"an overlong two-byte form hides a C1 byte", "x\xc0\x80y", "x\xc0" + `\u0080` + "y"},
+	{"a surrogate half is not a rune either", "x\xed\xa0\x80y", "x\xed\xa0" + `\u0080` + "y"},
+	{"a four-byte form past U+10FFFF is not a rune", "x\xf4\x90\x80\x80y", "x\xf4" + `\u0090\u0080\u0080` + "y"},
+	// The other side of the same rule: the smallest and largest well-formed
+	// sequence of each length must still be stepped over, or tightening the scan
+	// would have mangled the runes at every boundary.
+	{"the boundary rune of each length is still a rune",
+		"\u00a0\u07ff\u0800\ud7ff\uffff\U00010000\U0010ffff",
+		"\u00a0\u07ff\u0800\ud7ff\uffff\U00010000\U0010ffff"},
 }
 
 func TestBytesEscapesControlSequences(t *testing.T) {

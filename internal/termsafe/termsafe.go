@@ -102,6 +102,19 @@ func Line(value string) string {
 	return string(appendEscaped(make([]byte, 0, len(value)+escapeHeadroom), value, escapeLayout))
 }
 
+// EscapesLine reports whether Line would rewrite value.
+//
+// It exists for the one caller that has to decide something BEFORE rendering:
+// the VERIFY deriver, whose command must be runnable exactly as printed and so
+// must not be emitted at all when display would rewrite it. That decision has to
+// be made against the same rule the renderer applies, not a copy of it — a copy
+// that checked only C0 would emit a command whose C1 byte the renderer then
+// escaped, printing a line that is neither honest about being unprintable nor
+// runnable as shown.
+func EscapesLine(value string) bool {
+	return needsEscape(value, escapeLayout)
+}
+
 // Bytes neutralizes an already-rendered block that may legitimately span lines.
 // It returns the input itself when there is nothing to escape, so the ordinary
 // path neither copies nor allocates.
@@ -144,6 +157,15 @@ type text interface {
 // inside the C1 range, and a per-byte scan would mangle every CJK identifier it
 // met. Knowing the width lets the scan step OVER a valid sequence instead of
 // inspecting its interior.
+//
+// "Valid" here means WELL-FORMED, not merely well-shaped, and the second byte's
+// range is where the two differ. Accepting any continuation byte would let the
+// overlong form 0xe0 0x80 0x9b carry a CSI byte through as the interior of a
+// three-byte rune: a decoder that rejects overlongs shows a replacement
+// character, but one that does not decodes those three bytes to U+001B — the
+// classic overlong smuggling of an ASCII control. This package escapes a stray
+// C1 byte precisely because it cannot assume how the terminal decodes; treating
+// an ill-formed sequence as a rune to step over would assume exactly that.
 func runeWidthAt[T text](data T, i int) int {
 	lead := data[i]
 	switch {
@@ -153,21 +175,41 @@ func runeWidthAt[T text](data T, i int) int {
 		// A continuation byte with no lead, or an overlong two-byte form.
 		return 0
 	case lead < 0xe0:
-		return continuationWidth(data, i, 2)
+		return sequenceWidth(data, i, 2, 0x80, 0xbf)
+	case lead == 0xe0:
+		// Below 0xa0 the code point would fit the two-byte form: overlong.
+		return sequenceWidth(data, i, 3, 0xa0, 0xbf)
+	case lead == 0xed:
+		// 0xed 0xa0.. and up is a surrogate half, which UTF-8 does not encode.
+		return sequenceWidth(data, i, 3, 0x80, 0x9f)
 	case lead < 0xf0:
-		return continuationWidth(data, i, 3)
-	case lead < 0xf5:
-		return continuationWidth(data, i, 4)
+		return sequenceWidth(data, i, 3, 0x80, 0xbf)
+	case lead == 0xf0:
+		// Below 0x90 the code point would fit the three-byte form.
+		return sequenceWidth(data, i, 4, 0x90, 0xbf)
+	case lead == 0xf4:
+		// Above U+10FFFF there is nothing to encode.
+		return sequenceWidth(data, i, 4, 0x80, 0x8f)
+	case lead < 0xf4:
+		return sequenceWidth(data, i, 4, 0x80, 0xbf)
 	default:
 		return 0
 	}
 }
 
-func continuationWidth[T text](data T, i, width int) int {
+// sequenceWidth reports width when the bytes after the lead are continuations and
+// the SECOND one falls in the range that lead admits, or 0 otherwise. Only the
+// second byte's range varies by lead: it carries the code point's high bits, so
+// it is the byte that decides whether a sequence is overlong, a surrogate half,
+// or past the last code point.
+func sequenceWidth[T text](data T, i, width int, secondLow, secondHigh byte) int {
 	if i+width > len(data) {
 		return 0
 	}
-	for offset := 1; offset < width; offset++ {
+	if data[i+1] < secondLow || data[i+1] > secondHigh {
+		return 0
+	}
+	for offset := 2; offset < width; offset++ {
 		if data[i+offset] < 0x80 || data[i+offset] > 0xbf {
 			return 0
 		}

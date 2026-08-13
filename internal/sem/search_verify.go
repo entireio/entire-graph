@@ -271,16 +271,15 @@ func buildSearchVerifyCommand(
 }
 
 // searchVerifyControlBytes reports whether a derived command carries a byte that
-// the text renderer would have to escape. It checks the COMMAND only: Targets and
-// DerivedFrom are prose about the derivation and are escaped for display without
-// any claim that they can be pasted into a shell.
+// the text renderer would have to escape. It asks termsafe rather than scanning
+// for C0 itself, because a second copy of the rule is a rule that drifts: this
+// one already had, missing the C1 controls the renderer escapes — a path holding
+// a raw 0x9b passed the gate, was emitted as runnable, and was then rewritten on
+// the way to the terminal. It checks the COMMAND only: Targets and DerivedFrom
+// are prose about the derivation and are escaped for display without any claim
+// that they can be pasted into a shell.
 func searchVerifyControlBytes(command string) bool {
-	for i := 0; i < len(command); i++ {
-		if command[i] < 0x20 || command[i] == 0x7f {
-			return true
-		}
-	}
-	return false
+	return termsafe.EscapesLine(command)
 }
 
 // searchVerifyResidualFloor is the last rung: no manifest, no test file, no single-file checker. It
