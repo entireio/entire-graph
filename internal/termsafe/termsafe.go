@@ -70,13 +70,23 @@ func NewWriter(out io.Writer) *Writer {
 // the CALLER's buffer and a longer count would be read as a corrupt writer. The
 // common case — output with nothing to escape — passes p through untouched and
 // reports the underlying writer's own count.
+//
+// A short write with no error is a contract violation by the sink, not a state
+// this writer can be in — but reporting len(p) for it would turn truncated
+// output into a successful write, and truncated output is precisely how a
+// half-written escape stops being an escape. It is reported as io.ErrShortWrite
+// instead.
 func (w *Writer) Write(p []byte) (int, error) {
 	if !needsEscape(p, keepLayout) {
 		return w.out.Write(p)
 	}
 	safe := appendEscaped(make([]byte, 0, len(p)+escapeHeadroom), p, keepLayout)
-	if _, err := w.out.Write(safe); err != nil {
+	written, err := w.out.Write(safe)
+	if err != nil {
 		return 0, err
+	}
+	if written != len(safe) {
+		return 0, io.ErrShortWrite
 	}
 	return len(p), nil
 }
@@ -85,7 +95,7 @@ func (w *Writer) Write(p []byte) (int, error) {
 // symbol name, a one-line declaration — anything embedded in a record whose
 // layout is "one per line".
 //
-// It escapes LF and TAB on top of what String escapes, because in that position
+// It escapes LF and TAB on top of what Writer and Bytes escape, because in that position
 // they are not layout, they are forgery. A repository can name a file
 //
 //	a.go\n1. src/real.go:1 score=99.0

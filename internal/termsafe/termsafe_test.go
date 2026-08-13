@@ -3,12 +3,14 @@ package termsafe
 import (
 	"bytes"
 	"errors"
+	"io"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // escapeCases are the rules the package promises, stated once and driven through
-// all three entry points. A rule that holds for String but not for Writer is a
+// all three entry points. A rule that holds for Bytes but not for Writer is a
 // hole, since which one a sink uses is an implementation detail of the renderer.
 var escapeCases = []struct {
 	name string
@@ -107,13 +109,16 @@ func TestLineEscapesLayoutBytes(t *testing.T) {
 	if got := Line("page\fbreak"); got != `page\x0cbreak` {
 		t.Errorf("Line did not escape a form feed: %q", got)
 	}
-	// Everything String escapes, Line escapes too.
+	// Everything Bytes escapes, Line escapes too — in EITHER spelling a control
+	// arrives in. Scanning for ESC alone would say nothing about the raw and
+	// overlong C1 cases above, which are the ones that reached this package by
+	// being missed.
 	for _, testCase := range escapeCases {
-		if strings.ContainsAny(Line(testCase.in), "\x1b") {
-			t.Errorf("Line(%q) left a control sequence: %q", testCase.in, Line(testCase.in))
+		if index := indexControl(Line(testCase.in)); index >= 0 {
+			t.Errorf("Line(%q) left a control at byte %d: %q", testCase.in, index, Line(testCase.in))
 		}
 	}
-	// And a value with no layout bytes is left exactly as String leaves it.
+	// And a value with no layout bytes is left exactly as Bytes leaves it.
 	if got, want := Line("internal/cli/search.go"), "internal/cli/search.go"; got != want {
 		t.Errorf("Line rewrote a clean path: %q", got)
 	}
@@ -159,6 +164,26 @@ func TestWriterPassesThroughUnderlyingError(t *testing.T) {
 	}
 }
 
+// TestWriterReportsAShortWriteAsAnError covers the sink that writes part of the
+// buffer and reports no error. That is a contract violation by the sink, but
+// reporting len(p) for it would turn truncated output into a successful write —
+// and truncation is exactly how a half-written escape stops being an escape, with
+// the tail of the sanitized buffer never reaching the reader.
+func TestWriterReportsAShortWriteAsAnError(t *testing.T) {
+	t.Parallel()
+	var sink shortWriter
+	written, err := NewWriter(&sink).Write([]byte("hostile \x1b[2J tail"))
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Errorf("short write returned (%d, %v), want io.ErrShortWrite", written, err)
+	}
+	// The clean path hands the sink's own count back, because there is nothing to
+	// re-count: p and the bytes written are the same buffer.
+	var clean shortWriter
+	if written, err := NewWriter(&clean).Write([]byte("clean text")); written != 4 || err != nil {
+		t.Errorf("clean path returned (%d, %v), want the sink's own (4, nil)", written, err)
+	}
+}
+
 // TestWriterEscapesAcrossSeparateWrites documents the stateless boundary. Each
 // Write is sanitized on its own, so a renderer that formats a complete line per
 // call — which every renderer here does — gets the same result as one big write.
@@ -174,6 +199,37 @@ func TestWriterEscapesAcrossSeparateWrites(t *testing.T) {
 	if strings.ContainsRune(buffer.String(), 0x1b) {
 		t.Errorf("ESC survived a chunked write: %q", buffer.String())
 	}
+}
+
+// indexControl reports the first byte a terminal would act on, in every spelling
+// a value can carry one: ESC, a decoded C1 code point, and an undecodable byte in
+// the C1 range. Decoding rather than scanning bytes is what keeps it from firing
+// on the continuation bytes of an ordinary rune — U+0800 is 0xe0 0xa0 0x80, whose
+// last byte is 0x80.
+func indexControl(value string) int {
+	for index, character := range value {
+		switch {
+		case character == 0x1b:
+			return index
+		case character >= 0x80 && character <= 0x9f:
+			return index
+		case character == utf8.RuneError && value[index] >= 0x80 && value[index] <= 0x9f:
+			return index
+		}
+	}
+	return -1
+}
+
+// shortWriter accepts the first four bytes of anything and claims success, the
+// shape io.Writer forbids and this package must not paper over.
+type shortWriter struct{ got []byte }
+
+func (w *shortWriter) Write(p []byte) (int, error) {
+	if len(p) > 4 {
+		p = p[:4]
+	}
+	w.got = append(w.got, p...)
+	return len(p), nil
 }
 
 type failingWriter struct{ err error }
