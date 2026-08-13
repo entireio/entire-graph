@@ -1,15 +1,15 @@
 {
-  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
-  "checkpoint_id": "04b5e91fc5fc",
-  "strategy": "manual-commit",
   "branch": "fix/aikido-security-sast-86359818-jzs3",
-  "checkpoints_count": 3,
+  "checkpoint_id": "04b5e91fc5fc",
+  "checkpoints_count": 5,
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
   "files_touched": [
     "internal/sem/cache_entry.go",
     "internal/sem/records_cache.go",
     "internal/sem/search_cache.go",
     "internal/sem/search_cache_test.go"
   ],
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/04/b5e91fc5fc/0/metadata.json",
@@ -24,13 +24,20 @@
       "compact_transcript": "/04/b5e91fc5fc/1/transcript.jsonl",
       "content_hash": "/04/b5e91fc5fc/1/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "content_hash": "/04/b5e91fc5fc/2/content_hash.txt",
+      "metadata": "/04/b5e91fc5fc/2/metadata.json",
+      "prompt": "/04/b5e91fc5fc/2/prompt.txt",
+      "transcript": "/04/b5e91fc5fc/2/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 22,
+    "input_tokens": 51734,
     "cache_creation_tokens": 12286,
-    "cache_read_tokens": 3936900,
-    "output_tokens": 9540,
-    "api_call_count": 12
+    "cache_read_tokens": 4455907,
+    "output_tokens": 14646,
+    "api_call_count": 29
   }
 }
