@@ -1,0 +1,10 @@
+In the open Edge browser, find the tab with https://app.aikido.dev/repositories/2807130 open. Click through each
+  issue and review if the issue is real and needs a fix.
+
+---
+
+Now
+
+---
+
+Implement the fixes and submit them as a new PR. Don't hit Retest yet.
