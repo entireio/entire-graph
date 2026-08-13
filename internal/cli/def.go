@@ -823,17 +823,17 @@ func renderDefText(response defResponse, limit int) []byte {
 }
 
 func writeDefDeclarationText(buffer *strings.Builder, declaration defDeclaration, limit int) {
-	fmt.Fprintf(buffer, "%s:%d  %s %s\n", declaration.FilePath, declaration.StartLine,
-		declaration.Kind, defDisplayName(declaration))
+	fmt.Fprintf(buffer, "%s:%d  %s %s\n", termsafe.Line(declaration.FilePath), declaration.StartLine,
+		declaration.Kind, termsafe.Line(defDisplayName(declaration)))
 	if declaration.Owner != nil {
-		fmt.Fprintf(buffer, "  owner: %s %s (%s:%d)\n", declaration.Owner.Kind, declaration.Owner.Name,
-			declaration.Owner.FilePath, declaration.Owner.StartLine)
+		fmt.Fprintf(buffer, "  owner: %s %s (%s:%d)\n", declaration.Owner.Kind, termsafe.Line(declaration.Owner.Name),
+			termsafe.Line(declaration.Owner.FilePath), declaration.Owner.StartLine)
 	}
 	if declaration.Signature != "" {
-		fmt.Fprintf(buffer, "  signature: %s\n", defTruncateRunes(declaration.Signature, defMaxSignatureRunes))
+		fmt.Fprintf(buffer, "  signature: %s\n", termsafe.Line(defTruncateRunes(declaration.Signature, defMaxSignatureRunes)))
 	}
 	for _, part := range declaration.Parts {
-		fmt.Fprintf(buffer, "  also declared: %s:%d\n", part.FilePath, part.StartLine)
+		fmt.Fprintf(buffer, "  also declared: %s:%d\n", termsafe.Line(part.FilePath), part.StartLine)
 	}
 	if limit > 0 {
 		writeDefMemberLine(buffer, "fields", declaration.Fields, declaration.FieldsTotal, limit, false)

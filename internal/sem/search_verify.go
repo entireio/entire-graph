@@ -7,6 +7,8 @@ import (
 	"path"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // The verify command
@@ -1225,15 +1227,23 @@ func RenderSearchVerifyCommand(command *SearchVerifyCommand) []byte {
 	if command == nil || command.Command == "" {
 		return nil
 	}
+	// Every field below carries repository-derived paths, and this block is
+	// one-record-per-line — so each is escaped with termsafe.Line. It matters more
+	// here than anywhere else in the payload: VERIFY is the line an agent is told
+	// to RUN, and a pathname holding a newline would otherwise split the record
+	// and let a repository print a command the deriver never produced. (Execution
+	// itself was already safe: the path is shell-quoted. This is about what the
+	// reader is shown.)
+	//
 	// "VERIFY: " stays byte-identical at line start whatever else changes — every harness and every
 	// prior measurement keys on that prefix.
-	rendered := "VERIFY: " + searchVerifyDecorated(command) + "\n"
-	evidenceLine := "  targets " + command.Targets
+	rendered := "VERIFY: " + termsafe.Line(searchVerifyDecorated(command)) + "\n"
+	evidenceLine := "  targets " + termsafe.Line(command.Targets)
 	if command.Targets == "" {
 		evidenceLine = "  targets (omitted for length)"
 	}
 	if command.DerivedFrom != "" {
-		evidenceLine += " (from " + command.DerivedFrom + ")"
+		evidenceLine += " (from " + termsafe.Line(command.DerivedFrom) + ")"
 	}
 	if command.Tier != "" {
 		evidenceLine += " tier=" + command.Tier
@@ -1246,7 +1256,7 @@ func RenderSearchVerifyCommand(command *SearchVerifyCommand) []byte {
 	// questions the command otherwise invites: why is there a -D on my cmake line, or why does the
 	// derivation say coverage is not claimed.
 	if command.Guard != "" {
-		rendered += "  guarded by: " + command.Guard + "\n"
+		rendered += "  guarded by: " + termsafe.Line(command.Guard) + "\n"
 	}
 	// PRE-FIX status is computed by the CALLER (it already validates the pristine tree) and rendered
 	// verbatim here, capped. The binary deliberately does not interpret it: a status the tool invented

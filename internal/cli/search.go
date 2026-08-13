@@ -590,16 +590,16 @@ func renderSignatureTypes(types []sem.SearchSignatureType) []byte {
 	var buffer strings.Builder
 	buffer.WriteString(searchTextSignatureTypesHeader + "\n")
 	for _, entry := range types {
-		fmt.Fprintf(&buffer, "  %s  %s:%d\n", entry.Name, entry.FilePath, entry.StartLine)
+		fmt.Fprintf(&buffer, "  %s  %s:%d\n", termsafe.Line(entry.Name), termsafe.Line(entry.FilePath), entry.StartLine)
 		if len(entry.Fields) > 0 {
-			line := "    fields: " + strings.Join(entry.Fields, ", ")
+			line := "    fields: " + termsafe.Line(strings.Join(entry.Fields, ", "))
 			if omitted := entry.FieldsTotal - len(entry.Fields); omitted > 0 {
 				line += fmt.Sprintf(" (+%d more)", omitted)
 			}
 			fmt.Fprintln(&buffer, line)
 		}
 		if len(entry.Methods) > 0 {
-			line := fmt.Sprintf("    impl %s: %s", entry.Name, strings.Join(entry.Methods, ", "))
+			line := fmt.Sprintf("    impl %s: %s", termsafe.Line(entry.Name), termsafe.Line(strings.Join(entry.Methods, ", ")))
 			if omitted := entry.MethodsTotal - len(entry.Methods); omitted > 0 {
 				line += fmt.Sprintf(" (+%d more)", omitted)
 			}
@@ -1353,11 +1353,11 @@ func agentSearchTypeCard(card []sem.TypeCardEntry) []byte {
 	}
 	var output bytes.Buffer
 	for _, entry := range card {
-		fmt.Fprintf(&output, "D: %s %s:%d", entry.Name, entry.FilePath, entry.Line)
+		fmt.Fprintf(&output, "D: %s %s:%d", termsafe.Line(entry.Name), termsafe.Line(entry.FilePath), entry.Line)
 		if len(entry.UseLines) > 0 {
 			fmt.Fprintf(&output, " used=%s", joinSearchUseLines(entry.UseLines))
 		}
-		fmt.Fprintf(&output, " | %s\n", entry.Decl)
+		fmt.Fprintf(&output, " | %s\n", termsafe.Line(entry.Decl))
 	}
 	return output.Bytes()
 }

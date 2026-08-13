@@ -21,7 +21,8 @@
 // because output stability is what lets an agent copy a snippet verbatim as an
 // edit anchor:
 //
-//   - LF and TAB pass, being the layout the renderers themselves depend on.
+//   - LF, TAB, FF and VT pass, being page whitespace the renderers and the
+//     scanned sources themselves depend on.
 //   - CR immediately followed by LF passes. Snippet lines are split on LF alone,
 //     so a CRLF-authored file carries its CR into every printed line; escaping it
 //     would put a visible marker at the end of every line of a Windows-authored
@@ -80,16 +81,6 @@ func (w *Writer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// String neutralizes one value that may legitimately span lines. It exists for
-// the sinks a writer wrap cannot cover, chiefly the diff renderer, which must
-// escape a value BEFORE wrapping it in its own ANSI color codes.
-func String(value string) string {
-	if !needsEscape(value, keepLayout) {
-		return value
-	}
-	return string(appendEscaped(make([]byte, 0, len(value)+escapeHeadroom), value, keepLayout))
-}
-
 // Line neutralizes one value that must occupy a single line: a file path, a
 // symbol name, a one-line declaration — anything embedded in a record whose
 // layout is "one per line".
@@ -111,8 +102,9 @@ func Line(value string) string {
 	return string(appendEscaped(make([]byte, 0, len(value)+escapeHeadroom), value, escapeLayout))
 }
 
-// Bytes is String for an already-rendered block. It returns the input itself when
-// there is nothing to escape, so the ordinary path neither copies nor allocates.
+// Bytes neutralizes an already-rendered block that may legitimately span lines.
+// It returns the input itself when there is nothing to escape, so the ordinary
+// path neither copies nor allocates.
 func Bytes(value []byte) []byte {
 	if !needsEscape(value, keepLayout) {
 		return value
@@ -150,7 +142,14 @@ type text interface {
 func escapedAt[T text](data T, i int, keep layout) int {
 	character := data[i]
 	switch {
-	case character == '\n' || character == '\t':
+	case character == '\n' || character == '\t' || character == '\f' || character == '\v':
+		// FF and VT ride along with LF and TAB because they are page whitespace,
+		// not a cursor primitive: a terminal treats both as an index (move down a
+		// line) and neither can reposition horizontally, restyle, or hide text.
+		// They have to pass, because a form feed is how GNU-style C, Emacs Lisp
+		// and older Perl separate pages — escaping it would rewrite the bytes of
+		// every such file's snippet and break the verbatim edit anchor this
+		// package promises to preserve.
 		if keep {
 			return 0
 		}

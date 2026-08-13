@@ -93,3 +93,36 @@ func TestSearchBlocksLeaveCleanInputAlone(t *testing.T) {
 		t.Errorf("clean block gained an escape artifact:\n%s", rendered)
 	}
 }
+
+// TestRenderSearchVerifyCommandEscapesOneLineFields is the highest-stakes case in
+// this file. VERIFY is the line an agent is instructed to RUN, so a pathname that
+// splits the record lets a repository display a command the deriver never
+// produced. Execution was never at risk — the path is shell-quoted before it
+// reaches the command string — but what the reader is shown was.
+func TestRenderSearchVerifyCommandEscapesOneLineFields(t *testing.T) {
+	t.Parallel()
+	rendered := RenderSearchVerifyCommand(&SearchVerifyCommand{
+		Command:     "python -m py_compile '" + forgedPath + "'",
+		Targets:     forgedPath,
+		DerivedFrom: "build check on " + forgedPath,
+		Guard:       "cfg(" + forgedPath + ")",
+		Tier:        "build-check",
+	})
+	assertNoForgedLine(t, "RenderSearchVerifyCommand", rendered)
+	// Every line of the block must still belong to the block: the record is
+	// "VERIFY:" then indented evidence, and nothing else.
+	for _, line := range strings.Split(strings.TrimRight(string(rendered), "\n"), "\n") {
+		if !strings.HasPrefix(line, "VERIFY:") && !strings.HasPrefix(line, "  ") {
+			t.Errorf("a field forged a line outside the block's shape: %q\nin:\n%s", line, rendered)
+		}
+	}
+}
+
+func TestRenderSearchCoverageNoteEscapesOneLineFields(t *testing.T) {
+	t.Parallel()
+	assertNoForgedLine(t, "RenderSearchCoverageNote", RenderSearchCoverageNote(&SearchCoverageNote{
+		Symbol: "Merge" + forgedPath, Total: 3,
+		Peers:    []string{"TestMerge" + forgedPath},
+		FilePath: forgedPath,
+	}))
+}

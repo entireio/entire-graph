@@ -28,19 +28,9 @@ var escapeCases = []struct {
 	{"the low end of C1 escapes too", "x\u0080y", `x\u0080y`},
 	{"0xc2 not introducing C1 is an ordinary lead byte", "caf\u00e9 \u00c2\u00a0 break", "caf\u00e9 \u00c2\u00a0 break"},
 	{"NUL is a control byte like any other", "a\x00b", `a\x00b`},
+	{"FF is a page separator in GNU-style source", "top\n\fbottom", "top\n\fbottom"},
+	{"VT is page whitespace too", "a\vb", "a\vb"},
 	{"multi-byte runes survive intact", "héllo → wörld 日本語", "héllo → wörld 日本語"},
-}
-
-func TestStringEscapesControlSequences(t *testing.T) {
-	t.Parallel()
-	for _, testCase := range escapeCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-			if got := String(testCase.in); got != testCase.want {
-				t.Errorf("String(%q) = %q, want %q", testCase.in, got, testCase.want)
-			}
-		})
-	}
 }
 
 func TestBytesEscapesControlSequences(t *testing.T) {
@@ -92,6 +82,12 @@ func TestLineEscapesLayoutBytes(t *testing.T) {
 	if got := Line("col\tumn"); got != `col\x09umn` {
 		t.Errorf("Line did not escape a tab: %q", got)
 	}
+	// Page whitespace passes in keep-layout mode because it is real source
+	// formatting, but in a one-line record it still moves the reader down a line,
+	// so Line escapes it.
+	if got := Line("page\fbreak"); got != `page\x0cbreak` {
+		t.Errorf("Line did not escape a form feed: %q", got)
+	}
 	// Everything String escapes, Line escapes too.
 	for _, testCase := range escapeCases {
 		if strings.ContainsAny(Line(testCase.in), "\x1b") {
@@ -113,9 +109,6 @@ func TestOutputWithoutControlBytesIsByteIdentical(t *testing.T) {
 	source := "func (s textStyles) render(code, value string) string {\n" +
 		"\tif !s.color || value == \"\" {\n\t\treturn value\n\t}\n}\n" +
 		"// naïve — 日本語 — \"quoted\" 'single' `back` $shell\r\n"
-	if got := String(source); got != source {
-		t.Errorf("String rewrote clean source:\ngot  %q\nwant %q", got, source)
-	}
 	if got := Bytes([]byte(source)); !bytes.Equal(got, []byte(source)) {
 		t.Errorf("Bytes rewrote clean source:\ngot  %q\nwant %q", got, source)
 	}
@@ -126,9 +119,9 @@ func TestOutputWithoutControlBytesIsByteIdentical(t *testing.T) {
 func TestEscapingIsIdempotent(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range escapeCases {
-		once := String(testCase.in)
-		if twice := String(once); twice != once {
-			t.Errorf("String(String(%q)) = %q, want %q", testCase.in, twice, once)
+		once := string(Bytes([]byte(testCase.in)))
+		if twice := string(Bytes([]byte(once))); twice != once {
+			t.Errorf("Bytes(Bytes(%q)) = %q, want %q", testCase.in, twice, once)
 		}
 	}
 }

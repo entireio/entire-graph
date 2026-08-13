@@ -189,3 +189,62 @@ func TestSearchTextWithoutControlBytesIsUnchanged(t *testing.T) {
 		t.Errorf("clean output gained an escape artifact:\n%s", rendered)
 	}
 }
+
+// forgedPathName is a pathname that tries to print a record of its own. The
+// writer wrap cannot stop it — by the time bytes reach the writer, a snippet's
+// newline and a path's are the same byte — so these sinks have to escape by
+// value, and these tests are what say so.
+const forgedPathName = "a.go\n  src/attacker-owned.go:1 forged"
+
+func assertNoForgedRecord(t *testing.T, what, rendered string) {
+	t.Helper()
+	for _, line := range strings.Split(rendered, "\n") {
+		if strings.Contains(line, "attacker-owned.go") && !strings.Contains(line, "a.go") {
+			t.Errorf("%s let a pathname forge its own line:\n%s", what, rendered)
+		}
+	}
+	if !strings.Contains(rendered, "a.go") {
+		t.Errorf("%s dropped the path instead of escaping it:\n%s", what, rendered)
+	}
+}
+
+// TestAgentSearchTypeCardEscapesOneLineFields covers the --format agent twin of
+// the text type card. The two renderers print the same fields; only the text one
+// was escaped at first, which is exactly the asymmetry this pins shut.
+func TestAgentSearchTypeCardEscapesOneLineFields(t *testing.T) {
+	t.Parallel()
+	assertNoForgedRecord(t, "agentSearchTypeCard", string(agentSearchTypeCard([]sem.TypeCardEntry{{
+		Name: "Router", FilePath: forgedPathName, Line: 12,
+		Decl: "pub struct Router {" + forgedPathName + "}",
+	}})))
+}
+
+func TestRenderSignatureTypesEscapesOneLineFields(t *testing.T) {
+	t.Parallel()
+	assertNoForgedRecord(t, "renderSignatureTypes", string(renderSignatureTypes([]sem.SearchSignatureType{{
+		Name: "Router" + forgedPathName, FilePath: forgedPathName, StartLine: 3,
+		Fields: []string{"inner" + forgedPathName}, FieldsTotal: 1,
+	}})))
+}
+
+func TestFormatNeighborEndpointStaysOnOneLine(t *testing.T) {
+	t.Parallel()
+	rendered := formatNeighborEndpoint(neighborEndpoint{
+		Name: "Merge" + forgedPathName, FilePath: forgedPathName, StartLine: 4,
+	})
+	if strings.Contains(rendered, "\n") {
+		t.Errorf("formatNeighborEndpoint returned more than one line: %q", rendered)
+	}
+	assertNoForgedRecord(t, "formatNeighborEndpoint", rendered)
+}
+
+func TestExplainEscapesOneLineFields(t *testing.T) {
+	t.Parallel()
+	rendered := string(RenderExplain(ExplainResponse{Symbols: []ExplainSymbol{{
+		Query: "Helper", Resolved: true, Name: "Helper", Kind: "function",
+		FilePath: forgedPathName, StartLine: 3, EndLine: 3,
+		Signature: "func Helper() int" + forgedPathName,
+	}}}, 0))
+	assertNoForgedRecord(t, "RenderExplain", rendered)
+	assertNoRawControl(t, "RenderExplain", strings.ReplaceAll(rendered, "a.go", "evil"))
+}

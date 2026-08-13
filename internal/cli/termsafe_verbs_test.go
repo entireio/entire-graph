@@ -78,6 +78,11 @@ func TestNoVerbLeaksControlSequencesToTheTerminal(t *testing.T) {
 		{"neighbors", "--symbol", "Merge", "--format", "text"},
 		{"neighbors", "--symbol", "Merge", "--format", "agent"},
 		{"impact", "--symbol", "Merge", "--format", "text"},
+		// explain reads a build error from stdin; runVerb feeds it one naming a
+		// symbol that lives in the hostile file. It was missing from the first
+		// version of this sweep and was still leaking a raw ESC because of it.
+		{"explain", "--format", "text"},
+		{"explain", "--format", "agent"},
 		{"diff", "--base", "HEAD~1", "--head", "HEAD"},
 		// --progress is swept for the diff it still prints to stdout, NOT for the
 		// per-file progress line: that line is throttled to one per second and
@@ -144,6 +149,7 @@ func runVerb(t *testing.T, repo, cacheDir string, argv []string) (string, string
 		Env:     EntireEnv{RepoRoot: repo, PluginDataDir: cacheDir},
 		Stdout:  &stdout,
 		Stderr:  &stderr,
+		Stdin:   strings.NewReader("undefined: Helper\nundefined: Merge\n"),
 	}, argv); err != nil {
 		t.Fatalf("%v: %v\nstdout:\n%s\nstderr:\n%s", argv, err, stdout.String(), stderr.String())
 	}

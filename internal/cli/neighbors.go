@@ -1031,15 +1031,21 @@ func formatCallSiteLocation(endpoint neighborEndpoint, site *callSite) string {
 	return fmt.Sprintf("%s (%s:%d, def :%d)", name, site.FilePath, site.Line, endpoint.StartLine)
 }
 
+// formatNeighborEndpoint is the one place an endpoint becomes display text, for
+// the edge lists, the disambiguation listing, the fuzzy-match listing and the
+// compact payload alike. Its result is always placed on a line of its own by its
+// callers, so the name and the path are one-line values and are escaped here —
+// covering every caller at once, which is why the escape is not repeated at each
+// of them.
 func formatNeighborEndpoint(endpoint neighborEndpoint) string {
-	name := endpointDisplayName(endpoint)
+	name := termsafe.Line(endpointDisplayName(endpoint))
 	if endpoint.FilePath == "" {
 		return name
 	}
 	if endpoint.StartLine > 0 {
-		return fmt.Sprintf("%s (%s:%d)", name, endpoint.FilePath, endpoint.StartLine)
+		return fmt.Sprintf("%s (%s:%d)", name, termsafe.Line(endpoint.FilePath), endpoint.StartLine)
 	}
-	return fmt.Sprintf("%s (%s)", name, endpoint.FilePath)
+	return fmt.Sprintf("%s (%s)", name, termsafe.Line(endpoint.FilePath))
 }
 
 // formatNeighborFocus renders the symbol under query with BOTH numbers a reader
