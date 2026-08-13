@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/entireio/entire-graph/internal/sem"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 const (
@@ -722,6 +723,8 @@ func capImpactSections(response impactResponse, limit int) impactResponse {
 }
 
 func writeImpactText(out io.Writer, response impactResponse) {
+	// Every section here names repository paths and symbols. See writeTextSearch.
+	out = termsafe.NewWriter(out)
 	cacheState := "miss"
 	if response.IndexCacheHit {
 		cacheState = "hit"

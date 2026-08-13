@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // FILE OUTLINE — what else is in the files the payload already named.
@@ -189,7 +191,9 @@ func RenderSearchFileOutline(outlines []SearchFileOutline) []byte {
 	var buffer strings.Builder
 	buffer.WriteString(SearchFileOutlineHeader + "\n")
 	for _, outline := range outlines {
-		fmt.Fprintf(&buffer, "  %s", outline.FilePath)
+		// The block is one file per line, so the path is a one-line value: a Git
+		// pathname holding a newline would otherwise print as two outline entries.
+		fmt.Fprintf(&buffer, "  %s", termsafe.Line(outline.FilePath))
 		if outline.Lines > 0 {
 			fmt.Fprintf(&buffer, " (%d lines)", outline.Lines)
 		}

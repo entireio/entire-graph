@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/entireio/entire-graph/internal/sem"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 const (
@@ -725,12 +726,19 @@ func writeAgentNeighborsBounded(out io.Writer, response neighborResponse, budget
 		_, err := out.Write(full.Bytes())
 		return err
 	}
-	payload := compactAgentNeighbors(response, budget)
+	// The compact payload is built independently of writeAgentNeighborsFull, so it
+	// does not inherit that function's wrapped writer and is escaped on its own.
+	payload := termsafe.Bytes(compactAgentNeighbors(response, budget))
 	_, err := out.Write(payload)
 	return err
 }
 
 func writeAgentNeighborsFull(out io.Writer, response neighborResponse) error {
+	// Wrapped at the renderer rather than at its two callers, so the call-context
+	// windows this prints — raw source lines, via writeCallContext — are covered
+	// on the bounded path too, where the caller buffers this output before
+	// trimming it. See writeTextSearch.
+	out = termsafe.NewWriter(out)
 	cacheState := "miss"
 	if response.IndexCacheHit {
 		cacheState = "hit"

@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/entireio/entire-graph/internal/sem"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // `def` — a structural declaration lookup
@@ -771,6 +772,10 @@ func defDedupRelated(entries []defRelated) []defRelated {
 // lists shrink before anything structural is dropped, because the identity line
 // and the owner are the two things a caller cannot reconstruct themselves.
 func writeDefText(out io.Writer, response defResponse, budget int) error {
+	// The card prints whole source lines through writeNumberedSource, which reads
+	// them off the scanned repository unchanged. Wrapped here so the declaration
+	// headers and the bodies are both covered.
+	out = termsafe.NewWriter(out)
 	body := renderDefText(response, defaultDefMemberLimit)
 	if budget > 0 && len(body) > budget {
 		for _, limit := range []int{8, 5, 3, 1, 0} {

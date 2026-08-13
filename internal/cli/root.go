@@ -14,6 +14,7 @@ import (
 
 	"github.com/entireio/entire-graph/internal/gitutil"
 	"github.com/entireio/entire-graph/internal/sem"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 type Options struct {
@@ -799,16 +800,7 @@ func analyzeAndPrint(ctx context.Context, opts Options, repo, base, head string,
 	}
 	if flags.Progress {
 		analyzeOptions.Progress = func(event sem.AnalyzeProgressEvent) {
-			line := fmt.Sprintf("graph diff progress phase=%s files=%d/%d elapsed=%s",
-				event.Phase,
-				event.FilesDone,
-				event.FilesTotal,
-				event.Elapsed.Round(time.Millisecond),
-			)
-			if event.Path != "" {
-				line += " file=" + event.Path
-			}
-			fmt.Fprintln(opts.Stderr, line)
+			fmt.Fprintln(opts.Stderr, diffProgressLine(event))
 		}
 	}
 	result, err := sem.AnalyzeGitRangeWithOptions(ctx, repo, base, head, paths, analyzeOptions)
@@ -816,6 +808,27 @@ func analyzeAndPrint(ctx context.Context, opts Options, repo, base, head string,
 		return err
 	}
 	return printResult(opts.Stdout, result, flags.JSON)
+}
+
+// diffProgressLine renders one --progress event for stderr.
+//
+// It is a named function rather than an inline closure because of the escaping:
+// event.Path is a raw Git pathname carried through from `git diff -z`, which may
+// hold any byte but NUL and '/', and this is the one sink that has to escape by
+// value instead of by wrapping its writer — stderr also carries the progress
+// bar's own cursor control (see progressbar.go), which a wrap could not tell
+// apart from an injected sequence.
+func diffProgressLine(event sem.AnalyzeProgressEvent) string {
+	line := fmt.Sprintf("graph diff progress phase=%s files=%d/%d elapsed=%s",
+		event.Phase,
+		event.FilesDone,
+		event.FilesTotal,
+		event.Elapsed.Round(time.Millisecond),
+	)
+	if event.Path != "" {
+		line += " file=" + termsafe.Line(event.Path)
+	}
+	return line
 }
 
 func printResult(out io.Writer, result sem.Result, asJSON bool) error {
