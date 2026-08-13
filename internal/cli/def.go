@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/entireio/entire-graph/internal/sem"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // `def` — a structural declaration lookup
@@ -771,6 +772,10 @@ func defDedupRelated(entries []defRelated) []defRelated {
 // lists shrink before anything structural is dropped, because the identity line
 // and the owner are the two things a caller cannot reconstruct themselves.
 func writeDefText(out io.Writer, response defResponse, budget int) error {
+	// The card prints whole source lines through writeNumberedSource, which reads
+	// them off the scanned repository unchanged. Wrapped here so the declaration
+	// headers and the bodies are both covered.
+	out = termsafe.NewWriter(out)
 	body := renderDefText(response, defaultDefMemberLimit)
 	if budget > 0 && len(body) > budget {
 		for _, limit := range []int{8, 5, 3, 1, 0} {
@@ -818,17 +823,17 @@ func renderDefText(response defResponse, limit int) []byte {
 }
 
 func writeDefDeclarationText(buffer *strings.Builder, declaration defDeclaration, limit int) {
-	fmt.Fprintf(buffer, "%s:%d  %s %s\n", declaration.FilePath, declaration.StartLine,
-		declaration.Kind, defDisplayName(declaration))
+	fmt.Fprintf(buffer, "%s:%d  %s %s\n", termsafe.Line(declaration.FilePath), declaration.StartLine,
+		termsafe.Line(declaration.Kind), termsafe.Line(defDisplayName(declaration)))
 	if declaration.Owner != nil {
-		fmt.Fprintf(buffer, "  owner: %s %s (%s:%d)\n", declaration.Owner.Kind, declaration.Owner.Name,
-			declaration.Owner.FilePath, declaration.Owner.StartLine)
+		fmt.Fprintf(buffer, "  owner: %s %s (%s:%d)\n", termsafe.Line(declaration.Owner.Kind), termsafe.Line(declaration.Owner.Name),
+			termsafe.Line(declaration.Owner.FilePath), declaration.Owner.StartLine)
 	}
 	if declaration.Signature != "" {
-		fmt.Fprintf(buffer, "  signature: %s\n", defTruncateRunes(declaration.Signature, defMaxSignatureRunes))
+		fmt.Fprintf(buffer, "  signature: %s\n", termsafe.Line(defTruncateRunes(declaration.Signature, defMaxSignatureRunes)))
 	}
 	for _, part := range declaration.Parts {
-		fmt.Fprintf(buffer, "  also declared: %s:%d\n", part.FilePath, part.StartLine)
+		fmt.Fprintf(buffer, "  also declared: %s:%d\n", termsafe.Line(part.FilePath), part.StartLine)
 	}
 	if limit > 0 {
 		writeDefMemberLine(buffer, "fields", declaration.Fields, declaration.FieldsTotal, limit, false)
@@ -873,7 +878,13 @@ func writeDefMemberLine(buffer *strings.Builder, label string, members []defMemb
 		}
 		entries = append(entries, entry)
 	}
-	line := fmt.Sprintf("  %s: %s", label, strings.Join(entries, ", "))
+	// A member list is one line of the card, and every part of it — the label,
+	// which carries the owning type's name, and each entry's name, signature tail
+	// and origin — comes from the scanned repository. Escaped after assembly
+	// because the separators between them are this renderer's own ASCII, so one
+	// pass over the finished line covers every field without a new sink appearing
+	// each time an entry grows a part.
+	line := termsafe.Line(fmt.Sprintf("  %s: %s", label, strings.Join(entries, ", ")))
 	if omitted := total - len(shown); omitted > 0 {
 		line += fmt.Sprintf(" (+%d more)", omitted)
 	}
@@ -934,9 +945,9 @@ func defFieldType(member defMember) string {
 func defRelatedLine(entries []defRelated, label string) string {
 	parts := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		part := entry.Name
+		part := termsafe.Line(entry.Name)
 		if entry.FilePath != "" && entry.StartLine > 0 {
-			part += fmt.Sprintf(" (%s:%d)", entry.FilePath, entry.StartLine)
+			part += fmt.Sprintf(" (%s:%d)", termsafe.Line(entry.FilePath), entry.StartLine)
 		}
 		if entry.Relation != "" {
 			part += " [" + strings.ToLower(entry.Relation) + "]"

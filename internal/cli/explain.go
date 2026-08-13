@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/entireio/entire-graph/internal/sem"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // explain — turn a FAILING BUILD into the declarations it is complaining about.
@@ -290,20 +291,27 @@ func RenderExplain(response ExplainResponse, maxBytes int) []byte {
 	var missing []string
 	for _, symbol := range response.Symbols {
 		if !symbol.Resolved {
-			missing = append(missing, symbol.Query)
+			// Echoed from the build output the caller piped in, which is itself
+			// produced by a compiler reading repository names.
+			missing = append(missing, termsafe.Line(symbol.Query))
 			continue
 		}
-		line := fmt.Sprintf("  %s:%d-%d", symbol.FilePath, symbol.StartLine, symbol.EndLine)
+		// One declaration per line, so every field is a one-line value: the path
+		// is a raw Git pathname and the signature is a declaration lifted off a
+		// line of the scanned tree. Escaped here rather than by wrapping the
+		// writer, because the byte budget below is measured on these strings and
+		// has to count what is actually printed.
+		line := fmt.Sprintf("  %s:%d-%d", termsafe.Line(symbol.FilePath), symbol.StartLine, symbol.EndLine)
 		if symbol.Kind != "" {
-			line += " " + symbol.Kind
+			line += " " + termsafe.Line(symbol.Kind)
 		}
-		line += " " + symbol.Name
+		line += " " + termsafe.Line(symbol.Name)
 		if symbol.Owner != "" {
-			line += " (in " + symbol.Owner + ")"
+			line += " (in " + termsafe.Line(symbol.Owner) + ")"
 		}
 		line += "\n"
 		if symbol.Signature != "" {
-			line += "      " + strings.Join(strings.Fields(symbol.Signature), " ") + "\n"
+			line += "      " + termsafe.Line(strings.Join(strings.Fields(symbol.Signature), " ")) + "\n"
 		}
 		if buffer.Len()+len(line) > maxBytes {
 			break

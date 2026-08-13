@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/entireio/entire-graph/internal/sem"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 const (
@@ -725,12 +726,19 @@ func writeAgentNeighborsBounded(out io.Writer, response neighborResponse, budget
 		_, err := out.Write(full.Bytes())
 		return err
 	}
-	payload := compactAgentNeighbors(response, budget)
+	// The compact payload is built independently of writeAgentNeighborsFull, so it
+	// does not inherit that function's wrapped writer and is escaped on its own.
+	payload := termsafe.Bytes(compactAgentNeighbors(response, budget))
 	_, err := out.Write(payload)
 	return err
 }
 
 func writeAgentNeighborsFull(out io.Writer, response neighborResponse) error {
+	// Wrapped at the renderer rather than at its two callers, so the call-context
+	// windows this prints — raw source lines, via writeCallContext — are covered
+	// on the bounded path too, where the caller buffers this output before
+	// trimming it. See writeTextSearch.
+	out = termsafe.NewWriter(out)
 	cacheState := "miss"
 	if response.IndexCacheHit {
 		cacheState = "hit"
@@ -856,10 +864,15 @@ func compactAgentNeighbors(response neighborResponse, budget int) []byte {
 		}
 	} else {
 		focus := response.Matches[0].Symbol
+		// The SHORTER variants have to escape too. The first one inherits it from
+		// formatNeighborEndpoint, but these are what get printed under byte
+		// pressure — and a guard that holds only while the payload has room is
+		// worse than none, because the case it drops is the one nobody re-reads.
+		focusPath := termsafe.Line(focus.FilePath)
 		appendVariant(
 			"Focus: "+formatNeighborEndpoint(focus)+"\n",
-			fmt.Sprintf("F %s:%d %s\n", focus.FilePath, focus.StartLine, endpointDisplayName(focus)),
-			fmt.Sprintf("F %s:%d\n", focus.FilePath, focus.StartLine),
+			fmt.Sprintf("F %s:%d %s\n", focusPath, focus.StartLine, termsafe.Line(endpointDisplayName(focus))),
+			fmt.Sprintf("F %s:%d\n", focusPath, focus.StartLine),
 		)
 	}
 
@@ -1016,22 +1029,32 @@ func formatCallSiteLocation(endpoint neighborEndpoint, site *callSite) string {
 	if site == nil {
 		return formatNeighborEndpoint(endpoint)
 	}
-	name := endpointDisplayName(endpoint)
+	// Same one-line contract as formatNeighborEndpoint, which this deliberately
+	// does not delegate to (it names the CALL SITE, not the definition) — so the
+	// escaping has to be repeated rather than inherited.
+	name := termsafe.Line(endpointDisplayName(endpoint))
+	path := termsafe.Line(site.FilePath)
 	if site.Line == endpoint.StartLine && site.FilePath == endpoint.FilePath {
-		return fmt.Sprintf("%s (%s:%d)", name, site.FilePath, site.Line)
+		return fmt.Sprintf("%s (%s:%d)", name, path, site.Line)
 	}
-	return fmt.Sprintf("%s (%s:%d, def :%d)", name, site.FilePath, site.Line, endpoint.StartLine)
+	return fmt.Sprintf("%s (%s:%d, def :%d)", name, path, site.Line, endpoint.StartLine)
 }
 
+// formatNeighborEndpoint is the one place an endpoint becomes display text, for
+// the edge lists, the disambiguation listing, the fuzzy-match listing and the
+// compact payload alike. Its result is always placed on a line of its own by its
+// callers, so the name and the path are one-line values and are escaped here —
+// covering every caller at once, which is why the escape is not repeated at each
+// of them.
 func formatNeighborEndpoint(endpoint neighborEndpoint) string {
-	name := endpointDisplayName(endpoint)
+	name := termsafe.Line(endpointDisplayName(endpoint))
 	if endpoint.FilePath == "" {
 		return name
 	}
 	if endpoint.StartLine > 0 {
-		return fmt.Sprintf("%s (%s:%d)", name, endpoint.FilePath, endpoint.StartLine)
+		return fmt.Sprintf("%s (%s:%d)", name, termsafe.Line(endpoint.FilePath), endpoint.StartLine)
 	}
-	return fmt.Sprintf("%s (%s)", name, endpoint.FilePath)
+	return fmt.Sprintf("%s (%s)", name, termsafe.Line(endpoint.FilePath))
 }
 
 // formatNeighborFocus renders the symbol under query with BOTH numbers a reader

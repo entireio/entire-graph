@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // The container map
@@ -751,15 +753,15 @@ func RenderSearchContainerMap(containerMap *SearchContainerMap, compact bool) []
 		return nil
 	}
 	var out strings.Builder
-	fmt.Fprintf(&out, "CONTAINER MAP %s [%d lines]", containerMap.FilePath, containerMap.FileLines)
+	fmt.Fprintf(&out, "CONTAINER MAP %s [%d lines]", termsafe.Line(containerMap.FilePath), containerMap.FileLines)
 	if containerMap.Name != "" {
-		fmt.Fprintf(&out, " (%s %s, %d-%d)", containerMap.Kind, containerMap.Name, containerMap.StartLine, containerMap.EndLine)
+		fmt.Fprintf(&out, " (%s %s, %d-%d)", containerMap.Kind, termsafe.Line(containerMap.Name), containerMap.StartLine, containerMap.EndLine)
 	} else {
 		out.WriteString(" (file top level)")
 	}
 	out.WriteString("\n")
 	if len(containerMap.Fields) > 0 {
-		fmt.Fprintf(&out, "  fields: %s", strings.Join(containerMap.Fields, ", "))
+		fmt.Fprintf(&out, "  fields: %s", termsafe.Line(strings.Join(containerMap.Fields, ", ")))
 		if containerMap.FieldsOmitted > 0 {
 			fmt.Fprintf(&out, ", +%d more", containerMap.FieldsOmitted)
 		}
@@ -770,7 +772,7 @@ func RenderSearchContainerMap(containerMap *SearchContainerMap, compact bool) []
 		if member.Hit {
 			marker = " *"
 		}
-		fmt.Fprintf(&out, "%s %d-%d %s", marker, member.StartLine, member.EndLine, searchContainerMemberLabel(member, compact))
+		fmt.Fprintf(&out, "%s %d-%d %s", marker, member.StartLine, member.EndLine, termsafe.Line(searchContainerMemberLabel(member, compact)))
 		if !compact {
 			if len(member.Flags) > 0 {
 				fmt.Fprintf(&out, "  %s", strings.Join(member.Flags, ","))

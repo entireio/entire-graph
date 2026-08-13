@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/entireio/entire-graph/internal/sem"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 const (
@@ -722,6 +723,8 @@ func capImpactSections(response impactResponse, limit int) impactResponse {
 }
 
 func writeImpactText(out io.Writer, response impactResponse) {
+	// Every section here names repository paths and symbols. See writeTextSearch.
+	out = termsafe.NewWriter(out)
 	cacheState := "miss"
 	if response.IndexCacheHit {
 		cacheState = "hit"
@@ -791,7 +794,7 @@ func writeImpactText(out io.Writer, response impactResponse) {
 		response.DataFlows, true)
 	writeImpactSection(out,
 		fmt.Sprintf("Co-change coupling (%d; files that historically change with %s)",
-			response.CoChanges.Total, response.Focus.FilePath),
+			response.CoChanges.Total, termsafe.Line(response.Focus.FilePath)),
 		response.CoChanges, false)
 	writeImpactSection(out,
 		fmt.Sprintf("Same-container siblings (%d)", response.Siblings.Total),
@@ -816,7 +819,9 @@ func writeImpactSection(out io.Writer, header string, section impactSection, arr
 			}
 		}
 		if entry.Relation == "FILE_CHANGES_WITH" {
-			fmt.Fprintf(out, "- %s [%s]\n", entry.Endpoint.FilePath, entry.Detail)
+			// One co-change file per line: the path is a one-line value even though
+			// the section around it is written through the layout-preserving wrap.
+			fmt.Fprintf(out, "- %s [%s]\n", termsafe.Line(entry.Endpoint.FilePath), entry.Detail)
 			continue
 		}
 		fmt.Fprintf(out, "- %s%s", prefix, formatImpactEntryLocation(entry))

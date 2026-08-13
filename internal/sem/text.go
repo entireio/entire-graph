@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 func writeText(out io.Writer, result Result) {
@@ -151,7 +153,18 @@ func (s textStyles) changed(value string) string {
 	return s.render("33", value)
 }
 
+// render is the single sink of this renderer: every repository-derived value it
+// prints — entity names parsed out of the scanned tree, file paths from git —
+// reaches the terminal through here.
+//
+// Neutralizing BEFORE the color wrap rather than after is what makes the guard
+// hold. With color on, the value sits between codes this function opened, so an
+// embedded ESC does not merely inject a sequence of its own: it terminates the
+// styling mid-string and leaves the terminal in a state the trailing reset was
+// never going to close. With color off the value is returned as-is, which is the
+// other half of the same hole — hence the escape ahead of both paths.
 func (s textStyles) render(code, value string) string {
+	value = termsafe.Line(value)
 	if !s.color || value == "" {
 		return value
 	}

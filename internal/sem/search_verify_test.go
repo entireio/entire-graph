@@ -864,6 +864,48 @@ func TestBuildSearchVerifyCommandFallsBackToTheResidualFloor(t *testing.T) {
 		t.Fatalf("the line start must stay byte-identical:\n%s", rendered)
 	}
 }
+
+// TestBuildSearchVerifyCommandWithholdsAnUnprintableCommand pins the gate that
+// keeps "runnable exactly as written" true. A command whose path holds a byte the
+// renderer escapes is neither runnable as shown nor honest about not being, so it
+// is withheld and the residual floor answers instead.
+//
+// The C1 cases are the ones that regressed: the gate scanned for C0 and DEL while
+// the renderer escapes C1 as well, so a path carrying a raw 0x9b passed the gate,
+// was emitted as runnable, and was then rewritten on the way to the terminal. It
+// asks termsafe now, so the two cannot drift apart again.
+func TestBuildSearchVerifyCommandWithholdsAnUnprintableCommand(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct{ name, directory string }{
+		{"ESC", "internal/con\x1bfigs"},
+		{"a raw C1 byte", "internal/con\x9bfigs"},
+		{"C1 in its two-byte UTF-8 form", "internal/con\xc2\x9bfigs"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			evidence := searchVerifyTestEvidence(map[string]string{
+				"go.mod":                               "module x\n",
+				testCase.directory + "/parser_test.go": "package configs\n\nfunc TestParse(t *testing.T) {}\n",
+			})
+			results := []SearchResult{
+				{Rank: 1, FilePath: testCase.directory + "/parser.go", SymbolName: "Parse", Section: searchSectionPrimary},
+				{Rank: 2, FilePath: testCase.directory + "/parser_test.go", Section: searchSectionPrimary},
+			}
+			command := buildSearchVerifyCommand(results, evidence)
+			if command == nil {
+				t.Fatal("no VERIFY block at all — the residual floor must make this impossible")
+			}
+			if command.Command != searchVerifyNoneCommand {
+				t.Fatalf("emitted a command display would have rewritten: %q", command.Command)
+			}
+			rendered := string(RenderSearchVerifyCommand(command))
+			if strings.IndexByte(rendered, 0x1b) >= 0 || strings.IndexByte(rendered, 0x9b) >= 0 {
+				t.Fatalf("the rendered VERIFY block carried a control byte: %q", rendered)
+			}
+		})
+	}
+}
+
 func TestSearchVerifySuiteFallback(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // FILE OUTLINE — what else is in the files the payload already named.
@@ -189,7 +191,9 @@ func RenderSearchFileOutline(outlines []SearchFileOutline) []byte {
 	var buffer strings.Builder
 	buffer.WriteString(SearchFileOutlineHeader + "\n")
 	for _, outline := range outlines {
-		fmt.Fprintf(&buffer, "  %s", outline.FilePath)
+		// The block is one file per line, so the path is a one-line value: a Git
+		// pathname holding a newline would otherwise print as two outline entries.
+		fmt.Fprintf(&buffer, "  %s", termsafe.Line(outline.FilePath))
 		if outline.Lines > 0 {
 			fmt.Fprintf(&buffer, " (%d lines)", outline.Lines)
 		}
@@ -202,11 +206,15 @@ func RenderSearchFileOutline(outlines []SearchFileOutline) []byte {
 			if row.Hit {
 				marker = "*"
 			}
+			// A row is one symbol per line for the same reason the header above is one
+			// file per line, so the kind and the name are one-line values too: a symbol
+			// named "x\n   * 1-9 func Authorize" would otherwise index a symbol the
+			// file does not contain.
 			fmt.Fprintf(&buffer, "   %s %d-%d", marker, row.Start, row.End)
 			if row.Kind != "" {
-				fmt.Fprintf(&buffer, " %s", row.Kind)
+				fmt.Fprintf(&buffer, " %s", termsafe.Line(row.Kind))
 			}
-			fmt.Fprintf(&buffer, " %s\n", row.Name)
+			fmt.Fprintf(&buffer, " %s\n", termsafe.Line(row.Name))
 		}
 	}
 	return []byte(buffer.String())

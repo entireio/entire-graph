@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	"github.com/entireio/entire-graph/internal/sem"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // Addressing one definition
@@ -266,8 +267,10 @@ func disambiguationSelectors(definitions []neighborEndpoint) []string {
 		if definition.FilePath == "" || definition.StartLine <= 0 {
 			continue
 		}
+		// The selector is printed at the end of a definition's line, so it is a
+		// one-line value like the rest of that line.
 		selector := fmt.Sprintf("--symbol %s --file %s --line %d",
-			endpointDisplayName(definition), definition.FilePath, definition.StartLine)
+			termsafe.Line(endpointDisplayName(definition)), termsafe.Line(definition.FilePath), definition.StartLine)
 		if named[endpointNamedLocationKey(definition)] > 1 && definition.Kind != "" {
 			selector += " --kind " + definition.Kind
 		}
@@ -687,10 +690,18 @@ func minSymbolInt(left, right int) int {
 func writeSymbolMatchBodies(out interface {
 	Write([]byte) (int, error)
 }, bodies []symbolMatchBody) {
+	// The single place repository SOURCE is printed with a line-number gutter, and
+	// the only sink `def` reaches that its own writer wrap does not cover — so the
+	// wrap is made here, where all three callers pass through. Wrapping twice is
+	// harmless; see termsafe.NewWriter.
+	out = termsafe.NewWriter(out)
 	for _, body := range bodies {
-		fmt.Fprintf(out, "\n%s:%d-%d %s", body.FilePath, body.StartLine, body.EndLine, body.Name)
+		// The locator above each body is one line, so its fields get the stricter
+		// escape; the body itself keeps its newlines, being real layout.
+		fmt.Fprintf(out, "\n%s:%d-%d %s", termsafe.Line(body.FilePath), body.StartLine, body.EndLine,
+			termsafe.Line(body.Name))
 		if body.Kind != "" {
-			fmt.Fprintf(out, " [%s]", body.Kind)
+			fmt.Fprintf(out, " [%s]", termsafe.Line(body.Kind))
 		}
 		fmt.Fprintln(out)
 		writeNumberedSource(out, body.Source, body.StartLine)

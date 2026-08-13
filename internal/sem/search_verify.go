@@ -7,6 +7,8 @@ import (
 	"path"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // The verify command
@@ -256,7 +258,28 @@ func buildSearchVerifyCommand(
 	if searchVerifyCommandCost(command) > searchVerifyCommandMaxBytes {
 		command.Targets = ""
 	}
+	// A command built around a path holding control bytes cannot be BOTH runnable
+	// and safe to display. Rendering escapes it, which keeps the line honest but
+	// leaves a string that no longer names the file it was derived from — and
+	// "runnable as written" is this field's whole contract. So it is not emitted:
+	// the residual floor already exists to say "nothing derivable here", and that
+	// is the truthful answer for a repository whose filenames cannot be printed.
+	if searchVerifyControlBytes(command.Command) {
+		return searchVerifyResidualFloor("", evidence.prefix, evidence.preFixStatus)
+	}
 	return command
+}
+
+// searchVerifyControlBytes reports whether a derived command carries a byte that
+// the text renderer would have to escape. It asks termsafe rather than scanning
+// for C0 itself, because a second copy of the rule is a rule that drifts: this
+// one already had, missing the C1 controls the renderer escapes — a path holding
+// a raw 0x9b passed the gate, was emitted as runnable, and was then rewritten on
+// the way to the terminal. It checks the COMMAND only: Targets and DerivedFrom
+// are prose about the derivation and are escaped for display without any claim
+// that they can be pasted into a shell.
+func searchVerifyControlBytes(command string) bool {
+	return termsafe.EscapesLine(command)
 }
 
 // searchVerifyResidualFloor is the last rung: no manifest, no test file, no single-file checker. It
@@ -1225,15 +1248,23 @@ func RenderSearchVerifyCommand(command *SearchVerifyCommand) []byte {
 	if command == nil || command.Command == "" {
 		return nil
 	}
+	// Every field below carries repository-derived paths, and this block is
+	// one-record-per-line — so each is escaped with termsafe.Line. It matters more
+	// here than anywhere else in the payload: VERIFY is the line an agent is told
+	// to RUN, and a pathname holding a newline would otherwise split the record
+	// and let a repository print a command the deriver never produced. (Execution
+	// itself was already safe: the path is shell-quoted. This is about what the
+	// reader is shown.)
+	//
 	// "VERIFY: " stays byte-identical at line start whatever else changes — every harness and every
 	// prior measurement keys on that prefix.
-	rendered := "VERIFY: " + searchVerifyDecorated(command) + "\n"
-	evidenceLine := "  targets " + command.Targets
+	rendered := "VERIFY: " + termsafe.Line(searchVerifyDecorated(command)) + "\n"
+	evidenceLine := "  targets " + termsafe.Line(command.Targets)
 	if command.Targets == "" {
 		evidenceLine = "  targets (omitted for length)"
 	}
 	if command.DerivedFrom != "" {
-		evidenceLine += " (from " + command.DerivedFrom + ")"
+		evidenceLine += " (from " + termsafe.Line(command.DerivedFrom) + ")"
 	}
 	if command.Tier != "" {
 		evidenceLine += " tier=" + command.Tier
@@ -1246,7 +1277,7 @@ func RenderSearchVerifyCommand(command *SearchVerifyCommand) []byte {
 	// questions the command otherwise invites: why is there a -D on my cmake line, or why does the
 	// derivation say coverage is not claimed.
 	if command.Guard != "" {
-		rendered += "  guarded by: " + command.Guard + "\n"
+		rendered += "  guarded by: " + termsafe.Line(command.Guard) + "\n"
 	}
 	// PRE-FIX status is computed by the CALLER (it already validates the pristine tree) and rendered
 	// verbatim here, capped. The binary deliberately does not interpret it: a status the tool invented

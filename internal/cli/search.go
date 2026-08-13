@@ -14,6 +14,7 @@ import (
 
 	"github.com/entireio/entire-graph/internal/gitutil"
 	"github.com/entireio/entire-graph/internal/sem"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // defaultSearchContextBytes is the default `--max-context-bytes` ceiling for one search call.
@@ -428,6 +429,12 @@ const (
 // Ranks are the payload's own, unchanged, so a rank missing from the primary group is a visible
 // signal that it was sectioned rather than dropped.
 func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse) error {
+	// Everything below prints repository-controlled bytes: paths, snippets lifted
+	// verbatim from source, declarations read off a line of the scanned tree. The
+	// guarantee that none of them reaches the terminal as a control sequence is
+	// made once, here, rather than at the dozens of print sites in this function
+	// and in the sem renderers it calls.
+	out = termsafe.NewWriter(out)
 	if notice, _ := searchLowConfidenceNotices(response); len(notice) > 0 {
 		if _, err := out.Write(notice); err != nil {
 			return err
@@ -554,6 +561,7 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 	if len(related) > 0 {
 		fmt.Fprintf(out, "%s\n", searchTextRelatedHeader)
 		for _, result := range related {
+			result = searchResultOnOneLine(result)
 			name := searchResultDisplayName(result)
 			fmt.Fprintf(out, "%d. %s:%d", result.Rank, result.FilePath, searchResultLocatorLine(result))
 			if name != "" {
@@ -582,16 +590,16 @@ func renderSignatureTypes(types []sem.SearchSignatureType) []byte {
 	var buffer strings.Builder
 	buffer.WriteString(searchTextSignatureTypesHeader + "\n")
 	for _, entry := range types {
-		fmt.Fprintf(&buffer, "  %s  %s:%d\n", entry.Name, entry.FilePath, entry.StartLine)
+		fmt.Fprintf(&buffer, "  %s  %s:%d\n", termsafe.Line(entry.Name), termsafe.Line(entry.FilePath), entry.StartLine)
 		if len(entry.Fields) > 0 {
-			line := "    fields: " + strings.Join(entry.Fields, ", ")
+			line := "    fields: " + termsafe.Line(strings.Join(entry.Fields, ", "))
 			if omitted := entry.FieldsTotal - len(entry.Fields); omitted > 0 {
 				line += fmt.Sprintf(" (+%d more)", omitted)
 			}
 			fmt.Fprintln(&buffer, line)
 		}
 		if len(entry.Methods) > 0 {
-			line := fmt.Sprintf("    impl %s: %s", entry.Name, strings.Join(entry.Methods, ", "))
+			line := fmt.Sprintf("    impl %s: %s", termsafe.Line(entry.Name), termsafe.Line(strings.Join(entry.Methods, ", ")))
 			if omitted := entry.MethodsTotal - len(entry.Methods); omitted > 0 {
 				line += fmt.Sprintf(" (+%d more)", omitted)
 			}
@@ -714,7 +722,26 @@ func searchLocatorFollowUp(result sem.SearchResult) string {
 	return "  [body: def " + name + "]"
 }
 
+// searchResultOnOneLine escapes the fields that go into a result's HEADER, where
+// the layout is one record per line and a newline is therefore not layout but
+// forgery: a repository can name a file "a.go\n1. src/real.go:1 score=99.0" and
+// fabricate a hit the search never returned. The wrapped writer cannot make that
+// call — by then a path's newline and a snippet's are the same byte — so the
+// header fields are escaped here, where the renderer still knows which is which.
+//
+// The result is taken and returned BY VALUE. Nothing upstream sees the escaped
+// copy, so the JSON encoding of the same response still reports the exact bytes
+// the repository holds.
+func searchResultOnOneLine(result sem.SearchResult) sem.SearchResult {
+	result.FilePath = termsafe.Line(result.FilePath)
+	result.QualifiedName = termsafe.Line(result.QualifiedName)
+	result.SymbolName = termsafe.Line(result.SymbolName)
+	result.Kind = termsafe.Line(result.Kind)
+	return result
+}
+
 func writeTextSearchLocator(out interface{ Write([]byte) (int, error) }, result sem.SearchResult) {
+	result = searchResultOnOneLine(result)
 	// Byte-identical to the locator writeTextSearchResult already emits below the rank tier. Two
 	// different locator shapes in one payload would be a second thing for a reader to learn for no
 	// gain, and the existing shape is what every consumer and test already reads.
@@ -747,6 +774,7 @@ func writeTextSearchLocator(out interface{ Write([]byte) (int, error) }, result 
 }
 
 func writeTextSearchResult(out interface{ Write([]byte) (int, error) }, result sem.SearchResult, full bool) {
+	result = searchResultOnOneLine(result)
 	name := searchResultDisplayName(result)
 	if !full && !searchResultCarriesCompleteBody(result) {
 		// A locator is a single line number. Where the graph knows the named symbol's true extent,
@@ -911,11 +939,14 @@ func writeTextSearchTypeCard(out interface{ Write([]byte) (int, error) }, card [
 	}
 	fmt.Fprintf(out, "%s\n", searchTextTypesHeader)
 	for _, entry := range card {
-		fmt.Fprintf(out, "  %s %s:%d", entry.Name, entry.FilePath, entry.Line)
+		// One entry per line, and Decl is a declaration read verbatim off a single
+		// line of the scanned file — so all three fields are one-line values. See
+		// searchResultOnOneLine for why a newline here is forgery, not layout.
+		fmt.Fprintf(out, "  %s %s:%d", termsafe.Line(entry.Name), termsafe.Line(entry.FilePath), entry.Line)
 		if len(entry.UseLines) > 0 {
 			fmt.Fprintf(out, " (used %s)", joinSearchUseLines(entry.UseLines))
 		}
-		fmt.Fprintf(out, "  %s\n", entry.Decl)
+		fmt.Fprintf(out, "  %s\n", termsafe.Line(entry.Decl))
 	}
 }
 
@@ -1033,6 +1064,9 @@ func agentSearchSectionTag(result sem.SearchResult) string {
 }
 
 func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse, budget int) error {
+	// Same sink class as the text renderer, and the format agents are told to
+	// prefer — so it gets the same guard. See writeTextSearch.
+	out = termsafe.NewWriter(out)
 	results := orderAgentSearchResults(response.Results)
 	stats := response.Stats
 	cacheState := "miss"
@@ -1319,11 +1353,11 @@ func agentSearchTypeCard(card []sem.TypeCardEntry) []byte {
 	}
 	var output bytes.Buffer
 	for _, entry := range card {
-		fmt.Fprintf(&output, "D: %s %s:%d", entry.Name, entry.FilePath, entry.Line)
+		fmt.Fprintf(&output, "D: %s %s:%d", termsafe.Line(entry.Name), termsafe.Line(entry.FilePath), entry.Line)
 		if len(entry.UseLines) > 0 {
 			fmt.Fprintf(&output, " used=%s", joinSearchUseLines(entry.UseLines))
 		}
-		fmt.Fprintf(&output, " | %s\n", entry.Decl)
+		fmt.Fprintf(&output, " | %s\n", termsafe.Line(entry.Decl))
 	}
 	return output.Bytes()
 }
@@ -1387,11 +1421,15 @@ func searchCompletenessCounts(report sem.CompletenessReport) (int, int) {
 	return len(report.Languages), files
 }
 
+// agentDiagnosticPath renders the path a warning or partial failure names. The
+// file is unparseable BY DEFINITION here, so its name is the most attacker-shaped
+// value in the payload — and these records print one per line, ahead of the
+// ranking, which is where a forged line would do the most damage.
 func agentDiagnosticPath(path string) string {
 	if path == "" {
 		return ""
 	}
-	return ": " + path
+	return ": " + termsafe.Line(path)
 }
 
 // agentSearchBlockCarriesSource reports whether a rendered ranked block contains any source,
@@ -1515,6 +1553,9 @@ func agentSearchScoreTag(result sem.SearchResult) string {
 }
 
 func agentSearchBlock(result sem.SearchResult, budget int) []byte {
+	// Every location header this block and its helpers emit is one line. See
+	// searchResultOnOneLine.
+	result = searchResultOnOneLine(result)
 	if len(result.Passages) == 0 {
 		return agentSearchPrimaryBlock(result, budget)
 	}

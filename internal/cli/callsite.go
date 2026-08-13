@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/entireio/entire-graph/internal/sem"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // A CALLS relation records, as evidence, the span of the CALLER'S BODY — not the
@@ -775,7 +776,9 @@ func renderCallContext(site *callSite) string {
 		windowLines++
 	}
 	if windowLines > 0 {
-		fmt.Fprintf(&builder, "  %s:%d-%d\n", site.FilePath, site.WindowStart, site.WindowEnd)
+		// The window's locator is one record per line; the source lines under it
+		// keep their own layout and are covered by the caller's wrapped writer.
+		fmt.Fprintf(&builder, "  %s:%d-%d\n", termsafe.Line(site.FilePath), site.WindowStart, site.WindowEnd)
 		builder.WriteString(window.String())
 	}
 	return builder.String()

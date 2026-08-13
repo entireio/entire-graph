@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // The closed-set warning
@@ -986,9 +988,9 @@ func RenderSearchClosedSet(block *SearchClosedSet) []byte {
 		if site.Exhaustive {
 			coverage = "exhaustive"
 		}
-		fmt.Fprintf(&buffer, "  %s:%d", site.FilePath, site.Line)
+		fmt.Fprintf(&buffer, "  %s:%d", termsafe.Line(site.FilePath), site.Line)
 		if site.Symbol != "" {
-			fmt.Fprintf(&buffer, " %s", site.Symbol)
+			fmt.Fprintf(&buffer, " %s", termsafe.Line(site.Symbol))
 		}
 		fmt.Fprintf(&buffer, " %s, default %s, checked at %s\n", coverage, site.Default, site.Checked)
 	}

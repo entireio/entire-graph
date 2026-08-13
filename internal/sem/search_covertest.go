@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // Covering test
@@ -360,12 +362,12 @@ func RenderSearchCoverageNote(note *SearchCoverageNote) []byte {
 		return nil
 	}
 	line := fmt.Sprintf("  ALSO COVERING %s (%d tests cover it; all must still pass): %s",
-		note.Symbol, note.Total, strings.Join(note.Peers, ", "))
+		termsafe.Line(note.Symbol), note.Total, termsafe.Line(strings.Join(note.Peers, ", ")))
 	if note.More > 0 {
 		line += fmt.Sprintf(" +%d more", note.More)
 	}
 	if note.FilePath != "" {
-		line += " in " + note.FilePath
+		line += " in " + termsafe.Line(note.FilePath)
 	}
 	return []byte(line + "\n")
 }
