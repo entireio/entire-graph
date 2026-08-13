@@ -864,10 +864,15 @@ func compactAgentNeighbors(response neighborResponse, budget int) []byte {
 		}
 	} else {
 		focus := response.Matches[0].Symbol
+		// The SHORTER variants have to escape too. The first one inherits it from
+		// formatNeighborEndpoint, but these are what get printed under byte
+		// pressure — and a guard that holds only while the payload has room is
+		// worse than none, because the case it drops is the one nobody re-reads.
+		focusPath := termsafe.Line(focus.FilePath)
 		appendVariant(
 			"Focus: "+formatNeighborEndpoint(focus)+"\n",
-			fmt.Sprintf("F %s:%d %s\n", focus.FilePath, focus.StartLine, endpointDisplayName(focus)),
-			fmt.Sprintf("F %s:%d\n", focus.FilePath, focus.StartLine),
+			fmt.Sprintf("F %s:%d %s\n", focusPath, focus.StartLine, termsafe.Line(endpointDisplayName(focus))),
+			fmt.Sprintf("F %s:%d\n", focusPath, focus.StartLine),
 		)
 	}
 

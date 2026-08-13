@@ -321,3 +321,50 @@ func TestImpactCoChangeEntryStaysOnOneLine(t *testing.T) {
 	}, false)
 	assertNoForgedRecord(t, "writeImpactSection co-change", buffer.String())
 }
+
+// TestCallContextWindowLocatorStaysOnOneLine covers the call-context window's
+// locator. The source lines beneath it keep their layout and are covered by the
+// caller's wrapped writer; the locator above them is a one-line record.
+func TestCallContextWindowLocatorStaysOnOneLine(t *testing.T) {
+	t.Parallel()
+	rendered := renderCallContext(&callSite{
+		FilePath: forgedPathName, Line: 9, WindowStart: 8, WindowEnd: 10,
+		Window: []sourceLine{{Line: 9, Text: "  merge()"}},
+	})
+	assertNoForgedRecord(t, "renderCallContext", rendered)
+}
+
+// TestCompactNeighborFocusEscapesUnderBudgetPressure is the one that matters
+// most in this file. The focus line has three renderings and the caller picks the
+// longest that fits; only the first inherited its escaping, so the guard used to
+// disappear exactly when the payload was tight — the case nobody re-reads.
+//
+// The forged path is deliberately SHORT. A long one is never rendered in its
+// abbreviated forms at all, because the budgets that would select them cannot
+// hold the path either — so a fixture like that would sweep every budget and
+// still never reach the variants under test.
+func TestCompactNeighborFocusEscapesUnderBudgetPressure(t *testing.T) {
+	t.Parallel()
+	const shortForgery = "a\nb"
+	response := neighborResponse{
+		Query: "Merge",
+		Matches: []neighborFocus{{Symbol: neighborEndpoint{
+			Name: "Merge", FilePath: shortForgery, StartLine: 4,
+		}}},
+	}
+	var sawFocus bool
+	for budget := 1; budget <= 400; budget++ {
+		rendered := string(compactAgentNeighbors(response, budget))
+		if strings.Contains(rendered, shortForgery) {
+			t.Fatalf("budget %d selected an unescaped focus variant:\n%q", budget, rendered)
+		}
+		if strings.Contains(rendered, `a\x0ab`) {
+			sawFocus = true
+		}
+	}
+	// Without this the sweep would pass just as well against a payload that never
+	// rendered a focus line at any budget.
+	if !sawFocus {
+		t.Error("no budget rendered the focus line, so this test proves nothing")
+	}
+}
