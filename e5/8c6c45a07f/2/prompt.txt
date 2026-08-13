@@ -1,0 +1,13 @@
+Ok, let's wrap up this session. CI on the PR is green?
+
+---
+
+Saved to memory where?
+
+---
+
+Yeah, remove that. I don't want your hints on Edge or Aikido.
+
+---
+
+Put an empty commit to wrap up
