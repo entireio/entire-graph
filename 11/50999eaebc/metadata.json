@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
+  "checkpoint_id": "1150999eaebc",
+  "strategy": "manual-commit",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/cli/callsite.go",
+    "internal/cli/callsite_test.go",
+    "internal/cli/search_session_test.go",
+    "internal/cli/stats_test.go",
+    "internal/filedigest/filedigest_test.go",
+    "internal/sem/ignore.go",
+    "internal/sem/ignore_worktree_test.go",
+    "internal/sem/records_cache.go",
+    "internal/sem/search_cache.go",
+    "internal/sem/search_cache_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/11/50999eaebc/0/metadata.json",
+      "transcript": "/11/50999eaebc/0/full.jsonl",
+      "compact_transcript": "/11/50999eaebc/0/transcript.jsonl",
+      "content_hash": "/11/50999eaebc/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
