@@ -1,12 +1,12 @@
 {
-  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
-  "checkpoint_id": "28a6250a99e1",
-  "strategy": "manual-commit",
   "branch": "fix/terminal-escape-injection",
-  "checkpoints_count": 5,
+  "checkpoint_id": "28a6250a99e1",
+  "checkpoints_count": 7,
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
   "files_touched": [
     "internal/cli/termsafe_verbs_test.go"
   ],
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/28/a6250a99e1/0/metadata.json",
@@ -21,13 +21,20 @@
       "compact_transcript": "/28/a6250a99e1/1/transcript.jsonl",
       "content_hash": "/28/a6250a99e1/1/content_hash.txt",
       "prompt": "/28/a6250a99e1/1/prompt.txt"
+    },
+    {
+      "content_hash": "/28/a6250a99e1/2/content_hash.txt",
+      "metadata": "/28/a6250a99e1/2/metadata.json",
+      "prompt": "/28/a6250a99e1/2/prompt.txt",
+      "transcript": "/28/a6250a99e1/2/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 80,
+    "input_tokens": 87253,
     "cache_creation_tokens": 38667,
-    "cache_read_tokens": 10638779,
-    "output_tokens": 26578,
-    "api_call_count": 43
+    "cache_read_tokens": 11915142,
+    "output_tokens": 37237,
+    "api_call_count": 73
   }
 }
