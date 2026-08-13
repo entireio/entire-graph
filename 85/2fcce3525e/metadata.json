@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
+  "checkpoint_id": "852fcce3525e",
+  "strategy": "manual-commit",
+  "branch": "fix/terminal-escape-injection",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/def.go",
+    "internal/cli/termsafe_sinks_test.go",
+    "internal/cli/termsafe_verbs_test.go",
+    "internal/sem/search_blocks_escape_test.go",
+    "internal/sem/search_outline.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/85/2fcce3525e/0/metadata.json",
+      "transcript": "/85/2fcce3525e/0/full.jsonl",
+      "compact_transcript": "/85/2fcce3525e/0/transcript.jsonl",
+      "content_hash": "/85/2fcce3525e/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
