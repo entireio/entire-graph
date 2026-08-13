@@ -1,9 +1,8 @@
 {
-  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
-  "checkpoint_id": "d2893c5f7654",
-  "strategy": "manual-commit",
   "branch": "fix/terminal-escape-injection",
-  "checkpoints_count": 6,
+  "checkpoint_id": "d2893c5f7654",
+  "checkpoints_count": 8,
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
   "files_touched": [
     "internal/cli/completeness.go",
     "internal/cli/def.go",
@@ -17,6 +16,7 @@
     "internal/termsafe/termsafe.go",
     "internal/termsafe/termsafe_test.go"
   ],
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/d2/893c5f7654/0/metadata.json",
@@ -38,13 +38,20 @@
       "compact_transcript": "/d2/893c5f7654/2/transcript.jsonl",
       "content_hash": "/d2/893c5f7654/2/content_hash.txt",
       "prompt": "/d2/893c5f7654/2/prompt.txt"
+    },
+    {
+      "content_hash": "/d2/893c5f7654/3/content_hash.txt",
+      "metadata": "/d2/893c5f7654/3/metadata.json",
+      "prompt": "/d2/893c5f7654/3/prompt.txt",
+      "transcript": "/d2/893c5f7654/3/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 216996,
+    "input_tokens": 304988,
     "cache_creation_tokens": 357398,
-    "cache_read_tokens": 15764247,
-    "output_tokens": 59136,
-    "api_call_count": 77
+    "cache_read_tokens": 17367891,
+    "output_tokens": 70036,
+    "api_call_count": 110
   }
 }
