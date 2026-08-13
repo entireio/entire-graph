@@ -1,0 +1,43 @@
+{
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
+  "checkpoint_id": "d2893c5f7654",
+  "session_id": "019ff2ba-87be-7bb3-a567-c8823729741e",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-13T13:33:35.310221Z",
+  "branch": "fix/terminal-escape-injection",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/cli/completeness.go",
+    "internal/cli/def.go",
+    "internal/cli/impact.go",
+    "internal/cli/neighbors.go",
+    "internal/cli/search.go",
+    "internal/cli/symbolref.go",
+    "internal/cli/termsafe_sinks_test.go",
+    "internal/cli/termsafe_verbs_test.go",
+    "internal/sem/search_verify.go",
+    "internal/termsafe/termsafe.go",
+    "internal/termsafe/termsafe_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-luna",
+  "turn_id": "4f495786bf00",
+  "checkpoint_transcript_start": 2183,
+  "transcript_lines_at_start": 2183,
+  "compact_transcript_start": 331,
+  "session_metrics": {
+    "turn_count": 3
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-13T13:33:35.134587Z",
+    "agent_lines": 217,
+    "agent_removed": 34,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 217,
+    "total_lines_changed": 251,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
