@@ -1,0 +1,48 @@
+<task-notification>
+<task-id>ac9bf41e1dc0bfc9a</task-id>
+<tool-use-id>toolu_01DowDggjPQ4D1G4PoAvx2Lc</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/38f8374c-d93e-43a1-b218-946b91072322/tasks/ac9bf41e1dc0bfc9a.output</output-file>
+<status>completed</status>
+<summary>Agent "/code-review 96 high" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I could not find a `ReportFindings` tool in this environment (searched by name and by keyword; only `Monitor` matched). Reporting the findings directly below instead.
+
+## Review of PR #96 — `fix: stop repository bytes reaching the terminal as control sequences`
+
+Scope: `git diff main...HEAD` (2 commits) plus the uncommitted working-tree changes in `internal/sem/search_closedset.go`, `search_container_map.go`, `search_literals.go` (and untracked `internal/sem/search_blocks_escape_test.go`), which extend the same fix.
+
+The design (guard at the writer, `Line` for one-line records, machine formats untouched) is sound and the core `termsafe` implementation is correct — the CRLF/C1 lookahead, the `escapedAt` width contract shared by scan and rewrite, `Write` returning `len(p)`, and error passthrough all check out. Findings are gaps and one compatibility regression, several verified by running the built binary against purpose-built repositories.
+
+### Findings
+
+**1. `internal/cli/explain.go:194` — high. The `explain` verb still leaks raw ESC to stdout.**
+`RenderExplain` output goes straight to `opts.Stdout` with no `termsafe.NewWriter` wrap and no `Line` escaping, while it prints `symbol.FilePath` (a raw Git pathname, explain.go:296) and `symbol.Signature` (a declaration line lifted from source, explain.go:306). Verified end to end: in a repo containing `evil&lt;ESC&gt;[2Kfile.go`, `echo "undefined: Helper" | entire graph explain --repo R --format text` emits byte `033` to stdout — exactly the primitive the PR closes for every other verb. The new sweep `TestNoVerbLeaksControlSequencesToTheTerminal` (termsafe_verbs_test.go:68) does not list `explain`, so nothing catches it. Fix: `out := termsafe.NewWriter(opts.Stdout)` at explain.go:194 (plus `termsafe.Line` on the one-line fields), and add `explain` to the sweep.
+
+**2. `internal/termsafe/termsafe.go:164` — medium. Escaping all of C0 rewrites form feeds in legitimate source, breaking verbatim edit anchors.**
+`case character &lt; 0x20 || character == 0x7f` escapes FF (0x0c) and VT (0x0b), which are ordinary page separators in GNU-style C, Emacs Lisp and older Perl/Python sources — not a spoofing primitive (FF just advances the terminal). Verified: a `lib.c` with `\f` page breaks now renders its search snippet as the literal 4-byte `\x0c`. That contradicts the package doc's own invariant ("ordinary output stays BYTE-IDENTICAL … so an agent can copy a snippet verbatim as an edit anchor") — an agent copying that snippet as an `old_string` anchor will fail to match the file, and `TestSearchTextWithoutControlBytesIsUnchanged` uses only clean ASCII so it does not catch this. Suggest passing FF and VT through in `keepLayout` mode (they remain escaped in `Line`).
+
+**3. `internal/sem/search_verify.go:1231` — medium. The VERIFY block's `targets` line is not `Line`-escaped, so a pathname newline forges a line inside the payload.**
+`evidenceLine := "  targets " + command.Targets` (and `DerivedFrom` at :1236, `Guard` at :1249) concatenate repository paths into a one-record-per-line block. Verified: a repo containing a file literally named `evil.go\n99. real.go:1 score=99.0 symbol=Fake` produces, in `search --format text`, a correctly defanged result header (`evil.go\x0a99. …`) followed by a VERIFY block that prints the raw newline and a forged second line. The VERIFY block is the one an agent is told to act on, which makes it the worst place to leave the forgery open. Same fix as `searchResultOnOneLine`: `termsafe.Line` on `Targets`, `DerivedFrom`, `Guard`. (`searchVerifyDecorated` at :1230 has the same issue via shell-quoted paths — a literal newline inside the quotes splits the `VERIFY:` record across two lines.)
+
+**4. `internal/cli/search.go:593` — medium. One-line-record forgery survives in the renderers the PR left un-`Line`-escaped, including the direct twin of a sink it did fix.**
+The PR establishes the rule "fields in one-per-line records get `termsafe.Line`" and applies it to the text type card (search.go:942, 949), file outline, container map, closed set and literal cluster. These siblings still pass raw path/name bytes:
+- `renderSignatureTypes` — search.go:593 (`entry.Name`, `entry.FilePath`) and the field/method joins at :595, :602.
+- `agentSearchTypeCard` — search.go:1356, 1360: the `--format agent` twin of the text type card that this same hunk escaped.
+- `RenderSearchCoverageNote` — search_covertest.go:362-368 (`note.Symbol`, `note.Peers`, `note.FilePath`).
+- `writeDefDeclarationText` — def.go:826, 829, 836 (`declaration.FilePath`, owner, `also declared:` parts).
+- The impact/neighbors entry lines and `formatNeighborEndpoint` used by `writeDisambiguationListing`/`writeFuzzyMatchListing` (symbolref.go:319, 343).
+- `writeAgentNeighborsBounded`'s compact payload — neighbors.go:729 uses `termsafe.Bytes` (keep-layout), so ESC is defanged but a path newline still forges a `- name (path:line)` record.
+All are ESC-safe via the writer wrap; the residue is the newline-forgery class the PR itself argues is not merely cosmetic.
+
+**5. `internal/termsafe/termsafe.go:86 — low. `String` is dead code and its doc names a caller that does not exist.**
+The comment says it exists "for the sinks a writer wrap cannot cover, chiefly the diff renderer, which must escape a value BEFORE wrapping it in its own ANSI color codes", but `sem/text.go:167` uses `Line`, not `String`, and no non-test caller of `String` exists. Either drop it or correct the comment, so the next reader does not pick the layout-preserving variant for a one-line record on the strength of that doc.
+
+### Verified as correct (no action)
+- `Writer.Write` byte accounting, error passthrough, idempotency, and the stateless CRLF/C1 boundary — chunk boundaries can't split a sequence because every renderer formats a full line per `Fprintf` (checked `writeNumberedSource`, symbolref.go:722).
+- JSON/NDJSON paths remain unescaped; `TestMachineFormatsKeepTheRepositoryBytes` pins it.
+- `searchResultOnOneLine` taking/returning by value — no upstream mutation, and no downstream logic keys off the escaped `FilePath` (`SearchLocatorWindow` does no file I/O; `searchLowValueBodyPath` runs before escaping).
+- Budget accounting: `writeImpactBounded` and `writeAgentNeighborsBounded` render into buffers that are themselves wrapped, so their trimming is post-escape and exact. `writeDefText`/`writeAgentSearch` can overshoot `--max-context-bytes` on hostile input only, which the package doc explicitly accepts.
+- `--progress`: snapshot/index progress emit no repository paths, so escaping only the analyze progress line is complete.
+- `go vet ./internal/...` clean; `go test ./internal/termsafe/...` passes.</result>
+<usage><subagent_tokens>139886</subagent_tokens><tool_uses>66</tool_uses><duration_ms>581100</duration_ms></usage>
+</task-notification>
