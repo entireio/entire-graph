@@ -3,7 +3,7 @@
   "checkpoint_id": "6e42c20e7f67",
   "strategy": "manual-commit",
   "branch": "fix/callsite-line-reader-containment",
-  "checkpoints_count": 2,
+  "checkpoints_count": 7,
   "files_touched": [
     "internal/cli/callsite.go",
     "internal/cli/callsite_test.go"
@@ -15,6 +15,20 @@
       "compact_transcript": "/6e/42c20e7f67/0/transcript.jsonl",
       "content_hash": "/6e/42c20e7f67/0/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "metadata": "/6e/42c20e7f67/1/metadata.json",
+      "transcript": "/6e/42c20e7f67/1/full.jsonl",
+      "compact_transcript": "/6e/42c20e7f67/1/transcript.jsonl",
+      "content_hash": "/6e/42c20e7f67/1/content_hash.txt",
+      "prompt": ""
     }
-  ]
+  ],
+  "token_usage": {
+    "input_tokens": 54,
+    "cache_creation_tokens": 35036,
+    "cache_read_tokens": 10321056,
+    "output_tokens": 24484,
+    "api_call_count": 29
+  }
 }

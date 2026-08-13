@@ -1,0 +1,50 @@
+{
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
+  "checkpoint_id": "6e42c20e7f67",
+  "session_id": "b64ec1e0-575c-4273-ad7d-1dfd709c46c1",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-13T04:28:28.609063Z",
+  "branch": "fix/callsite-line-reader-containment",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "internal/cli/callsite.go",
+    "internal/cli/callsite_test.go"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-5[1m]",
+  "turn_id": "fa446db85921",
+  "checkpoint_transcript_start": 1102,
+  "transcript_lines_at_start": 1102,
+  "compact_transcript_start": 301,
+  "token_usage": {
+    "input_tokens": 54,
+    "cache_creation_tokens": 35036,
+    "cache_read_tokens": 10321056,
+    "output_tokens": 24484,
+    "api_call_count": 29
+  },
+  "session_metrics": {
+    "turn_count": 32
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-13T04:28:28.489755Z",
+    "agent_lines": 139,
+    "agent_removed": 9,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 139,
+    "total_lines_changed": 148,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
