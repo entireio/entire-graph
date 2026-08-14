@@ -172,33 +172,60 @@ func TestSearchRepositoryReturnsMultiResolutionProseResults(t *testing.T) {
 		write(t, repo, "sessions/session-"+string(rune('a'+index))+".md", body.String())
 	}
 
-	search := func(single bool) SearchResponse {
+	// The switches are separate levers over the same corpus: --document-resolution makes the
+	// DOCUMENT the ranked unit again (one result per file), and --single-resolution stops the
+	// spare slots being spent on finer regions of whatever unit was ranked.
+	search := func(single, document bool) SearchResponse {
 		response, err := SearchRepository(
 			t.Context(), repo, "test", "amber lantern orchard ledger", SearchOptions{
-				Worktree:         true,
-				Profile:          ProfileSyntaxOnly,
-				TopK:             40,
-				MaxIndexedFiles:  32,
-				MaxContextBytes:  400000,
-				SingleResolution: single,
+				Worktree:           true,
+				Profile:            ProfileSyntaxOnly,
+				TopK:               40,
+				MaxIndexedFiles:    32,
+				MaxContextBytes:    400000,
+				SingleResolution:   single,
+				DocumentResolution: document,
 			},
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := response.Validate(); err != nil {
-			t.Fatalf("invalid response (single=%v): %v", single, err)
+			t.Fatalf("invalid response (single=%v document=%v): %v", single, document, err)
 		}
 		return response
 	}
 
-	multi, single := search(false), search(true)
+	multi, single := search(false, true), search(true, true)
 	files := map[string]bool{}
 	for _, result := range single.Results {
 		files[result.FilePath] = true
 	}
 	if len(single.Results) != len(files) {
 		t.Fatalf("single-resolution returned %d results over %d files", len(single.Results), len(files))
+	}
+	// Section resolution is the default, and it must reach more of the corpus than either switch:
+	// twelve headed turns per document are twelve ranked units, not one.
+	sections := search(false, false)
+	if len(sections.Results) <= len(single.Results) {
+		t.Fatalf("section resolution returned %d results, document resolution returned %d; want more",
+			len(sections.Results), len(single.Results))
+	}
+	type span struct {
+		path       string
+		start, end int
+	}
+	sectionSpans := map[span]bool{}
+	for _, result := range sections.Results {
+		sectionSpans[span{result.FilePath, result.StartLine, result.EndLine}] = true
+	}
+	if len(sectionSpans) != len(sections.Results) {
+		t.Fatalf("section resolution returned %d results over %d distinct spans",
+			len(sections.Results), len(sectionSpans))
+	}
+	if sections.Stats.ResultBytes > sections.Stats.ContextBudgetBytes {
+		t.Fatalf("section resolution breached the budget: %d > %d",
+			sections.Stats.ResultBytes, sections.Stats.ContextBudgetBytes)
 	}
 	if len(multi.Results) <= len(single.Results) {
 		t.Fatalf("multi-resolution returned %d results, single returned %d; want more",

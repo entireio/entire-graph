@@ -113,10 +113,17 @@ func TestSearchRepositoryRanksSafePluralMarkdownSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertSearchResultGolden(t, response.Results, "402dfe1fae86d736a735d742dbcbd38871a61d9a4b280349291fe2c88ec72d0b")
+	// The admitted region is `## Vessels`, the section that carries the one query term no other
+	// document matches, rather than the document's globally best `# Ambers` heading: with the
+	// section as the ranked unit, the region that earned the slot is the region returned. Same
+	// rank, same score, same five regions.
+	assertSearchResultGolden(t, response.Results, "72795b2d906d1b141b4b040d82d8ef4e7d69d1a652bc16e72cbdb804524be5fc")
 	for _, result := range response.Results {
 		if result.FilePath == "sessions/focus.md" &&
 			containsString(result.Signals, "retrieval_mode=prose-parent") {
+			if result.StartLine != 9 {
+				t.Fatalf("admitted region start = %d, want the `## Vessels` section at 9", result.StartLine)
+			}
 			if result.Rank != 6 {
 				t.Fatalf("plural session rank = %d, want first fair tail slot 6", result.Rank)
 			}
@@ -208,7 +215,7 @@ func TestProseParentTermListsUseDerivedWordFamilyCoverage(t *testing.T) {
 	)
 	candidates := []searchCandidate{candidate}
 	lists := proseParentTermLists(
-		candidates, proseParents(candidates), []string{"navigate"}, 10,
+		candidates, proseParents(candidates, false), []string{"navigate"}, 10, false,
 	)
 	if len(lists) != 1 || len(lists[0]) != 1 || lists[0][0].parent.path != "sessions/focus.md" {
 		t.Fatalf("derived family did not seed prose parent: %#v", lists)
@@ -822,7 +829,7 @@ func TestSelectSearchCandidatesReturnsBestPassageForAdmittedParent(t *testing.T)
 		proseTestCandidate("sessions/focus.md", 80, 8, "# Amber overview", map[string]int{"amber": 1}),
 	)
 	sortSearchCandidates(candidates)
-	selected := selectSearchCandidates(candidates, q, 6, 3)
+	selected := selectSearchCandidates(candidates, q, 6, 3, false)
 	assertSearchResultGolden(t, searchCandidateResults(selected), "5ce0ba0a0d46c828e61092bbd325931fccd418b5b0bd6cae67ff4680bdcad95a")
 	for _, candidate := range selected {
 		if candidate.result.FilePath != "sessions/focus.md" {
@@ -842,16 +849,16 @@ func TestSelectSearchCandidatesHasLinearProseWorkingSet(t *testing.T) {
 	small := proseScaleCandidates(500)
 	large := proseScaleCandidates(1000)
 	smallAllocs := testing.AllocsPerRun(3, func() {
-		_ = selectSearchCandidates(small, q, 10, 3)
+		_ = selectSearchCandidates(small, q, 10, 3, false)
 	})
 	largeAllocs := testing.AllocsPerRun(3, func() {
-		_ = selectSearchCandidates(large, q, 10, 3)
+		_ = selectSearchCandidates(large, q, 10, 3, false)
 	})
 	if largeAllocs > smallAllocs*2.4 {
 		t.Fatalf("allocations grew superlinearly: 500=%0.f 1000=%0.f", smallAllocs, largeAllocs)
 	}
 	scale := proseScaleCandidates(4000)
-	selected := selectSearchCandidates(scale, q, 10, 3)
+	selected := selectSearchCandidates(scale, q, 10, 3, false)
 	if len(selected) != 10 {
 		t.Fatalf("selected %d candidates, want top-k 10", len(selected))
 	}
@@ -916,7 +923,7 @@ func BenchmarkSelectSearchCandidatesProse4000(b *testing.B) {
 	b.ResetTimer()
 	var selected []searchCandidate
 	for iteration := 0; iteration < b.N; iteration++ {
-		selected = selectSearchCandidates(candidates, q, 10, 3)
+		selected = selectSearchCandidates(candidates, q, 10, 3, false)
 	}
 	if len(selected) != 10 {
 		b.Fatalf("selected %d candidates, want 10", len(selected))

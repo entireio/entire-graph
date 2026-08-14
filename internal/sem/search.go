@@ -192,6 +192,13 @@ type SearchOptions struct {
 	// exists for callers that need the result count to equal the distinct-file count, not because
 	// the expansion can cost them a file.
 	SingleResolution bool
+	// DocumentResolution turns OFF section-resolution prose ranking, restoring the previous
+	// behaviour: one prose document is one retrievable unit, so a corpus of N documents can never
+	// return more than N ranked regions however large --top-k is. With it unset (the default), a
+	// prose document's SECTIONS are the ranked units — each competes on its own score exactly as
+	// an independent file would — which is what every comparable document retriever does and what
+	// a reader asking a question about a long document actually wants. See search_prose_parent.go.
+	DocumentResolution bool
 }
 
 // SearchPassage is an additional, non-overlapping source region from the same file as its
@@ -1006,7 +1013,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	applySearchBoilerplatePrior(candidates, q)
 	sortSearchCandidates(candidates)
 	candidates = collapseNearDuplicateCandidates(candidates)
-	semantic := selectSearchCandidates(candidates, q, options.TopK, options.MaxRegionsPerFile)
+	semantic := selectSearchCandidates(candidates, q, options.TopK, options.MaxRegionsPerFile, !options.DocumentResolution)
 	selected := semantic
 	if len(sparseCandidates) > 0 {
 		attachSparseCandidateSymbols(sparseCandidates, symbolsByFile)
