@@ -22,6 +22,11 @@ semantics, benchmarks, releases, the plugin catalog, or integrations.
 - Keep the root filename exactly `README.md`.
 - At publication time, the official plugin index contains `graph` and a clean
   `entire plugin install graph` succeeds on every platform the README claims.
+- At publication time, a released `init-agents` includes the topology-aware
+  behavior merged in [#102](https://github.com/entireio/entire-graph/pull/102):
+  when it confidently recognizes a standalone direct import from root `CLAUDE.md`
+  to a distinct root `AGENTS.md`, `AGENTS.md` retains the guide pointer and
+  `CLAUDE.md`'s managed block contains only the inheritance notice.
 - Entire CLI 0.10.0 or later is already available through its documented
   installation channels.
 - Setup uses the console, but day-to-day code discovery and analysis happen
@@ -123,7 +128,8 @@ produces four requirements:
 - State that activation is per repository. Before the command, disclose that it:
   - writes `.entire/graph-agent.md`;
   - creates or updates marker-delimited sections in `AGENTS.md` and `CLAUDE.md`;
-  - updates its managed blocks on later runs rather than appending duplicates.
+  - replaces an existing marker-delimited block in each file on later runs rather
+    than appending a second block in that file.
 
   Then show the exact command from the repository root:
 
@@ -145,9 +151,18 @@ produces four requirements:
   client matrix must cover instruction precedence or shadowing, size limits,
   whether the referenced guide is imported or read on demand, and how a user can
   see that it loaded.
-- Test the Claude Code layout where `CLAUDE.md` already imports `AGENTS.md`.
-  `init-agents` writes the same pointer block to both files, so that layout can
-  import the guide twice; document the supported resolution rather than hiding it.
+- Test the Claude Code layout where root `CLAUDE.md` has a standalone direct import
+  of root `AGENTS.md`. The released topology-aware `init-agents` must keep the
+  direct `.entire/graph-agent.md` pointer in `AGENTS.md`, put only its managed
+  inheritance notice in `CLAUDE.md`, restore the direct Claude pointer if the
+  standalone `CLAUDE.md` import of `AGENTS.md` is removed, and remain
+  byte-idempotent on rerun.
+- Keep configured-route hygiene distinct from observed client behavior. In the
+  Claude Code 2.1.232 fixture, the documented
+  [`InstructionsLoaded`](https://code.claude.com/docs/en/hooks#instructionsloaded)
+  hook reported one resolved guide load for both the former two-route layout and
+  the normalized control. Pin the client version and capture that load evidence;
+  do not infer duplicated runtime content merely from configured routes.
 - Document removal or reversal only if a supported procedure exists; do not invent one.
 
 ### 4. First agent task and observable verification
@@ -261,7 +276,7 @@ for the same subject.
 | File | Action | Canonical role |
 | --- | --- | --- |
 | `README.md` | Rewrite in place; never rename | Agent-first landing page described above |
-| `AGENTS.md`, `CLAUDE.md`, `.entire/graph-agent.md` | Regenerate or reconcile, then validate together | Current repository-agent instructions with no dangling or duplicate imports, stale limits, or universal safety claims |
+| `AGENTS.md`, `CLAUDE.md`, `.entire/graph-agent.md` | Regenerate or reconcile, then validate together | Current repository-agent instructions with every managed reference resolving, one intentional configured guide route in each tested client topology, and no stale limits or universal safety claims |
 | `entire-plugin.yml` | Track as a separate release prerequisite | Product description consistent with agent-first repository intelligence rather than checkpoint-only positioning |
 | `docs/README.md` | Retain and update | User-intent index and explicit archive boundary |
 | `docs/commands.md` | Create | Task-oriented manual and automation reference; built-in help remains the exhaustive command surface |
@@ -342,8 +357,9 @@ Rules:
 - [ ] Inventory the commands and flags used by active documentation and verify
   their defaults against the current binary.
 - [ ] Verify the complete per-client activation chain: generated files,
-  instruction precedence/import behavior, fresh-task requirement, visible load
-  evidence, and absence of dangling or duplicate imports.
+  instruction precedence/import behavior, fresh-task requirement, every managed
+  reference resolving, one intentional configured guide route in each tested
+  topology, and visible evidence that the client loaded the guide once.
 - [ ] Select a clean consuming fixture, pin its commit, install and commit the
   generated instruction files, and record a source-grounded agent task.
 - [ ] Verify cache behavior for a clean working tree, any dirty graph-relevant
@@ -370,7 +386,8 @@ Rules:
 - [ ] Consolidate benchmark content and preserve archived material as explicitly
   non-normative provenance.
 - [ ] Reconcile `AGENTS.md`, `CLAUDE.md`, and `.entire/graph-agent.md` together;
-  do not leave stale limits, unsafe absolutes, duplicate imports, or missing files.
+  leave every managed reference resolving, one intentional configured guide route
+  in each tested client topology, and no stale limits or unsafe absolutes.
 
 ### Phase 3: Rewrite the root README
 
@@ -409,8 +426,8 @@ Rules:
   file effects before execution, and tells the user how to review and optionally
   commit the result.
 - [ ] Each named client has a tested fresh-task/session path and an observable
-  check that the generated guide loaded without shadowing, a dangling reference,
-  or duplicate import.
+  check that the generated guide loaded once without shadowing or a dangling
+  reference, and an `init-agents` rerun preserves its intended configured route.
 - [ ] The pinned fixture transcript shows visible instruction discovery, graph
   use before broad source scanning, focused source inspection, a purposeful
   relation or impact query, and a sourced answer.
@@ -445,8 +462,9 @@ Rules:
 - A comprehensive flag reference in the root README.
 - An arbitrary README line-count target.
 - Adding an MCP server, daemon, watcher, hosted memory product, or visualization UI.
-- Rewriting embedded agent doctrine or changing `init-agents` behavior. If the
-  documentation audit exposes a format or import mismatch, track that product
-  change as a prerequisite rather than documenting behavior that does not exist.
+- Rewriting embedded agent doctrine or making further `init-agents` behavior
+  changes. Regenerating the released guide and managed blocks is in scope; if the
+  documentation audit exposes another format or import mismatch, track that
+  product change as a prerequisite rather than documenting behavior that does not exist.
 - Rewriting historical ADRs, archived plans, or immutable benchmark evidence. A
   new superseding cache ADR is in scope because current behavior has changed.
