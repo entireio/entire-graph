@@ -1,0 +1,44 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "88fa9ce314de",
+  "strategy": "manual-commit",
+  "branch": "ashtom/readme-refersh",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "README.md",
+    "bench/README.md",
+    "docs/BRAIN-VS-GRAPH.md",
+    "docs/DETAILS.md",
+    "docs/adr/0001-ga-schema-contract.md",
+    "docs/baseline-report.md",
+    "docs/benchmarks.md",
+    "docs/operations.md",
+    "docs/progress-so-far.md",
+    "docs/semantic_provider_requirements.md",
+    "docs/superpowers/plans/2026-08-01-eg-graphify-advertised-implementation.md",
+    "docs/superpowers/plans/2026-08-07-prose-memory-ranking-v53.md",
+    "docs/superpowers/plans/2026-08-07-prose-session-native-context.md",
+    "docs/superpowers/specs/2026-08-07-prose-memory-ranking-v53-design.md",
+    "docs/superpowers/specs/2026-08-07-prose-session-native-context-design.md",
+    "docs/v2-plan.md",
+    "docs/validation/full-plan-local-proof-20260620.md",
+    "internal/bench/bench.go",
+    "internal/sem/golden_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/88/fa9ce314de/0/metadata.json",
+      "transcript": "/88/fa9ce314de/0/full.jsonl",
+      "compact_transcript": "/88/fa9ce314de/0/transcript.jsonl",
+      "content_hash": "/88/fa9ce314de/0/content_hash.txt",
+      "prompt": "/88/fa9ce314de/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 22080,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 194304,
+    "output_tokens": 3163,
+    "api_call_count": 9
+  }
+}
