@@ -160,12 +160,20 @@ func runNeighbors(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	readSource, closeSource, err := openSnapshotLineReader(ctx, snapshot, flags.Worktree)
+	if err != nil {
+		return err
+	}
+	if closeSource != nil {
+		defer closeSource()
+	}
 	indexLatency := time.Since(indexStarted)
 	queryStarted := time.Now()
-	response := buildNeighborResponse(snapshot, flags)
-	// Call-site resolution reads the caller's source, so it needs the repo on
-	// disk. It runs after the graph query and is bounded by the answer's size.
-	annotateNeighborCallSites(&response, newRepoLineReader(snapshot.Header.RepoRoot))
+	response := buildNeighborResponseFromReader(snapshot, flags, readSource)
+	// Call-site resolution reads the caller's source from the same snapshot-bound
+	// reader as fuzzy and ambiguous bodies. It runs after the graph query and is
+	// bounded by the answer's size.
+	annotateNeighborCallSites(&response, readSource)
 	queryLatency := time.Since(queryStarted)
 	response.IndexCacheHit = cacheHit
 	response.IndexCacheDisabled = cacheDir == "" || flags.DisableCache
@@ -323,6 +331,14 @@ func parseNeighborFlags(args []string) (neighborFlags, error) {
 }
 
 func buildNeighborResponse(snapshot sem.ProviderSnapshot, flags neighborFlags) neighborResponse {
+	return buildNeighborResponseFromReader(snapshot, flags, newRepoLineReader(snapshot.Header.RepoRoot))
+}
+
+func buildNeighborResponseFromReader(
+	snapshot sem.ProviderSnapshot,
+	flags neighborFlags,
+	readSource lineReader,
+) neighborResponse {
 	endpoints := make(map[string]neighborEndpoint, len(snapshot.Symbols)+len(snapshot.Externals))
 	for _, file := range snapshot.Files {
 		endpoints[file.ID] = endpointForFile(file)
@@ -358,7 +374,7 @@ func buildNeighborResponse(snapshot sem.ProviderSnapshot, flags neighborFlags) n
 	focusMatchesTotal := len(focuses)
 	matchBodies := []symbolMatchBody(nil)
 	if fuzzyMatch || focusMatchesTotal > 1 {
-		matchBodies = symbolMatchBodies(snapshot.Header.RepoRoot, focuses, symbolAmbiguousBodyLimit)
+		matchBodies = symbolMatchBodiesFromReader(readSource, focuses, symbolAmbiguousBodyLimit)
 	}
 	focusMatchesTruncated := focusMatchesTotal > flags.Limit
 	if focusMatchesTruncated {

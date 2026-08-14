@@ -1,0 +1,273 @@
+package cli
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+
+	"github.com/entireio/entire-graph/internal/sem"
+)
+
+func TestHeadSnapshotLineReaderPreservesCommittedFileContract(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Tests")
+	git(t, repo, "config", "user.email", "tests@entire.local")
+	write(t, repo, "tracked.go", "committed\r\nline\r\n")
+	write(t, repo, "contains-nul.go", "before\x00after\n")
+	write(t, repo, "oversized.go", strings.Repeat("x", callSiteMaxFileBytes+1))
+	write(t, repo, "line\nbreak.go", "committed-newline-path\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "committed reader fixture")
+
+	write(t, repo, "tracked.go", "dirty\nline\n")
+	write(t, repo, "line\nbreak.go", "dirty-newline-path\n")
+	write(t, repo, "dirty-only.go", "must not be visible from HEAD\n")
+
+	read, closeReader, err := openSnapshotLineReader(t.Context(), sem.ProviderSnapshot{
+		Header: sem.SnapshotHeader{RepoRoot: repo, Commit: rev(t, repo, "HEAD")},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closeReader == nil {
+		t.Fatal("committed reader has no close function")
+	}
+	defer func() {
+		if closeReader != nil {
+			_ = closeReader()
+		}
+	}()
+
+	lines, ok := read("tracked.go")
+	if !ok || strings.Join(lines, "|") != "committed|line|" {
+		t.Fatalf("committed CRLF source = %q, ok=%v", lines, ok)
+	}
+	lines, ok = read("line\nbreak.go")
+	if !ok || strings.Join(lines, "|") != "committed-newline-path|" {
+		t.Fatalf("committed newline-path source = %q, ok=%v", lines, ok)
+	}
+	for _, path := range []string{"dirty-only.go", "contains-nul.go", "oversized.go"} {
+		if lines, ok := read(path); ok {
+			t.Errorf("committed reader accepted %q: %q", path, lines)
+		}
+	}
+	if err := closeReader(); err != nil {
+		t.Fatalf("close committed reader: %v", err)
+	}
+	closeReader = nil
+}
+
+func TestDefSourceBodiesFollowSelectedTree(t *testing.T) {
+	repo, cacheDir := newDirtySourceViewRepo(t)
+
+	for _, format := range []string{"text", "agent"} {
+		format := format
+		t.Run(format, func(t *testing.T) {
+			head := runSourceViewCommand(t, repo, cacheDir, "", "def", "--symbol", "InspectDefinition", "--head", "--format", format)
+			requireSourceView(t, head,
+				[]string{"committed-def-body"},
+				[]string{"dirty-def-body"},
+			)
+
+			worktree := runSourceViewCommand(t, repo, cacheDir, "", "def", "--symbol", "InspectDefinition", "--format", format)
+			requireSourceView(t, worktree,
+				[]string{"dirty-def-body"},
+				[]string{"committed-def-body"},
+			)
+		})
+	}
+}
+
+func TestNeighborsSourceAnnotationsFollowSelectedTree(t *testing.T) {
+	repo, cacheDir := newDirtySourceViewRepo(t)
+
+	headCallSite := runSourceViewCommand(t, repo, cacheDir, "", "neighbors",
+		"--symbol", "Target", "--direction", "in", "--head", "--format", "text")
+	requireSourceView(t, headCallSite,
+		[]string{"calls.go:7, def :5", "if committedGuard {", "committed-call-window"},
+		[]string{"calls.go:8, def :5", "dirtyGuard", "dirty-before-call", "dirty-call-window"},
+	)
+
+	worktreeCallSite := runSourceViewCommand(t, repo, cacheDir, "", "neighbors",
+		"--symbol", "Target", "--direction", "in", "--format", "text")
+	requireSourceView(t, worktreeCallSite,
+		[]string{"calls.go:8, def :5", "if dirtyGuard {", "dirty-before-call", "dirty-call-window"},
+		[]string{"calls.go:7, def :5", "committedGuard", "committed-call-window"},
+	)
+
+	headMatches := runSourceViewCommand(t, repo, cacheDir, "", "neighbors",
+		"--symbol", "Ambiguous", "--head", "--format", "text")
+	requireSourceView(t, headMatches,
+		[]string{"committed-alpha-body", "committed-beta-body"},
+		[]string{"dirty-alpha-body", "dirty-beta-body"},
+	)
+
+	worktreeMatches := runSourceViewCommand(t, repo, cacheDir, "", "neighbors",
+		"--symbol", "Ambiguous", "--format", "text")
+	requireSourceView(t, worktreeMatches,
+		[]string{"dirty-alpha-body", "dirty-beta-body"},
+		[]string{"committed-alpha-body", "committed-beta-body"},
+	)
+}
+
+func TestImpactSourceAnnotationsFollowSelectedTree(t *testing.T) {
+	repo, cacheDir := newDirtySourceViewRepo(t)
+
+	headCallSite := runSourceViewCommand(t, repo, cacheDir, "", "impact",
+		"--symbol", "Target", "--head", "--format", "text")
+	requireSourceView(t, headCallSite,
+		[]string{"calls.go:7, def :5"},
+		[]string{"calls.go:8, def :5"},
+	)
+
+	worktreeCallSite := runSourceViewCommand(t, repo, cacheDir, "", "impact",
+		"--symbol", "Target", "--format", "text")
+	requireSourceView(t, worktreeCallSite,
+		[]string{"calls.go:8, def :5"},
+		[]string{"calls.go:7, def :5"},
+	)
+
+	headMatches := runSourceViewCommand(t, repo, cacheDir, "", "impact",
+		"--symbol", "Ambiguous", "--head", "--format", "text")
+	requireSourceView(t, headMatches,
+		[]string{"committed-alpha-body", "committed-beta-body"},
+		[]string{"dirty-alpha-body", "dirty-beta-body"},
+	)
+
+	worktreeMatches := runSourceViewCommand(t, repo, cacheDir, "", "impact",
+		"--symbol", "Ambiguous", "--format", "text")
+	requireSourceView(t, worktreeMatches,
+		[]string{"dirty-alpha-body", "dirty-beta-body"},
+		[]string{"committed-alpha-body", "committed-beta-body"},
+	)
+}
+
+func TestExplainHeaderReportsSelectedTree(t *testing.T) {
+	repo, cacheDir := newDirtySourceViewRepo(t)
+	const buildFailure = "./definition.go:3:1: undefined: InspectDefinition\n"
+
+	worktree := runSourceViewCommand(t, repo, cacheDir, buildFailure, "explain", "--no-echo", "--format", "text")
+	if !strings.Contains(worktree, "from the working tree") {
+		t.Fatalf("worktree explain output does not identify its source view:\n%s", worktree)
+	}
+
+	head := runSourceViewCommand(t, repo, cacheDir, buildFailure, "explain", "--no-echo", "--head", "--format", "text")
+	if strings.Contains(head, "from the working tree") || !strings.Contains(strings.ToLower(head), "committed") {
+		t.Fatalf("--head explain output does not identify its committed source view:\n%s", head)
+	}
+	if firstLine(head) == firstLine(worktree) {
+		t.Fatalf("explain used the same provenance header for --head and worktree:\n%s", head)
+	}
+}
+
+func newDirtySourceViewRepo(t *testing.T) (repo, cacheDir string) {
+	t.Helper()
+	repo = t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Tests")
+	git(t, repo, "config", "user.email", "tests@entire.local")
+
+	write(t, repo, "definition.go", `package fixture
+
+func InspectDefinition() string {
+	return "committed-def-body"
+}
+`)
+	write(t, repo, "calls.go", `package fixture
+
+func Target() {}
+
+func Caller(committedGuard bool) {
+	if committedGuard {
+		Target()
+	}
+	_ = "committed-call-window"
+}
+`)
+	write(t, repo, "alpha.go", `package fixture
+
+func Ambiguous() string { return "committed-alpha-body" }
+`)
+	write(t, repo, "beta.go", `package fixture
+
+func Ambiguous() string { return "committed-beta-body" }
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "committed source view")
+
+	write(t, repo, "definition.go", `package fixture
+
+func InspectDefinition() string {
+	return "dirty-def-body"
+}
+`)
+	write(t, repo, "calls.go", `package fixture
+
+func Target() {}
+
+func Caller(dirtyGuard bool) {
+	_ = "dirty-before-call"
+	if dirtyGuard {
+		Target()
+	}
+	_ = "dirty-call-window"
+}
+`)
+	write(t, repo, "alpha.go", `package fixture
+
+func Ambiguous() string { return "dirty-alpha-body" }
+`)
+	write(t, repo, "beta.go", `package fixture
+
+func Ambiguous() string { return "dirty-beta-body" }
+`)
+	return repo, t.TempDir()
+}
+
+func runSourceViewCommand(t *testing.T, repo, cacheDir, stdin string, args ...string) string {
+	t.Helper()
+	if len(args) == 0 {
+		t.Fatal("runSourceViewCommand requires a command")
+	}
+	commandArgs := []string{args[0], "--repo", repo, "--cache-dir", cacheDir}
+	commandArgs = append(commandArgs, args[1:]...)
+	var stdout, stderr bytes.Buffer
+	options := Options{
+		Version: "0.1.0",
+		Env: EntireEnv{
+			RepoRoot:      repo,
+			PluginDataDir: cacheDir,
+		},
+		Stdout: &stdout,
+		Stderr: &stderr,
+	}
+	if stdin != "" {
+		options.Stdin = strings.NewReader(stdin)
+	}
+	if err := Run(t.Context(), options, commandArgs); err != nil {
+		t.Fatalf("entire graph %s: %v\nstderr:\n%s\nstdout:\n%s", strings.Join(commandArgs, " "), err, stderr.String(), stdout.String())
+	}
+	return stdout.String()
+}
+
+func requireSourceView(t *testing.T, output string, wants, rejects []string) {
+	t.Helper()
+	for _, want := range wants {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing selected-tree source %q:\n%s", want, output)
+		}
+	}
+	for _, reject := range rejects {
+		if strings.Contains(output, reject) {
+			t.Fatalf("output leaked other-tree source %q:\n%s", reject, output)
+		}
+	}
+}
+
+func firstLine(text string) string {
+	if end := strings.IndexByte(text, '\n'); end >= 0 {
+		return text[:end]
+	}
+	return text
+}

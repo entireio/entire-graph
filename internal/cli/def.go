@@ -173,6 +173,13 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	readSource, closeSource, err := openSnapshotLineReader(ctx, snapshot, flags.Worktree)
+	if err != nil {
+		return err
+	}
+	if closeSource != nil {
+		defer closeSource()
+	}
 	indexLatency := time.Since(totalStarted)
 	queryStarted := time.Now()
 	symbols := flags.Symbols
@@ -207,7 +214,7 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 			if err := writeDefText(opts.Stdout, response, flags.MaxContextBytes); err != nil {
 				return err
 			}
-			writeDefBodies(opts.Stdout, response, repo, query.From)
+			writeDefBodiesFromReader(opts.Stdout, response, readSource, query.From)
 		default:
 			return fmt.Errorf("def --format must be json, text, or agent, got %q", flags.Format)
 		}
@@ -221,7 +228,14 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 // on carbon: the agent got a body it could not navigate, cut it with `head -80`, lost the line it
 // needed and spent 87 turns grepping instead. The card alone was never the whole answer.
 func writeDefBodies(out io.Writer, response defResponse, repoRoot string, from int) {
-	if len(response.Declarations) == 0 || repoRoot == "" {
+	if repoRoot == "" {
+		return
+	}
+	writeDefBodiesFromReader(out, response, newRepoLineReader(repoRoot), from)
+}
+
+func writeDefBodiesFromReader(out io.Writer, response defResponse, read lineReader, from int) {
+	if len(response.Declarations) == 0 || read == nil {
 		return
 	}
 	records := make([]sem.SymbolRecord, 0, len(response.Declarations))
@@ -235,7 +249,7 @@ func writeDefBodies(out io.Writer, response defResponse, repoRoot string, from i
 			FilePath: declaration.FilePath, StartLine: start, EndLine: declaration.EndLine,
 		})
 	}
-	writeSymbolMatchBodies(out, symbolMatchBodies(repoRoot, records, len(records)))
+	writeSymbolMatchBodies(out, symbolMatchBodiesFromReader(read, records, len(records)))
 }
 
 func parseDefFlags(args []string) (defFlags, error) {

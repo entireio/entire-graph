@@ -147,10 +147,17 @@ func runImpact(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	readSource, closeSource, err := openSnapshotLineReader(ctx, snapshot, flags.Worktree)
+	if err != nil {
+		return err
+	}
+	if closeSource != nil {
+		defer closeSource()
+	}
 	indexLatency := time.Since(indexStarted)
 	queryStarted := time.Now()
-	response := buildImpactResponse(snapshot, flags)
-	annotateImpactCallSites(&response, newRepoLineReader(snapshot.Header.RepoRoot))
+	response := buildImpactResponseFromReader(snapshot, flags, readSource)
+	annotateImpactCallSites(&response, readSource)
 	// The verdict is computed once, on the finished response, so the text marker and the JSON fields
 	// can never disagree about whether this answer was worth reading.
 	if reason := impactDegenerateReason(response); reason != "" {
@@ -324,6 +331,14 @@ func impactNonCodeMention(relation sem.RelationRecord, endpoint neighborEndpoint
 }
 
 func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impactResponse {
+	return buildImpactResponseFromReader(snapshot, flags, newRepoLineReader(snapshot.Header.RepoRoot))
+}
+
+func buildImpactResponseFromReader(
+	snapshot sem.ProviderSnapshot,
+	flags impactFlags,
+	readSource lineReader,
+) impactResponse {
 	endpoints := make(map[string]neighborEndpoint, len(snapshot.Symbols)+len(snapshot.Externals))
 	// Relation records carry no language, and file endpoints carry no kind beyond
 	// "file", so the language an edge came from has to be looked up by endpoint ID.
@@ -380,7 +395,7 @@ func buildImpactResponse(snapshot sem.ProviderSnapshot, flags impactFlags) impac
 			if !fuzzyMatch && len(focuses) <= 1 {
 				return nil
 			}
-			return symbolMatchBodies(snapshot.Header.RepoRoot, focuses, symbolAmbiguousBodyLimit)
+			return symbolMatchBodiesFromReader(readSource, focuses, symbolAmbiguousBodyLimit)
 		}(),
 		Warnings:          snapshot.Header.Warnings,
 		PartialFailures:   partialFailures,
