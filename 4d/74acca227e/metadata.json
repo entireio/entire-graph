@@ -1,0 +1,31 @@
+{
+  "cli_version": "dev",
+  "checkpoint_version": "branch-v1",
+  "checkpoint_id": "4d74acca227e",
+  "strategy": "manual-commit",
+  "branch": "feat/prose-context-expansion",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "internal/cli/help.go",
+    "internal/cli/search.go",
+    "internal/sem/search.go",
+    "internal/sem/search_prose_context.go",
+    "internal/sem/search_prose_context_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/4d/74acca227e/0/metadata.json",
+      "transcript": "/4d/74acca227e/0/full.jsonl",
+      "compact_transcript": "/4d/74acca227e/0/transcript.jsonl",
+      "content_hash": "/4d/74acca227e/0/content_hash.txt",
+      "prompt": "/4d/74acca227e/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 7095,
+    "cache_creation_tokens": 148699438,
+    "cache_read_tokens": 1505278393,
+    "output_tokens": 3718815,
+    "api_call_count": 2872
+  }
+}
