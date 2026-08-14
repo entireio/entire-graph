@@ -1,7 +1,11 @@
-# Memory-benchmark reproduction kit
+# Memory benchmark — results and reproduction kit
 
-Everything a third party needs to independently re-run the published LoCoMo comparison between
-entire-graph and the other memory systems.
+**The results are in [`LOCOMO-COMPARISON.md`](LOCOMO-COMPARISON.md).** Start there. It carries the
+headline table, the mechanism behind it, where entire-graph wins, where it loses, and what is not
+claimable.
+
+This file is the other half: everything a third party needs to independently re-run that
+comparison. The two together are self-contained — what the results were, and how to reproduce them.
 
 This directory is **additive and self-contained**: it does not change any entire-graph source. It
 contains our benchmark adapters, our fairness-guard code, the patches we applied to the upstream
@@ -180,6 +184,7 @@ The defects we found on our own side are listed in `RESULTS.md` §6 and were rem
 | `patches/0001`–`0004` | our diffs against upstream harness files (see `UPSTREAM.md`) |
 | `patches/0005` | the cmm `Section` one-line patch + its regression test |
 | `run_locomo.sh` | the launcher used for the published runs |
+| `LOCOMO-COMPARISON.md` | **the results** — headline table, mechanism, wins, losses, and what is not claimable |
 | `FAIR-CONFIG.md` | the fairness spec every run must cite |
 | `RESULTS.md` | results, defect list, and retractions, verbatim |
 | `RUN-INDEX.md` | every complete run with its window, config, `fair_mode` stamp, and aggregate — machine-extracted from the artifacts, including the incomplete and oracle runs |
@@ -196,6 +201,8 @@ name only (`AZURE_AI_API_KEY`, `AZURE_AI_ENDPOINT`, `AZURE_AI_API_VERSION`, `ANT
 `CMM_BIN`, …).
 
 ## 5. Which comparisons are orderable, and which are not
+
+*Summarised in [`LOCOMO-COMPARISON.md`](LOCOMO-COMPARISON.md) §7; the full derivation is here.*
 
 **The rule: same-window comparisons are orderable; cross-window gaps under about 2 points are
 not.** This follows from a measured drift, and it cuts both ways — it licenses the head-to-head
