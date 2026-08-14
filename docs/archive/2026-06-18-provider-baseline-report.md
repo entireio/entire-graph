@@ -1,5 +1,9 @@
 # Provider Baseline Report
 
+> [!WARNING]
+> Archived on 2026-08-13. This is a point-in-time provider baseline, not a
+> current capability reference. See the [current documentation index](../README.md).
+
 Date: 2026-06-18
 Schema: `1.1`
 

@@ -1,5 +1,9 @@
 # Full Plan Local Proof - 2026-06-20
 
+> [!WARNING]
+> Archived on 2026-08-13. This branch-specific proof log is not current
+> verification evidence. See the [current documentation index](../README.md).
+
 Branch: `codex/full-plan-implementation`
 
 ## Commands

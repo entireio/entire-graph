@@ -24,11 +24,9 @@ Required responsibilities:
 - Partial failure reporting.
 - Stable provider contracts for downstream consumers.
 
-## Phase 1 Constraints
+## No-egress constraint
 
-Phase 1 integration is local-only.
-
-During Phase 1 indexing, `entire-graph` must not:
+Provider indexing is local-only. During indexing, `entire-graph` must not:
 
 - Fetch remote code.
 - Download grammars or parser assets.
@@ -40,9 +38,9 @@ During Phase 1 indexing, `entire-graph` must not:
 `doctor --json` should expose enough information for Entire Brain and CI to
 assert that the provider can run without network egress.
 
-## Required Commands
+## Provider integration commands
 
-Initial command surface:
+The provider and export surface includes:
 
 ```sh
 entire graph doctor --json
@@ -56,10 +54,12 @@ entire graph snapshot --repo . --format ndjson --worktree --include-file .graphi
 entire graph diff --base main --head HEAD --json
 ```
 
-Whole-repo outputs should support newline-delimited JSON. Large repositories can
-produce hundreds of megabytes of semantic facts, so a single whole-repo JSON
-document should be treated as a debug/compatibility mode rather than the primary
-integration format.
+This is not the complete user-facing CLI. Run `entire graph help` for the
+current command registry and `entire graph <command> --help` for flags.
+
+Whole-repo provider output uses newline-delimited JSON. `snapshot` also supports
+the separate, full-snapshot-only `compact-ndjson` artifact described below;
+`symbols` and `edges` accept only `ndjson`.
 
 ### Streaming NDJSON contract
 
@@ -146,14 +146,18 @@ Skipped families are always declared (in the header and capabilities) — a
 profile never silently drops a relation family.
 
 - `full` — the complete relation graph: `DEFINES`, `CONTAINS`, `IMPORTS`,
-  `CALLS`, `EXTENDS`, `IMPLEMENTS`, `OVERRIDES`, `USES_TYPE`, `READS_FIELD`,
-  `WRITES_FIELD`, `ACCESSES`, `HANDLES_ROUTE`, `HTTP_CALLS`, `EMITS`,
-  `LISTENS_ON`, `HANDLES_TOOL`, `SIMILAR_TO`, `TESTS`, `RESOURCE_DEPENDS_ON`,
-  with full evidence. **Semantic-depth and accuracy claims belong to `full`.**
-- `fast` — symbol inventory plus `DEFINES`, `CONTAINS`, `IMPORTS`, `CALLS`
-  (shallow: single-target, high-precision resolutions only — same-file
+  `CALLS`, `CONSTRUCTS`, `ASYNC_CALLS`, `EXTENDS`, `INHERITS`, `IMPLEMENTS`,
+  `OVERRIDES`, `USES_TYPE`, `PARAM_TYPE`, `RETURNS_TYPE`, `READS_FIELD`,
+  `WRITES_FIELD`, `ACCESSES`, `HANDLES_ROUTE`, `HANDLES_GRPC`,
+  `HANDLES_GRAPHQL`, `HANDLES_TRPC`, `HTTP_CALLS`, `EMITS`, `LISTENS_ON`,
+  `HANDLES_TOOL`, `CONFIGURES`, `SIMILAR_TO`, `TESTS`,
+  `RESOURCE_DEPENDS_ON`, `DATA_FLOWS`, and `FILE_CHANGES_WITH`, with full
+  evidence. **Semantic-depth and accuracy claims belong to `full`.**
+- `fast` — symbol inventory plus `DEFINES`, `CONTAINS`, `IMPORTS`, `CALLS`,
+  `CONSTRUCTS`, and `CONFIGURES`; call resolution is shallow and limited to
+  single-target, high-precision resolutions — same-file
   `exact`, unique same-package `package`, and import-bound
-  `import_resolved`; name-only and pattern fanouts stay full-only),
+  `import_resolved`; name-only and pattern fanouts stay full-only. It also emits
   `HANDLES_ROUTE`, `HANDLES_TOOL`, and
   `RESOURCE_DEPENDS_ON`. Evidence is omitted and the deep families
   (type/field/similarity/HTTP/channel/test/uses-type/override) are skipped and
@@ -184,25 +188,8 @@ Compatibility policy:
 - Unknown relation types should use an extension namespace, such as
   `X-provider-name:RELATION`.
 
-Initial snapshot header:
-
-```json
-{
-  "schema_version": "1.1",
-  "provider": "entire-graph",
-  "provider_version": "0.1.0",
-  "repo_root": "/path/to/repo",
-  "repo_key": "gh/org/repo",
-  "commit": "abc123",
-  "tree": "tree789",
-  "languages": ["Go", "Python"],
-  "capabilities": [],
-  "warnings": [],
-  "partial_failures": []
-}
-```
-
-Following records should be typed:
+Provider records are typed. The streaming header and summary fields are defined
+above; representative data records look like this:
 
 ```json
 {"record_type":"file","id":"gh/org/repo:file:internal/auth/token.go","path":"internal/auth/token.go","blob":"..."}
@@ -304,10 +291,12 @@ Schema `1.1` adds optional relation fields (additive; tolerant readers ignore
 unknown fields):
 
 - `relation_scope`: `file`, `module`, `workspace`, `external`.
-- `resolution`: how the target was resolved, e.g. `exact`, `import_resolved`,
-  `type_inferred` (receiver-type-inferred calls), `name_only`, `pattern`
+- `resolution`: how the target was resolved, e.g. `exact`, `package`,
+  `import_resolved`, `type_inferred` (receiver-type-inferred calls),
+  `name_only`, `pattern`
   (later: `runtime_trace`, `unresolved`).
-- `target_kind`: `symbol`, `file`, `external`, `route`, `resource`, `channel`.
+- `target_kind`: `symbol`, `file`, `external`, `route`, `resource`, `channel`,
+  or `config`.
 - `evidence`: array of compact `{kind, file_path, start_line, end_line, detail}`
   source pointers.
 
@@ -321,7 +310,10 @@ Relation vocabulary:
 - `CONTAINS`
 - `IMPORTS`
 - `CALLS`
+- `CONSTRUCTS` — a call expression constructs a known local type.
 - `EXTENDS` — class extends class, interface extends interface, Rust supertrait.
+- `INHERITS` — normalized inheritance edge emitted alongside language-specific
+  `EXTENDS` or `IMPLEMENTS` facts where applicable.
 - `IMPLEMENTS` — class implements interface, Rust `impl Trait for Type`.
 - `OVERRIDES` — a method that redefines a same-named method on a resolved
   supertype (derived from EXTENDS/IMPLEMENTS; only when both the supertype and
@@ -458,9 +450,9 @@ per directory is the fallback for a tree Git cannot enumerate.
 - parser versions
 - supported relation types
 - relation support per language (`relation_support_by_language`): the relation
-  types extractable for each language. DEFINES, CONTAINS, and CALLS are
-  structural for every language; IMPORTS is listed only where a language-specific
-  import scanner exists.
+  types extractable for each language. `DEFINES` and `CONTAINS` are structural
+  for recognized semantic and inventory-only entries; deeper relations are
+  listed only where their scanner or extractor exists.
 - relation support per profile (`relation_support_by_profile`): the relation
   types each indexing profile emits (`full`, `fast`, `syntax-only`).
 - heuristic relation types (`heuristic_relation_types`): relations such as
@@ -470,6 +462,11 @@ per directory is the fallback for a tree Git cannot enumerate.
 - unsupported-but-detected language hints when available
 - whether optional local-only features are available
 - whether any feature would require network access
+
+The current globally pattern-driven set is reported as
+`heuristic_relation_types` (`HANDLES_ROUTE`, `HTTP_CALLS`, `EMITS`, `LISTENS_ON`, `HANDLES_TOOL`,
+`SIMILAR_TO`, `TESTS`). A test keeps this list aligned with
+`capabilities --json`.
 
 ## Tests
 
@@ -483,9 +480,9 @@ Required provider-side tests:
 - Provider-absent and malformed-output tests at the integration boundary.
 - Stable symbol ID tests across content edits.
 - Move/rename tests that document known ID breakage or continuity.
-- Relation extraction tests for the initial relation vocabulary.
+- Relation extraction tests for the current relation vocabulary.
 - Partial failure tests proving one bad file does not fail the whole snapshot.
-- No-egress tests for Phase 1 operation.
+- No-egress tests for provider operation.
 - Performance smoke tests for medium repositories.
 - Memory budget tests for cold snapshots.
 
@@ -495,14 +492,14 @@ Useful existing foundation:
 
 - Go implementation.
 - Isolated tree-sitter parser boundary.
-- Rich parser support for Bash, C, C++, C#, CUE, Elixir, Go, Groovy,
-  HCL/Terraform, Java, JavaScript, TypeScript, Kotlin, Lua, OCaml, PHP,
-  Protocol Buffers, Python, Ruby, Rust, Scala, SQL, and Swift.
-- Lightweight deterministic inventory support for 158+ reported
-  languages/filetypes. Inventory-only entries emit file/symbol structure but do
+- Parser-backed semantic support for 36 languages. The generated list lives in
+  [language support](language-support.md), and `capabilities --json` is
+  authoritative.
+- Lightweight deterministic inventory support for 149 reported
+  languages/filetypes, for 185 recognized names in total. Inventory-only entries emit file/symbol structure but do
   not claim call/type/data-flow analysis. The capabilities JSON exposes this
   distinction through `semantic_languages` and `inventory_only_languages`; see
-  `docs/language-support.md` for the current generated matrix.
+  [language support](language-support.md) for the current generated matrix.
 - Entity signature and body-hash comparison.
 - Checkpoint-aware semantic diffs.
 
@@ -518,8 +515,10 @@ Current implemented foundation:
 Remaining gaps:
 
 - Relation extraction is still intentionally heuristic.
-- File moves, renames, and duplicate same-name symbols need stronger ID
-  reconciliation.
+- Snapshot IDs change when their file path or qualified name changes. Semantic
+  diffs reconcile high-confidence moves and renames at the documented `0.92`
+  threshold and warn instead of guessing when candidates are ambiguous; weaker
+  and duplicate-name cases remain limited.
 - `IMPLEMENTS`, `EXTENDS`, `OVERRIDES`, `ACCESSES`, field-access,
   data-flow, service-boundary, config, and resource-dependency relation
   families are implemented for supported high-confidence cases, but they remain

@@ -1,5 +1,9 @@
 # Native prose-session context design
 
+> [!WARNING]
+> Archived on 2026-08-13. This design records an implemented change and is not
+> current product documentation. See the [current documentation index](../README.md).
+
 ## Problem
 
 The sealed v45 public-protocol reimplementation shows that Entire Graph usually

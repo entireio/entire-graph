@@ -9,7 +9,7 @@ no network, no model calls, no keys.
 
 ## Install (one minute)
 
-Go 1.24+ and a C compiler required first
+Go 1.26 and a C compiler required first
 
 ```sh
 go install github.com/entireio/entire-graph/cmd/entire-graph@main
@@ -226,8 +226,8 @@ entire graph snapshot-query --input graph.compact.ndjson --from '<stable-id>' --
 Compact NDJSON v1 is full-snapshot-only; targeted `--to`, `--from`, and `--relation` output stays native NDJSON. Its first `h` line is the only version marker, dictionary `d` lines are part of the artifact and its raw byte count, and unknown versions are rejected. The compact and native streams must have the same decoded public projection and canonical semantic SHA-256; hash equality alone is not a losslessness proof. Compact cache entries use a separate namespace from native snapshot entries.
 
 - [AGENTS.md](AGENTS.md) — the agent operating guide (also: `entire graph agent-guide`)
-- [docs/DETAILS.md](docs/DETAILS.md) — full command reference, architecture, language support,
-  performance and accuracy benchmarks, security model
+- [docs/README.md](docs/README.md) — current reference docs, ADRs, benchmarks, operations,
+  language support, and the historical archive
 - `entire graph help` — command list; `entire graph doctor --json` — environment check
 
 ## License

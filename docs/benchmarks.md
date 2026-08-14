@@ -1,8 +1,9 @@
 # Benchmarks
 
-Reproducible performance and quality measurement for `entire-graph`, per v2-plan
-WP10. The harness lives in `cmd/graph-bench` (driver) and `internal/bench`
-(measurement core); see `bench/README.md` for layout and flags.
+Reproducible performance and quality measurement for `entire-graph`. The
+harness lives in `cmd/graph-bench` (driver) and `internal/bench` (measurement
+core); see `bench/README.md` for layout and flags. Its original WP10 plan is
+[archived](archive/2026-06-18-entire-graph-v2-implementation-plan.md).
 
 ## External native-memory comparison
 

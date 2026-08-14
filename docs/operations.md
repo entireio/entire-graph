@@ -4,6 +4,14 @@
 small: build the provider, install the local executable into Entire's plugin
 directory, and generate checksum-backed release archives.
 
+## Requirements
+
+- The Entire CLI and Git must be on `PATH` for local installation.
+- Development uses Go 1.26. Tree-sitter bindings require CGO and a working C
+  compiler for the target platform.
+- Release archives require `tar` and `shasum`. Signing additionally requires
+  either `cosign` or `gpg` and a configured local key.
+
 ## Local Install
 
 ```sh
@@ -38,5 +46,8 @@ also signs archives when a local signing key is explicitly configured:
 
 - `COSIGN_KEY=<key-ref>` with `cosign` on `PATH` writes `<archive>.sig`.
 - `GPG_SIGNING_KEY=<key-id>` with `gpg` on `PATH` writes `<archive>.asc`.
+
+If both signing variables are set and both tools are available, cosign takes
+precedence and the script writes only the `.sig` file.
 
 The script does not publish artifacts.
