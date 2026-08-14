@@ -1,0 +1,41 @@
+<agent-message from="general-purpose">
+PRIORITY 1 DONE — LAUNCH WHEN READY.
+
+BINARY: `~/bin/eg-mr3` on graphbench-g, md5 282a45ccada1d15fccd21e6417b2d81c, 79206424 bytes, built on-VM (linux/amd64, CGO). `eg-base`, `eg-mr`, `eg-mr2`, `entire-graph` untouched. `sw_mem0`/`sw_eg_tsmr`/`sw_eg_tsx` all still running (7 procs), nothing overwritten in place.
+
+BRANCH: `feat/prose-section-candidates` @ `ab35b8f` (off `fccf1fc`). `feat/multi-resolution-retrieval` and `feat/prose-context-expansion` untouched — I never checked them out.
+
+`mise run check` GREEN (exit 0, fmt+vet+race tests+build, 191s).
+
+RUN IT AT **DEFAULT** GRANULARITY — do NOT set `EG_INGEST_GRANULARITY`. The whole point is that it needs no ingest flag.
+
+VM SMOKE, conv-0 session-granularity corpus, top_k=200, real harness args:
+- eg-mr  : 200 items · **19 distinct scores** · 19 files · 63,193 chars
+- eg-mr3 : 200 items · **85 distinct scores** · 19 files · 51,342 chars
+
+FULL MECHANISM, all 152 conv-0 questions, identical search args:
+| arm | items/q | distinct regions/q | distinct FILES/q | distinct SCORES/q | visible chars/q | computed-and-discarded chars/q |
+|---|---|---|---|---|---|---|
+| eg-mr @ session (shipped) | 195.0 | 243.0 | 18.9 | **17.1** | 60,854 | 7,590 |
+| **eg-mr3 @ session** | **196.0** | **196.0** | **18.9** | **84.9** | **53,929** | **0** |
+| eg-mr @ pre-split turn+session | 197.1 | 467.2 | 196.4 | 78.2 | 47,731 | 48,775 |
+| eg-mr3 + `--document-resolution` | 195.0 | 243.0 | 18.9 | 17.1 | 60,854 | 7,590 |
+
+Read those four rows as: eg-mr3 at default granularity reaches the pre-split corpus's score diversity (84.9 vs 78.2 — it now exceeds it) with no ingest change; every returned region is distinct (196 items = 196 regions, zero waste); and the off switch is **byte-identical to eg-mr**, which is the cleanest possible proof the change is the only thing in play.
+
+BYTE BOUND: 53,929 chars/q, DOWN 11.4% from the shipped 60,854. Inside the 47-57k band, and the win does not come from a bigger prompt.
+
+BREADTH — the trap you flagged was REAL and I hit it. My first implementation ranked sections purely by score and dropped a whole document at small top-k (a unit test caught it: a 4-document corpus at top-k 6 returned only 3 documents; a real repo test lost the one weakly-scoring evidence file). Fixed by making "no document gets a SECOND region until every document that fits has one" bind EVERY selection pass, not just the head. Distinct files/q is now 18.9 — identical to eg-mr, so no document coverage was traded for section diversity. Three unit tests pin it.
+
+One more regression I found and fixed: section units initially dropped the additive same-document `passages` at tight top-k (a docs repo at top-k 10 lost 4 regions of evidence). Passages are now planned over the whole DOCUMENT and only the ones that won their own slot are removed — so nothing a consumer used to get is gone.
+
+Code-search full-JSON comparison (15 real locate queries x top-k 10 and 50) is running now; will report as soon as it lands.
+</agent-message>
+
+---
+
+status?
+
+---
+
+so we it 94% 0.47% up is good enough
