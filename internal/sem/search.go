@@ -184,6 +184,14 @@ type SearchOptions struct {
 	// for one more result is not a request to change retrieval strategy, so the strategy is
 	// now an explicit choice and top-k only changes how many rows come back.
 	Deep bool
+	// SingleResolution turns OFF multi-resolution prose retrieval, restoring the previous output
+	// exactly: one result per file, with the finer regions of a prose document left in each
+	// result's `passages` field instead of being promoted to results of their own. See
+	// search_multi_resolution.go — the expansion is strictly additive (it only fills result slots
+	// the distinct-file ranking left empty, and never breaches MaxContextBytes), so this switch
+	// exists for callers that need the result count to equal the distinct-file count, not because
+	// the expansion can cost them a file.
+	SingleResolution bool
 }
 
 // SearchPassage is an additional, non-overlapping source region from the same file as its
@@ -1333,6 +1341,14 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		// stats.context_block_bytes is only attributable if every counter feeding it measures
 		// what the caller was actually charged.
 		stats.ContainerMapBytes = searchContainerMapCost(containerMap)
+	}
+	// Multi-resolution runs LAST, after every block above has decided which result it anchors on,
+	// so a promoted passage can never become the anchor for the related-site, contract or
+	// container-map blocks — those describe code, and a prose passage is not a definition. It is
+	// also the only pass that can raise the result count above the distinct-file count, so running
+	// it here keeps every earlier pass reasoning about the ranking it actually produced.
+	if !options.SingleResolution {
+		results = expandProseResolution(results, options.TopK, options.MaxContextBytes)
 	}
 	stats.CandidatesSelected = len(results)
 	stats.ProsePassages, stats.ProsePassageBytes = searchPassageStats(results)

@@ -1,0 +1,220 @@
+package sem
+
+import (
+	"strings"
+	"testing"
+)
+
+func proseResolutionParent(rank int, path string, line int, snippet string, passages ...SearchPassage) SearchResult {
+	return SearchResult{
+		Rank: rank, Score: float64(100 - rank), FilePath: path,
+		StartLine: line, EndLine: line, FocusLine: line,
+		SnippetStartLine: line, SnippetEndLine: line, Snippet: snippet,
+		Language: "markdown",
+		Signals:  []string{proseParentRetrievalSignal},
+		Passages: passages,
+	}
+}
+
+func proseResolutionPassage(line int, snippet string) SearchPassage {
+	return SearchPassage{StartLine: line, EndLine: line, FocusLine: line, Snippet: snippet}
+}
+
+// TestExpandProseResolutionPromotesPassagesIntoSpareSlots is the whole point of the pass: the
+// finer regions the ranker already computed become results a consumer that reads `results[]`
+// can see, instead of staying in a field it never asked about.
+func TestExpandProseResolutionPromotesPassagesIntoSpareSlots(t *testing.T) {
+	t.Parallel()
+	results := []SearchResult{
+		proseResolutionParent(1, "sessions/one.md", 10, "primary one",
+			proseResolutionPassage(30, "one alpha"), proseResolutionPassage(50, "one beta")),
+	}
+
+	expanded := expandProseResolution(results, 10, 0)
+
+	if len(expanded) != 3 {
+		t.Fatalf("expanded to %d results, want 3", len(expanded))
+	}
+	if len(expanded[0].Passages) != 0 {
+		t.Fatalf("promoted passages still attached to the parent: %#v", expanded[0].Passages)
+	}
+	for index, want := range []struct {
+		line    int
+		snippet string
+	}{{30, "one alpha"}, {50, "one beta"}} {
+		got := expanded[index+1]
+		if got.Rank != index+2 {
+			t.Fatalf("rank %d at index %d", got.Rank, index+1)
+		}
+		if got.FilePath != "sessions/one.md" || got.StartLine != want.line || got.EndLine != want.line ||
+			got.SnippetStartLine != want.line || got.SnippetEndLine != want.line || got.FocusLine != want.line {
+			t.Fatalf("promoted span = %#v, want lines %d", got, want.line)
+		}
+		if got.Snippet != want.snippet {
+			t.Fatalf("promoted snippet = %q, want %q", got.Snippet, want.snippet)
+		}
+		if got.Score != results[0].Score {
+			t.Fatalf("promoted score = %v, want the parent's %v", got.Score, results[0].Score)
+		}
+		if !hasSearchSignal(got, proseResolutionSignal) {
+			t.Fatalf("promoted result is not labelled: %#v", got.Signals)
+		}
+		if got.SymbolID != "" || got.SymbolName != "" || got.QualifiedName != "" {
+			t.Fatalf("promoted result claims the parent's symbol identity: %#v", got)
+		}
+	}
+	if len(results[0].Passages) != 2 {
+		t.Fatalf("input was mutated: %#v", results[0].Passages)
+	}
+}
+
+// TestExpandProseResolutionNeverDisplacesAFile is the property that separates this from --deep:
+// the expansion only ever fills slots the distinct-file ranking left empty.
+func TestExpandProseResolutionNeverDisplacesAFile(t *testing.T) {
+	t.Parallel()
+	results := []SearchResult{
+		proseResolutionParent(1, "sessions/one.md", 10, "primary one", proseResolutionPassage(30, "one alpha")),
+		proseResolutionParent(2, "sessions/two.md", 20, "primary two", proseResolutionPassage(40, "two alpha")),
+	}
+
+	for _, topK := range []int{0, 1, 2} {
+		expanded := expandProseResolution(results, topK, 0)
+		if len(expanded) != len(results) {
+			t.Fatalf("top-k %d expanded to %d results, want %d", topK, len(expanded), len(results))
+		}
+		if len(expanded[0].Passages) != 1 {
+			t.Fatalf("top-k %d dropped a passage it did not promote", topK)
+		}
+	}
+}
+
+// TestExpandProseResolutionRoundRobinsAcrossParents stops one long document spending every spare
+// slot before a second document has contributed anything.
+func TestExpandProseResolutionRoundRobinsAcrossParents(t *testing.T) {
+	t.Parallel()
+	results := []SearchResult{
+		proseResolutionParent(1, "sessions/one.md", 10, "primary one",
+			proseResolutionPassage(30, "one alpha"), proseResolutionPassage(50, "one beta")),
+		proseResolutionParent(2, "sessions/two.md", 20, "primary two",
+			proseResolutionPassage(40, "two alpha")),
+	}
+
+	expanded := expandProseResolution(results, 4, 0)
+
+	if len(expanded) != 4 {
+		t.Fatalf("expanded to %d results, want 4", len(expanded))
+	}
+	got := []string{expanded[2].Snippet, expanded[3].Snippet}
+	if got[0] != "one alpha" || got[1] != "two alpha" {
+		t.Fatalf("promotion order = %v, want depth-first round robin across parents", got)
+	}
+	if len(expanded[0].Passages) != 1 || expanded[0].Passages[0].Snippet != "one beta" {
+		t.Fatalf("unpromoted passage lost from its parent: %#v", expanded[0].Passages)
+	}
+	if len(expanded[1].Passages) != 0 {
+		t.Fatalf("promoted passage still attached to its parent: %#v", expanded[1].Passages)
+	}
+}
+
+// TestExpandProseResolutionRespectsByteBudget: the expansion is additive, so it is the one pass
+// that could push a payload past the ceiling the fitter already satisfied.
+func TestExpandProseResolutionRespectsByteBudget(t *testing.T) {
+	t.Parallel()
+	results := []SearchResult{
+		proseResolutionParent(1, "sessions/one.md", 10, "primary one",
+			proseResolutionPassage(30, strings.Repeat("a", 400)),
+			proseResolutionPassage(50, strings.Repeat("b", 400))),
+	}
+	budget := serializedSearchResultBytes(results)
+
+	expanded := expandProseResolution(results, 10, budget)
+
+	if serializedSearchResultBytes(expanded) > budget {
+		t.Fatalf("expansion breached the budget: %d > %d", serializedSearchResultBytes(expanded), budget)
+	}
+	if len(expanded) != 1 {
+		t.Fatalf("expanded to %d results under a tight budget, want 1", len(expanded))
+	}
+	if len(expanded[0].Passages) != 2 {
+		t.Fatalf("passages lost when promotion was unaffordable: %#v", expanded[0].Passages)
+	}
+	if unbounded := expandProseResolution(results, 10, 0); len(unbounded) != 3 {
+		t.Fatalf("unbounded expansion returned %d results, want 3", len(unbounded))
+	}
+}
+
+// TestExpandProseResolutionIgnoresResultsWithoutPassages is the code-search case: nothing to
+// promote, so nothing changes.
+func TestExpandProseResolutionIgnoresResultsWithoutPassages(t *testing.T) {
+	t.Parallel()
+	results := []SearchResult{
+		{Rank: 1, FilePath: "internal/sem/search.go", StartLine: 1, EndLine: 2, FocusLine: 1,
+			SnippetStartLine: 1, SnippetEndLine: 2, Snippet: "func Search() {}"},
+	}
+
+	expanded := expandProseResolution(results, 10, 0)
+
+	if len(expanded) != 1 || expanded[0].Snippet != results[0].Snippet {
+		t.Fatalf("code result changed: %#v", expanded)
+	}
+}
+
+// TestSearchRepositoryReturnsMultiResolutionProseResults exercises the wiring end to end, and its
+// --single-resolution counterpart proves the switch restores the previous shape.
+func TestSearchRepositoryReturnsMultiResolutionProseResults(t *testing.T) {
+	repo := t.TempDir()
+	for index := 0; index < 6; index++ {
+		var body strings.Builder
+		body.WriteString("# Session\n\n")
+		for turn := 0; turn < 12; turn++ {
+			body.WriteString("## note: amber lantern orchard ledger braided vessel ridge marker\n\n")
+		}
+		write(t, repo, "sessions/session-"+string(rune('a'+index))+".md", body.String())
+	}
+
+	search := func(single bool) SearchResponse {
+		response, err := SearchRepository(
+			t.Context(), repo, "test", "amber lantern orchard ledger", SearchOptions{
+				Worktree:         true,
+				Profile:          ProfileSyntaxOnly,
+				TopK:             40,
+				MaxIndexedFiles:  32,
+				MaxContextBytes:  400000,
+				SingleResolution: single,
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := response.Validate(); err != nil {
+			t.Fatalf("invalid response (single=%v): %v", single, err)
+		}
+		return response
+	}
+
+	multi, single := search(false), search(true)
+	files := map[string]bool{}
+	for _, result := range single.Results {
+		files[result.FilePath] = true
+	}
+	if len(single.Results) != len(files) {
+		t.Fatalf("single-resolution returned %d results over %d files", len(single.Results), len(files))
+	}
+	if len(multi.Results) <= len(single.Results) {
+		t.Fatalf("multi-resolution returned %d results, single returned %d; want more",
+			len(multi.Results), len(single.Results))
+	}
+	multiFiles := map[string]bool{}
+	for _, result := range multi.Results {
+		multiFiles[result.FilePath] = true
+	}
+	for path := range files {
+		if !multiFiles[path] {
+			t.Fatalf("multi-resolution dropped file %s", path)
+		}
+	}
+	if multi.Stats.ResultBytes > multi.Stats.ContextBudgetBytes {
+		t.Fatalf("multi-resolution breached the budget: %d > %d",
+			multi.Stats.ResultBytes, multi.Stats.ContextBudgetBytes)
+	}
+}
