@@ -1,0 +1,16 @@
+{
+  "cli_version": "0.9.1-nightly.202608080619.caa0c9be9",
+  "checkpoint_id": "77fb6ab14a04",
+  "session_id": "019ffb3b-a03c-7f93-bdcc-3bfed8a7740a",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-14T00:02:19.217047Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "2b31a53dcd28",
+  "checkpoint_transcript_start": 226,
+  "transcript_lines_at_start": 226,
+  "compact_transcript_start": 48
+}
