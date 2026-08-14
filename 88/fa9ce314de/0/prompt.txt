@@ -1,1 +1,1 @@
-Create a new branch ashtom/readme-refersh in this repo with all the currently changed and added files.
+Commit all modified, deleted, and untracked files, then review docs/readme-plan.md
