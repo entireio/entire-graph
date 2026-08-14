@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "d0bc4c1205c0",
+  "strategy": "manual-commit",
+  "branch": "agent/deduplicate-claude-guide-import",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/d0/bc4c1205c0/0/metadata.json",
+      "transcript": "/d0/bc4c1205c0/0/full.jsonl",
+      "compact_transcript": "/d0/bc4c1205c0/0/transcript.jsonl",
+      "content_hash": "/d0/bc4c1205c0/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 2,
+    "cache_creation_tokens": 43,
+    "cache_read_tokens": 83518,
+    "output_tokens": 553,
+    "api_call_count": 1
+  }
+}
