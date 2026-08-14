@@ -46,6 +46,32 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
+      - name: Install LLVM-MinGW for Windows ARM64
+        if: matrix.goos == 'windows' && matrix.goarch == 'arm64'
+        shell: pwsh
+        run: |
+          $version = "20260616"
+          $expected = "312593669435bd0bfc1a43ac3fba23c8b27e0610bade88b2738e5a01702a99ba"
+          $archive = Join-Path $env:RUNNER_TEMP "llvm-mingw-$version-ucrt-aarch64.zip"
+          $destination = Join-Path $env:RUNNER_TEMP "llvm-mingw"
+          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/$version/llvm-mingw-$version-ucrt-aarch64.zip"
+
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "LLVM-MinGW checksum mismatch: expected $expected, got $actual"
+          }
+
+          Expand-Archive -Path $archive -DestinationPath $destination
+          $toolchain = Get-ChildItem -Path $destination -Directory | Select-Object -First 1
+          $cc = Join-Path $toolchain.FullName "bin/aarch64-w64-mingw32-clang.exe"
+          $cxx = Join-Path $toolchain.FullName "bin/aarch64-w64-mingw32-clang++.exe"
+          if (!(Test-Path $cc) -or !(Test-Path $cxx)) {
+            throw "LLVM-MinGW ARM64 compiler wrappers were not found"
+          }
+          "CC=$cc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CXX=$cxx" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & $cc --version
       - name: Select artifact version
         id: version
         shell: bash
@@ -96,7 +122,8 @@ jobs:
           else
             (cd dist && shasum -a 256 -c checksums.txt)
           fi
-          grep -F "  $asset" dist/checksums.txt
+          read -r _ checksum_name < dist/checksums.txt
+          test "${checksum_name#\*}" = "$asset"
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.goos }}-${{ matrix.goarch }}
