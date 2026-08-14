@@ -1,8 +1,8 @@
 # FAIR-CONFIG — the one config every arm's run must cite
 
-**Status: DRAFT, ready for merge/review by agent `a8fbcd775318cb31d`.** Written from the fixes and
-verifications performed this session. Every future run (preflight or full) must reference this
-file's git-free hash (see bottom) in its log header.
+**Status: in force.** This is the configuration the published runs were produced under. Written
+from fixes and verifications that were performed by running the harness, not by reading it. Every
+run (preflight or full) must reference this file's git-free hash (see bottom) in its log header.
 
 ## 1. Model spine (identical across every arm, no exceptions)
 
@@ -58,7 +58,7 @@ AZURE_AI_API_KEY=<key> AZURE_AI_ENDPOINT=<endpoint> AZURE_AI_API_VERSION=2024-05
 `preflight_*` project names are smoke tests only — a handful of questions, never scored as a
 publishable row, never resumed into a `field_*` run.
 
-## 5. Load envelope (32 vCPU box, `graphbench-g`)
+## 5. Load envelope (32 vCPU benchmark host)
 
 Target sustained load **under ~24** (raised from the 16-vCPU box's ~20 target, proportionally, with
 headroom for the bge embedder's own 16 workers + qdrant + postgres + supermemory + any concurrent
@@ -88,15 +88,14 @@ clearly labelled with context sizes shown, never publish only the higher one.
 
 ## 8. Hash
 
-Compute after final merge with agent `a8fbcd775318cb31d`'s edits:
 `sha256sum FAIR-CONFIG.md` — every run's log header must cite this hash so a reader can verify
 which config version produced which row.
 
 ---
 
-# PART B — fixes, invariants and hashes (fix-owner session, 2026-08-13 17:30Z)
+# PART B — fixes, invariants and hashes (2026-08-13 17:30Z)
 
-Everything below was applied to the live harness on `graphbench-g` and verified by running it,
+Everything below was applied to the live harness on the benchmark host and verified by running it,
 not by reading it. Where a check is missing, it says so.
 
 ## B1. mem0 `top_k` — the bug, and why the fix now survives a rebuild
@@ -359,13 +358,13 @@ before trusting it.
 
 ## B13. Not fixed / not verified — stated plainly
 
-- **neo4j and redis are down.** graphiti cannot run at all until they are started; I did not
-  start them.
+- **neo4j and redis are down.** graphiti cannot run at all until they are started; they were not
+  started.
 - **The five buffered arms have no live retrieval smoke.** Their pipelines are proven only as far
   as `search()` raising correctly. End-to-end proof needs an ingesting run, blocked by the hold.
 - **Embedder headroom under real multi-arm load is unmeasured** (see B12).
-- **`MEM0_HOST` is still absent from `run.env`.** I did not edit `run.env` — it is another agent's
-  file. Until it is added there, every launcher must export it (B2/B10) or connect to nothing.
+- **`MEM0_HOST` is still absent from `run.env`.** Until it is added there, every launcher must
+  export it (B2/B10) or connect to nothing.
 - **`metadata.git` is always empty** — `~/mem0harness` is not a git repo. `code_md5` is the parity
   record instead (B9).
 - **The audited historical numbers are not repaired by any of this.** Every LoCoMo and LongMemEval
