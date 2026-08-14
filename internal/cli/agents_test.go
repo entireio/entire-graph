@@ -17,7 +17,8 @@ const testAgentPointerBlock = agentPointerBegin + "\n" +
 	agentPointerEnd + "\n"
 
 const testInheritedAgentPointerBlock = agentPointerBegin + "\n" +
-	"<!-- Entire Graph instructions are inherited through AGENTS.md. -->\n" +
+	"Entire Graph's agent instructions are inherited from AGENTS.md, which this file\n" +
+	"already imports; the guide itself is .entire/graph-agent.md.\n" +
 	agentPointerEnd + "\n"
 
 func TestAgentGuidePrintsDoctrine(t *testing.T) {
@@ -186,6 +187,20 @@ func TestInitAgentsRecognizesLiveAgentsImportPathVariants(t *testing.T) {
 		{name: "cleaned relative", content: func(string) string { return "@subdir/../AGENTS.md\n" }},
 		{name: "absolute", content: func(repo string) string { return "@" + filepath.Join(repo, "AGENTS.md") + "\n" }},
 		{name: "after closed comment", content: func(string) string { return "<!-- context -->\n@AGENTS.md\n" }},
+		// A `-->` with no opener is prose, not comment structure, and must not hide the import.
+		{name: "prose arrow after import", content: func(string) string { return "@AGENTS.md\n\nFlow: a --> b\n" }},
+		{name: "fenced arrow before import", content: func(string) string {
+			return "```text\nlocate --> entire graph search\n```\n@AGENTS.md\n"
+		}},
+		{name: "fenced comment markers", content: func(string) string {
+			return "```md\n<!-- entire-graph:end -->\n```\n@AGENTS.md\n"
+		}},
+		{name: "fenced unterminated comment", content: func(string) string {
+			return "```md\n<!-- example\n```\n@AGENTS.md\n"
+		}},
+		{name: "stray end marker before import", content: func(string) string {
+			return agentPointerEnd + "\n@AGENTS.md\n"
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -254,6 +269,51 @@ func TestInitAgentsRecognizesImportWithUnrelatedInlineCode(t *testing.T) {
 	}
 }
 
+func TestInitAgentsInheritanceNoticeStaysReadable(t *testing.T) {
+	repo := t.TempDir()
+	claudePath := filepath.Join(repo, "CLAUDE.md")
+	if err := os.WriteFile(claudePath, []byte("@AGENTS.md\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runInitAgentsForTest(t, repo)
+	got := readFileForTest(t, claudePath)
+	// A reader that does not resolve Claude's @-import syntax must still learn where the
+	// instructions are, so the notice cannot be an HTML comment.
+	for _, want := range []string{"inherited from AGENTS.md", ".entire/graph-agent.md"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("inheritance notice is missing readable pointer %q:\n%s", want, got)
+		}
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "inherited from AGENTS.md") && strings.HasPrefix(strings.TrimSpace(line), "<!--") {
+			t.Fatalf("inheritance notice is hidden inside an HTML comment:\n%s", got)
+		}
+	}
+}
+
+func TestInitAgentsReplacesBlockDespiteStrayEndMarker(t *testing.T) {
+	repo := t.TempDir()
+	claudePath := filepath.Join(repo, "CLAUDE.md")
+	// An end marker with no block above it must not send every rerun down the append path.
+	if err := os.WriteFile(claudePath, []byte("# rules\n"+agentPointerEnd+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runInitAgentsForTest(t, repo)
+	first := readFileForTest(t, claudePath)
+	runInitAgentsForTest(t, repo)
+	runInitAgentsForTest(t, repo)
+	got := readFileForTest(t, claudePath)
+	if got != first {
+		t.Fatalf("reruns were not byte-idempotent:\nafter first:\n%s\nafter third:\n%s", first, got)
+	}
+	if count := strings.Count(got, agentPointerBegin); count != 1 {
+		t.Fatalf("managed block written %d times:\n%s", count, got)
+	}
+	if !strings.Contains(got, "# rules\n") {
+		t.Fatalf("unmanaged content was lost:\n%s", got)
+	}
+}
+
 func TestInitAgentsWritesSameFileOnlyOnce(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -288,7 +348,13 @@ func TestInitAgentsWritesSameFileOnlyOnce(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := t.TempDir()
 			tt.createAliases(t, repo)
-			runInitAgentsForTest(t, repo)
+			out := runInitAgentsForTest(t, repo)
+			// Both configured files were updated, even though one write covered both.
+			for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+				if !strings.Contains(out, "updated "+filepath.Join(repo, name)+"\n") {
+					t.Fatalf("init-agents did not report %s as updated:\n%s", name, out)
+				}
+			}
 
 			agents := readFileForTest(t, filepath.Join(repo, "AGENTS.md"))
 			claude := readFileForTest(t, filepath.Join(repo, "CLAUDE.md"))
@@ -323,12 +389,13 @@ func TestInitAgentsSurfacesClaudeReadErrors(t *testing.T) {
 	}
 }
 
-func runInitAgentsForTest(t *testing.T, repo string) {
+func runInitAgentsForTest(t *testing.T, repo string) string {
 	t.Helper()
 	var out bytes.Buffer
 	if err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo}); err != nil {
 		t.Fatal(err)
 	}
+	return out.String()
 }
 
 func readFileForTest(t *testing.T, path string) string {

@@ -69,7 +69,7 @@ var commandDocs = []commandDoc{
 		group:   groupSetup,
 		summary: "Install the coding-agent guide into AGENTS.md/CLAUDE.md",
 		usage:   []string{"entire graph init-agents [--repo path]"},
-		long:    "Writes the operating guide into a project's AGENTS.md and CLAUDE.md so any coding agent working in the repo knows to locate code with the graph before broad grep/read exploration.",
+		long:    "Writes the operating guide to .entire/graph-agent.md and points a project's AGENTS.md and CLAUDE.md at it, so any coding agent working in the repo knows to locate code with the graph before broad grep/read exploration. A CLAUDE.md that already imports AGENTS.md gets a note that it inherits the guide instead of a second pointer.",
 		flags: []flagDoc{
 			{name: "--repo", arg: "path", desc: "Repository to install into (default: current repo)"},
 		},

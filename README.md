@@ -22,9 +22,11 @@ Then, in any repo your agents work in:
 entire graph init-agents
 ```
 
-That's it. `init-agents` drops the operating guide into your project's `AGENTS.md` and `CLAUDE.md`,
-so Claude Code, Codex, Gemini, Cursor, Pi — any agent that reads those files — picks up the
-search-first workflow automatically. No config, no MCP server, no daemon.
+That's it. `init-agents` writes the operating guide to `.entire/graph-agent.md` and points your
+project's `AGENTS.md` and `CLAUDE.md` at it, so Claude Code, Codex, Gemini, Cursor, Pi — any agent
+that reads those files — picks up the search-first workflow automatically. If your `CLAUDE.md`
+already imports `AGENTS.md`, it gets a short note saying so instead of a second copy of the
+pointer. No config, no MCP server, no daemon.
 
 ## Status line: estimated exploration savings
 

@@ -66,6 +66,15 @@ const (
 	agentPointerEnd   = "<!-- entire-graph:end -->"
 )
 
+// inheritedPointer replaces the direct pointer in a CLAUDE.md that already imports AGENTS.md,
+// so the guide is not injected twice. It stays readable prose rather than an HTML comment:
+// tools that read CLAUDE.md without resolving Claude's @-import syntax still learn where the
+// instructions live.
+const inheritedPointer = agentPointerBegin + "\n" +
+	"Entire Graph's agent instructions are inherited from AGENTS.md, which this file\n" +
+	"already imports; the guide itself is .entire/graph-agent.md.\n" +
+	agentPointerEnd + "\n"
+
 func runAgentGuide(opts Options, args []string) error {
 	fs := flag.NewFlagSet("agent-guide", flag.ContinueOnError)
 	fs.SetOutput(opts.Stderr)
@@ -129,7 +138,9 @@ func runInitAgents(opts Options, args []string) error {
 	if err == nil && os.SameFile(agentsInfo, claudeInfo) {
 		// A symlink or hard link already gives Claude the AGENTS.md pointer. Updating the
 		// same inode a second time could replace that pointer with an inheritance notice
-		// that no longer has anything to inherit from.
+		// that no longer has anything to inherit from. The file is still updated, so it is
+		// still reported as such.
+		fmt.Fprintf(opts.Stdout, "updated %s\n", claudePath)
 		return nil
 	}
 
@@ -139,7 +150,7 @@ func runInitAgents(opts Options, args []string) error {
 	}
 	claudeBlock := pointer
 	if importsAgents {
-		claudeBlock = agentPointerBegin + "\n<!-- Entire Graph instructions are inherited through AGENTS.md. -->\n" + agentPointerEnd + "\n"
+		claudeBlock = inheritedPointer
 	}
 	if err := upsertPointerBlock(claudePath, claudeBlock); err != nil {
 		return fmt.Errorf("init-agents: CLAUDE.md: %w", err)
@@ -173,24 +184,9 @@ func claudeDirectlyImportsAgents(claudePath, agentsPath string) (bool, error) {
 			}
 			continue
 		}
-		if strings.Contains(line, agentPointerBegin) {
-			if !strings.Contains(line, agentPointerEnd) {
-				until = agentPointerEnd
-			}
-			continue
-		}
-		if strings.Contains(line, agentPointerEnd) {
-			return false, nil
-		}
-		if strings.Contains(line, "<!--") {
-			if !strings.Contains(line, "-->") {
-				until = "-->"
-			}
-			continue
-		}
-		if strings.Contains(line, "-->") {
-			return false, nil
-		}
+		// Fences are resolved before comments: inside a code block `<!--` and `-->` are
+		// literal text, so an arrow in a diagram or a commented-out example must not be
+		// mistaken for comment structure.
 		if fence {
 			width := len(line) - len(strings.TrimLeft(line, string(fenceChar)))
 			if indent <= 3 && width >= fenceWidth && strings.TrimSpace(line[width:]) == "" {
@@ -201,6 +197,21 @@ func claudeDirectlyImportsAgents(claudePath, agentsPath string) (bool, error) {
 		if indent <= 3 && len(line) >= 3 && (strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~")) {
 			fence, fenceChar = true, line[0]
 			fenceWidth = len(line) - len(strings.TrimLeft(line, string(fenceChar)))
+			continue
+		}
+		if strings.Contains(line, agentPointerBegin) {
+			if !strings.Contains(line, agentPointerEnd) {
+				until = agentPointerEnd
+			}
+			continue
+		}
+		// Only `<!--` opens a comment, and the last one on the line decides whether it stays
+		// open. A `-->` with no opener is ordinary text (a prose or diagram arrow), so it
+		// falls through instead of aborting the scan.
+		if open := strings.LastIndex(line, "<!--"); open >= 0 {
+			if strings.LastIndex(line, "-->") < open {
+				until = "-->"
+			}
 			continue
 		}
 		if codeTicks != 0 || strings.Contains(line, "`") {
@@ -271,7 +282,14 @@ func upsertPointerBlock(path, block string) error {
 	}
 	content := string(existing)
 	begin := strings.Index(content, agentPointerBegin)
-	end := strings.Index(content, agentPointerEnd)
+	// The end marker is searched from the block start: a stray end marker earlier in the file
+	// must not hide the managed block and turn every rerun into another appended copy.
+	end := -1
+	if begin >= 0 {
+		if offset := strings.Index(content[begin:], agentPointerEnd); offset >= 0 {
+			end = begin + offset
+		}
+	}
 	switch {
 	case begin >= 0 && end > begin:
 		content = content[:begin] + strings.TrimSuffix(block, "\n") + content[end+len(agentPointerEnd):]
