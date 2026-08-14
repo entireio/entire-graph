@@ -1,0 +1,21 @@
+Commit all modified, deleted, and untracked files, then review docs/readme-plan.md
+
+---
+
+Suggest a solution for each finding. Where you want to change a text, show me the before and after. Let me approve or change each solution individually, i.e. start with the first one, wait for my approval, fix it, then the second one.
+
+---
+
+All wrong. Instead of changing the clarity of the README, why don't you submit a PR against the index repo and build/upload the required archives?
+
+---
+
+Yes
+
+---
+
+Yes
+
+---
+
+Yes
