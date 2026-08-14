@@ -46,6 +46,9 @@ Windows are separated by rules. **Only rows inside the same window are orderable
 | | | | | | |
 | `full_graphify` | 08-14 16:25 | graphify | 87.34 | 1345/1540 | `true` |
 | `full_cmm` | 08-14 16:34 | **cmm (patched, Markdown-Section)** | 91.30 | 1406/1540 | `true` |
+| | | | | | |
+| `mrq_mres` | 08-14 17:41 | **entire-graph, shipped + PR #100** | **93.83** | 1445/1540 | `true` |
+| `mrq_base` | 08-14 17:43 | entire-graph, shipped current default | 91.56 | 1410/1540 | `true` |
 
 ¹ `field_mem0_loco` at 17:55 was launched without `FAIR_MODE=1` but its `runmeta` block records
 `asymmetric_settings_active: {}` — no asymmetric knob was set. The flag governs whether the guard
@@ -56,6 +59,22 @@ landing in the harness (`patches/0003`). Their fairness rests on the code-finger
 `FAIR-CONFIG.md` §7 rather than on a stamped flag. Later runs carry the stamp. Treat the stamped
 rows as the stronger evidence, and note that `runmeta` exists precisely because reconstructing the
 08-13 configurations by hand was the problem that motivated it.
+
+## The `mrq` window — the PR #100 result
+
+`mrq_mres` and `mrq_base` ran on the same corpus in the same window, same answerer, same judge,
+same `top_k`, **binary the only variable**. Both n=1540, `drops=0`, `zero-context=0`,
+`fair_mode: true`, `asymmetric_settings_active: {}`.
+
+Paired over all 1540 questions (ALL-PAIRS, the pre-registered endpoint):
+**91.5584 → 93.8312, +2.2727pp, discordant 46–11, exact McNemar p = 3.3e-06.**
+
+Retrieval-budget usage in the same two runs — the mechanism behind the gain:
+
+| | items returned / question | context chars / question |
+|---|---|---|
+| `mrq_base` | mean 27.7, median 29, min 7, max 32 | 24,487 |
+| `mrq_mres` | mean 198.7, median 200, min 8, max 200 | 56,891 |
 
 ## The `plan_g` window
 
@@ -85,5 +104,6 @@ Present in the artifact directories, **not scoreable**, listed so nothing looks 
 | `egopt_deep` / `egopt_sx2c10` | 1334 / 1333 | 0.00 | killed before judging |
 | `field_graphiti_loco` | 589 | 70.46 | graphiti never completable (~160h at observed rate) |
 | `paired_eg_r1` / `paired_mem0_r1` | 1540 / 762 | 72.66 / 69.03 | paired-harness experiment, different pipeline, not the published spine |
-| `mrp_base` / `mrp_mres` | 568 / 228 | 88.56 / 53.51 | in flight at time of writing |
+| `mrp_base` / `mrp_mres` | 568 / 228 | 88.56 / 53.51 | earlier partial pass, superseded by the completed `mrq_*` pair |
+| `sw_mem0` / `sw_eg_tsmr` | in flight | — | same-window control, still running; see `LOCOMO-COMPARISON.md` §7 |
 | `preflight_*`, `*_smoke` | 2–8 | — | smoke tests; never a publishable row |
