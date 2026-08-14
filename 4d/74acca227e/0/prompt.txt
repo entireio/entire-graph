@@ -152,3 +152,30 @@ No Go touched → `mise run check` not implicated. Ran `python3 -m py_compile` o
 Two things in the vendored verbatim docs worth a glance before merge: `FAIR-CONFIG.md` opens with "Status: DRAFT" and an internal agent ID, and `RESULTS.md` §1 documents a −2.21pt drift on an identical eg config that exceeds the spread between the leading arms. I carried the drift caveat into the README rather than hiding it, and the README states no LoCoMo ranking among the top arms should be published.</result>
 <usage><subagent_tokens>113473</subagent_tokens><tool_uses>55</tool_uses><duration_ms>587631</duration_ms></usage>
 </task-notification>
+
+---
+
+<agent-message from="general-purpose">
+Clock corrected — you are right, I was extrapolating between `date` calls instead of reading it. Real time now 16:58 UTC. Every ETA I gave after 16:26 was inflated by up to 2h. Sorry; from here every timestamp comes from an actual `date -u`.
+
+## 1. THE 32-QUESTION PROBE — the real number
+Both binaries, same corpora, same queries, same top-k 200, separate cache dirs, all 32 losses:
+```
+             chars/question    gold evidence turns found
+eg-mr  (control)   44,532            21 / 51
+eg-mr2 (fixed)     44,484            23 / 51
+```
+**+2 evidence turns, all inside ONE question** (`conv1_q56`, 0/2 -> 2/2). Every other one of the 32 is byte-for-byte the same coverage. Per-question bytes are non-increasing on all 32, so byte-neutrality holds in the live binary, not just in the design.
+
+So the published statement has an n behind it: **1 of 32 gold-coverage conversions, and coverage is necessary but not sufficient — expected score conversions 0 to 1.** Against a discordant split of 46/32 that moves p from 0.14 to at best 0.12. It does not clear its own bar.
+
+Worth recording precisely because the mechanism it targets is real: the diagnosis (perfect session recall, turn-level miss, 70% of missing gold within 2 turns) is confirmed and unaffected. The fix fails on economics, not on premise. There is not enough duplicate text in the payload to pay for the widening that would close the gap — and taking the budget from anywhere else is buying the win with a bigger prompt.
+
+## 2/3. BRANCH + WRITE-UP
+Doing now: new branch `feat/prose-context-expansion` off `fccf1fc`, commit there, no PR, and `feat/multi-resolution-retrieval` left pointing exactly at `fccf1fc` (I will confirm the SHA after). The byte-meter trap goes in the commit message in full: harness `memory` strings carry YAML frontmatter, which makes a coarse chunk a textual superset of a fine one, so a simulation over those strings credits dedup with 19.9% of bytes; the binary compares frontmatter-free snippets where real dedup frees ~3.5k chars, enough to widen ~8 of 177 results, and the rank-ordered greedy spends it on results that do not hold the missing evidence. Simulation +5, reality +1.
+
+`mise run check` is still running on the final state (statusline 151/151 green, test:ci in progress). I will confirm green before committing and will not touch the live arms.
+
+## On the n=414 control
+That is the better road and I would rather the number arrive that way. One caution: +1.93pp at n=414 with discordant 12-4 is a small discordant count, and discordant counts are exactly where early splits are least stable — the 12-4 could be 20-14 by n=1540 and land back above 0.05. Worth pre-registering now what you will report if it lands at, say, p=0.07, so the decision is not made after seeing the number.
+</agent-message>
