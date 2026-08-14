@@ -137,7 +137,7 @@ var commandDocs = []commandDoc{
 			{name: "--head", desc: "Search the committed tree (cached) instead of the working tree"},
 			{name: "--profile", arg: "syntax-only|fast|full", def: "fast", desc: "Parsing depth; use full for bug-fix/locate (call-graph active)"},
 			{name: "--deep", desc: "Also run the exhaustive BM25 pass and fuse it (slower)"},
-			{name: "--single-resolution", desc: "One result per file; do not spend spare slots on finer regions of a prose document"},
+			{name: "--single-resolution", desc: "One result per ranked unit; do not spend spare slots on finer regions of a prose document"},
 			{name: "--document-resolution", desc: "Rank a prose document as one unit; do not rank its sections separately"},
 			{name: "--max-context-bytes", arg: "n", def: "24576", desc: "Output byte budget; 0 = unbounded"},
 			{name: "--reference-blocks", arg: "all|container-map,signature-types,type-card", desc: "Turn reference blocks back on (off by default)"},
