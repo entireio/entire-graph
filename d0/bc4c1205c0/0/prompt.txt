@@ -1,0 +1,41 @@
+Review PR 102
+
+---
+
+<task-notification>
+<task-id>af4761af70b4181b8</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/a8abec92-b963-4add-9f02-a9dc914a88bf/tasks/af4761af70b4181b8.output</output-file>
+<status>completed</status>
+<summary>Agent "/code-review 102" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>ReportFindings is not available in this session's toolset (I searched the deferred-tool registry; only Monitor/WebFetch/etc. are exposed), so the findings are stated directly below.
+
+## Review of PR #102 — `fix: normalize Claude agent guide imports`
+
+Scope: `internal/cli/agents.go` (+153) and `internal/cli/agents_test.go` (+251). I ran the branch in a scratch worktree: `go vet ./internal/cli` clean, `go test ./internal/cli -count=1` passes, and I probed `claudeDirectlyImportsAgents` and `upsertPointerBlock` directly with extra table cases.
+
+Overall the detector is deliberately conservative and I could not construct a realistic **false positive** (a case where CLAUDE.md loses its direct pointer while Claude would not actually load `AGENTS.md`) — every ambiguity path returns `false`, which degrades to the pre-PR behavior. The issues below are the ones I do believe are real.
+
+### Findings
+
+**1. `/Users/thomi/Projects/entire-graph/internal/cli/agents.go:191` — medium.** The HTML-comment scan (`&lt;!--` / `--&gt;`) runs *before* the fence-state check at line 194, so a bare `--&gt;` anywhere in `CLAUDE.md` — including inside a fenced code block — hits `return false, nil` and aborts detection, discarding an `@AGENTS.md` import that was already found on an earlier line. Verified: `"@AGENTS.md\n\nFlow: a --&gt; b\n"` → `false`, and ```` "```text\nlocate --&gt; entire graph search\n```\n@AGENTS.md\n" ```` → `false`. A mermaid diagram (`A --&gt; B`) or an ASCII arrow in prose is extremely common in agent instruction files, so the new normalization silently no-ops for a large share of the repos it targets. Same ordering also lets an unterminated `&lt;!--` inside a fence swallow the closing fence line. Fix: evaluate `fence` state before comment scanning, and return `found` rather than `false` when the arrow appears after the import.
+
+**2. `/Users/thomi/Projects/entire-graph/internal/cli/agents.go:142` — low/medium.** The replacement block is a single HTML comment: `&lt;!-- Entire Graph instructions are inherited through AGENTS.md. --&gt;`. After migration, a `CLAUDE.md` whose only entire-graph content was the pointer paragraph now carries zero readable instruction. Before this change, even a tool that reads `CLAUDE.md` but does not resolve Claude's `@` import syntax still saw the prose ("This repo has the entire-graph code graph installed… read `.entire/graph-agent.md`") and could act on it; now it sees a comment and the `@AGENTS.md` line it also cannot follow. Consider making the notice a visible sentence that names `AGENTS.md` and `.entire/graph-agent.md` in plain text. Related stale docs that now overstate the behavior: `/Users/thomi/Projects/entire-graph/README.md:25` ("drops the operating guide into your project's `AGENTS.md` and `CLAUDE.md`… any agent that reads those files"), `/Users/thomi/Projects/entire-graph/internal/cli/help.go:71` (`long:` "Writes the operating guide into a project's AGENTS.md and CLAUDE.md"), and `/Users/thomi/Projects/entire-graph/docs/readme-plan.md:149` ("`init-agents` writes the same pointer block to both files").
+
+**3. `/Users/thomi/Projects/entire-graph/internal/cli/agents.go:276` — low (pre-existing, but it contradicts the PR's idempotence claim).** `upsertPointerBlock` only replaces in place when `begin &gt;= 0 &amp;&amp; end &gt; begin`. `strings.Index` finds the *first* `&lt;!-- entire-graph:end --&gt;`, so a file containing a stray end marker above the managed block never satisfies the guard and falls into the append branch on every run. Verified by running `init-agents` three times against `CLAUDE.md` = `"# rules\n&lt;!-- entire-graph:end --&gt;\n"`: 1 → 2 → 3 managed blocks, 351 → 668 → 985 bytes, growing without bound. The new detector already recognizes this state (line 191 returns `false` on a stray end marker), so the writer should too — search for the end marker starting at `begin`.
+
+**4. `/Users/thomi/Projects/entire-graph/internal/cli/agents.go:133` — low.** The `os.SameFile` branch returns before the `fmt.Fprintf(opts.Stdout, "updated %s\n", claudePath)` at line 147. When `CLAUDE.md` and `AGENTS.md` are the same inode (the symlink layout the PR explicitly supports), the command now reports only one updated path even though both configured files were updated. The file content is correct; only the user-facing/scriptable report changed versus the previous loop.
+
+### Non-issues I checked and cleared
+CRLF input (trimmed before matching, detected correctly); absolute, `./`, and `subdir/../` import forms; nested-list and table-row mentions; fence width/annotation rules; `nextCodeSpanWidth` run matching and loop termination (`width &gt;= 1`, no infinite loop); `claudeInfo` nil-deref (guarded by `err == nil`); dangling-symlink and directory-`CLAUDE.md` paths; the `AGENTS.md`↔`CLAUDE.md` symlink layouts in both directions; and round-tripping migrate → restore → migrate. An unclosed code span or fence, a `~` vs backtick mismatch, a case-mismatched path, and a `@~/`-style home import all fall back to the direct pointer, which is the safe direction.</result>
+<usage><subagent_tokens>73927</subagent_tokens><tool_uses>22</tool_uses><duration_ms>450546</duration_ms></usage>
+</task-notification>
+
+---
+
+Yes, fix them. Also verify in a Claude session that this actually works.
+
+---
+
+Push an empty commit to wrap this Entire session.
