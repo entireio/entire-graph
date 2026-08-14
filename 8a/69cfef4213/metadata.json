@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "8a69cfef4213",
+  "strategy": "manual-commit",
+  "branch": "agent/fix-head-source-provenance",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "internal/cli/callsite.go",
+    "internal/cli/def.go",
+    "internal/cli/explain.go",
+    "internal/cli/head_source_provenance_test.go",
+    "internal/cli/impact.go",
+    "internal/cli/neighbors.go",
+    "internal/cli/symbolref.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/8a/69cfef4213/0/metadata.json",
+      "transcript": "/8a/69cfef4213/0/full.jsonl",
+      "compact_transcript": "/8a/69cfef4213/0/transcript.jsonl",
+      "content_hash": "/8a/69cfef4213/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 249087,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 14538496,
+    "output_tokens": 27045,
+    "api_call_count": 135
+  }
+}
