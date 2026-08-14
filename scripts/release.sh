@@ -5,11 +5,42 @@ repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_root"
 
 version=${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || printf 'dev')}
+asset_version=${version#v}
 out_dir=${OUT_DIR:-dist/release-$version}
 targets=${ENTIRE_RELEASE_TARGETS:-$(go env GOOS)/$(go env GOARCH)}
 
 mkdir -p "$out_dir"
-rm -f "$out_dir"/SHA256SUMS
+out_dir=$(CDPATH= cd -- "$out_dir" && pwd)
+rm -f "$out_dir"/checksums.txt "$out_dir"/SHA256SUMS
+
+checksum_artifact() {
+	artifact_name=${1##*/}
+	if command -v sha256sum >/dev/null 2>&1; then
+		(cd "$out_dir" && sha256sum "$artifact_name")
+		return
+	fi
+	if command -v shasum >/dev/null 2>&1; then
+		(cd "$out_dir" && shasum -a 256 "$artifact_name")
+		return
+	fi
+	printf 'neither sha256sum nor shasum is available\n' >&2
+	return 1
+}
+
+archive_windows() {
+	work=$1
+	archive=$2
+	if command -v zip >/dev/null 2>&1; then
+		(cd "$work" && zip -q -r "$archive" .)
+		return
+	fi
+	if command -v 7z >/dev/null 2>&1; then
+		(cd "$work" && 7z a -bd -y -tzip "$archive" . >/dev/null)
+		return
+	fi
+	printf 'neither zip nor 7z is available for a Windows archive\n' >&2
+	return 1
+}
 
 build_target() {
 	goos=${1%/*}
@@ -24,8 +55,13 @@ build_target() {
 		windows) bin="$bin.exe" ;;
 	esac
 
-	work="$out_dir/entire-graph-$version-$goos-$goarch"
-	archive="$out_dir/entire-graph-$version-$goos-$goarch.tar.gz"
+	asset="entire-graph_${asset_version}_${goos}_${goarch}"
+	work="$out_dir/$asset"
+	archive="$out_dir/$asset.tar.gz"
+	if [ "$goos" = "windows" ]; then
+		archive="$out_dir/$asset.zip"
+	fi
+	rm -f "$archive" "$archive.sig" "$archive.asc"
 	rm -rf "$work"
 	mkdir -p "$work"
 
@@ -35,9 +71,13 @@ build_target() {
 		-o "$work/$bin" ./cmd/entire-graph
 
 	cp README.md LICENSE entire-plugin.yml "$work/"
-	tar -C "$out_dir" -czf "$archive" "entire-graph-$version-$goos-$goarch"
+	if [ "$goos" = "windows" ]; then
+		archive_windows "$work" "$archive"
+	else
+		tar -C "$work" -czf "$archive" .
+	fi
 	rm -rf "$work"
-	shasum -a 256 "$archive" >> "$out_dir/SHA256SUMS"
+	checksum_artifact "$archive" >> "$out_dir/checksums.txt"
 	sign_artifact "$archive"
 }
 
