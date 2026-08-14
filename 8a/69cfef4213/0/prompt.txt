@@ -1,0 +1,41 @@
+Commit all modified, deleted, and untracked files, then review docs/readme-plan.md
+
+---
+
+Suggest a solution for each finding. Where you want to change a text, show me the before and after. Let me approve or change each solution individually, i.e. start with the first one, wait for my approval, fix it, then the second one.
+
+---
+
+All wrong. Instead of changing the clarity of the README, why don't you submit a PR against the index repo and build/upload the required archives?
+
+---
+
+Yes
+
+---
+
+Yes
+
+---
+
+Yes
+
+---
+
+No, wait. The description "Entity-level checkpoint context for Entire sessions" doesn't match what entire-graph does. Give me better options.
+
+---
+
+Option 1. Also while you are at it, flip official to true for the entire-run plugin definition in the same file.
+
+---
+
+It's merged. Keep going then.
+
+---
+
+No. Your behavior change helps whom? How would an agent know to call it with --head? Or what I am not getting?
+
+---
+
+Open a separate PR to fix the behavior. On the README, does it mention --head at all?
