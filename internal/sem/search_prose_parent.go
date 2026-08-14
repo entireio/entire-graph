@@ -210,32 +210,38 @@ func selectSearchCandidates(
 	return dropSelectedProsePassages(selected)
 }
 
-// dropSelectedProsePassages removes any planned passage that a later pass admitted as a result of
-// its own. A region must be returned once: as a ranked result if it earned a slot, and only
-// otherwise as a passage of the document region that did.
+// dropSelectedProsePassages keeps every returned region unique. Passages are planned per selected
+// unit over the whole document, so the same unselected region is planned once for EVERY selected
+// section of that document, and a region that won a slot of its own is also still planned as a
+// passage of its neighbours. Both are the same fault — the payload would show one region twice —
+// so both are dropped here: a region is returned as a ranked result if it earned a slot, otherwise
+// as a passage of exactly one result, the highest-ranked one that planned it.
 func dropSelectedProsePassages(selected []searchCandidate) []searchCandidate {
-	primaries := make(map[string][]SearchPassage, len(selected))
+	claimed := make(map[string][]SearchPassage, len(selected))
 	for index := range selected {
 		path := selected[index].result.FilePath
-		primaries[path] = append(primaries[path], primarySearchPassage(selected[index].result))
+		claimed[path] = append(claimed[path], primarySearchPassage(selected[index].result))
 	}
 	for index := range selected {
 		plan := selected[index].prosePassagePlan
 		if len(plan) == 0 {
 			continue
 		}
+		path := selected[index].result.FilePath
 		kept := plan[:0]
 		for _, passage := range plan {
 			taken := false
-			for _, primary := range primaries[selected[index].result.FilePath] {
-				if passagesOverlap(primary, passage) {
+			for _, existing := range claimed[path] {
+				if passagesOverlap(existing, passage) {
 					taken = true
 					break
 				}
 			}
-			if !taken {
-				kept = append(kept, passage)
+			if taken {
+				continue
 			}
+			claimed[path] = append(claimed[path], passage)
+			kept = append(kept, passage)
 		}
 		if len(kept) == 0 {
 			kept = nil

@@ -3,6 +3,7 @@ package sem
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -157,5 +158,55 @@ func TestSelectSearchCandidatesLeavesCodeSelectionUnchanged(t *testing.T) {
 		if !reflect.DeepEqual(document[index], section[index]) {
 			t.Fatalf("code result %d changed:\n want %#v\n  got %#v", index, document[index], section[index])
 		}
+	}
+}
+
+// Passages are planned per selected unit over the whole document, so without deduplication the
+// same region is attached to every selected section of that document and the payload shows one
+// region several times over.
+func TestSearchRepositoryReturnsEveryProseRegionOnce(t *testing.T) {
+	repo := t.TempDir()
+	for index := 0; index < 5; index++ {
+		var body strings.Builder
+		body.WriteString("# Session\n\n")
+		for turn := 0; turn < 9; turn++ {
+			fmt.Fprintf(&body, "## turn %d: amber lantern orchard ledger vessel ridge marker%d\n\n", turn, turn)
+		}
+		write(t, repo, fmt.Sprintf("sessions/session-%02d.md", index), body.String())
+	}
+
+	response, err := SearchRepository(
+		t.Context(), repo, "test", "amber lantern orchard ledger vessel", SearchOptions{
+			Worktree: true, Profile: ProfileSyntaxOnly, TopK: 20,
+			MaxIndexedFiles: 32, MaxContextBytes: 400000,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := response.Validate(); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	type span struct {
+		path       string
+		start, end int
+	}
+	seen := map[span]int{}
+	total := 0
+	for _, result := range response.Results {
+		seen[span{result.FilePath, result.SnippetStartLine, result.SnippetEndLine}]++
+		total++
+		for _, passage := range result.Passages {
+			seen[span{result.FilePath, passage.StartLine, passage.EndLine}]++
+			total++
+		}
+	}
+	if len(seen) != total {
+		for key, count := range seen {
+			if count > 1 {
+				t.Errorf("region %v returned %d times", key, count)
+			}
+		}
+		t.Fatalf("%d regions returned over %d distinct spans", total, len(seen))
 	}
 }
