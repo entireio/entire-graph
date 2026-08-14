@@ -1,0 +1,27 @@
+{
+  "cli_version": "dev",
+  "checkpoint_version": "branch-v1",
+  "checkpoint_id": "3431f9efd577",
+  "strategy": "manual-commit",
+  "branch": "feat/prose-section-candidates",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/cli/help.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/34/31f9efd577/0/metadata.json",
+      "transcript": "/34/31f9efd577/0/full.jsonl",
+      "compact_transcript": "/34/31f9efd577/0/transcript.jsonl",
+      "content_hash": "/34/31f9efd577/0/content_hash.txt",
+      "prompt": "/34/31f9efd577/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 12,
+    "cache_creation_tokens": 13343,
+    "cache_read_tokens": 2351793,
+    "output_tokens": 6240,
+    "api_call_count": 6
+  }
+}
