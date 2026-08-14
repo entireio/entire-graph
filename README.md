@@ -213,7 +213,7 @@ local heuristic reports only, not benchmark results.
 
 ## More
 
-### Compact snapshot artifact
+### Compact and SCIP snapshot artifacts
 
 `entire graph snapshot --repo . --format ndjson` remains the interoperable default: it is the existing object-per-line stream. For a complete, local compact artifact, use:
 
@@ -224,6 +224,14 @@ entire graph snapshot-query --input graph.compact.ndjson --from '<stable-id>' --
 ```
 
 Compact NDJSON v1 is full-snapshot-only; targeted `--to`, `--from`, and `--relation` output stays native NDJSON. Its first `h` line is the only version marker, dictionary `d` lines are part of the artifact and its raw byte count, and unknown versions are rejected. The compact and native streams must have the same decoded public projection and canonical semantic SHA-256; hash equality alone is not a losslessness proof. Compact cache entries use a separate namespace from native snapshot entries.
+
+For experimental SCIP consumers, write the protobuf index to a binary file and keep stderr for the machine-readable omission note:
+
+```sh
+entire graph snapshot --repo . --format scip > index.scip 2> index.scip.omissions.json
+```
+
+The SCIP export is complete-snapshot-only and never changes the default NDJSON stream. It emits definitions and supported reference-like relations as line-granular SCIP occurrences; relation families that do not map to SCIP references are omitted from the protobuf and counted in the stderr JSON note. A `--worktree` export uses `worktree` rather than the current commit as its SCIP package version and records `worktree_snapshot: true` in that note. Because a SCIP `Index` is one protobuf message, this experimental path assembles the complete index in memory. `--progress` is rejected so stderr remains exactly one parseable JSON note.
 
 - [AGENTS.md](AGENTS.md) — the agent operating guide (also: `entire graph agent-guide`)
 - [docs/DETAILS.md](docs/DETAILS.md) — full command reference, architecture, language support,

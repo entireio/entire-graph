@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"github.com/entireio/entire-graph/internal/sem"
+	scippb "github.com/scip-code/scip/bindings/go/scip"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestDoctorPrintsEntireEnvironment(t *testing.T) {
@@ -108,6 +110,9 @@ func TestProviderJSONCommands(t *testing.T) {
 	}
 	if !strings.Contains(capabilitiesOut.String(), `"compact_snapshot_ndjson_v1":true`) {
 		t.Fatalf("capabilities omit compact snapshot support:\n%s", capabilitiesOut.String())
+	}
+	if !strings.Contains(capabilitiesOut.String(), `"scip_snapshot_experimental":true`) {
+		t.Fatalf("capabilities omit scip snapshot support:\n%s", capabilitiesOut.String())
 	}
 }
 
@@ -310,22 +315,123 @@ func TestSnapshotNDJSONRemainsDefaultObjectFormat(t *testing.T) {
 }
 
 func TestCompactNDJSONIsSnapshotOnly(t *testing.T) {
+	testSnapshotFormatIsSnapshotOnly(t, "compact-ndjson")
+}
+
+func TestSnapshotSCIPIsSnapshotOnly(t *testing.T) {
+	testSnapshotFormatIsSnapshotOnly(t, "scip")
+}
+
+func testSnapshotFormatIsSnapshotOnly(t *testing.T, format string) {
+	t.Helper()
 	repo := t.TempDir()
 	write(t, repo, "main.go", "package sample\nfunc main() {}\n")
 	for _, command := range []string{"symbols", "edges"} {
-		err := Run(t.Context(), Options{Env: EntireEnv{RepoRoot: repo}, Stdout: io.Discard}, []string{command, "--repo", repo, "--worktree", "--format", "compact-ndjson"})
+		err := Run(t.Context(), Options{Env: EntireEnv{RepoRoot: repo}, Stdout: io.Discard}, []string{command, "--repo", repo, "--worktree", "--format", format})
 		if err == nil || !strings.Contains(err.Error(), "only valid for snapshot") {
-			t.Fatalf("%s compact format error = %v", command, err)
+			t.Fatalf("%s %s format error = %v", command, format, err)
 		}
 	}
 }
 
 func TestCompactNDJSONRejectsTargetedRelationFilters(t *testing.T) {
+	testSnapshotFormatRejectsTargetedRelationFilters(t, "compact-ndjson")
+}
+
+func TestSnapshotSCIPRejectsTargetedRelationFilters(t *testing.T) {
+	testSnapshotFormatRejectsTargetedRelationFilters(t, "scip")
+}
+
+func testSnapshotFormatRejectsTargetedRelationFilters(t *testing.T, format string) {
+	t.Helper()
 	repo := t.TempDir()
 	write(t, repo, "main.go", "package sample\nfunc caller() { callee() }\nfunc callee() {}\n")
-	err := Run(t.Context(), Options{Env: EntireEnv{RepoRoot: repo}, Stdout: io.Discard}, []string{"snapshot", "--repo", repo, "--worktree", "--format", "compact-ndjson", "--from", "caller"})
+	err := Run(t.Context(), Options{Env: EntireEnv{RepoRoot: repo}, Stdout: io.Discard}, []string{"snapshot", "--repo", repo, "--worktree", "--format", format, "--from", "caller"})
 	if err == nil || !strings.Contains(err.Error(), "requires a complete snapshot") {
-		t.Fatalf("targeted compact format error = %v", err)
+		t.Fatalf("targeted %s format error = %v", format, err)
+	}
+}
+
+func TestSnapshotSCIPReservesStderrForOmissionNote(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "main.go", "package sample\nfunc main() {}\n")
+	err := Run(t.Context(), Options{Env: EntireEnv{RepoRoot: repo}, Stdout: io.Discard, Stderr: io.Discard}, []string{"snapshot", "--repo", repo, "--worktree", "--format", "scip", "--progress"})
+	if err == nil || !strings.Contains(err.Error(), "stderr is reserved for the JSON omission note") {
+		t.Fatalf("scip progress error = %v", err)
+	}
+}
+
+func TestSnapshotSCIPEmitsBinaryIndexAndOmissionNote(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "main.go", "package sample\n\nfunc caller() { callee() }\nfunc callee() {}\n")
+
+	var stdout, stderr bytes.Buffer
+	err := Run(t.Context(), Options{Version: "scip-test", Env: EntireEnv{RepoRoot: repo}, Stdout: &stdout, Stderr: &stderr}, []string{"snapshot", "--repo", repo, "--worktree", "--format", "scip"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stdout.Len() == 0 || bytes.HasPrefix(stdout.Bytes(), []byte("{")) || bytes.HasPrefix(stdout.Bytes(), []byte(`["h"`)) {
+		t.Fatalf("scip output does not look binary: %q", stdout.Bytes())
+	}
+	var index scippb.Index
+	if err := proto.Unmarshal(stdout.Bytes(), &index); err != nil {
+		t.Fatalf("scip output is not a valid Index protobuf: %v", err)
+	}
+	if got := index.GetMetadata().GetToolInfo().GetName(); got != sem.ProviderName {
+		t.Fatalf("tool name = %q, want %q", got, sem.ProviderName)
+	}
+	if got := index.GetMetadata().GetToolInfo().GetArguments(); !strings.Contains(strings.Join(got, " "), "--worktree") {
+		t.Fatalf("scip metadata omits worktree provenance: %#v", got)
+	}
+	documents := map[string]*scippb.Document{}
+	displayNames := map[string]bool{}
+	references := 0
+	worktreeSymbols := 0
+	for _, doc := range index.GetDocuments() {
+		documents[doc.GetRelativePath()] = doc
+		for _, info := range doc.GetSymbols() {
+			displayNames[info.GetDisplayName()] = true
+			parsed, err := scippb.ParseSymbol(info.GetSymbol())
+			if err != nil {
+				t.Fatalf("invalid SCIP symbol %q: %v", info.GetSymbol(), err)
+			}
+			if parsed.GetPackage().GetVersion() == "worktree" {
+				worktreeSymbols++
+			}
+		}
+		for _, occurrence := range doc.GetOccurrences() {
+			if occurrence.GetSymbolRoles()&int32(scippb.SymbolRole_Definition) == 0 {
+				references++
+			}
+		}
+	}
+	if documents["main.go"] == nil || documents["main.go"].GetLanguage() != "Go" || !displayNames["caller"] || !displayNames["callee"] || references == 0 || worktreeSymbols == 0 {
+		t.Fatalf("scip index omitted expected navigation facts: docs=%v names=%v references=%d worktree_symbols=%d", documents, displayNames, references, worktreeSymbols)
+	}
+	var note sem.SCIPOmissionNote
+	if err := json.Unmarshal(bytes.TrimSpace(stderr.Bytes()), &note); err != nil {
+		t.Fatalf("stderr omission note is not JSON: %q: %v", stderr.String(), err)
+	}
+	if note.RecordType != "scip_omissions" || note.Format != "scip" || note.EmittedDefinitions == 0 || !note.WorktreeSnapshot || note.WarningCount == 0 {
+		t.Fatalf("unexpected scip omission note: %#v", note)
+	}
+}
+
+func TestSCIPOmissionNoteWithSummaryCapturesPartialState(t *testing.T) {
+	ok := &sem.SnapshotSummary{Stats: sem.ProviderStats{CompletenessLevel: "ok"}}
+	note := scipOmissionNoteWithSummary(sem.SCIPOmissionNote{Format: "scip"}, ok)
+	if note.PartialSnapshot {
+		t.Fatalf("clean summary marked partial: %#v", note)
+	}
+
+	partial := &sem.SnapshotSummary{
+		Warnings:        []sem.ProviderWarning{{Code: "W"}},
+		PartialFailures: []sem.PartialFailure{{Code: "E"}},
+		Stats:           sem.ProviderStats{CompletenessLevel: "degraded"},
+	}
+	note = scipOmissionNoteWithSummary(sem.SCIPOmissionNote{Format: "scip"}, partial)
+	if !note.PartialSnapshot || note.CompletenessLevel != "degraded" || note.WarningCount != 1 || note.PartialFailureCount != 1 {
+		t.Fatalf("partial summary not captured in scip note: %#v", note)
 	}
 }
 

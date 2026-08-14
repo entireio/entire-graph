@@ -82,9 +82,16 @@ One header record, then file, external-endpoint, symbol, and relation records, s
 
 ```sh
 entire graph snapshot --repo . --format ndjson [--worktree]
+entire graph snapshot --repo . --format scip > index.scip 2> index.scip.omissions.json
 ```
 
-**When:** ingesting the full graph into agent memory or a store such as Entire Brain.
+The experimental `scip` format is a complete-snapshot binary projection for
+standard SCIP consumers. Native NDJSON remains the lossless default; SCIP
+retains one complete index in memory and reserves stderr for its JSON omission
+note, so it cannot be combined with `--progress`. With `--worktree`, SCIP uses
+package version `worktree` and marks that provenance in the note.
+
+**When:** ingesting the full graph into agent memory or a store such as Entire Brain, or exporting a navigation-oriented index to a SCIP consumer.
 
 ### 🧬 diff / analyze / commit / checkpoint — *what changed + risk*
 Entity-level change list (added / removed / renamed / signature-changed / body-changed) with a heuristic **dependent count**, so a signature change with many dependents stands out.

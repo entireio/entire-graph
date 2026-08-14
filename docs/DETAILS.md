@@ -16,6 +16,7 @@ It ships as an **Entire CLI plugin**, invoked as `entire graph ...`, and doubles
 entire graph search   --repo . --query "where is webhook retry handled?"   # 🔍 ranked code for a task
 entire graph snapshot --repo . --format ndjson                             # 🕸️  full symbol + relation graph
 entire graph snapshot --repo . --format compact-ndjson > graph.compact.ndjson # compact full graph artifact
+entire graph snapshot --repo . --format scip > index.scip 2> index.scip.omissions.json # experimental SCIP index
 entire graph snapshot-query --input graph.compact.ndjson --symbol Cache.Refresh --format ndjson
 entire graph diff     --base main --head HEAD                               # 🧬 what changed, at the entity level
 entire graph capabilities --json                                           # 🧭 languages + relation types
@@ -290,7 +291,7 @@ Savings scale with symbol connectivity: single-digit for narrow symbols, 280x+ f
 
 - **Semantic diff:** about 0.1s for a typical `HEAD~1..HEAD` on redis.
 - **Full-graph build:** linear in repository size; 23K relations in 1.5s up to 2.27M relations in 25.6s across the repos above.
-- **Streaming output:** `snapshot` emits records as it parses, so memory stays bounded on very large repositories.
+- **Streaming output:** native and compact `snapshot` formats emit records as they parse, so memory stays bounded on very large repositories. The experimental SCIP format must retain one complete protobuf index in memory.
 - **Cached committed-tree search:** reuses a tree-keyed compressed index across invocations, in the platform's per-user cache directory unless `--cache-dir`/`ENTIRE_PLUGIN_DATA_DIR` redirect it, so repeated queries on an unchanged tree skip re-parsing. The working tree is never cached. A complete prepared index derives the exact query-selected view, so relation expansion cannot escape that file set.
 - **Explicit preindex:** `index --head` builds and verifies that query-independent artifact before latency-sensitive work; cached `search` and `neighbors` calls then report the hit directly.
 
@@ -307,6 +308,16 @@ entire graph snapshot-query --input graph.compact.ndjson --from '<stable-id>' --
 ```
 
 The canonical SHA-256 is calculated from normalized native records in record order, not compact bytes. A valid compact artifact must match native NDJSON in both that hash and decoded public projection; a matching hash alone is not a proof of losslessness.
+
+### Experimental SCIP snapshot
+
+`snapshot --format scip` projects a complete snapshot into one standard binary SCIP `Index` message. It preserves native NDJSON as the default and lossless provider contract while exposing definitions and supported reference-like relations to SCIP navigation consumers:
+
+```sh
+entire graph snapshot --repo . --format scip > index.scip 2> index.scip.omissions.json
+```
+
+The exporter uses Entire Graph's inclusive line spans for nonempty, line-granular occurrences and does not invent column precision. Unsupported relation families, missing targets, and relations without source evidence are counted in the single JSON omission note on stderr. Partial-snapshot counts are included in that same object. A `--worktree` export uses package version `worktree`, includes the flag in tool metadata, and sets `worktree_snapshot: true` rather than binding dirty bytes to `HEAD`. The format is unavailable for `symbols`, `edges`, targeted relation filters, and `--progress`; it bypasses the NDJSON caches and retains the complete index in memory before writing stdout.
 
 Absolute numbers are environment-sensitive (measured on Apple Silicon). Read them as relative signals and reproduce locally with the harness.
 

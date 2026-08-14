@@ -5,9 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
+
+	scippb "github.com/scip-code/scip/bindings/go/scip"
+	"google.golang.org/protobuf/proto"
 )
 
 func compactFixtureRecords() []any {
@@ -46,6 +51,36 @@ func encodeCompactFixture(t *testing.T, records []any) ([]byte, *CompactSnapshot
 		}
 	}
 	return out.Bytes(), encoder
+}
+
+func encodeSCIPFixture(t *testing.T, records []any) ([]byte, *SCIPSnapshotEncoder) {
+	t.Helper()
+	var out bytes.Buffer
+	encoder := NewSCIPSnapshotEncoder(&out)
+	for _, record := range records {
+		if err := encoder.Encode(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return out.Bytes(), encoder
+}
+
+func decodeSCIPIndex(t *testing.T, data []byte) *scippb.Index {
+	t.Helper()
+	var index scippb.Index
+	if err := proto.Unmarshal(data, &index); err != nil {
+		t.Fatalf("scip output is not a valid Index protobuf: %v", err)
+	}
+	return &index
+}
+
+type scipShortWriter struct{}
+
+func (scipShortWriter) Write(payload []byte) (int, error) {
+	if len(payload) == 0 {
+		return 0, nil
+	}
+	return len(payload) - 1, nil
 }
 
 func publicRecordJSON(t *testing.T, records []any) []json.RawMessage {
@@ -123,6 +158,258 @@ func TestCompactSnapshotCanonicalHashMatchesNativeNDJSON(t *testing.T) {
 	if got, want := hashRecords(t, decodedCompactRecords(t, data)), hashRecords(t, records); got != want {
 		t.Fatalf("hash = %s, want %s", got, want)
 	}
+}
+
+func TestSCIPSnapshotEncoderEmitsDefinitionsReferencesAndOmissions(t *testing.T) {
+	records := compactFixtureRecords()
+	summary := records[len(records)-1]
+	records = append(records[:len(records)-1], RelationRecord{
+		RecordType: "relation",
+		FromID:     "symbol-id",
+		ToID:       "symbol-id-2",
+		Type:       "DATA_FLOWS",
+		Evidence:   []Evidence{{FilePath: "main.go", StartLine: 7, EndLine: 7}},
+	}, summary)
+	first, firstEncoder := encodeSCIPFixture(t, records)
+	second, secondEncoder := encodeSCIPFixture(t, records)
+	if !bytes.Equal(first, second) {
+		t.Fatal("scip output differs across identical inputs")
+	}
+	if got, want := firstEncoder.OmissionNote(), secondEncoder.OmissionNote(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("scip omission notes differ\n got=%#v\nwant=%#v", got, want)
+	}
+	index := decodeSCIPIndex(t, first)
+	if got := index.GetMetadata().GetToolInfo().GetName(); got != ProviderName {
+		t.Fatalf("tool name = %q, want %q", got, ProviderName)
+	}
+	if got := index.GetMetadata().GetTextDocumentEncoding(); got != scippb.TextEncoding_UTF8 {
+		t.Fatalf("text encoding = %v, want UTF8", got)
+	}
+	documents := map[string]*scippb.Document{}
+	for _, doc := range index.GetDocuments() {
+		documents[doc.GetRelativePath()] = doc
+	}
+	mainDoc := documents["main.go"]
+	if mainDoc == nil {
+		t.Fatalf("scip index omitted main.go: %#v", index.GetDocuments())
+	}
+	if got := mainDoc.GetLanguage(); got != "Go" {
+		t.Fatalf("main.go language = %q, want Go", got)
+	}
+	if got := mainDoc.GetPositionEncoding(); got != scippb.PositionEncoding_UTF8CodeUnitOffsetFromLineStart {
+		t.Fatalf("position encoding = %v, want UTF8 byte offsets", got)
+	}
+	definitions := 0
+	references := 0
+	displayNames := map[string]bool{}
+	for _, doc := range index.GetDocuments() {
+		for _, info := range doc.GetSymbols() {
+			parsed, err := scippb.ParseSymbol(info.GetSymbol())
+			if err != nil {
+				t.Fatalf("invalid SCIP symbol %q: %v", info.GetSymbol(), err)
+			}
+			descriptors := parsed.GetDescriptors()
+			if len(descriptors) == 0 || descriptors[len(descriptors)-1].GetSuffix() != scippb.Descriptor_Method {
+				t.Fatalf("callable symbol has non-method descriptor: %#v", parsed)
+			}
+			displayNames[info.GetDisplayName()] = true
+		}
+		for _, occurrence := range doc.GetOccurrences() {
+			sourceRange, ok := occurrence.SourceRange()
+			if !ok {
+				t.Fatalf("occurrence has no typed source range: %#v", occurrence)
+			}
+			if sourceRange.Start.Compare(sourceRange.End) >= 0 {
+				t.Fatalf("occurrence has an empty or reversed source range: %#v", occurrence)
+			}
+			if _, err := scippb.ParseSymbol(occurrence.GetSymbol()); err != nil {
+				t.Fatalf("occurrence has invalid SCIP symbol %q: %v", occurrence.GetSymbol(), err)
+			}
+			if occurrence.GetSymbolRoles()&int32(scippb.SymbolRole_Definition) != 0 {
+				definitions++
+			} else {
+				references++
+			}
+		}
+	}
+	if !displayNames["same"] {
+		t.Fatalf("scip index omitted symbol display name 'same': %#v", index.GetDocuments())
+	}
+	if definitions != 2 || references != 1 {
+		t.Fatalf("occurrence counts definitions=%d references=%d, want 2/1", definitions, references)
+	}
+	if got := len(index.GetExternalSymbols()); got != 1 {
+		t.Fatalf("external symbol count = %d, want 1", got)
+	}
+	for _, info := range index.GetExternalSymbols() {
+		parsed, err := scippb.ParseSymbol(info.GetSymbol())
+		if err != nil {
+			t.Fatalf("invalid external SCIP symbol %q: %v", info.GetSymbol(), err)
+		}
+		descriptors := parsed.GetDescriptors()
+		if len(descriptors) == 0 || descriptors[len(descriptors)-1].GetSuffix() != scippb.Descriptor_Namespace {
+			t.Fatalf("module external has non-namespace descriptor: %#v", parsed)
+		}
+	}
+	note := firstEncoder.OmissionNote()
+	if note.EmittedDefinitions != 2 || note.EmittedReferences != 1 || note.MissingTargetRelations != 1 || note.MissingEvidenceRelations != 0 || note.UnsupportedRelationCounts["DATA_FLOWS"] != 1 {
+		t.Fatalf("unexpected scip omission note: %#v", note)
+	}
+}
+
+func TestSCIPSnapshotEncoderMarksWorktreeProvenance(t *testing.T) {
+	records := compactFixtureRecords()
+	summary := records[len(records)-1].(SnapshotSummary)
+	summary.Warnings = append(summary.Warnings, ProviderWarning{Code: "W_WORKTREE_SNAPSHOT"})
+	records[len(records)-1] = summary
+
+	payload, encoder := encodeSCIPFixture(t, records)
+	index := decodeSCIPIndex(t, payload)
+	if got := index.GetMetadata().GetToolInfo().GetArguments(); !reflect.DeepEqual(got, []string{"snapshot", "--format", "scip", "--worktree"}) {
+		t.Fatalf("worktree tool arguments = %#v", got)
+	}
+	if !encoder.OmissionNote().WorktreeSnapshot {
+		t.Fatalf("worktree snapshot is absent from omission note: %#v", encoder.OmissionNote())
+	}
+	for _, doc := range index.GetDocuments() {
+		for _, info := range doc.GetSymbols() {
+			parsed, err := scippb.ParseSymbol(info.GetSymbol())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := parsed.GetPackage().GetVersion(); got != "worktree" {
+				t.Fatalf("worktree symbol package version = %q", got)
+			}
+		}
+	}
+}
+
+func TestSCIPSnapshotEncoderMarksNoHEADFallbackProvenance(t *testing.T) {
+	records := compactFixtureRecords()
+	summary := records[len(records)-1].(SnapshotSummary)
+	summary.Warnings = append(summary.Warnings, ProviderWarning{Code: "E_NO_GIT_HEAD"})
+	records[len(records)-1] = summary
+
+	payload, encoder := encodeSCIPFixture(t, records)
+	index := decodeSCIPIndex(t, payload)
+	if got := index.GetMetadata().GetToolInfo().GetArguments(); !reflect.DeepEqual(got, []string{"snapshot", "--format", "scip"}) {
+		t.Fatalf("fallback tool arguments = %#v", got)
+	}
+	if !encoder.OmissionNote().WorktreeSnapshot {
+		t.Fatalf("working-tree fallback is absent from omission note: %#v", encoder.OmissionNote())
+	}
+	for _, doc := range index.GetDocuments() {
+		for _, info := range doc.GetSymbols() {
+			parsed, err := scippb.ParseSymbol(info.GetSymbol())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := parsed.GetPackage().GetVersion(); got != "worktree" {
+				t.Fatalf("fallback symbol package version = %q", got)
+			}
+		}
+	}
+}
+
+func TestSCIPLanguageUsesCanonicalNames(t *testing.T) {
+	cases := map[string]string{
+		"Bash":              "ShellScript",
+		"C#":                "CSharp",
+		"C++":               "CPP",
+		"CoffeeScript":      "Coffeescript",
+		"Common Lisp":       "CommonLisp",
+		"F#":                "FSharp",
+		"Go":                "Go",
+		"INI":               "Ini",
+		"JSON":              "JSON",
+		"Just":              "Justfile",
+		"Make":              "Makefile",
+		"MATLAB":            "Matlab",
+		"Objective-C":       "Objective_C",
+		"Objective-C++":     "Objective_CPP",
+		"Protocol Buffers":  "Protobuf",
+		"reStructuredText":  "ReST",
+		"Starlark":          "Skylark",
+		"TypeScript":        "TypeScript",
+		"Unknown Lang":      "Unknown Lang",
+		"Visual Basic .NET": "VisualBasic",
+	}
+	for input, want := range cases {
+		if got := scipLanguage(input); got != want {
+			t.Fatalf("scipLanguage(%q) = %q, want %q", input, got, want)
+		}
+	}
+	if got := scipSignatureDocumentation("Go", ""); got != nil {
+		t.Fatalf("empty signature produced metadata: %#v", got)
+	}
+}
+
+func TestSCIPKindsUseStandardKindsAndDescriptors(t *testing.T) {
+	cases := []struct {
+		kind       string
+		wantKind   scippb.SymbolInformation_Kind
+		wantSuffix scippb.Descriptor_Suffix
+	}{
+		{kind: "function", wantKind: scippb.SymbolInformation_Function, wantSuffix: scippb.Descriptor_Method},
+		{kind: "macro", wantKind: scippb.SymbolInformation_Macro, wantSuffix: scippb.Descriptor_Macro},
+		{kind: "message", wantKind: scippb.SymbolInformation_Message, wantSuffix: scippb.Descriptor_Type},
+		{kind: "module", wantKind: scippb.SymbolInformation_Module, wantSuffix: scippb.Descriptor_Namespace},
+		{kind: "rpc", wantKind: scippb.SymbolInformation_Method, wantSuffix: scippb.Descriptor_Method},
+		{kind: "trait", wantKind: scippb.SymbolInformation_Trait, wantSuffix: scippb.Descriptor_Type},
+		{kind: "type_alias", wantKind: scippb.SymbolInformation_TypeAlias, wantSuffix: scippb.Descriptor_Type},
+		{kind: "union", wantKind: scippb.SymbolInformation_Union, wantSuffix: scippb.Descriptor_Type},
+	}
+	for _, test := range cases {
+		if got := scipKind(test.kind); got != test.wantKind {
+			t.Fatalf("scipKind(%q) = %v, want %v", test.kind, got, test.wantKind)
+		}
+		parsed, err := scippb.ParseSymbol("entire-graph . repo version " + scipDescriptor("name", test.kind, "abcdef123456"))
+		if err != nil {
+			t.Fatalf("parse descriptor for %q: %v", test.kind, err)
+		}
+		descriptors := parsed.GetDescriptors()
+		if len(descriptors) != 1 || descriptors[0].GetSuffix() != test.wantSuffix {
+			t.Fatalf("descriptor for %q = %#v, want suffix %v", test.kind, descriptors, test.wantSuffix)
+		}
+	}
+}
+
+func TestSCIPSymbolEscapingRoundTrips(t *testing.T) {
+	header := SnapshotHeader{RepoKey: "owner/repo with space", Commit: "work tree"}
+	record := SymbolRecord{
+		ID:       "compound-v1:odd-symbol",
+		Kind:     "function",
+		Name:     "render`item/name",
+		FilePath: "dir with space/source.go",
+	}
+	parsed, err := scippb.ParseSymbol(scipSymbol(header, record))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.GetPackage().GetName() != header.RepoKey || parsed.GetPackage().GetVersion() != header.Commit {
+		t.Fatalf("escaped package did not round trip: %#v", parsed.GetPackage())
+	}
+	descriptors := parsed.GetDescriptors()
+	if len(descriptors) != 2 || descriptors[0].GetName() != record.FilePath || descriptors[1].GetName() != record.Name {
+		t.Fatalf("escaped descriptors did not round trip: %#v", descriptors)
+	}
+}
+
+func TestSCIPSnapshotEncoderReportsShortWrites(t *testing.T) {
+	encoder := NewSCIPSnapshotEncoder(scipShortWriter{})
+	for _, record := range compactFixtureRecords() {
+		err := encoder.Encode(record)
+		if _, final := record.(SnapshotSummary); final {
+			if !errors.Is(err, io.ErrShortWrite) {
+				t.Fatalf("summary encode error = %v, want io.ErrShortWrite", err)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatalf("record encode failed before summary: %v", err)
+		}
+	}
+	t.Fatal("fixture omitted snapshot summary")
 }
 
 func TestCompactSnapshotPreservesNilWarningCodes(t *testing.T) {

@@ -560,6 +560,7 @@ func Capabilities() CapabilityReport {
 			"semantic_diff":              true,
 			"ndjson_snapshot":            true,
 			"compact_snapshot_ndjson_v1": true,
+			"scip_snapshot_experimental": true,
 			"hybrid_source_search":       true,
 			"near_clone_detection":       true,
 			"git_cochange_edges":         true,

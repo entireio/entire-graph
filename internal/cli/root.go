@@ -252,17 +252,21 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	}
 	filterActive := flags.To != "" || flags.From != "" || len(flags.Relation) > 0
 	compact := flags.Format == "compact-ndjson"
-	if flags.Format != "ndjson" && !compact {
+	scip := flags.Format == "scip"
+	if flags.Format != "ndjson" && !compact && !scip {
 		if mode == "snapshot" {
-			return fmt.Errorf("%s requires --format ndjson or compact-ndjson", mode)
+			return fmt.Errorf("%s requires --format ndjson, compact-ndjson, or scip", mode)
 		}
 		return fmt.Errorf("%s requires --format ndjson", mode)
 	}
-	if compact && mode != "snapshot" {
-		return errors.New("--format compact-ndjson is only valid for snapshot")
+	if (compact || scip) && mode != "snapshot" {
+		return fmt.Errorf("--format %s is only valid for snapshot", flags.Format)
 	}
-	if compact && filterActive {
-		return errors.New("--format compact-ndjson requires a complete snapshot; remove --to/--from/--relation")
+	if (compact || scip) && filterActive {
+		return fmt.Errorf("--format %s requires a complete snapshot; remove --to/--from/--relation", flags.Format)
+	}
+	if scip && flags.Progress {
+		return errors.New("--format scip cannot be combined with --progress; stderr is reserved for the JSON omission note")
 	}
 	repo, err := resolveRepo(ctx, opts.Env, flags.Repo)
 	if err != nil {
@@ -293,11 +297,16 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 			)
 		}
 	}
-	// Stream records straight to stdout so peak memory does not scale with the
-	// relation count on large repositories.
+	// Native and compact encoders stream records directly. SCIP must collect the
+	// complete graph before writing its single protobuf Index message.
+	var scipEncoder *sem.SCIPSnapshotEncoder
 	newRecordEncoder := func(out io.Writer) func(any) error {
 		if compact {
 			return sem.NewCompactSnapshotEncoder(out).Encode
+		}
+		if scip {
+			scipEncoder = sem.NewSCIPSnapshotEncoder(out)
+			return scipEncoder.Encode
 		}
 		encoder := json.NewEncoder(out)
 		encoder.SetEscapeHTML(false) // match json.Marshal used elsewhere (no < escaping)
@@ -355,7 +364,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	// expensive re-index. It is deliberately bypassed for --worktree (the working
 	// tree may differ from HEAD) and, by returning above, for targeted queries.
 	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
-	useCache := !flags.DisableCache && !flags.Worktree && cacheDir != ""
+	useCache := !flags.DisableCache && !flags.Worktree && !scip && cacheDir != ""
 	var tree string
 	if useCache {
 		if t, err := gitutil.RevParse(ctx, repo, "HEAD^{tree}"); err == nil && t != "" {
@@ -393,12 +402,39 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	}); err != nil {
 		return err
 	}
-	warnIfPartial(opts.Stderr, flags.Worktree, summary)
+	if scipEncoder != nil {
+		if err := writeSCIPOmissionNote(opts.Stderr, scipOmissionNoteWithSummary(scipEncoder.OmissionNote(), summary)); err != nil {
+			return err
+		}
+	} else {
+		warnIfPartial(opts.Stderr, flags.Worktree, summary)
+	}
 	if useCache {
 		// Best effort: a failed cache write never fails the command.
 		_ = sem.StoreProviderRecords(ctx, repo, opts.Version, tree, cacheMode, cacheDir, options, recordBuf.Bytes(), summary)
 	}
 	return nil
+}
+
+func scipOmissionNoteWithSummary(note sem.SCIPOmissionNote, summary *sem.SnapshotSummary) sem.SCIPOmissionNote {
+	if summary == nil {
+		return note
+	}
+	note.WarningCount = len(summary.Warnings)
+	note.PartialFailureCount = len(summary.PartialFailures)
+	level := summary.Stats.CompletenessLevel
+	if level == "" || level == "ok" {
+		return note
+	}
+	note.PartialSnapshot = true
+	note.CompletenessLevel = level
+	return note
+}
+
+func writeSCIPOmissionNote(w io.Writer, note sem.SCIPOmissionNote) error {
+	encoder := json.NewEncoder(w)
+	encoder.SetEscapeHTML(false)
+	return encoder.Encode(note)
 }
 
 // warnIfPartial prints a loud stderr banner when the snapshot did not fully cover

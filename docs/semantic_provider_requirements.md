@@ -109,6 +109,18 @@ aggregate total, read the summary, never the lean header.
 
 All `h`, `d`, data, and `m` bytes count as raw compact artifact bytes; dictionary overhead must never be subtracted. Compact output is loaded only through the production compact loader and queried with `snapshot-query --input <file> --symbol <id-or-name> [--from <stable-id> --relation <TYPE>] --format ndjson`, which writes deterministically ordered native symbol/relation records. Its decoded public projection and canonical semantic SHA-256 (normalized native records in record order) must equal the normal NDJSON snapshot. Matching only the hash is not sufficient evidence of losslessness.
 
+### Experimental SCIP snapshot protobuf
+
+`snapshot --format scip` is an experimental, complete-snapshot-only projection for SCIP consumers. It writes a single binary SCIP `Index` protobuf to stdout and a single JSON omission note to stderr. It is rejected for `symbols`, `edges`, targeted `--to`/`--from`/`--relation` output, and `--progress`, and it is not served from the NDJSON or compact snapshot caches. A `--worktree` export uses `worktree` instead of the current commit as its SCIP package version, includes `--worktree` in `ToolInfo.arguments`, and sets `worktree_snapshot: true` in the note. If the underlying snapshot is partial, the same stderr JSON object includes `partial_snapshot`, `completeness_level`, `warning_count`, and `partial_failure_count` instead of mixing human warning text into stderr. Unlike the NDJSON encoders, the SCIP encoder retains the complete graph until it can write the one protobuf message, so its memory use scales with snapshot size.
+
+The protobuf contains `Metadata`, one `Document` per source path, `SymbolInformation` for native symbol definitions, definition occurrences, and reference occurrences for supported reference-like relations: `IMPORTS`, `CALLS`, `CONSTRUCTS`, `ASYNC_CALLS`, `EXTENDS`, `INHERITS`, `IMPLEMENTS`, `OVERRIDES`, `USES_TYPE`, `PARAM_TYPE`, `RETURNS_TYPE`, `READS_FIELD`, `WRITES_FIELD`, and `ACCESSES`. Occurrence ranges cover the complete one-based inclusive line spans supplied by Entire Graph; the export does not invent unavailable columns. Native `DEFINES` and `CONTAINS` relations are represented by symbol metadata and definition occurrences rather than emitted as relation edges. Other relation families are omitted from the SCIP protobuf and counted by relation type in the stderr note:
+
+```json
+{"record_type":"scip_omissions","version":"entire-graph-scip-omissions/v1","format":"scip","unsupported_relation_counts":{"DATA_FLOWS":1},"missing_target_relations":0,"missing_evidence_relations":0,"emitted_definitions":2,"emitted_references":1}
+```
+
+The native NDJSON stream remains the lossless provider contract. The SCIP export is an interoperability artifact for navigation tools whose model is definitions and references, so consumers that need full Entire Graph relation semantics must keep using `--format ndjson` or `--format compact-ndjson`.
+
 ### Process-local cold-build telemetry
 
 The optional provider progress callback exposes only process-local performance

@@ -10,6 +10,12 @@ import (
 	"fmt"
 	stdhash "hash"
 	"io"
+	"net/url"
+	"sort"
+	"strings"
+
+	scippb "github.com/scip-code/scip/bindings/go/scip"
+	"google.golang.org/protobuf/proto"
 )
 
 // CompactSnapshotFormatVersion is the fixed wire version for compact snapshots.
@@ -188,6 +194,569 @@ func (encoder *CompactSnapshotEncoder) dataRow(row []any, base int) compactDataR
 type compactDataRow struct {
 	row  []any
 	base int
+}
+
+// SCIPOmissionNote is the deterministic stderr companion for the experimental
+// SCIP export. It names relation facts that cannot be represented as SCIP
+// definition/reference occurrences.
+type SCIPOmissionNote struct {
+	RecordType                string         `json:"record_type"`
+	Version                   string         `json:"version"`
+	Format                    string         `json:"format"`
+	UnsupportedRelationCounts map[string]int `json:"unsupported_relation_counts"`
+	MissingTargetRelations    int            `json:"missing_target_relations"`
+	MissingEvidenceRelations  int            `json:"missing_evidence_relations"`
+	EmittedDefinitions        int            `json:"emitted_definitions"`
+	EmittedReferences         int            `json:"emitted_references"`
+	WorktreeSnapshot          bool           `json:"worktree_snapshot,omitempty"`
+	PartialSnapshot           bool           `json:"partial_snapshot,omitempty"`
+	CompletenessLevel         string         `json:"completeness_level,omitempty"`
+	WarningCount              int            `json:"warning_count,omitempty"`
+	PartialFailureCount       int            `json:"partial_failure_count,omitempty"`
+}
+
+// SCIPSnapshotEncoder writes an experimental SCIP Index protobuf for complete
+// snapshots. The native provider stream is still the semantic authority; this
+// encoder projects definition and reference-like facts into SCIP's navigation
+// model and reports omitted relation families separately.
+type SCIPSnapshotEncoder struct {
+	out          io.Writer
+	header       *SnapshotHeader
+	summary      *SnapshotSummary
+	files        map[string]FileRecord
+	externals    map[string]ExternalRecord
+	symbols      map[string]SymbolRecord
+	relations    []RelationRecord
+	wroteHeader  bool
+	wroteSummary bool
+	note         SCIPOmissionNote
+}
+
+// NewSCIPSnapshotEncoder returns an encoder for one complete snapshot stream.
+func NewSCIPSnapshotEncoder(out io.Writer) *SCIPSnapshotEncoder {
+	return &SCIPSnapshotEncoder{
+		out:       out,
+		files:     map[string]FileRecord{},
+		externals: map[string]ExternalRecord{},
+		symbols:   map[string]SymbolRecord{},
+		note: SCIPOmissionNote{
+			RecordType:                "scip_omissions",
+			Version:                   "entire-graph-scip-omissions/v1",
+			Format:                    "scip",
+			UnsupportedRelationCounts: map[string]int{},
+		},
+	}
+}
+
+func (encoder *SCIPSnapshotEncoder) Encode(record any) error {
+	if encoder.wroteSummary {
+		return errors.New("scip snapshot summary must be last")
+	}
+	switch typed := record.(type) {
+	case SnapshotHeader:
+		if encoder.wroteHeader {
+			return errors.New("scip snapshot has more than one header")
+		}
+		encoder.wroteHeader = true
+		header := typed
+		encoder.header = &header
+		return nil
+	case SnapshotSummary:
+		if !encoder.wroteHeader {
+			return errors.New("scip snapshot header must be first")
+		}
+		encoder.wroteSummary = true
+		summary := typed
+		encoder.summary = &summary
+		payload, err := encoder.marshalIndex()
+		if err != nil {
+			return err
+		}
+		var written int
+		written, err = encoder.out.Write(payload)
+		if err == nil && written != len(payload) {
+			err = io.ErrShortWrite
+		}
+		return err
+	case FileRecord:
+		if !encoder.wroteHeader {
+			return errors.New("scip snapshot header must be first")
+		}
+		if typed.Path != "" {
+			encoder.files[typed.Path] = typed
+		}
+		return nil
+	case ExternalRecord:
+		if !encoder.wroteHeader {
+			return errors.New("scip snapshot header must be first")
+		}
+		if typed.ID != "" {
+			encoder.externals[typed.ID] = typed
+		}
+		return nil
+	case SymbolRecord:
+		if !encoder.wroteHeader {
+			return errors.New("scip snapshot header must be first")
+		}
+		if typed.ID != "" {
+			encoder.symbols[typed.ID] = typed
+		}
+		return nil
+	case RelationRecord:
+		if !encoder.wroteHeader {
+			return errors.New("scip snapshot header must be first")
+		}
+		encoder.relations = append(encoder.relations, typed)
+		return nil
+	default:
+		return fmt.Errorf("unsupported scip snapshot record %T", record)
+	}
+}
+
+// OmissionNote returns a copy of the current export accounting.
+func (encoder *SCIPSnapshotEncoder) OmissionNote() SCIPOmissionNote {
+	note := encoder.note
+	note.UnsupportedRelationCounts = map[string]int{}
+	for key, value := range encoder.note.UnsupportedRelationCounts {
+		note.UnsupportedRelationCounts[key] = value
+	}
+	return note
+}
+
+func (encoder *SCIPSnapshotEncoder) marshalIndex() ([]byte, error) {
+	header := SnapshotHeader{Provider: ProviderName}
+	if encoder.header != nil {
+		header = *encoder.header
+	}
+	explicitWorktree := scipSummaryHasWarning(encoder.summary, "W_WORKTREE_SNAPSHOT")
+	worktree := explicitWorktree || scipSummaryHasWarning(encoder.summary, "E_NO_GIT_HEAD")
+	if worktree {
+		header.Commit = ""
+		header.Tree = ""
+	}
+	encoder.note.UnsupportedRelationCounts = map[string]int{}
+	encoder.note.MissingTargetRelations = 0
+	encoder.note.MissingEvidenceRelations = 0
+	encoder.note.EmittedDefinitions = 0
+	encoder.note.EmittedReferences = 0
+	encoder.note.WorktreeSnapshot = worktree
+
+	documents := map[string]*scippb.Document{}
+	documentFor := func(filePath, language string) *scippb.Document {
+		if filePath == "" {
+			filePath = "_unknown"
+		}
+		doc, ok := documents[filePath]
+		if !ok {
+			doc = &scippb.Document{
+				RelativePath:     filePath,
+				PositionEncoding: scippb.PositionEncoding_UTF8CodeUnitOffsetFromLineStart,
+			}
+			documents[filePath] = doc
+		}
+		if doc.Language == "" {
+			if language != "" {
+				doc.Language = scipLanguage(language)
+			} else if file, ok := encoder.files[filePath]; ok {
+				doc.Language = scipLanguage(file.Language)
+			}
+		}
+		return doc
+	}
+
+	filePaths := scipSortedKeys(encoder.files)
+	for _, filePath := range filePaths {
+		file := encoder.files[filePath]
+		_ = documentFor(file.Path, file.Language)
+	}
+
+	symbolIDs := scipSortedKeys(encoder.symbols)
+	symbols := make(map[string]string, len(symbolIDs))
+	for _, id := range symbolIDs {
+		symbols[id] = scipSymbol(header, encoder.symbols[id])
+	}
+	externalIDs := scipSortedKeys(encoder.externals)
+	externals := make(map[string]string, len(externalIDs))
+	for _, id := range externalIDs {
+		externals[id] = scipExternalSymbol(header, encoder.externals[id])
+	}
+
+	for _, id := range symbolIDs {
+		record := encoder.symbols[id]
+		scipID := symbols[id]
+		doc := documentFor(record.FilePath, record.Language)
+		info := &scippb.SymbolInformation{
+			Symbol:      scipID,
+			DisplayName: scipFirstNonEmpty(record.Name, record.QualifiedName, record.ID),
+			Kind:        scipKind(record.Kind),
+		}
+		info.SignatureDocumentation = scipSignatureDocumentation(record.Language, record.Signature)
+		if record.ContainerID != "" {
+			info.EnclosingSymbol = symbols[record.ContainerID]
+		}
+		if record.QualifiedName != "" && record.QualifiedName != record.Name {
+			info.Documentation = append(info.Documentation, record.QualifiedName)
+		}
+		doc.Symbols = append(doc.Symbols, info)
+		if record.StartLine > 0 {
+			doc.Occurrences = append(doc.Occurrences, scipOccurrenceFromLines(record.StartLine, record.EndLine, scipID, int32(scippb.SymbolRole_Definition)))
+			encoder.note.EmittedDefinitions++
+		}
+	}
+
+	externalInfos := make([]*scippb.SymbolInformation, 0, len(externalIDs))
+	for _, id := range externalIDs {
+		record := encoder.externals[id]
+		info := &scippb.SymbolInformation{
+			Symbol:      externals[id],
+			DisplayName: scipFirstNonEmpty(record.Value, record.ID),
+			Kind:        scipKind(record.Kind),
+		}
+		info.SignatureDocumentation = scipSignatureDocumentation(record.Language, record.Signature)
+		if record.SourceDetails != "" {
+			info.Documentation = append(info.Documentation, record.SourceDetails)
+		}
+		externalInfos = append(externalInfos, info)
+	}
+
+	for _, relation := range encoder.relations {
+		relationType := strings.ToUpper(relation.Type)
+		if relationType == "DEFINES" || relationType == "CONTAINS" {
+			continue
+		}
+		if !scipReferenceRelation(relationType) {
+			encoder.note.UnsupportedRelationCounts[relationType]++
+			continue
+		}
+		target := symbols[relation.ToID]
+		if target == "" {
+			target = externals[relation.ToID]
+		}
+		if target == "" {
+			encoder.note.MissingTargetRelations++
+			continue
+		}
+		emitted := false
+		for _, evidence := range relation.Evidence {
+			if evidence.FilePath == "" || evidence.StartLine <= 0 {
+				continue
+			}
+			doc := documentFor(evidence.FilePath, "")
+			doc.Occurrences = append(doc.Occurrences, scipOccurrenceFromLines(evidence.StartLine, evidence.EndLine, target, scipRoles(relationType)))
+			encoder.note.EmittedReferences++
+			emitted = true
+		}
+		if !emitted {
+			encoder.note.MissingEvidenceRelations++
+		}
+	}
+
+	index := &scippb.Index{Metadata: scipMetadata(header, explicitWorktree)}
+	for _, docPath := range scipSortedKeys(documents) {
+		doc := documents[docPath]
+		sortSCIPDocument(doc)
+		index.Documents = append(index.Documents, doc)
+	}
+	sort.Slice(externalInfos, func(i, j int) bool { return externalInfos[i].Symbol < externalInfos[j].Symbol })
+	index.ExternalSymbols = externalInfos
+	return proto.MarshalOptions{Deterministic: true}.Marshal(index)
+}
+
+func scipSummaryHasWarning(summary *SnapshotSummary, code string) bool {
+	if summary == nil {
+		return false
+	}
+	for _, warning := range summary.Warnings {
+		if warning.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func scipMetadata(header SnapshotHeader, worktree bool) *scippb.Metadata {
+	arguments := []string{"snapshot", "--format", "scip"}
+	if worktree {
+		arguments = append(arguments, "--worktree")
+	}
+	return &scippb.Metadata{
+		ToolInfo: &scippb.ToolInfo{
+			Name:      ProviderName,
+			Version:   header.ProviderVersion,
+			Arguments: arguments,
+		},
+		ProjectRoot:          scipProjectRoot(header.RepoRoot),
+		TextDocumentEncoding: scippb.TextEncoding_UTF8,
+	}
+}
+
+func sortSCIPDocument(doc *scippb.Document) {
+	sort.Slice(doc.Occurrences, func(i, j int) bool {
+		left, right := doc.Occurrences[i], doc.Occurrences[j]
+		if compare := left.Compare(right); compare != 0 {
+			return compare < 0
+		}
+		return left.SymbolRoles < right.SymbolRoles
+	})
+	sort.Slice(doc.Symbols, func(i, j int) bool {
+		left, right := doc.Symbols[i], doc.Symbols[j]
+		if left.Symbol != right.Symbol {
+			return left.Symbol < right.Symbol
+		}
+		if left.Kind != right.Kind {
+			return left.Kind < right.Kind
+		}
+		return left.DisplayName < right.DisplayName
+	})
+}
+
+func scipSignatureDocumentation(language, signature string) *scippb.Signature {
+	if signature == "" {
+		return nil
+	}
+	return &scippb.Signature{Language: scipLanguage(language), Text: signature}
+}
+
+func scipOccurrenceFromLines(startLine, endLine int, symbol string, roles int32) *scippb.Occurrence {
+	occurrence := &scippb.Occurrence{Symbol: symbol, SymbolRoles: roles}
+	occurrence.SetSourceRange(scipRangeFromLines(startLine, endLine))
+	return occurrence
+}
+
+func scipRangeFromLines(startLine, endLine int) scippb.Range {
+	if startLine < 1 {
+		startLine = 1
+	}
+	if endLine < startLine {
+		endLine = startLine
+	}
+	start := scippb.Position{Line: int32(startLine - 1)}
+	// Entire Graph records line spans but not columns. Cover each complete
+	// inclusive source line so SCIP position lookups can hit the occurrence.
+	end := scippb.Position{Line: int32(endLine)}
+	return scippb.Range{Start: start, End: end}
+}
+
+func scipReferenceRelation(relationType string) bool {
+	switch relationType {
+	case "IMPORTS", "CALLS", "CONSTRUCTS", "ASYNC_CALLS", "EXTENDS", "INHERITS", "IMPLEMENTS", "OVERRIDES", "USES_TYPE", "PARAM_TYPE", "RETURNS_TYPE", "READS_FIELD", "WRITES_FIELD", "ACCESSES":
+		return true
+	default:
+		return false
+	}
+}
+
+func scipRoles(relationType string) int32 {
+	switch relationType {
+	case "IMPORTS":
+		return int32(scippb.SymbolRole_Import)
+	case "WRITES_FIELD":
+		return int32(scippb.SymbolRole_WriteAccess)
+	case "READS_FIELD":
+		return int32(scippb.SymbolRole_ReadAccess)
+	default:
+		return 0
+	}
+}
+
+func scipKind(kind string) scippb.SymbolInformation_Kind {
+	switch strings.ToLower(kind) {
+	case "method":
+		return scippb.SymbolInformation_Method
+	case "function", "func":
+		return scippb.SymbolInformation_Function
+	case "constructor":
+		return scippb.SymbolInformation_Constructor
+	case "class":
+		return scippb.SymbolInformation_Class
+	case "interface":
+		return scippb.SymbolInformation_Interface
+	case "struct":
+		return scippb.SymbolInformation_Struct
+	case "enum":
+		return scippb.SymbolInformation_Enum
+	case "macro":
+		return scippb.SymbolInformation_Macro
+	case "message":
+		return scippb.SymbolInformation_Message
+	case "rpc":
+		return scippb.SymbolInformation_Method
+	case "service":
+		return scippb.SymbolInformation_Interface
+	case "trait":
+		return scippb.SymbolInformation_Trait
+	case "union":
+		return scippb.SymbolInformation_Union
+	case "field":
+		return scippb.SymbolInformation_Field
+	case "property":
+		return scippb.SymbolInformation_Property
+	case "constant":
+		return scippb.SymbolInformation_Constant
+	case "variable":
+		return scippb.SymbolInformation_Variable
+	case "module":
+		return scippb.SymbolInformation_Module
+	case "namespace":
+		return scippb.SymbolInformation_Namespace
+	case "package":
+		return scippb.SymbolInformation_Package
+	case "type":
+		return scippb.SymbolInformation_Type
+	case "type_alias":
+		return scippb.SymbolInformation_TypeAlias
+	default:
+		return 0
+	}
+}
+
+func scipSymbol(header SnapshotHeader, record SymbolRecord) string {
+	name := scipFirstNonEmpty(record.Name, record.QualifiedName, "symbol")
+	return scipSymbolPrefix(header, record.FilePath) + scipDescriptor(name, record.Kind, shortDigest(record.ID))
+}
+
+func scipDescriptor(name, kind, short string) string {
+	if methodLikeSCIPKind(kind) {
+		return scipIdentifier(name) + "(s" + short + ")."
+	}
+	descriptorName := name
+	if !strings.Contains(descriptorName, short) {
+		descriptorName += "$" + short
+	}
+	suffix := "."
+	switch strings.ToLower(kind) {
+	case "class", "interface", "struct", "enum", "message", "service", "trait", "type", "type_alias", "union":
+		suffix = "#"
+	case "module", "namespace", "package":
+		suffix = "/"
+	case "macro":
+		suffix = "!"
+	}
+	return scipIdentifier(descriptorName) + suffix
+}
+
+func methodLikeSCIPKind(kind string) bool {
+	switch strings.ToLower(kind) {
+	case "constructor", "func", "function", "method", "rpc":
+		return true
+	default:
+		return false
+	}
+}
+
+func scipExternalSymbol(header SnapshotHeader, record ExternalRecord) string {
+	name := scipFirstNonEmpty(record.Value, record.ID, "external")
+	return scipSymbolPackage(header) + "external/" + scipDescriptor(name, record.Kind, shortDigest(record.ID))
+}
+
+func scipSymbolPrefix(header SnapshotHeader, filePath string) string {
+	prefix := scipSymbolPackage(header)
+	if filePath != "" {
+		prefix += scipIdentifier(filePath) + "/"
+	}
+	return prefix
+}
+
+func scipSymbolPackage(header SnapshotHeader) string {
+	packageName := scipFirstNonEmpty(header.RepoKey, "repository")
+	version := scipFirstNonEmpty(header.Commit, header.Tree, "worktree")
+	return "entire-graph . " + scipPackageComponent(packageName) + " " + scipPackageComponent(version) + " "
+}
+
+func scipPackageComponent(value string) string {
+	if value == "" {
+		return "."
+	}
+	return strings.ReplaceAll(value, " ", "  ")
+}
+
+func scipIdentifier(value string) string {
+	if value == "" {
+		return "."
+	}
+	simple := true
+	for _, r := range value {
+		if !(r == '_' || r == '+' || r == '-' || r == '$' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+			simple = false
+			break
+		}
+	}
+	if simple {
+		return value
+	}
+	return "`" + strings.ReplaceAll(value, "`", "``") + "`"
+}
+
+func scipLanguage(language string) string {
+	language = strings.TrimSpace(language)
+	switch language {
+	case "Bash", "Zsh":
+		return "ShellScript"
+	case "C++":
+		return "CPP"
+	case "C#":
+		return "CSharp"
+	case "CoffeeScript":
+		return "Coffeescript"
+	case "Common Lisp":
+		return "CommonLisp"
+	case "F#":
+		return "FSharp"
+	case "INI":
+		return "Ini"
+	case "Just":
+		return "Justfile"
+	case "Make":
+		return "Makefile"
+	case "MATLAB":
+		return "Matlab"
+	case "Objective-C":
+		return "Objective_C"
+	case "Objective-C++":
+		return "Objective_CPP"
+	case "Protocol Buffers":
+		return "Protobuf"
+	case "reStructuredText":
+		return "ReST"
+	case "Starlark":
+		return "Skylark"
+	case "Visual Basic .NET":
+		return "VisualBasic"
+	default:
+		// Provider names that already match the SCIP enum need no translation.
+		// Unknown languages remain truthful instead of acquiring an invented ID.
+		return language
+	}
+}
+
+func scipProjectRoot(root string) string {
+	if root == "" {
+		return ""
+	}
+	return (&url.URL{Scheme: "file", Path: root}).String()
+}
+
+func scipSortedKeys[V any](values map[string]V) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func scipFirstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func shortDigest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 // DecodeCompactSnapshot validates and decodes records incrementally. It retains
