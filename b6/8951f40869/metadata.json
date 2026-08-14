@@ -1,12 +1,12 @@
 {
-  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
-  "checkpoint_id": "b68951f40869",
-  "strategy": "manual-commit",
   "branch": "ashtom/release-v0.3.0",
-  "checkpoints_count": 1,
+  "checkpoint_id": "b68951f40869",
+  "checkpoints_count": 3,
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
   "files_touched": [
     ".github/workflows/release.yml"
   ],
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/b6/8951f40869/0/metadata.json",
@@ -14,13 +14,20 @@
       "compact_transcript": "/b6/8951f40869/0/transcript.jsonl",
       "content_hash": "/b6/8951f40869/0/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "content_hash": "/b6/8951f40869/1/content_hash.txt",
+      "metadata": "/b6/8951f40869/1/metadata.json",
+      "prompt": "/b6/8951f40869/1/prompt.txt",
+      "transcript": "/b6/8951f40869/1/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 6514,
+    "input_tokens": 136726,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 377600,
-    "output_tokens": 1514,
-    "api_call_count": 5
+    "cache_read_tokens": 1418953,
+    "output_tokens": 10565,
+    "api_call_count": 26
   }
 }
