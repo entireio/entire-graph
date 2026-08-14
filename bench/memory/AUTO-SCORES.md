@@ -1,5 +1,5 @@
-- [2026-08-13 17:56:54 UTC] **mem0_loco** (field_mem0_loco, locomo): 93.44155844155844% (1439/1540), drops=0, restarts=0, subset_applied=False, abandoned=False -- NOT YET folded into MEMORY-BENCH-DELIVERABLE.md
-- [2026-08-13 18:00:27 UTC] **mem0_loco** (field_mem0_loco, locomo): 93.44155844155844% (1439/1540), drops=0, restarts=0, subset_applied=False, abandoned=False -- NOT YET folded into MEMORY-BENCH-DELIVERABLE.md
+- [2026-08-13 17:56:54 UTC] **mem0_loco** (field_mem0_loco, locomo): 93.44155844155844% (1439/1540), drops=0, restarts=0, subset_applied=False, abandoned=False
+- [2026-08-13 18:00:27 UTC] **mem0_loco** (field_mem0_loco, locomo): 93.44155844155844% (1439/1540), drops=0, restarts=0, subset_applied=False, abandoned=False
 ## full_graphify  (2026-08-14T16:26:53+00:00)
 ```
 === full_graphify  (locomo_results_20260814_162508.json)

@@ -72,6 +72,8 @@ credential-sourcing line replaced by the env-var names.
 Full per-arm spec, state-root rules, load envelope, and the pre-run verification checklist are in
 [`FAIR-CONFIG.md`](FAIR-CONFIG.md). Results and retractions are in [`RESULTS.md`](RESULTS.md);
 raw gate output for the arms scored by the automated scorer is in [`AUTO-SCORES.md`](AUTO-SCORES.md).
+[`RUN-INDEX.md`](RUN-INDEX.md) lists every run — complete, incomplete, and oracle — with the window
+it belongs to, so any number quoted anywhere can be traced to an artifact.
 
 ## 3. Three competitor defects we found and fixed — every one RAISED the competitor's score
 
@@ -104,8 +106,15 @@ Fixed to `{"top_k": req.limit}` — in the running container at `/app/main.py:35
 the build-context source `docker/mem0/main.py` (patch `0004`, hunk at upstream line 233).
 Verifiable live before any mem0 run via `verify_mem0_topk_fix.sh`, which must print `VERIFIED`.
 
-**mem0 gained +6.04pp: 87.40 → 93.44** (1439/1540, n=1540, drops=0). That moved mem0 from clearly
-behind entire-graph (92.73) to nominally ahead of it.
+**mem0 gained +6.04pp: 87.40 → 93.44** (`field_mem0_loco`, 1439/1540, n=1540, drops=0). Both
+endpoints of that delta are from the same measurement window, which is what makes the +6.04pp
+subtraction valid. In that window the fix moved mem0 from clearly behind entire-graph (92.73) to
+nominally ahead of it.
+
+mem0's post-fix number in the later `plan_g` window is **93.77** (`plan_g_mem0`, 1444/1540). That
+is the figure to use for the head-to-head against entire-graph's 94.68, because those two ran
+concurrently — see §5. Do not subtract 87.40 from 93.77: they are different windows, and the
+difference would not be the bug's effect.
 
 ### 3.2 cognee — empty-buffer defect: state on disk, retrieval buffer in memory
 
@@ -173,6 +182,7 @@ The defects we found on our own side are listed in `RESULTS.md` §6 and were rem
 | `run_locomo.sh` | the launcher used for the published runs |
 | `FAIR-CONFIG.md` | the fairness spec every run must cite |
 | `RESULTS.md` | results, defect list, and retractions, verbatim |
+| `RUN-INDEX.md` | every complete run with its window, config, `fair_mode` stamp, and aggregate — machine-extracted from the artifacts, including the incomplete and oracle runs |
 | `AUTO-SCORES.md` | raw scorer output with gate counts, verbatim |
 | `UPSTREAM.md` | upstream commit, licence, and file-level provenance manifest |
 
@@ -185,10 +195,66 @@ artifacts by `runmeta.code_hashes()`.
 name only (`AZURE_AI_API_KEY`, `AZURE_AI_ENDPOINT`, `AZURE_AI_API_VERSION`, `ANTHROPIC_OAUTH_TOKEN`,
 `CMM_BIN`, …).
 
-## 5. Caveat you must read before quoting a ranking
+## 5. Which comparisons are orderable, and which are not
 
-`RESULTS.md` §1 documents a measured **−2.21 point drift on an identical entire-graph config**
-(92.73 → 90.52), same retrieval bytes, 26 hours apart, McNemar p ≈ 1e-6. The top arms span less
-than that. **Do not publish a LoCoMo ranking among the leading arms** — report them as
-indistinguishable and show the drift evidence. The defensible entire-graph claim is on cost and
-speed (`RESULTS.md` §5), where the gap is orders of magnitude and far outside any drift band.
+**The rule: same-window comparisons are orderable; cross-window gaps under about 2 points are
+not.** This follows from a measured drift, and it cuts both ways — it licenses the head-to-head
+below just as firmly as it forbids ranking arms that never ran together.
+
+### The drift that sets the threshold
+
+`RESULTS.md` §1 documents a **−2.21 point drift on an identical entire-graph config** (92.73 →
+90.52) measured 26 hours apart, with 299/300 retrieved-memory-ID lists byte-identical, same
+answerer, same judge, same `top_k`. Paired split 45/11 discordant, McNemar p ≈ 1e-6: systematic,
+not sampling noise. The served model's behaviour changed between windows.
+
+So a gap of a point or two between two arms measured on different days carries no information. It
+is the drift band, not a difference in capability.
+
+### Same-window head-to-head (`plan_g`, all three concurrent, 2026-08-14 ~14:42–14:46 UTC)
+
+These three ran **in one window against one endpoint**, all with `FAIR_MODE=1` and no
+arm-asymmetric settings active (`asymmetric_settings_active: {}` in each run's `runmeta` block).
+The drift argument does not apply to them, and the ordering is a direct measurement:
+
+| run id | arm / config | score | correct |
+|---|---|---|---|
+| `plan_g_hyb` | entire-graph, `EG_INGEST_GRANULARITY=turn+session` | **94.68** | 1458/1540 |
+| `plan_g_mem0` | mem0-OSS (post-`top_k` fix) | **93.77** | 1444/1540 |
+| `plan_g_base` | entire-graph, default `session` granularity | **92.14** | 1419/1540 |
+
+entire-graph's hybrid ingest granularity beats mem0 by **+0.91pp** here, and that is orderable.
+
+**State the third row whenever you state the first.** In the same window, entire-graph's *default*
+`session` granularity scores **1.62pp below** mem0. The win belongs to the `turn+session` hybrid,
+not to entire-graph's out-of-the-box configuration, and reporting only the winning row would be
+exactly the kind of selection this kit exists to rule out.
+
+### Cross-window rows — report, do not rank
+
+The field-window rows (`RESULTS.md` §2: mem0 93.44, cognee 92.86, entire-graph 92.73) were measured
+hours apart from each other. They span 0.71 points against a 2.21-point drift band. Report them;
+do not order them. The same applies to `full_cmm` (91.30) and `full_graphify` (87.34), which ran in
+a later window again.
+
+### Oracle rows — never publish
+
+`plan_f_ceil` (96.23) and `plan_s_ceil` (94.00) ran with `EG_FULL_CONTEXT=1` and
+**`fair_mode: false`**. They are retrieval-ceiling oracles that hand the answerer the whole
+haystack. They exist to bound what retrieval could theoretically buy. They are not a result and
+must never appear in a comparison table.
+
+### Pending: same-window mem0 control
+
+A same-window mem0 control (`sw_mem0`) is in flight — mem0 re-answering in the current window
+against the current entire-graph binary, which removes the cross-window question from the headline
+entirely rather than arguing around it. Interim at n=414: entire-graph 95.41 vs mem0 93.48,
+**+1.93pp**, discordant 12–4. *This paragraph will be replaced with the final n=1540 result and its
+run id when the run lands; until then the interim figure is not a publishable row.*
+
+### What is not in doubt
+
+None of the above touches cost and speed (`RESULTS.md` §5), where entire-graph's advantage is
+**orders of magnitude** — 0.55s vs ~131s build per history, 0 ingest LLM calls vs LLM extraction,
+corpus ingest 8.08s vs 20,471s. That gap is thousands of times wider than any drift band and is
+the claim that does not depend on which window you measured in.
