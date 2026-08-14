@@ -1,0 +1,826 @@
+<task-notification>
+<task-id>af40e295abf49ba56</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/fe41fb4b-5221-41ce-afce-6a9fa3dade0c/tasks/af40e295abf49ba56.output</output-file>
+<status>completed</status>
+<summary>Agent "Check cognee same-window feasibility" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>**NO-GO.** cognee's `field_cognee_loco2` store does not exist. Nothing launched. Live runs untouched (4 still up, load 1.08).
+
+## Deciding evidence
+
+**Store is gone.** `sudo find / -xdev -type d -name "*field_cognee_loco2*"` returns exactly one path — the results dir. Zero graph state.
+- cognee persists per-user dirs `&lt;COGNEE_STATE_ROOT&gt;/u_&lt;user_id&gt;/{system/databases/{cognee_db,cognee_graph_ladybug,cognee.lancedb},data,ccache,home}` (`benchmarks/common/cognee_worker.py` `_BASE`). No cognee container exists (`docker ps` = fieldmem0-mem0-1, fieldmem0-qdrant-1, memarms-pg only). Unlike mem0's resident Qdrant, cognee state is plain files — and loco2's were never persisted or were wiped.
+- Only LoCoMo cognee state root on disk: `~/memarms/state/cognee_loco`, containing **3** dirs, all project `field_cognee_loco_v2` (a *different* project): `u_locomo_0/3/4_field_cognee_loco_v2`.
+- `/tmp/cognee_state_6nb4d_bq` (the mkdtemp fallback) is **empty**. `~/memarms/state/cognee_lme` = 60 LME users, 0 locomo. No tarballs/backups anywhere.
+
+**Checkpoints are fine — irrelevant without a store.** All 10 `_ingestion_{0..9}.json` present, `chunk_size==1`, `user_id=locomo_{i}_field_cognee_loco2`, `total_chunks_failed=0`. The mem0 trick reduces ingest to a no-op that resolves to a resident store; here it would resolve to nothing.
+
+## Smoke searches (executed, real cognee, top_k=200)
+
+Against the only surviving state, `~/memarms/state/cognee_loco`:
+
+| user | dir | units | chars | verdict |
+|---|---|---|---|---|
+| `locomo_4_field_cognee_loco_v2` | 347M | 1 | 89,265 | **alive, topically correct** |
+| `locomo_3_field_cognee_loco_v2` | 306M | 1 | 100,601 | **alive, topically correct** |
+| `locomo_0_field_cognee_loco_v2` | 3.5M | **0** | **0** | **HOLLOW** |
+
+conv4 query "what are John's goals with regards to his basketball career?" returned `Facts: - On 2023-08-11, John said that winning a basketball championship was his number one goal. - ...wanted to make an off-court difference through charity...` — near-identical to the banked `conv4_q0.json` artifact (1 unit, 99,837 chars, judged CORRECT). Confirms 1 unit is normal.
+
+## The empty-cognee failure mode is real and I caught it live
+
+`predicted_field_cognee_loco_v2` (684 questions) is a **broken artifact**: 655/684 zero-context, 0.04 units/q, mean 3,302 chars, scores **20.18**. Head-to-head vs loco2 on the same 684: 93.27 → 20.18, −73.10pp, gain 3 / loss 503. conv0's hollow graph above is its physical cause. So it cannot serve as a drift check either.
+
+`field_cognee_loco2` by contrast is **clean**: n=1540, **0** zero-context, **0** empty answers, 1.00 units/q, mean 82,419 chars, **92.86** recomputed exactly from artifacts. The published number rests on a healthy run.
+
+## Why not salvage
+
+Re-measuring n=1540 requires a from-scratch LLM cognify of all 10 convs (5,882 chunks, `azure_ai/gpt-5.6-terra`). Evidence from `logs/cognee_loco2_redo_conv45.log`: conv4's cognify alone cost ~17.5 min (first question at 17:35, then 5.2 s/q); the loco_v2 wave took ~9h for 3 convs. Far past 19:30 UTC and explicitly out of scope. Answering-only would have been cheap (~45–90 min for 1540 at the given worker settings) — the store, not throughput, is the blocker.
+
+## Optional, NOT launched — your call
+
+A **377-question drift probe** is affordable: convs 3+4 have live state; `field_cognee_loco2` scores **89.39** on those same 377 (conv3 88.44, conv4 90.45). Re-answering them now over the surviving graph, ~20–35 min, would bound cognee's cross-window drift directly. Two caveats: it is a *different cognify build*, so a mismatch conflates build-variance with window-drift; and it burns shared Azure capacity right before the eg-mr2 arm launches at 18:00 — the exact saturation that voided earlier runs. I held off on both counts.
+
+**Recommendation:** publish cognee's 92.86 with the existing cross-window caveat as written.</result>
+<usage><subagent_tokens>101012</subagent_tokens><tool_uses>25</tool_uses><duration_ms>306429</duration_ms></usage>
+</task-notification>
+
+---
+
+remove the warnign signs and give the all the data int he tabel speed etc no pearing etc clean pbulsiahble table and put tht holy
+
+---
+
+<agent-message from="general-purpose">
+19:02 UTC. **`~/bin/eg-mr2` exists, builds on the VM, and the package tests are green** — but DO NOT launch the verification yet. Live measurement has just contradicted the simulation in a way you need to decide on, and it is the exact trap we said we would not fall into.
+
+## What happened
+The design works. The byte accounting did not survive contact with the real binary.
+
+First live build converted 2 of 5 probe questions from gold-absent to gold-present — but the retrieved TEXT went **31.4k -> 59.6k chars per question, +90%**. That is `plan_f_ceil` by another name: it "wins" by handing the answerer twice the prompt. I caught it because the smoke test measures the same thing the harness measures.
+
+Cause: I had bounded the pass on the SERIALIZED payload. Per result the JSON envelope (~1,560 B) dwarfs a prose snippet (~150 B), so dropping 23 duplicate results "freed" ~36k of envelope that does not exist as text, and the widening spent it on real text. Payload shrank 312k -> 286k while text nearly doubled. A byte bound on the wrong meter is worse than no bound, because it looks rigorous.
+
+## Fixed, and here is the honest number
+The ceiling is now **snippet bytes** — the text the consumer actually reads (passages excluded: they are an additive field a consumer may ignore, and counting them would credit budget that is not really there). Result on the same 5 probe questions:
+```
+                mr (control)      mr2 (fixed)
+conv3_q32       29,937 chars      29,892 chars
+conv3_q60       31,655            31,654
+conv3_q65       31,440            31,418
+conv3_q8        47,503            47,469
+conv3_q87       26,195            26,171
+gold recovered  -                 0 of 5
+```
+Strictly byte-neutral, as promised. **And the gain went to zero on this probe.**
+
+The gap between simulation (+5) and reality (0 of 5) is my error, and it is instructive: my simulation credited dedup with 19.9% of bytes because it compared the harness's `memory` strings, which carry a YAML frontmatter block that made the coarse chunk a textual superset of the fine one. The binary compares snippets, which have no frontmatter, so real dedup frees far less — roughly 23 short snippets, ~3.5k chars, enough to widen only ~8 of 177 results. The rank-ordered greedy spends it on the top few, which are not the ones holding the missing evidence.
+
+I am running the full 32-loss probe against both binaries now to replace the 5-question read with a real number; ETA ~10 min. But on current evidence the expected conversion is **near zero, not 3-5**.
+
+## My recommendation, unchanged in substance from Option A
+**Do not launch either verification arm.** A byte-neutral eg-mr2 currently buys ~nothing measurable, and a non-byte-neutral one is disqualified by our own rule. Spending 2.2h of runway to measure a change whose live probe shows no effect is how you get a noise result you then have to argue about.
+
+Publish the diagnosis. It stands on its own and it is correct:
+- perfect session-level recall (32/32 losses, 46/46 wins), turn-level miss
+- 70% of missing gold within 2 turns of retrieved text
+- 18/32 retrieval miss, 9/32 synthesis, 3/32 rank burial, 2/32 bad gold, 0 judge artifact
+- the 0.91pp lead is a point estimate at p~0.14 and we say so
+
+And say plainly that the obvious fix was built, measured, and did not clear its own fairness bar. That is a stronger result than a marginal p-value, and it is true.
+
+## If you want to proceed anyway
+The one lever that would make it work is more freed budget, i.e. a dedup that also removes the *duplicate framing* around each unit, not just the body. I will not do that tonight: it edits what a unit looks like, which is a much bigger blast radius than an assembly rule, and it cannot be verified before your deadline.
+
+State of the deliverable: worktree `/Users/suhaan/devenv/eg-multires`, uncommitted; new `internal/sem/search_prose_context.go` (+ tests), flag `--no-context-expansion`, `internal/sem/` and `internal/cli/` green, full `mise run check` still running. Binary `~/bin/eg-mr2` on graphbench-g; `eg-base`, `eg-mr`, `entire-graph` untouched. Five golden hashes in `search_prose_session_test.go` updated — three of those reverted to their original values once the pass became byte-neutral, which is itself evidence of how little it now changes.
+
+I will send the 32-question probe result as soon as it lands.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>a6f9e2955a6bbc2ab</task-id>
+<tool-use-id>toolu_016utx8YjAntAKJPPYvDuZDU</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/fe41fb4b-5221-41ce-afce-6a9fa3dade0c/tasks/a6f9e2955a6bbc2ab.output</output-file>
+<status>completed</status>
+<summary>Agent "Vendor memory benchmark harness PR" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Done.
+
+## PR
+**https://github.com/entireio/entire-graph/pull/101** — `bench: vendor the memory-benchmark reproduction kit`
+Branch `docs/memory-benchmark-repro-kit` off `origin/main` (`22e6f50`), commit `3561c9e`. Worktree `/Users/suhaan/devenv/eg-memharness`. Main checkout untouched (still `feat/preference-directive`, 24 dirty files). `eg-multires` and PR #100 untouched.
+
+## Files (17, +3466)
+| path | lines |
+|---|---|
+| `bench/memory/README.md` | 194 |
+| `bench/memory/UPSTREAM.md` | 104 |
+| `bench/memory/FAIR-CONFIG.md` (verbatim) | 373 |
+| `bench/memory/RESULTS.md` (verbatim) | 184 |
+| `bench/memory/AUTO-SCORES.md` (verbatim) | 37 |
+| `bench/memory/run_locomo.sh` | 52 |
+| `benchmarks/common/entire_client.py` | 693 |
+| `benchmarks/common/cmm_client.py` | 418 |
+| `benchmarks/common/graphify_client.py` | 364 |
+| `benchmarks/common/graphify_mem_bridge.py` | 184 |
+| `benchmarks/common/runmeta.py` | 129 |
+| `patches/0001..0005` | 164 / 20 / 268 / 192 / 88 |
+| `.gitignore` | 2 |
+
+## Upstream pin — resolved, not guessed
+`mem0harness` was never a git repo, so no fork SHA existed. Identified upstream as `mem0ai/memory-benchmarks` and **byte-verified** the fork point by md5: **`4b61c5d31b9c668a12b4f5e78064248a02c82d2b`** (2026-05-13, Apache-2.0). Stronger than a recorded SHA.
+
+## Judged upstream third-party → NOT vendored
+- **Byte-identical to upstream** (md5 match both sides): `benchmarks/__init__.py`, `benchmarks/common/__init__.py`, `metrics.py`, `schema.py`, `utils.py`, `locomo/prompts.py`. Prompts being unmodified is load-bearing — same answerer/judge prompts for every arm.
+- **Substantially upstream but modified by us** → shipped as patches, files not copied: `common/llm_client.py`, `common/mem0_client.py`, `locomo/run.py`, `docker/mem0/main.py`. All four `git apply --check -p1` **OK** against a fresh clone at the pinned commit.
+- Also not vendored: `cognee/letta/graphiti/supermemory` clients (ours, but not arms in this head-to-head).
+
+## Credential verification
+- `gitleaks detect --log-opts=22e6f50..HEAD`: **1 hit**, `patches/0003:175` — false positive, the code expression `api_key=args.mem0_api_key if backend == "cloud" else None`, no literal. (3 other repo-wide hits are pre-existing in `bench/repos.lock.json`, not mine.)
+- Targeted scans, all **zero** hits: `sk-`/`sk-ant-`/`AKIA`/`ghp_`/`xox`/JWT/PEM shapes; assignment-shaped `key|secret|token|password|endpoint = &lt;20+ chars&gt;`; Azure `*.openai|services.ai|cognitiveservices.azure.com` hostnames; generic 32+ char high-entropy excluding the intentional md5 manifest.
+- `$HOME/.azenv` and `memarms/run.env` were never read or copied. Launcher's `. $HOME/.azenv` replaced with `: "${AZURE_AI_API_KEY:?...}"` guards. Only non-secret leakage: benchmark-host paths (`/home/suhaan_entire_io/...`) inside verbatim adapters — kept deliberately so md5s still match `runmeta.code_hashes()` fingerprints in the run artifacts; all overridable by env var.
+
+## Checks
+No Go touched → `mise run check` not implicated. Ran `python3 -m py_compile` on all 5 modules (clean), `bash -n run_locomo.sh` (clean), patch apply-check (4/4 OK). Stripped `__pycache__` and added a local `.gitignore`.
+
+## One correction you should know
+**93.77 does not exist on the VM.** Exhaustive grep of `deliverable/*.md`, `*.json`, and result artifacts found only **93.44** (`1439/1540`, `field_mem0_loco`, drops=0) as mem0's post-fix LoCoMo score — and 87.40 + 6.04 = 93.44 exactly, so 93.44 is the figure the +6.04pp claim is built on. I cited **93.44 only**. Verified corroborating numbers on-VM: cmm **91.30** (1406/1540, drops=0, zero_ctx=0), graphify 87.34, cognee 92.86, eg 92.73.
+
+Two things in the vendored verbatim docs worth a glance before merge: `FAIR-CONFIG.md` opens with "Status: DRAFT" and an internal agent ID, and `RESULTS.md` §1 documents a −2.21pt drift on an identical eg config that exceeds the spread between the leading arms. I carried the drift caveat into the README rather than hiding it, and the README states no LoCoMo ranking among the top arms should be published.</result>
+<usage><subagent_tokens>113473</subagent_tokens><tool_uses>55</tool_uses><duration_ms>587631</duration_ms></usage>
+</task-notification>
+
+---
+
+<agent-message from="general-purpose">
+Clock corrected — you are right, I was extrapolating between `date` calls instead of reading it. Real time now 16:58 UTC. Every ETA I gave after 16:26 was inflated by up to 2h. Sorry; from here every timestamp comes from an actual `date -u`.
+
+## 1. THE 32-QUESTION PROBE — the real number
+Both binaries, same corpora, same queries, same top-k 200, separate cache dirs, all 32 losses:
+```
+             chars/question    gold evidence turns found
+eg-mr  (control)   44,532            21 / 51
+eg-mr2 (fixed)     44,484            23 / 51
+```
+**+2 evidence turns, all inside ONE question** (`conv1_q56`, 0/2 -> 2/2). Every other one of the 32 is byte-for-byte the same coverage. Per-question bytes are non-increasing on all 32, so byte-neutrality holds in the live binary, not just in the design.
+
+So the published statement has an n behind it: **1 of 32 gold-coverage conversions, and coverage is necessary but not sufficient — expected score conversions 0 to 1.** Against a discordant split of 46/32 that moves p from 0.14 to at best 0.12. It does not clear its own bar.
+
+Worth recording precisely because the mechanism it targets is real: the diagnosis (perfect session recall, turn-level miss, 70% of missing gold within 2 turns) is confirmed and unaffected. The fix fails on economics, not on premise. There is not enough duplicate text in the payload to pay for the widening that would close the gap — and taking the budget from anywhere else is buying the win with a bigger prompt.
+
+## 2/3. BRANCH + WRITE-UP
+Doing now: new branch `feat/prose-context-expansion` off `fccf1fc`, commit there, no PR, and `feat/multi-resolution-retrieval` left pointing exactly at `fccf1fc` (I will confirm the SHA after). The byte-meter trap goes in the commit message in full: harness `memory` strings carry YAML frontmatter, which makes a coarse chunk a textual superset of a fine one, so a simulation over those strings credits dedup with 19.9% of bytes; the binary compares frontmatter-free snippets where real dedup frees ~3.5k chars, enough to widen ~8 of 177 results, and the rank-ordered greedy spends it on results that do not hold the missing evidence. Simulation +5, reality +1.
+
+`mise run check` is still running on the final state (statusline 151/151 green, test:ci in progress). I will confirm green before committing and will not touch the live arms.
+
+## On the n=414 control
+That is the better road and I would rather the number arrive that way. One caution: +1.93pp at n=414 with discordant 12-4 is a small discordant count, and discordant counts are exactly where early splits are least stable — the 12-4 could be 20-14 by n=1540 and land back above 0.05. Worth pre-registering now what you will report if it lands at, say, p=0.07, so the decision is not made after seeing the number.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>afc2f107bf714488f</task-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/fe41fb4b-5221-41ce-afce-6a9fa3dade0c/tasks/afc2f107bf714488f.output</output-file>
+<status>completed</status>
+<summary>Agent "Productize multi-resolution retrieval in entire-graph" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>**n=901** (17:00 UTC) — now firmly significant:
+
+| | base | multi-res | Δ | disc. | p |
+|---|---|---|---|---|---|
+| ALL-PAIRS | 91.23 | 93.45 | **+2.22** | 26/6 | **0.00054** |
+| JUDGE-GATED (n=891) | 92.26 | 94.50 | +2.24 | 26/6 | 0.00054 |
+| open-domain (n=57) | 71.93 | 78.95 | +7.02 | 5/1 | 0.22 |
+| multi-hop (n=174) | 89.66 | 93.10 | +3.45 | 10/4 | 0.18 |
+| temporal (n=180) | 91.67 | 94.44 | +2.78 | 5/0 | 0.063 |
+| single-hop (n=480) | 95.83 | 96.88 | +1.04 | 6/1 | 0.13 |
+
+Gates unchanged: zero-context 0/0, judge/answer failures still 10/10 identical, units/q 26.77 (== distinct files) vs 198.38.
+
+Two things worth noting. The headline has been stable at **+2.2pp across n=525 → 556 → 901** while p tightened by an order of magnitude (0.012 → 0.00054), which is what a real effect looks like as n grows rather than a small-n artifact. And **every category is now positive** — the effect is not carried by one bucket, though no individual category reaches significance on its own, so the per-category rows stay descriptive.
+
+Verdict unchanged: shipped eg reproduces the benchmark gain, +2.22pp vs the published +2.53pp. Run is ~59% through; expect n=1540 around 17:40–18:00 UTC.</result>
+<usage><subagent_tokens>246006</subagent_tokens><tool_uses>247</tool_uses><duration_ms>6573615</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a25c07a3f7d283d64</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/fe41fb4b-5221-41ce-afce-6a9fa3dade0c/tasks/a25c07a3f7d283d64.output</output-file>
+<status>completed</status>
+<summary>Agent "Per-loser forensics on eg's 32 LoCoMo losses" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Report
+
+**Diagnosis (the deliverable).** Class distribution over the 32 losses: **18 RETRIEVAL MISS (56%), 9 SYNTHESIS (28%), 3 RANK BURIAL (9%), 2 BAD GOLD (6%), 0 JUDGE ARTIFACT.** The gap *is* retrieval-addressable in principle — 66% is miss+burial, not a synthesis wall.
+
+**The mechanism.** eg does not miss the right session — the gold session was retrieved in **32/32 losses and 46/46 wins**. It misses the right *turn* inside it: the gold turn text was present in only 16/32 losses vs 45/46 wins, and **70% of the 30 missing gold turns sat within two turns of a fragment eg already returned**. eg's retrieval unit (one conversational turn, ~100–235 chars) is smaller than the unit of meaning; fragments open with pronouns whose referents are in the neighbouring turn. That generalises well beyond this benchmark.
+
+**The fix was built, measured, and killed.** Contiguity expansion + duplicate-text dedup, question-blind, flag-gated (`--no-context-expansion`), `mise run check` green. Live on all 32 losses against the unchanged control:
+
+| | chars/question | gold turns found |
+|---|---|---|
+| eg-mr (control) | 44,532 | 21/51 |
+| eg-mr2 (fixed) | 44,484 | 23/51 |
+
+**+2 turns, all inside one question. One conversion in 32.** Byte-neutral per question on all 32. Premise right, economics wrong — there is not enough duplicated text to pay for the widening.
+
+**Two traps found, both worth keeping.** (1) My offline simulation predicted +5 because it compared the harness's `memory` strings, whose YAML frontmatter makes a coarse chunk a textual superset of a fine one — crediting dedup with 19.9% of bytes instead of the real ~3.5k chars. (2) The first live build bounded the pass on *serialized payload* rather than *snippet text*; because the JSON envelope (~1,560 B) dwarfs a prose snippet (~150 B), the payload shrank 312k→286k while the text handed to the answerer grew **+90%**. That build "converted" 2 of 5 probe questions purely by buying a bigger prompt — `plan_f_ceil` in disguise. Caught before it reached a table.
+
+**Also:** `conv0_q8`'s empty answer is 1-in-1540 for eg, 0-in-1540 for mem0 — a transient, not a defect class.
+
+Committed to `feat/prose-context-expansion` (`8a28407`), local only, nothing pushed. `feat/multi-resolution-retrieval` still resolves to exactly `fccf1fc`, so PR #100 is untouched. Files: `/Users/suhaan/devenv/eg-multires/internal/sem/search_prose_context.go` and `search_prose_context_test.go`; binary at `~/bin/eg-mr2` on graphbench-g (`eg-base`, `eg-mr`, `entire-graph` untouched).</result>
+<usage><subagent_tokens>263949</subagent_tokens><tool_uses>126</tool_uses><duration_ms>2651494</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a6f9e2955a6bbc2ab</task-id>
+<tool-use-id>toolu_014517HQvFXp7y6F2Vjj6TFq</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/fe41fb4b-5221-41ce-afce-6a9fa3dade0c/tasks/a6f9e2955a6bbc2ab.output</output-file>
+<status>completed</status>
+<summary>Agent "Vendor memory benchmark harness PR" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All three corrections pushed. **PR #101 updated** — https://github.com/entireio/entire-graph/pull/101, branch `docs/memory-benchmark-repro-kit`, 2 commits (`3561c9e`, `e69738d`).
+
+## 1. 93.77 — you were right, I searched the wrong tree
+Verified independently by parsing `metrics_by_cutoff.top_200.overall` out of the archived artifacts. All your figures reproduce exactly:
+
+| run id | UTC | score | correct | `fair_mode` | asym |
+|---|---|---|---|---|---|
+| `plan_g_hyb` | 08-14 14:45 | 94.6753 | 1458/1540 | true | `{}` |
+| `plan_g_mem0` | 08-14 14:42 | 93.7662 | 1444/1540 | true | `{}` |
+| `plan_g_base` | 08-14 14:42 | 92.1429 | 1419/1540 | true | `{}` |
+| `plan_f_hyb` | 08-14 14:08 | 94.7403 | 1459/1540 | true | `{}` |
+| `plan_f_ceil` | 08-14 14:09 | 96.2338 | 1482/1540 | **false**, `EG_FULL_CONTEXT=1` | `{}` |
+
+Both mem0 numbers are now in, each bound to its window: 93.44 carries the +6.04pp delta (same window as 87.40), 93.77 carries the head-to-head. README §3.1 also states explicitly *not* to subtract 87.40 from 93.77.
+
+## 2. Caveat narrowed
+README §5 rewritten as "Which comparisons are orderable, and which are not". Rule stated as: cross-window gaps under ~2pp are not orderable, same-window are. The `plan_g` table is published as a direct measurement, eg hybrid +0.91pp over mem0. `sw_mem0` placeholder added with the n=414 interim explicitly marked not publishable.
+
+**One thing I added that you should confirm you want.** The same-window table also carries `plan_g_base` — eg's *default* `session` granularity at 92.14, which is **1.62pp below mem0** in that same window. The +0.91pp win belongs to the `turn+session` hybrid, not to out-of-the-box eg. I made stating that row mandatory ("state the third row whenever you state the first"), because a kit whose whole argument is "we published fixes that helped competitors" cannot then show only the winning config. If the intent is to ship the hybrid as the default, that resolves it — but as of `plan_g` it is a config-conditional win and the doc says so.
+
+## 3. Docs de-scaffolded
+Removed: agent id `a8fbcd775318cb31d` (2 sites), the "Status: DRAFT" banner (replaced with "Status: in force"), "fix-owner session", `graphbench-g` → "the benchmark host" (2 sites), first-person asides ("I did not start them", "it is another agent's file"), and AUTO-SCORES' "NOT YET folded into MEMORY-BENCH-DELIVERABLE.md". Technical content untouched.
+
+## Also added: `RUN-INDEX.md` (89 lines)
+Machine-extracted index of **every** run — complete, incomplete, killed, preflight, oracle — with window, config, `fair_mode` stamp and aggregate, plus the extraction snippet so it regenerates. Rationale: the reason I missed 93.77 was that no single artifact enumerated the runs; this makes any quoted number traceable and makes a retired tree impossible to miss twice.
+
+Two things it surfaces that you should know:
+- **`plan_f_ceil` / `plan_s_ceil` are now explicitly marked never-publishable**, so 96.23 can't be mistaken for an eg score.
+- **The 08-13 field-window runs have no `fair_mode` stamp at all** (`None` — they predate `runmeta` landing in `patches/0003`). Their fairness rests on the code-fingerprint audit in FAIR-CONFIG §7, not a stamped flag. I labelled them "not stamped" rather than implying they were verified the same way. Related: `field_mem0_loco` @93.44 records `fair_mode: false` with `asymmetric_settings_active: {}` — launched without the guard, but nothing asymmetric was set; footnoted rather than glossed.
+
+## Verification
+gitleaks across both commits: 1 hit, the same known false positive at `patches/0003:175` (`api_key=args.mem0_api_key if backend == "cloud" else None` — an expression, no literal). Targeted key-shape, assignment-shape, and Azure-hostname scans: zero. `python3 -m py_compile` and `bash -n` clean. No Go touched.
+
+Untouched as instructed: main checkout still `feat/preference-directive` (25 dirty, uncommitted), `feat/multi-resolution-retrieval` still at `fccf1fc`, `eg-multires` never entered. `sw_mem0`, `mrq_mres` confirmed running via read-only `pgrep`; nothing written to the VM except two scripts under `/tmp`.</result>
+<usage><subagent_tokens>150481</subagent_tokens><tool_uses>30</tool_uses><duration_ms>399536</duration_ms></usage>
+</task-notification>
+
+---
+
+updates
+
+---
+
+Ok new thing no more lme js make us the fair winner on locomo
+
+---
+
+Ok we must win one everything fairly no more need for comp runs cuz we have results right?
+
+---
+
+<task-notification>
+<task-id>a32dd01ab5a91f2f3</task-id>
+<tool-use-id>toolu_01QgKPAANYudiVLYYvcJXrJd</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/fe41fb4b-5221-41ce-afce-6a9fa3dade0c/tasks/a32dd01ab5a91f2f3.output</output-file>
+<status>completed</status>
+<summary>Agent "Compute retrieval recall for all arms from artifacts" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Analysis complete. All work read-only in `~/retq_scratch/` on the VM; no results directory touched.
+
+## STEP 1 — Schema + matching method (as required, before any numbers)
+
+**`evidence` schema.** List of LoCoMo `dia_id` strings, e.g. `["D1:2"]` = session 1, turn 2. Resolves directly against the source corpus at `/home/suhaan_entire_io/memarms/inputs/datasets/locomo10.json` (10 convs, 5,882 turns; `conversation.session_N[].dia_id/text`). `conversation_idx` 0-9 maps identity-wise to dataset index (verified by question-set overlap, 152/152, 199/199, …).
+
+- 1,540 questions/arm (files `conv*_q*.json`; the 1,551 count includes 10 `_ingestion_*` + 1 timings file).
+- 2,355 gold evidence items; **99.62% resolve** verbatim. 9 malformed (`"D9:1 D4:4 D4:6"` space-joined, `"D:11:26"`, `"D30:05"` zero-padded, `"D8:6; D9:17"`, bare `"D"`). Normalised by regex `D\s*:?\s*(\d+)\s*:\s*(\d+)` + int-cast; bare `"D"` unrecoverable. 4 questions have empty evidence → excluded from recall, kept in accuracy.
+- Sanity: mem0 `judgment==CORRECT` = 1439/1540 = **93.44%**, exactly the published score. Denominators agree.
+
+**The blocking finding — arms split into two incompatible classes.** Measured verbatim containment of gold turn text in each arm's returned set:
+
+| extractive (stores source text) | abstractive (stores LLM-rewritten facts) |
+|---|---|
+| cognee .858, eg .831, plan_g_hyb .913, cmm .776, graphify .726, sm .712 | mem0 **0.000**, letta **0.000**, plan_g_mem0 **0.000**, sw_mem0 **0.000** |
+
+Exactly zero, not "low". mem0/letta retain no source string at all ("Caroline attended an LGBTQ support group on May 7, 2023" vs the turn "I went to a LGBTQ support group yesterday"). **Substring matching is not arm-neutral** — it is the reverse of the brief's hypothesis: it would score the two highest-accuracy arms at zero recall.
+
+**Calibrating the loose rule against verbatim is degenerate.** Lexical coverage has *zero* false negatives vs verbatim at every threshold (verbatim ⇒ full token coverage), so agreement rises monotonically to tau=1.0 and simply re-derives verbatim. It cannot calibrate paraphrase. Stated rather than papered over.
+
+**Rule adopted.** Per-conversation IDF-weighted content-token coverage of the gold turn by the returned set, tau=0.70; `@k` on the merged top-k prefix (gold facts can split across units), MRR = 1/first prefix-rank. Plus a **length-matched null**: score each gold turn against a non-evidence turn from the same conversation matched to ±25% token length, giving chance-corrected lift = (obs−null)/(1−null).
+
+**Hand-checks (5 q/arm) — the rule fails on abstractive arms.** letta retrieved "In November 2022, Nate began creating gaming content for YouTube…" for gold "creating gaming content for YouTube" — semantically a hit, scored **cov=0.464**, a miss. Discriminability (AUC, gold vs random turn) is poor and arm-dependent: letta 0.650, mem0 0.670, cmm 0.675 vs cognee 0.857. **Conclusion: gold-evidence recall is not identifiable for abstractive stores from banked artifacts.** They are dashed, not proxied.
+
+**Volume confound, quantified.** Returned chars ÷ whole-conversation chars: cognee **1.09× the entire conversation**, plan_g_hyb 0.64, cmm 0.49, mem0 0.46, eg 0.33, sm 0.10. Un-corrected null coverage reached 0.977 (cmm) / 0.994 (mrq_mres) — random non-evidence turns "retrieved" almost always. Raw recall@200 mostly ranks arms by text dumped; only chance-corrected numbers are reported as primary.
+
+## Recall@k, lexical tau=0.70 (ALL gold / ANY gold)
+
+| arm | @10 | @20 | @50 | @200 | MRR |
+|---|---|---|---|---|---|
+| cognee | – | – | – | .899/.960 | .960 |
+| plan_g_hyb | .764/.898 | .791/.919 | .846/.952 | .921/.982 | .731 |
+| eg | .820/.938 | .841/.951 | – | .850/.955 | .769 |
+| plan_g_base | .820/.937 | .840/.951 | – | .849/.954 | .769 |
+| cmm | .505/.614 | .577/.699 | .682/.807 | .858/.943 | .418 |
+| graphify | .568/.682 | .609/.736 | .674/.815 | .778/.902 | .478 |
+| sm | .508/.627 | .570/.691 | – | .648/.751 | .397 |
+| mem0 / plan_g_mem0 | .203/.292 | .275/.400 | .400/.551 | .700/.825 | .159 |
+| letta | .022/.036 | .033/.055 | .061/.103 | .083/.151 | .020 |
+
+Dashes: cognee returns **1 unit** (all k identical to @200 — no rank structure exists); eg/plan_g_base return median 29 units so @50 = @200; sm median 39. mem0/letta rows are the broken-rule artifact, not a measurement.
+
+## Chance-corrected recall — two independent derivations
+
+Rule A = IDF token coverage @0.70. Rule B = exact substring, no threshold, no weighting. **Because entire-graph scores well here I re-derived it a second way, as instructed** — the two rules share no machinery and agree to ~0.01 on eg.
+
+| arm | A lex | A null | **A lift** | B verb | B null | **B lift** |
+|---|---|---|---|---|---|---|
+| cognee | .899 | .267 | **.862** | .850 | .106 | **.832** |
+| plan_g_hyb | .921 | .606 | **.800** | .865 | .285 | **.811** |
+| mrq_mres *(interim)* | .955 | .806 | .766 | .897 | .491 | .798 |
+| **eg** | .850 | .403 | **.748** | .798 | .174 | **.755** |
+| plan_g_base | .849 | .408 | .745 | .797 | .187 | .750 |
+| mrq_base *(interim)* | .846 | .413 | .737 | .797 | .182 | .751 |
+| graphify | .778 | .277 | .693 | .734 | .131 | .694 |
+| cmm | .858 | .667 | .574 | .753 | .304 | .645 |
+| sm | .648 | .119 | .600 | .629 | .069 | .601 |
+| mem0 / plan_g_mem0 / sw_mem0 / letta | — | — | — | — | — | not identifiable |
+
+Ranking is stable across tau ∈ {0.6,0.7,0.8,0.9} for extractive arms; abstractive arms collapse toward zero as tau rises (mem0 .696→.086), which is the signature of a threshold artifact. **eg is 4th, not 1st — the metric does not flatter us.**
+
+## Evidence density (gold items found per 1k chars returned)
+
+sm **.131** ≫ graphify .065 &gt; eg/plan_g_base .049 &gt; cmm .032 &gt; plan_g_hyb .029 &gt; cognee **.016**. Inverts the recall table: cognee buys top recall by returning more than the whole conversation; sm is ~8× more efficient per character.
+
+## The decomposition (verbatim rule, extractive arms; bootstrap 95% CI)
+
+| arm | acc | ret+correct | ret+WRONG (synthesis fail) | ¬ret+correct | ¬ret+WRONG (retrieval fail) | % of error from retrieval |
+|---|---|---|---|---|---|---|
+| plan_g_hyb | .9466 | .835 | .029 | .111 | .024 | .451 [.350,.558] |
+| cognee | .9284 | .812 | .038 | .117 | .034 | .473 [.380,.563] |
+| **eg** | .9271 | .774 | **.023** | .153 | .049 | .679 [.587,.761] |
+| plan_g_base | .9212 | .771 | .025 | .150 | .053 | .678 [.592,.761] |
+| cmm | .9128 | .721 | .033 | .192 | .055 | .627 [.545,.709] |
+| graphify | .8730 | .715 | .020 | .158 | .107 | .846 [.794,.892] |
+| sm | .7760 | .607 | .022 | .169 | **.202** | .901 [.867,.931] |
+
+P(correct | gold retrieved) is ~.96-.97 for **every** arm; the spread is entirely in P(correct | not retrieved): sm .456, graphify .596, eg .756, plan_g_hyb .822. **Answering is a solved, undifferentiated step on this benchmark; the arms differ only in retrieval.** sm's and graphify's accuracy deficits are ~90% and ~85% retrieval failure. eg's synthesis-failure rate (.023) is the second-lowest measured.
+
+Per-category verbatim recall (single-hop / multi-hop / temporal / open-domain): eg .942/.376/.885/.467, plan_g_hyb .973/.543/.938/.609, cognee .924/.652/.897/.609, graphify .923/.184/.813/.424. **Multi-hop is the universal weak point** and the clearest separator.
+
+## Cross-class metric (the only one covering abstractive arms)
+
+Answer-support = gold answer tokens present in returned set, chance-corrected against another question's answer from the same conversation: cognee .719 &gt; eg .507 ≈ plan_g_base .504 ≈ plan_g_hyb .492 &gt; graphify .461 &gt; mem0 .441 &gt; sm .438 &gt; cmm .372 &gt; **letta −0.013**. Caveat: raw null is very high for mem0 (.687) and letta (.561) — answers are short, so any large blob contains them by chance; and it under-fires on paraphrase (letta acc .806 &gt; answer-support .556), so treat it as weak evidence only.
+
+## Anomalies flagged, not smoothed
+
+1. **mem0 date corruption.** conv1_q0 gold "19 January, 2023"; the stored memory reads "Jon lost his job as a banker on **August 12, 2026**" — ingestion date leaked into the fact. Judged WRONG. Worth a targeted check; it is an ingestion bug, not a retrieval one.
+2. **cognee returns one 80-103k-char unit** = 109% of the source conversation. Its recall is near-definitionally 1 and it has no rank structure; @k and MRR are meaningless for it. Its top lift is real under both rules but means "returns nearly everything", not "ranks well".
+3. **Uncorrected lift goes negative** for mem0/cmm/mrq_mres before length-matching — gold turns are long and content-rich, random turns include trivial greetings. Any recall table built without a length-matched null is inverted for high-volume arms.
+4. **letta is genuinely retrieval-starved** (10.5k chars, 14% of conversation, answer-support lift ≈ 0), consistent with its 80.58% accuracy — but its *evidence* recall is unmeasurable, so the 0.083 figure must not be quoted.
+5. `plan_g_base` and `eg` are numerically identical on every metric (.849/.850, .797/.798) — same retrieval config under two names; do not present as independent arms.
+6. Interim arms are partial: mrq_mres 1257/1540, mrq_base 1241/1540, sw_mem0 812/1540. mrq_mres leads several tables but is 82% complete and unresolved-question bias is unknown.
+
+**Bottom line for the published table:** add chance-corrected recall (both derivations), density, and the retrieval-vs-synthesis split for the 7 extractive arms; the 4 abstractive arms must be dashed on evidence recall with the reason stated, not filled with a proxy.</result>
+<usage><subagent_tokens>94024</subagent_tokens><tool_uses>28</tool_uses><duration_ms>785633</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>af1109860d1f857bc</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/fe41fb4b-5221-41ce-afce-6a9fa3dade0c/tasks/af1109860d1f857bc.output</output-file>
+<status>completed</status>
+<summary>Agent "Verify ingest granularity parity then launch stacked arm" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All four runs clean, 1 proc each, load 0.57, zero drops.
+
+---
+
+# STEP 1 — GRANULARITY AUDIT
+
+## Premise correction first
+
+`chunk_size:1 / total_chunks_processed:419` is **not a mem0 store count**. It is a harness feed counter — `CHUNK_SIZE = 1  # turns per ingestion chunk` at `benchmarks/locomo/run.py:90`, module-level, identical for every backend. Verified: the field reads `1 / 419` byte-identically in mem0, entire-graph, cognee, cmm, graphify, letta and supermemory checkpoints. **Every arm is fed the same 419 single-turn `add()` calls.** The real question is what each backend does with them.
+
+## Indexed units, LoCoMo conversation 0
+
+| System | Unit | Units | Evidence |
+|---|---|---|---|
+| *(harness feed — all arms)* | raw turn | **419** | `locomo/run.py:90` `CHUNK_SIZE=1` |
+| **mem0** | LLM-extracted fact | **312** | Qdrant `field_memories` count, filter `user_id=locomo_0_field_mem0_loco`, `exact:true` |
+| **entire-graph (DEFAULT)** | **session document** | **19** | `/tmp/entire-mem-ubk4q38r/b9b4e2ed21db92a3/corpus` = 19 `.md`; turn-lines sum to exactly 419 |
+| entire-graph `turn+session` | turn doc + session doc | 438 | live tsmr corpus: 419 `*_pNNN.md` + 19 `session_NNNN.md` |
+| **cmm** | markdown Section node | **438** | SQL `select label,count(*) from nodes` on `full_cmm/.../mem-*.db` → Section=438 |
+| **graphify** | markdown heading node | **457** | `full_graphify/.../graph.json` → 457 nodes, 438 links |
+| **supermemory** | raw turn document | **419** | `supermemory_worker.py:_ingest` 1:1 loop; sampled memories are single raw turns |
+| graphiti | episode | 419 | `graphiti_worker.py:238-247` one `add_episode` per chunk |
+| **letta** | LLM archival passage | **61** measured | Postgres `memarms-pg`/`letta`, `archival_passages` join agent `memuser_locomo_0_field_letta_loco` |
+| cognee | LLM knowledge-graph node | UNKNOWN, ≥169 | its cognify pipeline never COMPLETED in the live state; a working run's single context held 169 `Node:` blocks |
+
+## Verdict: YES — and worse than hypothesized
+
+entire-graph's default is **the coarsest indexing of any arm**, by a wide margin.
+
+- vs mem0: **16.4x coarser** (19 vs 312)
+- vs cmm / graphify: **23–24x coarser** (19 vs 438 / 457)
+- vs supermemory / graphiti: **22x coarser** (19 vs 419)
+
+The cmm and graphify rows are the cleanest evidence available, because **they are handed the identical 19-file session `.md` corpus that entire-graph gets** and still index 438/457 units — they split markdown on headings. Nothing about the corpus forces 19 units. entire-graph alone collapses a document to one retrievable region.
+
+## The mechanism, measured at the answerer's input
+
+The index count is upstream of what actually matters. What reaches the answerer, conv 0, `top_k=200`:
+
+| arm | items returned | ctx chars |
+|---|---|---|
+| mem0 | **200.0** (saturates the cap on every question) | 38.3K |
+| **eg default (eg-base, session)** | **18.9** — min 7, max 19 | 25.6K |
+| eg session + **PR #100 binary** (`mrq_mres`) | 195.0 | 60.9K |
+| eg `turn+session` + old binary (`plan_g_hyb`) | 196.4 | 47.7K |
+| eg `turn+session` + PR #100 (`sw_eg_tsmr`) | 198.3 | 47.5K |
+
+The default arm is structurally capped at `n_sessions` — it cannot return a 20th item for conv 0 no matter what `--top-k` says. Across all conversations `mrq_base` averages 27.5 items where every competitor gets 200. This is exactly the forensic signature you already had: right session, wrong turn, 32/32 losses and 46/46 wins.
+
+**The finding that changes the plan:** `mrq_mres` uses the **default session corpus** (19 files, verified on disk) and the PR #100 binary, and returns **195 items at mean 321 chars** — turn-grained evidence out of session-grained documents. Granularity parity is already reachable in product code. The env var is not the only route, and not the best one.
+
+---
+
+# STEP 2 — GO. Arm is live.
+
+**PID 3444064**, `--project-name sw_eg_tsmr`, `EG_INGEST_GRANULARITY=turn+session`, `ENTIRE_GRAPH_BIN=~/bin/eg-mr`, `ENTIRE_STATE_ROOT=$HOME/memarms/state/sw_eg_tsmr`, full config as specified. Launcher written to a temp path and atomically `mv`d. One process per project name confirmed for all four runs; load 0.57 on 32 cores; **0 `SEARCH_DROP`**.
+
+Corpus verified materialized at the intended granularity: **419 turn docs + 19 session docs = 438**.
+
+| checkpoint | n | acc@200 | retrieval | empty |
+|---|---|---|---|---|
+| n≈30 | 32 | 0.9688 | 200.0 items | 0 |
+| n≈100 | 109 | 0.9633 | 198.3 items | 0 |
+
+Paired on the same 109 conv-0 questions: **tsmr 0.9633 · mrq_mres 0.8991 · sw_mem0 0.8807 · mrq_base 0.8716**. Non-anomalous, retrieval healthy, no kill warranted. Treat the delta as a sanity check only — n=109 inside a single conversation, and cross-cell conversation identity is a known confound.
+
+One thing to watch at landing: context volume. tsmr feeds 47.5K chars against mem0's 36.4K (1.31x), and `mrq_mres` feeds 56.5K (1.55x). Item-count parity at `top_k=200` buys character-count disparity, because eg's units are raw prose and mem0's are LLM-compressed sentences. Notably the stack is *leaner* than `mrq_mres` alone — PR #100's dedup rule reclaims the redundancy that turn docs introduce.
+
+---
+
+# FAIRNESS VERDICT
+
+**FOR is correct on the principle. AGAINST is correct about the instrument. They do not conflict, because the env var is not the only way to satisfy FOR.**
+
+The FOR case is stronger than stated. Every competitor picks its own granularity, and none picked session: mem0 312, cmm 438, graphify 457, supermemory 419. Holding entire-graph to 19 is not a neutral default, it is a 16–24x handicap that caps the arm at 19 evidence items while every rival draws 200. It is the same class of defect as the three competitor bugs repaired in their favour — an arm that cannot use the top-k the harness grants it is misconfigured, not outperformed.
+
+The AGAINST case is also correct, and decisive against *the env var specifically*. `EG_INGEST_GRANULARITY=turn+session` lives in `benchmarks/common/entire_client.py`, not in the product. It rewrites the corpus before entire-graph ever sees it. A user who installs entire-graph today and points it at their notes gets 19 documents and 19 results. Publishing the env-var number reproduces the trap already caught once.
+
+**Verdict: granularity parity is the right fair setting; `EG_INGEST_GRANULARITY` is the wrong way to obtain it.** The publishable configuration is `mrq_mres` — shipped corpus shape, product binary, 195 items. It clears the handicap using code that is on a branch and default-on, so the claim is "entire-graph with PR #100 does this", which a user can reproduce by installing that build. `sw_eg_tsmr` is a **mechanism probe**, not a headline: it isolates whether ingest-side splitting adds anything once retrieval-side multi-resolution exists. If it lands at or near `mrq_mres`, that is the strongest possible result — it proves the harness lever is redundant and the product change is doing the whole job.
+
+Cite the headline off `mrq_mres` vs `sw_mem0`. Cite `sw_eg_tsmr` only as evidence about the mechanism.
+
+---
+
+# WHAT SHIPPING TURN-LEVEL BY DEFAULT REQUIRES
+
+It is a real product change, and **it is already written**. The worktree at `/Users/suhaan/devenv/eg-multires` (branch `feat/prose-context-expansion`) carries two commits:
+
+- `fccf1fc` **feat(search): multi-resolution prose retrieval** — 386 insertions, one new file `internal/sem/search_multi_resolution.go` plus hooks in `search.go`/`cli`. When fewer distinct files match than `--top-k` asked for, the spare slots promote the extra regions the ranker *already computed* and currently discards as unread `passages`. Strictly additive, runs after selection, never breaches `--max-context-bytes`, cannot displace a file. Code search is untouched because no code result carries passages. `--single-resolution` restores old behaviour.
+- `8a28407` **feat(search): assemble prose context instead of returning fragments** — 557 insertions, `internal/sem/search_prose_context.go`. Cross-document verbatim dedup, plus ±2-paragraph widening capped at 40 lines, holding snippet bytes constant against the pre-assembly total. Both rules are query-blind. Opt out with `--no-context-expansion`.
+
+**Size: ~943 insertions, 2 new files, 3 files touched, ~468 lines of tests.** Both default-on. **No ingest-time change of any kind** — no multi-granularity document splitting, no re-indexing, no corpus format change, no migration. That is the elegant part: the coarseness was never in the index, it was in the ranker returning one region per file, and the finer regions were already being computed and thrown away.
+
+Status: **PR #100, open, not merged.** Merging it is what converts the benchmark number from config-conditional to genuine. That is the single blocking action, and the honest framing of the result is:
+
+&gt; entire-graph's shipped ranker returns one region per file — correct for code, wrong for prose. On LoCoMo that capped it at 19 evidence items per conversation against every competitor's 200. PR #100 spends the unused top-k slots on regions the ranker already computed, lifting it to ~195 with no ingest change, and closes the gap to mem0.
+
+One caveat to carry into the writeup: this is a **prose-retrieval** fix. Its LoCoMo gain does not transfer to the code-search token benchmarks, where multi-resolution is explicitly inert.</result>
+<usage><subagent_tokens>99098</subagent_tokens><tool_uses>48</tool_uses><duration_ms>851251</duration_ms></usage>
+</task-notification>
+
+---
+
+updates
+
+---
+
+table ready or still relase readiness not done
+
+---
+
+k we are scraping grpahmrk ine g pr add the rpeodcule benchmarks reuslts clean us winnign etc itself
+
+---
+
+no searhc altnecy remove that and no p etc js us plain score winnign and score break down etc
+
+---
+
+so we done, above table fully fair and vialdted? no cehaitng on any side?
+
+---
+
+ok ik we can hit 94%+ as we have done it before ll we need is one run on it i want to win all cateogirs to so think like a reseacher ananlyze evyerhitng and get us there FAIRLY
+
+---
+
+<task-notification>
+<task-id>a6f9e2955a6bbc2ab</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/fe41fb4b-5221-41ce-afce-6a9fa3dade0c/tasks/a6f9e2955a6bbc2ab.output</output-file>
+<status>completed</status>
+<summary>Agent "Vendor memory benchmark harness PR" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Consolidated. **PR #101** is now the single self-contained artifact — https://github.com/entireio/entire-graph/pull/101, retitled *"bench: LoCoMo memory-system comparison results and reproduction kit"*, 3 commits, 19 files.
+
+New: `bench/memory/LOCOMO-COMPARISON.md` (298 lines). README retitled and now points at it as the entry point.
+
+## I re-derived every number from the artifacts rather than transcribing
+All confirmed, `drops=0` / `zero-context=0` / `fair_mode: true` / `asym={}` on both:
+
+| | verified |
+|---|---|
+| `mrq_mres` | 93.8312 (1445/1540), items mean **198.7**, ctx 56,891 ch |
+| `mrq_base` | 91.5584 (1410/1540), items mean **27.7**, ctx 24,487 ch |
+| paired | **+2.2727pp, discordant 46–11, exact McNemar p = 3.31e-06, n = 1540** |
+| per-category | 95.24→96.43, 88.30→**91.84**, 89.72→**93.15**, 75.00→**79.17** — exact match |
+| anchor, conv 0 | eg-base **mean 18.9, min 7, max 19**; mem0 **200.0 always**; cmm 198.9; graphify 84.4 |
+
+**Three corrections to the figures you sent**, none of which changes a claim:
+
+1. **The paired test is n=1540, not 1494.** Both runs completed all 1540 with zero drops, so ALL-PAIRS — the pre-registered endpoint — is available on the full set. Gives +2.2727pp, discordant 46–11, p=3.31e-06 (vs your 91.63→93.91, 45–11, p=5.4e-06). I used the full-set figures since the prereg specifies "all 1540, ALL-PAIRS".
+2. **18.9 items is conversation 0 specifically, not the dataset.** Across all conversations `mrq_base` averages 27.7 (max 32), because the cap equals each conversation's session count. I stated both so a reader checking the artifact doesn't find a mismatch.
+3. **graphify does not fill the budget either** — 98.0 items/question overall, 84.4 on conv 0. I dropped it from the "competitors fill 200" list and kept it only as corpus-side evidence (423 distinct units from the identical 19 files). mem0 and cmm carry that argument; graphify would have weakened it.
+
+Also strengthened: `mrq_base` returned **377 distinct regions across conv 0** while never exceeding 19 on any one question. That is direct artifact proof of "already computed and discarding unread" — better than the 19-documents framing, so I led the mechanism with it.
+
+## One thing you need to decide on: the latency numbers are not artifact-backed
+Stating the loss plainly required checking it, and it does not check out.
+
+`timings/timings_entire_locomo.json` on the host is stamped **`valid_for_publication: 0`** — "CONTENDED — invalid for cross-arm comparison; collected while field_cognee_loco was running on the same box." Its competitor figures also disagree with the reported table: cognee **4,987 ms** there vs 7,585 ms reported, supermemory **417 ms** vs 8,014 ms, mem0 498 ms vs 535 ms. No artifact anywhere on the host contains 868, and no idle-box re-measurement exists.
+
+So I kept your instruction's substance and its rationale — a reader who checks in ten minutes finds the stamp, and would then disbelieve everything else. §5 states the loss plainly (fourth place, 868 ms, ~600 ms bought 2.27 points, direction not in doubt since 198.7 items is ~7x the work), then flags in a blockquote that the ranking is **indicative pending an idle-host re-measurement**, and notes accuracy/ingest are unaffected because they come from run artifacts not timing files. **An idle-box latency run is the remaining gap before that row can be quoted as settled.**
+
+## Everything else per instruction
+Headline is the tie-safe wording; prereg followed exactly (interim n=1065 at p=0.568 rendered as "statistically tied; point estimate favours entire-graph by 0.47pp", marked not publishable, placeholder for `sw_mem0`). Wins bold, dashes with reasons for graphiti and mem0 Pro, recall dashed for mem0/letta with the 0.000-is-an-artifact reason and no proxy, P(correct|retrieved) 0.96–0.97, loss forensics with 0 judge errors, the built-and-rejected fix including the JSON-envelope error, three competitor bugs kept prominent. The 94.68 config is quoted only beside the 92.14 its default scored in the same window.
+
+**Oracle cited nowhere as a result.** `LOCOMO-COMPARISON.md` contains no oracle number at all — it only records the exclusion. 96.23 appears solely in `RUN-INDEX.md`/README as a never-publish warning so it can't later be mistaken for a score.
+
+Untouched: PR #100 / `feat/multi-resolution-retrieval` still at `fccf1fc`, main checkout still `feat/preference-directive` with 25 dirty files, `eg-multires` never entered. `sw_mem0` and `sw_eg_tsmr` confirmed running via read-only `pgrep`; nothing written to the VM except read-only analysis scripts under `/tmp`. gitleaks across all 3 commits: same single known false positive at `patches/0003:175`.</result>
+<usage><subagent_tokens>195369</subagent_tokens><tool_uses>25</tool_uses><duration_ms>695028</duration_ms></usage>
+</task-notification>
+
+---
+
+/goal make eg beat comp on evyerhting fairly and then vialdte evyerhtign igive final tables and make final pr ; which would incldue all possibl erlase readiness clean up etc
+
+---
+
++2.49pp, 96% ??? also can u give me recall emtrics pls in tbale to see
+
+---
+
+updates
+
+---
+
+ok btu that 700qish is not full rhting and full thing idn't turn out like that rihgt; come on work to meet ur goal; btw are we winning in any recall?
+
+---
+
+so then meet the damngoal and amaneg ur subangets; what where the other tbale swe where losing then; and after proerp eg run ebai5tng and meeting goal then dd thiese recall tables etc etc too
+
+---
+
+<agent-message from="general-purpose">
+sw_eg_tsx LAUNCHED. PID 3541834, 18:05:52 UTC, one process, 0 errors, 0 zero-ctx, search latency median 538ms (tsmr 741ms). Acknowledged: accuracy reported ONLY at n=1540. ETA ~1.3h.
+
+N-INDEPENDENT RESULTS — act on these now.
+
+1. BYTE-NEUTRALITY: PASSED, and it is STRUCTURALLY GUARANTEED, not just observed.
+   Paired on identical questions (n=114):
+     sw_eg_tsx   47,559 chars/q  162.7 units/q
+     sw_eg_tsmr  47,632 chars/q  198.4 units/q   -> tsx is -0.15%
+     mrq_mres    60,983 chars/q  196.7 units/q   -> tsx is -22%
+     sw_mem0     38,271 chars/q  200.0 units/q
+   Mechanism (search_prose_context.go:256): `ceiling := searchResultSnippetBytes(results)` is
+   computed BEFORE the pass; each widening is committed one at a time and reverted if total
+   snippet bytes exceed that ceiling. So post-expansion text can NEVER exceed pre-expansion text.
+   chars/q(tsx) <= chars/q(tsmr) is a theorem, not a measurement. This arm CANNOT win by
+   enlarging the prompt. Offline A/B on an identical copied corpus reproduced it: -0.15%.
+
+2. DEDUP-RECLAIM: THE PREMISE IS REFUTED. Economics did NOT invert on turn+session.
+   Direct A/B, eg-mr vs eg-mr2, same 709-doc turn+session corpus, 24 queries, top-k 200:
+     dedup reclaim     3,992 chars/q  (8.3% of returned text)   <- vs ~3,500 on session-only
+     expansion spend   3,918 chars/q  across only 9.3 widened results
+     units             193.5 -> 172.6 (-10.8%), all dropped units are turn docs
+     chars             48,336 -> 48,261 (-0.15%)
+   Reclaim went 3.5k -> 4.0k, i.e. +14%, NOT the large budget the hypothesis predicted.
+
+   WHY (this is the part that matters): "every turn document's text is contained verbatim in its
+   session document" is FALSE at the level the dedup actually compares, which is SNIPPETS, not
+   files. dropExcerptSearchResults requires strict verbatim containment of one returned snippet
+   inside a higher-ranked one from a DIFFERENT file. A turn doc only qualifies when its parent
+   session doc is itself in the result set AND ranked higher AND the turn's lines fall inside the
+   session doc's 80-line head-window snippet (defaultProseParentHeadWindowLines=80). Since prose-
+   parent retrieval returns at most one region per file, only a handful of session docs are ever
+   present to absorb their children. Observed: 32 of ~200 units dropped on a sample query, all
+   from the 2-3 session docs that happened to rank high.
+   => The budget the expansion has to spend is ~4k chars, so it widens ~9 of ~172 results by
+   ~420 chars each. The lever is REAL but SMALL. Do not expect a large category swing from it.
+
+3. Consequence for the complementarity hypothesis: the mechanism that was supposed to make
+   turn+session carry session-level context alongside turn-level precision is operating at ~5%
+   of results. If temporal/open-domain recover toward session-level values at n=1540 it is
+   unlikely to be this pass doing it. I will state that plainly in the final report.
+
+4. One shape change worth knowing: at the top_10 cutoff tsx carries MORE distinct text than tsmr
+   (19,624 vs 17,580 chars, +11.6%) because the deduped list packs 10 non-redundant units into
+   10 slots. Total across top_200 is still flat/-0.15%. If any cutoff is going to move, top_10
+   is the one with a mechanism behind it.
+
+Interim accuracy (n=113, UNRELIABLE, decay table acknowledged): tsx 97.32 = tsmr 97.32, and
+tsx 97.35 = mem0 97.35. Quoting none of it as a result.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>a546e5b0e8a3a9871</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/fe41fb4b-5221-41ce-afce-6a9fa3dade0c/tasks/a546e5b0e8a3a9871.output</output-file>
+<status>completed</status>
+<summary>Agent "Adversarially validate every published number" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Verification complete. Report below.
+
+## VERDICT: NOT SAFE TO PUBLISH AS-IS. 4 rows must be pulled, 2 re-derived.
+
+Method: every score recomputed twice independently (python `json` walk over `conv*_q*.json`, and `jq`+`grep -c` over the same files). The two methods agree to the last digit on every run. Aggregate summary files were never trusted as input.
+
+---
+
+## CONFIRMED
+
+| claim | recomputed | note |
+|---|---|---|
+| eg+PR100 93.83 (1445/1540) | **93.8312**, jq `CORRECT=1445 WRONG=95 scoresum=1445` | exact |
+| eg current 91.56 (1410/1540) | **91.5584**, `CORRECT=1410 WRONG=130` | exact |
+| +2.2727pp, discordant 46–11, p=3.31e-06 | **+2.2727pp, 46:11, McNemar exact p=3.31188e-06**, n=1540, common=1540, onlyA=onlyB=0 | exact |
+| per-category 95.24→96.43 / 88.30→91.84 / 89.72→93.15 / 75.00→79.17 | 95.2438→96.4328, 88.2979→91.8440, 89.7196→93.1464, 75.0000→79.1667 | all four exact |
+| mem0 93.77 / 93.44 | 93.7662 (`plan_g_mem0`) / 93.4416 (`field_mem0_loco`) | exact |
+| cognee 92.86 · cmm 91.30 · graphify 87.34 · letta 80.58 · sm 77.60 | 92.8571 · 91.2987 · 87.3376 · 80.5844 · 77.5974 | all exact |
+| `plan_g` trio same-window | question-phase overlap 94–100% of shorter span (base/mem0 = 1.000, base/hyb = 0.980, hyb/mem0 = 0.943) | genuinely concurrent |
+| `mrq_base`/`mrq_mres` differ only in binary | identical per-conv chunk counts `[419,369,663,629,680,675,689,681,509,568]`=5882 both; `EG_INGEST_GRANULARITY` unset both; same run.py md5 `7b5402a4`, same argv, `FAIR_MODE=1` both; only `ENTIRE_GRAPH_BIN` (eg-base/eg-mr, distinct md5, same 15:33 build) + state root differ | **+2.27pp is attributable to the code change** |
+| 18.9 on conv0 / 27.7 overall | 18.86 / 27.656 | exact |
+| `plan_f_ceil` disqualified | 96.2338, `fair_mode=false`, `EG_FULL_CONTEXT=1`; matches no published figure | correctly excluded |
+
+Both trees were searched; nothing relevant was missing from either.
+
+---
+
+## REFUTED
+
+**1. "eg vs mem0 same window = tie, +0.21pp, p=0.81" — WRONG SIGN, WRONG p.**
+`mrq_mres` 93.8312 vs `sw_mem0` 94.2208 = **−0.3896pp**, discordant 46:40, **p=0.590**. eg is *behind*, not ahead. Also `sw_mem0`'s ingest is dated 08-13T01:45:54 and shared verbatim with `field_mem0_loco`/`plan_g_mem0` — it is not a same-window ingest, only a same-window query phase (70% overlap with mrq).
+
+**2. "turn+session+PR100 vs mem0 = +2.49pp, p=0.020" — NOT SIGNIFICANT.**
+`sw_eg_tsmr` vs `sw_mem0` on the 787 common qids: **+1.1436pp, discordant 23:14, p=0.188**. And it is still moving — `sw_eg_tsmr` grew 779→787→854 questions during this audit, `sw_eg_tsx` 113→118→183. **Both `sw_*` eg arms are in flight; no number from them is publishable.**
+
+**3. Ingest timings — arithmetic right, measurement invalid.**
+Every span reproduces (eg 1066.0s=17m46s from `plan_g_hyb`; mem0 3325.2s; cognee 51468.5s; letta 16958.8s; sm 21108.3s; cmm 1466.1s; graphify 1402.3s). But the harness writes instrumented `ingest_seconds` to `timings_phases_*.jsonl`, and it disagrees by 3 orders of magnitude:
+
+| arm | completed_at span | instrumented sum |
+|---|---|---|
+| eg (`plan_g_hyb`) | 1066.0s | **3.32s** |
+| eg (`mrq_mres`) | 4423.5s | **3.16s** |
+| cmm | 1466.1s | 3.27s |
+| graphify | 1402.3s | 3.21s |
+| cognee | 51468.5s | 1.83s |
+| **mem0** | 3325.2s | **20470.96s** |
+
+The per-conversation `completed_at` deltas expose why: eg/cmm/graphify/cognee go `[0.2, 0.4, 900.9, 312.4, 628.6, …]` — the first three conversations ingest within 0.6s, then the remaining gaps are **query time**, because ingest is interleaved with the query phase. The span measures the whole benchmark, not ingest. mem0 is the opposite: its span *under*-counts its own instrumented 5h41m of ingest work. So the table compares eg's total runtime against mem0's ingest phase and calls the ratio "3x". Cognee's span also contains a single 34,118s (9.5h) gap followed by a 0.3s one — a stall, not steady ingest. **Pull the entire ingest row.** A defensible eg number exists (`eg_ingest_timing`: 6.5s span, 2.61s instrumented, 5882 chunks, 0 failed); the honest eg-vs-mem0 instrumented ratio is ~6,200x, not 3x.
+
+**4. "competitors ~200" — only two of six.**
+mem0 200.00, cmm 199.82, graphify 97.97, letta 87.92, sm 37.99, **cognee 1.00**.
+
+---
+
+## ASYMMETRIES AND SILENT FAILURES
+
+**A. Cold-start bug costs both eg arms 0.65pp (and is asymmetric vs mem0).** `mrq_mres` and `mrq_base` each have exactly 10 empty `generated_answer` at top_200 — the *same* 10 qids, `conv0_q0`…`conv0_q9`, one per `--question-workers 10`. All 10 judged WRONG. All 10 are answered **CORRECTLY at top_50 in both arms**. For `mrq_base` the top_200 and top_50 contexts are byte-identical (`memories_evaluated=19` at both cutoffs) — so this is a harness call failure, not retrieval or model. Corrected: eg+PR100 **94.4805**, eg current **92.2078**. The +2.27pp delta is unaffected (both +10), but `sw_mem0` has **0** empties, so the eg-vs-mem0 row is penalising eg only: corrected it is 94.48 vs 94.22 = +0.26pp. The same pattern appears across the matrix keyed to worker count (`field_mem0_loco` 8, `plan_s_turn`/`plan_s_w2` 4, `field_eg_deep2` 100, `field_eg_fair2` 32, `mrp_mres` 60). Note `full_cmm`/`full_graphify` passed through a gated path that reports `empty_generated_answers=0`; the `mrq_*` numbers did not go through that gate.
+
+**B. Supermemory is silently degraded — its 77.60 is not defensible.** 221/1540 questions (14.4%) returned **zero memories**, spread across all 10 conversations. `field_sm_loco` ran 08-13 05:22–11:35; `supermemory_client.py` mtime is 08-13 **14:57** — the run predates the `BUFFER_MISSING` invariant guard now in that file, which is precisely the failure mode that produces silent empty buffers. This is the same class as the prior cognee empty-buffer bug (13.77pp).
+
+**C. Cognee's protocol is not the stated one, in cognee's favour.** It returns **1 result of 82,419 chars mean** — the largest context of any arm (vs eg 56,891, cmm 37,006, mem0 36,101). `top_k=200` is meaningless for it. It lost anyway, so this is not flattering to eg, but the "top-200 memories" protocol claim is false for that row.
+
+**D. Item-count parity is not context parity — this one flatters entire-graph.** At a nominal identical `top_200`, eg feeds the answerer **56,891 chars vs mem0's 36,101** (+58%), because eg returns whole session chunks with YAML frontmatter while mem0 returns distilled facts. letta gets 9,997 and graphify 16,343. Any "same top-k, fair fight" framing must disclose this.
+
+**E. The automated fairness stamp is a false all-clear.** `ASYMMETRY_FLAGS` in `benchmarks/common/runmeta.py` covers only `EG_SESSION_EXPAND`, `EG_SESSION_EXPAND_CAP`, `EG_ANSWER_ENUM`, `EG_ANSWER_ENUM_R`, `EG_USER_PROFILE`. `EG_FULL_CONTEXT`, `EG_INGEST_GRANULARITY` and `EG_DEEP` are **not** covered — `plan_f_ceil` ran with `EG_FULL_CONTEXT=1` and still reported `asymmetric_settings_active: {}`. Only the operator manually dropping `FAIR_MODE` flagged it. Do not cite `asymmetric_settings_active: {}` as evidence of fairness.
+
+**F. Provenance gap on three competitor rows.** cognee/letta/supermemory come from 08-13 `field_*` runs with **no `env_capture`, no `code_md5`, no `fair_mode`, no argv** at all. `field_cognee_loco2` has two summary files spanning 00:52–15:56 and straddles the 14:57 client edit — one published number produced by two code versions. `field_mem0_loco` reports `fair_mode=false`, but `asymmetric_settings_active={}` and its env shows no asymmetric knob, so that one is a stamping nit, not a real unfairness. (Good news: the `run.py` md5 split `f7fcb6af` vs `7b5402a4` is benign — I diffed them, the only change is two added `--backend` choices.)
+
+**G. Noise floor is 0.45pp.** `plan_g_mem0` vs `sw_mem0` is the *same mem0 store* on the *same 1540 questions*, differing only in wall-clock window: **0.4545pp apart**, discordant 15:8. mem0 spans 93.44 / 93.77 / 94.22 across three runs of one store. Every sub-0.5pp claim in this table is inside noise.
+
+**H. Contention.** `mrq_base`, `mrq_mres`, `full_cmm`, `full_graphify` and `sw_mem0` all ran overlapping (mrq/cmm overlap = 1.000 of cmm's span). Given a latency table on this host was already voided as CONTENDED, no timing measured in that window is publishable.
+
+---
+
+## WHAT TO DO
+
+**Pull:** the ingest row (all 7 figures); the "eg vs mem0 tie +0.21pp / p=0.81" row; the "turn+session+PR100 +2.49pp / p=0.020" row; the supermemory 77.60 row.
+
+**Re-derive before publishing:** eg absolute scores as 94.48 / 92.21 after fixing or dropping the 10 cold-start questions symmetrically — or publish 93.83 / 91.56 with the defect disclosed and note mem0's comparison is unpenalised.
+
+**Safe to publish now:** the product-change result (**+2.27pp, 46:11, p=3.31e-06**) — corpus parity, single-variable design and both scoring methods all hold. It is the strongest thing in the table. Frame it as "PR #100 raises retrieved evidence from 27.7 to 198.7 items and converts that into +2.27pp", not as a general accuracy claim.
+
+**Disclose alongside any cross-system table:** the 0.45pp noise floor, the char-count asymmetry (E/D above), and cognee's 1-item/82K-char protocol.</result>
+<usage><subagent_tokens>130112</subagent_tokens><tool_uses>31</tool_uses><duration_ms>684892</duration_ms></usage>
+</task-notification>
+
+---
+
+ok then wha tu oing now??
+
+---
+
+<task-notification>
+<task-id>a8138e6f77deefed2</task-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/fe41fb4b-5221-41ce-afce-6a9fa3dade0c/tasks/a8138e6f77deefed2.output</output-file>
+<status>completed</status>
+<summary>Agent "Rebuild ingest table from instrumented timings" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Verified — and this refutes the agent's conclusion. The two `sw_mem0` files are **two independent mem0 runs**, not one run judged twice (different retrieval, only 3/1540 identical answers, 174 discordant split 82/92 — symmetric, so noise, not drift).
+
+---
+
+# Corrections to my earlier report
+
+Two things I stated need fixing, plus one overclaim from a parallel investigation that I am rejecting.
+
+## 1. The eg-vs-mem0 headline — I was wrong, and so was the agent
+
+I compared eg's 93.83 against mem0's **93.44** (Aug 13). The correct same-window comparator is `sw_mem0`, which ran **twice**:
+
+| run | n | score |
+|---|---|---|
+| eg `mrq_mres` | 1540 | **93.83%** |
+| mem0 `sw_mem0` (18:11) | 1540 | **93.57%** |
+| mem0 `sw_mem0` (18:12) | 1540 | **94.22%** |
+
+mem0's two identical-config runs differ by **0.65 points** — nine times the 0.07-point gap between eg and mem0's mean (93.90). **The two systems are tied within run-to-run noise.** The parallel agent reported "mem0 94.22, slightly ahead, reversing the prereg" — that picks the higher of two mem0 runs and ignores the lower one, which sits *below* eg. I am not passing that conclusion on. Note 174/1540 (11.3%) of answers flip between two identical mem0 runs.
+
+This *reinforces* the existing `RESULTS.md` §1 headline rather than overturning it: measurement noise exceeds the spread between arms. Anyone acting on the pre-registered decision rule for this pair should know the pair does not separate.
+
+## 2. Context sizes — my chars were the raw memory text, not what the model sees
+
+The agent imported the actual prompt builder (`prompts.py::get_answer_generation_prompt`, called at `run.py:528`), which sorts by `created_at` and joins as `f"({date_str}) {memory}"`. Real LLM-visible context is higher, and **asymmetrically**:
+
+| arm | raw-memory mean (mine, = the reference values) | true prompt mean | delta |
+|---|---|---|---|
+| cognee | 82,418.6 | 82,514.6 | +0.1% |
+| **eg (mrq_mres)** | 56,891.2 | **59,752.7** | +5.0% |
+| **mem0** | 36,100.5 | **41,980.5** | +16.3% |
+| cmm | 37,006.4 | 39,883.8 | +7.8% |
+| graphify | 16,342.9 | 17,794.5 | +8.9% |
+| letta | 9,997.1 | 11,483.7 | +14.9% |
+| supermemory | 8,214.0 (prompt) | — | — |
+
+Cause is a real bug in `prompts.py::_to_human_date`: `fmt.replace("%z","")` strips the directive but not the string's `+00:00`, so eg/cmm/graphify fall back to a short `(2023-05-08)` prefix while mem0's microsecond timestamps parse successfully into a long `(Thursday, August 13, 2026)` prefix.
+
+**The corrected eg:mem0 context ratio is 1.42x (mean 59,752.7 / 41,980.5; median 1.43x), not the 1.58x I reported.** The reference values I confirmed were means of raw memory text, and they *understate* mem0's true context by 16%. This correction runs in eg's favour and I am reporting it as such.
+
+The elasticity finding stands and is unaffected: `mrq_base` (24,486 raw chars, 27.7 items) → **91.56%** vs `mrq_mres` (56,891 raw chars, 198.7 items) → **93.83%**, same window, two minutes apart. **+2.3x context buys +2.27 points.** Against a mem0 gap of ~0.07 points, the context asymmetry remains more than sufficient to account for any eg edge.
+
+`top_k` still equalises nothing: cognee returns exactly **1** item (one ~82K-char blob), supermemory caps at 100, letta never exceeds 116, graphify ~98, only mem0 (200.0) and cmm (199.8) reach the budget.
+
+## 3. New fairness defect, running *against* mem0
+
+mem0's `created_at` values are **ingestion timestamps, not conversation dates** — verified directly: mem0 shows `2026-08-13T01:27:30`, while eg and cmm carry correct `2023-08-14`, `2023-08-17` for the same corpus with a reference date of "22 October, 2023". So mem0's answerer sees every memory stamped 2026 on a temporal benchmark, and mem0 is the arm that gets the *long* date prefix. Partially self-mitigating (mem0's memory text embeds "As of June 9, 2023…" inline), but it is arm-asymmetric and it handicaps mem0. This needs checking before any mem0 temporal-category number is published.
+
+---
+
+# What stands from my earlier report, unchanged
+
+- **Task 1:** `ingest_seconds` measures a Python list append for every arm except mem0 (~0.5 ms/chunk, identical across systems; `add()` is `self._buffers.setdefault(...).append(...)` in all seven clients). The 6,200x figure is pure instrument artifact. The defensible metric is `ingest_phase + build_first_search`, giving mem0 20,478s / supermemory 15,379s / cognee 6,195s / letta 3,373s vs **cmm 4.3s, graphify 5.9s, eg 7.0s** — eg is *not* the fastest, and the honest claim is a class distinction (0-LLM local indexing vs LLM-extraction/hosted), not an eg result. Publish the order of magnitude; do not publish a precise ratio (single run, contended, `timing_microrun.sh` does not exist). Clean measurement ≈ 12–13h per sweep, ~36–40h for a CI.
+- **Task 2: NO-GO on supermemory.** Independently confirmed: 221/1540 = 14.35% zero-retrieval, but all 221 have latency ≥343.9 ms (median 367.6, **zero under 50 ms**) versus 389.8 ms median for the rest — not the ~0 ms silent short-circuit signature of the empty-buffer bug. Conditional accuracy 88.48% on the 1,319 that retrieved. Publish 77.60% with the zero-retrieval rate disclosed; do not retract it.
+
+The one caveat I flagged earlier now has company: the context-elasticity pair is n=1, and we have just measured 0.65 points of spread between two identical mem0 runs. Every sub-point claim in this campaign is inside that band.</result>
+<usage><subagent_tokens>146692</subagent_tokens><tool_uses>57</tool_uses><duration_ms>830316</duration_ms></usage>
+</task-notification>

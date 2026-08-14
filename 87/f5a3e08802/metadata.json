@@ -1,0 +1,33 @@
+{
+  "cli_version": "dev",
+  "checkpoint_version": "branch-v1",
+  "checkpoint_id": "87f5a3e08802",
+  "strategy": "manual-commit",
+  "branch": "feat/prose-section-candidates",
+  "checkpoints_count": 25,
+  "files_touched": [
+    "internal/cli/help.go",
+    "internal/cli/search.go",
+    "internal/sem/search.go",
+    "internal/sem/search_multi_resolution_test.go",
+    "internal/sem/search_prose_parent.go",
+    "internal/sem/search_prose_section_test.go",
+    "internal/sem/search_prose_session_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/87/f5a3e08802/0/metadata.json",
+      "transcript": "/87/f5a3e08802/0/full.jsonl",
+      "compact_transcript": "/87/f5a3e08802/0/transcript.jsonl",
+      "content_hash": "/87/f5a3e08802/0/content_hash.txt",
+      "prompt": "/87/f5a3e08802/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 7210,
+    "cache_creation_tokens": 149184850,
+    "cache_read_tokens": 1522872281,
+    "output_tokens": 3813003,
+    "api_call_count": 2930
+  }
+}
