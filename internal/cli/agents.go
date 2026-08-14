@@ -111,14 +111,155 @@ func runInitAgents(opts Options, args []string) error {
 		"@.entire/graph-agent.md\n" +
 		agentPointerEnd + "\n"
 
-	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
-		path := filepath.Join(root, name)
-		if err := upsertPointerBlock(path, pointer); err != nil {
-			return fmt.Errorf("init-agents: %s: %w", name, err)
-		}
-		fmt.Fprintf(opts.Stdout, "updated %s\n", path)
+	agentsPath := filepath.Join(root, "AGENTS.md")
+	if err := upsertPointerBlock(agentsPath, pointer); err != nil {
+		return fmt.Errorf("init-agents: AGENTS.md: %w", err)
 	}
+	fmt.Fprintf(opts.Stdout, "updated %s\n", agentsPath)
+
+	claudePath := filepath.Join(root, "CLAUDE.md")
+	agentsInfo, err := os.Stat(agentsPath)
+	if err != nil {
+		return fmt.Errorf("init-agents: AGENTS.md: %w", err)
+	}
+	claudeInfo, err := os.Stat(claudePath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("init-agents: CLAUDE.md: %w", err)
+	}
+	if err == nil && os.SameFile(agentsInfo, claudeInfo) {
+		// A symlink or hard link already gives Claude the AGENTS.md pointer. Updating the
+		// same inode a second time could replace that pointer with an inheritance notice
+		// that no longer has anything to inherit from.
+		return nil
+	}
+
+	importsAgents, err := claudeDirectlyImportsAgents(claudePath, agentsPath)
+	if err != nil {
+		return fmt.Errorf("init-agents: CLAUDE.md: %w", err)
+	}
+	claudeBlock := pointer
+	if importsAgents {
+		claudeBlock = agentPointerBegin + "\n<!-- Entire Graph instructions are inherited through AGENTS.md. -->\n" + agentPointerEnd + "\n"
+	}
+	if err := upsertPointerBlock(claudePath, claudeBlock); err != nil {
+		return fmt.Errorf("init-agents: CLAUDE.md: %w", err)
+	}
+	fmt.Fprintf(opts.Stdout, "updated %s\n", claudePath)
 	return nil
+}
+
+// claudeDirectlyImportsAgents recognizes a standalone @path directive outside the Markdown
+// regions where Claude suppresses imports. Ambiguous syntax returns false so the direct pointer
+// remains in place.
+func claudeDirectlyImportsAgents(claudePath, agentsPath string) (bool, error) {
+	content, err := os.ReadFile(claudePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	var found, fence bool
+	var until string
+	var fenceChar byte
+	var fenceWidth int
+	var codeTicks int
+	for _, raw := range strings.Split(string(content), "\n") {
+		indent := markdownIndent(raw)
+		line := strings.TrimSpace(raw)
+		if until != "" {
+			if strings.Contains(line, until) {
+				until = ""
+			}
+			continue
+		}
+		if strings.Contains(line, agentPointerBegin) {
+			if !strings.Contains(line, agentPointerEnd) {
+				until = agentPointerEnd
+			}
+			continue
+		}
+		if strings.Contains(line, agentPointerEnd) {
+			return false, nil
+		}
+		if strings.Contains(line, "<!--") {
+			if !strings.Contains(line, "-->") {
+				until = "-->"
+			}
+			continue
+		}
+		if strings.Contains(line, "-->") {
+			return false, nil
+		}
+		if fence {
+			width := len(line) - len(strings.TrimLeft(line, string(fenceChar)))
+			if indent <= 3 && width >= fenceWidth && strings.TrimSpace(line[width:]) == "" {
+				fence = false
+			}
+			continue
+		}
+		if indent <= 3 && len(line) >= 3 && (strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~")) {
+			fence, fenceChar = true, line[0]
+			fenceWidth = len(line) - len(strings.TrimLeft(line, string(fenceChar)))
+			continue
+		}
+		if codeTicks != 0 || strings.Contains(line, "`") {
+			codeTicks = nextCodeSpanWidth(line, codeTicks)
+			continue
+		}
+		// Preserve raw indentation: trimming must not turn an indented Markdown code
+		// example into a live import and suppress Claude's direct guide pointer.
+		if indent >= 4 {
+			continue
+		}
+		if !strings.HasPrefix(line, "@") {
+			continue
+		}
+		imported := strings.TrimPrefix(line, "@")
+		if imported == "" || len(strings.Fields(imported)) != 1 {
+			continue
+		}
+		candidate := imported
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(filepath.Dir(claudePath), candidate)
+		}
+		if filepath.Clean(candidate) == filepath.Clean(agentsPath) {
+			found = true
+		}
+	}
+	return found && until == "" && !fence, nil
+}
+
+func markdownIndent(line string) int {
+	indent := 0
+	for i := 0; i < len(line); i++ {
+		switch line[i] {
+		case ' ':
+			indent++
+		case '\t':
+			return 4
+		default:
+			return indent
+		}
+	}
+	return indent
+}
+
+func nextCodeSpanWidth(line string, open int) int {
+	for cursor := 0; cursor < len(line); {
+		if line[cursor] != '`' {
+			cursor++
+			continue
+		}
+		width := len(line[cursor:]) - len(strings.TrimLeft(line[cursor:], "`"))
+		if open == 0 {
+			open = width
+		} else if open == width {
+			open = 0
+		}
+		cursor += width
+	}
+	return open
 }
 
 // upsertPointerBlock appends the block to path (creating the file if absent), or replaces the

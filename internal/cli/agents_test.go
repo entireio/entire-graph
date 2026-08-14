@@ -9,6 +9,17 @@ import (
 	"testing"
 )
 
+const testAgentPointerBlock = agentPointerBegin + "\n" +
+	"This repo has the entire-graph code graph installed. Before exploring code with\n" +
+	"grep/find/whole-file reads, read .entire/graph-agent.md — resolution-first guidance\n" +
+	"for using graph retrieval, focused source inspection, and verification.\n" +
+	"@.entire/graph-agent.md\n" +
+	agentPointerEnd + "\n"
+
+const testInheritedAgentPointerBlock = agentPointerBegin + "\n" +
+	"<!-- Entire Graph instructions are inherited through AGENTS.md. -->\n" +
+	agentPointerEnd + "\n"
+
 func TestAgentGuidePrintsDoctrine(t *testing.T) {
 	var out bytes.Buffer
 	if err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"agent-guide"}); err != nil {
@@ -79,14 +90,252 @@ func TestInitAgentsInstallsAndIsIdempotent(t *testing.T) {
 		t.Fatalf("CLAUDE.md missing import line:\n%s", claude)
 	}
 
-	// idempotence: second run must not duplicate the block
+	// Idempotence includes the complete bytes, not only the marker count.
 	run()
 	agents2, _ := os.ReadFile(filepath.Join(repo, "AGENTS.md"))
+	if !bytes.Equal(agents, agents2) {
+		t.Fatalf("AGENTS.md changed on idempotent rerun:\nbefore:\n%s\nafter:\n%s", agents, agents2)
+	}
 	if got := strings.Count(string(agents2), agentPointerBegin); got != 1 {
 		t.Fatalf("pointer block duplicated (%d occurrences):\n%s", got, agents2)
 	}
 	claude2, _ := os.ReadFile(filepath.Join(repo, "CLAUDE.md"))
+	if !bytes.Equal(claude, claude2) {
+		t.Fatalf("CLAUDE.md changed on idempotent rerun:\nbefore:\n%s\nafter:\n%s", claude, claude2)
+	}
 	if got := strings.Count(string(claude2), agentPointerBegin); got != 1 {
 		t.Fatalf("CLAUDE.md block duplicated (%d occurrences):\n%s", got, claude2)
 	}
+}
+
+func TestInitAgentsMigratesClaudeToAgentsInheritance(t *testing.T) {
+	repo := t.TempDir()
+	claudePath := filepath.Join(repo, "CLAUDE.md")
+	legacy := "# Claude-only rules\n\n@AGENTS.md\n\n" + testAgentPointerBlock + "\nKeep this footer.\n"
+	if err := os.WriteFile(claudePath, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runInitAgentsForTest(t, repo)
+	claude := readFileForTest(t, claudePath)
+	if !strings.Contains(claude, "# Claude-only rules\n") || !strings.Contains(claude, "\nKeep this footer.\n") {
+		t.Fatalf("unmanaged CLAUDE.md content was not preserved:\n%s", claude)
+	}
+	if !strings.Contains(claude, "@AGENTS.md") {
+		t.Fatalf("user-owned AGENTS.md import was removed:\n%s", claude)
+	}
+	if !strings.Contains(claude, testInheritedAgentPointerBlock) {
+		t.Fatalf("legacy direct block was not migrated to inheritance notice:\n%s", claude)
+	}
+	if strings.Contains(claude, "@.entire/graph-agent.md") {
+		t.Fatalf("CLAUDE.md retained a duplicate direct guide import:\n%s", claude)
+	}
+	agents := readFileForTest(t, filepath.Join(repo, "AGENTS.md"))
+	if !strings.Contains(agents, testAgentPointerBlock) {
+		t.Fatalf("AGENTS.md lost the canonical direct guide pointer:\n%s", agents)
+	}
+
+	runInitAgentsForTest(t, repo)
+	if rerun := readFileForTest(t, claudePath); rerun != claude {
+		t.Fatalf("migrated CLAUDE.md changed on rerun:\nbefore:\n%s\nafter:\n%s", claude, rerun)
+	}
+}
+
+func TestInitAgentsRestoresClaudeDirectPointerWhenAgentsImportIsRemoved(t *testing.T) {
+	repo := t.TempDir()
+	claudePath := filepath.Join(repo, "CLAUDE.md")
+	if err := os.WriteFile(claudePath, []byte("# Claude rules\n@AGENTS.md\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runInitAgentsForTest(t, repo)
+	if got := readFileForTest(t, claudePath); !strings.Contains(got, testInheritedAgentPointerBlock) {
+		t.Fatalf("CLAUDE.md did not initially inherit through AGENTS.md:\n%s", got)
+	}
+
+	withoutImport := strings.ReplaceAll(readFileForTest(t, claudePath), "@AGENTS.md\n", "")
+	if err := os.WriteFile(claudePath, []byte(withoutImport), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runInitAgentsForTest(t, repo)
+	got := readFileForTest(t, claudePath)
+	if !strings.Contains(got, "# Claude rules\n") {
+		t.Fatalf("unmanaged content was lost while restoring direct pointer:\n%s", got)
+	}
+	if !strings.Contains(got, testAgentPointerBlock) || strings.Contains(got, testInheritedAgentPointerBlock) {
+		t.Fatalf("CLAUDE.md direct guide pointer was not restored:\n%s", got)
+	}
+
+	withImportAgain := "@./AGENTS.md\n" + got
+	if err := os.WriteFile(claudePath, []byte(withImportAgain), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runInitAgentsForTest(t, repo)
+	got = readFileForTest(t, claudePath)
+	if !strings.Contains(got, testInheritedAgentPointerBlock) || strings.Contains(got, "@.entire/graph-agent.md") {
+		t.Fatalf("CLAUDE.md did not migrate back to inheritance:\n%s", got)
+	}
+}
+
+func TestInitAgentsRecognizesLiveAgentsImportPathVariants(t *testing.T) {
+	tests := []struct {
+		name    string
+		content func(string) string
+	}{
+		{name: "bare relative", content: func(string) string { return "@AGENTS.md\n" }},
+		{name: "dot relative", content: func(string) string { return "@./AGENTS.md\n" }},
+		{name: "cleaned relative", content: func(string) string { return "@subdir/../AGENTS.md\n" }},
+		{name: "absolute", content: func(repo string) string { return "@" + filepath.Join(repo, "AGENTS.md") + "\n" }},
+		{name: "after closed comment", content: func(string) string { return "<!-- context -->\n@AGENTS.md\n" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			if err := os.WriteFile(filepath.Join(repo, "CLAUDE.md"), []byte(tt.content(repo)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runInitAgentsForTest(t, repo)
+			got := readFileForTest(t, filepath.Join(repo, "CLAUDE.md"))
+			if !strings.Contains(got, testInheritedAgentPointerBlock) {
+				t.Fatalf("live import variant did not select inheritance block:\n%s", got)
+			}
+		})
+	}
+}
+
+func TestInitAgentsIgnoresNonLiveAndExcludedAgentsMentions(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{name: "inline code", content: "Use `@AGENTS.md` as an example.\n"},
+		{name: "backtick fence", content: "```md\n@AGENTS.md\n```\n"},
+		{name: "tilde fence", content: "~~~md\n@AGENTS.md\n~~~\n"},
+		{name: "html comment", content: "<!-- @AGENTS.md -->\n"},
+		{name: "managed region", content: agentPointerBegin + "\n@AGENTS.md\n" + agentPointerEnd + "\n"},
+		{name: "word prefix", content: "owner@AGENTS.md\n"},
+		{name: "filename suffix", content: "@AGENTS.md.backup\n"},
+		{name: "path suffix", content: "@AGENTS.md/example\n"},
+		{name: "space-indented code", content: "Example:\n\n    @AGENTS.md\n"},
+		{name: "tab-indented code", content: "Example:\n\n\t@AGENTS.md\n"},
+		{name: "short fence cannot close", content: "````md\nexample\n```\n@AGENTS.md\n"},
+		{name: "annotated fence cannot close", content: "```md\nexample\n```not-a-close\n@AGENTS.md\n"},
+		{name: "unclosed code span hides later import", content: "`unfinished example\n@AGENTS.md\n"},
+		{name: "unclosed fence is ambiguous", content: "@AGENTS.md\n```md\nunfinished\n"},
+		{name: "unclosed comment is ambiguous", content: "@AGENTS.md\n<!-- unfinished\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			if err := os.WriteFile(filepath.Join(repo, "CLAUDE.md"), []byte(tt.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runInitAgentsForTest(t, repo)
+			got := readFileForTest(t, filepath.Join(repo, "CLAUDE.md"))
+			if strings.Contains(got, testInheritedAgentPointerBlock) {
+				t.Fatalf("excluded or ambiguous mention selected inheritance block:\n%s", got)
+			}
+			if !strings.Contains(got, "@.entire/graph-agent.md") {
+				t.Fatalf("safe direct guide pointer is missing:\n%s", got)
+			}
+		})
+	}
+}
+
+func TestInitAgentsRecognizesImportWithUnrelatedInlineCode(t *testing.T) {
+	repo := t.TempDir()
+	content := "@AGENTS.md\nRun `go test ./...` before committing.\n"
+	if err := os.WriteFile(filepath.Join(repo, "CLAUDE.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runInitAgentsForTest(t, repo)
+	got := readFileForTest(t, filepath.Join(repo, "CLAUDE.md"))
+	if !strings.Contains(got, testInheritedAgentPointerBlock) {
+		t.Fatalf("unrelated inline code hid the live AGENTS.md import:\n%s", got)
+	}
+}
+
+func TestInitAgentsWritesSameFileOnlyOnce(t *testing.T) {
+	tests := []struct {
+		name          string
+		createAliases func(t *testing.T, repo string)
+	}{
+		{
+			name: "CLAUDE symlinks to AGENTS",
+			createAliases: func(t *testing.T, repo string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("# Shared rules\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("AGENTS.md", filepath.Join(repo, "CLAUDE.md")); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			},
+		},
+		{
+			name: "AGENTS symlinks to CLAUDE",
+			createAliases: func(t *testing.T, repo string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(repo, "CLAUDE.md"), []byte("# Shared rules\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("CLAUDE.md", filepath.Join(repo, "AGENTS.md")); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			tt.createAliases(t, repo)
+			runInitAgentsForTest(t, repo)
+
+			agents := readFileForTest(t, filepath.Join(repo, "AGENTS.md"))
+			claude := readFileForTest(t, filepath.Join(repo, "CLAUDE.md"))
+			if agents != claude {
+				t.Fatalf("same-file aliases diverged:\nAGENTS.md:\n%s\nCLAUDE.md:\n%s", agents, claude)
+			}
+			if !strings.Contains(agents, "# Shared rules\n") || !strings.Contains(agents, testAgentPointerBlock) {
+				t.Fatalf("shared file did not retain content and direct pointer:\n%s", agents)
+			}
+			if got := strings.Count(agents, agentPointerBegin); got != 1 {
+				t.Fatalf("same file was updated with %d managed blocks:\n%s", got, agents)
+			}
+
+			before := agents
+			runInitAgentsForTest(t, repo)
+			if after := readFileForTest(t, filepath.Join(repo, "AGENTS.md")); after != before {
+				t.Fatalf("same-file rerun was not byte-idempotent:\nbefore:\n%s\nafter:\n%s", before, after)
+			}
+		})
+	}
+}
+
+func TestInitAgentsSurfacesClaudeReadErrors(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, "CLAUDE.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo})
+	if err == nil || !strings.Contains(err.Error(), "CLAUDE.md") {
+		t.Fatalf("init-agents error = %v, want CLAUDE.md read/stat error", err)
+	}
+}
+
+func runInitAgentsForTest(t *testing.T, repo string) {
+	t.Helper()
+	var out bytes.Buffer
+	if err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readFileForTest(t *testing.T, path string) string {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(content)
 }
