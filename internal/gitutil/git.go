@@ -533,6 +533,66 @@ func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error)
 	return out, true, nil
 }
 
+// ShowFileLimited is ShowFile with a READ-SIDE ceiling: it never materializes
+// more than maxBytes+1 of the blob, and reports a larger blob as unreadable.
+//
+// ShowFile buffers all of git's stdout before returning, so a caller that only
+// wants small files could not express that: checking len(content) afterwards
+// enforces the ceiling on the ANSWER while the allocation has already happened.
+// Every other bounded read in this package refuses before materializing — the
+// batch reader streams an oversized blob to io.Discard off its header size, and
+// the on-disk reader reads through an io.LimitReader — so this closes the one
+// path where the bound arrived too late.
+//
+// The over-limit blob is not drained: cancelling the context stops git instead,
+// because the bytes were already refused and reading them to /dev/null is the
+// same wait this ceiling exists to avoid.
+func ShowFileLimited(ctx context.Context, repo, rev, path string, maxBytes int64) (string, bool, error) {
+	if maxBytes <= 0 {
+		return ShowFile(ctx, repo, rev, path)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Same object spec and the same stderr-only classification as ShowFile; see
+	// there for why the revision is peeled to a tree first.
+	objectSpec := rev + "^{tree}:" + path
+	cmd := newCmd(ctx, repo, "git", "show", objectSpec)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", false, err
+	}
+	if err := cmd.Start(); err != nil {
+		return "", false, fmt.Errorf("git show %s: %w", objectSpec, err)
+	}
+	content, readErr := io.ReadAll(io.LimitReader(stdout, maxBytes+1))
+	oversized := int64(len(content)) > maxBytes
+	if oversized {
+		cancel()
+	}
+	waitErr := cmd.Wait()
+	switch {
+	case oversized:
+		// Refused, not failed: an oversized blob is a file this caller cannot
+		// quote, exactly like a missing one. waitErr here is the kill.
+		return "", false, nil
+	case readErr != nil:
+		return "", false, fmt.Errorf("git show %s: %w", objectSpec, readErr)
+	case waitErr != nil:
+		message := strings.TrimSpace(stderr.String())
+		if isMissingPathDiagnostic(message) {
+			return "", false, nil
+		}
+		if message == "" {
+			message = waitErr.Error()
+		}
+		return "", false, fmt.Errorf("git show %s: %s", objectSpec, message)
+	}
+	return string(content), true, nil
+}
+
 func isMissingPathDiagnostic(stderr string) bool {
 	// ShowFile runs git under the C locale, so only classify Git's specific
 	// missing-path diagnostics. Broad substring checks can match a bad revision

@@ -2,6 +2,7 @@ package gitutil
 
 import (
 	"context"
+	"crypto/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -531,6 +532,107 @@ func TestShowFileClassifiesErrorsByStderrNotPath(t *testing.T) {
 	// An existing file at HEAD returns its content.
 	if out, ok, err := ShowFile(t.Context(), repo, "HEAD", path); err != nil || !ok || out != content {
 		t.Fatalf("ShowFile existing = (%q, ok %v, err %v), want (%q, true, nil)", out, ok, err, content)
+	}
+}
+
+// ShowFileLimited must refuse an oversized blob rather than materialize it, and
+// must keep every other ShowFile behavior: absent is absent, a real failure is
+// an error, and a blob at exactly the ceiling still reads.
+func TestShowFileLimitedBoundsTheReadNotTheAnswer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows filenames cannot contain newlines")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "commit.gpgsign", "false")
+
+	const ceiling = 1 << 10
+	// A newline in the path is the case that reaches this reader at all: the
+	// cat-file batch protocol is line based, so those paths take the one-shot
+	// `git show` route and nothing else bounds them.
+	const oversizedPath = "big\nname.txt"
+	files := map[string]string{
+		oversizedPath: strings.Repeat("x", ceiling+1),
+		"exact.txt":   strings.Repeat("y", ceiling),
+		"small.txt":   "small\n",
+	}
+	for path, content := range files {
+		if err := os.WriteFile(filepath.Join(repo, path), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "size fixture")
+
+	if out, ok, err := ShowFileLimited(t.Context(), repo, "HEAD", oversizedPath, ceiling); err != nil || ok || out != "" {
+		t.Errorf("oversized blob = (%d bytes, ok %v, err %v), want (\"\", false, nil)", len(out), ok, err)
+	}
+	// The ceiling is inclusive, so the boundary blob is still an answer. This is
+	// what distinguishes a bounded read from an off-by-one refusal.
+	if out, ok, err := ShowFileLimited(t.Context(), repo, "HEAD", "exact.txt", ceiling); err != nil || !ok || out != files["exact.txt"] {
+		t.Errorf("blob at the ceiling = (%d bytes, ok %v, err %v), want (%d bytes, true, nil)", len(out), ok, err, ceiling)
+	}
+	if out, ok, err := ShowFileLimited(t.Context(), repo, "HEAD", "small.txt", ceiling); err != nil || !ok || out != files["small.txt"] {
+		t.Errorf("small blob = (%q, ok %v, err %v), want (%q, true, nil)", out, ok, err, files["small.txt"])
+	}
+	if out, ok, err := ShowFileLimited(t.Context(), repo, "HEAD", "does-not-exist.txt", ceiling); err != nil || ok || out != "" {
+		t.Errorf("missing path = (%q, ok %v, err %v), want (\"\", false, nil)", out, ok, err)
+	}
+	// Same stderr-only classification as ShowFile: a bad revision is a failure,
+	// not an absent file, even though the argv echoes a path.
+	if out, ok, err := ShowFileLimited(t.Context(), repo, "BADREV", "small.txt", ceiling); err == nil || ok || out != "" {
+		t.Errorf("bad rev = (%q, ok %v, err %v), want (\"\", false, non-nil)", out, ok, err)
+	}
+	// A non-positive ceiling means "no ceiling", so it must behave as ShowFile.
+	if out, ok, err := ShowFileLimited(t.Context(), repo, "HEAD", oversizedPath, 0); err != nil || !ok || out != files[oversizedPath] {
+		t.Errorf("unbounded call = (%d bytes, ok %v, err %v), want the whole blob", len(out), ok, err)
+	}
+}
+
+// The refusal above is observable either way — buffering the whole blob and THEN
+// reporting it oversized returns the same triple. What this pins is the part that
+// is not observable from the return value: the bytes are never allocated.
+func TestShowFileLimitedNeverMaterializesAnOversizedBlob(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "commit.gpgsign", "false")
+
+	const blobSize = 32 << 20
+	const ceiling = 1 << 10
+	// Incompressible, so `git show` really does stream 32 MiB: a run of one byte
+	// would still decompress to the same size, but random content also rules out
+	// any future short-circuit on a cheap object.
+	blob := make([]byte, blobSize)
+	if _, err := rand.Read(blob); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "huge.bin"), blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "huge blob")
+	blob = nil
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	out, ok, err := ShowFileLimited(t.Context(), repo, "HEAD", "huge.bin", ceiling)
+	runtime.ReadMemStats(&after)
+
+	if err != nil || ok || out != "" {
+		t.Fatalf("oversized blob = (%d bytes, ok %v, err %v), want (\"\", false, nil)", len(out), ok, err)
+	}
+	// Generous by three orders of magnitude against the ceiling and by eight
+	// times against the blob: this fails on materialization, not on allocator
+	// noise.
+	const budget = 4 << 20
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > budget {
+		t.Errorf("reading a %d-byte blob under a %d-byte ceiling allocated %d bytes, want under %d: the blob was materialized before the ceiling was applied",
+			blobSize, ceiling, allocated, budget)
 	}
 }
 

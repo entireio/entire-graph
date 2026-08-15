@@ -118,11 +118,12 @@ func openSnapshotLineReader(
 		if strings.Contains(relPath, "\n") {
 			// The batch protocol is line based, so a newline-bearing Git path
 			// needs the argv-safe one-shot reader. It still reads the same commit;
-			// failure never falls back to the dirty working tree.
-			content, ok, readErr = gitutil.ShowFile(ctx, snapshot.Header.RepoRoot, snapshot.Header.Commit, relPath)
-			if int64(len(content)) > callSiteMaxFileBytes {
-				ok = false
-			}
+			// failure never falls back to the dirty working tree. The ceiling is
+			// passed DOWN rather than applied to the returned string: the sibling
+			// readers refuse an oversized blob before materializing it, and a path
+			// that reaches here can come from an ingested snapshot record, so this
+			// one must not be the exception that allocates first and checks after.
+			content, ok, readErr = gitutil.ShowFileLimited(ctx, snapshot.Header.RepoRoot, snapshot.Header.Commit, relPath, callSiteMaxFileBytes)
 		} else {
 			content, ok, readErr = batch.ReadFile(relPath)
 		}
