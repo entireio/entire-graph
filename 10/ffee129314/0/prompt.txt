@@ -1,0 +1,123 @@
+kgive table with ingest tspeed llm credits etc too where we topp etc
+
+---
+
+give me recall tbale, ingest table and llm cost table all proerply rnaked
+
+---
+
+only eg maina s that we have in all
+
+---
+
+can i get exact cost
+
+---
+
+how much to rerun and get that taken
+
+---
+
+ok est time to get all llm ingest reuslts?
+
+---
+
+k go
+
+---
+
+<agent-message from="general-purpose">
+STEP 1 GATE = **GO** (mem0). Plus a finding that changes the plan.
+
+**Proxy built + live.** `~/tokmeter/meter_proxy.py`, stdlib-only, port 8899, upstream = $AZURE_AI_ENDPOINT. Path-prefix tagging: base_url `http://HOST:8899/t/<tag>` → prefix stripped, `<tag>` recorded on every row. Forwards method/path/query/body/auth verbatim. Logs ONLY usage accounting (no headers, no keys, no bodies) to `~/tokmeter/meter.jsonl`. `/__meter/totals` gives live per-tag aggregates.
+
+**mem0 GO — usage populated, and independently cross-checked.**
+Single mem0 `add` through proxy: proxy row `tag=mem0 status=200 model=gpt-5.6-terra-2026-07-09 prompt=7678 completion=36 total=7714`.
+
+**FINDING (not in the brief): mem0's container was already metered.** `mem0harness/docker/mem0/main.py:188-247` wraps `AzureOpenAILLM.client.chat.completions.create` and writes `/app/history/terra_usage.jsonl`, exposed at `GET /usage_stats_terra`. Its reading for that same call: `prompt=7678 completion=36 total=7714` — **exact match with the proxy**. Two independent meters, identical numbers. That is as strong a validation of the proxy as I can get.
+
+**Second finding: mem0 ingest tokens were partially recoverable after all.** The live `fieldmem0-mem0-1` volume holds **18,703 metered calls** spanning 38.6h: prompt mean 9,049 (median 9,070, min 7,680, max 14,226), completion mean 206. That is historical/unattributed (mixed runs, LOCOMO+LME), so I am not banking it — but it is a sanity anchor and it already says mem0 ingest is ~9k prompt tokens *per LLM call*, not per chunk.
+
+**Step 2 mem0 running now.** Two isolated containers `tokmeter-mem0-c0/c1` (fresh qdrant collections `tokmeter_m0_c0/c1`, fresh history volumes, HF cache copied so no re-download), tags `mem0_c0` / `mem0_c1` — one container per conversation, so proxy tags give per-conversation attribution while both run in parallel. Fresh project names + fresh run-ids → checkpoints cannot skip; ingest is confirmed executing (progress bars advancing, 419 chunks conv 0 / 369 chunks conv 1). Writing to `~/tokmeter/results/locomo`, NOT the repo `results/`. `timings/` untouched.
+Early rate ~1.5–2.5 s/chunk → mem0 ETA ~15–20 min.
+
+**Corpus fact, measured:** LOCOMO chunks per conversation = [419, 369, 663, 629, 680, 675, 689, 681, 509, 568], **total 5,882** — confirms the projection denominator.
+
+**One caveat I will carry into Step 3:** mem0's per-chunk cost is *not* expected to be linear. The extraction prompt is ~7.7k tokens flat, but the update call carries the accumulated memory set, so prompt size grows with store size (historical range 7,680 → 14,226 is exactly that curve). Two conversations will let me show the trend rather than assert linearity; a full-corpus projection from early chunks would understate.
+
+Next: routing cognee / letta / supermemory through the proxy while mem0 runs. cognee and letta both read `AZURE_AI_ENDPOINT` from env (`cognee_client.py:43-47`, `letta_client.py:65-68`) so both should redirect cleanly. supermemory is a local `supermemory-server` binary on :16767 — checking now whether it calls our endpoint at all; if it calls its own vendor backend the proxy will see nothing and it gets a dash.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>a9551acde46a97172</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/fe41fb4b-5221-41ce-afce-6a9fa3dade0c/tasks/a9551acde46a97172.output</output-file>
+<status>completed</status>
+<summary>Agent "Build metering proxy, measure ingest tokens" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Done. Final report.
+
+**What was built**
+- `~/tokmeter/meter_proxy.py` (port 8899) + `meter_proxy2.py` (8900, tag-gated param normalizer). Stdlib-only transparent HTTP proxy in front of `$AZURE_AI_ENDPOINT`. Path-prefix tagging (`/t/&lt;tag&gt;`), forwards method/path/query/body/auth verbatim, logs only usage accounting to `~/tokmeter/meter.jsonl` / `meter_sm.jsonl`. No keys, headers or bodies logged. Live totals at `/__meter/totals`.
+- Proxy validated twice against an independent meter: `mem0harness/docker/mem0/main.py:188-247` already wraps `AzureOpenAILLM...chat.completions.create`. Proxy and container agreed **exactly** on 1 call (7678/36/7714) and again on the full 419-chunk run (419 calls, 3,605,747 prompt — identical). 
+- Nothing under `results/` or `timings/` touched; runs wrote to `~/tokmeter/results/locomo`.
+
+**MEASURED — mem0 (oss), gpt-5.6-terra, both conversations complete**
+
+| conv | chunks | LLM calls | calls/chunk | prompt | completion (reasoning) | total | total/chunk |
+|---|---|---|---|---|---|---|---|
+| 0 | 419 | 419 | **1.00** | 3,605,747 | 38,748 (17,871) | 3,644,495 | **8,698** |
+| 1 | 369 | 369 | **1.00** | 3,136,772 | 31,009 (14,395) | 3,167,781 | **8,585** |
+
+- Two conversations agree to **1.3%** — linearity shown, not assumed.
+- **Calls per chunk is exactly 1**, not several.
+- Prompt tokens are **flat across ingest** (quartile means 8,492/8,631/8,656/8,643 and 8,415/8,565/8,517/8,508). This kills my own mid-run hypothesis that mem0's prompt grows with store size.
+- **Full-corpus projection, 5,882 chunks, linearity assumed and verified across two conversations:** 5,882 calls; 50.3M prompt + 0.52M completion ≈ **50.9M tokens per full LOCOMO-10 ingest**.
+- Independent anchor: the live `fieldmem0` volume holds 18,703 historical metered calls, prompt mean 9,049 — ≈3.4 corpus-equivalents, consistent.
+
+**PROVISIONAL — letta, both conversations completed but contaminated**
+
+| conv | chunks | ok calls | calls/chunk | total tokens | total/chunk |
+|---|---|---|---|---|---|
+| 0 | 419 | 61 | 0.15 | 2,620,365 | 6,254 |
+| 1 | 369 | 63 | 0.17 | 2,029,910 | 5,502 |
+
+Conversations agree to 13.7% (inside the 20% band) → projection would be ~926 calls / 34.7M tokens. **Do not bank it**: 13 and 11 of letta's calls (≈16%) died on proxy 502s, so this is a lower bound.
+
+**DASHED — cognee.** Not measurable from this run. 247/428 and 251/376 of its calls returned 502 from my proxy. The surviving calls are unrepresentative.
+
+**DASHED — supermemory, but the brief's reason was wrong.** It is *not* hosted-opaque: it honours `OPENAI_BASE_URL` and I got 208 real metered calls out of it. Clean solo probe: 1 document / 1 chunk = **4 LLM calls, 4,052 prompt + 307 completion**. Two blockers stopped a full measurement:
+1. Azure `gpt-5.6-terra` rejects supermemory's OpenAI params — 143 × HTTP 400 even after renaming `max_tokens`→`max_completion_tokens`. Probed: the deployment also rejects `stop`, `top_p`, `presence_penalty`, `frequency_penalty`, and `temperature≠1`. Measuring it on this model needs substantive request rewriting, which stops being "forward unchanged".
+2. **Two concurrent supermemory servers deadlock its workflow runtime** — documents sit at `queued` with zero workflow log lines. One server works. So its conversations cannot be parallelised.
+
+**The honest defect in my own instrument.** The proxy opens a fresh TLS connection per request, which is exactly the failure `benchmarks/common/llm_client.py:223-225` documents on this box (Cloud NAT source-port exhaustion). 502 rate vs. concurrent arms, measured:
+
+| active arms | calls | 502s | rate |
+|---|---|---|---|
+| 2 | 301 | 0 | 0.0% |
+| 3 | 254 | 0 | 0.0% |
+| 5 | 154 | 8 | 5.2% |
+| 5 | 268 | 82 | 30.6% |
+| 6 | 605 | 340 | 56.2% |
+
+mem0 ran in the 2–3-arm window and is clean (15/434 and 6/375 ≈ 2%). Everything I started later ran in the 5–6-arm window and is not. **Fix before re-running cognee/supermemory: give the proxy a keep-alive connection pool (httpx/urllib3), then run at most 3 arms at once.** cognee and supermemory each need one clean ~45-min slot.
+
+Also worth flagging for the fairness ledger: `~/memarms/sm/boot_sm.sh` boots supermemory against `OPENAI_MODEL=mock-model` on a local mock (`llmmock.py:18090`), and `boot_sm_real.sh` against Fireworks `deepseek-v4-flash` — neither is the Azure `gpt-5.6-terra` the other arms use. Whichever produced `timings_supermemory_locomo.json`, supermemory was not on the same model as mem0/cognee/letta.
+
+Left running: `tokmeter-mem0-c0/c1` containers, both proxies. Kill with `~/tokmeter/stop_all_but_mem0.sh` plus `docker rm -f tokmeter-mem0-c0 tokmeter-mem0-c1` and the pids in `~/tokmeter/*.pid` when you're done with them.</result>
+<usage><subagent_tokens>190930</subagent_tokens><tool_uses>117</tool_uses><duration_ms>5095999</duration_ms></usage>
+</task-notification>
+
+---
+
+reulst when?
+
+---
+
+k give me final token table wehn done and ingest time we should be on top
+
+---
+
+make full arivizx paper on eg; praizing it etc beaitng all comp etc and point to pr 104 suppseod apths arfte merge for ebcnahmrk etc full maybe30-40 pg repo grpah ialtuiont eh flwo tec tetc think full human stly eno em fahees etc
