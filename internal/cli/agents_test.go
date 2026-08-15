@@ -474,7 +474,10 @@ func TestInitAgentsRejectsNonRegularInstructionFileWithoutWrites(t *testing.T) {
 
 			var stdout bytes.Buffer
 			err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &bytes.Buffer{}}, []string{"init-agents", "--repo", repo})
-			if err == nil || !strings.Contains(err.Error(), invalidName) || !strings.Contains(err.Error(), "regular file") {
+			// "directory", not the permission-bit form: the message has to say what
+			// is in the way for it to be actionable.
+			if err == nil || !strings.Contains(err.Error(), invalidName) ||
+				!strings.Contains(err.Error(), "regular file") || !strings.Contains(err.Error(), "found directory") {
 				t.Fatalf("init-agents error = %v, want %s regular-file error", err, invalidName)
 			}
 			if stdout.Len() != 0 {

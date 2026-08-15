@@ -193,9 +193,33 @@ func inspectInstructionFile(path string) (os.FileInfo, error) {
 		return nil, fmt.Errorf("%s: inspect target: %w", path, err)
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s: expected a regular file, found %s", path, info.Mode().Type())
+		return nil, fmt.Errorf("%s: expected a regular file, found %s", path, fileTypeName(info.Mode()))
 	}
 	return info, nil
+}
+
+// fileTypeName names what was found in place of a regular file. FileMode.Type()
+// formats as permission bits ("d---------"), which tells whoever hit this nothing
+// about what to remove or move aside.
+func fileTypeName(mode os.FileMode) string {
+	switch {
+	case mode.IsDir():
+		return "directory"
+	case mode&os.ModeSymlink != 0:
+		return "symlink"
+	case mode&os.ModeNamedPipe != 0:
+		return "named pipe"
+	case mode&os.ModeSocket != 0:
+		return "socket"
+	case mode&os.ModeCharDevice != 0:
+		return "character device"
+	case mode&os.ModeDevice != 0:
+		return "device"
+	case mode&os.ModeIrregular != 0:
+		return "irregular file"
+	default:
+		return mode.Type().String()
+	}
 }
 
 func readAndValidateInstructionFile(path string) ([]byte, int, int, error) {
