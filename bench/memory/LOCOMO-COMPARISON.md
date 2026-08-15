@@ -37,10 +37,10 @@ artifact in [`RUN-INDEX.md`](RUN-INDEX.md).
 | 4 | mem0 OSS — second run, same config | `sw_mem0` | 93.57 | 1441/1540 | 1+ per memory |
 | 5 | cognee | `field_cognee_loco2` | 92.86 | 1430/1540 | 1+ per memory |
 | 6 | entire-graph (shipped, current default) | `mrq_base` | 91.56 | 1410/1540 | **0** |
-| 5 | cmm (patched, Markdown-Section) | `full_cmm` | 91.30 | 1406/1540 | **0** |
-| 6 | graphify | `full_graphify` | 87.34 | 1345/1540 | **0** |
-| 7 | letta | `field_letta_loco` | 80.58 | 1241/1540 | 1+ per memory |
-| 8 | supermemory | `field_sm_loco` | 77.60 | 1195/1540 | hosted |
+| 7 | cmm (patched, Markdown-Section) | `full_cmm` | 91.30 | 1406/1540 | **0** |
+| 8 | graphify | `full_graphify` | 87.34 | 1345/1540 | **0** |
+| 9 | letta | `field_letta_loco` | 80.58 | 1241/1540 | 1+ per memory |
+| 10 | supermemory | `field_sm_loco` | 77.60 | 1195/1540 | hosted |
 | — | graphiti | — | — | — | 1+ per memory |
 | — | mem0 Pro / managed | — | — | — | hosted |
 
