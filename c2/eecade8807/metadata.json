@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "c2eecade8807",
+  "strategy": "manual-commit",
+  "branch": "agent/bound-showfile-fallthrough",
+  "checkpoints_count": 6,
+  "files_touched": [
+    "internal/cli/def.go",
+    "internal/gitutil/git.go",
+    "internal/gitutil/git_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/c2/eecade8807/0/metadata.json",
+      "transcript": "/c2/eecade8807/0/full.jsonl",
+      "compact_transcript": "/c2/eecade8807/0/transcript.jsonl",
+      "content_hash": "/c2/eecade8807/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 70,
+    "cache_creation_tokens": 304434,
+    "cache_read_tokens": 9136113,
+    "output_tokens": 18083,
+    "api_call_count": 35
+  }
+}
