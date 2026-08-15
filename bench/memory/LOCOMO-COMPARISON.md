@@ -208,6 +208,59 @@ evidence scores them at exactly **0.000**, which is an artifact of their storage
 measurement of their recall. Those cells are **dashed**. No proxy was substituted, because a proxy
 here would be a number invented to fill a column.
 
+## 6b. Answer-key quality, and why both scores exceed the reported ceiling
+
+An independent audit of LoCoMo-10 ([dial481/locomo-audit](https://github.com/dial481/locomo-audit),
+Feb 2026) reports 156 ground-truth defects across the 1,540 non-adversarial questions, **99 of them
+score-corrupting (6.4%)** — implying a **~93.6% ceiling for a perfect system**, which is *below both
+scores in the table above*.
+
+**We verified the audit rather than assuming it, and rather than dismissing it.** Its provenance is
+weak: it is not peer-reviewed, self-attributes to an LLM with human review, comes from a
+pseudonymous account, and its apparent corroboration is a GitHub issue filed by the same author.
+Its substance nonetheless holds — its dataset copy is byte-identical to `snap-research/locomo`
+(SHA256 `79fa87e9…`), its per-category counts match our own totals exactly (841/282/321/96), and we
+independently confirmed **12 of 12 spot-checked errors** against the raw transcript across the
+hallucination, temporal and attribution classes. We therefore treat the 99 as real.
+
+**Re-scoring under four treatments:**
+
+| treatment | entire-graph | mem0 | gap |
+|---|---|---|---|
+| as published (n=1540) | 94.74 | 93.83 | +0.91 (p = 0.125) |
+| all 99 disputed removed (n=1441) | **96.39** | **95.35** | **+1.04 (p = 0.072)** |
+| per-item corrected key | 94.48 | 93.51 | +0.97 |
+| worst case — every disputed credit void | 90.19 | 89.22 | +0.97 |
+
+**The defective questions are neutral between the arms.** entire-graph takes 70 of the 99, mem0
+takes 71; on the disputed set alone the arms score 70.71% and 71.72%, discordant 5–6, **exact
+p = 1.000**. The gap widens under every correction, and the "statistically tied, point estimate
+favours entire-graph" reading holds throughout.
+
+**The ceiling's premise is too strong.** It assumes a perfect system is penalised on all 99.
+Adjudicating each disputed item individually, only **4 of entire-graph's 70** and 5 of mem0's 71 are
+genuine false credit; **62 of 70 are answers matching the audit's own corrected answer**, not the
+defective gold. There are also ~12–16 **false debits**, where an arm was marked wrong for matching
+the corrected answer. A fully corrected key would raise *both* arms.
+
+### Two caveats that are ours, not the audit's
+
+**Judge tolerances.** `gpt-5.6-sol` applies an explicit **±50% duration tolerance** and grades
+multi-item list questions on **recall only**. In a 60-item hand-adjudication of correct-marked
+answers we found 1 clear and 1 borderline over-credit — **both in the mem0 control arm**;
+entire-graph's sample was 30/30 clean. Worst case observed: gold *"nearly two months"*, answer
+*"about five weeks (37 days)"*, credited under the tolerance rule.
+
+**Loader deviation — affects comparability with other publications.** Our loader ingests the
+dataset's `blip_caption` **and the annotator `query` field** (`benchmarks/locomo/run.py:173-176`);
+mem0's official evaluation loader uses `chat['text']` only. 15.1% of messages carry a `query`, and
+**18 of 1,540 golds (1.17%) contain content recoverable only from it**, plus 36 (2.34%) only from
+`blip_caption`. This is **symmetric across all arms**, so the head-to-head is unaffected — but our
+**absolute numbers are not comparable to text-only-loader publications**, and this partly explains
+why both arms exceed the audit's ceiling.
+
+---
+
 ## 7. Which comparisons are orderable
 
 A measured **−2.21pt drift on an identical entire-graph configuration** 26 hours apart
