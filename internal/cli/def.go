@@ -226,18 +226,12 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 	return nil
 }
 
-// writeDefBodies prints the SOURCE of each declaration the card describes, numbered.
+// writeDefBodiesFromReader prints the SOURCE of each declaration the card describes, numbered,
+// through the reader the command owns.
 //
 // The card answers "what can I do with this"; agents call `def` to answer "show me the code". Measured
 // on carbon: the agent got a body it could not navigate, cut it with `head -80`, lost the line it
 // needed and spent 87 turns grepping instead. The card alone was never the whole answer.
-func writeDefBodies(out io.Writer, response defResponse, repoRoot string, from int) {
-	if repoRoot == "" {
-		return
-	}
-	writeDefBodiesFromReader(out, response, newRepoLineReader(repoRoot), from)
-}
-
 func writeDefBodiesFromReader(out io.Writer, response defResponse, read lineReader, from int) {
 	if len(response.Declarations) == 0 || read == nil {
 		return

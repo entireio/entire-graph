@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -146,6 +147,49 @@ func TestNeighborsSourceAnnotationsFollowSelectedTree(t *testing.T) {
 		[]string{"dirty-alpha-body", "dirty-beta-body"},
 		[]string{"committed-alpha-body", "committed-beta-body"},
 	)
+}
+
+// The JSON answer carries call_site, resolved by reading the caller's source, so
+// the wired-up reader has to be right on the machine-readable path too — not
+// only on the path the text renderer takes.
+func TestNeighborsJSONCallSitesFollowSelectedTree(t *testing.T) {
+	repo, cacheDir := newDirtySourceViewRepo(t)
+
+	callSiteLines := func(output string) []int {
+		t.Helper()
+		var response neighborResponse
+		if err := json.Unmarshal([]byte(output), &response); err != nil {
+			t.Fatalf("decode neighbors json: %v\n%s", err, output)
+		}
+		var lines []int
+		for _, match := range response.Matches {
+			for _, edge := range match.Incoming {
+				if edge.CallSite != nil {
+					lines = append(lines, edge.CallSite.Line)
+				}
+			}
+		}
+		if len(lines) == 0 {
+			t.Fatalf("no call site resolved, so the reader is untested:\n%s", output)
+		}
+		return lines
+	}
+
+	head := callSiteLines(runSourceViewCommand(t, repo, cacheDir, "", "neighbors",
+		"--symbol", "Target", "--direction", "in", "--head", "--format", "json"))
+	for _, line := range head {
+		if line != 7 {
+			t.Errorf("--head call site at line %d, want the committed line 7", line)
+		}
+	}
+
+	worktree := callSiteLines(runSourceViewCommand(t, repo, cacheDir, "", "neighbors",
+		"--symbol", "Target", "--direction", "in", "--format", "json"))
+	for _, line := range worktree {
+		if line != 8 {
+			t.Errorf("working-tree call site at line %d, want the dirty line 8", line)
+		}
+	}
 }
 
 func TestImpactSourceAnnotationsFollowSelectedTree(t *testing.T) {
