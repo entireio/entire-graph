@@ -214,6 +214,61 @@ evidence scores them at exactly **0.000**, which is an artifact of their storage
 measurement of their recall. Those cells are **dashed**. No proxy was substituted, because a proxy
 here would be a number invented to fill a column.
 
+## 6a. Ingest cost, directly metered
+
+Published work in this area reports wall-clock, or reports nothing. These are **measured token
+counts**, captured by a transparent HTTP proxy in front of the shared extraction deployment that
+forwards every request unchanged and records only token accounting from each response. No library
+was patched, so the measurement is identical across systems by construction.
+
+**Instrument validation.** mem0's container carries its own independent meter. On a single call,
+and again across a full 419-chunk conversation, the two instruments agreed **exactly**: 419 calls,
+3,605,747 prompt tokens, identical on both sides.
+
+**Per conversation, `azure_ai/gpt-5.6-terra`:**
+
+| arm | conv | chunks | calls | calls/chunk | prompt | completion | tokens/chunk |
+|---|---|---|---|---|---|---|---|
+| mem0 | 0 | 419 | 419 | 1.000 | 3,605,747 | 38,748 | 8,698 |
+| mem0 | 1 | 369 | 369 | 1.000 | 3,136,772 | 31,009 | 8,585 |
+| cognee | 0 | 419 | 837 | 1.998 | 632,455 | 264,454 | 2,141 |
+| cognee | 1 | 369 | 737 | 1.997 | 552,260 | 205,733 | 2,054 |
+| letta | 0 | 419 | 101 | 0.241 | 3,001,629 | 21,447 | 7,215 |
+| letta | 1 | 369 | 55 | 0.149 | 1,232,194 | 7,323 | 3,359 |
+
+**Full corpus, 5,882 chunks:**
+
+| system | LLM calls | tokens | basis |
+|---|---|---|---|
+| **entire-graph** | **0** | **0** | measured, by design |
+| cmm, graphify | 0 | 0 | no LLM in the ingest path |
+| cognee | 11,749 | **12.35M** | linear, conversations agree to 4.2% |
+| mem0 | 5,882 | **50.85M** | linear, conversations agree to 1.3% |
+| letta | — | — | **not linear, no projection** |
+| supermemory | — | — | see ‡ below |
+
+**Linearity was tested, not assumed.** mem0 is exactly 1.00 calls/chunk and cognee exactly 2.00,
+across two conversations of different length. **letta is not projectable**: its two conversations
+differ by 114.8% in tokens per chunk, because its step count is decided by its own agent loop
+rather than by chunk count. A replicate run confirmed this is real and not a truncation artifact
+(52 calls / 1.17M tokens against the original 55 / 1.24M). Per-conversation letta figures are
+reliable; a corpus figure is not derivable, so we do not give one.
+
+**Cognee makes twice mem0's calls and costs four times fewer tokens** — mem0's prompt averages
+~8.5k per call, cognee's ~750. Call count is not a proxy for cost.
+
+**Retry accounting.** cognee logged client-side timeouts (45 and 88); some of those generations
+completed upstream and were billed. The totals above are *tokens actually consumed*, which
+includes retries, because that is what the bill reflects. That `calls/chunk` landed at 1.998 and
+1.997 across conversations with very different retry counts is what establishes 2.00 as cognee's
+real per-chunk call count rather than an artifact.
+
+**This is the one comparison in this document not subject to a statistical tie.** Zero is measured,
+not asserted, and it stays zero on every rebuild. Extraction cost is paid again for every changed
+document.
+
+---
+
 ### ‡ supermemory: extraction model unverifiable
 
 The spine in §0 requires every LLM-extraction arm to use the same extraction model
@@ -223,19 +278,29 @@ supermemory has two boot paths in our tooling: one pointing at a **local mock mo
 **Fireworks `deepseek-v4-flash`**. Neither is the Azure deployment the other extraction arms used.
 A read-only forensic pass over the machine established:
 
-- **It was not the mock.** Two independent proofs: the mock instance's data store was
-  filesystem-idle throughout the run window, and its log shows a crash at `2026-08-12T14:13:11Z`
-  with no further output until a boot banner on `2026-08-13T17:08:24Z` — i.e. the process was dead
-  for the entire `05:19–11:35` window that produced this row. High confidence.
-- **Which real model it used is unrecoverable.** No process-level environment record for the
-  supermemory server survives: no shell history, no supervisor log on the relevant track, no
-  pre-`runmeta` capture, and the harness driver never logs upstream host or model for *any* arm.
-  The system journal for the window is permission-denied. The only remaining evidence is off-VM
-  provider billing logs.
+- **It was not the mock.** Established at file level, not by directory timestamp: during the
+  `05:19–11:35` run window, **0 files were written** in the mock-backed store while **23,536 files
+  were written** in the store the run actually used. Extraction latencies in that run cluster at
+  **13–32 seconds**; all three mock scripts are in-process handlers answering in under 10 ms.
+- **`gpt-5.6-terra` is very likely impossible for supermemory, on positive evidence.** Probing the
+  deployment parameter by parameter, it **rejects** `max_tokens`, `stop`, `top_p`,
+  `presence_penalty`, `frequency_penalty`, and any `temperature != 1` — all of which supermemory's
+  server emits. 143 of its calls returned HTTP 400 even after a minimal compatibility shim.
+  **Supermemory's server cannot talk to this deployment without substantial request rewriting.**
+- **Which real model it used is unrecoverable.** `runmeta.py` was created **six hours after** this
+  run finished, so the result file carries no environment capture. No shell history survives, and
+  the harness never logs upstream host or model for *any* arm. Only provider billing logs could
+  settle it, and they are off-machine.
 
-So supermemory's extraction model is **either `gpt-5.6-terra` (the canonical intent) or Fireworks
-`deepseek-v4-flash` (what the environment file pinned at the time), and we cannot say which.**
-Its row is retained with this disclosure rather than silently presented as spine-compliant.
+So supermemory's extraction model was **not the mock**, is **not verifiably `gpt-5.6-terra`**, and
+on parameter-compatibility grounds is **very likely not `gpt-5.6-terra` at all**. The only other
+real endpoint configured anywhere in this campaign is Fireworks `deepseek-v4-flash`. Its row is
+retained with this disclosure rather than presented as a same-extractor comparison.
+
+**Two corrections to our own `FAIR-CONFIG.md`**, recorded so a re-auditor is not misled:
+`:14` states supermemory's extractor is `azure_ai/gpt-5.6-terra`; that is unverified and probably
+wrong. `:208` directs a re-auditor to `~/memarms/sm/data`; **that is the wrong directory** — that
+store was idle throughout the run, and the run's state lives in `~/memarms/smsrv/data`.
 
 Independently of the model question, `FAIR-CONFIG.md` already flags this run as suspect and
 not re-audited, and 221 of its 1,540 questions (14.4%) returned zero memories — with normal
