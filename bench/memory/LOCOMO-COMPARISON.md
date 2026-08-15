@@ -1,11 +1,21 @@
 # LoCoMo — memory system comparison
 
-**entire-graph matches the leading open-source memory system on accuracy, while building its index
-3x faster and using zero LLM calls to do it.**
+**entire-graph matches the leading open-source memory system on accuracy, and builds its index in
+seconds with zero LLM calls where extraction-based systems take hours.**
 
 That is the claim, and it is deliberately not "we are first on accuracy". Measured side by side in
-one window on the identical 1,540 questions, entire-graph and mem0 OSS are a **statistical dead
-heat**. The accuracy difference is inside the noise. The ingest difference is not.
+one window on the identical 1,540 questions, entire-graph leads mem0 OSS by **0.91pp at
+p = 0.125** — a point-estimate lead that does **not** reach significance. Run-to-run noise on this
+harness is **0.65pp**: two identical mem0 runs scored 93.83 and 93.57. Treat the two systems as
+tied on accuracy.
+
+The index-build difference is a class distinction, not a ratio: deterministic local indexing
+finishes in **seconds** (cmm 4.3s, graphify 5.9s, entire-graph 7.0s), while LLM-extraction and
+hosted systems take **thousands of seconds** (letta 3,373s, cognee 6,195s, supermemory 15,379s,
+mem0 20,478s). entire-graph is third within its class, and the honest claim is the ~1000x gap
+between the classes — not an entire-graph result. **An earlier "3x faster than mem0" figure in
+this document was withdrawn**: it was derived from `completed_at` spans that measure whole-run
+wall-clock, because ingest is interleaved with the query phase.
 
 Every row: all **1,540** LoCoMo questions, no subsetting. Answerer **and** judge are both
 `gpt-5.6-sol` (Azure AI) for every arm. Retrieval budget `top_k = 200` for every arm. Identical
@@ -21,10 +31,12 @@ artifact in [`RUN-INDEX.md`](RUN-INDEX.md).
 
 | # | system | run id | LoCoMo | correct | ingest LLM calls |
 |---|---|---|---|---|---|
-| **1** | **entire-graph** (shipped + PR #100) | `mrq_mres` | **93.83** | 1445/1540 | **0** |
-| 2 | mem0 OSS | `plan_g_mem0` | 93.77 | 1444/1540 | 1+ per memory |
-| 3 | cognee | `field_cognee_loco2` | 92.86 | 1430/1540 | 1+ per memory |
-| 4 | entire-graph (shipped, current default) | `mrq_base` | 91.56 | 1410/1540 | **0** |
+| **1** | **entire-graph** (this PR) | `sw_eg_mr3` | **94.74** | 1459/1540 | **0** |
+| 2 | mem0 OSS — same-window control | `sw_mem0b` | 93.83 | 1445/1540 | 1+ per memory |
+| 3 | entire-graph (first commit only) | `mrq_mres` | 93.83 | 1445/1540 | **0** |
+| 4 | mem0 OSS — second run, same config | `sw_mem0` | 93.57 | 1441/1540 | 1+ per memory |
+| 5 | cognee | `field_cognee_loco2` | 92.86 | 1430/1540 | 1+ per memory |
+| 6 | entire-graph (shipped, current default) | `mrq_base` | 91.56 | 1410/1540 | **0** |
 | 5 | cmm (patched, Markdown-Section) | `full_cmm` | 91.30 | 1406/1540 | **0** |
 | 6 | graphify | `full_graphify` | 87.34 | 1345/1540 | **0** |
 | 7 | letta | `field_letta_loco` | 80.58 | 1241/1540 | 1+ per memory |
@@ -213,25 +225,55 @@ A measured **−2.21pt drift on an identical entire-graph configuration** 26 hou
 **Cross-window and therefore not orderable:** rows 1, 2, 3, 5, 6, 7 and 8 of §1 were measured in
 different windows. Report them; do not rank them against each other.
 
-### The deciding same-window comparison — in flight
+### The deciding same-window comparison — FINAL
 
-A same-window control (`sw_mem0`) is running: mem0 re-answering in the current window against the
-current entire-graph binary. It removes the cross-window question from the headline entirely
-instead of arguing around it. The endpoint and the decision rule were **pre-registered before the
-numbers were known**.
+`sw_eg_mr3` (this PR, **default** ingest granularity, no harness flag) against `sw_mem0b` — mem0
+re-answering **concurrently in the same window**, on the identical 1,540 questions. The endpoint
+and the decision rule were **pre-registered before the numbers were known**. Both arms recorded
+**zero** empty answers and zero failed judgments.
 
-> **PLACEHOLDER — to be replaced with the final n=1540 result and its run id when the run lands.**
-> Interim at n=1065: entire-graph 93.80 vs mem0 93.33, **+0.47pp, discordant 27–22, p = 0.568.**
-> Under the pre-registered rule (p ≥ 0.10), this reads: **entire-graph and mem0 are statistically
-> tied on LoCoMo accuracy; the point estimate favours entire-graph by 0.47pp.** The interim figure
-> is **not a publishable row** and no claim rests on it.
+| | overall | single-hop | multi-hop | temporal | open-domain |
+|---|---|---|---|---|---|
+| **entire-graph** `sw_eg_mr3` | **94.74** | **96.67** | **93.97** | **95.33** | 78.12 |
+| mem0 OSS `sw_mem0b` | 93.83 | 95.12 | 93.62 | 94.70 | **80.21** |
+
+**+0.91pp overall, discordant 43–29, McNemar p = 0.125.** Under the pre-registered rule
+(p ≥ 0.10) this reads: **entire-graph and mem0 are statistically tied on LoCoMo accuracy; the
+point estimate favours entire-graph by 0.91pp.** Published as exactly that.
+
+**single-hop +1.55pp, p = 0.035** (n = 841) is the only cell that clears significance on its own.
+Multi-hop moved from **−1.44pp against mem0 to +0.35pp** — the deficit this PR targets, and the
+category the one-region-per-file collapse was starving. Open-domain (−2.08pp, n = 96) is the one
+losing category, and at n = 96 it is not separable from noise: two identical mem0 runs disagree
+with each other on 8 of those 96 questions.
+
+This supersedes the `plan_g` comparison above for headline purposes: it needs **no non-default
+ingest granularity**, so the number is what a user gets from the shipped corpus.
 
 The pre-registration fixes what gets published at every p: significance only below 0.05, a
 non-significant lead between 0.05 and 0.10, and a tie at 0.10 and above. It also forbids switching
 to the judge-gated figure, switching cutoff, post-hoc exclusions, sub-category headlines, and
-replicating until significant. In every branch the accuracy result is reported beside the two
-findings that do not depend on it: **first on ingest speed, and the only top-three system with zero
-LLM calls at ingest.**
+replicating until significant. In every branch the accuracy result is reported beside the finding
+that does not depend on it: **entire-graph builds its index in seconds with zero LLM calls, where
+every extraction-based competitor takes thousands of seconds.** entire-graph is not the fastest
+even so — cmm (4.3s) and graphify (5.9s) build faster than its 7.0s. The claim is the class gap,
+not a rank.
+
+### What this document does NOT claim
+
+- **Not "first on accuracy."** +0.91pp at p = 0.125, against a 0.65pp noise floor, is a tie.
+- **Not "faster than mem0 by 3x."** That figure was withdrawn; see the header.
+- **Not "more context-efficient."** We are not. mem0 delivers **43.2 accuracy points per 1,000
+  characters** at its tightest cutoff against entire-graph's **5.7**, and wins outright at matched
+  byte budgets below ~25k chars. entire-graph delivers roughly **30% more context per question**
+  than mem0 at the same `top_k`, because `top_k` equalises item count, not context volume. This is
+  the direct consequence of zero-LLM ingest: raw prose spans instead of LLM-distilled facts.
+- **No cutoff results** (`top_50`/`top_20`/`top_10`). entire-graph appears to win those decisively,
+  but it ships up to **7.9x more text** at the tight cutoffs, so the comparison measures prompt
+  size rather than retrieval quality. Excluded deliberately.
+- **Nothing from the oracle arm.** `plan_f_ceil` reached 96.23 with `EG_FULL_CONTEXT=1` and
+  `fair_mode=false`. It exists to measure headroom and is permanently disqualified from any
+  competitive table.
 
 ## 8. Three competitors scored higher because we fixed their bugs
 
