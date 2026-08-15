@@ -626,10 +626,19 @@ type symbolMatchBody struct {
 // (file gone, binary, oversized) is simply omitted: the locator list above it is still a complete
 // answer, and a missing body must never turn an answer back into a refusal.
 func symbolMatchBodies(repoRoot string, matches []sem.SymbolRecord, limit int) []symbolMatchBody {
-	if repoRoot == "" || limit <= 0 || len(matches) == 0 {
+	if repoRoot == "" {
 		return nil
 	}
-	read := newRepoLineReader(repoRoot)
+	return symbolMatchBodiesFromReader(newRepoLineReader(repoRoot), matches, limit)
+}
+
+// symbolMatchBodiesFromReader is the provenance-aware form used by commands
+// that may be reading a committed snapshot. The caller owns the reader and can
+// reuse it for every body and call-site annotation in the command.
+func symbolMatchBodiesFromReader(read lineReader, matches []sem.SymbolRecord, limit int) []symbolMatchBody {
+	if read == nil || limit <= 0 || len(matches) == 0 {
+		return nil
+	}
 	bodies := make([]symbolMatchBody, 0, minSymbolInt(limit, len(matches)))
 	for _, symbol := range matches {
 		if len(bodies) >= limit {

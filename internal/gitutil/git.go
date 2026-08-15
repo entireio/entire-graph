@@ -533,6 +533,63 @@ func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error)
 	return out, true, nil
 }
 
+// ShowFileLimited is ShowFile with a ceiling that is applied BEFORE the blob is
+// read: a larger blob is reported unreadable without its bytes ever being
+// materialized.
+//
+// ShowFile buffers all of git's stdout, so a caller that only wants small files
+// could not express that — checking len(content) afterwards bounds the ANSWER
+// once the allocation has already happened. The other bounded readers here do
+// not work that way: the batch reader decides off the size in its header, and
+// the on-disk reader stats before it opens. This asks git for the size first,
+// for the same reason and with the same shape.
+//
+// Deciding from the size, rather than reading through an io.LimitReader and
+// stopping git once the ceiling is passed, is deliberate. The reading form
+// deadlocked on Windows: killing git left a grandchild holding the inherited
+// stderr handle, so the copier goroutine never saw EOF and Cmd.Wait blocked in
+// awaitGoroutines forever. Nothing here now depends on process-tree teardown.
+// The extra `cat-file -s` is one small process on a path that is already the
+// rare fallback for a Git path containing a newline.
+//
+// The size probe cannot make an answer WORSE than ShowFile's: it is best effort,
+// and anything it fails to establish falls through to the unbounded read, which
+// keeps its own absent-vs-failed classification.
+func ShowFileLimited(ctx context.Context, repo, rev, path string, maxBytes int64) (string, bool, error) {
+	if maxBytes <= 0 {
+		return ShowFile(ctx, repo, rev, path)
+	}
+	// The probe only ever ADDS a refusal. Every outcome it cannot speak to —
+	// missing path, bad revision, a git whose diagnostics are worded differently,
+	// a size that will not parse — falls through to ShowFile, which stays the one
+	// place absent-vs-failed is decided. Classifying a second command's stderr
+	// with a matcher written for `git show` would have put that contract at the
+	// mercy of another command's wording.
+	if size, known := blobSizeAtRev(ctx, repo, rev, path); known && size > maxBytes {
+		// Refused, not failed: a blob this caller cannot quote, exactly like a
+		// missing one. No content was read to learn this.
+		return "", false, nil
+	}
+	// The commit is immutable, so a size measured above is the size that will be
+	// read — there is no grow-between-calls race to guard against here.
+	return ShowFile(ctx, repo, rev, path)
+}
+
+// blobSizeAtRev reports the size of the blob at rev:path without reading it.
+// It is BEST EFFORT by design: known=false means "no answer", never "absent" or
+// "broken", so a caller can only use it to refuse, not to conclude.
+func blobSizeAtRev(ctx context.Context, repo, rev, path string) (int64, bool) {
+	out, _, err := runWithStderr(ctx, repo, "git", "cat-file", "-s", rev+"^{tree}:"+path)
+	if err != nil {
+		return 0, false
+	}
+	size, parseErr := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if parseErr != nil {
+		return 0, false
+	}
+	return size, true
+}
+
 func isMissingPathDiagnostic(stderr string) bool {
 	// ShowFile runs git under the C locale, so only classify Git's specific
 	// missing-path diagnostics. Broad substring checks can match a bad revision
