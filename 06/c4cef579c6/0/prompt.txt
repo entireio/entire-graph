@@ -1,0 +1,24 @@
+<agent-message from="general-purpose">
+FOLLOW-UP COMPLETE (requested by the general-purpose peer that reviewed my first report). Read-only, nothing modified.
+
+VERDICT: still UNDETERMINED (gpt-5.6-terra vs deepseek-v4-flash). mock-model now ruled out with VERY HIGH confidence (new independent proof this round, see #4).
+
+CONFIDENCE: high (not-mock) / low (which real model) — unchanged from before, but the not-mock case is now airtight from two independent angles (file-mtime idleness + crash-log gap), not just latency.
+
+EVIDENCE (new this round):
+1. `/home/suhaan_entire_io/memarms/artifacts/memory-comparison-v1/{memory-preflight,memory-pilot1,memory-holdout,memory-holdout-df2,memory-full}` — every subtree's last write is 2026-08-12 13:59:31 UTC or earlier (checked via `find -printf %T@`). This whole phase-chain (the one `boot_sm_real.sh`'s `tagwatch.py` targets) is chronologically disjoint from our target run (05:19:16–11:35:35 UTC 2026-08-13) by ≥15h. No launch record for `field_sm_loco`/`smsrv` can live here — wrong track entirely.
+2. `/home/suhaan_entire_io/memarms/status/*.pid|*.state` — `phase-pilot1/-holdout/-full` timestamps all 2026-08-10/11/12; `guard.pid` 2026-08-12 01:38:00. Same disjoint chain as #1.
+3. `/home/suhaan_entire_io/memarms/state/sm_loco/` mtime 2026-08-13 17:31:54 — postdates our run by ~6h; belongs to the failed `field_sm_loco_v2` retry (BUFFER_MISSING), not the run that produced 77.60.
+4. `/home/suhaan_entire_io/memarms/logs/sm_mock.log` — banner shows API key `sm_KTNKK6v95FKUiAqS1yHshP_...`, IDENTICAL prefix to the key printed in `boot_sm_restart.log`'s banner (born 2026-08-13 17:08:24) — proves both logs are the same underlying `sm/data` store across a restart, i.e. the mock/`sm-data`/`boot_sm.sh` lineage. `sm_mock.log`'s LAST line: `ts=2026-08-12T14:13:11.698925368Z level=warn message="serverless runtime envoy drain exceeded timeout; forcing immediate stop"` — the mock instance crashed at 14:13:11 UTC Aug-12 and produced zero further output until its next boot banner at 17:08:24 Aug-13. Combined with the previously-found idle `sm/data` mtimes, this closes the loop two independent ways: the mock/`sm-data` instance was both file-system-idle AND process-dead for the entire 05:19–11:35 window. It categorically could not have served `field_sm_loco`.
+5. `journalctl --since "2026-08-13 05:00:00" --until "2026-08-13 12:00:00"` → `No journal files were opened due to insufficient permissions`. Did not escalate/sudo (out of scope for read-only forensics as instructed).
+6. Grepped every mem0harness driver log whose mtime falls inside the window (`locomo_20260813_051915.log` [ours], `_063203`, `_063158`, `_031232` [cognee_loco2, overlapping], `_065726`, `longmemeval_20260813_041214.log`) for `fireworks|azure|gpt-5.6-terra|deepseek|api.fireworks|services.ai.azure|cognitiveservices` — zero hits anywhere, for any arm. The harness driver never prints upstream host/model for any client (opaque by design), so this null result isn't specific to supermemory — not informative either way.
+7. `grep -l "smsrv\|16767"` across all memarms top-level launch scripts (`chain_run.sh`, `embed_boot.sh`, `mem0_boot.sh`, `phase_launch.sh`, `run_preflight.sh`) — no matches.
+
+CONTRADICTIONS: unchanged from prior report (run.env pins other arms to Fireworks deepseek-v4-flash as of 2026-08-11 23:40, unmodified since; FAIR-CONFIG.md states canonical intent is Azure gpt-5.6-terra for supermemory extraction but separately flags the 77.60 result itself as "suspect, not yet re-audited").
+
+WHAT WOULD SETTLE IT: exhausted for on-VM read-only forensics. No process-level env record for `smsrv` survives anywhere (no shell history, no supervisor/tagwatch log — wrong chain — no pre-runmeta capture, encrypted data store has no recoverable strings, no script fingerprint-matches its RAM/concurrency defaults, journal is permission-denied without sudo). The only remaining lever is off-VM: Fireworks account usage/billing (key is hardcoded in `boot_sm_real.sh`) or Azure `entirehq-2598-resource` usage logs (`.azure_env`'s `AZURE_AI_ENDPOINT`) for API calls in the 05:19–11:35 UTC 2026-08-13 window sized to a ~5,882-chunk LoCoMo ingest. Cannot check from here.
+
+Recommend banking this as: NOT mock (very high confidence, two independent proofs) / real-model identity UNDETERMINED / underlying 77.60 result already independently flagged "suspect" by the campaign's own FAIR-CONFIG.md audit trail regardless of extraction-model identity.
+
+(Note: this reply was addressed to "main" because "general-purpose" — the `from=` on the incoming message — was not a reachable SendMessage target; please relay to that peer if needed.)
+</agent-message>
