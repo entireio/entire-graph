@@ -551,37 +551,43 @@ func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error)
 // awaitGoroutines forever. Nothing here now depends on process-tree teardown.
 // The extra `cat-file -s` is one small process on a path that is already the
 // rare fallback for a Git path containing a newline.
+//
+// The size probe cannot make an answer WORSE than ShowFile's: it is best effort,
+// and anything it fails to establish falls through to the unbounded read, which
+// keeps its own absent-vs-failed classification.
 func ShowFileLimited(ctx context.Context, repo, rev, path string, maxBytes int64) (string, bool, error) {
 	if maxBytes <= 0 {
 		return ShowFile(ctx, repo, rev, path)
 	}
-	// Same object spec and the same stderr-only classification as ShowFile — see
-	// there for why the revision is peeled to a tree first. `cat-file -s` emits
-	// the identical missing-path diagnostic, so absent stays absent here too.
-	objectSpec := rev + "^{tree}:" + path
-	out, stderr, err := runWithStderr(ctx, repo, "git", "cat-file", "-s", objectSpec)
-	if err != nil {
-		if isMissingPathDiagnostic(stderr) {
-			return "", false, nil
-		}
-		message := stderr
-		if message == "" {
-			message = err.Error()
-		}
-		return "", false, fmt.Errorf("git cat-file -s %s: %s", objectSpec, message)
-	}
-	size, parseErr := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
-	if parseErr != nil {
-		return "", false, fmt.Errorf("git cat-file -s %s: unparseable size %q", objectSpec, strings.TrimSpace(out))
-	}
-	if size > maxBytes {
+	// The probe only ever ADDS a refusal. Every outcome it cannot speak to —
+	// missing path, bad revision, a git whose diagnostics are worded differently,
+	// a size that will not parse — falls through to ShowFile, which stays the one
+	// place absent-vs-failed is decided. Classifying a second command's stderr
+	// with a matcher written for `git show` would have put that contract at the
+	// mercy of another command's wording.
+	if size, known := blobSizeAtRev(ctx, repo, rev, path); known && size > maxBytes {
 		// Refused, not failed: a blob this caller cannot quote, exactly like a
 		// missing one. No content was read to learn this.
 		return "", false, nil
 	}
-	// The commit is immutable, so the size just measured is the size that will be
+	// The commit is immutable, so a size measured above is the size that will be
 	// read — there is no grow-between-calls race to guard against here.
 	return ShowFile(ctx, repo, rev, path)
+}
+
+// blobSizeAtRev reports the size of the blob at rev:path without reading it.
+// It is BEST EFFORT by design: known=false means "no answer", never "absent" or
+// "broken", so a caller can only use it to refuse, not to conclude.
+func blobSizeAtRev(ctx context.Context, repo, rev, path string) (int64, bool) {
+	out, _, err := runWithStderr(ctx, repo, "git", "cat-file", "-s", rev+"^{tree}:"+path)
+	if err != nil {
+		return 0, false
+	}
+	size, parseErr := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if parseErr != nil {
+		return 0, false
+	}
+	return size, true
 }
 
 func isMissingPathDiagnostic(stderr string) bool {
