@@ -1,0 +1,67 @@
+Review PR 99
+
+---
+
+<task-notification>
+<task-id>af17edac902673594</task-id>
+<tool-use-id>toolu_01RhpeDFdB3jdfwoHXvtC1qX</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/f0fe1aad-8ea2-4b96-bd6c-0743b14025f0/tasks/af17edac902673594.output</output-file>
+<status>completed</status>
+<summary>Agent "/code-review 99" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Reviewed PR #99 (`agent/fix-head-source-provenance`, 7 files, +421/-20) against `origin/main`. I checked out the branch in a scratch worktree, read every hunk with surrounding context, traced the provenance chain end-to-end (`prepareSource` → `openSource` → `restampCachedSearchSnapshotCommit` → `Header.Commit`), built the binary, and exercised `--head` on synthetic repos (no commits, dirty tree, file deleted in worktree, JSON/bad-format paths). `go vet ./internal/cli`, the new tests, and the full `internal/cli` suite all pass.
+
+Note: no `ReportFindings` tool is exposed in this session (I searched for it twice), so findings are reported inline below.
+
+## Verdict
+
+The core change is sound. The provenance gate (`worktree || snapshot.Header.Commit == ""`) is correct in every path I could construct:
+
+- `--head` on a repo with no HEAD → `resolveCommittedHEAD` returns `("", "", err)`, `Header.Commit` is empty, the reader correctly falls back to disk (verified live — `E_NO_GIT_HEAD` warning, working-tree bodies).
+- A worktree snapshot always carries `Header.Commit` set to HEAD, but the `worktree` flag is checked first, so it never routes to git.
+- Tree-only cache keying is safe here because `restampCachedSearchSnapshotCommit` is applied on every cache-hit return path reachable from `LoadOrBuildProviderSnapshot`, so the commit used as a treeish is always the serving HEAD — never a dangling one.
+- The new reader mirrors `internal/sem/provider.go:9764` (`openSource`) exactly — same `BatchFileReader`, same `ShowFile` newline escape hatch, same 4 MiB cap — so path semantics and size cutoffs match the reader that produced the snapshot's symbols. Notably `defaultMaxParseBytes` and `callSiteMaxFileBytes` are both 4 MiB, so an oversized blob can never be requested for a file that was parsed.
+- No other CLI verb was left behind: after the change, the only production callers of the on-disk `newRepoLineReader` are the `openSnapshotLineReader` fallback itself; `explain` reads no source (snapshot signatures only, so the header-only fix is the right scope), and `search` already handles `--head` in `internal/sem/search.go:783`.
+
+## Findings (4, all low)
+
+- `/Users/thomi/Projects/entire-graph/internal/cli/callsite.go:91` — a `NewBatchFileReader` failure is now fatal to the whole command. `runDef`/`runNeighbors`/`runImpact` return the error, so a fork/fd-exhaustion failure turns a `--head` query that previously printed the complete graph answer (minus source windows) into no output at all. Source enrichment is a presentation nicety everywhere else in this file — `symbolMatchBodiesFromReader` and `resolveCallSite` both degrade silently on an unreadable file. Suggest degrading to a reader that always reports `false` (no source, no dirty source) rather than aborting.
+- `/Users/thomi/Projects/entire-graph/internal/cli/def.go:176` — the reader is opened before the format switch, so `def --head --format json` spawns and tears down a `git cat-file --batch` child that `writeDefBodiesFromReader` never touches (verified: the JSON path works, but the process is pure overhead). It also adds the spawn cost to `index_latency_ms`, which is measured at line 182 after the open. Same ordering in `impact.go:150` and `neighbors.go:163`, though those two do use the reader in the JSON path.
+- `/Users/thomi/Projects/entire-graph/internal/cli/explain.go:191` — provenance was made explicit only for `text`/`agent`. `ExplainResponse` (line 102) carries no commit/tree/worktree field, so `explain --head --format json` and `explain --format json` are byte-identical on a clean tree and a machine consumer still cannot tell which tree the declarations came from. Schema is additive-only, so a `commit`/`tree` field would close the gap the text renderer just closed.
+- `/Users/thomi/Projects/entire-graph/internal/cli/def.go:230` — `writeDefBodies`, `buildNeighborResponse` (`neighbors.go:333`), `buildImpactResponse` (`impact.go:333`) and `symbolMatchBodies` (`symbolref.go:628`) are now test-only shims that hardwire the on-disk reader. The large existing suites (`neighbors_efficiency_test.go`, `impact_test.go`, `symbolref_test.go`) all still call the legacy wrappers, so the production `*FromReader` path is covered only by the new file — future regressions in the wired-up path can pass CI. Worth pointing the existing tests at the `FromReader` forms and dropping the shims.</result>
+<usage><subagent_tokens>119634</subagent_tokens><tool_uses>51</tool_uses><duration_ms>659957</duration_ms></usage>
+</task-notification>
+
+---
+
+What do you recommend?
+
+---
+
+Yes, apply the two pre-merge fixes, open new PRs for the other 2 and fix those as well.
+
+---
+
+Tell me more about the judgement call
+
+---
+
+Ok, just leave it
+
+---
+
+Review 99 with Cursor and Copilot
+
+---
+
+<task-notification>
+<task-id>bppgx9io6</task-id>
+<tool-use-id>toolu_01C5729B9nnr6cGGp31xyrfn</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/f0fe1aad-8ea2-4b96-bd6c-0743b14025f0/tasks/bppgx9io6.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll PR 99 for bot reviews" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Yes, add it, then run another review loop
