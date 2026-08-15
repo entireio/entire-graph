@@ -1,13 +1,13 @@
 {
-  "cli_version": "dev",
-  "checkpoint_version": "branch-v1",
-  "checkpoint_id": "10ffee129314",
-  "strategy": "manual-commit",
   "branch": "feat/prose-retrieval-and-benchmarks",
-  "checkpoints_count": 13,
+  "checkpoint_id": "10ffee129314",
+  "checkpoint_version": "branch-v1",
+  "checkpoints_count": 15,
+  "cli_version": "dev",
   "files_touched": [
     "bench/memory/LOCOMO-COMPARISON.md"
   ],
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/10/ffee129314/0/metadata.json",
@@ -15,13 +15,20 @@
       "compact_transcript": "/10/ffee129314/0/transcript.jsonl",
       "content_hash": "/10/ffee129314/0/content_hash.txt",
       "prompt": "/10/ffee129314/0/prompt.txt"
+    },
+    {
+      "content_hash": "/10/ffee129314/1/content_hash.txt",
+      "metadata": "/10/ffee129314/1/metadata.json",
+      "prompt": "/10/ffee129314/1/prompt.txt",
+      "transcript": "/10/ffee129314/1/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 56,
+    "input_tokens": 117054,
     "cache_creation_tokens": 750516,
-    "cache_read_tokens": 19713778,
-    "output_tokens": 41733,
-    "api_call_count": 28
+    "cache_read_tokens": 22674192,
+    "output_tokens": 53686,
+    "api_call_count": 74
   }
 }
