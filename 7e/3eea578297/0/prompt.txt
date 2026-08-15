@@ -1,0 +1,534 @@
+js fix open doain then; but hold for the tuchabse etc remmber
+
+---
+
+updates
+
+---
+
+<agent-message from="general-purpose">
+**IDENTICAL. The live `sw_eg_mr3` run is valid — let it finish. Do not kill it.**
+
+THE COMPARISON I RAN: rebuilt the old binary from `806a911` (the source of md5 282a45cc…) into a clean detached worktree, and diffed `results[]` against `b7def0e` (md5 7bc92fe5…) on the real LoCoMo conv-0 **session-granularity** corpus, `--top-k 200`, `--profile full --head --index-all-files --max-context-bytes 100000000` — the harness's exact argv. **All 152 conv-0 questions**, not a sample. `passages` stripped from both sides; everything else compared element by element as parsed JSON, so count, order, rank, score, file_path, start/end/focus lines, snippet text, signals, kind, symbol ids are all in scope.
+
+**0 of 152 queries differ.** Not "no meaningful difference" — the two `results[]` arrays are equal objects on every query.
+
+Why that is structurally guaranteed, so you can trust it beyond the sample: the dedup fix lives entirely in `dropSelectedProsePassages`, which only ever rewrites `searchCandidate.prosePassagePlan`. That field feeds `prosePassagePlans` → `allocateProseParentPassages` → `SearchResult.Passages` and nothing else. Selection, ranking, scoring, byte fitting and snippet allocation all run before it and never read it. The measurement is the proof, but the code path says the same thing.
+
+CONFIRMATIONS YOU ASKED FOR:
+- **`visible chars/q 53,929` is measured on `b7def0e`.** I re-ran the full 152-question measurement on the final build after restoring document-scoped passages; visible chars did not move (53,929 both times — passages are not in `results[].snippet`). Safe to quote.
+- **`mise run check` on `b7def0e`: GREEN, exit 0**, 199.9s, fmt + vet + race tests + build.
+
+So: `sw_eg_mr3` is measuring exactly the binary we will ship. The only difference between the running build and the branch head is a field the harness does not read.
+
+Code-search full-JSON comparison is the last open item; it is still running (15 real locate queries x top-k 10 and 50, full payload compare, `--profile full --head` on this repo is slow). I will send it as soon as it lands.
+</agent-message>
+
+---
+
+<agent-message from="general-purpose">
+sw_eg_tsmr COMPLETED 1540/1540. Your decay warning was correct and is now confirmed on a second arm.
+
+TSMR (turn+session, eg-mr, no expansion) vs MEM0, paired, judge-gated, top_200:
+  n<=200   96.48 -> 97.99  delta +1.51
+  n<=400   95.74 -> 97.74  delta +2.01
+  n<=736   94.56 -> 95.92  delta +1.36   <- the "+2.58" you were warned about was this region
+  n<=1100  94.27 -> 95.09  delta +0.82
+  n=1539   94.22 -> 94.74  delta +0.52   gain=39 loss=31 p=0.403   FINAL: TIED, point est. ours
+Do not quote +2.58. The honest number is +0.52, not significant.
+
+Per category (mem0 -> tsmr): single-hop 95.60 -> 97.15 (+1.55, p=0.024, the only significant
+cell); temporal 94.39 -> 94.70 (+0.31); multi-hop 94.31 -> 93.59 (-0.71); open-domain
+81.25 -> 77.08 (-4.17).
+
+GRANULARITY IS A REAL LEVER, and the complementarity table you gave me survives at full n.
+Comparing the two completed eg arms against the same mem0 baseline:
+  category      session-only(mrq_mres)   turn+session(tsmr)   direction predicted?
+  single-hop         96.43                    97.15            turn better  YES
+  multi-hop          92.83                    93.59            turn better  YES
+  temporal           94.92                    94.70            session better YES
+  open-domain        80.00                    77.08            session better YES (-2.92, large)
+All four directions match the hypothesis at n=1540. Turn-slicing buys single-hop and multi-hop
+and PAYS for it in open-domain, which is exactly the "a broad topic spans a whole conversation
+and does not survive slicing" mechanism. Overall it nets positive: session-only lost to mem0
+by -0.26, turn+session beats it by +0.52, so granularity is worth ~+0.78 overall.
+
+That makes open-domain (77.08, vs mem0 81.25) the single biggest hole and the exact thing
+sw_eg_tsx is supposed to repair. Bar to beat stands: 94.22 overall / open-domain 81.05-81.25 /
+multi-hop 94.27-94.31.
+
+ALSO WORTH YOUR ATTENTION - the cutoff story is much stronger than the top_200 headline:
+  cutoff    mem0    tsmr    delta      p
+  top_200   94.22   94.74   +0.52      0.403
+  top_50    90.13   92.73   +2.60      0.0021
+  top_20    87.21   89.87   +2.66      0.0062
+  top_10    84.16   87.99   +3.83      0.00037
+Under a tight context budget we win decisively and significantly. mem0 delivers 1,950 chars in
+its top-10; tsmr delivers 15,371 and tsx delivers ~17,500. If we need a defensible headline
+that is not a coin flip, it is the tight-budget regime, not top_200.
+
+sw_eg_tsx at 974/1540, ~35 min out. chars/q holding at -0.14% vs tsmr across every checkpoint
+(n=114/363/550/692). 0 zero-context, 0 drops, 0 tracebacks. Accuracy at 1540 only.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>acadf6738297b86c0</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/fe41fb4b-5221-41ce-afce-6a9fa3dade0c/tasks/acadf6738297b86c0.output</output-file>
+<status>completed</status>
+<summary>Agent "Fix cold-start empty-answer harness bug" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Done. Root-caused, fixed, deployed, and proven.
+
+## Root cause (measured, not guessed)
+
+Two defects compounding, both in shared code:
+
+**1. Connect timeout too tight for a cold-start burst** — `benchmarks/common/llm_client.py::_init_azure_ai` hardcoded `connect=15.0` (also `_init_openai`/`_init_azure` at `10.0`). `LLM_TIMEOUT=600` only sets the *read* timeout, so a 600s budget never applied to connection establishment.
+
+At the start of the question phase `question_semaphore = asyncio.Semaphore(args.question_workers)` (`locomo/run.py:929`) admits exactly N questions at once against an **empty httpx pool**, so all N need a brand-new TCP/TLS connection simultaneously. On this NAT-egressing VM those SYNs get dropped and the kernel retransmits.
+
+Reproduced live on `graphbench-g` (`~/coldstart-diag/diag.py`, 10 concurrent cold calls):
+- `connect=15`: 4 OK in ~1s, **6 × `APITimeoutError` at exactly 15.02s, `__cause__ = httpx.ConnectTimeout`**
+- `connect=90`: **10/10 OK** — the stalled connects complete at 1s,1s,1s,1s,3s, **20.2s, 20.2s, 36.8s, 36.9s**
+
+So it is not model quality, not retrieval, not the answerer — it is TCP connect. The exception surfaces as `openai.APITimeoutError` with `str()` = `"Request timed out."`, caught by the generic `except Exception` at `_generate_openai`.
+
+**2. Unjittered backoff kept the herd synchronised** — `await asyncio.sleep(2 * (attempt + 1))` (8 sites). All N coroutines fail together, sleep the *identical* interval, wake together and re-issue the identical connect storm. Every attempt fails the same way. `mrq_base` log shows a perfect 10/10/10/10/10 ladder across attempts 1→5, then `return ""`. `locomo/run.py:531` assigns that `""` to `generated_answer`, `:557` records it, judge scores WRONG. First question took 173.66s = 5×15s + (2+4+6+8) backoff + judge's 3×15s + 12s ≈ 173s. Exact match.
+
+**3. (Also fixed) Blank content was never retried** — only `content is None` retried; a `""`/whitespace completion was returned verbatim on the first attempt.
+
+`empty_generated_answers` is only a metric in `~/portwork/score.py:62` — there is **no existing gate**. `full_cmm`/`full_graphify` reported 0 because they got lucky, not because they took a different path.
+
+## Fix
+
+`benchmarks/common/llm_client.py` (shared, backend-agnostic — no backend client touched):
+- `_connect_timeout()` — `LLM_CONNECT_TIMEOUT` env, default **60.0**, applied to all three OpenAI-family init paths.
+- `_retry_delay(attempt)` — `2*(attempt+1)*uniform(0.5,1.5)`; replaces all 8 fixed sleeps.
+- `_generate_openai` / `_generate_anthropic`: blank/whitespace content is now a **retryable failure**, treated exactly like an exception.
+- `LLMClient.warmup(concurrency)` — pre-opens `concurrency` pooled connections; best-effort, failures non-fatal.
+
+`benchmarks/locomo/run.py`:
+- `await asyncio.gather(answerer.warmup(args.question_workers), judge_llm.warmup(args.question_workers))` immediately after both clients are built, **before any backend work** — identical for every arm.
+- Additive `"answer_empty": not generated_answer.strip()` in both cutoff-result dicts.
+
+**Scoring semantics unchanged**: after `max_retries` the call still returns `""`, still gets judged, still scores WRONG, never skipped. Verified by unit test #3/#4. Attempt cap is still 5 (test #5). The only new field is the additive `answer_empty` audit flag.
+
+## Proof
+
+Live before/after, same 40 questions, `--question-workers 10`, both backends (`~/smoke-out`, nothing under `results/` touched):
+
+| arm | before | after |
+|---|---|---|
+| `entire` | **empty=10** (`conv0_q0…q9:top_200`), retries exhausted ×10 | **empty=0**, 0 exhausted |
+| `oss` (mem0) | empty=0 but 14/10/6/2 failed attempts — nearly the same fate | **empty=0**, 0 exhausted |
+
+The before run reproduced the audit's signature exactly, including the asymmetry: same defect, same host, same minute — the entire arm lost 10 questions (25pp on n=40) and mem0 lost 0 purely on retry luck. After the fix the connect storm is absorbed by warm-up (all failure lines now precede the question phase) and isolated mid-run timeouts recover on attempt 2.
+
+Deterministic no-network test (`~/coldstart-diag/test_retry.py`): 7/7 PASS.
+
+## Safety
+
+- Deployed by staging to `~/coldstart-diag/*.new` and `mv -f` (atomic rename). Originals backed up to `~/coldstart-diag/backup/`.
+- `sw_eg_tsmr` and `sw_eg_tsx` were **not** disturbed: both modules were already in `sys.modules`; neither `entire_client` nor `mem0_client` spawns a Python subprocess that re-imports them (only the `entire-graph` Go binary and `git`). Both verified still running and progressing after deploy. No watchdog restarts them.
+- Consequence: those two live runs still carry the old code. Current state — `sw_eg_tsmr` (complete, 6160 answers) has **1 empty** (`conv0_q4:top_200`), `sw_eg_tsx` 0, `sw_mem0` 0. They got lucky; the deciding run will not need luck.
+
+Patch saved at `/home/suhaan_entire_io/coldstart-diag/coldstart-empty-answer.patch` (253 lines) for vendoring. `longmemeval` and `beam` runners inherit the llm_client fixes automatically but do **not** yet call `warmup()` — say the word if you want that added.</result>
+<usage><subagent_tokens>156924</subagent_tokens><tool_uses>75</tool_uses><duration_ms>2446827</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>aacc31610c091b369</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/fe41fb4b-5221-41ce-afce-6a9fa3dade0c/tasks/aacc31610c091b369.output</output-file>
+<status>completed</status>
+<summary>Agent "Diagnose open-domain failures, no runs" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Read-only. Nothing launched, nothing modified. All numbers from `~/mem0harness/results/locomo/predicted_*` + `~/memarms/inputs/datasets/locomo10.json` on `graphbench-g`.
+
+# VERDICT UP FRONT
+
+**The open-domain gap is not real. Do not chase it.** Every proposed mechanism (retrieval recall, distilled-fact advantage, context packing) is **refuted by the data**. eg retrieves *more* gold evidence and *more* of the conversation than mem0, on comparable bytes, and still lands 2–4 questions lower — a swing smaller than mem0's own run-to-run variance.
+
+---
+
+## 1. What an open-domain question is (n=96; 92 have gold evidence, 4 have none)
+
+Six kinds, mixed:
+
+| kind | ex | note |
+|---|---|---|
+| commonsense inference from 1–2 facts | `conv0_q59` "Would Caroline be considered religious?" GT `Somewhat, but not extremely` | ~45 of 96 |
+| world-knowledge keyed on a detail — **gold answer is not in the transcript** | `conv6_q6` "Does James live in Connecticut?" EV=`D5:1` = *"adopted a pup from a shelter in **Stamford**"*; `conv3_q87` Tampa→Florida; `conv7_q28` Bogotá→Colombia; `conv4_q70` GT=`Skellig Michael, Malin Head, Loop Head…` | the model must supply the fact |
+| recommendation with an **annotator-chosen** right answer | `conv4_q5` GT=`House of MinaLima`; `conv4_q51` GT=`Hatha Yoga`; `conv5_q52` GT=`Install a bird feeder`; `conv4_q67` GT=`Writing a travel blog` | one of many valid answers |
+| whole-conversation gist | `conv8_q19/31/38/46/51`, 4–17 evidence turns | **all 10 arms get these right** |
+| absence/negation, **EV=[]** | `conv0_q30`, `conv0_q46`, `conv9_q39`, `conv9_q42` | not retrieval-answerable by construction |
+| plain lookups mislabelled OD | `conv3_q14` nickname "Jo"; `conv8_q57` California | |
+
+**Irreducible floor: 12/96 wrong in all 5 full runs of both systems.** On most of them both systems give the *same* answer, differing from gold:
+
+```
+conv4_q5   eg "Harry Potter New York flagship store" | mem0 same          GT House of MinaLima
+conv4_q51  eg "Warrior II pose"                      | mem0 same          GT Hatha Yoga
+conv5_q43  eg "California."                          | mem0 "California."  GT Minnesota
+conv5_q52  eg "short birdwatching in nearby parks"   | mem0 same          GT install a bird feeder
+conv7_q23  eg "busy with engineering studies"        | mem0 same          GT more interested in video games
+conv6_q17  eg "Dungeons of the Dragon"               | mem0 "Among Us"     GT Mafia
+```
+Achievable ceiling ≈ **84/96 = 87.5%**. mem0 78, eg 74–76. Both are near ceiling.
+
+## 2. Per-loser forensics — eg(`sw_eg_tsmr`) vs mem0(`sw_mem0`): 7 losses / 3 wins
+
+**7 mem0-wins classified:**
+
+| class | n | qids |
+|---|---|---|
+| gold evidence absent from our 200 | 4 | `conv3_q87`, `conv5_q20`, `conv6_q6`, `conv0_q59` (1 of 2 EV) |
+| **judge inconsistency on a semantically identical answer** | 1 | `conv6_q19` |
+| evidence present + well-ranked (rank 2, 6), answer differs by one phrase | 1 | `conv8_q43` |
+| no gold evidence (absence question), coin flip — other eg runs get it right | 1 | `conv9_q42` |
+
+`conv6_q19` is a clean judge defect. **All five arms answered "No"** (GT = "Most likely yes"). Judge marked mem0 CORRECT, eg_mres CORRECT, eg_loco CORRECT, mem0_run2 CORRECT, **eg_tsmr WRONG** — awarding partial-fact credit to four and refusing it to the fifth.
+
+**3 eg-wins — all mem0 ingest-LLM damage:**
+- `conv4_q8` GT `Under Armour`: mem0's distillation flattened it to *"a renowned outdoor gear company"* → answered **The North Face**. eg had the raw turn at ranks 0 and 2.
+- `conv7_q28` GT `Colombia`: mem0's extracted fact says *"During the summer of **2025**, Jolene vacationed in Bogota"* — hallucinated year on a 2022 event → answered **France**.
+- `conv4_q53`: judge charity on near-identical answers.
+
+Whole eg WRONG set (22): 8 all-gold-missing · 8 partial · 3 all-present-top20 · 2 all-present-buried · 1 no-gold-ev. But the **CORRECT set has the same shape** (8/74 all-missing). Evidence-absence is enriched only 3.4× and **14/22 wrong questions had gold evidence retrieved anyway**.
+
+## 3. What mem0 returns that we don't — **nothing. Hypothesis refuted.**
+
+| metric (96 OD questions) | eg tsmr | eg mres | mem0 |
+|---|---|---|---|
+| context chars / question | 45,986 | 56,971 | **36,111** |
+| **corpus turn coverage (≥70% content tokens)** | **0.857** | **0.937** | 0.625 |
+| gold-evidence content coverage | **0.925** | 0.963 | 0.808 |
+| verbatim gold-evidence recall | 0.692 | 0.788 | **0.000** |
+| coverage per 10k chars | 0.186 | 0.164 | 0.173 |
+| store size / conversation | ~1000–1550 units | ~400–700 | ~300–470 facts |
+
+- eg's context **contains more of the conversation and more of the gold evidence** than mem0's, at near-identical bytes-per-coverage.
+- mem0's verbatim recall is **0.000** — it paraphrases. The `.467 / .609 vs cognee .609` comparison in the brief is apples-to-oranges the moment mem0 enters it.
+- mem0's coverage is **identical for its correct (0.806) and wrong (0.817)** OD questions → its retrieved content has *zero* discriminative power on this category.
+- Cross-category killer: eg **multi-hop recall .532 is LOWER than open-domain .609, yet multi-hop accuracy is 93.26 vs open-domain 77.08.** Gold-evidence recall does not gate open-domain.
+
+Reconciliation check: my instrument reproduces the brief's numbers exactly — `mrq_base` OD `.467`, SH `.941`; `sw_eg_tsmr` OD `.609`. Same method, so the refutations above are on the same footing.
+
+## 4. Design — **no fix is justified**
+
+One lever tested and **killed before proposing it**: dropping whole-session units to buy byte budget. They are 2.4% of units and 31–33% of bytes, but they carry **43% (tsmr) to 88% (base) of all gold evidence actually found**, rescuing 828–1295 evidence items. Removing them is a large regression, not a free win.
+
+The only question-blind, byte-neutral, zero-LLM lever that works is **already built**: turn-level neighbourhood expansion (PR#100 / `mrq_mres`). `mrq_base → mrq_mres` moves OD **75.00 → 79.17**, recall `.467 → .663`, and lifts *every* category (SH 95.24→96.43, MH 88.30→91.84, TP 89.72→93.15). That lands eg at **79.17 = mem0's own run-2 score of 79.17.** Nothing further is warranted.
+
+## 5. Statistics — the gap is inside the noise
+
+McNemar exact, two-sided, paired on the 96:
+
+```
+mem0(sw) vs eg(tsmr)     7+ / 3+   discordant=10   p=0.3438
+mem0(sw) vs eg(mres)     6+ / 4+   discordant=10   p=0.7539
+mem0(sw) vs eg(field)    7+ / 5+   discordant=12   p=0.7744
+mem0(sw) vs eg(base)    11+ / 5+   discordant=16   p=0.2101
+mem0(sw) vs mem0(field)  5+ / 3+   discordant= 8   p=0.7266   &lt;- SAME SYSTEM
+```
+
+- **mem0 disagrees with itself on 8/96 (8.3%) of open-domain answers across two full runs**, net swing 2 questions (81.25 vs 79.17). Between-system discordance (10) is barely above within-system (8).
+- Full-1540 OD spread: mem0 {79.17, **81.25**}; eg {75.00, 77.08, 77.08, **79.17**, 79.17}. **Distributions overlap.** The headline "−4.17pp" exists only if you quote mem0's better run against eg's worse one.
+- **Required n for 80% power at α=.05: 468 open-domain questions (best case) to 1,879.** LoCoMo contains 96. The entire 1540-question dataset does not have enough open-domain questions to ever call this.
+- Live in-progress paired arms, first 32 OD questions: **mem0b 28 · eg_mr3 28 · eg_tsx 30.** eg is currently ahead.
+
+**A 4-question difference on 96 questions, 12 of which nobody can answer and 1 of which is a demonstrated judge defect, is indistinguishable from noise. Recommend: stop, report open-domain as tied, and spend the cycles on single-hop/multi-hop where n is 5–9× larger.**
+
+Analysis scripts (local scratchpad, disposable): `/private/tmp/claude-501/-Users-suhaan-devenv/27642e0f-a981-4143-aea0-6f4f8cb34d37/scratchpad/{armstats2,pairs,diff,ev,cls,rec,corpuscov,final,live}.py` — all piped to VM stdin, zero files written on `graphbench-g`.</result>
+<usage><subagent_tokens>116127</subagent_tokens><tool_uses>43</tool_uses><duration_ms>586806</duration_ms></usage>
+</task-notification>
+
+---
+
+ready and fair yet?
+
+---
+
+<agent-message from="general-purpose">
+BYTE-MATCHED ANALYSIS DONE. Your call was correct. The cutoff headline is dead, and I am
+retracting it myself. Verdict: MEM0 IS MORE CONTEXT-EFFICIENT. Stating it plainly as instructed.
+
+CONTEXT DELIVERED PER QUESTION (paired n=1540, mean / median chars):
+  arm           top_200          top_50           top_20           top_10
+  sw_mem0     36,101/36,047    9,634/9,682     3,894/3,894     1,950/1,961
+  sw_eg_tsmr  46,796/47,244   23,532/23,501   17,570/17,286   15,371/15,116
+  mrq_mres    56,891/57,030   28,881/28,579   23,106/22,794   20,970/20,606
+  mrq_base    24,487/24,354   24,487/24,354   23,194/22,978   21,302/20,981
+mem0's cutoffs span 1.9k-36k. Ours span 15.4k-46.8k. At top_10 we ship 7.9x its text.
+
+ACCURACY POINTS PER 1,000 CHARS DELIVERED (the efficiency curve you asked for):
+  arm           top_200  top_50  top_20  top_10
+  sw_mem0         2.610   9.355  22.393  43.157
+  sw_eg_tsmr      2.024   3.941   5.115   5.724
+  mrq_mres        1.660   3.163   3.920   4.317
+  mrq_base        3.764   3.750   3.992   4.255
+mem0 is 7.5x more efficient than us at top_10 and 4.6x at top_50. It is not close.
+
+ACCURACY AT MATCHED BYTE BUDGET (linear interp along each arm's own curve):
+  budget      mem0     tsmr     winner
+  46,796 ch   94.22*   94.74    tsmr +0.52   (*mem0 cannot spend this much; its ceiling)
+  36,101 ch   94.22    93.81    MEM0 +0.41
+  23,532 ch   92.28    92.73    tsmr +0.45
+  17,570 ch   91.36    89.87    MEM0 +1.49
+  15,371 ch   91.02    87.99    MEM0 +3.03
+Below ~20k chars mem0 wins outright and the gap widens as the budget tightens. We only edge
+ahead in the 23k-47k band, by ~0.5pp, which is inside the noise on p=0.403.
+
+IMPORTANT - the flattering rows are invalid and I am discarding them: interpolating tsmr down to
+mem0's 9.6k / 3.9k / 1.95k budgets returns "87.99, +3.83" only because 15,371 chars is tsmr's
+FLOOR and the code clamps. tsmr physically cannot answer on 1,950 chars. Anyone quoting +3.83
+at top_10 is quoting a clamp. That was my error in the previous message; it is withdrawn.
+
+THE HONEST STATEMENT: at equal item count we win the tight cutoffs, but item count is not the
+budget the answerer pays. At equal BYTES, mem0's distilled one-line facts beat our raw prose
+spans everywhere below ~20k chars, and the two arms are tied (94.22 vs 94.74, p=0.403) only when
+we are allowed 30% more text. mem0 is the more context-efficient system. The place we are
+genuinely better is not retrieval density - it is ingest (0 LLM calls, ~6900x faster) and the
+single-hop cell (+1.55, p=0.024).
+
+Corollary for the roadmap: our byte floor is the problem, not our ranking. 15.4k chars to deliver
+10 units means ~1,540 chars per unit of raw session prose. mem0 delivers 195. Any future win at
+tight budgets requires SHORTER units, not better ordering - i.e. distillation, which is exactly
+the thing our 0-LLM-ingest story currently forbids. Worth deciding explicitly whether that
+trade is on the table.
+
+sw_eg_tsx at ~1,150/1,540, ETA ~25 min, chars/q still -0.14% vs tsmr, 0 zero-ctx, 0 drops.
+Full-n accuracy + tsx's own byte-efficiency curve to follow. Not touching sw_eg_mr3 / sw_mem0b.
+</agent-message>
+
+---
+
+<agent-message from="general-purpose">
+DISCLOSURE, so it is on the record rather than discovered later: `sw_eg_mr3` started 18:40; I replaced `~/bin/eg-mr3` at ~18:50. So roughly the first ten minutes of that run executed the old build (282a45cc…) and everything after executes the new one (7bc92fe5…).
+
+Why this does not invalidate it:
+1. `results[]` is IDENTICAL between the two builds — measured on all 152 conv-0 questions at the harness's exact argv, 0 differ. The harness reads `results[]` and nothing else.
+2. The swap itself was safe: `mv` is a rename, so it is atomic. The harness `exec`s a fresh `entire-graph search` per query, so no running process had bytes moved under it. This is the binary case, not the "scp over a live script" case that destroyed 22 sessions.
+
+I would not have swapped it had I known a run was live against that path — I had checked the box for running arms before deploying and only `sw_mem0`/`sw_eg_tsmr`/`sw_eg_tsx` were up. Flagging it so you can decide; my read is the run stands.
+
+TWO MORE MEASUREMENTS:
+
+**Latency.** eg-mr **0.300 s/query**, eg-mr3 **0.628 s/query** on the conv-0 session corpus, top-k 200, warm cache, 5 runs each. 2.1x slower per search. Cause is structural and expected: passages are now planned for each of ~196 selected units over the document's candidate list instead of for 19 units. For a 1540-question run that is about +8 minutes of search time total, against an LLM-answering phase measured in hours — it will not move your completion estimate. Flagging it because it is a real cost and because a per-query regression is the kind of thing that matters later for interactive code search, where the prose path never fires and latency is therefore unchanged.
+
+**Prose gate cannot fire on a code repo — checked, not assumed.** Three deliberately doc-flavoured queries against this Go repo ("agent operating doctrine for using the graph", "how do I install the plugin", "schema contract additive only adr"), top-k 20: `retrieval_mode=prose-parent` appears on **0 results** in both builds, and both return the same 22 results with the same single `.md` hit. The gate needs ≥4 units and ≥80% doc-extension paths; a source repo cannot reach it even when the query is about documentation.
+
+Code-search full-JSON comparison is running (it was killed twice by my own shell-timeout handling — my error, not a tool failure); relaunched properly. Sending the moment it lands.
+</agent-message>
+
+---
+
+<agent-message from="general-purpose">
+CODE SEARCH: **NO REGRESSION. 0 mismatches on 30 of 30 full-JSON payloads.** That was the last open gate.
+
+WHAT WAS COMPARED: eg-mr (`fccf1fc`) vs eg-mr3 (`b7def0e`), **15 real locate queries** against this repo (a 300k-line Go codebase), at **`--top-k 10` and `--top-k 50`**, `--profile full --head`. Comparison is the **entire JSON payload** — not just results: `results[]` element by element (rank, score, file_path, start/end/focus lines, snippet text, signals, kind, symbol ids), plus `stats`, `commit`, `tree`, `completeness`, `diagnostics`. Only latency telemetry keys were excluded. Queries span the ranking path, the parser, the byte fitter, the CLI, impact, dedup, VERIFY derivation, git helpers, BM25 fusion and snapshot emission — including the three that touch the code I changed.
+
+30/30 payloads equal. Not "results equal, stats drifted" — equal.
+
+(An earlier run of this same comparison reported 1 mismatch in `commit`/`tree`/`stats` with `results[]` identical. That was my fault: I committed to the repo while the comparison was running, so `--head` resolved to different commits on the two sides. Re-run on a clean, stable tree at `b7def0e` — 0.)
+
+WHY IT IS INERT, to go with the measurement: the change lives entirely inside `selectSearchCandidates`'s prose branch, behind `proseParentCorpus`, which requires ≥4 units and ≥80% doc-extension paths. A source repo cannot reach it. I checked that claim rather than asserting it — three deliberately documentation-flavoured queries against this Go repo returned **0 results carrying `retrieval_mode=prose-parent`** in either build. When the gate does not fire, `selectSearchCandidates` returns `selectDiverseCandidates(...)` unchanged, which is the identical code path both builds run.
+
+FULL STATUS — everything you asked for is now green:
+- **STEP 1 hypothesis**: CONFIRMED (`Score: parent.Score` at search_multi_resolution.go:106-122; round-robin over parent index at :38-61; artifact: 200 results, 19 distinct scores).
+- **Branch**: `feat/prose-section-candidates` @ **`b7def0e`**, off `fccf1fc`. `feat/multi-resolution-retrieval` and `feat/prose-context-expansion` never checked out.
+- **`mise run check`**: GREEN on `b7def0e` (exit 0, 199.9s).
+- **Binary**: `~/bin/eg-mr3` on graphbench-g, md5 `7bc92fe517c3f83af18d2d899142f7f9`. `eg-base`/`eg-mr`/`eg-mr2`/`entire-graph` untouched.
+- **Mechanism**: items/q 196.0, distinct scores/q **84.9** (was 17.1; pre-split corpus 78.2), distinct files/q 18.9 (unchanged — breadth held), visible chars/q **53,929** (down 11.4%).
+- **Code search**: 30/30 identical.
+- **Old-vs-new binary `results[]`**: identical on all 152 conv-0 questions, so the live `sw_eg_mr3` run is valid.
+
+Three regressions I introduced and fixed before shipping, each now pinned by a test: whole-document exclusion at small top-k; loss of same-document passages at tight top-k; one region returned up to seven times. Nothing in the change is conditioned on the query or on anything LoCoMo-specific — the unit is decided by the parser's section entities and the file extension, both query-blind.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>af641d0c6499a8bda</task-id>
+<tool-use-id>toolu_015eisa2oDUj7siT6dWG1DXJ</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/fe41fb4b-5221-41ce-afce-6a9fa3dade0c/tasks/af641d0c6499a8bda.output</output-file>
+<status>completed</status>
+<summary>Agent "Make prose regions independent ranking candidates" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Done. Both PR-blocking gates cleared and the deciding run is validated.
+
+## STEP 1 — hypothesis CONFIRMED
+
+Promoted passages are **not scored independently**. `proseResolutionResult` (`internal/sem/search_multi_resolution.go:106-122`) sets `Score: parent.Score` verbatim; `planProseResolutionPromotions` (`:38-61`) orders them by a round-robin over **parent index**, and `applyProseResolutionPromotions` (`:92-97`) appends every promotion **after all parents**.
+
+Artifact proof, live: conv-0 session corpus at `top_k=200` returns **200 results carrying 19 distinct scores**.
+
+The upstream cause is not PR #100 — it is `selectSearchCandidates` (`search_prose_parent.go:79`, `selectedPaths[parent.path]`): one candidate per **file**. The 438 markdown heading regions exist in the graph (`parser.go:3298 markdownEntities` emits a `section` entity per heading) and are collapsed to 19.
+
+**New consequence nobody had connected:** the harness sorts memories by score with a stable sort, so 19 distinct scores group the payload into 19 per-session blocks. At cutoff 50/20/10 the answerer sees only the top 1-2 sessions — multi-hop structurally cannot stitch across sessions. That is the largest category deficit (−1.44 vs mem0).
+
+## What changed
+
+The prose retrieval unit is the **section**, not the file (`proseParentKey`). A section competes on its own score as an independent file would — which is what cmm (438 Section nodes) and graphify (457 heading nodes) already do on this identical corpus. Off switch `--document-resolution`. Query-blind; the unit comes from parser section entities and file extension.
+
+Branch `feat/prose-section-candidates` @ **`b7def0e`** off `fccf1fc`. `feat/multi-resolution-retrieval` still at `fccf1fc`, `feat/prose-context-expansion` still at `8a28407`. `mise run check` green. Binary `~/bin/eg-mr3` on graphbench-g, md5 `7bc92fe517c3f83af18d2d899142f7f9`.
+
+## Evidence
+
+| arm (152 conv-0 questions) | items/q | regions/q | files/q | **scores/q** | visible chars/q |
+|---|---|---|---|---|---|
+| eg-mr @ session (shipped) | 195.0 | 243.0 | 18.9 | **17.1** | 60,854 |
+| **eg-mr3 @ session** | **196.0** | **295.3** | **18.9** | **84.9** | **53,929** |
+| eg-mr @ pre-split turn+session | 197.1 | 467.2 | 196.4 | 78.2 | 47,731 |
+| eg-mr3 `--document-resolution` | 195.0 | 243.0 | 18.9 | 17.1 | 60,854 |
+
+Default granularity now exceeds the pre-split corpus's score diversity with no ingest flag, at **11.4% fewer bytes**. The off switch is byte-identical to eg-mr on every metric.
+
+**Code search: 0 mismatches on 30/30 full-JSON payloads** (15 real locate queries × top-k 10 and 50, entire payload compared). Also verified the prose gate cannot fire on a Go repo even for documentation-flavoured queries (0 `prose-parent` signals, both builds).
+
+**Old-vs-new binary `results[]` identical on all 152 questions** — the live `sw_eg_mr3` run is valid despite my mid-run binary swap at ~18:50 (disclosed to the coordinator; `mv` is atomic and the harness `exec`s fresh per query).
+
+## Three regressions I introduced and fixed, each now pinned by a test
+
+1. **Whole-document exclusion at small top-k** — a pure score ranking dropped a document entirely. Fixed by making "no document gets a second region until every document that fits has one" bind *every* selection pass.
+2. **Lost same-document passages at tight top-k** — a docs repo at top-k 10 lost 4 regions of evidence. Passages are now planned over the whole document.
+3. **Same region returned up to 7 times** — consequence of (2). Deduplicated; the test fails without the fix.
+
+## Caveat worth carrying
+
+Per-query latency **0.300s → 0.628s** (2.1x) on the prose path — passages are now planned for ~196 units instead of 19. About +8 minutes across a 1540-question run, negligible against the answering phase. Code-search latency is unchanged since the prose path never fires there.</result>
+<usage><subagent_tokens>261684</subagent_tokens><tool_uses>177</tool_uses><duration_ms>4815341</duration_ms></usage>
+</task-notification>
+
+---
+
+updates
+
+---
+
+<agent-message from="general-purpose">
+sw_eg_tsx COMPLETE 1540/1540 (18:05:53 -> 19:48:14, PID 3541834). 0 search_dropped, 0
+zero-context, 0 tracebacks, 0 unjudged. Corpora verified byte-identical to sw_eg_tsmr modulo the
+arm-name string, so the ONLY difference between the two arms is the binary.
+
+=== HEADLINE: THE ONE CLEAN RESULT ===
+TSX vs TSMR, paired n=1539, top_200, AT BYTE PARITY (-0.14% chars/q, uniformly -0.14% inside
+every category, so no category was bought bytes at another's expense):
+  cell          tsmr    tsx     delta   bootstrap CI95      gain/loss
+  ALL          94.74   95.00   +0.26   [-0.39, +0.91]      15/11    ns
+  open-domain  77.08   81.25   +4.17   [+1.04, +8.33]       4/0     CI EXCLUDES ZERO
+  single-hop   97.15   97.38   +0.24   [-0.59, +1.07]       7/5     held
+  multi-hop    93.59   93.24   -0.36   [-1.42, +0.71]       1/2     held
+  temporal     94.70   94.39   -0.31   [-1.87, +1.25]       3/4     held, did NOT recover
+Open-domain is the only cell that moves, it moves in the predicted direction, 4 conversions with
+ZERO regressions, and it lands exactly on mem0's 81.25 - the hole you flagged is CLOSED. n=96 so
+treat +4.17 as suggestive-strong, not established; it wants replication on more open-domain items.
+
+=== VERDICT ON THE COMPLEMENTARITY HYPOTHESIS: 3 of 4, and half the stated mechanism is WRONG ===
+Predicted: single-hop and multi-hop hold at turn-level values, temporal and open-domain recover
+toward session-level values.
+  single-hop  HOLD     confirmed
+  multi-hop   HOLD     confirmed
+  open-domain RECOVER  confirmed, and overshoots session-only (81.25 > mrq_mres 80.00)
+  temporal    RECOVER  FALSIFIED - flat/down (94.39 vs session-only 94.92)
+The "a date lives in the session header and does not survive slicing" half of the mechanism is
+falsified by our own ingest code: entire_client.py writes the SAME front matter, including
+`date:`, into every turn document. The date was never lost, so temporal never needed repair and
+expansion had nothing to give it. The "a broad topic spans a whole conversation" half IS real and
+is the entire effect.
+
+Also note the premise about the economics was wrong but the conclusion still landed: dedup
+reclaimed only ~3,992 chars/q (8.3%) on turn+session vs ~3,500 on session-only - a 14% increase,
+not the inversion predicted - because containment is judged on SNIPPETS and only fires when a
+parent session doc is itself returned and ranked higher. That small budget was still enough to
+convert 4/22 open-domain losses with 0 regressions. Small mechanism, real effect.
+
+=== TSX vs MEM0, n=1540, top_200 ===
+  ALL 94.22 -> 95.00  +0.78  gain 44 / loss 32  p=0.207   TIED, point estimate ours
+  single-hop  95.60 -> 97.38  +1.78  p=0.0167   only significant cell
+  open-domain 81.25 -> 81.25   0.00             hole closed, now level
+  temporal    94.39 -> 94.39   0.00
+  multi-hop   94.33 -> 93.26  -1.06             still our remaining loss
+Decay held as you warned: +2.00 at n=400 -> +0.78 at n=1540. Do not quote the early number.
+Ladder of arms vs the same mem0 baseline: session-only -0.26, turn+session +0.52, turn+session
++context-assembly +0.78. Each lever is worth a few tenths; none is significant alone.
+
+=== BYTE-MATCHED, tsx included - MY EARLIER CUTOFF CLAIM STAYS RETRACTED ===
+chars/q: mem0 36,101 | tsx 46,730 | tsmr 46,796. Accuracy pts per 1k chars at top_10: mem0
+43.157, tsmr 5.724, tsx 5.256.
+Interpolated at matched byte budgets (clamped extrapolations discarded as invalid):
+  36,101 ch   mem0 94.22   tsx 94.23    DEAD TIE (+0.01)
+  27,791 ch   mem0 92.94   tsx 93.64    tsx +0.70
+  21,212 ch   mem0 91.92   tsx 91.23    MEM0 +0.69
+  17,186 ch   mem0 91.30   tsx 90.32    MEM0 +0.98
+tsx improves on tsmr at every matched point (tsmr was mem0 +0.41 / +1.49 at the comparable
+budgets) but does not overturn the verdict: below ~25k chars mem0 is still more byte-efficient,
+and we cannot even operate below 17k. And tsx's headline cutoff wins over tsmr (+2.34 at top_10,
+p=7e-6) are largely a byte artifact - tsx ships 17,186 ch at top_10 vs tsmr's 15,371 (+11.8%);
+byte-matched at 17,570 ch the gap is only +0.54. Do not publish the tsx cutoff numbers either.
+
+=== WHAT IS PUBLISHABLE ===
+Publish: open-domain 77.08 -> 81.25 at byte parity, CI [+1.04, +8.33], 4 gains 0 losses, from a
+deterministic 0-LLM assembly pass that provably cannot enlarge the prompt (the ceiling is
+computed pre-pass in search_prose_context.go, so post-expansion text can never exceed
+pre-expansion text - byte-neutrality is a theorem here, not a measurement).
+Do not publish: anything at top_10/20/50, the overall +0.26 or +0.78 (both ns), or any claim
+that we beat mem0 at tight context budgets. We do not.
+</agent-message>
+
+---
+
+now, eta?
+
+---
+
+<task-notification>
+<task-id>b43vsjg1a</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/fe41fb4b-5221-41ce-afce-6a9fa3dade0c/tasks/b43vsjg1a.output</output-file>
+<status>completed</status>
+<summary>Background command "Measure completion rate and ETA" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>b9y48z18v</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-suhaan-devenv/fe41fb4b-5221-41ce-afce-6a9fa3dade0c/tasks/b9y48z18v.output</output-file>
+<status>completed</status>
+<summary>Background command "Launch deciding run: eg-mr3 + fresh mem0 control" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+updates
+
+---
+
+updates
+
+---
+
+updates
+
+---
+
+progress?
+
+---
+
+updates
+
+---
+
+can u combine into one
+
+---
+
+full table ready? all good? publishabel?
