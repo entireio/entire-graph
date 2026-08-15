@@ -1,0 +1,56 @@
+<agent-message from="general-purpose">
+All four items done. Box is clean, nothing running.
+
+## 1. Proxy fixed and verified
+`meter_proxy3.py` — urllib3 `PoolManager`, keep-alive, `maxsize=64`, connect-only retries (never replays a completed LLM call). Verified three ways: synthetic 64 calls @8-way and 72 @12-way = **0% 502 over 12 reused TLS connections**; then a live mem0 slice, **139 real calls, 0% 502**. The v1/v2 curve (0% at 2-3 arms → 30.6% at 5 → 56.2% at 6) is gone.
+
+## 2-3. Final table — measured ingest LLM cost, gpt-5.6-terra via Azure
+
+| arm | conv | chunks | calls | calls/chunk | prompt | completion | total | tokens/chunk | fail |
+|---|---|---|---|---|---|---|---|---|---|
+| mem0 (oss) | 0 | 419 | 419 | 1.000 | 3,605,747 | 38,748 | 3,644,495 | 8,698 | ~2% |
+| mem0 (oss) | 1 | 369 | 369 | 1.000 | 3,136,772 | 31,009 | 3,167,781 | 8,585 | ~2% |
+| cognee | 0 | 419 | 837 | 1.998 | 632,455 | 264,454 | 896,909 | 2,141 | 0.0% |
+| cognee | 1 | 369 | 737 | 1.997 | 552,260 | 205,733 | 757,993 | 2,054 | 0.0% |
+| letta | 0 | 419 | 101 | 0.241 | 3,001,629 | 21,447 | 3,023,076 | 7,215 | 0.0% |
+| letta | 1 | 369 | 55 | 0.149 | 1,232,194 | 7,323 | 1,239,517 | 3,359 | 1.8% |
+| letta *(replicate c1)* | 1 | 369 | 52 | 0.141 | 1,157,908 | 7,818 | 1,165,726 | 3,159 | 0.0% |
+
+Cognee's single `GRAPH_COMPLETION` search call is excluded from its totals (identified and subtracted per conversation; 407/95 and 402/83 tokens).
+
+**Full-corpus projection, 5,882 chunks, linearity stated and tested:**
+- **mem0 — LINEAR**, conversations agree to **1.3%** → **5,882 calls, 50.85M tokens**. Exactly **1.00 calls/chunk**.
+- **cognee — LINEAR**, agree to **4.2%** → **11,749 calls, 12.35M tokens**. Exactly **2.00 calls/chunk**.
+- **letta — NOT LINEAR, no projection.** Conversations differ **114.8%** (7,215 vs 3,359 tokens/chunk).
+- **entire-graph — 0 calls, 0 tokens**, banked, `timings_entire_locomo.json` (`"provenance": "by design"`). cmm and graphify 0 by construction.
+
+**I re-ran letta conv 1 to test whether its low number was the one failed call truncating the agent loop. It was not** — the replicate came back at 52 calls / 1,165,726 tokens, within 6% of the original 55 / 1,239,517. Letta's step count is decided by its own agent, not by chunk count, so per-conversation numbers are reliable but the corpus figure is not derivable. Do not extrapolate it.
+
+Worth noting: **cognee makes twice mem0's calls but costs 4x fewer tokens** — mem0's prompt is ~8.5k/call, cognee's ~750.
+
+## 4. supermemory — DASHED, and the reason is now positive evidence, not absence
+Dashed for the shared-deployment table: **parameter incompatibility with the shared extraction deployment.** I probed each parameter individually — `gpt-5.6-terra` rejects `max_tokens`, `stop`, `top_p`, `presence_penalty`, `frequency_penalty`, and any `temperature != 1`. Even after a minimal rename shim, **143 of its calls still returned HTTP 400**. Measuring it would require rewriting its requests substantially, which stops being a transparent forward. I did not force it. The one clean solo datapoint, explicitly not banked: **1 document / 1 chunk = 4 calls, 4,052 prompt + 307 completion.**
+
+I also did not measure it on "the model it is actually configured for", because — see below — which model that was is not recoverable.
+
+## The supermemory model-asymmetry finding
+**The mock is ruled out. Which real model it used is unrecoverable. And the canonical spec is probably impossible as written.**
+
+1. The published artifacts are `timings_supermemory_locomo.json` → `locomo_results_20260813_113535.json`, accuracy **77.5974** — this is the banked 77.60. Run window 05:19–11:35 UTC on 2026-08-13.
+2. **The mock-backed store did no work during that window.** `boot_sm.sh` (the `OPENAI_MODEL=mock-model` boot) uses `memarms/sm/data`. File-level test over the window: **0 files written in `sm/data`, 23,536 files written in `memarms/smsrv/data`.** I ran this at file level specifically because the subagent's version rested on directory mtime, which would not have proven it. Latency corroborates: `smsrv/server.log` extraction calls cluster **13.2–31.9s**, while all three mock scripts are in-process `http.server` handlers that answer in sub-10ms.
+3. **Which real model is unrecoverable.** The run predates env capture — `runmeta.py` was created 6h after the run finished, so `locomo_results_20260813_113535.json` has no model or env field (verified: no env capture in its metadata). No shell history exists on the box. The `smsrv` launch env matches none of the three boot scripts.
+4. **`deliverable/FAIR-CONFIG.md:14` claims the canonical spec is `ingest extractor (cognee, letta, graphiti, supermemory) = azure_ai/gpt-5.6-terra`. For supermemory that is unverified — and my measurement today is evidence it is impossible as stated.** Supermemory's server emits OpenAI parameters that this deployment rejects outright. It cannot talk to `gpt-5.6-terra` without request rewriting. So the 77.60 run used something else; the only other real endpoint configured anywhere in the campaign is Fireworks `deepseek-v4-flash`.
+5. **The campaign already doubted this number.** `FAIR-CONFIG.md:86` — "supermemory LoCoMo 77.60% | **suspect, not yet re-audited under this pass**". And `:208` says supermemory needs re-ingest (BUFFER_MISSING).
+6. **`FAIR-CONFIG.md:208` also attributes supermemory's surviving state to `~/memarms/sm/data`. That is the wrong directory** — that store was idle across the entire run. The run's state is in `memarms/smsrv/data`. Anyone re-auditing from `sm/data` will audit the wrong server.
+
+**Disclosure recommendation:** the supermemory accuracy row was produced on an extraction model that is (a) definitely not the mock, (b) definitely not verifiable as `gpt-5.6-terra`, and (c) very likely not `gpt-5.6-terra` at all on parameter-compatibility grounds. It should not sit in a table beside mem0/cognee/letta as a same-extractor comparison without that caveat.
+
+**Security, unrelated but live:** `memarms/sm/boot_sm_real.sh` contains a plaintext Fireworks API key inline (`OPENAI_API_KEY=fw_...`) in a plain `.sh` file. Needs rotation. I did not print or copy the value.
+
+## Cleanup
+Ran `~/tokmeter/cleanup.sh`. Residual check: **0** meter-proxy processes, **0** supermemory-server processes, **0** locomo run processes, **0** tokmeter containers, **0** listeners on 8899/8900/16768/16769. Still up and untouched, as expected: `fieldmem0-mem0-1`, `fieldmem0-qdrant-1`, `memarms-pg`, the bge embedding server on :18080. Trimmed 2.5G of scratch to 2.4M, keeping the evidence: `~/tokmeter/meter3.jsonl` (post-fix log), `meter.jsonl` / `meter_sm.jsonl` (pre-fix, incl. the 502 curve), the per-container `terra_usage.jsonl` cross-check meters, and all scripts.
+
+`timings/` untouched — all four files still at their Aug 13 11:40 mtimes. `results/` untouched — the 107 files with today's date were all written 00:01–05:00 by a LongMemEval run that finished before my session started; nothing written during it.
+
+One caveat I am carrying rather than burying: cognee logged 45 (conv 0) and 88 (conv 1) client-side "Request timed out" retries. For conv 0, 42 proxy calls exceeded 10s, so some of those abandoned generations completed and were billed; for conv 1 only 1 call did, so its timeouts largely never reached the endpoint. The token totals are correct as *tokens actually consumed* (retries are real cost), and `calls/chunk` came out at 1.998 vs 1.997 across two conversations with very different retry counts, which is what makes me confident the 2.00 is cognee's real per-chunk call count and not an artifact.
+</agent-message>
