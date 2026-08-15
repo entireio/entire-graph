@@ -638,10 +638,12 @@ func TestShowFileLimitedNeverMaterializesAnOversizedBlob(t *testing.T) {
 	}
 }
 
-// A ceiling at math.MaxInt64 overflows the +1 the bounded read is built on. The
-// failure is not a wrong answer but a hang, so this asserts on the clock: the
-// blob is larger than a pipe buffer, which is what turns a mis-sized limit into
-// git blocking on a write nobody drains.
+// A ceiling no blob can reach must behave as no ceiling. This once guarded an
+// overflow in a maxBytes+1 limit; deciding from the blob's size removed that
+// arithmetic, but the guarantee is still worth pinning, and the clock-based
+// assertion still catches the failure mode this function has had twice: not a
+// wrong answer, a hang. The blob is larger than a pipe buffer, which is what
+// turns a stalled read into git blocking on a write nobody drains.
 func TestShowFileLimitedTreatsAnUnreachableCeilingAsNoCeiling(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")

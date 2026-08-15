@@ -533,71 +533,55 @@ func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error)
 	return out, true, nil
 }
 
-// ShowFileLimited is ShowFile with a READ-SIDE ceiling: it never materializes
-// more than maxBytes+1 of the blob, and reports a larger blob as unreadable.
+// ShowFileLimited is ShowFile with a ceiling that is applied BEFORE the blob is
+// read: a larger blob is reported unreadable without its bytes ever being
+// materialized.
 //
-// ShowFile buffers all of git's stdout before returning, so a caller that only
-// wants small files could not express that: checking len(content) afterwards
-// enforces the ceiling on the ANSWER while the allocation has already happened.
-// Every other bounded read in this package refuses before materializing — the
-// batch reader streams an oversized blob to io.Discard off its header size, and
-// the on-disk reader reads through an io.LimitReader — so this closes the one
-// path where the bound arrived too late.
+// ShowFile buffers all of git's stdout, so a caller that only wants small files
+// could not express that — checking len(content) afterwards bounds the ANSWER
+// once the allocation has already happened. The other bounded readers here do
+// not work that way: the batch reader decides off the size in its header, and
+// the on-disk reader stats before it opens. This asks git for the size first,
+// for the same reason and with the same shape.
 //
-// The over-limit blob is not drained: cancelling the context stops git instead,
-// because the bytes were already refused and reading them to /dev/null is the
-// same wait this ceiling exists to avoid.
+// Deciding from the size, rather than reading through an io.LimitReader and
+// stopping git once the ceiling is passed, is deliberate. The reading form
+// deadlocked on Windows: killing git left a grandchild holding the inherited
+// stderr handle, so the copier goroutine never saw EOF and Cmd.Wait blocked in
+// awaitGoroutines forever. Nothing here now depends on process-tree teardown.
+// The extra `cat-file -s` is one small process on a path that is already the
+// rare fallback for a Git path containing a newline.
 func ShowFileLimited(ctx context.Context, repo, rev, path string, maxBytes int64) (string, bool, error) {
-	// The read is bounded at maxBytes+1 so that "exceeded" is distinguishable
-	// from "exactly at the ceiling". At math.MaxInt64 that wraps negative, and a
-	// negative io.LimitReader EOFs at once: the blob would read as empty and the
-	// oversize test could not fire, leaving git blocked on a pipe nobody drains
-	// while Wait blocks on git. A ceiling no blob can reach is no ceiling, so it
-	// takes the unbounded path instead.
-	limit := maxBytes + 1
-	if maxBytes <= 0 || limit <= 0 {
+	if maxBytes <= 0 {
 		return ShowFile(ctx, repo, rev, path)
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	// Same object spec and the same stderr-only classification as ShowFile; see
-	// there for why the revision is peeled to a tree first.
+	// Same object spec and the same stderr-only classification as ShowFile — see
+	// there for why the revision is peeled to a tree first. `cat-file -s` emits
+	// the identical missing-path diagnostic, so absent stays absent here too.
 	objectSpec := rev + "^{tree}:" + path
-	cmd := newCmd(ctx, repo, "git", "show", objectSpec)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	stdout, err := cmd.StdoutPipe()
+	out, stderr, err := runWithStderr(ctx, repo, "git", "cat-file", "-s", objectSpec)
 	if err != nil {
-		return "", false, err
-	}
-	if err := cmd.Start(); err != nil {
-		return "", false, fmt.Errorf("git show %s: %w", objectSpec, err)
-	}
-	content, readErr := io.ReadAll(io.LimitReader(stdout, limit))
-	oversized := int64(len(content)) > maxBytes
-	if oversized {
-		cancel()
-	}
-	waitErr := cmd.Wait()
-	switch {
-	case oversized:
-		// Refused, not failed: an oversized blob is a file this caller cannot
-		// quote, exactly like a missing one. waitErr here is the kill.
-		return "", false, nil
-	case readErr != nil:
-		return "", false, fmt.Errorf("git show %s: %w", objectSpec, readErr)
-	case waitErr != nil:
-		message := strings.TrimSpace(stderr.String())
-		if isMissingPathDiagnostic(message) {
+		if isMissingPathDiagnostic(stderr) {
 			return "", false, nil
 		}
+		message := stderr
 		if message == "" {
-			message = waitErr.Error()
+			message = err.Error()
 		}
-		return "", false, fmt.Errorf("git show %s: %s", objectSpec, message)
+		return "", false, fmt.Errorf("git cat-file -s %s: %s", objectSpec, message)
 	}
-	return string(content), true, nil
+	size, parseErr := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if parseErr != nil {
+		return "", false, fmt.Errorf("git cat-file -s %s: unparseable size %q", objectSpec, strings.TrimSpace(out))
+	}
+	if size > maxBytes {
+		// Refused, not failed: a blob this caller cannot quote, exactly like a
+		// missing one. No content was read to learn this.
+		return "", false, nil
+	}
+	// The commit is immutable, so the size just measured is the size that will be
+	// read — there is no grow-between-calls race to guard against here.
+	return ShowFile(ctx, repo, rev, path)
 }
 
 func isMissingPathDiagnostic(stderr string) bool {

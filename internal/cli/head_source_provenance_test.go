@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -17,12 +18,21 @@ func TestHeadSnapshotLineReaderPreservesCommittedFileContract(t *testing.T) {
 	write(t, repo, "tracked.go", "committed\r\nline\r\n")
 	write(t, repo, "contains-nul.go", "before\x00after\n")
 	write(t, repo, "oversized.go", strings.Repeat("x", callSiteMaxFileBytes+1))
-	write(t, repo, "line\nbreak.go", "committed-newline-path\n")
+	// A newline in a path is legal in Git and drives the one-shot `git show`
+	// fallback, but Windows cannot create such a file at all. Everything else
+	// this test pins — CRLF, NUL, the size ceiling, worktree isolation — is
+	// cross-platform, so only the newline case is skipped rather than the test.
+	newlinePaths := runtime.GOOS != "windows"
+	if newlinePaths {
+		write(t, repo, "line\nbreak.go", "committed-newline-path\n")
+	}
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "committed reader fixture")
 
 	write(t, repo, "tracked.go", "dirty\nline\n")
-	write(t, repo, "line\nbreak.go", "dirty-newline-path\n")
+	if newlinePaths {
+		write(t, repo, "line\nbreak.go", "dirty-newline-path\n")
+	}
 	write(t, repo, "dirty-only.go", "must not be visible from HEAD\n")
 
 	read, closeReader, err := openSnapshotLineReader(t.Context(), sem.ProviderSnapshot{
@@ -44,9 +54,11 @@ func TestHeadSnapshotLineReaderPreservesCommittedFileContract(t *testing.T) {
 	if !ok || strings.Join(lines, "|") != "committed|line|" {
 		t.Fatalf("committed CRLF source = %q, ok=%v", lines, ok)
 	}
-	lines, ok = read("line\nbreak.go")
-	if !ok || strings.Join(lines, "|") != "committed-newline-path|" {
-		t.Fatalf("committed newline-path source = %q, ok=%v", lines, ok)
+	if newlinePaths {
+		lines, ok = read("line\nbreak.go")
+		if !ok || strings.Join(lines, "|") != "committed-newline-path|" {
+			t.Fatalf("committed newline-path source = %q, ok=%v", lines, ok)
+		}
 	}
 	for _, path := range []string{"dirty-only.go", "contains-nul.go", "oversized.go"} {
 		if lines, ok := read(path); ok {
