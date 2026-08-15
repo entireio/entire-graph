@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "5f0e3a2d992e",
+  "strategy": "manual-commit",
+  "branch": "agent/fix-head-source-provenance",
+  "checkpoints_count": 8,
+  "files_touched": [
+    "internal/cli/head_source_provenance_test.go",
+    "internal/gitutil/git.go",
+    "internal/gitutil/git_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/5f/0e3a2d992e/0/metadata.json",
+      "transcript": "/5f/0e3a2d992e/0/full.jsonl",
+      "compact_transcript": "/5f/0e3a2d992e/0/transcript.jsonl",
+      "content_hash": "/5f/0e3a2d992e/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 78,
+    "cache_creation_tokens": 224947,
+    "cache_read_tokens": 7486774,
+    "output_tokens": 27923,
+    "api_call_count": 39
+  }
+}

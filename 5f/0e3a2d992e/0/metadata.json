@@ -1,0 +1,85 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "5f0e3a2d992e",
+  "session_id": "f0fe1aad-8ea2-4b96-bd6c-0743b14025f0",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-15T17:07:09.709558Z",
+  "branch": "agent/fix-head-source-provenance",
+  "checkpoints_count": 8,
+  "files_touched": [
+    "internal/cli/head_source_provenance_test.go",
+    "internal/gitutil/git.go",
+    "internal/gitutil/git_test.go"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-5",
+  "turn_id": "4598fd2dd967",
+  "checkpoint_transcript_start": 657,
+  "transcript_lines_at_start": 657,
+  "compact_transcript_start": 133,
+  "token_usage": {
+    "input_tokens": 78,
+    "cache_creation_tokens": 224947,
+    "cache_read_tokens": 7486774,
+    "output_tokens": 27923,
+    "api_call_count": 39
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01RhpeDFdB3jdfwoHXvtC1qX",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "code-review"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "4598fd2dd967",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 14,
+        "end": 15,
+        "entry_ids": [
+          "e46c64c4-9ff0-4cf4-b933-f1a491219a03"
+        ],
+        "tool_use_id": "toolu_01RhpeDFdB3jdfwoHXvtC1qX"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01RhpeDFdB3jdfwoHXvtC1qX"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: code-review",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 16
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-15T17:07:09.647334Z",
+    "agent_lines": 60,
+    "agent_removed": 62,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 60,
+    "total_lines_changed": 122,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
