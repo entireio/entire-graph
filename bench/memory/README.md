@@ -1,5 +1,8 @@
 # Memory benchmark — results and reproduction kit
 
+**New to this harness? Read [`RUNNING-LOCOMO.md`](RUNNING-LOCOMO.md) first.** It is the
+step-by-step protocol, including the five settings that silently produce wrong numbers.
+
 **The results are in [`LOCOMO-COMPARISON.md`](LOCOMO-COMPARISON.md).** Start there. It carries the
 headline table, the mechanism behind it, where entire-graph wins, where it loses, and what is not
 claimable.
