@@ -46,7 +46,7 @@ artifact in [`RUN-INDEX.md`](RUN-INDEX.md).
 | 7 | cmm (patched, Markdown-Section) | `full_cmm` | 91.30 | 1406/1540 | **0** |
 | 8 | graphify | `full_graphify` | 87.34 | 1345/1540 | **0** |
 | 9 | letta | `field_letta_loco` | 80.58 | 1241/1540 | 1+ per memory |
-| 10 | supermemory | `field_sm_loco` | 77.60 | 1195/1540 | hosted |
+| 10 | supermemory ‡ | `field_sm_loco` | 77.60 | 1195/1540 | hosted |
 | — | graphiti | — | — | — | 1+ per memory |
 | — | mem0 Pro / managed | — | — | — | hosted |
 
@@ -213,6 +213,36 @@ mem0 and letta store **LLM-rewritten facts**, not source text. Substring matchin
 evidence scores them at exactly **0.000**, which is an artifact of their storage format and not a
 measurement of their recall. Those cells are **dashed**. No proxy was substituted, because a proxy
 here would be a number invented to fill a column.
+
+### ‡ supermemory: extraction model unverifiable
+
+The spine in §0 requires every LLM-extraction arm to use the same extraction model
+(`azure_ai/gpt-5.6-terra`). **For supermemory we cannot demonstrate that it did.**
+
+supermemory has two boot paths in our tooling: one pointing at a **local mock model**, one at
+**Fireworks `deepseek-v4-flash`**. Neither is the Azure deployment the other extraction arms used.
+A read-only forensic pass over the machine established:
+
+- **It was not the mock.** Two independent proofs: the mock instance's data store was
+  filesystem-idle throughout the run window, and its log shows a crash at `2026-08-12T14:13:11Z`
+  with no further output until a boot banner on `2026-08-13T17:08:24Z` — i.e. the process was dead
+  for the entire `05:19–11:35` window that produced this row. High confidence.
+- **Which real model it used is unrecoverable.** No process-level environment record for the
+  supermemory server survives: no shell history, no supervisor log on the relevant track, no
+  pre-`runmeta` capture, and the harness driver never logs upstream host or model for *any* arm.
+  The system journal for the window is permission-denied. The only remaining evidence is off-VM
+  provider billing logs.
+
+So supermemory's extraction model is **either `gpt-5.6-terra` (the canonical intent) or Fireworks
+`deepseek-v4-flash` (what the environment file pinned at the time), and we cannot say which.**
+Its row is retained with this disclosure rather than silently presented as spine-compliant.
+
+Independently of the model question, `FAIR-CONFIG.md` already flags this run as suspect and
+not re-audited, and 221 of its 1,540 questions (14.4%) returned zero memories — with normal
+retrieval latency, so genuine misses rather than the empty-buffer defect found elsewhere.
+**Treat 77.60 as a lower bound on supermemory's capability, not a measurement of it.**
+
+---
 
 ## 6b. Answer-key quality, and why both scores exceed the reported ceiling
 
