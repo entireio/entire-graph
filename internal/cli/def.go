@@ -174,8 +174,13 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 		return err
 	}
 	// Only the source-quoting formats read source. Opening before the format
-	// switch spawned a git cat-file child that `--format json` never touched, and
-	// charged its setup to index_latency_ms.
+	// switch spawned a git cat-file child that `--format json` never touched.
+	//
+	// That is all this gate fixes. The open still happens before indexLatency is
+	// taken below, so text and agent runs continue to report the spawn as index
+	// time — as do impact and neighbors, which open unconditionally. Changing
+	// that is a change to what a published latency field MEANS, so it belongs in
+	// its own commit across all three verbs rather than as a side effect here.
 	var readSource lineReader
 	if flags.Format == "text" || flags.Format == "agent" {
 		var closeSource func() error
