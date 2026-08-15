@@ -548,7 +548,14 @@ func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error)
 // because the bytes were already refused and reading them to /dev/null is the
 // same wait this ceiling exists to avoid.
 func ShowFileLimited(ctx context.Context, repo, rev, path string, maxBytes int64) (string, bool, error) {
-	if maxBytes <= 0 {
+	// The read is bounded at maxBytes+1 so that "exceeded" is distinguishable
+	// from "exactly at the ceiling". At math.MaxInt64 that wraps negative, and a
+	// negative io.LimitReader EOFs at once: the blob would read as empty and the
+	// oversize test could not fire, leaving git blocked on a pipe nobody drains
+	// while Wait blocks on git. A ceiling no blob can reach is no ceiling, so it
+	// takes the unbounded path instead.
+	limit := maxBytes + 1
+	if maxBytes <= 0 || limit <= 0 {
 		return ShowFile(ctx, repo, rev, path)
 	}
 	ctx, cancel := context.WithCancel(ctx)
@@ -567,7 +574,7 @@ func ShowFileLimited(ctx context.Context, repo, rev, path string, maxBytes int64
 	if err := cmd.Start(); err != nil {
 		return "", false, fmt.Errorf("git show %s: %w", objectSpec, err)
 	}
-	content, readErr := io.ReadAll(io.LimitReader(stdout, maxBytes+1))
+	content, readErr := io.ReadAll(io.LimitReader(stdout, limit))
 	oversized := int64(len(content)) > maxBytes
 	if oversized {
 		cancel()

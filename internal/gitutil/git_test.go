@@ -3,6 +3,7 @@ package gitutil
 import (
 	"context"
 	"crypto/rand"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestListFilesHandlesNewlinesInPaths(t *testing.T) {
@@ -633,6 +635,54 @@ func TestShowFileLimitedNeverMaterializesAnOversizedBlob(t *testing.T) {
 	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > budget {
 		t.Errorf("reading a %d-byte blob under a %d-byte ceiling allocated %d bytes, want under %d: the blob was materialized before the ceiling was applied",
 			blobSize, ceiling, allocated, budget)
+	}
+}
+
+// A ceiling at math.MaxInt64 overflows the +1 the bounded read is built on. The
+// failure is not a wrong answer but a hang, so this asserts on the clock: the
+// blob is larger than a pipe buffer, which is what turns a mis-sized limit into
+// git blocking on a write nobody drains.
+func TestShowFileLimitedTreatsAnUnreachableCeilingAsNoCeiling(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "commit.gpgsign", "false")
+
+	const blobSize = 1 << 20
+	blob := make([]byte, blobSize)
+	if _, err := rand.Read(blob); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "big.bin"), blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "pipe-filling blob")
+
+	type outcome struct {
+		out string
+		ok  bool
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		// t.Context() is cancelled when the test ends, so a hung git is reaped
+		// rather than outliving the run.
+		out, ok, err := ShowFileLimited(t.Context(), repo, "HEAD", "big.bin", math.MaxInt64)
+		done <- outcome{out, ok, err}
+	}()
+
+	select {
+	case got := <-done:
+		if got.err != nil || !got.ok || len(got.out) != blobSize {
+			t.Fatalf("unreachable ceiling = (%d bytes, ok %v, err %v), want (%d bytes, true, nil)", len(got.out), got.ok, got.err, blobSize)
+		}
+		if got.out != string(blob) {
+			t.Fatal("unreachable ceiling returned different bytes than the blob")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("ShowFileLimited did not return: maxBytes+1 overflowed to a negative limit, so the read EOFed at once and git blocked writing to a pipe nobody drains")
 	}
 }
 
