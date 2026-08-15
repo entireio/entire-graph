@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -195,6 +196,41 @@ func TestExplainHeaderReportsSelectedTree(t *testing.T) {
 	}
 	if firstLine(head) == firstLine(worktree) {
 		t.Fatalf("explain used the same provenance header for --head and worktree:\n%s", head)
+	}
+}
+
+// The text header names the tree it read. A JSON consumer has no header to read,
+// so the same fact has to be a field.
+func TestExplainJSONReportsSelectedTree(t *testing.T) {
+	repo, cacheDir := newDirtySourceViewRepo(t)
+	const buildFailure = "./definition.go:3:1: undefined: InspectDefinition\n"
+
+	decode := func(output string) ExplainResponse {
+		t.Helper()
+		var response ExplainResponse
+		if err := json.Unmarshal([]byte(output), &response); err != nil {
+			t.Fatalf("decode explain json: %v\n%s", err, output)
+		}
+		if len(response.Symbols) == 0 {
+			t.Fatalf("explain resolved nothing, so provenance is untested:\n%s", output)
+		}
+		return response
+	}
+
+	worktree := decode(runSourceViewCommand(t, repo, cacheDir, buildFailure, "explain", "--no-echo", "--format", "json"))
+	if !worktree.WorktreeSnapshot {
+		t.Error("working-tree explain does not report worktree_snapshot")
+	}
+
+	head := decode(runSourceViewCommand(t, repo, cacheDir, buildFailure, "explain", "--no-echo", "--head", "--format", "json"))
+	if head.WorktreeSnapshot {
+		t.Error("--head explain reports its answer as working-tree")
+	}
+	if head.Commit == "" || head.Tree == "" {
+		t.Errorf("--head explain omits its provenance: commit=%q tree=%q", head.Commit, head.Tree)
+	}
+	if head.Commit != rev(t, repo, "HEAD") {
+		t.Errorf("--head explain reports commit %q, want HEAD %q", head.Commit, rev(t, repo, "HEAD"))
 	}
 }
 

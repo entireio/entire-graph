@@ -104,6 +104,13 @@ type ExplainResponse struct {
 	// Scanned is how many candidate names the error text yielded, so a truncated answer is visible.
 	Scanned int `json:"scanned"`
 	Omitted int `json:"omitted,omitempty"`
+	// Commit / Tree / WorktreeSnapshot are the provenance of the declarations above: WHICH tree these
+	// line numbers and signatures describe. The text form says it in its header; without these a JSON
+	// consumer had no way to tell a --head answer from a working-tree one, and on a clean tree the two
+	// were byte-identical. Same field names and semantics as def, neighbors, and impact.
+	Commit           string `json:"commit,omitempty"`
+	Tree             string `json:"tree,omitempty"`
+	WorktreeSnapshot bool   `json:"worktree_snapshot,omitempty"`
 }
 
 type explainFlags struct {
@@ -187,13 +194,18 @@ func runExplain(ctx context.Context, opts Options, args []string) error {
 		return err
 	}
 	response := buildExplainResponse(snapshot, names)
+	// One decision, both renderings. The text header and the JSON fields are computed from the same
+	// expression so they can never disagree about which tree was read — the disagreement this command's
+	// provenance work exists to remove.
+	useHead := !flags.Worktree && snapshot.Header.Commit != ""
+	response.Commit, response.Tree = snapshot.Header.Commit, snapshot.Header.Tree
+	response.WorktreeSnapshot = !useHead
 	switch flags.Format {
 	case "json":
 		encoder := json.NewEncoder(opts.Stdout)
 		encoder.SetEscapeHTML(false)
 		return encoder.Encode(response)
 	case "text", "agent":
-		useHead := !flags.Worktree && snapshot.Header.Commit != ""
 		_, err := opts.Stdout.Write(RenderExplainWithProvenance(response, flags.MaxContextBytes, useHead))
 		return err
 	default:
