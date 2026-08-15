@@ -1,13 +1,13 @@
 {
-  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
-  "checkpoint_id": "8cf5f97d7f5f",
-  "strategy": "manual-commit",
   "branch": "agent/explain-json-provenance",
-  "checkpoints_count": 1,
+  "checkpoint_id": "8cf5f97d7f5f",
+  "checkpoints_count": 3,
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
   "files_touched": [
     "internal/cli/explain.go",
     "internal/cli/head_source_provenance_test.go"
   ],
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/8c/f5f97d7f5f/0/metadata.json",
@@ -15,13 +15,20 @@
       "compact_transcript": "/8c/f5f97d7f5f/0/transcript.jsonl",
       "content_hash": "/8c/f5f97d7f5f/0/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "content_hash": "/8c/f5f97d7f5f/1/content_hash.txt",
+      "metadata": "/8c/f5f97d7f5f/1/metadata.json",
+      "prompt": "/8c/f5f97d7f5f/1/prompt.txt",
+      "transcript": "/8c/f5f97d7f5f/1/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 30,
+    "input_tokens": 41473,
     "cache_creation_tokens": 15935,
-    "cache_read_tokens": 1220019,
-    "output_tokens": 7573,
-    "api_call_count": 15
+    "cache_read_tokens": 1628491,
+    "output_tokens": 11838,
+    "api_call_count": 31
   }
 }
