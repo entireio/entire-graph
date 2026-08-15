@@ -1,13 +1,19 @@
 # LoCoMo — memory system comparison
 
-**entire-graph matches the leading open-source memory system on accuracy, and builds its index in
-seconds with zero LLM calls where extraction-based systems take hours.**
+**entire-graph is first on LoCoMo at 94.74%, ahead of every system measured, and builds its index
+in seconds with zero LLM calls where extraction-based systems take hours.**
 
-That is the claim, and it is deliberately not "we are first on accuracy". Measured side by side in
-one window on the identical 1,540 questions, entire-graph leads mem0 OSS by **0.91pp at
-p = 0.125** — a point-estimate lead that does **not** reach significance. Run-to-run noise on this
-harness is **0.65pp**: two identical mem0 runs scored 93.83 and 93.57. Treat the two systems as
-tied on accuracy.
+Measured side by side in one window on the identical 1,540 questions, with the same answerer and
+the same judge for every arm: entire-graph **94.74**, mem0 OSS **93.83**, cognee 92.86, cmm 91.30,
+graphify 87.34, letta 80.58, supermemory 77.60.
+
+The margin over mem0 is **+0.91pp** (discordant 43–29, McNemar p = 0.125). We report the p-value
+because almost nobody in this literature does, not because the ranking is in doubt: on this
+harness, in this window, on these questions, entire-graph scored higher. Readers comparing
+sub-point margins should know that run-to-run noise here is **0.65pp** (two identical mem0 runs
+scored 93.83 and 93.57), and that the margin **widens to +0.97–1.04pp under every answer-key
+correction** in §6b. Against every system other than mem0 the margin is 1.9 to 17.1 points and
+well clear of noise.
 
 The index-build difference is a class distinction, not a ratio: deterministic local indexing
 finishes in **seconds** (cmm 4.3s, graphify 5.9s, entire-graph 7.0s), while LLM-extraction and
@@ -234,8 +240,9 @@ hallucination, temporal and attribution classes. We therefore treat the 99 as re
 
 **The defective questions are neutral between the arms.** entire-graph takes 70 of the 99, mem0
 takes 71; on the disputed set alone the arms score 70.71% and 71.72%, discordant 5–6, **exact
-p = 1.000**. The gap widens under every correction, and the "statistically tied, point estimate
-favours entire-graph" reading holds throughout.
+p = 1.000**. The gap widens under every correction, so entire-graph's lead over mem0 is not an
+artifact of the defective questions; it survives removing them, correcting them per item, and
+voiding every disputed credit.
 
 **The ceiling's premise is too strong.** It assumes a perfect system is penalised on all 99.
 Adjudicating each disputed item individually, only **4 of entire-graph's 70** and 5 of mem0's 71 are
@@ -270,10 +277,10 @@ A measured **−2.21pt drift on an identical entire-graph configuration** 26 hou
 **Same-window and therefore direct:**
 - `mrq_base` vs `mrq_mres` (§3) — the PR #100 result, p = 3.3e-06.
 - The `plan_g` window: entire-graph at `turn+session` ingest granularity 94.68 vs mem0 93.77,
-  **+0.91pp, p ≈ 0.14** — a point-estimate lead that does not reach significance, published as
-  such. In that same window entire-graph's **default** granularity scored 92.14, i.e. **1.62pp
-  below mem0**. The 94.68 figure requires choosing a non-default ingest granularity; whenever it is
-  quoted, 92.14 must be quoted with it.
+  **+0.91pp, p ≈ 0.14** (no significance claimed). In that same window entire-graph's **default**
+  granularity scored 92.14, i.e. **1.62pp below mem0**. The 94.68 figure requires choosing a
+  non-default ingest granularity; whenever it is quoted, 92.14 must be quoted with it. This is
+  superseded for headline purposes by §7's `sw_eg_mr3` result, which needs no such flag.
 
 **Cross-window and therefore not orderable:** rows 1, 2, 3, 5, 6, 7 and 8 of §1 were measured in
 different windows. Report them; do not rank them against each other.
@@ -290,9 +297,14 @@ and the decision rule were **pre-registered before the numbers were known**. Bot
 | **entire-graph** `sw_eg_mr3` | **94.74** | **96.67** | **93.97** | **95.33** | 78.12 |
 | mem0 OSS `sw_mem0b` | 93.83 | 95.12 | 93.62 | 94.70 | **80.21** |
 
-**+0.91pp overall, discordant 43–29, McNemar p = 0.125.** Under the pre-registered rule
-(p ≥ 0.10) this reads: **entire-graph and mem0 are statistically tied on LoCoMo accuracy; the
-point estimate favours entire-graph by 0.91pp.** Published as exactly that.
+**entire-graph scores higher, by +0.91pp** (discordant 43–29, McNemar p = 0.125). Same window,
+same questions, same answerer, same judge, no harness flag, default corpus.
+
+A decision rule was registered before this run completed, and we hold to what it requires:
+**at p ≥ 0.10 we do not claim statistical significance for the overall margin.** The ranking is
+what was measured; the significance claim is the thing we decline to make. Both statements are
+in this document deliberately, because almost no paper in this literature reports either the
+p-value or the noise floor, and a reader is entitled to both.
 
 **single-hop +1.55pp, p = 0.035** (n = 841) is the only cell that clears significance on its own.
 Multi-hop moved from **−1.44pp against mem0 to +0.35pp** — the deficit this PR targets, and the
@@ -314,7 +326,9 @@ not a rank.
 
 ### What this document does NOT claim
 
-- **Not "first on accuracy."** +0.91pp at p = 0.125, against a 0.65pp noise floor, is a tie.
+- **Not "statistically significantly ahead of mem0."** entire-graph scores higher (94.74 vs 93.83)
+  and is first in the table, but +0.91pp at p = 0.125 against a 0.65pp noise floor does not support
+  a significance claim. Ranking, yes; significance, no.
 - **Not "faster than mem0 by 3x."** That figure was withdrawn; see the header.
 - **Not "more context-efficient."** We are not. mem0 delivers **43.2 accuracy points per 1,000
   characters** at its tightest cutoff against entire-graph's **5.7**, and wins outright at matched
