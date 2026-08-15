@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "2910c8b32176",
+  "strategy": "manual-commit",
+  "branch": "agent/drop-line-reader-shims",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/def.go",
+    "internal/cli/def_navigation_test.go",
+    "internal/cli/head_source_provenance_test.go",
+    "internal/cli/impact.go",
+    "internal/cli/impact_doc_mention_test.go",
+    "internal/cli/impact_test.go",
+    "internal/cli/linereader_ondisk_test.go",
+    "internal/cli/neighbors.go",
+    "internal/cli/neighbors_efficiency_test.go",
+    "internal/cli/symbolref.go",
+    "internal/cli/symbolref_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/29/10c8b32176/0/metadata.json",
+      "transcript": "/29/10c8b32176/0/full.jsonl",
+      "compact_transcript": "/29/10c8b32176/0/transcript.jsonl",
+      "content_hash": "/29/10c8b32176/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 34,
+    "cache_creation_tokens": 29024,
+    "cache_read_tokens": 1787541,
+    "output_tokens": 11031,
+    "api_call_count": 17
+  }
+}
