@@ -688,6 +688,48 @@ func TestShowFileLimitedTreatsAnUnreachableCeilingAsNoCeiling(t *testing.T) {
 	}
 }
 
+// When the size probe gives no answer the read is unbounded, so the ceiling can
+// only be enforced on the result. That path was previously untested and the doc
+// comment claimed a guarantee it no longer had: the refusal must survive a
+// silent probe, or a caller receives content it declared too large.
+func TestShowFileLimitedRefusesOversizedBlobWhenTheProbeIsSilent(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "commit.gpgsign", "false")
+
+	const ceiling = 1 << 10
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("over.txt", strings.Repeat("x", ceiling+1))
+	write("under.txt", strings.Repeat("y", ceiling))
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "probe fixture")
+
+	silent := func(context.Context, string, string, string) (int64, bool) { return 0, false }
+
+	if out, ok, err := showFileLimited(t.Context(), repo, "HEAD", "over.txt", ceiling, silent); err != nil || ok || out != "" {
+		t.Errorf("oversized blob with a silent probe = (%d bytes, ok %v, err %v), want (\"\", false, nil)", len(out), ok, err)
+	}
+	// A silent probe must not turn into a blanket refusal either: everything at
+	// or under the ceiling still has to come back.
+	if out, ok, err := showFileLimited(t.Context(), repo, "HEAD", "under.txt", ceiling, silent); err != nil || !ok || len(out) != ceiling {
+		t.Errorf("blob at the ceiling with a silent probe = (%d bytes, ok %v, err %v), want (%d bytes, true, nil)", len(out), ok, err, ceiling)
+	}
+	// And absent-vs-failed still comes from ShowFile, not from the probe.
+	if out, ok, err := showFileLimited(t.Context(), repo, "HEAD", "missing.txt", ceiling, silent); err != nil || ok || out != "" {
+		t.Errorf("missing path with a silent probe = (%q, ok %v, err %v), want (\"\", false, nil)", out, ok, err)
+	}
+	if out, ok, err := showFileLimited(t.Context(), repo, "BADREV", "under.txt", ceiling, silent); err == nil || ok || out != "" {
+		t.Errorf("bad rev with a silent probe = (%q, ok %v, err %v), want (\"\", false, non-nil)", out, ok, err)
+	}
+}
+
 func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	// ShowFile classifies file-absent by matching git's English stderr text, so
 	// diagnostic subprocesses run with a pinned C locale. LC_ALL=C must come

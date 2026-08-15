@@ -533,9 +533,17 @@ func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error)
 	return out, true, nil
 }
 
-// ShowFileLimited is ShowFile with a ceiling that is applied BEFORE the blob is
-// read: a larger blob is reported unreadable without its bytes ever being
-// materialized.
+// ShowFileLimited is ShowFile with a size ceiling: a larger blob is always
+// reported unreadable, and is normally refused before its bytes are read.
+//
+// The two halves of that sentence are guaranteed differently, and the difference
+// is the contract. Refusing an oversized blob is UNCONDITIONAL — it holds even
+// when the size probe below says nothing. Refusing it without materializing it
+// holds whenever the probe answers, which is every ordinary run; when the probe
+// cannot answer, the fallback read is bounded on its result rather than on its
+// allocation. An earlier version of this comment promised the absolute form
+// after the probe had already been made best effort, which is the sort of claim
+// a caller sizing a buffer would rely on.
 //
 // ShowFile buffers all of git's stdout, so a caller that only wants small files
 // could not express that — checking len(content) afterwards bounds the ANSWER
@@ -553,26 +561,47 @@ func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error)
 // rare fallback for a Git path containing a newline.
 //
 // The size probe cannot make an answer WORSE than ShowFile's: it is best effort,
-// and anything it fails to establish falls through to the unbounded read, which
-// keeps its own absent-vs-failed classification.
+// and anything it fails to establish falls through to the read, which keeps its
+// own absent-vs-failed classification.
 func ShowFileLimited(ctx context.Context, repo, rev, path string, maxBytes int64) (string, bool, error) {
+	return showFileLimited(ctx, repo, rev, path, maxBytes, blobSizeAtRev)
+}
+
+// showFileLimited takes the probe as an argument so a test can exercise the
+// no-answer path, which is otherwise unreachable: the probe and the read resolve
+// the same object through the same git, so making one fail while the other
+// succeeds is not something a fixture repository can arrange.
+func showFileLimited(
+	ctx context.Context,
+	repo, rev, path string,
+	maxBytes int64,
+	probe func(ctx context.Context, repo, rev, path string) (int64, bool),
+) (string, bool, error) {
 	if maxBytes <= 0 {
 		return ShowFile(ctx, repo, rev, path)
 	}
-	// The probe only ever ADDS a refusal. Every outcome it cannot speak to —
-	// missing path, bad revision, a git whose diagnostics are worded differently,
-	// a size that will not parse — falls through to ShowFile, which stays the one
-	// place absent-vs-failed is decided. Classifying a second command's stderr
-	// with a matcher written for `git show` would have put that contract at the
-	// mercy of another command's wording.
-	if size, known := blobSizeAtRev(ctx, repo, rev, path); known && size > maxBytes {
+	// The probe only ever ADDS an early refusal. Every outcome it cannot speak to
+	// — missing path, bad revision, a git whose diagnostics are worded
+	// differently, a size that will not parse — falls through to ShowFile, which
+	// stays the one place absent-vs-failed is decided. Classifying a second
+	// command's stderr with a matcher written for `git show` would have put that
+	// contract at the mercy of another command's wording.
+	if size, known := probe(ctx, repo, rev, path); known && size > maxBytes {
 		// Refused, not failed: a blob this caller cannot quote, exactly like a
 		// missing one. No content was read to learn this.
 		return "", false, nil
 	}
 	// The commit is immutable, so a size measured above is the size that will be
 	// read — there is no grow-between-calls race to guard against here.
-	return ShowFile(ctx, repo, rev, path)
+	content, ok, err := ShowFile(ctx, repo, rev, path)
+	if ok && int64(len(content)) > maxBytes {
+		// Only reachable when the probe gave no answer. The bytes are already
+		// allocated, so this cannot restore the memory bound — but it keeps the
+		// ANSWER identical either way, so a caller never receives content it
+		// declared too large to accept.
+		return "", false, nil
+	}
+	return content, ok, err
 }
 
 // blobSizeAtRev reports the size of the blob at rev:path without reading it.
