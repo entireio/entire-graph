@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "133d1a61da63",
+  "strategy": "manual-commit",
+  "branch": "agent/validate-agent-markers",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "internal/cli/agents.go",
+    "internal/cli/agents_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/13/3d1a61da63/0/metadata.json",
+      "transcript": "/13/3d1a61da63/0/full.jsonl",
+      "compact_transcript": "/13/3d1a61da63/0/transcript.jsonl",
+      "content_hash": "/13/3d1a61da63/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 44,
+    "cache_creation_tokens": 316327,
+    "cache_read_tokens": 6235771,
+    "output_tokens": 11442,
+    "api_call_count": 22
+  }
+}
