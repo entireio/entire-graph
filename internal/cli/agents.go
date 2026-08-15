@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"os"
@@ -96,14 +97,6 @@ func runInitAgents(opts Options, args []string) error {
 	}
 
 	guidePath := filepath.Join(root, ".entire", "graph-agent.md")
-	if err := os.MkdirAll(filepath.Dir(guidePath), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(guidePath, []byte(agentGuide), 0o644); err != nil {
-		return err
-	}
-	fmt.Fprintf(opts.Stdout, "wrote %s\n", guidePath)
-
 	pointer := agentPointerBegin + "\n" +
 		"This repo has the entire-graph code graph installed. Before exploring code with\n" +
 		"grep/find/whole-file reads, read .entire/graph-agent.md — resolution-first guidance\n" +
@@ -112,53 +105,146 @@ func runInitAgents(opts Options, args []string) error {
 		agentPointerEnd + "\n"
 
 	agentsPath := filepath.Join(root, "AGENTS.md")
-	if err := upsertPointerBlock(agentsPath, pointer); err != nil {
+	claudePath := filepath.Join(root, "CLAUDE.md")
+	agentsInfo, err := inspectInstructionFile(agentsPath)
+	if err != nil {
+		return fmt.Errorf("init-agents: %w", err)
+	}
+	claudeInfo, err := inspectInstructionFile(claudePath)
+	if err != nil {
+		return fmt.Errorf("init-agents: %w", err)
+	}
+
+	sharedInstructions := agentsInfo != nil && claudeInfo != nil && os.SameFile(agentsInfo, claudeInfo)
+	agentsSource, agentsBegin, agentsEnd, err := readAndValidateInstructionFile(agentsPath)
+	if err != nil {
+		return fmt.Errorf("init-agents: %w", err)
+	}
+	var claudeSource []byte
+	claudeBegin, claudeEnd := -1, -1
+	if !sharedInstructions {
+		claudeSource, claudeBegin, claudeEnd, err = readAndValidateInstructionFile(claudePath)
+		if err != nil {
+			return fmt.Errorf("init-agents: %w", err)
+		}
+	}
+
+	// Compute every byte that depends on instruction-file reads before creating or
+	// modifying anything. In particular, Claude import detection must see the same
+	// validated snapshot that is rendered below.
+	agentsContent := renderPointerBlock(agentsSource, agentsBegin, agentsEnd, pointer)
+	claudeBlock := pointer
+	if !sharedInstructions && claudeDirectlyImportsAgents(claudeSource, claudePath, agentsPath) {
+		claudeBlock = agentPointerBegin + "\n<!-- Entire Graph instructions are inherited through AGENTS.md. -->\n" + agentPointerEnd + "\n"
+	}
+	var claudeContent []byte
+	if !sharedInstructions {
+		claudeContent = renderPointerBlock(claudeSource, claudeBegin, claudeEnd, claudeBlock)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(guidePath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(guidePath, []byte(agentGuide), 0o644); err != nil {
+		return err
+	}
+	fmt.Fprintf(opts.Stdout, "wrote %s\n", guidePath)
+
+	if err := os.WriteFile(agentsPath, agentsContent, 0o644); err != nil {
 		return fmt.Errorf("init-agents: AGENTS.md: %w", err)
 	}
 	fmt.Fprintf(opts.Stdout, "updated %s\n", agentsPath)
 
-	claudePath := filepath.Join(root, "CLAUDE.md")
-	agentsInfo, err := os.Stat(agentsPath)
-	if err != nil {
-		return fmt.Errorf("init-agents: AGENTS.md: %w", err)
-	}
-	claudeInfo, err := os.Stat(claudePath)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("init-agents: CLAUDE.md: %w", err)
-	}
-	if err == nil && os.SameFile(agentsInfo, claudeInfo) {
+	if sharedInstructions {
 		// A symlink or hard link already gives Claude the AGENTS.md pointer. Updating the
 		// same inode a second time could replace that pointer with an inheritance notice
 		// that no longer has anything to inherit from.
 		return nil
 	}
-
-	importsAgents, err := claudeDirectlyImportsAgents(claudePath, agentsPath)
+	// Preserve the existing first-run behavior for a dangling AGENTS.md/CLAUDE.md alias:
+	// writing AGENTS.md may have created the shared target that did not exist at preflight.
+	agentsInfo, err = os.Stat(agentsPath)
 	if err != nil {
+		return fmt.Errorf("init-agents: AGENTS.md: %w", err)
+	}
+	claudeInfo, err = os.Stat(claudePath)
+	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("init-agents: CLAUDE.md: %w", err)
 	}
-	claudeBlock := pointer
-	if importsAgents {
-		claudeBlock = agentPointerBegin + "\n<!-- Entire Graph instructions are inherited through AGENTS.md. -->\n" + agentPointerEnd + "\n"
+	if err == nil && os.SameFile(agentsInfo, claudeInfo) {
+		return nil
 	}
-	if err := upsertPointerBlock(claudePath, claudeBlock); err != nil {
+	if err := os.WriteFile(claudePath, claudeContent, 0o644); err != nil {
 		return fmt.Errorf("init-agents: CLAUDE.md: %w", err)
 	}
 	fmt.Fprintf(opts.Stdout, "updated %s\n", claudePath)
 	return nil
 }
 
+// inspectInstructionFile identifies existing aliases and rejects targets that cannot be safely
+// read as instruction files. A missing target—including a dangling alias—is preserved as the
+// empty-file case supported by init-agents.
+func inspectInstructionFile(path string) (os.FileInfo, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("%s: inspect target: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: expected a regular file, found %s", path, info.Mode().Type())
+	}
+	return info, nil
+}
+
+func readAndValidateInstructionFile(path string) ([]byte, int, int, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, -1, -1, nil
+		}
+		return nil, -1, -1, fmt.Errorf("%s: read file: %w", path, err)
+	}
+	begin, end, err := validatePointerMarkers(path, content)
+	if err != nil {
+		return nil, -1, -1, err
+	}
+	return content, begin, end, nil
+}
+
+// validatePointerMarkers intentionally counts the raw marker tokens. Markers in examples,
+// comments, or other Markdown regions are still managed-marker tokens and must not make the
+// replacement range ambiguous.
+func validatePointerMarkers(path string, content []byte) (int, int, error) {
+	beginToken := []byte(agentPointerBegin)
+	endToken := []byte(agentPointerEnd)
+	beginCount := bytes.Count(content, beginToken)
+	endCount := bytes.Count(content, endToken)
+	begin := bytes.Index(content, beginToken)
+	end := bytes.Index(content, endToken)
+
+	if beginCount == 0 && endCount == 0 {
+		return -1, -1, nil
+	}
+	if beginCount == 1 && endCount == 1 && begin < end {
+		return begin, end, nil
+	}
+
+	reason := fmt.Sprintf("found %d begin marker(s) and %d end marker(s)", beginCount, endCount)
+	if beginCount == 1 && endCount == 1 {
+		reason = "the end marker appears before the begin marker"
+	}
+	return -1, -1, fmt.Errorf(
+		"%s: malformed Entire Graph managed markers (%s); back up the file, preserve user-owned text, reduce it to zero markers or exactly one complete %q / %q pair with begin before end, then rerun init-agents",
+		path, reason, agentPointerBegin, agentPointerEnd,
+	)
+}
+
 // claudeDirectlyImportsAgents recognizes a standalone @path directive outside the Markdown
 // regions where Claude suppresses imports. Ambiguous syntax returns false so the direct pointer
 // remains in place.
-func claudeDirectlyImportsAgents(claudePath, agentsPath string) (bool, error) {
-	content, err := os.ReadFile(claudePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, err
-	}
+func claudeDirectlyImportsAgents(content []byte, claudePath, agentsPath string) bool {
 	var found, fence bool
 	var until string
 	var fenceChar byte
@@ -180,7 +266,7 @@ func claudeDirectlyImportsAgents(claudePath, agentsPath string) (bool, error) {
 			continue
 		}
 		if strings.Contains(line, agentPointerEnd) {
-			return false, nil
+			return false
 		}
 		if strings.Contains(line, "<!--") {
 			if !strings.Contains(line, "-->") {
@@ -189,7 +275,7 @@ func claudeDirectlyImportsAgents(claudePath, agentsPath string) (bool, error) {
 			continue
 		}
 		if strings.Contains(line, "-->") {
-			return false, nil
+			return false
 		}
 		if fence {
 			width := len(line) - len(strings.TrimLeft(line, string(fenceChar)))
@@ -227,7 +313,7 @@ func claudeDirectlyImportsAgents(claudePath, agentsPath string) (bool, error) {
 			found = true
 		}
 	}
-	return found && until == "" && !fence, nil
+	return found && until == "" && !fence
 }
 
 func markdownIndent(line string) int {
@@ -262,16 +348,11 @@ func nextCodeSpanWidth(line string, open int) int {
 	return open
 }
 
-// upsertPointerBlock appends the block to path (creating the file if absent), or replaces the
-// existing marker-delimited block in place, so repeated runs never duplicate content.
-func upsertPointerBlock(path, block string) error {
-	existing, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
+// renderPointerBlock appends the block to an empty/unmanaged snapshot, or replaces its already
+// validated marker-delimited block in place. It performs no I/O so callers can render all output
+// before the first write.
+func renderPointerBlock(existing []byte, begin, end int, block string) []byte {
 	content := string(existing)
-	begin := strings.Index(content, agentPointerBegin)
-	end := strings.Index(content, agentPointerEnd)
 	switch {
 	case begin >= 0 && end > begin:
 		content = content[:begin] + strings.TrimSuffix(block, "\n") + content[end+len(agentPointerEnd):]
@@ -283,5 +364,5 @@ func upsertPointerBlock(path, block string) error {
 		}
 		content += "\n" + block
 	}
-	return os.WriteFile(path, []byte(content), 0o644)
+	return []byte(content)
 }
