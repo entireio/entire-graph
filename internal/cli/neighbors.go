@@ -160,10 +160,7 @@ func runNeighbors(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	readSource, closeSource, err := openSnapshotLineReader(ctx, snapshot, flags.Worktree)
-	if err != nil {
-		return err
-	}
+	readSource, closeSource := openSnapshotLineReaderOrDegrade(ctx, snapshot, flags.Worktree, opts.Stderr)
 	if closeSource != nil {
 		defer closeSource()
 	}

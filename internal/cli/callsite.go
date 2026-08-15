@@ -138,6 +138,36 @@ func openSnapshotLineReader(
 	return read, batch.Close, nil
 }
 
+// openSnapshotLineReaderOrDegrade opens the provenance-correct reader and, when
+// that cannot be done, reports no source instead of failing the command.
+//
+// Quoted source is enrichment, not the answer. Every other read failure in this
+// file — missing file, binary, oversized, path outside the root — already
+// degrades to the definition line, and a `--head` answer without source windows
+// still answers the graph question. Only the opening of the git child process
+// was fatal, so an fd exhaustion or a fork failure turned a complete relation
+// answer into no output at all. The failure is reported on stderr, which never
+// reaches an agent's payload.
+func openSnapshotLineReaderOrDegrade(
+	ctx context.Context,
+	snapshot sem.ProviderSnapshot,
+	worktree bool,
+	warn io.Writer,
+) (lineReader, func() error) {
+	read, closeSource, err := openSnapshotLineReader(ctx, snapshot, worktree)
+	if err != nil {
+		if warn != nil {
+			fmt.Fprintf(warn, "graph: committed source unavailable (%v); reporting locations without source\n", err)
+		}
+		return noSourceLineReader, nil
+	}
+	return read, closeSource
+}
+
+// noSourceLineReader reports no source for every path, so that a degraded reader
+// is indistinguishable from a file that could not be quoted.
+func noSourceLineReader(string) ([]string, bool) { return nil, false }
+
 // newRepoLineReader reads files under repoRoot, memoizing per path so several
 // call sites in one file cost one read. It refuses oversized and NUL-bearing
 // files: neither can usefully be quoted.

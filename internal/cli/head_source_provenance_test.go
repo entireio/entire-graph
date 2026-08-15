@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -56,6 +57,30 @@ func TestHeadSnapshotLineReaderPreservesCommittedFileContract(t *testing.T) {
 		t.Fatalf("close committed reader: %v", err)
 	}
 	closeReader = nil
+}
+
+// A committed reader that cannot be opened must cost the answer its source
+// windows, not the answer itself.
+func TestSnapshotLineReaderDegradesWhenCommittedReaderCannotOpen(t *testing.T) {
+	var warn bytes.Buffer
+	read, closeReader := openSnapshotLineReaderOrDegrade(t.Context(), sem.ProviderSnapshot{
+		Header: sem.SnapshotHeader{
+			RepoRoot: filepath.Join(t.TempDir(), "not-a-directory"),
+			Commit:   "0000000000000000000000000000000000000000",
+		},
+	}, false, &warn)
+	if read == nil {
+		t.Fatal("degraded reader is nil, but call-site annotation reads through it unconditionally")
+	}
+	if closeReader != nil {
+		t.Fatal("degraded reader reported a close function for a process that never started")
+	}
+	if lines, ok := read("anything.go"); ok || lines != nil {
+		t.Fatalf("degraded reader returned source: %q ok=%v", lines, ok)
+	}
+	if !strings.Contains(warn.String(), "committed source unavailable") {
+		t.Fatalf("degradation was silent, so a missing source view looks like a file with no source: %q", warn.String())
+	}
 }
 
 func TestDefSourceBodiesFollowSelectedTree(t *testing.T) {

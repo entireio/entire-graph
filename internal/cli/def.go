@@ -173,12 +173,16 @@ func runDef(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	readSource, closeSource, err := openSnapshotLineReader(ctx, snapshot, flags.Worktree)
-	if err != nil {
-		return err
-	}
-	if closeSource != nil {
-		defer closeSource()
+	// Only the source-quoting formats read source. Opening before the format
+	// switch spawned a git cat-file child that `--format json` never touched, and
+	// charged its setup to index_latency_ms.
+	var readSource lineReader
+	if flags.Format == "text" || flags.Format == "agent" {
+		var closeSource func() error
+		readSource, closeSource = openSnapshotLineReaderOrDegrade(ctx, snapshot, flags.Worktree, opts.Stderr)
+		if closeSource != nil {
+			defer closeSource()
+		}
 	}
 	indexLatency := time.Since(totalStarted)
 	queryStarted := time.Now()
