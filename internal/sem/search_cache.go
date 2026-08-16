@@ -799,6 +799,10 @@ func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, opt
 	// left the env var out of the key entirely, so an ENTIRE_GRAPH_MAX_FILES=1 index and an uncapped
 	// search both keyed on max-files=0 and shared an entry — the exact poisoning this term exists to
 	// prevent, just reached by the other half of the same input.
+	//
+	// It cuts both ways, which is why the term has to be the resolved value rather than a lower
+	// bound: an entry built with a HIGHER cap also survives a later LOWERED one, handing back more
+	// of the tree than the caller asked to see. Neither direction announces itself.
 	writePart(fmt.Sprintf("max-files=%d", resolveMaxSourceFiles(options.MaxFiles)))
 	// Working-tree entries live in their own key space. The marker is only
 	// written for them so committed-tree keys — and every cache already on disk

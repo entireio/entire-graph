@@ -236,6 +236,17 @@ func TestSearchSnapshotKeyDiscriminatesEnvFileCap(t *testing.T) {
 	if explicit != capped {
 		t.Fatalf("%s=5 and MaxFiles=5 key differently; the env var must resolve onto the option's term", maxSourceFilesEnv)
 	}
+	// The converse direction matters just as much: LOWERING the cap must not reuse
+	// the larger entry, or a caller who asked to see less is handed more of the
+	// tree than it asked for. Neither direction announces itself in the answer.
+	t.Setenv(maxSourceFilesEnv, "2")
+	lowered, err := searchSnapshotKey(repo, "id", "v", "tree", ProviderSnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lowered == capped {
+		t.Fatalf("%s=2 reuses the %s=5 entry", maxSourceFilesEnv, maxSourceFilesEnv)
+	}
 }
 
 func TestProviderRecordsKeyDiscriminatesEnvFileCap(t *testing.T) {
@@ -258,6 +269,17 @@ func TestProviderRecordsKeyDiscriminatesEnvFileCap(t *testing.T) {
 	}
 	if explicit != capped {
 		t.Fatalf("%s=5 and MaxFiles=5 key differently; the env var must resolve onto the option's term", maxSourceFilesEnv)
+	}
+	// The converse direction matters just as much: LOWERING the cap must not reuse
+	// the larger entry, or a caller who asked to see less is handed more of the
+	// tree than it asked for. Neither direction announces itself in the answer.
+	t.Setenv(maxSourceFilesEnv, "2")
+	lowered, err := providerRecordsKey(repo, "id", "v", "tree", "snapshot", ProviderSnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lowered == capped {
+		t.Fatalf("%s=2 reuses the %s=5 entry", maxSourceFilesEnv, maxSourceFilesEnv)
 	}
 }
 
