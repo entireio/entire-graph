@@ -1,0 +1,296 @@
+Review PR 99
+
+---
+
+<task-notification>
+<task-id>af17edac902673594</task-id>
+<tool-use-id>toolu_01RhpeDFdB3jdfwoHXvtC1qX</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/f0fe1aad-8ea2-4b96-bd6c-0743b14025f0/tasks/af17edac902673594.output</output-file>
+<status>completed</status>
+<summary>Agent "/code-review 99" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Reviewed PR #99 (`agent/fix-head-source-provenance`, 7 files, +421/-20) against `origin/main`. I checked out the branch in a scratch worktree, read every hunk with surrounding context, traced the provenance chain end-to-end (`prepareSource` → `openSource` → `restampCachedSearchSnapshotCommit` → `Header.Commit`), built the binary, and exercised `--head` on synthetic repos (no commits, dirty tree, file deleted in worktree, JSON/bad-format paths). `go vet ./internal/cli`, the new tests, and the full `internal/cli` suite all pass.
+
+Note: no `ReportFindings` tool is exposed in this session (I searched for it twice), so findings are reported inline below.
+
+## Verdict
+
+The core change is sound. The provenance gate (`worktree || snapshot.Header.Commit == ""`) is correct in every path I could construct:
+
+- `--head` on a repo with no HEAD → `resolveCommittedHEAD` returns `("", "", err)`, `Header.Commit` is empty, the reader correctly falls back to disk (verified live — `E_NO_GIT_HEAD` warning, working-tree bodies).
+- A worktree snapshot always carries `Header.Commit` set to HEAD, but the `worktree` flag is checked first, so it never routes to git.
+- Tree-only cache keying is safe here because `restampCachedSearchSnapshotCommit` is applied on every cache-hit return path reachable from `LoadOrBuildProviderSnapshot`, so the commit used as a treeish is always the serving HEAD — never a dangling one.
+- The new reader mirrors `internal/sem/provider.go:9764` (`openSource`) exactly — same `BatchFileReader`, same `ShowFile` newline escape hatch, same 4 MiB cap — so path semantics and size cutoffs match the reader that produced the snapshot's symbols. Notably `defaultMaxParseBytes` and `callSiteMaxFileBytes` are both 4 MiB, so an oversized blob can never be requested for a file that was parsed.
+- No other CLI verb was left behind: after the change, the only production callers of the on-disk `newRepoLineReader` are the `openSnapshotLineReader` fallback itself; `explain` reads no source (snapshot signatures only, so the header-only fix is the right scope), and `search` already handles `--head` in `internal/sem/search.go:783`.
+
+## Findings (4, all low)
+
+- `/Users/thomi/Projects/entire-graph/internal/cli/callsite.go:91` — a `NewBatchFileReader` failure is now fatal to the whole command. `runDef`/`runNeighbors`/`runImpact` return the error, so a fork/fd-exhaustion failure turns a `--head` query that previously printed the complete graph answer (minus source windows) into no output at all. Source enrichment is a presentation nicety everywhere else in this file — `symbolMatchBodiesFromReader` and `resolveCallSite` both degrade silently on an unreadable file. Suggest degrading to a reader that always reports `false` (no source, no dirty source) rather than aborting.
+- `/Users/thomi/Projects/entire-graph/internal/cli/def.go:176` — the reader is opened before the format switch, so `def --head --format json` spawns and tears down a `git cat-file --batch` child that `writeDefBodiesFromReader` never touches (verified: the JSON path works, but the process is pure overhead). It also adds the spawn cost to `index_latency_ms`, which is measured at line 182 after the open. Same ordering in `impact.go:150` and `neighbors.go:163`, though those two do use the reader in the JSON path.
+- `/Users/thomi/Projects/entire-graph/internal/cli/explain.go:191` — provenance was made explicit only for `text`/`agent`. `ExplainResponse` (line 102) carries no commit/tree/worktree field, so `explain --head --format json` and `explain --format json` are byte-identical on a clean tree and a machine consumer still cannot tell which tree the declarations came from. Schema is additive-only, so a `commit`/`tree` field would close the gap the text renderer just closed.
+- `/Users/thomi/Projects/entire-graph/internal/cli/def.go:230` — `writeDefBodies`, `buildNeighborResponse` (`neighbors.go:333`), `buildImpactResponse` (`impact.go:333`) and `symbolMatchBodies` (`symbolref.go:628`) are now test-only shims that hardwire the on-disk reader. The large existing suites (`neighbors_efficiency_test.go`, `impact_test.go`, `symbolref_test.go`) all still call the legacy wrappers, so the production `*FromReader` path is covered only by the new file — future regressions in the wired-up path can pass CI. Worth pointing the existing tests at the `FromReader` forms and dropping the shims.</result>
+<usage><subagent_tokens>119634</subagent_tokens><tool_uses>51</tool_uses><duration_ms>659957</duration_ms></usage>
+</task-notification>
+
+---
+
+What do you recommend?
+
+---
+
+Yes, apply the two pre-merge fixes, open new PRs for the other 2 and fix those as well.
+
+---
+
+Tell me more about the judgement call
+
+---
+
+Ok, just leave it
+
+---
+
+Review 99 with Cursor and Copilot
+
+---
+
+<task-notification>
+<task-id>bppgx9io6</task-id>
+<tool-use-id>toolu_01C5729B9nnr6cGGp31xyrfn</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/f0fe1aad-8ea2-4b96-bd6c-0743b14025f0/tasks/bppgx9io6.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll PR 99 for bot reviews" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Yes, add it, then run another review loop
+
+---
+
+<task-notification>
+<task-id>beijga65h</task-id>
+<tool-use-id>toolu_01PRTR3Vp83aoLwPDwnBmMyL</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/f0fe1aad-8ea2-4b96-bd6c-0743b14025f0/tasks/beijga65h.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll for second-round reviews" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Yes, add it
+
+---
+
+Yes
+
+---
+
+<task-notification>
+<task-id>b24p6v1pa</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/f0fe1aad-8ea2-4b96-bd6c-0743b14025f0/tasks/b24p6v1pa.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll for third-round reviews" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Word
+
+---
+
+<task-notification>
+<task-id>bxx0xin8l</task-id>
+<tool-use-id>toolu_01LVnHRtfp4FSoMsXMVz9v97</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/f0fe1aad-8ea2-4b96-bd6c-0743b14025f0/tasks/bxx0xin8l.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll PRs 106 and 107 for bot reviews" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Do any of the 3 PRs potentially impact recall performance?
+
+---
+
+Where the changes introduced during the review process (in this session) or from the original author?
+
+---
+
+Ok, looking through 99, I still see a comment from Copilot that is not addressed.
+
+---
+
+I also see a failed CI test?
+
+---
+
+Fixed now?
+
+---
+
+<task-notification>
+<task-id>brsdz135z</task-id>
+<tool-use-id>toolu_01Swz5mjwzSYABvWiqo1T7pk</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/f0fe1aad-8ea2-4b96-bd6c-0743b14025f0/tasks/brsdz135z.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for CI on the new head" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Yes
+
+---
+
+Time to merge then
+
+---
+
+<task-notification>
+<task-id>by5v2xkaf</task-id>
+<tool-use-id>toolu_0122aRB6veUQBn7Xv8tBjgFu</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/f0fe1aad-8ea2-4b96-bd6c-0743b14025f0/tasks/by5v2xkaf.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for all three PRs to go green" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>b33dp21y1</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/f0fe1aad-8ea2-4b96-bd6c-0743b14025f0/tasks/b33dp21y1.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for CI on the new PR 99 head" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Sure, do that
+
+---
+
+Next, review 105
+
+---
+
+<task-notification>
+<task-id>bx20xojan</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/f0fe1aad-8ea2-4b96-bd6c-0743b14025f0/tasks/bx20xojan.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for CI on rebased stack" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bcsxza4o3</task-id>
+<tool-use-id>toolu_01Ffiy3fQwpjknCQvn3fpgVB</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/f0fe1aad-8ea2-4b96-bd6c-0743b14025f0/tasks/bcsxza4o3.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for PR 106 CI" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Both
+
+---
+
+What do Copilot and Cursor say on 105?
+
+---
+
+Yes, same as before.
+
+---
+
+<task-notification>
+<task-id>b1z5tk563</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/f0fe1aad-8ea2-4b96-bd6c-0743b14025f0/tasks/b1z5tk563.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll for bot reviews on PR 105" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Did you address all comments?
+
+---
+
+Merge 99, fix 105, request Copilot on 108
+
+---
+
+A --force on which command?
+
+---
+
+Ok, so what?
+
+---
+
+Yes
+
+---
+
+Who about the open Cursor comment in 105?
+
+---
+
+Yes
+
+---
+
+<task-notification>
+<task-id>b2iq93kj2</task-id>
+<tool-use-id>toolu_012X8d2xEEd2xyP6D7ySQbDY</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/f0fe1aad-8ea2-4b96-bd6c-0743b14025f0/tasks/b2iq93kj2.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll for the fresh Bugbot verdict" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+What's next?
+
+---
+
+Merge 105
+
+---
+
+Review 109
+
+---
+
+<task-notification>
+<task-id>af49539fb11c921d0</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-thomi-Projects-entire-graph/f0fe1aad-8ea2-4b96-bd6c-0743b14025f0/tasks/af49539fb11c921d0.output</output-file>
+<status>completed</status>
+<summary>Agent "/code-review 109" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I reviewed PR 109 (`agent/scope-index-prewarming-help`, single file `internal/cli/help.go`, 2 lines). No `ReportFindings` tool was available in this environment, so the findings are below.
+
+**Verification I ran** (built HEAD binary, isolated cache dirs, plus a throwaway 2-file git repo):
+- `index` default profile is `full` (`internal/cli/index.go:182`), `search` default is `fast` (`internal/cli/search.go:1723`), and profile is both hashed into the key (`searchSnapshotKey`, `internal/sem/search_cache.go:789`) and re-validated on load. Measured: after `index`, `search --head` (default) reports `index_cache_hit: false`; `search --head --profile full` reports `true`. The new sentence is correct.
+- `.graphignore` really is hashed into the key (`internal/sem/search_cache.go:835-845`); measured hit with the file present, miss after deleting it. Correct.
+- `neighbors --head` (defaults to `full`) does reuse the index entry — measured `index_cache_hit: true`, 21 ms. Correct.
+- `go test ./internal/cli -count=1` passes.
+
+Findings:
+
+- `internal/sem/search_cache.go:796` — **medium**. The key hashes the *raw* `options.MaxFiles` (`writePart(fmt.Sprintf("max-files=%d", options.MaxFiles))`) instead of `resolveMaxSourceFiles(options.MaxFiles)`, so `ENTIRE_GRAPH_MAX_FILES` never reaches the key — contrary to ADR-0002 decision 2 ("the resolved value, so `ENTIRE_GRAPH_MAX_FILES` is covered by the same term"). Reproduced: `ENTIRE_GRAPH_MAX_FILES=1 entire graph index --cache-dir C` writes a 0-file/0-symbol entry with `W_FILE_LIMIT`; a subsequent *uncapped* `search --head --profile full` gets `index_cache_hit: true`, `symbols_considered: 0`, no `W_FILE_LIMIT` warning, and returns a body-only hit (score 9.29, no `symbol_id`/`kind`/`signature`) where a cold run returns the resolved symbol (score 28.31). Same raw-value bug at `internal/sem/records_cache.go:67` for the on-by-default records cache. Pre-existing, not introduced here, but it directly falsifies this PR's premise that "incompatible variants safely rebuild", and the new help copy gives users no way to anticipate it.
+- `internal/cli/help.go:91` — **low**. The new enumeration ("same cache directory, profile, and ordered ignore/include inputs, with unchanged input-file contents and .graphignore") reads as complete but omits two keyed terms: the absolute checkout path and repository identity (`writePart(absRepo)` / `writePart(repositoryKey)`, `internal/sem/search_cache.go:785-786`), plus the file cap at line 796. Concrete miss the text does not explain: two linked worktrees at the same commit sharing one `--cache-dir` satisfy every listed condition yet each pay a full cold build and a second full entry — exactly the case ADR-0002 documents as "no cross-worktree sharing".
+- `AGENTS.md:101` — **low**. The fix is partial: the exact claim being corrected still lives in the repo's agent guide — "Prebuilds the durable, query-independent committed-tree index … **When:** once, up front, on a large repo before a batch of `--head` searches/neighbors queries." `CLAUDE.md` imports `AGENTS.md`, so every agent in this repo is still told that one `index --profile full` warms a batch of `--head` searches; measured, a default `search --head` after that index misses (`index_cache_hit: false`) and rebuilds. Also worth noting: the approved copy in `docs/readme-plan.md:246-248` adds "nor the default working-tree agent path", which the help text drops.</result>
+<usage><subagent_tokens>96820</subagent_tokens><tool_uses>61</tool_uses><duration_ms>592449</duration_ms></usage>
+</task-notification>
+
+---
+
+Ok, do both, but investigate how this bug was introduced and give me the RCA
