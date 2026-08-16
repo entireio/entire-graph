@@ -1,0 +1,13 @@
+No need to cut a release now. Reconcile the AGENTS.md changes, then write the README.
+
+---
+
+Review the generated README with Codex, Cursor, and Copilot (use the local CLIs). Ask yourself, would a human write like this and want to read it?
+
+---
+
+Before you do the next loop, read this skill: https://github.com/IamHarrie-Labs/humanizer-skill/blob/main/SKILL.md
+
+---
+
+Ok, let's start the loop then. Don't finish until you are finished.
