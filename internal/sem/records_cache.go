@@ -19,7 +19,7 @@ import (
 // set of options. Recomputing them on every call is expensive on large repos, so
 // we cache the raw NDJSON bytes keyed on the HEAD tree hash plus everything else
 // that changes the output. This mirrors the search-snapshot cache next door.
-const providerRecordsCacheVersion = "provider-records-v2"
+const providerRecordsCacheVersion = "provider-records-v3"
 
 // cachedProviderRecords is the on-disk envelope for a cached record stream. The
 // key alone is authoritative (sha256 over version+tree+mode+profile+options+
@@ -62,9 +62,10 @@ func providerRecordsKey(absRepo, repositoryKey, providerVersion, tree, mode stri
 	writePart(mode)
 	writePart(string(options.Profile))
 	writePart(fmt.Sprintf("%d", options.MaxParseBytes))
-	// Same graph-shaping argument as searchSnapshotKey: a capped build must not answer an uncapped
-	// caller. This cache is the one that is ON BY DEFAULT, so the hole mattered more here.
-	writePart(fmt.Sprintf("max-files=%d", options.MaxFiles))
+	// Same graph-shaping argument as searchSnapshotKey, resolved for the same reason: the env var
+	// behind the option has to reach the key too. This cache is the one that is ON BY DEFAULT, so
+	// the hole mattered more here.
+	writePart(fmt.Sprintf("max-files=%d", resolveMaxSourceFiles(options.MaxFiles)))
 	onlyFiles := append([]string(nil), options.OnlyFiles...)
 	sort.Strings(onlyFiles)
 	writePart("only-files")
