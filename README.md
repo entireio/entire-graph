@@ -1,26 +1,52 @@
 # Entire Graph
 
-Entire Graph is a local static-analysis plugin for the Entire CLI that helps
-coding agents find definitions, relationships, and change impact in Git
-repositories.
+Coding agents often lose time before the edit, while they are still trying to
+find the right code. Entire Graph gives them ranked search results and a local
+map of the repository. It connects definitions to callers, types, routes, and
+change impact, with `file:line` locations for resolved code.
 
-Its built-in analyzer parses repository contents with tree-sitter and returns
-ranked source locations, symbols, and static relationships. Analysis runs
-without network egress, hosted model calls, or API keys.
+Entire Graph runs as a plugin for the Entire CLI. Its built-in analyzer parses
+the repository with tree-sitter and makes no network requests, model calls, or
+API-key lookups.
 
-Entire Graph is a one-shot repository-local CLI and semantic provider, not a
-daemon, hosted memory service, or MCP server.
+## See it work
 
-The recommended path is: [install](#install) → [activate it for an
-agent](#activate-it-for-your-coding-agent) → [ask a repository
-question](#try-a-repository-question) → inspect the cited source.
+Here is a real question from this repository:
 
-## Install
+> Where do we keep terminal escape sequences out of CLI output, and what
+> depends on that code?
 
-Entire Graph is an external command for Entire CLI 0.10.0 or later. Install
-`entire` and make sure it is on `PATH`.
+Running `search` for that question found the implementation; `impact` then
+showed its blast radius. This is abridged from the captured command output:
 
-On macOS, install the stable release with Homebrew:
+```text
+search
+1. internal/termsafe/termsafe.go:295-317  appendEscaped
+
+impact
+Impact: appendEscaped (internal/termsafe/termsafe.go:295)
+Blast radius: 34 callers (3 direct, 31 transitive), 1 callee
+
+Direct callers:
+- Writer.Write (internal/termsafe/termsafe.go:83)
+- Line         (internal/termsafe/termsafe.go:112)
+- Bytes        (internal/termsafe/termsafe.go:135)
+
+(31 transitive callers omitted)
+
+Callee:
+- escapedAt (internal/termsafe/termsafe.go:234)
+```
+
+The result identifies the fix site, its three direct callers, and the broader
+set of code worth inspecting.
+
+## Quick start
+
+Entire Graph requires Entire CLI 0.10.0 or later. Install `entire` and make sure
+it is on `PATH`.
+
+On macOS:
 
 ```sh
 brew tap entireio/tap
@@ -28,41 +54,32 @@ brew trust entireio/tap
 brew install --cask entire
 ```
 
-On Linux, use the stable install script:
+On Linux:
 
 ```sh
 curl -fsSL https://entire.io/install.sh | bash
 ```
 
-See the [Entire CLI installation documentation](https://docs.entire.io/installation)
-for Windows, source builds, updates, and other methods. Then verify the CLI:
+For Windows, source builds, and other options, see the [Entire CLI installation
+guide](https://docs.entire.io/installation). Then install the plugin:
 
 ```sh
 entire version
-```
-
-`entire enable` configures Entire session capture; it is not required to run
-Entire Graph.
-
-Install the indexed plugin and verify that the command dispatches:
-
-```sh
 entire plugin install graph
 entire graph version
 ```
 
-## Activate it for your coding agent
+`entire enable` configures Entire session capture. Entire Graph can run without
+it. Built-in graph analysis has no network egress; installation is the
+networked step.
 
-Activation is per repository. Before running it, know that `init-agents`:
+### Add the agent instructions
 
-- Creates `.entire/graph-agent.md`, or replaces that generated file in full on
-  every successful rerun. Manual edits to it are not preserved.
-- Creates `AGENTS.md` and `CLAUDE.md` when absent. In existing files it appends
-  one managed block when no Entire Graph markers exist, or replaces exactly one
-  ordered managed block while preserving text outside it.
-- Validates both instruction files before writing. Malformed, reversed, or
-  duplicate Entire Graph markers, and instruction-file paths that resolve to
-  non-regular targets, stop activation without changing any activation file.
+Activation is per repository. `init-agents` writes
+`.entire/graph-agent.md` and creates or updates a managed block in `AGENTS.md`
+and `CLAUDE.md`. It preserves text outside those blocks. A successful rerun
+regenerates `.entire/graph-agent.md` and updates the managed blocks, so do not
+edit the generated guide by hand.
 
 From the repository root, run:
 
@@ -70,126 +87,73 @@ From the repository root, run:
 entire graph init-agents --repo .
 ```
 
-Review `.entire/graph-agent.md`, `AGENTS.md`, and `CLAUDE.md`. Commit them
-together when the instructions should apply to the team. Because all three
-generated paths have the supported `.md` extension, default working-tree
-queries bypass snapshot reuse repository-wide while Git reports any one as
-dirty or untracked.
+Review the three files and commit them when the instructions should apply to
+the team. Start a fresh agent session in the repository so the client discovers
+the new instructions.
 
-The generated instructions tell an agent to search the graph before broad code
-exploration, inspect focused source, check related sites when needed, and verify
-its result. See the [guide used in this repository](.entire/graph-agent.md), or
-print the installed version without writing files:
+Then ask a normal code question. For example:
 
-```sh
-entire graph agent-guide
-```
+> Find where working-tree cache reuse is decided. Show me what feeds that
+> decision and which source I should inspect before changing it.
 
-Instruction discovery differs between coding clients. After activation, start a
-fresh task or session rooted at the repository in a client that reads the
-generated repository instructions.
+The generated guide asks the agent to use the graph for location, open the
+relevant source, check related sites when they matter, and run focused
+verification after an edit.
 
-## Try a repository question
+## What to ask
 
-Ask about code in the repository rather than invoking a graph command yourself:
+Prompts are the main interface. You can also run the commands directly for
+debugging or automation.
 
-```text
-Without changing repository source files, find where <known feature> is
-implemented, identify what calls it or what changing it would affect, and cite
-the relevant source.
-```
-
-Use the client's visible activity or tool log to verify the workflow:
-
-1. The fresh task discovers the repository instructions.
-2. The agent runs `entire graph search` before broad repository scanning.
-3. It opens focused source around the ranked result.
-4. It uses `neighbors` or `impact` when the relationship or blast radius matters.
-5. Its answer cites the source it checked. For a code change, it also runs the
-   narrowest relevant verification it can identify.
-
-Because the evidence is specific to your repository and task, verify the live
-activity rather than comparing it with canned output. The source task above is
-read-only, but a graph query may still write a derivative local cache.
-
-## Common tasks and cache behavior
-
-Prompts are the primary interface. The graph operation is what the agent uses
-internally, or what you can run directly for debugging and automation.
-
-| Goal | Ask the agent | Graph operation |
+| Goal | Example prompt | Graph command |
 | --- | --- | --- |
-| Find code for a task | “Find where … is implemented.” | `search` |
-| Understand one definition | “Show and explain the definition of …” | `def` |
-| Inspect callers and relations | “What calls …?” | `neighbors` |
-| Estimate a symbol's blast radius | “What would changing … affect?” | `impact` |
-| Review a commit or branch | “Summarize the semantic changes in …” | `commit` / `diff` |
-| Export the graph | “Export the graph for …” | `snapshot` |
+| Find the implementation | Find where request routing is implemented. | `search` |
+| Read one definition | Show the definition of `ResolveRoute`. | `def` |
+| Trace callers or callees | What calls `ResolveRoute`? | `neighbors` |
+| Check the blast radius | What would changing `ResolveRoute` affect? | `impact` |
+| Review a branch | Summarize the semantic changes from `main` to `HEAD`. | `diff` |
+| Export the full graph | Export the repository graph as NDJSON. | `snapshot` |
 
-`search`, `def`, `explain`, `neighbors`, and `impact` read the working tree by
-default, so an agent sees current edits. Use `--head` only when the question is
-intentionally about committed state. Whole-graph streams and ref-based analysis
-have command-specific tree semantics; check `entire graph <command> --help`.
+For a command overview, run `entire graph help`. Use
+`entire graph <command> --help` for its flags and output formats.
 
-Working-tree snapshot reuse is conservative and repository-wide. A dirty path
-with a supported extension, an extensionless path that could be a shebang
-script, or a root manifest used for import resolution bypasses reuse for that
-query. Other dirty, non-manifest paths with known unsupported extensions remain
-eligible. `.graphignore` content is part of the cache key, and a changed
-committed tree selects a different entry.
+## Working tree and cache
 
-JSON search output exposes `stats.index_cache_hit`; `--format agent` includes a
-compact cache header. Text output does not report cache state. Cache writes are
-derivative local state, not repository source changes.
+Interactive queries such as `search`, `def`, `explain`, `neighbors`, and
+`impact` read the working tree by default, so agents can see uncommitted edits.
+Add `--head` when the question is specifically about committed state.
 
-`entire graph index` warms one committed-tree cache variant, not the default
-working-tree agent path. A later `--head` query can reuse it only with the same
-resolved cache directory and profile, the same ordered `--ignore-file` and
-`--include-file` paths with unchanged contents, and unchanged `.graphignore`
-content. `index` defaults to profile `full`, while `search` defaults to `fast`,
-so their defaults do not share a variant.
+Queries may write a derivative local cache. `entire graph index` warms one
+committed-tree cache variant for later `--head` searches and neighbor lookups;
+it does not prewarm the default working-tree path.
+`index` defaults to profile `full`, while `search` defaults to `fast`, so choose
+the same profile when prewarming search. Run `entire graph index --help` for
+cache and include/ignore controls.
 
-## Agent flow, boundaries, and limits
+## Using the results
 
-```text
-user prompt → coding agent → repository instructions → entire graph CLI
-            → ranked graph evidence → focused source/test check → sourced answer
-```
+Treat graph results as a map back to the code. Read the cited source and run the
+repository's tests or build before keeping a change. Static relationships can
+miss dynamic dispatch, reflection, and generated or runtime-wired code.
 
-- Built-in analysis is local and no-egress; installation obtains software over
-  the network.
-- `init-agents` writes the three disclosed repository instruction files, and
-  queries may write derivative caches.
-- Static relations and dependent counts are not compiler-accurate. Calls,
-  routes, tool registrations, renames, dynamic dispatch, reflection, generated
-  code, and runtime wiring can be heuristic or incomplete.
-- Unsupported languages are inventory-only or produce explicit partial
-  failures. Check support before relying on semantic relations.
-- Working-tree and committed-tree defaults differ by command family.
-- Entire Graph is a one-shot CLI and semantic provider. [Entire Brain is a
-  separate durable consumer and MCP surface](docs/brain-and-graph-boundaries.md);
-  Entire Graph is not a daemon, watcher, hosted memory service, or MCP server.
+[Language coverage](docs/language-support.md) varies. Some languages provide
+file inventory without deeper symbols or relationships.
 
-Treat graph output as evidence, not an oracle: inspect the relevant source and
-verify changes with the repository's own tests or build.
+For durable cross-project memory and an MCP interface, use
+[Entire Brain](docs/brain-and-graph-boundaries.md).
 
-## Documentation and manual use
+## Documentation
 
-- [Documentation map](docs/README.md) — repository documentation index
-- [Language support](docs/language-support.md) — semantic and inventory-only
-  languages
-- [Entire Brain and Entire Graph boundaries](docs/brain-and-graph-boundaries.md)
+- [Documentation map](docs/README.md)
+- [Language support](docs/language-support.md), or inspect the current build
+  with `entire graph capabilities --json`
 - [Benchmark methodology and evidence](docs/benchmarks.md)
+- [Entire Brain and Entire Graph boundaries](docs/brain-and-graph-boundaries.md)
 
-For direct inspection, diagnostics, and feature detection:
+Run `entire graph doctor --json` to inspect repository resolution and runtime
+settings.
 
-```sh
-entire graph help
-entire graph capabilities --json
-entire graph doctor --json
-```
-
-For development in this repository:
+To work on Entire Graph itself:
 
 ```sh
 mise run build
