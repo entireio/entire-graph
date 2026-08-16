@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "0b37017850ae",
+  "strategy": "manual-commit",
+  "branch": "ashtom/readme-refersh",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "docs/readme-plan.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0b/37017850ae/0/metadata.json",
+      "transcript": "/0b/37017850ae/0/full.jsonl",
+      "compact_transcript": "/0b/37017850ae/0/transcript.jsonl",
+      "content_hash": "/0b/37017850ae/0/content_hash.txt",
+      "prompt": "/0b/37017850ae/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 171407,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 3488768,
+    "output_tokens": 11807,
+    "api_call_count": 25
+  }
+}
