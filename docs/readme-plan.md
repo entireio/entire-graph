@@ -310,7 +310,8 @@ for the same subject.
 | `docs/brain-and-graph-boundaries.md` | Retain and link | Ownership boundary between the repository-local provider and durable Brain/MCP surfaces |
 | `docs/semantic-provider-requirements.md` | Rewrite and narrow | Graph owns repository-local parsing, indexing, queries, cache freshness, and instruction distribution; Brain owns durable and cross-repository state and presentation |
 | `docs/adr/0001-ga-schema-contract.md` | Retain | `1.x` schema compatibility contract |
-| `docs/adr/0002-committed-tree-cache-key.md` | Retain as historical decision; add a superseding ADR | Original committed-tree key and the newer safe clean-worktree reuse decision |
+| `docs/adr/0002-committed-tree-cache-key.md` | Retain in place; add a reciprocal partial-supersession notice to ADR 0003 without rewriting its decision body | The committed-tree key-totality decision remains accepted; only its working-tree search-snapshot no-cache conclusion is superseded |
+| `docs/adr/0003-working-tree-search-snapshot-cache.md` | Create as Accepted; declare that it partially supersedes ADR 0002 | Working-tree search-snapshot eligibility and isolation; provider-record caching remains committed-tree-only |
 | `docs/archive/` | Retain | Non-normative provenance only |
 
 Historical plans, validation reports, and implemented design records belong in
@@ -412,7 +413,17 @@ Rules:
 - [ ] Rewrite `docs/semantic-provider-requirements.md` so its ownership boundary
   matches the repository-local query, cache, and agent-instruction behavior that
   Entire Graph actually implements.
-- [ ] Add a superseding cache ADR without rewriting ADR 0002's historical decision.
+- [ ] Create `docs/adr/0003-working-tree-search-snapshot-cache.md` with
+  `Status: Accepted` and reciprocal metadata that partially supersedes ADR 0002
+  only for working-tree search-snapshot eligibility. Document the separate
+  working-tree cache identity and provenance; bypass for dirty supported-extension
+  paths, extensionless paths, or root resolver manifests; continued eligibility
+  for other dirty non-manifest paths with known unsupported extensions;
+  `.graphignore` contents selecting a different cache entry; fail-closed behavior
+  when worktree or HEAD inspection fails, including when no HEAD exists; and the
+  continued working-tree bypass in the provider-record cache. Add the reciprocal
+  notice to ADR 0002, update `docs/README.md` to scope each ADR's authority, and
+  correct the stale `LoadOrBuildProviderSnapshot` source comment.
 - [ ] Consolidate benchmark content and preserve archived material as explicitly
   non-normative provenance.
 - [ ] Reconcile `AGENTS.md`, `CLAUDE.md`, and `.entire/graph-agent.md` together;
@@ -480,6 +491,9 @@ Rules:
   a committed-tree query with a different profile, cache location, ordered
   ignore/include inputs, or changed `.graphignore`; the default `full`/`fast`
   mismatch is explicit.
+- [ ] ADR 0002 and ADR 0003 link to each other, and `docs/README.md` identifies
+  ADR 0002 as authoritative for committed-tree cache identity and ADR 0003 as
+  authoritative for working-tree search-snapshot eligibility.
 - [ ] Trust documentation distinguishes built-in analysis, installation network
   activity, derivative cache writes, repository instruction writes, and
   caller-provided command execution.
@@ -510,5 +524,6 @@ Rules:
   changes. Regenerating the released guide and managed blocks is in scope; if the
   documentation audit exposes another format or import mismatch, track that
   product change as a prerequisite rather than documenting behavior that does not exist.
-- Rewriting historical ADRs, archived plans, or immutable benchmark evidence. A
-  new superseding cache ADR is in scope because current behavior has changed.
+- Rewriting historical ADR decision bodies, archived plans, or immutable
+  benchmark evidence. Adding ADR 0003 and updating ADR 0002's supersession
+  metadata are in scope because current behavior has changed.
