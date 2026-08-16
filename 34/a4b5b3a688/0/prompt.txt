@@ -1,0 +1,17 @@
+Yes
+
+---
+
+Did you review the plan or also execute it?
+
+---
+
+Erm, what's the point then?
+
+---
+
+What's left for 109?
+
+---
+
+No need to cut a release now. Reconcile the AGENTS.md changes, then write the README.
