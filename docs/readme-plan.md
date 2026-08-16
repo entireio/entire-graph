@@ -240,8 +240,12 @@ Follow the table with a short cache explanation:
   `index_cache_hit`. `--format agent` exposes a compact cache header. Do not claim
   that `search --format text` reports cache state.
 - Link optional committed-tree prewarming, cache locations, overrides, and
-  cleanup limitations to operations. State there that `index` warms only the
-  committed-`HEAD` namespace, not the default working-tree namespace.
+  cleanup limitations to operations. State there that `index` warms a complete
+  snapshot only in the committed-`HEAD` namespace and only for the same resolved
+  cache directory, profile, and ordered `--ignore-file`/`--include-file` inputs;
+  `.graphignore` content must also be unchanged. Call out that `index` defaults
+  to `full` while `search` defaults to `fast`, so a default `index` warms neither
+  a default `search --head` nor the default working-tree agent path.
 - Reconcile the cache-directory fallback differences in `def` and `explain`
   before making a universal cache-location claim.
 
@@ -386,8 +390,11 @@ Rules:
 - [ ] Verify cache behavior for a clean working tree; a dirty supported-extension,
   extensionless, or resolver-manifest path; a dirty non-manifest path with a known
   unsupported extension; a changed `.graphignore`; explicit `--head`; and
-  committed-tree prewarming. Record the exact cache fields or headers exposed by
-  the formats used in the README and agent guide.
+  committed-tree prewarming with both matching and mismatched profiles and ordered
+  ignore/include inputs. Using isolated cache state for each case, confirm that the
+  matching query reuses the prewarmed entry and that the first query for each
+  mismatched variant misses it. Record the exact cache fields or headers exposed
+  by the formats used in the README and agent guide.
 - [ ] Build the quantitative claim ledger and audit local reads, writes,
   execution, cache, and network boundaries against implementation and tests.
 - [ ] Reconcile stale documentation authorities before drafting: repository-agent
@@ -409,6 +416,8 @@ Rules:
 - [ ] Consolidate benchmark content and preserve archived material as explicitly
   non-normative provenance.
 - [ ] Reconcile `AGENTS.md`, `CLAUDE.md`, and `.entire/graph-agent.md` together;
+  correct `AGENTS.md`'s `index --profile full` example so it promises reuse only
+  for queries with `--head`, `--profile full`, and matching cache/file-rule inputs;
   leave every managed reference resolving, one intentional configured guide route
   in each tested client topology, and no stale limits or unsafe absolutes.
 
@@ -467,7 +476,10 @@ Rules:
   other dirty paths with known unsupported extensions, `.graphignore` keying,
   derivative cache writes, and the exact observable cache field/header used in
   the example.
-- [ ] `index` is not presented as warming the default working-tree agent path.
+- [ ] `index` is not presented as warming the default working-tree agent path or
+  a committed-tree query with a different profile, cache location, ordered
+  ignore/include inputs, or changed `.graphignore`; the default `full`/`fast`
+  mismatch is explicit.
 - [ ] Trust documentation distinguishes built-in analysis, installation network
   activity, derivative cache writes, repository instruction writes, and
   caller-provided command execution.
