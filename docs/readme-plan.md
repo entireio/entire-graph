@@ -228,9 +228,12 @@ Follow the table with a short cache explanation:
   `impact`) reads the working tree by default, so current edits are visible.
   Whole-graph streams and ref-based analysis have different defaults; link their
   exact semantics instead of generalizing.
-- A graph-relevant clean working tree can reuse a tree- and option-keyed snapshot.
-  Any dirty graph-relevant path disables reuse for the whole working-tree query;
-  a changed committed tree produces a different entry.
+- Working-tree snapshot reuse is conservative and repository-wide. A dirty path
+  with a supported extension, an extensionless path that could be a shebang
+  script, or a root manifest used for import resolution bypasses reuse for that
+  query. Other dirty paths with known unsupported extensions do not; `.graphignore`
+  content is part of the cache key, and a changed committed tree selects a
+  different entry.
 - Cache writes are derivative local state, so “repository-source-read-only” does
   not mean “writes nothing.”
 - The installed guide's default `search` output is JSON and exposes
@@ -329,7 +332,7 @@ Create a small claim ledger during implementation:
 | Claim | Exact scope | Product version or commit | Corpus/environment | Evidence link | Root README? |
 | --- | --- | --- | --- | --- | --- |
 | Local/no-egress analysis | Built-in analyzer only | Pinned release | Not applicable | Implementation, contract, and tests | Yes |
-| Cache reuse and freshness | Clean working tree, dirty working tree, and explicit `--head` are distinct cases | Pinned release | Deterministic repository fixture | Cache tests and ADR | Yes |
+| Cache reuse and freshness | Clean working tree, dirty supported-extension or extensionless path, dirty resolver manifest, dirty non-manifest path with a known unsupported extension, changed `.graphignore`, and explicit `--head` are distinct cases | Pinned release | Deterministic repository fixture | Cache tests and ADR | Yes |
 | Language counts | Semantic versus inventory-only | TBD | Generated capabilities | Language reference | Maybe |
 | Code-query quality | TBD after audit | TBD | TBD | Reproducible result | Maybe |
 | Prose-memory comparison | Public-protocol reimplementation | Pinned | LOCOMO/LongMemEval-S | GraphMark bundle | Docs only by default |
@@ -380,9 +383,11 @@ Rules:
   topology, and visible evidence that the client loaded the guide once.
 - [ ] Select a clean consuming fixture, pin its commit, install and commit the
   generated instruction files, and record a source-grounded agent task.
-- [ ] Verify cache behavior for a clean working tree, any dirty graph-relevant
-  path, explicit `--head`, and committed-tree prewarming. Record the exact cache
-  fields or headers exposed by the formats used in the README and agent guide.
+- [ ] Verify cache behavior for a clean working tree; a dirty supported-extension,
+  extensionless, or resolver-manifest path; a dirty non-manifest path with a known
+  unsupported extension; a changed `.graphignore`; explicit `--head`; and
+  committed-tree prewarming. Record the exact cache fields or headers exposed by
+  the formats used in the README and agent guide.
 - [ ] Build the quantitative claim ledger and audit local reads, writes,
   execution, cache, and network boundaries against implementation and tests.
 - [ ] Reconcile stale documentation authorities before drafting: repository-agent
@@ -457,8 +462,11 @@ Rules:
   relation or impact query, and a sourced answer.
 - [ ] Example output is captured from the pinned binary and fixture, not invented.
 - [ ] The README scopes working-tree defaults to the interactive query family and
-  explains clean reuse, repository-wide dirty-path bypass, derivative cache
-  writes, and the exact observable cache field/header used in the example.
+  explains clean reuse, repository-wide bypass for dirty supported-extension,
+  extensionless, or resolver-manifest paths, continued cache eligibility for
+  other dirty paths with known unsupported extensions, `.graphignore` keying,
+  derivative cache writes, and the exact observable cache field/header used in
+  the example.
 - [ ] `index` is not presented as warming the default working-tree agent path.
 - [ ] Trust documentation distinguishes built-in analysis, installation network
   activity, derivative cache writes, repository instruction writes, and
