@@ -1,13 +1,13 @@
 {
-  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
-  "checkpoint_id": "d5032157fee1",
-  "strategy": "manual-commit",
   "branch": "agent/scope-index-prewarming-help",
-  "checkpoints_count": 2,
+  "checkpoint_id": "d5032157fee1",
+  "checkpoints_count": 4,
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
   "files_touched": [
     "AGENTS.md",
     "docs/DETAILS.md"
   ],
+  "has_review": true,
   "sessions": [
     {
       "metadata": "/d5/032157fee1/0/metadata.json",
@@ -15,13 +15,20 @@
       "compact_transcript": "/d5/032157fee1/0/transcript.jsonl",
       "content_hash": "/d5/032157fee1/0/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "content_hash": "/d5/032157fee1/1/content_hash.txt",
+      "metadata": "/d5/032157fee1/1/metadata.json",
+      "prompt": "/d5/032157fee1/1/prompt.txt",
+      "transcript": "/d5/032157fee1/1/full.jsonl"
     }
   ],
+  "strategy": "manual-commit",
   "token_usage": {
-    "input_tokens": 18,
+    "input_tokens": 43527,
     "cache_creation_tokens": 7030,
-    "cache_read_tokens": 3149199,
-    "output_tokens": 4184,
-    "api_call_count": 9
+    "cache_read_tokens": 3605639,
+    "output_tokens": 7940,
+    "api_call_count": 26
   }
 }
