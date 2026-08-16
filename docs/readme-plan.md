@@ -27,6 +27,10 @@ semantics, benchmarks, releases, the plugin catalog, or integrations.
   when it confidently recognizes a standalone direct import from root `CLAUDE.md`
   to a distinct root `AGENTS.md`, `AGENTS.md` retains the guide pointer and
   `CLAUDE.md`'s managed block contains only the inheritance notice.
+- At publication time, a released `init-agents` also includes the preflight behavior
+  merged in [#105](https://github.com/entireio/entire-graph/pull/105): malformed,
+  reversed, or duplicate managed markers are rejected before any activation file
+  is created or changed.
 - Entire CLI 0.10.0 or later is already available through its documented
   installation channels.
 - Setup uses the console, but day-to-day code discovery and analysis happen
@@ -126,10 +130,14 @@ produces four requirements:
 ### 3. Activate Entire Graph for the agent
 
 - State that activation is per repository. Before the command, disclose that it:
-  - writes `.entire/graph-agent.md`;
-  - creates or updates marker-delimited sections in `AGENTS.md` and `CLAUDE.md`;
-  - replaces an existing marker-delimited block in each file on later runs rather
-    than appending a second block in that file.
+  - creates `.entire/graph-agent.md`, or replaces it in full on every successful
+    rerun, so manual edits there are not preserved;
+  - creates `AGENTS.md` and `CLAUDE.md` if absent, appends one managed block when
+    an existing file has no Entire Graph markers, or replaces exactly one ordered
+    managed block while preserving text outside it;
+  - validates both instruction files before writing and refuses malformed,
+    reversed, or duplicate Entire Graph markers, as well as non-regular targets,
+    without changing any activation file.
 
   Then show the exact command from the repository root:
 
@@ -163,7 +171,12 @@ produces four requirements:
   hook reported one resolved guide load for both the former two-route layout and
   the normalized control. Pin the client version and capture that load evidence;
   do not infer duplicated runtime content merely from configured routes.
-- Document removal or reversal only if a supported procedure exists; do not invent one.
+- In `docs/agents.md`, document recovery from a marker-validation error: back up
+  `AGENTS.md` and `CLAUDE.md`, preserve user-owned text, and reduce each file to
+  zero raw Entire Graph marker tokens or exactly one complete begin-before-end
+  pair before rerunning `init-agents`. Exact marker strings in examples or
+  comments count. Also cover recovery from a non-regular instruction-file target.
+  Document ordinary removal or reversal only if a supported procedure exists.
 
 ### 4. First agent task and observable verification
 
@@ -280,7 +293,7 @@ for the same subject.
 | `entire-plugin.yml` | Track as a separate release prerequisite | Product description consistent with agent-first repository intelligence rather than checkpoint-only positioning |
 | `docs/README.md` | Retain and update | User-intent index and explicit archive boundary |
 | `docs/commands.md` | Create | Task-oriented manual and automation reference; built-in help remains the exhaustive command surface |
-| `docs/agents.md` | Create | Per-repository activation, client matrix, instruction discovery, fresh-session behavior, verification, updates, and supported removal |
+| `docs/agents.md` | Create | Per-repository activation, client matrix, instruction discovery, fresh-session behavior, verification, updates, marker-validation and non-regular-target recovery, and supported removal |
 | `docs/search.md` | Create | Ranking, result blocks, prose windows, passages, related sites, verification suggestions, and closed-set warnings |
 | `docs/operations.md` | Expand | Install alternatives, upgrades, source builds, cache namespaces and locations, overrides, reports, status line, environment variables, migration, and troubleshooting |
 | `docs/trust-and-security.md` | Create | Data flow, no-egress scope, local reads and writes, caller-provided command execution, transcript handling, and downstream boundaries |
@@ -352,6 +365,11 @@ Rules:
 ### Phase 1: Establish sources of truth
 
 - [ ] Resolve the four open decisions near the top of this plan.
+- [ ] Publish and index an Entire Graph release containing
+  [#102](https://github.com/entireio/entire-graph/pull/102) and
+  [#105](https://github.com/entireio/entire-graph/pull/105), pin that release for
+  activation documentation, and verify the installed binary—not a source build—
+  has both behaviors before documenting them.
 - [ ] Smoke-test `entire plugin install graph` and both version commands in a
   clean environment on each claimed platform.
 - [ ] Inventory the commands and flags used by active documentation and verify
@@ -422,12 +440,18 @@ Rules:
 - [ ] The root README never uses `entire-graph` as a bare plugin-index name and
   never presents `--yes`, `--force`, `@main`, or a local build as the recommended
   first install.
-- [ ] Activation is explicitly per repository, shows the exact command and three
-  file effects before execution, and tells the user how to review and optionally
-  commit the result.
-- [ ] Each named client has a tested fresh-task/session path and an observable
-  check that the generated guide loaded once without shadowing or a dangling
-  reference, and an `init-agents` rerun preserves its intended configured route.
+- [ ] Activation is explicitly per repository, shows the exact command, discloses
+  all three file effects—including full replacement of `.entire/graph-agent.md`
+  on successful reruns—before execution, and tells the user how to review and
+  optionally commit the result.
+- [ ] The installed, indexed pinned release's `init-agents` fails without
+  activation-file writes on malformed, reversed, or duplicate managed markers or
+  non-regular instruction-file targets, and `docs/agents.md` gives the supported
+  recovery procedure for both.
+- [ ] Using that same release, each named client has a tested fresh-task/session
+  path and an observable check that the generated guide loaded once without
+  shadowing or a dangling reference, and an `init-agents` rerun preserves its
+  intended configured route.
 - [ ] The pinned fixture transcript shows visible instruction discovery, graph
   use before broad source scanning, focused source inspection, a purposeful
   relation or impact query, and a sourced answer.
