@@ -86,9 +86,9 @@ var commandDocs = []commandDoc{
 	{
 		name:    "index",
 		group:   groupSetup,
-		summary: "Build/warm the committed-tree cache before a batch of queries",
+		summary: "Build/warm a committed-tree cache variant for matching queries",
 		usage:   []string{"entire graph index --repo . [--head] [--force] [--profile syntax-only|fast|full] [--cache-dir path] [--report GRAPH_REPORT.md] [--format text|json|auto]"},
-		long: "Prebuilds the durable, query-independent committed-tree index so latency-sensitive --head searches/neighbors reuse it. Re-running index is also how you refresh a committed-tree cache: an unchanged tree hits, a changed tree rebuilds. Pass --force to rebuild and overwrite the entry even when the tree is unchanged.\n\n" +
+		long: "Prebuilds a durable, complete committed-tree snapshot. Later --head searches/neighbors can reuse it when caching is enabled and they resolve the same cache directory, profile, and ordered ignore/include inputs, with unchanged input-file contents and .graphignore. index defaults to full while search defaults to fast, so a default index does not warm a default search --head. Re-running index refreshes that cache variant: an unchanged tree hits, while a changed tree rebuilds. Pass --force to rebuild and overwrite the entry even when the tree is unchanged.\n\n" +
 			"At a terminal it draws a live progress bar on stderr (only when it actually builds — a cache hit returns instantly) and prints a readable summary; piped or with --format json it emits the schema-versioned JSON summary that agents and CI consume. --report writes a human-readable GRAPH_REPORT.md rendered from the snapshot, so the same tree always renders the same bytes. The cache defaults to the platform per-user cache dir (macOS ~/Library/Caches/entire-graph; XDG_CACHE_HOME or ~/.cache elsewhere); --cache-dir and ENTIRE_PLUGIN_DATA_DIR override it.\n\n" +
 			"A repo-root .graphignore (gitignore syntax) is honored by every graph command, on top of .gitignore. Use it for tracked-but-vendored/generated sources — e.g. tree-sitter parser.c blobs — that otherwise surface as E_FILE_TOO_LARGE/E_PARSE_ERROR partial failures and a \"degraded\" completeness. Oversized/minified skips also no longer count toward \"degraded\" on their own.",
 		flags: []flagDoc{

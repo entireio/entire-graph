@@ -97,14 +97,14 @@ entire graph checkpoint <id> --json                 # the commit behind an Entir
 
 **When:** judging whether a change is safe to keep / revert / continue, or reviewing a branch/PR. High dependent counts on a signature change = run tests first.
 
-### 🏗️ index — *build / warm the cache*
-Prebuilds the durable, query-independent committed-tree index and verifies it was written, before latency-sensitive work.
+### 🏗️ index — *build / warm one cache variant*
+Prebuilds a durable, complete committed-tree snapshot and verifies it was written, before latency-sensitive work. The entry is not query-independent: a later `--head` query reuses it only when caching is enabled and it resolves the same cache directory, profile, and ordered ignore/include inputs, with unchanged input-file contents and `.graphignore`.
 
 ```sh
 entire graph index --repo . --head --profile full --cache-dir /path/to/cache --format json
 ```
 
-**When:** once, up front, on a large repo before a batch of `--head` searches/neighbors queries. Re-running it is also how you "refresh" a committed-tree cache — same tree hits, changed tree rebuilds.
+**When:** once, up front, on a large repo before a batch of `--head` searches/neighbors queries that use the SAME profile. `index` defaults to `--profile full` while `search` defaults to `fast`, so the command above does not warm a default `search --head`, nor the default working-tree agent path — match the profile or the entry is simply never found. Re-running it is also how you "refresh" that cache variant — same tree hits, changed tree rebuilds.
 
 ### 🧭 capabilities / doctor / version — *feature-detect*
 ```sh
