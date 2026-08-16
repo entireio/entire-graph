@@ -7,9 +7,9 @@ model, and no end-to-end savings claim is current.
 
 ## What this gives you
 
-A precomputed, **deterministic** code graph is available through the `entire graph` command — functions, classes, methods, types, routes, and the calls/inheritance/field/service relations between them, parsed with tree-sitter, 100% locally (no network, no model, no keys). Use it to **LOCATE** and **UNDERSTAND** code *before* broad grep / find / cat / whole-file exploration. Every command is no-egress and safe to run inside a sandboxed session. The same commit yields the same graph, but static relations can be heuristic or incomplete; inspect focused source and verify the resulting change.
+A precomputed code graph is available through the `entire graph` command — functions, classes, methods, types, routes, and the calls/inheritance/field/service relations between them, parsed with tree-sitter. Built-in analysis is local and no-egress (no network, no model, no keys). Use it to **LOCATE** and **UNDERSTAND** code *before* broad grep / find / cat / whole-file exploration. The same repository view and options yield the same graph, but static relations can be heuristic or incomplete; inspect focused source and verify the resulting change. Some commands write derivative caches or explicitly requested setup/report files; inspect command help when filesystem writes matter.
 
-Default flags to remember: pass `--repo .` when you're not inside an Entire session; the graph reads your **working tree by default** (your uncommitted edits are visible), and `--head` switches to committed-tree semantics with a cached, reusable index.
+Default flags to remember: pass `--repo .` when you're not inside an Entire session. The interactive query family (`search`, `def`, `explain`, `neighbors`, and `impact`) reads your **working tree by default** so uncommitted edits are visible; `--head` switches those commands to committed-tree semantics. Other command families have different defaults.
 
 ---
 
@@ -18,7 +18,7 @@ Default flags to remember: pass `--repo .` when you're not inside an Entire sess
 Reach for the smallest tool that answers your question.
 
 ### 🔍 search — *find the code for a task* (your first move)
-Ranked source regions for a plain-language description, with the source and `file:line` inline. Hybrid ranking over bodies, identifiers (camelCase/snake_case aware), signatures, paths, and graph neighbors. Output is budgeted (16 KiB by default) to drop straight into context.
+Ranked source regions for a plain-language description, with the source and `file:line` inline. Hybrid ranking over bodies, identifiers (camelCase/snake_case aware), signatures, paths, and graph neighbors. Output is byte-budgeted to drop straight into context.
 
 ```sh
 entire graph search --repo . --query "<the task or bug in one plain sentence>" --format text --top-k 8
@@ -97,14 +97,14 @@ entire graph checkpoint <id> --json                 # the commit behind an Entir
 
 **When:** judging whether a change is safe to keep / revert / continue, or reviewing a branch/PR. High dependent counts on a signature change = run tests first.
 
-### 🏗️ index — *build / warm the cache*
-Prebuilds the durable, query-independent committed-tree index and verifies it was written, before latency-sensitive work.
+### 🏗️ index — *build / warm one cache variant*
+Prebuilds a durable, complete committed-tree snapshot and verifies it was written, before latency-sensitive work. The snapshot is query-independent, but its cache variant is specific to the committed tree, resolved cache directory, profile, ordered ignore/include paths and contents, and `.graphignore` content.
 
 ```sh
 entire graph index --repo . --head --profile full --cache-dir /path/to/cache --format json
 ```
 
-**When:** once, up front, on a large repo before a batch of `--head` searches/neighbors queries. Re-running it is also how you "refresh" a committed-tree cache — same tree hits, changed tree rebuilds.
+**When:** once, up front, on a large repo before a batch of `--head` searches/neighbors queries that use the same cache variant. `index` defaults to `--profile full` while `search` defaults to `fast`, so the command above warms neither a default `search --head` nor the default working-tree agent path. Match the whole variant: unchanged keyed inputs and tree produce a hit, while a changed tree selects or builds another entry.
 
 ### 🧭 capabilities / doctor / version — *feature-detect*
 ```sh
