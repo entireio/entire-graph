@@ -283,6 +283,19 @@ func TestInitAgentsWritesSameFileOnlyOnce(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "CLAUDE hard-links to AGENTS",
+			createAliases: func(t *testing.T, repo string) {
+				t.Helper()
+				agentsPath := filepath.Join(repo, "AGENTS.md")
+				if err := os.WriteFile(agentsPath, []byte("# Shared rules\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Link(agentsPath, filepath.Join(repo, "CLAUDE.md")); err != nil {
+					t.Skipf("hard links unavailable: %v", err)
+				}
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -311,15 +324,208 @@ func TestInitAgentsWritesSameFileOnlyOnce(t *testing.T) {
 	}
 }
 
-func TestInitAgentsSurfacesClaudeReadErrors(t *testing.T) {
-	repo := t.TempDir()
-	if err := os.Mkdir(filepath.Join(repo, "CLAUDE.md"), 0o755); err != nil {
-		t.Fatal(err)
+func TestInitAgentsValidatePointerMarkersRequiresOneOrderedPair(t *testing.T) {
+	valid := []string{
+		"# No managed markers\n",
+		agentPointerBegin + agentPointerEnd,
+		"prefix\n" + agentPointerBegin + "\nmanaged\n" + agentPointerEnd + "\nsuffix\n",
 	}
-	var out bytes.Buffer
-	err := Run(context.Background(), Options{Stdout: &out, Stderr: &out}, []string{"init-agents", "--repo", repo})
-	if err == nil || !strings.Contains(err.Error(), "CLAUDE.md") {
-		t.Fatalf("init-agents error = %v, want CLAUDE.md read/stat error", err)
+	for i, content := range valid {
+		if _, _, err := validatePointerMarkers("VALID.md", []byte(content)); err != nil {
+			t.Errorf("valid case %d rejected: %v", i, err)
+		}
+	}
+
+	invalid := map[string]string{
+		"missing begin":     agentPointerEnd,
+		"missing end":       agentPointerBegin,
+		"reversed":          agentPointerEnd + "\n" + agentPointerBegin,
+		"duplicate begin":   agentPointerBegin + "\n" + agentPointerBegin + "\n" + agentPointerEnd,
+		"duplicate end":     agentPointerBegin + "\n" + agentPointerEnd + "\n" + agentPointerEnd,
+		"nested":            agentPointerBegin + "\n" + agentPointerBegin + "\n" + agentPointerEnd + "\n" + agentPointerEnd,
+		"multiple blocks":   agentPointerBegin + agentPointerEnd + agentPointerBegin + agentPointerEnd,
+		"marker in example": "example: `" + agentPointerBegin + "`",
+	}
+	for name, content := range invalid {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := validatePointerMarkers("BROKEN.md", []byte(content))
+			if err == nil {
+				t.Fatal("malformed markers were accepted")
+			}
+			for _, want := range []string{"BROKEN.md", "back up", "preserve user-owned text", "rerun init-agents"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error %q missing actionable text %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestInitAgentsRejectsMalformedMarkersWithoutWrites(t *testing.T) {
+	tests := []struct {
+		name      string
+		malformed string
+	}{
+		{name: "AGENTS.md", malformed: agentPointerBegin + "\nunterminated\n"},
+		{name: "CLAUDE.md", malformed: agentPointerEnd + "\n" + agentPointerBegin + "\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			guidePath := filepath.Join(repo, ".entire", "graph-agent.md")
+			if err := os.MkdirAll(filepath.Dir(guidePath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			files := map[string][]byte{
+				guidePath:                        []byte("sentinel guide\n"),
+				filepath.Join(repo, "AGENTS.md"): []byte("# Agent sentinel\n"),
+				filepath.Join(repo, "CLAUDE.md"): []byte("# Claude sentinel\n"),
+			}
+			files[filepath.Join(repo, tt.name)] = []byte(tt.malformed)
+			for path, content := range files {
+				if err := os.WriteFile(path, content, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var stdout, stderr bytes.Buffer
+			err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+			if err == nil {
+				t.Fatal("init-agents accepted malformed markers")
+			}
+			for _, want := range []string{tt.name, "malformed", "back up", "rerun init-agents"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error %q missing %q", err, want)
+				}
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout was written before validation completed: %q", stdout.String())
+			}
+			for path, want := range files {
+				if got := readFileForTest(t, path); got != string(want) {
+					t.Fatalf("%s changed after validation error:\nwant: %q\n got: %q", path, want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestInitAgentsMalformedMarkersDoNotCreateMissingOutputs(t *testing.T) {
+	for _, malformedName := range []string{"AGENTS.md", "CLAUDE.md"} {
+		t.Run(malformedName, func(t *testing.T) {
+			repo := t.TempDir()
+			malformedPath := filepath.Join(repo, malformedName)
+			malformed := []byte(agentPointerBegin + "\nmissing end\n")
+			if err := os.WriteFile(malformedPath, malformed, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			counterpartName := "CLAUDE.md"
+			if malformedName == "CLAUDE.md" {
+				counterpartName = "AGENTS.md"
+			}
+
+			var stdout bytes.Buffer
+			err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &bytes.Buffer{}}, []string{"init-agents", "--repo", repo})
+			if err == nil {
+				t.Fatal("init-agents accepted malformed markers")
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout was written before validation completed: %q", stdout.String())
+			}
+			if got := readFileForTest(t, malformedPath); got != string(malformed) {
+				t.Fatalf("malformed source changed: %q", got)
+			}
+			for _, path := range []string{
+				filepath.Join(repo, ".entire", "graph-agent.md"),
+				filepath.Join(repo, counterpartName),
+			} {
+				if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+					t.Fatalf("%s was created despite validation error (stat error %v)", path, statErr)
+				}
+			}
+		})
+	}
+}
+
+func TestInitAgentsRejectsNonRegularInstructionFileWithoutWrites(t *testing.T) {
+	for _, invalidName := range []string{"AGENTS.md", "CLAUDE.md"} {
+		t.Run(invalidName, func(t *testing.T) {
+			repo := t.TempDir()
+			guidePath := filepath.Join(repo, ".entire", "graph-agent.md")
+			if err := os.MkdirAll(filepath.Dir(guidePath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			guide := []byte("sentinel guide\n")
+			if err := os.WriteFile(guidePath, guide, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			counterpartName := "CLAUDE.md"
+			if invalidName == "CLAUDE.md" {
+				counterpartName = "AGENTS.md"
+			}
+			counterpartPath := filepath.Join(repo, counterpartName)
+			counterpart := []byte("# Counterpart sentinel\n")
+			if err := os.WriteFile(counterpartPath, counterpart, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(repo, invalidName), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			var stdout bytes.Buffer
+			err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &bytes.Buffer{}}, []string{"init-agents", "--repo", repo})
+			// "directory", not the permission-bit form: the message has to say what
+			// is in the way for it to be actionable.
+			if err == nil || !strings.Contains(err.Error(), invalidName) ||
+				!strings.Contains(err.Error(), "regular file") || !strings.Contains(err.Error(), "found directory") {
+				t.Fatalf("init-agents error = %v, want %s regular-file error", err, invalidName)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout was written before inspection completed: %q", stdout.String())
+			}
+			if got := readFileForTest(t, guidePath); got != string(guide) {
+				t.Fatalf("guide changed after inspection error: %q", got)
+			}
+			if got := readFileForTest(t, counterpartPath); got != string(counterpart) {
+				t.Fatalf("counterpart changed after inspection error: %q", got)
+			}
+		})
+	}
+}
+
+func TestInitAgentsCreatesDanglingSharedAliasTargetOnce(t *testing.T) {
+	tests := []struct {
+		name   string
+		link   string
+		target string
+	}{
+		{name: "CLAUDE symlinks to AGENTS", link: "CLAUDE.md", target: "AGENTS.md"},
+		{name: "AGENTS symlinks to CLAUDE", link: "AGENTS.md", target: "CLAUDE.md"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			linkPath := filepath.Join(repo, tt.link)
+			if err := os.Symlink(tt.target, linkPath); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+
+			runInitAgentsForTest(t, repo)
+			agents := readFileForTest(t, filepath.Join(repo, "AGENTS.md"))
+			claude := readFileForTest(t, filepath.Join(repo, "CLAUDE.md"))
+			if agents != claude || strings.Count(agents, agentPointerBegin) != 1 {
+				t.Fatalf("shared target was not created exactly once:\nAGENTS.md:\n%s\nCLAUDE.md:\n%s", agents, claude)
+			}
+			if info, err := os.Lstat(linkPath); err != nil || info.Mode()&os.ModeSymlink == 0 {
+				t.Fatalf("instruction alias was not preserved: info=%v error=%v", info, err)
+			}
+
+			before := agents
+			runInitAgentsForTest(t, repo)
+			if after := readFileForTest(t, filepath.Join(repo, "AGENTS.md")); after != before {
+				t.Fatalf("dangling-alias rerun was not byte-idempotent:\nbefore:\n%s\nafter:\n%s", before, after)
+			}
+		})
 	}
 }
 
