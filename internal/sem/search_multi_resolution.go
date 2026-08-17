@@ -36,7 +36,9 @@ type prosePromotion struct {
 }
 
 // planProseResolutionPromotions orders promotions round-robin by depth, so a single long document
-// cannot spend every free slot before a second document has contributed anything.
+// cannot spend every free slot before a second document has contributed anything. A passage whose
+// text the payload already prints is not promotable at all — its slot goes to the next passage in
+// the round robin instead.
 func planProseResolutionPromotions(results []SearchResult, limit int) []prosePromotion {
 	if limit <= 0 {
 		return nil
@@ -53,6 +55,9 @@ func planProseResolutionPromotions(results []SearchResult, limit int) []prosePro
 			if depth >= len(results[index].Passages) {
 				continue
 			}
+			if prosePassageAlreadyPrinted(results, results[index].FilePath, results[index].Passages[depth]) {
+				continue
+			}
 			order = append(order, prosePromotion{parent: index, passage: depth})
 			if len(order) == limit {
 				break
@@ -60,6 +65,29 @@ func planProseResolutionPromotions(results []SearchResult, limit int) []prosePro
 		}
 	}
 	return order
+}
+
+// prosePassageAlreadyPrinted reports whether the passage's span lies entirely inside the PRINTED
+// span of some result from the same file, so promoting it would return its text twice.
+//
+// This is the promotion-side counterpart of dropContainedProseResults, and it exists for the same
+// reason: dropSelectedProsePassages keeps passages disjoint from the ranked spans as SELECTED, and
+// allocateProseParentPassages re-checks a passage only against its OWN parent's grown window — a
+// window grown on a DIFFERENT result of the same file is checked by neither, so a passage planned
+// for a distant section can sit inside the head result's grown window. The passage stays attached
+// to its parent (that field's bytes were already fitted); it just cannot spend a result slot on
+// lines the payload already shows.
+func prosePassageAlreadyPrinted(results []SearchResult, path string, passage SearchPassage) bool {
+	for index := range results {
+		result := results[index]
+		if result.FilePath != path || result.SnippetStartLine <= 0 || result.SnippetEndLine < result.SnippetStartLine {
+			continue
+		}
+		if result.SnippetStartLine <= passage.StartLine && passage.EndLine <= result.SnippetEndLine {
+			return true
+		}
+	}
+	return false
 }
 
 // applyProseResolutionPromotions materializes the first `count` planned promotions. The promoted

@@ -129,6 +129,49 @@ func TestExpandProseResolutionRoundRobinsAcrossParents(t *testing.T) {
 	}
 }
 
+// TestExpandProseResolutionSkipsPassagesInsideGrownWindows: a grown snippet window is the one
+// span the earlier disjointness passes could not have seen. dropSelectedProsePassages keeps
+// passages disjoint from the ranked spans as SELECTED, and allocateProseParentPassages re-checks
+// a passage only against its OWN parent — so a passage planned for a distant section can sit
+// inside ANOTHER same-file result's grown window, and promoting it would print those lines twice.
+// The slot goes to the next passage in the round robin instead.
+func TestExpandProseResolutionSkipsPassagesInsideGrownWindows(t *testing.T) {
+	t.Parallel()
+	head := proseResolutionParent(1, "sessions/one.md", 1, "primary head")
+	head.EndLine, head.SnippetEndLine = 60, 60
+	section := proseResolutionParent(2, "sessions/one.md", 100, "primary section",
+		proseResolutionPassage(30, "inside the head window"),
+		proseResolutionPassage(200, "outside every window"))
+	other := proseResolutionParent(3, "sessions/two.md", 5, "primary other",
+		proseResolutionPassage(30, "same lines, different file"))
+
+	expanded := expandProseResolution([]SearchResult{head, section, other}, 10, 0)
+
+	if len(expanded) != 5 {
+		t.Fatalf("expanded to %d results, want 5", len(expanded))
+	}
+	promoted := map[string]bool{}
+	bySnippet := map[string]SearchResult{}
+	for _, result := range expanded {
+		bySnippet[result.Snippet] = result
+		if hasSearchSignal(result, proseResolutionSignal) {
+			promoted[result.Snippet] = true
+		}
+	}
+	if promoted["inside the head window"] {
+		t.Fatalf("promoted a passage whose lines the head window already prints: %v", promoted)
+	}
+	if !promoted["outside every window"] || !promoted["same lines, different file"] {
+		t.Fatalf("containment skipped promotions it should not have: %v", promoted)
+	}
+	// The skipped passage is not promotable, but it is not lost: it stays attached to its parent,
+	// whose bytes the fitter already accounted for.
+	if parent := bySnippet["primary section"]; len(parent.Passages) != 1 ||
+		parent.Passages[0].Snippet != "inside the head window" {
+		t.Fatalf("skipped passage lost from its parent: %#v", parent.Passages)
+	}
+}
+
 // TestExpandProseResolutionKeepsResultsScoreOrdered pins the invariant results[] advertises.
 // Promotions inherit their parent's score, so appending them left a high-scoring passage sitting
 // behind every low-scoring parent: a consumer taking "top 20 by score" got a different set than
