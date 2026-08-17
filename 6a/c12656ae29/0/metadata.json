@@ -3,7 +3,7 @@
   "checkpoint_id": "6ac12656ae29",
   "session_id": "019ffe5a-dc4d-7dd3-b419-3005416bfe86",
   "strategy": "manual-commit",
-  "created_at": "2026-08-17T01:50:06.389196Z",
+  "created_at": "2026-08-17T02:02:26.563446Z",
   "branch": "agent/windows-static-release",
   "checkpoints_count": 3,
   "files_touched": [
@@ -13,28 +13,28 @@
   "agent": "Codex",
   "model": "gpt-5.6-sol",
   "turn_id": "a80af39b47a6",
-  "checkpoint_transcript_start": 7999,
-  "transcript_lines_at_start": 7999,
-  "compact_transcript_start": 1245,
+  "checkpoint_transcript_start": 8158,
+  "transcript_lines_at_start": 8158,
+  "compact_transcript_start": 1267,
   "token_usage": {
-    "input_tokens": 22918,
+    "input_tokens": 28382,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 4607488,
-    "output_tokens": 2118,
-    "api_call_count": 26
+    "cache_read_tokens": 5336832,
+    "output_tokens": 3647,
+    "api_call_count": 30
   },
   "session_metrics": {
     "turn_count": 34
   },
   "initial_attribution": {
-    "calculated_at": "2026-08-17T01:50:05.854412Z",
-    "agent_lines": 37,
-    "agent_removed": 2,
+    "calculated_at": "2026-08-17T02:02:25.78833Z",
+    "agent_lines": 1,
+    "agent_removed": 1,
     "human_added": 0,
     "human_modified": 0,
     "human_removed": 0,
-    "total_committed": 37,
-    "total_lines_changed": 39,
+    "total_committed": 1,
+    "total_lines_changed": 2,
     "agent_percentage": 100,
     "metric_version": 2
   }
