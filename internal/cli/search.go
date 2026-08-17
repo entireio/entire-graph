@@ -1299,9 +1299,13 @@ func searchLowConfidenceNotices(response sem.SearchResponse) ([]byte, []byte) {
 	if !assessment.Low {
 		return nil, nil
 	}
+	score := fmt.Sprintf("top score %.1f", assessment.TopScore)
+	if ceiling := sem.LowConfidenceScoreCeiling(); assessment.TopScore < ceiling {
+		score += fmt.Sprintf(" (weak, below %.0f)", ceiling)
+	}
 	full := []byte(fmt.Sprintf(
-		"LOW CONFIDENCE: top score %.1f (weak, below %.0f) and %s. This repo may not contain what you asked for; verify before editing.\n",
-		assessment.TopScore, sem.LowConfidenceScoreCeiling(), assessment.Reason,
+		"LOW CONFIDENCE: %s and %s. This repo may not contain what you asked for; verify before editing.\n",
+		score, assessment.Reason,
 	))
 	compact := []byte(fmt.Sprintf("!LOW s=%.1f\n", assessment.TopScore))
 	return full, compact
