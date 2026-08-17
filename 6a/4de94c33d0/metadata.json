@@ -1,0 +1,47 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "6a4de94c33d0",
+  "strategy": "manual-commit",
+  "branch": "ashtom/readme-refersh",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "AGENTS.md",
+    "README.md",
+    "docs/README.md",
+    "docs/adr/0002-committed-tree-cache-key.md",
+    "docs/adr/0003-working-tree-search-snapshot-cache.md",
+    "docs/agents.md",
+    "docs/benchmarks.md",
+    "docs/commands.md",
+    "docs/evidence/2026-08-16-mux-agent-session.md",
+    "docs/operations.md",
+    "docs/readme-plan.md",
+    "docs/search.md",
+    "docs/semantic-provider-requirements.md",
+    "docs/snapshot-format.md",
+    "docs/trust-and-security.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/6a/4de94c33d0/0/metadata.json",
+      "transcript": "/6a/4de94c33d0/0/full.jsonl",
+      "compact_transcript": "/6a/4de94c33d0/0/transcript.jsonl",
+      "content_hash": "/6a/4de94c33d0/0/content_hash.txt",
+      "prompt": "/6a/4de94c33d0/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 202,
+    "cache_creation_tokens": 311045,
+    "cache_read_tokens": 20344415,
+    "output_tokens": 119187,
+    "api_call_count": 101,
+    "subagent_tokens": {
+      "input_tokens": 196,
+      "cache_creation_tokens": 639799,
+      "cache_read_tokens": 7062035,
+      "output_tokens": 102795,
+      "api_call_count": 98
+    }
+  }
+}

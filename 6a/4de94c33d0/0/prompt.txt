@@ -1,0 +1,274 @@
+You are working in `/Users/thomi/Projects/entire-graph` on branch `ashtom/readme-refersh`.
+
+Bring Entire Graph’s README to an evidence-adjusted score of at least 92/100 compared with Graphify, Mem0, Graphiti, Supermemory, and codebase-memory-mcp. Do not stop after reviewing it: make the documentation changes, verify them, run an independent comparison, and iterate until the score gate is met or a genuine external release blocker remains.
+
+Start by reading:
+
+- `README.md`
+- `docs/readme-plan.md`
+- `docs/README.md`
+- All other active Markdown files under `docs/`
+- `AGENTS.md`, `CLAUDE.md`, and `.entire/graph-agent.md`
+- The implementation and tests needed to substantiate README claims
+
+Treat checked items in `docs/readme-plan.md` as baselines to preserve, not work to redo. A checkmark records what was demonstrated on revision `98b856a`; rerun regression-sensitive checks after editing. Check off additional items only when they are fully verified. Partial work stays unchecked.
+
+## Hard constraints
+
+- Never rename the root `README.md`.
+- This is documentation and instruction-artifact work. Do not change Go code, CLI behavior, releases, the plugin index, or benchmark results.
+- Do not merge, rebase, switch branches, commit, or push.
+- Preserve unrelated user changes.
+- Assume `graph` is present in the official plugin index.
+- The canonical plugin installation command is:
+
+  ```sh
+  entire plugin install graph
+  ```
+
+- Entire CLI is a prerequisite. Include its current official installation call before the plugin installation, verified against an authoritative Entire source.
+- Require Entire CLI 0.10.0 or later.
+- Do not list Git as a prerequisite.
+- Do not mention either `entire graph doctor` or `entire plugin doctor`.
+- Do not recommend `entire-graph` as the plugin-index name, `@main`, `--yes`, `--force`, or a local source build in the primary installation flow.
+- Console commands may handle installation, activation, debugging, and automation. The core product journey must be a natural-language repository task performed through a coding agent.
+- Do not invent output, timings, benchmark results, client support, cache behavior, or release behavior.
+- Do not expose or fabricate private chain-of-thought. Show only observable tool events, commands, evidence, and answer excerpts.
+
+## Release truth
+
+Check the indexed stable release again before writing release-dependent claims.
+
+At the last audit, v0.3.0 predated both:
+
+- #102, topology-aware `init-agents` behavior
+- #105, activation-file preflight and marker validation
+
+Those changes existed on `origin/main`, not in a tagged release or this branch. The locally installed Graph binary reported `dev`.
+
+Do not use the local `dev` binary as release evidence. Do not document #102 or #105 as released unless a newer indexed release can be installed and verified during this task. If no qualifying release exists:
+
+- Document only behavior verified in the current indexed release.
+- Do not modify product code to remove the blocker.
+- Leave release-dependent plan items unchecked.
+- Report the precise release blocker in the final handoff.
+
+## README outcome
+
+Keep the root README concise and easy to scan. Move reference detail into focused files under `docs/` when it would interrupt the landing-page journey.
+
+The root README should accomplish this sequence:
+
+1. Explain immediately what Entire Graph is, what repository input it analyzes, what evidence it returns, who it is for, and the scoped no-egress boundary of the built-in analyzer.
+2. Install and verify the prerequisite Entire CLI.
+3. Install and verify Entire Graph with `entire plugin install graph` and `entire graph version`.
+4. Explain that activation is per repository.
+5. Before running activation, disclose exactly which files `init-agents` may create or update:
+   - `.entire/graph-agent.md`
+   - `AGENTS.md`
+   - `CLAUDE.md`
+6. Tell the user to review the generated files, commit the intended setup together, and begin a fresh agent task so the client can load the new instructions.
+7. Make a natural-language code question the first useful product action.
+8. Show observable evidence that the agent:
+   - discovered the applicable repository instructions;
+   - read the Entire Graph guide when the client requires an explicit read;
+   - used an Entire Graph query before broad source scanning;
+   - inspected focused source afterward;
+   - returned an answer grounded in named files, symbols, relations, or impact evidence.
+9. Give a compact prompt-first task map. Keep direct commands labeled as agent internals, manual inspection, debugging, or automation interfaces.
+10. Explain the important cache behavior without turning the root README into a cache manual.
+11. State limitations and the Entire Graph versus Entire Brain boundary honestly.
+12. Link to canonical detailed documentation.
+
+Do not end onboarding at “installed,” “done,” or “ask your agent.” Show the expected observable success path and how the reader knows each layer worked:
+
+- installation;
+- repository activation;
+- instruction loading;
+- graph adoption;
+- focused source verification;
+- grounded answer.
+
+## Demonstration and verification
+
+Replace the current hand-reformatted “captured output” demonstration. Its headings and summarized blast-radius line do not match the actual renderer.
+
+Create a reproducible demonstration using:
+
+- an indexed stable Entire Graph release;
+- its exact version;
+- a clean consuming fixture with no pre-existing Entire Graph instructions;
+- a pinned fixture commit;
+- the exact user prompt;
+- observable agent events;
+- literal command output or clearly marked literal excerpts;
+- focused source citations supporting the answer.
+
+Choose a task that demonstrates graph relationships or impact, not merely a filename lookup. A useful shape is:
+
+> Where is `<feature>` implemented, what invokes it, and what is likely affected if it changes?
+
+The transcript should show instruction discovery, graph use, focused source reads, a purposeful relation or impact query, and a sourced answer. It must not rely on Entire Graph’s own pre-existing `AGENTS.md` to “prove” that `init-agents` caused adoption.
+
+If the required clean capture cannot be produced honestly because of the release blocker, do not call reconstructed prose “captured output.” Leave the plan item open and report the blocker.
+
+## Agent activation accuracy
+
+Verify each client named in the README. Do not imply generic support merely because it recognizes `AGENTS.md` or `CLAUDE.md`.
+
+For every named client, verify:
+
+- instruction-file discovery and precedence;
+- whether a fresh task or session is required;
+- whether `.entire/graph-agent.md` is imported automatically or must be read explicitly;
+- shadowing behavior such as `AGENTS.override.md`;
+- that every managed reference resolves;
+- that the guide is loaded once through one intentional route;
+- that rerunning `init-agents` preserves the intended topology.
+
+If only one client is fully tested, name only that client and describe other integrations generically.
+
+## Cache accuracy
+
+The README currently underexplains the normal cache path. Correct it without overloading the landing page.
+
+Accurately explain that:
+
+- normal interactive queries analyze the working tree;
+- eligible clean working-tree queries reuse a tree- and option-keyed cache automatically;
+- a dirty supported-extension path, extensionless path, or resolver manifest causes working-tree cache bypass;
+- other dirty paths with known unsupported extensions can remain eligible;
+- changed `.graphignore` content selects a different cache entry;
+- cache writes are derivative and do not modify repository source files;
+- the Markdown files created by `init-agents` are indexable, so activation can prevent clean-tree reuse until those intended changes are committed;
+- `index` warms committed-tree queries, not the default working-tree agent path;
+- `index` defaults to `full`, while normal search defaults to `fast`;
+- reuse also depends on the cache location, profile, ordered include/ignore inputs, and `.graphignore`;
+- cache status is shown only for commands and formats that actually emit it.
+
+Use the exact cache field or header produced by the pinned binary. Do not silently display text or agent-format output if the installed guide actually invokes the default JSON format.
+
+Put the full cache matrix, prewarming details, and freshness rules in canonical supporting documentation.
+
+## Trust and limitations
+
+Scope claims precisely. Distinguish:
+
+- the built-in analyzer’s local/no-egress behavior;
+- network activity required for installation;
+- derivative cache writes;
+- repository instruction-file writes;
+- local Git-history and ignore-file inputs;
+- caller-provided commands that may execute through verification features;
+- Claude-specific transcript behavior where applicable.
+
+Cover:
+
+- heuristic relations;
+- inventory-only language support;
+- reflection, generated code, and dynamic dispatch gaps;
+- partial failures;
+- committed-tree versus working-tree semantics by command family.
+
+Do not use unsupported absolutes such as “every,” “always,” “zero,” or “never” when a narrower contract is accurate.
+
+## Supporting documentation
+
+Use `docs/readme-plan.md` as the migration plan. Keep one canonical authority for each substantial topic.
+
+Complete or update the supporting documentation needed by the root README, including the planned command, agent, search, trust, cache/snapshot, operations, and ADR material. In particular:
+
+- Rewrite or archive `docs/semantic-provider-requirements.md`; it currently contradicts the agent-first product by assigning Graph’s repository-local indexing, query, freshness, and agent presentation responsibilities to Entire Brain.
+- Reconcile ADR 0002 with the current working-tree cache and create ADR 0003 if the verified implementation supports the planned decision.
+- Reconcile `AGENTS.md`, `CLAUDE.md`, and `.entire/graph-agent.md` only against verified behavior.
+- Remove stale unsafe absolutes, cache statements, instruction routes, and doctor guidance.
+- Keep archived documents explicitly non-normative.
+- Do not claim benchmark consolidation is complete while `bench/README.md` remains a second active methodology authority.
+- Update `docs/README.md` as destinations become authoritative.
+- Keep the root README focused; move command tables, the full trust matrix, cache operations, formats, benchmark methodology, and detailed troubleshooting into `docs/`.
+
+Do not wholesale rewrite already-clean prose or benchmark material. Make evidence-driven edits to the remaining gaps.
+
+## Humanizer requirement
+
+Read and apply:
+
+https://github.com/IamHarrie-Labs/humanizer-skill/blob/main/SKILL.md
+
+Resolve `main` to a commit before using it. At the last audit it resolved to:
+
+https://github.com/IamHarrie-Labs/humanizer-skill/blob/47853ba9539447ec6e1dde77ec6c3bfe82cac078/SKILL.md
+
+The README already received a Humanizer pass. Preserve its existing voice as the baseline:
+
+1. Apply Humanizer diff-first to new or modified prose.
+2. Then run one whole-document coherence pass.
+3. Treat technical evidence, qualifications, commands, links, and literal captures as immutable inputs.
+4. Override suggestions to add opinions, first-person reactions, jokes, tangents, deliberate messiness, or unsupported narrative color.
+5. Do not introduce generic adjectives, faux quotations, rhetorical questions, slogan repetition, emoji headings, badge walls, filler conclusions, unsupported time promises, or other AI slop.
+6. Confirm that the Humanizer pass weakened no qualification and introduced no new claim.
+
+## Verification
+
+Run proportionate checks after editing:
+
+- Execute every safe documented command against the documented indexed release and fixture.
+- Compare documented commands and flags with both public help and accepted parser behavior.
+- Validate every local link and heading anchor from its containing file.
+- Check Markdown structure, fences, whitespace, spelling, and rendering.
+- Review narrow/mobile readability.
+- Audit every number and factual claim against implementation, tests, or pinned evidence.
+- Search active documentation for stale ownership claims, cache statements, old command names, doctor references, duplicate authorities, and withdrawn figures.
+- Ensure the root file is still exactly `README.md`.
+- Update `docs/readme-plan.md`, checking only fully demonstrated items.
+
+## Independent competitive judge
+
+After implementation, run a fresh, read-only judge against the current official READMEs for:
+
+- Graphify
+- Mem0
+- Graphiti
+- Supermemory
+- codebase-memory-mcp
+- Entire Graph
+
+Pin each competitor revision used and cite the exact official sources. Score all projects using this rubric:
+
+| Category | Points |
+| --- | ---: |
+| Immediate comprehension and value | 15 |
+| Installation and time to first value | 15 |
+| Agent workflow and activation | 20 |
+| Observable proof and verifiability | 20 |
+| Trust, limits, and accuracy | 15 |
+| Navigation and completeness | 10 |
+| Editorial quality and concision | 5 |
+| Total | 100 |
+
+The judge must be evidence-adjusted, not impression-based. Deduct for unverifiable output, stale links or names, hidden setup requirements, contradictory supporting documents, weak instruction-load verification, unclear caching, and claims unsupported by the released product.
+
+Acceptance requires:
+
+- Entire Graph scores at least 92/100.
+- Agent workflow and activation score at least 18/20.
+- Observable proof and verifiability score at least 18/20.
+- Trust, limits, and accuracy score at least 13/15.
+- No unresolved P0 or P1 finding remains.
+- The score is not inflated to compensate for a release blocker.
+
+If the score misses any threshold, iterate on in-scope documentation findings and judge it again. If the only remaining issue requires a new product release or another unauthorized external change, stop and report the exact blocker instead of fabricating compliance.
+
+## Final handoff
+
+Report:
+
+- Files changed.
+- Which plan items became complete.
+- Commands and checks run.
+- The pinned release and fixture used for evidence.
+- The final competitor score table with citations.
+- Remaining blockers or unchecked items.
+- Confirmation that `README.md` was not renamed.
+- Confirmation that no doctor command or Git prerequisite was added.
+- Confirmation that the Humanizer pass introduced no new technical claim or AI slop.
