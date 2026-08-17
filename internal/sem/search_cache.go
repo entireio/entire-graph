@@ -24,7 +24,7 @@ import (
 // and any prior-version directory can simply be deleted wholesale — cleanup is
 // "remove old version dirs" instead of per-entry reachability analysis.
 // (v5 isolated the tree-only key layout; v6, on main, supersedes it.)
-const searchSnapshotCacheVersion = "search-snapshot-v7"
+const searchSnapshotCacheVersion = "search-snapshot-v8"
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`
@@ -793,7 +793,17 @@ func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, opt
 	// uncapped caller. Measured on this repo: a cap-5 build wrote 28 symbols, and the next uncapped
 	// search was served those 28 instead of rebuilding to 5740 — 99.5% of the graph silently absent.
 	// One capped ingest therefore poisons every later query on the same tree.
-	writePart(fmt.Sprintf("max-files=%d", options.MaxFiles))
+	//
+	// RESOLVED, not raw: the cap that shaped the build is resolveMaxSourceFiles(options.MaxFiles),
+	// which falls back to ENTIRE_GRAPH_MAX_FILES and then to the default. Hashing options.MaxFiles
+	// left the env var out of the key entirely, so an ENTIRE_GRAPH_MAX_FILES=1 index and an uncapped
+	// search both keyed on max-files=0 and shared an entry — the exact poisoning this term exists to
+	// prevent, just reached by the other half of the same input.
+	//
+	// It cuts both ways, which is why the term has to be the resolved value rather than a lower
+	// bound: an entry built with a HIGHER cap also survives a later LOWERED one, handing back more
+	// of the tree than the caller asked to see. Neither direction announces itself.
+	writePart(fmt.Sprintf("max-files=%d", resolveMaxSourceFiles(options.MaxFiles)))
 	// Working-tree entries live in their own key space. The marker is only
 	// written for them so committed-tree keys — and every cache already on disk
 	// built under them — stay byte-identical.
