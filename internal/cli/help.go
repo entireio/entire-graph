@@ -127,7 +127,8 @@ var commandDocs = []commandDoc{
 		usage:   []string{`entire graph search --query "issue or concept" --repo . [--top-k 10] [--format text|json|ndjson|agent] [--head] [--profile fast|full] [--deep]`},
 		long: "Ranked source regions for a plain-language description, with source and file:line inline, budgeted to drop straight into context. This is the first move for almost every locate task.\n\n" +
 			"By default search returns: ranked candidate fix sites (top hits as full function bodies), RELATED SITES, the COVERING TEST plus other tests over the same code (ALSO COVERING), SAME-CONCEPT LITERAL (every place the concept is named, tagged EDIT/CONSUMER/DOC), a VERIFY line (the narrowest test command for the file), and a CLOSED-SET WARNING when a switch over a sealed set would fail at runtime. The three reference blocks (container map, signature types, declaration card) are OFF by default because they cost turns in agent sessions; --reference-blocks all turns them on for interactive reading.\n\n" +
-			"--top-k only changes how many results come back; --deep additionally runs the exhaustive sparse (BM25) pass and fuses it with the semantic ranking (slower, reads every eligible file).",
+			"--top-k only changes how many results come back; --deep additionally runs the exhaustive sparse (BM25) pass and fuses it with the semantic ranking (slower, reads every eligible file).\n\n" +
+			"Ranking returns one region per unit, which is right for code and wrong for whole prose documents: one markdown document can hold the answer across several distant regions. So for prose the unit is the SECTION, not the file — a document's headed sections are ranked against every other section on their own scores, exactly as independent files would be (--document-resolution ranks a document as one unit instead). Separately, and on prose of any shape including headed documents, when fewer distinct units match than --top-k asked for, the spare slots are spent returning finer regions of the same document as results of their own (multi-resolution retrieval) — strictly additive, so it never displaces a unit and never breaches --max-context-bytes. --single-resolution turns that off. The two stack: a headed document can be ranked by section AND have spare slots filled with promoted passages, so a prose payload may carry both.",
 		flags: []flagDoc{
 			{name: "--query", arg: "text", desc: "The task or bug in one plain sentence (required)"},
 			{name: "--repo", arg: "path", desc: "Repository to search (default: current repo)"},
@@ -136,6 +137,8 @@ var commandDocs = []commandDoc{
 			{name: "--head", desc: "Search the committed tree (cached) instead of the working tree"},
 			{name: "--profile", arg: "syntax-only|fast|full", def: "fast", desc: "Parsing depth; use full for bug-fix/locate (call-graph active)"},
 			{name: "--deep", desc: "Also run the exhaustive BM25 pass and fuse it (slower)"},
+			{name: "--single-resolution", desc: "One result per ranked unit; do not spend spare slots on finer regions of a prose document"},
+			{name: "--document-resolution", desc: "Rank a prose document as one unit; do not rank its sections separately"},
 			{name: "--max-context-bytes", arg: "n", def: "24576", desc: "Output byte budget; 0 = unbounded"},
 			{name: "--reference-blocks", arg: "all|container-map,signature-types,type-card", desc: "Turn reference blocks back on (off by default)"},
 			{name: "--max-indexed-files", arg: "n", desc: "Bound cold-search parsing to N files"},

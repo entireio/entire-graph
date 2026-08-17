@@ -79,6 +79,8 @@ type searchFlags struct {
 	VerifyPreFixStatus    string
 	FileOutline           bool
 	Deep                  bool
+	SingleResolution      bool
+	DocumentResolution    bool
 	// The reference blocks, off unless asked for. See SearchOptions in internal/sem/search.go for
 	// the session measurement that made OFF the default.
 	ContainerMap   bool
@@ -198,6 +200,8 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 		IncludeFileOutline:    flags.FileOutline,
 		VerifyExplainCommand:  flags.VerifyExplain,
 		Deep:                  flags.Deep,
+		SingleResolution:      flags.SingleResolution,
+		DocumentResolution:    flags.DocumentResolution,
 
 		IncludeContainerMap:   flags.ContainerMap,
 		IncludeSignatureTypes: flags.SignatureTypes,
@@ -1862,6 +1866,10 @@ func parseSearchFlags(args []string) (searchFlags, []string, error) {
 			flags.IndexAllFiles = true
 		case "--deep":
 			flags.Deep = true
+		case "--single-resolution":
+			flags.SingleResolution = true
+		case "--document-resolution":
+			flags.DocumentResolution = true
 		case "--container-map":
 			flags.ContainerMap = true
 		case "--signature-types":
