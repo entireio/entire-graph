@@ -1,0 +1,32 @@
+{
+  "cli_version": "dev",
+  "checkpoint_version": "branch-v1",
+  "checkpoint_id": "7d71faf42635",
+  "strategy": "manual-commit",
+  "branch": "feat/prose-retrieval-and-benchmarks",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/cli/help.go",
+    "internal/sem/search.go",
+    "internal/sem/search_multi_resolution.go",
+    "internal/sem/search_multi_resolution_test.go",
+    "internal/sem/search_prose_parent.go",
+    "internal/sem/search_prose_session_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/7d/71faf42635/0/metadata.json",
+      "transcript": "/7d/71faf42635/0/full.jsonl",
+      "compact_transcript": "/7d/71faf42635/0/transcript.jsonl",
+      "content_hash": "/7d/71faf42635/0/content_hash.txt",
+      "prompt": "/7d/71faf42635/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 411,
+    "cache_creation_tokens": 2273849,
+    "cache_read_tokens": 89647050,
+    "output_tokens": 270505,
+    "api_call_count": 206
+  }
+}
