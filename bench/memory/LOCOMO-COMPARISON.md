@@ -4,8 +4,8 @@
 in seconds with zero LLM calls where extraction-based systems take hours.**
 
 Measured side by side in one window on the identical 1,540 questions, with the same answerer and
-the same judge for every arm: entire-graph **94.74**, mem0 OSS **93.83**, cognee 92.86, cmm 91.30,
-graphify 87.34, letta 80.58, supermemory 77.60.
+the same judge for every arm: entire-graph **94.74**, mem0 OSS **93.83**, cognee 92.86, BM25 91.88
+(§6c), cmm 91.30, graphify 87.34, letta 80.58, supermemory 77.60.
 
 The margin over mem0 is **+0.91pp** (discordant 43–29, McNemar p = 0.125). We report the p-value
 because almost nobody in this literature does, not because the ranking is in doubt: on this
@@ -42,13 +42,19 @@ artifact in [`RUN-INDEX.md`](RUN-INDEX.md).
 | 3 | entire-graph (first commit only) | `mrq_mres` | 93.83 | 1445/1540 | **0** |
 | 4 | mem0 OSS — second run, same config | `sw_mem0` | 93.57 | 1441/1540 | 1+ per memory |
 | 5 | cognee | `field_cognee_loco2` | 92.86 | 1430/1540 | 1+ per memory |
-| 6 | entire-graph (shipped, current default) | `mrq_base` | 91.56 | 1410/1540 | **0** |
-| 7 | cmm (patched, Markdown-Section) | `full_cmm` | 91.30 | 1406/1540 | **0** |
-| 8 | graphify | `full_graphify` | 87.34 | 1345/1540 | **0** |
-| 9 | letta | `field_letta_loco` | 80.58 | 1241/1540 | 1+ per memory |
-| 10 | supermemory ‡ | `field_sm_loco` | 77.60 | 1195/1540 | hosted |
+| 6 | BM25, turn granularity §6c | `full_bm25` | 91.88 | 1415/1540 | **0** |
+| 7 | entire-graph (shipped, current default) | `mrq_base` | 91.56 | 1410/1540 | **0** |
+| 8 | cmm (patched, Markdown-Section) | `full_cmm` | 91.30 | 1406/1540 | **0** |
+| 9 | graphify | `full_graphify` | 87.34 | 1345/1540 | **0** |
+| 10 | letta | `field_letta_loco` | 80.58 | 1241/1540 | 1+ per memory |
+| 11 | supermemory ‡ | `field_sm_loco` | 77.60 | 1195/1540 | hosted |
 | — | graphiti | — | — | — | 1+ per memory |
 | — | mem0 Pro / managed | — | — | — | hosted |
+
+`full_bm25` ran 2026-08-15 22:41 UTC, answerer and judge both `gpt-5.6-sol`, `top_k=200`,
+`fair_mode: true`, `asymmetric_settings_active: {}` — see [`RUN-INDEX.md`](RUN-INDEX.md). Paired
+against entire-graph over the same 1,540 questions it gives a +2.86pp margin at McNemar
+<i>p</i> = 5.7×10⁻⁷, more than four times the 0.65pp noise floor — see §6c.
 
 mem0 OSS also scored **93.44** (`field_mem0_loco`, 1439/1540) in the earlier field window. Both are
 real; see §7 for which to use where.
@@ -360,6 +366,38 @@ mem0's official evaluation loader uses `chat['text']` only. 15.1% of messages ca
 `blip_caption`. This is **symmetric across all arms**, so the head-to-head is unaffected — but our
 **absolute numbers are not comparable to text-only-loader publications**, and this partly explains
 why both arms exceed the audit's ceiling.
+
+---
+
+## 6c. The lexical baseline: is structure even necessary?
+
+Two recent results argue that the structure every other arm in this table builds is unnecessary:
+*Better Call Grep* (ISSTA 2026, arXiv:2601.23254) found naive lexical retrieval "comparable to
+sophisticated graph-based baselines" for repository-level code completion, and arXiv:2608.12888 (13
+Aug 2026) found a lexical, turn-granularity index over the unmodified conversation archive — no
+graph, no embeddings, no extraction, no LLM at any point — topping MemoryAgentBench and reaching
+93.2 on LongMemEval-S. We added a BM25 arm precisely because this literature predicts it should be
+competitive, and built the honest strong form of it rather than a strawman: `rank_bm25.BM25Okapi`
+(k1=1.2, b=0.75), the conventional Lucene/Anserini tokenisation pipeline (lowercase →
+`[a-z0-9]+` → NLTK English stopword removal → Snowball stemming), one indexed unit per
+conversational turn, ingesting byte-identical corpus text to the entire-graph arm — same fairness
+contract as every other arm here, including raising rather than silently returning `[]` on a
+missing buffer, the defect class documented in §6b.
+
+**Result: 91.88, fourth of eleven rows in the table above.** It beats one graph-based system
+outright (graphify, *p* = 6.6×10⁻⁸), ties another (entire-graph's shipped current default, *p* =
+0.72), and is statistically indistinguishable from cognee — a system that spends 12.35 million
+tokens building its index (*p* = 0.19). It does this while returning less context than any
+structural system ranked above it. Built in 0.12 seconds with zero model calls.
+
+The margin between entire-graph and BM25 is **+2.86pp at McNemar *p* = 5.7×10⁻⁷** — more than four
+times the 0.65pp noise floor established in §7, and the one accuracy margin in this entire
+comparison that is not in statistical doubt. Because both arms build their index at identical zero
+cost, this comparison is also the cleanest one in the table: it isolates retrieval quality from the
+cost argument entirely, which the mem0/cognee rows cannot do.
+
+We have not tested this margin's sensitivity to reader-model choice the way §7 does for the mem0
+comparison, and flag that as open rather than assume it transfers.
 
 ---
 

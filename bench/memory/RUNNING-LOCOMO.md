@@ -178,7 +178,7 @@ than explaining it later.
 - **Read the score from the run's own aggregate**, not from a re-derivation.
 
 **Sanity check on any competitor.** A system scoring near zero is a broken integration until proven
-otherwise. Three of the six systems we measured were suppressed by defects in their own shipped
+otherwise. Three of the seven systems we measured were suppressed by defects in their own shipped
 code, worth **+6.04**, **+13.77**, and one that returned no results on prose at all. Diagnose before
 publishing.
 
@@ -193,6 +193,7 @@ All 1,540 questions, shared reader and judge, `top_k = 200`, zero dropped questi
 | **entire-graph** | **94.74** | **0** | **0** |
 | mem0 OSS | 93.83 | 5,882 | 50.85M |
 | cognee | 92.86 | 11,749 | 12.35M |
+| BM25 | 91.88 | 0 | 0 |
 | cmm | 91.30 | 0 | 0 |
 | graphify | 87.34 | 0 | 0 |
 | letta | 80.58 | not projectable | not projectable |

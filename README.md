@@ -13,36 +13,11 @@ agent: you ask a code question in plain language, the agent runs graph queries,
 reads the code the graph points at, and answers with citations. A captured
 example is below, after setup.
 
-## Benchmarks
-
-Measured on LoCoMo (1,540 questions, ten multi-session conversations) against
-seven other memory systems, under one shared reader model, one shared judge
-model, and a 200-item retrieval budget for every arm.
-
-| System | LoCoMo | Index-time tokens |
-| --- | --- | --- |
-| **Entire Graph** | **94.74** | **0** |
-| mem0 OSS | 93.83 | 50.85M |
-| cognee | 92.86 | 12.35M |
-| BM25 (lexical baseline) | 91.88 | 0 |
-| cmm | 91.30 | 0 |
-| graphify | 87.34 | 0 |
-| letta | 80.58 | not projectable |
-| supermemory | 77.60 | not measurable |
-
-Entire Graph recovers all gold evidence for 82.0% of questions within the top
-10 results; the next-best measurable system reaches 56.8% at the same cutoff.
-
-Index-time token counts are directly metered through a transparent proxy in
-front of the shared extraction endpoint, not estimated. Entire Graph calls no
-model to build its index; mem0 OSS calls one model per stored chunk, cognee
-calls two. That cost is not a one-time charge — an inference-built index pays
-it again on every revision of the underlying corpus. Entire Graph's index is
-free to build and free to rebuild at every corpus size.
-
-The accuracy margin over the closest competitor does not clear statistical
-significance on this benchmark; the cost margin is an exact count, not an
-estimate, and holds regardless.
+Entire Graph ranks first among eight memory systems on LoCoMo, a
+long-conversation benchmark, and builds its index with zero model calls where
+every inference-built competitor spends millions of tokens doing the same job.
+See [benchmarks](docs/benchmarks.md) for the numbers, the methodology, and
+what does and does not clear statistical significance.
 
 ## Install
 
