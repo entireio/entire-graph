@@ -104,6 +104,13 @@ type ExplainResponse struct {
 	// Scanned is how many candidate names the error text yielded, so a truncated answer is visible.
 	Scanned int `json:"scanned"`
 	Omitted int `json:"omitted,omitempty"`
+	// Commit / Tree / WorktreeSnapshot are the provenance of the declarations above: WHICH tree these
+	// line numbers and signatures describe. The text form says it in its header; without these a JSON
+	// consumer had no way to tell a --head answer from a working-tree one, and on a clean tree the two
+	// were byte-identical. Same field names and semantics as def, neighbors, and impact.
+	Commit           string `json:"commit,omitempty"`
+	Tree             string `json:"tree,omitempty"`
+	WorktreeSnapshot bool   `json:"worktree_snapshot,omitempty"`
 }
 
 type explainFlags struct {
@@ -173,8 +180,9 @@ func runExplain(ctx context.Context, opts Options, args []string) error {
 	if cacheDir == "" {
 		cacheDir = opts.Env.PluginDataDir
 	}
-	// Worktree semantics on purpose: the agent has just edited the tree, and a declaration read from
-	// HEAD would describe code that no longer exists.
+	// Worktree is the default on purpose: the agent has just edited the tree, and a declaration read
+	// from HEAD would describe code that no longer exists. --head remains available for callers that
+	// explicitly want the committed baseline.
 	snapshot, _, err := sem.LoadOrBuildProviderSnapshot(ctx, repo, opts.Version, sem.ProviderSnapshotOptions{
 		NoNetwork:    true,
 		Worktree:     flags.Worktree,
@@ -186,13 +194,19 @@ func runExplain(ctx context.Context, opts Options, args []string) error {
 		return err
 	}
 	response := buildExplainResponse(snapshot, names)
+	// One decision, both renderings. The text header and the JSON fields are computed from the same
+	// expression so they can never disagree about which tree was read — the disagreement this command's
+	// provenance work exists to remove.
+	useHead := !flags.Worktree && snapshot.Header.Commit != ""
+	response.Commit, response.Tree = snapshot.Header.Commit, snapshot.Header.Tree
+	response.WorktreeSnapshot = !useHead
 	switch flags.Format {
 	case "json":
 		encoder := json.NewEncoder(opts.Stdout)
 		encoder.SetEscapeHTML(false)
 		return encoder.Encode(response)
 	case "text", "agent":
-		_, err := opts.Stdout.Write(RenderExplain(response, flags.MaxContextBytes))
+		_, err := opts.Stdout.Write(RenderExplainWithProvenance(response, flags.MaxContextBytes, useHead))
 		return err
 	default:
 		return fmt.Errorf("explain --format must be json, text, or agent, got %q", flags.Format)
@@ -280,6 +294,13 @@ func buildExplainResponse(snapshot sem.ProviderSnapshot, names []string) Explain
 // RenderExplain prints the block. Unresolved names are listed last and on one line: they are a short
 // negative fact, not an entry worth a paragraph.
 func RenderExplain(response ExplainResponse, maxBytes int) []byte {
+	return RenderExplainWithProvenance(response, maxBytes, false)
+}
+
+// RenderExplainWithProvenance renders the same declaration block while making
+// its source view explicit. useHead is true only when a committed snapshot was
+// actually selected; the no-HEAD fallback therefore keeps the worktree label.
+func RenderExplainWithProvenance(response ExplainResponse, maxBytes int, useHead bool) []byte {
 	if len(response.Symbols) == 0 {
 		return nil
 	}
@@ -287,7 +308,11 @@ func RenderExplain(response ExplainResponse, maxBytes int) []byte {
 		maxBytes = explainMaxBytes
 	}
 	var buffer strings.Builder
-	buffer.WriteString(ExplainHeader + "\n")
+	header := ExplainHeader
+	if useHead {
+		header = ExplainHeadHeader
+	}
+	buffer.WriteString(header + "\n")
 	var missing []string
 	for _, symbol := range response.Symbols {
 		if !symbol.Resolved {
@@ -330,6 +355,9 @@ func RenderExplain(response ExplainResponse, maxBytes int) []byte {
 // ExplainHeader is exported so the guide and its test cannot drift from what is printed, the same
 // discipline the literal-cluster and file-outline block names are under.
 const ExplainHeader = "DECLARATIONS THE BUILD ERROR NAMED (from the working tree, so your own edits are included)"
+
+// ExplainHeadHeader labels the explicit committed-tree view selected by --head.
+const ExplainHeadHeader = "DECLARATIONS THE BUILD ERROR NAMED (from committed HEAD, so working-tree edits are excluded)"
 
 func parseExplainFlags(args []string) (explainFlags, error) {
 	flags := explainFlags{

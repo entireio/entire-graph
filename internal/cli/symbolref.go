@@ -622,14 +622,15 @@ type symbolMatchBody struct {
 	UnitEndLine int `json:"unit_end_line,omitempty"`
 }
 
-// symbolMatchBodies reads a compact body for the first `limit` records. A body that cannot be read
+// symbolMatchBodiesFromReader reads a compact body for the first `limit` records, through the
+// reader the command owns — one reader per command, reused for every body and call-site
+// annotation, so bodies come from the same tree the snapshot describes. A body that cannot be read
 // (file gone, binary, oversized) is simply omitted: the locator list above it is still a complete
 // answer, and a missing body must never turn an answer back into a refusal.
-func symbolMatchBodies(repoRoot string, matches []sem.SymbolRecord, limit int) []symbolMatchBody {
-	if repoRoot == "" || limit <= 0 || len(matches) == 0 {
+func symbolMatchBodiesFromReader(read lineReader, matches []sem.SymbolRecord, limit int) []symbolMatchBody {
+	if read == nil || limit <= 0 || len(matches) == 0 {
 		return nil
 	}
-	read := newRepoLineReader(repoRoot)
 	bodies := make([]symbolMatchBody, 0, minSymbolInt(limit, len(matches)))
 	for _, symbol := range matches {
 		if len(bodies) >= limit {

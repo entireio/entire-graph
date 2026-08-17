@@ -58,7 +58,7 @@ func TestSymbolMatchBodiesNeverStopMidSymbolSilently(t *testing.T) {
 	}
 	root := t.TempDir()
 	write(t, root, "big.go", strings.Join(huge, "\n"))
-	bodies := symbolMatchBodies(root, []sem.SymbolRecord{{
+	bodies := symbolMatchBodiesOnDisk(root, []sem.SymbolRecord{{
 		Name: "Huge", Kind: "function", FilePath: "big.go", StartLine: 1, EndLine: 500,
 	}}, 1)
 	if len(bodies) != 1 {
@@ -77,7 +77,7 @@ func TestSymbolMatchBodiesNeverStopMidSymbolSilently(t *testing.T) {
 		t.Fatalf("resume note missing %q:\n%s", want, out.String()[len(out.String())-200:])
 	}
 	// A unit that FITS says nothing: the note's presence has to mean something.
-	small := symbolMatchBodies(root, []sem.SymbolRecord{{
+	small := symbolMatchBodiesOnDisk(root, []sem.SymbolRecord{{
 		Name: "Small", FilePath: "big.go", StartLine: 1, EndLine: 3,
 	}}, 1)
 	var fits bytes.Buffer

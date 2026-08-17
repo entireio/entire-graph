@@ -207,6 +207,82 @@ func TestProviderRecordsKeyDiscriminatesRepoIdentity(t *testing.T) {
 }
 
 // The search snapshot cache had the same cap hole; identity was already keyed upstream.
+// The cap can be set two ways and only one of them was ever tested. Both existing
+// cap tests pass MaxFiles explicitly, so they pinned the option half of the term
+// while ENTIRE_GRAPH_MAX_FILES stayed out of the key — which is how a capped
+// index came to answer an uncapped search despite a test named for that exact
+// hole. These cannot be t.Parallel: t.Setenv forbids it, which is itself part of
+// why the env path was easy to leave uncovered.
+func TestSearchSnapshotKeyDiscriminatesEnvFileCap(t *testing.T) {
+	repo := t.TempDir()
+	uncapped, err := searchSnapshotKey(repo, "id", "v", "tree", ProviderSnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(maxSourceFilesEnv, "5")
+	capped, err := searchSnapshotKey(repo, "id", "v", "tree", ProviderSnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capped == uncapped {
+		t.Fatalf("%s=5 and uncapped search snapshots share a key", maxSourceFilesEnv)
+	}
+	// And the env var must land on the same term as the option: setting one to the
+	// value the other already has must NOT produce a third key space.
+	explicit, err := searchSnapshotKey(repo, "id", "v", "tree", ProviderSnapshotOptions{MaxFiles: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit != capped {
+		t.Fatalf("%s=5 and MaxFiles=5 key differently; the env var must resolve onto the option's term", maxSourceFilesEnv)
+	}
+	// The converse direction matters just as much: LOWERING the cap must not reuse
+	// the larger entry, or a caller who asked to see less is handed more of the
+	// tree than it asked for. Neither direction announces itself in the answer.
+	t.Setenv(maxSourceFilesEnv, "2")
+	lowered, err := searchSnapshotKey(repo, "id", "v", "tree", ProviderSnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lowered == capped {
+		t.Fatalf("%s=2 reuses the %s=5 entry", maxSourceFilesEnv, maxSourceFilesEnv)
+	}
+}
+
+func TestProviderRecordsKeyDiscriminatesEnvFileCap(t *testing.T) {
+	repo := t.TempDir()
+	uncapped, err := providerRecordsKey(repo, "id", "v", "tree", "snapshot", ProviderSnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(maxSourceFilesEnv, "5")
+	capped, err := providerRecordsKey(repo, "id", "v", "tree", "snapshot", ProviderSnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capped == uncapped {
+		t.Fatalf("%s=5 and uncapped provider records share a key", maxSourceFilesEnv)
+	}
+	explicit, err := providerRecordsKey(repo, "id", "v", "tree", "snapshot", ProviderSnapshotOptions{MaxFiles: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit != capped {
+		t.Fatalf("%s=5 and MaxFiles=5 key differently; the env var must resolve onto the option's term", maxSourceFilesEnv)
+	}
+	// The converse direction matters just as much: LOWERING the cap must not reuse
+	// the larger entry, or a caller who asked to see less is handed more of the
+	// tree than it asked for. Neither direction announces itself in the answer.
+	t.Setenv(maxSourceFilesEnv, "2")
+	lowered, err := providerRecordsKey(repo, "id", "v", "tree", "snapshot", ProviderSnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lowered == capped {
+		t.Fatalf("%s=2 reuses the %s=5 entry", maxSourceFilesEnv, maxSourceFilesEnv)
+	}
+}
+
 func TestSearchSnapshotKeyDiscriminatesFileCap(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()

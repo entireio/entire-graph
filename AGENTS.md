@@ -105,13 +105,22 @@ entire graph checkpoint <id> --json                 # the commit behind an Entir
 **When:** judging whether a change is safe to keep / revert / continue, or reviewing a branch/PR. High dependent counts on a signature change = run tests first.
 
 ### 🏗️ index — *build / warm one cache variant*
-Prebuilds a durable, complete committed-tree snapshot and verifies it was written, before latency-sensitive work. The snapshot is query-independent, but its cache variant is specific to the committed tree, resolved cache directory, profile, ordered ignore/include paths and contents, and `.graphignore` content.
+Prebuilds a durable, complete committed-tree snapshot and verifies it was
+written before latency-sensitive work. Reuse is cache-variant-specific: a
+later `--head` query finds the entry only when caching is enabled and it
+resolves the same cache directory, profile, ordered ignore/include paths and
+contents, and `.graphignore`.
 
 ```sh
 entire graph index --repo . --head --profile full --cache-dir /path/to/cache --format json
 ```
 
-**When:** once, up front, on a large repo before a batch of `--head` searches/neighbors queries that use the same cache variant. `index` defaults to `--profile full` while `search` defaults to `fast`, so the command above warms neither a default `search --head` nor the default working-tree agent path. Match the whole variant: unchanged keyed inputs and tree produce a hit, while a changed tree selects or builds another entry.
+**When:** once, up front, on a large repo before a batch of `--head`
+searches/neighbors queries that use the same cache variant. `index` defaults to
+`--profile full` while `search` defaults to `fast`, so the command above warms
+neither a default `search --head` nor the default working-tree agent path.
+Match the whole variant: unchanged keyed inputs and tree produce a hit, while
+a changed tree or changed input selects or builds another entry.
 
 ### 🧭 capabilities / version — *feature-detect*
 ```sh

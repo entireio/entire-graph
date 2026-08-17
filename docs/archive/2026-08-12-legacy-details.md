@@ -296,7 +296,7 @@ Savings scale with symbol connectivity: single-digit for narrow symbols, 280x+ f
 - **Full-graph build:** linear in repository size; 23K relations in 1.5s up to 2.27M relations in 25.6s across the repos above.
 - **Streaming output:** `snapshot` emits records as it parses, so memory stays bounded on very large repositories.
 - **Cached committed-tree search:** reuses a tree-keyed compressed index across invocations, in the platform's per-user cache directory unless `--cache-dir`/`ENTIRE_PLUGIN_DATA_DIR` redirect it, so repeated queries on an unchanged tree skip re-parsing. The working tree is never cached. A complete prepared index derives the exact query-selected view, so relation expansion cannot escape that file set.
-- **Explicit preindex:** `index --head` builds and verifies that query-independent artifact before latency-sensitive work; cached `search` and `neighbors` calls then report the hit directly.
+- **Explicit preindex:** `index --head` builds and verifies that artifact before latency-sensitive work; `search` and `neighbors` calls then report the hit directly — provided they resolve the same cache variant, which includes the profile (`index` defaults to `full`, `search` to `fast`).
 
 ### Compact snapshot NDJSON v1
 
