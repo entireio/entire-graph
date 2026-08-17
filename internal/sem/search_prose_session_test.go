@@ -865,6 +865,77 @@ func TestSelectSearchCandidatesHasLinearProseWorkingSet(t *testing.T) {
 	assertSearchResultGolden(t, searchCandidateResults(selected), "1839afd5464312390c65f319d2dda081904001e1fedddbc3b13d3ec32cea651b")
 }
 
+// TestSelectSearchCandidatesHasLinearProseSectionWorkingSet guards the path the product actually
+// takes. The fixture above cannot: proseScaleCandidates emits ONE candidate per file, so a section
+// key and a file key name the same unit there and sectionUnits is a no-op whichever way it is
+// passed. The default path is also the more expensive one — a second proseParents pass over the
+// documents, a planProseParentPassages call per selected section against the whole document's
+// candidate list, and a term-list key space that grows with sections rather than files — so a
+// ceiling that only covers the non-default path would not notice it regressing.
+func TestSelectSearchCandidatesHasLinearProseSectionWorkingSet(t *testing.T) {
+	q := buildSearchQuery("amber orchard ledger lantern")
+	q.matchableWords = []string{"amber", "orchard", "ledger", "lantern"}
+	small := proseSectionScaleCandidates(100, 20)
+	large := proseSectionScaleCandidates(200, 20)
+	smallAllocs := testing.AllocsPerRun(3, func() {
+		_ = selectSearchCandidates(small, q, 20, 3, true)
+	})
+	largeAllocs := testing.AllocsPerRun(3, func() {
+		_ = selectSearchCandidates(large, q, 20, 3, true)
+	})
+	if largeAllocs > smallAllocs*2.4 {
+		t.Fatalf("section-path allocations grew superlinearly: 2000=%0.f 4000=%0.f", smallAllocs, largeAllocs)
+	}
+	selected := selectSearchCandidates(large, q, 20, 3, true)
+	if len(selected) != 20 {
+		t.Fatalf("selected %d candidates, want top-k 20", len(selected))
+	}
+	// Breadth before depth still binds at scale: 4000 sections over 200 documents must not be
+	// answered with 20 sections of the same document.
+	paths := map[string]bool{}
+	for _, candidate := range selected {
+		paths[candidate.result.FilePath] = true
+	}
+	if len(paths) != 20 {
+		t.Fatalf("20 results spanned %d documents, want 20", len(paths))
+	}
+}
+
+// proseSectionScaleCandidates builds many SECTIONS per document, which is what makes section units
+// differ from file units at all.
+func proseSectionScaleCandidates(files, sections int) []searchCandidate {
+	candidates := make([]searchCandidate, 0, files*sections)
+	total := files * sections
+	for file := 0; file < files; file++ {
+		path := fmt.Sprintf("sessions/session-%05d.md", file)
+		for section := 0; section < sections; section++ {
+			candidates = append(candidates, proseTestCandidate(
+				path,
+				1+section*12,
+				float64(total-(file*sections+section)),
+				"# Amber orchard ledger lantern",
+				map[string]int{"amber": 1, "orchard": 1, "ledger": 1, "lantern": 1},
+			))
+		}
+	}
+	return candidates
+}
+
+func BenchmarkSelectSearchCandidatesProseSections4000(b *testing.B) {
+	q := buildSearchQuery("amber orchard ledger lantern")
+	q.matchableWords = []string{"amber", "orchard", "ledger", "lantern"}
+	candidates := proseSectionScaleCandidates(200, 20)
+	b.ReportAllocs()
+	b.ResetTimer()
+	var selected []searchCandidate
+	for iteration := 0; iteration < b.N; iteration++ {
+		selected = selectSearchCandidates(candidates, q, 20, 3, true)
+	}
+	if len(selected) != 20 {
+		b.Fatalf("selected %d candidates, want 20", len(selected))
+	}
+}
+
 func assertSearchResultGolden(t *testing.T, results []SearchResult, want string) {
 	t.Helper()
 	encoded, err := json.Marshal(results)

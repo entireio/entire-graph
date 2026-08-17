@@ -184,13 +184,17 @@ type SearchOptions struct {
 	// for one more result is not a request to change retrieval strategy, so the strategy is
 	// now an explicit choice and top-k only changes how many rows come back.
 	Deep bool
-	// SingleResolution turns OFF multi-resolution prose retrieval, restoring the previous output
-	// exactly: one result per file, with the finer regions of a prose document left in each
-	// result's `passages` field instead of being promoted to results of their own. See
-	// search_multi_resolution.go — the expansion is strictly additive (it only fills result slots
-	// the distinct-file ranking left empty, and never breaches MaxContextBytes), so this switch
-	// exists for callers that need the result count to equal the distinct-file count, not because
-	// the expansion can cost them a file.
+	// SingleResolution turns OFF multi-resolution prose retrieval: the finer regions of a prose
+	// document stay in each result's `passages` field instead of being promoted to results of their
+	// own. See search_multi_resolution.go — the expansion is strictly additive (it only fills result
+	// slots the distinct-file ranking left empty, and never breaches MaxContextBytes), so this
+	// switch exists for callers that do not want passages promoted, not because the expansion can
+	// cost them a file.
+	//
+	// It does NOT on its own restore the pre-section output shape. Promotion and section ranking are
+	// independent: with only this flag set, a prose document is still ranked by section, so one file
+	// can still supply many results. Reproducing the previous "one result per file" payload requires
+	// SingleResolution AND DocumentResolution together.
 	SingleResolution bool
 	// DocumentResolution turns OFF section-resolution prose ranking, restoring the previous
 	// behaviour: one prose document is one retrievable unit, so a corpus of N documents can never
@@ -1354,6 +1358,9 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	// container-map blocks — those describe code, and a prose passage is not a definition. It is
 	// also the only pass that can raise the result count above the distinct-file count, so running
 	// it here keeps every earlier pass reasoning about the ranking it actually produced.
+	// Containment is resolved before promotion, not after, so the slots a duplicate was occupying
+	// are handed back to the expansion and spent on regions the payload does not already show.
+	results = dropContainedProseResults(results)
 	if !options.SingleResolution {
 		results = expandProseResolution(results, options.TopK, options.MaxContextBytes)
 	}

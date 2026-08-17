@@ -1,5 +1,7 @@
 package sem
 
+import "sort"
+
 // MULTI-RESOLUTION RETRIEVAL
 //
 // Ranking returns at most one result per file, because for code search a second region of a file
@@ -92,6 +94,14 @@ func applyProseResolutionPromotions(results []SearchResult, order []prosePromoti
 	for _, promotion := range order[:count] {
 		expanded = append(expanded, proseResolutionResult(results[promotion.parent], results[promotion.parent].Passages[promotion.passage]))
 	}
+	// results[] is documented as descending by score, and consumers truncate on it. Appending
+	// promotions would break that: a promotion carries its parent's score, so a passage of a
+	// high-scoring document landed after every low-scoring parent and the array stopped being
+	// monotone. Re-sorting restores the invariant, and a STABLE sort is what makes it safe --
+	// a promotion ties with its parent exactly, so it settles immediately after that parent
+	// instead of anywhere else in the tie. Set membership is untouched, so promotion stays
+	// strictly additive; only the order it is reported in changes.
+	sort.SliceStable(expanded, func(i, j int) bool { return expanded[i].Score > expanded[j].Score })
 	for index := range expanded {
 		expanded[index].Rank = index + 1
 	}
@@ -131,13 +141,24 @@ func expandProseResolution(results []SearchResult, topK, budget int) []SearchRes
 	if len(order) == 0 {
 		return results
 	}
-	expanded := results
-	for count := 1; count <= len(order); count++ {
-		trial := applyProseResolutionPromotions(results, order, count)
-		if budget > 0 && serializedSearchResultBytes(trial) > budget {
-			break
-		}
-		expanded = trial
+	if budget <= 0 {
+		return applyProseResolutionPromotions(results, order, len(order))
 	}
-	return expanded
+	// Serialized size is strictly increasing in count: a promotion always moves a passage out of a
+	// `passages` entry and into a full result record, which is strictly larger. The largest fitting
+	// count is therefore found by bisection in ~log2(n) serializations rather than by materializing
+	// and marshalling the whole result set once per candidate count.
+	low, high := 0, len(order)
+	for low < high {
+		mid := (low + high + 1) / 2
+		if serializedSearchResultBytes(applyProseResolutionPromotions(results, order, mid)) <= budget {
+			low = mid
+		} else {
+			high = mid - 1
+		}
+	}
+	if low == 0 {
+		return results
+	}
+	return applyProseResolutionPromotions(results, order, low)
 }

@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -104,15 +105,60 @@ func TestExpandProseResolutionRoundRobinsAcrossParents(t *testing.T) {
 	if len(expanded) != 4 {
 		t.Fatalf("expanded to %d results, want 4", len(expanded))
 	}
-	got := []string{expanded[2].Snippet, expanded[3].Snippet}
-	if got[0] != "one alpha" || got[1] != "two alpha" {
-		t.Fatalf("promotion order = %v, want depth-first round robin across parents", got)
+	// Round robin is a property of WHICH passages are promoted, not of where they are printed:
+	// the second document contributes before the first document contributes twice. `one beta` is
+	// the first document's depth-2 passage, so its absence is the property under test. (Position
+	// is no longer meaningful here — results[] is re-sorted by score, so a promotion is reported
+	// beside its parent rather than at the end.)
+	promoted := map[string]bool{}
+	bySnippet := map[string]SearchResult{}
+	for _, result := range expanded {
+		bySnippet[result.Snippet] = result
+		if hasSearchSignal(result, proseResolutionSignal) {
+			promoted[result.Snippet] = true
+		}
 	}
-	if len(expanded[0].Passages) != 1 || expanded[0].Passages[0].Snippet != "one beta" {
-		t.Fatalf("unpromoted passage lost from its parent: %#v", expanded[0].Passages)
+	if !promoted["one alpha"] || !promoted["two alpha"] || promoted["one beta"] {
+		t.Fatalf("promoted set = %v, want one alpha and two alpha but not one beta", promoted)
 	}
-	if len(expanded[1].Passages) != 0 {
-		t.Fatalf("promoted passage still attached to its parent: %#v", expanded[1].Passages)
+	if parent := bySnippet["primary one"]; len(parent.Passages) != 1 || parent.Passages[0].Snippet != "one beta" {
+		t.Fatalf("unpromoted passage lost from its parent: %#v", parent.Passages)
+	}
+	if parent := bySnippet["primary two"]; len(parent.Passages) != 0 {
+		t.Fatalf("promoted passage still attached to its parent: %#v", parent.Passages)
+	}
+}
+
+// TestExpandProseResolutionKeepsResultsScoreOrdered pins the invariant results[] advertises.
+// Promotions inherit their parent's score, so appending them left a high-scoring passage sitting
+// behind every low-scoring parent: a consumer taking "top 20 by score" got a different set than
+// the first 20 entries, which is precisely the consumer this pass exists to serve.
+func TestExpandProseResolutionKeepsResultsScoreOrdered(t *testing.T) {
+	t.Parallel()
+	results := make([]SearchResult, 0, 6)
+	for index := 1; index <= 6; index++ {
+		results = append(results, proseResolutionParent(
+			index, "sessions/doc-"+strconv.Itoa(index)+".md", index*10,
+			"primary "+strconv.Itoa(index),
+			proseResolutionPassage(index*10+5, "passage "+strconv.Itoa(index)),
+		))
+	}
+
+	expanded := expandProseResolution(results, 12, 0)
+
+	if len(expanded) != 12 {
+		t.Fatalf("expanded to %d results, want 12", len(expanded))
+	}
+	for index := 1; index < len(expanded); index++ {
+		if expanded[index].Score > expanded[index-1].Score {
+			t.Fatalf("results not descending by score: position %d scores %v, position %d scores %v",
+				index-1, expanded[index-1].Score, index, expanded[index].Score)
+		}
+	}
+	for index := range expanded {
+		if expanded[index].Rank != index+1 {
+			t.Fatalf("rank %d reported at position %d", expanded[index].Rank, index)
+		}
 	}
 }
 

@@ -42,8 +42,15 @@ type proseParent struct {
 // The line is part of the key because a symbol ID names a heading, not an OCCURRENCE of one: a
 // document that heads twelve entries "## note" carries twelve identically-identified sections, and
 // keying by ID alone would collapse them back into the single unit this change exists to split.
+//
+// The unit is keyed by section only for regions of a DOCUMENT. The corpus gate is counted over the
+// whole candidate path mix, so a docs-heavy repository opens it while still containing source
+// files; without this check those files would be keyed by symbol too, and since a source file has
+// many symbols they would each contribute many units. That is not merely off-model — one region per
+// unit is what enforces MaxRegionsPerFile for code, so removing the rule silently uncaps it. A
+// source region therefore keeps falling back to its file, which is exactly its previous behaviour.
 func proseParentKey(candidate searchCandidate, sectionUnits bool) string {
-	if !sectionUnits || candidate.result.SymbolID == "" {
+	if !sectionUnits || candidate.result.SymbolID == "" || !proseParentPath(candidate.result.FilePath) {
 		return candidate.result.FilePath
 	}
 	return candidate.result.SymbolID + ":" + strconv.Itoa(candidate.result.StartLine)
@@ -142,7 +149,14 @@ func selectSearchCandidates(
 			candidate = *parent.best
 		}
 		candidate.result.Signals = appendUnique(candidate.result.Signals, proseParentRetrievalSignal)
-		candidate.prosePassagePlan = planProseParentPassages(documents[parent.path], candidate, q, maxInt(0, topK-1))
+		// Passages, and therefore multi-resolution promotion, are for DOCUMENTS. The corpus gate is
+		// counted over the whole path mix, so a docs-heavy repository admits its source files here
+		// too; planning passages for them would hand a code file extra result slots through
+		// promotion, which is the same uncapping that section keying caused and which
+		// MaxRegionsPerFile is supposed to prevent. A code region stays a single ranked region.
+		if proseParentPath(candidate.result.FilePath) {
+			candidate.prosePassagePlan = planProseParentPassages(documents[parent.path], candidate, q, maxInt(0, topK-1))
+		}
 		selectedKeys[parent.key] = true
 		selectedPaths[parent.path] = true
 		selected = append(selected, candidate)
@@ -249,6 +263,53 @@ func dropSelectedProsePassages(selected []searchCandidate) []searchCandidate {
 		selected[index].prosePassagePlan = kept
 	}
 	return selected
+}
+
+// dropContainedProseResults removes a prose result whose PRINTED span lies entirely inside the
+// printed span of a higher-ranked result from the same file.
+//
+// dropSelectedProsePassages already keeps the ranked regions disjoint, but it runs on the spans as
+// SELECTED. allocateSearchSnippets then grows them — a prose head takes an 80-line window — and
+// growth is what creates the containment: a head window that starts at line 1 and ends at line 63
+// swallows the sections at lines 8, 13, 18 and 23 that legitimately won their own slots. Nothing
+// re-checked the spans after they grew, so the payload printed that text once per contained result.
+// The cost is paid twice over, because a search payload is replayed into a model on every later
+// turn.
+//
+// Only prose results are considered. A contained CODE region is a different statement about the
+// same lines (an inner function inside an outer one, say), and one region per unit already bounds
+// how many of those a file can contribute.
+func dropContainedProseResults(results []SearchResult) []SearchResult {
+	kept := make([]SearchResult, 0, len(results))
+	for index := range results {
+		result := results[index]
+		contained := false
+		if searchResultIsProse(result) && result.SnippetStartLine > 0 && result.SnippetEndLine >= result.SnippetStartLine {
+			for _, prior := range kept {
+				if prior.FilePath != result.FilePath || prior.SnippetStartLine <= 0 {
+					continue
+				}
+				if prior.SnippetStartLine <= result.SnippetStartLine && result.SnippetEndLine <= prior.SnippetEndLine {
+					contained = true
+					break
+				}
+			}
+		}
+		if !contained {
+			kept = append(kept, result)
+		}
+	}
+	if len(kept) == len(results) {
+		return results
+	}
+	for index := range kept {
+		kept[index].Rank = index + 1
+	}
+	return kept
+}
+
+func searchResultIsProse(result SearchResult) bool {
+	return hasSearchSignal(result, proseParentRetrievalSignal) || hasSearchSignal(result, proseResolutionSignal)
 }
 
 func proseQueryRequestsMultipleParents(q searchQuery) bool {
