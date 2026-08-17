@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "1ef9e97977c0",
+  "strategy": "manual-commit",
+  "branch": "ashtom/fix-low-confidence-renderer",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/cli/search.go",
+    "internal/cli/search_confidence_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/1e/f9e97977c0/0/metadata.json",
+      "transcript": "/1e/f9e97977c0/0/full.jsonl",
+      "compact_transcript": "/1e/f9e97977c0/0/transcript.jsonl",
+      "content_hash": "/1e/f9e97977c0/0/content_hash.txt",
+      "prompt": "/1e/f9e97977c0/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 50,
+    "cache_creation_tokens": 38575,
+    "cache_read_tokens": 1295931,
+    "output_tokens": 11919,
+    "api_call_count": 25
+  }
+}
