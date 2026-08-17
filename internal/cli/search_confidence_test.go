@@ -134,6 +134,24 @@ func TestSearchLowConfidenceNoticeRetainsWeakScoreThreshold(t *testing.T) {
 	}
 }
 
+// TestSearchLowConfidenceNoticeRoundedScoreNeverContradictsThreshold: a raw score of 11.96
+// is below the ceiling but DISPLAYS as 12.0, so the "below 12" suffix must stay off — the
+// suffix follows the score the reader sees, not the raw value.
+func TestSearchLowConfidenceNoticeRoundedScoreNeverContradictsThreshold(t *testing.T) {
+	t.Parallel()
+	response := confidenceSearchResponse([]float64{11.96, 10.0, 9.0},
+		[]string{"src/a.go", "src/b.go", "src/c.go"}, "")
+	full, _ := searchLowConfidenceNotices(response)
+	text := string(full)
+	want := "top score 12.0 and top results agree on nothing"
+	if !strings.Contains(text, want) {
+		t.Fatalf("rounded-score notice is missing %q:\n%s", want, text)
+	}
+	if strings.Contains(text, "below 12") {
+		t.Fatalf("notice labels a displayed 12.0 as below 12:\n%s", text)
+	}
+}
+
 func TestSearchLowConfidenceNoticeUsesActualHighScoreReason(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

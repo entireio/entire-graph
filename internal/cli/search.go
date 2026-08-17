@@ -1299,8 +1299,14 @@ func searchLowConfidenceNotices(response sem.SearchResponse) ([]byte, []byte) {
 	if !assessment.Low {
 		return nil, nil
 	}
-	score := fmt.Sprintf("top score %.1f", assessment.TopScore)
-	if ceiling := sem.LowConfidenceScoreCeiling(); assessment.TopScore < ceiling {
+	// Gate the "below" suffix on the score AS DISPLAYED, not the raw value: 11.96 renders
+	// as 12.0, and "top score 12.0 (weak, below 12)" is the contradiction this notice must
+	// never contain. Parsing the rendered string back keeps the two in lockstep even where
+	// %.1f's half-to-even rounding and math.Round disagree.
+	display := fmt.Sprintf("%.1f", assessment.TopScore)
+	score := "top score " + display
+	shown, err := strconv.ParseFloat(display, 64)
+	if ceiling := sem.LowConfidenceScoreCeiling(); err == nil && shown < ceiling {
 		score += fmt.Sprintf(" (weak, below %.0f)", ceiling)
 	}
 	full := []byte(fmt.Sprintf(
