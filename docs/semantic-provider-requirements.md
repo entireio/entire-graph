@@ -1,19 +1,25 @@
 # Semantic Provider Requirements
 
-This document describes the requirements for `entire-graph` to serve as the
-semantic provider for Entire Brain.
+This document describes the requirements `entire-graph` meets as the semantic
+provider consumed by Entire Brain, and the ownership boundary between the two.
 
-`entire-graph` should remain responsible for parsing and semantic extraction.
-Entire Brain should remain responsible for persistence, indexing, query
-behavior, freshness policy, and agent presentation.
+Entire Graph owns everything repository-local: tree-sitter parsing and
+semantic extraction, repository indexing and its derivative caches, cache
+freshness for one requested repository view, the interactive query surface
+(`search`, `def`, `explain`, `neighbors`, `impact`), and distribution of the
+agent instruction files via `init-agents`. Entire Brain owns durable and
+cross-repository state: persistence of ingested snapshots, memory that
+outlives one command, cross-project reconciliation, and the MCP/presentation
+surfaces built on top. The boundary rationale is in
+[Entire Brain and Entire Graph boundaries](brain-and-graph-boundaries.md).
 
 ## Scope
 
-`entire-graph` is an artifact-emitting provider. It parses source and emits
-versioned semantic facts. It should not own the brain store, workspace model, or
-agent UX.
+As a provider, `entire-graph` parses source and emits versioned semantic
+facts for ingestion. It does not own the brain store, workspace model, or
+cross-repository UX.
 
-Required responsibilities:
+Provider responsibilities:
 
 - Tree-sitter parsing.
 - Entity extraction.
@@ -35,15 +41,14 @@ Provider indexing is local-only. During indexing, `entire-graph` must not:
 - Call remote embedding providers.
 - Perform implicit network discovery.
 
-`doctor --json` should expose enough information for Entire Brain and CI to
-assert that the provider can run without network egress.
+The provider's diagnostic output exposes enough information for Entire Brain
+and CI to assert that it can run without network egress.
 
 ## Provider integration commands
 
 The provider and export surface includes:
 
 ```sh
-entire graph doctor --json
 entire graph version --json
 entire graph capabilities --json
 entire graph snapshot --repo . --format ndjson
@@ -61,78 +66,13 @@ Whole-repo provider output uses newline-delimited JSON. `snapshot` also supports
 the separate, full-snapshot-only `compact-ndjson` artifact described below;
 `symbols` and `edges` accept only `ndjson`.
 
-### Streaming NDJSON contract
+### Stream and artifact formats
 
-The `snapshot`/`symbols`/`edges` commands stream records to stdout as they are
-produced, so the stream no longer holds full relation payloads, their evidence,
-or file contents in memory. Peak memory is bounded by the symbol/index metadata
-plus the relation dedup set, which holds one compact 64-bit key per unique
-relation. That dedup set still grows with the number of unique relations (the
-remaining relation-count-scaled component), but at a constant per relation
-rather than the full payload. The stream is emitted in this order:
-
-1. exactly one header line (a record with `schema_version`),
-2. `file` records, then `symbol` records (emitted per file as parsing
-   progresses, before any relation is resolved),
-3. `relation` records and the `external` endpoint records they reference,
-4. exactly one trailing `summary` record (`record_type: "summary"`).
-
-**The first header is intentionally lean.** It carries identity (`provider`,
-`provider_version`, `repo_root`, `repo_key`, `commit`, `tree`), `schema_version`,
-`capabilities`, `schema_features`, `language_versions`, and the **profile
-metadata** — `profile`, `profile_limits`, `relation_set`, and
-`skipped_relation_families`. Its `languages`, `warnings`, `partial_failures`,
-`stats`, and `completeness` are empty/zero — those totals are not known until
-the whole repository has been processed, and the header is emitted before that
-so consumers can begin work immediately. The profile metadata is **header-only**:
-it is known up front and is therefore not repeated in the summary.
-
-**The final `summary` record is authoritative for aggregate metadata.** It
-carries the real `languages`, `warnings`, `partial_failures`, `stats` (including
-the `relations` count and `completeness_level`), and the `completeness`
-breakdown. It does **not** carry profile metadata (`profile`, `profile_limits`,
-`relation_set`, `skipped_relation_families`); consumers should read those from
-the lean header and must not expect them in the summary unless a future schema
-version adds them.
-
-**Merging the two.** A consumer that wants one fully-populated header should
-take the lean header and overlay the summary's aggregate fields (`languages`,
-`warnings`, `partial_failures`, `stats`, `completeness`) on top of it — summary
-wins for any field both records carry, the header wins for the profile metadata
-the summary omits. The in-memory `BuildProviderSnapshot` path does exactly this
-merge internally, so its single emitted header is fully populated. For any
-aggregate total, read the summary, never the lean header.
-
-### Compact snapshot NDJSON v1
-
-`snapshot --format ndjson` remains the default interoperable object stream. `snapshot --format compact-ndjson` is a public, full-snapshot-only artifact with a separate cache mode, `snapshot:compact-ndjson-v1`; it is rejected for `symbols`, `edges`, and targeted `--to`/`--from`/`--relation` output. Its first line is `["h", 1, header]`, and the version appears nowhere else. Deterministic first-seen dictionary lines `d` precede positional `f` (file), `x` (external), `s` (symbol), and `r` (relation) rows; a trailing `m` summary is mandatory. Consumers must reject unknown versions, malformed row arity, non-first or duplicate headers, and missing summaries.
-
-All `h`, `d`, data, and `m` bytes count as raw compact artifact bytes; dictionary overhead must never be subtracted. Compact output is loaded only through the production compact loader and queried with `snapshot-query --input <file> --symbol <id-or-name> [--from <stable-id> --relation <TYPE>] --format ndjson`, which writes deterministically ordered native symbol/relation records. Its decoded public projection and canonical semantic SHA-256 (normalized native records in record order) must equal the normal NDJSON snapshot. Matching only the hash is not sufficient evidence of losslessness.
-
-### Process-local cold-build telemetry
-
-The optional provider progress callback exposes only process-local performance
-telemetry. Its typed phases are `inventory` (source preparation/file discovery),
-`parse` (header output, registration aliases, file/symbol output, and index
-construction), `relations` (relation resolution), and `finalize` (external
-output plus trailing-summary construction and serialization). Each event carries
-both elapsed time since that phase began and total provider-work time since
-snapshot entry. Progress sampling and the synchronous caller callback are
-measurement overhead and are excluded from both durations; the next phase clock
-starts only after the prior terminal callback returns. The final event is sent
-after the trailing summary has been emitted. These telemetry fields are not
-snapshot schema fields and must never alter emitted semantic records.
-
-**Ordering.** For a fixed input and profile the stream is deterministic and
-stable (file, symbol, and relation order are reproducible across runs), but it
-is not globally sorted the way the in-memory path sorts relations. Consumers
-should key on record `id`/identity, not on stream position.
-
-**Unknown record types.** Consumers must ignore record types they do not
-recognize within a supported major schema version (forward compatibility for new
-record types), and must not assume every line is a known type. A consumer that
-reads only the header and relations, for example, should skip `file`, `symbol`,
-`external`, and `summary` lines it does not need rather than erroring on them.
+The streaming NDJSON contract (record order, lean header vs authoritative
+summary, ordering and unknown-record rules), the compact snapshot artifact,
+and progress telemetry are specified in
+[snapshot format](snapshot-format.md), which is the canonical format
+reference.
 
 ### Indexing profiles
 
@@ -188,19 +128,9 @@ Compatibility policy:
 - Unknown relation types should use an extension namespace, such as
   `X-provider-name:RELATION`.
 
-Provider records are typed. The streaming header and summary fields are defined
-above; representative data records look like this:
-
-```json
-{"record_type":"file","id":"gh/org/repo:file:internal/auth/token.go","path":"internal/auth/token.go","blob":"..."}
-{"record_type":"external","id":"external:import:net/http","kind":"import","value":"net/http"}
-{"record_type":"symbol","id":"...","kind":"function","name":"ValidateToken"}
-{"record_type":"relation","from_id":"...","to_id":"...","type":"CALLS"}
-```
-
-Relation endpoints may point to file records, symbol records, or external endpoint
-records. Consumers should ignore unknown record types within the supported major
-schema version, but should not assume every relation target is a symbol.
+Provider records are typed; representative record examples and the header,
+summary, and unknown-record rules are in
+[snapshot format](snapshot-format.md).
 
 ## Symbols
 
@@ -506,7 +436,7 @@ Useful existing foundation:
 Current implemented foundation:
 
 - Whole-repo NDJSON snapshot output with schema headers.
-- Machine-readable provider capability and doctor commands.
+- Machine-readable provider capability and diagnostic commands.
 - Stable `compound-v1` symbol IDs for ordinary body/signature edits.
 - File, symbol, external endpoint, and relation records.
 - Stable warning and partial-failure records for unsupported files, syntax errors,

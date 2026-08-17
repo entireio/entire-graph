@@ -5,6 +5,13 @@ is installed. It moves initial code-location work from broad grep/read
 exploration to targeted graph queries; token impact depends on the task and
 model, and no end-to-end savings claim is current.
 
+Two guidance surfaces coexist here on purpose. `.entire/graph-agent.md` is the
+generated activation artifact — regenerated in full by `init-agents`, so never
+edit it by hand — and is what agents load through the managed block at the end
+of this file. This document is the maintained long-form reference; its examples
+pass flags explicitly (such as `--format text`) for readability rather than
+relying on command defaults.
+
 ## What this gives you
 
 A precomputed code graph is available through the `entire graph` command — functions, classes, methods, types, routes, and the calls/inheritance/field/service relations between them, parsed with tree-sitter. Built-in analysis is local and no-egress (no network, no model, no keys). Use it to **LOCATE** and **UNDERSTAND** code *before* broad grep / find / cat / whole-file exploration. The same repository view and options yield the same graph, but static relations can be heuristic or incomplete; inspect focused source and verify the resulting change. Some commands write derivative caches or explicitly requested setup/report files; inspect command help when filesystem writes matter.
@@ -26,7 +33,7 @@ entire graph search --repo . --query "<the task or bug in one plain sentence>" -
 
 - `--format agent` for compact ranked output with latency telemetry; `json`/`ndjson` for the full schema (completeness, partial failures, diagnostics).
 - `--top-k N` result count; `--max-context-bytes N` byte budget (`0` = unbounded).
-- Working tree by default; add `--head` for committed-tree + cache reuse.
+- Working tree by default (clean trees reuse a keyed cache); add `--head` for committed-tree semantics.
 - `--profile syntax-only|fast|full` (default `fast`); `--index-all-files` or `--max-indexed-files N` to widen/bound cold-search parsing.
 
 **When:** the start of essentially every task. One good query lands you on the fix area.
@@ -106,14 +113,13 @@ entire graph index --repo . --head --profile full --cache-dir /path/to/cache --f
 
 **When:** once, up front, on a large repo before a batch of `--head` searches/neighbors queries that use the same cache variant. `index` defaults to `--profile full` while `search` defaults to `fast`, so the command above warms neither a default `search --head` nor the default working-tree agent path. Match the whole variant: unchanged keyed inputs and tree produce a hit, while a changed tree selects or builds another entry.
 
-### 🧭 capabilities / doctor / version — *feature-detect*
+### 🧭 capabilities / version — *feature-detect*
 ```sh
 entire graph capabilities --json    # semantic vs inventory-only languages, relation types, features
-entire graph doctor --json          # environment, repo resolution, no_egress=true
 entire graph version [--json]       # provider name + plugin version
 ```
 
-**When:** before assuming a language is semantically parsed, or to confirm the no-egress environment.
+**When:** before assuming a language is semantically parsed, or to confirm which build is installed.
 
 ### 📊 stats — *did the graph actually save anything?* (for humans, not for you)
 ```sh
@@ -158,9 +164,10 @@ cannot be run, state why and perform a bounded source-level check. Optimize turn
 correctness.
 ```
 
-For bug-fix/locate tasks, run search at `--profile full` (call-graph expansion active) with default
-text output (tiered: full snippet for the top hits, terse locators after). Prefer
-targeted follow-up queries over whole-graph dumps, but use the graph and source
+For bug-fix/locate tasks, run search at `--profile full` (call-graph expansion active). Search's
+default output is JSON; pass `--format text` for the tiered human view (full snippet for the top
+hits, terse locators after) or `--format agent` for compact output with a cache/latency header.
+Prefer targeted follow-up queries over whole-graph dumps, but use the graph and source
 checks needed to make and verify a complete fix.
 
 ## Operating doctrine

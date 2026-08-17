@@ -37,7 +37,11 @@ Release evidence is bound to protocol
 and full completion
 `0d85eafde84ad52480454cab1906e2ce37e6d2003d3f0f537835228c733c07e7`.
 The GraphMark publication bundle records exact inputs, revisions, retry ledger,
-statistics, costs, artifact hashes, and limitations. Call the result a
+statistics, costs, artifact hashes, and limitations. The bundle is not
+distributed in this repository and has no public download location yet: the
+hashes above let a holder of the bundle verify it, but a reader here cannot
+fetch it independently. Until it is published, treat this external comparison
+as attested rather than independently reproducible. Call the result a
 **public-protocol reimplementation**: Graphify does not publish the original
 memory harness or selectors behind its historical README numbers.
 

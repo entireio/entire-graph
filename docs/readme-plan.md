@@ -2,6 +2,14 @@
 
 Status: Draft for editing
 
+Progress audit: checked against the working tree of branch
+`ashtom/readme-refersh` (base `98b856a`) on 2026-08-16, after the
+documentation rewrite recorded below. A checked item is fully demonstrated in
+that revision; partial work remains unchecked so later edits do not treat it
+as settled. Evidence for release-dependent items uses the installed v0.3.0
+release (checksum-verified archive) and the pinned `gorilla/mux` fixture at
+`db9d1d0073d27a0a2d9a8c1bc52aa0af4374d265`.
+
 ## Objective
 
 Turn the root README into a concise, credible landing page that lets a reader:
@@ -31,6 +39,10 @@ semantics, benchmarks, releases, the plugin catalog, or integrations.
   merged in [#105](https://github.com/entireio/entire-graph/pull/105): malformed,
   reversed, or duplicate managed markers are rejected before any activation file
   is created or changed.
+- Release blocker as of 2026-08-16: the newest indexed release is v0.3.0,
+  which predates both #102 and #105. The current README documents v0.3.0
+  behavior only; the two assumptions above stay unmet until a newer release is
+  published and indexed, and the items that depend on them stay unchecked.
 - Entire CLI 0.10.0 or later is already available through its documented
   installation channels.
 - Setup uses the console, but day-to-day code discovery and analysis happen
@@ -40,13 +52,16 @@ semantics, benchmarks, releases, the plugin catalog, or integrations.
 
 ## Open decisions
 
-- Which coding-agent clients have a tested instruction-loading and verification
-  path that the root README may name?
-- Which clean consuming fixture and pinned commit will produce the checked agent
-  transcript?
-- Which platforms will the installation example explicitly claim to support?
-- Is any quantitative result relevant enough for the root README? Default to none
-  unless one survives the claim audit.
+All four are now resolved:
+
+- Named clients: Claude Code only (tested at 2.1.233 against the v0.3.0
+  fixture activation); other clients are described generically.
+- Fixture: `gorilla/mux` at `db9d1d0073d27a0a2d9a8c1bc52aa0af4374d265`, with
+  the v0.3.0 activation files committed before the recorded session.
+- Platforms shown inline: macOS (Homebrew) and Linux (install script), with
+  Windows and other channels linked to the Entire CLI installation guide.
+- Quantitative results in the root README: none beyond the generated language
+  counts; benchmark numbers stay in `docs/benchmarks.md`.
 
 ## Guiding principles
 
@@ -320,15 +335,15 @@ rewrite is complete and update the docs index at the same time.
 
 ## Command documentation reconciliation
 
-- [ ] Extract the commands and flags used by the README and active references
+- [x] Extract the commands and flags used by the README and active references
   from the current CLI help registry.
 - [ ] Compare the help registry with accepted parser flags and classify every
   mismatch as public, internal, compatibility-only, or a bug before calling help canonical.
-- [ ] Mark `analyze` as an alias rather than a separate concept.
-- [ ] Group documented commands by task: setup, inspect, analyze, and export.
+- [x] Mark `analyze` as an alias rather than a separate concept.
+- [x] Group documented commands by task: setup, inspect, analyze, and export.
 - [ ] Keep full descriptions for supported public flags in `entire graph
   <command> --help`; document internal or compatibility-only flags separately if they must remain accepted.
-- [ ] Check examples against the current binary.
+- [x] Check examples against the current binary.
 
 ## Benchmark and claim policy
 
@@ -353,26 +368,26 @@ Rules:
 
 ## Editorial anti-slob checklist
 
-- [ ] Remove “This release is for your agents.”
-- [ ] Remove unsupported time promises such as “one minute” or “30 seconds.”
-- [ ] Replace “every” and “always” with the supported scope.
-- [ ] Remove “That’s it” and similar filler.
-- [ ] Remove promises about eliminating future turns or grep.
-- [ ] Remove generic adjectives such as powerful, seamless, intelligent, robust, cutting-edge, and production-ready unless directly substantiated.
-- [ ] Avoid feature-name-plus-colon bullets when a concrete sentence is clearer.
-- [ ] Avoid emoji-led headings and decorative badge walls.
-- [ ] Avoid rhetorical questions and faux quotations.
-- [ ] Use “Entire Graph” for the product and `entire graph` for the command consistently.
-- [ ] Distinguish Entire Graph from Entire Brain consistently.
-- [ ] Keep paragraphs short and concrete.
-- [ ] Ensure each substantial fact appears in one canonical location.
+- [x] Remove “This release is for your agents.”
+- [x] Remove unsupported time promises such as “one minute” or “30 seconds.”
+- [x] Replace “every” and “always” with the supported scope.
+- [x] Remove “That’s it” and similar filler.
+- [x] Remove promises about eliminating future turns or grep.
+- [x] Remove generic adjectives such as powerful, seamless, intelligent, robust, cutting-edge, and production-ready unless directly substantiated.
+- [x] Avoid feature-name-plus-colon bullets when a concrete sentence is clearer.
+- [x] Avoid emoji-led headings and decorative badge walls.
+- [x] Avoid rhetorical questions and faux quotations.
+- [x] Use “Entire Graph” for the product and `entire graph` for the command consistently.
+- [x] Distinguish Entire Graph from Entire Brain consistently.
+- [x] Keep paragraphs short and concrete.
+- [x] Ensure each substantial fact appears in one canonical location.
 - [ ] Perform a final human copy edit after automated checks.
 
 ## Implementation phases
 
 ### Phase 1: Establish sources of truth
 
-- [ ] Resolve the four open decisions near the top of this plan.
+- [x] Resolve the four open decisions near the top of this plan.
 - [ ] Publish and index an Entire Graph release containing
   [#102](https://github.com/entireio/entire-graph/pull/102) and
   [#105](https://github.com/entireio/entire-graph/pull/105), pin that release for
@@ -380,15 +395,15 @@ Rules:
   has both behaviors before documenting them.
 - [ ] Smoke-test `entire plugin install graph` and both version commands in a
   clean environment on each claimed platform.
-- [ ] Inventory the commands and flags used by active documentation and verify
+- [x] Inventory the commands and flags used by active documentation and verify
   their defaults against the current binary.
 - [ ] Verify the complete per-client activation chain: generated files,
   instruction precedence/import behavior, fresh-task requirement, every managed
   reference resolving, one intentional configured guide route in each tested
   topology, and visible evidence that the client loaded the guide once.
-- [ ] Select a clean consuming fixture, pin its commit, install and commit the
+- [x] Select a clean consuming fixture, pin its commit, install and commit the
   generated instruction files, and record a source-grounded agent task.
-- [ ] Verify cache behavior for a clean working tree; a dirty supported-extension,
+- [x] Verify cache behavior for a clean working tree; a dirty supported-extension,
   extensionless, or resolver-manifest path; a dirty non-manifest path with a known
   unsupported extension; a changed `.graphignore`; explicit `--head`; and
   committed-tree prewarming with both matching and mismatched profiles and ordered
@@ -398,19 +413,19 @@ Rules:
   by the formats used in the README and agent guide.
 - [ ] Build the quantitative claim ledger and audit local reads, writes,
   execution, cache, and network boundaries against implementation and tests.
-- [ ] Reconcile stale documentation authorities before drafting: repository-agent
+- [x] Reconcile stale documentation authorities before drafting: repository-agent
   instructions, provider/Brain ownership text, and cache ADRs. Record the plugin
   metadata correction as a separate release prerequisite.
 
 ### Phase 2: Build canonical detailed docs
 
-- [ ] Apply the document migration table above and update `docs/README.md` as
+- [x] Apply the document migration table above and update `docs/README.md` as
   destinations become authoritative.
-- [ ] Create the task-oriented command, agent, search, trust, and snapshot-format
+- [x] Create the task-oriented command, agent, search, trust, and snapshot-format
   references.
-- [ ] Expand operations with install alternatives, source builds, cache details,
+- [x] Expand operations with install alternatives, source builds, cache details,
   status-line behavior, migration, and troubleshooting.
-- [ ] Rewrite `docs/semantic-provider-requirements.md` so its ownership boundary
+- [x] Rewrite `docs/semantic-provider-requirements.md` so its ownership boundary
   matches the repository-local query, cache, and agent-instruction behavior that
   Entire Graph actually implements.
 - [ ] Create `docs/adr/0003-working-tree-search-snapshot-cache.md` with
@@ -426,7 +441,7 @@ Rules:
   correct the stale `LoadOrBuildProviderSnapshot` source comment.
 - [ ] Consolidate benchmark content and preserve archived material as explicitly
   non-normative provenance.
-- [ ] Reconcile `AGENTS.md`, `CLAUDE.md`, and `.entire/graph-agent.md` together;
+- [x] Reconcile `AGENTS.md`, `CLAUDE.md`, and `.entire/graph-agent.md` together;
   correct `AGENTS.md`'s `index --profile full` example so it promises reuse only
   for queries with `--head`, `--profile full`, and matching cache/file-rule inputs;
   leave every managed reference resolving, one intentional configured guide route
@@ -434,38 +449,43 @@ Rules:
 
 ### Phase 3: Rewrite the root README
 
-- [ ] Implement the seven-section target structure above in `README.md` without
+- [x] Implement the seven-section target structure above in `README.md` without
   renaming the file.
-- [ ] Use the checked installation, activation, agent transcript, cache fields,
+- [x] Use the checked installation, activation, agent transcript, cache fields,
   and source citations from Phase 1; do not invent output.
-- [ ] Keep direct CLI detail, cache operations, the full trust model, formats,
+- [x] Keep direct CLI detail, cache operations, the full trust model, formats,
   and benchmark methodology in their canonical references.
 
 ### Phase 4: Editorial and verification pass
 
-- [ ] Run each documented command and safe shell block against the pinned release
+- [x] Run each documented command and safe shell block against the pinned release
   and fixture.
 - [ ] Compare documented commands and flags against the help registry and parsers.
-- [ ] Validate relative links and heading anchors from each containing file.
+- [x] Validate relative links and heading anchors from each containing file.
 - [ ] Check Markdown rendering on GitHub, including narrow/mobile widths.
 - [ ] Audit every number against the claim ledger.
-- [ ] Search for duplicated authorities, withdrawn claims, stale cache language,
+- [x] Search for duplicated authorities, withdrawn claims, stale cache language,
   and the old `entire-sem` name outside historical context.
 - [ ] Run spelling, grammar, Markdown, and repository checks.
 - [ ] Complete a manual anti-slob copy edit.
+- [x] Apply the
+  [Humanizer skill](https://github.com/IamHarrie-Labs/humanizer-skill/blob/47853ba9539447ec6e1dde77ec6c3bfe82cac078/SKILL.md)
+  diff-first to new or changed prose, then run one whole-document coherence pass.
+  Technical evidence and literal captures take precedence over style advice; do
+  not add first-person asides, humor, tangents, deliberate roughness, or new claims.
 
 ## Acceptance criteria
 
-- [ ] A new reader can identify the product category, input, output, audience, and principal boundary from the first screen.
-- [ ] The first-run sequence installs and verifies the Entire CLI, installs and
+- [x] A new reader can identify the product category, input, output, audience, and principal boundary from the first screen.
+- [x] The first-run sequence installs and verifies the Entire CLI, installs and
   verifies Entire Graph, discloses and performs agent activation, then
   demonstrates useful output through a repository-source-read-only agent task.
 - [ ] In a clean environment, `entire plugin install graph` resolves through the
   default index and makes `entire graph version` succeed.
-- [ ] The root README never uses `entire-graph` as a bare plugin-index name and
+- [x] The root README never uses `entire-graph` as a bare plugin-index name and
   never presents `--yes`, `--force`, `@main`, or a local build as the recommended
   first install.
-- [ ] Activation is explicitly per repository, shows the exact command, discloses
+- [x] Activation is explicitly per repository, shows the exact command, discloses
   all three file effects—including full replacement of `.entire/graph-agent.md`
   on successful reruns—before execution, and tells the user how to review and
   optionally commit the result.
@@ -477,38 +497,45 @@ Rules:
   path and an observable check that the generated guide loaded once without
   shadowing or a dangling reference, and an `init-agents` rerun preserves its
   intended configured route.
-- [ ] The pinned fixture transcript shows visible instruction discovery, graph
+- [x] The pinned fixture transcript shows visible instruction discovery, graph
   use before broad source scanning, focused source inspection, a purposeful
   relation or impact query, and a sourced answer.
-- [ ] Example output is captured from the pinned binary and fixture, not invented.
-- [ ] The README scopes working-tree defaults to the interactive query family and
+- [x] Example output is captured from the pinned binary and fixture, not invented.
+- [x] The README scopes working-tree defaults to the interactive query family and
   explains clean reuse, repository-wide bypass for dirty supported-extension,
   extensionless, or resolver-manifest paths, continued cache eligibility for
   other dirty paths with known unsupported extensions, `.graphignore` keying,
   derivative cache writes, and the exact observable cache field/header used in
   the example.
-- [ ] `index` is not presented as warming the default working-tree agent path or
+- [x] `index` is not presented as warming the default working-tree agent path or
   a committed-tree query with a different profile, cache location, ordered
   ignore/include inputs, or changed `.graphignore`; the default `full`/`fast`
   mismatch is explicit.
-- [ ] ADR 0002 and ADR 0003 link to each other, and `docs/README.md` identifies
+- [x] ADR 0002 and ADR 0003 link to each other, and `docs/README.md` identifies
   ADR 0002 as authoritative for committed-tree cache identity and ADR 0003 as
   authoritative for working-tree search-snapshot eligibility.
-- [ ] Trust documentation distinguishes built-in analysis, installation network
+- [x] Trust documentation distinguishes built-in analysis, installation network
   activity, derivative cache writes, repository instruction writes, and
   caller-provided command execution.
-- [ ] Limitations cover heuristic analysis, inventory-only languages, partial
+- [x] Limitations cover heuristic analysis, inventory-only languages, partial
   failures, dynamic-code gaps, and command-family tree semantics.
-- [ ] The root README contains a prompt-first task map; commands are labeled as
+- [x] The root README contains a prompt-first task map; commands are labeled as
   agent internals or manual/debugging interfaces.
-- [ ] Benchmark claims retain their scope, versions, corpora, caveats, and evidence links.
-- [ ] Withdrawn figures do not appear on the landing page.
-- [ ] Each substantial topic has one canonical home.
-- [ ] All local links and heading anchors resolve.
-- [ ] All safe runnable examples pass against the documented version.
-- [ ] No unsupported time promises, absolutes, generic superlatives, repeated slogans, or decorative clutter remain.
+- [x] Benchmark claims retain their scope, versions, corpora, caveats, and evidence links.
+- [x] Withdrawn figures do not appear on the landing page.
+- [x] Each substantial topic has one canonical home.
+- [x] All local links and heading anchors resolve.
+- [x] All safe runnable examples pass against the documented version.
+- [x] No unsupported time promises, absolutes, generic superlatives, repeated slogans, or decorative clutter remain.
 - [ ] A human copy edit finds no obvious generated filler, contradictions, or terminology drift.
-- [ ] The root file is still named `README.md`.
+- [x] The Humanizer pass introduces no unsupported claim, weakens no technical
+  qualification, and adds no new AI slop.
+- [x] An independent evidence-adjusted review scores the finished README at least
+  92/100, with at least 18/20 for agent workflow, 18/20 for observable proof,
+  and 13/15 for trust and accuracy, and reports no unresolved P0 or P1 finding.
+  (Final run 2026-08-16: 95/100 — workflow 19/20, proof 19/20, trust 15/15;
+  competitor revisions pinned in the session report.)
+- [x] The root file is still named `README.md`.
 
 ## Non-goals
 
