@@ -1,0 +1,13 @@
+Ok, let's start the loop then. Don't finish until you are finished.
+
+---
+
+So all reviewers are good now?
+
+---
+
+What else could you do to improve the quality?
+
+---
+
+Add Windows. You can boot a Windows VM via az CLI.
