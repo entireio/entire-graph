@@ -1,0 +1,88 @@
+diff --git a/src/mcp/mcp.c b/src/mcp/mcp.c
+index 6702fd1..3bf8d95 100644
+--- a/src/mcp/mcp.c
++++ b/src/mcp/mcp.c
+@@ -1705,7 +1705,7 @@ static char *bm25_search(cbm_store_t *store, const char *project, const char *qu
+         ") fts "
+         "JOIN nodes n ON n.id = fts.rowid "
+         "WHERE n.project = ?2 "
+-        "  AND n.label NOT IN ('File','Folder','Module','Section','Variable','Project') "
++        "  AND n.label NOT IN ('File','Folder','Module','Variable','Project') "
+         "  AND (?6 IS NULL OR n.file_path LIKE ?6) "
+         "ORDER BY rank "
+         "LIMIT ?3 OFFSET ?4";
+@@ -1738,7 +1738,7 @@ static char *bm25_search(cbm_store_t *store, const char *project, const char *qu
+             "    ) fts "
+             "    JOIN nodes n ON n.id = fts.rowid "
+             "    WHERE n.project = ?2 "
+-            "      AND n.label NOT IN ('File','Folder','Module','Section','Variable','Project')"
++            "      AND n.label NOT IN ('File','Folder','Module','Variable','Project')"
+             "      AND (?6 IS NULL OR n.file_path LIKE ?6)"
+             ")";
+         sqlite3_stmt *cs = NULL;
+diff --git a/tests/test_mcp.c b/tests/test_mcp.c
+index 7914a8b..842ec1f 100644
+--- a/tests/test_mcp.c
++++ b/tests/test_mcp.c
+@@ -814,6 +814,53 @@ TEST(tool_search_graph_query_honors_file_pattern_issue552) {
+     PASS();
+ }
+ 
++TEST(tool_search_graph_query_returns_markdown_sections) {
++    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
++    ASSERT_NOT_NULL(srv);
++    cbm_store_t *st = cbm_mcp_server_store(srv);
++    ASSERT_NOT_NULL(st);
++
++    const char *proj = "markdown-memory";
++    cbm_mcp_server_set_project(srv, proj);
++    cbm_store_upsert_project(st, proj, "/tmp/markdown-memory");
++
++    cbm_node_t section = {0};
++    section.project = proj;
++    section.label = "Section";
++    section.name = "Ada: Luna is my cat";
++    section.qualified_name = "markdown-memory.session-1.Ada-Luna";
++    section.file_path = "session_1.md";
++    section.start_line = 7;
++    section.end_line = 7;
++    ASSERT_GT(cbm_store_upsert_node(st, &section), 0);
++
++    cbm_store_exec(st, "INSERT INTO nodes_fts(nodes_fts) VALUES('delete-all');");
++    ASSERT_EQ(cbm_store_exec(st,
++                             "INSERT INTO nodes_fts(rowid, name, qualified_name, label, "
++                             "file_path) "
++                             "SELECT id, cbm_camel_split(name), qualified_name, label, file_path "
++                             "FROM nodes;"),
++              CBM_STORE_OK);
++
++    char *resp = cbm_mcp_server_handle(
++        srv, "{\"jsonrpc\":\"2.0\",\"id\":553,\"method\":\"tools/call\","
++             "\"params\":{\"name\":\"search_graph\","
++             "\"arguments\":{\"project\":\"markdown-memory\","
++             "\"query\":\"Who is Luna, exactly?\",\"limit\":10}}}");
++    ASSERT_NOT_NULL(resp);
++    char *inner = extract_text_content(resp);
++    ASSERT_NOT_NULL(inner);
++    ASSERT_NOT_NULL(strstr(inner, "\"search_mode\":\"bm25\""));
++    ASSERT_NOT_NULL(strstr(inner, "\"label\":\"Section\""));
++    ASSERT_NOT_NULL(strstr(inner, "\"file_path\":\"session_1.md\""));
++    ASSERT_NOT_NULL(strstr(inner, "\"start_line\":7"));
++
++    free(inner);
++    free(resp);
++    cbm_mcp_server_free(srv);
++    PASS();
++}
++
+ TEST(tool_query_graph_basic) {
+     cbm_mcp_server_t *srv = setup_mcp_with_data();
+ 
+@@ -5042,6 +5089,7 @@ SUITE(mcp) {
+     RUN_TEST(tool_search_graph_basic);
+     RUN_TEST(tool_search_graph_includes_node_properties);
+     RUN_TEST(tool_search_graph_query_honors_file_pattern_issue552);
++    RUN_TEST(tool_search_graph_query_returns_markdown_sections);
+     RUN_TEST(tool_query_graph_basic);
+     RUN_TEST(tool_index_status_no_project);
+     RUN_TEST(tool_index_status_includes_git_metadata);
