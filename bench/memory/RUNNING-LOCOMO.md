@@ -56,9 +56,13 @@ the result. It is disclosed in the output, not homogenised away.
 ```bash
 git clone https://github.com/entireio/entire-graph.git
 cd entire-graph
-git checkout feat/prose-retrieval-and-benchmarks   # PR #104; after merge, main
+git checkout 212af697863a42a7260ff5bba353db3753d00253
 # everything below lives in bench/memory/
 ```
+
+That commit pins the adapter used for the published results. The 0.4.0 release
+corrects BM25 candidate selection for matches with negative IDF scores, so its
+BM25 adapter is intentionally not byte-identical to the published run.
 
 ### 1. Upstream harness at a pinned commit
 
@@ -81,8 +85,8 @@ for p in <kit>/patches/000[1-4]-*.patch <kit>/patches/0006-*.patch; do git apply
 not this harness, and is applied separately (see §3 below).
 
 Five upstream files are modified: provider timeouts, optional date injection, retry and drop
-accounting, a server-side fix, and `requirements.txt` for the BM25 arm's two pinned dependencies
-(`rank-bm25`, `PyStemmer`; the arm's stopword list is inlined, not an NLTK dependency). Each is
+accounting, a server-side fix, and `requirements.txt` for the BM25 arm's two declared dependencies
+(`rank-bm25`, `PyStemmer`; the arm's stopword list is inlined, not an NLTK dependency). Each patch is
 apply-checked against the pinned commit. Everything else is unmodified upstream code, **including
 the reader and judge prompts**. See [`UPSTREAM.md`](UPSTREAM.md) for the file-level provenance
 manifest.

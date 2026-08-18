@@ -77,6 +77,8 @@ What each patch does:
   at upstream line 233 / patched-container line 351), plus ingest token-usage metering for the
   cost table and optional Anthropic OAuth-bearer wiring. The metering and OAuth wiring are
   observation-only and gated behind env vars.
+- **0006 `requirements.txt`** adds the `rank-bm25` and `PyStemmer` dependencies used only by the
+  lexical BM25 arm.
 
 ### Not upstream at all — vendored here
 
@@ -84,11 +86,13 @@ Written by us; no upstream code involved.
 
 | file | lines |
 |---|---|
-| `benchmarks/common/entire_client.py` | 693 |
+| `benchmarks/common/entire_client.py` | 696 |
 | `benchmarks/common/graphify_client.py` | 364 |
 | `benchmarks/common/cmm_client.py` | 418 |
 | `benchmarks/common/graphify_mem_bridge.py` | 184 |
 | `benchmarks/common/runmeta.py` | 129 |
+| `benchmarks/common/bm25_client.py` | 369 |
+| `benchmarks/common/test_bm25_client.py` | 40 |
 
 ### Ours but not vendored
 
