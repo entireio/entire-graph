@@ -201,24 +201,25 @@ structure without call or type analysis. Check the current build with
 `entire graph capabilities --json`.
 
 Entire Graph is code intelligence for the repository your agent is working in:
-ranked search, relationships, and change impact grounded in source. It does not
+ranked search, relationships, and change impact grounded in source. It does _not_
 store user or conversation memory, run in the background, or expose its own MCP
 server. The full data-flow and write-surface description, including what runs
 caller-provided commands, is in
-[trust and security](docs/trust-and-security.md).
+the [trust and security](docs/trust-and-security.md) documentation.
 
 ## Documentation
 
-- [Documentation map](docs/README.md)
-- [Agent activation and verification](docs/agents.md)
+- [All Documentation](docs/README.md)
 - [Command reference](docs/commands.md)
+- [Agent activation and verification](docs/agents.md)
 - [Search results and ranking](docs/search.md)
 - [Operations: installs, cache, troubleshooting](docs/operations.md)
 - [Trust and security](docs/trust-and-security.md)
 - [Language support](docs/language-support.md)
 - [Benchmark methodology and evidence](docs/benchmarks.md)
 
-Report problems in [GitHub Issues](https://github.com/entireio/entire-graph/issues). 
+Please report problems in [GitHub Issues](https://github.com/entireio/entire-graph/issues) 
+or fork / open a pull request. Thank you! ❤️ 
 
 ## License
 
