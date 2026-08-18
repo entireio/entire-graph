@@ -60,8 +60,10 @@ All four are now resolved:
   the v0.3.0 activation files committed before the recorded session.
 - Platforms shown inline: macOS (Homebrew) and Linux (install script), with
   Windows and other channels linked to the Entire CLI installation guide.
-- Quantitative results in the root README: none beyond the generated language
-  counts; benchmark numbers stay in `docs/benchmarks.md`.
+- Quantitative results in the root README: the LoCoMo accuracy/cost table,
+  with its significance caveat and recurring-cost framing kept inline;
+  `docs/benchmarks.md` remains the source for full methodology, per-category
+  results, retractions, and reproduction steps.
 
 ## Guiding principles
 
@@ -298,8 +300,11 @@ than embedding a complete trust matrix in the landing page.
 - Put direct CLI examples and automation in the command and operations references,
   labeled as manual or programmatic alternatives to the agent flow.
 - Keep quantitative methodology, environments, corrections, and reproduction in
-  `docs/benchmarks.md`. Include no root benchmark number unless it survives the
-  claim audit and materially helps a new reader decide whether to continue.
+  `docs/benchmarks.md`. A root benchmark number is included when it survives
+  the claim audit and materially helps a new reader decide whether to
+  continue — the LoCoMo table meets that bar and is inline in the root
+  README; `docs/benchmarks.md` carries what the table cannot: full
+  methodology, per-category results, and every retraction.
 - Include development, issue/support, and license links. Add a security link only
   if a real reporting policy exists.
 

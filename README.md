@@ -13,10 +13,30 @@ agent: you ask a code question in plain language, the agent runs graph queries,
 reads the code the graph points at, and answers with citations. A captured
 example is below, after setup.
 
-The same retrieval engine ranked first in an eight-system LoCoMo comparison
-while building its index without model calls. See
-[benchmarks](docs/benchmarks.md) for the results, measured costs, methodology,
-and statistical limits.
+## Benchmarks
+
+The Entire Graph retrieval engine ranked first in an eight-system LoCoMo comparison
+(1,540 questions, shared reader and judge, 200-item retrieval budget for every
+arm) while building its index without model calls.
+
+| System | LoCoMo | Index-time tokens |
+| --- | --- | --- |
+| **Entire Graph** | **94.74** | **0** |
+| mem0 OSS | 93.83 | 50.85M |
+| cognee | 92.86 | 12.35M |
+| BM25 (lexical baseline) | 91.88 | 0 |
+| cmm | 91.30 | 0 |
+| graphify | 87.34 | 0 |
+| letta | 80.58 | not projectable |
+| supermemory | 77.60 | hosted |
+
+The margin over the strongest inference-built competitor (mem0 OSS) does not
+clear statistical significance; the margin over the BM25 baseline, built at
+identical zero cost, does (*p* = 5.7×10⁻⁷). Index-time token counts are
+directly metered rather than estimated. They are not a one-time charge: an
+inference-built index pays them again on every corpus revision. See
+[benchmarks](docs/benchmarks.md) for full methodology, per-category results,
+retractions, and reproduction steps.
 
 ## Install
 
