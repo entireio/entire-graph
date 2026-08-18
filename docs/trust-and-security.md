@@ -40,8 +40,11 @@ other is installation.
   in `AGENTS.md` and `CLAUDE.md`.
 - `index --report <path>` writes a Markdown graph report to the path you give
   it.
+- `verify --record-baseline <path>` creates parent directories as needed and
+  writes a JSON baseline to the path you give it.
 
-No other command family writes into the repository.
+No other command family writes into the repository unless a caller-provided
+command does so.
 
 ## What it executes
 
@@ -52,9 +55,10 @@ No other command family writes into the repository.
   (test names, build files). It does not run it. Anything that later runs
   that command is executing text influenced by repository contents. Read the
   command first in repositories you do not trust.
-- `entire graph verify` executes exactly the test command the caller provides
-  and adjudicates the result. It runs with your privileges; pass only
-  commands you would run yourself.
+- `entire graph verify` executes the test command the caller provides and
+  adjudicates the result. With `--setup <command>`, it executes that setup
+  command first. Both run with your privileges; pass only commands you would
+  run yourself.
 
 ## Determinism and heuristics
 
