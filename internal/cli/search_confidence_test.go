@@ -123,6 +123,75 @@ func TestAgentSearchLowConfidenceMarker(t *testing.T) {
 	}
 }
 
+func TestSearchLowConfidenceNoticeRetainsWeakScoreThreshold(t *testing.T) {
+	t.Parallel()
+	response := confidenceSearchResponse([]float64{9.6, 8.4, 8.1},
+		[]string{"src/a.go", "src/b.go", "src/c.go"}, "")
+	full, _ := searchLowConfidenceNotices(response)
+	want := "top score 9.6 (weak, below 12) and top results agree on nothing"
+	if !strings.Contains(string(full), want) {
+		t.Fatalf("low-score notice is missing %q:\n%s", want, full)
+	}
+}
+
+// TestSearchLowConfidenceNoticeRoundedScoreNeverContradictsThreshold: a raw score of 11.96
+// is below the ceiling but DISPLAYS as 12.0, so the "below 12" suffix must stay off — the
+// suffix follows the score the reader sees, not the raw value.
+func TestSearchLowConfidenceNoticeRoundedScoreNeverContradictsThreshold(t *testing.T) {
+	t.Parallel()
+	response := confidenceSearchResponse([]float64{11.96, 10.0, 9.0},
+		[]string{"src/a.go", "src/b.go", "src/c.go"}, "")
+	full, _ := searchLowConfidenceNotices(response)
+	text := string(full)
+	want := "top score 12.0 and top results agree on nothing"
+	if !strings.Contains(text, want) {
+		t.Fatalf("rounded-score notice is missing %q:\n%s", want, text)
+	}
+	if strings.Contains(text, "below 12") {
+		t.Fatalf("notice labels a displayed 12.0 as below 12:\n%s", text)
+	}
+}
+
+func TestSearchLowConfidenceNoticeUsesActualHighScoreReason(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		response   sem.SearchResponse
+		wantReason string
+	}{
+		{
+			name: "near tie",
+			response: confidenceSearchResponse([]float64{27.50, 27.51, 20.0},
+				[]string{"src/a.go", "src/a.go", "src/a.go"}, ""),
+			wantReason: "ranks 1 and 2 are tied (0.0100 apart) - the ranking did not choose",
+		},
+		{
+			name: "documentation wrapper",
+			response: func() sem.SearchResponse {
+				response := confidenceSearchResponse([]float64{27.5, 20.0},
+					[]string{"src/a.go", "src/a.go"}, "")
+				response.Results[0].Snippet = "// Usage notes\n// More usage notes\nfunc wrapper() {}\n"
+				return response
+			}(),
+			wantReason: "top hit is a documentation comment, not an implementation",
+		},
+	}
+	for _, testCase := range cases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			full, _ := searchLowConfidenceNotices(testCase.response)
+			text := string(full)
+			if !strings.Contains(text, testCase.wantReason) {
+				t.Fatalf("high-score notice is missing reason %q:\n%s", testCase.wantReason, text)
+			}
+			if strings.Contains(text, "below 12") {
+				t.Fatalf("high-score notice falsely labels its score as below 12:\n%s", text)
+			}
+		})
+	}
+}
+
 // TestAgentSearchLowConfidenceMarkerNeverBreaksTheByteCap: the marker is a notice, so under
 // a cap too small to hold it the ranking wins and the cap is still honoured exactly.
 func TestAgentSearchLowConfidenceMarkerNeverBreaksTheByteCap(t *testing.T) {
