@@ -25,8 +25,7 @@ below are the official ones from the [Entire CLI installation
 guide](https://docs.entire.io/installation), which also covers Windows and
 other channels.
 
-On macOS (`brew trust` is an external subcommand provided by the tap, not
-core Homebrew):
+On macOS:
 
 ```sh
 brew tap entireio/tap
@@ -59,10 +58,10 @@ not required for Entire Graph.
 Activation is per repository, and it writes files, so here is exactly what
 `init-agents` touches:
 
-- `.entire/graph-agent.md` — the agent operating guide. Generated in full and
+- `.entire/graph-agent.md`: the agent operating guide. Generated in full and
   regenerated in full on each successful rerun; manual edits there do not
   survive.
-- `AGENTS.md` and `CLAUDE.md` — created if absent; otherwise one managed block
+- `AGENTS.md` and `CLAUDE.md`: created if absent; otherwise one managed block
   between `<!-- entire-graph:begin -->` and `<!-- entire-graph:end -->` markers
   is added or replaced. Text outside the markers is preserved.
 
@@ -76,7 +75,7 @@ Review the three files, then commit them together when the instructions should
 apply to the team. Committing also matters for performance: the files are
 indexable Markdown, and while they sit uncommitted the working tree counts as
 dirty, which turns off query cache reuse (details below). Finally, start a
-fresh agent session in the repository — a session that was open during
+fresh agent session in the repository. A session that was open during
 activation has not seen the new instructions.
 
 Marker handling, rerun behavior, client specifics, and recovery from damaged
@@ -131,28 +130,30 @@ around the reported locations. Its answer traced matching through
 `routeRegexp.Match` (`regexp.go:189-209`), and named what a change would
 touch: handler dispatch and 404-vs-405 selection, route variables via
 `setMatch`, URL reversing built by `newRouteRegexp`, and the CORS middleware
-path through `getAllMethodsForRoute`. It also flagged a graph limit it
-verified by hand — `impact --symbol Route.Match` reports zero callers because
-both real call sites reach it through an interface loop.
+path through `getAllMethodsForRoute`. It also exposed a graph limit that the
+agent verified against source: `impact --symbol Route.Match` reports zero
+callers, while source inspection finds two direct call sites.
 
 That last point is the working relationship to expect: graph output is
-evidence for the agent to check against source, not an oracle. The complete
-record — capture conditions, every tool event, the full command outputs, and
-the answer verbatim — is in the
-[captured session evidence](docs/evidence/2026-08-16-mux-agent-session.md).
+evidence for the agent to check against source, not an oracle. The
+[supporting record](docs/evidence/2026-08-16-mux-agent-session.md) includes the
+capture conditions, relevant agent and tool events, complete graph-command
+outputs, and the final answer verbatim.
 
 Each layer of the setup has its own success signal. Installation: both
 `entire version` and `entire graph version` succeed. Activation: the three
-files exist with intact markers. Adoption: a fresh session's first
-code-locating call is an `entire graph search`; an agent that opens with grep
-did not get the instructions (see [agent activation](docs/agents.md)).
-Grounding: the answer cites files and lines the agent actually opened.
+files exist with intact markers. Adoption: in a fresh session, the first
+code-locating call is `entire graph search`. If the agent begins with broad
+grep or whole-file exploration, the guide may not have loaded or may not have
+been followed. Check the activation files and the client's instruction view;
+see [agent activation](docs/agents.md). Grounding: the answer cites files and
+lines the agent actually opened.
 
 ## What to ask
 
 Prompts are the interface. The commands are what the agent runs underneath;
 you can also invoke them directly for manual inspection, debugging, or
-automation — see the [command reference](docs/commands.md).
+automation. See the [command reference](docs/commands.md).
 
 | Goal | Example prompt | Graph command |
 | --- | --- | --- |
@@ -165,19 +166,19 @@ automation — see the [command reference](docs/commands.md).
 
 ## Working tree and cache
 
-The interactive query family — `search`, `def`, `explain`, `neighbors`,
-`impact` — reads the working tree by default, so agents see uncommitted edits.
+The interactive query family (`search`, `def`, `explain`, `neighbors`, and
+`impact`) reads the working tree by default, so agents see uncommitted edits.
 Add `--head` to ask about the committed tree instead. Bulk streams
 (`snapshot`, `symbols`, `edges`) and ref-based analysis (`diff`, `commit`)
 default to committed state.
 
 Queries write a derivative local cache; they never modify repository files.
 When the working tree is clean, a repeated query reuses a snapshot keyed to
-the committed tree and the query options. A dirty file the graph can index —
-including an extensionless file or a root dependency manifest such as `go.mod`
-or `package.json` — turns reuse off for the repository until the tree is clean
-again; dirty files the graph cannot index (a `.bin`, say) do not. Changing
-`.graphignore` selects a different cache entry.
+the committed tree and the query options. Any indexable dirty file turns reuse
+off for the repository until the tree is clean again. Examples include
+extensionless files and root dependency manifests such as `go.mod` or
+`package.json`. Dirty files the graph cannot index (a `.bin`, say) do not.
+Changing `.graphignore` selects a different cache entry.
 
 Cache state is visible where the format reports it: the default `search` JSON
 carries `stats.index_cache_hit`, and `impact`/`neighbors` text output opens
@@ -185,9 +186,9 @@ with an `Index: cache-hit`/`cache-miss` line, as in the capture above.
 `search --format text` does not report cache state.
 
 `entire graph index` prewarms committed-tree (`--head`) queries only, and
-defaults to profile `full` while plain `search` defaults to `fast` — a default
-`index` run does not warm the default working-tree path. One caveat inside
-the query family: `def` and `explain` only cache when `--cache-dir` or
+defaults to profile `full` while plain `search` defaults to `fast`. A default
+`index` run therefore does not warm the default working-tree path. One caveat
+inside the query family: `def` and `explain` only cache when `--cache-dir` or
 `ENTIRE_PLUGIN_DATA_DIR` is set, unlike the other query commands. Cache
 locations, key inputs, and prewarming are documented in
 [operations](docs/operations.md#cache).
@@ -195,8 +196,8 @@ locations, key inputs, and prewarming are documented in
 ## Limits
 
 Static analysis is heuristic. Calls through interfaces, reflection, dynamic
-dispatch, and generated or runtime-wired code can be missed or unresolved —
-the captured session above shows one such case. Dependent counts are guidance
+dispatch, and generated or runtime-wired code can be missed or unresolved.
+The captured session above shows one such case. Dependent counts are guidance
 for inspection, not compiler facts. Files the parser cannot handle surface as
 machine-readable partial failures rather than silent gaps.
 
