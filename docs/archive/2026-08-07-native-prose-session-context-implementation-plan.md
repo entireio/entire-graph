@@ -1,5 +1,9 @@
 # Native prose-session context implementation plan
 
+> [!WARNING]
+> Archived on 2026-08-13. This implementation plan was completed and is not a
+> current task list. See the [current documentation index](../README.md).
+
 1. Add a failing repository-search test with four Markdown session parents. The
    top session must rank correctly while its answer-bearing fact sits outside the
    current focused snippet. Require the default result to contain that fact and

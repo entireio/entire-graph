@@ -1,19 +1,25 @@
 # Semantic Provider Requirements
 
-This document describes the requirements for `entire-graph` to serve as the
-semantic provider for Entire Brain.
+This document describes the requirements `entire-graph` meets as the semantic
+provider consumed by Entire Brain, and the ownership boundary between the two.
 
-`entire-graph` should remain responsible for parsing and semantic extraction.
-Entire Brain should remain responsible for persistence, indexing, query
-behavior, freshness policy, and agent presentation.
+Entire Graph owns everything repository-local: tree-sitter parsing and
+semantic extraction, repository indexing and its derivative caches, cache
+freshness for one requested repository view, the interactive query surface
+(`search`, `def`, `explain`, `neighbors`, `impact`), and distribution of the
+agent instruction files via `init-agents`. Entire Brain owns durable and
+cross-repository state: persistence of ingested snapshots, memory that
+outlives one command, cross-project reconciliation, and the MCP/presentation
+surfaces built on top. The boundary rationale is in
+[Entire Brain and Entire Graph boundaries](brain-and-graph-boundaries.md).
 
 ## Scope
 
-`entire-graph` is an artifact-emitting provider. It parses source and emits
-versioned semantic facts. It should not own the brain store, workspace model, or
-agent UX.
+As a provider, `entire-graph` parses source and emits versioned semantic
+facts for ingestion. It does not own the brain store, workspace model, or
+cross-repository UX.
 
-Required responsibilities:
+Provider responsibilities:
 
 - Tree-sitter parsing.
 - Entity extraction.
@@ -24,11 +30,9 @@ Required responsibilities:
 - Partial failure reporting.
 - Stable provider contracts for downstream consumers.
 
-## Phase 1 Constraints
+## No-egress constraint
 
-Phase 1 integration is local-only.
-
-During Phase 1 indexing, `entire-graph` must not:
+Provider indexing is local-only. During indexing, `entire-graph` must not:
 
 - Fetch remote code.
 - Download grammars or parser assets.
@@ -37,15 +41,14 @@ During Phase 1 indexing, `entire-graph` must not:
 - Call remote embedding providers.
 - Perform implicit network discovery.
 
-`doctor --json` should expose enough information for Entire Brain and CI to
-assert that the provider can run without network egress.
+The provider's diagnostic output exposes enough information for Entire Brain
+and CI to assert that it can run without network egress.
 
-## Required Commands
+## Provider integration commands
 
-Initial command surface:
+The provider and export surface includes:
 
 ```sh
-entire graph doctor --json
 entire graph version --json
 entire graph capabilities --json
 entire graph snapshot --repo . --format ndjson
@@ -56,83 +59,20 @@ entire graph snapshot --repo . --format ndjson --worktree --include-file .graphi
 entire graph diff --base main --head HEAD --json
 ```
 
-Whole-repo outputs should support newline-delimited JSON. Large repositories can
-produce hundreds of megabytes of semantic facts, so a single whole-repo JSON
-document should be treated as a debug/compatibility mode rather than the primary
-integration format.
+This is not the complete user-facing CLI. Run `entire graph help` for the
+current command registry and `entire graph <command> --help` for flags.
 
-### Streaming NDJSON contract
+Whole-repo provider output uses newline-delimited JSON. `snapshot` also supports
+the separate, full-snapshot-only `compact-ndjson` artifact described below;
+`symbols` and `edges` accept only `ndjson`.
 
-The `snapshot`/`symbols`/`edges` commands stream records to stdout as they are
-produced, so the stream no longer holds full relation payloads, their evidence,
-or file contents in memory. Peak memory is bounded by the symbol/index metadata
-plus the relation dedup set, which holds one compact 64-bit key per unique
-relation. That dedup set still grows with the number of unique relations (the
-remaining relation-count-scaled component), but at a constant per relation
-rather than the full payload. The stream is emitted in this order:
+### Stream and artifact formats
 
-1. exactly one header line (a record with `schema_version`),
-2. `file` records, then `symbol` records (emitted per file as parsing
-   progresses, before any relation is resolved),
-3. `relation` records and the `external` endpoint records they reference,
-4. exactly one trailing `summary` record (`record_type: "summary"`).
-
-**The first header is intentionally lean.** It carries identity (`provider`,
-`provider_version`, `repo_root`, `repo_key`, `commit`, `tree`), `schema_version`,
-`capabilities`, `schema_features`, `language_versions`, and the **profile
-metadata** — `profile`, `profile_limits`, `relation_set`, and
-`skipped_relation_families`. Its `languages`, `warnings`, `partial_failures`,
-`stats`, and `completeness` are empty/zero — those totals are not known until
-the whole repository has been processed, and the header is emitted before that
-so consumers can begin work immediately. The profile metadata is **header-only**:
-it is known up front and is therefore not repeated in the summary.
-
-**The final `summary` record is authoritative for aggregate metadata.** It
-carries the real `languages`, `warnings`, `partial_failures`, `stats` (including
-the `relations` count and `completeness_level`), and the `completeness`
-breakdown. It does **not** carry profile metadata (`profile`, `profile_limits`,
-`relation_set`, `skipped_relation_families`); consumers should read those from
-the lean header and must not expect them in the summary unless a future schema
-version adds them.
-
-**Merging the two.** A consumer that wants one fully-populated header should
-take the lean header and overlay the summary's aggregate fields (`languages`,
-`warnings`, `partial_failures`, `stats`, `completeness`) on top of it — summary
-wins for any field both records carry, the header wins for the profile metadata
-the summary omits. The in-memory `BuildProviderSnapshot` path does exactly this
-merge internally, so its single emitted header is fully populated. For any
-aggregate total, read the summary, never the lean header.
-
-### Compact snapshot NDJSON v1
-
-`snapshot --format ndjson` remains the default interoperable object stream. `snapshot --format compact-ndjson` is a public, full-snapshot-only artifact with a separate cache mode, `snapshot:compact-ndjson-v1`; it is rejected for `symbols`, `edges`, and targeted `--to`/`--from`/`--relation` output. Its first line is `["h", 1, header]`, and the version appears nowhere else. Deterministic first-seen dictionary lines `d` precede positional `f` (file), `x` (external), `s` (symbol), and `r` (relation) rows; a trailing `m` summary is mandatory. Consumers must reject unknown versions, malformed row arity, non-first or duplicate headers, and missing summaries.
-
-All `h`, `d`, data, and `m` bytes count as raw compact artifact bytes; dictionary overhead must never be subtracted. Compact output is loaded only through the production compact loader and queried with `snapshot-query --input <file> --symbol <id-or-name> [--from <stable-id> --relation <TYPE>] --format ndjson`, which writes deterministically ordered native symbol/relation records. Its decoded public projection and canonical semantic SHA-256 (normalized native records in record order) must equal the normal NDJSON snapshot. Matching only the hash is not sufficient evidence of losslessness.
-
-### Process-local cold-build telemetry
-
-The optional provider progress callback exposes only process-local performance
-telemetry. Its typed phases are `inventory` (source preparation/file discovery),
-`parse` (header output, registration aliases, file/symbol output, and index
-construction), `relations` (relation resolution), and `finalize` (external
-output plus trailing-summary construction and serialization). Each event carries
-both elapsed time since that phase began and total provider-work time since
-snapshot entry. Progress sampling and the synchronous caller callback are
-measurement overhead and are excluded from both durations; the next phase clock
-starts only after the prior terminal callback returns. The final event is sent
-after the trailing summary has been emitted. These telemetry fields are not
-snapshot schema fields and must never alter emitted semantic records.
-
-**Ordering.** For a fixed input and profile the stream is deterministic and
-stable (file, symbol, and relation order are reproducible across runs), but it
-is not globally sorted the way the in-memory path sorts relations. Consumers
-should key on record `id`/identity, not on stream position.
-
-**Unknown record types.** Consumers must ignore record types they do not
-recognize within a supported major schema version (forward compatibility for new
-record types), and must not assume every line is a known type. A consumer that
-reads only the header and relations, for example, should skip `file`, `symbol`,
-`external`, and `summary` lines it does not need rather than erroring on them.
+The streaming NDJSON contract (record order, lean header vs authoritative
+summary, ordering and unknown-record rules), the compact snapshot artifact,
+and progress telemetry are specified in
+[snapshot format](snapshot-format.md), which is the canonical format
+reference.
 
 ### Indexing profiles
 
@@ -146,14 +86,18 @@ Skipped families are always declared (in the header and capabilities) — a
 profile never silently drops a relation family.
 
 - `full` — the complete relation graph: `DEFINES`, `CONTAINS`, `IMPORTS`,
-  `CALLS`, `EXTENDS`, `IMPLEMENTS`, `OVERRIDES`, `USES_TYPE`, `READS_FIELD`,
-  `WRITES_FIELD`, `ACCESSES`, `HANDLES_ROUTE`, `HTTP_CALLS`, `EMITS`,
-  `LISTENS_ON`, `HANDLES_TOOL`, `SIMILAR_TO`, `TESTS`, `RESOURCE_DEPENDS_ON`,
-  with full evidence. **Semantic-depth and accuracy claims belong to `full`.**
-- `fast` — symbol inventory plus `DEFINES`, `CONTAINS`, `IMPORTS`, `CALLS`
-  (shallow: single-target, high-precision resolutions only — same-file
+  `CALLS`, `CONSTRUCTS`, `ASYNC_CALLS`, `EXTENDS`, `INHERITS`, `IMPLEMENTS`,
+  `OVERRIDES`, `USES_TYPE`, `PARAM_TYPE`, `RETURNS_TYPE`, `READS_FIELD`,
+  `WRITES_FIELD`, `ACCESSES`, `HANDLES_ROUTE`, `HANDLES_GRPC`,
+  `HANDLES_GRAPHQL`, `HANDLES_TRPC`, `HTTP_CALLS`, `EMITS`, `LISTENS_ON`,
+  `HANDLES_TOOL`, `CONFIGURES`, `SIMILAR_TO`, `TESTS`,
+  `RESOURCE_DEPENDS_ON`, `DATA_FLOWS`, and `FILE_CHANGES_WITH`, with full
+  evidence. **Semantic-depth and accuracy claims belong to `full`.**
+- `fast` — symbol inventory plus `DEFINES`, `CONTAINS`, `IMPORTS`, `CALLS`,
+  `CONSTRUCTS`, and `CONFIGURES`; call resolution is shallow and limited to
+  single-target, high-precision resolutions — same-file
   `exact`, unique same-package `package`, and import-bound
-  `import_resolved`; name-only and pattern fanouts stay full-only),
+  `import_resolved`; name-only and pattern fanouts stay full-only. It also emits
   `HANDLES_ROUTE`, `HANDLES_TOOL`, and
   `RESOURCE_DEPENDS_ON`. Evidence is omitted and the deep families
   (type/field/similarity/HTTP/channel/test/uses-type/override) are skipped and
@@ -184,36 +128,9 @@ Compatibility policy:
 - Unknown relation types should use an extension namespace, such as
   `X-provider-name:RELATION`.
 
-Initial snapshot header:
-
-```json
-{
-  "schema_version": "1.1",
-  "provider": "entire-graph",
-  "provider_version": "0.1.0",
-  "repo_root": "/path/to/repo",
-  "repo_key": "gh/org/repo",
-  "commit": "abc123",
-  "tree": "tree789",
-  "languages": ["Go", "Python"],
-  "capabilities": [],
-  "warnings": [],
-  "partial_failures": []
-}
-```
-
-Following records should be typed:
-
-```json
-{"record_type":"file","id":"gh/org/repo:file:internal/auth/token.go","path":"internal/auth/token.go","blob":"..."}
-{"record_type":"external","id":"external:import:net/http","kind":"import","value":"net/http"}
-{"record_type":"symbol","id":"...","kind":"function","name":"ValidateToken"}
-{"record_type":"relation","from_id":"...","to_id":"...","type":"CALLS"}
-```
-
-Relation endpoints may point to file records, symbol records, or external endpoint
-records. Consumers should ignore unknown record types within the supported major
-schema version, but should not assume every relation target is a symbol.
+Provider records are typed; representative record examples and the header,
+summary, and unknown-record rules are in
+[snapshot format](snapshot-format.md).
 
 ## Symbols
 
@@ -304,10 +221,12 @@ Schema `1.1` adds optional relation fields (additive; tolerant readers ignore
 unknown fields):
 
 - `relation_scope`: `file`, `module`, `workspace`, `external`.
-- `resolution`: how the target was resolved, e.g. `exact`, `import_resolved`,
-  `type_inferred` (receiver-type-inferred calls), `name_only`, `pattern`
+- `resolution`: how the target was resolved, e.g. `exact`, `package`,
+  `import_resolved`, `type_inferred` (receiver-type-inferred calls),
+  `name_only`, `pattern`
   (later: `runtime_trace`, `unresolved`).
-- `target_kind`: `symbol`, `file`, `external`, `route`, `resource`, `channel`.
+- `target_kind`: `symbol`, `file`, `external`, `route`, `resource`, `channel`,
+  or `config`.
 - `evidence`: array of compact `{kind, file_path, start_line, end_line, detail}`
   source pointers.
 
@@ -321,7 +240,10 @@ Relation vocabulary:
 - `CONTAINS`
 - `IMPORTS`
 - `CALLS`
+- `CONSTRUCTS` — a call expression constructs a known local type.
 - `EXTENDS` — class extends class, interface extends interface, Rust supertrait.
+- `INHERITS` — normalized inheritance edge emitted alongside language-specific
+  `EXTENDS` or `IMPLEMENTS` facts where applicable.
 - `IMPLEMENTS` — class implements interface, Rust `impl Trait for Type`.
 - `OVERRIDES` — a method that redefines a same-named method on a resolved
   supertype (derived from EXTENDS/IMPLEMENTS; only when both the supertype and
@@ -458,9 +380,9 @@ per directory is the fallback for a tree Git cannot enumerate.
 - parser versions
 - supported relation types
 - relation support per language (`relation_support_by_language`): the relation
-  types extractable for each language. DEFINES, CONTAINS, and CALLS are
-  structural for every language; IMPORTS is listed only where a language-specific
-  import scanner exists.
+  types extractable for each language. `DEFINES` and `CONTAINS` are structural
+  for recognized semantic and inventory-only entries; deeper relations are
+  listed only where their scanner or extractor exists.
 - relation support per profile (`relation_support_by_profile`): the relation
   types each indexing profile emits (`full`, `fast`, `syntax-only`).
 - heuristic relation types (`heuristic_relation_types`): relations such as
@@ -470,6 +392,11 @@ per directory is the fallback for a tree Git cannot enumerate.
 - unsupported-but-detected language hints when available
 - whether optional local-only features are available
 - whether any feature would require network access
+
+The current globally pattern-driven set is reported as
+`heuristic_relation_types` (`HANDLES_ROUTE`, `HTTP_CALLS`, `EMITS`, `LISTENS_ON`, `HANDLES_TOOL`,
+`SIMILAR_TO`, `TESTS`). A test keeps this list aligned with
+`capabilities --json`.
 
 ## Tests
 
@@ -483,9 +410,9 @@ Required provider-side tests:
 - Provider-absent and malformed-output tests at the integration boundary.
 - Stable symbol ID tests across content edits.
 - Move/rename tests that document known ID breakage or continuity.
-- Relation extraction tests for the initial relation vocabulary.
+- Relation extraction tests for the current relation vocabulary.
 - Partial failure tests proving one bad file does not fail the whole snapshot.
-- No-egress tests for Phase 1 operation.
+- No-egress tests for provider operation.
 - Performance smoke tests for medium repositories.
 - Memory budget tests for cold snapshots.
 
@@ -495,21 +422,21 @@ Useful existing foundation:
 
 - Go implementation.
 - Isolated tree-sitter parser boundary.
-- Rich parser support for Bash, C, C++, C#, CUE, Elixir, Go, Groovy,
-  HCL/Terraform, Java, JavaScript, TypeScript, Kotlin, Lua, OCaml, PHP,
-  Protocol Buffers, Python, Ruby, Rust, Scala, SQL, and Swift.
-- Lightweight deterministic inventory support for 158+ reported
-  languages/filetypes. Inventory-only entries emit file/symbol structure but do
+- Parser-backed semantic support for 36 languages. The generated list lives in
+  [language support](language-support.md), and `capabilities --json` is
+  authoritative.
+- Lightweight deterministic inventory support for 149 reported
+  languages/filetypes, for 185 recognized names in total. Inventory-only entries emit file/symbol structure but do
   not claim call/type/data-flow analysis. The capabilities JSON exposes this
   distinction through `semantic_languages` and `inventory_only_languages`; see
-  `docs/language-support.md` for the current generated matrix.
+  [language support](language-support.md) for the current generated matrix.
 - Entity signature and body-hash comparison.
 - Checkpoint-aware semantic diffs.
 
 Current implemented foundation:
 
 - Whole-repo NDJSON snapshot output with schema headers.
-- Machine-readable provider capability and doctor commands.
+- Machine-readable provider capability and diagnostic commands.
 - Stable `compound-v1` symbol IDs for ordinary body/signature edits.
 - File, symbol, external endpoint, and relation records.
 - Stable warning and partial-failure records for unsupported files, syntax errors,
@@ -518,8 +445,10 @@ Current implemented foundation:
 Remaining gaps:
 
 - Relation extraction is still intentionally heuristic.
-- File moves, renames, and duplicate same-name symbols need stronger ID
-  reconciliation.
+- Snapshot IDs change when their file path or qualified name changes. Semantic
+  diffs reconcile high-confidence moves and renames at the documented `0.92`
+  threshold and warn instead of guessing when candidates are ambiguous; weaker
+  and duplicate-name cases remain limited.
 - `IMPLEMENTS`, `EXTENDS`, `OVERRIDES`, `ACCESSES`, field-access,
   data-flow, service-boundary, config, and resource-dependency relation
   families are implemented for supported high-confidence cases, but they remain

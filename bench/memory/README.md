@@ -60,7 +60,7 @@ git clone https://github.com/mem0ai/memory-benchmarks.git
 cd memory-benchmarks && git checkout 4b61c5d31b9c
 
 # 2. Our patches to the upstream files (see UPSTREAM.md for what each does)
-for p in <path-to-this-dir>/patches/000[1-4]-*.patch; do git apply -p1 "$p"; done
+for p in <path-to-this-dir>/patches/000[1-4]-*.patch <path-to-this-dir>/patches/0006-*.patch; do git apply -p1 "$p"; done
 
 # 3. Our adapters and the fairness guard (new files, no upstream code touched)
 cp -r <path-to-this-dir>/benchmarks/common/*.py benchmarks/common/
@@ -184,8 +184,8 @@ The defects we found on our own side are listed in `RESULTS.md` §6 and were rem
 | `benchmarks/common/graphify_mem_bridge.py` | prose-memory bridge for the graphify arm |
 | `benchmarks/common/cmm_client.py` | our port of `codebase-memory-mcp` as a benchmark arm |
 | `benchmarks/common/runmeta.py` | run-provenance capture + the `FAIR_MODE` guard |
-| `patches/0001`–`0004` | our diffs against upstream harness files (see `UPSTREAM.md`) |
-| `patches/0005` | the cmm `Section` one-line patch + its regression test |
+| `patches/0001`–`0004`, `0006` | our diffs against upstream harness files (see `UPSTREAM.md`) |
+| `patches/0005` | the cmm `Section` one-line patch + its regression test — applied to the separate `codebase-memory-mcp` repo, not this harness |
 | `run_locomo.sh` | the launcher used for the published runs |
 | `LOCOMO-COMPARISON.md` | **the results** — headline table, mechanism, wins, losses, and what is not claimable |
 | `FAIR-CONFIG.md` | the fairness spec every run must cite |

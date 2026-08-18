@@ -133,8 +133,8 @@
      parser.add_argument("--rpm", type=int, default=200, help="Requests per minute for LLM")
 -    parser.add_argument("--backend", default="oss", choices=["oss", "cloud"],
 -                        help="Mem0 backend: 'oss' for self-hosted server (default), 'cloud' for api.mem0.ai")
-+    parser.add_argument("--backend", default="oss", choices=["oss", "cloud", "entire", "cognee", "supermemory", "graphiti", "letta", "graphify", "cmm"],
-+                        help="Memory backend: 'oss' self-hosted Mem0 (default), 'cloud' api.mem0.ai, 'entire' entire-graph")
++    parser.add_argument("--backend", default="oss", choices=["oss", "cloud", "entire", "cognee", "supermemory", "graphiti", "letta", "graphify", "cmm", "bm25"],
++                        help="Memory backend: 'oss' self-hosted Mem0 (default), 'cloud' api.mem0.ai, 'entire' entire-graph, 'bm25' lexical baseline")
      parser.add_argument("--mem0-host", default=None,
                          help="Mem0 server URL (default: http://localhost:8888 for oss, https://api.mem0.ai for cloud)")
      parser.add_argument("--mem0-api-key", default=None,

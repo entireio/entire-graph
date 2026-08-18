@@ -1,5 +1,9 @@
 # Prose Memory Ranking v53 Design
 
+> [!WARNING]
+> Archived on 2026-08-13. This design records an implemented change and is not
+> current product documentation. See the [current documentation index](../README.md).
+
 ## Goal
 
 Improve Entire Graph's general prose retrieval for conversational-memory corpora

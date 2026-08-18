@@ -1,5 +1,9 @@
 # Progress So Far
 
+> [!WARNING]
+> Archived on 2026-08-13. This branch diary records completed work and is not
+> current project status. See the [current documentation index](../README.md).
+
 Branch: `semantic-provider-contract`
 
 ## 2026-05-31

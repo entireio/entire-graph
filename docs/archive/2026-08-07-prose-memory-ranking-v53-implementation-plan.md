@@ -1,5 +1,9 @@
 # Prose Memory Ranking v53 Implementation Plan
 
+> [!WARNING]
+> Archived on 2026-08-13. This implementation plan was completed and is not a
+> current task list. See the [current documentation index](../README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Improve deterministic prose-session retrieval for safe lexical families and distributed list evidence while preserving ordinary code-search output.

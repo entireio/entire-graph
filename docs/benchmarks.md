@@ -1,8 +1,9 @@
 # Benchmarks
 
-Reproducible performance and quality measurement for `entire-graph`, per v2-plan
-WP10. The harness lives in `cmd/graph-bench` (driver) and `internal/bench`
-(measurement core); see `bench/README.md` for layout and flags.
+Reproducible performance and quality measurement for `entire-graph`. The
+harness lives in `cmd/graph-bench` (driver) and `internal/bench` (measurement
+core); see `bench/README.md` for layout and flags. Its original WP10 plan is
+[archived](archive/2026-06-18-entire-graph-v2-implementation-plan.md).
 
 ## External native-memory comparison
 
@@ -36,9 +37,34 @@ Release evidence is bound to protocol
 and full completion
 `0d85eafde84ad52480454cab1906e2ce37e6d2003d3f0f537835228c733c07e7`.
 The GraphMark publication bundle records exact inputs, revisions, retry ledger,
-statistics, costs, artifact hashes, and limitations. Call the result a
+statistics, costs, artifact hashes, and limitations. The bundle is not
+distributed in this repository and has no public download location yet: the
+hashes above let a holder of the bundle verify it, but a reader here cannot
+fetch it independently. Until it is published, treat this external comparison
+as attested rather than independently reproducible. Call the result a
 **public-protocol reimplementation**: Graphify does not publish the original
 memory harness or selectors behind its historical README numbers.
+
+## LoCoMo memory-system comparison
+
+A separate comparison from the one above: eight memory systems (entire-graph, mem0 OSS, cognee,
+BM25, cmm, graphify, letta, supermemory) on all 1,540 questions of LoCoMo, under one shared reader
+model, one shared judge model, and a 200-item retrieval budget for every arm. Where the GraphMark
+comparison above is attested against an unpublished bundle, this one's full methodology, every
+retraction, and every quoted number's provenance are committed in this repository.
+
+entire-graph ranks first at **94.74**; the margin over the strongest inference-built competitor
+(mem0 OSS, 93.83) is **+0.91pp** and does not clear statistical significance (McNemar *p* = 0.125).
+The margin over a BM25 lexical baseline built at identical zero cost — **+2.86pp at *p* =
+5.7×10⁻⁷** — does, and is the one accuracy result in this comparison not in statistical doubt.
+Index-time cost is directly metered, not estimated: entire-graph builds its index with **zero**
+model calls against mem0's measured 50.85 million tokens, a cost paid again on every corpus
+revision.
+
+Full table, per-category breakdown, retractions, and reproduction steps:
+[`bench/memory/LOCOMO-COMPARISON.md`](../bench/memory/LOCOMO-COMPARISON.md) ·
+[run-by-run provenance](../bench/memory/RUN-INDEX.md) ·
+[reproduce it yourself](../bench/memory/RUNNING-LOCOMO.md).
 
 ## Running
 

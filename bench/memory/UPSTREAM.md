@@ -47,11 +47,13 @@ upstream's, untouched, and therefore identical for every arm.
 | `benchmarks/common/mem0_client.py` | `44e367847d94be3a90cdfa1d21aebe96` | `041f93a130c1a91d1b81f67622555b8c` | `patches/0002-mem0_client-optional-date-injection.patch` |
 | `benchmarks/locomo/run.py` | `f791a93df6257fe869ec6687865f8457` | `7b5402a4d865af5a085a09c6133eb76e` | `patches/0003-locomo-run-backends-search-retry-drop-accounting-runmeta.patch` |
 | `docker/mem0/main.py` | `e4e1e6076c9016bc37de6715ea29e67a` | `3fe9a40ba1cc8b494daadee2b977f411` | `patches/0004-docker-mem0-server-topk-fix-and-ingest-usage-metering.patch` |
+| `requirements.txt` | `13815b8f1ba4ecc628a44fc963a67679` | `e944e768d329e2e345b3929e8bd86478` | `patches/0006-requirements-bm25-deps.patch` |
 
-All four apply cleanly to a fresh checkout of `4b61c5d31b9c`:
+All five apply cleanly to a fresh checkout of `4b61c5d31b9c` (`0005` excluded — it targets the
+separate `codebase-memory-mcp` repo, not this harness):
 
 ```bash
-for p in patches/000[1-4]-*.patch; do git apply --check -p1 "$p" && echo "OK $p"; done
+for p in patches/000[1-4]-*.patch patches/0006-*.patch; do git apply --check -p1 "$p" && echo "OK $p"; done
 ```
 
 What each patch does:

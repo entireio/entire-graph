@@ -275,7 +275,7 @@ func startRSSGuard(ctx context.Context, maxRSSBytes uint64) (context.Context, fu
 	return guardCtx, stop, &exceeded
 }
 
-// confidenceBand maps a numeric confidence to the v2-plan bands.
+// confidenceBand maps a numeric confidence to the documented provider bands.
 func confidenceBand(confidence float64) string {
 	switch {
 	case confidence >= 0.90:

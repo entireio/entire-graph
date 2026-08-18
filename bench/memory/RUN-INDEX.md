@@ -46,6 +46,7 @@ Windows are separated by rules. **Only rows inside the same window are orderable
 | | | | | | |
 | `full_graphify` | 08-14 16:25 | graphify | 87.34 | 1345/1540 | `true` |
 | `full_cmm` | 08-14 16:34 | **cmm (patched, Markdown-Section)** | 91.30 | 1406/1540 | `true` |
+| `full_bm25` | 08-15 22:41 | BM25, `rank_bm25.BM25Okapi`, turn granularity | 91.88 | 1415/1540 | `true` |
 | | | | | | |
 | `mrq_mres` | 08-14 17:41 | **entire-graph, shipped + PR #100** | **93.83** | 1445/1540 | `true` |
 | `mrq_base` | 08-14 17:43 | entire-graph, shipped current default | 91.56 | 1410/1540 | `true` |

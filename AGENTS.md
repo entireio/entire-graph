@@ -5,11 +5,18 @@ is installed. It moves initial code-location work from broad grep/read
 exploration to targeted graph queries; token impact depends on the task and
 model, and no end-to-end savings claim is current.
 
+Two guidance surfaces coexist here on purpose. `.entire/graph-agent.md` is the
+generated activation artifact — regenerated in full by `init-agents`, so never
+edit it by hand — and is what agents load through the managed block at the end
+of this file. This document is the maintained long-form reference; its examples
+pass flags explicitly (such as `--format text`) for readability rather than
+relying on command defaults.
+
 ## What this gives you
 
-A precomputed, **deterministic** code graph is available through the `entire graph` command — functions, classes, methods, types, routes, and the calls/inheritance/field/service relations between them, parsed with tree-sitter, 100% locally (no network, no model, no keys). Use it to **LOCATE** and **UNDERSTAND** code *before* broad grep / find / cat / whole-file exploration. Every command is no-egress and safe to run inside a sandboxed session. The same commit yields the same graph, but static relations can be heuristic or incomplete; inspect focused source and verify the resulting change.
+A precomputed code graph is available through the `entire graph` command — functions, classes, methods, types, routes, and the calls/inheritance/field/service relations between them, parsed with tree-sitter. Built-in analysis is local and no-egress (no network, no model, no keys). Use it to **LOCATE** and **UNDERSTAND** code *before* broad grep / find / cat / whole-file exploration. The same repository view and options yield the same graph, but static relations can be heuristic or incomplete; inspect focused source and verify the resulting change. Some commands write derivative caches or explicitly requested setup/report files; inspect command help when filesystem writes matter.
 
-Default flags to remember: pass `--repo .` when you're not inside an Entire session; the graph reads your **working tree by default** (your uncommitted edits are visible), and `--head` switches to committed-tree semantics with a cached, reusable index.
+Default flags to remember: pass `--repo .` when you're not inside an Entire session. The interactive query family (`search`, `def`, `explain`, `neighbors`, and `impact`) reads your **working tree by default** so uncommitted edits are visible; `--head` switches those commands to committed-tree semantics. Other command families have different defaults.
 
 ---
 
@@ -18,7 +25,7 @@ Default flags to remember: pass `--repo .` when you're not inside an Entire sess
 Reach for the smallest tool that answers your question.
 
 ### 🔍 search — *find the code for a task* (your first move)
-Ranked source regions for a plain-language description, with the source and `file:line` inline. Hybrid ranking over bodies, identifiers (camelCase/snake_case aware), signatures, paths, and graph neighbors. Output is budgeted (16 KiB by default) to drop straight into context.
+Ranked source regions for a plain-language description, with the source and `file:line` inline. Hybrid ranking over bodies, identifiers (camelCase/snake_case aware), signatures, paths, and graph neighbors. Output is byte-budgeted to drop straight into context.
 
 ```sh
 entire graph search --repo . --query "<the task or bug in one plain sentence>" --format text --top-k 8
@@ -26,7 +33,7 @@ entire graph search --repo . --query "<the task or bug in one plain sentence>" -
 
 - `--format agent` for compact ranked output with latency telemetry; `json`/`ndjson` for the full schema (completeness, partial failures, diagnostics).
 - `--top-k N` result count; `--max-context-bytes N` byte budget (`0` = unbounded).
-- Working tree by default; add `--head` for committed-tree + cache reuse.
+- Working tree by default (clean trees reuse a keyed cache); add `--head` for committed-tree semantics.
 - `--profile syntax-only|fast|full` (default `fast`); `--index-all-files` or `--max-indexed-files N` to widen/bound cold-search parsing.
 
 **When:** the start of essentially every task. One good query lands you on the fix area.
@@ -98,22 +105,30 @@ entire graph checkpoint <id> --json                 # the commit behind an Entir
 **When:** judging whether a change is safe to keep / revert / continue, or reviewing a branch/PR. High dependent counts on a signature change = run tests first.
 
 ### 🏗️ index — *build / warm one cache variant*
-Prebuilds a durable, complete committed-tree snapshot and verifies it was written, before latency-sensitive work. The entry is not query-independent: a later `--head` query reuses it only when caching is enabled and it resolves the same cache directory, profile, and ordered ignore/include inputs, with unchanged input-file contents and `.graphignore`.
+Prebuilds a durable, complete committed-tree snapshot and verifies it was
+written before latency-sensitive work. Reuse is cache-variant-specific: a
+later `--head` query finds the entry only when caching is enabled and it
+resolves the same cache directory, profile, ordered ignore/include paths and
+contents, and `.graphignore`.
 
 ```sh
 entire graph index --repo . --head --profile full --cache-dir /path/to/cache --format json
 ```
 
-**When:** once, up front, on a large repo before a batch of `--head` searches/neighbors queries that use the SAME profile. `index` defaults to `--profile full` while `search` defaults to `fast`, so the command above does not warm a default `search --head`, nor the default working-tree agent path — match the profile or the entry is simply never found. Re-running it is also how you "refresh" that cache variant — same tree hits, changed tree rebuilds.
+**When:** once, up front, on a large repo before a batch of `--head`
+searches/neighbors queries that use the same cache variant. `index` defaults to
+`--profile full` while `search` defaults to `fast`, so the command above warms
+neither a default `search --head` nor the default working-tree agent path.
+Match the whole variant: unchanged keyed inputs and tree produce a hit, while
+a changed tree or changed input selects or builds another entry.
 
-### 🧭 capabilities / doctor / version — *feature-detect*
+### 🧭 capabilities / version — *feature-detect*
 ```sh
 entire graph capabilities --json    # semantic vs inventory-only languages, relation types, features
-entire graph doctor --json          # environment, repo resolution, no_egress=true
 entire graph version [--json]       # provider name + plugin version
 ```
 
-**When:** before assuming a language is semantically parsed, or to confirm the no-egress environment.
+**When:** before assuming a language is semantically parsed, or to confirm which build is installed.
 
 ### 📊 stats — *did the graph actually save anything?* (for humans, not for you)
 ```sh
@@ -158,9 +173,10 @@ cannot be run, state why and perform a bounded source-level check. Optimize turn
 correctness.
 ```
 
-For bug-fix/locate tasks, run search at `--profile full` (call-graph expansion active) with default
-text output (tiered: full snippet for the top hits, terse locators after). Prefer
-targeted follow-up queries over whole-graph dumps, but use the graph and source
+For bug-fix/locate tasks, run search at `--profile full` (call-graph expansion active). Search's
+default output is JSON; pass `--format text` for the tiered human view (full snippet for the top
+hits, terse locators after) or `--format agent` for compact output with a cache/latency header.
+Prefer targeted follow-up queries over whole-graph dumps, but use the graph and source
 checks needed to make and verify a complete fix.
 
 ## Operating doctrine
@@ -200,8 +216,7 @@ Contract rules that must not break: schema `1.x` is frozen and additive-only (`d
 
 <!-- entire-graph:begin -->
 This repo has the entire-graph code graph installed. Before exploring code with
-grep/find/whole-file reads, read .entire/graph-agent.md — the search-first, verify-once
-doctrine for coding agents: search instead of grepping, then check the sibling sites and
-compile (or run the nearest existing test) once before you finish.
+grep/find/whole-file reads, read .entire/graph-agent.md — resolution-first guidance
+for using graph retrieval, focused source inspection, and verification.
 @.entire/graph-agent.md
 <!-- entire-graph:end -->

@@ -1,5 +1,9 @@
 # EG Graphify Advertised Implementation Plan
 
+> [!WARNING]
+> Archived on 2026-08-13. This implementation plan was completed and is not a
+> current task list. See the [current documentation index](../README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add explicit entity/phrase-aware search, deterministic progressive cold preselection, a versioned public compact snapshot artifact, typed cold-build phase telemetry, and exactly one cold-build optimization selected only after the new profile proves where time is spent.

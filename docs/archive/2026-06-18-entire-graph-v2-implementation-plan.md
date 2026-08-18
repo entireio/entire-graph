@@ -1,5 +1,9 @@
 # Detailed Plan: `entire-graph`
 
+> [!WARNING]
+> Archived on 2026-08-13. This implementation plan is completed or superseded
+> and is not a current roadmap. See the [current documentation index](../README.md).
+
 Date: 2026-06-18
 
 ## Purpose

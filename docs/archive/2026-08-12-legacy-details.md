@@ -1,5 +1,9 @@
 # 🧠 entire-graph
 
+> [!WARNING]
+> Archived on 2026-08-13. This superseded all-in-one reference duplicates the
+> root README and contains stale claims. See the [current documentation index](../README.md).
+
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Languages](https://img.shields.io/badge/languages-36%20semantic%20%2B%20149%20inventory-2ea44f)
 ![Graph](https://img.shields.io/badge/graph-30%20relation%20types-8957e5)
@@ -25,7 +29,7 @@ entire graph capabilities --json                                           # �
 >
 > 🔒 **Security and trust.** entire-graph reads your codebase and writes only to Entire's managed plugin directory. All processing happens 100% locally: no network, no telemetry, no API keys, no grammar downloads at runtime. Your code never leaves your machine. `entire graph doctor --json` reports `no_egress=true`.
 
-> **Are you a coding agent (or configuring one)?** The operating instructions — the parts of the graph, the exact commands, and the query-before-grep doctrine — live in **[AGENTS.md](AGENTS.md)** (mirrored in [CLAUDE.md](CLAUDE.md)). This README is for humans installing and running the plugin.
+> **Are you a coding agent (or configuring one)?** The operating instructions — the parts of the graph, the exact commands, and the query-before-grep doctrine — live in **[AGENTS.md](../../AGENTS.md)** (mirrored in [CLAUDE.md](../../CLAUDE.md)). This README is for humans installing and running the plugin.
 
 ---
 
@@ -89,7 +93,7 @@ mise run build                        # go build -o entire-graph ./cmd/entire-gr
 entire plugin install ./entire-graph --force
 ```
 
-`scripts/install-local.sh` does this in one command (builds, installs, prints `entire graph version`, and fails early if the parent `entire` CLI is not on `PATH`). For release archives with `SHA256SUMS`, run `scripts/release.sh`. See [docs/operations.md](docs/operations.md) for target and cgo details.
+`scripts/install-local.sh` does this in one command (builds, installs, prints `entire graph version`, and fails early if the parent `entire` CLI is not on `PATH`). For release archives with `SHA256SUMS`, run `scripts/release.sh`. See [operations](../operations.md) for target and cgo details.
 
 ### 🔄 Updating (and migrating from `entire-sem`)
 
@@ -113,7 +117,7 @@ MCP access to code intelligence comes from **Entire Brain** (`entire-brain`), a 
 
 | Layer | Role | How you use it |
 |---|---|---|
-| **entire-graph** (this repo) | Deterministic graph engine + NDJSON provider | `entire graph <command>` on the CLI (see [AGENTS.md](AGENTS.md)) |
+| **entire-graph** (this repo) | Deterministic graph engine + NDJSON provider | `entire graph <command>` on the CLI (see [AGENTS.md](../../AGENTS.md)) |
 | **Entire Brain** (separate) | Persistence, indexing, query, **MCP server** | MCP tools in your agent, backed by the graph above |
 
 If you want MCP-style querying inside an agent, install and configure **Entire Brain** (its own docs) — entire-graph is the graph it builds on. If you just want direct, no-egress graph queries from an agent or the terminal, call `entire graph ...` directly; no MCP layer is required.
@@ -206,7 +210,7 @@ the freed slots go to genuinely different code. Collapsing requires distinct fil
 basename, outside different monorepo units, and either identical normalized region text or
 paths equal modulo version-like segments with ≥ 90% token overlap.
 
-Full flags and the agent-facing operating guide are in **[AGENTS.md](AGENTS.md)**. Diff commands print human-readable text by default and structured output with `--json`:
+Full flags and the agent-facing operating guide are in **[AGENTS.md](../../AGENTS.md)**. Diff commands print human-readable text by default and structured output with `--json`:
 
 When a neighbor lookup by name is ambiguous, each definition is listed with the
 narrowest selector that picks it out — `--symbol NAME --file <path> --line <n>`,
@@ -238,13 +242,13 @@ auth.py
 
 **36 semantic languages:** Bash, C, C#, C++, CUE, Clojure, ClojureScript, Dart, Elixir, Erlang, F#, Go, Groovy, HCL/Terraform, Haskell, Java, JavaScript, Julia, Kotlin, Lua, OCaml, Objective-C, PHP, Perl, Protocol Buffers, Python, R, Ruby, Rust, SQL, Scala, Swift, TypeScript, YAML (including GitHub Actions workflow sections and jobs), Zig, Zsh.
 
-Everything else is reported as an honest partial failure rather than dropped silently. See [docs/language-support.md](docs/language-support.md) for the full two-tier matrix.
+Everything else is reported as an honest partial failure rather than dropped silently. See [language support](../language-support.md) for the full two-tier matrix.
 
 ---
 
 ## 📊 Benchmarks
 
-All figures below are measured on real, public repositories, not estimated. Reproduce them with `cmd/graph-bench` (see [docs/benchmarks.md](docs/benchmarks.md)).
+All figures below are measured on real, public repositories, not estimated. Reproduce them with `cmd/graph-bench` (see [benchmarks](../benchmarks.md)).
 
 ### 🎯 Accuracy vs codebase-memory-mcp
 
@@ -336,7 +340,7 @@ docs/               Language support matrix, benchmarks, operations, provider re
 scripts/            Local install and checksum-backed release archives
 ```
 
-The parser is isolated behind `internal/sem`, so the command surface stays stable while the semantic model gets richer. The wire schema is a frozen `1.x` GA contract (additive-only minors; see `docs/adr/0001-ga-schema-contract.md`).
+The parser is isolated behind `internal/sem`, so the command surface stays stable while the semantic model gets richer. The wire schema is a frozen `1.x` GA contract (additive-only minors; see [ADR 0001](../adr/0001-ga-schema-contract.md)).
 
 ---
 

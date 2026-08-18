@@ -9,10 +9,10 @@ Date: 2026-07-03
 `entire-brain`). The wire format carries `schema_version` in `major.minor` form.
 The provider currently advertises **`1.1`** (`internal/sem/provider.go`
 `SchemaVersion`), where the `1.1` minor adds *optional, additive* relation fields
-that tolerant readers ignore. A compatibility policy already exists in
-`docs/semantic_provider_requirements.md`, but it was never ratified as the frozen
-contract for General Availability, and the requirements doc's example header still
-showed the older `1.0`.
+that tolerant readers ignore. A compatibility policy already exists in the
+[semantic provider requirements](../semantic-provider-requirements.md), but it
+was never ratified as the frozen contract for General Availability, and the
+requirements document's example header still showed the older `1.0`.
 
 For GA we need a single, stable, machine-checkable contract so consumers can pin
 against it and so future changes have clear, non-breaking rules.
@@ -48,5 +48,6 @@ The contract, stable for the entire `1.x` major:
   experimental.
 - A follow-up adds a brain-side ingestion contract test that asserts
   `entire-brain` parses current `entire-graph` `1.x` output (tracked separately).
-- The stale `1.0` example header in `semantic_provider_requirements.md` is updated
-  to `1.1` for consistency with the emitted version.
+- The stale `1.0` example header in the
+  [semantic provider requirements](../semantic-provider-requirements.md) is
+  updated to `1.1` for consistency with the emitted version.
