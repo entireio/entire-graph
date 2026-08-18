@@ -71,7 +71,6 @@ jobs:
           }
           "CC=$cc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "CXX=$cxx" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CGO_LDFLAGS=-static" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           & $cc --version
       - name: Select artifact version
         id: version
@@ -125,6 +124,34 @@ jobs:
           fi
           read -r _ checksum_name < dist/checksums.txt
           test "${checksum_name#\*}" = "$asset"
+      - name: Verify Windows archive without toolchain DLLs
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $assetVersion = $env:VERSION -replace '^v', ''
+          $asset = Join-Path "dist" "entire-graph_${assetVersion}_windows_$($env:GOARCH).zip"
+          $verifyDir = Join-Path $env:RUNNER_TEMP "entire-graph-clean-path-$($env:GOARCH)"
+          Remove-Item -Path $verifyDir -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -Path $asset -DestinationPath $verifyDir
+
+          $binary = Join-Path $verifyDir "entire-graph.exe"
+          $originalPath = $env:PATH
+          try {
+            $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+            $actualVersion = (& $binary version | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0) {
+              throw "entire-graph.exe exited with code $LASTEXITCODE on a clean PATH"
+            }
+          } finally {
+            $env:PATH = $originalPath
+          }
+          if ($actualVersion -ne $env:VERSION) {
+            throw "unexpected version: expected $env:VERSION, got $actualVersion"
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.goos }}-${{ matrix.goarch }}
