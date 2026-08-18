@@ -13,11 +13,10 @@ agent: you ask a code question in plain language, the agent runs graph queries,
 reads the code the graph points at, and answers with citations. A captured
 example is below, after setup.
 
-Entire Graph ranks first among eight memory systems on LoCoMo, a
-long-conversation benchmark, and builds its index with zero model calls where
-every inference-built competitor spends millions of tokens doing the same job.
-See [benchmarks](docs/benchmarks.md) for the numbers, the methodology, and
-what does and does not clear statistical significance.
+The same retrieval engine ranked first in an eight-system LoCoMo comparison
+while building its index without model calls. See
+[benchmarks](docs/benchmarks.md) for the results, measured costs, methodology,
+and statistical limits.
 
 ## Install
 
@@ -206,9 +205,11 @@ semantic parsing, and inventory-only filetypes that get file and symbol
 structure without call or type analysis. Check the current build with
 `entire graph capabilities --json`.
 
-Entire Graph is a one-shot local CLI for one repository. It is not a daemon,
-a watcher, an MCP server, or a memory system. The full data-flow and
-write-surface description, including what runs caller-provided commands, is in
+Entire Graph is code intelligence for the repository your agent is working in:
+ranked search, relationships, and change impact grounded in source. It does not
+store user or conversation memory, run in the background, or expose its own MCP
+server. The full data-flow and write-surface description, including what runs
+caller-provided commands, is in
 [trust and security](docs/trust-and-security.md).
 
 ## Documentation
