@@ -48,26 +48,27 @@ unique relation. The stream is emitted in this order:
 `provider_version`, `repo_root`, `repo_key`, `commit`, `tree`),
 `schema_version`, `capabilities`, `schema_features`, `language_versions`, and
 the **profile metadata** — `profile`, `profile_limits`, `relation_set`, and
-`skipped_relation_families`. Its `languages`, `warnings`, `partial_failures`,
-`stats`, and `completeness` are empty/zero — those totals are not known until
-the whole repository has been processed, and the header is emitted before that
-so consumers can begin work immediately. The profile metadata is
-**header-only**: it is known up front and is therefore not repeated in the
-summary.
+`skipped_relation_families`. Its `languages`, `language_tiers`, `warnings`,
+`partial_failures`, `stats`, and `completeness` are empty/zero — those totals
+are not known until the whole repository has been processed, and the header
+is emitted before that so consumers can begin work immediately. The profile
+metadata is **header-only**: it is known up front and is therefore not
+repeated in the summary.
 
 **The final `summary` record is authoritative for aggregate metadata.** It
-carries the real `languages`, `warnings`, `partial_failures`, `stats`
-(including the `relations` count and `completeness_level`), and the
+carries the real `languages`, `language_tiers` (each present language
+classified `semantic` or `inventory-only`), `warnings`, `partial_failures`,
+`stats` (including the `relations` count and `completeness_level`), and the
 `completeness` breakdown. It does **not** carry profile metadata; consumers
 should read that from the lean header and must not expect it in the summary
 unless a future schema version adds it.
 
 **Merging the two.** A consumer that wants one fully populated header should
 take the lean header and overlay the summary's aggregate fields (`languages`,
-`warnings`, `partial_failures`, `stats`, `completeness`) on top of it —
-summary wins for any field both records carry, the header wins for the
-profile metadata the summary omits. For any aggregate total, read the
-summary, never the lean header.
+`language_tiers`, `warnings`, `partial_failures`, `stats`, `completeness`) on
+top of it — summary wins for any field both records carry, the header wins
+for the profile metadata the summary omits. For any aggregate total,
+including per-language tier, read the summary, never the lean header.
 
 **Ordering.** For a fixed input and profile the stream is deterministic and
 stable (file, symbol, and relation order are reproducible across runs), but

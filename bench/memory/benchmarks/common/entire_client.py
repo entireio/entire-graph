@@ -685,6 +685,9 @@ def make_memory_client(
     if backend == "cmm":
         from .cmm_client import CmmClient
         return CmmClient(rpm=rpm, **kwargs)
+    if backend == "bm25":
+        from .bm25_client import Bm25Client
+        return Bm25Client(rpm=rpm, **kwargs)
     if backend == "entire":
         return EntireMemoryClient(rpm=rpm, **kwargs)
     # Import lazily so entire-only runs don't require the mem0 client.

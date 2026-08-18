@@ -74,13 +74,18 @@ different code. The fork point is verified byte-identical by checksum, not by a 
 ### 2. Apply the patches
 
 ```bash
-for p in <kit>/patches/000[1-4]-*.patch; do git apply -p1 "$p"; done
+for p in <kit>/patches/000[1-4]-*.patch <kit>/patches/0006-*.patch; do git apply -p1 "$p"; done
 ```
 
-Four upstream files are modified: provider timeouts, optional date injection, retry and drop
-accounting, and a server-side fix. Each is apply-checked against the pinned commit. Everything else
-is unmodified upstream code, **including the reader and judge prompts**. See
-[`UPSTREAM.md`](UPSTREAM.md) for the file-level provenance manifest.
+`patches/0005` is excluded from that glob on purpose: it targets `codebase-memory-mcp`'s own repo,
+not this harness, and is applied separately (see §3 below).
+
+Five upstream files are modified: provider timeouts, optional date injection, retry and drop
+accounting, a server-side fix, and `requirements.txt` for the BM25 arm's two pinned dependencies
+(`rank-bm25`, `PyStemmer`; the arm's stopword list is inlined, not an NLTK dependency). Each is
+apply-checked against the pinned commit. Everything else is unmodified upstream code, **including
+the reader and judge prompts**. See [`UPSTREAM.md`](UPSTREAM.md) for the file-level provenance
+manifest.
 
 ### 3. Copy in the adapters
 

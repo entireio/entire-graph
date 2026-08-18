@@ -8,8 +8,10 @@ against the v0.3.0 release and the implementation under `internal/`.
 
 The built-in analyzer is local-only. During analysis it does not fetch remote
 code, download grammars or models, call hosted APIs, resolve embeddings, or
-send telemetry. Tree-sitter grammars are compiled into the binary. The
-benchmark harness's clone phase and `entire plugin install graph` are the
+send telemetry. Tree-sitter grammars are compiled into the binary. Verify
+this on your own machine — `entire graph doctor --json` reports `no_egress:
+true` — rather than take the claim on trust. The benchmark harness's clone
+phase and `entire plugin install graph` are the
 networked operations, and both are explicit: one is a development tool, the
 other is installation.
 

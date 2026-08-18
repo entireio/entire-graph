@@ -384,7 +384,9 @@ conversational turn, ingesting byte-identical corpus text to the entire-graph ar
 contract as every other arm here, including raising rather than silently returning `[]` on a
 missing buffer, the defect class documented in §6b.
 
-**Result: 91.88, fourth of eleven rows in the table above.** It beats one graph-based system
+**Result: 91.88, the sixth row in the table above — the fourth distinct system, since two of the
+rows above it are earlier entire-graph and mem0 runs rather than different competitors.** It beats
+one graph-based system
 outright (graphify, *p* = 6.6×10⁻⁸), ties another (entire-graph's shipped current default, *p* =
 0.72), and is statistically indistinguishable from cognee — a system that spends 12.35 million
 tokens building its index (*p* = 0.19). It does this while returning less context than any
