@@ -39,19 +39,16 @@ On Linux:
 curl -fsSL https://entire.io/install.sh | bash
 ```
 
-Then install the plugin from the
-plugin index and confirm both layers:
+Then **install the plugin** from the plugin index and confirm its version:
 
 ```sh
-entire version
 entire plugin install graph
 entire graph version
 ```
 
 `entire graph version` printing a release tag (for example `v0.3.0`) is the
 installation check; a plugin built from source prints `dev` instead (see
-[operations](docs/operations.md)). `entire enable` configures Entire session capture and is
-not required for Entire Graph.
+[operations](docs/operations.md)). 
 
 ## Activate it for your agent
 
