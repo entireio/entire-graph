@@ -33,7 +33,7 @@ arm) while building its index without model calls.
 The margin over the strongest inference-built competitor (mem0 OSS) does not
 clear statistical significance; the margin over the BM25 baseline, built at
 identical zero cost, does (*p* = 5.7×10⁻⁷). Index-time token counts are
-directly metered, not estimated, and are not a one-time charge — an
+directly metered rather than estimated. They are not a one-time charge: an
 inference-built index pays them again on every corpus revision. See
 [benchmarks](docs/benchmarks.md) for full methodology, per-category results,
 retractions, and reproduction steps.
@@ -66,9 +66,10 @@ entire plugin install graph
 entire graph version
 ```
 
-`entire graph version` printing a release tag (for example `v0.3.0`) is the
-installation check; a plugin built from source prints `dev` instead (see
-[operations](docs/operations.md)). 
+`entire graph version` printing a release tag confirms that a versioned build
+is active.
+The local install helper reports the source checkout's Git description; a raw
+unversioned build prints `dev` (see [operations](docs/operations.md)).
 
 ## Activate it for your agent
 
@@ -78,7 +79,7 @@ Activation is per repository:
 entire graph init-agents --repo .
 ```
 
-The command created or touches the following files:
+The command creates or updates these files:
 
 - `.entire/graph-agent.md`: the agent operating guide. Generated in full and
   regenerated in full on each successful rerun; manual edits there do not
@@ -90,9 +91,9 @@ The command created or touches the following files:
 Review the three files, then commit them together when the instructions should
 apply to your team. Committing also matters for performance: the files are
 indexable Markdown, and while they sit uncommitted the working tree counts as
-dirty, which turns off query cache reuse (more details below). 
+dirty, which turns off query cache reuse (details below).
 
-Finally, start a fresh agent session in the repository. A session that was open 
+Finally, start a fresh agent session in the repository. A session that was open
 during activation has not seen the new instructions.
 
 ## Ask your first question
@@ -238,8 +239,8 @@ the [trust and security](docs/trust-and-security.md) documentation.
 - [Language support](docs/language-support.md)
 - [Benchmark methodology and evidence](docs/benchmarks.md)
 
-Please report problems in [GitHub Issues](https://github.com/entireio/entire-graph/issues) 
-or fork / open a pull request. Thank you! ❤️ 
+Please report problems in [GitHub Issues](https://github.com/entireio/entire-graph/issues)
+or open a pull request. Thank you! ❤️
 
 ## License
 

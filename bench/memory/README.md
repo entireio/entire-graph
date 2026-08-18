@@ -183,6 +183,8 @@ The defects we found on our own side are listed in `RESULTS.md` §6 and were rem
 | `benchmarks/common/graphify_client.py` | our port of graphify as a benchmark arm |
 | `benchmarks/common/graphify_mem_bridge.py` | prose-memory bridge for the graphify arm |
 | `benchmarks/common/cmm_client.py` | our port of `codebase-memory-mcp` as a benchmark arm |
+| `benchmarks/common/bm25_client.py` | lexical BM25 baseline over raw conversation turns |
+| `benchmarks/common/test_bm25_client.py` | regression coverage for BM25 candidate selection |
 | `benchmarks/common/runmeta.py` | run-provenance capture + the `FAIR_MODE` guard |
 | `patches/0001`–`0004`, `0006` | our diffs against upstream harness files (see `UPSTREAM.md`) |
 | `patches/0005` | the cmm `Section` one-line patch + its regression test — applied to the separate `codebase-memory-mcp` repo, not this harness |

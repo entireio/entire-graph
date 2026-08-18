@@ -12,8 +12,14 @@ entire plugin install graph
 entire graph version
 ```
 
-Updates go through the same command. To install a local development build
-instead, use:
+Update an indexed installation with:
+
+```sh
+entire plugin upgrade graph
+entire graph version
+```
+
+To install a local development build instead, use:
 
 ```sh
 scripts/install-local.sh
@@ -21,17 +27,18 @@ scripts/install-local.sh
 
 The script builds `./entire-graph`, installs it with `entire plugin install
 ./entire-graph --force`, and prints `entire graph version`. It fails before
-writing anything if the parent `entire` CLI is not on `PATH`. A locally built
-binary reports `dev` from `entire graph version`, which distinguishes it from
-an indexed release.
+writing anything if the parent `entire` CLI is not on `PATH`. The helper
+injects `git describe --tags --always --dirty` as the version. A raw `go build`
+without version linker flags reports `dev`.
 
 ## Requirements
 
 - The Entire CLI (0.10.0 or later) must be on `PATH`.
 - Development uses Go 1.26. Tree-sitter bindings require CGO and a working C
   compiler for the target platform.
-- Release archives require `tar` and `shasum`. Signing additionally requires
-  either `cosign` or `gpg` and a configured local key.
+- Local release builds require `tar` for non-Windows archives, `zip` or `7z`
+  for Windows archives, and either `sha256sum` or `shasum`. Signing additionally
+  requires `cosign` or `gpg` and a configured local key.
 
 ## Cache
 
@@ -42,11 +49,11 @@ the cache directory costs a rebuild, nothing else.
 ### Location
 
 The cache root is resolved in order: `--cache-dir`, then
-`ENTIRE_PLUGIN_DATA_DIR`, then — for `search`, `neighbors`, `impact`, and
-`index` — the per-user cache directory (`entire-graph` under the OS user cache
-path). `def` and `explain` stop at `ENTIRE_PLUGIN_DATA_DIR`: with neither the
-flag nor the variable set they rebuild on every run while the other query
-commands quietly share the per-user cache. One directory is shared by every
+`ENTIRE_PLUGIN_DATA_DIR`, then the per-user cache directory (`entire-graph`
+under the OS user cache path). The per-user fallback applies to `search`,
+`neighbors`, `impact`, `index`, `snapshot`, `symbols`, and `edges`. `def` and
+`explain` stop at `ENTIRE_PLUGIN_DATA_DIR`; with neither the flag nor the
+variable set they rebuild on every run. One directory is shared by every
 repository and worktree on the machine; keys, not directories, separate
 entries.
 
@@ -78,15 +85,15 @@ eligible for cache reuse only while the tree is effectively clean:
 
 - Clean tree → the query reuses its cached snapshot (an identical rerun is a
   hit).
-- A dirty or untracked path the graph can index — a supported source
+- A dirty or untracked path the graph can index, such as a supported source
   extension, any extensionless file (it could be a shebang script), or a root
   dependency manifest (`go.mod`, `package.json`, `tsconfig.json`,
-  `pyproject.toml`, `setup.cfg`, `Cargo.toml`, `composer.json`, `pom.xml`) —
+  `pyproject.toml`, `setup.cfg`, `Cargo.toml`, `composer.json`, or `pom.xml`),
   disables reuse for the whole repository until the tree is clean again.
 - Dirty paths with known unsupported extensions that are not manifests (build
   artifacts, archives, editor swap files) do not disable reuse.
-- If the working tree or `HEAD` cannot be inspected — including a repository
-  with no commits — the query fails closed: it builds fresh and caches
+- If the working tree or `HEAD` cannot be inspected, including in a repository
+  with no commits, the query fails closed: it builds fresh and caches
   nothing.
 
 Practical consequence: `init-agents` writes indexable Markdown, so a freshly
@@ -104,7 +111,7 @@ this easy to get wrong: `index` defaults to `--profile full` while `search`
 defaults to `--profile fast`, and `index` cannot warm the default
 working-tree path at all. To prewarm for the installed agent guide's
 committed-tree queries, `index`'s default profile is the right one, but the
-guide's queries are working-tree — they only reuse cache while the tree is
+guide's queries use the working tree, so they only reuse cache while the tree is
 clean, as above.
 
 `index --report <path>` additionally writes a Markdown summary of the built
@@ -113,23 +120,26 @@ graph for human review.
 ### Observing cache state
 
 - `search` (default JSON): `stats.index_cache_hit`.
-- `search --format agent`: header line `Index: cache-hit (…ms) | …`.
-- `impact` and `neighbors` (text and agent formats): leading
-  `Index: cache-hit`/`cache-miss` line, plus JSON fields.
+- `impact --format text` and `neighbors --format text`: leading
+  `Index: cache-hit`/`cache-miss` line.
+- `search --format agent` and `neighbors --format agent`: normally the same
+  `Index:` header. Under a tight byte budget it compacts to `I:hit`/`I:miss`;
+  an extremely small budget can omit the telemetry.
+- JSON output from `search`, `impact`, and `neighbors` includes cache fields.
 - `search --format text` and `explain`: no cache state is reported.
 - `def`: JSON field only.
 
 ## Updating and troubleshooting
 
-Rerunning `entire plugin install graph` installs the current indexed release;
-`entire graph version` confirms what is active. After an upgrade the first
-query per repository is cold — cache entries embed the provider version, so
-old entries simply stop matching and can be deleted at leisure.
+`entire plugin upgrade graph` installs the current indexed release;
+`entire graph version` confirms what is active. After an upgrade, the first
+query per repository is cold because cache entries embed the provider version.
+Old entries simply stop matching and can be deleted at leisure.
 
 If queries rebuild on every run when you expect hits, check in order: a dirty
 or untracked indexable file (`git status`; remember extensionless files and
 root manifests count), a changed `.graphignore`, a profile mismatch between
-runs, and — for `def`/`explain` — a missing `--cache-dir`/
+runs, and, for `def`/`explain`, a missing `--cache-dir`/
 `ENTIRE_PLUGIN_DATA_DIR`, since those two commands do not fall back to the
 per-user cache directory.
 
@@ -145,9 +155,10 @@ renders the single-session variant as a Claude Code status line.
 scripts/release.sh
 ```
 
-The release script writes `dist/release-<version>/` with one `.tar.gz` archive
-per target and a `SHA256SUMS` manifest. `VERSION=<value>` overrides the
-version; otherwise the script uses `git describe --tags --always --dirty`.
+The release script writes `dist/release-<version>/` with one archive per target
+and a `checksums.txt` manifest. Non-Windows targets use `.tar.gz`; Windows
+targets use `.zip`. `VERSION=<value>` overrides the version; otherwise the
+script uses `git describe --tags --always --dirty`.
 
 By default the script builds the current host target. Set
 `ENTIRE_RELEASE_TARGETS` to a space-separated list of `GOOS/GOARCH` targets to
@@ -169,4 +180,6 @@ configured:
 If both signing variables are set and both tools are available, cosign takes
 precedence and the script writes only the `.sig` file.
 
-The script does not publish artifacts.
+The script does not publish artifacts. The GitHub `release` workflow builds and
+verifies six platform archives. A manual workflow run on a branch only validates
+them; pushing a `v*` tag also publishes the GitHub release and `checksums.txt`.

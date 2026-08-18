@@ -45,8 +45,8 @@ Fairness contract (identical to the entire / mem0 / cognee / graphify / cmm arms
 
 Ranking is BM25's alone. Nothing here re-orders, rewrites or truncates it, with
 two conventional exceptions, both stated up front and both standard IR practice:
-  1. documents scoring 0 (no query term in common) are not returned -- Lucene
-     never places them in a result set either;
+  1. documents sharing no tokenized query term are not returned -- Lucene never
+     places them in a result set either;
   2. if stopword removal empties the query, the un-stopworded tokens are used,
      so a question like "who is he?" still retrieves.
 
@@ -327,14 +327,19 @@ class Bm25Client:
         tokens = self._tokenize(query)
         scores = await asyncio.to_thread(bm25.get_scores, tokens)
 
-        order = sorted(range(len(units)), key=lambda i: float(scores[i]), reverse=True)
+        # A BM25 score's sign does not indicate lexical overlap. Okapi IDF can
+        # be negative when a term appears in most documents, so valid matches
+        # can rank below the zero assigned to documents with no matching term.
+        # Select candidates by token overlap before ranking and applying top_k.
+        query_terms = frozenset(tokens)
+        candidates = (
+            i for i, frequencies in enumerate(bm25.doc_freqs)
+            if query_terms.intersection(frequencies)
+        )
+        order = sorted(candidates, key=lambda i: float(scores[i]), reverse=True)
         results: list[dict] = []
         for i in order[: int(top_k)]:
             score = float(scores[i])
-            if score <= 0.0:
-                # Conventional BM25 retrieval: a document sharing no query term
-                # is not in the result set (Lucene behaves the same way).
-                break
             u = units[i]
             entry: dict[str, Any] = {
                 "memory": u["text"],
