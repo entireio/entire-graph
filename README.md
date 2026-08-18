@@ -100,7 +100,7 @@ during activation has not seen the new instructions.
 
 Ask the agent a repository question in your own words. The transcript below is
 a real captured session, recorded with pinned inputs: the installed Entire
-Graph v0.3.0 release, a fresh clone of `gorilla/mux` at commit `db9d1d0` with
+Graph release, a fresh clone of `gorilla/mux` at commit `db9d1d0` with
 no prior agent instructions, activation files committed, and Claude Code
 2.1.233 (model Claude Fable 5) as the client. The prompt:
 
