@@ -15,7 +15,7 @@ example is below, after setup.
 
 ## Benchmarks
 
-The same retrieval engine ranked first in an eight-system LoCoMo comparison
+The Entire Graph retrieval engine ranked first in an eight-system LoCoMo comparison
 (1,540 questions, shared reader and judge, 200-item retrieval budget for every
 arm) while building its index without model calls.
 
