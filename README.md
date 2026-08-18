@@ -22,13 +22,13 @@ arm) while building its index without model calls.
 | System | LoCoMo | Index-time tokens |
 | --- | --- | --- |
 | **Entire Graph** | **94.74** | **0** |
-| mem0 OSS | 93.83 | 50.85M |
-| cognee | 92.86 | 12.35M |
-| BM25 (lexical baseline) | 91.88 | 0 |
-| cmm | 91.30 | 0 |
-| graphify | 87.34 | 0 |
-| letta | 80.58 | not projectable |
-| supermemory | 77.60 | hosted |
+| [mem0 OSS](https://github.com/mem0ai/mem0) | 93.83 | 50.85M |
+| [cognee](https://github.com/topoteretes/cognee) | 92.86 | 12.35M |
+| [BM25](https://github.com/dorianbrown/rank_bm25) (lexical baseline) | 91.88 | 0 |
+| [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) (cmm) | 91.30 | 0 |
+| [graphify](https://github.com/Graphify-Labs/graphify) | 87.34 | 0 |
+| [letta](https://github.com/letta-ai/letta) | 80.58 | not projectable |
+| [supermemory](https://github.com/supermemoryai/supermemory) | 77.60 | hosted |
 
 The margin over the strongest inference-built competitor (mem0 OSS) does not
 clear statistical significance; the margin over the BM25 baseline, built at
