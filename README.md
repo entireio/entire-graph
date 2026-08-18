@@ -52,8 +52,13 @@ installation check; a plugin built from source prints `dev` instead (see
 
 ## Activate it for your agent
 
-Activation is per repository, and it writes files, so here is exactly what
-`init-agents` touches:
+Activation is per repository:
+
+```sh
+entire graph init-agents --repo .
+```
+
+The command created or touches the following files:
 
 - `.entire/graph-agent.md`: the agent operating guide. Generated in full and
   regenerated in full on each successful rerun; manual edits there do not
@@ -62,21 +67,13 @@ Activation is per repository, and it writes files, so here is exactly what
   between `<!-- entire-graph:begin -->` and `<!-- entire-graph:end -->` markers
   is added or replaced. Text outside the markers is preserved.
 
-From the repository root:
-
-```sh
-entire graph init-agents --repo .
-```
-
 Review the three files, then commit them together when the instructions should
-apply to the team. Committing also matters for performance: the files are
+apply to your team. Committing also matters for performance: the files are
 indexable Markdown, and while they sit uncommitted the working tree counts as
-dirty, which turns off query cache reuse (details below). Finally, start a
-fresh agent session in the repository. A session that was open during
-activation has not seen the new instructions.
+dirty, which turns off query cache reuse (more details below). 
 
-Marker handling, rerun behavior, client specifics, and recovery from damaged
-instruction files are covered in [agent activation](docs/agents.md).
+Finally, start a fresh agent session in the repository. A session that was open 
+during activation has not seen the new instructions.
 
 ## Ask your first question
 
@@ -221,13 +218,8 @@ caller-provided commands, is in
 - [Language support](docs/language-support.md)
 - [Benchmark methodology and evidence](docs/benchmarks.md)
 
-To work on Entire Graph itself:
+Report problems in [GitHub Issues](https://github.com/entireio/entire-graph/issues). 
 
-```sh
-mise run build
-mise run test
-mise run check
-```
+## License
 
-Report problems in [GitHub Issues](https://github.com/entireio/entire-graph/issues).
 Entire Graph is distributed under the [MIT License](LICENSE).
