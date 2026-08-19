@@ -237,6 +237,11 @@ type repoIgnoreLedger struct {
 	// lets a test assert that the bound holds for the WORK and not only for the
 	// reported count.
 	direntsRead int
+	// ignoreBytesRead counts the nested `.gitignore` bytes the pruned-directory
+	// accounting has read in this listing, against maxRepoExclusionIgnoreBytes.
+	// The entry budget bounds how many entries are visited; this bounds what
+	// visiting one is allowed to cost.
+	ignoreBytesRead int64
 	// walkVisited counts the filesystem entries the pruned-directory accounting
 	// has visited in this listing, against maxRepoExclusionWalkEntries.
 	walkVisited int
@@ -355,6 +360,45 @@ func (l *repoIgnoreLedger) remainingExclusionWalk() int {
 		return 0
 	}
 	return maxRepoExclusionWalkEntries - l.walkVisited
+}
+
+// maxRepoExclusionIgnoreBytes bounds the nested `.gitignore` text ONE listing's
+// pruned-directory accounting may read. The walk-entry budget bounds how many
+// entries are visited; it does not bound what visiting one costs, and entering a
+// directory reads its `.gitignore` — up to maxNestedIgnoreFileBytes of it.
+//
+// Measured on this branch before this bound: a pruned tree of 300 directories
+// each holding a 1 MiB `.gitignore` cost 26.65s of EVERY search against 9.83ms
+// for the same tree with a 2-byte one, and both reported the identical 600
+// exclusions. 901 of the 20,000 entries were visited, so the entry budget never
+// came near firing. The size of that text is set by the repository whose rules
+// the report exists to expose, which is the same amplification the rule-text
+// bound and the walk bound already closed one layer up.
+//
+// 4 MiB is far past any real repository — 512 nested ignore files, the most one
+// listing merges, at 8 KiB each — and it is shared across the whole listing, so
+// splitting a rule over several pruned trees does not buy a fresh one.
+const maxRepoExclusionIgnoreBytes = 4 << 20
+
+// spendIgnoreBytes charges the listing for one nested `.gitignore` about to be
+// read and reports whether the accounting may still afford it. A refusal means
+// the file is NOT loaded, so the caller must stop descending rather than judge
+// that subtree against rules it never read: attributing a descendant to the
+// repository's rule when an unread nested `.gitignore` may have hidden it is the
+// false alarm this disclosure spends every other bound avoiding.
+func (l *repoIgnoreLedger) spendIgnoreBytes(n int64) bool {
+	if l == nil {
+		return false
+	}
+	if n < 0 {
+		n = 0
+	}
+	if l.ignoreBytesRead+n > maxRepoExclusionIgnoreBytes {
+		l.countIncomplete = true
+		return false
+	}
+	l.ignoreBytesRead += n
+	return true
 }
 
 // noteCountIncomplete marks Files a lower bound for a reason other than an
@@ -885,6 +929,23 @@ func (m ignoreMatcher) gitApplied() ignoreMatcher {
 // Levels the walk has left are dropped, so the stack holds one matcher per
 // ancestor directory of the current position.
 func (s *nestedIgnoreStack) enter(dir string) {
+	// The listing walk reads a directory it is listing anyway, so its nested
+	// .gitignore costs what any scan of that tree costs. A nil ledger charges
+	// nothing and never refuses.
+	s.enterCharged(nil, dir)
+}
+
+// enterCharged is enter for the pruned-directory accounting: it charges ledger
+// for the nested .gitignore it is about to read and reports whether the caller
+// may descend.
+//
+// It returns false ONLY when a .gitignore exists and the budget cannot pay to
+// read it. The rules of an unread ignore file are rules this stack does not
+// have, so every verdict below that directory would be reached without them —
+// crediting the repository's rule with removing paths a nested .gitignore may
+// have hidden. Not descending, and saying the count is a lower bound, is the
+// same trade the walk budget and the unreadable-path disclosure already make.
+func (s *nestedIgnoreStack) enterCharged(ledger *repoIgnoreLedger, dir string) bool {
 	dir = cleanIgnorePath(dir)
 	kept := s.levels[:0]
 	for _, level := range s.levels {
@@ -896,18 +957,22 @@ func (s *nestedIgnoreStack) enter(dir string) {
 	if dir == "" {
 		// The root .gitignore is already part of base, alongside the explicit
 		// ignore/include files that must keep overriding it.
-		return
+		return true
 	}
 	file := filepath.Join(s.repo, filepath.FromSlash(dir), ".gitignore")
 	info, err := os.Stat(file)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > maxNestedIgnoreFileBytes {
-		return
+		return true
+	}
+	if ledger != nil && !ledger.spendIgnoreBytes(info.Size()) {
+		return false
 	}
 	var matcher ignoreMatcher
 	if err := matcher.loadFile(file, false, repoIgnoreOrigin(path.Join(dir, ".gitignore"))); err != nil {
-		return
+		return true
 	}
 	s.levels = append(s.levels, nestedIgnoreLevel{dir: dir, matcher: matcher})
+	return true
 }
 
 // Ignored reports the stack's verdict for a repo-relative path.
@@ -1068,7 +1133,7 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 	// .gitignore files cannot disturb the walk that is standing at the prune. Its
 	// own level is dropped and re-entered below, so the tree is read the same way
 	// whether or not the caller had already entered it.
-	sub := &nestedIgnoreStack{repo: s.repo, base: s.base, gitBase: s.gitBase}
+	sub := &nestedIgnoreStack{repo: s.repo, base: s.base, gitBase: s.gitBase, gitCheckout: s.gitCheckout}
 	for _, level := range s.levels {
 		if level.dir == dir {
 			continue
@@ -1105,8 +1170,13 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 		childRel := cleanIgnorePath(filepath.ToSlash(child))
 		if entry.IsDir() {
 			// Same discipline as the outer walk: enter before judging anything
-			// inside, so the deepest .gitignore with an opinion is on the stack.
-			sub.enter(childRel)
+			// inside, so the deepest .gitignore with an opinion is on the stack —
+			// charged, because reading it is work the prune had already saved and
+			// its size is set by the repository. Refused means the rules of this
+			// subtree were never read, so nothing under it can be attributed.
+			if !sub.enterCharged(ledger, childRel) {
+				return filepath.SkipDir
+			}
 			// And the same prunes, in the same order. A vendored tree inside the
 			// pruned one was never going to be in the corpus, so crediting the
 			// repository's rule with removing it is a false alarm — and walking it
@@ -1120,6 +1190,14 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 			// unreadable directory down there then reported this exclusion count as
 			// a lower bound over content that was never part of the count.
 			if sub.ignoredByGit(childRel, true) && !sub.MayIncludeDescendant(childRel) {
+				// "Git would have hidden it anyway" is true of an UNTRACKED path
+				// only, and this mode runs because Git could not be asked. Pruning
+				// here therefore drops a whole subtree that may hold tracked sources
+				// the repository's own rule removed — the same unattributable case
+				// the per-file sink records one level up, and recording it there
+				// while staying silent here reported a partial disclosure as a
+				// complete one.
+				sub.noteGitBlindSpot(ledger)
 				return filepath.SkipDir
 			}
 			return nil
@@ -1135,6 +1213,10 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 			return nil
 		}
 		if sub.ignoredByGit(childRel, false) {
+			// Same swallow, one path at a time: a tracked source is visible to Git
+			// whatever .gitignore says, so this drop is unattributable rather than
+			// uninteresting.
+			sub.noteGitBlindSpot(ledger)
 			return nil
 		}
 		// A descendant of a pruned directory is a path the listing would have
