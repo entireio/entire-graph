@@ -75,10 +75,12 @@ each distinct file, validates the marker layout, and renders all managed
 content from that validated snapshot.
 
 Each path must be missing or resolve to a regular file. Symlinks and hard links
-to regular files are supported. A directory, named pipe, socket, device, or
-other non-regular target is rejected with its type named in the error. A
-dangling alias between `AGENTS.md` and `CLAUDE.md` is supported; the shared
-target is created and updated once.
+to regular files are supported, with the target written either relatively or as
+an absolute path, as long as it stays inside the project root; a link that
+resolves outside is refused and nothing is installed. A directory, named pipe,
+socket, device, or other non-regular target is rejected with its type named in
+the error. A dangling alias between `AGENTS.md` and `CLAUDE.md` is supported;
+the shared target is created and updated once.
 
 Each distinct file must contain either no Entire Graph marker tokens or exactly
 one begin marker followed by one end marker. Marker tokens in examples, code
