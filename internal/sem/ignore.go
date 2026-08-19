@@ -250,10 +250,56 @@ type repoIgnoreLedger struct {
 	// enumeration of a real checkout while a Git-applied repository rule was
 	// removing paths from it. See RepoIgnoreReport.GitListingUnavailable.
 	gitListingUnavailable bool
+	// listingLimit is the file cap the snapshot applies to this listing
+	// (sourceOptions.maxFiles, resolved). Zero means uncapped.
+	//
+	// It is here because the cap is the other way a path can be absent from a
+	// corpus without any ignore rule having removed it. A path the cap would have
+	// discarded anyway was never in the corpus to hide, and naming it is a claim
+	// about the repository that is not true — the same rule the per-file sink
+	// already applies to a staged-deleted file and a symlink.
+	listingLimit int
+	// listingPosition counts the paths that have reached the ignore decision in
+	// this listing, kept AND excluded. That is the position a path would have held
+	// in the listing this repository would have had with none of its own ignore
+	// rules, which is the only listing against which "the rule is what removed it
+	// from the corpus" can be tested.
+	listingPosition int
+}
+
+// noteListingCandidate advances the counterfactual listing by one path. Every
+// producer calls it for each path that reaches the ignore decision, kept or
+// excluded, BEFORE the decision — so the position an exclusion is recorded at is
+// the one it would have occupied had the rule not been there.
+//
+// A producer that never calls it leaves the position at zero and every exclusion
+// inside the cap: an unaccounted listing mode stays as noisy as it is today
+// rather than falling silent, which is the direction this ledger errs in
+// everywhere else.
+func (l *repoIgnoreLedger) noteListingCandidate() {
+	if l == nil {
+		return
+	}
+	l.listingPosition++
+}
+
+// beyondListingCap reports whether the path now at the head of the listing would
+// have fallen outside the snapshot's file cap even with no ignore rule at all.
+func (l *repoIgnoreLedger) beyondListingCap() bool {
+	return l != nil && l.listingLimit > 0 && l.listingPosition > l.listingLimit
 }
 
 func (l *repoIgnoreLedger) note(exclusion RepoExclusion) {
 	if l == nil {
+		return
+	}
+	// Gated HERE, at the one place an exclusion enters the ledger, for the same
+	// reason the rule text is bounded here: a check at the call sites is the
+	// shape that leaves one of them out. The snapshot's own file cap would have
+	// discarded this path with no ignore rule in the repository at all, so the
+	// rule is not what removed it from the corpus and the truncation warning
+	// W_FILE_LIMIT already says what did.
+	if l.beyondListingCap() {
 		return
 	}
 	if l.seen == nil {
@@ -1091,6 +1137,10 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 		if sub.ignoredByGit(childRel, false) {
 			return nil
 		}
+		// A descendant of a pruned directory is a path the listing would have
+		// offered had the rule not been there, so it takes a position in the
+		// counterfactual listing exactly as a per-file candidate does.
+		ledger.noteListingCandidate()
 		ledger.note(RepoExclusion{
 			Path:   childRel,
 			Source: rule.origin.label,
@@ -1180,6 +1230,21 @@ func walkPrunedBoundedNode(ledger *repoIgnoreLedger, current string, entry fs.Di
 
 // readDirBounded reads at most the remaining budget's worth of one directory,
 // sorted, and marks the count a lower bound when the directory held more.
+//
+// The order that prefix is taken IN is the filesystem's, not the repository's: a
+// directory larger than the remaining budget hands back whichever entries
+// getdents offers first, and only those are then sorted. So for such a directory
+// both the count and the sampled paths are a property of the filesystem as well
+// as of the tree, and the SAME repository view can disclose different paths on
+// two machines.
+//
+// That is the price of the read bound and it is not paid down by sorting more:
+// a deterministic prefix means reading the whole directory, which is exactly the
+// unbounded, repository-sized crawl the bound exists to stop
+// (TestPrunedExclusionAccountingBoundsWhatItReads fails the moment the read is
+// made whole). What the report must not do is present the sample as canonical
+// when it is not, so the shortfall this raises SAYS the enumerated paths are a
+// filesystem-order sample — see withRepoIgnorePartialFailures.
 func readDirBounded(ledger *repoIgnoreLedger, dir string) ([]fs.DirEntry, error) {
 	remaining := ledger.remainingExclusionWalk()
 	handle, err := os.Open(dir)

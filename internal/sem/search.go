@@ -590,7 +590,9 @@ func withRepoIgnorePartialFailures(failures []PartialFailure, report *RepoIgnore
 	// budget is a tree too large to enumerate. Naming the wrong one sends the
 	// reader looking for a permission problem that is not there.
 	effect := "the tree the repository's own ignore rules removed is larger than the exclusion accounting " +
-		"enumerates, so the disclosed count is a lower bound rather than the exact number"
+		"enumerates, so the disclosed count is a lower bound rather than the exact number, and the paths it " +
+		"did enumerate are a filesystem-order sample of that tree rather than its first paths in sorted " +
+		"order — two readers on two filesystems can be shown different ones"
 	code := repoIgnoreTruncatedCode
 	if len(report.Unreadable) > 0 {
 		effect = "part of a tree the repository's own ignore rules removed could not be read, so the " +
@@ -673,7 +675,8 @@ func RenderRepoIgnoreDisclosure(report *RepoIgnoreReport) []byte {
 		} else {
 			// An empty list rendered "- count is a LOWER BOUND:  could not be read",
 			// which reads as a broken checkout to someone whose tree is merely big.
-			out.WriteString("- count is a LOWER BOUND: the excluded tree is larger than this accounting enumerates\n")
+			out.WriteString("- count is a LOWER BOUND: the excluded tree is larger than this accounting " +
+				"enumerates, and the paths named are a filesystem-order sample of it, not its first in sorted order\n")
 		}
 	}
 	if report.GitListingUnavailable {

@@ -9783,7 +9783,7 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		// Every path in a committed-tree listing is tracked by construction, so
 		// anything the ignore rules drop here is source Git itself would show the
 		// reader. That is precisely the set worth disclosing.
-		ledger := &repoIgnoreLedger{}
+		ledger := &repoIgnoreLedger{listingLimit: resolveMaxSourceFiles(options.maxFiles)}
 		paths = filterIgnoredPaths(paths, ignores, ledger)
 		paths, warnings := capSourceFiles(paths, options.maxFiles)
 		batch, err := gitutil.NewBatchFileReader(ctx, repo, committedRevision)
@@ -9838,7 +9838,7 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 	if err != nil {
 		return openedSource{}, err
 	}
-	worktreeLedger := &repoIgnoreLedger{}
+	worktreeLedger := &repoIgnoreLedger{listingLimit: resolveMaxSourceFiles(options.maxFiles)}
 	paths, err := worktreeSourceFiles(ctx, repo, ignores, len(options.includeFiles) > 0, worktreeLedger)
 	if err != nil {
 		return openedSource{}, err
@@ -10177,6 +10177,7 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 		if statErr != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			continue
 		}
+		ledger.noteListingCandidate()
 		if ignores.Ignored(rel, false) {
 			// Git's listing already applied the repository's exclude stack to
 			// UNTRACKED content (`--exclude-standard`), so a path that reaches
@@ -10246,6 +10247,7 @@ func walkWorktreeFiles(repo string, ignores ignoreMatcher, dirTracked func(strin
 		if isVendoredScanFile(rel, name) {
 			return nil
 		}
+		ledger.noteListingCandidate()
 		if stack.Ignored(rel, false) {
 			stack.noteRepoExclusion(ledger, rel, false)
 			return nil
@@ -10272,6 +10274,9 @@ func filterIgnoredPaths(paths []string, ignores ignoreMatcher, ledger *repoIgnor
 	filtered := paths[:0]
 	for _, rel := range paths {
 		rel = filepath.ToSlash(rel)
+		// Kept or excluded, this path is one position of the listing this
+		// repository would have had with no ignore rules of its own.
+		ledger.noteListingCandidate()
 		if ignores.Ignored(rel, false) {
 			ignores.noteRepoExclusion(ledger, rel, false)
 			continue
