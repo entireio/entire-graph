@@ -396,6 +396,18 @@ type ProviderSnapshot struct {
 }
 
 type ProviderSnapshotOptions struct {
+	// nowFn is an in-package seam for the wall-clock the budget is measured
+	// against. It is unexported, so no embedder can set it and it is not part
+	// of any cache key; nil means time.Now, which is what every real caller
+	// gets. It exists because a budget cannot be tested by racing the platform
+	// clock: time.Now's resolution is nanoseconds on Linux and macOS but as
+	// coarse as a system tick on Windows, so a sub-tick budget reads as
+	// "not expired yet" there no matter how the check is written. Tests that
+	// need a budget that is expired BY CONSTRUCTION supply a clock instead of
+	// a tiny duration. Same idea as jsScanParseTimeout, threaded through the
+	// options rather than a package global so it is safe under t.Parallel.
+	nowFn func() time.Time
+
 	NoNetwork    bool
 	Worktree     bool
 	IgnoreFiles  []string
@@ -1036,7 +1048,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	var budgetDeadline time.Time
 	if options.MaxDuration > 0 {
 		var cancelBudget context.CancelFunc
-		budgetDeadline = time.Now().Add(options.MaxDuration)
+		budgetDeadline = options.now().Add(options.MaxDuration)
 		workCtx, cancelBudget = context.WithDeadline(ctx, budgetDeadline)
 		defer cancelBudget()
 	}
@@ -1044,7 +1056,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// timer: ctx.Err() flips one timer granularity after the deadline actually
 	// passed (~15.6 ms on Windows), and every poll below would spend that
 	// window working on a budget that is already gone. See budgetGate.
-	gate := newBudgetGate(workCtx, budgetDeadline)
+	gate := newBudgetGate(workCtx, budgetDeadline, options.now)
 	budgetHit := false
 	// classifyStop splits a stop reason into "our budget expired, truncate and
 	// finish" and "return this to the caller". ctx.Err() != nil means the

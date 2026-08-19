@@ -150,6 +150,10 @@ func TestTF142R7SelectiveDerivationStopsBeforeThePreprocessing(t *testing.T) {
 		Profile:     ProfileFull,
 		OnlyFiles:   []string{"deep.js"},
 		MaxDuration: tf142r5ExpiredBudget,
+		// The duration alone is not enough to be expired on a platform whose
+		// clock cannot resolve it -- see tf142r5ExpiredClock, and the
+		// windows-latest failure of this exact test that found it.
+		nowFn: tf142r5ExpiredClock(),
 	}
 	snapshot, _, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test", selective, cacheDir, false)
 	if err != nil {

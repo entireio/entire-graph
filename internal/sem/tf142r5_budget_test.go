@@ -1,15 +1,44 @@
 package sem
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 // A budget of one nanosecond is expired by the time the first unit of work
 // starts, so every assertion below is an INVARIANT ("this run was truncated"),
-// never a stopwatch reading. Nothing on a real machine parses a file inside a
-// nanosecond, so the outcome does not depend on how loaded the runner is.
+// never a stopwatch reading.
+//
+// STRUCK IN ROUND EIGHT: this comment also claimed the outcome "does not depend
+// on how loaded the runner is", and that the duration alone was enough. It is
+// not. The provider can only notice a budget its CLOCK can resolve, and
+// time.Now's resolution is nanoseconds on Linux and macOS but as coarse as a
+// system tick on Windows. A one-nanosecond deadline can therefore still read as
+// "not reached" there for the whole of a short pass -- which is exactly how
+// TestTF142R7SelectiveDerivationStopsBeforeThePreprocessing filtered in 1 file
+// and 2 symbols on windows-latest while stopping at 0 on the other two runners.
+// It was never a load problem; it was a resolution problem. Tests that must be
+// expired before the first unit of work therefore pair the duration with
+// tf142r5ExpiredClock, which is expired by construction on every platform.
 const tf142r5ExpiredBudget = time.Nanosecond
+
+// tf142r5ExpiredClock is the clock half of "expired by construction". It reads
+// the real time exactly once -- when the provider derives the budget deadline
+// from it -- and an hour past that on every later poll, so the budget is gone
+// before the first unit of work on any platform, whatever the platform clock's
+// resolution is. It is not a stopwatch: no assertion depends on how long
+// anything actually takes.
+func tf142r5ExpiredClock() func() time.Time {
+	var polls atomic.Int64
+	base := time.Now()
+	return func() time.Time {
+		if polls.Add(1) == 1 {
+			return base
+		}
+		return base.Add(time.Hour)
+	}
+}
 
 // TestTF142R5TruncatedSnapshotNeverReportsCompletenessOK reproduces the finding
 // on the summary. `completeness_level` is the machine-readable field a consumer
@@ -24,6 +53,7 @@ func TestTF142R5TruncatedSnapshotNeverReportsCompletenessOK(t *testing.T) {
 	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test", ProviderSnapshotOptions{
 		Profile:     ProfileFull,
 		MaxDuration: tf142r5ExpiredBudget,
+		nowFn:       tf142r5ExpiredClock(),
 	})
 	if err != nil {
 		t.Fatalf("an explicit budget must truncate, not fail: %v", err)
@@ -90,6 +120,7 @@ func TestTF142R5SelectiveDerivationObservesTheBudget(t *testing.T) {
 		Profile:     ProfileFull,
 		OnlyFiles:   []string{"deep.js"},
 		MaxDuration: tf142r5ExpiredBudget,
+		nowFn:       tf142r5ExpiredClock(),
 	}
 	snapshot, _, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test", selective, cacheDir, false)
 	if err != nil {

@@ -590,7 +590,7 @@ func selectiveSearchSnapshotFromFull(
 	var budgetDeadline time.Time
 	if options.MaxDuration > 0 {
 		var cancelBudget context.CancelFunc
-		budgetDeadline = time.Now().Add(options.MaxDuration)
+		budgetDeadline = options.now().Add(options.MaxDuration)
 		workCtx, cancelBudget = context.WithDeadline(ctx, budgetDeadline)
 		defer cancelBudget()
 	}
@@ -600,7 +600,7 @@ func selectiveSearchSnapshotFromFull(
 	// on Windows -- and the preprocessing below is short enough to finish
 	// inside that window, which is exactly how an already-expired budget still
 	// filtered the whole cached inventory on the Windows runner. See budgetGate.
-	gate := newBudgetGate(workCtx, budgetDeadline)
+	gate := newBudgetGate(workCtx, budgetDeadline, options.now)
 	budgetHit := false
 	// classifyStop splits a stop reason the way the streaming build does:
 	// expiry of an OPT-IN MaxDuration is a truncation to report, anything else

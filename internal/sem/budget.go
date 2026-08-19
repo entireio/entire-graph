@@ -35,8 +35,11 @@ type budgetGate struct {
 // newBudgetGate pairs the work context with the opt-in deadline derived from
 // MaxDuration. Pass the zero time when MaxDuration is unset; the gate then
 // reports exactly what the context reports and costs one ctx.Err() call.
-func newBudgetGate(work context.Context, deadline time.Time) budgetGate {
-	return budgetGate{work: work, deadline: deadline, now: time.Now}
+func newBudgetGate(work context.Context, deadline time.Time, now func() time.Time) budgetGate {
+	if now == nil {
+		now = time.Now
+	}
+	return budgetGate{work: work, deadline: deadline, now: now}
 }
 
 // err reports the work context's stop reason, treating a deadline the clock has
@@ -81,4 +84,14 @@ func (g budgetGate) reader(read contentReader) contentReader {
 		}
 		return read(path)
 	}
+}
+
+// now is the clock the budget is measured against: options.nowFn when a test
+// supplied one, time.Now otherwise. Both the deadline and every later poll must
+// read the SAME clock, or the two disagree about whether the budget is gone.
+func (o ProviderSnapshotOptions) now() time.Time {
+	if o.nowFn != nil {
+		return o.nowFn()
+	}
+	return time.Now()
 }
