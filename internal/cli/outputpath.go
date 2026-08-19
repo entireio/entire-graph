@@ -41,7 +41,10 @@ import (
 //     symlinked component at ANY depth is refused rather than followed. os.Root
 //     alone is not enough for the second half: it stops the write leaving the root,
 //     but on Unix it happily FOLLOWS a link that stays inside it, and `.git/config`
-//     is inside it.
+//     is inside it. The refusal covers the ROUTE the path is read through as well as
+//     the destination it names, because a ".." resolves a link away before the
+//     destination is spelled — see refuseSymlinkedComponents and, for the route,
+//     refuseTraversedSymlinks.
 //
 // Two things decide "inside", and both exist so that a SPELLING cannot move the
 // boundary. The root is the checkout's git top level rather than the --repo value
@@ -61,6 +64,11 @@ type repoOutputTarget struct {
 	// given is the caller's own spelling of the path, used in messages so the
 	// remedy names the flag value the caller typed.
 	given string
+	// traversed is that same spelling made absolute WITHOUT cleaning: the route
+	// the kernel walks to reach path, which is where a committed symlink can be
+	// resolved away before the destination is named. Empty when there is nothing
+	// to walk that the destination's own components do not already cover.
+	traversed string
 }
 
 func (target repoOutputTarget) insideRepo() bool { return target.root != "" }
@@ -182,12 +190,13 @@ func classifyOutputPath(repoRoot, path string) (repoOutputTarget, error) {
 	if err != nil {
 		return repoOutputTarget{}, fmt.Errorf("resolve repository root %q: %w", repoRoot, err)
 	}
+	traversed := traversedPath(path)
 	if rel, ok := containedRel(rootAbs, onDisk); ok {
-		return repoOutputTarget{root: rootAbs, rel: rel, path: onDisk, given: path}, nil
+		return repoOutputTarget{root: rootAbs, rel: rel, path: onDisk, given: path, traversed: traversed}, nil
 	}
 	if cleaned != onDisk {
 		if rel, ok := containedRel(rootAbs, cleaned); ok {
-			return repoOutputTarget{root: rootAbs, rel: rel, path: cleaned, given: path}, nil
+			return repoOutputTarget{root: rootAbs, rel: rel, path: cleaned, given: path, traversed: traversed}, nil
 		}
 	}
 	return repoOutputTarget{path: onDisk, given: path}, nil
@@ -228,23 +237,12 @@ func realOutputPathOn(path string, dotDotIsLexical bool) (string, error) {
 	if dotDotIsLexical || !hasDotDot(path) {
 		return cleaned, nil
 	}
-	raw := path
-	if !filepath.IsAbs(raw) {
-		// Only a plainly relative path can be made absolute by concatenation.
-		// Windows has two spellings that are neither absolute nor plainly relative
-		// — drive-relative (`C:file`, resolved against that drive's own working
-		// directory) and rooted-relative (`\file`, resolved against the current
-		// drive) — and only filepath.Abs knows what they mean.
-		if filepath.VolumeName(raw) != "" || (raw != "" && os.IsPathSeparator(raw[0])) {
-			return cleaned, nil
-		}
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", err
-		}
-		// Concatenated, not filepath.Join: Join cleans, which is the collapse this
-		// function exists to avoid.
-		raw = cwd + string(filepath.Separator) + raw
+	raw, ok, err := rawAbs(path)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return cleaned, nil
 	}
 	dir, last := splitFinalComponent(raw)
 	if last == "" || last == "." || last == ".." {
@@ -273,6 +271,66 @@ func hasDotDot(path string) bool {
 		}
 	}
 	return false
+}
+
+// rawAbs makes path absolute by CONCATENATION rather than filepath.Join, because
+// Join cleans and cleaning is the collapse the uncleaned reading exists to avoid.
+//
+// ok is false for the two Windows spellings that are neither absolute nor plainly
+// relative — drive-relative (`C:file`, resolved against that drive's own working
+// directory) and rooted-relative (`\file`, resolved against the current drive) —
+// which only filepath.Abs knows how to read.
+func rawAbs(path string) (string, bool, error) {
+	if filepath.IsAbs(path) {
+		return path, true, nil
+	}
+	if filepath.VolumeName(path) != "" || (path != "" && os.IsPathSeparator(path[0])) {
+		return "", false, nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", false, err
+	}
+	return cwd + string(filepath.Separator) + path, true, nil
+}
+
+// traversedPath is the caller's spelling made absolute without cleaning — the route
+// refuseSymlinkedComponents cannot see and refuseTraversedSymlinks walks.
+//
+// It is empty whenever that walk would add nothing. Without a ".." there is nothing
+// filepath.Clean can move across a link, so every component the kernel walks is still
+// a component of the destination and the destination's own check covers it. And on a
+// platform that collapses ".." itself, the cleaned path IS what gets opened —
+// `link\..\config` names `config` beside the link there, never the link's target —
+// so there is no traversal to inspect; Windows' os.Root refuses symlinked components
+// on its own besides.
+func traversedPath(path string) string {
+	if runtime.GOOS == "windows" || !hasDotDot(path) {
+		return ""
+	}
+	raw, ok, err := rawAbs(path)
+	if err != nil || !ok {
+		return ""
+	}
+	return raw
+}
+
+// pathComponents splits path into its non-empty components WITHOUT cleaning, so a
+// ".." survives as a component instead of being collapsed. A volume name is not a
+// component.
+func pathComponents(path string) []string {
+	path = path[len(filepath.VolumeName(path)):]
+	var components []string
+	start := 0
+	for i := 0; i <= len(path); i++ {
+		if i == len(path) || os.IsPathSeparator(path[i]) {
+			if i > start {
+				components = append(components, path[start:i])
+			}
+			start = i + 1
+		}
+	}
+	return components
 }
 
 // splitFinalComponent splits path before its final component, WITHOUT cleaning,
@@ -484,6 +542,77 @@ func refuseSymlinkedComponents(root *os.Root, rel, given string) error {
 	return nil
 }
 
+// refuseTraversedSymlinks refuses the write when REACHING the destination would
+// traverse a symbolic link committed inside the repository, as opposed to landing on
+// one. Both are the same escape; only the second is visible to the check above.
+//
+// refuseSymlinkedComponents walks the destination's canonical relative path, and in
+// the one spelling that needs the uncleaned reading — a path holding ".." — that
+// canonical path has had every link in its directory part already resolved away by
+// realOutputPath. A repository that commits `link -> .git/objects` turns
+// `--report link/../config` into `.git/config`, whose components are an ordinary
+// directory and an ordinary file: the component walk sees nothing wrong and
+// truncates git's own configuration, where core.pager and core.fsmonitor name
+// programs git then runs. That is the same file the leaf-only check and the
+// symlinked-parent check were each written to protect, reached a third way, so the
+// refusal belongs on the traversal itself rather than on one more spelling of it.
+//
+// The walk is the kernel's, component by component against a prefix that is always
+// link-free, which is what makes filepath.Dir an exact ".." — a lexical parent is
+// only wrong after a link has been followed. A link INSIDE the repository is refused.
+// One outside it is caller-owned, by the same reasoning that leaves the whole
+// out-of-repo write unconfined, so it is FOLLOWED rather than refused, and following
+// it is also what keeps the prefix link-free for the ".." that may come after.
+//
+// Missing components cannot hide a link behind them: a ".." that follows one is
+// refused outright by resolveExistingPrefix before this walk is ever reached.
+func refuseTraversedSymlinks(root, raw, given string) error {
+	if root == "" || raw == "" {
+		return nil
+	}
+	prefix := raw[:len(filepath.VolumeName(raw))] + string(filepath.Separator)
+	for _, component := range pathComponents(raw) {
+		switch component {
+		case ".":
+			continue
+		case "..":
+			prefix = filepath.Dir(prefix)
+			continue
+		}
+		next := filepath.Join(prefix, component)
+		info, err := os.Lstat(next)
+		if err != nil {
+			prefix = next
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if rel, ok := containedRel(root, next); ok {
+				return fmt.Errorf(
+					"refusing to write %s: the path leads through %s, a symbolic link committed "+
+						"inside the repository, and resolving it moves the write to whatever that "+
+						"link points at. Remove the link, or name a path outside the repository",
+					given, rel)
+			}
+			if resolved, err := filepath.EvalSymlinks(next); err == nil {
+				next = resolved
+			}
+		}
+		prefix = next
+	}
+	return nil
+}
+
+// refuseRepositorySymlinks is the whole refusal for a confined write: no committed
+// link on the way to the destination, and none at the destination. Keeping the two
+// walks behind one call is what stops a later spelling from being answered with yet
+// another check at yet another call site.
+func refuseRepositorySymlinks(root *os.Root, target repoOutputTarget) error {
+	if err := refuseSymlinkedComponents(root, target.rel, target.given); err != nil {
+		return err
+	}
+	return refuseTraversedSymlinks(target.root, target.traversed, target.given)
+}
+
 // writeOutputFile writes one caller-named output file under the rule documented at
 // the top of this file. createParents mirrors `verify --record-baseline`, which is
 // documented to create missing parent directories; `index --report` passes false
@@ -514,7 +643,7 @@ func writeOutputFile(
 	// Before MkdirAll, so parent creation cannot walk through a committed link
 	// either: `verify --record-baseline reports/nested/base.json` with `reports`
 	// committed as a link to .git would otherwise mkdir inside the git directory.
-	if err := refuseSymlinkedComponents(root, target.rel, target.given); err != nil {
+	if err := refuseRepositorySymlinks(root, target); err != nil {
 		return err
 	}
 	if createParents {
@@ -526,7 +655,7 @@ func writeOutputFile(
 	}
 	// And again after it, so the components MkdirAll just created are covered by a
 	// check taken after the last thing this function changed on disk.
-	if err := refuseSymlinkedComponents(root, target.rel, target.given); err != nil {
+	if err := refuseRepositorySymlinks(root, target); err != nil {
 		return err
 	}
 	file, err := root.OpenFile(target.rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)

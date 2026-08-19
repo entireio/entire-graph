@@ -1072,3 +1072,143 @@ func TestConfinementRootResolvesAliasedRepositories(t *testing.T) {
 		t.Fatal("confinement root for a symlinked subdirectory is not the checkout")
 	}
 }
+
+// TestOutputPathsRefuseASymlinkTraversedByDotDot is the regression for the fifth
+// review finding, and it is the THIRD route to the same file. `.git/config` holds
+// core.pager and core.fsmonitor, which name programs git then runs, so truncating it
+// with attacker-chosen report bytes escalates to execution.
+//
+// The first route was the leaf (`GRAPH_REPORT.md` committed as a link), the second a
+// parent directory (`reports -> .git`, then `--report reports/config`). Both are
+// caught by walking the destination's components. This one is not: a committed
+// `link -> .git/objects` with `--report link/../config` has realOutputPath resolve
+// the link while reading the ".." the way the kernel does, so the destination it
+// hands on is the canonical `.git/config` — a plain directory and a plain file, with
+// no component left for the walk to refuse. The refusal has to sit on the ROUTE, not
+// only on the destination.
+func TestOutputPathsRefuseASymlinkTraversedByDotDot(t *testing.T) {
+	requireSymlinkSupport(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows collapses `link\\..` before the filesystem sees it, so the spelling never reaches the link's target")
+	}
+
+	// hostile builds a repository whose committed link, followed by a "..", lands on
+	// the repository's own git configuration, and returns the caller's spelling of
+	// that path together with the bytes the configuration must still have afterwards.
+	hostile := func(t *testing.T) (repo, given, victim string, before []byte) {
+		t.Helper()
+		repo = outputPathRepo(t)
+		if err := os.Symlink(filepath.Join(".git", "objects"), filepath.Join(repo, "link")); err != nil {
+			t.Fatal(err)
+		}
+		git(t, repo, "add", ".")
+		git(t, repo, "commit", "-m", "hostile link traversed by a dot-dot")
+		victim = filepath.Join(repo, ".git", "config")
+		before, err := os.ReadFile(victim)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return repo, dotDotPath(filepath.Join(repo, "link"), "config"), victim, before
+	}
+
+	assertRefused := func(t *testing.T, err error, victim string, before []byte) {
+		t.Helper()
+		if err == nil {
+			t.Fatal("the write was resolved through a symlink committed inside the repository")
+		}
+		if !strings.Contains(err.Error(), "symbolic link") {
+			t.Fatalf("refusal does not say why: %v", err)
+		}
+		after, readErr := os.ReadFile(victim)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if !bytes.Equal(before, after) {
+			t.Fatalf("the repository's own git configuration was rewritten:\n%s", after)
+		}
+	}
+
+	t.Run("index --report", func(t *testing.T) {
+		repo, given, victim, before := hostile(t)
+		assertRefused(t, runIndexReport(t, repo, given), victim, before)
+		// The link is the repository's own committed entry: refusing must not have
+		// replaced it with a regular file.
+		info, err := os.Lstat(filepath.Join(repo, "link"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatal("the repository's symlink was replaced by a regular file")
+		}
+	})
+
+	// The other verb creates its parents, so the refusal has to come before that
+	// walk too — this spelling would otherwise mkdir inside the git directory.
+	t.Run("verify --record-baseline", func(t *testing.T) {
+		repo, given, victim, before := hostile(t)
+		assertRefused(t, runVerifyRecord(t, repo, given), victim, before)
+	})
+
+	// The relative spelling reaches the same place through os.Getwd rather than
+	// through an absolute path, which is the concatenation branch of rawAbs.
+	t.Run("relative to the working directory", func(t *testing.T) {
+		repo, _, victim, before := hostile(t)
+		t.Chdir(repo)
+		assertRefused(t, runIndexReport(t, repo, dotDotPath("link", "config")), victim, before)
+	})
+}
+
+// TestOutputPathsAllowDotDotThroughARealDirectory is the DO-NOT-OVER-CORRECT pin for
+// the rule above, on the inside-the-repository half. Refusing the ROUTE must refuse
+// symlinks on it, not the ".." itself: a repository with no committed link there is
+// an ordinary checkout, and `--report build/../GRAPH_REPORT.md` has to keep working.
+// (The outside-the-repository half stays pinned by
+// TestOutputPathsOutsideTheRepositoryKeepWorkingThroughLinkedDirectories, whose
+// caller-owned symlinked parent must still be followed rather than refused.)
+func TestOutputPathsAllowDotDotThroughARealDirectory(t *testing.T) {
+	repo := outputPathRepo(t)
+	if err := os.MkdirAll(filepath.Join(repo, "build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	given := dotDotPath(filepath.Join(repo, "build"), "GRAPH_REPORT.md")
+	if err := runIndexReport(t, repo, given); err != nil {
+		t.Fatalf("a dot-dot through a real directory inside the repository was refused: %v", err)
+	}
+	report, err := os.ReadFile(filepath.Join(repo, "GRAPH_REPORT.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(report), "# Graph report") {
+		t.Fatalf("report content is wrong:\n%s", report)
+	}
+}
+
+// TestPathComponentsKeepsDotDot covers the splitter the route walk is built on, on
+// EVERY platform including the one the symlink tests above skip. It is spelled with
+// the platform separator so the Windows backslash is exercised there.
+func TestPathComponentsKeepsDotDot(t *testing.T) {
+	sep := string(filepath.Separator)
+	for _, tc := range []struct {
+		path string
+		want []string
+	}{
+		{sep, nil},
+		{sep + "a" + sep + "b", []string{"a", "b"}},
+		{sep + "a" + sep + ".." + sep + "b", []string{"a", "..", "b"}},
+		{sep + "a" + sep + sep + "b" + sep, []string{"a", "b"}},
+		{sep + "a" + sep + "." + sep + "b", []string{"a", ".", "b"}},
+		{sep + "..a" + sep + "b..", []string{"..a", "b.."}},
+	} {
+		got := pathComponents(tc.path)
+		if len(got) != len(tc.want) {
+			t.Errorf("pathComponents(%q) = %q, want %q", tc.path, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("pathComponents(%q) = %q, want %q", tc.path, got, tc.want)
+				break
+			}
+		}
+	}
+}
