@@ -53,11 +53,9 @@ model, one shared judge model, and a 200-item retrieval budget for every arm. Wh
 comparison above is attested against an unpublished bundle, this one's full methodology, every
 retraction, and every quoted number's provenance are committed in this repository.
 
-Measured 2026-08-14, on the retrieval path that first shipped in
-[v0.4.0](https://github.com/entireio/entire-graph/releases/tag/v0.4.0)
-([#104](https://github.com/entireio/entire-graph/pull/104)) — v0.3.0 and earlier score 91.56 on
-the same benchmark, without it. Full before/after breakdown:
-[`LOCOMO-COMPARISON.md` §3](../bench/memory/LOCOMO-COMPARISON.md#3-the-finding-we-were-structurally-unable-to-spend-the-retrieval-budget).
+Measured 2026-08-14, entire-graph
+[v0.4.0](https://github.com/entireio/entire-graph/releases/tag/v0.4.0). Per-system versions and
+sources: [`UPSTREAM.md`](../bench/memory/UPSTREAM.md).
 
 entire-graph ranks first at **94.74**; the margin over the strongest inference-built competitor
 (mem0 OSS, 93.83) is **+0.91pp** and does not clear statistical significance (McNemar *p* = 0.125).
