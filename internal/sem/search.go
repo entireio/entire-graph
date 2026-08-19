@@ -542,6 +542,12 @@ func withRepoIgnoreDisclosure(warnings []ProviderWarning, report *RepoIgnoreRepo
 // learn.
 const repoIgnoreIncompleteCode = "E_REPO_IGNORE_UNREADABLE"
 
+// repoIgnoreGitUnavailableCode marks the other way the disclosure falls short of
+// exact: the listing was produced without Git's own enumeration of a real
+// checkout, so a path a `.gitignore` removed cannot be separated from the
+// tracked source Git would still have listed.
+const repoIgnoreGitUnavailableCode = "E_REPO_IGNORE_GIT_UNAVAILABLE"
+
 // withRepoIgnorePartialFailures appends the shortfall when the exclusion count
 // could not be completed, and returns failures unchanged otherwise.
 //
@@ -549,7 +555,19 @@ const repoIgnoreIncompleteCode = "E_REPO_IGNORE_UNREADABLE"
 // path that builds a SearchResponse from a listing inherits it and none can
 // forget it — the same reason the disclosure warning is added here.
 func withRepoIgnorePartialFailures(failures []PartialFailure, report *RepoIgnoreReport) []PartialFailure {
-	if report == nil || !report.CountIncomplete {
+	if report == nil {
+		return failures
+	}
+	if report.GitListingUnavailable {
+		failures = append(failures, PartialFailure{
+			Code:     repoIgnoreGitUnavailableCode,
+			Severity: "warning",
+			EffectOnCompleteness: "Git could not list this checkout, so the repository's own ignore rules were applied by a " +
+				"filesystem walk; what they removed that Git would still have listed — tracked files — is not counted here",
+			Detail: "exclusion accounting ran without Git's own listing of a git working tree",
+		})
+	}
+	if !report.CountIncomplete {
 		return failures
 	}
 	first := ""
@@ -579,7 +597,7 @@ const maxRenderedRepoExclusions = 3
 // RenderRepoIgnoreDisclosure renders the disclosure for a text payload, or nil
 // when there is nothing to disclose.
 func RenderRepoIgnoreDisclosure(report *RepoIgnoreReport) []byte {
-	if report == nil || report.Files == 0 {
+	if report == nil || (report.Files == 0 && !report.CountIncomplete && !report.GitListingUnavailable) {
 		return nil
 	}
 	var out bytes.Buffer
@@ -587,8 +605,19 @@ func RenderRepoIgnoreDisclosure(report *RepoIgnoreReport) []byte {
 	for _, source := range report.Sources {
 		names = append(names, termsafe.Line(source.File))
 	}
-	fmt.Fprintf(&out, "EXCLUDED: %d file%s removed from this corpus by the repository's own ignore rules (%s)\n",
-		report.Files, pluralS(report.Files), strings.Join(names, ", "))
+	// A count of zero is not "nothing was excluded" whenever the report also
+	// says the count could not be completed: an ignored tree that was unreadable
+	// before its first descendant was reached excludes an unknown number of
+	// files, and the JSON channel says so. Rendering nothing for it told the one
+	// reader who only ever sees the text payload that the corpus was whole —
+	// which is this disclosure's own failure mode, reached through its renderer.
+	if report.Files == 0 {
+		out.WriteString("EXCLUDED: the repository's own ignore rules removed content from this corpus; " +
+			"how much could not be determined\n")
+	} else {
+		fmt.Fprintf(&out, "EXCLUDED: %d file%s removed from this corpus by the repository's own ignore rules (%s)\n",
+			report.Files, pluralS(report.Files), strings.Join(names, ", "))
+	}
 	shown := report.Sample
 	if len(shown) > maxRenderedRepoExclusions {
 		shown = shown[:maxRenderedRepoExclusions]
@@ -607,6 +636,18 @@ func RenderRepoIgnoreDisclosure(report *RepoIgnoreReport) []byte {
 		} else {
 			fmt.Fprintf(&out, "- ... %d more (full list in --format json: repo_ignored)\n", remaining)
 		}
+	}
+	// Both shortfalls print AFTER the paths that could be named, and both print
+	// whatever the count is: a partially counted tree renders an exact-looking
+	// number today, and a reader cannot act on a lower bound they were not told
+	// was one.
+	if report.CountIncomplete {
+		fmt.Fprintf(&out, "- count is a LOWER BOUND: %s could not be read\n",
+			termsafe.Line(strings.Join(report.Unreadable, ", ")))
+	}
+	if report.GitListingUnavailable {
+		out.WriteString("- count is PARTIAL: Git could not list this checkout, so tracked files its own " +
+			"ignore rules cover are not counted here\n")
 	}
 	return out.Bytes()
 }

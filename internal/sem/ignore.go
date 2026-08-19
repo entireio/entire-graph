@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"unicode/utf8"
 )
 
 type ignoreMatcher struct {
@@ -132,6 +133,20 @@ type RepoIgnoreReport struct {
 	CountIncomplete bool `json:"count_incomplete,omitempty"`
 	// Unreadable lists the paths the enumeration could not read, capped like Sample.
 	Unreadable []string `json:"unreadable,omitempty"`
+	// GitListingUnavailable says the listing this report describes was produced
+	// WITHOUT Git's own enumeration of a real checkout — the filesystem-walk
+	// fallback over a directory that is a git working tree — and that a
+	// repository-controlled rule Git also applies (a `.gitignore`) removed at
+	// least one path from it.
+	//
+	// In that mode there is no tracked/untracked distinction to ask, so such a
+	// path cannot be attributed: it is ordinary build output Git would have
+	// hidden too, OR a tracked source Git would still have listed and this
+	// removed. Naming every one of them would bury the disclosure in build
+	// output; naming none of them silently answers "the repository hid nothing"
+	// to a corpus where it may well have. Stating the limitation is what is
+	// left, and it is stated rather than inferred.
+	GitListingUnavailable bool `json:"git_listing_unavailable,omitempty"`
 }
 
 // maxRepoExclusionSample bounds the named paths in a RepoIgnoreReport. The count
@@ -140,6 +155,36 @@ type RepoIgnoreReport struct {
 // response into a wall of paths — that would make the disclosure something
 // readers learn to skip, which is the same blindness by a different route.
 const maxRepoExclusionSample = 10
+
+// maxRepoExclusionRuleBytes bounds the pattern text one sample entry carries.
+//
+// Rule is the only field of a RepoExclusion whose length the repository sets
+// freely: Path and Source are filesystem paths, but a pattern is one line of an
+// ignore file, and a line is bounded only by bufio.Scanner's 64KiB token. The
+// same deciding rule is copied into EVERY entry it matched, so one 60KiB line
+// over ten sampled paths put 600KiB of repository-controlled text into a payload
+// whose whole context budget is 24KiB — a disclosure meant to protect a reader's
+// field of view turned into the thing that floods it.
+//
+// A real gitignore pattern is a few dozen bytes. Truncating past this keeps the
+// rule identifiable (the head is what names the file class) while making the
+// payload's size a property of the report, not of the repository.
+const maxRepoExclusionRuleBytes = 200
+
+// boundRuleText truncates a repository-controlled pattern to
+// maxRepoExclusionRuleBytes, on a rune boundary so the result is still valid
+// UTF-8, and marks that it was cut so a reader never mistakes the prefix for the
+// whole rule.
+func boundRuleText(rule string) string {
+	if len(rule) <= maxRepoExclusionRuleBytes {
+		return rule
+	}
+	cut := maxRepoExclusionRuleBytes
+	for cut > 0 && !utf8.RuneStart(rule[cut]) {
+		cut--
+	}
+	return rule[:cut] + "..."
+}
 
 // repoIgnoreLedger accumulates repository-controlled exclusions during one
 // listing. A nil ledger accumulates nothing, so callers that do not want the
@@ -161,6 +206,10 @@ type repoIgnoreLedger struct {
 	// further in.
 	unreadable     []string
 	unreadableSeen map[string]struct{}
+	// gitListingUnavailable records that this listing could not consult Git's own
+	// enumeration of a real checkout while a Git-applied repository rule was
+	// removing paths from it. See RepoIgnoreReport.GitListingUnavailable.
+	gitListingUnavailable bool
 }
 
 func (l *repoIgnoreLedger) note(exclusion RepoExclusion) {
@@ -174,6 +223,10 @@ func (l *repoIgnoreLedger) note(exclusion RepoExclusion) {
 		return
 	}
 	l.seen[exclusion.Path] = struct{}{}
+	// Bounded HERE, at the one place an exclusion enters the ledger, so every
+	// caller inherits it and none can forget: a second check at a call site is
+	// exactly the shape that leaves one path unbounded.
+	exclusion.Rule = boundRuleText(exclusion.Rule)
 	l.files++
 	if l.sources == nil {
 		l.sources = make(map[string]int)
@@ -208,6 +261,15 @@ func (l *repoIgnoreLedger) noteUnreadable(path string) {
 	}
 }
 
+// noteGitListingUnavailable records that a Git-applied repository rule removed a
+// path from a listing produced without Git's own enumeration of a real checkout.
+func (l *repoIgnoreLedger) noteGitListingUnavailable() {
+	if l == nil {
+		return
+	}
+	l.gitListingUnavailable = true
+}
+
 // report renders the ledger, or nil when nothing was excluded. Nil is what keeps
 // the field absent from the overwhelmingly common payload that has nothing to
 // disclose.
@@ -217,7 +279,7 @@ func (l *repoIgnoreLedger) noteUnreadable(path string) {
 // answer "the repository hid nothing" to the one case where the truth is "the
 // repository hid something and this could not see how much".
 func (l *repoIgnoreLedger) report() *RepoIgnoreReport {
-	if l == nil || (l.files == 0 && len(l.unreadable) == 0) {
+	if l == nil || (l.files == 0 && len(l.unreadable) == 0 && !l.gitListingUnavailable) {
 		return nil
 	}
 	sources := make([]RepoIgnoreSource, 0, len(l.order))
@@ -243,6 +305,8 @@ func (l *repoIgnoreLedger) report() *RepoIgnoreReport {
 		SampleTruncated: l.truncated,
 		CountIncomplete: len(unreadable) > 0,
 		Unreadable:      unreadable,
+
+		GitListingUnavailable: l.gitListingUnavailable,
 	}
 }
 
@@ -623,6 +687,12 @@ type nestedIgnoreStack struct {
 	// is a .gitignore, so the levels need no such twin.
 	gitBase ignoreMatcher
 	levels  []nestedIgnoreLevel
+	// gitCheckout says repo is a real git working tree that Git itself could not
+	// enumerate — the walk is running BECAUSE that listing failed. It is what
+	// separates "no tracked files exist" (an ordinary directory: nothing Git
+	// would have listed, so nothing suppressed here can be a tracked source)
+	// from "tracked files exist and this mode cannot see which".
+	gitCheckout bool
 }
 
 type nestedIgnoreLevel struct {
@@ -631,7 +701,21 @@ type nestedIgnoreLevel struct {
 }
 
 func newNestedIgnoreStack(repo string, base ignoreMatcher) *nestedIgnoreStack {
-	return &nestedIgnoreStack{repo: repo, base: base, gitBase: base.gitApplied()}
+	return &nestedIgnoreStack{
+		repo:        repo,
+		base:        base,
+		gitBase:     base.gitApplied(),
+		gitCheckout: isGitCheckout(repo),
+	}
+}
+
+// isGitCheckout reports whether repo carries a git working tree's .git — a
+// directory in an ordinary clone, a regular file holding "gitdir: ..." in a
+// linked worktree. Lstat, not Stat: a symlinked .git is still a checkout, and
+// following it is not this predicate's business.
+func isGitCheckout(repo string) bool {
+	_, err := os.Lstat(filepath.Join(repo, ".git"))
+	return err == nil
 }
 
 // gitApplied is the subset of the rules Git ITSELF would apply: .gitignore, a
@@ -743,7 +827,7 @@ func (s *nestedIgnoreStack) noteRepoExclusion(ledger *repoIgnoreLedger, rel stri
 		return
 	}
 	rule, matched := s.decidingRule(rel, isDir)
-	if !matched || !rule.ignore || rule.origin.callerControlled || !rule.origin.gitInvisible {
+	if !matched || !rule.ignore || rule.origin.callerControlled {
 		return
 	}
 	// Winning the precedence contest is not enough. A .graphignore rule can win it
@@ -752,7 +836,14 @@ func (s *nestedIgnoreStack) noteRepoExclusion(ledger *repoIgnoreLedger, rel stri
 	// and then the path is ordinary build output Git would have hidden regardless.
 	// Reporting it would cry wolf and print paths nobody asked about, which is the
 	// noise that makes readers skip the disclosure that matters.
-	if s.ignoredByGit(rel, isDir) {
+	//
+	// "Would have hidden regardless" is true of an UNTRACKED path only. Git does
+	// not apply .gitignore to a tracked file, so in a real checkout the same test
+	// also swallows a tracked source the repository's rules removed — and this
+	// mode runs because Git could not be asked which is which. Unattributable is
+	// not the same as absent, so the limitation is recorded instead of the path.
+	if !rule.origin.gitInvisible || s.ignoredByGit(rel, isDir) {
+		s.noteGitBlindSpot(ledger)
 		return
 	}
 	ledger.note(RepoExclusion{
@@ -809,10 +900,14 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 		dirTracked = func(string) bool { return false }
 	}
 	rule, matched := s.decidingRule(dir, true)
-	if !matched || !rule.ignore || rule.origin.callerControlled || !rule.origin.gitInvisible {
+	if !matched || !rule.ignore || rule.origin.callerControlled {
 		return
 	}
-	if s.ignoredByGit(dir, true) {
+	if !rule.origin.gitInvisible || s.ignoredByGit(dir, true) {
+		// Same unattributable case as a single file, one level up: a `.gitignore`
+		// directory line prunes tracked sources as readily as build output, and
+		// without Git's listing the two cannot be told apart.
+		s.noteGitBlindSpot(ledger)
 		return
 	}
 	// A private stack, so descending into the pruned tree to load its nested
@@ -888,6 +983,22 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 		})
 		return nil
 	})
+}
+
+// noteGitBlindSpot records that a repository rule GIT ITSELF APPLIES removed a
+// path from this listing, in a mode that cannot ask Git whether Git would have
+// listed it anyway.
+//
+// Gated on the directory actually being a checkout: where there is no .git there
+// are no tracked files, so nothing a `.gitignore` removes could be content Git
+// would still have shown, and the warning would be pure noise. Where there is
+// one, the alternative is a report that says nothing about a corpus the
+// repository may have narrowed — the exact silence this ledger exists to end.
+func (s *nestedIgnoreStack) noteGitBlindSpot(ledger *repoIgnoreLedger) {
+	if !s.gitCheckout {
+		return
+	}
+	ledger.noteGitListingUnavailable()
 }
 
 // noteUnreadablePath records one enumeration failure as a repository-relative

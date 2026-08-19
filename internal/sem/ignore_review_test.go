@@ -2,6 +2,7 @@ package sem
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,5 +166,161 @@ func TestWalkFallbackDoesNotDiscloseWhatGitWouldHideAnyway(t *testing.T) {
 	}
 	if response.Stats.RepoIgnoredFiles != 0 {
 		t.Fatalf("stats counted %d, want 0", response.Stats.RepoIgnoredFiles)
+	}
+}
+
+// TestWalkFallbackStatesWhatItCannotSeeInARealCheckout pins the fallback's blind
+// spot in the mode it actually happens in: a real git working tree that Git
+// itself cannot enumerate (no usable git binary), where a tracked source matched
+// by both .gitignore and .graphignore leaves the corpus. Git does not apply
+// .gitignore to a tracked file, so Git's own listing would still have shown it —
+// but this listing mode cannot ask which files are tracked, so the exclusion
+// cannot be attributed. Reporting nothing answered "the repository hid nothing"
+// to a corpus it had narrowed.
+func TestWalkFallbackStatesWhatItCannotSeeInARealCheckout(t *testing.T) {
+	repo := t.TempDir()
+	// A .git entry is what makes this a checkout with tracked files, and it is all
+	// the fallback can consult: the walk runs precisely because git cannot.
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, repo, "main.go", "package main\n\nfunc main() {}\n")
+	write(t, repo, "tracked_hidden.go", "package main\n\nfunc TrackedHidden() {}\n")
+	write(t, repo, ".gitignore", "tracked_hidden.go\n")
+	write(t, repo, graphIgnoreFileName, "tracked_hidden.go\n")
+
+	ignores, err := loadWorktreeIgnoreMatcher(repo, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger := &repoIgnoreLedger{}
+	paths, err := walkWorktreeFiles(repo, ignores, func(string) bool { return false }, ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		if path == "tracked_hidden.go" {
+			t.Fatalf("fixture is wrong: the file was not excluded from the listing")
+		}
+	}
+	report := ledger.report()
+	if report == nil {
+		t.Fatal("a tracked source left the corpus with no disclosure at all")
+	}
+	if !report.GitListingUnavailable {
+		t.Fatalf("the report does not say Git's listing was unavailable: %+v", *report)
+	}
+	rendered := string(RenderRepoIgnoreDisclosure(report))
+	if !strings.Contains(rendered, "Git could not list this checkout") {
+		t.Fatalf("text payload does not state the limitation: %q", rendered)
+	}
+	failures := withRepoIgnorePartialFailures(nil, report)
+	if len(failures) != 1 || failures[0].Code != repoIgnoreGitUnavailableCode {
+		t.Fatalf("partial failures = %+v, want one %s", failures, repoIgnoreGitUnavailableCode)
+	}
+}
+
+// TestWalkFallbackOutsideACheckoutStaysSilent is the other direction of the same
+// change: where there is no .git there are no tracked files, so nothing a
+// .gitignore removes could be content Git would still have listed, and the new
+// statement must not fire. Without this the warning would print over every
+// ordinary directory that has a .gitignore.
+func TestWalkFallbackOutsideACheckoutStaysSilent(t *testing.T) {
+	repo := t.TempDir()
+	write(t, repo, "main.go", "package main\n\nfunc main() {}\n")
+	write(t, repo, "build.out.go", "package main\n\nfunc BuildOutput() {}\n")
+	write(t, repo, ".gitignore", "build.out.go\n")
+
+	ignores, err := loadWorktreeIgnoreMatcher(repo, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger := &repoIgnoreLedger{}
+	if _, err := walkWorktreeFiles(repo, ignores, func(string) bool { return false }, ledger); err != nil {
+		t.Fatal(err)
+	}
+	if report := ledger.report(); report != nil {
+		t.Fatalf("ordinary gitignored build output raised a disclosure outside a checkout: %+v", *report)
+	}
+}
+
+// TestRepoExclusionRuleTextIsBounded pins the payload's size to the report, not
+// to the repository. The deciding rule is copied into every sample entry, so one
+// long ignore line multiplied by the sample cap; a 60KiB line put 600KiB of
+// repository-controlled text into a payload budgeted at 24KiB.
+func TestRepoExclusionRuleTextIsBounded(t *testing.T) {
+	long := strings.Repeat("**/", 20000) + "src/*.go"
+	ledger := &repoIgnoreLedger{}
+	for i := range maxRepoExclusionSample {
+		ledger.note(RepoExclusion{
+			Path:   fmt.Sprintf("src/w%d.go", i),
+			Source: graphIgnoreFileName,
+			Rule:   long,
+		})
+	}
+	report := ledger.report()
+	if report == nil {
+		t.Fatal("no report")
+	}
+	total := 0
+	for _, exclusion := range report.Sample {
+		if len(exclusion.Rule) > maxRepoExclusionRuleBytes+len("...") {
+			t.Fatalf("rule is %d bytes, want at most %d", len(exclusion.Rule), maxRepoExclusionRuleBytes+3)
+		}
+		if !strings.HasSuffix(exclusion.Rule, "...") {
+			t.Fatalf("a truncated rule does not say it was truncated: %q", exclusion.Rule)
+		}
+		total += len(exclusion.Rule)
+	}
+	if total > 4096 {
+		t.Fatalf("sample carries %d bytes of rule text", total)
+	}
+	// The other direction: an ordinary pattern still arrives whole, because the
+	// rule is what tells a reader which line to edit.
+	short := &repoIgnoreLedger{}
+	short.note(RepoExclusion{Path: "vendor/x.go", Source: ".graphignore", Rule: "vendor/**"})
+	if got := short.report().Sample[0].Rule; got != "vendor/**" {
+		t.Fatalf("ordinary rule was altered: %q", got)
+	}
+}
+
+// TestDisclosureRendersAnUncountableExclusion covers the count the text renderer
+// used to drop: an ignored directory unreadable before its first descendant is
+// reached excludes an unknown number of files, so Files is 0 while
+// CountIncomplete is true. The JSON channel said so; the text payload printed
+// nothing, telling a reader who only sees text that the corpus was whole.
+func TestDisclosureRendersAnUncountableExclusion(t *testing.T) {
+	rendered := string(RenderRepoIgnoreDisclosure(&RepoIgnoreReport{
+		Files:           0,
+		CountIncomplete: true,
+		Unreadable:      []string{"hidden"},
+	}))
+	if rendered == "" {
+		t.Fatal("an uncountable exclusion rendered nothing")
+	}
+	if !strings.Contains(rendered, "EXCLUDED") || !strings.Contains(rendered, "hidden") {
+		t.Fatalf("rendered payload does not name the exclusion: %q", rendered)
+	}
+	if !strings.Contains(rendered, "LOWER BOUND") {
+		t.Fatalf("rendered payload presents an incomplete count as exact: %q", rendered)
+	}
+	// A partially counted tree states the same shortfall beside its number.
+	partial := string(RenderRepoIgnoreDisclosure(&RepoIgnoreReport{
+		Files:           2,
+		Sources:         []RepoIgnoreSource{{File: ".graphignore", Files: 2}},
+		Sample:          []RepoExclusion{{Path: "hidden/a.go", Source: ".graphignore", Rule: "hidden/"}},
+		CountIncomplete: true,
+		Unreadable:      []string{"hidden/deep"},
+	}))
+	if !strings.Contains(partial, "LOWER BOUND") {
+		t.Fatalf("a partial count rendered as exact: %q", partial)
+	}
+	// And nothing to disclose still renders nothing, so the widening cannot put a
+	// block at the head of every ordinary payload.
+	if got := RenderRepoIgnoreDisclosure(&RepoIgnoreReport{}); got != nil {
+		t.Fatalf("empty report rendered %q", got)
+	}
+	if got := RenderRepoIgnoreDisclosure(nil); got != nil {
+		t.Fatalf("nil report rendered %q", got)
 	}
 }
