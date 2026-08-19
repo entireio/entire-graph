@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
 // Caller-named output files: `index --report` and `verify --record-baseline`
@@ -35,15 +38,11 @@ import (
 //     through os.Root — which cannot be made to leave the repository root — and a
 //     symlinked final component is refused rather than followed.
 //
-// Classification runs BOTH lexically and on resolved paths, and inside wins,
-// because each comparison alone is wrong in one direction:
-//
-//   - resolved alone misjudges a repository reached through a symlink (a macOS
-//     TMPDIR under /var, which is a link to /private/var), classifying the
-//     repository's own files as outside it and leaving them unconfined;
-//   - lexical alone is defeated by a committed symlinked DIRECTORY: with `out` a
-//     link to /etc, `--report out/x.md` resolves outside the repository, and
-//     calling it caller-owned is precisely the escape being closed.
+// Two things decide "inside", and both exist so that a SPELLING cannot move the
+// boundary. The root is the checkout's git top level rather than the --repo value
+// (confinementRoot, since --repo may name a subdirectory), and containment is
+// filesystem identity rather than lexical comparison (containedRel, since one
+// directory has many names). Each carries its own reasoning below.
 
 // repoOutputTarget is the resolved destination of one caller-named output file.
 type repoOutputTarget struct {
@@ -60,6 +59,34 @@ type repoOutputTarget struct {
 }
 
 func (target repoOutputTarget) insideRepo() bool { return target.root != "" }
+
+// confinementRoot resolves the boundary a write is classified against: the TOP
+// LEVEL of the checkout repoRoot sits in, rather than repoRoot itself.
+//
+// --repo may name a SUBDIRECTORY (`index --repo internal/cli`), and the untrusted
+// thing is the CHECKOUT, not the subtree that was indexed. The root-level files
+// are on disk next to the subdirectory and came out of the same hostile clone;
+// `git log -z --name-only` (gitutil/git.go:440, which backs co-change) even
+// reports paths across the whole top level while git runs from the subdirectory.
+// Classifying `--report GRAPH_REPORT.md` against the subdirectory would call that
+// root-level file caller-owned and write through whatever the clone left there.
+//
+// The fallback — repoRoot unchanged — is load-bearing rather than defensive.
+// `verify` runs the caller's own test command in any directory they name, and
+// that directory is not required to be a git repository at all; a missing git
+// binary, a bare repository and a plain directory must all keep working. Falling
+// back can only NARROW the confined region to the directory the caller named, so
+// no path that was confined before becomes unconfined by it.
+func confinementRoot(ctx context.Context, repoRoot string) string {
+	if repoRoot == "" {
+		return repoRoot
+	}
+	top, err := gitutil.RepoRoot(ctx, repoRoot)
+	if err != nil || strings.TrimSpace(top) == "" {
+		return repoRoot
+	}
+	return top
+}
 
 // classifyOutputPath decides whether path is repository-controlled or caller-owned.
 // It never resolves the FINAL component: that component is the symlink a confined
@@ -79,19 +106,88 @@ func classifyOutputPath(repoRoot, path string) (repoOutputTarget, error) {
 	if rel, ok := containedRel(rootAbs, abs); ok {
 		return repoOutputTarget{root: rootAbs, rel: rel, path: abs, given: path}, nil
 	}
-	rootReal := resolveExistingPrefix(rootAbs)
-	absReal := filepath.Join(resolveExistingPrefix(filepath.Dir(abs)), filepath.Base(abs))
-	if rel, ok := containedRel(rootReal, absReal); ok {
-		return repoOutputTarget{root: rootReal, rel: rel, path: abs, given: path}, nil
-	}
 	return repoOutputTarget{path: abs, given: path}, nil
 }
 
 // containedRel reports target's path beneath root, and whether it is beneath it at
-// all. Both arguments must already be absolute and cleaned. "." — the root itself —
-// is reported as not contained: it names a directory, so the write is a caller
-// error that the ordinary write path reports better than a containment message can.
+// all. Containment is decided by filesystem IDENTITY — os.SameFile against each of
+// target's ancestor directories — because comparing path STRINGS is wrong in ways
+// that each silently leave a repository-controlled path unconfined:
+//
+//   - CASE. filepath.Rel compares bytes even where the filesystem does not, and
+//     macOS and Windows are both case-insensitive by default. filepath.EvalSymlinks
+//     does not canonicalise the case of ordinary components either, so a re-spelled
+//     root (/repo against /Repo) reads as a different tree while naming the same
+//     directory. No exotic setup is needed to reach it: the root here comes from
+//     `git rev-parse --show-toplevel`, which reports the on-disk spelling, while the
+//     output path is spelled however the caller typed it.
+//   - OTHER NAMES FOR ONE DIRECTORY. Identity also absorbs the rest of that family
+//     — the /private/tmp git reports for a checkout under /tmp, a macOS TMPDIR under
+//     /var (a link to /private/var), a Windows 8.3 short name — none of which a
+//     lexical prefix test survives and all of which name the same directory.
+//
+// os.Stat FOLLOWS links, which is right for every ancestor and would be wrong for
+// the final component — that component is the symlink a confined write exists to
+// refuse — so the walk starts at the target's parent and the final component stays
+// a name. Ancestors that do not exist yet simply fail to match and the walk
+// continues past them, which is the ordinary case: `verify --record-baseline` is
+// documented to create its parent directories.
+//
+// The walk runs over BOTH the named chain and the resolved one, and inside wins,
+// because each chain alone is wrong in one direction:
+//
+//   - the NAMED chain is defeated by a caller-owned link that points INTO the
+//     repository (`/elsewhere/link` -> `<repo>/sub`, then `--report link/x.md`):
+//     its lexical ancestors leave the repository immediately, yet the file it
+//     names is a repository-controlled path;
+//   - the RESOLVED chain is defeated by a committed symlinked DIRECTORY (`out` ->
+//     /etc, then `--report out/x.md`): it resolves outside the repository, and
+//     calling that caller-owned is precisely the escape being closed.
+//
+// The root itself is reported as not contained — it names a directory, so the
+// write is a caller error that the ordinary write path reports better than a
+// containment message can. Starting at the parent gets that for free.
 func containedRel(root, target string) (string, bool) {
+	rootInfo, err := os.Stat(root)
+	if err != nil || !rootInfo.IsDir() {
+		// No identity to compare against. A live invocation always has its
+		// repository on disk, so this is the misconfiguration path; fall back to
+		// the lexical comparison rather than to "not contained", which would drop
+		// confinement silently.
+		return lexicalRel(root, target)
+	}
+	if rel, ok := walkToRoot(rootInfo, target); ok {
+		return rel, true
+	}
+	resolved := filepath.Join(resolveExistingPrefix(filepath.Dir(target)), filepath.Base(target))
+	if resolved != target {
+		if rel, ok := walkToRoot(rootInfo, resolved); ok {
+			return rel, true
+		}
+	}
+	return "", false
+}
+
+// walkToRoot climbs target's parent directories looking for the one that IS root,
+// and returns the path from it down to target. It compares identity, not names.
+func walkToRoot(rootInfo os.FileInfo, target string) (string, bool) {
+	rel := filepath.Base(target)
+	for dir := filepath.Dir(target); ; {
+		if info, err := os.Stat(dir); err == nil && os.SameFile(rootInfo, info) {
+			return rel, true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		rel = filepath.Join(filepath.Base(dir), rel)
+		dir = parent
+	}
+}
+
+// lexicalRel is containedRel's comparison of last resort, used only when root
+// cannot be stat'd. Both arguments must already be absolute and cleaned.
+func lexicalRel(root, target string) (string, bool) {
 	rel, err := filepath.Rel(root, target)
 	if err != nil {
 		return "", false
@@ -109,7 +205,7 @@ func containedRel(root, target string) (string, bool) {
 // missing, and `verify --record-baseline` is documented to CREATE its parent
 // directories, so the common case is a path whose leaf directories do not exist
 // yet. Returning dir unchanged when nothing resolves is safe — it only costs the
-// resolved comparison, and the lexical one has already run.
+// resolved walk, and the named one has already run.
 func resolveExistingPrefix(dir string) string {
 	remainder := ""
 	current := dir
@@ -134,8 +230,10 @@ func resolveExistingPrefix(dir string) string {
 // the top of this file. createParents mirrors `verify --record-baseline`, which is
 // documented to create missing parent directories; `index --report` passes false
 // and keeps its "no such directory" error.
-func writeOutputFile(repoRoot, path string, data []byte, perm os.FileMode, createParents bool) error {
-	target, err := classifyOutputPath(repoRoot, path)
+func writeOutputFile(
+	ctx context.Context, repoRoot, path string, data []byte, perm os.FileMode, createParents bool,
+) error {
+	target, err := classifyOutputPath(confinementRoot(ctx, repoRoot), path)
 	if err != nil {
 		return err
 	}
