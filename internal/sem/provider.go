@@ -17904,17 +17904,18 @@ func directTypeBodyLines(lines []string, symbol SymbolRecord, fileSymbols []Symb
 // otherwise-complete graph to "degraded". The parsed-file ratio and zero-symbol
 // guards in completenessLevel still catch a repo that is genuinely mostly
 // unparsed, and the skips remain visible in PartialFailures for transparency.
+// E_PARSE_DEPTH_EXCEEDED is deliberately NOT in this map. A depth-truncated walk
+// is a PARTIAL RESULT, not a skip: the graph did attempt the file, did parse it,
+// and did drop declarations it could not reach, so the graph really is
+// incomplete for that file and completeness must say so. The distinction that
+// earns a place in this map is whether the parser looked at the file at all —
+// E_FILE_TOO_LARGE and E_MINIFIED never open it, so there is no gap in
+// understanding to report. Excluding depth truncation as well would let a repo
+// whose files each carry a shallow symbol above deeply nested declarations
+// report "ok" while systematically missing those declarations.
 var intentionalSkipFailureCodes = map[string]bool{
 	"E_FILE_TOO_LARGE": true,
 	"E_MINIFIED":       true,
-	// A walk truncated at maxParseWalkDepth (parser.go) is the same kind of
-	// policy bound as the input-size cap: the file record and every declaration
-	// above the limit are still emitted, and no real source comes near the limit
-	// (deepest of 55,900 measured files: 464). Counting it would let one
-	// generated or hostile file flip a whole repo's completeness — verified: a
-	// single such failure in a 100-file repo returns "degraded" via
-	// completenessLevel's `failures*4 > files` fall-through.
-	"E_PARSE_DEPTH_EXCEEDED": true,
 }
 
 // completenessFailureCount counts only the partial failures that reflect a real

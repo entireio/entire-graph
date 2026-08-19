@@ -166,8 +166,17 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		// because symbols missing from the recovered set can surface as
 		// phantom removed/added. A validly-emptied file (ParseError false) is
 		// never suppressed or flagged, so its real removed changes stand.
-		afterParseFailed := afterStatus.ParseError && len(afterEntities) == 0
-		beforeParseFailed := beforeStatus.ParseError && len(beforeEntities) == 0
+		//
+		// ParseStatus.Partial marks a status whose output is valid even when it
+		// is empty, so it is never a total failure however few entities came
+		// back. A depth-truncated walk (E_PARSE_DEPTH_EXCEEDED) is the case:
+		// the tree parsed and the walk stopped, so zero entities means "no
+		// declarations above the limit", not "no signal" — treating it as total
+		// would suppress the whole file's delta, losing for instance the
+		// module-scope change of a Python file whose only statement is a
+		// deeply parenthesized module-level assignment.
+		afterParseFailed := afterStatus.ParseError && !afterStatus.Partial && len(afterEntities) == 0
+		beforeParseFailed := beforeStatus.ParseError && !beforeStatus.Partial && len(beforeEntities) == 0
 		if afterParseFailed || beforeParseFailed {
 			status, warnPath := afterStatus, path
 			if !afterParseFailed {
@@ -286,6 +295,11 @@ func parseFailureWarning(path string, status ParseStatus, suppressed bool) Provi
 		effect = "file diff suppressed; changes omitted because parser time budget was exceeded"
 	case suppressed:
 		effect = "file diff suppressed; changes omitted because the file could not be parsed"
+	case code == "E_PARSE_DEPTH_EXCEEDED":
+		// Never suppressed (ParseStatus.Partial), so the "syntax errors" wording
+		// below would be wrong on both counts: the file parsed, and what is
+		// missing is what the walk declined to reach, not what it misread.
+		effect = "diff kept, but declarations nested deeper than the parser walk limit were not compared on one side and may surface as phantom changes"
 	default:
 		effect = "file parsed with syntax errors on one side; diff kept but may be incomplete or contain phantom changes"
 	}

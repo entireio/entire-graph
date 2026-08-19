@@ -139,8 +139,11 @@ type TreeSitterParser struct{}
 
 const treeSitterParseTimeout = 5 * time.Second
 
-// maxParseWalkDepth bounds every recursive walk this file performs over a
-// tree-sitter parse tree.
+// maxParseWalkDepth bounds every recursive walk this package performs over a
+// tree-sitter parse tree while parsing a file: the entity walk and the helpers
+// it calls, the pre-parse Rust unwrap pass that runs before it, and the
+// error-detail walk that runs after it. The full inventory, and the walkers
+// deliberately left out of it, is in the "Walk inventory" comment below.
 //
 // Tree-sitter builds its tree iteratively on the C heap, so a source file can
 // nest as deeply as it has bytes for; the Go walkers over that tree recurse once
@@ -150,23 +153,64 @@ const treeSitterParseTimeout = 5 * time.Second
 // overflow is a fatal, unrecoverable process abort that recover() cannot catch,
 // so this has to be a LIMIT applied before recursing, not a rescue afterwards.
 //
-// The number: named-AST nesting was measured over 55,900 real source files in 21
-// languages, in two corpora. First-party code (entire-graph, cli, entire-api,
-// entiredb, entire.io/{frontend,api}/src, entire.io/website; 10,442 files):
-// p99=35, p99.9=59, max 464 — generated Go protobuf,
-// entiredb gen/proto/publicapi/admin/v1/admin.pb.go. Third-party code
-// (entire.io/node_modules; 45,458 files): p99=39, p99.9=187, max 419 —
-// iconv-lite/types/encodings.d.ts. 5000 leaves ~10x headroom over the deeper of
-// the two worst cases — no real source is truncated, including the generated
-// protobuf and generated .d.ts that are the deepest things anyone ships — while
-// capping the walk at ~3.8 MB of stack (walkEntitiesScoped frames measured at
-// 752 bytes on darwin/arm64) against Go's 1 GB goroutine limit.
+// The number: every walk below was instrumented and re-measured over 56,261 real
+// source files, in two corpora measured separately. First-party (entire-graph,
+// cli, entire-api, entiredb, entire.io/{frontend,api}/src, entire.io/website;
+// 7,515 files): p99=33, p99.9=46, max 463 — generated Go protobuf,
+// entiredb gen/proto/publicapi/admin/v1/admin.pb.go. Third-party
+// (entire.io/node_modules; 48,746 files): p99=37, p99.9=184, max 418 —
+// iconv-lite/types/encodings.d.ts. Not one file was truncated at 5000.
+//
+// Deepest level any single walk reached, across both corpora:
+//
+//	walkEntitiesScoped 463   initializerTypeBodies 359   collectParseErrorDetails 310
+//	jsFunctionLikeNode  12   jsPatternBindingNames   8   firstNameDescendant       7
+//	firstDescendantOfType 2
+//
+// So 5000 is ~10x the deepest whole-file nesting anyone ships (generated
+// protobuf, generated .d.ts) and far more than that for the name-resolution
+// descents, which start at a declaration and only ever look downward. It caps
+// the walk at ~3.8 MB of stack (walkEntitiesScoped frames measured at 752 bytes
+// on darwin/arm64) against Go's 1 GB goroutine limit.
+//
+// Walk inventory. internal/sem contains exactly nine self-recursive functions
+// whose signature takes a *sitter.Node, plus three recursive closures over one
+// (enumerated mechanically, not by eye; no MUTUALLY recursive node cycle
+// exists). Every one that a file parse can drive is bounded here:
+//
+//	parser.go     walkEntitiesScoped, initializerTypeBodies' walk,
+//	              collectParseErrorDetails' walk, firstNameDescendant,
+//	              firstDescendantOfType, rAssignedValueKind,
+//	              unwrapRustItemWrapperMacros' walk
+//	js_scopes.go  jsPatternBindingNames, jsFunctionLikeNode — both reached from
+//	              walkEntitiesScoped through jsEntityParameterNames
+//
+// Deliberately NOT bounded here, with the reason:
+//
+//	parameters.go identifierDescendants — reachable in principle from
+//	              astParameterNames, but three C declarator shapes
+//	              (parenthesized, pointer, array) nested to 800,000 levels never
+//	              drove it deep; left alone rather than guarded on a hypothesis.
+//	js_scopes.go  jsMemberChainParts, jsScopeWalker.walk — relation-phase
+//	              walkers on a separate entry point, not reached by a parse.
 const maxParseWalkDepth = 5000
 
 type ParseStatus struct {
+	// ParseError reports that the parse did not fully succeed, so every
+	// consumer surfaces a machine-readable warning for the file.
 	ParseError bool
-	Code       string
-	Detail     string
+	// Partial reports that what WAS produced is nonetheless valid and usable:
+	// the file parsed, the entities returned are real, and the only thing
+	// missing is what the parser declined to reach. It separates a PARTIAL
+	// RESULT from a TOTAL FAILURE, which are handled differently — a total
+	// failure gives the diff no signal and suppresses the file's delta
+	// (analyze.go), while a partial result keeps it. A partial result is still
+	// a real coverage gap, so it counts toward completeness (provider.go);
+	// that is what distinguishes it from an intentional skip, where the graph
+	// chose not to look at the file at all.
+	Partial bool
+	Code    string
+	Detail  string
 }
 
 func (TreeSitterParser) Parse(path, content string) ([]Entity, string) {
@@ -391,8 +435,14 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		// and it is the actionable one, so it wins the single status slot. The
 		// error-detail walk is skipped with it: it would descend the same
 		// pathological tree to report on syntax that was never the problem.
+		//
+		// Partial, not total: the entities above the limit were extracted from a
+		// tree that parsed, so they are real. Consumers must degrade rather than
+		// discard — the diff keeps this file's delta (analyze.go) — while still
+		// counting the file as an incompletely understood one (provider.go).
 		status = ParseStatus{
 			ParseError: true,
+			Partial:    true,
 			Code:       "E_PARSE_DEPTH_EXCEEDED",
 			Detail:     fmt.Sprintf("AST nesting exceeded the %d-level walk limit; declarations nested deeper than that were not extracted", maxParseWalkDepth),
 		}
@@ -668,8 +718,26 @@ func unwrapRustItemWrapperMacros(src []byte) bool {
 		return false
 	}
 	changed := false
-	var walk func(node *sitter.Node)
-	walk = func(node *sitter.Node) {
+	// depth is capped at maxParseWalkDepth. This pass runs BEFORE the guarded
+	// entity walk (it rewrites the source that walk is then given), on its own
+	// tree, so nothing downstream can protect it: a Rust file that merely
+	// CONTAINS a matching `cfg_*! {` hint — the hint is a regex over the whole
+	// file, it does not have to be anywhere near the nesting — drove this walk
+	// down an arbitrarily deep tree and aborted the process. Against the parent
+	// commit that is `fatal error: stack overflow` with frames in
+	// unwrapRustItemWrapperMacros.func1 and exit status 2; pinned by
+	// TestRustMacroUnwrapIsBoundedNotFatal.
+	//
+	// Truncating here means a cfg_*! wrapper nested deeper than the limit is
+	// left unexpanded, so the items inside it stay invisible — the same
+	// degradation as before this pass existed. The file is still reported: the
+	// entity walk over the same source hits its own guard and sets
+	// E_PARSE_DEPTH_EXCEEDED.
+	var walk func(node *sitter.Node, depth int)
+	walk = func(node *sitter.Node, depth int) {
+		if depth >= maxParseWalkDepth {
+			return
+		}
 		for i := 0; i < int(node.NamedChildCount()); i++ {
 			child := node.NamedChild(i)
 			if child == nil || child.IsNull() {
@@ -679,10 +747,10 @@ func unwrapRustItemWrapperMacros(src []byte) bool {
 				changed = true
 				continue
 			}
-			walk(child)
+			walk(child, depth+1)
 		}
 	}
-	walk(root)
+	walk(root, 0)
 	return changed
 }
 
@@ -6715,8 +6783,31 @@ func nodeName(node *sitter.Node, src []byte) string {
 	return firstNameDescendant(node, src)
 }
 
+// firstNameDescendant returns the first name-like token in a pre-order descent
+// of node's subtree.
+//
+// It carries its OWN depth budget rather than borrowing walkEntitiesScoped's,
+// because it is not part of that walk: entityFromNode calls it on a whole
+// declaration subtree while the walk is still only a level or two down, so it
+// runs BEFORE the walk's guard can fire and over a subtree the walk has not yet
+// entered. Unbounded, hostile input therefore killed the process without ever
+// reaching that guard. Against the parent commit, `graph diff` over a repo
+// holding one 12,024,026-byte C file of 6,000,000 nested declarator parentheses
+// dies with `fatal error: stack overflow`, frames in firstNameDescendant, exit
+// 2 — Analyze (analyze.go) hands git blob content to the parser with no size
+// cap at all, so nothing upstream keeps a file that large away from this
+// descent. Pinned by TestNameDescentIsBoundedNotFatal.
+//
+// Truncation is not reported from here. Any subtree deep enough to exhaust this
+// budget is also descended by walkEntitiesScoped or initializerTypeBodies, whose
+// guards set the file's E_PARSE_DEPTH_EXCEEDED status; pinned by
+// TestDeepNameDescentStillReportsTruncation.
 func firstNameDescendant(node *sitter.Node, src []byte) string {
-	if !validNode(node) {
+	return firstNameDescendantAt(node, src, 0)
+}
+
+func firstNameDescendantAt(node *sitter.Node, src []byte, depth int) string {
+	if !validNode(node) || depth >= maxParseWalkDepth {
 		return ""
 	}
 	if isNameNode(node.Type()) {
@@ -6732,7 +6823,7 @@ func firstNameDescendant(node *sitter.Node, src []byte) string {
 		if skipForNameDescent(child.Type()) {
 			continue
 		}
-		if name := firstNameDescendant(child, src); name != "" {
+		if name := firstNameDescendantAt(child, src, depth+1); name != "" {
 			return name
 		}
 	}
@@ -7513,8 +7604,21 @@ func rAssignmentEntity(node *sitter.Node, src []byte, scope string) (string, str
 	return kind, name, true
 }
 
+// rAssignedValueKind classifies what an R assignment binds, following chained
+// assignments (`a <- b <- function() 1`) to the terminal value.
+//
+// The chain is written by the source, so its length is attacker-controlled and
+// the recursion is independent of walkEntitiesScoped's: entityFromNode calls
+// this on the whole binary_operator subtree before the walk descends into it.
+// Against the parent commit a long enough chain of `a <- ` assignments aborts
+// the process with `fatal error: stack overflow`, frames in rAssignedValueKind;
+// pinned by TestRAssignmentChainIsBoundedNotFatal.
 func rAssignedValueKind(value *sitter.Node, src []byte) (string, bool) {
-	if !validNode(value) {
+	return rAssignedValueKindAt(value, src, 0)
+}
+
+func rAssignedValueKindAt(value *sitter.Node, src []byte, depth int) (string, bool) {
+	if !validNode(value) || depth >= maxParseWalkDepth {
 		return "", false
 	}
 	switch value.Type() {
@@ -7540,7 +7644,7 @@ func rAssignedValueKind(value *sitter.Node, src []byte) (string, bool) {
 		default:
 			return "", false
 		}
-		return rAssignedValueKind(assigned, src)
+		return rAssignedValueKindAt(assigned, src, depth+1)
 	}
 	return "", false
 }
@@ -7873,15 +7977,28 @@ func firstNamedChildOfType(node *sitter.Node, nodeType string) *sitter.Node {
 	return nil
 }
 
+// firstDescendantOfType returns the first node of nodeType in a pre-order
+// descent of node's subtree.
+//
+// Depth-budgeted for the same reason as firstNameDescendant above: entityFromNode
+// reaches it over a whole declaration subtree before walkEntitiesScoped has
+// descended into that subtree, so its recursion is independent of the walk's and
+// hits the goroutine stack first. It is the second name-resolution descent on
+// that path (C/Objective-C take the function name from the declarator here), so
+// bounding only firstNameDescendant would move the abort rather than remove it.
 func firstDescendantOfType(node *sitter.Node, nodeType string) *sitter.Node {
-	if !validNode(node) {
+	return firstDescendantOfTypeAt(node, nodeType, 0)
+}
+
+func firstDescendantOfTypeAt(node *sitter.Node, nodeType string, depth int) *sitter.Node {
+	if !validNode(node) || depth >= maxParseWalkDepth {
 		return nil
 	}
 	if node.Type() == nodeType {
 		return node
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		if found := firstDescendantOfType(node.NamedChild(i), nodeType); validNode(found) {
+		if found := firstDescendantOfTypeAt(node.NamedChild(i), nodeType, depth+1); validNode(found) {
 			return found
 		}
 	}
