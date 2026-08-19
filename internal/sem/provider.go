@@ -10132,7 +10132,11 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 	}
 	listed, err := gitutil.ListWorktreeFiles(ctx, repo)
 	if err != nil {
-		return walkWorktreeFiles(repo, ignores, dirTracked)
+		// The fallback accounts for its own exclusions: this listing mode narrows
+		// the corpus the same way, so a disclosure that stopped at the Git-backed
+		// path would leave the identical blind spot behind wherever Git cannot
+		// enumerate the tree.
+		return walkWorktreeFiles(repo, ignores, dirTracked, ledger)
 	}
 	if hasIncludeFiles {
 		// An explicit include file's negations are allowed to reach into ignored
@@ -10189,7 +10193,12 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 // walkWorktreeFiles is the non-git fallback listing. It honours the ignore stack
 // per directory (root .gitignore plus every nested one on the path) so a
 // directory Git cannot enumerate is still filtered the way the project asked.
-func walkWorktreeFiles(repo string, ignores ignoreMatcher, dirTracked func(string) bool) ([]string, error) {
+//
+// It records into ledger what a repository-controlled rule Git does not apply —
+// .graphignore — removed. See nestedIgnoreStack.noteRepoExclusion for why that
+// narrower test, and not every ignored path, is what this mode can disclose
+// honestly.
+func walkWorktreeFiles(repo string, ignores ignoreMatcher, dirTracked func(string) bool, ledger *repoIgnoreLedger) ([]string, error) {
 	stack := newNestedIgnoreStack(repo, ignores)
 	var paths []string
 	err := filepath.WalkDir(repo, func(path string, entry fs.DirEntry, err error) error {
@@ -10229,6 +10238,7 @@ func walkWorktreeFiles(repo string, ignores ignoreMatcher, dirTracked func(strin
 			return nil
 		}
 		if stack.Ignored(rel, false) {
+			stack.noteRepoExclusion(ledger, rel, false)
 			return nil
 		}
 		paths = append(paths, rel)

@@ -555,7 +555,16 @@ func RenderRepoIgnoreDisclosure(report *RepoIgnoreReport) []byte {
 		fmt.Fprintf(&out, "- %s\n", termsafe.Line(exclusion.Path))
 	}
 	if remaining := report.Files - len(shown); remaining > 0 {
-		fmt.Fprintf(&out, "- ... %d more (full list in --format json: repo_ignored)\n", remaining)
+		// The pointer has to name what the JSON actually holds. Its sample is
+		// capped too, so promising "the full list" there is an instruction that
+		// cannot be followed once a repository excludes more than the cap — and a
+		// disclosure that misdirects is worse than a shorter honest one.
+		if report.SampleTruncated {
+			fmt.Fprintf(&out, "- ... %d more (--format json: repo_ignored names %d of the %d; the count is exact)\n",
+				remaining, len(report.Sample), report.Files)
+		} else {
+			fmt.Fprintf(&out, "- ... %d more (full list in --format json: repo_ignored)\n", remaining)
+		}
 	}
 	return out.Bytes()
 }

@@ -338,6 +338,19 @@ func writeNdjsonSearch(out interface{ Write([]byte) (int, error) }, response sem
 		}); err != nil {
 			return err
 		}
+		// The exclusion disclosure leads the stream, ahead of the results, because NDJSON is
+		// consumed a record at a time: a consumer that acts on the first usable result never
+		// reaches a trailing summary, and a disclosure it never reads reproduces exactly the
+		// blind spot this payload exists to close. It is REPEATED on the summary below, so a
+		// consumer that already parses `repo_ignored` there keeps working unchanged.
+		if response.RepoIgnored != nil {
+			if err := encoder.Encode(struct {
+				RecordType string `json:"record_type"`
+				*sem.RepoIgnoreReport
+			}{RecordType: "search_repo_ignored", RepoIgnoreReport: response.RepoIgnored}); err != nil {
+				return err
+			}
+		}
 		// The closed-set warning leads the stream for the same reason it leads the text output: it is
 		// the one record that changes what the patch has to contain.
 		if response.ClosedSet != nil {
@@ -1290,11 +1303,27 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 		if len(response.PartialFailures) > 0 {
 			marker = "!D"
 		}
-		combined := []byte(fmt.Sprintf("Index: cache-%s%s\n", cacheState, marker))
-		if len(combined) <= budget {
-			payload = combined
-		} else {
-			payload = []byte(fmt.Sprintf("%s I:%s\n", marker, cacheState))
+		// The exclusion count degrades WITH the marker rather than being dropped
+		// alongside it. This rung synthesizes its own text, so building it from the
+		// marker alone silently discarded the X suffix agentSearchDiagnostics had
+		// already decided was not droppable telemetry — a payload too small for a
+		// ranked location would go back to implying it saw the whole repository. The
+		// rungs are ordered so the count survives wherever it fits at all: the
+		// shorter form that carries it beats the longer one that does not.
+		excluded := ""
+		if response.Stats.RepoIgnoredFiles > 0 {
+			excluded = fmt.Sprintf(" X%d", response.Stats.RepoIgnoredFiles)
+		}
+		for _, candidate := range [][]byte{
+			[]byte(fmt.Sprintf("Index: cache-%s%s%s\n", cacheState, marker, excluded)),
+			[]byte(fmt.Sprintf("%s I:%s%s\n", marker, cacheState, excluded)),
+			[]byte(fmt.Sprintf("Index: cache-%s%s\n", cacheState, marker)),
+			[]byte(fmt.Sprintf("%s I:%s\n", marker, cacheState)),
+		} {
+			payload = candidate
+			if len(candidate) <= budget {
+				break
+			}
 		}
 	}
 	if len(payload) > budget {

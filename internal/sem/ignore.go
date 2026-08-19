@@ -44,6 +44,12 @@ type ignoreRule struct {
 // to close.
 type ignoreOrigin struct {
 	callerControlled bool
+	// gitInvisible marks a rule from an ignore file GIT DOES NOT APPLY, i.e. the
+	// graph's own .graphignore. Anything such a rule removes is content Git itself
+	// would still list, so it is an exclusion worth reporting even in a listing
+	// mode that has no tracked/untracked distinction to lean on. See
+	// walkWorktreeFiles.
+	gitInvisible bool
 	// label names the file the rule came from, repo-relative where that is
 	// meaningful (".graphignore", "backend/.gitignore"). It is reported to the
 	// caller, so it is repository-controlled text: render it accordingly.
@@ -54,9 +60,29 @@ type ignoreOrigin struct {
 // repository and can therefore be changed by a contributor.
 func repoIgnoreOrigin(label string) ignoreOrigin { return ignoreOrigin{label: label} }
 
+// graphIgnoreOrigin labels rules from .graphignore: repository-controlled like
+// .gitignore, but invisible to Git, so Git's own listing never pre-filters what
+// it removes.
+func graphIgnoreOrigin() ignoreOrigin {
+	return ignoreOrigin{gitInvisible: true, label: graphIgnoreFileName}
+}
+
 // callerIgnoreOrigin labels rules the person running the graph supplied
 // themselves, via --ignore-file or --include-file.
 func callerIgnoreOrigin(label string) ignoreOrigin {
+	return ignoreOrigin{callerControlled: true, label: label}
+}
+
+// localIgnoreOrigin labels rules from an exclude list that belongs to THIS
+// CHECKOUT rather than to the repository: .git/info/exclude.
+//
+// It is not part of the tree, cannot be pushed, and is never delivered by a
+// clone — so no contributor can use it to narrow another reader's field of view,
+// which is the only thing the disclosure exists to catch. It is the local
+// operator's own instruction, exactly like --ignore-file, and reporting it back
+// would be both a false "the repository hid this" alarm and a leak of that
+// operator's private exclusion paths into every payload.
+func localIgnoreOrigin(label string) ignoreOrigin {
 	return ignoreOrigin{callerControlled: true, label: label}
 }
 
@@ -193,7 +219,7 @@ func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 	if err := matcher.loadOptional(filepath.Join(repo, ".gitignore"), false, repoIgnoreOrigin(".gitignore")); err != nil {
 		return ignoreMatcher{}, err
 	}
-	if err := matcher.loadOptional(filepath.Join(repo, graphIgnoreFileName), false, repoIgnoreOrigin(graphIgnoreFileName)); err != nil {
+	if err := matcher.loadOptional(filepath.Join(repo, graphIgnoreFileName), false, graphIgnoreOrigin()); err != nil {
 		return ignoreMatcher{}, err
 	}
 	// info/exclude is the repository's private exclude list: same syntax and same
@@ -205,7 +231,7 @@ func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 	// non-directory: os.Stat returns ENOTDIR rather than ErrNotExist, and treating
 	// that as fatal aborted the entire search with zero results in every worktree.
 	if exclude := gitInfoExcludePath(repo); exclude != "" {
-		if err := matcher.loadOptional(exclude, false, repoIgnoreOrigin(".git/info/exclude")); err != nil {
+		if err := matcher.loadOptional(exclude, false, localIgnoreOrigin(".git/info/exclude")); err != nil {
 			return ignoreMatcher{}, err
 		}
 	}
@@ -217,7 +243,7 @@ func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 
 func loadExplicitIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) (ignoreMatcher, error) {
 	var matcher ignoreMatcher
-	if err := matcher.loadOptional(filepath.Join(repo, graphIgnoreFileName), false, repoIgnoreOrigin(graphIgnoreFileName)); err != nil {
+	if err := matcher.loadOptional(filepath.Join(repo, graphIgnoreFileName), false, graphIgnoreOrigin()); err != nil {
 		return ignoreMatcher{}, err
 	}
 	if err := matcher.loadExplicit(repo, ignoreFiles, includeFiles); err != nil {
@@ -482,19 +508,29 @@ func (m ignoreMatcher) noteRepoExclusion(ledger *repoIgnoreLedger, rel string, i
 // rather than one of its ancestor directories — the most specific kind of rule,
 // whichever file it came from.
 func (m ignoreMatcher) decideSelf(rel string, isDir bool) (bool, bool) {
-	rel = cleanIgnorePath(rel)
-	if rel == "" {
+	rule, matched := m.decideSelfRule(rel, isDir)
+	if !matched {
 		return false, false
 	}
+	return true, rule.ignore
+}
+
+// decideSelfRule is decideSelf's single source of truth, so the verdict and the
+// attribution of that verdict cannot come from different rules.
+func (m ignoreMatcher) decideSelfRule(rel string, isDir bool) (ignoreRule, bool) {
+	rel = cleanIgnorePath(rel)
+	if rel == "" {
+		return ignoreRule{}, false
+	}
+	var winner ignoreRule
 	matched := false
-	ignored := false
 	for _, rule := range m.rules {
 		if rule.matchKind(rel, isDir) == ignoreSelfMatch {
 			matched = true
-			ignored = rule.ignore
+			winner = rule
 		}
 	}
-	return matched, ignored
+	return winner, matched
 }
 
 // Reincluded reports whether an explicit include file re-includes rel, which is
@@ -598,6 +634,51 @@ func (s *nestedIgnoreStack) Ignored(rel string, isDir bool) bool {
 		}
 	}
 	return s.base.Ignored(rel, isDir)
+}
+
+// decidingRule returns the rule behind Ignored's verdict, under exactly the same
+// precedence, so a walk can attribute an exclusion to the file that caused it.
+func (s *nestedIgnoreStack) decidingRule(rel string, isDir bool) (ignoreRule, bool) {
+	if rule, matched := s.base.decideSelfRule(rel, isDir); matched {
+		return rule, true
+	}
+	rel = cleanIgnorePath(rel)
+	for i := len(s.levels) - 1; i >= 0; i-- {
+		level := s.levels[i]
+		sub, ok := pathUnder(level.dir, rel)
+		if !ok {
+			continue
+		}
+		if rule, matched := level.matcher.decideRule(sub, isDir); matched {
+			return rule, true
+		}
+	}
+	return s.base.decideRule(rel, isDir)
+}
+
+// noteRepoExclusion records rel in the ledger when a repository-controlled rule
+// that GIT DOES NOT APPLY removed it — in practice .graphignore.
+//
+// The narrower test is what this listing mode can honestly support. Git's own
+// listing is unavailable here (that is why the walk is running), so there is no
+// tracked/untracked distinction to separate "a committed rule deleted a source
+// file" from the ordinary build output every .gitignore excludes; counting the
+// latter would bury the disclosure in noise. A .graphignore rule has no such
+// ambiguity: Git does not know the file, so everything it removes is content Git
+// would still have listed.
+func (s *nestedIgnoreStack) noteRepoExclusion(ledger *repoIgnoreLedger, rel string, isDir bool) {
+	if ledger == nil {
+		return
+	}
+	rule, matched := s.decidingRule(rel, isDir)
+	if !matched || !rule.ignore || rule.origin.callerControlled || !rule.origin.gitInvisible {
+		return
+	}
+	ledger.note(RepoExclusion{
+		Path:   cleanIgnorePath(rel),
+		Source: rule.origin.label,
+		Rule:   rule.pattern,
+	})
 }
 
 // MayIncludeDescendant defers to the explicit include files: only they can pull a
