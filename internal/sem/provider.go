@@ -10403,8 +10403,15 @@ const maxGitHEADBytes = 256
 
 // validGitHEAD reports whether head is a HEAD file git would accept, which is
 // what separates a git directory from a source tree that merely carries the
-// three names. Git accepts exactly three shapes, and this accepts the same
-// three: a symlink into refs/, a `ref: <refname>` line, or a bare object id.
+// three names. It is git's validate_headref(), rule for rule: a symlink whose
+// target begins `refs/`, a `ref:` line whose whitespace-skipped remainder begins
+// `refs/`, or a leading object id — and nothing else.
+//
+// Deliberately NOT check_refname_format: git does not validate the refname here,
+// so `ref: refs/heads/my branch` names a directory git treats as a repository,
+// and rejecting it would leave that repository's config to be indexed. In the
+// other direction git requires the `refs/` prefix, so a one-level `ref: SOMEREF`
+// is not a git directory to git and must not be one here.
 //
 // Without the content test, `testdata/parser/{HEAD,objects/,refs/}` — ordinary
 // program text — is classified as a git directory and silently dropped from
@@ -10432,40 +10439,24 @@ func validGitHEAD(head string) bool {
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return false
 	}
-	line, _, _ := strings.Cut(string(buffer[:read]), "\n")
-	line = strings.TrimSpace(line)
-	if refname, isSymbolic := strings.CutPrefix(line, "ref:"); isSymbolic {
-		return validRefname(strings.TrimSpace(refname))
+	content := string(buffer[:read])
+	if refname, isSymbolic := strings.CutPrefix(content, "ref:"); isSymbolic {
+		// Git skips whitespace after the prefix, then asks only for the prefix.
+		return strings.HasPrefix(strings.TrimLeft(refname, " \t\n\v\f\r"), "refs/")
 	}
-	return isObjectID(line)
+	return startsWithObjectID(content)
 }
 
-// validRefname is git's check_refname_format with REFNAME_ALLOW_ONELEVEL,
-// reduced to the checks that decide the question here: a refname is non-empty,
-// carries no whitespace or control characters, and none of the byte sequences
-// git reserves.
-func validRefname(name string) bool {
-	if name == "" || strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/") ||
-		strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".lock") ||
-		strings.Contains(name, "..") || strings.Contains(name, "//") ||
-		strings.Contains(name, "@{") {
+// startsWithObjectID reports whether content opens with an object id, which is
+// what a detached HEAD holds. Git reads it with get_oid_hex, which consumes the
+// hash's hex length and ignores whatever follows, so a SHA-256 id and a trailing
+// newline are both accepted by the shorter SHA-1 length.
+func startsWithObjectID(content string) bool {
+	const sha1HexLen = 40
+	if len(content) < sha1HexLen {
 		return false
 	}
-	for _, char := range name {
-		if char <= ' ' || char == 0x7f || strings.ContainsRune("~^:?*[\\", char) {
-			return false
-		}
-	}
-	return true
-}
-
-// isObjectID reports whether line is a bare object id: git's SHA-1 (40 hex
-// digits) or SHA-256 (64) form, which is what a detached HEAD holds.
-func isObjectID(line string) bool {
-	if len(line) != 40 && len(line) != 64 {
-		return false
-	}
-	for _, char := range line {
+	for _, char := range []byte(content[:sha1HexLen]) {
 		isHex := (char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')
 		if !isHex {
 			return false

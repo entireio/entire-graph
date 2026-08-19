@@ -15717,13 +15717,18 @@ func TestLooksLikeGitDirRejectsInvalidHEAD(t *testing.T) {
 		want bool
 	}{
 		{"symbolic ref", "ref: refs/heads/main\n", true},
-		{"symbolic ref one level", "ref: MERGE_HEAD\n", true},
+		{"symbolic ref separated by a tab", "ref:\trefs/heads/main\n", true},
+		// Git's validate_headref() does not validate the refname, so this names
+		// a directory git treats as a repository and it must be excluded.
+		{"symbolic ref whose refname holds a space", "ref: refs/heads/my branch\n", true},
+		// Git requires the refs/ prefix here, so a one-level ref is not one.
+		{"symbolic ref outside refs/", "ref: MERGE_HEAD\n", false},
 		{"detached object id", strings.Repeat("a", 40) + "\n", true},
 		{"sha256 object id", strings.Repeat("b", 64) + "\n", true},
+		{"object id with trailing junk", strings.Repeat("a", 40) + " stale note\n", true},
 		{"prose", "HEAD OF THE TABLE\n\nThe table's head seat.\n", false},
 		{"empty", "", false},
 		{"ref with no refname", "ref:\n", false},
-		{"ref with a space in the refname", "ref: refs/heads/my branch\n", false},
 		{"csv column header", "HEAD,BODY,TAIL\n", false},
 		{"short hex", strings.Repeat("a", 39) + "\n", false},
 		{"forty non-hex", strings.Repeat("z", 40) + "\n", false},
