@@ -3,6 +3,9 @@ package sem
 import (
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -254,5 +257,117 @@ func TestWalkPruneDisclosureDoesNotEnterGitExcludedSubtrees(t *testing.T) {
 	if response.RepoIgnored.Files != 1 {
 		t.Errorf("RepoIgnored.Files = %d, want 1 (hidden/auth.go; the generated tree is Git's own exclusion)",
 			response.RepoIgnored.Files)
+	}
+}
+
+// TestPrunedExclusionAccountingIsBounded is the give-back-the-prune finding.
+//
+// SkipDir is what makes an ignored directory cost nothing: nothing under it is
+// ever stat'd. Enumerating that tree to disclose what it removed hands the cost
+// back, and the tree's size is set by the repository whose rules the report
+// exists to expose — so a committed rule over a very large tree buys a
+// filesystem crawl on EVERY search, and the ignore file a project added to make
+// searching cheap stops doing that.
+//
+// FAILS AT RUNTIME on the current head: the accounting walks all
+// maxRepoExclusionWalkEntries+ entries and reports an exact count over them, with
+// nothing bounding the work.
+func TestPrunedExclusionAccountingIsBounded(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	write(t, root, "visible/stub.go", "package visible\n\nfunc Stub() {}\n")
+	write(t, root, graphIgnoreFileName, "hidden/\n")
+	// One entry past the budget, so the bound is the only thing that can stop it.
+	hidden := filepath.Join(root, "hidden")
+	for shard := range 4 {
+		dir := filepath.Join(hidden, "s"+strconv.Itoa(shard))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for i := range maxRepoExclusionWalkEntries/4 + 1 {
+			if err := os.WriteFile(filepath.Join(dir, "f"+strconv.Itoa(i)+".go"), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	response, err := SearchRepository(t.Context(), root, "test", "stub", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.RepoIgnored == nil {
+		t.Fatalf("a %s directory rule pruned a tree and the response disclosed nothing", graphIgnoreFileName)
+	}
+	if response.RepoIgnored.Files > maxRepoExclusionWalkEntries {
+		t.Errorf("RepoIgnored.Files = %d, want at most %d — the accounting walk is unbounded, so a"+
+			" repository sets how much filesystem every search crawls",
+			response.RepoIgnored.Files, maxRepoExclusionWalkEntries)
+	}
+	// Bounded is only honest if the payload stops calling the short count exact.
+	if !response.RepoIgnored.CountIncomplete {
+		t.Errorf("RepoIgnored.CountIncomplete = false with a count the walk could not finish; a bounded" +
+			" walk that still claims an exact number understates in silence")
+	}
+	if len(response.RepoIgnored.Unreadable) != 0 {
+		t.Errorf("Unreadable = %v, want empty — nothing here was unreadable, it was merely large",
+			response.RepoIgnored.Unreadable)
+	}
+	var codes []string
+	for _, failure := range response.PartialFailures {
+		codes = append(codes, failure.Code)
+	}
+	if !slices.Contains(codes, repoIgnoreTruncatedCode) {
+		t.Errorf("partial failure codes = %v, want %s", codes, repoIgnoreTruncatedCode)
+	}
+	if slices.Contains(codes, repoIgnoreIncompleteCode) {
+		t.Errorf("partial failure codes = %v, must not claim %s — nothing was unreadable",
+			codes, repoIgnoreIncompleteCode)
+	}
+	// The text payload must not render an empty list of unreadable paths.
+	rendered := string(RenderRepoIgnoreDisclosure(response.RepoIgnored))
+	if strings.Contains(rendered, "could not be read") {
+		t.Errorf("text disclosure blames an unreadable path for a tree that was merely large:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "LOWER BOUND") {
+		t.Errorf("text disclosure prints a short count as if it were exact:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "the count is exact") {
+		t.Errorf("text disclosure calls a short count exact and a lower bound in the same payload:\n%s", rendered)
+	}
+}
+
+// TestOrdinaryPrunedExclusionStaysExact is the kind-(b) guard on the bound: a
+// tree of the size a real repository excludes must keep an EXACT count, name its
+// paths, and raise no partial failure. It passes before and after the bound.
+func TestOrdinaryPrunedExclusionStaysExact(t *testing.T) {
+	t.Parallel()
+	root := walkHidingTree(t, "hidden/\n")
+	response, err := SearchRepository(t.Context(), root, "test", "bearer token validation", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.RepoIgnored == nil {
+		t.Fatalf("a %s directory rule pruned a source tree and the response disclosed nothing", graphIgnoreFileName)
+	}
+	if response.RepoIgnored.Files != 1 || response.RepoIgnored.CountIncomplete {
+		t.Errorf("Files = %d, CountIncomplete = %t; want 1 and false — a one-file tree is nowhere near the"+
+			" walk bound and must still be counted exactly",
+			response.RepoIgnored.Files, response.RepoIgnored.CountIncomplete)
+	}
+	for _, failure := range response.PartialFailures {
+		if failure.Code == repoIgnoreTruncatedCode || failure.Code == repoIgnoreIncompleteCode {
+			t.Errorf("an ordinary pruned tree raised %s; the bound must not turn every disclosure into a"+
+				" shortfall report", failure.Code)
+		}
+	}
+	if strings.Contains(string(RenderRepoIgnoreDisclosure(response.RepoIgnored)), "LOWER BOUND") {
+		t.Errorf("an exactly counted disclosure rendered itself as a lower bound")
 	}
 }

@@ -156,6 +156,30 @@ type RepoIgnoreReport struct {
 // readers learn to skip, which is the same blindness by a different route.
 const maxRepoExclusionSample = 10
 
+// maxRepoExclusionWalkEntries bounds how many filesystem entries the accounting
+// of pruned directories visits across ONE listing.
+//
+// The prune is what makes an ignored tree cheap: `filepath.WalkDir` returns
+// SkipDir and nothing under it is ever stat'd. Enumerating that tree to say what
+// it removed gives the cost back, and its size is set by the repository — the
+// same party whose rules this report exists to expose. Left unbounded, a
+// committed rule over a five-million-file tree buys a multi-second filesystem
+// crawl on EVERY search, and the ignore file a project added to make searching
+// cheap stops doing that.
+//
+// A cap on the walk IS a cap on the count, which is why it could not be applied
+// before: Files documents itself as exact. It can be applied now because the
+// report can say the count is a lower bound (CountIncomplete), so the bound
+// trades an exact number for a stated one rather than for a silently short one —
+// "at least N files removed, the count is a lower bound" is a true disclosure,
+// and an unbounded crawl is not the price of making it.
+//
+// Shared across the whole listing rather than per prune, so a repository cannot
+// multiply the budget by adding ignore rules. Sized well above any tree a
+// project would keep in a checkout deliberately, so a real repository never
+// reaches it.
+const maxRepoExclusionWalkEntries = 20000
+
 // maxRepoExclusionRuleBytes bounds the pattern text one sample entry carries.
 //
 // Rule is the only field of a RepoExclusion whose length the repository sets
@@ -206,6 +230,15 @@ type repoIgnoreLedger struct {
 	// further in.
 	unreadable     []string
 	unreadableSeen map[string]struct{}
+	// walkVisited counts the filesystem entries the pruned-directory accounting
+	// has visited in this listing, against maxRepoExclusionWalkEntries.
+	walkVisited int
+	// countIncomplete records that the accounting stopped short of the whole
+	// excluded tree for a reason other than an unreadable path — it ran out of
+	// walk budget. Files is a lower bound then, exactly as it is for an
+	// unreadable subtree, and for the same reason: content is excluded and
+	// uncounted.
+	countIncomplete bool
 	// gitListingUnavailable records that this listing could not consult Git's own
 	// enumeration of a real checkout while a Git-applied repository rule was
 	// removing paths from it. See RepoIgnoreReport.GitListingUnavailable.
@@ -240,6 +273,21 @@ func (l *repoIgnoreLedger) note(exclusion RepoExclusion) {
 		return
 	}
 	l.truncated = true
+}
+
+// spendExclusionWalk takes one entry from the listing's accounting budget and
+// reports whether the walk may continue. Exhausting it marks the count a lower
+// bound, because the rest of that excluded tree is excluded and uncounted.
+func (l *repoIgnoreLedger) spendExclusionWalk() bool {
+	if l == nil {
+		return false
+	}
+	if l.walkVisited >= maxRepoExclusionWalkEntries {
+		l.countIncomplete = true
+		return false
+	}
+	l.walkVisited++
+	return true
 }
 
 // noteUnreadable records a path an enumeration could not read. Deduplicated and
@@ -279,7 +327,7 @@ func (l *repoIgnoreLedger) noteGitListingUnavailable() {
 // answer "the repository hid nothing" to the one case where the truth is "the
 // repository hid something and this could not see how much".
 func (l *repoIgnoreLedger) report() *RepoIgnoreReport {
-	if l == nil || (l.files == 0 && len(l.unreadable) == 0 && !l.gitListingUnavailable) {
+	if l == nil || (l.files == 0 && len(l.unreadable) == 0 && !l.countIncomplete && !l.gitListingUnavailable) {
 		return nil
 	}
 	sources := make([]RepoIgnoreSource, 0, len(l.order))
@@ -303,7 +351,7 @@ func (l *repoIgnoreLedger) report() *RepoIgnoreReport {
 		Sources:         sources,
 		Sample:          sample,
 		SampleTruncated: l.truncated,
-		CountIncomplete: len(unreadable) > 0,
+		CountIncomplete: l.countIncomplete || len(unreadable) > 0,
 		Unreadable:      unreadable,
 
 		GitListingUnavailable: l.gitListingUnavailable,
@@ -871,10 +919,15 @@ func (s *nestedIgnoreStack) noteRepoExclusion(ledger *repoIgnoreLedger, rel stri
 // as source the repository removed. Either way the disclosure cries wolf, which
 // is the noise that makes readers skip the one that matters.
 //
-// The traversal is not bounded by a count. The number of files reported is what
-// the field promises to be exact, and a cap on the walk is a cap on the count,
-// not on the list — that one is maxRepoExclusionSample, applied by the ledger.
-// What bounds it instead is that it takes EVERY prune the outer walk takes:
+// The traversal is bounded twice. maxRepoExclusionWalkEntries caps the entries
+// it may visit across the whole listing, and reaching that cap marks the count a
+// lower bound rather than quietly returning a short exact-looking number: the
+// prune is what makes an ignored tree cost nothing, and handing that cost back
+// unbounded lets a committed rule over a huge tree slow every search that reads
+// this repository. The list of named paths is capped separately, at
+// maxRepoExclusionSample, by the ledger.
+//
+// Under that cap it also takes EVERY prune the outer walk takes:
 // vendored directories and files, and directories Git's own rules exclude. That
 // is what makes the stated cost true — accounting for a prune visits a subset of
 // what the outer walk would have visited had the prune not happened, never more.
@@ -923,6 +976,13 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 	}
 	root := filepath.Join(s.repo, filepath.FromSlash(dir))
 	_ = filepath.WalkDir(root, func(current string, entry fs.DirEntry, err error) error {
+		// Budget first, before anything is stat'd or matched, so the bound holds
+		// for the walk's own cost and not merely for what it reports. SkipAll ends
+		// this tree; the ledger keeps the exhausted budget, so a repository cannot
+		// win a fresh one by splitting its rule across several directories.
+		if !ledger.spendExclusionWalk() {
+			return fs.SkipAll
+		}
 		// An error here is a subtree that is excluded and cannot be counted. The
 		// walk continues — one unreadable directory must not silence the disclosure
 		// of the paths it CAN name — but the shortfall is recorded, because Files

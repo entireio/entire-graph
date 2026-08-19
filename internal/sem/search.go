@@ -542,6 +542,13 @@ func withRepoIgnoreDisclosure(warnings []ProviderWarning, report *RepoIgnoreRepo
 // learn.
 const repoIgnoreIncompleteCode = "E_REPO_IGNORE_UNREADABLE"
 
+// repoIgnoreTruncatedCode is the same shortfall for the other reason: the
+// excluded tree was larger than the accounting enumerates. It is a separate code
+// because the codes are what a consumer routes on, and routing a tree that is
+// merely big to the one that says UNREADABLE sends a reader after a permission
+// problem that does not exist.
+const repoIgnoreTruncatedCode = "E_REPO_IGNORE_COUNT_INCOMPLETE"
+
 // repoIgnoreGitUnavailableCode marks the other way the disclosure falls short of
 // exact: the listing was produced without Git's own enumeration of a real
 // checkout, so a path a `.gitignore` removed cannot be separated from the
@@ -578,13 +585,24 @@ func withRepoIgnorePartialFailures(failures []PartialFailure, report *RepoIgnore
 	if len(report.Unreadable) > 0 {
 		detail += "; unreadable: " + termsafe.Line(strings.Join(report.Unreadable, ", "))
 	}
+	// Two different shortfalls reach this line and a reader can only act on the
+	// one that happened: an unreadable subtree is a broken checkout, a spent walk
+	// budget is a tree too large to enumerate. Naming the wrong one sends the
+	// reader looking for a permission problem that is not there.
+	effect := "the tree the repository's own ignore rules removed is larger than the exclusion accounting " +
+		"enumerates, so the disclosed count is a lower bound rather than the exact number"
+	code := repoIgnoreTruncatedCode
+	if len(report.Unreadable) > 0 {
+		effect = "part of a tree the repository's own ignore rules removed could not be read, so the " +
+			"disclosed exclusion count is a lower bound rather than the exact number"
+		code = repoIgnoreIncompleteCode
+	}
 	return append(failures, PartialFailure{
-		Code:     repoIgnoreIncompleteCode,
-		Severity: "warning",
-		FilePath: first,
-		EffectOnCompleteness: "part of a tree the repository's own ignore rules removed could not be read, so the " +
-			"disclosed exclusion count is a lower bound rather than the exact number",
-		Detail: detail,
+		Code:                 code,
+		Severity:             "warning",
+		FilePath:             first,
+		EffectOnCompleteness: effect,
+		Detail:               detail,
 	})
 }
 
@@ -631,8 +649,15 @@ func RenderRepoIgnoreDisclosure(report *RepoIgnoreReport) []byte {
 		// cannot be followed once a repository excludes more than the cap — and a
 		// disclosure that misdirects is worse than a shorter honest one.
 		if report.SampleTruncated {
-			fmt.Fprintf(&out, "- ... %d more (--format json: repo_ignored names %d of the %d; the count is exact)\n",
-				remaining, len(report.Sample), report.Files)
+			// "the count is exact" is a claim, and it is false whenever the walk
+			// behind it stopped short. Printing it beside the LOWER BOUND line two
+			// rows down told the reader both things at once.
+			exactness := "the count is exact"
+			if report.CountIncomplete {
+				exactness = "the count is a lower bound"
+			}
+			fmt.Fprintf(&out, "- ... %d more (--format json: repo_ignored names %d of the %d; %s)\n",
+				remaining, len(report.Sample), report.Files, exactness)
 		} else {
 			fmt.Fprintf(&out, "- ... %d more (full list in --format json: repo_ignored)\n", remaining)
 		}
@@ -642,8 +667,14 @@ func RenderRepoIgnoreDisclosure(report *RepoIgnoreReport) []byte {
 	// number today, and a reader cannot act on a lower bound they were not told
 	// was one.
 	if report.CountIncomplete {
-		fmt.Fprintf(&out, "- count is a LOWER BOUND: %s could not be read\n",
-			termsafe.Line(strings.Join(report.Unreadable, ", ")))
+		if len(report.Unreadable) > 0 {
+			fmt.Fprintf(&out, "- count is a LOWER BOUND: %s could not be read\n",
+				termsafe.Line(strings.Join(report.Unreadable, ", ")))
+		} else {
+			// An empty list rendered "- count is a LOWER BOUND:  could not be read",
+			// which reads as a broken checkout to someone whose tree is merely big.
+			out.WriteString("- count is a LOWER BOUND: the excluded tree is larger than this accounting enumerates\n")
+		}
 	}
 	if report.GitListingUnavailable {
 		out.WriteString("- count is PARTIAL: Git could not list this checkout, so tracked files its own " +

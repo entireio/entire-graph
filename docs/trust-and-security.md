@@ -91,11 +91,15 @@ repository that excludes nothing adds nothing.
 Exclusions **you** asked for with `--ignore-file` are not reported: they are your
 own instruction, and reporting them back would bury the case that is not.
 
-The count is exact except in one case, and that case says so: when enumerating an
+The count is exact except in two cases, and both say so. When enumerating an
 excluded directory tree hits something it cannot read, `repo_ignored` carries
 `count_incomplete` with the paths responsible and the response carries an
-`E_REPO_IGNORE_UNREADABLE` partial failure, so the number is known to be a lower
-bound rather than quietly understated.
+`E_REPO_IGNORE_UNREADABLE` partial failure. When the excluded tree is larger than
+the accounting enumerates — the walk is bounded so that a committed rule over a
+huge tree cannot hand back the cost the prune saved, on every search — the report
+carries `count_incomplete` and an `E_REPO_IGNORE_COUNT_INCOMPLETE` partial
+failure. Either way the number is known to be a lower bound rather than quietly
+understated.
 
 This is disclosure, not prevention. It tells you that files were removed and
 which ones; it does not tell you whether one of them was the answer to your
