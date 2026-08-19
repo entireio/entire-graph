@@ -10238,15 +10238,24 @@ type vendorIgnoreRules interface {
 	ReincludesDescendant(rel string) bool
 }
 
-// isRepoGitDirPath reports whether a repo-relative path IS this repository's own
-// git directory, or lies inside it. It matches on the FIRST path component, so a
-// linked worktree's `.git` *file* (a `gitdir:` pointer, not source) is covered as
-// well as a `.git/` directory, while a nested `vendor/dep/.git` and a sibling
-// `.github/` are not this repository's git directory and keep their existing
-// treatment.
-func isRepoGitDirPath(rel string) bool {
-	rel = filepath.ToSlash(rel)
-	return rel == ".git" || strings.HasPrefix(rel, ".git/")
+// hasGitDirComponent reports whether a repo-relative path IS a git directory, or
+// lies inside one, by whole path component at ANY depth.
+//
+// Depth is deliberate. A vendored dependency that carries its own checkout
+// (`vendor/dep/.git/`) is a git directory too, and its config holds that
+// dependency's remote credentials — a nested git directory is never program
+// text, so there is nothing to weigh against excluding it. Matching a whole
+// component rather than a name prefix keeps `.github/` and `.repo-github/`
+// first-party, and matching a component rather than a directory also covers a
+// `.git` FILE: the `gitdir:` pointer of a linked worktree or of a nested clone,
+// which the directory decision never sees.
+func hasGitDirComponent(rel string) bool {
+	for _, component := range strings.Split(filepath.ToSlash(rel), "/") {
+		if component == ".git" {
+			return true
+		}
+	}
+	return false
 }
 
 // maxGitDirPointerBytes bounds the read of a `.git` pointer file. A real one is
@@ -10254,48 +10263,131 @@ func isRepoGitDirPath(rel string) bool {
 // rather than read.
 const maxGitDirPointerBytes = 4 << 10
 
-// repoGitDirRel resolves the repository's real git directory when `.git` is a
-// FILE rather than a directory, and reports it as a repo-relative slash path
-// when it lands INSIDE the repository root (otherwise ""). `.git` is a pointer
-// file for `git init|clone --separate-git-dir=<path>` and for a linked
-// worktree, and that path may be a sibling of the source it belongs to:
-// `--separate-git-dir=.repo-git` puts the whole git directory — config with its
-// credentialed remote URL, hooks, logs — under an ordinary-looking name in the
-// working tree, where the literal `.git` skip of isRepoGitDirPath does not
-// reach it.
+// gitDirExcluder answers "is this repo-relative path a git directory, or inside
+// one?" for a working-tree listing. Both of its rules are unconditional: no
+// gitignore negation can cancel either, because the project's exclude rules are
+// attacker-controlled input in the repository being scanned.
+//
+//  1. hasGitDirComponent — a `.git` component at any depth.
+//  2. A `gitdir:` pointer's target, when it resolves to a path inside the
+//     repository. `git init|clone --separate-git-dir=.repo-git` moves the whole
+//     git directory — config with its credentialed remote URL, hooks, logs —
+//     under an ordinary name that rule 1 cannot see. Targets are learned by
+//     observing directories, so every caller must observe before it trusts a
+//     verdict; the walk additionally re-filters at the end, since a pointer can
+//     name a directory the walk already passed.
+type gitDirExcluder struct {
+	repo    string
+	targets map[string]struct{}
+}
+
+// newGitDirExcluder builds the excluder for one listing of repo, having already
+// observed the repository root — the `--separate-git-dir` case that needs no
+// listing to find.
+func newGitDirExcluder(repo string) *gitDirExcluder {
+	excluder := &gitDirExcluder{repo: repo, targets: map[string]struct{}{}}
+	excluder.observe("")
+	return excluder
+}
+
+// observe resolves the `.git` pointer of one repo-relative directory ("" for the
+// repository root) and records its target when that target lands inside the
+// repository. A `.git` that is a directory, absent, or not a pointer records
+// nothing: rule 1 already covers those.
+func (g *gitDirExcluder) observe(dir string) {
+	if target, ok := gitDirPointerTarget(g.repo, dir); ok {
+		g.targets[target] = struct{}{}
+	}
+}
+
+// observeListedDirs observes every directory that is an ancestor of a listed
+// path. Git's own listing never enumerates a valid nested checkout — it reports
+// the directory as one entry and stops — but it does enumerate a broken or
+// planted one, and that is the shape an attacker supplies. Ancestors are walked
+// once each, the same traversal trackedDirSet already performs over the same
+// listing.
+func (g *gitDirExcluder) observeListedDirs(listed []string) {
+	seen := make(map[string]struct{}, len(listed))
+	for _, entry := range listed {
+		rel := filepath.ToSlash(entry)
+		for dir := path.Dir(rel); dir != "." && dir != "/"; dir = path.Dir(dir) {
+			if _, done := seen[dir]; done {
+				break
+			}
+			seen[dir] = struct{}{}
+			g.observe(dir)
+		}
+	}
+}
+
+// excluded reports the verdict for one repo-relative path, in a single pass over
+// its components: a `.git` component anywhere, or any ancestor prefix that an
+// observed pointer named.
+func (g *gitDirExcluder) excluded(rel string) bool {
+	rel = filepath.ToSlash(rel)
+	for start := 0; start <= len(rel); {
+		end := strings.IndexByte(rel[start:], '/')
+		if end < 0 {
+			end = len(rel)
+		} else {
+			end += start
+		}
+		if rel[start:end] == ".git" {
+			return true
+		}
+		if _, isTarget := g.targets[rel[:end]]; isTarget {
+			return true
+		}
+		start = end + 1
+	}
+	return false
+}
+
+// gitDirPointerTarget resolves `<repo>/<dir>/.git` when it is a FILE rather than
+// a directory, and reports the target as a repo-relative slash path when it
+// lands INSIDE the repository root.
 //
 // The pointer is parsed here rather than asked of `git rev-parse --git-dir`
-// deliberately: the listing paths that need this answer include the filesystem
-// fallback, which runs precisely because git just failed or is unavailable.
-// gitInfoExcludePath parses the same pointer but cannot answer this question: it
-// follows the gitdir's `commondir` on to the SHARED git directory (for a linked
-// worktree that is the main checkout's `.git`, outside this tree entirely) and
-// yields an info/exclude path rather than the directory to exclude.
-func repoGitDirRel(repo string) string {
-	pointer := filepath.Join(repo, ".git")
+// deliberately: one of the two listing paths that need this answer is the
+// filesystem fallback, which runs precisely because git just failed or is
+// unavailable. gitInfoExcludePath parses the same pointer but cannot answer this
+// question — it follows the gitdir's `commondir` on to the SHARED git directory
+// (for a linked worktree that is the main checkout's `.git`, outside this tree
+// entirely) and yields an info/exclude path rather than the directory to skip.
+//
+// A target outside the repository is reported as absent: it is not part of this
+// listing, so there is nothing to exclude. That is the ordinary linked-worktree
+// case, whose gitdir lives in the main checkout.
+func gitDirPointerTarget(repo, dir string) (string, bool) {
+	base := repo
+	if dir != "" {
+		base = filepath.Join(repo, filepath.FromSlash(dir))
+	}
+	pointer := filepath.Join(base, ".git")
 	info, err := os.Lstat(pointer)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > maxGitDirPointerBytes {
-		return ""
+		return "", false
 	}
 	content, err := os.ReadFile(pointer)
 	if err != nil {
-		return ""
+		return "", false
 	}
 	target, ok := strings.CutPrefix(strings.TrimSpace(string(content)), "gitdir:")
 	if !ok {
-		return ""
+		return "", false
 	}
 	target = strings.TrimSpace(target)
 	if target == "" {
-		return ""
+		return "", false
 	}
-	// Git writes the pointer with `/` separators on every platform.
+	// Git writes the pointer with `/` separators on every platform, and resolves
+	// a relative target against the directory that holds the `.git` file.
 	target = filepath.FromSlash(target)
 	if !filepath.IsAbs(target) {
-		target = filepath.Join(repo, target)
+		target = filepath.Join(base, target)
 	}
 	if rel, inside := containedRel(repo, target); inside {
-		return rel
+		return rel, true
 	}
 	// Git writes the pointer as an absolute path, so a symlinked repository root
 	// (macOS /var -> /private/var, a symlinked checkout) makes the pointer and
@@ -10304,12 +10396,12 @@ func repoGitDirRel(repo string) string {
 	resolvedRepo, repoErr := filepath.EvalSymlinks(repo)
 	resolvedTarget, targetErr := filepath.EvalSymlinks(target)
 	if repoErr != nil || targetErr != nil {
-		return ""
+		return "", false
 	}
 	if rel, inside := containedRel(resolvedRepo, resolvedTarget); inside {
-		return rel
+		return rel, true
 	}
-	return ""
+	return "", false
 }
 
 // containedRel reports target's slash-separated path relative to root, and
@@ -10324,26 +10416,6 @@ func containedRel(root, target string) (string, bool) {
 		return "", false
 	}
 	return rel, true
-}
-
-// repoGitDirFilter returns the working-tree listing's "this is the repository's
-// own git directory" test for repo: always the literal `.git` of
-// isRepoGitDirPath, plus a `--separate-git-dir` target resolved into the
-// worktree. Both listing paths need it — `git ls-files --others` reports a
-// separate git directory as ordinary untracked content, and the filesystem
-// fallback walks it — so it is resolved once per listing and asked per path.
-//
-// The committed-tree listing does not: its content is whatever the project
-// committed, never the live git directory a checkout writes credentials into.
-func repoGitDirFilter(repo string) func(rel string) bool {
-	gitDir := repoGitDirRel(repo)
-	return func(rel string) bool {
-		rel = filepath.ToSlash(rel)
-		if isRepoGitDirPath(rel) {
-			return true
-		}
-		return gitDir != "" && (rel == gitDir || strings.HasPrefix(rel, gitDir+"/"))
-	}
 }
 
 // skipVendoredDir is the single vendored-directory decision for both the
@@ -10362,7 +10434,7 @@ func repoGitDirFilter(repo string) func(rel string) bool {
 // walk then descended `.git`, and the credentials in a `.git/config` remote URL
 // came back as a ranked search snippet.
 func skipVendoredDir(rel, name string, ignores vendorIgnoreRules, dirTracked func(string) bool) bool {
-	if isRepoGitDirPath(rel) {
+	if hasGitDirComponent(rel) {
 		return true
 	}
 	untrackedOnly := isAmbiguousVendoredDirName(name) || isInstalledDependencyDirName(rel, name)
@@ -10422,7 +10494,6 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 		_, ok := trackedDirs[rel]
 		return ok
 	}
-	inRepoGitDir := repoGitDirFilter(repo)
 	listed, err := gitutil.ListWorktreeFiles(ctx, repo)
 	if err != nil {
 		return walkWorktreeFiles(repo, ignores, dirTracked)
@@ -10455,6 +10526,10 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 	if err != nil {
 		return nil, err
 	}
+	// Every `gitdir:` pointer this listing can reach is resolved before any
+	// verdict is asked, so the answer cannot depend on listing order.
+	gitDirs := newGitDirExcluder(repo)
+	gitDirs.observeListedDirs(listed)
 	paths := make([]string, 0, len(listed))
 	seen := make(map[string]struct{}, len(listed))
 	for _, entry := range listed {
@@ -10462,7 +10537,9 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 		if _, exists := seen[rel]; exists {
 			continue
 		}
-		if inRepoGitDir(rel) {
+		// Git lists a `--separate-git-dir` target inside the worktree as ordinary
+		// untracked content, so its own listing carries the git directory here.
+		if gitDirs.excluded(rel) {
 			continue
 		}
 		if !eligibleGitWorktreeSourcePath(repo, rel, ignores, vendorRules, dirTracked) {
@@ -10526,7 +10603,7 @@ func visitWalkWorktreeFiles(
 ) error {
 	stack := newNestedIgnoreStack(repo, ignores)
 	defer stack.close()
-	inRepoGitDir := repoGitDirFilter(repo)
+	gitDirs := newGitDirExcluder(repo)
 	return filepath.WalkDir(repo, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -10541,9 +10618,13 @@ func visitWalkWorktreeFiles(
 				}
 				rel = filepath.ToSlash(relPath)
 			}
+			// A directory's own `.git` pointer is read on the way in, before any
+			// of its children are visited, so a `--separate-git-dir` target
+			// beside it is already known when the walk reaches it.
+			gitDirs.observe(rel)
 			// The git directory is refused before anything inside it is read,
 			// including its own .gitignore.
-			if rel != "" && inRepoGitDir(rel) {
+			if rel != "" && gitDirs.excluded(rel) {
 				return filepath.SkipDir
 			}
 			// Enter first: this directory's own .gitignore is part of the evidence
@@ -10569,7 +10650,7 @@ func visitWalkWorktreeFiles(
 		rel = filepath.ToSlash(rel)
 		// A linked worktree's `.git` is a FILE, so the directory decision above
 		// never sees it; the same unconditional rule applies.
-		if inRepoGitDir(rel) {
+		if gitDirs.excluded(rel) {
 			return nil
 		}
 		if isVendoredScanFile(rel, name) {
