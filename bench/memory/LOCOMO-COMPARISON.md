@@ -521,6 +521,16 @@ It was caught before it reached this table.
 
 ## 10. Method
 
+- **entire-graph version:** measured 2026-08-14 against the multi-resolution prose retrieval
+  feature branch that later merged to `main` as
+  [#104](https://github.com/entireio/entire-graph/pull/104) on 2026-08-18 and first shipped in
+  [v0.4.0](https://github.com/entireio/entire-graph/releases/tag/v0.4.0). **v0.3.0 (released
+  2026-08-14, before #104 merged) and earlier do not have this feature** and score 91.56
+  (`mrq_base`) on the same benchmark, not 94.74. `sw_eg_mr3`, the run id this document cites for
+  94.74, has no corresponding row in [`RUN-INDEX.md`](RUN-INDEX.md) — the registry this document's
+  own rules require. `plan_f_hyb` (08-14 14:08, `turn+session` ingest granularity) is a **different,
+  non-default** run that happens to score the same 94.74; do not treat the two as
+  interchangeable evidence for the default-granularity claim in §7 until this is resolved.
 - **Answerer and judge:** `gpt-5.6-sol` (Azure AI) for every system, no exceptions.
 - **Retrieval budget:** `top_k = 200` for every system.
 - **Questions:** all 1,540. No subsetting, no per-type headline.
