@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 )
@@ -270,13 +271,13 @@ func isRootEscape(err error) bool {
 	return !errors.Is(err, os.ErrClosed) && !errors.Is(err, os.ErrInvalid)
 }
 
-// maxContainedLinkHops bounds the absolute-alias rewriting below the way SYMLOOP_MAX bounds the
-// kernel's own resolution, so two links naming each other by absolute path cannot spin forever.
+// maxContainedLinkHops bounds the link expansion below the way SYMLOOP_MAX bounds the kernel's own
+// resolution, so links naming each other cannot spin forever.
 const maxContainedLinkHops = 40
 
-// mkdirAllContained is os.Root.MkdirAll with the same absolute-alias handling the confined writes
-// get, so a project whose .entire is an in-repository alias spelled as an absolute path installs
-// instead of failing preflight.
+// mkdirAllContained is os.Root.MkdirAll with the same alias handling the confined writes get, so a
+// project whose .entire is an in-repository alias spelled as an absolute path installs instead of
+// failing preflight.
 func mkdirAllContained(root *os.Root, name string, perm os.FileMode) error {
 	resolved, err := resolveContainedName(root, name)
 	if err != nil {
@@ -294,57 +295,75 @@ func mkdirAllContained(root *os.Root, name string, perm os.FileMode) error {
 // spelled as an absolute path. It refuses such a link as an escape even when that path names a
 // file inside the very repository being written to, which is a legitimate and previously working
 // shape of the documented AGENTS.md/CLAUDE.md alias. Confinement must judge where a link LANDS,
-// not how it is spelled.
+// not how it is spelled — and where it lands is only visible once the WHOLE chain is followed, so
+// an absolute hop reached through a relative one has to be resolved too.
 //
-// So each component is examined with root.Lstat, and a symlink whose target is absolute but lands
-// inside the repository is replaced by its repository-relative name. Nothing else is rewritten: a
-// relative link is left to os.Root, which already follows it correctly, and one whose absolute
-// target lands outside is left untouched so os.Root produces the escape.
+// So this walks the chain the way the kernel does. resolved holds the prefix already stripped of
+// symlinks, which is what makes ".." correct: popping its last element is what the kernel does
+// after following a link, whereas trimming the name as text would ignore the link. A relative
+// target is pushed back as components so its own links are expanded in turn; an absolute target
+// that lands inside the repository restarts the walk from the root under its repository-relative
+// name. maxContainedLinkHops bounds the expansion the way SYMLOOP_MAX bounds the kernel's.
 //
-// This is a translation, never a permission. The rewritten name is still handed to os.Root, which
-// resolves it from the opened directory and refuses anything that leaves the root — including a
-// rewritten name that turns out to cross an escaping component — so the write remains the boundary
-// and a rewrite that is wrong can only fail closed.
+// Any chain that leaves the root — an absolute target outside it, or a ".." above it — returns the
+// ORIGINAL name so os.Root walks the real links itself and refuses them. That is the whole safety
+// argument: this function only ever hands os.Root a name, never a file, so it is a translation and
+// never a permission, and a rewrite that is wrong can only fail closed.
 func resolveContainedName(root *os.Root, name string) (string, error) {
-	resolved := ""
-	for _, component := range strings.Split(name, string(filepath.Separator)) {
-		if component == "" || component == "." {
+	pending := strings.Split(name, string(filepath.Separator))
+	var resolved []string
+	for hops := 0; len(pending) > 0; {
+		component := pending[0]
+		pending = pending[1:]
+		switch component {
+		case "", ".":
+			continue
+		case "..":
+			if len(resolved) == 0 {
+				// Above the root. Let os.Root refuse the real chain.
+				return name, nil
+			}
+			resolved = resolved[:len(resolved)-1]
 			continue
 		}
-		next := filepath.Join(resolved, component)
-		for hop := 0; ; hop++ {
-			if hop == maxContainedLinkHops {
-				return "", &fs.PathError{Op: "resolve", Path: name, Err: syscall.ELOOP}
+		candidate := filepath.Join(append(slices.Clone(resolved), component)...)
+		info, err := root.Lstat(candidate)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				resolved = append(resolved, component)
+				continue
 			}
-			info, err := root.Lstat(next)
-			if err != nil {
-				if errors.Is(err, fs.ErrNotExist) {
-					break
-				}
-				return "", err
-			}
-			if info.Mode()&os.ModeSymlink == 0 {
-				break
-			}
-			target, err := root.Readlink(next)
-			if err != nil {
-				return "", err
-			}
-			if !filepath.IsAbs(target) {
-				break
-			}
-			rel, ok := repoRelativeName(root.Name(), target)
-			if !ok {
-				break
-			}
-			next = rel
+			return "", err
 		}
-		resolved = next
+		if info.Mode()&os.ModeSymlink == 0 {
+			resolved = append(resolved, component)
+			continue
+		}
+		if hops++; hops > maxContainedLinkHops {
+			return "", &fs.PathError{Op: "resolve", Path: name, Err: syscall.ELOOP}
+		}
+		target, err := root.Readlink(candidate)
+		if err != nil {
+			return "", err
+		}
+		if !filepath.IsAbs(target) {
+			pending = append(strings.Split(target, string(filepath.Separator)), pending...)
+			continue
+		}
+		rel, ok := repoRelativeName(root.Name(), target)
+		if !ok {
+			// Lands outside. Let os.Root refuse the real chain.
+			return name, nil
+		}
+		// An absolute target is anchored at the root, so the walk restarts there.
+		resolved = resolved[:0]
+		pending = append(strings.Split(rel, string(filepath.Separator)), pending...)
 	}
-	if resolved == "" {
-		return name, nil
+	if len(resolved) == 0 {
+		// The chain resolved to the repository root itself.
+		return ".", nil
 	}
-	return resolved, nil
+	return filepath.Join(resolved...), nil
 }
 
 // repoRelativeName reports whether target lands inside the repository rooted at rootPath, and
@@ -353,6 +372,9 @@ func resolveContainedName(root *os.Root, name string) (string, error) {
 // symlinked checkout parent); comparing only the literal strings would read an ordinary
 // in-repository alias as an escape.
 //
+// "." — the root itself — is inside, and is returned as such: an alias may legitimately point at
+// the project directory, and the components after it still have to be appended.
+//
 // A false positive here cannot grant anything: the name it returns is resolved again by os.Root,
 // which refuses it if it does not in fact stay inside the root.
 func repoRelativeName(rootPath, target string) (string, bool) {
@@ -360,7 +382,7 @@ func repoRelativeName(rootPath, target string) (string, bool) {
 		for _, candidate := range pathSpellings(target) {
 			rel, err := filepath.Rel(base, candidate)
 			switch {
-			case err != nil, rel == ".", rel == "..", filepath.IsAbs(rel),
+			case err != nil, rel == "..", filepath.IsAbs(rel),
 				strings.HasPrefix(rel, ".."+string(filepath.Separator)):
 				continue
 			}

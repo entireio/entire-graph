@@ -884,6 +884,100 @@ func TestInitAgentsFollowsAbsoluteAliasInsideRepository(t *testing.T) {
 	}
 }
 
+// TestInitAgentsFollowsAliasChainReachingAnAbsoluteHop pins that confinement judges where the
+// WHOLE chain lands. An absolute in-repository hop reached through a relative one is still an
+// in-repository alias, and stopping the rewrite at the relative hop would hand os.Root the
+// absolute link it cannot resolve and turn a working project into a refusal.
+func TestInitAgentsFollowsAliasChainReachingAnAbsoluteHop(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	tests := []struct {
+		name string
+		// plant installs the chain and returns the in-repository path it lands on.
+		plant func(t *testing.T, repo string) string
+	}{
+		{
+			name: "relative hop then absolute hop",
+			plant: func(t *testing.T, repo string) string {
+				t.Helper()
+				shared := filepath.Join(repo, "docs", "shared.md")
+				mkdirAllForTest(t, filepath.Dir(shared))
+				writeFileForTest(t, shared, "# Shared rules\n")
+				symlinkForTest(t, shared, filepath.Join(repo, "relay.md"))
+				symlinkForTest(t, "relay.md", filepath.Join(repo, "AGENTS.md"))
+				return shared
+			},
+		},
+		{
+			name: "absolute hop then relative hop",
+			plant: func(t *testing.T, repo string) string {
+				t.Helper()
+				shared := filepath.Join(repo, "docs", "shared.md")
+				mkdirAllForTest(t, filepath.Dir(shared))
+				writeFileForTest(t, shared, "# Shared rules\n")
+				symlinkForTest(t, "shared.md", filepath.Join(repo, "docs", "relay.md"))
+				symlinkForTest(t, filepath.Join(repo, "docs", "relay.md"), filepath.Join(repo, "AGENTS.md"))
+				return shared
+			},
+		},
+		{
+			name: "absolute hop reached through a symlinked directory",
+			plant: func(t *testing.T, repo string) string {
+				t.Helper()
+				shared := filepath.Join(repo, "real", "nested", "shared.md")
+				mkdirAllForTest(t, filepath.Dir(shared))
+				writeFileForTest(t, shared, "# Shared rules\n")
+				symlinkForTest(t, filepath.Join("real", "nested"), filepath.Join(repo, "docs"))
+				symlinkForTest(t, shared, filepath.Join(repo, "docs", "alias.md"))
+				symlinkForTest(t, filepath.Join("docs", "alias.md"), filepath.Join(repo, "AGENTS.md"))
+				return shared
+			},
+		},
+		{
+			name: "absolute hop then a parent-relative hop",
+			plant: func(t *testing.T, repo string) string {
+				t.Helper()
+				shared := filepath.Join(repo, "shared.md")
+				writeFileForTest(t, shared, "# Shared rules\n")
+				mkdirAllForTest(t, filepath.Join(repo, "docs"))
+				symlinkForTest(t, filepath.Join("..", "shared.md"), filepath.Join(repo, "docs", "up.md"))
+				symlinkForTest(t, filepath.Join(repo, "docs", "up.md"), filepath.Join(repo, "AGENTS.md"))
+				return shared
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			landing := tt.plant(t, repo)
+
+			runInitAgentsForTest(t, repo)
+
+			if got := readFileForTest(t, landing); !strings.Contains(got, testAgentPointerBlock) {
+				t.Fatalf("chain landing %s did not receive the managed block:\n%s", landing, got)
+			}
+		})
+	}
+}
+
+// TestInitAgentsFollowsGuideDirectoryAliasToRepositoryRoot pins the alias whose absolute target is
+// the project directory itself. That resolves to "." — inside the repository, not an escape — and
+// the components after it still have to be appended, so the guide lands at the repository root
+// exactly as it did before init-agents was confined.
+func TestInitAgentsFollowsGuideDirectoryAliasToRepositoryRoot(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	repo := t.TempDir()
+	symlinkForTest(t, repo, filepath.Join(repo, ".entire"))
+
+	runInitAgentsForTest(t, repo)
+
+	if got := readFileForTest(t, filepath.Join(repo, "graph-agent.md")); !strings.Contains(got, "entire-graph") {
+		t.Fatalf("guide did not land at the repository root through the alias:\n%s", got)
+	}
+	if got := readFileForTest(t, filepath.Join(repo, "AGENTS.md")); !strings.Contains(got, testAgentPointerBlock) {
+		t.Fatalf("AGENTS.md did not receive the managed block:\n%s", got)
+	}
+}
+
 // TestInitAgentsFollowsAbsoluteAliasThroughSymlinkedRoot covers the same alias when --repo names
 // the project through a symlinked parent, so the absolute link target and the opened root are two
 // different spellings of one directory. Comparing them as strings alone reads the alias as an
@@ -936,6 +1030,28 @@ func TestInitAgentsRefusesAbsoluteAliasLeavingRepository(t *testing.T) {
 				relay := filepath.Join(repo, "relay.md")
 				symlinkForTest(t, victim, relay)
 				symlinkForTest(t, relay, filepath.Join(repo, "AGENTS.md"))
+				return victim
+			},
+		},
+		{
+			name: "absolute hop then a parent-relative hop out",
+			plant: func(t *testing.T, base, repo string) string {
+				t.Helper()
+				victim := filepath.Join(base, "victim.md")
+				writeFileForTest(t, victim, "# outside the repository\n")
+				mkdirAllForTest(t, filepath.Join(repo, "a"))
+				symlinkForTest(t, filepath.Join("..", "..", "victim.md"), filepath.Join(repo, "a", "b.md"))
+				symlinkForTest(t, filepath.Join(repo, "a", "b.md"), filepath.Join(repo, "AGENTS.md"))
+				return victim
+			},
+		},
+		{
+			name: "absolute target spelled through the repository parent",
+			plant: func(t *testing.T, base, repo string) string {
+				t.Helper()
+				victim := filepath.Join(base, "victim.md")
+				writeFileForTest(t, victim, "# outside the repository\n")
+				symlinkForTest(t, filepath.Join(repo, "..", "victim.md"), filepath.Join(repo, "AGENTS.md"))
 				return victim
 			},
 		},
