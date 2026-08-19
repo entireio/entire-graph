@@ -10406,11 +10406,67 @@ func foldedGitDirName(repo, dir string) bool {
 // addTarget records one repo-relative git directory under every spelling the
 // filesystem accepts for it, so the verdict does not depend on which of the two
 // producers — the pointer's text or the listing — supplied the path.
+//
+// A SYMLINK is the second such spelling, and the one the listing never uses. Git
+// resolves a `gitdir:` target with real_pathdup() — read_gitfile_gently() ends
+// there — so `gitdir: admin-link` with `admin-link -> .real-git` names
+// `.real-git`, and that is the directory whose config holds the credential and
+// the one the listing walks: neither `git ls-files --others` nor the filesystem
+// walk descends a symlink, so nothing is ever listed under `admin-link/`.
+// Recording the link's own spelling alone left `.real-git/config` indexable, and
+// the structural rule could not rescue it — the pointer rule exists precisely
+// for a target whose HEAD is missing or corrupt, which is the state that makes
+// git refuse the worktree and the filesystem fallback run.
+//
+// Verified on git 2.54.0: after `git init --separate-git-dir=.real-git .`,
+// `ln -s .real-git admin-link` and `printf 'gitdir: admin-link\n' > .git`,
+// `git rev-parse --git-dir` answers `<worktree>/.real-git`, and
+// `git ls-files --others --directory` lists `.real-git/` as ordinary untracked
+// content.
+//
+// Both spellings are kept rather than one: the link's own path is what the
+// pointer named and what a differently-shaped listing could still carry, and a
+// target that resolves OUTSIDE the repository adds nothing to exclude.
 func (g *gitDirExcluder) addTarget(target string) {
+	g.recordTarget(target)
+	if resolved, ok := symlinkResolvedRel(g.repo, target); ok && resolved != target {
+		g.recordTarget(resolved)
+	}
+}
+
+// recordTarget stores one spelling of a git directory, plus its folded form
+// where the filesystem itself folds case.
+func (g *gitDirExcluder) recordTarget(target string) {
 	g.targets[target] = struct{}{}
 	if foldsCase(g.repo, target) {
 		g.foldedTargets[strings.ToLower(target)] = struct{}{}
 	}
+}
+
+// symlinkResolvedRel reports <repo>/<target> with every symlink resolved, as a
+// repo-relative slash path, when the result is still inside the repository.
+//
+// The repository root is resolved too, and not only as a fallback: a checkout
+// reached through a symlinked path (macOS `/tmp` -> `/private/tmp`, a symlinked
+// worktree) makes the resolved target and the caller's root spell one directory
+// two ways, and comparing them unresolved reports "outside" for a directory that
+// is plainly inside. Resolution before the containment test is also the order
+// that matters — filepath.Abs and filepath.Join clean `..` LEXICALLY, before any
+// link resolves, so a link pointing out of the tree can survive a purely
+// lexical containment check.
+func symlinkResolvedRel(repo, target string) (string, bool) {
+	resolvedTarget, err := filepath.EvalSymlinks(filepath.Join(repo, filepath.FromSlash(target)))
+	if err != nil {
+		return "", false
+	}
+	if rel, inside := containedRel(repo, resolvedTarget); inside {
+		return rel, true
+	}
+	resolvedRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		return "", false
+	}
+	return containedRel(resolvedRepo, resolvedTarget)
 }
 
 // foldsCase reports whether the filesystem holding <repo>/<target> resolves that
