@@ -29,7 +29,7 @@ retrieval path that first shipped in
 | [cognee](https://github.com/topoteretes/cognee) | 92.86 | 12.35M | commit [`38eece5`](https://github.com/topoteretes/cognee/commit/38eece5bbb0cb9f5706fed908abd16dba0f5505e) |
 | [bm25](https://github.com/dorianbrown/rank_bm25) (lexical baseline) | 91.88 | 0 | — |
 | [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) (cmm) | 91.30 | 0 | v0.9.0 |
-| [graphify](https://github.com/Graphify-Labs/graphify) | 87.34 | 0 | unpinned commit (see `UPSTREAM.md`) |
+| [graphify](https://github.com/Graphify-Labs/graphify) | 87.34 | 0 | [v0.9.43](https://github.com/Graphify-Labs/graphify/releases/tag/v0.9.43) |
 | [letta](https://github.com/letta-ai/letta) | 80.58 | not projectable | [0.16.8](https://github.com/letta-ai/letta/releases/tag/0.16.8) |
 | [supermemory](https://github.com/supermemoryai/supermemory) | 77.60 | hosted | [server-v0.0.7-rc.2](https://github.com/supermemoryai/supermemory/releases/tag/server-v0.0.7-rc.2) |
 
