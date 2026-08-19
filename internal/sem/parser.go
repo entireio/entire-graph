@@ -139,6 +139,30 @@ type TreeSitterParser struct{}
 
 const treeSitterParseTimeout = 5 * time.Second
 
+// maxParseWalkDepth bounds every recursive walk this file performs over a
+// tree-sitter parse tree.
+//
+// Tree-sitter builds its tree iteratively on the C heap, so a source file can
+// nest as deeply as it has bytes for; the Go walkers over that tree recurse once
+// per level. Neither guard in front of the parser catches it: 900k nested
+// parentheses is 1.8 MB, well under defaultMaxParseBytes (4 MiB), and one
+// character per line so looksMinified's 5000-column test never fires. A Go stack
+// overflow is a fatal, unrecoverable process abort that recover() cannot catch,
+// so this has to be a LIMIT applied before recursing, not a rescue afterwards.
+//
+// The number: named-AST nesting was measured over 55,900 real source files in 21
+// languages, in two corpora. First-party code (entire-graph, cli, entire-api,
+// entiredb, entire.io/{frontend,api}/src, entire.io/website; 10,442 files):
+// p99=35, p99.9=59, max 464 — generated Go protobuf,
+// entiredb gen/proto/publicapi/admin/v1/admin.pb.go. Third-party code
+// (entire.io/node_modules; 45,458 files): p99=39, p99.9=187, max 419 —
+// iconv-lite/types/encodings.d.ts. 5000 leaves ~10x headroom over the deeper of
+// the two worst cases — no real source is truncated, including the generated
+// protobuf and generated .d.ts that are the deepest things anyone ships — while
+// capping the walk at ~3.8 MB of stack (walkEntitiesScoped frames measured at
+// 752 bytes on darwin/arm64) against Go's 1 GB goroutine limit.
+const maxParseWalkDepth = 5000
+
 type ParseStatus struct {
 	ParseError bool
 	Code       string
@@ -294,7 +318,7 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	}
 
 	var entities []Entity
-	walkEntities(root, entitySrc, spec.language, "", &entities)
+	depthExceeded := walkEntities(root, entitySrc, spec.language, "", &entities)
 	if spec.language == "C++" {
 		entities = appendMissingEntities(entities, cPlusPlusTypeAliasEntities(content)...)
 	}
@@ -361,7 +385,18 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		return entities[i].StartLine < entities[j].StartLine
 	})
 	status := ParseStatus{}
-	if root.HasError() {
+	switch {
+	case depthExceeded:
+		// A truncated walk, not a syntax error, is why declarations are missing,
+		// and it is the actionable one, so it wins the single status slot. The
+		// error-detail walk is skipped with it: it would descend the same
+		// pathological tree to report on syntax that was never the problem.
+		status = ParseStatus{
+			ParseError: true,
+			Code:       "E_PARSE_DEPTH_EXCEEDED",
+			Detail:     fmt.Sprintf("AST nesting exceeded the %d-level walk limit; declarations nested deeper than that were not extracted", maxParseWalkDepth),
+		}
+	case root.HasError():
 		status = ParseStatus{ParseError: true, Code: "E_PARSE_ERROR", Detail: parseErrorDetailWithLineOffset(root, entitySrc, entityLineOffset)}
 	}
 	return entities, spec.language, status
@@ -384,9 +419,14 @@ func collectParseErrorDetails(root *sitter.Node, src []byte, limit, lineOffset i
 		return nil
 	}
 	var details []string
-	var walk func(*sitter.Node)
-	walk = func(node *sitter.Node) {
-		if node == nil || node.IsNull() || len(details) >= limit {
+	// depth is capped at maxParseWalkDepth. The existing `limit` bounds RESULTS,
+	// not descent: a tree whose only error nodes sit at the bottom is walked all
+	// the way down, and this runs on every HasError file — precisely the
+	// adversarial input class. Measured: a 4,008,006-byte Python file (under the
+	// 4 MiB parser cap) nests 2,000,005 levels and overflows the stack here.
+	var walk func(*sitter.Node, int)
+	walk = func(node *sitter.Node, depth int) {
+		if node == nil || node.IsNull() || len(details) >= limit || depth >= maxParseWalkDepth {
 			return
 		}
 		if node.IsError() || node.IsMissing() {
@@ -409,10 +449,10 @@ func collectParseErrorDetails(root *sitter.Node, src []byte, limit, lineOffset i
 			details = append(details, fmt.Sprintf("%s %s at line %d column %d near %q", kind, node.Type(), line, point.Column+1, snippet))
 		}
 		for i := 0; i < int(node.ChildCount()) && len(details) < limit; i++ {
-			walk(node.Child(i))
+			walk(node.Child(i), depth+1)
 		}
 	}
-	walk(root)
+	walk(root, 0)
 	return details
 }
 
@@ -3633,15 +3673,33 @@ func minInt(a, b int) int {
 	return b
 }
 
-func walkEntities(node *sitter.Node, src []byte, language, scope string, entities *[]Entity) {
-	walkEntitiesScoped(node, src, language, scope, false, entities)
+// walkEntities extracts every entity in a parse tree. It reports whether the
+// walk was truncated at maxParseWalkDepth, which the caller turns into an
+// E_PARSE_DEPTH_EXCEEDED status so a truncated file is never silently reported
+// as fully understood.
+func walkEntities(node *sitter.Node, src []byte, language, scope string, entities *[]Entity) (depthExceeded bool) {
+	exceeded := false
+	walkEntitiesScoped(node, src, language, scope, false, 0, entities, &exceeded)
+	return exceeded
 }
 
 // walkEntitiesScoped tracks whether the current node is inside a function body
 // (inFunc), so a callable defined there is marked Entity.Local — a nested/closure
 // def that call resolution must not name-match across scopes.
-func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, inFunc bool, entities *[]Entity) {
+//
+// depth is the current AST nesting level and is capped at maxParseWalkDepth: a
+// tree deeper than that truncates (setting *depthExceeded) instead of recursing
+// on until the goroutine stack is exhausted, which is a fatal process abort.
+// initializerTypeBodies below shares this counter rather than starting a fresh
+// one, because walkEntitiesScoped calls it and then descends into what it
+// returns; two independent budgets over the same root-to-leaf path would let the
+// two walkers amplify each other.
+func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, inFunc bool, depth int, entities *[]Entity, depthExceeded *bool) {
 	if !validNode(node) {
+		return
+	}
+	if depth >= maxParseWalkDepth {
+		*depthExceeded = true
 		return
 	}
 	// Field/property declarations emit one entity per declared name and are not
@@ -3664,8 +3722,8 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		// function-local (inFunc=true) exactly like the same idiom written
 		// inside a method body, so localReachable keeps them scoped to the
 		// declaration instead of name-colliding with real members.
-		for _, body := range initializerTypeBodies(node) {
-			walkEntitiesScoped(body, src, language, scope, true, entities)
+		for _, body := range initializerTypeBodies(node, depth, depthExceeded) {
+			walkEntitiesScoped(body, src, language, scope, true, depth+1, entities, depthExceeded)
 		}
 		return
 	}
@@ -3737,7 +3795,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		}
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		walkEntitiesScoped(node.NamedChild(i), src, language, childScope, childInFunc, entities)
+		walkEntitiesScoped(node.NamedChild(i), src, language, childScope, childInFunc, depth+1, entities, depthExceeded)
 	}
 }
 
@@ -7373,11 +7431,25 @@ func scopesChildren(language, kind string) bool {
 // field/property declaration's initializer — the anonymous-class idiom. The
 // search stops at the outermost body found on each branch; walkEntitiesScoped
 // handles anything nested inside it.
-func initializerTypeBodies(node *sitter.Node) []*sitter.Node {
+//
+// depth is the caller's AST nesting level, continued rather than restarted: this
+// walk descends the same tree walkEntitiesScoped is already descending. That
+// caller returns at a field declaration without descending into it itself, so
+// this is the ONLY recursion into a field's initializer, and budgeting
+// walkEntitiesScoped alone leaves `class C { x = ((( ... ))) }` walking
+// unbounded here (verified: the initializer test still fails with this check
+// removed). Sharing one counter keeps the two from amplifying each other along a
+// root-to-leaf path; a truncated descent sets *depthExceeded so the file is
+// reported, not silently shortened.
+func initializerTypeBodies(node *sitter.Node, depth int, depthExceeded *bool) []*sitter.Node {
 	var out []*sitter.Node
-	var walk func(n *sitter.Node)
-	walk = func(n *sitter.Node) {
+	var walk func(n *sitter.Node, depth int)
+	walk = func(n *sitter.Node, depth int) {
 		if !validNode(n) {
+			return
+		}
+		if depth >= maxParseWalkDepth {
+			*depthExceeded = true
 			return
 		}
 		switch n.Type() {
@@ -7386,11 +7458,11 @@ func initializerTypeBodies(node *sitter.Node) []*sitter.Node {
 			return
 		}
 		for i := 0; i < int(n.NamedChildCount()); i++ {
-			walk(n.NamedChild(i))
+			walk(n.NamedChild(i), depth+1)
 		}
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		walk(node.NamedChild(i))
+		walk(node.NamedChild(i), depth+1)
 	}
 	return out
 }

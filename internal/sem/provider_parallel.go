@@ -195,8 +195,11 @@ func processProviderFile(
 			code = "E_PARSE_ERROR"
 		}
 		effect := "file parsed with syntax errors; semantic facts may be incomplete"
-		if code == "E_PARSE_TIMEOUT" {
+		switch code {
+		case "E_PARSE_TIMEOUT":
 			effect = "file record emitted but symbol parsing skipped because parser time budget was exceeded"
+		case "E_PARSE_DEPTH_EXCEEDED":
+			effect = "file record and symbols above the parser depth limit emitted; more deeply nested declarations were not walked"
 		}
 		result.failures = append(result.failures, PartialFailure{
 			Code:                 code,

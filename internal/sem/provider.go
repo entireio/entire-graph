@@ -17907,6 +17907,14 @@ func directTypeBodyLines(lines []string, symbol SymbolRecord, fileSymbols []Symb
 var intentionalSkipFailureCodes = map[string]bool{
 	"E_FILE_TOO_LARGE": true,
 	"E_MINIFIED":       true,
+	// A walk truncated at maxParseWalkDepth (parser.go) is the same kind of
+	// policy bound as the input-size cap: the file record and every declaration
+	// above the limit are still emitted, and no real source comes near the limit
+	// (deepest of 55,900 measured files: 464). Counting it would let one
+	// generated or hostile file flip a whole repo's completeness — verified: a
+	// single such failure in a 100-file repo returns "degraded" via
+	// completenessLevel's `failures*4 > files` fall-through.
+	"E_PARSE_DEPTH_EXCEEDED": true,
 }
 
 // completenessFailureCount counts only the partial failures that reflect a real
