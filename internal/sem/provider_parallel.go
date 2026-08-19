@@ -179,7 +179,14 @@ func processProviderFile(
 		return result
 	}
 
-	entities, parsedLanguage, parseStatus := parseWithProfile(TreeSitterParser{}, spec, langSpec, path, content)
+	entities, parsedLanguage, parseStatus := parseWithProfile(ctx, TreeSitterParser{}, spec, langSpec, path, content)
+	// The parse and the entity walk both observe ctx now, so a budget that
+	// expires mid-file returns a PARTIAL entity set. Truncation is file-atomic:
+	// drop the file entirely rather than let the reducer emit a file record with
+	// a silently short symbol list that reads as complete.
+	if ctx.Err() != nil {
+		return providerFileResult{index: index, path: path}
+	}
 	if parsedLanguage == "" {
 		result.failures = append(result.failures, PartialFailure{
 			Code:                 "E_UNSUPPORTED_LANGUAGE",

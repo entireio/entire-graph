@@ -1237,8 +1237,9 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		}
 		emitErr = emit(r)
 	}
+	relationsShouldStop := func() bool { return emitErr != nil || budgetHit || workCtx.Err() != nil }
 	if spec.name == ProfileSyntaxOnly {
-		emitStructuralRelationsCompact(sc.key, files, structuralByFile, func(r RelationRecord) {
+		emitStructuralRelationsCompact(sc.key, files, structuralByFile, relationsShouldStop, func(r RelationRecord) {
 			emitRelation(r, nil, nil)
 		})
 	} else {
@@ -1248,9 +1249,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 			symbolsByID, filesByID = recordIndexes(files, recordsByFile)
 		}
 		var relationFailures []PartialFailure
-		forEachRelation(sc.key, files, recordsByFile, sc.read, precomputedImports, spec, func() bool {
-			return emitErr != nil || workCtx.Err() != nil
-		}, func(r RelationRecord) {
+		forEachRelation(sc.key, files, recordsByFile, sc.read, precomputedImports, spec, relationsShouldStop, func(r RelationRecord) {
 			emitRelation(r, symbolsByID, filesByID)
 		}, func(failure PartialFailure) {
 			relationFailures = append(relationFailures, failure)
@@ -1261,9 +1260,15 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		// selective path does, so cache presence never changes the reported
 		// failure set.
 		failures = mergePartialFailures(failures, relationFailures)
-		if spec.emits("FILE_CHANGES_WITH") {
-			for _, r := range fileChangesWithRelations(ctx, sc.absRepo, sc.commit, sc.key, files) {
-				if emitErr != nil || workCtx.Err() != nil {
+		// Check the budget BEFORE calling fileChangesWithRelations, not after:
+		// the call runs a `git log` subprocess over the last 256 commits and
+		// returns a fully materialised slice, so entering it once the deadline
+		// has passed charges the entire co-change subprocess to the overshoot.
+		// The subprocess also runs under workCtx now, so a budget that expires
+		// while git is running kills git instead of waiting for it.
+		if spec.emits("FILE_CHANGES_WITH") && !relationsShouldStop() {
+			for _, r := range fileChangesWithRelations(workCtx, sc.absRepo, sc.commit, sc.key, files) {
+				if relationsShouldStop() {
 					break
 				}
 				emitRelation(r, symbolsByID, filesByID)
@@ -1331,11 +1336,11 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	return nil
 }
 
-func parseWithProfile(parser TreeSitterParser, spec profileSpec, langSpec languageSpec, path, content string) ([]Entity, string, ParseStatus) {
+func parseWithProfile(ctx context.Context, parser TreeSitterParser, spec profileSpec, langSpec languageSpec, path, content string) ([]Entity, string, ParseStatus) {
 	if useFastCFamilyParser(spec, langSpec) {
 		return fastCFamilyEntities(path, content, langSpec.language), langSpec.language, ParseStatus{}
 	}
-	return parser.ParseWithStatus(path, content)
+	return parser.ParseWithStatusCtx(ctx, path, content)
 }
 
 func sourceLineCount(content string) int {
@@ -2539,9 +2544,15 @@ func retainedSymbolsForProfile(records []SymbolRecord, spec profileSpec) []Symbo
 	return out
 }
 
-func emitStructuralRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, emit func(RelationRecord)) {
+func emitStructuralRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, shouldStop func() bool, emit func(RelationRecord)) {
 	for _, file := range files {
+		if shouldStop != nil && shouldStop() {
+			return
+		}
 		for _, symbol := range recordsByFile[file.Path] {
+			if shouldStop != nil && shouldStop() {
+				return
+			}
 			emit(RelationRecord{
 				RecordType:    "relation",
 				FromID:        fileID(repoKey, symbol.FilePath),
@@ -2572,9 +2583,20 @@ func emitStructuralRelations(repoKey string, files []FileRecord, recordsByFile m
 	}
 }
 
-func emitStructuralRelationsCompact(repoKey string, files []FileRecord, recordsByFile map[string][]structuralSymbol, emit func(RelationRecord)) {
+// emitStructuralRelationsCompact streams the syntax-only relation set. It takes
+// shouldStop because the emit sink returning early is not enough: without a stop
+// predicate the producer keeps walking every remaining file and symbol after the
+// wall-clock budget has expired, so the advertised ceiling is overshot by the
+// whole remainder of an O(symbol-count) pass.
+func emitStructuralRelationsCompact(repoKey string, files []FileRecord, recordsByFile map[string][]structuralSymbol, shouldStop func() bool, emit func(RelationRecord)) {
 	for _, file := range files {
+		if shouldStop != nil && shouldStop() {
+			return
+		}
 		for _, symbol := range recordsByFile[file.Path] {
+			if shouldStop != nil && shouldStop() {
+				return
+			}
 			emit(RelationRecord{
 				RecordType:    "relation",
 				FromID:        fileID(repoKey, symbol.FilePath),
@@ -2628,7 +2650,7 @@ func jsScanPartialFailure(path string, err error) PartialFailure {
 
 func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, precomputedImports map[string][]string, spec profileSpec, shouldStop func() bool, emit func(RelationRecord), recordFailure func(PartialFailure)) {
 	if spec.name == ProfileSyntaxOnly {
-		emitStructuralRelations(repoKey, files, recordsByFile, emit)
+		emitStructuralRelations(repoKey, files, recordsByFile, shouldStop, emit)
 		return
 	}
 	needsTool := spec.emits("HANDLES_TOOL")
@@ -3891,6 +3913,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		}
 	}
 
+	if shouldStop != nil && shouldStop() {
+		return
+	}
 	if needsOverrides {
 		for _, r := range overrideRelations(inheritanceEdges, methodsByContainer) {
 			if shouldStop != nil && shouldStop() {
@@ -3898,6 +3923,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			}
 			emit(r)
 		}
+	}
+	if shouldStop != nil && shouldStop() {
+		return
 	}
 	if spec.emits("HANDLES_ROUTE") {
 		for _, r := range crossFileExpressRouterRelations(files, recordsByFile, readContent, knownFiles) {
@@ -3907,6 +3935,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			emit(r.Relation)
 			routeHandlers[r.Route] = append(routeHandlers[r.Route], r.Handler)
 		}
+		if shouldStop != nil && shouldStop() {
+			return
+		}
 		for _, r := range pythonIncludeRouterRelations(files, recordsByFile, readContent, knownFiles) {
 			if shouldStop != nil && shouldStop() {
 				return
@@ -3915,6 +3946,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			routeHandlers[r.Route] = append(routeHandlers[r.Route], r.Handler)
 		}
 	}
+	if shouldStop != nil && shouldStop() {
+		return
+	}
 	if spec.emits("CALLS") {
 		for _, r := range routeBridgeRelations(routeHandlers, httpCallsByRoute) {
 			if shouldStop != nil && shouldStop() {
@@ -3922,12 +3956,18 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			}
 			emit(r)
 		}
+		if shouldStop != nil && shouldStop() {
+			return
+		}
 		for _, r := range graphqlSchemaResolverRelations(graphqlSchemaFields, graphqlResolvers) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
 			emit(r)
 		}
+	}
+	if shouldStop != nil && shouldStop() {
+		return
 	}
 	if spec.emits("USES_TYPE") {
 		for _, r := range usesTypeRelations(recordsByFile, symbolsByFile, symbolsByShortName, resolvedImportsByFile) {
@@ -3937,6 +3977,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			emit(r)
 		}
 	}
+	if shouldStop != nil && shouldStop() {
+		return
+	}
 	if spec.emits("PARAM_TYPE") || spec.emits("RETURNS_TYPE") {
 		for _, r := range signatureTypeRelations(recordsByFile, symbolsByFile, symbolsByShortName, resolvedImportsByFile, spec) {
 			if shouldStop != nil && shouldStop() {
@@ -3944,6 +3987,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			}
 			emit(r)
 		}
+	}
+	if shouldStop != nil && shouldStop() {
+		return
 	}
 	if spec.emits("TESTS") {
 		for _, r := range testRelations(recordsByFile, symbolsByShortName, resolvedImportsByFile) {
@@ -3953,6 +3999,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			emit(r)
 		}
 	}
+	if shouldStop != nil && shouldStop() {
+		return
+	}
 	if spec.emits("RESOURCE_DEPENDS_ON") {
 		for _, r := range resourceDependsOnRelations(recordsByRelationSupport(recordsByFile, "RESOURCE_DEPENDS_ON"), readContent) {
 			if shouldStop != nil && shouldStop() {
@@ -3961,6 +4010,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			emit(r)
 		}
 	}
+	if shouldStop != nil && shouldStop() {
+		return
+	}
 	if spec.emits("CONFIGURES") {
 		for _, r := range configuresRelations(recordsByRelationSupport(recordsByFile, "CONFIGURES"), readContent) {
 			if shouldStop != nil && shouldStop() {
@@ -3968,6 +4020,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			}
 			emit(r)
 		}
+	}
+	if shouldStop != nil && shouldStop() {
+		return
 	}
 	if spec.emits("SIMILAR_TO") {
 		for _, r := range similarityRelations(recordsByFile, readContent) {

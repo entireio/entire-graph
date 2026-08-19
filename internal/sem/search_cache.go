@@ -653,15 +653,17 @@ func selectiveSearchSnapshotFromFull(
 		selective.Relations = append(selective.Relations, relation)
 	}
 	var relationFailures []PartialFailure
+	// One stop predicate for the whole relation phase, checked by the producers
+	// as well as at the sink, so the deadline is observable where the work is
+	// done rather than only at phase boundaries.
+	shouldStop := func() bool { return ctx.Err() != nil }
 	if spec.name == ProfileSyntaxOnly {
-		emitStructuralRelationsCompact(sc.key, selective.Files, structuralByFile, emitRelation)
+		emitStructuralRelationsCompact(sc.key, selective.Files, structuralByFile, shouldStop, emitRelation)
 	} else {
-		forEachRelation(sc.key, selective.Files, recordsByFile, sc.read, precomputedImports, spec, func() bool {
-			return ctx.Err() != nil
-		}, emitRelation, func(failure PartialFailure) {
+		forEachRelation(sc.key, selective.Files, recordsByFile, sc.read, precomputedImports, spec, shouldStop, emitRelation, func(failure PartialFailure) {
 			relationFailures = append(relationFailures, failure)
 		})
-		if spec.emits("FILE_CHANGES_WITH") {
+		if spec.emits("FILE_CHANGES_WITH") && !shouldStop() {
 			for _, relation := range fileChangesWithRelations(ctx, sc.absRepo, sc.commit, sc.key, selective.Files) {
 				if ctx.Err() != nil {
 					break

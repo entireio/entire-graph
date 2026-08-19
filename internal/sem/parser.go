@@ -150,7 +150,39 @@ func (TreeSitterParser) Parse(path, content string) ([]Entity, string) {
 	return entities, language
 }
 
+// ParseWithStatus parses without a cancellation deadline of its own. It is the
+// entry point for callers that are not under a wall-clock budget.
 func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string, ParseStatus) {
+	return TreeSitterParser{}.ParseWithStatusCtx(context.Background(), path, content)
+}
+
+// ctxStop returns a cheap "has this context finished?" predicate, or nil when
+// the context can never finish. A nil predicate is what the unbudgeted path
+// gets: the walk then carries no per-node check at all, so a build with no
+// deadline does exactly the work — and produces exactly the bytes — it did
+// before deadlines existed.
+func ctxStop(ctx context.Context) func() bool {
+	done := ctx.Done()
+	if done == nil {
+		return nil
+	}
+	return func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}
+}
+
+// ParseWithStatusCtx is ParseWithStatus under a caller deadline. Both halves of
+// the per-file cost observe ctx: the tree-sitter parse (whose 5s internal cap is
+// now derived from ctx rather than from context.Background, so an expiring budget
+// sets the C parser's cancellation flag) and the entity walk, which is the far
+// larger term — it is superlinear in nesting depth and, before ctx reached it,
+// could run for minutes on one pathological file with nothing able to stop it.
+func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content string) ([]Entity, string, ParseStatus) {
 	spec, ok := languageForContent(path, content)
 	if !ok {
 		return nil, "", ParseStatus{}
@@ -254,7 +286,7 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	if flowJS {
 		parseSrc = []byte(maskFlowJavaScriptUnsupportedSyntax(content))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), treeSitterParseTimeout)
+	parseCtx, cancel := context.WithTimeout(ctx, treeSitterParseTimeout)
 	defer cancel()
 	// Own the parser and tree explicitly and free their native (cgo) memory on
 	// return. sitter.ParseCtx leaves the C parser and tree to be reclaimed by Go
@@ -265,7 +297,7 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	parser := sitter.NewParser()
 	defer parser.Close()
 	parser.SetLanguage(spec.grammar)
-	tree, err := parser.ParseCtx(ctx, nil, parseSrc)
+	tree, err := parser.ParseCtx(parseCtx, nil, parseSrc)
 	if tree != nil {
 		defer tree.Close()
 	}
@@ -278,9 +310,13 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		code := "E_PARSE_ERROR"
 		if err != nil {
 			detail = err.Error()
-			if ctx.Err() != nil {
+			if parseCtx.Err() != nil {
 				code = "E_PARSE_TIMEOUT"
 				detail = fmt.Sprintf("tree-sitter parse exceeded %s", treeSitterParseTimeout)
+				if ctx.Err() != nil {
+					// The caller's budget stopped the parse, not the 5s cap.
+					detail = fmt.Sprintf("tree-sitter parse stopped by caller: %v", ctx.Err())
+				}
 			}
 		}
 		return nil, spec.language, ParseStatus{ParseError: true, Code: code, Detail: detail}
@@ -294,7 +330,8 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	}
 
 	var entities []Entity
-	walkEntities(root, entitySrc, spec.language, "", &entities)
+	stop := ctxStop(ctx)
+	walkEntities(root, entitySrc, spec.language, "", stop, &entities)
 	if spec.language == "C++" {
 		entities = appendMissingEntities(entities, cPlusPlusTypeAliasEntities(content)...)
 	}
@@ -3633,14 +3670,20 @@ func minInt(a, b int) int {
 	return b
 }
 
-func walkEntities(node *sitter.Node, src []byte, language, scope string, entities *[]Entity) {
-	walkEntitiesScoped(node, src, language, scope, false, entities)
+func walkEntities(node *sitter.Node, src []byte, language, scope string, stop func() bool, entities *[]Entity) {
+	walkEntitiesScoped(node, src, language, scope, false, stop, entities)
 }
 
 // walkEntitiesScoped tracks whether the current node is inside a function body
 // (inFunc), so a callable defined there is marked Entity.Local — a nested/closure
 // def that call resolution must not name-match across scopes.
-func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, inFunc bool, entities *[]Entity) {
+func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, inFunc bool, stop func() bool, entities *[]Entity) {
+	// One non-blocking channel probe per node is what makes a wall-clock budget
+	// able to interrupt this walk. stop is nil unless the caller is actually
+	// under a deadline, so the default path pays nothing.
+	if stop != nil && stop() {
+		return
+	}
 	if !validNode(node) {
 		return
 	}
@@ -3665,7 +3708,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		// inside a method body, so localReachable keeps them scoped to the
 		// declaration instead of name-colliding with real members.
 		for _, body := range initializerTypeBodies(node) {
-			walkEntitiesScoped(body, src, language, scope, true, entities)
+			walkEntitiesScoped(body, src, language, scope, true, stop, entities)
 		}
 		return
 	}
@@ -3737,7 +3780,7 @@ func walkEntitiesScoped(node *sitter.Node, src []byte, language, scope string, i
 		}
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		walkEntitiesScoped(node.NamedChild(i), src, language, childScope, childInFunc, entities)
+		walkEntitiesScoped(node.NamedChild(i), src, language, childScope, childInFunc, stop, entities)
 	}
 }
 
