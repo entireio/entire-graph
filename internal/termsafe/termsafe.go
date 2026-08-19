@@ -85,18 +85,7 @@ func NewWriter(out io.Writer) *Writer {
 // half-written escape stops being an escape. It is reported as io.ErrShortWrite
 // instead.
 func (w *Writer) Write(p []byte) (int, error) {
-	if !needsEscape(p, keepLayout) {
-		return w.out.Write(p)
-	}
-	safe := appendEscaped(make([]byte, 0, len(p)+escapeHeadroom), p, keepLayout)
-	written, err := w.out.Write(safe)
-	if err != nil {
-		return 0, err
-	}
-	if written != len(safe) {
-		return 0, io.ErrShortWrite
-	}
-	return len(p), nil
+	return writeEscaped(w.out, p, keepLayout)
 }
 
 // JSONWriter neutralizes the one control an encoded JSON document still carries
@@ -131,18 +120,66 @@ func NewJSONWriter(out io.Writer) *JSONWriter {
 // Write sanitizes p and writes it, reporting progress through the CALLER's buffer
 // exactly as Writer.Write does and for the same reasons.
 func (w *JSONWriter) Write(p []byte) (int, error) {
-	if !needsEscape(p, jsonLayout) {
-		return w.out.Write(p)
+	return writeEscaped(w.out, p, jsonLayout)
+}
+
+// writeEscaped is the write path both writers share.
+//
+// The escaped bytes are flushed in bounded pieces rather than built as one buffer
+// the size of p, because p is not always a rendered line. The provider-record
+// cache hit in internal/cli/root.go hands this a single []byte holding the whole
+// decompressed snapshot, and the search replay paths in internal/cli/search.go
+// hand it a whole stored payload; a full-size copy of one of those doubles the
+// peak footprint of the largest thing the tool holds in memory, on input the
+// repository controls — one C1 byte anywhere in a cached snapshot is enough to
+// take the no-copy fast path away. The flush buffer never grows: one position
+// contributes at most six bytes and the headroom exceeds that, so the escaped
+// form of a stream of any size costs escapeFlushBytes and nothing more.
+//
+// The SCAN still runs over the whole input, and that is the part that must not be
+// chunked. Both lookahead rules read the byte after the one being judged — CRLF
+// passes only as a pair, and a C1 control is recognised from its two-byte form —
+// so escaping one bounded window at a time would judge the last byte of every
+// window against the end of that window instead of against the real next byte.
+// Only the output is in pieces, which is why the result is byte-for-byte the
+// one-shot escape (TestFlushBoundariesDoNotChangeTheEscaping).
+func writeEscaped(out io.Writer, p []byte, keep layout) (int, error) {
+	if !needsEscape(p, keep) {
+		return out.Write(p)
 	}
-	safe := appendEscaped(make([]byte, 0, len(p)+escapeHeadroom), p, jsonLayout)
-	written, err := w.out.Write(safe)
-	if err != nil {
+	buffer := make([]byte, 0, escapeFlushBytes+escapeHeadroom)
+	for i := 0; i < len(p); {
+		width, escape := escapedAt(p, i, keep)
+		buffer = appendEscapedAt(buffer, p, i, width, escape)
+		i += width
+		if len(buffer) < escapeFlushBytes {
+			continue
+		}
+		if err := flushEscaped(out, buffer); err != nil {
+			return 0, err
+		}
+		buffer = buffer[:0]
+	}
+	if err := flushEscaped(out, buffer); err != nil {
 		return 0, err
 	}
-	if written != len(safe) {
-		return 0, io.ErrShortWrite
-	}
 	return len(p), nil
+}
+
+// flushEscaped writes one piece of the escaped stream, refusing a short write for
+// the reason Writer.Write documents.
+func flushEscaped(out io.Writer, buffer []byte) error {
+	if len(buffer) == 0 {
+		return nil
+	}
+	written, err := out.Write(buffer)
+	if err != nil {
+		return err
+	}
+	if written != len(buffer) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 // Line neutralizes one value that must occupy a single line: a file path, a
@@ -206,9 +243,18 @@ const (
 	jsonLayout
 )
 
-// escapeHeadroom is the slack the output buffer starts with. It is a guess at how
-// much a hostile string grows, not a bound; append handles the rest.
+// escapeHeadroom is the slack the output buffer starts with. For the value
+// helpers it is a guess at how much a hostile string grows, not a bound, and
+// append handles the rest. For writeEscaped's flush buffer it IS the bound: that
+// buffer is flushed as soon as it reaches escapeFlushBytes, and one position
+// contributes at most six bytes, so 16 bytes of slack is never exhausted.
 const escapeHeadroom = 16
+
+// escapeFlushBytes is how much escaped output writeEscaped accumulates before
+// handing it to the sink. It is the whole memory cost of escaping a stream, so it
+// is sized to amortize the write syscall rather than to fit any payload — 32 KiB
+// is what io.Copy uses for the same trade.
+const escapeFlushBytes = 32 << 10
 
 const hexDigits = "0123456789abcdef"
 
@@ -362,23 +408,35 @@ func needsEscape[T text](data T, keep layout) bool {
 func appendEscaped[T text](dst []byte, data T, keep layout) []byte {
 	for i := 0; i < len(data); {
 		width, escape := escapedAt(data, i, keep)
-		switch {
-		case !escape:
-			for offset := 0; offset < width; offset++ {
-				dst = append(dst, data[i+offset])
-			}
-		case width == 2:
-			// In the two-byte form the trailing byte IS the code point: 0xc2
-			// contributes the 0x80 that its 0x00-0x1f payload is added to.
-			point := data[i+1]
-			dst = append(dst, '\\', 'u', '0', '0', hexDigits[point>>4], hexDigits[point&0x0f])
-		case data[i] >= 0x80:
-			// A stray C1 byte denotes the code point of the same value.
-			dst = append(dst, '\\', 'u', '0', '0', hexDigits[data[i]>>4], hexDigits[data[i]&0x0f])
-		default:
-			dst = append(dst, '\\', 'x', hexDigits[data[i]>>4], hexDigits[data[i]&0x0f])
-		}
+		dst = appendEscapedAt(dst, data, i, width, escape)
 		i += width
+	}
+	return dst
+}
+
+// appendEscapedAt appends the one sequence escapedAt just judged, verbatim or as
+// its escape. It is separate from the loop above so that the streaming write path
+// emits the identical bytes from the identical code: two copies of these four
+// cases would be two things to keep in step, and the escape FORM is what every
+// consumer of the machine formats decodes.
+//
+// It appends at most six bytes, which is what bounds writeEscaped's flush buffer.
+func appendEscapedAt[T text](dst []byte, data T, i, width int, escape bool) []byte {
+	switch {
+	case !escape:
+		for offset := 0; offset < width; offset++ {
+			dst = append(dst, data[i+offset])
+		}
+	case width == 2:
+		// In the two-byte form the trailing byte IS the code point: 0xc2
+		// contributes the 0x80 that its 0x00-0x1f payload is added to.
+		point := data[i+1]
+		dst = append(dst, '\\', 'u', '0', '0', hexDigits[point>>4], hexDigits[point&0x0f])
+	case data[i] >= 0x80:
+		// A stray C1 byte denotes the code point of the same value.
+		dst = append(dst, '\\', 'u', '0', '0', hexDigits[data[i]>>4], hexDigits[data[i]&0x0f])
+	default:
+		dst = append(dst, '\\', 'x', hexDigits[data[i]>>4], hexDigits[data[i]&0x0f])
 	}
 	return dst
 }
