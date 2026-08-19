@@ -51,6 +51,10 @@ func providerRecordsKey(absRepo, repositoryKey, providerVersion, tree, mode stri
 		_, _ = io.WriteString(hash, "\x00")
 	}
 	writePart(providerRecordsCacheVersion)
+	// The built-in credential-store deny decides which files are in this corpus at
+	// all, so a build that disagrees about it must not reach this build's entries.
+	// See builtinSecretRulesDigest for why nothing else in this key separates them.
+	writePart("builtin-secret-rules=" + builtinSecretRulesDigest())
 	writePart(absRepo)
 	// Repo identity PREFIXES EVERY SYMBOL ID this cache stores, so serving one repository's records
 	// to another hands back IDs attributed to the wrong project. Reproduced by re-pointing a remote:

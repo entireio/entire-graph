@@ -2,6 +2,8 @@ package sem
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -85,7 +87,11 @@ const graphIgnoreFileName = ".graphignore"
 // rule is decided on a basename or a suffix, except the `secrets/`-directory rules
 // which additionally require a data or config suffix — so `internal/secrets/manager.go`,
 // `pkg/credentials/provider.go` and `internal/config/dotenv.go` stay fully searchable.
-const builtinSecretIgnorePatterns = `
+// It is a var rather than a const for one reason: the persistent caches key on a
+// digest of it (see builtinSecretRulesDigest), and a test proving that binding has
+// to be able to stand in for a differently-built binary. Production code never
+// assigns to it.
+var builtinSecretIgnorePatterns = `
 # Dotenv and direnv: the whole file is credential material. The .env.<environment>
 # variants are covered because they are the same file shape, and the template forms
 # (.env.example, .env.sample) with them: a template is byte-shaped exactly like the
@@ -183,7 +189,7 @@ func parseBuiltinSecretIgnoreRules() []ignoreRule {
 	var matcher ignoreMatcher
 	if err := matcher.loadContent(builtinSecretIgnorePatterns, false); err != nil {
 		// loadContent only fails on a scanner error, which a string reader cannot
-		// produce; a panic here would mean the constant above stopped being a string.
+		// produce; a panic here would mean the block above stopped being a string.
 		panic("sem: built-in credential-store ignore rules failed to parse: " + err.Error())
 	}
 	for index := range matcher.rules {
@@ -191,6 +197,24 @@ func parseBuiltinSecretIgnoreRules() []ignoreRule {
 		rule.expression = regexp.MustCompile("(?i)" + rule.expression.String())
 	}
 	return matcher.rules
+}
+
+// builtinSecretRulesDigest fingerprints the built-in credential-store taxonomy so
+// the persistent cache keys can bind to it. Both caches store a corpus whose
+// MEMBERSHIP this taxonomy decides, and nothing else in either key separates two
+// builds that disagree about it: the provider version is the release string, which
+// the repository's own `mise run build` leaves at "dev", so a build made before
+// these rules existed and a build made after them key identically. An entry warmed
+// by the earlier build is then served to the later one, and the paths it names are
+// re-emitted and reopened.
+//
+// A digest rather than a hand-bumped cache version, because the digest moves
+// whenever the pattern block is edited and there is nothing left to remember. It
+// also invalidates every entry already on disk, which is what a version bump would
+// have been for.
+func builtinSecretRulesDigest() string {
+	sum := sha256.Sum256([]byte(builtinSecretIgnorePatterns))
+	return hex.EncodeToString(sum[:])
 }
 
 // loadBuiltinSecretRules appends the built-in credential-store deny. Callers place

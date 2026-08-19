@@ -54,6 +54,11 @@ inside the repository under analysis cannot switch it off, and before the
 caller's `--ignore-file`/`--include-file`, so `--include-file` remains the way
 to deliberately re-admit a path (a checked-in `.env.example` used as
 configuration documentation, for example).
+
+Both persistent caches (`index`/`search` snapshots and the streamed record
+caches) key on a digest of this list, so a cache entry warmed by a build with a
+different list is not reachable — an entry written before these rules existed
+misses instead of re-emitting the paths it named.
 - For `stats` only: local coding-agent session transcripts
   (`~/.claude/projects/<path-slug>/*.jsonl`, or `--sessions-dir`/
   `--transcript` overrides). This is Claude Code's transcript layout; the
