@@ -1156,7 +1156,13 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	}
 	// See writeTextSearch for why the literal cluster is quarantined here rather than in its own
 	// renderer, and why its verdict feeds the notice below.
-	literalCluster, literalClusterForged := searchQuarantineBlock(sem.RenderSearchLiteralCluster(response.LiteralCluster))
+	renderedLiteralCluster := sem.RenderSearchLiteralCluster(response.LiteralCluster)
+	literalCluster, _ := searchQuarantineBlock(renderedLiteralCluster)
+	// The LINES the quarantine produces, not merely whether it produced any. The notice is emitted
+	// when the set is non-empty, and the sink test below asks the set whether the composition the
+	// fitter finally chose kept one of them: a forged record that the byte fitter clipped away must
+	// not cost the caller the ranked location that survived. See searchPayloadDisclosesItsQuarantine.
+	quarantinedLines := searchResponseQuarantinedLines(response.Results, renderedLiteralCluster)
 	suffixes := [][]byte{
 		literalCluster,
 		agentSearchTypeCard(response.TypeCard),
@@ -1166,7 +1172,7 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	// It degrades only to absent, and only outside every other ladder, so it is the last block the
 	// fitter gives up — see the variant loops below.
 	var forgeryNotice []byte
-	if literalClusterForged || searchResultsCarryForgedRecords(response.Results) {
+	if len(quarantinedLines) > 0 {
 		forgeryNotice = searchForgeryNotice
 	}
 	if budget <= 0 {
@@ -1321,10 +1327,10 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 											append(prefix(), noResults...), agentVerifyFirstSuffixes(verify, verifyBlock, suffixes), budget,
 										)
 										// A result-less plan can still carry quarantined source: the literal
-										// cluster is a suffix and its renderer quarantines it. The verdict is
-										// passed in because the bytes alone cannot tell a line this renderer
-										// indented from one the file already held indented.
-										if !searchPayloadDisclosesItsQuarantine(string(payload), len(forgeryNotice) > 0) {
+										// cluster is a suffix and its renderer quarantines it. The produced
+										// lines are passed in because the bytes alone cannot tell a line this
+										// renderer indented from one the file already held indented.
+										if !searchPayloadDisclosesItsQuarantine(string(payload), quarantinedLines) {
 											continue
 										}
 										_, err := out.Write(payload)
@@ -1351,12 +1357,14 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 									// clipped the forged line away, and costs the ladder nothing it was
 									// entitled to: the next rung down is tried immediately.
 									//
-									// The test is gated on whether anything was ACTUALLY quarantined,
-									// because a one-space-indented record shape in the bytes is equally
-									// what an honest file looks like when it holds one. Ungated, such a
-									// file rejected every rung of a ladder that had no notice to offer and
-									// lost the caller its whole payload.
-									if !searchPayloadDisclosesItsQuarantine(string(payload), len(forgeryNotice) > 0) {
+									// The test asks for the LINES this response quarantined, because a
+									// one-space-indented record shape in the bytes is equally what an
+									// honest file looks like when it holds one. Asked only for a shape, it
+									// rejected every rung of a notice-free ladder over an honest indented
+									// line and lost the caller its whole payload — both when nothing was
+									// quarantined at all and when the forged result was clipped away and
+									// an honest one survived.
+									if !searchPayloadDisclosesItsQuarantine(string(payload), quarantinedLines) {
 										continue
 									}
 									_, err := out.Write(payload)
