@@ -1090,3 +1090,113 @@ func TestDiffRejectsUnknownFlag(t *testing.T) {
 		t.Errorf("error %q does not name the offending flag", err)
 	}
 }
+
+// TestParseDiffFlagsRejectsOptionShapedRevision is the unit half of the argument-injection
+// fix (CWE-88). --base/--head values used to be copied into `git diff`'s argv verbatim, so a
+// value beginning with '-' stopped being a revision and became an option of git itself.
+func TestParseDiffFlagsRejectsOptionShapedRevision(t *testing.T) {
+	for _, args := range [][]string{
+		{"--base", "--output=/tmp/entire-graph-victim", "--head", "HEAD"},
+		{"--base", "HEAD~1", "--head", "--output=/tmp/entire-graph-victim"},
+		{"--base", "-"},
+		{"--head", ""},
+	} {
+		if _, _, err := parseDiffFlags(args); err == nil {
+			t.Errorf("parseDiffFlags(%q) accepted an option-shaped revision, want an error", args)
+		}
+	}
+}
+
+// TestOptionShapedRevisionCannotWriteFiles is the end-to-end half. Before the fix,
+//
+//	entire graph diff --repo . --base '--output=FILE' --head HEAD
+//
+// exited 0 and left FILE truncated and replaced by git's own `-z --name-status` output,
+// because git parses options anywhere ahead of `--`. The `commit` verb had the same reach:
+// `git rev-parse '--output=FILE^'` does not fail, so FirstParent let the value through to the
+// same `git diff` argv. The revision here is an ordinary path with a '-' prefix, so nothing
+// about the fixture is platform-specific.
+func TestOptionShapedRevisionCannotWriteFiles(t *testing.T) {
+	repo := twoCommitRepo(t)
+	const secret = "victim contents that must survive\n"
+	victim := filepath.Join(t.TempDir(), "victim.txt")
+
+	tests := []struct {
+		name string
+		args func(target string) []string
+	}{
+		{"diff --base", func(target string) []string {
+			return []string{"diff", "--repo", repo, "--base", "--output=" + target, "--head", "HEAD"}
+		}},
+		{"diff --head", func(target string) []string {
+			return []string{"diff", "--repo", repo, "--base", "HEAD~1", "--head", "--output=" + target}
+		}},
+		{"analyze --base", func(target string) []string {
+			return []string{"analyze", "--repo", repo, "--base", "--output=" + target}
+		}},
+		{"commit revision", func(target string) []string {
+			return []string{"commit", "--repo", repo, "--output=" + target}
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := os.WriteFile(victim, []byte(secret), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var out, errOut bytes.Buffer
+			err := Run(t.Context(), Options{Stdout: &out, Stderr: &errOut, Version: "test-version"}, test.args(victim))
+			if err == nil {
+				t.Errorf("%s accepted an option-shaped revision; stdout:\n%s", test.name, out.String())
+			} else if !strings.Contains(err.Error(), "revision") {
+				t.Errorf("error %q does not explain that the value is not a revision", err)
+			}
+			got, readErr := os.ReadFile(victim)
+			if readErr != nil {
+				t.Fatalf("read victim file: %v", readErr)
+			}
+			if string(got) != secret {
+				t.Fatalf("%s let git rewrite a file outside the repository; victim now holds %q", test.name, string(got))
+			}
+		})
+	}
+}
+
+// TestDiffAcceptsOrdinaryRevisions is the over-rejection guard for the same fix: every shape
+// of revision a caller legitimately passes must still resolve.
+func TestDiffAcceptsOrdinaryRevisions(t *testing.T) {
+	repo := twoCommitRepo(t)
+	git(t, repo, "branch", "feature", "HEAD~1")
+	git(t, repo, "tag", "-a", "v1", "-m", "release", "HEAD~1")
+	full := rev(t, repo, "HEAD~1")
+
+	for _, base := range []string{"HEAD~1", "feature", "v1", full, full[:7]} {
+		var out, errOut bytes.Buffer
+		err := Run(t.Context(), Options{Stdout: &out, Stderr: &errOut, Version: "test-version"},
+			[]string{"diff", "--repo", repo, "--base", base, "--head", "HEAD", "--json"})
+		if err != nil {
+			t.Errorf("diff --base %q: %v\n%s", base, err, errOut.String())
+			continue
+		}
+		if !strings.Contains(out.String(), "\"files\"") {
+			t.Errorf("diff --base %q produced no result payload:\n%s", base, out.String())
+		}
+	}
+}
+
+// twoCommitRepo builds a git repository whose HEAD~1..HEAD range contains one real semantic
+// change, so a diff over it exercises the analysis rather than an empty file list.
+func twoCommitRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "a.go", "package main\n\nfunc validate() bool { return true }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "one")
+	write(t, repo, "a.go", "package main\n\nfunc validate() bool { return true }\n\nfunc audit() bool { return true }\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "two")
+	return repo
+}
