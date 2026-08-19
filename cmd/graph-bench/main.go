@@ -478,7 +478,14 @@ func ensureRepo(ctx context.Context, url, ref, dir string, depth int) (string, e
 // git 2.54.0). The upper bound is therefore the longer format's width, which
 // keeps every previously accepted abbreviation accepted.
 //
-// The classification is a guess in both directions: a lowercase-hex branch name
+// Git also parses an object name case-insensitively, so A-F is as valid as a-f:
+// `git rev-parse`, `git cat-file -t` and `git checkout` all accept an uppercase
+// or mixed-case id and answer with the lowercase one (verified against git
+// 2.54.0). Recognising only a-f misclassified an uppercase pinned commit id as
+// a branch name and produced the same
+// "fatal: Remote branch <id> not found in upstream origin" as the width bug.
+//
+// The classification is a guess in both directions: a hex-shaped branch name
 // looks exactly like an object id, and the two can coexist in one repository
 // pointing at different commits. It is therefore not load-bearing -- ensureRepo
 // asks the remote (remoteRefFor) whenever this returns true, and a name the
@@ -488,7 +495,7 @@ func looksLikeSHA(ref string) bool {
 		return false
 	}
 	for _, r := range ref {
-		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
 			return false
 		}
 	}

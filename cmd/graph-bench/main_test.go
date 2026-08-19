@@ -538,13 +538,19 @@ func benchGitOutput(t *testing.T, dir string, args ...string) string {
 func TestLooksLikeSHAAcceptsBothObjectFormats(t *testing.T) {
 	sha1ID := strings.Repeat("a1", 20)   // 40 hex, SHA-1
 	sha256ID := strings.Repeat("b2", 32) // 64 hex, SHA-256
-	for _, ref := range []string{"abcdef1", sha1ID, sha1ID[:12], sha256ID, sha256ID[:41]} {
+	// Git parses an object name case-insensitively, so the uppercase and
+	// mixed-case spellings of the same id are object ids too.
+	for _, ref := range []string{
+		"abcdef1", sha1ID, sha1ID[:12], sha256ID, sha256ID[:41],
+		"ABCDEF1", strings.ToUpper(sha1ID), strings.ToUpper(sha256ID), "aBcDeF1", "DeadBeef",
+	} {
 		if !looksLikeSHA(ref) {
 			t.Fatalf("looksLikeSHA(%q) (len %d) = false, want true", ref, len(ref))
 		}
 	}
-	// Still not object ids: too short, too long, and non-hex branch names.
-	for _, ref := range []string{"abcdef", strings.Repeat("c3", 33), "main", "release/v1", "deadbeefz"} {
+	// Still not object ids: too short, too long, and non-hex branch names in
+	// either case.
+	for _, ref := range []string{"abcdef", "ABCDEF", strings.Repeat("c3", 33), strings.ToUpper(strings.Repeat("c3", 33)), "main", "release/v1", "deadbeefz", "DEADBEEFZ"} {
 		if looksLikeSHA(ref) {
 			t.Fatalf("looksLikeSHA(%q) (len %d) = true, want false", ref, len(ref))
 		}
@@ -732,5 +738,91 @@ func TestEnsureRepoResolvesNewRefInCachedClone(t *testing.T) {
 	}
 	if sha != want {
 		t.Fatalf("sha = %q, want the release tip %q", sha, want)
+	}
+}
+
+// Git parses an object name case-insensitively: `git rev-parse`, `git cat-file`
+// and `git checkout` all accept an uppercase or mixed-case id and answer with
+// the lowercase one (verified against git 2.54.0). A lock file or manifest may
+// therefore pin a perfectly valid uppercase commit id. Recognising only a-f
+// classified it as a branch name, so the clone became `git clone --branch <id>`
+// and died with "fatal: Remote branch <id> not found in upstream origin" -- the
+// same failure as the SHA-256 width bug, from the same guess.
+func TestEnsureRepoClonesPinnedUppercaseCommitID(t *testing.T) {
+	mixedCase := func(s string) string {
+		out := []byte(strings.ToLower(s))
+		for i := 0; i < len(out); i += 2 {
+			out[i] = strings.ToUpper(string(out[i]))[0]
+		}
+		return string(out)
+	}
+	for _, tc := range []struct {
+		name      string
+		upstream  func(t *testing.T) string
+		transform func(string) string
+	}{
+		{"sha1-upper", func(t *testing.T) string { t.Setenv("GIT_DEFAULT_HASH", "sha1"); return newUpstreamRepo(t) }, strings.ToUpper},
+		{"sha1-mixed", func(t *testing.T) string { t.Setenv("GIT_DEFAULT_HASH", "sha1"); return newUpstreamRepo(t) }, mixedCase},
+		{"sha256-upper", func(t *testing.T) string {
+			if out, err := exec.CommandContext(t.Context(), "git", "init", "--object-format=sha256", "-h").CombinedOutput(); err != nil && strings.Contains(string(out), "unknown option") {
+				t.Skipf("this git has no --object-format: %s", out)
+			}
+			return newUpstreamRepoWithObjectFormat(t, "sha256")
+		}, strings.ToUpper},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := tc.upstream(t)
+			pinned := strings.TrimSpace(benchGitOutput(t, upstream, "rev-parse", "HEAD"))
+			ref := tc.transform(pinned)
+			if ref == pinned {
+				t.Fatalf("fixture produced no case change: %q", ref)
+			}
+			// No assertion on looksLikeSHA here: the classifier has its own
+			// table test, and letting this one run all the way to git makes
+			// the observable the tool's real failure.
+			dir := filepath.Join(t.TempDir(), "clone")
+			sha, err := ensureRepo(t.Context(), upstream, ref, dir, 1)
+			if err != nil {
+				t.Fatalf("ensureRepo on a pinned %s commit id: %v", tc.name, err)
+			}
+			if !strings.EqualFold(sha, pinned) {
+				t.Fatalf("resolved sha = %q, want the pinned %q", sha, pinned)
+			}
+			assertFullObjectID(t, sha)
+			if _, statErr := os.Stat(filepath.Join(dir, "main.go")); statErr != nil {
+				t.Fatalf("pinned %s id did not produce a checkout: %v", tc.name, statErr)
+			}
+		})
+	}
+}
+
+// The control for the widening above: accepting A-F makes an uppercase-hex
+// *branch* name look like an object id too, so this pins that such a branch is
+// still reachable. It passes both before and after the widening -- before it,
+// the name is classified as a branch and cloned with --branch; after it, the
+// name is classified as an object id and remoteRefFor asks the remote, which
+// publishes it as a branch. Either way ensureRepo must land on the branch tip.
+func TestEnsureRepoChecksOutUppercaseHexShapedBranchName(t *testing.T) {
+	name := strings.Repeat("AB", 20) // 40 chars: the shape of a full SHA-1 id
+	upstream := newUpstreamRepo(t)
+	benchGit(t, upstream, "checkout", "--quiet", "-b", name)
+	if err := os.WriteFile(filepath.Join(upstream, "branch.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	benchGit(t, upstream, "add", ".")
+	benchGit(t, upstream, "commit", "--quiet", "-m", "on the uppercase-hex branch")
+	want := strings.TrimSpace(benchGitOutput(t, upstream, "rev-parse", "HEAD"))
+	benchGit(t, upstream, "checkout", "--quiet", "main")
+
+	dir := filepath.Join(t.TempDir(), "clone")
+	sha, err := ensureRepo(t.Context(), upstream, name, dir, 1)
+	if err != nil {
+		t.Fatalf("ensureRepo(uppercase-hex branch): %v", err)
+	}
+	if sha != want {
+		t.Fatalf("sha = %q, want the branch tip %q", sha, want)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "branch.go")); statErr != nil {
+		t.Fatalf("uppercase-hex branch did not produce its working tree: %v", statErr)
 	}
 }
