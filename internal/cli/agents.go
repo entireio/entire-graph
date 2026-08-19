@@ -2,8 +2,10 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -96,7 +98,22 @@ func runInitAgents(opts Options, args []string) error {
 		return fmt.Errorf("init-agents: %s is not a directory", root)
 	}
 
-	guidePath := filepath.Join(root, ".entire", "graph-agent.md")
+	// init-agents is the only command that writes into the repository tree, and
+	// docs/trust-and-security.md scopes that to exactly three files inside it. A
+	// repository-committed symlink must not redirect any of those writes elsewhere, so every
+	// write below goes through this os.Root instead of an absolute path. os.Root resolves each
+	// component with openat relative to the opened directory: a link that stays inside the
+	// repository is still followed — which is what the documented AGENTS.md/CLAUDE.md alias
+	// needs — while one that escapes, is absolute, or crosses an escaping directory is refused.
+	repoRoot, err := os.OpenRoot(root)
+	if err != nil {
+		return fmt.Errorf("init-agents: %w", err)
+	}
+	defer repoRoot.Close()
+
+	guideDirName := ".entire"
+	guideName := filepath.Join(guideDirName, "graph-agent.md")
+	guidePath := filepath.Join(root, guideName)
 	pointer := agentPointerBegin + "\n" +
 		"This repo has the entire-graph code graph installed. Before exploring code with\n" +
 		"grep/find/whole-file reads, read .entire/graph-agent.md — resolution-first guidance\n" +
@@ -104,8 +121,24 @@ func runInitAgents(opts Options, args []string) error {
 		"@.entire/graph-agent.md\n" +
 		agentPointerEnd + "\n"
 
-	agentsPath := filepath.Join(root, "AGENTS.md")
-	claudePath := filepath.Join(root, "CLAUDE.md")
+	agentsName, claudeName := "AGENTS.md", "CLAUDE.md"
+	agentsPath := filepath.Join(root, agentsName)
+	claudePath := filepath.Join(root, claudeName)
+
+	// Establish containment for all four write targets before inspecting or writing anything,
+	// so a repository that redirects one of them fails with a single actionable error and no
+	// partial installation, exactly like the malformed-marker preflight below.
+	for _, target := range []struct{ name, path string }{
+		{guideDirName, filepath.Join(root, guideDirName)},
+		{guideName, guidePath},
+		{agentsName, agentsPath},
+		{claudeName, claudePath},
+	} {
+		if err := ensureContainedInRepo(repoRoot, target.name, target.path); err != nil {
+			return fmt.Errorf("init-agents: %w", err)
+		}
+	}
+
 	agentsInfo, err := inspectInstructionFile(agentsPath)
 	if err != nil {
 		return fmt.Errorf("init-agents: %w", err)
@@ -142,15 +175,15 @@ func runInitAgents(opts Options, args []string) error {
 		claudeContent = renderPointerBlock(claudeSource, claudeBegin, claudeEnd, claudeBlock)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(guidePath), 0o755); err != nil {
+	if err := repoRoot.MkdirAll(guideDirName, 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(guidePath, []byte(agentGuide), 0o644); err != nil {
+	if err := writeContainedFile(repoRoot, guideName, []byte(agentGuide), 0o644); err != nil {
 		return err
 	}
 	fmt.Fprintf(opts.Stdout, "wrote %s\n", guidePath)
 
-	if err := os.WriteFile(agentsPath, agentsContent, 0o644); err != nil {
+	if err := writeContainedFile(repoRoot, agentsName, agentsContent, 0o644); err != nil {
 		return fmt.Errorf("init-agents: AGENTS.md: %w", err)
 	}
 	fmt.Fprintf(opts.Stdout, "updated %s\n", agentsPath)
@@ -174,16 +207,56 @@ func runInitAgents(opts Options, args []string) error {
 	if err == nil && os.SameFile(agentsInfo, claudeInfo) {
 		return nil
 	}
-	if err := os.WriteFile(claudePath, claudeContent, 0o644); err != nil {
+	if err := writeContainedFile(repoRoot, claudeName, claudeContent, 0o644); err != nil {
 		return fmt.Errorf("init-agents: CLAUDE.md: %w", err)
 	}
 	fmt.Fprintf(opts.Stdout, "updated %s\n", claudePath)
 	return nil
 }
 
+// ensureContainedInRepo refuses a write target whose resolution leaves the repository. It is a
+// preflight only: root.Stat resolves the same way the write does but is not atomic with it, so
+// writeContainedFile below remains the boundary that actually holds. Its job is to turn an
+// escaping alias into one clear error before any file is created.
+//
+// A missing target is not an escape. init-agents legitimately creates all four paths, and the
+// documented dangling alias (CLAUDE.md -> AGENTS.md before AGENTS.md exists) resolves to
+// fs.ErrNotExist inside the root; only a genuine escape reports otherwise.
+func ensureContainedInRepo(root *os.Root, name, path string) error {
+	if _, err := root.Stat(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf(
+			"%s: refusing to write through a link that leaves the repository (%w); "+
+				"init-agents only writes inside the project root, so repoint or remove the link, then rerun init-agents",
+			path, err,
+		)
+	}
+	return nil
+}
+
+// writeContainedFile is os.WriteFile confined to root. The perm argument applies only when the
+// file is created, matching os.WriteFile, so an existing file keeps its mode.
+func writeContainedFile(root *os.Root, name string, content []byte, perm os.FileMode) error {
+	file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	_, writeErr := file.Write(content)
+	closeErr := file.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
+}
+
 // inspectInstructionFile identifies existing aliases and rejects targets that cannot be safely
 // read as instruction files. A missing target—including a dangling alias—is preserved as the
 // empty-file case supported by init-agents.
+//
+// os.Stat, not os.Lstat, is deliberate and load-bearing: AGENTS.md and CLAUDE.md are documented
+// as permitted to be the same file, and os.SameFile in runInitAgents can only see that when both
+// FileInfos describe the TARGET inode. Following the link is safe here because
+// ensureContainedInRepo has already established that it resolves inside the repository;
+// containment, not link rejection, is what keeps the write in the project root.
 func inspectInstructionFile(path string) (os.FileInfo, error) {
 	info, err := os.Stat(path)
 	if err != nil {

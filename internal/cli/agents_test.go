@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -524,6 +525,166 @@ func TestInitAgentsCreatesDanglingSharedAliasTargetOnce(t *testing.T) {
 			runInitAgentsForTest(t, repo)
 			if after := readFileForTest(t, filepath.Join(repo, "AGENTS.md")); after != before {
 				t.Fatalf("dangling-alias rerun was not byte-idempotent:\nbefore:\n%s\nafter:\n%s", before, after)
+			}
+		})
+	}
+}
+
+// skipIfSymlinksUnrepresentable guards the containment tests. The attack input is a symlink
+// committed to a repository, and a default Windows checkout does not materialize one: without
+// core.symlinks (which needs SeCreateSymbolicLinkPrivilege) git writes a plain text file holding
+// the link target instead, so the escaping alias cannot exist in a checked-out tree there.
+func skipIfSymlinksUnrepresentable(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("a committed symlink is not checked out as a symlink on Windows by default")
+	}
+}
+
+func TestInitAgentsRefusesInstructionAliasEscapingRepository(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	for _, aliasName := range []string{"AGENTS.md", "CLAUDE.md"} {
+		t.Run(aliasName, func(t *testing.T) {
+			base := t.TempDir()
+			repo := filepath.Join(base, "repo")
+			if err := os.Mkdir(repo, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			victimPath := filepath.Join(base, "victim.md")
+			victim := []byte("# outside the repository\n")
+			if err := os.WriteFile(victimPath, victim, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join("..", "victim.md"), filepath.Join(repo, aliasName)); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+
+			var stdout, stderr bytes.Buffer
+			err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+			if err == nil {
+				t.Fatalf("init-agents followed %s out of the repository", aliasName)
+			}
+			if !strings.Contains(err.Error(), aliasName) {
+				t.Fatalf("error %q does not name the offending alias %s", err, aliasName)
+			}
+			if got := readFileForTest(t, victimPath); got != string(victim) {
+				t.Fatalf("a file outside the repository was written:\nwant: %q\n got: %q", victim, got)
+			}
+			if _, statErr := os.Lstat(filepath.Join(repo, ".entire", "graph-agent.md")); !os.IsNotExist(statErr) {
+				t.Fatalf("the guide was written despite the containment failure (stat error %v)", statErr)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout was written before containment was established: %q", stdout.String())
+			}
+		})
+	}
+}
+
+// TestInitAgentsFollowsInstructionAliasInsideRepository pins the other half of the containment
+// rule. Refusing symlinks outright, or confining writes with a root that rejects every symlinked
+// component, would also break this shape, which is legitimate: the link never leaves the project.
+func TestInitAgentsFollowsInstructionAliasInsideRepository(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	repo := t.TempDir()
+	shared := filepath.Join(repo, "docs", "shared.md")
+	if err := os.Mkdir(filepath.Dir(shared), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(shared, []byte("# Shared rules\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	aliasPath := filepath.Join(repo, "AGENTS.md")
+	if err := os.Symlink(filepath.Join("docs", "shared.md"), aliasPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	runInitAgentsForTest(t, repo)
+
+	got := readFileForTest(t, shared)
+	if !strings.Contains(got, "# Shared rules\n") || !strings.Contains(got, testAgentPointerBlock) {
+		t.Fatalf("in-repo alias target did not receive the managed block:\n%s", got)
+	}
+	if info, err := os.Lstat(aliasPath); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("in-repo alias was replaced instead of followed: info=%v error=%v", info, err)
+	}
+
+	before := got
+	runInitAgentsForTest(t, repo)
+	if after := readFileForTest(t, shared); after != before {
+		t.Fatalf("in-repo alias rerun was not byte-idempotent:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestInitAgentsRefusesGuideAliasEscapingRepository(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	tests := []struct {
+		name string
+		// plant installs the escaping alias and returns the path outside the repository
+		// that the unconfined write reaches.
+		plant func(t *testing.T, base, repo string) string
+	}{
+		{
+			name: "guide directory alias",
+			plant: func(t *testing.T, base, repo string) string {
+				t.Helper()
+				outside := filepath.Join(base, "outside")
+				if err := os.Mkdir(outside, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				victimPath := filepath.Join(outside, "graph-agent.md")
+				if err := os.WriteFile(victimPath, []byte("# outside the repository\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join("..", "outside"), filepath.Join(repo, ".entire")); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+				return victimPath
+			},
+		},
+		{
+			name: "guide file alias",
+			plant: func(t *testing.T, base, repo string) string {
+				t.Helper()
+				victimPath := filepath.Join(base, "victim.md")
+				if err := os.WriteFile(victimPath, []byte("# outside the repository\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(filepath.Join(repo, ".entire"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				link := filepath.Join(repo, ".entire", "graph-agent.md")
+				if err := os.Symlink(filepath.Join("..", "..", "victim.md"), link); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+				return victimPath
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := t.TempDir()
+			repo := filepath.Join(base, "repo")
+			if err := os.Mkdir(repo, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			victimPath := tt.plant(t, base, repo)
+			victim := readFileForTest(t, victimPath)
+
+			var stdout, stderr bytes.Buffer
+			err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+			if err == nil {
+				t.Fatal("init-agents followed the guide alias out of the repository")
+			}
+			if got := readFileForTest(t, victimPath); got != victim {
+				t.Fatalf("a file outside the repository was written:\nwant: %q\n got: %q", victim, got)
+			}
+			for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+				if _, statErr := os.Lstat(filepath.Join(repo, name)); !os.IsNotExist(statErr) {
+					t.Fatalf("%s was written despite the containment failure (stat error %v)", name, statErr)
+				}
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout was written before containment was established: %q", stdout.String())
 			}
 		})
 	}
