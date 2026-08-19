@@ -38,7 +38,10 @@ import (
 //     cache writes unconfined (see internal/sem/cache_entry.go).
 //   - INSIDE the repository: the path is repository-controlled, so the write goes
 //     through os.Root — which cannot be made to leave the repository root — and a
-//     symlinked final component is refused rather than followed.
+//     symlinked component at ANY depth is refused rather than followed. os.Root
+//     alone is not enough for the second half: it stops the write leaving the root,
+//     but on Unix it happily FOLLOWS a link that stays inside it, and `.git/config`
+//     is inside it.
 //
 // Two things decide "inside", and both exist so that a SPELLING cannot move the
 // boundary. The root is the checkout's git top level rather than the --repo value
@@ -415,6 +418,52 @@ func resolveExistingPrefix(dir string) (string, error) {
 	}
 }
 
+// refuseSymlinkedComponents refuses the write when ANY component of rel is a
+// symbolic link, not only the final one.
+//
+// This is the check that makes the confinement real, and os.Root is not a
+// substitute for it. os.Root guarantees only that the write cannot LEAVE the root;
+// it does not refuse a link that stays inside it, and on Unix it FOLLOWS one.
+// (Windows' Root refuses every symlinked component itself, so this check is also
+// what makes the two platforms agree rather than diverge silently. It is the
+// portable spelling of the refusal either way — syscall.O_NOFOLLOW does not exist
+// on Windows.)
+//
+// Checking only the FINAL component, as the first version of this fix did, leaves
+// every parent followed: a repository that commits `reports -> .git` turns
+// `--report reports/config` into a truncating write of git's own configuration,
+// where core.pager and core.fsmonitor name programs git then runs. The leaf is a
+// regular file at that point, so a leaf-only check sees nothing wrong.
+//
+// The check is not a TOCTOU hole in the property that matters: were a link swapped
+// in between this walk and the open, os.Root still cannot be walked out of the
+// repository, so the worst case stays a write inside the tree being scanned.
+func refuseSymlinkedComponents(root *os.Root, rel, given string) error {
+	prefix := ""
+	for _, component := range strings.Split(rel, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		prefix = filepath.Join(prefix, component)
+		info, err := root.Lstat(prefix)
+		if err != nil {
+			// Not on disk yet. `verify --record-baseline` is documented to create
+			// its parents, so missing components are the ordinary case, and a
+			// component that does not exist cannot be a link. Any other error is
+			// left to the open below, which reports it against the caller's path.
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf(
+				"refusing to write %s: %s is a symbolic link committed inside the repository, "+
+					"and writing through it would truncate whatever it points at. "+
+					"Remove the link, or name a path outside the repository",
+				given, prefix)
+		}
+	}
+	return nil
+}
+
 // writeOutputFile writes one caller-named output file under the rule documented at
 // the top of this file. createParents mirrors `verify --record-baseline`, which is
 // documented to create missing parent directories; `index --report` passes false
@@ -442,6 +491,12 @@ func writeOutputFile(
 		return err
 	}
 	defer root.Close()
+	// Before MkdirAll, so parent creation cannot walk through a committed link
+	// either: `verify --record-baseline reports/nested/base.json` with `reports`
+	// committed as a link to .git would otherwise mkdir inside the git directory.
+	if err := refuseSymlinkedComponents(root, target.rel, target.given); err != nil {
+		return err
+	}
 	if createParents {
 		if directory := filepath.Dir(target.rel); directory != "" && directory != "." {
 			if err := root.MkdirAll(directory, 0o755); err != nil {
@@ -449,22 +504,10 @@ func writeOutputFile(
 			}
 		}
 	}
-	// Lstat before the open is what refuses a link the REPOSITORY planted. os.Root
-	// on its own only guarantees the write cannot leave the root: it resolves an
-	// in-root symlink and would still truncate the file the repository aimed it at.
-	// Root.Lstat does not traverse the link, and it is the portable spelling of the
-	// refusal — syscall.O_NOFOLLOW does not exist on Windows, and Root.OpenFile
-	// passes the platform's own no-follow flag either way.
-	//
-	// The check is not a TOCTOU hole in the property that matters: were the link
-	// swapped between the two calls, os.Root still cannot be walked out of the
-	// repository, so the worst case stays a write inside the tree being scanned.
-	if info, err := root.Lstat(target.rel); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf(
-			"refusing to write %s: it is a symbolic link committed inside the repository, "+
-				"and writing through it would truncate whatever it points at. "+
-				"Remove the link, or name a path outside the repository",
-			target.given)
+	// And again after it, so the components MkdirAll just created are covered by a
+	// check taken after the last thing this function changed on disk.
+	if err := refuseSymlinkedComponents(root, target.rel, target.given); err != nil {
+		return err
 	}
 	file, err := root.OpenFile(target.rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 	if err != nil {

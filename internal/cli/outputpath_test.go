@@ -915,3 +915,100 @@ func TestTheDotDotRuleMatchesTheFilesystemUnderTheTest(t *testing.T) {
 		t.Fatalf("realOutputPath = %q, but the write landed at %q", resolved, beside)
 	}
 }
+
+// TestIndexReportRefusesACommittedSymlinkedParentDirectory is the regression for
+// the third review finding. os.Root guarantees the write cannot leave the root; it
+// does NOT refuse a link that stays inside it — on Unix, Root FOLLOWS one. Checking
+// only the FINAL component therefore left every parent component followed, and a
+// repository that commits `reports -> .git` turned `--report reports/config` into a
+// truncating write of git's own configuration, which is where core.pager and
+// core.fsmonitor live.
+func TestIndexReportRefusesACommittedSymlinkedParentDirectory(t *testing.T) {
+	requireSymlinkSupport(t)
+	repo := outputPathRepo(t)
+	if err := os.Symlink(".git", filepath.Join(repo, "reports")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "hostile report directory")
+	victim := filepath.Join(repo, ".git", "config")
+	before, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = runIndexReport(t, repo, filepath.Join(repo, "reports", "config"))
+	if err == nil {
+		t.Fatal("index --report followed a symlinked directory committed inside the repository")
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("refusal does not say why: %v", err)
+	}
+	after, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("the repository's own git configuration was rewritten:\n%s", after)
+	}
+}
+
+// TestVerifyRecordBaselineRefusesACommittedSymlinkedParentDirectory drives the same
+// component rule through the other verb, which additionally CREATES its parent
+// directories — so the check has to come before that creation walks the link too.
+func TestVerifyRecordBaselineRefusesACommittedSymlinkedParentDirectory(t *testing.T) {
+	requireSymlinkSupport(t)
+	repo := outputPathRepo(t)
+	if err := os.Symlink(".git", filepath.Join(repo, "reports")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "hostile baseline directory")
+
+	err := runVerifyRecord(t, repo, filepath.Join(repo, "reports", "nested", "base.json"))
+	if err == nil {
+		t.Fatal("verify --record-baseline followed a symlinked directory committed inside the repository")
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("refusal does not say why: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".git", "nested")); !os.IsNotExist(err) {
+		t.Fatalf("parent creation walked through the committed link into .git: %v", err)
+	}
+}
+
+// TestOutputPathsOutsideTheRepositoryKeepWorkingThroughLinkedDirectories is the
+// DO-NOT-OVER-CORRECT pin, and it passes both before and after the component rule
+// above: refusing symlinked components must apply only INSIDE the repository. A
+// caller-owned destination reached through a symlinked parent — /tmp on macOS, and
+// the `--record-baseline /tmp/base.json` the verify help advertises — is unconfined
+// by design and must still be written, parents created and all.
+func TestOutputPathsOutsideTheRepositoryKeepWorkingThroughLinkedDirectories(t *testing.T) {
+	requireSymlinkSupport(t)
+	repo := outputPathRepo(t)
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := runIndexReport(t, repo, filepath.Join(link, "GRAPH_REPORT.md")); err != nil {
+		t.Fatalf("index --report through a caller-owned symlinked directory failed: %v", err)
+	}
+	if err := runVerifyRecord(t, repo, filepath.Join(link, "nested", "base.json")); err != nil {
+		t.Fatalf("verify --record-baseline through a caller-owned symlinked directory failed: %v", err)
+	}
+	report, err := os.ReadFile(filepath.Join(real, "GRAPH_REPORT.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(report), "# Graph report") {
+		t.Fatalf("report content is wrong:\n%s", report)
+	}
+	baseline, err := os.ReadFile(filepath.Join(real, "nested", "base.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(baseline), `"format_version": 1`) {
+		t.Fatalf("baseline is not the recorded JSON:\n%s", baseline)
+	}
+}
