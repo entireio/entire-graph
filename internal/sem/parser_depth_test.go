@@ -666,6 +666,57 @@ func TestAnalyzeKeepsDeltaForDepthTruncatedFile(t *testing.T) {
 	}
 }
 
+// TestDeepAndMalformedIsTotalNotPartial pins the interaction between the two
+// status paths. A file that is BOTH deeper than the walk limit AND syntactically
+// broken must report a TOTAL parse error, not a partial result: truncation alone
+// yields fewer entities that are still correct, but a malformed tree yields
+// entities that may be WRONG, so the caller must stay free to suppress the file.
+// Marking that case partial let AnalyzeGitRange diff against a zero-entity
+// malformed side and emit every symbol on the other side as a phantom removal.
+func TestDeepAndMalformedIsTotalNotPartial(t *testing.T) {
+	t.Parallel()
+	// 6000 levels is above the walk limit; the `$` makes the tree HasError.
+	broken := nestedSource("x = ", '(', ')', 6000, "$", "\n")
+	assertReachesTheParser(t, broken)
+	_, _, status := TreeSitterParser{}.ParseWithStatus("mod.py", broken)
+	if status.Code != "E_PARSE_ERROR" {
+		t.Fatalf("status = %+v, want E_PARSE_ERROR: a malformed tree dominates depth truncation", status)
+	}
+
+	repo := buildLinearRepo(t, func(r string) {
+		write(t, r, "mod.py", "def alpha():\n    return 1\n\ndef beta():\n    return 2\n")
+	}, func(r string) {
+		write(t, r, "mod.py", broken)
+	})
+	res, err := AnalyzeGitRange(context.Background(), repo.repo, repo.base, repo.head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range res.Files {
+		for _, c := range f.Changes {
+			if c.Type == "removed" && (c.Name == "alpha" || c.Name == "beta") {
+				t.Fatalf("phantom %s %q from a malformed zero-entity side; delta must be suppressed: %+v", c.Type, c.Name, res.Files)
+			}
+		}
+	}
+	if pfParseWarning(res, "mod.py") == nil {
+		t.Fatalf("expected a suppression warning, got %+v", res.Warnings)
+	}
+}
+
+// TestDeepButWellFormedStaysPartial is the other half of the pair: without the
+// syntax error the same depth still degrades rather than suppresses, so the
+// fix above did not collapse partial results back into total failures.
+func TestDeepButWellFormedStaysPartial(t *testing.T) {
+	t.Parallel()
+	clean := nestedSource("x = ", '(', ')', 6000, "1", "\n")
+	assertReachesTheParser(t, clean)
+	_, _, status := TreeSitterParser{}.ParseWithStatus("mod.py", clean)
+	if status.Code != "E_PARSE_DEPTH_EXCEEDED" {
+		t.Fatalf("status = %+v, want E_PARSE_DEPTH_EXCEEDED for a clean but deep tree", status)
+	}
+}
+
 // TestAnalyzeStillSuppressesTotalParseFailure guards the other side: a genuinely
 // unparseable file is not Partial, so it keeps the existing total-failure
 // behaviour of suppressing the delta.

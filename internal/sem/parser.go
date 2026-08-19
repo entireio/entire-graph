@@ -430,11 +430,27 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 	})
 	status := ParseStatus{}
 	switch {
+	case depthExceeded && root.HasError():
+		// BOTH too deep and malformed. Truncation alone is a partial result,
+		// but a malformed tree is not: the entities recovered from it may be
+		// wrong, not merely fewer, so the caller must be free to suppress the
+		// file rather than diff against them. Error therefore dominates depth —
+		// Partial stays false, and a zero-entity side goes back down
+		// analyze.go's total-failure path instead of emitting every symbol on
+		// the other side as a phantom removal. Both conditions are named in the
+		// detail so the operator is not left guessing which one to fix; the
+		// error-detail walk is safe to run here because it is itself bounded.
+		status = ParseStatus{
+			ParseError: true,
+			Code:       "E_PARSE_ERROR",
+			Detail: fmt.Sprintf("%s; AST nesting also exceeded the %d-level walk limit, so declarations nested deeper than that were not extracted",
+				parseErrorDetailWithLineOffset(root, entitySrc, entityLineOffset), maxParseWalkDepth),
+		}
 	case depthExceeded:
-		// A truncated walk, not a syntax error, is why declarations are missing,
-		// and it is the actionable one, so it wins the single status slot. The
-		// error-detail walk is skipped with it: it would descend the same
-		// pathological tree to report on syntax that was never the problem.
+		// A truncated walk on a tree that PARSED CLEANLY (the case above takes
+		// the malformed one): truncation is why declarations are missing, and it
+		// is the actionable one, so it wins the single status slot. The
+		// error-detail walk is skipped with it: there is no error to report.
 		//
 		// Partial, not total: the entities above the limit were extracted from a
 		// tree that parsed, so they are real. Consumers must degrade rather than
