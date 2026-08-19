@@ -1317,9 +1317,15 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 								if len(results) == 0 {
 									noResults := []byte("No search results.\n")
 									if len(noResults) <= remaining {
-										_, err := out.Write(fitAgentSearchSuffixes(
+										payload := fitAgentSearchSuffixes(
 											append(prefix(), noResults...), agentVerifyFirstSuffixes(verify, verifyBlock, suffixes), budget,
-										))
+										)
+										// A result-less plan can still carry quarantined source: the literal
+										// cluster is a suffix and its renderer quarantines it.
+										if !searchPayloadDisclosesItsQuarantine(string(payload)) {
+											continue
+										}
+										_, err := out.Write(payload)
 										return err
 									}
 									continue
@@ -1332,9 +1338,20 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 									continue
 								}
 								if len(formatted) > 0 {
-									_, err := out.Write(fitAgentSearchSuffixes(
+									payload := fitAgentSearchSuffixes(
 										append(prefix(), formatted...), agentVerifyFirstSuffixes(verify, verifyBlock, suffixes), budget,
-									))
+									)
+									// THE NOTICE IS NOT DROPPABLE WHILE THE INDENT IT EXPLAINS SURVIVES.
+									// The notice-free rungs above exist so a tight cap can still buy a
+									// ranked location; they are legitimate only for a plan whose FITTED
+									// bytes hold no quarantined line. Rejecting the plan here rather than
+									// deleting those rungs keeps the ranking at the caps where the fitter
+									// clipped the forged line away, and costs the ladder nothing it was
+									// entitled to: the next rung down is tried immediately.
+									if !searchPayloadDisclosesItsQuarantine(string(payload)) {
+										continue
+									}
+									_, err := out.Write(payload)
 									return err
 								}
 							}
