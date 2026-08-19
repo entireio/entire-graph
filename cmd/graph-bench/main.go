@@ -310,10 +310,59 @@ func validateRef(ref string) error {
 	return nil
 }
 
+// gitEndOfOptions returns the --end-of-options argument when the git on PATH
+// understands it, and nothing when it does not.
+//
+// parse-options learned --end-of-options in Git 2.24 (2019-11). On 2.23 and
+// earlier every invocation carrying it dies with "unknown option", which would
+// break every benchmark clone, including ordinary trusted refs, on those
+// versions. So the flag is defence in depth that is applied only where it
+// exists; validateRef is the guard that always runs and is what actually stops
+// an option-shaped ref.
+//
+// `--` is not a substitute. For git checkout it means "everything after this is
+// a pathspec", so `git checkout --quiet -- main` looks for a *file* named main
+// and fails with "pathspec 'main' did not match any file(s) known to git"
+// (verified against git 2.54.0). --end-of-options exists precisely because `--`
+// already has that meaning.
+func gitEndOfOptions(ctx context.Context) []string {
+	out, err := runGit(ctx, "", "version")
+	if err != nil || !gitVersionHasEndOfOptions(out) {
+		return nil
+	}
+	return []string{"--end-of-options"}
+}
+
+// gitVersionHasEndOfOptions reports whether `git version <v>` output names a Git
+// that has --end-of-options, i.e. 2.24 or newer. It tolerates the suffixed forms
+// distributions ship, such as "git version 2.39.5 (Apple Git-154)" and
+// "git version 2.45.2.windows.1", and treats anything it cannot parse as too old
+// so an unrecognised git still gets a working command line.
+func gitVersionHasEndOfOptions(out string) bool {
+	fields := strings.Fields(strings.TrimSpace(out))
+	if len(fields) < 3 || fields[0] != "git" || fields[1] != "version" {
+		return false
+	}
+	parts := strings.Split(fields[2], ".")
+	if len(parts) < 2 {
+		return false
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return false
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return false
+	}
+	return major > 2 || (major == 2 && minor >= 24)
+}
+
 func ensureRepo(ctx context.Context, url, ref, dir string, depth int) (string, error) {
 	if err := validateRef(ref); err != nil {
 		return "", err
 	}
+	endOfOptions := gitEndOfOptions(ctx)
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 			return "", err
@@ -322,7 +371,8 @@ func ensureRepo(ctx context.Context, url, ref, dir string, depth int) (string, e
 		if ref != "" && !looksLikeSHA(ref) {
 			args = append(args, "--branch", ref)
 		}
-		args = append(args, "--end-of-options", url, dir)
+		args = append(args, endOfOptions...)
+		args = append(args, url, dir)
 		if out, err := runGit(ctx, "", args...); err != nil {
 			return "", fmt.Errorf("%v: %s", err, out)
 		}
@@ -334,8 +384,12 @@ func ensureRepo(ctx context.Context, url, ref, dir string, depth int) (string, e
 		// --end-of-options stops Git parsing anything after it as an option, so
 		// the ref can only ever be a refspec/revision even if the shape guard
 		// above is ever relaxed.
-		_, _ = runGit(ctx, dir, "fetch", "--quiet", "--depth", strconv.Itoa(depth), "--end-of-options", "origin", ref)
-		if out, err := runGit(ctx, dir, "checkout", "--quiet", "--end-of-options", ref); err != nil {
+		fetchArgs := append([]string{"fetch", "--quiet", "--depth", strconv.Itoa(depth)}, endOfOptions...)
+		fetchArgs = append(fetchArgs, "origin", ref)
+		_, _ = runGit(ctx, dir, fetchArgs...)
+		checkoutArgs := append([]string{"checkout", "--quiet"}, endOfOptions...)
+		checkoutArgs = append(checkoutArgs, ref)
+		if out, err := runGit(ctx, dir, checkoutArgs...); err != nil {
 			return "", fmt.Errorf("checkout %s: %v: %s", ref, err, out)
 		}
 	}
@@ -343,8 +397,19 @@ func ensureRepo(ctx context.Context, url, ref, dir string, depth int) (string, e
 	return strings.TrimSpace(sha), err
 }
 
+// looksLikeSHA reports whether a ref is an object id rather than a branch name,
+// which decides whether ensureRepo may pass it to `git clone --branch`.
+//
+// Git has two object formats: SHA-1 (40 hex chars) and SHA-256 (64), the latter
+// selected by `git init --object-format=sha256`, init.defaultObjectFormat or
+// GIT_DEFAULT_HASH. Capping the length at 40 misclassified a pinned full
+// SHA-256 commit id as a branch name, so the clone became
+// `git clone --branch <64 hex>` and died with
+// "fatal: Remote branch <id> not found in upstream origin" (verified against
+// git 2.54.0). The upper bound is therefore the longer format's width, which
+// keeps every previously accepted abbreviation accepted.
 func looksLikeSHA(ref string) bool {
-	if len(ref) < 7 || len(ref) > 40 {
+	if len(ref) < 7 || len(ref) > 64 {
 		return false
 	}
 	for _, r := range ref {

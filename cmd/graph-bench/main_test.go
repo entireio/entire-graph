@@ -266,9 +266,7 @@ func TestEnsureRepoStillFetchesOrdinaryRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensureRepo: %v", err)
 	}
-	if len(sha) != 40 {
-		t.Fatalf("resolved sha = %q, want a full commit id", sha)
-	}
+	assertFullObjectID(t, sha)
 	if _, statErr := os.Stat(filepath.Join(dir, "main.go")); statErr != nil {
 		t.Fatalf("ordinary ref did not produce a checkout: %v", statErr)
 	}
@@ -294,5 +292,279 @@ func TestValidateRefRejectsOptionShapedRefs(t *testing.T) {
 		if err := validateRef(ref); err != nil {
 			t.Fatalf("validateRef(%q) = %v, want nil", ref, err)
 		}
+	}
+}
+
+// Git supports two object formats, SHA-1 (40 hex chars) and SHA-256 (64). A
+// repository created under GIT_DEFAULT_HASH=sha256 or
+// init.defaultObjectFormat=sha256 yields the longer id, so assert the shape Git
+// can actually produce rather than SHA-1's length alone.
+func assertFullObjectID(t *testing.T, sha string) {
+	t.Helper()
+	if len(sha) != 40 && len(sha) != 64 {
+		t.Fatalf("resolved sha = %q (len %d), want a full commit id (40 hex for SHA-1, 64 for SHA-256)", sha, len(sha))
+	}
+	for _, r := range sha {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			t.Fatalf("resolved sha = %q, want lowercase hex", sha)
+		}
+	}
+}
+
+// newUpstreamRepoWithObjectFormat is newUpstreamRepo with an explicit Git object
+// format, so the SHA-256 case is exercised without depending on the ambient
+// GIT_DEFAULT_HASH / init.defaultObjectFormat of the machine running the test.
+func newUpstreamRepoWithObjectFormat(t *testing.T, format string) string {
+	t.Helper()
+	upstream := t.TempDir()
+	benchGit(t, upstream, "init", "--quiet", "--initial-branch", "main", "--object-format", format, ".")
+	benchGit(t, upstream, "config", "user.name", "Entire Graph Test")
+	benchGit(t, upstream, "config", "user.email", "graph@example.com")
+	if err := os.WriteFile(filepath.Join(upstream, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	benchGit(t, upstream, "add", ".")
+	benchGit(t, upstream, "commit", "--quiet", "-m", "init")
+	return upstream
+}
+
+// ensureRepo must report the commit it checked out under either object format.
+// Under SHA-256 the clone and checkout succeed and only the reported id gets
+// longer, so a test that pins the id to SHA-1's 40 characters fails on a
+// correctly working tool.
+func TestEnsureRepoResolvesSHA256ObjectFormat(t *testing.T) {
+	if out, err := exec.CommandContext(t.Context(), "git", "init", "--object-format=sha256", "-h").CombinedOutput(); err != nil && strings.Contains(string(out), "unknown option") {
+		t.Skipf("this git has no --object-format: %s", out)
+	}
+	upstream := newUpstreamRepoWithObjectFormat(t, "sha256")
+	dir := filepath.Join(t.TempDir(), "clone")
+
+	sha, err := ensureRepo(t.Context(), upstream, "main", dir, 1)
+	if err != nil {
+		t.Fatalf("ensureRepo: %v", err)
+	}
+	assertFullObjectID(t, sha)
+	if len(sha) != 64 {
+		t.Fatalf("resolved sha = %q, want a 64-char SHA-256 commit id", sha)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "main.go")); statErr != nil {
+		t.Fatalf("sha256 upstream did not produce a checkout: %v", statErr)
+	}
+}
+
+// writeGit223Shim puts a `git` earlier on PATH that behaves like Git 2.23: it
+// reports that version and rejects --end-of-options the way parse-options did
+// before Git 2.24 learned the flag. Everything else is delegated to the real
+// git, so the repository operations under test are genuine.
+func writeGit223Shim(t *testing.T) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("no git on PATH: %v", err)
+	}
+	shimDir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = version ] || [ \"$1\" = --version ]; then echo 'git version 2.23.0'; exit 0; fi\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$a\" = --end-of-options ]; then\n" +
+		"    echo \"error: unknown option \\`end-of-options'\" >&2\n" +
+		"    exit 129\n" +
+		"  fi\n" +
+		"done\n" +
+		"exec " + realGit + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// --end-of-options reached parse-options in Git 2.24 (2019-11). On 2.23 and
+// earlier every git invocation carrying it dies with "unknown option", which
+// would break every benchmark clone -- including ordinary, trusted refs -- on
+// those versions. ensureRepo must therefore only pass the flag to a git that
+// understands it, and keep working when it does not. validateRef is the guard
+// that always runs; --end-of-options is defence in depth layered on top.
+//
+// `--` is not a substitute: for `git checkout` it means "everything after this
+// is a pathspec", so `git checkout --quiet -- main` looks for a *file* named
+// main and fails with "pathspec 'main' did not match any file(s) known to git"
+// (verified against git 2.54.0).
+func TestEnsureRepoWorksOnGitWithoutEndOfOptions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The shim is a POSIX /bin/sh script; Windows resolves `git` through
+		// PATHEXT to git.exe and will not execute an extensionless shell
+		// script, so an old-git PATH cannot be represented here.
+		t.Skip("the git shim is a POSIX /bin/sh script")
+	}
+	// Build the fixture with the real git, before the shim shadows it.
+	upstream := newUpstreamRepo(t)
+	writeGit223Shim(t)
+
+	dir := filepath.Join(t.TempDir(), "clone")
+	sha, err := ensureRepo(t.Context(), upstream, "main", dir, 1)
+	if err != nil {
+		t.Fatalf("ensureRepo on a Git without --end-of-options: %v", err)
+	}
+	assertFullObjectID(t, sha)
+	if _, statErr := os.Stat(filepath.Join(dir, "main.go")); statErr != nil {
+		t.Fatalf("no checkout produced on a Git without --end-of-options: %v", statErr)
+	}
+
+	// The already-cloned branch -- fetch + checkout -- must survive it too.
+	again, err := ensureRepo(t.Context(), upstream, "main", dir, 1)
+	if err != nil {
+		t.Fatalf("ensureRepo on existing clone without --end-of-options: %v", err)
+	}
+	if again != sha {
+		t.Fatalf("sha = %q on re-fetch, want %q", again, sha)
+	}
+
+	// And the shape guard, which is what actually stops an option-shaped ref,
+	// still rejects one when --end-of-options is unavailable.
+	if _, err := ensureRepo(t.Context(), upstream, "--upload-pack=touch /dev/null", dir, 1); err == nil ||
+		!strings.Contains(err.Error(), "invalid git ref") {
+		t.Fatalf("ensureRepo error = %v, want an invalid-git-ref rejection", err)
+	}
+}
+func TestGitVersionHasEndOfOptions(t *testing.T) {
+	for out, want := range map[string]bool{
+		"git version 2.54.0":                 true,
+		"git version 2.24.0":                 true,
+		"git version 2.24.0.rc1":             true,
+		"git version 2.23.0":                 false,
+		"git version 2.9.5":                  false,
+		"git version 1.9.1":                  false,
+		"git version 3.0.0":                  true,
+		"git version 2.39.5 (Apple Git-154)": true,
+		"git version 2.45.2.windows.1":       true,
+		"":                                   false,
+		"not git output":                     false,
+		"git version banana":                 false,
+		"git version 2":                      false,
+	} {
+		if got := gitVersionHasEndOfOptions(out); got != want {
+			t.Fatalf("gitVersionHasEndOfOptions(%q) = %v, want %v", out, got, want)
+		}
+	}
+}
+
+// The version probe must not silently drop the defence-in-depth flag on a Git
+// that does have it: on 2.24+ clone, fetch and checkout all still carry
+// --end-of-options. A recording shim captures the real argv.
+func TestEnsureRepoPassesEndOfOptionsOnModernGit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The recording shim is a POSIX /bin/sh script; Windows resolves `git`
+		// through PATHEXT to git.exe and will not run an extensionless script.
+		t.Skip("the git shim is a POSIX /bin/sh script")
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("no git on PATH: %v", err)
+	}
+	version, err := exec.CommandContext(t.Context(), realGit, "version").Output()
+	if err != nil {
+		t.Fatalf("git version: %v", err)
+	}
+	if !gitVersionHasEndOfOptions(string(version)) {
+		t.Skipf("this git predates --end-of-options: %s", version)
+	}
+
+	upstream := newUpstreamRepo(t)
+	shimDir := t.TempDir()
+	log := filepath.Join(shimDir, "argv.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + log + "\nexec " + realGit + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(shimDir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	dir := filepath.Join(t.TempDir(), "clone")
+	if _, err := ensureRepo(t.Context(), upstream, "main", dir, 1); err != nil {
+		t.Fatalf("ensureRepo: %v", err)
+	}
+	// Second call so the fetch/checkout branch runs too.
+	if _, err := ensureRepo(t.Context(), upstream, "main", dir, 1); err != nil {
+		t.Fatalf("ensureRepo on existing clone: %v", err)
+	}
+
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("read shim log: %v", err)
+	}
+	var sawClone, sawFetch, sawCheckout bool
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.Contains(line, "--end-of-options") {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "clone "):
+			sawClone = true
+		case strings.HasPrefix(line, "fetch "):
+			sawFetch = true
+		case strings.HasPrefix(line, "checkout "):
+			sawCheckout = true
+		}
+	}
+	if !sawClone || !sawFetch || !sawCheckout {
+		t.Fatalf("--end-of-options reached clone=%v fetch=%v checkout=%v; argv log:\n%s", sawClone, sawFetch, sawCheckout, data)
+	}
+}
+
+// benchGitOutput is benchGit for a command whose stdout is the point.
+func benchGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// A pinned commit id must be recognised as an object id under either object
+// format. looksLikeSHA decides whether ensureRepo may hand the ref to
+// `git clone --branch`; a full SHA-256 id is 64 hex chars, so an upper bound of
+// 40 turned it into a branch name and the clone died with "Remote branch <id>
+// not found in upstream origin".
+func TestLooksLikeSHAAcceptsBothObjectFormats(t *testing.T) {
+	sha1ID := strings.Repeat("a1", 20)   // 40 hex, SHA-1
+	sha256ID := strings.Repeat("b2", 32) // 64 hex, SHA-256
+	for _, ref := range []string{"abcdef1", sha1ID, sha1ID[:12], sha256ID, sha256ID[:41]} {
+		if !looksLikeSHA(ref) {
+			t.Fatalf("looksLikeSHA(%q) (len %d) = false, want true", ref, len(ref))
+		}
+	}
+	// Still not object ids: too short, too long, and non-hex branch names.
+	for _, ref := range []string{"abcdef", strings.Repeat("c3", 33), "main", "release/v1", "deadbeefz"} {
+		if looksLikeSHA(ref) {
+			t.Fatalf("looksLikeSHA(%q) (len %d) = true, want false", ref, len(ref))
+		}
+	}
+}
+
+// End to end for the same defect: ensureRepo must clone and check out a ref
+// pinned to a full SHA-256 commit id, the form a lock file records for a
+// SHA-256 repository.
+func TestEnsureRepoClonesPinnedSHA256CommitID(t *testing.T) {
+	if out, err := exec.CommandContext(t.Context(), "git", "init", "--object-format=sha256", "-h").CombinedOutput(); err != nil && strings.Contains(string(out), "unknown option") {
+		t.Skipf("this git has no --object-format: %s", out)
+	}
+	upstream := newUpstreamRepoWithObjectFormat(t, "sha256")
+	pinned := benchGitOutput(t, upstream, "rev-parse", "HEAD")
+	if len(pinned) != 64 {
+		t.Fatalf("upstream HEAD = %q (len %d), want a 64-char SHA-256 id", pinned, len(pinned))
+	}
+
+	dir := filepath.Join(t.TempDir(), "clone")
+	sha, err := ensureRepo(t.Context(), upstream, pinned, dir, 1)
+	if err != nil {
+		t.Fatalf("ensureRepo on a pinned SHA-256 commit id: %v", err)
+	}
+	if sha != pinned {
+		t.Fatalf("resolved sha = %q, want the pinned %q", sha, pinned)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "main.go")); statErr != nil {
+		t.Fatalf("pinned SHA-256 id did not produce a checkout: %v", statErr)
 	}
 }
