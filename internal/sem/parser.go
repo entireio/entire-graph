@@ -176,6 +176,24 @@ func ctxStop(ctx context.Context) func() bool {
 	}
 }
 
+// stopped reports whether a stop predicate exists and has fired. A nil
+// predicate is the unbudgeted path and always answers false, so every guard
+// built on this is inert -- not merely cheap -- when the caller set no deadline.
+func stopped(stop func() bool) bool {
+	return stop != nil && stop()
+}
+
+// parseStoppedStatus describes a parse abandoned because the caller's budget
+// expired. It reuses the E_PARSE_TIMEOUT code that a tree-sitter parse stopped
+// by the same context already reports; the detail says which half stopped.
+func parseStoppedStatus(ctx context.Context, where string) ParseStatus {
+	return ParseStatus{
+		ParseError: true,
+		Code:       "E_PARSE_TIMEOUT",
+		Detail:     fmt.Sprintf("%s stopped by caller: %v", where, ctx.Err()),
+	}
+}
+
 // ParseWithStatusCtx is ParseWithStatus under a caller deadline. Both halves of
 // the per-file cost observe ctx: the tree-sitter parse (whose 5s internal cap is
 // now derived from ctx rather than from context.Background, so an expiring budget
@@ -332,8 +350,22 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 	var entities []Entity
 	stop := ctxStop(ctx)
 	walkEntities(root, entitySrc, spec.language, "", stop, &entities)
+	// walkEntities returns early when the budget expires, but everything below
+	// it -- the language-specific supplemental extractors, the binding collapse,
+	// the offset fixup and the final sort -- used to run regardless, and one of
+	// those passes is superlinear in match count. processProviderFile then drops
+	// the whole file because ctx expired, so every bit of it was overshoot spent
+	// on a result nobody keeps. Bail out at each pass boundary instead. stop is
+	// nil whenever the caller has no deadline, so an unbudgeted parse does
+	// exactly the work, and emits exactly the bytes, it did before.
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "entity walk")
+	}
 	if spec.language == "C++" {
 		entities = appendMissingEntities(entities, cPlusPlusTypeAliasEntities(content)...)
+	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "supplemental entity recovery")
 	}
 	if spec.language == "C" || spec.language == "C++" {
 		// The C mask blanks `#define` lines before tree-sitter, so macro names (opcodes,
@@ -341,14 +373,23 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 		// nothing. Recover them from the UNMASKED content so `symbols`/`def <MACRO>` resolve.
 		entities = appendMissingEntities(entities, cMacroEntities(content)...)
 	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "supplemental entity recovery")
+	}
 	if spec.language == "Kotlin" {
 		entities = append(entities, kotlinPrimaryConstructorFieldEntities(content)...)
 	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "supplemental entity recovery")
+	}
 	if spec.language == "JavaScript" || spec.language == "TypeScript" {
-		entities = appendMissingEntities(entities, javascriptExportedVariableEntities(content)...)
+		entities = appendMissingEntities(entities, javascriptExportedVariableEntities(content, stop)...)
 		entities = appendMissingEntities(entities, javascriptAssignmentMethodEntities(content)...)
 		entities = appendMissingEntities(entities, javascriptDefaultExportEntities(path, content)...)
 		entities = append(entities, graphqlResolverEntities(path, content)...)
+	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "supplemental entity recovery")
 	}
 	if spec.language == "SQL" {
 		// Run the regex fallback extractors on comment-stripped source so that
@@ -358,17 +399,26 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 		entities = append(entities, postgresFunctionEntities(regexSrc)...)
 		entities = append(entities, postgresPolicyEntities(regexSrc)...)
 	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "supplemental entity recovery")
+	}
 	if spec.language == "Lua" {
 		// tree-sitter-lua can recover from large annotated files with incomplete
 		// top-level function coverage. Supplement it with the canonical Lua
 		// declaration forms so exported table functions stay discoverable.
 		entities = appendMissingEntities(entities, luaFunctionEntities(content)...)
 	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "supplemental entity recovery")
+	}
 	if spec.language == "Objective-C" {
 		// Large Objective-C implementation files with blocks/macros can leave
 		// recoverable method definitions out of the tree-sitter walk. Supplement
 		// only brace-backed implementation methods; header prototypes end in ';'.
 		entities = appendMissingEntities(entities, objectiveCMethodEntities(content)...)
+	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "entity reconciliation")
 	}
 	// A name binding and the function expression that initialises it are ONE entity. The
 	// tree-sitter walk classifies such a declarator by its VALUE while the regex recovery
@@ -3438,15 +3488,24 @@ func cFamilyTypedefAliasName(node *sitter.Node, src []byte) string {
 	return name
 }
 
-func fastCFamilyEntities(path, content, language string) []Entity {
+// fastCFamilyEntities is the ProfileFast C/C++ parser. It never reaches
+// tree-sitter, so the walk's stop predicate never covered it, yet its two line
+// loops each call a forward statement/brace scan that runs to end-of-file on a
+// declaration that never terminates -- quadratic in file length, in plain Go,
+// with nothing able to stop it. It takes the same predicate the walk takes; nil
+// (no caller deadline) leaves both loops exactly as they were.
+func fastCFamilyEntities(path, content, language string, stop func() bool) []Entity {
 	_ = path
 	_ = language
 	stripped := stripCodeLiteralsAndComments(content)
 	lines := strings.Split(stripped, "\n")
 	originalLines := strings.Split(content, "\n")
 	var entities []Entity
-	entities = append(entities, fastCFamilyTypeEntities(lines, originalLines)...)
-	entities = append(entities, fastCFamilyFunctionEntities(lines, originalLines)...)
+	entities = append(entities, fastCFamilyTypeEntities(lines, originalLines, stop)...)
+	if stopped(stop) {
+		return entities
+	}
+	entities = append(entities, fastCFamilyFunctionEntities(lines, originalLines, stop)...)
 	sort.Slice(entities, func(i, j int) bool {
 		if entities[i].StartLine == entities[j].StartLine {
 			if entities[i].Kind == entities[j].Kind {
@@ -3459,11 +3518,14 @@ func fastCFamilyEntities(path, content, language string) []Entity {
 	return entities
 }
 
-func fastCFamilyTypeEntities(lines, originalLines []string) []Entity {
+func fastCFamilyTypeEntities(lines, originalLines []string, stop func() bool) []Entity {
 	var entities []Entity
 	seen := map[string]bool{}
 	depth := 0
 	for i := 0; i < len(lines); i++ {
+		if stopped(stop) {
+			return entities
+		}
 		trimmed := strings.TrimSpace(lines[i])
 		if depth != 0 || trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			depth += braceDelta(lines[i])
@@ -3506,12 +3568,15 @@ func fastCFamilyTypeEntities(lines, originalLines []string) []Entity {
 	return entities
 }
 
-func fastCFamilyFunctionEntities(lines, originalLines []string) []Entity {
+func fastCFamilyFunctionEntities(lines, originalLines []string, stop func() bool) []Entity {
 	var entities []Entity
 	depth := 0
 	pendingStart := -1
 	pending := ""
 	for i := 0; i < len(lines); i++ {
+		if stopped(stop) {
+			return entities
+		}
 		line := lines[i]
 		trimmed := strings.TrimSpace(line)
 		if depth != 0 {
@@ -6838,10 +6903,19 @@ var luaFunctionLinePattern = regexp.MustCompile(`(?m)^[ \t]*(?:local[ \t]+)?func
 var luaBlockTokenPattern = regexp.MustCompile(`\b(function|if|for|while|repeat|do|end|until)\b`)
 var objectiveCMethodNamePattern = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)`)
 
-func javascriptExportedVariableEntities(content string) []Entity {
+// javascriptExportedVariableEntities is superlinear in match count: it counts
+// the newlines in content[:match] once per match, so a file of N exports costs
+// O(N * len(content)). That is why it takes a stop predicate -- it is the one
+// supplemental pass whose own runtime can dwarf the budget (2m32s on a 5.7 MB
+// file of 40k exports), so a guard at the pass boundary alone would not bound
+// the overshoot. stop is nil for callers with no deadline.
+func javascriptExportedVariableEntities(content string, stop func() bool) []Entity {
 	matches := jsExportedVariablePattern.FindAllStringSubmatchIndex(content, -1)
 	entities := make([]Entity, 0, len(matches))
 	for _, match := range matches {
+		if stopped(stop) {
+			return entities
+		}
 		if len(match) < 4 {
 			continue
 		}

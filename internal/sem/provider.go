@@ -1338,7 +1338,10 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 
 func parseWithProfile(ctx context.Context, parser TreeSitterParser, spec profileSpec, langSpec languageSpec, path, content string) ([]Entity, string, ParseStatus) {
 	if useFastCFamilyParser(spec, langSpec) {
-		return fastCFamilyEntities(path, content, langSpec.language), langSpec.language, ParseStatus{}
+		// The fast C/C++ parser bypasses tree-sitter entirely, so it needs the
+		// caller's stop predicate handed to it directly -- ParseWithStatusCtx,
+		// which derives one from ctx, is never reached on this path.
+		return fastCFamilyEntities(path, content, langSpec.language, ctxStop(ctx)), langSpec.language, ParseStatus{}
 	}
 	return parser.ParseWithStatusCtx(ctx, path, content)
 }
