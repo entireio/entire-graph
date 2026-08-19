@@ -567,6 +567,9 @@ func TestInitAgentsRefusesInstructionAliasEscapingRepository(t *testing.T) {
 			if !strings.Contains(err.Error(), aliasName) {
 				t.Fatalf("error %q does not name the offending alias %s", err, aliasName)
 			}
+			if !strings.Contains(err.Error(), "leaves the repository") {
+				t.Fatalf("a real escape lost its containment wording: %v", err)
+			}
 			if got := readFileForTest(t, victimPath); got != string(victim) {
 				t.Fatalf("a file outside the repository was written:\nwant: %q\n got: %q", victim, got)
 			}
@@ -675,6 +678,9 @@ func TestInitAgentsRefusesGuideAliasEscapingRepository(t *testing.T) {
 			if err == nil {
 				t.Fatal("init-agents followed the guide alias out of the repository")
 			}
+			if !strings.Contains(err.Error(), "leaves the repository") {
+				t.Fatalf("a real escape lost its containment wording: %v", err)
+			}
 			if got := readFileForTest(t, victimPath); got != victim {
 				t.Fatalf("a file outside the repository was written:\nwant: %q\n got: %q", victim, got)
 			}
@@ -687,6 +693,103 @@ func TestInitAgentsRefusesGuideAliasEscapingRepository(t *testing.T) {
 				t.Fatalf("stdout was written before containment was established: %q", stdout.String())
 			}
 		})
+	}
+}
+
+// skipIfDirectoryPermissionsUnenforceable guards the fixtures that make a directory unreadable
+// in order to produce a genuine operational stat failure. os.Chmod on Windows only toggles the
+// read-only bit and cannot withdraw traverse rights from a directory, so mode 0 there leaves it
+// perfectly readable and the fixture would assert nothing; root ignores the bits for the same
+// reason.
+func skipIfDirectoryPermissionsUnenforceable(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod cannot withdraw directory traverse permission on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("permission bits do not constrain root")
+	}
+}
+
+// TestInitAgentsReportsUnreadableTargetAsOperationalFailure pins the half of the containment
+// preflight that is not about security. os.Root answers "I could not resolve this" for an escape
+// and for an ordinary I/O failure alike, and its escape sentinel is unexported, so a preflight
+// that reads every non-ENOENT stat error as an escape tells whoever hit a plain EACCES that their
+// repository contains a link leading out of the project. There is no link in this repository at
+// all, and the cause the reader actually needs — the mode of .entire — must survive in the error.
+func TestInitAgentsReportsUnreadableTargetAsOperationalFailure(t *testing.T) {
+	skipIfDirectoryPermissionsUnenforceable(t)
+	repo := t.TempDir()
+	guideDir := filepath.Join(repo, ".entire")
+	if err := os.Mkdir(guideDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(guideDir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	// t.TempDir's cleanup cannot remove a directory it is not allowed to traverse.
+	t.Cleanup(func() { _ = os.Chmod(guideDir, 0o755) })
+
+	var stdout, stderr bytes.Buffer
+	err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+	if err == nil {
+		t.Fatal("init-agents reported success for a write target it could not inspect")
+	}
+	if strings.Contains(err.Error(), "leaves the repository") {
+		t.Fatalf("an unreadable directory was reported as a repository escape: %v", err)
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("error dropped the operating system cause: %v", err)
+	}
+	if !strings.Contains(err.Error(), filepath.Join(repo, ".entire", "graph-agent.md")) {
+		t.Fatalf("error does not name the target that could not be inspected: %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout was written before the write targets were established: %q", stdout.String())
+	}
+}
+
+// TestWriteContainedFileRefusesEscapeWithoutPreflight pins the property that lets
+// ensureContainedInRepo hand back an unclassifiable operational failure as itself: containment is
+// enforced by the write, not by the preflight stat. Called with no preflight at all, on exactly
+// the aliases the security tests plant, the confined write still refuses to leave the repository
+// and creates nothing outside it.
+func TestWriteContainedFileRefusesEscapeWithoutPreflight(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	victimPath := filepath.Join(base, "victim.md")
+	victim := []byte("# outside the repository\n")
+	if err := os.WriteFile(victimPath, victim, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	absentPath := filepath.Join(base, "absent.md")
+	if err := os.Symlink(filepath.Join("..", "victim.md"), filepath.Join(repo, "AGENTS.md")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..", "absent.md"), filepath.Join(repo, "CLAUDE.md")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md", filepath.Join("..", "victim.md")} {
+		if err := writeContainedFile(root, name, []byte("overwritten"), 0o644); err == nil {
+			t.Fatalf("writeContainedFile(%q) followed the alias out of the repository", name)
+		}
+	}
+	if got := readFileForTest(t, victimPath); got != string(victim) {
+		t.Fatalf("a file outside the repository was written:\nwant: %q\n got: %q", victim, got)
+	}
+	if _, err := os.Lstat(absentPath); !os.IsNotExist(err) {
+		t.Fatalf("a file outside the repository was created (stat error %v)", err)
 	}
 }
 

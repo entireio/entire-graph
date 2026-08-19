@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // agentGuide is the canonical, agent-agnostic operating guide for coding agents using the
@@ -221,16 +222,49 @@ func runInitAgents(opts Options, args []string) error {
 //
 // A missing target is not an escape. init-agents legitimately creates all four paths, and the
 // documented dangling alias (CLAUDE.md -> AGENTS.md before AGENTS.md exists) resolves to
-// fs.ErrNotExist inside the root; only a genuine escape reports otherwise.
+// fs.ErrNotExist inside the root.
+//
+// Nor is an unreadable directory, a symlink loop, or an I/O error. Every remaining stat failure
+// still aborts the install, but only the ones os.Root attributes to confinement are described as
+// one; see isRootEscape.
 func ensureContainedInRepo(root *os.Root, name, path string) error {
-	if _, err := root.Stat(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	_, err := root.Stat(name)
+	switch {
+	case err == nil || errors.Is(err, fs.ErrNotExist):
+		return nil
+	case isRootEscape(err):
 		return fmt.Errorf(
 			"%s: refusing to write through a link that leaves the repository (%w); "+
 				"init-agents only writes inside the project root, so repoint or remove the link, then rerun init-agents",
 			path, err,
 		)
+	default:
+		// An unreadable parent directory, a symlink loop, or an I/O error is not an attack.
+		// Report it as itself: naming it a repository escape would send the reader hunting a
+		// link that does not exist and hide the cause that does.
+		return fmt.Errorf("%s: inspect write target: %w", path, err)
 	}
-	return nil
+}
+
+// isRootEscape reports whether err is os.Root refusing to resolve a path outside its root.
+//
+// os.Root signals that with an unexported sentinel (os.errPathEscapes, a plain errors.New), so
+// there is nothing to match with errors.Is. What separates it from every other failure is
+// provenance: an operational failure is the kernel's answer relayed verbatim and therefore wraps
+// a syscall.Errno, while the escape refusal is produced by os.Root itself before it issues the
+// syscall. os.ErrClosed and os.ErrInvalid are the only other refusals os.Root raises without a
+// syscall and neither is about containment, so they are excluded here rather than left to fall
+// through to the security wording.
+//
+// This classification is advisory, not the security boundary. writeContainedFile refuses the
+// same escapes on its own, which is what lets the ambiguous case above be reported as an
+// ordinary error instead of being assumed hostile.
+func isRootEscape(err error) bool {
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return false
+	}
+	return !errors.Is(err, os.ErrClosed) && !errors.Is(err, os.ErrInvalid)
 }
 
 // writeContainedFile is os.WriteFile confined to root. The perm argument applies only when the
