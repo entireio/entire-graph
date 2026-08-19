@@ -185,6 +185,19 @@ func containsByIdentity(top, repoRoot string) bool {
 //     confine either — that link is caller-owned by the same rule that leaves the
 //     whole out-of-repository write unconfined — so the on-disk destination stands.
 func classifyOutputPath(repoRoot, path string) (repoOutputTarget, error) {
+	// Both spellings this function compares are made absolute by filepath.Abs, which
+	// CLEANS, and cleaning erases the one thing that says "this is a directory": the
+	// trailing separator, and a final "." or "..". The kernel does not erase it —
+	// `open("out.md/", O_CREAT|O_TRUNC)` is ENOTDIR while out.md is a file — so the
+	// os.WriteFile this helper replaced failed and left the file alone, and the
+	// cleaned spelling instead named out.md itself and truncated it. Both verbs write
+	// a FILE, so a spelling that names a directory can only ever fail; refusing it
+	// here keeps that failure and keeps it at the one sink both verbs pass through.
+	if namesADirectory(path) {
+		return repoOutputTarget{}, fmt.Errorf(
+			"refusing to write %s: the path names a directory, not a file. "+
+				"Name the output file itself", path)
+	}
 	// Both spellings are taken against the process working directory, not against
 	// --repo, which is what the os.WriteFile this helper replaced did.
 	onDisk, err := realOutputPath(path)
@@ -270,6 +283,32 @@ func realOutputPathOn(path string, dotDotIsLexical bool) (string, error) {
 		return "", err
 	}
 	return filepath.Join(prefix, last), nil
+}
+
+// namesADirectory reports whether path's own spelling says the destination is a
+// directory: it ends in a separator, or its final component is "." or "..".
+//
+// It reads the RAW spelling, never a cleaned one, because cleaning is exactly what
+// removes the evidence — filepath.Abs("out.md/") is "…/out.md", and splitFinalComponent
+// strips trailing separators before it splits, so neither can be asked this question.
+//
+// A bare volume name ("C:") is left alone: only filepath.Abs knows what it means,
+// and it resolves to that drive's working directory, which fails as a file on its
+// own.
+func namesADirectory(path string) bool {
+	path = path[len(filepath.VolumeName(path)):]
+	if path == "" {
+		return false
+	}
+	if os.IsPathSeparator(path[len(path)-1]) {
+		return true
+	}
+	start := len(path)
+	for start > 0 && !os.IsPathSeparator(path[start-1]) {
+		start--
+	}
+	last := path[start:]
+	return last == "." || last == ".."
 }
 
 // hasDotDot reports whether path contains a ".." component. That component is the

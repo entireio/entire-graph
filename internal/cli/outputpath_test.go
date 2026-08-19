@@ -1305,3 +1305,116 @@ func TestOutputPathsKeepTheKernelDestinationThroughACallerOwnedLink(t *testing.T
 		assertLandedOnTheKernelDestination(t, runVerifyRecord(t, repo, given), kernelDest, inRepo, "{")
 	})
 }
+
+// TestOutputPathsRefuseASpellingThatNamesADirectory is the regression for the
+// seventh review finding, and it is a bug this branch INTRODUCED rather than an
+// escape it failed to close.
+//
+// Confining the write meant deciding the destination with filepath.Abs, which
+// CLEANS. Cleaning erases the trailing separator and the final "." that say the
+// caller named a DIRECTORY, so `--report out.md/` stopped being ENOTDIR against an
+// existing out.md — the answer the kernel gives, and the answer the os.WriteFile
+// this fix replaced returned — and became a truncating write of out.md itself. On
+// an absent target the same spellings quietly created a regular file.
+func TestOutputPathsRefuseASpellingThatNamesADirectory(t *testing.T) {
+	const victim = "the caller named a directory, not this file\n"
+	sep := string(filepath.Separator)
+
+	for _, spelling := range []string{sep, sep + ".", sep + "..", sep + "." + sep} {
+		t.Run("existing file, --report "+spelling, func(t *testing.T) {
+			repo := outputPathRepo(t)
+			target := filepath.Join(repo, "out.md")
+			if err := os.WriteFile(target, []byte(victim), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err := runIndexReport(t, repo, target+spelling)
+			if err == nil {
+				t.Fatal("a path naming a directory was accepted as an output file")
+			}
+			after, readErr := os.ReadFile(target)
+			if readErr != nil {
+				t.Fatalf("the file the caller did not name was replaced: %v", readErr)
+			}
+			if string(after) != victim {
+				t.Fatalf("the file the caller did not name was truncated:\n%s", after)
+			}
+		})
+	}
+
+	// Absent target: nothing may be created at the cleaned spelling either.
+	t.Run("absent target", func(t *testing.T) {
+		repo := outputPathRepo(t)
+		absent := filepath.Join(repo, "absent.md")
+		if err := runVerifyRecord(t, repo, absent+sep); err == nil {
+			t.Fatal("a path naming a directory was accepted as an output file")
+		}
+		if _, err := os.Lstat(absent); !os.IsNotExist(err) {
+			t.Fatalf("the cleaned spelling was created anyway: %v", err)
+		}
+	})
+
+	// Outside the repository takes the unconfined branch, and cleans the same way.
+	t.Run("outside the repository", func(t *testing.T) {
+		repo := outputPathRepo(t)
+		target := filepath.Join(t.TempDir(), "out.md")
+		if err := os.WriteFile(target, []byte(victim), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := runIndexReport(t, repo, target+sep); err == nil {
+			t.Fatal("a path naming a directory was accepted as an output file")
+		}
+		assertVictimIntact(t, target, victim)
+	})
+
+	// DO-NOT-OVER-CORRECT: only the spellings that NAME a directory are refused. A
+	// "." or ".." in the MIDDLE of the path is an ordinary spelling of a file.
+	t.Run("dot and dot-dot inside the path still write", func(t *testing.T) {
+		repo := outputPathRepo(t)
+		if err := os.MkdirAll(filepath.Join(repo, "build"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, given := range []string{
+			dotDotPath(filepath.Join(repo, "build"), "GRAPH_REPORT.md"),
+			filepath.Join(repo, "."+sep+"GRAPH_REPORT.md"),
+		} {
+			if err := runIndexReport(t, repo, given); err != nil {
+				t.Fatalf("ordinary output path %q was refused: %v", given, err)
+			}
+			report, err := os.ReadFile(filepath.Join(repo, "GRAPH_REPORT.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(string(report), "# Graph report") {
+				t.Fatalf("report content is wrong:\n%s", report)
+			}
+			if err := os.Remove(filepath.Join(repo, "GRAPH_REPORT.md")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+}
+
+func TestNamesADirectoryReadsTheRawSpelling(t *testing.T) {
+	sep := string(filepath.Separator)
+	for _, testCase := range []struct {
+		path string
+		want bool
+	}{
+		{"out.md", false},
+		{"out.md" + sep, true},
+		{"out.md" + sep + ".", true},
+		{"out.md" + sep + "..", true},
+		{".", true},
+		{"..", true},
+		{sep, true},
+		{"", false},
+		{"..hidden", false},
+		{".hidden", false},
+		{"build" + sep + ".." + sep + "out.md", false},
+		{"." + sep + "out.md", false},
+	} {
+		if got := namesADirectory(testCase.path); got != testCase.want {
+			t.Errorf("namesADirectory(%q) = %v, want %v", testCase.path, got, testCase.want)
+		}
+	}
+}
