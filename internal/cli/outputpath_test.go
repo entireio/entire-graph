@@ -36,14 +36,7 @@ func requireSymlinkSupport(t *testing.T) {
 // outputPathRepo builds the smallest repository index has something to report on.
 func outputPathRepo(t *testing.T) string {
 	t.Helper()
-	repo := t.TempDir()
-	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Graph Test")
-	git(t, repo, "config", "user.email", "graph@example.com")
-	write(t, repo, "auth.go", "package auth\n\nfunc ValidateToken(token string) bool { return token != \"\" }\n")
-	git(t, repo, "add", ".")
-	git(t, repo, "commit", "-m", "initial")
-	return repo
+	return outputPathRepoAt(t, t.TempDir())
 }
 
 func runIndexReport(t *testing.T, repo, report string) error {
@@ -770,4 +763,74 @@ func TestOutputPathsRefuseDotDotThroughAMissingDirectory(t *testing.T) {
 			t.Errorf("realOutputPath = %q, want %q", got, want)
 		}
 	})
+}
+
+// trailingSpaceCheckout builds the same checkout in a directory whose name ends
+// in a SPACE. A trailing space is an ordinary byte in a POSIX path component, so
+// `git clone` into `~/work/checkout ` is a checkout like any other; Win32 strips
+// trailing spaces from path components while normalising, so the name is not
+// representable there and this input only exists on Unix.
+func trailingSpaceCheckout(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Win32 strips a trailing space from every path component, so this directory name cannot exist there")
+	}
+	return outputPathRepoAt(t, filepath.Join(t.TempDir(), "checkout "))
+}
+
+// TestConfinementRootPreservesACheckoutNamedWithATrailingSpace pins the boundary
+// for that checkout.
+//
+// `git rev-parse --show-toplevel` prints the path and a newline. Trimming ALL
+// trailing whitespace takes the path's own last byte with the terminator, so the
+// boundary names `…/checkout` — a directory that is not the checkout, and usually
+// is not on disk at all. Every path in the real checkout then classifies as
+// outside it.
+func TestConfinementRootPreservesACheckoutNamedWithATrailingSpace(t *testing.T) {
+	repo := trailingSpaceCheckout(t)
+	repoInfo, err := os.Stat(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := confinementRoot(t.Context(), repo)
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		t.Fatalf("confinement root %q is not on disk: %v", root, err)
+	}
+	if !os.SameFile(repoInfo, rootInfo) {
+		t.Fatalf("confinement root = %q, which is not the checkout %q", root, repo)
+	}
+}
+
+// TestIndexReportRefusesSymlinkInACheckoutNamedWithATrailingSpace drives the same
+// defect through the verb it re-opens: with the boundary naming a different
+// directory, the in-repo report path is classified caller-owned and written with
+// os.WriteFile, which follows the committed symlink and truncates the victim —
+// byte for byte the finding this PR exists to close.
+func TestIndexReportRefusesSymlinkInACheckoutNamedWithATrailingSpace(t *testing.T) {
+	requireSymlinkSupport(t)
+	repo := trailingSpaceCheckout(t)
+	victim, victimContent := plantVictim(t)
+	report := filepath.Join(repo, "GRAPH_REPORT.md")
+	if err := os.Symlink(victim, report); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "hostile report path")
+
+	err := runIndexReport(t, repo, report)
+	if err == nil {
+		t.Fatal("index --report followed a symlink committed inside the repository")
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("refusal does not say why: %v", err)
+	}
+	assertVictimIntact(t, victim, victimContent)
+	info, err := os.Lstat(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("the repository's symlink was replaced by a regular file")
+	}
 }

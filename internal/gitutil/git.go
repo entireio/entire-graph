@@ -34,12 +34,22 @@ type GrepMatch struct {
 	Text string
 }
 
+// RepoRoot reports the top level of the checkout cwd sits in.
+//
+// Only git's own LINE TERMINATOR is removed, not every trailing space.
+// `rev-parse --show-toplevel` prints the path followed by "\n", and a path
+// component may legitimately END in a space — a trailing space is an ordinary
+// byte in a POSIX name, so `git clone … "~/work/checkout "` is a checkout like
+// any other. strings.TrimSpace takes that byte along with the terminator and
+// returns the name of a DIFFERENT directory, which usually is not on disk at all;
+// callers that use the result as a boundary (internal/cli.confinementRoot) then
+// classify every path in the real checkout as outside it.
 func RepoRoot(ctx context.Context, cwd string) (string, error) {
 	out, err := run(ctx, cwd, "git", "rev-parse", "--show-toplevel")
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(out), nil
+	return strings.TrimSuffix(out, "\n"), nil
 }
 
 func RevParse(ctx context.Context, repo, rev string) (string, error) {

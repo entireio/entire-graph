@@ -86,7 +86,42 @@ func confinementRoot(ctx context.Context, repoRoot string) string {
 	if err != nil || strings.TrimSpace(top) == "" {
 		return repoRoot
 	}
+	if !containsByIdentity(top, repoRoot) {
+		return repoRoot
+	}
 	return top
+}
+
+// containsByIdentity reports whether top is repoRoot itself, or one of the
+// directories above it, compared by os.SameFile rather than by name.
+//
+// It is what lets confinementRoot widen the boundary without trusting the
+// SPELLING that came back from git. A root that names some OTHER directory is not
+// a narrower boundary, it is NO boundary: every path in the real checkout then
+// classifies as outside it and takes the unconfined write, which is exactly the
+// symlink escape this file exists to close. The name can be wrong without anything
+// being adversarial — git prints the path and a newline, and any trimming that
+// takes one byte too many (a checkout whose name ends in a space) renames the root.
+//
+// Refusing falls back to the directory the caller named, which can only NARROW the
+// confined region, never widen it — the same reasoning as confinementRoot's own
+// fallback.
+func containsByIdentity(top, repoRoot string) bool {
+	topInfo, err := os.Stat(top)
+	if err != nil || !topInfo.IsDir() {
+		return false
+	}
+	dir, err := filepath.Abs(repoRoot)
+	if err != nil {
+		return false
+	}
+	// walkToRoot starts at the parent, so the ordinary case — --repo IS the top
+	// level — is checked here first.
+	if info, err := os.Stat(dir); err == nil && os.SameFile(topInfo, info) {
+		return true
+	}
+	_, ok := walkToRoot(topInfo, dir)
+	return ok
 }
 
 // classifyOutputPath decides whether path is repository-controlled or caller-owned.
