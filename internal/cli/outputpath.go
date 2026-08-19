@@ -109,7 +109,9 @@ func confinementRoot(ctx context.Context, repoRoot string) string {
 //
 // Refusing falls back to the directory the caller named, which can only NARROW the
 // confined region, never widen it — the same reasoning as confinementRoot's own
-// fallback.
+// fallback. That fallback is safe as a DEFAULT and unsafe as an OUTCOME, which is
+// why both chains below are walked: falling back to a directory the checkout's own
+// files are not under leaves those files unconfined.
 func containsByIdentity(top, repoRoot string) bool {
 	topInfo, err := os.Stat(top)
 	if err != nil || !topInfo.IsDir() {
@@ -120,11 +122,29 @@ func containsByIdentity(top, repoRoot string) bool {
 		return false
 	}
 	// walkToRoot starts at the parent, so the ordinary case — --repo IS the top
-	// level — is checked here first.
+	// level — is checked here first. os.Stat FOLLOWS links, so this also covers a
+	// --repo that is a symlink to the top level itself.
 	if info, err := os.Stat(dir); err == nil && os.SameFile(topInfo, info) {
 		return true
 	}
-	_, ok := walkToRoot(topInfo, dir)
+	if _, ok := walkToRoot(topInfo, dir); ok {
+		return true
+	}
+	// The NAMED chain is not the only chain, for the same reason containedRel walks
+	// two: one directory has many names. --repo may be an external symlink INTO the
+	// checkout (`/tmp/alias` -> `<checkout>/sub`, the shape a build script or an
+	// editor's "open recent" leaves behind). Git resolves it and reports the real
+	// top level, but the alias's lexical parents are /tmp's and never reach it, so
+	// the widening was refused and the boundary fell back to the alias — under which
+	// the checkout's root-level files do not sit. They then classified as
+	// caller-owned and took the unconfined write, straight through whatever symlink
+	// the clone committed there. Resolving the alias puts the walk back on the
+	// checkout's own chain.
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil || resolved == dir {
+		return false
+	}
+	_, ok := walkToRoot(topInfo, resolved)
 	return ok
 }
 

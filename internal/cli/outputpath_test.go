@@ -1012,3 +1012,63 @@ func TestOutputPathsOutsideTheRepositoryKeepWorkingThroughLinkedDirectories(t *t
 		t.Fatalf("baseline is not the recorded JSON:\n%s", baseline)
 	}
 }
+
+// TestIndexReportRefusesSymlinkWhenRepoIsALinkToASubdirectory is the regression for
+// the fourth review finding. --repo may be an EXTERNAL symlink that points at a
+// subdirectory of the checkout. Git resolves it and reports the real top level, but
+// containment was walked over the alias's own lexical parents, which never reach
+// that top level; the widening was refused, the boundary fell back to the alias, and
+// every root-level file of the real checkout then classified as caller-owned and
+// took the unconfined write.
+func TestIndexReportRefusesSymlinkWhenRepoIsALinkToASubdirectory(t *testing.T) {
+	requireSymlinkSupport(t)
+	repo := outputPathRepo(t)
+	write(t, repo, filepath.Join("subdir", "sub.go"), "package sub\n\nfunc Helper() {}\n")
+	victim, victimContent := plantVictim(t)
+	report := filepath.Join(repo, "GRAPH_REPORT.md")
+	if err := os.Symlink(victim, report); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "hostile report path at the repository root")
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(filepath.Join(repo, "subdir"), alias); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runIndexReportWithRepoFlag(t, alias, report)
+	if err == nil {
+		t.Fatal("index --repo <link to subdir> followed a symlink committed inside the repository")
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("refusal does not say why: %v", err)
+	}
+	assertVictimIntact(t, victim, victimContent)
+}
+
+// TestConfinementRootResolvesAliasedRepositories pins the boundary that finding
+// directly, rather than one escape through it: a symlink to a subdirectory still
+// confines against the checkout it really lives in.
+func TestConfinementRootResolvesAliasedRepositories(t *testing.T) {
+	requireSymlinkSupport(t)
+	repo := outputPathRepo(t)
+	write(t, repo, filepath.Join("subdir", "sub.go"), "package sub\n\nfunc Helper() {}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "subdirectory")
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(filepath.Join(repo, "subdir"), alias); err != nil {
+		t.Fatal(err)
+	}
+
+	repoInfo, err := os.Stat(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootInfo, err := os.Stat(confinementRoot(t.Context(), alias))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(repoInfo, rootInfo) {
+		t.Fatal("confinement root for a symlinked subdirectory is not the checkout")
+	}
+}
