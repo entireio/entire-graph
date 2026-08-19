@@ -45,6 +45,22 @@ type repoSpec struct {
 	ref      string // optional manifest-pinned ref
 }
 
+// refOrigin records which file a ref came from, which decides whether Git may
+// read it as a ref name at all.
+//
+// The two origins are not interchangeable. A manifest entry is a name a person
+// wrote (`owner/name@<ref>`) and may be a branch, a tag or a commit, so a
+// hex-shaped one has to be asked about at the remote. A lock entry is a value
+// graph-bench itself wrote from `git rev-parse HEAD`: an object id, and only
+// ever an object id. Resolving a lock entry as a ref of the same name is how a
+// pin stops pinning -- see ensureRepo.
+type refOrigin int
+
+const (
+	refFromManifest refOrigin = iota
+	refFromLock
+)
+
 func parseProfile(value string) (sem.Profile, error) {
 	switch value {
 	case "", "full":
@@ -132,10 +148,11 @@ func runWithWorkerCommand(manifestPath, cacheDir, outDir, lockPath, languages, p
 	ctx := context.Background()
 	resolved := map[string]string{} // repoPath -> sha
 	var resolvedMu sync.Mutex
+	cloneFailures := map[string]error{}
 
 	if !skipClone {
 		fmt.Fprintf(os.Stderr, "Cloning %d repositories into %s...\n", len(specs), cacheDir)
-		cloneAll(ctx, specs, cacheDir, lock, depth, updateLock, jobs, func(repoPath, sha string) {
+		cloneFailures = cloneAll(ctx, specs, cacheDir, lock, depth, updateLock, jobs, func(repoPath, sha string) {
 			resolvedMu.Lock()
 			resolved[repoPath] = sha
 			resolvedMu.Unlock()
@@ -155,6 +172,16 @@ func runWithWorkerCommand(manifestPath, cacheDir, outDir, lockPath, languages, p
 	var metrics []bench.RepoMetrics
 	for _, spec := range specs {
 		dir := filepath.Join(cacheDir, spec.language, spec.dirName())
+		// A repository whose clone failed keeps whatever an earlier run left in
+		// the cache, and that checkout is at some other commit than the one this
+		// run asked for. Measuring it would report a number for the wrong tree
+		// under this run's provider version and lock, so the failure is carried
+		// into the report instead.
+		if cloneErr, failed := cloneFailures[spec.repoPath]; failed {
+			metrics = append(metrics, bench.RepoMetrics{Name: spec.repoPath, Language: spec.language, Profile: string(profile), Error: "clone failed: " + cloneErr.Error()})
+			fmt.Fprintf(os.Stderr, "  skip %-40s (clone failed)\n", spec.repoPath)
+			continue
+		}
 		if _, statErr := os.Stat(dir); statErr != nil {
 			metrics = append(metrics, bench.RepoMetrics{Name: spec.repoPath, Language: spec.language, Profile: string(profile), Error: "not cloned"})
 			fmt.Fprintf(os.Stderr, "  skip %-40s (not cloned)\n", spec.repoPath)
@@ -253,10 +280,22 @@ func loadSpecs(manifestPath, languages string, limit int) ([]repoSpec, error) {
 	return specs, nil
 }
 
-func cloneAll(ctx context.Context, specs []repoSpec, cacheDir string, lock map[string]string, depth int, updateLock bool, jobs int, record func(repoPath, sha string)) {
+// cloneAll puts every selected repository in the cache at the ref the lock or
+// the manifest asks for, and returns the repositories it could not, keyed by
+// repo path.
+//
+// The failures are a return value rather than a log line because the cache
+// outlives a run: a repository that fails to clone usually still has the
+// directory an earlier run left behind, and the measurement loop cannot tell a
+// fresh checkout from a stale one by looking at it. Reporting the failure is
+// what stops the caller measuring the stale checkout and printing it as an
+// ordinary result.
+func cloneAll(ctx context.Context, specs []repoSpec, cacheDir string, lock map[string]string, depth int, updateLock bool, jobs int, record func(repoPath, sha string)) map[string]error {
 	if jobs < 1 {
 		jobs = 1
 	}
+	failures := map[string]error{}
+	var failuresMu sync.Mutex
 	sem := make(chan struct{}, jobs)
 	var wg sync.WaitGroup
 	for _, spec := range specs {
@@ -265,22 +304,26 @@ func cloneAll(ctx context.Context, specs []repoSpec, cacheDir string, lock map[s
 		go func(spec repoSpec) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			ref := spec.ref
+			ref, origin := spec.ref, refFromManifest
 			if !updateLock {
 				if pinned, ok := lock[spec.repoPath]; ok && pinned != "" {
-					ref = pinned
+					ref, origin = pinned, refFromLock
 				}
 			}
 			dir := filepath.Join(cacheDir, spec.language, spec.dirName())
-			sha, err := ensureRepo(ctx, spec.cloneURL(), ref, dir, depth)
+			sha, err := ensureRepo(ctx, spec.cloneURL(), ref, dir, depth, origin)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  clone FAIL %-40s %v\n", spec.repoPath, err)
+				failuresMu.Lock()
+				failures[spec.repoPath] = err
+				failuresMu.Unlock()
 				return
 			}
 			record(spec.repoPath, sha)
 		}(spec)
 	}
 	wg.Wait()
+	return failures
 }
 
 // validateRef rejects refs Git would parse as command-line options or as a
@@ -387,17 +430,25 @@ func gitVersionHasEndOfOptions(out string) bool {
 	return major > 2 || (major == 2 && minor >= 24)
 }
 
-func ensureRepo(ctx context.Context, url, ref, dir string, depth int) (string, error) {
+func ensureRepo(ctx context.Context, url, ref, dir string, depth int, origin refOrigin) (string, error) {
 	if err := validateRef(ref); err != nil {
 		return "", err
 	}
 	endOfOptions := gitEndOfOptions(ctx)
+	// A lock entry is an object id by construction -- writeLock stores what
+	// `git rev-parse HEAD` printed -- so for it the object *is* the answer and
+	// there is nothing to ask the remote. Asking anyway is how the pin stops
+	// pinning: a repository that publishes a branch named after the pinned
+	// commit gets that branch fetched and its tip checked out instead, with
+	// every command exiting 0 (this is what the hex-shaped-manifest-ref
+	// resolution below did to lock entries before this guard existed).
+	pinnedObject := origin == refFromLock && looksLikeSHA(ref)
 	// looksLikeSHA only guesses, and a lowercase-hex string can name an object
 	// *and* a branch in the same repository, pointing at different commits. Ask
 	// the remote which it actually publishes, so the clone and the checkout
 	// cannot resolve the same ref two different ways.
 	remoteRef := ""
-	if ref != "" && refNeedsRemoteResolution(ref) {
+	if ref != "" && !pinnedObject && refNeedsRemoteResolution(ref) {
 		var err error
 		if remoteRef, err = remoteRefFor(ctx, url, ref, endOfOptions); err != nil {
 			// A failed lookup is not an answer. Treating it as "the remote
@@ -452,6 +503,34 @@ func ensureRepo(ctx context.Context, url, ref, dir string, depth int) (string, e
 		fetchArgs := append([]string{"fetch", "--quiet", "--depth", strconv.Itoa(depth)}, endOfOptions...)
 		fetchArgs = append(fetchArgs, "origin", fetchRef)
 		fetchOut, fetchErr := runGit(ctx, dir, fetchArgs...)
+		if pinnedObject {
+			// `git checkout --detach <id>` is not object semantics. With a ref
+			// of that name in the clone Git warns "refname is ambiguous" and
+			// takes the *ref*; the `^{commit}` suffix is what forces the object
+			// reading (verified against git 2.54.0: with a local branch named
+			// after commit A pointing at commit B, `git checkout --detach <A>`
+			// landed on B and `git checkout --detach <A>^{commit}` landed on A).
+			// Such a branch is exactly what a cache poisoned by an earlier
+			// `clone --branch <pinned id>` carries.
+			detachArgs := append([]string{"checkout", "--quiet", "--detach"}, endOfOptions...)
+			detachArgs = append(detachArgs, ref+"^{commit}")
+			if out, err := runGit(ctx, dir, detachArgs...); err != nil {
+				return "", fmt.Errorf("checkout pinned commit %s: %v: %s (fetch: %v: %s)", ref, err, out, fetchErr, fetchOut)
+			}
+			head, err := runGit(ctx, dir, "rev-parse", "HEAD")
+			if err != nil {
+				return "", err
+			}
+			head = strings.TrimSpace(head)
+			// Belt to the suffix's braces, and the check that does not depend on
+			// Git's ambiguity rules: the lock names this commit, so HEAD must be
+			// it. Git prints object ids in lowercase; a lock entry may be
+			// uppercase (looksLikeSHA accepts A-F) and may be an abbreviation.
+			if !strings.HasPrefix(head, strings.ToLower(ref)) {
+				return "", fmt.Errorf("checkout pinned commit %s: HEAD is %s, which is not that commit", ref, head)
+			}
+			return head, nil
+		}
 		if remoteRef != "" {
 			// The remote publishes this name as a ref, so FETCH_HEAD is that
 			// ref's tip. Checking the name out instead would resolve it to the
@@ -523,9 +602,12 @@ func ensureRepo(ctx context.Context, url, ref, dir string, depth int) (string, e
 //
 // The classification is a guess in both directions: a hex-shaped branch name
 // looks exactly like an object id, and the two can coexist in one repository
-// pointing at different commits. It is therefore not load-bearing -- ensureRepo
-// asks the remote (remoteRefFor) whenever this returns true, and a name the
-// remote publishes as a branch or tag is treated as that ref, not as an object.
+// pointing at different commits. For a *manifest* ref it is therefore not
+// load-bearing -- ensureRepo asks the remote (remoteRefFor) whenever this
+// returns true, and a name the remote publishes as a branch or tag is treated
+// as that ref, not as an object. For a *lock* ref there is nothing to guess:
+// the value is an object id by construction, and this reports whether it still
+// looks like one.
 func looksLikeSHA(ref string) bool {
 	if len(ref) < 7 || len(ref) > 64 {
 		return false
@@ -539,8 +621,9 @@ func looksLikeSHA(ref string) bool {
 }
 
 // refNeedsRemoteResolution reports whether ensureRepo must ask the remote what a
-// ref is before handing it to git as written, rather than letting git's own
-// parsing decide.
+// manifest ref is before handing it to git as written, rather than letting git's
+// own parsing decide. It is not consulted for a lock entry, which is an object
+// id and must stay one whatever the remote publishes under that name.
 //
 // Two shapes need it, for the same reason: git resolves them differently in
 // different slots, so the clone and the checkout can land on different commits

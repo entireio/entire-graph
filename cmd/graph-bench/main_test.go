@@ -241,12 +241,12 @@ func TestEnsureRepoRefusesOptionShapedRefBeforeGitRuns(t *testing.T) {
 	// Pre-clone with a benign ref: this is the realistic state, a repo already
 	// in -cache from an earlier run, so ensureRepo skips cloning and goes
 	// straight to the fetch that carries the ref as a positional.
-	if _, err := ensureRepo(t.Context(), upstream, "main", dir, 1); err != nil {
+	if _, err := ensureRepo(t.Context(), upstream, "main", dir, 1, refFromManifest); err != nil {
 		t.Fatalf("benign pre-clone: %v", err)
 	}
 
 	marker := filepath.Join(t.TempDir(), "pwned")
-	_, err := ensureRepo(t.Context(), upstream, "--upload-pack=touch "+marker, dir, 1)
+	_, err := ensureRepo(t.Context(), upstream, "--upload-pack=touch "+marker, dir, 1, refFromManifest)
 	// Asserted before the error shape: this is the security property. Without
 	// the guard, git runs `touch <marker>` and the file appears.
 	if _, statErr := os.Stat(marker); statErr == nil {
@@ -263,7 +263,7 @@ func TestEnsureRepoStillFetchesOrdinaryRef(t *testing.T) {
 	upstream := newUpstreamRepo(t)
 	dir := filepath.Join(t.TempDir(), "clone")
 
-	sha, err := ensureRepo(t.Context(), upstream, "main", dir, 1)
+	sha, err := ensureRepo(t.Context(), upstream, "main", dir, 1, refFromManifest)
 	if err != nil {
 		t.Fatalf("ensureRepo: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestEnsureRepoStillFetchesOrdinaryRef(t *testing.T) {
 
 	// Second call takes the already-cloned branch: fetch + checkout of the same
 	// ref must still succeed with --end-of-options in the argv.
-	again, err := ensureRepo(t.Context(), upstream, "main", dir, 1)
+	again, err := ensureRepo(t.Context(), upstream, "main", dir, 1, refFromManifest)
 	if err != nil {
 		t.Fatalf("ensureRepo on existing clone: %v", err)
 	}
@@ -350,7 +350,7 @@ func TestEnsureRepoResolvesSHA256ObjectFormat(t *testing.T) {
 	upstream := newUpstreamRepoWithObjectFormat(t, "sha256")
 	dir := filepath.Join(t.TempDir(), "clone")
 
-	sha, err := ensureRepo(t.Context(), upstream, "main", dir, 1)
+	sha, err := ensureRepo(t.Context(), upstream, "main", dir, 1, refFromManifest)
 	if err != nil {
 		t.Fatalf("ensureRepo: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestEnsureRepoWorksOnGitWithoutEndOfOptions(t *testing.T) {
 	writeGit223Shim(t)
 
 	dir := filepath.Join(t.TempDir(), "clone")
-	sha, err := ensureRepo(t.Context(), upstream, "main", dir, 1)
+	sha, err := ensureRepo(t.Context(), upstream, "main", dir, 1, refFromManifest)
 	if err != nil {
 		t.Fatalf("ensureRepo on a Git without --end-of-options: %v", err)
 	}
@@ -422,7 +422,7 @@ func TestEnsureRepoWorksOnGitWithoutEndOfOptions(t *testing.T) {
 	}
 
 	// The already-cloned branch -- fetch + checkout -- must survive it too.
-	again, err := ensureRepo(t.Context(), upstream, "main", dir, 1)
+	again, err := ensureRepo(t.Context(), upstream, "main", dir, 1, refFromManifest)
 	if err != nil {
 		t.Fatalf("ensureRepo on existing clone without --end-of-options: %v", err)
 	}
@@ -432,7 +432,7 @@ func TestEnsureRepoWorksOnGitWithoutEndOfOptions(t *testing.T) {
 
 	// And the shape guard, which is what actually stops an option-shaped ref,
 	// still rejects one when --end-of-options is unavailable.
-	if _, err := ensureRepo(t.Context(), upstream, "--upload-pack=touch /dev/null", dir, 1); err == nil ||
+	if _, err := ensureRepo(t.Context(), upstream, "--upload-pack=touch /dev/null", dir, 1, refFromManifest); err == nil ||
 		!strings.Contains(err.Error(), "invalid git ref") {
 		t.Fatalf("ensureRepo error = %v, want an invalid-git-ref rejection", err)
 	}
@@ -490,11 +490,11 @@ func TestEnsureRepoPassesEndOfOptionsOnModernGit(t *testing.T) {
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	dir := filepath.Join(t.TempDir(), "clone")
-	if _, err := ensureRepo(t.Context(), upstream, "main", dir, 1); err != nil {
+	if _, err := ensureRepo(t.Context(), upstream, "main", dir, 1, refFromManifest); err != nil {
 		t.Fatalf("ensureRepo: %v", err)
 	}
 	// Second call so the fetch/checkout branch runs too.
-	if _, err := ensureRepo(t.Context(), upstream, "main", dir, 1); err != nil {
+	if _, err := ensureRepo(t.Context(), upstream, "main", dir, 1, refFromManifest); err != nil {
 		t.Fatalf("ensureRepo on existing clone: %v", err)
 	}
 
@@ -574,7 +574,7 @@ func TestEnsureRepoClonesPinnedSHA256CommitID(t *testing.T) {
 	}
 
 	dir := filepath.Join(t.TempDir(), "clone")
-	sha, err := ensureRepo(t.Context(), upstream, pinned, dir, 1)
+	sha, err := ensureRepo(t.Context(), upstream, pinned, dir, 1, refFromManifest)
 	if err != nil {
 		t.Fatalf("ensureRepo on a pinned SHA-256 commit id: %v", err)
 	}
@@ -616,7 +616,7 @@ func TestEnsureRepoChecksOutHexShapedBranchNames(t *testing.T) {
 			benchGit(t, upstream, "checkout", "--quiet", "main")
 
 			dir := filepath.Join(t.TempDir(), "clone")
-			sha, err := ensureRepo(t.Context(), upstream, name, dir, 1)
+			sha, err := ensureRepo(t.Context(), upstream, name, dir, 1, refFromManifest)
 			if err != nil {
 				t.Fatalf("ensureRepo(%d-char hex branch): %v", len(name), err)
 			}
@@ -650,7 +650,7 @@ func TestEnsureRepoRefusesRefspecShapedRef(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "clone")
 	// The realistic state: the repo is already in -cache from an earlier run,
 	// so ensureRepo skips the clone and the ref reaches `git fetch` directly.
-	want, err := ensureRepo(t.Context(), upstream, "main", dir, 1)
+	want, err := ensureRepo(t.Context(), upstream, "main", dir, 1, refFromManifest)
 	if err != nil {
 		t.Fatalf("benign pre-clone: %v", err)
 	}
@@ -660,7 +660,7 @@ func TestEnsureRepoRefusesRefspecShapedRef(t *testing.T) {
 		"refs/heads/*:refs/remotes/origin/*",
 	} {
 		t.Run(ref, func(t *testing.T) {
-			sha, err := ensureRepo(t.Context(), upstream, ref, dir, 1)
+			sha, err := ensureRepo(t.Context(), upstream, ref, dir, 1, refFromManifest)
 			if err == nil || !strings.Contains(err.Error(), "invalid git ref") {
 				t.Fatalf("ensureRepo(%q) = %q, %v; want an invalid-git-ref rejection", ref, sha, err)
 			}
@@ -704,7 +704,7 @@ func TestEnsureRepoPrefersRemoteBranchOverAmbiguousObjectID(t *testing.T) {
 	benchGit(t, upstream, "branch", first, want)
 
 	dir := filepath.Join(t.TempDir(), "clone")
-	sha, err := ensureRepo(t.Context(), upstream, first, dir, 1)
+	sha, err := ensureRepo(t.Context(), upstream, first, dir, 1, refFromManifest)
 	if err != nil {
 		t.Fatalf("ensureRepo(ambiguous hex ref): %v", err)
 	}
@@ -739,7 +739,7 @@ func TestEnsureRepoFailsWhenTheRemoteLookupFails(t *testing.T) {
 
 	// A warm cache from an earlier run, holding the object named `first`.
 	dir := filepath.Join(t.TempDir(), "clone")
-	if _, err := ensureRepo(t.Context(), upstream, "main", dir, 1); err != nil {
+	if _, err := ensureRepo(t.Context(), upstream, "main", dir, 1, refFromManifest); err != nil {
 		t.Fatalf("pre-clone at main: %v", err)
 	}
 
@@ -757,7 +757,7 @@ func TestEnsureRepoFailsWhenTheRemoteLookupFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sha, err := ensureRepo(t.Context(), upstream, first, dir, 1)
+	sha, err := ensureRepo(t.Context(), upstream, first, dir, 1, refFromManifest)
 	if err == nil {
 		t.Fatalf("ensureRepo with an unreachable remote = %q, <nil>; want the lookup failure, not a checkout of the local object (the ref names a branch at %q)", sha, want)
 	}
@@ -772,14 +772,14 @@ func TestEnsureRepoFailsWhenTheRemoteLookupFails(t *testing.T) {
 func TestEnsureRepoResolvesOrdinaryRefWithTheRemoteUnreachable(t *testing.T) {
 	upstream := newUpstreamRepo(t)
 	dir := filepath.Join(t.TempDir(), "clone")
-	want, err := ensureRepo(t.Context(), upstream, "main", dir, 1)
+	want, err := ensureRepo(t.Context(), upstream, "main", dir, 1, refFromManifest)
 	if err != nil {
 		t.Fatalf("pre-clone at main: %v", err)
 	}
 	if err := os.Rename(upstream, upstream+".unreachable"); err != nil {
 		t.Fatal(err)
 	}
-	sha, err := ensureRepo(t.Context(), upstream, "main", dir, 1)
+	sha, err := ensureRepo(t.Context(), upstream, "main", dir, 1, refFromManifest)
 	if err != nil {
 		t.Fatalf("ensureRepo on a warm cache with the remote down: %v", err)
 	}
@@ -804,10 +804,10 @@ func TestEnsureRepoResolvesNewRefInCachedClone(t *testing.T) {
 	benchGit(t, upstream, "checkout", "--quiet", "main")
 
 	dir := filepath.Join(t.TempDir(), "clone")
-	if _, err := ensureRepo(t.Context(), upstream, "main", dir, 1); err != nil {
+	if _, err := ensureRepo(t.Context(), upstream, "main", dir, 1, refFromManifest); err != nil {
 		t.Fatalf("pre-clone at main: %v", err)
 	}
-	sha, err := ensureRepo(t.Context(), upstream, "release", dir, 1)
+	sha, err := ensureRepo(t.Context(), upstream, "release", dir, 1, refFromManifest)
 	if err != nil {
 		t.Fatalf("ensureRepo on a cached clone with a new ref: %v", err)
 	}
@@ -856,7 +856,7 @@ func TestEnsureRepoClonesPinnedUppercaseCommitID(t *testing.T) {
 			// table test, and letting this one run all the way to git makes
 			// the observable the tool's real failure.
 			dir := filepath.Join(t.TempDir(), "clone")
-			sha, err := ensureRepo(t.Context(), upstream, ref, dir, 1)
+			sha, err := ensureRepo(t.Context(), upstream, ref, dir, 1, refFromManifest)
 			if err != nil {
 				t.Fatalf("ensureRepo on a pinned %s commit id: %v", tc.name, err)
 			}
@@ -890,7 +890,7 @@ func TestEnsureRepoChecksOutUppercaseHexShapedBranchName(t *testing.T) {
 	benchGit(t, upstream, "checkout", "--quiet", "main")
 
 	dir := filepath.Join(t.TempDir(), "clone")
-	sha, err := ensureRepo(t.Context(), upstream, name, dir, 1)
+	sha, err := ensureRepo(t.Context(), upstream, name, dir, 1, refFromManifest)
 	if err != nil {
 		t.Fatalf("ensureRepo(uppercase-hex branch): %v", err)
 	}
@@ -950,7 +950,7 @@ func TestEnsureRepoChecksOutPlusPrefixedBranch(t *testing.T) {
 	t.Run("cold-cache", func(t *testing.T) {
 		upstream, plusTip, decoyTip := newUpstreamRepoWithPlusBranch(t)
 		dir := filepath.Join(t.TempDir(), "clone")
-		sha, err := ensureRepo(t.Context(), upstream, "+release", dir, 1)
+		sha, err := ensureRepo(t.Context(), upstream, "+release", dir, 1, refFromManifest)
 		if err != nil {
 			t.Fatalf("ensureRepo(+release): %v", err)
 		}
@@ -971,10 +971,10 @@ func TestEnsureRepoChecksOutPlusPrefixedBranch(t *testing.T) {
 	t.Run("warm-cache", func(t *testing.T) {
 		upstream, plusTip, decoyTip := newUpstreamRepoWithPlusBranch(t)
 		dir := filepath.Join(t.TempDir(), "clone")
-		if _, err := ensureRepo(t.Context(), upstream, "main", dir, 1); err != nil {
+		if _, err := ensureRepo(t.Context(), upstream, "main", dir, 1, refFromManifest); err != nil {
 			t.Fatalf("pre-clone at main: %v", err)
 		}
-		sha, err := ensureRepo(t.Context(), upstream, "+release", dir, 1)
+		sha, err := ensureRepo(t.Context(), upstream, "+release", dir, 1, refFromManifest)
 		if err != nil {
 			t.Fatalf("ensureRepo(+release) on a warm cache: %v", err)
 		}
@@ -1014,11 +1014,11 @@ func TestEnsureRepoRejectsPlusRefTheRemoteDoesNotPublish(t *testing.T) {
 	benchGit(t, upstream, "checkout", "--quiet", "main")
 
 	dir := filepath.Join(t.TempDir(), "clone")
-	cached, err := ensureRepo(t.Context(), upstream, "main", dir, 1)
+	cached, err := ensureRepo(t.Context(), upstream, "main", dir, 1, refFromManifest)
 	if err != nil {
 		t.Fatalf("pre-clone at main: %v", err)
 	}
-	sha, err := ensureRepo(t.Context(), upstream, "+release", dir, 1)
+	sha, err := ensureRepo(t.Context(), upstream, "+release", dir, 1, refFromManifest)
 	if err == nil {
 		t.Fatalf("ensureRepo(+release) = %q, <nil>; the remote publishes no such ref, so this is `release` at %q reported as a success", sha, decoyTip)
 	}
@@ -1050,5 +1050,151 @@ func TestValidateRefRejectsRefspecSyntaxButNotPlusPrefixedNames(t *testing.T) {
 		if err := validateRef(ref); err != nil {
 			t.Fatalf("validateRef(%q) = %v, want nil (git check-ref-format accepts these names)", ref, err)
 		}
+	}
+}
+
+// newUpstreamRepoWithBranchNamedAfterACommit publishes two commits and a branch
+// whose *name* is the first commit's object id, pointing at the second. Only
+// the second commit carries branch.go, so a checkout of the wrong one is
+// observable in the working tree.
+func newUpstreamRepoWithBranchNamedAfterACommit(t *testing.T) (upstream, pinned, branchTip string) {
+	t.Helper()
+	t.Setenv("GIT_DEFAULT_HASH", "sha1")
+	upstream = newUpstreamRepo(t)
+	pinned = strings.TrimSpace(benchGitOutput(t, upstream, "rev-parse", "HEAD"))
+	if len(pinned) != 40 {
+		t.Skipf("upstream HEAD = %q, want a 40-char SHA-1 id (this git ignores GIT_DEFAULT_HASH)", pinned)
+	}
+	if err := os.WriteFile(filepath.Join(upstream, "branch.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	benchGit(t, upstream, "add", ".")
+	benchGit(t, upstream, "commit", "--quiet", "-m", "second")
+	branchTip = strings.TrimSpace(benchGitOutput(t, upstream, "rev-parse", "HEAD"))
+	benchGit(t, upstream, "branch", pinned, branchTip)
+	return upstream, pinned, branchTip
+}
+
+// A lock entry is an object id -- writeLock stores what `git rev-parse HEAD`
+// printed -- so it must resolve to that object however the remote names its
+// refs. Resolving it as a ref instead is a pin that stops pinning: a repository
+// that publishes a branch named after the pinned commit redirects every later
+// run onto that branch's tip, and because the tip is fetched and checked out by
+// a command that exits 0, the run reports the redirected commit as a success.
+//
+// The remote lookup that makes a hex-shaped *manifest* ref work (a name a
+// person wrote, which may legitimately be a branch) is what introduced this: it
+// ran for every hex-shaped ref, and generated lock values are all hex.
+// TestEnsureRepoPrefersRemoteBranchOverAmbiguousObjectID pins the other
+// direction -- the manifest ref must still resolve to the branch.
+func TestEnsureRepoKeepsObjectSemanticsForLockedCommit(t *testing.T) {
+	t.Run("cold-cache", func(t *testing.T) {
+		upstream, pinned, branchTip := newUpstreamRepoWithBranchNamedAfterACommit(t)
+		dir := filepath.Join(t.TempDir(), "clone")
+		sha, err := ensureRepo(t.Context(), upstream, pinned, dir, 1, refFromLock)
+		if err != nil {
+			t.Fatalf("ensureRepo(locked commit): %v", err)
+		}
+		if sha == branchTip {
+			t.Fatalf("sha = %q, the tip of the branch named after the pinned commit; the lock pins %q", sha, pinned)
+		}
+		if sha != pinned {
+			t.Fatalf("sha = %q, want the pinned commit %q", sha, pinned)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, "branch.go")); statErr == nil {
+			t.Fatalf("working tree carries the branch's file, so the checkout is the branch tip, not the pinned commit")
+		}
+	})
+
+	// The cache an earlier round left behind: resolving the pin as a ref made
+	// `git clone --branch <pinned id>`, so the clone carries a local branch of
+	// that name. `git checkout --detach <id>` then prefers that ref over the
+	// object (verified against git 2.54.0, which also warns "refname ... is
+	// ambiguous"), so re-pinning has to defeat a poisoned cache too.
+	t.Run("cache-poisoned-by-a-ref-of-that-name", func(t *testing.T) {
+		upstream, pinned, branchTip := newUpstreamRepoWithBranchNamedAfterACommit(t)
+		dir := filepath.Join(t.TempDir(), "clone")
+		if _, err := ensureRepo(t.Context(), upstream, pinned, dir, 1, refFromManifest); err != nil {
+			t.Fatalf("seed the cache the way a manifest ref does: %v", err)
+		}
+		benchGit(t, dir, "branch", "--force", pinned, branchTip)
+
+		sha, err := ensureRepo(t.Context(), upstream, pinned, dir, 1, refFromLock)
+		if err != nil {
+			t.Fatalf("ensureRepo(locked commit) on a poisoned cache: %v", err)
+		}
+		if sha != pinned {
+			t.Fatalf("sha = %q, want the pinned commit %q (the local ref of that name is at %q)", sha, pinned, branchTip)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, "branch.go")); statErr == nil {
+			t.Fatalf("working tree carries the branch's file, so the checkout is the local ref, not the pinned commit")
+		}
+	})
+}
+
+// A lock entry that is not an object id at all (a hand-written lock file) keeps
+// the manifest reading, so widening object semantics to the lock costs no
+// existing lock.
+func TestEnsureRepoStillResolvesNonHexLockEntryAsARef(t *testing.T) {
+	upstream := newUpstreamRepo(t)
+	benchGit(t, upstream, "checkout", "--quiet", "-b", "release")
+	if err := os.WriteFile(filepath.Join(upstream, "release.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	benchGit(t, upstream, "add", ".")
+	benchGit(t, upstream, "commit", "--quiet", "-m", "on release")
+	want := strings.TrimSpace(benchGitOutput(t, upstream, "rev-parse", "HEAD"))
+	benchGit(t, upstream, "checkout", "--quiet", "main")
+
+	dir := filepath.Join(t.TempDir(), "clone")
+	sha, err := ensureRepo(t.Context(), upstream, "release", dir, 1, refFromLock)
+	if err != nil {
+		t.Fatalf("ensureRepo(non-hex lock entry): %v", err)
+	}
+	if sha != want {
+		t.Fatalf("sha = %q, want the release tip %q", sha, want)
+	}
+}
+
+// cloneAll only logged a failed clone, and the cache outlives a run: the
+// directory an earlier run left behind is still there, at some other commit, so
+// the measurement loop measured it and printed an ordinary result row. The
+// failure has to reach the report instead.
+//
+// The ref here is refused by validateRef before any git process starts, so the
+// test needs no network -- which is also the shape of a real failure that leaves
+// a stale cache in place (a refused ref, an ls-remote that could not reach the
+// remote).
+func TestRunReportsCloneFailureInsteadOfMeasuringTheStaleCache(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "manifest.json")
+	if err := os.WriteFile(manifestPath, []byte(`{"languages":{"Go":["owner/repo@-evil"]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The stale checkout an earlier run left in the cache.
+	cacheDir := filepath.Join(dir, "cache")
+	staleDir := filepath.Join(cacheDir, "Go", "owner__repo")
+	if err := os.MkdirAll(staleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staleDir, "stale.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	outDir := filepath.Join(dir, "out")
+	if err := run(manifestPath, cacheDir, outDir, filepath.Join(dir, "lock.json"), "", "syntax-only", 0, 1, 1, false, false, "bench-test", false, 0, 0, false); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	report := readOnlyReport(t, outDir)
+	if len(report.Repos) != 1 {
+		t.Fatalf("repos = %#v, want one row", report.Repos)
+	}
+	got := report.Repos[0]
+	if !strings.Contains(got.Error, "clone failed") {
+		t.Fatalf("row error = %q, want the clone failure; the stale cache was measured instead of being reported as not cloned", got.Error)
+	}
+	if got.LOC != 0 || got.Files != 0 {
+		t.Fatalf("row measured the stale checkout: %#v", got)
 	}
 }
