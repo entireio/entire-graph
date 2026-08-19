@@ -9831,30 +9831,77 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		return openedSource{}, err
 	}
 	paths, warnings := capSourceFiles(paths, options.maxFiles)
-	registry := newOversizeRegistry()
+	// One os.Root for the lifetime of this source makes the repository boundary
+	// structural. Joining a path onto repo and checking the result with os.Lstat
+	// bounds only the final component: an intermediate symlinked directory is
+	// followed, and filepath.Join normalizes a leading "../" into a path above the
+	// root before the check ever runs. The paths reaching these readers are not all
+	// listing output — jsLocalImportCandidates derives candidates from an import
+	// specifier written in a repository file, so "../../secret.env" arrives here as
+	// "../secret.env" — which is why the confinement cannot be left as a property of
+	// the callers.
+	//
+	// The root is opened once rather than per read: os.Root methods are
+	// goroutine-safe (provider_parallel.go drives these closures concurrently), and
+	// the per-file cost is unchanged because root.Lstat and root.Open are the same
+	// two syscalls, resolved relative to the root's descriptor.
+	//
+	// Containment is not all this changes. os.Root resolves every component inside
+	// the root, so a listed path that reached its file THROUGH a symlinked directory
+	// is now refused unless that link resolves within the repository: an
+	// intermediate link pointing outside is refused (the escape being closed), and
+	// so is an absolute link target even when it points back inside the repository,
+	// because os.Root will not rebase an absolute path onto itself. filepath.Join
+	// plus os.Lstat followed both, so both used to yield content. A relative link
+	// that resolves within the repository is still followed, and is the only one of
+	// the three that behaves as before.
+	//
+	// The listing can hold such a path: it comes from `git ls-files --cached`
+	// (gitutil.ListWorktreeFiles), so a directory tracked in the index but replaced
+	// on disk by a symlink still lists the files under it. Each one is now omitted
+	// from the snapshot with an error-severity E_FILE_READ partial failure
+	// (provider_parallel.go:119-125) where it previously contributed symbols and
+	// relations, which also drops the snapshot's completeness_level to "unsafe".
+	// filepath.WalkDir, the fallback listing, never descends a symlinked directory
+	// and so cannot produce the path at all.
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		return openedSource{}, err
+	}
+	registry := newOversizeRegistry(root)
 	read := func(path string) (string, bool) {
-		full := filepath.Join(repo, filepath.FromSlash(path))
-		info, err := os.Lstat(full)
+		name := filepath.FromSlash(path)
+		// Lstat before Open keeps the previous refusal of a symlinked final
+		// component: Root.Lstat does not traverse the link, and Root.Open would not
+		// leave the root anyway. The paths os.Root additionally refuses — those
+		// resolved through a symlinked directory it cannot resolve within the root —
+		// are described above the root.
+		info, err := root.Lstat(name)
 		if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return "", false
 		}
 		if maxReadBytes > 0 && info.Size() > maxReadBytes {
-			registry.note(path, full, info.Size())
+			registry.note(path, info.Size())
 			return "", false
 		}
-		content, err := os.ReadFile(full)
+		file, err := root.Open(name)
+		if err != nil {
+			return "", false
+		}
+		defer file.Close()
+		content, err := io.ReadAll(file)
 		if err != nil {
 			return "", false
 		}
 		return string(content), true
 	}
 	readPrefix := func(path string, limit int) (string, bool) {
-		full := filepath.Join(repo, filepath.FromSlash(path))
-		info, err := os.Lstat(full)
+		name := filepath.FromSlash(path)
+		info, err := root.Lstat(name)
 		if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return "", false
 		}
-		file, err := os.Open(full)
+		file, err := root.Open(name)
 		if err != nil {
 			return "", false
 		}
@@ -9871,7 +9918,11 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		read:       read,
 		readPrefix: readPrefix,
 		oversize:   registry.lookup,
-		warnings:   warnings,
+		// This field was nil while the working-tree reader held no handle. The root
+		// outlives every closure above, so the caller that closes the source is what
+		// releases it; every consumer already guards for a nil closer.
+		close:    root.Close,
+		warnings: warnings,
 	}, nil
 }
 
@@ -9881,30 +9932,56 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 // streaming pass over a multi-gigabyte file to answer a question nobody asked
 // would trade the memory blow-up for an I/O one.
 type oversizeRegistry struct {
+	// root confines the deferred digest exactly as the reader that refused the file
+	// was confined. The registry holds repository-relative paths only: an absolute
+	// path resolved later would reintroduce the traversal the refusal just stopped,
+	// one call after the reader declined to read the same file.
+	root    *os.Root
 	mu      sync.Mutex
 	pending map[string]oversizePending
 	digests map[string]oversizeFile
 }
 
 type oversizePending struct {
-	full  string
 	bytes int64
 }
 
-func newOversizeRegistry() *oversizeRegistry {
+func newOversizeRegistry(root *os.Root) *oversizeRegistry {
 	return &oversizeRegistry{
+		root:    root,
 		pending: map[string]oversizePending{},
 		digests: map[string]oversizeFile{},
 	}
 }
 
-func (r *oversizeRegistry) note(path, full string, size int64) {
+func (r *oversizeRegistry) note(path string, size int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, done := r.digests[path]; done {
 		return
 	}
-	r.pending[path] = oversizePending{full: full, bytes: size}
+	r.pending[path] = oversizePending{bytes: size}
+}
+
+// digestContained streams a refused file through the registry's root. It repeats
+// the reader's Lstat check so a symlinked final component is refused here too,
+// and streams rather than materializing because the file is over the read cap by
+// definition.
+func (r *oversizeRegistry) digestContained(path string) (filedigest.Digest, error) {
+	name := filepath.FromSlash(path)
+	info, err := r.root.Lstat(name)
+	if err != nil {
+		return filedigest.Digest{}, err
+	}
+	if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return filedigest.Digest{}, fs.ErrInvalid
+	}
+	file, err := r.root.Open(name)
+	if err != nil {
+		return filedigest.Digest{}, err
+	}
+	defer file.Close()
+	return filedigest.Stream(file)
 }
 
 func (r *oversizeRegistry) lookup(path string) (oversizeFile, bool) {
@@ -9919,7 +9996,7 @@ func (r *oversizeRegistry) lookup(path string) (oversizeFile, bool) {
 		return oversizeFile{}, false
 	}
 	record := oversizeFile{Bytes: pending.bytes}
-	if digest, err := filedigest.File(pending.full); err == nil {
+	if digest, err := r.digestContained(path); err == nil {
 		record = oversizeFile{Bytes: digest.Bytes, Hash: digest.Hash, Lines: digest.Lines}
 	}
 	r.mu.Lock()
