@@ -20,8 +20,7 @@ The Entire Graph retrieval engine ranked first in an eight-system LoCoMo compari
 arm) while building its index without model calls. Measured 2026-08-14, on the
 retrieval path that first shipped in
 [v0.4.0](https://github.com/entireio/entire-graph/releases/tag/v0.4.0)
-([#104](https://github.com/entireio/entire-graph/pull/104)); v0.3.0 and earlier
-score 91.56 on the same benchmark, without it.
+([#104](https://github.com/entireio/entire-graph/pull/104))
 
 | System | LoCoMo | Index-time tokens |
 | --- | --- | --- |
