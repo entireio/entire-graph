@@ -1325,7 +1325,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 			Symbols:           symbolCount,
 			Relations:         relationCount,
 			PartialFailures:   len(failures),
-			CompletenessLevel: completenessLevel(completenessFailureCount(failures), len(files), parsedFileCount, symbolCount),
+			CompletenessLevel: completenessLevel(failures, len(files), parsedFileCount, symbolCount),
 		},
 		Completeness: CompletenessReport{Languages: completenessLangs, Relations: relationsByType},
 	}
@@ -18135,8 +18135,24 @@ func completenessFailureCount(failures []PartialFailure) int {
 	return n
 }
 
-func completenessLevel(failures, files, parsedFiles, symbols int) string {
-	switch {
+// completenessLevel takes the failure RECORDS rather than a count so that the
+// one failure whose meaning is not "n gaps in an otherwise known scope" --
+// E_ANALYSIS_BUDGET_EXCEEDED -- can be read for what it is. Every other code
+// describes a bounded, enumerated gap inside a scope the provider fully
+// discovered; a wall-clock truncation instead means an UNKNOWN and unbounded
+// suffix of the repository was never reached, so neither the "files == 0" arm
+// (which reads an empty graph as a genuinely empty repository) nor the
+// failures-per-file ratio arms describe it.
+func completenessLevel(failures []PartialFailure, files, parsedFiles, symbols int) string {
+	if partialFailuresTruncated(failures) {
+		// "unsafe" is the only honest level: the caller cannot tell an empty
+		// truncation from an empty repository, nor a 1%-retained prefix from a
+		// 99% one, and the missing symbols would otherwise read as confident
+		// negatives. This is the same reason a truncated snapshot is refused by
+		// both cache writers (see ErrTruncatedSnapshotNotCacheable).
+		return "unsafe"
+	}
+	switch failureCount := completenessFailureCount(failures); {
 	case files == 0:
 		// Genuinely empty repo/scope — nothing to parse, so "ok" (not "unsafe":
 		// there is no missing coverage to warn about).
@@ -18150,9 +18166,9 @@ func completenessLevel(failures, files, parsedFiles, symbols int) string {
 		// Files were parsed but zero symbols came out — the graph is empty and
 		// unusable even though no hard parse failure occurred.
 		return "degraded"
-	case failures == 0:
+	case failureCount == 0:
 		return "ok"
-	case failures*4 > files:
+	case failureCount*4 > files:
 		return "unsafe"
 	default:
 		return "degraded"

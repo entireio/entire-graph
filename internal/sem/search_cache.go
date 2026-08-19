@@ -559,12 +559,47 @@ func selectiveSearchSnapshotFromFull(
 	options ProviderSnapshotOptions,
 	full ProviderSnapshot,
 ) (ProviderSnapshot, error) {
+	started := time.Now()
+	// Source preparation runs on the caller's context and OUTSIDE the budget
+	// clock, exactly as the streaming build does (see StreamSnapshot), so both
+	// paths bound the same phases and MaxDuration keeps its single documented
+	// meaning: a parse-and-relation ceiling.
 	sc, err := prepareSource(ctx, repo, options)
 	if err != nil {
 		return ProviderSnapshot{}, err
 	}
 	if sc.close != nil {
 		defer sc.close()
+	}
+	// The ceiling has to be derived HERE, not only inside
+	// BuildProviderSnapshotWithOptions. On a cold cache the caller falls
+	// through to that build and is bounded; on a warm complete snapshot this
+	// derivation re-runs the entire relation phase instead. Observing only the
+	// caller's context therefore made the SAME call with the SAME options
+	// bounded or unbounded purely as a function of cache state -- measured on a
+	// 500-function nested fixture, a 1 ns budget still built 385,137 relations
+	// in 78 s once the complete snapshot was cached.
+	workCtx := ctx
+	if options.MaxDuration > 0 {
+		var cancelBudget context.CancelFunc
+		workCtx, cancelBudget = context.WithDeadline(ctx, time.Now().Add(options.MaxDuration))
+		defer cancelBudget()
+	}
+	budgetHit := false
+	// classifyStop splits a stop reason the way the streaming build does:
+	// expiry of an OPT-IN MaxDuration is a truncation to report, anything else
+	// (a cancellation, or a deadline that came from the CALLER's own context)
+	// is returned. A caller that never asked for truncation must not receive a
+	// silently incomplete snapshot with a nil error.
+	classifyStop := func(err error) error {
+		if err == nil {
+			return nil
+		}
+		if options.MaxDuration > 0 && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			budgetHit = true
+			return nil
+		}
+		return err
 	}
 	// Tree (not commit) determines whether the cached full snapshot is a valid
 	// derivation source: two different commits sharing a tree parse identically.
@@ -656,23 +691,29 @@ func selectiveSearchSnapshotFromFull(
 	// One stop predicate for the whole relation phase, checked by the producers
 	// as well as at the sink, so the deadline is observable where the work is
 	// done rather than only at phase boundaries.
-	shouldStop := func() bool { return ctx.Err() != nil }
+	shouldStop := func() bool { return budgetHit || workCtx.Err() != nil }
 	if spec.name == ProfileSyntaxOnly {
 		emitStructuralRelationsCompact(sc.key, selective.Files, structuralByFile, shouldStop, emitRelation)
 	} else {
 		forEachRelation(sc.key, selective.Files, recordsByFile, sc.read, precomputedImports, spec, shouldStop, emitRelation, func(failure PartialFailure) {
 			relationFailures = append(relationFailures, failure)
 		})
+		// fileChangesWithRelations runs a `git log` subprocess and returns a
+		// fully materialised slice, so the budget is checked before entering it
+		// and the subprocess itself runs under workCtx.
 		if spec.emits("FILE_CHANGES_WITH") && !shouldStop() {
-			for _, relation := range fileChangesWithRelations(ctx, sc.absRepo, sc.commit, sc.key, selective.Files) {
-				if ctx.Err() != nil {
+			for _, relation := range fileChangesWithRelations(workCtx, sc.absRepo, sc.commit, sc.key, selective.Files) {
+				if shouldStop() {
 					break
 				}
 				emitRelation(relation)
 			}
 		}
 	}
-	if err := ctx.Err(); err != nil {
+	// shouldStop deliberately returns no reason, so classify the work context
+	// once here: budget expiry marks the derived snapshot truncated, a caller
+	// cancellation or a caller deadline is returned.
+	if err := classifyStop(workCtx.Err()); err != nil {
 		return ProviderSnapshot{}, err
 	}
 
@@ -696,6 +737,13 @@ func selectiveSearchSnapshotFromFull(
 	}
 	failures := filterSearchPartialFailures(full.Header.PartialFailures, allowedFiles)
 	failures = mergePartialFailures(failures, relationFailures)
+	if budgetHit {
+		// The marker both tells the caller the view is partial and makes the
+		// view uncacheable: writeSearchSnapshot refuses any snapshot carrying
+		// it, so a truncated derivation can never be served to a later
+		// unbudgeted query as the complete index.
+		failures = append(failures, analysisBudgetFailure(options.MaxDuration, time.Since(started)))
+	}
 	languageSet := make(map[string]struct{})
 	completenessLanguages := make(map[string]LanguageCompleteness)
 	for _, file := range selective.Files {
@@ -731,7 +779,7 @@ func selectiveSearchSnapshotFromFull(
 		Symbols:           len(selective.Symbols),
 		Relations:         len(selective.Relations),
 		PartialFailures:   len(failures),
-		CompletenessLevel: completenessLevel(completenessFailureCount(failures), len(selective.Files), parsedFiles, len(selective.Symbols)),
+		CompletenessLevel: completenessLevel(failures, len(selective.Files), parsedFiles, len(selective.Symbols)),
 	}
 	selective.Header.Completeness = CompletenessReport{
 		Languages: completenessLanguages,
