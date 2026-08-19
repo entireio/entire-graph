@@ -10516,12 +10516,20 @@ func foldsCase(repo, target string) bool {
 // holds a HEAD is ever read — and a path that is not a directory at all fails it
 // immediately.
 //
-// os.Stat, not os.Lstat, for objects/ and refs/: git accepts a repository whose
-// object store or refs tree is a symlink elsewhere, and Lstat would see the
-// symlink rather than the directory and call a real git directory ordinary
-// content.
+// A `commondir` git refuses to read is refused here too, which is where this
+// rule and the pointer rule below part company: git dies on such a directory, so
+// nothing licenses excluding it, and treating it as though no `commondir` were
+// there dropped an ordinary tree that merely carried the three names.
 func looksLikeGitDir(dir string) bool {
-	return validGitHEAD(filepath.Join(dir, "HEAD")) && hasGitDirStructure(dir)
+	if !validGitHEAD(filepath.Join(dir, "HEAD")) {
+		return false
+	}
+	// A `commondir` git refuses to read makes git refuse the whole git
+	// directory, so it is not a git directory here either. Falling back to dir
+	// instead called an ordinary fixture tree carrying HEAD, objects/ and refs/
+	// a git directory and dropped it from every snapshot.
+	common, ok := gitCommonDir(dir)
+	return ok && hasObjectsAndRefs(common)
 }
 
 // hasGitDirStructure is is_git_directory() with the HEAD test removed: the
@@ -10537,11 +10545,32 @@ func looksLikeGitDir(dir string) bool {
 // pointer rule exists precisely to carry a git directory whose HEAD is missing
 // or corrupt, which is the state that makes git refuse the worktree and the
 // filesystem fallback run in the first place.
+//
+// The same reasoning decides the `commondir` git will not read, and it decides
+// it the other way round from looksLikeGitDir: there the refusal means git says
+// "not a git directory" and there is nothing to hide, here the pointer already
+// says otherwise and the refusal is just more of the damage this rule exists to
+// survive.
 func hasGitDirStructure(dir string) bool {
 	common, ok := gitCommonDir(dir)
 	if !ok {
-		return false
+		// A `commondir` git will not read is the same class of damage as the
+		// missing HEAD this rule already carries: git refuses the repository,
+		// which is what makes the fallback run, while the config keeps the
+		// credential. The pointer is the evidence, so look in the directory
+		// itself rather than declaring it ordinary content.
+		common = dir
 	}
+	return hasObjectsAndRefs(common)
+}
+
+// hasObjectsAndRefs is the objects/ and refs/ half of is_git_directory(), asked
+// of the directory git resolves them through.
+//
+// os.Stat, not os.Lstat: git accepts a repository whose object store or refs
+// tree is a symlink elsewhere, and Lstat would see the symlink rather than the
+// directory and call a real git directory ordinary content.
+func hasObjectsAndRefs(common string) bool {
 	for _, name := range []string{"objects", "refs"} {
 		if info, err := os.Stat(filepath.Join(common, name)); err != nil || !info.IsDir() {
 			return false
@@ -10564,27 +10593,38 @@ const maxGitCommonDirBytes = 4 << 10
 // fixture carrying HEAD plus its own objects/ and refs/ alongside a stale
 // `commondir`, which git REJECTS, is excluded from every worktree snapshot.
 //
-// No commondir file: dir itself, as git does. Present but empty, or unreadable:
-// git has no directory to resolve through and finds neither objects nor refs, so
-// the answer is "not a git directory" rather than "resolve inside dir" — the
-// same verdict git reaches, and the one that does not over-exclude.
+// ABSENT commondir: dir itself, as git does. PRESENT but unreadable — empty, a
+// directory, a dangling symlink — git dies rather than resolving anything, so
+// the answer is neither a path nor dir but "git refuses this", and the caller
+// decides what that is worth. Verified on git 2.54.0, all three refused:
 //
-// os.Stat, not os.Lstat: git reads `commondir` through the ordinary stdio path,
+//	fatal: failed to read adm/commondir: No such file or directory
+//	fatal: failed to read admd/commondir: Is a directory
+//
+// Presence is lstat, because git's file_exists() is an lstat: os.Stat reports a
+// dangling symlink as ENOENT, indistinguishable from absent, and that collapsed
+// git's refusal into "resolve inside dir".
+//
+// Reading follows symlinks: git reads `commondir` through the ordinary stdio path,
 // which follows a symlink, so a symlinked `commondir` names a common directory
 // to git and the git directory holding it is a git directory. Refusing it —
 // lstat plus a regular-file requirement — called a real linked worktree's
 // administrative directory ordinary content and left its config and hooks
 // indexable. Verified on git 2.54.0: with `adm/commondir` a symlink to a regular
 // file, `git --git-dir=adm rev-parse --git-dir` succeeds and
-// `--git-common-dir` resolves through the link. A `commondir` that is a
-// DIRECTORY still fails the regular-file test, as it fails git's own read.
+// `--git-common-dir` resolves through the link.
 func gitCommonDir(dir string) (string, bool) {
 	pointer := filepath.Join(dir, "commondir")
-	info, err := os.Stat(pointer)
-	if err != nil {
+	// Presence is lstat, exactly as git's file_exists() decides it. os.Stat
+	// cannot tell an absent `commondir` from a present but DANGLING symlink —
+	// both are ENOENT — and git treats those two oppositely: absent means
+	// "resolve inside dir", present-but-unreadable means it refuses the
+	// directory outright.
+	if _, err := os.Lstat(pointer); err != nil {
 		return dir, true
 	}
-	if !info.Mode().IsRegular() || info.Size() > maxGitCommonDirBytes {
+	info, err := os.Stat(pointer)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxGitCommonDirBytes {
 		return "", false
 	}
 	content, err := os.ReadFile(pointer)
