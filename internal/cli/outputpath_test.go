@@ -1212,3 +1212,96 @@ func TestPathComponentsKeepsDotDot(t *testing.T) {
 		}
 	}
 }
+
+// TestOutputPathsKeepTheKernelDestinationThroughACallerOwnedLink is the
+// DO-NOT-OVER-CORRECT pin for the rule above, on the route half.
+//
+// Classifying the CLEANED spelling is what routes the traversal escape into the
+// refusal: a committed `link -> .git/objects` resolves `link/../config` to a path
+// OUTSIDE the repository on disk, and only the cleaned spelling keeps it inside
+// where refuseTraversedSymlinks can see it. But the cleaned spelling is a different
+// FILE, so preferring it must be limited to the routes that need it — the ones
+// whose link the repository controls.
+//
+// It was not. With a CALLER-OWNED `<parent>/link -> <elsewhere>/a/b`,
+// `--report <parent>/link/../repo/out.md` is `<elsewhere>/a/repo/out.md` to the
+// kernel — the ".." steps out of the link's TARGET — and `<parent>/repo/out.md`
+// once cleaned, which is inside the scanned repository. Preferring the cleaned one
+// moved the caller's report off the destination they named and truncated an
+// unrelated file in the repository instead. The link is outside the repository, so
+// it is caller-owned by the same ownership rule that leaves the whole
+// out-of-repository write unconfined; there is nothing here to confine.
+func TestOutputPathsKeepTheKernelDestinationThroughACallerOwnedLink(t *testing.T) {
+	requireSymlinkSupport(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows collapses `link\\..` before the filesystem sees it, so the two spellings never differ")
+	}
+
+	// bystander is the in-repo file the CLEANED spelling names. Nothing may write
+	// it: the caller never asked for it, and on a real checkout it is tracked work.
+	const bystander = "the caller never named this file\n"
+
+	// scene builds the shape once for both verbs and returns the caller's spelling,
+	// the destination the kernel opens for it, and the in-repo file that must not
+	// move. leaf is the output file's own name under <elsewhere>/a/.
+	scene := func(t *testing.T, leaf ...string) (repo, given, kernelDest, inRepo string) {
+		t.Helper()
+		parent := t.TempDir()
+		repo = outputPathRepoAt(t, filepath.Join(parent, "repo"))
+		elsewhere := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(elsewhere, "a", "b"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// The kernel's destination directory, which is <link>/.. + "repo".
+		if err := os.MkdirAll(filepath.Join(elsewhere, "a", "repo"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(parent, "link")
+		if err := os.Symlink(filepath.Join(elsewhere, "a", "b"), link); err != nil {
+			t.Fatal(err)
+		}
+		inRepo = filepath.Join(repo, filepath.Join(leaf...))
+		if err := os.MkdirAll(filepath.Dir(inRepo), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(inRepo, []byte(bystander), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		given = dotDotPath(link, append([]string{"repo"}, leaf...)...)
+		kernelDest = filepath.Join(append([]string{elsewhere, "a", "repo"}, leaf...)...)
+		return repo, given, kernelDest, inRepo
+	}
+
+	assertLandedOnTheKernelDestination := func(t *testing.T, err error, kernelDest, inRepo, want string) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("a caller-owned destination reached through their own link was refused: %v", err)
+		}
+		written, readErr := os.ReadFile(kernelDest)
+		if readErr != nil {
+			t.Fatalf("nothing was written to the path the kernel opens for the caller's spelling: %v", readErr)
+		}
+		if !strings.HasPrefix(string(written), want) {
+			t.Fatalf("the destination holds the wrong bytes:\n%s", written)
+		}
+		untouched, readErr := os.ReadFile(inRepo)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if string(untouched) != bystander {
+			t.Fatalf("the write was redirected onto an unrelated file inside the repository:\n%s", untouched)
+		}
+	}
+
+	t.Run("index --report", func(t *testing.T) {
+		repo, given, kernelDest, inRepo := scene(t, "out.md")
+		assertLandedOnTheKernelDestination(t, runIndexReport(t, repo, given), kernelDest, inRepo, "# Graph report")
+	})
+
+	// The other verb creates its parents, so this also pins that the parents get
+	// created under the kernel's destination rather than inside the repository.
+	t.Run("verify --record-baseline", func(t *testing.T) {
+		repo, given, kernelDest, inRepo := scene(t, "nested", "base.json")
+		assertLandedOnTheKernelDestination(t, runVerifyRecord(t, repo, given), kernelDest, inRepo, "{")
+	})
+}
