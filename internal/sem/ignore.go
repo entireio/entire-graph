@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -713,6 +714,68 @@ func (s *nestedIgnoreStack) noteRepoExclusion(ledger *repoIgnoreLedger, rel stri
 		Path:   cleanIgnorePath(rel),
 		Source: rule.origin.label,
 		Rule:   rule.pattern,
+	})
+}
+
+// maxPrunedTreeDisclosure bounds how many descendants one pruned directory adds
+// to the ledger. A prune is disclosed by naming what left the corpus, and a tree
+// large enough to exhaust this is already past the point where more paths tell a
+// reader anything; the walk stops there rather than paying an unbounded traversal
+// for a directory the listing had decided not to read.
+const maxPrunedTreeDisclosure = 512
+
+// notePrunedRepoExclusion records what a DIRECTORY prune removed.
+//
+// filepath.WalkDir returns SkipDir before any child of an ignored directory is
+// tested, so the per-file noteRepoExclusion never sees them: one `hidden/` line
+// in .graphignore could delete an entire source tree from the corpus with an
+// empty ledger behind it. The descendants are enumerated here instead, so the
+// disclosure names paths a reader can open.
+//
+// The qualification is the same one noteRepoExclusion applies to a file — a
+// repository rule Git does not apply, whose verdict Git's own rules do not
+// already reach — so this discloses only pruning Git would not have done itself.
+// Without that test every build/, dist/ and node_modules/ in the tree would print
+// its contents, which is the noise that makes readers skip the disclosure that
+// matters.
+func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, rel string) {
+	if ledger == nil {
+		return
+	}
+	dir := cleanIgnorePath(rel)
+	if dir == "" {
+		return
+	}
+	rule, matched := s.decidingRule(dir, true)
+	if !matched || !rule.ignore || rule.origin.callerControlled || !rule.origin.gitInvisible {
+		return
+	}
+	if s.ignoredByGit(dir, true) {
+		return
+	}
+	recorded := 0
+	root := filepath.Join(s.repo, filepath.FromSlash(dir))
+	_ = filepath.WalkDir(root, func(current string, entry fs.DirEntry, err error) error {
+		if err != nil || entry == nil {
+			return nil
+		}
+		if entry.IsDir() || entry.Type()&fs.ModeSymlink != 0 || !entry.Type().IsRegular() {
+			return nil
+		}
+		child, relErr := filepath.Rel(s.repo, current)
+		if relErr != nil {
+			return nil
+		}
+		ledger.note(RepoExclusion{
+			Path:   cleanIgnorePath(filepath.ToSlash(child)),
+			Source: rule.origin.label,
+			Rule:   rule.pattern,
+		})
+		recorded++
+		if recorded >= maxPrunedTreeDisclosure {
+			return filepath.SkipAll
+		}
+		return nil
 	})
 }
 

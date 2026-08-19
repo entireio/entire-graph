@@ -496,8 +496,9 @@ type SearchResponse struct {
 // `warnings` still learns that this answer was assembled from a narrowed corpus.
 const repoIgnoreDisclosureCode = "W_REPO_IGNORED_SOURCE"
 
-// withRepoIgnoreDisclosure appends the disclosure warning when the repository's
-// own ignore rules narrowed the corpus, and returns warnings unchanged otherwise.
+// withRepoIgnoreDisclosure puts the disclosure warning FIRST when the
+// repository's own ignore rules narrowed the corpus, and returns warnings
+// unchanged otherwise.
 func withRepoIgnoreDisclosure(warnings []ProviderWarning, report *RepoIgnoreReport) []ProviderWarning {
 	if report == nil || report.Files == 0 {
 		return warnings
@@ -518,14 +519,20 @@ func withRepoIgnoreDisclosure(warnings []ProviderWarning, report *RepoIgnoreRepo
 	if len(report.Sample) > 0 {
 		first = report.Sample[0].Path
 	}
-	return append(append([]ProviderWarning(nil), warnings...), ProviderWarning{
+	// FIRST, not appended. Every renderer that caps the diagnostics it prints
+	// takes them from the head of the list — the agent payload prints three and
+	// replaces the rest with a count — so appending left this warning's path behind
+	// whatever unrelated diagnostics the snapshot happened to carry, and a reader
+	// holding only the count knows something is hidden without knowing what to
+	// open. The existing warnings keep their order behind it.
+	return append([]ProviderWarning{{
 		Code:     repoIgnoreDisclosureCode,
 		Severity: "warning",
 		FilePath: first,
 		EffectOnCompleteness: "files git lists were excluded from the corpus by the repository's own ignore rules; " +
 			"the coverage figures describe what remained, not what the repository contains",
 		Detail: detail,
-	})
+	}}, warnings...)
 }
 
 // maxRenderedRepoExclusions is how many excluded paths the TEXT payload names.

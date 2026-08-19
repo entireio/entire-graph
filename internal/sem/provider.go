@@ -10167,6 +10167,16 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 		// Explicit ignore/include rules still arbitrate: an include file may have
 		// pulled this path back in, and its own rules may then exclude part of
 		// what it re-included.
+		// Git lists index entries for files staged as deleted and can list a
+		// symlink; the snapshot reads neither. Eligibility is decided BEFORE the
+		// ledger hears the path, because a disclosure may only name a file the
+		// ignore rules are what removed — a path the snapshot would have discarded
+		// anyway was never in the corpus to hide, and reporting it as hidden is a
+		// claim about the repository that is not true.
+		info, statErr := os.Lstat(filepath.Join(repo, filepath.FromSlash(rel)))
+		if statErr != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			continue
+		}
 		if ignores.Ignored(rel, false) {
 			// Git's listing already applied the repository's exclude stack to
 			// UNTRACKED content (`--exclude-standard`), so a path that reaches
@@ -10175,12 +10185,6 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 			// nothing else is what keeps the report free of the ordinary
 			// build-output noise every repository gitignores.
 			ignores.noteRepoExclusion(ledger, rel, false)
-			continue
-		}
-		// Git lists index entries for files staged as deleted and can list a
-		// symlink; the snapshot reads neither.
-		info, statErr := os.Lstat(filepath.Join(repo, filepath.FromSlash(rel)))
-		if statErr != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			continue
 		}
 		seen[rel] = struct{}{}
@@ -10222,6 +10226,11 @@ func walkWorktreeFiles(repo string, ignores ignoreMatcher, dirTracked func(strin
 				return filepath.SkipDir
 			}
 			if rel != "" && stack.Ignored(rel, true) && !stack.MayIncludeDescendant(rel) {
+				// Disclose before pruning: SkipDir means no child of this directory
+				// ever reaches the per-file noteRepoExclusion below, so a single
+				// `hidden/` line would otherwise remove an entire source tree from
+				// the corpus with nothing recorded at all.
+				stack.notePrunedRepoExclusion(ledger, rel)
 				return filepath.SkipDir
 			}
 			return nil

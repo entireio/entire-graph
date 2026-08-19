@@ -1439,10 +1439,16 @@ func agentSearchDiagnostics(response sem.SearchResponse) ([]byte, []byte) {
 		len(response.PartialFailures), pluralSuffix(len(response.PartialFailures)),
 	)
 	const maxAgentDiagnostics = 3
+	// The exclusion disclosure is hoisted into a visible slot before the cap is
+	// applied. It is the only warning whose whole value is the path it names, and
+	// the omitted-diagnostics line replaces that path with a count — "something is
+	// hidden" instead of "internal/auth/auth.go is hidden". Producers put it first
+	// already; hoisting here means no future producer ordering can lose it.
+	warnings := hoistRepoIgnoreDisclosure(response.Warnings)
 	warningsVisible, failuresVisible := agentDiagnosticVisibility(
-		len(response.Warnings), len(response.PartialFailures), maxAgentDiagnostics,
+		len(warnings), len(response.PartialFailures), maxAgentDiagnostics,
 	)
-	for _, warning := range response.Warnings[:warningsVisible] {
+	for _, warning := range warnings[:warningsVisible] {
 		fmt.Fprintf(&full, "- warning %s%s\n", warning.Code, agentDiagnosticPath(warning.FilePath))
 	}
 	for _, failure := range response.PartialFailures[:failuresVisible] {
@@ -1466,6 +1472,30 @@ func agentSearchDiagnostics(response sem.SearchResponse) ([]byte, []byte) {
 	compact := []byte(fmt.Sprintf("!%s W%d F%d L%d/%d%s\n",
 		marker, len(response.Warnings), len(response.PartialFailures), languages, files, excluded))
 	return full.Bytes(), compact
+}
+
+// repoIgnoreDisclosureWarning is the code of the warning that names a file the
+// repository's own ignore rules removed from the corpus.
+const repoIgnoreDisclosureWarning = "W_REPO_IGNORED_SOURCE"
+
+// hoistRepoIgnoreDisclosure returns warnings with the exclusion disclosure moved
+// to the front, leaving every other warning in its original order. The input is
+// never mutated.
+func hoistRepoIgnoreDisclosure(warnings []sem.ProviderWarning) []sem.ProviderWarning {
+	index := -1
+	for i, warning := range warnings {
+		if warning.Code == repoIgnoreDisclosureWarning {
+			index = i
+			break
+		}
+	}
+	if index <= 0 {
+		return warnings
+	}
+	hoisted := make([]sem.ProviderWarning, 0, len(warnings))
+	hoisted = append(hoisted, warnings[index])
+	hoisted = append(hoisted, warnings[:index]...)
+	return append(hoisted, warnings[index+1:]...)
 }
 
 // agentCoverageExcluded renders the repository-controlled exclusion count inside
