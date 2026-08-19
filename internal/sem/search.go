@@ -535,6 +535,41 @@ func withRepoIgnoreDisclosure(warnings []ProviderWarning, report *RepoIgnoreRepo
 	}}, warnings...)
 }
 
+// repoIgnoreIncompleteCode is the partial-failure code for a disclosure whose
+// count is short. Partial failures are the channel this provider already uses for
+// "the answer is real but something was not read", and the coverage line already
+// counts them, so the shortfall reaches every renderer without a new field to
+// learn.
+const repoIgnoreIncompleteCode = "E_REPO_IGNORE_UNREADABLE"
+
+// withRepoIgnorePartialFailures appends the shortfall when the exclusion count
+// could not be completed, and returns failures unchanged otherwise.
+//
+// It is applied at the response sink rather than where the walk runs, so every
+// path that builds a SearchResponse from a listing inherits it and none can
+// forget it — the same reason the disclosure warning is added here.
+func withRepoIgnorePartialFailures(failures []PartialFailure, report *RepoIgnoreReport) []PartialFailure {
+	if report == nil || !report.CountIncomplete {
+		return failures
+	}
+	first := ""
+	if len(report.Unreadable) > 0 {
+		first = report.Unreadable[0]
+	}
+	detail := fmt.Sprintf("%d excluded path%s counted", report.Files, pluralS(report.Files))
+	if len(report.Unreadable) > 0 {
+		detail += "; unreadable: " + termsafe.Line(strings.Join(report.Unreadable, ", "))
+	}
+	return append(failures, PartialFailure{
+		Code:     repoIgnoreIncompleteCode,
+		Severity: "warning",
+		FilePath: first,
+		EffectOnCompleteness: "part of a tree the repository's own ignore rules removed could not be read, so the " +
+			"disclosed exclusion count is a lower bound rather than the exact number",
+		Detail: detail,
+	})
+}
+
 // maxRenderedRepoExclusions is how many excluded paths the TEXT payload names.
 // The header line carries the exact count, so the list only has to be enough to
 // act on; a longer one would cost bytes at the head of every payload in a
@@ -865,7 +900,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 			},
 			RepoIgnored:     selection.repoIgnored,
 			Warnings:        withRepoIgnoreDisclosure(warnings, selection.repoIgnored),
-			PartialFailures: partialFailures,
+			PartialFailures: withRepoIgnorePartialFailures(partialFailures, selection.repoIgnored),
 			Completeness:    completeness,
 		}, nil
 	}
@@ -1522,7 +1557,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		RepoIgnored:     selection.repoIgnored,
 		Stats:           stats,
 		Warnings:        withRepoIgnoreDisclosure(snapshot.Header.Warnings, selection.repoIgnored),
-		PartialFailures: partialFailures,
+		PartialFailures: withRepoIgnorePartialFailures(partialFailures, selection.repoIgnored),
 		Completeness:    snapshot.Header.Completeness,
 	}, nil
 }

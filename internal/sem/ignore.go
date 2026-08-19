@@ -122,6 +122,16 @@ type RepoIgnoreReport struct {
 	// repository that ignores thousands of vendored blobs cannot flood a payload.
 	Sample          []RepoExclusion `json:"sample,omitempty"`
 	SampleTruncated bool            `json:"sample_truncated,omitempty"`
+	// CountIncomplete says Files is a LOWER BOUND rather than the exact number:
+	// enumerating an excluded directory tree hit something it could not read, and
+	// whatever that subtree held is excluded and uncounted. It is the one case in
+	// which Files does not mean what it says, so it is stated rather than left to
+	// be inferred from a number that looks like every other number. Unreadable
+	// names what stopped it; the same fact rides the response's partial_failures,
+	// so a consumer that reads only that channel still learns the count is short.
+	CountIncomplete bool `json:"count_incomplete,omitempty"`
+	// Unreadable lists the paths the enumeration could not read, capped like Sample.
+	Unreadable []string `json:"unreadable,omitempty"`
 }
 
 // maxRepoExclusionSample bounds the named paths in a RepoIgnoreReport. The count
@@ -144,6 +154,13 @@ type repoIgnoreLedger struct {
 	seen      map[string]struct{}
 	sample    []RepoExclusion
 	truncated bool
+	// unreadable records the paths an enumeration of an excluded tree could not
+	// read. Those subtrees are excluded like every other descendant and cannot be
+	// counted, so files stops being exact — and a disclosure that quietly
+	// understates is the same blindness this ledger exists to end, one step
+	// further in.
+	unreadable     []string
+	unreadableSeen map[string]struct{}
 }
 
 func (l *repoIgnoreLedger) note(exclusion RepoExclusion) {
@@ -172,11 +189,35 @@ func (l *repoIgnoreLedger) note(exclusion RepoExclusion) {
 	l.truncated = true
 }
 
+// noteUnreadable records a path an enumeration could not read. Deduplicated and
+// capped the same way the sample is: one unreadable directory near the root can
+// produce an error per entry, and a payload is not the place for all of them.
+func (l *repoIgnoreLedger) noteUnreadable(path string) {
+	if l == nil || path == "" {
+		return
+	}
+	if l.unreadableSeen == nil {
+		l.unreadableSeen = make(map[string]struct{})
+	}
+	if _, duplicate := l.unreadableSeen[path]; duplicate {
+		return
+	}
+	l.unreadableSeen[path] = struct{}{}
+	if len(l.unreadable) < maxRepoExclusionSample {
+		l.unreadable = append(l.unreadable, path)
+	}
+}
+
 // report renders the ledger, or nil when nothing was excluded. Nil is what keeps
 // the field absent from the overwhelmingly common payload that has nothing to
 // disclose.
+//
+// An unreadable path alone is enough to render one: a prune whose whole tree was
+// unreadable excluded an unknown number of files, and returning nil for it would
+// answer "the repository hid nothing" to the one case where the truth is "the
+// repository hid something and this could not see how much".
 func (l *repoIgnoreLedger) report() *RepoIgnoreReport {
-	if l == nil || l.files == 0 {
+	if l == nil || (l.files == 0 && len(l.unreadable) == 0) {
 		return nil
 	}
 	sources := make([]RepoIgnoreSource, 0, len(l.order))
@@ -193,11 +234,15 @@ func (l *repoIgnoreLedger) report() *RepoIgnoreReport {
 	// the determinism the rest of the provider promises applies here too.
 	sample := append([]RepoExclusion(nil), l.sample...)
 	sort.Slice(sample, func(i, j int) bool { return sample[i].Path < sample[j].Path })
+	unreadable := append([]string(nil), l.unreadable...)
+	sort.Strings(unreadable)
 	return &RepoIgnoreReport{
 		Files:           l.files,
 		Sources:         sources,
 		Sample:          sample,
 		SampleTruncated: l.truncated,
+		CountIncomplete: len(unreadable) > 0,
+		Unreadable:      unreadable,
 	}
 }
 
@@ -768,11 +813,19 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 	}
 	root := filepath.Join(s.repo, filepath.FromSlash(dir))
 	_ = filepath.WalkDir(root, func(current string, entry fs.DirEntry, err error) error {
+		// An error here is a subtree that is excluded and cannot be counted. The
+		// walk continues — one unreadable directory must not silence the disclosure
+		// of the paths it CAN name — but the shortfall is recorded, because Files
+		// promises to be exact and this is the one thing that can make it a lower
+		// bound. Swallowing it returned a successful, understated security
+		// disclosure with nothing to distinguish it from a true one.
 		if err != nil || entry == nil {
+			s.noteUnreadablePath(ledger, current, dir)
 			return nil
 		}
 		child, relErr := filepath.Rel(s.repo, current)
 		if relErr != nil {
+			s.noteUnreadablePath(ledger, current, dir)
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -800,6 +853,20 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 		})
 		return nil
 	})
+}
+
+// noteUnreadablePath records one enumeration failure as a repository-relative
+// path. The absolute path is never recorded: it names the operator's own
+// filesystem, and this report is delivered to whoever reads the answer. When the
+// path cannot be made relative, the pruned directory stands in for it — less
+// precise, still true, and still inside the repository.
+func (s *nestedIgnoreStack) noteUnreadablePath(ledger *repoIgnoreLedger, current, fallback string) {
+	rel, err := filepath.Rel(s.repo, current)
+	if err != nil {
+		ledger.noteUnreadable(fallback)
+		return
+	}
+	ledger.noteUnreadable(cleanIgnorePath(filepath.ToSlash(rel)))
 }
 
 // ignoredByGit reports whether the rules Git itself applies already exclude rel,

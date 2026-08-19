@@ -1314,12 +1314,26 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 		if response.Stats.RepoIgnoredFiles > 0 {
 			excluded = fmt.Sprintf(" X%d", response.Stats.RepoIgnoredFiles)
 		}
-		for _, candidate := range [][]byte{
+		candidates := [][]byte{
 			[]byte(fmt.Sprintf("Index: cache-%s%s%s\n", cacheState, marker, excluded)),
 			[]byte(fmt.Sprintf("%s I:%s%s\n", marker, cacheState, excluded)),
+		}
+		if excluded != "" {
+			// The count outlives the cache state, not the other way round. Below the
+			// bytes the pair needs, every remaining rung named the cache state and
+			// dropped the count — so the tightest budgets, which cannot hold a ranked
+			// location either, went back to implying the answer saw the whole
+			// repository. A stale-index marker is telemetry the caller can re-derive
+			// by asking again; a corpus the repository narrowed is not. This rung is
+			// only ever reached when the fuller line does not fit, so no budget that
+			// can afford both is made to choose.
+			candidates = append(candidates, []byte(fmt.Sprintf("%s%s\n", marker, excluded)))
+		}
+		candidates = append(candidates,
 			[]byte(fmt.Sprintf("Index: cache-%s%s\n", cacheState, marker)),
 			[]byte(fmt.Sprintf("%s I:%s\n", marker, cacheState)),
-		} {
+		)
+		for _, candidate := range candidates {
 			payload = candidate
 			if len(candidate) <= budget {
 				break
