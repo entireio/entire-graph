@@ -3,6 +3,7 @@ package gitutil
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"math"
 	"os"
 	"os/exec"
@@ -812,5 +813,110 @@ func TestGrepTreePathsCaseSensitiveIncludingBinary(t *testing.T) {
 	want := []string{"dollar.js", "exact.py", "substring.py"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("case-sensitive grep = %#v, want %#v", got, want)
+	}
+}
+
+// A `git cat-file --batch` request is one LINE, so a path the line protocol
+// cannot carry must be refused BEFORE it is written to the pipe. Two shapes
+// cannot be carried, and each corrupts a different amount of the session:
+//
+//   - An embedded LF turns one request into two request lines while ReadFile
+//     consumes one response record. The pipe is then permanently one record
+//     ahead, so every LATER path returns some other file's blob — no error, no
+//     short read, nothing for a caller to notice. That is the whole-session
+//     corruption, and it is why this test reads the ordinary files AFTER the
+//     bad one and demands each of them get its own content back.
+//   - A trailing CR is stripped by git's own strbuf_getline before the lookup,
+//     so the request silently resolves to a DIFFERENT object that really
+//     exists. Nothing downstream can tell that blob apart from the right one.
+//
+// A CR anywhere but the end round-trips intact, and is asserted to still read,
+// because the sibling callers of this reader depend on that today.
+func TestBatchFileReaderRefusesPathsTheProtocolCannotCarry(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows filenames cannot contain newlines or carriage returns")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	const newlinePath = "b_ev\nxil.go"
+	const trailingCRPath = "endcr.go\r"
+	const midCRPath = "mid\rcr.go"
+	files := map[string]string{
+		newlinePath:    "package evil\n",
+		trailingCRPath: "package endcr\n// carriage return in the NAME\n",
+		// The decoy: identical to trailingCRPath minus the CR. git strips the
+		// trailing CR from the request line, so an unguarded reader answers the
+		// request for trailingCRPath with THIS blob and calls it a success.
+		"endcr.go":  "package endcr\n// the DECOY the stripped request resolves to\n",
+		midCRPath:   "package midcr\n",
+		"a.go":      "package a\nfunc A() {}\n",
+		"dir/b.go":  "package dir\nfunc B() {}\n",
+		"z_last.go": "package z\nfunc Z() {}\n",
+	}
+	for path, content := range files {
+		full := filepath.Join(repo, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "paths the batch protocol cannot carry")
+
+	reader, err := NewBatchFileReader(context.Background(), repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := reader.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	for _, tc := range []struct{ name, path string }{
+		{name: "embedded newline", path: newlinePath},
+		{name: "trailing carriage return", path: trailingCRPath},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			content, ok, err := reader.ReadFile(tc.path)
+			if !errors.Is(err, ErrNonBatchablePath) {
+				t.Fatalf("ReadFile(%q) err = %v, want ErrNonBatchablePath", tc.path, err)
+			}
+			if ok || content != "" {
+				t.Fatalf("ReadFile(%q) = (%q, ok %v), want (\"\", false)", tc.path, content, ok)
+			}
+		})
+	}
+
+	// The refusal must leave the stream untouched: every ordinary path read
+	// AFTER the refused ones still gets its OWN blob. Before the guard the
+	// newline path left a spare response record in the pipe and these reads
+	// came back shifted by one — a.go answered with dir/b.go's content.
+	for _, path := range []string{"a.go", "dir/b.go", "z_last.go", midCRPath} {
+		batched, ok, err := reader.ReadFile(path)
+		if err != nil {
+			t.Fatalf("batch read %q after a refused path: %v", path, err)
+		}
+		if !ok {
+			t.Fatalf("batch read %q after a refused path: not found", path)
+		}
+		if batched != files[path] {
+			t.Fatalf("batch read %q = %q, want %q (response stream is out of step)", path, batched, files[path])
+		}
+	}
+
+	// ShowFile is the fallback the guard sends these paths to, so it has to be
+	// able to answer them: it passes the path as one argv entry, where no
+	// delimiter exists to be injected into.
+	for _, path := range []string{newlinePath, trailingCRPath} {
+		shown, ok, err := ShowFile(t.Context(), repo, "HEAD", path)
+		if err != nil || !ok || shown != files[path] {
+			t.Fatalf("ShowFile(%q) = (%q, ok %v, err %v), want (%q, true, nil)", path, shown, ok, err, files[path])
+		}
 	}
 }

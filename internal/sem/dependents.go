@@ -2,6 +2,7 @@ package sem
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -115,7 +116,20 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 	if batch, batchErr := gitutil.NewBatchFileReader(ctx, repo, head); batchErr == nil {
 		defer func() { _ = batch.Close() }()
 		batch.SetMaxBytes(defaultMaxParseBytes)
-		readFile = batch.ReadFile
+		readFile = func(path string) (string, bool, error) {
+			content, ok, err := batch.ReadFile(path)
+			if errors.Is(err, gitutil.ErrNonBatchablePath) {
+				// The batch protocol is line based, so a path it cannot carry
+				// takes the argv-safe one-shot reader instead — same commit,
+				// same content, one extra subprocess for a file shape that is
+				// vanishingly rare. Falling back rather than giving up is the
+				// point: dropping the file would undercount dependents_count
+				// with no warning attached, which is exactly the disappearing
+				// silently that docs/trust-and-security.md rules out.
+				return gitutil.ShowFile(ctx, repo, head, path)
+			}
+			return content, ok, err
+		}
 		oversizeBytes = func(path string) (int64, bool) {
 			blob, ok := batch.OversizeBlob(path)
 			return blob.Bytes, ok

@@ -714,7 +714,57 @@ func NewBatchFileReader(ctx context.Context, repo, rev string) (*BatchFileReader
 	}, nil
 }
 
+// ErrNonBatchablePath reports a path that the LF-delimited `git cat-file
+// --batch` request protocol cannot carry without changing which object is read.
+// Callers that can afford a subprocess should fall back to the argv-based
+// ShowFile, which passes the path as one argument and has no delimiter at all.
+// It is deliberately an error rather than a "missing file": a path that cannot
+// be requested is not a path that is absent, and reporting it as absent is the
+// silent drop docs/trust-and-security.md rules out.
+var ErrNonBatchablePath = errors.New("path is not expressible as a git cat-file --batch request")
+
+// checkBatchablePath rejects a path the request protocol would mangle.
+//
+// One request is one line, and git reads it with strbuf_getline, which strips
+// the trailing LF and then ONE trailing CR. Two path shapes therefore do not
+// survive the round trip:
+//
+//   - An embedded LF splits a single ReadFile call into N+1 request lines while
+//     the reader consumes exactly one response record. The pipe is then
+//     permanently one record ahead, so every LATER path in the session gets
+//     another file's blob — silently, with no error and no short read. This is
+//     the whole-session corruption; it is not confined to the offending path.
+//   - A trailing CR is eaten before the lookup, so "endcr.go\r" resolves to the
+//     blob of "endcr.go" — a different object, returned as a success.
+//
+// A CR anywhere else round-trips byte for byte and is deliberately still
+// allowed, because the three sibling call sites read such paths correctly today
+// and this guard must not take that away from them.
+//
+// The alternative fix is `git cat-file --batch -Z`, whose request AND response
+// records are NUL-delimited and which handles both shapes. It is not used here:
+// it needs Git >= 2.42, so it would have to be version-detected at runtime and
+// backed by this same guard on older Git, leaving two response parsers on the
+// security-critical path to keep in agreement. A guard at the sink is total —
+// no future caller can forget it — and the paths it refuses are exotic enough
+// that one extra `git show` subprocess is the right price.
+func checkBatchablePath(path string) error {
+	if strings.Contains(path, "\n") {
+		return fmt.Errorf("%w: path contains a newline", ErrNonBatchablePath)
+	}
+	if strings.HasSuffix(path, "\r") {
+		return fmt.Errorf("%w: path ends with a carriage return", ErrNonBatchablePath)
+	}
+	return nil
+}
+
 func (r *BatchFileReader) ReadFile(path string) (string, bool, error) {
+	// Checked before the request is written, so a refused path costs the
+	// protocol nothing: the stream is left exactly as it was and the reader
+	// stays usable for every subsequent path.
+	if err := checkBatchablePath(path); err != nil {
+		return "", false, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {

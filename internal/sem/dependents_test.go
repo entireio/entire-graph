@@ -507,3 +507,74 @@ func TestBuildReferenceIndexReportsPerFileProgress(t *testing.T) {
 		t.Fatalf("last progress event = %#v, want total/total with empty path", last)
 	}
 }
+
+// The dependents scan reads every candidate file through one persistent
+// `git cat-file --batch` process, whose request protocol is line delimited. A
+// tracked file whose NAME contains a newline therefore used to contribute two
+// request lines while the reader consumed one response record, leaving the pipe
+// permanently one record ahead: the newline file itself was dropped, and every
+// candidate scanned after it was parsed from the PREVIOUS file's blob, so its
+// dependents were attributed to a file they do not appear in and the last
+// file's dependents were lost outright. dependents_count came back too low with
+// exit 0, no warning and no partial failure.
+//
+// The fixture is ordered so the damage is unmissable: the newline-named file
+// sorts first, and five genuine dependents follow it.
+func TestBuildReferenceIndexCountsDependentsPastANewlineNamedFile(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	const newlinePath = "a_ev\nxil.py"
+	write(t, repo, "z_defines.py", `def Foo(token):
+    return bool(token)
+`)
+	// Sorts before every caller, so an unguarded reader desyncs the pipe before
+	// a single genuine dependent has been read.
+	write(t, repo, newlinePath, `def uses_foo_from_a_weird_path(token):
+    return Foo(token)
+`)
+	callers := []string{"c1.py", "c2.py", "c3.py", "c4.py", "c5.py"}
+	for i, path := range callers {
+		write(t, repo, path, "def check"+string(rune('1'+i))+`(token):
+    return Foo(token)
+`)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "dependents behind a newline-named path")
+	head := rev(t, repo, "HEAD")
+
+	index, warnings, err := buildReferenceIndex(context.Background(), repo, head, map[string]struct{}{"Foo": {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %#v", warnings)
+	}
+
+	dependents := index["Foo"]
+	// Each caller must be attributed to ITS OWN file. Asserting the exact key
+	// set, not just the size, is what separates "the count is right" from "the
+	// count is right by accident while every entry names the wrong file" — the
+	// off-by-one response stream produced exactly that.
+	want := map[string]struct{}{
+		newlinePath + "#function:uses_foo_from_a_weird_path": {},
+	}
+	for i, path := range callers {
+		want[path+"#function:check"+string(rune('1'+i))] = struct{}{}
+	}
+	for key := range want {
+		if _, ok := dependents[key]; !ok {
+			t.Errorf("missing dependent %q; got %#v", key, dependents)
+		}
+	}
+	for key := range dependents {
+		if _, ok := want[key]; !ok {
+			t.Errorf("unexpected dependent %q (attributed to a file it is not in); got %#v", key, dependents)
+		}
+	}
+	if got := len(dependents); got != len(want) {
+		t.Fatalf("dependents count = %d, want %d: %#v", got, len(want), dependents)
+	}
+}
