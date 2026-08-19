@@ -922,7 +922,20 @@ func readSearchSnapshot(entry cacheEntry) (cachedSearchSnapshot, error) {
 	return cache, nil
 }
 
+// ErrTruncatedSnapshotNotCacheable is returned when a caller tries to persist a
+// snapshot that stopped at its wall-clock ceiling. The search cache is keyed by
+// tree and by the options that SHAPE the graph -- never by the budget, which
+// only truncates it -- so a stored truncation would be served to every later
+// query on this tree, including queries that passed no budget, as though it were
+// the complete index. Missing symbols would then read as confident negatives.
+// The check lives in the writer rather than at the call sites so that a new call
+// site cannot reintroduce the hole.
+var ErrTruncatedSnapshotNotCacheable = errors.New("refusing to cache a snapshot truncated by its wall-clock budget (E_ANALYSIS_BUDGET_EXCEEDED)")
+
 func writeSearchSnapshot(entry cacheEntry, cache cachedSearchSnapshot) error {
+	if partialFailuresTruncated(cache.Snapshot.Header.PartialFailures) {
+		return ErrTruncatedSnapshotNotCacheable
+	}
 	path := entry.writePath()
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

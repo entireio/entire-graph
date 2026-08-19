@@ -364,16 +364,35 @@ on disk. Two bounds are enforced, and both are visible in the output:
   overrides; negative removes it). Truncation is deterministic in sorted path
   order and always reported as `W_FILE_LIMIT`, naming the real count, the limit
   and the override.
-- **Wall-clock ceiling** — `MaxDuration` (`--max-seconds` on `snapshot`,
-  `symbols` and `edges`; a deadline on the caller's context has the same
-  effect). It is **opt-in: zero, the default, means no ceiling**, because a full
-  index of a large repository legitimately runs for minutes. When it is set, the
-  parse and relation phases stop at the deadline and the stream is still
-  finished normally — the records produced so far, an
+- **Parse/relation wall-clock ceiling** — `MaxDuration` (`--max-seconds` on
+  `snapshot`, `symbols` and `edges`). It is **opt-in: zero, the default, means
+  no ceiling**, because a full index of a large repository legitimately runs for
+  minutes. When it is set, the parse and relation phases stop at the deadline
+  and the stream is still finished normally — the records produced so far, an
   `E_ANALYSIS_BUDGET_EXCEEDED` partial failure, and a summary — so a truncated
-  graph is always self-describing. A truncated result is never written to the
-  record cache. A context *cancellation* (Ctrl-C) is not a budget: it still
-  aborts with an error.
+  graph is always self-describing.
+
+  Three limits are part of the contract, not caveats:
+
+  - It is **not a whole-run ceiling.** Source preparation (the git listing and
+    plumbing) runs before the clock starts and cannot be interrupted by it, so a
+    run may exceed `--max-seconds` by however long listing takes. The bound is on
+    parsing and relation building, which is where the superlinear cost lives.
+  - **Truncation is opt-in.** A deadline that merely happens to be on the
+    caller's context is *not* treated as a budget: it is returned as
+    `context.DeadlineExceeded`, as it always was. A caller that did not ask for a
+    partial graph is never handed one with a nil error, because it would then
+    persist that graph under a budget-independent tree key and serve the gap to
+    every later unbudgeted query. A context *cancellation* (Ctrl-C) likewise
+    still aborts with an error.
+  - **A truncated snapshot is never cached.** Both writers refuse it: the record
+    cache (`StoreProviderRecords`) and the search/preindex snapshot cache
+    (`writeSearchSnapshot`, which returns `ErrTruncatedSnapshotNotCacheable`).
+    The check lives in the writers so a new call site cannot reintroduce the hole.
+  - `--max-seconds` is **rejected with `--format compact-ndjson`.** A compact
+    artifact is defined to be a complete snapshot and has nowhere to carry
+    `E_ANALYSIS_BUDGET_EXCEEDED` forward, so a truncated one would make every
+    unreached symbol read as a confident negative.
 
   This bound is what makes the relation phase's cost survivable rather than
   cheap. The phase is still quadratic in the nesting depth of a file's

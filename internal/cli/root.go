@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"strconv"
@@ -282,6 +283,15 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	if compact && filterActive {
 		return errors.New("--format compact-ndjson requires a complete snapshot; remove --to/--from/--relation")
 	}
+	if compact && flags.MaxSeconds > 0 {
+		// A compact artifact is DEFINED to be a complete snapshot: LoadCompactSnapshot
+		// and snapshot-query accept whatever prefix they are handed, with no place to
+		// carry E_ANALYSIS_BUDGET_EXCEEDED forward, so a truncated compact file turns
+		// every symbol that was never reached into a confident negative answer. The
+		// NDJSON stream can say "partial"; this format cannot, so the combination is
+		// refused rather than written.
+		return errors.New("--format compact-ndjson requires a complete snapshot and cannot be combined with --max-seconds; use --format ndjson (which reports E_ANALYSIS_BUDGET_EXCEEDED when truncated), or --max-seconds 0")
+	}
 	repo, err := resolveRepo(ctx, opts.Env, flags.Repo)
 	if err != nil {
 		return err
@@ -499,6 +509,14 @@ func includeRecord(mode string, record any) bool {
 // disables the budget.
 const defaultMaxSeconds = 120
 
+// maxSecondsCeiling is the largest --max-seconds value that still fits in a
+// time.Duration once multiplied by time.Second (~292 years). strconv.Atoi
+// happily accepts every int64, but seconds*time.Second above this wraps to a
+// NEGATIVE duration: context.WithDeadline would then fire in the past, and the
+// provider commands' "MaxDuration > 0" test would be false, silently disabling
+// the very ceiling the operator asked for.
+const maxSecondsCeiling = int64(math.MaxInt64) / int64(time.Second)
+
 type commonFlags struct {
 	Repo     string
 	JSON     bool
@@ -617,6 +635,9 @@ func parseProviderFlags(args []string) (providerFlags, []string, error) {
 			if err != nil || seconds < 0 {
 				return flags, nil, fmt.Errorf("--max-seconds requires a non-negative integer, got %q", args[i])
 			}
+			if int64(seconds) > maxSecondsCeiling {
+				return flags, nil, fmt.Errorf("--max-seconds must be at most %d (larger values overflow time.Duration and disable the ceiling), got %q", maxSecondsCeiling, args[i])
+			}
 			flags.MaxSeconds = seconds
 		case "--no-network":
 			flags.NoNetwork = true
@@ -691,6 +712,9 @@ func parseCommonFlags(args []string) (commonFlags, []string, error) {
 			seconds, err := strconv.Atoi(args[i])
 			if err != nil || seconds < 0 {
 				return flags, nil, fmt.Errorf("--max-seconds requires a non-negative integer, got %q", args[i])
+			}
+			if int64(seconds) > maxSecondsCeiling {
+				return flags, nil, fmt.Errorf("--max-seconds must be at most %d (larger values overflow time.Duration and disable the ceiling), got %q", maxSecondsCeiling, args[i])
 			}
 			flags.MaxSeconds = seconds
 		case "--repo":

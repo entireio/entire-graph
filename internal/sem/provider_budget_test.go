@@ -35,17 +35,17 @@ func budgetBombRepo(t *testing.T) string {
 	return repo
 }
 
-// TestStreamSnapshotContextDeadlineTruncatesInsteadOfFailing pins the same
-// degradation for a deadline the CALLER put on the context. Before this change
-// the deadline aborted the stream with context.DeadlineExceeded and the caller
-// got no records and no summary at all.
-func TestStreamSnapshotContextDeadlineTruncatesInsteadOfFailing(t *testing.T) {
+// TestStreamSnapshotExplicitBudgetTruncatesInsteadOfFailing pins the
+// degradation for an OPT-IN budget: MaxDuration expiry finishes the stream with
+// an E_ANALYSIS_BUDGET_EXCEEDED summary instead of aborting with no records and
+// no summary at all. A deadline the caller merely happens to be running under is
+// deliberately NOT treated this way -- see
+// TestF06FixCallerDeadlineWithoutBudgetIsAnError.
+func TestStreamSnapshotExplicitBudgetTruncatesInsteadOfFailing(t *testing.T) {
 	repo := budgetBombRepo(t)
 
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
 	var summary *SnapshotSummary
-	err := StreamSnapshot(ctx, repo, "test", ProviderSnapshotOptions{}, func(record any) error {
+	err := StreamSnapshot(t.Context(), repo, "test", ProviderSnapshotOptions{MaxDuration: time.Second}, func(record any) error {
 		if s, ok := record.(SnapshotSummary); ok {
 			s := s
 			summary = &s
@@ -53,10 +53,10 @@ func TestStreamSnapshotContextDeadlineTruncatesInsteadOfFailing(t *testing.T) {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("a caller deadline must truncate, not fail: got %v", err)
+		t.Fatalf("an explicit budget must truncate, not fail: got %v", err)
 	}
 	if summary == nil || !hasBudgetFailure(summary.PartialFailures) {
-		t.Fatalf("caller deadline must report %s, got %#v", budgetFailureCode, summary)
+		t.Fatalf("an expired budget must report %s, got %#v", budgetFailureCode, summary)
 	}
 }
 

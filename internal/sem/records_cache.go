@@ -132,6 +132,15 @@ func StoreProviderRecords(ctx context.Context, repo, providerVersion, tree, mode
 	if cacheDir == "" || tree == "" || options.Worktree {
 		return nil
 	}
+	if SnapshotTruncated(summary) {
+		// A budget-truncated stream is not this tree's answer. The key is
+		// derived from the tree and the graph-shaping options only, never from
+		// the budget, so persisting a truncation would hand it to every later
+		// caller -- including unbudgeted ones -- as the complete index. Not an
+		// error: persistence here is best effort by contract, and the caller
+		// already has the (correctly self-describing) records in hand.
+		return nil
+	}
 	absRepo, err := filepath.Abs(repo)
 	if err != nil {
 		return err
