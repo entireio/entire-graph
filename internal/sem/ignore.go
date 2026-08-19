@@ -717,13 +717,6 @@ func (s *nestedIgnoreStack) noteRepoExclusion(ledger *repoIgnoreLedger, rel stri
 	})
 }
 
-// maxPrunedTreeDisclosure bounds how many descendants one pruned directory adds
-// to the ledger. A prune is disclosed by naming what left the corpus, and a tree
-// large enough to exhaust this is already past the point where more paths tell a
-// reader anything; the walk stops there rather than paying an unbounded traversal
-// for a directory the listing had decided not to read.
-const maxPrunedTreeDisclosure = 512
-
 // notePrunedRepoExclusion records what a DIRECTORY prune removed.
 //
 // filepath.WalkDir returns SkipDir before any child of an ignored directory is
@@ -734,10 +727,19 @@ const maxPrunedTreeDisclosure = 512
 //
 // The qualification is the same one noteRepoExclusion applies to a file — a
 // repository rule Git does not apply, whose verdict Git's own rules do not
-// already reach — so this discloses only pruning Git would not have done itself.
-// Without that test every build/, dist/ and node_modules/ in the tree would print
-// its contents, which is the noise that makes readers skip the disclosure that
-// matters.
+// already reach — and it is applied to the DIRECTORY and then again to every
+// descendant one at a time. Both halves are needed: without the first, every
+// build/, dist/ and node_modules/ in the tree would print its contents; without
+// the second, a .gitignore INSIDE the pruned tree stops being consulted the
+// moment the prune happens, and generated files Git hides on its own get named
+// as source the repository removed. Either way the disclosure cries wolf, which
+// is the noise that makes readers skip the one that matters.
+//
+// The traversal is not bounded by a count. The number of files reported is what
+// the field promises to be exact, and a cap on the walk is a cap on the count,
+// not on the list — that one is maxRepoExclusionSample, applied by the ledger.
+// The cost is bounded by the subtree the walk would have visited had the prune
+// not happened, so accounting for a prune never costs more than not pruning.
 func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, rel string) {
 	if ledger == nil {
 		return
@@ -753,28 +755,49 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 	if s.ignoredByGit(dir, true) {
 		return
 	}
-	recorded := 0
+	// A private stack, so descending into the pruned tree to load its nested
+	// .gitignore files cannot disturb the walk that is standing at the prune. Its
+	// own level is dropped and re-entered below, so the tree is read the same way
+	// whether or not the caller had already entered it.
+	sub := &nestedIgnoreStack{repo: s.repo, base: s.base, gitBase: s.gitBase}
+	for _, level := range s.levels {
+		if level.dir == dir {
+			continue
+		}
+		sub.levels = append(sub.levels, level)
+	}
 	root := filepath.Join(s.repo, filepath.FromSlash(dir))
 	_ = filepath.WalkDir(root, func(current string, entry fs.DirEntry, err error) error {
 		if err != nil || entry == nil {
 			return nil
 		}
-		if entry.IsDir() || entry.Type()&fs.ModeSymlink != 0 || !entry.Type().IsRegular() {
-			return nil
-		}
 		child, relErr := filepath.Rel(s.repo, current)
 		if relErr != nil {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		childRel := cleanIgnorePath(filepath.ToSlash(child))
+		if entry.IsDir() {
+			// Same discipline as the outer walk: enter before judging anything
+			// inside, so the deepest .gitignore with an opinion is on the stack.
+			sub.enter(childRel)
+			return nil
+		}
+		// IsRegular is false for a symlink, so the listing's own rule — it never
+		// follows one — holds for what the prune is credited with removing.
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		if sub.ignoredByGit(childRel, false) {
 			return nil
 		}
 		ledger.note(RepoExclusion{
-			Path:   cleanIgnorePath(filepath.ToSlash(child)),
+			Path:   childRel,
 			Source: rule.origin.label,
 			Rule:   rule.pattern,
 		})
-		recorded++
-		if recorded >= maxPrunedTreeDisclosure {
-			return filepath.SkipAll
-		}
 		return nil
 	})
 }
