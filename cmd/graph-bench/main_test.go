@@ -1198,3 +1198,63 @@ func TestRunReportsCloneFailureInsteadOfMeasuringTheStaleCache(t *testing.T) {
 		t.Fatalf("row measured the stale checkout: %#v", got)
 	}
 }
+
+// The clone failures cloneAll reports were keyed by repo path alone, but a
+// repository can be listed under more than one language and each language gets
+// its own cache directory (`-cache/<language>/<owner>__<name>`) and its own
+// clone. One language's failure therefore skipped every other language's copy
+// of the same repository -- including a clone that had just succeeded -- and
+// reported it as "clone failed", dropping a valid measurement from the report.
+//
+// The key has to be the checkout whose freshness is in doubt, which is the
+// cache directory, not the repository name.
+//
+// No network: the failing spec is refused by validateRef before any git process
+// starts, and the succeeding spec names no ref, so ensureRepo finds .git in the
+// cache and only runs rev-parse.
+func TestRunKeepsCloneFailuresToTheirOwnCacheDirectory(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "manifest.json")
+	if err := os.WriteFile(manifestPath, []byte(`{"languages":{"Go":["owner/repo"],"Rust":["owner/repo@-evil"]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The Go copy is already in the cache, so its clone succeeds untouched.
+	goDir := filepath.Join(dir, "cache", "Go", "owner__repo")
+	if err := os.MkdirAll(goDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(goDir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	benchGit(t, goDir, "init", "--quiet", "--initial-branch", "main", ".")
+	benchGit(t, goDir, "config", "user.name", "Entire Graph Test")
+	benchGit(t, goDir, "config", "user.email", "graph@example.com")
+	benchGit(t, goDir, "add", ".")
+	benchGit(t, goDir, "commit", "--quiet", "-m", "init")
+
+	t.Setenv("ENTIRE_GRAPH_BENCH_MAIN_TEST_WORKER", "1")
+	worker := []string{os.Args[0], "-test.run=^TestGraphBenchMeasureWorker$"}
+	outDir := filepath.Join(dir, "out")
+	if err := runWithWorkerCommand(manifestPath, filepath.Join(dir, "cache"), outDir, filepath.Join(dir, "lock.json"), "", "syntax-only", 0, 1, 1, false, false, "bench-test", false, 0, 0, false, worker); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	rows := map[string]bench.RepoMetrics{}
+	for _, row := range readOnlyReport(t, outDir).Repos {
+		rows[row.Language] = row
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %#v, want one per language", rows)
+	}
+	// The language that failed still has to be reported as a failure.
+	if !strings.Contains(rows["Rust"].Error, "clone failed") {
+		t.Fatalf("Rust row error = %q, want the clone failure", rows["Rust"].Error)
+	}
+	// The language that cloned cleanly has to be measured.
+	if rows["Go"].Error != "" {
+		t.Fatalf("Go row error = %q, want the successful clone measured; the other language's failure was applied to it", rows["Go"].Error)
+	}
+	if rows["Go"].Files == 0 {
+		t.Fatalf("Go row measured nothing: %#v", rows["Go"])
+	}
+}

@@ -77,6 +77,14 @@ func parseProfile(value string) (sem.Profile, error) {
 func (r repoSpec) cloneURL() string { return "https://github.com/" + r.repoPath + ".git" }
 func (r repoSpec) dirName() string  { return strings.ReplaceAll(r.repoPath, "/", "__") }
 
+// cachePath is the checkout this spec owns. The language is part of the path,
+// so a repository listed under two languages has two independent clones, and
+// anything said about one checkout -- above all whether its clone succeeded --
+// says nothing about the other.
+func (r repoSpec) cachePath(cacheRoot string) string {
+	return filepath.Join(cacheRoot, r.language, r.dirName())
+}
+
 func main() {
 	var (
 		manifestPath  = flag.String("manifest", "bench/repos.json", "path to the repo manifest")
@@ -171,13 +179,13 @@ func runWithWorkerCommand(manifestPath, cacheDir, outDir, lockPath, languages, p
 	fmt.Fprintf(os.Stderr, "Measuring (no-egress, profile=%s)...\n", profile)
 	var metrics []bench.RepoMetrics
 	for _, spec := range specs {
-		dir := filepath.Join(cacheDir, spec.language, spec.dirName())
+		dir := spec.cachePath(cacheDir)
 		// A repository whose clone failed keeps whatever an earlier run left in
 		// the cache, and that checkout is at some other commit than the one this
 		// run asked for. Measuring it would report a number for the wrong tree
 		// under this run's provider version and lock, so the failure is carried
 		// into the report instead.
-		if cloneErr, failed := cloneFailures[spec.repoPath]; failed {
+		if cloneErr, failed := cloneFailures[dir]; failed {
 			metrics = append(metrics, bench.RepoMetrics{Name: spec.repoPath, Language: spec.language, Profile: string(profile), Error: "clone failed: " + cloneErr.Error()})
 			fmt.Fprintf(os.Stderr, "  skip %-40s (clone failed)\n", spec.repoPath)
 			continue
@@ -281,8 +289,14 @@ func loadSpecs(manifestPath, languages string, limit int) ([]repoSpec, error) {
 }
 
 // cloneAll puts every selected repository in the cache at the ref the lock or
-// the manifest asks for, and returns the repositories it could not, keyed by
-// repo path.
+// the manifest asks for, and returns the ones it could not, keyed by the cache
+// directory that clone would have refreshed.
+//
+// The key is the directory rather than the repo path because a repository may
+// be listed under several languages, and each language clones it into its own
+// directory. Keying by repo path made one language's failure skip every other
+// language's copy of that repository, including clones that had just
+// succeeded, and report them as clone failures.
 //
 // The failures are a return value rather than a log line because the cache
 // outlives a run: a repository that fails to clone usually still has the
@@ -310,12 +324,12 @@ func cloneAll(ctx context.Context, specs []repoSpec, cacheDir string, lock map[s
 					ref, origin = pinned, refFromLock
 				}
 			}
-			dir := filepath.Join(cacheDir, spec.language, spec.dirName())
+			dir := spec.cachePath(cacheDir)
 			sha, err := ensureRepo(ctx, spec.cloneURL(), ref, dir, depth, origin)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  clone FAIL %-40s %v\n", spec.repoPath, err)
 				failuresMu.Lock()
-				failures[spec.repoPath] = err
+				failures[dir] = err
 				failuresMu.Unlock()
 				return
 			}
