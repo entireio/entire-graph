@@ -616,6 +616,111 @@ func showFileBounded(
 	return content, ok, 0, err
 }
 
+// ShowFileDigested is ShowFileBounded for the callers whose contract is not
+// merely "refuse an oversized blob" but "refuse it and still say what it was".
+// That is the contract BatchFileReader already meets for the paths it CAN carry:
+// a blob above the cap is streamed past into a digest and recorded, so the
+// caller keeps the file's size, content hash and line count without ever holding
+// its bytes. A path the line protocol cannot carry falls back to this argv-based
+// reader instead, and until it did the same thing the fallback had to choose
+// between an unbounded read and dropping the file with no explanation.
+//
+// scan, when non-nil, receives successive chunks of a REFUSED blob as they are
+// discarded — the same single pass the digest makes, so relevance costs no extra
+// read. The bytes are BORROWED: scan must not retain the slice, and chunks may
+// split a token, so a caller matching multi-byte patterns must carry its own
+// overlap. It is never called for a blob that is returned.
+//
+// The digest is meaningful only together with ok==false and a nil error; every
+// other outcome returns the zero value.
+func ShowFileDigested(ctx context.Context, repo, rev, path string, maxBytes int64, scan func(chunk []byte)) (content string, ok bool, refused OversizeBlob, err error) {
+	if maxBytes <= 0 {
+		content, ok, err = ShowFile(ctx, repo, rev, path)
+		return content, ok, OversizeBlob{}, err
+	}
+	// Same best-effort probe as showFileBounded: when it answers, the blob is
+	// refused before a byte of it is materialized.
+	if size, known := blobSizeAtRev(ctx, repo, rev, path); known && size > maxBytes {
+		digest, digestErr := streamBlobDigest(ctx, repo, rev, path, scan)
+		if digestErr != nil {
+			return "", false, OversizeBlob{}, digestErr
+		}
+		return "", false, digest, nil
+	}
+	// The probe said nothing, so the ceiling can only be applied to the answer.
+	// The bytes are already in hand at this point, so the digest is taken from
+	// them rather than by reading the blob a second time.
+	content, ok, err = ShowFile(ctx, repo, rev, path)
+	if err != nil || !ok {
+		return "", false, OversizeBlob{}, err
+	}
+	if int64(len(content)) > maxBytes {
+		if scan != nil {
+			scan([]byte(content))
+		}
+		digest, digestErr := filedigest.Stream(strings.NewReader(content))
+		if digestErr != nil {
+			return "", false, OversizeBlob{}, digestErr
+		}
+		return "", false, OversizeBlob{Bytes: digest.Bytes, Hash: digest.Hash, Lines: digest.Lines}, nil
+	}
+	return content, true, OversizeBlob{}, nil
+}
+
+// streamBlobDigest digests rev:path without ever holding it, by reading git's
+// stdout to EOF through the digest rather than into a buffer.
+//
+// It reads to EOF deliberately: stopping git early and killing it deadlocked on
+// Windows, where a grandchild holding the inherited stderr handle kept the
+// copier goroutine from seeing EOF and Cmd.Wait blocked forever (see
+// ShowFileLimited). Nothing here depends on process-tree teardown — the pipe
+// closes because git finished.
+func streamBlobDigest(ctx context.Context, repo, rev, path string, scan func(chunk []byte)) (OversizeBlob, error) {
+	objectSpec := rev + "^{tree}:" + path
+	cmd := newCmd(ctx, repo, "git", "cat-file", "blob", objectSpec)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return OversizeBlob{}, err
+	}
+	if err := cmd.Start(); err != nil {
+		return OversizeBlob{}, err
+	}
+	var src io.Reader = stdout
+	if scan != nil {
+		src = io.TeeReader(src, scanWriter{scan: scan})
+	}
+	digest, digestErr := filedigest.Stream(src)
+	// Drain whatever the digest did not consume, so git is never writing into a
+	// full pipe when Wait is called.
+	_, _ = io.Copy(io.Discard, stdout)
+	waitErr := cmd.Wait()
+	if digestErr != nil {
+		return OversizeBlob{}, digestErr
+	}
+	if waitErr != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = waitErr.Error()
+		}
+		return OversizeBlob{}, fmt.Errorf("git cat-file blob %s: %s", objectSpec, msg)
+	}
+	return OversizeBlob{Bytes: digest.Bytes, Hash: digest.Hash, Lines: digest.Lines}, nil
+}
+
+// scanWriter adapts a chunk callback to io.Writer so it can sit in the TeeReader
+// on the streaming path. Write must not retain p, and the callback is documented
+// not to.
+type scanWriter struct {
+	scan func(chunk []byte)
+}
+
+func (w scanWriter) Write(p []byte) (int, error) {
+	w.scan(p)
+	return len(p), nil
+}
+
 // blobSizeAtRev reports the size of the blob at rev:path without reading it.
 // It is BEST EFFORT by design: known=false means "no answer", never "absent" or
 // "broken", so a caller can only use it to refuse, not to conclude.

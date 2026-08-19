@@ -710,3 +710,75 @@ func TestBuildReferenceIndexBoundsTheNonBatchableFallbackRead(t *testing.T) {
 			allocated, ceiling, oversizeBytes)
 	}
 }
+
+// TestBuildReferenceIndexWarnsOnTheNonBatchableFallbackWithoutThePrefilter is
+// TestBuildReferenceIndexBoundsTheNonBatchableFallbackRead with the prefilter
+// FAILED, which is the only state in which the relevance gate below actually
+// gates: with prefiltered=true every refused file warns regardless. The
+// fallback refuses the blob by size, so nothing ever read it, so
+// oversizeMatched stayed false and the file was skipped in silence -- the
+// batch reader's oversize scanner sees such a blob stream past and decides,
+// and the argv fallback has to decide the same way or the guard traded an
+// unbounded read for a lost E_FILE_TOO_LARGE.
+func TestBuildReferenceIndexWarnsOnTheNonBatchableFallbackWithoutThePrefilter(t *testing.T) {
+	// Windows forbids '\n' in a filename, so the fixture cannot exist there.
+	if runtime.GOOS == "windows" {
+		t.Skip("windows filenames cannot contain a newline; the non-batchable fallback is unreachable")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	write(t, repo, "z_defines.py", "def Foo(token):\n    return bool(token)\n")
+	const oversizePath = "a_ev\nxil.py"
+	oversizeContent := "# Foo\n" + strings.Repeat("# padding to defeat the parse ceiling\n", 6*defaultMaxParseBytes/38)
+	oversizeBytes := len(oversizeContent)
+	write(t, repo, oversizePath, oversizeContent)
+	// An oversized blob at a non-batchable path that contains NO changed name:
+	// it was never a candidate and must stay silent, so the fix cannot be "warn
+	// about everything the fallback refused".
+	const unrelatedPath = "b_ev\nxil.py"
+	unrelatedContent := "# Bar\n" + strings.Repeat("# padding to defeat the parse ceiling\n", 6*defaultMaxParseBytes/38)
+	write(t, repo, unrelatedPath, unrelatedContent)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "oversized blobs at paths the batch protocol cannot carry")
+	head := rev(t, repo, "HEAD")
+
+	// The NUL byte forces the grep prefilter to fail (Go's exec layer rejects
+	// NUL in arguments), so buildReferenceIndex takes the full-tree fallback
+	// and prefiltered is false.
+	names := map[string]struct{}{"Foo": {}, "poison\x00x": {}}
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, warnings, err := buildReferenceIndex(context.Background(), repo, head, names)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&after)
+	allocated := after.TotalAlloc - before.TotalAlloc
+
+	found := false
+	for _, warning := range warnings {
+		if warning.FilePath == unrelatedPath {
+			t.Errorf("oversized non-candidate at a non-batchable path must stay silent, got %#v", warning)
+		}
+		if warning.FilePath == oversizePath && warning.Code == "E_FILE_TOO_LARGE" {
+			found = true
+			if !strings.Contains(warning.Detail, strconv.Itoa(oversizeBytes)) {
+				t.Errorf("oversize warning for %q lost its byte count: %+v", oversizePath, warning)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no E_FILE_TOO_LARGE warning for %q on the prefilter-failed path; got %#v", oversizePath, warnings)
+	}
+	// Deciding relevance must stay a STREAMED decision: the scan still may not
+	// allocate either blob.
+	if ceiling := uint64(oversizeBytes); allocated >= ceiling {
+		t.Errorf("scan allocated %d bytes, want < %d: an oversized blob at a non-batchable path was materialized to decide relevance",
+			allocated, ceiling)
+	}
+}

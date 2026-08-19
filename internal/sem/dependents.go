@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -124,6 +125,56 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 	if batch, batchErr := gitutil.NewBatchFileReader(ctx, repo, head); batchErr == nil {
 		defer func() { _ = batch.Close() }()
 		batch.SetMaxBytes(defaultMaxParseBytes)
+		// An oversized blob is streamed past and discarded, so its content is never available to
+		// isCandidate below. Decide relevance during that same pass: if none of the changed names
+		// appears in the blob, it was never a candidate and must not produce a warning (the fallback
+		// scan would otherwise spray E_FILE_TOO_LARGE over every huge vendored blob in the tree).
+		// Chunks may split an identifier, so carry maxNameLen-1 bytes of overlap between them.
+		maxNameLen := 0
+		for name := range names {
+			if len(name) > maxNameLen {
+				maxNameLen = len(name)
+			}
+		}
+		// The names as bytes, and a per-path window kept in bytes with its
+		// capacity reused across chunks. The string form of this loop allocated a
+		// copy of every chunk it was handed, so the cumulative cost of DECIDING
+		// about a blob scaled with the blob — for a reader whose whole point is
+		// that the blob is never materialized.
+		nameBytes := make([][]byte, 0, len(names))
+		for name := range names {
+			if name != "" {
+				nameBytes = append(nameBytes, []byte(name))
+			}
+		}
+		carry := map[string][]byte{}
+		// Named rather than inlined into SetOversizeScanner because the argv
+		// fallback below has to make the SAME decision about the blobs it
+		// refuses. Two copies of it would put the fallback's files under a
+		// different relevance rule than the batch reader's, which is how the
+		// E_FILE_TOO_LARGE warning went missing for them in the first place.
+		scanOversize := func(path string, chunk []byte) {
+			if oversizeMatched[path] {
+				return
+			}
+			window := append(carry[path], chunk...)
+			for _, name := range nameBytes {
+				if bytes.Contains(window, name) {
+					oversizeMatched[path] = true
+					delete(carry, path)
+					return
+				}
+			}
+			keep := maxNameLen - 1
+			if keep < 0 {
+				keep = 0
+			}
+			if len(window) > keep {
+				window = window[:copy(window, window[len(window)-keep:])]
+			}
+			carry[path] = window
+		}
+		batch.SetOversizeScanner(scanOversize)
 		readFile = func(path string) (string, bool, error) {
 			content, ok, err := batch.ReadFile(path)
 			if errors.Is(err, gitutil.ErrNonBatchablePath) {
@@ -140,12 +191,20 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 				// blob — twice, the byte slice plus the string — to then have it
 				// dropped by the size check further down this loop, so the one
 				// path that skips the reader's cap would be the one that decides
-				// this scan's memory. Refusing by size rather than after the
-				// read costs the warning its byte count, which is why the size
-				// is recorded here for oversizeBytes to report.
-				content, ok, refusedBytes, showErr := gitutil.ShowFileBounded(ctx, repo, head, path, defaultMaxParseBytes)
-				if showErr == nil && !ok && refusedBytes > 0 {
-					fallbackOversize[path] = refusedBytes
+				// this scan's memory.
+				//
+				// Refusing by size means nobody read the blob, so the SAME
+				// streamed relevance decision the batch reader makes has to be
+				// made here too: the size alone is not enough, because the
+				// warning below fires only for a file shown to contain a changed
+				// name, and on the prefilter-failed scan nothing else can show
+				// it. Without the scanner these files were refused correctly and
+				// then skipped in total silence.
+				content, ok, refused, showErr := gitutil.ShowFileDigested(ctx, repo, head, path, defaultMaxParseBytes, func(chunk []byte) {
+					scanOversize(path, chunk)
+				})
+				if showErr == nil && !ok && refused.Bytes > 0 {
+					fallbackOversize[path] = refused.Bytes
 				}
 				return content, ok, showErr
 			}
@@ -158,33 +217,6 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 			blob, ok := batch.OversizeBlob(path)
 			return blob.Bytes, ok
 		}
-		// An oversized blob is streamed past and discarded, so its content is never available to
-		// isCandidate below. Decide relevance during that same pass: if none of the changed names
-		// appears in the blob, it was never a candidate and must not produce a warning (the fallback
-		// scan would otherwise spray E_FILE_TOO_LARGE over every huge vendored blob in the tree).
-		// Chunks may split an identifier, so carry maxNameLen-1 bytes of overlap between them.
-		maxNameLen := 0
-		for name := range names {
-			if len(name) > maxNameLen {
-				maxNameLen = len(name)
-			}
-		}
-		carry := map[string]string{}
-		batch.SetOversizeScanner(func(path string, chunk []byte) {
-			if oversizeMatched[path] {
-				return
-			}
-			window := carry[path] + string(chunk)
-			if containsAnyName(window, names) {
-				oversizeMatched[path] = true
-				delete(carry, path)
-				return
-			}
-			if keep := maxNameLen - 1; keep > 0 && len(window) > keep {
-				window = window[len(window)-keep:]
-			}
-			carry[path] = window
-		})
 	}
 
 	// When the grep prefilter ran, every file below already matched a changed

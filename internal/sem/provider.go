@@ -9780,6 +9780,13 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 			return openedSource{}, err
 		}
 		batch.SetMaxBytes(maxReadBytes)
+		// Oversize records for the blobs the NON-BATCHABLE fallback refused. The
+		// batch reader keeps its own registry, but a path it cannot carry never
+		// reaches it, so this is where the fallback's refusals are explained.
+		// Guarded because a caller may read files concurrently — batch.ReadFile
+		// is, which is what makes that shape legal.
+		var fallbackMu sync.Mutex
+		fallbackOversize := map[string]oversizeFile{}
 		read := func(path string) (string, bool) {
 			content, ok, err := batch.ReadFile(path)
 			if errors.Is(err, gitutil.ErrNonBatchablePath) {
@@ -9791,7 +9798,21 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 				// rules, which match on prefix and so admit a trailing CR — fell
 				// through to a reader that answers it with the blob of the
 				// CR-less name instead.
-				content, ok, err = gitutil.ShowFile(ctx, repo, committedRevision, path)
+				//
+				// BOUNDED by the same maxReadBytes the batch reader is capped at,
+				// and recorded the same way. A plain ShowFile here would make one
+				// exotic path the exception to both halves of this function's
+				// contract at once: it buffers the blob whole — twice, the byte
+				// slice plus the string — so the snapshot's memory would be set
+				// by the largest object in the revision, and the file would then
+				// be dropped with nothing in the oversize registry to explain it.
+				var refused gitutil.OversizeBlob
+				content, ok, refused, err = gitutil.ShowFileDigested(ctx, repo, committedRevision, path, maxReadBytes, nil)
+				if err == nil && !ok && refused.Bytes > 0 {
+					fallbackMu.Lock()
+					fallbackOversize[path] = oversizeFile{Bytes: refused.Bytes, Hash: refused.Hash, Lines: refused.Lines}
+					fallbackMu.Unlock()
+				}
 			}
 			if err != nil || !ok {
 				return "", false
@@ -9799,6 +9820,12 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 			return content, true
 		}
 		oversize := func(path string) (oversizeFile, bool) {
+			fallbackMu.Lock()
+			refused, refusedOK := fallbackOversize[path]
+			fallbackMu.Unlock()
+			if refusedOK {
+				return refused, true
+			}
 			blob, ok := batch.OversizeBlob(path)
 			if !ok {
 				return oversizeFile{}, false

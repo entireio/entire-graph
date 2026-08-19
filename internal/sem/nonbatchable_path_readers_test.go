@@ -2,6 +2,7 @@ package sem
 
 import (
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -80,4 +81,68 @@ func TestHeadReadersRouteCRSuffixedPathsToTheArgvSafeReader(t *testing.T) {
 			t.Fatalf("search head read(%q) = %q, want %q", crPath, content, crContent)
 		}
 	})
+}
+
+// TestOpenSourceBoundsTheNonBatchableFallbackRead pins openSource's stated
+// bound -- "a file above maxReadBytes is never materialized, and is instead
+// recorded in the oversize registry from a streamed digest" -- on the path that
+// does NOT go through the batch reader. The batch reader is capped by
+// SetMaxBytes(maxReadBytes); the argv fallback for a path the line protocol
+// cannot carry had no cap at all, so one CR-suffixed tracked file could make
+// the snapshot's memory the size of the largest blob in the revision, and the
+// oversize registry never learned the file existed.
+func TestOpenSourceBoundsTheNonBatchableFallbackRead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows filenames cannot end in a carriage return; the shape is unrepresentable there")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	const crPath = "Dockerfile.dev\r"
+	const maxReadBytes = 4096
+	crContent := "FROM alpine\n" + strings.Repeat("RUN echo padding-well-past-the-read-ceiling\n", 100_000)
+	write(t, repo, crPath, crContent)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "an oversized blob at a path the batch protocol cannot carry")
+	head := rev(t, repo, "HEAD")
+
+	opened, err := openSource(t.Context(), repo, head, sourceOptions{maxReadBytes: maxReadBytes, maxFiles: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if opened.close != nil {
+			_ = opened.close()
+		}
+	}()
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	content, ok := opened.read(crPath)
+	runtime.ReadMemStats(&after)
+	allocated := after.TotalAlloc - before.TotalAlloc
+
+	if ok {
+		t.Errorf("read(%q) returned %d bytes with a %d-byte ceiling: the non-batchable fallback is unbounded",
+			crPath, len(content), maxReadBytes)
+	}
+	if ceiling := uint64(len(crContent)); allocated >= ceiling {
+		t.Errorf("read allocated %d bytes, want < %d: the blob was materialized instead of refused by size",
+			allocated, ceiling)
+	}
+	// Refusing it is only half the contract: the file must still be EXPLAINED,
+	// or bounding the read has traded an unbounded allocation for a silent drop.
+	record, recorded := opened.oversize(crPath)
+	if !recorded {
+		t.Fatalf("oversize(%q) = not recorded; the refused file has no explanation", crPath)
+	}
+	if got, want := record.Bytes, int64(len(crContent)); got != want {
+		t.Errorf("oversize(%q).Bytes = %d, want %d", crPath, got, want)
+	}
+	if record.Hash == "" || record.Lines == 0 {
+		t.Errorf("oversize(%q) = %+v, want the streamed hash and line count the batch reader records", crPath, record)
+	}
 }
