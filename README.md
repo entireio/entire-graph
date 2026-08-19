@@ -22,16 +22,16 @@ retrieval path that first shipped in
 [v0.4.0](https://github.com/entireio/entire-graph/releases/tag/v0.4.0)
 ([#104](https://github.com/entireio/entire-graph/pull/104))
 
-| System | LoCoMo | Index-time tokens |
-| --- | --- | --- |
-| **entire-graph** | **94.74** | **0** |
-| [mem0](https://github.com/mem0ai/mem0) | 93.83 | 50.85M |
-| [cognee](https://github.com/topoteretes/cognee) | 92.86 | 12.35M |
-| [bm25](https://github.com/dorianbrown/rank_bm25) (lexical baseline) | 91.88 | 0 |
-| [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) (cmm) | 91.30 | 0 |
-| [graphify](https://github.com/Graphify-Labs/graphify) | 87.34 | 0 |
-| [letta](https://github.com/letta-ai/letta) | 80.58 | not projectable |
-| [supermemory](https://github.com/supermemoryai/supermemory) | 77.60 | hosted |
+| System | LoCoMo | Index-time tokens | Version tested |
+| --- | --- | --- | --- |
+| **entire-graph** | **94.74** | **0** | [v0.4.0](https://github.com/entireio/entire-graph/releases/tag/v0.4.0) ([#104](https://github.com/entireio/entire-graph/pull/104)) |
+| [mem0](https://github.com/mem0ai/mem0) | 93.83 | 50.85M | commit [`4debc58`](https://github.com/mem0ai/mem0/commit/4debc58a83377b18be81ae1e5969a300736b2fac) |
+| [cognee](https://github.com/topoteretes/cognee) | 92.86 | 12.35M | commit [`38eece5`](https://github.com/topoteretes/cognee/commit/38eece5bbb0cb9f5706fed908abd16dba0f5505e) |
+| [bm25](https://github.com/dorianbrown/rank_bm25) (lexical baseline) | 91.88 | 0 | — |
+| [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) (cmm) | 91.30 | 0 | v0.9.0 |
+| [graphify](https://github.com/Graphify-Labs/graphify) | 87.34 | 0 | unpinned commit (see `UPSTREAM.md`) |
+| [letta](https://github.com/letta-ai/letta) | 80.58 | not projectable | [0.16.8](https://github.com/letta-ai/letta/releases/tag/0.16.8) |
+| [supermemory](https://github.com/supermemoryai/supermemory) | 77.60 | hosted | [server-v0.0.7-rc.2](https://github.com/supermemoryai/supermemory/releases/tag/server-v0.0.7-rc.2) |
 
 See [benchmarks](docs/benchmarks.md) for full methodology, per-category results,
 retractions, and reproduction steps.
