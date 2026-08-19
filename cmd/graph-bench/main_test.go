@@ -713,6 +713,78 @@ func TestEnsureRepoPrefersRemoteBranchOverAmbiguousObjectID(t *testing.T) {
 	}
 }
 
+// remoteRefFor is what stops ensureRepo guessing which of the two resolutions a
+// hex-shaped ref means, so a failed lookup must not be reported as an answer.
+// Collapsing a transport or authentication failure into "the remote publishes
+// no such ref" reinstates the guess -- and the guess is then checked out as a
+// success: with the object already in a warm cache, `git checkout <ref>`
+// resolves it locally (verified against git 2.54.0: with no local ref of that
+// name, an ambiguous 40-hex string detaches onto the object, and with one, git
+// warns "refname is ambiguous" and takes the branch instead), so ensureRepo
+// returned that commit with a nil error while the ref named a branch pointing
+// somewhere else.
+//
+// Failing closed here costs no supported workflow: measuring an existing cache
+// without a network is `-skip-clone`, which never reaches ensureRepo.
+func TestEnsureRepoFailsWhenTheRemoteLookupFails(t *testing.T) {
+	t.Setenv("GIT_DEFAULT_HASH", "sha1")
+	upstream := newUpstreamRepo(t)
+	first := strings.TrimSpace(benchGitOutput(t, upstream, "rev-parse", "HEAD"))
+	if len(first) != 40 {
+		t.Skipf("upstream HEAD = %q, want a 40-char SHA-1 id (this git ignores GIT_DEFAULT_HASH)", first)
+	}
+
+	// A warm cache from an earlier run, holding the object named `first`.
+	dir := filepath.Join(t.TempDir(), "clone")
+	if _, err := ensureRepo(t.Context(), upstream, "main", dir, 1); err != nil {
+		t.Fatalf("pre-clone at main: %v", err)
+	}
+
+	// The remote now also publishes a branch of that name, pointing elsewhere.
+	if err := os.WriteFile(filepath.Join(upstream, "branch.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	benchGit(t, upstream, "add", ".")
+	benchGit(t, upstream, "commit", "--quiet", "-m", "second")
+	want := strings.TrimSpace(benchGitOutput(t, upstream, "rev-parse", "HEAD"))
+	benchGit(t, upstream, "branch", first, want)
+
+	// ... and the lookup fails for a transport reason.
+	if err := os.Rename(upstream, upstream+".unreachable"); err != nil {
+		t.Fatal(err)
+	}
+
+	sha, err := ensureRepo(t.Context(), upstream, first, dir, 1)
+	if err == nil {
+		t.Fatalf("ensureRepo with an unreachable remote = %q, <nil>; want the lookup failure, not a checkout of the local object (the ref names a branch at %q)", sha, want)
+	}
+	if sha != "" {
+		t.Fatalf("ensureRepo returned sha %q alongside the error %v; want no commit", sha, err)
+	}
+}
+
+// The bound on the check above: the remote is consulted only for a hex-shaped
+// ref, so an ordinary ref in a warm cache must still resolve with the remote
+// down, exactly as it did before.
+func TestEnsureRepoResolvesOrdinaryRefWithTheRemoteUnreachable(t *testing.T) {
+	upstream := newUpstreamRepo(t)
+	dir := filepath.Join(t.TempDir(), "clone")
+	want, err := ensureRepo(t.Context(), upstream, "main", dir, 1)
+	if err != nil {
+		t.Fatalf("pre-clone at main: %v", err)
+	}
+	if err := os.Rename(upstream, upstream+".unreachable"); err != nil {
+		t.Fatal(err)
+	}
+	sha, err := ensureRepo(t.Context(), upstream, "main", dir, 1)
+	if err != nil {
+		t.Fatalf("ensureRepo on a warm cache with the remote down: %v", err)
+	}
+	if sha != want {
+		t.Fatalf("sha = %q, want the cached tip %q", sha, want)
+	}
+}
+
 // The FETCH_HEAD fallback exists for a legitimate case: a clone already in
 // -cache from an earlier run has no local branch for a ref the manifest names
 // now, so `git checkout <ref>` fails even though the fetch resolved it. The

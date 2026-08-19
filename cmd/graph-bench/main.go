@@ -386,7 +386,19 @@ func ensureRepo(ctx context.Context, url, ref, dir string, depth int) (string, e
 	// cannot resolve the same ref two different ways.
 	remoteRef := ""
 	if ref != "" && looksLikeSHA(ref) {
-		remoteRef = remoteRefFor(ctx, url, ref, endOfOptions)
+		var err error
+		if remoteRef, err = remoteRefFor(ctx, url, ref, endOfOptions); err != nil {
+			// A failed lookup is not an answer. Treating it as "the remote
+			// publishes no such ref" silently reinstates the guess this call
+			// exists to remove, and the guess can then be checked out as a
+			// success: with the object already in a warm cache, `git checkout
+			// <ref>` resolves it locally and ensureRepo returns that commit
+			// with a nil error even though the ref names a branch pointing
+			// elsewhere. Offline measurement has its own flag, -skip-clone,
+			// which never reaches ensureRepo, so failing here costs no
+			// supported workflow.
+			return "", err
+		}
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
@@ -506,12 +518,16 @@ func looksLikeSHA(ref string) bool {
 // preferring a branch over a tag, and "" when the remote publishes neither (the
 // ordinary case for a pinned commit id). ls-remote is a read-only query, so a
 // name that is not a ref costs one listing and nothing else.
-func remoteRefFor(ctx context.Context, url, name string, endOfOptions []string) string {
+//
+// A transport or authentication failure is returned as an error rather than as
+// "the remote publishes neither": the two are not the same answer, and only one
+// of them is safe to act on. See the caller for what collapsing them costs.
+func remoteRefFor(ctx context.Context, url, name string, endOfOptions []string) (string, error) {
 	args := append([]string{"ls-remote", "--quiet"}, endOfOptions...)
 	args = append(args, url, "refs/heads/"+name, "refs/tags/"+name)
 	out, err := runGit(ctx, "", args...)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("ls-remote %s %q: %v: %s", url, name, err, out)
 	}
 	tag := ""
 	for _, line := range strings.Split(out, "\n") {
@@ -521,12 +537,12 @@ func remoteRefFor(ctx context.Context, url, name string, endOfOptions []string) 
 		}
 		switch {
 		case fields[1] == "refs/heads/"+name:
-			return fields[1]
+			return fields[1], nil
 		case fields[1] == "refs/tags/"+name && tag == "":
 			tag = fields[1]
 		}
 	}
-	return tag
+	return tag, nil
 }
 
 // fetchHeadEntries counts the refs the last fetch recorded in FETCH_HEAD.
