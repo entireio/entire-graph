@@ -365,46 +365,45 @@ func resolveContainedName(root *os.Root, name string) (string, error) {
 }
 
 // repoRelativeName reports whether target lands inside the repository rooted at rootPath, and
-// under what name. Both sides are compared as written and as fully resolved, because --repo and a
-// committed link routinely spell one directory two ways (/tmp/x against /private/tmp/x, a
-// symlinked checkout parent); comparing only the literal strings would read an ordinary
-// in-repository alias as an escape.
+// under what name.
 //
-// "." — the root itself — is inside, and is returned as such: an alias may legitimately point at
-// the project directory, and the components after it still have to be appended.
+// The decision is made by filesystem identity, not by matching path text. Comparing the two paths
+// lexically gets this wrong in both directions that matter in practice: --repo and a committed link
+// routinely spell one directory two ways (/tmp/x against /private/tmp/x, a symlinked checkout
+// parent), and on a case-insensitive volume — the default on macOS and Windows — they can differ
+// only in the case of a component while the kernel resolves both to the same file. So target's
+// ancestors are walked upward and each is compared with the root by os.SameFile; the components
+// stepped over on the way become the repository-relative name. Ancestors that do not exist yet are
+// simply stepped over, which is the case that matters here: an alias may legitimately point at a
+// file init-agents is about to create.
 //
-// A false positive here cannot grant anything: the name it returns is resolved again by os.Root,
-// which refuses it if it does not in fact stay inside the root.
+// The root itself is inside, and is reported as ".", because an alias may point at the project
+// directory and the components after it still have to be appended.
+//
+// This walk is textual about the components it steps over, so a target routed through a symlinked
+// ancestor can yield a name that does not in fact stay inside. That cannot grant anything: the name
+// is resolved again by os.Root, which refuses it.
 func repoRelativeName(rootPath, target string) (string, bool) {
-	for _, base := range pathSpellings(rootPath) {
-		for _, candidate := range pathSpellings(target) {
-			rel, err := filepath.Rel(base, candidate)
-			switch {
-			case err != nil, rel == "..", filepath.IsAbs(rel),
-				strings.HasPrefix(rel, ".."+string(filepath.Separator)):
-				continue
+	rootInfo, err := os.Stat(rootPath)
+	if err != nil {
+		return "", false
+	}
+	var suffix []string
+	for current := filepath.Clean(target); ; {
+		if info, statErr := os.Stat(current); statErr == nil && os.SameFile(rootInfo, info) {
+			if len(suffix) == 0 {
+				return ".", true
 			}
-			return rel, true
+			slices.Reverse(suffix)
+			return filepath.Join(suffix...), true
 		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", false
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
 	}
-	return "", false
-}
-
-// pathSpellings returns p as written and, when it differs, as fully resolved. A path that does not
-// exist yet still gets its existing parent resolved, which is the case that matters here: an alias
-// may legitimately point at a file init-agents is about to create.
-func pathSpellings(p string) []string {
-	literal := filepath.Clean(p)
-	canonical := literal
-	if resolved, err := filepath.EvalSymlinks(p); err == nil {
-		canonical = resolved
-	} else if dir, dirErr := filepath.EvalSymlinks(filepath.Dir(p)); dirErr == nil {
-		canonical = filepath.Join(dir, filepath.Base(p))
-	}
-	if canonical == literal {
-		return []string{literal}
-	}
-	return []string{literal, canonical}
 }
 
 // statContainedFile is os.Stat confined to root. It follows a link that stays inside the

@@ -1190,3 +1190,43 @@ func TestInstructionReadsAreConfinedToRepository(t *testing.T) {
 		t.Errorf("content from outside the repository was returned: %q", content)
 	}
 }
+
+// TestInitAgentsFollowsAbsoluteAliasDifferingOnlyInCase pins containment on a case-insensitive
+// volume, the default on macOS and Windows. There an alias and --repo can name one directory with
+// different casing, so the kernel resolves both to the same file while a lexical comparison of the
+// two paths disagrees. Containment is about which file the link reaches, so it has to be decided by
+// filesystem identity, not by matching path text.
+func TestInitAgentsFollowsAbsoluteAliasDifferingOnlyInCase(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	base := t.TempDir()
+	repo := filepath.Join(base, "Repo")
+	mkdirAllForTest(t, filepath.Join(repo, "docs"))
+	skipIfCaseSensitive(t, repo)
+	shared := filepath.Join(repo, "docs", "shared.md")
+	writeFileForTest(t, shared, "# Shared rules\n")
+	// The same path, spelled with the repository directory in a different case.
+	symlinkForTest(t, filepath.Join(base, "repo", "docs", "shared.md"), filepath.Join(repo, "AGENTS.md"))
+
+	runInitAgentsForTest(t, repo)
+
+	if got := readFileForTest(t, shared); !strings.Contains(got, testAgentPointerBlock) {
+		t.Fatalf("alias differing only in case did not receive the managed block:\n%s", got)
+	}
+}
+
+// skipIfCaseSensitive reports whether dir lives on a case-insensitive volume, which is a property
+// of the filesystem and not of the OS: macOS and Windows default to case-insensitive, Linux CI runs
+// case-sensitive, and either can be mounted the other way.
+func skipIfCaseSensitive(t *testing.T, dir string) {
+	t.Helper()
+	probe := filepath.Join(dir, "casEprobe")
+	writeFileForTest(t, probe, "")
+	defer func() {
+		if err := os.Remove(probe); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	if _, err := os.Stat(filepath.Join(dir, "CASEPROBE")); err != nil {
+		t.Skip("case-sensitive filesystem: one directory cannot be named in two cases here")
+	}
+}
