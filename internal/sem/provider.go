@@ -10154,6 +10154,18 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 	// rules wherever they live, not only at the root, so a tree the project
 	// deliberately keeps under a vendored-looking name is not dropped.
 	vendorRules := worktreeVendorIgnoreRules(repo, ignores, listed)
+	// Sorted BEFORE the ignore decision, because the ledger counts each candidate's
+	// position in the listing this repository would have had with none of its own
+	// ignore rules — and the cap that position is tested against truncates the
+	// SORTED listing (capSourceFiles, below, on the sorted `paths`).
+	//
+	// Arrival order is not sorted order here, twice over. `git ls-files --cached
+	// --others` emits the untracked group before the index group (git 2.54.0), so a
+	// tracked path that sorts first can arrive last; and an include file's
+	// re-included paths are appended after everything git listed. Counting arrival
+	// order therefore both suppressed the disclosure of a lexically-early excluded
+	// path and disclosed a lexically-late one the cap alone had already discarded.
+	sort.Strings(listed)
 	paths := make([]string, 0, len(listed))
 	seen := make(map[string]struct{}, len(listed))
 	for _, entry := range listed {
