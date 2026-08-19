@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -141,24 +142,24 @@ func runInitAgents(opts Options, args []string) error {
 		}
 	}
 
-	agentsInfo, err := inspectInstructionFile(agentsPath)
+	agentsInfo, err := inspectInstructionFile(repoRoot, agentsName, agentsPath)
 	if err != nil {
 		return fmt.Errorf("init-agents: %w", err)
 	}
-	claudeInfo, err := inspectInstructionFile(claudePath)
+	claudeInfo, err := inspectInstructionFile(repoRoot, claudeName, claudePath)
 	if err != nil {
 		return fmt.Errorf("init-agents: %w", err)
 	}
 
 	sharedInstructions := agentsInfo != nil && claudeInfo != nil && os.SameFile(agentsInfo, claudeInfo)
-	agentsSource, agentsBegin, agentsEnd, err := readAndValidateInstructionFile(agentsPath)
+	agentsSource, agentsBegin, agentsEnd, err := readAndValidateInstructionFile(repoRoot, agentsName, agentsPath)
 	if err != nil {
 		return fmt.Errorf("init-agents: %w", err)
 	}
 	var claudeSource []byte
 	claudeBegin, claudeEnd := -1, -1
 	if !sharedInstructions {
-		claudeSource, claudeBegin, claudeEnd, err = readAndValidateInstructionFile(claudePath)
+		claudeSource, claudeBegin, claudeEnd, err = readAndValidateInstructionFile(repoRoot, claudeName, claudePath)
 		if err != nil {
 			return fmt.Errorf("init-agents: %w", err)
 		}
@@ -198,11 +199,11 @@ func runInitAgents(opts Options, args []string) error {
 	}
 	// Preserve the existing first-run behavior for a dangling AGENTS.md/CLAUDE.md alias:
 	// writing AGENTS.md may have created the shared target that did not exist at preflight.
-	agentsInfo, err = os.Stat(agentsPath)
+	agentsInfo, err = statContainedFile(repoRoot, agentsName)
 	if err != nil {
 		return fmt.Errorf("init-agents: AGENTS.md: %w", err)
 	}
-	claudeInfo, err = os.Stat(claudePath)
+	claudeInfo, err = statContainedFile(repoRoot, claudeName)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("init-agents: CLAUDE.md: %w", err)
 	}
@@ -229,10 +230,7 @@ func runInitAgents(opts Options, args []string) error {
 // still aborts the install, but only the ones os.Root attributes to confinement are described as
 // one; see isRootEscape.
 func ensureContainedInRepo(root *os.Root, name, path string) error {
-	resolved, err := resolveContainedName(root, name)
-	if err == nil {
-		_, err = root.Stat(resolved)
-	}
+	_, err := statContainedFile(root, name)
 	switch {
 	case err == nil || errors.Is(err, fs.ErrNotExist):
 		return nil
@@ -409,6 +407,38 @@ func pathSpellings(p string) []string {
 	return []string{literal, canonical}
 }
 
+// statContainedFile is os.Stat confined to root. It follows a link that stays inside the
+// repository — os.Root does the following, so the boundary is enforced by the same openat walk the
+// writes use — and the FileInfo it returns describes the TARGET inode, which is what os.SameFile
+// needs to recognize the documented AGENTS.md/CLAUDE.md alias.
+func statContainedFile(root *os.Root, name string) (os.FileInfo, error) {
+	resolved, err := resolveContainedName(root, name)
+	if err != nil {
+		return nil, err
+	}
+	return root.Stat(resolved)
+}
+
+// readContainedFile is os.ReadFile confined to root.
+//
+// Reading through the root rather than through the absolute path is not redundant with the
+// preflight. ensureContainedInRepo is explicitly not atomic with what follows, so a link swapped
+// to an outside file after the preflight and restored before the write would otherwise have that
+// file's contents read in and then written back into the repository under the managed block. The
+// escape has to be refused at the read too, not only at the preflight and the write.
+func readContainedFile(root *os.Root, name string) ([]byte, error) {
+	resolved, err := resolveContainedName(root, name)
+	if err != nil {
+		return nil, err
+	}
+	file, err := root.Open(resolved)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return io.ReadAll(file)
+}
+
 // writeContainedFile is os.WriteFile confined to root. The perm argument applies only when the
 // file is created, matching os.WriteFile, so an existing file keeps its mode.
 func writeContainedFile(root *os.Root, name string, content []byte, perm os.FileMode) error {
@@ -432,13 +462,14 @@ func writeContainedFile(root *os.Root, name string, content []byte, perm os.File
 // read as instruction files. A missing target—including a dangling alias—is preserved as the
 // empty-file case supported by init-agents.
 //
-// os.Stat, not os.Lstat, is deliberate and load-bearing: AGENTS.md and CLAUDE.md are documented
-// as permitted to be the same file, and os.SameFile in runInitAgents can only see that when both
-// FileInfos describe the TARGET inode. Following the link is safe here because
-// ensureContainedInRepo has already established that it resolves inside the repository;
-// containment, not link rejection, is what keeps the write in the project root.
-func inspectInstructionFile(path string) (os.FileInfo, error) {
-	info, err := os.Stat(path)
+// A stat that follows the link, not an Lstat, is deliberate and load-bearing: AGENTS.md and
+// CLAUDE.md are documented as permitted to be the same file, and os.SameFile in runInitAgents can
+// only see that when both FileInfos describe the TARGET inode. Following it is safe because the
+// following is done by os.Root, which refuses a link that leaves the repository; containment, not
+// link rejection, is what keeps the write in the project root. path is carried alongside name only
+// so the error names the file the caller asked about.
+func inspectInstructionFile(root *os.Root, name, path string) (os.FileInfo, error) {
+	info, err := statContainedFile(root, name)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -475,8 +506,8 @@ func fileTypeName(mode os.FileMode) string {
 	}
 }
 
-func readAndValidateInstructionFile(path string) ([]byte, int, int, error) {
-	content, err := os.ReadFile(path)
+func readAndValidateInstructionFile(root *os.Root, name, path string) ([]byte, int, int, error) {
+	content, err := readContainedFile(root, name)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, -1, -1, nil

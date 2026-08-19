@@ -1156,3 +1156,37 @@ func symlinkForTest(t *testing.T, target, link string) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 }
+
+// TestInstructionReadsAreConfinedToRepository drives the read helpers directly, which is the only
+// way to observe this without racing the process against itself. ensureContainedInRepo is a
+// preflight and is explicitly not atomic with what follows, so if the reads resolve absolute paths
+// on their own, a link swapped to an outside file after preflight and restored before the write
+// gets that file's contents read in — and then written into the repository under the managed
+// block. Confinement has to hold at the read, not only at the preflight and the write.
+func TestInstructionReadsAreConfinedToRepository(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	mkdirAllForTest(t, repo)
+	secret := "# PRIVATE NOTES OUTSIDE THE REPO\n"
+	writeFileForTest(t, filepath.Join(base, "victim.md"), secret)
+	symlinkForTest(t, filepath.Join("..", "victim.md"), filepath.Join(repo, "AGENTS.md"))
+
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	path := filepath.Join(repo, "AGENTS.md")
+
+	if _, err := inspectInstructionFile(root, "AGENTS.md", path); err == nil {
+		t.Error("inspectInstructionFile followed a link out of the repository")
+	}
+	content, _, _, err := readAndValidateInstructionFile(root, "AGENTS.md", path)
+	if err == nil {
+		t.Errorf("readAndValidateInstructionFile read outside the repository: %q", content)
+	}
+	if strings.Contains(string(content), secret) {
+		t.Errorf("content from outside the repository was returned: %q", content)
+	}
+}
