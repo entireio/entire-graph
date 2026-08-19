@@ -146,3 +146,74 @@ func TestOpenSourceBoundsTheNonBatchableFallbackRead(t *testing.T) {
 		t.Errorf("oversize(%q) = %+v, want the streamed hash and line count the batch reader records", crPath, record)
 	}
 }
+
+// TestHeadReadersRefuseANonBlobAtANonBatchablePath is the previous test's other
+// half. Routing a CR-suffixed path to the argv reader is only correct if that
+// reader answers the same QUESTION the batch reader does: "give me this blob".
+//
+// `git ls-tree -r` lists a GITLINK -- a tree entry of mode 160000, the shape a
+// submodule takes -- exactly like a file, and "Dockerfile.dev\r" is a supported
+// path (prefix language detection) that the line protocol cannot carry. So a
+// gitlink can be BOTH listed and routed to the fallback. The batch reader reads
+// the object type out of its response header and reports a non-blob as absent;
+// `git show` renders whatever the spec names, and for a gitlink pointing at a
+// commit in this repository that is the commit itself. The provider then
+// hashed, parsed and indexed commit output -- author line, message, diff -- as
+// Dockerfile content, with no partial failure to show for it.
+func TestHeadReadersRefuseANonBlobAtANonBatchablePath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows filenames cannot end in a carriage return; the shape is unrepresentable there")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "keep.txt", "anchor\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "subject line\n\nRUN echo body-rendered-as-content")
+	pointee := rev(t, repo, "HEAD")
+
+	const crPath = "Dockerfile.dev\r"
+	git(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+pointee+","+crPath)
+	git(t, repo, "commit", "-m", "a gitlink at a path the batch protocol cannot carry")
+	head := rev(t, repo, "HEAD")
+
+	if !Supported(crPath) {
+		t.Fatalf("%q is not a supported path, so no reader would ever be asked for it", crPath)
+	}
+
+	assertRefused := func(t *testing.T, label, content string, ok bool) {
+		t.Helper()
+		if ok {
+			t.Fatalf("%s read(%q) = %q, ok=true; want not found -- a gitlink has no blob, and the rendered commit is not this file's content", label, crPath, content)
+		}
+	}
+
+	t.Run("provider committed source", func(t *testing.T) {
+		opened, err := openSource(t.Context(), repo, head, sourceOptions{maxReadBytes: defaultMaxParseBytes})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if opened.close != nil {
+				_ = opened.close()
+			}
+		}()
+		content, ok := opened.read(crPath)
+		assertRefused(t, "openSource", content, ok)
+	})
+
+	t.Run("search head content", func(t *testing.T) {
+		read, closeReader, err := openSearchContentReader(t.Context(), repo, head, true, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if closeReader != nil {
+				_ = closeReader()
+			}
+		}()
+		content, ok := read(crPath)
+		assertRefused(t, "search head", content, ok)
+	})
+}

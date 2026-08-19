@@ -1003,3 +1003,61 @@ func mustRunGit(t *testing.T, repo string, args ...string) string {
 	}
 	return out
 }
+
+// TestShowFileRefusesNonBlobEntries pins the type constraint the argv reader
+// must share with the batch reader it stands in for.
+//
+// `git ls-tree -r` lists a GITLINK (a tree entry of mode 160000, the shape a
+// submodule takes) exactly like any other path, so every reader here can be
+// asked for one. BatchFileReader.ReadFile checks the object type in the
+// response header and reports a non-blob as absent. ShowFile ran `git show`,
+// which RENDERS whatever the spec resolves to: for a gitlink whose commit is
+// present in this repository that is the commit — header, author, date, message
+// and diff — returned as ok==true, i.e. as the file's contents. A caller that
+// routed a path to this reader because the line protocol could not carry it
+// therefore got commit output hashed and parsed as source.
+func TestShowFileRefusesNonBlobEntries(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "a.go", "package a\nfunc A() {}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "subject line\n\nbody rendered as if it were file content")
+	pointee := gitOutput(t, repo, "rev-parse", "HEAD")
+	git(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+pointee+",sub")
+	git(t, repo, "commit", "-m", "add a gitlink")
+	head := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	if listed := gitOutput(t, repo, "ls-tree", "-r", "--name-only", head); !strings.Contains(listed, "sub") {
+		t.Fatalf("ls-tree -r = %q, want it to list the gitlink (no reader would ever be asked for it otherwise)", listed)
+	}
+
+	content, ok, err := ShowFile(t.Context(), repo, head, "sub")
+	if err != nil {
+		t.Fatalf("ShowFile(gitlink) err = %v, want a clean absent answer", err)
+	}
+	if ok {
+		t.Fatalf("ShowFile(gitlink) = %q, ok=true; want not found (rendered commit output would be parsed as source)", content)
+	}
+
+	// Parity with the reader this one stands in for: the batch reader answers a
+	// gitlink as absent, so the fallback must not answer it with content.
+	batch, err := NewBatchFileReader(t.Context(), repo, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = batch.Close() }()
+	if batchContent, batchOK, batchErr := batch.ReadFile("sub"); batchErr != nil || batchOK {
+		t.Fatalf("batch ReadFile(gitlink) = %q, ok=%v, err=%v; want not found", batchContent, batchOK, batchErr)
+	}
+
+	// Non-over-suppression: an ordinary blob is still read, byte for byte, and a
+	// genuinely absent path is still classified absent rather than as a failure.
+	if got, ok, err := ShowFile(t.Context(), repo, head, "a.go"); err != nil || !ok || got != "package a\nfunc A() {}\n" {
+		t.Fatalf("ShowFile(a.go) = %q, ok=%v, err=%v; want the blob", got, ok, err)
+	}
+	if got, ok, err := ShowFile(t.Context(), repo, head, "absent.go"); err != nil || ok {
+		t.Fatalf("ShowFile(absent.go) = %q, ok=%v, err=%v; want a clean absent answer", got, ok, err)
+	}
+}

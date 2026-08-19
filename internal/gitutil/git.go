@@ -510,6 +510,20 @@ func FileCochanges(ctx context.Context, repo, revision string, maxCommits int) (
 	return pairs, nil
 }
 
+// ShowFile reads the BLOB at rev:path through one argv-based git process, so a
+// path the `git cat-file --batch` line protocol cannot carry has a reader that
+// does not have to encode it into a delimited request at all.
+//
+// It reads a blob and nothing else. `git ls-tree -r` lists a GITLINK -- a tree
+// entry of mode 160000, the shape a submodule takes -- exactly like a file, so
+// every caller here can be handed one; `git show` would RENDER it, and for a
+// gitlink whose commit is present in this repository that render is the commit
+// (header, author, date, message and diff), returned as if it were the file's
+// contents and then hashed, parsed and indexed as source. `git cat-file blob`
+// resolves the same spec but refuses anything that is not a blob, which is the
+// type constraint BatchFileReader.ReadFile already applies from its response
+// header. Both readers now answer a non-blob the same way -- absent, without an
+// error -- so which reader a path is routed to cannot change the answer.
 func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error) {
 	// Classify against git's stderr only, never the wrapped error that echoes
 	// the argv (which includes rev+":"+path). Matching the full error text made
@@ -519,18 +533,43 @@ func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error)
 	// constraint, a missing full object ID or a blob object can produce the
 	// same path-looking diagnostic as a genuinely absent file.
 	objectSpec := rev + "^{tree}:" + path
-	out, stderr, err := runWithStderr(ctx, repo, "git", "show", objectSpec)
+	out, stderr, err := runWithStderr(ctx, repo, "git", "cat-file", "blob", objectSpec)
 	if err != nil {
 		if isMissingPathDiagnostic(stderr) {
+			return "", false, nil
+		}
+		// A non-blob entry is reported as absent, matching the batch reader.
+		// The type is asked for rather than read out of this command's wording:
+		// git says "bad file" here for a gitlink, a tree and a corrupt object
+		// alike, and only the first two are absences. The extra process runs
+		// only on a read that has ALREADY failed, so the ordinary path is still
+		// one process.
+		if objectType, known := objectTypeAtRev(ctx, repo, rev, path); known && objectType != "blob" {
 			return "", false, nil
 		}
 		msg := stderr
 		if msg == "" {
 			msg = err.Error()
 		}
-		return "", false, fmt.Errorf("git show %s: %s", objectSpec, msg)
+		return "", false, fmt.Errorf("git cat-file blob %s: %s", objectSpec, msg)
 	}
 	return out, true, nil
+}
+
+// objectTypeAtRev reports the type of the object rev:path names ("blob",
+// "tree", "commit", "tag"), and whether git answered at all. It is best effort:
+// every caller treats "no answer" as "learned nothing" and falls through to
+// whatever it would have done without it.
+func objectTypeAtRev(ctx context.Context, repo, rev, path string) (string, bool) {
+	out, _, err := runWithStderr(ctx, repo, "git", "cat-file", "-t", rev+"^{tree}:"+path)
+	if err != nil {
+		return "", false
+	}
+	objectType := strings.TrimSpace(out)
+	if objectType == "" {
+		return "", false
+	}
+	return objectType, true
 }
 
 // ShowFileLimited is ShowFile with a size ceiling: a larger blob is always
