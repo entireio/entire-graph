@@ -283,7 +283,37 @@ func cloneAll(ctx context.Context, specs []repoSpec, cacheDir string, lock map[s
 	wg.Wait()
 }
 
+// validateRef rejects refs Git would parse as command-line options.
+//
+// Git's parse-options permutes arguments, so a value in a positional slot is
+// still parsed as an option if it looks like one. ensureRepo puts the ref in a
+// positional slot of git fetch and git checkout, so an option-shaped ref was
+// applied as an option instead of being fetched: the fetch error is discarded
+// here, and a ref such as --detach is then accepted by the checkout, leaving
+// the cached repo on something other than the requested commit while the run
+// reports success.
+//
+// The classic escalation of this shape, --upload-pack=<cmd>, executes <cmd>
+// only when the remote uses a transport that runs upload-pack on this machine
+// (a filesystem path or file:// URL). cloneURL always builds an https URL, for
+// which Git ignores the option, so the reachable impact here is a wrong
+// checkout rather than command execution.
+//
+// Refs reach ensureRepo from two ordinary repo files -- the manifest
+// (`owner/name@<ref>`) and the commit lock -- so their contents are argv input
+// to validate, not trusted configuration. Mirrors the leading-dash/NUL guards
+// in internal/gitutil (git.go:168, :237, :419).
+func validateRef(ref string) error {
+	if strings.HasPrefix(ref, "-") || strings.ContainsRune(ref, '\x00') {
+		return fmt.Errorf("invalid git ref %q", ref)
+	}
+	return nil
+}
+
 func ensureRepo(ctx context.Context, url, ref, dir string, depth int) (string, error) {
+	if err := validateRef(ref); err != nil {
+		return "", err
+	}
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 			return "", err
@@ -292,7 +322,7 @@ func ensureRepo(ctx context.Context, url, ref, dir string, depth int) (string, e
 		if ref != "" && !looksLikeSHA(ref) {
 			args = append(args, "--branch", ref)
 		}
-		args = append(args, url, dir)
+		args = append(args, "--end-of-options", url, dir)
 		if out, err := runGit(ctx, "", args...); err != nil {
 			return "", fmt.Errorf("%v: %s", err, out)
 		}
@@ -301,8 +331,11 @@ func ensureRepo(ctx context.Context, url, ref, dir string, depth int) (string, e
 		// Best-effort fetch of the exact ref so a pinned SHA is available even
 		// when it is not on the default branch; ignore fetch errors and let the
 		// checkout surface a real failure.
-		_, _ = runGit(ctx, dir, "fetch", "--quiet", "--depth", strconv.Itoa(depth), "origin", ref)
-		if out, err := runGit(ctx, dir, "checkout", "--quiet", ref); err != nil {
+		// --end-of-options stops Git parsing anything after it as an option, so
+		// the ref can only ever be a refspec/revision even if the shape guard
+		// above is ever relaxed.
+		_, _ = runGit(ctx, dir, "fetch", "--quiet", "--depth", strconv.Itoa(depth), "--end-of-options", "origin", ref)
+		if out, err := runGit(ctx, dir, "checkout", "--quiet", "--end-of-options", ref); err != nil {
 			return "", fmt.Errorf("checkout %s: %v: %s", ref, err, out)
 		}
 	}

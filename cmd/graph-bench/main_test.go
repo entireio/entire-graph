@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -186,4 +187,112 @@ func readOnlyReport(t *testing.T, outDir string) bench.Report {
 		t.Fatalf("parse report: %v", err)
 	}
 	return report
+}
+
+func benchGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+}
+
+// newUpstreamRepo builds a one-commit local repository that ensureRepo can
+// clone and fetch from with no network, keeping the bench tool's no-egress
+// property intact under test.
+func newUpstreamRepo(t *testing.T) string {
+	t.Helper()
+	upstream := t.TempDir()
+	benchGit(t, upstream, "init", "--quiet", "--initial-branch", "main", ".")
+	benchGit(t, upstream, "config", "user.name", "Entire Graph Test")
+	benchGit(t, upstream, "config", "user.email", "graph@example.com")
+	if err := os.WriteFile(filepath.Join(upstream, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	benchGit(t, upstream, "add", ".")
+	benchGit(t, upstream, "commit", "--quiet", "-m", "init")
+	return upstream
+}
+
+// A ref is argv input: it comes from the manifest (`owner/name@<ref>`) or the
+// commit lock file, and it lands in a positional slot of `git fetch`. Git's
+// parse-options permutes arguments, so an option-shaped ref there is parsed as
+// an option. ensureRepo must refuse such a ref before any git process runs.
+//
+// The upstream in this fixture is a filesystem path, which is the transport
+// where Git runs upload-pack locally and `--upload-pack=<cmd>` therefore
+// executes <cmd>; that gives the test an unambiguous observable. graph-bench's
+// own cloneURL builds an https URL, where Git ignores the option, so the marker
+// assertion demonstrates the guard rather than production severity.
+func TestEnsureRepoRefusesOptionShapedRefBeforeGitRuns(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The payload is a POSIX command line: `touch <path>` is not a Windows
+		// executable, so the exploit's observable side effect (the marker file)
+		// is unrepresentable there and the negative assertion would pass
+		// vacuously. The shape guard itself is covered by
+		// TestValidateRefRejectsOptionShapedRefs, which runs everywhere.
+		t.Skip("the `touch` marker payload is POSIX-only")
+	}
+	upstream := newUpstreamRepo(t)
+	dir := filepath.Join(t.TempDir(), "clone")
+
+	// Pre-clone with a benign ref: this is the realistic state, a repo already
+	// in -cache from an earlier run, so ensureRepo skips cloning and goes
+	// straight to the fetch that carries the ref as a positional.
+	if _, err := ensureRepo(t.Context(), upstream, "main", dir, 1); err != nil {
+		t.Fatalf("benign pre-clone: %v", err)
+	}
+
+	marker := filepath.Join(t.TempDir(), "pwned")
+	_, err := ensureRepo(t.Context(), upstream, "--upload-pack=touch "+marker, dir, 1)
+	// Asserted before the error shape: this is the security property. Without
+	// the guard, git runs `touch <marker>` and the file appears.
+	if _, statErr := os.Stat(marker); statErr == nil {
+		t.Fatalf("option-shaped ref executed an arbitrary command: %s exists", marker)
+	}
+	if err == nil || !strings.Contains(err.Error(), "invalid git ref") {
+		t.Fatalf("ensureRepo error = %v, want an invalid-git-ref rejection", err)
+	}
+}
+
+// The guard must not break the ordinary path: a real ref still fetches and
+// checks out, and ensureRepo still reports that commit.
+func TestEnsureRepoStillFetchesOrdinaryRef(t *testing.T) {
+	upstream := newUpstreamRepo(t)
+	dir := filepath.Join(t.TempDir(), "clone")
+
+	sha, err := ensureRepo(t.Context(), upstream, "main", dir, 1)
+	if err != nil {
+		t.Fatalf("ensureRepo: %v", err)
+	}
+	if len(sha) != 40 {
+		t.Fatalf("resolved sha = %q, want a full commit id", sha)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "main.go")); statErr != nil {
+		t.Fatalf("ordinary ref did not produce a checkout: %v", statErr)
+	}
+
+	// Second call takes the already-cloned branch: fetch + checkout of the same
+	// ref must still succeed with --end-of-options in the argv.
+	again, err := ensureRepo(t.Context(), upstream, "main", dir, 1)
+	if err != nil {
+		t.Fatalf("ensureRepo on existing clone: %v", err)
+	}
+	if again != sha {
+		t.Fatalf("sha = %q on re-fetch, want %q", again, sha)
+	}
+}
+
+func TestValidateRefRejectsOptionShapedRefs(t *testing.T) {
+	for _, ref := range []string{"--upload-pack=touch x", "-o", "--exec=x", "\x00"} {
+		if err := validateRef(ref); err == nil {
+			t.Fatalf("validateRef(%q) = nil, want rejection", ref)
+		}
+	}
+	for _, ref := range []string{"", "main", "v1.2.3", "refs/heads/main", "1a2b3c4d5e6f7890abcdef1234567890abcdef12"} {
+		if err := validateRef(ref); err != nil {
+			t.Fatalf("validateRef(%q) = %v, want nil", ref, err)
+		}
+	}
 }
