@@ -10367,7 +10367,6 @@ type gitDirExcluder struct {
 	// observeUnlistedDirs.
 	unlistedRoots    []string
 	gitAnsweredRoots bool
-	ignoredDir       func(rel string) bool
 	directoriesRead  int
 }
 
@@ -10815,12 +10814,9 @@ func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
 //
 // The sweep descends from each root, because git collapses a pointer-only
 // directory's ancestor (`nested2/` for `nested2/sub/.git`), and the descent is
-// pruned two ways: an already-excluded path is not descended into, and neither
-// is a tree the project's own ignore rules cover — nothing in an ignored tree is
-// indexed, and keeping the descent inside what git already agreed to enumerate
-// is what bounds its cost. Symlinked entries report as symlinks, not
-// directories, so no link is followed and no cycle is possible; each directory
-// is read once.
+// pruned exactly one way: an already-excluded path is not descended into.
+// Symlinked entries report as symlinks, not directories, so no link is followed
+// and no cycle is possible; each directory is read once.
 //
 // ~~A vendored or installed-dependency tree is skipped, since nothing in it is
 // indexed for a pointer there to leak through.~~ Struck: the premise is false.
@@ -10835,14 +10831,19 @@ func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
 // untracked, so a directory holding tracked content is neither a root nor inside
 // one, and this sweep never reads it.
 //
-// What that gives up is narrow and stated: a pointer buried in an IGNORED tree
+// ~~What that gives up is narrow and stated: a pointer buried in an IGNORED tree
 // is no longer read, so a git directory whose only pointer lives there and whose
 // HEAD is damaged — the one shape neither rule 1 nor the structural rule can
 // reach — is not excluded by this path. The filesystem fallback, which observes
-// every directory it walks, is unaffected.
+// every directory it walks, is unaffected.~~ Struck on both counts. The give-up
+// was a leak, not a narrowing: `.gitignore` is committed, attacker-controlled
+// input in the repository being scanned, so pruning by it let the scanned
+// repository choose which pointers this rule may read. And the fallback was NOT
+// unaffected — it pruned the same tree the same way, and leaked the same
+// `.dep-git/config` under an ignored `build/`. Both now read the directories of
+// a tree they prune. See skipSweptDir.
 //
-// When git could not answer, the old derivation is the fallback, still pruned by
-// the ignore rules.
+// When git could not answer, the old derivation is the fallback.
 func (g *gitDirExcluder) observeUnlistedDirs(seen map[string]struct{}) {
 	queue := make([]string, 0, len(seen)+1)
 	queued := make(map[string]struct{}, len(seen)+1)
@@ -10953,8 +10954,10 @@ func (g *gitDirExcluder) descendObserving(queue []string, queued map[string]stru
 // fallback prunes a vendored or installed-dependency tree for indexing, and a
 // pointer there names a git directory that is not vendored and is indexed —
 // exactly the leak skipSweptDir describes on the git-listing path. Directories
-// only, no files, and the tree the project's own ignore rules already removed is
-// pruned by the caller before this runs.
+// only, no files. The walk calls it for a tree the project's own ignore rules
+// removed as well: those rules are committed, attacker-controlled content, and
+// skipping such a tree unread leaked `.dep-git/config` under an ignored
+// `build/`.
 func (g *gitDirExcluder) observePrunedSubtree(root string) {
 	seen := map[string]struct{}{}
 	observeOnce := func(dir string) {
@@ -10979,25 +10982,31 @@ func (g *gitDirExcluder) observePrunedSubtree(root string) {
 // the tree before reading the pointer leaked that target instead of saving
 // anything.
 //
-// The cost is bounded by what the descent can reach at all: a directory git's
-// `--directory` listing COLLAPSED, which is an entirely untracked, non-ignored
-// tree whose every file git already enumerated into the ordinary listing, and
-// which this listing's caller already lstats one path at a time. An IGNORED tree
-// is still pruned below — which is where a vendored dependency of any size
-// actually lives — so the measured price is paid only by an untracked,
-// unignored one. Cold `search --profile syntax-only`, 3 runs each after a
-// warm-up, on a 6,268-directory repository with 500 tracked source packages, an
-// ignored 2,200-directory build tree and a 3,300-directory node_modules:
+// ~~An IGNORED tree is still pruned below — which is where a vendored dependency
+// of any size actually lives — so the measured price is paid only by an
+// untracked, unignored one.~~ Struck: an ignored tree is a hiding place, not a
+// bound. `.gitignore` is committed content in the repository being scanned, so
+// pruning by it handed that repository the choice of which pointers this rule
+// may read — the same reason rule 1 and rule 2 are unconditional. A committed
+// `build/` ignore hid `build/dep/.git` -> `gitdir: ../../.dep-git`, and the
+// root-level HEAD-damaged git directory it names was listed by git in full and
+// indexed, on the git-listing path AND on the filesystem fallback.
 //
-//	node_modules ignored (the ordinary case)   before 0.22 0.25 0.27
-//	                                           after  0.24 0.21 0.21
-//	node_modules untracked and NOT ignored     before 0.48 0.41 0.41
-//	                                           after  0.54 0.55 0.58
+// So this decision now prunes on one thing only: a path already excluded. The
+// price is real and measured rather than hidden. Cold `search --profile
+// syntax-only` with the cache directory removed before each run, on a
+// 6,350-directory repository with 500 tracked source packages, an ignored
+// 2,200-directory build tree and an ignored 3,300-directory node_modules
+// (first run of each set discarded as page-cache warm-up):
+//
+//	before  0.18 0.18 0.18
+//	after   0.50 0.51 0.50
+//
+// That is one ReadDir per ignored directory and no file read at all: nothing in
+// an ignored tree becomes indexable, and a repository with no ignored untracked
+// trees pays nothing.
 func (g *gitDirExcluder) skipSweptDir(rel string) bool {
-	if g.excluded(rel) {
-		return true
-	}
-	return g.ignoredDir != nil && g.ignoredDir(rel)
+	return g.excluded(rel)
 }
 
 // listedPathKind is what one lstat of a listed path found. The listing needs the
@@ -11296,9 +11305,15 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 	if dirEntries, dirErr := gitutil.ListWorktreeDirectoryEntries(ctx, repo); dirErr == nil {
 		gitDirs.unlistedRoots = dirEntries
 		gitDirs.gitAnsweredRoots = true
-	}
-	gitDirs.ignoredDir = func(rel string) bool {
-		return ignores.Ignored(rel, true) && !ignores.MayIncludeDescendant(rel)
+		// An IGNORED tree is in neither of git's `--exclude-standard` listings,
+		// so no chain and no collapsed root reaches a `.git` pointer inside it —
+		// and that pointer names a git directory somewhere ELSE, which git does
+		// list. `.gitignore` is committed content in the repository being
+		// scanned, so leaving those trees unswept let the scanned repository
+		// choose which pointers this rule may read. Ask git for them by name.
+		if ignoredEntries, ignoredErr := gitutil.ListIgnoredWorktreeDirectoryEntries(ctx, repo); ignoredErr == nil {
+			gitDirs.unlistedRoots = append(gitDirs.unlistedRoots, ignoredEntries...)
+		}
 	}
 	gitDirs.observeListedPaths(listed, listedDirs)
 	paths := make([]string, 0, len(listed))
@@ -11412,12 +11427,16 @@ func visitWalkWorktreeFiles(
 			if err := stack.enter(rel); err != nil {
 				return err
 			}
-			// The ignore rules are consulted BEFORE the vendored name, though
-			// both prune: the vendored prune now reads the tree's directories
-			// for `.git` pointers on its way out, and the tree an ignored
-			// vendored dependency actually lives in should not be read at all.
-			// Both still return SkipDir, so the set of walked files is unchanged.
+			// The ignore rules are consulted BEFORE the vendored name, but they
+			// prune the same way and no longer prune any harder: the project's
+			// exclude rules are attacker-controlled input in the repository
+			// being scanned, so `build/` in a committed `.gitignore` hid
+			// `build/dep/.git` -> `gitdir: ../../.dep-git` and the root-level,
+			// HEAD-damaged git directory it names was indexed in full. Read the
+			// directories for pointers, then stop. Both branches still return
+			// SkipDir, so the set of walked FILES is unchanged.
 			if rel != "" && stack.Ignored(rel, true) && !stack.MayIncludeDescendant(rel) {
+				gitDirs.observePrunedSubtree(rel)
 				return filepath.SkipDir
 			}
 			if rel != "" && skipVendoredDir(rel, name, stack, dirTracked) {

@@ -2,7 +2,6 @@ package sem
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 )
 
@@ -153,24 +152,38 @@ func TestGitDirExcluderSweepReadsNoListedFileEntry(t *testing.T) {
 	}
 }
 
-// TestGitDirExcluderSweepStillSkipsIgnoredCollapsedTrees is the widening's other
-// direction: descending into a collapsed root must not walk a tree the project's
-// ignore rules cover, which is what round 4 removed from this sweep.
-func TestGitDirExcluderSweepStillSkipsIgnoredCollapsedTrees(t *testing.T) {
+// TestGitDirExcluderSweepsIgnoredCollapsedTrees reverses what an earlier round
+// pinned here. That round stopped the descent at a tree the project's own ignore
+// rules cover and called the give-up narrow; it was a leak. `.gitignore` is
+// committed content in the repository being scanned, so pruning by it hands the
+// scanned repository the choice of which pointers this rule may read — the same
+// reason no gitignore negation may cancel either half of the rule. An ignored
+// `pkg/build/` holding `pkg/build/dep/.git` -> `gitdir: ../../../.dep-git` named
+// a root-level, HEAD-damaged git directory that git lists in full and no other
+// rule can reach.
+//
+// The price is stated rather than hidden: the descent now reads the directories
+// of an ignored tree under a collapsed root — directories only, never a file,
+// and nothing in that tree becomes indexable.
+func TestGitDirExcluderSweepsIgnoredCollapsedTrees(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
 	writeFile(t, repo, "pkg/source.go", "package pkg\n")
 	for object := range 32 {
 		writeFile(t, repo, fmt.Sprintf("pkg/build/o%d/x/y/a.o", object), "")
 	}
+	writeFile(t, repo, "pkg/build/dep/.git", "gitdir: ../../../.dep-git\n")
+	writeHeadlessGitDirFixture(t, repo, ".dep-git")
+
 	excluder := newGitDirExcluder(repo)
-	excluder.ignoredDir = func(rel string) bool { return strings.HasPrefix(rel, "pkg/build") }
 	excluder.unlistedRoots = []string{"pkg/"}
 	excluder.gitAnsweredRoots = true
 	excluder.observeListedPaths([]string{"pkg/source.go"}, nil)
 
-	// `pkg` itself, and nothing of the ignored tree under it.
-	if excluder.directoriesRead != 1 {
-		t.Errorf("directoriesRead = %d, want 1 (the collapsed root only; the ignored tree stays unread)", excluder.directoriesRead)
+	if !excluder.excluded(".dep-git/config") {
+		t.Error(`excluded(".dep-git/config") = false, want true: the pointer under the ignored tree names it`)
+	}
+	if excluder.excluded("pkg/source.go") {
+		t.Error(`excluded("pkg/source.go") = true, want false: ordinary source must stay listable`)
 	}
 }

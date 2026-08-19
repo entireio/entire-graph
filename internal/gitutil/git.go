@@ -193,6 +193,25 @@ func ListWorktreeDirectoryEntries(ctx context.Context, repo string) ([]string, e
 	return splitNULPaths(out), nil
 }
 
+// ListIgnoredWorktreeDirectoryEntries lists the trees Git's exclude rules cover,
+// collapsed to one entry per top-most ignored directory
+// (`--others --ignored --exclude-standard --directory`).
+//
+// It exists for the git-directory sweep, and for nothing else. A `.git` pointer
+// inside an ignored tree names a git directory OUTSIDE it, which git lists as
+// ordinary untracked content — and the ordinary listings cannot reach the
+// pointer: verified on git 2.54.0 with `build/` ignored and holding
+// `build/dep/.git`, neither `--exclude-standard` listing mentions `build/` at
+// all, while `.dep-git/config` is listed in full. The sweep reads directories
+// only, never a file, so nothing in the ignored tree becomes indexable.
+func ListIgnoredWorktreeDirectoryEntries(ctx context.Context, repo string) ([]string, error) {
+	out, err := run(ctx, repo, "git", "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory")
+	if err != nil {
+		return nil, err
+	}
+	return splitNULPaths(out), nil
+}
+
 // ListIgnoredWorktreeFiles lists the untracked working-tree files Git's exclude
 // rules *do* cover (`git ls-files --others --ignored --exclude-standard`). It
 // exists for one caller: an explicit include-file whose negations re-include
