@@ -758,3 +758,132 @@ func hasEntityNamed(entities []Entity, name string) bool {
 	}
 	return false
 }
+
+// bothPhaseDepthSource is a well-formed TypeScript file that truncates BOTH
+// walks: the namespace call drives the relation-phase JS/TS scope scan, and the
+// deeply nested initializer takes every walk over it past maxParseWalkDepth.
+// It parses cleanly, so the entity status is the partial E_PARSE_DEPTH_EXCEEDED
+// rather than a total E_PARSE_ERROR.
+func bothPhaseDepthSource() string {
+	return "export namespace Utils { export function parse() {} }\n" +
+		"export function run() { Utils.parse(); }\n" +
+		nestedSource("export const nested = ", '(', ')', 6000, "1", ";\n")
+}
+
+// TestSnapshotReportsBothPhasesOfDepthTruncation pins that neither phase's
+// truncation is silently lost. Both phases report E_PARSE_DEPTH_EXCEEDED for the
+// same file under the same code — deliberately, so the report carries one record
+// per code+file and completeness counts the file once — but they lose DIFFERENT
+// things: the entity walk drops declarations, the relation walk drops call
+// classification. Deduplicating by code+file alone kept the entity record and
+// discarded the relation one, so a deep snapshot understated what was missing.
+func TestSnapshotReportsBothPhasesOfDepthTruncation(t *testing.T) {
+	t.Parallel()
+	src := bothPhaseDepthSource()
+	assertReachesTheParser(t, src)
+
+	// Preconditions: this fixture really does truncate in both phases. Without
+	// these the test could pass for the wrong reason if the fixture ever stops
+	// exercising one of the walks.
+	if _, _, status := (TreeSitterParser{}).ParseWithStatus("deep.ts", src); status.Code != "E_PARSE_DEPTH_EXCEEDED" {
+		t.Fatalf("entity phase status = %+v, want E_PARSE_DEPTH_EXCEEDED", status)
+	}
+	scan, err := newJSScanState("deep.ts", src)
+	if err != nil {
+		t.Fatalf("relation-phase scope scan must degrade, not fail: %v", err)
+	}
+	if !scan.depthTruncated {
+		t.Fatal("fixture no longer truncates the relation-phase scope walk; the merge seam is untested")
+	}
+	if len(scan.calls) == 0 {
+		t.Fatal("fixture must contain a dotted call, or the relation phase has nothing to classify")
+	}
+
+	repo := t.TempDir()
+	writeFile(t, repo, "deep.ts", src)
+	writeFile(t, repo, "ordinary.ts", "export function ordinary() { return 1; }\n")
+
+	var summary SnapshotSummary
+	if err := StreamSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{}, func(rec any) error {
+		if s, ok := rec.(SnapshotSummary); ok {
+			summary = s
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var records []PartialFailure
+	for _, failure := range summary.PartialFailures {
+		if failure.Code == "E_PARSE_DEPTH_EXCEEDED" && failure.FilePath == "deep.ts" {
+			records = append(records, failure)
+		}
+	}
+	if len(records) != 1 {
+		t.Fatalf("want exactly one E_PARSE_DEPTH_EXCEEDED record for deep.ts, got %d: %+v", len(records), records)
+	}
+	got := records[0]
+	// The entity-phase clause: declarations below the limit were not walked.
+	if !strings.Contains(got.EffectOnCompleteness, "counts against completeness") {
+		t.Fatalf("entity-phase effect missing from the merged record: %+v", got)
+	}
+	// The relation-phase clause, taken from its own constructor so this pins the
+	// merge rather than restating the prose.
+	relation := jsScanDepthPartialFailure("deep.ts")
+	if !strings.Contains(got.EffectOnCompleteness, relation.EffectOnCompleteness) {
+		t.Fatalf("relation-phase effect discarded by the merge; want %q inside %q", relation.EffectOnCompleteness, got.EffectOnCompleteness)
+	}
+	if !strings.Contains(got.Detail, relation.Detail) {
+		t.Fatalf("relation-phase detail discarded by the merge; want %q inside %q", relation.Detail, got.Detail)
+	}
+	if got.Severity != "warning" {
+		t.Fatalf("severity = %q, want warning: both phases produced a partial result", got.Severity)
+	}
+	if summary.Stats.CompletenessLevel == "ok" {
+		t.Fatal("a file parsed incompletely in both phases must not report ok")
+	}
+}
+
+// TestMergePartialFailuresFoldsRatherThanDrops pins the merge rule directly: a
+// duplicate code+file record must not add a second record, and must not lose its
+// own effect/detail text either. Folding is idempotent, so merging the same
+// extra twice cannot grow the text without bound.
+func TestMergePartialFailuresFoldsRatherThanDrops(t *testing.T) {
+	t.Parallel()
+	entity := PartialFailure{
+		Code:                 "E_PARSE_DEPTH_EXCEEDED",
+		Severity:             "warning",
+		FilePath:             "src/deep.ts",
+		EffectOnCompleteness: "declarations below the limit were not walked",
+		Detail:               "entity walk truncated",
+	}
+	relation := jsScanDepthPartialFailure("src/deep.ts")
+
+	merged := mergePartialFailures([]PartialFailure{entity}, []PartialFailure{relation})
+	if len(merged) != 1 {
+		t.Fatalf("same code+file must stay one record: %+v", merged)
+	}
+	if merged[0].Code != entity.Code || merged[0].FilePath != entity.FilePath || merged[0].Severity != entity.Severity {
+		t.Fatalf("identity fields must come from the existing record: %+v", merged[0])
+	}
+	for _, want := range []string{entity.EffectOnCompleteness, relation.EffectOnCompleteness} {
+		if !strings.Contains(merged[0].EffectOnCompleteness, want) {
+			t.Fatalf("effect %q missing %q", merged[0].EffectOnCompleteness, want)
+		}
+	}
+	for _, want := range []string{entity.Detail, relation.Detail} {
+		if !strings.Contains(merged[0].Detail, want) {
+			t.Fatalf("detail %q missing %q", merged[0].Detail, want)
+		}
+	}
+
+	again := mergePartialFailures(merged, []PartialFailure{relation})
+	if len(again) != 1 || again[0].EffectOnCompleteness != merged[0].EffectOnCompleteness || again[0].Detail != merged[0].Detail {
+		t.Fatalf("folding must be idempotent: %+v vs %+v", again, merged)
+	}
+
+	// The input slice must not be mutated: callers keep their own copy.
+	if entityAfter := entity.EffectOnCompleteness; entityAfter != "declarations below the limit were not walked" {
+		t.Fatalf("merge mutated the caller's record: %q", entityAfter)
+	}
+}
