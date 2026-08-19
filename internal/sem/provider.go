@@ -9782,7 +9782,14 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		batch.SetMaxBytes(maxReadBytes)
 		read := func(path string) (string, bool) {
 			if strings.Contains(path, "\n") {
-				content, ok, err := gitutil.ShowFile(ctx, repo, committedRevision, path)
+				// The batch protocol is line based, so a newline-bearing Git
+				// path needs the argv-safe one-shot reader. The ceiling is
+				// passed DOWN rather than applied to the returned string: this
+				// fallback is selected by the file's NAME, which the repository
+				// under analysis chooses, so an unbounded read here would let
+				// any repository opt one blob out of the cap that makes this
+				// reader's memory claim true.
+				content, ok, err := gitutil.ShowFileLimited(ctx, repo, committedRevision, path, maxReadBytes)
 				if err != nil || !ok {
 					return "", false
 				}
