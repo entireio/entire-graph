@@ -2487,6 +2487,20 @@ func jsScanPartialFailure(path string, err error) PartialFailure {
 	}
 }
 
+// jsScanDepthPartialFailure reports a relation-phase scope walk truncated at
+// maxParseWalkDepth. It reuses the entity phase's code so both phases describe
+// the same condition identically, and it is a warning rather than an error for
+// the same reason: the relations above the limit are emitted.
+func jsScanDepthPartialFailure(path string) PartialFailure {
+	return PartialFailure{
+		Code:                 "E_PARSE_DEPTH_EXCEEDED",
+		Severity:             "warning",
+		FilePath:             path,
+		EffectOnCompleteness: "relation-phase scope walk truncated at the parser depth limit; calls nested deeper than that were not classified",
+		Detail:               fmt.Sprintf("AST nesting exceeded the %d-level walk limit during relation construction", maxParseWalkDepth),
+	}
+}
+
 func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, precomputedImports map[string][]string, spec profileSpec, shouldStop func() bool, emit func(RelationRecord), recordFailure func(PartialFailure)) {
 	if spec.name == ProfileSyntaxOnly {
 		emitStructuralRelations(repoKey, files, recordsByFile, emit)
@@ -3084,6 +3098,15 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				// parse is observable instead of silently dropping namespace
 				// call classification for the file.
 				recordFailure(jsScanPartialFailure(file.Path, jsScanErr))
+			}
+			if jsScan.depthTruncated && recordFailure != nil {
+				// A relation-phase walk stopped at the depth limit. Reported
+				// separately from jsScanErr because it is a PARTIAL result, not
+				// a failed parse: the scope state above the limit is real and
+				// still used below. Same code and severity as the entity phase,
+				// so one file truncated in both phases merges to one record per
+				// code (mergePartialFailures).
+				recordFailure(jsScanDepthPartialFailure(file.Path))
 			}
 			// Without namespaces there is nothing to map: every namespace-call
 			// consumer below is gated on jsNamespaceCalls entries, which require

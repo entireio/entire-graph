@@ -264,6 +264,116 @@ func TestJSPatternBindingsAreBoundedNotFatal(t *testing.T) {
 	parseInChild(t, "pattern.ts", b.String())
 }
 
+// deepRelationWalkDepth is the nesting used by the two relation-phase children.
+// The relation walkers carry smaller frames than the entity walkers, so they
+// need more levels to overflow the same ceiling; measured against the parent
+// commit, (*jsScopeWalker).walk survives 100,000 and aborts by 400,000 at a
+// 16 MiB ceiling.
+const deepRelationWalkDepth = 1_500_000
+
+// TestJSScopeWalkerIsBoundedNotFatal pins the relation-phase scope walker.
+// Relation construction REPARSES the file and walks its own tree after the
+// entity phase has returned, so the entity walk's budget never reaches it: a
+// deeply nested .js/.ts file aborted the process during relation construction
+// even though the entity phase had already truncated cleanly and reported it.
+//
+// Verified against the parent commit through the provider itself, at Go's
+// default 1 GiB ceiling: a snapshot over an 8 MB .js file of 4,000,000 nested
+// parentheses dies with `fatal error: stack overflow`, frames in
+// (*jsScopeWalker).walk, exit 2, 3.4 GB RSS. Under the provider's default 4 MiB
+// input cap the largest admissible file survives; the sizes that reach this
+// walker come from ProviderSnapshotOptions.MaxParseBytes < 0, the documented
+// escape hatch that removes the cap.
+func TestJSScopeWalkerIsBoundedNotFatal(t *testing.T) {
+	if !inDepthChild() {
+		runDepthChild(t, "TestJSScopeWalkerIsBoundedNotFatal")
+		return
+	}
+	src := nestedSource("const x = ", '(', ')', deepRelationWalkDepth, "1", ";\n")
+	if looksMinified(src) {
+		t.Fatal("fixture must not look minified, or the scope scan is never reached")
+	}
+	// Must return instead of aborting the process.
+	state, err := newJSScanState("deep.js", src)
+	if err != nil {
+		t.Fatalf("scope scan must degrade, not fail: %v", err)
+	}
+	if !state.parsed {
+		t.Fatal("the scope parse itself must still succeed; only the walk is truncated")
+	}
+	fmt.Printf("child ok: scope scan returned, %d bytes\n", len(src))
+}
+
+// TestJSMemberChainIsBoundedNotFatal pins the recursive member-chain helper the
+// scope walker calls. A member chain is as long as the source writes it, and
+// walk hands jsMemberChainParts the whole chain from its head before descending
+// into it, so that recursion is independent of walk's and reaches the stack
+// first — measured against the parent commit, it aborts at 100,000 links where
+// walk itself still survives.
+func TestJSMemberChainIsBoundedNotFatal(t *testing.T) {
+	if !inDepthChild() {
+		runDepthChild(t, "TestJSMemberChainIsBoundedNotFatal")
+		return
+	}
+	var b strings.Builder
+	b.WriteString("a")
+	for i := 0; i < deepRelationWalkDepth; i++ {
+		b.WriteString(".b")
+		if i%250 == 249 {
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("(1);\n")
+	src := b.String()
+	if looksMinified(src) {
+		t.Fatal("fixture must not look minified, or the scope scan is never reached")
+	}
+	state, err := newJSScanState("chain.js", src)
+	if err != nil {
+		t.Fatalf("scope scan must degrade, not fail: %v", err)
+	}
+	if !state.parsed {
+		t.Fatal("the scope parse itself must still succeed; only the walk is truncated")
+	}
+	fmt.Printf("child ok: member chain scan returned, %d bytes\n", len(src))
+}
+
+// TestSnapshotOverDeeplyNestedJSCompletes is a guard, not a fix pin: it runs the
+// whole provider — both phases, including relation construction — over a .js
+// file deep enough to truncate, and requires the run to finish and say so. It
+// passes on the parent commit too at this size (the abort there needs the
+// uncapped path); what it stops is a future regression that reintroduces the
+// crash within the default cap.
+func TestSnapshotOverDeeplyNestedJSCompletes(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "deep.js", nestedSource("const x = ", '(', ')', 6000, "1", ";\n"))
+	writeFile(t, repo, "ordinary.js", "export function ordinary() { return 1; }\n")
+
+	var summary SnapshotSummary
+	err := StreamSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{}, func(rec any) error {
+		if s, ok := rec.(SnapshotSummary); ok {
+			summary = s
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, f := range summary.PartialFailures {
+		if f.Code == "E_PARSE_DEPTH_EXCEEDED" && f.FilePath == "deep.js" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a truncated .js must be reported; got %+v", summary.PartialFailures)
+	}
+	if summary.Stats.CompletenessLevel == "ok" {
+		t.Fatal("a repo whose file was parsed incompletely must not report ok")
+	}
+}
+
 // TestCollectParseErrorDetailsIsBoundedNotFatal isolates the error-detail walk.
 // It runs on every HasError file — exactly the adversarial input class — and was
 // bounded on the number of RESULTS it collects, never on depth, so a tree whose

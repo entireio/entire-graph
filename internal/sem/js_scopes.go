@@ -39,6 +39,12 @@ type jsScanState struct {
 	lineStarts   []int
 	contentLen   int
 	parsed       bool
+	// depthTruncated reports that a relation-phase walk stopped at
+	// maxParseWalkDepth (parser.go). The scope state stays usable — everything
+	// above the limit was collected — but it is incomplete, so the provider
+	// records it as an E_PARSE_DEPTH_EXCEEDED partial failure rather than
+	// letting a silently short scope scan look like a complete one.
+	depthTruncated bool
 }
 
 type jsNamespaceScope struct {
@@ -146,7 +152,7 @@ func buildJSScanState(grammar *sitter.Language, parseSrc []byte, content string)
 		lexEnd:    len(content),
 		funcStart: -1,
 		funcEnd:   len(content),
-	})
+	}, 0)
 	for _, scope := range state.namespaces {
 		state.namespaceSet[scope.Name] = true
 	}
@@ -389,8 +395,22 @@ type jsScopeWalker struct {
 	declarationBindings []jsDeclarationBinding
 }
 
-func (w *jsScopeWalker) walk(node *sitter.Node, ctx jsScopeContext) {
+// walk descends the whole relation-phase parse tree.
+//
+// depth is capped at maxParseWalkDepth (parser.go). This is a SECOND parse of
+// the file, on its own tree, driven after the entity phase has already returned
+// — so the entity walk's budget does not reach it, and a JS/TS file that the
+// entity phase truncated (or one that is deep in a way the entity phase never
+// descends) still aborted the process here during relation construction.
+// Verified against the parent commit through the provider itself: a snapshot
+// over an 8 MB .js file of 4,000,000 nested parentheses dies with `fatal error:
+// stack overflow`, frames in (*jsScopeWalker).walk, exit 2.
+func (w *jsScopeWalker) walk(node *sitter.Node, ctx jsScopeContext, depth int) {
 	if !validNode(node) {
+		return
+	}
+	if depth >= maxParseWalkDepth {
+		w.state.depthTruncated = true
 		return
 	}
 	switch node.Type() {
@@ -436,7 +456,7 @@ func (w *jsScopeWalker) walk(node *sitter.Node, ctx jsScopeContext) {
 		w.addDottedCall(node.ChildByFieldName("constructor"), node.ChildByFieldName("arguments"))
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		w.walk(node.NamedChild(i), ctx)
+		w.walk(node.NamedChild(i), ctx, depth+1)
 	}
 }
 
@@ -644,7 +664,10 @@ func (w *jsScopeWalker) addDottedCall(function, arguments *sitter.Node) {
 	if !validNode(function) || !validNode(arguments) || arguments.Type() != "arguments" {
 		return
 	}
-	parts := jsMemberChainParts(function, w.src)
+	parts, truncated := jsMemberChainPartsAt(function, w.src, 0)
+	if truncated {
+		w.state.depthTruncated = true
+	}
 	if len(parts) < 2 {
 		return
 	}
@@ -656,25 +679,44 @@ func (w *jsScopeWalker) addDottedCall(function, arguments *sitter.Node) {
 // (`A.B.f` -> [A B f]); any non-identifier link (calls, subscripts, `this`,
 // parenthesized receivers) disqualifies the chain.
 func jsMemberChainParts(node *sitter.Node, src []byte) []string {
+	parts, _ := jsMemberChainPartsAt(node, src, 0)
+	return parts
+}
+
+// depth is capped at maxParseWalkDepth (parser.go). A member chain is as long as
+// the source writes it (`a.b.c…z()`), and walk hands this the whole chain from
+// its head — before descending into it — so this recursion is independent of
+// walk's and reaches the stack first: with the ceiling lowered to 16 MiB a
+// 100,000-link chain aborts here while walk itself survives. Truncation reports
+// upward rather than silently returning a short path, because a partial chain
+// would resolve the call to the WRONG target; the reported chain is either
+// complete or refused.
+func jsMemberChainPartsAt(node *sitter.Node, src []byte, depth int) (parts []string, truncated bool) {
+	if depth >= maxParseWalkDepth {
+		return nil, true
+	}
 	switch node.Type() {
 	case "identifier":
-		return []string{node.Content(src)}
+		return []string{node.Content(src)}, false
 	case "member_expression":
 		property := node.ChildByFieldName("property")
 		if !validNode(property) || property.Type() != "property_identifier" {
-			return nil
+			return nil, false
 		}
 		object := node.ChildByFieldName("object")
 		if !validNode(object) {
-			return nil
+			return nil, false
 		}
-		parts := jsMemberChainParts(object, src)
+		parts, truncated := jsMemberChainPartsAt(object, src, depth+1)
+		if truncated {
+			return nil, true
+		}
 		if parts == nil {
-			return nil
+			return nil, false
 		}
-		return append(parts, property.Content(src))
+		return append(parts, property.Content(src)), false
 	default:
-		return nil
+		return nil, false
 	}
 }
 
