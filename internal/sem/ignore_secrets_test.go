@@ -148,3 +148,124 @@ func TestBuiltinCredentialStoreDenyOutranksRepositoryNegation(t *testing.T) {
 		}
 	}
 }
+
+// TestBuiltinCredentialStoreDenyKeepsRepositoryDirectoryExclusions pins the other
+// direction of the same precedence rule: the built-in deny outranks a repository
+// negation, but it must never itself act as a negation of a repository EXCLUSION.
+//
+// The bare `credentials` entry names the AWS CLI shape (.aws/credentials). A bare
+// gitignore pattern matches every path segment, not only the basename, so that one
+// entry also covered a directory named credentials/ and everything under it. The
+// first attempt to carve that back out used a `!credentials/` negation — and
+// because the built-in block is loaded AFTER .gitignore/.graphignore precisely so
+// it can outrank them, that negation re-admitted every file under any directory a
+// repository had excluded as `credentials/`. The correct shape is file-only
+// matching for the bare entry: it never matches a directory and never matches an
+// ancestor segment, so it neither swallows nor re-admits a directory.
+func TestBuiltinCredentialStoreDenyKeepsRepositoryDirectoryExclusions(t *testing.T) {
+	t.Parallel()
+
+	for _, loader := range []struct {
+		name       string
+		ignoreFile string
+		load       func(string, []string, []string) (ignoreMatcher, error)
+	}{
+		// loadExplicitIgnoreMatcher (the --head corpus) reads .graphignore only.
+		{name: "worktree", ignoreFile: ".gitignore", load: loadWorktreeIgnoreMatcher},
+		{name: "head", ignoreFile: graphIgnoreFileName, load: loadExplicitIgnoreMatcher},
+	} {
+		t.Run(loader.name, func(t *testing.T) {
+			t.Parallel()
+
+			repo := t.TempDir()
+			if err := os.WriteFile(filepath.Join(repo, loader.ignoreFile),
+				[]byte("credentials/\nvendor/secrets/\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			matcher, err := loader.load(repo, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			for _, path := range []string{
+				"credentials/private.go", "credentials/nested/deep.go",
+				"vendor/secrets/loader.go",
+			} {
+				if !matcher.Ignored(path, false) {
+					t.Errorf("the built-in deny re-admitted %q, which the repository excluded "+
+						"by directory; the built-in block must never negate a repository exclusion", path)
+				}
+			}
+			if !matcher.Ignored("credentials", true) {
+				t.Error(`the built-in deny re-admitted the directory "credentials", which the repository excluded`)
+			}
+
+			// The guarantees the built-in entry exists for must survive unchanged.
+			for _, path := range []string{".aws/credentials", "credentials"} {
+				if !matcher.Ignored(path, false) {
+					t.Errorf("the credential store %q is no longer denied", path)
+				}
+			}
+		})
+	}
+}
+
+// TestBuiltinCredentialStoreDenyLeavesSourcePackagesSearchable is the kind-(b)
+// guard on the same entry: with no repository exclusion in play, a SOURCE package
+// directory named credentials/ must stay walked and its .go files searchable,
+// while a file literally named credentials inside it is still a credential store.
+func TestBuiltinCredentialStoreDenyLeavesSourcePackagesSearchable(t *testing.T) {
+	t.Parallel()
+
+	for _, loader := range []struct {
+		name string
+		load func(string, []string, []string) (ignoreMatcher, error)
+	}{
+		{name: "worktree", load: loadWorktreeIgnoreMatcher},
+		{name: "head", load: loadExplicitIgnoreMatcher},
+	} {
+		t.Run(loader.name, func(t *testing.T) {
+			t.Parallel()
+
+			matcher, err := loader.load(t.TempDir(), nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range []string{"pkg/credentials/provider.go", "credentials/provider.go"} {
+				if matcher.Ignored(path, false) {
+					t.Errorf("source file %q was denied; the bare credentials entry must be file-only", path)
+				}
+			}
+			if matcher.Ignored("pkg/credentials", true) {
+				t.Error("the source package directory pkg/credentials was denied")
+			}
+			if !matcher.Ignored("pkg/credentials/credentials", false) {
+				t.Error("a file named credentials inside a source package is still a credential store")
+			}
+		})
+	}
+}
+
+// TestBuiltinSecretFileOnlyPatternsAreAllPresent pins the file-only marking to the
+// pattern block: an edit that renames or drops the bare `credentials` entry would
+// otherwise leave builtinSecretFileOnlyPatterns naming nothing and silently restore
+// a rule that covers a whole directory named credentials/.
+func TestBuiltinSecretFileOnlyPatternsAreAllPresent(t *testing.T) {
+	t.Parallel()
+
+	if len(builtinSecretFileOnlyPatterns) == 0 {
+		t.Fatal("builtinSecretFileOnlyPatterns is empty; the bare credentials entry must be file-only")
+	}
+	marked := map[string]bool{}
+	for _, rule := range builtinSecretIgnoreRules {
+		if rule.fileOnly {
+			marked[rule.pattern] = true
+		}
+	}
+	for pattern := range builtinSecretFileOnlyPatterns {
+		if !marked[pattern] {
+			t.Errorf("built-in pattern %q is declared file-only but no parsed rule carries it; "+
+				"it is missing from builtinSecretIgnorePatterns", pattern)
+		}
+	}
+}

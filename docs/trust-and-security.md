@@ -55,6 +55,13 @@ caller's `--ignore-file`/`--include-file`, so `--include-file` remains the way
 to deliberately re-admit a path (a checked-in `.env.example` used as
 configuration documentation, for example).
 
+Because of that position the list only ever adds exclusions: it contains no
+negation, so it cannot re-admit anything the repository itself excluded. The
+bare `credentials` entry — the AWS CLI shape, `.aws/credentials` — is matched as
+a FILENAME only for that reason: a directory named `credentials/` is neither
+excluded by it nor re-admitted when the repository's own `.gitignore` or
+`.graphignore` excludes it.
+
 Both persistent caches (`index`/`search` snapshots and the streamed record
 caches) key on a digest of this list, so a cache entry warmed by a build with a
 different list is not reachable — an entry written before these rules existed

@@ -19,9 +19,14 @@ type ignoreMatcher struct {
 }
 
 type ignoreRule struct {
-	ignore       bool
-	includeFile  bool
-	directory    bool
+	ignore      bool
+	includeFile bool
+	directory   bool
+	// fileOnly restricts the rule to non-directory paths matched on their basename:
+	// it never matches a directory and never matches an ancestor directory segment.
+	// Ordinary gitignore syntax cannot express that, so it is set only for built-in
+	// entries (see builtinSecretFileOnlyPatterns).
+	fileOnly     bool
 	basenameOnly bool
 	pattern      string
 	expression   *regexp.Regexp
@@ -119,13 +124,14 @@ id_ecdsa
 id_ed25519
 
 # Conventional credential and secret store filenames. The bare credentials entry
-# is the AWS CLI shape (.aws/credentials); the negation immediately after it is
-# what keeps that rule from also swallowing a SOURCE package directory named
-# credentials/, since a bare gitignore pattern matches every path segment and not
-# only the basename. A directory-only negation cannot match a file, so the file
-# stays denied and the directory stays walked.
+# is the AWS CLI shape (.aws/credentials). It is the one entry carried as FILE-ONLY
+# (builtinSecretFileOnlyPatterns): a bare gitignore pattern matches every path
+# segment rather than only the basename, so without that it would also swallow a
+# SOURCE package directory named credentials/ and everything under it. File-only
+# matching is used instead of a "!credentials/" negation because this block is
+# loaded AFTER the repository own exclude files in order to outrank them, so any
+# negation here would also cancel a repository own "credentials/" exclusion.
 credentials
-!credentials/
 credentials.json
 credentials.yml
 credentials.yaml
@@ -185,6 +191,18 @@ secrets.toml
 // shares this one slice.
 var builtinSecretIgnoreRules = parseBuiltinSecretIgnoreRules()
 
+// builtinSecretFileOnlyPatterns are the built-in entries that must deny a FILE and
+// leave any directory of the same name alone: the name is a credential-store
+// filename that is also a plausible SOURCE package name. Gitignore syntax has no
+// way to say "file only" — a bare pattern matches every path segment — and the one
+// thing that looks like it, a trailing-slash negation such as `!credentials/`,
+// cannot be used here: this block is loaded after the repository's own exclude
+// files so that it outranks them, which means a negation in it also cancels a
+// repository's own `credentials/` exclusion and re-admits every file underneath.
+var builtinSecretFileOnlyPatterns = map[string]struct{}{
+	"credentials": {},
+}
+
 func parseBuiltinSecretIgnoreRules() []ignoreRule {
 	var matcher ignoreMatcher
 	if err := matcher.loadContent(builtinSecretIgnorePatterns, false); err != nil {
@@ -195,6 +213,12 @@ func parseBuiltinSecretIgnoreRules() []ignoreRule {
 	for index := range matcher.rules {
 		rule := &matcher.rules[index]
 		rule.expression = regexp.MustCompile("(?i)" + rule.expression.String())
+		if _, ok := builtinSecretFileOnlyPatterns[rule.pattern]; ok {
+			if !rule.basenameOnly || rule.directory || !rule.ignore {
+				panic("sem: file-only built-in rule " + rule.pattern + " is not a bare deny")
+			}
+			rule.fileOnly = true
+		}
 	}
 	return matcher.rules
 }
@@ -735,10 +759,31 @@ func (m ignoreMatcher) reincludesDescendantUnder(dir, rel string) bool {
 }
 
 func (r ignoreRule) matchKind(rel string, isDir bool) ignoreMatchKind {
+	if r.fileOnly {
+		return r.matchFileOnly(rel, isDir)
+	}
 	if r.basenameOnly {
 		return r.matchBasename(rel, isDir)
 	}
 	return r.matchPath(rel, isDir)
+}
+
+// matchFileOnly decides a rule that names a file and nothing else. It matches the
+// last path segment of a non-directory path only, so it can never produce an
+// ancestor match — which is what keeps the bare `credentials` deny from covering
+// (or, as a negation would, re-admitting) a directory named credentials/.
+func (r ignoreRule) matchFileOnly(rel string, isDir bool) ignoreMatchKind {
+	if isDir {
+		return ignoreNoMatch
+	}
+	name := rel
+	if slash := strings.LastIndex(rel, "/"); slash >= 0 {
+		name = rel[slash+1:]
+	}
+	if name != "" && r.expression.MatchString(name) {
+		return ignoreSelfMatch
+	}
+	return ignoreNoMatch
 }
 
 func (r ignoreRule) matchBasename(rel string, isDir bool) ignoreMatchKind {
