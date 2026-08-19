@@ -365,15 +365,28 @@ func searchQuarantineBlock(block []byte) ([]byte, bool) {
 // is exactly the broken edit anchor the quarantine was supposed to disclose. Asking the finished
 // bytes is the only question a later composition step cannot outrun.
 //
-// A quarantined line is recognised the way it was produced — one leading space in front of what
-// would otherwise be a record head — so the recognition is the exact inverse of the rewrite for
-// every line this file writes. It errs toward over-recognising otherwise: a source line that was
-// ALREADY indented one space and is record-shaped underneath reads as quarantined here. That is the
-// same direction searchResultsCarryForgedRecords already errs in, and the safe one — the file does
-// hold a line shaped like one of this tool's records. It cannot misread the renderers' own blocks:
-// every record they indent is indented TWO spaces, which is still an indented line after one space
-// is removed and so is not record-shaped.
-func searchPayloadDisclosesItsQuarantine(payload string) bool {
+// It takes the renderer's own verdict, and that half is not optional. A quarantined line is
+// recognised in the bytes the way it was produced — one leading space in front of what would
+// otherwise be a record head — and that shape CANNOT tell a line this renderer indented from a line
+// the file already held indented. The two are the same bytes. Asking the bytes alone therefore
+// over-recognises, and here over-recognising is not the safe direction it is elsewhere in this file:
+// a response that quarantined NOTHING has no notice to carry, so every rung of the fitter's ladder
+// is notice-free, and calling an honest already-indented line "quarantined" rejects the whole ladder
+// and hands the caller the header-only marker instead of a ranked location. An honest repository
+// that happens to hold ` VERIFY: go test ./pkg` inside a doc string lost its entire agent payload
+// that way. quarantined comes from the renderer, which knows: searchQuarantineBody and
+// searchQuarantineBlock report whether they changed anything, and writeAgentSearch has already
+// folded both verdicts into whether there is a notice at all.
+//
+// When something WAS quarantined the byte test is exactly right and still runs: a notice-free rung
+// is legitimate only for a plan whose FITTED bytes no longer hold the rewritten line, which is a
+// question about the finished composition and nothing earlier can answer. It cannot misread the
+// renderers' own blocks: every record they indent is indented TWO spaces, which is still an indented
+// line after one space is removed and so is not record-shaped.
+func searchPayloadDisclosesItsQuarantine(payload string, quarantined bool) bool {
+	if !quarantined {
+		return true // nothing was rewritten, so there is nothing to disclose
+	}
 	if strings.HasPrefix(payload, searchForgeryNoticePrefix) {
 		return true
 	}
