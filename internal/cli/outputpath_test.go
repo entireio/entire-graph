@@ -699,8 +699,15 @@ func TestRealOutputPathWithoutDotDotIsPlainAbs(t *testing.T) {
 // truncating write of a DIFFERENT existing file, for both `--report` and
 // `--record-baseline`.
 //
-// No symlink is involved, so this runs on every platform, Windows included.
+// The refusal belongs to the platforms that TRAVERSE the missing component.
+// Windows removes `missing\..` while normalising the path in user mode, so the
+// spelling names the file beside it there and writing it is what the caller asked
+// for; TestRealOutputPathFollowsThePlatformsDotDotRule pins both rules on one
+// machine.
 func TestOutputPathsRefuseDotDotThroughAMissingDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows collapses `missing\\..` before the filesystem sees it, so this spelling names an existing file there")
+	}
 	// Outside the repository: the caller-owned write path. The bystander is an
 	// ordinary file the caller never named.
 	t.Run("report does not truncate a bystander outside the repository", func(t *testing.T) {
@@ -832,5 +839,39 @@ func TestIndexReportRefusesSymlinkInACheckoutNamedWithATrailingSpace(t *testing.
 	}
 	if info.Mode()&os.ModeSymlink == 0 {
 		t.Fatal("the repository's symlink was replaced by a regular file")
+	}
+}
+
+// TestRealOutputPathFollowsThePlatformsDotDotRule pins the ".." refusal to the
+// platforms that actually traverse the missing component.
+//
+// A Unix kernel resolves each component in turn, so `missing/../x` fails at
+// `missing` with ENOENT and never reaches `x`. Windows does not: it normalises the
+// path in USER MODE before the filesystem sees it, removing `missing\..` the way
+// filepath.Clean does, so the same spelling names `x` beside it and OPENS it. The
+// refusal is therefore correct on Unix and a regression on Windows, where a
+// `--report` or `--record-baseline` path that wrote its file before would now
+// return a not-exist error.
+//
+// Both halves run on one machine because the platform rule is a parameter.
+func TestRealOutputPathFollowsThePlatformsDotDotRule(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	given := dotDotPath(filepath.Join(home, "missing"), "x.md")
+
+	if _, err := realOutputPathOn(given, false); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("traversing platform: err = %v, want a not-exist error", err)
+	}
+
+	got, err := realOutputPathOn(given, true)
+	if err != nil {
+		t.Fatalf("normalising platform: realOutputPathOn returned %v, want the collapsed path", err)
+	}
+	want, err := filepath.Abs(given)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("normalising platform: realOutputPathOn = %q, want %q", got, want)
 	}
 }

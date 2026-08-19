@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
@@ -169,7 +170,7 @@ func classifyOutputPath(repoRoot, path string) (repoOutputTarget, error) {
 	return repoOutputTarget{path: onDisk, given: path}, nil
 }
 
-// realOutputPath makes path absolute the way the KERNEL reads it: the directory
+// realOutputPath makes path absolute the way the PLATFORM reads it: the directory
 // part is resolved through symlinks, so a ".." after a symlinked component steps
 // out of the link's TARGET rather than out of the link's parent. The final
 // component is deliberately left as a name — it is the symlink a confined write
@@ -181,11 +182,27 @@ func classifyOutputPath(repoRoot, path string) (repoOutputTarget, error) {
 // and keeps every spelling filepath.Abs understands that the concatenation below
 // could not reproduce.
 func realOutputPath(path string) (string, error) {
+	return realOutputPathOn(path, runtime.GOOS == "windows")
+}
+
+// realOutputPathOn is realOutputPath with the platform's ".." rule passed in, so
+// both rules can be exercised on one machine.
+//
+// dotDotIsLexical says the platform collapses ".." ITSELF, before the filesystem
+// sees the path. Windows does: it normalises in user mode — the same textual
+// removal filepath.Clean performs — so `missing\..\x` names `x` beside it and
+// OPENS it, missing directory and all. A Unix kernel instead walks component by
+// component, resolving ".." against the directory it just followed, so the same
+// spelling fails at `missing` and a ".." after a symlink steps out of the link's
+// TARGET. Only the walking platforms need the uncleaned reading below; on the
+// normalising one the cleaned path already IS the file that gets opened, and
+// taking the walk would refuse output paths that were written before.
+func realOutputPathOn(path string, dotDotIsLexical bool) (string, error) {
 	cleaned, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
-	if !hasDotDot(path) {
+	if dotDotIsLexical || !hasDotDot(path) {
 		return cleaned, nil
 	}
 	raw := path
@@ -369,6 +386,9 @@ func lexicalRel(root, target string) (string, bool) {
 // This costs no legitimate spelling: a ".." that follows a directory which DOES
 // exist is resolved by EvalSymlinks before the walk can reach it, so the ordinary
 // `../reports/x.md` — leaf directories not yet created included — never lands here.
+// Nor does anything on a platform that collapses ".." itself: realOutputPathOn
+// returns the cleaned path there without taking this walk, and containedRel's call
+// passes an already-cleaned absolute path, which holds no ".." to reach.
 func resolveExistingPrefix(dir string) (string, error) {
 	remainder := ""
 	current := dir
