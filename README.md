@@ -33,12 +33,7 @@ retrieval path that first shipped in
 | [letta](https://github.com/letta-ai/letta) | 80.58 | not projectable |
 | [supermemory](https://github.com/supermemoryai/supermemory) | 77.60 | hosted |
 
-The margin over the strongest inference-built competitor (mem0 OSS) does not
-clear statistical significance; the margin over the BM25 baseline, built at
-identical zero cost, does (*p* = 5.7×10⁻⁷). Index-time token counts are
-directly metered rather than estimated. They are not a one-time charge: an
-inference-built index pays them again on every corpus revision. See
-[benchmarks](docs/benchmarks.md) for full methodology, per-category results,
+See [benchmarks](docs/benchmarks.md) for full methodology, per-category results,
 retractions, and reproduction steps.
 
 ## Install
