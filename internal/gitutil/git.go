@@ -266,8 +266,10 @@ func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string,
 		args = append(args, treeish)
 	}
 	args = append(args, "--")
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = repo
+	// newGitCmd, not newCmd: the configuration hardening applies to grep too (a
+	// working-tree grep refreshes the index, which is what runs core.fsmonitor),
+	// but the C locale must not, because `git grep -i` case-folds through LC_CTYPE.
+	cmd := newGitCmd(ctx, repo, args...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -326,9 +328,10 @@ func grepFixedStringMatches(ctx context.Context, repo, treeish string, patterns 
 	args = append(args, "--")
 	// Preserve the caller's locale here. Unlike the other git commands in this
 	// package, `git grep -i` uses LC_CTYPE for non-ASCII case folding; forcing
-	// the C locale would make Unicode matches disappear.
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = repo
+	// the C locale would make Unicode matches disappear. newGitCmd keeps the
+	// locale while still applying the configuration hardening, which a
+	// working-tree grep needs — refreshing the index is what runs core.fsmonitor.
+	cmd := newGitCmd(ctx, repo, args...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -839,14 +842,74 @@ func run(ctx context.Context, dir, name string, args ...string) (string, error) 
 	return stdout, nil
 }
 
+// gitConfigOverrides are the `-c` settings prepended to the argv of every git
+// subprocess this package spawns. They exist because the *target repository's*
+// own .git/config is attacker-controlled input for a tool whose entire purpose
+// is indexing repositories the user has not audited, and some git
+// configuration values are commands git executes:
+//
+//   - core.fsmonitor names a hook git runs through `sh -c` every time it
+//     refreshes the index. `git ls-files` (ListIndexFiles, ListWorktreeFiles,
+//     ListIgnoredWorktreeFiles) and working-tree `git grep` (GrepIndexMatches,
+//     GrepFixedStringPaths with an empty treeish) all refresh the index, so
+//     merely listing a repository ran whatever command its config named. The
+//     empty value is the disabled state: git reads core.fsmonitor as a boolean
+//     first and as a path second, and an empty path disables the hook.
+//   - gpg.program is executed to verify a commit signature, and
+//     log.showSignature — also repository config — is the switch that makes
+//     `git log` reach it. A forged `gpgsig` header on any commit is enough to
+//     trigger verification, so FindCommitWithCheckpoint and FileCochanges were
+//     reachable the same way. Disabling the trigger keeps the program from
+//     being run at all.
+//
+// The rest of this package's argv were checked against the same fixture and do
+// not reach an executed configuration value: diff.external, diff.<driver>.textconv
+// and core.pager never ran for `git diff --name-status`, `git log --name-only`,
+// `git grep`, `git show <tree>:<path>` or `git cat-file --batch`, and no command
+// here contacts a remote, so the credential, ssh and proxy keys are unreachable.
+//
+// Deliberately NOT set here: GIT_CONFIG_NOSYSTEM. It blocks none of the above —
+// the payload lives in the repository's own config, which GIT_CONFIG_NOSYSTEM
+// does not touch — while it does drop a system-level core.excludesFile, one of
+// the exclude sources ListWorktreeFiles documents that it honors.
+func gitConfigOverrides() []string {
+	return []string{"-c", "core.fsmonitor=", "-c", "log.showSignature=false"}
+}
+
+// newGitCmd builds a hardened git subprocess that keeps the caller's locale.
+// The configuration overrides are prepended to the argv here rather than folded
+// into the args callers assemble, so error messages keep quoting the command
+// the caller actually asked for.
+//
+// GIT_TERMINAL_PROMPT=0 cannot change the behavior of anything this package runs
+// today — none of these commands contacts a remote, so none of them can reach a
+// credential prompt. It is set so that a future caller which does cannot inherit
+// an interactive stall from a repository the tool does not trust.
+func newGitCmd(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", append(gitConfigOverrides(), args...)...)
+	cmd.Dir = dir
+	// Cmd.Environ observes Dir and updates PWD accordingly. Starting from
+	// os.Environ would leave child processes with the parent's stale PWD.
+	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0")
+	return cmd
+}
+
 // newCmd builds the exec.Cmd used by subprocesses whose diagnostics must be
 // stable. It pins the subprocess locale to C (LC_ALL=C overrides LANG and any
 // LC_*; LANG=C is set as a belt-and-braces default) so git's stderr messages
 // are always the English ones our error classification matches — e.g.
 // ShowFile's absent-file detection would otherwise break under a non-English
-// git locale. GrepIndexMatches intentionally bypasses this helper and keeps
-// the caller's locale because git grep uses LC_CTYPE for case folding.
+// git locale. The grep helpers intentionally bypass this one and use newGitCmd
+// directly, keeping the caller's locale because git grep uses LC_CTYPE for case
+// folding — but they get the same configuration hardening.
 func newCmd(ctx context.Context, dir, name string, args ...string) *exec.Cmd {
+	// Every caller passes "git"; the guard keeps the hardening from being
+	// applied as bogus leading arguments should a non-git command ever appear.
+	if name == "git" {
+		cmd := newGitCmd(ctx, dir, args...)
+		cmd.Env = append(cmd.Env, "LC_ALL=C", "LANG=C")
+		return cmd
+	}
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	// Cmd.Environ observes Dir and updates PWD accordingly. Starting from
