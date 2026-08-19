@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -15577,5 +15578,226 @@ func assertNoGitDirLeak(t *testing.T, repo string, gitDirs ...string) {
 		if strings.Contains(result.Snippet, gitDirCredentialMarker) {
 			t.Errorf("search snippet for %q leaked the planted remote credential", result.FilePath)
 		}
+	}
+}
+
+// caseFoldingTestFS reports whether dir's filesystem folds case, so the
+// spelling-mismatch fixtures below can skip where they are unrepresentable: on a
+// case-sensitive filesystem `STATE/.dep-git` and `state/.dep-git` really are two
+// different directories, and one cannot be spelled two ways.
+func caseFoldingTestFS(t *testing.T, dir string) bool {
+	t.Helper()
+	probe := filepath.Join(dir, "tf132-case-probe")
+	if err := os.Mkdir(probe, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(probe) }()
+	_, err := os.Lstat(filepath.Join(dir, "TF132-CASE-PROBE"))
+	return err == nil
+}
+
+// TestGitDirExcluderMatchesTargetSpelledInAnotherCase pins the pointer half
+// against the filesystem's own case folding. The pointer names the git
+// directory `STATE/.dep-git`; the listing spells the same directory
+// `state/.dep-git`. An exact map lookup misses, and the git directory — which
+// carries no HEAD, so the structural half cannot rescue it — stays listable.
+func TestGitDirExcluderMatchesTargetSpelledInAnotherCase(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	if !caseFoldingTestFS(t, repo) {
+		t.Skip("filesystem is case-sensitive: `STATE/.dep-git` and `state/.dep-git` are two directories here")
+	}
+	// Deliberately NOT a structural git directory: no HEAD, no objects/, no
+	// refs/. Only the pointer names it, so only the pointer can exclude it.
+	writeFile(t, repo, "state/.dep-git/config", gitDirConfigWithCredential)
+	writeFile(t, repo, "state/.dep-git/hooks/post-commit.go", gitDirHookSource)
+	writeFile(t, repo, "libs/dep/.git", "gitdir: ../../STATE/.dep-git\n")
+	// A second git directory whose LEAF carries no letters, so the case the
+	// pointer differs in exists only in an ancestor component.
+	writeFile(t, repo, "state/42/config", gitDirConfigWithCredential)
+	writeFile(t, repo, "libs/other/.git", "gitdir: ../../STATE/42\n")
+	writeFile(t, repo, "src/app.go", "package src\n")
+	listed := []string{"src/app.go", "state/.dep-git/config", "state/.dep-git/hooks/post-commit.go", "state/42/config", "libs/dep", "libs/other"}
+	excluder := newGitDirExcluder(repo)
+	excluder.observeListedPaths(listed, []string{"libs/dep", "libs/other"})
+	for _, rel := range []string{"state/.dep-git/config", "state/.dep-git/hooks/post-commit.go", "state/42/config"} {
+		if !excluder.excluded(rel) {
+			t.Errorf("excluded(%q) = false, want true", rel)
+		}
+	}
+	if excluder.excluded("src/app.go") {
+		t.Error(`excluded("src/app.go") = true, want false`)
+	}
+}
+
+// TestSearchRepositoryNeverIndexesGitDirNamedInAnotherCase is the same
+// spelling mismatch end to end, on the filesystem fallback. The pointer sits in
+// `libs/`, which the vendored heuristic does not skip, so the pointer IS read —
+// it just names the directory in a different case than the walk spells it.
+func TestSearchRepositoryNeverIndexesGitDirNamedInAnotherCase(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	if !caseFoldingTestFS(t, repo) {
+		t.Skip("filesystem is case-sensitive: `STATE/.dep-git` and `state/.dep-git` are two directories here")
+	}
+	writeFile(t, repo, "libs/dep/.git", "gitdir: ../../STATE/.dep-git\n")
+	writeFile(t, repo, "state/.dep-git/config", gitDirConfigWithCredential)
+	writeFile(t, repo, "state/.dep-git/hooks/post-commit.go", gitDirHookSource)
+	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	assertNoGitDirLeak(t, repo, "state/.dep-git")
+}
+
+// TestLooksLikeGitDirAcceptsSymlinkedObjectsAndRefs pins the structural half
+// against a repository layout git itself accepts: `objects` and `refs` are
+// symlinks to directories elsewhere (a shared object store, a relocated refs
+// tree). Lstat sees the symlink, not the directory, and calls a real git
+// directory ordinary content.
+func TestLooksLikeGitDirAcceptsSymlinkedObjectsAndRefs(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a directory symlink needs a privilege ordinary Windows accounts lack, so this layout is unrepresentable there")
+	}
+	dir := t.TempDir()
+	writeFile(t, dir, "d/HEAD", "ref: refs/heads/main\n")
+	writeFile(t, dir, "d/config", gitDirConfigWithCredential)
+	for _, name := range []string{"objects", "refs"} {
+		real := filepath.Join(dir, "store", name)
+		if err := os.MkdirAll(real, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(real, filepath.Join(dir, "d", name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !looksLikeGitDir(filepath.Join(dir, "d")) {
+		t.Error("looksLikeGitDir = false, want true for a git directory whose objects/ and refs/ are symlinks")
+	}
+}
+
+// TestSearchRepositoryNeverIndexesGitDirWithSymlinkedObjectStore is that same
+// layout end to end, on the walk, where the structural half is the only rule
+// that can catch it: the pointer sits in `vendor/`, which the vendored heuristic
+// skips unread.
+func TestSearchRepositoryNeverIndexesGitDirWithSymlinkedObjectStore(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a directory symlink needs a privilege ordinary Windows accounts lack, so this layout is unrepresentable there")
+	}
+	repo := t.TempDir()
+	writeFile(t, repo, "vendor/dep/.git", "gitdir: ../../state/.dep-git\n")
+	writeFile(t, repo, "state/.dep-git/HEAD", "ref: refs/heads/main\n")
+	writeFile(t, repo, "state/.dep-git/config", gitDirConfigWithCredential)
+	writeFile(t, repo, "state/.dep-git/hooks/post-commit.go", gitDirHookSource)
+	// git accepts a repository whose object store and refs tree live elsewhere
+	// and are reached by symlink; this is how a shared object store is wired.
+	for _, name := range []string{"objects", "refs"} {
+		real := filepath.Join(repo, "store", name)
+		if err := os.MkdirAll(real, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(real, filepath.Join(repo, "state", ".dep-git", name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	assertNoGitDirLeak(t, repo, "state/.dep-git")
+}
+
+// TestLooksLikeGitDirRejectsInvalidHEAD pins the other direction: three names
+// are not evidence on their own. Git reads HEAD and rejects the directory when
+// it is neither `ref: <refname>` nor an object id, so a source tree that
+// happens to carry those three names must stay listed.
+func TestLooksLikeGitDirRejectsInvalidHEAD(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		head string
+		want bool
+	}{
+		{"symbolic ref", "ref: refs/heads/main\n", true},
+		{"symbolic ref one level", "ref: MERGE_HEAD\n", true},
+		{"detached object id", strings.Repeat("a", 40) + "\n", true},
+		{"sha256 object id", strings.Repeat("b", 64) + "\n", true},
+		{"prose", "HEAD OF THE TABLE\n\nThe table's head seat.\n", false},
+		{"empty", "", false},
+		{"ref with no refname", "ref:\n", false},
+		{"ref with a space in the refname", "ref: refs/heads/my branch\n", false},
+		{"csv column header", "HEAD,BODY,TAIL\n", false},
+		{"short hex", strings.Repeat("a", 39) + "\n", false},
+		{"forty non-hex", strings.Repeat("z", 40) + "\n", false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			writeFile(t, dir, "d/HEAD", testCase.head)
+			for _, sub := range []string{"objects", "refs"} {
+				if err := os.MkdirAll(filepath.Join(dir, "d", sub), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := looksLikeGitDir(filepath.Join(dir, "d")); got != testCase.want {
+				t.Errorf("looksLikeGitDir = %v, want %v", got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestGitDirExcluderKeepsSourceTreeNamedLikeAGitDir is the same false positive
+// at the listing boundary: a fixture directory carrying HEAD, objects/ and
+// refs/ is ordinary program text, and every one of its files must survive.
+func TestGitDirExcluderKeepsSourceTreeNamedLikeAGitDir(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "testdata/parser/HEAD", "HEAD,BODY,TAIL\n")
+	writeFile(t, repo, "testdata/parser/objects/loader.go", "package objects\n")
+	writeFile(t, repo, "testdata/parser/refs/table.go", "package refs\n")
+	listed := []string{"testdata/parser/HEAD", "testdata/parser/objects/loader.go", "testdata/parser/refs/table.go"}
+	excluder := newGitDirExcluder(repo)
+	excluder.observeListedPaths(listed, nil)
+	for _, rel := range listed {
+		if excluder.excluded(rel) {
+			t.Errorf("excluded(%q) = true, want false", rel)
+		}
+	}
+}
+
+// TestSearchRepositoryStillIndexesSourceTreeNamedLikeAGitDir is that false
+// positive end to end: a search that should find the fixture's source returns
+// nothing at all once the directory is misread as a git directory.
+func TestSearchRepositoryStillIndexesSourceTreeNamedLikeAGitDir(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	// A CSV column header, not a git HEAD. Git's own is_git_directory() reads
+	// HEAD and rejects this directory.
+	writeFile(t, repo, "testdata/parser/HEAD", "HEAD,BODY,TAIL\n")
+	writeFile(t, repo, "testdata/parser/objects/loader.go", "package objects\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+	if err := os.MkdirAll(filepath.Join(repo, "testdata", "parser", "refs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, "src/other.go", "package src\n")
+
+	response, err := SearchRepository(t.Context(), repo, "test", "origin remote credential loader", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, result := range response.Results {
+		if result.FilePath == "testdata/parser/objects/loader.go" {
+			found = true
+		}
+	}
+	if !found {
+		paths := make([]string, 0, len(response.Results))
+		for _, result := range response.Results {
+			paths = append(paths, result.FilePath)
+		}
+		t.Errorf("search did not return testdata/parser/objects/loader.go; results = %v", paths)
 	}
 }

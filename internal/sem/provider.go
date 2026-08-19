@@ -10279,13 +10279,22 @@ const maxGitDirPointerBytes = 4 << 10
 type gitDirExcluder struct {
 	repo    string
 	targets map[string]struct{}
+	// foldedTargets holds the same targets lowercased, and is populated only
+	// where the filesystem itself folds case. A pointer's spelling and the
+	// listing's spelling are two independent strings for one directory there —
+	// git writes `gitdir:` with the spelling it was given, while the listing
+	// carries the spelling the caller walked with — so an exact match is not
+	// enough. It stays empty on a case-sensitive filesystem, where two
+	// spellings really are two directories and folding would exclude an
+	// innocent one.
+	foldedTargets map[string]struct{}
 }
 
 // newGitDirExcluder builds the excluder for one listing of repo, having already
 // observed the repository root — the `--separate-git-dir` case that needs no
 // listing to find.
 func newGitDirExcluder(repo string) *gitDirExcluder {
-	excluder := &gitDirExcluder{repo: repo, targets: map[string]struct{}{}}
+	excluder := &gitDirExcluder{repo: repo, targets: map[string]struct{}{}, foldedTargets: map[string]struct{}{}}
 	excluder.observe("")
 	return excluder
 }
@@ -10308,27 +10317,157 @@ func newGitDirExcluder(repo string) *gitDirExcluder {
 // leak, and must keep listing what it lists today.
 func (g *gitDirExcluder) observe(dir string) {
 	if target, ok := gitDirPointerTarget(g.repo, dir); ok {
-		g.targets[target] = struct{}{}
+		g.addTarget(target)
 	}
 	if dir == "" {
 		return
 	}
 	if looksLikeGitDir(filepath.Join(g.repo, filepath.FromSlash(dir))) {
-		g.targets[filepath.ToSlash(dir)] = struct{}{}
+		g.addTarget(filepath.ToSlash(dir))
 	}
 }
 
+// addTarget records one repo-relative git directory under every spelling the
+// filesystem accepts for it, so the verdict does not depend on which of the two
+// producers — the pointer's text or the listing — supplied the path.
+func (g *gitDirExcluder) addTarget(target string) {
+	g.targets[target] = struct{}{}
+	if foldsCase(g.repo, target) {
+		g.foldedTargets[strings.ToLower(target)] = struct{}{}
+	}
+}
+
+// foldsCase reports whether the filesystem holding <repo>/<target> resolves that
+// same directory under a differently-cased spelling of the WHOLE repo-relative
+// path. macOS (APFS/HFS+ by default) and Windows fold case; ext4, XFS and btrfs
+// do not. Three properties matter here:
+//
+//   - It asks the filesystem instead of guessing from runtime.GOOS, because one
+//     machine can mount both kinds.
+//   - It compares identity (os.SameFile), not mere existence, so a genuinely
+//     distinct sibling of another case is never mistaken for the same directory
+//     and no innocent path is excluded on a case-sensitive filesystem.
+//   - It re-spells every component, not just the last one, because the case a
+//     pointer differs in is usually an ANCESTOR (`STATE/.dep-git`), and a leaf
+//     that carries no letters at all (`state/42`) has no other spelling to
+//     compare.
+//
+// A path with no letters anywhere has exactly one spelling, so there is nothing
+// to fold and false is the right answer.
+func foldsCase(repo, target string) bool {
+	info, err := os.Lstat(filepath.Join(repo, filepath.FromSlash(target)))
+	if err != nil {
+		return false
+	}
+	for _, spelling := range [2]string{strings.ToLower(target), strings.ToUpper(target)} {
+		if spelling == target {
+			continue
+		}
+		other, otherErr := os.Lstat(filepath.Join(repo, filepath.FromSlash(spelling)))
+		if otherErr != nil {
+			continue
+		}
+		if os.SameFile(info, other) {
+			return true
+		}
+	}
+	return false
+}
+
 // looksLikeGitDir reports whether a directory is a git directory by its own
-// contents: the HEAD file plus the objects/ and refs/ directories, which is the
-// same triple git itself checks to decide a path is a repository. HEAD is tested
-// first, so the ordinary answer costs one stat and a path that is not a
-// directory at all fails it immediately.
+// contents, applying the same three tests git's own is_git_directory() applies:
+// a VALID HEAD, an objects/ directory and a refs/ directory. HEAD is tested
+// first, so the ordinary answer costs one lstat — only a directory that actually
+// holds a HEAD is ever read — and a path that is not a directory at all fails it
+// immediately.
+//
+// os.Stat, not os.Lstat, for objects/ and refs/: git accepts a repository whose
+// object store or refs tree is a symlink elsewhere, and Lstat would see the
+// symlink rather than the directory and call a real git directory ordinary
+// content.
 func looksLikeGitDir(dir string) bool {
-	if info, err := os.Lstat(filepath.Join(dir, "HEAD")); err != nil || !info.Mode().IsRegular() {
+	if !validGitHEAD(filepath.Join(dir, "HEAD")) {
 		return false
 	}
 	for _, name := range []string{"objects", "refs"} {
-		if info, err := os.Lstat(filepath.Join(dir, name)); err != nil || !info.IsDir() {
+		if info, err := os.Stat(filepath.Join(dir, name)); err != nil || !info.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
+// maxGitHEADBytes bounds the read of a HEAD file, and is git's own buffer size
+// in validate_headref().
+const maxGitHEADBytes = 256
+
+// validGitHEAD reports whether head is a HEAD file git would accept, which is
+// what separates a git directory from a source tree that merely carries the
+// three names. Git accepts exactly three shapes, and this accepts the same
+// three: a symlink into refs/, a `ref: <refname>` line, or a bare object id.
+//
+// Without the content test, `testdata/parser/{HEAD,objects/,refs/}` — ordinary
+// program text — is classified as a git directory and silently dropped from
+// every worktree snapshot.
+func validGitHEAD(head string) bool {
+	info, err := os.Lstat(head)
+	if err != nil {
+		return false
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		// Git's own rule for a symlinked HEAD, which it accepts even dangling.
+		target, readErr := os.Readlink(head)
+		return readErr == nil && strings.HasPrefix(filepath.ToSlash(target), "refs/")
+	}
+	if !info.Mode().IsRegular() {
+		return false
+	}
+	file, err := os.Open(head)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = file.Close() }()
+	buffer := make([]byte, maxGitHEADBytes)
+	read, err := io.ReadFull(file, buffer)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return false
+	}
+	line, _, _ := strings.Cut(string(buffer[:read]), "\n")
+	line = strings.TrimSpace(line)
+	if refname, isSymbolic := strings.CutPrefix(line, "ref:"); isSymbolic {
+		return validRefname(strings.TrimSpace(refname))
+	}
+	return isObjectID(line)
+}
+
+// validRefname is git's check_refname_format with REFNAME_ALLOW_ONELEVEL,
+// reduced to the checks that decide the question here: a refname is non-empty,
+// carries no whitespace or control characters, and none of the byte sequences
+// git reserves.
+func validRefname(name string) bool {
+	if name == "" || strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/") ||
+		strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".lock") ||
+		strings.Contains(name, "..") || strings.Contains(name, "//") ||
+		strings.Contains(name, "@{") {
+		return false
+	}
+	for _, char := range name {
+		if char <= ' ' || char == 0x7f || strings.ContainsRune("~^:?*[\\", char) {
+			return false
+		}
+	}
+	return true
+}
+
+// isObjectID reports whether line is a bare object id: git's SHA-1 (40 hex
+// digits) or SHA-256 (64) form, which is what a detached HEAD holds.
+func isObjectID(line string) bool {
+	if len(line) != 40 && len(line) != 64 {
+		return false
+	}
+	for _, char := range line {
+		isHex := (char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')
+		if !isHex {
 			return false
 		}
 	}
@@ -10403,6 +10542,11 @@ func (g *gitDirExcluder) excluded(rel string) bool {
 		}
 		if _, isTarget := g.targets[rel[:end]]; isTarget {
 			return true
+		}
+		if len(g.foldedTargets) > 0 {
+			if _, isTarget := g.foldedTargets[strings.ToLower(rel[:end])]; isTarget {
+				return true
+			}
 		}
 		start = end + 1
 	}
