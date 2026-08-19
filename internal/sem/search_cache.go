@@ -762,10 +762,19 @@ func selectiveSearchSnapshotFromFull(
 			}
 		}
 	}
-	// shouldStop deliberately returns no reason, so classify the work context
-	// once here: budget expiry marks the derived snapshot truncated, a caller
-	// cancellation or a caller deadline is returned.
-	if err := classifyStop(workCtx.Err()); err != nil {
+	// shouldStop deliberately returns no reason, so classify the stop once here:
+	// budget expiry marks the derived snapshot truncated, a caller cancellation
+	// or a caller deadline is returned.
+	//
+	// Classify off the GATE, not off workCtx directly. shouldStop is
+	// level-triggered against the clock, so between the deadline passing and
+	// the context timer firing it stops the derivation while workCtx.Err() is
+	// still nil. Reading the raw context here would leave budgetHit false, and
+	// a snapshot that is missing everything after the deadline would carry no
+	// E_ANALYSIS_BUDGET_EXCEEDED marker -- which is exactly what makes it
+	// cacheable, and every later unbudgeted query would be served the gap as
+	// the complete index.
+	if err := classifyStop(gate.err()); err != nil {
 		return ProviderSnapshot{}, err
 	}
 

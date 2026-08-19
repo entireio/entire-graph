@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -235,5 +236,65 @@ func TestTF142R8JSScopeUnbudgetedIsUnchanged(t *testing.T) {
 	// must survive the merge filter the new poll runs inside.
 	if len(state.bindings) < count {
 		t.Fatalf("an unbudgeted scope scan must keep every declaration binding, got %d of at least %d", len(state.bindings), count)
+	}
+}
+
+// TestTF142R8ClockTriggeredStopStillMarksTheSnapshotTruncated closes the hole a
+// level-triggered predicate opens if the sink is left reading the raw context.
+//
+// shouldStop fires the instant the clock passes the deadline. The context's own
+// timer fires later. In that window the derivation stops but workCtx.Err() is
+// still nil, so a sink that classifies off the context leaves budgetHit false:
+// the snapshot is missing everything after the deadline, carries no
+// E_ANALYSIS_BUDGET_EXCEEDED marker, reports completeness "ok", and is
+// therefore CACHEABLE -- every later unbudgeted query would be served the gap
+// as the complete index. That is the round-one HIGH finding's failure mode
+// reintroduced through the back door.
+//
+// The window is reproduced deterministically rather than raced: MaxDuration is
+// an hour, so the context timer is nowhere near firing, and the injected clock
+// jumps two hours after the deadline is derived, so the gate is expired and the
+// context is not.
+func TestTF142R8ClockTriggeredStopStillMarksTheSnapshotTruncated(t *testing.T) {
+	repo := tf142r5SelectiveRepo(t)
+	cacheDir := t.TempDir()
+
+	if _, _, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test", ProviderSnapshotOptions{
+		Profile: ProfileFull,
+	}, cacheDir, false); err != nil {
+		t.Fatalf("warm the complete snapshot: %v", err)
+	}
+
+	// The clock stays live long enough for the preprocessing to complete, so
+	// stopNow never fires and budgetHit is still false when the relation phase
+	// starts; the budget then runs out DURING relation generation, where the
+	// predicate is shouldStop (which deliberately records no reason). That
+	// leaves the sink as the only place the truncation can be recorded.
+	const livePolls = 12
+	var polls atomic.Int64
+	base := time.Now()
+	selective := ProviderSnapshotOptions{
+		Profile:     ProfileFull,
+		OnlyFiles:   []string{"deep.js"},
+		MaxDuration: time.Hour,
+		nowFn: func() time.Time {
+			if polls.Add(1) <= livePolls {
+				return base
+			}
+			return base.Add(2 * time.Hour)
+		},
+	}
+	snapshot, _, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test", selective, cacheDir, false)
+	if err != nil {
+		t.Fatalf("an explicit budget must truncate, not fail: %v", err)
+	}
+	if !partialFailuresTruncated(snapshot.Header.PartialFailures) {
+		t.Fatalf("a derivation stopped by the clock must be marked truncated, got %#v", snapshot.Header.PartialFailures)
+	}
+	if snapshot.Header.Stats.CompletenessLevel != "unsafe" {
+		t.Fatalf("a truncated derivation must be unsafe, got %q", snapshot.Header.Stats.CompletenessLevel)
+	}
+	if polls.Load() <= livePolls {
+		t.Fatalf("the clock never got past the preprocessing (%d poll(s)), so the sink was not the thing under test", polls.Load())
 	}
 }
