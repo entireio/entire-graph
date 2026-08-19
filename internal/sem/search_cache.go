@@ -548,6 +548,13 @@ func restoreCachedSearchInternals(cache *cachedSearchSnapshot) {
 	}
 }
 
+// budgetPollStride is how often the cheap per-record loops in the selective
+// derivation poll the wall-clock budget. The loops are linear in the size of the
+// COMPLETE cached snapshot, so they must be interruptible, but their bodies are
+// far cheaper than a context read; polling every stride keeps the unbudgeted
+// path's cost unchanged while bounding the residual to one stride.
+const budgetPollStride = 1024
+
 // selectiveSearchSnapshotFromFull derives the same graph that a fresh
 // OnlyFiles build would produce. It reuses cached parse output, but deliberately
 // reruns relation resolution against only the selected symbols: simply dropping
@@ -601,6 +608,27 @@ func selectiveSearchSnapshotFromFull(
 		}
 		return err
 	}
+	// One stop predicate for the whole derivation, defined HERE rather than at
+	// the relation phase: everything below this point -- filtering the complete
+	// cached inventory (linear in the FULL snapshot, not the selection) and the
+	// per-file importsFor precompute (a content scan per selected file) -- is
+	// budgeted work that used to run unchecked, so a selective request could
+	// overshoot MaxDuration before the relation phase ever created a predicate.
+	shouldStop := func() bool { return budgetHit || workCtx.Err() != nil }
+	// stopNow marks the derivation truncated the same way an expired relation
+	// phase does, so the E_ANALYSIS_BUDGET_EXCEEDED marker (and with it the
+	// "unsafe" completeness level and the cache writer's refusal) is reached by
+	// this path too. A caller cancellation or a caller-owned deadline still has
+	// to surface as an error, which classifyStop decides at the sink below.
+	stopNow := func() bool {
+		if !shouldStop() {
+			return false
+		}
+		if options.MaxDuration > 0 && errors.Is(workCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			budgetHit = true
+		}
+		return true
+	}
 	// Tree (not commit) determines whether the cached full snapshot is a valid
 	// derivation source: two different commits sharing a tree parse identically.
 	if sc.tree != full.Header.Tree || sc.key != full.Header.RepoKey {
@@ -616,12 +644,22 @@ func selectiveSearchSnapshotFromFull(
 	for _, filePath := range sc.paths {
 		allowedFiles[filepath.ToSlash(filepath.Clean(filePath))] = true
 	}
-	for _, file := range full.Files {
+	// The budget is polled every budgetPollStride records rather than every
+	// record: the check is a context read, the loop body is a path clean plus a
+	// map lookup, and an unbudgeted derivation must keep costing what it did.
+	// One stride is the residual, not the whole inventory.
+	for index, file := range full.Files {
+		if index%budgetPollStride == 0 && stopNow() {
+			break
+		}
 		if allowedFiles[filepath.ToSlash(filepath.Clean(file.Path))] {
 			selective.Files = append(selective.Files, file)
 		}
 	}
-	for _, symbol := range full.Symbols {
+	for index, symbol := range full.Symbols {
+		if index%budgetPollStride == 0 && stopNow() {
+			break
+		}
 		if allowedFiles[filepath.ToSlash(filepath.Clean(symbol.FilePath))] {
 			selective.Symbols = append(selective.Symbols, symbol)
 		}
@@ -644,6 +682,11 @@ func selectiveSearchSnapshotFromFull(
 	precomputedImports := make(map[string][]string)
 	if spec.name != ProfileSyntaxOnly {
 		for _, file := range selective.Files {
+			// importsFor reads and scans the whole file, so this is real
+			// per-file work and is polled per file, not per stride.
+			if stopNow() {
+				break
+			}
 			if !skipFastProfilePerSymbolScan(spec, file.Language) {
 				continue
 			}
@@ -688,10 +731,6 @@ func selectiveSearchSnapshotFromFull(
 		selective.Relations = append(selective.Relations, relation)
 	}
 	var relationFailures []PartialFailure
-	// One stop predicate for the whole relation phase, checked by the producers
-	// as well as at the sink, so the deadline is observable where the work is
-	// done rather than only at phase boundaries.
-	shouldStop := func() bool { return budgetHit || workCtx.Err() != nil }
 	if spec.name == ProfileSyntaxOnly {
 		emitStructuralRelationsCompact(sc.key, selective.Files, structuralByFile, shouldStop, emitRelation)
 	} else {

@@ -3988,7 +3988,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		return
 	}
 	if spec.emits("USES_TYPE") {
-		for _, r := range usesTypeRelations(recordsByFile, symbolsByFile, symbolsByShortName, resolvedImportsByFile) {
+		for _, r := range usesTypeRelations(shouldStop, recordsByFile, symbolsByFile, symbolsByShortName, resolvedImportsByFile) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
@@ -3999,7 +3999,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		return
 	}
 	if spec.emits("PARAM_TYPE") || spec.emits("RETURNS_TYPE") {
-		for _, r := range signatureTypeRelations(recordsByFile, symbolsByFile, symbolsByShortName, resolvedImportsByFile, spec) {
+		for _, r := range signatureTypeRelations(shouldStop, recordsByFile, symbolsByFile, symbolsByShortName, resolvedImportsByFile, spec) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
@@ -9251,7 +9251,15 @@ func resolveTestSubject(subject string, test SymbolRecord, candidates []SymbolRe
 // symbols means primitives and library types (which have no local symbol) are
 // naturally excluded, keeping the edges high-precision without per-language
 // signature grammar.
-func usesTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFile, symbolsByShortName map[string][]SymbolRecord, resolvedImportsByFile map[string]map[string][]string) []RelationRecord {
+// usesTypeRelations resolves every identifier in every function signature
+// against the declarations visible to it. resolveTypeReference scans the whole
+// same-file symbol slice per reference (firstTypeLikeNamed), so the pass costs
+// symbols x references x symbols-in-file: it is QUADRATIC in symbols per file,
+// not the single linear pass the other producers are. Measured on one 16k-symbol
+// TypeScript file it charged 5.2 s to an already-expired budget, so it takes the
+// stop predicate rather than relying on the caller's guard between stages, which
+// cannot run until the whole slice has been materialized.
+func usesTypeRelations(stop func() bool, recordsByFile map[string][]SymbolRecord, symbolsByFile, symbolsByShortName map[string][]SymbolRecord, resolvedImportsByFile map[string]map[string][]string) []RelationRecord {
 	paths := make([]string, 0, len(recordsByFile))
 	for path := range recordsByFile {
 		paths = append(paths, path)
@@ -9260,7 +9268,13 @@ func usesTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFile, s
 
 	var relations []RelationRecord
 	for _, path := range paths {
+		if stop != nil && stop() {
+			return relations
+		}
 		for _, symbol := range recordsByFile[path] {
+			if stop != nil && stop() {
+				return relations
+			}
 			if symbol.Kind != "function" && symbol.Kind != "method" || symbol.Signature == "" {
 				continue
 			}
@@ -9308,7 +9322,10 @@ func usesTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFile, s
 	return relations
 }
 
-func signatureTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFile, symbolsByShortName map[string][]SymbolRecord, resolvedImportsByFile map[string]map[string][]string, spec profileSpec) []RelationRecord {
+// signatureTypeRelations shares resolveTypeReference with usesTypeRelations and
+// is quadratic in symbols per file for the same reason, so it takes the stop
+// predicate too.
+func signatureTypeRelations(stop func() bool, recordsByFile map[string][]SymbolRecord, symbolsByFile, symbolsByShortName map[string][]SymbolRecord, resolvedImportsByFile map[string]map[string][]string, spec profileSpec) []RelationRecord {
 	paths := make([]string, 0, len(recordsByFile))
 	for path := range recordsByFile {
 		paths = append(paths, path)
@@ -9317,7 +9334,13 @@ func signatureTypeRelations(recordsByFile map[string][]SymbolRecord, symbolsByFi
 
 	var relations []RelationRecord
 	for _, path := range paths {
+		if stop != nil && stop() {
+			return relations
+		}
 		for _, symbol := range recordsByFile[path] {
+			if stop != nil && stop() {
+				return relations
+			}
 			if symbol.Kind != "function" && symbol.Kind != "method" || symbol.Signature == "" {
 				continue
 			}
