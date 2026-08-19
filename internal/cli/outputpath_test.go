@@ -501,3 +501,194 @@ func TestOutputPathClassificationFollowsALinkIntoTheRepository(t *testing.T) {
 	}
 	assertVictimIntact(t, victim, victimContent)
 }
+
+// dotDotPath spells `<first>/../<rest...>` by CONCATENATION rather than
+// filepath.Join, because Join cleans and the ".." is precisely what cleaning
+// removes. Every test below needs the uncleaned spelling to survive as far as the
+// code under test.
+func dotDotPath(first string, rest ...string) string {
+	sep := string(filepath.Separator)
+	return first + sep + ".." + sep + strings.Join(rest, sep)
+}
+
+// TestOutputPathsResolveDotDotThroughSymlinksLikeTheKernel is the regression for
+// the review finding on classifyOutputPath.
+//
+// filepath.Abs CLEANS: it collapses ".." textually, before any symlink is
+// traversed. The `os.WriteFile(path, …)` this fix replaced did not — it handed the
+// path to the KERNEL, where ".." steps out of the link's TARGET. With
+// `link -> real/sub`, `link/../report.md` names `real/report.md` on disk and
+// `report.md` beside the link after cleaning. Those are two different files, so
+// classifying and writing the cleaned spelling silently moves the caller's output
+// and, in the second subtest, hands a repository-controlled path back to the
+// unconfined write.
+func TestOutputPathsResolveDotDotThroughSymlinksLikeTheKernel(t *testing.T) {
+	requireSymlinkSupport(t)
+
+	// linkOver creates <home>/real/<sub> and a <home>/link symlink onto it, so
+	// that `<home>/link/..` is `<home>/real` to the kernel and `<home>` to Clean.
+	linkOver := func(t *testing.T, home, sub string) string {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(home, "real", sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(home, "link")
+		if err := os.Symlink(filepath.Join(home, "real", sub), link); err != nil {
+			t.Fatal(err)
+		}
+		return link
+	}
+
+	// The destination half: an unconfined write must land where the caller's own
+	// path resolves on disk, which is where os.WriteFile put it before this fix.
+	t.Run("report lands where the path resolves on disk", func(t *testing.T) {
+		repo := outputPathRepo(t)
+		home := t.TempDir()
+		link := linkOver(t, home, "sub")
+		if err := runIndexReport(t, repo, dotDotPath(link, "report.md")); err != nil {
+			t.Fatal(err)
+		}
+		onDisk := filepath.Join(home, "real", "report.md")
+		if _, err := os.Stat(onDisk); err != nil {
+			t.Errorf("report did not land where the path resolves on disk (%s): %v", onDisk, err)
+		}
+		if _, err := os.Stat(filepath.Join(home, "report.md")); err == nil {
+			t.Error("report landed beside the link, at the path filepath.Clean invented")
+		}
+	})
+
+	// `verify --record-baseline` is documented to CREATE its parents, so the ".."
+	// there is followed by a directory that does not exist yet and the mkdir has to
+	// agree with the write. Before this fix the two disagreed even on main, which
+	// created the parent beside the link and then failed to open the file inside the
+	// link's target.
+	t.Run("record-baseline creates its parent where the path resolves", func(t *testing.T) {
+		repo := outputPathRepo(t)
+		home := t.TempDir()
+		link := linkOver(t, home, "sub")
+		if err := runVerifyRecord(t, repo, dotDotPath(link, "created", "base.json")); err != nil {
+			t.Fatal(err)
+		}
+		onDisk := filepath.Join(home, "real", "created", "base.json")
+		if _, err := os.Stat(onDisk); err != nil {
+			t.Errorf("baseline did not land where the path resolves on disk (%s): %v", onDisk, err)
+		}
+		if _, err := os.Stat(filepath.Join(home, "created")); err == nil {
+			t.Error("baseline created its parent beside the link, at the path filepath.Clean invented")
+		}
+	})
+
+	// The confinement half, and the reason this is not merely cosmetic. A
+	// caller-owned link whose ".." step lands back INSIDE the checkout names a
+	// repository-controlled file. TestOutputPathClassificationFollowsALinkIntoThe
+	// Repository already pins that for the plain spelling; cleaning ".." first
+	// throws the same path back to the unconfined write, so a symlink committed at
+	// the destination would be followed again.
+	t.Run("a dot-dot step back into the repository stays confined", func(t *testing.T) {
+		repo := outputPathRepo(t)
+		if err := os.MkdirAll(filepath.Join(repo, "sub", "deeper"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		home := t.TempDir()
+		link := filepath.Join(home, "into-repo")
+		if err := os.Symlink(filepath.Join(repo, "sub", "deeper"), link); err != nil {
+			t.Fatal(err)
+		}
+		given := dotDotPath(link, "GRAPH_REPORT.md")
+
+		target, err := classifyOutputPath(repo, given)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !target.insideRepo() || target.rel != filepath.Join("sub", "GRAPH_REPORT.md") {
+			t.Fatalf("a dot-dot step back into the repository was classified caller-owned: %#v", target)
+		}
+
+		victim, victimContent := plantVictim(t)
+		if err := os.Symlink(victim, filepath.Join(repo, "sub", "GRAPH_REPORT.md")); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeOutputFile(t.Context(), repo, given, []byte("x"), 0o644, false); err == nil {
+			t.Error("write followed a symlink committed inside the repository")
+		}
+		assertVictimIntact(t, victim, victimContent)
+	})
+}
+
+// TestHasDotDotMatchesWholeComponentsOnly and TestSplitFinalComponentDoesNotClean
+// cover the two helpers realOutputPath is built from on EVERY platform, including
+// Windows, where the symlink tests above skip. Both are spelled with the platform
+// separator so that the Windows backslash is exercised there.
+func TestHasDotDotMatchesWholeComponentsOnly(t *testing.T) {
+	sep := string(filepath.Separator)
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{"", false},
+		{"report.md", false},
+		{"..", true},
+		{"...", false},
+		{"..report.md", false},
+		{"a" + sep + ".." + sep + "b", true},
+		{"a" + sep + "..", true},
+		{".." + sep + "reports" + sep + "x.md", true},
+		{"a" + sep + "..b" + sep + "c", false},
+		{"a" + sep + "b.." + sep + "c", false},
+		{"a" + sep + sep + ".." + sep + "b", true},
+	} {
+		if got := hasDotDot(tc.path); got != tc.want {
+			t.Errorf("hasDotDot(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestSplitFinalComponentDoesNotClean(t *testing.T) {
+	sep := string(filepath.Separator)
+	for _, tc := range []struct {
+		path, parent, last string
+	}{
+		{"", "", ""},
+		{sep, "", ""},
+		{sep + sep, "", ""},
+		{"report.md", "", "report.md"},
+		{sep + "x", sep, "x"},
+		{"a" + sep + ".." + sep + "b", "a" + sep + ".." + sep, "b"},
+		// The trailing separator is ignored rather than treated as an empty
+		// component, and the ".." SURVIVES in the parent — filepath.Dir would have
+		// collapsed it, which is the whole reason this helper exists.
+		{"a" + sep + ".." + sep + "b" + sep, "a" + sep + ".." + sep, "b"},
+		{"a" + sep + "b" + sep + "..", "a" + sep + "b" + sep, ".."},
+	} {
+		parent, last := splitFinalComponent(tc.path)
+		if parent != tc.parent || last != tc.last {
+			t.Errorf("splitFinalComponent(%q) = (%q, %q), want (%q, %q)",
+				tc.path, parent, last, tc.parent, tc.last)
+		}
+	}
+}
+
+// TestRealOutputPathWithoutDotDotIsPlainAbs pins the fast path: with no ".."
+// component there is nothing for filepath.Clean to move across a symlink, so
+// realOutputPath must not resolve anything and must agree with filepath.Abs. That
+// keeps classification for the overwhelmingly common invocation byte-identical to
+// what it was before ".." handling was added.
+func TestRealOutputPathWithoutDotDotIsPlainAbs(t *testing.T) {
+	for _, path := range []string{
+		"GRAPH_REPORT.md",
+		filepath.Join("reports", "x.md"),
+		filepath.Join(t.TempDir(), "sub", "base.json"),
+	} {
+		want, err := filepath.Abs(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := realOutputPath(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("realOutputPath(%q) = %q, want filepath.Abs = %q", path, got, want)
+		}
+	}
+}

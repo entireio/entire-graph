@@ -92,10 +92,29 @@ func confinementRoot(ctx context.Context, repoRoot string) string {
 // It never resolves the FINAL component: that component is the symlink a confined
 // write exists to refuse, and resolving it would report the link's target as the
 // destination and classify the write by the attacker's choice.
+//
+// TWO spellings of the path are classified, and the ON-DISK one decides first.
+// filepath.Abs CLEANS, which collapses a ".." textually before any symlink is
+// traversed; the os.WriteFile this helper replaced did not, because it handed the
+// path to the KERNEL, where ".." steps out of the link's TARGET. With
+// `link -> real/sub`, `link/../report.md` is `real/report.md` on disk and
+// `report.md` beside the link once cleaned — two different files. realOutputPath
+// keeps the on-disk reading, so the destination does not move.
+//
+// The cleaned spelling is still classified, second, and inside wins, because the
+// two disagree in the direction this fix exists to close: a committed symlinked
+// DIRECTORY (`out` -> /etc, then `--report out/x.md`) resolves outside the
+// repository on disk, and calling that caller-owned is exactly the escape. Its
+// cleaned spelling stays under the root, is confined, and os.Root then refuses to
+// walk out through the link.
 func classifyOutputPath(repoRoot, path string) (repoOutputTarget, error) {
-	// filepath.Abs, not the resolved root, matches today's semantics: the path is
-	// interpreted against the process working directory, not against --repo.
-	abs, err := filepath.Abs(path)
+	// Both spellings are taken against the process working directory, not against
+	// --repo, which is what the os.WriteFile this helper replaced did.
+	onDisk, err := realOutputPath(path)
+	if err != nil {
+		return repoOutputTarget{}, fmt.Errorf("resolve output path %q: %w", path, err)
+	}
+	cleaned, err := filepath.Abs(path)
 	if err != nil {
 		return repoOutputTarget{}, fmt.Errorf("resolve output path %q: %w", path, err)
 	}
@@ -103,10 +122,93 @@ func classifyOutputPath(repoRoot, path string) (repoOutputTarget, error) {
 	if err != nil {
 		return repoOutputTarget{}, fmt.Errorf("resolve repository root %q: %w", repoRoot, err)
 	}
-	if rel, ok := containedRel(rootAbs, abs); ok {
-		return repoOutputTarget{root: rootAbs, rel: rel, path: abs, given: path}, nil
+	if rel, ok := containedRel(rootAbs, onDisk); ok {
+		return repoOutputTarget{root: rootAbs, rel: rel, path: onDisk, given: path}, nil
 	}
-	return repoOutputTarget{path: abs, given: path}, nil
+	if cleaned != onDisk {
+		if rel, ok := containedRel(rootAbs, cleaned); ok {
+			return repoOutputTarget{root: rootAbs, rel: rel, path: cleaned, given: path}, nil
+		}
+	}
+	return repoOutputTarget{path: onDisk, given: path}, nil
+}
+
+// realOutputPath makes path absolute the way the KERNEL reads it: the directory
+// part is resolved through symlinks, so a ".." after a symlinked component steps
+// out of the link's TARGET rather than out of the link's parent. The final
+// component is deliberately left as a name — it is the symlink a confined write
+// exists to refuse.
+//
+// Without a ".." component there is nothing for filepath.Clean to move across a
+// link, so the cleaned absolute path already names the file the kernel would open
+// and is returned unchanged. That keeps this helper off the common path entirely,
+// and keeps every spelling filepath.Abs understands that the concatenation below
+// could not reproduce.
+func realOutputPath(path string) (string, error) {
+	cleaned, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if !hasDotDot(path) {
+		return cleaned, nil
+	}
+	raw := path
+	if !filepath.IsAbs(raw) {
+		// Only a plainly relative path can be made absolute by concatenation.
+		// Windows has two spellings that are neither absolute nor plainly relative
+		// — drive-relative (`C:file`, resolved against that drive's own working
+		// directory) and rooted-relative (`\file`, resolved against the current
+		// drive) — and only filepath.Abs knows what they mean.
+		if filepath.VolumeName(raw) != "" || (raw != "" && os.IsPathSeparator(raw[0])) {
+			return cleaned, nil
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		// Concatenated, not filepath.Join: Join cleans, which is the collapse this
+		// function exists to avoid.
+		raw = cwd + string(filepath.Separator) + raw
+	}
+	dir, last := splitFinalComponent(raw)
+	if last == "" || last == "." || last == ".." {
+		// The path names a DIRECTORY, so there is no final component to hold back;
+		// the write fails on the directory, as it did before.
+		return cleaned, nil
+	}
+	return filepath.Join(resolveExistingPrefix(dir), last), nil
+}
+
+// hasDotDot reports whether path contains a ".." component. That component is the
+// only thing filepath.Clean moves across a symlink, so it is the only reason to
+// take the uncleaned walk above.
+func hasDotDot(path string) bool {
+	start := 0
+	for i := 0; i <= len(path); i++ {
+		if i == len(path) || os.IsPathSeparator(path[i]) {
+			if path[start:i] == ".." {
+				return true
+			}
+			start = i + 1
+		}
+	}
+	return false
+}
+
+// splitFinalComponent splits path before its final component, WITHOUT cleaning,
+// ignoring trailing separators. parent keeps its trailing separator so that "/x"
+// splits into "/" and "x" rather than "" and "x". An empty last means there was no
+// component left to take.
+func splitFinalComponent(path string) (parent, last string) {
+	end := len(path)
+	for end > 0 && os.IsPathSeparator(path[end-1]) {
+		end--
+	}
+	start := end
+	for start > 0 && !os.IsPathSeparator(path[start-1]) {
+		start--
+	}
+	return path[:start], path[start:end]
 }
 
 // containedRel reports target's path beneath root, and whether it is beneath it at
@@ -217,11 +319,14 @@ func resolveExistingPrefix(dir string) string {
 			}
 			return filepath.Join(resolved, remainder)
 		}
-		parent := filepath.Dir(current)
-		if parent == current {
+		// splitFinalComponent, not filepath.Dir: Dir cleans, and cleaning a ".."
+		// off the chain here would put back exactly the collapse this walk exists
+		// to resolve. EvalSymlinks handles ".." itself, against the RESOLVED path.
+		parent, last := splitFinalComponent(current)
+		if last == "" {
 			return dir
 		}
-		remainder = filepath.Join(filepath.Base(current), remainder)
+		remainder = filepath.Join(last, remainder)
 		current = parent
 	}
 }
