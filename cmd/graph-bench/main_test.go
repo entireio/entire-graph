@@ -284,7 +284,14 @@ func TestEnsureRepoStillFetchesOrdinaryRef(t *testing.T) {
 }
 
 func TestValidateRefRejectsOptionShapedRefs(t *testing.T) {
-	for _, ref := range []string{"--upload-pack=touch x", "-o", "--exec=x", "\x00"} {
+	for _, ref := range []string{
+		"--upload-pack=touch x", "-o", "--exec=x", "\x00",
+		// Refspec syntax: `git fetch origin <this>` is a write, not a read.
+		"+refs/heads/evil:refs/heads/injected",
+		"refs/heads/*:refs/remotes/origin/*",
+		"main:main",
+		"+main",
+	} {
 		if err := validateRef(ref); err == nil {
 			t.Fatalf("validateRef(%q) = nil, want rejection", ref)
 		}
@@ -611,5 +618,119 @@ func TestEnsureRepoChecksOutHexShapedBranchNames(t *testing.T) {
 				t.Fatalf("hex-named branch did not produce its checkout: %v", statErr)
 			}
 		})
+	}
+}
+
+// A ref is not only option-shaped input, it is also refspec-shaped input: the
+// ref lands in the positional slot of `git fetch <remote> <refspec>`, where a
+// value such as `+refs/heads/evil:refs/heads/injected` is a *write*. That fetch
+// succeeds, so the subsequent checkout-by-name is the only thing that fails,
+// and the FETCH_HEAD fallback then reports success for a commit nobody asked
+// for -- after the refspec has already created a ref inside the cached clone.
+// ensureRepo must refuse refspec syntax before any git process runs.
+func TestEnsureRepoRefusesRefspecShapedRef(t *testing.T) {
+	upstream := newUpstreamRepo(t)
+	benchGit(t, upstream, "checkout", "--quiet", "-b", "evil")
+	if err := os.WriteFile(filepath.Join(upstream, "evil.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	benchGit(t, upstream, "add", ".")
+	benchGit(t, upstream, "commit", "--quiet", "-m", "on the evil branch")
+	benchGit(t, upstream, "checkout", "--quiet", "main")
+
+	dir := filepath.Join(t.TempDir(), "clone")
+	// The realistic state: the repo is already in -cache from an earlier run,
+	// so ensureRepo skips the clone and the ref reaches `git fetch` directly.
+	want, err := ensureRepo(t.Context(), upstream, "main", dir, 1)
+	if err != nil {
+		t.Fatalf("benign pre-clone: %v", err)
+	}
+
+	for _, ref := range []string{
+		"+refs/heads/evil:refs/heads/injected",
+		"refs/heads/*:refs/remotes/origin/*",
+	} {
+		t.Run(ref, func(t *testing.T) {
+			sha, err := ensureRepo(t.Context(), upstream, ref, dir, 1)
+			if err == nil || !strings.Contains(err.Error(), "invalid git ref") {
+				t.Fatalf("ensureRepo(%q) = %q, %v; want an invalid-git-ref rejection", ref, sha, err)
+			}
+			if _, statErr := os.Stat(filepath.Join(dir, ".git", "refs", "heads", "injected")); statErr == nil {
+				t.Fatalf("refspec ref wrote refs/heads/injected into the cached clone")
+			}
+			head := strings.TrimSpace(benchGitOutput(t, dir, "rev-parse", "HEAD"))
+			if head != want {
+				t.Fatalf("cached clone HEAD = %q after a rejected ref, want the untouched %q", head, want)
+			}
+		})
+	}
+}
+
+// A lowercase-hex ref is ambiguous: it can name an object *and* a branch in the
+// same repository, and those can point at different commits. The object-id
+// shape guess makes the two paths disagree -- `git clone --branch <name>`
+// lands on the branch tip, while omitting --branch makes the later fetch and
+// checkout resolve the same string as the object -- and the disagreement is
+// silent, because resolving the object succeeds. ensureRepo must ask the remote
+// which one it publishes instead of guessing.
+//
+// The fixture pins SHA-1 so the collision is representable: it needs a branch
+// whose name is a full object id of the repository's own hash format.
+func TestEnsureRepoPrefersRemoteBranchOverAmbiguousObjectID(t *testing.T) {
+	t.Setenv("GIT_DEFAULT_HASH", "sha1")
+	upstream := newUpstreamRepo(t)
+	first := strings.TrimSpace(benchGitOutput(t, upstream, "rev-parse", "HEAD"))
+	if len(first) != 40 {
+		t.Skipf("upstream HEAD = %q, want a 40-char SHA-1 id (this git ignores GIT_DEFAULT_HASH)", first)
+	}
+	if err := os.WriteFile(filepath.Join(upstream, "branch.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	benchGit(t, upstream, "add", ".")
+	benchGit(t, upstream, "commit", "--quiet", "-m", "second")
+	want := strings.TrimSpace(benchGitOutput(t, upstream, "rev-parse", "HEAD"))
+
+	// A branch whose name is the first commit's object id, pointing at the
+	// second commit. Both resolutions exist; only one is the branch.
+	benchGit(t, upstream, "branch", first, want)
+
+	dir := filepath.Join(t.TempDir(), "clone")
+	sha, err := ensureRepo(t.Context(), upstream, first, dir, 1)
+	if err != nil {
+		t.Fatalf("ensureRepo(ambiguous hex ref): %v", err)
+	}
+	if sha != want {
+		t.Fatalf("sha = %q, want the branch tip %q (the object of the same name is %q)", sha, want, first)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "branch.go")); statErr != nil {
+		t.Fatalf("ambiguous hex ref did not produce the branch's checkout: %v", statErr)
+	}
+}
+
+// The FETCH_HEAD fallback exists for a legitimate case: a clone already in
+// -cache from an earlier run has no local branch for a ref the manifest names
+// now, so `git checkout <ref>` fails even though the fetch resolved it. The
+// refspec guard and the single-entry FETCH_HEAD check must not close that path.
+func TestEnsureRepoResolvesNewRefInCachedClone(t *testing.T) {
+	upstream := newUpstreamRepo(t)
+	benchGit(t, upstream, "checkout", "--quiet", "-b", "release")
+	if err := os.WriteFile(filepath.Join(upstream, "release.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	benchGit(t, upstream, "add", ".")
+	benchGit(t, upstream, "commit", "--quiet", "-m", "on release")
+	want := strings.TrimSpace(benchGitOutput(t, upstream, "rev-parse", "HEAD"))
+	benchGit(t, upstream, "checkout", "--quiet", "main")
+
+	dir := filepath.Join(t.TempDir(), "clone")
+	if _, err := ensureRepo(t.Context(), upstream, "main", dir, 1); err != nil {
+		t.Fatalf("pre-clone at main: %v", err)
+	}
+	sha, err := ensureRepo(t.Context(), upstream, "release", dir, 1)
+	if err != nil {
+		t.Fatalf("ensureRepo on a cached clone with a new ref: %v", err)
+	}
+	if sha != want {
+		t.Fatalf("sha = %q, want the release tip %q", sha, want)
 	}
 }
