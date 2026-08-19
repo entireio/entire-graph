@@ -10238,13 +10238,36 @@ type vendorIgnoreRules interface {
 	ReincludesDescendant(rel string) bool
 }
 
+// isRepoGitDirPath reports whether a repo-relative path IS this repository's own
+// git directory, or lies inside it. It matches on the FIRST path component, so a
+// linked worktree's `.git` *file* (a `gitdir:` pointer, not source) is covered as
+// well as a `.git/` directory, while a nested `vendor/dep/.git` and a sibling
+// `.github/` are not this repository's git directory and keep their existing
+// treatment.
+func isRepoGitDirPath(rel string) bool {
+	rel = filepath.ToSlash(rel)
+	return rel == ".git" || strings.HasPrefix(rel, ".git/")
+}
+
 // skipVendoredDir is the single vendored-directory decision for both the
 // working-tree walk and the HEAD-tree listing: skip unambiguous vendored names
 // always, and ambiguous generated-output names only when the directory is not
 // tracked in git (dirTracked). Gitignore negations that re-include a
 // descendant (see ReincludesDescendant) keep the tree walked in either case;
 // the ignore rules themselves then filter its contents.
+//
+// This repository's own git directory is the exception, and it is decided BEFORE
+// the negation is consulted. `.git` used to be merely one of isVendoredScanDir's
+// re-includable names, so a repo-committed root .gitignore holding `!.git/**` —
+// or the stealthier `!.git/config` — cancelled the skip. On the filesystem
+// fallback listing (git refusing the worktree for dubious ownership on a
+// uid-mismatched bind mount, a sandbox with no git binary, a corrupt index) the
+// walk then descended `.git`, and the credentials in a `.git/config` remote URL
+// came back as a ranked search snippet.
 func skipVendoredDir(rel, name string, ignores vendorIgnoreRules, dirTracked func(string) bool) bool {
+	if isRepoGitDirPath(rel) {
+		return true
+	}
 	untrackedOnly := isAmbiguousVendoredDirName(name) || isInstalledDependencyDirName(rel, name)
 	vendored := isVendoredScanDir(rel, name) || (untrackedOnly && !dirTracked(rel))
 	return vendored && !ignores.ReincludesDescendant(rel)
@@ -10437,6 +10460,11 @@ func visitWalkWorktreeFiles(
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		// A linked worktree's `.git` is a FILE, so the directory decision above
+		// never sees it; the same unconditional rule applies.
+		if isRepoGitDirPath(rel) {
+			return nil
+		}
 		if isVendoredScanFile(rel, name) {
 			return nil
 		}

@@ -15085,3 +15085,95 @@ func TestQualifiedImportDoesNotPoisonBareSameFileType(t *testing.T) {
 		t.Fatalf("fully-qualified name should remain import-authoritative: %#v", qualified)
 	}
 }
+
+// TestSkipVendoredDirAlwaysExcludesGitDir pins the git directory as an
+// unconditional exclusion rather than a re-includable vendored name. `.git`
+// used to be decided by isVendoredScanDir and then cancelled by
+// ignoreMatcher.ReincludesDescendant, so a repo-committed root .gitignore
+// holding `!.git/**` (or the stealthier `!.git/config`) re-included the
+// repository's own git directory.
+func TestSkipVendoredDirAlwaysExcludesGitDir(t *testing.T) {
+	t.Parallel()
+	load := func(content string) ignoreMatcher {
+		t.Helper()
+		var matcher ignoreMatcher
+		if err := matcher.loadContent(content, false); err != nil {
+			t.Fatal(err)
+		}
+		return matcher
+	}
+	untracked := func(string) bool { return false }
+	cases := []struct {
+		name      string
+		rel, base string
+		ignores   ignoreMatcher
+		want      bool
+	}{
+		{"plain", ".git", ".git", ignoreMatcher{}, true},
+		{"glob negation", ".git", ".git", load("!.git/**\n"), true},
+		{"single-file negation", ".git", ".git", load("!.git/config\n"), true},
+		{"trailing-slash negation", ".git", ".git", load("!.git/\n"), true},
+		// The unconditional rule keys off the FIRST path component, so it neither
+		// narrows the existing nested-.git exclusion nor widens onto a sibling
+		// whose name merely starts with ".git".
+		{"nested git dir stays skipped", "vendor/dep/.git", ".git", ignoreMatcher{}, true},
+		{"github dir is first-party", ".github", ".github", load("!.git/**\n"), false},
+		{"gitattributes-like dir is first-party", ".github/workflows", "workflows", ignoreMatcher{}, false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := skipVendoredDir(testCase.rel, testCase.base, testCase.ignores, untracked); got != testCase.want {
+				t.Errorf("skipVendoredDir(%q, %q) = %v, want %v", testCase.rel, testCase.base, got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestSearchRepositoryNeverIndexesGitDirOnFilesystemFallback is the end-to-end
+// exploit. When `git ls-files` fails, worktreeSourceFiles falls back to
+// walkWorktreeFiles; with `!.git/**` committed at the repository root the walk
+// descended .git and the remote credential in .git/config became a ranked
+// search snippet.
+// gitDirCredentialMarker is the fake credential planted in the fixture's
+// .git/config remote URL. It is not a real secret.
+const gitDirCredentialMarker = "n0t-a-real-git-token"
+
+func TestSearchRepositoryNeverIndexesGitDirOnFilesystemFallback(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	// The attacker-controlled half: a committed root .gitignore that negates the
+	// git directory.
+	writeFile(t, repo, ".gitignore", "!.git/**\n")
+	// A .git directory with no HEAD, objects or refs is not a usable repository,
+	// so `git ls-files` exits non-zero and the filesystem fallback runs — the
+	// same listing path taken on a uid-mismatched bind mount git rejects for
+	// "dubious ownership", in a sandbox with no git binary, or on a corrupt
+	// index. Ordinary directory and file names only: nothing in this fixture is
+	// unrepresentable on Windows.
+	writeFile(t, repo, ".git/config", "[remote \"origin\"]\n\turl = https://x-access-token:"+gitDirCredentialMarker+"@github.com/acme/private.git\n")
+	writeFile(t, repo, ".git/hooks/post-commit.go", "package hooks\n\n// PostCommitCredentialLoader returns the origin remote credential.\nfunc PostCommitCredentialLoader() string { return \""+gitDirCredentialMarker+"\" }\n")
+	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	response, err := SearchRepository(t.Context(), repo, "test", "origin remote credential loader", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range response.Results {
+		if result.FilePath == ".git" || strings.HasPrefix(result.FilePath, ".git/") {
+			t.Errorf("search returned a path inside the git directory: %q", result.FilePath)
+		}
+		if strings.Contains(result.Snippet, gitDirCredentialMarker) {
+			t.Errorf("search snippet for %q leaked the .git/config remote credential", result.FilePath)
+		}
+	}
+	// files_scanned must not grow: only .gitignore and src/app.go are listable
+	// content here.
+	if response.Stats.FilesScanned != 2 {
+		t.Errorf("files_scanned = %d, want 2 (.gitignore and src/app.go only)", response.Stats.FilesScanned)
+	}
+}
