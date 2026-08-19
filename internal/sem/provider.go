@@ -10230,7 +10230,7 @@ func walkWorktreeFiles(repo string, ignores ignoreMatcher, dirTracked func(strin
 				// ever reaches the per-file noteRepoExclusion below, so a single
 				// `hidden/` line would otherwise remove an entire source tree from
 				// the corpus with nothing recorded at all.
-				stack.notePrunedRepoExclusion(ledger, rel)
+				stack.notePrunedRepoExclusion(ledger, rel, dirTracked)
 				return filepath.SkipDir
 			}
 			return nil

@@ -783,15 +783,30 @@ func (s *nestedIgnoreStack) noteRepoExclusion(ledger *repoIgnoreLedger, rel stri
 // The traversal is not bounded by a count. The number of files reported is what
 // the field promises to be exact, and a cap on the walk is a cap on the count,
 // not on the list — that one is maxRepoExclusionSample, applied by the ledger.
-// The cost is bounded by the subtree the walk would have visited had the prune
-// not happened, so accounting for a prune never costs more than not pruning.
-func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, rel string) {
+// What bounds it instead is that it takes EVERY prune the outer walk takes:
+// vendored directories and files, and directories Git's own rules exclude. That
+// is what makes the stated cost true — accounting for a prune visits a subset of
+// what the outer walk would have visited had the prune not happened, never more.
+// Filtering those paths one at a time after descending into them was both slower
+// (a `.graphignore` line over a tree holding node_modules crawled every entry in
+// it) and wrong: the count then included files the scan never wanted, so the
+// disclosure blamed the repository's rule for removing content no rule removed.
+//
+// Pruning at a Git-excluded directory rather than filtering its files is what Git
+// itself does — a nested `!keep.go` cannot re-include a file whose parent
+// directory is excluded — so the set of disclosed paths is unchanged by it.
+func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, rel string, dirTracked func(string) bool) {
 	if ledger == nil {
 		return
 	}
 	dir := cleanIgnorePath(rel)
 	if dir == "" {
 		return
+	}
+	if dirTracked == nil {
+		// The walk that owns this ledger always supplies one; a caller that does
+		// not gets the same answer a repository with no Git index gives.
+		dirTracked = func(string) bool { return false }
 	}
 	rule, matched := s.decidingRule(dir, true)
 	if !matched || !rule.ignore || rule.origin.callerControlled || !rule.origin.gitInvisible {
@@ -836,11 +851,31 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 			// Same discipline as the outer walk: enter before judging anything
 			// inside, so the deepest .gitignore with an opinion is on the stack.
 			sub.enter(childRel)
+			// And the same prunes, in the same order. A vendored tree inside the
+			// pruned one was never going to be in the corpus, so crediting the
+			// repository's rule with removing it is a false alarm — and walking it
+			// to find that out is the cost the outer walk avoids by not walking it.
+			if skipVendoredDir(childRel, entry.Name(), sub, dirTracked) {
+				return filepath.SkipDir
+			}
+			// A directory Git's own rules exclude is one the outer walk prunes
+			// wholesale. Descending to filter its files one by one reached the same
+			// verdict for each of them while paying for the whole subtree, and an
+			// unreadable directory down there then reported this exclusion count as
+			// a lower bound over content that was never part of the count.
+			if sub.ignoredByGit(childRel, true) && !sub.MayIncludeDescendant(childRel) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		// IsRegular is false for a symlink, so the listing's own rule — it never
 		// follows one — holds for what the prune is credited with removing.
 		if !entry.Type().IsRegular() {
+			return nil
+		}
+		// Lockfiles and source maps: the outer walk drops them by name wherever
+		// they sit, so no ignore rule can be what removed them.
+		if isVendoredScanFile(childRel, entry.Name()) {
 			return nil
 		}
 		if sub.ignoredByGit(childRel, false) {
