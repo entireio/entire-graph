@@ -809,3 +809,234 @@ func readFileForTest(t *testing.T, path string) string {
 	}
 	return string(content)
 }
+
+// TestInitAgentsFollowsAbsoluteAliasInsideRepository pins the half of the containment rule that
+// os.Root cannot express on its own. os.Root resolves each component with openat relative to the
+// opened directory, so a symlink whose target is spelled as an absolute path has no in-root
+// starting point and is refused as an escape — even when that absolute path names a file inside
+// the very repository being installed into. That alias is legitimate, worked before init-agents
+// was confined, and is the AGENTS.md/CLAUDE.md sharing docs/trust-and-security.md permits.
+// Confinement must judge where a link LANDS, not how it is spelled.
+func TestInitAgentsFollowsAbsoluteAliasInsideRepository(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	tests := []struct {
+		name string
+		// plant installs the absolute in-repository alias and returns the path inside the
+		// repository the install has to reach through it.
+		plant func(t *testing.T, repo string) string
+	}{
+		{
+			name: "AGENTS.md alias",
+			plant: func(t *testing.T, repo string) string {
+				t.Helper()
+				shared := filepath.Join(repo, "docs", "shared.md")
+				mkdirAllForTest(t, filepath.Dir(shared))
+				writeFileForTest(t, shared, "# Shared rules\n")
+				symlinkForTest(t, shared, filepath.Join(repo, "AGENTS.md"))
+				return shared
+			},
+		},
+		{
+			name: "CLAUDE.md alias",
+			plant: func(t *testing.T, repo string) string {
+				t.Helper()
+				shared := filepath.Join(repo, "docs", "claude.md")
+				mkdirAllForTest(t, filepath.Dir(shared))
+				writeFileForTest(t, shared, "# Claude rules\n")
+				symlinkForTest(t, shared, filepath.Join(repo, "CLAUDE.md"))
+				return shared
+			},
+		},
+		{
+			name: "guide directory alias",
+			plant: func(t *testing.T, repo string) string {
+				t.Helper()
+				real := filepath.Join(repo, "tooling")
+				mkdirAllForTest(t, real)
+				symlinkForTest(t, real, filepath.Join(repo, ".entire"))
+				return filepath.Join(real, "graph-agent.md")
+			},
+		},
+		{
+			name: "guide file alias",
+			plant: func(t *testing.T, repo string) string {
+				t.Helper()
+				guide := filepath.Join(repo, "tooling", "guide.md")
+				mkdirAllForTest(t, filepath.Dir(guide))
+				writeFileForTest(t, guide, "")
+				mkdirAllForTest(t, filepath.Join(repo, ".entire"))
+				symlinkForTest(t, guide, filepath.Join(repo, ".entire", "graph-agent.md"))
+				return guide
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			landing := tt.plant(t, repo)
+
+			runInitAgentsForTest(t, repo)
+
+			if got := readFileForTest(t, landing); !strings.Contains(got, "entire-graph") {
+				t.Fatalf("absolute in-repository alias target %s never received the install:\n%s", landing, got)
+			}
+		})
+	}
+}
+
+// TestInitAgentsFollowsAbsoluteAliasThroughSymlinkedRoot covers the same alias when --repo names
+// the project through a symlinked parent, so the absolute link target and the opened root are two
+// different spellings of one directory. Comparing them as strings alone reads the alias as an
+// escape; on macOS the same mismatch arises for free between /tmp and /private/tmp.
+func TestInitAgentsFollowsAbsoluteAliasThroughSymlinkedRoot(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	mkdirAllForTest(t, filepath.Join(real, "docs"))
+	shared := filepath.Join(real, "docs", "shared.md")
+	writeFileForTest(t, shared, "# Shared rules\n")
+	symlinkForTest(t, shared, filepath.Join(real, "AGENTS.md"))
+	alias := filepath.Join(base, "alias")
+	symlinkForTest(t, real, alias)
+
+	runInitAgentsForTest(t, alias)
+
+	if got := readFileForTest(t, shared); !strings.Contains(got, testAgentPointerBlock) {
+		t.Fatalf("alias target did not receive the managed block through a symlinked root:\n%s", got)
+	}
+}
+
+// TestInitAgentsRefusesAbsoluteAliasLeavingRepository is the other side of the rewrite above: an
+// absolute target must still be refused when it lands outside, including when it lands on a
+// second link that leaves. Nothing outside the repository may be touched, and no partial install
+// may be left behind.
+func TestInitAgentsRefusesAbsoluteAliasLeavingRepository(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	tests := []struct {
+		name string
+		// plant installs the hostile alias and returns the outside path it aims at.
+		plant func(t *testing.T, base, repo string) string
+	}{
+		{
+			name: "absolute target outside",
+			plant: func(t *testing.T, base, repo string) string {
+				t.Helper()
+				victim := filepath.Join(base, "victim.md")
+				writeFileForTest(t, victim, "# outside the repository\n")
+				symlinkForTest(t, victim, filepath.Join(repo, "AGENTS.md"))
+				return victim
+			},
+		},
+		{
+			name: "absolute target inside relaying out",
+			plant: func(t *testing.T, base, repo string) string {
+				t.Helper()
+				victim := filepath.Join(base, "victim.md")
+				writeFileForTest(t, victim, "# outside the repository\n")
+				relay := filepath.Join(repo, "relay.md")
+				symlinkForTest(t, victim, relay)
+				symlinkForTest(t, relay, filepath.Join(repo, "AGENTS.md"))
+				return victim
+			},
+		},
+		{
+			name: "absolute guide-directory target outside",
+			plant: func(t *testing.T, base, repo string) string {
+				t.Helper()
+				outside := filepath.Join(base, "outside")
+				mkdirAllForTest(t, outside)
+				victim := filepath.Join(outside, "keep.md")
+				writeFileForTest(t, victim, "# outside the repository\n")
+				symlinkForTest(t, outside, filepath.Join(repo, ".entire"))
+				return victim
+			},
+		},
+		{
+			name: "absolute target inside crossing an escaping directory",
+			plant: func(t *testing.T, base, repo string) string {
+				t.Helper()
+				outside := filepath.Join(base, "outside")
+				mkdirAllForTest(t, outside)
+				victim := filepath.Join(outside, "victim.md")
+				writeFileForTest(t, victim, "# outside the repository\n")
+				symlinkForTest(t, outside, filepath.Join(repo, "docs"))
+				symlinkForTest(t, filepath.Join(repo, "docs", "victim.md"), filepath.Join(repo, "AGENTS.md"))
+				return victim
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := t.TempDir()
+			repo := filepath.Join(base, "repo")
+			mkdirAllForTest(t, repo)
+			victim := tt.plant(t, base, repo)
+			before := readFileForTest(t, victim)
+
+			var stdout, stderr bytes.Buffer
+			err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+			if err == nil {
+				t.Fatal("init-agents followed an absolute alias out of the repository")
+			}
+			if !strings.Contains(err.Error(), "leaves the repository") {
+				t.Fatalf("a real escape lost its containment wording: %v", err)
+			}
+			if got := readFileForTest(t, victim); got != before {
+				t.Fatalf("a file outside the repository was written:\nwant: %q\n got: %q", before, got)
+			}
+			if _, statErr := os.Lstat(filepath.Join(repo, ".entire", "graph-agent.md")); !os.IsNotExist(statErr) {
+				t.Fatalf("the guide was written despite the containment failure (stat error %v)", statErr)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout was written before containment was established: %q", stdout.String())
+			}
+		})
+	}
+}
+
+// TestInitAgentsReportsAbsoluteAliasLoopAsItself keeps the classification honest for the one
+// pathological shape the absolute-alias rewrite can hit that os.Root never sees: two in-repository
+// links pointing at each other by absolute path. That is a symlink loop, not an escape, and
+// naming it one would send the reader hunting a link that leaves when none does.
+func TestInitAgentsReportsAbsoluteAliasLoopAsItself(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	repo := t.TempDir()
+	symlinkForTest(t, filepath.Join(repo, "loop.md"), filepath.Join(repo, "AGENTS.md"))
+	symlinkForTest(t, filepath.Join(repo, "AGENTS.md"), filepath.Join(repo, "loop.md"))
+
+	var stdout, stderr bytes.Buffer
+	err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+	if err == nil {
+		t.Fatal("init-agents accepted a symlink loop")
+	}
+	if !strings.Contains(err.Error(), "AGENTS.md") {
+		t.Fatalf("error %q does not name the offending alias", err)
+	}
+	if strings.Contains(err.Error(), "leaves the repository") {
+		t.Fatalf("a symlink loop was misreported as a repository escape: %v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(repo, ".entire", "graph-agent.md")); !os.IsNotExist(statErr) {
+		t.Fatalf("the guide was written despite the failure (stat error %v)", statErr)
+	}
+}
+
+func mkdirAllForTest(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFileForTest(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func symlinkForTest(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+}

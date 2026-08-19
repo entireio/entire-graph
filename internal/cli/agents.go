@@ -176,7 +176,7 @@ func runInitAgents(opts Options, args []string) error {
 		claudeContent = renderPointerBlock(claudeSource, claudeBegin, claudeEnd, claudeBlock)
 	}
 
-	if err := repoRoot.MkdirAll(guideDirName, 0o755); err != nil {
+	if err := mkdirAllContained(repoRoot, guideDirName, 0o755); err != nil {
 		return err
 	}
 	if err := writeContainedFile(repoRoot, guideName, []byte(agentGuide), 0o644); err != nil {
@@ -228,7 +228,10 @@ func runInitAgents(opts Options, args []string) error {
 // still aborts the install, but only the ones os.Root attributes to confinement are described as
 // one; see isRootEscape.
 func ensureContainedInRepo(root *os.Root, name, path string) error {
-	_, err := root.Stat(name)
+	resolved, err := resolveContainedName(root, name)
+	if err == nil {
+		_, err = root.Stat(resolved)
+	}
 	switch {
 	case err == nil || errors.Is(err, fs.ErrNotExist):
 		return nil
@@ -267,10 +270,131 @@ func isRootEscape(err error) bool {
 	return !errors.Is(err, os.ErrClosed) && !errors.Is(err, os.ErrInvalid)
 }
 
+// maxContainedLinkHops bounds the absolute-alias rewriting below the way SYMLOOP_MAX bounds the
+// kernel's own resolution, so two links naming each other by absolute path cannot spin forever.
+const maxContainedLinkHops = 40
+
+// mkdirAllContained is os.Root.MkdirAll with the same absolute-alias handling the confined writes
+// get, so a project whose .entire is an in-repository alias spelled as an absolute path installs
+// instead of failing preflight.
+func mkdirAllContained(root *os.Root, name string, perm os.FileMode) error {
+	resolved, err := resolveContainedName(root, name)
+	if err != nil {
+		return err
+	}
+	return root.MkdirAll(resolved, perm)
+}
+
+// resolveContainedName rewrites name into the equivalent os.Root can resolve. It is the single
+// place confinement understands an alias, and every sink plus the preflight above goes through it,
+// so no call site can be the one that forgets.
+//
+// os.Root resolves each component with openat relative to the opened directory, which is exactly
+// what makes it a boundary — and also means it has no starting point for a symlink whose target is
+// spelled as an absolute path. It refuses such a link as an escape even when that path names a
+// file inside the very repository being written to, which is a legitimate and previously working
+// shape of the documented AGENTS.md/CLAUDE.md alias. Confinement must judge where a link LANDS,
+// not how it is spelled.
+//
+// So each component is examined with root.Lstat, and a symlink whose target is absolute but lands
+// inside the repository is replaced by its repository-relative name. Nothing else is rewritten: a
+// relative link is left to os.Root, which already follows it correctly, and one whose absolute
+// target lands outside is left untouched so os.Root produces the escape.
+//
+// This is a translation, never a permission. The rewritten name is still handed to os.Root, which
+// resolves it from the opened directory and refuses anything that leaves the root — including a
+// rewritten name that turns out to cross an escaping component — so the write remains the boundary
+// and a rewrite that is wrong can only fail closed.
+func resolveContainedName(root *os.Root, name string) (string, error) {
+	resolved := ""
+	for _, component := range strings.Split(name, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		next := filepath.Join(resolved, component)
+		for hop := 0; ; hop++ {
+			if hop == maxContainedLinkHops {
+				return "", &fs.PathError{Op: "resolve", Path: name, Err: syscall.ELOOP}
+			}
+			info, err := root.Lstat(next)
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					break
+				}
+				return "", err
+			}
+			if info.Mode()&os.ModeSymlink == 0 {
+				break
+			}
+			target, err := root.Readlink(next)
+			if err != nil {
+				return "", err
+			}
+			if !filepath.IsAbs(target) {
+				break
+			}
+			rel, ok := repoRelativeName(root.Name(), target)
+			if !ok {
+				break
+			}
+			next = rel
+		}
+		resolved = next
+	}
+	if resolved == "" {
+		return name, nil
+	}
+	return resolved, nil
+}
+
+// repoRelativeName reports whether target lands inside the repository rooted at rootPath, and
+// under what name. Both sides are compared as written and as fully resolved, because --repo and a
+// committed link routinely spell one directory two ways (/tmp/x against /private/tmp/x, a
+// symlinked checkout parent); comparing only the literal strings would read an ordinary
+// in-repository alias as an escape.
+//
+// A false positive here cannot grant anything: the name it returns is resolved again by os.Root,
+// which refuses it if it does not in fact stay inside the root.
+func repoRelativeName(rootPath, target string) (string, bool) {
+	for _, base := range pathSpellings(rootPath) {
+		for _, candidate := range pathSpellings(target) {
+			rel, err := filepath.Rel(base, candidate)
+			switch {
+			case err != nil, rel == ".", rel == "..", filepath.IsAbs(rel),
+				strings.HasPrefix(rel, ".."+string(filepath.Separator)):
+				continue
+			}
+			return rel, true
+		}
+	}
+	return "", false
+}
+
+// pathSpellings returns p as written and, when it differs, as fully resolved. A path that does not
+// exist yet still gets its existing parent resolved, which is the case that matters here: an alias
+// may legitimately point at a file init-agents is about to create.
+func pathSpellings(p string) []string {
+	literal := filepath.Clean(p)
+	canonical := literal
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		canonical = resolved
+	} else if dir, dirErr := filepath.EvalSymlinks(filepath.Dir(p)); dirErr == nil {
+		canonical = filepath.Join(dir, filepath.Base(p))
+	}
+	if canonical == literal {
+		return []string{literal}
+	}
+	return []string{literal, canonical}
+}
+
 // writeContainedFile is os.WriteFile confined to root. The perm argument applies only when the
 // file is created, matching os.WriteFile, so an existing file keeps its mode.
 func writeContainedFile(root *os.Root, name string, content []byte, perm os.FileMode) error {
-	file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	resolved, err := resolveContainedName(root, name)
+	if err != nil {
+		return err
+	}
+	file, err := root.OpenFile(resolved, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 	if err != nil {
 		return err
 	}
