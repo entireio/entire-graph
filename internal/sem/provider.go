@@ -10290,35 +10290,101 @@ func newGitDirExcluder(repo string) *gitDirExcluder {
 	return excluder
 }
 
-// observe resolves the `.git` pointer of one repo-relative directory ("" for the
-// repository root) and records its target when that target lands inside the
-// repository. A `.git` that is a directory, absent, or not a pointer records
-// nothing: rule 1 already covers those.
+// observe decides whether one repo-relative directory ("" for the repository
+// root) reveals a git directory, by either half of rule 2, and records what it
+// finds.
+//
+// The `.git` pointer it holds names one. So does its own structure: a directory
+// carrying HEAD, objects/ and refs/ IS a git directory whatever it is called,
+// and that half is what closes the cases where no pointer is reachable — a
+// pointer inside a tree the vendored heuristic skips unread, a pointer git never
+// lists, a bare clone vendored under a `*.git` name that no pointer names at all.
+// The two halves are complementary, not redundant: a planted git directory with
+// no HEAD is caught only by the pointer, and a git directory whose pointer is
+// out of reach is caught only by the structure.
+//
+// The repository root is exempt from the structure half. Pointing the tool at a
+// bare repository or at a git directory is a deliberate act by the caller, not a
+// leak, and must keep listing what it lists today.
 func (g *gitDirExcluder) observe(dir string) {
 	if target, ok := gitDirPointerTarget(g.repo, dir); ok {
 		g.targets[target] = struct{}{}
 	}
+	if dir == "" {
+		return
+	}
+	if looksLikeGitDir(filepath.Join(g.repo, filepath.FromSlash(dir))) {
+		g.targets[filepath.ToSlash(dir)] = struct{}{}
+	}
 }
 
-// observeListedDirs observes every directory that is an ancestor of a listed
-// path. Git's own listing never enumerates a valid nested checkout — it reports
-// the directory as one entry and stops — but it does enumerate a broken or
-// planted one, and that is the shape an attacker supplies. Ancestors are walked
-// once each, the same traversal trackedDirSet already performs over the same
-// listing.
-func (g *gitDirExcluder) observeListedDirs(listed []string) {
+// looksLikeGitDir reports whether a directory is a git directory by its own
+// contents: the HEAD file plus the objects/ and refs/ directories, which is the
+// same triple git itself checks to decide a path is a repository. HEAD is tested
+// first, so the ordinary answer costs one stat and a path that is not a
+// directory at all fails it immediately.
+func looksLikeGitDir(dir string) bool {
+	if info, err := os.Lstat(filepath.Join(dir, "HEAD")); err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	for _, name := range []string{"objects", "refs"} {
+		if info, err := os.Lstat(filepath.Join(dir, name)); err != nil || !info.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
+// observeListedPaths observes every listed path AND every ancestor directory of
+// one.
+//
+// The listed path itself is not an optimisation, it is the point: git emits a
+// tracked nested repository as a single gitlink entry with no trailing slash
+// (`vendor/dep`, mode 160000), so that directory is never an ancestor of
+// anything in the listing. Starting at the ancestor would walk straight past the
+// one directory holding the `.git` pointer, leaving its target — which git DOES
+// list, in full, when the target sits elsewhere in the worktree — indexed.
+//
+// Git's own listing likewise never enumerates a valid nested checkout in place;
+// it reports the directory as one entry and stops. It does enumerate a broken or
+// planted one, and that is the shape an attacker supplies.
+//
+// listedDirs is the subset of listed that are directories on disk — in a file
+// listing, the gitlink entries and nothing else — so the caller's own lstat of
+// each path answers this, and no path is stat'd twice.
+//
+// Each directory is visited once, the same traversal trackedDirSet already
+// performs over the same listing.
+func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
 	seen := make(map[string]struct{}, len(listed))
-	for _, entry := range listed {
-		rel := filepath.ToSlash(entry)
-		for dir := path.Dir(rel); dir != "." && dir != "/"; dir = path.Dir(dir) {
+	observeChain := func(start string) {
+		for dir := start; dir != "." && dir != "/"; dir = path.Dir(dir) {
 			if _, done := seen[dir]; done {
-				break
+				return
 			}
 			seen[dir] = struct{}{}
 			g.observe(dir)
 		}
 	}
+	for _, entry := range listedDirs {
+		observeChain(filepath.ToSlash(entry))
+	}
+	for _, entry := range listed {
+		observeChain(path.Dir(filepath.ToSlash(entry)))
+	}
 }
+
+// listedPathKind is what one lstat of a listed path found. The listing needs the
+// answer twice — a gitlink entry is a directory that may hold a `.git` pointer,
+// and only a regular file is readable source — so it is taken once, up front,
+// rather than once per question.
+type listedPathKind uint8
+
+const (
+	listedPathOther listedPathKind = iota
+	listedPathRegular
+	listedPathDir
+)
 
 // excluded reports the verdict for one repo-relative path, in a single pass over
 // its components: a `.git` component anywhere, or any ancestor prefix that an
@@ -10528,11 +10594,28 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 	}
 	// Every `gitdir:` pointer this listing can reach is resolved before any
 	// verdict is asked, so the answer cannot depend on listing order.
+	// One lstat per listed path. Git lists index entries for files staged as
+	// deleted and can list a symlink or a gitlink directory; the snapshot reads
+	// only regular files, and the gitlink entries are exactly what the excluder
+	// must examine for a `.git` pointer.
+	kinds := make([]listedPathKind, len(listed))
+	var listedDirs []string
+	for index, entry := range listed {
+		info, statErr := os.Lstat(filepath.Join(repo, filepath.FromSlash(entry)))
+		switch {
+		case statErr != nil:
+		case info.IsDir():
+			kinds[index] = listedPathDir
+			listedDirs = append(listedDirs, entry)
+		case info.Mode()&fs.ModeSymlink == 0 && info.Mode().IsRegular():
+			kinds[index] = listedPathRegular
+		}
+	}
 	gitDirs := newGitDirExcluder(repo)
-	gitDirs.observeListedDirs(listed)
+	gitDirs.observeListedPaths(listed, listedDirs)
 	paths := make([]string, 0, len(listed))
 	seen := make(map[string]struct{}, len(listed))
-	for _, entry := range listed {
+	for index, entry := range listed {
 		rel := filepath.ToSlash(entry)
 		if _, exists := seen[rel]; exists {
 			continue
@@ -10542,7 +10625,16 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 		if gitDirs.excluded(rel) {
 			continue
 		}
-		if !eligibleGitWorktreeSourcePath(repo, rel, ignores, vendorRules, dirTracked) {
+		if vendoredScanPath(rel, vendorRules, dirTracked) {
+			continue
+		}
+		// Explicit ignore/include rules still arbitrate: an include file may have
+		// pulled this path back in, and its own rules may then exclude part of
+		// what it re-included.
+		if ignores.Ignored(rel, false) {
+			continue
+		}
+		if kinds[index] != listedPathRegular {
 			continue
 		}
 		seen[rel] = struct{}{}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -15315,7 +15316,7 @@ func TestGitDirExcluderCoversEveryGitDirShapeWithoutWideningOntoGitPrefixedNames
 	}
 	// Observing the directory that holds the nested pointer resolves it against
 	// that directory, and only then does its target become excluded.
-	excluder.observeListedDirs([]string{"vendor/dep/.dep-git/config"})
+	excluder.observeListedPaths([]string{"vendor/dep/.dep-git/config"}, nil)
 	if !excluder.excluded("vendor/dep/.dep-git/config") {
 		t.Error("excluded(\"vendor/dep/.dep-git/config\") = false after observing vendor/dep, want true")
 	}
@@ -15394,6 +15395,164 @@ func TestSearchRepositoryNeverIndexesNestedGitDirs(t *testing.T) {
 	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
 
 	assertNoGitDirLeak(t, repo, "vendor/dep/.git", "vendor/other/.dep-git")
+}
+
+// writeGitDirFixture writes what git itself checks to recognise a directory as a
+// repository — the HEAD file plus objects/ and refs/ — alongside the content
+// these fixtures plant. Nothing creates a loose object, so the tree leaves no
+// read-only file behind for t.TempDir cleanup on Windows.
+func writeGitDirFixture(t *testing.T, repo, dir string) {
+	t.Helper()
+	writeFile(t, repo, dir+"/HEAD", "ref: refs/heads/main\n")
+	writeFile(t, repo, dir+"/config", gitDirConfigWithCredential)
+	writeFile(t, repo, dir+"/hooks/post-commit.go", gitDirHookSource)
+	for _, sub := range []string{"objects", "refs"} {
+		if err := os.MkdirAll(filepath.Join(repo, filepath.FromSlash(dir), sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestLooksLikeGitDir pins the structural half of the git-directory rule: a
+// directory carrying HEAD, objects/ and refs/ IS a git directory whatever it is
+// named, and nothing short of all three is.
+func TestLooksLikeGitDir(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, dir string)
+		want  bool
+	}{
+		{"complete git directory", func(t *testing.T, dir string) {
+			writeGitDirFixture(t, dir, "d")
+		}, true},
+		{"no HEAD", func(t *testing.T, dir string) {
+			writeGitDirFixture(t, dir, "d")
+			if err := os.Remove(filepath.Join(dir, "d", "HEAD")); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"no objects", func(t *testing.T, dir string) {
+			writeGitDirFixture(t, dir, "d")
+			if err := os.Remove(filepath.Join(dir, "d", "objects")); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"no refs", func(t *testing.T, dir string) {
+			writeGitDirFixture(t, dir, "d")
+			if err := os.Remove(filepath.Join(dir, "d", "refs")); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"HEAD is a directory, not a file", func(t *testing.T, dir string) {
+			writeGitDirFixture(t, dir, "d")
+			if err := os.Remove(filepath.Join(dir, "d", "HEAD")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(dir, "d", "HEAD"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"ordinary source directory", func(t *testing.T, dir string) {
+			writeFile(t, dir, "d/app.go", "package d\n")
+		}, false},
+		{"path is a file, not a directory", func(t *testing.T, dir string) {
+			writeFile(t, dir, "d", "not a directory\n")
+		}, false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			testCase.setup(t, dir)
+			if got := looksLikeGitDir(filepath.Join(dir, "d")); got != testCase.want {
+				t.Errorf("looksLikeGitDir = %v, want %v", got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestGitDirExcluderObservesGitlinkEntries pins the listed path itself as an
+// observation site. Git emits a tracked nested repository as ONE gitlink entry
+// with no trailing slash, so `vendor/dep` is never an ancestor of anything in
+// the listing; observing only ancestors walks straight past the directory that
+// holds the `.git` pointer, and the target the pointer names stays listed.
+func TestGitDirExcluderObservesGitlinkEntries(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "vendor/dep/.git", "gitdir: ../../state/.dep-git\n")
+	writeFile(t, repo, "state/.dep-git/config", gitDirConfigWithCredential)
+	writeFile(t, repo, "src/app.go", "package src\n")
+	// Exactly what `git ls-files --cached --others --exclude-standard` reports
+	// for that tree: the gitlink as one entry, and the target's files in full.
+	listed := []string{"src/app.go", "state/.dep-git/config", "vendor/dep"}
+	excluder := newGitDirExcluder(repo)
+	excluder.observeListedPaths(listed, []string{"vendor/dep"})
+	if !excluder.excluded("state/.dep-git/config") {
+		t.Error(`excluded("state/.dep-git/config") = false, want true`)
+	}
+	if excluder.excluded("src/app.go") {
+		t.Error(`excluded("src/app.go") = true, want false`)
+	}
+	// The gitlink's own working tree is not the git directory and must stay
+	// listable; only what its pointer names is excluded.
+	if excluder.excluded("vendor/dep/lib.go") {
+		t.Error(`excluded("vendor/dep/lib.go") = true, want false`)
+	}
+}
+
+// TestSearchRepositoryNeverIndexesGitlinkTargetGitListed is the gitlink exploit
+// on git's own listing, and it isolates the POINTER half of the rule: the target
+// carries no HEAD/objects/refs, so nothing about it looks like a git directory
+// and only reading `vendor/dep/.git` can reveal it.
+func TestSearchRepositoryNeverIndexesGitlinkTargetGitListed(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary required to create a gitlink index entry")
+	}
+	repo := t.TempDir()
+	runGit := func(args ...string) error {
+		command := exec.Command("git", args...)
+		command.Dir = repo
+		if out, err := command.CombinedOutput(); err != nil {
+			return fmt.Errorf("git %v: %w\n%s", args, err, out)
+		}
+		return nil
+	}
+	if err := runGit("init"); err != nil {
+		t.Skipf("git init unavailable here: %v", err)
+	}
+	writeFile(t, repo, "vendor/dep/.git", "gitdir: ../../state/.dep-git\n")
+	writeFile(t, repo, "state/.dep-git/config", gitDirConfigWithCredential)
+	writeFile(t, repo, "state/.dep-git/hooks/post-commit.go", gitDirHookSource)
+	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+	// A gitlink index entry, written directly rather than by committing inside a
+	// nested repository: no loose object is created anywhere, so the tree leaves
+	// nothing read-only for t.TempDir cleanup on Windows. Git does not require
+	// the referenced commit to exist locally — that is what a submodule is.
+	if err := runGit("update-index", "--add", "--cacheinfo",
+		"160000,0000000000000000000000000000000000000001,vendor/dep"); err != nil {
+		t.Skipf("gitlink index entry unsupported here: %v", err)
+	}
+
+	assertNoGitDirLeak(t, repo, "state/.dep-git")
+}
+
+// TestSearchRepositoryNeverIndexesGitlinkTargetOnFilesystemFallback is the same
+// shape on the walk, and it isolates the STRUCTURAL half. The pointer sits in
+// `vendor/`, which the vendored-directory heuristic skips unread, so no pointer
+// is reachable at all; the target is caught because a directory carrying HEAD,
+// objects/ and refs/ IS a git directory whatever it is named.
+func TestSearchRepositoryNeverIndexesGitlinkTargetOnFilesystemFallback(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	// No usable git directory at the root, so `git ls-files` fails and the
+	// filesystem fallback runs.
+	writeFile(t, repo, "vendor/dep/.git", "gitdir: ../../state/.dep-git\n")
+	writeGitDirFixture(t, repo, "state/.dep-git")
+	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	assertNoGitDirLeak(t, repo, "state/.dep-git")
 }
 
 // assertNoGitDirLeak runs the search these fixtures are built for and fails if
