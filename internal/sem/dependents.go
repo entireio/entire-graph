@@ -113,6 +113,14 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 	// Set for an oversized blob whose streamed bytes contained a changed name.
 	oversizeMatched := map[string]bool{}
 	oversizeBytes := func(string) (int64, bool) { return 0, false }
+	// Sizes of blobs the NON-BATCHABLE fallback refused. The batch reader keeps
+	// its own registry, but a path it cannot carry never reaches it, so without
+	// this the fallback would have to choose between an unbounded read and losing
+	// the E_FILE_TOO_LARGE warning. It still passes through the same relevance
+	// gate below, so on the non-prefiltered full-tree scan — where relevance is
+	// decided from content nobody read — such a file is skipped as quietly as any
+	// other blob that was never shown to be a candidate.
+	fallbackOversize := map[string]int64{}
 	if batch, batchErr := gitutil.NewBatchFileReader(ctx, repo, head); batchErr == nil {
 		defer func() { _ = batch.Close() }()
 		batch.SetMaxBytes(defaultMaxParseBytes)
@@ -126,11 +134,27 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 				// point: dropping the file would undercount dependents_count
 				// with no warning attached, which is exactly the disappearing
 				// silently that docs/trust-and-security.md rules out.
-				return gitutil.ShowFile(ctx, repo, head, path)
+				//
+				// It is BOUNDED by the same defaultMaxParseBytes the batch
+				// reader is capped at. A plain ShowFile would buffer the whole
+				// blob — twice, the byte slice plus the string — to then have it
+				// dropped by the size check further down this loop, so the one
+				// path that skips the reader's cap would be the one that decides
+				// this scan's memory. Refusing by size rather than after the
+				// read costs the warning its byte count, which is why the size
+				// is recorded here for oversizeBytes to report.
+				content, ok, refusedBytes, showErr := gitutil.ShowFileBounded(ctx, repo, head, path, defaultMaxParseBytes)
+				if showErr == nil && !ok && refusedBytes > 0 {
+					fallbackOversize[path] = refusedBytes
+				}
+				return content, ok, showErr
 			}
 			return content, ok, err
 		}
 		oversizeBytes = func(path string) (int64, bool) {
+			if size, ok := fallbackOversize[path]; ok {
+				return size, true
+			}
 			blob, ok := batch.OversizeBlob(path)
 			return blob.Bytes, ok
 		}

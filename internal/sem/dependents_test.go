@@ -3,6 +3,7 @@ package sem
 import (
 	"context"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -585,5 +586,127 @@ func TestBuildReferenceIndexCountsDependentsPastANewlineNamedFile(t *testing.T) 
 	}
 	if got := len(dependents); got != len(want) {
 		t.Fatalf("dependents count = %d, want %d: %#v", got, len(want), dependents)
+	}
+}
+
+// The dependents scan hands its revision to the batch reader, which puts it on
+// the same request line as the path: "<rev>:<path>\n". Git accepts revisions
+// containing a newline — `HEAD^{/subject\nbody}` searches a multi-line commit
+// message and rev-parse resolves it — and `graph diff --head` passes its value
+// through unchanged, so such a revision reaches this scan verbatim. It then
+// split EVERY request the reader made, desynchronising the pipe from the first
+// read onward, and the scan reported dependents_count 0 with exit 0, no warning
+// and no partial failure: a valid revision answered with a confidently empty
+// result.
+func TestBuildReferenceIndexCountsDependentsUnderARevisionTheBatchProtocolCannotCarry(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	write(t, repo, "z_defines.py", `def Foo(token):
+    return bool(token)
+`)
+	callers := []string{"c1.py", "c2.py", "c3.py"}
+	for i, path := range callers {
+		write(t, repo, path, "def check"+string(rune('1'+i))+`(token):
+    return Foo(token)
+`)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "multi-line subject\nsecond line of the message")
+
+	const newlineRev = "HEAD^{/multi-line subject\nsecond line}"
+	// Sanity: the revision under test is one git resolves, so this is a valid
+	// input being answered wrongly rather than a bad input being rejected.
+	if got := rev(t, repo, newlineRev); got != rev(t, repo, "HEAD") {
+		t.Fatalf("newline revision resolved to %q, want HEAD %q", got, rev(t, repo, "HEAD"))
+	}
+
+	index, warnings, err := buildReferenceIndex(context.Background(), repo, newlineRev, map[string]struct{}{"Foo": {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %#v", warnings)
+	}
+	want := map[string]struct{}{}
+	for i, path := range callers {
+		want[path+"#function:check"+string(rune('1'+i))] = struct{}{}
+	}
+	dependents := index["Foo"]
+	for key := range want {
+		if _, ok := dependents[key]; !ok {
+			t.Errorf("missing dependent %q; got %#v", key, dependents)
+		}
+	}
+	if got := len(dependents); got != len(want) {
+		t.Fatalf("dependents count = %d, want %d: %#v", got, len(want), dependents)
+	}
+}
+
+// The batch reader is capped at defaultMaxParseBytes precisely so one huge blob
+// cannot set this scan's memory. A path the batch protocol cannot carry takes
+// the one-shot fallback instead, and that fallback must carry the same cap: a
+// plain `git show` buffers the whole blob, and then twice over once its bytes
+// become a string, only for the size check further down the loop to throw it
+// away. The file is reported as oversized either way, so the warning cannot tell
+// the two implementations apart — the allocation is the observable, which is why
+// this test measures it.
+func TestBuildReferenceIndexBoundsTheNonBatchableFallbackRead(t *testing.T) {
+	// Windows forbids '\n' in a filename, so the fixture cannot exist there and
+	// the unbounded read it provokes is unreachable.
+	if runtime.GOOS == "windows" {
+		t.Skip("windows filenames cannot contain a newline; the unbounded fallback read is unreachable")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	write(t, repo, "z_defines.py", `def Foo(token):
+    return bool(token)
+`)
+	// Six times the parse ceiling, named so the batch protocol cannot carry it.
+	// The content matches the changed name, so it is a genuine candidate the scan
+	// must decide about rather than a blob it can ignore.
+	const oversizePath = "a_ev\nxil.py"
+	oversizeContent := "# Foo\n" + strings.Repeat("# padding to defeat the parse ceiling\n", 6*defaultMaxParseBytes/38)
+	oversizeBytes := len(oversizeContent)
+	write(t, repo, oversizePath, oversizeContent)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "an oversized blob at a path the batch protocol cannot carry")
+	head := rev(t, repo, "HEAD")
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, warnings, err := buildReferenceIndex(context.Background(), repo, head, map[string]struct{}{"Foo": {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&after)
+	allocated := after.TotalAlloc - before.TotalAlloc
+
+	// The oversized file must still be REPORTED, or bounding the read has just
+	// traded an unbounded allocation for a silent drop.
+	found := false
+	for _, warning := range warnings {
+		if warning.FilePath == oversizePath && warning.Code == "E_FILE_TOO_LARGE" {
+			found = true
+			if !strings.Contains(warning.Detail, strconv.Itoa(oversizeBytes)) {
+				t.Errorf("oversize warning for %q lost its byte count: %+v", oversizePath, warning)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no E_FILE_TOO_LARGE warning for %q; got %#v", oversizePath, warnings)
+	}
+	// Generous: the whole scan, on a two-file repository, must allocate less
+	// than the oversized blob alone. An unbounded fallback allocates the blob
+	// twice over, so the gap is not marginal.
+	if ceiling := uint64(oversizeBytes); allocated >= ceiling {
+		t.Errorf("scan allocated %d bytes, want < %d: the %d-byte blob at a non-batchable path was materialized instead of refused by size",
+			allocated, ceiling, oversizeBytes)
 	}
 }

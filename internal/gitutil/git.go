@@ -564,21 +564,33 @@ func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error)
 // and anything it fails to establish falls through to the read, which keeps its
 // own absent-vs-failed classification.
 func ShowFileLimited(ctx context.Context, repo, rev, path string, maxBytes int64) (string, bool, error) {
-	return showFileLimited(ctx, repo, rev, path, maxBytes, blobSizeAtRev)
+	content, ok, _, err := showFileBounded(ctx, repo, rev, path, maxBytes, blobSizeAtRev)
+	return content, ok, err
 }
 
-// showFileLimited takes the probe as an argument so a test can exercise the
+// ShowFileBounded is ShowFileLimited that also reports the SIZE of a blob it
+// refused, so a caller whose contract is "skip it but say so" can warn without
+// reading it. ShowFileLimited drops that number; a caller reconstructing it from
+// the returned content cannot, because the point of the refusal is that the
+// content was never materialized. refusedBytes is 0 on every other outcome, and
+// is only meaningful together with ok==false and a nil error.
+func ShowFileBounded(ctx context.Context, repo, rev, path string, maxBytes int64) (content string, ok bool, refusedBytes int64, err error) {
+	return showFileBounded(ctx, repo, rev, path, maxBytes, blobSizeAtRev)
+}
+
+// showFileBounded takes the probe as an argument so a test can exercise the
 // no-answer path, which is otherwise unreachable: the probe and the read resolve
 // the same object through the same git, so making one fail while the other
 // succeeds is not something a fixture repository can arrange.
-func showFileLimited(
+func showFileBounded(
 	ctx context.Context,
 	repo, rev, path string,
 	maxBytes int64,
 	probe func(ctx context.Context, repo, rev, path string) (int64, bool),
-) (string, bool, error) {
+) (string, bool, int64, error) {
 	if maxBytes <= 0 {
-		return ShowFile(ctx, repo, rev, path)
+		content, ok, err := ShowFile(ctx, repo, rev, path)
+		return content, ok, 0, err
 	}
 	// The probe only ever ADDS an early refusal. Every outcome it cannot speak to
 	// — missing path, bad revision, a git whose diagnostics are worded
@@ -589,7 +601,7 @@ func showFileLimited(
 	if size, known := probe(ctx, repo, rev, path); known && size > maxBytes {
 		// Refused, not failed: a blob this caller cannot quote, exactly like a
 		// missing one. No content was read to learn this.
-		return "", false, nil
+		return "", false, size, nil
 	}
 	// The commit is immutable, so a size measured above is the size that will be
 	// read — there is no grow-between-calls race to guard against here.
@@ -599,9 +611,9 @@ func showFileLimited(
 		// allocated, so this cannot restore the memory bound — but it keeps the
 		// ANSWER identical either way, so a caller never receives content it
 		// declared too large to accept.
-		return "", false, nil
+		return "", false, int64(len(content)), nil
 	}
-	return content, ok, err
+	return content, ok, 0, err
 }
 
 // blobSizeAtRev reports the size of the blob at rev:path without reading it.
@@ -689,6 +701,31 @@ func (r *BatchFileReader) OversizeBlob(path string) (OversizeBlob, bool) {
 }
 
 func NewBatchFileReader(ctx context.Context, repo, rev string) (*BatchFileReader, error) {
+	// The request is "<rev>:<path>\n", so the REVISION shares the line with the
+	// path and a revision holding a newline splits every request the reader will
+	// ever make. Git accepts such revisions — `HEAD^{/subject\nbody}` resolves
+	// against a multi-line commit message — and `graph diff --head` passes its
+	// value through unchanged, so this is reachable from the command line.
+	//
+	// Refusing the reader would turn a revision git accepts into a hard failure,
+	// so resolve it instead: rev is only ever used as the request prefix, and an
+	// object id names the same commit in a form the line protocol can carry. The
+	// ordinary revision skips this entirely, so the fast path keeps costing
+	// nothing.
+	// Only a newline is handled here. A carriage return inside the revision
+	// round-trips intact, because git strips at most one CR from the END of the
+	// line and ":<path>" always follows the revision — the one case where it
+	// could land there, an empty path, is caught by ReadFile's own check below.
+	if strings.Contains(rev, "\n") {
+		resolved, err := RevParse(ctx, repo, rev)
+		if err != nil {
+			return nil, fmt.Errorf("resolve revision for git cat-file --batch: %w", err)
+		}
+		if strings.Contains(resolved, "\n") {
+			return nil, fmt.Errorf("%w: revision %q does not resolve to a single object id", ErrNonBatchablePath, rev)
+		}
+		rev = resolved
+	}
 	cmd := newCmd(ctx, repo, "git", "cat-file", "--batch")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -723,7 +760,7 @@ func NewBatchFileReader(ctx context.Context, repo, rev string) (*BatchFileReader
 // silent drop docs/trust-and-security.md rules out.
 var ErrNonBatchablePath = errors.New("path is not expressible as a git cat-file --batch request")
 
-// checkBatchablePath rejects a path the request protocol would mangle.
+// checkBatchableRequest rejects a request the protocol would mangle.
 //
 // One request is one line, and git reads it with strbuf_getline, which strips
 // the trailing LF and then ONE trailing CR. Two path shapes therefore do not
@@ -738,8 +775,8 @@ var ErrNonBatchablePath = errors.New("path is not expressible as a git cat-file 
 //     blob of "endcr.go" — a different object, returned as a success.
 //
 // A CR anywhere else round-trips byte for byte and is deliberately still
-// allowed, because the three sibling call sites read such paths correctly today
-// and this guard must not take that away from them.
+// allowed, because the sibling call sites read such paths correctly today and
+// this guard must not take that away from them.
 //
 // The alternative fix is `git cat-file --batch -Z`, whose request AND response
 // records are NUL-delimited and which handles both shapes. It is not used here:
@@ -748,11 +785,24 @@ var ErrNonBatchablePath = errors.New("path is not expressible as a git cat-file 
 // security-critical path to keep in agreement. A guard at the sink is total —
 // no future caller can forget it — and the paths it refuses are exotic enough
 // that one extra `git show` subprocess is the right price.
-func checkBatchablePath(path string) error {
+// It takes the whole request, not just the path, because the request line is
+// "<rev>:<path>" and both halves are subject to the same parser. The revision is
+// resolved to an object id at construction when it needs to be, so in practice
+// only the path can still offend here — but the check is on the bytes that are
+// actually written, which is the only form of it that cannot be reasoned around.
+func checkBatchableRequest(rev, path string) error {
 	if strings.Contains(path, "\n") {
 		return fmt.Errorf("%w: path contains a newline", ErrNonBatchablePath)
 	}
-	if strings.HasSuffix(path, "\r") {
+	if strings.Contains(rev, "\n") {
+		return fmt.Errorf("%w: revision contains a newline", ErrNonBatchablePath)
+	}
+	// Only a CR on the END of the line is eaten, which is the path's last byte
+	// or — when the path is empty — the revision's.
+	if strings.HasSuffix(rev+":"+path, "\r") {
+		if path == "" {
+			return fmt.Errorf("%w: revision ends with a carriage return", ErrNonBatchablePath)
+		}
 		return fmt.Errorf("%w: path ends with a carriage return", ErrNonBatchablePath)
 	}
 	return nil
@@ -762,7 +812,7 @@ func (r *BatchFileReader) ReadFile(path string) (string, bool, error) {
 	// Checked before the request is written, so a refused path costs the
 	// protocol nothing: the stream is left exactly as it was and the reader
 	// stays usable for every subsequent path.
-	if err := checkBatchablePath(path); err != nil {
+	if err := checkBatchableRequest(r.rev, path); err != nil {
 		return "", false, err
 	}
 	r.mu.Lock()

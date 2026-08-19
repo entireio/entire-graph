@@ -9781,14 +9781,18 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		}
 		batch.SetMaxBytes(maxReadBytes)
 		read := func(path string) (string, bool) {
-			if strings.Contains(path, "\n") {
-				content, ok, err := gitutil.ShowFile(ctx, repo, committedRevision, path)
-				if err != nil || !ok {
-					return "", false
-				}
-				return content, true
-			}
 			content, ok, err := batch.ReadFile(path)
+			if errors.Is(err, gitutil.ErrNonBatchablePath) {
+				// Which paths the line protocol cannot carry is the reader's
+				// knowledge, not this caller's. Asking it and routing on the
+				// answer is what makes the set total: a copy of the test here
+				// only covered newlines, so a tracked path ending in CR — legal
+				// in Git, and reachable through the Dockerfile./Makefile. name
+				// rules, which match on prefix and so admit a trailing CR — fell
+				// through to a reader that answers it with the blob of the
+				// CR-less name instead.
+				content, ok, err = gitutil.ShowFile(ctx, repo, committedRevision, path)
+			}
 			if err != nil || !ok {
 				return "", false
 			}

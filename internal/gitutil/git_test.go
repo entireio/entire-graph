@@ -714,20 +714,25 @@ func TestShowFileLimitedRefusesOversizedBlobWhenTheProbeIsSilent(t *testing.T) {
 
 	silent := func(context.Context, string, string, string) (int64, bool) { return 0, false }
 
-	if out, ok, err := showFileLimited(t.Context(), repo, "HEAD", "over.txt", ceiling, silent); err != nil || ok || out != "" {
-		t.Errorf("oversized blob with a silent probe = (%d bytes, ok %v, err %v), want (\"\", false, nil)", len(out), ok, err)
+	// The refused SIZE has to survive the late check too, or a caller whose
+	// contract is "skip it but say so" loses its byte count exactly when the
+	// probe was the thing that failed it.
+	if out, ok, refused, err := showFileBounded(t.Context(), repo, "HEAD", "over.txt", ceiling, silent); err != nil || ok || out != "" || refused != ceiling+1 {
+		t.Errorf("oversized blob with a silent probe = (%d bytes, ok %v, refused %d, err %v), want (\"\", false, %d, nil)", len(out), ok, refused, err, ceiling+1)
 	}
 	// A silent probe must not turn into a blanket refusal either: everything at
 	// or under the ceiling still has to come back.
-	if out, ok, err := showFileLimited(t.Context(), repo, "HEAD", "under.txt", ceiling, silent); err != nil || !ok || len(out) != ceiling {
-		t.Errorf("blob at the ceiling with a silent probe = (%d bytes, ok %v, err %v), want (%d bytes, true, nil)", len(out), ok, err, ceiling)
+	if out, ok, refused, err := showFileBounded(t.Context(), repo, "HEAD", "under.txt", ceiling, silent); err != nil || !ok || len(out) != ceiling || refused != 0 {
+		t.Errorf("blob at the ceiling with a silent probe = (%d bytes, ok %v, refused %d, err %v), want (%d bytes, true, 0, nil)", len(out), ok, refused, err, ceiling)
 	}
-	// And absent-vs-failed still comes from ShowFile, not from the probe.
-	if out, ok, err := showFileLimited(t.Context(), repo, "HEAD", "missing.txt", ceiling, silent); err != nil || ok || out != "" {
-		t.Errorf("missing path with a silent probe = (%q, ok %v, err %v), want (\"\", false, nil)", out, ok, err)
+	// And absent-vs-failed still comes from ShowFile, not from the probe. An
+	// absent path reports no refused size, so a caller cannot mistake it for one
+	// that was skipped on size.
+	if out, ok, refused, err := showFileBounded(t.Context(), repo, "HEAD", "missing.txt", ceiling, silent); err != nil || ok || out != "" || refused != 0 {
+		t.Errorf("missing path with a silent probe = (%q, ok %v, refused %d, err %v), want (\"\", false, 0, nil)", out, ok, refused, err)
 	}
-	if out, ok, err := showFileLimited(t.Context(), repo, "BADREV", "under.txt", ceiling, silent); err == nil || ok || out != "" {
-		t.Errorf("bad rev with a silent probe = (%q, ok %v, err %v), want (\"\", false, non-nil)", out, ok, err)
+	if out, ok, refused, err := showFileBounded(t.Context(), repo, "BADREV", "under.txt", ceiling, silent); err == nil || ok || out != "" || refused != 0 {
+		t.Errorf("bad rev with a silent probe = (%q, ok %v, refused %d, err %v), want (\"\", false, 0, non-nil)", out, ok, refused, err)
 	}
 }
 
@@ -919,4 +924,82 @@ func TestBatchFileReaderRefusesPathsTheProtocolCannotCarry(t *testing.T) {
 			t.Fatalf("ShowFile(%q) = (%q, ok %v, err %v), want (%q, true, nil)", path, shown, ok, err, files[path])
 		}
 	}
+}
+
+// A `git cat-file --batch` request is one line, and the REVISION shares that
+// line with the path: the sink writes "<rev>:<path>\n". Git accepts revisions
+// containing a newline — `HEAD^{/subject\nbody}` is a legal commit-message
+// search against a multi-line message, and rev-parse resolves it — so a
+// revision alone can split every request the reader will ever make, with the
+// same permanent one-record-ahead desync an embedded newline in the PATH
+// causes. `graph diff --head` passes its value through to this reader
+// unchanged, so the input is reachable from the command line.
+//
+// The reader must therefore answer such a revision correctly, not merely refuse
+// it: refusing would turn a revision git accepts into a hard failure.
+func TestBatchFileReaderReadsThroughARevisionTheProtocolCannotCarry(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	files := map[string]string{
+		"a.go":     "package a\nfunc A() {}\n",
+		"dir/b.go": "package dir\nfunc B() {}\n",
+		"c.go":     "package c\nfunc C() {}\n",
+	}
+	for path, content := range files {
+		full := filepath.Join(repo, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "multi-line subject\nsecond line of the message")
+
+	// Sanity: this really is a revision git resolves, so the reader is being
+	// asked about a valid input rather than a bad one.
+	const newlineRev = "HEAD^{/multi-line subject\nsecond line}"
+	resolved, err := RevParse(t.Context(), repo, newlineRev)
+	if err != nil {
+		t.Fatalf("git does not accept the revision this test is about: %v", err)
+	}
+	if want := strings.TrimSpace(mustRunGit(t, repo, "rev-parse", "HEAD")); resolved != want {
+		t.Fatalf("newline revision resolved to %q, want %q", resolved, want)
+	}
+
+	reader, err := NewBatchFileReader(t.Context(), repo, newlineRev)
+	if err != nil {
+		t.Fatalf("NewBatchFileReader with a newline-bearing revision: %v", err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
+
+	// Read more than one path: the desync this pins only shows from the second
+	// read onward, because the first ReadFile consumes the response to the first
+	// of the two request lines its own request was split into.
+	for _, path := range []string{"a.go", "dir/b.go", "c.go"} {
+		content, ok, err := reader.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%q) through a newline-bearing revision: %v", path, err)
+		}
+		if !ok {
+			t.Fatalf("ReadFile(%q) through a newline-bearing revision: not found", path)
+		}
+		if content != files[path] {
+			t.Fatalf("ReadFile(%q) = %q, want %q (response stream is out of step)", path, content, files[path])
+		}
+	}
+}
+
+// mustRunGit runs git in repo and returns its stdout, failing the test on error.
+func mustRunGit(t *testing.T, repo string, args ...string) string {
+	t.Helper()
+	out, err := run(t.Context(), repo, "git", args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }

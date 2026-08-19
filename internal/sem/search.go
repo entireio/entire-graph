@@ -1430,11 +1430,15 @@ func openSearchContentReader(
 		// so the reader declines it rather than materializing it twice over.
 		batch.SetMaxBytes(defaultMaxParseBytes)
 		read := func(path string) (string, bool) {
-			if strings.Contains(path, "\n") {
-				content, ok, err := gitutil.ShowFile(ctx, repo, commit, path)
-				return content, ok && err == nil
-			}
 			content, ok, err := batch.ReadFile(path)
+			if errors.Is(err, gitutil.ErrNonBatchablePath) {
+				// Routed on the reader's own answer rather than on a second copy
+				// of its rule, which only knew about newlines and so lost paths
+				// ending in CR. The ceiling is passed DOWN so the fallback
+				// refuses the same blobs the batch reader above refuses — a
+				// snippet read has no use for a file the indexer will not parse.
+				content, ok, err = gitutil.ShowFileLimited(ctx, repo, commit, path, defaultMaxParseBytes)
+			}
 			return content, ok && err == nil
 		}
 		return read, batch.Close, nil

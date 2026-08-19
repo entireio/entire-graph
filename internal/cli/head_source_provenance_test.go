@@ -26,6 +26,13 @@ func TestHeadSnapshotLineReaderPreservesCommittedFileContract(t *testing.T) {
 	newlinePaths := runtime.GOOS != "windows"
 	if newlinePaths {
 		write(t, repo, "line\nbreak.go", "committed-newline-path\n")
+		// A TRAILING CARRIAGE RETURN is the second shape the batch request line
+		// cannot carry: git strips it before the lookup, so the request resolves
+		// to the CR-less name. Both names are committed, so answering with the
+		// wrong blob is indistinguishable from answering with the right one
+		// unless the contents differ — they do.
+		write(t, repo, "Dockerfile.dev", "committed-DECOY-the-stripped-request-resolves-to\n")
+		write(t, repo, "Dockerfile.dev\r", "committed-cr-suffixed-path\n")
 	}
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "committed reader fixture")
@@ -59,6 +66,10 @@ func TestHeadSnapshotLineReaderPreservesCommittedFileContract(t *testing.T) {
 		lines, ok = read("line\nbreak.go")
 		if !ok || strings.Join(lines, "|") != "committed-newline-path|" {
 			t.Fatalf("committed newline-path source = %q, ok=%v", lines, ok)
+		}
+		lines, ok = read("Dockerfile.dev\r")
+		if !ok || strings.Join(lines, "|") != "committed-cr-suffixed-path|" {
+			t.Fatalf("committed CR-suffixed-path source = %q, ok=%v", lines, ok)
 		}
 	}
 	for _, path := range []string{"dirty-only.go", "contains-nul.go", "oversized.go"} {
