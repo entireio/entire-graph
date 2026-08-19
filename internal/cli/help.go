@@ -440,6 +440,7 @@ var providerFlagDocs = []flagDoc{
 	{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Parsing depth"},
 	{name: "--ignore-file", arg: "path", desc: "Extra gitignore-style exclude rules (repeatable)"},
 	{name: "--include-file", arg: "path", desc: "Re-include ignored paths (gitignore-style; not an allowlist)"},
+	{name: "--max-seconds", arg: "n", def: "0", desc: "Wall-clock ceiling; 0 = unlimited. On expiry the stream is truncated, reports E_ANALYSIS_BUDGET_EXCEEDED, and is not cached"},
 }
 
 // snapshotFlagDocs extend the bulk provider flags with the compact full-snapshot format.
@@ -451,6 +452,7 @@ var snapshotFlagDocs = []flagDoc{
 	{name: "--profile", arg: "syntax-only|fast|full", def: "full", desc: "Parsing depth"},
 	{name: "--ignore-file", arg: "path", desc: "Extra gitignore-style exclude rules (repeatable)"},
 	{name: "--include-file", arg: "path", desc: "Re-include ignored paths (gitignore-style; not an allowlist)"},
+	{name: "--max-seconds", arg: "n", def: "0", desc: "Wall-clock ceiling; 0 = unlimited. On expiry the stream is truncated, reports E_ANALYSIS_BUDGET_EXCEEDED, and is not cached"},
 }
 
 // commonFlagDocs are shared by the commit/diff/analyze change-analysis commands.

@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
@@ -28,8 +30,24 @@ type Options struct {
 	Stdin io.Reader
 }
 
+// Execute is the process entry point. It runs the command under a context that
+// is actually cancellable, which the provider path depends on: every phase of
+// the indexer polls ctx.Err() (see internal/sem/provider.go), so under the
+// previous context.Background() those checks could never fire and an
+// interrupted index could only be stopped by killing the process mid-write.
+//
+// The first SIGINT/SIGTERM cancels the context and restores the default signal
+// handler, so a second one still kills the process immediately. Without that
+// restore, installing a handler would make a runaway index HARDER to stop than
+// before, which is the opposite of the point.
 func Execute(version string, args []string) error {
-	return Run(context.Background(), Options{
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	return Run(ctx, Options{
 		Version: version,
 		Env:     EnvFromOS(),
 		Stdout:  os.Stdout,
@@ -279,6 +297,9 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		IncludeFiles: flags.IncludeFiles,
 		Profile:      profile,
 	}
+	if flags.MaxSeconds > 0 {
+		options.MaxDuration = time.Duration(flags.MaxSeconds) * time.Second
+	}
 	if flags.Progress {
 		options.Progress = func(event sem.ProgressEvent) {
 			fmt.Fprintf(opts.Stderr, "graph progress phase=%s files=%d/%d symbols=%d relations=%d heap=%d rss=%d elapsed=%s\n",
@@ -344,6 +365,9 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 			return err
 		}
 		warnIfPartial(opts.Stderr, flags.Worktree, summary)
+		if budgetTruncated(summary) {
+			fmt.Fprintln(opts.Stderr, "graph: index stopped at the --max-seconds budget; the matched edges are partial")
+		}
 		fmt.Fprintf(opts.Stderr, "graph: %d edge(s) matched (--to=%q --from=%q --relation=%s)\n",
 			matched, flags.To, flags.From, strings.Join(flags.Relation, ","))
 		return nil
@@ -394,11 +418,34 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		return err
 	}
 	warnIfPartial(opts.Stderr, flags.Worktree, summary)
+	if budgetTruncated(summary) {
+		// A budget-truncated graph must never become the cached answer for this
+		// tree: the cache key deliberately does not include the budget, so a
+		// stored truncation would be served to every later caller as if it were
+		// the complete index.
+		fmt.Fprintln(opts.Stderr, "graph: index stopped at the --max-seconds budget; result is partial and was not cached")
+		useCache = false
+	}
 	if useCache {
 		// Best effort: a failed cache write never fails the command.
 		_ = sem.StoreProviderRecords(ctx, repo, opts.Version, tree, cacheMode, cacheDir, options, recordBuf.Bytes(), summary)
 	}
 	return nil
+}
+
+// budgetTruncated reports whether a snapshot stopped at its wall-clock ceiling
+// rather than finishing. Such a result is valid to print but must not be
+// persisted or treated as a complete index.
+func budgetTruncated(s *sem.SnapshotSummary) bool {
+	if s == nil {
+		return false
+	}
+	for _, failure := range s.PartialFailures {
+		if failure.Code == sem.AnalysisBudgetExceededCode {
+			return true
+		}
+	}
+	return false
 }
 
 // warnIfPartial prints a loud stderr banner when the snapshot did not fully cover
@@ -470,6 +517,13 @@ type providerFlags struct {
 	Progress     bool
 	IgnoreFiles  []string
 	IncludeFiles []string
+	// MaxSeconds is the wall-clock ceiling for the index build in seconds.
+	// -1 means the flag was not given, 0 means unlimited. Unlike diff/commit
+	// these commands do NOT apply defaultMaxSeconds when the flag is absent:
+	// a full index of a large repository legitimately runs for minutes, and
+	// silently truncating one by default would turn a slow index into a wrong
+	// one. The ceiling is opt-in.
+	MaxSeconds int
 	// Targeted edge filters (edges mode). When any is set the command emits only
 	// the matching relation records (plus header/summary) instead of the whole
 	// graph, so "callers of X" is a tiny reply rather than a 50MB dump that the
@@ -532,7 +586,7 @@ func parseProfile(value string) (sem.Profile, error) {
 }
 
 func parseProviderFlags(args []string) (providerFlags, []string, error) {
-	flags := providerFlags{Format: "ndjson"}
+	flags := providerFlags{Format: "ndjson", MaxSeconds: -1}
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -554,6 +608,16 @@ func parseProviderFlags(args []string) (providerFlags, []string, error) {
 				return flags, nil, errors.New("--profile requires a value")
 			}
 			flags.Profile = args[i]
+		case "--max-seconds":
+			i++
+			if i >= len(args) {
+				return flags, nil, errors.New("--max-seconds requires a value")
+			}
+			seconds, err := strconv.Atoi(args[i])
+			if err != nil || seconds < 0 {
+				return flags, nil, fmt.Errorf("--max-seconds requires a non-negative integer, got %q", args[i])
+			}
+			flags.MaxSeconds = seconds
 		case "--no-network":
 			flags.NoNetwork = true
 		case "--worktree":

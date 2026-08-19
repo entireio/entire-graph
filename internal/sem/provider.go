@@ -223,6 +223,33 @@ type PartialFailure struct {
 	Detail               string `json:"detail,omitempty"`
 }
 
+// AnalysisBudgetExceededCode marks a snapshot that stopped at its wall-clock
+// ceiling (ProviderSnapshotOptions.MaxDuration, or a deadline on the caller's
+// context) instead of running to completion. It is a truncation, not a parse
+// failure: the records emitted before the deadline are valid, everything after
+// it is missing, and callers must treat the graph as incomplete — in
+// particular they must not persist it as a complete snapshot.
+const AnalysisBudgetExceededCode = "E_ANALYSIS_BUDGET_EXCEEDED"
+
+// analysisBudgetFailure reports a snapshot truncated by its wall-clock ceiling.
+// It carries no FilePath because the ceiling is a whole-run property: the
+// deadline can land in the middle of the relation phase, where the missing work
+// is spread across every file, so naming one file would misattribute the gap.
+func analysisBudgetFailure(budget, elapsed time.Duration) PartialFailure {
+	detail := fmt.Sprintf("stopped after %s", elapsed.Round(time.Millisecond))
+	if budget > 0 {
+		detail += fmt.Sprintf("; wall-clock budget was %s", budget)
+	} else {
+		detail += "; the caller's context deadline expired"
+	}
+	return PartialFailure{
+		Code:                 AnalysisBudgetExceededCode,
+		Severity:             "warning",
+		EffectOnCompleteness: "snapshot truncated at the wall-clock budget; files and relations after the deadline are missing",
+		Detail:               detail,
+	}
+}
+
 type FileRecord struct {
 	RecordType string `json:"record_type"`
 	ID         string `json:"id"`
@@ -367,6 +394,19 @@ type ProviderSnapshotOptions struct {
 	// inventory, imports, shallow local calls, boundaries, IaC, no evidence), or
 	// syntax-only (file/symbol inventory and structure only). Empty means full.
 	Profile Profile
+	// MaxDuration is the wall-clock ceiling for one snapshot. Zero (the
+	// default) means no ceiling, which is the historical behavior. When it is
+	// set the parse and relation phases stop at the deadline and the stream is
+	// still finished normally: the records produced so far, an
+	// E_ANALYSIS_BUDGET_EXCEEDED partial failure, and a summary. It is NOT part
+	// of any cache key (a budget does not shape the graph, it truncates it), so
+	// callers must not persist a truncated snapshot -- see the
+	// SnapshotSummary.PartialFailures check in the record cache writer.
+	//
+	// A deadline already present on the caller's context has the same effect:
+	// context.DeadlineExceeded degrades to a truncated snapshot, while
+	// context.Canceled (Ctrl-C, an aborted parent) still returns an error.
+	MaxDuration time.Duration
 	// Progress, when non-nil, receives coarse local-only indexing telemetry.
 	// Callbacks run synchronously and should return quickly.
 	Progress func(ProgressEvent)
@@ -933,6 +973,43 @@ func StreamSnapshot(ctx context.Context, repo, providerVersion string, options P
 // public provider always uses defaultProviderWorkerCount.
 func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion string, options ProviderSnapshotOptions, workers int, emit func(record any) error) error {
 	started := time.Now()
+
+	// Wall-clock ceiling. A deadline on the work context is the single
+	// mechanism: the file pipeline already stops on ctx.Done, and the relation
+	// phase already polls shouldStop, so one deadline bounds both phases
+	// without a second clock to keep in sync.
+	//
+	// Expiry is a truncation, not a failure: budgetHit turns into an
+	// E_ANALYSIS_BUDGET_EXCEEDED partial failure and the stream is finished
+	// normally, the way E_FILE_TOO_LARGE reports a file the provider chose not
+	// to parse. A caller cancellation (context.Canceled) keeps the old
+	// behavior and returns the error, because a half-finished snapshot is not
+	// what an interrupted caller asked for.
+	workCtx := ctx
+	if options.MaxDuration > 0 {
+		var cancelBudget context.CancelFunc
+		workCtx, cancelBudget = context.WithDeadline(ctx, started.Add(options.MaxDuration))
+		defer cancelBudget()
+	}
+	budgetHit := false
+	// noteStop records why the work context is done: budget expiry is
+	// recoverable (truncate and finish), anything else is returned to the
+	// caller.
+	noteStop := func() error {
+		err := workCtx.Err()
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			budgetHit = true
+			return nil
+		}
+		return err
+	}
+
+	// Source preparation runs on the caller's context, not the budgeted one:
+	// it is git plumbing that has to finish for there to be a snapshot shape at
+	// all, and a partially-listed source would not be reportable.
 	sc, err := prepareSource(ctx, repo, options)
 	if err != nil {
 		return err
@@ -1005,7 +1082,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// Phase 1: workers independently read, classify, and parse files. Only this
 	// reducer mutates graph indexes or calls emit, and it consumes the original
 	// path order, so worker timing cannot change snapshot bytes.
-	err = runProviderFilePipeline(ctx, sc.paths, workers,
+	err = runProviderFilePipeline(workCtx, sc.paths, workers,
 		func(workerCtx context.Context, index int, path string) providerFileResult {
 			return processProviderFile(workerCtx, sc, spec, maxParseBytes, index, path)
 		},
@@ -1055,7 +1132,13 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		},
 	)
 	if err != nil {
-		return err
+		// The pipeline surfaces the work context's error verbatim, so a budget
+		// expiry arrives here as context.DeadlineExceeded. Truncate rather than
+		// discard: every file already reduced has been emitted.
+		if !errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		budgetHit = true
 	}
 	emitProgress(BuildPhaseParse, len(sc.paths), symbolCount, relationCount)
 
@@ -1071,11 +1154,14 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	relationsByType := map[string]int{}
 	var emitErr error
 	emitRelation := func(r RelationRecord, symbolsByID map[string]SymbolRecord, filesByID map[string]FileRecord) {
-		if emitErr != nil {
+		if emitErr != nil || budgetHit {
 			return
 		}
-		if err := ctx.Err(); err != nil {
+		if err := noteStop(); err != nil {
 			emitErr = err
+			return
+		}
+		if budgetHit {
 			return
 		}
 		// Profile filter: emit only relation families the profile includes; in
@@ -1122,7 +1208,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		}
 		var relationFailures []PartialFailure
 		forEachRelation(sc.key, files, recordsByFile, sc.read, precomputedImports, spec, func() bool {
-			return emitErr != nil || ctx.Err() != nil
+			return emitErr != nil || workCtx.Err() != nil
 		}, func(r RelationRecord) {
 			emitRelation(r, symbolsByID, filesByID)
 		}, func(failure PartialFailure) {
@@ -1136,7 +1222,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		failures = mergePartialFailures(failures, relationFailures)
 		if spec.emits("FILE_CHANGES_WITH") {
 			for _, r := range fileChangesWithRelations(ctx, sc.absRepo, sc.commit, sc.key, files) {
-				if emitErr != nil || ctx.Err() != nil {
+				if emitErr != nil || workCtx.Err() != nil {
 					break
 				}
 				emitRelation(r, symbolsByID, filesByID)
@@ -1145,6 +1231,12 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	}
 	if emitErr != nil {
 		return emitErr
+	}
+	// forEachRelation's shouldStop and the structural path both return without
+	// a reason, so classify the work context once here: budget expiry marks the
+	// snapshot truncated, a caller cancellation is returned.
+	if err := noteStop(); err != nil {
+		return err
 	}
 	emitProgress(BuildPhaseRelations, len(sc.paths), symbolCount, relationCount)
 
@@ -1155,7 +1247,10 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	}
 	sort.Strings(externalIDs)
 	for _, id := range externalIDs {
-		if err := ctx.Err(); err != nil {
+		// Externals are already resolved in memory; only a caller cancellation
+		// stops emitting them, so a budget-truncated snapshot still ends with a
+		// complete, well-formed record stream.
+		if err := noteStop(); err != nil {
 			return err
 		}
 		if err := emit(externalsByID[id]); err != nil {
@@ -1168,6 +1263,9 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	}
 	if failures == nil {
 		failures = []PartialFailure{}
+	}
+	if budgetHit {
+		failures = append(failures, analysisBudgetFailure(options.MaxDuration, time.Since(started)))
 	}
 	summary := SnapshotSummary{
 		RecordType:      "summary",

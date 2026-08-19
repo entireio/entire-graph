@@ -364,6 +364,23 @@ on disk. Two bounds are enforced, and both are visible in the output:
   overrides; negative removes it). Truncation is deterministic in sorted path
   order and always reported as `W_FILE_LIMIT`, naming the real count, the limit
   and the override.
+- **Wall-clock ceiling** — `MaxDuration` (`--max-seconds` on `snapshot`,
+  `symbols` and `edges`; a deadline on the caller's context has the same
+  effect). It is **opt-in: zero, the default, means no ceiling**, because a full
+  index of a large repository legitimately runs for minutes. When it is set, the
+  parse and relation phases stop at the deadline and the stream is still
+  finished normally — the records produced so far, an
+  `E_ANALYSIS_BUDGET_EXCEEDED` partial failure, and a summary — so a truncated
+  graph is always self-describing. A truncated result is never written to the
+  record cache. A context *cancellation* (Ctrl-C) is not a budget: it still
+  aborts with an error.
+
+  This bound is what makes the relation phase's cost survivable rather than
+  cheap. The phase is still quadratic in the nesting depth of a file's
+  declarations: each enclosing symbol re-scans every inner symbol's body, so 500
+  nested JavaScript function declarations (~52 KB) produce ~386,000 relations in
+  ~37 s, and 1,000 (~105 KB) take ~162 s. The ceiling bounds that; it does not
+  remove it.
 
 The working-tree listing is Git's own view of the working tree (tracked files plus
 untracked files no exclude rule covers). Every exclude source Git applies — nested
