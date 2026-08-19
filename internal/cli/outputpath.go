@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -176,7 +177,11 @@ func realOutputPath(path string) (string, error) {
 		// the write fails on the directory, as it did before.
 		return cleaned, nil
 	}
-	return filepath.Join(resolveExistingPrefix(dir), last), nil
+	prefix, err := resolveExistingPrefix(dir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(prefix, last), nil
 }
 
 // hasDotDot reports whether path contains a ".." component. That component is the
@@ -261,7 +266,14 @@ func containedRel(root, target string) (string, bool) {
 	if rel, ok := walkToRoot(rootInfo, target); ok {
 		return rel, true
 	}
-	resolved := filepath.Join(resolveExistingPrefix(filepath.Dir(target)), filepath.Base(target))
+	// target is already absolute and cleaned, so it holds no ".." for
+	// resolveExistingPrefix to refuse; an error here can only mean there is no
+	// resolved chain to try, and the named one has already run.
+	prefix, err := resolveExistingPrefix(filepath.Dir(target))
+	if err != nil {
+		return "", false
+	}
+	resolved := filepath.Join(prefix, filepath.Base(target))
 	if resolved != target {
 		if rel, ok := walkToRoot(rootInfo, resolved); ok {
 			return rel, true
@@ -308,23 +320,40 @@ func lexicalRel(root, target string) (string, bool) {
 // directories, so the common case is a path whose leaf directories do not exist
 // yet. Returning dir unchanged when nothing resolves is safe — it only costs the
 // resolved walk, and the named one has already run.
-func resolveExistingPrefix(dir string) string {
+//
+// A ".." reached by this walk is REFUSED rather than resolved, and that is the
+// whole reason the function returns an error. Reaching one means EvalSymlinks
+// failed on the directory the ".." follows, so the kernel fails there too:
+// `missing/../victim` is ENOENT at `missing` and never reaches `victim`. There is
+// no path that could be returned instead of the error. The tail is put back with
+// filepath.Join — here, and again on the final component in realOutputPath — and
+// Join CLEANS, so `missing/..` collapses to nothing and the destination silently
+// becomes `victim`, turning the kernel's ENOENT into a truncating write of a file
+// the caller never named. Refusing is what keeps the destination from moving.
+//
+// This costs no legitimate spelling: a ".." that follows a directory which DOES
+// exist is resolved by EvalSymlinks before the walk can reach it, so the ordinary
+// `../reports/x.md` — leaf directories not yet created included — never lands here.
+func resolveExistingPrefix(dir string) (string, error) {
 	remainder := ""
 	current := dir
 	for {
 		resolved, err := filepath.EvalSymlinks(current)
 		if err == nil {
 			if remainder == "" {
-				return resolved
+				return resolved, nil
 			}
-			return filepath.Join(resolved, remainder)
+			return filepath.Join(resolved, remainder), nil
 		}
 		// splitFinalComponent, not filepath.Dir: Dir cleans, and cleaning a ".."
 		// off the chain here would put back exactly the collapse this walk exists
 		// to resolve. EvalSymlinks handles ".." itself, against the RESOLVED path.
 		parent, last := splitFinalComponent(current)
 		if last == "" {
-			return dir
+			return dir, nil
+		}
+		if last == ".." {
+			return "", &fs.PathError{Op: "resolve", Path: current, Err: fs.ErrNotExist}
 		}
 		remainder = filepath.Join(last, remainder)
 		current = parent

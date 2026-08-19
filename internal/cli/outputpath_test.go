@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -691,4 +693,81 @@ func TestRealOutputPathWithoutDotDotIsPlainAbs(t *testing.T) {
 			t.Errorf("realOutputPath(%q) = %q, want filepath.Abs = %q", path, got, want)
 		}
 	}
+}
+
+// TestOutputPathsRefuseDotDotThroughAMissingDirectory is the regression for the
+// review finding on resolveExistingPrefix.
+//
+// The kernel resolves ".." against the directory it FOLLOWS, so `missing/../x`
+// fails at `missing` with ENOENT and never reaches `x`. resolveExistingPrefix
+// peeled the not-yet-existing tail back onto the resolved prefix with
+// filepath.Join, which CLEANS — so `missing/..` collapsed to nothing and the
+// destination silently became `x` beside it. That turned the previous ENOENT into a
+// truncating write of a DIFFERENT existing file, for both `--report` and
+// `--record-baseline`.
+//
+// No symlink is involved, so this runs on every platform, Windows included.
+func TestOutputPathsRefuseDotDotThroughAMissingDirectory(t *testing.T) {
+	// Outside the repository: the caller-owned write path. The bystander is an
+	// ordinary file the caller never named.
+	t.Run("report does not truncate a bystander outside the repository", func(t *testing.T) {
+		repo := outputPathRepo(t)
+		victim, victimContent := plantVictim(t)
+		given := dotDotPath(filepath.Join(filepath.Dir(victim), "missing"), filepath.Base(victim))
+
+		err := runIndexReport(t, repo, given)
+		if err == nil {
+			t.Error("write through a missing directory succeeded; the kernel would have returned ENOENT")
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("error is not a not-exist error: %v", err)
+		}
+		assertVictimIntact(t, victim, victimContent)
+	})
+
+	// Inside the repository: the confined write path, which reaches the same
+	// resolution helper. The bystander here is a TRACKED source file.
+	t.Run("record-baseline does not truncate a tracked file inside the repository", func(t *testing.T) {
+		repo := outputPathRepo(t)
+		tracked := filepath.Join(repo, "auth.go")
+		before, err := os.ReadFile(tracked)
+		if err != nil {
+			t.Fatal(err)
+		}
+		given := dotDotPath(filepath.Join(repo, "missing"), "auth.go")
+
+		if err := runVerifyRecord(t, repo, given); err == nil {
+			t.Error("write through a missing directory succeeded; the kernel would have returned ENOENT")
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("error is not a not-exist error: %v", err)
+		}
+		assertVictimIntact(t, tracked, string(before))
+	})
+
+	// The helper itself, so the reason is pinned where it lives rather than only
+	// through two commands.
+	t.Run("realOutputPath reports the missing component", func(t *testing.T) {
+		home := t.TempDir()
+		if _, err := realOutputPath(dotDotPath(filepath.Join(home, "missing"), "x.md")); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("realOutputPath through a missing directory: err = %v, want a not-exist error", err)
+		}
+		// A ".." after a directory that DOES exist is ordinary and must still
+		// resolve — including when the leaf directories do not exist yet, which is
+		// the documented `--record-baseline` case.
+		if err := os.MkdirAll(filepath.Join(home, "present"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		got, err := realOutputPath(dotDotPath(filepath.Join(home, "present"), "created", "base.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Against the RESOLVED home: t.TempDir sits under a symlinked /var on macOS,
+		// and resolving `present` is what this helper is for.
+		resolvedHome, err := filepath.EvalSymlinks(home)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := filepath.Join(resolvedHome, "created", "base.json"); got != want {
+			t.Errorf("realOutputPath = %q, want %q", got, want)
+		}
+	})
 }
