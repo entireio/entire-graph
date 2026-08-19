@@ -887,3 +887,176 @@ func TestMergePartialFailuresFoldsRatherThanDrops(t *testing.T) {
 		t.Fatalf("merge mutated the caller's record: %q", entityAfter)
 	}
 }
+
+// nestedBlockJS wraps inner in `depth` nested JavaScript blocks. Blocks are
+// statements and a function declaration inside one is legal ES6, so the result
+// is WELL-FORMED (no error nodes) yet deeper than the walk limit: the declaration
+// is hidden below it, not missing from the file.
+func nestedBlockJS(depth int, inner string) string {
+	return nestedSource("", '{', '}', depth, "\n"+inner+"\n", "\n")
+}
+
+// truncatedEmptyBase/HeadJS: alpha and beta are present on BOTH sides. On the
+// head side they sit 6000 blocks deep, so the walk stops before reaching them
+// and the side yields zero entities.
+const truncatedEmptyDeclsJS = "function alpha() { return 1 }\nfunction beta() { return 2 }"
+
+// TestAnalyzeSkipsEntityDiffWhenTruncatedSideIsEmpty pins the third depth case.
+// The two already pinned are a truncated side with SOME entities (kept: fewer
+// but correct) and a malformed one (suppressed: possibly wrong). This is a
+// truncated side with ZERO entities: the tree parsed, so it is not a total
+// failure, but the walk never reached a declaration, so the side carries no
+// entity-level information at all. Diffing it against a populated side made
+// compareEntities report every symbol on that side as removed (or added) even
+// though the fixture still declares them, merely below the limit — and
+// reconcileMoves can then promote those phantoms into cross-file MOVES. The file
+// must still be reported as changed at module scope, with the depth warning.
+func TestAnalyzeSkipsEntityDiffWhenTruncatedSideIsEmpty(t *testing.T) {
+	t.Parallel()
+	base := truncatedEmptyDeclsJS + "\n"
+	head := nestedBlockJS(6000, truncatedEmptyDeclsJS)
+	assertReachesTheParser(t, head)
+
+	// Preconditions, so the fixture cannot silently stop exercising the path:
+	// the head side must be the well-formed depth-truncated ZERO-entity shape,
+	// and the base side must be a clean POPULATED one.
+	headEntities, _, headStatus := TreeSitterParser{}.ParseWithStatus("svc.js", head)
+	if headStatus.Code != "E_PARSE_DEPTH_EXCEEDED" || !headStatus.Partial {
+		t.Fatalf("head status = %+v, want a well-formed depth-truncated (Partial) status", headStatus)
+	}
+	if len(headEntities) != 0 {
+		t.Fatalf("head entities = %v, want zero: the fixture must truncate before any declaration", entityNames(headEntities))
+	}
+	baseEntities, _, baseStatus := TreeSitterParser{}.ParseWithStatus("svc.js", base)
+	if baseStatus.Code != "" {
+		t.Fatalf("base status = %+v, want a clean parse", baseStatus)
+	}
+	if !hasEntityNamed(baseEntities, "alpha") || !hasEntityNamed(baseEntities, "beta") {
+		t.Fatalf("base entities = %v, want alpha and beta: the populated side of the pairing", entityNames(baseEntities))
+	}
+
+	repo := buildLinearRepo(t, func(r string) {
+		write(t, r, "svc.js", base)
+	}, func(r string) {
+		write(t, r, "svc.js", head)
+	})
+	res, err := AnalyzeGitRange(context.Background(), repo.repo, repo.base, repo.head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var moduleChange bool
+	for _, f := range res.Files {
+		for _, c := range f.Changes {
+			if c.Name == "alpha" || c.Name == "beta" {
+				t.Fatalf("phantom %s %q from a truncated zero-entity side (%s): both are still declared in head, below the walk limit; changes %+v",
+					c.Type, c.Name, f.Path, f.Changes)
+			}
+			if f.Path == "svc.js" && c.Kind == moduleKind {
+				moduleChange = true
+			}
+		}
+	}
+	if !moduleChange {
+		t.Fatalf("the file's module-scope change must survive; got files %+v warnings %+v", res.Files, res.Warnings)
+	}
+
+	warning := depthWarning(res, "svc.js")
+	if warning == nil {
+		t.Fatalf("a skipped entity comparison must still be flagged; got %+v", res.Warnings)
+	}
+	if !strings.Contains(warning.EffectOnCompleteness, "entity comparison skipped") {
+		t.Fatalf("effect = %q, must say the entity comparison was skipped rather than kept", warning.EffectOnCompleteness)
+	}
+}
+
+// TestAnalyzeDiffsLegitimatelyEmptyFileNormally is the first boundary the fix
+// must not swallow: a file whose head side genuinely declares nothing and was
+// NOT truncated still diffs normally, so its real removals stand.
+func TestAnalyzeDiffsLegitimatelyEmptyFileNormally(t *testing.T) {
+	t.Parallel()
+	head := "// every declaration really was deleted\n1 + 1;\n"
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("svc.js", head)
+	if status.Code != "" || status.ParseError {
+		t.Fatalf("head status = %+v, want a clean parse: this boundary is an UNtruncated empty side", status)
+	}
+	if len(entities) != 0 {
+		t.Fatalf("head entities = %v, want zero", entityNames(entities))
+	}
+
+	repo := buildLinearRepo(t, func(r string) {
+		write(t, r, "svc.js", truncatedEmptyDeclsJS+"\n")
+	}, func(r string) {
+		write(t, r, "svc.js", head)
+	})
+	res, err := AnalyzeGitRange(context.Background(), repo.repo, repo.base, repo.head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed := map[string]bool{}
+	for _, f := range res.Files {
+		for _, c := range f.Changes {
+			if c.Type == "removed" {
+				removed[c.Name] = true
+			}
+		}
+	}
+	if !removed["alpha"] || !removed["beta"] {
+		t.Fatalf("a genuinely emptied, cleanly parsed file must still report its removals; got %+v", res.Files)
+	}
+}
+
+// TestAnalyzeKeepsEntityDiffWhenTruncatedSideHasEntities is the second boundary:
+// a truncated side that DID recover entities keeps the partial entity diff built
+// in the earlier rounds — fewer entities, but the ones compared are real.
+func TestAnalyzeKeepsEntityDiffWhenTruncatedSideHasEntities(t *testing.T) {
+	t.Parallel()
+	head := "function alpha() { return 99 }\n" + nestedBlockJS(6000, "function beta() { return 2 }")
+	assertReachesTheParser(t, head)
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("svc.js", head)
+	if status.Code != "E_PARSE_DEPTH_EXCEEDED" || !status.Partial {
+		t.Fatalf("head status = %+v, want a well-formed depth-truncated status", status)
+	}
+	if len(entities) != 1 || !hasEntityNamed(entities, "alpha") {
+		t.Fatalf("head entities = %v, want exactly alpha: truncated but NOT empty", entityNames(entities))
+	}
+
+	repo := buildLinearRepo(t, func(r string) {
+		write(t, r, "svc.js", truncatedEmptyDeclsJS+"\n")
+	}, func(r string) {
+		write(t, r, "svc.js", head)
+	})
+	res, err := AnalyzeGitRange(context.Background(), repo.repo, repo.base, repo.head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var alphaChanged bool
+	for _, f := range res.Files {
+		for _, c := range f.Changes {
+			if c.Name == "alpha" && c.Type == "body_changed" {
+				alphaChanged = true
+			}
+		}
+	}
+	if !alphaChanged {
+		t.Fatalf("a truncated side WITH entities must keep the entity-level diff; got %+v", res.Files)
+	}
+	if w := depthWarning(res, "svc.js"); w == nil {
+		t.Fatalf("the kept-but-degraded diff must still be flagged; got %+v", res.Warnings)
+	} else if strings.Contains(w.EffectOnCompleteness, "entity comparison skipped") {
+		t.Fatalf("effect = %q, must not claim the comparison was skipped: it was kept", w.EffectOnCompleteness)
+	}
+}
+
+// depthWarning returns the analyze-phase depth warning for a path. The
+// dependents scan emits its own E_PARSE_DEPTH_EXCEEDED warning for the same
+// file, so match on the parse-phase effect text rather than the code alone.
+func depthWarning(result Result, path string) *ProviderWarning {
+	for i := range result.Warnings {
+		w := &result.Warnings[i]
+		if w.FilePath == path && w.Code == "E_PARSE_DEPTH_EXCEEDED" && !strings.Contains(w.EffectOnCompleteness, "dependent references") {
+			return w
+		}
+	}
+	return nil
+}

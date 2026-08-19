@@ -182,15 +182,46 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			if !afterParseFailed {
 				status, warnPath = beforeStatus, oldPath
 			}
-			result.Warnings = append(result.Warnings, parseFailureWarning(warnPath, status, true))
+			result.Warnings = append(result.Warnings, parseFailureWarning(warnPath, status, diffSuppressed))
 			continue
 		}
+		// A depth-truncated side that recovered ZERO entities is a valid
+		// partial result — the tree parsed — that nonetheless carries NO
+		// entity-level information: the walk stopped before it reached any
+		// declaration, so "this side declares nothing" is indistinguishable
+		// from "every declaration is hidden below the limit". Comparing it
+		// against a populated side made compareEntities emit every symbol on
+		// that side as removed (or added): the same phantom class the
+		// total-failure path above exists to prevent, reached through a
+		// WELL-FORMED file, and reconcileMoves can then promote those phantoms
+		// into cross-file MOVES. So the entity comparison is skipped for this
+		// file and only its module-scope change is reported, which is real —
+		// the bytes did change. The cost is under-reporting when that side
+		// genuinely stopped declaring anything; the warning below says so
+		// rather than claiming a complete diff.
+		//
+		// Three cases stay deliberately distinct:
+		//   truncated, zero entities  -> module-scope change only (here)
+		//   truncated, some entities  -> entity diff kept: fewer, but correct
+		//   not truncated, zero       -> entity diff kept: the removals are real
+		//
+		// Only an existing side can lack signal: on an add/delete the missing
+		// side parses no content, and its emptiness is the real change.
+		beforeNoEntitySignal := beforeOK && beforeStatus.Partial && len(beforeEntities) == 0
+		afterNoEntitySignal := afterOK && afterStatus.Partial && len(afterEntities) == 0
+		entitiesSkipped := beforeNoEntitySignal || afterNoEntitySignal
 		if afterStatus.ParseError || beforeStatus.ParseError {
 			status, warnPath := afterStatus, path
-			if !afterStatus.ParseError {
+			// Warn about the side that lost the signal when one did, so the
+			// detail names the truncated file rather than the other revision.
+			if !afterStatus.ParseError || (entitiesSkipped && !afterNoEntitySignal) {
 				status, warnPath = beforeStatus, oldPath
 			}
-			result.Warnings = append(result.Warnings, parseFailureWarning(warnPath, status, false))
+			outcome := diffKept
+			if entitiesSkipped {
+				outcome = diffEntitiesSkipped
+			}
+			result.Warnings = append(result.Warnings, parseFailureWarning(warnPath, status, outcome))
 		}
 		if !beforeOK {
 			beforeEntities = nil
@@ -199,7 +230,11 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			afterEntities = nil
 		}
 
-		changes, removed, added := compareEntities(beforeEntities, afterEntities)
+		var changes []EntityChange
+		var removed, added []Entity
+		if !entitiesSkipped {
+			changes, removed, added = compareEntities(beforeEntities, afterEntities)
+		}
 		if len(changes) == 0 && len(removed) == 0 && len(added) == 0 {
 			// The file changed but no named symbol did: the edit lives at
 			// module scope (top-level statements, imports, comments). Surface
@@ -277,24 +312,46 @@ func budgetSkippedFileWarning(path string, done, total int, budget time.Duration
 	}
 }
 
+// diffParseOutcome names what the diff actually did with a file whose parse did
+// not fully succeed. It selects the warning's effect wording, which must state
+// what happened to THIS file rather than what usually happens to its code.
+type diffParseOutcome int
+
+const (
+	// diffKept: the parse degraded but the entity diff was still computed from
+	// what came back.
+	diffKept diffParseOutcome = iota
+	// diffEntitiesSkipped: one existing side was truncated to zero entities, so
+	// the entity comparison was skipped and only the file's module-scope change
+	// is reported (see AnalyzeGitRangeWithOptions).
+	diffEntitiesSkipped
+	// diffSuppressed: a total failure; the file contributes no delta at all.
+	diffSuppressed
+)
+
 // parseFailureWarning builds the warning emitted when a changed file fails to
 // parse on one side of the diff. It reuses the provider path's machine-readable
 // codes (parseStatus.ParseError → PartialFailure, see provider.go), and both
 // surfaces warn on any ParseError — but the effect wording is diff-specific:
 // the provider always emits its (possibly partial) output, while the diff path
-// suppresses the file's delta entirely on a total failure (suppressed == true)
-// and keeps a possibly-degraded diff on a partial recovery.
-func parseFailureWarning(path string, status ParseStatus, suppressed bool) ProviderWarning {
+// suppresses the file's delta entirely on a total failure, reports only the
+// module-scope change when a side was truncated to zero entities, and keeps a
+// possibly-degraded diff on any other partial recovery.
+func parseFailureWarning(path string, status ParseStatus, outcome diffParseOutcome) ProviderWarning {
 	code := status.Code
 	if code == "" {
 		code = "E_PARSE_ERROR"
 	}
 	var effect string
 	switch {
-	case suppressed && code == "E_PARSE_TIMEOUT":
+	case outcome == diffSuppressed && code == "E_PARSE_TIMEOUT":
 		effect = "file diff suppressed; changes omitted because parser time budget was exceeded"
-	case suppressed:
+	case outcome == diffSuppressed:
 		effect = "file diff suppressed; changes omitted because the file could not be parsed"
+	case outcome == diffEntitiesSkipped:
+		// The entity sets were never compared, so this file cannot produce
+		// phantom entity changes; what it can do is omit real ones.
+		effect = "entity comparison skipped; one side's parser walk was truncated before it reached any declaration, so only this file's module-scope change is reported and individual symbol changes are omitted"
 	case code == "E_PARSE_DEPTH_EXCEEDED":
 		// Never suppressed (ParseStatus.Partial), so the "syntax errors" wording
 		// below would be wrong on both counts: the file parsed, and what is
