@@ -74,6 +74,28 @@ symbol structure with no semantic relations. `capabilities --json` reports
 which tier a language is in. Files the parser cannot process emit
 machine-readable partial failures rather than disappearing silently.
 
+## Repository-controlled exclusions are disclosed
+
+`.graphignore`, `.gitignore` and `.git/info/exclude` live in the repository, so
+whoever can commit to it decides part of what the graph sees. One committed line
+naming a tracked source file removes that file from every answer.
+
+`search` therefore reports what those rules removed rather than presenting the
+surviving corpus as the whole of it. When repository-controlled rules exclude
+files Git itself lists, the response carries `repo_ignored` (the count, the ignore
+files responsible, and up to ten of the excluded paths),
+`stats.files_excluded_by_repo_ignore_rules`, and a `W_REPO_IGNORED_SOURCE`
+warning; the text and agent payloads print the count and name the paths. A
+repository that excludes nothing adds nothing.
+
+Exclusions **you** asked for with `--ignore-file` are not reported: they are your
+own instruction, and reporting them back would bury the case that is not.
+
+This is disclosure, not prevention. It tells you that files were removed and
+which ones; it does not tell you whether one of them was the answer to your
+query, and deciding that still means reading the file. Commands other than
+`search` do not yet carry the disclosure.
+
 ## Command-family tree semantics
 
 Interactive queries read the working tree by default and the committed tree

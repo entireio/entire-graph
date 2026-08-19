@@ -386,6 +386,9 @@ func writeNdjsonSearch(out interface{ Write([]byte) (int, error) }, response sem
 		if response.CoverageNote != nil {
 			summary["coverage_note"] = response.CoverageNote
 		}
+		if response.RepoIgnored != nil {
+			summary["repo_ignored"] = response.RepoIgnored
+		}
 		return encoder.Encode(summary)
 	}
 }
@@ -439,6 +442,15 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 	// made once, here, rather than at the dozens of print sites in this function
 	// and in the sem renderers it calls.
 	out = termsafe.NewWriter(out)
+	// FIRST, ahead of every result: what the repository's own ignore rules took out
+	// of the corpus this answer came from. A reader who has already read the ranked
+	// hits has decided the answer is complete, so a disclosure printed after them is
+	// a disclosure nobody acts on.
+	if block := sem.RenderRepoIgnoreDisclosure(response.RepoIgnored); len(block) > 0 {
+		if _, err := out.Write(block); err != nil {
+			return err
+		}
+	}
 	if notice, _ := searchLowConfidenceNotices(response); len(notice) > 0 {
 		if _, err := out.Write(notice); err != nil {
 			return err
@@ -1377,7 +1389,8 @@ func agentSearchTypeCard(card []sem.TypeCardEntry) []byte {
 }
 
 func agentSearchDiagnostics(response sem.SearchResponse) ([]byte, []byte) {
-	if len(response.Warnings) == 0 && len(response.PartialFailures) == 0 {
+	if len(response.Warnings) == 0 && len(response.PartialFailures) == 0 &&
+		response.Stats.RepoIgnoredFiles == 0 {
 		return nil, nil
 	}
 	languages, files := searchCompletenessCounts(response.Completeness)
@@ -1386,8 +1399,13 @@ func agentSearchDiagnostics(response sem.SearchResponse) ([]byte, []byte) {
 		level = "degraded"
 	}
 	var full bytes.Buffer
-	fmt.Fprintf(&full, "Coverage: %s (%d language%s/%d file%s; %d warning%s; %d partial failure%s)\n",
+	// The excluded count sits inside the file count's own parentheses on purpose.
+	// This line is the payload's claim about how much of the repository the answer
+	// saw; printing "2 files" beside a silently removed third is what let one
+	// committed ignore line narrow a reader's field of view unannounced.
+	fmt.Fprintf(&full, "Coverage: %s (%d language%s/%d file%s%s; %d warning%s; %d partial failure%s)\n",
 		level, languages, pluralSuffix(languages), files, pluralSuffix(files),
+		agentCoverageExcluded(response.Stats.RepoIgnoredFiles),
 		len(response.Warnings), pluralSuffix(len(response.Warnings)),
 		len(response.PartialFailures), pluralSuffix(len(response.PartialFailures)),
 	)
@@ -1409,9 +1427,25 @@ func agentSearchDiagnostics(response sem.SearchResponse) ([]byte, []byte) {
 	if level == "degraded" {
 		marker = "D"
 	}
-	compact := []byte(fmt.Sprintf("!%s W%d F%d L%d/%d\n",
-		marker, len(response.Warnings), len(response.PartialFailures), languages, files))
+	excluded := ""
+	if response.Stats.RepoIgnoredFiles > 0 {
+		// X is not droppable telemetry: the compact form exists for tight budgets,
+		// and a budget too small for the count is not a reason to let the payload
+		// go back to implying it saw the whole repository.
+		excluded = fmt.Sprintf(" X%d", response.Stats.RepoIgnoredFiles)
+	}
+	compact := []byte(fmt.Sprintf("!%s W%d F%d L%d/%d%s\n",
+		marker, len(response.Warnings), len(response.PartialFailures), languages, files, excluded))
 	return full.Bytes(), compact
+}
+
+// agentCoverageExcluded renders the repository-controlled exclusion count inside
+// the coverage line, or nothing when the repository excluded nothing.
+func agentCoverageExcluded(excluded int) string {
+	if excluded <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(", %d excluded by repo ignore rules", excluded)
 }
 
 func agentDiagnosticVisibility(warnings, failures, limit int) (int, int) {

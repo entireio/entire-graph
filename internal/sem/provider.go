@@ -754,6 +754,9 @@ type sourceContext struct {
 	oversize   oversizeReader
 	close      func() error
 	warnings   []ProviderWarning
+	// repoIgnored reports what the REPOSITORY's own ignore files removed from the
+	// listing Git produced, or nil when they removed nothing.
+	repoIgnored *RepoIgnoreReport
 }
 
 // oversizeAt reports the oversize record for path when the source has one.
@@ -1456,16 +1459,17 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		})
 	}
 	return sourceContext{
-		absRepo:    absRepo,
-		key:        key,
-		commit:     commit,
-		tree:       tree,
-		paths:      paths,
-		read:       opened.read,
-		readPrefix: opened.readPrefix,
-		oversize:   opened.oversize,
-		close:      opened.close,
-		warnings:   warnings,
+		absRepo:     absRepo,
+		key:         key,
+		commit:      commit,
+		tree:        tree,
+		paths:       paths,
+		read:        opened.read,
+		readPrefix:  opened.readPrefix,
+		oversize:    opened.oversize,
+		close:       opened.close,
+		warnings:    warnings,
+		repoIgnored: opened.repoIgnored,
 	}, nil
 }
 
@@ -9748,6 +9752,9 @@ type openedSource struct {
 	oversize   oversizeReader
 	close      func() error
 	warnings   []ProviderWarning
+	// repoIgnored reports what the REPOSITORY's own ignore files removed from the
+	// listing Git produced, or nil when they removed nothing. See RepoIgnoreReport.
+	repoIgnored *RepoIgnoreReport
 }
 
 // openSource lists the repository's files and returns a per-file content reader
@@ -9773,7 +9780,11 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 			return openedSource{}, err
 		}
 		paths = filterVendoredPaths(paths, headVendorIgnoreRules(ctx, repo, committedRevision, paths))
-		paths = filterIgnoredPaths(paths, ignores)
+		// Every path in a committed-tree listing is tracked by construction, so
+		// anything the ignore rules drop here is source Git itself would show the
+		// reader. That is precisely the set worth disclosing.
+		ledger := &repoIgnoreLedger{}
+		paths = filterIgnoredPaths(paths, ignores, ledger)
 		paths, warnings := capSourceFiles(paths, options.maxFiles)
 		batch, err := gitutil.NewBatchFileReader(ctx, repo, committedRevision)
 		if err != nil {
@@ -9814,19 +9825,21 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 			return content, true
 		}
 		return openedSource{
-			paths:      paths,
-			read:       read,
-			readPrefix: readPrefix,
-			oversize:   oversize,
-			close:      batch.Close,
-			warnings:   warnings,
+			paths:       paths,
+			read:        read,
+			readPrefix:  readPrefix,
+			oversize:    oversize,
+			close:       batch.Close,
+			warnings:    warnings,
+			repoIgnored: ledger.report(),
 		}, nil
 	}
 	ignores, err := loadWorktreeIgnoreMatcher(repo, options.ignoreFiles, options.includeFiles)
 	if err != nil {
 		return openedSource{}, err
 	}
-	paths, err := worktreeSourceFiles(ctx, repo, ignores, len(options.includeFiles) > 0)
+	worktreeLedger := &repoIgnoreLedger{}
+	paths, err := worktreeSourceFiles(ctx, repo, ignores, len(options.includeFiles) > 0, worktreeLedger)
 	if err != nil {
 		return openedSource{}, err
 	}
@@ -9867,11 +9880,12 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		return string(buf[:n]), true
 	}
 	return openedSource{
-		paths:      paths,
-		read:       read,
-		readPrefix: readPrefix,
-		oversize:   registry.lookup,
-		warnings:   warnings,
+		paths:       paths,
+		read:        read,
+		readPrefix:  readPrefix,
+		oversize:    registry.lookup,
+		warnings:    warnings,
+		repoIgnored: worktreeLedger.report(),
 	}, nil
 }
 
@@ -10110,7 +10124,7 @@ func isVendoredScanFile(rel, name string) bool {
 // The filesystem walk remains the fallback for a directory Git cannot enumerate
 // (not a repository at all, or no usable git binary), and it now applies nested
 // .gitignore files itself.
-func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher, hasIncludeFiles bool) ([]string, error) {
+func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher, hasIncludeFiles bool, ledger *repoIgnoreLedger) ([]string, error) {
 	trackedDirs := trackedDirSet(ctx, repo)
 	dirTracked := func(rel string) bool {
 		_, ok := trackedDirs[rel]
@@ -10150,6 +10164,13 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 		// pulled this path back in, and its own rules may then exclude part of
 		// what it re-included.
 		if ignores.Ignored(rel, false) {
+			// Git's listing already applied the repository's exclude stack to
+			// UNTRACKED content (`--exclude-standard`), so a path that reaches
+			// this line and is dropped here is one Git would still show — a
+			// tracked file, or one an include file reopened. Disclosing those and
+			// nothing else is what keeps the report free of the ordinary
+			// build-output noise every repository gitignores.
+			ignores.noteRepoExclusion(ledger, rel, false)
 			continue
 		}
 		// Git lists index entries for files staged as deleted and can list a
@@ -10228,11 +10249,12 @@ func filterVendoredPaths(paths []string, ignores vendorIgnoreRules) []string {
 	return filtered
 }
 
-func filterIgnoredPaths(paths []string, ignores ignoreMatcher) []string {
+func filterIgnoredPaths(paths []string, ignores ignoreMatcher, ledger *repoIgnoreLedger) []string {
 	filtered := paths[:0]
 	for _, rel := range paths {
 		rel = filepath.ToSlash(rel)
 		if ignores.Ignored(rel, false) {
+			ignores.noteRepoExclusion(ledger, rel, false)
 			continue
 		}
 		filtered = append(filtered, rel)
@@ -10302,7 +10324,7 @@ func headIgnoreMatcher(ctx context.Context, repo, committedRevision string) igno
 		return ignoreMatcher{}
 	}
 	var matcher ignoreMatcher
-	if err := matcher.loadContent(content, false); err != nil {
+	if err := matcher.loadContent(content, false, repoIgnoreOrigin(".gitignore")); err != nil {
 		return ignoreMatcher{}
 	}
 	return matcher

@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"unicode"
 
 	"github.com/entireio/entire-graph/internal/gitutil"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 const (
@@ -286,8 +288,13 @@ type SearchResult struct {
 }
 
 type SearchStats struct {
-	QueryConstraintsTruncated      bool    `json:"query_constraints_truncated,omitempty"`
-	FilesScanned                   int     `json:"files_scanned"`
+	QueryConstraintsTruncated bool `json:"query_constraints_truncated,omitempty"`
+	FilesScanned              int  `json:"files_scanned"`
+	// RepoIgnoredFiles counts the files Git listed that the REPOSITORY's own
+	// ignore rules removed from this corpus before FilesScanned was taken. It sits
+	// beside FilesScanned deliberately: read alone, "scanned N files" invites the
+	// reading that N is what the repository contains.
+	RepoIgnoredFiles               int     `json:"files_excluded_by_repo_ignore_rules,omitempty"`
 	PreselectionBackend            string  `json:"preselection_backend,omitempty"`
 	PreselectionPasses             int     `json:"preselection_passes,omitempty"`
 	PreselectionFilesExamined      int     `json:"preselection_files_examined,omitempty"`
@@ -461,11 +468,96 @@ type SearchResponse struct {
 	// names the ones that entry does not show. It exists because "the fix passed the test I was
 	// shown and broke its neighbour" is a measured wrong-fix shape that no single test body can
 	// prevent. Nil whenever exactly one test covers the anchor. See search_covertest.go.
-	CoverageNote    *SearchCoverageNote `json:"coverage_note,omitempty"`
-	Stats           SearchStats         `json:"stats"`
-	Warnings        []ProviderWarning   `json:"warnings"`
-	PartialFailures []PartialFailure    `json:"partial_failures"`
-	Completeness    CompletenessReport  `json:"completeness"`
+	CoverageNote *SearchCoverageNote `json:"coverage_note,omitempty"`
+	// RepoIgnored discloses what the REPOSITORY's own ignore rules removed from the
+	// corpus this answer was assembled from, and is nil when they removed nothing.
+	//
+	// Every other field here describes the corpus that survived. That is what made
+	// a committed ignore line an attack: one line deleted a tracked source file
+	// from the payload, the remaining files were reported as the coverage, and an
+	// agent working under this tool's own "search first" doctrine had nothing to
+	// tell it that a file it should have read was missing. The graph does not need
+	// to index an ignored file. It needs to stop implying that what it indexed is
+	// everything the repository holds.
+	//
+	// Only REPOSITORY-controlled rules are reported (.graphignore, .gitignore,
+	// .git/info/exclude, nested .gitignore). Exclusions the caller asked for with
+	// --ignore-file are not: telling callers what they themselves excluded is noise
+	// that would bury the case that matters.
+	RepoIgnored     *RepoIgnoreReport  `json:"repo_ignored,omitempty"`
+	Stats           SearchStats        `json:"stats"`
+	Warnings        []ProviderWarning  `json:"warnings"`
+	PartialFailures []PartialFailure   `json:"partial_failures"`
+	Completeness    CompletenessReport `json:"completeness"`
+}
+
+// repoIgnoreDisclosureCode is the diagnostic code that carries the disclosure on
+// the channel every existing consumer already reads. A caller that only parses
+// `warnings` still learns that this answer was assembled from a narrowed corpus.
+const repoIgnoreDisclosureCode = "W_REPO_IGNORED_SOURCE"
+
+// withRepoIgnoreDisclosure appends the disclosure warning when the repository's
+// own ignore rules narrowed the corpus, and returns warnings unchanged otherwise.
+func withRepoIgnoreDisclosure(warnings []ProviderWarning, report *RepoIgnoreReport) []ProviderWarning {
+	if report == nil || report.Files == 0 {
+		return warnings
+	}
+	names := make([]string, 0, len(report.Sources))
+	for _, source := range report.Sources {
+		names = append(names, termsafe.Line(source.File))
+	}
+	detail := fmt.Sprintf("%d file%s excluded by %s", report.Files, pluralS(report.Files), strings.Join(names, ", "))
+	if len(report.Sample) > 0 {
+		detail += "; including " + termsafe.Line(report.Sample[0].Path)
+	}
+	// FilePath carries the first excluded path so the disclosure survives every
+	// renderer that prints only a warning's code and file — which is the compact
+	// agent payload, i.e. the exact reader this finding is about. "Something is
+	// hidden" is a shrug; "internal/auth/auth.go is hidden" is a next action.
+	first := ""
+	if len(report.Sample) > 0 {
+		first = report.Sample[0].Path
+	}
+	return append(append([]ProviderWarning(nil), warnings...), ProviderWarning{
+		Code:     repoIgnoreDisclosureCode,
+		Severity: "warning",
+		FilePath: first,
+		EffectOnCompleteness: "files git lists were excluded from the corpus by the repository's own ignore rules; " +
+			"the coverage figures describe what remained, not what the repository contains",
+		Detail: detail,
+	})
+}
+
+// maxRenderedRepoExclusions is how many excluded paths the TEXT payload names.
+// The header line carries the exact count, so the list only has to be enough to
+// act on; a longer one would cost bytes at the head of every payload in a
+// repository that vendors legitimately.
+const maxRenderedRepoExclusions = 3
+
+// RenderRepoIgnoreDisclosure renders the disclosure for a text payload, or nil
+// when there is nothing to disclose.
+func RenderRepoIgnoreDisclosure(report *RepoIgnoreReport) []byte {
+	if report == nil || report.Files == 0 {
+		return nil
+	}
+	var out bytes.Buffer
+	names := make([]string, 0, len(report.Sources))
+	for _, source := range report.Sources {
+		names = append(names, termsafe.Line(source.File))
+	}
+	fmt.Fprintf(&out, "EXCLUDED: %d file%s removed from this corpus by the repository's own ignore rules (%s)\n",
+		report.Files, pluralS(report.Files), strings.Join(names, ", "))
+	shown := report.Sample
+	if len(shown) > maxRenderedRepoExclusions {
+		shown = shown[:maxRenderedRepoExclusions]
+	}
+	for _, exclusion := range shown {
+		fmt.Fprintf(&out, "- %s\n", termsafe.Line(exclusion.Path))
+	}
+	if remaining := report.Files - len(shown); remaining > 0 {
+		fmt.Fprintf(&out, "- ... %d more (full list in --format json: repo_ignored)\n", remaining)
+	}
+	return out.Bytes()
 }
 
 type searchQuery struct {
@@ -735,6 +827,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 			Stats: SearchStats{
 				QueryConstraintsTruncated: q.constraints.Truncated,
 				FilesScanned:              selection.filesScanned,
+				RepoIgnoredFiles:          repoIgnoredFileCount(selection.repoIgnored),
 				PreselectionBackend:       selection.preselectionBackend,
 				PreselectionPasses:        selection.preselectionPasses,
 				PreselectionFilesExamined: selection.preselectionFilesExamined,
@@ -754,7 +847,8 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 				TotalLatencyMS:            totalLatency,
 				SearchLatencyMS:           totalLatency,
 			},
-			Warnings:        warnings,
+			RepoIgnored:     selection.repoIgnored,
+			Warnings:        withRepoIgnoreDisclosure(warnings, selection.repoIgnored),
 			PartialFailures: partialFailures,
 			Completeness:    completeness,
 		}, nil
@@ -1386,6 +1480,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	stats.QueryLatencyMS = time.Since(queryStarted).Milliseconds()
 	stats.TotalLatencyMS = time.Since(searchStarted).Milliseconds()
 	stats.SearchLatencyMS = stats.TotalLatencyMS
+	stats.RepoIgnoredFiles = repoIgnoredFileCount(selection.repoIgnored)
 	if results == nil {
 		results = []SearchResult{}
 	}
@@ -1408,8 +1503,9 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		VerifyCommand:   verifyCommand,
 		ClosedSet:       closedSet,
 		CoverageNote:    coverageNote,
+		RepoIgnored:     selection.repoIgnored,
 		Stats:           stats,
-		Warnings:        snapshot.Header.Warnings,
+		Warnings:        withRepoIgnoreDisclosure(snapshot.Header.Warnings, selection.repoIgnored),
 		PartialFailures: partialFailures,
 		Completeness:    snapshot.Header.Completeness,
 	}, nil
@@ -1687,6 +1783,9 @@ type searchFileSelection struct {
 	// run against — empty means the working tree, which is what a worktree search indexes.
 	gitGrepUsable  bool
 	gitGrepTreeish string
+	// repoIgnored is the listing's disclosure of what the repository's own ignore
+	// rules removed, carried through so every response shape can report it.
+	repoIgnored *RepoIgnoreReport
 }
 
 type searchScanTelemetry struct {
@@ -1720,6 +1819,7 @@ func preselectSearchFiles(
 		commit:                    source.commit,
 		tree:                      source.tree,
 		warnings:                  append([]ProviderWarning{}, source.warnings...),
+		repoIgnored:               source.repoIgnored,
 		filesScanned:              len(source.paths),
 		preselectionBackend:       "inventory",
 		preselectionPasses:        1,
@@ -5076,3 +5176,11 @@ func (response SearchResponse) Validate() error {
 }
 
 var dottedCallMentionPattern = regexp.MustCompile(`([a-z_][a-z0-9_]*)\.([a-z_][a-z0-9_]*)\s*\(`)
+
+// repoIgnoredFileCount is the nil-safe count for the stats block.
+func repoIgnoredFileCount(report *RepoIgnoreReport) int {
+	if report == nil {
+		return 0
+	}
+	return report.Files
+}

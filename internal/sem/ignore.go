@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"syscall"
 )
@@ -22,7 +23,151 @@ type ignoreRule struct {
 	directory    bool
 	basenameOnly bool
 	pattern      string
+	origin       ignoreOrigin
 	expression   *regexp.Regexp
+}
+
+// ignoreOrigin records WHO controls a rule, which is the whole difference between
+// an exclusion worth reporting and one that would only be noise.
+//
+// A rule from an ignore file that lives in the repository — .gitignore,
+// .graphignore, .git/info/exclude, a nested .gitignore — is written by whoever can
+// commit to that repository, i.e. potentially by someone other than the person
+// running the graph. A rule from --ignore-file/--include-file is that person's own
+// instruction. Only the first kind can narrow a reader's field of view without
+// the reader having asked for it, so only the first kind is disclosed.
+//
+// The zero value is repo-controlled ON PURPOSE. If a future ignore source is
+// added and nobody labels it, the failure mode is an exclusion reported that did
+// not need to be (visible, quickly corrected) rather than an exclusion that
+// silently disappears from the report, which is the exact defect this type exists
+// to close.
+type ignoreOrigin struct {
+	callerControlled bool
+	// label names the file the rule came from, repo-relative where that is
+	// meaningful (".graphignore", "backend/.gitignore"). It is reported to the
+	// caller, so it is repository-controlled text: render it accordingly.
+	label string
+}
+
+// repoIgnoreOrigin labels rules loaded from an ignore file that lives in the
+// repository and can therefore be changed by a contributor.
+func repoIgnoreOrigin(label string) ignoreOrigin { return ignoreOrigin{label: label} }
+
+// callerIgnoreOrigin labels rules the person running the graph supplied
+// themselves, via --ignore-file or --include-file.
+func callerIgnoreOrigin(label string) ignoreOrigin {
+	return ignoreOrigin{callerControlled: true, label: label}
+}
+
+// RepoExclusion names one path that the repository's own ignore rules removed
+// from a corpus, and the rule that removed it.
+type RepoExclusion struct {
+	Path string `json:"path"`
+	// Source is the ignore file the deciding rule came from.
+	Source string `json:"source"`
+	// Rule is the pattern line itself, normalized the way the matcher stores it.
+	Rule string `json:"rule"`
+}
+
+// RepoIgnoreSource counts one ignore file's contribution to the exclusions.
+type RepoIgnoreSource struct {
+	File  string `json:"file"`
+	Files int    `json:"files"`
+}
+
+// RepoIgnoreReport is the disclosure: how much of what Git itself listed the
+// repository's own ignore rules removed from the corpus a query was answered
+// from, and which files did the removing.
+//
+// It exists because the graph's coverage figures otherwise describe the corpus
+// that survived, with nothing to distinguish "this repository has two files" from
+// "this repository has two files left after a committed rule deleted a third".
+type RepoIgnoreReport struct {
+	// Files is the exact number of listed paths excluded, even when Sample is capped.
+	Files   int                `json:"files"`
+	Sources []RepoIgnoreSource `json:"sources"`
+	// Sample names the excluded paths, capped at maxRepoExclusionSample so a
+	// repository that ignores thousands of vendored blobs cannot flood a payload.
+	Sample          []RepoExclusion `json:"sample,omitempty"`
+	SampleTruncated bool            `json:"sample_truncated,omitempty"`
+}
+
+// maxRepoExclusionSample bounds the named paths in a RepoIgnoreReport. The count
+// stays exact; only the list is capped. A repository that legitimately keeps
+// dozens of vendored blobs out of the graph must not be able to turn every
+// response into a wall of paths — that would make the disclosure something
+// readers learn to skip, which is the same blindness by a different route.
+const maxRepoExclusionSample = 10
+
+// repoIgnoreLedger accumulates repository-controlled exclusions during one
+// listing. A nil ledger accumulates nothing, so callers that do not want the
+// accounting pay for none of it.
+type repoIgnoreLedger struct {
+	files   int
+	sources map[string]int
+	order   []string
+	// seen keeps the count a count of PATHS. A listing can offer the same path
+	// twice (Git's tracked listing plus an include file's re-inclusion), and a
+	// disclosure that inflates is a disclosure readers stop believing.
+	seen      map[string]struct{}
+	sample    []RepoExclusion
+	truncated bool
+}
+
+func (l *repoIgnoreLedger) note(exclusion RepoExclusion) {
+	if l == nil {
+		return
+	}
+	if l.seen == nil {
+		l.seen = make(map[string]struct{})
+	}
+	if _, duplicate := l.seen[exclusion.Path]; duplicate {
+		return
+	}
+	l.seen[exclusion.Path] = struct{}{}
+	l.files++
+	if l.sources == nil {
+		l.sources = make(map[string]int)
+	}
+	if _, seen := l.sources[exclusion.Source]; !seen {
+		l.order = append(l.order, exclusion.Source)
+	}
+	l.sources[exclusion.Source]++
+	if len(l.sample) < maxRepoExclusionSample {
+		l.sample = append(l.sample, exclusion)
+		return
+	}
+	l.truncated = true
+}
+
+// report renders the ledger, or nil when nothing was excluded. Nil is what keeps
+// the field absent from the overwhelmingly common payload that has nothing to
+// disclose.
+func (l *repoIgnoreLedger) report() *RepoIgnoreReport {
+	if l == nil || l.files == 0 {
+		return nil
+	}
+	sources := make([]RepoIgnoreSource, 0, len(l.order))
+	for _, file := range l.order {
+		sources = append(sources, RepoIgnoreSource{File: file, Files: l.sources[file]})
+	}
+	sort.Slice(sources, func(i, j int) bool {
+		if sources[i].Files != sources[j].Files {
+			return sources[i].Files > sources[j].Files
+		}
+		return sources[i].File < sources[j].File
+	})
+	// Sorted, so the same repository view always renders the same disclosure —
+	// the determinism the rest of the provider promises applies here too.
+	sample := append([]RepoExclusion(nil), l.sample...)
+	sort.Slice(sample, func(i, j int) bool { return sample[i].Path < sample[j].Path })
+	return &RepoIgnoreReport{
+		Files:           l.files,
+		Sources:         sources,
+		Sample:          sample,
+		SampleTruncated: l.truncated,
+	}
 }
 
 type ignoreMatchKind int
@@ -45,10 +190,10 @@ const graphIgnoreFileName = ".graphignore"
 
 func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) (ignoreMatcher, error) {
 	var matcher ignoreMatcher
-	if err := matcher.loadOptional(filepath.Join(repo, ".gitignore"), false); err != nil {
+	if err := matcher.loadOptional(filepath.Join(repo, ".gitignore"), false, repoIgnoreOrigin(".gitignore")); err != nil {
 		return ignoreMatcher{}, err
 	}
-	if err := matcher.loadOptional(filepath.Join(repo, graphIgnoreFileName), false); err != nil {
+	if err := matcher.loadOptional(filepath.Join(repo, graphIgnoreFileName), false, repoIgnoreOrigin(graphIgnoreFileName)); err != nil {
 		return ignoreMatcher{}, err
 	}
 	// info/exclude is the repository's private exclude list: same syntax and same
@@ -60,7 +205,7 @@ func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 	// non-directory: os.Stat returns ENOTDIR rather than ErrNotExist, and treating
 	// that as fatal aborted the entire search with zero results in every worktree.
 	if exclude := gitInfoExcludePath(repo); exclude != "" {
-		if err := matcher.loadOptional(exclude, false); err != nil {
+		if err := matcher.loadOptional(exclude, false, repoIgnoreOrigin(".git/info/exclude")); err != nil {
 			return ignoreMatcher{}, err
 		}
 	}
@@ -72,7 +217,7 @@ func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 
 func loadExplicitIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) (ignoreMatcher, error) {
 	var matcher ignoreMatcher
-	if err := matcher.loadOptional(filepath.Join(repo, graphIgnoreFileName), false); err != nil {
+	if err := matcher.loadOptional(filepath.Join(repo, graphIgnoreFileName), false, repoIgnoreOrigin(graphIgnoreFileName)); err != nil {
 		return ignoreMatcher{}, err
 	}
 	if err := matcher.loadExplicit(repo, ignoreFiles, includeFiles); err != nil {
@@ -87,7 +232,7 @@ func (m *ignoreMatcher) loadExplicit(repo string, ignoreFiles, includeFiles []st
 		if !filepath.IsAbs(resolved) {
 			resolved = filepath.Join(repo, resolved)
 		}
-		if err := m.loadRequired(resolved, false); err != nil {
+		if err := m.loadRequired(resolved, false, callerIgnoreOrigin(ignoreFile)); err != nil {
 			return err
 		}
 	}
@@ -96,7 +241,7 @@ func (m *ignoreMatcher) loadExplicit(repo string, ignoreFiles, includeFiles []st
 		if !filepath.IsAbs(resolved) {
 			resolved = filepath.Join(repo, resolved)
 		}
-		if err := m.loadRequired(resolved, true); err != nil {
+		if err := m.loadRequired(resolved, true, callerIgnoreOrigin(includeFile)); err != nil {
 			return err
 		}
 	}
@@ -145,7 +290,7 @@ func gitInfoExcludePath(repo string) string {
 	return filepath.Join(gitDir, "info", "exclude")
 }
 
-func (m *ignoreMatcher) loadOptional(file string, includeMode bool) error {
+func (m *ignoreMatcher) loadOptional(file string, includeMode bool, origin ignoreOrigin) error {
 	label := ignoreFileLabel(includeMode)
 	info, err := os.Stat(file)
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
@@ -159,10 +304,10 @@ func (m *ignoreMatcher) loadOptional(file string, includeMode bool) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%s %q is not a regular file", label, file)
 	}
-	return m.loadFile(file, includeMode)
+	return m.loadFile(file, includeMode, origin)
 }
 
-func (m *ignoreMatcher) loadRequired(file string, includeMode bool) error {
+func (m *ignoreMatcher) loadRequired(file string, includeMode bool, origin ignoreOrigin) error {
 	label := ignoreFileLabel(includeMode)
 	info, err := os.Stat(file)
 	if errors.Is(err, os.ErrNotExist) {
@@ -174,25 +319,25 @@ func (m *ignoreMatcher) loadRequired(file string, includeMode bool) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%s %q is not a regular file", label, file)
 	}
-	return m.loadFile(file, includeMode)
+	return m.loadFile(file, includeMode, origin)
 }
 
-func (m *ignoreMatcher) loadFile(file string, includeMode bool) error {
+func (m *ignoreMatcher) loadFile(file string, includeMode bool, origin ignoreOrigin) error {
 	label := ignoreFileLabel(includeMode)
 	content, err := os.ReadFile(file)
 	if err != nil {
 		return fmt.Errorf("read %s %q: %w", label, file, err)
 	}
-	if err := m.loadContent(string(content), includeMode); err != nil {
+	if err := m.loadContent(string(content), includeMode, origin); err != nil {
 		return fmt.Errorf("read %s %q: %w", label, file, err)
 	}
 	return nil
 }
 
-func (m *ignoreMatcher) loadContent(content string, includeMode bool) error {
+func (m *ignoreMatcher) loadContent(content string, includeMode bool, origin ignoreOrigin) error {
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	for scanner.Scan() {
-		rule, ok := parseIgnoreRule(scanner.Text(), includeMode)
+		rule, ok := parseIgnoreRule(scanner.Text(), includeMode, origin)
 		if ok {
 			m.rules = append(m.rules, rule)
 		}
@@ -207,7 +352,7 @@ func ignoreFileLabel(includeMode bool) string {
 	return "ignore file"
 }
 
-func parseIgnoreRule(line string, includeMode bool) (ignoreRule, bool) {
+func parseIgnoreRule(line string, includeMode bool, origin ignoreOrigin) (ignoreRule, bool) {
 	line = strings.TrimRight(line, "\r")
 	line = strings.TrimSpace(line)
 	if line == "" || strings.HasPrefix(line, "#") {
@@ -246,6 +391,7 @@ func parseIgnoreRule(line string, includeMode bool) (ignoreRule, bool) {
 		directory:    directory,
 		basenameOnly: basenameOnly,
 		pattern:      line,
+		origin:       origin,
 		expression:   regexp.MustCompile(globPatternExpression(line)),
 	}, true
 }
@@ -262,31 +408,74 @@ func (m ignoreMatcher) Ignored(rel string, isDir bool) bool {
 // ignore files can let the deepest file that has an opinion decide, exactly as
 // Git does.
 func (m ignoreMatcher) decide(rel string, isDir bool) (bool, bool) {
-	rel = cleanIgnorePath(rel)
-	if rel == "" {
+	winner, matched := m.decideRule(rel, isDir)
+	if !matched {
 		return false, false
 	}
+	return true, winner.ignore
+}
+
+// decideRule is decide's single source of truth: it returns the rule that decides
+// rel, so a caller that needs the verdict and a caller that needs to attribute
+// the verdict cannot drift apart. Attributing an exclusion to the wrong file
+// would be worse than not attributing it, so the two share one traversal.
+func (m ignoreMatcher) decideRule(rel string, isDir bool) (ignoreRule, bool) {
+	rel = cleanIgnorePath(rel)
+	if rel == "" {
+		return ignoreRule{}, false
+	}
+	var selfRule, ancestorRule ignoreRule
 	selfMatched := false
-	selfIgnored := false
 	ancestorMatched := false
-	ancestorIgnored := false
 	for _, rule := range m.rules {
 		switch rule.matchKind(rel, isDir) {
 		case ignoreSelfMatch:
 			selfMatched = true
-			selfIgnored = rule.ignore
+			selfRule = rule
 		case ignoreAncestorMatch:
 			ancestorMatched = true
-			ancestorIgnored = rule.ignore
+			ancestorRule = rule
 		}
 	}
 	if selfMatched {
-		return true, selfIgnored
+		return selfRule, true
 	}
 	if ancestorMatched {
-		return true, ancestorIgnored
+		return ancestorRule, true
 	}
-	return false, false
+	return ignoreRule{}, false
+}
+
+// repoExclusion reports the repository-controlled rule that excluded rel, if one
+// did.
+//
+// It answers only for the rule that ACTUALLY decided the path, under the same
+// precedence Ignored uses. A caller's own --ignore-file that overrides a
+// repository rule takes the attribution with it (the caller asked for that
+// exclusion, so there is nothing to disclose), and a caller's --include-file that
+// re-includes the path means there is no exclusion to report at all.
+func (m ignoreMatcher) repoExclusion(rel string, isDir bool) (RepoExclusion, bool) {
+	rule, matched := m.decideRule(rel, isDir)
+	if !matched || !rule.ignore || rule.origin.callerControlled {
+		return RepoExclusion{}, false
+	}
+	return RepoExclusion{
+		Path:   cleanIgnorePath(rel),
+		Source: rule.origin.label,
+		Rule:   rule.pattern,
+	}, true
+}
+
+// noteRepoExclusion records rel in the ledger when the repository's own ignore
+// rules are what removed it. It is the one call sites make, so that "did we
+// exclude it" and "who excluded it" can never answer differently.
+func (m ignoreMatcher) noteRepoExclusion(ledger *repoIgnoreLedger, rel string, isDir bool) {
+	if ledger == nil {
+		return
+	}
+	if exclusion, ok := m.repoExclusion(rel, isDir); ok {
+		ledger.note(exclusion)
+	}
 }
 
 // decideSelf reports the verdict of the last rule that names the path itself
@@ -379,7 +568,7 @@ func (s *nestedIgnoreStack) enter(dir string) {
 		return
 	}
 	var matcher ignoreMatcher
-	if err := matcher.loadFile(file, false); err != nil {
+	if err := matcher.loadFile(file, false, repoIgnoreOrigin(path.Join(dir, ".gitignore"))); err != nil {
 		return
 	}
 	s.levels = append(s.levels, nestedIgnoreLevel{dir: dir, matcher: matcher})
@@ -467,7 +656,7 @@ func (r *nestedIgnoreRules) addFile(file, content string) {
 		return
 	}
 	var matcher ignoreMatcher
-	if err := matcher.loadContent(content, false); err != nil {
+	if err := matcher.loadContent(content, false, repoIgnoreOrigin(path.Join(dir, ".gitignore"))); err != nil {
 		return
 	}
 	r.levels = append(r.levels, nestedIgnoreLevel{dir: dir, matcher: matcher})
