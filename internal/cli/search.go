@@ -439,12 +439,14 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 	// made once, here, rather than at the dozens of print sites in this function
 	// and in the sem renderers it calls.
 	out = termsafe.NewWriter(out)
-	// The literal cluster is rendered here, well before it is printed, only so its quarantine
-	// verdict can feed the notice below. It is the one sem block that writes a repository body
-	// unprefixed and verbatim (search_literals.go, --edit-site-bodies), so it needs the same
-	// quarantine a ranked snippet gets; its own records are indented two spaces and pass through
-	// untouched.
-	literalCluster, literalClusterForged := searchQuarantineBlock(sem.RenderSearchLiteralCluster(response.LiteralCluster))
+	// The literal cluster is quarantined here, well before it is printed, so its verdict can feed
+	// the notice below. It is the one sem block that writes a repository body unprefixed and
+	// verbatim (search_literals.go, --edit-site-bodies), so it needs the same quarantine a ranked
+	// snippet gets. The rewrite is applied to the BODIES and the block is rendered from the result,
+	// not applied to the rendered bytes: see searchQuarantineLiteralCluster for why the renderer's
+	// own header cannot survive being re-classified from bytes alone.
+	quarantinedCluster, literalClusterForged := searchQuarantineLiteralCluster(response.LiteralCluster)
+	literalCluster := sem.RenderSearchLiteralCluster(quarantinedCluster)
 	// Ahead of everything, including the closed-set warning: it is the only block that says the
 	// payload's own bytes may be lying about who wrote them, and a reader who has already acted on
 	// a forged line will not come back for it.
@@ -1155,14 +1157,14 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 		verifyVariants = append(verifyVariants, nil)
 	}
 	// See writeTextSearch for why the literal cluster is quarantined here rather than in its own
-	// renderer, and why its verdict feeds the notice below.
-	renderedLiteralCluster := sem.RenderSearchLiteralCluster(response.LiteralCluster)
-	literalCluster, _ := searchQuarantineBlock(renderedLiteralCluster)
+	// renderer, and why the rewrite lands on the block's bodies rather than on its rendered bytes.
+	quarantinedCluster, _ := searchQuarantineLiteralCluster(response.LiteralCluster)
+	literalCluster := sem.RenderSearchLiteralCluster(quarantinedCluster)
 	// The LINES the quarantine produces, not merely whether it produced any. The notice is emitted
 	// when the set is non-empty, and the sink test below asks the set whether the composition the
 	// fitter finally chose kept one of them: a forged record that the byte fitter clipped away must
 	// not cost the caller the ranked location that survived. See searchPayloadDisclosesItsQuarantine.
-	quarantinedLines := searchResponseQuarantinedLines(response.Results, renderedLiteralCluster)
+	quarantinedLines := searchResponseQuarantinedLines(response.Results, response.LiteralCluster)
 	suffixes := [][]byte{
 		literalCluster,
 		agentSearchTypeCard(response.TypeCard),

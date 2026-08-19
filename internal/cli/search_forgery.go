@@ -92,10 +92,12 @@ var searchForgeryNotice = []byte(searchForgeryNoticePrefix + " some source lines
 // hold a line shaped like one of these records. Measured cost on the corpora in
 // searchQuarantineFalsePositiveRate: see the note there.
 //
-// Every entry here is matched at column 0 only, so the renderers' OWN blocks are never touched:
-// they are written outside any quarantined body (the prefix blocks of writeTextSearch and
-// writeAgentSearch), and the one rendered block that IS post-processed — the literal cluster —
-// heads with sem.LiteralClusterBlockName and indents its records two spaces.
+// Every entry here is matched at column 0 only, and nothing this grammar runs on is tool-authored:
+// the renderers' own blocks are written outside every quarantined body, and the one block that
+// quotes a repository body inside itself — the literal cluster — is quarantined at its INPUT, so
+// its own header never reaches this grammar (searchQuarantineLiteralCluster). That separation is
+// what lets sem.LiteralClusterBlockName sit in searchRecordLineWordHeads below, where it has to be:
+// a repository line wearing that header still labels every payload line under it.
 //
 // The other record heads ("D: ", "additional ", the ranked hit) are matched STRUCTURALLY below.
 // Their prefixes are ordinary English at the start of a prose line - "additional context is..."
@@ -860,19 +862,50 @@ func searchQuarantineLine(line string) (string, bool) {
 	return quarantined, true
 }
 
-// searchQuarantineBlock is searchQuarantineBody for an already-rendered block that mixes tool
-// records with raw repository bodies.
+// searchQuarantineLiteralCluster returns the literal cluster with every REPOSITORY-DERIVED body it
+// carries quarantined, and reports whether it rewrote any.
 //
-// It has exactly one caller: the literal cluster, whose renderer writes `hit.Body` unprefixed and
-// verbatim (internal/sem/search_literals.go). That block's own records are all indented two
-// spaces, so they are out of record position by this function's own test and pass through
-// untouched — which is what makes post-processing the rendered block safe rather than clever.
-func searchQuarantineBlock(block []byte) ([]byte, bool) {
-	quarantined, changed := searchQuarantineBody(string(block))
-	if !changed {
-		return block, false
+// It quarantines the block's INPUT rather than its rendered bytes, and that is the whole point.
+// Post-processing the rendered block asks the grammar to re-derive, from bytes alone, which lines
+// the renderer wrote and which it quoted — a question the bytes no longer answer. The grammar is
+// deliberately built to catch a REPOSITORY line wearing a block header, so it catches the block's
+// own header too: `SAME-CONCEPT LITERAL "glow" — 10 in 4 files repo-wide:` is record-shaped by
+// construction (sem.LiteralClusterBlockName is in searchRecordLineWordHeads, and
+// TestSearchRecordGrammarCoversEveryRenderedBlockHeader keeps it there). Post-processing therefore
+// indented the tool's OWN header on every literal cluster and raised the untrusted-content notice on
+// payloads where no repository line had been rewritten at all.
+//
+// At this point provenance is still known and needs no deriving: `hit.Body` is the one field the
+// renderer writes unprefixed and verbatim (internal/sem/search_literals.go, --edit-site-bodies).
+// Everything else in the block is either the renderer's own text or a repository value it prints
+// behind a two-space indent — out of record position — or, for the literal itself, inside %q, whose
+// escaping is what keeps it on one line. So the bodies are the exact set that needs quarantining,
+// and they are quarantined by the same searchQuarantineBody every ranked snippet passes through.
+//
+// The cluster is COPIED before any body changes. response.LiteralCluster is a pointer the JSON
+// encoding also reads, and the standing contract is that the JSON reports the exact bytes the
+// repository holds (see searchResultOnOneLine for the same rule on ranked results).
+func searchQuarantineLiteralCluster(cluster *sem.SearchLiteralCluster) (*sem.SearchLiteralCluster, bool) {
+	if cluster == nil {
+		return nil, false
 	}
-	return []byte(quarantined), true
+	quarantined := cluster
+	for index, hit := range cluster.Hits {
+		if hit.Body == "" {
+			continue
+		}
+		body, changed := searchQuarantineBody(hit.Body)
+		if !changed {
+			continue
+		}
+		if quarantined == cluster {
+			clone := *cluster
+			clone.Hits = slices.Clone(cluster.Hits)
+			quarantined = &clone
+		}
+		quarantined.Hits[index].Body = body
+	}
+	return quarantined, quarantined != cluster
 }
 
 // searchPayloadDisclosesItsQuarantine reports whether a FINISHED payload honours the disclosure
@@ -992,10 +1025,11 @@ func searchProducedLineOpensWith(produced []string, line string) bool {
 // non-empty) and, at the sink, whether the composition it finally chose kept a line the notice was
 // there to explain.
 //
-// literalCluster is the block as RENDERED and before it is quarantined, because that is the text
-// searchQuarantineBlock reads; the block's own records are indented two spaces and are not
-// record-shaped, so they contribute nothing.
-func searchResponseQuarantinedLines(results []sem.SearchResult, literalCluster []byte) []string {
+// The literal cluster contributes its HIT BODIES, not its rendered bytes, for the same reason
+// searchQuarantineLiteralCluster rewrites the bodies rather than the render: the bodies are the
+// repository-derived part, and they are the only part the quarantine touches. Reading the rendered
+// block here would put the renderer's own header in the produced set.
+func searchResponseQuarantinedLines(results []sem.SearchResult, literalCluster *sem.SearchLiteralCluster) []string {
 	var produced []string
 	collect := func(body string) {
 		for len(body) > 0 {
@@ -1006,7 +1040,11 @@ func searchResponseQuarantinedLines(results []sem.SearchResult, literalCluster [
 			body = rest
 		}
 	}
-	collect(string(literalCluster))
+	if literalCluster != nil {
+		for _, hit := range literalCluster.Hits {
+			collect(hit.Body)
+		}
+	}
 	for _, result := range results {
 		collect(result.Snippet)
 		for _, passage := range result.Passages {
@@ -1035,8 +1073,8 @@ func searchBodyCarriesRecordShape(body string) bool {
 // them, so a body whose forged line a tight budget happens to clip still raises the notice.
 // Over-warning is the safe direction: the file does contain the line.
 //
-// The literal cluster is not scanned here — its renderer already reports whether it quarantined
-// anything (searchQuarantineBlock), and rendering it twice would be the same work done twice.
+// The literal cluster is not scanned here — searchQuarantineLiteralCluster already reports whether
+// it rewrote any of the block's bodies, and asking twice would be the same work done twice.
 func searchResultsCarryForgedRecords(results []sem.SearchResult) bool {
 	for _, result := range results {
 		if searchBodyCarriesRecordShape(result.Snippet) {
