@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -230,6 +231,12 @@ type repoIgnoreLedger struct {
 	// further in.
 	unreadable     []string
 	unreadableSeen map[string]struct{}
+	// direntsRead counts the entries the accounting has READ from directories in
+	// this listing. It is not the same number as walkVisited — a directory is
+	// read whole before any of its entries is visited — and keeping it is what
+	// lets a test assert that the bound holds for the WORK and not only for the
+	// reported count.
+	direntsRead int
 	// walkVisited counts the filesystem entries the pruned-directory accounting
 	// has visited in this listing, against maxRepoExclusionWalkEntries.
 	walkVisited int
@@ -288,6 +295,49 @@ func (l *repoIgnoreLedger) spendExclusionWalk() bool {
 	}
 	l.walkVisited++
 	return true
+}
+
+// remainingExclusionWalk reports how many more entries the accounting may visit
+// in this listing. It is what bounds a directory READ, not merely the callbacks
+// the read feeds: nothing past this many entries could ever be visited, so
+// reading past it is pure cost.
+func (l *repoIgnoreLedger) remainingExclusionWalk() int {
+	if l == nil {
+		return 0
+	}
+	if l.walkVisited >= maxRepoExclusionWalkEntries {
+		return 0
+	}
+	return maxRepoExclusionWalkEntries - l.walkVisited
+}
+
+// noteCountIncomplete marks Files a lower bound for a reason other than an
+// unreadable path: a directory held more entries than the budget could pay to
+// visit, so the rest of it is excluded and uncounted.
+func (l *repoIgnoreLedger) noteCountIncomplete() {
+	if l == nil {
+		return
+	}
+	l.countIncomplete = true
+}
+
+// noteDirentsRead records entries read from one directory.
+func (l *repoIgnoreLedger) noteDirentsRead(n int) {
+	if l == nil {
+		return
+	}
+	l.direntsRead += n
+}
+
+// walkDirentsRead counts the directory entries the accounting has READ in this
+// listing, as opposed to the entries it went on to visit. The two diverged
+// silently before the read was bounded, which is what made a bounded-looking
+// count sit on top of an unbounded crawl, so it is counted rather than assumed.
+func (l *repoIgnoreLedger) walkDirentsRead() int {
+	if l == nil {
+		return 0
+	}
+	return l.direntsRead
 }
 
 // noteUnreadable records a path an enumeration could not read. Deduplicated and
@@ -919,9 +969,14 @@ func (s *nestedIgnoreStack) noteRepoExclusion(ledger *repoIgnoreLedger, rel stri
 // as source the repository removed. Either way the disclosure cries wolf, which
 // is the noise that makes readers skip the one that matters.
 //
-// The traversal is bounded twice. maxRepoExclusionWalkEntries caps the entries
-// it may visit across the whole listing, and reaching that cap marks the count a
-// lower bound rather than quietly returning a short exact-looking number: the
+// The traversal is bounded twice, and the bound covers the READ as well as the
+// visit. maxRepoExclusionWalkEntries caps the entries it may visit across the
+// whole listing, and walkPrunedBounded stops each directory read at what is left
+// of that budget — filepath.WalkDir reads a directory in full before its first
+// entry reaches the callback, so a budget spent in the callback alone bounded
+// the reported count while the crawl behind it stayed the repository's to size.
+// Reaching the cap marks the count a lower bound rather than quietly returning a
+// short exact-looking number: the
 // prune is what makes an ignored tree cost nothing, and handing that cost back
 // unbounded lets a committed rule over a huge tree slow every search that reads
 // this repository. The list of named paths is capped separately, at
@@ -975,7 +1030,7 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 		sub.levels = append(sub.levels, level)
 	}
 	root := filepath.Join(s.repo, filepath.FromSlash(dir))
-	_ = filepath.WalkDir(root, func(current string, entry fs.DirEntry, err error) error {
+	walkPrunedBounded(ledger, root, func(current string, entry fs.DirEntry, err error) error {
 		// Budget first, before anything is stat'd or matched, so the bound holds
 		// for the walk's own cost and not merely for what it reports. SkipAll ends
 		// this tree; the ledger keeps the exhausted budget, so a repository cannot
@@ -1043,6 +1098,108 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 		})
 		return nil
 	})
+}
+
+// walkPrunedBounded walks root the way filepath.WalkDir does — a directory
+// handed to fn before its children, children in lexical order — with the one
+// difference the accounting budget depends on: it never reads more of a
+// directory than the budget can still pay to visit.
+//
+// filepath.WalkDir reads and sorts a directory IN FULL before the first child
+// reaches fn, so a budget spent inside fn bounds the callbacks and not the work.
+// Measured on this branch before this change, one pruned directory of 200,000
+// entries cost 468ms of every search against 112ms for 20,000 while the ledger
+// recorded the same 19,998 exclusions for both: a bounded number sitting on top
+// of an unbounded crawl. The prune is what makes an ignored tree cost nothing,
+// and reading that tree to say what it removed must not hand back a cost the
+// repository sets.
+//
+// Reading remaining+1 entries is exactly enough. A directory holding more than
+// the budget can pay for will exhaust it while the prefix is being visited, so
+// nothing past that prefix could ever be reached — reading it buys the report
+// nothing and the repository a multiple of every search. The shortfall is
+// recorded, so Files stays a stated lower bound rather than a silently short
+// number.
+//
+// Entries are sorted after reading, so any directory that fits the budget — every
+// directory in a real repository — is walked in filepath.WalkDir's own order and
+// the disclosure is unchanged. Only a directory larger than the remaining budget
+// takes directory order for its prefix, and that report already says the count
+// is incomplete.
+func walkPrunedBounded(ledger *repoIgnoreLedger, root string, fn fs.WalkDirFunc) {
+	info, err := os.Lstat(root)
+	var entry fs.DirEntry
+	if err == nil {
+		entry = fs.FileInfoToDirEntry(info)
+	}
+	_ = walkPrunedBoundedNode(ledger, root, entry, err, fn)
+}
+
+// walkPrunedBoundedNode visits one node and, for a directory, its children.
+// SkipDir returned for a directory skips that directory's contents; returned for
+// anything else it skips the rest of the containing directory; SkipAll and any
+// other error stop the walk. That is filepath.WalkDir's contract, kept because
+// the callback this serves was written against it.
+func walkPrunedBoundedNode(ledger *repoIgnoreLedger, current string, entry fs.DirEntry, statErr error, fn fs.WalkDirFunc) error {
+	if err := fn(current, entry, statErr); err != nil {
+		if errors.Is(err, filepath.SkipDir) {
+			if entry != nil && entry.IsDir() {
+				return nil
+			}
+			return filepath.SkipDir
+		}
+		return err
+	}
+	if statErr != nil || entry == nil || !entry.IsDir() {
+		return nil
+	}
+	entries, err := readDirBounded(ledger, current)
+	if err != nil {
+		// filepath.WalkDir reports a directory whose listing failed to fn a second
+		// time, with the error, and the callback here turns that into the
+		// unreadable-path disclosure. Dropping it would report a short count as
+		// exact.
+		if skip := fn(current, entry, err); skip != nil {
+			if errors.Is(skip, filepath.SkipDir) {
+				return nil
+			}
+			return skip
+		}
+		return nil
+	}
+	for _, child := range entries {
+		if err := walkPrunedBoundedNode(ledger, filepath.Join(current, child.Name()), child, nil, fn); err != nil {
+			if errors.Is(err, filepath.SkipDir) {
+				return nil
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// readDirBounded reads at most the remaining budget's worth of one directory,
+// sorted, and marks the count a lower bound when the directory held more.
+func readDirBounded(ledger *repoIgnoreLedger, dir string) ([]fs.DirEntry, error) {
+	remaining := ledger.remainingExclusionWalk()
+	handle, err := os.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = handle.Close() }()
+	// remaining+1 distinguishes "the whole directory" from "as much of it as the
+	// budget allows"; the extra entry is read and discarded, never visited.
+	entries, err := handle.ReadDir(remaining + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	ledger.noteDirentsRead(len(entries))
+	if len(entries) > remaining {
+		ledger.noteCountIncomplete()
+		entries = entries[:remaining]
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	return entries, nil
 }
 
 // noteGitBlindSpot records that a repository rule GIT ITSELF APPLIES removed a

@@ -371,3 +371,70 @@ func TestOrdinaryPrunedExclusionStaysExact(t *testing.T) {
 		t.Errorf("an exactly counted disclosure rendered itself as a lower bound")
 	}
 }
+
+// TestPrunedExclusionAccountingBoundsWhatItReads is the give-back-the-prune
+// finding one layer in: the entry budget bounded the entries the accounting
+// VISITED, and filepath.WalkDir reads and sorts a directory IN FULL before the
+// first of them reaches the callback. The reported count was bounded; the work
+// behind it was not, and the repository still set how much filesystem every
+// search crawls.
+//
+// Reproduced at runtime on the head that carried the entry budget, one flat
+// pruned directory, same search, same reported count:
+//
+//	fanout=20000  elapsed=112ms  Files=19998 CountIncomplete=true
+//	fanout=200000 elapsed=468ms  Files=19998 CountIncomplete=true
+//
+// Ten times the tree for 4.2x the wall clock of every search, with a payload
+// that could not tell the two apart. That defect is visible only as cost, so the
+// assertion here is on the entries read rather than on elapsed time, which is
+// why this test counts them instead of timing them.
+func TestPrunedExclusionAccountingBoundsWhatItReads(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	write(t, root, "visible/stub.go", "package visible\n\nfunc Stub() {}\n")
+	write(t, root, graphIgnoreFileName, "hidden/\n")
+	hidden := filepath.Join(root, "hidden")
+	if err := os.MkdirAll(hidden, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Twice the budget in ONE directory: nothing past the budget can ever be
+	// visited, so every entry past it that is read is cost the report cannot use.
+	for i := range maxRepoExclusionWalkEntries * 2 {
+		if err := os.WriteFile(filepath.Join(hidden, "f"+strconv.Itoa(i)+".go"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	matcher, err := loadWorktreeIgnoreMatcher(root, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger := &repoIgnoreLedger{}
+	if _, err := walkWorktreeFiles(root, matcher, nil, ledger); err != nil {
+		t.Fatal(err)
+	}
+	// +1: the read distinguishes "the whole directory" from "as much of it as the
+	// budget allows" by asking for one entry more than it can pay for.
+	if got, want := ledger.walkDirentsRead(), maxRepoExclusionWalkEntries+1; got > want {
+		t.Errorf("the accounting read %d directory entries against a budget of %d; the bound holds for"+
+			" the count and not for the crawl behind it, so the repository still sets how much"+
+			" filesystem every search reads", got, want)
+	}
+	report := ledger.report()
+	if report == nil {
+		t.Fatalf("a %s directory rule pruned a tree and the ledger disclosed nothing", graphIgnoreFileName)
+	}
+	// Bounding the read must not turn the disclosure into a silent shortfall.
+	if !report.CountIncomplete {
+		t.Errorf("CountIncomplete = false over a tree the read could not finish; a short count that"+
+			" calls itself exact is the silence this disclosure exists to end (Files = %d)", report.Files)
+	}
+	if len(report.Unreadable) != 0 {
+		t.Errorf("Unreadable = %v, want empty — nothing here was unreadable, it was merely large",
+			report.Unreadable)
+	}
+	if report.Files == 0 || report.Files > maxRepoExclusionWalkEntries {
+		t.Errorf("Files = %d, want between 1 and %d — bounding the READ must still name what it did"+
+			" visit, not collapse the disclosure to nothing", report.Files, maxRepoExclusionWalkEntries)
+	}
+}
