@@ -10290,16 +10290,41 @@ const gitDirPointerPrefix = "gitdir: "
 // into the pointer and `git rev-parse --git-dir` reads it back with the space,
 // while every rejected spelling above fails `git rev-parse --git-dir`.
 //
-// The empty target — `gitdir: ` and nothing else — is reported as absent. Git
-// resolves it to the directory holding the pointer only to reject it in
-// is_git_directory(); treating it as a hit would exclude that whole directory on
-// the strength of a file git does not accept.
+// A NUL byte ENDS the target. Git reads the file into a NUL-terminated buffer,
+// trims the trailing newlines off the raw length, and then hands `buf + 8` on as
+// a C string to is_absolute_path(), is_git_directory() and real_pathdup() — so
+// the first NUL is the end of the name and everything after it is neither part
+// of the path nor an error. Keeping it produced a name nothing on disk is
+// called: the structure test could not find the directory, no target was
+// recorded, and the git directory the pointer named was indexed. Verified on
+// git 2.54.0 with a `--separate-git-dir=.repo-git` worktree:
+//
+//	$ printf 'gitdir: .repo-git\0junkjunk\n' > .git
+//	$ git rev-parse --git-dir
+//	<worktree>/.repo-git
+//	$ git ls-files --cached --others --exclude-standard --directory
+//	.repo-git/
+//	tracked.go
+//
+// The truncation is applied AFTER the newline trim, which is the order git's own
+// buffer produces: `gitdir: x\n\0` keeps the newline in the name there and here
+// alike, because the trim looks at the last byte of the file and finds the NUL.
+//
+// The empty target — `gitdir: ` and nothing else, or a NUL straight after the
+// prefix — is reported as absent. Git resolves it to the directory holding the
+// pointer only to reject it in is_git_directory() (`printf 'gitdir: \0x\n' >
+// .git` gives `fatal: not a git repository: (null)`, exit 128); treating it as a
+// hit would exclude that whole directory on the strength of a file git does not
+// accept.
 func parseGitDirPointer(content []byte) (string, bool) {
 	target, ok := strings.CutPrefix(string(content), gitDirPointerPrefix)
 	if !ok {
 		return "", false
 	}
 	target = strings.TrimRight(target, "\r\n")
+	if nul := strings.IndexByte(target, 0); nul >= 0 {
+		target = target[:nul]
+	}
 	if target == "" {
 		return "", false
 	}
