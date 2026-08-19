@@ -163,8 +163,7 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 			if _, err := io.WriteString(opts.Stdout, searchEchoHeader(flags.Query, state.Query)); err != nil {
 				return err
 			}
-			_, err := io.WriteString(opts.Stdout, state.Payload)
-			return err
+			return replaySearchPayload(opts.Stdout, []byte(state.Payload))
 		}
 	}
 	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
@@ -318,7 +317,42 @@ func echoPresearchPayload(out interface{ Write([]byte) (int, error) }, path stri
 	if len(payload) == 0 {
 		return fmt.Errorf("%s: %s is empty: a pre-delivered payload of zero bytes would answer the agent with nothing and still report success", envPresearch, path)
 	}
-	_, err = out.Write(payload)
+	return replaySearchPayload(out, payload)
+}
+
+// replaySearchPayload is the sink every REPLAY of a stored search payload goes
+// through, and it exists because wrapping the encoders does not reach these bytes.
+//
+// The machine-format rule is applied where a value is ENCODED. A replay encodes
+// nothing: ENTIRE_GRAPH_PRESEARCH hands stdout a file another process wrote, and
+// the search echo hands it a payload a previous PROCESS wrote — possibly a
+// previous BUILD, one from before the rule existed. Those bytes carry whatever
+// that writer left in them, so the rule is applied again on the way out, exactly
+// as the warm provider-record cache in root.go re-applies it rather than trusting
+// the entry that produced it.
+//
+// It is JSONWriter and not Writer, for both replay paths, because the escape has
+// to be safe for a payload whose format this code does not know:
+//
+//   - JSONWriter's rewrite is lossless and leaves a machine format decodable —
+//     \u009d is the JSON escape for the same code point. Writer's is not usable
+//     here: it would rewrite DEL to \x7f, and DEL is a byte encoding/json leaves
+//     RAW inside a string, so a payload holding one would come out of a replay
+//     with an escape JSON does not define. Measured on Go 1.26.5,
+//     `{"p":"a\x7fb"}` through Writer no longer decodes, and through JSONWriter
+//     it does. Corrupting the document is a worse outcome than the byte, and
+//     0x7f introduces no sequence.
+//   - The text and agent renderers write through termsafe.Writer already, so a
+//     payload recorded in those formats arrives here with its C1 controls ALREADY
+//     in \u00XX form and every remaining byte below 0x80. JSONWriter leaves all of
+//     that untouched, which is what makes one wrapper correct for every format a
+//     payload can be in.
+//
+// The C1 range is the whole guarantee. A payload predating termsafe entirely
+// could hold a raw ESC, and JSONWriter does not rewrite it — a C0 escape inside a
+// JSON string would be an escape JSON does not define, the same way \x7f is.
+func replaySearchPayload(out io.Writer, payload []byte) error {
+	_, err := termsafe.NewJSONWriter(out).Write(payload)
 	return err
 }
 
