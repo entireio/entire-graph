@@ -10603,6 +10603,68 @@ func hasObjectsAndRefs(common string) bool {
 	return true
 }
 
+// gitJoinRelative joins a RELATIVE path git read out of a `.git` pointer or a
+// `commondir` file onto the directory that held that file, the way git joins it.
+//
+// Git concatenates and lets the OS resolve: read_gitfile_gently() appends the
+// `gitdir:` target onto the `.git` file's own directory prefix, and
+// get_common_dir_noenv() appends the `commondir` target onto the git directory,
+// and each hands the result straight to the kernel, which walks the components
+// IN ORDER. `filepath.Join` cleans `..` LEXICALLY, before any link is consulted,
+// so a `..` that FOLLOWS a symlink component names a different directory in the
+// two schemes: git steps out of the link's TARGET, filepath.Join steps out of
+// the link's own parent.
+//
+// Verified on git 2.54.0, with `nested/link -> sub/child`:
+//
+//	$ printf 'gitdir: link/../.real-git\n' > nested/.git
+//	$ cd nested && git rev-parse --absolute-git-dir
+//	<repo>/nested/sub/.real-git
+//
+// and the same shape for `commondir`, with `adm/link -> sub/child`:
+//
+//	$ printf 'link/../.common\n' > adm/commondir
+//	$ git --git-dir=adm rev-parse --git-common-dir
+//	<tmp>/adm/sub/.common
+//
+// Both lexical answers — `nested/.real-git`, `adm/.common` — name nothing on
+// disk. On the pointer that meant NO target was recorded (observe() asks for git
+// structure at the name, and the lexical name has none) and the HEAD-less git
+// directory git really names was indexed with its credentialed config; on
+// `commondir` it meant a linked worktree's administrative directory was called
+// ordinary content.
+//
+// The filesystem is consulted only when the target actually contains a `..`
+// element, so every other join keeps the exact spelling it has today — including
+// the link's own spelling for a pointer that names a symlink outright, which
+// addTarget records beside the resolved one. When resolution fails, which is
+// what a target naming nothing on disk does, the lexical join is the answer: git
+// would call that "not a git repository" too, and the caller's structure test
+// then refuses it.
+func gitJoinRelative(base, target string) string {
+	lexical := filepath.Join(base, target)
+	if !hasDotDotElement(target) {
+		return lexical
+	}
+	resolved, err := filepath.EvalSymlinks(base + string(filepath.Separator) + target)
+	if err != nil {
+		return lexical
+	}
+	return resolved
+}
+
+// hasDotDotElement reports whether target contains a `..` PATH ELEMENT, rather
+// than merely the two characters: a file called `..config` carries no parent
+// step, and must not pay for the filesystem resolution.
+func hasDotDotElement(target string) bool {
+	for _, element := range strings.Split(filepath.ToSlash(target), "/") {
+		if element == ".." {
+			return true
+		}
+	}
+	return false
+}
+
 // maxGitCommonDirBytes bounds the read of a `commondir` file. A real one is a
 // single path; anything larger is not one, and is refused rather than read.
 const maxGitCommonDirBytes = 4 << 10
@@ -10662,8 +10724,9 @@ func gitCommonDir(dir string) (string, bool) {
 	}
 	target = filepath.FromSlash(target)
 	if !filepath.IsAbs(target) {
-		// Git resolves a relative commondir against the git directory itself.
-		target = filepath.Join(dir, target)
+		// Git resolves a relative commondir against the git directory itself,
+		// by concatenation — see gitJoinRelative.
+		target = gitJoinRelative(dir, target)
 	}
 	return target, true
 }
@@ -11101,7 +11164,7 @@ func gitDirPointerTarget(repo, dir string) (string, bool) {
 	// a relative target against the directory that holds the `.git` file.
 	target = filepath.FromSlash(target)
 	if !filepath.IsAbs(target) {
-		target = filepath.Join(base, target)
+		target = gitJoinRelative(base, target)
 	}
 	if rel, inside := containedRel(repo, target); inside {
 		return rel, true
@@ -11302,19 +11365,15 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 	gitDirs := newGitDirExcluder(repo)
 	// The directories git lists nothing under come from git itself, so the sweep
 	// for a suppressed `.git` pointer does not have to re-read the whole tree.
-	if dirEntries, dirErr := gitutil.ListWorktreeDirectoryEntries(ctx, repo); dirErr == nil {
-		gitDirs.unlistedRoots = dirEntries
-		gitDirs.gitAnsweredRoots = true
-		// An IGNORED tree is in neither of git's `--exclude-standard` listings,
-		// so no chain and no collapsed root reaches a `.git` pointer inside it —
-		// and that pointer names a git directory somewhere ELSE, which git does
-		// list. `.gitignore` is committed content in the repository being
-		// scanned, so leaving those trees unswept let the scanned repository
-		// choose which pointers this rule may read. Ask git for them by name.
-		if ignoredEntries, ignoredErr := gitutil.ListIgnoredWorktreeDirectoryEntries(ctx, repo); ignoredErr == nil {
-			gitDirs.unlistedRoots = append(gitDirs.unlistedRoots, ignoredEntries...)
-		}
-	}
+	// An IGNORED tree is in neither of git's `--exclude-standard` listings, so no
+	// chain and no collapsed root reaches a `.git` pointer inside it — and that
+	// pointer names a git directory somewhere ELSE, which git does list.
+	// `.gitignore` is committed content in the repository being scanned, so
+	// leaving those trees unswept let the scanned repository choose which
+	// pointers this rule may read. Ask git for them by name.
+	dirEntries, dirErr := gitutil.ListWorktreeDirectoryEntries(ctx, repo)
+	ignoredEntries, ignoredErr := gitutil.ListIgnoredWorktreeDirectoryEntries(ctx, repo)
+	gitDirs.unlistedRoots, gitDirs.gitAnsweredRoots = gitSweepRoots(dirEntries, dirErr, ignoredEntries, ignoredErr)
 	gitDirs.observeListedPaths(listed, listedDirs)
 	paths := make([]string, 0, len(listed))
 	seen := make(map[string]struct{}, len(listed))
@@ -11372,6 +11431,34 @@ func eligibleGitWorktreeSourcePath(
 	// symlink; the snapshot reads neither.
 	info, err := os.Lstat(filepath.Join(repo, filepath.FromSlash(rel)))
 	return err == nil && info.Mode()&fs.ModeSymlink == 0 && info.Mode().IsRegular()
+}
+
+// gitSweepRoots combines git's two `--directory` listings into the roots the
+// sweep descends from, and reports whether GIT ANSWERED — which is the whole
+// question, because "answered" is what makes observeUnlistedDirs trust those
+// roots instead of deriving them by walking the tree.
+//
+// Both listings must have succeeded. Trusting the pair on the strength of the
+// first alone was a leak with a bounded, one-sided cost: the non-ignored listing
+// is the one that nearly always works, so `gitAnsweredRoots` stayed true while
+// the ignored roots were silently missing, the sweep skipped the whole-tree
+// fallback it exists for, and a `.git` pointer inside an ignored tree went unread
+// — leaving its target, which git lists in full, indexed with its credentialed
+// config. The two commands differ by one flag, so anything that can fail the
+// second (a spawn refused under fd or memory pressure, a killed child, a git
+// that does not know the flag) fails it while the first has already succeeded.
+//
+// The price of the false answer is the sweep's entire purpose; the price of the
+// fallback is one whole-tree traversal on a path that already failed. So an
+// error on EITHER listing means git did not answer.
+func gitSweepRoots(dirEntries []string, dirErr error, ignoredEntries []string, ignoredErr error) ([]string, bool) {
+	if dirErr != nil || ignoredErr != nil {
+		return nil, false
+	}
+	roots := make([]string, 0, len(dirEntries)+len(ignoredEntries))
+	roots = append(roots, dirEntries...)
+	roots = append(roots, ignoredEntries...)
+	return roots, true
 }
 
 // walkWorktreeFiles is the non-git fallback listing. It honours the ignore stack
