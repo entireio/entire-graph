@@ -72,21 +72,41 @@ type jsDottedCall struct {
 // an empty state — no namespace calls are classified for that file — and a
 // non-nil error so the caller can record a partial failure instead of
 // silently degrading (a timeout wraps context.DeadlineExceeded).
-func newJSScanState(path, content string) (*jsScanState, error) {
+func newJSScanState(ctx context.Context, path, content string) (*jsScanState, error) {
+	// jsScanGrammar masks the source before any parse happens, which is the
+	// same "a later stage was reached unbudgeted" shape as the parse itself.
+	// Guard the whole scan on entry, not just the parse inside it.
+	if err := ctx.Err(); err != nil {
+		return emptyJSScanState(content), fmt.Errorf("tree-sitter scope parse stopped by caller: %w", err)
+	}
 	grammar, parseSrc := jsScanGrammar(path, content)
-	return buildJSScanState(grammar, parseSrc, content)
+	return buildJSScanState(ctx, grammar, parseSrc, content)
 }
 
 // newJSScanStateForContent serves content-only callers (no path available):
 // it prefers the TypeScript grammar and falls back to TSX when the parse
 // fails outright.
-func newJSScanStateForContent(content string) *jsScanState {
-	state, _ := buildJSScanState(treesitterts.GetLanguage(), []byte(maskTypeScriptUnsupportedSyntax(content)), content)
+func newJSScanStateForContent(ctx context.Context, content string) *jsScanState {
+	if ctx.Err() != nil {
+		return emptyJSScanState(content)
+	}
+	state, _ := buildJSScanState(ctx, treesitterts.GetLanguage(), []byte(maskTypeScriptUnsupportedSyntax(content)), content)
 	if state.parsed {
 		return state
 	}
-	state, _ = buildJSScanState(treesittertsx.GetLanguage(), []byte(content), content)
+	state, _ = buildJSScanState(ctx, treesittertsx.GetLanguage(), []byte(content), content)
 	return state
+}
+
+// emptyJSScanState is the "nothing was scanned" state every failure path
+// returns: no namespaces, no bindings, no calls, but with the line index the
+// callers' position helpers need.
+func emptyJSScanState(content string) *jsScanState {
+	return &jsScanState{
+		namespaceSet: map[string]bool{},
+		lineStarts:   jsLineStarts(content),
+		contentLen:   len(content),
+	}
 }
 
 func jsScanGrammar(path, content string) (*sitter.Language, []byte) {
@@ -111,23 +131,30 @@ func jsScanGrammar(path, content string) (*sitter.Language, []byte) {
 // timeout path deterministically.
 var jsScanParseTimeout = treeSitterParseTimeout
 
-func buildJSScanState(grammar *sitter.Language, parseSrc []byte, content string) (*jsScanState, error) {
-	state := &jsScanState{
-		namespaceSet: map[string]bool{},
-		lineStarts:   jsLineStarts(content),
-		contentLen:   len(content),
+// buildJSScanState parses under the CALLER's context. The parse budget below
+// is a cap on top of that context, not a fresh one rooted at
+// context.Background: the relation-phase scan is per file, so a scan rooted at
+// Background let every remaining file spend up to jsScanParseTimeout after the
+// wall-clock budget had already expired.
+func buildJSScanState(ctx context.Context, grammar *sitter.Language, parseSrc []byte, content string) (*jsScanState, error) {
+	state := emptyJSScanState(content)
+	if err := ctx.Err(); err != nil {
+		return state, fmt.Errorf("tree-sitter scope parse stopped by caller: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), jsScanParseTimeout)
+	parseCtx, cancel := context.WithTimeout(ctx, jsScanParseTimeout)
 	defer cancel()
 	parser := sitter.NewParser()
 	defer parser.Close()
 	parser.SetLanguage(grammar)
-	tree, err := parser.ParseCtx(ctx, nil, parseSrc)
+	tree, err := parser.ParseCtx(parseCtx, nil, parseSrc)
 	if tree != nil {
 		defer tree.Close()
 	}
 	if err != nil || tree == nil {
-		if ctx.Err() != nil {
+		if callerErr := ctx.Err(); callerErr != nil {
+			return state, fmt.Errorf("tree-sitter scope parse stopped by caller: %w", callerErr)
+		}
+		if parseCtx.Err() != nil {
 			return state, fmt.Errorf("%w: tree-sitter scope parse exceeded %s", context.DeadlineExceeded, jsScanParseTimeout)
 		}
 		if err == nil {
@@ -706,8 +733,8 @@ func jsFunctionLikeNode(node *sitter.Node) *sitter.Node {
 // functions inside a namespace as ordinary, unqualified function symbols, so
 // call resolution needs the source range to distinguish same-named
 // declarations in `namespace A` and `namespace B`.
-func jsNamespaceScopes(fileContent string) []jsNamespaceScope {
-	return newJSScanStateForContent(fileContent).namespaces
+func jsNamespaceScopes(ctx context.Context, fileContent string) []jsNamespaceScope {
+	return newJSScanStateForContent(ctx, fileContent).namespaces
 }
 
 // jsCanonicalNamespaceWithPrefix resolves a dotted receiver path against the

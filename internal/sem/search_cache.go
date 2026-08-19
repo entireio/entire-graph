@@ -695,7 +695,7 @@ func selectiveSearchSnapshotFromFull(
 	if spec.name == ProfileSyntaxOnly {
 		emitStructuralRelationsCompact(sc.key, selective.Files, structuralByFile, shouldStop, emitRelation)
 	} else {
-		forEachRelation(sc.key, selective.Files, recordsByFile, sc.read, precomputedImports, spec, shouldStop, emitRelation, func(failure PartialFailure) {
+		forEachRelation(workCtx, sc.key, selective.Files, recordsByFile, sc.read, precomputedImports, spec, shouldStop, emitRelation, func(failure PartialFailure) {
 			relationFailures = append(relationFailures, failure)
 		})
 		// fileChangesWithRelations runs a `git log` subprocess and returns a

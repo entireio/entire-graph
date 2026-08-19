@@ -2,6 +2,7 @@ package sem
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11002,7 +11003,7 @@ func TestBuildRelationsUsesSymbolBlockIdentifierLookup(t *testing.T) {
 	recordsByFile[caller.FilePath] = []SymbolRecord{caller}
 	contentByFile[caller.FilePath] = "package pkg\nfunc Caller() {\n\tTargetSymbol()\n}\n"
 
-	relations := buildRelations("repo", files, recordsByFile, mapReader(contentByFile))
+	relations := buildRelations(context.Background(), "repo", files, recordsByFile, mapReader(contentByFile))
 
 	var sawTargetCall bool
 	for _, relation := range relations {
@@ -11073,7 +11074,7 @@ func TestBuildRelationsDropsAmbiguousCrossFileCallNameCollisions(t *testing.T) {
 		"runtime.ts":    "function sleep(ms: number) {}\n",
 	}
 
-	for _, relation := range buildRelations("repo", files, recordsByFile, mapReader(contentByFile)) {
+	for _, relation := range buildRelations(context.Background(), "repo", files, recordsByFile, mapReader(contentByFile)) {
 		if relation.Type == "CALLS" && relation.FromID == "caller" {
 			t.Fatalf("ambiguous sleep call should not resolve globally: %#v", relation)
 		}
@@ -11125,7 +11126,7 @@ func TestBuildRelationsResolvesCPlusPlusSameFileOverloadSet(t *testing.T) {
 	}
 
 	var targets []string
-	for _, relation := range buildRelations("repo", files, recordsByFile, mapReader(contentByFile)) {
+	for _, relation := range buildRelations(context.Background(), "repo", files, recordsByFile, mapReader(contentByFile)) {
 		if relation.Type == "CALLS" && relation.FromID == "caller" {
 			targets = append(targets, relation.ToID)
 			if relation.Resolution != "name_only" || relation.RelationScope != "workspace" {

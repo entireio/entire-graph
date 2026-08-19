@@ -1249,7 +1249,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 			symbolsByID, filesByID = recordIndexes(files, recordsByFile)
 		}
 		var relationFailures []PartialFailure
-		forEachRelation(sc.key, files, recordsByFile, sc.read, precomputedImports, spec, relationsShouldStop, func(r RelationRecord) {
+		forEachRelation(workCtx, sc.key, files, recordsByFile, sc.read, precomputedImports, spec, relationsShouldStop, func(r RelationRecord) {
 			emitRelation(r, symbolsByID, filesByID)
 		}, func(failure PartialFailure) {
 			relationFailures = append(relationFailures, failure)
@@ -2253,7 +2253,7 @@ func resolveJSNamespaceCallChain(name string, from SymbolRecord, sameFile []Symb
 // cross-file candidate actually reopens the receiver's namespace before
 // emitting an edge. Files without namespaces — or whose scope parse fails —
 // yield "" for every symbol; each file is read and scanned at most once.
-func jsCrossFileNamespaceLookup(readContent contentReader, recordsByFile map[string][]SymbolRecord) func(SymbolRecord) string {
+func jsCrossFileNamespaceLookup(ctx context.Context, readContent contentReader, recordsByFile map[string][]SymbolRecord) func(SymbolRecord) string {
 	cache := map[string]map[string]string{}
 	return func(symbol SymbolRecord) string {
 		if symbol.Language != "JavaScript" && symbol.Language != "TypeScript" {
@@ -2262,7 +2262,7 @@ func jsCrossFileNamespaceLookup(readContent contentReader, recordsByFile map[str
 		byID, ok := cache[symbol.FilePath]
 		if !ok {
 			if content, okRead := readContent(symbol.FilePath); okRead {
-				if scan, err := newJSScanState(symbol.FilePath, content); err == nil && len(scan.namespaces) > 0 {
+				if scan, err := newJSScanState(ctx, symbol.FilePath, content); err == nil && len(scan.namespaces) > 0 {
 					byID = jsNamespaceBySymbolID(content, recordsByFile[symbol.FilePath], scan.namespaces)
 				}
 			}
@@ -2501,9 +2501,9 @@ func sameFileOverloadSet(candidates []SymbolRecord) ([]SymbolRecord, bool) {
 // buildRelations collects every relation, deduplicates (first occurrence wins,
 // in emission order), and sorts for stable output. Used by the in-memory
 // snapshot path; the streaming path uses forEachRelation directly.
-func buildRelations(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func buildRelations(ctx context.Context, repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
 	var relations []RelationRecord
-	forEachRelation(repoKey, files, recordsByFile, readContent, nil, resolveProfile(ProfileFull), nil, func(r RelationRecord) {
+	forEachRelation(ctx, repoKey, files, recordsByFile, readContent, nil, resolveProfile(ProfileFull), nil, func(r RelationRecord) {
 		relations = append(relations, r)
 	}, nil)
 	relations = dedupeRelations(relations)
@@ -2651,7 +2651,7 @@ func jsScanPartialFailure(path string, err error) PartialFailure {
 	}
 }
 
-func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, precomputedImports map[string][]string, spec profileSpec, shouldStop func() bool, emit func(RelationRecord), recordFailure func(PartialFailure)) {
+func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, precomputedImports map[string][]string, spec profileSpec, shouldStop func() bool, emit func(RelationRecord), recordFailure func(PartialFailure)) {
 	// Nothing above the file loop used to consult shouldStop, so entering this
 	// function with an already-expired budget still bought three whole-repository
 	// index passes plus partialTypeCanonicalIDs before the first guard could run.
@@ -2729,7 +2729,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	// merged-declaration fallback (rare), and the lookup memoizes per file, so
 	// building the closure up front costs nothing for repositories without
 	// TypeScript namespaces.
-	foreignJSNamespaceOf := jsCrossFileNamespaceLookup(readContent, recordsByFile)
+	foreignJSNamespaceOf := jsCrossFileNamespaceLookup(ctx, readContent, recordsByFile)
 	typeLikeByShortName := map[string][]SymbolRecord{}
 	if crossFileContainers {
 		for _, file := range files {
@@ -3256,7 +3256,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 			// call sites for the whole file; every JS/TS scope decision below
 			// shares this state instead of re-deriving it per symbol.
 			var jsScanErr error
-			jsScan, jsScanErr = newJSScanState(file.Path, content)
+			jsScan, jsScanErr = newJSScanState(ctx, file.Path, content)
 			if jsScanErr != nil && recordFailure != nil {
 				// Surface the degraded relation pass the same way entity-phase
 				// parse failures are surfaced, so a timed-out or failed scope
@@ -3968,7 +3968,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		return
 	}
 	if spec.emits("CALLS") {
-		for _, r := range routeBridgeRelations(routeHandlers, httpCallsByRoute) {
+		for _, r := range routeBridgeRelations(shouldStop, routeHandlers, httpCallsByRoute) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
@@ -3977,7 +3977,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		if shouldStop != nil && shouldStop() {
 			return
 		}
-		for _, r := range graphqlSchemaResolverRelations(graphqlSchemaFields, graphqlResolvers) {
+		for _, r := range graphqlSchemaResolverRelations(shouldStop, graphqlSchemaFields, graphqlResolvers) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
@@ -4052,7 +4052,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	}
 }
 
-func routeBridgeRelations(routeHandlers map[string][]SymbolRecord, httpCallsByRoute map[string][]RelationRecord) []RelationRecord {
+// routeBridgeRelations pairs every HTTP client call on a route with every
+// handler of that route, so one high-cardinality route costs calls x handlers
+// records. It takes the stop predicate rather than relying on the caller's
+// guard between stages, because that guard cannot run until the whole product
+// has already been materialized. stop is nil on the unbudgeted path, so the
+// loops carry no check at all there.
+func routeBridgeRelations(stop func() bool, routeHandlers map[string][]SymbolRecord, httpCallsByRoute map[string][]RelationRecord) []RelationRecord {
+	if stopped(stop) {
+		return nil
+	}
 	var routes []string
 	for route := range httpCallsByRoute {
 		if len(routeHandlers[route]) > 0 {
@@ -4062,6 +4071,9 @@ func routeBridgeRelations(routeHandlers map[string][]SymbolRecord, httpCallsByRo
 	sort.Strings(routes)
 	var relations []RelationRecord
 	for _, route := range routes {
+		if stopped(stop) {
+			return relations
+		}
 		handlers := append([]SymbolRecord(nil), routeHandlers[route]...)
 		sort.Slice(handlers, func(i, j int) bool {
 			return handlers[i].ID < handlers[j].ID
@@ -4074,7 +4086,13 @@ func routeBridgeRelations(routeHandlers map[string][]SymbolRecord, httpCallsByRo
 			return calls[i].FromID < calls[j].FromID
 		})
 		for _, call := range calls {
+			if stopped(stop) {
+				return relations
+			}
 			for _, handler := range handlers {
+				if stopped(stop) {
+					return relations
+				}
 				if call.FromID == handler.ID {
 					continue
 				}
@@ -4102,7 +4120,13 @@ func routeBridgeRelations(routeHandlers map[string][]SymbolRecord, httpCallsByRo
 	return relations
 }
 
-func graphqlSchemaResolverRelations(schemaFields, resolvers map[string][]SymbolRecord) []RelationRecord {
+// graphqlSchemaResolverRelations is the same fields-by-resolvers product shape
+// as routeBridgeRelations and takes the predicate for the same reason: the
+// caller's guard between stages cannot run until the whole product exists.
+func graphqlSchemaResolverRelations(stop func() bool, schemaFields, resolvers map[string][]SymbolRecord) []RelationRecord {
+	if stopped(stop) {
+		return nil
+	}
 	var endpoints []string
 	for endpoint := range schemaFields {
 		if len(resolvers[endpoint]) > 0 {
@@ -4112,12 +4136,21 @@ func graphqlSchemaResolverRelations(schemaFields, resolvers map[string][]SymbolR
 	sort.Strings(endpoints)
 	var relations []RelationRecord
 	for _, endpoint := range endpoints {
+		if stopped(stop) {
+			return relations
+		}
 		fields := append([]SymbolRecord(nil), schemaFields[endpoint]...)
 		sort.Slice(fields, func(i, j int) bool { return fields[i].ID < fields[j].ID })
 		targets := append([]SymbolRecord(nil), resolvers[endpoint]...)
 		sort.Slice(targets, func(i, j int) bool { return targets[i].ID < targets[j].ID })
 		for _, field := range fields {
+			if stopped(stop) {
+				return relations
+			}
 			for _, resolver := range targets {
+				if stopped(stop) {
+					return relations
+				}
 				if field.ID == resolver.ID {
 					continue
 				}

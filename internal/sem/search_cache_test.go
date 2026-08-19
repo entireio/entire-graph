@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -289,7 +290,7 @@ func TestSelectiveSearchSnapshotUsesCachedSymbolByteRanges(t *testing.T) {
 	for _, symbol := range selective.Symbols {
 		symbolsByID[symbol.ID] = symbol
 	}
-	namespaces := jsNamespaceBySymbolID(source, selective.Symbols, jsNamespaceScopes(source))
+	namespaces := jsNamespaceBySymbolID(source, selective.Symbols, jsNamespaceScopes(context.Background(), source))
 	if len(calls) != 1 || symbolsByID[calls[0].FromID].Name != "run" || symbolsByID[calls[0].ToID].Name != "parse" || namespaces[calls[0].ToID] != "A.B" || calls[0].Resolution != "exact" {
 		t.Fatalf("cached selective namespace calls = %#v, want only exact run -> A.B.parse", calls)
 	}

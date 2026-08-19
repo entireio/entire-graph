@@ -271,6 +271,15 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 		}
 		return fallbackEntities(path, content, spec.language), spec.language, ParseStatus{}
 	}
+	// Source masking is language-specific work in its own right, and it sat
+	// between the predicate above and the budgeted parse context below, so
+	// nothing observed the budget across it. Rust's mask is the extreme case:
+	// it runs up to eight tree-sitter unwrap passes of its own. Guard the
+	// stage on entry and hand the mask the context, so no later stage can be
+	// reached unbudgeted.
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "source masking")
+	}
 	src := []byte(content)
 	parseSrc := src
 	entitySrc := src
@@ -328,10 +337,13 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 		}
 	}
 	if spec.language == "Rust" {
-		parseSrc = []byte(maskRustUnsupportedSyntax(content))
+		parseSrc = []byte(maskRustUnsupportedSyntax(ctx, content))
 	}
 	if flowJS {
 		parseSrc = []byte(maskFlowJavaScriptUnsupportedSyntax(content))
+	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "source masking")
 	}
 	parseCtx, cancel := context.WithTimeout(ctx, treeSitterParseTimeout)
 	defer cancel()
@@ -714,14 +726,14 @@ var rustItemWrapperMacroName = regexp.MustCompile(`^cfg_[A-Za-z0-9_]*$`)
 // all. The macro name, `!`, and wrapping braces are blanked with same-length
 // whitespace so the contents parse at identical byte offsets. Wrappers nest
 // (`cfg_net! { cfg_io! { ... } }`), so unwrapping iterates to a fixed point.
-func maskRustUnsupportedSyntax(content string) string {
+func maskRustUnsupportedSyntax(ctx context.Context, content string) string {
 	if !rustItemWrapperMacroHint.MatchString(content) {
 		return content
 	}
 	src := []byte(content)
 	const maxUnwrapDepth = 8
 	for i := 0; i < maxUnwrapDepth; i++ {
-		if !unwrapRustItemWrapperMacros(src) {
+		if !unwrapRustItemWrapperMacros(ctx, src) {
 			break
 		}
 	}
@@ -730,13 +742,19 @@ func maskRustUnsupportedSyntax(content string) string {
 
 // unwrapRustItemWrapperMacros blanks one layer of item-position cfg_*! macro
 // wrappers in src in place and reports whether anything changed.
-func unwrapRustItemWrapperMacros(src []byte) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), treeSitterParseTimeout)
+func unwrapRustItemWrapperMacros(ctx context.Context, src []byte) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	// The cap is a bound on top of the caller's context, not a fresh budget
+	// rooted at context.Background: each unwrap pass is a full parse, and
+	// maskRustUnsupportedSyntax runs up to eight of them.
+	parseCtx, cancel := context.WithTimeout(ctx, treeSitterParseTimeout)
 	defer cancel()
 	parser := sitter.NewParser()
 	defer parser.Close()
 	parser.SetLanguage(rust.GetLanguage())
-	tree, err := parser.ParseCtx(ctx, nil, src)
+	tree, err := parser.ParseCtx(parseCtx, nil, src)
 	if tree != nil {
 		defer tree.Close()
 	}
