@@ -10766,12 +10766,19 @@ func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
 // Git names those directories itself, and is asked rather than re-derived.
 // `git ls-files --cached --others --exclude-standard --directory` reports a
 // directory with no listed content as one entry — `nested/` for a directory
-// holding only a `.git` pointer — while a directory that does hold listed
-// content is reported through its files, so the entries not already seen are
-// exactly the roots this sweep needs. Verified on git 2.54.0 in a repository
-// with tracked content, an ignored `build/` tree and two pointer-only
-// directories: the listing reports `nested/` and `nested2/` and says nothing
-// about `build/`.
+// holding only a `.git` pointer — so the entries ending in `/` are the roots
+// this sweep needs. Verified on git 2.54.0 in a repository with tracked content,
+// an ignored `build/` tree and two pointer-only directories: the listing reports
+// `nested/` and `nested2/` and says nothing about `build/`.
+//
+// A root is swept whether or not the ordinary listing already mentioned content
+// under it. `--directory` collapses an UNTRACKED directory to one entry no
+// matter what it holds, so `pkg/` holding `source.go` beside `nested/.git` is
+// reported as `pkg/` alone while the ordinary listing reports `pkg/source.go`:
+// the collapsed root is in `seen`, and the pointer-only directory inside it is
+// in neither listing. Skipping a seen root — or a seen directory during the
+// descent — therefore skipped the only path to it, at any depth, since git
+// collapses at the top-most untracked directory (`pkg/` for `pkg/a/nested/`).
 //
 // Deriving them instead — queueing every ancestor of every listed path and
 // reading each one — made the successful git-listing path perform a second
@@ -10781,15 +10788,21 @@ func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
 // .cache/ trees, one cold `search` went from 0.12 s to 0.43 s, and the gap grew
 // with the ignored trees while the indexed source did not change.
 //
-// The sweep still descends, because git collapses a pointer-only directory's
-// ancestor (`nested2/` for `nested2/sub/.git`), and the descent is pruned four
-// ways: a directory that holds listed content is already observed and is not
-// read again; an already-excluded path is not descended into; a vendored or
-// installed-dependency tree is skipped, since nothing in it is indexed for a
-// pointer there to leak through; and so is a tree the project's own ignore
-// rules cover, for the same reason and to keep the descent inside what git
-// already agreed to enumerate. Symlinked entries report as symlinks, not
-// directories, so no link is followed and no cycle is possible.
+// The sweep descends from each root, because git collapses a pointer-only
+// directory's ancestor (`nested2/` for `nested2/sub/.git`), and the descent is
+// pruned three ways: an already-excluded path is not descended into; a vendored
+// or installed-dependency tree is skipped, since nothing in it is indexed for a
+// pointer there to leak through; and so is a tree the project's own ignore rules
+// cover, for the same reason and to keep the descent inside what git already
+// agreed to enumerate. Symlinked entries report as symlinks, not directories, so
+// no link is followed and no cycle is possible; each directory is read once.
+//
+// Its cost is therefore the directories under the roots git collapsed — an
+// entirely untracked, non-ignored tree, which is the tree whose files this
+// listing indexes anyway — plus nothing at all for a repository whose untracked
+// content is ignored or absent. Git collapses only a directory that is entirely
+// untracked, so a directory holding tracked content is neither a root nor inside
+// one, and this sweep never reads it.
 //
 // What that gives up is narrow and stated: a pointer buried in an IGNORED tree
 // is no longer read, so a git directory whose only pointer lives there and whose
@@ -10801,26 +10814,63 @@ func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
 // the ignore rules.
 func (g *gitDirExcluder) observeUnlistedDirs(seen map[string]struct{}) {
 	queue := make([]string, 0, len(seen)+1)
+	queued := make(map[string]struct{}, len(seen)+1)
+	// Being already observed and being already swept are two different facts,
+	// and conflating them let a whole subtree go unread. `--directory` collapses
+	// an untracked directory to ONE entry and says nothing about anything under
+	// it, while the ordinary listing names that directory's files — so the
+	// collapsed root is always in `seen`, and skipping it there skipped the only
+	// path to the pointer-only directories inside it. Verified on git 2.54.0
+	// with `pkg/` untracked, holding `source.go` and `nested/.git`:
+	//
+	//	$ git ls-files --cached --others --exclude-standard
+	//	pkg/source.go
+	//	tracked.go
+	//	$ git ls-files --cached --others --exclude-standard --directory
+	//	pkg/
+	//	tracked.go
+	//
+	// `pkg/nested/` is in neither listing. So `seen` now guards observation
+	// only, and `queued` guards the descent.
+	enqueue := func(dir string) {
+		if _, done := queued[dir]; done {
+			return
+		}
+		queued[dir] = struct{}{}
+		queue = append(queue, dir)
+	}
+	observeOnce := func(dir string) {
+		if _, done := seen[dir]; done {
+			return
+		}
+		seen[dir] = struct{}{}
+		g.observe(dir)
+	}
 	if g.gitAnsweredRoots {
 		for _, entry := range g.unlistedRoots {
-			dir := strings.TrimSuffix(filepath.ToSlash(entry), "/")
-			if dir == "" || dir == "." {
+			// Only a directory git COLLAPSED carries the trailing slash. The
+			// same listing reports every tracked and untracked file by name,
+			// and a gitlink the same way, so without this test the sweep pays
+			// one failed ReadDir per file in the repository — and gains
+			// nothing: a listed path is already observed through its own chain,
+			// gitlink entries included.
+			if !strings.HasSuffix(entry, "/") {
 				continue
 			}
-			if _, done := seen[dir]; done {
+			dir := strings.TrimSuffix(filepath.ToSlash(entry), "/")
+			if dir == "" || dir == "." {
 				continue
 			}
 			if g.skipSweptDir(dir, path.Base(dir)) {
 				continue
 			}
-			seen[dir] = struct{}{}
-			g.observe(dir)
-			queue = append(queue, dir)
+			observeOnce(dir)
+			enqueue(dir)
 		}
 	} else {
-		queue = append(queue, "")
+		enqueue("")
 		for dir := range seen {
-			queue = append(queue, dir)
+			enqueue(dir)
 		}
 	}
 	// Sorted so the observation order, and therefore the pruning, is the same on
@@ -10846,15 +10896,11 @@ func (g *gitDirExcluder) observeUnlistedDirs(seen map[string]struct{}) {
 			if dir != "" {
 				child = dir + "/" + name
 			}
-			if _, done := seen[child]; done {
-				continue
-			}
 			if g.skipSweptDir(child, name) {
 				continue
 			}
-			seen[child] = struct{}{}
-			g.observe(child)
-			queue = append(queue, child)
+			observeOnce(child)
+			enqueue(child)
 		}
 	}
 }
