@@ -308,10 +308,22 @@ func cloneAll(ctx context.Context, specs []repoSpec, cacheDir string, lock map[s
 // `ls .git/refs/heads` gains `injected`, and HEAD lands on the evil branch tip
 // while ensureRepo returns a nil error). A wildcard refspec such as
 // `refs/heads/*:refs/remotes/origin/*` does the same for every branch at once.
-// Git ref names cannot contain `:` or `*` (git check-ref-format), and a leading
-// `+` is meaningful only as a refspec's force marker, so rejecting those three
-// costs no legitimate ref and leaves `git fetch origin <ref>` able to fetch
-// exactly one ref -- which is what makes FETCH_HEAD trustworthy afterwards.
+// Git ref names cannot contain `:` or `*` at all (git check-ref-format), so
+// refusing those two costs no legitimate ref and leaves `git fetch origin <ref>`
+// able to fetch exactly one ref -- which is what makes FETCH_HEAD trustworthy
+// afterwards.
+//
+// A leading `+` is not in that class and is not refused here. `+` is a legal ref
+// character in any position: `git check-ref-format refs/heads/+release` exits 0
+// and `git clone --branch +release` checks that branch out (verified against git
+// 2.54.0), so refusing it rejected refs Git itself accepts -- and because
+// cloneAll only logs a refused clone, a cache from an earlier run then carried
+// the benchmark on a stale checkout. What is unsafe about `+` is narrower and
+// lives in one slot: `git fetch origin +release` reads the `+` as a refspec's
+// force marker and fetches `release` instead, with exit 0 (verified against git
+// 2.54.0: FETCH_HEAD held release's tip while `+release` pointed elsewhere).
+// ensureRepo therefore resolves such a name against the remote and fetches it
+// fully qualified, and refuses it when the remote publishes no ref by that name.
 //
 // Refs reach ensureRepo from two ordinary repo files -- the manifest
 // (`owner/name@<ref>`) and the commit lock -- so their contents are argv input
@@ -321,7 +333,7 @@ func validateRef(ref string) error {
 	if strings.HasPrefix(ref, "-") || strings.ContainsRune(ref, '\x00') {
 		return fmt.Errorf("invalid git ref %q", ref)
 	}
-	if strings.HasPrefix(ref, "+") || strings.ContainsAny(ref, ":*") {
+	if strings.ContainsAny(ref, ":*") {
 		return fmt.Errorf("invalid git ref %q: refspec syntax is not a ref", ref)
 	}
 	return nil
@@ -385,7 +397,7 @@ func ensureRepo(ctx context.Context, url, ref, dir string, depth int) (string, e
 	// the remote which it actually publishes, so the clone and the checkout
 	// cannot resolve the same ref two different ways.
 	remoteRef := ""
-	if ref != "" && looksLikeSHA(ref) {
+	if ref != "" && refNeedsRemoteResolution(ref) {
 		var err error
 		if remoteRef, err = remoteRefFor(ctx, url, ref, endOfOptions); err != nil {
 			// A failed lookup is not an answer. Treating it as "the remote
@@ -398,6 +410,16 @@ func ensureRepo(ctx context.Context, url, ref, dir string, depth int) (string, e
 			// which never reaches ensureRepo, so failing here costs no
 			// supported workflow.
 			return "", err
+		}
+		if remoteRef == "" && strings.HasPrefix(ref, "+") {
+			// Nothing downstream can carry this name safely. The fetch slot
+			// reads a bare leading `+` as a refspec force marker, so `git fetch
+			// origin +release` fetches `release` and exits 0; the checkout by
+			// name then fails in a cache that has no local branch of that name,
+			// and the single-entry FETCH_HEAD fallback would return the wrong
+			// branch's tip as a success. Only the fully-qualified form the
+			// remote publishes escapes that reading, and here there is none.
+			return "", fmt.Errorf("invalid git ref %q: the remote publishes no branch or tag by that name, and a leading + is a fetch refspec's force marker", ref)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
@@ -459,8 +481,10 @@ func ensureRepo(ctx context.Context, url, ref, dir string, depth int) (string, e
 			if fetchErr != nil {
 				return "", fmt.Errorf("checkout %s: %v: %s", ref, err, out)
 			}
-			// validateRef rejects refspec syntax, so the fetch above asked for
-			// exactly one ref and FETCH_HEAD holds exactly that ref's tip.
+			// validateRef rejects `:` and `*`, and a leading `+` reaches here
+			// only as a ref the remote published (which takes the branch
+			// above), so the fetch asked for exactly one ref and FETCH_HEAD
+			// holds exactly that ref's tip.
 			// Re-check the file rather than trusting that reasoning: a
 			// multi-entry FETCH_HEAD means the ref was not a single ref, and
 			// its first entry is not what the manifest asked for.
@@ -512,6 +536,29 @@ func looksLikeSHA(ref string) bool {
 		}
 	}
 	return true
+}
+
+// refNeedsRemoteResolution reports whether ensureRepo must ask the remote what a
+// ref is before handing it to git as written, rather than letting git's own
+// parsing decide.
+//
+// Two shapes need it, for the same reason: git resolves them differently in
+// different slots, so the clone and the checkout can land on different commits
+// while every command exits 0.
+//
+//   - A hex-shaped name may be an object id or a branch of that name, and both
+//     can exist in one repository pointing at different commits (looksLikeSHA
+//     only guesses which).
+//   - A name starting with `+` is a ref to `git clone --branch` and to `git
+//     checkout`, but a force-marked refspec for the *rest* of the name to `git
+//     fetch` (verified against git 2.54.0: with `release` and `+release` at
+//     different commits, `git fetch origin +release` put release's tip in
+//     FETCH_HEAD and exited 0).
+//
+// In both cases the answer is the fully-qualified ref from remoteRefFor, which
+// no slot can re-read as something else.
+func refNeedsRemoteResolution(ref string) bool {
+	return looksLikeSHA(ref) || strings.HasPrefix(ref, "+")
 }
 
 // remoteRefFor returns the fully-qualified ref the remote publishes under name,

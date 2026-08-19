@@ -290,12 +290,15 @@ func TestValidateRefRejectsOptionShapedRefs(t *testing.T) {
 		"+refs/heads/evil:refs/heads/injected",
 		"refs/heads/*:refs/remotes/origin/*",
 		"main:main",
-		"+main",
 	} {
 		if err := validateRef(ref); err == nil {
 			t.Fatalf("validateRef(%q) = nil, want rejection", ref)
 		}
 	}
+	// A leading `+` is a legal ref character, not refspec syntax on its own;
+	// TestEnsureRepoChecksOutPlusPrefixedBranch and
+	// TestEnsureRepoRejectsPlusRefTheRemoteDoesNotPublish pin how ensureRepo
+	// keeps it out of the fetch slot's force-marker reading.
 	for _, ref := range []string{"", "main", "v1.2.3", "refs/heads/main", "1a2b3c4d5e6f7890abcdef1234567890abcdef12"} {
 		if err := validateRef(ref); err != nil {
 			t.Fatalf("validateRef(%q) = %v, want nil", ref, err)
@@ -896,5 +899,156 @@ func TestEnsureRepoChecksOutUppercaseHexShapedBranchName(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(dir, "branch.go")); statErr != nil {
 		t.Fatalf("uppercase-hex branch did not produce its working tree: %v", statErr)
+	}
+}
+
+// newUpstreamRepoWithPlusBranch publishes `release` and `+release` at different
+// commits, so a checkout of the wrong one is observable. Only `+release`
+// carries plus.go.
+func newUpstreamRepoWithPlusBranch(t *testing.T) (upstream, plusTip, decoyTip string) {
+	t.Helper()
+	upstream = newUpstreamRepo(t)
+	benchGit(t, upstream, "checkout", "--quiet", "-b", "release")
+	if err := os.WriteFile(filepath.Join(upstream, "release.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	benchGit(t, upstream, "add", ".")
+	benchGit(t, upstream, "commit", "--quiet", "-m", "on release")
+	decoyTip = benchGitOutput(t, upstream, "rev-parse", "HEAD")
+
+	benchGit(t, upstream, "checkout", "--quiet", "-b", "+release")
+	if err := os.WriteFile(filepath.Join(upstream, "plus.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	benchGit(t, upstream, "add", ".")
+	benchGit(t, upstream, "commit", "--quiet", "-m", "on +release")
+	plusTip = benchGitOutput(t, upstream, "rev-parse", "HEAD")
+
+	benchGit(t, upstream, "checkout", "--quiet", "main")
+	if plusTip == decoyTip {
+		t.Fatalf("fixture produced one commit for both branches: %q", plusTip)
+	}
+	return upstream, plusTip, decoyTip
+}
+
+// Git's ref grammar allows `+` anywhere in a name, first position included:
+// `git check-ref-format refs/heads/+release` exits 0, `git check-ref-format
+// --branch +release` echoes the name, and `git clone --branch +release` checks
+// that branch out (verified against git 2.54.0). Refusing every leading `+` as
+// refspec syntax therefore rejected a ref Git itself accepts, and cloneAll only
+// logs the refusal -- so a cache from an earlier run stays in place and the
+// benchmark measures the stale checkout.
+//
+// The `+` cannot simply be passed through either. In the *fetch* slot a bare
+// `+name` is a refspec whose force marker is that `+`, so `git fetch origin
+// +release` asks for `release`: verified against git 2.54.0, FETCH_HEAD held
+// release's tip and the command exited 0 while `+release` pointed at a
+// different commit. ensureRepo must resolve the name against the remote and
+// fetch it fully qualified (`refs/heads/+release`), where the leading character
+// is no longer a `+` and the force marker cannot be read into it.
+func TestEnsureRepoChecksOutPlusPrefixedBranch(t *testing.T) {
+	t.Run("cold-cache", func(t *testing.T) {
+		upstream, plusTip, decoyTip := newUpstreamRepoWithPlusBranch(t)
+		dir := filepath.Join(t.TempDir(), "clone")
+		sha, err := ensureRepo(t.Context(), upstream, "+release", dir, 1)
+		if err != nil {
+			t.Fatalf("ensureRepo(+release): %v", err)
+		}
+		if sha == decoyTip {
+			t.Fatalf("sha = %q, the tip of `release`; the manifest asked for `+release` at %q", sha, plusTip)
+		}
+		if sha != plusTip {
+			t.Fatalf("sha = %q, want the +release tip %q", sha, plusTip)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, "plus.go")); statErr != nil {
+			t.Fatalf("+release did not produce its working tree: %v", statErr)
+		}
+	})
+
+	// The warm cache is where the fetch slot decides the answer: no local
+	// branch of that name exists, so the checkout by name fails and the
+	// FETCH_HEAD fallback reports whatever the fetch resolved.
+	t.Run("warm-cache", func(t *testing.T) {
+		upstream, plusTip, decoyTip := newUpstreamRepoWithPlusBranch(t)
+		dir := filepath.Join(t.TempDir(), "clone")
+		if _, err := ensureRepo(t.Context(), upstream, "main", dir, 1); err != nil {
+			t.Fatalf("pre-clone at main: %v", err)
+		}
+		sha, err := ensureRepo(t.Context(), upstream, "+release", dir, 1)
+		if err != nil {
+			t.Fatalf("ensureRepo(+release) on a warm cache: %v", err)
+		}
+		if sha == decoyTip {
+			t.Fatalf("sha = %q, the tip of `release`; the leading + was read as a force marker instead of part of the ref (want %q)", sha, plusTip)
+		}
+		if sha != plusTip {
+			t.Fatalf("sha = %q, want the +release tip %q", sha, plusTip)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, "plus.go")); statErr != nil {
+			t.Fatalf("+release did not produce its working tree: %v", statErr)
+		}
+	})
+}
+
+// The bound on the widening above, and the reason it cannot be a plain removal
+// of the guard: a leading `+` is part of a ref only when the remote publishes
+// it as one. Against a remote that has `release` and no `+release`, `git fetch
+// origin +release` succeeds and leaves release's tip in FETCH_HEAD (verified
+// against git 2.54.0), the checkout by name then fails, and the single-entry
+// FETCH_HEAD fallback would return release's tip as a success for a ref the
+// remote never published. ensureRepo must fail closed instead, and leave the
+// cache where it was.
+//
+// This passes both before and after the widening -- before it the shape guard
+// refuses the ref, after it the remote lookup does -- which is the point: it
+// pins the behaviour the widening must not trade away.
+func TestEnsureRepoRejectsPlusRefTheRemoteDoesNotPublish(t *testing.T) {
+	upstream := newUpstreamRepo(t)
+	benchGit(t, upstream, "checkout", "--quiet", "-b", "release")
+	if err := os.WriteFile(filepath.Join(upstream, "release.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	benchGit(t, upstream, "add", ".")
+	benchGit(t, upstream, "commit", "--quiet", "-m", "on release")
+	decoyTip := benchGitOutput(t, upstream, "rev-parse", "HEAD")
+	benchGit(t, upstream, "checkout", "--quiet", "main")
+
+	dir := filepath.Join(t.TempDir(), "clone")
+	cached, err := ensureRepo(t.Context(), upstream, "main", dir, 1)
+	if err != nil {
+		t.Fatalf("pre-clone at main: %v", err)
+	}
+	sha, err := ensureRepo(t.Context(), upstream, "+release", dir, 1)
+	if err == nil {
+		t.Fatalf("ensureRepo(+release) = %q, <nil>; the remote publishes no such ref, so this is `release` at %q reported as a success", sha, decoyTip)
+	}
+	if sha != "" {
+		t.Fatalf("ensureRepo returned sha %q alongside the error %v; want no commit", sha, err)
+	}
+	if head := benchGitOutput(t, dir, "rev-parse", "HEAD"); head != cached {
+		t.Fatalf("cache HEAD moved to %q on a refused ref, want the cached %q", head, cached)
+	}
+}
+
+// Refspec syntax stays refused: a `:` or a `*` makes `git fetch origin <ref>` a
+// write or a wildcard read, and neither character can appear in a ref name at
+// all (git check-ref-format), so refusing them costs no legitimate ref. The
+// leading `+` is different -- it is a legal ref character -- and is handled by
+// the remote lookup in ensureRepo rather than by shape.
+func TestValidateRefRejectsRefspecSyntaxButNotPlusPrefixedNames(t *testing.T) {
+	for _, ref := range []string{
+		"+refs/heads/evil:refs/heads/injected",
+		"refs/heads/*:refs/remotes/origin/*",
+		"main:main",
+		"+main:main",
+	} {
+		if err := validateRef(ref); err == nil {
+			t.Fatalf("validateRef(%q) = nil, want rejection", ref)
+		}
+	}
+	for _, ref := range []string{"+main", "+release", "refs/heads/+release", "re+lease"} {
+		if err := validateRef(ref); err != nil {
+			t.Fatalf("validateRef(%q) = %v, want nil (git check-ref-format accepts these names)", ref, err)
+		}
 	}
 }
