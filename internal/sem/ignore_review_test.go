@@ -129,3 +129,41 @@ func TestTruncatedDisclosurePointsAtWhatJSONActuallyHolds(t *testing.T) {
 		t.Fatalf("an uncapped report should still point at the complete list:\n%s", whole)
 	}
 }
+
+// TestWalkFallbackDoesNotDiscloseWhatGitWouldHideAnyway is the other half of the
+// walk fallback's contract. The disclosure's whole claim is "Git would still have
+// shown you this file", which is why only `.graphignore` is accounted for there.
+// A path that a Git-applied rule ALSO covers fails that claim even when the
+// `.graphignore` rule is the one that wins the precedence contest — it is ordinary
+// build output, and reporting it both cries wolf and prints paths nobody asked
+// about.
+func TestWalkFallbackDoesNotDiscloseWhatGitWouldHideAnyway(t *testing.T) {
+	// No initRepo: the filesystem walk is the listing.
+	repo := t.TempDir()
+	write(t, repo, "main.go", "package main\n\nfunc main() {}\n")
+	write(t, repo, "bundle.gen.go", "package main\n\nfunc GeneratedBundle() string { return \"bearer token validation\" }\n")
+	// Git already hides the generated file; .graphignore covers it too, and its
+	// rule is the one that wins (loaded later, matches the path itself).
+	write(t, repo, ".gitignore", "bundle.gen.go\n")
+	write(t, repo, graphIgnoreFileName, "*.gen.go\n")
+	response, err := SearchRepository(t.Context(), repo, "test", "bearer token validation", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range response.Results {
+		if result.FilePath == "bundle.gen.go" {
+			t.Fatalf("fixture is wrong: the generated file was not excluded")
+		}
+	}
+	if response.RepoIgnored != nil {
+		t.Fatalf("ordinary Git-ignored build output was reported as repository-hidden source: %+v",
+			*response.RepoIgnored)
+	}
+	if response.Stats.RepoIgnoredFiles != 0 {
+		t.Fatalf("stats counted %d, want 0", response.Stats.RepoIgnoredFiles)
+	}
+}

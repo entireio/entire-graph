@@ -44,11 +44,13 @@ type ignoreRule struct {
 // to close.
 type ignoreOrigin struct {
 	callerControlled bool
-	// gitInvisible marks a rule from an ignore file GIT DOES NOT APPLY, i.e. the
-	// graph's own .graphignore. Anything such a rule removes is content Git itself
-	// would still list, so it is an exclusion worth reporting even in a listing
-	// mode that has no tracked/untracked distinction to lean on. See
-	// walkWorktreeFiles.
+	// gitInvisible marks a rule GIT DOES NOT APPLY: the graph's own .graphignore,
+	// and a --ignore-file/--include-file the caller passed. Git applies .gitignore
+	// (root and nested) and .git/info/exclude, so those are visible to it.
+	//
+	// It exists because a path only deserves the disclosure if Git itself would
+	// still have listed it, and in the filesystem-walk fallback there is no Git
+	// listing to ask. See nestedIgnoreStack.noteRepoExclusion.
 	gitInvisible bool
 	// label names the file the rule came from, repo-relative where that is
 	// meaningful (".graphignore", "backend/.gitignore"). It is reported to the
@@ -70,7 +72,7 @@ func graphIgnoreOrigin() ignoreOrigin {
 // callerIgnoreOrigin labels rules the person running the graph supplied
 // themselves, via --ignore-file or --include-file.
 func callerIgnoreOrigin(label string) ignoreOrigin {
-	return ignoreOrigin{callerControlled: true, label: label}
+	return ignoreOrigin{callerControlled: true, gitInvisible: true, label: label}
 }
 
 // localIgnoreOrigin labels rules from an exclude list that belongs to THIS
@@ -83,6 +85,8 @@ func callerIgnoreOrigin(label string) ignoreOrigin {
 // would be both a false "the repository hid this" alarm and a leak of that
 // operator's private exclusion paths into every payload.
 func localIgnoreOrigin(label string) ignoreOrigin {
+	// Not gitInvisible: Git does apply info/exclude, so a path it covers is one
+	// Git would have hidden too.
 	return ignoreOrigin{callerControlled: true, label: label}
 }
 
@@ -566,9 +570,13 @@ const maxNestedIgnoreFileBytes = 1 << 20
 // `backend/.gitignore` is invisible to a reader that only ever parsed the
 // repository root's .gitignore.
 type nestedIgnoreStack struct {
-	repo   string
-	base   ignoreMatcher
-	levels []nestedIgnoreLevel
+	repo string
+	base ignoreMatcher
+	// gitBase is base minus the rules Git does not apply, kept alongside it so the
+	// walk can ask what Git alone would have done with a path. Every nested level
+	// is a .gitignore, so the levels need no such twin.
+	gitBase ignoreMatcher
+	levels  []nestedIgnoreLevel
 }
 
 type nestedIgnoreLevel struct {
@@ -577,7 +585,25 @@ type nestedIgnoreLevel struct {
 }
 
 func newNestedIgnoreStack(repo string, base ignoreMatcher) *nestedIgnoreStack {
-	return &nestedIgnoreStack{repo: repo, base: base}
+	return &nestedIgnoreStack{repo: repo, base: base, gitBase: base.gitApplied()}
+}
+
+// gitApplied is the subset of the rules Git ITSELF would apply: .gitignore, a
+// nested .gitignore, .git/info/exclude. It answers "would Git have hidden this
+// path anyway", which is the question the walk fallback has to answer for itself
+// because the mode exists precisely where Git's own listing is unavailable.
+func (m ignoreMatcher) gitApplied() ignoreMatcher {
+	rules := make([]ignoreRule, 0, len(m.rules))
+	for _, rule := range m.rules {
+		if rule.origin.gitInvisible {
+			continue
+		}
+		rules = append(rules, rule)
+	}
+	if len(rules) == 0 {
+		return ignoreMatcher{}
+	}
+	return ignoreMatcher{rules: rules}
 }
 
 // enter registers the directory the walk is about to descend into (repo-relative,
@@ -674,11 +700,40 @@ func (s *nestedIgnoreStack) noteRepoExclusion(ledger *repoIgnoreLedger, rel stri
 	if !matched || !rule.ignore || rule.origin.callerControlled || !rule.origin.gitInvisible {
 		return
 	}
+	// Winning the precedence contest is not enough. A .graphignore rule can win it
+	// over a Git-applied rule that covers the same path — `*.gen.go` beats a
+	// `.gitignore` line naming one generated file, and `.graphignore` loads last —
+	// and then the path is ordinary build output Git would have hidden regardless.
+	// Reporting it would cry wolf and print paths nobody asked about, which is the
+	// noise that makes readers skip the disclosure that matters.
+	if s.ignoredByGit(rel, isDir) {
+		return
+	}
 	ledger.note(RepoExclusion{
 		Path:   cleanIgnorePath(rel),
 		Source: rule.origin.label,
 		Rule:   rule.pattern,
 	})
+}
+
+// ignoredByGit reports whether the rules Git itself applies already exclude rel,
+// under the same precedence Ignored uses over that subset.
+func (s *nestedIgnoreStack) ignoredByGit(rel string, isDir bool) bool {
+	if matched, ignored := s.gitBase.decideSelf(rel, isDir); matched {
+		return ignored
+	}
+	rel = cleanIgnorePath(rel)
+	for i := len(s.levels) - 1; i >= 0; i-- {
+		level := s.levels[i]
+		sub, ok := pathUnder(level.dir, rel)
+		if !ok {
+			continue
+		}
+		if matched, ignored := level.matcher.decide(sub, isDir); matched {
+			return ignored
+		}
+	}
+	return s.gitBase.Ignored(rel, isDir)
 }
 
 // MayIncludeDescendant defers to the explicit include files: only they can pull a
