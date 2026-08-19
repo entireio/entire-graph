@@ -875,3 +875,43 @@ func TestRealOutputPathFollowsThePlatformsDotDotRule(t *testing.T) {
 		t.Errorf("normalising platform: realOutputPathOn = %q, want %q", got, want)
 	}
 }
+
+// TestTheDotDotRuleMatchesTheFilesystemUnderTheTest checks the PREMISE of the
+// rule above against the machine actually running the test, rather than asserting
+// it: it performs the very call this helper replaced — os.WriteFile through a
+// ".." after a directory that does not exist — and requires realOutputPath to
+// agree with what the filesystem did.
+//
+// It therefore carries no GOOS guard on purpose. On a traversing platform both
+// fail; on a normalising one both succeed and name the same file. Compiling in
+// the wrong rule for the host is what this catches, and it is the reason the
+// Windows half of the rule does not rest on a claim: windows-latest runs it.
+func TestTheDotDotRuleMatchesTheFilesystemUnderTheTest(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	given := dotDotPath(filepath.Join(home, "missing"), "probe.txt")
+
+	writeErr := os.WriteFile(given, []byte("probe\n"), 0o600)
+	resolved, resolveErr := realOutputPath(given)
+	if (writeErr == nil) != (resolveErr == nil) {
+		t.Fatalf("os.WriteFile(%q) = %v but realOutputPath = %v: the compiled-in \"..\" rule is not this filesystem's",
+			given, writeErr, resolveErr)
+	}
+	if writeErr != nil {
+		// Traversing platform: the write stopped at the missing component, which
+		// is what the refusal preserves. Nothing landed anywhere.
+		if _, err := os.Stat(filepath.Join(home, "probe.txt")); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("the write failed but a file appeared beside the missing directory: %v", err)
+		}
+		return
+	}
+	// Normalising platform: the write landed beside the missing component, and
+	// realOutputPath must name that same file rather than refuse it.
+	beside := filepath.Join(home, "probe.txt")
+	if _, err := os.Stat(beside); err != nil {
+		t.Fatalf("the write succeeded but %s is not there: %v", beside, err)
+	}
+	if resolved != beside {
+		t.Fatalf("realOutputPath = %q, but the write landed at %q", resolved, beside)
+	}
+}
