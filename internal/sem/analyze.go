@@ -11,6 +11,12 @@ import (
 	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
+// maxDiffFileBytes caps how large a blob the semantic diff will materialize,
+// per side. It is deliberately the same ceiling the snapshot parser uses
+// (defaultMaxParseBytes): a file the graph declines to parse is not one the
+// diff should read twice in order to parse it anyway.
+const maxDiffFileBytes = defaultMaxParseBytes
+
 func AnalyzeGitRange(ctx context.Context, repo, base, head string, paths []string) (Result, error) {
 	return AnalyzeGitRangeWithOptions(ctx, repo, base, head, paths, AnalyzeOptions{})
 }
@@ -108,18 +114,46 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			beforeOK = file.Status != "A"
 			afterOK = file.Status != "D"
 		} else {
+			// Both sides are read under the same ceiling the snapshot parser
+			// uses. A semantic diff holds TWO blobs of one file at once, so an
+			// unbounded read here sets this command's memory and time by the
+			// largest object in the range rather than by anything the caller
+			// chose -- and unlike the snapshot readers, nothing downstream
+			// would have declined to parse it.
 			if file.Status != "A" {
-				before, beforeOK, err = gitutil.ShowFile(ctx, repo, base, oldPath)
+				before, beforeOK, err = gitutil.ShowFileLimited(ctx, repo, base, oldPath, maxDiffFileBytes)
 				if err != nil {
 					return Result{}, err
 				}
 			}
 			if file.Status != "D" {
-				after, afterOK, err = gitutil.ShowFile(ctx, repo, head, path)
+				after, afterOK, err = gitutil.ShowFileLimited(ctx, repo, head, path, maxDiffFileBytes)
 				if err != nil {
 					return Result{}, err
 				}
 			}
+		}
+
+		// A side ChangedFiles reported as present that came back unread was
+		// refused by the ceiling above. ChangedFiles parses `git diff -z`, so
+		// the path is exact rather than quoted and resolves at that revision by
+		// construction; the remaining way ShowFileLimited reports a present
+		// path as unreadable WITHOUT an error is the size refusal. Skip the
+		// delta and say so: an empty side would otherwise be compared against a
+		// parsed one and report every entity in it as phantom removed/added.
+		beforeRefused := file.Status != "A" && !beforeOK
+		afterRefused := file.Status != "D" && !afterOK
+		if beforeRefused || afterRefused {
+			warningPath := path
+			detail := "head version is above the diff read cap"
+			if beforeRefused && !afterRefused {
+				warningPath = oldPath
+				detail = "base version is above the diff read cap"
+			} else if beforeRefused && afterRefused {
+				detail = "base and head versions are above the diff read cap"
+			}
+			result.Warnings = append(result.Warnings, diffFileTooLargeWarning(warningPath, detail))
+			continue
 		}
 
 		// Support is content-aware: extensionless executables can still route to a
@@ -268,6 +302,22 @@ func budgetSkippedFileWarning(path string, done, total int, budget time.Duration
 		FilePath:             path,
 		EffectOnCompleteness: "file skipped; analysis time budget ran out before this changed file was analyzed",
 		Detail:               detail,
+	}
+}
+
+// diffFileTooLargeWarning builds the warning emitted when one side of a changed
+// file is above maxDiffFileBytes. It reuses the provider's E_FILE_TOO_LARGE
+// code and severity (see provider_parallel.go, and dependents.go for the same
+// reuse) so one code covers "this file was too large to read" everywhere; the
+// effect wording is diff-specific, because here the whole delta is dropped
+// rather than only the file's symbol parsing.
+func diffFileTooLargeWarning(path, detail string) ProviderWarning {
+	return ProviderWarning{
+		Code:                 "E_FILE_TOO_LARGE",
+		Severity:             "warning",
+		FilePath:             path,
+		EffectOnCompleteness: "file skipped; its content was not read, so its changes are not analyzed",
+		Detail:               fmt.Sprintf("%s of %d bytes", detail, maxDiffFileBytes),
 	}
 }
 
