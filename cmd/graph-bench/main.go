@@ -379,18 +379,34 @@ func ensureRepo(ctx context.Context, url, ref, dir string, depth int) (string, e
 	}
 	if ref != "" {
 		// Best-effort fetch of the exact ref so a pinned SHA is available even
-		// when it is not on the default branch; ignore fetch errors and let the
-		// checkout surface a real failure.
+		// when it is not on the default branch; a fetch failure is not fatal on
+		// its own, the checkout below surfaces the real failure.
 		// --end-of-options stops Git parsing anything after it as an option, so
 		// the ref can only ever be a refspec/revision even if the shape guard
 		// above is ever relaxed.
 		fetchArgs := append([]string{"fetch", "--quiet", "--depth", strconv.Itoa(depth)}, endOfOptions...)
 		fetchArgs = append(fetchArgs, "origin", ref)
-		_, _ = runGit(ctx, dir, fetchArgs...)
+		_, fetchErr := runGit(ctx, dir, fetchArgs...)
 		checkoutArgs := append([]string{"checkout", "--quiet"}, endOfOptions...)
 		checkoutArgs = append(checkoutArgs, ref)
 		if out, err := runGit(ctx, dir, checkoutArgs...); err != nil {
-			return "", fmt.Errorf("checkout %s: %v: %s", ref, err, out)
+			// looksLikeSHA is a shape guess, and a lowercase-hex branch name
+			// longer than SHA-1's 40 characters is indistinguishable from an
+			// abbreviated or full SHA-256 object id. Guessing "object id"
+			// makes the clone above omit --branch, so the branch reaches this
+			// repository only as FETCH_HEAD and checkout by name cannot see
+			// it. The fetch just resolved the ref on the remote, so when it
+			// succeeded FETCH_HEAD is exactly that ref's tip: check it out
+			// detached rather than failing a manifest that names a valid
+			// branch. Any other checkout failure keeps its original error.
+			if fetchErr != nil {
+				return "", fmt.Errorf("checkout %s: %v: %s", ref, err, out)
+			}
+			fallbackArgs := append([]string{"checkout", "--quiet", "--detach"}, endOfOptions...)
+			fallbackArgs = append(fallbackArgs, "FETCH_HEAD")
+			if fallbackOut, fallbackErr := runGit(ctx, dir, fallbackArgs...); fallbackErr != nil {
+				return "", fmt.Errorf("checkout %s: %v: %s (FETCH_HEAD fallback: %v: %s)", ref, err, out, fallbackErr, fallbackOut)
+			}
 		}
 	}
 	sha, err := runGit(ctx, dir, "rev-parse", "HEAD")
@@ -408,6 +424,11 @@ func ensureRepo(ctx context.Context, url, ref, dir string, depth int) (string, e
 // "fatal: Remote branch <id> not found in upstream origin" (verified against
 // git 2.54.0). The upper bound is therefore the longer format's width, which
 // keeps every previously accepted abbreviation accepted.
+//
+// The classification is a guess in both directions: a lowercase-hex branch name
+// longer than 40 characters looks exactly like an object id. It is therefore not
+// load-bearing — ensureRepo falls back to FETCH_HEAD when a checkout by name
+// fails after a successful fetch, so a misclassified branch still resolves.
 func looksLikeSHA(ref string) bool {
 	if len(ref) < 7 || len(ref) > 64 {
 		return false

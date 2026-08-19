@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -566,5 +567,42 @@ func TestEnsureRepoClonesPinnedSHA256CommitID(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(dir, "main.go")); statErr != nil {
 		t.Fatalf("pinned SHA-256 id did not produce a checkout: %v", statErr)
+	}
+}
+
+// A branch may legitimately be named in lowercase hex — release automation and
+// content-addressed tooling produce such names — and the object-id heuristic
+// cannot tell a 41-to-64 character hex branch from an abbreviated or full
+// SHA-256 id. When the heuristic guesses "object id", the fresh clone omits
+// --branch, so the branch exists only in FETCH_HEAD afterwards and checkout by
+// name fails. ensureRepo must still land on that branch's commit.
+func TestEnsureRepoChecksOutHexShapedBranchNames(t *testing.T) {
+	for _, name := range []string{
+		strings.Repeat("ab", 20) + "c", // 41 chars: longer than SHA-1, shorter than SHA-256
+		strings.Repeat("dc", 32),       // 64 chars: indistinguishable from a full SHA-256 id
+	} {
+		t.Run(strconv.Itoa(len(name)), func(t *testing.T) {
+			upstream := newUpstreamRepo(t)
+			benchGit(t, upstream, "checkout", "--quiet", "-b", name)
+			if err := os.WriteFile(filepath.Join(upstream, "branch.go"), []byte("package main\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			benchGit(t, upstream, "add", ".")
+			benchGit(t, upstream, "commit", "--quiet", "-m", "on the hex-named branch")
+			want := strings.TrimSpace(benchGitOutput(t, upstream, "rev-parse", "HEAD"))
+			benchGit(t, upstream, "checkout", "--quiet", "main")
+
+			dir := filepath.Join(t.TempDir(), "clone")
+			sha, err := ensureRepo(t.Context(), upstream, name, dir, 1)
+			if err != nil {
+				t.Fatalf("ensureRepo(%d-char hex branch): %v", len(name), err)
+			}
+			if sha != want {
+				t.Fatalf("sha = %q, want the branch tip %q", sha, want)
+			}
+			if _, statErr := os.Stat(filepath.Join(dir, "branch.go")); statErr != nil {
+				t.Fatalf("hex-named branch did not produce its checkout: %v", statErr)
+			}
+		})
 	}
 }
