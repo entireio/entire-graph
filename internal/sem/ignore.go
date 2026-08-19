@@ -969,7 +969,16 @@ func (s *nestedIgnoreStack) enterCharged(ledger *repoIgnoreLedger, dir string) b
 	}
 	var matcher ignoreMatcher
 	if err := matcher.loadFile(file, false, repoIgnoreOrigin(path.Join(dir, ".gitignore"))); err != nil {
-		return true
+		// Read but not parsed leaves the stack in exactly the state the budget
+		// refusal above describes: rules this stack does not have. bufio.Scanner
+		// refuses a token over 64 KiB, so one long line in a .gitignore far under
+		// maxNestedIgnoreFileBytes drops every rule in the file — including the
+		// ones already parsed, since the partial matcher goes with the error — and
+		// descending then credits the repository's own rule with removing paths
+		// that nested .gitignore hides. Same refusal, and the path is named so the
+		// disclosure reports an unreadable subtree rather than an ordering problem.
+		s.noteUnreadablePath(ledger, file, dir)
+		return false
 	}
 	s.levels = append(s.levels, nestedIgnoreLevel{dir: dir, matcher: matcher})
 	return true
