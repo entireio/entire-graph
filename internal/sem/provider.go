@@ -10249,6 +10249,103 @@ func isRepoGitDirPath(rel string) bool {
 	return rel == ".git" || strings.HasPrefix(rel, ".git/")
 }
 
+// maxGitDirPointerBytes bounds the read of a `.git` pointer file. A real one is
+// a single `gitdir: <path>` line; anything larger is not one, and is refused
+// rather than read.
+const maxGitDirPointerBytes = 4 << 10
+
+// repoGitDirRel resolves the repository's real git directory when `.git` is a
+// FILE rather than a directory, and reports it as a repo-relative slash path
+// when it lands INSIDE the repository root (otherwise ""). `.git` is a pointer
+// file for `git init|clone --separate-git-dir=<path>` and for a linked
+// worktree, and that path may be a sibling of the source it belongs to:
+// `--separate-git-dir=.repo-git` puts the whole git directory — config with its
+// credentialed remote URL, hooks, logs — under an ordinary-looking name in the
+// working tree, where the literal `.git` skip of isRepoGitDirPath does not
+// reach it.
+//
+// The pointer is parsed here rather than asked of `git rev-parse --git-dir`
+// deliberately: the listing paths that need this answer include the filesystem
+// fallback, which runs precisely because git just failed or is unavailable.
+// gitInfoExcludePath parses the same pointer but cannot answer this question: it
+// follows the gitdir's `commondir` on to the SHARED git directory (for a linked
+// worktree that is the main checkout's `.git`, outside this tree entirely) and
+// yields an info/exclude path rather than the directory to exclude.
+func repoGitDirRel(repo string) string {
+	pointer := filepath.Join(repo, ".git")
+	info, err := os.Lstat(pointer)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxGitDirPointerBytes {
+		return ""
+	}
+	content, err := os.ReadFile(pointer)
+	if err != nil {
+		return ""
+	}
+	target, ok := strings.CutPrefix(strings.TrimSpace(string(content)), "gitdir:")
+	if !ok {
+		return ""
+	}
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return ""
+	}
+	// Git writes the pointer with `/` separators on every platform.
+	target = filepath.FromSlash(target)
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(repo, target)
+	}
+	if rel, inside := containedRel(repo, target); inside {
+		return rel
+	}
+	// Git writes the pointer as an absolute path, so a symlinked repository root
+	// (macOS /var -> /private/var, a symlinked checkout) makes the pointer and
+	// the caller's root spell one directory two ways. Compare their resolved
+	// forms before concluding the git directory is outside the repository.
+	resolvedRepo, repoErr := filepath.EvalSymlinks(repo)
+	resolvedTarget, targetErr := filepath.EvalSymlinks(target)
+	if repoErr != nil || targetErr != nil {
+		return ""
+	}
+	if rel, inside := containedRel(resolvedRepo, resolvedTarget); inside {
+		return rel
+	}
+	return ""
+}
+
+// containedRel reports target's slash-separated path relative to root, and
+// whether it is strictly inside root.
+func containedRel(root, target string) (string, bool) {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return "", false
+	}
+	rel = filepath.ToSlash(rel)
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", false
+	}
+	return rel, true
+}
+
+// repoGitDirFilter returns the working-tree listing's "this is the repository's
+// own git directory" test for repo: always the literal `.git` of
+// isRepoGitDirPath, plus a `--separate-git-dir` target resolved into the
+// worktree. Both listing paths need it — `git ls-files --others` reports a
+// separate git directory as ordinary untracked content, and the filesystem
+// fallback walks it — so it is resolved once per listing and asked per path.
+//
+// The committed-tree listing does not: its content is whatever the project
+// committed, never the live git directory a checkout writes credentials into.
+func repoGitDirFilter(repo string) func(rel string) bool {
+	gitDir := repoGitDirRel(repo)
+	return func(rel string) bool {
+		rel = filepath.ToSlash(rel)
+		if isRepoGitDirPath(rel) {
+			return true
+		}
+		return gitDir != "" && (rel == gitDir || strings.HasPrefix(rel, gitDir+"/"))
+	}
+}
+
 // skipVendoredDir is the single vendored-directory decision for both the
 // working-tree walk and the HEAD-tree listing: skip unambiguous vendored names
 // always, and ambiguous generated-output names only when the directory is not
@@ -10325,6 +10422,7 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 		_, ok := trackedDirs[rel]
 		return ok
 	}
+	inRepoGitDir := repoGitDirFilter(repo)
 	listed, err := gitutil.ListWorktreeFiles(ctx, repo)
 	if err != nil {
 		return walkWorktreeFiles(repo, ignores, dirTracked)
@@ -10362,6 +10460,9 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 	for _, entry := range listed {
 		rel := filepath.ToSlash(entry)
 		if _, exists := seen[rel]; exists {
+			continue
+		}
+		if inRepoGitDir(rel) {
 			continue
 		}
 		if !eligibleGitWorktreeSourcePath(repo, rel, ignores, vendorRules, dirTracked) {
@@ -10425,6 +10526,7 @@ func visitWalkWorktreeFiles(
 ) error {
 	stack := newNestedIgnoreStack(repo, ignores)
 	defer stack.close()
+	inRepoGitDir := repoGitDirFilter(repo)
 	return filepath.WalkDir(repo, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -10438,6 +10540,11 @@ func visitWalkWorktreeFiles(
 					return relErr
 				}
 				rel = filepath.ToSlash(relPath)
+			}
+			// The git directory is refused before anything inside it is read,
+			// including its own .gitignore.
+			if rel != "" && inRepoGitDir(rel) {
+				return filepath.SkipDir
 			}
 			// Enter first: this directory's own .gitignore is part of the evidence
 			// for whether the project re-includes something inside it.
@@ -10462,7 +10569,7 @@ func visitWalkWorktreeFiles(
 		rel = filepath.ToSlash(rel)
 		// A linked worktree's `.git` is a FILE, so the directory decision above
 		// never sees it; the same unconditional rule applies.
-		if isRepoGitDirPath(rel) {
+		if inRepoGitDir(rel) {
 			return nil
 		}
 		if isVendoredScanFile(rel, name) {

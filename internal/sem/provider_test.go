@@ -15177,3 +15177,181 @@ func TestSearchRepositoryNeverIndexesGitDirOnFilesystemFallback(t *testing.T) {
 		t.Errorf("files_scanned = %d, want 2 (.gitignore and src/app.go only)", response.Stats.FilesScanned)
 	}
 }
+
+// TestRepoGitDirRelResolvesSeparateGitDirPointer pins the `.git` pointer parse.
+// `git init|clone --separate-git-dir=<path>` (and a linked worktree) writes
+// `.git` as a FILE holding `gitdir: <path>`, and that path may be an
+// ordinary-looking directory inside the worktree — `.repo-git`, which the
+// literal `.git` component match of isRepoGitDirPath does not cover. The parse
+// is local on purpose: the listing paths that ask this question include the
+// filesystem fallback, which runs because git already failed.
+func TestRepoGitDirRelResolvesSeparateGitDirPointer(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		// setup prepares the repository and returns the expected result; it
+		// receives the root so a case can name an absolute path.
+		setup func(t *testing.T, repo string) string
+	}{
+		{"no pointer at all", func(t *testing.T, repo string) string {
+			return ""
+		}},
+		{"ordinary .git directory", func(t *testing.T, repo string) string {
+			if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			return ""
+		}},
+		{"relative pointer inside the worktree", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir: .repo-git\n")
+			return ".repo-git"
+		}},
+		{"relative pointer into a subdirectory", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir: tools/state/.repo-git\n")
+			return "tools/state/.repo-git"
+		}},
+		{"absolute pointer inside the worktree", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir: "+filepath.ToSlash(filepath.Join(repo, ".repo-git"))+"\n")
+			return ".repo-git"
+		}},
+		{"pointer escaping the worktree", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir: ../elsewhere/.git\n")
+			return ""
+		}},
+		{"pointer at the worktree root itself", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir: .\n")
+			return ""
+		}},
+		{"absolute pointer outside the worktree", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir: "+filepath.ToSlash(t.TempDir())+"\n")
+			return ""
+		}},
+		{"no gitdir prefix", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", ".repo-git\n")
+			return ""
+		}},
+		{"empty target", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir:   \n")
+			return ""
+		}},
+		{"implausibly large pointer is refused unread", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir: .repo-git\n"+strings.Repeat("x", maxGitDirPointerBytes))
+			return ""
+		}},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			repo := t.TempDir()
+			want := testCase.setup(t, repo)
+			if got := repoGitDirRel(repo); got != want {
+				t.Errorf("repoGitDirRel = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestRepoGitDirFilterCoversSeparateGitDirWithoutWideningOntoGitPrefixedNames
+// pins the listing predicate: the literal `.git` AND the resolved separate git
+// directory are excluded, while a sibling whose name merely shares a prefix
+// (.github, and a `.repo-git`-prefixed name) stays first-party source.
+func TestRepoGitDirFilterCoversSeparateGitDirWithoutWideningOntoGitPrefixedNames(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, ".git", "gitdir: .repo-git\n")
+	inRepoGitDir := repoGitDirFilter(repo)
+	cases := []struct {
+		rel  string
+		want bool
+	}{
+		{".git", true},
+		{".repo-git", true},
+		{".repo-git/config", true},
+		{".repo-git/hooks/post-commit.go", true},
+		{".github", false},
+		{".github/workflows/ci.yml", false},
+		{".repo-github", false},
+		{".repo-gitignore", false},
+		// Only the resolved root-relative path is the git directory; a nested
+		// directory that happens to share the name is not.
+		{"vendor/dep/.repo-git", false},
+		{"src/app.go", false},
+	}
+	for _, testCase := range cases {
+		if got := inRepoGitDir(testCase.rel); got != testCase.want {
+			t.Errorf("inRepoGitDir(%q) = %v, want %v", testCase.rel, got, testCase.want)
+		}
+	}
+}
+
+// TestSearchRepositoryNeverIndexesSeparateGitDirOnFilesystemFallback is the
+// exploit for a `--separate-git-dir` target inside the worktree. `.git` is a
+// FILE pointing at `.repo-git`, so the first-component `.git` skip never sees
+// the git directory: the filesystem fallback walked `.repo-git` and the remote
+// credential in `.repo-git/config` came back as a ranked search snippet.
+func TestSearchRepositoryNeverIndexesSeparateGitDirOnFilesystemFallback(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	// The `.git` pointer git writes for `--separate-git-dir=.repo-git`. The
+	// target holds no HEAD, objects or refs, so `git ls-files` exits non-zero and
+	// the filesystem fallback runs — the same listing path taken on a
+	// uid-mismatched bind mount git rejects for "dubious ownership", in a sandbox
+	// with no git binary, or on a corrupt index. Ordinary directory and file
+	// names only: nothing in this fixture is unrepresentable on Windows.
+	writeFile(t, repo, ".git", "gitdir: .repo-git\n")
+	writeFile(t, repo, ".repo-git/config", "[remote \"origin\"]\n\turl = https://x-access-token:"+gitDirCredentialMarker+"@github.com/acme/private.git\n")
+	writeFile(t, repo, ".repo-git/hooks/post-commit.go", "package hooks\n\n// PostCommitCredentialLoader returns the origin remote credential.\nfunc PostCommitCredentialLoader() string { return \""+gitDirCredentialMarker+"\" }\n")
+	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	assertNoSeparateGitDirLeak(t, repo)
+}
+
+// TestSearchRepositoryNeverIndexesSeparateGitDirGitListed is the same exploit on
+// the primary listing path. `git ls-files --others` reports a separate git
+// directory inside the worktree as ordinary untracked content, so the leak never
+// needed the fallback at all: a working git binary hands the git directory
+// straight to the listing.
+func TestSearchRepositoryNeverIndexesSeparateGitDirGitListed(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	// A usable git directory, built by hand rather than by `git init` so the
+	// fixture is deterministic and leaves nothing read-only behind: HEAD, objects
+	// and refs are all git needs to enumerate this worktree. Where no git binary
+	// answers, the listing falls back to the walk and the same invariant holds.
+	writeFile(t, repo, ".git", "gitdir: .repo-git\n")
+	writeFile(t, repo, ".repo-git/HEAD", "ref: refs/heads/main\n")
+	if err := os.MkdirAll(filepath.Join(repo, ".repo-git", "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".repo-git", "refs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, ".repo-git/config", "[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = https://x-access-token:"+gitDirCredentialMarker+"@github.com/acme/private.git\n")
+	writeFile(t, repo, ".repo-git/hooks/post-commit.go", "package hooks\n\n// PostCommitCredentialLoader returns the origin remote credential.\nfunc PostCommitCredentialLoader() string { return \""+gitDirCredentialMarker+"\" }\n")
+	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	assertNoSeparateGitDirLeak(t, repo)
+}
+
+// assertNoSeparateGitDirLeak runs the search both fixtures are built for and
+// fails if any result path is inside the separate git directory or any snippet
+// carries the planted credential.
+func assertNoSeparateGitDirLeak(t *testing.T, repo string) {
+	t.Helper()
+	response, err := SearchRepository(t.Context(), repo, "test", "origin remote credential loader", SearchOptions{
+		Worktree: true,
+		Profile:  ProfileSyntaxOnly,
+		TopK:     10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range response.Results {
+		if result.FilePath == ".repo-git" || strings.HasPrefix(result.FilePath, ".repo-git/") {
+			t.Errorf("search returned a path inside the separate git directory: %q", result.FilePath)
+		}
+		if strings.Contains(result.Snippet, gitDirCredentialMarker) {
+			t.Errorf("search snippet for %q leaked the .repo-git/config remote credential", result.FilePath)
+		}
+	}
+}
