@@ -231,15 +231,44 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 	if spec.language == "SQL" {
 		spec.grammar = pgsql.GetLanguage()
 	}
+	// The stop predicate is built HERE, above the three return paths that never
+	// reach tree-sitter, not below them: the dedicated Groovy parser, every
+	// grammar-less fallback parser and YAML's entity extraction each returned
+	// straight out of this function with nothing able to stop them, so a budget
+	// that expired inside one of them waited for the whole file -- and
+	// processProviderFile discards that file anyway once ctx has expired, so all
+	// of it was overshoot spent on a result nobody keeps. stop is nil whenever
+	// the caller set no deadline, so the unbudgeted path carries no check at all.
+	stop := ctxStop(ctx)
 	if spec.language == "Groovy" {
 		// Groovy uses a dedicated structural parser (see groovy.go): the best
 		// available tree-sitter-groovy grammar fails on fundamental syntax —
 		// quoted method names, casts, slashy strings — leaving 1,400+ parse
 		// errors on real repos, so it is not consulted at all.
-		entities, status := groovyEntities(content)
+		//
+		// It is also superlinear: every entity's body hash joins the lines it
+		// spans, and nested classes each span the rest of the file, so one
+		// 12k-class file cost 21.0s against a 500ms budget. The scanner takes
+		// the predicate; this checks the outcome, so a scan cut short is a
+		// dropped file rather than a silently short symbol list.
+		if stopped(stop) {
+			return nil, spec.language, parseStoppedStatus(ctx, "groovy parse")
+		}
+		entities, status := groovyEntities(content, stop)
+		if stopped(stop) {
+			return nil, spec.language, parseStoppedStatus(ctx, "groovy parse")
+		}
 		return entities, spec.language, status
 	}
 	if spec.grammar == nil {
+		// Every grammar-less fallback (Dockerfile, JSON, TOML, XML, Make,
+		// Markdown, HTML, CSS, GraphQL, Vue/Svelte and the inventory default)
+		// is a single linear pass, so the residual here is bounded by the
+		// file-size cap rather than superlinear -- but it observed nothing at
+		// all, and the file is discarded on expiry regardless.
+		if stopped(stop) {
+			return nil, spec.language, parseStoppedStatus(ctx, "fallback parse")
+		}
 		return fallbackEntities(path, content, spec.language), spec.language, ParseStatus{}
 	}
 	src := []byte(content)
@@ -340,6 +369,11 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 		return nil, spec.language, ParseStatus{ParseError: true, Code: code, Detail: detail}
 	}
 	if spec.language == "YAML" {
+		// YAML's entities come from its own line scanner, not from the walk, so
+		// the walk's predicate never covered it either.
+		if stopped(stop) {
+			return nil, spec.language, parseStoppedStatus(ctx, "yaml entity extraction")
+		}
 		status := ParseStatus{}
 		if root.HasError() {
 			status = ParseStatus{ParseError: true, Code: "E_PARSE_ERROR", Detail: parseErrorDetail(root, src)}
@@ -348,7 +382,6 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 	}
 
 	var entities []Entity
-	stop := ctxStop(ctx)
 	walkEntities(root, entitySrc, spec.language, "", stop, &entities)
 	// walkEntities returns early when the budget expires, but everything below
 	// it -- the language-specific supplemental extractors, the binding collapse,

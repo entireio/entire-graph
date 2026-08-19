@@ -1,7 +1,6 @@
 package sem
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -63,58 +62,67 @@ func TestTF142BudgetInterruptsInFlightFileParse(t *testing.T) {
 }
 
 // TestTF142DeadlineStopsStructuralRelationProducer reproduces the finding at
-// provider.go:1198. emitStructuralRelationsCompact had no stop predicate, so
-// once the deadline was detected the sink returned immediately but the PRODUCER
-// kept walking every remaining file and symbol -- a full O(symbol-count) pass
-// charged entirely to the overshoot.
+// provider.go:1198. emitStructuralRelations and emitStructuralRelationsCompact
+// had no stop predicate, so once the deadline was detected the sink returned
+// immediately but the PRODUCER kept walking every remaining file and symbol -- a
+// full O(symbol-count) pass charged entirely to the overshoot.
 //
-// The probe cancels at the first relation record, which is a deterministic
-// point: it is the very start of the structural pass, so the residual measured
-// afterwards is the whole pass. Cancellation rather than MaxDuration is used
-// only because it can be triggered at an exact point; the stop predicate the
-// fix installs is the same one MaxDuration expiry sets.
+// The assertion is on records produced, not on elapsed time. An earlier version
+// of this test measured the residual with a stopwatch against a 3ms ceiling; it
+// passed on macOS and Windows and failed on the shared ubuntu runner at 3.14ms
+// (the producer HAD stopped -- one record emitted, then nothing -- the runner
+// was simply slower than the ceiling). A wall-clock bound is not a property a
+// shared CI runner can be asked to meet, and a flaky test on the check that is
+// supposed to prove the ceiling works is worse than no test. The invariant the
+// fix actually installs is "the producer stops at the next symbol", and that is
+// what is asserted here, deterministically, on any machine. The timed
+// end-to-end measurement it replaces is recorded in the PR description.
 func TestTF142DeadlineStopsStructuralRelationProducer(t *testing.T) {
-	repo := t.TempDir()
-	initRepo(t, repo)
-	const files, perFile = 120, 3000
-	body := tf142FlatSymbolFile(perFile)
+	t.Parallel()
+	const files, perFile = 40, 2000
+	fileRecords := make([]FileRecord, 0, files)
+	compact := map[string][]structuralSymbol{}
+	records := map[string][]SymbolRecord{}
 	for i := range files {
-		writeFile(t, repo, fmt.Sprintf("pkg%03d/flat.js", i), body)
-	}
-	git(t, repo, "add", ".")
-	git(t, repo, "commit", "-m", "flat")
-
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	var canceledAt time.Time
-	relations := 0
-	err := StreamSnapshot(ctx, repo, "test", ProviderSnapshotOptions{Profile: ProfileSyntaxOnly}, func(record any) error {
-		if _, ok := record.(RelationRecord); ok {
-			relations++
-			if canceledAt.IsZero() {
-				cancel()
-				canceledAt = time.Now()
-			}
+		path := fmt.Sprintf("pkg%03d/flat.js", i)
+		fileRecords = append(fileRecords, FileRecord{RecordType: "file", ID: "file:" + path, Path: path, Language: "JavaScript"})
+		for j := range perFile {
+			id := fmt.Sprintf("sym%03d_%05d", i, j)
+			compact[path] = append(compact[path], structuralSymbol{ID: id, FilePath: path})
+			records[path] = append(records[path], SymbolRecord{
+				ID: id, Kind: "function", Name: fmt.Sprintf("flatFn%d", j), FilePath: path,
+			})
 		}
-		return nil
-	})
-	if canceledAt.IsZero() {
-		t.Fatal("fixture produced no relation records; the probe never armed")
 	}
-	residual := time.Since(canceledAt)
-	if err == nil {
-		t.Fatal("a canceled context must still be an error")
+	// Every symbol emits exactly one DEFINES here (no container), so a producer
+	// that ignores its predicate emits files*perFile records after the stop.
+	// The producer checks once per file and once per symbol, so the bound after
+	// the flag flips is the current symbol's own records.
+	const ceiling = 4
+	producers := map[string]func(shouldStop func() bool, emit func(RelationRecord)){
+		"emitStructuralRelations": func(shouldStop func() bool, emit func(RelationRecord)) {
+			emitStructuralRelations("test", fileRecords, records, shouldStop, emit)
+		},
+		"emitStructuralRelationsCompact": func(shouldStop func() bool, emit func(RelationRecord)) {
+			emitStructuralRelationsCompact("test", fileRecords, compact, shouldStop, emit)
+		},
 	}
-	t.Logf("symbols=%d relations emitted before stop=%d residual after deadline=%s",
-		files*perFile, relations, residual)
-	// Measured on this fixture: 11.0ms residual before the fix (one full
-	// O(symbol-count) producer pass over 360k symbols, ~30ns each) against
-	// ~0.05ms after, because the producer now breaks out at the next symbol.
-	// The ceiling sits between the two, far enough from the post-fix value that
-	// it is not measuring scheduler noise.
-	const ceiling = 3 * time.Millisecond
-	if residual > ceiling {
-		t.Fatalf("the structural relation producer ran for %s after the deadline was detected (%d symbols left to walk): it has no stop predicate", residual, files*perFile)
+	for name, run := range producers {
+		t.Run(name, func(t *testing.T) {
+			emitted := 0
+			stop := false
+			run(func() bool { return stop }, func(RelationRecord) {
+				emitted++
+				stop = true // the deadline fires at the very first record
+			})
+			if emitted == 0 {
+				t.Fatal("fixture produced no relation records; the probe never armed")
+			}
+			if emitted > ceiling {
+				t.Fatalf("the producer emitted %d records after the deadline was detected at the first one (%d symbols in the workspace): it does not observe the stop predicate",
+					emitted, files*perFile)
+			}
+		})
 	}
 }
 

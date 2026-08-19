@@ -2652,6 +2652,12 @@ func jsScanPartialFailure(path string, err error) PartialFailure {
 }
 
 func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, precomputedImports map[string][]string, spec profileSpec, shouldStop func() bool, emit func(RelationRecord), recordFailure func(PartialFailure)) {
+	// Nothing above the file loop used to consult shouldStop, so entering this
+	// function with an already-expired budget still bought three whole-repository
+	// index passes plus partialTypeCanonicalIDs before the first guard could run.
+	if shouldStop != nil && shouldStop() {
+		return
+	}
 	if spec.name == ProfileSyntaxOnly {
 		emitStructuralRelations(repoKey, files, recordsByFile, shouldStop, emit)
 		return
@@ -2695,6 +2701,9 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	graphqlResolvers := map[string][]SymbolRecord{}
 	graphqlOperationRootAliases := map[string]string{}
 	for _, file := range files {
+		if shouldStop != nil && shouldStop() {
+			return
+		}
 		for _, symbol := range recordsByFile[file.Path] {
 			if symbol.Kind != "graphql_schema_field" {
 				continue
@@ -2724,12 +2733,18 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 	typeLikeByShortName := map[string][]SymbolRecord{}
 	if crossFileContainers {
 		for _, file := range files {
+			if shouldStop != nil && shouldStop() {
+				return
+			}
 			for _, symbol := range recordsByFile[file.Path] {
 				if typeLikeKind(symbol.Kind) {
 					typeLikeByShortName[symbol.Name] = append(typeLikeByShortName[symbol.Name], symbol)
 				}
 			}
 		}
+	}
+	if shouldStop != nil && shouldStop() {
+		return
 	}
 	partialContainerCanonical, partialContainerFile := partialTypeCanonicalIDs(files, recordsByFile)
 	// Iterate files in their (stable) slice order, not the recordsByFile map, so
@@ -4028,7 +4043,7 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 		return
 	}
 	if spec.emits("SIMILAR_TO") {
-		for _, r := range similarityRelations(recordsByFile, readContent) {
+		for _, r := range similarityRelations(recordsByFile, readContent, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
