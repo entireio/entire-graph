@@ -270,6 +270,18 @@ type repoIgnoreLedger struct {
 	// rules, which is the only listing against which "the rule is what removed it
 	// from the corpus" can be tested.
 	listingPosition int
+	// positionIncomplete records that listingPosition has become a LOWER BOUND
+	// rather than the position itself.
+	//
+	// Every bound on the pruned-directory accounting — a spent walk budget, a
+	// spent nested-ignore byte budget, a subtree that could not be read — stops
+	// the enumeration of a tree the counterfactual listing DOES contain, and the
+	// descendants it abandons never advance listingPosition. A later exclusion is
+	// then tested against a position short by an unknown amount, so one whose true
+	// position is outside the snapshot's cap can test as inside it and be blamed
+	// on a committed rule that is not what removed it from the corpus. See
+	// beyondListingCap.
+	positionIncomplete bool
 }
 
 // noteListingCandidate advances the counterfactual listing by one path. Every
@@ -290,8 +302,59 @@ func (l *repoIgnoreLedger) noteListingCandidate() {
 
 // beyondListingCap reports whether the path now at the head of the listing would
 // have fallen outside the snapshot's file cap even with no ignore rule at all.
+//
+// Unknown counts as outside. Once the accounting has abandoned part of a tree it
+// was enumerating, listingPosition is a lower bound short by an unknown amount,
+// so "inside the cap" stops being something this ledger can establish — and the
+// invariant the cap gate exists for is that a committed rule is never blamed for
+// a path the cap alone had already discarded. CountIncomplete is true in exactly
+// the cases that set positionIncomplete, so what is withheld here is withheld out
+// loud rather than in silence.
 func (l *repoIgnoreLedger) beyondListingCap() bool {
-	return l != nil && l.listingLimit > 0 && l.listingPosition > l.listingLimit
+	if l == nil || l.listingLimit <= 0 {
+		return false
+	}
+	return l.positionIncomplete || l.listingPosition > l.listingLimit
+}
+
+// listingCapFull reports whether NO path still to reach the ledger can be inside
+// the snapshot's file cap. beyondListingCap is the test for a path that has
+// already taken its position; this is the lookahead for one that has not, and the
+// off-by-one between them is real: a listing at position N with a cap of N still
+// passes beyondListingCap and can still admit nothing, because the next candidate
+// takes position N+1.
+func (l *repoIgnoreLedger) listingCapFull() bool {
+	if l == nil || l.listingLimit <= 0 {
+		return false
+	}
+	return l.positionIncomplete || l.listingPosition >= l.listingLimit
+}
+
+// accountingStoppedShort reports whether any enumeration in this listing gave up
+// on content it had started to count. Both halves are the same fact the report
+// renders as CountIncomplete, read from the ledger while the walk is still
+// running.
+func (l *repoIgnoreLedger) accountingStoppedShort() bool {
+	if l == nil {
+		return false
+	}
+	return l.countIncomplete || len(l.unreadable) > 0
+}
+
+// notePositionIncomplete records that listingPosition is now a lower bound.
+//
+// It is called with a whole prune behind it rather than at the moment a budget is
+// spent, and the difference is the disclosure a reader most needs. The read bound
+// fires while a directory is being READ, before any of its entries have been
+// visited: gating on it there would refuse the entire enumerated prefix and turn
+// a 19,998-path disclosure of a runaway ignored tree into silence. Those paths
+// are inside the tree the rule pruned and hold the positions counted for them;
+// it is everything AFTER the prune whose position the shortfall makes unknowable.
+func (l *repoIgnoreLedger) notePositionIncomplete() {
+	if l == nil {
+		return
+	}
+	l.positionIncomplete = true
 }
 
 func (l *repoIgnoreLedger) note(exclusion RepoExclusion) {
@@ -1118,6 +1181,16 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 	if ledger == nil {
 		return
 	}
+	// Nothing this walk could find is still attributable: note() refuses every
+	// exclusion once the listing is past the snapshot's cap, so enumerating the
+	// tree reads its directories and parses its nested ignore files to produce a
+	// set of records that are all discarded. Worse than free — on a tree past the
+	// walk budget it also spends that budget, raises CountIncomplete, and files a
+	// repo_ignored partial failure over content the cap, not the rule, had already
+	// removed from the corpus.
+	if ledger.listingCapFull() {
+		return
+	}
 	dir := cleanIgnorePath(rel)
 	if dir == "" {
 		return
@@ -1239,6 +1312,13 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 		})
 		return nil
 	})
+	// This is the ONE producer that can leave a path out of the counterfactual
+	// position while the counterfactual listing still holds it, so it is the one
+	// place a position can stop being a position. The outer walk counts every path
+	// it reaches, kept or excluded, before deciding anything about it.
+	if ledger.accountingStoppedShort() {
+		ledger.notePositionIncomplete()
+	}
 }
 
 // walkPrunedBounded walks root the way filepath.WalkDir does — a directory
