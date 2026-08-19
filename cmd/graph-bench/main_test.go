@@ -582,6 +582,13 @@ func TestEnsureRepoChecksOutHexShapedBranchNames(t *testing.T) {
 		strings.Repeat("dc", 32),       // 64 chars: indistinguishable from a full SHA-256 id
 	} {
 		t.Run(strconv.Itoa(len(name)), func(t *testing.T) {
+			// Pin the fixture's object format instead of inheriting the
+			// caller's GIT_DEFAULT_HASH: in a SHA-256 repository a 64-hex
+			// string *is* an object name, so git resolves the branch name to an
+			// object id and no tool can address that branch by name there. The
+			// case is only representable under SHA-1, which is also every
+			// git older than 2.29, where this variable is simply ignored.
+			t.Setenv("GIT_DEFAULT_HASH", "sha1")
 			upstream := newUpstreamRepo(t)
 			benchGit(t, upstream, "checkout", "--quiet", "-b", name)
 			if err := os.WriteFile(filepath.Join(upstream, "branch.go"), []byte("package main\n"), 0o644); err != nil {
