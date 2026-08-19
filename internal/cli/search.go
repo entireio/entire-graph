@@ -439,6 +439,20 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 	// made once, here, rather than at the dozens of print sites in this function
 	// and in the sem renderers it calls.
 	out = termsafe.NewWriter(out)
+	// The literal cluster is rendered here, well before it is printed, only so its quarantine
+	// verdict can feed the notice below. It is the one sem block that writes a repository body
+	// unprefixed and verbatim (search_literals.go, --edit-site-bodies), so it needs the same
+	// quarantine a ranked snippet gets; its own records are indented two spaces and pass through
+	// untouched.
+	literalCluster, literalClusterForged := searchQuarantineBlock(sem.RenderSearchLiteralCluster(response.LiteralCluster))
+	// Ahead of everything, including the closed-set warning: it is the only block that says the
+	// payload's own bytes may be lying about who wrote them, and a reader who has already acted on
+	// a forged line will not come back for it.
+	if literalClusterForged || searchResultsCarryForgedRecords(response.Results) {
+		if _, err := out.Write(searchForgeryNotice); err != nil {
+			return err
+		}
+	}
 	if notice, _ := searchLowConfidenceNotices(response); len(notice) > 0 {
 		if _, err := out.Write(notice); err != nil {
 			return err
@@ -545,8 +559,8 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 		out.Write(block)
 		fmt.Fprintln(out)
 	}
-	if block := sem.RenderSearchLiteralCluster(response.LiteralCluster); len(block) > 0 {
-		if _, err := out.Write(block); err != nil {
+	if len(literalCluster) > 0 {
+		if _, err := out.Write(literalCluster); err != nil {
 			return err
 		}
 	}
@@ -726,21 +740,45 @@ func searchLocatorFollowUp(result sem.SearchResult) string {
 	return "  [body: def " + name + "]"
 }
 
-// searchResultOnOneLine escapes the fields that go into a result's HEADER, where
-// the layout is one record per line and a newline is therefore not layout but
+// searchResultOnOneLine makes one result safe to print into a one-record-per-line payload.
+//
+// It escapes the fields that go into a result's HEADER, where a newline is not layout but
 // forgery: a repository can name a file "a.go\n1. src/real.go:1 score=99.0" and
 // fabricate a hit the search never returned. The wrapped writer cannot make that
 // call — by then a path's newline and a snippet's are the same byte — so the
 // header fields are escaped here, where the renderer still knows which is which.
 //
-// The result is taken and returned BY VALUE. Nothing upstream sees the escaped
-// copy, so the JSON encoding of the same response still reports the exact bytes
-// the repository holds.
+// It also quarantines the result's BODIES. A snippet's newlines are its structure, so they
+// cannot be escaped the way a path's are — but a body line that begins at column 0 and is
+// shaped like a record is the same forgery by another route, and `VERIFY:` is the one line an
+// agent is told to run. See internal/cli/search_forgery.go for the grammar, the disclosure that
+// goes with it, and what it does NOT protect against.
+//
+// This is the chokepoint every body reaches: writeTextSearchResult, writeTextSearchLocator (via
+// sem.SearchLocatorWindow, which derives its window from result.Snippet) and agentSearchBlock all
+// pass through here before printing.
+//
+// The result is taken and returned BY VALUE, and a passage slice is copied before any element of
+// it changes. Nothing upstream sees the escaped copy, so the JSON encoding of the same response
+// still reports the exact bytes the repository holds.
 func searchResultOnOneLine(result sem.SearchResult) sem.SearchResult {
 	result.FilePath = termsafe.Line(result.FilePath)
 	result.QualifiedName = termsafe.Line(result.QualifiedName)
 	result.SymbolName = termsafe.Line(result.SymbolName)
 	result.Kind = termsafe.Line(result.Kind)
+	result.Snippet, _ = searchQuarantineBody(result.Snippet)
+	for index, passage := range result.Passages {
+		quarantined, changed := searchQuarantineBody(passage.Snippet)
+		if !changed {
+			continue
+		}
+		// Copy before writing: result.Passages still aliases the caller's backing array, and the
+		// by-value contract above is what keeps the JSON encoding of this response honest.
+		passages := make([]sem.SearchPassage, len(result.Passages))
+		copy(passages, result.Passages)
+		passages[index].Snippet = quarantined
+		result.Passages = passages
+	}
 	return result
 }
 
@@ -1067,6 +1105,14 @@ func agentSearchSectionTag(result sem.SearchResult) string {
 	return ""
 }
 
+// agentSearchPrefixHead pairs the two outermost prefix blocks so the fitter can walk them as one
+// flat list. See the comment at its only construction site in writeAgentSearch for the ordering
+// the pairing encodes.
+type agentSearchPrefixHead struct {
+	notice []byte
+	header []byte
+}
+
 func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse, budget int) error {
 	// Same sink class as the text renderer, and the format agents are told to
 	// prefer — so it gets the same guard. See writeTextSearch.
@@ -1108,12 +1154,24 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	if len(verifyBlock) > 0 {
 		verifyVariants = append(verifyVariants, nil)
 	}
+	// See writeTextSearch for why the literal cluster is quarantined here rather than in its own
+	// renderer, and why its verdict feeds the notice below.
+	literalCluster, literalClusterForged := searchQuarantineBlock(sem.RenderSearchLiteralCluster(response.LiteralCluster))
 	suffixes := [][]byte{
-		sem.RenderSearchLiteralCluster(response.LiteralCluster),
+		literalCluster,
 		agentSearchTypeCard(response.TypeCard),
 	}
+	// The forgery disclosure leads the payload when anything was quarantined. It is a prefix, not a
+	// suffix, for the same reason VERIFY is: a warning an agent reads after acting is not a warning.
+	// It degrades only to absent, and only outside every other ladder, so it is the last block the
+	// fitter gives up — see the variant loops below.
+	var forgeryNotice []byte
+	if literalClusterForged || searchResultsCarryForgedRecords(response.Results) {
+		forgeryNotice = searchForgeryNotice
+	}
 	if budget <= 0 {
-		payload := append([]byte{}, fullHeader...)
+		payload := append([]byte{}, forgeryNotice...)
+		payload = append(payload, fullHeader...)
 		payload = append(payload, fullDiagnostics...)
 		payload = append(payload, fullConfidence...)
 		payload = append(payload, closedSet...)
@@ -1206,23 +1264,41 @@ func writeAgentSearch(out interface{ Write([]byte) (int, error) }, response sem.
 	//
 	// A rendered block is location-only when every line is a `N. path:line …` header, so ask
 	// that question of the bytes instead of guessing a size.
+	// The forgery notice and the header ladder are FLATTENED into one list of prefix heads rather
+	// than nested, because the ladder is already six loops deep and a seventh would reindent all of
+	// it for one block. The pairing order is what the nesting would have expressed: the notice
+	// varies SLOWEST, so every header rung is tried with the notice present before any rung is
+	// tried without it, which makes the notice the last prefix block the fitter gives up. A rung
+	// without it is offered only when there is a notice at all, so an honest payload adds none.
+	headers := [][]byte{fullHeader, compactHeader, timedHeader, terseHeader, legacyHeader}
+	heads := make([]agentSearchPrefixHead, 0, 2*len(headers))
+	for _, header := range headers {
+		heads = append(heads, agentSearchPrefixHead{notice: forgeryNotice, header: header})
+	}
+	if len(forgeryNotice) > 0 {
+		for _, header := range headers {
+			heads = append(heads, agentSearchPrefixHead{header: header})
+		}
+	}
 	for _, protectTopHit := range []bool{true, false} {
 		if protectTopHit && len(results) == 0 {
 			continue // nothing to protect; the fallback pass is the only pass
 		}
-		for _, header := range [][]byte{fullHeader, compactHeader, timedHeader, terseHeader, legacyHeader} {
+		for _, head := range heads {
+			forgery, header := head.notice, head.header
 			for _, diagnostics := range diagnosticVariants {
 				for _, confidence := range confidenceVariants {
 					for _, warning := range closedSetVariants {
 						for _, containerMap := range mapVariants {
 							for _, verify := range verifyVariants {
-								remaining := budget - len(header) - len(diagnostics) - len(confidence) -
+								remaining := budget - len(forgery) - len(header) - len(diagnostics) - len(confidence) -
 									len(warning) - len(containerMap) - len(verify)
 								if remaining <= 0 {
 									continue
 								}
 								prefix := func() []byte {
-									payload := append([]byte{}, header...)
+									payload := append([]byte{}, forgery...)
+									payload = append(payload, header...)
 									payload = append(payload, diagnostics...)
 									payload = append(payload, confidence...)
 									payload = append(payload, warning...)
