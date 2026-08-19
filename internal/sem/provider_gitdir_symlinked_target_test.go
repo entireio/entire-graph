@@ -128,3 +128,68 @@ func TestGitDirExcluderKeepsOrdinaryDirBehindSymlinkListable(t *testing.T) {
 		}
 	}
 }
+
+// TestSearchRepositoryNeverIndexesGitDirBehindADotGitSymlink is the third
+// spelling of "the git directory is not called `.git`": `.git` is a SYMLINK to
+// an in-worktree directory. There is no `gitdir:` line to parse, and the `.git`
+// component match only covers the link, which no listing descends. Verified on
+// git 2.54.0:
+//
+//	$ git init --separate-git-dir=.real-git -q . && rm .git && ln -s .real-git .git
+//	$ git rev-parse --git-dir
+//	.git
+//	$ mv .real-git/HEAD .real-git/HEAD.bak && git rev-parse --git-dir
+//	fatal: not a git repository (or any of the parent directories): .git
+//
+// With HEAD moved aside git refuses the worktree, the filesystem fallback runs,
+// and the structural rule cannot classify a HEAD-less directory — so
+// `.real-git/config` and its remote credential came back as a ranked snippet.
+func TestSearchRepositoryNeverIndexesGitDirBehindADotGitSymlink(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeHeadlessGitDirFixture(t, repo, ".real-git")
+	symlinkOrSkip(t, ".real-git", filepath.Join(repo, ".git"))
+	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	assertNoGitDirLeak(t, repo, ".real-git")
+}
+
+// TestGitDirExcluderResolvesNestedDotGitSymlink is the nested shape: a vendored
+// dependency whose `.git` is a link to a git directory elsewhere in the tree.
+func TestGitDirExcluderResolvesNestedDotGitSymlink(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeHeadlessGitDirFixture(t, repo, "state/.dep-git")
+	writeFile(t, repo, "src/app.go", "package src\n")
+	if err := os.MkdirAll(filepath.Join(repo, "vendor", "dep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	symlinkOrSkip(t, filepath.Join("..", "..", "state", ".dep-git"), filepath.Join(repo, "vendor", "dep", ".git"))
+
+	excluder := newGitDirExcluder(repo)
+	excluder.observeListedPaths([]string{"src/app.go", "state/.dep-git/config", "vendor/dep"}, []string{"vendor/dep"})
+	if !excluder.excluded("state/.dep-git/config") {
+		t.Error("excluded(state/.dep-git/config) = false for the directory a nested `.git` symlink resolves to, want true")
+	}
+	if excluder.excluded("src/app.go") {
+		t.Error("excluded(src/app.go) = true, want false: ordinary source must stay listable")
+	}
+}
+
+// TestGitDirExcluderKeepsPackageBehindADotGitSymlinkListable is the widening
+// direction: git calls `.git` linked to an ordinary package `not a git
+// repository`, so the structure test must reject it and the package must stay
+// listable.
+func TestGitDirExcluderKeepsPackageBehindADotGitSymlinkListable(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/app.go", "package src\n")
+	symlinkOrSkip(t, "src", filepath.Join(repo, ".git"))
+
+	excluder := newGitDirExcluder(repo)
+	for _, rel := range []string{"src", "src/app.go"} {
+		if excluder.excluded(rel) {
+			t.Errorf("excluded(%q) = true, want false: a `.git` link to an ordinary package is not a git directory", rel)
+		}
+	}
+}

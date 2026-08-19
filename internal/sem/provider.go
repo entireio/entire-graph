@@ -10375,6 +10375,9 @@ func (g *gitDirExcluder) observe(dir string) {
 	if target, ok := gitDirPointerTarget(g.repo, dir); ok && hasGitDirStructure(filepath.Join(g.repo, filepath.FromSlash(target))) {
 		g.addTarget(target)
 	}
+	if target, ok := gitDirLinkTarget(g.repo, dir); ok && hasGitDirStructure(filepath.Join(g.repo, filepath.FromSlash(target))) {
+		g.addTarget(target)
+	}
 	if dir == "" {
 		return
 	}
@@ -10923,6 +10926,43 @@ func gitDirPointerTarget(repo, dir string) (string, bool) {
 		return rel, true
 	}
 	return "", false
+}
+
+// gitDirLinkTarget resolves `<repo>/<dir>/.git` when it is a SYMLINK to a
+// DIRECTORY, and reports that directory as a repo-relative slash path when it
+// lands inside the repository.
+//
+// This is the third spelling of "the git directory is not called `.git`", and
+// the one neither other rule reaches. It is not a gitfile — there is no
+// `gitdir:` line to parse, and gitDirPointerTarget's regular-file test refuses
+// it — and the `.git` component match only covers the LINK, which the walk never
+// descends. Verified on git 2.54.0: after
+// `git init --separate-git-dir=.real-git .` and `ln -s .real-git .git`,
+// `git rev-parse --git-dir` answers `.git`, so reading `.git/config` reads
+// `.real-git/config`.
+//
+// The leak is the same shape as the pointer's. With `.real-git/HEAD` moved aside
+// git says `fatal: not a git repository` and the filesystem fallback runs; the
+// structural rule cannot classify a HEAD-less directory, so `.real-git/config`
+// and its remote credential came back as a ranked search snippet.
+//
+// The caller applies the same structure test the pointer rule applies, for the
+// same reason: `.git` linked to an ordinary package is `not a git repository` to
+// git, and naming it must not delete that package from the index.
+func gitDirLinkTarget(repo, dir string) (string, bool) {
+	rel := ".git"
+	if dir != "" {
+		rel = path.Join(filepath.ToSlash(dir), ".git")
+	}
+	link := filepath.Join(repo, filepath.FromSlash(rel))
+	info, err := os.Lstat(link)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return "", false
+	}
+	if resolved, statErr := os.Stat(link); statErr != nil || !resolved.IsDir() {
+		return "", false
+	}
+	return symlinkResolvedRel(repo, rel)
 }
 
 // containedRel reports target's slash-separated path relative to root, and
