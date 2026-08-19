@@ -175,6 +175,24 @@ func ListWorktreeFiles(ctx context.Context, repo string) ([]string, error) {
 	return splitNULPaths(out), nil
 }
 
+// ListWorktreeDirectoryEntries lists the working tree the way ListWorktreeFiles
+// does but with `--directory`, which reports a directory holding no listed
+// content as a single entry ending in `/` instead of not at all.
+//
+// It exists for one caller: the git-directory excluder, which has to reach the
+// directories the ordinary listing never mentions — git suppresses every `.git`
+// entry, so a directory whose whole content is a `gitdir:` pointer file
+// contributes no listed path. Asking git for them costs one subprocess and
+// inherits git's exclude stack; deriving them instead means reading every
+// directory in the tree, ignored build and cache trees included.
+func ListWorktreeDirectoryEntries(ctx context.Context, repo string) ([]string, error) {
+	out, err := run(ctx, repo, "git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--directory")
+	if err != nil {
+		return nil, err
+	}
+	return splitNULPaths(out), nil
+}
+
 // ListIgnoredWorktreeFiles lists the untracked working-tree files Git's exclude
 // rules *do* cover (`git ls-files --others --ignored --exclude-standard`). It
 // exists for one caller: an explicit include-file whose negations re-include

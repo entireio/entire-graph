@@ -15296,6 +15296,11 @@ func TestGitDirExcluderCoversEveryGitDirShapeWithoutWideningOntoGitPrefixedNames
 	repo := t.TempDir()
 	writeFile(t, repo, ".git", "gitdir: .repo-git\n")
 	writeFile(t, repo, "vendor/dep/.git", "gitdir: .dep-git\n")
+	// Both targets are real git directories on disk, HEAD aside: git resolves a
+	// `.git` file and then asks is_git_directory() of what it names, so a
+	// pointer naming nothing at all names nothing here either.
+	writeHeadlessGitDirFixture(t, repo, ".repo-git")
+	writeHeadlessGitDirFixture(t, repo, "vendor/dep/.dep-git")
 	excluder := newGitDirExcluder(repo)
 	cases := []struct {
 		rel  string
@@ -15349,8 +15354,7 @@ func TestSearchRepositoryNeverIndexesSeparateGitDirOnFilesystemFallback(t *testi
 	// with no git binary, or on a corrupt index. Ordinary directory and file
 	// names only: nothing in this fixture is unrepresentable on Windows.
 	writeFile(t, repo, ".git", "gitdir: .repo-git\n")
-	writeFile(t, repo, ".repo-git/config", "[remote \"origin\"]\n\turl = https://x-access-token:"+gitDirCredentialMarker+"@github.com/acme/private.git\n")
-	writeFile(t, repo, ".repo-git/hooks/post-commit.go", "package hooks\n\n// PostCommitCredentialLoader returns the origin remote credential.\nfunc PostCommitCredentialLoader() string { return \""+gitDirCredentialMarker+"\" }\n")
+	writeHeadlessGitDirFixture(t, repo, ".repo-git")
 	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
 
 	assertNoGitDirLeak(t, repo, ".repo-git")
@@ -15399,8 +15403,7 @@ func TestSearchRepositoryNeverIndexesNestedGitDirs(t *testing.T) {
 	// The nested dependency uses --separate-git-dir, so its `.git` is a pointer
 	// file and the git directory itself carries an ordinary name.
 	writeFile(t, repo, "vendor/other/.git", "gitdir: .dep-git\n")
-	writeFile(t, repo, "vendor/other/.dep-git/config", gitDirConfigWithCredential)
-	writeFile(t, repo, "vendor/other/.dep-git/hooks/post-commit.go", gitDirHookSource)
+	writeHeadlessGitDirFixture(t, repo, "vendor/other/.dep-git")
 	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
 
 	assertNoGitDirLeak(t, repo, "vendor/dep/.git", "vendor/other/.dep-git")
@@ -15419,6 +15422,24 @@ func writeGitDirFixture(t *testing.T, repo, dir string) {
 		if err := os.MkdirAll(filepath.Join(repo, filepath.FromSlash(dir), sub), 0o755); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// writeHeadlessGitDirFixture writes the same git directory with NO HEAD, which
+// is what a `--separate-git-dir` target looks like once its HEAD is missing or
+// corrupt — the state that makes git refuse the worktree and the filesystem
+// fallback run. git itself calls such a directory `not a git repository`, so the
+// structural rule cannot reach it and only a `gitdir:` pointer can; that is the
+// complementarity these fixtures isolate.
+//
+// objects/ and refs/ are still there because `git init` creates them and every
+// real git directory has them. They are what separates this directory from the
+// ordinary source tree a stray `.git` file might otherwise name.
+func writeHeadlessGitDirFixture(t *testing.T, repo, dir string) {
+	t.Helper()
+	writeGitDirFixture(t, repo, dir)
+	if err := os.Remove(filepath.Join(repo, filepath.FromSlash(dir), "HEAD")); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -15490,7 +15511,7 @@ func TestGitDirExcluderObservesGitlinkEntries(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
 	writeFile(t, repo, "vendor/dep/.git", "gitdir: ../../state/.dep-git\n")
-	writeFile(t, repo, "state/.dep-git/config", gitDirConfigWithCredential)
+	writeHeadlessGitDirFixture(t, repo, "state/.dep-git")
 	writeFile(t, repo, "src/app.go", "package src\n")
 	// Exactly what `git ls-files --cached --others --exclude-standard` reports
 	// for that tree: the gitlink as one entry, and the target's files in full.
@@ -15532,8 +15553,7 @@ func TestSearchRepositoryNeverIndexesGitlinkTargetGitListed(t *testing.T) {
 		t.Skipf("git init unavailable here: %v", err)
 	}
 	writeFile(t, repo, "vendor/dep/.git", "gitdir: ../../state/.dep-git\n")
-	writeFile(t, repo, "state/.dep-git/config", gitDirConfigWithCredential)
-	writeFile(t, repo, "state/.dep-git/hooks/post-commit.go", gitDirHookSource)
+	writeHeadlessGitDirFixture(t, repo, "state/.dep-git")
 	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
 	// A gitlink index entry, written directly rather than by committing inside a
 	// nested repository: no loose object is created anywhere, so the tree leaves
@@ -15615,14 +15635,14 @@ func TestGitDirExcluderMatchesTargetSpelledInAnotherCase(t *testing.T) {
 	if !caseFoldingTestFS(t, repo) {
 		t.Skip("filesystem is case-sensitive: `STATE/.dep-git` and `state/.dep-git` are two directories here")
 	}
-	// Deliberately NOT a structural git directory: no HEAD, no objects/, no
-	// refs/. Only the pointer names it, so only the pointer can exclude it.
-	writeFile(t, repo, "state/.dep-git/config", gitDirConfigWithCredential)
-	writeFile(t, repo, "state/.dep-git/hooks/post-commit.go", gitDirHookSource)
+	// Deliberately carries no HEAD, so git itself calls it "not a git
+	// repository" and the structural rule is blind: only the pointer names it,
+	// so only the pointer can exclude it.
+	writeHeadlessGitDirFixture(t, repo, "state/.dep-git")
 	writeFile(t, repo, "libs/dep/.git", "gitdir: ../../STATE/.dep-git\n")
 	// A second git directory whose LEAF carries no letters, so the case the
 	// pointer differs in exists only in an ancestor component.
-	writeFile(t, repo, "state/42/config", gitDirConfigWithCredential)
+	writeHeadlessGitDirFixture(t, repo, "state/42")
 	writeFile(t, repo, "libs/other/.git", "gitdir: ../../STATE/42\n")
 	writeFile(t, repo, "src/app.go", "package src\n")
 	listed := []string{"src/app.go", "state/.dep-git/config", "state/.dep-git/hooks/post-commit.go", "state/42/config", "libs/dep", "libs/other"}
@@ -15649,8 +15669,7 @@ func TestSearchRepositoryNeverIndexesGitDirNamedInAnotherCase(t *testing.T) {
 		t.Skip("filesystem is case-sensitive: `STATE/.dep-git` and `state/.dep-git` are two directories here")
 	}
 	writeFile(t, repo, "libs/dep/.git", "gitdir: ../../STATE/.dep-git\n")
-	writeFile(t, repo, "state/.dep-git/config", gitDirConfigWithCredential)
-	writeFile(t, repo, "state/.dep-git/hooks/post-commit.go", gitDirHookSource)
+	writeHeadlessGitDirFixture(t, repo, "state/.dep-git")
 	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
 
 	assertNoGitDirLeak(t, repo, "state/.dep-git")

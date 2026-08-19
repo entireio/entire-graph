@@ -160,8 +160,7 @@ func TestSearchRepositoryNeverIndexesGitDirWhosePointerEndsInASpace(t *testing.T
 		t.Skip("filesystem does not store a trailing space in a name (Win32 strips it), so this git directory is unrepresentable here")
 	}
 	writeFile(t, repo, ".git", "gitdir: .repo-git \n")
-	writeFile(t, repo, ".repo-git /config", gitDirConfigWithCredential)
-	writeFile(t, repo, ".repo-git /hooks/post-commit.go", gitDirHookSource)
+	writeHeadlessGitDirFixture(t, repo, ".repo-git ")
 	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
 
 	assertNoGitDirLeak(t, repo, ".repo-git ")

@@ -88,8 +88,7 @@ func TestGitDirExcluderObservesDirectoriesGitListsNothingUnder(t *testing.T) {
 	repo := t.TempDir()
 	// `nested/` holds nothing but the pointer, so git reports nothing for it.
 	writeFile(t, repo, "nested/.git", "gitdir: ../.dep-git\n")
-	writeFile(t, repo, ".dep-git/config", gitDirConfigWithCredential)
-	writeFile(t, repo, ".dep-git/hooks/post-commit.go", "package hooks\n")
+	writeHeadlessGitDirFixture(t, repo, ".dep-git")
 	writeFile(t, repo, "src/app.go", "package src\n")
 	// Exactly what `git ls-files --cached --others --exclude-standard` reports:
 	// no entry mentions `nested` at all.

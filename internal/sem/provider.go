@@ -10313,12 +10313,16 @@ func parseGitDirPointer(content []byte) (string, bool) {
 //
 //  1. hasGitDirComponent — a `.git` component at any depth.
 //  2. A `gitdir:` pointer's target, when it resolves to a path inside the
-//     repository. `git init|clone --separate-git-dir=.repo-git` moves the whole
-//     git directory — config with its credentialed remote URL, hooks, logs —
-//     under an ordinary name that rule 1 cannot see. Targets are learned by
-//     observing directories, so every caller must observe before it trusts a
-//     verdict; the walk additionally re-filters at the end, since a pointer can
-//     name a directory the walk already passed.
+//     repository AND that target carries a git directory's structure. `git
+//     init|clone --separate-git-dir=.repo-git` moves the whole git directory —
+//     config with its credentialed remote URL, hooks, logs — under an ordinary
+//     name that rule 1 cannot see. The structure test is not optional: git
+//     itself resolves a `.git` file and then asks is_git_directory() of the
+//     target, so `gitdir: ../src` naming an ordinary package is `fatal: not a
+//     git repository` to git (2.54.0) and naming it must not delete `src` from
+//     the index. Targets are learned by observing directories, so every caller
+//     must observe before it trusts a verdict; the walk additionally re-filters
+//     at the end, since a pointer can name a directory the walk already passed.
 type gitDirExcluder struct {
 	repo    string
 	targets map[string]struct{}
@@ -10331,6 +10335,15 @@ type gitDirExcluder struct {
 	// spellings really are two directories and folding would exclude an
 	// innocent one.
 	foldedTargets map[string]struct{}
+	// unlistedRoots names the directories the listing says nothing under, from
+	// git's own `--directory` listing, and gitAnsweredRoots records that git
+	// answered at all (an empty answer is a real answer). Without them the sweep
+	// has to rediscover those directories by reading the whole tree; see
+	// observeUnlistedDirs.
+	unlistedRoots    []string
+	gitAnsweredRoots bool
+	ignoredDir       func(rel string) bool
+	directoriesRead  int
 }
 
 // newGitDirExcluder builds the excluder for one listing of repo, having already
@@ -10359,7 +10372,7 @@ func newGitDirExcluder(repo string) *gitDirExcluder {
 // bare repository or at a git directory is a deliberate act by the caller, not a
 // leak, and must keep listing what it lists today.
 func (g *gitDirExcluder) observe(dir string) {
-	if target, ok := gitDirPointerTarget(g.repo, dir); ok {
+	if target, ok := gitDirPointerTarget(g.repo, dir); ok && hasGitDirStructure(filepath.Join(g.repo, filepath.FromSlash(target))) {
 		g.addTarget(target)
 	}
 	if dir == "" {
@@ -10449,9 +10462,23 @@ func foldsCase(repo, target string) bool {
 // symlink rather than the directory and call a real git directory ordinary
 // content.
 func looksLikeGitDir(dir string) bool {
-	if !validGitHEAD(filepath.Join(dir, "HEAD")) {
-		return false
-	}
+	return validGitHEAD(filepath.Join(dir, "HEAD")) && hasGitDirStructure(dir)
+}
+
+// hasGitDirStructure is is_git_directory() with the HEAD test removed: the
+// objects/ and refs/ directories, resolved through `commondir` exactly as git
+// resolves them.
+//
+// It is what the POINTER rule asks of a target, and the split is the whole
+// reason the two rules are not one function. On its own the structure is not
+// enough to call a directory a git directory — `testdata/parser/{objects,refs}`
+// is ordinary program text — which is why the standalone rule keeps git's HEAD
+// test. A `gitdir:` pointer naming the directory is the second, independent
+// piece of evidence, and it is what lets the HEAD test be dropped here: the
+// pointer rule exists precisely to carry a git directory whose HEAD is missing
+// or corrupt, which is the state that makes git refuse the worktree and the
+// filesystem fallback run in the first place.
+func hasGitDirStructure(dir string) bool {
 	common, ok := gitCommonDir(dir)
 	if !ok {
 		return false
@@ -10482,9 +10509,19 @@ const maxGitCommonDirBytes = 4 << 10
 // git has no directory to resolve through and finds neither objects nor refs, so
 // the answer is "not a git directory" rather than "resolve inside dir" — the
 // same verdict git reaches, and the one that does not over-exclude.
+//
+// os.Stat, not os.Lstat: git reads `commondir` through the ordinary stdio path,
+// which follows a symlink, so a symlinked `commondir` names a common directory
+// to git and the git directory holding it is a git directory. Refusing it —
+// lstat plus a regular-file requirement — called a real linked worktree's
+// administrative directory ordinary content and left its config and hooks
+// indexable. Verified on git 2.54.0: with `adm/commondir` a symlink to a regular
+// file, `git --git-dir=adm rev-parse --git-dir` succeeds and
+// `--git-common-dir` resolves through the link. A `commondir` that is a
+// DIRECTORY still fails the regular-file test, as it fails git's own read.
 func gitCommonDir(dir string) (string, bool) {
 	pointer := filepath.Join(dir, "commondir")
-	info, err := os.Lstat(pointer)
+	info, err := os.Stat(pointer)
 	if err != nil {
 		return dir, true
 	}
@@ -10627,18 +10664,65 @@ func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
 // without the structural HEAD/objects/refs signature had nothing else to catch
 // it.
 //
-// The sweep is directory-only and pruned three ways, so it enumerates the few
-// directories the listing said nothing about rather than the repository: a
-// directory that holds listed content is already observed and is not read again;
-// an already-excluded path is not descended into; and a vendored or installed-
-// dependency tree is skipped, since nothing in it is indexed for a pointer there
-// to leak through. Symlinked entries report as symlinks, not directories, so no
-// link is followed and no cycle is possible.
+// Git names those directories itself, and is asked rather than re-derived.
+// `git ls-files --cached --others --exclude-standard --directory` reports a
+// directory with no listed content as one entry — `nested/` for a directory
+// holding only a `.git` pointer — while a directory that does hold listed
+// content is reported through its files, so the entries not already seen are
+// exactly the roots this sweep needs. Verified on git 2.54.0 in a repository
+// with tracked content, an ignored `build/` tree and two pointer-only
+// directories: the listing reports `nested/` and `nested2/` and says nothing
+// about `build/`.
+//
+// Deriving them instead — queueing every ancestor of every listed path and
+// reading each one — made the successful git-listing path perform a second
+// traversal of the whole tree, ignored build and cache trees included, since
+// nothing pruned by git's exclude rules was pruned here. On a 5,946-directory
+// repository whose 501 listed source files sit beside ignored build/ and
+// .cache/ trees, one cold `search` went from 0.12 s to 0.43 s, and the gap grew
+// with the ignored trees while the indexed source did not change.
+//
+// The sweep still descends, because git collapses a pointer-only directory's
+// ancestor (`nested2/` for `nested2/sub/.git`), and the descent is pruned four
+// ways: a directory that holds listed content is already observed and is not
+// read again; an already-excluded path is not descended into; a vendored or
+// installed-dependency tree is skipped, since nothing in it is indexed for a
+// pointer there to leak through; and so is a tree the project's own ignore
+// rules cover, for the same reason and to keep the descent inside what git
+// already agreed to enumerate. Symlinked entries report as symlinks, not
+// directories, so no link is followed and no cycle is possible.
+//
+// What that gives up is narrow and stated: a pointer buried in an IGNORED tree
+// is no longer read, so a git directory whose only pointer lives there and whose
+// HEAD is damaged — the one shape neither rule 1 nor the structural rule can
+// reach — is not excluded by this path. The filesystem fallback, which observes
+// every directory it walks, is unaffected.
+//
+// When git could not answer, the old derivation is the fallback, still pruned by
+// the ignore rules.
 func (g *gitDirExcluder) observeUnlistedDirs(seen map[string]struct{}) {
 	queue := make([]string, 0, len(seen)+1)
-	queue = append(queue, "")
-	for dir := range seen {
-		queue = append(queue, dir)
+	if g.gitAnsweredRoots {
+		for _, entry := range g.unlistedRoots {
+			dir := strings.TrimSuffix(filepath.ToSlash(entry), "/")
+			if dir == "" || dir == "." {
+				continue
+			}
+			if _, done := seen[dir]; done {
+				continue
+			}
+			if g.skipSweptDir(dir, path.Base(dir)) {
+				continue
+			}
+			seen[dir] = struct{}{}
+			g.observe(dir)
+			queue = append(queue, dir)
+		}
+	} else {
+		queue = append(queue, "")
+		for dir := range seen {
+			queue = append(queue, dir)
+		}
 	}
 	// Sorted so the observation order, and therefore the pruning, is the same on
 	// every run over the same tree.
@@ -10649,6 +10733,7 @@ func (g *gitDirExcluder) observeUnlistedDirs(seen map[string]struct{}) {
 		if dir != "" {
 			base = filepath.Join(g.repo, filepath.FromSlash(dir))
 		}
+		g.directoriesRead++
 		entries, err := os.ReadDir(base)
 		if err != nil {
 			continue
@@ -10665,10 +10750,7 @@ func (g *gitDirExcluder) observeUnlistedDirs(seen map[string]struct{}) {
 			if _, done := seen[child]; done {
 				continue
 			}
-			if g.excluded(child) {
-				continue
-			}
-			if isVendoredScanDir(child, name) || isInstalledDependencyDirName(child, name) {
+			if g.skipSweptDir(child, name) {
 				continue
 			}
 			seen[child] = struct{}{}
@@ -10676,6 +10758,18 @@ func (g *gitDirExcluder) observeUnlistedDirs(seen map[string]struct{}) {
 			queue = append(queue, child)
 		}
 	}
+}
+
+// skipSweptDir is the sweep's single pruning decision, applied both to the roots
+// git names and to every directory the descent reaches.
+func (g *gitDirExcluder) skipSweptDir(rel, name string) bool {
+	if g.excluded(rel) {
+		return true
+	}
+	if isVendoredScanDir(rel, name) || isInstalledDependencyDirName(rel, name) {
+		return true
+	}
+	return g.ignoredDir != nil && g.ignoredDir(rel)
 }
 
 // listedPathKind is what one lstat of a listed path found. The listing needs the
@@ -10917,6 +11011,15 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 		}
 	}
 	gitDirs := newGitDirExcluder(repo)
+	// The directories git lists nothing under come from git itself, so the sweep
+	// for a suppressed `.git` pointer does not have to re-read the whole tree.
+	if dirEntries, dirErr := gitutil.ListWorktreeDirectoryEntries(ctx, repo); dirErr == nil {
+		gitDirs.unlistedRoots = dirEntries
+		gitDirs.gitAnsweredRoots = true
+	}
+	gitDirs.ignoredDir = func(rel string) bool {
+		return ignores.Ignored(rel, true) && !ignores.MayIncludeDescendant(rel)
+	}
 	gitDirs.observeListedPaths(listed, listedDirs)
 	paths := make([]string, 0, len(listed))
 	seen := make(map[string]struct{}, len(listed))
