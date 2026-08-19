@@ -24,6 +24,36 @@ other is installation.
   `.git/info/exclude`, per-worktree excludes, and `core.excludesFile`, plus
   `.graphignore` and any
   `--ignore-file`/`--include-file` the caller passes.
+
+### What it does not read: credential stores
+
+A built-in exclude list keeps credential stores out of every corpus — the
+working tree, the committed tree, and therefore the graph, search results and
+search context blocks alike. A file it names is never opened, so its contents
+cannot be quoted back into an agent's context.
+
+The list covers `.env` and its `.env.<environment>` variants, `.envrc`,
+`.npmrc`, `.netrc`/`_netrc`, `.pgpass`, `.htpasswd`, `.pypirc`, `.dockercfg`,
+`.boto`, SSH private keys (`id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`),
+`credentials`/`credentials.{json,yml,yaml,ini,toml}`,
+`secrets.{json,yml,yaml,ini,toml}`, key material and encrypted stores by suffix
+(`.pem`, `.key`, `.pfx`, `.p12`, `.pkcs12`, `.jks`, `.keystore`, `.truststore`,
+`.ppk`, `.kdbx`, `.asc`, `.gpg`), and files ending in `.yaml`, `.yml`, `.json`,
+`.ini`, `.toml`, `.cfg`, `.conf`, `.properties`, `.txt` or `.enc` under a
+directory segment named `secrets/` or `credentials/` at any depth. Matching is
+case-insensitive.
+
+It is a rule about PATHS, not about content: no file is scanned for
+secret-shaped strings, and a credential store whose path gives no signal —
+`deploy/prod-values.yaml` holding an inline API key — is not covered. Public
+halves (`.crt`, `.cer`, `.pub`) are deliberately not excluded, and source code
+under `internal/secrets/` or `pkg/credentials/` stays fully searchable.
+
+The list is loaded after the repository's own exclude files, so a negation
+inside the repository under analysis cannot switch it off, and before the
+caller's `--ignore-file`/`--include-file`, so `--include-file` remains the way
+to deliberately re-admit a path (a checked-in `.env.example` used as
+configuration documentation, for example).
 - For `stats` only: local coding-agent session transcripts
   (`~/.claude/projects/<path-slug>/*.jsonl`, or `--sessions-dir`/
   `--transcript` overrides). This is Claude Code's transcript layout; the

@@ -43,6 +43,163 @@ const (
 // caller's --include-file can still override it.
 const graphIgnoreFileName = ".graphignore"
 
+// Built-in credential-store exclusion
+// ===================================
+//
+// A credential store is a file whose CONTENT is the secret: `.env`, `.npmrc`, a
+// PEM private key, a service-account `credentials.json`, a Kubernetes Secret
+// manifest under `deploy/secrets/`. Nothing in the graph asked whether a file
+// was one before reading it, so `entire graph search` read them, ranked them and
+// quoted the matching region back as a snippet, putting a repository's secrets
+// into the calling agent's LLM context (CWE-538 / CWE-312). They match readily:
+// the key names AROUND the secret (`STRIPE_SECRET_KEY`, `_authToken`,
+// `private_key`) are exactly the vocabulary of a query about authentication.
+//
+// The exclusion lives here, in the ignore matcher, because this is the one place
+// that governs every corpus at once. The working-tree listing consults it at
+// provider.go worktreeSourceFiles, the committed-tree listing at
+// filterIgnoredPaths, and both listings are what the snapshot is parsed from —
+// so a path denied here is absent from search results, from the context blocks,
+// and from `entire graph symbols`, without a second taxonomy anywhere.
+//
+// It is an EXCLUSION rather than a ranking penalty on purpose. searchFileClassPrior
+// (search_file_class.go) documents itself as "not a filter: a non-source hit stays
+// reachable (and still ranks first when nothing else matches at all)", and every
+// class prior is switched back off when the query names the class — so
+// "api key credentials token", the query most likely to surface a secret, would
+// restore a credential file to full strength. The harm here is the bytes being
+// quoted at all, not the rank.
+//
+// Two properties of where it is loaded matter:
+//
+//   - It is loaded AFTER the repository's own exclude files (.gitignore,
+//     .graphignore, info/exclude) so a negation shipped inside the repository
+//     under analysis cannot switch it off, and BEFORE the caller's explicit
+//     --ignore-file/--include-file so `--include-file` remains the documented,
+//     deliberate override. Later rules win in ignoreMatcher.decide.
+//   - The patterns are matched case-insensitively, unlike ordinary gitignore
+//     rules, because `.ENV` on a case-insensitive filesystem is the same file
+//     and the same secret.
+//
+// Scope is the credential STORE, never code that talks about credentials. Every
+// rule is decided on a basename or a suffix, except the `secrets/`-directory rules
+// which additionally require a data or config suffix — so `internal/secrets/manager.go`,
+// `pkg/credentials/provider.go` and `internal/config/dotenv.go` stay fully searchable.
+const builtinSecretIgnorePatterns = `
+# Dotenv and direnv: the whole file is credential material. The .env.<environment>
+# variants are covered because they are the same file shape, and the template forms
+# (.env.example, .env.sample) with them: a template is byte-shaped exactly like the
+# real thing and is routinely committed with real values still in it.
+.env
+.env.*
+*.env
+.envrc
+
+# Registry, database and service credential files, by their conventional names.
+.npmrc
+.netrc
+_netrc
+.pgpass
+.htpasswd
+.pypirc
+.dockercfg
+.boto
+
+# SSH private keys. The .pub half is deliberately NOT matched: publishing it is
+# its purpose, and id_rsa here matches only the exact basename.
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+
+# Conventional credential and secret store filenames. The bare credentials entry
+# is the AWS CLI shape (.aws/credentials); the negation immediately after it is
+# what keeps that rule from also swallowing a SOURCE package directory named
+# credentials/, since a bare gitignore pattern matches every path segment and not
+# only the basename. A directory-only negation cannot match a file, so the file
+# stays denied and the directory stays walked.
+credentials
+!credentials/
+credentials.json
+credentials.yml
+credentials.yaml
+credentials.ini
+credentials.toml
+secrets.json
+secrets.yml
+secrets.yaml
+secrets.ini
+secrets.toml
+
+# Key material and encrypted stores, by suffix. .crt, .cer and .pub are deliberately
+# absent: they are the public halves, and excluding them would cost recall and
+# protect nothing.
+*.pem
+*.key
+*.pfx
+*.p12
+*.pkcs12
+*.jks
+*.keystore
+*.truststore
+*.ppk
+*.kdbx
+*.asc
+*.gpg
+
+# Path-shaped stores: a data or config file under a directory segment named
+# secrets/ or credentials/, at any depth. This is the Kubernetes / sops /
+# sealed-secrets convention, where the basename carries no signal at all
+# (deploy/secrets/prod-secrets.yaml). Restricted to data and config suffixes so a
+# SOURCE package named secrets/ or credentials/ stays fully searchable.
+**/secrets/**/*.yaml
+**/secrets/**/*.yml
+**/secrets/**/*.json
+**/secrets/**/*.ini
+**/secrets/**/*.toml
+**/secrets/**/*.cfg
+**/secrets/**/*.conf
+**/secrets/**/*.properties
+**/secrets/**/*.txt
+**/secrets/**/*.enc
+**/credentials/**/*.yaml
+**/credentials/**/*.yml
+**/credentials/**/*.json
+**/credentials/**/*.ini
+**/credentials/**/*.toml
+**/credentials/**/*.cfg
+**/credentials/**/*.conf
+**/credentials/**/*.properties
+**/credentials/**/*.txt
+**/credentials/**/*.enc
+`
+
+// builtinSecretIgnoreRules is builtinSecretIgnorePatterns parsed once. The rules
+// are immutable and their regexps are safe for concurrent use, so every matcher
+// shares this one slice.
+var builtinSecretIgnoreRules = parseBuiltinSecretIgnoreRules()
+
+func parseBuiltinSecretIgnoreRules() []ignoreRule {
+	var matcher ignoreMatcher
+	if err := matcher.loadContent(builtinSecretIgnorePatterns, false); err != nil {
+		// loadContent only fails on a scanner error, which a string reader cannot
+		// produce; a panic here would mean the constant above stopped being a string.
+		panic("sem: built-in credential-store ignore rules failed to parse: " + err.Error())
+	}
+	for index := range matcher.rules {
+		rule := &matcher.rules[index]
+		rule.expression = regexp.MustCompile("(?i)" + rule.expression.String())
+	}
+	return matcher.rules
+}
+
+// loadBuiltinSecretRules appends the built-in credential-store deny. Callers place
+// it after the repository's own exclude files and before the caller's explicit
+// ones; see the comment on builtinSecretIgnorePatterns for why that position.
+func (m *ignoreMatcher) loadBuiltinSecretRules() {
+	m.rules = append(m.rules, builtinSecretIgnoreRules...)
+}
+
 func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) (ignoreMatcher, error) {
 	var matcher ignoreMatcher
 	if err := matcher.loadOptional(filepath.Join(repo, ".gitignore"), false); err != nil {
@@ -64,6 +221,7 @@ func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 			return ignoreMatcher{}, err
 		}
 	}
+	matcher.loadBuiltinSecretRules()
 	if err := matcher.loadExplicit(repo, ignoreFiles, includeFiles); err != nil {
 		return ignoreMatcher{}, err
 	}
@@ -75,6 +233,7 @@ func loadExplicitIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 	if err := matcher.loadOptional(filepath.Join(repo, graphIgnoreFileName), false); err != nil {
 		return ignoreMatcher{}, err
 	}
+	matcher.loadBuiltinSecretRules()
 	if err := matcher.loadExplicit(repo, ignoreFiles, includeFiles); err != nil {
 		return ignoreMatcher{}, err
 	}

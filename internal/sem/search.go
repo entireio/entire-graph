@@ -817,11 +817,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	needleIndex := &searchNeedleIndex{read: read, corpus: selection.allFiles}
 	needleIndex.termFiles, needleIndex.termFileTotals = selection.termPostings.snapshot()
 	if selection.gitGrepUsable {
-		treeish := selection.gitGrepTreeish
-		needleIndex.grep = func(pattern string) ([]string, bool) {
-			paths, grepErr := gitutil.GrepFixedStringPaths(ctx, selection.repoRoot, treeish, pattern)
-			return paths, grepErr == nil
-		}
+		needleIndex.grep = newSearchNeedleGrep(ctx, selection.repoRoot, selection.gitGrepTreeish, selection.ignores)
 	}
 
 	symbolsByFile := make(map[string][]SymbolRecord)
@@ -1415,6 +1411,23 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}, nil
 }
 
+// newSearchNeedleGrep is the needle index's Git route: it lists every file in the tree
+// containing a fixed string, case-sensitively. It is the only route into the payload that
+// answers over the WHOLE TREE rather than over the listed corpus, so it is the only one that
+// can name a path the listing already excluded — a credential store denied by the built-in
+// rules in ignore.go, a tree the caller's --ignore-file removed, anything .graphignore names.
+//
+// Re-applying the corpus's own ignore verdict here is what keeps "excluded" meaning "never
+// opened": a path this returns is handed to searchNeedleIndex.readLines, which reads it. Using
+// the same matcher rather than a second predicate is what keeps a caller's --include-file
+// meaning the same thing on both routes.
+func newSearchNeedleGrep(ctx context.Context, repoRoot, treeish string, ignores ignoreMatcher) func(string) ([]string, bool) {
+	return func(pattern string) ([]string, bool) {
+		paths, grepErr := gitutil.GrepFixedStringPaths(ctx, repoRoot, treeish, pattern)
+		return filterIgnoredPaths(paths, ignores), grepErr == nil
+	}
+}
+
 func openSearchContentReader(
 	ctx context.Context,
 	repo, commit string,
@@ -1687,6 +1700,12 @@ type searchFileSelection struct {
 	// run against — empty means the working tree, which is what a worktree search indexes.
 	gitGrepUsable  bool
 	gitGrepTreeish string
+	// ignores is the exclude stack the corpus listing was filtered with, kept so the routes that
+	// reach OUTSIDE that listing can apply the same verdict. Only one does: the needle index's
+	// `git grep`, which Git answers over the whole tree. Carrying the matcher rather than
+	// re-deriving a predicate is what keeps a caller's --include-file meaning the same thing on
+	// both routes.
+	ignores ignoreMatcher
 }
 
 type searchScanTelemetry struct {
@@ -1715,7 +1734,20 @@ func preselectSearchFiles(
 	if source.close != nil {
 		defer source.close()
 	}
+	// The same exclude stack prepareSource listed the corpus with, so the one route that reaches
+	// outside that listing can apply the identical verdict. Which loader applies is decided the
+	// way openSource decides it: a committed-tree listing sees .graphignore plus the explicit
+	// files, a working-tree listing the full Git exclude stack as well.
+	loadIgnores := loadWorktreeIgnoreMatcher
+	if !options.Worktree {
+		loadIgnores = loadExplicitIgnoreMatcher
+	}
+	ignores, err := loadIgnores(source.absRepo, options.IgnoreFiles, options.IncludeFiles)
+	if err != nil {
+		return searchFileSelection{}, err
+	}
 	selection := searchFileSelection{
+		ignores:                   ignores,
 		repoRoot:                  source.absRepo,
 		commit:                    source.commit,
 		tree:                      source.tree,
