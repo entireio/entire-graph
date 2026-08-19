@@ -15258,8 +15258,16 @@ func TestGitDirPointerTargetResolvesSeparateGitDirPointer(t *testing.T) {
 			return ""
 		}},
 		{"empty target", "", func(t *testing.T, repo string) string {
-			writeFile(t, repo, ".git", "gitdir:   \n")
+			writeFile(t, repo, ".git", "gitdir: \n")
 			return ""
+		}},
+		// Git strips only the trailing newline, so the surplus spaces are the
+		// name: `git init --separate-git-dir='<wt>/  '` and a `gitdir:   `
+		// pointer resolve to a directory literally called two spaces, verified
+		// on git 2.54.0.
+		{"spaces after the prefix are the path, not padding", "", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir:   \n")
+			return "  "
 		}},
 		{"implausibly large pointer is refused unread", "", func(t *testing.T, repo string) string {
 			writeFile(t, repo, ".git", "gitdir: .repo-git\n"+strings.Repeat("x", maxGitDirPointerBytes))

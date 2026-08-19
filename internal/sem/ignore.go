@@ -458,8 +458,11 @@ func gitInfoExcludePath(repo string) string {
 	if err != nil {
 		return ""
 	}
-	gitDir := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(raw)), "gitdir:"))
-	if gitDir == "" {
+	// One parser for both readers of these bytes: git applies read_gitfile_gently()
+	// here too, so a `.git` text file git refuses to parse must steer this
+	// worktree's exclude rules nowhere — git applies no info/exclude at all there.
+	gitDir, ok := parseGitDirPointer(raw)
+	if !ok {
 		return ""
 	}
 	if !filepath.IsAbs(gitDir) {

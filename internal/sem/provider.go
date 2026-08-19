@@ -10263,6 +10263,49 @@ func hasGitDirComponent(rel string) bool {
 // rather than read.
 const maxGitDirPointerBytes = 4 << 10
 
+// gitDirPointerPrefix is the prefix git's read_gitfile_gently() requires at BYTE
+// 0 of a `.git` file, the space after the colon included.
+const gitDirPointerPrefix = "gitdir: "
+
+// parseGitDirPointer reads the bytes of a `.git` FILE the way git's
+// read_gitfile_gently() reads them, and reports the target path git would
+// resolve — or that this is not a gitfile at all.
+//
+// Git checks the prefix against byte 0 and strips only trailing NEWLINE bytes
+// (`\n`, `\r`). Everything else after the prefix is the path: a second space
+// after the colon, or a space or tab at the end, belongs to the name. Trimming
+// the buffer before the prefix check — and the target after it — disagreed with
+// git in both directions, and each direction was a bug of its own:
+//
+//   - Too lenient. ` gitdir: x`, `\tgitdir: x` and `gitdir:x` are `invalid
+//     gitfile format` to git, so no directory is named at all; accepting them
+//     let an ordinary text file named `.git` — a fixture, a stray note — name
+//     any directory in the tree and delete it from the index.
+//   - Too eager. `gitdir: .repo-git ` names `.repo-git ` WITH the space;
+//     trimming recorded `.repo-git`, which nothing on disk is called, and the
+//     real git directory was walked and its config indexed.
+//
+// Both wants come from git 2.54.0, not from its documentation:
+// `git init --separate-git-dir='<path>/trailspace '` writes the trailing space
+// into the pointer and `git rev-parse --git-dir` reads it back with the space,
+// while every rejected spelling above fails `git rev-parse --git-dir`.
+//
+// The empty target — `gitdir: ` and nothing else — is reported as absent. Git
+// resolves it to the directory holding the pointer only to reject it in
+// is_git_directory(); treating it as a hit would exclude that whole directory on
+// the strength of a file git does not accept.
+func parseGitDirPointer(content []byte) (string, bool) {
+	target, ok := strings.CutPrefix(string(content), gitDirPointerPrefix)
+	if !ok {
+		return "", false
+	}
+	target = strings.TrimRight(target, "\r\n")
+	if target == "" {
+		return "", false
+	}
+	return target, true
+}
+
 // gitDirExcluder answers "is this repo-relative path a git directory, or inside
 // one?" for a working-tree listing. Both of its rules are unconditional: no
 // gitignore negation can cancel either, because the project's exclude rules are
@@ -10704,12 +10747,8 @@ func gitDirPointerTarget(repo, dir string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	target, ok := strings.CutPrefix(strings.TrimSpace(string(content)), "gitdir:")
+	target, ok := parseGitDirPointer(content)
 	if !ok {
-		return "", false
-	}
-	target = strings.TrimSpace(target)
-	if target == "" {
 		return "", false
 	}
 	// Git writes the pointer with `/` separators on every platform, and resolves
