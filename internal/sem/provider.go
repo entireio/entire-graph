@@ -9780,6 +9780,12 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 			return openedSource{}, err
 		}
 		batch.SetMaxBytes(maxReadBytes)
+		// The oversize registry for the paths the batch reader cannot carry.
+		// batch.OversizeBlob only knows blobs that streamed past IT, so a
+		// refusal in the newline fallback below has to be recorded here or the
+		// file has no record at all and the snapshot drops it for being NAMED
+		// with a newline.
+		fallback := newFallbackOversizeRegistry(repo, committedRevision, maxReadBytes)
 		read := func(path string) (string, bool) {
 			if strings.Contains(path, "\n") {
 				// The batch protocol is line based, so a newline-bearing Git
@@ -9790,7 +9796,19 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 				// any repository opt one blob out of the cap that makes this
 				// reader's memory claim true.
 				content, ok, err := gitutil.ShowFileLimited(ctx, repo, committedRevision, path, maxReadBytes)
-				if err != nil || !ok {
+				if err != nil {
+					return "", false
+				}
+				if !ok {
+					// A refusal has to leave the same trace the batch reader
+					// leaves, or processProviderFile cannot tell a file it
+					// declined from one it could not read: the file record is
+					// dropped, the warning becomes an error-severity
+					// E_FILE_READ, and completeness falls to degraded.
+					// ShowFileLimited refuses without reading, so the digest
+					// MaxParseBytes promises is still owed — noted here and
+					// resolved lazily below. An absent path records nothing.
+					fallback.note(path)
 					return "", false
 				}
 				return content, true
@@ -9802,6 +9820,9 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 			return content, true
 		}
 		oversize := func(path string) (oversizeFile, bool) {
+			if over, ok := fallback.lookup(ctx, path); ok {
+				return over, true
+			}
 			blob, ok := batch.OversizeBlob(path)
 			if !ok {
 				return oversizeFile{}, false
@@ -9880,6 +9901,76 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		oversize:   registry.lookup,
 		warnings:   warnings,
 	}, nil
+}
+
+// fallbackOversizeRegistry remembers the HEAD-tree paths the one-shot newline
+// fallback refused, and resolves each one's record at most once. It is the
+// committed-revision counterpart of oversizeRegistry below, and defers for the
+// same reason: resolving costs a streaming pass over the blob, and preselection
+// only needs to know the file is out of reach, so paying that pass to answer a
+// question nobody asked would trade a memory blow-up for an I/O one.
+//
+// A noted path is not yet known to be oversized — ShowFileLimited refuses
+// without saying why. gitutil.OversizeBlobAtRev decides that against the same
+// ceiling, and a path it does not establish as oversized resolves to no record,
+// so a read that failed for another reason is never reported as too large.
+type fallbackOversizeRegistry struct {
+	repo     string
+	rev      string
+	maxBytes int64
+	mu       sync.Mutex
+	pending  map[string]struct{}
+	// resolved caches the answer, nil meaning "asked, and not oversized".
+	resolved map[string]*oversizeFile
+}
+
+func newFallbackOversizeRegistry(repo, rev string, maxBytes int64) *fallbackOversizeRegistry {
+	return &fallbackOversizeRegistry{
+		repo:     repo,
+		rev:      rev,
+		maxBytes: maxBytes,
+		pending:  map[string]struct{}{},
+		resolved: map[string]*oversizeFile{},
+	}
+}
+
+// note records that the fallback refused path. Files are processed in parallel
+// and the batch reader's own registry is private to it, so this keeps its lock.
+func (r *fallbackOversizeRegistry) note(path string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, done := r.resolved[path]; done {
+		return
+	}
+	r.pending[path] = struct{}{}
+}
+
+// lookup resolves a noted path to the record MaxParseBytes promises. The lock is
+// not held across the git call; a concurrent duplicate would only recompute the
+// same answer, because the revision it reads is immutable.
+func (r *fallbackOversizeRegistry) lookup(ctx context.Context, path string) (oversizeFile, bool) {
+	r.mu.Lock()
+	record, done := r.resolved[path]
+	if !done {
+		_, done = r.pending[path]
+		if !done {
+			r.mu.Unlock()
+			return oversizeFile{}, false
+		}
+		r.mu.Unlock()
+		blob, over, err := gitutil.OversizeBlobAtRev(ctx, r.repo, r.rev, path, r.maxBytes)
+		if err == nil && over {
+			record = &oversizeFile{Bytes: blob.Bytes, Hash: blob.Hash, Lines: blob.Lines}
+		}
+		r.mu.Lock()
+		r.resolved[path] = record
+		delete(r.pending, path)
+	}
+	r.mu.Unlock()
+	if record == nil {
+		return oversizeFile{}, false
+	}
+	return *record, true
 }
 
 // oversizeRegistry remembers the working-tree files the reader refused, and

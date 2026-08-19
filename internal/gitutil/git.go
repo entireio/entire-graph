@@ -614,6 +614,60 @@ func showFileLimited(
 	return content, ok, err
 }
 
+// OversizeBlobAtRev reports the size, content hash and line count of the blob at
+// rev:path when that blob exceeds maxBytes — the same OversizeBlob the batch
+// reader records for a blob IT refuses, learned the same way, by streaming the
+// blob past a digest and discarding it. The bytes are never held.
+//
+// It is the companion ShowFileLimited owes its callers. The batch reader digests
+// what it declines on the way past, so a caller can still record a file it could
+// not parse; ShowFileLimited only refuses, so a caller taking that fallback — a
+// Git path containing a newline, which `cat-file --batch` cannot carry — would
+// otherwise lose the file entirely because of how it is NAMED.
+//
+// The second return means "this blob exists and is over maxBytes", not merely
+// "found": false is also the answer for a blob at or under the ceiling, so a
+// caller that refused for some other reason cannot record it as oversized. A
+// missing path is (false, nil); a read that broke is (false, err).
+//
+// maxBytes <= 0 means no ceiling, so nothing is oversized and no git runs.
+func OversizeBlobAtRev(ctx context.Context, repo, rev, path string, maxBytes int64) (OversizeBlob, bool, error) {
+	if maxBytes <= 0 {
+		return OversizeBlob{}, false, nil
+	}
+	cmd := newCmd(ctx, repo, "git", "cat-file", "blob", rev+"^{tree}:"+path)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return OversizeBlob{}, false, err
+	}
+	if err := cmd.Start(); err != nil {
+		return OversizeBlob{}, false, fmt.Errorf("git cat-file blob: %w", err)
+	}
+	digest, digestErr := filedigest.Stream(stdout)
+	// Drain anything the digest did not consume before waiting. git blocks on a
+	// full pipe, and Wait would then block on git.
+	_, _ = io.Copy(io.Discard, stdout)
+	if waitErr := cmd.Wait(); waitErr != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if isMissingPathDiagnostic(msg) {
+			return OversizeBlob{}, false, nil
+		}
+		if msg == "" {
+			msg = waitErr.Error()
+		}
+		return OversizeBlob{}, false, fmt.Errorf("git cat-file blob %s:%s: %s", rev, path, msg)
+	}
+	if digestErr != nil {
+		return OversizeBlob{}, false, digestErr
+	}
+	if digest.Bytes <= maxBytes {
+		return OversizeBlob{}, false, nil
+	}
+	return OversizeBlob{Bytes: digest.Bytes, Hash: digest.Hash, Lines: digest.Lines}, true, nil
+}
+
 // blobSizeAtRev reports the size of the blob at rev:path without reading it.
 // It is BEST EFFORT by design: known=false means "no answer", never "absent" or
 // "broken", so a caller can only use it to refuse, not to conclude.

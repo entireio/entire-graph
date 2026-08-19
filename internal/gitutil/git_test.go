@@ -3,6 +3,8 @@ package gitutil
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"math"
 	"os"
 	"os/exec"
@@ -812,5 +814,113 @@ func TestGrepTreePathsCaseSensitiveIncludingBinary(t *testing.T) {
 	want := []string{"dollar.js", "exact.py", "substring.py"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("case-sensitive grep = %#v, want %#v", got, want)
+	}
+}
+
+// TestOversizeBlobAtRevAnswersOnlyForOversizedBlobs pins the contract that lets
+// a caller of ShowFileLimited record a file it was refused. The "found" return
+// means "exists AND is over the ceiling", never merely "exists": a caller whose
+// read failed for some other reason must not be able to report that file as too
+// large, because it would then carry a size, hash and line count nothing
+// established.
+func TestOversizeBlobAtRevAnswersOnlyForOversizedBlobs(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "commit.gpgsign", "false")
+
+	const ceiling = 1 << 10
+	over := strings.Repeat("x\n", ceiling) // 2*ceiling bytes, ceiling lines
+	if err := os.WriteFile(filepath.Join(repo, "over.txt"), []byte(over), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "exact.txt"), []byte(strings.Repeat("y", ceiling)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "dir", "leaf.txt"), []byte("leaf\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "size fixture")
+
+	blob, found, err := OversizeBlobAtRev(t.Context(), repo, "HEAD", "over.txt", ceiling)
+	if err != nil || !found {
+		t.Fatalf("oversized blob = (found %v, err %v), want (true, nil)", found, err)
+	}
+	sum := sha256.Sum256([]byte(over))
+	if blob.Bytes != int64(len(over)) || blob.Lines != ceiling || blob.Hash != hex.EncodeToString(sum[:]) {
+		t.Errorf(
+			"blob = {Bytes:%d Lines:%d Hash:%s}, want {Bytes:%d Lines:%d Hash:%s}",
+			blob.Bytes, blob.Lines, blob.Hash, len(over), ceiling, hex.EncodeToString(sum[:]),
+		)
+	}
+
+	// A blob exactly at the ceiling is not oversized: ShowFileLimited returns it,
+	// so nothing here is owed a record.
+	if _, found, err := OversizeBlobAtRev(t.Context(), repo, "HEAD", "exact.txt", ceiling); err != nil || found {
+		t.Errorf("blob at the ceiling = (found %v, err %v), want (false, nil)", found, err)
+	}
+	// Absent is refused, not broken -- the same distinction the readers keep.
+	if _, found, err := OversizeBlobAtRev(t.Context(), repo, "HEAD", "absent.txt", ceiling); err != nil || found {
+		t.Errorf("absent path = (found %v, err %v), want (false, nil)", found, err)
+	}
+	// No ceiling means nothing is oversized, and no git runs.
+	if _, found, err := OversizeBlobAtRev(t.Context(), repo, "HEAD", "over.txt", 0); err != nil || found {
+		t.Errorf("disabled ceiling = (found %v, err %v), want (false, nil)", found, err)
+	}
+	// A tree is not a blob: git cannot cat it, and that is a failure to report,
+	// not an absence -- the caller must not silently record a directory.
+	if _, found, err := OversizeBlobAtRev(t.Context(), repo, "HEAD", "dir", ceiling); err == nil || found {
+		t.Errorf("a tree path = (found %v, err %v), want (false, error)", found, err)
+	}
+}
+
+// TestOversizeBlobAtRevNeverMaterializesTheBlob is the reason the function
+// exists rather than callers reading the file and measuring it. The digest is
+// computed while the blob streams past and is discarded, so learning a 32 MiB
+// file's identity costs a bounded buffer, not 32 MiB.
+func TestOversizeBlobAtRevNeverMaterializesTheBlob(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "commit.gpgsign", "false")
+
+	const blobSize = 32 << 20
+	const ceiling = 1 << 10
+	// Incompressible, so git really does stream 32 MiB past the digest.
+	blob := make([]byte, blobSize)
+	if _, err := rand.Read(blob); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "huge.bin"), blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "huge fixture")
+
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+
+	record, found, err := OversizeBlobAtRev(t.Context(), repo, "HEAD", "huge.bin", ceiling)
+	if err != nil || !found {
+		t.Fatalf("OversizeBlobAtRev = (found %v, err %v), want (true, nil)", found, err)
+	}
+	if record.Bytes != blobSize {
+		t.Fatalf("Bytes = %d, want %d", record.Bytes, blobSize)
+	}
+
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	allocated := after.TotalAlloc - before.TotalAlloc
+	// Generous: the point is that the bound is a buffer, not the blob. A version
+	// that held the content would allocate at least blobSize.
+	if allocated > blobSize/4 {
+		t.Fatalf("allocated %d bytes reading a %d-byte blob; it must never be held", allocated, blobSize)
 	}
 }

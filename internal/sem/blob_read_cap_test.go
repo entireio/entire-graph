@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -169,4 +170,92 @@ func TestHeadReadersCapNewlineBearingPaths(t *testing.T) {
 			t.Fatal("a newline-bearing path under the cap must still be readable")
 		}
 	})
+}
+
+// TestRefusedNewlinePathKeepsItsFileRecord is the parity guard the cap must not
+// cost. ProviderSnapshotOptions.MaxParseBytes documents (provider.go:356-361)
+// that an oversized file "still emit[s] file records and a partial failure" with
+// the record's blob hash and line count "from a streamed digest". The batch
+// reader keeps that promise: it digests the blob it refuses on the way past.
+//
+// The one-shot fallback taken for a newline-bearing path must keep the same
+// promise. If it only refuses, processProviderFile cannot tell a refused file
+// from an unreadable one (provider_parallel.go:76-126): the FileRecord is
+// dropped, the warning-severity E_FILE_TOO_LARGE becomes an error-severity
+// E_FILE_READ, and completeness falls from ok to degraded. The file then
+// disappears from the snapshot because of how it is NAMED.
+func TestRefusedNewlinePathKeepsItsFileRecord(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Win32 rejects newlines (and every other control character) in file
+		// names, so this input cannot exist there and Git cannot check it out.
+		t.Skip("a newline-bearing file name is unrepresentable on Windows")
+	}
+
+	const newlinePath = "record\nme.py"
+	const oversizeBytes = int64(4096)
+
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeSparseFile(t, repo, newlinePath, oversizeBytes, "# over the cap\n")
+	write(t, repo, "plain.py", "def helper(value):\n    return value\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	wantHash, wantLines := fileSHA256(t, filepath.Join(repo, newlinePath))
+
+	snapshot, err := BuildProviderSnapshotWithOptions(
+		t.Context(), repo, "test", ProviderSnapshotOptions{MaxParseBytes: 1024},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var record *FileRecord
+	for i := range snapshot.Files {
+		if snapshot.Files[i].Path == newlinePath {
+			record = &snapshot.Files[i]
+		}
+	}
+	if record == nil {
+		t.Fatalf("the refused file lost its record; files = %#v", snapshot.Files)
+	}
+	if int64(record.Bytes) != oversizeBytes || record.Lines != wantLines || record.Blob != wantHash {
+		t.Fatalf(
+			"record = {Bytes:%d Lines:%d Blob:%s}, want {Bytes:%d Lines:%d Blob:%s}",
+			record.Bytes, record.Lines, record.Blob, oversizeBytes, wantLines, wantHash,
+		)
+	}
+	if record.Language != "Python" {
+		t.Fatalf("record language = %q, want Python", record.Language)
+	}
+
+	var failure *PartialFailure
+	for i := range snapshot.Header.PartialFailures {
+		if snapshot.Header.PartialFailures[i].FilePath == newlinePath {
+			failure = &snapshot.Header.PartialFailures[i]
+		}
+	}
+	if failure == nil {
+		t.Fatalf("the refused file disappeared silently; partial failures = %#v", snapshot.Header.PartialFailures)
+	}
+	if failure.Code != "E_FILE_TOO_LARGE" || failure.Severity != "warning" {
+		t.Fatalf("failure = {Code:%s Severity:%s}, want {E_FILE_TOO_LARGE warning}", failure.Code, failure.Severity)
+	}
+	if snapshot.Header.Stats.CompletenessLevel != "ok" {
+		t.Fatalf("completeness = %q, want ok", snapshot.Header.Stats.CompletenessLevel)
+	}
+
+	// The parity must not come from un-capping the read: the fallback still
+	// refuses to materialize the blob.
+	opened, err := openSource(t.Context(), repo, rev(t, repo, "HEAD"), sourceOptions{maxReadBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if opened.close != nil {
+			_ = opened.close()
+		}
+	}()
+	if content, ok := opened.read(newlinePath); ok {
+		t.Fatalf("read returned %d bytes for a blob above the 1024-byte cap", len(content))
+	}
 }
