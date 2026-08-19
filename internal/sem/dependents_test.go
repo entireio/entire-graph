@@ -2,6 +2,7 @@ package sem
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -521,6 +522,14 @@ func TestBuildReferenceIndexReportsPerFileProgress(t *testing.T) {
 // The fixture is ordered so the damage is unmissable: the newline-named file
 // sorts first, and five genuine dependents follow it.
 func TestBuildReferenceIndexCountsDependentsPastANewlineNamedFile(t *testing.T) {
+	// Windows forbids '\n' in a filename outright, so the fixture below cannot be
+	// created there and the desync it reproduces cannot occur: the guard under test
+	// rejects a path the platform will never hand it. Skipping keeps the assertion
+	// honest on the platforms where the input is representable rather than weakening
+	// it everywhere to accommodate one that cannot express the bug.
+	if runtime.GOOS == "windows" {
+		t.Skip("windows filenames cannot contain a newline; the reproduced desync is unreachable")
+	}
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
