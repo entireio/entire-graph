@@ -10325,6 +10325,26 @@ func (g *gitDirExcluder) observe(dir string) {
 	if looksLikeGitDir(filepath.Join(g.repo, filepath.FromSlash(dir))) {
 		g.addTarget(filepath.ToSlash(dir))
 	}
+	if foldedGitDirName(g.repo, dir) {
+		g.addTarget(filepath.ToSlash(dir))
+	}
+}
+
+// foldedGitDirName reports whether dir's last component is a differently-cased
+// spelling of `.git` that the filesystem folds onto the real thing. On macOS
+// (APFS/HFS+) and Windows a directory physically named `.GIT` IS the
+// repository's git directory — reading `.GIT/config` reads `.git/config` — but
+// the component test in excluded() compares exactly, and an incomplete or
+// corrupt one carries no HEAD for the structural test to find, so it passed
+// both. Asking foldsCase, rather than runtime.GOOS, keeps a genuinely distinct
+// `.GIT` on a case-sensitive filesystem indexable: there it is not an alias of
+// anything, and excluding it would drop first-party content.
+func foldedGitDirName(repo, dir string) bool {
+	name := path.Base(filepath.ToSlash(dir))
+	if name == ".git" || !strings.EqualFold(name, ".git") {
+		return false
+	}
+	return foldsCase(repo, filepath.ToSlash(dir))
 }
 
 // addTarget records one repo-relative git directory under every spelling the
@@ -10389,12 +10409,60 @@ func looksLikeGitDir(dir string) bool {
 	if !validGitHEAD(filepath.Join(dir, "HEAD")) {
 		return false
 	}
+	common, ok := gitCommonDir(dir)
+	if !ok {
+		return false
+	}
 	for _, name := range []string{"objects", "refs"} {
-		if info, err := os.Stat(filepath.Join(dir, name)); err != nil || !info.IsDir() {
+		if info, err := os.Stat(filepath.Join(common, name)); err != nil || !info.IsDir() {
 			return false
 		}
 	}
 	return true
+}
+
+// maxGitCommonDirBytes bounds the read of a `commondir` file. A real one is a
+// single path; anything larger is not one, and is refused rather than read.
+const maxGitCommonDirBytes = 4 << 10
+
+// gitCommonDir reports the directory git resolves `objects` and `refs` THROUGH
+// when deciding whether dir is a git directory — git's own get_common_dir(),
+// which looksLikeGitDir must apply or it disagrees with git in both directions.
+//
+// Without it a linked worktree's administrative git directory — HEAD and
+// `commondir` present, no local objects/ or refs/, which git accepts — is
+// classified as ordinary content and its files stay indexable; and a source
+// fixture carrying HEAD plus its own objects/ and refs/ alongside a stale
+// `commondir`, which git REJECTS, is excluded from every worktree snapshot.
+//
+// No commondir file: dir itself, as git does. Present but empty, or unreadable:
+// git has no directory to resolve through and finds neither objects nor refs, so
+// the answer is "not a git directory" rather than "resolve inside dir" — the
+// same verdict git reaches, and the one that does not over-exclude.
+func gitCommonDir(dir string) (string, bool) {
+	pointer := filepath.Join(dir, "commondir")
+	info, err := os.Lstat(pointer)
+	if err != nil {
+		return dir, true
+	}
+	if !info.Mode().IsRegular() || info.Size() > maxGitCommonDirBytes {
+		return "", false
+	}
+	content, err := os.ReadFile(pointer)
+	if err != nil {
+		return "", false
+	}
+	// Git strips trailing newlines and carriage returns, and nothing else.
+	target := strings.TrimRight(string(content), "\r\n")
+	if target == "" {
+		return "", false
+	}
+	target = filepath.FromSlash(target)
+	if !filepath.IsAbs(target) {
+		// Git resolves a relative commondir against the git directory itself.
+		target = filepath.Join(dir, target)
+	}
+	return target, true
 }
 
 // maxGitHEADBytes bounds the read of a HEAD file, and is git's own buffer size
@@ -10501,6 +10569,69 @@ func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
 	}
 	for _, entry := range listed {
 		observeChain(path.Dir(filepath.ToSlash(entry)))
+	}
+	g.observeUnlistedDirs(seen)
+}
+
+// observeUnlistedDirs observes the directories git's listing does not mention at
+// all, which the chains above cannot reach.
+//
+// Git suppresses every `.git` entry, so a directory whose entire content IS a
+// `.git` pointer file contributes no listed path and is not the ancestor of one:
+// `nested/.git` -> `gitdir: ../.dep-git` is invisible to the listing, while the
+// target it names is listed in full. Rule 2 already excludes that target once
+// the pointer is seen — the pointer was simply never reachable, and a target
+// without the structural HEAD/objects/refs signature had nothing else to catch
+// it.
+//
+// The sweep is directory-only and pruned three ways, so it enumerates the few
+// directories the listing said nothing about rather than the repository: a
+// directory that holds listed content is already observed and is not read again;
+// an already-excluded path is not descended into; and a vendored or installed-
+// dependency tree is skipped, since nothing in it is indexed for a pointer there
+// to leak through. Symlinked entries report as symlinks, not directories, so no
+// link is followed and no cycle is possible.
+func (g *gitDirExcluder) observeUnlistedDirs(seen map[string]struct{}) {
+	queue := make([]string, 0, len(seen)+1)
+	queue = append(queue, "")
+	for dir := range seen {
+		queue = append(queue, dir)
+	}
+	// Sorted so the observation order, and therefore the pruning, is the same on
+	// every run over the same tree.
+	sort.Strings(queue)
+	for cursor := 0; cursor < len(queue); cursor++ {
+		dir := queue[cursor]
+		base := g.repo
+		if dir != "" {
+			base = filepath.Join(g.repo, filepath.FromSlash(dir))
+		}
+		entries, err := os.ReadDir(base)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			child := name
+			if dir != "" {
+				child = dir + "/" + name
+			}
+			if _, done := seen[child]; done {
+				continue
+			}
+			if g.excluded(child) {
+				continue
+			}
+			if isVendoredScanDir(child, name) || isInstalledDependencyDirName(child, name) {
+				continue
+			}
+			seen[child] = struct{}{}
+			g.observe(child)
+			queue = append(queue, child)
+		}
 	}
 }
 
