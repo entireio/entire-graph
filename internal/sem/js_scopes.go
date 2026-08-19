@@ -167,18 +167,39 @@ func buildJSScanState(ctx context.Context, grammar *sitter.Language, parseSrc []
 		return state, errors.New("tree-sitter scope parse produced no root node")
 	}
 	state.parsed = true
-	walker := &jsScopeWalker{src: parseSrc, state: state}
+	// Bounding the tree-sitter call bounds the PARSE. Everything below runs on
+	// the tree the parse produced, and it is not linear: the merge filter asks
+	// namespaceMergesDeclaration once per declaration, and that scans the whole
+	// namespace list, so a file with N namespaces and N declarations costs
+	// O(N^2). Measured with the real verb on one 16k-declaration TypeScript
+	// file, this ran 4.4 s past an already-expired budget. Poll the caller's
+	// context through the walk and through the post-walk passes, and return the
+	// caller's error so the relation phase records the degraded scan the same
+	// way it records a timed-out parse.
+	walker := &jsScopeWalker{src: parseSrc, state: state, budget: ctx}
 	walker.walk(root, jsScopeContext{
 		lexStart:  -1,
 		lexEnd:    len(content),
 		funcStart: -1,
 		funcEnd:   len(content),
 	})
+	if walker.stopped {
+		return emptyJSScanState(content), fmt.Errorf("tree-sitter scope walk stopped by caller: %w", ctx.Err())
+	}
 	for _, scope := range state.namespaces {
 		state.namespaceSet[scope.Name] = true
 	}
 	sort.Slice(state.calls, func(i, j int) bool { return state.calls[i].startByte < state.calls[j].startByte })
-	for _, declaration := range walker.declarationBindings {
+	// namespaceMergesDeclaration scans the whole namespace list for every
+	// declaration, so this loop is quadratic exactly when the file declares
+	// namespaces. Poll every iteration in that case -- the poll is cheap beside
+	// the scan it guards -- and every stride otherwise, where the loop is linear
+	// and a per-iteration poll would itself become the dominant cost.
+	mergeIsSuperlinear := len(state.namespaces) > 0
+	for index, declaration := range walker.declarationBindings {
+		if (mergeIsSuperlinear || index%jsScanPollStride == 0) && ctx.Err() != nil {
+			return emptyJSScanState(content), fmt.Errorf("tree-sitter scope walk stopped by caller: %w", ctx.Err())
+		}
 		if state.namespaceMergesDeclaration(declaration) {
 			continue
 		}
@@ -414,9 +435,43 @@ type jsScopeWalker struct {
 	// the namespace-merge filter, which needs the complete namespace list (a
 	// merging namespace may be declared later in the file).
 	declarationBindings []jsDeclarationBinding
+	// budget is the caller's context, polled every jsScanPollStride nodes so a
+	// traversal of a huge tree cannot outlive the wall-clock budget. The parse
+	// that produced the tree is bounded; the walk over it was not.
+	budget  context.Context
+	visited int
+	stopped bool
+}
+
+// jsScanPollStride is how often the scope walk and the post-walk passes consult
+// the caller's context. A context read is far more expensive than one node
+// visit, so polling per node would tax every unbudgeted index; polling per
+// stride keeps the residual at one stride of work.
+const jsScanPollStride = 512
+
+// budgetGone reports whether the caller's context has stopped, latching the
+// answer so the rest of the traversal unwinds without re-reading the context.
+func (w *jsScopeWalker) budgetGone() bool {
+	if w.stopped {
+		return true
+	}
+	if w.budget == nil {
+		return false
+	}
+	w.visited++
+	if w.visited%jsScanPollStride != 0 {
+		return false
+	}
+	if w.budget.Err() != nil {
+		w.stopped = true
+	}
+	return w.stopped
 }
 
 func (w *jsScopeWalker) walk(node *sitter.Node, ctx jsScopeContext) {
+	if w.budgetGone() {
+		return
+	}
 	if !validNode(node) {
 		return
 	}

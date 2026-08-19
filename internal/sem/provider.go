@@ -1033,11 +1033,18 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// budget-independent tree key, and every later unbudgeted query would be
 	// served the gap as if it were the complete index.
 	workCtx := ctx
+	var budgetDeadline time.Time
 	if options.MaxDuration > 0 {
 		var cancelBudget context.CancelFunc
-		workCtx, cancelBudget = context.WithDeadline(ctx, time.Now().Add(options.MaxDuration))
+		budgetDeadline = time.Now().Add(options.MaxDuration)
+		workCtx, cancelBudget = context.WithDeadline(ctx, budgetDeadline)
 		defer cancelBudget()
 	}
+	// Observe the budget against the clock, not only against the context's
+	// timer: ctx.Err() flips one timer granularity after the deadline actually
+	// passed (~15.6 ms on Windows), and every poll below would spend that
+	// window working on a budget that is already gone. See budgetGate.
+	gate := newBudgetGate(workCtx, budgetDeadline)
 	budgetHit := false
 	// classifyStop splits a stop reason into "our budget expired, truncate and
 	// finish" and "return this to the caller". ctx.Err() != nil means the
@@ -1054,7 +1061,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		return err
 	}
 	// noteStop classifies the work context's current state.
-	noteStop := func() error { return classifyStop(workCtx.Err()) }
+	noteStop := func() error { return classifyStop(gate.err()) }
 	if sc.close != nil {
 		defer sc.close()
 	}
@@ -1118,7 +1125,19 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// Command verbs bound to handlers through registration tables
 	// (commands/<name>.json) never appear in the handler body; index them once as
 	// searchable aliases so they can be attached to the handler symbol below.
-	aliasesByHandler := collectRegistrationAliases(sc.paths, sc.read)
+	//
+	// The alias scan reads whole files, so it gets the budgeted reader (see
+	// budgetGate.reader) rather than sc.read: on a repository with many or
+	// large command manifests the pass used to run to completion before the
+	// first budget check existed. The reader bounds it to one in-flight read,
+	// and the explicit classification below turns that expiry into the same
+	// truncation every later phase reports, rather than leaving it for the
+	// pipeline's timer to notice.
+	budgetedRead := gate.reader(sc.read)
+	aliasesByHandler := collectRegistrationAliases(sc.paths, budgetedRead)
+	if err := noteStop(); err != nil {
+		return err
+	}
 
 	// Phase 1: workers independently read, classify, and parse files. Only this
 	// reducer mutates graph indexes or calls emit, and it consumes the original
@@ -1237,7 +1256,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		}
 		emitErr = emit(r)
 	}
-	relationsShouldStop := func() bool { return emitErr != nil || budgetHit || workCtx.Err() != nil }
+	relationsShouldStop := func() bool { return emitErr != nil || budgetHit || gate.expired() }
 	if spec.name == ProfileSyntaxOnly {
 		emitStructuralRelationsCompact(sc.key, files, structuralByFile, relationsShouldStop, func(r RelationRecord) {
 			emitRelation(r, nil, nil)
@@ -1249,7 +1268,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 			symbolsByID, filesByID = recordIndexes(files, recordsByFile)
 		}
 		var relationFailures []PartialFailure
-		forEachRelation(workCtx, sc.key, files, recordsByFile, sc.read, precomputedImports, spec, relationsShouldStop, func(r RelationRecord) {
+		forEachRelation(workCtx, sc.key, files, recordsByFile, budgetedRead, precomputedImports, spec, relationsShouldStop, func(r RelationRecord) {
 			emitRelation(r, symbolsByID, filesByID)
 		}, func(failure PartialFailure) {
 			relationFailures = append(relationFailures, failure)

@@ -587,11 +587,20 @@ func selectiveSearchSnapshotFromFull(
 	// 500-function nested fixture, a 1 ns budget still built 385,137 relations
 	// in 78 s once the complete snapshot was cached.
 	workCtx := ctx
+	var budgetDeadline time.Time
 	if options.MaxDuration > 0 {
 		var cancelBudget context.CancelFunc
-		workCtx, cancelBudget = context.WithDeadline(ctx, time.Now().Add(options.MaxDuration))
+		budgetDeadline = time.Now().Add(options.MaxDuration)
+		workCtx, cancelBudget = context.WithDeadline(ctx, budgetDeadline)
 		defer cancelBudget()
 	}
+	// The budget is observed against the CLOCK, not only against the context's
+	// timer. ctx.Err() flips one timer granularity after the deadline actually
+	// passed -- microseconds on Linux and macOS, up to a system tick (~15.6 ms)
+	// on Windows -- and the preprocessing below is short enough to finish
+	// inside that window, which is exactly how an already-expired budget still
+	// filtered the whole cached inventory on the Windows runner. See budgetGate.
+	gate := newBudgetGate(workCtx, budgetDeadline)
 	budgetHit := false
 	// classifyStop splits a stop reason the way the streaming build does:
 	// expiry of an OPT-IN MaxDuration is a truncation to report, anything else
@@ -614,7 +623,7 @@ func selectiveSearchSnapshotFromFull(
 	// per-file importsFor precompute (a content scan per selected file) -- is
 	// budgeted work that used to run unchecked, so a selective request could
 	// overshoot MaxDuration before the relation phase ever created a predicate.
-	shouldStop := func() bool { return budgetHit || workCtx.Err() != nil }
+	shouldStop := func() bool { return budgetHit || gate.expired() }
 	// stopNow marks the derivation truncated the same way an expired relation
 	// phase does, so the E_ANALYSIS_BUDGET_EXCEEDED marker (and with it the
 	// "unsafe" completeness level and the cache writer's refusal) is reached by
@@ -624,7 +633,7 @@ func selectiveSearchSnapshotFromFull(
 		if !shouldStop() {
 			return false
 		}
-		if options.MaxDuration > 0 && errors.Is(workCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+		if options.MaxDuration > 0 && errors.Is(gate.err(), context.DeadlineExceeded) && ctx.Err() == nil {
 			budgetHit = true
 		}
 		return true
@@ -679,6 +688,10 @@ func selectiveSearchSnapshotFromFull(
 			recordsByFile[filePath] = retainedSymbolsForProfile(symbols, spec)
 		}
 	}
+	// Every content read below this point goes through the budgeted reader, so
+	// a producer that scans file content per symbol cannot keep scanning after
+	// the budget is gone even though it builds its whole slice before returning.
+	budgetedRead := gate.reader(sc.read)
 	precomputedImports := make(map[string][]string)
 	if spec.name != ProfileSyntaxOnly {
 		for _, file := range selective.Files {
@@ -690,7 +703,7 @@ func selectiveSearchSnapshotFromFull(
 			if !skipFastProfilePerSymbolScan(spec, file.Language) {
 				continue
 			}
-			if content, ok := sc.read(file.Path); ok {
+			if content, ok := budgetedRead(file.Path); ok {
 				precomputedImports[file.Path] = importsFor(file.Path, content)
 			}
 		}
@@ -734,7 +747,7 @@ func selectiveSearchSnapshotFromFull(
 	if spec.name == ProfileSyntaxOnly {
 		emitStructuralRelationsCompact(sc.key, selective.Files, structuralByFile, shouldStop, emitRelation)
 	} else {
-		forEachRelation(workCtx, sc.key, selective.Files, recordsByFile, sc.read, precomputedImports, spec, shouldStop, emitRelation, func(failure PartialFailure) {
+		forEachRelation(workCtx, sc.key, selective.Files, recordsByFile, budgetedRead, precomputedImports, spec, shouldStop, emitRelation, func(failure PartialFailure) {
 			relationFailures = append(relationFailures, failure)
 		})
 		// fileChangesWithRelations runs a `git log` subprocess and returns a
