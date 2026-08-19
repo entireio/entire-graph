@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -235,12 +234,11 @@ func writeVerifyBaseline(
 	if err != nil {
 		return err
 	}
-	if directory := filepath.Dir(flags.RecordBaseline); directory != "" && directory != "." {
-		if err := os.MkdirAll(directory, 0o755); err != nil {
-			return err
-		}
-	}
-	if err := os.WriteFile(flags.RecordBaseline, append(encoded, '\n'), 0o644); err != nil {
+	// writeOutputFile, not MkdirAll+os.WriteFile: --record-baseline names a path
+	// anywhere on the machine (the help advertises /tmp/base.json), but a path
+	// inside the scanned repository is repository-controlled and may be a
+	// committed symlink. See outputpath.go.
+	if err := writeOutputFile(repo, flags.RecordBaseline, append(encoded, '\n'), 0o644, true); err != nil {
 		return err
 	}
 	passed, failed := verifyCountByStatus(baseline.Results)
