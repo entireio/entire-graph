@@ -255,7 +255,7 @@ func searchSessionScopeFor(ctx context.Context, repo string) searchSessionScope 
 func writeSearchResponse(out io.Writer, response sem.SearchResponse, format string, contextBudget int) error {
 	switch format {
 	case "json":
-		encoder := json.NewEncoder(out)
+		encoder := json.NewEncoder(termsafe.NewJSONWriter(out))
 		encoder.SetEscapeHTML(false)
 		return encoder.Encode(response)
 	case "ndjson":
@@ -326,7 +326,7 @@ func echoPresearchPayload(out interface{ Write([]byte) (int, error) }, path stri
 // records, every ranked result, and a summary that carries the rest.
 func writeNdjsonSearch(out interface{ Write([]byte) (int, error) }, response sem.SearchResponse) error {
 	{
-		encoder := json.NewEncoder(out)
+		encoder := json.NewEncoder(termsafe.NewJSONWriter(out))
 		encoder.SetEscapeHTML(false)
 		if err := encoder.Encode(map[string]any{
 			"record_type": "search_header",

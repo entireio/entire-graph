@@ -32,10 +32,18 @@
 //   - Everything else in C0, DEL, and C1 is escaped to its Go literal form, so
 //     the byte is shown rather than obeyed and nothing is silently dropped.
 //
-// JSON and NDJSON output is deliberately NOT wrapped: encoding/json already
-// escapes control characters inside strings, so no raw byte reaches that stream,
-// and a consumer of the machine formats is entitled to the exact bytes Git
-// reported.
+// JSON and NDJSON output is wrapped too, but by JSONWriter and for the C1 range
+// only. This package shipped asserting the opposite — that encoding/json escapes
+// the control characters inside strings, so no raw byte can reach a machine
+// format and none of them needs wrapping. That is true of C0 and FALSE of C1:
+// encoding/json escapes below U+0020 and folds invalid UTF-8 to U+FFFD, but
+// U+0080-U+009F encode to a WELL-FORMED two-byte sequence it copies through
+// verbatim. A repository that names a file with U+009D (OSC) and U+009C (ST)
+// therefore reaches the reader's terminal with the pair that brackets an OSC 52
+// clipboard write, through `entire graph search` with no --format flag at all —
+// json is that verb's default. The escape JSONWriter writes is LOSSLESS: \u009d
+// decodes to the same code point, so a consumer of the machine formats still
+// receives the exact bytes Git reported.
 //
 // One accepted cost: renderers that trim a payload to a byte budget do so before
 // their writer is wrapped, so escaping can push a payload past its budget. Each
@@ -91,6 +99,52 @@ func (w *Writer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// JSONWriter neutralizes the one control an encoded JSON document still carries
+// raw, and rewrites nothing else.
+//
+// It wraps the SINK an encoder writes to rather than the values going into the
+// encoder, for the reason Writer does: the machine formats are emitted from
+// json.Encoder and CompactSnapshotEncoder instances created in a dozen verbs, and
+// a rule enforced at each of them is a rule the next verb forgets. Wrapping the
+// sink makes it structural.
+//
+// What it rewrites is U+0080-U+009F, and only that. The escape it writes is the
+// JSON escape \u00XX, which decodes to the identical code point, so the stream
+// stays a valid JSON document carrying the exact value the repository holds — no
+// consumer sees a different string, and none has to know this wrapper exists.
+//
+// It holds no state between calls, so the two-byte lookahead treats the end of a
+// buffer as the end of the input. json.Encoder.Encode writes each encoded value
+// to its sink in a single Write (measured: one 200 KB value, one Write), so a C1
+// sequence does not straddle one in practice; were one to, the leading 0xc2 would
+// pass through as an incomplete UTF-8 sequence a terminal cannot act on while the
+// trailing byte, now stray, is still escaped by the rule below.
+type JSONWriter struct {
+	out io.Writer
+}
+
+// NewJSONWriter wraps the sink of a machine-format encoder.
+func NewJSONWriter(out io.Writer) *JSONWriter {
+	return &JSONWriter{out: out}
+}
+
+// Write sanitizes p and writes it, reporting progress through the CALLER's buffer
+// exactly as Writer.Write does and for the same reasons.
+func (w *JSONWriter) Write(p []byte) (int, error) {
+	if !needsEscape(p, jsonLayout) {
+		return w.out.Write(p)
+	}
+	safe := appendEscaped(make([]byte, 0, len(p)+escapeHeadroom), p, jsonLayout)
+	written, err := w.out.Write(safe)
+	if err != nil {
+		return 0, err
+	}
+	if written != len(safe) {
+		return 0, io.ErrShortWrite
+	}
+	return len(p), nil
+}
+
 // Line neutralizes one value that must occupy a single line: a file path, a
 // symbol name, a one-line declaration — anything embedded in a record whose
 // layout is "one per line".
@@ -135,14 +189,21 @@ func Bytes(value []byte) []byte {
 	return appendEscaped(make([]byte, 0, len(value)+escapeHeadroom), value, keepLayout)
 }
 
-// layout says whether LF, TAB, and CRLF are this value's own structure (a source
-// snippet, a rendered block) or content it must not be allowed to fake (a path or
-// a name inside a one-line record).
-type layout bool
+// layout says what the value being scanned IS, which is what decides whether a
+// given byte is its own structure or content it must not be allowed to fake.
+type layout uint8
 
 const (
-	keepLayout   layout = true
-	escapeLayout layout = false
+	// keepLayout: a source snippet or an already-rendered block, whose LF, TAB and
+	// CRLF are its own page structure.
+	keepLayout layout = iota
+	// escapeLayout: a path or a name going into a one-line record, where an LF is
+	// not layout but forgery.
+	escapeLayout
+	// jsonLayout: an already-ENCODED JSON document, where every byte below 0x80 is
+	// either the document's own syntax or an escape encoding/json has already
+	// chosen, and the C1 range is the only raw control left to neutralize.
+	jsonLayout
 )
 
 // escapeHeadroom is the slack the output buffer starts with. It is a guess at how
@@ -234,6 +295,12 @@ func sequenceWidth[T text](data T, i, width int, secondLow, secondHigh byte) int
 func escapedAt[T text](data T, i int, keep layout) (int, bool) {
 	character := data[i]
 	switch {
+	case keep == jsonLayout && character < 0x80:
+		// Nothing below 0x80 survives encoding as a control: the C0 range is already
+		// a \uXXXX escape, and every remaining ASCII byte is the document's own
+		// syntax. Rewriting any of it would corrupt the JSON rather than defend it,
+		// so the scan skips straight to the range encoding/json left raw.
+		return 1, false
 	case character == '\n' || character == '\t' || character == '\f' || character == '\v':
 		// FF and VT ride along with LF and TAB because they are page whitespace,
 		// not a cursor primitive: a terminal treats both as an index (move down a
@@ -242,10 +309,10 @@ func escapedAt[T text](data T, i int, keep layout) (int, bool) {
 		// and older Perl separate pages — escaping it would rewrite the bytes of
 		// every such file's snippet and break the verbatim edit anchor this
 		// package promises to preserve.
-		return 1, !bool(keep)
+		return 1, keep != keepLayout
 	case character == '\r':
 		// CRLF is the line ending of a Windows-authored file, not an overwrite.
-		if keep && i+1 < len(data) && data[i+1] == '\n' {
+		if keep == keepLayout && i+1 < len(data) && data[i+1] == '\n' {
 			return 1, false
 		}
 		return 1, true

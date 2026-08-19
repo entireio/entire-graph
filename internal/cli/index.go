@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/entireio/entire-graph/internal/sem"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 type indexFlags struct {
@@ -133,7 +134,7 @@ func runIndex(ctx context.Context, opts Options, args []string) error {
 	if outputText {
 		return writeIndexText(opts.Stdout, response, flags.Report)
 	}
-	encoder := json.NewEncoder(opts.Stdout)
+	encoder := json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout))
 	encoder.SetEscapeHTML(false)
 	return encoder.Encode(response)
 }

@@ -109,7 +109,7 @@ func Run(ctx context.Context, opts Options, args []string) error {
 		return runInitAgents(opts, args[1:])
 	case "version", "--version", "-v":
 		if len(args) > 1 && args[1] == "--json" {
-			return json.NewEncoder(opts.Stdout).Encode(map[string]string{
+			return json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout)).Encode(map[string]string{
 				"provider": sem.ProviderName,
 				"version":  opts.Version,
 			})
@@ -218,7 +218,7 @@ func runDoctor(ctx context.Context, opts Options, args []string) error {
 		report["repo_root"] = ""
 		report["repo_error"] = err.Error()
 		if asJSON {
-			return json.NewEncoder(opts.Stdout).Encode(report)
+			return json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout)).Encode(report)
 		}
 		fmt.Fprintf(opts.Stdout, "repo_root=%s\n", valueOrUnset(""))
 		fmt.Fprintf(opts.Stdout, "repo_error=%s\n", err)
@@ -226,7 +226,7 @@ func runDoctor(ctx context.Context, opts Options, args []string) error {
 	}
 	report["repo_root"] = repo
 	if asJSON {
-		return json.NewEncoder(opts.Stdout).Encode(report)
+		return json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout)).Encode(report)
 	}
 	fmt.Fprintf(opts.Stdout, "repo_root=%s\n", repo)
 	return nil
@@ -236,7 +236,7 @@ func runCapabilities(opts Options, args []string) error {
 	if len(args) != 1 || args[0] != "--json" {
 		return errors.New("capabilities requires --json")
 	}
-	return json.NewEncoder(opts.Stdout).Encode(sem.Capabilities())
+	return json.NewEncoder(termsafe.NewJSONWriter(opts.Stdout)).Encode(sem.Capabilities())
 }
 
 func runProviderRecords(ctx context.Context, opts Options, args []string, mode string) error {
@@ -296,6 +296,10 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	// Stream records straight to stdout so peak memory does not scale with the
 	// relation count on large repositories.
 	newRecordEncoder := func(out io.Writer) func(any) error {
+		// Wrapped once here rather than in either branch below: both encoders write
+		// repository-controlled pathnames and entity names, and a snapshot carries no
+		// source text, so a hostile PATHNAME is the only C1 these streams can hold.
+		out = termsafe.NewJSONWriter(out)
 		if compact {
 			return sem.NewCompactSnapshotEncoder(out).Encode
 		}
@@ -370,7 +374,12 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	}
 	if useCache {
 		if records, cachedSummary, hit, err := sem.LoadProviderRecords(ctx, repo, opts.Version, tree, cacheMode, cacheDir, options); err == nil && hit {
-			if _, err := opts.Stdout.Write(records); err != nil {
+			// Replayed bytes need the same wrap the encoder above gets. This path does
+			// not go through encodeRecord at all, so a cache entry written before the
+			// C1 rule existed — or by any build that predates it — would stream the
+			// repository's raw control straight to the terminal on every hit. Escaping
+			// is idempotent, so a clean entry passes through unchanged.
+			if _, err := termsafe.NewJSONWriter(opts.Stdout).Write(records); err != nil {
 				return err
 			}
 			warnIfPartial(opts.Stderr, flags.Worktree, cachedSummary)
@@ -837,7 +846,7 @@ func printResult(out io.Writer, result sem.Result, asJSON bool) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(out, string(encoded))
+		fmt.Fprintln(termsafe.NewJSONWriter(out), string(encoded))
 		return nil
 	}
 	sem.WriteText(out, result)
