@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "b23b7144d4f6",
+  "strategy": "manual-commit",
+  "branch": "codex/pr-129-findings-1-2",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/cli/search.go",
+    "internal/cli/search_session.go",
+    "internal/cli/search_session_test.go",
+    "internal/sem/search_verify.go",
+    "internal/sem/search_verify_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b2/3b7144d4f6/0/metadata.json",
+      "transcript": "/b2/3b7144d4f6/0/full.jsonl",
+      "compact_transcript": "/b2/3b7144d4f6/0/transcript.jsonl",
+      "content_hash": "/b2/3b7144d4f6/0/content_hash.txt",
+      "prompt": "/b2/3b7144d4f6/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 6,
+    "cache_creation_tokens": 47446,
+    "cache_read_tokens": 76261,
+    "output_tokens": 1870,
+    "api_call_count": 3
+  }
+}
