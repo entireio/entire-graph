@@ -85,6 +85,17 @@ type Result struct {
 	Head       string            `json:"head"`
 	Files      []FileChange      `json:"files"`
 	Warnings   []ProviderWarning `json:"warnings,omitempty"`
+	// SchemaVersion pins the shape of this Result so a copy persisted into
+	// checkpoint metadata can be read back knowing which schema it was written
+	// under. Populated centrally from the package SchemaVersion const at the
+	// single place Result is constructed with real content
+	// (AnalyzeGitRangeWithOptions) — every caller (diff, analyze, checkpoint)
+	// funnels through it.
+	SchemaVersion string `json:"schema_version"`
+	// ProducerVersion is the entire-graph binary version that produced this
+	// Result (build-time version threaded from main.go via Options.Version).
+	// Optional/omitted when the caller has no version to attribute.
+	ProducerVersion string `json:"producer_version,omitempty"`
 }
 
 type Parser interface {
