@@ -835,6 +835,55 @@ func TestAnalyzeJSONCommand(t *testing.T) {
 	}
 }
 
+// TestDiffJSONIncludesSchemaVersion pins that `diff --json` output is
+// versioned: downstream consumers are about to persist this payload into
+// checkpoint metadata, so every emission must carry schema_version (and, when
+// the caller has a build version to attribute, producer_version) so a reader
+// years later knows which shape it is holding.
+func TestDiffJSONIncludesSchemaVersion(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	write(t, repo, "auth.py", "def validate_token(token, issuer=None):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "update")
+
+	var out bytes.Buffer
+	err := Run(t.Context(), Options{
+		Version: "9.9.9-test",
+		Env:     EntireEnv{RepoRoot: repo},
+		Stdout:  &out,
+		Stderr:  &out,
+	}, []string{"diff", "--json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"schema_version": "1.1"`) {
+		t.Fatalf("diff json missing schema_version:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), `"producer_version": "9.9.9-test"`) {
+		t.Fatalf("diff json missing producer_version:\n%s", out.String())
+	}
+
+	var payload struct {
+		SchemaVersion   string `json:"schema_version"`
+		ProducerVersion string `json:"producer_version"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("diff json invalid:\n%s\n%v", out.String(), err)
+	}
+	if payload.SchemaVersion != "1.1" {
+		t.Fatalf("schema_version = %q, want 1.1", payload.SchemaVersion)
+	}
+	if payload.ProducerVersion != "9.9.9-test" {
+		t.Fatalf("producer_version = %q, want 9.9.9-test", payload.ProducerVersion)
+	}
+}
+
 func TestDiffJSONCommandCoversEverySupportedLanguage(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
