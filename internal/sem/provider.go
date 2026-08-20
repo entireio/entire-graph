@@ -11216,9 +11216,6 @@ func (g *gitDirExcluder) observeUnlistedDirs(seen map[string]struct{}) {
 			if dir == "" || dir == "." {
 				continue
 			}
-			if g.skipSweptDir(dir) {
-				continue
-			}
 			observeOnce(dir)
 			enqueue(dir)
 		}
@@ -11236,6 +11233,27 @@ func (g *gitDirExcluder) observeUnlistedDirs(seen map[string]struct{}) {
 // a file — and follows no symlink, since a symlinked entry reports as a symlink
 // rather than a directory, so no cycle is possible and each directory is read
 // once.
+//
+// It prunes on NOTHING, and that is the whole of the rule. Three reasons to
+// prune have been tried here and all three were the same mistake: a vendored or
+// installed-dependency NAME, the project's own ignore rules, and finally "this
+// path is already excluded". Each of them says *do not index this tree*, and
+// this sweep indexes nothing — what it reads there is a `.git` pointer, and a
+// pointer's target is somewhere ELSE. `vendorgit/dep/.git` ->
+// `gitdir: ../../.dep-git` names a directory at the repository root that git
+// lists in full and that, HEAD-less, no other rule can classify, so refusing to
+// look inside `vendorgit/` published `.dep-git/config` and the credential in it.
+//
+// The excluded case is the cheapest of the three for a repository to arrange,
+// which is why it is the one that had to go last: any directory carrying HEAD,
+// objects/ and refs/ is excluded on sight by the structural half of rule 2, and
+// a literal `.git` component is excluded by name — so a tree that buys itself an
+// exclusion buys a hiding place for the pointer as well. Reproduced with the
+// real `search` verb on both listing paths.
+//
+// Its price is one ReadDir per directory under a tree that is not indexed
+// anyway, and no file read at all: nothing inside an excluded tree can become
+// indexable by way of this sweep, because the sweep only ever adds targets.
 func (g *gitDirExcluder) descendObserving(queue []string, queued map[string]struct{}, observeOnce func(string)) {
 	// Sorted so the observation order, and therefore the pruning, is the same on
 	// every run over the same tree.
@@ -11271,9 +11289,6 @@ func (g *gitDirExcluder) descendObserving(queue []string, queued map[string]stru
 			child := entry.Name()
 			if dir != "" {
 				child = dir + "/" + entry.Name()
-			}
-			if g.skipSweptDir(child) {
-				continue
 			}
 			observeOnce(child)
 			if _, done := queued[child]; done {
@@ -11373,45 +11388,6 @@ func (g *gitDirExcluder) promoteUnverifiedGitDirs() {
 			g.addTarget(dir)
 		}
 	}
-}
-
-// skipSweptDir is the sweep's single pruning decision, applied both to the roots
-// git names and to every directory the descent reaches.
-//
-// A vendored or installed-dependency NAME is deliberately not one of the reasons.
-// It says "do not index this tree", and the sweep indexes nothing: what it reads
-// there is a `.git` pointer, and a pointer's target is somewhere else. `vendor/
-// dep/.git` -> `gitdir: ../../.dep-git` names a git directory at the repository
-// root, which is not vendored, is listed by git in full, and — HEAD-less, as a
-// damaged `--separate-git-dir` target is — is reachable by no other rule. Pruning
-// the tree before reading the pointer leaked that target instead of saving
-// anything.
-//
-// ~~An IGNORED tree is still pruned below — which is where a vendored dependency
-// of any size actually lives — so the measured price is paid only by an
-// untracked, unignored one.~~ Struck: an ignored tree is a hiding place, not a
-// bound. `.gitignore` is committed content in the repository being scanned, so
-// pruning by it handed that repository the choice of which pointers this rule
-// may read — the same reason rule 1 and rule 2 are unconditional. A committed
-// `build/` ignore hid `build/dep/.git` -> `gitdir: ../../.dep-git`, and the
-// root-level HEAD-damaged git directory it names was listed by git in full and
-// indexed, on the git-listing path AND on the filesystem fallback.
-//
-// So this decision now prunes on one thing only: a path already excluded. The
-// price is real and measured rather than hidden. Cold `search --profile
-// syntax-only` with the cache directory removed before each run, on a
-// 6,350-directory repository with 500 tracked source packages, an ignored
-// 2,200-directory build tree and an ignored 3,300-directory node_modules
-// (first run of each set discarded as page-cache warm-up):
-//
-//	before  0.18 0.18 0.18
-//	after   0.50 0.51 0.50
-//
-// That is one ReadDir per ignored directory and no file read at all: nothing in
-// an ignored tree becomes indexable, and a repository with no ignored untracked
-// trees pays nothing.
-func (g *gitDirExcluder) skipSweptDir(rel string) bool {
-	return g.excluded(rel)
 }
 
 // listedPathKind is what one lstat of a listed path found. The listing needs the
@@ -11929,8 +11905,14 @@ func visitWalkWorktreeFiles(
 			// beside it is already known when the walk reaches it.
 			gitDirs.observe(rel)
 			// The git directory is refused before anything inside it is read,
-			// including its own .gitignore.
+			// including its own .gitignore. Its DIRECTORIES are still read, for
+			// the reason descendObserving states: an exclusion means "do not
+			// index this tree", and a `.git` pointer inside one names a git
+			// directory somewhere else that git lists in full. Skipping the
+			// subtree unread leaked `.dep-git/config` from `vendorgit/dep/.git`
+			// on this path exactly as it did on the git-listing path.
 			if rel != "" && gitDirs.excluded(rel) {
+				gitDirs.observePrunedSubtree(rel)
 				return filepath.SkipDir
 			}
 			// Enter first: this directory's own .gitignore is part of the evidence
