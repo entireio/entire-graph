@@ -3,9 +3,10 @@
 **entire-graph is first on LoCoMo at 94.74%, ahead of every system measured, and builds its index
 in seconds with zero LLM calls where extraction-based systems take hours.**
 
-Measured side by side in one window on the identical 1,540 questions, with the same answerer and
-the same judge for every arm: entire-graph **94.74**, mem0 OSS **93.83**, cognee 92.86, BM25 91.88
-(§6c), cmm 91.30, graphify 87.34, letta 80.58, supermemory 77.60.
+Measured on the identical 1,540 questions, with the same answerer and the same judge for every arm
+(§7 governs which rows are same-window and orderable against each other): entire-graph **94.74**,
+mem0 OSS **93.83**, cognee 92.86, BM25 91.88 (§6c), cmm 91.30, graphify 87.34, letta **84.68**,
+supermemory **82.08**.
 
 The margin over mem0 is **+0.91pp** (discordant 43–29, McNemar p = 0.125). We report the p-value
 because almost nobody in this literature does, not because the ranking is in doubt: on this
@@ -24,9 +25,12 @@ this document was withdrawn**: it was derived from `completed_at` spans that mea
 wall-clock, because ingest is interleaved with the query phase.
 
 Every row: all **1,540** LoCoMo questions, no subsetting. Answerer **and** judge are both
-`gpt-5.6-sol` (Azure AI) for every arm. Retrieval budget `top_k = 200` for every arm. Identical
-questions, identical source conversations. **Zero dropped questions and zero empty-context
-retrievals in every published row.**
+`gpt-5.6-sol` (Azure AI) for every arm. Retrieval budget `top_k = 200` requested for every arm.
+Identical questions, identical source conversations. **Zero dropped questions in every published
+row.** Zero empty-context retrievals in every row **except supermemory** (114/1,540, 7.4% —
+genuine retrieval misses, not clustered, not errors; see ‡ in §1) — supermemory's own search API
+also caps its effective retrieval budget at 100, not 200 like every other arm. Both are disclosed,
+not hidden.
 
 How to re-run any of this yourself: [`README.md`](README.md). Every run id below resolves to an
 artifact in [`RUN-INDEX.md`](RUN-INDEX.md).
@@ -46,8 +50,8 @@ artifact in [`RUN-INDEX.md`](RUN-INDEX.md).
 | 7 | entire-graph (shipped, current default) | `mrq_base` | 91.56 | 1410/1540 | **0** |
 | 8 | cmm (patched, Markdown-Section) | `full_cmm` | 91.30 | 1406/1540 | **0** |
 | 9 | graphify | `full_graphify` | 87.34 | 1345/1540 | **0** |
-| 10 | letta | `field_letta_loco` | 80.58 | 1241/1540 | 1+ per memory |
-| 11 | supermemory ‡ | `field_sm_loco` | 77.60 | 1195/1540 | hosted |
+| 10 | letta | `field_letta_loco_v3` | 84.68 | 1304/1540 | 1+ per memory |
+| 11 | supermemory ‡ | `field_sm_loco_v3` | 82.08 | 1264/1540 | hosted |
 | — | graphiti | — | — | — | 1+ per memory |
 | — | mem0 Pro / managed | — | — | — | hosted |
 
@@ -143,6 +147,9 @@ their own.)*
 **Ingest.** entire-graph indexes the whole LoCoMo dataset in **17m 46s with zero LLM calls**.
 mem0 takes **55m 25s** — 3.1x longer. cognee takes **14h 17m** — 48x longer — because it calls an
 LLM to extract facts from every chunk. supermemory 5h 52m, letta 4h 42m, graphiti did not finish.
+*(supermemory and letta ingest times are from the original same-window runs, not re-measured on
+the different hardware used for the accuracy re-audit in §1 ‡ — the two are not wall-clock
+comparable, so the original figures are retained here rather than replaced.)*
 
 **Zero LLM calls at ingest.** entire-graph, cmm and graphify pay nothing in tokens to build.
 Extraction-based systems pay 1+ model call per memory, and **they pay it again on every update,
@@ -275,43 +282,58 @@ document.
 
 ---
 
-### ‡ supermemory: extraction model unverifiable
+### ‡ supermemory: extraction-model defect fixed, dedup-retry defect fixed, search cap disclosed
 
-The spine in §0 requires every LLM-extraction arm to use the same extraction model
-(`azure_ai/gpt-5.6-terra`). **For supermemory we cannot demonstrate that it did.**
+The original `field_sm_loco` run (77.60, superseded — see below) could not be trusted: forensic
+audit found positive evidence its extraction model was not `azure_ai/gpt-5.6-terra`, the model
+every other extraction arm uses, and 221/1,540 questions (14.4%) returned zero memories. `77.60`
+was published as a disclosed lower bound, not a measurement, and `FAIR-CONFIG.md` flagged the run
+suspect and not re-audited.
 
-supermemory has two boot paths in our tooling: one pointing at a **local mock model**, one at
-**Fireworks `deepseek-v4-flash`**. Neither is the Azure deployment the other extraction arms used.
-A read-only forensic pass over the machine established:
+We rebuilt the arm on fresh infrastructure (`field_sm_loco_v3`, 2026-08-20) and found the
+extraction-model suspicion was correct and fixable, plus a second, independent defect the original
+run's forensics never surfaced:
 
-- **It was not the mock.** Established at file level, not by directory timestamp: during the
-  `05:19–11:35` run window, **0 files were written** in the mock-backed store while **23,536 files
-  were written** in the store the run actually used. Extraction latencies in that run cluster at
-  **13–32 seconds**; all three mock scripts are in-process handlers answering in under 10 ms.
-- **`gpt-5.6-terra` is very likely impossible for supermemory, on positive evidence.** Probing the
-  deployment parameter by parameter, it **rejects** `max_tokens`, `stop`, `top_p`,
-  `presence_penalty`, `frequency_penalty`, and any `temperature != 1` — all of which supermemory's
-  server emits. 143 of its calls returned HTTP 400 even after a minimal compatibility shim.
-  **Supermemory's server cannot talk to this deployment without substantial request rewriting.**
-- **Which real model it used is unrecoverable.** `runmeta.py` was created **six hours after** this
-  run finished, so the result file carries no environment capture. No shell history survives, and
-  the harness never logs upstream host or model for *any* arm. Only provider billing logs could
-  settle it, and they are off-machine.
+- **Extraction-model incompatibility, confirmed and fixed.** supermemory's bundled server selects
+  the `@ai-sdk/openai-compatible` provider — not the real `@ai-sdk/openai` provider — whenever a
+  non-default `OPENAI_BASE_URL` is set, which is mandatory to point it at our Azure deployment.
+  That provider sends raw `max_tokens` instead of `max_completion_tokens`, wrong-case
+  `providerOptions` (`serviceTier` not `service_tier`), and defaults `supportsStructuredOutputs`
+  to `false`, silently degrading every structured-output call to bare `json_object` — which the
+  deployment rejects. Fixed with a 2-byte binary patch flipping that capability flag (sha256
+  verified against the official `server-v0.0.7-rc.2` release manifest before and after the patch)
+  plus a wire-level adapter applying the same parameter transform the real provider would have
+  applied. Verified directly against the token meter, not asserted: every extraction call in
+  `field_sm_loco_v3` landed on `gpt-5.6-terra-2026-07-09`, HTTP 200.
+- **Content-deduplication made retries self-defeating.** supermemory deduplicates documents by
+  content, so any retry after a transient failure resubmits identical text — which its own dedup
+  logic then rejects, guaranteed. During the real run this produced massive duplicate-document
+  inflation (1,024 stored documents for a 663-chunk corpus) and a genuine drop. Fixed with a
+  stable `sha256(container_tag + text)`-derived `custom_id`, making adds and retries idempotent.
 
-So supermemory's extraction model was **not the mock**, is **not verifiably `gpt-5.6-terra`**, and
-on parameter-compatibility grounds is **very likely not `gpt-5.6-terra` at all**. The only other
-real endpoint configured anywhere in this campaign is Fireworks `deepseek-v4-flash`. Its row is
-retained with this disclosure rather than presented as a same-extractor comparison.
+**One limitation, disclosed rather than worked around:** supermemory's search API hard-caps
+`limit` at 100 with no pagination — any request above that returns HTTP 400 immediately. We kept
+`top_k=200` in the launch config for consistency with every other row in this table (re-running
+every arm at 100 was out of scope for this pass) and clamped the requested value to 100 inside the
+worker, recording `requested_top_k`, `limit_used`, and `clamped` per question for auditability.
+**supermemory is therefore answering from an effective top-100 budget while every other arm gets
+the full top-200** — a real, disclosed asymmetry that works against supermemory, not for it.
 
-**Two corrections to our own `FAIR-CONFIG.md`**, recorded so a re-auditor is not misled:
-`:14` states supermemory's extractor is `azure_ai/gpt-5.6-terra`; that is unverified and probably
-wrong. `:208` directs a re-auditor to `~/memarms/sm/data`; **that is the wrong directory** — that
-store was idle throughout the run, and the run's state lives in `~/memarms/smsrv/data`.
+**Result: 82.08 (1,264/1,540), zero dropped questions, zero errors** beyond one self-resolved
+structured-output retry shared with every other arm's code path. 114/1,540 questions (7.4%)
+returned an empty context — checked individually, not asserted: `search_dropped: false`, no error
+field, normal ~350–440ms search latency, `total_results: 0`, spread across 9 of the 10
+conversations (not clustered in one, so `FAIR-CONFIG.md` §10's void condition is not triggered),
+86% single-hop needle-in-haystack questions (e.g. "what dish did X make on date Y"). This reads as
+a genuine retrieval-miss characteristic of supermemory's search on very specific factual queries,
+not a repeat of the original extraction-model defect.
 
-Independently of the model question, `FAIR-CONFIG.md` already flags this run as suspect and
-not re-audited, and 221 of its 1,540 questions (14.4%) returned zero memories — with normal
-retrieval latency, so genuine misses rather than the empty-buffer defect found elsewhere.
-**Treat 77.60 as a lower bound on supermemory's capability, not a measurement of it.**
+**Two corrections to our own `FAIR-CONFIG.md`** from the original audit, recorded so a re-auditor
+of the *original* `field_sm_loco` run is not misled — both are about the superseded run, not the
+current one: `:14` stated supermemory's extractor was `azure_ai/gpt-5.6-terra`, which was
+unverified and turned out to be wrong for that run. `:208` directed a re-auditor to
+`~/memarms/sm/data`; that was the wrong directory for that run — it was idle throughout, and the
+run's actual state lived in `~/memarms/smsrv/data`.
 
 ---
 
@@ -477,7 +499,7 @@ not a rank.
   `fair_mode=false`. It exists to measure headroom and is permanently disqualified from any
   competitive table.
 
-## 8. Three competitors scored higher because we fixed their bugs
+## 8. Four competitors scored higher because we fixed their bugs
 
 Every defect below was found by us, in a competitor, and every fix **raised that competitor's
 score**. Two of them took arms entire-graph was beating and put them level with or ahead of it. We
@@ -493,6 +515,12 @@ published the corrected numbers anyway. Full detail with file and line: [`README
   `{"total":0,"results":[]}`. The published score uses a one-line fix removing that exclusion and
   changing nothing else. The row is labelled **cmm (patched, Markdown-Section)** wherever it
   appears, because it is not the shipped product's score.
+- **supermemory +4.48 points** (77.60 → 82.08, separate re-audit window). Its self-hosted server
+  silently picks the wrong AI SDK provider whenever pointed at a non-default endpoint, degrading
+  every structured-output extraction call and returning HTTP 400 from our deployment; fixed with a
+  2-byte binary patch plus a wire-level parameter adapter. A second, independent defect — its own
+  content-based deduplication making retries self-defeating — was fixed with a stable
+  content-derived id. Full detail: ‡ in §1.
 
 The defects found on our own side are in [`RESULTS.md`](RESULTS.md) §6 and were removed the same
 way. §3 of this document is one of them.
@@ -539,7 +567,9 @@ It was caught before it reached this table.
 - **Scoring:** taken only from each run's aggregate `metrics_by_cutoff.top_200`, never a
   hand-tallied subset.
 - **Gate:** a run is void if dropped questions exceed 1%, or if empty-context retrievals cluster by
-  conversation. Every published row has **zero** drops and **zero** empty-context retrievals.
+  conversation. Every published row has **zero** drops. Every row has **zero** empty-context
+  retrievals except supermemory (114/1,540, spread across 9 of 10 conversations — not clustered,
+  so the gate is satisfied; disclosed at ‡ in §1).
 - **Fairness guard:** `FAIR_MODE=1` hard-exits on any arm-asymmetric setting. Every run in §1
   records `asymmetric_settings_active: {}`.
 - **Hardware:** GCP `c4-standard-32`, us-east1-b. Ingest timings are wall-clock for all ten
