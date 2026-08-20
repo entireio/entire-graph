@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "5c40a1fc791b",
+  "strategy": "manual-commit",
+  "branch": "codex/pr-137-fixes",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/agents.md",
+    "internal/cli/agents.go",
+    "internal/cli/agents_notwindows.go",
+    "internal/cli/agents_test.go",
+    "internal/cli/agents_windows.go",
+    "internal/cli/agents_windows_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/5c/40a1fc791b/0/metadata.json",
+      "transcript": "/5c/40a1fc791b/0/full.jsonl",
+      "compact_transcript": "/5c/40a1fc791b/0/transcript.jsonl",
+      "content_hash": "/5c/40a1fc791b/0/content_hash.txt",
+      "prompt": "/5c/40a1fc791b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 926942,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 65760512,
+    "output_tokens": 259007,
+    "api_call_count": 613
+  }
+}
