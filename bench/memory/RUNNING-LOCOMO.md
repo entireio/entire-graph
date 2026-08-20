@@ -205,8 +205,8 @@ All 1,540 questions, shared reader and judge, `top_k = 200`, zero dropped questi
 | BM25 | 91.88 | 0 | 0 |
 | cmm | 91.30 | 0 | 0 |
 | graphify | 87.34 | 0 | 0 |
-| letta | 80.58 | not projectable | not projectable |
-| supermemory | 77.60 | not measurable | not measurable |
+| letta | 84.68 | not projectable | not projectable |
+| supermemory | 82.08 | not measurable | not measurable |
 
 The margin between the top two is **0.91 points at p = 0.125**, against a 0.65-point noise floor. We
 report the ranking and do not claim statistical significance for that margin. The ingest column is
