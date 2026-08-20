@@ -1,3 +1,5 @@
+![entire-graph theme](docs/images/gh-repo-cover.png "entire-graph cover image")
+
 # Entire Graph
 
 Coding agents lose time before the edit, while they are still looking for the
