@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -264,24 +266,22 @@ func TestInitAgentsWritesSameFileOnlyOnce(t *testing.T) {
 			name: "CLAUDE symlinks to AGENTS",
 			createAliases: func(t *testing.T, repo string) {
 				t.Helper()
+				skipIfSymlinksUnrepresentable(t)
 				if err := os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("# Shared rules\n"), 0o644); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Symlink("AGENTS.md", filepath.Join(repo, "CLAUDE.md")); err != nil {
-					t.Skipf("symlinks unavailable: %v", err)
-				}
+				symlinkForTest(t, "AGENTS.md", filepath.Join(repo, "CLAUDE.md"))
 			},
 		},
 		{
 			name: "AGENTS symlinks to CLAUDE",
 			createAliases: func(t *testing.T, repo string) {
 				t.Helper()
+				skipIfSymlinksUnrepresentable(t)
 				if err := os.WriteFile(filepath.Join(repo, "CLAUDE.md"), []byte("# Shared rules\n"), 0o644); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Symlink("CLAUDE.md", filepath.Join(repo, "AGENTS.md")); err != nil {
-					t.Skipf("symlinks unavailable: %v", err)
-				}
+				symlinkForTest(t, "CLAUDE.md", filepath.Join(repo, "AGENTS.md"))
 			},
 		},
 		{
@@ -505,11 +505,10 @@ func TestInitAgentsCreatesDanglingSharedAliasTargetOnce(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			skipIfSymlinksUnrepresentable(t)
 			repo := t.TempDir()
 			linkPath := filepath.Join(repo, tt.link)
-			if err := os.Symlink(tt.target, linkPath); err != nil {
-				t.Skipf("symlinks unavailable: %v", err)
-			}
+			symlinkForTest(t, tt.target, linkPath)
 
 			runInitAgentsForTest(t, repo)
 			agents := readFileForTest(t, filepath.Join(repo, "AGENTS.md"))
@@ -530,14 +529,15 @@ func TestInitAgentsCreatesDanglingSharedAliasTargetOnce(t *testing.T) {
 	}
 }
 
-// skipIfSymlinksUnrepresentable guards the containment tests. The attack input is a symlink
-// committed to a repository, and a default Windows checkout does not materialize one: without
-// core.symlinks (which needs SeCreateSymbolicLinkPrivilege) git writes a plain text file holding
-// the link target instead, so the escaping alias cannot exist in a checked-out tree there.
+// skipIfSymlinksUnrepresentable marks tests that need runtime symlink support. Once this probe
+// succeeds, fixture creation uses symlinkForTest and any later failure is a real test failure. Do
+// not skip Windows wholesale, because Developer Mode and CI can provide symlinks there and its
+// os.Root/path semantics need the same coverage.
 func skipIfSymlinksUnrepresentable(t *testing.T) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("a committed symlink is not checked out as a symlink on Windows by default")
+	probeDir := t.TempDir()
+	if err := os.Symlink("target", filepath.Join(probeDir, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
 	}
 }
 
@@ -555,9 +555,7 @@ func TestInitAgentsRefusesInstructionAliasEscapingRepository(t *testing.T) {
 			if err := os.WriteFile(victimPath, victim, 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Symlink(filepath.Join("..", "victim.md"), filepath.Join(repo, aliasName)); err != nil {
-				t.Skipf("symlinks unavailable: %v", err)
-			}
+			symlinkForTest(t, filepath.Join("..", "victim.md"), filepath.Join(repo, aliasName))
 
 			var stdout, stderr bytes.Buffer
 			err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
@@ -597,9 +595,7 @@ func TestInitAgentsFollowsInstructionAliasInsideRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	aliasPath := filepath.Join(repo, "AGENTS.md")
-	if err := os.Symlink(filepath.Join("docs", "shared.md"), aliasPath); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
-	}
+	symlinkForTest(t, filepath.Join("docs", "shared.md"), aliasPath)
 
 	runInitAgentsForTest(t, repo)
 
@@ -638,9 +634,7 @@ func TestInitAgentsRefusesGuideAliasEscapingRepository(t *testing.T) {
 				if err := os.WriteFile(victimPath, []byte("# outside the repository\n"), 0o644); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Symlink(filepath.Join("..", "outside"), filepath.Join(repo, ".entire")); err != nil {
-					t.Skipf("symlinks unavailable: %v", err)
-				}
+				symlinkForTest(t, filepath.Join("..", "outside"), filepath.Join(repo, ".entire"))
 				return victimPath
 			},
 		},
@@ -656,9 +650,7 @@ func TestInitAgentsRefusesGuideAliasEscapingRepository(t *testing.T) {
 					t.Fatal(err)
 				}
 				link := filepath.Join(repo, ".entire", "graph-agent.md")
-				if err := os.Symlink(filepath.Join("..", "..", "victim.md"), link); err != nil {
-					t.Skipf("symlinks unavailable: %v", err)
-				}
+				symlinkForTest(t, filepath.Join("..", "..", "victim.md"), link)
 				return victimPath
 			},
 		},
@@ -767,12 +759,8 @@ func TestWriteContainedFileRefusesEscapeWithoutPreflight(t *testing.T) {
 		t.Fatal(err)
 	}
 	absentPath := filepath.Join(base, "absent.md")
-	if err := os.Symlink(filepath.Join("..", "victim.md"), filepath.Join(repo, "AGENTS.md")); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
-	}
-	if err := os.Symlink(filepath.Join("..", "absent.md"), filepath.Join(repo, "CLAUDE.md")); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
-	}
+	symlinkForTest(t, filepath.Join("..", "victim.md"), filepath.Join(repo, "AGENTS.md"))
+	symlinkForTest(t, filepath.Join("..", "absent.md"), filepath.Join(repo, "CLAUDE.md"))
 
 	root, err := os.OpenRoot(repo)
 	if err != nil {
@@ -978,6 +966,44 @@ func TestInitAgentsFollowsGuideDirectoryAliasToRepositoryRoot(t *testing.T) {
 	}
 }
 
+func TestInitAgentsCreatesDanglingGuideDirectoryAliasParents(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	baseTarget := filepath.Join("tooling", "generated", "entire")
+	for _, tt := range []struct {
+		name   string
+		target string
+	}{
+		{name: "plain target", target: baseTarget},
+		{name: "trailing separator", target: rawJoin(baseTarget, "")},
+		{name: "terminal dot", target: rawJoin(baseTarget, ".")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			symlinkForTest(t, tt.target, filepath.Join(repo, ".entire"))
+
+			runInitAgentsForTest(t, repo)
+
+			guide := filepath.Join(repo, baseTarget, "graph-agent.md")
+			if got := readFileForTest(t, guide); !strings.Contains(got, "entire-graph") {
+				t.Fatalf("guide was not created through the dangling directory alias:\n%s", got)
+			}
+		})
+	}
+}
+
+func TestInitAgentsAcceptsParentCreatedByPlannedMkdirAll(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	repo := t.TempDir()
+	symlinkForTest(t, filepath.Join("nested", "activation"), filepath.Join(repo, ".entire"))
+	symlinkForTest(t, filepath.Join("nested", "shared.md"), filepath.Join(repo, "AGENTS.md"))
+
+	runInitAgentsForTest(t, repo)
+
+	if got := readFileForTest(t, filepath.Join(repo, "nested", "shared.md")); !strings.Contains(got, testAgentPointerBlock) {
+		t.Fatalf("instruction target whose parent was created by MkdirAll was not updated:\n%s", got)
+	}
+}
+
 // TestInitAgentsFollowsAbsoluteAliasThroughSymlinkedRoot covers the same alias when --repo names
 // the project through a symlinked parent, so the absolute link target and the opened root are two
 // different spellings of one directory. Comparing them as strings alone reads the alias as an
@@ -997,6 +1023,128 @@ func TestInitAgentsFollowsAbsoluteAliasThroughSymlinkedRoot(t *testing.T) {
 
 	if got := readFileForTest(t, shared); !strings.Contains(got, testAgentPointerBlock) {
 		t.Fatalf("alias target did not receive the managed block through a symlinked root:\n%s", got)
+	}
+}
+
+func TestInitAgentsFollowsPOSIXAbsoluteAliasWithDoubleLeadingSlash(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX double-leading-slash spelling")
+	}
+	skipIfSymlinksUnrepresentable(t)
+	repo := t.TempDir()
+	shared := filepath.Join(repo, "shared.md")
+	writeFileForTest(t, shared, "# Shared rules\n")
+	target := string(filepath.Separator) + shared
+	symlinkForTest(t, target, filepath.Join(repo, "AGENTS.md"))
+	if _, err := os.Stat(filepath.Join(repo, "AGENTS.md")); err != nil {
+		t.Skipf("the host does not resolve the double-leading-slash spelling: %v", err)
+	}
+
+	runInitAgentsForTest(t, repo)
+
+	if got := readFileForTest(t, shared); !strings.Contains(got, testAgentPointerBlock) {
+		t.Fatalf("double-leading-slash alias did not receive the managed block:\n%s", got)
+	}
+}
+
+// TestInitAgentsFollowsAbsoluteAliasThroughDirectoryAlias verifies containment by where the
+// target lands, even when the absolute spelling reaches a repository subdirectory through an
+// alias outside the repository. No textual ancestor of that spelling is the project root.
+func TestInitAgentsFollowsAbsoluteAliasThroughDirectoryAlias(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	for _, existing := range []bool{true, false} {
+		name := "missing target"
+		if existing {
+			name = "existing target"
+		}
+		t.Run(name, func(t *testing.T) {
+			base := t.TempDir()
+			repo := filepath.Join(base, "repo")
+			shared := filepath.Join(repo, "docs", "shared.md")
+			mkdirAllForTest(t, filepath.Dir(shared))
+			if existing {
+				writeFileForTest(t, shared, "# Shared rules\n")
+			}
+			docsAlias := filepath.Join(base, "docs-alias")
+			symlinkForTest(t, filepath.Join(repo, "docs"), docsAlias)
+			symlinkForTest(t, filepath.Join(docsAlias, "shared.md"), filepath.Join(repo, "AGENTS.md"))
+
+			runInitAgentsForTest(t, repo)
+
+			if got := readFileForTest(t, shared); !strings.Contains(got, testAgentPointerBlock) {
+				t.Fatalf("absolute alias through a directory alias did not receive the managed block:\n%s", got)
+			}
+		})
+	}
+}
+
+func TestInitAgentsRefusesUntraversableSuffixAfterDirectoryAlias(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	skipIfDirectoryPermissionsUnenforceable(t)
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	docs := filepath.Join(repo, "docs")
+	closed := filepath.Join(docs, "closed")
+	mkdirAllForTest(t, closed)
+	if err := os.Chmod(closed, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(closed, 0o755) })
+	victim := filepath.Join(docs, "victim.md")
+	writeFileForTest(t, victim, "# an unrelated repository file\n")
+	docsAlias := filepath.Join(base, "docs-alias")
+	symlinkForTest(t, docs, docsAlias)
+	symlinkForTest(t, rawJoin(docsAlias, "closed", "..", "victim.md"), filepath.Join(repo, "AGENTS.md"))
+	before := readFileForTest(t, victim)
+
+	var stdout, stderr bytes.Buffer
+	err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+	if err == nil {
+		t.Fatal("init-agents collapsed an untraversable suffix after a directory alias")
+	}
+	if got := readFileForTest(t, victim); got != before {
+		t.Fatalf("an unrelated repository file was rewritten:\nwant: %q\n got: %q", before, got)
+	}
+	if _, statErr := os.Lstat(filepath.Join(repo, ".entire", "graph-agent.md")); !os.IsNotExist(statErr) {
+		t.Fatalf("the guide was written despite the preflight failure (stat error %v)", statErr)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout was written before resolution was established: %q", stdout.String())
+	}
+}
+
+// TestInitAgentsPreservesTerminalSeparatorAfterAbsoluteAliasMapping covers a directory
+// requirement carried entirely by the suffix that remains after an external alias is mapped
+// into the repository. Dropping that suffix turns a path the kernel rejects into permission to
+// rewrite the regular file at which the external alias lands.
+func TestInitAgentsPreservesTerminalSeparatorAfterAbsoluteAliasMapping(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	victim := filepath.Join(repo, ".git", "config")
+	mkdirAllForTest(t, filepath.Dir(victim))
+	before := "[core]\n\tbare = false\n"
+	writeFileForTest(t, victim, before)
+	fileAlias := filepath.Join(base, "config-alias")
+	symlinkForTest(t, victim, fileAlias)
+	symlinkForTest(t, rawJoin(fileAlias, ""), filepath.Join(repo, "AGENTS.md"))
+	if _, err := os.Stat(filepath.Join(repo, "AGENTS.md")); err == nil {
+		t.Fatal("test alias unexpectedly resolves despite requiring a regular file to be a directory")
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+	if err == nil {
+		t.Fatal("init-agents dropped a trailing separator while mapping an absolute alias")
+	}
+	if got := readFileForTest(t, victim); got != before {
+		t.Fatalf("the mapped regular file was rewritten:\nwant: %q\n got: %q", before, got)
+	}
+	if _, statErr := os.Lstat(filepath.Join(repo, ".entire", "graph-agent.md")); !os.IsNotExist(statErr) {
+		t.Fatalf("the guide was written despite the preflight failure (stat error %v)", statErr)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout was written before resolution was established: %q", stdout.String())
 	}
 }
 
@@ -1110,6 +1258,182 @@ func TestInitAgentsRefusesAbsoluteAliasLeavingRepository(t *testing.T) {
 	}
 }
 
+func TestInitAgentsRefusesWindowsRootRelativeAlias(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows root-relative path semantics")
+	}
+	skipIfSymlinksUnrepresentable(t)
+	repo := t.TempDir()
+	victim := filepath.Join(repo, ".git", "config")
+	mkdirAllForTest(t, filepath.Dir(victim))
+	writeFileForTest(t, victim, "[core]\n\tbare = false\n")
+	target := string(filepath.Separator) + filepath.Join(".git", "config")
+	symlinkForTest(t, target, filepath.Join(repo, "AGENTS.md"))
+	before := readFileForTest(t, victim)
+
+	var stdout, stderr bytes.Buffer
+	err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+	if err == nil {
+		t.Fatal("init-agents treated a drive-rooted alias as repository-relative")
+	}
+	if got := readFileForTest(t, victim); got != before {
+		t.Fatalf("the repository git config was rewritten:\nwant: %q\n got: %q", before, got)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout was written before containment was established: %q", stdout.String())
+	}
+}
+
+func TestInitAgentsUsesWindowsLexicalTraversalWithAlternateSeparators(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows accepts slash as an alternate path separator")
+	}
+	skipIfSymlinksUnrepresentable(t)
+	repo := t.TempDir()
+	shared := filepath.Join(repo, "shared.md")
+	writeFileForTest(t, shared, "# Shared rules\n")
+	symlinkForTest(t, "missing/../shared.md", filepath.Join(repo, "AGENTS.md"))
+	if _, err := os.Stat(filepath.Join(repo, "AGENTS.md")); err != nil {
+		t.Fatalf("Windows did not apply its documented lexical path cleaning: %v", err)
+	}
+
+	runInitAgentsForTest(t, repo)
+
+	if got := readFileForTest(t, shared); !strings.Contains(got, testAgentPointerBlock) {
+		t.Fatalf("the lexically resolved Windows alias was not updated:\n%s", got)
+	}
+}
+
+func TestInitAgentsPreservesWindowsSymlinkType(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows symlinks encode whether their target is a file or directory")
+	}
+	skipIfSymlinksUnrepresentable(t)
+	for _, targetExists := range []bool{true, false} {
+		name := "dangling directory link"
+		if targetExists {
+			name = "directory link whose target became a file"
+		}
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			shared := filepath.Join(repo, "shared")
+			mkdirAllForTest(t, shared)
+			symlinkForTest(t, shared, filepath.Join(repo, "AGENTS.md"))
+			if err := os.Remove(shared); err != nil {
+				t.Fatal(err)
+			}
+			before := ""
+			if targetExists {
+				before = "# unrelated file\n"
+				writeFileForTest(t, shared, before)
+			}
+			if _, err := os.Stat(filepath.Join(repo, "AGENTS.md")); err == nil {
+				t.Fatal("test setup did not preserve the directory-link type mismatch")
+			}
+
+			var stdout, stderr bytes.Buffer
+			err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+			if err == nil {
+				t.Fatal("init-agents ignored the Windows symlink target type")
+			}
+			if targetExists {
+				if got := readFileForTest(t, shared); got != before {
+					t.Fatalf("the mismatched directory link rewrote a regular file:\nwant: %q\n got: %q", before, got)
+				}
+			} else if _, statErr := os.Lstat(shared); !os.IsNotExist(statErr) {
+				t.Fatalf("the dangling directory link target was created as a file (stat error %v)", statErr)
+			}
+			if _, statErr := os.Lstat(filepath.Join(repo, ".entire", "graph-agent.md")); !os.IsNotExist(statErr) {
+				t.Fatalf("the guide was written despite the type mismatch (stat error %v)", statErr)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout was written before link type was validated: %q", stdout.String())
+			}
+		})
+	}
+}
+
+func TestInitAgentsDoesNotCleanWindowsExtendedPathTraversal(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows extended-path semantics")
+	}
+	skipIfSymlinksUnrepresentable(t)
+	repo := t.TempDir()
+	victim := filepath.Join(repo, "victim.md")
+	before := "# unrelated file\n"
+	writeFileForTest(t, victim, before)
+	target := `\\?\` + rawJoin(repo, "missing", "..", "victim.md")
+	symlinkForTest(t, target, filepath.Join(repo, "AGENTS.md"))
+	if _, err := os.Stat(filepath.Join(repo, "AGENTS.md")); err == nil {
+		t.Skip("the host expanded dot components in an extended path")
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+	if err == nil {
+		t.Fatal("init-agents cleaned a dot component in an extended path")
+	}
+	if strings.Contains(err.Error(), "leaves the repository") || !strings.Contains(err.Error(), "cannot resolve") {
+		t.Fatalf("unsupported extended spelling was misclassified: %v", err)
+	}
+	if got := readFileForTest(t, victim); got != before {
+		t.Fatalf("the extended path rewrote an unrelated file:\nwant: %q\n got: %q", before, got)
+	}
+	if _, statErr := os.Lstat(filepath.Join(repo, ".entire", "graph-agent.md")); !os.IsNotExist(statErr) {
+		t.Fatalf("the guide was written despite the preflight failure (stat error %v)", statErr)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout was written before containment was established: %q", stdout.String())
+	}
+}
+
+func TestInitAgentsFollowsWindowsRootRelativeAliasInsideRepository(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows root-relative path semantics")
+	}
+	skipIfSymlinksUnrepresentable(t)
+	repo := t.TempDir()
+	shared := filepath.Join(repo, "docs", "shared.md")
+	mkdirAllForTest(t, filepath.Dir(shared))
+	writeFileForTest(t, shared, "# Shared rules\n")
+	target := strings.TrimPrefix(shared, filepath.VolumeName(shared))
+	if len(target) == 0 || !os.IsPathSeparator(target[0]) {
+		t.Fatalf("test target is not drive-rooted: %q", target)
+	}
+	symlinkForTest(t, target, filepath.Join(repo, "AGENTS.md"))
+
+	runInitAgentsForTest(t, repo)
+
+	if got := readFileForTest(t, shared); !strings.Contains(got, testAgentPointerBlock) {
+		t.Fatalf("drive-rooted in-repository alias did not receive the managed block:\n%s", got)
+	}
+}
+
+func TestUNCVolumeClassificationDoesNotRejectLocalDevicePaths(t *testing.T) {
+	tests := []struct {
+		name   string
+		volume string
+		want   bool
+	}{
+		{name: "ordinary UNC share", volume: `\\server\share`, want: true},
+		{name: "extended UNC marker", volume: `\\?\UNC`, want: true},
+		{name: "device UNC share", volume: `\\.\UNC\server\share`, want: true},
+		{name: "NT UNC marker", volume: `\??\UNC`, want: true},
+		{name: "unknown global device", volume: `\\?\GLOBALROOT`, want: true},
+		{name: "extended local drive", volume: `\\?\C:`, want: false},
+		{name: "local volume GUID", volume: `\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}`, want: false},
+		{name: "local device drive", volume: `\\.\C:`, want: false},
+		{name: "drive letter", volume: `C:`, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isUNCVolume(tt.volume); got != tt.want {
+				t.Fatalf("isUNCVolume(%q) = %t, want %t", tt.volume, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestInitAgentsReportsAbsoluteAliasLoopAsItself keeps the classification honest for the one
 // pathological shape the absolute-alias rewrite can hit that os.Root never sees: two in-repository
 // links pointing at each other by absolute path. That is a symlink loop, not an escape, and
@@ -1136,6 +1460,191 @@ func TestInitAgentsReportsAbsoluteAliasLoopAsItself(t *testing.T) {
 	}
 }
 
+// TestInitAgentsHonorsTheHostSymlinkLimit ensures the custom absolute-alias resolver never
+// dereferences more links than the host filesystem would. Darwin rejects the thirty-second
+// traversal, so treating MAXSYMLINKS as the number accepted turns its ELOOP into a write.
+func TestInitAgentsHonorsTheHostSymlinkLimit(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	repo := t.TempDir()
+	victim := filepath.Join(repo, ".git", "config")
+	mkdirAllForTest(t, filepath.Dir(victim))
+	writeFileForTest(t, victim, "[core]\n\tbare = false\n")
+	next := filepath.Join(".git", "config")
+	for i := 30; i >= 0; i-- {
+		linkName := fmt.Sprintf("hop-%02d", i)
+		symlinkForTest(t, next, filepath.Join(repo, linkName))
+		next = linkName
+	}
+	symlinkForTest(t, next, filepath.Join(repo, "AGENTS.md"))
+	if _, err := os.Stat(filepath.Join(repo, "AGENTS.md")); err == nil {
+		t.Skip("the host filesystem resolves 32 symlink hops")
+	}
+	before := readFileForTest(t, victim)
+
+	var stdout, stderr bytes.Buffer
+	err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+	if err == nil {
+		t.Fatal("init-agents resolved more symlink hops than the host filesystem")
+	}
+	if got := readFileForTest(t, victim); got != before {
+		t.Fatalf("a path rejected by the host rewrote the git config:\nwant: %q\n got: %q", before, got)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout was written before resolution was established: %q", stdout.String())
+	}
+}
+
+// TestInitAgentsHonorsTheHostLimitAcrossAnAbsolutePrefix ensures an external directory-alias
+// prefix and the remaining in-repository chain share one traversal budget. Resolving the prefix
+// in a separate syscall must not reset the count the kernel carries through the original path.
+func TestInitAgentsHonorsTheHostLimitAcrossAnAbsolutePrefix(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	docs := filepath.Join(repo, "docs")
+	mkdirAllForTest(t, docs)
+	victim := filepath.Join(repo, ".git", "config")
+	mkdirAllForTest(t, filepath.Dir(victim))
+	before := "[core]\n\tbare = false\n"
+	writeFileForTest(t, victim, before)
+
+	next := filepath.Join("..", ".git", "config")
+	for i := 16; i >= 0; i-- {
+		name := fmt.Sprintf("inside-%02d", i)
+		symlinkForTest(t, next, filepath.Join(docs, name))
+		next = name
+	}
+
+	externalTarget := docs
+	for i := 16; i >= 0; i-- {
+		name := fmt.Sprintf("outside-%02d", i)
+		link := filepath.Join(base, name)
+		symlinkForTest(t, externalTarget, link)
+		externalTarget = name
+	}
+	target := filepath.Join(base, externalTarget, "inside-00")
+	symlinkForTest(t, target, filepath.Join(repo, "AGENTS.md"))
+	if _, err := os.Stat(filepath.Join(repo, "AGENTS.md")); err == nil {
+		t.Skip("the host resolves the combined 35-link chain")
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+	if err == nil {
+		t.Fatal("init-agents reset the host link budget after mapping an absolute prefix")
+	}
+	if got := readFileForTest(t, victim); got != before {
+		t.Fatalf("a path rejected by the host rewrote the git config:\nwant: %q\n got: %q", before, got)
+	}
+	if _, statErr := os.Lstat(filepath.Join(repo, ".entire", "graph-agent.md")); !os.IsNotExist(statErr) {
+		t.Fatalf("the guide was written despite the preflight failure (stat error %v)", statErr)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout was written before resolution was established: %q", stdout.String())
+	}
+}
+
+// TestInitAgentsCountsLinksInEveryAbsoluteTargetPrefix pins Darwin's exact boundary. The
+// spelling /tmp follows a link to /private/tmp on the default filesystem, so sixteen absolute
+// link targets consume thirty-two traversals even though the repository chain itself contains
+// only sixteen links.
+func TestInitAgentsCountsLinksInEveryAbsoluteTargetPrefix(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Darwin /tmp prefix and MAXSYMLINKS boundary")
+	}
+	skipIfSymlinksUnrepresentable(t)
+	base, err := os.MkdirTemp("/tmp", "entire-graph-absolute-links-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(base); err != nil {
+			t.Error(err)
+		}
+	})
+	repo := filepath.Join(base, "repo")
+	victim := filepath.Join(repo, ".git", "config")
+	mkdirAllForTest(t, filepath.Dir(victim))
+	before := "[core]\n\tbare = false\n"
+	writeFileForTest(t, victim, before)
+
+	next := victim
+	for i := 14; i >= 0; i-- {
+		link := filepath.Join(repo, fmt.Sprintf("absolute-%02d", i))
+		symlinkForTest(t, next, link)
+		next = link
+	}
+	symlinkForTest(t, next, filepath.Join(repo, "AGENTS.md"))
+	if _, err := os.Stat(filepath.Join(repo, "AGENTS.md")); err == nil {
+		t.Skip("this /tmp spelling does not consume a link traversal on the host filesystem")
+	}
+
+	var stdout, stderr bytes.Buffer
+	err = Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+	if err == nil {
+		t.Fatal("init-agents ignored links consumed by each absolute target prefix")
+	}
+	if got := readFileForTest(t, victim); got != before {
+		t.Fatalf("a path rejected by Darwin rewrote the git config:\nwant: %q\n got: %q", before, got)
+	}
+	if _, statErr := os.Lstat(filepath.Join(repo, ".entire", "graph-agent.md")); !os.IsNotExist(statErr) {
+		t.Fatalf("the guide was written despite the preflight failure (stat error %v)", statErr)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout was written before resolution was established: %q", stdout.String())
+	}
+}
+
+func TestInitAgentsHonorsWindowsReparseLimits(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows reparse-point limits")
+	}
+	skipIfSymlinksUnrepresentable(t)
+	tests := []struct {
+		name          string
+		relays        int
+		absoluteFirst bool
+	}{
+		{name: "64 relative targets", relays: 63},
+		{name: "32 hops with a fully qualified target", relays: 31, absoluteFirst: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			victim := filepath.Join(repo, ".git", "config")
+			mkdirAllForTest(t, filepath.Dir(victim))
+			writeFileForTest(t, victim, "[core]\n\tbare = false\n")
+			next := filepath.Join(".git", "config")
+			for i := tt.relays - 1; i >= 0; i-- {
+				linkName := fmt.Sprintf("hop-%02d", i)
+				symlinkForTest(t, next, filepath.Join(repo, linkName))
+				next = linkName
+			}
+			firstTarget := next
+			if tt.absoluteFirst {
+				firstTarget = filepath.Join(repo, next)
+			}
+			symlinkForTest(t, firstTarget, filepath.Join(repo, "AGENTS.md"))
+			if _, err := os.Stat(filepath.Join(repo, "AGENTS.md")); err == nil {
+				t.Skip("the host resolved a chain beyond its documented reparse-point limit")
+			}
+			before := readFileForTest(t, victim)
+
+			var stdout, stderr bytes.Buffer
+			err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+			if err == nil {
+				t.Fatal("init-agents resolved more reparse points than Windows permits")
+			}
+			if got := readFileForTest(t, victim); got != before {
+				t.Fatalf("a path rejected by Windows rewrote the git config:\nwant: %q\n got: %q", before, got)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout was written before resolution was established: %q", stdout.String())
+			}
+		})
+	}
+}
+
 func mkdirAllForTest(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -1153,7 +1662,7 @@ func writeFileForTest(t *testing.T, path, content string) {
 func symlinkForTest(t *testing.T, target, link string) {
 	t.Helper()
 	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
+		t.Fatal(err)
 	}
 }
 
@@ -1231,6 +1740,261 @@ func skipIfCaseSensitive(t *testing.T, dir string) {
 	}
 }
 
+// filesystemAliasesNamesForTest asks the actual test filesystem whether two spellings identify
+// one directory entry. This covers rules that path-string helpers cannot model, including APFS
+// Unicode normalization and Win32 trailing-dot/case aliases.
+func filesystemAliasesNamesForTest(t *testing.T, dir, first, second string) bool {
+	t.Helper()
+	firstPath := filepath.Join(dir, first)
+	writeFileForTest(t, firstPath, "")
+	defer func() {
+		if err := os.Remove(firstPath); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	firstInfo, err := os.Stat(firstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondInfo, err := os.Stat(filepath.Join(dir, second))
+	if errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return os.SameFile(firstInfo, secondInfo)
+}
+
+func TestInitAgentsRefusesAliasWithTerminalDirectoryRequirementBeforeWriting(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	tests := []struct {
+		name     string
+		target   string
+		existing bool
+	}{
+		{name: "existing file with trailing separator", target: rawJoin("victim.md", ""), existing: true},
+		{name: "existing file with terminal dot", target: rawJoin("victim.md", "."), existing: true},
+		{name: "missing target with trailing separator", target: rawJoin("missing", "")},
+		{name: "missing target with terminal dot", target: rawJoin("missing", ".")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			victim := filepath.Join(repo, "victim.md")
+			before := ""
+			if tt.existing {
+				before = "# an unrelated repository file\n"
+				writeFileForTest(t, victim, before)
+			}
+			symlinkForTest(t, tt.target, filepath.Join(repo, "AGENTS.md"))
+
+			var stdout, stderr bytes.Buffer
+			err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+			if err == nil {
+				t.Fatal("init-agents accepted a file alias whose spelling requires a directory")
+			}
+			if !strings.Contains(err.Error(), "cannot resolve") {
+				t.Fatalf("the refusal did not explain that the target cannot be resolved: %v", err)
+			}
+			if tt.existing {
+				if got := readFileForTest(t, victim); got != before {
+					t.Fatalf("an unrelated repository file was rewritten:\nwant: %q\n got: %q", before, got)
+				}
+			} else if _, statErr := os.Lstat(filepath.Join(repo, "missing")); !os.IsNotExist(statErr) {
+				t.Fatalf("the missing target was created (stat error %v)", statErr)
+			}
+			if _, statErr := os.Lstat(filepath.Join(repo, ".entire", "graph-agent.md")); !os.IsNotExist(statErr) {
+				t.Fatalf("the guide was written despite the preflight failure (stat error %v)", statErr)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout was written before resolution was established: %q", stdout.String())
+			}
+		})
+	}
+}
+
+func TestInitAgentsRefusesMissingAliasParentBeforeWriting(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	repo := t.TempDir()
+	target := filepath.Join("missing", "subdir", "shared.md")
+	symlinkForTest(t, target, filepath.Join(repo, "CLAUDE.md"))
+
+	var stdout, stderr bytes.Buffer
+	err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+	if err == nil {
+		t.Fatal("init-agents accepted a dangling alias whose parent cannot be created by OpenFile")
+	}
+	if !strings.Contains(err.Error(), "parent directory") {
+		t.Fatalf("the refusal did not identify the missing parent directory: %v", err)
+	}
+	for _, name := range []string{
+		filepath.Join(".entire", "graph-agent.md"),
+		"AGENTS.md",
+		filepath.Join("missing", "subdir", "shared.md"),
+	} {
+		if _, statErr := os.Lstat(filepath.Join(repo, name)); !os.IsNotExist(statErr) {
+			t.Fatalf("%s was written despite the preflight failure (stat error %v)", name, statErr)
+		}
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout was written before resolution was established: %q", stdout.String())
+	}
+}
+
+func TestInitAgentsRefusesManagedTargetCollisionsBeforeWriting(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	t.Run("guide symlinks to AGENTS", func(t *testing.T) {
+		repo := t.TempDir()
+		guideDir := filepath.Join(repo, ".entire")
+		mkdirAllForTest(t, guideDir)
+		symlinkForTest(t, filepath.Join("..", "AGENTS.md"), filepath.Join(guideDir, "graph-agent.md"))
+
+		var stdout, stderr bytes.Buffer
+		err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+		if err == nil || !strings.Contains(err.Error(), "same managed file") {
+			t.Fatalf("init-agents did not reject the guide/instruction collision: %v", err)
+		}
+		if _, statErr := os.Lstat(filepath.Join(repo, "AGENTS.md")); !os.IsNotExist(statErr) {
+			t.Fatalf("AGENTS.md was written despite the collision (stat error %v)", statErr)
+		}
+		if stdout.Len() != 0 {
+			t.Fatalf("stdout was written before topology validation: %q", stdout.String())
+		}
+	})
+
+	t.Run("guide hard-links to AGENTS", func(t *testing.T) {
+		repo := t.TempDir()
+		guideDir := filepath.Join(repo, ".entire")
+		mkdirAllForTest(t, guideDir)
+		agents := filepath.Join(repo, "AGENTS.md")
+		before := "# Shared rules\n"
+		writeFileForTest(t, agents, before)
+		if err := os.Link(agents, filepath.Join(guideDir, "graph-agent.md")); err != nil {
+			t.Skipf("hard links unavailable: %v", err)
+		}
+
+		var stdout, stderr bytes.Buffer
+		err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+		if err == nil || !strings.Contains(err.Error(), "same managed file") {
+			t.Fatalf("init-agents did not reject the hard-linked collision: %v", err)
+		}
+		if got := readFileForTest(t, agents); got != before {
+			t.Fatalf("hard-linked instructions changed despite the collision:\nwant: %q\n got: %q", before, got)
+		}
+		if stdout.Len() != 0 {
+			t.Fatalf("stdout was written before topology validation: %q", stdout.String())
+		}
+	})
+
+	t.Run("instruction is planned directory ancestor", func(t *testing.T) {
+		repo := t.TempDir()
+		symlinkForTest(t, filepath.Join("nested", "activation"), filepath.Join(repo, ".entire"))
+		symlinkForTest(t, "nested", filepath.Join(repo, "AGENTS.md"))
+
+		var stdout, stderr bytes.Buffer
+		err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+		if err == nil || !strings.Contains(err.Error(), "created as a directory") {
+			t.Fatalf("init-agents did not reject the directory/file collision: %v", err)
+		}
+		if _, statErr := os.Lstat(filepath.Join(repo, "nested")); !os.IsNotExist(statErr) {
+			t.Fatalf("planned directory was created despite the collision (stat error %v)", statErr)
+		}
+		if stdout.Len() != 0 {
+			t.Fatalf("stdout was written before topology validation: %q", stdout.String())
+		}
+	})
+
+	t.Run("filesystem-normalized missing names", func(t *testing.T) {
+		repo := t.TempDir()
+		if !filesystemAliasesNamesForTest(t, repo, "probe-é", "probe-e\u0301") {
+			t.Skip("filesystem keeps canonical Unicode normalizations distinct")
+		}
+		guideDir := filepath.Join(repo, ".entire")
+		mkdirAllForTest(t, guideDir)
+		guideTarget := "é.md"
+		instructionTarget := "e\u0301.md"
+		symlinkForTest(t, filepath.Join("..", guideTarget), filepath.Join(guideDir, "graph-agent.md"))
+		symlinkForTest(t, instructionTarget, filepath.Join(repo, "AGENTS.md"))
+
+		var stdout, stderr bytes.Buffer
+		err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+		if err == nil || !strings.Contains(err.Error(), "same managed file") {
+			t.Fatalf("init-agents did not reject filesystem-equivalent Unicode names: %v", err)
+		}
+		if _, statErr := os.Lstat(filepath.Join(repo, guideTarget)); !os.IsNotExist(statErr) {
+			t.Fatalf("the colliding target remained after rollback (stat error %v)", statErr)
+		}
+		if stdout.Len() != 0 {
+			t.Fatalf("stdout was written before topology validation: %q", stdout.String())
+		}
+	})
+
+	t.Run("Windows trailing-dot missing names", func(t *testing.T) {
+		if runtime.GOOS != "windows" {
+			t.Skip("Win32 name-equivalence rule")
+		}
+		repo := t.TempDir()
+		guideDir := filepath.Join(repo, ".entire")
+		mkdirAllForTest(t, guideDir)
+		symlinkForTest(t, filepath.Join("..", "shared.md."), filepath.Join(guideDir, "graph-agent.md"))
+		symlinkForTest(t, "shared.md", filepath.Join(repo, "AGENTS.md"))
+
+		var stdout, stderr bytes.Buffer
+		err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+		if err == nil || !strings.Contains(err.Error(), "same managed file") {
+			t.Fatalf("init-agents did not reject Win32-equivalent trailing-dot names: %v", err)
+		}
+		if _, statErr := os.Lstat(filepath.Join(repo, "shared.md")); !os.IsNotExist(statErr) {
+			t.Fatalf("the colliding target remained after rollback (stat error %v)", statErr)
+		}
+		if stdout.Len() != 0 {
+			t.Fatalf("stdout was written before topology validation: %q", stdout.String())
+		}
+	})
+}
+
+func TestInitAgentsAllowsCaseDistinctMissingManagedTargets(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	t.Run("guide and instruction files", func(t *testing.T) {
+		repo := t.TempDir()
+		if filesystemAliasesNamesForTest(t, repo, "CaseProbe", "caseprobe") {
+			t.Skip("filesystem aliases names that differ only in case")
+		}
+		guideDir := filepath.Join(repo, ".entire")
+		mkdirAllForTest(t, guideDir)
+		symlinkForTest(t, filepath.Join("..", "Shared.md"), filepath.Join(guideDir, "graph-agent.md"))
+		symlinkForTest(t, "shared.md", filepath.Join(repo, "AGENTS.md"))
+
+		runInitAgentsForTest(t, repo)
+
+		if got := readFileForTest(t, filepath.Join(repo, "Shared.md")); !strings.Contains(got, "# entire-graph") {
+			t.Fatalf("case-distinct guide target did not receive the guide:\n%s", got)
+		}
+		if got := readFileForTest(t, filepath.Join(repo, "shared.md")); !strings.Contains(got, testAgentPointerBlock) {
+			t.Fatalf("case-distinct instruction target did not receive the pointer:\n%s", got)
+		}
+	})
+
+	t.Run("instruction and planned directory", func(t *testing.T) {
+		repo := t.TempDir()
+		if filesystemAliasesNamesForTest(t, repo, "CaseProbe", "caseprobe") {
+			t.Skip("filesystem aliases names that differ only in case")
+		}
+		symlinkForTest(t, filepath.Join("nested", "activation"), filepath.Join(repo, ".entire"))
+		symlinkForTest(t, "NESTED", filepath.Join(repo, "AGENTS.md"))
+
+		runInitAgentsForTest(t, repo)
+
+		if got := readFileForTest(t, filepath.Join(repo, "nested", "activation", "graph-agent.md")); !strings.Contains(got, "# entire-graph") {
+			t.Fatalf("guide was not written through the planned directory alias:\n%s", got)
+		}
+		if got := readFileForTest(t, filepath.Join(repo, "NESTED")); !strings.Contains(got, testAgentPointerBlock) {
+			t.Fatalf("case-distinct instruction target did not receive the pointer:\n%s", got)
+		}
+	})
+}
+
 // aliasPlant installs one alias spelling into a repository. target names the install path whose
 // resolution it subverts, and plant returns the in-repository file that spelling reaches only
 // after ".." is collapsed as text — the file init-agents must not touch.
@@ -1254,6 +2018,17 @@ var untraversableAliasPlants = []aliasPlant{
 			victim := filepath.Join(repo, "victim.md")
 			writeFileForTest(t, victim, "# an unrelated repository file\n")
 			symlinkForTest(t, rawJoin("missing", "..", "victim.md"), filepath.Join(repo, "AGENTS.md"))
+			return victim
+		},
+	},
+	{
+		name:   "absolute target with a component that does not exist",
+		target: "AGENTS.md",
+		plant: func(t *testing.T, repo string) string {
+			t.Helper()
+			victim := filepath.Join(repo, "victim.md")
+			writeFileForTest(t, victim, "# an unrelated repository file\n")
+			symlinkForTest(t, rawJoin(repo, "missing", "..", "victim.md"), filepath.Join(repo, "AGENTS.md"))
 			return victim
 		},
 	},
