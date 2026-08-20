@@ -1600,3 +1600,63 @@ func TestOutputPathRefusesARepositoryLinkOnARouteThatLeavesTheRepository(t *test
 		}
 	})
 }
+
+// TestWriteOutputFileDoesNotFollowALinkSwappedInAfterTheCheck is the regression for
+// the TOCTOU finding, and it is a RACE, not a shape: every refusal above answers a
+// different SPELLING of the path, and this one answers the same spelling twice with
+// different answers. The check says "reports is an ordinary directory"; between that
+// answer and the open, the repository makes it a link to .git, and the open — which
+// resolves a link that stays inside the root — truncates .git/config anyway.
+//
+// The swapper flips one directory entry between the two states as fast as it can
+// while the sink is driven repeatedly. It can only ever produce a FALSE PASS: a run
+// that never lands in the window reports nothing, and a run that does lands in it
+// only because the window is real. It never fails on a build that has none.
+func TestWriteOutputFileDoesNotFollowALinkSwappedInAfterTheCheck(t *testing.T) {
+	requireSymlinkSupport(t)
+	repo := outputPathRepo(t)
+	victim := filepath.Join(repo, ".git", "config")
+	before, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(repo, "reports")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stop := make(chan struct{})
+	swapped := make(chan struct{})
+	go func() {
+		defer close(swapped)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			// The two states the check and the open must disagree about: an
+			// ordinary directory, which the check accepts, and a link into .git,
+			// which the open follows.
+			_ = os.Remove(parent)
+			_ = os.Symlink(".git", parent)
+			_ = os.Remove(parent)
+			_ = os.Mkdir(parent, 0o755)
+		}
+	}()
+
+	target := filepath.Join(parent, "config")
+	for range 40000 {
+		_ = writeOutputFileUnder(repo, target, []byte("SWAPPED IN AFTER THE CHECK\n"), 0o644, false)
+	}
+	close(stop)
+	<-swapped
+
+	after, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("the repository's own git configuration was rewritten through a link swapped in after the check:\n%s", after)
+	}
+}

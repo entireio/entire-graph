@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -40,11 +41,16 @@ import (
 //     through os.Root — which cannot be made to leave the repository root — and a
 //     symlinked component at ANY depth is refused rather than followed. os.Root
 //     alone is not enough for the second half: it stops the write leaving the root,
-//     but on Unix it happily FOLLOWS a link that stays inside it, and `.git/config`
-//     is inside it. The refusal covers the ROUTE the path is read through as well as
-//     the destination it names, because a ".." resolves a link away before the
-//     destination is spelled — see refuseSymlinkedComponents and, for the route,
-//     refuseTraversedSymlinks.
+//     but it happily FOLLOWS a link that stays inside it (on every platform, Windows
+//     included), and `.git/config` is inside it. The refusal covers the ROUTE the
+//     path is read through as well as the destination it names, because a ".."
+//     resolves a link away before the destination is spelled — see
+//     refuseSymlinkedComponents and, for the route, refuseTraversedSymlinks.
+//
+// Those are CHECKS, and a check is not the enforcement. The write itself is opened
+// component by component, holding each one open and verifying it by identity, so
+// there is no window between deciding and opening for the repository to swap a link
+// into — see openConfinedOutputFile.
 //
 // Two things decide "inside", and both exist so that a SPELLING cannot move the
 // boundary. The root is the checkout's git top level rather than the --repo value
@@ -424,8 +430,9 @@ func rawAbs(path string) (string, bool, error) {
 // a component of the destination and the destination's own check covers it. And on a
 // platform that collapses ".." itself, the cleaned path IS what gets opened —
 // `link\..\config` names `config` beside the link there, never the link's target —
-// so there is no traversal to inspect; Windows' os.Root refuses symlinked components
-// on its own besides.
+// so there is no traversal to inspect. (This comment used to add "Windows' os.Root
+// refuses symlinked components on its own besides". STRUCK — it does not; see
+// refuseSymlinkedComponents. The reason above never depended on it.)
 func traversedPath(path string) string {
 	if runtime.GOOS == "windows" || !hasDotDot(path) {
 		return ""
@@ -621,13 +628,18 @@ func resolveExistingPrefix(dir string) (string, error) {
 // refuseSymlinkedComponents refuses the write when ANY component of rel is a
 // symbolic link, not only the final one.
 //
-// This is the check that makes the confinement real, and os.Root is not a
-// substitute for it. os.Root guarantees only that the write cannot LEAVE the root;
-// it does not refuse a link that stays inside it, and on Unix it FOLLOWS one.
-// (Windows' Root refuses every symlinked component itself, so this check is also
-// what makes the two platforms agree rather than diverge silently. It is the
-// portable spelling of the refusal either way — syscall.O_NOFOLLOW does not exist
-// on Windows.)
+// This is the check that NAMES the offence, and os.Root is not a substitute for
+// it. os.Root guarantees only that the write cannot LEAVE the root; it does not
+// refuse a link that stays inside it, it FOLLOWS one.
+//
+// STRUCK, and it was wrong on this very point: this comment used to say "Windows'
+// Root refuses every symlinked component itself, so this check is what makes the
+// two platforms agree". It does not. Go documents os.Root as following symbolic
+// links that stay inside the root with no platform exception (os/root.go), and
+// Windows reaches that by the same route Unix does — os/root_windows.go:147 opens
+// with O_NOFOLLOW_ANY, then reads the reparse point on the resulting ELOOP and
+// hands doInRoot an errSymlink to resolve (os/root_openat.go:450), exactly as
+// os/root_unix.go:85 does. Neither platform gets a no-follow open out of os.Root.
 //
 // Checking only the FINAL component, as the first version of this fix did, leaves
 // every parent followed: a repository that commits `reports -> .git` turns
@@ -635,9 +647,16 @@ func resolveExistingPrefix(dir string) (string, error) {
 // where core.pager and core.fsmonitor name programs git then runs. The leaf is a
 // regular file at that point, so a leaf-only check sees nothing wrong.
 //
-// The check is not a TOCTOU hole in the property that matters: were a link swapped
-// in between this walk and the open, os.Root still cannot be walked out of the
-// repository, so the worst case stays a write inside the tree being scanned.
+// STRUCK: this comment used to say "the check is not a TOCTOU hole in the property
+// that matters — os.Root still cannot be walked out of the repository, so the worst
+// case stays a write inside the tree being scanned". The worst case inside the tree
+// is .git/config, whose core.pager and core.fsmonitor name programs git then runs,
+// which is the same escalation every refusal in this file exists to stop. The race
+// was demonstrated: a swapper flipping `reports` between an ordinary directory and
+// a link to .git truncated .git/config through this check within one test run
+// (TestWriteOutputFileDoesNotFollowALinkSwappedInAfterTheCheck). So this walk is
+// kept for the message it produces and for the route it is the only reader of, and
+// the refusal is ENFORCED in openConfinedOutputFile, which leaves no window.
 func refuseSymlinkedComponents(root *os.Root, rel, given string) error {
 	prefix := ""
 	for _, component := range strings.Split(rel, string(filepath.Separator)) {
@@ -654,14 +673,22 @@ func refuseSymlinkedComponents(root *os.Root, rel, given string) error {
 			continue
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf(
-				"refusing to write %s: %s is a symbolic link committed inside the repository, "+
-					"and writing through it would truncate whatever it points at. "+
-					"Remove the link, or name a path outside the repository",
-				given, prefix)
+			return symlinkedComponentError(prefix, given)
 		}
 	}
 	return nil
+}
+
+// symlinkedComponentError is the one refusal for a repository-owned link ON the
+// destination, worded once for the two places that reach it: the static check above,
+// and openConfinedOutputFile, which reaches the same verdict about a link that was
+// not there when the static check looked.
+func symlinkedComponentError(rel, given string) error {
+	return fmt.Errorf(
+		"refusing to write %s: %s is a symbolic link committed inside the repository, "+
+			"and writing through it would truncate whatever it points at. "+
+			"Remove the link, or name a path outside the repository",
+		given, rel)
 }
 
 // refuseTraversedSymlinks refuses the write when REACHING the destination would
@@ -773,7 +800,18 @@ func refuseRepositorySymlinks(root *os.Root, target repoOutputTarget) error {
 func writeOutputFile(
 	ctx context.Context, repoRoot, path string, data []byte, perm os.FileMode, createParents bool,
 ) error {
-	target, err := classifyOutputPath(confinementRoot(ctx, repoRoot), path)
+	return writeOutputFileUnder(confinementRoot(ctx, repoRoot), path, data, perm, createParents)
+}
+
+// writeOutputFileUnder is writeOutputFile with the boundary already resolved. The
+// split exists because finding that boundary runs `git rev-parse` — a subprocess,
+// and the only part of this sink that is neither a syscall nor arithmetic — which a
+// test that has to repeat the write tens of thousands of times cannot afford to pay
+// per iteration. Nothing else about the write differs.
+func writeOutputFileUnder(
+	confinement, path string, data []byte, perm os.FileMode, createParents bool,
+) error {
+	target, err := classifyOutputPath(confinement, path)
 	if err != nil {
 		return err
 	}
@@ -793,25 +831,15 @@ func writeOutputFile(
 		return err
 	}
 	defer root.Close()
-	// Before MkdirAll, so parent creation cannot walk through a committed link
-	// either: `verify --record-baseline reports/nested/base.json` with `reports`
-	// committed as a link to .git would otherwise mkdir inside the git directory.
+	// This is the STATIC answer, and it is not what makes the write safe — see
+	// openConfinedOutputFile, which is. It runs first because it is the only place
+	// the ROUTE (target.traversed, a spelling the destination's own components no
+	// longer contain) can be judged at all, and because it names the offending
+	// component in the message before anything is created on disk.
 	if err := refuseRepositorySymlinks(root, target); err != nil {
 		return err
 	}
-	if createParents {
-		if directory := filepath.Dir(target.rel); directory != "" && directory != "." {
-			if err := root.MkdirAll(directory, 0o755); err != nil {
-				return err
-			}
-		}
-	}
-	// And again after it, so the components MkdirAll just created are covered by a
-	// check taken after the last thing this function changed on disk.
-	if err := refuseRepositorySymlinks(root, target); err != nil {
-		return err
-	}
-	file, err := root.OpenFile(target.rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	file, err := openConfinedOutputFile(root, target, perm, createParents)
 	if err != nil {
 		return err
 	}
@@ -820,4 +848,134 @@ func writeOutputFile(
 		return err
 	}
 	return file.Close()
+}
+
+// openConfinedOutputFile opens the confined destination for writing, and is where
+// the refusal is ENFORCED rather than merely asked.
+//
+// Every refusal above this one is a CHECK: it reads the filesystem, decides, and
+// returns — and the write then happens in a separate call. Between the two the
+// repository can change the answer. A directory the check accepted becomes a link
+// to .git, os.Root resolves a link that stays inside the root, and .git/config is
+// truncated by a write whose every check passed. That is not another SPELLING of
+// the path — it is the same spelling answered twice, differently — so no smarter
+// check can close it. The window has to stop existing.
+//
+// So the destination is reached by OPENING each component and keeping it open,
+// never by naming a path and trusting the components to still be what they were:
+//
+//   - each directory component is opened as its own os.Root, and the handle is
+//     what the next component is opened relative to. Once opened it is pinned:
+//     renaming or replacing the entry afterwards cannot move the write, because
+//     the write no longer goes through the name.
+//   - the component is then verified by IDENTITY — os.SameFile between what the
+//     name lstats to and what the held handle stats to. os.Root follows a link
+//     that stays inside the root, so a symlinked component opens its TARGET, whose
+//     identity is not the link's; the two agree only for a component that was a
+//     real directory at the instant it was looked at, and that directory is the one
+//     now held. This is the portable spelling of O_NOFOLLOW, which os.Root does not
+//     accept (rootOpenFileNolog already passes it and resolves the ELOOP itself)
+//     and which is undefined on Windows.
+//   - the final component is opened WITHOUT O_TRUNC — O_CREATE|O_EXCL first, which
+//     Go documents as never following a symlink whatever the OS returns, then a
+//     plain O_WRONLY if it already exists — so nothing can be destroyed before the
+//     same identity check has run. The truncation happens through the verified
+//     handle afterwards, where no name is left to swap.
+//
+// What this does NOT claim: it is a check-free path to the FILE, not proof that no
+// name in it ever pointed elsewhere. A write that loses the race is refused, not
+// silently redirected, and the file it would have hit is untouched.
+func openConfinedOutputFile(
+	root *os.Root, target repoOutputTarget, perm os.FileMode, createParents bool,
+) (*os.File, error) {
+	components := pathComponents(target.rel)
+	if len(components) == 0 {
+		return nil, fmt.Errorf("refusing to write %s: the path names no file", target.given)
+	}
+	directory := root
+	var opened []*os.Root
+	defer func() {
+		for _, held := range opened {
+			held.Close()
+		}
+	}()
+	rel := ""
+	for _, component := range components[:len(components)-1] {
+		if component == "." {
+			continue
+		}
+		rel = filepath.Join(rel, component)
+		if createParents {
+			// `verify --record-baseline` is documented to create its parents. An
+			// existing entry — including a link the walk is about to refuse — comes
+			// back as EEXIST, which is not an answer to whether it may be used.
+			if err := directory.Mkdir(component, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+				return nil, err
+			}
+		}
+		next, err := directory.OpenRoot(component)
+		if err != nil {
+			return nil, err
+		}
+		opened = append(opened, next)
+		if err := refuseUnlessSameEntry(directory, component, next, rel, target.given); err != nil {
+			return nil, err
+		}
+		directory = next
+	}
+
+	leaf := components[len(components)-1]
+	rel = filepath.Join(rel, leaf)
+	file, err := directory.OpenFile(leaf, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if errors.Is(err, fs.ErrExist) {
+		// Not O_CREATE: the entry exists, and re-asking for creation is what would
+		// let a dangling link committed in the repository be MATERIALISED at its
+		// target before the identity check below can refuse it.
+		file, err = directory.OpenFile(leaf, os.O_WRONLY, 0)
+	}
+	if err != nil {
+		return nil, err
+	}
+	named, err := directory.Lstat(leaf)
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	held, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	if !os.SameFile(named, held) {
+		file.Close()
+		return nil, symlinkedComponentError(rel, target.given)
+	}
+	// Only now, and through the handle rather than the name.
+	if err := file.Truncate(0); err != nil {
+		file.Close()
+		return nil, err
+	}
+	return file, nil
+}
+
+// refuseUnlessSameEntry reports whether the directory now HELD open is the same
+// filesystem object the name lstats to, and refuses the write when it is not.
+//
+// Lstat does not follow the final component, so it reports the LINK when component
+// is one; the held handle reports what os.Root resolved that link to. Equality is
+// therefore exactly "component was not a symlink", asked about the object the walk
+// is already holding rather than about a name it is going to use later.
+func refuseUnlessSameEntry(parent *os.Root, component string, held *os.Root, rel, given string) error {
+	named, err := parent.Lstat(component)
+	if err != nil {
+		return err
+	}
+	info, err := held.Stat(".")
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(named, info) {
+		return symlinkedComponentError(rel, given)
+	}
+	return nil
 }
