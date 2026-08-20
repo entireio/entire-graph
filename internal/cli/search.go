@@ -1459,13 +1459,19 @@ func agentSearchDiagnostics(response sem.SearchResponse) ([]byte, []byte) {
 	// hidden" instead of "internal/auth/auth.go is hidden". Producers put it first
 	// already; hoisting here means no future producer ordering can lose it.
 	warnings := hoistRepoIgnoreDisclosure(response.Warnings)
+	// The same argument on the failure side. The exclusion SHORTFALL is what turns
+	// the coverage line's file count — and the compact form's X<n> — from a fact
+	// into a lower bound, and producers append it after whatever parser failures
+	// the run collected. Three unparseable files were enough to push it past the
+	// cap, leaving a payload that reported a narrowed corpus as if it were whole.
+	failures := hoistRepoIgnoreShortfall(response.PartialFailures)
 	warningsVisible, failuresVisible := agentDiagnosticVisibility(
-		len(warnings), len(response.PartialFailures), maxAgentDiagnostics,
+		len(warnings), len(failures), maxAgentDiagnostics,
 	)
 	for _, warning := range warnings[:warningsVisible] {
 		fmt.Fprintf(&full, "- warning %s%s\n", warning.Code, agentDiagnosticPath(warning.FilePath))
 	}
-	for _, failure := range response.PartialFailures[:failuresVisible] {
+	for _, failure := range failures[:failuresVisible] {
 		fmt.Fprintf(&full, "- partial %s%s\n", failure.Code, agentDiagnosticPath(failure.FilePath))
 	}
 	visible := warningsVisible + failuresVisible
@@ -1510,6 +1516,43 @@ func hoistRepoIgnoreDisclosure(warnings []sem.ProviderWarning) []sem.ProviderWar
 	hoisted = append(hoisted, warnings[index])
 	hoisted = append(hoisted, warnings[:index]...)
 	return append(hoisted, warnings[index+1:]...)
+}
+
+// repoIgnoreShortfallPrefix is the code prefix every partial failure that
+// qualifies the exclusion accounting shares (E_REPO_IGNORE_UNREADABLE,
+// E_REPO_IGNORE_COUNT_INCOMPLETE, E_REPO_IGNORE_GIT_UNAVAILABLE).
+//
+// A prefix rather than a list on purpose: the producer and this renderer are in
+// different packages, and a list here would have to be edited every time the
+// producer learns a new way for the count to fall short. A prefix makes the next
+// one visible by construction instead of silently capped away.
+const repoIgnoreShortfallPrefix = "E_REPO_IGNORE_"
+
+// hoistRepoIgnoreShortfall returns failures with every exclusion-shortfall
+// record moved to the front, each group keeping its original relative order.
+// The input is never mutated.
+func hoistRepoIgnoreShortfall(failures []sem.PartialFailure) []sem.PartialFailure {
+	shortfalls := 0
+	for _, failure := range failures {
+		if strings.HasPrefix(failure.Code, repoIgnoreShortfallPrefix) {
+			shortfalls++
+		}
+	}
+	if shortfalls == 0 || shortfalls == len(failures) {
+		return failures
+	}
+	hoisted := make([]sem.PartialFailure, 0, len(failures))
+	for _, failure := range failures {
+		if strings.HasPrefix(failure.Code, repoIgnoreShortfallPrefix) {
+			hoisted = append(hoisted, failure)
+		}
+	}
+	for _, failure := range failures {
+		if !strings.HasPrefix(failure.Code, repoIgnoreShortfallPrefix) {
+			hoisted = append(hoisted, failure)
+		}
+	}
+	return hoisted
 }
 
 // agentCoverageExcluded renders the repository-controlled exclusion count inside
