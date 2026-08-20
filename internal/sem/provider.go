@@ -10603,10 +10603,25 @@ func (g *gitDirExcluder) recordTarget(target string) {
 }
 
 // gitDirRootEntryNames are the top-level names that belong to a git directory
-// rather than to a worktree, taken from git's own two lists: path.c's
+// rather than to a worktree. They come from git's own two lists — path.c's
 // `common_list[]`, which is what git shares between worktrees through
 // `commondir`, and the per-git-directory files setup.c and the sequencer write
-// beside it. `objects`, `refs` and `HEAD` are is_git_directory()'s own three.
+// beside it — and, for everything below the first group, from asking the real
+// git binary what it leaves behind:
+// TestGitDirRootEntryNamesCoversEveryNameGitWrites drives git through the
+// operations that park state in a git directory and fails naming any top-level
+// entry this list does not cover. `objects`, `refs` and `HEAD` are
+// is_git_directory()'s own three.
+//
+// That oracle is the lock, and it exists because reading git's source once is
+// exactly what let `reftable` through: a repository initialized with
+// `--ref-format=reftable` keeps its whole ref store — and its reflogs, which the
+// loose layout keeps in `logs/` and this list therefore already excluded — under
+// `reftable/`, and a list written against the loose layout had never heard of
+// the name. Verified on git 2.54.0: `git init --ref-format=reftable` writes
+// `reftable/tables.list` and the `*.ref` tables, and with `gitdir: .` at the
+// root `git ls-files --others --directory` lists `reftable/` as ordinary
+// untracked content.
 //
 // This list is consulted in exactly one situation: a `.git` pointer names the
 // repository ROOT and that root carries objects/ and refs/, so the git directory
@@ -10628,6 +10643,22 @@ var gitDirRootEntryNames = []string{
 	"rr-cache", "shallow", "svn", "worktrees",
 	// The description git init writes, and the config include git 2.46+ writes.
 	"description", "config.worktree",
+	// The reftable ref store, which replaces loose refs, `packed-refs` AND the
+	// `logs/` reflogs for a repository initialized with `--ref-format=reftable`.
+	"reftable",
+	// In-progress operation state the oracle above observed git 2.54.0 write:
+	// a conflicted merge (`AUTO_MERGE`, `MERGE_MODE`), rerere's record of it
+	// (`MERGE_RR`), an autostashed merge (`MERGE_AUTOSTASH`), a stopped rebase
+	// (`REBASE_HEAD`), a bisect with and without a checkout (`BISECT_START`,
+	// `BISECT_TERMS`, `BISECT_NAMES`, `BISECT_EXPECTED_REV`,
+	// `BISECT_ANCESTORS_OK`, `BISECT_HEAD`), a conflicted notes merge
+	// (`NOTES_MERGE_REF`, `NOTES_MERGE_WORKTREE`, `NOTES_MERGE_PARTIAL`), and the
+	// two buffers git hands an editor (`TAG_EDITMSG`, `EDIT_DESCRIPTION`).
+	"AUTO_MERGE", "MERGE_MODE", "MERGE_RR", "MERGE_AUTOSTASH", "REBASE_HEAD",
+	"BISECT_START", "BISECT_TERMS", "BISECT_NAMES", "BISECT_EXPECTED_REV",
+	"BISECT_ANCESTORS_OK", "BISECT_HEAD",
+	"NOTES_MERGE_REF", "NOTES_MERGE_WORKTREE", "NOTES_MERGE_PARTIAL",
+	"TAG_EDITMSG", "EDIT_DESCRIPTION",
 }
 
 // recordGitDirRootEntries excludes the git directory's own top-level entries
