@@ -27,7 +27,7 @@ func TestSearchNeedleGrepDropsCredentialStores(t *testing.T) {
 	if !ok {
 		t.Fatal("git grep could not answer; the assertions below would be vacuous")
 	}
-	for _, victim := range []string{".env", "deploy/secrets/prod-secrets.yaml"} {
+	for _, victim := range credentialStoreNeedleVictimPaths {
 		if !slices.Contains(unfiltered, victim) {
 			t.Fatalf("git grep did not name %s for this needle, so the filtered call proves "+
 				"nothing; got %v", victim, unfiltered)

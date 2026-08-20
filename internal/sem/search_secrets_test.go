@@ -14,10 +14,15 @@ import (
 // fixture shaped like a live Stripe/AWS/npm key trips push protection and secret
 // scanners in every repository that vendors this test.
 const (
-	testFakeStripeKey = "placeholder-stripe-value-not-a-key"
-	testFakeNPMToken  = "placeholder-npm-value-not-a-token"
-	testFakeAWSSecret = "placeholder-aws-value-not-a-secret"
-	testFakeK8sSecret = "placeholder-kubernetes-value-not-a-secret"
+	testFakeStripeKey          = "placeholder-stripe-value-not-a-key"
+	testFakeNPMToken           = "placeholder-npm-value-not-a-token"
+	testFakeAWSSecret          = "placeholder-aws-value-not-a-secret"
+	testFakeK8sSecret          = "placeholder-kubernetes-value-not-a-secret"
+	testFakeGitCredential      = "placeholder-git-credential-not-a-token"
+	testFakeDockerAuth         = "placeholder-docker-auth-not-a-token"
+	testFakeKubeToken          = "placeholder-kubernetes-token-not-a-token"
+	testFakeTerraformToken     = "placeholder-terraform-token-not-a-token"
+	testFakeGoogleRefreshToken = "placeholder-google-refresh-token-not-a-token"
 	// Deliberately not PEM-decodable: a fixture that parses as a real private key
 	// trips secret scanners in every repository that vendors this test.
 	testFakePrivateKey = "placeholder-private-key-material-not-a-key"
@@ -31,13 +36,26 @@ const (
 var credentialStoreVictimPaths = []string{
 	".env", ".npmrc", "certs/server.pem", "credentials.json",
 	"deploy/secrets/prod-secrets.yaml",
+	".git-credentials", ".docker/config.json", ".kube/config",
+	"credentials.tfrc.json", "application_default_credentials.json",
+}
+
+// credentialStoreNeedleVictimPaths are the stores containing the literal used by
+// the git-grep regression path. The other stores remain fixture victims, but do
+// not contain that particular literal and therefore cannot prove the grep filter.
+var credentialStoreNeedleVictimPaths = []string{
+	".env", "deploy/secrets/prod-secrets.yaml",
+	".git-credentials", ".docker/config.json", ".kube/config",
+	"credentials.tfrc.json", "application_default_credentials.json",
 }
 
 // credentialStoreSecrets are the values that must not reach the caller through
 // any field of any payload.
 var credentialStoreSecrets = []string{
 	testFakeStripeKey, testFakeNPMToken, testFakeAWSSecret,
-	testFakePrivateKey, testFakeK8sSecret,
+	testFakePrivateKey, testFakeK8sSecret, testFakeGitCredential,
+	testFakeDockerAuth, testFakeKubeToken, testFakeTerraformToken,
+	testFakeGoogleRefreshToken,
 }
 
 // credentialStoreControlPaths are first-party source files that must stay fully
@@ -78,6 +96,18 @@ func credentialStoreRepo(t *testing.T) string {
 	writeFile(t, repo, "deploy/secrets/prod-secrets.yaml", "apiVersion: v1\nkind: Secret\n"+
 		"metadata:\n  name: prod-api-credentials\nstringData:\n"+
 		"  STRIPE_SECRET_KEY: "+testFakeK8sSecret+"\n")
+	writeFile(t, repo, ".git-credentials", "https://oauth2:STRIPE_SECRET_KEY."+testFakeGitCredential+
+		"@git.example.internal\n")
+	writeFile(t, repo, ".docker/config.json", "{\n  \"auths\": {\n"+
+		"    \"registry.example.internal\": {\"auth\": \"STRIPE_SECRET_KEY."+testFakeDockerAuth+"\"}\n"+
+		"  }\n}\n")
+	writeFile(t, repo, ".kube/config", "apiVersion: v1\nusers:\n- name: production\n  user:\n"+
+		"    token: STRIPE_SECRET_KEY."+testFakeKubeToken+"\n")
+	writeFile(t, repo, "credentials.tfrc.json", "{\n  \"credentials\": {\n"+
+		"    \"app.terraform.io\": {\"token\": \"STRIPE_SECRET_KEY."+testFakeTerraformToken+"\"}\n"+
+		"  }\n}\n")
+	writeFile(t, repo, "application_default_credentials.json", "{\n"+
+		"  \"type\": \"authorized_user\",\n  \"refresh_token\": \"STRIPE_SECRET_KEY."+testFakeGoogleRefreshToken+"\"\n}\n")
 
 	// The legitimate search targets. A fix that also sinks these has broken search
 	// rather than secured it. The two literal mentions of STRIPE_SECRET_KEY below

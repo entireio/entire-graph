@@ -34,14 +34,19 @@ cannot be quoted back into an agent's context.
 
 The list covers `.env` and its `.env.<environment>` variants, `.envrc`,
 `.npmrc`, `.netrc`/`_netrc`, `.pgpass`, `.htpasswd`, `.pypirc`, `.dockercfg`,
-`.boto`, SSH private keys (`id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`),
+`.boto`, `.git-credentials`, Docker's `.docker/config.json`, Kubernetes'
+`.kube/config`, Terraform's `credentials.tfrc.json`, Google Cloud's
+`application_default_credentials.json`, SSH private keys (`id_rsa`, `id_dsa`,
+`id_ecdsa`, `id_ed25519`),
 `credentials`/`credentials.{json,yml,yaml,ini,toml}`,
 `secrets.{json,yml,yaml,ini,toml}`, key material and encrypted stores by suffix
 (`.pem`, `.key`, `.pfx`, `.p12`, `.pkcs12`, `.jks`, `.keystore`, `.truststore`,
 `.ppk`, `.kdbx`, `.asc`, `.gpg`), and files ending in `.yaml`, `.yml`, `.json`,
 `.ini`, `.toml`, `.cfg`, `.conf`, `.properties`, `.txt` or `.enc` under a
 directory segment named `secrets/` or `credentials/` at any depth. Matching is
-case-insensitive.
+case-insensitive. The Git, Docker, Kubernetes, Terraform, and Google Cloud
+entries match at any depth and are file-only, so a same-named directory and its
+descendants remain searchable.
 
 It is a rule about PATHS, not about content: no file is scanned for
 secret-shaped strings, and a credential store whose path gives no signal —

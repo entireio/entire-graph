@@ -15,6 +15,15 @@ var credentialStoreDenied = []string{
 	".pypirc", ".dockercfg", ".boto",
 	"id_rsa", "id_dsa", "id_ecdsa", "deploy/.ssh/id_ed25519",
 	".aws/credentials", "credentials.json", "config/credentials.yml", "secrets.yaml",
+	// Exact, tool-owned credential stores. Exercise root, nested, and case variants:
+	// the rules must match the store file at any depth without admitting a
+	// similarly named directory.
+	".git-credentials", "nested/.git-credentials", ".GIT-CREDENTIALS",
+	".docker/config.json", "clusters/prod/.docker/config.json", ".DOCKER/CONFIG.JSON",
+	".kube/config", "clusters/prod/.kube/config", ".KUBE/CONFIG",
+	"credentials.tfrc.json", "nested/credentials.tfrc.json", "CREDENTIALS.TFRC.JSON",
+	"application_default_credentials.json", "nested/application_default_credentials.json",
+	"APPLICATION_DEFAULT_CREDENTIALS.JSON",
 	"certs/server.pem", "keys/private.key", "store.jks", "bundle.p12", "cert.pfx",
 	"app.keystore", "ca.truststore", "backup.kdbx", "release.asc", "signing.gpg",
 	"server.ppk", "vault.pkcs12",
@@ -33,6 +42,11 @@ var credentialStoreAllowed = []string{
 	"docs/secrets.md", "cmd/keygen/main.go", "environment.yml", "envoy.yaml",
 	"src/secret_manager.rs", "keyring.c", "k8s/issuer-secrets.yaml",
 	"certs/server.crt", "certs/ca.cer", "id_rsa.pub", "package.json",
+	".git-credentials/reader.go", "nested/.git-credentials/reader.go",
+	".docker/client.go", "clusters/prod/.docker/client.go", ".docker/config.json/reader.go",
+	".kube/client.go", "clusters/prod/.kube/client.go", ".kube/config/reader.go",
+	"credentials.tfrc.json/reader.go", "nested/credentials.tfrc.json/reader.go",
+	"application_default_credentials.json/reader.go",
 }
 
 // TestBuiltinCredentialStoreDenyCoversBothCorpora pins the taxonomy directly, on
@@ -73,7 +87,14 @@ func TestBuiltinCredentialStoreDenyCoversBothCorpora(t *testing.T) {
 			}
 			// A source package under a directory segment the deny names must stay
 			// walkable, or every file below it disappears with it.
-			for _, dir := range []string{"pkg/credentials", "internal/secrets", "deploy/secrets"} {
+			for _, dir := range []string{
+				"pkg/credentials", "internal/secrets", "deploy/secrets",
+				".git-credentials", "nested/.git-credentials",
+				".docker", "clusters/prod/.docker", ".docker/config.json",
+				".kube", "clusters/prod/.kube", ".kube/config",
+				"credentials.tfrc.json", "nested/credentials.tfrc.json",
+				"application_default_credentials.json",
+			} {
 				if matcher.Ignored(dir, true) {
 					t.Errorf("directory %q is excluded; the directory rules are scoped to data and "+
 						"config suffixes precisely so a source package survives", dir)
@@ -247,14 +268,14 @@ func TestBuiltinCredentialStoreDenyLeavesSourcePackagesSearchable(t *testing.T) 
 }
 
 // TestBuiltinSecretFileOnlyPatternsAreAllPresent pins the file-only marking to the
-// pattern block: an edit that renames or drops the bare `credentials` entry would
-// otherwise leave builtinSecretFileOnlyPatterns naming nothing and silently restore
-// a rule that covers a whole directory named credentials/.
+// pattern block: an edit that renames or drops one of these entries would otherwise
+// leave builtinSecretFileOnlyPatterns naming nothing and silently restore a rule
+// that covers a matching directory tree.
 func TestBuiltinSecretFileOnlyPatternsAreAllPresent(t *testing.T) {
 	t.Parallel()
 
 	if len(builtinSecretFileOnlyPatterns) == 0 {
-		t.Fatal("builtinSecretFileOnlyPatterns is empty; the bare credentials entry must be file-only")
+		t.Fatal("builtinSecretFileOnlyPatterns is empty; credential-store file rules must be file-only")
 	}
 	marked := map[string]bool{}
 	for _, rule := range builtinSecretIgnoreRules {

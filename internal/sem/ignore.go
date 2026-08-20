@@ -25,10 +25,11 @@ type ignoreRule struct {
 	ignore      bool
 	includeFile bool
 	directory   bool
-	// fileOnly restricts the rule to non-directory paths matched on their basename:
-	// it never matches a directory and never matches an ancestor directory segment.
-	// Ordinary gitignore syntax cannot express that, so it is set only for built-in
-	// entries (see builtinSecretFileOnlyPatterns).
+	// fileOnly restricts the rule to non-directory paths: basename-only rules match
+	// the final segment, while path-shaped rules match the full relative path. It
+	// never matches a directory or an ancestor directory segment. Ordinary gitignore
+	// syntax cannot express that, so it is set only for built-in entries (see
+	// builtinSecretFileOnlyPatterns).
 	fileOnly     bool
 	basenameOnly bool
 	pattern      string
@@ -109,9 +110,10 @@ const (
 //     and the same secret.
 //
 // Scope is the credential STORE, never code that talks about credentials. Every
-// rule is decided on a basename or a suffix, except the `secrets/`-directory rules
-// which additionally require a data or config suffix — so `internal/secrets/manager.go`,
-// `pkg/credentials/provider.go` and `internal/config/dotenv.go` stay fully searchable.
+// rule is decided on a basename, suffix, or exact tool-owned path. The broader
+// `secrets/`-directory rules additionally require a data or config suffix — so
+// `internal/secrets/manager.go`, `pkg/credentials/provider.go` and
+// `internal/config/dotenv.go` stay fully searchable.
 // It is a var rather than a const for one reason: the persistent caches key on a
 // digest of it (see builtinSecretRulesDigest), and a test proving that binding has
 // to be able to stand in for a differently-built binary. Production code never
@@ -135,6 +137,7 @@ _netrc
 .pypirc
 .dockercfg
 .boto
+.git-credentials
 
 # SSH private keys. The .pub half is deliberately NOT matched: publishing it is
 # its purpose, and id_rsa here matches only the exact basename.
@@ -144,7 +147,7 @@ id_ecdsa
 id_ed25519
 
 # Conventional credential and secret store filenames. The bare credentials entry
-# is the AWS CLI shape (.aws/credentials). It is the one entry carried as FILE-ONLY
+# is the AWS CLI shape (.aws/credentials). It is carried as FILE-ONLY
 # (builtinSecretFileOnlyPatterns): a bare gitignore pattern matches every path
 # segment rather than only the basename, so without that it would also swallow a
 # SOURCE package directory named credentials/ and everything under it. File-only
@@ -162,6 +165,14 @@ secrets.yml
 secrets.yaml
 secrets.ini
 secrets.toml
+
+# Exact tool-owned stores whose canonical paths or filenames identify credential
+# material. These are file-only even when the pattern is path-shaped: a directory
+# literally named config.json must not hide the source tree beneath it.
+**/.docker/config.json
+**/.kube/config
+credentials.tfrc.json
+application_default_credentials.json
 
 # Key material and encrypted stores, by suffix. .crt, .cer and .pub are deliberately
 # absent: they are the public halves, and excluding them would cost recall and
@@ -212,15 +223,20 @@ secrets.toml
 var builtinSecretIgnoreRules = parseBuiltinSecretIgnoreRules()
 
 // builtinSecretFileOnlyPatterns are the built-in entries that must deny a FILE and
-// leave any directory of the same name alone: the name is a credential-store
-// filename that is also a plausible SOURCE package name. Gitignore syntax has no
-// way to say "file only" — a bare pattern matches every path segment — and the one
-// thing that looks like it, a trailing-slash negation such as `!credentials/`,
+// leave any matching directory alone. Gitignore syntax has no way to say "file
+// only" — a bare pattern matches every path segment and a path-shaped pattern can
+// match an ancestor — and the one thing that looks like it, a trailing-slash
+// negation such as `!credentials/`,
 // cannot be used here: this block is loaded after the repository's own exclude
 // files so that it outranks them, which means a negation in it also cancels a
 // repository's own `credentials/` exclusion and re-admits every file underneath.
 var builtinSecretFileOnlyPatterns = map[string]struct{}{
-	"credentials": {},
+	"credentials":                          {},
+	".git-credentials":                     {},
+	"**/.docker/config.json":               {},
+	"**/.kube/config":                      {},
+	"credentials.tfrc.json":                {},
+	"application_default_credentials.json": {},
 }
 
 func parseBuiltinSecretIgnoreRules() []ignoreRule {
@@ -234,8 +250,8 @@ func parseBuiltinSecretIgnoreRules() []ignoreRule {
 		rule := &matcher.rules[index]
 		rule.expression = regexp.MustCompile("(?i)" + rule.expression.String())
 		if _, ok := builtinSecretFileOnlyPatterns[rule.pattern]; ok {
-			if !rule.basenameOnly || rule.directory || !rule.ignore {
-				panic("sem: file-only built-in rule " + rule.pattern + " is not a bare deny")
+			if rule.directory || !rule.ignore {
+				panic("sem: file-only built-in rule " + rule.pattern + " is not a file deny")
 			}
 			rule.fileOnly = true
 		}
@@ -883,19 +899,21 @@ func (r ignoreRule) matchKind(rel string, isDir bool) ignoreMatchKind {
 	return r.matchPath(rel, isDir)
 }
 
-// matchFileOnly decides a rule that names a file and nothing else. It matches the
-// last path segment of a non-directory path only, so it can never produce an
-// ancestor match — which is what keeps the bare `credentials` deny from covering
-// (or, as a negation would, re-admitting) a directory named credentials/.
+// matchFileOnly decides a rule that names a file and nothing else. Basename-only
+// rules match the last segment; path-shaped rules match the complete relative
+// path. Neither can produce an ancestor match — which is what keeps a credential
+// filename from covering a same-named source directory and everything beneath it.
 func (r ignoreRule) matchFileOnly(rel string, isDir bool) ignoreMatchKind {
 	if isDir {
 		return ignoreNoMatch
 	}
-	name := rel
-	if slash := strings.LastIndex(rel, "/"); slash >= 0 {
-		name = rel[slash+1:]
+	candidate := rel
+	if r.basenameOnly {
+		if slash := strings.LastIndex(rel, "/"); slash >= 0 {
+			candidate = rel[slash+1:]
+		}
 	}
-	if name != "" && r.expression.MatchString(name) {
+	if candidate != "" && r.expression.MatchString(candidate) {
 		return ignoreSelfMatch
 	}
 	return ignoreNoMatch
