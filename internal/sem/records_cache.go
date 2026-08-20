@@ -19,7 +19,7 @@ import (
 // set of options. Recomputing them on every call is expensive on large repos, so
 // we cache the raw NDJSON bytes keyed on the HEAD tree hash plus everything else
 // that changes the output. This mirrors the search-snapshot cache next door.
-const providerRecordsCacheVersion = "provider-records-v3"
+const providerRecordsCacheVersion = "provider-records-v4"
 
 // cachedProviderRecords is the on-disk envelope for a cached record stream. The
 // key alone is authoritative (sha256 over version+tree+mode+profile+options+
@@ -40,10 +40,11 @@ type cachedProviderRecords struct {
 // folds in the caller-selected output mode (including
 // snapshot:compact-ndjson-v1) and the profile so native and compact snapshots
 // never collide, and it hashes the contents of
-// any --ignore-file / --include-file inputs so an edit to those files misses the
-// cache. OnlyFiles is included for completeness even though the record commands
-// do not expose it. Callers must NOT use this for --worktree runs (the working
-// tree can differ from HEAD) or for targeted --to/--from/--relation queries.
+// any --ignore-file / --include-file inputs, in caller order, so an edit or
+// reorder of those files misses the cache. OnlyFiles is included for
+// completeness even though the record commands do not expose it. Callers must
+// NOT use this for --worktree runs (the working tree can differ from HEAD) or
+// for targeted --to/--from/--relation queries.
 func providerRecordsKey(absRepo, repositoryKey, providerVersion, tree, mode string, options ProviderSnapshotOptions) (string, error) {
 	hash := sha256.New()
 	writePart := func(value string) {
@@ -78,9 +79,9 @@ func providerRecordsKey(absRepo, repositoryKey, providerVersion, tree, mode stri
 	}
 	for groupIndex, group := range [][]string{options.IgnoreFiles, options.IncludeFiles} {
 		writePart(fmt.Sprintf("path-group-%d", groupIndex))
-		paths := append([]string(nil), group...)
-		sort.Strings(paths)
-		for _, path := range paths {
+		// Preserve caller order: ignore matching is last-rule-wins, including
+		// across repeatable ignore/include files within each group.
+		for _, path := range group {
 			resolved := path
 			if !filepath.IsAbs(resolved) {
 				resolved = filepath.Join(absRepo, resolved)

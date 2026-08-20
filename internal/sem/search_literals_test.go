@@ -233,6 +233,36 @@ func TestClassifySearchLiteralHitsAnnotatesAndDeduplicates(t *testing.T) {
 	}
 }
 
+func TestSearchLiteralClusterRetainsEveryCountedMatchingFile(t *testing.T) {
+	t.Parallel()
+
+	scan := searchNeedleScan{
+		occurrences: 4,
+		files:       3,
+		complete:    true,
+		matchingPaths: []string{
+			"edit.go",
+			"unclassified.go",
+			"unsampled.go",
+		},
+		hits: []searchNeedleHit{
+			{filePath: "edit.go", line: 1, text: `const Mode = "ROUNDUP"`},
+			{filePath: "unclassified.go", line: 2, text: `return "ROUNDUP"`, indented: true},
+		},
+	}
+	cluster := classifySearchLiteralHits("ROUNDUP", scan, nil, nil)
+	if cluster == nil {
+		t.Fatal("expected a literal cluster")
+	}
+	if cluster.Unclassified != 1 {
+		t.Fatalf("unclassified = %d, want 1", cluster.Unclassified)
+	}
+	want := "edit.go,unclassified.go,unsampled.go"
+	if got := strings.Join(cluster.provenancePaths, ","); got != want {
+		t.Fatalf("literal provenance = %q, want %q", got, want)
+	}
+}
+
 func TestSearchLiteralClusterListsTheSitesThePayloadDidNotPrintEndToEnd(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
@@ -412,7 +442,10 @@ func TestSearchLiteralClusterRefusesALexicalMagnet(t *testing.T) {
 
 func TestFitSearchLiteralClusterShrinksTheListAndKeepsTheTotal(t *testing.T) {
 	t.Parallel()
-	cluster := &SearchLiteralCluster{Literal: "quotient", HitsTotal: 40, FilesTotal: 9}
+	cluster := &SearchLiteralCluster{
+		Literal: "quotient", HitsTotal: 40, FilesTotal: 9,
+		provenancePaths: []string{"not-rendered.go"},
+	}
 	for index := 0; index < 6; index++ {
 		cluster.Hits = append(cluster.Hits, SearchLiteralHit{
 			FilePath: "a/very/long/path/that/eats/the/budget/File" + strconv.Itoa(index) + ".java",
@@ -430,6 +463,9 @@ func TestFitSearchLiteralClusterShrinksTheListAndKeepsTheTotal(t *testing.T) {
 	}
 	if fitted.HitsTotal != 40 || fitted.FilesTotal != 9 {
 		t.Fatalf("truncation rewrote the repository totals: %d/%d", fitted.HitsTotal, fitted.FilesTotal)
+	}
+	if strings.Join(fitted.provenancePaths, ",") != "not-rendered.go" {
+		t.Fatalf("truncation dropped provenance: %v", fitted.provenancePaths)
 	}
 	if searchLiteralClusterCost(fitted) > searchLiteralClusterMaxBytes {
 		t.Fatalf("cost %d exceeds the cap %d", searchLiteralClusterCost(fitted), searchLiteralClusterMaxBytes)

@@ -9933,15 +9933,22 @@ func (r *oversizeRegistry) lookup(path string) (oversizeFile, bool) {
 // ENTIRE_GRAPH_MAX_FILES override, else the provider default. A negative value
 // removes the cap.
 func resolveMaxSourceFiles(requested int) int {
-	if requested != 0 {
-		return requested
-	}
-	if raw := strings.TrimSpace(os.Getenv(maxSourceFilesEnv)); raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil {
-			return parsed
+	resolved := requested
+	if requested == 0 {
+		resolved = defaultMaxSourceFiles
+		if raw := strings.TrimSpace(os.Getenv(maxSourceFilesEnv)); raw != "" {
+			if parsed, err := strconv.Atoi(raw); err == nil {
+				resolved = parsed
+			}
 		}
 	}
-	return defaultMaxSourceFiles
+	// Every non-positive resolved value has the same documented meaning: no
+	// listing cap. Canonicalizing it prevents cache and replay identities from
+	// distinguishing spellings that cannot change provider output.
+	if resolved <= 0 {
+		return -1
+	}
+	return resolved
 }
 
 // capSourceFiles truncates an over-long listing and says so. Truncation is
@@ -10143,19 +10150,7 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 		if _, exists := seen[rel]; exists {
 			continue
 		}
-		if vendoredScanPath(rel, vendorRules, dirTracked) {
-			continue
-		}
-		// Explicit ignore/include rules still arbitrate: an include file may have
-		// pulled this path back in, and its own rules may then exclude part of
-		// what it re-included.
-		if ignores.Ignored(rel, false) {
-			continue
-		}
-		// Git lists index entries for files staged as deleted and can list a
-		// symlink; the snapshot reads neither.
-		info, statErr := os.Lstat(filepath.Join(repo, filepath.FromSlash(rel)))
-		if statErr != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		if !eligibleGitWorktreeSourcePath(repo, rel, ignores, vendorRules, dirTracked) {
 			continue
 		}
 		seen[rel] = struct{}{}
@@ -10165,13 +10160,55 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 	return paths, nil
 }
 
+// eligibleGitWorktreeSourcePath is the provider's final eligibility predicate
+// after Git has produced a tracked/unignored (or explicitly re-admitted) path.
+// Replay corpus observation calls this same predicate so vendored, explicit
+// rule, missing-file and symlink decisions cannot drift between the two paths.
+func eligibleGitWorktreeSourcePath(
+	repo, rel string,
+	ignores ignoreMatcher,
+	vendorRules vendorIgnoreRules,
+	dirTracked func(string) bool,
+) bool {
+	if vendoredScanPath(rel, vendorRules, dirTracked) {
+		return false
+	}
+	// Explicit ignore/include rules still arbitrate: an include file may have
+	// pulled this path back in, and its own rules may then exclude part of what
+	// it re-included.
+	if ignores.Ignored(rel, false) {
+		return false
+	}
+	// Git lists index entries for files staged as deleted and can list a
+	// symlink; the snapshot reads neither.
+	info, err := os.Lstat(filepath.Join(repo, filepath.FromSlash(rel)))
+	return err == nil && info.Mode()&fs.ModeSymlink == 0 && info.Mode().IsRegular()
+}
+
 // walkWorktreeFiles is the non-git fallback listing. It honours the ignore stack
 // per directory (root .gitignore plus every nested one on the path) so a
 // directory Git cannot enumerate is still filtered the way the project asked.
 func walkWorktreeFiles(repo string, ignores ignoreMatcher, dirTracked func(string) bool) ([]string, error) {
-	stack := newNestedIgnoreStack(repo, ignores)
 	var paths []string
-	err := filepath.WalkDir(repo, func(path string, entry fs.DirEntry, err error) error {
+	err := visitWalkWorktreeFiles(repo, ignores, dirTracked, func(rel string) bool {
+		paths = append(paths, rel)
+		return true
+	})
+	sort.Strings(paths)
+	return paths, err
+}
+
+// visitWalkWorktreeFiles is the non-Git provider walk with a streaming sink.
+// Returning false stops successfully, allowing replay observation to retain a
+// bounded corpus without changing the provider's eligibility or traversal.
+func visitWalkWorktreeFiles(
+	repo string,
+	ignores ignoreMatcher,
+	dirTracked func(string) bool,
+	visit func(string) bool,
+) error {
+	stack := newNestedIgnoreStack(repo, ignores)
+	return filepath.WalkDir(repo, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -10187,7 +10224,9 @@ func walkWorktreeFiles(repo string, ignores ignoreMatcher, dirTracked func(strin
 			}
 			// Enter first: this directory's own .gitignore is part of the evidence
 			// for whether the project re-includes something inside it.
-			stack.enter(rel)
+			if err := stack.enter(rel); err != nil {
+				return err
+			}
 			if rel != "" && skipVendoredDir(rel, name, stack, dirTracked) {
 				return filepath.SkipDir
 			}
@@ -10210,11 +10249,11 @@ func walkWorktreeFiles(repo string, ignores ignoreMatcher, dirTracked func(strin
 		if stack.Ignored(rel, false) {
 			return nil
 		}
-		paths = append(paths, rel)
+		if !visit(rel) {
+			return fs.SkipAll
+		}
 		return nil
 	})
-	sort.Strings(paths)
-	return paths, err
 }
 
 func filterVendoredPaths(paths []string, ignores vendorIgnoreRules) []string {

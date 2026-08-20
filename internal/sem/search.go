@@ -466,6 +466,30 @@ type SearchResponse struct {
 	Warnings        []ProviderWarning   `json:"warnings"`
 	PartialFailures []PartialFailure    `json:"partial_failures"`
 	Completeness    CompletenessReport  `json:"completeness"`
+	// replayProvenancePaths is the old mutable provider corpus whose membership
+	// and contents could influence preselection, scores, ordering, and rendered
+	// confidence. It stays out of schema 1.x and is used only by session replay.
+	replayProvenancePaths []string
+}
+
+// boundedWorktreeSearchReplayProvenance sorts and deduplicates the already
+// materialized provider corpus. One path beyond the persisted replay limit is
+// retained deliberately: ValidateSearchReplayPaths then disables replay without
+// carrying an unbounded hidden slice in SearchResponse.
+func boundedWorktreeSearchReplayProvenance(paths []string) []string {
+	ordered := append([]string(nil), paths...)
+	sort.Strings(ordered)
+	result := make([]string, 0, minInt(len(ordered), SearchReplayMaxPathCount+1))
+	for _, filePath := range ordered {
+		if len(result) > 0 && result[len(result)-1] == filePath {
+			continue
+		}
+		result = append(result, filePath)
+		if len(result) == SearchReplayMaxPathCount+1 {
+			break
+		}
+	}
+	return result
 }
 
 type searchQuery struct {
@@ -696,6 +720,10 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	preselectLatency := time.Since(preselectStarted)
 	selectedFiles := selection.files
+	var replayProvenancePaths []string
+	if options.Worktree || selection.commit == "" {
+		replayProvenancePaths = boundedWorktreeSearchReplayProvenance(selection.allFiles)
+	}
 	if len(selectedFiles) == 0 {
 		// A no-hit query still reports the health of an already-preindexed HEAD
 		// graph. Do not build a cold graph merely to return no results, but do
@@ -726,12 +754,13 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 			symbolsConsidered = len(cachedSnapshot.Symbols)
 		}
 		return SearchResponse{
-			Query:    query,
-			RepoRoot: repoRoot,
-			Commit:   commit,
-			Tree:     tree,
-			Profile:  string(options.Profile),
-			Results:  []SearchResult{},
+			Query:                 query,
+			RepoRoot:              repoRoot,
+			Commit:                commit,
+			Tree:                  tree,
+			Profile:               string(options.Profile),
+			Results:               []SearchResult{},
+			replayProvenancePaths: replayProvenancePaths,
 			Stats: SearchStats{
 				QueryConstraintsTruncated: q.constraints.Truncated,
 				FilesScanned:              selection.filesScanned,
@@ -1390,24 +1419,25 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		partialFailures = []PartialFailure{}
 	}
 	return SearchResponse{
-		Query:           query,
-		RepoRoot:        snapshot.Header.RepoRoot,
-		Commit:          snapshot.Header.Commit,
-		Tree:            snapshot.Header.Tree,
-		Profile:         string(options.Profile),
-		Results:         results,
-		SignatureTypes:  signatureTypes,
-		TypeCard:        typeCard,
-		ContainerMap:    containerMap,
-		LiteralCluster:  literalCluster,
-		FileOutlines:    fileOutlines,
-		VerifyCommand:   verifyCommand,
-		ClosedSet:       closedSet,
-		CoverageNote:    coverageNote,
-		Stats:           stats,
-		Warnings:        snapshot.Header.Warnings,
-		PartialFailures: partialFailures,
-		Completeness:    snapshot.Header.Completeness,
+		Query:                 query,
+		RepoRoot:              snapshot.Header.RepoRoot,
+		Commit:                snapshot.Header.Commit,
+		Tree:                  snapshot.Header.Tree,
+		Profile:               string(options.Profile),
+		Results:               results,
+		SignatureTypes:        signatureTypes,
+		TypeCard:              typeCard,
+		ContainerMap:          containerMap,
+		LiteralCluster:        literalCluster,
+		FileOutlines:          fileOutlines,
+		VerifyCommand:         verifyCommand,
+		ClosedSet:             closedSet,
+		CoverageNote:          coverageNote,
+		Stats:                 stats,
+		Warnings:              snapshot.Header.Warnings,
+		PartialFailures:       partialFailures,
+		Completeness:          snapshot.Header.Completeness,
+		replayProvenancePaths: replayProvenancePaths,
 	}, nil
 }
 
