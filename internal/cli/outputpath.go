@@ -33,18 +33,21 @@ import (
 //
 // So the rule is conditional, and the condition is OWNERSHIP:
 //
-//   - OUTSIDE the repository: write exactly as before. A symlink there was placed
-//     by the caller or their operator, not by the scanned tree, and anyone who can
-//     plant it can write the file directly. This is the same reasoning that leaves
-//     cache writes unconfined (see internal/sem/cache_entry.go).
-//   - INSIDE the repository: the path is repository-controlled, so the write goes
-//     through os.Root — which cannot be made to leave the repository root — and a
-//     symlinked component at ANY depth is refused rather than followed. os.Root
-//     alone is not enough for the second half: it stops the write leaving the root,
-//     but it happily FOLLOWS a link that stays inside it (on every platform, Windows
-//     included), and `.git/config` is inside it. The refusal covers the ROUTE the
-//     path is read through as well as the destination it names, because a ".."
-//     resolves a link away before the destination is spelled — see
+//   - OUTSIDE every checkout the --repo spelling implicates: write exactly as
+//     before. A symlink there was placed by the caller or their operator, not by a
+//     scanned tree, and anyone who can plant it can write the file directly. This is
+//     the same reasoning that leaves cache writes unconfined (see
+//     internal/sem/cache_entry.go).
+//   - INSIDE any implicated checkout: the path is repository-controlled, so the
+//     write goes through os.Root — which cannot be made to leave its repository root
+//     — and a symlinked component at ANY depth is refused rather than followed.
+//     os.Root alone is not enough for the second half: it stops the write leaving
+//     the root, but it happily FOLLOWS a link that stays inside it (on every
+//     platform, Windows included), and `.git/config` is inside it. The refusal
+//     covers the ROUTE the path is read through as well as the destination it names,
+//     because resolving the directory part can erase a repository link from the
+//     canonical destination — through "..", or through an external alias that
+//     enters below the root and reaches a second link — see
 //     refuseSymlinkedComponents and, for the route, refuseTraversedSymlinks.
 //
 // Those are CHECKS, and a check is not the enforcement. The write itself is opened
@@ -70,10 +73,10 @@ type repoOutputTarget struct {
 	// given is the caller's own spelling of the path, used in messages so the
 	// remedy names the flag value the caller typed.
 	given string
-	// traversed is that same spelling made absolute WITHOUT cleaning: the route
-	// the kernel walks to reach path, which is where a committed symlink can be
-	// resolved away before the destination is named. Empty when there is nothing
-	// to walk that the destination's own components do not already cover.
+	// traversed is that same spelling made absolute with the platform's path-walking
+	// rules preserved: the route the kernel walks to reach path, which is where a
+	// committed symlink can be resolved away before the destination is named. Empty
+	// only when the spelling cannot be made absolute.
 	traversed string
 }
 
@@ -352,6 +355,12 @@ func containsByIdentity(top, repoRoot string) bool {
 //     caller's output and truncates a file they never named. There is nothing to
 //     confine either — that link is caller-owned by the same rule that leaves the
 //     whole out-of-repository write unconfined — so the on-disk destination stands.
+//
+// Even when the spellings agree because there is no "..", the route is still
+// classified. A caller-owned alias can enter below the repository root and then
+// reach a repository-owned link that leaves again; neither destination chain sees
+// the root, and only the route retains the link. Since cleaned and onDisk are equal
+// in that shape, the route branch below can only refuse — it cannot move the file.
 func classifyOutputPath(repoRoot, path string) (repoOutputTarget, error) {
 	// Both spellings this function compares are made absolute by filepath.Abs, which
 	// CLEANS, and cleaning erases the one thing that says "this is a directory": the
@@ -390,7 +399,7 @@ func classifyOutputPath(repoRoot, path string) (repoOutputTarget, error) {
 	// readings — the kernel lands on /attacker/victim, cleaning lands beside the
 	// checkout — and the file it lands on was chosen by the clone either way. So the
 	// question the route asks is answered BEFORE either destination is trusted.
-	if routed, ok := traversedRepositorySymlink(rootAbs, traversed); ok {
+	if routed, ok := traversedRepositorySymlink([]string{rootAbs}, traversed); ok {
 		// The cleaned spelling names a DIFFERENT FILE than the one the kernel opens,
 		// so preferring it is limited to the routes that need it: this one, which the
 		// repository controls. Carrying it into the confined write is what puts the
@@ -525,20 +534,28 @@ func rawAbs(path string) (string, bool, error) {
 	return cwd + string(filepath.Separator) + path, true, nil
 }
 
-// traversedPath is the caller's spelling made absolute without cleaning — the route
-// refuseSymlinkedComponents cannot see and refuseTraversedSymlinks walks.
+// traversedPath is the caller's spelling made absolute with the platform's
+// path-walking rules preserved — the route refuseSymlinkedComponents cannot see
+// and refuseTraversedSymlinks walks.
 //
-// It is empty whenever that walk would add nothing. Without a ".." there is nothing
-// filepath.Clean can move across a link, so every component the kernel walks is still
-// a component of the destination and the destination's own check covers it. And on a
-// platform that collapses ".." itself, the cleaned path IS what gets opened —
-// `link\..\config` names `config` beside the link there, never the link's target —
-// so there is no traversal to inspect. (This comment used to add "Windows' os.Root
-// refuses symlinked components on its own besides". STRUCK — it does not; see
-// refuseSymlinkedComponents. The reason above never depended on it.)
+// The route is needed even without a "..". A caller-owned alias may enter a
+// repository below its root and then reach a repository-owned link that leaves it
+// again. Neither destination chain visits the root in that shape: the named chain
+// enters only at the subdirectory, and the resolved chain is already outside. The
+// destination is therefore classified caller-owned unless this walk retains and
+// recognises the repository-owned component on the way there.
+//
+// On a platform that collapses ".." itself, filepath.Abs is the route the kernel
+// opens: `link\..\config` names `config` beside the link there, never the link's
+// target. On a walking platform only a spelling that actually contains ".." must be
+// preserved without cleaning; all other spellings take the portable Abs path.
 func traversedPath(path string) string {
 	if runtime.GOOS == "windows" || !hasDotDot(path) {
-		return ""
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return ""
+		}
+		return absolute
 	}
 	raw, ok, err := rawAbs(path)
 	if err != nil || !ok {
@@ -811,15 +828,16 @@ func symlinkedComponentError(rel, given string) error {
 //
 // The walk is the kernel's, component by component against a prefix that is always
 // link-free, which is what makes filepath.Dir an exact ".." — a lexical parent is
-// only wrong after a link has been followed. A link INSIDE the repository is refused.
-// One outside it is caller-owned, by the same reasoning that leaves the whole
-// out-of-repo write unconfined, so it is FOLLOWED rather than refused, and following
-// it is also what keeps the prefix link-free for the ".." that may come after.
+// only wrong after a link has been followed. A link inside ANY checkout implicated
+// by --repo is refused. One outside all of them is caller-owned, by the same
+// reasoning that leaves the whole out-of-repo write unconfined, so it is FOLLOWED
+// rather than refused, and following it is also what keeps the prefix link-free for
+// the ".." that may come after.
 //
 // Missing components cannot hide a link behind them: a ".." that follows one is
 // refused outright by resolveExistingPrefix before this walk is ever reached.
-func refuseTraversedSymlinks(root, raw, given string) error {
-	rel, ok := traversedRepositorySymlink(root, raw)
+func refuseTraversedSymlinks(roots []string, raw, given string) error {
+	rel, ok := traversedRepositorySymlink(roots, raw)
 	if !ok {
 		return nil
 	}
@@ -839,7 +857,8 @@ func traversedSymlinkError(rel, given string) error {
 }
 
 // traversedRepositorySymlink walks raw the way the kernel does and reports the first
-// component that is a symbolic link committed inside root, as a path beneath root.
+// component that is a symbolic link committed inside any root, as a path beneath
+// the root that owns it.
 //
 // It is ONE walk with TWO callers, which is the point of it being a function. The
 // refusal above rejects such a route; classifyOutputPath asks the same question
@@ -847,14 +866,14 @@ func traversedSymlinkError(rel, given string) error {
 // destination at all. Answering it twice, in two walks, is how a route ends up
 // classified by one rule and refused by another.
 //
-// The walk keeps its prefix link-free — a link outside the repository is FOLLOWED,
-// by the same ownership rule that leaves the whole out-of-repository write
-// unconfined — which is what makes filepath.Dir an exact "..": a lexical parent is
-// only wrong after a link has been followed. Missing components cannot hide a link
-// behind them: a ".." that follows one is refused outright by resolveExistingPrefix
-// before this walk is ever reached.
-func traversedRepositorySymlink(root, raw string) (string, bool) {
-	if root == "" || raw == "" {
+// The walk keeps its prefix link-free — a link outside every root is FOLLOWED, by
+// the same ownership rule that leaves the whole out-of-repository write unconfined
+// — which is what makes filepath.Dir an exact "..": a lexical parent is only wrong
+// after a link has been followed. Missing components cannot hide a link behind them:
+// a ".." that follows one is refused outright by resolveExistingPrefix before this
+// walk is ever reached.
+func traversedRepositorySymlink(roots []string, raw string) (string, bool) {
+	if len(roots) == 0 || raw == "" {
 		return "", false
 	}
 	prefix := raw[:len(filepath.VolumeName(raw))] + string(filepath.Separator)
@@ -873,8 +892,10 @@ func traversedRepositorySymlink(root, raw string) (string, bool) {
 			continue
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			if rel, ok := containedRel(root, next); ok {
-				return rel, true
+			for _, root := range roots {
+				if rel, ok := containedRel(root, next); ok {
+					return rel, true
+				}
 			}
 			if resolved, err := filepath.EvalSymlinks(next); err == nil {
 				next = resolved
@@ -886,14 +907,17 @@ func traversedRepositorySymlink(root, raw string) (string, bool) {
 }
 
 // refuseRepositorySymlinks is the whole refusal for a confined write: no committed
-// link on the way to the destination, and none at the destination. Keeping the two
-// walks behind one call is what stops a later spelling from being answered with yet
-// another check at yet another call site.
-func refuseRepositorySymlinks(root *os.Root, target repoOutputTarget) error {
+// link in the destination's owning checkout, and none on the route in ANY checkout
+// the --repo spelling implicates. The route needs every boundary even though the
+// destination needs only target.root: a route owned by one checkout can select a
+// destination owned by another, and stopping at the destination's first owner hides
+// that link. Keeping the two walks behind one call is what stops a later spelling
+// from being answered with yet another check at yet another call site.
+func refuseRepositorySymlinks(root *os.Root, confinements []string, target repoOutputTarget) error {
 	if err := refuseSymlinkedComponents(root, target.rel, target.given); err != nil {
 		return err
 	}
-	return refuseTraversedSymlinks(target.root, target.traversed, target.given)
+	return refuseTraversedSymlinks(confinements, target.traversed, target.given)
 }
 
 // writeOutputFile writes one caller-named output file under the rule documented at
@@ -937,7 +961,7 @@ func writeOutputFileUnderAny(
 			return err
 		}
 		if target.insideRepo() {
-			return writeConfinedOutputFile(target, data, perm, createParents)
+			return writeConfinedOutputFile(confinements, target, data, perm, createParents)
 		}
 		if !decided {
 			outside, decided = target, true
@@ -959,9 +983,10 @@ func writeOutputFileUnderAny(
 	return os.WriteFile(outside.path, data, perm)
 }
 
-// writeConfinedOutputFile writes a target that one of the boundaries owns.
+// writeConfinedOutputFile writes a target under the boundary that owns its
+// destination, after refusing route links owned by any implicated boundary.
 func writeConfinedOutputFile(
-	target repoOutputTarget, data []byte, perm os.FileMode, createParents bool,
+	confinements []string, target repoOutputTarget, data []byte, perm os.FileMode, createParents bool,
 ) error {
 	root, err := os.OpenRoot(target.root)
 	if err != nil {
@@ -970,10 +995,10 @@ func writeConfinedOutputFile(
 	defer root.Close()
 	// This is the STATIC answer, and it is not what makes the write safe — see
 	// openConfinedOutputFile, which is. It runs first because it is the only place
-	// the ROUTE (target.traversed, a spelling the destination's own components no
-	// longer contain) can be judged at all, and because it names the offending
-	// component in the message before anything is created on disk.
-	if err := refuseRepositorySymlinks(root, target); err != nil {
+	// the ROUTE (target.traversed, including spellings the destination's own
+	// components no longer contain) can be judged at all, and because it names the
+	// offending component in the message before anything is created on disk.
+	if err := refuseRepositorySymlinks(root, confinements, target); err != nil {
 		return err
 	}
 	file, err := openConfinedOutputFile(root, target, perm, createParents)

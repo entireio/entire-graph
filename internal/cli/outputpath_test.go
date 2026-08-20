@@ -499,6 +499,41 @@ func TestOutputPathClassificationFollowsALinkIntoTheRepository(t *testing.T) {
 	assertVictimIntact(t, victim, victimContent)
 }
 
+// TestVerifyRecordBaselineRefusesARepositoryLinkAfterAnExternalAlias is the
+// regression for a route that neither containment chain can classify on its own.
+// A caller-owned alias enters a repository BELOW its root, then a symlink committed
+// in that subdirectory leaves the repository again. The named chain never visits
+// the repository root, while the resolved chain is already outside it; treating
+// that route as caller-owned follows the repository's link and rewrites the victim.
+func TestVerifyRecordBaselineRefusesARepositoryLinkAfterAnExternalAlias(t *testing.T) {
+	requireSymlinkSupport(t)
+	repo := outputPathRepo(t)
+	sub := filepath.Join(repo, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	victim, victimContent := plantVictim(t)
+	if err := os.Symlink(filepath.Dir(victim), filepath.Join(sub, "out")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "hostile linked output directory")
+
+	alias := filepath.Join(t.TempDir(), "into-repo")
+	if err := os.Symlink(sub, alias); err != nil {
+		t.Fatal(err)
+	}
+	baseline := filepath.Join(alias, "out", filepath.Base(victim))
+	err := runVerifyRecord(t, repo, baseline)
+	if err == nil {
+		t.Fatal("verify --record-baseline followed a repository symlink after an external alias")
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("refusal does not say why: %v", err)
+	}
+	assertVictimIntact(t, victim, victimContent)
+}
+
 // dotDotPath spells `<first>/../<rest...>` by CONCATENATION rather than
 // filepath.Join, because Join cleans and the ".." is precisely what cleaning
 // removes. Every test below needs the uncleaned spelling to survive as far as the
@@ -1782,6 +1817,65 @@ func TestRecordBaselineStaysConfinedInTheCheckoutThatCommittedTheAlias(t *testin
 	info, lstatErr := os.Lstat(baseline)
 	if lstatErr != nil || info.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("the repository's own entry was replaced rather than refused: %v", lstatErr)
+	}
+}
+
+// TestRecordBaselineChecksTheRouteAgainstEveryImplicatedCheckout is the mirror
+// direction: the first boundary owns the destination, while the second boundary
+// owns the link that chose it. Stopping at the first boundary hides that link and
+// lets the checkout the caller spelled through redirect the write into the other
+// checkout's Git configuration.
+func TestRecordBaselineChecksTheRouteAgainstEveryImplicatedCheckout(t *testing.T) {
+	requireSymlinkSupport(t)
+	parent := t.TempDir()
+	hostile := outputPathRepoAt(t, filepath.Join(parent, "hostile"))
+	other := outputPathRepoAt(t, filepath.Join(parent, "other"))
+	sub := filepath.Join(other, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(hostile, "alias")
+	if err := os.Symlink(sub, alias); err != nil {
+		t.Fatal(err)
+	}
+	linkedGitDir := filepath.Join(hostile, "linked-git-dir")
+	if err := os.Symlink(filepath.Join(other, ".git"), linkedGitDir); err != nil {
+		t.Fatal(err)
+	}
+	git(t, hostile, "add", ".")
+	git(t, hostile, "commit", "-m", "hostile alias and linked output route")
+
+	// The premise, at runtime: the resolved checkout is first, and the checkout
+	// that committed linked-git-dir is the second boundary.
+	roots := confinementRoots(t.Context(), alias)
+	if len(roots) != 2 {
+		t.Fatalf("confinementRoots kept %d boundaries, want 2: %q", len(roots), roots)
+	}
+	assertSameDirectory(t, roots[0], other, "destination boundary")
+	assertSameDirectory(t, roots[1], hostile, "route boundary")
+
+	victim := filepath.Join(other, ".git", "config")
+	before, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = Run(t.Context(), Options{
+		Version: "test-version",
+		Env:     EntireEnv{RepoRoot: hostile},
+		Stdout:  &bytes.Buffer{},
+	}, []string{"verify", "--repo", alias, "--test", "true", "--record-baseline", filepath.Join(linkedGitDir, "config")})
+	if err == nil {
+		t.Fatal("verify --record-baseline followed a route symlink owned by the second checkout")
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("refusal does not say why: %v", err)
+	}
+	after, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("the destination checkout's Git configuration was rewritten:\n%s", after)
 	}
 }
 
