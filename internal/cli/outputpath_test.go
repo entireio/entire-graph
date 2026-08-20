@@ -1518,3 +1518,85 @@ func TestRecordBaselineStaysConfinedWhenRepoIsACommittedSymlinkOutOfTheCheckout(
 		t.Fatalf("the repository's own entry was replaced rather than refused: %v", lstatErr)
 	}
 }
+
+// TestOutputPathRefusesARepositoryLinkOnARouteThatLeavesTheRepository is the
+// regression for the fifth spelling.
+//
+// A repository-owned link on the ROUTE was only acted on when the CLEANED
+// destination happened to stay under the root. It need not: `<repo>/link/../../x`,
+// with `link` committed as a symlink, leaves the repository on both readings while
+// the clone still picks the file that gets truncated. Ownership of the route decides,
+// not where the route ends up — the last subtest is the other direction, the same
+// spelling with a link the CALLER owns, which must keep writing.
+func TestOutputPathRefusesARepositoryLinkOnARouteThatLeavesTheRepository(t *testing.T) {
+	requireSymlinkSupport(t)
+	const content = "export PATH=/usr/bin\n# real user config\n"
+	for _, testCase := range []struct {
+		name string
+		// holder is where the committed link points; it decides whether the
+		// kernel's destination and the cleaned one are the same file.
+		holder func(t *testing.T, parent string) string
+	}{
+		{"the kernel's destination and the cleaned one disagree", func(t *testing.T, _ string) string {
+			t.Helper()
+			return t.TempDir()
+		}},
+		{"the kernel's destination and the cleaned one agree", func(_ *testing.T, parent string) string {
+			return parent
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			parent := t.TempDir()
+			repo := outputPathRepoAt(t, filepath.Join(parent, "checkout"))
+			holder := testCase.holder(t, parent)
+			if err := os.MkdirAll(filepath.Join(holder, "a", "b"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// Both readings of the spelling below name a file, and neither may be
+			// written: the kernel lands in holder, filepath.Clean lands in parent.
+			onDisk := filepath.Join(holder, "zshrc")
+			cleaned := filepath.Join(parent, "zshrc")
+			for _, victim := range []string{onDisk, cleaned} {
+				if err := os.WriteFile(victim, []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			link := filepath.Join(repo, "link")
+			if err := os.Symlink(filepath.Join(holder, "a", "b"), link); err != nil {
+				t.Fatal(err)
+			}
+			git(t, repo, "add", ".")
+			git(t, repo, "commit", "-m", "hostile route out of the repository")
+
+			given := dotDotPath(link, "..", "zshrc")
+			if err := runIndexReportWithRepoFlag(t, repo, given); err == nil {
+				t.Fatal("index --report resolved a symlink committed inside the repository")
+			}
+			// The same route reaches --record-baseline, so the refusal is pinned at
+			// the classifier both verbs share rather than at one of them.
+			if _, err := classifyOutputPath(repo, given); err == nil {
+				t.Fatal("classifyOutputPath accepted a route through a repository-committed symlink")
+			}
+			assertVictimIntact(t, onDisk, content)
+			assertVictimIntact(t, cleaned, content)
+		})
+	}
+
+	t.Run("the same spelling through a caller-owned link still writes", func(t *testing.T) {
+		repo := outputPathRepo(t)
+		home := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(home, "a", "b"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(home, "a", "b"), filepath.Join(home, "link")); err != nil {
+			t.Fatal(err)
+		}
+		given := dotDotPath(filepath.Join(home, "link"), "..", "out.md")
+		if err := runIndexReportWithRepoFlag(t, repo, given); err != nil {
+			t.Fatalf("a caller-owned route stopped writing: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(home, "out.md")); err != nil {
+			t.Fatalf("the report did not land where the kernel resolves the path: %v", err)
+		}
+	})
+}

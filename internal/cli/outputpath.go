@@ -275,17 +275,26 @@ func classifyOutputPath(repoRoot, path string) (repoOutputTarget, error) {
 	if rel, ok := containedRel(rootAbs, onDisk); ok {
 		return repoOutputTarget{root: rootAbs, rel: rel, path: onDisk, given: path, traversed: traversed}, nil
 	}
-	// The cleaned spelling names a DIFFERENT FILE than the one the kernel opens,
-	// so preferring it is limited to the routes that need it: those the repository
-	// controls. Where the only link on the route is the caller's own, the on-disk
-	// destination stands, exactly as the os.WriteFile this helper replaced left it.
-	if cleaned != onDisk {
-		if _, ok := traversedRepositorySymlink(rootAbs, traversed); ok {
-			if rel, ok := containedRel(rootAbs, cleaned); ok {
-				return repoOutputTarget{root: rootAbs, rel: rel, path: cleaned, given: path, traversed: traversed}, nil
-			}
+	// Neither the destination the kernel opens nor the cleaned one has to stay under
+	// the root for the ROUTE to be the repository's. `<repo>/link/../../victim`, with
+	// `link` committed as a symlink to /attacker/a/b, leaves the repository on both
+	// readings — the kernel lands on /attacker/victim, cleaning lands beside the
+	// checkout — and the file it lands on was chosen by the clone either way. So the
+	// question the route asks is answered BEFORE either destination is trusted.
+	if routed, ok := traversedRepositorySymlink(rootAbs, traversed); ok {
+		// The cleaned spelling names a DIFFERENT FILE than the one the kernel opens,
+		// so preferring it is limited to the routes that need it: this one, which the
+		// repository controls. Carrying it into the confined write is what puts the
+		// route in front of refuseTraversedSymlinks with the destination still under
+		// the root; where it is not under the root there is no confined write to carry
+		// it into, and the same refusal is the answer here.
+		if rel, ok := containedRel(rootAbs, cleaned); ok {
+			return repoOutputTarget{root: rootAbs, rel: rel, path: cleaned, given: path, traversed: traversed}, nil
 		}
+		return repoOutputTarget{}, traversedSymlinkError(routed, path)
 	}
+	// Where the only link on the route is the caller's own, the on-disk destination
+	// stands, exactly as the os.WriteFile this helper replaced left it.
 	return repoOutputTarget{path: onDisk, given: path}, nil
 }
 
@@ -684,6 +693,14 @@ func refuseTraversedSymlinks(root, raw, given string) error {
 	if !ok {
 		return nil
 	}
+	return traversedSymlinkError(rel, given)
+}
+
+// traversedSymlinkError is the one refusal for a repository-owned link on the ROUTE,
+// worded once for both places that reach the same verdict: classifyOutputPath, where
+// the route leaves the repository and there is no confined write to hand it to, and
+// refuseTraversedSymlinks, where there is.
+func traversedSymlinkError(rel, given string) error {
 	return fmt.Errorf(
 		"refusing to write %s: the path leads through %s, a symbolic link committed "+
 			"inside the repository, and resolving it moves the write to whatever that "+
