@@ -10138,6 +10138,13 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 		// enumerate the tree.
 		return walkWorktreeFiles(repo, ignores, dirTracked, ledger)
 	}
+	// Git listed the tree, so it has already applied the checkout's own
+	// .git/info/exclude to the only content that list governs — untracked files.
+	// Anything those rules could still match here is TRACKED, which Git never
+	// hides for them, and dropping it would take source out of the corpus with no
+	// disclosure, because the list belongs to the local operator rather than to
+	// the repository.
+	ignores = ignores.withoutLocalExcludes()
 	if hasIncludeFiles {
 		// An explicit include file's negations are allowed to reach into ignored
 		// content; nothing else is, so the ignored listing is only ever requested

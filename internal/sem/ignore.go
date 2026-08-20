@@ -34,11 +34,13 @@ type ignoreRule struct {
 // an exclusion worth reporting and one that would only be noise.
 //
 // A rule from an ignore file that lives in the repository — .gitignore,
-// .graphignore, .git/info/exclude, a nested .gitignore — is written by whoever can
-// commit to that repository, i.e. potentially by someone other than the person
-// running the graph. A rule from --ignore-file/--include-file is that person's own
-// instruction. Only the first kind can narrow a reader's field of view without
-// the reader having asked for it, so only the first kind is disclosed.
+// .graphignore, a nested .gitignore — is written by whoever can commit to that
+// repository, i.e. potentially by someone other than the person running the
+// graph. A rule from --ignore-file/--include-file, or from the checkout's own
+// .git/info/exclude, is that person's own instruction: info/exclude is not in the
+// tree, is never pushed and never arrives in a clone. Only the first kind can
+// narrow a reader's field of view without the reader having asked for it, so only
+// the first kind is disclosed.
 //
 // The zero value is repo-controlled ON PURPOSE. If a future ignore source is
 // added and nobody labels it, the failure mode is an exclusion reported that did
@@ -49,12 +51,22 @@ type ignoreOrigin struct {
 	callerControlled bool
 	// gitInvisible marks a rule GIT DOES NOT APPLY: the graph's own .graphignore,
 	// and a --ignore-file/--include-file the caller passed. Git applies .gitignore
-	// (root and nested) and .git/info/exclude, so those are visible to it.
+	// (root and nested) to everything and .git/info/exclude to untracked discovery,
+	// so those are visible to it.
 	//
 	// It exists because a path only deserves the disclosure if Git itself would
 	// still have listed it, and in the filesystem-walk fallback there is no Git
 	// listing to ask. See nestedIgnoreStack.noteRepoExclusion.
 	gitInvisible bool
+	// localExclude marks a rule from the checkout's OWN exclude list,
+	// .git/info/exclude. Git consults that list only while discovering UNTRACKED
+	// files: a tracked path named there is still listed by `git ls-files --cached
+	// --others --exclude-standard`, and `git check-ignore -v` reports it as not
+	// ignored (git 2.54.0). So wherever Git produced the listing, these rules have
+	// already been applied to everything they govern, and reapplying them could
+	// only remove tracked source Git would have shown — silently, since the list
+	// is the operator's and carries no disclosure. See withoutLocalExcludes.
+	localExclude bool
 	// label names the file the rule came from, repo-relative where that is
 	// meaningful (".graphignore", "backend/.gitignore"). It is reported to the
 	// caller, so it is repository-controlled text: render it accordingly.
@@ -90,7 +102,34 @@ func callerIgnoreOrigin(label string) ignoreOrigin {
 func localIgnoreOrigin(label string) ignoreOrigin {
 	// Not gitInvisible: Git does apply info/exclude, so a path it covers is one
 	// Git would have hidden too.
-	return ignoreOrigin{callerControlled: true, label: label}
+	return ignoreOrigin{callerControlled: true, localExclude: true, label: label}
+}
+
+// withoutLocalExcludes returns the matcher with the checkout's own exclude list
+// dropped, for the listing paths where Git has already applied it.
+//
+// Git scopes .git/info/exclude to untracked discovery. Once `git ls-files
+// --cached --others --exclude-standard` has produced the listing, every path the
+// list governs is already gone from it, and every rule left to fire can only
+// fire on a TRACKED file — one Git itself still shows. Removing such a file is
+// wrong twice over: it is not what the operator's exclude list means, and the
+// exclusion disclosure deliberately stays quiet about caller-controlled rules,
+// so the file leaves the corpus without a word. Dropping the rules here makes
+// this path agree with the committed-revision path, which never loads them.
+//
+// The filesystem-walk fallback keeps them: there is no Git listing to have
+// applied them, and no way to tell tracked from untracked without one.
+func (m ignoreMatcher) withoutLocalExcludes() ignoreMatcher {
+	kept := make([]ignoreRule, 0, len(m.rules))
+	for _, rule := range m.rules {
+		if rule.origin.localExclude {
+			continue
+		}
+		kept = append(kept, rule)
+	}
+	out := m
+	out.rules = kept
+	return out
 }
 
 // RepoExclusion names one path that the repository's own ignore rules removed
@@ -587,9 +626,13 @@ func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 	if err := matcher.loadOptional(filepath.Join(repo, graphIgnoreFileName), false, graphIgnoreOrigin()); err != nil {
 		return ignoreMatcher{}, err
 	}
-	// info/exclude is the repository's private exclude list: same syntax and same
-	// authority as the root .gitignore, and Git applies both. Reading only
-	// .gitignore silently pulled excluded trees into the working-tree scan.
+	// info/exclude is the CHECKOUT's own exclude list — the local operator's, not
+	// the repository's (see localIgnoreOrigin). Same syntax as .gitignore, but NOT
+	// the same authority: Git consults it only while discovering UNTRACKED files,
+	// so it is loaded here for the filesystem-walk fallback, where no Git listing
+	// exists to have applied it, and dropped again wherever Git did list the tree
+	// (withoutLocalExcludes). Reading only .gitignore silently pulled excluded
+	// trees into that walk.
 	//
 	// It is NOT always at <repo>/.git/info/exclude. In a linked worktree, <repo>/.git
 	// is a regular file holding "gitdir: <path>", so that join names a path under a
