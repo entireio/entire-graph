@@ -778,7 +778,7 @@ func runCheckpoint(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
-	return printResult(opts.Stdout, result, flags.JSON)
+	return printResult(opts.Stdout, result, flags.JSON, opts.Version)
 }
 
 func runAnalyze(ctx context.Context, opts Options, args []string) error {
@@ -895,7 +895,7 @@ func analyzeAndPrint(ctx context.Context, opts Options, repo, base, head string,
 	if err != nil {
 		return err
 	}
-	return printResult(opts.Stdout, result, flags.JSON)
+	return printResult(opts.Stdout, result, flags.JSON, opts.Version)
 }
 
 // diffProgressLine renders one --progress event for stderr.
@@ -919,7 +919,12 @@ func diffProgressLine(event sem.AnalyzeProgressEvent) string {
 	return line
 }
 
-func printResult(out io.Writer, result sem.Result, asJSON bool) error {
+func printResult(out io.Writer, result sem.Result, asJSON bool, producerVersion string) error {
+	// ProducerVersion is set here, the one place a Result is rendered, rather
+	// than at each of the two callers — it needs the CLI's build-time version
+	// (Options.Version), which the sem package that builds the rest of the
+	// Result has no access to.
+	result.ProducerVersion = producerVersion
 	if asJSON {
 		encoded, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
