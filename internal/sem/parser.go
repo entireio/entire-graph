@@ -175,24 +175,36 @@ const treeSitterParseTimeout = 5 * time.Second
 //
 // Walk inventory. internal/sem contains exactly nine self-recursive functions
 // whose signature takes a *sitter.Node, plus three recursive closures over one
-// (enumerated mechanically, not by eye; no MUTUALLY recursive node cycle
-// exists). Every one that a file parse can drive is bounded here:
+// (enumerated mechanically over the package call graph, not by eye; no MUTUALLY
+// recursive node cycle exists). ALL TWELVE are bounded here — none is left out:
 //
-//	parser.go     walkEntitiesScoped, initializerTypeBodies' walk,
-//	              collectParseErrorDetails' walk, firstNameDescendant,
-//	              firstDescendantOfType, rAssignedValueKind,
-//	              unwrapRustItemWrapperMacros' walk
-//	js_scopes.go  jsPatternBindingNames, jsFunctionLikeNode — both reached from
-//	              walkEntitiesScoped through jsEntityParameterNames
+//	parser.go       walkEntitiesScoped, initializerTypeBodies' walk,
+//	                collectParseErrorDetails' walk, firstNameDescendant,
+//	                firstDescendantOfType, rAssignedValueKind,
+//	                unwrapRustItemWrapperMacros' walk
+//	js_scopes.go    jsPatternBindingNames, jsFunctionLikeNode — both reached
+//	                from walkEntitiesScoped through jsEntityParameterNames;
+//	                jsScopeWalker.walk, jsMemberChainParts — the relation phase,
+//	                which reparses the file and walks its own tree after the
+//	                entity phase has returned, so the entity budget never
+//	                reaches them
+//	parameters.go   identifierDescendants — reached from walkEntitiesScoped
+//	                through astParameterNames on every callable, BEFORE the walk
+//	                descends into it, so the walk's own budget is unspent and
+//	                cannot bound it
 //
-// Deliberately NOT bounded here, with the reason:
-//
-//	parameters.go identifierDescendants — reachable in principle from
-//	              astParameterNames, but three C declarator shapes
-//	              (parenthesized, pointer, array) nested to 800,000 levels never
-//	              drove it deep; left alone rather than guarded on a hypothesis.
-//	js_scopes.go  jsMemberChainParts, jsScopeWalker.walk — relation-phase
-//	              walkers on a separate entry point, not reached by a parse.
+// identifierDescendants was the one walker an earlier revision of this change
+// left unbounded, on the evidence that three C declarator shapes (parenthesized,
+// pointer, array) nested to 800,000 levels never drove it deep. That evidence
+// was real but partial: C takes parameterBindingNames' `name` branch and never
+// the `pattern`/`declarator` branch, so it reads 0 levels at any nesting. Rust
+// and Python parameter PATTERNS take the other branch and descend one level per
+// source level — instrumented at 2,001 levels for a 2,000-level fixture — and
+// `fn f(&&&…&a: u8) {}` aborts the process from ParseWithStatus. Two recursive
+// closures elsewhere in the package (kotlinReceiverTypeNames' visit, depth > 4;
+// uniqueImplementedMethod's walk, depth > 16) walk the SYMBOL graph rather than
+// a parse tree and carry their own explicit caps; they are not parse walkers and
+// are not governed by this limit.
 const maxParseWalkDepth = 5000
 
 type ParseStatus struct {

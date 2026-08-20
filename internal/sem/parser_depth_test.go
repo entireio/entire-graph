@@ -264,6 +264,74 @@ func TestJSPatternBindingsAreBoundedNotFatal(t *testing.T) {
 	parseInChild(t, "pattern.ts", b.String())
 }
 
+// deepParameterPattern builds a callable whose single parameter is a pattern
+// nested `depth` levels deep, one byte per level: Rust `fn f(&&&…&a: u8) {}`.
+// A reference pattern is the most compact shape that drives the parameter
+// descent, which keeps a 500,000-level fixture at ~0.5 MB — under
+// defaultMaxParseBytes, so nothing in front of the parser rejects it. The line
+// break every 500 columns keeps looksMinified from classifying it as a bundle.
+func deepParameterPattern(depth int) string {
+	var b strings.Builder
+	b.Grow(depth + depth/500 + 32)
+	b.WriteString("fn f(")
+	for i := 0; i < depth; i++ {
+		b.WriteByte('&')
+		if i%500 == 499 {
+			b.WriteByte('\n')
+		}
+	}
+	b.WriteString("a: u8) {}\n")
+	return b.String()
+}
+
+// TestParameterPatternDescentIsBoundedNotFatal pins identifierDescendants
+// (parameters.go), which walkEntitiesScoped reaches through astParameterNames
+// on every callable it extracts — BEFORE it descends into the callable, so its
+// own depth budget has not been spent and cannot protect this descent. The
+// walker followed a parameter's `pattern` / `declarator` field with no bound of
+// its own, so one function whose parameter pattern nests deeply aborted the
+// process from ParseWithStatus.
+//
+// This was the walker the earlier revision of this change deliberately left
+// unbounded, on the evidence that three C declarator shapes (parenthesized,
+// pointer, array) nested to 800,000 levels never drove it deep. That evidence
+// was real but partial: C reaches parameterBindingNames' `name` branch and
+// never the `pattern` / `declarator` branch, so it measures 0 levels whatever
+// the nesting. Rust and Python parameter PATTERNS take the other branch and
+// descend one level per source level — instrumented at 2,001 levels for a
+// 2,000-level fixture in all three of Rust reference patterns, Rust tuple
+// patterns, and Python tuple patterns.
+func TestParameterPatternDescentIsBoundedNotFatal(t *testing.T) {
+	if !inDepthChild() {
+		runDepthChild(t, "TestParameterPatternDescentIsBoundedNotFatal")
+		return
+	}
+	parseInChild(t, "pattern.rs", deepParameterPattern(deepWalkDepth))
+}
+
+// TestDeepParameterPatternStillReportsTruncation is the non-fatal half: at a
+// nesting just past the limit the parameter descent stops, and the file is
+// still reported as depth-truncated rather than as fully understood — the
+// truncation is not silently swallowed by the parameter extractor.
+func TestDeepParameterPatternStillReportsTruncation(t *testing.T) {
+	t.Parallel()
+	src := deepParameterPattern(6000) // above the 5000-level limit
+	assertReachesTheParser(t, src)
+
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("truncated.rs", src)
+
+	if status.Code != "E_PARSE_DEPTH_EXCEEDED" {
+		t.Fatalf("status = %+v, want E_PARSE_DEPTH_EXCEEDED", status)
+	}
+	if !status.Partial {
+		t.Fatalf("status = %+v, want a PARTIAL result: the callable was still extracted", status)
+	}
+	// The shallow symbol survives the truncated descent.
+	if !hasEntityNamed(entities, "f") {
+		t.Fatalf("entities = %v, want the callable itself despite the truncated parameter descent", entityNames(entities))
+	}
+}
+
 // deepRelationWalkDepth is the nesting used by the two relation-phase children.
 // The relation walkers carry smaller frames than the entity walkers, so they
 // need more levels to overflow the same ceiling; measured against the parent
