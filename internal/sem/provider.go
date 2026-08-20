@@ -10258,14 +10258,109 @@ func hasGitDirComponent(rel string) bool {
 	return false
 }
 
-// maxGitDirPointerBytes bounds the read of a `.git` pointer file. A real one is
-// a single `gitdir: <path>` line; anything larger is not one, and is refused
-// rather than read.
-const maxGitDirPointerBytes = 4 << 10
+// maxGitPointerBytes bounds how much of a git pointer file — a `.git` gitfile,
+// a `commondir` — is READ. It bounds the read, not the file: see
+// readGitPointerFile.
+const maxGitPointerBytes = 4 << 10
 
 // gitDirPointerPrefix is the prefix git's read_gitfile_gently() requires at BYTE
 // 0 of a `.git` file, the space after the colon included.
 const gitDirPointerPrefix = "gitdir: "
+
+// gitPointerPath is git's byte rule for a file whose content is a PATH — the
+// `.git` gitfile and the `commondir` file alike — and it is the ONE place that
+// rule lives. Every reader of either file goes through it, because git applies
+// one rule to both and a reader that applies its own disagrees with git in a way
+// that is always a leak or always an over-exclusion.
+//
+// The rule is two steps, in this order:
+//
+//  1. Trailing `\n` and `\r` are stripped off the RAW buffer. Git does this
+//     explicitly in read_gitfile_gently() and in get_common_dir_noenv(), and
+//     nothing else is stripped: a second space after `gitdir:`, or a space or
+//     tab at the end, belongs to the name.
+//  2. The result is handed on as a C STRING, so the first NUL ends the path and
+//     everything after it is neither part of the path nor an error. Git reads
+//     into a NUL-terminated strbuf and passes `buf` to is_absolute_path(),
+//     is_git_directory() and real_pathdup(); those see a C string.
+//
+// Both wants come from git 2.54.0 run as an oracle, on both files:
+//
+//	$ printf 'gitdir: .repo-git\0junkjunk\n' > .git
+//	$ git rev-parse --git-dir
+//	<worktree>/.repo-git
+//
+//	$ printf '../realcommon\0junkjunkjunk\n' > adm/commondir
+//	$ git --git-dir=adm rev-parse --git-common-dir
+//	<tmp>/realcommon
+//	$ git --git-dir=adm rev-parse --git-dir
+//	adm                                  <- git ACCEPTS the git directory
+//
+// Keeping the NUL produced a name nothing on disk is called, and the two files
+// failed the same way: on the gitfile no target was recorded and the separate
+// git directory was indexed, and on `commondir` the objects/ and refs/ lookup
+// missed, so BOTH the pointer rule and the structural rule called a linked
+// worktree's administrative directory ordinary content and its config — remote
+// URL, credential and all — was ranked as a search snippet.
+//
+// `whole` says whether content is the entire file. It is false when the file is
+// longer than the read window, and then two things change: the trailing-newline
+// strip is skipped, since the file's last byte is not in hand — and it cannot
+// matter, because any byte it could strip lies beyond the NUL — and a window
+// with no NUL in it is REFUSED, since the path does not end inside the window
+// and no path that long names anything on any filesystem.
+func gitPointerPath(content []byte, whole bool) (string, bool) {
+	text := string(content)
+	if whole {
+		text = strings.TrimRight(text, "\r\n")
+	}
+	if nul := strings.IndexByte(text, 0); nul >= 0 {
+		return text[:nul], true
+	}
+	return text, whole
+}
+
+// readGitPointerFile reads a git pointer file and applies gitPointerPath to it,
+// which is the only way either file is read.
+//
+// The bound is on the READ, never on the file, and that ordering is the whole
+// point: git's own limits are far larger than any real pointer — a `.git` file
+// is refused only above 1 MiB (`fatal: too large to be a .git file`), and
+// `commondir` has no size limit at all — and the path stops at the first NUL, so
+// the bytes that decide "too large" must not be the bytes that decide the
+// target. Verified on git 2.54.0, with a `--separate-git-dir` worktree:
+//
+//	$ { printf 'gitdir: %s/.repo-git\0' "$PWD"; head -c 65536 /dev/zero | tr '\0' A; } > .git
+//	$ git rev-parse --git-dir
+//	<abs>/.repo-git                      <- a 64 KiB pointer git follows
+//
+// Refusing that file on its SIZE — the whole-file check this replaces — refused
+// the only evidence naming a HEAD-damaged separate git directory, which is
+// exactly the shape that makes git reject the worktree and the filesystem
+// fallback run, and its credentialed config was indexed.
+//
+// The caller decides what a missing or unreadable file means, because git
+// decides it differently for the two: an absent `.git` names nothing, while an
+// unreadable `commondir` makes git refuse the whole git directory.
+func readGitPointerFile(path string) (string, bool) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = file.Close() }()
+	// One byte past the window tells a file that fits from one that is longer,
+	// which is what `whole` reports.
+	buffer := make([]byte, maxGitPointerBytes+1)
+	read, err := io.ReadFull(file, buffer)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return "", false
+	}
+	whole := read <= maxGitPointerBytes
+	if !whole {
+		read = maxGitPointerBytes
+	}
+	return gitPointerPath(buffer[:read], whole)
+}
 
 // parseGitDirPointer reads the bytes of a `.git` FILE the way git's
 // read_gitfile_gently() reads them, and reports the target path git would
@@ -10317,18 +10412,38 @@ const gitDirPointerPrefix = "gitdir: "
 // hit would exclude that whole directory on the strength of a file git does not
 // accept.
 func parseGitDirPointer(content []byte) (string, bool) {
-	target, ok := strings.CutPrefix(string(content), gitDirPointerPrefix)
+	text, ok := gitPointerPath(content, true)
 	if !ok {
 		return "", false
 	}
-	target = strings.TrimRight(target, "\r\n")
-	if nul := strings.IndexByte(target, 0); nul >= 0 {
-		target = target[:nul]
-	}
-	if target == "" {
+	return parseGitDirPointerText(text)
+}
+
+// parseGitDirPointerText applies git's prefix test to a pointer file that has
+// already been through the shared byte rule, and is what both readers of a
+// `.git` gitfile — this file's excluder and ignore.go's info/exclude resolver —
+// call on the bytes readGitPointerFile hands back.
+//
+// Applying the byte rule BEFORE cutting the prefix is git's own order — it
+// strips and NUL-terminates the buffer it read, and only then looks at `buf[0]`
+// and hands `buf + 8` on — and the two orders cannot disagree in any case, since
+// a prefix at byte 0 survives every operation on the buffer's tail.
+func parseGitDirPointerText(text string) (string, bool) {
+	target, ok := strings.CutPrefix(text, gitDirPointerPrefix)
+	if !ok || target == "" {
 		return "", false
 	}
 	return target, true
+}
+
+// readGitDirPointer reads `path` as a `.git` gitfile and reports the target git
+// would resolve, through the one reader and the one byte rule.
+func readGitDirPointer(path string) (string, bool) {
+	text, ok := readGitPointerFile(path)
+	if !ok {
+		return "", false
+	}
+	return parseGitDirPointerText(text)
 }
 
 // gitDirExcluder answers "is this repo-relative path a git directory, or inside
@@ -10461,12 +10576,75 @@ func (g *gitDirExcluder) addTarget(target string) {
 	}
 }
 
+// gitDirRootTarget is the repo-relative spelling of the repository root, which
+// containedRel reports for a pointer that names the root itself.
+const gitDirRootTarget = "."
+
 // recordTarget stores one spelling of a git directory, plus its folded form
 // where the filesystem itself folds case.
+//
+// The repository ROOT is the one target that cannot be stored as a prefix: every
+// path in the listing is under it, so recording it would exclude the whole
+// snapshot — the source the caller asked for included — which is the
+// over-suppression this rule has already had to be narrowed back from twice.
+// recordGitDirRootEntries takes that case instead, and this is the single place
+// every spelling passes through, so neither producer — a pointer's text, its
+// symlink-resolved form, a `.git` link — can put "." into targets by another
+// route.
 func (g *gitDirExcluder) recordTarget(target string) {
+	if target == gitDirRootTarget {
+		g.recordGitDirRootEntries()
+		return
+	}
 	g.targets[target] = struct{}{}
 	if foldsCase(g.repo, target) {
 		g.foldedTargets[strings.ToLower(target)] = struct{}{}
+	}
+}
+
+// gitDirRootEntryNames are the top-level names that belong to a git directory
+// rather than to a worktree, taken from git's own two lists: path.c's
+// `common_list[]`, which is what git shares between worktrees through
+// `commondir`, and the per-git-directory files setup.c and the sequencer write
+// beside it. `objects`, `refs` and `HEAD` are is_git_directory()'s own three.
+//
+// This list is consulted in exactly one situation: a `.git` pointer names the
+// repository ROOT and that root carries objects/ and refs/, so the git directory
+// and the worktree are one directory and there is no prefix that separates them.
+// Excluding by name is the narrow half of that — `config` and `logs/` hold the
+// credential, `src/app.go` is still the caller's source and stays indexed —
+// where excluding the root itself would return nothing at all.
+//
+// An ordinary repository never reaches it: a project whose root holds a `config`
+// file keeps it, because nothing there says the root is a git directory.
+var gitDirRootEntryNames = []string{
+	// is_git_directory() and the per-worktree files.
+	"HEAD", "index", "ORIG_HEAD", "FETCH_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD",
+	"REVERT_HEAD", "BISECT_LOG", "COMMIT_EDITMSG", "MERGE_MSG", "SQUASH_MSG",
+	"sequencer", "rebase-merge", "rebase-apply", "commondir", "gitdir",
+	// path.c common_list[].
+	"branches", "common", "config", "gc.pid", "hooks", "info", "logs",
+	"lost-found", "modules", "objects", "packed-refs", "refs", "remotes",
+	"rr-cache", "shallow", "svn", "worktrees",
+	// The description git init writes, and the config include git 2.46+ writes.
+	"description", "config.worktree",
+}
+
+// recordGitDirRootEntries excludes the git directory's own top-level entries
+// when the repository root IS the git directory a pointer named.
+//
+// Only entries that exist are recorded, so the excluder carries nothing for a
+// repository this never fires on, and `excluded()` keeps comparing whole
+// components against a map as it did.
+func (g *gitDirExcluder) recordGitDirRootEntries() {
+	for _, name := range gitDirRootEntryNames {
+		if _, err := os.Lstat(filepath.Join(g.repo, name)); err != nil {
+			continue
+		}
+		g.targets[name] = struct{}{}
+		if foldsCase(g.repo, name) {
+			g.foldedTargets[strings.ToLower(name)] = struct{}{}
+		}
 	}
 }
 
@@ -10665,10 +10843,6 @@ func hasDotDotElement(target string) bool {
 	return false
 }
 
-// maxGitCommonDirBytes bounds the read of a `commondir` file. A real one is a
-// single path; anything larger is not one, and is refused rather than read.
-const maxGitCommonDirBytes = 4 << 10
-
 // gitCommonDir reports the directory git resolves `objects` and `refs` THROUGH
 // when deciding whether dir is a git directory — git's own get_common_dir(),
 // which looksLikeGitDir must apply or it disagrees with git in both directions.
@@ -10679,13 +10853,30 @@ const maxGitCommonDirBytes = 4 << 10
 // fixture carrying HEAD plus its own objects/ and refs/ alongside a stale
 // `commondir`, which git REJECTS, is excluded from every worktree snapshot.
 //
-// ABSENT commondir: dir itself, as git does. PRESENT but unreadable — empty, a
-// directory, a dangling symlink — git dies rather than resolving anything, so
-// the answer is neither a path nor dir but "git refuses this", and the caller
-// decides what that is worth. Verified on git 2.54.0, all three refused:
+// ABSENT commondir: dir itself, as git does. PRESENT but unreadable — a
+// zero-byte file, a directory, a dangling symlink — git dies rather than
+// resolving anything, so the answer is neither a path nor dir but "git refuses
+// this", and the caller decides what that is worth. Verified on git 2.54.0, all
+// three refused:
 //
 //	fatal: failed to read adm/commondir: No such file or directory
 //	fatal: failed to read admd/commondir: Is a directory
+//
+// Present, readable, and EMPTY AFTER THE BYTE RULE is a fourth case, and it is
+// not the third: git's read only fails on a file it got nothing out of, so a
+// `commondir` holding a bare newline — or a NUL as its first byte — is read
+// successfully and leaves the common directory at dir. Verified on git 2.54.0,
+// with `objects/` and `refs/` beside it:
+//
+//	$ printf '\n' > admG/commondir
+//	$ git --git-dir=admG rev-parse --git-common-dir
+//	<tmp>/admG                       <- dir itself, and the directory is ACCEPTED
+//	$ printf '\0junkjunk\n' > admE/commondir
+//	$ git --git-dir=admE rev-parse --git-dir
+//	admE
+//
+// Folding that onto "git refuses" left a real git directory unexcluded, which is
+// the same leak the NUL rule closes and reachable by the same one byte.
 //
 // Presence is lstat, because git's file_exists() is an lstat: os.Stat reports a
 // dangling symlink as ENOENT, indistinguishable from absent, and that collapsed
@@ -10709,18 +10900,26 @@ func gitCommonDir(dir string) (string, bool) {
 	if _, err := os.Lstat(pointer); err != nil {
 		return dir, true
 	}
+	// A zero-byte file is the read git gets nothing out of and dies on; every
+	// other readable content is a successful read whatever it holds.
 	info, err := os.Stat(pointer)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > maxGitCommonDirBytes {
+	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 		return "", false
 	}
-	content, err := os.ReadFile(pointer)
-	if err != nil {
+	// One byte rule for both pointer files, and one reader: git strips the
+	// trailing newlines and then stops the path at the first NUL here exactly as
+	// it does in a `.git` gitfile, and it caps neither file at 4 KiB. Reading
+	// these bytes with a rule of its own was the whole defect — `commondir`
+	// holding `../common\0junk` kept the NUL, so objects/ and refs/ were looked
+	// for at a path nothing on disk is called, and BOTH rules then called a
+	// linked worktree's administrative git directory ordinary content.
+	target, ok := readGitPointerFile(pointer)
+	if !ok {
 		return "", false
 	}
-	// Git strips trailing newlines and carriage returns, and nothing else.
-	target := strings.TrimRight(string(content), "\r\n")
 	if target == "" {
-		return "", false
+		// Read, and empty: git leaves the common directory at dir.
+		return dir, true
 	}
 	target = filepath.FromSlash(target)
 	if !filepath.IsAbs(target) {
@@ -11148,15 +11347,15 @@ func gitDirPointerTarget(repo, dir string) (string, bool) {
 	// directory, which is what "not a pointer" already means. gitCommonDir keeps
 	// its lstat, because git's file_exists() there is an lstat and a dangling
 	// `commondir` makes git REFUSE the directory rather than ignore the file.
+	//
+	// The SIZE is not a test. Git refuses a `.git` file only above 1 MiB, and
+	// the target ends at the first NUL, so a whole-file bound refused pointers
+	// git follows — see readGitPointerFile, which bounds the read instead.
 	info, err := os.Stat(pointer)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > maxGitDirPointerBytes {
+	if err != nil || !info.Mode().IsRegular() {
 		return "", false
 	}
-	content, err := os.ReadFile(pointer)
-	if err != nil {
-		return "", false
-	}
-	target, ok := parseGitDirPointer(content)
+	target, ok := readGitDirPointer(pointer)
 	if !ok {
 		return "", false
 	}
@@ -11222,14 +11421,35 @@ func gitDirLinkTarget(repo, dir string) (string, bool) {
 }
 
 // containedRel reports target's slash-separated path relative to root, and
-// whether it is strictly inside root.
+// whether it is inside root — the ROOT ITSELF included, reported as
+// gitDirRootTarget.
+//
+// The root is not outside. Folding it in with `..` — "not part of this listing,
+// nothing to exclude" — was a leak, because a `.git` pointer CAN name the
+// repository root and git follows it. Verified on git 2.54.0, with the git
+// directory's own files sitting at the top of the worktree:
+//
+//	$ printf 'gitdir: .\n' > .git
+//	$ git rev-parse --git-dir
+//	<repo>
+//	$ git ls-files --cached --others --exclude-standard --directory
+//	HEAD
+//	app.go
+//	config           <- the remote URL, credential and all, as ordinary content
+//	objects/
+//	refs/
+//
+// `gitdir: ..` from a subdirectory, and an absolute pointer spelling the root,
+// are the same shape by another route, as is a `.git` SYMLINK to the root.
+// recordTarget decides what to do with it; what it must not do is silently
+// resolve to "outside the repository".
 func containedRel(root, target string) (string, bool) {
 	rel, err := filepath.Rel(root, target)
 	if err != nil {
 		return "", false
 	}
 	rel = filepath.ToSlash(rel)
-	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+	if rel == ".." || strings.HasPrefix(rel, "../") {
 		return "", false
 	}
 	return rel, true

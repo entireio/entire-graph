@@ -29,9 +29,29 @@ func TestLooksLikeGitDirResolvesObjectsAndRefsThroughCommondir(t *testing.T) {
 			writeGitDirFixture(t, dir, "d")
 			writeFile(t, dir, "d/commondir", "../absent\n")
 		}, false},
-		{"empty commondir", func(t *testing.T, dir string) {
+		// A `commondir` git READS and finds empty is not one git fails to read:
+		// git only dies when it got nothing out of the file at all, so a bare
+		// newline leaves the common directory at the git directory itself and
+		// git accepts it. Verified on git 2.54.0, with objects/ and refs/ beside
+		// it: `printf '\n' > admG/commondir; git --git-dir=admG rev-parse
+		// --git-common-dir` answers `<tmp>/admG`, and `--git-dir` answers
+		// `admG`.
+		{"newline-only commondir resolves to the git directory itself", func(t *testing.T, dir string) {
 			writeGitDirFixture(t, dir, "d")
 			writeFile(t, dir, "d/commondir", "\n")
+		}, true},
+		// A NUL as the first byte is the same case by the byte rule: the path
+		// git hands on is empty. `printf '\0junkjunk\n' > admE/commondir` and
+		// `git --git-dir=admE rev-parse --git-dir` answers `admE`.
+		{"commondir whose path is empty at the first NUL", func(t *testing.T, dir string) {
+			writeGitDirFixture(t, dir, "d")
+			writeFile(t, dir, "d/commondir", "\x00junkjunk\n")
+		}, true},
+		// The zero-byte file is the read git gets nothing out of, and it dies:
+		// `fatal: failed to read admF/commondir: No such file or directory`.
+		{"zero-byte commondir is one git refuses to read", func(t *testing.T, dir string) {
+			writeGitDirFixture(t, dir, "d")
+			writeFile(t, dir, "d/commondir", "")
 		}, false},
 		{"absolute commondir", func(t *testing.T, dir string) {
 			writeGitDirFixture(t, dir, "common")

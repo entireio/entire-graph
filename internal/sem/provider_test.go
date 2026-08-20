@@ -15245,9 +15245,13 @@ func TestGitDirPointerTargetResolvesSeparateGitDirPointer(t *testing.T) {
 			writeFile(t, repo, ".git", "gitdir: ../elsewhere/.git\n")
 			return ""
 		}},
+		// The root is INSIDE the repository, not outside it: git follows
+		// `gitdir: .` to the root and then lists the git directory's own files
+		// as ordinary content (git 2.54.0). recordTarget decides what to do with
+		// that; resolving it to "" said there was nothing there.
 		{"pointer at the worktree root itself", "", func(t *testing.T, repo string) string {
 			writeFile(t, repo, ".git", "gitdir: .\n")
-			return ""
+			return "."
 		}},
 		{"absolute pointer outside the worktree", "", func(t *testing.T, repo string) string {
 			writeFile(t, repo, ".git", "gitdir: "+filepath.ToSlash(t.TempDir())+"\n")
@@ -15269,8 +15273,13 @@ func TestGitDirPointerTargetResolvesSeparateGitDirPointer(t *testing.T) {
 			writeFile(t, repo, ".git", "gitdir:   \n")
 			return "  "
 		}},
-		{"implausibly large pointer is refused unread", "", func(t *testing.T, repo string) string {
-			writeFile(t, repo, ".git", "gitdir: .repo-git\n"+strings.Repeat("x", maxGitDirPointerBytes))
+		// The bound is on the READ, not on the file: a pointer whose path does
+		// not END inside the window names nothing on any filesystem, and is
+		// refused — while one that ends at a NUL inside the window is followed
+		// however large the file is, which is git's own rule (see
+		// TestGitDirPointerFollowsALargePointerTerminatedByNUL).
+		{"pointer whose path never ends inside the window is refused", "", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir: .repo-git"+strings.Repeat("x", maxGitPointerBytes))
 			return ""
 		}},
 	}

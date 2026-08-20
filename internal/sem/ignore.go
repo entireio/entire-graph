@@ -454,31 +454,26 @@ func gitInfoExcludePath(repo string) string {
 	if !info.Mode().IsRegular() {
 		return ""
 	}
-	raw, err := readSmallRegularFile(dotGit, maxGitIndirectionFileBytes)
-	if err != nil {
-		return ""
-	}
-	// One parser for both readers of these bytes: git applies read_gitfile_gently()
-	// here too, so a `.git` text file git refuses to parse must steer this
-	// worktree's exclude rules nowhere — git applies no info/exclude at all there.
-	gitDir, ok := parseGitDirPointer(raw)
+	// One reader and one byte rule for both pointer files, in provider.go: git
+	// applies read_gitfile_gently() here too, so a `.git` text file git refuses
+	// to parse must steer this worktree's exclude rules nowhere — git applies no
+	// info/exclude at all there — and a pointer git DOES follow must be followed
+	// to the same place. Reading these bytes here with rules of its own (a
+	// whole-file size test, TrimSpace, no NUL rule) disagreed with the excluder
+	// about which directory a worktree's `.git` names.
+	gitDir, ok := readGitDirPointer(dotGit)
 	if !ok {
 		return ""
 	}
 	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(repo, gitDir)
+		gitDir = gitJoinRelative(repo, gitDir)
 	}
 	// commondir points at the shared .git that owns info/; it may be relative to gitDir.
-	if common, err := readSmallRegularFile(
-		filepath.Join(gitDir, "commondir"),
-		maxGitIndirectionFileBytes,
-	); err == nil {
-		if c := strings.TrimSpace(string(common)); c != "" {
-			if !filepath.IsAbs(c) {
-				c = filepath.Join(gitDir, c)
-			}
-			gitDir = filepath.Clean(c)
+	if common, ok := readGitPointerFile(filepath.Join(gitDir, "commondir")); ok && common != "" {
+		if !filepath.IsAbs(common) {
+			common = gitJoinRelative(gitDir, common)
 		}
+		gitDir = filepath.Clean(common)
 	}
 	return filepath.Join(gitDir, "info", "exclude")
 }
