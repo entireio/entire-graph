@@ -1156,7 +1156,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// path order, so worker timing cannot change snapshot bytes.
 	err = runProviderFilePipeline(workCtx, sc.paths, workers,
 		func(workerCtx context.Context, index int, path string) providerFileResult {
-			return processProviderFile(workerCtx, sc, spec, maxParseBytes, index, path)
+			return processProviderFile(workerCtx, gate, sc, spec, maxParseBytes, index, path)
 		},
 		func(result providerFileResult) error {
 			failures = append(failures, result.failures...)

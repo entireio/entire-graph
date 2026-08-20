@@ -47,6 +47,7 @@ func boundedProviderWorkerCount(maxProcs int) int {
 // without changing the deterministic reducer.
 func processProviderFile(
 	ctx context.Context,
+	gate budgetGate,
 	sc sourceContext,
 	spec profileSpec,
 	maxParseBytes int,
@@ -54,7 +55,18 @@ func processProviderFile(
 	path string,
 ) providerFileResult {
 	result := providerFileResult{index: index, path: path}
-	if ctx.Err() != nil {
+	// The per-file stop condition is the worker context OR the wall-clock
+	// budget. It cannot be ctx alone: context.WithDeadline reports expiry
+	// through a runtime timer, so ctx.Err() flips one timer granularity after
+	// the deadline actually passed (~15.6 ms on Windows). Inside that window
+	// the pipeline keeps handing out files and this function reads, parses and
+	// RETURNS them, so the reducer emits file and symbol records dated after
+	// the advertised ceiling. gate.expired() compares the clock to the deadline
+	// directly, so the answer is true the instant the budget is gone on every
+	// platform. ctx stays in the disjunction because the pipeline's own
+	// cancellation (a reduce error, or shutdown) travels only on it.
+	stop := func() bool { return ctx.Err() != nil || gate.expired() }
+	if stop() {
 		return result
 	}
 	// Path-based routing first; files the path cannot classify (extensionless
@@ -73,6 +85,22 @@ func processProviderFile(
 		return result
 	}
 
+	// Checked BEFORE the read, not by wrapping sc.read in gate.reader. A
+	// refused read is reported below as E_FILE_READ ("file listed but content
+	// was unavailable"), which is the signature of a corrupt or vanished
+	// source; routing a budget expiry into it would make a truncated run
+	// indistinguishable from a broken repository. Stopping here instead drops
+	// the file with no failure record, which is exactly what an expiry during
+	// the parse already does, and the run still carries the single
+	// E_ANALYSIS_BUDGET_EXCEEDED marker that says why files are missing.
+	//
+	// This bounds the number of reads STARTED after expiry to zero. It does not
+	// bound a read already in flight -- sc.read is synchronous and takes no
+	// context -- which is the residual the PR discloses as one in-flight file
+	// per worker.
+	if stop() {
+		return providerFileResult{index: index, path: path}
+	}
 	content, ok := sc.read(path)
 	if !ok {
 		// A refused read is not a failed one: the reader declines files above
@@ -184,7 +212,7 @@ func processProviderFile(
 	// expires mid-file returns a PARTIAL entity set. Truncation is file-atomic:
 	// drop the file entirely rather than let the reducer emit a file record with
 	// a silently short symbol list that reads as complete.
-	if ctx.Err() != nil {
+	if stop() {
 		return providerFileResult{index: index, path: path}
 	}
 	if parsedLanguage == "" {

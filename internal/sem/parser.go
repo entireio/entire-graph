@@ -766,9 +766,31 @@ func unwrapRustItemWrapperMacros(ctx context.Context, src []byte) bool {
 		return false
 	}
 	changed := false
+	// The walk is the unbudgeted half of an unwrap pass. ParseCtx above stops on
+	// ctx, but the recursive traversal of the tree it produced polled nothing,
+	// so a deadline that expired after the parse still paid for a COMPLETE
+	// traversal before the next iteration of maskRustUnsupportedSyntax could
+	// notice -- and there are up to maxUnwrapDepth iterations. Poll every
+	// rustUnwrapPollStride nodes: often enough that the residual is a few
+	// hundred nodes, rare enough that an unbudgeted parse does not pay a
+	// context read per node.
+	//
+	// Abandoning the walk mid-tree leaves src partially unwrapped, which is
+	// harmless: the caller checks the stop predicate immediately after masking
+	// and discards the parse, so a partially masked source is never parsed for
+	// entities.
+	visited := 0
+	stop := false
 	var walk func(node *sitter.Node)
 	walk = func(node *sitter.Node) {
 		for i := 0; i < int(node.NamedChildCount()); i++ {
+			visited++
+			if visited%rustUnwrapPollStride == 0 && ctx.Err() != nil {
+				stop = true
+			}
+			if stop {
+				return
+			}
 			child := node.NamedChild(i)
 			if child == nil || child.IsNull() {
 				continue
@@ -783,6 +805,10 @@ func unwrapRustItemWrapperMacros(ctx context.Context, src []byte) bool {
 	walk(root)
 	return changed
 }
+
+// rustUnwrapPollStride is how often the unwrap walk checks the caller's
+// context, in visited nodes. It matches the stride the JS scope walk uses.
+const rustUnwrapPollStride = 512
 
 // unwrapRustItemWrapperMacro blanks a single cfg_*! wrapper when the
 // invocation sits at item position (file, module, impl, or trait scope — not
