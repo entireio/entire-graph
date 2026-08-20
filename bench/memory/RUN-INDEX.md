@@ -27,8 +27,8 @@ Windows are separated by rules. **Only rows inside the same window are orderable
 | `field_eg_loco` | 08-13 01:05 | entire-graph, default `session` | 92.73 | 1428/1540 | not stamped |
 | `field_mem0_loco` | 08-13 02:44 | mem0-OSS, **pre-`top_k` fix** | 87.40 | 1346/1540 | not stamped |
 | `field_cognee_loco2` | 08-13 06:15 | cognee, **pre-buffer fix** | 79.09 | 1218/1540 | not stamped |
-| `field_sm_loco` | 08-13 11:35 | supermemory | 77.60 | 1195/1540 | not stamped |
-| `field_letta_loco` | 08-13 13:52 | letta | 80.58 | 1241/1540 | not stamped |
+| `field_sm_loco` | 08-13 11:35 | supermemory, **suspect — superseded by `field_sm_loco_v3`** | 77.60 | 1195/1540 | not stamped |
+| `field_letta_loco` | 08-13 13:52 | letta, **suspect — superseded by `field_letta_loco_v3`** | 80.58 | 1241/1540 | not stamped |
 | `field_cognee_loco2` | 08-13 15:56 | cognee, **post-buffer fix** | 92.86 | 1430/1540 | not stamped |
 | `field_mem0_loco` | 08-13 17:55 | mem0-OSS, **post-`top_k` fix** | 93.44 | 1439/1540 | `false`¹ |
 | | | | | | |
@@ -50,6 +50,9 @@ Windows are separated by rules. **Only rows inside the same window are orderable
 | | | | | | |
 | `mrq_mres` | 08-14 17:41 | **entire-graph, shipped + PR #100** | **93.83** | 1445/1540 | `true` |
 | `mrq_base` | 08-14 17:43 | entire-graph, shipped current default | 91.56 | 1410/1540 | `true` |
+| | | | | | |
+| `field_letta_loco_v3` | 08-19 15:40 | letta, rebuilt (fresh VM, postgres+pgvector, agent-driven ingest) | **84.68** | 1304/1540 | `true` |
+| `field_sm_loco_v3` | 08-20 01:04 | supermemory, rebuilt (extraction-model + dedup-retry fixes, search cap disclosed) | **82.08** | 1264/1540 | `true` |
 
 ¹ `field_mem0_loco` at 17:55 was launched without `FAIR_MODE=1` but its `runmeta` block records
 `asymmetric_settings_active: {}` — no asymmetric knob was set. The flag governs whether the guard
