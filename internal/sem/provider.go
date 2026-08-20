@@ -10214,6 +10214,83 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 	return paths, nil
 }
 
+// listingOrderWalk walks the tree rooted at root exactly as filepath.WalkDir
+// does — same callback contract, same SkipDir/SkipAll handling, same second call
+// for a directory it cannot read — except for the order in which it visits the
+// entries of a directory.
+//
+// filepath.WalkDir visits them sorted by NAME, which is not the order of the
+// flat path listing this walk produces. A directory `a` sorts before the file
+// `a.go` by name, yet every path inside it sorts after `a.go`, because '.'
+// (0x2E) is below '/' (0x2F). Name order therefore both reaches `a/hidden.go`
+// before `a.go` and reaches `a.go` after everything under `a/`.
+//
+// That matters because the ledger counts each candidate's position as it is
+// visited, and the cap those positions are tested against (capSourceFiles)
+// truncates the SORTED listing. Counting arrival order blamed a committed rule
+// for a path the cap alone had already discarded, and silenced the disclosure of
+// one the rule really did remove — the same two failures that arrival order
+// caused on the Git-backed listing, which is sorted before it is counted.
+//
+// Keying a directory as name+"/" and recursing in that order visits every path
+// in exactly the order sort.Strings puts them in — it is how Git itself orders
+// tree entries — so the position a candidate takes here is the position it holds
+// in the listing the cap truncates.
+func listingOrderWalk(root string, fn fs.WalkDirFunc) error {
+	info, err := os.Lstat(root)
+	if err != nil {
+		err = fn(root, nil, err)
+	} else {
+		err = listingOrderWalkDir(root, fs.FileInfoToDirEntry(info), fn)
+	}
+	if err == filepath.SkipDir || err == filepath.SkipAll {
+		return nil
+	}
+	return err
+}
+
+func listingOrderWalkDir(path string, entry fs.DirEntry, fn fs.WalkDirFunc) error {
+	if err := fn(path, entry, nil); err != nil || !entry.IsDir() {
+		if err == filepath.SkipDir && entry.IsDir() {
+			err = nil
+		}
+		return err
+	}
+	entries, readErr := os.ReadDir(path)
+	if readErr != nil {
+		// Second call, to report the ReadDir error, as filepath.WalkDir does.
+		if err := fn(path, entry, readErr); err != nil {
+			if err == filepath.SkipDir {
+				return nil
+			}
+			return err
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return listingOrderKey(entries[i]) < listingOrderKey(entries[j])
+	})
+	for _, child := range entries {
+		if err := listingOrderWalkDir(filepath.Join(path, child.Name()), child, fn); err != nil {
+			if err == filepath.SkipDir {
+				break
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// listingOrderKey is the sort key that makes a per-directory ordering agree with
+// a flat sort of the full relative paths: a directory contributes only paths
+// prefixed with its name and a separator, so it must be compared with that
+// separator present.
+func listingOrderKey(entry fs.DirEntry) string {
+	if entry.IsDir() {
+		return entry.Name() + "/"
+	}
+	return entry.Name()
+}
+
 // walkWorktreeFiles is the non-git fallback listing. It honours the ignore stack
 // per directory (root .gitignore plus every nested one on the path) so a
 // directory Git cannot enumerate is still filtered the way the project asked.
@@ -10225,7 +10302,7 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 func walkWorktreeFiles(repo string, ignores ignoreMatcher, dirTracked func(string) bool, ledger *repoIgnoreLedger) ([]string, error) {
 	stack := newNestedIgnoreStack(repo, ignores)
 	var paths []string
-	err := filepath.WalkDir(repo, func(path string, entry fs.DirEntry, err error) error {
+	err := listingOrderWalk(repo, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
