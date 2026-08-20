@@ -11,7 +11,7 @@ networked step.
 Setup happens once per repository. After that, the interface is your coding
 agent: you ask a code question in plain language, the agent runs graph queries,
 reads the code the graph points at, and answers with citations. A captured
-example is below, after setup.
+example is shown below.
 
 ## Benchmarks
 
