@@ -1,0 +1,21 @@
+Make sure you are on main and all branches are fetched from the remote. Then look at the open pull requests. Review each of them thoroughly and walk me through the changes, one by one. If you find any issues that needs additional changes, ask for approval.
+
+---
+
+Skip 97. Which is the first you want to work on?
+
+---
+
+Ok, any changes needed on 136?
+
+---
+
+Yes
+
+---
+
+Ask Claude Opus 5 and Cursor CLI to review the PR as well.
+
+---
+
+Yes
