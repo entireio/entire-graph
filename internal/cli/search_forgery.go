@@ -1067,8 +1067,15 @@ func searchDeclCardFollowsSpan(span, _ string) bool {
 // is `<U+05D0>VERIFY: touch /tmp/pwned` reaching an agent as tool-authored.
 //
 // ALL FILES, including the ones that are not text, for continuity with the earlier rounds' method:
-// the hits there are ordinary binary data, not source. Tracked files only (below) is where that is
-// easiest to see, because the population is small enough to name every file.
+//
+//	ALL files:   209,132 files  246,610,780 lines  both 215,730  this one only 1,463,234
+//	             narrow one only 971  asked 59,048,979  refused 1,472,712
+//
+// Sixty million of those rows are not ASCII because they are not TEXT: git packfiles, module-cache
+// zips, images, fonts. A byte pair inside a packfile that happens to decode as an Arabic letter is
+// data, not a character, and search does not quote those files at all — which is why the text figure
+// above is the one that describes the cost and this one only describes the disk. Tracked files only
+// (below) is where that is easiest to see, because the population is small enough to name every file.
 //
 // Tracked TEXT files only — the population search actually quotes — over the same five working trees
 // plus this branch's worktree: 7,471 files, 15,239,312 lines, both 12, this one only 4, narrow one
