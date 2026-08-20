@@ -45,6 +45,35 @@ def format_date(value):
 	}
 }
 
+// TestAnalyzeGitRangeSetsSchemaVersion pins that every Result built by the
+// diff/analyze path carries the package SchemaVersion — the field that lets a
+// copy persisted into checkpoint metadata be read back knowing which schema
+// it was written under.
+func TestAnalyzeGitRangeSetsSchemaVersion(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	write(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	write(t, repo, "auth.py", "def validate_token(token, issuer=None):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "semantic change")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SchemaVersion != SchemaVersion {
+		t.Fatalf("schema version = %q, want %q", result.SchemaVersion, SchemaVersion)
+	}
+}
+
 func TestAnalyzeGitRangeSurfacesModuleScopeChange(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
@@ -572,6 +601,9 @@ func TestAnalyzeCheckpointResolvesAssociatedCommit(t *testing.T) {
 	}
 	if len(result.Files) != 1 {
 		t.Fatalf("files = %#v", result.Files)
+	}
+	if result.SchemaVersion != SchemaVersion {
+		t.Fatalf("schema version = %q, want %q", result.SchemaVersion, SchemaVersion)
 	}
 }
 
