@@ -77,7 +77,10 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 	}
 	emitProgress("parse", 0, len(changed))
 	parser := TreeSitterParser{}
-	result := Result{Base: base, Head: head}
+	// SchemaVersion is set here, at the one place a content-bearing Result is
+	// constructed; every caller (AnalyzeGitRange, AnalyzeCheckpoint, and the
+	// diff/analyze CLI handlers that call through them) inherits it.
+	result := Result{Base: base, Head: head, SchemaVersion: SchemaVersion}
 	var deltas []*fileDelta
 	for i, file := range changed {
 		if overBudget() {
