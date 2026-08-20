@@ -223,24 +223,40 @@ type PartialFailure struct {
 	Detail               string `json:"detail,omitempty"`
 }
 
-// AnalysisBudgetExceededCode marks a snapshot that stopped at its wall-clock
-// ceiling (ProviderSnapshotOptions.MaxDuration, or a deadline on the caller's
-// context) instead of running to completion. It is a truncation, not a parse
-// failure: the records emitted before the deadline are valid, everything after
-// it is missing, and callers must treat the graph as incomplete — in
-// particular they must not persist it as a complete snapshot.
+// AnalysisBudgetExceededCode marks a snapshot that stopped at the OPT-IN
+// wall-clock ceiling ProviderSnapshotOptions.MaxDuration instead of running to
+// completion. It is a truncation, not a parse failure: the records emitted
+// before the deadline are valid, everything after it is missing, and callers
+// must treat the graph as incomplete — in particular they must not persist it
+// as a complete snapshot.
+//
+// A deadline that came from the CALLER's own context never carries this code:
+// classifyStop (streamSnapshotWithWorkerCount, deriveSelectiveSnapshot) sets
+// the truncation flag only when MaxDuration > 0 and returns anything else as an
+// error, because a caller that never asked for truncation must not be handed a
+// silently incomplete snapshot with a nil error.
 const AnalysisBudgetExceededCode = "E_ANALYSIS_BUDGET_EXCEEDED"
 
 // analysisBudgetFailure reports a snapshot truncated by its wall-clock ceiling.
 // It carries no FilePath because the ceiling is a whole-run property: the
 // deadline can land in the middle of the relation phase, where the missing work
 // is spread across every file, so naming one file would misattribute the gap.
-func analysisBudgetFailure(budget, elapsed time.Duration) PartialFailure {
-	detail := fmt.Sprintf("stopped after %s", elapsed.Round(time.Millisecond))
+//
+// The detail reports the CONFIGURED budget and nothing measured. It used to
+// carry time.Since(started) rounded to milliseconds, which made the record a
+// function of how fast the machine ran: three `snapshot --max-seconds 1` runs
+// over this repository agreed on the first 8,053,472 bytes and then published
+// "stopped after 1.248s" / "1.229s" / "1.211s" — three digests for one
+// truncation. A record that moves run to run cannot be diffed, content-addressed
+// or reproduced by a reviewer, and byte-identical output is this change's own
+// verification method. Elapsed time belongs where the schema already keeps it:
+// the *_latency_ms fields on the response envelope, which consumers know to
+// normalise. The sibling budget report, budgetSkippedFileWarning (analyze.go),
+// already reports counts and the configured budget for the same reason.
+func analysisBudgetFailure(budget time.Duration) PartialFailure {
+	detail := "the wall-clock budget expired"
 	if budget > 0 {
-		detail += fmt.Sprintf("; wall-clock budget was %s", budget)
-	} else {
-		detail += "; the caller's context deadline expired"
+		detail = fmt.Sprintf("the %s wall-clock budget expired", budget)
 	}
 	return PartialFailure{
 		Code:                 AnalysisBudgetExceededCode,
@@ -1342,7 +1358,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		failures = []PartialFailure{}
 	}
 	if budgetHit {
-		failures = append(failures, analysisBudgetFailure(options.MaxDuration, time.Since(started)))
+		failures = append(failures, analysisBudgetFailure(options.MaxDuration))
 	}
 	summary := SnapshotSummary{
 		RecordType:      "summary",

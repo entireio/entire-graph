@@ -76,7 +76,7 @@ func TestF06FixRecordCacheWriterRejectsTruncatedSummary(t *testing.T) {
 	options := ProviderSnapshotOptions{Profile: ProfileFull}
 	summary := &SnapshotSummary{
 		RecordType:      "summary",
-		PartialFailures: []PartialFailure{analysisBudgetFailure(time.Second, 2*time.Second)},
+		PartialFailures: []PartialFailure{analysisBudgetFailure(time.Second)},
 	}
 	if err := StoreProviderRecords(t.Context(), repo, "test", tree, "symbols", cacheDir, options, []byte("{}\n"), summary); err != nil {
 		t.Fatalf("store: %v", err)

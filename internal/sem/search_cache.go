@@ -566,7 +566,6 @@ func selectiveSearchSnapshotFromFull(
 	options ProviderSnapshotOptions,
 	full ProviderSnapshot,
 ) (ProviderSnapshot, error) {
-	started := time.Now()
 	// Source preparation runs on the caller's context and OUTSIDE the budget
 	// clock, exactly as the streaming build does (see StreamSnapshot), so both
 	// paths bound the same phases and MaxDuration keeps its single documented
@@ -803,7 +802,7 @@ func selectiveSearchSnapshotFromFull(
 		// view uncacheable: writeSearchSnapshot refuses any snapshot carrying
 		// it, so a truncated derivation can never be served to a later
 		// unbudgeted query as the complete index.
-		failures = append(failures, analysisBudgetFailure(options.MaxDuration, time.Since(started)))
+		failures = append(failures, analysisBudgetFailure(options.MaxDuration))
 	}
 	languageSet := make(map[string]struct{})
 	completenessLanguages := make(map[string]LanguageCompleteness)
