@@ -9923,11 +9923,15 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 	if err != nil {
 		return openedSource{}, err
 	}
-	paths, err := worktreeSourceFiles(ctx, repo, ignores, len(options.includeFiles) > 0)
+	paths, sweepWarnings, err := worktreeSourceFiles(ctx, repo, ignores, len(options.includeFiles) > 0)
 	if err != nil {
 		return openedSource{}, err
 	}
 	paths, warnings := capSourceFiles(paths, options.maxFiles)
+	// An incomplete `.git` pointer sweep changes what the listing MEANS — the
+	// exclusions below it are wider than a complete sweep's — so it is reported
+	// beside the file-limit warning rather than inferred from a short listing.
+	warnings = append(warnings, sweepWarnings...)
 	registry := newOversizeRegistry()
 	read := func(path string) (string, bool) {
 		full := filepath.Join(repo, filepath.FromSlash(path))
@@ -10482,7 +10486,22 @@ type gitDirExcluder struct {
 	// observeUnlistedDirs.
 	unlistedRoots    []string
 	gitAnsweredRoots bool
+	// sweepCtx is the query's context. Every other part of this listing is
+	// bounded by content git names; the sweep alone is bounded by content git
+	// OMITS, so it is the one part that has to be able to stop when the caller
+	// has stopped waiting.
+	sweepCtx context.Context
+	// sweepBudget is how many directories this query's sweep may take on and
+	// sweepDirectories is what it has spent. One ledger for the whole query —
+	// every root, every pruned subtree, both listing paths. See
+	// admitSweepDirectory. directoriesRead is the reads that ledger paid for,
+	// kept separate because it is what the disclosure quotes.
+	sweepBudget      int
+	sweepDirectories int
 	directoriesRead  int
+	// sweepStop records why the sweep stopped short, so what the listing means
+	// is disclosed rather than quietly changed.
+	sweepStop sweepStopReason
 	// hiddenEvidence counts the reads rule 2 depends on that failed for a reason
 	// other than the thing not being there — an unreadable directory the sweep
 	// had to skip, an unreadable `.git` file. Each one may have hidden a
@@ -10503,13 +10522,187 @@ type gitDirExcluder struct {
 	promotedUnverified bool
 }
 
+// sweepStopReason names why the `.git`-pointer sweep stopped before it had read
+// every directory it was given. Both values mean the same thing to correctness —
+// evidence was not gathered — and differ only in what the caller is told.
+type sweepStopReason uint8
+
+const (
+	sweepRanToCompletion sweepStopReason = iota
+	sweepStoppedOnBudget
+	sweepStoppedOnCancel
+)
+
+// defaultSweepDirectoryBudget bounds the directories one query's `.git`-pointer
+// sweep may read.
+//
+// Why a bound is not optional. The sweep descends every root git collapsed,
+// including the IGNORED ones, because `.gitignore` is committed content in the
+// repository being scanned and pruning by it let that repository choose which
+// pointers this rule may read. But those roots are exactly the trees whose size
+// is unbounded by anything the tool controls: `node_modules`, a pnpm store, a
+// build cache. Measured on this branch before the bound, with 2 indexed files
+// and 110,120 directories under an ignored `node_modules/`, one working-tree
+// listing took 2.31-2.39 s against 9-11 ms on main — ~21 us per directory,
+// linear, and paid again on EVERY query. A tree ten times that size is an
+// ordinary monorepo and a twenty-second listing.
+//
+// Why this number. The largest real checkout available to measure here is
+// 10,893 directories in total (a pnpm monorepo, `node_modules` included), and
+// the other five range from 269 to 9,259. 20,000 is a little under twice the
+// largest of them, so no repository of that shape spends the ledger, and it caps
+// the sweep at ~0.42 s on the timings above instead of at nothing at all. It
+// also caps `observedDirs`, which is one retained string per observed directory.
+//
+// ENTIRE_GRAPH_SWEEP_DIR_BUDGET overrides it for a caller who knows their own
+// tree; 0 or a negative value means unbounded, which is what this branch did
+// before and is offered only because the fail-closed behaviour below makes an
+// unbounded sweep a performance choice rather than a security one.
+const defaultSweepDirectoryBudget = 20000
+
+// sweepDirBudgetEnv overrides defaultSweepDirectoryBudget.
+const sweepDirBudgetEnv = "ENTIRE_GRAPH_SWEEP_DIR_BUDGET"
+
+// sweepCancelCheckInterval is how many directories the sweep reads between
+// checks of the caller's context. The budget is the deterministic bound and this
+// is only the responsiveness one, so it is read rarely enough to cost nothing
+// and often enough to notice a cancelled query inside ~10 ms at the measured
+// ~21 us per directory.
+const sweepCancelCheckInterval = 512
+
+// resolveSweepDirectoryBudget reads the override, falling back to the default
+// for anything unparseable so a typo cannot silently unbound the sweep.
+func resolveSweepDirectoryBudget() int {
+	raw, ok := os.LookupEnv(sweepDirBudgetEnv)
+	if !ok {
+		return defaultSweepDirectoryBudget
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return defaultSweepDirectoryBudget
+	}
+	return value
+}
+
 // newGitDirExcluder builds the excluder for one listing of repo, having already
 // observed the repository root — the `--separate-git-dir` case that needs no
 // listing to find.
-func newGitDirExcluder(repo string) *gitDirExcluder {
-	excluder := &gitDirExcluder{repo: repo, targets: map[string]struct{}{}, foldedTargets: map[string]struct{}{}}
+func newGitDirExcluder(ctx context.Context, repo string) *gitDirExcluder {
+	excluder := &gitDirExcluder{
+		repo:          repo,
+		targets:       map[string]struct{}{},
+		foldedTargets: map[string]struct{}{},
+		sweepCtx:      ctx,
+		sweepBudget:   resolveSweepDirectoryBudget(),
+	}
 	excluder.observe("")
 	return excluder
+}
+
+// admitSweepDirectory draws one directory from the query's ledger and reports
+// whether the sweep may take it on. When the ledger is empty it stops the sweep
+// and records hidden evidence, which is the whole design.
+//
+// One unit is one DIRECTORY the sweep brings in, not one ReadDir, because the
+// syscalls are not where the count would suggest. A directory costs one ReadDir
+// to enumerate and one observe() — two pointer reads and the structural stats —
+// per subdirectory it turns up, so charging the read alone undercounts by the
+// tree's fan-out: on the 110,120-directory synthetic below, a 20,000-READ budget
+// let the sweep observe 110,101 directories and cost 0.86 s. Charged at
+// admission, the same budget bounds both halves: at most `budget` directories
+// are observed and at most `budget` are read.
+//
+// The tension it resolves. descendObserving prunes on NOTHING, for a reason that
+// is still true: every prune tried here — a vendored NAME, the project's own
+// ignore rules, "this path is already excluded" — is something the scanned
+// repository can arrange, and each one therefore bought a hiding place for a
+// `.git` pointer whose target sits elsewhere in the tree and is indexed in full.
+// The cheapest of them, "already excluded", costs an attacker three empty
+// directories. But an unpruned sweep is unbounded, and its size is set by the
+// content git omits, which no one controls.
+//
+// So the bound is not a prune. A prune says "there is nothing to find in here"
+// and is wrong; a spent ledger says "I did not look, and I am not pretending I
+// did". Exhaustion sets hiddenEvidence, and hiddenEvidence is what
+// promoteUnverifiedGitDirs acts on: every observed directory carrying a git
+// directory's structure becomes a target, pointer or no pointer. The pointer
+// rule accepts a target on exactly that test, so the set of directories an
+// UNREAD pointer could have excluded is a subset of the set promotion excludes.
+// Running the ledger out therefore hides nothing — it costs the attacker
+// sweepBudget real directories on disk and buys a strictly WIDER exclusion than
+// letting the pointer be read would have.
+//
+// The ledger is one ledger. It is a field of the excluder, and the excluder is
+// built once per listing, so the roots of observeUnlistedDirs and every
+// observePrunedSubtree call on the filesystem fallback all spend from it. A
+// repository cannot win a fresh allowance by splitting one huge ignored tree
+// into a hundred ignored trees.
+//
+// The context check is the responsiveness half and not the correctness half:
+// cancelling a query stops the sweep the same fail-closed way, and the listing
+// it belongs to is about to be abandoned anyway.
+func (g *gitDirExcluder) admitSweepDirectory() bool {
+	if g.sweepStop != sweepRanToCompletion {
+		return false
+	}
+	if g.sweepBudget > 0 && g.sweepDirectories >= g.sweepBudget {
+		g.sweepStop = sweepStoppedOnBudget
+		g.hiddenEvidence++
+		return false
+	}
+	if g.sweepDirectories%sweepCancelCheckInterval == 0 && g.sweepHalted() {
+		return false
+	}
+	g.sweepDirectories++
+	return true
+}
+
+// sweepHalted reports whether the caller has stopped waiting, and stops the
+// sweep the same fail-closed way the ledger does if so. It is asked on the read
+// side as well as at admission because the queue admitted before a cancellation
+// can still be up to a whole budget long.
+func (g *gitDirExcluder) sweepHalted() bool {
+	if g.sweepStop != sweepRanToCompletion {
+		return true
+	}
+	if g.sweepCtx == nil || g.sweepCtx.Err() == nil {
+		return false
+	}
+	g.sweepStop = sweepStoppedOnCancel
+	g.hiddenEvidence++
+	return true
+}
+
+// sweepWarnings reports what the caller is owed when the sweep stopped short:
+// the directory count is a LOWER bound on the tree, and the exclusions that
+// follow are wider than a complete sweep would have produced. Nothing is
+// reported for a sweep that finished, which is every repository of ordinary
+// size.
+func (g *gitDirExcluder) sweepWarnings() []ProviderWarning {
+	switch g.sweepStop {
+	case sweepStoppedOnBudget:
+		return []ProviderWarning{{
+			Code:                 "W_GITDIR_SWEEP_BUDGET",
+			Severity:             "warning",
+			EffectOnCompleteness: "the scan for `.git` pointers stopped early, so directories that carry a git directory's structure were excluded from the listing without a pointer naming them; source under them is absent",
+			Detail: fmt.Sprintf(
+				"the `.git` pointer sweep read its whole budget of %d directories and stopped; the tree under the ignored and collapsed roots is at least that large (%s overrides the budget, 0 removes it)",
+				g.sweepBudget, sweepDirBudgetEnv,
+			),
+		}}
+	case sweepStoppedOnCancel:
+		return []ProviderWarning{{
+			Code:                 "W_GITDIR_SWEEP_CANCELLED",
+			Severity:             "warning",
+			EffectOnCompleteness: "the scan for `.git` pointers was cancelled, so directories that carry a git directory's structure were excluded from the listing without a pointer naming them; source under them is absent",
+			Detail: fmt.Sprintf(
+				"the `.git` pointer sweep was cancelled after %d directories",
+				g.directoriesRead,
+			),
+		}}
+	default:
+		return nil
+	}
 }
 
 // observe decides whether one repo-relative directory ("" for the repository
@@ -11187,19 +11380,27 @@ func (g *gitDirExcluder) observeUnlistedDirs(seen map[string]struct{}) {
 	//
 	// `pkg/nested/` is in neither listing. So `seen` now guards observation
 	// only, and `queued` guards the descent.
-	enqueue := func(dir string) {
-		if _, done := queued[dir]; done {
-			return
-		}
-		queued[dir] = struct{}{}
-		queue = append(queue, dir)
-	}
 	observeOnce := func(dir string) {
 		if _, done := seen[dir]; done {
 			return
 		}
 		seen[dir] = struct{}{}
 		g.observe(dir)
+	}
+	// admit charges one directory to the query's ledger, observes it and queues
+	// it for the descent. It reports false when the ledger is spent, which ends
+	// the sweep — see admitSweepDirectory for why stopping is safe.
+	admit := func(dir string) bool {
+		if _, done := queued[dir]; done {
+			return true
+		}
+		if !g.admitSweepDirectory() {
+			return false
+		}
+		observeOnce(dir)
+		queued[dir] = struct{}{}
+		queue = append(queue, dir)
+		return true
 	}
 	if g.gitAnsweredRoots {
 		for _, entry := range g.unlistedRoots {
@@ -11216,13 +11417,25 @@ func (g *gitDirExcluder) observeUnlistedDirs(seen map[string]struct{}) {
 			if dir == "" || dir == "." {
 				continue
 			}
-			observeOnce(dir)
-			enqueue(dir)
+			if !admit(dir) {
+				break
+			}
 		}
 	} else {
-		enqueue("")
+		// Sorted, because with a ledger in play WHICH directories the sweep got
+		// to is part of the answer, and ranging a map would make that differ
+		// between two runs over the same tree.
+		derived := make([]string, 0, len(seen))
 		for dir := range seen {
-			enqueue(dir)
+			derived = append(derived, dir)
+		}
+		sort.Strings(derived)
+		if admit("") {
+			for _, dir := range derived {
+				if !admit(dir) {
+					break
+				}
+			}
 		}
 	}
 	g.descendObserving(queue, queued, observeOnce)
@@ -11254,12 +11467,26 @@ func (g *gitDirExcluder) observeUnlistedDirs(seen map[string]struct{}) {
 // Its price is one ReadDir per directory under a tree that is not indexed
 // anyway, and no file read at all: nothing inside an excluded tree can become
 // indexable by way of this sweep, because the sweep only ever adds targets.
+//
+// That price is BOUNDED, and the bound is not a fourth prune. Pruning on
+// nothing left the sweep's size set by content git omits — an ignored
+// `node_modules` or build cache — so it is bounded by a directory ledger
+// instead, and running the ledger out fails closed rather than falling silent.
+// spendSweepDirectory carries the argument for why that keeps the hiding place
+// shut.
 func (g *gitDirExcluder) descendObserving(queue []string, queued map[string]struct{}, observeOnce func(string)) {
 	// Sorted so the observation order, and therefore the pruning, is the same on
 	// every run over the same tree.
 	sort.Strings(queue)
 	for cursor := 0; cursor < len(queue); cursor++ {
 		dir := queue[cursor]
+		// Every directory in this queue was already charged to the ledger when
+		// it was admitted, so the read side owes nothing — it only has to notice
+		// a caller who has stopped waiting, since a queue admitted before the
+		// cancellation can be a whole budget long.
+		if cursor%sweepCancelCheckInterval == 0 && g.sweepHalted() {
+			return
+		}
 		base := g.repo
 		if dir != "" {
 			base = filepath.Join(g.repo, filepath.FromSlash(dir))
@@ -11290,10 +11517,16 @@ func (g *gitDirExcluder) descendObserving(queue []string, queued map[string]stru
 			if dir != "" {
 				child = dir + "/" + entry.Name()
 			}
-			observeOnce(child)
+			// Deduplicated before it is charged: a directory already queued has
+			// already been observed by this sweep, so re-observing it is a
+			// no-op that would spend the ledger twice.
 			if _, done := queued[child]; done {
 				continue
 			}
+			if !g.admitSweepDirectory() {
+				return
+			}
+			observeOnce(child)
 			queued[child] = struct{}{}
 			queue = append(queue, child)
 		}
@@ -11685,7 +11918,7 @@ func isVendoredScanFile(rel, name string) bool {
 // The filesystem walk remains the fallback for a directory Git cannot enumerate
 // (not a repository at all, or no usable git binary), and it now applies nested
 // .gitignore files itself.
-func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher, hasIncludeFiles bool) ([]string, error) {
+func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher, hasIncludeFiles bool) ([]string, []ProviderWarning, error) {
 	trackedDirs := trackedDirSet(ctx, repo)
 	dirTracked := func(rel string) bool {
 		_, ok := trackedDirs[rel]
@@ -11693,7 +11926,7 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 	}
 	listed, err := gitutil.ListWorktreeFiles(ctx, repo)
 	if err != nil {
-		return walkWorktreeFiles(repo, ignores, dirTracked)
+		return walkWorktreeFiles(ctx, repo, ignores, dirTracked)
 	}
 	if hasIncludeFiles {
 		// An explicit include file's negations are allowed to reach into ignored
@@ -11717,11 +11950,11 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 		ctx, repo, maxNestedIgnoreFiles, includeEveryNestedIgnore,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("list worktree nested ignore files: %w", err)
+		return nil, nil, fmt.Errorf("list worktree nested ignore files: %w", err)
 	}
 	vendorRules, err := worktreeVendorIgnoreRules(repo, ignores, nestedIgnores)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Every `gitdir:` pointer this listing can reach is resolved before any
 	// verdict is asked, so the answer cannot depend on listing order.
@@ -11742,7 +11975,7 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 			kinds[index] = listedPathRegular
 		}
 	}
-	gitDirs := newGitDirExcluder(repo)
+	gitDirs := newGitDirExcluder(ctx, repo)
 	// The directories git lists nothing under come from git itself, so the sweep
 	// for a suppressed `.git` pointer does not have to re-read the whole tree.
 	// An IGNORED tree is in neither of git's `--exclude-standard` listings, so no
@@ -11783,7 +12016,7 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 		paths = append(paths, rel)
 	}
 	sort.Strings(paths)
-	return paths, nil
+	return paths, gitDirs.sweepWarnings(), nil
 }
 
 func includeEveryNestedIgnore(string) bool { return true }
@@ -11844,28 +12077,29 @@ func gitSweepRoots(dirEntries []string, dirErr error, ignoredEntries []string, i
 // walkWorktreeFiles is the non-git fallback listing. It honours the ignore stack
 // per directory (root .gitignore plus every nested one on the path) so a
 // directory Git cannot enumerate is still filtered the way the project asked.
-func walkWorktreeFiles(repo string, ignores ignoreMatcher, dirTracked func(string) bool) ([]string, error) {
+func walkWorktreeFiles(ctx context.Context, repo string, ignores ignoreMatcher, dirTracked func(string) bool) ([]string, []ProviderWarning, error) {
 	var paths []string
-	err := visitWalkWorktreeFiles(repo, ignores, dirTracked, func(rel string) bool {
+	warnings, err := visitWalkWorktreeFiles(ctx, repo, ignores, dirTracked, func(rel string) bool {
 		paths = append(paths, rel)
 		return true
 	})
 	sort.Strings(paths)
-	return paths, err
+	return paths, warnings, err
 }
 
 // visitWalkWorktreeFiles is the non-Git provider walk with a streaming sink.
 // Returning false stops successfully, allowing replay observation to retain a
 // bounded corpus without changing the provider's eligibility or traversal.
 func visitWalkWorktreeFiles(
+	ctx context.Context,
 	repo string,
 	ignores ignoreMatcher,
 	dirTracked func(string) bool,
 	visit func(string) bool,
-) error {
+) ([]ProviderWarning, error) {
 	stack := newNestedIgnoreStack(repo, ignores)
 	defer stack.close()
-	gitDirs := newGitDirExcluder(repo)
+	gitDirs := newGitDirExcluder(ctx, repo)
 	var paths []string
 	walkErr := filepath.WalkDir(repo, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -11981,10 +12215,10 @@ func visitWalkWorktreeFiles(
 	sort.Strings(paths)
 	for _, rel := range paths {
 		if !visit(rel) {
-			return nil
+			return gitDirs.sweepWarnings(), nil
 		}
 	}
-	return walkErr
+	return gitDirs.sweepWarnings(), walkErr
 }
 
 func filterVendoredPaths(paths []string, ignores vendorIgnoreRules) []string {

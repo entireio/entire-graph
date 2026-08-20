@@ -209,7 +209,7 @@ func TestGitDirExcluderPromotesStructureOnlyDirectoriesOnlyWhileEvidenceIsHidden
 			writeHeadlessGitDirFixture(t, repo, ".dep-git")
 			writeFile(t, repo, "src/app.go", "package src\n")
 
-			excluder := newGitDirExcluder(repo)
+			excluder := newGitDirExcluder(t.Context(), repo)
 			excluder.observeListedPaths([]string{".dep-git/config", "src/app.go"}, nil)
 			if hidden {
 				// observeListedPaths already ran the promotion and returned

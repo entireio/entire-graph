@@ -60,7 +60,7 @@ func TestGitDirExcluderSweepsInsideACollapsedDirectoryGitNames(t *testing.T) {
 			// rule cannot reach it and only the suppressed pointer can.
 			writeHeadlessGitDirFixture(t, repo, ".dep-git")
 
-			excluder := newGitDirExcluder(repo)
+			excluder := newGitDirExcluder(t.Context(), repo)
 			excluder.unlistedRoots = []string{".dep-git/", "pkg/", "tracked.go"}
 			excluder.gitAnsweredRoots = true
 			excluder.observeListedPaths(testCase.listed, nil)
@@ -139,7 +139,7 @@ func TestGitDirExcluderSweepReadsNoListedFileEntry(t *testing.T) {
 	writeFile(t, repo, "nested/.git", "gitdir: ../.dep-git\n")
 	writeHeadlessGitDirFixture(t, repo, ".dep-git")
 
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	excluder.unlistedRoots = append(roots, "nested/")
 	excluder.gitAnsweredRoots = true
 	excluder.observeListedPaths(listed, nil)
@@ -175,7 +175,7 @@ func TestGitDirExcluderSweepsIgnoredCollapsedTrees(t *testing.T) {
 	writeFile(t, repo, "pkg/build/dep/.git", "gitdir: ../../../.dep-git\n")
 	writeHeadlessGitDirFixture(t, repo, ".dep-git")
 
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	excluder.unlistedRoots = []string{"pkg/"}
 	excluder.gitAnsweredRoots = true
 	excluder.observeListedPaths([]string{"pkg/source.go"}, nil)

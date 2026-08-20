@@ -36,7 +36,7 @@ func TestGitDirExcluderSweepsInsideAVendoredTreeForPointers(t *testing.T) {
 			writeFile(t, repo, dir+"/dep/.git", "gitdir: ../../.dep-git\n")
 			writeHeadlessGitDirFixture(t, repo, ".dep-git")
 
-			excluder := newGitDirExcluder(repo)
+			excluder := newGitDirExcluder(t.Context(), repo)
 			excluder.unlistedRoots = []string{".dep-git/", "pkg/", dir + "/", "tracked.go"}
 			excluder.gitAnsweredRoots = true
 			excluder.observeListedPaths([]string{".dep-git/config", "pkg/source.go", "tracked.go"}, nil)

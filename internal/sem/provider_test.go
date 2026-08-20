@@ -15310,7 +15310,7 @@ func TestGitDirExcluderCoversEveryGitDirShapeWithoutWideningOntoGitPrefixedNames
 	// pointer naming nothing at all names nothing here either.
 	writeHeadlessGitDirFixture(t, repo, ".repo-git")
 	writeHeadlessGitDirFixture(t, repo, "vendor/dep/.dep-git")
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	cases := []struct {
 		rel  string
 		want bool
@@ -15525,7 +15525,7 @@ func TestGitDirExcluderObservesGitlinkEntries(t *testing.T) {
 	// Exactly what `git ls-files --cached --others --exclude-standard` reports
 	// for that tree: the gitlink as one entry, and the target's files in full.
 	listed := []string{"src/app.go", "state/.dep-git/config", "vendor/dep"}
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	excluder.observeListedPaths(listed, []string{"vendor/dep"})
 	if !excluder.excluded("state/.dep-git/config") {
 		t.Error(`excluded("state/.dep-git/config") = false, want true`)
@@ -15655,7 +15655,7 @@ func TestGitDirExcluderMatchesTargetSpelledInAnotherCase(t *testing.T) {
 	writeFile(t, repo, "libs/other/.git", "gitdir: ../../STATE/42\n")
 	writeFile(t, repo, "src/app.go", "package src\n")
 	listed := []string{"src/app.go", "state/.dep-git/config", "state/.dep-git/hooks/post-commit.go", "state/42/config", "libs/dep", "libs/other"}
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	excluder.observeListedPaths(listed, []string{"libs/dep", "libs/other"})
 	for _, rel := range []string{"state/.dep-git/config", "state/.dep-git/hooks/post-commit.go", "state/42/config"} {
 		if !excluder.excluded(rel) {
@@ -15796,7 +15796,7 @@ func TestGitDirExcluderKeepsSourceTreeNamedLikeAGitDir(t *testing.T) {
 	writeFile(t, repo, "testdata/parser/objects/loader.go", "package objects\n")
 	writeFile(t, repo, "testdata/parser/refs/table.go", "package refs\n")
 	listed := []string{"testdata/parser/HEAD", "testdata/parser/objects/loader.go", "testdata/parser/refs/table.go"}
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	excluder.observeListedPaths(listed, nil)
 	for _, rel := range listed {
 		if excluder.excluded(rel) {

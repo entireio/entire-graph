@@ -318,7 +318,7 @@ func TestGitDirExcluderExcludesTheReftableRefStoreOnlyAtARootGitDir(t *testing.T
 		writeFile(t, repo, "reftable/tables.list", "\n")
 		writeFile(t, repo, "src/app.go", "package src\n")
 
-		excluder := newGitDirExcluder(repo)
+		excluder := newGitDirExcluder(t.Context(), repo)
 		if !excluder.excluded("reftable/tables.list") {
 			t.Error(`excluded("reftable/tables.list") = false, want true: the pointer names the root, so this is the git directory's own ref store`)
 		}

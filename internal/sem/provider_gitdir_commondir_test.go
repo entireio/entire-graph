@@ -117,7 +117,7 @@ func TestGitDirExcluderStillExcludesAPointerTargetWhoseCommondirGitRefuses(t *te
 			writeHeadlessGitDirFixture(t, repo, ".dead-git")
 			testCase.write(t, filepath.Join(repo, ".dead-git", "commondir"))
 			writeFile(t, repo, "src/app.go", "package src\n")
-			excluder := newGitDirExcluder(repo)
+			excluder := newGitDirExcluder(t.Context(), repo)
 			excluder.observeListedPaths([]string{".dead-git/config", "src/app.go"}, nil)
 			if !excluder.excluded(".dead-git/config") {
 				t.Error(`excluded(".dead-git/config") = false, want true`)

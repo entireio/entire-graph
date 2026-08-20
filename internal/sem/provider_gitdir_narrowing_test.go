@@ -80,7 +80,7 @@ func TestGitDirExcluderKeepsSourceNamedByAGitfileGitRejects(t *testing.T) {
 	writeFile(t, repo, "nested/.git", "gitdir: ../src\n")
 	writeFile(t, repo, "src/app.go", "package src\n")
 	writeFile(t, repo, "src/lib.go", "package src\n")
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	excluder.observeListedPaths([]string{"src/app.go", "src/lib.go"}, nil)
 	for _, rel := range []string{"src/app.go", "src/lib.go"} {
 		if excluder.excluded(rel) {
@@ -134,7 +134,7 @@ func TestGitDirExcluderStillExcludesAGitDirNamedByAPointer(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, repo, "src/app.go", "package src\n")
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	excluder.observeListedPaths([]string{".repo-git/config", ".dead-git/config", "src/app.go"}, nil)
 	for _, rel := range []string{".repo-git/config", ".dead-git/config"} {
 		if !excluder.excluded(rel) {
@@ -171,7 +171,7 @@ func TestGitDirExcluderSweepReadsOnlyTheDirectoriesGitNames(t *testing.T) {
 	}
 	writeFile(t, repo, "nested/.git", "gitdir: ../.dep-git\n")
 	writeHeadlessGitDirFixture(t, repo, ".dep-git")
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	// Exactly what `git ls-files --cached --others --exclude-standard
 	// --directory` reports for this tree: `nested/` as an entry of its own, and
 	// nothing at all about the ignored build tree.

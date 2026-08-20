@@ -38,7 +38,7 @@ func TestGitDirPointerTargetRecordsSymlinkResolvedTarget(t *testing.T) {
 	symlinkOrSkip(t, ".real-git", filepath.Join(repo, "admin-link"))
 	writeFile(t, repo, ".git", "gitdir: admin-link\n")
 
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	if !excluder.excluded(".real-git/config") {
 		t.Error("excluded(.real-git/config) = false for the directory the gitfile's symlinked target resolves to, want true")
 	}
@@ -59,7 +59,7 @@ func TestGitDirExcluderResolvesNestedSymlinkedPointerTarget(t *testing.T) {
 	writeFile(t, repo, "src/app.go", "package src\n")
 	symlinkOrSkip(t, filepath.Join("..", "state", ".dep-git"), filepath.Join(repo, "libs", "admin-link"))
 
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	excluder.observeListedPaths([]string{"src/app.go", "state/.dep-git/config", "libs/dep"}, []string{"libs/dep"})
 	if !excluder.excluded("state/.dep-git/config") {
 		t.Error("excluded(state/.dep-git/config) = false for the directory the nested gitfile's symlinked target resolves to, want true")
@@ -101,7 +101,7 @@ func TestGitDirExcluderKeepsSymlinkTargetOutsideRepoUnexcluded(t *testing.T) {
 	symlinkOrSkip(t, filepath.Join("..", "outside-git"), filepath.Join(repo, "admin-link"))
 	writeFile(t, repo, ".git", "gitdir: admin-link\n")
 
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	for _, rel := range []string{"src", "src/app.go", ".."} {
 		if excluder.excluded(rel) {
 			t.Errorf("excluded(%q) = true, want false: a target outside the repository excludes nothing inside it", rel)
@@ -120,7 +120,7 @@ func TestGitDirExcluderKeepsOrdinaryDirBehindSymlinkListable(t *testing.T) {
 	writeFile(t, repo, "libs/dep/.git", "gitdir: ../../src-link\n")
 	symlinkOrSkip(t, "src", filepath.Join(repo, "src-link"))
 
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	excluder.observeListedPaths([]string{"src/app.go", "libs/dep"}, []string{"libs/dep"})
 	for _, rel := range []string{"src", "src/app.go", "src-link"} {
 		if excluder.excluded(rel) {
@@ -166,7 +166,7 @@ func TestGitDirExcluderResolvesNestedDotGitSymlink(t *testing.T) {
 	}
 	symlinkOrSkip(t, filepath.Join("..", "..", "state", ".dep-git"), filepath.Join(repo, "vendor", "dep", ".git"))
 
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	excluder.observeListedPaths([]string{"src/app.go", "state/.dep-git/config", "vendor/dep"}, []string{"vendor/dep"})
 	if !excluder.excluded("state/.dep-git/config") {
 		t.Error("excluded(state/.dep-git/config) = false for the directory a nested `.git` symlink resolves to, want true")
@@ -186,7 +186,7 @@ func TestGitDirExcluderKeepsPackageBehindADotGitSymlinkListable(t *testing.T) {
 	writeFile(t, repo, "src/app.go", "package src\n")
 	symlinkOrSkip(t, "src", filepath.Join(repo, ".git"))
 
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	for _, rel := range []string{"src", "src/app.go"} {
 		if excluder.excluded(rel) {
 			t.Errorf("excluded(%q) = true, want false: a `.git` link to an ordinary package is not a git directory", rel)

@@ -148,7 +148,7 @@ func TestGitDirExcluderExcludesGitFilesWhenAPointerNamesTheRepositoryRoot(t *tes
 			writeFile(t, repo, filepath.Join(testCase.dir, ".git"), testCase.pointer)
 			writeFile(t, repo, "src/app.go", "package src\n")
 
-			excluder := newGitDirExcluder(repo)
+			excluder := newGitDirExcluder(t.Context(), repo)
 			excluder.observeListedPaths([]string{"config", "HEAD", "hooks/post-commit.go", "src/app.go"}, nil)
 			if testCase.dir != "" {
 				excluder.observe(testCase.dir)

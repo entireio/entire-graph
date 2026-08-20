@@ -34,7 +34,7 @@ func TestGitDirExcluderSweepsInsideATreeItAlreadyExcluded(t *testing.T) {
 	writeFile(t, repo, "vendorgit/dep/.git", "gitdir: ../../.dep-git\n")
 	writeHeadlessGitDirFixture(t, repo, ".dep-git")
 
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	excluder.unlistedRoots = []string{".dep-git/", "vendorgit/", "src/app.go"}
 	excluder.gitAnsweredRoots = true
 	excluder.observeListedPaths([]string{
@@ -95,7 +95,7 @@ func TestGitDirExcluderSweepsInsideADotGitNamedTree(t *testing.T) {
 	writeFile(t, repo, "vendor/pkg/.git/dep/.git", "gitdir: ../../../../.dep-git\n")
 	writeHeadlessGitDirFixture(t, repo, ".dep-git")
 
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	excluder.unlistedRoots = []string{".dep-git/", "vendor/", "src/app.go"}
 	excluder.gitAnsweredRoots = true
 	excluder.observeListedPaths([]string{".dep-git/config", "src/app.go"}, nil)
@@ -124,7 +124,7 @@ func TestSweepInsideExcludedTreeIndexesNothingFromIt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files, err := worktreeSourceFiles(t.Context(), repo, ignoreMatcher{}, false)
+	files, _, err := worktreeSourceFiles(t.Context(), repo, ignoreMatcher{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

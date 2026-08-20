@@ -36,7 +36,7 @@ func TestGitDirPointerTargetReadsAGitfileThroughASymlink(t *testing.T) {
 	writeFile(t, repo, "realpointer", "gitdir: .real-git\n")
 	symlinkOrSkip(t, "realpointer", filepath.Join(repo, ".git"))
 
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	if !excluder.excluded(".real-git/config") {
 		t.Error(`excluded(".real-git/config") = false, want true: git reads a symlinked gitfile and resolves this directory`)
 	}
@@ -55,7 +55,7 @@ func TestGitDirExcluderReadsANestedGitfileThroughASymlink(t *testing.T) {
 	writeFile(t, repo, "src/app.go", "package src\n")
 	symlinkOrSkip(t, "pointer", filepath.Join(repo, "libs", "dep", ".git"))
 
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	excluder.observeListedPaths([]string{"src/app.go", "state/.dep-git/config", "libs/dep/pointer"}, nil)
 	if !excluder.excluded("state/.dep-git/config") {
 		t.Error(`excluded("state/.dep-git/config") = false, want true: the nested gitfile is reached through a symlink`)
@@ -93,7 +93,7 @@ func TestGitDirExcluderIgnoresASymlinkedGitPathGitRefuses(t *testing.T) {
 			writeFile(t, repo, "src/app.go", "package src\n")
 			testCase.setup(t, repo)
 
-			excluder := newGitDirExcluder(repo)
+			excluder := newGitDirExcluder(t.Context(), repo)
 			if excluder.excluded("src/app.go") {
 				t.Error(`excluded("src/app.go") = true, want false: git names no directory here`)
 			}

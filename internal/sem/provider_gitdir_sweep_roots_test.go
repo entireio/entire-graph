@@ -64,7 +64,7 @@ func TestGitDirExcluderSweepsAnIgnoredTreeWhenGitDidNotAnswer(t *testing.T) {
 	writeFile(t, repo, "build/dep/.git", "gitdir: ../../.dep-git\n")
 	writeFile(t, repo, "pkg/source.go", "package pkg\n")
 
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	// gitAnsweredRoots deliberately left false: this is the state gitSweepRoots
 	// now reports when either listing failed.
 	excluder.observeListedPaths([]string{"pkg/source.go", ".dep-git/config", ".gitignore"}, nil)

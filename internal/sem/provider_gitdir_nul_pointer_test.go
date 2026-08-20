@@ -69,7 +69,7 @@ func TestGitDirExcluderResolvesANULTerminatedPointer(t *testing.T) {
 	writeFile(t, repo, ".git", "gitdir: .repo-git\x00junkjunk\n")
 	writeHeadlessGitDirFixture(t, repo, ".repo-git")
 
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	excluder.unlistedRoots = []string{".repo-git/", "tracked.go"}
 	excluder.gitAnsweredRoots = true
 	excluder.observeListedPaths([]string{".repo-git/config", "tracked.go"}, nil)

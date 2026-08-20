@@ -85,7 +85,7 @@ func TestGitDirExcluderExcludesCaseFoldedGitDirName(t *testing.T) {
 	if !foldsCase(repo, ".GIT") {
 		t.Skip("filesystem is case-sensitive: `.GIT` is a distinct directory, not an alias of `.git`")
 	}
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	excluder.observeListedPaths([]string{".GIT/config", ".GIT/hooks/post-commit.go", "src/app.go"}, nil)
 	for _, rel := range []string{".GIT/config", ".GIT/hooks/post-commit.go"} {
 		if !excluder.excluded(rel) {
@@ -113,7 +113,7 @@ func TestGitDirExcluderObservesDirectoriesGitListsNothingUnder(t *testing.T) {
 	// Exactly what `git ls-files --cached --others --exclude-standard` reports:
 	// no entry mentions `nested` at all.
 	listed := []string{".dep-git/config", ".dep-git/hooks/post-commit.go", "src/app.go"}
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	excluder.observeListedPaths(listed, nil)
 	for _, rel := range []string{".dep-git/config", ".dep-git/hooks/post-commit.go"} {
 		if !excluder.excluded(rel) {
@@ -136,7 +136,7 @@ func TestGitDirExcluderSweepSkipsVendoredTrees(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "node_modules/dep/lib.js", "module.exports = {}\n")
 	writeFile(t, repo, "src/app.go", "package src\n")
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	excluder.observeListedPaths([]string{"src/app.go"}, nil)
 	if excluder.excluded("src/app.go") {
 		t.Error(`excluded("src/app.go") = true, want false`)

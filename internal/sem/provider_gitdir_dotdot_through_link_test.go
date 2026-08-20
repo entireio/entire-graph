@@ -64,7 +64,7 @@ func TestGitDirExcluderExcludesATargetReachedThroughASymlinkedDotDot(t *testing.
 	writeFile(t, repo, "nested/.git", "gitdir: link/../.real-git\n")
 	writeFile(t, repo, "src/app.go", "package src\n")
 
-	excluder := newGitDirExcluder(repo)
+	excluder := newGitDirExcluder(t.Context(), repo)
 	excluder.observeListedPaths([]string{"src/app.go", "nested/sub/.real-git/config", "nested"}, []string{"nested"})
 	if !excluder.excluded("nested/sub/.real-git/config") {
 		t.Error("excluded(nested/sub/.real-git/config) = false, want true: git names that directory")

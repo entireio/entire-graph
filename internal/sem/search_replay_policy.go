@@ -207,7 +207,7 @@ func observeSearchReplayWorktreeCorpus(
 		}
 	} else {
 		dirTracked := func(string) bool { return false }
-		if err := visitWalkWorktreeFiles(repo, ignores, dirTracked, collector.add); err != nil {
+		if _, err := visitWalkWorktreeFiles(ctx, repo, ignores, dirTracked, collector.add); err != nil {
 			return "", fmt.Errorf("observe filesystem worktree corpus for replay: %w", err)
 		}
 	}
