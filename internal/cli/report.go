@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/entireio/entire-graph/internal/sem"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 // renderGraphReport renders a snapshot as GRAPH_REPORT.md: the thirty-second
@@ -100,7 +101,12 @@ func writeCountTable(out *strings.Builder, title, keyHeader string, counts map[s
 		shown = shown[:limit]
 	}
 	for _, key := range shown {
-		fmt.Fprintf(out, "| %s | %d |\n", key, counts[key])
+		// termsafe.Line, because one key here is a Git pathname — the file column of
+		// "Top files by symbol count" — and a Git pathname may hold any byte but NUL
+		// and '/'. A newline in it would end the table row and make the REPOSITORY
+		// the author of a whole line of a file the caller asked this tool to write.
+		// Counting stays on the raw key so escaping cannot merge two files into one row.
+		fmt.Fprintf(out, "| %s | %d |\n", termsafe.Line(key), counts[key])
 	}
 	if len(shown) < len(keys) {
 		fmt.Fprintf(out, "\n%d more not shown.\n", len(keys)-len(shown))
