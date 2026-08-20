@@ -680,17 +680,32 @@ func resolveContainedNameWithOptions(root *os.Root, name string, allowMissingDir
 			resolved = append(resolved, component)
 			continue
 		}
-		target, err := root.Readlink(candidate)
-		if err != nil {
-			// Since Go 1.23, Windows reports junctions and other name-surrogate
-			// reparse points as ModeIrregular. Readlink distinguishes a junction,
-			// which participates in path resolution, from an irregular reparse point
-			// that does not; preserve the latter for the ordinary type check.
-			if isWindowsReparsePoint && !isSymlink {
-				resolved = append(resolved, component)
-				continue
+		var target string
+		if runtime.GOOS == "windows" {
+			rawTarget, available, rawErr := windowsRawReparseTarget(root.Name(), candidate, info)
+			if rawErr != nil {
+				return "", fmt.Errorf("%w: cannot inspect raw Windows reparse target: %v", errUnresolvableAlias, rawErr)
 			}
-			return "", err
+			if !available {
+				// Since Go 1.23, Windows reports every reparse point as
+				// ModeIrregular. Preserve tags that do not participate in path
+				// resolution for the ordinary file-type check below.
+				if isWindowsReparsePoint && !isSymlink {
+					resolved = append(resolved, component)
+					continue
+				}
+				return "", fmt.Errorf("%w: cannot inspect raw Windows reparse target", errUnresolvableAlias)
+			}
+			// Resolve the raw target from the same reparse-buffer snapshot that was
+			// screened, so malformed offsets never reach Readlink's unsafe parser and
+			// an in-place update cannot pair an unchecked target with this walk.
+			target = rawTarget
+		} else {
+			var readErr error
+			target, readErr = root.Readlink(candidate)
+			if readErr != nil {
+				return "", readErr
+			}
 		}
 		if runtime.GOOS == "windows" {
 			linkDirectory, ok := windowsLinkRequiresDirectory(info)
@@ -1112,15 +1127,28 @@ func resolvePathAndCountLinks(path string) (string, int, error) {
 			continue
 		}
 
-		link, err := os.Readlink(dest)
-		if err != nil {
-			if isWindowsReparsePoint && !isSymlink {
-				if !info.IsDir() && end < len(path) {
-					return "", 0, &fs.PathError{Op: "resolve", Path: original, Err: syscall.ENOTDIR}
-				}
-				continue
+		var link string
+		if runtime.GOOS == "windows" {
+			rawTarget, available, rawErr := windowsRawReparseTargetAtPath(dest, info)
+			if rawErr != nil {
+				return "", 0, rawErr
 			}
-			return "", 0, err
+			if !available {
+				if isWindowsReparsePoint && !isSymlink {
+					if !info.IsDir() && end < len(path) {
+						return "", 0, &fs.PathError{Op: "resolve", Path: original, Err: syscall.ENOTDIR}
+					}
+					continue
+				}
+				return "", 0, fmt.Errorf("cannot inspect raw Windows reparse target")
+			}
+			link = rawTarget
+		} else {
+			var readErr error
+			link, readErr = os.Readlink(dest)
+			if readErr != nil {
+				return "", 0, readErr
+			}
 		}
 		hops++
 		if hops > 255 {

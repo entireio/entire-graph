@@ -979,7 +979,15 @@ func TestInitAgentsCreatesDanglingGuideDirectoryAliasParents(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := t.TempDir()
+			// Windows records whether a symlink targets a file or directory when
+			// the link is created. Establish the directory type first, then remove
+			// the target so every platform exercises the same dangling directory
+			// alias that MkdirAll is expected to recreate.
+			mkdirAllForTest(t, filepath.Join(repo, baseTarget))
 			symlinkForTest(t, tt.target, filepath.Join(repo, ".entire"))
+			if err := os.RemoveAll(filepath.Join(repo, "tooling")); err != nil {
+				t.Fatal(err)
+			}
 
 			runInitAgentsForTest(t, repo)
 
@@ -994,7 +1002,11 @@ func TestInitAgentsCreatesDanglingGuideDirectoryAliasParents(t *testing.T) {
 func TestInitAgentsAcceptsParentCreatedByPlannedMkdirAll(t *testing.T) {
 	skipIfSymlinksUnrepresentable(t)
 	repo := t.TempDir()
+	mkdirAllForTest(t, filepath.Join(repo, "nested", "activation"))
 	symlinkForTest(t, filepath.Join("nested", "activation"), filepath.Join(repo, ".entire"))
+	if err := os.RemoveAll(filepath.Join(repo, "nested")); err != nil {
+		t.Fatal(err)
+	}
 	symlinkForTest(t, filepath.Join("nested", "shared.md"), filepath.Join(repo, "AGENTS.md"))
 
 	runInitAgentsForTest(t, repo)
@@ -1128,8 +1140,9 @@ func TestInitAgentsPreservesTerminalSeparatorAfterAbsoluteAliasMapping(t *testin
 	fileAlias := filepath.Join(base, "config-alias")
 	symlinkForTest(t, victim, fileAlias)
 	symlinkForTest(t, rawJoin(fileAlias, ""), filepath.Join(repo, "AGENTS.md"))
-	if _, err := os.Stat(filepath.Join(repo, "AGENTS.md")); err == nil {
-		t.Fatal("test alias unexpectedly resolves despite requiring a regular file to be a directory")
+	if err := kernelReachesRawPath(t, repo, "AGENTS.md"); err == nil {
+		target, readErr := os.Readlink(filepath.Join(repo, "AGENTS.md"))
+		t.Skipf("the host resolves the trailing-separator alias %q (readlink error %v)", target, readErr)
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -1889,7 +1902,11 @@ func TestInitAgentsRefusesManagedTargetCollisionsBeforeWriting(t *testing.T) {
 
 	t.Run("instruction is planned directory ancestor", func(t *testing.T) {
 		repo := t.TempDir()
+		mkdirAllForTest(t, filepath.Join(repo, "nested", "activation"))
 		symlinkForTest(t, filepath.Join("nested", "activation"), filepath.Join(repo, ".entire"))
+		if err := os.RemoveAll(filepath.Join(repo, "nested")); err != nil {
+			t.Fatal(err)
+		}
 		symlinkForTest(t, "nested", filepath.Join(repo, "AGENTS.md"))
 
 		var stdout, stderr bytes.Buffer
@@ -1981,7 +1998,11 @@ func TestInitAgentsAllowsCaseDistinctMissingManagedTargets(t *testing.T) {
 		if filesystemAliasesNamesForTest(t, repo, "CaseProbe", "caseprobe") {
 			t.Skip("filesystem aliases names that differ only in case")
 		}
+		mkdirAllForTest(t, filepath.Join(repo, "nested", "activation"))
 		symlinkForTest(t, filepath.Join("nested", "activation"), filepath.Join(repo, ".entire"))
+		if err := os.RemoveAll(filepath.Join(repo, "nested")); err != nil {
+			t.Fatal(err)
+		}
 		symlinkForTest(t, "NESTED", filepath.Join(repo, "AGENTS.md"))
 
 		runInitAgentsForTest(t, repo)

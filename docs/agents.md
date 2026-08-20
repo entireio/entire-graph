@@ -89,9 +89,12 @@ A relative symlink target may not step above the project root and later
 re-enter it through another alias. On Windows, a UNC target whose share cannot
 be matched to the repository's own UNC spelling is refused before it is probed;
 this means a mapped-drive checkout must use that mapped-drive spelling rather
-than an UNC spelling of the same directory. Windows extended/device path
-spellings are also refused because their parsing rules cannot be preserved by
-the confined relative operation.
+than an UNC spelling of the same directory. A Windows reparse target is also
+refused when its authoritative NT spelling cannot be represented without
+changing meaning in the confined relative operation. This includes raw
+alternate separators, absolute NT dot components, trailing dots or spaces, and
+non-DOS device namespaces; an informational extended-path display name alone
+does not change the target Windows resolves.
 
 Each distinct file must contain either no Entire Graph marker tokens or exactly
 one begin marker followed by one end marker. Marker tokens in examples, code
