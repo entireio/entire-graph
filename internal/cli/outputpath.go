@@ -113,6 +113,12 @@ func (target repoOutputTarget) insideRepo() bool { return target.root != "" }
 // So a failure to ASK is not evidence of an ANSWER. discoverCheckoutRoot reads the
 // same thing git would, from the filesystem, and the fallback is taken only once that
 // finds nothing either.
+//
+// This function answers with ONE root, and one root is not always the whole answer:
+// when --repo is spelled through a symlink, the checkout the SPELLING sits in and the
+// checkout the link RESOLVES into are two different untrusted trees and a single root
+// leaves the other one unconfined. confinementRoots is what the write path uses; this
+// is the root it puts first.
 func confinementRoot(ctx context.Context, repoRoot string) string {
 	if repoRoot == "" {
 		return repoRoot
@@ -127,27 +133,124 @@ func confinementRoot(ctx context.Context, repoRoot string) string {
 	return repoRoot
 }
 
+// confinementRoots is the whole boundary a write is classified against: EVERY
+// checkout the --repo spelling implicates, not just the first one found.
+//
+// One root was the bug. --repo may be spelled through a symlink, and then there are
+// TWO checkouts, both untrusted, and neither is a subtree of the other:
+//
+//   - the checkout the link RESOLVES into, which is the tree that actually gets
+//     indexed. `<unrelated>/alias` -> `<hostile>/sub`: the lexical `.git` search
+//     stops at <unrelated>, the boundary becomes a checkout the scan never reads,
+//     and `--report <hostile>/GRAPH_REPORT.md` classifies as caller-owned and takes
+//     the unconfined write straight through the committed link.
+//   - the checkout the SPELLING sits in, which is the tree that COMMITTED the link.
+//     `<hostile>/alias` -> `<other>/sub`: git resolves the alias and reports <other>,
+//     so the boundary is the tree the caller was pointed AT, and
+//     `--report <hostile>/GRAPH_REPORT.md` — a link the same clone committed
+//     alongside the alias — is outside it and takes the unconfined write.
+//
+// Both were live, and each is the other's mirror: the first needs git to be
+// unavailable (the lexical search only runs when rev-parse cannot answer), the
+// second happens WITH git, because git answers about the resolved directory and
+// says nothing about the one the caller spelled through. Picking either root alone
+// closes one and leaves the other open, which is why this returns both. A path is
+// repository-controlled if it is inside ANY of them; the write is confined under
+// the first that contains it.
+//
+// The order is confinementRoot's answer first — git's, when git could be asked —
+// so the ordinary single-checkout invocation is classified exactly as before and
+// the extra roots only ever ADD refusals.
+func confinementRoots(ctx context.Context, repoRoot string) []string {
+	roots := []string{confinementRoot(ctx, repoRoot)}
+	if repoRoot == "" {
+		return roots
+	}
+	for _, candidate := range checkoutRoots(repoRoot) {
+		if !sameDirectory(candidate, roots[0]) {
+			roots = append(roots, candidate)
+		}
+	}
+	return roots
+}
+
 // discoverCheckoutRoot finds the top level of the checkout dir sits in without
 // running git: the nearest ancestor holding a `.git` entry, which is git's own
 // discovery rule (`setup_git_directory`), so the boundary it reports is the one
 // `rev-parse --show-toplevel` would have reported when git can be asked at all.
 //
-// The entry is looked for with Lstat and is not required to be a directory: a
-// linked worktree and a submodule both spell `.git` as a FILE holding `gitdir:`,
-// and a repository is no less untrusted for being checked out that way.
-//
-// Both chains are walked, named then resolved, for the reason containedRel walks
-// two: --repo may be an alias INTO a checkout (`/tmp/alias` -> `<checkout>/sub`),
-// whose lexical ancestors are /tmp's and never reach the checkout.
+// It reports the FIRST of checkoutRoots, which is the named chain's, and that is a
+// preference rather than the answer: the named chain is what protects a --repo that
+// is a committed symlink pointing OUT of its checkout (`<hostile>/link` -> a plain
+// directory elsewhere), where the resolved chain finds no checkout at all and
+// falling back to --repo itself would leave the hostile checkout's own root-level
+// files caller-owned. The chain it does not pick is not discarded — confinementRoots
+// keeps it as a second boundary.
 func discoverCheckoutRoot(dir string) (string, bool) {
-	if top, ok := gitEntryAncestor(dir); ok {
-		return top, true
-	}
-	resolved, err := filepath.EvalSymlinks(dir)
-	if err != nil || resolved == dir {
+	found := checkoutRoots(dir)
+	if len(found) == 0 {
 		return "", false
 	}
-	return gitEntryAncestor(resolved)
+	return found[0], true
+}
+
+// checkoutRoots reports the checkout at the top of each chain that reaches dir: the
+// NAMED one first, then the RESOLVED one when the two differ.
+//
+// Two chains are walked for the reason containedRel walks two: one directory has
+// many names. --repo may be an alias INTO a checkout (`/tmp/alias` ->
+// `<checkout>/sub`), whose lexical ancestors are /tmp's and never reach the
+// checkout; and it may be a link OUT of one, whose resolved ancestors never reach
+// the checkout that committed it. Neither chain subsumes the other.
+//
+// The `.git` entry is looked for with Lstat and is not required to be a directory:
+// a linked worktree and a submodule both spell `.git` as a FILE holding `gitdir:`,
+// and a repository is no less untrusted for being checked out that way.
+func checkoutRoots(dir string) []string {
+	var roots []string
+	if top, ok := gitEntryAncestor(dir); ok {
+		roots = append(roots, top)
+	}
+	// A resolution failure is not a second answer: EvalSymlinks fails on exactly the
+	// paths the kernel cannot walk either (a missing component, a link loop, a
+	// directory that cannot be searched), and such a --repo is not indexable at all.
+	// The named chain above has already reported what can be read from the spelling.
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil || resolved == dir {
+		return roots
+	}
+	if top, ok := gitEntryAncestor(resolved); ok && !sameDirectory(top, first(roots)) {
+		roots = append(roots, top)
+	}
+	return roots
+}
+
+// first is the first element of roots, or "" when there is none.
+func first(roots []string) string {
+	if len(roots) == 0 {
+		return ""
+	}
+	return roots[0]
+}
+
+// sameDirectory reports whether two paths name one directory, by identity rather
+// than by name — the two chains reach the same checkout through different spellings
+// far more often than they reach different ones (a checkout under macOS's /tmp is
+// also under /private/tmp), and adding a second boundary that IS the first only
+// costs a second walk.
+func sameDirectory(left, right string) bool {
+	if left == right {
+		return true
+	}
+	leftInfo, err := os.Stat(left)
+	if err != nil {
+		return false
+	}
+	rightInfo, err := os.Stat(right)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(leftInfo, rightInfo)
 }
 
 // gitEntryAncestor climbs dir's own parents looking for the nearest one that holds a
@@ -800,7 +903,7 @@ func refuseRepositorySymlinks(root *os.Root, target repoOutputTarget) error {
 func writeOutputFile(
 	ctx context.Context, repoRoot, path string, data []byte, perm os.FileMode, createParents bool,
 ) error {
-	return writeOutputFileUnder(confinementRoot(ctx, repoRoot), path, data, perm, createParents)
+	return writeOutputFileUnderAny(confinementRoots(ctx, repoRoot), path, data, perm, createParents)
 }
 
 // writeOutputFileUnder is writeOutputFile with the boundary already resolved. The
@@ -811,21 +914,55 @@ func writeOutputFile(
 func writeOutputFileUnder(
 	confinement, path string, data []byte, perm os.FileMode, createParents bool,
 ) error {
-	target, err := classifyOutputPath(confinement, path)
-	if err != nil {
-		return err
+	return writeOutputFileUnderAny([]string{confinement}, path, data, perm, createParents)
+}
+
+// writeOutputFileUnderAny classifies path against every boundary confinementRoots
+// found and writes it under the FIRST that owns it.
+//
+// "Outside" has to mean outside them ALL, because each root is a checkout the
+// invocation implicated and a path inside any of them was chosen by a repository
+// rather than by the caller. A refusal from any root is returned as it is reached:
+// classifyOutputPath only errors when it has recognised a repository-controlled
+// route, and that verdict does not become weaker because some other boundary would
+// have called the same path caller-owned.
+func writeOutputFileUnderAny(
+	confinements []string, path string, data []byte, perm os.FileMode, createParents bool,
+) error {
+	var outside repoOutputTarget
+	decided := false
+	for _, confinement := range confinements {
+		target, err := classifyOutputPath(confinement, path)
+		if err != nil {
+			return err
+		}
+		if target.insideRepo() {
+			return writeConfinedOutputFile(target, data, perm, createParents)
+		}
+		if !decided {
+			outside, decided = target, true
+		}
 	}
-	if !target.insideRepo() {
-		if createParents {
-			if directory := filepath.Dir(target.path); directory != "" && directory != "." {
-				if err := os.MkdirAll(directory, 0o755); err != nil {
-					return err
-				}
+	if !decided {
+		// confinementRoots never returns an empty list, and writeOutputFileUnder
+		// passes exactly one. Classifying against nothing would silently write
+		// unconfined, so it is an error rather than a default.
+		return fmt.Errorf("refusing to write %s: no confinement boundary was resolved", path)
+	}
+	if createParents {
+		if directory := filepath.Dir(outside.path); directory != "" && directory != "." {
+			if err := os.MkdirAll(directory, 0o755); err != nil {
+				return err
 			}
 		}
-		return os.WriteFile(target.path, data, perm)
 	}
+	return os.WriteFile(outside.path, data, perm)
+}
 
+// writeConfinedOutputFile writes a target that one of the boundaries owns.
+func writeConfinedOutputFile(
+	target repoOutputTarget, data []byte, perm os.FileMode, createParents bool,
+) error {
 	root, err := os.OpenRoot(target.root)
 	if err != nil {
 		return err

@@ -1660,3 +1660,162 @@ func TestWriteOutputFileDoesNotFollowALinkSwappedInAfterTheCheck(t *testing.T) {
 		t.Fatalf("the repository's own git configuration was rewritten through a link swapped in after the check:\n%s", after)
 	}
 }
+
+// pathWithoutGit returns a PATH directory holding `sh` and nothing else.
+//
+// `verify` runs its test command through `sh -c`, so emptying PATH outright would
+// fail the verb for a reason that has nothing to do with the boundary. Keeping the
+// shell and dropping git reproduces the configuration confinementRoot is written
+// for: a machine where `verify` works and `rev-parse` cannot be asked.
+func pathWithoutGit(t *testing.T) string {
+	t.Helper()
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("this machine has no sh to run the verify test command with")
+	}
+	dir := t.TempDir()
+	if err := os.Symlink(shell, filepath.Join(dir, "sh")); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestRecordBaselineStaysConfinedWhenRepoAliasesIntoAnotherCheckout is the
+// regression for the seventh spelling of the original escape, and it attacks the
+// function that closed the fourth.
+//
+// discoverCheckoutRoot walked the NAMED chain first and stopped at the first
+// ancestor holding a `.git` entry. Point --repo at a link that lives in one
+// checkout and resolves into another, and that first hit is the checkout the scan
+// never reads: the tree that IS indexed then sits entirely outside the boundary, so
+// `--record-baseline <indexed>/GRAPH_REPORT.md` classified as caller-owned and took
+// the unconfined write straight through the link the clone committed there.
+//
+// Git has to be unaskable for the lexical search to decide at all, which is not a
+// contrivance — `verify` needs no git, and that is exactly why the search exists.
+// The premise is checked at runtime before it is relied on.
+func TestRecordBaselineStaysConfinedWhenRepoAliasesIntoAnotherCheckout(t *testing.T) {
+	requireSymlinkSupport(t)
+	parent := t.TempDir()
+	unrelated := outputPathRepoAt(t, filepath.Join(parent, "unrelated"))
+	indexed := outputPathRepoAt(t, filepath.Join(parent, "indexed"))
+	sub := filepath.Join(indexed, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	victim, victimContent := plantVictim(t)
+	baseline := filepath.Join(indexed, "GRAPH_REPORT.md")
+	if err := os.Symlink(victim, baseline); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(unrelated, "alias")
+	if err := os.Symlink(sub, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PATH", pathWithoutGit(t))
+	if _, err := gitutil.RepoRoot(t.Context(), alias); err == nil {
+		t.Fatal("git still ran; the premise of this test is that it cannot be asked")
+	}
+
+	err := Run(t.Context(), Options{
+		Version: "test-version",
+		Env:     EntireEnv{RepoRoot: indexed},
+		Stdout:  &bytes.Buffer{},
+	}, []string{"verify", "--repo", alias, "--test", "true", "--record-baseline", baseline})
+	if err == nil {
+		t.Fatal("verify --record-baseline followed a symlink committed in the checkout it indexed")
+	}
+	assertVictimIntact(t, victim, victimContent)
+	info, lstatErr := os.Lstat(baseline)
+	if lstatErr != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the repository's own entry was replaced rather than refused: %v", lstatErr)
+	}
+}
+
+// TestRecordBaselineStaysConfinedInTheCheckoutThatCommittedTheAlias is the same
+// escape from the other side, and it needs no failure of git at all.
+//
+// `rev-parse --show-toplevel` answers about the directory the alias RESOLVES into,
+// because git chdirs and reads the physical path; it says nothing about the
+// checkout the caller was spelling THROUGH. A hostile clone that commits both the
+// alias and the report link therefore had its own root-level files classified as
+// caller-owned while git was working perfectly, which is why one boundary was never
+// enough.
+func TestRecordBaselineStaysConfinedInTheCheckoutThatCommittedTheAlias(t *testing.T) {
+	requireSymlinkSupport(t)
+	parent := t.TempDir()
+	hostile := outputPathRepoAt(t, filepath.Join(parent, "hostile"))
+	other := outputPathRepoAt(t, filepath.Join(parent, "other"))
+	sub := filepath.Join(other, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	victim, victimContent := plantVictim(t)
+	baseline := filepath.Join(hostile, "GRAPH_REPORT.md")
+	if err := os.Symlink(victim, baseline); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(hostile, "alias")
+	if err := os.Symlink(sub, alias); err != nil {
+		t.Fatal(err)
+	}
+	git(t, hostile, "add", ".")
+	git(t, hostile, "commit", "-m", "hostile alias and hostile report path")
+
+	// The premise, at runtime: git runs, and reports the OTHER checkout.
+	top, err := gitutil.RepoRoot(t.Context(), alias)
+	if err != nil {
+		t.Fatalf("the premise of this test is that git can be asked: %v", err)
+	}
+	assertSameDirectory(t, top, other, "git top level")
+
+	err = Run(t.Context(), Options{
+		Version: "test-version",
+		Env:     EntireEnv{RepoRoot: hostile},
+		Stdout:  &bytes.Buffer{},
+	}, []string{"verify", "--repo", alias, "--test", "true", "--record-baseline", baseline})
+	if err == nil {
+		t.Fatal("verify --record-baseline followed a symlink committed by the checkout --repo was spelled through")
+	}
+	assertVictimIntact(t, victim, victimContent)
+	info, lstatErr := os.Lstat(baseline)
+	if lstatErr != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the repository's own entry was replaced rather than refused: %v", lstatErr)
+	}
+}
+
+// TestConfinementRootsKeepBothChainsCheckouts pins the boundary itself rather than
+// the verb: when the two chains reach different checkouts BOTH are returned, and
+// when they reach the same one it is returned once.
+func TestConfinementRootsKeepBothChainsCheckouts(t *testing.T) {
+	requireSymlinkSupport(t)
+	parent := t.TempDir()
+	spelled := outputPathRepoAt(t, filepath.Join(parent, "spelled"))
+	resolvedRepo := outputPathRepoAt(t, filepath.Join(parent, "resolved"))
+	sub := filepath.Join(resolvedRepo, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(spelled, "alias")
+	if err := os.Symlink(sub, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	roots := confinementRoots(t.Context(), alias)
+	if len(roots) != 2 {
+		t.Fatalf("confinementRoots kept %d boundaries for a --repo that aliases across checkouts: %q", len(roots), roots)
+	}
+	assertSameDirectory(t, roots[0], resolvedRepo, "first boundary")
+	assertSameDirectory(t, roots[1], spelled, "second boundary")
+
+	// The ordinary invocation is unchanged: one checkout, one boundary, however
+	// many names the temp directory reaches it by.
+	plainSub := filepath.Join(resolvedRepo, "plain")
+	if err := os.MkdirAll(plainSub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := confinementRoots(t.Context(), plainSub); len(got) != 1 {
+		t.Fatalf("an ordinary subdirectory produced %d boundaries: %q", len(got), got)
+	}
+}
