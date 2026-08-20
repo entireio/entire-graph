@@ -769,29 +769,32 @@ func searchDeclCardFollowsSpan(span, _ string) bool {
 // evaluated on the same pass over the same line, over the Go module cache, one node_modules tree and
 // this org's five working trees plus this branch's worktree, on Go 1.26.5:
 //
-//	282,375 files   107,165,132 lines   both 33   this one only 100   narrow one only 0
+//	285,654 files   108,590,424 lines   both 33   this one only 109   narrow one only 0
 //
 // "narrow one only 0" is a PROOF here and not an observation: the rule only ever ADDS a verdict —
 // the two passes it precedes are unchanged and are still asked — so the result is a superset by
 // construction.
 //
 // THE INSTRUMENT, because a hundred hits are worth nothing without the population they came out of:
-// 143 lines of the 107.2M hold a bidi control at all, so the rule fired on 143 lines and changed the
-// verdict on 100 of them. NINE of those hundred are valid UTF-8, in seven files, and not one is
-// source a reader would recognise:
+// 155 lines of the 108.6M hold a bidi control at all, so the rule fired on 155 lines and changed the
+// verdict on 109 of them, spread over 28 files. Counted per file rather than sampled:
 //
-//	91  bytes inside compressed or generated payloads that are not text at all — a Huffman test
-//	    corpus (dsnet/compress testdata), two minified worker .js.map bundles — where `e2 80 ae`
-//	    is data rather than a character
-//	 4  vite's generated htmlDecodeTree entity table, which ships the controls as literals
-//	 2  an untracked agent transcript (.entire/metadata/*/prompt.txt) where a pasted path arrived
-//	    wrapped in U+200E, which search never quotes
-//	 1  a base64-ish line of the same Huffman corpus
-//	 1  THIS BRANCH's own search_forgery_bidi_test.go, quoting the bypass it closes
+//	100  lines that are not valid UTF-8 at all, inside files that are not text: four PDFs (41),
+//	     six copies of a compressed SHA-3 KAT fixture keccakKats.json.deflate (48), four copies of
+//	     a DEFLATE token dump tokens.bin (4), four copies of Go's own string_escaped.json.zst (4),
+//	     and three sumdb tile files (3). `e2 80 ae` there is data, not a character.
+//	  2  minified worker .js.map bundles in node_modules (one line each)
+//	  2  vite's generated htmlDecodeTree entity table, which ships the controls as literals
+//	  1  an untracked agent transcript (.entire/metadata/*/prompt.txt) where a pasted path arrived
+//	     wrapped in U+200E, which search never quotes
+//	  1  a base64-ish line of a Huffman test corpus (dsnet/compress testdata)
+//	  3  THIS BRANCH's own search_forgery_bidi_test.go, quoting the bypasses it closes
 //
-// The last one is the only hit in a TRACKED file anywhere, and it is this branch documenting the row
-// it quarantines — the same shape the line-separator round measured. The population search quotes
-// does not hold this rune today; the population an attacker writes is the one the rule is for.
+// The last three are the only hits in a TRACKED file anywhere, and they are this branch documenting
+// the rows it quarantines — the same shape the line-separator round measured. Every other hit is in
+// the module cache or behind a .gitignore (node_modules/, .entire/metadata/). The population search
+// quotes does not hold this rune today; the population an attacker writes is the one the rule is
+// for.
 
 // searchIsRankField matches the `N.` field that opens a ranked record.
 func searchIsRankField(field string) bool {
