@@ -86,22 +86,81 @@ func (target repoOutputTarget) insideRepo() bool { return target.root != "" }
 //
 // The fallback — repoRoot unchanged — is load-bearing rather than defensive.
 // `verify` runs the caller's own test command in any directory they name, and
-// that directory is not required to be a git repository at all; a missing git
-// binary, a bare repository and a plain directory must all keep working. Falling
-// back can only NARROW the confined region to the directory the caller named, so
-// no path that was confined before becomes unconfined by it.
+// that directory is not required to be a git repository at all; a bare repository
+// and a plain directory must both keep working.
+//
+// It is NOT, as this comment used to claim, free of consequence for being a
+// narrowing. Narrowing is safe only where there is nothing above repoRoot to
+// confine against; when repoRoot IS inside a checkout, narrowing to it is the
+// original escape, because the checkout's root-level files then sit outside the
+// narrowed boundary, classify as caller-owned and take the unconfined write,
+// straight through whatever symlink the clone committed there.
+//
+// Asking git is not a reliable way to find that out, because
+// the question is answered by an EXTERNAL PROGRAM that fails for reasons which have
+// nothing to do with the answer: no git on PATH (`verify` needs none, and indexing a
+// mounted tree from a minimal image is an ordinary way to run this), a checkout whose
+// files another uid owns, so every git command in it stops at `detected dubious
+// ownership`, or a --repo that is a committed symlink to a directory outside the
+// checkout, where `rev-parse` runs somewhere that is not a repository at all.
+//
+// So a failure to ASK is not evidence of an ANSWER. discoverCheckoutRoot reads the
+// same thing git would, from the filesystem, and the fallback is taken only once that
+// finds nothing either.
 func confinementRoot(ctx context.Context, repoRoot string) string {
 	if repoRoot == "" {
 		return repoRoot
 	}
 	top, err := gitutil.RepoRoot(ctx, repoRoot)
-	if err != nil || strings.TrimSpace(top) == "" {
-		return repoRoot
+	if err == nil && strings.TrimSpace(top) != "" && containsByIdentity(top, repoRoot) {
+		return top
 	}
-	if !containsByIdentity(top, repoRoot) {
-		return repoRoot
+	if discovered, ok := discoverCheckoutRoot(repoRoot); ok && containsByIdentity(discovered, repoRoot) {
+		return discovered
 	}
-	return top
+	return repoRoot
+}
+
+// discoverCheckoutRoot finds the top level of the checkout dir sits in without
+// running git: the nearest ancestor holding a `.git` entry, which is git's own
+// discovery rule (`setup_git_directory`), so the boundary it reports is the one
+// `rev-parse --show-toplevel` would have reported when git can be asked at all.
+//
+// The entry is looked for with Lstat and is not required to be a directory: a
+// linked worktree and a submodule both spell `.git` as a FILE holding `gitdir:`,
+// and a repository is no less untrusted for being checked out that way.
+//
+// Both chains are walked, named then resolved, for the reason containedRel walks
+// two: --repo may be an alias INTO a checkout (`/tmp/alias` -> `<checkout>/sub`),
+// whose lexical ancestors are /tmp's and never reach the checkout.
+func discoverCheckoutRoot(dir string) (string, bool) {
+	if top, ok := gitEntryAncestor(dir); ok {
+		return top, true
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil || resolved == dir {
+		return "", false
+	}
+	return gitEntryAncestor(resolved)
+}
+
+// gitEntryAncestor climbs dir's own parents looking for the nearest one that holds a
+// `.git` entry, and returns it.
+func gitEntryAncestor(dir string) (string, bool) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", false
+	}
+	for {
+		if _, err := os.Lstat(filepath.Join(abs, ".git")); err == nil {
+			return abs, true
+		}
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			return "", false
+		}
+		abs = parent
+	}
 }
 
 // containsByIdentity reports whether top is repoRoot itself, or one of the
@@ -115,11 +174,11 @@ func confinementRoot(ctx context.Context, repoRoot string) string {
 // being adversarial — git prints the path and a newline, and any trimming that
 // takes one byte too many (a checkout whose name ends in a space) renames the root.
 //
-// Refusing falls back to the directory the caller named, which can only NARROW the
-// confined region, never widen it — the same reasoning as confinementRoot's own
-// fallback. That fallback is safe as a DEFAULT and unsafe as an OUTCOME, which is
-// why both chains below are walked: falling back to a directory the checkout's own
-// files are not under leaves those files unconfined.
+// Refusing sends confinementRoot to discoverCheckoutRoot and, failing that, to the
+// directory the caller named. That last fallback is safe as a DEFAULT and unsafe as
+// an OUTCOME — the checkout's own root-level files are not under it, so they classify
+// as caller-owned and take the unconfined write — which is why both chains below are
+// walked before refusing, and why refusing is no longer the end of the search.
 func containsByIdentity(top, repoRoot string) bool {
 	topInfo, err := os.Stat(top)
 	if err != nil || !topInfo.IsDir() {

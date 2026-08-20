@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
 // These cover the two caller-named output files — `index --report` and
@@ -1416,5 +1418,103 @@ func TestNamesADirectoryReadsTheRawSpelling(t *testing.T) {
 		if got := namesADirectory(testCase.path); got != testCase.want {
 			t.Errorf("namesADirectory(%q) = %v, want %v", testCase.path, got, testCase.want)
 		}
+	}
+}
+
+// assertSameDirectory compares two path spellings by filesystem identity, because
+// the boundary is a directory and a directory has many names.
+func assertSameDirectory(t *testing.T, got, want, what string) {
+	t.Helper()
+	gotInfo, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("%s %q is not on disk: %v", what, got, err)
+	}
+	wantInfo, err := os.Stat(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("%s is %q, want the checkout %q", what, got, want)
+	}
+}
+
+// TestConfinementRootFindsTheCheckoutWhenGitCannotBeAsked is the regression for the
+// fourth spelling of the original escape.
+//
+// The boundary was taken from an EXTERNAL PROGRAM, and EVERY failure of that program
+// was read as the one answer "this directory is in no checkout" — which narrows the
+// boundary to --repo itself and leaves the checkout's own root-level files outside
+// it, caller-owned, on the unconfined write. `verify` needs no git at all, so running
+// it where git is not installed is an ordinary configuration rather than a broken
+// one; a checkout whose files another uid owns (`detected dubious ownership`) and a
+// --repo the repository itself committed as a link out of the tree fail the same way.
+//
+// The premise is checked at RUNTIME, with git, before it is relied on: the fallback
+// half needs a temp directory that really is in no checkout, and the discovery half
+// needs git to really be unreachable.
+func TestConfinementRootFindsTheCheckoutWhenGitCannotBeAsked(t *testing.T) {
+	repo := outputPathRepo(t)
+	sub := filepath.Join(repo, "subdir")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plain := t.TempDir()
+	if _, err := gitutil.RepoRoot(t.Context(), plain); err == nil {
+		t.Skip("this machine's temp directory is itself inside a checkout")
+	}
+
+	t.Setenv("PATH", t.TempDir())
+	if _, err := gitutil.RepoRoot(t.Context(), sub); err == nil {
+		t.Fatal("git still ran; the premise of this test is that it cannot be asked")
+	}
+
+	assertSameDirectory(t, confinementRoot(t.Context(), sub), repo, "confinement root")
+	// The other direction: where there is no checkout to find, the fallback to
+	// --repo stands, so `verify --record-baseline` in a plain directory keeps
+	// working exactly as it is documented to.
+	if got := confinementRoot(t.Context(), plain); got != plain {
+		t.Fatalf("a directory inside no checkout did not fall back to --repo: %q", got)
+	}
+}
+
+// TestRecordBaselineStaysConfinedWhenRepoIsACommittedSymlinkOutOfTheCheckout drives
+// the same hole through the real verb, with git present and working the whole time:
+// the REPOSITORY decides that `rev-parse --show-toplevel` fails, by committing the
+// subdirectory --repo names as a link to somewhere that is not a checkout.
+func TestRecordBaselineStaysConfinedWhenRepoIsACommittedSymlinkOutOfTheCheckout(t *testing.T) {
+	requireSymlinkSupport(t)
+	parent := t.TempDir()
+	outside := filepath.Join(parent, "notarepository")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo := outputPathRepoAt(t, filepath.Join(parent, "checkout"))
+	victim, victimContent := plantVictim(t)
+	baseline := filepath.Join(repo, "GRAPH_REPORT.md")
+	if err := os.Symlink(victim, baseline); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(repo, "subdir")
+	if err := os.Symlink(outside, sub); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "hostile --repo and hostile report path")
+
+	if _, err := gitutil.RepoRoot(t.Context(), sub); err == nil {
+		t.Fatal("git reported a top level for a directory outside every checkout")
+	}
+	err := Run(t.Context(), Options{
+		Version: "test-version",
+		Env:     EntireEnv{RepoRoot: repo},
+		Stdout:  &bytes.Buffer{},
+	}, []string{"verify", "--repo", sub, "--test", "true", "--record-baseline", baseline})
+	if err == nil {
+		t.Fatal("verify --record-baseline followed a symlink committed inside the repository")
+	}
+	assertVictimIntact(t, victim, victimContent)
+	info, lstatErr := os.Lstat(baseline)
+	if lstatErr != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the repository's own entry was replaced rather than refused: %v", lstatErr)
 	}
 }
