@@ -1230,3 +1230,255 @@ func skipIfCaseSensitive(t *testing.T, dir string) {
 		t.Skip("case-sensitive filesystem: one directory cannot be named in two cases here")
 	}
 }
+
+// aliasPlant installs one alias spelling into a repository. target names the install path whose
+// resolution it subverts, and plant returns the in-repository file that spelling reaches only
+// after ".." is collapsed as text — the file init-agents must not touch.
+type aliasPlant struct {
+	name   string
+	target string
+	plant  func(t *testing.T, repo string) string
+}
+
+// untraversableAliasPlants are the in-repository alias spellings whose landing exists only after
+// ".." is collapsed as text. filepath.Abs, filepath.Join and filepath.Clean all collapse ".."
+// LEXICALLY, before a single component is opened — Join collapses these very targets if used to
+// build them, which is why rawJoin exists — so each spelling names a file the kernel never
+// reaches: it stops at the component before the ".." with ENOENT, ENOTDIR or EACCES.
+var untraversableAliasPlants = []aliasPlant{
+	{
+		name:   "component that does not exist",
+		target: "AGENTS.md",
+		plant: func(t *testing.T, repo string) string {
+			t.Helper()
+			victim := filepath.Join(repo, "victim.md")
+			writeFileForTest(t, victim, "# an unrelated repository file\n")
+			symlinkForTest(t, rawJoin("missing", "..", "victim.md"), filepath.Join(repo, "AGENTS.md"))
+			return victim
+		},
+	},
+	{
+		name:   "component that is a regular file",
+		target: "AGENTS.md",
+		plant: func(t *testing.T, repo string) string {
+			t.Helper()
+			victim := filepath.Join(repo, "victim.md")
+			writeFileForTest(t, victim, "# an unrelated repository file\n")
+			writeFileForTest(t, filepath.Join(repo, "blocker"), "not a directory\n")
+			symlinkForTest(t, rawJoin("blocker", "..", "victim.md"), filepath.Join(repo, "AGENTS.md"))
+			return victim
+		},
+	},
+	{
+		name:   "component that is a link to a regular file",
+		target: "AGENTS.md",
+		plant: func(t *testing.T, repo string) string {
+			t.Helper()
+			victim := filepath.Join(repo, "victim.md")
+			writeFileForTest(t, victim, "# an unrelated repository file\n")
+			writeFileForTest(t, filepath.Join(repo, "leaf.md"), "not a directory\n")
+			symlinkForTest(t, "leaf.md", filepath.Join(repo, "blocker"))
+			symlinkForTest(t, rawJoin("blocker", "..", "victim.md"), filepath.Join(repo, "AGENTS.md"))
+			return victim
+		},
+	},
+	{
+		name:   "component that cannot be searched",
+		target: "AGENTS.md",
+		plant: func(t *testing.T, repo string) string {
+			t.Helper()
+			victim := filepath.Join(repo, "victim.md")
+			writeFileForTest(t, victim, "# an unrelated repository file\n")
+			closed := filepath.Join(repo, "closed")
+			mkdirAllForTest(t, closed)
+			if err := os.Chmod(closed, 0o000); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(closed, 0o755) })
+			symlinkForTest(t, rawJoin("closed", "..", "victim.md"), filepath.Join(repo, "AGENTS.md"))
+			return victim
+		},
+	},
+	{
+		name:   "landing inside the git directory",
+		target: "AGENTS.md",
+		plant: func(t *testing.T, repo string) string {
+			t.Helper()
+			victim := filepath.Join(repo, ".git", "config")
+			mkdirAllForTest(t, filepath.Dir(victim))
+			writeFileForTest(t, victim, "[core]\n\tbare = false\n")
+			symlinkForTest(t, rawJoin("missing", "..", ".git", "config"), filepath.Join(repo, "AGENTS.md"))
+			return victim
+		},
+	},
+	{
+		name:   "guide directory alias",
+		target: filepath.Join(".entire", "graph-agent.md"),
+		plant: func(t *testing.T, repo string) string {
+			t.Helper()
+			victim := filepath.Join(repo, "tooling", "graph-agent.md")
+			mkdirAllForTest(t, filepath.Dir(victim))
+			writeFileForTest(t, victim, "# an unrelated repository file\n")
+			symlinkForTest(t, rawJoin("missing", "..", "tooling"), filepath.Join(repo, ".entire"))
+			return victim
+		},
+	},
+}
+
+// TestInitAgentsRefusesAliasCollapsingUntraversableComponent is the hole this fix closed.
+// Collapsing ".." is only containment when the kernel could have taken that step; collapsing it as
+// text turns a link the filesystem refuses into a write to an unrelated file inside the
+// repository — including one under .git. Before the resolve walk asked the kernel, every spelling
+// below installed the managed block into the file named after the collapse.
+func TestInitAgentsRefusesAliasCollapsingUntraversableComponent(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	for _, tt := range untraversableAliasPlants {
+		t.Run(tt.name, func(t *testing.T) {
+			skipIfKernelResolvesPlant(t, tt)
+			repo := t.TempDir()
+			victim := tt.plant(t, repo)
+			before := readFileForTest(t, victim)
+
+			var stdout, stderr bytes.Buffer
+			err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+
+			if err == nil {
+				t.Fatal("init-agents wrote through a \"..\" the kernel could not have taken")
+			}
+			if got := readFileForTest(t, victim); got != before {
+				t.Fatalf("an unrelated repository file was rewritten:\nwant: %q\n got: %q", before, got)
+			}
+			if !strings.Contains(err.Error(), "cannot resolve") {
+				t.Fatalf("the refusal did not say the path could not be resolved: %v", err)
+			}
+			if strings.Contains(err.Error(), "leaves the repository") {
+				// The link stays inside. Calling it an escape sends the reader hunting a
+				// link that leaves when the cause is a path that does not resolve.
+				t.Fatalf("a broken path was reported as a repository escape: %v", err)
+			}
+			if _, statErr := os.Lstat(filepath.Join(repo, ".entire", "graph-agent.md")); !os.IsNotExist(statErr) {
+				t.Fatalf("the guide was written despite the failure (stat error %v)", statErr)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout was written before resolution was established: %q", stdout.String())
+			}
+		})
+	}
+}
+
+// TestInitAgentsAliasResolutionMatchesTheKernel is the oracle differential behind the fix. Rather
+// than restate the kernel's path rules — restating them is how the collapse came to be written —
+// it asks the filesystem what each spelling does and requires init-agents to agree: install
+// exactly when the kernel can open that path, refuse when it cannot, and, when both succeed, land
+// on the file the kernel's own resolution reaches. Every alias here stays inside the repository,
+// which is what makes the two comparable; an alias that leaves is refused by design and is covered
+// by TestInitAgentsRefusesAbsoluteAliasLeavingRepository.
+func TestInitAgentsAliasResolutionMatchesTheKernel(t *testing.T) {
+	skipIfSymlinksUnrepresentable(t)
+	tests := append([]aliasPlant{
+		{
+			name:   "no alias at all",
+			target: "AGENTS.md",
+			plant:  func(t *testing.T, repo string) string { return filepath.Join(repo, "AGENTS.md") },
+		},
+		{
+			name:   "legal traversal over a real directory",
+			target: "AGENTS.md",
+			plant: func(t *testing.T, repo string) string {
+				t.Helper()
+				shared := filepath.Join(repo, "shared.md")
+				writeFileForTest(t, shared, "# Shared rules\n")
+				mkdirAllForTest(t, filepath.Join(repo, "sub"))
+				symlinkForTest(t, rawJoin("sub", "..", "shared.md"), filepath.Join(repo, "AGENTS.md"))
+				return shared
+			},
+		},
+		{
+			name:   "legal traversal over a directory reached through a link",
+			target: "AGENTS.md",
+			plant: func(t *testing.T, repo string) string {
+				t.Helper()
+				shared := filepath.Join(repo, "docs", "shared.md")
+				mkdirAllForTest(t, filepath.Join(repo, "docs", "nested"))
+				writeFileForTest(t, shared, "# Shared rules\n")
+				symlinkForTest(t, filepath.Join("docs", "nested"), filepath.Join(repo, "hop"))
+				symlinkForTest(t, rawJoin("hop", "..", "shared.md"), filepath.Join(repo, "AGENTS.md"))
+				return shared
+			},
+		},
+		{
+			name:   "dangling alias the install is meant to create",
+			target: "AGENTS.md",
+			plant: func(t *testing.T, repo string) string {
+				t.Helper()
+				symlinkForTest(t, "shared.md", filepath.Join(repo, "AGENTS.md"))
+				return filepath.Join(repo, "shared.md")
+			},
+		},
+	}, untraversableAliasPlants...)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oracleRepo := t.TempDir()
+			tt.plant(t, oracleRepo)
+			kernelErr := kernelReachesRawPath(t, oracleRepo, tt.target)
+
+			repo := t.TempDir()
+			tt.plant(t, repo)
+			var stdout, stderr bytes.Buffer
+			err := Run(context.Background(), Options{Stdout: &stdout, Stderr: &stderr}, []string{"init-agents", "--repo", repo})
+
+			if (kernelErr == nil) != (err == nil) {
+				t.Fatalf("init-agents disagreed with the filesystem about %s:\nkernel: %v\n  init: %v", tt.target, kernelErr, err)
+			}
+			if err != nil {
+				return
+			}
+			// Read back through the same spelling, so the kernel — not this test's idea of
+			// where the alias points — decides which file is inspected.
+			got, readErr := os.ReadFile(rawJoin(repo, tt.target))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if !strings.Contains(string(got), "entire-graph") {
+				t.Fatalf("the install did not land where the kernel resolves %s:\n%s", tt.target, got)
+			}
+		})
+	}
+}
+
+// skipIfKernelResolvesPlant keeps the refusal test honest about privileges rather than about the
+// OS: a process that can search a mode-000 directory — root, or a filesystem without POSIX
+// permissions — genuinely reaches the target, so refusing it would be the bug. The probe runs on
+// its own copy of the plant because it creates the file it opens.
+func skipIfKernelResolvesPlant(t *testing.T, plant aliasPlant) {
+	t.Helper()
+	probeRepo := t.TempDir()
+	plant.plant(t, probeRepo)
+	if err := kernelReachesRawPath(t, probeRepo, plant.target); err == nil {
+		t.Skipf("this environment resolves %s, so there is nothing for init-agents to refuse", plant.target)
+	}
+}
+
+// rawJoin joins path elements without filepath.Join, whose Clean collapses ".." lexically. Using
+// Join to build these paths would silently rewrite them into the legitimate spelling and test
+// nothing — the same substitution the code under test used to make.
+func rawJoin(elements ...string) string {
+	return strings.Join(elements, string(filepath.Separator))
+}
+
+// kernelReachesRawPath asks the filesystem, not this package, whether name can be opened for
+// writing inside dir the way init-agents opens it — creating it when absent. Its answer is the
+// oracle: ENOENT, ENOTDIR or EACCES here is the kernel refusing the walk, and nil is the kernel
+// resolving it.
+func kernelReachesRawPath(t *testing.T, dir, name string) error {
+	t.Helper()
+	file, err := os.OpenFile(rawJoin(dir, name), os.O_WRONLY|os.O_CREATE, 0o644)
+	if err != nil {
+		return err
+	}
+	if closeErr := file.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	return nil
+}

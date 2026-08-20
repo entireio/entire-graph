@@ -229,9 +229,23 @@ func runInitAgents(opts Options, args []string) error {
 // Nor is an unreadable directory, a symlink loop, or an I/O error. Every remaining stat failure
 // still aborts the install, but only the ones os.Root attributes to confinement are described as
 // one; see isRootEscape.
+//
+// A path the walk below refuses to collapse (errUnresolvedTraversal) is neither. It has to be
+// checked before the missing-target case because it arrives as the kernel's own ENOENT/ENOTDIR
+// and would otherwise read as a file init-agents may create — and it is not creatable: an
+// O_CREAT open of that same spelling fails exactly as the stat did.
 func ensureContainedInRepo(root *os.Root, name, path string) error {
 	_, err := statContainedFile(root, name)
 	switch {
+	case errors.Is(err, errUnresolvedTraversal):
+		// Not an escape and not a target to create: the chain names its landing only
+		// after a ".." the kernel could not have taken, so there is nothing to write.
+		return fmt.Errorf(
+			"%s: refusing to write through a link the filesystem cannot resolve (%w); "+
+				"it reaches its target only by stepping back out of a component the kernel could not enter, "+
+				"so repoint or remove the link, then rerun init-agents",
+			path, err,
+		)
 	case err == nil || errors.Is(err, fs.ErrNotExist):
 		return nil
 	case isRootEscape(err):
@@ -266,7 +280,12 @@ func isRootEscape(err error) bool {
 	if errors.As(err, &errno) {
 		return false
 	}
-	return !errors.Is(err, os.ErrClosed) && !errors.Is(err, os.ErrInvalid)
+	// errUnresolvedTraversal is raised by the walk above, not by os.Root, and reports the
+	// kernel's answer as text rather than as a wrapped errno — so it reaches here looking
+	// syscall-free. It is a broken path, not an escape; saying otherwise would send the
+	// reader hunting a link that leaves when none does.
+	return !errors.Is(err, errUnresolvedTraversal) &&
+		!errors.Is(err, os.ErrClosed) && !errors.Is(err, os.ErrInvalid)
 }
 
 // maxContainedLinkHops bounds the link expansion below the way SYMLOOP_MAX bounds the kernel's own
@@ -297,8 +316,10 @@ func mkdirAllContained(root *os.Root, name string, perm os.FileMode) error {
 // an absolute hop reached through a relative one has to be resolved too.
 //
 // So this walks the chain the way the kernel does. resolved holds the prefix already stripped of
-// symlinks, which is what makes ".." correct: popping its last element is what the kernel does
-// after following a link, whereas trimming the name as text would ignore the link. A relative
+// symlinks, which is half of what makes ".." correct: popping its last element is what the kernel
+// does after following a link, whereas trimming the name as text would ignore the link. The other
+// half is that the kernel must have been able to take that step at all — see
+// ensureParentTraversable, which asks it before anything is popped. A relative
 // target is pushed back as components so its own links are expanded in turn; an absolute target
 // that lands inside the repository restarts the walk from the root under its repository-relative
 // name. maxContainedLinkHops bounds the expansion the way SYMLOOP_MAX bounds the kernel's.
@@ -320,6 +341,9 @@ func resolveContainedName(root *os.Root, name string) (string, error) {
 			if len(resolved) == 0 {
 				// Above the root. Let os.Root refuse the real chain.
 				return name, nil
+			}
+			if err := ensureParentTraversable(root, resolved); err != nil {
+				return "", err
 			}
 			resolved = resolved[:len(resolved)-1]
 			continue
@@ -362,6 +386,40 @@ func resolveContainedName(root *os.Root, name string) (string, error) {
 		return ".", nil
 	}
 	return filepath.Join(resolved...), nil
+}
+
+// errUnresolvedTraversal marks a ".." the walk above refused to collapse because the kernel
+// could not have taken it. It is deliberately reported as its own failure rather than as the
+// missing file the kernel reports, because the two mean opposite things to init-agents: a
+// missing target is one of the four files it creates, while this path names nothing that can be
+// created — the same spelling fails an O_CREAT open exactly as it failed the stat. Folding the
+// kernel's answer in as text rather than wrapping it keeps os.IsNotExist from reading this as
+// the creatable case at any call site, present or future.
+var errUnresolvedTraversal = errors.New(`refusing to collapse ".." over a component the kernel could not traverse`)
+
+// ensureParentTraversable asks the kernel whether ".." may be taken out of the last component of
+// resolved, and is what makes collapsing it equivalent to the walk the kernel would perform.
+//
+// filepath.Abs, filepath.Join and filepath.Clean collapse ".." LEXICALLY — before a single
+// component is opened — so text alone cannot tell a legal traversal from one that never happens.
+// A prefix that does not exist, is not a directory, or cannot be searched stops the kernel with
+// ENOENT/ENOTDIR/EACCES; erasing it as text instead leaves the remaining elements naming a file
+// the kernel would never have reached, and init-agents would write there.
+//
+// os.Root is the oracle rather than a rule reconstructed here: it resolves each component with
+// openat, ".." included, so handing it the prefix with the ".." still attached returns exactly
+// the kernel's own verdict — including reasons this code does not enumerate, such as a directory
+// without search permission. The probe path is assembled with strings.Join, not filepath.Join,
+// because Join cleans: it would delete the ".." this probe exists to send to the kernel.
+//
+// The pop itself stays lexical, and is correct once the probe passes: resolved holds only
+// components already stripped of symlinks, so its parent is its textual parent.
+func ensureParentTraversable(root *os.Root, resolved []string) error {
+	probe := strings.Join(append(slices.Clone(resolved), ".."), string(filepath.Separator))
+	if _, err := root.Lstat(probe); err != nil {
+		return fmt.Errorf("%w: %v", errUnresolvedTraversal, err)
+	}
+	return nil
 }
 
 // repoRelativeName reports whether target lands inside the repository rooted at rootPath, and
