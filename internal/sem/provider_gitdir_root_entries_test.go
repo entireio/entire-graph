@@ -19,9 +19,9 @@ import (
 // repository ROOT, so the git directory and the worktree are one directory and
 // only a name can separate them — and a name it lacks is a piece of the git
 // directory handed to the index. Hard-coding names from one reading of git's
-// path.c is what let `reftable` through: git 2.45 moved the whole ref store into
-// `reftable/` for repositories initialized with `--ref-format=reftable`, and the
-// list, written against the loose-ref layout, had never heard of it.
+// path.c is what let `reftable` through: on git 2.54.0, a repository initialized
+// with `--ref-format=reftable` keeps its whole ref store under `reftable/`, and
+// the list, written against the loose-ref layout, had never heard of the name.
 //
 // The battery is deliberately made of ordinary porcelain, so it keeps answering
 // for whatever git the runner has, and every step is optional: a git too old for
