@@ -10483,6 +10483,24 @@ type gitDirExcluder struct {
 	unlistedRoots    []string
 	gitAnsweredRoots bool
 	directoriesRead  int
+	// hiddenEvidence counts the reads rule 2 depends on that failed for a reason
+	// other than the thing not being there — an unreadable directory the sweep
+	// had to skip, an unreadable `.git` file. Each one may have hidden a
+	// `gitdir:` pointer, and a pointer's target is somewhere ELSE in the tree,
+	// where git lists it as ordinary content. promoteUnverifiedGitDirs is what
+	// this count pays for.
+	hiddenEvidence int
+	// observedDirs is every directory observe() was given, in observation order
+	// and without the repository root. It is the candidate set
+	// promoteUnverifiedGitDirs re-examines, and it is collected rather than
+	// recomputed because whether the sweep was complete is only known once the
+	// sweep has finished. Recording the name costs one slice append per
+	// directory; the structure test itself is paid only when evidence was
+	// actually hidden.
+	observedDirs []string
+	// promotedUnverified makes promoteUnverifiedGitDirs idempotent, since the
+	// filesystem fallback and the git listing each call it at their own end.
+	promotedUnverified bool
 }
 
 // newGitDirExcluder builds the excluder for one listing of repo, having already
@@ -10511,15 +10529,26 @@ func newGitDirExcluder(repo string) *gitDirExcluder {
 // bare repository or at a git directory is a deliberate act by the caller, not a
 // leak, and must keep listing what it lists today.
 func (g *gitDirExcluder) observe(dir string) {
-	if target, ok := gitDirPointerTarget(g.repo, dir); ok && hasGitDirStructure(filepath.Join(g.repo, filepath.FromSlash(target))) {
+	switch target, ok, hidden := gitDirPointerTarget(g.repo, dir); {
+	case hidden:
+		g.hiddenEvidence++
+	case ok && hasGitDirStructure(filepath.Join(g.repo, filepath.FromSlash(target))):
 		g.addTarget(target)
 	}
-	if target, ok := gitDirLinkTarget(g.repo, dir); ok && hasGitDirStructure(filepath.Join(g.repo, filepath.FromSlash(target))) {
+	switch target, ok, hidden := gitDirLinkTarget(g.repo, dir); {
+	case hidden:
+		g.hiddenEvidence++
+	case ok && hasGitDirStructure(filepath.Join(g.repo, filepath.FromSlash(target))):
 		g.addTarget(target)
 	}
 	if dir == "" {
 		return
 	}
+	// Recorded for promoteUnverifiedGitDirs, which needs the candidates a
+	// pointer COULD have named and cannot know until the sweep is over whether
+	// it will have to look at them. The repository root is left out for the same
+	// reason the structure half below skips it.
+	g.observedDirs = append(g.observedDirs, dir)
 	if looksLikeGitDir(filepath.Join(g.repo, filepath.FromSlash(dir))) {
 		g.addTarget(filepath.ToSlash(dir))
 	}
@@ -11067,6 +11096,7 @@ func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
 		observeChain(path.Dir(filepath.ToSlash(entry)))
 	}
 	g.observeUnlistedDirs(seen)
+	g.promoteUnverifiedGitDirs()
 }
 
 // observeUnlistedDirs observes the directories git's listing does not mention at
@@ -11219,6 +11249,19 @@ func (g *gitDirExcluder) descendObserving(queue []string, queued map[string]stru
 		g.directoriesRead++
 		entries, err := os.ReadDir(base)
 		if err != nil {
+			// A directory this sweep may not read can hold a `.git` pointer, and
+			// the target that pointer names is somewhere ELSE in the tree, where
+			// git lists it as ordinary content. So the failure is recorded rather
+			// than passed over; promoteUnverifiedGitDirs is what acts on it, and
+			// its comment records why neither of the two obvious remedies works.
+			//
+			// A directory that is simply GONE hides nothing: there is no pointer
+			// in a directory that does not exist, and it is the pointer, not the
+			// listing, that this sweep is here for. Only an error that means "it
+			// is there and you may not look" narrows what may be claimed.
+			if !errors.Is(err, fs.ErrNotExist) {
+				g.hiddenEvidence++
+			}
 			continue
 		}
 		for _, entry := range entries {
@@ -11261,6 +11304,75 @@ func (g *gitDirExcluder) observePrunedSubtree(root string) {
 		g.observe(dir)
 	}
 	g.descendObserving([]string{root}, map[string]struct{}{root: {}}, observeOnce)
+}
+
+// promoteUnverifiedGitDirs closes rule 2 for the pointers this run could not
+// read, by dropping the one piece of evidence it could not get and keeping every
+// other test exactly as it is.
+//
+// The hole it closes. A `.git` pointer whose bytes are out of reach — inside a
+// mode-000 directory the sweep skipped, or a mode-000 `.git` file — is a pointer
+// that was never seen, and the git directory it names sits SOMEWHERE ELSE in the
+// tree, where git lists it as ordinary untracked content. The shape that makes
+// the pointer necessary is the shape that makes it dangerous: a
+// `--separate-git-dir` target with a damaged HEAD is what makes git refuse the
+// worktree in the first place, and the standalone structural rule keeps git's
+// HEAD test, so nothing else classifies it. Reproduced with `build/` mode 000
+// holding `build/dep/.git` -> `gitdir: ../../.dep-git`: `search` returned
+// `.dep-git/config` and the remote credential in it.
+//
+// Why not propagate the error. It makes a repository holding ONE unreadable
+// directory wholly unsearchable, and root-owned build output or a
+// permission-restricted directory is ordinary in a real checkout. That is not an
+// argument, it is measured: on the filesystem fallback the walk DID propagate,
+// and `search` over a directory with one mode-000 subdirectory answered
+// `permission denied` and nothing else. walkWorktreeFiles no longer does that,
+// for this reason.
+//
+// Why not exclude the unreadable subtree. Nothing in it is indexed either way —
+// the leak is the pointer's TARGET, which by construction is elsewhere in the
+// tree and perfectly readable. Excluding the subtree excludes the wrong path.
+//
+// What it does instead. The pointer rule accepts a target on exactly one test:
+// hasGitDirStructure — objects/ and refs/ resolved through commondir, git's
+// is_git_directory() with the HEAD test dropped. So the set of directories an
+// unread pointer could have excluded is a SUBSET of the directories that carry
+// that structure. When evidence was hidden, every observed directory carrying it
+// becomes a target, pointer or no pointer. Nothing the readable sweep would have
+// caught is left behind, because the acceptance test is the same test.
+//
+// The candidate set is complete for what can leak: a git directory only leaks by
+// having its files LISTED, observeListedPaths observes the ancestor chain of
+// every listed path, and the filesystem fallback observes every directory it
+// walks. So a directory whose content is indexable has been observed.
+//
+// The cost, and it is paid only here. This runs only when a read failed, and it
+// can only over-exclude a directory that holds both an `objects/` and a `refs/`
+// DIRECTORY while no pointer names it — `testdata/parser/{objects,refs}`, the
+// case that is exactly why the standalone rule keeps git's HEAD test. A
+// repository with no unreadable directory is untouched, and one with an
+// unreadable directory but no such shape is untouched too: the whole of the rest
+// of the tree stays indexed either way. This is a narrowing of ONE subtree, not
+// of the search.
+//
+// The repository root is not a candidate, which is unchanged and deliberate:
+// observe() exempts it from the structure half already, because pointing the
+// tool at a bare repository or at a git directory is the caller's own act and
+// must keep listing what it lists today. A hidden pointer naming the root
+// therefore stays out of reach of this rule, exactly as a READ one already is.
+func (g *gitDirExcluder) promoteUnverifiedGitDirs() {
+	if g.promotedUnverified || g.hiddenEvidence == 0 {
+		return
+	}
+	g.promotedUnverified = true
+	for _, dir := range g.observedDirs {
+		if g.excluded(dir) {
+			continue
+		}
+		if hasGitDirStructure(filepath.Join(g.repo, filepath.FromSlash(dir))) {
+			g.addTarget(dir)
+		}
+	}
 }
 
 // skipSweptDir is the sweep's single pruning decision, applied both to the roots
@@ -11357,7 +11469,11 @@ func (g *gitDirExcluder) excluded(rel string) bool {
 // A target outside the repository is reported as absent: it is not part of this
 // listing, so there is nothing to exclude. That is the ordinary linked-worktree
 // case, whose gitdir lives in the main checkout.
-func gitDirPointerTarget(repo, dir string) (string, bool) {
+// The third result is `hidden`: a `.git` is there and its bytes are out of
+// reach, so this answer is "unknown", not "no pointer". It is the same fact an
+// unreadable directory carries — see promoteUnverifiedGitDirs — and it is
+// reported separately because ABSENT is a real answer and unreadable is not.
+func gitDirPointerTarget(repo, dir string) (string, bool, bool) {
 	base := repo
 	if dir != "" {
 		base = filepath.Join(repo, filepath.FromSlash(dir))
@@ -11383,12 +11499,25 @@ func gitDirPointerTarget(repo, dir string) (string, bool) {
 	// the target ends at the first NUL, so a whole-file bound refused pointers
 	// git follows — see readGitPointerFile, which bounds the read instead.
 	info, err := os.Stat(pointer)
-	if err != nil || !info.Mode().IsRegular() {
-		return "", false
+	if err != nil {
+		// ABSENT and DANGLING both mean "no pointer", as the paragraph above
+		// says. Anything else — the directory or the file itself out of reach —
+		// means the pointer could not be looked at, which is not the same answer.
+		return "", false, !errors.Is(err, fs.ErrNotExist)
+	}
+	if !info.Mode().IsRegular() {
+		return "", false, false
 	}
 	target, ok := readGitDirPointer(pointer)
 	if !ok {
-		return "", false
+		// A regular `.git` that did not parse is either not a gitfile — a
+		// fixture, a stray note, which is a real "no" — or a gitfile whose bytes
+		// this process may not read, which is not. One open tells them apart, and
+		// it is paid only for a `.git` FILE that failed to parse: a mode-000
+		// pointer hid `dep/.git` -> `gitdir: ../.dep-git` exactly the way an
+		// unreadable parent directory hides it, and the HEAD-damaged `.dep-git`
+		// it named came back as a ranked snippet with its credential.
+		return "", false, !readableFile(pointer)
 	}
 	// Git writes the pointer with `/` separators on every platform, and resolves
 	// a relative target against the directory that holds the `.git` file.
@@ -11397,7 +11526,7 @@ func gitDirPointerTarget(repo, dir string) (string, bool) {
 		target = gitJoinRelative(base, target)
 	}
 	if rel, inside := containedRel(repo, target); inside {
-		return rel, true
+		return rel, true, false
 	}
 	// Git writes the pointer as an absolute path, so a symlinked repository root
 	// (macOS /var -> /private/var, a symlinked checkout) makes the pointer and
@@ -11406,12 +11535,12 @@ func gitDirPointerTarget(repo, dir string) (string, bool) {
 	resolvedRepo, repoErr := filepath.EvalSymlinks(repo)
 	resolvedTarget, targetErr := filepath.EvalSymlinks(target)
 	if repoErr != nil || targetErr != nil {
-		return "", false
+		return "", false, false
 	}
 	if rel, inside := containedRel(resolvedRepo, resolvedTarget); inside {
-		return rel, true
+		return rel, true, false
 	}
-	return "", false
+	return "", false, false
 }
 
 // gitDirLinkTarget resolves `<repo>/<dir>/.git` when it is a SYMLINK to a
@@ -11435,20 +11564,44 @@ func gitDirPointerTarget(repo, dir string) (string, bool) {
 // The caller applies the same structure test the pointer rule applies, for the
 // same reason: `.git` linked to an ordinary package is `not a git repository` to
 // git, and naming it must not delete that package from the index.
-func gitDirLinkTarget(repo, dir string) (string, bool) {
+//
+// The third result is `hidden`, exactly as in gitDirPointerTarget: the link is
+// there and what it points at could not be looked at. A DANGLING link is not
+// that — git stats too, so it names nothing and the answer really is "no".
+func gitDirLinkTarget(repo, dir string) (string, bool, bool) {
 	rel := ".git"
 	if dir != "" {
 		rel = path.Join(filepath.ToSlash(dir), ".git")
 	}
 	link := filepath.Join(repo, filepath.FromSlash(rel))
 	info, err := os.Lstat(link)
-	if err != nil || info.Mode()&os.ModeSymlink == 0 {
-		return "", false
+	if err != nil {
+		return "", false, !errors.Is(err, fs.ErrNotExist)
 	}
-	if resolved, statErr := os.Stat(link); statErr != nil || !resolved.IsDir() {
-		return "", false
+	if info.Mode()&os.ModeSymlink == 0 {
+		return "", false, false
 	}
-	return symlinkResolvedRel(repo, rel)
+	resolved, statErr := os.Stat(link)
+	if statErr != nil {
+		return "", false, !errors.Is(statErr, fs.ErrNotExist)
+	}
+	if !resolved.IsDir() {
+		return "", false, false
+	}
+	target, ok := symlinkResolvedRel(repo, rel)
+	return target, ok, false
+}
+
+// readableFile reports whether this process can open path for reading. It is the
+// one question os.Stat cannot answer, and the difference between "there is no
+// pointer here" and "there is a pointer here that I may not read".
+func readableFile(path string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	_ = file.Close()
+	return true
 }
 
 // containedRel reports target's slash-separated path relative to root, and
@@ -11737,9 +11890,29 @@ func visitWalkWorktreeFiles(
 	stack := newNestedIgnoreStack(repo, ignores)
 	defer stack.close()
 	gitDirs := newGitDirExcluder(repo)
-	return filepath.WalkDir(repo, func(path string, entry fs.DirEntry, err error) error {
+	var paths []string
+	walkErr := filepath.WalkDir(repo, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			// WalkDir reports a directory it could not read by calling this
+			// function a SECOND time for that directory, after the visit that
+			// already observed it. Returning the error there aborted the walk, so
+			// one mode-000 subdirectory made `search` answer `permission denied`
+			// for the whole tree and index nothing — a repository-wide outage
+			// caused by a root-owned build directory. Note it and walk on: what
+			// an unreadable directory can hide is a `.git` pointer, and
+			// promoteUnverifiedGitDirs fails closed for that, narrowly, at the
+			// end of the walk.
+			//
+			// The root is the exception. `entry` is nil when WalkDir could not
+			// even stat what it was pointed at, and there is no listing to
+			// salvage there.
+			if entry == nil {
+				return err
+			}
+			if !errors.Is(err, fs.ErrNotExist) {
+				gitDirs.hiddenEvidence++
+			}
+			return nil
 		}
 		name := entry.Name()
 		if entry.IsDir() {
@@ -11807,11 +11980,29 @@ func visitWalkWorktreeFiles(
 		if stack.Ignored(rel, false) {
 			return nil
 		}
-		if !visit(rel) {
-			return fs.SkipAll
-		}
+		paths = append(paths, rel)
 		return nil
 	})
+	// A pointer can name a directory the walk had already passed (`.aaa-git`
+	// sorts before the `.git` that names it), so the collected paths are filtered
+	// once more against every pointer the whole walk found — and against the
+	// candidates promoted for the pointers it could NOT read.
+	gitDirs.promoteUnverifiedGitDirs()
+	kept := paths[:0]
+	for _, rel := range paths {
+		if gitDirs.excluded(rel) {
+			continue
+		}
+		kept = append(kept, rel)
+	}
+	paths = kept
+	sort.Strings(paths)
+	for _, rel := range paths {
+		if !visit(rel) {
+			return nil
+		}
+	}
+	return walkErr
 }
 
 func filterVendoredPaths(paths []string, ignores vendorIgnoreRules) []string {

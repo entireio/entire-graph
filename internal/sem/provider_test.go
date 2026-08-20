@@ -15288,9 +15288,9 @@ func TestGitDirPointerTargetResolvesSeparateGitDirPointer(t *testing.T) {
 			t.Parallel()
 			repo := t.TempDir()
 			want := testCase.setup(t, repo)
-			got, ok := gitDirPointerTarget(repo, testCase.dir)
-			if ok != (want != "") || got != want {
-				t.Errorf("gitDirPointerTarget(%q) = (%q, %v), want (%q, %v)", testCase.dir, got, ok, want, want != "")
+			got, ok, hidden := gitDirPointerTarget(repo, testCase.dir)
+			if ok != (want != "") || hidden || got != want {
+				t.Errorf("gitDirPointerTarget(%q) = (%q, %v, hidden %v), want (%q, %v, false)", testCase.dir, got, ok, hidden, want, want != "")
 			}
 		})
 	}

@@ -68,10 +68,10 @@ func TestGitDirPointerTargetMatchesGitsOwnGitfileParse(t *testing.T) {
 			t.Parallel()
 			repo := t.TempDir()
 			writeFile(t, repo, ".git", testCase.content)
-			got, ok := gitDirPointerTarget(repo, "")
-			if ok != (testCase.want != "") || got != testCase.want {
-				t.Errorf("gitDirPointerTarget(%q) = (%q, %v), want (%q, %v)",
-					testCase.content, got, ok, testCase.want, testCase.want != "")
+			got, ok, hidden := gitDirPointerTarget(repo, "")
+			if ok != (testCase.want != "") || hidden || got != testCase.want {
+				t.Errorf("gitDirPointerTarget(%q) = (%q, %v, hidden %v), want (%q, %v, false)",
+					testCase.content, got, ok, hidden, testCase.want, testCase.want != "")
 			}
 		})
 	}

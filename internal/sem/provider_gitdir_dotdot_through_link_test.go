@@ -45,9 +45,9 @@ func TestGitDirPointerTargetJoinsThroughASymlinkedDotDot(t *testing.T) {
 	symlinkOrSkip(t, filepath.Join("sub", "child"), filepath.Join(repo, "nested", "link"))
 	writeFile(t, repo, "nested/.git", "gitdir: link/../.real-git\n")
 
-	got, ok := gitDirPointerTarget(repo, "nested")
-	if !ok || got != "nested/sub/.real-git" {
-		t.Errorf("gitDirPointerTarget = %q, %v; want %q, true (git 2.54.0 resolves it there)", got, ok, "nested/sub/.real-git")
+	got, ok, hidden := gitDirPointerTarget(repo, "nested")
+	if !ok || hidden || got != "nested/sub/.real-git" {
+		t.Errorf("gitDirPointerTarget = %q, %v, hidden %v; want %q, true, false (git 2.54.0 resolves it there)", got, ok, hidden, "nested/sub/.real-git")
 	}
 }
 

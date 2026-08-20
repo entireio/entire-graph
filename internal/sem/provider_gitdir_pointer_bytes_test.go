@@ -90,9 +90,9 @@ func TestGitDirPointerFollowsALargePointerTerminatedByNUL(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "nested/.git", "gitdir: ../.dep-git\x00"+strings.Repeat("A", 4*maxGitPointerBytes)+"\n")
 	writeHeadlessGitDirFixture(t, repo, ".dep-git")
-	got, ok := gitDirPointerTarget(repo, "nested")
-	if !ok || got != ".dep-git" {
-		t.Errorf("gitDirPointerTarget = (%q, %v), want (%q, true)", got, ok, ".dep-git")
+	got, ok, hidden := gitDirPointerTarget(repo, "nested")
+	if !ok || hidden || got != ".dep-git" {
+		t.Errorf("gitDirPointerTarget = (%q, %v, hidden %v), want (%q, true, false)", got, ok, hidden, ".dep-git")
 	}
 }
 
