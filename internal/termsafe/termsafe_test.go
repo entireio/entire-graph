@@ -297,38 +297,49 @@ func TestSnippetBodiesStillCarryUnicodeLineSeparators(t *testing.T) {
 	}
 }
 
-// TestLineEscapesTheSeparatorCategory holds the rule that makes this closed rather than a pair of
-// code points. Zl and Zp are the categories Unicode defines to separate lines and paragraphs;
-// naming U+2028 and U+2029 would be the enumeration searchOpensNewVisualLine refuses for the same
-// reason, and a separator Unicode adds later is added to the categories.
+// TestLineEscapesTheRowForgingCategories holds the rules that make this closed rather than a list
+// of code points. Zl and Zp are the categories Unicode defines to separate lines and paragraphs, and
+// Bidi_Control is its name for the characters that reorder a row; naming U+2028, U+2029, RLO and PDF
+// would be the enumeration searchOpensNewVisualLine and searchRowIsReordered refuse for the same
+// reason, and a rune Unicode adds later is added to the properties.
 //
-// It also pins the CONVERSE over every code point, which is what makes the widening safe to
-// reason about rather than merely tested: no rune outside the categories started being escaped,
-// so Line changed on exactly the separators and nothing else.
-func TestLineEscapesTheSeparatorCategory(t *testing.T) {
+// It also pins the CONVERSE over every code point, which is what makes each widening safe to reason
+// about rather than merely tested: no rune outside those properties and the control blocks Line
+// escaped before them is rewritten, so Line changed on exactly the row-forging categories and
+// nothing else.
+//
+// It was TestLineEscapesTheSeparatorCategory and pinned Zl|Zp alone. The bidi controls are added to
+// the same statement rather than tested beside it, because the exactness is the point: a second test
+// asserting "and these too" would leave the converse here reading "everything except the runes the
+// other test allows", which is how an escape set stops being closed.
+func TestLineEscapesTheRowForgingCategories(t *testing.T) {
 	t.Parallel()
-	members, escaped := 0, 0
+	separators, controls, escaped := 0, 0, 0
 	for point := rune(0); point <= unicode.MaxRune; point++ {
 		if !utf8.ValidRune(point) {
 			continue
 		}
 		separator := unicode.In(point, unicode.Zl, unicode.Zp)
+		control := unicode.Is(unicode.Bidi_Control, point)
 		if separator {
-			members++
+			separators++
+		}
+		if control {
+			controls++
 		}
 		value := "a" + string(point) + "b"
 		rewritten := Line(value) != value
 		switch {
-		case separator && !rewritten:
-			t.Errorf("U+%04X separates lines and survives a one-line record field", point)
-		case separator:
+		case (separator || control) && !rewritten:
+			t.Errorf("U+%04X forges a record row and survives a one-line record field", point)
+		case separator || control:
 			escaped++
 		case rewritten && !lineEscapedBeforeSeparators(point):
-			t.Errorf("U+%04X is not a separator and was rewritten: the widening is not additive", point)
+			t.Errorf("U+%04X forges no row and was rewritten: the widening is not additive", point)
 		}
 	}
-	if members == 0 || members != escaped {
-		t.Fatalf("Zl|Zp has %d members and %d of them are escaped", members, escaped)
+	if separators == 0 || controls == 0 || separators+controls != escaped {
+		t.Fatalf("Zl|Zp has %d members, Bidi_Control %d, and %d of them are escaped", separators, controls, escaped)
 	}
 }
 
@@ -336,4 +347,30 @@ func TestLineEscapesTheSeparatorCategory(t *testing.T) {
 // field must not carry, C0, DEL, and the C1 block.
 func lineEscapedBeforeSeparators(point rune) bool {
 	return point < 0x20 || point == 0x7f || (point >= 0x80 && point <= 0x9f)
+}
+
+// TestLineNeutralisesABidiForgedLocator is the runtime shape of the rule above, held on the value a
+// renderer actually passes: a path. `entire-graph search --format agent` printed
+// `1. pkg/safe<U+202E>og.live.go:2-4 RenderWidget s=21.4 [focus:4]`, which GNU FriBidi 1.0.16 draws
+// as `1. pkg/safe[4:sucof] 4.12=s tegdiWredneR 4-2:og.evil.go` — the tool's own record read
+// backwards, with a path tail that says `evil` where the bytes say `live`.
+func TestLineNeutralisesABidiForgedLocator(t *testing.T) {
+	t.Parallel()
+	const path = "pkg/safe‮og.live.go"
+	got := Line(path)
+	if strings.ContainsRune(got, '‮') {
+		t.Errorf("Line(%q) = %q: the override still reaches the record row", path, got)
+	}
+	if want := `pkg/safe\u202eog.live.go`; got != want {
+		t.Errorf("Line(%q) = %q, want %q", path, got, want)
+	}
+	if !EscapesLine(path) {
+		t.Error("EscapesLine disagrees with Line about a bidi-forged path, so the VERIFY deriver would emit one")
+	}
+	// A snippet body keeps its bytes: the split between the two modes is the whole reason the
+	// snippet grammar carries searchRowIsReordered.
+	body := "a‮b"
+	if got := string(Bytes([]byte(body))); got != body {
+		t.Errorf("Bytes(%q) = %q: a snippet body must reach the grammar unchanged", body, got)
+	}
 }

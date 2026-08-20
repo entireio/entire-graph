@@ -98,8 +98,9 @@ func (w *Writer) Write(p []byte) (int, error) {
 // symbol name, a one-line declaration — anything embedded in a record whose
 // layout is "one per line".
 //
-// It escapes LF, TAB and the Unicode line separators on top of what Writer and
-// Bytes escape, because in that position they are not layout, they are forgery.
+// It escapes LF, TAB, the Unicode line separators and the bidi controls on top of
+// what Writer and Bytes escape, because in that position they are not layout,
+// they are forgery.
 // A repository can name a file
 //
 //	a.go\n1. src/real.go:1 score=99.0
@@ -109,6 +110,12 @@ func (w *Writer) Write(p []byte) (int, error) {
 // bytes reach it, a snippet's newlines and a path's are the same byte — so
 // values that go into single-line records are escaped here, at the point where
 // the renderer still knows which is which.
+//
+// A BIDI CONTROL is the same forgery committed by permutation. `safe<U+202E>og.live.go`
+// is drawn by a bidi-aware reader as a locator whose fields run backwards and
+// whose path tail reads `og.evil.go`, so the record a reader believes was
+// reported is the repository's to choose. It is escaped here for the same reason
+// and under the same closed rule: see forgesRecordRow.
 //
 // U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR are the same forgery in
 // a different encoding, and they are escaped here for the same reason LF is. A
@@ -129,10 +136,12 @@ func (w *Writer) Write(p []byte) (int, error) {
 //
 // WHY A CATEGORY AND NOT A PAIR. Zl and Zp are the Unicode categories defined to
 // separate lines and paragraphs; U+2028 and U+2029 are their only members today,
-// and a separator Unicode adds later is added to them. This is the same closed
-// rule searchOpensNewVisualLine states for the snippet grammar, and the two
-// agreeing by construction is the point: a rune that starts a new row THERE is a
-// rune that cannot sit unescaped in a one-line record field HERE.
+// and a separator Unicode adds later is added to them. Bidi_Control is Unicode's
+// own name for the other half. Both are the same closed rules
+// internal/cli/search_forgery.go states for the snippet grammar, and the two
+// layers agreeing by construction is the point: a rune that starts a new row
+// THERE, or whose drawn order the grammar there cannot compute, is a rune that
+// cannot sit unescaped in a one-line record field HERE.
 //
 // They are escaped ONLY in this mode. Writer and Bytes still pass them through a
 // snippet body untouched, because a body's rows are its own structure and
@@ -304,7 +313,7 @@ func escapedAt[T text](data T, i int, keep layout) (int, bool) {
 		// if it ENDS the line: see Line. The decode is reached only for non-ASCII
 		// bytes in escapeLayout mode — paths and names, which are short and very
 		// nearly always ASCII — so the body path pays nothing for it.
-		return width, !bool(keep) && separatesLines(decodePoint(data, i, width))
+		return width, !bool(keep) && forgesRecordRow(decodePoint(data, i, width))
 	case character <= 0x9f:
 		// A STRAY C1 byte — one that begins no valid sequence. A Git pathname is
 		// a byte string, not text, so 0x9b can arrive raw, and a terminal in an
@@ -356,6 +365,21 @@ func appendEscaped[T text](dst []byte, data T, keep layout) []byte {
 	return dst
 }
 
+// forgesRecordRow reports whether point can make a one-line record field read as
+// something other than the field it is: by ENDING the row it sits in, so the text
+// after it is drawn at column 0 of the next one, or by REORDERING the row around
+// it, so the fields a reader sees are not the fields in the bytes.
+//
+// Both halves are Unicode CATEGORIES rather than lists, and both are the same
+// closed rules internal/cli/search_forgery.go states for the snippet grammar, so
+// the two layers agree by construction rather than by two enumerations kept in
+// step by hand: a rune that starts a new row THERE (searchOpensNewVisualLine), or
+// whose drawn order the grammar there cannot compute (searchRowIsReordered), is a
+// rune that cannot sit unescaped in a one-line record field HERE.
+func forgesRecordRow(point rune) bool {
+	return separatesLines(point) || reordersRow(point)
+}
+
 // separatesLines reports whether point ends the row it sits in, so text after it
 // is drawn at column 0 of the next one by a consumer that honours it.
 //
@@ -367,6 +391,34 @@ func appendEscaped[T text](dst []byte, data T, keep layout) []byte {
 // from here, so both readings are defended rather than one of them bet on.
 func separatesLines(point rune) bool {
 	return unicode.In(point, unicode.Zl, unicode.Zp)
+}
+
+// reordersRow reports whether point changes the ORDER in which the runes around
+// it are drawn, which in a one-line record field is the same forgery a line
+// separator is, committed by permutation rather than by a break.
+//
+// A repository can name a file
+//
+//	safe<U+202E>og.live.go
+//
+// and every locator this tool prints — the ranked hit, the passage header, the
+// def card, the impact row, the neighbor line — hands a bidi-aware reader a row
+// drawn as `1. pkg/safe[4:sucof] 4.12=s tegdiWredneR 4-2:og.evil.go`: the record's
+// own fields reversed, and a path whose tail now reads `evil` where the bytes say
+// `live`. Measured with GNU FriBidi 1.0.16, the reference implementation of
+// UAX #9, on the payload this tool actually printed. The row a reader believes
+// was reported is then the repository's to choose, which is the spoofing
+// primitive this package exists to take away.
+//
+// Bidi_Control is Unicode's own closed name for these characters — U+061C,
+// U+200E, U+200F, U+202A-U+202E and U+2066-U+2069 today, and whatever is added to
+// it next. They are escaped ONLY in escapeLayout mode, exactly like the line
+// separators and for the same reason: a snippet body's rows are its own
+// structure, and rewriting them would break the verbatim edit anchor this package
+// promises. The snippet grammar quarantines that reading instead, which is what
+// searchRowIsReordered is for.
+func reordersRow(point rune) bool {
+	return unicode.Is(unicode.Bidi_Control, point)
 }
 
 // decodePoint returns the code point of the sequence of the given width at i.
