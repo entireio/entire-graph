@@ -890,26 +890,21 @@ func isMissingPathDiagnostic(stderr string) bool {
 			strings.Contains(stderr, "' exists on disk, but not in '"))
 }
 
-// BatchFileReader reads blobs from one revision through persistent
-// `git cat-file --batch-check` metadata and `--batch` content processes. The
-// metadata process prevents non-blobs from entering the content stream; the
-// content process still streams oversized blobs for caller digests. Together
-// they avoid per-file process spawning while preserving HEAD-tree snapshot
-// semantics. Paths are relative to repo; rev represents the repository-root
-// tree when repo is a subdirectory.
+// BatchFileReader reads blobs from one revision through one persistent
+// `git cat-file --batch-command` process. Each read issues `info` first and
+// issues `contents` only for a blob, so a non-blob never enters the content
+// stream. Keeping both commands in one Git process also gives them one snapshot
+// of replace refs; an immutable OID cannot change type between the metadata and
+// content responses. Oversized blobs are still streamed for caller digests.
+// Paths are relative to repo; rev represents the repository-root tree when repo
+// is a subdirectory.
 type BatchFileReader struct {
-	ctx          context.Context
-	repo         string
 	rev          string
 	pathPrefix   string
 	cmd          *exec.Cmd
 	stdin        io.WriteCloser
 	stdout       *bufio.Reader
 	stderr       *bytes.Buffer
-	checkCmd     *exec.Cmd
-	checkStdin   io.WriteCloser
-	checkStdout  *bufio.Reader
-	checkStderr  *bytes.Buffer
 	mu           sync.Mutex
 	closed       bool
 	maxBytes     int64
@@ -966,7 +961,7 @@ func NewBatchFileReader(ctx context.Context, repo, rev string) (*BatchFileReader
 	if err != nil {
 		return nil, err
 	}
-	cmd := newCmd(ctx, repo, "git", "cat-file", "--batch")
+	cmd := newCmd(ctx, repo, "git", "cat-file", "--batch-command")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -980,23 +975,42 @@ func NewBatchFileReader(ctx context.Context, repo, rev string) (*BatchFileReader
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
-		return nil, fmt.Errorf("git cat-file --batch: %w", err)
+		return nil, fmt.Errorf("git cat-file --batch-command (requires Git 2.36 or newer): %w", err)
 	}
-	return &BatchFileReader{
-		ctx:        ctx,
-		repo:       repo,
+	reader := &BatchFileReader{
 		rev:        rev,
 		pathPrefix: pathPrefix,
 		cmd:        cmd,
 		stdin:      stdin,
 		stdout:     bufio.NewReader(stdoutPipe),
 		stderr:     &stderr,
-	}, nil
+	}
+	// Start is not enough to feature-detect an option: an older Git starts and
+	// then exits after parsing argv. A metadata-only missing-object request
+	// verifies the protocol without reading an object body. It also establishes
+	// the replace-ref snapshot at reader construction, before caller reads begin.
+	const probeOID = "0000000000000000000000000000000000000000"
+	if _, _, _, found, probeErr := reader.objectInfoLocked(probeOID); probeErr != nil || found {
+		_ = stdin.Close()
+		waitErr := cmd.Wait()
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			if probeErr != nil {
+				msg = probeErr.Error()
+			} else if waitErr != nil {
+				msg = waitErr.Error()
+			} else {
+				msg = "unexpected response to protocol probe"
+			}
+		}
+		return nil, fmt.Errorf("git cat-file --batch-command unavailable (Git 2.36 or newer required): %s", msg)
+	}
+	return reader, nil
 }
 
 // IsBatchPathSafe reports whether path can be embedded in one LF-delimited
-// cat-file --batch request without splitting or normalization. A trailing CR
-// is consumed by Git's line reader; internal CR bytes are preserved.
+// cat-file batch-command request without splitting or normalization. A
+// trailing CR is consumed by Git's line reader; internal CR bytes are preserved.
 func IsBatchPathSafe(path string) bool {
 	return !strings.Contains(path, "\n") && !strings.HasSuffix(path, "\r")
 }
@@ -1026,90 +1040,69 @@ func (r *BatchFileReader) ReadFile(path string) (string, bool, error) {
 func (r *BatchFileReader) readCheckedObjectSpec(objectSpec, oversizeKey string) (string, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	objectID, objectType, found, err := r.checkObjectSpecLocked(objectSpec)
+	objectID, objectType, objectSize, found, err := r.objectInfoLocked(objectSpec)
 	if err != nil || !found {
 		return "", false, err
 	}
 	if objectType != "blob" {
-		// Never ask the content batch for a non-blob. Its protocol places the
-		// complete object after the header, so declining only after that request
-		// would still have to stream an arbitrarily large tree or commit merely to
-		// reach the next response. The metadata batch has no object body to drain.
+		// Never issue contents for a non-blob. That response places the complete
+		// object after its header, so declining only after the request would still
+		// have to stream an arbitrarily large tree or commit merely to reach the next
+		// response. The info response has no object body to drain.
 		return "", false, nil
 	}
 	// Pin the checked object before asking for content. Besides avoiding a second
 	// path-bearing request, this keeps a moving ref from changing object type
-	// between the metadata and content batches.
-	return r.readObjectSpecLocked(objectID, oversizeKey)
+	// between the metadata and content commands.
+	return r.readObjectContentsLocked(objectID, objectType, objectSize, oversizeKey)
 }
 
-// readKnownBlobObjectID is the content-only path for LimitedFileReader, whose
-// authoritative ls-tree metadata already established that objectID is a blob.
-// The request contains only an immutable OID, never repository path bytes.
+// readKnownBlobObjectID is the exact-OID path for LimitedFileReader, whose
+// ls-tree metadata established that objectID was a blob at metadata time. It
+// still repeats the type check in this SAME batch-command process before asking
+// for contents: a replace ref may have moved between ls-tree and this process's
+// snapshot. The request contains only an immutable OID, never repository path
+// bytes.
 func (r *BatchFileReader) readKnownBlobObjectID(objectID, oversizeKey string) (string, bool, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.readObjectSpecLocked(objectID, oversizeKey)
+	return r.readCheckedObjectSpec(objectID, oversizeKey)
 }
 
-func (r *BatchFileReader) checkObjectSpecLocked(objectSpec string) (string, string, bool, error) {
+func (r *BatchFileReader) objectInfoLocked(objectSpec string) (string, string, int64, bool, error) {
 	if r.closed {
-		return "", "", false, fmt.Errorf("git cat-file batch reader is closed")
+		return "", "", 0, false, fmt.Errorf("git cat-file batch reader is closed")
 	}
-	if r.checkCmd == nil {
-		cmd := newCmd(r.ctx, r.repo, "git", "cat-file", "--batch-check")
-		stdin, err := cmd.StdinPipe()
-		if err != nil {
-			return "", "", false, err
-		}
-		stdoutPipe, err := cmd.StdoutPipe()
-		if err != nil {
-			_ = stdin.Close()
-			return "", "", false, err
-		}
-		stderr := &bytes.Buffer{}
-		cmd.Stderr = stderr
-		if err := cmd.Start(); err != nil {
-			_ = stdin.Close()
-			return "", "", false, fmt.Errorf("git cat-file --batch-check: %w", err)
-		}
-		r.checkCmd = cmd
-		r.checkStdin = stdin
-		r.checkStdout = bufio.NewReader(stdoutPipe)
-		r.checkStderr = stderr
+	if _, err := fmt.Fprintf(r.stdin, "info %s\n", objectSpec); err != nil {
+		return "", "", 0, false, err
 	}
-	if _, err := fmt.Fprintf(r.checkStdin, "%s\n", objectSpec); err != nil {
-		return "", "", false, err
-	}
-	header, err := r.checkStdout.ReadString('\n')
+	header, err := r.stdout.ReadString('\n')
 	if err != nil {
-		return "", "", false, fmt.Errorf("read git cat-file batch-check header: %w", err)
+		return "", "", 0, false, fmt.Errorf("read git cat-file batch-command info header: %w", err)
 	}
 	header = strings.TrimSuffix(header, "\n")
 	if strings.HasSuffix(header, " missing") {
-		return "", "", false, nil
+		return "", "", 0, false, nil
 	}
 	fields := strings.Fields(header)
 	if len(fields) != 3 {
-		return "", "", false, fmt.Errorf("unexpected git cat-file batch-check header %q", header)
+		return "", "", 0, false, fmt.Errorf("unexpected git cat-file batch-command info header %q", header)
 	}
 	size, err := strconv.ParseInt(fields[2], 10, 64)
 	if err != nil || size < 0 {
-		return "", "", false, fmt.Errorf("parse git cat-file batch-check size %q", fields[2])
+		return "", "", 0, false, fmt.Errorf("parse git cat-file batch-command info size %q", fields[2])
 	}
-	return fields[0], fields[1], true, nil
+	return fields[0], fields[1], size, true, nil
 }
 
-func (r *BatchFileReader) readObjectSpecLocked(objectSpec, oversizeKey string) (string, bool, error) {
+func (r *BatchFileReader) readObjectContentsLocked(objectSpec, expectedType string, expectedSize int64, oversizeKey string) (string, bool, error) {
 	if r.closed {
 		return "", false, fmt.Errorf("git cat-file batch reader is closed")
 	}
-	if _, err := fmt.Fprintf(r.stdin, "%s\n", objectSpec); err != nil {
+	if _, err := fmt.Fprintf(r.stdin, "contents %s\n", objectSpec); err != nil {
 		return "", false, err
 	}
 	header, err := r.stdout.ReadString('\n')
 	if err != nil {
-		return "", false, fmt.Errorf("read git cat-file header: %w", err)
+		return "", false, fmt.Errorf("read git cat-file batch-command contents header: %w", err)
 	}
 	header = strings.TrimSuffix(header, "\n")
 	if strings.HasSuffix(header, " missing") {
@@ -1117,17 +1110,23 @@ func (r *BatchFileReader) readObjectSpecLocked(objectSpec, oversizeKey string) (
 	}
 	fields := strings.Fields(header)
 	if len(fields) != 3 {
-		return "", false, fmt.Errorf("unexpected git cat-file header %q", header)
+		return "", false, fmt.Errorf("unexpected git cat-file batch-command contents header %q", header)
 	}
 	size, err := strconv.ParseInt(fields[2], 10, 64)
-	if err != nil {
-		return "", false, fmt.Errorf("parse git cat-file size %q: %w", fields[2], err)
+	if err != nil || size < 0 {
+		return "", false, fmt.Errorf("parse git cat-file size %q", fields[2])
+	}
+	if fields[0] != objectSpec || fields[1] != expectedType || size != expectedSize {
+		// info and contents share one process, so their resolved identity, type and
+		// size must agree. Do not drain an unexpected body merely to salvage the
+		// protocol: that is exactly the unbounded non-blob read this gate prevents.
+		_ = r.cmd.Process.Kill()
+		return "", false, fmt.Errorf("git cat-file batch-command metadata changed between info and contents: info=%s %s %d contents=%s %s %d",
+			objectSpec, expectedType, expectedSize, fields[0], fields[1], size)
 	}
 	if fields[1] != "blob" {
-		if _, err := io.CopyN(io.Discard, r.stdout, size+1); err != nil {
-			return "", false, err
-		}
-		return "", false, nil
+		_ = r.cmd.Process.Kill()
+		return "", false, fmt.Errorf("git cat-file batch-command returned non-blob contents after blob info: %s", fields[1])
 	}
 	if r.maxBytes > 0 && size > r.maxBytes {
 		var src io.Reader = io.LimitReader(r.stdout, size)
@@ -1140,8 +1139,12 @@ func (r *BatchFileReader) readObjectSpecLocked(objectSpec, oversizeKey string) (
 		if err != nil {
 			return "", false, err
 		}
-		if _, err := io.CopyN(io.Discard, r.stdout, 1); err != nil {
+		trailing, err := r.stdout.ReadByte()
+		if err != nil {
 			return "", false, err
+		}
+		if trailing != '\n' {
+			return "", false, fmt.Errorf("git cat-file blob missing trailing newline separator")
 		}
 		if r.oversize == nil {
 			r.oversize = map[string]OversizeBlob{}
@@ -1171,34 +1174,17 @@ func (r *BatchFileReader) Close() error {
 	}
 	r.closed = true
 	stdin := r.stdin
-	checkStdin := r.checkStdin
-	checkCmd := r.checkCmd
-	checkStderr := r.checkStderr
 	r.mu.Unlock()
 	var closeErrors []error
 	if err := stdin.Close(); err != nil {
 		closeErrors = append(closeErrors, err)
-	}
-	if checkStdin != nil {
-		if err := checkStdin.Close(); err != nil {
-			closeErrors = append(closeErrors, err)
-		}
 	}
 	if err := r.cmd.Wait(); err != nil {
 		msg := strings.TrimSpace(r.stderr.String())
 		if msg == "" {
 			msg = err.Error()
 		}
-		closeErrors = append(closeErrors, fmt.Errorf("git cat-file --batch: %s", msg))
-	}
-	if checkCmd != nil {
-		if err := checkCmd.Wait(); err != nil {
-			msg := strings.TrimSpace(checkStderr.String())
-			if msg == "" {
-				msg = err.Error()
-			}
-			closeErrors = append(closeErrors, fmt.Errorf("git cat-file --batch-check: %s", msg))
-		}
+		closeErrors = append(closeErrors, fmt.Errorf("git cat-file --batch-command: %s", msg))
 	}
 	return errors.Join(closeErrors...)
 }

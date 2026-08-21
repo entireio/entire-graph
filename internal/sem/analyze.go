@@ -148,10 +148,10 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 				if extensionUnsupported(oldCandidatePath) && extensionUnsupported(candidate.Path) {
 					continue
 				}
-				if candidate.Status != "A" {
+				if candidate.Status != "A" && gitutil.IsCanonicalGitTreePath(oldCandidatePath) {
 					basePaths = append(basePaths, oldCandidatePath)
 				}
-				if candidate.Status != "D" {
+				if candidate.Status != "D" && gitutil.IsCanonicalGitTreePath(candidate.Path) {
 					headPaths = append(headPaths, candidate.Path)
 				}
 			}
@@ -175,6 +175,20 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		oldPath := file.OldPath
 		if oldPath == "" {
 			oldPath = path
+		}
+		beforeInvalidPath := file.Status != "A" && !gitutil.IsCanonicalGitTreePath(oldPath)
+		afterInvalidPath := file.Status != "D" && !gitutil.IsCanonicalGitTreePath(path)
+		if beforeInvalidPath || afterInvalidPath {
+			warningPath := path
+			detail := "head path is not a canonical Git tree path"
+			if beforeInvalidPath && !afterInvalidPath {
+				warningPath = oldPath
+				detail = "base path is not a canonical Git tree path"
+			} else if beforeInvalidPath && afterInvalidPath {
+				detail = "base and head paths are not canonical Git tree paths"
+			}
+			result.Warnings = append(result.Warnings, diffFileReadWarning(warningPath, detail))
+			continue
 		}
 
 		var before, after string
