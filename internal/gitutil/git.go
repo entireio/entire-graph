@@ -559,59 +559,122 @@ func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error)
 // could not express that — checking len(content) afterwards bounds the ANSWER
 // once the allocation has already happened. The other bounded readers here do
 // not work that way: the batch reader decides off the size in its header, and
-// the on-disk reader stats before it opens. This asks git for the size first,
-// for the same reason and with the same shape.
+// the on-disk reader stats before it opens. This asks Git for the object type
+// and then its size first, for the same reason and with the same shape.
 //
 // Deciding from the size, rather than reading through an io.LimitReader and
 // stopping git once the ceiling is passed, is deliberate. The reading form
 // deadlocked on Windows: killing git left a grandchild holding the inherited
 // stderr handle, so the copier goroutine never saw EOF and Cmd.Wait blocked in
 // awaitGoroutines forever. Nothing here now depends on process-tree teardown.
-// The extra `cat-file -s` is one small process on a path that is already the
+// The extra `cat-file` probes are small processes on a path that is already the
 // rare fallback for a Git path containing a newline.
 //
-// The size probe cannot make an answer WORSE than ShowFile's: it is best effort,
-// and anything it fails to establish falls through to the read, which keeps its
-// own absent-vs-failed classification.
+// The metadata probe is authoritative only when Git identifies the object. A
+// blob proceeds to the size decision below; a non-blob (notably a gitlink's
+// commit object) is refused before `git show` can render that object's patch.
+// Anything the probe cannot establish falls through to the read, which keeps
+// ShowFile's absent-vs-failed classification.
 func ShowFileLimited(ctx context.Context, repo, rev, path string, maxBytes int64) (string, bool, error) {
 	return showFileLimited(ctx, repo, rev, path, maxBytes, blobSizeAtRev)
 }
 
-// showFileLimited takes the probe as an argument so a test can exercise the
-// no-answer path, which is otherwise unreachable: the probe and the read resolve
-// the same object through the same git, so making one fail while the other
-// succeeds is not something a fixture repository can arrange.
+// LimitedFileStatus classifies the outcome of ReadFileLimited without
+// conflating a missing path, an oversized blob, and a non-blob tree entry.
+type LimitedFileStatus uint8
+
+const (
+	LimitedFileMissing LimitedFileStatus = iota
+	LimitedFileContent
+	LimitedFileOversize
+	LimitedFileNonBlob
+)
+
+// LimitedFileResult is the bounded, typed result for one path at a revision.
+// Content is populated only for LimitedFileContent. Bytes is the exact content
+// size for LimitedFileContent and LimitedFileOversize; the latter comes from
+// Git's object metadata whenever the probe succeeds, so the blob is not read.
+type LimitedFileResult struct {
+	Status  LimitedFileStatus
+	Content string
+	Bytes   int64
+}
+
+// ReadFileLimited is the typed form of ShowFileLimited. Callers that need one
+// coherent snapshot across this metadata probe and other Git operations must
+// pass an already-resolved immutable revision rather than a moving ref name.
+func ReadFileLimited(ctx context.Context, repo, rev, path string, maxBytes int64) (LimitedFileResult, error) {
+	return readFileLimited(ctx, repo, rev, path, maxBytes, blobSizeAtRev)
+}
+
+// showFileLimited preserves the compact historical API for callers that only
+// distinguish returned content from unavailable content.
 func showFileLimited(
 	ctx context.Context,
 	repo, rev, path string,
 	maxBytes int64,
-	probe func(ctx context.Context, repo, rev, path string) (int64, bool),
+	probe func(ctx context.Context, repo, rev, path string) (int64, blobProbeStatus),
 ) (string, bool, error) {
-	if maxBytes <= 0 {
-		return ShowFile(ctx, repo, rev, path)
+	result, err := readFileLimited(ctx, repo, rev, path, maxBytes, probe)
+	if err != nil {
+		return "", false, err
 	}
-	// The probe only ever ADDS an early refusal. Every outcome it cannot speak to
-	// — missing path, bad revision, a git whose diagnostics are worded
-	// differently, a size that will not parse — falls through to ShowFile, which
-	// stays the one place absent-vs-failed is decided. Classifying a second
-	// command's stderr with a matcher written for `git show` would have put that
-	// contract at the mercy of another command's wording.
-	if size, known := probe(ctx, repo, rev, path); known && size > maxBytes {
+	if result.Status != LimitedFileContent {
+		return "", false, nil
+	}
+	return result.Content, true, nil
+}
+
+// readFileLimited takes the probe as an argument so a test can exercise the
+// best-effort no-answer path without relying on a transient Git failure.
+func readFileLimited(
+	ctx context.Context,
+	repo, rev, path string,
+	maxBytes int64,
+	probe func(ctx context.Context, repo, rev, path string) (int64, blobProbeStatus),
+) (LimitedFileResult, error) {
+	if maxBytes <= 0 {
+		content, ok, err := ShowFile(ctx, repo, rev, path)
+		if err != nil {
+			return LimitedFileResult{}, err
+		}
+		if !ok {
+			return LimitedFileResult{Status: LimitedFileMissing}, nil
+		}
+		return LimitedFileResult{Status: LimitedFileContent, Content: content, Bytes: int64(len(content))}, nil
+	}
+	// An identified non-blob is not file content. In particular, `git show` on a
+	// gitlink's small commit object renders the commit's potentially enormous
+	// patch, so trusting only that object's size would defeat the caller's bound.
+	// Unknown outcomes — missing path, bad revision, unexpected diagnostics, or
+	// an unparsable size — still fall through to ShowFile, which remains the one
+	// place absent-vs-failed is decided.
+	size, status := probe(ctx, repo, rev, path)
+	if status == blobProbeNonBlob {
+		return LimitedFileResult{Status: LimitedFileNonBlob}, nil
+	}
+	if status == blobProbeBlob && size > maxBytes {
 		// Refused, not failed: a blob this caller cannot quote, exactly like a
 		// missing one. No content was read to learn this.
-		return "", false, nil
+		return LimitedFileResult{Status: LimitedFileOversize, Bytes: size}, nil
 	}
 	// The commit is immutable, so a size measured above is the size that will be
 	// read — there is no grow-between-calls race to guard against here.
 	content, ok, err := ShowFile(ctx, repo, rev, path)
-	if ok && int64(len(content)) > maxBytes {
+	if err != nil {
+		return LimitedFileResult{}, err
+	}
+	if !ok {
+		return LimitedFileResult{Status: LimitedFileMissing}, nil
+	}
+	if int64(len(content)) > maxBytes {
 		// Only reachable when the probe gave no answer. The bytes are already
 		// allocated, so this cannot restore the memory bound — but it keeps the
 		// ANSWER identical either way, so a caller never receives content it
 		// declared too large to accept.
-		return "", false, nil
+		return LimitedFileResult{Status: LimitedFileOversize, Bytes: int64(len(content))}, nil
 	}
-	return content, ok, err
+	return LimitedFileResult{Status: LimitedFileContent, Content: content, Bytes: int64(len(content))}, nil
 }
 
 // OversizeBlobAtRev reports the size, content hash and line count of the blob at
@@ -668,19 +731,35 @@ func OversizeBlobAtRev(ctx context.Context, repo, rev, path string, maxBytes int
 	return OversizeBlob{Bytes: digest.Bytes, Hash: digest.Hash, Lines: digest.Lines}, true, nil
 }
 
-// blobSizeAtRev reports the size of the blob at rev:path without reading it.
-// It is BEST EFFORT by design: known=false means "no answer", never "absent" or
-// "broken", so a caller can only use it to refuse, not to conclude.
-func blobSizeAtRev(ctx context.Context, repo, rev, path string) (int64, bool) {
-	out, _, err := runWithStderr(ctx, repo, "git", "cat-file", "-s", rev+"^{tree}:"+path)
+type blobProbeStatus uint8
+
+const (
+	blobProbeUnknown blobProbeStatus = iota
+	blobProbeBlob
+	blobProbeNonBlob
+)
+
+// blobSizeAtRev reports the type and, for a blob, the size of rev:path without
+// reading its content. It is best effort: unknown means "no answer", never
+// "absent" or "broken", so a caller can only use it to refuse, not to conclude.
+func blobSizeAtRev(ctx context.Context, repo, rev, path string) (int64, blobProbeStatus) {
+	objectSpec := rev + "^{tree}:" + path
+	typeOut, _, err := runWithStderr(ctx, repo, "git", "cat-file", "-t", objectSpec)
 	if err != nil {
-		return 0, false
+		return 0, blobProbeUnknown
+	}
+	if strings.TrimSpace(typeOut) != "blob" {
+		return 0, blobProbeNonBlob
+	}
+	out, _, err := runWithStderr(ctx, repo, "git", "cat-file", "-s", objectSpec)
+	if err != nil {
+		return 0, blobProbeUnknown
 	}
 	size, parseErr := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
-	if parseErr != nil {
-		return 0, false
+	if parseErr != nil || size < 0 {
+		return 0, blobProbeUnknown
 	}
-	return size, true
+	return size, blobProbeBlob
 }
 
 func isMissingPathDiagnostic(stderr string) bool {

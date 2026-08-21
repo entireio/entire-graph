@@ -76,8 +76,22 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		emitProgressEvent(phase, filesDone, filesTotal, "", true)
 	}
 
+	// Bind both caller-facing revision labels to immutable commits before any
+	// discovery or content read. A branch can advance between ChangedFiles, the
+	// size probe, and ShowFile; resolving each operation through the original
+	// label would then compare bytes from different ranges and could invalidate
+	// the read ceiling. Keep the labels below for the result's public provenance.
+	pinnedBase, err := gitutil.RevParse(ctx, repo, base+"^{commit}")
+	if err != nil {
+		return Result{}, fmt.Errorf("resolve diff base %q: %w", base, err)
+	}
+	pinnedHead, err := gitutil.RevParse(ctx, repo, head+"^{commit}")
+	if err != nil {
+		return Result{}, fmt.Errorf("resolve diff head %q: %w", head, err)
+	}
+
 	emitProgress("discover", 0, 0)
-	changed, err := gitutil.ChangedFiles(ctx, repo, base, head, paths)
+	changed, err := gitutil.ChangedFiles(ctx, repo, pinnedBase, pinnedHead, paths)
 	if err != nil {
 		return Result{}, err
 	}
@@ -121,13 +135,13 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			// chose -- and unlike the snapshot readers, nothing downstream
 			// would have declined to parse it.
 			if file.Status != "A" {
-				before, beforeOK, err = gitutil.ShowFileLimited(ctx, repo, base, oldPath, maxDiffFileBytes)
+				before, beforeOK, err = gitutil.ShowFileLimited(ctx, repo, pinnedBase, oldPath, maxDiffFileBytes)
 				if err != nil {
 					return Result{}, err
 				}
 			}
 			if file.Status != "D" {
-				after, afterOK, err = gitutil.ShowFileLimited(ctx, repo, head, path, maxDiffFileBytes)
+				after, afterOK, err = gitutil.ShowFileLimited(ctx, repo, pinnedHead, path, maxDiffFileBytes)
 				if err != nil {
 					return Result{}, err
 				}
@@ -274,7 +288,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		})
 	}
 
-	if err := addDependentCountsWithProgress(ctx, repo, head, &result, dependentsScanOptions{
+	if err := addDependentCountsWithProgress(ctx, repo, pinnedHead, &result, dependentsScanOptions{
 		progress: func(done, total int, path string) {
 			emitProgressEvent("dependents", done, total, path, path == "")
 		},
