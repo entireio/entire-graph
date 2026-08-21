@@ -17,6 +17,10 @@ import (
 // diff should read twice in order to parse it anyway.
 const maxDiffFileBytes = defaultMaxParseBytes
 
+// Keep metadata prefetch bounded so a short analysis budget does not inspect an
+// entire huge range before the per-file budget check can stop it.
+const analyzeMetadataPrimeFiles = 128
+
 func AnalyzeGitRange(ctx context.Context, repo, base, head string, paths []string) (Result, error) {
 	return AnalyzeGitRangeWithOptions(ctx, repo, base, head, paths, AnalyzeOptions{})
 }
@@ -76,18 +80,18 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		emitProgressEvent(phase, filesDone, filesTotal, "", true)
 	}
 
-	// Bind both caller-facing revision labels to immutable commits before any
+	// Bind both caller-facing revision labels to immutable trees before any
 	// discovery or content read. A branch can advance between ChangedFiles, the
 	// size probe, and ShowFile; resolving each operation through the original
 	// label would then compare bytes from different ranges and could invalidate
-	// the read ceiling. Keep the labels below for the result's public provenance.
-	pinnedBase, err := gitutil.RevParse(ctx, repo, base+"^{commit}")
+	// the read ceiling. Trees preserve the command's historical tree-ish input
+	// contract; requiring commits would reject valid tree OIDs and expressions.
+	// When both labels are byte-identical, reuse the first resolution so a ref
+	// advance between subprocesses cannot turn an intended empty diff into an
+	// old-tree/new-tree comparison. Keep the labels below for result provenance.
+	pinnedBase, pinnedHead, err := resolveDiffTrees(ctx, repo, base, head, gitutil.RevParse)
 	if err != nil {
-		return Result{}, fmt.Errorf("resolve diff base %q: %w", base, err)
-	}
-	pinnedHead, err := gitutil.RevParse(ctx, repo, head+"^{commit}")
-	if err != nil {
-		return Result{}, fmt.Errorf("resolve diff head %q: %w", head, err)
+		return Result{}, err
 	}
 
 	emitProgress("discover", 0, 0)
@@ -97,6 +101,12 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 	}
 	emitProgress("parse", 0, len(changed))
 	parser := TreeSitterParser{}
+	baseReader := gitutil.NewLimitedFileReader(ctx, repo, pinnedBase, maxDiffFileBytes)
+	headReader := gitutil.NewLimitedFileReader(ctx, repo, pinnedHead, maxDiffFileBytes)
+	defer func() {
+		_ = baseReader.Close()
+		_ = headReader.Close()
+	}()
 	// SchemaVersion is set here, at the one place a content-bearing Result is
 	// constructed; every caller (AnalyzeGitRange, AnalyzeCheckpoint, and the
 	// diff/analyze CLI handlers that call through them) inherits it.
@@ -111,6 +121,32 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 				result.Warnings = append(result.Warnings, budgetSkippedFileWarning(skipped.Path, i, len(changed), options.MaxDuration))
 			}
 			break
+		}
+		if i%analyzeMetadataPrimeFiles == 0 {
+			end := min(i+analyzeMetadataPrimeFiles, len(changed))
+			basePaths := make([]string, 0, end-i)
+			headPaths := make([]string, 0, end-i)
+			for _, candidate := range changed[i:end] {
+				oldCandidatePath := candidate.OldPath
+				if oldCandidatePath == "" {
+					oldCandidatePath = candidate.Path
+				}
+				if extensionUnsupported(oldCandidatePath) && extensionUnsupported(candidate.Path) {
+					continue
+				}
+				if candidate.Status != "A" {
+					basePaths = append(basePaths, oldCandidatePath)
+				}
+				if candidate.Status != "D" {
+					headPaths = append(headPaths, candidate.Path)
+				}
+			}
+			if err := baseReader.Prime(basePaths); err != nil {
+				return Result{}, err
+			}
+			if err := headReader.Prime(headPaths); err != nil {
+				return Result{}, err
+			}
 		}
 		emitProgressEvent("parse", i, len(changed), file.Path, i > 0 && i%100 == 0)
 		path := file.Path
@@ -134,40 +170,66 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			// largest object in the range rather than by anything the caller
 			// chose -- and unlike the snapshot readers, nothing downstream
 			// would have declined to parse it.
+			var beforeRead, afterRead gitutil.LimitedFileResult
 			if file.Status != "A" {
-				before, beforeOK, err = gitutil.ShowFileLimited(ctx, repo, pinnedBase, oldPath, maxDiffFileBytes)
+				beforeRead, err = baseReader.ReadFile(oldPath)
 				if err != nil {
 					return Result{}, err
 				}
+				before, beforeOK = beforeRead.Content, beforeRead.Status == gitutil.LimitedFileContent
 			}
 			if file.Status != "D" {
-				after, afterOK, err = gitutil.ShowFileLimited(ctx, repo, pinnedHead, path, maxDiffFileBytes)
+				afterRead, err = headReader.ReadFile(path)
 				if err != nil {
 					return Result{}, err
 				}
+				after, afterOK = afterRead.Content, afterRead.Status == gitutil.LimitedFileContent
 			}
-		}
 
-		// A side ChangedFiles reported as present that came back unread was
-		// refused by the ceiling above. ChangedFiles parses `git diff -z`, so
-		// the path is exact rather than quoted and resolves at that revision by
-		// construction; the remaining way ShowFileLimited reports a present
-		// path as unreadable WITHOUT an error is the size refusal. Skip the
-		// delta and say so: an empty side would otherwise be compared against a
-		// parsed one and report every entity in it as phantom removed/added.
-		beforeRefused := file.Status != "A" && !beforeOK
-		afterRefused := file.Status != "D" && !afterOK
-		if beforeRefused || afterRefused {
-			warningPath := path
-			detail := "head version is above the diff read cap"
-			if beforeRefused && !afterRefused {
-				warningPath = oldPath
-				detail = "base version is above the diff read cap"
-			} else if beforeRefused && afterRefused {
-				detail = "base and head versions are above the diff read cap"
+			beforeMissing := file.Status != "A" && beforeRead.Status == gitutil.LimitedFileMissing
+			afterMissing := file.Status != "D" && afterRead.Status == gitutil.LimitedFileMissing
+			if beforeMissing || afterMissing {
+				warningPath := path
+				detail := "head version was missing after changed-file discovery"
+				if beforeMissing && !afterMissing {
+					warningPath = oldPath
+					detail = "base version was missing after changed-file discovery"
+				} else if beforeMissing && afterMissing {
+					detail = "base and head versions were missing after changed-file discovery"
+				}
+				result.Warnings = append(result.Warnings, diffFileReadWarning(warningPath, detail))
 			}
-			result.Warnings = append(result.Warnings, diffFileTooLargeWarning(warningPath, detail))
-			continue
+
+			beforeNonBlob := file.Status != "A" && beforeRead.Status == gitutil.LimitedFileNonBlob
+			afterNonBlob := file.Status != "D" && afterRead.Status == gitutil.LimitedFileNonBlob
+			if beforeNonBlob || afterNonBlob {
+				warningPath := path
+				detail := "head version is a non-blob Git tree entry"
+				if beforeNonBlob && !afterNonBlob {
+					warningPath = oldPath
+					detail = "base version is a non-blob Git tree entry"
+				} else if beforeNonBlob && afterNonBlob {
+					detail = "base and head versions are non-blob Git tree entries"
+				}
+				result.Warnings = append(result.Warnings, diffNonBlobWarning(warningPath, detail))
+			}
+
+			beforeOversize := file.Status != "A" && beforeRead.Status == gitutil.LimitedFileOversize
+			afterOversize := file.Status != "D" && afterRead.Status == gitutil.LimitedFileOversize
+			if beforeOversize || afterOversize {
+				warningPath := path
+				detail := "head version is above the diff read cap"
+				if beforeOversize && !afterOversize {
+					warningPath = oldPath
+					detail = "base version is above the diff read cap"
+				} else if beforeOversize && afterOversize {
+					detail = "base and head versions are above the diff read cap"
+				}
+				result.Warnings = append(result.Warnings, diffFileTooLargeWarning(warningPath, detail))
+			}
+			if beforeMissing || afterMissing || beforeNonBlob || afterNonBlob || beforeOversize || afterOversize {
+				continue
+			}
 		}
 
 		// Support is content-aware: extensionless executables can still route to a
@@ -263,6 +325,14 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		})
 	}
 	emitProgress("parse", len(changed), len(changed))
+	baseCloseErr := baseReader.Close()
+	headCloseErr := headReader.Close()
+	if baseCloseErr != nil {
+		return Result{}, baseCloseErr
+	}
+	if headCloseErr != nil {
+		return Result{}, headCloseErr
+	}
 
 	emitProgress("reconcile", len(changed), len(changed))
 	result.Warnings = append(result.Warnings, reconcileMoves(deltas)...)
@@ -301,6 +371,43 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 	return result, nil
 }
 
+func resolveDiffTrees(
+	ctx context.Context,
+	repo, base, head string,
+	resolve func(context.Context, string, string) (string, error),
+) (string, string, error) {
+	resolveTree := func(label string) (string, error) {
+		pinned, directErr := resolve(ctx, repo, label+"^{tree}")
+		if directErr == nil {
+			return pinned, nil
+		}
+		if ctx.Err() != nil {
+			return "", directErr
+		}
+		// A revision-path expression such as HEAD:subdir already names its
+		// result object; appending ^{tree} would instead become part of the
+		// path. Resolve that expression first, then peel the immutable OID.
+		objectID, err := resolve(ctx, repo, label)
+		if err != nil {
+			return "", directErr
+		}
+		return resolve(ctx, repo, objectID+"^{tree}")
+	}
+
+	pinnedBase, err := resolveTree(base)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve diff base %q: %w", base, err)
+	}
+	if head == base {
+		return pinnedBase, pinnedBase, nil
+	}
+	pinnedHead, err := resolveTree(head)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve diff head %q: %w", head, err)
+	}
+	return pinnedBase, pinnedHead, nil
+}
+
 // budgetSkippedFileWarning marks one changed file that was never analyzed
 // because the overall wall-clock budget (AnalyzeOptions.MaxDuration) ran out
 // first. It shares the W_ANALYSIS_BUDGET_EXCEEDED code with the dependents
@@ -332,6 +439,33 @@ func diffFileTooLargeWarning(path, detail string) ProviderWarning {
 		FilePath:             path,
 		EffectOnCompleteness: "file skipped; its content was not read, so its changes are not analyzed",
 		Detail:               fmt.Sprintf("%s of %d bytes", detail, maxDiffFileBytes),
+	}
+}
+
+// diffNonBlobWarning marks a changed tree entry that cannot contain source
+// text. Gitlinks are the ordinary case: their object is a commit, and asking
+// `git show` for it would render a patch rather than read file content.
+func diffNonBlobWarning(path, detail string) ProviderWarning {
+	return ProviderWarning{
+		Code:                 "W_UNSUPPORTED_FILE",
+		Severity:             "info",
+		FilePath:             path,
+		EffectOnCompleteness: "file skipped; the Git tree entry has no blob content, so its changes are not analyzed",
+		Detail:               detail,
+	}
+}
+
+// diffFileReadWarning keeps an unexpectedly absent side distinct from the
+// deliberate size refusal above. ChangedFiles and these reads use the same
+// pinned trees, so a present side disappearing is an input/read failure, not
+// evidence that the file exceeded the cap.
+func diffFileReadWarning(path, detail string) ProviderWarning {
+	return ProviderWarning{
+		Code:                 "E_FILE_READ",
+		Severity:             "error",
+		FilePath:             path,
+		EffectOnCompleteness: "file skipped; expected Git blob content was unavailable, so its changes are not analyzed",
+		Detail:               detail,
 	}
 }
 

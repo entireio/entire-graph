@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"math"
 	"os"
 	"os/exec"
@@ -713,6 +714,213 @@ func TestShowFileLimitedRejectsGitlinkBeforeRenderingCommit(t *testing.T) {
 	}
 	if detailed.Status != LimitedFileNonBlob || detailed.Content != "" || detailed.Bytes != 0 {
 		t.Errorf("typed gitlink result = %#v, want non-blob with no content", detailed)
+	}
+}
+
+func TestLimitedFileReaderReusesBatchesAndRefusesByMetadata(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "commit.gpgsign", "false")
+
+	if err := os.WriteFile(filepath.Join(repo, "seed.txt"), []byte("target\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "seed.txt")
+	git(t, repo, "commit", "-m", "gitlink target")
+	target := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const fileCount = 32
+	for i := range fileCount {
+		path := filepath.Join(repo, "src", fmt.Sprintf("file%02d.go", i))
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("package src\n// file %d\n", i)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const ceiling = int64(64)
+	if err := os.WriteFile(filepath.Join(repo, "large.go"), []byte(strings.Repeat("x", int(ceiling)+1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "update-index", "--add", "--cacheinfo", "160000", target, "vendor/module.go")
+	git(t, repo, "commit", "-m", "reader fixture")
+
+	reader := NewLimitedFileReader(t.Context(), repo, "HEAD", ceiling)
+	t.Cleanup(func() { _ = reader.Close() })
+	primePaths := make([]string, 0, fileCount+3)
+	for i := range fileCount {
+		primePaths = append(primePaths, fmt.Sprintf("src/file%02d.go", i))
+	}
+	primePaths = append(primePaths, "large.go", "vendor/module.go", "missing.go")
+	if err := reader.Prime(primePaths); err != nil {
+		t.Fatal(err)
+	}
+	if reader.content != nil {
+		t.Fatal("metadata priming should not start the persistent content batch")
+	}
+	var contentCmd *exec.Cmd
+	for i := range fileCount {
+		path := fmt.Sprintf("src/file%02d.go", i)
+		result, err := reader.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Status != LimitedFileContent || !strings.Contains(result.Content, fmt.Sprintf("file %d", i)) {
+			t.Fatalf("%s = %#v, want its content", path, result)
+		}
+		if i == 0 {
+			contentCmd = reader.content.cmd
+		} else if reader.content.cmd != contentCmd {
+			t.Fatal("limited reader started new Git processes instead of reusing its content batch")
+		}
+	}
+
+	large, err := reader.ReadFile("large.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if large.Status != LimitedFileOversize || large.Bytes != ceiling+1 || large.Content != "" {
+		t.Fatalf("large blob = %#v, want metadata-only oversize refusal", large)
+	}
+	if _, streamed := reader.content.OversizeBlob("large.go"); streamed {
+		t.Fatal("oversized blob entered the content batch and was streamed merely to advance it")
+	}
+	if reader.content.cmd != contentCmd {
+		t.Fatal("oversize probe replaced a persistent batch process")
+	}
+
+	gitlink, err := reader.ReadFile("vendor/module.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gitlink.Status != LimitedFileNonBlob {
+		t.Fatalf("gitlink = %#v, want non-blob", gitlink)
+	}
+	missing, err := reader.ReadFile("missing.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing.Status != LimitedFileMissing {
+		t.Fatalf("missing path = %#v, want missing", missing)
+	}
+}
+
+func TestLimitedFileReaderUsesObjectIDsForLineTerminators(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows filenames cannot contain newlines or carriage returns")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "commit.gpgsign", "false")
+
+	plainPath := "name.go"
+	carriagePath := "name.go\r"
+	newlinePath := "line\nname.go"
+	plainContent := "package plain\n"
+	carriageContent := "package carriage\n"
+	newlineContent := "package newline\n"
+	if err := os.WriteFile(filepath.Join(repo, plainPath), []byte(plainContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, carriagePath), []byte(carriageContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, newlinePath), []byte(newlineContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "carriage return siblings")
+
+	reader := NewLimitedFileReader(t.Context(), repo, "HEAD", 1024)
+	t.Cleanup(func() { _ = reader.Close() })
+	if err := reader.Prime([]string{plainPath, carriagePath, newlinePath}); err != nil {
+		t.Fatal(err)
+	}
+	newlineResult, err := reader.ReadFile(newlinePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newlineResult.Status != LimitedFileContent || newlineResult.Content != newlineContent {
+		t.Fatalf("newline path = %#v, want its own content %q", newlineResult, newlineContent)
+	}
+	if reader.content == nil {
+		t.Fatal("newline path did not start the exact-object content batch")
+	}
+	contentCmd := reader.content.cmd
+
+	carriageResult, err := reader.ReadFile(carriagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if carriageResult.Status != LimitedFileContent || carriageResult.Content != carriageContent {
+		t.Fatalf("trailing-CR path = %#v, want its own content %q", carriageResult, carriageContent)
+	}
+	if reader.content.cmd != contentCmd {
+		t.Fatal("line-terminator paths did not reuse the exact-object content batch")
+	}
+
+	plain, err := reader.ReadFile(plainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Status != LimitedFileContent || plain.Content != plainContent {
+		t.Fatalf("plain sibling = %#v, want %q", plain, plainContent)
+	}
+	if reader.content.cmd != contentCmd {
+		t.Fatal("plain sibling did not reuse the exact-object content batch")
+	}
+}
+
+func TestLimitedFileReaderKeepsRepoSubdirectoryPathsRelative(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "commit.gpgsign", "false")
+
+	const content = "package scope\n"
+	if err := os.MkdirAll(filepath.Join(repo, "scope"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "scope", "file.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "subdirectory fixture")
+
+	reader := NewLimitedFileReader(t.Context(), filepath.Join(repo, "scope"), "HEAD", 1024)
+	t.Cleanup(func() { _ = reader.Close() })
+	if err := reader.Prime([]string{"file.go", "missing.go"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := reader.ReadFile("file.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != LimitedFileContent || result.Content != content {
+		t.Fatalf("subdirectory file = %#v, want cwd-relative content %q", result, content)
+	}
+	missing, err := reader.ReadFile("missing.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing.Status != LimitedFileMissing {
+		t.Fatalf("subdirectory missing path = %#v, want missing", missing)
+	}
+}
+
+func TestLimitedFileReaderBoundsMetadataPathspecs(t *testing.T) {
+	reader := NewLimitedFileReader(t.Context(), t.TempDir(), "HEAD", 1024)
+	path := strings.Repeat("x", literalPathOutputMaxPathBytes+1)
+	err := reader.Prime([]string{path})
+	if err == nil || !strings.Contains(err.Error(), "input path exceeds") {
+		t.Fatalf("oversized metadata path error = %v, want bounded-input rejection", err)
 	}
 }
 

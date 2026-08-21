@@ -567,8 +567,10 @@ func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error)
 // deadlocked on Windows: killing git left a grandchild holding the inherited
 // stderr handle, so the copier goroutine never saw EOF and Cmd.Wait blocked in
 // awaitGoroutines forever. Nothing here now depends on process-tree teardown.
-// The extra `cat-file` probes are small processes on a path that is already the
-// rare fallback for a Git path containing a newline.
+// This one-shot helper pays for separate `cat-file` probes. Callers scanning a
+// range of ordinary paths should use LimitedFileReader, which batches metadata
+// and sends exact blob OIDs (never repository paths) to its persistent content
+// batch. An unprimed LimitedFileReader path falls back here.
 //
 // The metadata probe is authoritative only when Git identifies the object. A
 // blob proceeds to the size decision below; a non-blob (notably a gitlink's
@@ -858,12 +860,19 @@ func NewBatchFileReader(ctx context.Context, repo, rev string) (*BatchFileReader
 }
 
 func (r *BatchFileReader) ReadFile(path string) (string, bool, error) {
+	return r.readObjectSpec(r.rev+":"+path, path)
+}
+
+// readObjectSpec is the shared batch protocol implementation. LimitedFileReader
+// passes a hex blob OID here, so repository-controlled path bytes never enter
+// the line-oriented request; ordinary callers retain rev:path behavior.
+func (r *BatchFileReader) readObjectSpec(objectSpec, oversizeKey string) (string, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
 		return "", false, fmt.Errorf("git cat-file batch reader is closed")
 	}
-	if _, err := fmt.Fprintf(r.stdin, "%s:%s\n", r.rev, path); err != nil {
+	if _, err := fmt.Fprintf(r.stdin, "%s\n", objectSpec); err != nil {
 		return "", false, err
 	}
 	header, err := r.stdout.ReadString('\n')
@@ -893,7 +902,7 @@ func (r *BatchFileReader) ReadFile(path string) (string, bool, error) {
 		if scan := r.oversizeScan; scan != nil {
 			// The same single pass the digest already makes: the scanner sees the bytes on their
 			// way to being discarded, so relevance costs no extra read and no retained memory.
-			src = io.TeeReader(src, oversizeScanWriter{path: path, scan: scan})
+			src = io.TeeReader(src, oversizeScanWriter{path: oversizeKey, scan: scan})
 		}
 		digest, err := filedigest.Stream(src)
 		if err != nil {
@@ -905,7 +914,7 @@ func (r *BatchFileReader) ReadFile(path string) (string, bool, error) {
 		if r.oversize == nil {
 			r.oversize = map[string]OversizeBlob{}
 		}
-		r.oversize[path] = OversizeBlob{Bytes: digest.Bytes, Hash: digest.Hash, Lines: digest.Lines}
+		r.oversize[oversizeKey] = OversizeBlob{Bytes: digest.Bytes, Hash: digest.Hash, Lines: digest.Lines}
 		return "", false, nil
 	}
 	content := make([]byte, size)
@@ -940,6 +949,195 @@ func (r *BatchFileReader) Close() error {
 			msg = err.Error()
 		}
 		return fmt.Errorf("git cat-file --batch: %s", msg)
+	}
+	return nil
+}
+
+// LimitedFileReader performs repeated bounded reads from one immutable Git
+// tree without spawning probes per file. Prime batches exact ls-tree metadata;
+// ReadFile then asks a persistent content batch for the exact blob OIDs at or
+// below the ceiling. Repository paths never enter that line-oriented protocol,
+// so newline-bearing and trailing-carriage-return names cannot split or
+// normalize a request. An unprimed path uses the argv-safe one-shot fallback.
+type LimitedFileReader struct {
+	ctx      context.Context
+	repo     string
+	rev      string
+	maxBytes int64
+
+	mu      sync.Mutex
+	content *BatchFileReader
+	primed  map[string]primedLimitedFile
+	closed  bool
+}
+
+type primedLimitedFile struct {
+	result   LimitedFileResult
+	objectID string
+}
+
+// NewLimitedFileReader creates a lazy reader. No Git process starts until Prime
+// or ReadFile, so an empty or extension-filtered range costs no subprocesses.
+// rev must be immutable when metadata and content consistency matters.
+func NewLimitedFileReader(ctx context.Context, repo, rev string, maxBytes int64) *LimitedFileReader {
+	return &LimitedFileReader{ctx: ctx, repo: repo, rev: rev, maxBytes: maxBytes}
+}
+
+// Prime resolves exact tree-entry metadata for a bounded group of paths. Unlike
+// cat-file, ls-tree identifies a gitlink from its tree mode even when the
+// referenced commit object is absent from the superproject object database.
+// Literal pathspec batches keep unusual names inert and bound argv size.
+func (r *LimitedFileReader) Prime(paths []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return errors.New("limited Git file reader is closed")
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	if r.primed == nil {
+		r.primed = make(map[string]primedLimitedFile, len(paths))
+	}
+	for start := 0; start < len(paths); {
+		end := literalPathspecBatchEnd(paths, start)
+		entries, err := treeEntryMetadataBatch(r.ctx, r.repo, r.rev, paths[start:end])
+		if err != nil {
+			return err
+		}
+		for _, path := range paths[start:end] {
+			r.primed[path] = primedLimitedFile{result: LimitedFileResult{Status: LimitedFileMissing}}
+		}
+		for path, entry := range entries {
+			r.primed[path] = entry
+		}
+		start = end
+	}
+	return nil
+}
+
+func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []string) (map[string]primedLimitedFile, error) {
+	if rev == "" || strings.HasPrefix(rev, "-") || strings.ContainsRune(rev, 0) {
+		return nil, fmt.Errorf("invalid treeish %q", rev)
+	}
+	if len(paths) > literalPathspecBatchCount {
+		return nil, fmt.Errorf("git tree metadata input exceeds %d paths", literalPathspecBatchCount)
+	}
+	args := []string{"ls-tree", "-z", "-l", rev, "--"}
+	known := make(map[string]struct{}, len(paths))
+	pathspecBytes := 0
+	for _, path := range paths {
+		if path == "" || strings.ContainsRune(path, 0) {
+			return nil, fmt.Errorf("invalid Git tree path %q", path)
+		}
+		if len(path) > literalPathOutputMaxPathBytes {
+			return nil, fmt.Errorf("git tree metadata input path exceeds %d bytes", literalPathOutputMaxPathBytes)
+		}
+		pathspecBytes += len(":(literal)") + len(path)
+		if pathspecBytes > literalPathspecBatchBytes {
+			return nil, fmt.Errorf("git tree metadata pathspecs exceed %d bytes", literalPathspecBatchBytes)
+		}
+		args = append(args, ":(literal)"+path)
+		known[path] = struct{}{}
+	}
+	out, err := run(ctx, repo, "git", args...)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > 0 && out[len(out)-1] != 0 {
+		return nil, errors.New("git ls-tree returned non-NUL-terminated metadata")
+	}
+	entries := make(map[string]primedLimitedFile, len(paths))
+	for _, record := range bytes.Split([]byte(out), []byte{0}) {
+		if len(record) == 0 {
+			continue
+		}
+		tab := bytes.IndexByte(record, '\t')
+		if tab < 0 {
+			return nil, errors.New("git ls-tree returned malformed metadata")
+		}
+		fields := strings.Fields(string(record[:tab]))
+		if len(fields) != 4 {
+			return nil, fmt.Errorf("git ls-tree returned malformed metadata header %q", record[:tab])
+		}
+		path := string(record[tab+1:])
+		if _, ok := known[path]; !ok {
+			return nil, fmt.Errorf("git ls-tree returned unexpected path %q", path)
+		}
+		if _, duplicate := entries[path]; duplicate {
+			return nil, fmt.Errorf("git ls-tree returned duplicate path %q", path)
+		}
+		if fields[1] != "blob" {
+			entries[path] = primedLimitedFile{result: LimitedFileResult{Status: LimitedFileNonBlob}}
+			continue
+		}
+		size, err := strconv.ParseInt(fields[3], 10, 64)
+		if err != nil || size < 0 {
+			return nil, fmt.Errorf("parse git ls-tree blob size %q for %q", fields[3], path)
+		}
+		entries[path] = primedLimitedFile{
+			result:   LimitedFileResult{Status: LimitedFileContent, Bytes: size},
+			objectID: fields[2],
+		}
+	}
+	return entries, nil
+}
+
+// ReadFile returns one typed bounded result. Oversized blobs are answered from
+// metadata and are never sent to the content batch.
+func (r *LimitedFileReader) ReadFile(path string) (LimitedFileResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return LimitedFileResult{}, errors.New("limited Git file reader is closed")
+	}
+	entry, primed := r.primed[path]
+	if !primed {
+		return ReadFileLimited(r.ctx, r.repo, r.rev, path, r.maxBytes)
+	}
+	result := entry.result
+	if result.Status != LimitedFileContent {
+		return result, nil
+	}
+	if r.maxBytes > 0 && result.Bytes > r.maxBytes {
+		result.Status = LimitedFileOversize
+		return result, nil
+	}
+	if r.content == nil {
+		content, err := NewBatchFileReader(r.ctx, r.repo, r.rev)
+		if err != nil {
+			return LimitedFileResult{}, err
+		}
+		content.SetMaxBytes(r.maxBytes)
+		r.content = content
+	}
+	content, ok, err := r.content.readObjectSpec(entry.objectID, path)
+	if err != nil {
+		return LimitedFileResult{}, err
+	}
+	if !ok {
+		if oversize, exists := r.content.OversizeBlob(path); exists {
+			return LimitedFileResult{Status: LimitedFileOversize, Bytes: oversize.Bytes}, nil
+		}
+		return LimitedFileResult{Status: LimitedFileMissing}, nil
+	}
+	result.Content = content
+	result.Bytes = int64(len(content))
+	return result, nil
+}
+
+// Close stops any lazy batches that were started.
+func (r *LimitedFileReader) Close() error {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return nil
+	}
+	r.closed = true
+	content := r.content
+	r.mu.Unlock()
+	if content != nil {
+		return content.Close()
 	}
 	return nil
 }
