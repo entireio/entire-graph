@@ -52,6 +52,26 @@ func RepoRoot(ctx context.Context, cwd string) (string, error) {
 	return strings.TrimSuffix(out, "\n"), nil
 }
 
+// RepoPrefix reports cwd's path from the repository root, including Git's
+// trailing slash when non-empty. Git is authoritative here: linked worktrees,
+// submodules, and unusual path bytes must use the same coordinate system as
+// tree object expressions. Only Git's final LF is removed.
+func RepoPrefix(ctx context.Context, cwd string) (string, error) {
+	out, err := run(ctx, cwd, "git", "rev-parse", "--show-prefix")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(out, "\n"), nil
+}
+
+func repoTreePath(ctx context.Context, repo, path string) (string, error) {
+	prefix, err := RepoPrefix(ctx, repo)
+	if err != nil {
+		return "", err
+	}
+	return prefix + path, nil
+}
+
 func RevParse(ctx context.Context, repo, rev string) (string, error) {
 	out, err := run(ctx, repo, "git", "rev-parse", rev)
 	if err != nil {
@@ -520,6 +540,9 @@ func FileCochanges(ctx context.Context, repo, revision string, maxCommits int) (
 	return pairs, nil
 }
 
+// ShowFile reads path relative to repo from a revision that represents the
+// repository-root tree. When repo is a subdirectory, Git's authoritative cwd
+// prefix is added before resolving the object.
 func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error) {
 	// Classify against git's stderr only, never the wrapped error that echoes
 	// the argv (which includes rev+":"+path). Matching the full error text made
@@ -528,7 +551,11 @@ func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error)
 	// Peel the revision to a tree before resolving the path. Without the type
 	// constraint, a missing full object ID or a blob object can produce the
 	// same path-looking diagnostic as a genuinely absent file.
-	objectSpec := rev + "^{tree}:" + path
+	treePath, err := repoTreePath(ctx, repo, path)
+	if err != nil {
+		return "", false, err
+	}
+	objectSpec := rev + "^{tree}:" + treePath
 	out, stderr, err := runWithStderr(ctx, repo, "git", "show", objectSpec)
 	if err != nil {
 		if isMissingPathDiagnostic(stderr) {
@@ -590,6 +617,10 @@ const (
 	LimitedFileContent
 	LimitedFileOversize
 	LimitedFileNonBlob
+	// LimitedFileUnaddressable means a valid tree path cannot fit the bounded
+	// argv used for exact metadata lookup (currently one component exceeds the
+	// whole 15 KiB pathspec budget). No content was read.
+	LimitedFileUnaddressable
 )
 
 // LimitedFileResult is the bounded, typed result for one path at a revision.
@@ -605,6 +636,8 @@ type LimitedFileResult struct {
 // ReadFileLimited is the typed form of ShowFileLimited. Callers that need one
 // coherent snapshot across this metadata probe and other Git operations must
 // pass an already-resolved immutable revision rather than a moving ref name.
+// Like ShowFile, path is relative to repo and rev represents the repository
+// root when repo is a subdirectory.
 func ReadFileLimited(ctx context.Context, repo, rev, path string, maxBytes int64) (LimitedFileResult, error) {
 	return readFileLimited(ctx, repo, rev, path, maxBytes, blobSizeAtRev)
 }
@@ -635,16 +668,6 @@ func readFileLimited(
 	maxBytes int64,
 	probe func(ctx context.Context, repo, rev, path string) (int64, blobProbeStatus),
 ) (LimitedFileResult, error) {
-	if maxBytes <= 0 {
-		content, ok, err := ShowFile(ctx, repo, rev, path)
-		if err != nil {
-			return LimitedFileResult{}, err
-		}
-		if !ok {
-			return LimitedFileResult{Status: LimitedFileMissing}, nil
-		}
-		return LimitedFileResult{Status: LimitedFileContent, Content: content, Bytes: int64(len(content))}, nil
-	}
 	// An identified non-blob is not file content. In particular, `git show` on a
 	// gitlink's small commit object renders the commit's potentially enormous
 	// patch, so trusting only that object's size would defeat the caller's bound.
@@ -655,21 +678,29 @@ func readFileLimited(
 	if status == blobProbeNonBlob {
 		return LimitedFileResult{Status: LimitedFileNonBlob}, nil
 	}
-	if status == blobProbeBlob && size > maxBytes {
+	if status == blobProbeBlob && maxBytes > 0 && size > maxBytes {
 		// Refused, not failed: a blob this caller cannot quote, exactly like a
 		// missing one. No content was read to learn this.
 		return LimitedFileResult{Status: LimitedFileOversize, Bytes: size}, nil
 	}
-	// The commit is immutable, so a size measured above is the size that will be
-	// read — there is no grow-between-calls race to guard against here.
-	content, ok, err := ShowFile(ctx, repo, rev, path)
+	// A positively identified blob can be read with plumbing, avoiding git
+	// show's worktree-path disambiguation and its commit-rendering behavior.
+	// Unknown probes retain ShowFile as the historical missing-vs-error arbiter.
+	var content string
+	var ok bool
+	var err error
+	if status == blobProbeBlob {
+		content, ok, err = readBlobAtRev(ctx, repo, rev, path)
+	} else {
+		content, ok, err = ShowFile(ctx, repo, rev, path)
+	}
 	if err != nil {
 		return LimitedFileResult{}, err
 	}
 	if !ok {
 		return LimitedFileResult{Status: LimitedFileMissing}, nil
 	}
-	if int64(len(content)) > maxBytes {
+	if maxBytes > 0 && int64(len(content)) > maxBytes {
 		// Only reachable when the probe gave no answer. The bytes are already
 		// allocated, so this cannot restore the memory bound — but it keeps the
 		// ANSWER identical either way, so a caller never receives content it
@@ -677,6 +708,26 @@ func readFileLimited(
 		return LimitedFileResult{Status: LimitedFileOversize, Bytes: int64(len(content))}, nil
 	}
 	return LimitedFileResult{Status: LimitedFileContent, Content: content, Bytes: int64(len(content))}, nil
+}
+
+func readBlobAtRev(ctx context.Context, repo, rev, path string) (string, bool, error) {
+	treePath, err := repoTreePath(ctx, repo, path)
+	if err != nil {
+		return "", false, err
+	}
+	objectSpec := rev + "^{tree}:" + treePath
+	out, stderr, err := runWithStderr(ctx, repo, "git", "cat-file", "blob", objectSpec)
+	if err != nil {
+		if isMissingPathDiagnostic(stderr) {
+			return "", false, nil
+		}
+		msg := stderr
+		if msg == "" {
+			msg = err.Error()
+		}
+		return "", false, fmt.Errorf("git cat-file blob %s: %s", objectSpec, msg)
+	}
+	return out, true, nil
 }
 
 // OversizeBlobAtRev reports the size, content hash and line count of the blob at
@@ -700,7 +751,11 @@ func OversizeBlobAtRev(ctx context.Context, repo, rev, path string, maxBytes int
 	if maxBytes <= 0 {
 		return OversizeBlob{}, false, nil
 	}
-	cmd := newCmd(ctx, repo, "git", "cat-file", "blob", rev+"^{tree}:"+path)
+	treePath, err := repoTreePath(ctx, repo, path)
+	if err != nil {
+		return OversizeBlob{}, false, err
+	}
+	cmd := newCmd(ctx, repo, "git", "cat-file", "blob", rev+"^{tree}:"+treePath)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()
@@ -745,23 +800,21 @@ const (
 // reading its content. It is best effort: unknown means "no answer", never
 // "absent" or "broken", so a caller can only use it to refuse, not to conclude.
 func blobSizeAtRev(ctx context.Context, repo, rev, path string) (int64, blobProbeStatus) {
-	objectSpec := rev + "^{tree}:" + path
-	typeOut, _, err := runWithStderr(ctx, repo, "git", "cat-file", "-t", objectSpec)
+	treePath, err := repoTreePath(ctx, repo, path)
 	if err != nil {
 		return 0, blobProbeUnknown
 	}
-	if strings.TrimSpace(typeOut) != "blob" {
+	entry, found, err := treeEntryMetadata(ctx, repo, rev, treePath)
+	if err != nil || !found {
+		return 0, blobProbeUnknown
+	}
+	if entry.result.Status == LimitedFileUnaddressable {
+		return 0, blobProbeUnknown
+	}
+	if entry.objectType != "blob" {
 		return 0, blobProbeNonBlob
 	}
-	out, _, err := runWithStderr(ctx, repo, "git", "cat-file", "-s", objectSpec)
-	if err != nil {
-		return 0, blobProbeUnknown
-	}
-	size, parseErr := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
-	if parseErr != nil || size < 0 {
-		return 0, blobProbeUnknown
-	}
-	return size, blobProbeBlob
+	return entry.result.Bytes, blobProbeBlob
 }
 
 func isMissingPathDiagnostic(stderr string) bool {
@@ -775,9 +828,11 @@ func isMissingPathDiagnostic(stderr string) bool {
 
 // BatchFileReader reads blobs from one revision through a persistent
 // `git cat-file --batch` process. It avoids spawning one git process per file
-// while preserving HEAD-tree snapshot semantics.
+// while preserving HEAD-tree snapshot semantics. Paths are relative to repo;
+// rev represents the repository-root tree when repo is a subdirectory.
 type BatchFileReader struct {
 	rev          string
+	pathPrefix   string
 	cmd          *exec.Cmd
 	stdin        io.WriteCloser
 	stdout       *bufio.Reader
@@ -834,6 +889,10 @@ func (r *BatchFileReader) OversizeBlob(path string) (OversizeBlob, bool) {
 }
 
 func NewBatchFileReader(ctx context.Context, repo, rev string) (*BatchFileReader, error) {
+	pathPrefix, err := RepoPrefix(ctx, repo)
+	if err != nil {
+		return nil, err
+	}
 	cmd := newCmd(ctx, repo, "git", "cat-file", "--batch")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -851,16 +910,34 @@ func NewBatchFileReader(ctx context.Context, repo, rev string) (*BatchFileReader
 		return nil, fmt.Errorf("git cat-file --batch: %w", err)
 	}
 	return &BatchFileReader{
-		rev:    rev,
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: bufio.NewReader(stdoutPipe),
-		stderr: &stderr,
+		rev:        rev,
+		pathPrefix: pathPrefix,
+		cmd:        cmd,
+		stdin:      stdin,
+		stdout:     bufio.NewReader(stdoutPipe),
+		stderr:     &stderr,
 	}, nil
 }
 
+// IsBatchPathSafe reports whether path can be embedded in one LF-delimited
+// cat-file --batch request without splitting or normalization. A trailing CR
+// is consumed by Git's line reader; internal CR bytes are preserved.
+func IsBatchPathSafe(path string) bool {
+	return !strings.Contains(path, "\n") && !strings.HasSuffix(path, "\r")
+}
+
+// IsPathSafe includes the repository-cwd prefix that ReadFile prepends before
+// writing its request. Git reports embedded newlines in that prefix verbatim,
+// so a plain caller-relative path can still be unsafe in an unusual subdir.
+func (r *BatchFileReader) IsPathSafe(path string) bool {
+	return IsBatchPathSafe(r.rev + ":" + r.pathPrefix + path)
+}
+
 func (r *BatchFileReader) ReadFile(path string) (string, bool, error) {
-	return r.readObjectSpec(r.rev+":"+path, path)
+	if !r.IsPathSafe(path) {
+		return "", false, fmt.Errorf("Git path cannot be represented by cat-file batch protocol")
+	}
+	return r.readObjectSpec(r.rev+":"+r.pathPrefix+path, path)
 }
 
 // readObjectSpec is the shared batch protocol implementation. LimitedFileReader
@@ -972,8 +1049,9 @@ type LimitedFileReader struct {
 }
 
 type primedLimitedFile struct {
-	result   LimitedFileResult
-	objectID string
+	result     LimitedFileResult
+	objectID   string
+	objectType string
 }
 
 const treeMetadataLiteralPrefix = ":(top,literal)"
@@ -1002,10 +1080,18 @@ func (r *LimitedFileReader) Prime(paths []string) error {
 		r.primed = make(map[string]primedLimitedFile, len(paths))
 	}
 	for start := 0; start < len(paths); {
-		// Leave a rare over-limit path unprimed so ReadFile uses the existing
-		// argv-safe one-shot bounded reader instead of exceeding this batch's
-		// command-line budget or rejecting a valid deep Git-tree path.
+		// A rare over-limit full path is resolved one tree component at a time.
+		// No command receives the whole path, while the final exact blob OID can
+		// still use the persistent content batch.
 		if len(treeMetadataLiteralPrefix)+len(paths[start]) > literalPathspecBatchBytes {
+			entry, found, err := treeEntryMetadataByComponents(r.ctx, r.repo, r.rev, paths[start])
+			if err != nil {
+				return err
+			}
+			if !found {
+				entry = primedLimitedFile{result: LimitedFileResult{Status: LimitedFileMissing}}
+			}
+			r.primed[paths[start]] = entry
 			start++
 			continue
 		}
@@ -1023,6 +1109,53 @@ func (r *LimitedFileReader) Prime(paths []string) error {
 		start = end
 	}
 	return nil
+}
+
+func treeEntryMetadata(ctx context.Context, repo, rev, path string) (primedLimitedFile, bool, error) {
+	if len(treeMetadataLiteralPrefix)+len(path) > literalPathspecBatchBytes {
+		return treeEntryMetadataByComponents(ctx, repo, rev, path)
+	}
+	entries, err := treeEntryMetadataBatch(ctx, repo, rev, []string{path})
+	if err != nil {
+		return primedLimitedFile{}, false, err
+	}
+	entry, found := entries[path]
+	return entry, found, nil
+}
+
+// treeEntryMetadataByComponents resolves a deep path without ever placing the
+// full repository-controlled string in argv. Each intermediate entry must be a
+// tree; its immutable OID becomes the root of the next exact one-component
+// lookup. The rare path pays one bounded Git process per component.
+func treeEntryMetadataByComponents(ctx context.Context, repo, rev, path string) (primedLimitedFile, bool, error) {
+	components := strings.Split(path, "/")
+	currentTree := rev
+	for i, component := range components {
+		if component == "" {
+			return primedLimitedFile{}, false, fmt.Errorf("invalid Git tree path %q", path)
+		}
+		if len(treeMetadataLiteralPrefix)+len(component) > literalPathspecBatchBytes {
+			return primedLimitedFile{
+				result: LimitedFileResult{Status: LimitedFileUnaddressable},
+			}, true, nil
+		}
+		entries, err := treeEntryMetadataBatch(ctx, repo, currentTree, []string{component})
+		if err != nil {
+			return primedLimitedFile{}, false, err
+		}
+		entry, found := entries[component]
+		if !found {
+			return primedLimitedFile{}, false, nil
+		}
+		if i == len(components)-1 {
+			return entry, true, nil
+		}
+		if entry.objectType != "tree" {
+			return primedLimitedFile{}, false, nil
+		}
+		currentTree = entry.objectID
+	}
+	return primedLimitedFile{}, false, nil
 }
 
 // treeMetadataBatchEnd keeps each ls-tree invocation prefix-free as well as
@@ -1109,7 +1242,11 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 			return nil, fmt.Errorf("git ls-tree returned duplicate path %q", path)
 		}
 		if fields[1] != "blob" {
-			entries[path] = primedLimitedFile{result: LimitedFileResult{Status: LimitedFileNonBlob}}
+			entries[path] = primedLimitedFile{
+				result:     LimitedFileResult{Status: LimitedFileNonBlob},
+				objectID:   fields[2],
+				objectType: fields[1],
+			}
 			continue
 		}
 		size, err := strconv.ParseInt(fields[3], 10, 64)
@@ -1117,8 +1254,9 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 			return nil, fmt.Errorf("parse git ls-tree blob size %q for %q", fields[3], path)
 		}
 		entries[path] = primedLimitedFile{
-			result:   LimitedFileResult{Status: LimitedFileContent, Bytes: size},
-			objectID: fields[2],
+			result:     LimitedFileResult{Status: LimitedFileContent, Bytes: size},
+			objectID:   fields[2],
+			objectType: fields[1],
 		}
 	}
 	return entries, nil

@@ -9782,12 +9782,12 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		batch.SetMaxBytes(maxReadBytes)
 		// The oversize registry for the paths the batch reader cannot carry.
 		// batch.OversizeBlob only knows blobs that streamed past IT, so a
-		// refusal in the newline fallback below has to be recorded here or the
+		// refusal in the line-unsafe fallback below has to be recorded here or the
 		// file has no record at all and the snapshot drops it for being NAMED
 		// with a newline.
 		fallback := newFallbackOversizeRegistry(repo, committedRevision, maxReadBytes)
 		read := func(path string) (string, bool) {
-			if strings.Contains(path, "\n") {
+			if !batch.IsPathSafe(path) {
 				// The batch protocol is line based, so a newline-bearing Git
 				// path needs the argv-safe one-shot reader. The ceiling is
 				// passed DOWN rather than applied to the returned string: this
@@ -9795,23 +9795,25 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 				// under analysis chooses, so an unbounded read here would let
 				// any repository opt one blob out of the cap that makes this
 				// reader's memory claim true.
-				content, ok, err := gitutil.ShowFileLimited(ctx, repo, committedRevision, path, maxReadBytes)
+				result, err := gitutil.ReadFileLimited(ctx, repo, committedRevision, path, maxReadBytes)
 				if err != nil {
 					return "", false
 				}
-				if !ok {
-					// A refusal has to leave the same trace the batch reader
+				if result.Status != gitutil.LimitedFileContent {
+					// An oversize refusal has to leave the same trace the batch reader
 					// leaves, or processProviderFile cannot tell a file it
 					// declined from one it could not read: the file record is
 					// dropped, the warning becomes an error-severity
 					// E_FILE_READ, and completeness falls to degraded.
-					// ShowFileLimited refuses without reading, so the digest
+					// ReadFileLimited gives the exact size without reading, but the digest
 					// MaxParseBytes promises is still owed — noted here and
 					// resolved lazily below. An absent path records nothing.
-					fallback.note(path)
+					if result.Status == gitutil.LimitedFileOversize {
+						fallback.note(path)
+					}
 					return "", false
 				}
-				return content, true
+				return result.Content, true
 			}
 			content, ok, err := batch.ReadFile(path)
 			if err != nil || !ok {
@@ -9903,17 +9905,18 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 	}, nil
 }
 
-// fallbackOversizeRegistry remembers the HEAD-tree paths the one-shot newline
+// fallbackOversizeRegistry remembers the HEAD-tree paths the one-shot line-unsafe
 // fallback refused, and resolves each one's record at most once. It is the
 // committed-revision counterpart of oversizeRegistry below, and defers for the
 // same reason: resolving costs a streaming pass over the blob, and preselection
 // only needs to know the file is out of reach, so paying that pass to answer a
 // question nobody asked would trade a memory blow-up for an I/O one.
 //
-// A noted path is not yet known to be oversized — ShowFileLimited refuses
-// without saying why. gitutil.OversizeBlobAtRev decides that against the same
-// ceiling, and a path it does not establish as oversized resolves to no record,
-// so a read that failed for another reason is never reported as too large.
+// A noted path is already known to be oversized from typed metadata, but its
+// content hash and line count still require one streaming pass.
+// gitutil.OversizeBlobAtRev computes those against the same ceiling; a path it
+// cannot re-establish as oversized resolves to no record rather than being
+// misreported.
 type fallbackOversizeRegistry struct {
 	repo     string
 	rev      string

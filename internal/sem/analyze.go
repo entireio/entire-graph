@@ -227,7 +227,21 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 				}
 				result.Warnings = append(result.Warnings, diffFileTooLargeWarning(warningPath, detail))
 			}
-			if beforeMissing || afterMissing || beforeNonBlob || afterNonBlob || beforeOversize || afterOversize {
+
+			beforeUnaddressable := file.Status != "A" && beforeRead.Status == gitutil.LimitedFileUnaddressable
+			afterUnaddressable := file.Status != "D" && afterRead.Status == gitutil.LimitedFileUnaddressable
+			if beforeUnaddressable || afterUnaddressable {
+				warningPath := path
+				detail := "head path has a component above the bounded Git argv limit"
+				if beforeUnaddressable && !afterUnaddressable {
+					warningPath = oldPath
+					detail = "base path has a component above the bounded Git argv limit"
+				} else if beforeUnaddressable && afterUnaddressable {
+					detail = "base and head paths have a component above the bounded Git argv limit"
+				}
+				result.Warnings = append(result.Warnings, diffFileReadWarning(warningPath, detail))
+			}
+			if beforeMissing || afterMissing || beforeNonBlob || afterNonBlob || beforeOversize || afterOversize || beforeUnaddressable || afterUnaddressable {
 				continue
 			}
 		}

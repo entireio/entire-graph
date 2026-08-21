@@ -2,9 +2,11 @@ package sem
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +83,7 @@ func TestAnalyzeGitRangeAcceptsTreeObjects(t *testing.T) {
 	git(t, repo, "config", "user.email", "graph@example.com")
 
 	write(t, repo, "scope/auth.py", "def validate_token(token):\n    return bool(token)\n")
+	write(t, repo, "scope/use_auth.py", "def check(token):\n    return validate_token(token)\n")
 	// This sibling makes a direct `baseExpression + ^{tree}` resolve the
 	// wrong repository path instead of failing. Analyze must resolve the exact
 	// caller expression first, then peel its immutable OID.
@@ -128,6 +131,7 @@ func TestAnalyzeGitRangeReadsRootPathsFromRepoSubdirectory(t *testing.T) {
 	git(t, repo, "config", "user.email", "graph@example.com")
 
 	write(t, repo, "scope/auth.py", "def validate_token(token):\n    return bool(token)\n")
+	write(t, repo, "scope/use_auth.py", "def check(token):\n    return validate_token(token)\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "base")
 	base := rev(t, repo, "HEAD")
@@ -143,9 +147,112 @@ func TestAnalyzeGitRangeReadsRootPathsFromRepoSubdirectory(t *testing.T) {
 	if len(result.Files) != 1 || result.Files[0].Path != "scope/auth.py" {
 		t.Fatalf("subdirectory diff files = %#v, want root-relative scope/auth.py", result.Files)
 	}
+	foundDependent := false
+	for _, change := range result.Files[0].Changes {
+		if change.Name == "validate_token" {
+			foundDependent = true
+			if change.DependentsCount != 1 {
+				t.Fatalf("subdirectory dependent count = %d, want 1: %#v", change.DependentsCount, change)
+			}
+		}
+	}
+	if !foundDependent {
+		t.Fatalf("subdirectory diff did not report validate_token: %#v", result.Files)
+	}
 	for _, warning := range result.Warnings {
 		if warning.Code == "E_FILE_READ" {
 			t.Fatalf("root-relative changed path was misclassified as missing: %#v", warning)
+		}
+	}
+}
+
+func TestAnalyzeGitRangeReadsPathBeyondMetadataArgvBound(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	baseTree, path := nestedAnalyzeTree(t, repo, "package deep\n\nvar Value = 1\n", 80)
+	headTree, headPath := nestedAnalyzeTree(t, repo, "package deep\n\nvar Value = 2\n", 80)
+	if headPath != path || len(path) <= 15<<10 {
+		t.Fatalf("deep fixture path lengths = %d/%d, want same path beyond 15 KiB", len(path), len(headPath))
+	}
+	result, err := AnalyzeGitRange(t.Context(), repo, baseTree, headTree, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != path {
+		t.Fatalf("deep-tree diff files = %#v, want exact %d-byte path", result.Files, len(path))
+	}
+}
+
+func TestAnalyzeGitRangeWarnsForSingleComponentBeyondArgvBound(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	component := strings.Repeat("x", (16<<10)+1)
+	makeTree := func(content string) string {
+		t.Helper()
+		blob := gitInput(t, repo, content, "hash-object", "-w", "--stdin")
+		leaf := gitInput(t, repo, fmt.Sprintf("100644 blob %s\tfile.go%c", blob, byte(0)), "mktree", "-z")
+		return gitInput(t, repo, fmt.Sprintf("040000 tree %s\t%s%c", leaf, component, byte(0)), "mktree", "-z")
+	}
+	result, err := AnalyzeGitRange(t.Context(), repo, makeTree("package p\nvar Value = 1\n"), makeTree("package p\nvar Value = 2\n"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("unaddressable path produced semantic changes: %#v", result.Files)
+	}
+	found := false
+	for _, warning := range result.Warnings {
+		if warning.Code == "E_FILE_READ" && strings.Contains(warning.Detail, "bounded Git argv limit") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing bounded unaddressable warning: %#v", result.Warnings)
+	}
+}
+
+func TestAnalyzeGitRangeDependentsAvoidLineProtocolPaths(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows filenames cannot contain newlines or carriage returns")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
+	write(t, repo, "a\nunsafe.py", "def first(token):\n    return validate_token(token)\n")
+	// This path is also returned by git grep, but its trailing CR makes it an
+	// unsupported parser path. It must never enter the line-framed reader.
+	write(t, repo, "b.py\r", "def second(token):\n    return validate_token(token)\n")
+	const oversizeUnsafePath = "c\nover.py"
+	write(t, repo, oversizeUnsafePath, "validate_token\n"+strings.Repeat("#", defaultMaxParseBytes))
+	write(t, repo, "z_plain.py", "def third(token):\n    return validate_token(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "base")
+	base := rev(t, repo, "HEAD")
+	write(t, repo, "auth.py", "def validate_token(token, issuer=None):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "head")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(t.Context(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundOversizeWarning := false
+	for _, warning := range result.Warnings {
+		if warning.Code == "E_FILE_TOO_LARGE" && warning.FilePath == oversizeUnsafePath {
+			foundOversizeWarning = true
+		}
+	}
+	if !foundOversizeWarning {
+		t.Fatalf("unsafe oversized dependent was not reported: %#v", result.Warnings)
+	}
+	for _, file := range result.Files {
+		for _, change := range file.Changes {
+			if change.Name == "validate_token" && change.DependentsCount != 2 {
+				t.Fatalf("line-safe dependent count = %d, want newline + ordinary candidates: %#v", change.DependentsCount, change)
+			}
 		}
 	}
 }
@@ -1391,6 +1498,31 @@ func git(t *testing.T, repo string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
+}
+
+func gitInput(t *testing.T, repo, input string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repo
+	cmd.Stdin = strings.NewReader(input)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func nestedAnalyzeTree(t *testing.T, repo, content string, depth int) (tree, path string) {
+	t.Helper()
+	blob := gitInput(t, repo, content, "hash-object", "-w", "--stdin")
+	tree = gitInput(t, repo, fmt.Sprintf("100644 blob %s\tfile.go%c", blob, byte(0)), "mktree", "-z")
+	path = "file.go"
+	component := strings.Repeat("a", 200)
+	for range depth {
+		tree = gitInput(t, repo, fmt.Sprintf("040000 tree %s\t%s%c", tree, component, byte(0)), "mktree", "-z")
+		path = component + "/" + path
+	}
+	return tree, path
 }
 
 func rev(t *testing.T, repo, value string) string {

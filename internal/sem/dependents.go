@@ -99,24 +99,50 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 		options.progress(0, len(files), "")
 	}
 
-	// One persistent `git cat-file --batch` process replaces a `git show`
+	// One persistent `git cat-file --batch` process replaces a one-shot Git
 	// subprocess per candidate file; on large repos the per-file spawn cost
-	// alone was tens of seconds. Falls back to per-file ShowFile only when the
-	// batch process cannot start at all.
+	// alone was tens of seconds. Paths the LF protocol cannot represent and a
+	// batch startup failure use the same bounded typed one-shot reader.
+	oneShotOversize := map[string]int64{}
 	readFile := func(path string) (string, bool, error) {
-		return gitutil.ShowFile(ctx, repo, head, path)
+		result, err := gitutil.ReadFileLimited(ctx, repo, head, path, defaultMaxParseBytes)
+		if err != nil {
+			return "", false, err
+		}
+		if result.Status == gitutil.LimitedFileOversize {
+			oneShotOversize[path] = result.Bytes
+		}
+		return result.Content, result.Status == gitutil.LimitedFileContent, nil
 	}
 	// oversizeBytes reports a file the reader declined because it exceeds the
 	// parse limit, so the scan can warn about it (below) without the read that
 	// would have cost the file's size twice for a file it refuses to parse anyway.
 	// Set for an oversized blob whose streamed bytes contained a changed name.
 	oversizeMatched := map[string]bool{}
-	oversizeBytes := func(string) (int64, bool) { return 0, false }
+	oversizeBytes := func(path string) (int64, bool) {
+		size, ok := oneShotOversize[path]
+		return size, ok
+	}
 	if batch, batchErr := gitutil.NewBatchFileReader(ctx, repo, head); batchErr == nil {
 		defer func() { _ = batch.Close() }()
 		batch.SetMaxBytes(defaultMaxParseBytes)
-		readFile = batch.ReadFile
+		readFile = func(path string) (string, bool, error) {
+			if !batch.IsPathSafe(path) {
+				result, err := gitutil.ReadFileLimited(ctx, repo, head, path, defaultMaxParseBytes)
+				if err != nil {
+					return "", false, err
+				}
+				if result.Status == gitutil.LimitedFileOversize {
+					oneShotOversize[path] = result.Bytes
+				}
+				return result.Content, result.Status == gitutil.LimitedFileContent, nil
+			}
+			return batch.ReadFile(path)
+		}
 		oversizeBytes = func(path string) (int64, bool) {
+			if size, ok := oneShotOversize[path]; ok {
+				return size, true
+			}
 			blob, ok := batch.OversizeBlob(path)
 			return blob.Bytes, ok
 		}
@@ -175,6 +201,9 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 			return nil, nil, err
 		}
 		if !ok {
+			// In a fallback full-tree scan, a one-shot unsafe oversize file has
+			// no streamed content evidence. Do not claim relevance merely from
+			// its size; the normal git-grep prefilter makes this rare path exact.
 			if size, oversize := oversizeBytes(path); oversize && (prefiltered || oversizeMatched[path]) {
 				warnings = append(warnings, dependentsFileTooLargeWarning(path, int(size)))
 			}

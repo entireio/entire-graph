@@ -87,6 +87,8 @@ func TestHeadReadersCapNewlineBearingPaths(t *testing.T) {
 
 	const newlinePath = "over\ncap.py"
 	const smallNewlinePath = "under\ncap.py"
+	const carriagePath = "carriage.py\r"
+	const carriageContent = "def carriage(value):\n    return value\n"
 
 	repo := t.TempDir()
 	initRepo(t, repo)
@@ -95,6 +97,7 @@ func TestHeadReadersCapNewlineBearingPaths(t *testing.T) {
 	// from the caller and is exercised with a much smaller one below.
 	writeSparseFile(t, repo, newlinePath, int64(defaultMaxParseBytes)+1, "# over the cap\n")
 	write(t, repo, smallNewlinePath, "def helper(value):\n    return value\n")
+	write(t, repo, carriagePath, carriageContent)
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "initial")
 	head := rev(t, repo, "HEAD")
@@ -126,6 +129,9 @@ func TestHeadReadersCapNewlineBearingPaths(t *testing.T) {
 		}
 		if _, ok := opened.read(smallNewlinePath); !ok {
 			t.Fatal("a newline-bearing path under the cap must still be readable")
+		}
+		if content, ok := opened.read(carriagePath); !ok || content != carriageContent {
+			t.Fatalf("trailing-CR path = (%q, %v), want exact content", content, ok)
 		}
 	})
 
@@ -169,7 +175,50 @@ func TestHeadReadersCapNewlineBearingPaths(t *testing.T) {
 		if _, ok := read(smallNewlinePath); !ok {
 			t.Fatal("a newline-bearing path under the cap must still be readable")
 		}
+		if content, ok := read(carriagePath); !ok || content != carriageContent {
+			t.Fatalf("search trailing-CR path = (%q, %v), want exact content", content, ok)
+		}
 	})
+}
+
+func TestHeadReadersFallbackWhenRepoPrefixContainsNewline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows directory names cannot contain newlines")
+	}
+	root := t.TempDir()
+	initRepo(t, root)
+	const firstContent = "def first():\n    return 1\n"
+	const secondContent = "def second():\n    return 2\n"
+	write(t, root, "line\nscope/first.py", firstContent)
+	write(t, root, "line\nscope/second.py", secondContent)
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-m", "newline prefix fixture")
+	head := rev(t, root, "HEAD")
+	repo := filepath.Join(root, "line\nscope")
+
+	opened, err := openSource(t.Context(), repo, head, sourceOptions{maxReadBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = opened.close() }()
+	for path, want := range map[string]string{"first.py": firstContent, "second.py": secondContent} {
+		content, ok := opened.read(path)
+		if !ok || content != want {
+			t.Fatalf("provider read after newline prefix %q = (%q, %v), want exact content", path, content, ok)
+		}
+	}
+
+	read, closeReader, err := openSearchContentReader(t.Context(), repo, head, true, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeReader() }()
+	for path, want := range map[string]string{"first.py": firstContent, "second.py": secondContent} {
+		content, ok := read(path)
+		if !ok || content != want {
+			t.Fatalf("search read after newline prefix %q = (%q, %v), want exact content", path, content, ok)
+		}
+	}
 }
 
 // TestRefusedNewlinePathKeepsItsFileRecord is the parity guard the cap must not

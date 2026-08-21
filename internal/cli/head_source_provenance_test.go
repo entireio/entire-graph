@@ -26,6 +26,7 @@ func TestHeadSnapshotLineReaderPreservesCommittedFileContract(t *testing.T) {
 	newlinePaths := runtime.GOOS != "windows"
 	if newlinePaths {
 		write(t, repo, "line\nbreak.go", "committed-newline-path\n")
+		write(t, repo, "trail.go\r", "committed-carriage-path\n")
 	}
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "committed reader fixture")
@@ -33,6 +34,7 @@ func TestHeadSnapshotLineReaderPreservesCommittedFileContract(t *testing.T) {
 	write(t, repo, "tracked.go", "dirty\nline\n")
 	if newlinePaths {
 		write(t, repo, "line\nbreak.go", "dirty-newline-path\n")
+		write(t, repo, "trail.go\r", "dirty-carriage-path\n")
 	}
 	write(t, repo, "dirty-only.go", "must not be visible from HEAD\n")
 
@@ -59,6 +61,10 @@ func TestHeadSnapshotLineReaderPreservesCommittedFileContract(t *testing.T) {
 		lines, ok = read("line\nbreak.go")
 		if !ok || strings.Join(lines, "|") != "committed-newline-path|" {
 			t.Fatalf("committed newline-path source = %q, ok=%v", lines, ok)
+		}
+		lines, ok = read("trail.go\r")
+		if !ok || strings.Join(lines, "|") != "committed-carriage-path|" {
+			t.Fatalf("committed trailing-CR path source = %q, ok=%v", lines, ok)
 		}
 	}
 	for _, path := range []string{"dirty-only.go", "contains-nul.go", "oversized.go"} {
