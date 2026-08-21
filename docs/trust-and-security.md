@@ -48,6 +48,11 @@ case-insensitive. The Git, Docker, Kubernetes, Terraform, and Google Cloud
 entries match at any depth and are file-only, so a same-named directory and its
 descendants remain searchable.
 
+Outside those file-only entries, matching retains Git-style path semantics. A
+basename or suffix pattern can therefore match a directory segment; when it
+does, that directory's descendants are excluded. For example, `*.key` also
+excludes `pkg/client.key/**`. This behavior is intentional.
+
 It is a rule about PATHS, not about content: no file is scanned for
 secret-shaped strings, and a credential store whose path gives no signal —
 `deploy/prod-values.yaml` holding an inline API key — is not covered. Public
