@@ -1,6 +1,7 @@
 package gitutil
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,9 +10,10 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
-const classifyStagedSubtreeRepoEnv = "ENTIRE_GRAPH_TEST_STAGED_SUBTREE_REPO"
+const boundedPathOutputHelperEnv = "ENTIRE_GRAPH_TEST_BOUNDED_PATH_OUTPUT_HELPER"
 
 func TestLiteralPathspecBatchEndLeavesWindowsCommandLineHeadroom(t *testing.T) {
 	const (
@@ -44,56 +46,76 @@ func TestLiteralPathspecBatchEndLeavesWindowsCommandLineHeadroom(t *testing.T) {
 }
 
 func TestClassifyWorktreePathsBoundsStagedSubtreeConflict(t *testing.T) {
-	if repo := os.Getenv(classifyStagedSubtreeRepoEnv); repo != "" {
-		runtime.GC()
-		var before runtime.MemStats
-		runtime.ReadMemStats(&before)
-		_, _, err := ClassifyWorktreePaths(t.Context(), repo, []string{"src.go"})
-		var after runtime.MemStats
-		runtime.ReadMemStats(&after)
-		if err == nil {
-			t.Fatal("staged descendants of the requested regular file were accepted")
-		}
-		if !strings.Contains(err.Error(), "unexpected path") {
-			t.Fatalf("ClassifyWorktreePaths error = %q, want unexpected path", err)
-		}
-		if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 4<<20 {
-			t.Fatalf("ClassifyWorktreePaths allocated %d bytes for bounded input, want at most %d", allocated, 4<<20)
-		}
-		return
-	}
-
 	repo := t.TempDir()
 	gitCmd(t, repo, "init")
-	emptyBlob := gitInputOutput(t, repo, "", "hash-object", "-w", "--stdin")
-	const stagedFiles = 30_000
-	longSuffix := strings.Repeat("x", 160)
-	var subtreeInput strings.Builder
-	for index := 0; index < stagedFiles; index++ {
-		fmt.Fprintf(&subtreeInput, "100644 blob %s\t%05d_%s.go%c", emptyBlob, index, longSuffix, byte(0))
-	}
-	subtree := gitInputOutput(t, repo, subtreeInput.String(), "mktree", "-z")
-	tree := gitInputOutput(t, repo,
-		fmt.Sprintf("040000 tree %s\tsrc.go%c", subtree, byte(0)),
-		"mktree", "-z",
-	)
-	gitCmd(t, repo, "read-tree", tree)
-
+	write(t, repo, "src.go/staged.go", "package staged\n")
+	gitCmd(t, repo, "add", "src.go/staged.go")
 	stagedDirectory := filepath.Join(repo, "src.go")
-	if err := os.Mkdir(stagedDirectory, 0o755); err != nil {
-		t.Fatal(err)
-	}
 	movedDirectory := filepath.Join(t.TempDir(), "staged-src.go")
 	if err := os.Rename(stagedDirectory, movedDirectory); err != nil {
 		t.Fatal(err)
 	}
 	write(t, repo, "src.go", "package src\n")
 
-	cmd := exec.Command(os.Args[0], "-test.run=^TestClassifyWorktreePathsBoundsStagedSubtreeConflict$")
-	cmd.Env = append(os.Environ(), classifyStagedSubtreeRepoEnv+"="+repo)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("bounded classification subprocess: %v\n%s", err, out)
+	_, _, err := ClassifyWorktreePaths(t.Context(), repo, []string{"src.go"})
+	if err == nil {
+		t.Fatal("staged descendants of the requested regular file were accepted")
+	}
+	if !strings.Contains(err.Error(), "unexpected path") {
+		t.Fatalf("ClassifyWorktreePaths error = %q, want unexpected path", err)
+	}
+}
+
+func TestRunBoundedPathOutputRejectsUnexpectedStreamingOutput(t *testing.T) {
+	if os.Getenv(boundedPathOutputHelperEnv) != "" {
+		record := []byte("src.go/unexpected-staged-descendant.go\x00")
+		for emitted := 0; emitted <= 8<<20; emitted += len(record) {
+			if _, err := os.Stdout.Write(record); err != nil {
+				time.Sleep(time.Hour)
+				return
+			}
+		}
+		time.Sleep(time.Hour)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRunBoundedPathOutputRejectsUnexpectedStreamingOutput$")
+	t.Cleanup(func() {
+		if cmd.Process != nil && cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+	cmd.Env = append(os.Environ(), boundedPathOutputHelperEnv+"=1")
+	cmd.WaitDelay = time.Second
+
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+	started := time.Now()
+	_, err := runBoundedPathOutput(cmd, map[string]struct{}{"src.go": {}})
+	elapsed := time.Since(started)
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	if cmd.ProcessState == nil {
+		t.Fatal("runBoundedPathOutput did not reap helper process")
+	}
+	if err == nil {
+		t.Fatal("unexpected streamed descendant was accepted")
+	}
+	if !strings.Contains(err.Error(), "unexpected path") {
+		t.Fatalf("runBoundedPathOutput error = %q, want unexpected path", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("runBoundedPathOutput did not kill and reap helper before timeout after %s: %v", elapsed, ctx.Err())
+	}
+	if elapsed >= 5*time.Second {
+		t.Fatalf("runBoundedPathOutput took %s to reject and reap helper, want less than 5s", elapsed)
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 4<<20 {
+		t.Fatalf("runBoundedPathOutput allocated %d bytes for streamed output, want at most %d", allocated, 4<<20)
 	}
 }
 

@@ -338,9 +338,7 @@ func literalPathspecBatchEnd(paths []string, start int) int {
 }
 
 func runBoundedPathOutput(
-	ctx context.Context,
-	repo string,
-	args []string,
+	cmd *exec.Cmd,
 	known map[string]struct{},
 ) (map[string]struct{}, error) {
 	// A literal pathspec naming a worktree file can still match descendants of
@@ -370,7 +368,6 @@ func runBoundedPathOutput(
 		expectedOutputBytes += recordBytes
 	}
 
-	cmd := newCmd(ctx, repo, "git", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()
@@ -478,7 +475,7 @@ func listLiteralWorktreePathBatch(
 		known[path] = struct{}{}
 	}
 
-	result, err := runBoundedPathOutput(ctx, repo, args, known)
+	result, err := runBoundedPathOutput(newCmd(ctx, repo, "git", args...), known)
 	if err != nil {
 		return nil, fmt.Errorf("git ls-files literal worktree probe: %w", err)
 	}
