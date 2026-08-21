@@ -13,18 +13,15 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
-	"time"
 
-	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
 // searchSnapshotCacheVersion names the on-disk cache directory and is hashed
 // into every entry key, so bumping it moves new entries to a fresh directory
 // and any prior-version directory can simply be deleted wholesale — cleanup is
 // "remove old version dirs" instead of per-entry reachability analysis.
-// v9 introduces typed, length-prefixed fields and bounded ignore-file reads.
-const searchSnapshotCacheVersion = "search-snapshot-v9"
+// v10 binds keying and construction to one immutable captured ignore policy.
+const searchSnapshotCacheVersion = "search-snapshot-v10"
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`
@@ -38,12 +35,9 @@ type cachedSearchSnapshot struct {
 	Tree            string  `json:"tree"`
 	Profile         Profile `json:"profile"`
 	MaxParseBytes   int     `json:"max_parse_bytes"`
-	// Worktree records which view produced this entry. Working-tree snapshots
-	// carry provenance a committed-tree snapshot does not (W_WORKTREE_SNAPSHOT),
-	// so the two views never share an entry even when their content is equal.
-	// This became load-bearing when a clean working tree turned cacheable at all
-	// (worktreeSnapshotCacheable): before that, `options.Worktree` bypassed the
-	// cache outright and no working-tree entry could exist to collide.
+	// Worktree is retained for decoding and validating older in-memory fixtures.
+	// Persistent worktree caching is disabled because Git listing inputs and
+	// working-tree contents cannot be pinned to one atomic cache transaction.
 	Worktree bool             `json:"worktree,omitempty"`
 	Snapshot ProviderSnapshot `json:"snapshot"`
 	// FileRecord.Lines, SymbolRecord.Local, and exact symbol byte ranges are
@@ -73,99 +67,17 @@ type cachedSignatureTypes struct {
 	Returns string `json:"returns,omitempty"`
 }
 
-// worktreeCleanTTL bounds how stale a working-tree cleanliness verdict may be.
-// One command issues several snapshot lookups (graph scope, complete preindex,
-// selective build) and must not pay for a `git status` each time; a window this
-// short cannot span an edit that happens between two of them, while a
-// long-lived library consumer still re-checks on every new command.
-const worktreeCleanTTL = 2 * time.Second
-
-type worktreeCleanVerdict struct {
-	clean     bool
-	checkedAt time.Time
+// worktreeSnapshotCacheable deliberately rejects every working-tree snapshot.
+// A cleanliness comparison cannot pin Git's listing, info/exclude, nested
+// ignore files, and filesystem content to one atomic view; A→B→A changes can
+// therefore evade any pre/post recheck and poison a persistent entry.
+func worktreeSnapshotCacheable(_ context.Context, _ string, options ProviderSnapshotOptions) bool {
+	return !options.Worktree
 }
 
-var worktreeCleanVerdicts sync.Map // absRepo -> worktreeCleanVerdict
-
-// absOrRepo resolves repo to an absolute path, falling back to the input when
-// that is impossible. It exists so a cleanliness verdict is memoized under the
-// same key the cache lookups use.
-func absOrRepo(repo string) string {
-	if abs, err := filepath.Abs(repo); err == nil {
-		return abs
-	}
-	return repo
-}
-
-// worktreeSnapshotCacheable reports whether these options may be served from,
-// and stored in, the tree-keyed snapshot cache.
-//
-// Committed-tree snapshots always could. A working-tree snapshot may too, but
-// only while the working tree's INDEXABLE content is identical to HEAD: then the
-// tree hash names that content exactly, which is the whole premise of the cache
-// key. This is what makes the relation verbs (neighbors/impact, which index the
-// whole repository) warm on their second call instead of re-indexing from
-// scratch — and it never hides a dirty edit, because a dirty indexable file
-// fails the check and bypasses the cache exactly as before.
-//
-// "Indexable" is the load-bearing word. Requiring a wholly pristine tree made a
-// stray untracked file that no parser ever opens — .DS_Store, a compiled binary,
-// a log, an editor swap file — disable the cache for the entire repository, so
-// every query re-indexed from scratch. A path that cannot contribute a symbol or
-// a relation cannot make a snapshot stale either, so it is not a reason to throw
-// one away.
-//
-// The test is extensionUnsupported, which is what the indexer uses to decide whether to PARSE a
-// file — but parsing is not the only way a file reaches the graph. buildManifestImportResolver
-// also reads the CONTENT of the repo-root manifests, and two of those (go.mod, setup.cfg) carry
-// no supported extension while deciding how every import in the repository resolves. Forgiving
-// them served a snapshot whose call edges were still resolved against the previous module path.
-// They are excluded by name through isManifestImportFile, and TestManifestImportFilesCoverReads
-// fails if that list falls behind the manifests actually read.
-//
-// Otherwise the rule is deliberately conservative in the safe direction: an extensionless path
-// counts as supported, because a shebang can make it a script, and any supported path still
-// bypasses the cache whatever its status.
-//
-// Ignored files never reach this loop: git status omits them, and the provider's walk skips them
-// too, so neither side can serve what the other would have indexed. Note the two do not agree in
-// general — git never ignores a TRACKED file, while the walk applies the ignore stack to every
-// path — but that disagreement only ever reports a path as dirty that the walk would have
-// skipped, which costs a re-index and cannot serve a stale one.
-func worktreeSnapshotCacheable(ctx context.Context, absRepo string, options ProviderSnapshotOptions) bool {
-	if !options.Worktree {
-		return true
-	}
-	if cached, ok := worktreeCleanVerdicts.Load(absRepo); ok {
-		verdict := cached.(worktreeCleanVerdict)
-		if time.Since(verdict.checkedAt) < worktreeCleanTTL {
-			return verdict.clean
-		}
-	}
-	clean := true
-	dirty, err := gitutil.WorktreeDirtyPaths(ctx, absRepo)
-	if err != nil {
-		clean = false
-	}
-	for _, path := range dirty {
-		if !extensionUnsupported(path) || isManifestImportFile(path) {
-			clean = false
-			break
-		}
-	}
-	worktreeCleanVerdicts.Store(absRepo, worktreeCleanVerdict{clean: clean, checkedAt: time.Now()})
-	return clean
-}
-
-// InvalidateWorktreeCleanVerdicts drops the memoized cleanliness verdicts. A
-// one-shot command never needs it (the memo cannot outlive the process), but a
-// long-lived embedder that has just written to a working tree can call it to
-// force the next query to re-check rather than wait out the TTL.
+// InvalidateWorktreeCleanVerdicts remains as a compatibility no-op. Worktree
+// snapshots are never persisted or served from cache, so there is no verdict.
 func InvalidateWorktreeCleanVerdicts() {
-	worktreeCleanVerdicts.Range(func(key, _ any) bool {
-		worktreeCleanVerdicts.Delete(key)
-		return true
-	})
 }
 
 // loadOrBuildSearchGraphSnapshot preserves the exact candidate-file scope even
@@ -202,6 +114,10 @@ func loadCachedCompleteSearchSnapshot(
 	}
 	if !worktreeSnapshotCacheable(ctx, absRepo, options) {
 		return ProviderSnapshot{}, false, nil
+	}
+	options, err = ensureProviderCachePolicy(absRepo, options)
+	if err != nil {
+		return ProviderSnapshot{}, false, err
 	}
 	commit, tree, headErr := resolveCommittedHEAD(ctx, absRepo)
 	if headErr != nil {
@@ -261,6 +177,10 @@ func loadOrBuildSearchSnapshot(
 	if !worktreeSnapshotCacheable(ctx, absRepo, options) {
 		snapshot, buildErr := BuildProviderSnapshotWithOptions(ctx, repo, providerVersion, options)
 		return snapshot, false, buildErr
+	}
+	options, err = ensureProviderCachePolicy(absRepo, options)
+	if err != nil {
+		return ProviderSnapshot{}, false, err
 	}
 	commit, tree, headErr := resolveCommittedHEAD(ctx, absRepo)
 	if headErr != nil {
@@ -397,6 +317,10 @@ func preindexProviderSnapshotWithPersistenceReader(
 		options.Profile = ProfileFull
 	}
 	absRepo, err := filepath.Abs(repo)
+	if err != nil {
+		return ProviderSnapshot{}, false, err
+	}
+	options, err = CaptureProviderCachePolicy(absRepo, options)
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
@@ -776,6 +700,10 @@ func LoadOrBuildProviderSnapshot(
 // accepted because those edges are heuristic and confidence-scored, not
 // exact facts about the tree.
 func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, options ProviderSnapshotOptions) (string, error) {
+	policy, err := cachePolicyForOptions(absRepo, options)
+	if err != nil {
+		return "", err
+	}
 	hash := sha256.New()
 	writeCacheKeyString(hash, "cache-version", searchSnapshotCacheVersion)
 	writeCacheKeyString(hash, "repository-path", absRepo)
@@ -812,28 +740,6 @@ func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, opt
 	for _, filePath := range onlyFiles {
 		writeCacheKeyString(hash, "only-file", filepath.ToSlash(filepath.Clean(filePath)))
 	}
-	for groupIndex, group := range [][]string{options.IgnoreFiles, options.IncludeFiles} {
-		writeCacheKeyString(hash, "path-group", fmt.Sprintf("%d", groupIndex))
-		// Preserve caller order: ignore matching is last-rule-wins, including
-		// across repeatable ignore/include files within each group.
-		for _, rulePath := range group {
-			resolved := rulePath
-			if !filepath.IsAbs(resolved) {
-				resolved = filepath.Join(absRepo, resolved)
-			}
-			writeCacheKeyString(hash, "rule-path", filepath.Clean(resolved))
-			content, _, err := readBoundedRegularFile(
-				resolved,
-				ignoreFileLabel(groupIndex == 1),
-				true,
-				maxIgnoreFileBytes,
-			)
-			if err != nil {
-				return "", err
-			}
-			writeCacheKeyField(hash, "rule-content", content)
-		}
-	}
 	// The repo-root .graphignore is applied implicitly, so it must key the entry
 	// exactly as an explicit --ignore-file does. Without it, editing
 	// .graphignore against an unchanged tree hits the old entry and the new
@@ -844,21 +750,7 @@ func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, opt
 	// therefore which files the ranked payload, the snippets and the context blocks
 	// can quote. See builtinSecretRulesDigest.
 	writeCacheKeyString(hash, "builtin-secret-rules", builtinSecretRulesDigest())
-	graphIgnore := filepath.Join(absRepo, graphIgnoreFileName)
-	content, present, err := readBoundedRegularFile(
-		graphIgnore,
-		ignoreFileLabel(false),
-		false,
-		maxIgnoreFileBytes,
-	)
-	if err != nil {
-		return "", err
-	}
-	if present {
-		writeCacheKeyField(hash, "graphignore-content", content)
-	} else {
-		writeCacheKeyField(hash, "graphignore-missing", nil)
-	}
+	policy.writeCacheKey(hash)
 	// A worktree snapshot also applies the repository's private info/exclude
 	// file. It lives under Git metadata rather than the worktree, so neither the
 	// HEAD tree nor git status changes when its policy changes. Bind its optional

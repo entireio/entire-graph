@@ -368,8 +368,22 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	if compact {
 		cacheMode = "snapshot:compact-ndjson-v1"
 	}
+	var recordsCache *sem.ProviderRecordsCacheTransaction
 	if useCache {
-		if records, cachedSummary, hit, err := sem.LoadProviderRecords(ctx, repo, opts.Version, tree, cacheMode, cacheDir, options); err == nil && hit {
+		recordsCache, err = sem.BeginProviderRecordsCache(ctx, repo, opts.Version, tree, cacheMode, cacheDir, options)
+		if err != nil {
+			// Cache setup is optional. The uncached stream below will surface any
+			// policy-input error that also prevents a correct build.
+			useCache = false
+			recordsCache = nil
+		} else {
+			// Pin matcher construction to the exact policy bytes that keyed this
+			// lookup, and carry the same transaction through storage below.
+			options = recordsCache.Options()
+		}
+	}
+	if recordsCache != nil {
+		if records, cachedSummary, hit := recordsCache.Load(); hit {
 			if _, err := opts.Stdout.Write(records); err != nil {
 				return err
 			}
@@ -381,7 +395,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	// On a miss, tee the serialized record stream into a buffer so we can persist it after
 	// a successful run without a second pass over the graph.
 	var recordBuf bytes.Buffer
-	if useCache {
+	if recordsCache != nil {
 		encodeRecord = newRecordEncoder(io.MultiWriter(opts.Stdout, &recordBuf))
 	}
 	if err := sem.StreamSnapshot(ctx, repo, opts.Version, options, func(record any) error {
@@ -394,9 +408,9 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		return err
 	}
 	warnIfPartial(opts.Stderr, flags.Worktree, summary)
-	if useCache {
+	if recordsCache != nil {
 		// Best effort: a failed cache write never fails the command.
-		_ = sem.StoreProviderRecords(ctx, repo, opts.Version, tree, cacheMode, cacheDir, options, recordBuf.Bytes(), summary)
+		_ = recordsCache.Store(recordBuf.Bytes(), summary)
 	}
 	return nil
 }
