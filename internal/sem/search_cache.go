@@ -23,8 +23,8 @@ import (
 // into every entry key, so bumping it moves new entries to a fresh directory
 // and any prior-version directory can simply be deleted wholesale — cleanup is
 // "remove old version dirs" instead of per-entry reachability analysis.
-// (v5 isolated the tree-only key layout; v6, on main, supersedes it.)
-const searchSnapshotCacheVersion = "search-snapshot-v8"
+// v9 introduces typed, length-prefixed fields and bounded ignore-file reads.
+const searchSnapshotCacheVersion = "search-snapshot-v9"
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`
@@ -777,17 +777,13 @@ func LoadOrBuildProviderSnapshot(
 // exact facts about the tree.
 func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, options ProviderSnapshotOptions) (string, error) {
 	hash := sha256.New()
-	writePart := func(value string) {
-		_, _ = io.WriteString(hash, value)
-		_, _ = io.WriteString(hash, "\x00")
-	}
-	writePart(searchSnapshotCacheVersion)
-	writePart(absRepo)
-	writePart(repositoryKey)
-	writePart(providerVersion)
-	writePart(tree)
-	writePart(string(options.Profile))
-	writePart(fmt.Sprintf("%d", options.MaxParseBytes))
+	writeCacheKeyString(hash, "cache-version", searchSnapshotCacheVersion)
+	writeCacheKeyString(hash, "repository-path", absRepo)
+	writeCacheKeyString(hash, "repository-key", repositoryKey)
+	writeCacheKeyString(hash, "provider-version", providerVersion)
+	writeCacheKeyString(hash, "tree", tree)
+	writeCacheKeyString(hash, "profile", string(options.Profile))
+	writeCacheKeyString(hash, "max-parse-bytes", fmt.Sprintf("%d", options.MaxParseBytes))
 	// The resolved file cap SHAPES THE GRAPH: a run capped at N files produces a snapshot missing
 	// everything past N, and without the cap in the key that truncated snapshot is served to a later
 	// uncapped caller. Measured on this repo: a cap-5 build wrote 28 symbols, and the next uncapped
@@ -803,39 +799,39 @@ func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, opt
 	// It cuts both ways, which is why the term has to be the resolved value rather than a lower
 	// bound: an entry built with a HIGHER cap also survives a later LOWERED one, handing back more
 	// of the tree than the caller asked to see. Neither direction announces itself.
-	writePart(fmt.Sprintf("max-files=%d", resolveMaxSourceFiles(options.MaxFiles)))
+	writeCacheKeyString(hash, "max-files", fmt.Sprintf("%d", resolveMaxSourceFiles(options.MaxFiles)))
 	// Working-tree entries live in their own key space. The marker is only
-	// written for them so committed-tree keys — and every cache already on disk
-	// built under them — stay byte-identical.
+	// written for them; the versioned field framing already distinguishes this
+	// generation from every cache previously written to disk.
 	if options.Worktree {
-		writePart("worktree")
+		writeCacheKeyString(hash, "worktree", "true")
 	}
 	onlyFiles := append([]string(nil), options.OnlyFiles...)
 	sort.Strings(onlyFiles)
-	writePart("only-files")
+	writeCacheKeyString(hash, "only-files", "begin")
 	for _, filePath := range onlyFiles {
-		writePart(filepath.ToSlash(filepath.Clean(filePath)))
+		writeCacheKeyString(hash, "only-file", filepath.ToSlash(filepath.Clean(filePath)))
 	}
 	for groupIndex, group := range [][]string{options.IgnoreFiles, options.IncludeFiles} {
-		writePart(fmt.Sprintf("path-group-%d", groupIndex))
+		writeCacheKeyString(hash, "path-group", fmt.Sprintf("%d", groupIndex))
 		// Preserve caller order: ignore matching is last-rule-wins, including
 		// across repeatable ignore/include files within each group.
-		for _, path := range group {
-			resolved := path
+		for _, rulePath := range group {
+			resolved := rulePath
 			if !filepath.IsAbs(resolved) {
 				resolved = filepath.Join(absRepo, resolved)
 			}
-			writePart(filepath.Clean(resolved))
-			content, err := os.ReadFile(resolved)
+			writeCacheKeyString(hash, "rule-path", filepath.Clean(resolved))
+			content, _, err := readBoundedRegularFile(
+				resolved,
+				ignoreFileLabel(groupIndex == 1),
+				true,
+				maxIgnoreFileBytes,
+			)
 			if err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					writePart("missing")
-					continue
-				}
 				return "", err
 			}
-			_, _ = hash.Write(content)
-			writePart("")
+			writeCacheKeyField(hash, "rule-content", content)
 		}
 	}
 	// The repo-root .graphignore is applied implicitly, so it must key the entry
@@ -847,17 +843,21 @@ func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, opt
 	// .graphignore does: it decides which files the snapshot may contain, and
 	// therefore which files the ranked payload, the snippets and the context blocks
 	// can quote. See builtinSecretRulesDigest.
-	writePart("builtin-secret-rules=" + builtinSecretRulesDigest())
-	writePart("graphignore")
+	writeCacheKeyString(hash, "builtin-secret-rules", builtinSecretRulesDigest())
 	graphIgnore := filepath.Join(absRepo, graphIgnoreFileName)
-	switch content, err := os.ReadFile(graphIgnore); {
-	case err == nil:
-		_, _ = hash.Write(content)
-		writePart("")
-	case errors.Is(err, os.ErrNotExist):
-		writePart("missing")
-	default:
+	content, present, err := readBoundedRegularFile(
+		graphIgnore,
+		ignoreFileLabel(false),
+		false,
+		maxIgnoreFileBytes,
+	)
+	if err != nil {
 		return "", err
+	}
+	if present {
+		writeCacheKeyField(hash, "graphignore-content", content)
+	} else {
+		writeCacheKeyField(hash, "graphignore-missing", nil)
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }

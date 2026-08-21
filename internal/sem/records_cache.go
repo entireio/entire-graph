@@ -18,8 +18,9 @@ import (
 // `graph` commands) are deterministic for a given git tree, indexing mode, and
 // set of options. Recomputing them on every call is expensive on large repos, so
 // we cache the raw NDJSON bytes keyed on the HEAD tree hash plus everything else
-// that changes the output. This mirrors the search-snapshot cache next door.
-const providerRecordsCacheVersion = "provider-records-v4"
+// that changes the output. This mirrors the search-snapshot cache next door. v5
+// introduces typed, length-prefixed fields and bounded ignore-file reads.
+const providerRecordsCacheVersion = "provider-records-v5"
 
 // cachedProviderRecords is the on-disk envelope for a cached record stream. The
 // key alone is authoritative (sha256 over version+tree+mode+profile+options+
@@ -47,57 +48,71 @@ type cachedProviderRecords struct {
 // for targeted --to/--from/--relation queries.
 func providerRecordsKey(absRepo, repositoryKey, providerVersion, tree, mode string, options ProviderSnapshotOptions) (string, error) {
 	hash := sha256.New()
-	writePart := func(value string) {
-		_, _ = io.WriteString(hash, value)
-		_, _ = io.WriteString(hash, "\x00")
-	}
-	writePart(providerRecordsCacheVersion)
+	writeCacheKeyString(hash, "cache-version", providerRecordsCacheVersion)
 	// The built-in credential-store deny decides which files are in this corpus at
 	// all, so a build that disagrees about it must not reach this build's entries.
 	// See builtinSecretRulesDigest for why nothing else in this key separates them.
-	writePart("builtin-secret-rules=" + builtinSecretRulesDigest())
-	writePart(absRepo)
+	writeCacheKeyString(hash, "builtin-secret-rules", builtinSecretRulesDigest())
+	writeCacheKeyString(hash, "repository-path", absRepo)
 	// Repo identity PREFIXES EVERY SYMBOL ID this cache stores, so serving one repository's records
 	// to another hands back IDs attributed to the wrong project. Reproduced by re-pointing a remote:
 	// the warm run still reported gh/entireio/entire-graph after the checkout had become a fork.
 	// searchSnapshotKey already folds this in; this key did not.
-	writePart(repositoryKey)
-	writePart(providerVersion)
-	writePart(tree)
-	writePart(mode)
-	writePart(string(options.Profile))
-	writePart(fmt.Sprintf("%d", options.MaxParseBytes))
+	writeCacheKeyString(hash, "repository-key", repositoryKey)
+	writeCacheKeyString(hash, "provider-version", providerVersion)
+	writeCacheKeyString(hash, "tree", tree)
+	writeCacheKeyString(hash, "mode", mode)
+	writeCacheKeyString(hash, "profile", string(options.Profile))
+	writeCacheKeyString(hash, "max-parse-bytes", fmt.Sprintf("%d", options.MaxParseBytes))
 	// Same graph-shaping argument as searchSnapshotKey, resolved for the same reason: the env var
 	// behind the option has to reach the key too. This cache is the one that is ON BY DEFAULT, so
 	// the hole mattered more here.
-	writePart(fmt.Sprintf("max-files=%d", resolveMaxSourceFiles(options.MaxFiles)))
+	writeCacheKeyString(hash, "max-files", fmt.Sprintf("%d", resolveMaxSourceFiles(options.MaxFiles)))
 	onlyFiles := append([]string(nil), options.OnlyFiles...)
 	sort.Strings(onlyFiles)
-	writePart("only-files")
+	writeCacheKeyString(hash, "only-files", "begin")
 	for _, filePath := range onlyFiles {
-		writePart(filepath.ToSlash(filepath.Clean(filePath)))
+		writeCacheKeyString(hash, "only-file", filepath.ToSlash(filepath.Clean(filePath)))
 	}
 	for groupIndex, group := range [][]string{options.IgnoreFiles, options.IncludeFiles} {
-		writePart(fmt.Sprintf("path-group-%d", groupIndex))
+		writeCacheKeyString(hash, "path-group", fmt.Sprintf("%d", groupIndex))
 		// Preserve caller order: ignore matching is last-rule-wins, including
 		// across repeatable ignore/include files within each group.
-		for _, path := range group {
-			resolved := path
+		for _, rulePath := range group {
+			resolved := rulePath
 			if !filepath.IsAbs(resolved) {
 				resolved = filepath.Join(absRepo, resolved)
 			}
-			writePart(filepath.Clean(resolved))
-			content, err := os.ReadFile(resolved)
+			writeCacheKeyString(hash, "rule-path", filepath.Clean(resolved))
+			content, _, err := readBoundedRegularFile(
+				resolved,
+				ignoreFileLabel(groupIndex == 1),
+				true,
+				maxIgnoreFileBytes,
+			)
 			if err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					writePart("missing")
-					continue
-				}
 				return "", err
 			}
-			_, _ = hash.Write(content)
-			writePart("")
+			writeCacheKeyField(hash, "rule-content", content)
 		}
+	}
+
+	// .graphignore is applied without an explicit option, so its state must bind
+	// the records entry just as it binds the parsed search snapshot.
+	graphIgnore := filepath.Join(absRepo, graphIgnoreFileName)
+	content, present, err := readBoundedRegularFile(
+		graphIgnore,
+		ignoreFileLabel(false),
+		false,
+		maxIgnoreFileBytes,
+	)
+	if err != nil {
+		return "", err
+	}
+	if present {
+		writeCacheKeyField(hash, "graphignore-content", content)
+	} else {
+		writeCacheKeyField(hash, "graphignore-missing", nil)
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
