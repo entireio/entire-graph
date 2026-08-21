@@ -19,14 +19,44 @@ import (
 // Mutates package-level state: tests using it must not call t.Parallel().
 func setBuiltinSecretPatterns(t *testing.T, patterns string) {
 	t.Helper()
+	setBuiltinSecretPolicy(t, patterns, builtinSecretFileOnlyPatterns)
+}
+
+// setBuiltinSecretPolicy swaps every input that determines the effective
+// built-in credential-store matcher. It returns an idempotent restore function
+// so one test can model two builds in sequence while keeping the raw pattern
+// text byte-identical.
+//
+// Mutates package-level state: tests using it must not call t.Parallel().
+func setBuiltinSecretPolicy(t *testing.T, patterns string, fileOnlyPatterns map[string]struct{}) func() {
+	t.Helper()
 	previousPatterns := builtinSecretIgnorePatterns
+	previousFileOnlyPatterns := builtinSecretFileOnlyPatterns
 	previousRules := builtinSecretIgnoreRules
 	builtinSecretIgnorePatterns = patterns
+	builtinSecretFileOnlyPatterns = fileOnlyPatterns
 	builtinSecretIgnoreRules = parseBuiltinSecretIgnoreRules()
-	t.Cleanup(func() {
+	restored := false
+	restore := func() {
+		if restored {
+			return
+		}
+		restored = true
 		builtinSecretIgnorePatterns = previousPatterns
+		builtinSecretFileOnlyPatterns = previousFileOnlyPatterns
 		builtinSecretIgnoreRules = previousRules
-	})
+	}
+	t.Cleanup(restore)
+	return restore
+}
+
+func assertCredentialsDirectoryPolicy(t *testing.T, wantIgnored bool) {
+	t.Helper()
+	var matcher ignoreMatcher
+	matcher.loadBuiltinSecretRules()
+	if got := matcher.Ignored("credentials/config.go", false); got != wantIgnored {
+		t.Fatalf("credentials/config.go ignored=%v, want %v", got, wantIgnored)
+	}
 }
 
 // A record-stream cache entry written by a build with a different
@@ -140,5 +170,116 @@ func TestProviderRecordsKeyBindsBuiltinSecretRules(t *testing.T) {
 	}
 	if liveKey == priorKey {
 		t.Fatalf("provider-records key %s is identical under two different credential-store taxonomies", liveKey)
+	}
+}
+
+// A metadata-only policy change can alter corpus membership without changing a
+// byte of the raw pattern block. The search cache key must bind to the effective
+// parsed semantics rather than only to that block.
+//
+// Mutates package-level state: no t.Parallel().
+func TestSearchSnapshotKeyBindsBuiltinSecretRuleSemantics(t *testing.T) {
+	repo := t.TempDir()
+	options := ProviderSnapshotOptions{Profile: ProfileFull}
+	const patterns = "credentials\n"
+
+	restore := setBuiltinSecretPolicy(t, patterns, map[string]struct{}{"credentials": {}})
+	assertCredentialsDirectoryPolicy(t, false)
+	fileOnlyKey, err := searchSnapshotKey(repo, "local/victim", "dev", "tree-1", options)
+	if err != nil {
+		t.Fatalf("file-only key: %v", err)
+	}
+	repeatKey, err := searchSnapshotKey(repo, "local/victim", "dev", "tree-1", options)
+	if err != nil {
+		t.Fatalf("repeat file-only key: %v", err)
+	}
+	if fileOnlyKey != repeatKey {
+		t.Fatalf("control: unchanged effective policy changed the search key: %s vs %s", fileOnlyKey, repeatKey)
+	}
+	restore()
+
+	setBuiltinSecretPolicy(t, patterns, nil)
+	assertCredentialsDirectoryPolicy(t, true)
+	ordinaryKey, err := searchSnapshotKey(repo, "local/victim", "dev", "tree-1", options)
+	if err != nil {
+		t.Fatalf("ordinary Git-semantics key: %v", err)
+	}
+	if fileOnlyKey == ordinaryKey {
+		t.Fatalf("search-snapshot key %s ignored a file-only metadata change with identical raw patterns", fileOnlyKey)
+	}
+}
+
+// The records cache has the same corpus-membership dependency as search and
+// must therefore bind to the same effective rule semantics.
+//
+// Mutates package-level state: no t.Parallel().
+func TestProviderRecordsKeyBindsBuiltinSecretRuleSemantics(t *testing.T) {
+	repo := t.TempDir()
+	options := ProviderSnapshotOptions{Profile: ProfileFull}
+	const patterns = "credentials\n"
+
+	restore := setBuiltinSecretPolicy(t, patterns, map[string]struct{}{"credentials": {}})
+	assertCredentialsDirectoryPolicy(t, false)
+	fileOnlyKey, err := providerRecordsKey(repo, "local/victim", "dev", "tree-1", "symbols", options)
+	if err != nil {
+		t.Fatalf("file-only key: %v", err)
+	}
+	repeatKey, err := providerRecordsKey(repo, "local/victim", "dev", "tree-1", "symbols", options)
+	if err != nil {
+		t.Fatalf("repeat file-only key: %v", err)
+	}
+	if fileOnlyKey != repeatKey {
+		t.Fatalf("control: unchanged effective policy changed the records key: %s vs %s", fileOnlyKey, repeatKey)
+	}
+	restore()
+
+	setBuiltinSecretPolicy(t, patterns, nil)
+	assertCredentialsDirectoryPolicy(t, true)
+	ordinaryKey, err := providerRecordsKey(repo, "local/victim", "dev", "tree-1", "symbols", options)
+	if err != nil {
+		t.Fatalf("ordinary Git-semantics key: %v", err)
+	}
+	if fileOnlyKey == ordinaryKey {
+		t.Fatalf("provider-records key %s ignored a file-only metadata change with identical raw patterns", fileOnlyKey)
+	}
+}
+
+// Prove the key inequality above is load-bearing at the cache boundary. A build
+// whose file-only rule admits credentials/config.go must not lend that record to
+// a build whose ordinary Git-style rule excludes the ancestor directory.
+//
+// The same-policy load is a non-vacuous control: this cannot pass merely because
+// the cache never serves records.
+//
+// Mutates package-level state: no t.Parallel().
+func TestProviderRecordsCacheMissesEntryFromDifferentSecretRuleSemantics(t *testing.T) {
+	repo := t.TempDir()
+	cacheDir := t.TempDir()
+	options := ProviderSnapshotOptions{Profile: ProfileFull}
+	const patterns = "credentials\n"
+	records := []byte(`{"record_type":"symbol","file_path":"credentials/config.go"}` + "\n")
+
+	restore := setBuiltinSecretPolicy(t, patterns, map[string]struct{}{"credentials": {}})
+	assertCredentialsDirectoryPolicy(t, false)
+	if err := StoreProviderRecords(t.Context(), repo, "dev", "tree-1", "symbols", cacheDir, options, records, nil); err != nil {
+		t.Fatalf("store records under file-only policy: %v", err)
+	}
+	control, _, hit, err := LoadProviderRecords(t.Context(), repo, "dev", "tree-1", "symbols", cacheDir, options)
+	if err != nil {
+		t.Fatalf("control load under file-only policy: %v", err)
+	}
+	if !hit || string(control) != string(records) {
+		t.Fatalf("control: same effective policy must serve its own entry, got hit=%v records=%q", hit, control)
+	}
+	restore()
+
+	setBuiltinSecretPolicy(t, patterns, nil)
+	assertCredentialsDirectoryPolicy(t, true)
+	cached, _, hit, err := LoadProviderRecords(t.Context(), repo, "dev", "tree-1", "symbols", cacheDir, options)
+	if err != nil {
+		t.Fatalf("load under ordinary Git semantics: %v", err)
+	}
+	if hit {
+		t.Fatalf("records cache served an entry from different effective rule semantics: %s", cached)
 	}
 }

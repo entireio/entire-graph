@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -114,10 +115,8 @@ const (
 // `secrets/`-directory rules additionally require a data or config suffix — so
 // `internal/secrets/manager.go`, `pkg/credentials/provider.go` and
 // `internal/config/dotenv.go` stay fully searchable.
-// It is a var rather than a const for one reason: the persistent caches key on a
-// digest of it (see builtinSecretRulesDigest), and a test proving that binding has
-// to be able to stand in for a differently-built binary. Production code never
-// assigns to it.
+// It is a var rather than a const so cache-binding tests can stand in for a
+// differently built binary. Production code never assigns to it.
 var builtinSecretIgnorePatterns = `
 # Dotenv and direnv: the whole file is credential material. The .env.<environment>
 # variants are covered because they are the same file shape, and the template forms
@@ -259,22 +258,67 @@ func parseBuiltinSecretIgnoreRules() []ignoreRule {
 	return matcher.rules
 }
 
-// builtinSecretRulesDigest fingerprints the built-in credential-store taxonomy so
-// the persistent cache keys can bind to it. Both caches store a corpus whose
-// MEMBERSHIP this taxonomy decides, and nothing else in either key separates two
-// builds that disagree about it: the provider version is the release string, which
-// the repository's own `mise run build` leaves at "dev", so a build made before
-// these rules existed and a build made after them key identically. An entry warmed
-// by the earlier build is then served to the later one, and the paths it names are
-// re-emitted and reopened.
+// builtinSecretRulesDigestVersion identifies the canonical rule serialization
+// used by builtinSecretRulesDigest. Parsed fields normally make matcher changes
+// self-invalidating; bump this only if the matching algorithm changes semantics
+// without changing those fields.
+const builtinSecretRulesDigestVersion = "builtin-secret-rules-digest-v1"
+
+func writeIgnoreRuleHashPart(hash io.Writer, value string) {
+	_, _ = io.WriteString(hash, strconv.Itoa(len(value)))
+	_, _ = io.WriteString(hash, ":")
+	_, _ = io.WriteString(hash, value)
+}
+
+// writeIgnoreRuleSemantics writes the ordered effective matcher policy. Every
+// field is length-prefixed so unusual patterns and expressions cannot make two
+// different rule sequences serialize identically.
+func writeIgnoreRuleSemantics(hash io.Writer, rules []ignoreRule) {
+	for _, rule := range rules {
+		flags := 0
+		if rule.ignore {
+			flags |= 1 << 0
+		}
+		if rule.includeFile {
+			flags |= 1 << 1
+		}
+		if rule.directory {
+			flags |= 1 << 2
+		}
+		if rule.fileOnly {
+			flags |= 1 << 3
+		}
+		if rule.basenameOnly {
+			flags |= 1 << 4
+		}
+		writeIgnoreRuleHashPart(hash, "rule")
+		writeIgnoreRuleHashPart(hash, strconv.Itoa(flags))
+		writeIgnoreRuleHashPart(hash, rule.pattern)
+		if rule.expression == nil {
+			writeIgnoreRuleHashPart(hash, "")
+		} else {
+			writeIgnoreRuleHashPart(hash, rule.expression.String())
+		}
+	}
+}
+
+// builtinSecretRulesDigest fingerprints the effective built-in credential-store
+// taxonomy so the persistent cache keys can bind to it. Both caches store a
+// corpus whose MEMBERSHIP this taxonomy decides, and nothing else in either key
+// separates two builds that disagree about it: the provider version is the
+// release string, which the repository's own `mise run build` leaves at "dev".
+// An entry warmed by one build could otherwise be served to another, re-emitting
+// and reopening paths selected under different rules.
 //
-// A digest rather than a hand-bumped cache version, because the digest moves
-// whenever the pattern block is edited and there is nothing left to remember. It
-// also invalidates every entry already on disk, which is what a version bump would
-// have been for.
+// The digest covers the ordered parsed rules, including all matcher flags, each
+// pattern, and its compiled expression. It therefore moves for metadata-only
+// policy changes as well as pattern edits. The version marker above is the
+// explicit escape hatch for an algorithm change that those fields cannot express.
 func builtinSecretRulesDigest() string {
-	sum := sha256.Sum256([]byte(builtinSecretIgnorePatterns))
-	return hex.EncodeToString(sum[:])
+	hash := sha256.New()
+	writeIgnoreRuleHashPart(hash, builtinSecretRulesDigestVersion)
+	writeIgnoreRuleSemantics(hash, builtinSecretIgnoreRules)
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 // loadBuiltinSecretRules appends the built-in credential-store deny. Callers place

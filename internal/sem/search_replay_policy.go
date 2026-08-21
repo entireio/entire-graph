@@ -744,9 +744,7 @@ func readSearchReplayNestedIgnore(root *os.Root, candidate string) (string, bool
 }
 
 func writeSearchReplayHashPart(hash io.Writer, value string) {
-	_, _ = io.WriteString(hash, strconv.Itoa(len(value)))
-	_, _ = io.WriteString(hash, ":")
-	_, _ = io.WriteString(hash, value)
+	writeIgnoreRuleHashPart(hash, value)
 }
 
 func searchReplayPolicyFingerprint(view string, ignores ignoreMatcher, policyParts ...string) string {
@@ -757,32 +755,7 @@ func searchReplayPolicyFingerprint(view string, ignores ignoreMatcher, policyPar
 	for _, part := range policyParts {
 		writePart(part)
 	}
-	for _, rule := range ignores.rules {
-		flags := 0
-		if rule.ignore {
-			flags |= 1 << 0
-		}
-		if rule.includeFile {
-			flags |= 1 << 1
-		}
-		if rule.directory {
-			flags |= 1 << 2
-		}
-		if rule.fileOnly {
-			flags |= 1 << 3
-		}
-		if rule.basenameOnly {
-			flags |= 1 << 4
-		}
-		writePart("rule")
-		writePart(strconv.Itoa(flags))
-		writePart(rule.pattern)
-		if rule.expression == nil {
-			writePart("")
-		} else {
-			writePart(rule.expression.String())
-		}
-	}
+	writeIgnoreRuleSemantics(hash, ignores.rules)
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
