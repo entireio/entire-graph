@@ -1,0 +1,50 @@
+{
+  "cli_version": "0.10.1",
+  "checkpoint_id": "8758c15f61fd",
+  "strategy": "manual-commit",
+  "branch": "docs/chicago-style",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/README.md",
+    "docs/adr/0001-ga-schema-contract.md",
+    "docs/adr/0002-committed-tree-cache-key.md",
+    "docs/adr/0003-working-tree-search-snapshot-cache.md",
+    "docs/agents.md",
+    "docs/archive/2026-05-31-semantic-provider-contract-progress.md",
+    "docs/archive/2026-06-18-entire-graph-v2-implementation-plan.md",
+    "docs/archive/2026-06-18-provider-baseline-report.md",
+    "docs/archive/2026-06-20-full-plan-local-proof.md",
+    "docs/archive/2026-08-01-graphify-advertised-implementation-plan.md",
+    "docs/archive/2026-08-07-native-prose-session-context-design.md",
+    "docs/archive/2026-08-07-native-prose-session-context-implementation-plan.md",
+    "docs/archive/2026-08-07-prose-memory-ranking-v53-implementation-plan.md",
+    "docs/archive/2026-08-12-legacy-details.md",
+    "docs/archive/README.md",
+    "docs/benchmarks.md",
+    "docs/brain-and-graph-boundaries.md",
+    "docs/commands.md",
+    "docs/evidence/2026-08-16-mux-agent-session.md",
+    "docs/language-support.md",
+    "docs/readme-plan.md",
+    "docs/search.md",
+    "docs/semantic-provider-requirements.md",
+    "docs/snapshot-format.md",
+    "docs/trust-and-security.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/87/58c15f61fd/0/metadata.json",
+      "transcript": "/87/58c15f61fd/0/full.jsonl",
+      "compact_transcript": "/87/58c15f61fd/0/transcript.jsonl",
+      "content_hash": "/87/58c15f61fd/0/content_hash.txt",
+      "prompt": "/87/58c15f61fd/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 298,
+    "cache_creation_tokens": 637652,
+    "cache_read_tokens": 29910407,
+    "output_tokens": 115965,
+    "api_call_count": 149
+  }
+}

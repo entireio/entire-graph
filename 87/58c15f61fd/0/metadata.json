@@ -1,0 +1,79 @@
+{
+  "cli_version": "0.10.1",
+  "checkpoint_id": "8758c15f61fd",
+  "session_id": "22bc80ae-fe17-43c4-b918-a92250191246",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-21T04:53:46.025286Z",
+  "branch": "docs/chicago-style",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "docs/README.md",
+    "docs/adr/0001-ga-schema-contract.md",
+    "docs/adr/0002-committed-tree-cache-key.md",
+    "docs/adr/0003-working-tree-search-snapshot-cache.md",
+    "docs/agents.md",
+    "docs/archive/2026-05-31-semantic-provider-contract-progress.md",
+    "docs/archive/2026-06-18-entire-graph-v2-implementation-plan.md",
+    "docs/archive/2026-06-18-provider-baseline-report.md",
+    "docs/archive/2026-06-20-full-plan-local-proof.md",
+    "docs/archive/2026-08-01-graphify-advertised-implementation-plan.md",
+    "docs/archive/2026-08-07-native-prose-session-context-design.md",
+    "docs/archive/2026-08-07-native-prose-session-context-implementation-plan.md",
+    "docs/archive/2026-08-07-prose-memory-ranking-v53-implementation-plan.md",
+    "docs/archive/2026-08-12-legacy-details.md",
+    "docs/archive/README.md",
+    "docs/benchmarks.md",
+    "docs/brain-and-graph-boundaries.md",
+    "docs/commands.md",
+    "docs/evidence/2026-08-16-mux-agent-session.md",
+    "docs/language-support.md",
+    "docs/readme-plan.md",
+    "docs/search.md",
+    "docs/semantic-provider-requirements.md",
+    "docs/snapshot-format.md",
+    "docs/trust-and-security.md"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-5",
+  "turn_id": "0c67e3e2096c",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 298,
+    "cache_creation_tokens": 637652,
+    "cache_read_tokens": 29910407,
+    "output_tokens": 115965,
+    "api_call_count": 149
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-21T04:53:45.972054Z",
+    "agent_lines": 249,
+    "agent_removed": 249,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 249,
+    "total_lines_changed": 498,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 523,
+      "agent_lines_removed": 249
+    }
+  ]
+}
