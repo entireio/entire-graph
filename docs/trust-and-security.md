@@ -100,9 +100,11 @@ these rules existed misses instead of re-emitting the paths it named.
   (for most query commands) the per-user cache directory. Cache entries are
   compressed snapshots rebuilt from repository state; deleting them costs a
   rebuild, nothing else. Queries never modify repository source files.
-- `init-agents` writes exactly three repository files, disclosed in
+- `init-agents` writes through exactly three repository paths, disclosed in
   [agent activation](agents.md): `.entire/graph-agent.md` and managed blocks
-  in `AGENTS.md` and `CLAUDE.md`.
+  in `AGENTS.md` and `CLAUDE.md`. A hard-linked pathname elsewhere names the
+  same inode and therefore observes the same update; the activation guide
+  calls out that filesystem property explicitly.
 - `index --report <path>` writes a Markdown graph report to the path you give
   it.
 - `verify --record-baseline <path>` creates parent directories as needed and
