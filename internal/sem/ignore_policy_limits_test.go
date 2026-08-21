@@ -32,6 +32,21 @@ func initializeIgnorePolicyRepo(t *testing.T, repo string) string {
 	return rev(t, repo, "HEAD")
 }
 
+func stageUnmergedIgnorePath(t *testing.T, repo, candidate string) {
+	t.Helper()
+	blobs := []string{
+		gitInput(t, repo, "# base\n", "hash-object", "-w", "--stdin"),
+		gitInput(t, repo, "# ours\n", "hash-object", "-w", "--stdin"),
+		gitInput(t, repo, "# theirs\n", "hash-object", "-w", "--stdin"),
+	}
+	git(t, repo, "update-index", "--force-remove", "--", candidate)
+	var indexInfo strings.Builder
+	for index, blob := range blobs {
+		fmt.Fprintf(&indexInfo, "100644 %s %d\t%s%c", blob, index+1, candidate, byte(0))
+	}
+	gitInput(t, repo, indexInfo.String(), "update-index", "-z", "--index-info")
+}
+
 func wantIgnoreLimitError(t *testing.T, err error, file, limit string) {
 	t.Helper()
 	if err == nil {
@@ -252,6 +267,74 @@ func TestSearchReplayPolicyNestedBudgetIsFreshPerEvaluation(t *testing.T) {
 	for attempt := 0; attempt < 2; attempt++ {
 		if !policy.AllowsReplayPaths([]string{"vendor/keep/keep.go"}) {
 			t.Fatalf("replay attempt %d reused a spent nested-ignore budget", attempt+1)
+		}
+	}
+}
+
+func TestUnmergedNestedIgnoreHasProviderReplayParity(t *testing.T) {
+	repo := t.TempDir()
+	policy := parsedIgnoreRules(maxIgnoreParsedRules/2) + "*\n!.gitignore\n!mypkg/\n!mypkg/**\n"
+	writeFile(t, repo, "vendor/.gitignore", policy)
+	writeFile(t, repo, "vendor/mypkg/kept.go", "package kept\n")
+	initializeIgnorePolicyRepo(t, repo)
+	stageUnmergedIgnorePath(t, repo, "vendor/.gitignore")
+
+	ignores, err := loadWorktreeIgnoreMatcher(repo, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := worktreeSourceFiles(t.Context(), repo, ignores, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerAllows := false
+	for _, candidate := range paths {
+		if candidate == "vendor/mypkg/kept.go" {
+			providerAllows = true
+			break
+		}
+	}
+	if !providerAllows {
+		t.Fatalf("provider paths = %q, want vendored path re-admitted by nested policy", paths)
+	}
+
+	replay, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayAllows := replay.AllowsReplayPaths([]string{"vendor/mypkg/kept.go"})
+	if replayAllows != providerAllows {
+		t.Fatalf("replay allows vendored path = %v, provider = %v", replayAllows, providerAllows)
+	}
+}
+
+func TestCommittedSubdirectoryReadsRootAndNestedIgnoreFiles(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "bench/.gitignore", "vendor/*\n!vendor/rootpkg/\n!vendor/rootpkg/**\n")
+	writeFile(t, repo, "bench/vendor/rootpkg/root.go", "package rootpkg\n")
+	writeFile(t, repo, "bench/memory/.gitignore", "vendor/*\n!vendor/nestedpkg/\n!vendor/nestedpkg/**\n")
+	writeFile(t, repo, "bench/memory/vendor/nestedpkg/nested.go", "package nestedpkg\n")
+	revision := initializeIgnorePolicyRepo(t, repo)
+
+	opened, err := openSource(t.Context(), filepath.Join(repo, "bench"), revision, sourceOptions{})
+	if opened.close != nil {
+		defer opened.close()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		"vendor/rootpkg/root.go":            false,
+		"memory/vendor/nestedpkg/nested.go": false,
+	}
+	for _, candidate := range opened.paths {
+		if _, exists := want[candidate]; exists {
+			want[candidate] = true
+		}
+	}
+	for candidate, found := range want {
+		if !found {
+			t.Errorf("committed subdirectory paths = %q, missing %q", opened.paths, candidate)
 		}
 	}
 }

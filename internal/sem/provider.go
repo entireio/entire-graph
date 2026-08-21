@@ -10469,9 +10469,20 @@ func loadHeadNestedIgnoreRules(
 	if len(candidates) > maxNestedIgnoreFiles {
 		return nil, tooManyNestedIgnoreFilesError()
 	}
-	requested := make([]string, 1, len(candidates)+1)
-	requested[0] = ".gitignore"
-	requested = append(requested, candidates...)
+	prefix, err := gitutil.RepoPrefix(ctx, repo)
+	if err != nil {
+		return nil, fmt.Errorf("resolve committed ignore-file tree prefix: %w", err)
+	}
+	// Git listings are relative to the requested repository scope, while the
+	// limited reader addresses the repository-root tree. Map that coordinate
+	// boundary once; labels remain scope-relative for ignore semantics/errors.
+	labels := make([]string, 1, len(candidates)+1)
+	labels[0] = ".gitignore"
+	labels = append(labels, candidates...)
+	requested := make([]string, len(labels))
+	for index, label := range labels {
+		requested[index] = prefix + label
+	}
 	reader := gitutil.NewLimitedFileReader(
 		ctx,
 		repo,
@@ -10485,7 +10496,7 @@ func loadHeadNestedIgnoreRules(
 
 	budget := newIgnoreRuleBudget(policyBase)
 	rootMatcher := ignoreMatcher{}
-	rootContent, present, err := readCommittedIgnoreFile(reader, ".gitignore", false)
+	rootContent, present, err := readCommittedIgnoreFile(reader, requested[0], labels[0], false)
 	if err != nil {
 		return nil, err
 	}
@@ -10496,8 +10507,8 @@ func loadHeadNestedIgnoreRules(
 		}
 	}
 	rules := newNestedIgnoreRulesWithBudget(rootMatcher, budget)
-	for _, candidate := range candidates {
-		content, present, err := readCommittedIgnoreFile(reader, candidate, true)
+	for index, candidate := range candidates {
+		content, present, err := readCommittedIgnoreFile(reader, requested[index+1], candidate, true)
 		if err != nil {
 			return nil, err
 		}
@@ -10513,34 +10524,34 @@ func loadHeadNestedIgnoreRules(
 
 func readCommittedIgnoreFile(
 	reader *gitutil.LimitedFileReader,
-	candidate string,
+	treePath, label string,
 	required bool,
 ) (string, bool, error) {
-	result, err := reader.ReadFile(candidate)
+	result, err := reader.ReadFile(treePath)
 	if err != nil {
-		return "", false, fmt.Errorf("read committed ignore file %q: %w", candidate, err)
+		return "", false, fmt.Errorf("read committed ignore file %q: %w", label, err)
 	}
 	switch result.Status {
 	case gitutil.LimitedFileContent:
 		return result.Content, true, nil
 	case gitutil.LimitedFileMissing:
 		if required {
-			return "", false, fmt.Errorf("committed ignore file %q is missing", candidate)
+			return "", false, fmt.Errorf("committed ignore file %q is missing", label)
 		}
 		return "", false, nil
 	case gitutil.LimitedFileOversize:
 		return "", false, fmt.Errorf(
 			"read committed ignore file %q: file is %d bytes and exceeds %d bytes",
-			candidate,
+			label,
 			result.Bytes,
 			maxNestedIgnoreFileBytes,
 		)
 	case gitutil.LimitedFileNonBlob:
-		return "", false, fmt.Errorf("committed ignore file %q is not a blob", candidate)
+		return "", false, fmt.Errorf("committed ignore file %q is not a blob", label)
 	case gitutil.LimitedFileUnaddressable:
-		return "", false, fmt.Errorf("committed ignore file %q cannot be addressed within Git metadata bounds", candidate)
+		return "", false, fmt.Errorf("committed ignore file %q cannot be addressed within Git metadata bounds", label)
 	default:
-		return "", false, fmt.Errorf("committed ignore file %q has unknown read status %d", candidate, result.Status)
+		return "", false, fmt.Errorf("committed ignore file %q has unknown read status %d", label, result.Status)
 	}
 }
 
