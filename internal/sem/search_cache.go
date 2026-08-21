@@ -19,9 +19,10 @@ import (
 // into every entry key, so bumping it moves new entries to a fresh directory
 // and any prior-version directory can simply be deleted wholesale — cleanup is
 // "remove old version dirs" instead of per-entry reachability analysis.
-// v11 retires every entry produced before the final immutable-policy and
-// unconditional-worktree-bypass transaction checks were complete.
-const searchSnapshotCacheVersion = "search-snapshot-v11"
+// v12 retires every entry produced before the final immutable-policy,
+// unconditional-worktree-bypass transaction checks, and shared nested-ignore
+// resource policy were complete.
+const searchSnapshotCacheVersion = "search-snapshot-v12"
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`

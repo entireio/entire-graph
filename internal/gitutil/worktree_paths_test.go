@@ -406,6 +406,44 @@ func TestFirstWorktreeNestedIgnorePathsPreservesProviderOrder(t *testing.T) {
 	}
 }
 
+func TestBoundedNestedIgnorePathsReportOverflow(t *testing.T) {
+	repo := t.TempDir()
+	gitCmd(t, repo, "init")
+	gitCmd(t, repo, "config", "user.name", "T")
+	gitCmd(t, repo, "config", "user.email", "t@example.com")
+	for _, name := range []string{"a/.gitignore", "b/.gitignore", "c/.gitignore"} {
+		write(t, repo, name, "# policy\n")
+	}
+	gitCmd(t, repo, "add", ".")
+	gitCmd(t, repo, "commit", "-m", "nested ignores")
+
+	if _, err := BoundedTreeNestedIgnorePaths(t.Context(), repo, "HEAD", 2); err == nil ||
+		!strings.Contains(err.Error(), "exceed 2 paths") {
+		t.Fatalf("bounded tree nested-ignore overflow = %v", err)
+	}
+	if _, err := BoundedWorktreeNestedIgnorePaths(t.Context(), repo, 2, nil); err == nil ||
+		!strings.Contains(err.Error(), "exceed 2 paths") {
+		t.Fatalf("bounded worktree nested-ignore overflow = %v", err)
+	}
+
+	for _, list := range []func() ([]string, error){
+		func() ([]string, error) {
+			return BoundedTreeNestedIgnorePaths(t.Context(), repo, "HEAD", 3)
+		},
+		func() ([]string, error) {
+			return BoundedWorktreeNestedIgnorePaths(t.Context(), repo, 3, nil)
+		},
+	} {
+		paths, err := list()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{"a/.gitignore", "b/.gitignore", "c/.gitignore"}; !reflect.DeepEqual(paths, want) {
+			t.Fatalf("bounded nested-ignore paths = %v, want %v", paths, want)
+		}
+	}
+}
+
 func TestVisitWorktreePathsStreamsAndStopsAtVisitorBound(t *testing.T) {
 	repo := t.TempDir()
 	gitCmd(t, repo, "init")

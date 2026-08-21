@@ -24,6 +24,12 @@ other is installation.
   `.git/info/exclude`, per-worktree excludes, and `core.excludesFile`, plus
   `.graphignore` and any
   `--ignore-file`/`--include-file` the caller passes.
+  External ignore inputs are bounded to 1 MiB per file and 64 KiB per rule
+  line. One listing retains at most 16,384 parsed external rules and observes at
+  most 512 nested `.gitignore` files. A limit refusal is reported instead of
+  truncating the policy and silently changing the indexed corpus. Nested
+  worktree ignore files are confined to the repository and are not followed
+  through a symlink that escapes it.
 - For `stats` only: local coding-agent session transcripts
   (`~/.claude/projects/<path-slug>/*.jsonl`, or `--sessions-dir`/
   `--transcript` overrides). This is Claude Code's transcript layout; the

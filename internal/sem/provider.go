@@ -9810,11 +9810,14 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		if err != nil {
 			return openedSource{}, err
 		}
-		vendorRules, vendorWarnings := headVendorIgnoreRules(ctx, repo, committedRevision, paths)
+		vendorRules, err := headVendorIgnoreRules(ctx, repo, committedRevision, paths, ignores)
+		if err != nil {
+			return openedSource{}, err
+		}
 		paths = filterVendoredPaths(paths, vendorRules)
 		paths = filterIgnoredPaths(paths, ignores)
 		paths, capWarnings := capSourceFiles(paths, options.maxFiles)
-		warnings := append(vendorWarnings, capWarnings...)
+		warnings := capWarnings
 		treePathPrefix, err := gitutil.RepoPrefix(ctx, repo)
 		if err != nil {
 			return openedSource{}, err
@@ -10318,7 +10321,10 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 	// The vendored-directory heuristic consults the project's own re-inclusion
 	// rules wherever they live, not only at the root, so a tree the project
 	// deliberately keeps under a vendored-looking name is not dropped.
-	vendorRules := worktreeVendorIgnoreRules(repo, ignores, listed)
+	vendorRules, err := worktreeVendorIgnoreRules(repo, ignores, listed)
+	if err != nil {
+		return nil, err
+	}
 	paths := make([]string, 0, len(listed))
 	seen := make(map[string]struct{}, len(listed))
 	for _, entry := range listed {
@@ -10384,6 +10390,7 @@ func visitWalkWorktreeFiles(
 	visit func(string) bool,
 ) error {
 	stack := newNestedIgnoreStack(repo, ignores)
+	defer stack.close()
 	return filepath.WalkDir(repo, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -10461,135 +10468,156 @@ func filterIgnoredPaths(paths []string, ignores ignoreMatcher) []string {
 // newer HEAD nor miss a project's re-inclusion rules because they sit beside the
 // tree they describe, which is where Git expects them. The tracked listing
 // already in hand is reused to find them, so this costs no extra listing.
-func headVendorIgnoreRules(ctx context.Context, repo, committedRevision string, paths []string) (*nestedIgnoreRules, []ProviderWarning) {
-	base, baseUnreadable := headIgnoreMatcherOrError(ctx, repo, committedRevision)
-	rules := newNestedIgnoreRules(base)
-	var warnings []ProviderWarning
-	if baseUnreadable {
-		rules.baseUnreadable = true
-		warnings = append(warnings, ProviderWarning{
-			Code:                 "W_VENDOR_IGNORE_UNREADABLE",
-			Severity:             "warning",
-			FilePath:             ".gitignore",
-			EffectOnCompleteness: "the root .gitignore could not be read at the committed revision, so its re-inclusion rules are unknown; the vendored-directory heuristic is skipped for the whole snapshot rather than risk silently dropping first-party paths it would have re-included",
-		})
-		return rules, warnings
+func headVendorIgnoreRules(
+	ctx context.Context,
+	repo, committedRevision string,
+	paths []string,
+	policyBase ignoreMatcher,
+) (*nestedIgnoreRules, error) {
+	candidates, err := nestedIgnorePathsFromListing(paths)
+	if err != nil {
+		return nil, err
 	}
-	nestedPaths, truncated := boundedNestedIgnorePaths(paths)
-	if truncated {
-		rules.incomplete = true
-		warnings = append(warnings, ProviderWarning{
-			Code:                 "W_VENDOR_IGNORE_LIMIT",
-			Severity:             "warning",
-			EffectOnCompleteness: "not every nested .gitignore could be inspected within the bounded input limit, so the vendored-directory heuristic is skipped for the whole snapshot rather than risk silently dropping first-party paths with unknown re-inclusion rules",
-			Detail:               fmt.Sprintf("nested .gitignore inputs exceeded the limit of %d", maxNestedIgnoreFiles),
-		})
-	}
-	for _, rel := range nestedPaths {
-		content, ok, err := gitutil.ShowFile(ctx, repo, committedRevision, rel)
-		if err != nil {
-			// A real read failure — for example a promised blob a partial
-			// clone cannot fetch because network egress is disabled — leaves
-			// this directory's re-inclusion rules unknowable. Recording it
-			// (rather than silently `continue`ing as if the file simply did
-			// not exist) lets ReincludesDescendant fail open for this
-			// subtree instead of the vendored-directory heuristic silently
-			// agreeing that nothing here is re-included.
-			dir := cleanIgnorePath(path.Dir(rel))
-			rules.unreadableDirs = append(rules.unreadableDirs, dir)
-			warnings = append(warnings, ProviderWarning{
-				Code:                 "W_VENDOR_IGNORE_UNREADABLE",
-				Severity:             "warning",
-				FilePath:             rel,
-				EffectOnCompleteness: "this directory's .gitignore could not be read at the committed revision, so its re-inclusion rules are unknown; the vendored-directory heuristic is skipped for this subtree rather than risk silently dropping first-party paths it would have re-included",
-			})
-			continue
-		}
-		if !ok || len(content) > maxNestedIgnoreFileBytes {
-			continue
-		}
-		rules.addFile(rel, content)
-	}
-	return rules, warnings
-}
-
-// boundedNestedIgnorePaths returns at most maxNestedIgnoreFiles tracked nested
-// .gitignore paths. The separate truncated result lets callers fail open and
-// disclose that some re-inclusion rules remain unknown without issuing an
-// unbounded number of Git subprocesses or retaining unbounded diagnostics.
-func boundedNestedIgnorePaths(paths []string) ([]string, bool) {
-	nested := make([]string, 0, min(len(paths), maxNestedIgnoreFiles))
-	for _, entry := range paths {
-		rel := filepath.ToSlash(entry)
-		if path.Base(rel) != ".gitignore" || !strings.Contains(rel, "/") {
-			continue
-		}
-		if len(nested) >= maxNestedIgnoreFiles {
-			return nested, true
-		}
-		nested = append(nested, rel)
-	}
-	return nested, false
+	return loadHeadNestedIgnoreRules(ctx, repo, committedRevision, candidates, policyBase)
 }
 
 // worktreeVendorIgnoreRules is headVendorIgnoreRules for the working tree: the
 // per-directory .gitignore files Git's own listing reports (one inside an
 // excluded tree is not listed, and that tree is excluded anyway) are read from
 // disk and merged over the root rules.
-func worktreeVendorIgnoreRules(repo string, base ignoreMatcher, listed []string) *nestedIgnoreRules {
+func worktreeVendorIgnoreRules(repo string, base ignoreMatcher, listed []string) (*nestedIgnoreRules, error) {
+	candidates, err := nestedIgnorePathsFromListing(listed)
+	if err != nil {
+		return nil, err
+	}
 	rules := newNestedIgnoreRules(base)
-	for _, entry := range listed {
+	if len(candidates) == 0 {
+		return rules, nil
+	}
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		return nil, fmt.Errorf("open repository for nested ignore files: %w", err)
+	}
+	defer root.Close()
+	for _, candidate := range candidates {
+		content, present, err := readWorktreeNestedIgnore(root, repo, candidate)
+		if err != nil {
+			return nil, err
+		}
+		if !present {
+			continue
+		}
+		if err := rules.addFile(candidate, content); err != nil {
+			return nil, err
+		}
+	}
+	return rules, nil
+}
+
+func nestedIgnorePathsFromListing(paths []string) ([]string, error) {
+	candidates := make([]string, 0, min(len(paths), maxNestedIgnoreFiles))
+	for _, entry := range paths {
 		rel := filepath.ToSlash(entry)
 		if path.Base(rel) != ".gitignore" || !strings.Contains(rel, "/") {
 			continue
 		}
-		if len(rules.levels) >= maxNestedIgnoreFiles {
-			break
+		if len(candidates) >= maxNestedIgnoreFiles {
+			return nil, tooManyNestedIgnoreFilesError()
 		}
-		full := filepath.Join(repo, filepath.FromSlash(rel))
-		info, err := os.Stat(full)
-		if err != nil || !info.Mode().IsRegular() || info.Size() > maxNestedIgnoreFileBytes {
-			continue
-		}
-		content, err := os.ReadFile(full)
-		if err != nil {
-			continue
-		}
-		rules.addFile(rel, string(content))
+		candidates = append(candidates, rel)
 	}
-	return rules
+	return candidates, nil
 }
 
-// headIgnoreMatcher parses the repository's root .gitignore at the same exact
-// committed revision used for listing and content reads, so the vendored-
-// directory heuristic cannot observe a newer HEAD.
-// headIgnoreMatcher reads the root .gitignore at the committed revision. A
-// genuine read failure (for example a promised blob a partial clone cannot
-// fetch because network egress is disabled) is indistinguishable here from the
-// ordinary, common case of no root .gitignore existing at all; callers that
-// need to tell "no rules" from "rules unknown" — because they must not
-// silently agree with the empty result — use headIgnoreMatcherOrError instead.
-func headIgnoreMatcher(ctx context.Context, repo, committedRevision string) ignoreMatcher {
-	matcher, _ := headIgnoreMatcherOrError(ctx, repo, committedRevision)
-	return matcher
-}
+// loadHeadNestedIgnoreRules reads every committed ignore input through one
+// typed, bounded Git reader pinned to committedRevision. policyBase is not part
+// of the vendored matcher semantics, but its external rules draw from the same
+// operation allowance; without that charge committed mode had two independent
+// ledgers that a repository could fill separately.
+func loadHeadNestedIgnoreRules(
+	ctx context.Context,
+	repo, committedRevision string,
+	candidates []string,
+	policyBase ignoreMatcher,
+) (*nestedIgnoreRules, error) {
+	if len(candidates) > maxNestedIgnoreFiles {
+		return nil, tooManyNestedIgnoreFilesError()
+	}
+	requested := make([]string, 1, len(candidates)+1)
+	requested[0] = ".gitignore"
+	requested = append(requested, candidates...)
+	reader := gitutil.NewLimitedFileReader(
+		ctx,
+		repo,
+		committedRevision,
+		int64(maxNestedIgnoreFileBytes),
+	)
+	defer reader.Close()
+	if err := reader.Prime(requested); err != nil {
+		return nil, fmt.Errorf("inspect committed ignore files: %w", err)
+	}
 
-// headIgnoreMatcherOrError is headIgnoreMatcher with the failure mode kept
-// visible. The returned bool is true only for a genuine read failure — never
-// for the ordinary case of no root .gitignore existing at all.
-func headIgnoreMatcherOrError(ctx context.Context, repo, committedRevision string) (ignoreMatcher, bool) {
-	content, ok, err := gitutil.ShowFile(ctx, repo, committedRevision, ".gitignore")
+	budget := newIgnoreRuleBudget(policyBase)
+	rootMatcher := ignoreMatcher{}
+	rootContent, present, err := readCommittedIgnoreFile(reader, ".gitignore", false)
 	if err != nil {
-		return ignoreMatcher{}, true
+		return nil, err
 	}
-	if !ok {
-		return ignoreMatcher{}, false
+	if present {
+		rootMatcher, err = loadNestedIgnoreMatcher(rootContent, budget)
+		if err != nil {
+			return nil, fmt.Errorf("read ignore file %q: %w", ".gitignore", err)
+		}
 	}
-	var matcher ignoreMatcher
-	if err := matcher.loadContent(content, false); err != nil {
-		return ignoreMatcher{}, false
+	rules := newNestedIgnoreRulesWithBudget(rootMatcher, budget)
+	for _, candidate := range candidates {
+		content, present, err := readCommittedIgnoreFile(reader, candidate, true)
+		if err != nil {
+			return nil, err
+		}
+		if !present {
+			continue
+		}
+		if err := rules.addFile(candidate, content); err != nil {
+			return nil, err
+		}
 	}
-	return matcher, false
+	return rules, nil
+}
+
+func readCommittedIgnoreFile(
+	reader *gitutil.LimitedFileReader,
+	candidate string,
+	required bool,
+) (string, bool, error) {
+	result, err := reader.ReadFile(candidate)
+	if err != nil {
+		return "", false, fmt.Errorf("read committed ignore file %q: %w", candidate, err)
+	}
+	switch result.Status {
+	case gitutil.LimitedFileContent:
+		return result.Content, true, nil
+	case gitutil.LimitedFileMissing:
+		if required {
+			return "", false, fmt.Errorf("committed ignore file %q is missing", candidate)
+		}
+		return "", false, nil
+	case gitutil.LimitedFileOversize:
+		return "", false, fmt.Errorf(
+			"read committed ignore file %q: file is %d bytes and exceeds %d bytes",
+			candidate,
+			result.Bytes,
+			maxNestedIgnoreFileBytes,
+		)
+	case gitutil.LimitedFileNonBlob:
+		return "", false, fmt.Errorf("committed ignore file %q is not a blob", candidate)
+	case gitutil.LimitedFileUnreadable:
+		return "", false, fmt.Errorf("committed ignore file %q exists but its blob object metadata is unreadable", candidate)
+	case gitutil.LimitedFileUnaddressable:
+		return "", false, fmt.Errorf("committed ignore file %q cannot be addressed within Git metadata bounds", candidate)
+	default:
+		return "", false, fmt.Errorf("committed ignore file %q has unknown read status %d", candidate, result.Status)
+	}
 }
 
 // vendoredPath filters a HEAD-tree path. Every path in the HEAD listing is
