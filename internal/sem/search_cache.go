@@ -859,6 +859,32 @@ func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, opt
 	} else {
 		writeCacheKeyField(hash, "graphignore-missing", nil)
 	}
+	// A worktree snapshot also applies the repository's private info/exclude
+	// file. It lives under Git metadata rather than the worktree, so neither the
+	// HEAD tree nor git status changes when its policy changes. Bind its optional
+	// state and content explicitly or a warm relation-query cache can continue to
+	// serve paths the user has just excluded.
+	if options.Worktree {
+		exclude := gitInfoExcludePath(absRepo)
+		if exclude == "" {
+			writeCacheKeyField(hash, "git-info-exclude-missing", nil)
+		} else {
+			content, present, err := readBoundedRegularFile(
+				exclude,
+				ignoreFileLabel(false),
+				false,
+				maxIgnoreFileBytes,
+			)
+			if err != nil {
+				return "", err
+			}
+			if present {
+				writeCacheKeyField(hash, "git-info-exclude-content", content)
+			} else {
+				writeCacheKeyField(hash, "git-info-exclude-missing", nil)
+			}
+		}
+	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 

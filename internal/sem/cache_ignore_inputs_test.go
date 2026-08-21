@@ -161,3 +161,89 @@ func TestProviderRecordsKeyIncludesGraphIgnore(t *testing.T) {
 		t.Fatal("editing .graphignore did not invalidate provider records")
 	}
 }
+
+func TestSearchSnapshotKeyIncludesWorktreeInfoExcludeStateAndContent(t *testing.T) {
+	repo := t.TempDir()
+	key := func(options ProviderSnapshotOptions) string {
+		t.Helper()
+		got, err := searchSnapshotKey(repo, "repo", "version", "tree", options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	worktreeOptions := ProviderSnapshotOptions{Worktree: true}
+	missing := key(worktreeOptions)
+	headMissing := key(ProviderSnapshotOptions{})
+	infoDir := filepath.Join(repo, ".git", "info")
+	if err := os.MkdirAll(infoDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	exclude := filepath.Join(infoDir, "exclude")
+	if err := os.WriteFile(exclude, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	presentEmpty := key(worktreeOptions)
+	if presentEmpty == missing {
+		t.Fatal("missing info/exclude collided with a present empty file")
+	}
+	if err := os.WriteFile(exclude, []byte("/dist/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	presentContent := key(worktreeOptions)
+	if presentContent == presentEmpty {
+		t.Fatal("editing info/exclude did not invalidate the worktree key")
+	}
+	if headPresent := key(ProviderSnapshotOptions{}); headPresent != headMissing {
+		t.Fatal("committed-tree key changed for a worktree-only ignore input")
+	}
+}
+
+func TestWorktreeSnapshotCacheInvalidatesForGitInfoExclude(t *testing.T) {
+	repo := cacheTestRepo(t)
+	cacheDir := t.TempDir()
+	options := ProviderSnapshotOptions{Worktree: true, Profile: ProfileFull, NoNetwork: true}
+
+	first, hit, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test", options, cacheDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hit {
+		t.Fatal("cold worktree cache reported a hit")
+	}
+	if !hasSymbolNamed(first.Symbols, "Alpha") {
+		t.Fatal("cold snapshot did not include app.go")
+	}
+
+	exclude := gitInfoExcludePath(repo)
+	if exclude == "" {
+		t.Fatal("test repository did not resolve info/exclude")
+	}
+	if err := os.WriteFile(exclude, []byte("/app.go\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	InvalidateWorktreeCleanVerdicts()
+	second, hit, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test", options, cacheDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hit {
+		t.Fatal("info/exclude edit reused the stale worktree snapshot")
+	}
+	if hasSymbolNamed(second.Symbols, "Alpha") {
+		t.Fatal("snapshot retained a tracked file excluded by info/exclude")
+	}
+
+	InvalidateWorktreeCleanVerdicts()
+	third, hit, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test", options, cacheDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hit {
+		t.Fatal("unchanged info/exclude did not reuse the rebuilt snapshot")
+	}
+	if hasSymbolNamed(third.Symbols, "Alpha") {
+		t.Fatal("warm rebuilt snapshot restored the excluded file")
+	}
+}
