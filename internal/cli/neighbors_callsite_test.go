@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/entireio/entire-graph/internal/sem"
 )
 
 // A section that was never queried must never render as an empty result: an
@@ -261,10 +259,10 @@ func TestCallSiteLocationOmitsRedundantDefinitionLine(t *testing.T) {
 	}
 }
 
-// Relation queries index the whole repository, so the cold cost must be paid at
-// most once for a clean tree: the second query is served from the cache, and a
-// dirty tree still bypasses it.
-func TestRelationQueryReusesIndexForCleanWorktreeOnly(t *testing.T) {
+// Relation queries over a worktree always rebuild until raw worktree equality
+// can be established without invoking repository-selected Git filters. Both a
+// clean repeat and a dirty edit therefore bypass the committed-tree cache.
+func TestRelationQueryRebuildsWorktreeIndex(t *testing.T) {
 	repo := t.TempDir()
 	runGit := func(args ...string) {
 		t.Helper()
@@ -302,14 +300,13 @@ func TestRelationQueryReusesIndexForCleanWorktreeOnly(t *testing.T) {
 	if first := query(); first.IndexCacheHit {
 		t.Fatal("first query on a cold cache reported a hit")
 	}
-	if second := query(); !second.IndexCacheHit {
-		t.Fatal("second query on a clean worktree did not reuse the index")
+	if second := query(); second.IndexCacheHit {
+		t.Fatal("second query on a clean worktree reused the index")
 	}
 
 	// A dirty working tree must never be served committed-tree content, and the
 	// edit must be visible.
 	write(t, repo, "calls.go", "package calls\n\nfunc Alpha() { Beta() }\nfunc Beta() {}\nfunc Delta() { Beta() }\n")
-	sem.InvalidateWorktreeCleanVerdicts()
 	dirty := query()
 	if dirty.IndexCacheHit {
 		t.Fatal("dirty worktree was served a cached index")
@@ -317,7 +314,9 @@ func TestRelationQueryReusesIndexForCleanWorktreeOnly(t *testing.T) {
 	if len(dirty.Matches) != 1 || len(dirty.Matches[0].Incoming) != 2 {
 		t.Fatalf("dirty worktree edit not visible: %#v", dirty.Matches)
 	}
-	if _, err := os.Stat(filepath.Join(cacheDir, "search")); err != nil {
-		t.Fatalf("cache directory was never written: %v", err)
+	if _, err := os.Stat(filepath.Join(cacheDir, "search")); err == nil {
+		t.Fatal("worktree query wrote a cache entry")
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
 	}
 }

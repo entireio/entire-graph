@@ -13,10 +13,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
-	"time"
-
-	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
 // searchSnapshotCacheVersion names the on-disk cache directory and is hashed
@@ -38,12 +34,11 @@ type cachedSearchSnapshot struct {
 	Tree            string  `json:"tree"`
 	Profile         Profile `json:"profile"`
 	MaxParseBytes   int     `json:"max_parse_bytes"`
-	// Worktree records which view produced this entry. Working-tree snapshots
-	// carry provenance a committed-tree snapshot does not (W_WORKTREE_SNAPSHOT),
-	// so the two views never share an entry even when their content is equal.
-	// This became load-bearing when a clean working tree turned cacheable at all
-	// (worktreeSnapshotCacheable): before that, `options.Worktree` bypassed the
-	// cache outright and no working-tree entry could exist to collide.
+	// Worktree records which view produced this entry. Working-tree queries
+	// currently bypass this cache because safely proving raw worktree equality
+	// with HEAD cannot use Git's conversion-aware status machinery. Keep the
+	// discriminator so existing entries and any future safe implementation can
+	// never collide with committed-tree provenance.
 	Worktree bool             `json:"worktree,omitempty"`
 	Snapshot ProviderSnapshot `json:"snapshot"`
 	// FileRecord.Lines, SymbolRecord.Local, and exact symbol byte ranges are
@@ -73,99 +68,17 @@ type cachedSignatureTypes struct {
 	Returns string `json:"returns,omitempty"`
 }
 
-// worktreeCleanTTL bounds how stale a working-tree cleanliness verdict may be.
-// One command issues several snapshot lookups (graph scope, complete preindex,
-// selective build) and must not pay for a `git status` each time; a window this
-// short cannot span an edit that happens between two of them, while a
-// long-lived library consumer still re-checks on every new command.
-const worktreeCleanTTL = 2 * time.Second
-
-type worktreeCleanVerdict struct {
-	clean     bool
-	checkedAt time.Time
-}
-
-var worktreeCleanVerdicts sync.Map // absRepo -> worktreeCleanVerdict
-
-// absOrRepo resolves repo to an absolute path, falling back to the input when
-// that is impossible. It exists so a cleanliness verdict is memoized under the
-// same key the cache lookups use.
-func absOrRepo(repo string) string {
-	if abs, err := filepath.Abs(repo); err == nil {
-		return abs
-	}
-	return repo
-}
-
 // worktreeSnapshotCacheable reports whether these options may be served from,
 // and stored in, the tree-keyed snapshot cache.
 //
-// Committed-tree snapshots always could. A working-tree snapshot may too, but
-// only while the working tree's INDEXABLE content is identical to HEAD: then the
-// tree hash names that content exactly, which is the whole premise of the cache
-// key. This is what makes the relation verbs (neighbors/impact, which index the
-// whole repository) warm on their second call instead of re-indexing from
-// scratch — and it never hides a dirty edit, because a dirty indexable file
-// fails the check and bypasses the cache exactly as before.
-//
-// "Indexable" is the load-bearing word. Requiring a wholly pristine tree made a
-// stray untracked file that no parser ever opens — .DS_Store, a compiled binary,
-// a log, an editor swap file — disable the cache for the entire repository, so
-// every query re-indexed from scratch. A path that cannot contribute a symbol or
-// a relation cannot make a snapshot stale either, so it is not a reason to throw
-// one away.
-//
-// The test is extensionUnsupported, which is what the indexer uses to decide whether to PARSE a
-// file — but parsing is not the only way a file reaches the graph. buildManifestImportResolver
-// also reads the CONTENT of the repo-root manifests, and two of those (go.mod, setup.cfg) carry
-// no supported extension while deciding how every import in the repository resolves. Forgiving
-// them served a snapshot whose call edges were still resolved against the previous module path.
-// They are excluded by name through isManifestImportFile, and TestManifestImportFilesCoverReads
-// fails if that list falls behind the manifests actually read.
-//
-// Otherwise the rule is deliberately conservative in the safe direction: an extensionless path
-// counts as supported, because a shebang can make it a script, and any supported path still
-// bypasses the cache whatever its status.
-//
-// Ignored files never reach this loop: git status omits them, and the provider's walk skips them
-// too, so neither side can serve what the other would have indexed. Note the two do not agree in
-// general — git never ignores a TRACKED file, while the walk applies the ignore stack to every
-// path — but that disagreement only ever reports a path as dirty that the walk would have
-// skipped, which costs a re-index and cannot serve a stale one.
-func worktreeSnapshotCacheable(ctx context.Context, absRepo string, options ProviderSnapshotOptions) bool {
-	if !options.Worktree {
-		return true
-	}
-	if cached, ok := worktreeCleanVerdicts.Load(absRepo); ok {
-		verdict := cached.(worktreeCleanVerdict)
-		if time.Since(verdict.checkedAt) < worktreeCleanTTL {
-			return verdict.clean
-		}
-	}
-	clean := true
-	dirty, err := gitutil.WorktreeDirtyPaths(ctx, absRepo)
-	if err != nil {
-		clean = false
-	}
-	for _, path := range dirty {
-		if !extensionUnsupported(path) || isManifestImportFile(path) {
-			clean = false
-			break
-		}
-	}
-	worktreeCleanVerdicts.Store(absRepo, worktreeCleanVerdict{clean: clean, checkedAt: time.Now()})
-	return clean
-}
-
-// InvalidateWorktreeCleanVerdicts drops the memoized cleanliness verdicts. A
-// one-shot command never needs it (the memo cannot outlive the process), but a
-// long-lived embedder that has just written to a working tree can call it to
-// force the next query to re-check rather than wait out the TTL.
-func InvalidateWorktreeCleanVerdicts() {
-	worktreeCleanVerdicts.Range(func(key, _ any) bool {
-		worktreeCleanVerdicts.Delete(key)
-		return true
-	})
+// A committed tree is immutable and its tree hash names the indexed content.
+// A worktree is not: Git's convenient status/diff checks run clean/process
+// filters selected by repository attributes and config, so consulting them here
+// would execute code from the untrusted repository. Comparing raw, contained
+// worktree bytes safely needs a separate implementation. Until one exists,
+// conservatively rebuild every worktree snapshot.
+func worktreeSnapshotCacheable(_ context.Context, _ string, options ProviderSnapshotOptions) bool {
+	return !options.Worktree
 }
 
 // loadOrBuildSearchGraphSnapshot preserves the exact candidate-file scope even
@@ -871,11 +784,9 @@ func validCachedSearchSnapshot(cache cachedSearchSnapshot, repositoryKey, provid
 		cache.MaxParseBytes == options.MaxParseBytes &&
 		cache.Snapshot.Header.RepoKey == repositoryKey &&
 		// Both identity gates are required and neither implies the other: RepoKey
-		// separates two checkouts that share a tree hash, Worktree separates the two
-		// VIEWS of one checkout. A clean working tree is now cacheable
-		// (worktreeSnapshotCacheable), so a working-tree entry and a committed-tree
-		// entry can have the same repo, tree and profile while carrying different
-		// provenance (W_WORKTREE_SNAPSHOT) — without this they would collide.
+		// separates two checkouts that share a tree hash, while Worktree prevents
+		// legacy or future working-tree entries from colliding with committed-tree
+		// provenance.
 		cache.Worktree == options.Worktree &&
 		cache.Snapshot.Header.Tree == tree &&
 		cache.Snapshot.Header.Provider == ProviderName &&

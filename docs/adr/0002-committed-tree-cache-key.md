@@ -1,11 +1,10 @@
 # ADR 0002 — Committed-tree cache key: total over graph-shaping inputs
 
-Status: Accepted; partially superseded by
-[ADR 0003](0003-working-tree-search-snapshot-cache.md) (2026-08-16), which
-replaces only this document's "no change to working-tree mode / stays
-uncached" consequence for the search snapshot cache. The key-totality
-decision below is unchanged, and the working-tree bypass still holds for the
-provider records cache.
+Status: Accepted. [ADR 0003](0003-working-tree-search-snapshot-cache.md)
+temporarily replaced this document's "working-tree mode stays uncached"
+consequence for the search snapshot cache;
+[ADR 0004](0004-working-tree-cache-security-boundary.md) (2026-08-21) restores
+that bypass. The committed-tree key-totality decision below is unchanged.
 Date: 2026-07-28
 
 ## Context

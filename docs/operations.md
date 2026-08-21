@@ -60,8 +60,8 @@ entries.
 ### Two cache families
 
 - The **search snapshot cache** backs `search`, `neighbors`, `impact`, and
-  `index`. It caches both committed-tree (`--head`) and clean-working-tree
-  queries, in separate entries.
+  `index`. It caches committed-tree (`--head`) queries; working-tree queries
+  always bypass it.
 - The **provider records cache** backs the bulk streams (`snapshot`,
   `symbols`, `edges`). It is committed-tree only; `--worktree` streams always
   bypass it.
@@ -78,28 +78,18 @@ query builds a new entry; matching all of them is what "cache hit" means.
 [ADR 0002](adr/0002-committed-tree-cache-key.md) records why the key is total
 over graph-shaping inputs.
 
-### Working-tree reuse and dirtiness
+### Working-tree queries
 
-Interactive queries default to the working tree. A working-tree query is
-eligible for cache reuse only while the tree is effectively clean:
+Interactive queries default to the working tree and always build a fresh
+snapshot. They neither load nor store search-snapshot cache entries, even when
+the checkout is clean. Git's status/diff machinery cannot establish raw
+worktree equality safely here because it may run repository-selected clean or
+process filters.
 
-- Clean tree → the query reuses its cached snapshot (an identical rerun is a
-  hit).
-- A dirty or untracked path the graph can index, such as a supported source
-  extension, any extensionless file (it could be a shebang script), or a root
-  dependency manifest (`go.mod`, `package.json`, `tsconfig.json`,
-  `pyproject.toml`, `setup.cfg`, `Cargo.toml`, `composer.json`, or `pom.xml`),
-  disables reuse for the whole repository until the tree is clean again.
-- Dirty paths with known unsupported extensions that are not manifests (build
-  artifacts, archives, editor swap files) do not disable reuse.
-- If the working tree or `HEAD` cannot be inspected, including in a repository
-  with no commits, the query fails closed: it builds fresh and caches
-  nothing.
-
-Practical consequence: `init-agents` writes indexable Markdown, so a freshly
-activated repository loses clean-tree reuse until the activation files are
-committed. [ADR 0003](adr/0003-working-tree-search-snapshot-cache.md) records
-the working-tree eligibility decision.
+Use `--head` when committed-tree semantics are acceptable and repeated queries
+should reuse a cache entry. [ADR 0004](adr/0004-working-tree-cache-security-boundary.md)
+records the security decision; [ADR 0003](adr/0003-working-tree-search-snapshot-cache.md)
+is the superseded clean-tree reuse design.
 
 ### Prewarming with `index`
 
@@ -111,8 +101,7 @@ this easy to get wrong: `index` defaults to `--profile full` while `search`
 defaults to `--profile fast`, and `index` cannot warm the default
 working-tree path at all. To prewarm for the installed agent guide's
 committed-tree queries, `index`'s default profile is the right one, but the
-guide's queries use the working tree, so they only reuse cache while the tree is
-clean, as above.
+guide's queries use the working tree, so they do not reuse that entry.
 
 `index --report <path>` additionally writes a Markdown summary of the built
 graph for human review.
@@ -136,12 +125,11 @@ graph for human review.
 query per repository is cold because cache entries embed the provider version.
 Old entries simply stop matching and can be deleted at leisure.
 
-If queries rebuild on every run when you expect hits, check in order: a dirty
-or untracked indexable file (`git status`; remember extensionless files and
-root manifests count), a changed `.graphignore`, a profile mismatch between
-runs, and, for `def`/`explain`, a missing `--cache-dir`/
-`ENTIRE_PLUGIN_DATA_DIR`, since those two commands do not fall back to the
-per-user cache directory.
+Working-tree queries always rebuild. If a `--head` query rebuilds when you
+expect a hit, check in order: a changed committed tree or `.graphignore`, a
+profile mismatch between runs, and, for `def`/`explain`, a missing
+`--cache-dir`/`ENTIRE_PLUGIN_DATA_DIR`, since those two commands do not fall
+back to the per-user cache directory.
 
 ## Reports and the status line
 

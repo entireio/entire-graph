@@ -116,14 +116,12 @@ There is no removal command. To deactivate, delete
 lines, from `AGENTS.md` and `CLAUDE.md`. Delete `.entire/` or either instruction
 file only if it is otherwise empty.
 
-## Commit before you rely on the cache
+## Working-tree queries bypass the cache
 
-The three activation files are indexable Markdown. While any is untracked or
-modified, the working tree is dirty in a way the query cache respects. Default
-working-tree queries rebuild the graph instead of reusing a clean snapshot.
-Committing the activation files restores clean-tree cache reuse. Activation and
-a query benchmark should therefore not share one uncommitted checkout. See the
-[operations cache guide](operations.md#what-a-cache-entry-is-keyed-on).
+The interactive query family reads the working tree by default and rebuilds its
+snapshot on every query, whether or not the activation files are committed. Use
+`--head` when committed-tree semantics are acceptable and cache reuse matters.
+See the [operations cache guide](operations.md#working-tree-queries).
 
 ## Client notes
 
