@@ -1000,6 +1000,15 @@ func (r *LimitedFileReader) Prime(paths []string) error {
 		r.primed = make(map[string]primedLimitedFile, len(paths))
 	}
 	for start := 0; start < len(paths); {
+		// literalPathspecBatchEnd deliberately admits one over-limit first
+		// path so its callers always make progress. This reader can do better:
+		// leave that rare path unprimed and let ReadFile use the existing
+		// argv-safe one-shot bounded reader instead of exceeding this batch's
+		// command-line budget or rejecting a valid deep Git-tree path.
+		if len(":(literal)")+len(paths[start]) > literalPathspecBatchBytes {
+			start++
+			continue
+		}
 		end := literalPathspecBatchEnd(paths, start)
 		entries, err := treeEntryMetadataBatch(r.ctx, r.repo, r.rev, paths[start:end])
 		if err != nil {
@@ -1029,9 +1038,6 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 	for _, path := range paths {
 		if path == "" || strings.ContainsRune(path, 0) {
 			return nil, fmt.Errorf("invalid Git tree path %q", path)
-		}
-		if len(path) > literalPathOutputMaxPathBytes {
-			return nil, fmt.Errorf("git tree metadata input path exceeds %d bytes", literalPathOutputMaxPathBytes)
 		}
 		pathspecBytes += len(":(literal)") + len(path)
 		if pathspecBytes > literalPathspecBatchBytes {

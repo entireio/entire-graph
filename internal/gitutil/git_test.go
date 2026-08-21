@@ -915,13 +915,72 @@ func TestLimitedFileReaderKeepsRepoSubdirectoryPathsRelative(t *testing.T) {
 	}
 }
 
-func TestLimitedFileReaderBoundsMetadataPathspecs(t *testing.T) {
-	reader := NewLimitedFileReader(t.Context(), t.TempDir(), "HEAD", 1024)
-	path := strings.Repeat("x", literalPathOutputMaxPathBytes+1)
-	err := reader.Prime([]string{path})
-	if err == nil || !strings.Contains(err.Error(), "input path exceeds") {
-		t.Fatalf("oversized metadata path error = %v, want bounded-input rejection", err)
+func TestLimitedFileReaderPrimesDeepGitTreePath(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	tree, path := nestedGitTree(t, repo, "package deep\n", 25)
+	if len(path) <= literalPathOutputMaxPathBytes || len(":(literal)")+len(path) >= literalPathspecBatchBytes {
+		t.Fatalf("fixture path length = %d, want between output and batch limits", len(path))
 	}
+
+	reader := NewLimitedFileReader(t.Context(), repo, tree, 1024)
+	t.Cleanup(func() { _ = reader.Close() })
+	if err := reader.Prime([]string{path}); err != nil {
+		t.Fatal(err)
+	}
+	if _, primed := reader.primed[path]; !primed {
+		t.Fatal("valid deep Git-tree path was not metadata-primed")
+	}
+	result, err := reader.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != LimitedFileContent || result.Content != "package deep\n" {
+		t.Fatalf("deep Git-tree file = %#v, want exact content", result)
+	}
+}
+
+func TestLimitedFileReaderFallsBackForPathBeyondBatchArgvBound(t *testing.T) {
+	repo := t.TempDir()
+	// A bare repository avoids git show's pre-existing worktree-path stat for
+	// very long revision arguments and isolates the reader's fallback behavior.
+	git(t, repo, "init", "--bare")
+	tree, path := nestedGitTree(t, repo, "package fallback\n", 80)
+	if len(":(literal)")+len(path) <= literalPathspecBatchBytes {
+		t.Fatalf("fixture path length = %d, want beyond batch argv bound", len(path))
+	}
+
+	reader := NewLimitedFileReader(t.Context(), repo, tree, 1024)
+	t.Cleanup(func() { _ = reader.Close() })
+	if err := reader.Prime([]string{path}); err != nil {
+		t.Fatal(err)
+	}
+	if _, primed := reader.primed[path]; primed {
+		t.Fatal("over-bound path unexpectedly entered metadata batch")
+	}
+	result, err := reader.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != LimitedFileContent || result.Content != "package fallback\n" {
+		t.Fatalf("one-shot deep Git-tree file = %#v, want exact content", result)
+	}
+	if reader.content != nil {
+		t.Fatal("over-bound path started persistent content batch instead of one-shot fallback")
+	}
+}
+
+func nestedGitTree(t *testing.T, repo, content string, depth int) (tree, path string) {
+	t.Helper()
+	blob := gitInputOutput(t, repo, content, "hash-object", "-w", "--stdin")
+	tree = gitInputOutput(t, repo, fmt.Sprintf("100644 blob %s\tfile.go%c", blob, byte(0)), "mktree", "-z")
+	path = "file.go"
+	component := strings.Repeat("a", 200)
+	for range depth {
+		tree = gitInputOutput(t, repo, fmt.Sprintf("040000 tree %s\t%s%c", tree, component, byte(0)), "mktree", "-z")
+		path = component + "/" + path
+	}
+	return tree, path
 }
 
 // A ceiling no blob can reach must behave as no ceiling. This once guarded an
