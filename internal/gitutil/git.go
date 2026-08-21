@@ -976,6 +976,8 @@ type primedLimitedFile struct {
 	objectID string
 }
 
+const treeMetadataLiteralPrefix = ":(top,literal)"
+
 // NewLimitedFileReader creates a lazy reader. No Git process starts until Prime
 // or ReadFile, so an empty or extension-filtered range costs no subprocesses.
 // rev must be immutable when metadata and content consistency matters.
@@ -1000,16 +1002,14 @@ func (r *LimitedFileReader) Prime(paths []string) error {
 		r.primed = make(map[string]primedLimitedFile, len(paths))
 	}
 	for start := 0; start < len(paths); {
-		// literalPathspecBatchEnd deliberately admits one over-limit first
-		// path so its callers always make progress. This reader can do better:
-		// leave that rare path unprimed and let ReadFile use the existing
+		// Leave a rare over-limit path unprimed so ReadFile uses the existing
 		// argv-safe one-shot bounded reader instead of exceeding this batch's
 		// command-line budget or rejecting a valid deep Git-tree path.
-		if len(":(literal)")+len(paths[start]) > literalPathspecBatchBytes {
+		if len(treeMetadataLiteralPrefix)+len(paths[start]) > literalPathspecBatchBytes {
 			start++
 			continue
 		}
-		end := literalPathspecBatchEnd(paths, start)
+		end := treeMetadataBatchEnd(paths, start)
 		entries, err := treeEntryMetadataBatch(r.ctx, r.repo, r.rev, paths[start:end])
 		if err != nil {
 			return err
@@ -1025,6 +1025,41 @@ func (r *LimitedFileReader) Prime(paths []string) error {
 	return nil
 }
 
+// treeMetadataBatchEnd keeps each ls-tree invocation prefix-free as well as
+// count- and argv-bounded. Combining an ancestor tree path with one of its
+// descendants makes ls-tree recursively expand the ancestor; splitting them
+// preserves the command's one-record-per-exact-path memory bound.
+func treeMetadataBatchEnd(paths []string, start int) int {
+	end := start
+	pathspecBytes := 0
+	for end < len(paths) && end-start < literalPathspecBatchCount {
+		next := paths[end]
+		nextBytes := len(treeMetadataLiteralPrefix) + len(next)
+		if end > start && pathspecBytes+nextBytes > literalPathspecBatchBytes {
+			break
+		}
+		conflicts := false
+		for _, batched := range paths[start:end] {
+			if treePathsOverlap(batched, next) {
+				conflicts = true
+				break
+			}
+		}
+		if conflicts {
+			break
+		}
+		pathspecBytes += nextBytes
+		end++
+	}
+	return end
+}
+
+func treePathsOverlap(left, right string) bool {
+	return left == right ||
+		strings.HasPrefix(left, right+"/") ||
+		strings.HasPrefix(right, left+"/")
+}
+
 func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []string) (map[string]primedLimitedFile, error) {
 	if rev == "" || strings.HasPrefix(rev, "-") || strings.ContainsRune(rev, 0) {
 		return nil, fmt.Errorf("invalid treeish %q", rev)
@@ -1032,18 +1067,18 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 	if len(paths) > literalPathspecBatchCount {
 		return nil, fmt.Errorf("git tree metadata input exceeds %d paths", literalPathspecBatchCount)
 	}
-	args := []string{"ls-tree", "-z", "-l", rev, "--"}
+	args := []string{"ls-tree", "-z", "-l", "--full-name", rev, "--"}
 	known := make(map[string]struct{}, len(paths))
 	pathspecBytes := 0
 	for _, path := range paths {
 		if path == "" || strings.ContainsRune(path, 0) {
 			return nil, fmt.Errorf("invalid Git tree path %q", path)
 		}
-		pathspecBytes += len(":(literal)") + len(path)
+		pathspecBytes += len(treeMetadataLiteralPrefix) + len(path)
 		if pathspecBytes > literalPathspecBatchBytes {
 			return nil, fmt.Errorf("git tree metadata pathspecs exceed %d bytes", literalPathspecBatchBytes)
 		}
-		args = append(args, ":(literal)"+path)
+		args = append(args, treeMetadataLiteralPrefix+path)
 		known[path] = struct{}{}
 	}
 	out, err := run(ctx, repo, "git", args...)

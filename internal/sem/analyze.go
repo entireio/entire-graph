@@ -377,19 +377,13 @@ func resolveDiffTrees(
 	resolve func(context.Context, string, string) (string, error),
 ) (string, string, error) {
 	resolveTree := func(label string) (string, error) {
-		pinned, directErr := resolve(ctx, repo, label+"^{tree}")
-		if directErr == nil {
-			return pinned, nil
-		}
-		if ctx.Err() != nil {
-			return "", directErr
-		}
-		// A revision-path expression such as HEAD:subdir already names its
-		// result object; appending ^{tree} would instead become part of the
-		// path. Resolve that expression first, then peel the immutable OID.
+		// Resolve the caller's expression exactly before adding syntax of our
+		// own. Appending ^{tree} directly to HEAD:scope can select a different
+		// repository path literally named scope^{tree}; an immutable OID has no
+		// such revision/path ambiguity.
 		objectID, err := resolve(ctx, repo, label)
 		if err != nil {
-			return "", directErr
+			return "", err
 		}
 		return resolve(ctx, repo, objectID+"^{tree}")
 	}

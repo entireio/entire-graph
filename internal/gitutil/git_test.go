@@ -877,7 +877,7 @@ func TestLimitedFileReaderUsesObjectIDsForLineTerminators(t *testing.T) {
 	}
 }
 
-func TestLimitedFileReaderKeepsRepoSubdirectoryPathsRelative(t *testing.T) {
+func TestLimitedFileReaderKeepsRootPathsExactFromRepoSubdirectory(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
@@ -896,17 +896,17 @@ func TestLimitedFileReaderKeepsRepoSubdirectoryPathsRelative(t *testing.T) {
 
 	reader := NewLimitedFileReader(t.Context(), filepath.Join(repo, "scope"), "HEAD", 1024)
 	t.Cleanup(func() { _ = reader.Close() })
-	if err := reader.Prime([]string{"file.go", "missing.go"}); err != nil {
+	if err := reader.Prime([]string{"scope/file.go", "scope/missing.go"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := reader.ReadFile("file.go")
+	result, err := reader.ReadFile("scope/file.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Status != LimitedFileContent || result.Content != content {
-		t.Fatalf("subdirectory file = %#v, want cwd-relative content %q", result, content)
+		t.Fatalf("subdirectory file = %#v, want root-relative content %q", result, content)
 	}
-	missing, err := reader.ReadFile("missing.go")
+	missing, err := reader.ReadFile("scope/missing.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -915,11 +915,52 @@ func TestLimitedFileReaderKeepsRepoSubdirectoryPathsRelative(t *testing.T) {
 	}
 }
 
+func TestLimitedFileReaderSplitsAncestorAndDescendantPathspecs(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	if err := os.MkdirAll(filepath.Join(repo, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "dir", "file.go"), []byte("package dir\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "overlapping path fixture")
+
+	paths := []string{"dir", "dir/file.go"}
+	if end := treeMetadataBatchEnd(paths, 0); end != 1 {
+		t.Fatalf("first prefix-free batch ended at %d, want 1", end)
+	}
+	reader := NewLimitedFileReader(t.Context(), repo, "HEAD", 1024)
+	t.Cleanup(func() { _ = reader.Close() })
+	if err := reader.Prime(paths); err != nil {
+		t.Fatal(err)
+	}
+	if len(reader.primed) != 2 {
+		t.Fatalf("primed entries = %#v, want exactly ancestor and descendant", reader.primed)
+	}
+	if got := reader.primed["dir"].result.Status; got != LimitedFileNonBlob {
+		t.Fatalf("ancestor status = %v, want non-blob tree", got)
+	}
+	if got := reader.primed["dir/file.go"].result.Status; got != LimitedFileContent {
+		t.Fatalf("descendant status = %v, want blob content", got)
+	}
+	result, err := reader.ReadFile("dir/file.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != LimitedFileContent || result.Content != "package dir\n" {
+		t.Fatalf("descendant read = %#v, want exact content", result)
+	}
+}
+
 func TestLimitedFileReaderPrimesDeepGitTreePath(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
 	tree, path := nestedGitTree(t, repo, "package deep\n", 25)
-	if len(path) <= literalPathOutputMaxPathBytes || len(":(literal)")+len(path) >= literalPathspecBatchBytes {
+	if len(path) <= literalPathOutputMaxPathBytes || len(treeMetadataLiteralPrefix)+len(path) >= literalPathspecBatchBytes {
 		t.Fatalf("fixture path length = %d, want between output and batch limits", len(path))
 	}
 
@@ -946,7 +987,7 @@ func TestLimitedFileReaderFallsBackForPathBeyondBatchArgvBound(t *testing.T) {
 	// very long revision arguments and isolates the reader's fallback behavior.
 	git(t, repo, "init", "--bare")
 	tree, path := nestedGitTree(t, repo, "package fallback\n", 80)
-	if len(":(literal)")+len(path) <= literalPathspecBatchBytes {
+	if len(treeMetadataLiteralPrefix)+len(path) <= literalPathspecBatchBytes {
 		t.Fatalf("fixture path length = %d, want beyond batch argv bound", len(path))
 	}
 
