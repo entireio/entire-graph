@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
 func oversizedNestedIgnoreBody() string {
@@ -30,6 +32,21 @@ func initializeIgnorePolicyRepo(t *testing.T, repo string) string {
 	git(t, repo, "add", "-f", ".")
 	git(t, repo, "commit", "-m", "ignore policy fixture")
 	return rev(t, repo, "HEAD")
+}
+
+func stageUnmergedIgnorePath(t *testing.T, repo, candidate string) {
+	t.Helper()
+	blobs := []string{
+		gitInput(t, repo, "# base\n", "hash-object", "-w", "--stdin"),
+		gitInput(t, repo, "# ours\n", "hash-object", "-w", "--stdin"),
+		gitInput(t, repo, "# theirs\n", "hash-object", "-w", "--stdin"),
+	}
+	git(t, repo, "update-index", "--force-remove", "--", candidate)
+	var indexInfo strings.Builder
+	for index, blob := range blobs {
+		fmt.Fprintf(&indexInfo, "100644 %s %d\t%s%c", blob, index+1, candidate, byte(0))
+	}
+	gitInput(t, repo, indexInfo.String(), "update-index", "-z", "--index-info")
 }
 
 func wantIgnoreLimitError(t *testing.T, err error, file, limit string) {
@@ -102,6 +119,65 @@ func TestCommittedRootIgnoreLimitsAreReported(t *testing.T) {
 			}
 			wantIgnoreLimitError(t, err, ".gitignore", test.want)
 		})
+	}
+}
+
+func TestCommittedIgnoreReportsUnreadableBlob(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	knownBlob := gitInput(t, repo, "known\n", "hash-object", "-w", "--stdin")
+	missingOID := strings.Repeat("1", len(knownBlob))
+	tree := gitInput(
+		t,
+		repo,
+		fmt.Sprintf("100644 blob %s\t.gitignore%c", missingOID, byte(0)),
+		"mktree",
+		"-z",
+		"--missing",
+	)
+
+	reader := gitutil.NewLimitedFileReader(t.Context(), repo, tree, maxNestedIgnoreFileBytes)
+	t.Cleanup(func() { _ = reader.Close() })
+	if err := reader.Prime([]string{".gitignore"}); err != nil {
+		t.Fatalf("prime committed ignore reader: %v", err)
+	}
+	content, present, err := readCommittedIgnoreFile(reader, ".gitignore", ".gitignore", false)
+	if content != "" || present || err == nil {
+		t.Fatalf("unreadable committed ignore = (%q, %v, %v), want reported refusal", content, present, err)
+	}
+	if !strings.Contains(err.Error(), "Git blob object is unavailable or unreadable") {
+		t.Fatalf("unreadable committed ignore error = %q, want actionable blob error", err)
+	}
+	if strings.Contains(err.Error(), "unknown read status") {
+		t.Fatalf("unreadable committed ignore error = %q, want typed status handling", err)
+	}
+}
+
+func TestCommittedIgnoreReportsNonBlobTree(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	ignoreTree := gitInput(t, repo, "", "mktree", "-z")
+	keepBlob := gitInput(t, repo, "package keep\n", "hash-object", "-w", "--stdin")
+	tree := gitInput(
+		t,
+		repo,
+		fmt.Sprintf(
+			"040000 tree %s\t.gitignore%c100644 blob %s\tkeep.go%c",
+			ignoreTree,
+			byte(0),
+			keepBlob,
+			byte(0),
+		),
+		"mktree",
+		"-z",
+	)
+
+	opened, err := openSource(t.Context(), repo, tree, sourceOptions{})
+	if opened.close != nil {
+		defer opened.close()
+	}
+	if err == nil || !strings.Contains(err.Error(), `committed ignore file ".gitignore" is not a blob`) {
+		t.Fatalf("non-blob committed ignore error = %v, want actionable object-type refusal", err)
 	}
 }
 
@@ -252,6 +328,74 @@ func TestSearchReplayPolicyNestedBudgetIsFreshPerEvaluation(t *testing.T) {
 	for attempt := 0; attempt < 2; attempt++ {
 		if !policy.AllowsReplayPaths([]string{"vendor/keep/keep.go"}) {
 			t.Fatalf("replay attempt %d reused a spent nested-ignore budget", attempt+1)
+		}
+	}
+}
+
+func TestUnmergedNestedIgnoreHasProviderReplayParity(t *testing.T) {
+	repo := t.TempDir()
+	policy := parsedIgnoreRules(maxIgnoreParsedRules/2) + "*\n!.gitignore\n!mypkg/\n!mypkg/**\n"
+	writeFile(t, repo, "vendor/.gitignore", policy)
+	writeFile(t, repo, "vendor/mypkg/kept.go", "package kept\n")
+	initializeIgnorePolicyRepo(t, repo)
+	stageUnmergedIgnorePath(t, repo, "vendor/.gitignore")
+
+	ignores, err := loadWorktreeIgnoreMatcher(repo, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := worktreeSourceFiles(t.Context(), repo, ignores, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerAllows := false
+	for _, candidate := range paths {
+		if candidate == "vendor/mypkg/kept.go" {
+			providerAllows = true
+			break
+		}
+	}
+	if !providerAllows {
+		t.Fatalf("provider paths = %q, want vendored path re-admitted by nested policy", paths)
+	}
+
+	replay, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayAllows := replay.AllowsReplayPaths([]string{"vendor/mypkg/kept.go"})
+	if replayAllows != providerAllows {
+		t.Fatalf("replay allows vendored path = %v, provider = %v", replayAllows, providerAllows)
+	}
+}
+
+func TestCommittedSubdirectoryReadsRootAndNestedIgnoreFiles(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "bench/.gitignore", "vendor/*\n!vendor/rootpkg/\n!vendor/rootpkg/**\n")
+	writeFile(t, repo, "bench/vendor/rootpkg/root.go", "package rootpkg\n")
+	writeFile(t, repo, "bench/memory/.gitignore", "vendor/*\n!vendor/nestedpkg/\n!vendor/nestedpkg/**\n")
+	writeFile(t, repo, "bench/memory/vendor/nestedpkg/nested.go", "package nestedpkg\n")
+	revision := initializeIgnorePolicyRepo(t, repo)
+
+	opened, err := openSource(t.Context(), filepath.Join(repo, "bench"), revision, sourceOptions{})
+	if opened.close != nil {
+		defer opened.close()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		"vendor/rootpkg/root.go":            false,
+		"memory/vendor/nestedpkg/nested.go": false,
+	}
+	for _, candidate := range opened.paths {
+		if _, exists := want[candidate]; exists {
+			want[candidate] = true
+		}
+	}
+	for candidate, found := range want {
+		if !found {
+			t.Errorf("committed subdirectory paths = %q, missing %q", opened.paths, candidate)
 		}
 	}
 }

@@ -444,6 +444,54 @@ func TestBoundedNestedIgnorePathsReportOverflow(t *testing.T) {
 	}
 }
 
+func TestBoundedWorktreeNestedIgnorePathsDeduplicatesUnmergedStages(t *testing.T) {
+	repo := t.TempDir()
+	gitCmd(t, repo, "init")
+	gitCmd(t, repo, "config", "user.name", "T")
+	gitCmd(t, repo, "config", "user.email", "t@example.com")
+	// Keep the newline-bearing candidate where the filesystem supports it so
+	// this fixture covers both NUL-safe path handling and unmerged-stage
+	// deduplication. Windows uses an ordinary nested path, but the three-stage
+	// assertion below still makes its native deduplication check non-vacuous.
+	candidate := "odd\nname/.gitignore"
+	if runtime.GOOS == "windows" {
+		candidate = "ordinary/name/.gitignore"
+	}
+	write(t, repo, candidate, "# worktree policy\n")
+	gitCmd(t, repo, "add", candidate)
+	gitCmd(t, repo, "commit", "-m", "nested ignore")
+
+	blobs := []string{
+		gitInputOutput(t, repo, "# base\n", "hash-object", "-w", "--stdin"),
+		gitInputOutput(t, repo, "# ours\n", "hash-object", "-w", "--stdin"),
+		gitInputOutput(t, repo, "# theirs\n", "hash-object", "-w", "--stdin"),
+	}
+	gitCmd(t, repo, "update-index", "--force-remove", "--", candidate)
+	var indexInfo strings.Builder
+	for index, blob := range blobs {
+		fmt.Fprintf(&indexInfo, "100644 %s %d\t%s%c", blob, index+1, candidate, byte(0))
+	}
+	gitInputOutput(t, repo, indexInfo.String(), "update-index", "-z", "--index-info")
+
+	cmd := exec.Command("git", "ls-files", "-z", "--cached", "--", ":(glob)**/.gitignore")
+	cmd.Dir = repo
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git ls-files: %v\n%s", err, out)
+	}
+	if got := strings.Count(string(out), candidate+"\x00"); got != 3 {
+		t.Fatalf("unmerged fixture emitted %d copies of %q, want 3", got, candidate)
+	}
+
+	paths, err := BoundedWorktreeNestedIgnorePaths(t.Context(), repo, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{candidate}; !reflect.DeepEqual(paths, want) {
+		t.Fatalf("bounded unmerged nested-ignore paths = %q, want %q", paths, want)
+	}
+}
+
 func TestVisitWorktreePathsStreamsAndStopsAtVisitorBound(t *testing.T) {
 	repo := t.TempDir()
 	gitCmd(t, repo, "init")

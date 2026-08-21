@@ -284,7 +284,12 @@ func boundedNestedIgnorePaths(
 		return nil, fmt.Errorf("git nested-ignore candidates exceed %d paths", limit)
 	}
 	retainedBytes := 0
+	// An unmerged index emits the same pathname once per stage. Keep Git's
+	// first-seen byte order, but charge each exact candidate only once across
+	// both the eligible and optional ignored streams.
+	seen := make(map[string]struct{}, len(paths))
 	for _, retained := range paths {
+		seen[retained] = struct{}{}
 		retainedBytes += len(retained)
 	}
 	if retainedBytes > nestedIgnoreCandidateMaxAllBytes {
@@ -302,11 +307,15 @@ func boundedNestedIgnorePaths(
 		if include != nil && !include(candidate) {
 			return true
 		}
+		if _, duplicate := seen[candidate]; duplicate {
+			return true
+		}
 		if len(paths) >= limit || len(paths) >= nestedIgnoreCandidateMaxCount ||
 			len(candidate) > nestedIgnoreCandidateMaxAllBytes-retainedBytes {
 			exceeded = true
 			return false
 		}
+		seen[candidate] = struct{}{}
 		paths = append(paths, candidate)
 		retainedBytes += len(candidate)
 		return true
