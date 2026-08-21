@@ -1,4 +1,4 @@
-# Command reference
+# Command Reference
 
 Day to day, Entire Graph is driven by a coding agent following the guide that
 `init-agents` installs. The commands below are the same surface used directly

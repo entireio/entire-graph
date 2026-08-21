@@ -1,4 +1,4 @@
-# Captured agent session — gorilla/mux, Entire Graph v0.3.0
+# Captured Agent Session: gorilla/mux, Entire Graph v0.3.0
 
 This is the evidence record behind the transcript excerpted in the
 [root README](../../README.md). It contains the capture conditions, every
@@ -50,7 +50,7 @@ Agent text and tool commands are verbatim from the session stream.
 7. Tool call: `sed -n 40,120p route.go`
 8. Tool call: `grep -n "func.*Match\|matcher\b" route.go regexp.go | head -40`
 9. Agent: "One more focused read: the lowest-level matcher
-   `routeRegexp.Match`, plus a check for other callers of `Match` (e.g. the
+   `routeRegexp.Match`, plus a check for other callers of `Match` (e.g., the
    CORS middleware)."
 10. Tool call:
     `sed -n 185,225p regexp.go; grep -n "\.Match(" mux.go route.go middleware.go route_test.go mux_test.go 2>/dev/null | grep -v "_test"`
@@ -58,7 +58,7 @@ Agent text and tool commands are verbatim from the session stream.
 
 ## Graph outputs the agent received
 
-### Search (event 2) — leading excerpt
+### Search (event 2): leading excerpt
 
 The full response was 12,572 bytes of JSON, reproduced in its entirety in
 [Full search response](#full-search-response-event-2) below. Its opening,
@@ -81,7 +81,7 @@ path, is elided.) Rank 2 was `newRouteRegexp` (`regexp.go:41`). The response
 ended with `"index_cache_hit":true` in its `stats`, a `verify_command` of
 `go test . -run '^Test_newRouteRegexp_Errors$'`, and a completeness breakdown.
 
-### Impact on `Route.Match` (event 3) — verbatim
+### Impact on `Route.Match` (event 3): verbatim
 
 ```text
 Index: cache-hit (60ms) | Query: 0ms | Total: 61ms
@@ -132,7 +132,7 @@ final answer: both real call sites (`mux.go:153`, `middleware.go:79`) invoke
 `Route.Match` through a loop over an interface value, which static call
 resolution does not attribute to this method.
 
-### Impact on `Router.Match` (event 4) — verbatim
+### Impact on `Router.Match` (event 4): verbatim
 
 ```text
 Index: cache-hit (49ms) | Query: 0ms | Total: 50ms
@@ -555,7 +555,7 @@ scratch path the capture ran in.
 }
 ```
 
-## Final answer — verbatim
+## Final answer: verbatim
 
 > Route matching in this repo (a checkout of `gorilla/mux`) is implemented in
 > three layers, dispatched from `Router.ServeHTTP`. Here's the map, verified
@@ -563,16 +563,16 @@ scratch path the capture ran in.
 >
 > **Where matching is implemented**
 >
-> **1. `Router.Match` — `mux.go:151-182`.** The top-level entry: it iterates
+> **1. `Router.Match`: `mux.go:151-182`.** The top-level entry: it iterates
 > the registered routes in order, returns on the first `route.Match` success,
 > wraps the matched handler in the router's middleware chain (only when
 > `match.MatchErr == nil`), and otherwise falls back to
 > `MethodNotAllowedHandler` (on `ErrMethodMismatch`) or
 > `NotFoundHandler`/`ErrNotFound`.
 >
-> **2. `Route.Match` — `route.go:47-114`.** The per-route logic: it runs every
+> **2. `Route.Match`: `route.go:47-114`.** The per-route logic: it runs every
 > registered `matcher` against the request (`route.go:56`), with special-case
-> error handling — a failed `methodMatcher` records `ErrMethodMismatch` but
+> error handling: a failed `methodMatcher` records `ErrMethodMismatch` but
 > keeps going, a failed query-type `routeRegexp` produces `ErrNotFound`, and
 > subrouter `ErrNotFound`s are cleared so later siblings still run middleware.
 > On success it fills `match.Route`/`match.Handler` and calls
@@ -581,7 +581,7 @@ scratch path the capture ran in.
 >
 > **3. The `matcher` implementations** behind the interface at `route.go:234`:
 >
-> - `routeRegexp.Match` — `regexp.go:189-209`, the core host/path/query regexp
+> - `routeRegexp.Match`: `regexp.go:189-209`, the core host/path/query regexp
 >   test (path cleaning vs. `useEncodedPath` handled here). The regexps
 >   themselves are built by `newRouteRegexp` (`regexp.go:41-165`), which the
 >   graph search surfaced first, and attached via
@@ -593,7 +593,7 @@ scratch path the capture ran in.
 >
 > **What calls it**
 >
-> - `Router.ServeHTTP` (`mux.go:203`) — the only direct caller of
+> - `Router.ServeHTTP` (`mux.go:203`): the only direct caller of
 >   `Router.Match` per `entire graph impact`, and the path every HTTP request
 >   takes. After matching it injects the route, vars, and router into the
 >   request context (`mux.go:206-215`).
@@ -604,27 +604,27 @@ scratch path the capture ran in.
 > - `Router.Match` is exported public API, so downstream applications can call
 >   it directly too. (One graph caveat I verified by hand:
 >   `entire graph impact --symbol Route.Match` reports 0 callers because both
->   call sites go through a loop/interface — the real callers are `mux.go:153`
+>   call sites go through a loop/interface: the real callers are `mux.go:153`
 >   and `middleware.go:79`.)
 >
 > **Blast radius if matching behavior changes**
 >
 > - **Every request dispatch**: handler selection, 404 vs. 405 responses, and
 >   whether middleware runs at all (`Router.Match` only wraps middleware when
->   `MatchErr` is nil — the subtle error-clearing logic in `Route.Match`
+>   `MatchErr` is nil: the subtle error-clearing logic in `Route.Match`
 >   exists precisely to keep sibling subrouters' middleware working).
 > - **Route variables**: `mux.Vars()` values come from `setMatch` at the end
 >   of `Route.Match`; changes there ripple into any handler reading vars from
 >   context.
 > - **URL reversing**: `newRouteRegexp` builds both the match pattern and the
 >   `reverse` template consumed by `routeRegexp.url` (`regexp.go:211`), so
->   `Route.URL`/`URLPath`/`URLHost` are coupled to the same code — a matching
+>   `Route.URL`/`URLPath`/`URLHost` are coupled to the same code: a matching
 >   change can silently break URL building.
 > - **CORS middleware** output, via `getAllMethodsForRoute` as above.
 > - **Historically coupled files** (graph co-change data): `mux.go`,
 >   `route.go`, and `regexp.go` change together frequently, with `mux_test.go`
 >   (23 co-commits), `old_test.go`, and `regexp_test.go` as the test surfaces
->   most likely to need updating — `go test .` over those is the right
+>   most likely to need updating: `go test .` over those is the right
 >   verification for any change here. Per your request I changed nothing and
 >   ran nothing mutating.
 

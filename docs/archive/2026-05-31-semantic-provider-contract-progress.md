@@ -23,7 +23,7 @@ Branch: `semantic-provider-contract`
 - Added initial relation extraction for `DEFINES`, `CONTAINS`, `IMPORTS`, `CALLS`, `HANDLES_ROUTE`, and `HANDLES_TOOL`.
 - Added provider and CLI tests for JSON and NDJSON command output.
 
-## Current Validation
+## Current validation
 
 - `go test ./...` passed.
 - Smoke-tested:
@@ -38,7 +38,7 @@ Branch: `semantic-provider-contract`
 - Ran `entire review`; it exited successfully with no output.
 - Re-ran `go test ./...` after `entire review`; it passed.
 
-## Review Follow-Up
+## Review follow-up
 
 - Inspected `../cli/docs/architecture/review-command.md` and `entire review --help` to verify the canonical review flow.
 - Re-ran `entire review --base origin/main`; both configured reviewers completed successfully:

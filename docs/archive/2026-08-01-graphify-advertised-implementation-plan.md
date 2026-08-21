@@ -12,7 +12,7 @@
 
 **Tech Stack:** Go 1.24, `encoding/json`, tree-sitter provider pipeline, existing `internal/sem` and `internal/cli` packages, Go `testing`, `cmd/graph-bench`.
 
-## Global Constraints
+## Global constraints
 
 - Work from base commit `90a3346a624d76f7fee21bd894721e5438dd9ac2` and preserve unrelated worktree changes.
 - Keep all processing local-only and no-egress; do not add hosted services, embeddings, telemetry upload, or runtime downloads.
@@ -43,49 +43,49 @@
 
 ---
 
-## File Structure
+## File structure
 
 ### Files to create
 
-- `internal/sem/search_constraints.go` — bounded entity/phrase parsing and same-candidate agreement bonuses.
-- `internal/sem/search_constraints_test.go` — pure parser, phrase-order, subject-agreement, bonus bounds, truncation, and end-to-end search tests.
-- `internal/sem/search_preselection.go` — deterministic evidence fusion, progressive pass evaluation, and widening decision.
-- `internal/sem/search_preselection_test.go` — confidence/coverage/diversity and deterministic widening tests.
-- `internal/sem/compact_snapshot.go` — version-1 dictionary-backed positional compact NDJSON encoder/decoder and canonical semantic hasher.
-- `internal/sem/compact_snapshot_test.go` — schema validation, dictionary accounting, semantic-hash/projection equivalence, determinism, and size tests.
-- `internal/sem/compact_snapshot_query.go` — production compact snapshot loader, deterministic indexes, and exact symbol/relation query API.
-- `internal/sem/compact_snapshot_query_test.go` — load, hash, projection, and deterministic query tests.
-- `internal/cli/snapshot_query.go` — `snapshot-query` command that consumes compact artifacts through the production loader.
-- `internal/cli/snapshot_query_test.go` — command validation and load/query integration tests.
-- `internal/bench/compact_preflight.go` — post-timing native/compact artifact construction, load/query validation, and exact size metrics.
-- `internal/bench/compact_preflight_test.go` — preflight consumer-path, dictionary-byte, hash, projection, and bytes-per-fact tests.
-- `internal/sem/provider_parse_batch.go` — conditional bounded parallel parse batching, created only after the Task 6 gate passes.
-- `internal/sem/provider_parse_batch_test.go` — ordering, concurrency cap, cancellation, semantic equivalence, and determinism tests for the selected optimization.
+- `internal/sem/search_constraints.go`: bounded entity/phrase parsing and same-candidate agreement bonuses.
+- `internal/sem/search_constraints_test.go`: pure parser, phrase-order, subject-agreement, bonus bounds, truncation, and end-to-end search tests.
+- `internal/sem/search_preselection.go`: deterministic evidence fusion, progressive pass evaluation, and widening decision.
+- `internal/sem/search_preselection_test.go`: confidence/coverage/diversity and deterministic widening tests.
+- `internal/sem/compact_snapshot.go`: version-1 dictionary-backed positional compact NDJSON encoder/decoder and canonical semantic hasher.
+- `internal/sem/compact_snapshot_test.go`: schema validation, dictionary accounting, semantic-hash/projection equivalence, determinism, and size tests.
+- `internal/sem/compact_snapshot_query.go`: production compact snapshot loader, deterministic indexes, and exact symbol/relation query API.
+- `internal/sem/compact_snapshot_query_test.go`: load, hash, projection, and deterministic query tests.
+- `internal/cli/snapshot_query.go`: `snapshot-query` command that consumes compact artifacts through the production loader.
+- `internal/cli/snapshot_query_test.go`: command validation and load/query integration tests.
+- `internal/bench/compact_preflight.go`: post-timing native/compact artifact construction, load/query validation, and exact size metrics.
+- `internal/bench/compact_preflight_test.go`: preflight consumer-path, dictionary-byte, hash, projection, and bytes-per-fact tests.
+- `internal/sem/provider_parse_batch.go`: conditional bounded parallel parse batching, created only after the Task 6 gate passes.
+- `internal/sem/provider_parse_batch_test.go`: ordering, concurrency cap, cancellation, semantic equivalence, and determinism tests for the selected optimization.
 
 ### Files to modify
 
-- `internal/sem/search.go` — retain raw query, expose constraint truncation stats, apply constraints, and call the progressive selector.
-- `internal/sem/search_test.go` — preserve full-preindex, top-K, and existing unquoted-query contracts.
-- `internal/sem/search_cache_test.go` — prove cold/warm and selective/full results remain equivalent after progressive preselection.
-- `internal/sem/provider.go` — typed phases, phase-local duration, inventory coverage, compact capability discovery, and gated parse-batch integration.
-- `internal/sem/provider_test.go` — typed phase ordering and current NDJSON compatibility tests.
-- `internal/sem/golden_test.go` — compare compact-decoded records with deterministic current provider records.
-- `internal/sem/records_cache.go` — no algorithm change; accept the CLI-provided compact cache mode as a distinct hashed mode.
-- `internal/sem/records_cache_test.go` — prove NDJSON and compact cache entries cannot collide.
-- `internal/cli/root.go` — accept `compact-ndjson` for snapshot only, stream through the compact encoder, and register `snapshot-query`.
-- `internal/cli/root_test.go` — CLI validation, default NDJSON compatibility, compact round trip, and cache reuse.
-- `internal/bench/bench.go` — collect per-phase milliseconds, run compact preflight after cold timing, and aggregate exact artifact metrics.
-- `internal/bench/bench_test.go` — deterministic phase reduction, preflight failure propagation, and report aggregation tests.
-- `cmd/graph-bench/main.go` — print phase totals/shares already present in benchmark report data.
-- `cmd/graph-bench/main_test.go` — profile JSON and summary-output coverage.
-- `README.md` — advertise the additional snapshot format without changing the current NDJSON example.
-- `docs/DETAILS.md` — document compact schema versioning, dictionaries, canonical hashing, load/query behavior, and decode equivalence.
-- `docs/semantic_provider_requirements.md` — add the lossless compact artifact contract, deterministic query contract, and phase taxonomy.
-- `docs/benchmarks.md` — document post-timing preflight, exact raw-byte accounting, bytes per projected fact, phase metrics, profiling commands, and the optimization decision gate.
+- `internal/sem/search.go`: retain raw query, expose constraint truncation stats, apply constraints, and call the progressive selector.
+- `internal/sem/search_test.go`: preserve full-preindex, top-K, and existing unquoted-query contracts.
+- `internal/sem/search_cache_test.go`: prove cold/warm and selective/full results remain equivalent after progressive preselection.
+- `internal/sem/provider.go`: typed phases, phase-local duration, inventory coverage, compact capability discovery, and gated parse-batch integration.
+- `internal/sem/provider_test.go`: typed phase ordering and current NDJSON compatibility tests.
+- `internal/sem/golden_test.go`: compare compact-decoded records with deterministic current provider records.
+- `internal/sem/records_cache.go`: no algorithm change; accept the CLI-provided compact cache mode as a distinct hashed mode.
+- `internal/sem/records_cache_test.go`: prove NDJSON and compact cache entries cannot collide.
+- `internal/cli/root.go`: accept `compact-ndjson` for snapshot only, stream through the compact encoder, and register `snapshot-query`.
+- `internal/cli/root_test.go`: CLI validation, default NDJSON compatibility, compact round trip, and cache reuse.
+- `internal/bench/bench.go`: collect per-phase milliseconds, run compact preflight after cold timing, and aggregate exact artifact metrics.
+- `internal/bench/bench_test.go`: deterministic phase reduction, preflight failure propagation, and report aggregation tests.
+- `cmd/graph-bench/main.go`: print phase totals/shares already present in benchmark report data.
+- `cmd/graph-bench/main_test.go`: profile JSON and summary-output coverage.
+- `README.md`: advertise the additional snapshot format without changing the current NDJSON example.
+- `docs/DETAILS.md`: document compact schema versioning, dictionaries, canonical hashing, load/query behavior, and decode equivalence.
+- `docs/semantic_provider_requirements.md`: add the lossless compact artifact contract, deterministic query contract, and phase taxonomy.
+- `docs/benchmarks.md`: document post-timing preflight, exact raw-byte accounting, bytes per projected fact, phase metrics, profiling commands, and the optimization decision gate.
 
 ---
 
-### Task 1: Add bounded entity and ordered-phrase agreement scoring
+### Task 1: add bounded entity and ordered-phrase agreement scoring
 
 **Files:**
 - Create: `internal/sem/search_constraints.go`
@@ -266,7 +266,7 @@ git commit -m "feat(search): add bounded entity and phrase agreement"
 
 ---
 
-### Task 2: Add deterministic progressive preselection and evidence fusion
+### Task 2: add deterministic progressive preselection and evidence fusion
 
 **Files:**
 - Create: `internal/sem/search_preselection.go`
@@ -404,7 +404,7 @@ git commit -m "feat(search): widen cold preselection deterministically"
 
 ---
 
-### Task 3: Add the lossless, deterministic, queryable compact snapshot artifact
+### Task 3: add the lossless, deterministic, queryable compact snapshot artifact
 
 **Files:**
 - Create: `internal/sem/compact_snapshot.go`
@@ -561,7 +561,7 @@ git commit -m "feat(snapshot): add queryable compact ndjson v1"
 
 ---
 
-### Task 4: Expose compact snapshot production and query commands without changing NDJSON
+### Task 4: expose compact snapshot production and query commands without changing NDJSON
 
 **Files:**
 - Modify: `internal/cli/root.go:256-396` (`runProviderRecords`)
@@ -660,7 +660,7 @@ git commit -m "feat(cli): expose compact snapshot ndjson"
 
 ---
 
-### Task 5: Add typed cold-build phases and benchmark phase metrics
+### Task 5: add typed cold-build phases and benchmark phase metrics
 
 **Files:**
 - Modify: `internal/sem/provider.go:318-355` (`ProviderSnapshotOptions`, `ProgressEvent`)
@@ -780,7 +780,7 @@ git commit -m "feat(bench): report typed cold build phases"
 
 ---
 
-### Task 6: Profile first and enforce the optimization decision gate
+### Task 6: profile first and enforce the optimization decision gate
 
 **Files:**
 - No product-code changes before the gate.
@@ -849,7 +849,7 @@ git commit -m "docs(bench): record cold parse optimization gate"
 
 ---
 
-#### Conditional Task 6 continuation: implement the one selected cold optimization — bounded parallel parsing
+#### Conditional task 6 continuation: implement the one selected cold optimization: bounded parallel parsing
 
 **Precondition:** Execute these steps only when every gate condition above passed. These steps are invalid without that evidence.
 
@@ -970,7 +970,7 @@ git commit -m "perf(provider): parallelize bounded cold parsing"
 
 ---
 
-### Task 7: Final compatibility and advertised-contract verification
+### Task 7: final compatibility and advertised-contract verification
 
 **Files:**
 - Verify all files changed by Tasks 1–6.
@@ -1036,6 +1036,6 @@ git commit -m "docs: align graphify advertised contracts"
 
 ---
 
-## Execution Handoff
+## Execution handoff
 
 Plan complete. Execute Tasks 1–5 in order, run the Task 6 profile gate, and execute its conditional optimization only when every gate condition passes. Task 7 verification is required in either branch. Use subagent-driven development for isolated review gates or execute inline with checkpoints before the Task 6 decision.

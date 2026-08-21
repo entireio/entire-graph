@@ -15,12 +15,12 @@ systems used zero build-time LLM credits. Codebase Memory MCP is present in the
 release as an off-domain native diagnostic: v0.9.0 indexes the Markdown content
 as `Section` nodes but excludes that node type from its public natural-language
 BM25 route, so its column is not a third apples-to-apples memory comparison. On
-that route it retrieved nothing at all — all 1,050 CMM cells returned a
+that route it retrieved nothing at all: all 1,050 CMM cells returned a
 byte-identical empty context (24 bytes, zero hits), so its QA number is the
 shared reader answering from the question alone.
 
 Those 300 + 50 cases are not tune-disjoint: 35 of the 350 overlap the tune
-phase. The tune-disjoint holdout is the clean generalization estimate — Entire
+phase. The tune-disjoint holdout is the clean generalization estimate. Entire
 Graph scored 75.6% LOCOMO QA accuracy and 0.900 recall@10 on it (n=30; the
 LongMemEval-S holdout is n=5).
 
@@ -59,8 +59,8 @@ sources: [`UPSTREAM.md`](../bench/memory/UPSTREAM.md).
 
 entire-graph ranks first at **94.74**; the margin over the strongest inference-built competitor
 (mem0 OSS, 93.83) is **+0.91pp** and does not clear statistical significance (McNemar *p* = 0.125).
-The margin over a BM25 lexical baseline built at identical zero cost — **+2.86pp at *p* =
-5.7×10⁻⁷** — does, and is the one accuracy result in this comparison not in statistical doubt.
+The margin over a BM25 lexical baseline built at identical zero cost (**+2.86pp at *p* =
+5.7×10⁻⁷**) does, and is the one accuracy result in this comparison not in statistical doubt.
 Index-time cost is directly metered, not estimated: entire-graph builds its index with **zero**
 model calls against mem0's measured 50.85 million tokens, a cost paid again on every corpus
 revision.
@@ -73,13 +73,13 @@ Full table, per-category breakdown, retractions, and reproduction steps:
 ## Running
 
 ```sh
-# Pin repo commits once (writes bench/repos.lock.json) — commit the result.
+# Pin repo commits once (writes bench/repos.lock.json), then commit the result.
 go run ./cmd/graph-bench -update-lock
 
-# Fast tier — routine per-phase tracking (minutes):
+# Fast tier: routine per-phase tracking (minutes):
 go run ./cmd/graph-bench -manifest bench/repos.fast.json
 
-# Full tier — all 24 languages x 10 repos (slow; includes mega-repos):
+# Full tier: all 24 languages x 10 repos (slow; includes mega-repos):
 go run ./cmd/graph-bench
 
 # Quick subset / offline:
@@ -107,13 +107,13 @@ Each profile measures the production streaming path at a different depth. Small
 or medium runs make the trade-off visible:
 
 ```sh
-# syntax-only — fastest; symbol inventory + structure only.
+# syntax-only: fastest; symbol inventory + structure only.
 go run ./cmd/graph-bench -profile syntax-only -languages Go -limit 3
 
-# fast — symbols, imports, shallow calls, boundaries, IaC; no deep relations.
+# fast: symbols, imports, shallow calls, boundaries, IaC; no deep relations.
 go run ./cmd/graph-bench -profile fast -languages Go,Python -limit 5
 
-# full — the complete relation graph (default).
+# full: the complete relation graph (default).
 go run ./cmd/graph-bench -profile full -languages Go,Python,TypeScript -limit 5
 ```
 
@@ -199,7 +199,7 @@ language and overall):
 
 The streaming path's only relation-count-scaled memory is the dedup set (one
 compact 64-bit key per unique relation), so its entry count equals the reported
-unique `relations` total — no separate dedup-count metric is emitted because
+unique `relations` total. No separate dedup-count metric is emitted, because
 `relations` already measures it.
 
 ## Findings to date (historical, pre-streaming)
@@ -210,7 +210,7 @@ Treat the numbers as historical; re-run with the current streaming benchmark
 (and a named profile) for current figures.
 
 - **Route over-firing.** An early run showed gin emitting 1039 `HANDLES_ROUTE`
-  edges — every path-like string literal counted as a route. Requiring routing
+  edges: every path-like string literal counted as a route. Requiring routing
   context on the literal's line cut that to 206 (real registrations only).
 - **C/C++ throughput used to be the floor.** Early C/C++ runs parsed at
   ~1.5–3.5k LOC/s because HEAD snapshots spawned `git show` once per file and
@@ -233,7 +233,7 @@ Treat the numbers as historical; re-run with the current streaming benchmark
   their evidence, or file contents in memory. Peak memory is instead bounded by
   the symbol/index metadata plus a compact relation dedup set (one 64-bit key
   per unique relation). That dedup set still scales with the count of unique
-  relations — it is the remaining relation-count-scaled component — but at a
+  relations (it is the remaining relation-count-scaled component), but at a
   tiny constant per relation rather than the full payload, which is what kept
   the in-memory path from finishing on the largest repos.
 

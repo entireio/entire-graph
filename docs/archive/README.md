@@ -1,4 +1,4 @@
-# Documentation archive
+# Documentation Archive
 
 Files in this directory record completed or superseded work. They are retained
 for provenance, not as current product documentation. Use the [current

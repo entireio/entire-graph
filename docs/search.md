@@ -1,4 +1,4 @@
-# Search results and ranking
+# Search Results and Ranking
 
 `entire graph search` turns a plain-language task description into ranked
 source regions. This page describes what comes back and how to read it,

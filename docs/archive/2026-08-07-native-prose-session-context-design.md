@@ -1,4 +1,4 @@
-# Native prose-session context design
+# Native Prose-Session Context Design
 
 > [!WARNING]
 > Archived on 2026-08-13. This design records an implemented change and is not

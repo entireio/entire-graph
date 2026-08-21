@@ -1,4 +1,4 @@
-# ADR 0001 — GA semantic-provider schema contract
+# ADR 0001: GA Semantic-Provider Schema Contract
 
 Status: Accepted
 Date: 2026-07-03

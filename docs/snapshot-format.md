@@ -1,4 +1,4 @@
-# Snapshot format
+# Snapshot Format
 
 This page is the canonical description of the NDJSON artifacts emitted by
 `snapshot`, `symbols`, and `edges`, the compact snapshot variant, and the
@@ -47,9 +47,9 @@ unique relation. The stream is emitted in this order:
 **The first header is intentionally lean.** It carries identity (`provider`,
 `provider_version`, `repo_root`, `repo_key`, `commit`, `tree`),
 `schema_version`, `capabilities`, `schema_features`, `language_versions`, and
-the **profile metadata** — `profile`, `profile_limits`, `relation_set`, and
+the **profile metadata**: `profile`, `profile_limits`, `relation_set`, and
 `skipped_relation_families`. Its `languages`, `language_tiers`, `warnings`,
-`partial_failures`, `stats`, and `completeness` are empty/zero — those totals
+`partial_failures`, `stats`, and `completeness` are empty/zero. Those totals
 are not known until the whole repository has been processed, and the header
 is emitted before that so consumers can begin work immediately. The profile
 metadata is **header-only**: it is known up front and is therefore not
@@ -66,7 +66,7 @@ unless a future schema version adds it.
 **Merging the two.** A consumer that wants one fully populated header should
 take the lean header and overlay the summary's aggregate fields (`languages`,
 `language_tiers`, `warnings`, `partial_failures`, `stats`, `completeness`) on
-top of it — summary wins for any field both records carry, the header wins
+top of it: summary wins for any field both records carry, the header wins
 for the profile metadata the summary omits. For any aggregate total,
 including per-language tier, read the summary, never the lean header.
 

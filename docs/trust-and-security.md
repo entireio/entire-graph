@@ -1,4 +1,4 @@
-# Trust and security
+# Trust and Security
 
 This page states what Entire Graph reads, writes, executes, and sends over the
 network, scoped precisely enough to be checked. Statements match the 0.4.0

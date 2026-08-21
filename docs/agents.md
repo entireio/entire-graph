@@ -1,4 +1,4 @@
-# Agent activation
+# Agent Activation
 
 This page is the reference for `entire graph init-agents`: what it writes, how
 reruns behave, how Claude inheritance is handled, how to verify that a coding

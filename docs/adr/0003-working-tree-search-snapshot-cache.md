@@ -1,8 +1,8 @@
-# ADR 0003 — Working-tree search-snapshot cache: clean-tree eligibility
+# ADR 0003: Working-Tree Search-Snapshot Cache (Clean-Tree Eligibility)
 
 Status: Accepted
 Date: 2026-08-16
-Partially supersedes: [ADR 0002](0002-committed-tree-cache-key.md) — only its
+Partially supersedes: [ADR 0002](0002-committed-tree-cache-key.md): only its
 "working-tree mode stays uncached" consequence. ADR 0002's committed-tree
 key-totality decision is unchanged and remains authoritative for cache
 identity.
@@ -13,8 +13,8 @@ ADR 0002 recorded, as an explicit non-goal, that working-tree query mode
 stayed uncached: "dirty state has no durable key." That held for the provider
 records cache and still does. For the interactive query family it produced a
 bad default experience: `search`, `neighbors`, and `impact` read the working
-tree by default, so the common case — an agent issuing several queries against
-an unchanged checkout — paid a full graph rebuild per query.
+tree by default, so the common case: an agent issuing several queries against
+an unchanged checkout: paid a full graph rebuild per query.
 
 The observation that unlocked caching is that a *clean* working tree does have
 a durable key: it is content-identical to the committed `HEAD` tree, whose
@@ -30,10 +30,10 @@ under these rules, implemented in `worktreeSnapshotCacheable` and
 `searchSnapshotKey` (`internal/sem/search_cache.go`):
 
 1. **Separate identity for working-tree entries.** The key covers everything
-   ADR 0002 made total — cache version, checkout path, repository identity,
+   ADR 0002 made total: cache version, checkout path, repository identity,
    provider version, `HEAD` tree hash, profile, parse-size limit, resolved
    file cap, file-subset selection, ordered ignore/include paths and
-   contents, and `.graphignore` contents — plus a `worktree` marker term.
+   contents, and `.graphignore` contents, plus a `worktree` marker term.
    The on-disk envelope stores a `worktree` field that is revalidated on
    load, so a working-tree entry and a `--head` entry for the same tree never
    serve each other.
@@ -44,9 +44,9 @@ under these rules, implemented in `worktreeSnapshotCacheable` and
      for the query;
    - any dirty extensionless path disables it (it could be a shebang script
      the graph would index);
-   - any dirty root dependency manifest used for import resolution —
-     `go.mod`, `package.json`, `tsconfig.json`, `pyproject.toml`,
-     `setup.cfg`, `Cargo.toml`, `composer.json`, `pom.xml` — disables it,
+   - any dirty root dependency manifest used for import resolution
+     (`go.mod`, `package.json`, `tsconfig.json`, `pyproject.toml`,
+     `setup.cfg`, `Cargo.toml`, `composer.json`, `pom.xml`) disables it,
      regardless of extension support;
    - dirty paths with known unsupported extensions that are not manifests do
      not disable caching.

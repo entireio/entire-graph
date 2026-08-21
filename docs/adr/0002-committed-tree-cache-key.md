@@ -1,4 +1,4 @@
-# ADR 0002 — Committed-tree cache key: total over graph-shaping inputs
+# ADR 0002: Committed-Tree Cache Key (Total over Graph-Shaping Inputs)
 
 Status: Accepted; partially superseded by
 [ADR 0003](0003-working-tree-search-snapshot-cache.md) (2026-08-16), which
@@ -14,14 +14,14 @@ Date: 2026-07-28
 
 | cache | key | consumers | on by default? |
 |---|---|---|---|
-| search snapshot (`internal/sem/search_cache.go`, `searchSnapshotKey`) | `<cacheDir>/search/…/<sha256>.json.gz` | `search`, `neighbors`, `impact`, `index` | no — `searchFlags{Worktree: true}`, so only `--head` |
-| provider records (`internal/sem/records_cache.go`, `providerRecordsKey`) | `<cacheDir>/records/…/<sha256>.json.gz` | whole-graph `snapshot`, `symbols`, `edges` | yes — those commands default to committed-tree |
+| search snapshot (`internal/sem/search_cache.go`, `searchSnapshotKey`) | `<cacheDir>/search/…/<sha256>.json.gz` | `search`, `neighbors`, `impact`, `index` | no, `searchFlags{Worktree: true}`, so only `--head` |
+| provider records (`internal/sem/records_cache.go`, `providerRecordsKey`) | `<cacheDir>/records/…/<sha256>.json.gz` | whole-graph `snapshot`, `symbols`, `edges` | yes, those commands default to committed-tree |
 
 `cacheDir` is `--cache-dir` else `ENTIRE_PLUGIN_DATA_DIR`: one flat global directory, shared by
 every repository and every worktree on the machine.
 
-The question this ADR answers: with N worktrees off one repository — branch A refactoring a
-package, branch B renaming symbols, `main` moving on — can a cache entry written on one branch
+The question this ADR answers: with N worktrees off one repository: branch A refactoring a
+package, branch B renaming symbols, `main` moving on: can a cache entry written on one branch
 be served on another, and what does the current keying cost?
 
 Both keys hash the cache version, the **checkout path** (`filepath.Abs(repo)`), the provider
@@ -33,7 +33,7 @@ and filters with `loadExplicitIgnoreMatcher` (content-hashed) plus a tree-derive
 path, which is never cached.
 
 Measured on a binary built from `cdcb8db`, against an isolated clone with three linked
-worktrees — `wtA`/`wtC` at `cdcb8db`, `wtB` at `6e4bfde`, 3 of 317 tracked files differing:
+worktrees: `wtA`/`wtC` at `cdcb8db`, `wtB` at `6e4bfde`, 3 of 317 tracked files differing:
 
 **Branch drift is already safe.** The tree hash is in both keys, so switching branches at one
 checkout path misses:
@@ -105,34 +105,34 @@ envelopes and their `valid…` predicates:
 
 1. **Repository identity (`repoKey`) joins the key** and is compared on load. Identity is what
    every symbol ID embeds, so an entry built under a different identity must miss, not be
-   re-served. This replaces the checkout path as the *identity* term — the path is a proxy for
+   re-served. This replaces the checkout path as the *identity* term: the path is a proxy for
    identity that is simultaneously too strict (three worktrees, one graph, three entries) and
    too loose (identity can change under a fixed path).
-2. **The effective file-listing cap joins the key** — `resolveMaxSourceFiles(options.MaxFiles)`,
+2. **The effective file-listing cap joins the key**: `resolveMaxSourceFiles(options.MaxFiles)`,
    the resolved value, so `ENTIRE_GRAPH_MAX_FILES` is covered by the same term as the option.
 3. **Cache version strings bump** (`search-snapshot-v5`, `provider-records-v2`) so entries
    written by the old keying are unreachable by name rather than merely unfindable by hash.
 
 **The trade-off accepted: this only adds misses, never hits.** Every change above narrows what
 counts as a valid entry. Runs that previously reused an entry across a remote-URL change or a
-cap change now rebuild — correctly. We accept the extra cold builds and one extra `git remote`
+cap change now rebuild, correctly. We accept the extra cold builds and one extra `git remote`
 subprocess per cache lookup, because a wrong cache hit is worse than a slow miss. We do not
 take the sharing win in the same change, so no new reuse surface is opened alongside a
 correctness fix.
 
 ## Consequences
 
-**What this does NOT do — explicitly:**
+**What this does NOT do, explicitly:**
 
 - **No cross-worktree sharing.** The checkout path stays in the key, so `wtC` still rebuilds
   `wtA`'s identical graph and the third 435 KB entry is still written. Keying on identity alone
   is now *possible* (identity is in the key and validated), but not *safe* yet: on a cache hit
   `search.go:356` overwrites the response's `repoRoot` from the cached header, so a shared entry
-  would report the wrong checkout path — and `records_cache.go` stores opaque NDJSON bytes, so
+  would report the wrong checkout path, and `records_cache.go` stores opaque NDJSON bytes, so
   restamping its header means rewriting the serialized first line. Both are separate changes
   with their own tests.
-- **No per-file content-hash caching / incrementality.** The prize measured above — `wtB`
-  differing in 3 of 317 files should reuse ~99% of the parse, not 0% — needs a per-blob parse
+- **No per-file content-hash caching / incrementality.** The prize measured above: `wtB`
+  differing in 3 of 317 files should reuse ~99% of the parse, not 0%: needs a per-blob parse
   cache keyed by blob hash plus relation re-resolution over the union, which is a new index
   layer, not a key change. This ADR is its prerequisite: a per-blob cache is only sharable
   across worktrees if repository identity is a keyed, validated term, which it now is.
@@ -140,7 +140,7 @@ correctness fix.
   0-entry rows in the measurement are that policy, not a write failure.
 - **No change to tree-only keying of the parsed graph.** Two commits sharing a tree still share
   an entry, and `FILE_CHANGES_WITH` co-change edges are still allowed to come from the other
-  commit's history — already documented on `searchSnapshotKey` and unchanged here.
+  commit's history: already documented on `searchSnapshotKey` and unchanged here.
 - **No fix for the linked-worktree `.git/info/exclude` ENOTDIR failure** seen while measuring
   (`read ignore file ".../wtA/.git/info/exclude": not a directory`, exit 1). That is
   working-tree-only, therefore cache-irrelevant, and is owned by a separate change.
@@ -150,7 +150,7 @@ directory; the first run after upgrading is cold. One additional `git remote` in
 committed-tree cache lookup, alongside the two `rev-parse` calls already made.
 
 **What it buys:** the two measured silent-wrong-answer paths become misses, and the key is now
-defensible as complete — the audit above enumerates the committed-tree inputs, and after this
+defensible as complete: the audit above enumerates the committed-tree inputs, and after this
 change each one is either hashed or provably tree-derived.
 
 **Verified on the same three-worktree lab, with a binary built from this change.** Both holes
@@ -164,7 +164,7 @@ wtA --head cold 9.75s -> warm 0.86s                            (warm win unchang
 wtC --head at wtA's identical tree -> still a full build, third entry   (unchanged, by design)
 ```
 
-## Addendum — what upstream had already fixed
+## Addendum: what upstream had already fixed
 
 This ADR was written against an older base. Rebasing onto current `main` showed upstream had
 independently keyed `searchSnapshotKey` on repository identity and bumped that cache to

@@ -19,7 +19,7 @@ Current generated counts:
 - Semantic languages: 36
 - Inventory-only languages: 149
 
-## Semantic Languages
+## Semantic languages
 
 - Bash
 - C
@@ -63,7 +63,7 @@ including files that omit the syntax declaration, proto2 field labels, and
 groups. Compatibility parsing preserves original source locations, signatures,
 and hashes; genuinely malformed files still surface as partial failures.
 
-## Inventory-Only Languages
+## Inventory-only languages
 
 - ABAP
 - ANTLR

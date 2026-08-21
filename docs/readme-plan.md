@@ -87,7 +87,7 @@ The comparison with [Graphify](https://github.com/Graphify-Labs/graphify/blob/7f
 [Supermemory](https://github.com/supermemoryai/supermemory/blob/82dae50ef458139823b3bfd3ebaaaac90ffd8a7c/README.md)
 produces four requirements:
 
-- Make a natural-language task—not a graph command—the first useful action.
+- Make a natural-language task, not a graph command: the first useful action.
 - Show observable agent events, focused source evidence, and the resulting answer;
   never end the quickstart at “installed” or “done.”
 - Separate installation, instruction loading, graph adoption, and answer grounding
@@ -270,7 +270,7 @@ Do not copy flag catalogs or cache-internals prose into the root README.
 
 ### 6. Agent flow, boundaries, and limits
 
-Use one compact flow that makes the agent—not the console—the recommended interface:
+Use one compact flow that makes the agent, not the console: the recommended interface:
 
 ```text
 user prompt → coding agent → repository instructions → entire graph CLI
@@ -302,7 +302,7 @@ than embedding a complete trust matrix in the landing page.
 - Keep quantitative methodology, environments, corrections, and reproduction in
   `docs/benchmarks.md`. A root benchmark number is included when it survives
   the claim audit and materially helps a new reader decide whether to
-  continue — the LoCoMo table meets that bar and is inline in the root
+  continue: the LoCoMo table meets that bar and is inline in the root
   README; `docs/benchmarks.md` carries what the table cannot: full
   methodology, per-category results, and every retraction.
 - Include development, issue/support, and license links. Add a security link only
@@ -390,14 +390,14 @@ Rules:
 
 ## Implementation phases
 
-### Phase 1: Establish sources of truth
+### Phase 1: establish sources of truth
 
 - [x] Resolve the four open decisions near the top of this plan.
 - [ ] Publish and index an Entire Graph release containing
   [#102](https://github.com/entireio/entire-graph/pull/102) and
   [#105](https://github.com/entireio/entire-graph/pull/105), pin that release for
-  activation documentation, and verify the installed binary—not a source build—
-  has both behaviors before documenting them.
+  activation documentation, and verify that the installed binary (not a source
+  build) has both behaviors before documenting them.
 - [ ] Smoke-test `entire plugin install graph` and both version commands in a
   clean environment on each claimed platform.
 - [x] Inventory the commands and flags used by active documentation and verify
@@ -422,7 +422,7 @@ Rules:
   instructions, provider/Brain ownership text, and cache ADRs. Record the plugin
   metadata correction as a separate release prerequisite.
 
-### Phase 2: Build canonical detailed docs
+### Phase 2: build canonical detailed docs
 
 - [x] Apply the document migration table above and update `docs/README.md` as
   destinations become authoritative.
@@ -452,7 +452,7 @@ Rules:
   leave every managed reference resolving, one intentional configured guide route
   in each tested client topology, and no stale limits or unsafe absolutes.
 
-### Phase 3: Rewrite the root README
+### Phase 3: rewrite the root README
 
 - [x] Implement the seven-section target structure above in `README.md` without
   renaming the file.
@@ -461,7 +461,7 @@ Rules:
 - [x] Keep direct CLI detail, cache operations, the full trust model, formats,
   and benchmark methodology in their canonical references.
 
-### Phase 4: Editorial and verification pass
+### Phase 4: editorial and verification pass
 
 - [x] Run each documented command and safe shell block against the pinned release
   and fixture.
@@ -491,8 +491,8 @@ Rules:
   never presents `--yes`, `--force`, `@main`, or a local build as the recommended
   first install.
 - [x] Activation is explicitly per repository, shows the exact command, discloses
-  all three file effects—including full replacement of `.entire/graph-agent.md`
-  on successful reruns—before execution, and tells the user how to review and
+  all three file effects, including full replacement of `.entire/graph-agent.md`
+  on successful reruns: before execution, and tells the user how to review and
   optionally commit the result.
 - [ ] The installed, indexed pinned release's `init-agents` fails without
   activation-file writes on malformed, reversed, or duplicate managed markers or
@@ -538,7 +538,7 @@ Rules:
 - [x] An independent evidence-adjusted review scores the finished README at least
   92/100, with at least 18/20 for agent workflow, 18/20 for observable proof,
   and 13/15 for trust and accuracy, and reports no unresolved P0 or P1 finding.
-  (Final run 2026-08-16: 95/100 — workflow 19/20, proof 19/20, trust 15/15;
+  (Final run 2026-08-16: 95/100: workflow 19/20, proof 19/20, trust 15/15;
   competitor revisions pinned in the session report.)
 - [x] The root file is still named `README.md`.
 

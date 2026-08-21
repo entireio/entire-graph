@@ -1,4 +1,4 @@
-# Native prose-session context implementation plan
+# Native Prose-Session Context Implementation Plan
 
 > [!WARNING]
 > Archived on 2026-08-13. This implementation plan was completed and is not a

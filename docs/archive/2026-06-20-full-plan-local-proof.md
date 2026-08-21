@@ -970,7 +970,7 @@ go run ./cmd/graph-bench -manifest bench/repos.fast.json -cache bench/.cache -ou
     165,967 LOC/s, max RSS 30,015,488 bytes, estimated output 1,902,632
     bytes.
 
-## Remaining Honesty Notes
+## Remaining honesty notes
 
 - The retained fast-profile Linux run is proof over a cached local checkout,
   not clone/network time and not a full-profile relation-depth benchmark.

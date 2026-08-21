@@ -13,7 +13,7 @@ code-intelligence stack. It should not become a database, MCP server, graph UI,
 or agent-memory product. Its job is to parse source locally and emit accurate,
 versioned, confidence-scored facts that `entire-brain` can persist and query.
 
-## Current Strengths
+## Current strengths
 
 - Tree-sitter-backed parser boundary is isolated behind `internal/sem`.
 - Supports core languages: Bash, C/C++, C#, CUE, Elixir, Go, Groovy,
@@ -27,7 +27,7 @@ versioned, confidence-scored facts that `entire-brain` can persist and query.
 - Has stable `compound-v1` symbol IDs for ordinary edits.
 - Reports partial failures and no-egress posture.
 
-## Delivered Capabilities And Remaining Goals
+## Delivered capabilities and remaining goals
 
 - Relation extraction remains intentionally confidence-scored and honest about
   heuristics.
@@ -75,7 +75,7 @@ versioned, confidence-scored facts that `entire-brain` can persist and query.
 - Performance and memory claims are backed by local benchmark tooling; external
   large-corpus proof runs remain an operations task.
 
-## Design Rules
+## Design rules
 
 - Stay provider-only: no persistent store, MCP server, graph query language, or
   agent UX in this repo.
@@ -87,7 +87,7 @@ versioned, confidence-scored facts that `entire-brain` can persist and query.
 - Maintain compatibility for Brain: schema `1.0` consumers must fail safely or
   ignore unknown supported-major fields.
 
-## Schema Plan
+## Schema plan
 
 ### Schema `1.1`
 
@@ -111,7 +111,7 @@ Add header fields:
 - `completeness`: aggregate parse/index stats by language and relation type.
 - `benchmark_profile`: optional local profile label when emitted by test tools.
 
-### Relation Vocabulary
+### Relation vocabulary
 
 Keep existing:
 
@@ -167,9 +167,9 @@ Remain out of provider scope or later expansion:
   currently emitted.
 - more parser grammars when a real repo or benchmark fixture needs them.
 
-## Work Packages
+## Work packages
 
-### WP1: Baseline Audit And Golden Harness
+### WP1: baseline audit and golden harness
 
 Objective: know what the provider emits today and prevent regressions.
 
@@ -198,7 +198,7 @@ Acceptance:
   relation-type coverage for the golden corpus.
 - Current known false positives and false negatives are documented.
 
-### WP2: Stable Identity And Reconciliation
+### WP2: stable identity and reconciliation
 
 Objective: make symbol IDs and diffs stable enough for Brain history and impact.
 
@@ -220,7 +220,7 @@ Acceptance:
   confidence is high.
 - Ambiguous duplicate cases produce stable warnings.
 
-### WP3: Import And Module Resolution
+### WP3: import and module resolution
 
 Objective: improve the graph backbone used by call resolution and impact.
 
@@ -276,7 +276,7 @@ Acceptance:
   fabricated.
 - Import failures are counted in completeness metrics, not hidden.
 
-### WP4: Calls And Method Resolution
+### WP4: calls and method resolution
 
 Objective: move from broad name matching to scoped, language-aware call edges.
 
@@ -322,7 +322,7 @@ Acceptance:
   on the resolved type.
 - Brain impact can trust high-confidence direct callers/callees.
 
-### WP5: OO And Type Relations
+### WP5: OO and type relations
 
 Objective: support architecture and impact questions that depend on inheritance,
 interfaces, traits, and types.
@@ -344,7 +344,7 @@ Acceptance:
 - Override edges are emitted only when confidence is high enough.
 - Unsupported dynamic type cases are marked as unresolved, not fabricated.
 
-### WP6: Routes, Tools, Services, And Channels
+### WP6: routes, tools, services, and channels
 
 Objective: make boundary and cross-service analysis competitive.
 
@@ -434,7 +434,7 @@ Acceptance:
   template-literal route constants, static array joins, and child route paths;
   arbitrary runtime builders remain out of scope.
 
-### WP7: IaC And Resource Graph
+### WP7: IaC and resource graph
 
 Objective: cover the infrastructure files agents frequently need for impact.
 
@@ -531,7 +531,7 @@ Acceptance:
   port, image, env var, or module?"
 - IaC parse failures are localized and do not fail source indexing.
 
-### WP8: Semantic Similarity And Clone Hints
+### WP8: semantic similarity and clone hints
 
 Objective: provide useful local similarity facts without making `entire-graph` own
 vector search.
@@ -547,7 +547,7 @@ Acceptance:
 - Near-copy fixture functions are linked.
 - Common boilerplate and tiny functions are suppressed or low-confidence.
 
-### WP9: Language Coverage Expansion
+### WP9: language coverage expansion
 
 Objective: expand coverage pragmatically rather than chasing a raw language
 count.
@@ -571,7 +571,7 @@ Acceptance:
 - Capabilities reports exact language support and relation support per language.
 - Unsupported languages remain visible as partial failures or unsupported hints.
 
-### WP10: Performance And Memory
+### WP10: performance and memory
 
 Objective: support credible local claims, and make the production path
 memory-bounded rather than accumulating the whole graph.
@@ -586,7 +586,7 @@ Delivered:
   longer holds full relation payloads, their evidence, or file contents; peak
   memory is bounded by symbol/index metadata plus a compact relation dedup set
   (one 64-bit key per unique relation). The dedup set still scales with the
-  count of unique relations — the remaining relation-count-scaled component.
+  count of unique relations: the remaining relation-count-scaled component.
 - Indexing profiles `full|fast|syntax-only` (`--profile`) select indexing
   depth; the header declares the profile, its limits, the emitted relation set,
   and skipped relation families. Read throughput numbers from `fast`/`syntax-only`
@@ -606,36 +606,36 @@ Remaining/optional:
 - Optimize only after baseline: parser reuse, worker-pool sizing, file-hash
   cache interface, lower-allocation relation builders.
 
-## Proposed Sequencing
+## Proposed sequencing
 
-### Phase A: Contract And Baseline
+### Phase A: contract and baseline
 
 1. WP1 baseline harness.
 2. Schema `1.1` draft and compatibility tests.
 3. Capabilities output includes per-language relation support.
 4. Baseline report committed in `entire-plan` or generated artifacts.
 
-### Phase B: Graph Backbone
+### Phase B: graph backbone
 
 1. WP2 identity/reconciliation.
 2. WP3 imports/modules.
 3. WP4 calls/methods.
 4. Update Brain ingestion tests against schema `1.1`.
 
-### Phase C: Rich Architecture Edges
+### Phase C: rich architecture edges
 
 1. WP5 OO/type relations.
 2. WP6 routes/services/channels.
 3. WP7 IaC resources.
 4. Add acceptance fixtures per relation type.
 
-### Phase D: Similarity, Breadth, Performance
+### Phase D: similarity, breadth, performance
 
 1. WP8 near-clone hints.
 2. WP9 coverage expansion.
 3. WP10 benchmark and optimization.
 
-## Brain Integration Contract
+## Brain integration contract
 
 `entire-graph` should provide:
 
@@ -657,7 +657,7 @@ Remaining/optional:
 - Agent-facing summaries and briefs.
 - Durable facts, history, patterns, review, and evals.
 
-## Testing Standard
+## Testing standard
 
 Every new relation type needs:
 
@@ -668,7 +668,7 @@ Every new relation type needs:
 - Completeness or warning behavior when partially unsupported.
 - Brain ingestion compatibility test when the relation becomes consumed.
 
-## Documentation Updates
+## Documentation updates
 
 Update `entire-graph` docs as work lands:
 
@@ -692,7 +692,7 @@ Update `entire-graph` docs as work lands:
 - Sharing graph artifacts can leak private symbols/routes/config. Keep sharing
   policy in Brain, not `entire-graph`.
 
-## Definition Of Done
+## Definition of done
 
 `entire-graph` reaches the graph-provider goal when:
 

@@ -12,7 +12,7 @@
 
 **Tech Stack:** Go 1.24, Entire Graph semantic search, tree-sitter Markdown fixtures, standard `testing` package.
 
-## Global Constraints
+## Global constraints
 
 - Base all work on commit `bb8bd49fb4039f489cc5977fe008af7dcead5050` in branch `codex/eg-prose-memory-v53-ranking`.
 - Do not modify or merge PRs #64 or #84.
@@ -24,7 +24,7 @@
 
 ---
 
-### Task 1: Safe prose lexical families
+### Task 1: safe prose lexical families
 
 **Files:**
 - Modify: `internal/sem/search_prose_parent.go:246-293`
@@ -214,7 +214,7 @@ git commit -m "feat(search): match bounded prose word families"
 
 ---
 
-### Task 2: Distributed-session reservation for list questions
+### Task 2: distributed-session reservation for list questions
 
 **Files:**
 - Modify: `internal/sem/search_prose_parent.go:57-130`
@@ -354,7 +354,7 @@ git commit -m "feat(search): reserve prose tail for list evidence"
 
 ---
 
-### Task 3: Verification and no-API retired-tune audit
+### Task 3: verification and no-API retired-tune audit
 
 **Files:**
 - Modify only if verification uncovers a defect: `internal/sem/search_prose_parent.go`, `internal/sem/search_prose_session_test.go`
@@ -441,7 +441,7 @@ Expected: clean `codex/eg-prose-memory-v53-ranking` worktree.
 
 ---
 
-### Task 4: Review and separate PR preparation
+### Task 4: review and separate PR preparation
 
 **Files:**
 - Review: `docs/superpowers/specs/2026-08-07-prose-memory-ranking-v53-design.md`

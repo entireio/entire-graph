@@ -13,7 +13,7 @@ machine-readable golden baselines under
 `internal/sem/testdata/fixtures/*.ndjson.golden`, which are the authoritative
 record of the current provider contract.
 
-## Golden Harness
+## Golden harness
 
 `internal/sem/golden_test.go` (`TestProviderGoldenSnapshots`) snapshots each
 fixture repo under `internal/sem/testdata/fixtures/<name>/` in worktree mode and
@@ -41,7 +41,7 @@ goldens; it is not a substitute for broader external scored corpora.
   its name in `goldenFixtures`, run with `-update`, then update
   `quality_coverage.json`.
 
-## Current Fixtures
+## Current fixtures
 
 | Fixture             | Language   | Exercises                                              |
 | ------------------- | ---------- | ------------------------------------------------------ |
@@ -76,7 +76,7 @@ Ruby on Rails static route declarations and
 NestJS controller/method decorators;
 remaining work is deeper framework coverage and larger-corpus proof.
 
-## Relation Coverage Today
+## Relation coverage today
 
 The provider emits the relation types advertised by `capabilities --json`.
 Confidence bands follow the v2-plan schema section (`0.90-1.00 exact`,
@@ -95,7 +95,7 @@ Confidence bands follow the v2-plan schema section (`0.90-1.00 exact`,
   resolve locally at 0.86-0.87; Composer PSR-4 PHP namespace imports resolve
   locally at 0.88; Rust crate/Cargo module imports, deterministic `#[path] mod` aliases,
   and straightforward `pub use` re-exports resolve locally at 0.88).
-- Calls: `CALLS` — same-file 0.92, imported 0.86, type-inferred receiver
+- Calls: `CALLS`, same-file 0.92, imported 0.86, type-inferred receiver
   0.85-0.9, globally-unique name 0.68.
 - OO/type: `EXTENDS`, `IMPLEMENTS` (0.9; C# 0.7 heuristic), `OVERRIDES` (0.85),
   `USES_TYPE` (0.75-0.85).
@@ -153,14 +153,14 @@ the relation families: richer cross-statement/cross-symbol data-flow,
 higher-precision fallback-format semantics, full GraphQL validation and
 non-root type-aware resolver analysis, and larger corpus proof runs.
 
-## Known False Positives / Negatives
+## Known false positives / negatives
 
 These are the documented baseline gaps the later work packages address. They are
 intentionally captured in the goldens so improvements show up as diffs.
 
 False positives:
 
-- **Route over-firing — fixed.** `HANDLES_ROUTE` previously fired for any
+- **Route over-firing: fixed.** `HANDLES_ROUTE` previously fired for any
   path-like string literal in any symbol (gin reported 1039 routes). A route is
   now recorded only when its line carries routing context (an HTTP-verb/route
   method call, mapping decorator, Python Flask/FastAPI-style route decorator,
@@ -201,7 +201,7 @@ False positives:
 
 Fixed (kept as a note so the goldens explain the change):
 
-- **Container credited as caller** — a class used to be emitted as `CALLS` of
+- **Container credited as caller**: a class used to be emitted as `CALLS` of
   its own methods because the member definition lines (`def validate(...)`) match
   the call pattern inside the container's block. Direct-child names are now
   excluded from a container's call scan, so each fixture emits exactly one
@@ -209,7 +209,7 @@ Fixed (kept as a note so the goldens explain the change):
 
 False negatives:
 
-- **Receiver method calls — partially resolved.** Receiver calls are now
+- **Receiver method calls: partially resolved.** Receiver calls are now
   resolved by inferring the receiver's type (`resolution: type_inferred`): a
   `this`/`self` receiver resolves to the enclosing type's method (confidence
   0.9), and a local variable resolves through a constructor assignment
@@ -222,12 +222,12 @@ False negatives:
   `const widget = makeWidget(); widget.label()` resolve at confidence 0.77,
   when the factory symbol has an explicit local return type and the target
   method exists on that type. This recovers calls the name-based path drops,
-  e.g. Python `service.validate()` and Go `t.Validate()`. Receivers whose type
-  can't be inferred still produce no edge — by design, no fabricated targets.
+  e.g., Python `service.validate()` and Go `t.Validate()`. Receivers whose type
+  can't be inferred still produce no edge: by design, no fabricated targets.
   Remaining: arbitrary returned/chained receivers beyond these high-confidence
   local patterns, plus compiler-grade type flow.
   (WP4.)
-- **Imported-symbol calls — external endpoints implemented for common import
+- **Imported-symbol calls: external endpoints implemented for common import
   forms.** Go package calls (`strings.TrimSpace`), Python module/member calls
   (`json.dumps` and `from json import dumps`), JS/TS named, default, or
   namespace import calls (`readFileSync`, `path.join`), literal CommonJS
@@ -309,13 +309,13 @@ False negatives:
   via the same name-based heuristic (the class is sometimes credited as the
   caller, as in Python). (WP4: per-language call extraction.)
 
-## Header Stats
+## Header stats
 
 Every snapshot header carries `stats` with `files`, `parsed_files`, `symbols`,
 `relations`, `partial_failures`, and a `completeness_level` of `ok`, `degraded`,
 or `unsafe`.
 
-## Schema 1.1 Additive Fields (emitted)
+## Schema 1.1 additive fields (emitted)
 
 The following optional schema `1.1` fields are now emitted (additive, backward
 compatible; tolerant readers ignore unknown fields):

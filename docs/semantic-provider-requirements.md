@@ -69,7 +69,7 @@ the separate, full-snapshot-only `compact-ndjson` artifact described below;
 ### Stream and artifact formats
 
 The streaming NDJSON contract (record order, lean header vs authoritative
-summary, ordering and unknown-record rules), the compact snapshot artifact,
+summary, ordering, and unknown-record rules), the compact snapshot artifact,
 and progress telemetry are specified in
 [snapshot format](snapshot-format.md), which is the canonical format
 reference.
@@ -82,10 +82,10 @@ to `fast` unless the caller selects a profile explicitly. The snapshot header
 reports the selected `profile`, its `profile_limits` (evidence, call
 resolution), the emitted `relation_set`, and the
 `skipped_relation_families`; capabilities reports `relation_support_by_profile`.
-Skipped families are always declared (in the header and capabilities) — a
+Skipped families are always declared (in the header and capabilities): a
 profile never silently drops a relation family.
 
-- `full` — the complete relation graph: `DEFINES`, `CONTAINS`, `IMPORTS`,
+- `full`: the complete relation graph, covering `DEFINES`, `CONTAINS`, `IMPORTS`,
   `CALLS`, `CONSTRUCTS`, `ASYNC_CALLS`, `EXTENDS`, `INHERITS`, `IMPLEMENTS`,
   `OVERRIDES`, `USES_TYPE`, `PARAM_TYPE`, `RETURNS_TYPE`, `READS_FIELD`,
   `WRITES_FIELD`, `ACCESSES`, `HANDLES_ROUTE`, `HANDLES_GRPC`,
@@ -93,16 +93,16 @@ profile never silently drops a relation family.
   `HANDLES_TOOL`, `CONFIGURES`, `SIMILAR_TO`, `TESTS`,
   `RESOURCE_DEPENDS_ON`, `DATA_FLOWS`, and `FILE_CHANGES_WITH`, with full
   evidence. **Semantic-depth and accuracy claims belong to `full`.**
-- `fast` — symbol inventory plus `DEFINES`, `CONTAINS`, `IMPORTS`, `CALLS`,
+- `fast`: symbol inventory plus `DEFINES`, `CONTAINS`, `IMPORTS`, `CALLS`,
   `CONSTRUCTS`, and `CONFIGURES`; call resolution is shallow and limited to
-  single-target, high-precision resolutions — same-file
+  single-target, high-precision resolutions: same-file
   `exact`, unique same-package `package`, and import-bound
   `import_resolved`; name-only and pattern fanouts stay full-only. It also emits
   `HANDLES_ROUTE`, `HANDLES_TOOL`, and
   `RESOURCE_DEPENDS_ON`. Evidence is omitted and the deep families
   (type/field/similarity/HTTP/channel/test/uses-type/override) are skipped and
   their content scans avoided. **Speed/throughput claims belong to `fast`.**
-- `syntax-only` — file/symbol inventory and structure (`DEFINES`, `CONTAINS`)
+- `syntax-only`: file/symbol inventory and structure (`DEFINES`, `CONTAINS`)
   only, plus warnings, partial failures, and freshness metadata. No relation
   resolution and no per-file content re-read.
 
@@ -115,7 +115,7 @@ closed with a clear error. Callers may also pass repeatable `--include-file
 applied after `.gitignore` and `--ignore-file`, so they can reopen otherwise
 ignored paths.
 
-## Schema Contract
+## Schema contract
 
 Provider output uses `schema_version` in `major.minor` form.
 
@@ -156,7 +156,7 @@ Common kinds: `function`, `method`, `class`, `interface`, `struct`, `type`,
 language-specific kinds (`message`, `service`, `rpc`, `table`, `block`, ...).
 
 `field` is the canonical kind for declared data members of a struct, class,
-interface, or record. Properties (e.g. C# properties, TypeScript accessors) map
+interface, or record. Properties (e.g., C# properties, TypeScript accessors) map
 to the same `field` kind when added, rather than a separate `property` kind, so
 consumers have one kind to query. A field carries `container_id` (the enclosing
 type symbol), a `signature` of its name and type text, and a `body_hash` of its
@@ -170,7 +170,7 @@ interface/type-literal properties. C/C++ struct/class fields are intentionally
 not emitted because C/C++ field-access relations are not part of the advertised
 relation matrix; emitting millions of C register/header fields adds indexing
 cost without a consumed relation. Field extraction is declaration extraction
-only — Python instance attributes and other inference-based members are out of
+only: Python instance attributes and other inference-based members are out of
 scope here and belong to later field-access inference.
 
 The first stable symbol ID version should use a documented compound identity:
@@ -221,7 +221,7 @@ Schema `1.1` adds optional relation fields (additive; tolerant readers ignore
 unknown fields):
 
 - `relation_scope`: `file`, `module`, `workspace`, `external`.
-- `resolution`: how the target was resolved, e.g. `exact`, `package`,
+- `resolution`: how the target was resolved, e.g., `exact`, `package`,
   `import_resolved`, `type_inferred` (receiver-type-inferred calls),
   `name_only`, `pattern`
   (later: `runtime_trace`, `unresolved`).
@@ -240,69 +240,69 @@ Relation vocabulary:
 - `CONTAINS`
 - `IMPORTS`
 - `CALLS`
-- `CONSTRUCTS` — a call expression constructs a known local type.
-- `EXTENDS` — class extends class, interface extends interface, Rust supertrait.
-- `INHERITS` — normalized inheritance edge emitted alongside language-specific
+- `CONSTRUCTS`: a call expression constructs a known local type.
+- `EXTENDS`: class extends class, interface extends interface, Rust supertrait.
+- `INHERITS`: normalized inheritance edge emitted alongside language-specific
   `EXTENDS` or `IMPLEMENTS` facts where applicable.
-- `IMPLEMENTS` — class implements interface, Rust `impl Trait for Type`.
-- `OVERRIDES` — a method that redefines a same-named method on a resolved
+- `IMPLEMENTS`: class implements interface, Rust `impl Trait for Type`.
+- `OVERRIDES`: a method that redefines a same-named method on a resolved
   supertype (derived from EXTENDS/IMPLEMENTS; only when both the supertype and
   its methods are known local symbols).
-- `READS_FIELD` / `WRITES_FIELD` / `ACCESSES` — a function/method reads, writes
+- `READS_FIELD` / `WRITES_FIELD` / `ACCESSES`: a function/method reads, writes
   (assignment target), or takes the address of a field. The `receiver.field`
   access is resolved to a known local field via the receiver's type (this/self,
   a Go method receiver variable, or a constructor-assigned local). Accesses with
   an unresolved/dynamic receiver, or to a name that is not a known field, are
-  skipped — no guessed edges. Bare implicit-`this` access (no `receiver.`) is
+  skipped, no guessed edges. Bare implicit-`this` access (no `receiver.`) is
   not resolved in this pass.
-- `USES_TYPE` — a function/method references a local type in its signature
+- `USES_TYPE`: a function/method references a local type in its signature
   (resolved against known type symbols, so primitives and library types are
   excluded). This is the broad signature edge.
-- `PARAM_TYPE` / `RETURNS_TYPE` — a function/method references a local type in
+- `PARAM_TYPE` / `RETURNS_TYPE`: a function/method references a local type in
   parameter or return position. These positional edges are emitted only when the
   parser captured enough signature text to classify the reference.
-- `HANDLES_ROUTE` — a handler registers an HTTP route (path on a line carrying
+- `HANDLES_ROUTE`: a handler registers an HTTP route (path on a line carrying
   routing context: a verb/route method call or mapping decorator).
-- `HANDLES_GRPC` / `HANDLES_GRAPHQL` / `HANDLES_TRPC` — service boundary edges
+- `HANDLES_GRPC` / `HANDLES_GRAPHQL` / `HANDLES_TRPC`: service boundary edges
   from protobuf RPC declarations, GraphQL operation literals, JS/TS GraphQL
   resolver-map fields and modular resolver root objects (`Query`, `Mutation`,
   `Subscription`), GraphQL schema root fields, and tRPC procedure declarations
   to stable external endpoint nodes.
-- `HTTP_CALLS` — an outbound HTTP client call (fetch/axios/requests/httpx/http
+- `HTTP_CALLS`: an outbound HTTP client call (fetch/axios/requests/httpx/http
   client) to a path. Client calls and route registrations to the same path
   share an `external:route:<path>` node, enabling client-to-route matching. When
   that static route has a local handler/boundary in the snapshot, the provider
   also emits a direct pattern-resolved `CALLS` edge from the client symbol to
   that handler/boundary symbol.
-- `EMITS` / `LISTENS_ON` — pub/sub and event-emitter calls
+- `EMITS` / `LISTENS_ON`: pub/sub and event-emitter calls
   (`emit`/`publish`/`dispatch` and `on`/`subscribe`/`addEventListener`). Emitter
   and listener of the same name share an `external:channel:<name>` node. Weak
   naming-pattern detections: low confidence (0.6) with a `WEAK_PATTERN` code.
 - `HANDLES_TOOL`
-- `RESOURCE_DEPENDS_ON` — a Terraform/HCL block (resource/module) that
-  references another block (e.g. `aws_vpc.main.id`, `var.cidr`) depends on it.
+- `RESOURCE_DEPENDS_ON`: a Terraform/HCL block (resource/module) that
+  references another block (e.g., `aws_vpc.main.id`, `var.cidr`) depends on it.
   Blocks are indexed by their referenceable name and references resolved within
   the module.
-- `CONFIGURES` — configuration artifacts point at stable external config nodes:
+- `CONFIGURES`: configuration artifacts point at stable external config nodes:
   HCL blocks, Dockerfile stages, Kubernetes-looking YAML sections, and GitHub
   Actions workflow jobs, Kustomize sections, common JSON/TOML/XML project
   configuration, and Make targets.
-- `DATA_FLOWS` — high-confidence local return-flow edge from a callee to a
+- `DATA_FLOWS`: high-confidence local return-flow edge from a callee to a
   caller when a callable returns the result of another resolved callable, plus
   direct, branch, conditional/fallback, and expression-assigned local
   assignment-then-return cases, plus
   conservative local caller-to-callee forwarding for exact/import-resolved
   parameter, alias, destructured alias, object-field/object-literal, and
   collection-element cases.
-- `ASYNC_CALLS` — async call-site edge for language-level async constructs such
+- `ASYNC_CALLS`: async call-site edge for language-level async constructs such
   as Go `go` statements, JavaScript/TypeScript/Python `await`, and common
   spawn/promise patterns when the target resolves to a known symbol.
-- `FILE_CHANGES_WITH` — bounded local git co-change edge between files that
+- `FILE_CHANGES_WITH`: bounded local git co-change edge between files that
   repeatedly changed together in recent history.
-- `TESTS` — a test function maps to the unit it covers by naming convention
+- `TESTS`: a test function maps to the unit it covers by naming convention
   (`TestFoo`/`testFoo` → `Foo`, `test_foo` → `foo`, `FooTest`/`FooSpec` → `Foo`)
   when the subject resolves to a non-test function/method/type.
-- `SIMILAR_TO` — near-duplicate symbol bodies, found by MinHash+LSH over
+- `SIMILAR_TO`: near-duplicate symbol bodies, found by MinHash+LSH over
   normalized function/method bodies. Tiny bodies are suppressed and only pairs
   above an estimated-Jaccard threshold are emitted, with the estimate as
   confidence. Local-only; advertised as the `near_clone_detection` feature.
@@ -322,7 +322,7 @@ conditional/fallback return-flow plus expression assignment-then-return flow,
 bounded co-change edges, and lightweight inventory for common web/document/
 config formats.
 
-## Warnings And Partial Failures
+## Warnings and partial failures
 
 Warnings and partial failures must be machine-readable. Free-form strings are
 allowed as human detail, but every warning needs:
@@ -348,30 +348,30 @@ files dominating large-repo runs. Files above the cap still emit file records,
 but symbol parsing is skipped and an `E_FILE_TOO_LARGE` partial failure is
 reported.
 
-## Listing And Memory Bounds
+## Listing and memory bounds
 
 A snapshot's memory must be set by the caller's limits, not by what happens to be
 on disk. Two bounds are enforced, and both are visible in the output:
 
-- **Per-file read cap** — the same limit as the parser input cap (`MaxParseBytes`,
+- **Per-file read cap**: the same limit as the parser input cap (`MaxParseBytes`,
   4 MiB by default). A file above it is never materialized in memory: its size,
   content hash and line count come from a constant-memory streamed digest, it
   emits a file record plus `E_FILE_TOO_LARGE`, and no consumer (including search
   preselection, which scans every listed file concurrently) can read it. Without
   this cap a repository's peak memory is set by its largest file, at twice that
   file's size per read.
-- **Listing cap** — `MaxFiles` (200,000 by default, `ENTIRE_GRAPH_MAX_FILES`
+- **Listing cap**: `MaxFiles` (200,000 by default, `ENTIRE_GRAPH_MAX_FILES`
   overrides; negative removes it). Truncation is deterministic in sorted path
   order and always reported as `W_FILE_LIMIT`, naming the real count, the limit
   and the override.
 
 The working-tree listing is Git's own view of the working tree (tracked files plus
-untracked files no exclude rule covers). Every exclude source Git applies — nested
-`.gitignore` files, `.git/info/exclude`, per-worktree excludes, `core.excludesFile`
-— therefore applies to the graph. A filesystem walk that honours the ignore stack
+untracked files no exclude rule covers). Every exclude source Git applies (nested
+`.gitignore` files, `.git/info/exclude`, per-worktree excludes, `core.excludesFile`)
+therefore applies to the graph. A filesystem walk that honours the ignore stack
 per directory is the fallback for a tree Git cannot enumerate.
 
-## Capability Reporting
+## Capability reporting
 
 `entire graph capabilities --json` should report:
 
@@ -416,7 +416,7 @@ Required provider-side tests:
 - Performance smoke tests for medium repositories.
 - Memory budget tests for cold snapshots.
 
-## Current Foundation
+## Current foundation
 
 Useful existing foundation:
 

@@ -1,4 +1,4 @@
-# Entire Graph documentation
+# Entire Graph Documentation
 
 These are the current project documents, organized by what you are trying to
 do. `entire graph help` lists the public command surface and documented flags;
