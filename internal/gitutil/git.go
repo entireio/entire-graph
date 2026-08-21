@@ -634,6 +634,11 @@ const (
 	LimitedFileContent
 	LimitedFileOversize
 	LimitedFileNonBlob
+	// LimitedFileUnreadable means the tree entry exists and identifies a blob,
+	// but Git could not read that blob's object metadata. This is distinct from
+	// LimitedFileMissing (no tree entry) and from the bounded traversal refusal
+	// below; callers can report one bad object as a recoverable file-read failure.
+	LimitedFileUnreadable
 	// LimitedFileUnaddressable means a valid tree path could not be resolved
 	// within the bounded exact-metadata traversal: a component exceeded the
 	// argv ceiling, the component-process allowance was exhausted, or the
@@ -705,6 +710,9 @@ func readFileLimited(
 	if status == blobProbeNonBlob {
 		return LimitedFileResult{Status: LimitedFileNonBlob}, nil
 	}
+	if status == blobProbeUnreadable {
+		return LimitedFileResult{Status: LimitedFileUnreadable}, nil
+	}
 	if status == blobProbeUnaddressable {
 		return LimitedFileResult{Status: LimitedFileUnaddressable}, nil
 	}
@@ -750,6 +758,15 @@ func validateLimitedFilePath(path string) error {
 		}
 	}
 	return nil
+}
+
+// IsCanonicalGitTreePath reports whether path has the file-like, slash-separated
+// form accepted by the bounded object readers. Raw Git trees can contain "." or
+// ".." entries that cannot be represented safely by rev:path plumbing; callers
+// enumerating such trees use this predicate to turn one entry into a partial
+// read failure without poisoning a shared Git process.
+func IsCanonicalGitTreePath(path string) bool {
+	return validateLimitedFilePath(path) == nil
 }
 
 func readBlobAtRev(ctx context.Context, repo, rev, path string) (string, bool, error) {
@@ -836,6 +853,7 @@ const (
 	blobProbeUnknown blobProbeStatus = iota
 	blobProbeBlob
 	blobProbeNonBlob
+	blobProbeUnreadable
 	blobProbeUnaddressable
 )
 
@@ -854,6 +872,9 @@ func blobSizeAtRev(ctx context.Context, repo, rev, path string) (int64, blobProb
 	if entry.result.Status == LimitedFileUnaddressable {
 		return 0, blobProbeUnaddressable
 	}
+	if entry.result.Status == LimitedFileUnreadable {
+		return 0, blobProbeUnreadable
+	}
 	if entry.objectType != "blob" {
 		return 0, blobProbeNonBlob
 	}
@@ -869,17 +890,26 @@ func isMissingPathDiagnostic(stderr string) bool {
 			strings.Contains(stderr, "' exists on disk, but not in '"))
 }
 
-// BatchFileReader reads blobs from one revision through a persistent
-// `git cat-file --batch` process. It avoids spawning one git process per file
-// while preserving HEAD-tree snapshot semantics. Paths are relative to repo;
-// rev represents the repository-root tree when repo is a subdirectory.
+// BatchFileReader reads blobs from one revision through persistent
+// `git cat-file --batch-check` metadata and `--batch` content processes. The
+// metadata process prevents non-blobs from entering the content stream; the
+// content process still streams oversized blobs for caller digests. Together
+// they avoid per-file process spawning while preserving HEAD-tree snapshot
+// semantics. Paths are relative to repo; rev represents the repository-root
+// tree when repo is a subdirectory.
 type BatchFileReader struct {
+	ctx          context.Context
+	repo         string
 	rev          string
 	pathPrefix   string
 	cmd          *exec.Cmd
 	stdin        io.WriteCloser
 	stdout       *bufio.Reader
 	stderr       *bytes.Buffer
+	checkCmd     *exec.Cmd
+	checkStdin   io.WriteCloser
+	checkStdout  *bufio.Reader
+	checkStderr  *bytes.Buffer
 	mu           sync.Mutex
 	closed       bool
 	maxBytes     int64
@@ -953,6 +983,8 @@ func NewBatchFileReader(ctx context.Context, repo, rev string) (*BatchFileReader
 		return nil, fmt.Errorf("git cat-file --batch: %w", err)
 	}
 	return &BatchFileReader{
+		ctx:        ctx,
+		repo:       repo,
 		rev:        rev,
 		pathPrefix: pathPrefix,
 		cmd:        cmd,
@@ -977,18 +1009,98 @@ func (r *BatchFileReader) IsPathSafe(path string) bool {
 }
 
 func (r *BatchFileReader) ReadFile(path string) (string, bool, error) {
+	// Reject path forms Git interprets relative to the worktree before they enter
+	// the persistent protocol. In particular, `rev:../file` terminates cat-file
+	// with an "outside repository" error and would poison every later read on the
+	// shared process. Repository tree listings can contain such raw components
+	// even though a filesystem checkout cannot.
+	if err := validateLimitedFilePath(path); err != nil {
+		return "", false, err
+	}
 	if !r.IsPathSafe(path) {
 		return "", false, fmt.Errorf("Git path cannot be represented by cat-file batch protocol")
 	}
-	return r.readObjectSpec(r.rev+":"+r.pathPrefix+path, path)
+	return r.readCheckedObjectSpec(r.rev+":"+r.pathPrefix+path, path)
 }
 
-// readObjectSpec is the shared batch protocol implementation. LimitedFileReader
-// passes a hex blob OID here, so repository-controlled path bytes never enter
-// the line-oriented request; ordinary callers retain rev:path behavior.
-func (r *BatchFileReader) readObjectSpec(objectSpec, oversizeKey string) (string, bool, error) {
+func (r *BatchFileReader) readCheckedObjectSpec(objectSpec, oversizeKey string) (string, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	objectID, objectType, found, err := r.checkObjectSpecLocked(objectSpec)
+	if err != nil || !found {
+		return "", false, err
+	}
+	if objectType != "blob" {
+		// Never ask the content batch for a non-blob. Its protocol places the
+		// complete object after the header, so declining only after that request
+		// would still have to stream an arbitrarily large tree or commit merely to
+		// reach the next response. The metadata batch has no object body to drain.
+		return "", false, nil
+	}
+	// Pin the checked object before asking for content. Besides avoiding a second
+	// path-bearing request, this keeps a moving ref from changing object type
+	// between the metadata and content batches.
+	return r.readObjectSpecLocked(objectID, oversizeKey)
+}
+
+// readKnownBlobObjectID is the content-only path for LimitedFileReader, whose
+// authoritative ls-tree metadata already established that objectID is a blob.
+// The request contains only an immutable OID, never repository path bytes.
+func (r *BatchFileReader) readKnownBlobObjectID(objectID, oversizeKey string) (string, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.readObjectSpecLocked(objectID, oversizeKey)
+}
+
+func (r *BatchFileReader) checkObjectSpecLocked(objectSpec string) (string, string, bool, error) {
+	if r.closed {
+		return "", "", false, fmt.Errorf("git cat-file batch reader is closed")
+	}
+	if r.checkCmd == nil {
+		cmd := newCmd(r.ctx, r.repo, "git", "cat-file", "--batch-check")
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return "", "", false, err
+		}
+		stdoutPipe, err := cmd.StdoutPipe()
+		if err != nil {
+			_ = stdin.Close()
+			return "", "", false, err
+		}
+		stderr := &bytes.Buffer{}
+		cmd.Stderr = stderr
+		if err := cmd.Start(); err != nil {
+			_ = stdin.Close()
+			return "", "", false, fmt.Errorf("git cat-file --batch-check: %w", err)
+		}
+		r.checkCmd = cmd
+		r.checkStdin = stdin
+		r.checkStdout = bufio.NewReader(stdoutPipe)
+		r.checkStderr = stderr
+	}
+	if _, err := fmt.Fprintf(r.checkStdin, "%s\n", objectSpec); err != nil {
+		return "", "", false, err
+	}
+	header, err := r.checkStdout.ReadString('\n')
+	if err != nil {
+		return "", "", false, fmt.Errorf("read git cat-file batch-check header: %w", err)
+	}
+	header = strings.TrimSuffix(header, "\n")
+	if strings.HasSuffix(header, " missing") {
+		return "", "", false, nil
+	}
+	fields := strings.Fields(header)
+	if len(fields) != 3 {
+		return "", "", false, fmt.Errorf("unexpected git cat-file batch-check header %q", header)
+	}
+	size, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil || size < 0 {
+		return "", "", false, fmt.Errorf("parse git cat-file batch-check size %q", fields[2])
+	}
+	return fields[0], fields[1], true, nil
+}
+
+func (r *BatchFileReader) readObjectSpecLocked(objectSpec, oversizeKey string) (string, bool, error) {
 	if r.closed {
 		return "", false, fmt.Errorf("git cat-file batch reader is closed")
 	}
@@ -1059,18 +1171,36 @@ func (r *BatchFileReader) Close() error {
 	}
 	r.closed = true
 	stdin := r.stdin
+	checkStdin := r.checkStdin
+	checkCmd := r.checkCmd
+	checkStderr := r.checkStderr
 	r.mu.Unlock()
+	var closeErrors []error
 	if err := stdin.Close(); err != nil {
-		return err
+		closeErrors = append(closeErrors, err)
+	}
+	if checkStdin != nil {
+		if err := checkStdin.Close(); err != nil {
+			closeErrors = append(closeErrors, err)
+		}
 	}
 	if err := r.cmd.Wait(); err != nil {
 		msg := strings.TrimSpace(r.stderr.String())
 		if msg == "" {
 			msg = err.Error()
 		}
-		return fmt.Errorf("git cat-file --batch: %s", msg)
+		closeErrors = append(closeErrors, fmt.Errorf("git cat-file --batch: %s", msg))
 	}
-	return nil
+	if checkCmd != nil {
+		if err := checkCmd.Wait(); err != nil {
+			msg := strings.TrimSpace(checkStderr.String())
+			if msg == "" {
+				msg = err.Error()
+			}
+			closeErrors = append(closeErrors, fmt.Errorf("git cat-file --batch-check: %s", msg))
+		}
+	}
+	return errors.Join(closeErrors...)
 }
 
 // LimitedFileReader performs repeated bounded reads from one immutable Git
@@ -1383,6 +1513,18 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 			}
 			continue
 		}
+		// With -l, Git uses the exact sentinel BAD when a listed blob object
+		// cannot be inspected (for example, a tree references a missing object).
+		// The tree entry is still authoritative and recoverable as one unreadable
+		// file. Keep every other unexpected size a hard protocol error.
+		if fields[3] == "BAD" {
+			entries[path] = primedLimitedFile{
+				result:     LimitedFileResult{Status: LimitedFileUnreadable},
+				objectID:   fields[2],
+				objectType: fields[1],
+			}
+			continue
+		}
 		size, err := strconv.ParseInt(fields[3], 10, 64)
 		if err != nil || size < 0 {
 			return nil, fmt.Errorf("parse git ls-tree blob size %q for %q", fields[3], path)
@@ -1436,7 +1578,7 @@ func (r *LimitedFileReader) ReadFile(path string) (LimitedFileResult, error) {
 		content.SetMaxBytes(r.maxBytes)
 		r.content = content
 	}
-	content, ok, err := r.content.readObjectSpec(entry.objectID, path)
+	content, ok, err := r.content.readKnownBlobObjectID(entry.objectID, path)
 	if err != nil {
 		return LimitedFileResult{}, err
 	}
@@ -1444,7 +1586,10 @@ func (r *LimitedFileReader) ReadFile(path string) (LimitedFileResult, error) {
 		if oversize, exists := r.content.OversizeBlob(path); exists {
 			return LimitedFileResult{Status: LimitedFileOversize, Bytes: oversize.Bytes}, nil
 		}
-		return LimitedFileResult{Status: LimitedFileMissing}, nil
+		// Metadata already established an exact blob entry. A missing exact OID
+		// therefore means its object became unavailable, not that the tree path
+		// was absent.
+		return LimitedFileResult{Status: LimitedFileUnreadable}, nil
 	}
 	result.Content = content
 	result.Bytes = int64(len(content))

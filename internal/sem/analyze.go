@@ -222,6 +222,20 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 				result.Warnings = append(result.Warnings, diffFileReadWarning(warningPath, detail))
 			}
 
+			beforeUnreadable := file.Status != "A" && beforeRead.Status == gitutil.LimitedFileUnreadable
+			afterUnreadable := file.Status != "D" && afterRead.Status == gitutil.LimitedFileUnreadable
+			if beforeUnreadable || afterUnreadable {
+				warningPath := path
+				detail := "head version references an unreadable Git blob object"
+				if beforeUnreadable && !afterUnreadable {
+					warningPath = oldPath
+					detail = "base version references an unreadable Git blob object"
+				} else if beforeUnreadable && afterUnreadable {
+					detail = "base and head versions reference unreadable Git blob objects"
+				}
+				result.Warnings = append(result.Warnings, diffFileReadWarning(warningPath, detail))
+			}
+
 			beforeNonBlob := file.Status != "A" && beforeRead.Status == gitutil.LimitedFileNonBlob
 			afterNonBlob := file.Status != "D" && afterRead.Status == gitutil.LimitedFileNonBlob
 			if beforeNonBlob || afterNonBlob {
@@ -263,7 +277,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 				}
 				result.Warnings = append(result.Warnings, diffFileReadWarning(warningPath, detail))
 			}
-			if beforeMissing || afterMissing || beforeNonBlob || afterNonBlob || beforeOversize || afterOversize || beforeUnaddressable || afterUnaddressable {
+			if beforeMissing || afterMissing || beforeUnreadable || afterUnreadable || beforeNonBlob || afterNonBlob || beforeOversize || afterOversize || beforeUnaddressable || afterUnaddressable {
 				continue
 			}
 		}

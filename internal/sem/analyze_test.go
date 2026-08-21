@@ -855,6 +855,30 @@ func TestAnalyzeGitRangeMarksChangedGitlinkAsUnsupported(t *testing.T) {
 	}
 }
 
+func TestAnalyzeGitRangeReportsUnreadableBlobObject(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	baseBlob := gitInput(t, repo, "package p\nvar Value = 1\n", "hash-object", "-w", "--stdin")
+	missingOID := strings.Repeat("1", len(baseBlob))
+	baseTree := gitInput(t, repo, fmt.Sprintf("100644 blob %s\tfile.go%c", baseBlob, byte(0)), "mktree", "-z")
+	headTree := gitInput(t, repo, fmt.Sprintf("100644 blob %s\tfile.go%c", missingOID, byte(0)), "mktree", "-z", "--missing")
+
+	result, err := AnalyzeGitRange(t.Context(), repo, baseTree, headTree, nil)
+	if err != nil {
+		t.Fatalf("analyze listed unreadable blob: %v", err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("unreadable blob produced semantic changes: %#v", result.Files)
+	}
+	for _, warning := range result.Warnings {
+		if warning.Code == "E_FILE_READ" && warning.FilePath == "file.go" &&
+			warning.Detail == "head version references an unreadable Git blob object" {
+			return
+		}
+	}
+	t.Fatalf("unreadable blob had no accurate E_FILE_READ warning: %#v", result.Warnings)
+}
+
 func TestAnalyzeGitRangeKeepsShebangRoutableChangedFiles(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
