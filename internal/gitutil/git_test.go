@@ -475,12 +475,60 @@ func TestBatchFileReaderReadsMultipleFilesFromHead(t *testing.T) {
 
 type countingWriteCloser struct {
 	io.WriteCloser
-	writes int
+	commands    []string
+	beforeWrite func(string)
 }
 
 func (w *countingWriteCloser) Write(p []byte) (int, error) {
-	w.writes++
+	command := string(p)
+	if w.beforeWrite != nil {
+		w.beforeWrite(command)
+	}
+	w.commands = append(w.commands, command)
 	return w.WriteCloser.Write(p)
+}
+
+func (w *countingWriteCloser) countCommands(prefix string) int {
+	count := 0
+	for _, command := range w.commands {
+		if strings.HasPrefix(command, prefix) {
+			count++
+		}
+	}
+	return count
+}
+
+func TestNewBatchFileReaderReportsUnsupportedBatchCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX shell shim")
+	}
+	binDir := t.TempDir()
+	fakeGit := filepath.Join(binDir, "git")
+	const script = `#!/bin/sh
+if [ "$1" = "rev-parse" ] && [ "$2" = "--show-prefix" ]; then
+	printf '\n'
+	exit 0
+fi
+if [ "$1" = "cat-file" ] && [ "$2" = "--batch-command" ]; then
+	printf '%s\n' 'error: unknown option batch-command' >&2
+	exit 129
+fi
+exit 2
+`
+	if err := os.WriteFile(fakeGit, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	reader, err := NewBatchFileReader(t.Context(), t.TempDir(), "HEAD")
+	if reader != nil {
+		_ = reader.Close()
+		t.Fatal("unsupported batch-command returned a reader")
+	}
+	if err == nil || !strings.Contains(err.Error(), "Git 2.36 or newer required") ||
+		!strings.Contains(err.Error(), "unknown option batch-command") {
+		t.Fatalf("unsupported batch-command error = %v, want version requirement and Git diagnostic", err)
+	}
 }
 
 func TestBatchFileReaderRejectsNonBlobBeforeRequestingContent(t *testing.T) {
@@ -509,11 +557,11 @@ func TestBatchFileReaderRejectsNonBlobBeforeRequestingContent(t *testing.T) {
 	if content, ok, err := reader.ReadFile("module.py"); err != nil || ok || content != "" {
 		t.Fatalf("gitlink batch read = (%q, %v, %v), want metadata-only refusal", content, ok, err)
 	}
-	if contentWrites.writes != 0 {
-		t.Fatalf("gitlink issued %d content requests, want none", contentWrites.writes)
+	if got := contentWrites.countCommands("contents "); got != 0 {
+		t.Fatalf("gitlink issued %d content requests, want none: %#v", got, contentWrites.commands)
 	}
-	if reader.checkCmd == nil {
-		t.Fatal("gitlink read did not use the metadata batch")
+	if got := contentWrites.countCommands("info "); got != 1 {
+		t.Fatalf("gitlink issued %d metadata requests, want one: %#v", got, contentWrites.commands)
 	}
 
 	// A real blob still reaches the content batch. The one-byte ceiling makes it
@@ -521,12 +569,159 @@ func TestBatchFileReaderRejectsNonBlobBeforeRequestingContent(t *testing.T) {
 	if content, ok, err := reader.ReadFile("plain.py"); err != nil || ok || content != "" {
 		t.Fatalf("oversized blob batch read = (%q, %v, %v), want refusal", content, ok, err)
 	}
-	if contentWrites.writes != 1 {
-		t.Fatalf("blob issued %d content requests, want one", contentWrites.writes)
+	if got := contentWrites.countCommands("contents "); got != 1 {
+		t.Fatalf("blob issued %d content requests, want one: %#v", got, contentWrites.commands)
 	}
 	if _, ok := reader.OversizeBlob("plain.py"); !ok {
 		t.Fatal("blob preflight bypassed the existing oversize digest registry")
 	}
+}
+
+func TestBatchFileReaderPinsReplaceRefsAcrossInfoAndContents(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	const content = "package pinned\n"
+	if err := os.WriteFile(filepath.Join(repo, "file.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "file.go")
+	git(t, repo, "commit", "-m", "replace-race fixture")
+	originalOID := gitOutput(t, repo, "rev-parse", "HEAD:file.go")
+	replacementLeaf := gitInputOutput(t, repo, "replacement\n", "hash-object", "-w", "--stdin")
+	replacementTree := gitInputOutput(
+		t,
+		repo,
+		fmt.Sprintf("100644 blob %s\tleaf%c", replacementLeaf, byte(0)),
+		"mktree", "-z",
+	)
+
+	reader, err := NewBatchFileReader(t.Context(), repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
+	writes := &countingWriteCloser{WriteCloser: reader.stdin}
+	reader.stdin = writes
+	moved := false
+	writes.beforeWrite = func(command string) {
+		if moved || !strings.HasPrefix(command, "contents ") {
+			return
+		}
+		moved = true
+		// This runs after the info response but before contents reaches Git. With
+		// separate metadata/content processes, the content process sees this new
+		// replacement and returns a tree body for an object checked as a blob.
+		git(t, repo, "update-ref", "refs/replace/"+originalOID, replacementTree)
+	}
+
+	got, ok, err := reader.ReadFile("file.go")
+	if err != nil || !ok || got != content {
+		t.Fatalf("read across moving replacement = (%q, %v, %v), want original blob", got, ok, err)
+	}
+	if !moved {
+		t.Fatal("fixture did not move the replacement between info and contents")
+	}
+	if got := writes.countCommands("info "); got != 1 {
+		t.Fatalf("metadata commands = %d, want one: %#v", got, writes.commands)
+	}
+	if got := writes.countCommands("contents "); got != 1 {
+		t.Fatalf("content commands = %d, want one original-blob request: %#v", got, writes.commands)
+	}
+	// The replacement target was a tree. Returning the original bytes and keeping
+	// the session usable proves that no non-blob body entered or desynchronized it.
+	again, ok, err := reader.ReadFile("file.go")
+	if err != nil || !ok || again != content {
+		t.Fatalf("read after moving replacement = (%q, %v, %v), want synchronized original blob", again, ok, err)
+	}
+}
+
+func TestLimitedFileReaderRechecksKnownOIDInContentSession(t *testing.T) {
+	t.Run("replacement becomes nonblob", func(t *testing.T) {
+		repo := t.TempDir()
+		git(t, repo, "init")
+		originalOID := gitInputOutput(t, repo, "package original\n", "hash-object", "-w", "--stdin")
+		rootTree := gitInputOutput(t, repo, fmt.Sprintf("100644 blob %s\tfile.go%c", originalOID, byte(0)), "mktree", "-z")
+		replacementLeaf := gitInputOutput(t, repo, "leaf\n", "hash-object", "-w", "--stdin")
+		replacementTree := gitInputOutput(t, repo, fmt.Sprintf("100644 blob %s\tleaf%c", replacementLeaf, byte(0)), "mktree", "-z")
+
+		reader := NewLimitedFileReader(t.Context(), repo, rootTree, 1024)
+		t.Cleanup(func() { _ = reader.Close() })
+		if err := reader.Prime([]string{"file.go"}); err != nil {
+			t.Fatal(err)
+		}
+		git(t, repo, "update-ref", "refs/replace/"+originalOID, replacementTree)
+		content, err := NewBatchFileReader(t.Context(), repo, rootTree)
+		if err != nil {
+			t.Fatal(err)
+		}
+		content.SetMaxBytes(1024)
+		writes := &countingWriteCloser{WriteCloser: content.stdin}
+		content.stdin = writes
+		reader.content = content
+
+		result, err := reader.ReadFile("file.go")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Status != LimitedFileUnreadable {
+			t.Fatalf("known OID replaced by tree = %#v, want unreadable without a body request", result)
+		}
+		if got := writes.countCommands("info "); got != 1 {
+			t.Fatalf("known-OID metadata commands = %d, want one: %#v", got, writes.commands)
+		}
+		if got := writes.countCommands("contents "); got != 0 {
+			t.Fatalf("known OID replaced by tree issued %d content commands, want zero: %#v", got, writes.commands)
+		}
+	})
+
+	t.Run("replacement becomes oversized blob", func(t *testing.T) {
+		repo := t.TempDir()
+		git(t, repo, "init")
+		originalOID := gitInputOutput(t, repo, "small\n", "hash-object", "-w", "--stdin")
+		rootTree := gitInputOutput(t, repo, fmt.Sprintf("100644 blob %s\tfile.go%c", originalOID, byte(0)), "mktree", "-z")
+		oversizedContent := strings.Repeat("replacement line\n", 64)
+		replacementOID := gitInputOutput(t, repo, oversizedContent, "hash-object", "-w", "--stdin")
+		const ceiling = int64(32)
+
+		reader := NewLimitedFileReader(t.Context(), repo, rootTree, ceiling)
+		t.Cleanup(func() { _ = reader.Close() })
+		if err := reader.Prime([]string{"file.go"}); err != nil {
+			t.Fatal(err)
+		}
+		git(t, repo, "update-ref", "refs/replace/"+originalOID, replacementOID)
+		content, err := NewBatchFileReader(t.Context(), repo, rootTree)
+		if err != nil {
+			t.Fatal(err)
+		}
+		content.SetMaxBytes(ceiling)
+		writes := &countingWriteCloser{WriteCloser: content.stdin}
+		content.stdin = writes
+		reader.content = content
+
+		result, err := reader.ReadFile("file.go")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Status != LimitedFileOversize || result.Bytes != int64(len(oversizedContent)) {
+			t.Fatalf("known OID replaced by oversized blob = %#v, want exact oversize result", result)
+		}
+		digest, ok := content.OversizeBlob("file.go")
+		if !ok {
+			t.Fatal("replacement oversize blob had no digest")
+		}
+		wantHash := sha256.Sum256([]byte(oversizedContent))
+		if digest.Bytes != int64(len(oversizedContent)) || digest.Hash != hex.EncodeToString(wantHash[:]) || digest.Lines != 64 {
+			t.Fatalf("replacement oversize digest = %#v, want exact bytes/hash/lines", digest)
+		}
+		if got := writes.countCommands("info "); got != 1 {
+			t.Fatalf("oversize known-OID metadata commands = %d, want one: %#v", got, writes.commands)
+		}
+		if got := writes.countCommands("contents "); got != 1 {
+			t.Fatalf("oversize known-OID content commands = %d, want one digest stream: %#v", got, writes.commands)
+		}
+	})
 }
 
 func TestBatchFileReaderRejectsInvalidPathWithoutDesync(t *testing.T) {

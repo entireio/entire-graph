@@ -879,6 +879,33 @@ func TestAnalyzeGitRangeReportsUnreadableBlobObject(t *testing.T) {
 	t.Fatalf("unreadable blob had no accurate E_FILE_READ warning: %#v", result.Warnings)
 }
 
+func TestAnalyzeGitRangeRecoversFromNoncanonicalTreePath(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	baseBlob := gitInput(t, repo, "package p\nvar Value = 1\n", "hash-object", "-w", "--stdin")
+	headBlob := gitInput(t, repo, "package p\nvar Value = 2\n", "hash-object", "-w", "--stdin")
+	baseSubtree := gitInput(t, repo, fmt.Sprintf("100644 blob %s\tfile.go%c", baseBlob, byte(0)), "mktree", "-z")
+	headSubtree := gitInput(t, repo, fmt.Sprintf("100644 blob %s\tfile.go%c", headBlob, byte(0)), "mktree", "-z")
+	baseTree := gitInput(t, repo, fmt.Sprintf("040000 tree %s\t..%c", baseSubtree, byte(0)), "mktree", "-z")
+	headTree := gitInput(t, repo, fmt.Sprintf("040000 tree %s\t..%c", headSubtree, byte(0)), "mktree", "-z")
+
+	result, err := AnalyzeGitRange(t.Context(), repo, baseTree, headTree, nil)
+	if err != nil {
+		t.Fatalf("analyze noncanonical raw tree path: %v", err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("noncanonical path produced semantic changes: %#v", result.Files)
+	}
+	for _, warning := range result.Warnings {
+		if warning.Code == "E_FILE_READ" && warning.Severity == "error" &&
+			warning.FilePath == "../file.go" &&
+			warning.Detail == "base and head paths are not canonical Git tree paths" {
+			return
+		}
+	}
+	t.Fatalf("noncanonical path had no recoverable E_FILE_READ warning: %#v", result.Warnings)
+}
+
 func TestAnalyzeGitRangeKeepsShebangRoutableChangedFiles(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
