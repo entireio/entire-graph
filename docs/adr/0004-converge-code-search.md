@@ -1,0 +1,376 @@
+# RFD 0004 - Converge code search on one engine, deprecate duplicates
+
+Status: Proposed (RFC, open for comment). P2.M1, COR-786
+Date: 2026-08-21
+
+## TLDR
+
+We maintain two independent tree-sitter extractor stacks and have no single front door for code
+search. This RFD proposes **Option A**: entire-graph becomes the precision symbol **producer**,
+emitting a SCIP index per `repo@commit` that peregrine ingests into its already-reserved
+`SymbolSource::Scip` / `SymbolPrecision::Semantic` slots. peregrine stays the find-text-fast
+**serving** engine and the single front door. entire-graph stays the understand-structure engine
+(relations, impact, brain). Each retires its duplicate half: peregrine stops owning symbol
+precision, entire-graph stops building a search engine.
+
+Embedding backbone consolidation is **not** in scope. That is COR-788 and gets its own RFD.
+
+## Context
+
+### The honest inventory
+
+| System | Owner | Lang | Role today | Backbone | Deployed? |
+|---|---|---|---|---|---|
+| **peregrine** | Evis | Rust | Lexical code search: trigram index, regex, symbol/fuzzy search, cross-file go-to-def | Trigram postings (Roaring), zstd content. No vectors | Staging only, `eks-staging-us-west-2`, ~114 repos, single replica |
+| **entire-graph** | Us | Go | Structural code graph: typed symbols + 30 relation types, ranked search, impact, diff | Tree-sitter snapshot, tree-hash-keyed cache. No vectors | One-shot local binary, plus brain ingestion |
+| **entire-search** | Alisha | - | Product-entity search over transcript chunks, commits, PRs. Deliberately strips code | Cohere embed-v4, 1536-dim, Turbopuffer | Yes, serves entire.io |
+| **librarian** | Alex | - | Comms and docs knowledge. No code | nomic-768, pgvector | Yes |
+
+entire-search and librarian are prior verified context. Neither is code search, neither overlaps
+here, and neither is touched by this RFD.
+
+### Duplicate 1: two tree-sitter extractor stacks
+
+peregrine ships 15 per-language extractors plus import resolvers (`src/symbols/mod.rs:8-22`,
+`:25-39`). entire-graph ships a semantic path for **36** languages (`docs/language-support.md`),
+a strict superset: all 15 of peregrine's tier-1 languages appear in it. Two teams pay grammar
+maintenance and upgrade churn for an overlapping set, and the smaller stack is the one users hit.
+
+The duplication already costs coverage, not just effort. **peregrine's Kotlin support does not
+work.** `src/symbols/parser.rs:15-34` wires only 14 grammars; Kotlin is absent with the comment
+"tree-sitter-kotlin 0.3.x links against tree-sitter 0.20 (incompatible with 0.26)" (`:27`).
+Unmapped languages return `None` (`:6-11`) and `extract_symbols` returns empty
+(`extract.rs:93-96`), so `lang_kotlin.rs` is unreachable and every Kotlin file yields zero
+symbols, despite the README advertising Kotlin as tier 1. entire-graph extracts Kotlin today.
+
+Precision is the larger gap, and peregrine's source says so. It has **two** resolvers:
+
+- **Index-time, persisted, crude.** `batch_resolve_references` (`src/symbols/resolve.rs:122-179`)
+  populates `resolved_to` in every shipped index (called from `src/index/writer.rs:170`, `:416`,
+  `src/index/incremental.rs:1121`). Its own comment: "ponytail: uses simple name-matching +
+  same-directory preference heuristic" (`resolve.rs:118`). Repo-wide `name -> defs` map, prefer a
+  same-directory candidate, else **pick the first arbitrarily** (`:174-176`). No import parsing,
+  no qualifier or type awareness.
+- **Query-time, not persisted, better.** `resolve_file_references` (`:185-380`) parses imports,
+  filters external packages and disambiguates by qualifier, but runs one file per request behind
+  `POST /api/resolve` (`src/server/http.rs:1296`), recomputed every call.
+
+`README.md` describes only the second and claims resolution is "query-time, not index-time,"
+which is misleading about what ships in the index. The honest statement: peregrine's persisted
+resolution is name-based and heuristic with arbitrary tiebreaks. Its wanted upgrade is documented
+as expensive at build time (`resolve.rs:119-121`), and is exactly the work entire-graph already
+does elsewhere.
+
+### Duplicate 2: entire-graph is starting to build a search engine
+
+Branch `codex/eg-graphify-lexical-sidecar` (commit `5442ed87`, not on main, divergent) adds a real
+**trigram-postings on-disk lexical index**: `internal/sem/search_lexical_index.go` (984 lines)
+plus `search_source_pack.go` (455 lines), magic headers `EGLEXI1` / `EGPOST1` (`:35-36`),
+artifacts `manifest.json` / `lexicon.bin` / `postings.bin` (`:26-28`). Confirmed dormant, zero
+callers in the query path. That is a second trigram engine, in a second language, inside the repo
+whose own boundary doc says serving is not its job. This RFD is the decision that closes it.
+
+### Duplicate 3: no single code-search front door
+
+peregrine is reachable through the entire-api gateway as upstream `"peregrine"`
+(`entire-api/internal/server/api.go:399`), spec-merged under a `/search` prefix (`:451-457`), and
+surfaced to agents as `search_entire_code` (`mcp/internal/entiremcp/curatedtools.go:619-666`).
+entire-graph reaches agents by a disjoint route: a shell-out binary and brain ingestion.
+`grep -rni "entire-graph"` across the MCP repo returns **zero hits**. Callers pick a door by
+accident, and the two doors disagree about what a symbol is.
+
+### The seam already exists, and was designed on purpose
+
+peregrine reserved an external precision producer from the start: `src/symbols/types.rs:111-115`
+`enum SymbolSource { TreeSitter = 0, Scip = 1 }`, `:118-122`
+`enum SymbolPrecision { Syntax = 0, Semantic = 1 }`, `:137-138` both carried on every `Symbol`,
+`:265-276` `deserialize` already mapping byte `1` to `Scip` and `Semantic`. Deliberately, per its
+own spec: "source and precision fields exist to support future SCIP overlay without schema
+changes" and "Resolution ... is explicitly out of scope for v1 (requires import analysis or SCIP)"
+(`docs/superpowers/specs/2026-03-31-symbolic-search-design.md:45,48`), with `docs/design.md:27`
+recording "SCIP evaluated later." Nothing constructs `SymbolSource::Scip` today. It is a reserved
+slot waiting for a producer.
+
+The producer exists but is **not merged**: PR #97 (`ec/candidate-scip-export-v2`, ashtom, OPEN,
+`CONFLICTING` with main, 0 reviews) adds `snapshot --format scip` emitting a real `scippb.Index`
+via `github.com/scip-code/scip/bindings/go/scip v0.9.0`, deterministically marshalled
+(`internal/sem/compact_snapshot.go:454,462`), with unsupported relations reported in a JSON stderr
+omission note.
+
+## Options considered
+
+### Option A: peregrine absorbs entire-graph's extraction via a SCIP feed
+
+One extractor, two engines. entire-graph produces SCIP per `repo@commit`; peregrine ingests it
+into `.pg` section 6 as `Scip` / `Semantic`, keeping its native layer as fallback. Cons:
+
+- Adds a cross-repo build dependency and a new failure mode, a stale or absent feed. Needs an
+  explicit freshness contract and fallback or quality silently regresses.
+- **SCIP is a lossy projection.** Only 15 of entire-graph's 30 relation types map to SCIP
+  references (`compact_snapshot.go:540-547`); the rest drop into `UnsupportedRelationCounts`
+  (`:427-429`). Only `Import`, `WriteAccess`, `ReadAccess` get explicit roles (`:549-560`); CALLS,
+  EXTENDS, IMPLEMENTS emit role 0. entire-graph cannot retire its native snapshot format.
+- **The monikers are not portable.** The exporter hardcodes scheme `"entire-graph"`, package
+  manager `"."`, package name = repo key (`:660-664`), and embeds `shortDigest(record.ID)`, an
+  internal ID, in the descriptor (`:613-636`). Syntactically valid SCIP carrying
+  entire-graph-specific identity, not monikers another indexer resolves to the same symbol.
+- PR #97 "materializes one complete SCIP index in memory before writing it," an unvalidated scale
+  risk on a monorepo. It also couples release cadences: peregrine's build waits on an
+  entire-graph run.
+
+### Option B: entire-graph becomes the search engine too
+
+Delete peregrine, serve everything from entire-graph. Cons, close to disqualifying:
+
+- It contradicts a boundary already ratified in this repo. `docs/brain-and-graph-boundaries.md`
+  declares the MCP server surface "Brain's job" and multi-repo / cross-project graph "Brain's
+  job," because "there is no equivalent identity for 'nine repositories as of roughly now'." Code
+  search is inherently multi-repo fan-out.
+- entire-graph is a one-shot, no-egress binary, not a serving system. Caches key on the git
+  **tree** hash, "deliberately tree-only, not commit-keyed"
+  (`internal/sem/search_cache.go:485-489`), monolithic, with **no incremental indexing**: a
+  one-character change alters the tree hash and forces a full rebuild. Per-file invalidation is
+  "unbuilt, not declined" per the boundary doc.
+- It discards a working, benchmarked engine. peregrine indexes are roughly 4.9x smaller than
+  Zoekt's with about 4x faster exact search (README), it does `git diff-tree` incremental indexing
+  with surgical section splices (`src/index/patch.rs:1-6`), and it is already wired through the
+  gateway and MCP. Rebuilding trigram search, regex literal pruning, mmap serving and an anon
+  gate in Go is quarters of work to reach parity we already have.
+
+### Option C: status quo plus contracts
+
+Keep both extractors, write a compatibility contract, let each engine serve its own door. Cons:
+
+- It removes nothing, so it does not satisfy COR-786. Maintenance cost is unchanged and grows with
+  every grammar bump. Kotlin stays broken in peregrine.
+- The stacks keep drifting on symbol identity, and a contract with no shared producer has no
+  enforcement point. Callers still have to know which door to knock on.
+- Its single honest advantage is that it carries no migration risk.
+
+## Decision: Option A
+
+**entire-graph becomes the precision symbol producer. peregrine remains the serving engine and the
+single front door.** This is the only option where each system keeps the half it is demonstrably
+good at and drops the half it duplicates:
+
+- peregrine is a serving system with a deployed footprint, incremental indexing, and an in-source
+  admission that its persisted resolution is an arbitrary-tiebreak heuristic. It should stop
+  owning symbol precision.
+- entire-graph is a deterministic producer with 36 semantic languages, a frozen `1.x` schema
+  contract (`docs/adr/0001-ga-schema-contract.md`), and an explicit written boundary against
+  becoming a server. It should stop growing a serving surface and sell its precision to the engine
+  that already serves.
+
+Neither engine is deleted. The **duplicate halves** are.
+
+### The interface
+
+**Artifact.** One SCIP protobuf index per `repo@commit` from `entire-graph snapshot --format scip`
+(PR #97), plus its JSON omission note as a required sidecar. The note is contract, not debug
+output: it declares which relations and languages were skipped, which is what lets peregrine
+decide per-language whether to trust the feed.
+
+**Identity, and an addressing mismatch to resolve.** peregrine's `.pg` header carries `org_id`,
+`repo_name`, `repo_id` and `indexed_commit: [u8; 20]` (`src/index/format.rs:33-44`), so the join
+key exists consumer-side. But the **S3 object is repo-scoped, not commit-scoped**: key
+`{repo_id[0..2]}/{repo_id}.pg` (`src/server/s3_store.rs:14-24`), overwritten on every rebuild
+(`src/server/index_manager.rs:704-716`). There is no commit-addressed index history, and
+entire-graph dedupes on tree hash rather than commit. The contract: the feed is addressed by
+`(repo_id, commit_sha)`, the producer may dedupe by tree hash underneath, and the consumer
+validates the feed against the `indexed_commit` it is currently building. The feed store is
+commit-versioned even though the `.pg` store is not.
+
+**Delivery.** The artifact lands in the same object store as the `.pg` index, written by the
+producer and read by the indexer tier (`deploy/fleet/apps/peregrine/base/index-deployment.yaml`)
+at build time. peregrine then writes `SectionType::SymbolTable = 6` (`src/index/format.rs:24-31`)
+from the feed instead of from its own extractors. **No `.pg` version bump is required**: `VERSION`
+stays `1` (`:6`), the enum values are already defined and parsed, and TOC sections are
+independently addressable and CRC32-checksummed (`:52-58`), so section 6 can be rewritten alone.
+
+**Freshness contract.**
+1. A feed is valid only for the exact `indexed_commit` being built. Any other commit is ignored,
+   never approximated. Staleness is a hard miss.
+2. Per-language trust is driven by the omission note. A language reported skipped or degraded
+   falls back for that language only, not for the whole index.
+3. Relation loss is expected and bounded: the feed supplies **symbols and resolution**, not
+   relations. entire-graph's native snapshot stays the source of truth for the graph.
+4. The feed is advisory to availability. peregrine must build a complete, servable index with the
+   feed entirely absent.
+
+**Fallback.** peregrine's native tree-sitter layer is retained and stays the default when no valid
+feed is present, emitting `TreeSitter` / `Syntax` exactly as today. `precision` becomes a queryable
+field, so callers needing semantic guarantees can filter on it, and mixed-precision indexes are
+legal and honest rather than hidden.
+
+### Migration steps and owners
+
+| # | Step | Owner | Gate |
+|---|---|---|---|
+| 1 | Rebase and merge PR #97, promote `--format scip` from experimental, freeze the omission-note schema | Us | Byte-identical export on repeat runs, already shown in PR #97 |
+| 2 | Publish per-language SCIP coverage matrix vs peregrine's tier-1 15 | Us | Reviewed by Evis |
+| 3 | Decide the moniker scheme (open question 2) | Us + Evis | Written into the contract |
+| 4 | Build the parity harness | TBD (open question 5) | Reproducible by both sides |
+| 5 | Add SCIP ingestion to peregrine's index writer, per-repo flag, default off | Evis | Feed-off path byte-identical to today |
+| 6 | Run parity on N repos, feed-on vs feed-off | Joint | Recall no worse, precision better, budgets held |
+| 7 | Flip default to feed-on per language as each clears parity | Evis | Per-language, reversible |
+| 8 | Wire the converged surface into the single MCP front door | Us + Alisha | Follows the `brain_*` plane pattern, P2.M3 |
+| 9 | Remove peregrine's duplicate extractors at feed-on parity | Evis | Two release cycles feed-on, no rollback |
+
+### What "deprecate duplicates" concretely removes, and when
+
+Nothing is removed before step 7 has held for two release cycles. Then:
+
+- **peregrine**: the per-language extractors and import resolvers (`src/symbols/lang_*.rs`,
+  `src/symbols/imports_*.rs`) for every language at feed-on parity, plus the index-time heuristic
+  `batch_resolve_references` (`resolve.rs:122`) once no shipped language depends on it. Up to 15
+  extractor modules and 15 import-resolver modules, including `lang_kotlin.rs`, dead today.
+  tree-sitter stays only for languages still on the fallback path. `resolve_file_references` stays
+  as the query-time path for repos with no feed.
+- **entire-graph**: branches `codex/eg-graphify-lexical-sidecar` and
+  `codex/eg-graphify-query-service` are closed rather than merged.
+  `docs/brain-and-graph-boundaries.md` gains a verdict entry recording that full-text and
+  multi-repo code search is peregrine's job. entire-graph's own `search` stays, scoped to
+  single-repo structural ranking, as `docs/search.md` already describes.
+- **Front door**: `search_entire_code` becomes the one code-search tool. Its dropped `usages` mode
+  should be reinstated: the MCP ADR recorded "peregrine has no such endpoint today"
+  (`docs/adrs/20260721-mcp-curated-product-surface.md:145`), now stale, since `/api/usages` exists
+  at `peregrine/src/server/http.rs:1688` and entire-api allowlists `/search/api/usages` (`:458`).
+
+### Test and rollout gates
+
+- **Corpus**: at least 10 repos spanning all peregrine tier-1 languages, including one monorepo
+  large enough to test PR #97's in-memory materialization.
+- **Primary metric**: symbol recall and precision of the SCIP-fed symbol table against peregrine's
+  native layer, per language, definitions and references scored separately. Cross-file
+  `resolved_to` correctness scored against hand-labelled ground truth, since that is the field the
+  heuristic is weakest on and the one a semantic producer should most improve.
+- **Non-regression**: recall must not drop in any language. A precision gain that costs recall is
+  a fail, because users notice a missing hit more than a spurious one.
+- **Budgets**: `.pg` size delta, index build wall-clock delta, p50/p99 query latency, each with a
+  ceiling agreed with Evis before the run, not after.
+- **Rollout**: per-repo flag, then per-language default, then global, each stage reversible by
+  clearing the flag and falling back to the native layer with no reindex. Feed-off stays a
+  permanently supported configuration, not a transitional state.
+
+### Non-goals
+
+- **Embedding backbone convergence.** Cohere embed-v4/Turbopuffer versus nomic-768/pgvector is
+  COR-788, separate RFD. Nothing here adds vectors; both engines in scope are non-vector and stay
+  that way.
+- **Prose and knowledge search.** entire-search and librarian keep their corpora and owners.
+- **Not an entire-graph deprecation.** Its relation graph, impact analysis, diff and brain feed are
+  unaffected and remain the reason it exists.
+- **Not an MCP surface design.** The single surface is P2.M3; this RFD only commits to what sits
+  behind it.
+
+## Open questions
+
+1. **SCIP coverage per language.** 36 semantic languages against peregrine's 15, but the
+   projection is lossier than the native snapshot and its per-language fidelity is unmeasured.
+   Step 2 answers this and could shrink the set that ever reaches feed-on. Doc drift to reconcile:
+   `docs/language-support.md` says 185 supported / 36 semantic, live `capabilities --json` says
+   179 / 35.
+2. **Symbol identity.** The exporter emits entire-graph-internal identity inside SCIP syntax
+   (`compact_snapshot.go:613-636,660-664`). peregrine joins on name plus position today, so the
+   initial feed works, but this blocks cross-repo and cross-tool navigation later. Real
+   package-manager monikers now, or internal IDs and revisit? Decide before step 5.
+3. **Index size and latency budgets.** Semantic symbols carry more data per symbol. peregrine's
+   headline is 4.9x smaller than Zoekt; decide how much of that lead is for sale before spending it.
+4. **In-memory materialization.** PR #97 builds the full SCIP index in memory. Unknown whether that
+   survives our largest monorepo. Measure before step 5.
+5. **Who owns the parity harness?** It must be trusted by both sides, which argues against either
+   side owning it alone. Unassigned, and the biggest scheduling risk here.
+6. **Producer runtime placement.** Inside peregrine's indexer tier, or a separate job publishing to
+   the object store? Affects failure isolation and paging.
+7. **Feed store addressing.** The `.pg` store is repo-keyed and overwritten in place while the feed
+   is commit-keyed. Commit-versioned feed store with its own retention, or repo-keyed and accept
+   that a rebuild races the feed?
+8. **Staging to production.** peregrine is staging-only, single replica, no live autoscaling per
+   `docs/go-live-plan.md`, no production cluster overlay in the repo. Convergence assumes it
+   reaches production. If that slips, COR-786 lands on an engine no user can reach.
+
+## Consequences
+
+- One tree-sitter extraction stack of record, maintained by one team, covering a superset of
+  today's languages, and fixing Kotlin as a side effect.
+- Symbol precision becomes an explicit queryable property rather than an undocumented heuristic.
+- peregrine gains a cross-repo build dependency it did not have, mitigated by a mandatory
+  always-supported fallback.
+- entire-graph gains a second consumer contract alongside brain. ADR 0001's additive-only `1.x`
+  rules should extend to the SCIP projection and its omission note.
+- COR-786 closes when steps 1 through 7 land and step 9 removes the first duplicate extractor.
+  Step 8 continues into P2.M3.
+
+## Appendix: pointers
+
+**peregrine** (`entirehq/peregrine`, Rust, owner evisdren, latest `b55bfce` / PR #180)
+
+- **Format**: `src/index/format.rs:5-6` `MAGIC = b"PRGN"`, `VERSION: u32 = 1`; `:24-31`
+  `SectionType` (SymbolTable = 6; its `// Future` comment is stale, it is live per
+  `writer.rs:577,991`, `reader.rs:485-491`); `:33-44` `Header` incl. `indexed_commit: [u8; 20]`;
+  `:52-58` `TocEntry`, 24 bytes, CRC32 per section
+- **Storage**: `src/server/s3_store.rs:14-24` key `{repo_id[0..2]}/{repo_id}.pg`;
+  `index_manager.rs:704-716` rebuild overwrites it, so the index is repo-addressed, not
+  commit-addressed; `:563-566` S3 cold-start seed. `reader.rs:152-156` mmap, `registry.rs:41-51`
+  readers stay resident; `incremental.rs:2-4` git diff-tree incremental, `patch.rs:1-6` splices
+- **Reserved seam**: `src/symbols/types.rs:111-115` `SymbolSource`, `:118-122` `SymbolPrecision`,
+  `:137-138` per-symbol fields, `:265-276` deserialize maps byte 1 to `Scip` / `Semantic`,
+  `:232-241` older indexes end after the precision byte. Deliberate per
+  `docs/superpowers/specs/2026-03-31-symbolic-search-design.md:45,48` and `docs/design.md:27`.
+- **Extractors**: `src/symbols/mod.rs:8-22` 15 `lang_*.rs`, `:25-39` import resolvers;
+  `parser.rs:15-34` only 14 grammars wired, `:27` Kotlin excluded, `:6-11` unmapped returns
+  `None`, `extract.rs:93-96` yields no symbols
+- **Resolvers**: `resolve.rs:118` "ponytail" admission; `:122-179` `batch_resolve_references`,
+  `:174-176` arbitrary tiebreak, called from `writer.rs:170,416`, `incremental.rs:1121`;
+  `:185-380` `resolve_file_references`, query-time only, sole caller `http.rs:1296`.
+  `serialize.rs:220-227` SymbolTable header 7x u32 with `OLD_HEADER_SIZE=20` /
+  `V2_HEADER_SIZE=24` still supported: the sub-format evolved three times under one unchanged
+  top-level `VERSION=1`.
+- **Serving**: `src/server/http.rs:1679-1692` routes (`/api/symbols` :1687, `/api/usages` :1688,
+  `/api/resolve` :1689, `/api/fuzzy` :1690); `proto/peregrine/v1/peregrine.proto:4-11` gRPC has 7
+  RPCs and does **not** expose symbols, usages or resolve, so HTTP is a superset.
+  `src/search/ranking.rs:181-219` already uses symbols: +5.0 definition boost.
+- **Deploy**: `deploy/fleet/apps/peregrine/base/` index-deployment, query-statefulset, index-hpa,
+  query-hpa; only overlay `deploy/fleet/clusters/nonprod/eks-staging-us-west-2/peregrine.yaml`.
+  `docs/go-live-plan.md:1-30` staging behind envoy, ~114 repos, single replica; gaps: no
+  multi-replica or sharding, no load testing, no HPA. Re-index is NATS-driven from entiredb.
+
+**entire-graph** (`entireio/entire-graph`, Go)
+
+- `internal/sem/provider.go:34` `SchemaVersion = "1.1"`; `:50-81` the 30 relation types.
+  `docs/adr/0001-ga-schema-contract.md` `1.x` frozen GA, additive-only minors, tolerant readers.
+- `docs/adr/0002-committed-tree-cache-key.md` and `internal/sem/search_cache.go:485-489`
+  "deliberately tree-only, not commit-keyed"; `records_cache.go:89-90` cache paths. No
+  incremental reuse.
+- `docs/language-support.md` 185 supported / 36 semantic / 149 inventory-only, covering all 15 of
+  peregrine's tier-1 set; live `capabilities --json` reports 179 / 35 (drift, open question 1).
+  `docs/search.md` search is hybrid lexical plus graph expansion, single `--repo`, byte-budgeted.
+- `docs/brain-and-graph-boundaries.md` MCP surface and multi-repo graph are "Brain's job";
+  per-file incremental invalidation is "unbuilt, not declined".
+- PR #97 `ec/candidate-scip-export-v2`, OPEN, `CONFLICTING`, 0 reviews. `internal/cli/root.go:255`
+  `--format scip`, `:262-269` snapshot-mode only. `internal/sem/compact_snapshot.go:454,462`
+  deterministic marshal; `:345-365` Documents; `:384-404` SymbolInformation and definition
+  occurrences; `:407-420` external symbols; `:540-547` only 15 of 30 relations map; `:549-560`
+  only Import/WriteAccess/ReadAccess get roles; `:427-429` `UnsupportedRelationCounts`;
+  `:613-636,660-664` entire-graph-specific monikers. `go.mod:6` `scip-code/scip/bindings/go/scip
+  v0.9.0`.
+- Branch `codex/eg-graphify-lexical-sidecar` commit `5442ed87`, not on main:
+  `internal/sem/search_lexical_index.go:35-36` `EGLEXI1`/`EGPOST1`, `:26-28` postings artifacts,
+  `:657,751` trigram API. Zero callers in the query path.
+- No SCIP on main: `grep -rin scip internal/ cmd/` returns only unrelated substring matches.
+  Current CLI is `entire graph ...`; `entire sem ...` is the deprecated old name.
+
+**entire-api / mcp** (the front door, and where the P2.M3 surface lands)
+
+- `entire-api/internal/server/api.go:399` `AnonGate{ Upstream: "peregrine", ... }`; `:451-457`
+  peregrine's OpenAPI merged under a `/search` prefix, failing closed on rename; `:458`
+  `anonSearchRoutes = {"/search/api/symbols", "/search/api/usages"}`
+- `mcp/internal/entiremcp/curatedtools.go:619-666` `search_entire_code`: `content` to
+  `/search/api/search`, `files`/`symbols` to `/search/api/fuzzy`, resolving to the storage ULIDs
+  peregrine keys on; `:55` `codeSearchUnavailable`, peregrine "staging-only today".
+  `docs/adrs/20260721-mcp-curated-product-surface.md:100-105` decision 10; `:145` `usages` dropped
+  as unavailable, now stale.
+- Surface pattern to follow, PR #41 brain tools: `braintools.go:123-133` `brainPlane`, `:393-420`
+  `withBrainRepo` adapter, `:299-369` `registerBrainTools`, registered once at `server.go:293`;
+  shared routing and auth via `entireAPIPlane` at `gitplane.go:41-61`.
+- `grep -rni "entire-graph"` across the MCP repo returns zero hits.
