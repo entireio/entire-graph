@@ -1,0 +1,68 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "ca74a7b3e389",
+  "session_id": "01a0259a-31a2-78e0-9e26-29763d0c4fa3",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-21T20:32:03.350292Z",
+  "branch": "codex/pr-134-blocker-fix",
+  "checkpoints_count": 2,
+  "save_step_count": 1,
+  "files_touched": [
+    "AGENTS.md",
+    "README.md",
+    "docs/README.md",
+    "docs/adr/0002-committed-tree-cache-key.md",
+    "docs/adr/0003-working-tree-search-snapshot-cache.md",
+    "docs/adr/0004-working-tree-cache-security-boundary.md",
+    "docs/agents.md",
+    "docs/operations.md",
+    "docs/readme-plan.md",
+    "internal/cli/neighbors_callsite_test.go",
+    "internal/gitutil/worktree.go",
+    "internal/gitutil/worktree_test.go",
+    "internal/sem/search_cache.go",
+    "internal/sem/search_cache_worktree_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "ca0511860e36",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 487591,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 20614144,
+    "output_tokens": 81742,
+    "api_call_count": 188
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-21T20:32:03.222403Z",
+    "agent_lines": 244,
+    "agent_removed": 596,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 244,
+    "total_lines_changed": 840,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 239,
+      "agent_lines_removed": 567
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+PR number: 134
+
+Review this pull request thoroughly. Use sub-agents with the appropriate models. Work read-only unless I explicitly approve changes.
+
+1. Read the repository’s AGENTS.md and follow its review and verification guidance.
+2. Inspect the working tree first. Preserve unrelated or uncommitted work.
+3. Fetch and prune every remote branch, fetch the exact live PR head, switch the primary worktree to main, and fast-forward main only. If this cannot be done safely, stop and explain why.
+4. Record:
+    * Current main SHA
+    * Live PR head SHA
+    * Base and head branches
+    * Commits behind main
+    * Draft/merge status
+    * CI jobs associated with that exact head
+5. Use a temporary worktree pinned to the PR head for testing. Do not alter the contributor’s branch.
+6. Start with entire graph diff as directed by AGENTS.md, then inspect the focused source, callers, contracts, documentation, and tests. Walk me through what the PR changes and why.
+7. Review for correctness, unintended behavior changes, unsafe reads or writes, path and symlink handling, Git argument/configuration handling, caching and determinism, resource bounds, partial/error handling, and platform differences—only where relevant to the change.
+8. Do not trust green CI or automated review gates by themselves. Confirm that checks ran against the current head and inspect meaningful skips, build tags, platform guards, and t.Skip calls.
+9. Run:
+    * Focused tests for the changed behavior
+    * The relevant package suite
+    * The repository’s full prescribed check
+10. For bug fixes, whenever practical, demonstrate red/green behavior in isolation: the regression should fail against the parent implementation and pass at the PR head.
+11. If behavior is platform-specific, verify it natively. A green Windows/Linux job does not count if the relevant test was skipped. Ask before provisioning any billable cloud resources.
+12. Ask Claude Opus 5 and Cursor CLI for independent, read-only reviews of the exact pinned diff if available. Reproduce their findings yourself; do not accept them as proof and do not let them modify files.
+13. Check interactions with other open PRs touching the same files. Use conflict analysis to recommend merge order and identify behavior that must be preserved during rebases.
+14. Before reporting, verify that neither main nor the PR head changed. If the PR advanced, review the new delta and rerun affected checks.
+
+Report:
+
+* Verdict: clean, advisory, or changes required
+* Findings first, ordered by severity, with exact file/line, impact, evidence or reproduction, and recommended correction
+* A concise walkthrough of the PR’s changes
+* Verification matrix showing command, platform, pass/fail, and any skips
+* Current SHA, behind/merge status, CI status, and cross-PR conflicts
+* Residual risks and anything not independently validated
+
+Do not edit, stage, commit, push, comment, approve, or merge. If additional changes are needed, explain them and ask for my approval before doing anything.
+
+---
+
+Another Codex is currently reviewing 130, 132, and 139. Should we wait for it?
+
+---
+
+Ok, fix the blockers then
