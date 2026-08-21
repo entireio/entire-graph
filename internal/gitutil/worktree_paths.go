@@ -9,6 +9,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 const (
@@ -246,19 +247,16 @@ func visitBoundedNULPaths(cmd *exec.Cmd, visit func(string) bool) error {
 	for {
 		record, readErr := reader.ReadSlice(0)
 		if errors.Is(readErr, bufio.ErrBufferFull) {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
+			stopPathOutputCommand(cmd, stdout)
 			return fmt.Errorf("git returned a path longer than %d bytes", nestedIgnorePathMaxBytes)
 		}
 		if len(record) > 0 {
 			if record[len(record)-1] != 0 {
-				_ = cmd.Process.Kill()
-				_ = cmd.Wait()
+				stopPathOutputCommand(cmd, stdout)
 				return errors.New("git returned a non-NUL-terminated path")
 			}
 			if !visit(string(record[:len(record)-1])) {
-				_ = cmd.Process.Kill()
-				_ = cmd.Wait()
+				stopPathOutputCommand(cmd, stdout)
 				return nil
 			}
 		}
@@ -266,7 +264,7 @@ func visitBoundedNULPaths(cmd *exec.Cmd, visit func(string) bool) error {
 			continue
 		}
 		if !errors.Is(readErr, io.EOF) {
-			stopPathOutputCommand(cmd)
+			stopPathOutputCommand(cmd, stdout)
 			return readErr
 		}
 		waitErr := cmd.Wait()
@@ -389,7 +387,7 @@ func runBoundedPathOutput(
 	for {
 		record, readErr := reader.ReadSlice(0)
 		if errors.Is(readErr, bufio.ErrBufferFull) {
-			stopPathOutputCommand(cmd)
+			stopPathOutputCommand(cmd, stdout)
 			return nil, fmt.Errorf(
 				"git returned a path longer than %d bytes",
 				literalPathOutputMaxPathBytes,
@@ -397,33 +395,33 @@ func runBoundedPathOutput(
 		}
 		if len(record) > 0 {
 			if record[len(record)-1] != 0 {
-				stopPathOutputCommand(cmd)
+				stopPathOutputCommand(cmd, stdout)
 				return nil, errors.New("git returned a non-NUL-terminated path")
 			}
 			if len(record) == 1 {
-				stopPathOutputCommand(cmd)
+				stopPathOutputCommand(cmd, stdout)
 				return nil, errors.New("git returned an empty path")
 			}
 			path := string(record[:len(record)-1])
 			if _, ok := known[path]; !ok {
-				stopPathOutputCommand(cmd)
+				stopPathOutputCommand(cmd, stdout)
 				return nil, fmt.Errorf("git returned unexpected path %q", path)
 			}
 			if _, duplicate := result[path]; duplicate {
-				stopPathOutputCommand(cmd)
+				stopPathOutputCommand(cmd, stdout)
 				return nil, fmt.Errorf("git returned duplicate path %q", path)
 			}
 			outputCount++
 			outputBytes += len(record)
 			if outputCount > len(known) || outputCount > literalPathspecBatchCount {
-				stopPathOutputCommand(cmd)
+				stopPathOutputCommand(cmd, stdout)
 				return nil, fmt.Errorf(
 					"git returned more than %d literal paths",
 					len(known),
 				)
 			}
 			if outputBytes > expectedOutputBytes || outputBytes > literalPathspecBatchBytes {
-				stopPathOutputCommand(cmd)
+				stopPathOutputCommand(cmd, stdout)
 				return nil, fmt.Errorf(
 					"git returned more than %d aggregate path bytes",
 					expectedOutputBytes,
@@ -449,11 +447,49 @@ func runBoundedPathOutput(
 	}
 }
 
-func stopPathOutputCommand(cmd *exec.Cmd) {
-	if cmd.Process != nil {
-		_ = cmd.Process.Kill()
+func stopPathOutputCommand(cmd *exec.Cmd, stdout io.Closer) {
+	descendants := capturePathOutputDescendants(cmd)
+	defer descendants.close()
+
+	// Close the read side before terminating Git. Git for Windows can use a
+	// launcher/worker process pair; killing only the process os/exec started can
+	// orphan the worker with repository files still open. Closing stdout makes
+	// the writer fail, allowing Git to unwind and reap its own process tree.
+	if stdout != nil {
+		_ = stdout.Close()
 	}
-	_ = cmd.Wait()
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
+
+	timer := time.NewTimer(gitCommandWaitDelay)
+	defer timer.Stop()
+	select {
+	case <-done:
+		// WaitDelay may have released os/exec after a descendant retained a
+		// copied pipe. Stable Windows process handles captured before stdout was
+		// closed prevent that descendant from surviving with repository handles.
+		descendants.terminateAndWait(gitCommandWaitDelay)
+		return
+	case <-timer.C:
+		// A non-Git command or a Git process stuck somewhere other than its
+		// bounded output still gets a hard, time-bounded fallback. WaitDelay
+		// bounds inherited pipes after this direct process is gone.
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		// Stop the root before its captured descendants so it cannot create a
+		// replacement worker between the process snapshot and termination.
+		descendants.terminateAndWait(gitCommandWaitDelay)
+		finalTimer := time.NewTimer(gitCommandWaitDelay)
+		defer finalTimer.Stop()
+		select {
+		case <-done:
+		case <-finalTimer.C:
+		}
+	}
 }
 
 func listLiteralWorktreePathBatch(
@@ -516,8 +552,7 @@ func IndexHasFilesUnder(ctx context.Context, repo, rel string) (bool, error) {
 		// No later output can change an existence answer from true to false.
 		// Stopping here keeps the probe proportional to one match even when
 		// rel contains a very large tracked subtree.
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		stopPathOutputCommand(cmd, stdout)
 		return true, nil
 	}
 	waitErr := cmd.Wait()

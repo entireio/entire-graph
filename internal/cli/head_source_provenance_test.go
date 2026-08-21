@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -91,26 +90,58 @@ type deepSnapshotLineFile struct {
 
 func importDeepSnapshotLineFiles(t *testing.T, repo string, files []deepSnapshotLineFile) string {
 	t.Helper()
-	var input strings.Builder
-	for i, file := range files {
-		fmt.Fprintf(&input, "blob\nmark :%d\ndata %d\n%s\n", i+1, len(file.content), file.content)
+	// Construct the tree from single components rather than giving fast-import
+	// each complete 16 KiB path. The latter exceeds Git for Windows' path parser
+	// limit even though the raw Git tree object can represent the fixture.
+	var scopeInput strings.Builder
+	for _, file := range files {
+		components := strings.Split(file.path, "/")
+		blob := gitSnapshotObjectInputOutput(t, repo, file.content, "hash-object", "-w", "--stdin")
+		tree := gitSnapshotObjectInputOutput(
+			t,
+			repo,
+			fmt.Sprintf("100644 blob %s\t%s%c", blob, components[len(components)-1], byte(0)),
+			"mktree", "-z",
+		)
+		for i := len(components) - 2; i >= 1; i-- {
+			tree = gitSnapshotObjectInputOutput(
+				t,
+				repo,
+				fmt.Sprintf("040000 tree %s\t%s%c", tree, components[i], byte(0)),
+				"mktree", "-z",
+			)
+		}
+		fmt.Fprintf(&scopeInput, "040000 tree %s\t%s%c", tree, components[0], byte(0))
 	}
-	message := "deep snapshot lines"
-	fmt.Fprintf(&input, "commit refs/heads/deep-snapshot-lines\nmark :%d\n", len(files)+1)
-	fmt.Fprint(&input, "committer Test <test@example.com> 1 +0000\n")
-	fmt.Fprintf(&input, "data %d\n%s\n", len(message), message)
-	for i, file := range files {
-		fmt.Fprintf(&input, "M 100644 :%d %s\n", i+1, strconv.Quote("scope/"+file.path))
-	}
-	input.WriteByte('\n')
+	scope := gitSnapshotObjectInputOutput(t, repo, scopeInput.String(), "mktree", "-z")
+	root := gitSnapshotObjectInputOutput(
+		t,
+		repo,
+		fmt.Sprintf("040000 tree %s\tscope%c", scope, byte(0)),
+		"mktree", "-z",
+	)
+	commit := gitSnapshotObjectInputOutput(
+		t,
+		repo,
+		"",
+		"-c", "user.name=Entire Graph Test",
+		"-c", "user.email=graph@example.com",
+		"commit-tree", root, "-m", "deep snapshot lines",
+	)
+	git(t, repo, "update-ref", "refs/heads/deep-snapshot-lines", commit)
+	return commit
+}
 
-	cmd := exec.Command("git", "fast-import", "--quiet")
+func gitSnapshotObjectInputOutput(t *testing.T, repo, input string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
 	cmd.Dir = repo
-	cmd.Stdin = strings.NewReader(input.String())
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git fast-import deep snapshot lines: %v\n%s", err, out)
+	cmd.Stdin = strings.NewReader(input)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
-	return rev(t, repo, "refs/heads/deep-snapshot-lines")
+	return strings.TrimSpace(string(out))
 }
 
 func deepSnapshotLinePath(branch int) string {

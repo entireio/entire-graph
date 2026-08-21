@@ -1564,7 +1564,9 @@ func TestLimitedFileReaderStreamsAndRejectsDuplicateTreeMetadata(t *testing.T) {
 	runtime.GC()
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
-	reader := NewLimitedFileReader(t.Context(), repo, tree, 1024)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	reader := NewLimitedFileReader(ctx, repo, tree, 1024)
 	err := reader.Prime([]string{"file.go"})
 	runtime.ReadMemStats(&after)
 	if err == nil || !strings.Contains(err.Error(), `duplicate path "file.go"`) {
@@ -1576,6 +1578,15 @@ func TestLimitedFileReaderStreamsAndRejectsDuplicateTreeMetadata(t *testing.T) {
 	const allocationBudget = 4 << 20
 	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > allocationBudget {
 		t.Fatalf("duplicate metadata probe allocated %d bytes, want under %d", allocated, allocationBudget)
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("duplicate metadata probe did not retire Git before its deadline: %v", err)
+	}
+	// A prompt Wait is not enough on Windows if the killed Git launcher leaves
+	// its worker behind with the repository as its current directory. Require
+	// the complete repository to be removable as soon as Prime returns.
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatalf("duplicate metadata probe left a Git process holding the repository: %v", err)
 	}
 }
 
@@ -1972,6 +1983,9 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	t.Setenv("GIT_NO_REPLACE_OBJECTS", "0")
 	dir := t.TempDir()
 	cmd := newCmd(context.Background(), dir, "git", "version")
+	if cmd.WaitDelay != gitCommandWaitDelay || cmd.WaitDelay == 0 {
+		t.Fatalf("stable-locale command WaitDelay = %v, want %v", cmd.WaitDelay, gitCommandWaitDelay)
+	}
 	lcAll, lang, pwd, noReplace := "", "", "", ""
 	for _, kv := range cmd.Env {
 		if v, ok := strings.CutPrefix(kv, "LC_ALL="); ok {
@@ -1998,6 +2012,9 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	}
 
 	grepCmd := newGitCmdWithCallerLocale(context.Background(), dir, "version")
+	if grepCmd.WaitDelay != gitCommandWaitDelay || grepCmd.WaitDelay == 0 {
+		t.Fatalf("caller-locale command WaitDelay = %v, want %v", grepCmd.WaitDelay, gitCommandWaitDelay)
+	}
 	lcAll, pwd, noReplace = "", "", ""
 	for _, kv := range grepCmd.Env {
 		if v, ok := strings.CutPrefix(kv, "LC_ALL="); ok {

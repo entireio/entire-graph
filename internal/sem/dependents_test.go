@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -451,35 +450,56 @@ type deepDependentFile struct {
 	content string
 }
 
-// importDeepDependentFiles uses Git's object protocol instead of the
-// filesystem, whose native path limits are far below the adversarial Git tree
-// paths these tests need to exercise.
+// importDeepDependentFiles builds the tree one component at a time. No Git
+// command receives the complete adversarial path: besides avoiding filesystem
+// limits, that keeps the fixture valid on Git for Windows, whose fast-import
+// path parser rejects names this deep even though the object format permits
+// them.
 func importDeepDependentFiles(t *testing.T, repo string, files []deepDependentFile) string {
 	t.Helper()
-	var input strings.Builder
-	for i, file := range files {
-		mark := i + 1
-		fmt.Fprintf(&input, "blob\nmark :%d\ndata %d\n%s\n", mark, len(file.content), file.content)
+	var rootInput strings.Builder
+	for _, file := range files {
+		components := strings.Split(file.path, "/")
+		blob := gitObjectInputOutput(t, repo, file.content, "hash-object", "-w", "--stdin")
+		tree := gitObjectInputOutput(
+			t,
+			repo,
+			fmt.Sprintf("100644 blob %s\t%s%c", blob, components[len(components)-1], byte(0)),
+			"mktree", "-z",
+		)
+		for i := len(components) - 2; i >= 1; i-- {
+			tree = gitObjectInputOutput(
+				t,
+				repo,
+				fmt.Sprintf("040000 tree %s\t%s%c", tree, components[i], byte(0)),
+				"mktree", "-z",
+			)
+		}
+		fmt.Fprintf(&rootInput, "040000 tree %s\t%s%c", tree, components[0], byte(0))
 	}
-	message := "deep dependents"
-	commitMark := len(files) + 1
-	fmt.Fprintf(&input, "commit refs/heads/deep-dependents\nmark :%d\n", commitMark)
-	fmt.Fprint(&input, "committer Test <test@example.com> 1 +0000\n")
-	fmt.Fprintf(&input, "data %d\n%s\n", len(message), message)
-	for i, file := range files {
-		// strconv.Quote emits the C-style quoted path form fast-import uses,
-		// preserving the newline that makes the cat-file batch protocol unsafe.
-		fmt.Fprintf(&input, "M 100644 :%d %s\n", i+1, strconv.Quote(file.path))
-	}
-	input.WriteByte('\n')
+	root := gitObjectInputOutput(t, repo, rootInput.String(), "mktree", "-z")
+	commit := gitObjectInputOutput(
+		t,
+		repo,
+		"",
+		"-c", "user.name=Entire Graph Test",
+		"-c", "user.email=graph@example.com",
+		"commit-tree", root, "-m", "deep dependents",
+	)
+	git(t, repo, "update-ref", "refs/heads/deep-dependents", commit)
+	return commit
+}
 
-	cmd := exec.Command("git", "fast-import", "--quiet")
+func gitObjectInputOutput(t *testing.T, repo, input string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
 	cmd.Dir = repo
-	cmd.Stdin = strings.NewReader(input.String())
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git fast-import deep dependents: %v\n%s", err, out)
+	cmd.Stdin = strings.NewReader(input)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
-	return rev(t, repo, "refs/heads/deep-dependents")
+	return strings.TrimSpace(string(out))
 }
 
 func repeatedDeepUnsafePath(branch, depth, componentBytes int) string {

@@ -1546,7 +1546,7 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 	for {
 		record, readErr := reader.ReadSlice(0)
 		if errors.Is(readErr, bufio.ErrBufferFull) {
-			stopPathOutputCommand(cmd)
+			stopPathOutputCommand(cmd, stdout)
 			return nil, fmt.Errorf(
 				"git ls-tree returned a metadata record longer than %d bytes",
 				literalPathspecBatchBytes+treeMetadataRecordOverheadMax,
@@ -1564,37 +1564,37 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 			return entries, nil
 		}
 		if len(record) == 0 || record[len(record)-1] != 0 {
-			stopPathOutputCommand(cmd)
+			stopPathOutputCommand(cmd, stdout)
 			return nil, errors.New("git ls-tree returned non-NUL-terminated metadata")
 		}
 		record = record[:len(record)-1]
 		tab := bytes.IndexByte(record, '\t')
 		if tab < 0 {
-			stopPathOutputCommand(cmd)
+			stopPathOutputCommand(cmd, stdout)
 			return nil, errors.New("git ls-tree returned malformed metadata")
 		}
 		fields := strings.Fields(string(record[:tab]))
 		if len(fields) != 4 {
-			stopPathOutputCommand(cmd)
+			stopPathOutputCommand(cmd, stdout)
 			return nil, fmt.Errorf("git ls-tree returned malformed metadata header %q", record[:tab])
 		}
 		path := string(record[tab+1:])
 		if _, ok := known[path]; !ok {
-			stopPathOutputCommand(cmd)
+			stopPathOutputCommand(cmd, stdout)
 			return nil, fmt.Errorf("git ls-tree returned unexpected path %q", path)
 		}
 		if _, duplicate := entries[path]; duplicate {
-			stopPathOutputCommand(cmd)
+			stopPathOutputCommand(cmd, stdout)
 			return nil, fmt.Errorf("git ls-tree returned duplicate path %q", path)
 		}
 		outputCount++
 		outputBytes += len(record) + 1
 		if outputCount > len(known) || outputCount > literalPathspecBatchCount {
-			stopPathOutputCommand(cmd)
+			stopPathOutputCommand(cmd, stdout)
 			return nil, fmt.Errorf("git ls-tree returned more than %d metadata records", len(known))
 		}
 		if outputBytes > expectedOutputBytes {
-			stopPathOutputCommand(cmd)
+			stopPathOutputCommand(cmd, stdout)
 			return nil, fmt.Errorf("git ls-tree returned more than %d metadata bytes", expectedOutputBytes)
 		}
 		if fields[1] != "blob" {
@@ -1619,7 +1619,7 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 		}
 		size, err := strconv.ParseInt(fields[3], 10, 64)
 		if err != nil || size < 0 {
-			stopPathOutputCommand(cmd)
+			stopPathOutputCommand(cmd, stdout)
 			return nil, fmt.Errorf("parse git ls-tree blob size %q for %q", fields[3], path)
 		}
 		entries[path] = primedLimitedFile{
@@ -1628,7 +1628,7 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 			objectType: fields[1],
 		}
 		if readErr != nil {
-			stopPathOutputCommand(cmd)
+			stopPathOutputCommand(cmd, stdout)
 			return nil, fmt.Errorf("read git ls-tree metadata: %w", readErr)
 		}
 	}
@@ -1746,7 +1746,10 @@ func run(ctx context.Context, dir, name string, args ...string) (string, error) 
 	return stdout, nil
 }
 
-const rawGitObjectsEnv = "GIT_NO_REPLACE_OBJECTS=1"
+const (
+	rawGitObjectsEnv    = "GIT_NO_REPLACE_OBJECTS=1"
+	gitCommandWaitDelay = time.Second
+)
 
 // newGitCmdWithCallerLocale builds the two git-grep subprocesses whose
 // case-folding must retain the caller's locale. Like every other production Git
@@ -1755,6 +1758,10 @@ const rawGitObjectsEnv = "GIT_NO_REPLACE_OBJECTS=1"
 func newGitCmdWithCallerLocale(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
+	// Bound Wait when Git exits but a child process inherited one of the pipes.
+	// This matters especially on Windows, where killing Git does not necessarily
+	// close an orphan-held stderr handle promptly.
+	cmd.WaitDelay = gitCommandWaitDelay
 	// Cmd.Environ observes Dir and updates PWD accordingly. Append after the
 	// inherited environment so a hostile GIT_NO_REPLACE_OBJECTS=0 is overridden.
 	cmd.Env = append(cmd.Environ(), rawGitObjectsEnv)
@@ -1773,6 +1780,10 @@ func newGitCmdWithCallerLocale(ctx context.Context, dir string, args ...string) 
 func newCmd(ctx context.Context, dir, name string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
+	// Bound Wait after cancellation or process exit when a descendant retains a
+	// subprocess pipe. All production Git commands are constructed here or by
+	// newGitCmdWithCallerLocale, so malformed-output retirement cannot hang.
+	cmd.WaitDelay = gitCommandWaitDelay
 	// Cmd.Environ observes Dir and updates PWD accordingly. Starting from
 	// os.Environ would leave child processes with the parent's stale PWD.
 	env := cmd.Environ()

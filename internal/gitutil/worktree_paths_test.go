@@ -81,16 +81,14 @@ func TestRunBoundedPathOutputRejectsUnexpectedStreamingOutput(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRunBoundedPathOutputRejectsUnexpectedStreamingOutput$")
+	cmd := newCmd(ctx, "", os.Args[0], "-test.run=^TestRunBoundedPathOutputRejectsUnexpectedStreamingOutput$")
 	t.Cleanup(func() {
 		if cmd.Process != nil && cmd.ProcessState == nil {
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
 		}
 	})
-	cmd.Env = append(os.Environ(), boundedPathOutputHelperEnv+"=1")
-	cmd.WaitDelay = time.Second
-
+	cmd.Env = append(cmd.Env, boundedPathOutputHelperEnv+"=1")
 	runtime.GC()
 	var before runtime.MemStats
 	runtime.ReadMemStats(&before)
