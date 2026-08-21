@@ -281,6 +281,37 @@ func TestGrepIndexMatchesPreservesUnicodeCaseFoldingLocale(t *testing.T) {
 	}
 }
 
+func TestTreeGrepsIgnoreReplaceRefsAndOverrideHostileEnvironment(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	originalOID := gitInputOutput(t, repo, "OriginalNeedle\n", "hash-object", "-w", "--stdin")
+	replacementOID := gitInputOutput(t, repo, "replacement without it\n", "hash-object", "-w", "--stdin")
+	tree := gitInputOutput(t, repo, fmt.Sprintf("100644 blob %s\tfile.go%c", originalOID, byte(0)), "mktree", "-z")
+	git(t, repo, "update-ref", "refs/replace/"+originalOID, replacementOID)
+	// Preserve a hostile inherited assignment and prove production commands
+	// append their canonical raw-object override after it. The control below
+	// removes the variable entirely so Git demonstrably honors the replacement.
+	t.Setenv("GIT_NO_REPLACE_OBJECTS", "0")
+	if got := gitOutputHonoringReplaceRefs(t, repo, "cat-file", "-p", originalOID); got != "replacement without it" {
+		t.Fatalf("control Git replacement view = %q, want replacement content", got)
+	}
+
+	paths, err := GrepTreePaths(t.Context(), repo, tree, []string{"OriginalNeedle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(paths, []string{"file.go"}) {
+		t.Fatalf("raw tree grep paths = %#v, want file.go despite replacement", paths)
+	}
+	matches, err := GrepTreeMatches(t.Context(), repo, tree, []string{"OriginalNeedle"}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Path != "file.go" || matches[0].Text != "OriginalNeedle" {
+		t.Fatalf("raw tree grep matches = %#v, want original blob match", matches)
+	}
+}
+
 func TestChangedFilesHandlesNewlinesAndTabsInPaths(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows filenames cannot contain newlines")
@@ -531,6 +562,107 @@ exit 2
 	}
 }
 
+func TestBatchFileReaderProtocolFailureIsStickyAndRetiresProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX shell protocol shim")
+	}
+	for _, test := range []struct {
+		name      string
+		mode      string
+		maxBytes  int64
+		wantError string
+	}{
+		{name: "wrong separator", mode: "separator", wantError: "missing trailing newline separator"},
+		{name: "short oversized body", mode: "partial", maxBytes: 1, wantError: "blob body length 2, want 5"},
+		{name: "mismatched info missing header", mode: "info-missing", wantError: `info missing header "other missing"`},
+		{name: "mismatched contents missing header", mode: "contents-missing", wantError: `contents missing header "other missing"`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			requestLog := filepath.Join(t.TempDir(), "requests.log")
+			fakeGit := filepath.Join(binDir, "git")
+			const objectID = "1111111111111111111111111111111111111111"
+			const script = `#!/bin/sh
+if [ "$1" = "rev-parse" ] && [ "$2" = "--show-prefix" ]; then
+	printf '\n'
+	exit 0
+fi
+if [ "$1" = "cat-file" ] && [ "$2" = "--batch-command" ]; then
+	while IFS= read -r line; do
+		printf '%s\n' "$line" >> "$ENTIRE_GRAPH_BATCH_REQUEST_LOG"
+		case "$line" in
+			"info 0000000000000000000000000000000000000000")
+				printf '%s missing\n' '0000000000000000000000000000000000000000'
+				;;
+			info\ *)
+				if [ "$ENTIRE_GRAPH_BATCH_MODE" = "info-missing" ]; then
+					printf 'other missing\n'
+				elif [ "$ENTIRE_GRAPH_BATCH_MODE" = "partial" ]; then
+					printf '%s blob 5\n' '1111111111111111111111111111111111111111'
+				else
+					printf '%s blob 3\n' '1111111111111111111111111111111111111111'
+				fi
+				;;
+			contents\ *)
+				if [ "$ENTIRE_GRAPH_BATCH_MODE" = "contents-missing" ]; then
+					printf 'other missing\n'
+				elif [ "$ENTIRE_GRAPH_BATCH_MODE" = "partial" ]; then
+					printf '%s blob 5\nab' '1111111111111111111111111111111111111111'
+					exit 0
+				fi
+				printf '%s blob 3\nabc!' '1111111111111111111111111111111111111111'
+				;;
+		esac
+	done
+	exit 0
+fi
+exit 2
+`
+			if err := os.WriteFile(fakeGit, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", binDir)
+			t.Setenv("ENTIRE_GRAPH_BATCH_REQUEST_LOG", requestLog)
+			t.Setenv("ENTIRE_GRAPH_BATCH_MODE", test.mode)
+
+			reader, err := NewBatchFileReader(t.Context(), t.TempDir(), "HEAD")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = reader.Close() })
+			reader.SetMaxBytes(test.maxBytes)
+			if _, ok, firstErr := reader.ReadFile("file.go"); firstErr == nil || ok ||
+				!strings.Contains(firstErr.Error(), test.wantError) {
+				t.Fatalf("first malformed response = (ok %v, err %v), want %q", ok, firstErr, test.wantError)
+			} else {
+				// Even a locally invalid path must return the sticky protocol cause after
+				// poisoning, rather than hiding it or reaching stdin.
+				if _, ok, secondErr := reader.ReadFile("../file.go"); secondErr == nil || ok || secondErr.Error() != firstErr.Error() {
+					t.Fatalf("second read = (ok %v, err %v), want original poison %q", ok, secondErr, firstErr)
+				}
+				if closeErr := reader.Close(); closeErr == nil || closeErr.Error() != firstErr.Error() {
+					t.Fatalf("close after poison = %v, want original protocol error %q", closeErr, firstErr)
+				}
+			}
+			logged, err := os.ReadFile(requestLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			commands := strings.Split(strings.TrimSpace(string(logged)), "\n")
+			want := []string{
+				"info 0000000000000000000000000000000000000000",
+				"info HEAD:file.go",
+			}
+			if test.mode != "info-missing" {
+				want = append(want, "contents "+objectID)
+			}
+			if !reflect.DeepEqual(commands, want) {
+				t.Fatalf("protocol commands after poison = %#v, want exactly %#v and no second request", commands, want)
+			}
+		})
+	}
+}
+
 func TestBatchFileReaderRejectsNonBlobBeforeRequestingContent(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
@@ -577,7 +709,7 @@ func TestBatchFileReaderRejectsNonBlobBeforeRequestingContent(t *testing.T) {
 	}
 }
 
-func TestBatchFileReaderPinsReplaceRefsAcrossInfoAndContents(t *testing.T) {
+func TestBatchFileReaderIgnoresReplaceRefMovedAcrossInfoAndContents(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
@@ -596,6 +728,7 @@ func TestBatchFileReaderPinsReplaceRefsAcrossInfoAndContents(t *testing.T) {
 		fmt.Sprintf("100644 blob %s\tleaf%c", replacementLeaf, byte(0)),
 		"mktree", "-z",
 	)
+	t.Setenv("GIT_NO_REPLACE_OBJECTS", "0")
 
 	reader, err := NewBatchFileReader(t.Context(), repo, "HEAD")
 	if err != nil {
@@ -605,15 +738,17 @@ func TestBatchFileReaderPinsReplaceRefsAcrossInfoAndContents(t *testing.T) {
 	writes := &countingWriteCloser{WriteCloser: reader.stdin}
 	reader.stdin = writes
 	moved := false
+	controlType := ""
 	writes.beforeWrite = func(command string) {
 		if moved || !strings.HasPrefix(command, "contents ") {
 			return
 		}
 		moved = true
-		// This runs after the info response but before contents reaches Git. With
-		// separate metadata/content processes, the content process sees this new
-		// replacement and returns a tree body for an object checked as a blob.
+		// This runs after the info response but before contents reaches Git. Every
+		// production Git process has raw-object semantics, so the new replacement
+		// cannot turn this exact blob OID into a tree body.
 		git(t, repo, "update-ref", "refs/replace/"+originalOID, replacementTree)
+		controlType = gitOutputHonoringReplaceRefs(t, repo, "cat-file", "-t", originalOID)
 	}
 
 	got, ok, err := reader.ReadFile("file.go")
@@ -622,6 +757,9 @@ func TestBatchFileReaderPinsReplaceRefsAcrossInfoAndContents(t *testing.T) {
 	}
 	if !moved {
 		t.Fatal("fixture did not move the replacement between info and contents")
+	}
+	if controlType != "tree" {
+		t.Fatalf("control Git replacement type = %q, want tree", controlType)
 	}
 	if got := writes.countCommands("info "); got != 1 {
 		t.Fatalf("metadata commands = %d, want one: %#v", got, writes.commands)
@@ -637,14 +775,15 @@ func TestBatchFileReaderPinsReplaceRefsAcrossInfoAndContents(t *testing.T) {
 	}
 }
 
-func TestLimitedFileReaderRechecksKnownOIDInContentSession(t *testing.T) {
-	t.Run("replacement becomes nonblob", func(t *testing.T) {
+func TestLimitedFileReaderUsesRawKnownOIDDespiteReplaceRefs(t *testing.T) {
+	t.Run("nonblob replacement is ignored", func(t *testing.T) {
 		repo := t.TempDir()
 		git(t, repo, "init")
 		originalOID := gitInputOutput(t, repo, "package original\n", "hash-object", "-w", "--stdin")
 		rootTree := gitInputOutput(t, repo, fmt.Sprintf("100644 blob %s\tfile.go%c", originalOID, byte(0)), "mktree", "-z")
 		replacementLeaf := gitInputOutput(t, repo, "leaf\n", "hash-object", "-w", "--stdin")
 		replacementTree := gitInputOutput(t, repo, fmt.Sprintf("100644 blob %s\tleaf%c", replacementLeaf, byte(0)), "mktree", "-z")
+		t.Setenv("GIT_NO_REPLACE_OBJECTS", "0")
 
 		reader := NewLimitedFileReader(t.Context(), repo, rootTree, 1024)
 		t.Cleanup(func() { _ = reader.Close() })
@@ -652,6 +791,9 @@ func TestLimitedFileReaderRechecksKnownOIDInContentSession(t *testing.T) {
 			t.Fatal(err)
 		}
 		git(t, repo, "update-ref", "refs/replace/"+originalOID, replacementTree)
+		if got := gitOutputHonoringReplaceRefs(t, repo, "cat-file", "-t", originalOID); got != "tree" {
+			t.Fatalf("control Git replacement type = %q, want tree", got)
+		}
 		content, err := NewBatchFileReader(t.Context(), repo, rootTree)
 		if err != nil {
 			t.Fatal(err)
@@ -665,18 +807,18 @@ func TestLimitedFileReaderRechecksKnownOIDInContentSession(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result.Status != LimitedFileUnreadable {
-			t.Fatalf("known OID replaced by tree = %#v, want unreadable without a body request", result)
+		if result.Status != LimitedFileContent || result.Content != "package original\n" {
+			t.Fatalf("known OID with tree replacement = %#v, want original raw blob", result)
 		}
 		if got := writes.countCommands("info "); got != 1 {
 			t.Fatalf("known-OID metadata commands = %d, want one: %#v", got, writes.commands)
 		}
-		if got := writes.countCommands("contents "); got != 0 {
-			t.Fatalf("known OID replaced by tree issued %d content commands, want zero: %#v", got, writes.commands)
+		if got := writes.countCommands("contents "); got != 1 {
+			t.Fatalf("raw known OID issued %d content commands, want one original-blob request: %#v", got, writes.commands)
 		}
 	})
 
-	t.Run("replacement becomes oversized blob", func(t *testing.T) {
+	t.Run("oversized blob replacement is ignored", func(t *testing.T) {
 		repo := t.TempDir()
 		git(t, repo, "init")
 		originalOID := gitInputOutput(t, repo, "small\n", "hash-object", "-w", "--stdin")
@@ -684,6 +826,7 @@ func TestLimitedFileReaderRechecksKnownOIDInContentSession(t *testing.T) {
 		oversizedContent := strings.Repeat("replacement line\n", 64)
 		replacementOID := gitInputOutput(t, repo, oversizedContent, "hash-object", "-w", "--stdin")
 		const ceiling = int64(32)
+		t.Setenv("GIT_NO_REPLACE_OBJECTS", "0")
 
 		reader := NewLimitedFileReader(t.Context(), repo, rootTree, ceiling)
 		t.Cleanup(func() { _ = reader.Close() })
@@ -691,6 +834,9 @@ func TestLimitedFileReaderRechecksKnownOIDInContentSession(t *testing.T) {
 			t.Fatal(err)
 		}
 		git(t, repo, "update-ref", "refs/replace/"+originalOID, replacementOID)
+		if got := gitOutputHonoringReplaceRefs(t, repo, "cat-file", "-s", originalOID); got != strconv.Itoa(len(oversizedContent)) {
+			t.Fatalf("control Git replacement size = %q, want %d", got, len(oversizedContent))
+		}
 		content, err := NewBatchFileReader(t.Context(), repo, rootTree)
 		if err != nil {
 			t.Fatal(err)
@@ -704,22 +850,17 @@ func TestLimitedFileReaderRechecksKnownOIDInContentSession(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result.Status != LimitedFileOversize || result.Bytes != int64(len(oversizedContent)) {
-			t.Fatalf("known OID replaced by oversized blob = %#v, want exact oversize result", result)
+		if result.Status != LimitedFileContent || result.Content != "small\n" || result.Bytes != int64(len("small\n")) {
+			t.Fatalf("known OID with oversized replacement = %#v, want original small raw blob", result)
 		}
-		digest, ok := content.OversizeBlob("file.go")
-		if !ok {
-			t.Fatal("replacement oversize blob had no digest")
-		}
-		wantHash := sha256.Sum256([]byte(oversizedContent))
-		if digest.Bytes != int64(len(oversizedContent)) || digest.Hash != hex.EncodeToString(wantHash[:]) || digest.Lines != 64 {
-			t.Fatalf("replacement oversize digest = %#v, want exact bytes/hash/lines", digest)
+		if digest, ok := content.OversizeBlob("file.go"); ok {
+			t.Fatalf("ignored replacement produced an oversize digest: %#v", digest)
 		}
 		if got := writes.countCommands("info "); got != 1 {
-			t.Fatalf("oversize known-OID metadata commands = %d, want one: %#v", got, writes.commands)
+			t.Fatalf("raw known-OID metadata commands = %d, want one: %#v", got, writes.commands)
 		}
 		if got := writes.countCommands("contents "); got != 1 {
-			t.Fatalf("oversize known-OID content commands = %d, want one digest stream: %#v", got, writes.commands)
+			t.Fatalf("raw known-OID content commands = %d, want one original-blob read: %#v", got, writes.commands)
 		}
 	})
 }
@@ -1401,6 +1542,43 @@ func TestLimitedFileReaderSplitsAncestorAndDescendantPathspecs(t *testing.T) {
 	}
 }
 
+// An exact literal pathspec does not imply one ls-tree record when a raw tree
+// contains duplicate names. Keep the adversarial output proportional to the
+// requested path set: the reader must reject the second record and retire Git,
+// rather than buffering every duplicate before discovering the malformed tree.
+func TestLimitedFileReaderStreamsAndRejectsDuplicateTreeMetadata(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	blob := gitInputOutput(t, repo, "package duplicate\n", "hash-object", "-w", "--stdin")
+
+	const duplicateEntries = 100_000
+	tree := func() string {
+		var input strings.Builder
+		input.Grow(duplicateEntries * (len(blob) + len("100644 blob \tfile.go\x00")))
+		for range duplicateEntries {
+			fmt.Fprintf(&input, "100644 blob %s\tfile.go%c", blob, byte(0))
+		}
+		return gitInputOutput(t, repo, input.String(), "mktree", "-z")
+	}()
+
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	reader := NewLimitedFileReader(t.Context(), repo, tree, 1024)
+	err := reader.Prime([]string{"file.go"})
+	runtime.ReadMemStats(&after)
+	if err == nil || !strings.Contains(err.Error(), `duplicate path "file.go"`) {
+		t.Fatalf("duplicate-tree Prime error = %v, want immediate duplicate-path rejection", err)
+	}
+	// The old whole-output run path allocated the complete ~6.9 MiB listing,
+	// then copied and split it. This generous bound permits subprocess plumbing
+	// while proving the duplicate stream is stopped after its second record.
+	const allocationBudget = 4 << 20
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > allocationBudget {
+		t.Fatalf("duplicate metadata probe allocated %d bytes, want under %d", allocated, allocationBudget)
+	}
+}
+
 func TestLimitedFileReaderRejectsTrailingSlashBeforeGit(t *testing.T) {
 	// The directory need not be a repository: validation must happen before
 	// ls-tree, because a single literal path ending in slash expands every
@@ -1791,9 +1969,10 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	// after the inherited environment so it overrides LC_ALL/LANG/LC_MESSAGES.
 	t.Setenv("LC_ALL", "fr_FR.UTF-8")
 	t.Setenv("LANG", "fr_FR.UTF-8")
+	t.Setenv("GIT_NO_REPLACE_OBJECTS", "0")
 	dir := t.TempDir()
 	cmd := newCmd(context.Background(), dir, "git", "version")
-	lcAll, lang, pwd := "", "", ""
+	lcAll, lang, pwd, noReplace := "", "", "", ""
 	for _, kv := range cmd.Env {
 		if v, ok := strings.CutPrefix(kv, "LC_ALL="); ok {
 			lcAll = v
@@ -1804,12 +1983,41 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 		if v, ok := strings.CutPrefix(kv, "PWD="); ok {
 			pwd = v
 		}
+		if v, ok := strings.CutPrefix(kv, "GIT_NO_REPLACE_OBJECTS="); ok {
+			noReplace = v
+		}
 	}
 	if lcAll != "C" || lang != "C" {
 		t.Fatalf("effective subprocess locale LC_ALL=%q LANG=%q, want both \"C\"", lcAll, lang)
 	}
 	if runtime.GOOS != "windows" && filepath.Clean(pwd) != filepath.Clean(dir) {
 		t.Fatalf("subprocess PWD=%q, want command directory %q", pwd, dir)
+	}
+	if noReplace != "1" {
+		t.Fatalf("effective GIT_NO_REPLACE_OBJECTS=%q, want 1", noReplace)
+	}
+
+	grepCmd := newGitCmdWithCallerLocale(context.Background(), dir, "version")
+	lcAll, pwd, noReplace = "", "", ""
+	for _, kv := range grepCmd.Env {
+		if v, ok := strings.CutPrefix(kv, "LC_ALL="); ok {
+			lcAll = v
+		}
+		if v, ok := strings.CutPrefix(kv, "PWD="); ok {
+			pwd = v
+		}
+		if v, ok := strings.CutPrefix(kv, "GIT_NO_REPLACE_OBJECTS="); ok {
+			noReplace = v
+		}
+	}
+	if lcAll != "fr_FR.UTF-8" {
+		t.Fatalf("caller-locale git command LC_ALL=%q, want inherited locale", lcAll)
+	}
+	if runtime.GOOS != "windows" && filepath.Clean(pwd) != filepath.Clean(dir) {
+		t.Fatalf("caller-locale git command PWD=%q, want command directory %q", pwd, dir)
+	}
+	if noReplace != "1" {
+		t.Fatalf("caller-locale git command GIT_NO_REPLACE_OBJECTS=%q, want 1", noReplace)
 	}
 }
 
@@ -1830,6 +2038,28 @@ func gitOutput(t *testing.T, repo string, args ...string) string {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// gitOutputHonoringReplaceRefs is a test control, never a production command.
+// GIT_NO_REPLACE_OBJECTS disables replacements whenever it is present, even
+// when its value is "0", so remove every inherited occurrence explicitly.
+func gitOutputHonoringReplaceRefs(t *testing.T, repo string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repo
+	env := cmd.Environ()
+	filtered := env[:0]
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, "GIT_NO_REPLACE_OBJECTS=") {
+			filtered = append(filtered, entry)
+		}
+	}
+	cmd.Env = filtered
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git honoring replacements %v: %v\n%s", args, err, out)
 	}
 	return strings.TrimSpace(string(out))
 }

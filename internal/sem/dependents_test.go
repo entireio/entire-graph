@@ -3,7 +3,10 @@ package sem
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -535,6 +538,79 @@ func TestBuildReferenceIndexSharesDeepPathMetadataAllowance(t *testing.T) {
 	}
 	if unaddressable[0].EffectOnCompleteness == "" {
 		t.Fatalf("bounded metadata warning must explain partial dependents: %#v", unaddressable[0])
+	}
+}
+
+// Every newline-bearing candidate is unsafe for cat-file's LF request
+// protocol. Prime must batch their exact metadata before the scan; otherwise
+// each lazy fallback starts its own ls-tree process and the scan cost grows
+// linearly with the candidate count.
+func TestBuildReferenceIndexBatchesLineUnsafeMetadata(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the Git wrapper is a POSIX shell script")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	const fileCount = 200
+	files := make([]deepDependentFile, fileCount)
+	for i := range files {
+		files[i] = deepDependentFile{
+			path:    fmt.Sprintf("unsafe\ncaller_%03d.py", i),
+			content: fmt.Sprintf("def caller_%03d():\n    return Foo()\n", i),
+		}
+	}
+	head := importDeepDependentFiles(t, repo, files)
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapperDir := t.TempDir()
+	lsTreeLog := filepath.Join(wrapperDir, "ls-tree.log")
+	wrapper := filepath.Join(wrapperDir, "git")
+	script := `#!/bin/sh
+for arg do
+	if [ "$arg" = "ls-tree" ]; then
+		printf 'ls-tree\n' >> "$LS_TREE_LOG"
+		break
+	fi
+done
+exec "$REAL_GIT" "$@"
+`
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REAL_GIT", realGit)
+	t.Setenv("LS_TREE_LOG", lsTreeLog)
+	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	index, warnings, err := buildReferenceIndexWithProgress(
+		ctx,
+		repo,
+		head,
+		map[string]struct{}{"Foo": {}},
+		dependentsScanOptions{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("line-unsafe dependents scan exceeded safety timeout: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("line-unsafe dependents warnings = %#v, want none", warnings)
+	}
+	if got := len(index["Foo"]); got != fileCount {
+		t.Fatalf("line-unsafe dependents = %d, want %d", got, fileCount)
+	}
+	log, err := os.ReadFile(lsTreeLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Count(string(log), "ls-tree\n"), 2; got != want {
+		t.Fatalf("ls-tree metadata subprocesses = %d, want %d bounded batches", got, want)
 	}
 }
 

@@ -80,12 +80,14 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		emitProgressEvent(phase, filesDone, filesTotal, "", true)
 	}
 
-	// Bind both caller-facing revision labels to immutable trees before any
+	// Bind both caller-facing revision labels to immutable raw trees before any
 	// discovery or content read. A branch can advance between ChangedFiles, the
 	// size probe, and ShowFile; resolving each operation through the original
 	// label would then compare bytes from different ranges and could invalidate
 	// the read ceiling. Trees preserve the command's historical tree-ish input
 	// contract; requiring commits would reject valid tree OIDs and expressions.
+	// gitutil disables replace refs for every subprocess, so refs/replace cannot
+	// mutate either pinned tree between discovery, metadata, content, and grep.
 	// When both labels are byte-identical, reuse the first resolution so a ref
 	// advance between subprocesses cannot turn an intended empty diff into an
 	// old-tree/new-tree comparison. Keep the labels below for result provenance.

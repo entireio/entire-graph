@@ -906,6 +906,52 @@ func TestAnalyzeGitRangeRecoversFromNoncanonicalTreePath(t *testing.T) {
 	t.Fatalf("noncanonical path had no recoverable E_FILE_READ warning: %#v", result.Warnings)
 }
 
+func TestAnalyzeGitRangeIgnoresTreeReplacementMovedAfterDiscovery(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	baseBlob := gitInput(t, repo, "package p\nfunc Target() int { return 1 }\n", "hash-object", "-w", "--stdin")
+	headBlob := gitInput(t, repo, "package p\nfunc Target(value int) int { return value }\n", "hash-object", "-w", "--stdin")
+	baseTree := gitInput(t, repo, fmt.Sprintf("100644 blob %s\tfile.go%c", baseBlob, byte(0)), "mktree", "-z")
+	headTree := gitInput(t, repo, fmt.Sprintf("100644 blob %s\tfile.go%c", headBlob, byte(0)), "mktree", "-z")
+	// Preserve a hostile inherited assignment; production must append its
+	// canonical raw-object value after it. The control command below removes the
+	// variable entirely so Git demonstrably honors the moved replacement.
+	t.Setenv("GIT_NO_REPLACE_OBJECTS", "0")
+
+	replacementMoved := false
+	controlTree := ""
+	result, err := AnalyzeGitRangeWithOptions(t.Context(), repo, baseTree, headTree, nil, AnalyzeOptions{
+		Progress: func(event AnalyzeProgressEvent) {
+			if replacementMoved || event.Phase != "parse" || event.Path != "" {
+				return
+			}
+			replacementMoved = true
+			// ChangedFiles already discovered file.go from the raw trees. Replace the
+			// head tree with the base now; any later Git process that honors this ref
+			// sees identical content and silently loses the signature change.
+			git(t, repo, "update-ref", "refs/replace/"+headTree, baseTree)
+			controlTree = gitOutputHonoringReplaceRefs(t, repo, "cat-file", "-p", headTree)
+		},
+	})
+	if err != nil {
+		t.Fatalf("analyze across moving tree replacement: %v", err)
+	}
+	if !replacementMoved {
+		t.Fatal("fixture did not move the tree replacement after discovery")
+	}
+	if !strings.Contains(controlTree, baseBlob) || strings.Contains(controlTree, headBlob) {
+		t.Fatalf("control Git did not observe moved tree replacement: %q", controlTree)
+	}
+	for _, file := range result.Files {
+		for _, change := range file.Changes {
+			if file.Path == "file.go" && change.Type == "signature_changed" && change.Name == "Target" {
+				return
+			}
+		}
+	}
+	t.Fatalf("raw pinned trees lost Target signature change after replacement moved: %#v", result)
+}
+
 func TestAnalyzeGitRangeKeepsShebangRoutableChangedFiles(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
@@ -1583,6 +1629,25 @@ func gitInput(t *testing.T, repo, input string, args ...string) string {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func gitOutputHonoringReplaceRefs(t *testing.T, repo string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repo
+	env := cmd.Environ()
+	filtered := env[:0]
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, "GIT_NO_REPLACE_OBJECTS=") {
+			filtered = append(filtered, entry)
+		}
+	}
+	cmd.Env = filtered
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git honoring replacements %v: %v\n%s", args, err, out)
 	}
 	return strings.TrimSpace(string(out))
 }
