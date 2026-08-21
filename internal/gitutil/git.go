@@ -1071,7 +1071,7 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 	known := make(map[string]struct{}, len(paths))
 	pathspecBytes := 0
 	for _, path := range paths {
-		if path == "" || strings.ContainsRune(path, 0) {
+		if path == "" || strings.HasSuffix(path, "/") || strings.ContainsRune(path, 0) {
 			return nil, fmt.Errorf("invalid Git tree path %q", path)
 		}
 		pathspecBytes += len(treeMetadataLiteralPrefix) + len(path)

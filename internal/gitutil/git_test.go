@@ -956,6 +956,17 @@ func TestLimitedFileReaderSplitsAncestorAndDescendantPathspecs(t *testing.T) {
 	}
 }
 
+func TestLimitedFileReaderRejectsTrailingSlashBeforeGit(t *testing.T) {
+	// The directory need not be a repository: validation must happen before
+	// ls-tree, because a single literal path ending in slash expands every
+	// immediate child instead of returning one exact tree entry.
+	reader := NewLimitedFileReader(t.Context(), t.TempDir(), "HEAD", 1024)
+	err := reader.Prime([]string{"dir/"})
+	if err == nil || !strings.Contains(err.Error(), `invalid Git tree path "dir/"`) {
+		t.Fatalf("trailing-slash Prime error = %v, want pre-Git invalid-path rejection", err)
+	}
+}
+
 func TestLimitedFileReaderPrimesDeepGitTreePath(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
