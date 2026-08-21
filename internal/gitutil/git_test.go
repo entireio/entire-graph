@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -573,16 +574,37 @@ func TestShowFileLimitedBoundsTheReadNotTheAnswer(t *testing.T) {
 	if out, ok, err := ShowFileLimited(t.Context(), repo, "HEAD", oversizedPath, ceiling); err != nil || ok || out != "" {
 		t.Errorf("oversized blob = (%d bytes, ok %v, err %v), want (\"\", false, nil)", len(out), ok, err)
 	}
+	detailed, err := ReadFileLimited(t.Context(), repo, "HEAD", oversizedPath, ceiling)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detailed.Status != LimitedFileOversize || detailed.Bytes != ceiling+1 || detailed.Content != "" {
+		t.Errorf("typed oversized blob = %#v, want status oversize, %d bytes, and no content", detailed, ceiling+1)
+	}
 	// The ceiling is inclusive, so the boundary blob is still an answer. This is
 	// what distinguishes a bounded read from an off-by-one refusal.
 	if out, ok, err := ShowFileLimited(t.Context(), repo, "HEAD", "exact.txt", ceiling); err != nil || !ok || out != files["exact.txt"] {
 		t.Errorf("blob at the ceiling = (%d bytes, ok %v, err %v), want (%d bytes, true, nil)", len(out), ok, err, ceiling)
+	}
+	detailed, err = ReadFileLimited(t.Context(), repo, "HEAD", "exact.txt", ceiling)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detailed.Status != LimitedFileContent || detailed.Bytes != ceiling || detailed.Content != files["exact.txt"] {
+		t.Errorf("typed blob at ceiling = %#v, want content status with %d bytes", detailed, ceiling)
 	}
 	if out, ok, err := ShowFileLimited(t.Context(), repo, "HEAD", "small.txt", ceiling); err != nil || !ok || out != files["small.txt"] {
 		t.Errorf("small blob = (%q, ok %v, err %v), want (%q, true, nil)", out, ok, err, files["small.txt"])
 	}
 	if out, ok, err := ShowFileLimited(t.Context(), repo, "HEAD", "does-not-exist.txt", ceiling); err != nil || ok || out != "" {
 		t.Errorf("missing path = (%q, ok %v, err %v), want (\"\", false, nil)", out, ok, err)
+	}
+	detailed, err = ReadFileLimited(t.Context(), repo, "HEAD", "does-not-exist.txt", ceiling)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detailed.Status != LimitedFileMissing || detailed.Bytes != 0 || detailed.Content != "" {
+		t.Errorf("typed missing path = %#v, want missing with no content", detailed)
 	}
 	// Same stderr-only classification as ShowFile: a bad revision is a failure,
 	// not an absent file, even though the argv echoes a path.
@@ -637,6 +659,60 @@ func TestShowFileLimitedNeverMaterializesAnOversizedBlob(t *testing.T) {
 	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > budget {
 		t.Errorf("reading a %d-byte blob under a %d-byte ceiling allocated %d bytes, want under %d: the blob was materialized before the ceiling was applied",
 			blobSize, ceiling, allocated, budget)
+	}
+}
+
+// A gitlink resolves to a commit object, not a blob. `cat-file -s` alone can
+// make that object look safe because the commit itself is tiny, while `git
+// show` renders the commit's entire patch. The bounded file reader must reject
+// the type before invoking that renderer.
+func TestShowFileLimitedRejectsGitlinkBeforeRenderingCommit(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "commit.gpgsign", "false")
+
+	const renderedPatchBytes = 16 << 20
+	const ceiling = int64(4 << 10)
+	large := strings.Repeat("a line large enough to render in the commit patch\n", renderedPatchBytes/48+1)
+	if err := os.WriteFile(filepath.Join(repo, "large.txt"), []byte(large), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "large.txt")
+	git(t, repo, "commit", "-m", "large gitlink target")
+	target := gitOutput(t, repo, "rev-parse", "HEAD")
+	targetSize, err := strconv.ParseInt(gitOutput(t, repo, "cat-file", "-s", target), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if targetSize >= ceiling {
+		t.Fatalf("target commit object is %d bytes, want below the %d-byte ceiling", targetSize, ceiling)
+	}
+
+	git(t, repo, "rm", "large.txt")
+	git(t, repo, "update-index", "--add", "--cacheinfo", "160000", target, "vendor/module")
+	git(t, repo, "commit", "-m", "record gitlink")
+	large = ""
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	out, ok, err := ShowFileLimited(t.Context(), repo, "HEAD", "vendor/module", ceiling)
+	runtime.ReadMemStats(&after)
+	if err != nil || ok || out != "" {
+		t.Fatalf("gitlink = (%d bytes, ok %v, err %v), want (\"\", false, nil)", len(out), ok, err)
+	}
+	const allocationBudget = 4 << 20
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > allocationBudget {
+		t.Errorf("refusing a gitlink allocated %d bytes, want under %d: git show rendered the target commit's patch", allocated, allocationBudget)
+	}
+	detailed, err := ReadFileLimited(t.Context(), repo, "HEAD", "vendor/module", ceiling)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detailed.Status != LimitedFileNonBlob || detailed.Content != "" || detailed.Bytes != 0 {
+		t.Errorf("typed gitlink result = %#v, want non-blob with no content", detailed)
 	}
 }
 
@@ -713,7 +789,9 @@ func TestShowFileLimitedRefusesOversizedBlobWhenTheProbeIsSilent(t *testing.T) {
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "probe fixture")
 
-	silent := func(context.Context, string, string, string) (int64, bool) { return 0, false }
+	silent := func(context.Context, string, string, string) (int64, blobProbeStatus) {
+		return 0, blobProbeUnknown
+	}
 
 	if out, ok, err := showFileLimited(t.Context(), repo, "HEAD", "over.txt", ceiling, silent); err != nil || ok || out != "" {
 		t.Errorf("oversized blob with a silent probe = (%d bytes, ok %v, err %v), want (\"\", false, nil)", len(out), ok, err)

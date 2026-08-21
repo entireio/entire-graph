@@ -158,6 +158,68 @@ func TestAnalyzeGitRangeReportsProgress(t *testing.T) {
 	}
 }
 
+func TestAnalyzeGitRangePinsSymbolicRefsBeforeDiscoveryAndReads(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	write(t, repo, "auth.py", "def validate_token(token):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "base")
+	baseCommit := rev(t, repo, "HEAD")
+	git(t, repo, "branch", "base-view", baseCommit)
+
+	write(t, repo, "auth.py", "def validate_token(token, issuer=None):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "first head")
+	firstHead := rev(t, repo, "HEAD")
+	git(t, repo, "branch", "moving-head", firstHead)
+
+	write(t, repo, "auth.py", "def validate_token(token, audience=None):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "advanced head")
+	advancedHead := rev(t, repo, "HEAD")
+
+	advanced := false
+	result, err := AnalyzeGitRangeWithOptions(t.Context(), repo, "base-view", "moving-head", nil, AnalyzeOptions{
+		Progress: func(event AnalyzeProgressEvent) {
+			// The parse boundary is emitted after ChangedFiles. Moving the ref here
+			// deterministically exercises every content and dependent read that
+			// follows discovery.
+			if event.Phase == "parse" && event.FilesDone == 0 && !advanced {
+				git(t, repo, "update-ref", "refs/heads/moving-head", advancedHead, firstHead)
+				advanced = true
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !advanced {
+		t.Fatal("test did not advance the symbolic head after discovery")
+	}
+	if result.Base != "base-view" || result.Head != "moving-head" {
+		t.Fatalf("result labels = %q..%q, want caller labels base-view..moving-head", result.Base, result.Head)
+	}
+
+	var signatureChange *EntityChange
+	for fileIndex := range result.Files {
+		for changeIndex := range result.Files[fileIndex].Changes {
+			change := &result.Files[fileIndex].Changes[changeIndex]
+			if change.Name == "validate_token" && change.Type == "signature_changed" {
+				signatureChange = change
+			}
+		}
+	}
+	if signatureChange == nil {
+		t.Fatalf("changes = %#v, want validate_token signature change", result.Files)
+	}
+	if !strings.Contains(signatureChange.NewSignature, "issuer") || strings.Contains(signatureChange.NewSignature, "audience") {
+		t.Fatalf("new signature = %q, want initially pinned head containing issuer, not advanced head containing audience", signatureChange.NewSignature)
+	}
+}
+
 func containsPhase(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
