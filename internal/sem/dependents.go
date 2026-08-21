@@ -85,7 +85,7 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 	}
 
 	overBudget := func() bool {
-		return !options.deadline.IsZero() && time.Now().After(options.deadline)
+		return !options.deadline.IsZero() && !time.Now().Before(options.deadline)
 	}
 	if overBudget() {
 		return index, []ProviderWarning{dependentsBudgetWarning(0, -1, options.budget)}, nil
@@ -102,25 +102,35 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 	// One persistent `git cat-file --batch` process replaces a one-shot Git
 	// subprocess per candidate file; on large repos the per-file spawn cost
 	// alone was tens of seconds. Paths the LF protocol cannot represent and a
-	// batch startup failure use the same bounded typed one-shot reader.
-	oneShotOversize := map[string]int64{}
-	readFile := func(path string) (string, bool, error) {
-		result, err := gitutil.ReadFileLimited(ctx, repo, head, path, defaultMaxParseBytes)
+	// batch startup failure share one bounded metadata reader, so exceptional
+	// deep paths cannot each reset the component-process allowance.
+	limited := gitutil.NewLimitedFileReader(ctx, repo, head, defaultMaxParseBytes)
+	limited.SetDeadline(options.deadline)
+	defer func() { _ = limited.Close() }()
+
+	limitedOversize := map[string]int64{}
+	limitedUnaddressable := map[string]bool{}
+	readLimitedFile := func(path string) (string, bool, error) {
+		result, err := limited.ReadFile(path)
 		if err != nil {
 			return "", false, err
 		}
 		if result.Status == gitutil.LimitedFileOversize {
-			oneShotOversize[path] = result.Bytes
+			limitedOversize[path] = result.Bytes
+		}
+		if result.Status == gitutil.LimitedFileUnaddressable {
+			limitedUnaddressable[path] = true
 		}
 		return result.Content, result.Status == gitutil.LimitedFileContent, nil
 	}
+	readFile := readLimitedFile
 	// oversizeBytes reports a file the reader declined because it exceeds the
 	// parse limit, so the scan can warn about it (below) without the read that
 	// would have cost the file's size twice for a file it refuses to parse anyway.
 	// Set for an oversized blob whose streamed bytes contained a changed name.
 	oversizeMatched := map[string]bool{}
 	oversizeBytes := func(path string) (int64, bool) {
-		size, ok := oneShotOversize[path]
+		size, ok := limitedOversize[path]
 		return size, ok
 	}
 	if batch, batchErr := gitutil.NewBatchFileReader(ctx, repo, head); batchErr == nil {
@@ -128,19 +138,12 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 		batch.SetMaxBytes(defaultMaxParseBytes)
 		readFile = func(path string) (string, bool, error) {
 			if !batch.IsPathSafe(path) {
-				result, err := gitutil.ReadFileLimited(ctx, repo, head, path, defaultMaxParseBytes)
-				if err != nil {
-					return "", false, err
-				}
-				if result.Status == gitutil.LimitedFileOversize {
-					oneShotOversize[path] = result.Bytes
-				}
-				return result.Content, result.Status == gitutil.LimitedFileContent, nil
+				return readLimitedFile(path)
 			}
 			return batch.ReadFile(path)
 		}
 		oversizeBytes = func(path string) (int64, bool) {
-			if size, ok := oneShotOversize[path]; ok {
+			if size, ok := limitedOversize[path]; ok {
 				return size, true
 			}
 			blob, ok := batch.OversizeBlob(path)
@@ -200,12 +203,22 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 		if err != nil {
 			return nil, nil, err
 		}
+		// A deep-path metadata read can consume the remaining budget. Stop
+		// immediately after it returns, before its deadline-driven
+		// Unaddressable result is mistaken for a file-read failure.
+		if overBudget() {
+			warnings = append(warnings, dependentsBudgetWarning(i, len(files), options.budget))
+			break
+		}
 		if !ok {
-			// In a fallback full-tree scan, a one-shot unsafe oversize file has
+			// In a fallback full-tree scan, an unsafe oversized file has
 			// no streamed content evidence. Do not claim relevance merely from
 			// its size; the normal git-grep prefilter makes this rare path exact.
 			if size, oversize := oversizeBytes(path); oversize && (prefiltered || oversizeMatched[path]) {
 				warnings = append(warnings, dependentsFileTooLargeWarning(path, int(size)))
+			}
+			if limitedUnaddressable[path] && prefiltered {
+				warnings = append(warnings, dependentsFileUnaddressableWarning(path))
 			}
 			continue
 		}
@@ -306,6 +319,20 @@ func dependentsFileTooLargeWarning(path string, size int) ProviderWarning {
 		FilePath:             path,
 		EffectOnCompleteness: "dependent references in this file were not counted because it exceeds max parser input",
 		Detail:               fmt.Sprintf("file is %d bytes, above max parser input %d bytes", size, defaultMaxParseBytes),
+	}
+}
+
+// dependentsFileUnaddressableWarning reports a known-relevant candidate whose
+// unusual path could not be resolved within the shared bounded metadata
+// traversal. On the full-tree grep fallback, relevance is unknown without the
+// content, so callers deliberately do not emit this warning.
+func dependentsFileUnaddressableWarning(path string) ProviderWarning {
+	return ProviderWarning{
+		Code:                 "E_FILE_READ",
+		Severity:             "error",
+		FilePath:             path,
+		EffectOnCompleteness: "dependent references in this file were not counted because its Git metadata could not be resolved",
+		Detail:               "path could not be resolved within bounded Git metadata traversal",
 	}
 }
 

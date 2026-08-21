@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -97,11 +98,16 @@ func openSnapshotLineReader(
 		return newRepoLineReader(snapshot.Header.RepoRoot), nil, nil
 	}
 
+	treePathPrefix, err := gitutil.RepoPrefix(ctx, snapshot.Header.RepoRoot)
+	if err != nil {
+		return nil, nil, err
+	}
 	batch, err := gitutil.NewBatchFileReader(ctx, snapshot.Header.RepoRoot, snapshot.Header.Commit)
 	if err != nil {
 		return nil, nil, err
 	}
 	batch.SetMaxBytes(callSiteMaxFileBytes)
+	limited := gitutil.NewLimitedFileReader(ctx, snapshot.Header.RepoRoot, snapshot.Header.Commit, callSiteMaxFileBytes)
 
 	cache := map[string][]string{}
 	read := func(relPath string) ([]string, bool) {
@@ -117,13 +123,16 @@ func openSnapshotLineReader(
 		var readErr error
 		if !batch.IsPathSafe(relPath) {
 			// The batch protocol is line based, so a newline-bearing Git path
-			// needs the argv-safe one-shot reader. It still reads the same commit;
-			// failure never falls back to the dirty working tree. The ceiling is
+			// needs the shared exact-object bounded reader. It still reads the
+			// same commit; failure never falls back to the dirty working tree. The
+			// ceiling is
 			// passed DOWN rather than applied to the returned string: the sibling
 			// readers refuse an oversized blob before materializing it, and a path
 			// that reaches here can come from an ingested snapshot record, so this
 			// one must not be the exception that allocates first and checks after.
-			result, err := gitutil.ReadFileLimited(ctx, snapshot.Header.RepoRoot, snapshot.Header.Commit, relPath, callSiteMaxFileBytes)
+			// One reader shares its component cache and process allowance across
+			// all source records handled by this command.
+			result, err := limited.ReadFile(treePathPrefix + relPath)
 			readErr = err
 			content = result.Content
 			ok = result.Status == gitutil.LimitedFileContent
@@ -139,7 +148,10 @@ func openSnapshotLineReader(
 		cache[relPath] = lines
 		return lines, true
 	}
-	return read, batch.Close, nil
+	closeReaders := func() error {
+		return errors.Join(batch.Close(), limited.Close())
+	}
+	return read, closeReaders, nil
 }
 
 // openSnapshotLineReaderOrDegrade opens the provenance-correct reader and, when

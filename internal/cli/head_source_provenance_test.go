@@ -2,11 +2,17 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/entireio/entire-graph/internal/sem"
 )
@@ -19,7 +25,7 @@ func TestHeadSnapshotLineReaderPreservesCommittedFileContract(t *testing.T) {
 	write(t, repo, "tracked.go", "committed\r\nline\r\n")
 	write(t, repo, "contains-nul.go", "before\x00after\n")
 	write(t, repo, "oversized.go", strings.Repeat("x", callSiteMaxFileBytes+1))
-	// A newline in a path is legal in Git and drives the one-shot `git show`
+	// A newline in a path is legal in Git and drives the bounded exact-object
 	// fallback, but Windows cannot create such a file at all. Everything else
 	// this test pins — CRLF, NUL, the size ceiling, worktree isolation — is
 	// cross-platform, so only the newline case is skipped rather than the test.
@@ -76,6 +82,91 @@ func TestHeadSnapshotLineReaderPreservesCommittedFileContract(t *testing.T) {
 		t.Fatalf("close committed reader: %v", err)
 	}
 	closeReader = nil
+}
+
+type deepSnapshotLineFile struct {
+	path    string
+	content string
+}
+
+func importDeepSnapshotLineFiles(t *testing.T, repo string, files []deepSnapshotLineFile) string {
+	t.Helper()
+	var input strings.Builder
+	for i, file := range files {
+		fmt.Fprintf(&input, "blob\nmark :%d\ndata %d\n%s\n", i+1, len(file.content), file.content)
+	}
+	message := "deep snapshot lines"
+	fmt.Fprintf(&input, "commit refs/heads/deep-snapshot-lines\nmark :%d\n", len(files)+1)
+	fmt.Fprint(&input, "committer Test <test@example.com> 1 +0000\n")
+	fmt.Fprintf(&input, "data %d\n%s\n", len(message), message)
+	for i, file := range files {
+		fmt.Fprintf(&input, "M 100644 :%d %s\n", i+1, strconv.Quote("scope/"+file.path))
+	}
+	input.WriteByte('\n')
+
+	cmd := exec.Command("git", "fast-import", "--quiet")
+	cmd.Dir = repo
+	cmd.Stdin = strings.NewReader(input.String())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git fast-import deep snapshot lines: %v\n%s", err, out)
+	}
+	return rev(t, repo, "refs/heads/deep-snapshot-lines")
+}
+
+func deepSnapshotLinePath(branch int) string {
+	component := strings.Repeat(string(rune('a'+branch)), 200)
+	components := make([]string, 80, 81)
+	for i := range components {
+		components[i] = component
+	}
+	components = append(components, fmt.Sprintf("unsafe\nsource_%d.go", branch))
+	return strings.Join(components, "/")
+}
+
+// TestSnapshotLineReaderSharesDeepUnsafeMetadataAllowance proves the
+// command-lifetime fallback does not reset its component-process allowance per
+// source record. The snapshot root is a repository subdirectory, so the same
+// fixture also pins conversion from caller-relative to tree-root coordinates.
+func TestSnapshotLineReaderSharesDeepUnsafeMetadataAllowance(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	files := make([]deepSnapshotLineFile, 4)
+	for i := range files {
+		files[i] = deepSnapshotLineFile{
+			path:    deepSnapshotLinePath(i),
+			content: fmt.Sprintf("source-%d\n", i),
+		}
+	}
+	head := importDeepSnapshotLineFiles(t, repo, files)
+	subdir := filepath.Join(repo, "scope")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	defer cancel()
+	read, closeReader, err := openSnapshotLineReader(ctx, sem.ProviderSnapshot{
+		Header: sem.SnapshotHeader{RepoRoot: subdir, Commit: head},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reads := 0
+	for _, file := range files {
+		lines, ok := read(file.path)
+		if ok && len(lines) > 0 && lines[0]+"\n" == file.content {
+			reads++
+		}
+	}
+	if err := closeReader(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := reads, 3; got != want {
+		t.Fatalf("snapshot source reads before shared metadata cap = %d, want %d", got, want)
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("snapshot line reader exceeded safety timeout: %v", err)
+	}
 }
 
 // A committed reader that cannot be opened must cost the answer its source

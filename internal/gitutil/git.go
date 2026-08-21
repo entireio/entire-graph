@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/entireio/entire-graph/internal/filedigest"
 )
@@ -62,6 +63,22 @@ func RepoPrefix(ctx context.Context, cwd string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSuffix(out, "\n"), nil
+}
+
+// RepoCommandRoot returns a cwd from which tree-root-relative paths keep the
+// same coordinates. A worktree subdirectory is normalized to Git's top level;
+// a worktree root or bare repository already has an empty prefix and is kept as
+// provided. This matters when rev itself is a subtree OID: running tree commands
+// from the original subdirectory would apply that prefix a second time.
+func RepoCommandRoot(ctx context.Context, cwd string) (string, error) {
+	prefix, err := RepoPrefix(ctx, cwd)
+	if err != nil {
+		return "", err
+	}
+	if prefix == "" {
+		return cwd, nil
+	}
+	return RepoRoot(ctx, cwd)
 }
 
 func repoTreePath(ctx context.Context, repo, path string) (string, error) {
@@ -594,10 +611,10 @@ func ShowFile(ctx context.Context, repo, rev, path string) (string, bool, error)
 // deadlocked on Windows: killing git left a grandchild holding the inherited
 // stderr handle, so the copier goroutine never saw EOF and Cmd.Wait blocked in
 // awaitGoroutines forever. Nothing here now depends on process-tree teardown.
-// This one-shot helper pays for separate `cat-file` probes. Callers scanning a
-// range of ordinary paths should use LimitedFileReader, which batches metadata
-// and sends exact blob OIDs (never repository paths) to its persistent content
-// batch. An unprimed LimitedFileReader path falls back here.
+// This one-shot helper pays for separate metadata probes. Callers scanning a
+// range of paths should use LimitedFileReader, which batches metadata, shares
+// exceptional component traversal, and sends exact blob OIDs (never repository
+// paths) to its persistent content batch.
 //
 // The metadata probe is authoritative only when Git identifies the object. A
 // blob proceeds to the size decision below; a non-blob (notably a gitlink's
@@ -617,9 +634,10 @@ const (
 	LimitedFileContent
 	LimitedFileOversize
 	LimitedFileNonBlob
-	// LimitedFileUnaddressable means a valid tree path cannot fit the bounded
-	// argv used for exact metadata lookup (currently one component exceeds the
-	// whole 15 KiB pathspec budget). No content was read.
+	// LimitedFileUnaddressable means a valid tree path could not be resolved
+	// within the bounded exact-metadata traversal: a component exceeded the
+	// argv ceiling, the component-process allowance was exhausted, or the
+	// caller's traversal deadline elapsed. No content was read.
 	LimitedFileUnaddressable
 )
 
@@ -637,7 +655,9 @@ type LimitedFileResult struct {
 // coherent snapshot across this metadata probe and other Git operations must
 // pass an already-resolved immutable revision rather than a moving ref name.
 // Like ShowFile, path is relative to repo and rev represents the repository
-// root when repo is a subdirectory.
+// root when repo is a subdirectory. Path must be canonical and file-like: it
+// cannot be empty or NUL-bearing and cannot contain empty, ".", or ".."
+// components. Invalid paths fail before Git runs.
 func ReadFileLimited(ctx context.Context, repo, rev, path string, maxBytes int64) (LimitedFileResult, error) {
 	return readFileLimited(ctx, repo, rev, path, maxBytes, blobSizeAtRev)
 }
@@ -668,6 +688,13 @@ func readFileLimited(
 	maxBytes int64,
 	probe func(ctx context.Context, repo, rev, path string) (int64, blobProbeStatus),
 ) (LimitedFileResult, error) {
+	// A file read must never let git-show reinterpret an empty/trailing-slash
+	// path as a request to render a tree. Validate before the best-effort probe:
+	// otherwise its validation error becomes "unknown" and the fallback can
+	// materialize an unbounded repository-controlled directory listing.
+	if err := validateLimitedFilePath(path); err != nil {
+		return LimitedFileResult{}, err
+	}
 	// An identified non-blob is not file content. In particular, `git show` on a
 	// gitlink's small commit object renders the commit's potentially enormous
 	// patch, so trusting only that object's size would defeat the caller's bound.
@@ -677,6 +704,9 @@ func readFileLimited(
 	size, status := probe(ctx, repo, rev, path)
 	if status == blobProbeNonBlob {
 		return LimitedFileResult{Status: LimitedFileNonBlob}, nil
+	}
+	if status == blobProbeUnaddressable {
+		return LimitedFileResult{Status: LimitedFileUnaddressable}, nil
 	}
 	if status == blobProbeBlob && maxBytes > 0 && size > maxBytes {
 		// Refused, not failed: a blob this caller cannot quote, exactly like a
@@ -708,6 +738,18 @@ func readFileLimited(
 		return LimitedFileResult{Status: LimitedFileOversize, Bytes: int64(len(content))}, nil
 	}
 	return LimitedFileResult{Status: LimitedFileContent, Content: content, Bytes: int64(len(content))}, nil
+}
+
+func validateLimitedFilePath(path string) error {
+	if path == "" || strings.ContainsRune(path, 0) {
+		return fmt.Errorf("invalid Git tree path %q", path)
+	}
+	for _, component := range strings.Split(path, "/") {
+		if component == "" || component == "." || component == ".." {
+			return fmt.Errorf("invalid Git tree path %q", path)
+		}
+	}
+	return nil
 }
 
 func readBlobAtRev(ctx context.Context, repo, rev, path string) (string, bool, error) {
@@ -794,6 +836,7 @@ const (
 	blobProbeUnknown blobProbeStatus = iota
 	blobProbeBlob
 	blobProbeNonBlob
+	blobProbeUnaddressable
 )
 
 // blobSizeAtRev reports the type and, for a blob, the size of rev:path without
@@ -809,7 +852,7 @@ func blobSizeAtRev(ctx context.Context, repo, rev, path string) (int64, blobProb
 		return 0, blobProbeUnknown
 	}
 	if entry.result.Status == LimitedFileUnaddressable {
-		return 0, blobProbeUnknown
+		return 0, blobProbeUnaddressable
 	}
 	if entry.objectType != "blob" {
 		return 0, blobProbeNonBlob
@@ -1035,7 +1078,7 @@ func (r *BatchFileReader) Close() error {
 // ReadFile then asks a persistent content batch for the exact blob OIDs at or
 // below the ceiling. Repository paths never enter that line-oriented protocol,
 // so newline-bearing and trailing-carriage-return names cannot split or
-// normalize a request. An unprimed path uses the argv-safe one-shot fallback.
+// normalize a request. An unprimed path resolves the same metadata lazily.
 type LimitedFileReader struct {
 	ctx      context.Context
 	repo     string
@@ -1046,6 +1089,12 @@ type LimitedFileReader struct {
 	content *BatchFileReader
 	primed  map[string]primedLimitedFile
 	closed  bool
+
+	componentMetadata          map[treeComponentMetadataKey]treeComponentMetadataResult
+	componentMetadataProcesses int
+	componentMetadataLookup    treeMetadataLookup
+	deadline                   time.Time
+	now                        func() time.Time
 }
 
 type primedLimitedFile struct {
@@ -1056,11 +1105,51 @@ type primedLimitedFile struct {
 
 const treeMetadataLiteralPrefix = ":(top,literal)"
 
+// Normal paths use count- and argv-bounded metadata batches. Only a path too
+// large for those batches enters component traversal. 256 leaves ample room
+// for the existing 80-component compatibility case while bounding one
+// adversarial reader (and therefore both sides of an Analyze call)
+// independently of path depth/count.
+const limitedFileComponentMetadataProcessLimit = 256
+
+type treeComponentMetadataKey struct {
+	treeOID   string
+	component string
+}
+
+type treeComponentMetadataResult struct {
+	entry primedLimitedFile
+	found bool
+}
+
+type treeMetadataLookup func(
+	context.Context,
+	string,
+	string,
+	[]string,
+) (map[string]primedLimitedFile, error)
+
 // NewLimitedFileReader creates a lazy reader. No Git process starts until Prime
 // or ReadFile, so an empty or extension-filtered range costs no subprocesses.
 // rev must be immutable when metadata and content consistency matters.
 func NewLimitedFileReader(ctx context.Context, repo, rev string, maxBytes int64) *LimitedFileReader {
-	return &LimitedFileReader{ctx: ctx, repo: repo, rev: rev, maxBytes: maxBytes}
+	return &LimitedFileReader{
+		ctx:                     ctx,
+		repo:                    repo,
+		rev:                     rev,
+		maxBytes:                maxBytes,
+		componentMetadataLookup: treeEntryMetadataBatch,
+		now:                     time.Now,
+	}
+}
+
+// SetDeadline bounds only the exceptional component-by-component metadata
+// traversal. Ordinary short-path batches remain one process and unchanged.
+// A zero deadline restores the historical no-deadline behavior.
+func (r *LimitedFileReader) SetDeadline(deadline time.Time) {
+	r.mu.Lock()
+	r.deadline = deadline
+	r.mu.Unlock()
 }
 
 // Prime resolves exact tree-entry metadata for a bounded group of paths. Unlike
@@ -1084,7 +1173,7 @@ func (r *LimitedFileReader) Prime(paths []string) error {
 		// No command receives the whole path, while the final exact blob OID can
 		// still use the persistent content batch.
 		if len(treeMetadataLiteralPrefix)+len(paths[start]) > literalPathspecBatchBytes {
-			entry, found, err := treeEntryMetadataByComponents(r.ctx, r.repo, r.rev, paths[start])
+			entry, found, err := r.treeEntryMetadataByComponents(paths[start])
 			if err != nil {
 				return err
 			}
@@ -1112,10 +1201,15 @@ func (r *LimitedFileReader) Prime(paths []string) error {
 }
 
 func treeEntryMetadata(ctx context.Context, repo, rev, path string) (primedLimitedFile, bool, error) {
+	reader := NewLimitedFileReader(ctx, repo, rev, 0)
+	return reader.treeEntryMetadata(path)
+}
+
+func (r *LimitedFileReader) treeEntryMetadata(path string) (primedLimitedFile, bool, error) {
 	if len(treeMetadataLiteralPrefix)+len(path) > literalPathspecBatchBytes {
-		return treeEntryMetadataByComponents(ctx, repo, rev, path)
+		return r.treeEntryMetadataByComponents(path)
 	}
-	entries, err := treeEntryMetadataBatch(ctx, repo, rev, []string{path})
+	entries, err := treeEntryMetadataBatch(r.ctx, r.repo, r.rev, []string{path})
 	if err != nil {
 		return primedLimitedFile{}, false, err
 	}
@@ -1126,36 +1220,76 @@ func treeEntryMetadata(ctx context.Context, repo, rev, path string) (primedLimit
 // treeEntryMetadataByComponents resolves a deep path without ever placing the
 // full repository-controlled string in argv. Each intermediate entry must be a
 // tree; its immutable OID becomes the root of the next exact one-component
-// lookup. The rare path pays one bounded Git process per component.
-func treeEntryMetadataByComponents(ctx context.Context, repo, rev, path string) (primedLimitedFile, bool, error) {
+// lookup. Resolved (tree OID, component) pairs are cached across paths, and
+// uncached lookups stop at the reader's process allowance or deadline.
+func (r *LimitedFileReader) treeEntryMetadataByComponents(path string) (primedLimitedFile, bool, error) {
+	if err := validateLimitedFilePath(path); err != nil {
+		return primedLimitedFile{}, false, err
+	}
 	components := strings.Split(path, "/")
-	currentTree := rev
+	currentTree := r.rev
 	for i, component := range components {
-		if component == "" {
-			return primedLimitedFile{}, false, fmt.Errorf("invalid Git tree path %q", path)
-		}
 		if len(treeMetadataLiteralPrefix)+len(component) > literalPathspecBatchBytes {
-			return primedLimitedFile{
-				result: LimitedFileResult{Status: LimitedFileUnaddressable},
-			}, true, nil
+			return unaddressableLimitedFile(), true, nil
 		}
-		entries, err := treeEntryMetadataBatch(ctx, repo, currentTree, []string{component})
+		metadata, addressable, err := r.componentEntryMetadata(currentTree, component)
 		if err != nil {
 			return primedLimitedFile{}, false, err
 		}
-		entry, found := entries[component]
-		if !found {
+		if !addressable {
+			return unaddressableLimitedFile(), true, nil
+		}
+		if !metadata.found {
 			return primedLimitedFile{}, false, nil
 		}
 		if i == len(components)-1 {
-			return entry, true, nil
+			return metadata.entry, true, nil
 		}
-		if entry.objectType != "tree" {
+		if metadata.entry.objectType != "tree" {
 			return primedLimitedFile{}, false, nil
 		}
-		currentTree = entry.objectID
+		currentTree = metadata.entry.objectID
 	}
 	return primedLimitedFile{}, false, nil
+}
+
+func (r *LimitedFileReader) componentEntryMetadata(
+	treeOID, component string,
+) (treeComponentMetadataResult, bool, error) {
+	key := treeComponentMetadataKey{treeOID: treeOID, component: component}
+	if metadata, ok := r.componentMetadata[key]; ok {
+		return metadata, true, nil
+	}
+	if r.componentMetadataProcesses >= limitedFileComponentMetadataProcessLimit || r.componentDeadlineReached() {
+		return treeComponentMetadataResult{}, false, nil
+	}
+	r.componentMetadataProcesses++
+	entries, err := r.componentMetadataLookup(r.ctx, r.repo, treeOID, []string{component})
+	if err != nil {
+		return treeComponentMetadataResult{}, false, err
+	}
+	entry, found := entries[component]
+	metadata := treeComponentMetadataResult{entry: entry, found: found}
+	if r.componentMetadata == nil {
+		r.componentMetadata = make(map[treeComponentMetadataKey]treeComponentMetadataResult)
+	}
+	r.componentMetadata[key] = metadata
+	return metadata, true, nil
+}
+
+func (r *LimitedFileReader) componentDeadlineReached() bool {
+	if r.deadline.IsZero() {
+		return false
+	}
+	now := r.now
+	if now == nil {
+		now = time.Now
+	}
+	return !now().Before(r.deadline)
+}
+
+func unaddressableLimitedFile() primedLimitedFile {
+	return primedLimitedFile{result: LimitedFileResult{Status: LimitedFileUnaddressable}}
 }
 
 // treeMetadataBatchEnd keeps each ls-tree invocation prefix-free as well as
@@ -1204,8 +1338,8 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 	known := make(map[string]struct{}, len(paths))
 	pathspecBytes := 0
 	for _, path := range paths {
-		if path == "" || strings.HasSuffix(path, "/") || strings.ContainsRune(path, 0) {
-			return nil, fmt.Errorf("invalid Git tree path %q", path)
+		if err := validateLimitedFilePath(path); err != nil {
+			return nil, err
 		}
 		pathspecBytes += len(treeMetadataLiteralPrefix) + len(path)
 		if pathspecBytes > literalPathspecBatchBytes {
@@ -1272,7 +1406,19 @@ func (r *LimitedFileReader) ReadFile(path string) (LimitedFileResult, error) {
 	}
 	entry, primed := r.primed[path]
 	if !primed {
-		return ReadFileLimited(r.ctx, r.repo, r.rev, path, r.maxBytes)
+		var found bool
+		var err error
+		entry, found, err = r.treeEntryMetadata(path)
+		if err != nil {
+			return LimitedFileResult{}, err
+		}
+		if !found {
+			entry = primedLimitedFile{result: LimitedFileResult{Status: LimitedFileMissing}}
+		}
+		if r.primed == nil {
+			r.primed = make(map[string]primedLimitedFile)
+		}
+		r.primed[path] = entry
 	}
 	result := entry.result
 	if result.Status != LimitedFileContent {

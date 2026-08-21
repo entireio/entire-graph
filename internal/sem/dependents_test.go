@@ -2,6 +2,9 @@ package sem
 
 import (
 	"context"
+	"fmt"
+	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -437,6 +440,166 @@ func TestAddDependentCountsBudgetExpiredWarnsAndKeepsResult(t *testing.T) {
 	}
 	if got := result.Files[0].Changes[0].DependentsCount; got != 0 {
 		t.Fatalf("dependents count under expired budget = %d, want 0", got)
+	}
+}
+
+type deepDependentFile struct {
+	path    string
+	content string
+}
+
+// importDeepDependentFiles uses Git's object protocol instead of the
+// filesystem, whose native path limits are far below the adversarial Git tree
+// paths these tests need to exercise.
+func importDeepDependentFiles(t *testing.T, repo string, files []deepDependentFile) string {
+	t.Helper()
+	var input strings.Builder
+	for i, file := range files {
+		mark := i + 1
+		fmt.Fprintf(&input, "blob\nmark :%d\ndata %d\n%s\n", mark, len(file.content), file.content)
+	}
+	message := "deep dependents"
+	commitMark := len(files) + 1
+	fmt.Fprintf(&input, "commit refs/heads/deep-dependents\nmark :%d\n", commitMark)
+	fmt.Fprint(&input, "committer Test <test@example.com> 1 +0000\n")
+	fmt.Fprintf(&input, "data %d\n%s\n", len(message), message)
+	for i, file := range files {
+		// strconv.Quote emits the C-style quoted path form fast-import uses,
+		// preserving the newline that makes the cat-file batch protocol unsafe.
+		fmt.Fprintf(&input, "M 100644 :%d %s\n", i+1, strconv.Quote(file.path))
+	}
+	input.WriteByte('\n')
+
+	cmd := exec.Command("git", "fast-import", "--quiet")
+	cmd.Dir = repo
+	cmd.Stdin = strings.NewReader(input.String())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git fast-import deep dependents: %v\n%s", err, out)
+	}
+	return rev(t, repo, "refs/heads/deep-dependents")
+}
+
+func repeatedDeepUnsafePath(branch, depth, componentBytes int) string {
+	component := strings.Repeat(string(rune('a'+branch)), componentBytes)
+	components := make([]string, depth, depth+1)
+	for i := range components {
+		components[i] = component
+	}
+	components = append(components, fmt.Sprintf("unsafe\ncaller_%d.py", branch))
+	return strings.Join(components, "/")
+}
+
+// TestBuildReferenceIndexSharesDeepPathMetadataAllowance proves that unsafe
+// dependent paths use one LimitedFileReader. Four independent 81-component
+// paths need 324 metadata subprocesses in total; the shared allowance resolves
+// three, then reports the known-relevant remainder as partial. The previous
+// per-file ReadFileLimited fallback reset the allowance four times and read all
+// four paths.
+func TestBuildReferenceIndexSharesDeepPathMetadataAllowance(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+
+	files := make([]deepDependentFile, 4)
+	for i := range files {
+		files[i] = deepDependentFile{
+			path:    repeatedDeepUnsafePath(i, 80, 200),
+			content: fmt.Sprintf("def caller_%d():\n    return Foo()\n", i),
+		}
+	}
+	head := importDeepDependentFiles(t, repo, files)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	index, warnings, err := buildReferenceIndexWithProgress(ctx, repo, head, map[string]struct{}{"Foo": {}}, dependentsScanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("dependents scan exceeded safety timeout: %v", err)
+	}
+	if got, want := len(index["Foo"]), 3; got != want {
+		t.Fatalf("dependents resolved before shared metadata cap = %d, want %d", got, want)
+	}
+
+	var unaddressable []ProviderWarning
+	for _, warning := range warnings {
+		if warning.Code == "E_FILE_READ" && strings.Contains(warning.Detail, "bounded Git metadata traversal") {
+			unaddressable = append(unaddressable, warning)
+		}
+		if warning.Code == "W_ANALYSIS_BUDGET_EXCEEDED" {
+			t.Fatalf("metadata process cap must not be reported as a time budget expiry: %#v", warning)
+		}
+	}
+	if got, want := len(unaddressable), 1; got != want {
+		t.Fatalf("bounded metadata warnings = %d, want %d: %#v", got, want, warnings)
+	}
+	if unaddressable[0].EffectOnCompleteness == "" {
+		t.Fatalf("bounded metadata warning must explain partial dependents: %#v", unaddressable[0])
+	}
+}
+
+// TestHeadReadersShareDeepUnsafeMetadataAllowance covers the two committed
+// multi-file reader closures outside Analyze. Each has one shared component
+// allowance: four independent 81-component unsafe paths resolve three and
+// classify the fourth as unavailable. A fresh one-shot reader per file would
+// reset the allowance and incorrectly read all four.
+func TestHeadReadersShareDeepUnsafeMetadataAllowance(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	files := make([]deepDependentFile, 4)
+	for i := range files {
+		files[i] = deepDependentFile{
+			path:    repeatedDeepUnsafePath(i, 80, 200),
+			content: fmt.Sprintf("def caller_%d():\n    return %d\n", i, i),
+		}
+	}
+	head := importDeepDependentFiles(t, repo, files)
+	git(t, repo, "symbolic-ref", "HEAD", "refs/heads/deep-dependents")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	source, err := prepareSource(ctx, repo, ProviderSnapshotOptions{MaxParseBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Read in the opposite order from the deterministic listing. Without the
+	// pre-worker Prime, this reverse schedule would give the allowance to the
+	// last three paths and make provider output depend on worker timing.
+	providerRead := make(map[string]bool, len(files))
+	for i := len(files) - 1; i >= 0; i-- {
+		file := files[i]
+		if content, ok := source.read(file.path); ok && content == file.content {
+			providerRead[file.path] = true
+		}
+	}
+	if err := source.close(); err != nil {
+		t.Fatal(err)
+	}
+	for i, file := range files {
+		want := i < 3
+		if got := providerRead[file.path]; got != want {
+			t.Fatalf("provider read for listed path %d = %v, want %v", i, got, want)
+		}
+	}
+
+	readSearch, closeSearch, err := openSearchContentReader(ctx, repo, head, true, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	searchReads := 0
+	for _, file := range files {
+		if content, ok := readSearch(file.path); ok && content == file.content {
+			searchReads++
+		}
+	}
+	if err := closeSearch(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := searchReads, 3; got != want {
+		t.Fatalf("search reads before shared metadata cap = %d, want %d", got, want)
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("shared head readers exceeded safety timeout: %v", err)
 	}
 }
 
