@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -469,6 +470,90 @@ func TestBatchFileReaderReadsMultipleFilesFromHead(t *testing.T) {
 	}
 	if _, ok, err := reader.ReadFile("missing.go"); err != nil || ok {
 		t.Fatalf("missing read ok=%v err=%v, want ok=false err=nil", ok, err)
+	}
+}
+
+type countingWriteCloser struct {
+	io.WriteCloser
+	writes int
+}
+
+func (w *countingWriteCloser) Write(p []byte) (int, error) {
+	w.writes++
+	return w.WriteCloser.Write(p)
+}
+
+func TestBatchFileReaderRejectsNonBlobBeforeRequestingContent(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	if err := os.WriteFile(filepath.Join(repo, "plain.py"), []byte("def plain():\n    return True\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "plain.py")
+	git(t, repo, "commit", "-m", "gitlink target")
+	target := gitOutput(t, repo, "rev-parse", "HEAD")
+	git(t, repo, "update-index", "--add", "--cacheinfo", "160000", target, "module.py")
+	git(t, repo, "commit", "-m", "record gitlink")
+
+	reader, err := NewBatchFileReader(t.Context(), repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
+	contentWrites := &countingWriteCloser{WriteCloser: reader.stdin}
+	reader.stdin = contentWrites
+	reader.SetMaxBytes(1)
+
+	if content, ok, err := reader.ReadFile("module.py"); err != nil || ok || content != "" {
+		t.Fatalf("gitlink batch read = (%q, %v, %v), want metadata-only refusal", content, ok, err)
+	}
+	if contentWrites.writes != 0 {
+		t.Fatalf("gitlink issued %d content requests, want none", contentWrites.writes)
+	}
+	if reader.checkCmd == nil {
+		t.Fatal("gitlink read did not use the metadata batch")
+	}
+
+	// A real blob still reaches the content batch. The one-byte ceiling makes it
+	// stream through the existing oversize digest path rather than materializing.
+	if content, ok, err := reader.ReadFile("plain.py"); err != nil || ok || content != "" {
+		t.Fatalf("oversized blob batch read = (%q, %v, %v), want refusal", content, ok, err)
+	}
+	if contentWrites.writes != 1 {
+		t.Fatalf("blob issued %d content requests, want one", contentWrites.writes)
+	}
+	if _, ok := reader.OversizeBlob("plain.py"); !ok {
+		t.Fatal("blob preflight bypassed the existing oversize digest registry")
+	}
+}
+
+func TestBatchFileReaderRejectsInvalidPathWithoutDesync(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	const content = "package plain\n"
+	if err := os.WriteFile(filepath.Join(repo, "plain.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "plain.go")
+	git(t, repo, "commit", "-m", "plain file")
+
+	reader, err := NewBatchFileReader(t.Context(), repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
+	for _, path := range []string{"", ".", "./plain.go", "../plain.go", "/plain.go", "dir//plain.go", "dir/../plain.go", "dir/"} {
+		if got, ok, err := reader.ReadFile(path); err == nil || ok || got != "" {
+			t.Fatalf("invalid batch path %q = (%q, %v, %v), want pre-write error", path, got, ok, err)
+		}
+	}
+	got, ok, err := reader.ReadFile("plain.go")
+	if err != nil || !ok || got != content {
+		t.Fatalf("plain read after invalid paths = (%q, %v, %v), want exact content", got, ok, err)
 	}
 }
 
@@ -1358,6 +1443,43 @@ func TestLimitedFileReaderClassifiesSingleComponentBeyondArgvBound(t *testing.T)
 	}
 	if reader.content != nil {
 		t.Fatal("unaddressable component started a content batch")
+	}
+}
+
+func TestLimitedFileReaderClassifiesMissingBlobObjectAsUnreadable(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	knownBlob := gitInputOutput(t, repo, "package known\n", "hash-object", "-w", "--stdin")
+	missingOID := strings.Repeat("1", len(knownBlob))
+	tree := gitInputOutput(
+		t,
+		repo,
+		fmt.Sprintf("100644 blob %s\tmissing.go%c", missingOID, byte(0)),
+		"mktree", "-z", "--missing",
+	)
+
+	reader := NewLimitedFileReader(t.Context(), repo, tree, 1024)
+	t.Cleanup(func() { _ = reader.Close() })
+	if err := reader.Prime([]string{"missing.go"}); err != nil {
+		t.Fatalf("prime missing-object entry: %v", err)
+	}
+	result, err := reader.ReadFile("missing.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != LimitedFileUnreadable {
+		t.Fatalf("missing-object result = %#v, want unreadable", result)
+	}
+	if reader.content != nil {
+		t.Fatal("unreadable metadata started a content batch")
+	}
+
+	oneShot, err := ReadFileLimited(t.Context(), repo, tree, "missing.go", 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oneShot.Status != LimitedFileUnreadable {
+		t.Fatalf("one-shot missing-object result = %#v, want unreadable", oneShot)
 	}
 }
 

@@ -72,6 +72,64 @@ func TestAnalyzeGitRangeRefusesBlobsAboveTheReadCap(t *testing.T) {
 	}
 }
 
+func TestCommittedProviderRecoversFromMissingBlobObjectsForSafeAndUnsafePaths(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+	knownBlob := gitInput(t, repo, "def available():\n    return True\n", "hash-object", "-w", "--stdin")
+	missingOID := strings.Repeat("1", len(knownBlob))
+	const (
+		safePath          = "safe-missing.py"
+		unsafePath        = "unsafe\nmissing.py"
+		invalidUnsafePath = "../unsafe\ninvalid.py"
+	)
+	invalidSubtree := gitInput(
+		t,
+		repo,
+		"100644 blob "+knownBlob+"\tunsafe\ninvalid.py\x00",
+		"mktree", "-z",
+	)
+	treeInput := "040000 tree " + invalidSubtree + "\t..\x00" +
+		"100644 blob " + knownBlob + "\tplain.py\x00" +
+		"100644 blob " + missingOID + "\t" + safePath + "\x00" +
+		"100644 blob " + missingOID + "\t" + unsafePath + "\x00"
+	tree := gitInput(t, repo, treeInput, "mktree", "-z", "--missing")
+	commit := gitInput(t, repo, "missing-object parity\n", "commit-tree", tree)
+	git(t, repo, "update-ref", "HEAD", commit)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test", ProviderSnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot with listed missing objects: %v", err)
+	}
+	foundPlain := false
+	for _, file := range snapshot.Files {
+		if file.Path == "plain.py" {
+			foundPlain = true
+		}
+		if file.Path == safePath || file.Path == unsafePath || file.Path == invalidUnsafePath {
+			t.Fatalf("missing-object path emitted a file record: %#v", file)
+		}
+	}
+	if !foundPlain {
+		t.Fatalf("recoverable missing objects suppressed the readable sibling: %#v", snapshot.Files)
+	}
+
+	failures := map[string]PartialFailure{}
+	for _, failure := range snapshot.Header.PartialFailures {
+		if failure.FilePath == safePath || failure.FilePath == unsafePath || failure.FilePath == invalidUnsafePath {
+			failures[failure.FilePath] = failure
+		}
+	}
+	for _, path := range []string{safePath, unsafePath, invalidUnsafePath} {
+		failure, ok := failures[path]
+		if !ok {
+			t.Fatalf("missing-object path %q had no partial failure: %#v", path, snapshot.Header.PartialFailures)
+		}
+		if failure.Code != "E_FILE_READ" || failure.Severity != "error" || failure.Detail != "file listed but content was unavailable" {
+			t.Fatalf("missing-object path %q failure = %#v, want E_FILE_READ parity", path, failure)
+		}
+	}
+}
+
 // TestHeadReadersCapNewlineBearingPaths pins the bound on the one HEAD read
 // that the `git cat-file --batch` protocol cannot carry. The batch reader is
 // line based, so a Git path containing a newline falls back to a shared bounded

@@ -111,6 +111,10 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 	limitedOversize := map[string]int64{}
 	limitedUnaddressable := map[string]bool{}
 	readLimitedFile := func(path string) (string, bool, error) {
+		if !gitutil.IsCanonicalGitTreePath(path) {
+			limitedUnaddressable[path] = true
+			return "", false, nil
+		}
 		result, err := limited.ReadFile(path)
 		if err != nil {
 			return "", false, err
@@ -137,7 +141,7 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 		defer func() { _ = batch.Close() }()
 		batch.SetMaxBytes(defaultMaxParseBytes)
 		readFile = func(path string) (string, bool, error) {
-			if !batch.IsPathSafe(path) {
+			if !gitutil.IsCanonicalGitTreePath(path) || !batch.IsPathSafe(path) {
 				return readLimitedFile(path)
 			}
 			return batch.ReadFile(path)

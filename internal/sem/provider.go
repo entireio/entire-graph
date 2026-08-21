@@ -9866,8 +9866,9 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		prime := func(paths []string) error {
 			unsafeTreePaths := make([]string, 0, len(paths))
 			for _, path := range paths {
-				if !batch.IsPathSafe(path) {
-					unsafeTreePaths = append(unsafeTreePaths, treePathPrefix+path)
+				treePath := treePathPrefix + path
+				if !batch.IsPathSafe(path) && gitutil.IsCanonicalGitTreePath(treePath) {
+					unsafeTreePaths = append(unsafeTreePaths, treePath)
 				}
 			}
 			return limited.Prime(unsafeTreePaths)
