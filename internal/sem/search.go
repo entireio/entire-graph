@@ -1473,15 +1473,15 @@ func openSearchContentReader(
 		// so the reader declines it rather than materializing it twice over.
 		batch.SetMaxBytes(defaultMaxParseBytes)
 		read := func(path string) (string, bool) {
-			if strings.Contains(path, "\n") {
+			if !batch.IsPathSafe(path) {
 				// Same ceiling as the batch reader above. The argv-safe
 				// fallback exists because the batch protocol cannot carry a
 				// newline-bearing path, not to exempt that path from the cap:
 				// the file's name is chosen by the repository being searched,
 				// so an unbounded read here would be a name-shaped hole in the
 				// bound.
-				content, ok, err := gitutil.ShowFileLimited(ctx, repo, commit, path, defaultMaxParseBytes)
-				return content, ok && err == nil
+				result, err := gitutil.ReadFileLimited(ctx, repo, commit, path, defaultMaxParseBytes)
+				return result.Content, err == nil && result.Status == gitutil.LimitedFileContent
 			}
 			content, ok, err := batch.ReadFile(path)
 			return content, ok && err == nil

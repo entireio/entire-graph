@@ -472,6 +472,106 @@ func TestBatchFileReaderReadsMultipleFilesFromHead(t *testing.T) {
 	}
 }
 
+func TestGitObjectReadersUseRepoSubdirectoryPrefix(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	if err := os.MkdirAll(filepath.Join(repo, "scope"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const content = "package scope\n"
+	if err := os.WriteFile(filepath.Join(repo, "scope", "file.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "subdirectory object fixture")
+	subdir := filepath.Join(repo, "scope")
+
+	prefix, err := RepoPrefix(t.Context(), subdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prefix != "scope/" {
+		t.Fatalf("repository prefix = %q, want scope/", prefix)
+	}
+	shown, ok, err := ShowFile(t.Context(), subdir, "HEAD", "file.go")
+	if err != nil || !ok || shown != content {
+		t.Fatalf("subdirectory ShowFile = (%q, %v, %v), want exact content", shown, ok, err)
+	}
+	limited, err := ReadFileLimited(t.Context(), subdir, "HEAD", "file.go", 1024)
+	if err != nil || limited.Status != LimitedFileContent || limited.Content != content {
+		t.Fatalf("subdirectory ReadFileLimited = (%#v, %v), want exact content", limited, err)
+	}
+	batch, err := NewBatchFileReader(t.Context(), subdir, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = batch.Close() })
+	batched, ok, err := batch.ReadFile("file.go")
+	if err != nil || !ok || batched != content {
+		t.Fatalf("subdirectory batch read = (%q, %v, %v), want exact content", batched, ok, err)
+	}
+}
+
+func TestBatchFileReaderRejectsLineUnsafePathsWithoutDesync(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows filenames cannot contain newlines or carriage returns")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	files := map[string]string{
+		"name.go":       "package plain\n",
+		"name.go\r":     "package carriage\n",
+		"line\nname.go": "package newline\n",
+	}
+	for path, content := range files {
+		if err := os.WriteFile(filepath.Join(repo, path), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "line protocol fixture")
+
+	batch, err := NewBatchFileReader(t.Context(), repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = batch.Close() })
+	for _, path := range []string{"name.go\r", "line\nname.go"} {
+		if content, ok, err := batch.ReadFile(path); err == nil || ok || content != "" {
+			t.Fatalf("unsafe batch read %q = (%q, %v, %v), want pre-write error", path, content, ok, err)
+		}
+	}
+	plain, ok, err := batch.ReadFile("name.go")
+	if err != nil || !ok || plain != files["name.go"] {
+		t.Fatalf("plain sibling after unsafe reads = (%q, %v, %v), want exact content", plain, ok, err)
+	}
+
+	carriage, err := ReadFileLimited(t.Context(), repo, "HEAD", "name.go\r", 1024)
+	if err != nil || carriage.Status != LimitedFileContent || carriage.Content != files["name.go\r"] || carriage.Bytes != int64(len(files["name.go\r"])) {
+		t.Fatalf("typed trailing-CR read = (%#v, %v), want exact content and size", carriage, err)
+	}
+	carriage, err = ReadFileLimited(t.Context(), repo, "HEAD", "name.go\r", int64(len(files["name.go\r"])-1))
+	if err != nil || carriage.Status != LimitedFileOversize || carriage.Bytes != int64(len(files["name.go\r"])) {
+		t.Fatalf("capped trailing-CR read = (%#v, %v), want metadata-only oversize", carriage, err)
+	}
+
+	unsafeRevision, err := NewBatchFileReader(t.Context(), repo, "HEAD\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unsafeRevision.Close() })
+	if unsafeRevision.IsPathSafe("name.go") {
+		t.Fatal("revision newline was not included in batch request safety check")
+	}
+	if _, _, err := unsafeRevision.ReadFile("name.go"); err == nil {
+		t.Fatal("batch accepted a revision newline before writing its request")
+	}
+}
+
 func TestShowFileClassifiesErrorsByStderrNotPath(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
@@ -714,6 +814,43 @@ func TestShowFileLimitedRejectsGitlinkBeforeRenderingCommit(t *testing.T) {
 	}
 	if detailed.Status != LimitedFileNonBlob || detailed.Content != "" || detailed.Bytes != 0 {
 		t.Errorf("typed gitlink result = %#v, want non-blob with no content", detailed)
+	}
+}
+
+func TestReadFileLimitedClassifiesGitlinksWithoutCeiling(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	if err := os.WriteFile(filepath.Join(repo, "seed.txt"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "seed.txt")
+	git(t, repo, "commit", "-m", "reachable target")
+	target := gitOutput(t, repo, "rev-parse", "HEAD")
+	git(t, repo, "update-index", "--add", "--cacheinfo", "160000", target, "reachable")
+	git(t, repo, "commit", "-m", "reachable gitlink")
+
+	reachable, err := ReadFileLimited(t.Context(), repo, "HEAD", "reachable", 0)
+	if err != nil || reachable.Status != LimitedFileNonBlob {
+		t.Fatalf("reachable unbounded gitlink = (%#v, %v), want non-blob", reachable, err)
+	}
+	oidLength := 40
+	if gitOutput(t, repo, "rev-parse", "--show-object-format") == "sha256" {
+		oidLength = 64
+	}
+	danglingTree := gitInputOutput(
+		t,
+		repo,
+		fmt.Sprintf("160000 commit %s\tdangling%c", strings.Repeat("1", oidLength), byte(0)),
+		"mktree", "-z", "--missing",
+	)
+	dangling, err := ReadFileLimited(t.Context(), repo, danglingTree, "dangling", 0)
+	if err != nil || dangling.Status != LimitedFileNonBlob {
+		t.Fatalf("dangling unbounded gitlink = (%#v, %v), want non-blob", dangling, err)
+	}
+	if content, ok, err := ShowFileLimited(t.Context(), repo, danglingTree, "dangling", 0); err != nil || ok || content != "" {
+		t.Fatalf("compact dangling gitlink = (%q, %v, %v), want refused non-blob", content, ok, err)
 	}
 }
 
@@ -992,11 +1129,9 @@ func TestLimitedFileReaderPrimesDeepGitTreePath(t *testing.T) {
 	}
 }
 
-func TestLimitedFileReaderFallsBackForPathBeyondBatchArgvBound(t *testing.T) {
+func TestLimitedFileReaderPrimesPathBeyondBatchArgvBound(t *testing.T) {
 	repo := t.TempDir()
-	// A bare repository avoids git show's pre-existing worktree-path stat for
-	// very long revision arguments and isolates the reader's fallback behavior.
-	git(t, repo, "init", "--bare")
+	git(t, repo, "init")
 	tree, path := nestedGitTree(t, repo, "package fallback\n", 80)
 	if len(treeMetadataLiteralPrefix)+len(path) <= literalPathspecBatchBytes {
 		t.Fatalf("fixture path length = %d, want beyond batch argv bound", len(path))
@@ -1007,18 +1142,43 @@ func TestLimitedFileReaderFallsBackForPathBeyondBatchArgvBound(t *testing.T) {
 	if err := reader.Prime([]string{path}); err != nil {
 		t.Fatal(err)
 	}
-	if _, primed := reader.primed[path]; primed {
-		t.Fatal("over-bound path unexpectedly entered metadata batch")
+	if _, primed := reader.primed[path]; !primed {
+		t.Fatal("over-bound path was not resolved by bounded component traversal")
 	}
 	result, err := reader.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Status != LimitedFileContent || result.Content != "package fallback\n" {
-		t.Fatalf("one-shot deep Git-tree file = %#v, want exact content", result)
+		t.Fatalf("component-resolved deep Git-tree file = %#v, want exact content", result)
+	}
+	if reader.content == nil {
+		t.Fatal("component-resolved path did not use exact-OID content batch")
+	}
+}
+
+func TestLimitedFileReaderClassifiesSingleComponentBeyondArgvBound(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	blob := gitInputOutput(t, repo, "package leaf\n", "hash-object", "-w", "--stdin")
+	leafTree := gitInputOutput(t, repo, fmt.Sprintf("100644 blob %s\tfile.go%c", blob, byte(0)), "mktree", "-z")
+	component := strings.Repeat("x", literalPathspecBatchBytes+1)
+	tree := gitInputOutput(t, repo, fmt.Sprintf("040000 tree %s\t%s%c", leafTree, component, byte(0)), "mktree", "-z")
+	path := component + "/file.go"
+
+	reader := NewLimitedFileReader(t.Context(), repo, tree, 1024)
+	if err := reader.Prime([]string{path}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := reader.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != LimitedFileUnaddressable {
+		t.Fatalf("over-bound component result = %#v, want bounded unaddressable classification", result)
 	}
 	if reader.content != nil {
-		t.Fatal("over-bound path started persistent content batch instead of one-shot fallback")
+		t.Fatal("unaddressable component started a content batch")
 	}
 }
 
