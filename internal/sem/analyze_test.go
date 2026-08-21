@@ -81,6 +81,10 @@ func TestAnalyzeGitRangeAcceptsTreeObjects(t *testing.T) {
 	git(t, repo, "config", "user.email", "graph@example.com")
 
 	write(t, repo, "scope/auth.py", "def validate_token(token):\n    return bool(token)\n")
+	// This sibling makes a direct `baseExpression + ^{tree}` resolve the
+	// wrong repository path instead of failing. Analyze must resolve the exact
+	// caller expression first, then peel its immutable OID.
+	write(t, repo, "scope^{tree}/auth.py", "def decoy():\n    return False\n")
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "base")
 	baseCommit := rev(t, repo, "HEAD")
@@ -117,21 +121,54 @@ func TestAnalyzeGitRangeAcceptsTreeObjects(t *testing.T) {
 	}
 }
 
+func TestAnalyzeGitRangeReadsRootPathsFromRepoSubdirectory(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	write(t, repo, "scope/auth.py", "def validate_token(token):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "base")
+	base := rev(t, repo, "HEAD")
+	write(t, repo, "scope/auth.py", "def validate_token(token, issuer=None):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "head")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(t.Context(), filepath.Join(repo, "scope"), base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "scope/auth.py" {
+		t.Fatalf("subdirectory diff files = %#v, want root-relative scope/auth.py", result.Files)
+	}
+	for _, warning := range result.Warnings {
+		if warning.Code == "E_FILE_READ" {
+			t.Fatalf("root-relative changed path was misclassified as missing: %#v", warning)
+		}
+	}
+}
+
 func TestResolveDiffTreesReusesResolutionForSameLabel(t *testing.T) {
 	var revisions []string
 	resolve := func(_ context.Context, _, revision string) (string, error) {
 		revisions = append(revisions, revision)
-		if len(revisions) == 1 {
+		switch revision {
+		case "moving":
+			return "moving-object", nil
+		case "moving-object^{tree}":
 			return "old-tree", nil
+		default:
+			return "new-tree", nil
 		}
-		return "new-tree", nil
 	}
 	base, head, err := resolveDiffTrees(t.Context(), "repo", "moving", "moving", resolve)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(revisions) != 1 || revisions[0] != "moving^{tree}" {
-		t.Fatalf("same ref resolutions = %#v, want one moving^{tree}", revisions)
+	if len(revisions) != 2 || revisions[0] != "moving" || revisions[1] != "moving-object^{tree}" {
+		t.Fatalf("same ref resolutions = %#v, want exact label then one immutable tree peel", revisions)
 	}
 	if base != "old-tree" || head != "old-tree" {
 		t.Fatalf("same ref pinned to %q..%q, want old-tree..old-tree", base, head)
