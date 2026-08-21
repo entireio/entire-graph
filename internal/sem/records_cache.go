@@ -18,9 +18,9 @@ import (
 // `graph` commands) are deterministic for a given git tree, indexing mode, and
 // set of options. Recomputing them on every call is expensive on large repos, so
 // we cache the raw NDJSON bytes keyed on the HEAD tree hash plus everything else
-// that changes the output. This mirrors the search-snapshot cache next door. v5
-// introduces typed, length-prefixed fields and bounded ignore-file reads.
-const providerRecordsCacheVersion = "provider-records-v5"
+// that changes the output. This mirrors the search-snapshot cache next door. v6
+// binds the shared nested-ignore resource policy and surfaced refusals.
+const providerRecordsCacheVersion = "provider-records-v6"
 
 // cachedProviderRecords is the on-disk envelope for a cached record stream. The
 // key alone is authoritative (sha256 over version+tree+mode+profile+options+

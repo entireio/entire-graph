@@ -23,8 +23,8 @@ import (
 // into every entry key, so bumping it moves new entries to a fresh directory
 // and any prior-version directory can simply be deleted wholesale — cleanup is
 // "remove old version dirs" instead of per-entry reachability analysis.
-// v9 introduces typed, length-prefixed fields and bounded ignore-file reads.
-const searchSnapshotCacheVersion = "search-snapshot-v9"
+// v10 binds the shared nested-ignore resource policy and surfaced refusals.
+const searchSnapshotCacheVersion = "search-snapshot-v10"
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`

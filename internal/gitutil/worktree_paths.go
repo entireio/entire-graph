@@ -121,6 +121,21 @@ func FirstTreeNestedIgnorePaths(ctx context.Context, repo, treeish string, limit
 	return firstNestedIgnorePaths(ctx, repo, args, limit, nil)
 }
 
+// BoundedTreeNestedIgnorePaths returns every nested .gitignore path when their
+// count fits limit and reports an error on the first path beyond it. Unlike the
+// First variant, reaching limit is not success: callers use this form when
+// silently omitting a policy file would change the answer.
+func BoundedTreeNestedIgnorePaths(ctx context.Context, repo, treeish string, limit int) ([]string, error) {
+	if limit <= 0 {
+		return []string{}, nil
+	}
+	if err := validateNestedIgnoreLimit(limit); err != nil {
+		return nil, err
+	}
+	args := []string{"ls-tree", "-r", "-z", "--name-only", treeish}
+	return boundedNestedIgnorePaths(ctx, repo, args, limit, nil, nil)
+}
+
 // FirstWorktreeNestedIgnorePaths returns the first limit nested .gitignore
 // paths in provider order: tracked/unignored paths first, then ignored paths
 // admitted by includeIgnored. Both Git streams are filtered to .gitignore and
@@ -154,6 +169,37 @@ func FirstWorktreeNestedIgnorePaths(
 		return nil, err
 	}
 	return append(paths, ignored...), nil
+}
+
+// BoundedWorktreeNestedIgnorePaths is the policy-complete counterpart to
+// FirstWorktreeNestedIgnorePaths: it scans until EOF or one admitted path beyond
+// limit, including the optional ignored stream, so a cap cannot become a silent
+// skip.
+func BoundedWorktreeNestedIgnorePaths(
+	ctx context.Context,
+	repo string,
+	limit int,
+	includeIgnored func(string) bool,
+) ([]string, error) {
+	if limit <= 0 {
+		return []string{}, nil
+	}
+	if err := validateNestedIgnoreLimit(limit); err != nil {
+		return nil, err
+	}
+	eligibleArgs := []string{
+		"ls-files", "-z", "--cached", "--others", "--exclude-standard", "--",
+		":(glob)**/.gitignore",
+	}
+	paths, err := boundedNestedIgnorePaths(ctx, repo, eligibleArgs, limit, nil, nil)
+	if err != nil || includeIgnored == nil {
+		return paths, err
+	}
+	ignoredArgs := []string{
+		"ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--",
+		":(glob)**/.gitignore",
+	}
+	return boundedNestedIgnorePaths(ctx, repo, ignoredArgs, limit, includeIgnored, paths)
 }
 
 // VisitWorktreePaths streams Git's provider candidate listing one NUL-safe path
@@ -219,6 +265,58 @@ func firstNestedIgnorePaths(
 		return nil, fmt.Errorf(
 			"git nested-ignore candidates exceed %d paths or %d aggregate bytes",
 			nestedIgnoreCandidateMaxCount,
+			nestedIgnoreCandidateMaxAllBytes,
+		)
+	}
+	return paths, nil
+}
+
+func boundedNestedIgnorePaths(
+	ctx context.Context,
+	repo string,
+	args []string,
+	limit int,
+	include func(string) bool,
+	paths []string,
+) ([]string, error) {
+	if len(paths) > limit || len(paths) > nestedIgnoreCandidateMaxCount {
+		return nil, fmt.Errorf("git nested-ignore candidates exceed %d paths", limit)
+	}
+	retainedBytes := 0
+	for _, retained := range paths {
+		retainedBytes += len(retained)
+	}
+	if retainedBytes > nestedIgnoreCandidateMaxAllBytes {
+		return nil, fmt.Errorf(
+			"git nested-ignore candidates exceed %d aggregate bytes",
+			nestedIgnoreCandidateMaxAllBytes,
+		)
+	}
+	exceeded := false
+	cmd := newCmd(ctx, repo, "git", args...)
+	err := visitBoundedNULPaths(cmd, func(candidate string) bool {
+		if !strings.Contains(candidate, "/") || !strings.HasSuffix(candidate, "/.gitignore") {
+			return true
+		}
+		if include != nil && !include(candidate) {
+			return true
+		}
+		if len(paths) >= limit || len(paths) >= nestedIgnoreCandidateMaxCount ||
+			len(candidate) > nestedIgnoreCandidateMaxAllBytes-retainedBytes {
+			exceeded = true
+			return false
+		}
+		paths = append(paths, candidate)
+		retainedBytes += len(candidate)
+		return true
+	})
+	if err != nil {
+		return nil, err
+	}
+	if exceeded {
+		return nil, fmt.Errorf(
+			"git nested-ignore candidates exceed %d paths or %d aggregate bytes",
+			limit,
 			nestedIgnoreCandidateMaxAllBytes,
 		)
 	}

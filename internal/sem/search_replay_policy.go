@@ -18,7 +18,7 @@ import (
 	"github.com/entireio/entire-graph/internal/gitutil"
 )
 
-const searchReplayPolicyVersion = "search-replay-policy-v3"
+const searchReplayPolicyVersion = "search-replay-policy-v4"
 
 const (
 	searchReplayViewHead               = "head"
@@ -225,7 +225,7 @@ func observeSearchReplayGitWorktreeCorpus(
 	if hasIncludeFiles {
 		includeIgnored = func(rel string) bool { return ignores.Reincluded(rel, false) }
 	}
-	nestedPaths, err := gitutil.FirstWorktreeNestedIgnorePaths(
+	nestedPaths, err := gitutil.BoundedWorktreeNestedIgnorePaths(
 		ctx, repo, maxNestedIgnoreFiles, includeIgnored,
 	)
 	if err != nil {
@@ -297,26 +297,12 @@ func strictSearchReplayWorktreeVendorRules(
 	base ignoreMatcher,
 	paths []string,
 ) (*nestedIgnoreRules, error) {
-	rules := newNestedIgnoreRules(base)
-	root, err := os.OpenRoot(repo)
+	rules, err := worktreeVendorIgnoreRules(repo, base, paths)
 	if err != nil {
 		return nil, err
 	}
-	defer root.Close()
-	for _, candidate := range paths {
-		content, ok, readErr := readSearchReplayNestedIgnore(root, candidate)
-		if readErr != nil {
-			return nil, readErr
-		}
-		if !ok {
-			return nil, fmt.Errorf("nested ignore file %q cannot be observed safely", candidate)
-		}
-		var matcher ignoreMatcher
-		if err := matcher.loadContent(content, false); err != nil {
-			return nil, fmt.Errorf("parse nested ignore file %q for replay corpus: %w", candidate, err)
-		}
-		dir := cleanIgnorePath(path.Dir(candidate))
-		rules.levels = append(rules.levels, nestedIgnoreLevel{dir: dir, matcher: matcher})
+	if len(rules.levels) != len(paths) {
+		return nil, errors.New("one or more nested ignore files cannot be observed safely")
 	}
 	return rules, nil
 }
@@ -444,22 +430,15 @@ func (p SearchReplayPolicy) allowsHeadReplayPaths(ctx context.Context, paths []s
 	}
 	var selected []string
 	if len(ancestors) > 0 {
-		selected, err = gitutil.FirstTreeNestedIgnorePaths(ctx, p.repo, p.commit, maxNestedIgnoreFiles)
+		selected, err = gitutil.BoundedTreeNestedIgnorePaths(ctx, p.repo, p.commit, maxNestedIgnoreFiles)
 		if err != nil {
 			return false
 		}
 	}
 	candidates := selectedSearchReplayAncestorIgnores(ancestors, selected)
-	matchers, err := p.loadHeadSearchReplayNestedMatchers(ctx, candidates)
+	vendorRules, err := loadHeadNestedIgnoreRules(ctx, p.repo, p.commit, candidates, p.ignores)
 	if err != nil {
 		return false
-	}
-	vendorRules := newNestedIgnoreRules(headIgnoreMatcher(ctx, p.repo, p.commit))
-	for _, candidate := range candidates {
-		dir := cleanIgnorePath(path.Dir(candidate))
-		if matcher, exists := matchers[dir]; exists {
-			vendorRules.levels = append(vendorRules.levels, nestedIgnoreLevel{dir: dir, matcher: matcher})
-		}
 	}
 	for _, rel := range paths {
 		if vendoredPath(rel, vendorRules) {
@@ -524,7 +503,7 @@ func (p SearchReplayPolicy) allowsGitWorktreeReplayPaths(ctx context.Context, pa
 		if p.hasIncludes {
 			includeIgnored = func(rel string) bool { return p.ignores.Reincluded(rel, false) }
 		}
-		selected, err = gitutil.FirstWorktreeNestedIgnorePaths(
+		selected, err = gitutil.BoundedWorktreeNestedIgnorePaths(
 			ctx,
 			p.repo,
 			maxNestedIgnoreFiles,
@@ -535,16 +514,9 @@ func (p SearchReplayPolicy) allowsGitWorktreeReplayPaths(ctx context.Context, pa
 		}
 	}
 	candidates := selectedSearchReplayAncestorIgnores(ancestors, selected)
-	matchers, err := p.loadSearchReplayNestedMatchers(candidates)
+	vendorRules, err := strictSearchReplayWorktreeVendorRules(p.repo, p.ignores, candidates)
 	if err != nil {
 		return false
-	}
-	vendorRules := newNestedIgnoreRules(p.ignores)
-	for _, candidate := range candidates {
-		dir := cleanIgnorePath(path.Dir(candidate))
-		if matcher, exists := matchers[dir]; exists {
-			vendorRules.levels = append(vendorRules.levels, nestedIgnoreLevel{dir: dir, matcher: matcher})
-		}
 	}
 
 	tracked := make(map[string]bool)
@@ -585,36 +557,6 @@ func selectedSearchReplayAncestorIgnores(ancestors, selected []string) []string 
 		}
 	}
 	return result
-}
-
-func (p SearchReplayPolicy) loadHeadSearchReplayNestedMatchers(
-	ctx context.Context,
-	candidates []string,
-) (map[string]ignoreMatcher, error) {
-	matchers := make(map[string]ignoreMatcher)
-	for _, candidate := range candidates {
-		content, ok, err := gitutil.ShowFileLimited(
-			ctx, p.repo, p.commit, candidate, int64(maxNestedIgnoreFileBytes),
-		)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return nil, fmt.Errorf(
-				"nested ignore file %q is absent from HEAD or exceeds %d bytes",
-				candidate,
-				maxNestedIgnoreFileBytes,
-			)
-		}
-		var matcher ignoreMatcher
-		if err := matcher.loadContent(content, false); err != nil {
-			// headVendorIgnoreRules skips content its parser cannot consume.
-			continue
-		}
-		dir := cleanIgnorePath(path.Dir(candidate))
-		matchers[dir] = matcher
-	}
-	return matchers, nil
 }
 
 func (p SearchReplayPolicy) allowsNonGitWorktreeReplayPaths(paths []string) bool {
@@ -680,67 +622,28 @@ func (p SearchReplayPolicy) loadSearchReplayNestedMatchers(
 	candidates []string,
 ) (map[string]ignoreMatcher, error) {
 	matchers := make(map[string]ignoreMatcher)
+	budget := newIgnoreRuleBudget(p.ignores)
 	root, err := os.OpenRoot(p.repo)
 	if err != nil {
 		return nil, err
 	}
 	defer root.Close()
 	for _, candidate := range candidates {
-		content, ok, err := readSearchReplayNestedIgnore(root, candidate)
+		content, ok, err := readWorktreeNestedIgnore(root, p.repo, candidate)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
 			continue
 		}
-		var matcher ignoreMatcher
-		if err := matcher.loadContent(content, false); err != nil {
+		matcher, err := loadNestedIgnoreMatcher(content, budget)
+		if err != nil {
 			return nil, err
 		}
 		dir := cleanIgnorePath(path.Dir(candidate))
 		matchers[dir] = matcher
 	}
 	return matchers, nil
-}
-
-func readSearchReplayNestedIgnore(root *os.Root, candidate string) (string, bool, error) {
-	name := filepath.FromSlash(candidate)
-	info, err := root.Lstat(name)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-	if info.Mode()&fs.ModeSymlink != 0 {
-		return "", false, fmt.Errorf("nested ignore file %q is a symlink", candidate)
-	}
-	if !info.Mode().IsRegular() || info.Size() > maxNestedIgnoreFileBytes {
-		return "", false, nil
-	}
-	file, err := root.Open(name)
-	if err != nil {
-		return "", false, err
-	}
-	defer file.Close()
-	openedInfo, err := file.Stat()
-	if err != nil {
-		return "", false, err
-	}
-	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
-		return "", false, fmt.Errorf("nested ignore file %q changed while opening", candidate)
-	}
-	if openedInfo.Size() > maxNestedIgnoreFileBytes {
-		return "", false, nil
-	}
-	content, err := io.ReadAll(io.LimitReader(file, int64(maxNestedIgnoreFileBytes)+1))
-	if err != nil {
-		return "", false, err
-	}
-	if len(content) > maxNestedIgnoreFileBytes {
-		return "", false, nil
-	}
-	return string(content), true, nil
 }
 
 func writeSearchReplayHashPart(hash io.Writer, value string) {
