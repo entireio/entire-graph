@@ -215,3 +215,74 @@ the comparison not subject to a tie, and it is the one that recurs on every docu
 Full spec in [`FAIR-CONFIG.md`](FAIR-CONFIG.md). Results, retractions and disclosures in
 [`LOCOMO-COMPARISON.md`](LOCOMO-COMPARISON.md). Every quoted number traces to an artifact via
 [`RUN-INDEX.md`](RUN-INDEX.md).
+
+---
+
+## Nightly CI
+
+`.github/workflows/locomo-nightly.yml` runs the **entire-graph arm only**, nightly at 06:00 UTC,
+over the full 1,540 questions. It reconstructs the pinned upstream harness from
+[`UPSTREAM.md`](UPSTREAM.md)'s commit plus this repo's patches, so CI runs the published
+configuration rather than a CI-specific variant.
+
+### What the run costs
+
+At Foundry list prices for `gpt-5.6-sol` ($5/M input, $30/M output) and the launcher's
+`--top-k-cutoffs 200`, one run is roughly **$190** — call it **$5.7k/month**. Ingest is $0: the
+entire-graph arm makes no model calls to build its index. Widening `--top-k-cutoffs` back to
+`200,50,20,10` quadruples the answerer and judge calls and takes a run to roughly $475, which is
+why the launcher does not.
+
+### Why the job does not fail on a score change
+
+It fails on **integrity**, never on a delta. Run-to-run noise here is **0.65pp**, and an identical
+entire-graph configuration re-run 26 hours apart drifted **2.21pt**
+([`LOCOMO-COMPARISON.md`](LOCOMO-COMPARISON.md) §7). A nightly threshold inside that band would
+alert on noise every few nights and be ignored within a week. `ci/summarize_run.py` therefore gates
+on: all 1,540 questions scored, `FAIR_MODE` active, no arm-asymmetric settings, zero dropped
+searches, and a plausibility floor that treats a collapse as a broken harness rather than a
+regression. Read the score as a trend across runs, not against last night's.
+
+### Security model
+
+- **`schedule` only fires on this repository's default branch.** A fork cannot schedule a workflow
+  upstream, so the nightly path is not reachable from outside.
+- **`pull_request_target` is absent, deliberately.** It is the trigger that hands repository
+  secrets to fork code. Do not add it to that workflow.
+- **`workflow_dispatch` is gated** by the `benchmark` environment's required reviewers, on top of
+  the write access the trigger already needs.
+- **No long-lived credential is stored in GitHub.** The job takes a short-lived GitHub OIDC token,
+  federates into Azure, and reads the Foundry key from Key Vault at run time. Rotation happens in
+  Key Vault without touching this repo; deleting the federated credential revokes CI access
+  immediately.
+- **Stated limit:** the harness authenticates to Foundry with an `api-key` header
+  (`patches/0001-*`), so the key is in the job environment while the benchmark runs, and any job
+  with code execution can read its own environment. That is why this workflow runs only on the
+  default branch, never runs fork code, and pins every action to a full commit SHA.
+
+### One-time setup (an operator does this once; it is not in the repo)
+
+1. **Azure AD app + federated credential.** Create an app registration, then a federated credential
+   with issuer `https://token.actions.githubusercontent.com`, audience `api://AzureADTokenExchange`,
+   and subject `repo:entireio/entire-graph:environment:benchmark`. Scoping the subject to the
+   environment — not to `ref:refs/heads/main` — is what makes the environment's reviewer gate part
+   of the credential's trust boundary.
+2. **Key Vault.** Put the Foundry key in a vault as the secret `azure-ai-api-key`, and grant the
+   app registration `Key Vault Secrets User` on that vault only.
+3. **GitHub environment.** Create an environment named `benchmark`; add required reviewers and
+   restrict its deployment branches to `main`.
+4. **GitHub repository variables** (these are identifiers, not credentials, which is why they are
+   variables and not secrets): `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`,
+   `AZURE_KEY_VAULT_NAME`, `AZURE_AI_ENDPOINT`.
+
+Verify the wiring with a `workflow_dispatch` run before trusting the schedule.
+
+### Runner sizing
+
+The published runs took 2.5–3.5h on a 32-vCPU host. GitHub's hosted `ubuntu-latest` is far smaller
+and its hard job ceiling is 6h; the workflow sets `timeout-minutes: 330` so a slow run fails with
+its artifacts uploaded rather than being killed mid-write. The query phase is network-bound on the
+Foundry deployment and the launcher throttles itself (`--max-workers 3 --question-workers 10
+--rpm 60`), so the runner's core count mostly affects index build, not the 1,540 questions. If runs
+start timing out, move to a larger runner before touching those throttles — they are load-bearing
+for fairness, not performance tuning.
