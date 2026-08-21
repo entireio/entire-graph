@@ -842,6 +842,12 @@ func searchSnapshotKey(absRepo, repositoryKey, providerVersion, tree string, opt
 	// exactly as an explicit --ignore-file does. Without it, editing
 	// .graphignore against an unchanged tree hits the old entry and the new
 	// rules silently do nothing.
+	// The built-in credential-store deny is applied implicitly too, after the
+	// repository's own exclude files, so it keys the entry for the same reason
+	// .graphignore does: it decides which files the snapshot may contain, and
+	// therefore which files the ranked payload, the snippets and the context blocks
+	// can quote. See builtinSecretRulesDigest.
+	writePart("builtin-secret-rules=" + builtinSecretRulesDigest())
 	writePart("graphignore")
 	graphIgnore := filepath.Join(absRepo, graphIgnoreFileName)
 	switch content, err := os.ReadFile(graphIgnore); {

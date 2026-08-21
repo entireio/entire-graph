@@ -445,6 +445,21 @@ func TestSourceListingFileLimitIsReportedNotSilent(t *testing.T) {
 	}
 }
 
+func TestFilesystemWalkPropagatesNestedIgnoreLimitErrors(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "nested/keep.go", "package sample\n")
+	writeFile(t, repo, "nested/.gitignore", "#"+strings.Repeat("x", maxIgnoreRuleBytes))
+	ignores, err := loadWorktreeIgnoreMatcher(repo, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = walkWorktreeFiles(repo, ignores, func(string) bool { return false })
+	if err == nil || !strings.Contains(err.Error(), "nested ignore file") ||
+		!strings.Contains(err.Error(), "rule line exceeds") {
+		t.Fatalf("nested ignore limit error = %v, want propagated rule-line failure", err)
+	}
+}
+
 // TestWorktreeListingSkipsInstalledDependencyDirNames covers the defence in depth
 // for a tree whose exclude rules are missing entirely (an untracked clone, a
 // stray checkout): these directory names never denote first-party source.

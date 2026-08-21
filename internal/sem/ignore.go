@@ -2,24 +2,36 @@ package sem
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 )
 
 type ignoreMatcher struct {
-	rules []ignoreRule
+	rules           []ignoreRule
+	parsedRuleCount int
 }
 
 type ignoreRule struct {
-	ignore       bool
-	includeFile  bool
-	directory    bool
+	ignore      bool
+	includeFile bool
+	directory   bool
+	// fileOnly restricts the rule to non-directory paths: basename-only rules match
+	// the final segment, while path-shaped rules match the full relative path. It
+	// never matches a directory or an ancestor directory segment. Ordinary gitignore
+	// syntax cannot express that, so it is set only for built-in entries (see
+	// builtinSecretFileOnlyPatterns).
+	fileOnly     bool
 	basenameOnly bool
 	pattern      string
 	expression   *regexp.Regexp
@@ -43,6 +55,279 @@ const (
 // caller's --include-file can still override it.
 const graphIgnoreFileName = ".graphignore"
 
+const (
+	// Root and explicit ignore inputs affect both the live provider corpus and
+	// replay admission. Keep their resource contract identical and bounded before
+	// parsing can retain an attacker-controlled number or size of regular
+	// expressions. The rule count is cumulative across every external file loaded
+	// into one matcher; the fixed, trusted built-in secret rules are not charged to
+	// that budget.
+	maxIgnoreFileBytes   = 1 << 20
+	maxIgnoreRuleBytes   = 64 << 10
+	maxIgnoreParsedRules = 16 << 10
+
+	// A linked worktree resolves info/exclude through these small Git pointer
+	// files. Git writes one path line to each; bounding them prevents ignore-policy
+	// discovery itself from becoming an unbounded read.
+	maxGitIndirectionFileBytes = 4 << 10
+)
+
+// Built-in credential-store exclusion
+// ===================================
+//
+// A credential store is a file whose CONTENT is the secret: `.env`, `.npmrc`, a
+// PEM private key, a service-account `credentials.json`, a Kubernetes Secret
+// manifest under `deploy/secrets/`. Nothing in the graph asked whether a file
+// was one before reading it, so `entire graph search` read them, ranked them and
+// quoted the matching region back as a snippet, putting a repository's secrets
+// into the calling agent's LLM context (CWE-538 / CWE-312). They match readily:
+// the key names AROUND the secret (`STRIPE_SECRET_KEY`, `_authToken`,
+// `private_key`) are exactly the vocabulary of a query about authentication.
+//
+// The exclusion lives here, in the ignore matcher, because this is the one place
+// that governs both provider source corpora. The working-tree listing consults
+// it at provider.go worktreeSourceFiles, the committed-tree listing at
+// filterIgnoredPaths, and both listings are what the snapshot is parsed from —
+// so a path denied here is absent from search results, from the context blocks,
+// and from `entire graph symbols`, without a second taxonomy anywhere.
+//
+// It is an EXCLUSION rather than a ranking penalty on purpose. searchFileClassPrior
+// (search_file_class.go) documents itself as "not a filter: a non-source hit stays
+// reachable (and still ranks first when nothing else matches at all)", and every
+// class prior is switched back off when the query names the class — so
+// "api key credentials token", the query most likely to surface a secret, would
+// restore a credential file to full strength. The harm here is the bytes being
+// quoted at all, not the rank.
+//
+// Two properties of where it is loaded matter:
+//
+//   - It is loaded AFTER the repository's own exclude files (.gitignore,
+//     .graphignore, info/exclude) so a negation shipped inside the repository
+//     under analysis cannot switch it off, and BEFORE the caller's explicit
+//     --ignore-file/--include-file so `--include-file` remains the documented,
+//     deliberate override. Later rules win in ignoreMatcher.decide.
+//   - The patterns are matched case-insensitively, unlike ordinary gitignore
+//     rules, because `.ENV` on a case-insensitive filesystem is the same file
+//     and the same secret.
+//
+// Scope is the credential STORE, never code that talks about credentials. Every
+// rule is decided on a basename, suffix, or exact tool-owned path. The broader
+// `secrets/`-directory rules additionally require a data or config suffix — so
+// `internal/secrets/manager.go`, `pkg/credentials/provider.go` and
+// `internal/config/dotenv.go` stay fully searchable.
+// It is a var rather than a const so cache-binding tests can stand in for a
+// differently built binary. Production code never assigns to it.
+var builtinSecretIgnorePatterns = `
+# Dotenv and direnv: the whole file is credential material. The .env.<environment>
+# variants are covered because they are the same file shape, and the template forms
+# (.env.example, .env.sample) with them: a template is byte-shaped exactly like the
+# real thing and is routinely committed with real values still in it.
+.env
+.env.*
+*.env
+.envrc
+
+# Registry, database and service credential files, by their conventional names.
+.npmrc
+.netrc
+_netrc
+.pgpass
+.htpasswd
+.pypirc
+.dockercfg
+.boto
+.git-credentials
+
+# SSH private keys. The .pub half is deliberately NOT matched: publishing it is
+# its purpose, and id_rsa here matches only the exact basename.
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+
+# Conventional credential and secret store filenames. The bare credentials entry
+# is the AWS CLI shape (.aws/credentials). It is carried as FILE-ONLY
+# (builtinSecretFileOnlyPatterns): a bare gitignore pattern matches every path
+# segment rather than only the basename, so without that it would also swallow a
+# SOURCE package directory named credentials/ and everything under it. File-only
+# matching is used instead of a "!credentials/" negation because this block is
+# loaded AFTER the repository own exclude files in order to outrank them, so any
+# negation here would also cancel a repository own "credentials/" exclusion.
+credentials
+credentials.json
+credentials.yml
+credentials.yaml
+credentials.ini
+credentials.toml
+secrets.json
+secrets.yml
+secrets.yaml
+secrets.ini
+secrets.toml
+
+# Exact tool-owned stores whose canonical paths or filenames identify credential
+# material. These are file-only even when the pattern is path-shaped: a directory
+# literally named config.json must not hide the source tree beneath it.
+**/.docker/config.json
+**/.kube/config
+credentials.tfrc.json
+application_default_credentials.json
+
+# Key material and encrypted stores, by suffix. .crt, .cer and .pub are deliberately
+# absent: they are the public halves, and excluding them would cost recall and
+# protect nothing.
+*.pem
+*.key
+*.pfx
+*.p12
+*.pkcs12
+*.jks
+*.keystore
+*.truststore
+*.ppk
+*.kdbx
+*.asc
+*.gpg
+
+# Path-shaped stores: a data or config file under a directory segment named
+# secrets/ or credentials/, at any depth. This is the Kubernetes / sops /
+# sealed-secrets convention, where the basename carries no signal at all
+# (deploy/secrets/prod-secrets.yaml). Restricted to data and config suffixes so a
+# SOURCE package named secrets/ or credentials/ stays fully searchable.
+**/secrets/**/*.yaml
+**/secrets/**/*.yml
+**/secrets/**/*.json
+**/secrets/**/*.ini
+**/secrets/**/*.toml
+**/secrets/**/*.cfg
+**/secrets/**/*.conf
+**/secrets/**/*.properties
+**/secrets/**/*.txt
+**/secrets/**/*.enc
+**/credentials/**/*.yaml
+**/credentials/**/*.yml
+**/credentials/**/*.json
+**/credentials/**/*.ini
+**/credentials/**/*.toml
+**/credentials/**/*.cfg
+**/credentials/**/*.conf
+**/credentials/**/*.properties
+**/credentials/**/*.txt
+**/credentials/**/*.enc
+`
+
+// builtinSecretIgnoreRules is builtinSecretIgnorePatterns parsed once. The rules
+// are immutable and their regexps are safe for concurrent use, so every matcher
+// shares this one slice.
+var builtinSecretIgnoreRules = parseBuiltinSecretIgnoreRules()
+
+// builtinSecretFileOnlyPatterns are the built-in entries that must deny a FILE and
+// leave any matching directory alone. Gitignore syntax has no way to say "file
+// only" — a bare pattern matches every path segment and a path-shaped pattern can
+// match an ancestor — and the one thing that looks like it, a trailing-slash
+// negation such as `!credentials/`,
+// cannot be used here: this block is loaded after the repository's own exclude
+// files so that it outranks them, which means a negation in it also cancels a
+// repository's own `credentials/` exclusion and re-admits every file underneath.
+var builtinSecretFileOnlyPatterns = map[string]struct{}{
+	"credentials":                          {},
+	".git-credentials":                     {},
+	"**/.docker/config.json":               {},
+	"**/.kube/config":                      {},
+	"credentials.tfrc.json":                {},
+	"application_default_credentials.json": {},
+}
+
+func parseBuiltinSecretIgnoreRules() []ignoreRule {
+	var matcher ignoreMatcher
+	if err := matcher.loadContent(builtinSecretIgnorePatterns, false); err != nil {
+		// loadContent only fails on a scanner error, which a string reader cannot
+		// produce; a panic here would mean the block above stopped being a string.
+		panic("sem: built-in credential-store ignore rules failed to parse: " + err.Error())
+	}
+	for index := range matcher.rules {
+		rule := &matcher.rules[index]
+		rule.expression = regexp.MustCompile("(?i)" + rule.expression.String())
+		if _, ok := builtinSecretFileOnlyPatterns[rule.pattern]; ok {
+			if rule.directory || !rule.ignore {
+				panic("sem: file-only built-in rule " + rule.pattern + " is not a file deny")
+			}
+			rule.fileOnly = true
+		}
+	}
+	return matcher.rules
+}
+
+// builtinSecretRulesDigestVersion identifies the canonical rule serialization
+// used by builtinSecretRulesDigest. Parsed fields normally make matcher changes
+// self-invalidating; bump this only if the matching algorithm changes semantics
+// without changing those fields.
+const builtinSecretRulesDigestVersion = "builtin-secret-rules-digest-v1"
+
+func writeIgnoreRuleHashPart(hash io.Writer, value string) {
+	_, _ = io.WriteString(hash, strconv.Itoa(len(value)))
+	_, _ = io.WriteString(hash, ":")
+	_, _ = io.WriteString(hash, value)
+}
+
+// writeIgnoreRuleSemantics writes the ordered effective matcher policy. Every
+// field is length-prefixed so unusual patterns and expressions cannot make two
+// different rule sequences serialize identically.
+func writeIgnoreRuleSemantics(hash io.Writer, rules []ignoreRule) {
+	for _, rule := range rules {
+		flags := 0
+		if rule.ignore {
+			flags |= 1 << 0
+		}
+		if rule.includeFile {
+			flags |= 1 << 1
+		}
+		if rule.directory {
+			flags |= 1 << 2
+		}
+		if rule.fileOnly {
+			flags |= 1 << 3
+		}
+		if rule.basenameOnly {
+			flags |= 1 << 4
+		}
+		writeIgnoreRuleHashPart(hash, "rule")
+		writeIgnoreRuleHashPart(hash, strconv.Itoa(flags))
+		writeIgnoreRuleHashPart(hash, rule.pattern)
+		if rule.expression == nil {
+			writeIgnoreRuleHashPart(hash, "")
+		} else {
+			writeIgnoreRuleHashPart(hash, rule.expression.String())
+		}
+	}
+}
+
+// builtinSecretRulesDigest fingerprints the effective built-in credential-store
+// taxonomy so the persistent cache keys can bind to it. Both caches store a
+// corpus whose MEMBERSHIP this taxonomy decides, and nothing else in either key
+// separates two builds that disagree about it: the provider version is the
+// release string, which the repository's own `mise run build` leaves at "dev".
+// An entry warmed by one build could otherwise be served to another, re-emitting
+// and reopening paths selected under different rules.
+//
+// The digest covers the ordered parsed rules, including all matcher flags, each
+// pattern, and its compiled expression. It therefore moves for metadata-only
+// policy changes as well as pattern edits. The version marker above is the
+// explicit escape hatch for an algorithm change that those fields cannot express.
+func builtinSecretRulesDigest() string {
+	hash := sha256.New()
+	writeIgnoreRuleHashPart(hash, builtinSecretRulesDigestVersion)
+	writeIgnoreRuleSemantics(hash, builtinSecretIgnoreRules)
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+// loadBuiltinSecretRules appends the built-in credential-store deny. Callers place
+// it after the repository's own exclude files and before the caller's explicit
+// ones; see the comment on builtinSecretIgnorePatterns for why that position.
+func (m *ignoreMatcher) loadBuiltinSecretRules() {
+	m.rules = append(m.rules, builtinSecretIgnoreRules...)
+}
+
 func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) (ignoreMatcher, error) {
 	var matcher ignoreMatcher
 	if err := matcher.loadOptional(filepath.Join(repo, ".gitignore"), false); err != nil {
@@ -64,6 +349,7 @@ func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 			return ignoreMatcher{}, err
 		}
 	}
+	matcher.loadBuiltinSecretRules()
 	if err := matcher.loadExplicit(repo, ignoreFiles, includeFiles); err != nil {
 		return ignoreMatcher{}, err
 	}
@@ -75,6 +361,7 @@ func loadExplicitIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 	if err := matcher.loadOptional(filepath.Join(repo, graphIgnoreFileName), false); err != nil {
 		return ignoreMatcher{}, err
 	}
+	matcher.loadBuiltinSecretRules()
 	if err := matcher.loadExplicit(repo, ignoreFiles, includeFiles); err != nil {
 		return ignoreMatcher{}, err
 	}
@@ -122,7 +409,7 @@ func gitInfoExcludePath(repo string) string {
 	if !info.Mode().IsRegular() {
 		return ""
 	}
-	raw, err := os.ReadFile(dotGit)
+	raw, err := readSmallRegularFile(dotGit, maxGitIndirectionFileBytes)
 	if err != nil {
 		return ""
 	}
@@ -134,7 +421,10 @@ func gitInfoExcludePath(repo string) string {
 		gitDir = filepath.Join(repo, gitDir)
 	}
 	// commondir points at the shared .git that owns info/; it may be relative to gitDir.
-	if common, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
+	if common, err := readSmallRegularFile(
+		filepath.Join(gitDir, "commondir"),
+		maxGitIndirectionFileBytes,
+	); err == nil {
 		if c := strings.TrimSpace(string(common)); c != "" {
 			if !filepath.IsAbs(c) {
 				c = filepath.Join(gitDir, c)
@@ -146,27 +436,26 @@ func gitInfoExcludePath(repo string) string {
 }
 
 func (m *ignoreMatcher) loadOptional(file string, includeMode bool) error {
-	label := ignoreFileLabel(includeMode)
-	info, err := os.Stat(file)
-	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
-		// ENOTDIR: a parent component is not a directory, so the file cannot exist.
-		// For an OPTIONAL exclude file that is absence, never a hard failure.
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("read %s %q: %w", label, file, err)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s %q is not a regular file", label, file)
-	}
-	return m.loadFile(file, includeMode)
+	return m.loadPath(file, includeMode, false)
 }
 
 func (m *ignoreMatcher) loadRequired(file string, includeMode bool) error {
+	return m.loadPath(file, includeMode, true)
+}
+
+func (m *ignoreMatcher) loadPath(file string, includeMode, required bool) error {
 	label := ignoreFileLabel(includeMode)
 	info, err := os.Stat(file)
-	if errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("%s %q does not exist", label, file)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+		if !required {
+			// ENOTDIR: a parent component is not a directory, so the file cannot
+			// exist. For an optional exclude file that is absence, never a hard
+			// failure.
+			return nil
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%s %q does not exist", label, file)
+		}
 	}
 	if err != nil {
 		return fmt.Errorf("read %s %q: %w", label, file, err)
@@ -174,30 +463,113 @@ func (m *ignoreMatcher) loadRequired(file string, includeMode bool) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%s %q is not a regular file", label, file)
 	}
-	return m.loadFile(file, includeMode)
-}
+	if info.Size() > maxIgnoreFileBytes {
+		return fmt.Errorf(
+			"read %s %q: file exceeds %d bytes",
+			label,
+			file,
+			maxIgnoreFileBytes,
+		)
+	}
 
-func (m *ignoreMatcher) loadFile(file string, includeMode bool) error {
-	label := ignoreFileLabel(includeMode)
-	content, err := os.ReadFile(file)
+	opened, err := os.Open(file)
 	if err != nil {
 		return fmt.Errorf("read %s %q: %w", label, file, err)
 	}
-	if err := m.loadContent(string(content), includeMode); err != nil {
+	defer opened.Close()
+	openedInfo, err := opened.Stat()
+	if err != nil {
+		return fmt.Errorf("read %s %q: %w", label, file, err)
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		return fmt.Errorf("%s %q changed while opening", label, file)
+	}
+	if openedInfo.Size() > maxIgnoreFileBytes {
+		return fmt.Errorf(
+			"read %s %q: file exceeds %d bytes",
+			label,
+			file,
+			maxIgnoreFileBytes,
+		)
+	}
+	if err := m.loadReader(io.LimitReader(opened, maxIgnoreFileBytes+1), includeMode); err != nil {
 		return fmt.Errorf("read %s %q: %w", label, file, err)
 	}
 	return nil
 }
 
+func (m *ignoreMatcher) loadFile(file string, includeMode bool) error {
+	return m.loadPath(file, includeMode, true)
+}
+
 func (m *ignoreMatcher) loadContent(content string, includeMode bool) error {
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for scanner.Scan() {
-		rule, ok := parseIgnoreRule(scanner.Text(), includeMode)
-		if ok {
-			m.rules = append(m.rules, rule)
+	return m.loadReader(strings.NewReader(content), includeMode)
+}
+
+func (m *ignoreMatcher) loadReader(source io.Reader, includeMode bool) error {
+	reader := bufio.NewReaderSize(source, maxIgnoreRuleBytes+1)
+	totalBytes := 0
+	for {
+		line, readErr := reader.ReadSlice('\n')
+		totalBytes += len(line)
+		if totalBytes > maxIgnoreFileBytes {
+			return fmt.Errorf("ignore input exceeds %d bytes", maxIgnoreFileBytes)
 		}
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			return fmt.Errorf("ignore rule line exceeds %d bytes", maxIgnoreRuleBytes)
+		}
+		if len(line) > 0 {
+			line = bytes.TrimSuffix(line, []byte{'\n'})
+			if len(line) > maxIgnoreRuleBytes {
+				return fmt.Errorf("ignore rule line exceeds %d bytes", maxIgnoreRuleBytes)
+			}
+			rule, ok := parseIgnoreRule(string(line), includeMode)
+			if ok {
+				if m.parsedRuleCount >= maxIgnoreParsedRules {
+					return fmt.Errorf("ignore inputs exceed %d parsed rules", maxIgnoreParsedRules)
+				}
+				m.rules = append(m.rules, rule)
+				m.parsedRuleCount++
+			}
+		}
+		if readErr == nil {
+			continue
+		}
+		if errors.Is(readErr, io.EOF) {
+			return nil
+		}
+		return readErr
 	}
-	return scanner.Err()
+}
+
+func readSmallRegularFile(file string, limit int64) ([]byte, error) {
+	info, err := os.Stat(file)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > limit {
+		return nil, fmt.Errorf("file is not a regular file of at most %d bytes", limit)
+	}
+	opened, err := os.Open(file)
+	if err != nil {
+		return nil, err
+	}
+	defer opened.Close()
+	openedInfo, err := opened.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) || openedInfo.Size() > limit {
+		return nil, errors.New("file changed while opening")
+	}
+	content, err := io.ReadAll(io.LimitReader(opened, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(content)) > limit {
+		return nil, fmt.Errorf("file exceeds %d bytes", limit)
+	}
+	return content, nil
 }
 
 func ignoreFileLabel(includeMode bool) string {
@@ -332,7 +704,7 @@ func (m ignoreMatcher) Reincluded(rel string, isDir bool) bool {
 // maxNestedIgnoreFileBytes bounds one .gitignore read during a walk. Real ignore
 // files are a few kilobytes; anything past this is not an ignore file and must
 // not be materialized just because it is named like one.
-const maxNestedIgnoreFileBytes = 1 << 20
+const maxNestedIgnoreFileBytes = maxIgnoreFileBytes
 
 // nestedIgnoreStack applies per-directory .gitignore files during a walk the way
 // Git does: a .gitignore governs its own subtree, and the deepest file with an
@@ -359,7 +731,7 @@ func newNestedIgnoreStack(repo string, base ignoreMatcher) *nestedIgnoreStack {
 // slash-separated; "" for the repository root) and loads its .gitignore, if any.
 // Levels the walk has left are dropped, so the stack holds one matcher per
 // ancestor directory of the current position.
-func (s *nestedIgnoreStack) enter(dir string) {
+func (s *nestedIgnoreStack) enter(dir string) error {
 	dir = cleanIgnorePath(dir)
 	kept := s.levels[:0]
 	for _, level := range s.levels {
@@ -371,18 +743,28 @@ func (s *nestedIgnoreStack) enter(dir string) {
 	if dir == "" {
 		// The root .gitignore is already part of base, alongside the explicit
 		// ignore/include files that must keep overriding it.
-		return
+		return nil
 	}
 	file := filepath.Join(s.repo, filepath.FromSlash(dir), ".gitignore")
 	info, err := os.Stat(file)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > maxNestedIgnoreFileBytes {
-		return
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read nested ignore file %q: %w", file, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	if info.Size() > maxNestedIgnoreFileBytes {
+		return fmt.Errorf("read nested ignore file %q: file exceeds %d bytes", file, maxNestedIgnoreFileBytes)
 	}
 	var matcher ignoreMatcher
 	if err := matcher.loadFile(file, false); err != nil {
-		return
+		return fmt.Errorf("read nested ignore file %q: %w", file, err)
 	}
 	s.levels = append(s.levels, nestedIgnoreLevel{dir: dir, matcher: matcher})
+	return nil
 }
 
 // Ignored reports the stack's verdict for a repo-relative path.
@@ -552,10 +934,33 @@ func (m ignoreMatcher) reincludesDescendantUnder(dir, rel string) bool {
 }
 
 func (r ignoreRule) matchKind(rel string, isDir bool) ignoreMatchKind {
+	if r.fileOnly {
+		return r.matchFileOnly(rel, isDir)
+	}
 	if r.basenameOnly {
 		return r.matchBasename(rel, isDir)
 	}
 	return r.matchPath(rel, isDir)
+}
+
+// matchFileOnly decides a rule that names a file and nothing else. Basename-only
+// rules match the last segment; path-shaped rules match the complete relative
+// path. Neither can produce an ancestor match — which is what keeps a credential
+// filename from covering a same-named source directory and everything beneath it.
+func (r ignoreRule) matchFileOnly(rel string, isDir bool) ignoreMatchKind {
+	if isDir {
+		return ignoreNoMatch
+	}
+	candidate := rel
+	if r.basenameOnly {
+		if slash := strings.LastIndex(rel, "/"); slash >= 0 {
+			candidate = rel[slash+1:]
+		}
+	}
+	if candidate != "" && r.expression.MatchString(candidate) {
+		return ignoreSelfMatch
+	}
+	return ignoreNoMatch
 }
 
 func (r ignoreRule) matchBasename(rel string, isDir bool) ignoreMatchKind {

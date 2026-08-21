@@ -466,6 +466,30 @@ type SearchResponse struct {
 	Warnings        []ProviderWarning   `json:"warnings"`
 	PartialFailures []PartialFailure    `json:"partial_failures"`
 	Completeness    CompletenessReport  `json:"completeness"`
+	// replayProvenancePaths is the old mutable provider corpus whose membership
+	// and contents could influence preselection, scores, ordering, and rendered
+	// confidence. It stays out of schema 1.x and is used only by session replay.
+	replayProvenancePaths []string
+}
+
+// boundedWorktreeSearchReplayProvenance sorts and deduplicates the already
+// materialized provider corpus. One path beyond the persisted replay limit is
+// retained deliberately: ValidateSearchReplayPaths then disables replay without
+// carrying an unbounded hidden slice in SearchResponse.
+func boundedWorktreeSearchReplayProvenance(paths []string) []string {
+	ordered := append([]string(nil), paths...)
+	sort.Strings(ordered)
+	result := make([]string, 0, minInt(len(ordered), SearchReplayMaxPathCount+1))
+	for _, filePath := range ordered {
+		if len(result) > 0 && result[len(result)-1] == filePath {
+			continue
+		}
+		result = append(result, filePath)
+		if len(result) == SearchReplayMaxPathCount+1 {
+			break
+		}
+	}
+	return result
 }
 
 type searchQuery struct {
@@ -696,6 +720,10 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	}
 	preselectLatency := time.Since(preselectStarted)
 	selectedFiles := selection.files
+	var replayProvenancePaths []string
+	if options.Worktree || selection.commit == "" {
+		replayProvenancePaths = boundedWorktreeSearchReplayProvenance(selection.allFiles)
+	}
 	if len(selectedFiles) == 0 {
 		// A no-hit query still reports the health of an already-preindexed HEAD
 		// graph. Do not build a cold graph merely to return no results, but do
@@ -726,12 +754,13 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 			symbolsConsidered = len(cachedSnapshot.Symbols)
 		}
 		return SearchResponse{
-			Query:    query,
-			RepoRoot: repoRoot,
-			Commit:   commit,
-			Tree:     tree,
-			Profile:  string(options.Profile),
-			Results:  []SearchResult{},
+			Query:                 query,
+			RepoRoot:              repoRoot,
+			Commit:                commit,
+			Tree:                  tree,
+			Profile:               string(options.Profile),
+			Results:               []SearchResult{},
+			replayProvenancePaths: replayProvenancePaths,
 			Stats: SearchStats{
 				QueryConstraintsTruncated: q.constraints.Truncated,
 				FilesScanned:              selection.filesScanned,
@@ -817,11 +846,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	needleIndex := &searchNeedleIndex{read: read, corpus: selection.allFiles}
 	needleIndex.termFiles, needleIndex.termFileTotals = selection.termPostings.snapshot()
 	if selection.gitGrepUsable {
-		treeish := selection.gitGrepTreeish
-		needleIndex.grep = func(pattern string) ([]string, bool) {
-			paths, grepErr := gitutil.GrepFixedStringPaths(ctx, selection.repoRoot, treeish, pattern)
-			return paths, grepErr == nil
-		}
+		needleIndex.grep = newSearchNeedleGrep(ctx, selection.repoRoot, selection.gitGrepTreeish, selection.ignores)
 	}
 
 	symbolsByFile := make(map[string][]SymbolRecord)
@@ -1394,25 +1419,43 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		partialFailures = []PartialFailure{}
 	}
 	return SearchResponse{
-		Query:           query,
-		RepoRoot:        snapshot.Header.RepoRoot,
-		Commit:          snapshot.Header.Commit,
-		Tree:            snapshot.Header.Tree,
-		Profile:         string(options.Profile),
-		Results:         results,
-		SignatureTypes:  signatureTypes,
-		TypeCard:        typeCard,
-		ContainerMap:    containerMap,
-		LiteralCluster:  literalCluster,
-		FileOutlines:    fileOutlines,
-		VerifyCommand:   verifyCommand,
-		ClosedSet:       closedSet,
-		CoverageNote:    coverageNote,
-		Stats:           stats,
-		Warnings:        snapshot.Header.Warnings,
-		PartialFailures: partialFailures,
-		Completeness:    snapshot.Header.Completeness,
+		Query:                 query,
+		RepoRoot:              snapshot.Header.RepoRoot,
+		Commit:                snapshot.Header.Commit,
+		Tree:                  snapshot.Header.Tree,
+		Profile:               string(options.Profile),
+		Results:               results,
+		SignatureTypes:        signatureTypes,
+		TypeCard:              typeCard,
+		ContainerMap:          containerMap,
+		LiteralCluster:        literalCluster,
+		FileOutlines:          fileOutlines,
+		VerifyCommand:         verifyCommand,
+		ClosedSet:             closedSet,
+		CoverageNote:          coverageNote,
+		Stats:                 stats,
+		Warnings:              snapshot.Header.Warnings,
+		PartialFailures:       partialFailures,
+		Completeness:          snapshot.Header.Completeness,
+		replayProvenancePaths: replayProvenancePaths,
 	}, nil
+}
+
+// newSearchNeedleGrep is the needle index's Git route: it lists every file in the tree
+// containing a fixed string, case-sensitively. It is the only route into the payload that
+// answers over the WHOLE TREE rather than over the listed corpus, so it is the only one that
+// can name a path the listing already excluded — a credential store denied by the built-in
+// rules in ignore.go, a tree the caller's --ignore-file removed, anything .graphignore names.
+//
+// Git has already inspected the broader tree to produce these paths. Re-applying the corpus's
+// own ignore verdict here is the output boundary: it keeps a denied path away from the needle
+// index's content reader and therefore out of search blocks. Using the same matcher rather than
+// a second predicate keeps a caller's --include-file meaning the same thing on both routes.
+func newSearchNeedleGrep(ctx context.Context, repoRoot, treeish string, ignores ignoreMatcher) func(string) ([]string, bool) {
+	return func(pattern string) ([]string, bool) {
+		paths, grepErr := gitutil.GrepFixedStringPaths(ctx, repoRoot, treeish, pattern)
+		return filterIgnoredPaths(paths, ignores), grepErr == nil
+	}
 }
 
 func openSearchContentReader(
@@ -1687,6 +1730,12 @@ type searchFileSelection struct {
 	// run against — empty means the working tree, which is what a worktree search indexes.
 	gitGrepUsable  bool
 	gitGrepTreeish string
+	// ignores is the exclude stack the corpus listing was filtered with, kept so the routes that
+	// reach OUTSIDE that listing can apply the same verdict. Only one does: the needle index's
+	// `git grep`, which Git answers over the whole tree. Carrying the matcher rather than
+	// re-deriving a predicate is what keeps a caller's --include-file meaning the same thing on
+	// both routes.
+	ignores ignoreMatcher
 }
 
 type searchScanTelemetry struct {
@@ -1715,7 +1764,20 @@ func preselectSearchFiles(
 	if source.close != nil {
 		defer source.close()
 	}
+	// The same exclude stack prepareSource listed the corpus with, so the one route that reaches
+	// outside that listing can apply the identical verdict. Which loader applies is decided the
+	// way openSource decides it: a committed-tree listing sees .graphignore plus the explicit
+	// files, a working-tree listing the full Git exclude stack as well.
+	loadIgnores := loadWorktreeIgnoreMatcher
+	if !options.Worktree {
+		loadIgnores = loadExplicitIgnoreMatcher
+	}
+	ignores, err := loadIgnores(source.absRepo, options.IgnoreFiles, options.IncludeFiles)
+	if err != nil {
+		return searchFileSelection{}, err
+	}
 	selection := searchFileSelection{
+		ignores:                   ignores,
 		repoRoot:                  source.absRepo,
 		commit:                    source.commit,
 		tree:                      source.tree,
@@ -1758,8 +1820,8 @@ func preselectSearchFiles(
 			selection.preselectionBackend = "git-tree-grep"
 			selection.preselectionPasses = 1
 			selection.preselectionFilesExamined = len(source.paths)
-			// This path never reads content, so there are no posting lists. Git answered once, so
-			// it can answer again for a single needle.
+			// Git scanned content but returned only paths, so the provider has no posting lists.
+			// Git answered once, so it can answer again for a single needle.
 			selection.gitGrepUsable = true
 			selection.gitGrepTreeish = source.commit
 			return selection, nil

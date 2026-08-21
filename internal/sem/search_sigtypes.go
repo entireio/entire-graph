@@ -45,6 +45,11 @@ type SearchSignatureType struct {
 	Methods      []string `json:"methods,omitempty"`
 	MethodsTotal int      `json:"methods_total,omitempty"`
 	FieldsTotal  int      `json:"fields_total,omitempty"`
+	// provenancePaths retains the declaration and every file whose counted
+	// field or method contributes to the rendered surface and totals, including
+	// members omitted by display and funding caps. Unexported so the public
+	// response schema stays unchanged.
+	provenancePaths []string
 }
 
 var searchSignatureIdentifierRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
@@ -210,9 +215,16 @@ func searchSignatureTypeSurface(
 			FilePath:  symbol.FilePath,
 			StartLine: symbol.StartLine,
 		}
+		provenance := map[string]struct{}{}
+		if symbol.FilePath != "" {
+			provenance[symbol.FilePath] = struct{}{}
+		}
 		for _, member := range members[symbol.ID] {
 			if member.Kind == "field" || member.Kind == "property" || member.Kind == "constant" {
 				entry.FieldsTotal++
+				if member.FilePath != "" {
+					provenance[member.FilePath] = struct{}{}
+				}
 				if len(entry.Fields) < searchSignatureTypeFieldLimit {
 					entry.Fields = append(entry.Fields, searchSignatureFieldEntry(member))
 				}
@@ -222,6 +234,9 @@ func searchSignatureTypeSurface(
 				continue
 			}
 			entry.MethodsTotal++
+			if member.FilePath != "" {
+				provenance[member.FilePath] = struct{}{}
+			}
 			if len(entry.Methods) < searchSignatureTypeMemberLimit {
 				entry.Methods = append(entry.Methods, searchSignatureCallableEntry(member))
 			}
@@ -229,6 +244,11 @@ func searchSignatureTypeSurface(
 		if len(entry.Fields) == 0 && len(entry.Methods) == 0 {
 			continue
 		}
+		entry.provenancePaths = make([]string, 0, len(provenance))
+		for filePath := range provenance {
+			entry.provenancePaths = append(entry.provenancePaths, filePath)
+		}
+		sort.Strings(entry.provenancePaths)
 		out = append(out, entry)
 	}
 	if len(out) == 0 {

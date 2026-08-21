@@ -29,6 +29,71 @@ other is installation.
   `--transcript` overrides). This is Claude Code's transcript layout; the
   report is read-only and local. No other command reads transcripts.
 
+### Credential-store path exclusions
+
+A built-in exclude list keeps credential stores out of the provider's
+working-tree and committed-tree source corpora. Within those corpora, unless a
+caller deliberately re-admits one, a denied path is not parsed as source,
+indexed, written to graph/search caches, returned in graph or search results, or
+quoted in search context blocks.
+
+This is a corpus and output boundary, not a promise that no local process reads
+the underlying file or Git blob. Git-backed search acceleration can scan
+tracked or committed blobs before credential-store path rules are applied to
+its matches; denied matches are discarded before Entire Graph's content reader,
+source parser, caches or responses. The `diff`, `analyze`, `commit` and
+`checkpoint` families analyze requested Git ranges rather than the graph/search
+corpus, so they can read credential-store paths and report content-derived
+metadata about them. Those built-in operations remain local under the provider's
+no-egress contract. `verify` runs caller-supplied commands with the caller's
+privileges and is outside this exclusion boundary.
+
+The list covers `.env` and its `.env.<environment>` variants, `.envrc`,
+`.npmrc`, `.netrc`/`_netrc`, `.pgpass`, `.htpasswd`, `.pypirc`, `.dockercfg`,
+`.boto`, `.git-credentials`, Docker's `.docker/config.json`, Kubernetes'
+`.kube/config`, Terraform's `credentials.tfrc.json`, Google Cloud's
+`application_default_credentials.json`, SSH private keys (`id_rsa`, `id_dsa`,
+`id_ecdsa`, `id_ed25519`),
+`credentials`/`credentials.{json,yml,yaml,ini,toml}`,
+`secrets.{json,yml,yaml,ini,toml}`, key material and encrypted stores by suffix
+(`.pem`, `.key`, `.pfx`, `.p12`, `.pkcs12`, `.jks`, `.keystore`, `.truststore`,
+`.ppk`, `.kdbx`, `.asc`, `.gpg`), and files ending in `.yaml`, `.yml`, `.json`,
+`.ini`, `.toml`, `.cfg`, `.conf`, `.properties`, `.txt` or `.enc` under a
+directory segment named `secrets/` or `credentials/` at any depth. Matching is
+case-insensitive. The Git, Docker, Kubernetes, Terraform, and Google Cloud
+entries match at any depth and are file-only, so a same-named directory and its
+descendants remain searchable.
+
+Outside those file-only entries, matching retains Git-style path semantics. A
+basename or suffix pattern can therefore match a directory segment; when it
+does, that directory's descendants are excluded. For example, `*.key` also
+excludes `pkg/client.key/**`. This behavior is intentional.
+
+Classification is based on PATHS, not content: Entire Graph does not inspect a
+file's bytes to decide whether an otherwise-unrecognized path contains a
+secret. A credential store whose path gives no signal — `deploy/prod-values.yaml`
+holding an inline API key — is not covered. Public halves (`.crt`, `.cer`,
+`.pub`) are deliberately not excluded, and source code under
+`internal/secrets/` or `pkg/credentials/` stays fully searchable.
+
+The list is loaded after the repository's own exclude files, so a negation
+inside the repository under analysis cannot switch it off, and before the
+caller's `--ignore-file`/`--include-file`, so `--include-file` remains the way
+to deliberately re-admit a path (a checked-in `.env.example` used as
+configuration documentation, for example).
+
+Because of that position the list only ever adds exclusions: it contains no
+negation, so it cannot re-admit anything the repository itself excluded. The
+bare `credentials` entry — the AWS CLI shape, `.aws/credentials` — is matched as
+a FILENAME only for that reason: a directory named `credentials/` is neither
+excluded by it nor re-admitted when the repository's own `.gitignore` or
+`.graphignore` excludes it.
+
+Both persistent caches (`index`/`search` snapshots and the streamed record
+caches) key on a digest of the effective built-in rules, so a cache entry warmed
+by a build with a different policy is not reachable — an entry written before
+these rules existed misses instead of re-emitting the paths it named.
+
 ## What it writes
 
 - Derivative caches, under `--cache-dir`, else `ENTIRE_PLUGIN_DATA_DIR`, else

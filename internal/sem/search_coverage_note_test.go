@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"sort"
 	"strings"
 	"testing"
 )
@@ -218,6 +219,41 @@ func TestBuildSearchCoverageNote(t *testing.T) {
 				t.Errorf("note costs %d bytes, over its %d allowance", cost, testCase.budget)
 			}
 		})
+	}
+}
+
+func TestSearchCoverageNoteRetainsEveryQualifyingFileAsProvenance(t *testing.T) {
+	t.Parallel()
+
+	shown := searchCoveringTest{symbol: coverSymbol(
+		"shown", "TestShown", "TestShown", "function", "tests/shown_test.go", 1, 4,
+	)}
+	peers := make([]searchCoveringTest, 0, searchCoveragePeerLimit+2)
+	want := []string{"tests/shown_test.go"}
+	for index := 0; index < searchCoveragePeerLimit+2; index++ {
+		filePath := "tests/peer_" + itoaCover(index+1) + "_test.go"
+		name := "TestPeer" + itoaCover(index+1)
+		qualified := name
+		if index == 1 {
+			// An unnamed qualifying peer still contributes to Total and provenance.
+			name, qualified = "", ""
+		}
+		peers = append(peers, searchCoveringTest{symbol: coverSymbol(
+			"peer:"+itoaCover(index), name, qualified, "function", filePath, index+1, index+2,
+		)})
+		want = append(want, filePath)
+	}
+	sort.Strings(want)
+
+	note := buildSearchCoverageNote(coverageAnchor(), shown, peers, 0)
+	if note == nil {
+		t.Fatal("no coverage note built")
+	}
+	if len(note.Peers) >= len(peers) {
+		t.Fatal("fixture did not truncate or omit any peer names")
+	}
+	if strings.Join(note.provenancePaths, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("coverage provenance = %v, want %v", note.provenancePaths, want)
 	}
 }
 
