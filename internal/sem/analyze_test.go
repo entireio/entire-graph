@@ -74,6 +74,70 @@ func TestAnalyzeGitRangeSetsSchemaVersion(t *testing.T) {
 	}
 }
 
+func TestAnalyzeGitRangeAcceptsTreeObjects(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	write(t, repo, "scope/auth.py", "def validate_token(token):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "base")
+	baseCommit := rev(t, repo, "HEAD")
+	baseTree := rev(t, repo, "HEAD^{tree}")
+
+	write(t, repo, "scope/auth.py", "def validate_token(token, issuer=None):\n    return bool(token)\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "head")
+	headCommit := rev(t, repo, "HEAD")
+	headTree := rev(t, repo, "HEAD^{tree}")
+
+	result, err := AnalyzeGitRange(t.Context(), repo, baseTree, headTree, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Base != baseTree || result.Head != headTree {
+		t.Fatalf("result labels = %q..%q, want tree labels %q..%q", result.Base, result.Head, baseTree, headTree)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "scope/auth.py" {
+		t.Fatalf("tree-object diff files = %#v, want scope/auth.py", result.Files)
+	}
+
+	baseExpression := baseCommit + ":scope"
+	headExpression := headCommit + ":scope"
+	subtreeResult, err := AnalyzeGitRange(t.Context(), repo, baseExpression, headExpression, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if subtreeResult.Base != baseExpression || subtreeResult.Head != headExpression {
+		t.Fatalf("result labels = %q..%q, want expressions %q..%q", subtreeResult.Base, subtreeResult.Head, baseExpression, headExpression)
+	}
+	if len(subtreeResult.Files) != 1 || subtreeResult.Files[0].Path != "auth.py" {
+		t.Fatalf("tree-expression diff files = %#v, want auth.py", subtreeResult.Files)
+	}
+}
+
+func TestResolveDiffTreesReusesResolutionForSameLabel(t *testing.T) {
+	var revisions []string
+	resolve := func(_ context.Context, _, revision string) (string, error) {
+		revisions = append(revisions, revision)
+		if len(revisions) == 1 {
+			return "old-tree", nil
+		}
+		return "new-tree", nil
+	}
+	base, head, err := resolveDiffTrees(t.Context(), "repo", "moving", "moving", resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(revisions) != 1 || revisions[0] != "moving^{tree}" {
+		t.Fatalf("same ref resolutions = %#v, want one moving^{tree}", revisions)
+	}
+	if base != "old-tree" || head != "old-tree" {
+		t.Fatalf("same ref pinned to %q..%q, want old-tree..old-tree", base, head)
+	}
+}
+
 func TestAnalyzeGitRangeSurfacesModuleScopeChange(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
@@ -551,6 +615,75 @@ func TestAnalyzeGitRangeMarksUnsupportedChangedFiles(t *testing.T) {
 	}
 	if marker.FilePath != "shim.Tests.ps1" || marker.Severity != "info" {
 		t.Fatalf("unexpected marker %#v", marker)
+	}
+}
+
+func TestAnalyzeGitRangeMarksChangedGitlinkAsUnsupported(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "commit.gpgsign", "false")
+
+	runGit := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	oidLength := 40
+	if runGit("rev-parse", "--show-object-format") == "sha256" {
+		oidLength = 64
+	}
+	makeGitlinkTree := func(digit string) string {
+		t.Helper()
+		cmd := exec.Command("git", "mktree", "-z", "--missing")
+		cmd.Dir = repo
+		cmd.Stdin = strings.NewReader("160000 commit " + strings.Repeat(digit, oidLength) + "\tmodule.go\x00")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git mktree: %v\n%s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	baseTree := makeGitlinkTree("1")
+	headTree := makeGitlinkTree("2")
+	base := runGit("commit-tree", baseTree, "-m", "record first gitlink")
+	head := runGit("commit-tree", headTree, "-p", base, "-m", "advance gitlink")
+
+	result, err := AnalyzeGitRange(t.Context(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("gitlink produced semantic file changes: %#v", result.Files)
+	}
+
+	var unsupported *ProviderWarning
+	for i := range result.Warnings {
+		warning := &result.Warnings[i]
+		if warning.Code == "E_FILE_TOO_LARGE" {
+			t.Fatalf("gitlink was misclassified as oversized: %#v", warning)
+		}
+		if warning.Code == "E_FILE_READ" {
+			t.Fatalf("gitlink was misclassified as a missing blob: %#v", warning)
+		}
+		if warning.Code == "W_UNSUPPORTED_FILE" && warning.FilePath == "module.go" {
+			unsupported = warning
+		}
+	}
+	if unsupported == nil {
+		t.Fatalf("missing gitlink W_UNSUPPORTED_FILE warning: %#v", result.Warnings)
+	}
+	if unsupported.Severity != "info" || unsupported.Detail != "base and head versions are non-blob Git tree entries" {
+		t.Fatalf("unexpected gitlink warning: %#v", unsupported)
+	}
+	if !strings.Contains(unsupported.EffectOnCompleteness, "has no blob content") {
+		t.Fatalf("gitlink warning has inaccurate effect: %#v", unsupported)
 	}
 }
 
