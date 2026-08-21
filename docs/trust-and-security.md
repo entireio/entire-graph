@@ -24,6 +24,10 @@ other is installation.
   `.git/info/exclude`, per-worktree excludes, and `core.excludesFile`, plus
   `.graphignore` and any
   `--ignore-file`/`--include-file` the caller passes.
+- For `stats` only: local coding-agent session transcripts
+  (`~/.claude/projects/<path-slug>/*.jsonl`, or `--sessions-dir`/
+  `--transcript` overrides). This is Claude Code's transcript layout; the
+  report is read-only and local. No other command reads transcripts.
 
 ### Credential-store path exclusions
 
@@ -89,10 +93,6 @@ Both persistent caches (`index`/`search` snapshots and the streamed record
 caches) key on a digest of the effective built-in rules, so a cache entry warmed
 by a build with a different policy is not reachable — an entry written before
 these rules existed misses instead of re-emitting the paths it named.
-- For `stats` only: local coding-agent session transcripts
-  (`~/.claude/projects/<path-slug>/*.jsonl`, or `--sessions-dir`/
-  `--transcript` overrides). This is Claude Code's transcript layout; the
-  report is read-only and local. No other command reads transcripts.
 
 ## What it writes
 
