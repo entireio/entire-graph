@@ -34,6 +34,8 @@ without version linker flags reports `dev`.
 ## Requirements
 
 - The Entire CLI (0.10.0 or later) must be on `PATH`.
+- Git 2.36 or later must be on `PATH`; committed-tree readers use its
+  single-session `cat-file --batch-command` protocol.
 - Development uses Go 1.26. Tree-sitter bindings require CGO and a working C
   compiler for the target platform.
 - Local release builds require `tar` for non-Windows archives, `zip` or `7z`

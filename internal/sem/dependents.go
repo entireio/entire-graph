@@ -99,7 +99,7 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 		options.progress(0, len(files), "")
 	}
 
-	// One persistent `git cat-file --batch` process replaces a one-shot Git
+	// One persistent `git cat-file --batch-command` process replaces a one-shot Git
 	// subprocess per candidate file; on large repos the per-file spawn cost
 	// alone was tens of seconds. Paths the LF protocol cannot represent and a
 	// batch startup failure share one bounded metadata reader, so exceptional
@@ -137,7 +137,8 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 		size, ok := limitedOversize[path]
 		return size, ok
 	}
-	if batch, batchErr := gitutil.NewBatchFileReader(ctx, repo, head); batchErr == nil {
+	batch, batchErr := gitutil.NewBatchFileReader(ctx, repo, head)
+	if batchErr == nil {
 		defer func() { _ = batch.Close() }()
 		batch.SetMaxBytes(defaultMaxParseBytes)
 		readFile = func(path string) (string, bool, error) {
@@ -180,6 +181,32 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 			}
 			carry[path] = window
 		})
+	}
+
+	// Prime exactly the canonical, supported paths that will use the fallback,
+	// in candidate-list order. Without this pass, every LF-unsafe short path
+	// performs its own lazy ls-tree lookup even though LimitedFileReader can
+	// resolve up to 128 exact paths per bounded metadata subprocess. If the
+	// primary content batch failed to start, every readable candidate uses the
+	// same primed fallback instead.
+	limitedPaths := make([]string, 0, len(files))
+	for _, path := range files {
+		if !Supported(path) || !gitutil.IsCanonicalGitTreePath(path) {
+			continue
+		}
+		if batchErr != nil || !batch.IsPathSafe(path) {
+			limitedPaths = append(limitedPaths, path)
+		}
+	}
+	if err := limited.Prime(limitedPaths); err != nil {
+		return nil, nil, err
+	}
+	// A bounded metadata batch can consume the remaining analysis budget. Keep
+	// the existing semantics: stop before parsing and report one budget warning,
+	// rather than misclassifying deadline-driven component results as read errors.
+	if len(files) > 0 && overBudget() {
+		warnings = append(warnings, dependentsBudgetWarning(0, len(files), options.budget))
+		return index, warnings, nil
 	}
 
 	// When the grep prefilter ran, every file below already matched a changed

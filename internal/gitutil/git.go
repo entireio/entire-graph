@@ -313,8 +313,7 @@ func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string,
 		args = append(args, treeish)
 	}
 	args = append(args, "--")
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = repo
+	cmd := newGitCmdWithCallerLocale(ctx, repo, args...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -374,8 +373,7 @@ func grepFixedStringMatches(ctx context.Context, repo, treeish string, patterns 
 	// Preserve the caller's locale here. Unlike the other git commands in this
 	// package, `git grep -i` uses LC_CTYPE for non-ASCII case folding; forcing
 	// the C locale would make Unicode matches disappear.
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = repo
+	cmd := newGitCmdWithCallerLocale(ctx, repo, args...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -893,9 +891,10 @@ func isMissingPathDiagnostic(stderr string) bool {
 // BatchFileReader reads blobs from one revision through one persistent
 // `git cat-file --batch-command` process. Each read issues `info` first and
 // issues `contents` only for a blob, so a non-blob never enters the content
-// stream. Keeping both commands in one Git process also gives them one snapshot
-// of replace refs; an immutable OID cannot change type between the metadata and
-// content responses. Oversized blobs are still streamed for caller digests.
+// stream. All production Git commands ignore replace refs, and keeping both
+// commands in one process ensures an immutable raw OID cannot change type
+// between the metadata and content responses. Oversized blobs are still
+// streamed for caller digests.
 // Paths are relative to repo; rev represents the repository-root tree when repo
 // is a subdirectory.
 type BatchFileReader struct {
@@ -907,6 +906,7 @@ type BatchFileReader struct {
 	stderr       *bytes.Buffer
 	mu           sync.Mutex
 	closed       bool
+	poison       error
 	maxBytes     int64
 	oversize     map[string]OversizeBlob
 	oversizeScan func(path string, chunk []byte)
@@ -987,8 +987,8 @@ func NewBatchFileReader(ctx context.Context, repo, rev string) (*BatchFileReader
 	}
 	// Start is not enough to feature-detect an option: an older Git starts and
 	// then exits after parsing argv. A metadata-only missing-object request
-	// verifies the protocol without reading an object body. It also establishes
-	// the replace-ref snapshot at reader construction, before caller reads begin.
+	// verifies the protocol without reading an object body. The process already
+	// has raw-object semantics through GIT_NO_REPLACE_OBJECTS.
 	const probeOID = "0000000000000000000000000000000000000000"
 	if _, _, _, found, probeErr := reader.objectInfoLocked(probeOID); probeErr != nil || found {
 		_ = stdin.Close()
@@ -1023,6 +1023,14 @@ func (r *BatchFileReader) IsPathSafe(path string) bool {
 }
 
 func (r *BatchFileReader) ReadFile(path string) (string, bool, error) {
+	// Once framing failed, even a path rejected locally must not obscure the
+	// session's original cause. More importantly, no later call may reach stdin.
+	r.mu.Lock()
+	poison := r.poison
+	r.mu.Unlock()
+	if poison != nil {
+		return "", false, poison
+	}
 	// Reject path forms Git interprets relative to the worktree before they enter
 	// the persistent protocol. In particular, `rev:../file` terminates cat-file
 	// with an "outside repository" error and would poison every later read on the
@@ -1060,73 +1068,83 @@ func (r *BatchFileReader) readCheckedObjectSpec(objectSpec, oversizeKey string) 
 // readKnownBlobObjectID is the exact-OID path for LimitedFileReader, whose
 // ls-tree metadata established that objectID was a blob at metadata time. It
 // still repeats the type check in this SAME batch-command process before asking
-// for contents: a replace ref may have moved between ls-tree and this process's
-// snapshot. The request contains only an immutable OID, never repository path
-// bytes.
+// for contents, defending against missing/corrupt objects without ever sending
+// a non-blob body request. The request contains only an immutable raw OID, never
+// repository path bytes.
 func (r *BatchFileReader) readKnownBlobObjectID(objectID, oversizeKey string) (string, bool, error) {
 	return r.readCheckedObjectSpec(objectID, oversizeKey)
 }
 
 func (r *BatchFileReader) objectInfoLocked(objectSpec string) (string, string, int64, bool, error) {
+	if r.poison != nil {
+		return "", "", 0, false, r.poison
+	}
 	if r.closed {
 		return "", "", 0, false, fmt.Errorf("git cat-file batch reader is closed")
 	}
 	if _, err := fmt.Fprintf(r.stdin, "info %s\n", objectSpec); err != nil {
-		return "", "", 0, false, err
+		return "", "", 0, false, r.poisonLocked(fmt.Errorf("write git cat-file batch-command info request: %w", err))
 	}
 	header, err := r.stdout.ReadString('\n')
 	if err != nil {
-		return "", "", 0, false, fmt.Errorf("read git cat-file batch-command info header: %w", err)
+		return "", "", 0, false, r.poisonLocked(fmt.Errorf("read git cat-file batch-command info header: %w", err))
 	}
 	header = strings.TrimSuffix(header, "\n")
 	if strings.HasSuffix(header, " missing") {
+		if header != objectSpec+" missing" {
+			return "", "", 0, false, r.poisonLocked(fmt.Errorf("unexpected git cat-file batch-command info missing header %q", header))
+		}
 		return "", "", 0, false, nil
 	}
 	fields := strings.Fields(header)
 	if len(fields) != 3 {
-		return "", "", 0, false, fmt.Errorf("unexpected git cat-file batch-command info header %q", header)
+		return "", "", 0, false, r.poisonLocked(fmt.Errorf("unexpected git cat-file batch-command info header %q", header))
 	}
 	size, err := strconv.ParseInt(fields[2], 10, 64)
 	if err != nil || size < 0 {
-		return "", "", 0, false, fmt.Errorf("parse git cat-file batch-command info size %q", fields[2])
+		return "", "", 0, false, r.poisonLocked(fmt.Errorf("parse git cat-file batch-command info size %q", fields[2]))
 	}
 	return fields[0], fields[1], size, true, nil
 }
 
 func (r *BatchFileReader) readObjectContentsLocked(objectSpec, expectedType string, expectedSize int64, oversizeKey string) (string, bool, error) {
+	if r.poison != nil {
+		return "", false, r.poison
+	}
 	if r.closed {
 		return "", false, fmt.Errorf("git cat-file batch reader is closed")
 	}
 	if _, err := fmt.Fprintf(r.stdin, "contents %s\n", objectSpec); err != nil {
-		return "", false, err
+		return "", false, r.poisonLocked(fmt.Errorf("write git cat-file batch-command contents request: %w", err))
 	}
 	header, err := r.stdout.ReadString('\n')
 	if err != nil {
-		return "", false, fmt.Errorf("read git cat-file batch-command contents header: %w", err)
+		return "", false, r.poisonLocked(fmt.Errorf("read git cat-file batch-command contents header: %w", err))
 	}
 	header = strings.TrimSuffix(header, "\n")
 	if strings.HasSuffix(header, " missing") {
+		if header != objectSpec+" missing" {
+			return "", false, r.poisonLocked(fmt.Errorf("unexpected git cat-file batch-command contents missing header %q", header))
+		}
 		return "", false, nil
 	}
 	fields := strings.Fields(header)
 	if len(fields) != 3 {
-		return "", false, fmt.Errorf("unexpected git cat-file batch-command contents header %q", header)
+		return "", false, r.poisonLocked(fmt.Errorf("unexpected git cat-file batch-command contents header %q", header))
 	}
 	size, err := strconv.ParseInt(fields[2], 10, 64)
 	if err != nil || size < 0 {
-		return "", false, fmt.Errorf("parse git cat-file size %q", fields[2])
+		return "", false, r.poisonLocked(fmt.Errorf("parse git cat-file size %q", fields[2]))
 	}
 	if fields[0] != objectSpec || fields[1] != expectedType || size != expectedSize {
 		// info and contents share one process, so their resolved identity, type and
 		// size must agree. Do not drain an unexpected body merely to salvage the
 		// protocol: that is exactly the unbounded non-blob read this gate prevents.
-		_ = r.cmd.Process.Kill()
-		return "", false, fmt.Errorf("git cat-file batch-command metadata changed between info and contents: info=%s %s %d contents=%s %s %d",
-			objectSpec, expectedType, expectedSize, fields[0], fields[1], size)
+		return "", false, r.poisonLocked(fmt.Errorf("git cat-file batch-command metadata changed between info and contents: info=%s %s %d contents=%s %s %d",
+			objectSpec, expectedType, expectedSize, fields[0], fields[1], size))
 	}
 	if fields[1] != "blob" {
-		_ = r.cmd.Process.Kill()
-		return "", false, fmt.Errorf("git cat-file batch-command returned non-blob contents after blob info: %s", fields[1])
+		return "", false, r.poisonLocked(fmt.Errorf("git cat-file batch-command returned non-blob contents after blob info: %s", fields[1]))
 	}
 	if r.maxBytes > 0 && size > r.maxBytes {
 		var src io.Reader = io.LimitReader(r.stdout, size)
@@ -1137,14 +1155,17 @@ func (r *BatchFileReader) readObjectContentsLocked(objectSpec, expectedType stri
 		}
 		digest, err := filedigest.Stream(src)
 		if err != nil {
-			return "", false, err
+			return "", false, r.poisonLocked(fmt.Errorf("stream oversized git blob: %w", err))
+		}
+		if digest.Bytes != size {
+			return "", false, r.poisonLocked(fmt.Errorf("git cat-file blob body length %d, want %d", digest.Bytes, size))
 		}
 		trailing, err := r.stdout.ReadByte()
 		if err != nil {
-			return "", false, err
+			return "", false, r.poisonLocked(fmt.Errorf("read git cat-file blob separator: %w", err))
 		}
 		if trailing != '\n' {
-			return "", false, fmt.Errorf("git cat-file blob missing trailing newline separator")
+			return "", false, r.poisonLocked(fmt.Errorf("git cat-file blob missing trailing newline separator"))
 		}
 		if r.oversize == nil {
 			r.oversize = map[string]OversizeBlob{}
@@ -1154,45 +1175,72 @@ func (r *BatchFileReader) readObjectContentsLocked(objectSpec, expectedType stri
 	}
 	content := make([]byte, size)
 	if _, err := io.ReadFull(r.stdout, content); err != nil {
-		return "", false, err
+		return "", false, r.poisonLocked(fmt.Errorf("read git cat-file blob body: %w", err))
 	}
 	trailing, err := r.stdout.ReadByte()
 	if err != nil {
-		return "", false, err
+		return "", false, r.poisonLocked(fmt.Errorf("read git cat-file blob separator: %w", err))
 	}
 	if trailing != '\n' {
-		return "", false, fmt.Errorf("git cat-file blob missing trailing newline separator")
+		return "", false, r.poisonLocked(fmt.Errorf("git cat-file blob missing trailing newline separator"))
 	}
 	return string(content), true, nil
+}
+
+// poisonLocked retires a batch-command session whose request/response boundary
+// is no longer trustworthy. It preserves the first protocol error as the
+// reader's stable result; later reads never write into a dead or desynchronized
+// stream, and Close reaps the killed child while returning this original cause.
+// r.mu must be held.
+func (r *BatchFileReader) poisonLocked(err error) error {
+	if r.poison != nil {
+		return r.poison
+	}
+	r.poison = err
+	if r.cmd.Process != nil {
+		_ = r.cmd.Process.Kill()
+	}
+	return err
 }
 
 func (r *BatchFileReader) Close() error {
 	r.mu.Lock()
 	if r.closed {
+		poison := r.poison
 		r.mu.Unlock()
-		return nil
+		return poison
 	}
 	r.closed = true
 	stdin := r.stdin
+	poison := r.poison
 	r.mu.Unlock()
 	var closeErrors []error
 	if err := stdin.Close(); err != nil {
 		closeErrors = append(closeErrors, err)
 	}
 	if err := r.cmd.Wait(); err != nil {
+		if poison != nil {
+			// poisonLocked deliberately killed this child. The protocol cause is
+			// actionable; "signal: killed" is only the cleanup mechanism.
+			return poison
+		}
 		msg := strings.TrimSpace(r.stderr.String())
 		if msg == "" {
 			msg = err.Error()
 		}
 		closeErrors = append(closeErrors, fmt.Errorf("git cat-file --batch-command: %s", msg))
 	}
+	if poison != nil {
+		return poison
+	}
 	return errors.Join(closeErrors...)
 }
 
-// LimitedFileReader performs repeated bounded reads from one immutable Git
-// tree without spawning probes per file. Prime batches exact ls-tree metadata;
-// ReadFile then asks a persistent content batch for the exact blob OIDs at or
-// below the ceiling. Repository paths never enter that line-oriented protocol,
+// LimitedFileReader performs repeated bounded reads from one immutable raw Git
+// tree without spawning probes per file. Replace refs are ignored. Prime
+// batches exact ls-tree metadata; ReadFile then asks a persistent content batch
+// for the exact blob OIDs at or below the ceiling. Repository paths never enter
+// that line-oriented protocol,
 // so newline-bearing and trailing-carriage-return names cannot split or
 // normalize a request. An unprimed path resolves the same metadata lazily.
 type LimitedFileReader struct {
@@ -1219,7 +1267,14 @@ type primedLimitedFile struct {
 	objectType string
 }
 
-const treeMetadataLiteralPrefix = ":(top,literal)"
+const (
+	treeMetadataLiteralPrefix = ":(top,literal)"
+	// ls-tree formats mode, type, object ID, and decimal size (or BAD) before
+	// each path. SHA-256 object IDs need at most 64 bytes; 128 bytes leaves
+	// generous room for every fixed field while putting a hard bound on a
+	// malformed record before its path is retained.
+	treeMetadataRecordOverheadMax = 128
+)
 
 // Normal paths use count- and argv-bounded metadata batches. Only a path too
 // large for those batches enters component traversal. 256 leaves ample room
@@ -1450,9 +1505,13 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 	if len(paths) > literalPathspecBatchCount {
 		return nil, fmt.Errorf("git tree metadata input exceeds %d paths", literalPathspecBatchCount)
 	}
+	if len(paths) == 0 {
+		return map[string]primedLimitedFile{}, nil
+	}
 	args := []string{"ls-tree", "-z", "-l", "--full-name", rev, "--"}
 	known := make(map[string]struct{}, len(paths))
 	pathspecBytes := 0
+	expectedOutputBytes := 0
 	for _, path := range paths {
 		if err := validateLimitedFilePath(path); err != nil {
 			return nil, err
@@ -1463,33 +1522,80 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 		}
 		args = append(args, treeMetadataLiteralPrefix+path)
 		known[path] = struct{}{}
+		expectedOutputBytes += len(path) + treeMetadataRecordOverheadMax
 	}
-	out, err := run(ctx, repo, "git", args...)
+	cmd := newCmd(ctx, repo, "git", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("git ls-tree metadata pipe: %w", err)
 	}
-	if len(out) > 0 && out[len(out)-1] != 0 {
-		return nil, errors.New("git ls-tree returned non-NUL-terminated metadata")
-	}
-	entries := make(map[string]primedLimitedFile, len(paths))
-	for _, record := range bytes.Split([]byte(out), []byte{0}) {
-		if len(record) == 0 {
-			continue
+	if err := cmd.Start(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
 		}
+		return nil, fmt.Errorf("git ls-tree metadata: %s", message)
+	}
+
+	entries := make(map[string]primedLimitedFile, len(paths))
+	outputCount := 0
+	outputBytes := 0
+	reader := bufio.NewReaderSize(stdout, literalPathspecBatchBytes+treeMetadataRecordOverheadMax)
+	for {
+		record, readErr := reader.ReadSlice(0)
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			stopPathOutputCommand(cmd)
+			return nil, fmt.Errorf(
+				"git ls-tree returned a metadata record longer than %d bytes",
+				literalPathspecBatchBytes+treeMetadataRecordOverheadMax,
+			)
+		}
+		if len(record) == 0 && errors.Is(readErr, io.EOF) {
+			waitErr := cmd.Wait()
+			if waitErr != nil {
+				message := strings.TrimSpace(stderr.String())
+				if message == "" {
+					message = waitErr.Error()
+				}
+				return nil, fmt.Errorf("git ls-tree metadata: %s", message)
+			}
+			return entries, nil
+		}
+		if len(record) == 0 || record[len(record)-1] != 0 {
+			stopPathOutputCommand(cmd)
+			return nil, errors.New("git ls-tree returned non-NUL-terminated metadata")
+		}
+		record = record[:len(record)-1]
 		tab := bytes.IndexByte(record, '\t')
 		if tab < 0 {
+			stopPathOutputCommand(cmd)
 			return nil, errors.New("git ls-tree returned malformed metadata")
 		}
 		fields := strings.Fields(string(record[:tab]))
 		if len(fields) != 4 {
+			stopPathOutputCommand(cmd)
 			return nil, fmt.Errorf("git ls-tree returned malformed metadata header %q", record[:tab])
 		}
 		path := string(record[tab+1:])
 		if _, ok := known[path]; !ok {
+			stopPathOutputCommand(cmd)
 			return nil, fmt.Errorf("git ls-tree returned unexpected path %q", path)
 		}
 		if _, duplicate := entries[path]; duplicate {
+			stopPathOutputCommand(cmd)
 			return nil, fmt.Errorf("git ls-tree returned duplicate path %q", path)
+		}
+		outputCount++
+		outputBytes += len(record) + 1
+		if outputCount > len(known) || outputCount > literalPathspecBatchCount {
+			stopPathOutputCommand(cmd)
+			return nil, fmt.Errorf("git ls-tree returned more than %d metadata records", len(known))
+		}
+		if outputBytes > expectedOutputBytes {
+			stopPathOutputCommand(cmd)
+			return nil, fmt.Errorf("git ls-tree returned more than %d metadata bytes", expectedOutputBytes)
 		}
 		if fields[1] != "blob" {
 			entries[path] = primedLimitedFile{
@@ -1513,6 +1619,7 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 		}
 		size, err := strconv.ParseInt(fields[3], 10, 64)
 		if err != nil || size < 0 {
+			stopPathOutputCommand(cmd)
 			return nil, fmt.Errorf("parse git ls-tree blob size %q for %q", fields[3], path)
 		}
 		entries[path] = primedLimitedFile{
@@ -1520,8 +1627,11 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 			objectID:   fields[2],
 			objectType: fields[1],
 		}
+		if readErr != nil {
+			stopPathOutputCommand(cmd)
+			return nil, fmt.Errorf("read git ls-tree metadata: %w", readErr)
+		}
 	}
-	return entries, nil
 }
 
 // ReadFile returns one typed bounded result. Oversized blobs are answered from
@@ -1636,19 +1746,40 @@ func run(ctx context.Context, dir, name string, args ...string) (string, error) 
 	return stdout, nil
 }
 
+const rawGitObjectsEnv = "GIT_NO_REPLACE_OBJECTS=1"
+
+// newGitCmdWithCallerLocale builds the two git-grep subprocesses whose
+// case-folding must retain the caller's locale. Like every other production Git
+// subprocess in this package, it disables replace refs: exact tree/object IDs
+// are the immutable snapshot boundary, regardless of later refs/replace edits.
+func newGitCmdWithCallerLocale(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	// Cmd.Environ observes Dir and updates PWD accordingly. Append after the
+	// inherited environment so a hostile GIT_NO_REPLACE_OBJECTS=0 is overridden.
+	cmd.Env = append(cmd.Environ(), rawGitObjectsEnv)
+	return cmd
+}
+
 // newCmd builds the exec.Cmd used by subprocesses whose diagnostics must be
 // stable. It pins the subprocess locale to C (LC_ALL=C overrides LANG and any
 // LC_*; LANG=C is set as a belt-and-braces default) so git's stderr messages
 // are always the English ones our error classification matches — e.g.
 // ShowFile's absent-file detection would otherwise break under a non-English
-// git locale. GrepIndexMatches intentionally bypasses this helper and keeps
-// the caller's locale because git grep uses LC_CTYPE for case folding.
+// git locale. It also disables replace refs for every Git command, so an exact
+// tree or object ID keeps raw-object semantics across separate subprocesses.
+// The git-grep paths above preserve caller locale while applying the same raw
+// object rule.
 func newCmd(ctx context.Context, dir, name string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	// Cmd.Environ observes Dir and updates PWD accordingly. Starting from
 	// os.Environ would leave child processes with the parent's stale PWD.
-	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
+	env := cmd.Environ()
+	if name == "git" {
+		env = append(env, rawGitObjectsEnv)
+	}
+	cmd.Env = append(env, "LC_ALL=C", "LANG=C")
 	return cmd
 }
 
