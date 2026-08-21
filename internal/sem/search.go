@@ -1447,10 +1447,10 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 // can name a path the listing already excluded — a credential store denied by the built-in
 // rules in ignore.go, a tree the caller's --ignore-file removed, anything .graphignore names.
 //
-// Re-applying the corpus's own ignore verdict here is what keeps "excluded" meaning "never
-// opened": a path this returns is handed to searchNeedleIndex.readLines, which reads it. Using
-// the same matcher rather than a second predicate is what keeps a caller's --include-file
-// meaning the same thing on both routes.
+// Git has already inspected the broader tree to produce these paths. Re-applying the corpus's
+// own ignore verdict here is the output boundary: it keeps a denied path away from the needle
+// index's content reader and therefore out of search blocks. Using the same matcher rather than
+// a second predicate keeps a caller's --include-file meaning the same thing on both routes.
 func newSearchNeedleGrep(ctx context.Context, repoRoot, treeish string, ignores ignoreMatcher) func(string) ([]string, bool) {
 	return func(pattern string) ([]string, bool) {
 		paths, grepErr := gitutil.GrepFixedStringPaths(ctx, repoRoot, treeish, pattern)
@@ -1820,8 +1820,8 @@ func preselectSearchFiles(
 			selection.preselectionBackend = "git-tree-grep"
 			selection.preselectionPasses = 1
 			selection.preselectionFilesExamined = len(source.paths)
-			// This path never reads content, so there are no posting lists. Git answered once, so
-			// it can answer again for a single needle.
+			// Git scanned content but returned only paths, so the provider has no posting lists.
+			// Git answered once, so it can answer again for a single needle.
 			selection.gitGrepUsable = true
 			selection.gitGrepTreeish = source.commit
 			return selection, nil

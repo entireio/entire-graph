@@ -85,8 +85,8 @@ const (
 // `private_key`) are exactly the vocabulary of a query about authentication.
 //
 // The exclusion lives here, in the ignore matcher, because this is the one place
-// that governs every corpus at once. The working-tree listing consults it at
-// provider.go worktreeSourceFiles, the committed-tree listing at
+// that governs both provider source corpora. The working-tree listing consults
+// it at provider.go worktreeSourceFiles, the committed-tree listing at
 // filterIgnoredPaths, and both listings are what the snapshot is parsed from —
 // so a path denied here is absent from search results, from the context blocks,
 // and from `entire graph symbols`, without a second taxonomy anywhere.

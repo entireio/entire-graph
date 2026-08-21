@@ -25,12 +25,24 @@ other is installation.
   `.graphignore` and any
   `--ignore-file`/`--include-file` the caller passes.
 
-### What it does not read: credential stores
+### Credential-store path exclusions
 
-A built-in exclude list keeps credential stores out of every corpus — the
-working tree, the committed tree, and therefore the graph, search results and
-search context blocks alike. A file it names is never opened, so its contents
-cannot be quoted back into an agent's context.
+A built-in exclude list keeps credential stores out of the provider's
+working-tree and committed-tree source corpora. Within those corpora, unless a
+caller deliberately re-admits one, a denied path is not parsed as source,
+indexed, written to graph/search caches, returned in graph or search results, or
+quoted in search context blocks.
+
+This is a corpus and output boundary, not a promise that no local process reads
+the underlying file or Git blob. Git-backed search acceleration can scan
+tracked or committed blobs before credential-store path rules are applied to
+its matches; denied matches are discarded before Entire Graph's content reader,
+source parser, caches or responses. The `diff`, `analyze`, `commit` and
+`checkpoint` families analyze requested Git ranges rather than the graph/search
+corpus, so they can read credential-store paths and report content-derived
+metadata about them. Those built-in operations remain local under the provider's
+no-egress contract. `verify` runs caller-supplied commands with the caller's
+privileges and is outside this exclusion boundary.
 
 The list covers `.env` and its `.env.<environment>` variants, `.envrc`,
 `.npmrc`, `.netrc`/`_netrc`, `.pgpass`, `.htpasswd`, `.pypirc`, `.dockercfg`,
@@ -53,11 +65,12 @@ basename or suffix pattern can therefore match a directory segment; when it
 does, that directory's descendants are excluded. For example, `*.key` also
 excludes `pkg/client.key/**`. This behavior is intentional.
 
-It is a rule about PATHS, not about content: no file is scanned for
-secret-shaped strings, and a credential store whose path gives no signal —
-`deploy/prod-values.yaml` holding an inline API key — is not covered. Public
-halves (`.crt`, `.cer`, `.pub`) are deliberately not excluded, and source code
-under `internal/secrets/` or `pkg/credentials/` stays fully searchable.
+Classification is based on PATHS, not content: Entire Graph does not inspect a
+file's bytes to decide whether an otherwise-unrecognized path contains a
+secret. A credential store whose path gives no signal — `deploy/prod-values.yaml`
+holding an inline API key — is not covered. Public halves (`.crt`, `.cer`,
+`.pub`) are deliberately not excluded, and source code under
+`internal/secrets/` or `pkg/credentials/` stays fully searchable.
 
 The list is loaded after the repository's own exclude files, so a negation
 inside the repository under analysis cannot switch it off, and before the
@@ -73,9 +86,9 @@ excluded by it nor re-admitted when the repository's own `.gitignore` or
 `.graphignore` excludes it.
 
 Both persistent caches (`index`/`search` snapshots and the streamed record
-caches) key on a digest of this list, so a cache entry warmed by a build with a
-different list is not reachable — an entry written before these rules existed
-misses instead of re-emitting the paths it named.
+caches) key on a digest of the effective built-in rules, so a cache entry warmed
+by a build with a different policy is not reachable — an entry written before
+these rules existed misses instead of re-emitting the paths it named.
 - For `stats` only: local coding-agent session transcripts
   (`~/.claude/projects/<path-slug>/*.jsonl`, or `--sessions-dir`/
   `--transcript` overrides). This is Claude Code's transcript layout; the

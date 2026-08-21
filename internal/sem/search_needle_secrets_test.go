@@ -9,9 +9,9 @@ import (
 //
 // Excluding a path from the corpus LISTING is not sufficient on its own, because
 // the needle index has a route that does not go through the listing: Git answers
-// `git grep` over the whole tree. Whatever that route returns is handed to
-// searchNeedleIndex.readLines and read, so an unfiltered answer would reopen every
-// file the listing denied.
+// `git grep` over the whole tree. Git has already scanned that broader tree; this
+// filter prevents a denied path from being handed to the provider's content reader
+// and surfaced in a search block.
 //
 // The unfiltered call below is the control, and it is what makes this test
 // non-vacuous: it proves Git really does name `.env` and
