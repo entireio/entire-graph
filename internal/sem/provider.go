@@ -1439,6 +1439,14 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		}
 		paths = filtered
 	}
+	if opened.prime != nil {
+		if err := opened.prime(paths); err != nil {
+			if opened.close != nil {
+				err = errors.Join(err, opened.close())
+			}
+			return sourceContext{}, err
+		}
+	}
 
 	warnings := append([]ProviderWarning(nil), opened.warnings...)
 	if options.Worktree {
@@ -9746,8 +9754,11 @@ type openedSource struct {
 	read       contentReader
 	readPrefix prefixReader
 	oversize   oversizeReader
-	close      func() error
-	warnings   []ProviderWarning
+	// prime deterministically admits the final filtered committed-tree paths
+	// to any shared bounded metadata reader before parallel workers start.
+	prime    func([]string) error
+	close    func() error
+	warnings []ProviderWarning
 }
 
 // openSource lists the repository's files and returns a per-file content reader
@@ -9775,11 +9786,16 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		paths = filterVendoredPaths(paths, headVendorIgnoreRules(ctx, repo, committedRevision, paths))
 		paths = filterIgnoredPaths(paths, ignores)
 		paths, warnings := capSourceFiles(paths, options.maxFiles)
+		treePathPrefix, err := gitutil.RepoPrefix(ctx, repo)
+		if err != nil {
+			return openedSource{}, err
+		}
 		batch, err := gitutil.NewBatchFileReader(ctx, repo, committedRevision)
 		if err != nil {
 			return openedSource{}, err
 		}
 		batch.SetMaxBytes(maxReadBytes)
+		limited := gitutil.NewLimitedFileReader(ctx, repo, committedRevision, maxReadBytes)
 		// The oversize registry for the paths the batch reader cannot carry.
 		// batch.OversizeBlob only knows blobs that streamed past IT, so a
 		// refusal in the line-unsafe fallback below has to be recorded here or the
@@ -9789,13 +9805,14 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		read := func(path string) (string, bool) {
 			if !batch.IsPathSafe(path) {
 				// The batch protocol is line based, so a newline-bearing Git
-				// path needs the argv-safe one-shot reader. The ceiling is
-				// passed DOWN rather than applied to the returned string: this
+				// path needs the exact-object bounded reader. Sharing it across
+				// files also shares its component cache and process allowance.
+				// The ceiling is passed DOWN rather than applied to the returned string: this
 				// fallback is selected by the file's NAME, which the repository
 				// under analysis chooses, so an unbounded read here would let
 				// any repository opt one blob out of the cap that makes this
 				// reader's memory claim true.
-				result, err := gitutil.ReadFileLimited(ctx, repo, committedRevision, path, maxReadBytes)
+				result, err := limited.ReadFile(treePathPrefix + path)
 				if err != nil {
 					return "", false
 				}
@@ -9805,8 +9822,8 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 					// declined from one it could not read: the file record is
 					// dropped, the warning becomes an error-severity
 					// E_FILE_READ, and completeness falls to degraded.
-					// ReadFileLimited gives the exact size without reading, but the digest
-					// MaxParseBytes promises is still owed — noted here and
+					// LimitedFileReader gives the exact size without reading, but
+					// the digest MaxParseBytes promises is still owed — noted here and
 					// resolved lazily below. An absent path records nothing.
 					if result.Status == gitutil.LimitedFileOversize {
 						fallback.note(path)
@@ -9843,12 +9860,25 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 			}
 			return content, true
 		}
+		closeReaders := func() error {
+			return errors.Join(batch.Close(), limited.Close())
+		}
+		prime := func(paths []string) error {
+			unsafeTreePaths := make([]string, 0, len(paths))
+			for _, path := range paths {
+				if !batch.IsPathSafe(path) {
+					unsafeTreePaths = append(unsafeTreePaths, treePathPrefix+path)
+				}
+			}
+			return limited.Prime(unsafeTreePaths)
+		}
 		return openedSource{
 			paths:      paths,
 			read:       read,
 			readPrefix: readPrefix,
 			oversize:   oversize,
-			close:      batch.Close,
+			prime:      prime,
+			close:      closeReaders,
 			warnings:   warnings,
 		}, nil
 	}
@@ -9905,7 +9935,7 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 	}, nil
 }
 
-// fallbackOversizeRegistry remembers the HEAD-tree paths the one-shot line-unsafe
+// fallbackOversizeRegistry remembers the HEAD-tree paths the bounded line-unsafe
 // fallback refused, and resolves each one's record at most once. It is the
 // committed-revision counterpart of oversizeRegistry below, and defers for the
 // same reason: resolving costs a streaming pass over the blob, and preselection

@@ -54,7 +54,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		deadline = started.Add(options.MaxDuration)
 	}
 	overBudget := func() bool {
-		return !deadline.IsZero() && time.Now().After(deadline)
+		return !deadline.IsZero() && !time.Now().Before(deadline)
 	}
 	var lastEmit time.Time
 	// force emits phase boundaries unconditionally; per-file events are
@@ -93,6 +93,15 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 	if err != nil {
 		return Result{}, err
 	}
+	// ChangedFiles intentionally retains the caller's cwd so explicit path
+	// arguments keep Git's native --repo-relative meaning. Its emitted names,
+	// however, are relative to the compared tree. Perform every subsequent
+	// object read and grep from Git's command root so a repository subdirectory
+	// is not applied again when pinnedBase/pinnedHead are already subtree OIDs.
+	objectRepo, err := gitutil.RepoCommandRoot(ctx, repo)
+	if err != nil {
+		return Result{}, err
+	}
 
 	emitProgress("discover", 0, 0)
 	changed, err := gitutil.ChangedFiles(ctx, repo, pinnedBase, pinnedHead, paths)
@@ -101,8 +110,10 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 	}
 	emitProgress("parse", 0, len(changed))
 	parser := TreeSitterParser{}
-	baseReader := gitutil.NewLimitedFileReader(ctx, repo, pinnedBase, maxDiffFileBytes)
-	headReader := gitutil.NewLimitedFileReader(ctx, repo, pinnedHead, maxDiffFileBytes)
+	baseReader := gitutil.NewLimitedFileReader(ctx, objectRepo, pinnedBase, maxDiffFileBytes)
+	headReader := gitutil.NewLimitedFileReader(ctx, objectRepo, pinnedHead, maxDiffFileBytes)
+	baseReader.SetDeadline(deadline)
+	headReader.SetDeadline(deadline)
 	defer func() {
 		_ = baseReader.Close()
 		_ = headReader.Close()
@@ -112,14 +123,17 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 	// diff/analyze CLI handlers that call through them) inherits it.
 	result := Result{Base: base, Head: head, SchemaVersion: SchemaVersion}
 	var deltas []*fileDelta
+	appendBudgetWarnings := func(start int) {
+		for _, skipped := range changed[start:] {
+			result.Warnings = append(result.Warnings, budgetSkippedFileWarning(skipped.Path, start, len(changed), options.MaxDuration))
+		}
+	}
 	for i, file := range changed {
 		if overBudget() {
 			// Stop cleanly: keep everything analyzed so far and enumerate each
 			// skipped changed file with a machine-readable warning, so the
 			// partial result is never silently incomplete.
-			for _, skipped := range changed[i:] {
-				result.Warnings = append(result.Warnings, budgetSkippedFileWarning(skipped.Path, i, len(changed), options.MaxDuration))
-			}
+			appendBudgetWarnings(i)
 			break
 		}
 		if i%analyzeMetadataPrimeFiles == 0 {
@@ -146,6 +160,14 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			}
 			if err := headReader.Prime(headPaths); err != nil {
 				return Result{}, err
+			}
+			// Component traversal observes the same deadline between metadata
+			// subprocesses. Re-check immediately so the current file and the rest
+			// receive the ordinary budget warnings instead of being misreported as
+			// unaddressable/read failures after Prime stopped at that deadline.
+			if overBudget() {
+				appendBudgetWarnings(i)
+				break
 			}
 		}
 		emitProgressEvent("parse", i, len(changed), file.Path, i > 0 && i%100 == 0)
@@ -232,12 +254,12 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 			afterUnaddressable := file.Status != "D" && afterRead.Status == gitutil.LimitedFileUnaddressable
 			if beforeUnaddressable || afterUnaddressable {
 				warningPath := path
-				detail := "head path has a component above the bounded Git argv limit"
+				detail := "head path could not be resolved within bounded Git metadata traversal"
 				if beforeUnaddressable && !afterUnaddressable {
 					warningPath = oldPath
-					detail = "base path has a component above the bounded Git argv limit"
+					detail = "base path could not be resolved within bounded Git metadata traversal"
 				} else if beforeUnaddressable && afterUnaddressable {
-					detail = "base and head paths have a component above the bounded Git argv limit"
+					detail = "base and head paths could not be resolved within bounded Git metadata traversal"
 				}
 				result.Warnings = append(result.Warnings, diffFileReadWarning(warningPath, detail))
 			}
@@ -372,7 +394,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		})
 	}
 
-	if err := addDependentCountsWithProgress(ctx, repo, pinnedHead, &result, dependentsScanOptions{
+	if err := addDependentCountsWithProgress(ctx, objectRepo, pinnedHead, &result, dependentsScanOptions{
 		progress: func(done, total int, path string) {
 			emitProgressEvent("dependents", done, total, path, path == "")
 		},

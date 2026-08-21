@@ -1465,6 +1465,10 @@ func openSearchContentReader(
 	ignoreFiles, includeFiles []string,
 ) (contentReader, func() error, error) {
 	if useHead {
+		treePathPrefix, err := gitutil.RepoPrefix(ctx, repo)
+		if err != nil {
+			return nil, nil, err
+		}
 		batch, err := gitutil.NewBatchFileReader(ctx, repo, commit)
 		if err != nil {
 			return nil, nil, err
@@ -1472,21 +1476,26 @@ func openSearchContentReader(
 		// Snippet and body reads never need a file the indexer refuses to parse,
 		// so the reader declines it rather than materializing it twice over.
 		batch.SetMaxBytes(defaultMaxParseBytes)
+		limited := gitutil.NewLimitedFileReader(ctx, repo, commit, defaultMaxParseBytes)
 		read := func(path string) (string, bool) {
 			if !batch.IsPathSafe(path) {
-				// Same ceiling as the batch reader above. The argv-safe
+				// Same ceiling as the batch reader above. The shared exact-object
 				// fallback exists because the batch protocol cannot carry a
 				// newline-bearing path, not to exempt that path from the cap:
 				// the file's name is chosen by the repository being searched,
 				// so an unbounded read here would be a name-shaped hole in the
-				// bound.
-				result, err := gitutil.ReadFileLimited(ctx, repo, commit, path, defaultMaxParseBytes)
+				// bound. One reader also shares the component traversal allowance
+				// and prefix cache across all requested files.
+				result, err := limited.ReadFile(treePathPrefix + path)
 				return result.Content, err == nil && result.Status == gitutil.LimitedFileContent
 			}
 			content, ok, err := batch.ReadFile(path)
 			return content, ok && err == nil
 		}
-		return read, batch.Close, nil
+		closeReaders := func() error {
+			return errors.Join(batch.Close(), limited.Close())
+		}
+		return read, closeReaders, nil
 	}
 	opened, err := openSource(ctx, repo, "", sourceOptions{
 		ignoreFiles:  ignoreFiles,

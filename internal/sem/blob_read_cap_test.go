@@ -74,7 +74,7 @@ func TestAnalyzeGitRangeRefusesBlobsAboveTheReadCap(t *testing.T) {
 
 // TestHeadReadersCapNewlineBearingPaths pins the bound on the one HEAD read
 // that the `git cat-file --batch` protocol cannot carry. The batch reader is
-// line based, so a Git path containing a newline falls back to a one-shot
+// line based, so a Git path containing a newline falls back to a shared bounded
 // reader — a fallback selected by the file's NAME, which the repository under
 // analysis chooses. An uncapped fallback therefore lets any repository opt a
 // blob out of the cap by renaming it.
@@ -227,7 +227,7 @@ func TestHeadReadersFallbackWhenRepoPrefixContainsNewline(t *testing.T) {
 // the record's blob hash and line count "from a streamed digest". The batch
 // reader keeps that promise: it digests the blob it refuses on the way past.
 //
-// The one-shot fallback taken for a newline-bearing path must keep the same
+// The bounded fallback taken for a newline-bearing path must keep the same
 // promise. If it only refuses, processProviderFile cannot tell a refused file
 // from an unreadable one (provider_parallel.go:76-126): the FileRecord is
 // dropped, the warning-severity E_FILE_TOO_LARGE becomes an error-severity

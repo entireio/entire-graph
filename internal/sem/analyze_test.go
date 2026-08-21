@@ -112,7 +112,7 @@ func TestAnalyzeGitRangeAcceptsTreeObjects(t *testing.T) {
 
 	baseExpression := baseCommit + ":scope"
 	headExpression := headCommit + ":scope"
-	subtreeResult, err := AnalyzeGitRange(t.Context(), repo, baseExpression, headExpression, nil)
+	subtreeResult, err := AnalyzeGitRange(t.Context(), filepath.Join(repo, "scope"), baseExpression, headExpression, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,6 +121,30 @@ func TestAnalyzeGitRangeAcceptsTreeObjects(t *testing.T) {
 	}
 	if len(subtreeResult.Files) != 1 || subtreeResult.Files[0].Path != "auth.py" {
 		t.Fatalf("tree-expression diff files = %#v, want auth.py", subtreeResult.Files)
+	}
+	foundSubtreeDependent := false
+	for _, change := range subtreeResult.Files[0].Changes {
+		if change.Name == "validate_token" {
+			foundSubtreeDependent = true
+			if change.DependentsCount != 1 {
+				t.Fatalf("subdirectory subtree dependent count = %d, want 1: %#v", change.DependentsCount, change)
+			}
+		}
+	}
+	if !foundSubtreeDependent {
+		t.Fatalf("subdirectory subtree diff did not report validate_token: %#v", subtreeResult.Files)
+	}
+
+	// Direct full-root tree OIDs retain the historical caller-cwd pathspec
+	// semantics. Unlike commit:scope above, auth.py means scope/auth.py here.
+	baseRootTree := rev(t, repo, baseCommit+"^{tree}")
+	headRootTree := rev(t, repo, headCommit+"^{tree}")
+	rootTreeResult, err := AnalyzeGitRange(t.Context(), filepath.Join(repo, "scope"), baseRootTree, headRootTree, []string{"auth.py"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rootTreeResult.Files) != 1 || rootTreeResult.Files[0].Path != "scope/auth.py" {
+		t.Fatalf("direct root-tree diff files = %#v, want scope/auth.py", rootTreeResult.Files)
 	}
 }
 
@@ -140,7 +164,7 @@ func TestAnalyzeGitRangeReadsRootPathsFromRepoSubdirectory(t *testing.T) {
 	git(t, repo, "commit", "-m", "head")
 	head := rev(t, repo, "HEAD")
 
-	result, err := AnalyzeGitRange(t.Context(), filepath.Join(repo, "scope"), base, head, nil)
+	result, err := AnalyzeGitRange(t.Context(), filepath.Join(repo, "scope"), base, head, []string{"auth.py"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +226,7 @@ func TestAnalyzeGitRangeWarnsForSingleComponentBeyondArgvBound(t *testing.T) {
 	}
 	found := false
 	for _, warning := range result.Warnings {
-		if warning.Code == "E_FILE_READ" && strings.Contains(warning.Detail, "bounded Git argv limit") {
+		if warning.Code == "E_FILE_READ" && strings.Contains(warning.Detail, "bounded Git metadata traversal") {
 			found = true
 		}
 	}
@@ -1525,6 +1549,22 @@ func nestedAnalyzeTree(t *testing.T, repo, content string, depth int) (tree, pat
 	return tree, path
 }
 
+func importDeepAnalyzeHistory(t *testing.T, repo, path, baseContent, headContent string) (base, head string) {
+	t.Helper()
+	var input strings.Builder
+	fmt.Fprintf(&input, "blob\nmark :1\ndata %d\n%s\n", len(baseContent), baseContent)
+	fmt.Fprintf(&input, "commit refs/heads/deep\nmark :2\ncommitter Test <test@example.com> 1 +0000\ndata 4\nbase\nM 100644 :1 %s\n\n", path)
+	fmt.Fprintf(&input, "blob\nmark :3\ndata %d\n%s\n", len(headContent), headContent)
+	fmt.Fprintf(&input, "commit refs/heads/deep\nmark :4\ncommitter Test <test@example.com> 2 +0000\ndata 4\nhead\nfrom :2\nM 100644 :3 %s\n\n", path)
+	cmd := exec.Command("git", "fast-import", "--quiet")
+	cmd.Dir = repo
+	cmd.Stdin = strings.NewReader(input.String())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git fast-import deep history: %v\n%s", err, out)
+	}
+	return rev(t, repo, "refs/heads/deep^"), rev(t, repo, "refs/heads/deep")
+}
+
 func rev(t *testing.T, repo, value string) string {
 	t.Helper()
 	cmd := exec.Command("git", "rev-parse", value)
@@ -1582,6 +1622,55 @@ func TestAnalyzeGitRangeBudgetExceededEmitsPartialResult(t *testing.T) {
 		if !skipped[want] {
 			t.Fatalf("skipped files %v missing %q", skipped, want)
 		}
+	}
+}
+
+func TestAnalyzeGitRangeDeepPathMetadataHonorsBudget(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	components := make([]string, 800)
+	for index := range components {
+		components[index] = fmt.Sprintf("component-%010d", index)
+	}
+	path := strings.Join(components, "/") + "/file.go"
+	if len(path) != 16807 {
+		t.Fatalf("deep path length = %d, want reviewer fixture length 16807", len(path))
+	}
+	base, head := importDeepAnalyzeHistory(
+		t,
+		repo,
+		path,
+		"package deep\nvar Value = 1\n",
+		"package deep\nvar Value = 2\n",
+	)
+
+	// Use a deterministically exhausted tiny budget for the integration-level
+	// warning contract. The injected-clock LimitedFileReader test separately
+	// proves that an in-progress component walk stops between subprocesses; this
+	// test must not assume how quickly a particular host can launch 256 Git
+	// processes before the fixed process allowance wins the race.
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	result, err := AnalyzeGitRangeWithOptions(ctx, repo, base, head, nil, AnalyzeOptions{
+		MaxDuration: time.Nanosecond,
+	})
+	if err != nil {
+		t.Fatalf("deep-path budget exhaustion must return a partial result: %v", err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("budget-exhausted deep path produced changes: %#v", result.Files)
+	}
+	foundBudget := false
+	for _, warning := range result.Warnings {
+		if warning.Code == "E_FILE_READ" {
+			t.Fatalf("deadline-limited traversal was misreported as a file read failure: %#v", warning)
+		}
+		if warning.Code == "W_ANALYSIS_BUDGET_EXCEEDED" && warning.FilePath == path {
+			foundBudget = true
+		}
+	}
+	if !foundBudget {
+		t.Fatalf("deep-path result lacks per-file budget warning: %#v", result.Warnings)
 	}
 }
 

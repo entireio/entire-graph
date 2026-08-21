@@ -495,6 +495,21 @@ func TestGitObjectReadersUseRepoSubdirectoryPrefix(t *testing.T) {
 	if prefix != "scope/" {
 		t.Fatalf("repository prefix = %q, want scope/", prefix)
 	}
+	commandRoot, err := RepoCommandRoot(t.Context(), subdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commandRootInfo, err := os.Stat(commandRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoInfo, err := os.Stat(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(commandRootInfo, repoInfo) {
+		t.Fatalf("repository command root = %q, want same directory as %q", commandRoot, repo)
+	}
 	shown, ok, err := ShowFile(t.Context(), subdir, "HEAD", "file.go")
 	if err != nil || !ok || shown != content {
 		t.Fatalf("subdirectory ShowFile = (%q, %v, %v), want exact content", shown, ok, err)
@@ -1050,6 +1065,19 @@ func TestLimitedFileReaderKeepsRootPathsExactFromRepoSubdirectory(t *testing.T) 
 	if missing.Status != LimitedFileMissing {
 		t.Fatalf("subdirectory missing path = %#v, want missing", missing)
 	}
+
+	// ReadFile without an explicit Prime must use the same tree-root coordinate,
+	// rather than delegating to the repo-relative one-shot API and prepending
+	// scope/ a second time.
+	lazy := NewLimitedFileReader(t.Context(), filepath.Join(repo, "scope"), "HEAD", 1024)
+	t.Cleanup(func() { _ = lazy.Close() })
+	lazyResult, err := lazy.ReadFile("scope/file.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lazyResult.Status != LimitedFileContent || lazyResult.Content != content {
+		t.Fatalf("lazy subdirectory file = %#v, want root-relative content %q", lazyResult, content)
+	}
 }
 
 func TestLimitedFileReaderSplitsAncestorAndDescendantPathspecs(t *testing.T) {
@@ -1101,6 +1129,20 @@ func TestLimitedFileReaderRejectsTrailingSlashBeforeGit(t *testing.T) {
 	err := reader.Prime([]string{"dir/"})
 	if err == nil || !strings.Contains(err.Error(), `invalid Git tree path "dir/"`) {
 		t.Fatalf("trailing-slash Prime error = %v, want pre-Git invalid-path rejection", err)
+	}
+	if _, err := reader.ReadFile("dir/"); err == nil || !strings.Contains(err.Error(), `invalid Git tree path "dir/"`) {
+		t.Fatalf("trailing-slash lazy read error = %v, want pre-Git invalid-path rejection", err)
+	}
+	for _, path := range []string{"", ".", "./file", "dir/../file", "/file", "dir//file", "dir/", "nul\x00path"} {
+		if _, err := reader.ReadFile(path); err == nil || !strings.Contains(err.Error(), "invalid Git tree path") {
+			t.Fatalf("lazy invalid path %q error = %v, want pre-Git validation", path, err)
+		}
+		if _, err := ReadFileLimited(t.Context(), t.TempDir(), "HEAD", path, 0); err == nil || !strings.Contains(err.Error(), "invalid Git tree path") {
+			t.Fatalf("one-shot invalid path %q error = %v, want pre-Git validation", path, err)
+		}
+		if _, _, err := ShowFileLimited(t.Context(), t.TempDir(), "HEAD", path, 0); err == nil || !strings.Contains(err.Error(), "invalid Git tree path") {
+			t.Fatalf("compatibility invalid path %q error = %v, want pre-Git validation", path, err)
+		}
 	}
 }
 
@@ -1157,6 +1199,136 @@ func TestLimitedFileReaderPrimesPathBeyondBatchArgvBound(t *testing.T) {
 	}
 }
 
+func TestLimitedFileReaderCachesAndCapsComponentMetadata(t *testing.T) {
+	const (
+		depth  = 80
+		leaves = 200
+	)
+	component := strings.Repeat("a", 200)
+	prefix := strings.Repeat(component+"/", depth)
+	paths := make([]string, 0, leaves)
+	for index := range leaves {
+		paths = append(paths, prefix+fmt.Sprintf("file%03d.go", index))
+	}
+	if len(paths[0])+len(treeMetadataLiteralPrefix) <= literalPathspecBatchBytes {
+		t.Fatalf("fixture path length = %d, want component traversal", len(paths[0]))
+	}
+
+	reader := NewLimitedFileReader(t.Context(), "unused", "tree-0", 1024)
+	lookups := 0
+	reader.componentMetadataLookup = func(
+		_ context.Context,
+		_, treeOID string,
+		components []string,
+	) (map[string]primedLimitedFile, error) {
+		lookups++
+		if len(components) != 1 {
+			t.Fatalf("component lookup paths = %#v, want one", components)
+		}
+		componentPath := components[0]
+		treeIndex, err := strconv.Atoi(strings.TrimPrefix(treeOID, "tree-"))
+		if err != nil {
+			t.Fatalf("fake tree OID %q: %v", treeOID, err)
+		}
+		if treeIndex < depth && componentPath == component {
+			return map[string]primedLimitedFile{
+				componentPath: {
+					result:     LimitedFileResult{Status: LimitedFileNonBlob},
+					objectID:   fmt.Sprintf("tree-%d", treeIndex+1),
+					objectType: "tree",
+				},
+			}, nil
+		}
+		if treeIndex == depth && strings.HasPrefix(componentPath, "file") {
+			return map[string]primedLimitedFile{
+				componentPath: {
+					result:     LimitedFileResult{Status: LimitedFileContent, Bytes: 1},
+					objectID:   "blob-" + componentPath,
+					objectType: "blob",
+				},
+			}, nil
+		}
+		return map[string]primedLimitedFile{}, nil
+	}
+
+	if err := reader.Prime(paths); err != nil {
+		t.Fatal(err)
+	}
+	if lookups != limitedFileComponentMetadataProcessLimit ||
+		reader.componentMetadataProcesses != limitedFileComponentMetadataProcessLimit {
+		t.Fatalf("component metadata lookups = %d/%d, want cap %d",
+			lookups, reader.componentMetadataProcesses, limitedFileComponentMetadataProcessLimit)
+	}
+	// The shared 80-entry prefix is looked up once, leaving the rest of the
+	// process allowance for distinct leaves. Without the (tree, component)
+	// cache, only a few paths would resolve before hitting the same cap.
+	wantContent := limitedFileComponentMetadataProcessLimit - depth
+	for index, path := range paths {
+		want := LimitedFileUnaddressable
+		if index < wantContent {
+			want = LimitedFileContent
+		}
+		if got := reader.primed[path].result.Status; got != want {
+			t.Fatalf("path %d status = %v, want %v", index, got, want)
+		}
+	}
+	if len(reader.componentMetadata) != limitedFileComponentMetadataProcessLimit {
+		t.Fatalf("component cache entries = %d, want %d", len(reader.componentMetadata), limitedFileComponentMetadataProcessLimit)
+	}
+	if err := reader.Prime(paths); err != nil {
+		t.Fatal(err)
+	}
+	if lookups != limitedFileComponentMetadataProcessLimit {
+		t.Fatalf("repeat Prime launched %d component lookups, want cached %d", lookups, limitedFileComponentMetadataProcessLimit)
+	}
+}
+
+func TestLimitedFileReaderStopsComponentMetadataAtDeadline(t *testing.T) {
+	const depth = 80
+	component := strings.Repeat("a", 200)
+	prefix := strings.Repeat(component+"/", depth)
+	reader := NewLimitedFileReader(t.Context(), "unused", "tree-0", 1024)
+	lookups := 0
+	reader.componentMetadataLookup = func(
+		_ context.Context,
+		_, treeOID string,
+		components []string,
+	) (map[string]primedLimitedFile, error) {
+		lookups++
+		treeIndex, err := strconv.Atoi(strings.TrimPrefix(treeOID, "tree-"))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]primedLimitedFile{
+			components[0]: {
+				result:     LimitedFileResult{Status: LimitedFileNonBlob},
+				objectID:   fmt.Sprintf("tree-%d", treeIndex+1),
+				objectType: "tree",
+			},
+		}, nil
+	}
+	deadline := time.Unix(100, 0)
+	reader.now = func() time.Time {
+		if reader.componentMetadataProcesses < 3 {
+			return deadline.Add(-time.Second)
+		}
+		return deadline
+	}
+	reader.SetDeadline(deadline)
+	paths := []string{prefix + "first.go", prefix + "second.go"}
+	if err := reader.Prime(paths); err != nil {
+		t.Fatal(err)
+	}
+	if lookups != 3 || reader.componentMetadataProcesses != 3 {
+		t.Fatalf("deadline component lookups = %d/%d, want 3", lookups, reader.componentMetadataProcesses)
+	}
+	for _, path := range paths {
+		if got := reader.primed[path].result.Status; got != LimitedFileUnaddressable {
+			t.Fatalf("deadline result for %q = %v, want unaddressable", path, got)
+		}
+	}
+}
+
 func TestLimitedFileReaderClassifiesSingleComponentBeyondArgvBound(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
@@ -1176,6 +1348,13 @@ func TestLimitedFileReaderClassifiesSingleComponentBeyondArgvBound(t *testing.T)
 	}
 	if result.Status != LimitedFileUnaddressable {
 		t.Fatalf("over-bound component result = %#v, want bounded unaddressable classification", result)
+	}
+	oneShot, err := ReadFileLimited(t.Context(), repo, tree, path, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oneShot.Status != LimitedFileUnaddressable {
+		t.Fatalf("one-shot over-bound component = %#v, want bounded unaddressable classification", oneShot)
 	}
 	if reader.content != nil {
 		t.Fatal("unaddressable component started a content batch")
