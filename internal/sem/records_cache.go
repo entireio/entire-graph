@@ -15,20 +15,21 @@ import (
 )
 
 // Provider records (the streamed snapshot/symbols/edges NDJSON emitted by the
-// `graph` commands) are deterministic for a given git tree, indexing mode, and
-// set of options. Recomputing them on every call is expensive on large repos, so
-// we cache the raw NDJSON bytes keyed on the HEAD tree hash plus everything else
-// that changes the output. This mirrors the search-snapshot cache next door. v5
-// introduces typed, length-prefixed fields and bounded ignore-file reads.
-const providerRecordsCacheVersion = "provider-records-v5"
+// `graph` commands) are deterministic for a given commit, tree, indexing mode,
+// and set of options. Recomputing them on every call is expensive on large
+// repos, so we cache the raw NDJSON bytes under that complete identity. Unlike
+// the structured search cache, an opaque record stream cannot restamp commit
+// provenance on a same-tree hit.
+const providerRecordsCacheVersion = "provider-records-v7"
 
 // cachedProviderRecords is the on-disk envelope for a cached record stream. The
-// key alone is authoritative (sha256 over version+tree+mode+profile+options+
-// path-file contents), but we re-validate the discriminating fields on read as
-// defense-in-depth against a stale or hand-edited cache file.
+// key alone is authoritative (sha256 over version+commit+tree+mode+profile+
+// options+path-file contents), but we re-validate the discriminating fields on
+// read as defense-in-depth against a stale or hand-edited cache file.
 type cachedProviderRecords struct {
 	CacheVersion    string           `json:"cache_version"`
 	ProviderVersion string           `json:"provider_version"`
+	Commit          string           `json:"commit"`
 	Tree            string           `json:"tree"`
 	Mode            string           `json:"mode"`
 	Profile         Profile          `json:"profile"`
@@ -46,7 +47,11 @@ type cachedProviderRecords struct {
 // completeness even though the record commands do not expose it. Callers must
 // NOT use this for --worktree runs (the working tree can differ from HEAD) or
 // for targeted --to/--from/--relation queries.
-func providerRecordsKey(absRepo, repositoryKey, providerVersion, tree, mode string, options ProviderSnapshotOptions) (string, error) {
+func providerRecordsKey(absRepo, repositoryKey, providerVersion, commit, tree, mode string, options ProviderSnapshotOptions) (string, error) {
+	policy, err := cachePolicyForOptions(absRepo, options)
+	if err != nil {
+		return "", err
+	}
 	hash := sha256.New()
 	writeCacheKeyString(hash, "cache-version", providerRecordsCacheVersion)
 	// The built-in credential-store deny decides which files are in this corpus at
@@ -60,6 +65,7 @@ func providerRecordsKey(absRepo, repositoryKey, providerVersion, tree, mode stri
 	// searchSnapshotKey already folds this in; this key did not.
 	writeCacheKeyString(hash, "repository-key", repositoryKey)
 	writeCacheKeyString(hash, "provider-version", providerVersion)
+	writeCacheKeyString(hash, "commit", commit)
 	writeCacheKeyString(hash, "tree", tree)
 	writeCacheKeyString(hash, "mode", mode)
 	writeCacheKeyString(hash, "profile", string(options.Profile))
@@ -74,112 +80,146 @@ func providerRecordsKey(absRepo, repositoryKey, providerVersion, tree, mode stri
 	for _, filePath := range onlyFiles {
 		writeCacheKeyString(hash, "only-file", filepath.ToSlash(filepath.Clean(filePath)))
 	}
-	for groupIndex, group := range [][]string{options.IgnoreFiles, options.IncludeFiles} {
-		writeCacheKeyString(hash, "path-group", fmt.Sprintf("%d", groupIndex))
-		// Preserve caller order: ignore matching is last-rule-wins, including
-		// across repeatable ignore/include files within each group.
-		for _, rulePath := range group {
-			resolved := rulePath
-			if !filepath.IsAbs(resolved) {
-				resolved = filepath.Join(absRepo, resolved)
-			}
-			writeCacheKeyString(hash, "rule-path", filepath.Clean(resolved))
-			content, _, err := readBoundedRegularFile(
-				resolved,
-				ignoreFileLabel(groupIndex == 1),
-				true,
-				maxIgnoreFileBytes,
-			)
-			if err != nil {
-				return "", err
-			}
-			writeCacheKeyField(hash, "rule-content", content)
-		}
-	}
-
-	// .graphignore is applied without an explicit option, so its state must bind
-	// the records entry just as it binds the parsed search snapshot.
-	graphIgnore := filepath.Join(absRepo, graphIgnoreFileName)
-	content, present, err := readBoundedRegularFile(
-		graphIgnore,
-		ignoreFileLabel(false),
-		false,
-		maxIgnoreFileBytes,
-	)
-	if err != nil {
-		return "", err
-	}
-	if present {
-		writeCacheKeyField(hash, "graphignore-content", content)
-	} else {
-		writeCacheKeyField(hash, "graphignore-missing", nil)
-	}
+	policy.writeCacheKey(hash)
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-// LoadProviderRecords returns the cached NDJSON record stream for repo at the
-// given tree/mode/options, or hit=false when there is no usable cache entry.
-// The returned summary (when present) lets the caller reproduce the partial-parse
-// warning without re-indexing. A missing/corrupt cache is a miss, not an error;
-// only a key-derivation failure (an unreadable ignore/include file) errors.
-func LoadProviderRecords(ctx context.Context, repo, providerVersion, tree, mode, cacheDir string, options ProviderSnapshotOptions) ([]byte, *SnapshotSummary, bool, error) {
-	if cacheDir == "" || tree == "" || options.Worktree {
-		return nil, nil, false, nil
-	}
-	absRepo, err := filepath.Abs(repo)
-	if err != nil {
-		return nil, nil, false, err
-	}
-	key, err := providerRecordsKey(absRepo, repoKey(ctx, absRepo), providerVersion, tree, mode, options)
-	if err != nil {
-		return nil, nil, false, err
-	}
-	entry, err := newCacheEntry(cacheDir, "records", providerRecordsCacheVersion, key)
-	if err != nil {
-		return nil, nil, false, err
-	}
-	cache, err := readProviderRecords(entry)
-	if err != nil || !validCachedProviderRecords(cache, providerVersion, tree, mode, options) {
-		return nil, nil, false, nil
-	}
-	return cache.Records, cache.Summary, true, nil
+// ProviderRecordsCacheTransaction pins the cache key and immutable ignore
+// policy used by one record-stream lookup/build/store cycle.
+type ProviderRecordsCacheTransaction struct {
+	enabled         bool
+	entry           cacheEntry
+	providerVersion string
+	repositoryKey   string
+	commit          string
+	tree            string
+	mode            string
+	options         ProviderSnapshotOptions
 }
 
-// StoreProviderRecords persists a freshly built record stream. Persistence is
-// best effort: retrieval correctness never depends on a writable cache dir, so
-// callers may ignore the returned error.
-func StoreProviderRecords(ctx context.Context, repo, providerVersion, tree, mode, cacheDir string, options ProviderSnapshotOptions, records []byte, summary *SnapshotSummary) error {
-	if cacheDir == "" || tree == "" || options.Worktree {
-		return nil
+// BeginProviderRecordsCache captures every external ignore input once and
+// prepares the one entry used throughout a provider-record cache transaction.
+// Callers must build records with Options before calling Store.
+func BeginProviderRecordsCache(ctx context.Context, repo, providerVersion, commit, tree, mode, cacheDir string, options ProviderSnapshotOptions) (*ProviderRecordsCacheTransaction, error) {
+	transaction := &ProviderRecordsCacheTransaction{
+		providerVersion: providerVersion,
+		commit:          commit,
+		tree:            tree,
+		mode:            mode,
+		options:         options,
+	}
+	if cacheDir == "" || commit == "" || tree == "" || options.Worktree {
+		return transaction, nil
 	}
 	absRepo, err := filepath.Abs(repo)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	key, err := providerRecordsKey(absRepo, repoKey(ctx, absRepo), providerVersion, tree, mode, options)
+	transaction.options, err = CaptureProviderCachePolicy(absRepo, options)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	entry, err := newCacheEntry(cacheDir, "records", providerRecordsCacheVersion, key)
+	transaction.repositoryKey = repoKey(ctx, absRepo)
+	key, err := providerRecordsKey(
+		absRepo,
+		transaction.repositoryKey,
+		providerVersion,
+		commit,
+		tree,
+		mode,
+		transaction.options,
+	)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	transaction.entry, err = newCacheEntry(cacheDir, "records", providerRecordsCacheVersion, key)
+	if err != nil {
+		return nil, err
+	}
+	transaction.enabled = true
+	return transaction, nil
+}
+
+// Options returns the policy-pinned options that must shape records stored by
+// this transaction.
+func (transaction *ProviderRecordsCacheTransaction) Options() ProviderSnapshotOptions {
+	if transaction == nil {
+		return ProviderSnapshotOptions{}
+	}
+	return cloneProviderSnapshotOptions(transaction.options)
+}
+
+// Load returns this transaction's cached record stream, when present.
+func (transaction *ProviderRecordsCacheTransaction) Load() ([]byte, *SnapshotSummary, bool) {
+	if transaction == nil || !transaction.enabled {
+		return nil, nil, false
+	}
+	cache, err := readProviderRecords(transaction.entry)
+	if err != nil || !validCachedProviderRecords(
+		cache,
+		transaction.providerVersion,
+		transaction.commit,
+		transaction.tree,
+		transaction.mode,
+		transaction.options,
+	) {
+		return nil, nil, false
+	}
+	return cache.Records, cache.Summary, true
+}
+
+// Store persists records built with Options only when their observed header
+// still matches the immutable commit, tree, repository identity, provider, and
+// profile that keyed this transaction. A moving HEAD or remote therefore cannot
+// place a later snapshot's record stream under the earlier cache entry.
+func (transaction *ProviderRecordsCacheTransaction) Store(records []byte, summary *SnapshotSummary, observed SnapshotHeader) error {
+	if transaction == nil || !transaction.enabled {
+		return nil
+	}
+	if observed.Tree != transaction.tree ||
+		observed.Commit != transaction.commit ||
+		observed.RepoKey != transaction.repositoryKey ||
+		observed.Provider != ProviderName ||
+		observed.ProviderVersion != transaction.providerVersion ||
+		observed.Profile != string(transaction.options.Profile) {
+		return fmt.Errorf(
+			"provider records snapshot provenance changed while building: got commit=%q tree=%q repo=%q provider=%q version=%q profile=%q, want commit=%q tree=%q repo=%q provider=%q version=%q profile=%q",
+			observed.Commit, observed.Tree, observed.RepoKey, observed.Provider, observed.ProviderVersion, observed.Profile,
+			transaction.commit, transaction.tree, transaction.repositoryKey, ProviderName, transaction.providerVersion, transaction.options.Profile,
+		)
 	}
 	cache := cachedProviderRecords{
 		CacheVersion:    providerRecordsCacheVersion,
-		ProviderVersion: providerVersion,
-		Tree:            tree,
-		Mode:            mode,
-		Profile:         options.Profile,
-		MaxParseBytes:   options.MaxParseBytes,
+		ProviderVersion: transaction.providerVersion,
+		Commit:          transaction.commit,
+		Tree:            transaction.tree,
+		Mode:            transaction.mode,
+		Profile:         transaction.options.Profile,
+		MaxParseBytes:   transaction.options.MaxParseBytes,
 		Records:         records,
 		Summary:         summary,
 	}
-	return writeProviderRecords(entry, cache)
+	return writeProviderRecords(transaction.entry, cache)
 }
 
-func validCachedProviderRecords(cache cachedProviderRecords, providerVersion, tree, mode string, options ProviderSnapshotOptions) bool {
+// LoadProviderRecords returns the cached NDJSON record stream for repo at the
+// given commit/tree/mode/options, or hit=false when there is no usable entry.
+// The returned summary (when present) lets the caller reproduce the partial-parse
+// warning without re-indexing. A missing/corrupt cache is a miss, not an error;
+// only a key-derivation failure (an unreadable ignore/include file) errors.
+func LoadProviderRecords(ctx context.Context, repo, providerVersion, commit, tree, mode, cacheDir string, options ProviderSnapshotOptions) ([]byte, *SnapshotSummary, bool, error) {
+	transaction, err := BeginProviderRecordsCache(ctx, repo, providerVersion, commit, tree, mode, cacheDir, options)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	records, summary, hit := transaction.Load()
+	return records, summary, hit, nil
+}
+
+func validCachedProviderRecords(cache cachedProviderRecords, providerVersion, commit, tree, mode string, options ProviderSnapshotOptions) bool {
 	return cache.CacheVersion == providerRecordsCacheVersion &&
 		cache.ProviderVersion == providerVersion &&
+		cache.Commit == commit &&
 		cache.Tree == tree &&
 		cache.Mode == mode &&
 		cache.Profile == options.Profile &&

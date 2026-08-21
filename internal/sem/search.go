@@ -69,6 +69,10 @@ type SearchOptions struct {
 	// standard cold default may widen adaptively; explicit and TopK-adaptive
 	// MaxIndexedFiles values remain exact compatibility limits.
 	progressivePreselection bool
+	// afterCachePolicyCapture is a deterministic test seam for policy-file
+	// mutation between transaction capture and the first cache lookup. It is
+	// deliberately unexported and nil in production.
+	afterCachePolicyCapture func()
 	// BodyHeadRanks caps how deep the COMPLETE-BODY upgrade reaches, independently of the
 	// locator head. 0 means the built-in depth (searchEnclosureHeadRanks). It may only narrow
 	// the head, never widen it, so the growth allowance stays sized for the bodies it funds.
@@ -698,10 +702,31 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		MaxParseBytes: options.MaxParseBytes,
 		Profile:       options.Profile,
 	}
+	searchCacheDisabled := options.DisableCache
+	if !options.Worktree && !searchCacheDisabled && options.CacheDir != "" {
+		capturedOptions, captureErr := CaptureProviderCachePolicy(repo, baseSnapshotOptions)
+		if captureErr != nil {
+			// Capturing retains every policy input at once and therefore has a
+			// stricter aggregate bound than sequential matcher construction. An
+			// optional cache must not reject a search that the uncached path can
+			// safely execute.
+			searchCacheDisabled = true
+		} else {
+			baseSnapshotOptions = capturedOptions
+			// Keep lexical preselection on the same immutable path ordering as
+			// provider keying and construction. The captured policy itself travels
+			// in baseSnapshotOptions to avoid rereading the files below.
+			options.IgnoreFiles = capturedOptions.IgnoreFiles
+			options.IncludeFiles = capturedOptions.IncludeFiles
+			if options.afterCachePolicyCapture != nil {
+				options.afterCachePolicyCapture()
+			}
+		}
+	}
 	var preindexedSnapshot ProviderSnapshot
 	preindexCacheHit := false
 	indexStarted := time.Now()
-	if !options.Worktree && !options.DisableCache {
+	if !options.Worktree && !searchCacheDisabled {
 		var err error
 		preindexedSnapshot, preindexCacheHit, err = loadCachedCompleteSearchSnapshot(
 			ctx, repo, providerVersion, baseSnapshotOptions, options.CacheDir,
@@ -713,7 +738,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	preindexLoadLatency := time.Since(indexStarted)
 	preselectStarted := time.Now()
 	selection, err := preselectSearchFiles(
-		ctx, repo, q, sparseQuery, options, preindexedSnapshot, preindexCacheHit,
+		ctx, repo, q, sparseQuery, options, baseSnapshotOptions, preindexedSnapshot, preindexCacheHit,
 	)
 	if err != nil {
 		return SearchResponse{}, err
@@ -809,7 +834,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		// ordinary build when derivation fails (for example after a HEAD move).
 		indexStarted = time.Now()
 		snapshot, cacheHit, err = loadOrDeriveSelectiveSearchSnapshot(
-			ctx, repo, providerVersion, snapshotOptions, options.CacheDir, options.DisableCache, preindexedSnapshot,
+			ctx, repo, providerVersion, snapshotOptions, options.CacheDir, searchCacheDisabled, preindexedSnapshot,
 		)
 		if err != nil {
 			return SearchResponse{}, err
@@ -817,7 +842,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		indexLatency += time.Since(indexStarted)
 	} else if !cacheHit {
 		indexStarted = time.Now()
-		snapshot, cacheHit, err = loadOrBuildSearchGraphSnapshot(ctx, repo, providerVersion, snapshotOptions, options.CacheDir, options.DisableCache)
+		snapshot, cacheHit, err = loadOrBuildSearchGraphSnapshot(ctx, repo, providerVersion, snapshotOptions, options.CacheDir, searchCacheDisabled)
 		if err != nil {
 			return SearchResponse{}, err
 		}
@@ -1764,33 +1789,21 @@ func preselectSearchFiles(
 	repo string,
 	q, sparseQuery searchQuery,
 	options SearchOptions,
+	snapshotOptions ProviderSnapshotOptions,
 	preindexedSnapshot ProviderSnapshot,
 	preindexCacheHit bool,
 ) (searchFileSelection, error) {
-	source, err := prepareSource(ctx, repo, ProviderSnapshotOptions{
-		NoNetwork:    true,
-		Worktree:     options.Worktree,
-		IgnoreFiles:  options.IgnoreFiles,
-		IncludeFiles: options.IncludeFiles,
-	})
+	source, err := prepareSource(ctx, repo, snapshotOptions)
 	if err != nil {
 		return searchFileSelection{}, err
 	}
 	if source.close != nil {
 		defer source.close()
 	}
-	// The same exclude stack prepareSource listed the corpus with, so the one route that reaches
-	// outside that listing can apply the identical verdict. Which loader applies is decided the
-	// way openSource decides it: a committed-tree listing sees .graphignore plus the explicit
-	// files, a working-tree listing the full Git exclude stack as well.
-	loadIgnores := loadWorktreeIgnoreMatcher
-	if !options.Worktree {
-		loadIgnores = loadExplicitIgnoreMatcher
-	}
-	ignores, err := loadIgnores(source.absRepo, options.IgnoreFiles, options.IncludeFiles)
-	if err != nil {
-		return searchFileSelection{}, err
-	}
+	// Keep the exact matcher that admitted source.paths. Re-reading policy files
+	// here could give the whole-tree Git-grep route a different verdict and let
+	// it name a path the corpus listing denied, even when caching is bypassed.
+	ignores := source.ignores
 	selection := searchFileSelection{
 		ignores:                   ignores,
 		repoRoot:                  source.absRepo,

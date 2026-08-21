@@ -29,7 +29,7 @@ func TestIgnoreSurfacesRejectCharacterDevice(t *testing.T) {
 			return err
 		}},
 		{"records key", func() error {
-			_, err := providerRecordsKey(repo, "repo", "version", "tree", "snapshot", ProviderSnapshotOptions{IgnoreFiles: []string{device}})
+			_, err := providerRecordsKey(repo, "repo", "version", "commit", "tree", "snapshot", ProviderSnapshotOptions{IgnoreFiles: []string{device}})
 			return err
 		}},
 	}
@@ -60,7 +60,7 @@ func TestIgnoreSurfacesRejectWriterlessFIFOWithoutBlocking(t *testing.T) {
 			return err
 		}},
 		{"records key", func() error {
-			_, err := providerRecordsKey(repo, "repo", "version", "tree", "snapshot", ProviderSnapshotOptions{IgnoreFiles: []string{fifo}})
+			_, err := providerRecordsKey(repo, "repo", "version", "commit", "tree", "snapshot", ProviderSnapshotOptions{IgnoreFiles: []string{fifo}})
 			return err
 		}},
 	}

@@ -24,7 +24,7 @@ func ignoreInputKeyers(repo string) []ignoreInputKeyer {
 		{
 			name: "provider records",
 			key: func(options ProviderSnapshotOptions) (string, error) {
-				return providerRecordsKey(repo, "repo", "version", "tree", "snapshot", options)
+				return providerRecordsKey(repo, "repo", "version", "commit", "tree", "snapshot", options)
 			},
 		},
 	}
@@ -68,6 +68,67 @@ func TestCacheKeysRejectOversizedIgnoreInputs(t *testing.T) {
 				t.Fatalf("oversized cache-key input error = %v, want size refusal", err)
 			}
 		})
+	}
+}
+
+func TestCaptureProviderCachePolicyBoundsAggregateInputs(t *testing.T) {
+	repo := t.TempDir()
+	comments := filepath.Join(repo, "comments.ignore")
+	if err := os.WriteFile(comments, bytes.Repeat([]byte("#\n"), maxIgnoreFileBytes/2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tooManyBytes := ProviderSnapshotOptions{IgnoreFiles: []string{
+		comments, comments, comments, comments, comments,
+	}}
+	if _, err := CaptureProviderCachePolicy(repo, tooManyBytes); err == nil || !strings.Contains(err.Error(), "captured bytes") {
+		t.Fatalf("aggregate byte limit error = %v", err)
+	}
+
+	empty := filepath.Join(repo, "empty.ignore")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tooManyInputs := ProviderSnapshotOptions{IgnoreFiles: make([]string, maxCapturedIgnoreInputs+1)}
+	for index := range tooManyInputs.IgnoreFiles {
+		tooManyInputs.IgnoreFiles[index] = empty
+	}
+	if _, err := CaptureProviderCachePolicy(repo, tooManyInputs); err == nil || !strings.Contains(err.Error(), "captured inputs") {
+		t.Fatalf("aggregate input limit error = %v", err)
+	}
+}
+
+func TestSearchCacheCaptureBudgetFallsBackToUncachedBuild(t *testing.T) {
+	repo := cacheTestRepo(t)
+	comments := filepath.Join(repo, "comments.ignore")
+	if err := os.WriteFile(comments, bytes.Repeat([]byte("#\n"), maxIgnoreFileBytes/2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	options := ProviderSnapshotOptions{
+		Profile:     ProfileFull,
+		IgnoreFiles: []string{comments, comments, comments, comments, comments},
+	}
+	cacheDir := t.TempDir()
+	snapshot, hit, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test", options, cacheDir, false)
+	if err != nil {
+		t.Fatalf("optional cache changed valid uncached behavior: %v", err)
+	}
+	if hit {
+		t.Fatal("aggregate policy overflow unexpectedly produced a cache hit")
+	}
+	if !hasSymbolNamed(snapshot.Symbols, "Alpha") {
+		t.Fatal("uncached fallback omitted the repository snapshot")
+	}
+	response, err := SearchRepository(t.Context(), repo, "test", "Alpha", SearchOptions{
+		Profile:     ProfileFull,
+		TopK:        5,
+		CacheDir:    cacheDir,
+		IgnoreFiles: append([]string(nil), options.IgnoreFiles...),
+	})
+	if err != nil {
+		t.Fatalf("search cache capture changed valid uncached behavior: %v", err)
+	}
+	if len(response.Results) == 0 || response.Results[0].SymbolName != "Alpha" {
+		t.Fatalf("uncached search fallback lost Alpha: %#v", response.Results)
 	}
 }
 
@@ -140,7 +201,7 @@ func TestProviderRecordsKeyIncludesGraphIgnore(t *testing.T) {
 	repo := t.TempDir()
 	key := func() string {
 		t.Helper()
-		got, err := providerRecordsKey(repo, "repo", "version", "tree", "snapshot", ProviderSnapshotOptions{})
+		got, err := providerRecordsKey(repo, "repo", "version", "commit", "tree", "snapshot", ProviderSnapshotOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -162,45 +223,14 @@ func TestProviderRecordsKeyIncludesGraphIgnore(t *testing.T) {
 	}
 }
 
-func TestSearchSnapshotKeyIncludesWorktreeInfoExcludeStateAndContent(t *testing.T) {
+func TestSearchSnapshotKeyRejectsWorktree(t *testing.T) {
 	repo := t.TempDir()
-	key := func(options ProviderSnapshotOptions) string {
-		t.Helper()
-		got, err := searchSnapshotKey(repo, "repo", "version", "tree", options)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return got
-	}
-
-	worktreeOptions := ProviderSnapshotOptions{Worktree: true}
-	missing := key(worktreeOptions)
-	headMissing := key(ProviderSnapshotOptions{})
-	infoDir := filepath.Join(repo, ".git", "info")
-	if err := os.MkdirAll(infoDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	exclude := filepath.Join(infoDir, "exclude")
-	if err := os.WriteFile(exclude, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	presentEmpty := key(worktreeOptions)
-	if presentEmpty == missing {
-		t.Fatal("missing info/exclude collided with a present empty file")
-	}
-	if err := os.WriteFile(exclude, []byte("/dist/\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	presentContent := key(worktreeOptions)
-	if presentContent == presentEmpty {
-		t.Fatal("editing info/exclude did not invalidate the worktree key")
-	}
-	if headPresent := key(ProviderSnapshotOptions{}); headPresent != headMissing {
-		t.Fatal("committed-tree key changed for a worktree-only ignore input")
+	if _, err := searchSnapshotKey(repo, "repo", "version", "tree", ProviderSnapshotOptions{Worktree: true}); err == nil {
+		t.Fatal("working-tree snapshot received a persistent cache key")
 	}
 }
 
-func TestWorktreeSnapshotCacheInvalidatesForGitInfoExclude(t *testing.T) {
+func TestWorktreeSnapshotAppliesGitInfoExcludeWithoutCaching(t *testing.T) {
 	repo := cacheTestRepo(t)
 	cacheDir := t.TempDir()
 	options := ProviderSnapshotOptions{Worktree: true, Profile: ProfileFull, NoNetwork: true}
@@ -223,7 +253,6 @@ func TestWorktreeSnapshotCacheInvalidatesForGitInfoExclude(t *testing.T) {
 	if err := os.WriteFile(exclude, []byte("/app.go\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	InvalidateWorktreeCleanVerdicts()
 	second, hit, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test", options, cacheDir, false)
 	if err != nil {
 		t.Fatal(err)
@@ -235,15 +264,14 @@ func TestWorktreeSnapshotCacheInvalidatesForGitInfoExclude(t *testing.T) {
 		t.Fatal("snapshot retained a tracked file excluded by info/exclude")
 	}
 
-	InvalidateWorktreeCleanVerdicts()
 	third, hit, err := LoadOrBuildProviderSnapshot(t.Context(), repo, "test", options, cacheDir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hit {
-		t.Fatal("unchanged info/exclude did not reuse the rebuilt snapshot")
+	if hit {
+		t.Fatal("unchanged info/exclude made the worktree snapshot cacheable")
 	}
 	if hasSymbolNamed(third.Symbols, "Alpha") {
-		t.Fatal("warm rebuilt snapshot restored the excluded file")
+		t.Fatal("second rebuilt snapshot restored the excluded file")
 	}
 }

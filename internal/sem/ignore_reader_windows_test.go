@@ -22,7 +22,7 @@ func TestIgnoreSurfacesRejectWindowsNULDevice(t *testing.T) {
 			return err
 		}},
 		{"records key", func() error {
-			_, err := providerRecordsKey(repo, "repo", "version", "tree", "snapshot", ProviderSnapshotOptions{IgnoreFiles: []string{device}})
+			_, err := providerRecordsKey(repo, "repo", "version", "commit", "tree", "snapshot", ProviderSnapshotOptions{IgnoreFiles: []string{device}})
 			return err
 		}},
 	}

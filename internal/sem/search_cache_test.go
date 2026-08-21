@@ -1292,6 +1292,106 @@ func TestSearchSnapshotCacheKeyPreservesIgnoreFileOrder(t *testing.T) {
 	}
 }
 
+func TestSearchCacheTransactionPinsPolicyAcrossCompleteAndSelectiveSnapshots(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, ".search-policy", "denied.go\n")
+	write(t, repo, "denied.go", `package sample
+
+func PolicyTransactionNeedle() bool { return true }
+`)
+	write(t, repo, "control.go", `package sample
+
+// Control documents the cache transaction fallback.
+func Control() bool { return true }
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cacheDir := t.TempDir()
+	providerOptions := ProviderSnapshotOptions{
+		Profile:     ProfileSyntaxOnly,
+		IgnoreFiles: []string{".search-policy"},
+	}
+	preindexed, hit, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", providerOptions, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hit {
+		t.Fatal("first policy-A preindex unexpectedly hit cache")
+	}
+	if snapshotHasSymbol(preindexed, "PolicyTransactionNeedle") {
+		t.Fatal("policy-A preindex retained the denied symbol")
+	}
+
+	policyMutated := false
+	searchOptions := SearchOptions{
+		Profile:         ProfileSyntaxOnly,
+		TopK:            5,
+		MaxIndexedFiles: 1,
+		CacheDir:        cacheDir,
+		IgnoreFiles:     []string{".search-policy"},
+		afterCachePolicyCapture: func() {
+			policyMutated = true
+			write(t, repo, ".search-policy", "# policy B includes every source file\n")
+		},
+	}
+	policyAResponse, err := SearchRepository(
+		t.Context(), repo, "test-version", "PolicyTransactionNeedle cache transaction", searchOptions,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !policyMutated {
+		t.Fatal("test did not mutate the policy after transaction capture")
+	}
+	if !policyAResponse.Stats.IndexCacheHit {
+		t.Fatal("policy-A search did not load the preindexed complete snapshot")
+	}
+	if policyAResponse.Stats.FilesIndexed == 0 {
+		t.Fatalf("policy-A search skipped selective derivation: %#v", policyAResponse.Stats)
+	}
+	if len(policyAResponse.Results) == 0 || policyAResponse.Results[0].FilePath != "control.go" {
+		t.Fatalf("policy-A search did not derive the matching control file: %#v", policyAResponse.Results)
+	}
+	for _, result := range policyAResponse.Results {
+		if result.FilePath == "denied.go" {
+			t.Fatalf("policy-A transaction admitted a file enabled only by policy B: %#v", policyAResponse.Results)
+		}
+	}
+
+	// The first transaction must not derive the missing policy-A symbol from
+	// its complete snapshot and persist that omission under policy B's selective
+	// key. Two B searches prove both the cold build and its direct cache replay.
+	searchOptions.afterCachePolicyCapture = nil
+	for attempt := 0; attempt < 2; attempt++ {
+		response, searchErr := SearchRepository(
+			t.Context(), repo, "test-version", "PolicyTransactionNeedle cache transaction", searchOptions,
+		)
+		if searchErr != nil {
+			t.Fatal(searchErr)
+		}
+		found := false
+		for _, result := range response.Results {
+			if result.SymbolName == "PolicyTransactionNeedle" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("policy-B search %d replayed a policy-A omission: %#v", attempt+1, response.Results)
+		}
+		if attempt == 0 && response.Stats.IndexCacheHit {
+			t.Fatal("first policy-B search unexpectedly hit a poisoned selective entry")
+		}
+		if attempt == 1 && !response.Stats.IndexCacheHit {
+			t.Fatal("second policy-B search did not reuse its correct selective entry")
+		}
+	}
+}
+
 // TestOnlyFilesDerivationReStampsCommitAfterSameTreeCommit pins the re-stamp
 // on the OnlyFiles-derivation branch of loadOrBuildSearchSnapshot: a selective
 // snapshot derived from a complete same-tree cache entry built at an older

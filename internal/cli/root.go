@@ -314,9 +314,13 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	// parse. Without this the CLI discards the summary and a run that silently
 	// parsed only a fraction of the repo (e.g. a mis-scoped subdir) looks clean.
 	var summary *sem.SnapshotSummary
+	var snapshotHeader sem.SnapshotHeader
 	capture := func(record any) {
-		if s, ok := record.(sem.SnapshotSummary); ok {
-			s := s
+		switch r := record.(type) {
+		case sem.SnapshotHeader:
+			snapshotHeader = r
+		case sem.SnapshotSummary:
+			s := r
 			summary = &s
 		}
 	}
@@ -349,17 +353,22 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		return nil
 	}
 
-	// Whole-graph dump (no targeted filter): serve from the tree-hash record
-	// cache when possible. The cache is keyed on the HEAD tree, the mode, and the
-	// output-affecting options, so a repeat call on an unchanged HEAD skips the
-	// expensive re-index. It is deliberately bypassed for --worktree (the working
-	// tree may differ from HEAD) and, by returning above, for targeted queries.
+	// Whole-graph dump (no targeted filter): serve from the committed-record
+	// cache when possible. The cache is keyed on the exact HEAD commit and tree,
+	// the mode, and output-affecting options, so an unchanged HEAD skips the
+	// expensive re-index. It is deliberately bypassed for --worktree and, by
+	// returning above, for targeted queries.
 	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
 	useCache := !flags.DisableCache && !flags.Worktree && cacheDir != ""
-	var tree string
+	var commit, tree string
 	if useCache {
-		if t, err := gitutil.RevParse(ctx, repo, "HEAD^{tree}"); err == nil && t != "" {
-			tree = t
+		if c, commitErr := gitutil.RevParse(ctx, repo, "HEAD^{commit}"); commitErr == nil && c != "" {
+			if t, treeErr := gitutil.RevParse(ctx, repo, c+"^{tree}"); treeErr == nil && t != "" {
+				commit = c
+				tree = t
+			} else {
+				useCache = false
+			}
 		} else {
 			useCache = false
 		}
@@ -368,8 +377,22 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	if compact {
 		cacheMode = "snapshot:compact-ndjson-v1"
 	}
+	var recordsCache *sem.ProviderRecordsCacheTransaction
 	if useCache {
-		if records, cachedSummary, hit, err := sem.LoadProviderRecords(ctx, repo, opts.Version, tree, cacheMode, cacheDir, options); err == nil && hit {
+		recordsCache, err = sem.BeginProviderRecordsCache(ctx, repo, opts.Version, commit, tree, cacheMode, cacheDir, options)
+		if err != nil {
+			// Cache setup is optional. The uncached stream below will surface any
+			// policy-input error that also prevents a correct build.
+			useCache = false
+			recordsCache = nil
+		} else {
+			// Pin matcher construction to the exact policy bytes that keyed this
+			// lookup, and carry the same transaction through storage below.
+			options = recordsCache.Options()
+		}
+	}
+	if recordsCache != nil {
+		if records, cachedSummary, hit := recordsCache.Load(); hit {
 			if _, err := opts.Stdout.Write(records); err != nil {
 				return err
 			}
@@ -381,7 +404,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	// On a miss, tee the serialized record stream into a buffer so we can persist it after
 	// a successful run without a second pass over the graph.
 	var recordBuf bytes.Buffer
-	if useCache {
+	if recordsCache != nil {
 		encodeRecord = newRecordEncoder(io.MultiWriter(opts.Stdout, &recordBuf))
 	}
 	if err := sem.StreamSnapshot(ctx, repo, opts.Version, options, func(record any) error {
@@ -394,9 +417,9 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 		return err
 	}
 	warnIfPartial(opts.Stderr, flags.Worktree, summary)
-	if useCache {
+	if recordsCache != nil {
 		// Best effort: a failed cache write never fails the command.
-		_ = sem.StoreProviderRecords(ctx, repo, opts.Version, tree, cacheMode, cacheDir, options, recordBuf.Bytes(), summary)
+		_ = recordsCache.Store(recordBuf.Bytes(), summary, snapshotHeader)
 	}
 	return nil
 }
@@ -479,7 +502,7 @@ type providerFlags struct {
 	To       string
 	From     string
 	Relation []string
-	// CacheDir/DisableCache control the tree-hash record cache. Empty CacheDir
+	// CacheDir/DisableCache control the committed-record cache. Empty CacheDir
 	// falls back to ENTIRE_PLUGIN_DATA_DIR; --no-cache disables it entirely.
 	CacheDir     string
 	DisableCache bool
