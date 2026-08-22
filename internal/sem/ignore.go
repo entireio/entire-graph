@@ -469,7 +469,7 @@ func gitInfoExcludePath(repo string) string {
 		gitDir = gitJoinRelative(repo, gitDir)
 	}
 	// commondir points at the shared .git that owns info/; it may be relative to gitDir.
-	if common, ok := readGitPointerFile(filepath.Join(gitDir, "commondir")); ok && common != "" {
+	if common, ok := readGitPointerFile(filepath.Join(gitDir, "commondir"), maxGitPointerBytes); ok && common != "" {
 		if !filepath.IsAbs(common) {
 			common = gitJoinRelative(gitDir, common)
 		}

@@ -15273,13 +15273,22 @@ func TestGitDirPointerTargetResolvesSeparateGitDirPointer(t *testing.T) {
 			writeFile(t, repo, ".git", "gitdir:   \n")
 			return "  "
 		}},
-		// The bound is on the READ, not on the file: a pointer whose path does
-		// not END inside the window names nothing on any filesystem, and is
-		// refused — while one that ends at a NUL inside the window is followed
-		// however large the file is, which is git's own rule (see
-		// TestGitDirPointerFollowsALargePointerTerminatedByNUL).
-		{"pointer whose path never ends inside the window is refused", "", func(t *testing.T, repo string) string {
-			writeFile(t, repo, ".git", "gitdir: .repo-git"+strings.Repeat("x", maxGitPointerBytes))
+		// The window is git's own ceiling (maxGitFileBytes, 1 MiB), not the
+		// smaller read-safety bound `commondir` uses: a path well past the old
+		// 4 KiB window but still inside git's 1 MiB limit is a target git
+		// itself reads and follows, so refusing it here would be a leak, not a
+		// safety margin.
+		{"pointer path longer than the old 4 KiB window is still followed", "", func(t *testing.T, repo string) string {
+			target := ".repo-git" + strings.Repeat("x", 8*maxGitPointerBytes)
+			writeFile(t, repo, ".git", "gitdir: "+target+"\n")
+			return target
+		}},
+		// Git refuses the whole `.git` FILE above 1 MiB (`fatal: too large to
+		// be a .git file`), checked on the file's real size and before it reads
+		// a single byte — so a file this size names nothing to git, however the
+		// bytes inside it are shaped, and this reader must refuse it too.
+		{"pointer file larger than git's 1 MiB ceiling is refused", "", func(t *testing.T, repo string) string {
+			writeFile(t, repo, ".git", "gitdir: .repo-git"+strings.Repeat("x", maxGitFileBytes))
 			return ""
 		}},
 	}

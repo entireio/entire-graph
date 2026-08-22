@@ -267,6 +267,39 @@ func TestDerivedSweepRootsSpendTheSameLedger(t *testing.T) {
 	}
 }
 
+// observePrunedSubtree's root must be charged to the ledger before
+// descendObserving ever reads it. Seeding the queue directly, without an
+// admit() call, used to skip that charge: once the ledger was already spent,
+// each pruned root — a vendored dependency, an ignored directory, one the walk
+// prunes for either reason — still bought one uncharged ReadDir, and nothing
+// bounded how many pruned roots a scanned repository could plant.
+func TestObservePrunedSubtreeRootIsChargedToTheLedger(t *testing.T) {
+	repo := t.TempDir()
+	writeIgnoredDirTree(t, repo, "vendor/dep", 50)
+
+	excluder := newGitDirExcluder(t.Context(), repo)
+	excluder.sweepBudget = 3
+	for i := 0; i < 3; i++ {
+		if !excluder.admitSweepDirectory() {
+			t.Fatalf("admitSweepDirectory() = false on call %d, before the ledger should be spent", i)
+		}
+	}
+	if excluder.sweepStop != sweepRanToCompletion {
+		t.Fatalf("sweepStop = %d before exhaustion, want sweepRanToCompletion", excluder.sweepStop)
+	}
+	directoriesReadBeforePrune := excluder.directoriesRead
+
+	excluder.observePrunedSubtree("vendor/dep")
+
+	if excluder.sweepStop != sweepStoppedOnBudget {
+		t.Errorf("sweepStop = %d after observePrunedSubtree on a spent ledger, want sweepStoppedOnBudget", excluder.sweepStop)
+	}
+	if excluder.directoriesRead != directoriesReadBeforePrune {
+		t.Errorf("directoriesRead = %d, want %d unchanged: a spent ledger must not pay for the pruned root's own ReadDir",
+			excluder.directoriesRead, directoriesReadBeforePrune)
+	}
+}
+
 // The override is read from the environment, and anything unparseable falls back
 // to the default rather than silently unbounding the sweep.
 func TestResolveSweepDirectoryBudget(t *testing.T) {

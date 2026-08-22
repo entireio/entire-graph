@@ -10262,10 +10262,28 @@ func hasGitDirComponent(rel string) bool {
 	return false
 }
 
-// maxGitPointerBytes bounds how much of a git pointer file — a `.git` gitfile,
-// a `commondir` — is READ. It bounds the read, not the file: see
+// maxGitPointerBytes bounds how much of a `commondir` file is READ. It bounds
+// the read, not the file: `commondir` carries no size limit of git's own, so
+// this is a read-safety bound this tool chooses, not one git enforces. See
 // readGitPointerFile.
 const maxGitPointerBytes = 4 << 10
+
+// maxGitFileBytes is git's own limit on a `.git` FILE. read_gitfile_gently()
+// stats the path and dies "Too large to be a .git file" above this size — a
+// check of the file's REAL size, performed before a single byte is opened, so
+// the NUL that ends the target plays no part in it: a 5 MiB file with a NUL on
+// line one is refused by git exactly as a 5 MiB file with no NUL at all is.
+// Bounding only the READ instead — accepting whatever NUL falls inside a
+// smaller window — disagrees with git on every file between that window and
+// this one, in both directions: it accepts what git refuses above the window,
+// and (at a window narrower than this) it refuses what git accepts below it.
+// This is the gitfile reader's own bound; `commondir` keeps maxGitPointerBytes
+// because git enforces no ceiling on it at all. Verified on git 2.54.0:
+//
+//	$ { printf 'gitdir: x\0'; head -c 1048569 /dev/zero | tr '\0' A; } > .git
+//	$ git rev-parse --git-dir
+//	fatal: too large to be a .git file: '<abs>/.git'
+const maxGitFileBytes = 1 << 20
 
 // gitDirPointerPrefix is the prefix git's read_gitfile_gently() requires at BYTE
 // 0 of a `.git` file, the space after the colon included.
@@ -10324,29 +10342,26 @@ func gitPointerPath(content []byte, whole bool) (string, bool) {
 	return text, whole
 }
 
-// readGitPointerFile reads a git pointer file and applies gitPointerPath to it,
-// which is the only way either file is read.
+// readGitPointerFile reads up to maxBytes of a git pointer file and applies
+// gitPointerPath to it, which is the only way either file is read.
 //
-// The bound is on the READ, never on the file, and that ordering is the whole
-// point: git's own limits are far larger than any real pointer — a `.git` file
-// is refused only above 1 MiB (`fatal: too large to be a .git file`), and
-// `commondir` has no size limit at all — and the path stops at the first NUL, so
-// the bytes that decide "too large" must not be the bytes that decide the
-// target. Verified on git 2.54.0, with a `--separate-git-dir` worktree:
+// maxBytes is a bound on the READ, not a verdict on the file: a caller who
+// also needs to enforce git's own ceiling on the file's REAL size — the `.git`
+// gitfile does, `commondir` does not — checks that separately, by stat, before
+// ever calling here, because git's own refusal is exactly that stat and does
+// not depend on where the NUL falls. Passing a maxBytes equal to that same
+// ceiling then reads the whole of any file small enough to pass it, so nothing
+// below the ceiling is refused for want of a NUL inside a narrower window.
+// Verified on git 2.54.0, with a `--separate-git-dir` worktree:
 //
 //	$ { printf 'gitdir: %s/.repo-git\0' "$PWD"; head -c 65536 /dev/zero | tr '\0' A; } > .git
 //	$ git rev-parse --git-dir
 //	<abs>/.repo-git                      <- a 64 KiB pointer git follows
 //
-// Refusing that file on its SIZE — the whole-file check this replaces — refused
-// the only evidence naming a HEAD-damaged separate git directory, which is
-// exactly the shape that makes git reject the worktree and the filesystem
-// fallback run, and its credentialed config was indexed.
-//
 // The caller decides what a missing or unreadable file means, because git
 // decides it differently for the two: an absent `.git` names nothing, while an
 // unreadable `commondir` makes git refuse the whole git directory.
-func readGitPointerFile(path string) (string, bool) {
+func readGitPointerFile(path string, maxBytes int) (string, bool) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", false
@@ -10354,14 +10369,14 @@ func readGitPointerFile(path string) (string, bool) {
 	defer func() { _ = file.Close() }()
 	// One byte past the window tells a file that fits from one that is longer,
 	// which is what `whole` reports.
-	buffer := make([]byte, maxGitPointerBytes+1)
+	buffer := make([]byte, maxBytes+1)
 	read, err := io.ReadFull(file, buffer)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return "", false
 	}
-	whole := read <= maxGitPointerBytes
+	whole := read <= maxBytes
 	if !whole {
-		read = maxGitPointerBytes
+		read = maxBytes
 	}
 	return gitPointerPath(buffer[:read], whole)
 }
@@ -10442,8 +10457,30 @@ func parseGitDirPointerText(text string) (string, bool) {
 
 // readGitDirPointer reads `path` as a `.git` gitfile and reports the target git
 // would resolve, through the one reader and the one byte rule.
+//
+// The stat comes first and is checked against the file's REAL size, exactly as
+// git's read_gitfile_gently() checks it, and before readGitPointerFile ever
+// opens the file: git dies "Too large to be a .git file" above maxGitFileBytes
+// regardless of where — or whether — a NUL appears, so a multi-megabyte file
+// with a NUL on line one is refused by git exactly as one with no NUL at all
+// is. Deciding this by bounding the READ instead accepted every size above the
+// window as long as it held a NUL early enough, which made the window git's
+// ceiling in name only: the window was the old maxGitPointerBytes (4 KiB), so
+// a file at, say, 512 KiB with an early NUL was accepted here though git itself
+// would still follow it (512 KiB is under git's 1 MiB ceiling) — that half
+// happened to agree with git by luck — but a file at 5 MiB with an early NUL
+// was accepted here though git refuses the whole file outright, and a
+// legitimate target at 8 KiB with no NUL at all was refused here though git
+// reads and accepts it. Passing maxGitFileBytes as both the stat ceiling and
+// the read window fixes both directions at once: nothing over git's real
+// ceiling is read at all, and nothing under it is refused for want of a NUL
+// inside a narrower window.
 func readGitDirPointer(path string) (string, bool) {
-	text, ok := readGitPointerFile(path)
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxGitFileBytes {
+		return "", false
+	}
+	text, ok := readGitPointerFile(path, maxGitFileBytes)
 	if !ok {
 		return "", false
 	}
@@ -10881,6 +10918,12 @@ var gitDirRootEntryNames = []string{
 	"BISECT_ANCESTORS_OK", "BISECT_HEAD",
 	"NOTES_MERGE_REF", "NOTES_MERGE_WORKTREE", "NOTES_MERGE_PARTIAL",
 	"TAG_EDITMSG", "EDIT_DESCRIPTION",
+	// lockfile.c's transient `.lock` siblings of the files above. The oracle
+	// above cannot plant these itself — git removes each one when the
+	// operation that held it finishes cleanly — but a crashed or killed git
+	// process leaves one behind exactly where these names say, still holding
+	// the credentialed content of the file it was about to replace.
+	"config.lock", "index.lock", "HEAD.lock", "packed-refs.lock", "shallow.lock",
 }
 
 // recordGitDirRootEntries excludes the git directory's own top-level entries
@@ -11166,7 +11209,7 @@ func gitCommonDir(dir string) (string, bool) {
 	// holding `../common\0junk` kept the NUL, so objects/ and refs/ were looked
 	// for at a path nothing on disk is called, and BOTH rules then called a
 	// linked worktree's administrative git directory ordinary content.
-	target, ok := readGitPointerFile(pointer)
+	target, ok := readGitPointerFile(pointer, maxGitPointerBytes)
 	if !ok {
 		return "", false
 	}
@@ -11542,7 +11585,21 @@ func (g *gitDirExcluder) descendObserving(queue []string, queued map[string]stru
 // removed as well: those rules are committed, attacker-controlled content, and
 // skipping such a tree unread leaked `.dep-git/config` under an ignored
 // `build/`.
+//
+// root itself is charged to the ledger before descendObserving ever reads it.
+// Every other directory the sweep reads is charged by admit() before it is
+// queued; seeding descendObserving's queue with root directly bypassed that,
+// so an arbitrarily large tree of empty ignored or vendored roots could each
+// trigger one uncharged ReadDir while g.sweepDirectories stayed below the
+// configured budget and no warning was ever emitted. root's own `.git`
+// pointer was already read by the caller's g.observe(rel) on the way in
+// (before the prune decision), so admitSweepDirectory failing here only
+// stops descending into root's children — it does not lose root's own
+// pointer.
 func (g *gitDirExcluder) observePrunedSubtree(root string) {
+	if !g.admitSweepDirectory() {
+		return
+	}
 	seen := map[string]struct{}{}
 	observeOnce := func(dir string) {
 		if _, done := seen[dir]; done {
@@ -11704,9 +11761,11 @@ func gitDirPointerTarget(repo, dir string) (string, bool, bool) {
 	// its lstat, because git's file_exists() there is an lstat and a dangling
 	// `commondir` makes git REFUSE the directory rather than ignore the file.
 	//
-	// The SIZE is not a test. Git refuses a `.git` file only above 1 MiB, and
-	// the target ends at the first NUL, so a whole-file bound refused pointers
-	// git follows — see readGitPointerFile, which bounds the read instead.
+	// This stat decides presence and regularity only. The SIZE test that
+	// matters for git-fidelity — refusing a `.git` file only above its real 1
+	// MiB ceiling, independent of where a NUL falls — lives in
+	// readGitDirPointer, on this same file, because it has to run before any
+	// byte of it is read and a second stat here would only race the first.
 	info, err := os.Stat(pointer)
 	if err != nil {
 		// ABSENT and DANGLING both mean "no pointer", as the paragraph above
