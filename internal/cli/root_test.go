@@ -1238,7 +1238,11 @@ func TestDiffAcceptsOrdinaryRevisions(t *testing.T) {
 func twoCommitRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
-	git(t, repo, "init")
+	// An explicit initial branch, not whatever the user's global
+	// init.defaultBranch names: this fixture creates a branch literally
+	// called "feature", and `git branch feature HEAD~1` fails with "a branch
+	// named 'feature' already exists" whenever init.defaultBranch=feature.
+	git(t, repo, "init", "-b", "twocommitrepo-trunk")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
 	git(t, repo, "config", "user.email", "graph@example.com")
 	write(t, repo, "a.go", "package main\n\nfunc validate() bool { return true }\n")
