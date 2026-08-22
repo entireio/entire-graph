@@ -259,8 +259,9 @@ func TestNestedIgnoreFileCountIsReportedAcrossListings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := worktreeSourceFiles(t.Context(), repo, ignores, false); err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("Git worktree nested-file limit error = %v, want %q", err, want)
+	worktreeWant := fmt.Sprintf("exceed %d paths", maxNestedIgnoreFiles)
+	if _, err := worktreeSourceFiles(t.Context(), repo, ignores, false); err == nil || !strings.Contains(err.Error(), worktreeWant) {
+		t.Fatalf("Git worktree nested-file limit error = %v, want %q", err, worktreeWant)
 	}
 	opened, err := openSource(t.Context(), repo, revision, sourceOptions{})
 	if opened.close != nil {
@@ -366,6 +367,44 @@ func TestUnmergedNestedIgnoreHasProviderReplayParity(t *testing.T) {
 	replayAllows := replay.AllowsReplayPaths([]string{"vendor/mypkg/kept.go"})
 	if replayAllows != providerAllows {
 		t.Fatalf("replay allows vendored path = %v, provider = %v", replayAllows, providerAllows)
+	}
+}
+
+func TestIgnoredNestedIgnoreHasProviderReplayParity(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, ".gitignore", "vendor/.gitignore\n")
+	writeFile(t, repo, "main.go", "package main\n")
+	initializeIgnorePolicyRepo(t, repo)
+	// Git still applies this ignored policy file to sibling paths: keep.go is
+	// in the eligible listing even though vendor/.gitignore itself is not.
+	writeFile(t, repo, "vendor/.gitignore", "!mypkg/**\n")
+	writeFile(t, repo, "vendor/mypkg/keep.go", "package mypkg\n")
+
+	ignores, err := loadWorktreeIgnoreMatcher(repo, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := worktreeSourceFiles(t.Context(), repo, ignores, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerAllows := false
+	for _, candidate := range paths {
+		if candidate == "vendor/mypkg/keep.go" {
+			providerAllows = true
+			break
+		}
+	}
+	if !providerAllows {
+		t.Fatalf("provider paths = %q, want path re-admitted by an ignored nested policy file", paths)
+	}
+
+	replay, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replay.AllowsReplayPaths([]string{"vendor/mypkg/keep.go"}) {
+		t.Fatal("replay rejected the provider-admitted path from an ignored nested policy file")
 	}
 }
 

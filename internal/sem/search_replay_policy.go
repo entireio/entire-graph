@@ -221,12 +221,8 @@ func observeSearchReplayGitWorktreeCorpus(
 	hasIncludeFiles bool,
 	collector *searchReplayCorpusCollector,
 ) error {
-	var includeIgnored func(string) bool
-	if hasIncludeFiles {
-		includeIgnored = func(rel string) bool { return ignores.Reincluded(rel, false) }
-	}
 	nestedPaths, err := gitutil.BoundedWorktreeNestedIgnorePaths(
-		ctx, repo, maxNestedIgnoreFiles, includeIgnored,
+		ctx, repo, maxNestedIgnoreFiles, includeEveryNestedIgnore,
 	)
 	if err != nil {
 		return fmt.Errorf("observe Git worktree nested ignore paths for replay: %w", err)
@@ -499,15 +495,11 @@ func (p SearchReplayPolicy) allowsGitWorktreeReplayPaths(ctx context.Context, pa
 	}
 	var selected []string
 	if len(ancestors) > 0 {
-		var includeIgnored func(string) bool
-		if p.hasIncludes {
-			includeIgnored = func(rel string) bool { return p.ignores.Reincluded(rel, false) }
-		}
 		selected, err = gitutil.BoundedWorktreeNestedIgnorePaths(
 			ctx,
 			p.repo,
 			maxNestedIgnoreFiles,
-			includeIgnored,
+			includeEveryNestedIgnore,
 		)
 		if err != nil {
 			return false

@@ -10321,7 +10321,16 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 	// The vendored-directory heuristic consults the project's own re-inclusion
 	// rules wherever they live, not only at the root, so a tree the project
 	// deliberately keeps under a vendored-looking name is not dropped.
-	vendorRules, err := worktreeVendorIgnoreRules(repo, ignores, listed)
+	// A .gitignore can itself be ignored while Git still applies its rules to
+	// sibling paths. Enumerate the bounded ignored-ignore stream as policy
+	// evidence instead of assuming every effective rule file appears in listed.
+	nestedIgnores, err := gitutil.BoundedWorktreeNestedIgnorePaths(
+		ctx, repo, maxNestedIgnoreFiles, includeEveryNestedIgnore,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list worktree nested ignore files: %w", err)
+	}
+	vendorRules, err := worktreeVendorIgnoreRules(repo, ignores, nestedIgnores)
 	if err != nil {
 		return nil, err
 	}
@@ -10341,6 +10350,8 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 	sort.Strings(paths)
 	return paths, nil
 }
+
+func includeEveryNestedIgnore(string) bool { return true }
 
 // eligibleGitWorktreeSourcePath is the provider's final eligibility predicate
 // after Git has produced a tracked/unignored (or explicitly re-admitted) path.
