@@ -57,6 +57,7 @@ func processProviderFile(
 	if ctx.Err() != nil {
 		return result
 	}
+	var routedOversize *oversizeFile
 	// Path-based routing first; files the path cannot classify (extensionless
 	// executables like pyenv's libexec/* scripts) get one bounded prefix read
 	// to route by shebang before being declared unsupported. Git blob reads
@@ -70,6 +71,9 @@ func processProviderFile(
 		if !routable {
 			if over, isOversize := sc.oversizeAt(path); isOversize && over.Prefix != "" {
 				_, routable = languageForShebang(over.Prefix)
+				if routable {
+					routedOversize = &over
+				}
 			}
 		}
 		if !routable {
@@ -86,11 +90,19 @@ func processProviderFile(
 		}
 	}
 
-	content, ok := sc.read(path)
+	var content string
+	var ok bool
+	if routedOversize == nil {
+		content, ok = sc.read(path)
+	}
 	if !ok {
 		// A refused read is not a failed one: the reader declines files above
 		// the byte cap so no single file can set the snapshot's memory ceiling.
-		if over, isOversize := sc.oversizeAt(path); isOversize {
+		over, isOversize := sc.oversizeAt(path)
+		if routedOversize != nil {
+			over, isOversize = *routedOversize, true
+		}
+		if isOversize {
 			langSpec, langOK := languageForPath(path)
 			if !langOK && over.Prefix != "" {
 				// The ordinary bounded prefix read is doomed here for the same

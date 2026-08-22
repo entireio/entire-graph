@@ -194,6 +194,38 @@ func TestSnapshotRoutesOversizedCommittedShebangScriptsByCapturedPrefix(t *testi
 	}
 }
 
+func TestProcessProviderFileDoesNotRestreamKnownOversizedShebang(t *testing.T) {
+	const path = "bin/large-script"
+	reads := 0
+	read := func(string) (string, bool) {
+		reads++
+		return "", false
+	}
+	source := sourceContext{
+		key:  "test-repo",
+		read: read,
+		readPrefix: func(path string, limit int) (string, bool) {
+			return read(path)
+		},
+		oversize: func(string) (oversizeFile, bool) {
+			return oversizeFile{
+				Bytes:  8192,
+				Hash:   "sha256:test",
+				Lines:  2,
+				Prefix: "#!/usr/bin/env bash\necho ok\n",
+			}, true
+		},
+	}
+
+	result := processProviderFile(t.Context(), source, profileSpec{}, 1024, 0, path)
+	if result.file == nil || result.file.Language != "Bash" {
+		t.Fatalf("oversized shebang result = %#v, want Bash file record", result)
+	}
+	if reads != 1 {
+		t.Fatalf("oversized shebang content reads = %d, want 1 streamed refusal", reads)
+	}
+}
+
 func fileHasSymbolNamed(snapshot ProviderSnapshot, path, name string) bool {
 	for _, symbol := range snapshot.Symbols {
 		if symbol.FilePath == path && symbol.Name == name {
