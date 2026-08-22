@@ -6,6 +6,70 @@ import (
 	"testing"
 )
 
+// TestSafeStatThroughSymlinksFollowsAMultiHopChainOnTheSameVolume pins the
+// ordinary case safeStatThroughSymlinks exists to keep working: a chain of
+// several symlinks, every hop on the same volume, must still resolve to its
+// terminal target -- the multi-hop volume guard must not turn into a blanket
+// refusal of any chain longer than one link.
+func TestSafeStatThroughSymlinksFollowsAMultiHopChainOnTheSameVolume(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	real := filepath.Join(repo, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hopA := filepath.Join(repo, "hop-a")
+	hopB := filepath.Join(repo, "hop-b")
+	hopC := filepath.Join(repo, "hop-c")
+	// entry -> hop-c -> hop-b -> hop-a -> real (three intermediate hops).
+	if err := os.Symlink(real, hopA); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(hopA, hopB); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(hopB, hopC); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := safeStatThroughSymlinks(repo, hopC)
+	if err != nil {
+		t.Fatalf("safeStatThroughSymlinks(repo, hopC) error = %v, want nil: a same-volume chain must resolve", err)
+	}
+	if !info.IsDir() {
+		t.Error("safeStatThroughSymlinks(repo, hopC).IsDir() = false, want true: the chain terminates at a directory")
+	}
+}
+
+// TestSafeStatThroughSymlinksRefusesAnImplausiblyDeepChain pins the hop
+// ceiling: a chain longer than maxSymlinkChainHops is refused rather than
+// followed forever. Each Lstat/Readlink call in the chain succeeds on its
+// own regardless of how many hops precede it -- unlike a kernel-resolved
+// os.Stat, there is no ELOOP to rely on -- so the function's own ceiling is
+// the only thing bounding this loop's work.
+func TestSafeStatThroughSymlinksRefusesAnImplausiblyDeepChain(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	real := filepath.Join(repo, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prev := real
+	var entry string
+	for i := range maxSymlinkChainHops + 5 {
+		hop := filepath.Join(repo, "hop"+string(rune('a'+i%26))+string(rune('0'+i/26)))
+		if err := os.Symlink(prev, hop); err != nil {
+			t.Fatal(err)
+		}
+		prev = hop
+		entry = hop
+	}
+
+	if _, err := safeStatThroughSymlinks(repo, entry); err == nil {
+		t.Error("safeStatThroughSymlinks did not refuse a chain deeper than maxSymlinkChainHops")
+	}
+}
+
 // TestGitDirPointerTargetResolvesSymlinksBeforeAcceptingLexicalContainment
 // reproduces the trail finding: a `.git` pointer naming a target that LOOKS
 // lexically inside the repository (`admin-link`) used to be accepted on that

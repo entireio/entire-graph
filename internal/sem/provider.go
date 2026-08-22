@@ -11018,7 +11018,13 @@ var gitDirRootEntryNames = []string{
 	// operation that held it finishes cleanly — but a crashed or killed git
 	// process leaves one behind exactly where these names say, still holding
 	// the credentialed content of the file it was about to replace.
-	"config.lock", "index.lock", "HEAD.lock", "packed-refs.lock", "shallow.lock",
+	// config.worktree.lock is the same lock discipline applied to
+	// config.worktree above: `git config --worktree` (or any write to a
+	// per-worktree config git 2.46+ splits out) creates this sibling while
+	// rewriting it, and a crash or kill mid-write leaves it holding the
+	// complete rewritten worktree config, credentials included, exactly like
+	// config.lock does for the main config.
+	"config.lock", "config.worktree.lock", "index.lock", "HEAD.lock", "packed-refs.lock", "shallow.lock",
 }
 
 // gitDirRootEntryPrefixes are the git-owned top-level names whose full
@@ -11212,56 +11218,106 @@ func hasGitDirStructure(dir string) bool {
 	return hasObjectsAndRefs(common)
 }
 
+// sameVolume reports whether a and b name the same Windows volume. Windows
+// drive letters and UNC share roots are case-INSENSITIVE ("C:" and "c:" are
+// one volume; "\\HOST\Share" and "\\host\share" are one share), but
+// filepath.VolumeName preserves whatever spelling the string carries. A raw
+// `!=` comparison rejected a target spelled with different case than the
+// path being compared against — a false "different volume", which for a
+// git-directory pointer meant the false positive went the SAFE direction
+// (refuse a real git directory) except at the ONE call site
+// (hasGitDirStructure's HEAD-less recovery path) where an over-eager refusal
+// left a target with real objects/refs and an invalid HEAD unrecovered, so
+// its git-owned entries stayed indexable instead of excluded. VolumeName is
+// "" for every relative and POSIX-absolute path, and EqualFold("", "") is
+// true, so this is a no-op off Windows and for two relative paths.
+func sameVolume(a, b string) bool {
+	return strings.EqualFold(filepath.VolumeName(a), filepath.VolumeName(b))
+}
+
+// maxSymlinkChainHops bounds how many symlink levels safeStatThroughSymlinks
+// follows itself. Linux's own kernel limit is 40; this is that same
+// conservative ceiling, used here only to guarantee termination rather than
+// to match any particular OS's exact behavior for a pathological chain.
+const maxSymlinkChainHops = 40
+
+// safeStatThroughSymlinks resolves path exactly like os.Stat would — following
+// every symlink hop to its terminal target — but walks the chain manually, ONE
+// HOP AT A TIME, checking EVERY intermediate hop's volume before ever asking
+// the kernel to resolve it further.
+//
+// Checking only the FIRST hop's target and then handing the ORIGINAL path to
+// os.Stat/filepath.EvalSymlinks is not enough: a same-volume local symlink or
+// junction can itself point at a second symlink that names a UNC share, and
+// the kernel's own symlink-following inside that one Stat/EvalSymlinks call
+// resolves EVERY hop to satisfy its own answer — including the second one —
+// before this function's caller ever sees that an intermediate hop existed.
+// That is exactly how the single-hop guards on `.git`, `commondir`, and
+// `objects`/`refs` could still be walked into dialing SMB with ambient
+// credentials: not through the entry itself, but through a same-volume local
+// redirect placed one hop before the network share.
+//
+// errSymlinkChainOffVolume is safeStatThroughSymlinks' sentinel for "a hop in
+// the chain names a different volume than base (or the chain is implausibly
+// deep)" — a definitive answer, not an inability to look, so callers must NOT
+// treat it the way they treat fs.ErrPermission (an unresolved unknown that
+// promoteUnverifiedGitDirs' fail-closed path exists for).
+var errSymlinkChainOffVolume = errors.New("symlink chain resolves off the expected volume")
+
+// base is the volume every hop must match; a hop landing on a different
+// volume aborts immediately, with no further Stat or Readlink issued on it or
+// anything beyond it. The error is the raw OS error from whichever hop failed
+// (ErrNotExist for a dangling link, ErrPermission for one this process could
+// not traverse), or errSymlinkChainOffVolume when every hop was reachable but
+// one left the volume — callers that distinguish "absent" from "hidden" need
+// that difference preserved rather than collapsed to a single bool.
+func safeStatThroughSymlinks(base, path string) (os.FileInfo, error) {
+	current := path
+	for hop := 0; hop < maxSymlinkChainHops; hop++ {
+		info, err := os.Lstat(current)
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			return info, nil
+		}
+		target, err := os.Readlink(current)
+		if err != nil {
+			return nil, err
+		}
+		target = filepath.FromSlash(target)
+		if !filepath.IsAbs(target) {
+			target = gitJoinRelative(filepath.Dir(current), target)
+		}
+		if !sameVolume(target, base) {
+			return nil, errSymlinkChainOffVolume
+		}
+		current = target
+	}
+	return nil, errSymlinkChainOffVolume // too many hops: refuse rather than loop forever
+}
+
 // hasObjectsAndRefs is the objects/ and refs/ half of is_git_directory(), asked
 // of the directory git resolves them through.
 //
 // os.Stat, not os.Lstat, on the final read: git accepts a repository whose
 // object store or refs tree is a symlink elsewhere, and Lstat would see the
 // symlink rather than the directory and call a real git directory ordinary
-// content. But each entry is Lstat'd and, if it is a symlink, Readlink'd
-// first — exactly as gitDirPointerTarget and gitCommonDir already guard the
-// `.git` file and `commondir` targets — so a target on a different volume (a
-// UNC share on Windows) is rejected BEFORE os.Stat ever follows it. Without
-// this, a committed `objects -> \\host\share\x` or `refs -> \\host\share\x`
-// inside an otherwise-ordinary directory would make this structural probe —
-// which runs over every directory the sweep observes, not just ones a `.git`
-// pointer already named — open an SMB connection to a server the scanned
-// repository's own committed content names, with ambient credentials.
-// VolumeName is "" for every relative and POSIX-absolute path, so this is a
-// no-op off Windows.
+// content. safeStatThroughSymlinks resolves the whole chain hop by hop instead
+// of a bare os.Stat, so a target on a different volume (a UNC share on
+// Windows) is rejected at whichever hop first reaches it, BEFORE the kernel
+// ever follows that hop. Without this, a committed `objects -> \\host\share\x`
+// — or an ordinary same-volume `objects -> local-link` where `local-link`
+// itself points at a UNC share — inside an otherwise-ordinary directory would
+// make this structural probe, which runs over every directory the sweep
+// observes and not just ones a `.git` pointer already named, open an SMB
+// connection to a server the scanned repository's own committed content
+// names, with ambient credentials.
 func hasObjectsAndRefs(common string) bool {
 	for _, name := range []string{"objects", "refs"} {
 		entry := filepath.Join(common, name)
-		info, err := os.Lstat(entry)
-		if err != nil {
-			return false
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			target, err := os.Readlink(entry)
-			if err != nil {
-				return false
-			}
-			target = filepath.FromSlash(target)
-			// Readlink returns the target exactly as the link stores it, which
-			// for a relative target (the ordinary case: `objects -> ../foo`,
-			// resolved against the link's OWN PARENT, common, the same way
-			// git resolves it) carries no volume of its own — VolumeName is ""
-			// for every relative path on every OS. Comparing that directly
-			// against common's volume rejected every relative objects/refs
-			// symlink on Windows ("" != "C:"), misclassifying a real git
-			// directory as ordinary content. Joining onto common first, as
-			// gitJoinRelative already does for a `.git`/`commondir` pointer's
-			// own relative target, gives the same absolute answer git's
-			// resolution would, so only a target that genuinely names a
-			// different volume (a UNC share) is rejected here.
-			if !filepath.IsAbs(target) {
-				target = gitJoinRelative(common, target)
-			}
-			if filepath.VolumeName(target) != filepath.VolumeName(common) {
-				return false
-			}
-		}
-		if info, err = os.Stat(entry); err != nil || !info.IsDir() {
+		info, err := safeStatThroughSymlinks(common, entry)
+		if err != nil || !info.IsDir() {
 			return false
 		}
 	}
@@ -11389,7 +11445,16 @@ func gitCommonDir(dir string) (string, bool) {
 	}
 	// A zero-byte file is the read git gets nothing out of and dies on; every
 	// other readable content is a successful read whatever it holds.
-	info, err := os.Stat(pointer)
+	//
+	// safeStatThroughSymlinks, not a bare os.Stat: `commondir` itself can be a
+	// symlink (see the "Reading follows symlinks" paragraph above), and a
+	// bare os.Stat resolves every hop of a symlink CHAIN in one syscall — so a
+	// same-volume local `commondir` symlink to a SECOND symlink naming a UNC
+	// share would dial SMB before this function ever saw the intermediate
+	// hop. Resolving hop by hop and checking each one's volume against dir
+	// closes that the same way hasObjectsAndRefs and gitDirPointerTarget do
+	// for objects/refs and .git.
+	info, err := safeStatThroughSymlinks(dir, pointer)
 	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 		return "", false
 	}
@@ -11421,9 +11486,11 @@ func gitCommonDir(dir string) (string, bool) {
 	// UNC share (`\\host\share`) as its own volume, and a `commondir` naming
 	// one would otherwise make looksLikeGitDir/hasGitDirStructure open an
 	// SMB connection to a server the scanned repository's own committed
-	// content names — with ambient credentials. VolumeName is "" for every
-	// relative and POSIX-absolute path, so this is a no-op off Windows.
-	if filepath.VolumeName(target) != filepath.VolumeName(dir) {
+	// content names — with ambient credentials. sameVolume compares
+	// case-insensitively: VolumeName preserves spelling, but Windows volumes
+	// are not case-sensitive ("C:" and "c:" are the same drive), and this is
+	// a no-op off Windows.
+	if !sameVolume(target, dir) {
 		return "", false
 	}
 	return target, true
@@ -11991,42 +12058,31 @@ func gitDirPointerTarget(repo, dir string) (string, bool, bool) {
 	// readGitDirPointer, on this same file, because it has to run before any
 	// byte of it is read and a second stat here would only race the first.
 	//
-	// Lstat first, not a bare os.Stat: `.git` ITSELF can be a symlink (the
-	// gitfile-fidelity comment above is about following it, not about
-	// skipping the check), and os.Stat resolves a symlink as part of the
-	// SAME syscall that reports its result — on Windows, a `.git` symlink to
-	// a UNC path (`\\host\share\gitfile`) would dial SMB with ambient
+	// safeStatThroughSymlinks, not a bare os.Stat: `.git` ITSELF can be a
+	// symlink (the gitfile-fidelity comment above is about following it, not
+	// about skipping the check), and os.Stat resolves a symlink — and every
+	// FURTHER symlink hop beneath it — as part of the SAME syscall that
+	// reports its result. On Windows, a `.git` symlink to a UNC path
+	// (`\\host\share\gitfile`), or an ordinary same-volume `.git` symlink to
+	// a SECOND symlink that names one, would dial SMB with ambient
 	// credentials as a side effect of that one call, before this function
-	// ever gets to look at, let alone reject, the target. Reading the link
-	// and checking its volume first — exactly as hasObjectsAndRefs already
-	// does for an `objects`/`refs` entry — means a cross-volume `.git` link
-	// is rejected without the kernel ever resolving it. VolumeName is "" for
-	// every relative and POSIX-absolute path, so this is a no-op off
-	// Windows, and a same-volume symlink still stats through to whatever it
-	// points at, matching git's own S_ISREG-of-the-result fidelity.
-	info, err := os.Lstat(pointer)
+	// ever got to look at, let alone reject, the offending hop. Resolving hop
+	// by hop and checking each one's volume — exactly as hasObjectsAndRefs
+	// already does for an `objects`/`refs` entry — means a cross-volume
+	// `.git` link, at any depth, is rejected without the kernel ever
+	// resolving it, and a same-volume chain still stats through to whatever
+	// it ultimately points at, matching git's own S_ISREG-of-the-result
+	// fidelity.
+	info, err := safeStatThroughSymlinks(base, pointer)
 	if err != nil {
 		// ABSENT and DANGLING both mean "no pointer", as the paragraph above
-		// says. Anything else — the directory or the file itself out of reach —
-		// means the pointer could not be looked at, which is not the same answer.
-		return "", false, !errors.Is(err, fs.ErrNotExist)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		linkTarget, rlErr := os.Readlink(pointer)
-		if rlErr != nil {
-			return "", false, false
-		}
-		linkTarget = filepath.FromSlash(linkTarget)
-		if !filepath.IsAbs(linkTarget) {
-			linkTarget = gitJoinRelative(base, linkTarget)
-		}
-		if filepath.VolumeName(linkTarget) != filepath.VolumeName(base) {
-			return "", false, false
-		}
-		info, err = os.Stat(pointer)
-		if err != nil {
-			return "", false, !errors.Is(err, fs.ErrNotExist)
-		}
+		// says; so does a chain that resolves off the expected volume, which
+		// is a definitive "not this repository's git directory" answer, not
+		// an inability to look. Anything else — the directory or the file
+		// itself out of reach — means the pointer could not be looked at,
+		// which is not the same answer.
+		hidden := !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, errSymlinkChainOffVolume)
+		return "", false, hidden
 	}
 	if !info.Mode().IsRegular() {
 		return "", false, false
@@ -12064,9 +12120,13 @@ func gitDirPointerTarget(repo, dir string) (string, bool, bool) {
 	// path directly, making this process open an SMB connection to a
 	// server the SCANNED REPOSITORY'S OWN COMMITTED CONTENT names — with
 	// ambient credentials, and to a `.git` file whose target already can't be
-	// inside this repo. VolumeName is "" for every relative and POSIX-absolute
-	// path, so this is a no-op off Windows.
-	if filepath.VolumeName(target) != filepath.VolumeName(repo) {
+	// inside this repo. sameVolume compares case-insensitively: VolumeName
+	// preserves spelling, but Windows volumes are not case-sensitive ("C:"
+	// and "c:" are the same drive — a raw `!=` here rejected a target spelled
+	// with different case than repo's own, which for THIS check fails toward
+	// the safe side (an over-eager refusal, not an escape) but is still the
+	// wrong answer), and this is a no-op off Windows.
+	if !sameVolume(target, repo) {
 		return "", false, false
 	}
 	// A target that does not exist at all — the common case in a pointer

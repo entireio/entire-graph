@@ -212,6 +212,76 @@ func TestGitDirPointerTargetFollowsAGitfileSymlinkOnTheSameVolume(t *testing.T) 
 	}
 }
 
+// TestSameVolumeIsCaseInsensitive reproduces the trail finding on the volume
+// comparisons throughout this file: filepath.VolumeName preserves whatever
+// spelling a path carries, but Windows drive letters and UNC share roots are
+// case-INSENSITIVE, so a raw `!=` on two differently-cased spellings of the
+// SAME volume reported them as different.
+func TestSameVolumeIsCaseInsensitive(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ a, b string }{
+		{`C:\repo\sub`, `c:\repo\other`},
+		{`c:\repo`, `C:\elsewhere`},
+		{`\\HOST\Share\a`, `\\host\share\b`},
+		{`\\host\SHARE\a`, `\\HOST\share\b`},
+	}
+	for _, tc := range cases {
+		if !sameVolume(tc.a, tc.b) {
+			t.Errorf("sameVolume(%q, %q) = false, want true: same volume, different case", tc.a, tc.b)
+		}
+	}
+	if sameVolume(`C:\repo`, `D:\repo`) {
+		t.Error("sameVolume(C:, D:) = true, want false: genuinely different drives")
+	}
+	if sameVolume(`C:\repo`, `\\host\share\repo`) {
+		t.Error("sameVolume(C:, UNC share) = true, want false: a local drive is never a network share")
+	}
+}
+
+// TestSafeStatThroughSymlinksRejectsAChainThatLeavesTheVolumeOnASecondHop
+// reproduces the trail finding on hasObjectsAndRefs/gitDirPointerTarget/
+// gitCommonDir: each checked only the FIRST symlink hop's volume, so a
+// same-volume local symlink pointing at a SECOND symlink that names a UNC
+// share passed the check, and the eventual os.Stat/EvalSymlinks call
+// resolved that second hop itself -- dialing SMB with ambient credentials
+// through a hop the guard never looked at. safeStatThroughSymlinks walks
+// every hop itself, so this must return quickly with a refusal instead of
+// hanging or dialing a nonexistent host.
+func TestSafeStatThroughSymlinksRejectsAChainThatLeavesTheVolumeOnASecondHop(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	// First hop: an ordinary same-volume symlink, which the naive single-hop
+	// check would accept outright.
+	firstHop := filepath.Join(repo, "first-hop")
+	// 203.0.113.0/24 is TEST-NET-3 (RFC 5737): reserved for documentation, so
+	// this address is never routable and a hang here would be the missing
+	// guard, not a fluke of a real host answering.
+	secondHop := `\\203.0.113.1\share\repo`
+	if err := os.Symlink(secondHop, firstHop); err != nil {
+		t.Fatalf("create second-hop symlink: %v", err)
+	}
+	entry := filepath.Join(repo, "entry")
+	if err := os.Symlink(firstHop, entry); err != nil {
+		t.Fatalf("create first-hop symlink: %v", err)
+	}
+
+	done := make(chan struct{})
+	var err error
+	go func() {
+		_, err = safeStatThroughSymlinks(repo, entry)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("safeStatThroughSymlinks did not return within 5s: a second-hop UNC target must be rejected" +
+			" by volume before the network is ever touched")
+	}
+	if err == nil {
+		t.Error("safeStatThroughSymlinks(repo, entry) returned no error, want a refusal: the chain's second hop names a UNC share")
+	}
+}
+
 // TestGitInfoExcludePathRejectsAUNCCommonDirWithoutTouchingTheNetwork
 // reproduces the sibling trail finding on gitInfoExcludePath: unlike
 // gitCommonDir in provider.go, this independent commondir reader had no

@@ -320,6 +320,31 @@ func TestGitDirExcluderExcludesASharedIndexFileAtARootGitDir(t *testing.T) {
 	})
 }
 
+// TestGitDirExcluderExcludesConfigWorktreeLockAtARootGitDir reproduces the
+// trail finding: config.worktree.lock, the lockfile.c sibling of
+// config.worktree (git 2.46+'s per-worktree config, already in
+// gitDirRootEntryNames), was missing from the lock-sibling list. `git config
+// --worktree` creates it while rewriting config.worktree, and a crash or kill
+// mid-write leaves it holding the complete rewritten worktree config,
+// credentials included, exactly like config.lock does for the main config --
+// but unlike config.lock, it was not excluded at a root git directory.
+func TestGitDirExcluderExcludesConfigWorktreeLockAtARootGitDir(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeRootGitDirFixture(t, repo)
+	writeFile(t, repo, ".git", "gitdir: .\n")
+	writeFile(t, repo, "config.worktree.lock", "[core]\n\tworktreeConfig = true\n# credential leaked mid-rewrite\n")
+	writeFile(t, repo, "src/app.go", "package src\n")
+
+	excluder := newGitDirExcluder(t.Context(), repo)
+	if !excluder.excluded("config.worktree.lock") {
+		t.Error(`excluded("config.worktree.lock") = false, want true: it is lockfile.c's transient sibling of config.worktree`)
+	}
+	if excluder.excluded("src/app.go") {
+		t.Error(`excluded("src/app.go") = true, want false`)
+	}
+}
+
 // TestIsGitSharedIndexName pins the suffix validation directly.
 func TestIsGitSharedIndexName(t *testing.T) {
 	t.Parallel()
