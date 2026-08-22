@@ -4003,7 +4003,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		return
 	}
 	if needsOverrides {
-		for _, r := range overrideRelations(inheritanceEdges, methodsByContainer) {
+		for _, r := range overrideRelations(inheritanceEdges, methodsByContainer, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
@@ -9848,9 +9848,18 @@ func fieldAccessRelations(from SymbolRecord, block string, fieldsByContainer map
 // resolved supertype overrides it. It only fires when both the supertype and
 // its methods are known local symbols, so external base classes never produce
 // guessed overrides.
-func overrideRelations(relations []RelationRecord, methodsByContainer map[string]map[string]SymbolRecord) []RelationRecord {
+// overrideRelations is polled every budgetPollStride inheritance edges, like
+// the other bounded scans in this package: the caller's shouldStop check
+// above only ran BEFORE this call, so a large class hierarchy -- many
+// EXTENDS/IMPLEMENTS edges, each sorting its subtype's whole method set --
+// kept consuming CPU and memory past MaxDuration until the entire slice was
+// materialized and returned.
+func overrideRelations(relations []RelationRecord, methodsByContainer map[string]map[string]SymbolRecord, stop func() bool) []RelationRecord {
 	var overrides []RelationRecord
-	for _, relation := range relations {
+	for i, relation := range relations {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return overrides
+		}
 		if relation.Type != "EXTENDS" && relation.Type != "IMPLEMENTS" {
 			continue
 		}
