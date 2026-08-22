@@ -205,11 +205,7 @@ func ListWorktreeDirectoryEntries(ctx context.Context, repo string) ([]string, e
 // all, while `.dep-git/config` is listed in full. The sweep reads directories
 // only, never a file, so nothing in the ignored tree becomes indexable.
 func ListIgnoredWorktreeDirectoryEntries(ctx context.Context, repo string) ([]string, error) {
-	out, err := run(ctx, repo, "git", "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory")
-	if err != nil {
-		return nil, err
-	}
-	return splitNULDirectoryEntries(out), nil
+	return streamNULDirectoryEntries(ctx, repo, "git", "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory")
 }
 
 // ListIgnoredWorktreeFiles lists the untracked working-tree files Git's exclude
@@ -272,16 +268,86 @@ func splitNULDirectoryEntries(out string) []string {
 		} else {
 			out = ""
 		}
-		if field == "" || !strings.HasSuffix(field, "/") {
-			continue
+		if keepDirectoryEntry(field, seen) {
+			dirs = append(dirs, field)
 		}
-		if _, exists := seen[field]; exists {
-			continue
-		}
-		seen[field] = struct{}{}
-		dirs = append(dirs, field)
 	}
 	return dirs
+}
+
+// keepDirectoryEntry applies splitNULDirectoryEntries' filter (keep only
+// trailing-slash, not-yet-seen fields) to one field at a time, recording it
+// in seen on acceptance. Shared with streamNULDirectoryEntries so the two
+// callers — one filtering an already-materialized string, the other
+// filtering fields as they arrive off a pipe — cannot drift apart.
+func keepDirectoryEntry(field string, seen map[string]struct{}) bool {
+	if field == "" || !strings.HasSuffix(field, "/") {
+		return false
+	}
+	if _, exists := seen[field]; exists {
+		return false
+	}
+	seen[field] = struct{}{}
+	return true
+}
+
+// streamNULDirectoryEntries runs a NUL-delimited `git ls-files --directory`
+// listing and keeps only the trailing-slash entries `--directory` actually
+// collapsed, discarding every other field the moment it is read off the
+// subprocess's stdout pipe.
+//
+// It exists because `run` (and the bytes.Buffer it hands to cmd.Stdout)
+// materializes the ENTIRE subprocess output before any caller gets to filter
+// it. `--directory` only collapses a directory when git classifies its whole
+// content the same way; a directory ignored only by file-pattern rules
+// alongside other content is not collapsed, so a repository with a build or
+// dependency tree matched by a pattern like `*.o` makes git print every one
+// of those files individually. Buffering that complete listing first would
+// cost memory and CPU proportional to every ignored FILE in the tree ahead
+// of the caller's own directory-count budget, even though the filter here
+// discards every one of those filenames. Streaming and filtering in the same
+// pass bounds this call's cost to the number of ignored/untracked
+// DIRECTORIES, which is the quantity any caller of this helper ever uses.
+func streamNULDirectoryEntries(ctx context.Context, repo, name string, args ...string) ([]string, error) {
+	cmd := newCmd(ctx, repo, name, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+	}
+	reader := bufio.NewReader(stdout)
+	var dirs []string
+	seen := make(map[string]struct{})
+	var readErr error
+	for {
+		field, err := reader.ReadString(0)
+		field = strings.TrimSuffix(field, "\x00")
+		if keepDirectoryEntry(field, seen) {
+			dirs = append(dirs, field)
+		}
+		if err != nil {
+			if err != io.EOF {
+				readErr = err
+			}
+			break
+		}
+	}
+	waitErr := cmd.Wait()
+	if readErr != nil {
+		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), readErr)
+	}
+	if waitErr != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = waitErr.Error()
+		}
+		return nil, fmt.Errorf("%s %s: %s", name, strings.Join(args, " "), msg)
+	}
+	return dirs, nil
 }
 
 // GrepIndexMatches returns a bounded sample of matched terms per tracked
