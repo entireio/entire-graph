@@ -4014,7 +4014,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		return
 	}
 	if spec.emits("HANDLES_ROUTE") {
-		for _, r := range crossFileExpressRouterRelations(files, recordsByFile, readContent, knownFiles) {
+		for _, r := range crossFileExpressRouterRelations(files, recordsByFile, readContent, knownFiles, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
@@ -4024,7 +4024,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		if shouldStop != nil && shouldStop() {
 			return
 		}
-		for _, r := range pythonIncludeRouterRelations(files, recordsByFile, readContent, knownFiles) {
+		for _, r := range pythonIncludeRouterRelations(files, recordsByFile, readContent, knownFiles, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
@@ -16652,7 +16652,7 @@ func splitJavaScriptMember(value string) (string, string) {
 	return strings.TrimSpace(before), strings.TrimSpace(after)
 }
 
-func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, knownFiles map[string]bool) []expressRouteRelation {
+func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, knownFiles map[string]bool, stop func() bool) []expressRouteRelation {
 	routesByFile := map[string][]jsRouterRoute{}
 	pluginRoutesByFile := map[string]map[string][]jsRouterRoute{}
 	mountsByFile := map[string][]jsRouterMount{}
@@ -16661,6 +16661,15 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 	defaultExportsByFile := map[string]string{}
 	symbolsByFileAndName := map[string]map[string]SymbolRecord{}
 	for _, file := range files {
+		// A file this loop has not reached yet is simply absent from every
+		// *ByFile map below, which the join loop already treats the same as
+		// readContent failing for it (a plain lookup miss, skipped). Stopping
+		// mid-scan and joining only what was gathered is therefore as safe as
+		// a normal partial read failure -- no relation is ever built from a
+		// half-populated file's data.
+		if stopped(stop) {
+			break
+		}
 		if !jsLikeExtension(filepath.Ext(file.Path)) {
 			continue
 		}
@@ -16695,6 +16704,9 @@ func crossFileExpressRouterRelations(files []FileRecord, recordsByFile map[strin
 	var relations []expressRouteRelation
 	seen := map[string]bool{}
 	for _, file := range files {
+		if stopped(stop) {
+			break
+		}
 		for _, mount := range mountsByFile[file.Path] {
 			targetLocal, targetMember := splitJavaScriptMember(mount.Target)
 			localReceiver := targetLocal
@@ -16895,11 +16907,17 @@ func javascriptDefaultExportName(content string) string {
 	return ""
 }
 
-func pythonIncludeRouterRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, knownFiles map[string]bool) []expressRouteRelation {
+func pythonIncludeRouterRelations(files []FileRecord, recordsByFile map[string][]SymbolRecord, readContent contentReader, knownFiles map[string]bool, stop func() bool) []expressRouteRelation {
 	routesByFile := map[string][]pythonRouterRoute{}
 	mountsByFile := map[string][]pythonRouterMount{}
 	importsByFile := map[string]map[string][]pythonImportBinding{}
 	for _, file := range files {
+		// See crossFileExpressRouterRelations: a file this scan has not
+		// reached is absent from every *ByFile map, which the join loop
+		// below already treats like a plain readContent miss.
+		if stopped(stop) {
+			break
+		}
 		if !strings.EqualFold(filepath.Ext(file.Path), ".py") {
 			continue
 		}
@@ -16914,6 +16932,9 @@ func pythonIncludeRouterRelations(files []FileRecord, recordsByFile map[string][
 	var relations []expressRouteRelation
 	seen := map[string]bool{}
 	for _, file := range files {
+		if stopped(stop) {
+			break
+		}
 		if len(mountsByFile[file.Path]) == 0 {
 			continue
 		}

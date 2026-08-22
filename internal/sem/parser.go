@@ -3660,13 +3660,13 @@ func fastCFamilyTypeEntities(lines, originalLines []string, stop func() bool) []
 				continue
 			}
 			seen[key] = true
-			end := fastCFamilyStatementEnd(lines, i)
+			end := fastCFamilyStatementEnd(lines, i, stop)
 			entities = append(entities, fastCFamilyEntity(kind, name, i+1, end, originalLines))
 		}
 		if !strings.HasPrefix(trimmed, "typedef ") {
 			continue
 		}
-		end := fastCFamilyStatementEnd(lines, i)
+		end := fastCFamilyStatementEnd(lines, i, stop)
 		statement := strings.TrimSpace(strings.Join(lines[i:end], " "))
 		statement = strings.TrimSuffix(statement, ";")
 		if match := cFamilyTypedefNameRe.FindStringSubmatch(statement); match != nil {
@@ -3721,7 +3721,7 @@ func fastCFamilyFunctionEntities(lines, originalLines []string, stop func() bool
 				signature = strings.TrimSpace(strings.TrimSuffix(signature, braceText))
 			}
 			if name := fastCFamilyFunctionName(signature); name != "" {
-				end := fastCFamilyBraceEnd(lines, i)
+				end := fastCFamilyBraceEnd(lines, i, stop)
 				entities = append(entities, fastCFamilyEntity("function", name, pendingStart+1, end, originalLines))
 				i = end - 1
 				pending = ""
@@ -3758,9 +3758,19 @@ func fastCFamilyFunctionName(signature string) string {
 	return name
 }
 
-func fastCFamilyStatementEnd(lines []string, start int) int {
+// fastCFamilyStatementEnd scans forward from start for the end of a single
+// declaration. An unterminated declaration (never closed by `;` or `}`) makes
+// this run to EOF, and every call site invokes it once per candidate line, so
+// a single malformed file made the pair quadratic in file length with nothing
+// able to stop it; stop is the same walk-level predicate the outer loops
+// already poll, threaded down so a deadline expiring mid-scan takes effect
+// here too rather than only between whole top-level declarations.
+func fastCFamilyStatementEnd(lines []string, start int, stop func() bool) int {
 	depth := 0
 	for i := start; i < len(lines); i++ {
+		if stopped(stop) {
+			return i + 1
+		}
 		depth += braceDelta(lines[i])
 		if strings.Contains(lines[i], ";") && depth <= 0 {
 			return i + 1
@@ -3772,9 +3782,15 @@ func fastCFamilyStatementEnd(lines []string, start int) int {
 	return start + 1
 }
 
-func fastCFamilyBraceEnd(lines []string, start int) int {
+// fastCFamilyBraceEnd is fastCFamilyStatementEnd's sibling for a function
+// body: it scans forward for the matching closing brace and is exposed to the
+// same unbounded-scan risk on an unterminated body.
+func fastCFamilyBraceEnd(lines []string, start int, stop func() bool) int {
 	depth := 0
 	for i := start; i < len(lines); i++ {
+		if stopped(stop) {
+			return i + 1
+		}
 		depth += braceDelta(lines[i])
 		if depth <= 0 && i > start {
 			return i + 1

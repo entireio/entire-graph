@@ -102,6 +102,18 @@ func processProviderFile(
 		return providerFileResult{index: index, path: path}
 	}
 	content, ok := sc.read(path)
+	// sc.read is the one synchronous, unbudgeted step this function cannot
+	// interrupt mid-flight (see the comment above), but once it returns,
+	// everything below it -- the oversize branch immediately following,
+	// E_FILE_TOO_LARGE, E_MINIFIED -- populates a file record and returns
+	// without touching the parser or ctx again, so none of those early
+	// returns observed a budget that expired while the read was in flight.
+	// Rechecking here, before any of them run, keeps every populated return
+	// between the read and the parse subject to the same ceiling the
+	// pre-read and post-parse checks already enforce.
+	if stop() {
+		return providerFileResult{index: index, path: path}
+	}
 	if !ok {
 		// A refused read is not a failed one: the reader declines files above
 		// the byte cap so no single file can set the snapshot's memory ceiling.
