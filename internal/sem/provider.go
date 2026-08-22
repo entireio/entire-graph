@@ -12201,9 +12201,19 @@ func gitDirLinkTarget(repo, dir string) (string, bool, bool) {
 	if info.Mode()&os.ModeSymlink == 0 {
 		return "", false, false
 	}
-	resolved, statErr := os.Stat(link)
+	// safeStatThroughSymlinks, not a bare os.Stat: exactly the same hazard
+	// gitDirPointerTarget's own comment describes for a `.git` GITFILE naming
+	// a UNC target applies here to a `.git` SYMLINK naming one directly (or a
+	// same-volume link to a second link that does). A bare os.Stat resolves
+	// every hop of the chain, including an off-volume one, in the same
+	// syscall that reports the result — dialing SMB with ambient credentials
+	// before this function ever gets to look at, let alone reject, the
+	// offending hop. Resolving hop by hop and checking each one's volume
+	// against repo closes that the same way hasObjectsAndRefs and
+	// gitDirPointerTarget already do.
+	resolved, statErr := safeStatThroughSymlinks(repo, link)
 	if statErr != nil {
-		return "", false, !errors.Is(statErr, fs.ErrNotExist)
+		return "", false, !errors.Is(statErr, fs.ErrNotExist) && !errors.Is(statErr, errSymlinkChainOffVolume)
 	}
 	if !resolved.IsDir() {
 		return "", false, false

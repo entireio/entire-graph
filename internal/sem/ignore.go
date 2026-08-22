@@ -482,9 +482,13 @@ func gitInfoExcludePath(repo string) string {
 		// an SMB connection to a server the scanned repository's own committed
 		// content names, with ambient credentials, purely to look for an
 		// info/exclude file. VolumeName is "" for every relative and
-		// POSIX-absolute path, so this is a no-op off Windows. Mirrors the
-		// same guard on gitCommonDir in provider.go.
-		if filepath.VolumeName(common) != filepath.VolumeName(gitDir) {
+		// POSIX-absolute path, so this is a no-op off Windows. sameVolume
+		// compares case-insensitively — Windows drive letters and UNC hosts
+		// are case-insensitive, but VolumeName preserves whatever spelling the
+		// string carries, so a bare != here rejected `c:` against `C:` and
+		// silently skipped the shared info/exclude instead of reading it.
+		// Mirrors the same guard on gitCommonDir in provider.go.
+		if !sameVolume(common, gitDir) {
 			return ""
 		}
 		gitDir = filepath.Clean(common)

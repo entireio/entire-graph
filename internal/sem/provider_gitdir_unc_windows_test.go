@@ -5,6 +5,7 @@ package sem
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -208,6 +209,99 @@ func TestGitDirPointerTargetFollowsAGitfileSymlinkOnTheSameVolume(t *testing.T) 
 	target, ok, hidden := gitDirPointerTarget(repo, "")
 	if !ok || hidden || target != ".real-git" {
 		t.Errorf("gitDirPointerTarget(repo, \"\") = (%q, ok=%v, hidden=%v), want (\".real-git\", true, false)",
+			target, ok, hidden)
+	}
+}
+
+// TestGitInfoExcludePathAcceptsACaseDifferentCommonDirVolume reproduces the
+// trail finding on gitInfoExcludePath's own volume comparison: unlike every
+// other volume check in this package (already on sameVolume), this one
+// compared filepath.VolumeName(common) against filepath.VolumeName(gitDir)
+// with a raw `!=`. Windows drive letters are case-insensitive ("c:" and
+// "C:" are the same volume), but VolumeName preserves whatever spelling the
+// path carries, so a `commondir` written with a lowercase drive letter while
+// gitDir's own path carries an uppercase one was rejected as "a different
+// volume" even though Git itself accepts it -- silently skipping the shared
+// info/exclude and letting files it excludes reach the index.
+func TestGitInfoExcludePathAcceptsACaseDifferentCommonDirVolume(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	gitDir := filepath.Join(repo, ".realgit")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, ".git", "gitdir: .realgit\n")
+	// Same volume as gitDir, spelled with the opposite case.
+	lowerVolume := strings.ToLower(filepath.VolumeName(gitDir)) + gitDir[len(filepath.VolumeName(gitDir)):]
+	writeFile(t, repo, ".realgit/commondir", lowerVolume+"\n")
+
+	got := gitInfoExcludePath(repo)
+	want := filepath.Join(gitDir, "info", "exclude")
+	if got != want {
+		t.Errorf("gitInfoExcludePath(repo) = %q, want %q: a commondir differing only in drive-letter case"+
+			" from gitDir's own must still resolve, not be treated as a different volume", got, want)
+	}
+}
+
+// TestGitDirLinkTargetRejectsAUNCSymlinkWithoutTouchingTheNetwork reproduces
+// the trail finding on gitDirLinkTarget: unlike gitDirPointerTarget's own
+// `.git`-itself check (already guarded above), this sibling — which handles
+// a `.git` that is a symlink to a DIRECTORY rather than to a gitfile — read
+// the link's target with a bare os.Stat. That follows the whole symlink
+// chain, including an off-volume hop, as part of the same syscall that
+// reports the result, so a `.git` symlinked straight to a UNC directory
+// would dial SMB with ambient credentials before this function ever got to
+// look at, let alone reject, the target. The fix resolves the chain hop by
+// hop through safeStatThroughSymlinks, exactly as gitDirPointerTarget
+// already does for the gitfile form, so this must return quickly instead of
+// hanging or dialing a nonexistent host.
+func TestGitDirLinkTargetRejectsAUNCSymlinkWithoutTouchingTheNetwork(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	// 203.0.113.0/24 is TEST-NET-3 (RFC 5737): reserved for documentation, so
+	// this address is never routable and a hang here would be the missing
+	// guard, not a fluke of a real host answering.
+	if err := os.Symlink(`\\203.0.113.1\share\repo`, filepath.Join(repo, ".git")); err != nil {
+		t.Fatalf("create .git symlink: %v", err)
+	}
+
+	done := make(chan struct{})
+	var target string
+	var ok, hidden bool
+	go func() {
+		target, ok, hidden = gitDirLinkTarget(repo, "")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("gitDirLinkTarget did not return within 5s: a .git symlink to a UNC directory must be" +
+			" rejected by volume before os.Stat attempts to resolve it over the network")
+	}
+	if ok || hidden {
+		t.Errorf("gitDirLinkTarget(repo, \"\") = (%q, ok=%v, hidden=%v), want (_, false, false): a UNC"+
+			" .git symlink target is never on the repository's own volume", target, ok, hidden)
+	}
+}
+
+// TestGitDirLinkTargetFollowsADirectorySymlinkOnTheSameVolume pins the other
+// half of the previous fix: an ordinary same-volume `.git` symlink to a real
+// git directory must still be followed and accepted, matching git's own
+// fidelity — the volume guard must not turn into a blanket refusal of every
+// symlinked `.git` directory.
+func TestGitDirLinkTargetFollowsADirectorySymlinkOnTheSameVolume(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".real-git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(repo, ".real-git"), filepath.Join(repo, ".git")); err != nil {
+		t.Fatalf("create .git symlink: %v", err)
+	}
+
+	target, ok, hidden := gitDirLinkTarget(repo, "")
+	if !ok || hidden || target != ".real-git" {
+		t.Errorf("gitDirLinkTarget(repo, \"\") = (%q, ok=%v, hidden=%v), want (\".real-git\", true, false)",
 			target, ok, hidden)
 	}
 }
