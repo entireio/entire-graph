@@ -131,6 +131,62 @@ func TestTruncatedDisclosurePointsAtWhatJSONActuallyHolds(t *testing.T) {
 	}
 }
 
+// TestRenderRepoIgnoreDisclosureCapsTheSourcesHeaderLine reproduces the trail
+// finding: the header line joined EVERY entry of report.Sources with no cap of
+// its own, unlike the sample list below it (capped at maxRenderedRepoExclusions).
+// Sources carries one entry per distinct .gitignore/.git-info-exclude/
+// .graphignore file that contributed an exclusion, and nothing bounds how many
+// distinct files a repository can nest -- each one an arbitrary
+// repository-controlled path. --format text has no separate byte-budget
+// parameter of its own; every OTHER block in this renderer stays bounded by a
+// fixed count (the sample, the body count, top-k) rather than a byte ceiling,
+// so an uncapped join here was the one place a repository could make a single
+// line grow without limit ahead of the results --max-context-bytes already
+// bounds elsewhere.
+func TestRenderRepoIgnoreDisclosureCapsTheSourcesHeaderLine(t *testing.T) {
+	sources := make([]RepoIgnoreSource, 0, 500)
+	for i := 0; i < 500; i++ {
+		sources = append(sources, RepoIgnoreSource{
+			File:  fmt.Sprintf("vendor/pkg%04d/nested/deeply/.gitignore", i),
+			Files: 1,
+		})
+	}
+	rendered := string(RenderRepoIgnoreDisclosure(&RepoIgnoreReport{
+		Files:   500,
+		Sources: sources,
+		Sample:  []RepoExclusion{{Path: "vendor/pkg0000/nested/deeply/x.go", Source: sources[0].File, Rule: "*"}},
+	}))
+	header, _, _ := strings.Cut(rendered, "\n")
+	if len(header) > 2048 {
+		t.Fatalf("header line is %d bytes for %d sources: it must stay capped like the sample list, not"+
+			" grow with the number of distinct ignore files a repository nests:\n%s", len(header), len(sources), header)
+	}
+	if !strings.Contains(rendered, "+") || !strings.Contains(rendered, "more") {
+		t.Fatalf("rendered disclosure does not disclose that the source list was truncated:\n%s", rendered)
+	}
+}
+
+// TestRenderRepoIgnoreDisclosureShowsEverySourceWhenFew is the widening
+// direction: an ordinary report with only a couple of source files must still
+// name all of them, unchanged.
+func TestRenderRepoIgnoreDisclosureShowsEverySourceWhenFew(t *testing.T) {
+	rendered := string(RenderRepoIgnoreDisclosure(&RepoIgnoreReport{
+		Files: 2,
+		Sources: []RepoIgnoreSource{
+			{File: ".gitignore", Files: 1},
+			{File: "vendor/.gitignore", Files: 1},
+		},
+		Sample: []RepoExclusion{{Path: "build/out.js", Source: ".gitignore", Rule: "build/"}},
+	}))
+	header, _, _ := strings.Cut(rendered, "\n")
+	if !strings.Contains(header, ".gitignore") || !strings.Contains(header, "vendor/.gitignore") {
+		t.Fatalf("header dropped a source name below the cap: %q", header)
+	}
+	if strings.Contains(header, "more") {
+		t.Fatalf("a header at or under the source cap must not claim there is more:\n%s", header)
+	}
+}
+
 // TestWalkFallbackDoesNotDiscloseWhatGitWouldHideAnyway is the other half of the
 // walk fallback's contract. The disclosure's whole claim is "Git would still have
 // shown you this file", which is why only `.graphignore` is accounted for there.

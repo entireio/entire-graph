@@ -621,9 +621,26 @@ func RenderRepoIgnoreDisclosure(report *RepoIgnoreReport) []byte {
 		return nil
 	}
 	var out bytes.Buffer
-	names := make([]string, 0, len(report.Sources))
-	for _, source := range report.Sources {
+	// Capped exactly like the sample list below, and for the same reason: Sources
+	// carries one entry per DISTINCT .gitignore/.git-info-exclude/.graphignore
+	// file that contributed an exclusion, with no upper bound of its own (a
+	// project can nest hundreds of vendored .gitignore files, each an arbitrary
+	// repository-controlled path). Joining every one of them here used to make
+	// this single header line grow without limit, ahead of the ranked results
+	// this payload's --max-context-bytes budget already accounts for elsewhere —
+	// exactly the kind of unbudgeted, repository-controlled bytes that ceiling
+	// exists to rule out.
+	sourceNames := report.Sources
+	if len(sourceNames) > maxRenderedRepoExclusions {
+		sourceNames = sourceNames[:maxRenderedRepoExclusions]
+	}
+	names := make([]string, 0, len(sourceNames))
+	for _, source := range sourceNames {
 		names = append(names, termsafe.Line(source.File))
+	}
+	sourcesLabel := strings.Join(names, ", ")
+	if remaining := len(report.Sources) - len(sourceNames); remaining > 0 {
+		sourcesLabel += fmt.Sprintf(", +%d more", remaining)
 	}
 	// A count of zero is not "nothing was excluded" whenever the report also
 	// says the count could not be completed: an ignored tree that was unreadable
@@ -636,7 +653,7 @@ func RenderRepoIgnoreDisclosure(report *RepoIgnoreReport) []byte {
 			"how much could not be determined\n")
 	} else {
 		fmt.Fprintf(&out, "EXCLUDED: %d file%s removed from this corpus by the repository's own ignore rules (%s)\n",
-			report.Files, pluralS(report.Files), strings.Join(names, ", "))
+			report.Files, pluralS(report.Files), sourcesLabel)
 	}
 	shown := report.Sample
 	if len(shown) > maxRenderedRepoExclusions {
