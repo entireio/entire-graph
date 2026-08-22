@@ -137,3 +137,77 @@ func TestTF142R4SimilarityProducerStopsMidPass(t *testing.T) {
 		t.Fatalf("a producer stopped mid-pass must not emit a partial relation set, got %d", len(stopped))
 	}
 }
+
+// TestTF142R14SimilarityLSHBandPollsInsideBucketLoop reproduces the finding at
+// similarity.go:117 (post round-4 fix): shouldStop was consulted once per LSH
+// band, but a single band's bucket/candidate-pair expansion can run to
+// maxSimilarityCandidates (2,000,000) map insertions with no poll in between.
+//
+// Every symbol here has distinct enough tokens that no two land in the same
+// LSH bucket, so zero candidate pairs are ever formed and the final
+// relations loop never runs: the ONLY source of extra shouldStop calls beyond
+// "once per path/symbol during signature building, plus once per band" is a
+// poll inside the per-band bucket loop itself. A stop predicate that always
+// returns false (so the pass runs to completion and the call count is fully
+// determined) isolates that source precisely.
+func TestTF142R14SimilarityLSHBandPollsInsideBucketLoop(t *testing.T) {
+	t.Parallel()
+	const symbols = 24
+	records := map[string][]SymbolRecord{}
+	bodies := map[string]string{}
+	for i := range symbols {
+		path := fmt.Sprintf("pkg%02d/u.js", i)
+		// Distinct identifiers and operators in every symbol so shingle sets
+		// barely overlap: this must not form any LSH bucket collision.
+		op := []string{"+", "-", "*", "^", "%"}[i%5]
+		body := fmt.Sprintf(
+			"function fn%d(alpha%d, beta%d) {\n  let gamma%d = alpha%d %s beta%d;\n  let delta%d = gamma%d %s alpha%d;\n  return delta%d %s beta%d;\n}\n",
+			i, i, i, i, i, op, i, i, i, op, i, i, op, i,
+		)
+		bodies[path] = body
+		records[path] = []SymbolRecord{{
+			ID: fmt.Sprintf("sym%02d", i), Kind: "function", Name: fmt.Sprintf("fn%d", i),
+			FilePath: path, StartLine: 1, EndLine: 5,
+		}}
+	}
+	read := func(p string) (string, bool) { b, ok := bodies[p]; return b, ok }
+
+	if got := similarityRelations(records, read, nil); len(got) != 0 {
+		t.Fatalf("fixture must be pairwise dissimilar (no LSH bucket collisions), got %d relations: %v", len(got), got)
+	}
+
+	calls := 0
+	neverStop := func() bool { calls++; return false }
+	if got := similarityRelations(records, read, neverStop); len(got) != 0 {
+		t.Fatalf("a stop predicate that never fires must not change the result, got %d relations", len(got))
+	}
+
+	// Without a doc-loop poll: calls == 2*symbols (path+symbol read loop) +
+	// lshBands (one check per band, at the top, before any bucket work) + 0
+	// (no candidates, so the final relations loop never iterates).
+	perBandTopOnly := 2*symbols + lshBands
+	if calls <= perBandTopOnly {
+		t.Fatalf("shouldStop was called %d times, expected more than %d (once per path/symbol plus once per band): "+
+			"the per-band bucket loop is not polling shouldStop at all", calls, perBandTopOnly)
+	}
+	// With the fix, keyIdx==0 always polls once more per band (every band has
+	// at least one non-empty bucket here, since every symbol falls somewhere),
+	// so the floor is one extra check per band beyond the band-top check.
+	wantAtLeast := perBandTopOnly + lshBands
+	if calls < wantAtLeast {
+		t.Fatalf("shouldStop was called %d times, want at least %d (an extra poll per band inside the bucket loop)",
+			calls, wantAtLeast)
+	}
+
+	// And the poll must actually be able to abort mid-band: once shouldStop
+	// fires, no further work should be attempted for this band or later ones.
+	afterFirstBandTop := 2*symbols + 1
+	trip := 0
+	stopSoon := func() bool {
+		trip++
+		return trip > afterFirstBandTop
+	}
+	if got := similarityRelations(records, read, stopSoon); got != nil {
+		t.Fatalf("a producer halted inside a band's bucket loop must return nil, got %d relations", len(got))
+	}
+}

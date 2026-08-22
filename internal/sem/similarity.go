@@ -129,7 +129,17 @@ func similarityRelations(recordsByFile map[string][]SymbolRecord, readContent co
 			keys = append(keys, key)
 		}
 		sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-		for _, key := range keys {
+		for keyIdx, key := range keys {
+			// One band's bucket set can hold thousands of entries even though
+			// each bucket's own O(k^2) expansion is capped by maxBucketMembers:
+			// the halt() above only fires once per band, so a band with many
+			// buckets built its entire candidate contribution — up to the
+			// 2,000,000-pair global cap — without a single budget poll in
+			// between. Polled every budgetPollStride buckets like the other
+			// bounded scans in this package.
+			if keyIdx%budgetPollStride == 0 && halt() {
+				return nil
+			}
 			group := buckets[key]
 			if len(group) > maxBucketMembers {
 				continue // mass-duplication bucket: skip its O(k^2) pairs (noise + the explosion source)
