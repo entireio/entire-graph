@@ -1986,7 +1986,7 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	if cmd.WaitDelay != gitCommandWaitDelay || cmd.WaitDelay == 0 {
 		t.Fatalf("stable-locale command WaitDelay = %v, want %v", cmd.WaitDelay, gitCommandWaitDelay)
 	}
-	lcAll, lang, pwd, noReplace := "", "", "", ""
+	lcAll, lang, pwd, noReplace, noLazyFetch := "", "", "", "", ""
 	for _, kv := range cmd.Env {
 		if v, ok := strings.CutPrefix(kv, "LC_ALL="); ok {
 			lcAll = v
@@ -2000,6 +2000,9 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 		if v, ok := strings.CutPrefix(kv, "GIT_NO_REPLACE_OBJECTS="); ok {
 			noReplace = v
 		}
+		if v, ok := strings.CutPrefix(kv, "GIT_NO_LAZY_FETCH="); ok {
+			noLazyFetch = v
+		}
 	}
 	if lcAll != "C" || lang != "C" {
 		t.Fatalf("effective subprocess locale LC_ALL=%q LANG=%q, want both \"C\"", lcAll, lang)
@@ -2010,12 +2013,15 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	if noReplace != "1" {
 		t.Fatalf("effective GIT_NO_REPLACE_OBJECTS=%q, want 1", noReplace)
 	}
+	if noLazyFetch != "1" {
+		t.Fatalf("effective GIT_NO_LAZY_FETCH=%q, want 1: a partial clone's promisor remote must never be contacted by this no-egress provider", noLazyFetch)
+	}
 
 	grepCmd := newGitCmdWithCallerLocale(context.Background(), dir, "version")
 	if grepCmd.WaitDelay != gitCommandWaitDelay || grepCmd.WaitDelay == 0 {
 		t.Fatalf("caller-locale command WaitDelay = %v, want %v", grepCmd.WaitDelay, gitCommandWaitDelay)
 	}
-	lcAll, pwd, noReplace = "", "", ""
+	lcAll, pwd, noReplace, noLazyFetch = "", "", "", ""
 	for _, kv := range grepCmd.Env {
 		if v, ok := strings.CutPrefix(kv, "LC_ALL="); ok {
 			lcAll = v
@@ -2026,6 +2032,9 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 		if v, ok := strings.CutPrefix(kv, "GIT_NO_REPLACE_OBJECTS="); ok {
 			noReplace = v
 		}
+		if v, ok := strings.CutPrefix(kv, "GIT_NO_LAZY_FETCH="); ok {
+			noLazyFetch = v
+		}
 	}
 	if lcAll != "fr_FR.UTF-8" {
 		t.Fatalf("caller-locale git command LC_ALL=%q, want inherited locale", lcAll)
@@ -2035,6 +2044,9 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	}
 	if noReplace != "1" {
 		t.Fatalf("caller-locale git command GIT_NO_REPLACE_OBJECTS=%q, want 1", noReplace)
+	}
+	if noLazyFetch != "1" {
+		t.Fatalf("caller-locale git command GIT_NO_LAZY_FETCH=%q, want 1", noLazyFetch)
 	}
 }
 

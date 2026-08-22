@@ -109,6 +109,15 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 	defer func() { _ = limited.Close() }()
 
 	limitedOversize := map[string]int64{}
+	// limitedOversizeUnscanned records every oversized path whose size came
+	// from LimitedFileReader rather than the batch reader's oversize scanner
+	// below: LimitedFileReader has no content-scanning capability of its own,
+	// so oversizeMatched can never be populated for these paths. That used to
+	// silently read as "did not match" on the full-tree fallback (prefiltered
+	// == false), undercounting dependents for any line-unsafe or
+	// batch-ineligible oversized file that does contain a changed name. With
+	// no candidate evidence either way, warn rather than assume a miss.
+	limitedOversizeUnscanned := map[string]bool{}
 	limitedUnaddressable := map[string]bool{}
 	readLimitedFile := func(path string) (string, bool, error) {
 		if !gitutil.IsCanonicalGitTreePath(path) {
@@ -121,6 +130,7 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 		}
 		if result.Status == gitutil.LimitedFileOversize {
 			limitedOversize[path] = result.Bytes
+			limitedOversizeUnscanned[path] = true
 		}
 		if result.Status == gitutil.LimitedFileUnaddressable {
 			limitedUnaddressable[path] = true
@@ -242,13 +252,20 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 			break
 		}
 		if !ok {
-			// In a fallback full-tree scan, an unsafe oversized file has
-			// no streamed content evidence. Do not claim relevance merely from
-			// its size; the normal git-grep prefilter makes this rare path exact.
-			if size, oversize := oversizeBytes(path); oversize && (prefiltered || oversizeMatched[path]) {
+			// In a fallback full-tree scan, an unsafe oversized file has no
+			// streamed content evidence unless the batch reader's oversize
+			// scanner actually ran on it (oversizeMatched). A path the batch
+			// reader could not touch at all -- read through LimitedFileReader
+			// instead, tracked by limitedOversizeUnscanned -- has no candidate
+			// evidence in either direction, so it must warn rather than be
+			// silently assumed clean; the same applies to a path this scan
+			// cannot address at all. Both are rare, so this does not reopen
+			// the vendored-blob warning spam the isCandidate check above
+			// exists to avoid.
+			if size, oversize := oversizeBytes(path); oversize && (prefiltered || oversizeMatched[path] || limitedOversizeUnscanned[path]) {
 				warnings = append(warnings, dependentsFileTooLargeWarning(path, int(size)))
 			}
-			if limitedUnaddressable[path] && prefiltered {
+			if limitedUnaddressable[path] {
 				warnings = append(warnings, dependentsFileUnaddressableWarning(path))
 			}
 			continue
@@ -353,10 +370,12 @@ func dependentsFileTooLargeWarning(path string, size int) ProviderWarning {
 	}
 }
 
-// dependentsFileUnaddressableWarning reports a known-relevant candidate whose
-// unusual path could not be resolved within the shared bounded metadata
-// traversal. On the full-tree grep fallback, relevance is unknown without the
-// content, so callers deliberately do not emit this warning.
+// dependentsFileUnaddressableWarning reports a candidate whose unusual path
+// could not be resolved within the shared bounded metadata traversal. Its
+// content is never available by definition, so relevance can never be
+// confirmed OR ruled out on the full-tree grep fallback either; callers emit
+// this warning unconditionally rather than silently undercounting
+// dependents_count for a path that might have been relevant.
 func dependentsFileUnaddressableWarning(path string) ProviderWarning {
 	return ProviderWarning{
 		Code:                 "E_FILE_READ",

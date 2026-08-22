@@ -305,6 +305,58 @@ func TestBuildReferenceIndexFallbackWarnsOnlyForCandidateFiles(t *testing.T) {
 	}
 }
 
+// TestBuildReferenceIndexFallbackWarnsForLineUnsafeOversizedCandidate
+// reproduces the dependents.go:248 finding: a candidate whose path the batch
+// reader's IsPathSafe rejects (here, an embedded newline) is read through
+// LimitedFileReader instead, which has no content-scanning capability of its
+// own, so oversizeMatched can never be populated for it. On the full-tree
+// fallback (git-grep failed, prefiltered == false) that used to read as "did
+// not match" and silently drop the E_FILE_TOO_LARGE warning even though the
+// file does contain a changed name, undercounting dependents_count with
+// nothing in Result.Warnings to show for it. With no candidate evidence
+// either way, it must warn.
+func TestBuildReferenceIndexFallbackWarnsForLineUnsafeOversizedCandidate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("embedded-newline paths are not representable in a Windows working tree")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	// importDeepDependentFiles treats a single path component as both the
+	// containing tree's name and the blob's own name, so a genuinely flat
+	// path needs a directory component to avoid an unrelated self-nesting
+	// quirk in the fixture builder.
+	const unsafePath = "d/unsafe\ncaller.py"
+	head := importDeepDependentFiles(t, repo, []deepDependentFile{{
+		path:    unsafePath,
+		content: paddedPythonSource("unsafe_caller", "Foo", defaultMaxParseBytes+4096),
+	}})
+
+	// The NUL byte forces the grep prefilter to fail, exactly as in
+	// TestBuildReferenceIndexFallbackWarnsOnlyForCandidateFiles, so
+	// buildReferenceIndex takes the full-tree fallback.
+	names := map[string]struct{}{
+		"Foo":         {},
+		"poison\x00x": {},
+	}
+	_, warnings, err := buildReferenceIndex(context.Background(), repo, head, names)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sawTooLarge := false
+	for _, warning := range warnings {
+		if warning.Code == "E_FILE_TOO_LARGE" && warning.FilePath == unsafePath {
+			sawTooLarge = true
+		}
+	}
+	if !sawTooLarge {
+		t.Fatalf("expected E_FILE_TOO_LARGE for the line-unsafe oversized candidate, got %#v", warnings)
+	}
+}
+
 // pfBrokenCallsFooTS is a hard tree-sitter parse failure (mirrors
 // analyze_parsefailure_test.go's pfBrokenTS trick: a malformed leading type
 // alias derails the whole parse) that also contains a whole-token match for
