@@ -881,7 +881,7 @@ func (r *nestedIgnoreRules) ReincludesDescendant(rel string) bool {
 		return true
 	}
 	for _, dir := range r.unreadableDirs {
-		if dirContainsPath(dir, rel) {
+		if subtreesOverlap(dir, rel) {
 			return true
 		}
 	}
@@ -904,16 +904,15 @@ func pathUnder(dir, rel string) (string, bool) {
 	return strings.TrimPrefix(rel, dir+"/"), true
 }
 
-// dirContainsPath reports whether rel names dir itself or something under it.
-// skipVendoredDir queries ReincludesDescendant with rel equal to the candidate
-// vendored directory itself (not one of its files), so an unreadable nested
-// .gitignore's own directory has to match here, not only its descendants —
-// pathUnder alone (a strict "dir/" prefix) never matches that equal case.
-func dirContainsPath(dir, rel string) bool {
-	if dir == "" || rel == dir {
+// subtreesOverlap reports whether either path is the other path or its
+// ancestor. An unreadable nested .gitignore makes both its own subtree and any
+// ancestor that the vendored-directory heuristic might skip unknowable: if the
+// ancestor were skipped, traversal would never reach the unreadable rules.
+func subtreesOverlap(a, b string) bool {
+	if a == "" || b == "" || a == b {
 		return true
 	}
-	return strings.HasPrefix(rel, dir+"/")
+	return strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
 
 func (m ignoreMatcher) MayIncludeDescendant(rel string) bool {

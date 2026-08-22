@@ -139,3 +139,28 @@ func TestNestedVendorGitignoreStillExcludesUnrelatedVendoredPathsWhenAnotherIsUn
 			" of its own must still be excluded when only vendor/.gitignore is unreadable")
 	}
 }
+
+func TestUnreadableNestedVendorGitignoreKeepsItsVendoredAncestor(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, "vendor/pkg/.gitignore", "*\n!keep.go\n")
+	writeFile(t, repo, "vendor/pkg/keep.go", "package pkg\n")
+	writeFile(t, repo, "main.go", "package main\n")
+	git(t, repo, "add", "-f", "-A")
+	git(t, repo, "commit", "-m", "nested vendor rules with a re-included file")
+
+	hash := gitRevParseOutput(t, repo, "HEAD:vendor/pkg/.gitignore")
+	deleteLooseObject(t, repo, hash)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, file := range snapshot.Files {
+		if file.Path == "vendor/pkg/keep.go" {
+			return
+		}
+	}
+	t.Error("vendor/pkg/keep.go missing: an unreadable nested .gitignore must also keep a vendored ancestor that traversal must cross")
+}
