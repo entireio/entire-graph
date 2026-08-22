@@ -1454,11 +1454,15 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 // recorded, so Files stays a stated lower bound rather than a silently short
 // number.
 //
-// Entries are sorted after reading, so any directory that fits the budget — every
-// directory in a real repository — is walked in filepath.WalkDir's own order and
-// the disclosure is unchanged. Only a directory larger than the remaining budget
-// takes directory order for its prefix, and that report already says the count
-// is incomplete.
+// Entries are sorted by listingOrderKey after reading — the same key
+// capSourceFiles' flat listing sorts by, not filepath.WalkDir's plain Name()
+// order, which disagrees with it at every directory/file name collision (a
+// sibling `a.go` and `a/` visit in the opposite order under the two keys; see
+// listingOrderKey). Matching that key is what lets a position counted here
+// agree with the position the same path would hold in the listing the file
+// cap truncates. Only a directory larger than the remaining budget takes
+// filesystem order for its prefix, and that report already says the count is
+// incomplete.
 func walkPrunedBounded(ledger *repoIgnoreLedger, root string, fn fs.WalkDirFunc) {
 	info, err := os.Lstat(root)
 	var entry fs.DirEntry
@@ -1546,7 +1550,16 @@ func readDirBounded(ledger *repoIgnoreLedger, dir string) ([]fs.DirEntry, error)
 		ledger.noteCountIncomplete()
 		entries = entries[:remaining]
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	// Sort by the same key listingOrderWalk/capSourceFiles use, not by bare
+	// Name(): a directory `a/` sorts before the sibling file `a.go` by name
+	// alone, but capSourceFiles truncates the flat listing where `a.go`
+	// (nothing after it sorts below the '.' in its own name) comes first and
+	// everything under `a/` comes after. Sorting these children by Name()
+	// alone let this walker visit `a/` — and prune-account for its
+	// descendants — before `a.go`, while the outer walk's cap had already
+	// admitted `a.go` and excluded `a/`'s descendants (or vice versa),
+	// mismatching which candidates the two passes agree are inside the cap.
+	sort.Slice(entries, func(i, j int) bool { return listingOrderKey(entries[i]) < listingOrderKey(entries[j]) })
 	return entries, nil
 }
 

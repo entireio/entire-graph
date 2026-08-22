@@ -202,6 +202,50 @@ func TestPrunedTreeGitSwallowMarksThePositionIncomplete(t *testing.T) {
 	}
 }
 
+// TestPrunedExclusionAccountingOrdersCandidatesLikeTheOuterCapDoes reproduces
+// the trail finding on readDirBounded's sort key: a pruned directory holding a
+// sibling file `a.go` and directory `a/` (containing `a/big.go`) visits `a/`
+// FIRST when its children are sorted by bare Name() (`"a" < "a.go"`
+// byte-for-byte), while the flat listing capSourceFiles truncates sorts
+// `a.go` first (`'.'` is 0x2E, below `'/'` at 0x2F, so "a.go" < "a/big.go").
+// At a cap boundary that falls between the two, the two passes must agree on
+// which one path crosses it — otherwise the accounting attributes the
+// exclusion of a/big.go (a path the cap alone would already exclude) to the
+// ignore rule, while silently dropping a.go (a path genuinely inside the cap)
+// as though the cap had excluded it.
+func TestPrunedExclusionAccountingOrdersCandidatesLikeTheOuterCapDoes(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	write(t, root, graphIgnoreFileName, "hidden/\n")
+	write(t, root, "hidden/a.go", "package a\n")
+	write(t, root, "hidden/a/big.go", "package a\n")
+
+	ignores, err := loadWorktreeIgnoreMatcher(root, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger := &repoIgnoreLedger{listingLimit: 1}
+	stack := newNestedIgnoreStack(root, ignores)
+	stack.notePrunedRepoExclusion(ledger, "hidden", func(string) bool { return false })
+
+	report := ledger.report()
+	if report == nil {
+		t.Fatal("a pruned tree at the cap boundary disclosed nothing")
+	}
+	named := make(map[string]bool)
+	for _, exclusion := range report.Sample {
+		named[exclusion.Path] = true
+	}
+	if !named["hidden/a.go"] {
+		t.Errorf("hidden/a.go is the one candidate inside the file cap in capSourceFiles' own flat order"+
+			" ('.' sorts below '/'), so it must be attributed to the %s rule; report = %+v", graphIgnoreFileName, report)
+	}
+	if named["hidden/a/big.go"] {
+		t.Errorf("hidden/a/big.go falls past the file cap in capSourceFiles' own flat order and must not"+
+			" be blamed on the %s rule instead; report = %+v", graphIgnoreFileName, report)
+	}
+}
+
 // TestPrunedLedgerBookkeepingStaysInsideTheListingCap is the lock for the
 // "`seen` grows without bound" reading of this ledger.
 //
