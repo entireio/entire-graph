@@ -778,7 +778,20 @@ func readTrimmedFile(path string, maxBytes int64) (string, bool) {
 
 func (m *ignoreMatcher) loadOptional(file string, includeMode bool, origin ignoreOrigin) error {
 	label := ignoreFileLabel(includeMode)
-	info, err := os.Stat(file)
+	// Lstat, not Stat: a repository-controlled ignore file (.gitignore,
+	// .graphignore, .git/info/exclude) that is ITSELF a symlink can be made to
+	// point outside the repository — at a sibling .env, say — and the
+	// disclosure feature below echoes the matched PATTERN TEXT of whichever
+	// rule decided a path into the JSON/NDJSON response (repoExclusion's
+	// Rule field). Stat follows the link and reads the external target's
+	// content as if it were the repository's own ignore rules, which turns
+	// that disclosure into an arbitrary local-file-read primitive. Lstat
+	// reports the link itself, which fails IsRegular() below the same way an
+	// existing non-regular file (a directory, say) already does, so a
+	// symlinked ignore file hits the SAME "not a regular file" hard failure
+	// that path already produced — it is never opened, so its target is
+	// never dereferenced or read.
+	info, err := os.Lstat(file)
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
 		// ENOTDIR: a parent component is not a directory, so the file cannot exist.
 		// For an OPTIONAL exclude file that is absence, never a hard failure.
@@ -795,7 +808,12 @@ func (m *ignoreMatcher) loadOptional(file string, includeMode bool, origin ignor
 
 func (m *ignoreMatcher) loadRequired(file string, includeMode bool, origin ignoreOrigin) error {
 	label := ignoreFileLabel(includeMode)
-	info, err := os.Stat(file)
+	// Lstat: see loadOptional. An explicit --ignore-file/--include-file is
+	// caller-supplied rather than repository-controlled, but a symlink there
+	// is refused the same way for the same reason — this loader has no way to
+	// tell a caller's OWN symlink from one a checked-out repository planted
+	// under a path the caller happened to name.
+	info, err := os.Lstat(file)
 	if errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("%s %q does not exist", label, file)
 	}
@@ -1118,7 +1136,12 @@ func (s *nestedIgnoreStack) enterCharged(ledger *repoIgnoreLedger, dir string) b
 		return true
 	}
 	file := filepath.Join(s.repo, filepath.FromSlash(dir), ".gitignore")
-	info, err := os.Stat(file)
+	// Lstat, not Stat: see loadOptional's comment. A nested .gitignore that is
+	// itself a symlink to outside the repository must not have its target's
+	// content read and echoed as rule text; treated as absent here exactly
+	// like a missing file, descent continues with one fewer level of rules
+	// rather than following the link.
+	info, err := os.Lstat(file)
 	if err != nil || !info.Mode().IsRegular() {
 		return true
 	}
