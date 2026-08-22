@@ -1862,8 +1862,8 @@ func run(ctx context.Context, dir, name string, args ...string) (string, error) 
 }
 
 const (
-	rawGitObjectsEnv    = "GIT_NO_REPLACE_OBJECTS=1"
-	noLazyFetchEnv      = "GIT_NO_LAZY_FETCH=1"
+	rawGitObjectsEnv = "GIT_NO_REPLACE_OBJECTS=1"
+	noLazyFetchEnv   = "GIT_NO_LAZY_FETCH=1"
 	// noTransportProtocolEnv is a second, independent no-egress guard.
 	// GIT_NO_LAZY_FETCH only became effective in Git 2.45 (git/git@2c206fc);
 	// this package's floor is Git 2.36 (cat-file --batch-command), so on any
