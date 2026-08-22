@@ -376,6 +376,17 @@ type ProviderSnapshotOptions struct {
 	// (see searchSnapshotKey), so a forced rebuild refreshes the same entry every
 	// other reader serves.
 	ForceRebuild bool
+	// trackRepoIgnored opts into the repoIgnoreLedger accounting inside
+	// openSource: without it the ledger stays nil and every ledger method is a
+	// no-op (see repoIgnoreLedger's nil receivers), so no extra directory reads
+	// or nested-.gitignore parsing happen for a caller that never looks at the
+	// result. Only preselectSearchFiles reads sourceContext.repoIgnored today
+	// (into SearchResponse.RepoIgnored); every other prepareSource caller
+	// (snapshot/index/symbol/edge building) discarded the report, yet paid the
+	// walk-into-every-pruned-directory cost of producing it on every open.
+	// Deliberately unexported: it is an internal wiring detail, not a documented
+	// option, and is not part of the cache key (it changes no snapshot content).
+	trackRepoIgnored bool
 }
 
 type BuildPhase string
@@ -1420,10 +1431,11 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 		committedRevision = commit
 	}
 	opened, err := openSource(ctx, absRepo, committedRevision, sourceOptions{
-		ignoreFiles:  options.IgnoreFiles,
-		includeFiles: options.IncludeFiles,
-		maxReadBytes: resolveMaxParseBytes(options.MaxParseBytes),
-		maxFiles:     options.MaxFiles,
+		ignoreFiles:      options.IgnoreFiles,
+		includeFiles:     options.IncludeFiles,
+		maxReadBytes:     resolveMaxParseBytes(options.MaxParseBytes),
+		maxFiles:         options.MaxFiles,
+		trackRepoIgnored: options.trackRepoIgnored,
 	})
 	if err != nil {
 		return sourceContext{}, err
@@ -9740,6 +9752,9 @@ type sourceOptions struct {
 	// maxFiles caps how many paths the listing returns. Zero uses the provider
 	// default; negative removes the cap.
 	maxFiles int
+	// trackRepoIgnored opts into building a real repoIgnoreLedger. See
+	// ProviderSnapshotOptions.trackRepoIgnored for why this defaults to off.
+	trackRepoIgnored bool
 }
 
 // openedSource is what openSource resolves: the file list, the per-file readers,
@@ -9782,8 +9797,13 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		paths = filterVendoredPaths(paths, headVendorIgnoreRules(ctx, repo, committedRevision, paths))
 		// Every path in a committed-tree listing is tracked by construction, so
 		// anything the ignore rules drop here is source Git itself would show the
-		// reader. That is precisely the set worth disclosing.
-		ledger := &repoIgnoreLedger{listingLimit: resolveMaxSourceFiles(options.maxFiles)}
+		// reader. That is precisely the set worth disclosing. A nil ledger (every
+		// caller but search) makes every method below a no-op: see
+		// trackRepoIgnored.
+		var ledger *repoIgnoreLedger
+		if options.trackRepoIgnored {
+			ledger = &repoIgnoreLedger{listingLimit: resolveMaxSourceFiles(options.maxFiles)}
+		}
 		paths = filterIgnoredPaths(paths, ignores, ledger)
 		paths, warnings := capSourceFiles(paths, options.maxFiles)
 		batch, err := gitutil.NewBatchFileReader(ctx, repo, committedRevision)
@@ -9838,7 +9858,14 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 	if err != nil {
 		return openedSource{}, err
 	}
-	worktreeLedger := &repoIgnoreLedger{listingLimit: resolveMaxSourceFiles(options.maxFiles)}
+	// A nil ledger (every caller but search) makes every method below a
+	// no-op, including the pruned-directory walk that would otherwise descend
+	// into an ignored tree just to produce a report nobody reads: see
+	// trackRepoIgnored.
+	var worktreeLedger *repoIgnoreLedger
+	if options.trackRepoIgnored {
+		worktreeLedger = &repoIgnoreLedger{listingLimit: resolveMaxSourceFiles(options.maxFiles)}
+	}
 	paths, err := worktreeSourceFiles(ctx, repo, ignores, len(options.includeFiles) > 0, worktreeLedger)
 	if err != nil {
 		return openedSource{}, err

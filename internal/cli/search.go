@@ -459,9 +459,21 @@ func writeTextSearch(out interface{ Write([]byte) (int, error) }, response sem.S
 	// of the corpus this answer came from. A reader who has already read the ranked
 	// hits has decided the answer is complete, so a disclosure printed after them is
 	// a disclosure nobody acts on.
+	//
+	// This block is repository-controlled (excluded path names, .gitignore/
+	// .graphignore file names, unreadable directory names) and is written here
+	// AHEAD of the ranked results that response.Stats.ResultBytes was already fit
+	// to response.Stats.ContextBudgetBytes for — so it is charged against that
+	// same ceiling rather than added on top of it. A caller who asked for a tiny
+	// ceiling gets no disclosure rather than a payload that blows past the
+	// ceiling before a single ranked result is printed; the JSON channel still
+	// carries the full, uncapped report regardless (response.RepoIgnored).
 	if block := sem.RenderRepoIgnoreDisclosure(response.RepoIgnored); len(block) > 0 {
-		if _, err := out.Write(block); err != nil {
-			return err
+		budget := response.Stats.ContextBudgetBytes
+		if budget <= 0 || len(block) < budget {
+			if _, err := out.Write(block); err != nil {
+				return err
+			}
 		}
 	}
 	if notice, _ := searchLowConfidenceNotices(response); len(notice) > 0 {

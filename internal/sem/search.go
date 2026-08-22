@@ -687,8 +687,21 @@ func RenderRepoIgnoreDisclosure(report *RepoIgnoreReport) []byte {
 	// was one.
 	if report.CountIncomplete {
 		if len(report.Unreadable) > 0 {
-			fmt.Fprintf(&out, "- count is a LOWER BOUND: %s could not be read\n",
-				termsafe.Line(strings.Join(report.Unreadable, ", ")))
+			// Capped like Sources and Sample above, and for the same reason:
+			// Unreadable carries one entry per unreadable repository-controlled
+			// directory with no upper bound of its own (the ledger samples up to
+			// maxRepoExclusionSample of them). Joining every one of them here
+			// made this single line grow with the size of the broken subtree
+			// instead of the size of the answer.
+			unreadable := report.Unreadable
+			if len(unreadable) > maxRenderedRepoExclusions {
+				unreadable = unreadable[:maxRenderedRepoExclusions]
+			}
+			line := termsafe.Line(strings.Join(unreadable, ", "))
+			if remaining := len(report.Unreadable) - len(unreadable); remaining > 0 {
+				line += fmt.Sprintf(", +%d more", remaining)
+			}
+			fmt.Fprintf(&out, "- count is a LOWER BOUND: %s could not be read\n", line)
 		} else {
 			// An empty list rendered "- count is a LOWER BOUND:  could not be read",
 			// which reads as a broken checkout to someone whose tree is merely big.
@@ -1950,6 +1963,11 @@ func preselectSearchFiles(
 		Worktree:     options.Worktree,
 		IgnoreFiles:  options.IgnoreFiles,
 		IncludeFiles: options.IncludeFiles,
+		// This is the one prepareSource caller that reads
+		// sourceContext.repoIgnored (into selection.repoIgnored below, then
+		// SearchResponse.RepoIgnored); every other caller discards it, so this
+		// is where the ledger's accounting cost is worth paying.
+		trackRepoIgnored: true,
 	})
 	if err != nil {
 		return searchFileSelection{}, err
