@@ -10452,15 +10452,19 @@ func headVendorIgnoreRules(ctx context.Context, repo, committedRevision string, 
 			FilePath:             ".gitignore",
 			EffectOnCompleteness: "the root .gitignore could not be read at the committed revision, so its re-inclusion rules are unknown; the vendored-directory heuristic is skipped for the whole snapshot rather than risk silently dropping first-party paths it would have re-included",
 		})
+		return rules, warnings
 	}
-	for _, entry := range paths {
-		rel := filepath.ToSlash(entry)
-		if path.Base(rel) != ".gitignore" || !strings.Contains(rel, "/") {
-			continue
-		}
-		if len(rules.levels) >= maxNestedIgnoreFiles {
-			break
-		}
+	nestedPaths, truncated := boundedNestedIgnorePaths(paths)
+	if truncated {
+		rules.incomplete = true
+		warnings = append(warnings, ProviderWarning{
+			Code:                 "W_VENDOR_IGNORE_LIMIT",
+			Severity:             "warning",
+			EffectOnCompleteness: "not every nested .gitignore could be inspected within the bounded input limit, so the vendored-directory heuristic is skipped for the whole snapshot rather than risk silently dropping first-party paths with unknown re-inclusion rules",
+			Detail:               fmt.Sprintf("nested .gitignore inputs exceeded the limit of %d", maxNestedIgnoreFiles),
+		})
+	}
+	for _, rel := range nestedPaths {
 		content, ok, err := gitutil.ShowFile(ctx, repo, committedRevision, rel)
 		if err != nil {
 			// A real read failure — for example a promised blob a partial
@@ -10486,6 +10490,25 @@ func headVendorIgnoreRules(ctx context.Context, repo, committedRevision string, 
 		rules.addFile(rel, content)
 	}
 	return rules, warnings
+}
+
+// boundedNestedIgnorePaths returns at most maxNestedIgnoreFiles tracked nested
+// .gitignore paths. The separate truncated result lets callers fail open and
+// disclose that some re-inclusion rules remain unknown without issuing an
+// unbounded number of Git subprocesses or retaining unbounded diagnostics.
+func boundedNestedIgnorePaths(paths []string) ([]string, bool) {
+	nested := make([]string, 0, min(len(paths), maxNestedIgnoreFiles))
+	for _, entry := range paths {
+		rel := filepath.ToSlash(entry)
+		if path.Base(rel) != ".gitignore" || !strings.Contains(rel, "/") {
+			continue
+		}
+		if len(nested) >= maxNestedIgnoreFiles {
+			return nested, true
+		}
+		nested = append(nested, rel)
+	}
+	return nested, false
 }
 
 // worktreeVendorIgnoreRules is headVendorIgnoreRules for the working tree: the

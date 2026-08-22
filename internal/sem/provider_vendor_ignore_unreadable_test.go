@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -163,4 +164,28 @@ func TestUnreadableNestedVendorGitignoreKeepsItsVendoredAncestor(t *testing.T) {
 		}
 	}
 	t.Error("vendor/pkg/keep.go missing: an unreadable nested .gitignore must also keep a vendored ancestor that traversal must cross")
+}
+
+func TestBoundedNestedIgnorePathsCapsEveryAttemptedInput(t *testing.T) {
+	paths := []string{"main.go", ".gitignore"}
+	for i := 0; i < maxNestedIgnoreFiles+1; i++ {
+		paths = append(paths, fmt.Sprintf("dir-%04d/.gitignore", i))
+	}
+
+	got, truncated := boundedNestedIgnorePaths(paths)
+	if !truncated {
+		t.Fatal("boundedNestedIgnorePaths did not disclose an input beyond the limit")
+	}
+	if len(got) != maxNestedIgnoreFiles {
+		t.Fatalf("boundedNestedIgnorePaths returned %d inputs, want bounded %d", len(got), maxNestedIgnoreFiles)
+	}
+	if last := got[len(got)-1]; last != fmt.Sprintf("dir-%04d/.gitignore", maxNestedIgnoreFiles-1) {
+		t.Fatalf("last bounded nested ignore path = %q, want stable input prefix", last)
+	}
+
+	rules := newNestedIgnoreRules(ignoreMatcher{})
+	rules.incomplete = true
+	if !rules.ReincludesDescendant("vendor") {
+		t.Fatal("incomplete nested ignore inputs did not fail open for an arbitrary vendored subtree")
+	}
 }

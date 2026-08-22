@@ -847,6 +847,10 @@ type nestedIgnoreRules struct {
 	// subtree only: the rest of the tree's rules are still known and still
 	// enforced.
 	unreadableDirs []string
+	// incomplete is set when the bounded reader cannot inspect every nested
+	// .gitignore. Unknown rules can affect any vendored subtree, so the heuristic
+	// must fail open globally instead of silently dropping possible re-inclusions.
+	incomplete bool
 }
 
 func newNestedIgnoreRules(base ignoreMatcher) *nestedIgnoreRules {
@@ -874,7 +878,7 @@ func (r *nestedIgnoreRules) addFile(file, content string) {
 // could not be read, rather than silently agree with a heuristic that has no
 // idea what the project's own re-inclusion rules say there.
 func (r *nestedIgnoreRules) ReincludesDescendant(rel string) bool {
-	if r.baseUnreadable {
+	if r.baseUnreadable || r.incomplete {
 		return true
 	}
 	if r.base.ReincludesDescendant(rel) {
