@@ -104,6 +104,70 @@ func TestBuildReferenceIndexCaseSensitiveWholeToken(t *testing.T) {
 	}
 }
 
+func TestBuildReferenceIndexWarnsWhenPrefilteredBlobDisappears(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the Git wrapper is a POSIX shell script")
+	}
+	repo, head := newDependentsTestRepo(t)
+	objectID := rev(t, repo, head+":caller_one.py")
+	objectPath := filepath.Join(repo, ".git", "objects", objectID[:2], objectID[2:])
+	if _, err := os.Stat(objectPath); err != nil {
+		t.Fatalf("locate loose candidate blob: %v", err)
+	}
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapperDir := t.TempDir()
+	wrapper := filepath.Join(wrapperDir, "git")
+	script := `#!/bin/sh
+for arg do
+	if [ "$arg" = "grep" ]; then
+		"$REAL_GIT" "$@"
+		status=$?
+		if [ "$status" -eq 0 ]; then
+			unlink "$DELETE_OBJECT"
+		fi
+		exit "$status"
+	fi
+done
+exec "$REAL_GIT" "$@"
+`
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REAL_GIT", realGit)
+	t.Setenv("DELETE_OBJECT", objectPath)
+	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	index, warnings, err := buildReferenceIndex(context.Background(), repo, head, map[string]struct{}{"Foo": {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, counted := index["Foo"]["caller_one.py#function:check"]; counted {
+		t.Fatalf("dependent was counted after its blob disappeared: %#v", index["Foo"])
+	}
+	if _, counted := index["Foo"]["caller_two.py#function:check_again"]; !counted {
+		t.Fatalf("readable dependent disappeared beside the missing blob: %#v", index["Foo"])
+	}
+	var fileWarnings []ProviderWarning
+	for _, warning := range warnings {
+		if warning.FilePath == "caller_one.py" {
+			fileWarnings = append(fileWarnings, warning)
+		}
+	}
+	if len(fileWarnings) != 1 {
+		t.Fatalf("missing blob after dependent prefilter warnings = %#v, want exactly one", fileWarnings)
+	}
+	warning := fileWarnings[0]
+	if warning.Code != "E_FILE_READ" || warning.Severity != "error" ||
+		!strings.Contains(warning.Detail, "unavailable") ||
+		!strings.Contains(warning.EffectOnCompleteness, "not counted") {
+		t.Fatalf("missing blob warning = %#v, want exact E_FILE_READ completeness disclosure", warning)
+	}
+}
+
 // TestBuildReferenceIndexEmptyNamesDoesNoWork pins that an empty names map
 // short-circuits before any git call is made -- passing a repo path that
 // does not exist must not surface an error, because buildReferenceIndex

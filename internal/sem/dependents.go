@@ -119,6 +119,7 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 	// no candidate evidence either way, warn rather than assume a miss.
 	limitedOversizeUnscanned := map[string]bool{}
 	limitedUnaddressable := map[string]bool{}
+	limitedUnavailable := map[string]gitutil.LimitedFileStatus{}
 	readLimitedFile := func(path string) (string, bool, error) {
 		if !gitutil.IsCanonicalGitTreePath(path) {
 			limitedUnaddressable[path] = true
@@ -134,6 +135,10 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 		}
 		if result.Status == gitutil.LimitedFileUnaddressable {
 			limitedUnaddressable[path] = true
+		}
+		switch result.Status {
+		case gitutil.LimitedFileMissing, gitutil.LimitedFileNonBlob, gitutil.LimitedFileUnreadable:
+			limitedUnavailable[path] = result.Status
 		}
 		return result.Content, result.Status == gitutil.LimitedFileContent, nil
 	}
@@ -155,7 +160,16 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 			if !gitutil.IsCanonicalGitTreePath(path) || !batch.IsPathSafe(path) {
 				return readLimitedFile(path)
 			}
-			return batch.ReadFile(path)
+			content, ok, err := batch.ReadFile(path)
+			if err == nil && !ok {
+				if _, oversize := batch.OversizeBlob(path); !oversize {
+					// Git grep already proved a prefiltered path existed and
+					// matched. A later missing/non-blob batch response means the
+					// promised blob became unavailable between discovery and read.
+					limitedUnavailable[path] = gitutil.LimitedFileUnreadable
+				}
+			}
+			return content, ok, err
 		}
 		oversizeBytes = func(path string) (int64, bool) {
 			if size, ok := limitedOversize[path]; ok {
@@ -267,6 +281,9 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 			}
 			if limitedUnaddressable[path] {
 				warnings = append(warnings, dependentsFileUnaddressableWarning(path))
+			}
+			if status, unavailable := limitedUnavailable[path]; unavailable && prefiltered {
+				warnings = append(warnings, dependentsFileUnavailableWarning(path, status))
 			}
 			continue
 		}
@@ -383,6 +400,22 @@ func dependentsFileUnaddressableWarning(path string) ProviderWarning {
 		FilePath:             path,
 		EffectOnCompleteness: "dependent references in this file were not counted because its Git metadata could not be resolved",
 		Detail:               "path could not be resolved within bounded Git metadata traversal",
+	}
+}
+
+func dependentsFileUnavailableWarning(path string, status gitutil.LimitedFileStatus) ProviderWarning {
+	detail := "file matched during dependent discovery but its Git blob was unavailable when content was read"
+	if status == gitutil.LimitedFileNonBlob {
+		detail = "file matched during dependent discovery but its tree entry was no longer a blob when content was read"
+	} else if status == gitutil.LimitedFileMissing {
+		detail = "file matched during dependent discovery but its tree entry was missing when content was read"
+	}
+	return ProviderWarning{
+		Code:                 "E_FILE_READ",
+		Severity:             "error",
+		FilePath:             path,
+		EffectOnCompleteness: "dependent references in this file were not counted because its Git content became unavailable after discovery",
+		Detail:               detail,
 	}
 }
 
