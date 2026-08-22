@@ -11212,7 +11212,23 @@ func hasObjectsAndRefs(common string) bool {
 			if err != nil {
 				return false
 			}
-			if filepath.VolumeName(filepath.FromSlash(target)) != filepath.VolumeName(common) {
+			target = filepath.FromSlash(target)
+			// Readlink returns the target exactly as the link stores it, which
+			// for a relative target (the ordinary case: `objects -> ../foo`,
+			// resolved against the link's OWN PARENT, common, the same way
+			// git resolves it) carries no volume of its own — VolumeName is ""
+			// for every relative path on every OS. Comparing that directly
+			// against common's volume rejected every relative objects/refs
+			// symlink on Windows ("" != "C:"), misclassifying a real git
+			// directory as ordinary content. Joining onto common first, as
+			// gitJoinRelative already does for a `.git`/`commondir` pointer's
+			// own relative target, gives the same absolute answer git's
+			// resolution would, so only a target that genuinely names a
+			// different volume (a UNC share) is rejected here.
+			if !filepath.IsAbs(target) {
+				target = gitJoinRelative(common, target)
+			}
+			if filepath.VolumeName(target) != filepath.VolumeName(common) {
 				return false
 			}
 		}
@@ -11827,16 +11843,28 @@ func (g *gitDirExcluder) observePrunedSubtree(root string) {
 // of the tree stays indexed either way. This is a narrowing of ONE subtree, not
 // of the search.
 //
-// The repository root is not a candidate, which is unchanged and deliberate:
-// observe() exempts it from the structure half already, because pointing the
-// tool at a bare repository or at a git directory is the caller's own act and
-// must keep listing what it lists today. A hidden pointer naming the root
-// therefore stays out of reach of this rule, exactly as a READ one already is.
+// The repository root IS a candidate here, even though observe() exempts it
+// from the structure half for a DIFFERENT reason: pointing the tool at a bare
+// repository or at a git directory directly is the caller's own act, and that
+// exemption keeps listing what it lists today for the ordinary case where
+// nothing was hidden. This rule reacts to something else — a `.git` pointer
+// this run could not read, which by construction could have named ANY
+// directory carrying git structure, root included. A READ pointer naming the
+// root already narrows to root's own git-owned entries rather than excluding
+// the whole tree (recordTarget's `.` case, via recordGitDirRootEntries) — it
+// does not hide an intentionally-scanned bare repository either. Skipping
+// root here left a hidden pointer landing on it as the one target this rule
+// could not close, while every other directory the same pointer could have
+// named was covered. hiddenEvidence being zero is what keeps a clean scan of
+// a bare repository untouched, exactly as before this rule runs at all.
 func (g *gitDirExcluder) promoteUnverifiedGitDirs() {
 	if g.promotedUnverified || g.hiddenEvidence == 0 {
 		return
 	}
 	g.promotedUnverified = true
+	if hasGitDirStructure(g.repo) {
+		g.addTarget(gitDirRootTarget)
+	}
 	for _, dir := range g.observedDirs {
 		if g.excluded(dir) {
 			continue
@@ -11960,9 +11988,14 @@ func gitDirPointerTarget(repo, dir string) (string, bool, bool) {
 	if !filepath.IsAbs(target) {
 		target = gitJoinRelative(base, target)
 	}
-	if rel, inside := containedRel(repo, target); inside {
-		return rel, true, false
-	}
+	// No lexical fast path on a target that EXISTS: a target that LOOKS like
+	// it is inside the repository (`<repo>/admin-link`) can still be a
+	// symlink or junction to an external or network-backed directory, and
+	// containedRel is a string comparison that cannot see that. Accepting it
+	// on lexical containment alone made hasGitDirStructure probe
+	// commondir/objects/refs through that link before this function's own
+	// EvalSymlinks-based check below ever ran.
+	//
 	// A different volume than the repository's is outside it whatever a
 	// symlink further down the path resolves to, and has to be rejected BEFORE
 	// EvalSymlinks touches it: on Windows, filepath.VolumeName reports a UNC
@@ -11976,13 +12009,32 @@ func gitDirPointerTarget(repo, dir string) (string, bool, bool) {
 	if filepath.VolumeName(target) != filepath.VolumeName(repo) {
 		return "", false, false
 	}
+	// A target that does not exist at all — the common case in a pointer
+	// naming a directory nobody created, which every caller already treats as
+	// "not a git directory" via hasGitDirStructure's own failed Stat, or one
+	// whose length exceeds what the filesystem can even look up (a name past
+	// the old 4 KiB window, still inside git's own 1 MiB ceiling, that this
+	// reader must still follow like git does) — has nothing on disk for a
+	// symlink to redirect, so the lexical answer is authoritative. Only a
+	// permission error is treated as a reason to refuse rather than fall back:
+	// it can be hiding a real symlink this process was blocked from resolving,
+	// so it is reported as outside rather than guessed at, same as before.
+	resolvedTarget, targetErr := filepath.EvalSymlinks(target)
+	if targetErr != nil {
+		if errors.Is(targetErr, fs.ErrPermission) {
+			return "", false, false
+		}
+		if rel, inside := containedRel(repo, target); inside {
+			return rel, true, false
+		}
+		return "", false, false
+	}
 	// Git writes the pointer as an absolute path, so a symlinked repository root
 	// (macOS /var -> /private/var, a symlinked checkout) makes the pointer and
 	// the caller's root spell one directory two ways. Compare their resolved
 	// forms before concluding the git directory is outside the repository.
 	resolvedRepo, repoErr := filepath.EvalSymlinks(repo)
-	resolvedTarget, targetErr := filepath.EvalSymlinks(target)
-	if repoErr != nil || targetErr != nil {
+	if repoErr != nil {
 		return "", false, false
 	}
 	if rel, inside := containedRel(resolvedRepo, resolvedTarget); inside {

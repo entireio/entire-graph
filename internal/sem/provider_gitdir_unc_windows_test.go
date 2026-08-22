@@ -121,6 +121,35 @@ func TestHasObjectsAndRefsRejectsAUNCSymlinkWithoutTouchingTheNetwork(t *testing
 	}
 }
 
+// TestHasObjectsAndRefsAcceptsARelativeSymlinkOnTheSameVolume reproduces the
+// trail finding on hasObjectsAndRefs' volume comparison: os.Readlink returns
+// a RELATIVE target exactly as the link stores it, which carries no volume of
+// its own (filepath.VolumeName is "" for every relative path), while repo is
+// an absolute `C:\...` path. Comparing that raw target against repo's volume
+// rejected every relative objects/refs symlink outright -- a layout git
+// itself accepts -- misclassifying a real git directory as ordinary content
+// and leaving its config indexable. The fix resolves a relative target
+// against the entry's own parent (the same directory gitJoinRelative already
+// resolves a `.git`/`commondir` pointer's own relative target against)
+// before comparing volumes.
+func TestHasObjectsAndRefsAcceptsARelativeSymlinkOnTheSameVolume(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "real-objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, "refs/marker.txt", "refs\n")
+	if err := os.Symlink(`real-objects`, filepath.Join(repo, "objects")); err != nil {
+		t.Fatalf("create objects symlink: %v", err)
+	}
+
+	if !hasObjectsAndRefs(repo) {
+		t.Error("hasObjectsAndRefs(repo) = false, want true: a relative objects/ symlink resolved" +
+			" against its own parent directory must be accepted, not rejected on an empty-vs-drive" +
+			" volume mismatch")
+	}
+}
+
 // TestGitInfoExcludePathRejectsAUNCCommonDirWithoutTouchingTheNetwork
 // reproduces the sibling trail finding on gitInfoExcludePath: unlike
 // gitCommonDir in provider.go, this independent commondir reader had no
