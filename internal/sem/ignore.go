@@ -618,10 +618,9 @@ func readKnownBoundedRegularFile(file, label string, expected os.FileInfo, limit
 // readWorktreeNestedIgnore applies the bounded ignore reader to a
 // repository-confined path. Root.Lstat refuses an ancestor symlink that escapes
 // repo and identifies a leaf symlink without following it. The subsequent open
-// retains the non-blocking, fstat, identity, and post-read growth checks used by
-// every other external ignore input. If a component is raced after Lstat, the
-// opened descriptor must still identify the same regular file before any bytes
-// are read.
+// is performed through the same root, so an ancestor swap cannot redirect it
+// outside the repository; it retains the non-blocking, fstat, identity, and
+// post-read growth checks used by every other external ignore input.
 func readWorktreeNestedIgnore(root *os.Root, repo, candidate string) (string, bool, error) {
 	candidate = filepath.ToSlash(candidate)
 	if candidate == "" || path.IsAbs(candidate) || path.Clean(candidate) != candidate ||
@@ -654,11 +653,13 @@ func readWorktreeNestedIgnore(root *os.Root, repo, candidate string) (string, bo
 		)
 	}
 	full := filepath.Join(repo, name)
-	content, err := readKnownBoundedRegularFile(
-		full,
-		"nested ignore file",
-		info,
-		int64(maxNestedIgnoreFileBytes),
+	opened, err := openRootBoundedRegularFile(root, name)
+	if err != nil {
+		return "", false, fmt.Errorf("read nested ignore file %q: %w", full, err)
+	}
+	defer opened.Close()
+	content, err := readOpenedBoundedRegularFile(
+		opened, info, full, "nested ignore file", int64(maxNestedIgnoreFileBytes),
 	)
 	if err != nil {
 		return "", false, err
