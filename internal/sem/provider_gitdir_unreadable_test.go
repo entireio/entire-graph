@@ -272,6 +272,59 @@ func TestWalkWorktreeFilesWarnsAboutAnUnreadableDirectory(t *testing.T) {
 	}
 }
 
+// TestWorktreeSourceFilesWarnsAboutAnUnreadableSweepDirectory reproduces the
+// trail finding on descendObserving's ReadDir error branch: an unreadable
+// directory the `.git`-pointer sweep could not read only incremented
+// hiddenEvidence, which makes promoteUnverifiedGitDirs fail closed by
+// excluding every structurally-git-shaped directory it can no longer rule
+// out — but sweepStop stays sweepRanToCompletion for this case (the sweep
+// skips the one directory and keeps going), so sweepWarnings' switch on
+// sweepStop never disclosed it. The caller had no machine-readable signal
+// that unrelated structure-only source trees may have been excluded as a
+// side effect of one unreadable directory.
+func TestWorktreeSourceFilesWarnsAboutAnUnreadableSweepDirectory(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, ".gitignore", "build/\n")
+	writeFile(t, repo, "tracked.go", "package tracked\n")
+	git(t, repo, "add", ".gitignore", "tracked.go")
+	git(t, repo, "commit", "-m", "tracked")
+	writeFile(t, repo, "build/dep/.git", "gitdir: ../../.dep-git\n")
+	writeHeadlessGitDirFixture(t, repo, ".dep-git")
+	unreadableOrSkip(t, filepath.Join(repo, "build"))
+
+	ignores, err := loadWorktreeIgnoreMatcher(repo, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, warnings, err := worktreeSourceFiles(t.Context(), repo, ignores, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var warned bool
+	for _, w := range warnings {
+		if w.Code == "W_GITDIR_SWEEP_UNREADABLE_DIRECTORY" && strings.Contains(w.Detail, "build") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("warnings = %+v, want a W_GITDIR_SWEEP_UNREADABLE_DIRECTORY warning naming \"build\":"+
+			" an unreadable sweep directory can widen exclusion via hiddenEvidence with no disclosure otherwise", warnings)
+	}
+}
+
+// TestGitDirExcluderSweepUnreadableWarningIsSilentWhenNothingWasUnreadable is
+// the widening direction: an ordinary sweep that reads everything it is given
+// must not emit the new warning.
+func TestGitDirExcluderSweepUnreadableWarningIsSilentWhenNothingWasUnreadable(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	excluder := newGitDirExcluder(t.Context(), repo)
+	if got := excluder.sweepUnreadableDirWarning(); got != nil {
+		t.Errorf("sweepUnreadableDirWarning() = %+v on a sweep with nothing unreadable, want nil", got)
+	}
+}
+
 // assertSearchFinds is the availability assertion these tests share: the
 // repository is still searchable and the ordinary source file is still in the
 // results.

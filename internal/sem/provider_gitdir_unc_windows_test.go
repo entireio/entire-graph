@@ -3,6 +3,8 @@
 package sem
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -81,5 +83,77 @@ func TestGitCommonDirRejectsAUNCTargetWithoutTouchingTheNetwork(t *testing.T) {
 	}
 	if looksLikeGit {
 		t.Error("looksLikeGitDir(repo) = true, want false: a refused commondir must not be treated as a git directory")
+	}
+}
+
+// TestHasObjectsAndRefsRejectsAUNCSymlinkWithoutTouchingTheNetwork reproduces
+// the trail finding on hasObjectsAndRefs: unlike the `.git` pointer and
+// `commondir` files, an `objects` or `refs` ENTRY that is itself a symlink to
+// a UNC share reached os.Stat directly with no volume check at all, and this
+// probe runs over every directory the sweep observes — not only ones a
+// `.git` pointer already named. A hang or a dial to the (nonexistent, per
+// RFC 5737) host would be the missing guard, not a fluke.
+func TestHasObjectsAndRefsRejectsAUNCSymlinkWithoutTouchingTheNetwork(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "refs/marker.txt", "refs\n")
+	// 203.0.113.0/24 is TEST-NET-3 (RFC 5737): reserved for documentation, so
+	// this address is never routable and a hang here would be the missing
+	// guard, not a fluke of a real host answering.
+	if err := os.Symlink(`\\203.0.113.1\share\repo\objects`, filepath.Join(repo, "objects")); err != nil {
+		t.Fatalf("create objects symlink: %v", err)
+	}
+
+	done := make(chan struct{})
+	var got bool
+	go func() {
+		got = hasObjectsAndRefs(repo)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("hasObjectsAndRefs did not return within 5s: a UNC symlink target must be rejected by" +
+			" volume before os.Stat attempts to resolve it over the network")
+	}
+	if got {
+		t.Error("hasObjectsAndRefs(repo) = true, want false: an objects/ symlink to a UNC share is never on the repository's own volume")
+	}
+}
+
+// TestGitInfoExcludePathRejectsAUNCCommonDirWithoutTouchingTheNetwork
+// reproduces the sibling trail finding on gitInfoExcludePath: unlike
+// gitCommonDir in provider.go, this independent commondir reader had no
+// volume guard at all, so a linked worktree's `.git` pointer plus a
+// `commondir` naming a UNC share made the CALLER's os.Stat(info/exclude)
+// dial an SMB share — reachable through the same NUL-aware pointer parser
+// readGitDirPointer already has to defend the `.git` file itself against.
+func TestGitInfoExcludePathRejectsAUNCCommonDirWithoutTouchingTheNetwork(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	gitDir := filepath.Join(repo, ".realgit")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, ".git", "gitdir: .realgit\n")
+	// 203.0.113.0/24 is TEST-NET-3 (RFC 5737): reserved for documentation, so
+	// this address is never routable and a hang here would be the missing
+	// guard, not a fluke of a real host answering.
+	writeFile(t, repo, ".realgit/commondir", `\\203.0.113.1\share\repo`+"\n")
+
+	done := make(chan struct{})
+	var got string
+	go func() {
+		got = gitInfoExcludePath(repo)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("gitInfoExcludePath did not return within 5s: a UNC commondir target must be rejected by" +
+			" volume before any caller's os.Stat attempts to resolve it over the network")
+	}
+	if got != "" {
+		t.Errorf("gitInfoExcludePath(repo) = %q, want \"\": a UNC commondir target is never on the repository's own volume", got)
 	}
 }

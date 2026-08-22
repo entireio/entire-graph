@@ -473,6 +473,20 @@ func gitInfoExcludePath(repo string) string {
 		if !filepath.IsAbs(common) {
 			common = gitJoinRelative(gitDir, common)
 		}
+		// A different volume than gitDir's own is rejected before the caller's
+		// os.Stat(exclude) ever reaches it: on Windows, filepath.VolumeName
+		// reports a UNC share (`\\host\share`) as its own volume, and a
+		// `commondir` naming one — reachable through the same NUL-aware
+		// pointer parser readGitDirPointer above already has to defend against
+		// for the `.git` file itself — would otherwise make this process open
+		// an SMB connection to a server the scanned repository's own committed
+		// content names, with ambient credentials, purely to look for an
+		// info/exclude file. VolumeName is "" for every relative and
+		// POSIX-absolute path, so this is a no-op off Windows. Mirrors the
+		// same guard on gitCommonDir in provider.go.
+		if filepath.VolumeName(common) != filepath.VolumeName(gitDir) {
+			return ""
+		}
 		gitDir = filepath.Clean(common)
 	}
 	return filepath.Join(gitDir, "info", "exclude")

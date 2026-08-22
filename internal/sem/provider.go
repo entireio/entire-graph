@@ -10566,9 +10566,19 @@ type gitDirExcluder struct {
 	// unreadableWalkWarning tell a caller WHICH paths were skipped instead of
 	// only that some directory, somewhere, was.
 	unreadableWalkDirs []string
+	// sweepUnreadableDirs samples the repo-relative directories descendObserving
+	// could not ReadDir (permission denied, etc.), capped at
+	// maxUnreadableWalkDirSample like unreadableWalkDirs. hiddenEvidence already
+	// counts every one of them for promoteUnverifiedGitDirs' fail-closed
+	// exclusion of unrelated structure-only trees; sweepStop stays
+	// sweepRanToCompletion for these (the sweep skips the one directory and
+	// keeps going, it does not stop), so sweepWarnings alone never surfaces
+	// them. This is what lets sweepUnreadableDirWarning disclose which
+	// directories were skipped instead of leaving the wider exclusion silent.
+	sweepUnreadableDirs []string
 }
 
-// maxUnreadableWalkDirSample bounds unreadableWalkDirs.
+// maxUnreadableWalkDirSample bounds unreadableWalkDirs and sweepUnreadableDirs.
 const maxUnreadableWalkDirSample = 8
 
 // noteUnreadableWalkDir records one directory walkWorktreeFiles could not
@@ -10603,6 +10613,44 @@ func (g *gitDirExcluder) unreadableWalkWarning() []ProviderWarning {
 		EffectOnCompleteness: "one or more directories in the working tree could not be read, so any source " +
 			"under them is absent from this listing without being reported as an error",
 		Detail: fmt.Sprintf("unreadable: %s", termsafe.Line(strings.Join(g.unreadableWalkDirs, ", "))),
+	}}
+}
+
+// noteSweepUnreadableDir records one directory descendObserving could not
+// ReadDir, for sweepUnreadableDirWarning. Unlike admitSweepDirectory's budget
+// and cancel cases, this does not set sweepStop: the sweep skips the one
+// directory and keeps going rather than stopping outright, so sweepWarnings'
+// switch on sweepStop never sees it.
+func (g *gitDirExcluder) noteSweepUnreadableDir(rel string) {
+	if len(g.sweepUnreadableDirs) >= maxUnreadableWalkDirSample {
+		return
+	}
+	label := rel
+	if label == "" {
+		label = "."
+	}
+	g.sweepUnreadableDirs = append(g.sweepUnreadableDirs, label)
+}
+
+// sweepUnreadableDirWarning reports the shortfall noteSweepUnreadableDir
+// recorded: each directory the `.git`-pointer sweep could not read may have
+// hidden a `gitdir:` pointer, and hiddenEvidence already makes
+// promoteUnverifiedGitDirs react by excluding every structurally-git-shaped
+// directory it could not rule out as a result — including unrelated,
+// structure-only source trees that merely happen to contain `objects/` and
+// `refs/` entries of their own. sweepWarnings alone never discloses this case
+// (sweepStop stays sweepRanToCompletion), so this is the only place the wider
+// exclusion is explained.
+func (g *gitDirExcluder) sweepUnreadableDirWarning() []ProviderWarning {
+	if len(g.sweepUnreadableDirs) == 0 {
+		return nil
+	}
+	return []ProviderWarning{{
+		Code:     "W_GITDIR_SWEEP_UNREADABLE_DIRECTORY",
+		Severity: "warning",
+		EffectOnCompleteness: "one or more directories could not be read while scanning for `.git` pointers, so a directory that structurally " +
+			"resembles a git directory may be excluded from the listing even though no pointer was found naming it",
+		Detail: fmt.Sprintf("unreadable: %s", termsafe.Line(strings.Join(g.sweepUnreadableDirs, ", "))),
 	}}
 }
 
@@ -11138,12 +11186,37 @@ func hasGitDirStructure(dir string) bool {
 // hasObjectsAndRefs is the objects/ and refs/ half of is_git_directory(), asked
 // of the directory git resolves them through.
 //
-// os.Stat, not os.Lstat: git accepts a repository whose object store or refs
-// tree is a symlink elsewhere, and Lstat would see the symlink rather than the
-// directory and call a real git directory ordinary content.
+// os.Stat, not os.Lstat, on the final read: git accepts a repository whose
+// object store or refs tree is a symlink elsewhere, and Lstat would see the
+// symlink rather than the directory and call a real git directory ordinary
+// content. But each entry is Lstat'd and, if it is a symlink, Readlink'd
+// first — exactly as gitDirPointerTarget and gitCommonDir already guard the
+// `.git` file and `commondir` targets — so a target on a different volume (a
+// UNC share on Windows) is rejected BEFORE os.Stat ever follows it. Without
+// this, a committed `objects -> \\host\share\x` or `refs -> \\host\share\x`
+// inside an otherwise-ordinary directory would make this structural probe —
+// which runs over every directory the sweep observes, not just ones a `.git`
+// pointer already named — open an SMB connection to a server the scanned
+// repository's own committed content names, with ambient credentials.
+// VolumeName is "" for every relative and POSIX-absolute path, so this is a
+// no-op off Windows.
 func hasObjectsAndRefs(common string) bool {
 	for _, name := range []string{"objects", "refs"} {
-		if info, err := os.Stat(filepath.Join(common, name)); err != nil || !info.IsDir() {
+		entry := filepath.Join(common, name)
+		info, err := os.Lstat(entry)
+		if err != nil {
+			return false
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(entry)
+			if err != nil {
+				return false
+			}
+			if filepath.VolumeName(filepath.FromSlash(target)) != filepath.VolumeName(common) {
+				return false
+			}
+		}
+		if info, err = os.Stat(entry); err != nil || !info.IsDir() {
 			return false
 		}
 	}
@@ -11642,6 +11715,7 @@ func (g *gitDirExcluder) descendObserving(queue []string, queued map[string]stru
 			// is there and you may not look" narrows what may be claimed.
 			if !errors.Is(err, fs.ErrNotExist) {
 				g.hiddenEvidence++
+				g.noteSweepUnreadableDir(dir)
 			}
 			continue
 		}
@@ -12181,7 +12255,8 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 		paths = append(paths, rel)
 	}
 	sort.Strings(paths)
-	return paths, gitDirs.sweepWarnings(), nil
+	warnings := append(gitDirs.sweepWarnings(), gitDirs.sweepUnreadableDirWarning()...)
+	return paths, warnings, nil
 }
 
 func includeEveryNestedIgnore(string) bool { return true }
@@ -12384,6 +12459,7 @@ func visitWalkWorktreeFiles(
 	paths = kept
 	sort.Strings(paths)
 	warnings := append(gitDirs.sweepWarnings(), gitDirs.unreadableWalkWarning()...)
+	warnings = append(warnings, gitDirs.sweepUnreadableDirWarning()...)
 	for _, rel := range paths {
 		if !visit(rel) {
 			return warnings, nil
