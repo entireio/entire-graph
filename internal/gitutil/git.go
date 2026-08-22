@@ -680,6 +680,18 @@ func ShowFileDigested(ctx context.Context, repo, rev, path string, maxBytes int6
 	// Same best-effort probe as showFileBounded: when it answers, the blob is
 	// refused before a byte of it is materialized.
 	if size, known := blobSizeAtRev(ctx, repo, rev, path); known && size > maxBytes {
+		// blobSizeAtRev's `cat-file -s` answers for any object type, not only
+		// blobs, so a non-batchable gitlink whose commit object happens to
+		// exceed maxBytes reaches here too. `git cat-file blob` refuses
+		// anything that is not a blob, so streamBlobDigest would fail on it
+		// instead of returning the clean absent result ShowFile and
+		// BatchFileReader already give a non-blob entry. Check the type
+		// first and fall through to the same absent answer when it is not a
+		// blob, at the cost of one extra small process on this already-rare
+		// oversize path.
+		if objectType, known := objectTypeAtRev(ctx, repo, rev, path); known && objectType != "blob" {
+			return "", false, OversizeBlob{}, nil
+		}
 		digest, digestErr := streamBlobDigest(ctx, repo, rev, path, scan)
 		if digestErr != nil {
 			return "", false, OversizeBlob{}, digestErr

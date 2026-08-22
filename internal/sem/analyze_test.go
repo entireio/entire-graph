@@ -45,6 +45,55 @@ def format_date(value):
 	}
 }
 
+// TestAnalyzeGitRangeGitlinkChangeWarns pins that a path whose type changes
+// between a blob and a gitlink (a submodule pointer, "T" status in git's
+// diff) is surfaced with a machine-readable warning instead of being
+// silently dropped. ShowFile reports a non-blob tree entry the same way it
+// reports a missing path (ok=false, no error), so without the caller-side
+// check this file produced neither a FileChange nor a warning: compareEntities
+// saw nil on both sides and moduleScopeChange declined a beforeOK=false,
+// afterOK=false pair.
+func TestAnalyzeGitRangeGitlinkChangeWarns(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	write(t, repo, "vendor/lib", "placeholder\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+
+	// Replace the tracked blob with a gitlink (submodule pointer) at the same
+	// path -- git reports this as a "T" (typechange) diff entry. Point the
+	// gitlink at a commit that actually exists in this repository (base)
+	// rather than an arbitrary SHA: `git cat-file -t <tree>:<path>` can only
+	// answer a gitlink's object type when the referenced commit is present in
+	// the object database, and this test needs that path exercised.
+	git(t, repo, "rm", "--cached", "vendor/lib")
+	git(t, repo, "update-index", "--add", "--cacheinfo",
+		"160000,"+base+",vendor/lib")
+	git(t, repo, "commit", "-m", "convert to submodule")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(context.Background(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("files = %#v, want none (gitlink has no entities)", result.Files)
+	}
+	found := false
+	for _, warning := range result.Warnings {
+		if warning.Code == "W_NON_BLOB_CHANGE" && warning.FilePath == "vendor/lib" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %#v, want a W_NON_BLOB_CHANGE warning for vendor/lib", result.Warnings)
+	}
+}
+
 // TestAnalyzeGitRangeSetsSchemaVersion pins that every Result built by the
 // diff/analyze path carries the package SchemaVersion — the field that lets a
 // copy persisted into checkpoint metadata be read back knowing which schema

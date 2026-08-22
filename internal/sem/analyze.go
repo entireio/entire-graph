@@ -120,6 +120,27 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 					return Result{}, err
 				}
 			}
+			// ShowFile reports a non-blob tree entry (a gitlink/submodule
+			// pointer, or any other object type) the same way it reports a
+			// missing path: ok=false, no error. Git already told us this path
+			// changed, so a side the diff says should exist coming back
+			// absent here is not a deletion or a read failure -- it is a
+			// non-blob entry. Without this check the file silently produces
+			// no changes and no warning below (compareEntities sees nil on
+			// both sides, and moduleScopeChange declines a beforeOK=false,
+			// afterOK=false pair), discarding a real gitlink change.
+			expectedBefore := file.Status != "A"
+			expectedAfter := file.Status != "D"
+			if (expectedBefore && !beforeOK) || (expectedAfter && !afterOK) {
+				result.Warnings = append(result.Warnings, ProviderWarning{
+					Code:                 "W_NON_BLOB_CHANGE",
+					Severity:             "info",
+					FilePath:             path,
+					EffectOnCompleteness: "file skipped; path is not a blob (for example, a submodule/gitlink) so its change is not analyzed",
+					Detail:               "git reported this path as changed, but at least one side could not be read as blob content",
+				})
+				continue
+			}
 		}
 
 		// Support is content-aware: extensionless executables can still route to a

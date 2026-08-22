@@ -1061,3 +1061,36 @@ func TestShowFileRefusesNonBlobEntries(t *testing.T) {
 		t.Fatalf("ShowFile(absent.go) = %q, ok=%v, err=%v; want a clean absent answer", got, ok, err)
 	}
 }
+
+// TestShowFileDigestedRefusesNonBlobEntriesInsteadOfFailing pins that a
+// non-batchable gitlink whose pointee commit is large enough to trip
+// blobSizeAtRev's cat-file -s ceiling still gets the clean absent answer
+// ShowFile and BatchFileReader give a non-blob entry, rather than the
+// streamBlobDigest branch failing outright because `git cat-file blob`
+// refuses anything that is not a blob.
+func TestShowFileDigestedRefusesNonBlobEntriesInsteadOfFailing(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	// A commit object is normally a few hundred bytes, comfortably above a
+	// tiny maxBytes ceiling, so the oversize probe fires for the gitlink too.
+	write(t, repo, "a.go", "package a\nfunc A() {}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", strings.Repeat("pad the commit object past the tiny ceiling ", 20))
+	pointee := gitOutput(t, repo, "rev-parse", "HEAD")
+	git(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+pointee+",sub")
+	git(t, repo, "commit", "-m", "add a gitlink")
+	head := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	content, ok, refused, err := ShowFileDigested(t.Context(), repo, head, "sub", 1, nil)
+	if err != nil {
+		t.Fatalf("ShowFileDigested(gitlink) err = %v, want a clean absent answer", err)
+	}
+	if ok {
+		t.Fatalf("ShowFileDigested(gitlink) = %q, ok=true; want not found", content)
+	}
+	if refused != (OversizeBlob{}) {
+		t.Fatalf("ShowFileDigested(gitlink) refused = %#v, want the zero value (never materialized as oversize content)", refused)
+	}
+}
