@@ -1440,6 +1440,20 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 		if isVendoredScanFile(childRel, entry.Name()) {
 			return nil
 		}
+		// A descendant of a pruned directory is a path the listing would have
+		// offered had the rule not been there, so it takes a position in the
+		// counterfactual listing exactly as a per-file candidate does — counted
+		// BEFORE the Git-blind-spot check below, unlike the directory prune
+		// above. There, an entire unbounded subtree goes unvisited, so its true
+		// size (and therefore how many positions it occupies) is genuinely
+		// unknown, which is why that branch marks listingPosition incomplete
+		// instead of advancing it. Here exactly one already-enumerated file is
+		// at stake, and its position IS known regardless of the verdict; a
+		// swallow that skipped this call left listingPosition short by one for
+		// every blind-spotted file, so a later exclusion could test as "inside
+		// the cap" when the real listing (with this file correctly occupying
+		// its position) would have placed it past the cap instead.
+		ledger.noteListingCandidate()
 		if sub.ignoredByGit(childRel, false) {
 			// Same swallow, one path at a time: a tracked source is visible to Git
 			// whatever .gitignore says, so this drop is unattributable rather than
@@ -1447,10 +1461,6 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 			sub.noteGitBlindSpot(ledger)
 			return nil
 		}
-		// A descendant of a pruned directory is a path the listing would have
-		// offered had the rule not been there, so it takes a position in the
-		// counterfactual listing exactly as a per-file candidate does.
-		ledger.noteListingCandidate()
 		ledger.note(RepoExclusion{
 			Path:   childRel,
 			Source: rule.origin.label,
