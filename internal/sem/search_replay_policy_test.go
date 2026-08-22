@@ -365,8 +365,8 @@ func TestSearchReplayPolicyMatchesExactResolvedTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !worktree.MatchesTree("") || !worktree.MatchesTree(secondTree) {
-		t.Fatal("effective worktree policy was incorrectly bound to a Git tree")
+	if worktree.MatchesTree("") || worktree.MatchesTree(secondTree) {
+		t.Fatal("mutable worktree policy authorized persisted replay without an immutable tree")
 	}
 	if (SearchReplayPolicy{}).MatchesTree("") {
 		t.Fatal("zero policy matched a tree")
@@ -668,6 +668,20 @@ func TestSearchReplayPolicyNonGitFallbackUsesNestedIgnoreRules(t *testing.T) {
 	}
 	if !policy.AllowsReplayPaths([]string{"nested/keep.go"}) {
 		t.Fatal("non-Git replay fallback rejected an eligible regular file")
+	}
+}
+
+func TestSearchReplayPolicyNonGitFallbackStopsAtRawCorpusBound(t *testing.T) {
+	t.Parallel()
+
+	repo := t.TempDir()
+	for index := 0; index <= SearchReplayMaxPathCount; index++ {
+		writeFile(t, repo, fmt.Sprintf("src/p-%04d.go", index), "package sample\n")
+	}
+
+	_, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
+	if !errors.Is(err, errWorktreeRawPathLimit) {
+		t.Fatalf("ResolveSearchReplayPolicy error = %v, want errWorktreeRawPathLimit", err)
 	}
 }
 

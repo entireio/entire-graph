@@ -1,11 +1,48 @@
 package gitutil
 
 import (
+	"bufio"
 	"errors"
-	"fmt"
+	"os"
+	"os/exec"
+	"strconv"
 	"testing"
 	"time"
 )
+
+const directoryEntryProducerEnv = "ENTIRE_GRAPH_TEST_DIRECTORY_ENTRY_FIELDS"
+
+func TestDirectoryEntryScaleProducer(t *testing.T) {
+	raw := os.Getenv(directoryEntryProducerEnv)
+	if raw == "" {
+		return
+	}
+	fields, err := strconv.Atoi(raw)
+	if err != nil {
+		os.Exit(2)
+	}
+	writer := bufio.NewWriterSize(os.Stdout, 64<<10)
+	for index := 0; index < fields; index++ {
+		if _, err := writer.WriteString("vendor/file.o\x00"); err != nil {
+			os.Exit(0)
+		}
+	}
+	if os.Getenv(directoryEntryProducerEnv+"_DIRS") != "" {
+		_, _ = writer.WriteString("build/\x00dist/\x00build/\x00")
+	}
+	_ = writer.Flush()
+	os.Exit(0)
+}
+
+func directoryEntryProducerCommand(t *testing.T, fields int, withDirs bool) *exec.Cmd {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestDirectoryEntryScaleProducer$")
+	cmd.Env = append(cmd.Environ(), directoryEntryProducerEnv+"="+strconv.Itoa(fields))
+	if withDirs {
+		cmd.Env = append(cmd.Env, directoryEntryProducerEnv+"_DIRS=1")
+	}
+	return cmd
+}
 
 // TestStreamNULDirectoryEntriesHandlesLargeMixedOutput reproduces the trail
 // finding on ListIgnoredWorktreeDirectoryEntries: `--directory` only
@@ -20,7 +57,7 @@ import (
 //
 // This drives a synthetic producer standing in for such a listing (one
 // million non-directory fields plus two real directory entries) through
-// streamNULDirectoryEntries directly, so the test exercises the actual pipe
+// visitWorktreeDirectoryEntryOutput directly, so the test exercises the production pipe
 // + incremental-filter code path rather than only its output-format parsing.
 // It pins two things a regression to the old buffer-then-filter approach
 // would break: exactly the directory entries come back (no leaked filenames,
@@ -29,16 +66,16 @@ import (
 // would — the streaming/filtering must happen in the same pass.
 func TestStreamNULDirectoryEntriesHandlesLargeMixedOutput(t *testing.T) {
 	const fields = 1_000_000
-	script := fmt.Sprintf(
-		`awk 'BEGIN{for(i=0;i<%d;i++) printf "vendor/dep-%%d.o%%c", i, 0; printf "build/%%c", 0; printf "dist/%%c", 0; printf "build/%%c", 0}'`,
-		fields,
-	)
 
 	start := time.Now()
-	dirs, err := streamNULDirectoryEntries(t.Context(), t.TempDir(), "sh", "-c", script)
+	var dirs []string
+	err := visitWorktreeDirectoryEntryOutput(directoryEntryProducerCommand(t, fields, true), func(dir string) bool {
+		dirs = append(dirs, dir)
+		return true
+	})
 	elapsed := time.Since(start)
 	if err != nil {
-		t.Fatalf("streamNULDirectoryEntries: %v", err)
+		t.Fatalf("visitWorktreeDirectoryEntryOutput: %v", err)
 	}
 
 	want := map[string]bool{"build/": true, "dist/": true}
@@ -58,7 +95,7 @@ func TestStreamNULDirectoryEntriesHandlesLargeMixedOutput(t *testing.T) {
 	// streams.
 	const budget = 5 * time.Second
 	if elapsed > budget {
-		t.Fatalf("streamNULDirectoryEntries took %s to process %d fields (budget %s): "+
+		t.Fatalf("visitWorktreeDirectoryEntryOutput took %s to process %d fields (budget %s): "+
 			"this smells like the listing is being buffered/rescanned instead of streamed", elapsed, fields, budget)
 	}
 }
@@ -80,17 +117,17 @@ func TestStreamNULDirectoryEntriesHandlesLargeMixedOutput(t *testing.T) {
 // with the producer's true size.
 func TestStreamNULDirectoryEntriesTruncatesAPathologicalFieldCount(t *testing.T) {
 	const fields = maxIgnoredDirectoryFields * 3
-	script := fmt.Sprintf(
-		`awk 'BEGIN{for(i=0;i<%d;i++) printf "vendor/dep-%%d.o%%c", i, 0}'`,
-		fields,
-	)
 
 	start := time.Now()
-	dirs, err := streamNULDirectoryEntries(t.Context(), t.TempDir(), "sh", "-c", script)
+	var dirs []string
+	err := visitWorktreeDirectoryEntryOutput(directoryEntryProducerCommand(t, fields, false), func(dir string) bool {
+		dirs = append(dirs, dir)
+		return true
+	})
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, errIgnoredListingTruncated) {
-		t.Fatalf("streamNULDirectoryEntries err = %v, want errIgnoredListingTruncated", err)
+		t.Fatalf("visitWorktreeDirectoryEntryOutput err = %v, want errIgnoredListingTruncated", err)
 	}
 	if len(dirs) != 0 {
 		t.Fatalf("a truncated listing returned %d dir(s), want none returned alongside the error", len(dirs))
@@ -100,7 +137,24 @@ func TestStreamNULDirectoryEntriesTruncatesAPathologicalFieldCount(t *testing.T)
 	// not after the producer finishes emitting fields ~3x past it.
 	const budget = 10 * time.Second
 	if elapsed > budget {
-		t.Fatalf("streamNULDirectoryEntries took %s to give up on a %d-field pathological listing (budget %s): "+
+		t.Fatalf("visitWorktreeDirectoryEntryOutput took %s to give up on a %d-field pathological listing (budget %s): "+
 			"it is reading past maxIgnoredDirectoryFields instead of stopping there", elapsed, fields, budget)
+	}
+}
+
+func TestVisitWorktreeDirectoryEntryOutputAllowsExactRawFieldBound(t *testing.T) {
+	var dirs []string
+	err := visitWorktreeDirectoryEntryOutput(
+		directoryEntryProducerCommand(t, maxIgnoredDirectoryFields, false),
+		func(dir string) bool {
+			dirs = append(dirs, dir)
+			return true
+		},
+	)
+	if err != nil {
+		t.Fatalf("exactly %d raw fields were truncated: %v", maxIgnoredDirectoryFields, err)
+	}
+	if len(dirs) != 0 {
+		t.Fatalf("pattern-only output produced directory entries: %v", dirs)
 	}
 }

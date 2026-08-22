@@ -15729,6 +15729,26 @@ func TestSearchRepositoryNeverIndexesGitDirNamedInAnotherNormalization(t *testin
 	assertNoGitDirLeak(t, repo, composed)
 }
 
+// TestSearchRepositoryNeverIndexesGitDirNamedWithUnicodeCaseAlias covers a
+// case-fold pair strings.ToLower does not canonicalize. Default APFS treats
+// Greek capital sigma, small sigma, and final sigma as one filename, while Go
+// lowercasing leaves final sigma distinct. The excluder must use Unicode case
+// folding so a pointer spelling Σ still excludes a listing spelling ς.
+func TestSearchRepositoryNeverIndexesGitDirNamedWithUnicodeCaseAlias(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	if !caseFoldingTestFS(t, repo) {
+		t.Skip("filesystem is case-sensitive: Greek sigma spellings are distinct here")
+	}
+	const physical = "state/\u03c2/.dep-git"
+	const pointer = "state/\u03a3/.dep-git"
+	writeFile(t, repo, "libs/dep/.git", "gitdir: ../../"+pointer+"\n")
+	writeHeadlessGitDirFixture(t, repo, physical)
+	writeFile(t, repo, "src/app.go", "package src\n\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	assertNoGitDirLeak(t, repo, physical)
+}
+
 // TestLooksLikeGitDirAcceptsSymlinkedObjectsAndRefs pins the structural half
 // against a repository layout git itself accepts: `objects` and `refs` are
 // symlinks to directories elsewhere (a shared object store, a relocated refs

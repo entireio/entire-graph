@@ -390,7 +390,7 @@ func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 	// non-directory: os.Stat returns ENOTDIR rather than ErrNotExist, and treating
 	// that as fatal aborted the entire search with zero results in every worktree.
 	if exclude := gitInfoExcludePath(repo); exclude != "" {
-		if err := matcher.loadOptional(exclude, false); err != nil {
+		if err := matcher.loadOptionalSameVolume(repo, exclude, false); err != nil {
 			return ignoreMatcher{}, err
 		}
 	}
@@ -444,14 +444,20 @@ func (m *ignoreMatcher) loadExplicit(repo string, ignoreFiles, includeFiles []st
 // lives under the common directory, not under <repo>/.git.
 func gitInfoExcludePath(repo string) string {
 	dotGit := filepath.Join(repo, ".git")
-	info, err := os.Stat(dotGit)
+	opened, _, err := openSameVolumePath(repo, dotGit)
+	if err != nil {
+		return ""
+	}
+	defer opened.Close()
+	info, err := opened.Stat()
 	if err != nil {
 		return ""
 	}
 	if info.IsDir() {
 		return filepath.Join(dotGit, "info", "exclude")
 	}
-	if !info.Mode().IsRegular() {
+	regular, err := openedFileIsRegular(opened, info)
+	if err != nil || !regular || info.Size() > maxGitFileBytes {
 		return ""
 	}
 	// One reader and one byte rule for both pointer files, in provider.go: git
@@ -461,12 +467,15 @@ func gitInfoExcludePath(repo string) string {
 	// to the same place. Reading these bytes here with rules of its own (a
 	// whole-file size test, TrimSpace, no NUL rule) disagreed with the excluder
 	// about which directory a worktree's `.git` names.
-	gitDir, ok := readGitDirPointer(dotGit)
+	gitDir, ok := readGitDirPointerFromOpened(opened, info.Size())
 	if !ok {
 		return ""
 	}
 	if !filepath.IsAbs(gitDir) {
 		gitDir = gitJoinRelative(repo, gitDir)
+	}
+	if !sameVolume(gitDir, repo) {
+		return ""
 	}
 	// commondir points at the shared .git that owns info/; it may be relative to
 	// gitDir. Resolved through gitCommonDir (provider.go), not a second,
@@ -492,6 +501,40 @@ func gitInfoExcludePath(repo string) string {
 
 func (m *ignoreMatcher) loadOptional(file string, includeMode bool) error {
 	return m.loadPath(file, includeMode, false)
+}
+
+func (m *ignoreMatcher) loadOptionalSameVolume(base, file string, includeMode bool) error {
+	label := ignoreFileLabel(includeMode)
+	opened, resolved, err := openSameVolumePath(base, file)
+	if isMissingPathError(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read %s %q: %w", label, file, err)
+	}
+	defer opened.Close()
+	info, err := opened.Stat()
+	if err != nil {
+		return fmt.Errorf("read %s %q: %w", label, file, err)
+	}
+	regular, err := openedFileIsRegular(opened, info)
+	if err != nil {
+		return fmt.Errorf("read %s %q: %w", label, file, err)
+	}
+	if !regular {
+		return fmt.Errorf("%s %q is not a regular file", label, file)
+	}
+	if info.Size() > maxIgnoreFileBytes {
+		return fmt.Errorf("read %s %q: file exceeds %d bytes", label, file, maxIgnoreFileBytes)
+	}
+	content, err := readOpenedBoundedRegularFile(opened, info, resolved, label, maxIgnoreFileBytes)
+	if err != nil {
+		return err
+	}
+	if err := m.loadContent(string(content), includeMode); err != nil {
+		return fmt.Errorf("read %s %q: %w", label, file, err)
+	}
+	return nil
 }
 
 func (m *ignoreMatcher) loadRequired(file string, includeMode bool) error {
@@ -892,8 +935,17 @@ func (s *nestedIgnoreStack) directoryReadable(dir string) bool {
 		return false
 	}
 	defer opened.Close()
-	_, err = opened.ReadDir(1)
-	return err == nil || errors.Is(err, io.EOF)
+	entries, err := opened.ReadDir(1)
+	if err != nil || len(entries) == 0 {
+		// This probe is reached only after the confined .gitignore lookup failed.
+		// An empty directory contributes no policy or source, so treating it as
+		// inaccessible is conservative and avoids pretending enumeration implies
+		// traversal/search permission.
+		return false
+	}
+	child := path.Join(cleanIgnorePath(dir), entries[0].Name())
+	_, err = s.root.Lstat(filepath.FromSlash(child))
+	return err == nil
 }
 
 // enter registers the directory the walk is about to descend into (repo-relative,

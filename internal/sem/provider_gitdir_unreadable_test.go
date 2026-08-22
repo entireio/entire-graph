@@ -40,6 +40,21 @@ func unreadableFileOrSkip(t *testing.T, path string) {
 	}
 }
 
+func enumerableButUnsearchableOrSkip(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.Chmod(dir, 0o444); err != nil {
+		t.Skipf("cannot remove directory search permission here: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) == 0 {
+		t.Skipf("filesystem cannot represent an enumerable, nonempty mode-0444 directory: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, entries[0].Name())); err == nil {
+		t.Skip("this process can traverse a mode-0444 directory anyway (root or ignored mode bits)")
+	}
+}
+
 // A sweep root the process may not READ hides the `.git` pointer inside it, and
 // the git directory that pointer names is somewhere ELSE in the tree, where git
 // lists it as ordinary untracked content. `build/` mode 000, holding
@@ -102,6 +117,23 @@ func TestSearchRepositoryNeverIndexesGitDirNamedFromAnUnreadablePointerFile(t *t
 
 	assertNoGitDirLeak(t, repo, ".dep-git")
 	assertSearchFinds(t, repo, "pkg/source.go")
+	ignores, err := loadWorktreeIgnoreMatcher(repo, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, warnings, err := worktreeSourceFiles(t.Context(), repo, ignores, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, warning := range warnings {
+		if warning.Code == "W_GITDIR_POINTER_UNREADABLE" && strings.Contains(warning.Detail, "dep/.git") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %+v, want W_GITDIR_POINTER_UNREADABLE naming dep/.git", warnings)
+	}
 }
 
 // The availability half, and the reason the report's first remedy was refused.
@@ -141,6 +173,16 @@ func TestSearchRepositoryStillIndexesSourceBesideAnUnreadableDirectory(t *testin
 			assertSearchFinds(t, repo, "src/app.go")
 		})
 	}
+}
+
+func TestSearchRepositoryStillIndexesSourceBesideEnumerableUnsearchableDirectory(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "src/app.go", "package src\n\nfunc LoadOriginCredential() string { return \"\" }\n")
+	writeFile(t, repo, "out/.gitignore", "*.go\n")
+	writeFile(t, repo, "out/gen.go", "package out\n")
+	enumerableButUnsearchableOrSkip(t, filepath.Join(repo, "out"))
+
+	assertSearchFinds(t, repo, "src/app.go")
 }
 
 // The promotion is conditional, and this is the condition. A directory holding
@@ -269,6 +311,26 @@ func TestWalkWorktreeFilesWarnsAboutAnUnreadableDirectory(t *testing.T) {
 		t.Errorf("warnings = %+v, want a W_WALK_UNREADABLE_DIRECTORY warning naming \"out\": an unreadable"+
 			" directory now silently drops the source under it from the listing, and that gap must be"+
 			" disclosed since it is no longer reported as an error", warnings)
+	}
+}
+
+func TestUnreadableEvidenceSamplesAreOrderIndependent(t *testing.T) {
+	var excluder gitDirExcluder
+	for _, value := range []string{"j", "i", "h", "g", "f", "e", "d", "c", "b", "a", "h"} {
+		excluder.noteUnreadableWalkDir(value)
+		excluder.noteSweepUnreadableDir(value)
+		excluder.noteUnreadablePointer(value)
+	}
+	want := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
+	if got := excluder.unreadableWalkDirs; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("unreadable walk sample = %v, want %v", got, want)
+	}
+	if got := excluder.sweepUnreadableDirs; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("sweep unreadable sample = %v, want %v", got, want)
+	}
+	pointerWant := []string{"a/.git", "b/.git", "c/.git", "d/.git", "e/.git", "f/.git", "g/.git", "h/.git"}
+	if got := excluder.unreadablePointers; strings.Join(got, ",") != strings.Join(pointerWant, ",") {
+		t.Fatalf("unreadable pointer sample = %v, want %v", got, pointerWant)
 	}
 }
 

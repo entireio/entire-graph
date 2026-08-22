@@ -351,7 +351,7 @@ reported.
 ## Listing And Memory Bounds
 
 A snapshot's memory must be set by the caller's limits, not by what happens to be
-on disk. Two bounds are enforced, and both are visible in the output:
+on disk. The following bounds are enforced:
 
 - **Per-file read cap** — the same limit as the parser input cap (`MaxParseBytes`,
   4 MiB by default). A file above it is never materialized in memory: its size,
@@ -378,6 +378,16 @@ on disk. Two bounds are enforced, and both are visible in the output:
   and it is reported as `W_GITDIR_SWEEP_BUDGET` (`W_GITDIR_SWEEP_CANCELLED` when
   the caller's context ended it). Running the ledger out therefore produces a
   WIDER exclusion than a completed sweep, never a narrower one.
+- **Git directory-listing record cap** — 2,000,000 raw NUL-delimited records,
+  charged before non-directory filenames are discarded. A pattern-only ignore
+  can otherwise make `git ls-files --directory` emit one record per ignored
+  file without spending the directory ledger. Crossing the cap terminates Git,
+  treats the listing as incomplete, and selects the fail-closed derived sweep.
+- **Aggregate gitfile read cap** — 64 MiB of `.git` and `commondir` pointer bytes
+  per working-tree listing. Individual `.git` files retain Git's 1 MiB fidelity
+  limit and `commondir` retains a 64 KiB lexical window, but those per-file
+  allowances cannot multiply by 20,000 observations. Exhaustion records hidden
+  evidence and emits `W_GITDIR_POINTER_READ_BUDGET`.
 
 The working-tree listing is Git's own view of the working tree (tracked files plus
 untracked files no exclude rule covers). Every exclude source Git applies — nested

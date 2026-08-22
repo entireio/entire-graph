@@ -26,6 +26,7 @@ import (
 	"github.com/entireio/entire-graph/internal/filedigest"
 	"github.com/entireio/entire-graph/internal/gitutil"
 	"github.com/entireio/entire-graph/internal/termsafe"
+	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -10380,21 +10381,49 @@ func gitPointerPath(content []byte, whole bool) (string, bool) {
 // decides it differently for the two: an absent `.git` names nothing, while an
 // unreadable `commondir` makes git refuse the whole git directory.
 func readGitPointerFile(path string, maxBytes int) (string, bool) {
-	file, err := os.Open(path)
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	return readGitPointerFileAtSize(path, maxBytes, info.Size())
+}
+
+// readGitPointerFileAtSize reads against one already-observed size. The extra
+// byte detects growth after the stat without allocating maxBytes for every
+// ordinary, short pointer. If the file grows into that byte, whole is false and
+// the pointer is refused rather than parsed from a raced prefix.
+func readGitPointerFileAtSize(path string, maxBytes int, observedSize int64) (string, bool) {
+	file, err := openBoundedRegularFile(path)
 	if err != nil {
 		return "", false
 	}
 	defer func() { _ = file.Close() }()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return "", false
+	}
+	regular, err := openedFileIsRegular(file, openedInfo)
+	if err != nil || !regular {
+		return "", false
+	}
+	return readGitPointerFromOpened(file, maxBytes, openedInfo.Size())
+}
+
+func readGitPointerFromOpened(file *os.File, maxBytes int, observedSize int64) (string, bool) {
 	// One byte past the window tells a file that fits from one that is longer,
 	// which is what `whole` reports.
-	buffer := make([]byte, maxBytes+1)
+	window := int64(maxBytes) + 1
+	if observedSize >= 0 && observedSize < int64(maxBytes) {
+		window = observedSize + 1
+	}
+	buffer := make([]byte, int(window))
 	read, err := io.ReadFull(file, buffer)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return "", false
 	}
-	whole := read <= maxBytes
+	whole := err != nil && read <= maxBytes
 	if !whole {
-		read = maxBytes
+		read = min(read, maxBytes)
 	}
 	return gitPointerPath(buffer[:read], whole)
 }
@@ -10498,7 +10527,25 @@ func readGitDirPointer(path string) (string, bool) {
 	if err != nil || !info.Mode().IsRegular() || info.Size() > maxGitFileBytes {
 		return "", false
 	}
-	text, ok := readGitPointerFile(path, maxGitFileBytes)
+	return readGitDirPointerAtSize(path, info.Size())
+}
+
+func readGitDirPointerAtSize(path string, observedSize int64) (string, bool) {
+	if observedSize < 0 || observedSize > maxGitFileBytes {
+		return "", false
+	}
+	text, ok := readGitPointerFileAtSize(path, maxGitFileBytes, observedSize)
+	if !ok {
+		return "", false
+	}
+	return parseGitDirPointerText(text)
+}
+
+func readGitDirPointerFromOpened(file *os.File, observedSize int64) (string, bool) {
+	if observedSize < 0 || observedSize > maxGitFileBytes {
+		return "", false
+	}
+	text, ok := readGitPointerFromOpened(file, maxGitFileBytes, observedSize)
 	if !ok {
 		return "", false
 	}
@@ -10570,6 +10617,13 @@ type gitDirExcluder struct {
 	// Counting only directories still let one flat directory force ReadDir to
 	// allocate and inspect an arbitrary number of non-directory entries.
 	directoryEntriesRead int
+	// pointerBytesReserved bounds aggregate `.git` gitfile reads. A single
+	// gitfile may legitimately be 1 MiB, but multiplying that allowance by the
+	// directory sweep's 20,000 entries would permit tens of GiB of read and
+	// allocation churn. Reads reserve their observed size plus one race-detection
+	// byte before opening the file; exhaustion is disclosed and fails closed.
+	pointerBytesReserved      int64
+	pointerReadBudgetExceeded bool
 	// sweepStop records why the sweep stopped short, so what the listing means
 	// is disclosed rather than quietly changed.
 	sweepStop sweepStopReason
@@ -10609,6 +10663,10 @@ type gitDirExcluder struct {
 	// them. This is what lets sweepUnreadableDirWarning disclose which
 	// directories were skipped instead of leaving the wider exclusion silent.
 	sweepUnreadableDirs []string
+	// unreadablePointers samples `.git` files or links whose evidence could not
+	// be inspected. hiddenEvidence already drives the fail-closed exclusion;
+	// this list makes that wider omission visible to callers and cache identity.
+	unreadablePointers []string
 }
 
 // maxUnreadableWalkDirSample bounds unreadableWalkDirs and sweepUnreadableDirs.
@@ -10619,10 +10677,7 @@ const maxUnreadableWalkDirSample = 8
 // the listing rather than aborting the whole walk (see the comment at the
 // WalkDir error branch), so unlike an aborted walk this has to say so itself.
 func (g *gitDirExcluder) noteUnreadableWalkDir(rel string) {
-	if len(g.unreadableWalkDirs) >= maxUnreadableWalkDirSample {
-		return
-	}
-	g.unreadableWalkDirs = append(g.unreadableWalkDirs, rel)
+	retainSmallestPathSample(&g.unreadableWalkDirs, rel)
 }
 
 // unreadableWalkWarning reports the shortfall noteUnreadableWalkDir recorded:
@@ -10655,14 +10710,39 @@ func (g *gitDirExcluder) unreadableWalkWarning() []ProviderWarning {
 // directory and keeps going rather than stopping outright, so sweepWarnings'
 // switch on sweepStop never sees it.
 func (g *gitDirExcluder) noteSweepUnreadableDir(rel string) {
-	if len(g.sweepUnreadableDirs) >= maxUnreadableWalkDirSample {
-		return
-	}
 	label := rel
 	if label == "" {
 		label = "."
 	}
-	g.sweepUnreadableDirs = append(g.sweepUnreadableDirs, label)
+	retainSmallestPathSample(&g.sweepUnreadableDirs, label)
+}
+
+func (g *gitDirExcluder) noteUnreadablePointer(dir string) {
+	label := ".git"
+	if dir != "" {
+		label = path.Join(filepath.ToSlash(dir), ".git")
+	}
+	retainSmallestPathSample(&g.unreadablePointers, label)
+}
+
+func retainSmallestPathSample(sample *[]string, value string) {
+	values := *sample
+	index := sort.SearchStrings(values, value)
+	if index < len(values) && values[index] == value {
+		return
+	}
+	if len(values) < maxUnreadableWalkDirSample {
+		values = append(values, "")
+		copy(values[index+1:], values[index:])
+		values[index] = value
+		*sample = values
+		return
+	}
+	if index >= len(values) {
+		return
+	}
+	copy(values[index+1:], values[index:len(values)-1])
+	values[index] = value
 }
 
 // sweepUnreadableDirWarning reports the shortfall noteSweepUnreadableDir
@@ -10724,6 +10804,12 @@ const (
 // before and is offered only because the fail-closed behaviour below makes an
 // unbounded sweep a performance choice rather than a security one.
 const defaultSweepDirectoryBudget = 20000
+
+// maxGitPointerAggregateBytes is the per-listing aggregate allowance for `.git`
+// gitfiles encountered by the excluder. Real pointers are ordinarily tens or
+// hundreds of bytes; 64 MiB leaves ample room for large nested-worktree sets
+// while putting a hard ceiling under adversarial near-1-MiB pointer files.
+const maxGitPointerAggregateBytes int64 = 64 << 20
 
 // sweepDirBudgetEnv overrides defaultSweepDirectoryBudget.
 const sweepDirBudgetEnv = "ENTIRE_GRAPH_SWEEP_DIR_BUDGET"
@@ -10847,6 +10933,24 @@ func (g *gitDirExcluder) admitSweepEntry() bool {
 	return true
 }
 
+func (g *gitDirExcluder) admitPointerRead(size int64) bool {
+	if size < 0 {
+		return false
+	}
+	// One extra byte detects a file that grew after the no-follow stat. Clamp
+	// defensively even though callers reject gitfiles over maxGitFileBytes.
+	reserved := min(size, int64(maxGitFileBytes)) + 1
+	if reserved > maxGitPointerAggregateBytes-g.pointerBytesReserved {
+		if !g.pointerReadBudgetExceeded {
+			g.hiddenEvidence++
+		}
+		g.pointerReadBudgetExceeded = true
+		return false
+	}
+	g.pointerBytesReserved += reserved
+	return true
+}
+
 // sweepHalted reports whether the caller has stopped waiting, and stops the
 // sweep the same fail-closed way the ledger does if so. It is asked on the read
 // side as well as at admission because the queue admitted before a cancellation
@@ -10869,9 +10973,10 @@ func (g *gitDirExcluder) sweepHalted() bool {
 // reported for a sweep that finished, which is every repository of ordinary
 // size.
 func (g *gitDirExcluder) sweepWarnings() []ProviderWarning {
+	var warnings []ProviderWarning
 	switch g.sweepStop {
 	case sweepStoppedOnBudget:
-		return []ProviderWarning{{
+		warnings = append(warnings, ProviderWarning{
 			Code:                 "W_GITDIR_SWEEP_BUDGET",
 			Severity:             "warning",
 			EffectOnCompleteness: "the scan for `.git` pointers stopped early, so directories that carry a git directory's structure were excluded from the listing without a pointer naming them; source under them is absent",
@@ -10879,9 +10984,9 @@ func (g *gitDirExcluder) sweepWarnings() []ProviderWarning {
 				"the `.git` pointer sweep spent its whole budget of %d directories or directory entries and stopped; the tree under the ignored and collapsed roots is at least that large (%s overrides the budget, 0 removes it)",
 				g.sweepBudget, sweepDirBudgetEnv,
 			),
-		}}
+		})
 	case sweepStoppedOnCancel:
-		return []ProviderWarning{{
+		warnings = append(warnings, ProviderWarning{
 			Code:                 "W_GITDIR_SWEEP_CANCELLED",
 			Severity:             "warning",
 			EffectOnCompleteness: "the scan for `.git` pointers was cancelled, so directories that carry a git directory's structure were excluded from the listing without a pointer naming them; source under them is absent",
@@ -10889,10 +10994,28 @@ func (g *gitDirExcluder) sweepWarnings() []ProviderWarning {
 				"the `.git` pointer sweep was cancelled after %d directories",
 				g.directoriesRead,
 			),
-		}}
-	default:
-		return nil
+		})
 	}
+	if g.pointerReadBudgetExceeded {
+		warnings = append(warnings, ProviderWarning{
+			Code:                 "W_GITDIR_POINTER_READ_BUDGET",
+			Severity:             "warning",
+			EffectOnCompleteness: "the aggregate `.git` pointer read allowance was exhausted, so directories that carry a git directory's structure were excluded without a pointer naming them; source under them is absent",
+			Detail: fmt.Sprintf(
+				"the `.git` pointer scan reserved its whole %d-byte aggregate allowance and stopped reading additional pointer files",
+				maxGitPointerAggregateBytes,
+			),
+		})
+	}
+	if len(g.unreadablePointers) > 0 {
+		warnings = append(warnings, ProviderWarning{
+			Code:                 "W_GITDIR_POINTER_UNREADABLE",
+			Severity:             "warning",
+			EffectOnCompleteness: "one or more `.git` pointer files or links could not be inspected, so directories that structurally resemble git directories may be excluded without a readable pointer naming them",
+			Detail:               fmt.Sprintf("unreadable: %s", termsafe.Line(strings.Join(g.unreadablePointers, ", "))),
+		})
+	}
+	return warnings
 }
 
 // observe decides whether one repo-relative directory ("" for the repository
@@ -10912,16 +11035,20 @@ func (g *gitDirExcluder) sweepWarnings() []ProviderWarning {
 // bare repository or at a git directory is a deliberate act by the caller, not a
 // leak, and must keep listing what it lists today.
 func (g *gitDirExcluder) observe(dir string) {
-	switch target, ok, hidden := gitDirPointerTarget(g.repo, dir); {
+	switch target, ok, hidden := gitDirPointerTargetWithBudget(g.repo, dir, g.admitPointerRead); {
 	case hidden:
 		g.hiddenEvidence++
-	case ok && hasGitDirStructure(filepath.Join(g.repo, filepath.FromSlash(target))):
+		if !g.pointerReadBudgetExceeded {
+			g.noteUnreadablePointer(dir)
+		}
+	case ok && hasGitDirStructureWithBudget(filepath.Join(g.repo, filepath.FromSlash(target)), g.admitPointerRead):
 		g.addTarget(target)
 	}
 	switch target, ok, hidden := gitDirLinkTarget(g.repo, dir); {
 	case hidden:
 		g.hiddenEvidence++
-	case ok && hasGitDirStructure(filepath.Join(g.repo, filepath.FromSlash(target))):
+		g.noteUnreadablePointer(dir)
+	case ok && hasGitDirStructureWithBudget(filepath.Join(g.repo, filepath.FromSlash(target)), g.admitPointerRead):
 		g.addTarget(target)
 	}
 	if dir == "" {
@@ -10932,7 +11059,7 @@ func (g *gitDirExcluder) observe(dir string) {
 	// it will have to look at them. The repository root is left out for the same
 	// reason the structure half below skips it.
 	g.observedDirs = append(g.observedDirs, dir)
-	if looksLikeGitDir(filepath.Join(g.repo, filepath.FromSlash(dir))) {
+	if looksLikeGitDirWithBudget(filepath.Join(g.repo, filepath.FromSlash(dir)), g.admitPointerRead) {
 		g.addTarget(filepath.ToSlash(dir))
 	}
 	if foldedGitDirName(g.repo, dir) {
@@ -11012,13 +11139,13 @@ func (g *gitDirExcluder) recordTarget(target string) {
 	caseFolded := foldsCase(g.repo, target)
 	normalizationFolded := foldsNormalization(g.repo, target)
 	if caseFolded {
-		g.foldedTargets[strings.ToLower(target)] = struct{}{}
+		g.foldedTargets[unicodeCaseFoldKey(target)] = struct{}{}
 	}
 	if normalizationFolded {
 		g.normalizedTargets[norm.NFD.String(target)] = struct{}{}
 	}
 	if caseFolded && normalizationFolded {
-		g.foldedNormalizedTargets[strings.ToLower(norm.NFD.String(target))] = struct{}{}
+		g.foldedNormalizedTargets[unicodeFoldedNFDKey(target)] = struct{}{}
 	}
 }
 
@@ -11166,17 +11293,20 @@ func (g *gitDirExcluder) recordGitDirRootEntries() {
 // link resolves, so a link pointing out of the tree can survive a purely
 // lexical containment check.
 func symlinkResolvedRel(repo, target string) (string, bool) {
-	resolvedTarget, err := filepath.EvalSymlinks(filepath.Join(repo, filepath.FromSlash(target)))
+	targetPath := filepath.Join(repo, filepath.FromSlash(target))
+	targetFile, resolvedTarget, err := openSameVolumePath(repo, targetPath)
 	if err != nil {
 		return "", false
 	}
+	_ = targetFile.Close()
 	if rel, inside := containedRel(repo, resolvedTarget); inside {
 		return rel, true
 	}
-	resolvedRepo, err := filepath.EvalSymlinks(repo)
+	repoFile, resolvedRepo, err := openSameVolumePath(repo, repo)
 	if err != nil {
 		return "", false
 	}
+	_ = repoFile.Close()
 	return containedRel(resolvedRepo, resolvedTarget)
 }
 
@@ -11198,15 +11328,15 @@ func symlinkResolvedRel(repo, target string) (string, bool) {
 // A path with no letters anywhere has exactly one spelling, so there is nothing
 // to fold and false is the right answer.
 func foldsCase(repo, target string) bool {
-	info, err := os.Lstat(filepath.Join(repo, filepath.FromSlash(target)))
+	info, err := lstatSameVolumePath(repo, filepath.Join(repo, filepath.FromSlash(target)))
 	if err != nil {
 		return false
 	}
-	for _, spelling := range [2]string{strings.ToLower(target), strings.ToUpper(target)} {
+	for _, spelling := range [2]string{unicodeCaseFoldKey(target), strings.ToUpper(target)} {
 		if spelling == target {
 			continue
 		}
-		other, otherErr := os.Lstat(filepath.Join(repo, filepath.FromSlash(spelling)))
+		other, otherErr := lstatSameVolumePath(repo, filepath.Join(repo, filepath.FromSlash(spelling)))
 		if otherErr != nil {
 			continue
 		}
@@ -11217,6 +11347,14 @@ func foldsCase(repo, target string) bool {
 	return false
 }
 
+func unicodeCaseFoldKey(value string) string {
+	return cases.Fold().String(value)
+}
+
+func unicodeFoldedNFDKey(value string) string {
+	return norm.NFD.String(unicodeCaseFoldKey(value))
+}
+
 // foldsNormalization reports whether the filesystem resolves canonically
 // equivalent Unicode spellings of <repo>/<target> to the same entry. Default
 // APFS does, so a pointer may carry a decomposed spelling while Git's listing
@@ -11225,7 +11363,7 @@ func foldsCase(repo, target string) bool {
 // directory. The identity check keeps distinct names distinct on filesystems
 // that do not normalize names.
 func foldsNormalization(repo, target string) bool {
-	info, err := os.Lstat(filepath.Join(repo, filepath.FromSlash(target)))
+	info, err := lstatSameVolumePath(repo, filepath.Join(repo, filepath.FromSlash(target)))
 	if err != nil {
 		return false
 	}
@@ -11233,7 +11371,7 @@ func foldsNormalization(repo, target string) bool {
 		if spelling == target {
 			continue
 		}
-		other, otherErr := os.Lstat(filepath.Join(repo, filepath.FromSlash(spelling)))
+		other, otherErr := lstatSameVolumePath(repo, filepath.Join(repo, filepath.FromSlash(spelling)))
 		if otherErr == nil && os.SameFile(info, other) {
 			return true
 		}
@@ -11253,6 +11391,10 @@ func foldsNormalization(repo, target string) bool {
 // nothing licenses excluding it, and treating it as though no `commondir` were
 // there dropped an ordinary tree that merely carried the three names.
 func looksLikeGitDir(dir string) bool {
+	return looksLikeGitDirWithBudget(dir, nil)
+}
+
+func looksLikeGitDirWithBudget(dir string, admitRead func(int64) bool) bool {
 	if !validGitHEAD(filepath.Join(dir, "HEAD")) {
 		return false
 	}
@@ -11260,7 +11402,7 @@ func looksLikeGitDir(dir string) bool {
 	// directory, so it is not a git directory here either. Falling back to dir
 	// instead called an ordinary fixture tree carrying HEAD, objects/ and refs/
 	// a git directory and dropped it from every snapshot.
-	common, ok := gitCommonDir(dir)
+	common, ok := gitCommonDirWithBudget(dir, admitRead)
 	return ok && hasObjectsAndRefs(common)
 }
 
@@ -11284,7 +11426,11 @@ func looksLikeGitDir(dir string) bool {
 // says otherwise and the refusal is just more of the damage this rule exists to
 // survive.
 func hasGitDirStructure(dir string) bool {
-	common, ok := gitCommonDir(dir)
+	return hasGitDirStructureWithBudget(dir, nil)
+}
+
+func hasGitDirStructureWithBudget(dir string, admitRead func(int64) bool) bool {
+	common, ok := gitCommonDirWithBudget(dir, admitRead)
 	if !ok {
 		// A `commondir` git will not read is the same class of damage as the
 		// missing HEAD this rule already carries: git refuses the repository,
@@ -11350,29 +11496,158 @@ var errSymlinkChainOffVolume = errors.New("symlink chain resolves off the expect
 // one left the volume — callers that distinguish "absent" from "hidden" need
 // that difference preserved rather than collapsed to a single bool.
 func safeStatThroughSymlinks(base, path string) (os.FileInfo, error) {
-	current := path
-	for hop := 0; hop < maxSymlinkChainHops; hop++ {
-		info, err := os.Lstat(current)
-		if err != nil {
-			return nil, err
+	file, _, err := openSameVolumePath(base, path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return file.Stat()
+}
+
+// openSameVolumePath resolves path one component at a time beneath an os.Root
+// anchored at base's volume root. Inspecting only the final path with Lstat is
+// insufficient: the kernel follows an ancestor junction before reporting that
+// final component, which let an in-repository path redirect to UNC and dial SMB
+// before the caller could inspect it. Rooted Lstat/Readlink keeps every probe on
+// the original volume; the final Open returns a held handle so callers need not
+// reopen a checked pathname.
+func openSameVolumePath(base, path string) (*os.File, string, error) {
+	baseAbs, err := filepath.Abs(base)
+	if err != nil {
+		return nil, "", err
+	}
+	if !filepath.IsAbs(path) {
+		path = strings.TrimRight(baseAbs, `/\\`) + string(filepath.Separator) + path
+	}
+	if !sameVolume(path, baseAbs) {
+		return nil, "", errSymlinkChainOffVolume
+	}
+	volume := filepath.VolumeName(baseAbs)
+	volumeRoot := string(filepath.Separator)
+	if volume != "" {
+		volumeRoot = volume + string(filepath.Separator)
+	}
+	root, err := os.OpenRoot(volumeRoot)
+	if err != nil {
+		return nil, "", err
+	}
+	defer root.Close()
+
+	components := pathComponentsAfterVolume(path)
+	resolved := make([]string, 0, len(components))
+	hops := 0
+	for len(components) > 0 {
+		component := components[0]
+		components = components[1:]
+		switch component {
+		case "", ".":
+			continue
+		case "..":
+			if len(resolved) == 0 {
+				return nil, "", errSymlinkChainOffVolume
+			}
+			resolved = resolved[:len(resolved)-1]
+			continue
+		}
+
+		candidateParts := append(append([]string(nil), resolved...), component)
+		candidate := filepath.Join(candidateParts...)
+		info, statErr := root.Lstat(candidate)
+		if statErr != nil {
+			return nil, "", statErr
 		}
 		if info.Mode()&os.ModeSymlink == 0 {
-			return info, nil
+			resolved = append(resolved, component)
+			continue
 		}
-		target, err := os.Readlink(current)
-		if err != nil {
-			return nil, err
+		hops++
+		if hops > maxSymlinkChainHops {
+			return nil, "", errSymlinkChainOffVolume
+		}
+		target, readErr := root.Readlink(candidate)
+		if readErr != nil {
+			return nil, "", readErr
 		}
 		target = filepath.FromSlash(target)
-		if !filepath.IsAbs(target) {
-			target = gitJoinRelative(filepath.Dir(current), target)
+		if filepath.IsAbs(target) {
+			if !sameVolume(target, baseAbs) {
+				return nil, "", errSymlinkChainOffVolume
+			}
+			resolved = resolved[:0]
+			components = append(pathComponentsAfterVolume(target), components...)
+			continue
 		}
-		if !sameVolume(target, base) {
-			return nil, errSymlinkChainOffVolume
-		}
-		current = target
+		components = append(pathComponentsAfterVolume(target), components...)
 	}
-	return nil, errSymlinkChainOffVolume // too many hops: refuse rather than loop forever
+
+	rel := "."
+	if len(resolved) > 0 {
+		rel = filepath.Join(resolved...)
+	}
+	file, err := openRootBoundedRegularFile(root, rel)
+	if err != nil {
+		return nil, "", err
+	}
+	return file, filepath.Join(volumeRoot, rel), nil
+}
+
+func pathComponentsAfterVolume(value string) []string {
+	rest := value[len(filepath.VolumeName(value)):]
+	return strings.FieldsFunc(rest, func(r rune) bool { return r == '/' || r == '\\' })
+}
+
+func lstatSameVolumePath(base, path string) (os.FileInfo, error) {
+	parent, resolvedParent, err := openSameVolumePath(base, filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	_ = parent.Close()
+	if !sameVolume(resolvedParent, base) {
+		return nil, errSymlinkChainOffVolume
+	}
+	volume := filepath.VolumeName(resolvedParent)
+	volumeRoot := string(filepath.Separator)
+	if volume != "" {
+		volumeRoot = volume + string(filepath.Separator)
+	}
+	root, err := os.OpenRoot(volumeRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	relParts := append(pathComponentsAfterVolume(resolvedParent), filepath.Base(path))
+	rel := filepath.Join(relParts...)
+	if rel == "" {
+		rel = "."
+	}
+	return root.Lstat(rel)
+}
+
+func readlinkSameVolumePath(base, path string) (string, error) {
+	parent, resolvedParent, err := openSameVolumePath(base, filepath.Dir(path))
+	if err != nil {
+		return "", err
+	}
+	_ = parent.Close()
+	if !sameVolume(resolvedParent, base) {
+		return "", errSymlinkChainOffVolume
+	}
+	volume := filepath.VolumeName(resolvedParent)
+	volumeRoot := string(filepath.Separator)
+	if volume != "" {
+		volumeRoot = volume + string(filepath.Separator)
+	}
+	root, err := os.OpenRoot(volumeRoot)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	relParts := append(pathComponentsAfterVolume(resolvedParent), filepath.Base(path))
+	rel := filepath.Join(relParts...)
+	if rel == "" {
+		rel = "."
+	}
+	return root.Readlink(rel)
 }
 
 // hasObjectsAndRefs is the objects/ and refs/ half of is_git_directory(), asked
@@ -11433,35 +11708,12 @@ func hasObjectsAndRefs(common string) bool {
 // `commondir` it meant a linked worktree's administrative directory was called
 // ordinary content.
 //
-// The filesystem is consulted only when the target actually contains a `..`
-// element, so every other join keeps the exact spelling it has today — including
-// the link's own spelling for a pointer that names a symlink outright, which
-// addTarget records beside the resolved one. When resolution fails, which is
-// what a target naming nothing on disk does, the lexical join is the answer: git
-// would call that "not a git repository" too, and the caller's structure test
-// then refuses it.
+// Keep the path uncleaned here. The rooted resolver that consumes this result
+// walks its components in order, including `..` after a symlink, while refusing
+// any off-volume hop before following it. If resolution later fails, git would
+// call the target "not a git repository" too.
 func gitJoinRelative(base, target string) string {
-	lexical := filepath.Join(base, target)
-	if !hasDotDotElement(target) {
-		return lexical
-	}
-	resolved, err := filepath.EvalSymlinks(base + string(filepath.Separator) + target)
-	if err != nil {
-		return lexical
-	}
-	return resolved
-}
-
-// hasDotDotElement reports whether target contains a `..` PATH ELEMENT, rather
-// than merely the two characters: a file called `..config` carries no parent
-// step, and must not pay for the filesystem resolution.
-func hasDotDotElement(target string) bool {
-	for _, element := range strings.Split(filepath.ToSlash(target), "/") {
-		if element == ".." {
-			return true
-		}
-	}
-	return false
+	return strings.TrimRight(base, `/\\`) + string(filepath.Separator) + target
 }
 
 // gitCommonDir reports the directory git resolves `objects` and `refs` THROUGH
@@ -11512,14 +11764,23 @@ func hasDotDotElement(target string) bool {
 // file, `git --git-dir=adm rev-parse --git-dir` succeeds and
 // `--git-common-dir` resolves through the link.
 func gitCommonDir(dir string) (string, bool) {
-	pointer := filepath.Join(dir, "commondir")
+	return gitCommonDirWithBudget(dir, nil)
+}
+
+func gitCommonDirWithBudget(dir string, admitRead func(int64) bool) (string, bool) {
+	dirHandle, resolvedDir, err := openSameVolumePath(dir, dir)
+	if err != nil {
+		return "", false
+	}
+	_ = dirHandle.Close()
+	pointer := filepath.Join(resolvedDir, "commondir")
 	// Presence is lstat, exactly as git's file_exists() decides it. os.Stat
 	// cannot tell an absent `commondir` from a present but DANGLING symlink —
 	// both are ENOENT — and git treats those two oppositely: absent means
 	// "resolve inside dir", present-but-unreadable means it refuses the
 	// directory outright.
-	if _, err := os.Lstat(pointer); err != nil {
-		return dir, true
+	if _, err := lstatSameVolumePath(resolvedDir, pointer); err != nil {
+		return resolvedDir, true
 	}
 	// A zero-byte file is the read git gets nothing out of and dies on; every
 	// other readable content is a successful read whatever it holds.
@@ -11532,8 +11793,20 @@ func gitCommonDir(dir string) (string, bool) {
 	// hop. Resolving hop by hop and checking each one's volume against dir
 	// closes that the same way hasObjectsAndRefs and gitDirPointerTarget do
 	// for objects/refs and .git.
-	info, err := safeStatThroughSymlinks(dir, pointer)
-	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+	opened, _, err := openSameVolumePath(resolvedDir, pointer)
+	if err != nil {
+		return "", false
+	}
+	defer opened.Close()
+	info, err := opened.Stat()
+	if err != nil {
+		return "", false
+	}
+	regular, err := openedFileIsRegular(opened, info)
+	if err != nil || !regular || info.Size() == 0 {
+		return "", false
+	}
+	if admitRead != nil && !admitRead(info.Size()) {
 		return "", false
 	}
 	// One byte rule for both pointer files, and one reader: git strips the
@@ -11543,19 +11816,19 @@ func gitCommonDir(dir string) (string, bool) {
 	// holding `../common\0junk` kept the NUL, so objects/ and refs/ were looked
 	// for at a path nothing on disk is called, and BOTH rules then called a
 	// linked worktree's administrative git directory ordinary content.
-	target, ok := readGitPointerFile(pointer, maxGitPointerBytes)
+	target, ok := readGitPointerFromOpened(opened, maxGitPointerBytes, info.Size())
 	if !ok {
 		return "", false
 	}
 	if target == "" {
 		// Read, and empty: git leaves the common directory at dir.
-		return dir, true
+		return resolvedDir, true
 	}
 	target = filepath.FromSlash(target)
 	if !filepath.IsAbs(target) {
 		// Git resolves a relative commondir against the git directory itself,
 		// by concatenation — see gitJoinRelative.
-		target = gitJoinRelative(dir, target)
+		target = gitJoinRelative(resolvedDir, target)
 	}
 	// A different volume than dir's own is rejected BEFORE the caller ever
 	// stats it: unlike gitDirPointerTarget, this result feeds straight into
@@ -11568,7 +11841,7 @@ func gitCommonDir(dir string) (string, bool) {
 	// case-insensitively: VolumeName preserves spelling, but Windows volumes
 	// are not case-sensitive ("C:" and "c:" are the same drive), and this is
 	// a no-op off Windows.
-	if !sameVolume(target, dir) {
+	if !sameVolume(target, resolvedDir) {
 		return "", false
 	}
 	return target, true
@@ -11594,7 +11867,8 @@ const maxGitHEADBytes = 256
 // program text — is classified as a git directory and silently dropped from
 // every worktree snapshot.
 func validGitHEAD(head string) bool {
-	info, err := os.Lstat(head)
+	base := filepath.Dir(head)
+	info, err := lstatSameVolumePath(base, head)
 	if err != nil {
 		return false
 	}
@@ -11608,17 +11882,25 @@ func validGitHEAD(head string) bool {
 		// filepath.ToSlash would turn it into `refs/heads/main` here and accept
 		// it anyway, misclassifying an ordinary source fixture as a git
 		// directory and dropping it from the corpus.
-		target, readErr := os.Readlink(head)
+		target, readErr := readlinkSameVolumePath(base, head)
 		return readErr == nil && strings.HasPrefix(target, "refs/")
 	}
 	if !info.Mode().IsRegular() {
 		return false
 	}
-	file, err := os.Open(head)
+	file, _, err := openSameVolumePath(base, head)
 	if err != nil {
 		return false
 	}
 	defer func() { _ = file.Close() }()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return false
+	}
+	regular, err := openedFileIsRegular(file, openedInfo)
+	if err != nil || !regular {
+		return false
+	}
 	buffer := make([]byte, maxGitHEADBytes)
 	read, err := io.ReadFull(file, buffer)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
@@ -12108,14 +12390,14 @@ func (g *gitDirExcluder) promoteUnverifiedGitDirs() {
 		return
 	}
 	g.promotedUnverified = true
-	if hasGitDirStructure(g.repo) {
+	if hasGitDirStructureWithBudget(g.repo, g.admitPointerRead) {
 		g.addTarget(gitDirRootTarget)
 	}
 	for _, dir := range g.observedDirs {
 		if g.excluded(dir) {
 			continue
 		}
-		if hasGitDirStructure(filepath.Join(g.repo, filepath.FromSlash(dir))) {
+		if hasGitDirStructureWithBudget(filepath.Join(g.repo, filepath.FromSlash(dir)), g.admitPointerRead) {
 			g.addTarget(dir)
 		}
 	}
@@ -12155,7 +12437,7 @@ func (g *gitDirExcluder) excluded(rel string) bool {
 			return true
 		}
 		if len(g.foldedTargets) > 0 {
-			if _, isTarget := g.foldedTargets[strings.ToLower(rel[:end])]; isTarget {
+			if _, isTarget := g.foldedTargets[unicodeCaseFoldKey(rel[:end])]; isTarget {
 				return true
 			}
 		}
@@ -12165,7 +12447,7 @@ func (g *gitDirExcluder) excluded(rel string) bool {
 			}
 		}
 		if len(g.foldedNormalizedTargets) > 0 {
-			key := strings.ToLower(norm.NFD.String(rel[:end]))
+			key := unicodeFoldedNFDKey(rel[:end])
 			if _, isTarget := g.foldedNormalizedTargets[key]; isTarget {
 				return true
 			}
@@ -12195,6 +12477,13 @@ func (g *gitDirExcluder) excluded(rel string) bool {
 // unreadable directory carries — see promoteUnverifiedGitDirs — and it is
 // reported separately because ABSENT is a real answer and unreadable is not.
 func gitDirPointerTarget(repo, dir string) (string, bool, bool) {
+	return gitDirPointerTargetWithBudget(repo, dir, nil)
+}
+
+func gitDirPointerTargetWithBudget(
+	repo, dir string,
+	admitRead func(size int64) bool,
+) (string, bool, bool) {
 	base := repo
 	if dir != "" {
 		base = filepath.Join(repo, filepath.FromSlash(dir))
@@ -12237,7 +12526,7 @@ func gitDirPointerTarget(repo, dir string) (string, bool, bool) {
 	// resolving it, and a same-volume chain still stats through to whatever
 	// it ultimately points at, matching git's own S_ISREG-of-the-result
 	// fidelity.
-	info, err := safeStatThroughSymlinks(base, pointer)
+	openedPointer, _, err := openSameVolumePath(base, pointer)
 	if err != nil {
 		// ABSENT and DANGLING both mean "no pointer", as the paragraph above
 		// says; so does a chain that resolves off the expected volume, which
@@ -12248,10 +12537,25 @@ func gitDirPointerTarget(repo, dir string) (string, bool, bool) {
 		hidden := !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, errSymlinkChainOffVolume)
 		return "", false, hidden
 	}
-	if !info.Mode().IsRegular() {
+	defer openedPointer.Close()
+	info, err := openedPointer.Stat()
+	if err != nil {
+		return "", false, true
+	}
+	regular, err := openedFileIsRegular(openedPointer, info)
+	if err != nil {
+		return "", false, true
+	}
+	if !regular {
 		return "", false, false
 	}
-	target, ok := readGitDirPointer(pointer)
+	if info.Size() > maxGitFileBytes {
+		return "", false, false
+	}
+	if admitRead != nil && !admitRead(info.Size()) {
+		return "", false, true
+	}
+	target, ok := readGitDirPointerFromOpened(openedPointer, info.Size())
 	if !ok {
 		// A regular `.git` that did not parse is either not a gitfile — a
 		// fixture, a stray note, which is a real "no" — or a gitfile whose bytes
@@ -12260,7 +12564,7 @@ func gitDirPointerTarget(repo, dir string) (string, bool, bool) {
 		// pointer hid `dep/.git` -> `gitdir: ../.dep-git` exactly the way an
 		// unreadable parent directory hides it, and the HEAD-damaged `.dep-git`
 		// it named came back as a ranked snippet with its credential.
-		return "", false, !readableFile(pointer)
+		return "", false, false
 	}
 	// Git writes the pointer with `/` separators on every platform, and resolves
 	// a relative target against the directory that holds the `.git` file.
@@ -12303,7 +12607,7 @@ func gitDirPointerTarget(repo, dir string) (string, bool, bool) {
 	// permission error is treated as a reason to refuse rather than fall back:
 	// it can be hiding a real symlink this process was blocked from resolving,
 	// so it is reported as outside rather than guessed at, same as before.
-	resolvedTarget, targetErr := filepath.EvalSymlinks(target)
+	targetFile, resolvedTarget, targetErr := openSameVolumePath(repo, target)
 	if targetErr != nil {
 		if errors.Is(targetErr, fs.ErrPermission) {
 			return "", false, false
@@ -12313,14 +12617,16 @@ func gitDirPointerTarget(repo, dir string) (string, bool, bool) {
 		}
 		return "", false, false
 	}
+	_ = targetFile.Close()
 	// Git writes the pointer as an absolute path, so a symlinked repository root
 	// (macOS /var -> /private/var, a symlinked checkout) makes the pointer and
 	// the caller's root spell one directory two ways. Compare their resolved
 	// forms before concluding the git directory is outside the repository.
-	resolvedRepo, repoErr := filepath.EvalSymlinks(repo)
+	repoFile, resolvedRepo, repoErr := openSameVolumePath(repo, repo)
 	if repoErr != nil {
 		return "", false, false
 	}
+	_ = repoFile.Close()
 	if rel, inside := containedRel(resolvedRepo, resolvedTarget); inside {
 		return rel, true, false
 	}
@@ -12358,7 +12664,7 @@ func gitDirLinkTarget(repo, dir string) (string, bool, bool) {
 		rel = path.Join(filepath.ToSlash(dir), ".git")
 	}
 	link := filepath.Join(repo, filepath.FromSlash(rel))
-	info, err := os.Lstat(link)
+	info, err := lstatSameVolumePath(repo, link)
 	if err != nil {
 		return "", false, !errors.Is(err, fs.ErrNotExist)
 	}
@@ -12709,6 +13015,24 @@ func visitWalkWorktreeFiles(
 	dirTracked func(string) bool,
 	visit func(string) bool,
 ) ([]ProviderWarning, error) {
+	return visitWalkWorktreeFilesWithRawLimit(ctx, repo, ignores, dirTracked, 0, visit)
+}
+
+var errWorktreeRawPathLimit = errors.New("filesystem worktree raw path limit exceeded")
+
+// visitWalkWorktreeFilesWithRawLimit is visitWalkWorktreeFiles with an
+// optional conservative pre-filter ceiling. The replay observer uses it to
+// decline persistence as soon as the raw candidate set cannot fit its exact
+// corpus bound; the ordinary provider passes zero and retains its existing
+// complete late filter for pointers that name an earlier path.
+func visitWalkWorktreeFilesWithRawLimit(
+	ctx context.Context,
+	repo string,
+	ignores ignoreMatcher,
+	dirTracked func(string) bool,
+	rawPathLimit int,
+	visit func(string) bool,
+) ([]ProviderWarning, error) {
 	stack := newNestedIgnoreStack(repo, ignores)
 	defer stack.close()
 	gitDirs := newGitDirExcluder(ctx, repo)
@@ -12823,6 +13147,9 @@ func visitWalkWorktreeFiles(
 		}
 		if stack.Ignored(rel, false) {
 			return nil
+		}
+		if rawPathLimit > 0 && len(paths) >= rawPathLimit {
+			return errWorktreeRawPathLimit
 		}
 		paths = append(paths, rel)
 		return nil

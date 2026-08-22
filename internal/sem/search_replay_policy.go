@@ -237,7 +237,9 @@ func observeSearchReplayWorktreeCorpus(
 		}
 	} else {
 		dirTracked := func(string) bool { return false }
-		warnings, err := visitWalkWorktreeFiles(ctx, repo, ignores, dirTracked, collector.add)
+		warnings, err := visitWalkWorktreeFilesWithRawLimit(
+			ctx, repo, ignores, dirTracked, SearchReplayMaxPathCount, collector.add,
+		)
 		if err != nil {
 			return "", nil, fmt.Errorf("observe filesystem worktree corpus for replay: %w", err)
 		}
@@ -396,15 +398,17 @@ func (p SearchReplayPolicy) Fingerprint() string {
 	return p.fingerprint
 }
 
-// MatchesTree reports whether a search result's tree observation belongs to
-// this policy's resolved repository view. A worktree policy has no immutable
-// Git tree to bind; a committed policy must match the exact tree resolved with
-// the commit used for all subsequent admission probes.
+// MatchesTree reports whether a search result's tree observation belongs to a
+// persistable immutable repository view. Worktree state cannot be pinned across
+// the final admission-to-output interval: a newly written `.git` pointer can
+// turn an already-cached path into Git-directory content after every check.
+// Worktree policies therefore never authorize persisted replay. Committed views
+// must match the exact tree resolved with the commit used for every probe.
 func (p SearchReplayPolicy) MatchesTree(tree string) bool {
 	if p.fingerprint == "" {
 		return false
 	}
-	return p.worktree || (p.tree != "" && p.tree == tree)
+	return !p.worktree && p.tree != "" && p.tree == tree
 }
 
 // ValidateSearchReplayPaths applies the hard provenance shape and size limits

@@ -122,3 +122,24 @@ func TestNonblockingIgnoreOpenReturnsOnWriterlessFIFO(t *testing.T) {
 		t.Fatal("regular-file opener blocked before it could reject the FIFO handle")
 	}
 }
+
+func TestGitCommonDirRejectsWriterlessFIFOWithoutBlocking(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "commondir")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+	returned := make(chan bool, 1)
+	go func() {
+		_, ok := gitCommonDir(dir)
+		returned <- ok
+	}()
+	select {
+	case ok := <-returned:
+		if ok {
+			t.Fatal("gitCommonDir accepted a FIFO commondir")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("gitCommonDir blocked on a writerless FIFO")
+	}
+}

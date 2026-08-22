@@ -23,13 +23,13 @@ func TestSafeStatThroughSymlinksFollowsAMultiHopChainOnTheSameVolume(t *testing.
 	hopC := filepath.Join(repo, "hop-c")
 	// entry -> hop-c -> hop-b -> hop-a -> real (three intermediate hops).
 	if err := os.Symlink(real, hopA); err != nil {
-		t.Fatal(err)
+		t.Skipf("cannot create symlinks here: %v", err)
 	}
 	if err := os.Symlink(hopA, hopB); err != nil {
-		t.Fatal(err)
+		t.Skipf("cannot create symlinks here: %v", err)
 	}
 	if err := os.Symlink(hopB, hopC); err != nil {
-		t.Fatal(err)
+		t.Skipf("cannot create symlinks here: %v", err)
 	}
 
 	info, err := safeStatThroughSymlinks(repo, hopC)
@@ -59,7 +59,7 @@ func TestSafeStatThroughSymlinksRefusesAnImplausiblyDeepChain(t *testing.T) {
 	for i := range maxSymlinkChainHops + 5 {
 		hop := filepath.Join(repo, "hop"+string(rune('a'+i%26))+string(rune('0'+i/26)))
 		if err := os.Symlink(prev, hop); err != nil {
-			t.Fatal(err)
+			t.Skipf("cannot create symlinks here: %v", err)
 		}
 		prev = hop
 		entry = hop

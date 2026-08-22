@@ -3,12 +3,24 @@
 package sem
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
+
+func windowsSymlinkOrSkip(t *testing.T, oldname, newname string) {
+	t.Helper()
+	if err := os.Symlink(oldname, newname); err != nil {
+		if errors.Is(err, syscall.Errno(1314)) { // ERROR_PRIVILEGE_NOT_HELD
+			t.Skipf("symlink creation requires unavailable Windows privilege: %v", err)
+		}
+		t.Fatalf("create symlink: %v", err)
+	}
+}
 
 // TestGitDirPointerTargetRejectsAUNCTargetWithoutTouchingTheNetwork
 // reproduces the trail finding on gitDirPointerTarget's out-of-repo fallback:
@@ -101,9 +113,7 @@ func TestHasObjectsAndRefsRejectsAUNCSymlinkWithoutTouchingTheNetwork(t *testing
 	// 203.0.113.0/24 is TEST-NET-3 (RFC 5737): reserved for documentation, so
 	// this address is never routable and a hang here would be the missing
 	// guard, not a fluke of a real host answering.
-	if err := os.Symlink(`\\203.0.113.1\share\repo\objects`, filepath.Join(repo, "objects")); err != nil {
-		t.Fatalf("create objects symlink: %v", err)
-	}
+	windowsSymlinkOrSkip(t, `\\203.0.113.1\share\repo\objects`, filepath.Join(repo, "objects"))
 
 	done := make(chan struct{})
 	var got bool
@@ -140,9 +150,7 @@ func TestHasObjectsAndRefsAcceptsARelativeSymlinkOnTheSameVolume(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, repo, "refs/marker.txt", "refs\n")
-	if err := os.Symlink(`real-objects`, filepath.Join(repo, "objects")); err != nil {
-		t.Fatalf("create objects symlink: %v", err)
-	}
+	windowsSymlinkOrSkip(t, `real-objects`, filepath.Join(repo, "objects"))
 
 	if !hasObjectsAndRefs(repo) {
 		t.Error("hasObjectsAndRefs(repo) = false, want true: a relative objects/ symlink resolved" +
@@ -167,9 +175,7 @@ func TestGitDirPointerTargetRejectsAUNCGitfileSymlinkWithoutTouchingTheNetwork(t
 	// 203.0.113.0/24 is TEST-NET-3 (RFC 5737): reserved for documentation, so
 	// this address is never routable and a hang here would be the missing
 	// guard, not a fluke of a real host answering.
-	if err := os.Symlink(`\\203.0.113.1\share\repo\.git`, filepath.Join(repo, ".git")); err != nil {
-		t.Fatalf("create .git symlink: %v", err)
-	}
+	windowsSymlinkOrSkip(t, `\\203.0.113.1\share\repo\.git`, filepath.Join(repo, ".git"))
 
 	done := make(chan struct{})
 	var target string
@@ -202,9 +208,7 @@ func TestGitDirPointerTargetFollowsAGitfileSymlinkOnTheSameVolume(t *testing.T) 
 		t.Fatal(err)
 	}
 	writeFile(t, repo, "elsewhere-gitfile", "gitdir: .real-git\n")
-	if err := os.Symlink(filepath.Join(repo, "elsewhere-gitfile"), filepath.Join(repo, ".git")); err != nil {
-		t.Fatalf("create .git symlink: %v", err)
-	}
+	windowsSymlinkOrSkip(t, filepath.Join(repo, "elsewhere-gitfile"), filepath.Join(repo, ".git"))
 
 	target, ok, hidden := gitDirPointerTarget(repo, "")
 	if !ok || hidden || target != ".real-git" {
@@ -261,9 +265,7 @@ func TestGitDirLinkTargetRejectsAUNCSymlinkWithoutTouchingTheNetwork(t *testing.
 	// 203.0.113.0/24 is TEST-NET-3 (RFC 5737): reserved for documentation, so
 	// this address is never routable and a hang here would be the missing
 	// guard, not a fluke of a real host answering.
-	if err := os.Symlink(`\\203.0.113.1\share\repo`, filepath.Join(repo, ".git")); err != nil {
-		t.Fatalf("create .git symlink: %v", err)
-	}
+	windowsSymlinkOrSkip(t, `\\203.0.113.1\share\repo`, filepath.Join(repo, ".git"))
 
 	done := make(chan struct{})
 	var target string
@@ -295,9 +297,7 @@ func TestGitDirLinkTargetFollowsADirectorySymlinkOnTheSameVolume(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repo, ".real-git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(repo, ".real-git"), filepath.Join(repo, ".git")); err != nil {
-		t.Fatalf("create .git symlink: %v", err)
-	}
+	windowsSymlinkOrSkip(t, filepath.Join(repo, ".real-git"), filepath.Join(repo, ".git"))
 
 	target, ok, hidden := gitDirLinkTarget(repo, "")
 	if !ok || hidden || target != ".real-git" {
@@ -351,13 +351,9 @@ func TestSafeStatThroughSymlinksRejectsAChainThatLeavesTheVolumeOnASecondHop(t *
 	// this address is never routable and a hang here would be the missing
 	// guard, not a fluke of a real host answering.
 	secondHop := `\\203.0.113.1\share\repo`
-	if err := os.Symlink(secondHop, firstHop); err != nil {
-		t.Fatalf("create second-hop symlink: %v", err)
-	}
+	windowsSymlinkOrSkip(t, secondHop, firstHop)
 	entry := filepath.Join(repo, "entry")
-	if err := os.Symlink(firstHop, entry); err != nil {
-		t.Fatalf("create first-hop symlink: %v", err)
-	}
+	windowsSymlinkOrSkip(t, firstHop, entry)
 
 	done := make(chan struct{})
 	var err error

@@ -360,56 +360,26 @@ var errIgnoredListingTruncated = errors.New("ignored-directory listing exceeded 
 // DIRECTORIES in the ordinary case, and maxIgnoredDirectoryFields bounds it
 // even when that count never grows.
 func streamNULDirectoryEntries(ctx context.Context, repo, name string, args ...string) ([]string, error) {
-	cmd := newCmd(ctx, repo, name, args...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
-	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
-	}
-	reader := bufio.NewReader(stdout)
 	var dirs []string
 	seen := make(map[string]struct{})
-	var readErr error
 	fields := 0
 	truncated := false
-	for {
-		field, err := reader.ReadString(0)
-		field = strings.TrimSuffix(field, "\x00")
+	err := visitBoundedNULPaths(newCmd(ctx, repo, name, args...), func(field string) bool {
 		fields++
+		if fields > maxIgnoredDirectoryFields {
+			truncated = true
+			return false
+		}
 		if keepDirectoryEntry(field, seen) {
 			dirs = append(dirs, field)
 		}
-		if err != nil {
-			if err != io.EOF {
-				readErr = err
-			}
-			break
-		}
-		if fields >= maxIgnoredDirectoryFields {
-			// Kill rather than let the subprocess block writing to a pipe
-			// nothing is draining anymore; Wait below still reaps it.
-			truncated = true
-			_ = cmd.Process.Kill()
-			break
-		}
-	}
-	waitErr := cmd.Wait()
-	if readErr != nil {
-		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), readErr)
+		return true
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}
 	if truncated {
 		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), errIgnoredListingTruncated)
-	}
-	if waitErr != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = waitErr.Error()
-		}
-		return nil, fmt.Errorf("%s %s: %s", name, strings.Join(args, " "), msg)
 	}
 	return dirs, nil
 }

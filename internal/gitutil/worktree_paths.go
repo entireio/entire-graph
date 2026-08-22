@@ -253,13 +253,35 @@ func VisitWorktreeDirectoryEntries(
 	} else {
 		args = append(args, "--cached")
 	}
+	return visitWorktreeDirectoryEntryOutput(newCmd(ctx, repo, "git", args...), visit)
+}
+
+// visitWorktreeDirectoryEntryOutput applies the production directory filter
+// and raw-record bound to an already-constructed command. Keeping the command
+// injectable lets scale tests use the Go test binary as a portable producer on
+// Windows, without requiring sh/awk or testing a separate parser.
+func visitWorktreeDirectoryEntryOutput(cmd *exec.Cmd, visit func(string) bool) error {
 	seen := make(map[string]struct{})
-	return visitBoundedNULPaths(newCmd(ctx, repo, "git", args...), func(entry string) bool {
+	rawFields := 0
+	truncated := false
+	err := visitBoundedNULPaths(cmd, func(entry string) bool {
+		rawFields++
+		if rawFields > maxIgnoredDirectoryFields {
+			truncated = true
+			return false
+		}
 		if !keepDirectoryEntry(entry, seen) {
 			return true
 		}
 		return visit(entry)
 	})
+	if err != nil {
+		return err
+	}
+	if truncated {
+		return errIgnoredListingTruncated
+	}
+	return nil
 }
 
 func firstNestedIgnorePaths(

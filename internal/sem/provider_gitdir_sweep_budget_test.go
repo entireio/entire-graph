@@ -369,3 +369,27 @@ func TestResolveSweepDirectoryBudget(t *testing.T) {
 		})
 	}
 }
+
+func TestGitDirPointerAggregateReadBudgetFailsClosedAndWarns(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "dep/.git", "gitdir: ../state/.dep-git\n")
+	excluder := newGitDirExcluder(t.Context(), repo)
+	excluder.pointerBytesReserved = maxGitPointerAggregateBytes - 1
+
+	excluder.observe("dep")
+	if !excluder.pointerReadBudgetExceeded {
+		t.Fatal("pointer read budget was not marked exhausted")
+	}
+	if excluder.hiddenEvidence == 0 {
+		t.Fatal("pointer read budget exhaustion did not create fail-closed hidden evidence")
+	}
+	found := false
+	for _, warning := range excluder.sweepWarnings() {
+		if warning.Code == "W_GITDIR_POINTER_READ_BUDGET" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %+v, want W_GITDIR_POINTER_READ_BUDGET", excluder.sweepWarnings())
+	}
+}
