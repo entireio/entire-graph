@@ -11031,8 +11031,40 @@ var gitDirRootEntryNames = []string{
 // `sharedindex.<40-or-64-hex-chars>` there, and `git ls-files --others
 // --directory` does not list it (it is git index state, not worktree
 // content) while a name-only exact-match excluder does not recognize it
-// either and leaves it in the source listing.
-var gitDirRootEntryPrefixes = []string{"sharedindex."}
+// either and leaves it in the source listing. See isGitSharedIndexName below
+// for how the variable part is actually validated.
+
+// gitSharedIndexNameSuffixLens are the hash-hex-digit lengths git's own
+// object-id formats produce: 40 for SHA-1, 64 for the newer SHA-256 repository
+// format. A bare `strings.HasPrefix(name, "sharedindex.")` check accepted ANY
+// name starting that way, so a legitimate tracked source file that happens to
+// share the prefix -- `sharedindex.go`, `sharedindex.test.ts` -- was silently
+// treated as git-owned and excluded whenever a pointer made the repository
+// root double as its own git directory. Requiring the suffix to be exactly
+// one of these lengths of lowercase hex digits, matching what
+// `update-index --split-index` actually writes, is what tells the two apart.
+var gitSharedIndexNameSuffixLens = map[int]bool{40: true, 64: true}
+
+// isGitSharedIndexName reports whether name is a `sharedindex.<hash>` file as
+// written by `git update-index --split-index`, not merely something that
+// starts with that prefix.
+func isGitSharedIndexName(name string) bool {
+	const prefix = "sharedindex."
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	suffix := name[len(prefix):]
+	if !gitSharedIndexNameSuffixLens[len(suffix)] {
+		return false
+	}
+	for _, r := range suffix {
+		isHex := (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')
+		if !isHex {
+			return false
+		}
+	}
+	return true
+}
 
 // recordGitDirRootEntries excludes the git directory's own top-level entries
 // when the repository root IS the git directory a pointer named.
@@ -11048,19 +11080,16 @@ func (g *gitDirExcluder) recordGitDirRootEntries() {
 		g.recordTarget(name)
 	}
 	// A variably-named entry cannot be probed by an exact Lstat, so this asks
-	// the directory itself instead, once, for whichever of its entries starts
-	// with a known git-owned prefix (currently only sharedindex.<hash>).
+	// the directory itself instead, once, for whichever of its entries is a
+	// git-owned sharedindex file (currently the only variably-named one).
 	entries, err := os.ReadDir(g.repo)
 	if err != nil {
 		return
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		for _, prefix := range gitDirRootEntryPrefixes {
-			if strings.HasPrefix(name, prefix) {
-				g.recordTarget(name)
-				break
-			}
+		if isGitSharedIndexName(name) {
+			g.recordTarget(name)
 		}
 	}
 }
@@ -11961,12 +11990,43 @@ func gitDirPointerTarget(repo, dir string) (string, bool, bool) {
 	// MiB ceiling, independent of where a NUL falls — lives in
 	// readGitDirPointer, on this same file, because it has to run before any
 	// byte of it is read and a second stat here would only race the first.
-	info, err := os.Stat(pointer)
+	//
+	// Lstat first, not a bare os.Stat: `.git` ITSELF can be a symlink (the
+	// gitfile-fidelity comment above is about following it, not about
+	// skipping the check), and os.Stat resolves a symlink as part of the
+	// SAME syscall that reports its result — on Windows, a `.git` symlink to
+	// a UNC path (`\\host\share\gitfile`) would dial SMB with ambient
+	// credentials as a side effect of that one call, before this function
+	// ever gets to look at, let alone reject, the target. Reading the link
+	// and checking its volume first — exactly as hasObjectsAndRefs already
+	// does for an `objects`/`refs` entry — means a cross-volume `.git` link
+	// is rejected without the kernel ever resolving it. VolumeName is "" for
+	// every relative and POSIX-absolute path, so this is a no-op off
+	// Windows, and a same-volume symlink still stats through to whatever it
+	// points at, matching git's own S_ISREG-of-the-result fidelity.
+	info, err := os.Lstat(pointer)
 	if err != nil {
 		// ABSENT and DANGLING both mean "no pointer", as the paragraph above
 		// says. Anything else — the directory or the file itself out of reach —
 		// means the pointer could not be looked at, which is not the same answer.
 		return "", false, !errors.Is(err, fs.ErrNotExist)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		linkTarget, rlErr := os.Readlink(pointer)
+		if rlErr != nil {
+			return "", false, false
+		}
+		linkTarget = filepath.FromSlash(linkTarget)
+		if !filepath.IsAbs(linkTarget) {
+			linkTarget = gitJoinRelative(base, linkTarget)
+		}
+		if filepath.VolumeName(linkTarget) != filepath.VolumeName(base) {
+			return "", false, false
+		}
+		info, err = os.Stat(pointer)
+		if err != nil {
+			return "", false, !errors.Is(err, fs.ErrNotExist)
+		}
 	}
 	if !info.Mode().IsRegular() {
 		return "", false, false

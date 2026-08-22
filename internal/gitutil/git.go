@@ -190,7 +190,7 @@ func ListWorktreeDirectoryEntries(ctx context.Context, repo string) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	return splitNULPaths(out), nil
+	return splitNULDirectoryEntries(out), nil
 }
 
 // ListIgnoredWorktreeDirectoryEntries lists the trees Git's exclude rules cover,
@@ -209,7 +209,7 @@ func ListIgnoredWorktreeDirectoryEntries(ctx context.Context, repo string) ([]st
 	if err != nil {
 		return nil, err
 	}
-	return splitNULPaths(out), nil
+	return splitNULDirectoryEntries(out), nil
 }
 
 // ListIgnoredWorktreeFiles lists the untracked working-tree files Git's exclude
@@ -240,6 +240,48 @@ func splitNULPaths(out string) []string {
 		files = append(files, path)
 	}
 	return files
+}
+
+// splitNULDirectoryEntries parses a NUL-terminated `git ls-files --directory`
+// listing, keeping ONLY the entries `--directory` actually collapsed (they
+// carry the trailing slash git adds for that case) and discarding every plain
+// filename immediately, without ever placing it in a slice or a dedup map.
+//
+// `--directory` collapses a directory to one entry only when git's OWN
+// listing classifies its ENTIRE content the same way (all "other", or here,
+// all ignored). A directory ignored only by file-pattern rules (`*.o`,
+// `node_modules/*.log`) rather than a whole-directory rule does not collapse:
+// git instead lists every one of its matched files individually, so a build
+// or dependency tree with hundreds of thousands of pattern-ignored files
+// widens this listing to the same size. The only consumer of this listing
+// (the git-directory sweep's root list) already discards every non-directory
+// entry one at a time — see its trailing-slash check — so parsing them at all
+// bought nothing but the memory and CPU of a slice and a dedup map sized to
+// every ignored FILE in the tree, ahead of the sweep's own 20,000-directory
+// budget. Filtering here, during the NUL split rather than after it,
+// bounds this listing's cost to the number of ignored/untracked DIRECTORIES,
+// which is the quantity the sweep ever actually uses.
+func splitNULDirectoryEntries(out string) []string {
+	var dirs []string
+	seen := make(map[string]struct{})
+	for len(out) > 0 {
+		field := out
+		if idx := strings.IndexByte(out, 0); idx >= 0 {
+			field = out[:idx]
+			out = out[idx+1:]
+		} else {
+			out = ""
+		}
+		if field == "" || !strings.HasSuffix(field, "/") {
+			continue
+		}
+		if _, exists := seen[field]; exists {
+			continue
+		}
+		seen[field] = struct{}{}
+		dirs = append(dirs, field)
+	}
+	return dirs
 }
 
 // GrepIndexMatches returns a bounded sample of matched terms per tracked

@@ -261,26 +261,54 @@ func topLevelNames(t *testing.T, gitDir string) []string {
 // finding on gitDirRootEntryNames: `git update-index --split-index` writes
 // `sharedindex.<hash>` beside `index` with a fresh content-addressed hash each
 // time, so no fixed name in that list can ever cover it. It has to be found by
-// listing the git directory's own entries and matching the `sharedindex.`
-// prefix, the same way gitDirRootEntryPrefixes documents.
+// listing the git directory's own entries and matching a genuine
+// `sharedindex.<40-or-64-hex>` name, the same way isGitSharedIndexName
+// documents -- NOT a bare `sharedindex.` prefix, which a re-review found also
+// matched ordinary source such as `sharedindex.go`.
 func TestGitDirExcluderExcludesASharedIndexFileAtARootGitDir(t *testing.T) {
 	t.Parallel()
-	t.Run("at a root git directory it goes", func(t *testing.T) {
+	const sha1Hash = "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3"                            // 40 hex chars
+	const sha256Hash = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" // 64 hex chars
+	t.Run("a real SHA-1-length hash at a root git directory goes", func(t *testing.T) {
 		t.Parallel()
 		repo := t.TempDir()
 		writeRootGitDirFixture(t, repo)
 		writeFile(t, repo, ".git", "gitdir: .\n")
-		// A real hash would do, but any name with the prefix is git-owned index
-		// state regardless of what the hash algorithm or length happens to be.
-		writeFile(t, repo, "sharedindex.deadbeefcafef00d", "\n")
+		writeFile(t, repo, "sharedindex."+sha1Hash, "\n")
 		writeFile(t, repo, "src/app.go", "package src\n")
 
 		excluder := newGitDirExcluder(t.Context(), repo)
-		if !excluder.excluded("sharedindex.deadbeefcafef00d") {
-			t.Error(`excluded("sharedindex.deadbeefcafef00d") = false, want true: the pointer names the root, so this is the git directory's own split-index state`)
+		if !excluder.excluded("sharedindex." + sha1Hash) {
+			t.Error(`excluded("sharedindex.<40-hex>") = false, want true: the pointer names the root, so this is the git directory's own split-index state`)
 		}
 		if excluder.excluded("src/app.go") {
 			t.Error(`excluded("src/app.go") = true, want false`)
+		}
+	})
+	t.Run("a real SHA-256-length hash at a root git directory goes", func(t *testing.T) {
+		t.Parallel()
+		repo := t.TempDir()
+		writeRootGitDirFixture(t, repo)
+		writeFile(t, repo, ".git", "gitdir: .\n")
+		writeFile(t, repo, "sharedindex."+sha256Hash, "\n")
+
+		excluder := newGitDirExcluder(t.Context(), repo)
+		if !excluder.excluded("sharedindex." + sha256Hash) {
+			t.Error(`excluded("sharedindex.<64-hex>") = false, want true`)
+		}
+	})
+	t.Run("ordinary source sharing the bare prefix stays even at a root git directory", func(t *testing.T) {
+		t.Parallel()
+		repo := t.TempDir()
+		writeRootGitDirFixture(t, repo)
+		writeFile(t, repo, ".git", "gitdir: .\n")
+		// Starts with "sharedindex." but is not a hash of a git-recognized
+		// length: legitimate tracked source, not split-index state.
+		writeFile(t, repo, "sharedindex.go", "package main\n")
+
+		excluder := newGitDirExcluder(t.Context(), repo)
+		if excluder.excluded("sharedindex.go") {
+			t.Error(`excluded("sharedindex.go") = true, want false: a bare prefix match wrongly treated ordinary source as git-owned index state`)
 		}
 	})
 	t.Run("in an ordinary repository it stays", func(t *testing.T) {
@@ -290,6 +318,30 @@ func TestGitDirExcluderExcludesASharedIndexFileAtARootGitDir(t *testing.T) {
 
 		assertSearchReturns(t, repo, "sharedindex.go")
 	})
+}
+
+// TestIsGitSharedIndexName pins the suffix validation directly.
+func TestIsGitSharedIndexName(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"sharedindex.a94a8fe5ccb19ba61c4c0873d391e987982fbbd3", true},                                     // 40 hex
+		{"sharedindex.9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", true},              // 64 hex
+		{"sharedindex.go", false},
+		{"sharedindex.test.ts", false},
+		{"sharedindex.", false},
+		{"sharedindex", false},
+		{"sharedindex.A94A8FE5CCB19BA61C4C0873D391E987982FBBD3", false}, // git writes lowercase hex only
+		{"sharedindex.g94a8fe5ccb19ba61c4c0873d391e987982fbbd3", false}, // 'g' is not hex
+		{"index", false},
+	}
+	for _, tc := range cases {
+		if got := isGitSharedIndexName(tc.name); got != tc.want {
+			t.Errorf("isGitSharedIndexName(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }
 
 // TestSearchRepositoryNeverIndexesTheReftableRefStoreAtARootGitDir is the leak

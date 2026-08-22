@@ -82,6 +82,82 @@ func TestListWorktreeFilesAppliesEveryExcludeSource(t *testing.T) {
 	}
 }
 
+// TestSplitNULDirectoryEntriesKeepsOnlyCollapsedDirectories reproduces the
+// trail finding on ListIgnoredWorktreeDirectoryEntries: `git ls-files
+// --directory` only collapses a directory to a single trailing-slash entry
+// when its ENTIRE content is classified the same way. A directory ignored
+// only by file-pattern rules alongside other content is not collapsed, so git
+// lists every one of its matched files individually — and the only consumer
+// of this listing (the git-directory sweep's root list) already discards
+// every entry without a trailing slash, so parsing them at all bought nothing
+// but memory and CPU sized to every ignored file in the tree. This pins that
+// the split itself now drops non-directory entries instead of materializing
+// them.
+func TestSplitNULDirectoryEntriesKeepsOnlyCollapsedDirectories(t *testing.T) {
+	t.Parallel()
+	raw := strings.Join([]string{
+		"build/",         // whole directory collapsed: keep
+		"vendor/pkg.o",   // pattern-ignored file inside a mixed directory: drop
+		"vendor/pkg2.o",  // same, a second one, also a duplicate-prefix check
+		"dist/",          // another collapsed directory: keep
+		"",               // trailing NUL from -z output: drop
+		"README.md",      // an ordinary file entry with no trailing slash: drop
+		"build/",         // duplicate of an already-kept directory: dedup
+	}, "\x00")
+
+	got := splitNULDirectoryEntries(raw)
+	want := []string{"build/", "dist/"}
+	if len(got) != len(want) {
+		t.Fatalf("splitNULDirectoryEntries(...) = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("splitNULDirectoryEntries(...) = %#v, want %#v", got, want)
+		}
+	}
+}
+
+// TestListIgnoredWorktreeDirectoryEntriesDropsPatternIgnoredFilenames is the
+// end-to-end form of the same finding: a real git checkout where a directory
+// is ignored only by a file-pattern rule, mixed with content that is NOT
+// ignored, so `--directory` cannot collapse it. Before the fix, every ignored
+// filename inside such a directory reached the caller; after it, none does —
+// the caller only ever wanted directory roots for the git-directory sweep.
+func TestListIgnoredWorktreeDirectoryEntriesDropsPatternIgnoredFilenames(t *testing.T) {
+	repo := t.TempDir()
+	gitCmd(t, repo, "init")
+	gitCmd(t, repo, "config", "user.name", "T")
+	gitCmd(t, repo, "config", "user.email", "t@example.com")
+	write(t, repo, ".gitignore", "*.o\n")
+	write(t, repo, "src/keep.go", "package src\n")
+	gitCmd(t, repo, "add", ".")
+	gitCmd(t, repo, "commit", "-m", "tracked")
+
+	// vendor/ mixes a pattern-ignored file with an untracked-but-not-ignored
+	// one, so git cannot collapse the whole directory to "vendor/".
+	write(t, repo, "vendor/dep.o", "object\n")
+	write(t, repo, "vendor/keep.txt", "not ignored\n")
+	// wholly ignored, and nothing else in it: this one DOES collapse.
+	write(t, repo, "cache/a.o", "object\n")
+	write(t, repo, "cache/b.o", "object\n")
+
+	entries, err := ListIgnoredWorktreeDirectoryEntries(t.Context(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry, "/") {
+			t.Fatalf("listing leaked a non-directory entry %q: %#v", entry, entries)
+		}
+	}
+	if !slices.Contains(entries, "cache/") {
+		t.Fatalf("listing missing wholly-ignored directory %q: %#v", "cache/", entries)
+	}
+	if slices.Contains(entries, "vendor/") {
+		t.Fatalf("listing collapsed a MIXED directory to %q, which git itself would not have done: %#v", "vendor/", entries)
+	}
+}
+
 // TestBatchFileReaderRefusesOversizeBlob guards the read cap: an oversize blob is
 // never materialized, and is still described exactly from the streamed digest.
 func TestBatchFileReaderRefusesOversizeBlob(t *testing.T) {
