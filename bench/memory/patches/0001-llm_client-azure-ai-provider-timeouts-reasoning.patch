@@ -28,7 +28,7 @@
          if self.provider == "anthropic":
              self._init_anthropic(api_key)
 +        elif self.provider in ("azure_ai", "azure-ai", "foundry", "azure_foundry"):
-+            self._init_azure_ai(api_key, base_url, timeout, **kwargs)
++            self._init_azure_ai(base_url, timeout, **kwargs)
          elif self.provider == "azure":
              self._init_azure(api_key, timeout, **kwargs)
          else:
@@ -75,20 +75,22 @@
      def _parse_yes_no_judgment(self, raw: str) -> bool:
          """Extract the final yes/no verdict from judge output."""
          text = raw.strip()
-@@ -123,6 +166,54 @@
+@@ -123,6 +166,57 @@
              timeout=openai.Timeout(timeout, connect=10.0),
          )
  
-+    def _init_azure_ai(self, api_key: str | None, base_url: str | None, timeout: float, **kwargs: Any) -> None:
++    def _init_azure_ai(self, base_url: str | None, timeout: float, **kwargs: Any) -> None:
 +        """Azure AI Foundry / Model Inference endpoint (``*.services.ai.azure.com/models``).
 +
 +        Unlike classic Azure OpenAI (deployment-path URLs), Foundry exposes a single
-+        OpenAI-compatible ``/models/chat/completions`` route, authenticated with an
-+        ``api-key`` header and an ``api-version`` query param. Everything else (the
-+        gpt-5 ``max_completion_tokens`` / no-temperature handling) is shared with the
-+        openai path, keyed off the model name, so the harness's ruler is unchanged.
++        OpenAI-compatible ``/models/chat/completions`` route. Microsoft Entra bearer
++        authentication is refreshed automatically by the HTTP transport. Everything
++        else (the gpt-5 ``max_completion_tokens`` / no-temperature handling) is shared
++        with the openai path, keyed off the model name, so the harness's ruler is unchanged.
 +        """
 +        import openai
++        from benchmarks.common.entra_auth import build_entra_auth
++
 +        endpoint = (
 +            base_url
 +            or kwargs.get("azure_endpoint")
@@ -98,7 +100,6 @@
 +        ).rstrip("/")
 +        if endpoint and not endpoint.endswith("/models"):
 +            endpoint = endpoint + "/models"
-+        key = api_key or os.getenv("AZURE_AI_API_KEY") or os.getenv("AZURE_OPENAI_API_KEY") or ""
 +        api_version = (
 +            kwargs.get("api_version")
 +            or os.getenv("AZURE_AI_API_VERSION")
@@ -116,12 +117,14 @@
 +                keepalive_expiry=float(os.getenv("LLM_KEEPALIVE_EXPIRY", "300")),
 +            ),
 +            timeout=httpx.Timeout(self.timeout, connect=15.0),
++            auth=build_entra_auth(),
 +        )
 +        self._client = openai.AsyncOpenAI(
-+            api_key=key or "placeholder",
++            # AsyncOpenAI 1.x requires this field. EntraBearerAuth replaces its
++            # placeholder Authorization header immediately before every request.
++            api_key="entra-auth-placeholder",
 +            base_url=endpoint,
 +            default_query={"api-version": api_version},
-+            default_headers={"api-key": key},
 +            timeout=openai.Timeout(self.timeout, connect=15.0),
 +            max_retries=0,
 +            http_client=http_client,
@@ -130,7 +133,7 @@
      def _init_anthropic(self, api_key: str | None) -> None:
          import anthropic
          self._client = anthropic.AsyncAnthropic(
-@@ -169,6 +260,7 @@
+@@ -169,6 +263,7 @@
                              model=self.model,
                              messages=messages,
                              **self._openai_chat_temperature_kwargs(temperature),
@@ -138,7 +141,7 @@
                              **self._openai_chat_token_limit_kwargs(max_tokens),
                          ),
                          timeout=self.timeout,
-@@ -187,6 +279,7 @@
+@@ -187,6 +282,7 @@
              except asyncio.TimeoutError:
                  logger.warning("Generation attempt %d/%d timed out", attempt + 1, self.max_retries)
              except Exception as exc:
@@ -146,7 +149,7 @@
                  logger.warning("Generation attempt %d/%d failed: %s", attempt + 1, self.max_retries, exc)
              if attempt < self.max_retries - 1:
                  await asyncio.sleep(2 * (attempt + 1))
-@@ -270,6 +363,7 @@
+@@ -270,6 +366,7 @@
                              model=self.model,
                              messages=messages,
                              **self._openai_chat_temperature_kwargs(temperature),
@@ -154,7 +157,7 @@
                              response_format={"type": "json_object"},
                              **self._openai_chat_token_limit_kwargs(max_tokens),
                          ),
-@@ -301,6 +395,7 @@
+@@ -301,6 +398,7 @@
              except asyncio.TimeoutError:
                  logger.warning("Structured output attempt %d/%d timed out", attempt + 1, self.max_retries)
              except Exception as exc:
