@@ -89,13 +89,33 @@ func (launch *pathOutputLaunch) start(cmd *exec.Cmd) (pathOutputJob, error) {
 	}
 	childAttrs := pathOutputChildSysProcAttr(launch.originalProcAttr, launch.creationParent.process)
 	cmd.SysProcAttr = &childAttrs
+	// The job's handle is already valid (createPathOutputJob ran inside
+	// preparePathOutputCommand, before this method was ever called), so it can
+	// be captured here and installed as cmd.Cancel BEFORE Start. That matters
+	// because os/exec's context-cancellation watchdog is armed INSIDE Start
+	// when cmd is built with CommandContext, and every streaming caller in
+	// this package blocks reading cmd's stdout pipe before it ever calls
+	// Wait — so WaitDelay's own forced pipe-close, which runs only once Wait
+	// executes, never gets a chance to fire. Without this, a canceled context
+	// killed only cmd.Process (the default Cancel) while a descendant Git
+	// spawned inside this job kept the pipe's write end open, and the blocked
+	// reader hung until whatever later, explicit stopPathOutputCommand call
+	// happened to run — which never happens on this exact path, since nothing
+	// is reading to notice the cancellation in the first place.
+	job := launch.job
+	cmd.Cancel = func() error {
+		job.terminate()
+		if cmd.Process != nil {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
 	startErr := cmd.Start()
 	cmd.SysProcAttr = launch.originalProcAttr
 	if startErr != nil {
 		launch.close()
 		return pathOutputJob{}, startErr
 	}
-	job := launch.job
 	job.creationParentPID = launch.creationParent.pid
 	launch.creationParent.close()
 	launch.creationParent = nil

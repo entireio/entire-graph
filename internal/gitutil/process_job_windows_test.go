@@ -152,6 +152,80 @@ func TestPathOutputCommandIsBornInJobAndDirectTerminationWorks(t *testing.T) {
 	}
 }
 
+// TestPathOutputCommandCancelTerminatesDescendantsHoldingTheStdoutPipe
+// reproduces the trail finding: a canceled context must free a caller
+// blocked reading cmd's stdout pipe even when the descendant STILL HOLDING
+// the pipe's write end is not cmd.Process itself. The "launcher" helper
+// starts a "child" grandchild inheriting its own stdout and then exits
+// immediately, exactly the launcher/worker shape a real Git subprocess tree
+// can take; killing only cmd.Process (the default Cancel, or a job
+// terminated solely at an explicit stop point after the blocked read
+// returns) leaves the grandchild running and the pipe open.
+func TestPathOutputCommandCancelTerminatesDescendantsHoldingTheStdoutPipe(t *testing.T) {
+	switch os.Getenv(pathOutputJobHelperEnv) {
+	case "launcher":
+		grandchild := exec.Command(os.Args[0], "-test.run=^TestPathOutputCommandCancelTerminatesDescendantsHoldingTheStdoutPipe$")
+		grandchild.Env = append(os.Environ(), pathOutputJobHelperEnv+"=child")
+		grandchild.Stdout = os.Stdout
+		grandchild.Stderr = os.Stderr
+		if err := grandchild.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, "launcher: start grandchild:", err)
+			os.Exit(1)
+		}
+		// Exit well before the grandchild does, so cmd.Process (this
+		// launcher) is already gone by the time the context is canceled and
+		// only the grandchild is left holding the pipe — the shape that
+		// defeats a fix which kills cmd.Process alone.
+		os.Exit(0)
+	case "child":
+		fmt.Fprintln(os.Stdout, "stdout-ready")
+		time.Sleep(time.Hour)
+		return
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestPathOutputCommandCancelTerminatesDescendantsHoldingTheStdoutPipe$")
+	cmd.Env = append(os.Environ(), pathOutputJobHelperEnv+"=launcher")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
+	launch, err := preparePathOutputCommand(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer launch.close()
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := launch.start(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer job.close()
+	t.Cleanup(job.terminate)
+
+	reader := bufio.NewReader(stdout)
+	line, err := reader.ReadString('\n')
+	if err != nil || strings.TrimSpace(line) != "stdout-ready" {
+		t.Fatalf("read grandchild readiness line: line=%q err=%v", line, err)
+	}
+
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = reader.ReadByte()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("read from the stdout pipe did not unblock within 10s of context cancellation:" +
+			" cmd.Cancel must terminate the whole job, not only cmd.Process, to free a descendant" +
+			" that is holding the pipe open when cmd.Process itself has already exited")
+	}
+}
+
 func TestPathOutputCommandRejectsCallerSuppliedCreationParent(t *testing.T) {
 	current, err := syscall.GetCurrentProcess()
 	if err != nil {
