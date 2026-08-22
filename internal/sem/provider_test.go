@@ -11818,7 +11818,7 @@ func TestCollectRegistrationAliases(t *testing.T) {
 		return c, ok
 	}
 
-	got := collectRegistrationAliases(paths, read)
+	got := collectRegistrationAliases(nil, paths, read)
 	want := map[string][]string{
 		"getrangeCommand": {"getrange", "substr"},
 		"getCommand":      {"get"},

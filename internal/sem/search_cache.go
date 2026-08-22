@@ -652,24 +652,31 @@ func selectiveSearchSnapshotFromFull(
 	for _, filePath := range sc.paths {
 		allowedFiles[filepath.ToSlash(filepath.Clean(filePath))] = true
 	}
-	// The budget is polled every budgetPollStride records rather than every
-	// record: the check is a context read, the loop body is a path clean plus a
-	// map lookup, and an unbudgeted derivation must keep costing what it did.
-	// One stride is the residual, not the whole inventory.
-	for index, file := range full.Files {
-		if index%budgetPollStride == 0 && stopNow() {
+	// full.Files and full.Symbols are filtered together, file by file, rather
+	// than in two independent index-based passes: the streaming builder emits
+	// one FileRecord followed immediately by every SymbolRecord for that file
+	// (see the reducer in BuildProviderSnapshotWithOptions), so full.Symbols is
+	// a run-length grouping in the same file order as full.Files. Filtering
+	// them separately let expiry land between a file's FileRecord and the tail
+	// of its SymbolRecords -- or mid-run within the Symbols pass alone --
+	// leaving selective.Files claim a file was retained while selective.Symbols
+	// held none or only some of its symbols. The cold (non-cached) path never
+	// produces that state: a file it cannot finish in budget is dropped
+	// whole. This walks both slices in lockstep so a file crossing the
+	// boundary is dropped whole here too, keeping a "retained" file's symbol
+	// set complete by construction rather than by the budget's luck.
+	symIndex := 0
+	for fileIndex, file := range full.Files {
+		if fileIndex%budgetPollStride == 0 && stopNow() {
 			break
+		}
+		runStart := symIndex
+		for symIndex < len(full.Symbols) && full.Symbols[symIndex].FilePath == file.Path {
+			symIndex++
 		}
 		if allowedFiles[filepath.ToSlash(filepath.Clean(file.Path))] {
 			selective.Files = append(selective.Files, file)
-		}
-	}
-	for index, symbol := range full.Symbols {
-		if index%budgetPollStride == 0 && stopNow() {
-			break
-		}
-		if allowedFiles[filepath.ToSlash(filepath.Clean(symbol.FilePath))] {
-			selective.Symbols = append(selective.Symbols, symbol)
+			selective.Symbols = append(selective.Symbols, full.Symbols[runStart:symIndex]...)
 		}
 	}
 

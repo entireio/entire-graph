@@ -136,7 +136,7 @@ func TestTF142R8RegistrationAliasScanStopsWhenTheBudgetIsGone(t *testing.T) {
 
 	base := time.Now()
 	expired := budgetGate{work: context.Background(), deadline: base.Add(-time.Second), now: func() time.Time { return base }}
-	aliases := collectRegistrationAliases(paths, expired.reader(raw))
+	aliases := collectRegistrationAliases(expired.expired, paths, expired.reader(raw))
 	if reads != 0 {
 		t.Fatalf("the alias scan read %d manifest(s) on an already-expired budget", reads)
 	}
@@ -146,7 +146,7 @@ func TestTF142R8RegistrationAliasScanStopsWhenTheBudgetIsGone(t *testing.T) {
 
 	// Widening: an unbudgeted scan is unchanged.
 	live := budgetGate{work: context.Background(), now: time.Now}
-	aliases = collectRegistrationAliases(paths, live.reader(raw))
+	aliases = collectRegistrationAliases(live.expired, paths, live.reader(raw))
 	if reads != len(paths) {
 		t.Fatalf("an unbudgeted alias scan must read every manifest, got %d of %d", reads, len(paths))
 	}

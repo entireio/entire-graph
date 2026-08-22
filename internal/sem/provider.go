@@ -950,9 +950,18 @@ var registrationFunctionPattern = regexp.MustCompile(`"function"\s*:\s*"([A-Za-z
 // The command verb (the file's basename without .json) never appears in the
 // handler body, so it is indexed as a searchable alias of the handler symbol.
 // Only paths matching commands/*.json are touched; no generic scan is performed.
-func collectRegistrationAliases(paths []string, read contentReader) map[string][]string {
+// collectRegistrationAliases scans a large inventory once, so its own loop
+// needs the stop predicate too: the gated reader passed to it only refuses
+// reads once the budget is gone, and a refused read merely `continue`s, so
+// without this check the loop still walked every remaining path (and the
+// final sort/dedupe pass still ran over whatever had accumulated) rather than
+// stopping where the budget actually expired.
+func collectRegistrationAliases(stop func() bool, paths []string, read contentReader) map[string][]string {
 	aliasesByHandler := map[string][]string{}
 	for _, p := range paths {
+		if stop != nil && stop() {
+			break
+		}
 		slash := filepath.ToSlash(p)
 		if !strings.HasSuffix(slash, ".json") {
 			continue
@@ -1162,7 +1171,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	// truncation every later phase reports, rather than leaving it for the
 	// pipeline's timer to notice.
 	budgetedRead := gate.reader(sc.read)
-	aliasesByHandler := collectRegistrationAliases(sc.paths, budgetedRead)
+	aliasesByHandler := collectRegistrationAliases(gate.expired, sc.paths, budgetedRead)
 	if err := noteStop(); err != nil {
 		return err
 	}
@@ -4057,7 +4066,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		return
 	}
 	if spec.emits("TESTS") {
-		for _, r := range testRelations(recordsByFile, symbolsByShortName, resolvedImportsByFile) {
+		for _, r := range testRelations(shouldStop, recordsByFile, symbolsByShortName, resolvedImportsByFile) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
@@ -9200,7 +9209,17 @@ func lookupHCLReference(index map[string]SymbolRecord, ref string) (SymbolRecord
 // naming convention (TestFoo -> Foo, test_foo -> foo, FooTest -> Foo). The
 // subject must resolve to a non-test function/method/type symbol. This is a
 // high-precision convention match, not call-graph analysis.
-func testRelations(recordsByFile map[string][]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, resolvedImportsByFile map[string]map[string][]string) []RelationRecord {
+// testRelations materializes its whole result slice before returning, so a
+// between-stage budget check in the caller cannot interrupt it — the same gap
+// usesTypeRelations' doc describes. resolveTestSubject can itself scan a large
+// same-name candidate set per call (a common test-subject name in a big
+// repository resolves against every symbol sharing it), making the pass
+// quadratic in the worst case rather than the single linear pass over symbols
+// this loop otherwise is. stop is threaded into both the outer loops and
+// resolveTestSubject's own candidate scan so a run past the wall-clock budget
+// is interrupted where the cost actually accrues, not just at the
+// already-too-late edges of this function.
+func testRelations(stop func() bool, recordsByFile map[string][]SymbolRecord, symbolsByShortName map[string][]SymbolRecord, resolvedImportsByFile map[string]map[string][]string) []RelationRecord {
 	paths := make([]string, 0, len(recordsByFile))
 	for path := range recordsByFile {
 		paths = append(paths, path)
@@ -9209,7 +9228,13 @@ func testRelations(recordsByFile map[string][]SymbolRecord, symbolsByShortName m
 
 	var relations []RelationRecord
 	for _, path := range paths {
+		if stop != nil && stop() {
+			return relations
+		}
 		for _, symbol := range recordsByFile[path] {
+			if stop != nil && stop() {
+				return relations
+			}
 			if symbol.Kind != "function" && symbol.Kind != "method" {
 				continue
 			}
@@ -9217,7 +9242,7 @@ func testRelations(recordsByFile map[string][]SymbolRecord, symbolsByShortName m
 			if subject == "" {
 				continue
 			}
-			target, resolution, ok := resolveTestSubject(subject, symbol, symbolsByShortName[subject], resolvedImportsByFile[path])
+			target, resolution, ok := resolveTestSubject(stop, subject, symbol, symbolsByShortName[subject], resolvedImportsByFile[path])
 			if !ok {
 				continue
 			}
@@ -9252,9 +9277,12 @@ func testRelations(recordsByFile map[string][]SymbolRecord, symbolsByShortName m
 // import evidence resolves to nothing rather than to whichever same-name
 // symbol sorts first, which produced cross-crate TESTS edges to unrelated
 // units in Cargo workspaces.
-func resolveTestSubject(subject string, test SymbolRecord, candidates []SymbolRecord, importsByName map[string][]string) (SymbolRecord, string, bool) {
+func resolveTestSubject(stop func() bool, subject string, test SymbolRecord, candidates []SymbolRecord, importsByName map[string][]string) (SymbolRecord, string, bool) {
 	var eligible []SymbolRecord
 	for _, symbol := range candidates {
+		if stop != nil && stop() {
+			return SymbolRecord{}, "", false
+		}
 		if symbol.ID == test.ID || isTestName(symbol.Name) {
 			continue
 		}

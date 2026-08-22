@@ -269,7 +269,11 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 		if stopped(stop) {
 			return nil, spec.language, parseStoppedStatus(ctx, "fallback parse")
 		}
-		return fallbackEntities(path, content, spec.language), spec.language, ParseStatus{}
+		entities := fallbackEntities(path, content, spec.language, stop)
+		if stopped(stop) {
+			return nil, spec.language, parseStoppedStatus(ctx, "fallback parse")
+		}
+		return entities, spec.language, ParseStatus{}
 	}
 	// Source masking is language-specific work in its own right, and it sat
 	// between the predicate above and the budgeted parse context below, so
@@ -3274,32 +3278,42 @@ func inventoryLanguageForSuffix(base string) (languageSpec, bool) {
 	return languageSpec{}, false
 }
 
-func fallbackEntities(path, content, language string) []Entity {
+// fallbackEntities dispatches to a per-format extractor for files with no
+// tree-sitter grammar. Every extractor below that scans line-by-line polls
+// stop every budgetPollStride lines, mirroring the cadence search_cache.go
+// uses for its own per-record loops: a maximum-sized Markdown, HTML, XML or
+// JSON file is exactly the case a wall-clock budget expiring mid-file needs
+// to interrupt, since the caller discards the whole result once ctx expires
+// regardless of how much of the file this pass already walked.
+func fallbackEntities(path, content, language string, stop func() bool) []Entity {
 	switch language {
 	case "Dockerfile":
-		return dockerfileEntities(content)
+		return dockerfileEntities(content, stop)
 	case "Kustomize":
-		return kustomizeEntities(content)
+		return kustomizeEntities(content, stop)
 	case "JSON", "JSON5":
-		return jsonLikeEntities(content)
+		return jsonLikeEntities(content, stop)
 	case "TOML":
-		return tomlEntities(content)
+		return tomlEntities(content, stop)
 	case "XML":
-		return xmlEntities(content)
+		return xmlEntities(content, stop)
 	case "Make":
-		return makeEntities(content)
+		return makeEntities(content, stop)
 	case "Markdown":
-		return markdownEntities(content)
+		return markdownEntities(content, stop)
 	case "HTML":
-		return htmlEntities(path, content)
+		return htmlEntities(path, content, stop)
 	case "CSS":
-		return cssEntities(content)
+		return cssEntities(content, stop)
 	case "GraphQL":
 		entities := inventoryEntities(path, content, language)
+		if stopped(stop) {
+			return entities
+		}
 		entities = append(entities, graphqlSchemaEntities(content)...)
 		return entities
 	case "Vue", "Svelte":
-		return componentEntities(path, content, language)
+		return componentEntities(path, content, language, stop)
 	default:
 		return inventoryEntities(path, content, language)
 	}
@@ -3319,11 +3333,14 @@ func inventoryEntities(path, content, language string) []Entity {
 	return []Entity{simpleFallbackEntity(kind, base, signature, 1, maxInt(1, len(lines)), content)}
 }
 
-func dockerfileEntities(content string) []Entity {
+func dockerfileEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	var entities []Entity
 	stageIndex := 0
 	for index, line := range lines {
+		if index%budgetPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
@@ -3363,15 +3380,18 @@ func dockerfileEntities(content string) []Entity {
 	return entities
 }
 
-func kustomizeEntities(content string) []Entity {
-	return yamlKeyEntities(content, "kustomize")
+func kustomizeEntities(content string, stop func() bool) []Entity {
+	return yamlKeyEntities(content, "kustomize", stop)
 }
 
-func yamlKeyEntities(content, prefix string) []Entity {
+func yamlKeyEntities(content, prefix string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	keyRe := regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_-]*):`)
 	var entities []Entity
 	for i, line := range lines {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
@@ -3386,12 +3406,15 @@ func yamlKeyEntities(content, prefix string) []Entity {
 	return entities
 }
 
-func jsonLikeEntities(content string) []Entity {
+func jsonLikeEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	keyRe := regexp.MustCompile(`^\s*["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*:`)
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		match := keyRe.FindStringSubmatch(line)
 		if match == nil || seen[match[1]] {
 			continue
@@ -3402,13 +3425,16 @@ func jsonLikeEntities(content string) []Entity {
 	return entities
 }
 
-func tomlEntities(content string) []Entity {
+func tomlEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	sectionRe := regexp.MustCompile(`^\s*\[+\s*([A-Za-z0-9_.-]+)\s*\]+`)
 	keyRe := regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*=`)
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		name := ""
 		kind := "section"
 		if match := sectionRe.FindStringSubmatch(line); match != nil {
@@ -3426,12 +3452,15 @@ func tomlEntities(content string) []Entity {
 	return entities
 }
 
-func xmlEntities(content string) []Entity {
+func xmlEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	tagRe := regexp.MustCompile(`<\s*([A-Za-z_][A-Za-z0-9_.:-]*)\b`)
 	var entities []Entity
 	seen := map[string]bool{}
 	for i, line := range lines {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		match := tagRe.FindStringSubmatch(line)
 		if match == nil || strings.HasPrefix(match[1], "?") || seen[match[1]] {
 			continue
@@ -3442,11 +3471,14 @@ func xmlEntities(content string) []Entity {
 	return entities
 }
 
-func makeEntities(content string) []Entity {
+func makeEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	targetRe := regexp.MustCompile(`^([A-Za-z0-9_.%/-]+)\s*:`)
 	var entities []Entity
 	for i, line := range lines {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		if strings.HasPrefix(line, "\t") || strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
 			continue
 		}
@@ -3459,13 +3491,16 @@ func makeEntities(content string) []Entity {
 	return entities
 }
 
-func markdownEntities(content string) []Entity {
+func markdownEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	headingRe := regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
 	fenceRe := regexp.MustCompile("^```\\s*([A-Za-z0-9_+-]*)")
 	var entities []Entity
 	fenceIndex := 0
 	for i, line := range lines {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		if match := headingRe.FindStringSubmatch(line); match != nil {
 			name := strings.TrimSpace(strings.Trim(match[2], "#"))
 			entities = append(entities, simpleFallbackEntity("section", slugName(name), "markdown heading "+name, i+1, i+1, strings.TrimSpace(line)))
@@ -3484,7 +3519,7 @@ func markdownEntities(content string) []Entity {
 	return entities
 }
 
-func htmlEntities(path, content string) []Entity {
+func htmlEntities(path, content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	idRe := regexp.MustCompile(`\bid\s*=\s*["']([^"']+)["']`)
 	var entities []Entity
@@ -3492,6 +3527,9 @@ func htmlEntities(path, content string) []Entity {
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	entities = append(entities, simpleFallbackEntity("document", base, "html document "+base, 1, maxInt(1, len(lines)), base))
 	for i, line := range lines {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		for _, match := range idRe.FindAllStringSubmatch(line, -1) {
 			name := slugName(match[1])
 			if name == "" || seen[name] {
@@ -3504,11 +3542,14 @@ func htmlEntities(path, content string) []Entity {
 	return entities
 }
 
-func cssEntities(content string) []Entity {
+func cssEntities(content string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	selectorRe := regexp.MustCompile(`^\s*([.#]?[A-Za-z_][A-Za-z0-9_-]*)\s*\{`)
 	var entities []Entity
 	for i, line := range lines {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return entities
+		}
 		match := selectorRe.FindStringSubmatch(line)
 		if match == nil {
 			continue
@@ -3519,12 +3560,12 @@ func cssEntities(content string) []Entity {
 	return entities
 }
 
-func componentEntities(path, content, language string) []Entity {
+func componentEntities(path, content, language string, stop func() bool) []Entity {
 	lines := strings.Split(content, "\n")
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	entities := []Entity{simpleFallbackEntity("component", base, language+" component "+base, 1, maxInt(1, len(lines)), base)}
 	if language == "Vue" {
-		entities = append(entities, htmlEntities(path, content)...)
+		entities = append(entities, htmlEntities(path, content, stop)...)
 	}
 	return entities
 }
