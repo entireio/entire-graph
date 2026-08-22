@@ -128,10 +128,11 @@ func TestGitDirExcluderObservesDirectoriesGitListsNothingUnder(t *testing.T) {
 	}
 }
 
-// TestGitDirExcluderSweepSkipsVendoredTrees keeps the unlisted-directory sweep
-// off trees the scanner does not index anyway, so a fully ignored dependency
-// tree is not enumerated for pointers it can never leak through.
-func TestGitDirExcluderSweepSkipsVendoredTrees(t *testing.T) {
+// TestGitDirExcluderSweepLeavesSourceBesideVendoredTreesEligible pins the
+// separation between sweeping and indexing: the sweep may inspect a vendored
+// tree for pointers whose target is elsewhere, but no file in that tree becomes
+// source and ordinary source beside it stays eligible.
+func TestGitDirExcluderSweepLeavesSourceBesideVendoredTreesEligible(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
 	writeFile(t, repo, "node_modules/dep/lib.js", "module.exports = {}\n")

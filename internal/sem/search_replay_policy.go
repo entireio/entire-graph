@@ -52,8 +52,13 @@ type SearchReplayPolicy struct {
 	gitWorktree bool
 	hasIncludes bool
 	ignores     ignoreMatcher
-	fingerprint string
-	ctx         context.Context
+	// worktreeCorpus is the exact bounded provider listing observed while the
+	// fingerprint was built. Worktree replay is disabled when the listing does
+	// not fit the replay bounds, so membership here includes git-directory,
+	// vendored, ignore, regular-file, and symlink eligibility in one decision.
+	worktreeCorpus map[string]struct{}
+	fingerprint    string
+	ctx            context.Context
 }
 
 // ResolveSearchReplayPolicy assembles the same root policy as a real search.
@@ -104,8 +109,10 @@ func ResolveSearchReplayPolicy(ctx context.Context, repo string, options SearchO
 	}
 	effectiveMaxFiles := resolveMaxSourceFiles(0)
 	policyParts := []string{"max-files=" + strconv.Itoa(effectiveMaxFiles)}
+	var worktreeCorpus map[string]struct{}
 	if worktree {
-		corpusIdentity, corpusErr := observeSearchReplayWorktreeCorpus(
+		policyParts = append(policyParts, "sweep-dir-budget="+strconv.Itoa(resolveSweepDirectoryBudget()))
+		corpusIdentity, resolvedCorpus, corpusErr := observeSearchReplayWorktreeCorpus(
 			ctx,
 			absRepo,
 			ignores,
@@ -116,27 +123,39 @@ func ResolveSearchReplayPolicy(ctx context.Context, repo string, options SearchO
 			return SearchReplayPolicy{}, corpusErr
 		}
 		policyParts = append(policyParts, "corpus="+corpusIdentity)
+		worktreeCorpus = resolvedCorpus
 	}
 
 	return SearchReplayPolicy{
-		repo:        absRepo,
-		commit:      commit,
-		tree:        tree,
-		worktree:    worktree,
-		gitWorktree: gitWorktree,
-		hasIncludes: len(options.IncludeFiles) > 0,
-		ignores:     ignores,
-		fingerprint: searchReplayPolicyFingerprint(view, ignores, policyParts...),
-		ctx:         ctx,
+		repo:           absRepo,
+		commit:         commit,
+		tree:           tree,
+		worktree:       worktree,
+		gitWorktree:    gitWorktree,
+		hasIncludes:    len(options.IncludeFiles) > 0,
+		ignores:        ignores,
+		worktreeCorpus: worktreeCorpus,
+		fingerprint:    searchReplayPolicyFingerprint(view, ignores, policyParts...),
+		ctx:            ctx,
 	}, nil
 }
 
 type searchReplayCorpusCollector struct {
-	paths      []string
-	seen       map[string]struct{}
-	pathBytes  int
-	exceeded   bool
-	exceedWhat string
+	paths        []string
+	seen         map[string]struct{}
+	observations []string
+	pathBytes    int
+	exceeded     bool
+	exceedWhat   string
+}
+
+func (c *searchReplayCorpusCollector) addWarning(warning ProviderWarning) {
+	c.observations = append(c.observations,
+		warning.Code,
+		warning.Severity,
+		warning.EffectOnCompleteness,
+		warning.Detail,
+	)
 }
 
 func newSearchReplayCorpusCollector() *searchReplayCorpusCollector {
@@ -185,10 +204,21 @@ func (c *searchReplayCorpusCollector) identity() (string, error) {
 	sort.Strings(ordered)
 	hash := sha256.New()
 	writeSearchReplayHashPart(hash, searchReplayCorpusVersion)
+	for _, observation := range c.observations {
+		writeSearchReplayHashPart(hash, observation)
+	}
 	for _, rel := range ordered {
 		writeSearchReplayHashPart(hash, rel)
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func (c *searchReplayCorpusCollector) corpus() map[string]struct{} {
+	result := make(map[string]struct{}, len(c.seen))
+	for rel := range c.seen {
+		result[rel] = struct{}{}
+	}
+	return result
 }
 
 func observeSearchReplayWorktreeCorpus(
@@ -197,21 +227,29 @@ func observeSearchReplayWorktreeCorpus(
 	ignores ignoreMatcher,
 	hasIncludeFiles bool,
 	gitWorktree bool,
-) (string, error) {
+) (string, map[string]struct{}, error) {
 	collector := newSearchReplayCorpusCollector()
 	if gitWorktree {
 		if err := observeSearchReplayGitWorktreeCorpus(
 			ctx, repo, ignores, hasIncludeFiles, collector,
 		); err != nil {
-			return "", err
+			return "", nil, err
 		}
 	} else {
 		dirTracked := func(string) bool { return false }
-		if _, err := visitWalkWorktreeFiles(ctx, repo, ignores, dirTracked, collector.add); err != nil {
-			return "", fmt.Errorf("observe filesystem worktree corpus for replay: %w", err)
+		warnings, err := visitWalkWorktreeFiles(ctx, repo, ignores, dirTracked, collector.add)
+		if err != nil {
+			return "", nil, fmt.Errorf("observe filesystem worktree corpus for replay: %w", err)
+		}
+		for _, warning := range warnings {
+			collector.addWarning(warning)
 		}
 	}
-	return collector.identity()
+	identity, err := collector.identity()
+	if err != nil {
+		return "", nil, err
+	}
+	return identity, collector.corpus(), nil
 }
 
 func observeSearchReplayGitWorktreeCorpus(
@@ -232,8 +270,46 @@ func observeSearchReplayGitWorktreeCorpus(
 		return err
 	}
 
-	tracked := make(map[string]bool)
+	// Retain the raw provider candidates first. If even that set does not fit
+	// replay bounds, stop Git and decline replay; this keeps the later exact
+	// git-directory sweep and final eligibility pass bounded without pretending
+	// a truncated listing is complete.
+	raw := newSearchReplayCorpusCollector()
 	var observationErr error
+	collect := func(rel string) bool {
+		cleaned, ok := cleanSearchReplayPath(filepath.ToSlash(rel))
+		if !ok || cleaned != filepath.ToSlash(rel) {
+			observationErr = fmt.Errorf("Git returned invalid replay corpus path %q", rel)
+			return false
+		}
+		return raw.add(cleaned)
+	}
+	if err := gitutil.VisitWorktreePaths(ctx, repo, false, collect); err != nil {
+		return fmt.Errorf("observe Git worktree corpus for replay: %w", err)
+	}
+	if observationErr != nil {
+		return observationErr
+	}
+	if hasIncludeFiles {
+		visitIgnored := func(rel string) bool {
+			rel = filepath.ToSlash(rel)
+			if !ignores.Reincluded(rel, false) {
+				return true
+			}
+			return collect(rel)
+		}
+		if err := gitutil.VisitWorktreePaths(ctx, repo, true, visitIgnored); err != nil {
+			return fmt.Errorf("observe Git ignored worktree corpus for replay: %w", err)
+		}
+		if observationErr != nil {
+			return observationErr
+		}
+	}
+	if _, err := raw.identity(); err != nil {
+		return err
+	}
+
+	tracked := make(map[string]bool)
 	dirTracked := func(rel string) bool {
 		if value, exists := tracked[rel]; exists {
 			return value
@@ -250,36 +326,31 @@ func observeSearchReplayGitWorktreeCorpus(
 		tracked[rel] = value
 		return value
 	}
-	visit := func(rel string) bool {
-		cleaned, ok := cleanSearchReplayPath(filepath.ToSlash(rel))
-		if !ok || cleaned != filepath.ToSlash(rel) {
-			observationErr = fmt.Errorf("Git returned invalid replay corpus path %q", rel)
-			return false
+
+	listedDirs := make([]string, 0)
+	for _, rel := range raw.paths {
+		info, statErr := os.Lstat(filepath.Join(repo, filepath.FromSlash(rel)))
+		if statErr == nil && info.IsDir() {
+			listedDirs = append(listedDirs, rel)
 		}
-		if !eligibleGitWorktreeSourcePath(repo, cleaned, ignores, vendorRules, dirTracked) {
-			return observationErr == nil
+	}
+	gitDirs := newGitDirExcluder(ctx, repo)
+	gitDirs.unlistedRoots, gitDirs.gitAnsweredRoots = gitSweepRootsFromGit(ctx, repo, gitDirs)
+	gitDirs.observeListedPaths(raw.paths, listedDirs)
+	for _, warning := range gitDirs.sweepWarnings() {
+		collector.addWarning(warning)
+	}
+	for _, warning := range gitDirs.sweepUnreadableDirWarning() {
+		collector.addWarning(warning)
+	}
+	for _, rel := range raw.paths {
+		if gitDirs.excluded(rel) {
+			continue
 		}
-		return collector.add(cleaned)
-	}
-	if err := gitutil.VisitWorktreePaths(ctx, repo, false, visit); err != nil {
-		return fmt.Errorf("observe Git worktree corpus for replay: %w", err)
-	}
-	if observationErr != nil {
-		return observationErr
-	}
-	if collector.exceeded {
-		return nil
-	}
-	if hasIncludeFiles {
-		visitIgnored := func(rel string) bool {
-			rel = filepath.ToSlash(rel)
-			if !ignores.Reincluded(rel, false) {
-				return true
+		if eligibleGitWorktreeSourcePath(repo, rel, ignores, vendorRules, dirTracked) {
+			if !collector.add(rel) {
+				break
 			}
-			return visit(rel)
-		}
-		if err := gitutil.VisitWorktreePaths(ctx, repo, true, visitIgnored); err != nil {
-			return fmt.Errorf("observe Git ignored worktree corpus for replay: %w", err)
 		}
 		if observationErr != nil {
 			return observationErr
@@ -388,7 +459,13 @@ func (p SearchReplayPolicy) AllowsReplayPaths(paths []string) bool {
 		}
 		return p.allowsHeadReplayPaths(ctx, cleaned)
 	}
+	if p.worktreeCorpus == nil {
+		return false
+	}
 	for _, rel := range cleaned {
+		if _, eligible := p.worktreeCorpus[rel]; !eligible {
+			return false
+		}
 		if !regularWorktreeReplayPath(p.repo, rel) {
 			return false
 		}

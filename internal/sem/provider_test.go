@@ -15642,6 +15642,22 @@ func caseFoldingTestFS(t *testing.T, dir string) bool {
 	return err == nil
 }
 
+func normalizationFoldingTestFS(t *testing.T, dir string) bool {
+	t.Helper()
+	composed := filepath.Join(dir, "tf132-caf\u00e9-probe")
+	decomposed := filepath.Join(dir, "tf132-cafe\u0301-probe")
+	if err := os.Mkdir(composed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(composed) }()
+	composedInfo, err := os.Lstat(composed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decomposedInfo, err := os.Lstat(decomposed)
+	return err == nil && os.SameFile(composedInfo, decomposedInfo)
+}
+
 // TestGitDirExcluderMatchesTargetSpelledInAnotherCase pins the pointer half
 // against the filesystem's own case folding. The pointer names the git
 // directory `STATE/.dep-git`; the listing spells the same directory
@@ -15691,6 +15707,26 @@ func TestSearchRepositoryNeverIndexesGitDirNamedInAnotherCase(t *testing.T) {
 	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
 
 	assertNoGitDirLeak(t, repo, "state/.dep-git")
+}
+
+// TestSearchRepositoryNeverIndexesGitDirNamedInAnotherNormalization is the
+// APFS Unicode-equivalence variant of the spelling mismatch above. The pointer
+// carries a decomposed e+acute spelling while the listing carries the composed
+// spelling of the same directory. Both paths open one directory on a
+// normalization-folding volume, so exact and case-only matching are not enough.
+func TestSearchRepositoryNeverIndexesGitDirNamedInAnotherNormalization(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	if !normalizationFoldingTestFS(t, repo) {
+		t.Skip("filesystem is normalization-sensitive: composed and decomposed names are distinct here")
+	}
+	const composed = "state/caf\u00e9/.dep-git"
+	const decomposed = "state/cafe\u0301/.dep-git"
+	writeFile(t, repo, "libs/dep/.git", "gitdir: ../../"+decomposed+"\n")
+	writeHeadlessGitDirFixture(t, repo, composed)
+	writeFile(t, repo, "src/app.go", "package src\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	assertNoGitDirLeak(t, repo, composed)
 }
 
 // TestLooksLikeGitDirAcceptsSymlinkedObjectsAndRefs pins the structural half

@@ -883,6 +883,25 @@ func (s *nestedIgnoreStack) close() error {
 	return s.root.Close()
 }
 
+// directoryReadable distinguishes an unreadable directory from an unreadable
+// .gitignore inside a readable directory after enter reports fs.ErrPermission.
+// The former cannot contribute source and is disclosed by the walk warning;
+// the latter is policy evidence the provider must not silently ignore. OpenRoot
+// keeps this one-entry probe confined to the repository if the path changes
+// between WalkDir's directory entry and this check.
+func (s *nestedIgnoreStack) directoryReadable(dir string) bool {
+	if s.root == nil {
+		return false
+	}
+	opened, err := s.root.Open(filepath.FromSlash(cleanIgnorePath(dir)))
+	if err != nil {
+		return false
+	}
+	defer opened.Close()
+	_, err = opened.ReadDir(1)
+	return err == nil || errors.Is(err, io.EOF)
+}
+
 // enter registers the directory the walk is about to descend into (repo-relative,
 // slash-separated; "" for the repository root) and loads its .gitignore, if any.
 // Levels the walk has left are dropped, so the stack holds one matcher per

@@ -186,11 +186,12 @@ func ListWorktreeFiles(ctx context.Context, repo string) ([]string, error) {
 // inherits git's exclude stack; deriving them instead means reading every
 // directory in the tree, ignored build and cache trees included.
 func ListWorktreeDirectoryEntries(ctx context.Context, repo string) ([]string, error) {
-	out, err := run(ctx, repo, "git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--directory")
-	if err != nil {
-		return nil, err
-	}
-	return splitNULDirectoryEntries(out), nil
+	var entries []string
+	err := VisitWorktreeDirectoryEntries(ctx, repo, false, func(entry string) bool {
+		entries = append(entries, entry)
+		return true
+	})
+	return entries, err
 }
 
 // ListIgnoredWorktreeDirectoryEntries lists the trees Git's exclude rules cover,
@@ -205,7 +206,12 @@ func ListWorktreeDirectoryEntries(ctx context.Context, repo string) ([]string, e
 // all, while `.dep-git/config` is listed in full. The sweep reads directories
 // only, never a file, so nothing in the ignored tree becomes indexable.
 func ListIgnoredWorktreeDirectoryEntries(ctx context.Context, repo string) ([]string, error) {
-	return streamNULDirectoryEntries(ctx, repo, "git", "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory")
+	var entries []string
+	err := VisitWorktreeDirectoryEntries(ctx, repo, true, func(entry string) bool {
+		entries = append(entries, entry)
+		return true
+	})
+	return entries, err
 }
 
 // ListIgnoredWorktreeFiles lists the untracked working-tree files Git's exclude

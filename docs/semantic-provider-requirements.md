@@ -364,13 +364,15 @@ on disk. Two bounds are enforced, and both are visible in the output:
   overrides; negative removes it). Truncation is deterministic in sorted path
   order and always reported as `W_FILE_LIMIT`, naming the real count, the limit
   and the override.
-- **`.git`-pointer sweep budget** — 20,000 directories per working-tree listing
+- **`.git`-pointer sweep budget** — 20,000 admitted directories and 20,000
+  inspected directory entries per working-tree listing
   (`ENTIRE_GRAPH_SWEEP_DIR_BUDGET` overrides; 0 or negative removes it). The
   sweep that looks for a suppressed `.git` pointer descends the roots Git
   collapsed, ignored trees included, so its size is set by content Git omits — a
   `node_modules`, a package store, a build cache — and without a bound one query
   is a whole-tree scan of it. The budget is one ledger for the whole listing, so
-  splitting one large ignored tree into many buys no extra allowance, and
+  splitting one large ignored tree into many, or flattening it into arbitrarily
+  many files, buys no extra allowance, and
   exhaustion is not silence: it records hidden evidence, which makes every
   observed directory carrying a git directory's structure an exclusion target,
   and it is reported as `W_GITDIR_SWEEP_BUDGET` (`W_GITDIR_SWEEP_CANCELLED` when

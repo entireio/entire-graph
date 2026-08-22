@@ -2,6 +2,7 @@ package sem
 
 import (
 	"bufio"
+	"container/heap"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -25,6 +26,7 @@ import (
 	"github.com/entireio/entire-graph/internal/filedigest"
 	"github.com/entireio/entire-graph/internal/gitutil"
 	"github.com/entireio/entire-graph/internal/termsafe"
+	"golang.org/x/text/unicode/norm"
 )
 
 const (
@@ -10508,6 +10510,11 @@ func readGitDirPointer(path string) (string, bool) {
 type gitDirExcluder struct {
 	repo    string
 	targets map[string]struct{}
+	// gitDirRoot records the special target whose git directory and worktree
+	// share the repository root. Variable Git-owned names are then recognized
+	// directly by excluded, avoiding an unbounded root ReadDir merely to find a
+	// sharedindex.<hash> entry.
+	gitDirRoot bool
 	// foldedTargets holds the same targets lowercased, and is populated only
 	// where the filesystem itself folds case. A pointer's spelling and the
 	// listing's spelling are two independent strings for one directory there —
@@ -10517,6 +10524,13 @@ type gitDirExcluder struct {
 	// spellings really are two directories and folding would exclude an
 	// innocent one.
 	foldedTargets map[string]struct{}
+	// normalizedTargets and foldedNormalizedTargets close the corresponding
+	// Unicode-normalization alias on filesystems such as the default APFS. They
+	// are populated only after an alternate normalization was verified to name
+	// the same file, so a case-sensitive or normalization-sensitive filesystem
+	// never loses a genuinely distinct source directory.
+	normalizedTargets       map[string]struct{}
+	foldedNormalizedTargets map[string]struct{}
 	// unlistedRoots names the directories the listing says nothing under, from
 	// git's own `--directory` listing, and gitAnsweredRoots records that git
 	// answered at all (an empty answer is a real answer). Without them the sweep
@@ -10537,6 +10551,10 @@ type gitDirExcluder struct {
 	sweepBudget      int
 	sweepDirectories int
 	directoriesRead  int
+	// directoryEntriesRead is a second ledger under the same configured bound.
+	// Counting only directories still let one flat directory force ReadDir to
+	// allocate and inspect an arbitrary number of non-directory entries.
+	directoryEntriesRead int
 	// sweepStop records why the sweep stopped short, so what the listing means
 	// is disclosed rather than quietly changed.
 	sweepStop sweepStopReason
@@ -10665,8 +10683,8 @@ const (
 	sweepStoppedOnCancel
 )
 
-// defaultSweepDirectoryBudget bounds the directories one query's `.git`-pointer
-// sweep may read.
+// defaultSweepDirectoryBudget bounds both directories admitted and directory
+// entries inspected by one query's `.git`-pointer sweep.
 //
 // Why a bound is not optional. The sweep descends every root git collapsed,
 // including the IGNORED ones, because `.gitignore` is committed content in the
@@ -10713,6 +10731,9 @@ func resolveSweepDirectoryBudget() int {
 	if err != nil {
 		return defaultSweepDirectoryBudget
 	}
+	if value <= 0 {
+		return 0
+	}
 	return value
 }
 
@@ -10721,11 +10742,13 @@ func resolveSweepDirectoryBudget() int {
 // listing to find.
 func newGitDirExcluder(ctx context.Context, repo string) *gitDirExcluder {
 	excluder := &gitDirExcluder{
-		repo:          repo,
-		targets:       map[string]struct{}{},
-		foldedTargets: map[string]struct{}{},
-		sweepCtx:      ctx,
-		sweepBudget:   resolveSweepDirectoryBudget(),
+		repo:                    repo,
+		targets:                 map[string]struct{}{},
+		foldedTargets:           map[string]struct{}{},
+		normalizedTargets:       map[string]struct{}{},
+		foldedNormalizedTargets: map[string]struct{}{},
+		sweepCtx:                ctx,
+		sweepBudget:             resolveSweepDirectoryBudget(),
 	}
 	excluder.observe("")
 	return excluder
@@ -10789,6 +10812,26 @@ func (g *gitDirExcluder) admitSweepDirectory() bool {
 	return true
 }
 
+// admitSweepEntry bounds the other dimension of a directory traversal: entries
+// inspected while looking for subdirectories. Without it, a flat ignored
+// directory containing millions of files spent one directory from the ledger
+// and still forced an unbounded ReadDir allocation and scan.
+func (g *gitDirExcluder) admitSweepEntry() bool {
+	if g.sweepStop != sweepRanToCompletion {
+		return false
+	}
+	if g.sweepBudget > 0 && g.directoryEntriesRead >= g.sweepBudget {
+		g.sweepStop = sweepStoppedOnBudget
+		g.hiddenEvidence++
+		return false
+	}
+	if g.directoryEntriesRead%sweepCancelCheckInterval == 0 && g.sweepHalted() {
+		return false
+	}
+	g.directoryEntriesRead++
+	return true
+}
+
 // sweepHalted reports whether the caller has stopped waiting, and stops the
 // sweep the same fail-closed way the ledger does if so. It is asked on the read
 // side as well as at admission because the queue admitted before a cancellation
@@ -10818,7 +10861,7 @@ func (g *gitDirExcluder) sweepWarnings() []ProviderWarning {
 			Severity:             "warning",
 			EffectOnCompleteness: "the scan for `.git` pointers stopped early, so directories that carry a git directory's structure were excluded from the listing without a pointer naming them; source under them is absent",
 			Detail: fmt.Sprintf(
-				"the `.git` pointer sweep read its whole budget of %d directories and stopped; the tree under the ignored and collapsed roots is at least that large (%s overrides the budget, 0 removes it)",
+				"the `.git` pointer sweep spent its whole budget of %d directories or directory entries and stopped; the tree under the ignored and collapsed roots is at least that large (%s overrides the budget, 0 removes it)",
 				g.sweepBudget, sweepDirBudgetEnv,
 			),
 		}}
@@ -10951,8 +10994,16 @@ func (g *gitDirExcluder) recordTarget(target string) {
 		return
 	}
 	g.targets[target] = struct{}{}
-	if foldsCase(g.repo, target) {
+	caseFolded := foldsCase(g.repo, target)
+	normalizationFolded := foldsNormalization(g.repo, target)
+	if caseFolded {
 		g.foldedTargets[strings.ToLower(target)] = struct{}{}
+	}
+	if normalizationFolded {
+		g.normalizedTargets[norm.NFD.String(target)] = struct{}{}
+	}
+	if caseFolded && normalizationFolded {
+		g.foldedNormalizedTargets[strings.ToLower(norm.NFD.String(target))] = struct{}{}
 	}
 }
 
@@ -11079,24 +11130,12 @@ func isGitSharedIndexName(name string) bool {
 // repository this never fires on, and `excluded()` keeps comparing whole
 // components against a map as it did.
 func (g *gitDirExcluder) recordGitDirRootEntries() {
+	g.gitDirRoot = true
 	for _, name := range gitDirRootEntryNames {
 		if _, err := os.Lstat(filepath.Join(g.repo, name)); err != nil {
 			continue
 		}
 		g.recordTarget(name)
-	}
-	// A variably-named entry cannot be probed by an exact Lstat, so this asks
-	// the directory itself instead, once, for whichever of its entries is a
-	// git-owned sharedindex file (currently the only variably-named one).
-	entries, err := os.ReadDir(g.repo)
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if isGitSharedIndexName(name) {
-			g.recordTarget(name)
-		}
 	}
 }
 
@@ -11157,6 +11196,30 @@ func foldsCase(repo, target string) bool {
 			continue
 		}
 		if os.SameFile(info, other) {
+			return true
+		}
+	}
+	return false
+}
+
+// foldsNormalization reports whether the filesystem resolves canonically
+// equivalent Unicode spellings of <repo>/<target> to the same entry. Default
+// APFS does, so a pointer may carry a decomposed spelling while Git's listing
+// carries the composed spelling (or vice versa). Exact and case-only maps miss
+// that alias even though opening either path reads the same credentialed git
+// directory. The identity check keeps distinct names distinct on filesystems
+// that do not normalize names.
+func foldsNormalization(repo, target string) bool {
+	info, err := os.Lstat(filepath.Join(repo, filepath.FromSlash(target)))
+	if err != nil {
+		return false
+	}
+	for _, spelling := range [2]string{norm.NFC.String(target), norm.NFD.String(target)} {
+		if spelling == target {
+			continue
+		}
+		other, otherErr := os.Lstat(filepath.Join(repo, filepath.FromSlash(spelling)))
+		if otherErr == nil && os.SameFile(info, other) {
 			return true
 		}
 	}
@@ -11680,10 +11743,59 @@ func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
 // `.dep-git/config` under an ignored `build/`. Both now read the directories of
 // a tree they prune. See skipSweptDir.
 //
+// maxStringHeap keeps the lexicographically largest retained key at index zero,
+// allowing smallestMapKeys to select a deterministic bounded prefix without
+// cloning an unbounded map before the sweep ledger can stop it.
+type maxStringHeap []string
+
+func (h maxStringHeap) Len() int           { return len(h) }
+func (h maxStringHeap) Less(i, j int) bool { return h[i] > h[j] }
+func (h maxStringHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *maxStringHeap) Push(value any)    { *h = append(*h, value.(string)) }
+func (h *maxStringHeap) Pop() any {
+	old := *h
+	last := len(old) - 1
+	value := old[last]
+	*h = old[:last]
+	return value
+}
+
+func smallestMapKeys(values map[string]struct{}, limit int) []string {
+	if limit < 0 || len(values) <= limit {
+		result := make([]string, 0, len(values))
+		for value := range values {
+			result = append(result, value)
+		}
+		sort.Strings(result)
+		return result
+	}
+	if limit == 0 {
+		return nil
+	}
+	selected := make(maxStringHeap, 0, limit)
+	for value := range values {
+		if len(selected) < limit {
+			heap.Push(&selected, value)
+			continue
+		}
+		if value < selected[0] {
+			selected[0] = value
+			heap.Fix(&selected, 0)
+		}
+	}
+	result := []string(selected)
+	sort.Strings(result)
+	return result
+}
+
 // When git could not answer, the old derivation is the fallback.
 func (g *gitDirExcluder) observeUnlistedDirs(seen map[string]struct{}) {
-	queue := make([]string, 0, len(seen)+1)
-	queued := make(map[string]struct{}, len(seen)+1)
+	queueCapacity := len(seen) + 1
+	if g.sweepBudget > 0 {
+		queueCapacity = min(queueCapacity, g.sweepBudget+1)
+	}
+	queue := make([]string, 0, queueCapacity)
+	queued := make(map[string]struct{}, queueCapacity)
 	// Being already observed and being already swept are two different facts,
 	// and conflating them let a whole subtree go unread. `--directory` collapses
 	// an untracked directory to ONE entry and says nothing about anything under
@@ -11743,14 +11855,15 @@ func (g *gitDirExcluder) observeUnlistedDirs(seen map[string]struct{}) {
 			}
 		}
 	} else {
-		// Sorted, because with a ledger in play WHICH directories the sweep got
-		// to is part of the answer, and ranging a map would make that differ
-		// between two runs over the same tree.
-		derived := make([]string, 0, len(seen))
-		for dir := range seen {
-			derived = append(derived, dir)
+		// Keep only the deterministic prefix the ledger can consume, plus the one
+		// entry whose failed admission records exhaustion. Cloning and sorting all
+		// of seen first let this fallback allocate without regard to the bound it
+		// was about to enforce.
+		limit := -1
+		if g.sweepBudget > 0 {
+			limit = max(0, g.sweepBudget-g.sweepDirectories)
 		}
-		sort.Strings(derived)
+		derived := smallestMapKeys(seen, limit)
 		if admit("") {
 			for _, dir := range derived {
 				if !admit(dir) {
@@ -11812,8 +11925,7 @@ func (g *gitDirExcluder) descendObserving(queue []string, queued map[string]stru
 		if dir != "" {
 			base = filepath.Join(g.repo, filepath.FromSlash(dir))
 		}
-		g.directoriesRead++
-		entries, err := os.ReadDir(base)
+		opened, err := os.Open(base)
 		if err != nil {
 			// A directory this sweep may not read can hold a `.git` pointer, and
 			// the target that pointer names is somewhere ELSE in the tree, where
@@ -11831,27 +11943,50 @@ func (g *gitDirExcluder) descendObserving(queue []string, queued map[string]stru
 			}
 			continue
 		}
-		for _, entry := range entries {
-			if !entry.IsDir() {
+		g.directoriesRead++
+		for {
+			// ReadDir(n), unlike os.ReadDir, retains only one fixed-size batch.
+			// Sorting the batch keeps repeated runs stable until the entry ledger
+			// is exhausted; after exhaustion hiddenEvidence's promotion determines
+			// the result independently of which later entries were not inspected.
+			entries, readErr := opened.ReadDir(256)
+			sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+			for _, entry := range entries {
+				if !g.admitSweepEntry() {
+					_ = opened.Close()
+					return
+				}
+				if !entry.IsDir() {
+					continue
+				}
+				child := entry.Name()
+				if dir != "" {
+					child = dir + "/" + entry.Name()
+				}
+				// Deduplicated before it is charged: a directory already queued has
+				// already been observed by this sweep, so re-observing it is a
+				// no-op that would spend the directory ledger twice.
+				if _, done := queued[child]; done {
+					continue
+				}
+				if !g.admitSweepDirectory() {
+					_ = opened.Close()
+					return
+				}
+				observeOnce(child)
+				queued[child] = struct{}{}
+				queue = append(queue, child)
+			}
+			if readErr == nil {
 				continue
 			}
-			child := entry.Name()
-			if dir != "" {
-				child = dir + "/" + entry.Name()
+			if !errors.Is(readErr, io.EOF) && !errors.Is(readErr, fs.ErrNotExist) {
+				g.hiddenEvidence++
+				g.noteSweepUnreadableDir(dir)
 			}
-			// Deduplicated before it is charged: a directory already queued has
-			// already been observed by this sweep, so re-observing it is a
-			// no-op that would spend the ledger twice.
-			if _, done := queued[child]; done {
-				continue
-			}
-			if !g.admitSweepDirectory() {
-				return
-			}
-			observeOnce(child)
-			queued[child] = struct{}{}
-			queue = append(queue, child)
+			break
 		}
+		_ = opened.Close()
 	}
 }
 
@@ -11998,11 +12133,25 @@ func (g *gitDirExcluder) excluded(rel string) bool {
 		if rel[start:end] == ".git" {
 			return true
 		}
+		if start == 0 && g.gitDirRoot && isGitSharedIndexName(rel[:end]) {
+			return true
+		}
 		if _, isTarget := g.targets[rel[:end]]; isTarget {
 			return true
 		}
 		if len(g.foldedTargets) > 0 {
 			if _, isTarget := g.foldedTargets[strings.ToLower(rel[:end])]; isTarget {
+				return true
+			}
+		}
+		if len(g.normalizedTargets) > 0 {
+			if _, isTarget := g.normalizedTargets[norm.NFD.String(rel[:end])]; isTarget {
+				return true
+			}
+		}
+		if len(g.foldedNormalizedTargets) > 0 {
+			key := strings.ToLower(norm.NFD.String(rel[:end]))
+			if _, isTarget := g.foldedNormalizedTargets[key]; isTarget {
 				return true
 			}
 		}
@@ -12405,9 +12554,7 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 	// `.gitignore` is committed content in the repository being scanned, so
 	// leaving those trees unswept let the scanned repository choose which
 	// pointers this rule may read. Ask git for them by name.
-	dirEntries, dirErr := gitutil.ListWorktreeDirectoryEntries(ctx, repo)
-	ignoredEntries, ignoredErr := gitutil.ListIgnoredWorktreeDirectoryEntries(ctx, repo)
-	gitDirs.unlistedRoots, gitDirs.gitAnsweredRoots = gitSweepRoots(dirEntries, dirErr, ignoredEntries, ignoredErr)
+	gitDirs.unlistedRoots, gitDirs.gitAnsweredRoots = gitSweepRootsFromGit(ctx, repo, gitDirs)
 	gitDirs.observeListedPaths(listed, listedDirs)
 	paths := make([]string, 0, len(listed))
 	seen := make(map[string]struct{}, len(listed))
@@ -12496,6 +12643,34 @@ func gitSweepRoots(dirEntries []string, dirErr error, ignoredEntries []string, i
 	return roots, true
 }
 
+// gitSweepRootsFromGit is the production, bounded form of gitSweepRoots. The
+// slice-based helper remains useful for testing the two-command success rule;
+// production streams both listings and stops retaining roots when the sweep's
+// entry ledger is spent.
+func gitSweepRootsFromGit(ctx context.Context, repo string, gitDirs *gitDirExcluder) ([]string, bool) {
+	roots := make([]string, 0)
+	seen := make(map[string]struct{})
+	visit := func(entry string) bool {
+		if _, duplicate := seen[entry]; duplicate {
+			return true
+		}
+		if !gitDirs.admitSweepEntry() {
+			return false
+		}
+		seen[entry] = struct{}{}
+		roots = append(roots, entry)
+		return true
+	}
+	if err := gitutil.VisitWorktreeDirectoryEntries(ctx, repo, false, visit); err != nil {
+		return nil, false
+	}
+	if err := gitutil.VisitWorktreeDirectoryEntries(ctx, repo, true, visit); err != nil {
+		return nil, false
+	}
+	sort.Strings(roots)
+	return roots, true
+}
+
 // walkWorktreeFiles is the non-git fallback listing. It honours the ignore stack
 // per directory (root .gitignore plus every nested one on the path) so a
 // directory Git cannot enumerate is still filtered the way the project asked.
@@ -12579,6 +12754,17 @@ func visitWalkWorktreeFiles(
 			// Enter first: this directory's own .gitignore is part of the evidence
 			// for whether the project re-includes something inside it.
 			if err := stack.enter(rel); err != nil {
+				// If the directory itself is unreadable, none of its source can be
+				// listed and a nested policy inside it cannot affect a sibling. Keep
+				// the repository available, but disclose the omission and make hidden
+				// pointer evidence fail closed. An unreadable .gitignore inside a
+				// READABLE directory remains a hard error: silently discarding policy
+				// there could admit content the policy excludes.
+				if errors.Is(err, fs.ErrPermission) && !stack.directoryReadable(rel) {
+					gitDirs.hiddenEvidence++
+					gitDirs.noteUnreadableWalkDir(rel)
+					return filepath.SkipDir
+				}
 				return err
 			}
 			// The ignore rules are consulted BEFORE the vendored name, but they

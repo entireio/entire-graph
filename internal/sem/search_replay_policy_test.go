@@ -171,6 +171,34 @@ func TestSearchReplayPolicyHeadFingerprintBindsEffectiveFileCap(t *testing.T) {
 	}
 }
 
+func TestSearchReplayPolicyWorktreeFingerprintBindsEffectiveSweepBudget(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "only.go", "package sample\n")
+	resolve := func(value string) SearchReplayPolicy {
+		t.Helper()
+		t.Setenv(sweepDirBudgetEnv, value)
+		policy, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
+		if err != nil {
+			t.Fatalf("resolve policy with %s=%q: %v", sweepDirBudgetEnv, value, err)
+		}
+		return policy
+	}
+
+	defaulted := resolve("")
+	if invalid := resolve("not-an-integer"); invalid.Fingerprint() != defaulted.Fingerprint() {
+		t.Fatalf("invalid and default sweep budgets did not share semantics: %q vs %q",
+			invalid.Fingerprint(), defaulted.Fingerprint())
+	}
+	unbounded := resolve("0")
+	if negative := resolve("-1"); negative.Fingerprint() != unbounded.Fingerprint() {
+		t.Fatalf("negative and zero sweep budgets did not share unbounded semantics: %q vs %q",
+			negative.Fingerprint(), unbounded.Fingerprint())
+	}
+	if bounded := resolve("1"); bounded.Fingerprint() == unbounded.Fingerprint() {
+		t.Fatalf("bounded and unbounded sweep policies shared fingerprint %q", bounded.Fingerprint())
+	}
+}
+
 func TestSearchReplayPolicyWorktreeFingerprintBindsCompleteCorpus(t *testing.T) {
 	for _, gitRepo := range []bool{false, true} {
 		name := "filesystem"
@@ -464,6 +492,64 @@ func TestSearchReplayPolicyWorktreeUsesGitEffectiveExcludes(t *testing.T) {
 	}
 }
 
+func TestSearchReplayPolicyWorktreeBindsGitDirectoryExclusions(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, "tracked.go", "package tracked\n")
+	git(t, repo, "add", "tracked.go")
+	git(t, repo, "commit", "-m", "tracked")
+	writeHeadlessGitDirFixture(t, repo, ".dep-git")
+	writeFile(t, repo, "nested/.git", "gitdir: ../.dep-git\n")
+
+	excluded, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if excluded.AllowsReplayPaths([]string{".dep-git/config"}) {
+		t.Fatal("replay admitted a path inside a git directory named by a pointer")
+	}
+	if err := os.Remove(filepath.Join(repo, "nested", ".git")); err != nil {
+		t.Fatal(err)
+	}
+	eligible, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eligible.AllowsReplayPaths([]string{".dep-git/config"}) {
+		t.Fatal("fixture did not make the former target ordinary eligible content after removing the pointer")
+	}
+	if excluded.Fingerprint() == eligible.Fingerprint() {
+		t.Fatalf("adding a git-directory pointer retained replay fingerprint %q", excluded.Fingerprint())
+	}
+}
+
+func TestSearchReplayPolicyWorktreeBindsUnreadableSweepDisclosure(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, ".gitignore", "build/\n")
+	writeFile(t, repo, "tracked.go", "package tracked\n")
+	git(t, repo, "add", ".gitignore", "tracked.go")
+	git(t, repo, "commit", "-m", "tracked")
+	writeFile(t, repo, "build/dep/.git", "gitdir: ../../.dep-git\n")
+	writeHeadlessGitDirFixture(t, repo, ".dep-git")
+	unreadableOrSkip(t, filepath.Join(repo, "build"))
+
+	unreadable, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(repo, "build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	readable, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unreadable.Fingerprint() == readable.Fingerprint() {
+		t.Fatalf("unreadable sweep evidence retained warning-free replay fingerprint %q", unreadable.Fingerprint())
+	}
+}
+
 func TestSearchReplayPolicyFailsClosedWhenGitEligibilityCheckFails(t *testing.T) {
 	t.Parallel()
 
@@ -554,7 +640,7 @@ func TestSearchReplayPolicyReportsGlobalNestedIgnoreCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := worktreeSourceFiles(t.Context(), repo, ignores, false); err == nil ||
+	if _, _, err := worktreeSourceFiles(t.Context(), repo, ignores, false); err == nil ||
 		!strings.Contains(err.Error(), "nested-ignore candidates exceed 512") {
 		t.Fatalf("provider nested-ignore cap error = %v", err)
 	}

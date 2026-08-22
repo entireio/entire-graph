@@ -234,6 +234,34 @@ func VisitWorktreePaths(
 	return visitBoundedNULPaths(newCmd(ctx, repo, "git", args...), visit)
 }
 
+// VisitWorktreeDirectoryEntries streams only the collapsed directory records
+// from Git's --directory listing. Returning false stops Git through the same
+// bounded process-tree path as VisitWorktreePaths, allowing callers to enforce
+// their own root budget without first materializing every collapsed directory.
+func VisitWorktreeDirectoryEntries(
+	ctx context.Context,
+	repo string,
+	ignored bool,
+	visit func(string) bool,
+) error {
+	if visit == nil {
+		return errors.New("git worktree directory-entry visitor is nil")
+	}
+	args := []string{"ls-files", "-z", "--others", "--exclude-standard", "--directory"}
+	if ignored {
+		args = append(args, "--ignored")
+	} else {
+		args = append(args, "--cached")
+	}
+	seen := make(map[string]struct{})
+	return visitBoundedNULPaths(newCmd(ctx, repo, "git", args...), func(entry string) bool {
+		if !keepDirectoryEntry(entry, seen) {
+			return true
+		}
+		return visit(entry)
+	})
+}
+
 func firstNestedIgnorePaths(
 	ctx context.Context,
 	repo string,

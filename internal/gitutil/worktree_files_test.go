@@ -96,13 +96,13 @@ func TestListWorktreeFilesAppliesEveryExcludeSource(t *testing.T) {
 func TestSplitNULDirectoryEntriesKeepsOnlyCollapsedDirectories(t *testing.T) {
 	t.Parallel()
 	raw := strings.Join([]string{
-		"build/",         // whole directory collapsed: keep
-		"vendor/pkg.o",   // pattern-ignored file inside a mixed directory: drop
-		"vendor/pkg2.o",  // same, a second one, also a duplicate-prefix check
-		"dist/",          // another collapsed directory: keep
-		"",               // trailing NUL from -z output: drop
-		"README.md",      // an ordinary file entry with no trailing slash: drop
-		"build/",         // duplicate of an already-kept directory: dedup
+		"build/",        // whole directory collapsed: keep
+		"vendor/pkg.o",  // pattern-ignored file inside a mixed directory: drop
+		"vendor/pkg2.o", // same, a second one, also a duplicate-prefix check
+		"dist/",         // another collapsed directory: keep
+		"",              // trailing NUL from -z output: drop
+		"README.md",     // an ordinary file entry with no trailing slash: drop
+		"build/",        // duplicate of an already-kept directory: dedup
 	}, "\x00")
 
 	got := splitNULDirectoryEntries(raw)
@@ -155,6 +155,28 @@ func TestListIgnoredWorktreeDirectoryEntriesDropsPatternIgnoredFilenames(t *test
 	}
 	if slices.Contains(entries, "vendor/") {
 		t.Fatalf("listing collapsed a MIXED directory to %q, which git itself would not have done: %#v", "vendor/", entries)
+	}
+}
+
+func TestVisitWorktreeDirectoryEntriesStopsAtCallerBound(t *testing.T) {
+	repo := t.TempDir()
+	gitCmd(t, repo, "init")
+	for _, dir := range []string{"a", "b", "c"} {
+		write(t, repo, filepath.Join(dir, "file.txt"), "fixture\n")
+	}
+	count := 0
+	err := VisitWorktreeDirectoryEntries(t.Context(), repo, false, func(entry string) bool {
+		if !strings.HasSuffix(entry, "/") {
+			t.Fatalf("visitor received non-directory entry %q", entry)
+		}
+		count++
+		return false
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("visitor count = %d, want exactly one before early stop", count)
 	}
 }
 

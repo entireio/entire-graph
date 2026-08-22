@@ -53,6 +53,42 @@ func TestSweepStopsAtItsDirectoryBudget(t *testing.T) {
 	}
 }
 
+// A directory ledger alone does not bound a flat directory: one ReadDir can
+// return arbitrarily many files without admitting another directory. The entry
+// ledger uses the same configured ceiling and stops that scan fail-closed.
+func TestSweepStopsAtItsDirectoryEntryBudget(t *testing.T) {
+	repo := t.TempDir()
+	t.Setenv(sweepDirBudgetEnv, "64")
+	writeFile(t, repo, "src/app.go", "package app\n")
+	for i := 0; i < 400; i++ {
+		writeFile(t, repo, fmt.Sprintf("flat/file%04d.txt", i), "fixture\n")
+	}
+
+	excluder := newGitDirExcluder(t.Context(), repo)
+	excluder.unlistedRoots = []string{"flat/"}
+	excluder.gitAnsweredRoots = true
+	excluder.observeListedPaths([]string{"src/app.go"}, nil)
+
+	if excluder.sweepStop != sweepStoppedOnBudget {
+		t.Fatalf("sweepStop = %d, want sweepStoppedOnBudget for a flat 400-entry directory", excluder.sweepStop)
+	}
+	if excluder.directoryEntriesRead > 64 {
+		t.Errorf("directoryEntriesRead = %d, want <= 64", excluder.directoryEntriesRead)
+	}
+}
+
+func TestSmallestMapKeysReturnsABoundedDeterministicPrefix(t *testing.T) {
+	values := make(map[string]struct{})
+	for i := 99; i >= 0; i-- {
+		values[fmt.Sprintf("d%03d", i)] = struct{}{}
+	}
+	got := smallestMapKeys(values, 5)
+	want := []string{"d000", "d001", "d002", "d003", "d004"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("smallestMapKeys = %v, want %v", got, want)
+	}
+}
+
 // The ledger is ONE ledger. Splitting a huge ignored tree into many ignored
 // trees is free for the repository being scanned, so a per-root allowance would
 // be no allowance at all.
@@ -313,6 +349,7 @@ func TestResolveSweepDirectoryBudget(t *testing.T) {
 		{"override", true, "512", 512},
 		{"padded", true, "  512  ", 512},
 		{"unbounded", true, "0", 0},
+		{"negative is unbounded", true, "-1", 0},
 		{"garbage", true, "many", defaultSweepDirectoryBudget},
 		{"empty", true, "", defaultSweepDirectoryBudget},
 	} {

@@ -70,7 +70,7 @@ func TestOversizedNestedIgnoreIsReportedAcrossListings(t *testing.T) {
 		repo := t.TempDir()
 		writeFile(t, repo, "nested/.gitignore", body)
 		writeFile(t, repo, "nested/keep.go", "package nested\n")
-		_, err := walkWorktreeFiles(repo, ignoreMatcher{}, func(string) bool { return false })
+		_, _, err := walkWorktreeFiles(t.Context(), repo, ignoreMatcher{}, func(string) bool { return false })
 		wantIgnoreLimitError(t, err, "nested/.gitignore", strconv.Itoa(maxNestedIgnoreFileBytes))
 	})
 
@@ -83,7 +83,7 @@ func TestOversizedNestedIgnoreIsReportedAcrossListings(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = worktreeSourceFiles(t.Context(), repo, ignores, false)
+		_, _, err = worktreeSourceFiles(t.Context(), repo, ignores, false)
 		wantIgnoreLimitError(t, err, "nested/.gitignore", strconv.Itoa(maxNestedIgnoreFileBytes))
 	})
 
@@ -196,7 +196,7 @@ func TestNestedIgnoreRulesShareOneOperationBudget(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = walkWorktreeFiles(repo, ignores, func(string) bool { return false })
+		_, _, err = walkWorktreeFiles(t.Context(), repo, ignores, func(string) bool { return false })
 		wantIgnoreLimitError(t, err, "vendor/.gitignore", limit)
 	})
 
@@ -210,7 +210,7 @@ func TestNestedIgnoreRulesShareOneOperationBudget(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = worktreeSourceFiles(t.Context(), repo, ignores, false)
+		_, _, err = worktreeSourceFiles(t.Context(), repo, ignores, false)
 		wantIgnoreLimitError(t, err, "vendor/.gitignore", limit)
 	})
 
@@ -236,7 +236,7 @@ func TestFilesystemWalkReleasesDepartedIgnoreRuleLevels(t *testing.T) {
 	writeFile(t, repo, "second/.gitignore", "second-rule\n")
 	writeFile(t, repo, "second/keep.go", "package second\n")
 	base := ignoreMatcher{parsedRuleCount: maxIgnoreParsedRules - 1}
-	if _, err := walkWorktreeFiles(repo, base, func(string) bool { return false }); err != nil {
+	if _, _, err := walkWorktreeFiles(t.Context(), repo, base, func(string) bool { return false }); err != nil {
 		t.Fatalf("sibling ignore levels were retained after departure: %v", err)
 	}
 
@@ -244,7 +244,7 @@ func TestFilesystemWalkReleasesDepartedIgnoreRuleLevels(t *testing.T) {
 	writeFile(t, deep, "first/.gitignore", "first-rule\n")
 	writeFile(t, deep, "first/second/.gitignore", "second-rule\n")
 	writeFile(t, deep, "first/second/keep.go", "package second\n")
-	_, err := walkWorktreeFiles(deep, base, func(string) bool { return false })
+	_, _, err := walkWorktreeFiles(t.Context(), deep, base, func(string) bool { return false })
 	wantIgnoreLimitError(t, err, "first/second/.gitignore", strconv.Itoa(maxIgnoreParsedRules)+" parsed rules")
 }
 
@@ -261,7 +261,7 @@ func TestNestedIgnoreFileCountIsReportedAcrossListings(t *testing.T) {
 		t.Fatal(err)
 	}
 	worktreeWant := fmt.Sprintf("exceed %d paths", maxNestedIgnoreFiles)
-	if _, err := worktreeSourceFiles(t.Context(), repo, ignores, false); err == nil || !strings.Contains(err.Error(), worktreeWant) {
+	if _, _, err := worktreeSourceFiles(t.Context(), repo, ignores, false); err == nil || !strings.Contains(err.Error(), worktreeWant) {
 		t.Fatalf("Git worktree nested-file limit error = %v, want %q", err, worktreeWant)
 	}
 	opened, err := openSource(t.Context(), repo, revision, sourceOptions{})
@@ -271,7 +271,7 @@ func TestNestedIgnoreFileCountIsReportedAcrossListings(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("committed nested-file limit error = %v, want %q", err, want)
 	}
-	if _, err := walkWorktreeFiles(repo, ignores, func(string) bool { return false }); err == nil || !strings.Contains(err.Error(), want) {
+	if _, _, err := walkWorktreeFiles(t.Context(), repo, ignores, func(string) bool { return false }); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("filesystem nested-file limit error = %v, want %q", err, want)
 	}
 	if _, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true}); err == nil ||
@@ -300,7 +300,7 @@ func TestWorktreeNestedIgnoreDoesNotFollowEscapingDirectorySymlink(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := worktreeSourceFiles(t.Context(), repo, ignores, false); err == nil ||
+	if _, _, err := worktreeSourceFiles(t.Context(), repo, ignores, false); err == nil ||
 		!strings.Contains(err.Error(), "vendor/.gitignore") {
 		t.Fatalf("escaping nested-ignore symlink error = %v", err)
 	}
@@ -346,7 +346,7 @@ func TestUnmergedNestedIgnoreHasProviderReplayParity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	paths, err := worktreeSourceFiles(t.Context(), repo, ignores, false)
+	paths, _, err := worktreeSourceFiles(t.Context(), repo, ignores, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +385,7 @@ func TestIgnoredNestedIgnoreHasProviderReplayParity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	paths, err := worktreeSourceFiles(t.Context(), repo, ignores, false)
+	paths, _, err := worktreeSourceFiles(t.Context(), repo, ignores, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +422,7 @@ func TestIrrelevantIgnoredNestedIgnoresDoNotSpendProviderReplayBudget(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	paths, err := worktreeSourceFiles(t.Context(), repo, ignores, false)
+	paths, _, err := worktreeSourceFiles(t.Context(), repo, ignores, false)
 	if err != nil {
 		t.Fatalf("irrelevant ignored policies exhausted provider budget: %v", err)
 	}

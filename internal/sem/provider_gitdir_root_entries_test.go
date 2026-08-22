@@ -188,6 +188,8 @@ func (g gitRunner) try(args ...string) bool {
 	command.Env = append(os.Environ(),
 		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
 		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com",
+		"GIT_EDITOR=true", "GIT_SEQUENCE_EDITOR=true",
+		"GIT_TERMINAL_PROMPT=0",
 		"GIT_CONFIG_GLOBAL="+filepath.Join(g.dir, "absent-global-config"),
 		"GIT_CONFIG_SYSTEM="+filepath.Join(g.dir, "absent-system-config"),
 	)
@@ -267,7 +269,7 @@ func topLevelNames(t *testing.T, gitDir string) []string {
 // matched ordinary source such as `sharedindex.go`.
 func TestGitDirExcluderExcludesASharedIndexFileAtARootGitDir(t *testing.T) {
 	t.Parallel()
-	const sha1Hash = "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3"                            // 40 hex chars
+	const sha1Hash = "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3"                           // 40 hex chars
 	const sha256Hash = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" // 64 hex chars
 	t.Run("a real SHA-1-length hash at a root git directory goes", func(t *testing.T) {
 		t.Parallel()
@@ -352,8 +354,8 @@ func TestIsGitSharedIndexName(t *testing.T) {
 		name string
 		want bool
 	}{
-		{"sharedindex.a94a8fe5ccb19ba61c4c0873d391e987982fbbd3", true},                                     // 40 hex
-		{"sharedindex.9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", true},              // 64 hex
+		{"sharedindex.a94a8fe5ccb19ba61c4c0873d391e987982fbbd3", true},                         // 40 hex
+		{"sharedindex.9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", true}, // 64 hex
 		{"sharedindex.go", false},
 		{"sharedindex.test.ts", false},
 		{"sharedindex.", false},
