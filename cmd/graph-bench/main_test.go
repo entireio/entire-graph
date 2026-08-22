@@ -285,7 +285,7 @@ func TestEnsureRepoStillFetchesOrdinaryRef(t *testing.T) {
 
 func TestValidateRefRejectsOptionShapedRefs(t *testing.T) {
 	for _, ref := range []string{
-		"--upload-pack=touch x", "-o", "--exec=x", "\x00",
+		"\x00",
 		// Refspec syntax: `git fetch origin <this>` is a write, not a read.
 		"+refs/heads/evil:refs/heads/injected",
 		"refs/heads/*:refs/remotes/origin/*",
@@ -295,11 +295,17 @@ func TestValidateRefRejectsOptionShapedRefs(t *testing.T) {
 			t.Fatalf("validateRef(%q) = nil, want rejection", ref)
 		}
 	}
-	// A leading `+` is a legal ref character, not refspec syntax on its own;
-	// TestEnsureRepoChecksOutPlusPrefixedBranch and
-	// TestEnsureRepoRejectsPlusRefTheRemoteDoesNotPublish pin how ensureRepo
-	// keeps it out of the fetch slot's force-marker reading.
-	for _, ref := range []string{"", "main", "v1.2.3", "refs/heads/main", "1a2b3c4d5e6f7890abcdef1234567890abcdef12"} {
+	// A leading `+` or `-` is a legal ref character, not refspec syntax on its
+	// own; TestEnsureRepoChecksOutPlusPrefixedBranch,
+	// TestEnsureRepoRejectsPlusRefTheRemoteDoesNotPublish,
+	// TestEnsureRepoChecksOutDashPrefixedBranch, and
+	// TestEnsureRepoRefusesOptionShapedRefBeforeGitRuns pin how ensureRepo
+	// keeps both out of a positional git argument by resolving them against
+	// the remote first, rather than rejecting the shape here.
+	for _, ref := range []string{
+		"", "main", "v1.2.3", "refs/heads/main", "1a2b3c4d5e6f7890abcdef1234567890abcdef12",
+		"--upload-pack=touch x", "-o", "--exec=x",
+	} {
 		if err := validateRef(ref); err != nil {
 			t.Fatalf("validateRef(%q) = %v, want nil", ref, err)
 		}
@@ -716,6 +722,53 @@ func TestEnsureRepoPrefersRemoteBranchOverAmbiguousObjectID(t *testing.T) {
 	}
 }
 
+// TestEnsureRepoForcesObjectSemanticsForUnpublishedHexRef pins the gap next to
+// TestEnsureRepoPrefersRemoteBranchOverAmbiguousObjectID: that test covers a
+// branch the REMOTE publishes under the hex name (remoteRef != "", so
+// ensureRepo checks out FETCH_HEAD and the object is never in play). This
+// covers the complementary case, where the remote confirms it does NOT
+// publish the name (remoteRef == "") but the warm LOCAL cache still carries a
+// branch of that name from an unrelated earlier run, pointing at a different
+// commit. ensureRepo must then check out the pinned object itself, not let
+// git's ambiguous-name resolution silently prefer the local branch.
+func TestEnsureRepoForcesObjectSemanticsForUnpublishedHexRef(t *testing.T) {
+	t.Setenv("GIT_DEFAULT_HASH", "sha1")
+	upstream := newUpstreamRepo(t)
+	first := strings.TrimSpace(benchGitOutput(t, upstream, "rev-parse", "HEAD"))
+	if len(first) != 40 {
+		t.Skipf("upstream HEAD = %q, want a 40-char SHA-1 id (this git ignores GIT_DEFAULT_HASH)", first)
+	}
+	if err := os.WriteFile(filepath.Join(upstream, "branch.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	benchGit(t, upstream, "add", ".")
+	benchGit(t, upstream, "commit", "--quiet", "-m", "second")
+	second := strings.TrimSpace(benchGitOutput(t, upstream, "rev-parse", "HEAD"))
+
+	dir := filepath.Join(t.TempDir(), "clone")
+	if _, err := ensureRepo(t.Context(), upstream, "main", dir, 2, refFromManifest); err != nil {
+		t.Fatalf("pre-clone at main: %v", err)
+	}
+	// Poison the warm cache only: a local branch named after the FIRST
+	// commit's object id, pointing at the SECOND commit. The upstream remote
+	// never sees this branch, so remoteRefFor confirms it publishes nothing
+	// by that name -- exactly the state that used to fall through to a bare
+	// `git checkout <hex>`, which resolves an ambiguous name to the ref, not
+	// the object.
+	benchGit(t, dir, "branch", first, second)
+
+	sha, err := ensureRepo(t.Context(), upstream, first, dir, 2, refFromManifest)
+	if err != nil {
+		t.Fatalf("ensureRepo(unpublished hex ref with a colliding local branch): %v", err)
+	}
+	if sha == second {
+		t.Fatalf("sha = %q, the LOCAL branch's tip; want the pinned object %q", sha, first)
+	}
+	if sha != first {
+		t.Fatalf("sha = %q, want the pinned object %q", sha, first)
+	}
+}
+
 // remoteRefFor is what stops ensureRepo guessing which of the two resolutions a
 // hex-shaped ref means, so a failed lookup must not be reported as an answer.
 // Collapsing a transport or authentication failure into "the remote publishes
@@ -1021,6 +1074,126 @@ func TestEnsureRepoRejectsPlusRefTheRemoteDoesNotPublish(t *testing.T) {
 	sha, err := ensureRepo(t.Context(), upstream, "+release", dir, 1, refFromManifest)
 	if err == nil {
 		t.Fatalf("ensureRepo(+release) = %q, <nil>; the remote publishes no such ref, so this is `release` at %q reported as a success", sha, decoyTip)
+	}
+	if sha != "" {
+		t.Fatalf("ensureRepo returned sha %q alongside the error %v; want no commit", sha, err)
+	}
+	if head := benchGitOutput(t, dir, "rev-parse", "HEAD"); head != cached {
+		t.Fatalf("cache HEAD moved to %q on a refused ref, want the cached %q", head, cached)
+	}
+}
+
+// A dash-prefixed branch cannot be created through git's porcelain
+// (`git branch -release` / `git checkout -b -release` both refuse it as an
+// invalid branch name -- a stricter check than check-ref-format applies to
+// the fully-qualified `refs/heads/-release`, which git accepts). Real
+// clients can still publish one: `git push origin HEAD:refs/heads/-release`
+// writes the fully-qualified form, which bypasses the porcelain name check
+// the same way `update-ref` does here. The commit is made on an
+// ordinarily-named branch and the ref is pointed at it afterwards so the
+// fixture does not depend on git ever accepting the name as an argument.
+func newUpstreamRepoWithDashBranch(t *testing.T) (upstream, dashTip, decoyTip string) {
+	t.Helper()
+	upstream = newUpstreamRepo(t)
+	benchGit(t, upstream, "checkout", "--quiet", "-b", "release")
+	if err := os.WriteFile(filepath.Join(upstream, "release.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	benchGit(t, upstream, "add", ".")
+	benchGit(t, upstream, "commit", "--quiet", "-m", "on release")
+	decoyTip = benchGitOutput(t, upstream, "rev-parse", "HEAD")
+
+	benchGit(t, upstream, "checkout", "--quiet", "main")
+	benchGit(t, upstream, "checkout", "--quiet", "-b", "tmp-dash-source")
+	if err := os.WriteFile(filepath.Join(upstream, "dash.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	benchGit(t, upstream, "add", ".")
+	benchGit(t, upstream, "commit", "--quiet", "-m", "on -release")
+	dashTip = benchGitOutput(t, upstream, "rev-parse", "HEAD")
+	benchGit(t, upstream, "update-ref", "refs/heads/-release", dashTip)
+	benchGit(t, upstream, "checkout", "--quiet", "main")
+	benchGit(t, upstream, "branch", "-D", "tmp-dash-source")
+
+	if dashTip == decoyTip {
+		t.Fatalf("fixture produced one commit for both branches: %q", dashTip)
+	}
+	return upstream, dashTip, decoyTip
+}
+
+// A leading `-` is a legal ref character (git check-ref-format accepts
+// `-release`), and the widening in validateRef relies on ensureRepo resolving
+// it against the remote and routing it through FETCH_HEAD rather than ever
+// handing the raw name to a positional git argument. This pins the ordinary
+// success path, cold and warm cache, the same shape as
+// TestEnsureRepoChecksOutPlusPrefixedBranch.
+func TestEnsureRepoChecksOutDashPrefixedBranch(t *testing.T) {
+	t.Run("cold-cache", func(t *testing.T) {
+		upstream, dashTip, decoyTip := newUpstreamRepoWithDashBranch(t)
+		dir := filepath.Join(t.TempDir(), "clone")
+		sha, err := ensureRepo(t.Context(), upstream, "-release", dir, 1, refFromManifest)
+		if err != nil {
+			t.Fatalf("ensureRepo(-release): %v", err)
+		}
+		if sha == decoyTip {
+			t.Fatalf("sha = %q, the tip of `release`; the manifest asked for `-release` at %q", sha, dashTip)
+		}
+		if sha != dashTip {
+			t.Fatalf("sha = %q, want the -release tip %q", sha, dashTip)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, "dash.go")); statErr != nil {
+			t.Fatalf("-release did not produce its working tree: %v", statErr)
+		}
+	})
+
+	t.Run("warm-cache", func(t *testing.T) {
+		upstream, dashTip, decoyTip := newUpstreamRepoWithDashBranch(t)
+		dir := filepath.Join(t.TempDir(), "clone")
+		if _, err := ensureRepo(t.Context(), upstream, "main", dir, 1, refFromManifest); err != nil {
+			t.Fatalf("pre-clone at main: %v", err)
+		}
+		sha, err := ensureRepo(t.Context(), upstream, "-release", dir, 1, refFromManifest)
+		if err != nil {
+			t.Fatalf("ensureRepo(-release) on a warm cache: %v", err)
+		}
+		if sha == decoyTip {
+			t.Fatalf("sha = %q, the tip of `release`; want the -release tip %q", sha, dashTip)
+		}
+		if sha != dashTip {
+			t.Fatalf("sha = %q, want the -release tip %q", sha, dashTip)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, "dash.go")); statErr != nil {
+			t.Fatalf("-release did not produce its working tree: %v", statErr)
+		}
+	})
+}
+
+// The bound on the widening, mirroring TestEnsureRepoRejectsPlusRefTheRemoteDoesNotPublish:
+// a leading `-` is only part of a ref when the remote publishes it as one.
+// ensureRepo must fail closed rather than ever pass the raw name to a
+// positional git argument, and must leave the cache untouched.
+func TestEnsureRepoRejectsDashRefTheRemoteDoesNotPublish(t *testing.T) {
+	upstream := newUpstreamRepo(t)
+	benchGit(t, upstream, "checkout", "--quiet", "-b", "release")
+	if err := os.WriteFile(filepath.Join(upstream, "release.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	benchGit(t, upstream, "add", ".")
+	benchGit(t, upstream, "commit", "--quiet", "-m", "on release")
+	decoyTip := benchGitOutput(t, upstream, "rev-parse", "HEAD")
+	benchGit(t, upstream, "checkout", "--quiet", "main")
+
+	dir := filepath.Join(t.TempDir(), "clone")
+	cached, err := ensureRepo(t.Context(), upstream, "main", dir, 1, refFromManifest)
+	if err != nil {
+		t.Fatalf("pre-clone at main: %v", err)
+	}
+	sha, err := ensureRepo(t.Context(), upstream, "-release", dir, 1, refFromManifest)
+	if err == nil {
+		t.Fatalf("ensureRepo(-release) = %q, <nil>; the remote publishes no such ref, so this is `release` at %q reported as a success", sha, decoyTip)
+	}
+	if !strings.Contains(err.Error(), "invalid git ref") {
+		t.Fatalf("ensureRepo(-release) error = %v, want an invalid-git-ref rejection", err)
 	}
 	if sha != "" {
 		t.Fatalf("ensureRepo returned sha %q alongside the error %v; want no commit", sha, err)

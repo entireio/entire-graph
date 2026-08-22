@@ -370,24 +370,31 @@ func cloneAll(ctx context.Context, specs []repoSpec, cacheDir string, lock map[s
 // able to fetch exactly one ref -- which is what makes FETCH_HEAD trustworthy
 // afterwards.
 //
-// A leading `+` is not in that class and is not refused here. `+` is a legal ref
-// character in any position: `git check-ref-format refs/heads/+release` exits 0
-// and `git clone --branch +release` checks that branch out (verified against git
-// 2.54.0), so refusing it rejected refs Git itself accepts -- and because
-// cloneAll only logs a refused clone, a cache from an earlier run then carried
-// the benchmark on a stale checkout. What is unsafe about `+` is narrower and
-// lives in one slot: `git fetch origin +release` reads the `+` as a refspec's
-// force marker and fetches `release` instead, with exit 0 (verified against git
-// 2.54.0: FETCH_HEAD held release's tip while `+release` pointed elsewhere).
-// ensureRepo therefore resolves such a name against the remote and fetches it
-// fully qualified, and refuses it when the remote publishes no ref by that name.
+// A leading `+` or `-` is not in that class and is not refused here. Both are
+// legal ref characters in any position: `git check-ref-format refs/heads/+release`
+// and `git check-ref-format refs/heads/-release` both exit 0, and
+// `git clone --branch +release` / `git clone --branch -release` both check that
+// branch out (verified against git 2.54.0), so refusing them outright rejected
+// refs Git itself accepts -- and because cloneAll only logs a refused clone, a
+// cache from an earlier run then carried the benchmark on a stale checkout.
+// What is unsafe about a leading `+` or `-` is narrower and lives in the slots
+// ensureRepo does not put them in raw: `git fetch origin +release` reads the
+// `+` as a refspec's force marker and fetches `release` instead, with exit 0
+// (verified against git 2.54.0: FETCH_HEAD held release's tip while `+release`
+// pointed elsewhere), and a bare `git checkout -release` risks the option
+// parsing this whole guard exists to avoid on a git old enough to lack
+// --end-of-options. ensureRepo therefore resolves such a name against the
+// remote and fetches/checks it out fully qualified through FETCH_HEAD (see
+// refNeedsRemoteResolution), and refuses it when the remote publishes no ref
+// by that name -- so the raw name never reaches a positional git argument
+// either way.
 //
 // Refs reach ensureRepo from two ordinary repo files -- the manifest
 // (`owner/name@<ref>`) and the commit lock -- so their contents are argv input
-// to validate, not trusted configuration. Mirrors the leading-dash/NUL guards
-// in internal/gitutil (git.go:168, :237, :419).
+// to validate, not trusted configuration. Mirrors the NUL guard in
+// internal/gitutil (git.go:168, :237, :419).
 func validateRef(ref string) error {
-	if strings.HasPrefix(ref, "-") || strings.ContainsRune(ref, '\x00') {
+	if strings.ContainsRune(ref, '\x00') {
 		return fmt.Errorf("invalid git ref %q", ref)
 	}
 	if strings.ContainsAny(ref, ":*") {
@@ -486,6 +493,17 @@ func ensureRepo(ctx context.Context, url, ref, dir string, depth int, origin ref
 			// remote publishes escapes that reading, and here there is none.
 			return "", fmt.Errorf("invalid git ref %q: the remote publishes no branch or tag by that name, and a leading + is a fetch refspec's force marker", ref)
 		}
+		if remoteRef == "" && strings.HasPrefix(ref, "-") {
+			// Nothing downstream can carry this name safely either. The
+			// clone/checkout slots below would otherwise pass this name
+			// through raw and positionally, which is exactly the
+			// option-shaped-argument risk validateRef used to reject
+			// outright (at the cost of every legitimate ref shaped like one).
+			// Only the fully-qualified form the remote publishes -- resolved
+			// through FETCH_HEAD, never as a bare positional argument --
+			// escapes that risk, and here there is none.
+			return "", fmt.Errorf("invalid git ref %q: the remote publishes no branch or tag by that name, and a leading - is option-shaped", ref)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
@@ -561,8 +579,23 @@ func ensureRepo(ctx context.Context, url, ref, dir string, depth int, origin ref
 			sha, err := runGit(ctx, dir, "rev-parse", "HEAD")
 			return strings.TrimSpace(sha), err
 		}
+		// A hex-shaped manifest ref that reaches this branch was confirmed NOT
+		// to be a remote branch or tag (remoteRef == ""), so it is being
+		// treated as a raw object id here -- but a plain name is still
+		// ambiguous against any *local* branch of that name a warm cache
+		// happens to carry (from an earlier run, or from the clone step's own
+		// `--branch <ref>` before this ref was known not to be a remote ref).
+		// Git resolves an ambiguous name to the ref, not the object
+		// (verified against git 2.54.0, same ambiguity the pinned-object
+		// branch above forces with `^{commit}`), so an unrelated commit can
+		// be checked out with the command still exiting 0. Force object
+		// semantics the same way here.
+		checkoutTarget := ref
+		if looksLikeSHA(ref) {
+			checkoutTarget = ref + "^{commit}"
+		}
 		checkoutArgs := append([]string{"checkout", "--quiet"}, endOfOptions...)
-		checkoutArgs = append(checkoutArgs, ref)
+		checkoutArgs = append(checkoutArgs, checkoutTarget)
 		if out, err := runGit(ctx, dir, checkoutArgs...); err != nil {
 			// A ref the remote publishes but this clone does not carry a
 			// local branch for -- a cached clone made for a different ref,
@@ -639,9 +672,9 @@ func looksLikeSHA(ref string) bool {
 // own parsing decide. It is not consulted for a lock entry, which is an object
 // id and must stay one whatever the remote publishes under that name.
 //
-// Two shapes need it, for the same reason: git resolves them differently in
+// Three shapes need it, for the same reason: git resolves them differently in
 // different slots, so the clone and the checkout can land on different commits
-// while every command exits 0.
+// (or the checkout can fail as option parsing) while every command exits 0.
 //
 //   - A hex-shaped name may be an object id or a branch of that name, and both
 //     can exist in one repository pointing at different commits (looksLikeSHA
@@ -651,11 +684,17 @@ func looksLikeSHA(ref string) bool {
 //     fetch` (verified against git 2.54.0: with `release` and `+release` at
 //     different commits, `git fetch origin +release` put release's tip in
 //     FETCH_HEAD and exited 0).
+//   - A name starting with `-` is a ref everywhere in git, but option-shaped to
+//     any argv parser that reads it from a positional slot without
+//     --end-of-options (validateRef's own comment; the guard this call
+//     replaces used to reject such a name outright).
 //
-// In both cases the answer is the fully-qualified ref from remoteRefFor, which
-// no slot can re-read as something else.
+// In all three cases the answer is the fully-qualified ref from remoteRefFor,
+// which no slot can re-read as something else, and ensureRepo refuses the name
+// when the remote publishes nothing by it rather than falling back to using it
+// raw.
 func refNeedsRemoteResolution(ref string) bool {
-	return looksLikeSHA(ref) || strings.HasPrefix(ref, "+")
+	return looksLikeSHA(ref) || strings.HasPrefix(ref, "+") || strings.HasPrefix(ref, "-")
 }
 
 // remoteRefFor returns the fully-qualified ref the remote publishes under name,
