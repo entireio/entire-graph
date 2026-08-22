@@ -822,7 +822,8 @@ func OversizeBlobAtRev(ctx context.Context, repo, rev, path string, maxBytes int
 	if err := cmd.Start(); err != nil {
 		return OversizeBlob{}, false, fmt.Errorf("git cat-file blob: %w", err)
 	}
-	digest, digestErr := filedigest.Stream(stdout)
+	prefix := make([]byte, 0, oversizeBlobPrefixCap)
+	digest, digestErr := filedigest.Stream(io.TeeReader(stdout, prefixCaptureWriter{buf: &prefix}))
 	// Drain anything the digest did not consume before waiting. git blocks on a
 	// full pipe, and Wait would then block on git.
 	_, _ = io.Copy(io.Discard, stdout)
@@ -842,7 +843,7 @@ func OversizeBlobAtRev(ctx context.Context, repo, rev, path string, maxBytes int
 	if digest.Bytes <= maxBytes {
 		return OversizeBlob{}, false, nil
 	}
-	return OversizeBlob{Bytes: digest.Bytes, Hash: digest.Hash, Lines: digest.Lines}, true, nil
+	return OversizeBlob{Bytes: digest.Bytes, Hash: digest.Hash, Lines: digest.Lines, Prefix: string(prefix)}, true, nil
 }
 
 type blobProbeStatus uint8
@@ -920,6 +921,35 @@ type OversizeBlob struct {
 	Bytes int64
 	Hash  string
 	Lines int
+	// Prefix holds up to oversizeBlobPrefixCap leading bytes, captured for
+	// free from the same mandatory streaming pass that computes Hash and
+	// Lines. Git blob reads are all-or-nothing, so a refused blob otherwise
+	// cannot be prefix-sniffed at all (for example, to route an
+	// extensionless committed file by its shebang line) without a second,
+	// unbounded read of the same object.
+	Prefix string
+}
+
+// oversizeBlobPrefixCap bounds OversizeBlob.Prefix. It is comfortably above
+// the largest known prefix consumer (shebang sniffing) while staying a fixed,
+// small cost independent of the blob's real size.
+const oversizeBlobPrefixCap = 4096
+
+// prefixCaptureWriter retains up to oversizeBlobPrefixCap leading bytes
+// written to it and discards the rest, for use as an io.TeeReader sink
+// alongside a digest pass that must consume the whole stream anyway.
+type prefixCaptureWriter struct {
+	buf *[]byte
+}
+
+func (w prefixCaptureWriter) Write(p []byte) (int, error) {
+	if room := oversizeBlobPrefixCap - len(*w.buf); room > 0 {
+		if room > len(p) {
+			room = len(p)
+		}
+		*w.buf = append(*w.buf, p[:room]...)
+	}
+	return len(p), nil
 }
 
 // SetOversizeScanner registers a callback invoked with successive chunks of an OVERSIZE blob as it
@@ -1148,11 +1178,14 @@ func (r *BatchFileReader) readObjectContentsLocked(objectSpec, expectedType stri
 	}
 	if r.maxBytes > 0 && size > r.maxBytes {
 		var src io.Reader = io.LimitReader(r.stdout, size)
+		prefix := make([]byte, 0, oversizeBlobPrefixCap)
+		tee := io.Writer(prefixCaptureWriter{buf: &prefix})
 		if scan := r.oversizeScan; scan != nil {
 			// The same single pass the digest already makes: the scanner sees the bytes on their
 			// way to being discarded, so relevance costs no extra read and no retained memory.
-			src = io.TeeReader(src, oversizeScanWriter{path: oversizeKey, scan: scan})
+			tee = io.MultiWriter(tee, oversizeScanWriter{path: oversizeKey, scan: scan})
 		}
+		src = io.TeeReader(src, tee)
 		digest, err := filedigest.Stream(src)
 		if err != nil {
 			return "", false, r.poisonLocked(fmt.Errorf("stream oversized git blob: %w", err))
@@ -1170,7 +1203,7 @@ func (r *BatchFileReader) readObjectContentsLocked(objectSpec, expectedType stri
 		if r.oversize == nil {
 			r.oversize = map[string]OversizeBlob{}
 		}
-		r.oversize[oversizeKey] = OversizeBlob{Bytes: digest.Bytes, Hash: digest.Hash, Lines: digest.Lines}
+		r.oversize[oversizeKey] = OversizeBlob{Bytes: digest.Bytes, Hash: digest.Hash, Lines: digest.Lines, Prefix: string(prefix)}
 		return "", false, nil
 	}
 	content := make([]byte, size)
@@ -1314,9 +1347,10 @@ func NewLimitedFileReader(ctx context.Context, repo, rev string, maxBytes int64)
 	}
 }
 
-// SetDeadline bounds only the exceptional component-by-component metadata
-// traversal. Ordinary short-path batches remain one process and unchanged.
-// A zero deadline restores the historical no-deadline behavior.
+// SetDeadline bounds the component-by-component metadata traversal, and also
+// stops Prime from starting further metadata batches once elapsed (checked
+// between batches, not mid-batch: one already-started batch still runs to
+// completion). A zero deadline restores the historical no-deadline behavior.
 func (r *LimitedFileReader) SetDeadline(deadline time.Time) {
 	r.mu.Lock()
 	r.deadline = deadline
@@ -1340,6 +1374,20 @@ func (r *LimitedFileReader) Prime(paths []string) error {
 		r.primed = make(map[string]primedLimitedFile, len(paths))
 	}
 	for start := 0; start < len(paths); {
+		// An unbounded candidate list otherwise runs every batch to completion
+		// before the caller's overBudget check ever sees it: SetDeadline only
+		// bounded the exceptional component-by-component path above. Once the
+		// deadline elapses, stop starting new metadata subprocesses and mark
+		// every remaining path unaddressable instead, exactly like the
+		// component traversal's own deadline refusal.
+		if r.deadlineReached() {
+			for _, path := range paths[start:] {
+				if _, already := r.primed[path]; !already {
+					r.primed[path] = unaddressableLimitedFile()
+				}
+			}
+			return nil
+		}
 		// A rare over-limit full path is resolved one tree component at a time.
 		// No command receives the whole path, while the final exact blob OID can
 		// still use the persistent content batch.
@@ -1431,7 +1479,7 @@ func (r *LimitedFileReader) componentEntryMetadata(
 	if metadata, ok := r.componentMetadata[key]; ok {
 		return metadata, true, nil
 	}
-	if r.componentMetadataProcesses >= limitedFileComponentMetadataProcessLimit || r.componentDeadlineReached() {
+	if r.componentMetadataProcesses >= limitedFileComponentMetadataProcessLimit || r.deadlineReached() {
 		return treeComponentMetadataResult{}, false, nil
 	}
 	r.componentMetadataProcesses++
@@ -1448,7 +1496,7 @@ func (r *LimitedFileReader) componentEntryMetadata(
 	return metadata, true, nil
 }
 
-func (r *LimitedFileReader) componentDeadlineReached() bool {
+func (r *LimitedFileReader) deadlineReached() bool {
 	if r.deadline.IsZero() {
 		return false
 	}

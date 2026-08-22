@@ -1668,6 +1668,70 @@ func TestLimitedFileReaderPrimesPathBeyondBatchArgvBound(t *testing.T) {
 	}
 }
 
+// TestLimitedFileReaderPrimeStopsOrdinaryBatchesAtDeadline reproduces the
+// trail finding on Prime: the ordinary short-path batch loop ran every batch
+// to completion regardless of SetDeadline, so a candidate list long enough to
+// need several literalPathspecBatchCount-sized batches could keep starting
+// new Git subprocesses long after the caller's wall-clock budget elapsed.
+func TestLimitedFileReaderPrimeStopsOrdinaryBatchesAtDeadline(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	// More than one literalPathspecBatchCount-sized group, so Prime must issue
+	// at least two ordinary metadata batches to resolve every path.
+	const total = literalPathspecBatchCount + 10
+	paths := make([]string, total)
+	for i := range paths {
+		path := fmt.Sprintf("file%03d.go", i)
+		paths[i] = path
+		if err := os.WriteFile(filepath.Join(repo, path), []byte("package p\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "many short paths")
+	head := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	reader := NewLimitedFileReader(t.Context(), repo, head, 1024)
+	t.Cleanup(func() { _ = reader.Close() })
+	deadline := time.Unix(100, 0)
+	checks := 0
+	reader.now = func() time.Time {
+		checks++
+		if checks == 1 {
+			// Let the first batch attempt proceed, so this test exercises a
+			// deadline that elapses mid-Prime, not one already elapsed
+			// before the first Git subprocess ever ran.
+			return deadline.Add(-time.Second)
+		}
+		return deadline
+	}
+	reader.SetDeadline(deadline)
+
+	if err := reader.Prime(paths); err != nil {
+		t.Fatal(err)
+	}
+	if checks < 2 {
+		t.Fatalf("Prime checked the deadline %d times, want at least 2 (once per batch attempt)", checks)
+	}
+	resolved, unaddressable := 0, 0
+	for _, path := range paths {
+		switch reader.primed[path].result.Status {
+		case LimitedFileUnaddressable:
+			unaddressable++
+		default:
+			resolved++
+		}
+	}
+	if unaddressable == 0 {
+		t.Fatalf("Prime resolved every path despite an elapsed deadline: %d resolved, 0 unaddressable", resolved)
+	}
+	if resolved == 0 {
+		t.Fatal("Prime marked every path unaddressable; want the already-started first batch to still complete")
+	}
+}
+
 func TestLimitedFileReaderCachesAndCapsComponentMetadata(t *testing.T) {
 	const (
 		depth  = 80

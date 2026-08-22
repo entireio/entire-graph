@@ -1,6 +1,8 @@
 package sem
 
 import (
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -119,6 +121,76 @@ if __name__ == "__main__":
 	}
 	if _, ok := filesByPath["node_modules/pkg/cli"]; ok {
 		t.Fatalf("vendored node_modules script must stay skipped")
+	}
+}
+
+// TestSnapshotRoutesOversizedCommittedShebangScriptsByCapturedPrefix
+// reproduces two trail findings: a committed, extensionless shebang script
+// that is ALSO oversized cannot satisfy the ordinary bounded prefix read at
+// all (Git blob reads are all-or-nothing, so the git-tree source's
+// readPrefix has to fully read the blob first), so routing used to fail
+// before the oversize registry was ever consulted and the file vanished
+// with no file record and no partial failure. It must instead be routed
+// from the prefix already captured for free while streaming the blob's
+// digest, and reported as E_FILE_TOO_LARGE like any other oversized file.
+func TestSnapshotRoutesOversizedCommittedShebangScriptsByCapturedPrefix(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+
+	// Longer than shebangSniffLimit so the language check never reaches the
+	// zero-filled padding writeSparseFile adds beyond this header, and small
+	// enough to stay well under the oversize cap chosen below.
+	header := "#!/usr/bin/env bash\n" + strings.Repeat("# padding line to clear the shebang sniff window\n", 30)
+	if len(header) <= shebangSniffLimit {
+		t.Fatalf("fixture header is %d bytes, want more than shebangSniffLimit (%d)", len(header), shebangSniffLimit)
+	}
+	const maxParseBytes = 2048
+	const totalSize = maxParseBytes * 4
+	if len(header) >= maxParseBytes {
+		t.Fatalf("fixture header is %d bytes, want under maxParseBytes (%d)", len(header), maxParseBytes)
+	}
+
+	const batchSafePath = "bin/pytool-big"
+	writeSparseFile(t, repo, batchSafePath, totalSize, header)
+
+	const newlinePath = "bin/py\ntool-big"
+	if runtime.GOOS != "windows" {
+		writeSparseFile(t, repo, newlinePath, totalSize, header)
+	}
+
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "oversized extensionless shebang scripts")
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{MaxParseBytes: maxParseBytes})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	filesByPath := map[string]FileRecord{}
+	for _, file := range snapshot.Files {
+		filesByPath[file.Path] = file
+	}
+	failuresByPath := map[string]PartialFailure{}
+	for _, failure := range snapshot.Header.PartialFailures {
+		failuresByPath[failure.FilePath] = failure
+	}
+
+	paths := []string{batchSafePath}
+	if runtime.GOOS != "windows" {
+		paths = append(paths, newlinePath)
+	}
+	for _, path := range paths {
+		file, ok := filesByPath[path]
+		if !ok {
+			t.Fatalf("oversized shebang script %q missing from snapshot files (silently dropped): %#v", path, snapshot.Files)
+		}
+		if file.Language != "Bash" {
+			t.Fatalf("oversized shebang script %q language = %q, want Bash", path, file.Language)
+		}
+		failure, ok := failuresByPath[path]
+		if !ok || failure.Code != "E_FILE_TOO_LARGE" {
+			t.Fatalf("oversized shebang script %q partial failure = %#v (ok=%v), want E_FILE_TOO_LARGE", path, failure, ok)
+		}
 	}
 }
 

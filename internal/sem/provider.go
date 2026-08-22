@@ -733,6 +733,14 @@ type oversizeFile struct {
 	Bytes int64
 	Hash  string
 	Lines int
+	// Prefix holds up to a few KiB of leading content, captured for free from
+	// the same streaming pass that computes Hash and Lines when the source
+	// can. It backs shebang routing for a committed, extensionless file whose
+	// blob is too large for the ordinary content read to reach at all (Git
+	// blob reads are all-or-nothing, so readPrefix cannot bound its own read
+	// the way the filesystem source's readPrefix does). Empty when the
+	// source has no prefix to offer.
+	Prefix string
 }
 
 // oversizeReader reports why a content read came back empty: a file above the
@@ -9846,7 +9854,7 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 			if !ok {
 				return oversizeFile{}, false
 			}
-			return oversizeFile{Bytes: blob.Bytes, Hash: blob.Hash, Lines: blob.Lines}, true
+			return oversizeFile{Bytes: blob.Bytes, Hash: blob.Hash, Lines: blob.Lines, Prefix: blob.Prefix}, true
 		}
 		// Git blob reads are all-or-nothing, so the HEAD-tree prefix reader
 		// fetches the blob and truncates.
@@ -9994,7 +10002,7 @@ func (r *fallbackOversizeRegistry) lookup(ctx context.Context, path string) (ove
 		r.mu.Unlock()
 		blob, over, err := gitutil.OversizeBlobAtRev(ctx, r.repo, r.rev, path, r.maxBytes)
 		if err == nil && over {
-			record = &oversizeFile{Bytes: blob.Bytes, Hash: blob.Hash, Lines: blob.Lines}
+			record = &oversizeFile{Bytes: blob.Bytes, Hash: blob.Hash, Lines: blob.Lines, Prefix: blob.Prefix}
 		}
 		r.mu.Lock()
 		r.resolved[path] = record
