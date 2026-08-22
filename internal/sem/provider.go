@@ -10492,10 +10492,11 @@ func headVendorIgnoreRules(
 	return loadHeadNestedIgnoreRules(ctx, repo, committedRevision, candidates, policyBase)
 }
 
-// worktreeVendorIgnoreRules is headVendorIgnoreRules for the working tree: the
-// per-directory .gitignore files Git's own listing reports (one inside an
-// excluded tree is not listed, and that tree is excluded anyway) are read from
-// disk and merged over the root rules.
+// worktreeVendorIgnoreRules is headVendorIgnoreRules for the working tree. Its
+// bounded input combines ordinary Git-listed policy files with ignored policy
+// pathnames in directories Git still traverses; policies below a wholly ignored
+// directory are collapsed with that directory because Git never applies them.
+// Every selected file is read from disk and merged over the root rules.
 func worktreeVendorIgnoreRules(repo string, base ignoreMatcher, listed []string) (*nestedIgnoreRules, error) {
 	candidates, err := nestedIgnorePathsFromListing(listed)
 	if err != nil {
