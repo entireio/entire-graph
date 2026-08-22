@@ -560,6 +560,55 @@ const budgetPollStride = 1024
 // reruns relation resolution against only the selected symbols: simply dropping
 // cross-boundary edges from a complete graph is wrong because an OnlyFiles build
 // externalizes those targets and records different resolution metadata.
+// filterFilesAndSymbolsForBudget filters fullFiles and fullSymbols down to
+// the files allowedFiles admits, in lockstep, stopping as soon as stop
+// reports true.
+//
+// full.Files and full.Symbols are filtered together, file by file, rather
+// than in two independent index-based passes: the streaming builder emits
+// one FileRecord followed immediately by every SymbolRecord for that file
+// (see the reducer in BuildProviderSnapshotWithOptions), so full.Symbols is
+// a run-length grouping in the same file order as full.Files. Filtering them
+// separately let expiry land between a file's FileRecord and the tail of
+// its SymbolRecords -- or mid-run within the Symbols pass alone -- leaving
+// selective.Files claim a file was retained while selective.Symbols held
+// none or only some of its symbols. The cold (non-cached) path never
+// produces that state: a file it cannot finish in budget is dropped whole.
+// This walks both slices in lockstep so a file crossing the boundary is
+// dropped whole here too, keeping a "retained" file's symbol set complete
+// by construction rather than by the budget's luck.
+func filterFilesAndSymbolsForBudget(fullFiles []FileRecord, fullSymbols []SymbolRecord, allowedFiles map[string]bool, stop func() bool) (files []FileRecord, symbols []SymbolRecord) {
+	symIndex := 0
+filesAndSymbols:
+	for fileIndex, file := range fullFiles {
+		if fileIndex%budgetPollStride == 0 && stop() {
+			break
+		}
+		runStart := symIndex
+		// Polled by SYMBOL, not just by file: the outer poll above only fires
+		// once per budgetPollStride FILES, so one pathological file holding
+		// far more than that many symbols (a huge generated or vendored
+		// source) let this inner run advance through all of them before the
+		// outer loop ever got another chance to check. A stop here breaks
+		// the OUTER loop too (not just this inner one), because the file
+		// this run belongs to has not reached its allowedFiles decision yet
+		// and must be dropped whole -- exactly like a stop at the outer poll
+		// above already drops the CURRENT file whole -- rather than retained
+		// with a truncated, budget-luck-sized symbol slice.
+		for symIndex < len(fullSymbols) && fullSymbols[symIndex].FilePath == file.Path {
+			if (symIndex-runStart)%budgetPollStride == 0 && stop() {
+				break filesAndSymbols
+			}
+			symIndex++
+		}
+		if allowedFiles[filepath.ToSlash(filepath.Clean(file.Path))] {
+			files = append(files, file)
+			symbols = append(symbols, fullSymbols[runStart:symIndex]...)
+		}
+	}
+	return files, symbols
+}
+
 func selectiveSearchSnapshotFromFull(
 	ctx context.Context,
 	repo, providerVersion string,
@@ -652,46 +701,41 @@ func selectiveSearchSnapshotFromFull(
 	for _, filePath := range sc.paths {
 		allowedFiles[filepath.ToSlash(filepath.Clean(filePath))] = true
 	}
-	// full.Files and full.Symbols are filtered together, file by file, rather
-	// than in two independent index-based passes: the streaming builder emits
-	// one FileRecord followed immediately by every SymbolRecord for that file
-	// (see the reducer in BuildProviderSnapshotWithOptions), so full.Symbols is
-	// a run-length grouping in the same file order as full.Files. Filtering
-	// them separately let expiry land between a file's FileRecord and the tail
-	// of its SymbolRecords -- or mid-run within the Symbols pass alone --
-	// leaving selective.Files claim a file was retained while selective.Symbols
-	// held none or only some of its symbols. The cold (non-cached) path never
-	// produces that state: a file it cannot finish in budget is dropped
-	// whole. This walks both slices in lockstep so a file crossing the
-	// boundary is dropped whole here too, keeping a "retained" file's symbol
-	// set complete by construction rather than by the budget's luck.
-	symIndex := 0
-	for fileIndex, file := range full.Files {
-		if fileIndex%budgetPollStride == 0 && stopNow() {
-			break
-		}
-		runStart := symIndex
-		for symIndex < len(full.Symbols) && full.Symbols[symIndex].FilePath == file.Path {
-			symIndex++
-		}
-		if allowedFiles[filepath.ToSlash(filepath.Clean(file.Path))] {
-			selective.Files = append(selective.Files, file)
-			selective.Symbols = append(selective.Symbols, full.Symbols[runStart:symIndex]...)
-		}
-	}
+	selective.Files, selective.Symbols = filterFilesAndSymbolsForBudget(full.Files, full.Symbols, allowedFiles, stopNow)
 
+	// recordsByFile only feeds relation resolution below (never the reported
+	// selective.Symbols, which is already complete by this point), so
+	// stopping it early merely narrows how many of the RETAINED files get a
+	// relation pass -- the same truncation the relation phase itself is
+	// already allowed to apply per file. Without polling here, a large
+	// cached symbol inventory made this grouping and per-file transform pass
+	// linear in the number of budgeted symbols exactly like the relation
+	// phase, but with no stop check of its own.
 	recordsByFile := make(map[string][]SymbolRecord)
 	structuralByFile := make(map[string][]structuralSymbol)
-	for _, symbol := range selective.Symbols {
+	for i, symbol := range selective.Symbols {
+		if i%budgetPollStride == 0 && stopNow() {
+			break
+		}
 		recordsByFile[symbol.FilePath] = append(recordsByFile[symbol.FilePath], symbol)
 	}
 	if spec.name == ProfileSyntaxOnly {
+		i := 0
 		for filePath, symbols := range recordsByFile {
+			if i%budgetPollStride == 0 && stopNow() {
+				break
+			}
 			structuralByFile[filePath] = compactStructuralSymbols(symbols)
+			i++
 		}
 	} else {
+		i := 0
 		for filePath, symbols := range recordsByFile {
+			if i%budgetPollStride == 0 && stopNow() {
+				break
+			}
 			recordsByFile[filePath] = retainedSymbolsForProfile(symbols, spec)
+			i++
 		}
 	}
 	// Every content read below this point goes through the budgeted reader, so
@@ -717,6 +761,11 @@ func selectiveSearchSnapshotFromFull(
 
 	seenRelations := make(map[uint64]struct{})
 	externalsByID := make(map[string]ExternalRecord)
+	// externalOrder is the first-seen order of every external ID, tracked
+	// alongside externalsByID (not derived from it) so a budget-truncated
+	// derivation can emit externals in a deterministic order without paying
+	// for a sort: see finalizeSelectiveOrdering.
+	var externalOrder []string
 	relationsByType := make(map[string]int)
 	var symbolsByID map[string]SymbolRecord
 	var filesByID map[string]FileRecord
@@ -743,6 +792,9 @@ func selectiveSearchSnapshotFromFull(
 		seenRelations[key] = struct{}{}
 		for _, id := range []string{relation.FromID, relation.ToID} {
 			if strings.HasPrefix(id, "external:") {
+				if _, exists := externalsByID[id]; !exists {
+					externalOrder = append(externalOrder, id)
+				}
 				mergeExternalRecord(externalsByID, externalRecordFor(relation, id, symbolsByID, filesByID))
 			}
 		}
@@ -784,7 +836,7 @@ func selectiveSearchSnapshotFromFull(
 		return ProviderSnapshot{}, err
 	}
 
-	finalizeSelectiveOrdering(&selective, externalsByID, budgetHit)
+	finalizeSelectiveOrdering(&selective, externalsByID, externalOrder, budgetHit)
 
 	warnings := sc.warnings
 	if warnings == nil {
@@ -844,30 +896,24 @@ func selectiveSearchSnapshotFromFull(
 }
 
 // finalizeSelectiveOrdering populates selective.Externals from externalsByID
-// and sorts both it and selective.Relations for stable output -- but only on
-// the complete (budgetHit == false) path.
+// (ordered by orderedExternalIDs) and sorts selective.Relations for stable
+// output -- but only on the complete (budgetHit == false) path.
 //
-// Sorting is itself O(n log n) work over whatever the relation phase
-// accumulated before the gate tripped -- on a 500-function nested fixture,
-// that phase alone produced 385,137 relations, and the comparator
-// reallocates a concatenated key on every comparison on top of that. The
-// caller already turned budget expiry into a truncation rather than an
-// error by the time this runs, so a true budgetHit skips the sort entirely
-// instead of letting the advertised parse/relation ceiling get blown by its
-// own finalization step. A truncated snapshot is already unordered from the
-// caller's point of view (it is missing an arbitrary tail), gets an
-// E_ANALYSIS_BUDGET_EXCEEDED marker from the caller, and writeSearchSnapshot
-// refuses to cache it -- so there is no correctness or cacheability property
-// left for a stable order to protect here.
-func finalizeSelectiveOrdering(selective *ProviderSnapshot, externalsByID map[string]ExternalRecord, budgetHit bool) {
-	externalIDs := make([]string, 0, len(externalsByID))
-	for id := range externalsByID {
-		externalIDs = append(externalIDs, id)
-	}
-	if !budgetHit {
-		sort.Strings(externalIDs)
-	}
-	for _, id := range externalIDs {
+// Sorting selective.Relations is itself O(n log n) work over whatever the
+// relation phase accumulated before the gate tripped -- on a 500-function
+// nested fixture, that phase alone produced 385,137 relations, and the
+// comparator reallocates a concatenated key on every comparison on top of
+// that. The caller already turned budget expiry into a truncation rather
+// than an error by the time this runs, so a true budgetHit skips the
+// (expensive) relations sort entirely instead of letting the advertised
+// parse/relation ceiling get blown by its own finalization step.
+// selective.Relations is already in a deterministic order without it -- it
+// is built by a plain append during the relation phase, never through a
+// map, so a truncated snapshot's relations come out in the same order for
+// the same tree and budget every time; skipping the sort trades
+// "alphabetical" for "scan order", not determinism for nondeterminism.
+func finalizeSelectiveOrdering(selective *ProviderSnapshot, externalsByID map[string]ExternalRecord, externalOrder []string, budgetHit bool) {
+	for _, id := range orderedExternalIDs(externalsByID, externalOrder, budgetHit) {
 		selective.Externals = append(selective.Externals, externalsByID[id])
 	}
 	if !budgetHit {

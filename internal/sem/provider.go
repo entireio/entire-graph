@@ -1248,6 +1248,11 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	startPhase()
 	seenRelation := map[uint64]struct{}{}
 	externalsByID := map[string]ExternalRecord{}
+	// externalOrder is the first-seen order of every external ID, tracked
+	// alongside externalsByID (not derived from it) so a budget-truncated
+	// snapshot can emit externals in a deterministic order without paying for
+	// a sort: see the budgetHit branch below.
+	var externalOrder []string
 	relationsByType := map[string]int{}
 	var emitErr error
 	emitRelation := func(r RelationRecord, symbolsByID map[string]SymbolRecord, filesByID map[string]FileRecord) {
@@ -1283,6 +1288,9 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		seenRelation[dedupKey] = struct{}{}
 		for _, id := range []string{r.FromID, r.ToID} {
 			if strings.HasPrefix(id, "external:") {
+				if _, exists := externalsByID[id]; !exists {
+					externalOrder = append(externalOrder, id)
+				}
 				mergeExternalRecord(externalsByID, externalRecordFor(r, id, symbolsByID, filesByID))
 			}
 		}
@@ -1343,11 +1351,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 	emitProgress(BuildPhaseRelations, len(sc.paths), symbolCount, relationCount)
 
 	startPhase()
-	externalIDs := make([]string, 0, len(externalsByID))
-	for id := range externalsByID {
-		externalIDs = append(externalIDs, id)
-	}
-	sort.Strings(externalIDs)
+	externalIDs := orderedExternalIDs(externalsByID, externalOrder, budgetHit)
 	for _, id := range externalIDs {
 		// Externals are already resolved in memory; only a caller cancellation
 		// stops emitting them, so a budget-truncated snapshot still ends with a
@@ -10112,6 +10116,41 @@ func mergeExternalRecord(seen map[string]ExternalRecord, record ExternalRecord) 
 		return
 	}
 	seen[record.ID] = record
+}
+
+// orderedExternalIDs decides what order externalsByID's records are emitted
+// in: alphabetical when the derivation ran to completion (budgetHit ==
+// false), or the deterministic first-seen scan order (externalOrder,
+// maintained by the caller's emitRelation alongside externalsByID) when it
+// was budget-truncated.
+//
+// The complete path sorts because emission order is otherwise whatever a Go
+// map iteration gives, which varies run to run for the identical input --
+// sorting is cheap here because a completed build already paid the full
+// relation-phase cost with no time pressure left to protect.
+//
+// The truncated path must NOT sort: sort.Strings is O(n log n) over however
+// many distinct external IDs the relation phase accumulated before the gate
+// tripped -- on a 500-function nested fixture that phase alone produced
+// 385,137 relations, so a comparably large external set is not implausible
+// -- and running it unconditionally after budget expiry was classified
+// blows the wall-clock ceiling the rest of the derivation had just finished
+// enforcing. Falling back to plain map iteration there instead of to
+// externalOrder would trade that bug for another: it would make even a
+// truncated build's Externals order vary run to run for the identical tree,
+// regressing the provider's determinism contract independent of caching.
+// externalOrder is deterministic for the same input at O(1) extra cost per
+// relation, so the truncated case loses nothing switching to it.
+func orderedExternalIDs(externalsByID map[string]ExternalRecord, externalOrder []string, budgetHit bool) []string {
+	if budgetHit {
+		return externalOrder
+	}
+	ids := make([]string, 0, len(externalsByID))
+	for id := range externalsByID {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 type boundarySource struct {
