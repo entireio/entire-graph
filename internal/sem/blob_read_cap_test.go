@@ -218,7 +218,7 @@ func TestHeadReadersCapNewlineBearingPaths(t *testing.T) {
 	})
 
 	t.Run("openSearchContentReader", func(t *testing.T) {
-		read, closeReader, err := openSearchContentReader(t.Context(), repo, head, true, nil, nil)
+		read, closeReader, err := openSearchContentReader(t.Context(), repo, head, true, nil, nil, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -266,7 +266,7 @@ func TestHeadReadersFallbackWhenRepoPrefixContainsNewline(t *testing.T) {
 		}
 	}
 
-	read, closeReader, err := openSearchContentReader(t.Context(), repo, head, true, nil, nil)
+	read, closeReader, err := openSearchContentReader(t.Context(), repo, head, true, nil, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,4 +365,50 @@ func TestRefusedNewlinePathKeepsItsFileRecord(t *testing.T) {
 	if content, ok := opened.read(newlinePath); ok {
 		t.Fatalf("read returned %d bytes for a blob above the 1024-byte cap", len(content))
 	}
+}
+
+// TestOpenSearchContentReaderHonorsARaisedMaxParseBytes reproduces the trail
+// finding: openSearchContentReader hard-coded defaultMaxParseBytes on its
+// batch reader, its LimitedFileReader fallback, and its worktree source
+// instead of accepting the search's resolved MaxParseBytes. A caller who
+// raised the limit above the package default got a file into the ranked
+// snapshot (BuildProviderSnapshotWithOptions honors the raised limit) only
+// to have this reader refuse it during snippet/body reads — a raise that
+// silently produced missing or truncated search results instead of the
+// larger files it promised.
+func TestOpenSearchContentReaderHonorsARaisedMaxParseBytes(t *testing.T) {
+	const raisedLimit = defaultMaxParseBytes + 8192
+
+	repo := t.TempDir()
+	initRepo(t, repo)
+	huge := "BLOB = \"" + strings.Repeat("x", defaultMaxParseBytes+1024) + "\"\n"
+	write(t, repo, "huge.py", huge)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	head := rev(t, repo, "HEAD")
+
+	t.Run("default limit still refuses the file", func(t *testing.T) {
+		read, closeReader, err := openSearchContentReader(t.Context(), repo, head, true, nil, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = closeReader() }()
+		if content, ok := read("huge.py"); ok {
+			t.Fatalf("read returned %d bytes at the default cap for a file sized just above it", len(content))
+		}
+	})
+
+	t.Run("raised limit lets the file through", func(t *testing.T) {
+		read, closeReader, err := openSearchContentReader(t.Context(), repo, head, true, nil, nil, raisedLimit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = closeReader() }()
+		content, ok := read("huge.py")
+		if !ok || content != huge {
+			t.Fatalf("read at a raised MaxParseBytes = (%d bytes, ok=%v), want the full %d-byte file: "+
+				"the reader must use the caller's resolved limit, not the package default",
+				len(content), ok, len(huge))
+		}
+	})
 }

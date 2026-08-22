@@ -2435,3 +2435,58 @@ func TestOversizeBlobAtRevNeverMaterializesTheBlob(t *testing.T) {
 		t.Fatalf("allocated %d bytes reading a %d-byte blob; it must never be held", allocated, blobSize)
 	}
 }
+
+// TestRevParseRejectsAnOptionShapedRevisionInsteadOfPassingItThrough
+// reproduces the trail finding: RevParse fed a caller-supplied label straight
+// to `git rev-parse <label>` with no `--end-of-options` guard. A label
+// spelled like a flag (starting with "-") is not rejected as a bad revision —
+// git rev-parse's documented behavior for a flag it does not itself
+// recognize is to echo it back verbatim (exit 0), which is silent wrong
+// resolution, not a resolved OID. `--end-of-options` forces every remaining
+// argument to be treated as a revision, so an option-shaped label now fails
+// loudly instead of round-tripping through unresolved.
+func TestRevParseRejectsAnOptionShapedRevisionInsteadOfPassingItThrough(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "a.txt", "hi\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "init")
+
+	if _, err := RevParse(t.Context(), repo, "--upload-pack=/bin/true"); err == nil {
+		t.Fatal("RevParse(\"--upload-pack=/bin/true\") returned nil error, want a rejection: " +
+			"an option-shaped label must not be silently passed through as if it were a revision")
+	}
+
+	// Control: an ordinary revision still resolves.
+	if _, err := RevParse(t.Context(), repo, "HEAD"); err != nil {
+		t.Fatalf("RevParse(\"HEAD\") = %v, want a resolved commit OID", err)
+	}
+}
+
+// TestFirstParentRejectsAnOptionShapedRevision pins the same guard on
+// FirstParent, used directly with a CLI-supplied revision by `entire commit
+// <rev>` (internal/cli/root.go's runCommit).
+func TestFirstParentRejectsAnOptionShapedRevision(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "a.txt", "hi\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "init")
+	write(t, repo, "a.txt", "hi again\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "second")
+
+	if _, err := FirstParent(t.Context(), repo, "--upload-pack=/bin/true"); err == nil {
+		t.Fatal("FirstParent(\"--upload-pack=/bin/true\") returned nil error, want a rejection")
+	}
+
+	if _, err := FirstParent(t.Context(), repo, "HEAD"); err != nil {
+		t.Fatalf("FirstParent(\"HEAD\") = %v, want a resolved parent OID", err)
+	}
+}

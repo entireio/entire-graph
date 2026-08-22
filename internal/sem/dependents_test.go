@@ -867,7 +867,7 @@ func TestHeadReadersShareDeepUnsafeMetadataAllowance(t *testing.T) {
 		}
 	}
 
-	readSearch, closeSearch, err := openSearchContentReader(ctx, repo, head, true, nil, nil)
+	readSearch, closeSearch, err := openSearchContentReader(ctx, repo, head, true, nil, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

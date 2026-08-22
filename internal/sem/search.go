@@ -871,7 +871,7 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	queryStarted := time.Now()
 	useHead := !options.Worktree && snapshot.Header.Commit != ""
 	read, closeSource, err := openSearchContentReader(
-		ctx, repo, snapshot.Header.Commit, useHead, options.IgnoreFiles, options.IncludeFiles,
+		ctx, repo, snapshot.Header.Commit, useHead, options.IgnoreFiles, options.IncludeFiles, options.MaxParseBytes,
 	)
 	if err != nil {
 		return SearchResponse{}, err
@@ -1504,7 +1504,23 @@ func openSearchContentReader(
 	repo, commit string,
 	useHead bool,
 	ignoreFiles, includeFiles []string,
+	maxParseBytes int,
 ) (contentReader, func() error, error) {
+	// The content reader's cap is a ceiling on what a search RESULT can show,
+	// not a mirror of the parser's eligibility cutoff: a file too large to
+	// parse into the graph can still surface as a lexical (git-tree-grep)
+	// match, and that match still needs its snippet read. So the floor here
+	// stays the package default regardless of a caller-LOWERED MaxParseBytes
+	// -- only a caller-RAISED MaxParseBytes should raise it further, else a
+	// file the raised limit let into the snapshot would be refused right back
+	// out during ranking/snippet reads. A negative resolved value means
+	// "uncapped" (resolveMaxParseBytes's documented escape hatch) and must
+	// stay uncapped rather than be floored back up to the default.
+	resolvedMaxParseBytes := resolveMaxParseBytes(maxParseBytes)
+	maxBytes := resolvedMaxParseBytes
+	if resolvedMaxParseBytes >= 0 {
+		maxBytes = max(defaultMaxParseBytes, resolvedMaxParseBytes)
+	}
 	if useHead {
 		treePathPrefix, err := gitutil.RepoPrefix(ctx, repo)
 		if err != nil {
@@ -1515,9 +1531,13 @@ func openSearchContentReader(
 			return nil, nil, err
 		}
 		// Snippet and body reads never need a file the indexer refuses to parse,
-		// so the reader declines it rather than materializing it twice over.
-		batch.SetMaxBytes(defaultMaxParseBytes)
-		limited := gitutil.NewLimitedFileReader(ctx, repo, commit, defaultMaxParseBytes)
+		// so the reader declines it rather than materializing it twice over. Use
+		// the wider of the package default and the caller's resolved search
+		// limit: if a caller raised MaxParseBytes, a file the raised limit lets
+		// into the snapshot must not then be refused here during ranking/snippet
+		// reads.
+		batch.SetMaxBytes(int64(maxBytes))
+		limited := gitutil.NewLimitedFileReader(ctx, repo, commit, int64(maxBytes))
 		read := func(path string) (string, bool) {
 			if !batch.IsPathSafe(path) {
 				// Same ceiling as the batch reader above. The shared exact-object
@@ -1541,7 +1561,7 @@ func openSearchContentReader(
 	opened, err := openSource(ctx, repo, "", sourceOptions{
 		ignoreFiles:  ignoreFiles,
 		includeFiles: includeFiles,
-		maxReadBytes: defaultMaxParseBytes,
+		maxReadBytes: maxBytes,
 	})
 	if err != nil {
 		return nil, nil, err
