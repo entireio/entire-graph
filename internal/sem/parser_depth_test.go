@@ -1161,6 +1161,106 @@ func TestAnalyzeSuppressesOneSidedResultWhenTruncatedSideHasEntities(t *testing.
 	}
 }
 
+// TestAnalyzeSuppressesCombinedDepthAndMalformedEvenWithRecoveredEntities
+// reproduces the trail finding on the combined status: a tree that is both
+// too deep AND malformed sets ParseError with Partial deliberately false (see
+// parser.go's depthExceeded && root.HasError() case), specifically so
+// AnalyzeGitRange treats it as a total failure and suppresses the file's
+// delta rather than diffing against entities that may be wrong. But the
+// analyze.go check that recognized total failure required zero recovered
+// entities, and a shallow declaration BEFORE the deep, malformed part of the
+// file is recovered anyway (root.HasError() covers the whole tree even
+// though the declaration itself parsed fine) — so this exact shape used to
+// slip past the total-failure check and fall through to the kept-diff path
+// with one-sided suppression never engaged (it reads Partial, which is
+// false here), reopening the phantom-removal class the status exists to
+// prevent.
+func TestAnalyzeSuppressesCombinedDepthAndMalformedEvenWithRecoveredEntities(t *testing.T) {
+	t.Parallel()
+	// $ is not valid Python syntax (unlike JS, where it is a legal identifier),
+	// so this reproduces the same HasError trigger TestDeepAndMalformedIsTotalNotPartial
+	// uses, with a real shallow declaration recovered ahead of it.
+	broken := "def alpha():\n    return 99\n\n" + nestedSource("x = ", '(', ')', 6000, "$", "\n")
+	assertReachesTheParser(t, broken)
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("mod.py", broken)
+	if status.Code != "E_PARSE_ERROR" || status.Partial {
+		t.Fatalf("status = %+v, want a total E_PARSE_ERROR (Partial false) even though alpha was recovered", status)
+	}
+	if !status.DepthExceeded {
+		t.Fatalf("status = %+v, want DepthExceeded set for the combined too-deep-and-malformed case", status)
+	}
+	if !hasEntityNamed(entities, "alpha") {
+		t.Fatal("fixture must recover a shallow entity before the combined failure, or this test proves nothing")
+	}
+
+	repo := buildLinearRepo(t, func(r string) {
+		write(t, r, "mod.py", "def alpha():\n    return 1\n\ndef beta():\n    return 2\n")
+	}, func(r string) {
+		write(t, r, "mod.py", broken)
+	})
+	res, err := AnalyzeGitRange(context.Background(), repo.repo, repo.base, repo.head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range res.Files {
+		for _, c := range f.Changes {
+			if c.Type == "removed" && (c.Name == "alpha" || c.Name == "beta") {
+				t.Fatalf("phantom %s %q from a combined depth+malformed side that recovered one entity; the delta must be suppressed entirely, not partially compared: %+v", c.Type, c.Name, res.Files)
+			}
+		}
+	}
+	if pfParseWarning(res, "mod.py") == nil {
+		t.Fatalf("expected a suppression warning, got %+v", res.Warnings)
+	}
+}
+
+// TestAnalyzeDoesNotSuppressAddedFileEntitiesWhenTheOnlySideIsDepthTruncated
+// reproduces the trail finding on oneSidedSuppressed: it used to fire
+// whenever EITHER side was Partial, without checking that both revisions
+// exist. On a newly added file the base side simply has no tree, so a
+// declaration recovered on the truncated head side cannot be a truncation
+// artifact — there is nothing on the other side for it to have collided
+// with — and is unambiguously a real addition. Suppressing one-sided results
+// here collapsed the entire symbol-level diff into a synthetic module-scope
+// change, losing every real added entity.
+func TestAnalyzeDoesNotSuppressAddedFileEntitiesWhenTheOnlySideIsDepthTruncated(t *testing.T) {
+	t.Parallel()
+	head := "function alpha() { return 1 }\n" + nestedBlockJS(6000, "function beta() { return 2 }")
+	assertReachesTheParser(t, head)
+	entities, _, status := TreeSitterParser{}.ParseWithStatus("svc.js", head)
+	if status.Code != "E_PARSE_DEPTH_EXCEEDED" || !status.Partial {
+		t.Fatalf("status = %+v, want a well-formed depth-truncated status", status)
+	}
+	if !hasEntityNamed(entities, "alpha") {
+		t.Fatalf("fixture must recover alpha before truncation, got %v", entityNames(entities))
+	}
+
+	repo := buildLinearRepo(t, func(r string) {
+		write(t, r, "seed.txt", "seed\n")
+	}, func(r string) {
+		write(t, r, "seed.txt", "seed\n")
+		write(t, r, "svc.js", head)
+	})
+	res, err := AnalyzeGitRange(context.Background(), repo.repo, repo.base, repo.head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var alphaAdded bool
+	for _, f := range res.Files {
+		if f.Path != "svc.js" {
+			continue
+		}
+		for _, c := range f.Changes {
+			if c.Name == "alpha" && c.Type == "added" {
+				alphaAdded = true
+			}
+		}
+	}
+	if !alphaAdded {
+		t.Fatalf("a newly added file's recovered entity must be reported as a real addition, not collapsed into a synthetic module-scope change; got %+v", res.Files)
+	}
+}
+
 // depthWarning returns the analyze-phase depth warning for a path. The
 // dependents scan emits its own E_PARSE_DEPTH_EXCEEDED warning for the same
 // file, so match on the parse-phase effect text rather than the code alone.

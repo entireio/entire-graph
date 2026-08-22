@@ -221,8 +221,17 @@ type ParseStatus struct {
 	// that is what distinguishes it from an intentional skip, where the graph
 	// chose not to look at the file at all.
 	Partial bool
-	Code    string
-	Detail  string
+	// DepthExceeded reports that the AST walk hit maxParseWalkDepth,
+	// independent of Partial: a tree that is both too deep AND malformed sets
+	// this true while deliberately leaving Partial false (see the
+	// depthExceeded && root.HasError() case below), because the malformed
+	// tree's recovered entities may be wrong rather than merely incomplete.
+	// Consumers that need to know specifically "was this side truncated by
+	// the depth limit" — as opposed to "is what came back trustworthy" —
+	// read this field, not Partial.
+	DepthExceeded bool
+	Code          string
+	Detail        string
 }
 
 func (TreeSitterParser) Parse(path, content string) ([]Entity, string) {
@@ -453,8 +462,9 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		// detail so the operator is not left guessing which one to fix; the
 		// error-detail walk is safe to run here because it is itself bounded.
 		status = ParseStatus{
-			ParseError: true,
-			Code:       "E_PARSE_ERROR",
+			ParseError:    true,
+			DepthExceeded: true,
+			Code:          "E_PARSE_ERROR",
 			Detail: fmt.Sprintf("%s; AST nesting also exceeded the %d-level walk limit, so declarations nested deeper than that were not extracted",
 				parseErrorDetailWithLineOffset(root, entitySrc, entityLineOffset), maxParseWalkDepth),
 		}
@@ -469,10 +479,11 @@ func (TreeSitterParser) ParseWithStatus(path, content string) ([]Entity, string,
 		// discard — the diff keeps this file's delta (analyze.go) — while still
 		// counting the file as an incompletely understood one (provider.go).
 		status = ParseStatus{
-			ParseError: true,
-			Partial:    true,
-			Code:       "E_PARSE_DEPTH_EXCEEDED",
-			Detail:     fmt.Sprintf("AST nesting exceeded the %d-level walk limit; declarations nested deeper than that were not extracted", maxParseWalkDepth),
+			ParseError:    true,
+			Partial:       true,
+			DepthExceeded: true,
+			Code:          "E_PARSE_DEPTH_EXCEEDED",
+			Detail:        fmt.Sprintf("AST nesting exceeded the %d-level walk limit; declarations nested deeper than that were not extracted", maxParseWalkDepth),
 		}
 	case root.HasError():
 		status = ParseStatus{ParseError: true, Code: "E_PARSE_ERROR", Detail: parseErrorDetailWithLineOffset(root, entitySrc, entityLineOffset)}

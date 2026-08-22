@@ -178,8 +178,20 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		// would suppress the whole file's delta, losing for instance the
 		// module-scope change of a Python file whose only statement is a
 		// deeply parenthesized module-level assignment.
-		afterParseFailed := afterStatus.ParseError && !afterStatus.Partial && len(afterEntities) == 0
-		beforeParseFailed := beforeStatus.ParseError && !beforeStatus.Partial && len(beforeEntities) == 0
+		// A side that is both malformed AND depth-truncated (DepthExceeded set,
+		// Partial deliberately false — see the depthExceeded && root.HasError()
+		// case in parser.go) is a total failure regardless of how many entities
+		// it recovered before hitting either problem: those entities may be
+		// wrong, not merely an incomplete-but-trustworthy subset, so they must
+		// not be compared against the other side any more than a zero-entity
+		// failure would be. Without this, a shallow entity recovered before the
+		// combined failure fell through to the kept-diff path below with
+		// oneSidedSuppressed never set (that check reads Partial, which this
+		// case leaves false), reopening exactly the phantom
+		// removed/added-below-the-depth-limit class this status exists to
+		// prevent.
+		afterParseFailed := afterStatus.ParseError && !afterStatus.Partial && (len(afterEntities) == 0 || afterStatus.DepthExceeded)
+		beforeParseFailed := beforeStatus.ParseError && !beforeStatus.Partial && (len(beforeEntities) == 0 || beforeStatus.DepthExceeded)
 		if afterParseFailed || beforeParseFailed {
 			status, warnPath := afterStatus, path
 			if !afterParseFailed {
@@ -224,7 +236,15 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		// one-sided results (including the rename reconciliation, which is
 		// built from those same one-sided sets) whenever either side is
 		// truncated; matched changes are unaffected.
-		oneSidedSuppressed := (beforeOK && beforeStatus.Partial) || (afterOK && afterStatus.Partial)
+		//
+		// That ambiguity only exists when BOTH revisions exist: on an add or a
+		// delete, the missing side has no tree to hide anything in, so every
+		// entity recovered from the truncated existing side is unambiguously a
+		// real addition or removal, not a truncation artifact. Gating on
+		// beforeOK && afterOK keeps that case out of suppression instead of
+		// collapsing a real symbol-level add/delete into a synthetic
+		// module-scope change with none of its actual entities reported.
+		oneSidedSuppressed := beforeOK && afterOK && (beforeStatus.Partial || afterStatus.Partial)
 		if afterStatus.ParseError || beforeStatus.ParseError {
 			status, warnPath := afterStatus, path
 			// Warn about the side that lost the signal when one did, so the
