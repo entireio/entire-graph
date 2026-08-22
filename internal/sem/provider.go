@@ -3091,7 +3091,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 			handledRoutes[r.Route] = struct{}{}
 		}
 	}
-	manifestImports := buildManifestImportResolver(files, readContent)
+	manifestImports := buildManifestImportResolver(files, readContent, shouldStop)
 
 	// pythonModuleExists reports whether the repo contains a Python file that the
 	// strict dotted-module matcher resolves `module` to (the module's own source
@@ -11040,8 +11040,11 @@ func isManifestImportFile(path string) bool {
 	return false
 }
 
-func buildManifestImportResolver(files []FileRecord, readContent contentReader) manifestImportResolver {
+func buildManifestImportResolver(files []FileRecord, readContent contentReader, stop func() bool) manifestImportResolver {
 	resolver := manifestImportResolver{goPackages: map[string]string{}, jsPackageExports: map[string]string{}, jsPackageImports: map[string]string{}, jsImportMap: map[string]string{}, jsModuleFiles: map[string]string{}, pythonSourceRoots: []string{"src"}, pythonModules: map[string]string{}, pythonNamespaces: map[string]bool{}, jvmTypes: map[string]string{}, jvmTypeEvidence: map[string]string{}, csharpNamespaces: map[string]string{}, csharpEvidence: map[string]string{}, csharpAmbiguous: map[string]bool{}, phpTypes: map[string]string{}, phpTypeEvidence: map[string]string{}, phpTypeAmbiguous: map[string]bool{}, rustModules: map[string]string{}, rustAliases: map[string]string{}, rustCrateNames: map[string]bool{}}
+	if stopped(stop) {
+		return resolver
+	}
 	if content, ok := readContent("go.mod"); ok {
 		resolver.goModule = parseGoModulePath(content)
 	}
@@ -11050,7 +11053,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		resolver.jsPackageExports = parsePackageJSONTargets(content, "exports")
 		resolver.jsPackageImports = parsePackageJSONTargets(content, "imports")
 	}
-	for _, file := range files {
+	for i, file := range files {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		path := filepath.ToSlash(file.Path)
 		if path == "package.json" || filepath.Base(path) != "package.json" {
 			continue
@@ -11124,7 +11130,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 	}
 	resolver.jvmPackagePrefixes = normalizeJVMPackagePrefixes(resolver.jvmPackagePrefixes)
-	for _, file := range files {
+	for i, file := range files {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		if !strings.EqualFold(filepath.Ext(file.Path), ".csproj") {
 			continue
 		}
@@ -11142,7 +11151,14 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 	var csharpPaths []string
 	var phpPaths []string
 	var rustPaths []string
-	for _, file := range files {
+	// Path-only classification: no readContent call anywhere in this loop, so
+	// nothing in it was ever gated by the caller's budgeted reader. On a
+	// repository-wide file list this pass alone can outlast an already-expired
+	// deadline before the very first gated read below ever runs.
+	for i, file := range files {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		if strings.EqualFold(filepath.Ext(file.Path), ".go") {
 			goPaths = append(goPaths, filepath.ToSlash(file.Path))
 		}
@@ -11178,8 +11194,14 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 		return goPaths[i] < goPaths[j]
 	})
+	if stopped(stop) {
+		return resolver
+	}
 	if resolver.goModule != "" {
-		for _, path := range goPaths {
+		for i, path := range goPaths {
+			if i%budgetPollStride == 0 && stopped(stop) {
+				return resolver
+			}
 			dir := filepath.ToSlash(filepath.Dir(path))
 			importPath := resolver.goModule
 			if dir != "." {
@@ -11191,7 +11213,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 	}
 	sort.Strings(jsPaths)
-	for _, path := range jsPaths {
+	for i, path := range jsPaths {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		key := strings.TrimSuffix(path, filepath.Ext(path))
 		if _, exists := resolver.jsModuleFiles[key]; !exists {
 			resolver.jsModuleFiles[key] = path
@@ -11211,7 +11236,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 	for _, path := range pyPaths {
 		pyFileSet[path] = true
 	}
-	for _, path := range pyPaths {
+	for i, path := range pyPaths {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		for _, key := range pythonModuleKeysForPath(path, resolver.pythonSourceRoots, pyFileSet) {
 			if _, exists := resolver.pythonModules[key.Module]; !exists {
 				resolver.pythonModules[key.Module] = path
@@ -11230,7 +11258,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 	}
 	sort.Strings(jvmPaths)
-	for _, path := range jvmPaths {
+	for i, path := range jvmPaths {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -11246,7 +11277,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 	}
 	sort.Strings(csharpPaths)
-	for _, path := range csharpPaths {
+	for i, path := range csharpPaths {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -11264,7 +11298,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 		}
 	}
 	sort.Strings(phpPaths)
-	for _, path := range phpPaths {
+	for i, path := range phpPaths {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -11284,7 +11321,10 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 	}
 	// Build per-crate src roots from every Cargo.toml [package] (Cargo workspaces
 	// put crates under <crate>/src/, not ./src/). Longest dir first for nearest-match.
-	for _, cp := range cargoPaths {
+	for i, cp := range cargoPaths {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		content, ok := readContent(cp)
 		if !ok {
 			continue
@@ -11312,14 +11352,20 @@ func buildManifestImportResolver(files []FileRecord, readContent contentReader) 
 	}
 	rustPaths = uniqueStrings(rustPaths)
 	sort.Strings(rustPaths)
-	for _, path := range rustPaths {
+	for i, path := range rustPaths {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		for _, module := range resolver.rustModuleKeysForPath(path) {
 			if _, exists := resolver.rustModules[module]; !exists {
 				resolver.rustModules[module] = path
 			}
 		}
 	}
-	for _, path := range rustPaths {
+	for i, path := range rustPaths {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return resolver
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
