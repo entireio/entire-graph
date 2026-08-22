@@ -19,7 +19,7 @@ import (
 // set of options. Recomputing them on every call is expensive on large repos, so
 // we cache the raw NDJSON bytes keyed on the HEAD tree hash plus everything else
 // that changes the output. This mirrors the search-snapshot cache next door.
-const providerRecordsCacheVersion = "provider-records-v4"
+const providerRecordsCacheVersion = "provider-records-v5"
 
 // cachedProviderRecords is the on-disk envelope for a cached record stream. The
 // key alone is authoritative (sha256 over version+tree+mode+profile+options+

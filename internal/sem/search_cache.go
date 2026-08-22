@@ -24,7 +24,7 @@ import (
 // and any prior-version directory can simply be deleted wholesale — cleanup is
 // "remove old version dirs" instead of per-entry reachability analysis.
 // (v5 isolated the tree-only key layout; v6, on main, supersedes it.)
-const searchSnapshotCacheVersion = "search-snapshot-v8"
+const searchSnapshotCacheVersion = "search-snapshot-v9"
 
 type cachedSymbolByteRange struct {
 	Start int `json:"start"`

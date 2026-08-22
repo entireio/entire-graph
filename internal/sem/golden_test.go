@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -117,11 +118,50 @@ func TestReturnFlowCallsOrderIsTotal(t *testing.T) {
 	}
 }
 
+// TestDataFlowEvidenceTruncationIsDisclosed covers the other side of the cap:
+// past dataFlowEvidenceLimit the evidence array stops growing, and a record
+// that stopped growing must say so. A silently truncated list reads as
+// exhaustive, which is the failure the merge was written to remove.
+func TestDataFlowEvidenceTruncationIsDisclosed(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "flow.go", `package flow
+
+func sink(a, b, c, d, e, f, g, h, i, j int) {}
+
+func caller(a, b, c, d, e, f, g, h, i, j int) {
+	sink(a, b, c, d, e, f, g, h, i, j)
+}
+`)
+
+	var evidence []Evidence
+	var warnings []string
+	err := StreamSnapshot(t.Context(), repo, "truncation-test", ProviderSnapshotOptions{Worktree: true, Profile: ProfileFull}, func(record any) error {
+		if typed, ok := record.(RelationRecord); ok &&
+			typed.Type == "DATA_FLOWS" && lastSegment(typed.FromID) == "caller" && lastSegment(typed.ToID) == "sink" {
+			evidence, warnings = typed.Evidence, typed.WarningCodes
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) != dataFlowEvidenceLimit {
+		t.Fatalf("evidence entries = %d, want the cap %d", len(evidence), dataFlowEvidenceLimit)
+	}
+	if !slices.Contains(warnings, evidenceTruncatedWarning) {
+		t.Fatalf("warning codes = %q, want %q on a truncated evidence array", warnings, evidenceTruncatedWarning)
+	}
+}
+
 // TestSnapshotFormatsAreByteDeterministicWhenRelationsDeduplicate exercises
-// the streaming dedup boundary with several DATA_FLOWS candidates that share
-// one public relation identity. The chosen evidence must be canonical, not the
-// first value encountered while ranging a Go map, because both native and
-// first-seen-dictionary compact output inherit that choice byte for byte.
+// the streaming dedup boundary with several DATA_FLOWS flows that share one
+// public relation identity. All of them belong on the edge — forwarding eight
+// parameters into one callee is eight real flows, not one — so the record
+// carries the whole ordered list. That order must be canonical, not the order a
+// Go map happened to range in, because both native and first-seen-dictionary
+// compact output inherit it byte for byte. The fixture forwards exactly
+// dataFlowEvidenceLimit parameters, which also pins the cap boundary: at the
+// limit nothing is dropped and no truncation warning appears.
 func TestSnapshotFormatsAreByteDeterministicWhenRelationsDeduplicate(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "flow.go", `package flow
@@ -137,7 +177,8 @@ func caller(alpha, bravo, charlie, delta, echo, foxtrot, golf, hotel int) {
 		bytes        []byte
 		hash         string
 		summary      SnapshotSummary
-		flowEvidence string
+		flowEvidence []string
+		flowWarnings []string
 	}
 	captureFormat := func(t *testing.T, compact bool) capture {
 		t.Helper()
@@ -152,14 +193,18 @@ func caller(alpha, bravo, charlie, delta, echo, foxtrot, golf, hotel int) {
 		}
 		hasher := NewSnapshotSemanticHasher()
 		var summary SnapshotSummary
-		var flowEvidence string
+		var flowEvidence, flowWarnings []string
 		err := StreamSnapshot(t.Context(), repo, "determinism-test", ProviderSnapshotOptions{Worktree: true, Profile: ProfileFull}, func(record any) error {
 			switch typed := record.(type) {
 			case SnapshotSummary:
 				summary = typed
 			case RelationRecord:
-				if typed.Type == "DATA_FLOWS" && lastSegment(typed.FromID) == "caller" && lastSegment(typed.ToID) == "sink" && len(typed.Evidence) == 1 {
-					flowEvidence = typed.Evidence[0].Detail
+				if typed.Type == "DATA_FLOWS" && lastSegment(typed.FromID) == "caller" && lastSegment(typed.ToID) == "sink" {
+					flowEvidence = nil
+					for _, evidence := range typed.Evidence {
+						flowEvidence = append(flowEvidence, evidence.Detail)
+					}
+					flowWarnings = typed.WarningCodes
 				}
 			}
 			if err := hasher.Add(record); err != nil {
@@ -170,7 +215,7 @@ func caller(alpha, bravo, charlie, delta, echo, foxtrot, golf, hotel int) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return capture{bytes: append([]byte(nil), out.Bytes()...), hash: hasher.SumHex(), summary: summary, flowEvidence: flowEvidence}
+		return capture{bytes: append([]byte(nil), out.Bytes()...), hash: hasher.SumHex(), summary: summary, flowEvidence: flowEvidence, flowWarnings: flowWarnings}
 	}
 
 	for _, testCase := range []struct {
@@ -185,8 +230,21 @@ func caller(alpha, bravo, charlie, delta, echo, foxtrot, golf, hotel int) {
 			if first.summary.Stats.Symbols != 2 || first.summary.Stats.Relations == 0 {
 				t.Fatalf("fixture stats = %#v, want 2 symbols and at least one relation", first.summary.Stats)
 			}
-			if first.flowEvidence != "alpha -> sink()" {
-				t.Fatalf("canonical DATA_FLOWS evidence = %q, want %q", first.flowEvidence, "alpha -> sink()")
+			wantEvidence := []string{
+				"alpha -> sink()",
+				"bravo -> sink()",
+				"charlie -> sink()",
+				"delta -> sink()",
+				"echo -> sink()",
+				"foxtrot -> sink()",
+				"golf -> sink()",
+				"hotel -> sink()",
+			}
+			if !reflect.DeepEqual(first.flowEvidence, wantEvidence) {
+				t.Fatalf("DATA_FLOWS evidence = %q, want %q", first.flowEvidence, wantEvidence)
+			}
+			if len(first.flowWarnings) != 0 {
+				t.Fatalf("DATA_FLOWS warnings = %q, want none at exactly the evidence limit", first.flowWarnings)
 			}
 			for run := 2; run <= 32; run++ {
 				next := captureFormat(t, testCase.compact)

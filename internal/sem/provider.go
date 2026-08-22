@@ -3412,6 +3412,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 				}
 			}
 			if needsDataFlow && callableSymbol {
+				// Several flows can describe one edge: `f(a, b, c)` forwards three
+				// caller parameters into the same callee, and relation identity is
+				// from+to+type, so all three land on one record. Collect every flow
+				// for an edge into its evidence array here rather than emitting
+				// competing records and letting the dedupe keep an arbitrary first
+				// one — that reported one real flow as if it were the only one.
+				// Grouping at emit keeps the streaming path's bounded memory (the
+				// map lives for one symbol) and needs no dedupe-side merge.
+				edgeOrder := []string{}
+				flowsByEdge := map[string]*RelationRecord{}
 				for _, flow := range returnFlowCalls(block, symbolFlowParameterNames(from)) {
 					if flow.Name == from.Name {
 						continue
@@ -3426,7 +3436,26 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							fromID, toID = from.ID, to.ID
 							confidenceCap = 0.7
 						}
-						emit(RelationRecord{
+						item := Evidence{
+							Kind:      flow.EvidenceKind,
+							FilePath:  from.FilePath,
+							StartLine: from.StartLine,
+							EndLine:   from.EndLine,
+							Detail:    flow.Detail,
+						}
+						edgeKey := fromID + "\x00" + toID
+						if existing, ok := flowsByEdge[edgeKey]; ok {
+							// Past the cap the array stops growing, so the record has to
+							// say so rather than read as an exhaustive list again.
+							if len(existing.Evidence) >= dataFlowEvidenceLimit {
+								existing.WarningCodes = []string{evidenceTruncatedWarning}
+								continue
+							}
+							existing.Evidence = append(existing.Evidence, item)
+							continue
+						}
+						edgeOrder = append(edgeOrder, edgeKey)
+						flowsByEdge[edgeKey] = &RelationRecord{
 							RecordType:    "relation",
 							FromID:        fromID,
 							ToID:          toID,
@@ -3436,16 +3465,16 @@ func forEachRelation(repoKey string, files []FileRecord, recordsByFile map[strin
 							RelationScope: to.Scope,
 							Resolution:    to.Resolution,
 							TargetKind:    "symbol",
-							Evidence: []Evidence{{
-								Kind:      flow.EvidenceKind,
-								FilePath:  from.FilePath,
-								StartLine: from.StartLine,
-								EndLine:   from.EndLine,
-								Detail:    flow.Detail,
-							}},
-							WarningCodes: []string{},
-						})
+							Evidence:      []Evidence{item},
+							WarningCodes:  []string{},
+						}
 					}
+				}
+				// returnFlowCalls is totally ordered and resolveCallTargets is
+				// deterministic, so both the edge order and each evidence array are
+				// reproducible without re-sorting.
+				for _, edgeKey := range edgeOrder {
+					emit(*flowsByEdge[edgeKey])
 				}
 			}
 			if fileNeedsServiceScan {
@@ -17985,6 +18014,17 @@ func completenessLevel(failures, files, parsedFiles, symbols int) string {
 		return "degraded"
 	}
 }
+
+// dataFlowEvidenceLimit caps how many flows one DATA_FLOWS edge carries. A
+// forwarding call site rarely has more than a handful; the tail is long and
+// repetitive (a struct's fields interned one by one), so the cap bounds output
+// on the outliers. A truncated record is tagged evidenceTruncatedWarning.
+const dataFlowEvidenceLimit = 8
+
+// evidenceTruncatedWarning marks a relation whose evidence array was cut off at
+// a limit, so a consumer reading evidence to explain the edge knows the list is
+// partial rather than exhaustive.
+const evidenceTruncatedWarning = "EVIDENCE_TRUNCATED"
 
 func dedupeRelations(relations []RelationRecord) []RelationRecord {
 	seen := map[string]struct{}{}
