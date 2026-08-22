@@ -251,10 +251,10 @@ func loadOrBuildSearchSnapshot(
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
-	if snapshot.Header.Tree != tree {
+	if err := validateBuiltSearchSnapshot(snapshot, repositoryKey, providerVersion, tree, options); err != nil {
 		return ProviderSnapshot{}, false, fmt.Errorf(
-			"HEAD changed while building search snapshot: got commit %q tree %q, started at commit %q tree %q",
-			snapshot.Header.Commit, snapshot.Header.Tree, commit, tree,
+			"search snapshot provenance changed while building from commit %q tree %q: %w",
+			commit, tree, err,
 		)
 	}
 	// The tree we started at is still what got built even if a same-tree
@@ -346,10 +346,10 @@ func preindexProviderSnapshotWithPersistenceReader(
 	if err != nil {
 		return ProviderSnapshot{}, false, err
 	}
-	if snapshot.Header.Tree != tree {
+	if err := validateBuiltSearchSnapshot(snapshot, repositoryKey, providerVersion, tree, options); err != nil {
 		return ProviderSnapshot{}, false, fmt.Errorf(
-			"preindex snapshot provenance mismatch: got tree %q (commit %q), want tree %q (commit %q); only tree identity is checked",
-			snapshot.Header.Tree, snapshot.Header.Commit, tree, commit,
+			"preindex snapshot provenance mismatch for commit %q tree %q: %w",
+			commit, tree, err,
 		)
 	}
 	if cacheHit {
@@ -383,6 +383,34 @@ func preindexProviderSnapshotWithPersistenceReader(
 		}
 	}
 	return snapshot, cacheHit, nil
+}
+
+// validateBuiltSearchSnapshot closes the transaction between cache keying and
+// snapshot construction. Git tree identity alone is enough for source bytes,
+// but repository identity participates in stable symbol IDs, while provider
+// version and profile select the shape of the graph. A concurrent config or
+// option change must therefore fail before the snapshot is returned or stored.
+// Commit is deliberately excluded: different commits with the same tree have
+// identical graph content and are re-stamped to the commit captured by the
+// caller after this validation succeeds.
+func validateBuiltSearchSnapshot(
+	snapshot ProviderSnapshot,
+	repositoryKey, providerVersion, tree string,
+	options ProviderSnapshotOptions,
+) error {
+	header := snapshot.Header
+	if header.Tree != tree ||
+		header.RepoKey != repositoryKey ||
+		header.Provider != ProviderName ||
+		header.ProviderVersion != providerVersion ||
+		header.Profile != string(options.Profile) {
+		return fmt.Errorf(
+			"got repo %q tree %q provider %q version %q profile %q; want repo %q tree %q provider %q version %q profile %q",
+			header.RepoKey, header.Tree, header.Provider, header.ProviderVersion, header.Profile,
+			repositoryKey, tree, ProviderName, providerVersion, options.Profile,
+		)
+	}
+	return nil
 }
 
 func newCachedSearchSnapshot(providerVersion, commit, tree string, options ProviderSnapshotOptions, snapshot ProviderSnapshot) cachedSearchSnapshot {

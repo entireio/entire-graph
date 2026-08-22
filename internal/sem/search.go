@@ -73,6 +73,10 @@ type SearchOptions struct {
 	// mutation between transaction capture and the first cache lookup. It is
 	// deliberately unexported and nil in production.
 	afterCachePolicyCapture func()
+	// afterPreindexLoad is a deterministic test seam for repository-identity
+	// mutation between a complete cache lookup and source preselection. It is
+	// deliberately unexported and nil in production.
+	afterPreindexLoad func()
 	// BodyHeadRanks caps how deep the COMPLETE-BODY upgrade reaches, independently of the
 	// locator head. 0 means the built-in depth (searchEnclosureHeadRanks). It may only narrow
 	// the head, never widen it, so the growth allowance stays sized for the bodies it funds.
@@ -735,6 +739,9 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 			return SearchResponse{}, err
 		}
 	}
+	if options.afterPreindexLoad != nil {
+		options.afterPreindexLoad()
+	}
 	preindexLoadLatency := time.Since(indexStarted)
 	preselectStarted := time.Now()
 	selection, err := preselectSearchFiles(
@@ -742,6 +749,14 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 	)
 	if err != nil {
 		return SearchResponse{}, err
+	}
+	// The repository identity can change without changing HEAD (for example
+	// when a remote URL changes). Symbols embed that identity, so a complete
+	// preindex loaded before preselection is usable only when both identities
+	// still match. Treat drift as a miss and rebuild from the captured source.
+	if preindexCacheHit && !searchSnapshotMatchesSelection(preindexedSnapshot, selection) {
+		preindexedSnapshot = ProviderSnapshot{}
+		preindexCacheHit = false
 	}
 	preselectLatency := time.Since(preselectStarted)
 	selectedFiles := selection.files
@@ -754,11 +769,11 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		// graph. Do not build a cold graph merely to return no results, but do
 		// preserve cached partial failures/completeness and cache-hit provenance.
 		cachedSnapshot, cacheHit := preindexedSnapshot, preindexCacheHit
-		// Tree, not commit, is what determines whether the graph is still valid:
-		// two different commits sharing a tree parse identically, so only a tree
-		// change mid-search is a real race worth rejecting.
-		if cacheHit && selection.commit != "" && cachedSnapshot.Header.Tree != selection.tree {
-			return SearchResponse{}, errors.New("repository HEAD changed during search; retry against a stable commit")
+		// Commit can differ when two commits share a tree, but the tree and
+		// repository identity must still match: the latter participates in stable
+		// symbol IDs even when source bytes are unchanged.
+		if cacheHit && selection.commit != "" && !searchSnapshotMatchesSelection(cachedSnapshot, selection) {
+			return SearchResponse{}, errors.New("repository identity or HEAD changed during search; retry against a stable repository")
 		}
 		totalLatency := time.Since(searchStarted).Milliseconds()
 		repoRoot, commit, tree := selection.repoRoot, selection.commit, selection.tree
@@ -848,9 +863,10 @@ func SearchRepository(ctx context.Context, repo, providerVersion, query string, 
 		}
 		indexLatency += time.Since(indexStarted)
 	}
-	// See the analogous no-hit guard above: tree identity is what matters here.
-	if selection.commit != "" && snapshot.Header.Tree != selection.tree {
-		return SearchResponse{}, errors.New("repository HEAD changed during search; retry against a stable commit")
+	// See the analogous no-hit guard above. Tree identity pins source bytes;
+	// repository identity additionally pins the stable IDs built from them.
+	if selection.commit != "" && !searchSnapshotMatchesSelection(snapshot, selection) {
+		return SearchResponse{}, errors.New("repository identity or HEAD changed during search; retry against a stable repository")
 	}
 	queryStarted := time.Now()
 	useHead := !options.Worktree && snapshot.Header.Commit != ""
@@ -1743,6 +1759,7 @@ type searchFileSelection struct {
 	sparseDocumentLength      int
 	sparseFilesContentRead    int
 	repoRoot                  string
+	repoKey                   string
 	commit                    string
 	tree                      string
 	warnings                  []ProviderWarning
@@ -1807,6 +1824,7 @@ func preselectSearchFiles(
 	selection := searchFileSelection{
 		ignores:                   ignores,
 		repoRoot:                  source.absRepo,
+		repoKey:                   source.key,
 		commit:                    source.commit,
 		tree:                      source.tree,
 		warnings:                  append([]ProviderWarning{}, source.warnings...),
@@ -1838,7 +1856,8 @@ func preselectSearchFiles(
 	// current HEAD; the grep below runs against source.commit directly, so a
 	// same-tree preindex built at a different commit is still an exact match.
 	exactFullPreindex := preindexCacheHit &&
-		preindexedSnapshot.Header.Tree == source.tree
+		preindexedSnapshot.Header.Tree == source.tree &&
+		preindexedSnapshot.Header.RepoKey == source.key
 	grepPatterns, grepSafe := searchGitGrepPatterns(q.terms)
 	if exactFullPreindex && !options.Worktree && !options.Deep && grepSafe {
 		matches, grepErr := gitutil.GrepTreePaths(ctx, source.absRepo, source.commit, grepPatterns)
@@ -2103,6 +2122,10 @@ func preselectSearchFiles(
 		selection.gitGrepTreeish = ""
 	}
 	return selection, nil
+}
+
+func searchSnapshotMatchesSelection(snapshot ProviderSnapshot, selection searchFileSelection) bool {
+	return snapshot.Header.Tree == selection.tree && snapshot.Header.RepoKey == selection.repoKey
 }
 
 func searchTermsSafeForGitGrep(terms []string) bool {

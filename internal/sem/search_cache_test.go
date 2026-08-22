@@ -214,6 +214,72 @@ func TestValidCachedSearchSnapshotKeysRepoAndIgnoresCommit(t *testing.T) {
 	}
 }
 
+func TestValidateBuiltSearchSnapshotPinsGraphProvenanceButNotCommit(t *testing.T) {
+	options := ProviderSnapshotOptions{Profile: ProfileFull}
+	want := SnapshotHeader{
+		Provider:        ProviderName,
+		ProviderVersion: "test-version",
+		RepoKey:         "github.com/example/repo",
+		Commit:          "commit-built-mid-transaction",
+		Tree:            "tree",
+		Profile:         string(ProfileFull),
+	}
+	validate := func(header SnapshotHeader) error {
+		return validateBuiltSearchSnapshot(
+			ProviderSnapshot{Header: header}, want.RepoKey, want.ProviderVersion, want.Tree, options,
+		)
+	}
+	if err := validate(want); err != nil {
+		t.Fatalf("matching snapshot rejected: %v", err)
+	}
+	sameTreeDifferentCommit := want
+	sameTreeDifferentCommit.Commit = "another-commit"
+	if err := validate(sameTreeDifferentCommit); err != nil {
+		t.Fatalf("commit-only drift rejected: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*SnapshotHeader)
+	}{
+		{"repository key", func(header *SnapshotHeader) { header.RepoKey = "github.com/example/other" }},
+		{"tree", func(header *SnapshotHeader) { header.Tree = "other-tree" }},
+		{"provider", func(header *SnapshotHeader) { header.Provider = "other-provider" }},
+		{"provider version", func(header *SnapshotHeader) { header.ProviderVersion = "other-version" }},
+		{"profile", func(header *SnapshotHeader) { header.Profile = string(ProfileFast) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			header := want
+			test.mutate(&header)
+			if err := validate(header); err == nil {
+				t.Fatalf("mismatched %s was accepted: %#v", test.name, header)
+			}
+		})
+	}
+}
+
+func TestSearchSnapshotMatchesSelectionPinsRepositoryIdentityAndTree(t *testing.T) {
+	selection := searchFileSelection{repoKey: "github.com/example/repo", tree: "tree"}
+	snapshot := ProviderSnapshot{Header: SnapshotHeader{RepoKey: selection.repoKey, Tree: selection.tree}}
+	if !searchSnapshotMatchesSelection(snapshot, selection) {
+		t.Fatal("matching snapshot and selection rejected")
+	}
+	snapshot.Header.Commit = "commit-drift-does-not-matter"
+	if !searchSnapshotMatchesSelection(snapshot, selection) {
+		t.Fatal("commit-only drift rejected")
+	}
+	snapshot.Header.RepoKey = "github.com/example/other"
+	if searchSnapshotMatchesSelection(snapshot, selection) {
+		t.Fatal("repository-identity drift accepted")
+	}
+	snapshot.Header.RepoKey = selection.repoKey
+	snapshot.Header.Tree = "other-tree"
+	if searchSnapshotMatchesSelection(snapshot, selection) {
+		t.Fatal("tree drift accepted")
+	}
+}
+
 func TestMergePartialFailuresDeduplicatesByCodeAndFile(t *testing.T) {
 	base := []PartialFailure{{Code: "E_PARSE_TIMEOUT", FilePath: "src/a.ts"}}
 	merged := mergePartialFailures(base, []PartialFailure{
@@ -1233,6 +1299,60 @@ func IdentitySensitiveTarget() bool { return true }
 		t.Fatal(err)
 	}
 	assertNewRepoKeyResult("full", full)
+}
+
+func TestSearchRejectsPreindexWhenRepoKeyChangesAfterCacheLoad(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "remote", "add", "origin", "https://github.com/acme/legacy.git")
+	write(t, repo, "target.go", `package target
+
+func IdentityRaceTarget() bool { return true }
+`)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	cacheDir := t.TempDir()
+	if _, hit, err := PreindexProviderSnapshot(t.Context(), repo, "test-version", ProviderSnapshotOptions{
+		Profile: ProfileSyntaxOnly,
+	}, cacheDir); err != nil {
+		t.Fatal(err)
+	} else if hit {
+		t.Fatal("first preindex unexpectedly hit cache")
+	}
+
+	mutated := false
+	response, err := SearchRepository(t.Context(), repo, "test-version", "IdentityRaceTarget", SearchOptions{
+		Profile:       ProfileSyntaxOnly,
+		TopK:          5,
+		IndexAllFiles: true,
+		CacheDir:      cacheDir,
+		afterPreindexLoad: func() {
+			mutated = true
+			git(t, repo, "remote", "set-url", "origin", "https://github.com/acme/renamed.git")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mutated {
+		t.Fatal("test did not mutate repository identity after loading the complete preindex")
+	}
+	if response.Stats.IndexCacheHit {
+		t.Fatalf("search reported the old-identity preindex as a hit: %#v", response.Stats)
+	}
+	for _, result := range response.Results {
+		if result.SymbolName != "IdentityRaceTarget" {
+			continue
+		}
+		if !strings.HasPrefix(result.SymbolID, "gh/acme/renamed:") {
+			t.Fatalf("search returned stale repository identity in symbol ID %q", result.SymbolID)
+		}
+		return
+	}
+	t.Fatalf("search lost IdentityRaceTarget: %#v", response.Results)
 }
 
 func TestSearchSnapshotCacheKeyPreservesIgnoreFileOrder(t *testing.T) {
