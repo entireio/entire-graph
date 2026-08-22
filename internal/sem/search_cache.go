@@ -721,7 +721,7 @@ func selectiveSearchSnapshotFromFull(
 	var symbolsByID map[string]SymbolRecord
 	var filesByID map[string]FileRecord
 	if spec.includeEvidence {
-		symbolsByID, filesByID = recordIndexes(selective.Files, recordsByFile)
+		symbolsByID, filesByID = recordIndexes(selective.Files, recordsByFile, stopNow)
 	}
 	emitRelation := func(relation RelationRecord) {
 		if !spec.emits(relation.Type) {

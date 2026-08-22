@@ -246,7 +246,18 @@ func processProviderFile(
 	result.file = &file
 	result.parsed = true
 	result.symbols = entitySymbols(sc.key, path, parsedLanguage, entities)
-	result.symbols = append(result.symbols, syntheticBoundarySymbols(sc.key, path, parsedLanguage, content, result.symbols)...)
+	// syntheticBoundarySymbols rescans file content once per already-parsed
+	// symbol (route/tool/workflow boundary detection), which is superlinear in
+	// files with very large symbol counts. stop is polled inside its loop, so
+	// a deadline expiring mid-scan is caught within one poll stride rather
+	// than only after the whole pass finishes. A stop here truncates like the
+	// post-parse check above: the file is dropped whole rather than emitted
+	// with entity symbols but no synthetic ones, which would read as complete.
+	synthetic, truncated := syntheticBoundarySymbols(sc.key, path, parsedLanguage, content, result.symbols, stop)
+	if truncated {
+		return providerFileResult{index: index, path: path}
+	}
+	result.symbols = append(result.symbols, synthetic...)
 	return result
 }
 

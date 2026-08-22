@@ -1302,7 +1302,7 @@ func streamSnapshotWithWorkerCount(ctx context.Context, repo, providerVersion st
 		var symbolsByID map[string]SymbolRecord
 		var filesByID map[string]FileRecord
 		if spec.includeEvidence {
-			symbolsByID, filesByID = recordIndexes(files, recordsByFile)
+			symbolsByID, filesByID = recordIndexes(files, recordsByFile, relationsShouldStop)
 		}
 		var relationFailures []PartialFailure
 		forEachRelation(workCtx, sc.key, files, recordsByFile, budgetedRead, precomputedImports, spec, relationsShouldStop, func(r RelationRecord) {
@@ -1852,7 +1852,16 @@ func entitySymbols(repoKey, path, language string, entities []Entity) []SymbolRe
 	return symbols
 }
 
-func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbols []SymbolRecord) []SymbolRecord {
+// syntheticBoundarySymbols returns the derived route/tool/workflow boundary
+// symbols for a file, plus whether the wall-clock budget expired before it
+// finished. The tool-handler loop below rescans content once per already-
+// parsed symbol, so it is polled every budgetPollStride symbols like the other
+// whole-corpus loops in this package (see parser.go); a file with an unusually
+// large symbol count is the only way this pass takes long enough for the
+// budget to matter. On truncation the caller must drop the file atomically —
+// a partial synthetic list appended to a complete entity list would read as a
+// complete file that simply has no boundary symbols.
+func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbols []SymbolRecord, stop func() bool) ([]SymbolRecord, bool) {
 	var symbols []SymbolRecord
 	lines := strings.Split(content, "\n")
 	if route := webRouteBoundary(path); route != "" {
@@ -1875,7 +1884,10 @@ func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbo
 			sourceEndByte:   source.sourceEndByte,
 		})
 	}
-	for _, source := range fileSymbols {
+	for i, source := range fileSymbols {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return nil, true
+		}
 		block := symbolBlockFromLines(lines, source)
 		if exact, ok := exactSymbolSource(content, source); ok {
 			block = exact
@@ -1921,7 +1933,7 @@ func syntheticBoundarySymbols(repoKey, path, language, content string, fileSymbo
 			sourceEndByte:   source.sourceEndByte,
 		})
 	}
-	return symbols
+	return symbols, false
 }
 
 type routeSource struct {
@@ -4077,7 +4089,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		return
 	}
 	if spec.emits("RESOURCE_DEPENDS_ON") {
-		for _, r := range resourceDependsOnRelations(recordsByRelationSupport(recordsByFile, "RESOURCE_DEPENDS_ON"), readContent) {
+		for _, r := range resourceDependsOnRelations(recordsByRelationSupport(recordsByFile, "RESOURCE_DEPENDS_ON"), readContent, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
@@ -4088,7 +4100,7 @@ func forEachRelation(ctx context.Context, repoKey string, files []FileRecord, re
 		return
 	}
 	if spec.emits("CONFIGURES") {
-		for _, r := range configuresRelations(recordsByRelationSupport(recordsByFile, "CONFIGURES"), readContent) {
+		for _, r := range configuresRelations(recordsByRelationSupport(recordsByFile, "CONFIGURES"), readContent, shouldStop) {
 			if shouldStop != nil && shouldStop() {
 				return
 			}
@@ -7104,20 +7116,48 @@ func importedExternalSymbolName(module, member string) string {
 // resource or module block that references another block (e.g. aws_vpc.main.id,
 // module.network.id) emits RESOURCE_DEPENDS_ON to that block. Block symbols are
 // indexed by their referenceable name (the form used inside expressions).
-func resourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+// resourceDependsOnRelations and its per-format producers below all take stop,
+// checked at the top of each producer's outer per-path (or, for the O(resources²)
+// selector matchers, per-source) loop. Each producer materializes a complete
+// slice with no interruption otherwise, so on a large full-profile snapshot a
+// deadline expiring mid-producer used to go unnoticed until the NEXT producer's
+// entry, charging the whole remainder of whichever one was running to the
+// overshoot.
+func resourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var relations []RelationRecord
-	relations = append(relations, hclResourceDependsOnRelations(recordsByFile, readContent)...)
-	relations = append(relations, dockerfileResourceDependsOnRelations(recordsByFile, readContent)...)
-	relations = append(relations, kubernetesResourceDependsOnRelations(recordsByFile, readContent)...)
-	relations = append(relations, kubernetesNamedResourceReferenceRelations(recordsByFile, readContent)...)
-	relations = append(relations, kubernetesSelectorResourceRelations(recordsByFile, readContent)...)
-	relations = append(relations, kubernetesSelectorExpressionResourceRelations(recordsByFile, readContent)...)
-	relations = append(relations, kustomizeResourceDependsOnRelations(recordsByFile, readContent)...)
-	relations = append(relations, composeResourceDependsOnRelations(recordsByFile, readContent)...)
+	relations = append(relations, hclResourceDependsOnRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, dockerfileResourceDependsOnRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, kubernetesResourceDependsOnRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, kubernetesNamedResourceReferenceRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, kubernetesSelectorResourceRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, kubernetesSelectorExpressionResourceRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, kustomizeResourceDependsOnRelations(recordsByFile, readContent, stop)...)
+	if stopped(stop) {
+		return relations
+	}
+	relations = append(relations, composeResourceDependsOnRelations(recordsByFile, readContent, stop)...)
 	return relations
 }
 
-func hclResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func hclResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	index := map[string]SymbolRecord{}
 	for _, symbols := range recordsByFile {
 		for _, symbol := range symbols {
@@ -7138,6 +7178,9 @@ func hclResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, read
 
 	var relations []RelationRecord
 	for _, path := range paths {
+		if stopped(stop) {
+			return relations
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -7180,9 +7223,12 @@ func hclResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, read
 	return relations
 }
 
-func dockerfileResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func dockerfileResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var relations []RelationRecord
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return relations
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -7252,9 +7298,12 @@ func dockerCopyFromStages(content string) []string {
 	return out
 }
 
-func kubernetesResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func kubernetesResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var relations []RelationRecord
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return relations
+		}
 		content, ok := readContent(path)
 		if !ok || !(isKubernetesPath(path) || looksLikeKubernetesManifest(content)) {
 			continue
@@ -8252,10 +8301,13 @@ func kubernetesServiceMeshName(value string) string {
 	return strings.TrimSpace(name)
 }
 
-func kubernetesNamedResourceReferenceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func kubernetesNamedResourceReferenceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	resources := map[string]SymbolRecord{}
 	var sources []SymbolRecord
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return nil
+		}
 		content, ok := readContent(path)
 		if !ok || !(isKubernetesPath(path) || looksLikeKubernetesManifest(content)) {
 			continue
@@ -8278,6 +8330,9 @@ func kubernetesNamedResourceReferenceRelations(recordsByFile map[string][]Symbol
 	var relations []RelationRecord
 	emitted := map[string]bool{}
 	for _, source := range sources {
+		if stopped(stop) {
+			return relations
+		}
 		content, ok := readContent(source.FilePath)
 		if !ok {
 			continue
@@ -8338,9 +8393,12 @@ type yamlPathFrame struct {
 	key    string
 }
 
-func kubernetesSelectorResourceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func kubernetesSelectorResourceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var resources []kubernetesResourceInfo
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return nil
+		}
 		content, ok := readContent(path)
 		if !ok || !(isKubernetesPath(path) || looksLikeKubernetesManifest(content)) {
 			continue
@@ -8370,6 +8428,9 @@ func kubernetesSelectorResourceRelations(recordsByFile map[string][]SymbolRecord
 	}
 	var relations []RelationRecord
 	for _, source := range resources {
+		if stopped(stop) {
+			return relations
+		}
 		if len(source.Selector) == 0 {
 			continue
 		}
@@ -8521,9 +8582,12 @@ type kubernetesSelectorExpression struct {
 	Values   []string
 }
 
-func kubernetesSelectorExpressionResourceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func kubernetesSelectorExpressionResourceRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var resources []kubernetesResourceInfo
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return nil
+		}
 		content, ok := readContent(path)
 		if !ok || !(isKubernetesPath(path) || looksLikeKubernetesManifest(content)) {
 			continue
@@ -8554,6 +8618,9 @@ func kubernetesSelectorExpressionResourceRelations(recordsByFile map[string][]Sy
 	}
 	var relations []RelationRecord
 	for _, source := range resources {
+		if stopped(stop) {
+			return relations
+		}
 		if len(source.SelectorExpressions) == 0 {
 			continue
 		}
@@ -8734,9 +8801,12 @@ func stringInSlice(value string, values []string) bool {
 	return false
 }
 
-func kustomizeResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func kustomizeResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var relations []RelationRecord
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return relations
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -8798,9 +8868,12 @@ func kustomizeFileReferences(content string) []string {
 	return dedupeStrings(refs)
 }
 
-func composeResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func composeResourceDependsOnRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	var relations []RelationRecord
 	for _, path := range sortedKeysOf(recordsByFile) {
+		if stopped(stop) {
+			return relations
+		}
 		if !yamlDockerComposePath(path) {
 			continue
 		}
@@ -9593,7 +9666,7 @@ func resolveTypeReference(name string, from SymbolRecord, sameFile []SymbolRecor
 	return SymbolRecord{}, "", "", 0, false
 }
 
-func configuresRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader) []RelationRecord {
+func configuresRelations(recordsByFile map[string][]SymbolRecord, readContent contentReader, stop func() bool) []RelationRecord {
 	paths := make([]string, 0, len(recordsByFile))
 	for path := range recordsByFile {
 		paths = append(paths, path)
@@ -9602,6 +9675,9 @@ func configuresRelations(recordsByFile map[string][]SymbolRecord, readContent co
 
 	var relations []RelationRecord
 	for _, path := range paths {
+		if stopped(stop) {
+			return relations
+		}
 		content, ok := readContent(path)
 		if !ok {
 			continue
@@ -9969,15 +10045,32 @@ func minFloat(a, b float64) float64 {
 	return b
 }
 
-// recordIndexes builds id lookups for file and symbol records.
-func recordIndexes(files []FileRecord, recordsByFile map[string][]SymbolRecord) (map[string]SymbolRecord, map[string]FileRecord) {
+// recordIndexes builds id lookups for file and symbol records. stop is polled
+// every budgetPollStride symbols (mirroring parser.go's cadence): this whole-
+// corpus pass runs BEFORE relation generation even starts, so on a large
+// full-profile snapshot a deadline expiring here previously went unnoticed
+// until relationsShouldStop was next consulted in forEachRelation, charging
+// the entire indexing pass to the overshoot. A stopped pass returns whatever
+// it has indexed so far — every downstream lookup (boundarySourceLocation,
+// externalRecordFor) already treats a missing id as "no evidence available"
+// rather than an error, so a partial index only degrades evidence richness,
+// never correctness.
+func recordIndexes(files []FileRecord, recordsByFile map[string][]SymbolRecord, stop func() bool) (map[string]SymbolRecord, map[string]FileRecord) {
 	filesByID := make(map[string]FileRecord, len(files))
-	for _, file := range files {
+	for i, file := range files {
+		if i%budgetPollStride == 0 && stopped(stop) {
+			return map[string]SymbolRecord{}, filesByID
+		}
 		filesByID[file.ID] = file
 	}
 	symbolsByID := map[string]SymbolRecord{}
+	count := 0
 	for _, records := range recordsByFile {
 		for _, symbol := range records {
+			if count%budgetPollStride == 0 && stopped(stop) {
+				return symbolsByID, filesByID
+			}
+			count++
 			symbolsByID[symbol.ID] = symbol
 		}
 	}
