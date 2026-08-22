@@ -24,6 +24,7 @@ import (
 
 	"github.com/entireio/entire-graph/internal/filedigest"
 	"github.com/entireio/entire-graph/internal/gitutil"
+	"github.com/entireio/entire-graph/internal/termsafe"
 )
 
 const (
@@ -10557,6 +10558,52 @@ type gitDirExcluder struct {
 	// promotedUnverified makes promoteUnverifiedGitDirs idempotent, since the
 	// filesystem fallback and the git listing each call it at their own end.
 	promotedUnverified bool
+	// unreadableWalkDirs samples the paths walkWorktreeFiles could not read
+	// (permission denied, removed mid-walk, etc.), capped at
+	// maxUnreadableWalkDirSample so a pathological tree cannot make this
+	// unbounded. hiddenEvidence already counts every one of them for
+	// promoteUnverifiedGitDirs' fail-closed exclusion; this is what lets
+	// unreadableWalkWarning tell a caller WHICH paths were skipped instead of
+	// only that some directory, somewhere, was.
+	unreadableWalkDirs []string
+}
+
+// maxUnreadableWalkDirSample bounds unreadableWalkDirs.
+const maxUnreadableWalkDirSample = 8
+
+// noteUnreadableWalkDir records one directory walkWorktreeFiles could not
+// read, for unreadableWalkWarning. Source under it is silently excluded from
+// the listing rather than aborting the whole walk (see the comment at the
+// WalkDir error branch), so unlike an aborted walk this has to say so itself.
+func (g *gitDirExcluder) noteUnreadableWalkDir(rel string) {
+	if len(g.unreadableWalkDirs) >= maxUnreadableWalkDirSample {
+		return
+	}
+	g.unreadableWalkDirs = append(g.unreadableWalkDirs, rel)
+}
+
+// unreadableWalkWarning reports the shortfall noteUnreadableWalkDir recorded:
+// every directory walkWorktreeFiles could not read is missing from the
+// listing with no error returned to the caller (a deliberate trade against
+// the alternative, a single unreadable subdirectory turning the whole search
+// into a repository-wide outage), so the gap has to be disclosed some other
+// way. hiddenEvidence's fail-closed exclusion in promoteUnverifiedGitDirs
+// covers the security property this can hide a `.git` pointer; this covers
+// the completeness property that ordinary source under the same path is now
+// silently absent, exactly as the same failure was on main before that trade
+// was made, which returned an error a caller could act on instead of a quiet
+// success with a smaller corpus.
+func (g *gitDirExcluder) unreadableWalkWarning() []ProviderWarning {
+	if len(g.unreadableWalkDirs) == 0 {
+		return nil
+	}
+	return []ProviderWarning{{
+		Code:     "W_WALK_UNREADABLE_DIRECTORY",
+		Severity: "warning",
+		EffectOnCompleteness: "one or more directories in the working tree could not be read, so any source " +
+			"under them is absent from this listing without being reported as an error",
+		Detail: fmt.Sprintf("unreadable: %s", termsafe.Line(strings.Join(g.unreadableWalkDirs, ", "))),
+	}}
 }
 
 // sweepStopReason names why the `.git`-pointer sweep stopped before it had read
@@ -11252,8 +11299,16 @@ func validGitHEAD(head string) bool {
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		// Git's own rule for a symlinked HEAD, which it accepts even dangling.
+		// Tested against the RAW link text, not a slash-normalized copy: git's
+		// validate_headref reads the bytes readlink() returns and does a literal
+		// byte prefix test, with no separator translation. On Windows a symlink
+		// whose target is spelled with backslashes (`refs\heads\main`) fails that
+		// literal test in real git — it is not a git HEAD to git — but
+		// filepath.ToSlash would turn it into `refs/heads/main` here and accept
+		// it anyway, misclassifying an ordinary source fixture as a git
+		// directory and dropping it from the corpus.
 		target, readErr := os.Readlink(head)
-		return readErr == nil && strings.HasPrefix(filepath.ToSlash(target), "refs/")
+		return readErr == nil && strings.HasPrefix(target, "refs/")
 	}
 	if !info.Mode().IsRegular() {
 		return false
@@ -11796,6 +11851,19 @@ func gitDirPointerTarget(repo, dir string) (string, bool, bool) {
 	if rel, inside := containedRel(repo, target); inside {
 		return rel, true, false
 	}
+	// A different volume than the repository's is outside it whatever a
+	// symlink further down the path resolves to, and has to be rejected BEFORE
+	// EvalSymlinks touches it: on Windows, filepath.VolumeName reports a UNC
+	// share (`\\host\share`) as its own volume, and a `.git` file containing
+	// `gitdir: \\host\share\repo` would otherwise reach EvalSymlinks on that
+	// path directly, making this process open an SMB connection to a
+	// server the SCANNED REPOSITORY'S OWN COMMITTED CONTENT names — with
+	// ambient credentials, and to a `.git` file whose target already can't be
+	// inside this repo. VolumeName is "" for every relative and POSIX-absolute
+	// path, so this is a no-op off Windows.
+	if filepath.VolumeName(target) != filepath.VolumeName(repo) {
+		return "", false, false
+	}
 	// Git writes the pointer as an absolute path, so a symlinked repository root
 	// (macOS /var -> /private/var, a symlinked checkout) makes the pointer and
 	// the caller's root spell one directory two ways. Compare their resolved
@@ -12180,6 +12248,11 @@ func visitWalkWorktreeFiles(
 			}
 			if !errors.Is(err, fs.ErrNotExist) {
 				gitDirs.hiddenEvidence++
+				rel := "."
+				if relPath, relErr := filepath.Rel(repo, path); relErr == nil {
+					rel = filepath.ToSlash(relPath)
+				}
+				gitDirs.noteUnreadableWalkDir(rel)
 			}
 			return nil
 		}
@@ -12272,12 +12345,13 @@ func visitWalkWorktreeFiles(
 	}
 	paths = kept
 	sort.Strings(paths)
+	warnings := append(gitDirs.sweepWarnings(), gitDirs.unreadableWalkWarning()...)
 	for _, rel := range paths {
 		if !visit(rel) {
-			return gitDirs.sweepWarnings(), nil
+			return warnings, nil
 		}
 	}
-	return gitDirs.sweepWarnings(), walkErr
+	return warnings, walkErr
 }
 
 func filterVendoredPaths(paths []string, ignores vendorIgnoreRules) []string {

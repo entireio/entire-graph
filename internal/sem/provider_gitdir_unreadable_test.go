@@ -228,6 +228,50 @@ func TestGitDirExcluderPromotesStructureOnlyDirectoriesOnlyWhileEvidenceIsHidden
 	}
 }
 
+// TestWalkWorktreeFilesWarnsAboutAnUnreadableDirectory reproduces the trail
+// finding on the WalkDir error branch: hiddenEvidence already makes an
+// unreadable subtree fail closed for promoteUnverifiedGitDirs, but nothing
+// told the CALLER that ordinary source under that path is now silently
+// missing from the listing rather than reported as an error, the way main
+// would have reported it (at the cost of aborting the whole walk, which is
+// the outage the fail-open behavior below this fix exists to prevent).
+func TestWalkWorktreeFilesWarnsAboutAnUnreadableDirectory(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	writeFile(t, repo, "src/app.go", "package src\n")
+	writeFile(t, repo, "out/gen.go", "package out\n\nfunc Built() {}\n")
+	unreadableOrSkip(t, filepath.Join(repo, "out"))
+
+	ignores, err := loadWorktreeIgnoreMatcher(repo, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, warnings, walkErr := walkWorktreeFiles(t.Context(), repo, ignores, nil)
+	if walkErr != nil {
+		t.Fatalf("an unreadable subdirectory must not abort the whole walk: %v", walkErr)
+	}
+	found := false
+	for _, p := range paths {
+		if p == "src/app.go" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("src/app.go missing from paths = %v: an unreadable sibling must not drop unrelated source", paths)
+	}
+	var warned bool
+	for _, w := range warnings {
+		if w.Code == "W_WALK_UNREADABLE_DIRECTORY" && strings.Contains(w.Detail, "out") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("warnings = %+v, want a W_WALK_UNREADABLE_DIRECTORY warning naming \"out\": an unreadable"+
+			" directory now silently drops the source under it from the listing, and that gap must be"+
+			" disclosed since it is no longer reported as an error", warnings)
+	}
+}
+
 // assertSearchFinds is the availability assertion these tests share: the
 // repository is still searchable and the ordinary source file is still in the
 // results.
