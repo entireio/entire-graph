@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "f92c076c35e9",
+  "strategy": "manual-commit",
+  "branch": "codex/pr-147-direct-oidc",
+  "checkpoints_count": 4,
+  "files_touched": [
+    ".github/workflows/locomo-nightly.yml",
+    "bench/memory/FAIR-CONFIG.md",
+    "bench/memory/README.md",
+    "bench/memory/RUNNING-LOCOMO.md",
+    "bench/memory/UPSTREAM.md",
+    "bench/memory/benchmarks/common/entra_auth.py",
+    "bench/memory/benchmarks/common/runmeta.py",
+    "bench/memory/benchmarks/common/test_entra_auth.py",
+    "bench/memory/benchmarks/common/test_runmeta.py",
+    "bench/memory/ci/summarize_run.py",
+    "bench/memory/ci/test_summarize_run.py",
+    "bench/memory/patches/0001-llm_client-azure-ai-provider-timeouts-reasoning.patch",
+    "bench/memory/patches/0006-requirements-bm25-deps.patch",
+    "bench/memory/requirements-lock-py312.txt",
+    "bench/memory/run_locomo.sh"
+  ],
+  "sessions": [
+    {
+      "metadata": "/f9/2c076c35e9/0/metadata.json",
+      "transcript": "/f9/2c076c35e9/0/full.jsonl",
+      "compact_transcript": "/f9/2c076c35e9/0/transcript.jsonl",
+      "content_hash": "/f9/2c076c35e9/0/content_hash.txt",
+      "prompt": "/f9/2c076c35e9/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 863245,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 42137088,
+    "output_tokens": 147455,
+    "api_call_count": 382
+  }
+}
