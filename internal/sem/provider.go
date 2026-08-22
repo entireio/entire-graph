@@ -9866,9 +9866,23 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 	// and so cannot produce the path at all.
 	root, err := os.OpenRoot(repo)
 	if err != nil {
-		return openedSource{}, err
+		if !errors.Is(err, fs.ErrPermission) {
+			return openedSource{}, err
+		}
+		// os.OpenRoot always opens the repository root itself for reading, but
+		// nothing downstream needs that: `git ls-files --cached` reads the
+		// index, not the worktree root's own directory entries, and a direct
+		// read of a KNOWN path only needs to traverse (execute) every ancestor
+		// directory, never to list one. A repository whose root carries
+		// execute-only permissions supported both before this source held a
+		// root descriptor, and failing the whole snapshot here — before a
+		// single file is read — took that away for a permission bit nothing
+		// after this point actually requires. Fall back to a reader with no
+		// root descriptor; see readFallback for how it still enforces
+		// containment.
+		return openManuallyConfinedWorktreeSource(repo, paths, warnings, maxReadBytes), nil
 	}
-	registry := newOversizeRegistry(root)
+	registry := newOversizeRegistry(root, repo)
 	read := func(path string) (string, bool) {
 		name := filepath.FromSlash(path)
 		// Lstat before Open keeps the previous refusal of a symlinked final
@@ -9877,7 +9891,17 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		// resolved through a symlinked directory it cannot resolve within the root —
 		// are described above the root.
 		info, err := root.Lstat(name)
-		if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		if err != nil {
+			// os.Root's own resolution refused this path outright — a symlink
+			// chain over its hardcoded 8-hop limit, or an intermediate
+			// symlink with an absolute target, are the two shapes that reach
+			// here despite resolving to a location inside the repository. See
+			// readFallback: it re-verifies containment on the DESTINATION, so
+			// a path that genuinely escapes is refused there exactly as it is
+			// refused here.
+			return readFallback(repo, path, maxReadBytes, func(size int64) { registry.note(path, size) })
+		}
+		if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return "", false
 		}
 		if maxReadBytes > 0 && info.Size() > maxReadBytes {
@@ -9886,7 +9910,7 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 		}
 		file, err := root.Open(name)
 		if err != nil {
-			return "", false
+			return readFallback(repo, path, maxReadBytes, func(size int64) { registry.note(path, size) })
 		}
 		defer file.Close()
 		content, err := io.ReadAll(file)
@@ -9898,12 +9922,15 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 	readPrefix := func(path string, limit int) (string, bool) {
 		name := filepath.FromSlash(path)
 		info, err := root.Lstat(name)
-		if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		if err != nil {
+			return readPrefixFallback(repo, path, limit)
+		}
+		if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return "", false
 		}
 		file, err := root.Open(name)
 		if err != nil {
-			return "", false
+			return readPrefixFallback(repo, path, limit)
 		}
 		defer file.Close()
 		buf := make([]byte, limit)
@@ -9926,6 +9953,131 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 	}, nil
 }
 
+// containedRealPath resolves the DIRECTORY portion of repo/relPath through
+// every symlink it contains — repo itself included, so a repository reached
+// through its own symlink does not make an in-repository file look external —
+// and reports the resulting real path joined with relPath's own final
+// component, unresolved, together with whether that directory lies within
+// repo.
+//
+// This exists because os.Root refuses two shapes of pointer that resolve to a
+// location inside the repository just as validly as any other: a symlink
+// chain longer than its hardcoded 8-hop limit (os.Root's rootMaxSymlinks;
+// filepath.EvalSymlinks allows 255, in line with __POSIX_SYMLOOP_MAX's more
+// common real-world value), and any symlink whose target is spelled as an
+// absolute path, which os.Root refuses outright because it has no root-
+// relative meaning to rebase onto — even when that absolute path names a real
+// location this repository already owns. Both are refused by os.Root's own
+// design, not by anything this package controls, so a path os.Root refuses is
+// re-verified here on its DESTINATION before being treated as genuinely
+// outside the repository: what determines whether a read leaks anything is
+// where it ends up, not how many hops it took or how a symlink spelled its
+// target.
+//
+// The final component is left unresolved on purpose, so a caller can still
+// refuse it for being a symlink itself — matching root.Lstat's own refusal —
+// without this helper silently following it first.
+//
+// The trade-off this accepts: unlike os.Root's containment, checking a
+// resolved path and then opening it separately has a TOCTOU window, because
+// it is not backed by a directory file descriptor the way os.Root's reads are.
+// It exists only as a fallback for the shapes os.Root's own model refuses
+// outright; every file that resolves under os.Root's stricter rules keeps
+// reading through the syscall-confined root.Open above.
+func containedRealPath(repo, relPath string) (string, bool) {
+	dir, base := filepath.Split(filepath.Join(repo, filepath.FromSlash(relPath)))
+	realRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		return "", false
+	}
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(realRepo, realDir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return filepath.Join(realDir, base), true
+}
+
+// readFallback reads relPath the way os.Root would have, had it not refused
+// one of the two shapes containedRealPath's doc describes: it refuses a
+// symlinked or non-regular final component exactly as the root.Lstat check
+// above does, verifies containment on the resolved destination, and only then
+// reads.
+func readFallback(repo, relPath string, maxReadBytes int64, noteOversize func(int64)) (string, bool) {
+	joined := filepath.Join(repo, filepath.FromSlash(relPath))
+	info, err := os.Lstat(joined)
+	if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", false
+	}
+	resolved, ok := containedRealPath(repo, relPath)
+	if !ok {
+		return "", false
+	}
+	if maxReadBytes > 0 && info.Size() > maxReadBytes {
+		if noteOversize != nil {
+			noteOversize(info.Size())
+		}
+		return "", false
+	}
+	content, err := os.ReadFile(resolved)
+	if err != nil {
+		return "", false
+	}
+	return string(content), true
+}
+
+// readPrefixFallback is readFallback's counterpart for a bounded prefix read.
+func readPrefixFallback(repo, relPath string, limit int) (string, bool) {
+	joined := filepath.Join(repo, filepath.FromSlash(relPath))
+	info, err := os.Lstat(joined)
+	if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", false
+	}
+	resolved, ok := containedRealPath(repo, relPath)
+	if !ok {
+		return "", false
+	}
+	file, err := os.Open(resolved)
+	if err != nil {
+		return "", false
+	}
+	defer file.Close()
+	buf := make([]byte, limit)
+	n, err := io.ReadFull(file, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return "", false
+	}
+	return string(buf[:n]), true
+}
+
+// openManuallyConfinedWorktreeSource builds a worktree source with no
+// os.Root descriptor at all, for the repository whose root os.OpenRoot itself
+// refused to open (see the permission branch above). Every read still goes
+// through readFallback / readPrefixFallback, so containment is still checked
+// on every file; what is lost is the syscall-level guarantee of a directory
+// descriptor pinning the root across the source's lifetime, not the
+// containment guarantee itself.
+func openManuallyConfinedWorktreeSource(repo string, paths []string, warnings []ProviderWarning, maxReadBytes int64) openedSource {
+	registry := newOversizeRegistry(nil, repo)
+	return openedSource{
+		paths: paths,
+		read: func(path string) (string, bool) {
+			return readFallback(repo, path, maxReadBytes, func(size int64) { registry.note(path, size) })
+		},
+		readPrefix: func(path string, limit int) (string, bool) {
+			return readPrefixFallback(repo, path, limit)
+		},
+		oversize: registry.lookup,
+		// No root descriptor was ever opened, so there is nothing to close;
+		// every consumer already guards for a nil closer.
+		close:    nil,
+		warnings: warnings,
+	}
+}
+
 // oversizeRegistry remembers the working-tree files the reader refused, and
 // digests each one at most once. The digest is deferred until a caller actually
 // asks: preselection only needs to know the file is out of reach, and paying a
@@ -9936,7 +10088,15 @@ type oversizeRegistry struct {
 	// was confined. The registry holds repository-relative paths only: an absolute
 	// path resolved later would reintroduce the traversal the refusal just stopped,
 	// one call after the reader declined to read the same file.
-	root    *os.Root
+	//
+	// root is nil when the source that created this registry never opened one
+	// at all — see openManuallyConfinedWorktreeSource — in which case
+	// digestContained goes straight to digestFallback.
+	root *os.Root
+	// repo backs digestFallback the same way it backs readFallback: the path
+	// os.Root refused to resolve for the reader is re-verified here, on its
+	// destination, before the deferred digest reads it.
+	repo    string
 	mu      sync.Mutex
 	pending map[string]oversizePending
 	digests map[string]oversizeFile
@@ -9946,9 +10106,10 @@ type oversizePending struct {
 	bytes int64
 }
 
-func newOversizeRegistry(root *os.Root) *oversizeRegistry {
+func newOversizeRegistry(root *os.Root, repo string) *oversizeRegistry {
 	return &oversizeRegistry{
 		root:    root,
+		repo:    repo,
 		pending: map[string]oversizePending{},
 		digests: map[string]oversizeFile{},
 	}
@@ -9967,16 +10128,48 @@ func (r *oversizeRegistry) note(path string, size int64) {
 // the reader's Lstat check so a symlinked final component is refused here too,
 // and streams rather than materializing because the file is over the read cap by
 // definition.
+//
+// A path os.Root itself refused to resolve — or a registry that never opened a
+// root at all — falls back to digestFallback, exactly as read/readPrefix do
+// through readFallback/readPrefixFallback: the destination is re-verified as
+// still inside the repository before the digest reads it.
 func (r *oversizeRegistry) digestContained(path string) (filedigest.Digest, error) {
+	if r.root == nil {
+		return r.digestFallback(path)
+	}
 	name := filepath.FromSlash(path)
 	info, err := r.root.Lstat(name)
+	if err != nil {
+		return r.digestFallback(path)
+	}
+	if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return filedigest.Digest{}, fs.ErrInvalid
+	}
+	file, err := r.root.Open(name)
+	if err != nil {
+		return r.digestFallback(path)
+	}
+	defer file.Close()
+	return filedigest.Stream(file)
+}
+
+// digestFallback streams a refused file's digest through the same containment
+// check readFallback applies, for the destination os.Root's own resolution
+// rules would not reach.
+func (r *oversizeRegistry) digestFallback(path string) (filedigest.Digest, error) {
+	joined := filepath.Join(r.repo, filepath.FromSlash(path))
+	info, err := os.Lstat(joined)
 	if err != nil {
 		return filedigest.Digest{}, err
 	}
 	if info.Mode()&fs.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return filedigest.Digest{}, fs.ErrInvalid
 	}
-	file, err := r.root.Open(name)
+	resolved, ok := containedRealPath(r.repo, path)
+	if !ok {
+		return filedigest.Digest{}, fs.ErrInvalid
+	}
+	file, err := os.Open(resolved)
 	if err != nil {
 		return filedigest.Digest{}, err
 	}

@@ -1,6 +1,7 @@
 package sem
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -128,19 +129,19 @@ func TestWorktreeSourceReadsRepositoryFilesAndClosesItsRoot(t *testing.T) {
 // TestSymlinkedDirectoryResolutionInsideRepository pins the part of this change
 // that is NOT containment, so the claim in openSource's comment is checked
 // rather than asserted. os.Root resolves every component inside the root, which
-// splits paths that filepath.Join plus os.Lstat treated alike:
+// splits paths that filepath.Join plus os.Lstat treated alike — but readFallback
+// re-verifies each of the three on its DESTINATION rather than accepting
+// os.Root's outright refusal, so all three still resolve to repository content:
 //
-//   - a relative link resolving within the repository is still followed;
-//   - a link that climbs out and comes back is refused, even though its target
-//     is a repository file;
-//   - an absolute link target is refused for the same reason, because os.Root
-//     will not rebase an absolute path onto itself — the target being inside the
-//     repository does not save it.
-//
-// The last two are the behavior a repository can lose: `git ls-files --cached`
-// lists files under a directory that the index records but the working tree has
-// replaced with a link, and those files now reach provider_parallel's
-// E_FILE_READ path instead of being parsed.
+//   - a relative link resolving within the repository is followed directly by
+//     os.Root, the same as before this change;
+//   - a link that climbs out and returns is refused by os.Root's own
+//     resolution, but its destination is still a repository file, so
+//     readFallback follows it;
+//   - an absolute link target is refused by os.Root for the same structural
+//     reason — it will not rebase an absolute path onto itself — but
+//     readFallback checks the absolute target's REAL location directly, which
+//     the repository already owns.
 func TestSymlinkedDirectoryResolutionInsideRepository(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
@@ -161,14 +162,102 @@ func TestSymlinkedDirectoryResolutionInsideRepository(t *testing.T) {
 	}
 	opened := openWorktreeSource(t, repo, sourceOptions{})
 
-	if content, ok := opened.read("rel/a.ts"); !ok || content != "export const a = 1;\n" {
-		t.Fatalf("read(rel/a.ts) = %q, %v; a relative link resolving inside the repository must still be followed", content, ok)
+	for _, name := range []string{"rel", "updown", "abs"} {
+		path := name + "/a.ts"
+		if content, ok := opened.read(path); !ok || content != "export const a = 1;\n" {
+			t.Errorf("read(%q) = %q, %v; want the repository file, whether os.Root followed the link directly or readFallback verified its destination", path, content, ok)
+		}
 	}
-	if content, ok := opened.read("updown/a.ts"); ok {
-		t.Fatalf("read(updown/a.ts) = %q; a link leaving the repository is refused even when it returns to it", content)
+}
+
+// TestReadFallbackRefusesAnAbsoluteSymlinkThatEscapes is the negative case
+// TestSymlinkedDirectoryResolutionInsideRepository's "abs" link does not cover:
+// an absolute target this repository does NOT own must stay refused, exactly as
+// os.Root refuses it, because readFallback verifies the destination rather than
+// unconditionally trusting an absolute spelling.
+func TestReadFallbackRefusesAnAbsoluteSymlinkThatEscapes(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("directory symlinks require elevated privilege on Windows")
 	}
-	if content, ok := opened.read("abs/a.ts"); ok {
-		t.Fatalf("read(abs/a.ts) = %q; an absolute link target is refused even when it points inside the repository", content)
+	repo, outside := newContainmentFixture(t)
+	if err := os.Symlink(outside, filepath.Join(repo, "abs-outside")); err != nil {
+		t.Fatal(err)
+	}
+	opened := openWorktreeSource(t, repo, sourceOptions{})
+
+	if content, ok := opened.read("abs-outside/secret.env"); ok {
+		t.Fatalf("read(abs-outside/secret.env) = %q; an absolute link leaving the repository must still be refused", content)
+	}
+}
+
+// TestReadFallbackFollowsASymlinkChainLongerThanOSRootsLimit covers the low
+// finding: os.Root refuses to resolve a chain past its hardcoded 8-hop limit
+// (rootMaxSymlinks), even when every hop stays inside the repository, so a
+// tracked file nine or more relative symlinked directories deep used to come
+// back with E_FILE_READ despite no escape attempt anywhere in the chain.
+func TestReadFallbackFollowsASymlinkChainLongerThanOSRootsLimit(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("directory symlinks require elevated privilege on Windows")
+	}
+	repo, _ := newContainmentFixture(t)
+	// 10 hops: one more than os.Root's rootMaxSymlinks (8), well under
+	// filepath.EvalSymlinks's 255.
+	const hops = 10
+	target := "src"
+	for i := hops - 1; i >= 0; i-- {
+		name := fmt.Sprintf("link%d", i)
+		if err := os.Symlink(target, filepath.Join(repo, name)); err != nil {
+			t.Fatal(err)
+		}
+		target = name
+	}
+	opened := openWorktreeSource(t, repo, sourceOptions{})
+
+	path := "link0/a.ts"
+	if content, ok := opened.read(path); !ok || content != "export const a = 1;\n" {
+		t.Fatalf("read(%q) = %q, %v; a %d-hop chain entirely inside the repository must still resolve", path, content, ok, hops)
+	}
+}
+
+// TestWorktreeSourceOpensWithAnExecuteOnlyRepositoryRoot covers the medium
+// finding: os.OpenRoot always opens the repository root for reading, but
+// `git ls-files --cached` reads the index rather than listing the worktree
+// root, and a direct read of a known path only needs to traverse (execute)
+// every ancestor directory, never to list one — so a repository root with
+// execute-only permissions used to support both, and os.OpenRoot's stricter
+// requirement failed the whole snapshot before a single file was read.
+func TestWorktreeSourceOpensWithAnExecuteOnlyRepositoryRoot(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits do not apply on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permission bits, so this fixture proves nothing running as root")
+	}
+	// worktreeSourceFiles lists via `git ls-files --cached`, which reads
+	// .git/index rather than the repo root's own directory entries, so the
+	// fixture must be a real, committed repository: an uncommitted directory
+	// would force the filepath.WalkDir fallback listing, which DOES need to
+	// read the root's entries and would fail for a reason this test isn't
+	// about.
+	repo, _ := newContainmentFixture(t)
+	git(t, repo, "init")
+	git(t, repo, "add", "src/a.ts")
+	git(t, repo, "-c", "user.email=a@b.c", "-c", "user.name=a", "commit", "-m", "init")
+	if err := os.Chmod(repo, 0o111); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(repo, 0o755) })
+
+	opened := openWorktreeSource(t, repo, sourceOptions{})
+	if opened.close != nil {
+		t.Error("execute-only root source returned a closer; no os.Root was ever opened")
+	}
+	content, ok := opened.read("src/a.ts")
+	if !ok || content != "export const a = 1;\n" {
+		t.Fatalf("read(src/a.ts) = %q, %v; an execute-only repository root must still support reading a known tracked file", content, ok)
 	}
 }
 
