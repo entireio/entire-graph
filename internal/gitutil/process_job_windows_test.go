@@ -5,6 +5,7 @@ package gitutil
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -201,13 +202,30 @@ func TestPathOutputCommandCancelTerminatesDescendantsHoldingTheStdoutPipe(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer job.close()
-	t.Cleanup(job.terminate)
+	defer func() {
+		_ = job.terminate()
+		if cmd.ProcessState == nil {
+			_ = cmd.Wait()
+		}
+		job.close()
+	}()
 
 	reader := bufio.NewReader(stdout)
 	line, err := reader.ReadString('\n')
 	if err != nil || strings.TrimSpace(line) != "stdout-ready" {
 		t.Fatalf("read grandchild readiness line: line=%q err=%v", line, err)
+	}
+	launcher, err := syscall.OpenProcess(syscall.SYNCHRONIZE, false, uint32(cmd.Process.Pid))
+	if err != nil {
+		t.Fatalf("open launcher process %d: %v", cmd.Process.Pid, err)
+	}
+	defer syscall.CloseHandle(launcher)
+	state, err := syscall.WaitForSingleObject(launcher, 5_000)
+	if err != nil {
+		t.Fatalf("wait for launcher exit: %v", err)
+	}
+	if state != syscall.WAIT_OBJECT_0 {
+		t.Fatalf("launcher process %d did not exit before cancellation (wait state %#x)", cmd.Process.Pid, state)
 	}
 
 	cancel()
@@ -223,6 +241,9 @@ func TestPathOutputCommandCancelTerminatesDescendantsHoldingTheStdoutPipe(t *tes
 		t.Fatal("read from the stdout pipe did not unblock within 10s of context cancellation:" +
 			" cmd.Cancel must terminate the whole job, not only cmd.Process, to free a descendant" +
 			" that is holding the pipe open when cmd.Process itself has already exited")
+	}
+	if waitErr := cmd.Wait(); !errors.Is(waitErr, context.Canceled) {
+		t.Fatalf("Wait after whole-job cancellation = %v, want context.Canceled so truncated output cannot be accepted", waitErr)
 	}
 }
 

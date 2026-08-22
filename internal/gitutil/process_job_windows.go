@@ -104,11 +104,21 @@ func (launch *pathOutputLaunch) start(cmd *exec.Cmd) (pathOutputJob, error) {
 	// is reading to notice the cancellation in the first place.
 	job := launch.job
 	cmd.Cancel = func() error {
-		job.terminate()
-		if cmd.Process != nil {
-			return cmd.Process.Kill()
+		jobErr := job.terminate()
+		if jobErr == nil {
+			// Returning nil tells os/exec that cancellation succeeded. If the
+			// launcher already exited 0, Wait will then still return the context
+			// error instead of accepting the deliberately truncated output.
+			return nil
 		}
-		return nil
+		if cmd.Process == nil {
+			return jobErr
+		}
+		killErr := cmd.Process.Kill()
+		if killErr == nil || errors.Is(killErr, os.ErrProcessDone) {
+			return jobErr
+		}
+		return errors.Join(jobErr, killErr)
 	}
 	startErr := cmd.Start()
 	cmd.SysProcAttr = launch.originalProcAttr
@@ -270,11 +280,15 @@ func windowsJobCallError(name string, err error) error {
 
 // terminate kills every process still in the job: current members and any
 // descendant spawned after the point-in-time snapshot capture fallback.
-func (job pathOutputJob) terminate() {
+func (job pathOutputJob) terminate() error {
 	if job.handle == 0 {
-		return
+		return errors.New("terminate Windows job: handle is unavailable")
 	}
-	_, _, _ = procTerminateJobObject.Call(uintptr(job.handle), 1)
+	ret, _, callErr := procTerminateJobObject.Call(uintptr(job.handle), 1)
+	if ret == 0 {
+		return windowsJobCallError("TerminateJobObject", callErr)
+	}
+	return nil
 }
 
 func (job pathOutputJob) close() {

@@ -226,6 +226,59 @@ func TestProcessProviderFileDoesNotRestreamKnownOversizedShebang(t *testing.T) {
 	}
 }
 
+func TestSnapshotPreservesWorkingTreeShebangLanguageWhenOversized(t *testing.T) {
+	const path = "large-worktree-script"
+	source := sourceContext{
+		key: "test-repo",
+		read: func(string) (string, bool) {
+			return "", false
+		},
+		readPrefix: func(string, int) (string, bool) {
+			return "#!/usr/bin/env bash\necho ok\n", true
+		},
+		// Worktree oversize records intentionally retain no content prefix:
+		// routing already obtained one through the bounded filesystem read above.
+		oversize: func(string) (oversizeFile, bool) {
+			return oversizeFile{Bytes: 8192, Hash: "sha256:test", Lines: 2}, true
+		},
+	}
+
+	result := processProviderFile(t.Context(), source, profileSpec{}, 2048, 0, path)
+	if result.file == nil || result.file.Language != "Bash" {
+		t.Fatalf("oversized working-tree shebang result = %#v, want Bash file record", result)
+	}
+	if len(result.failures) != 1 || result.failures[0].Code != "E_FILE_TOO_LARGE" {
+		t.Fatalf("oversized working-tree shebang failures = %#v, want E_FILE_TOO_LARGE", result.failures)
+	}
+}
+
+func TestFallbackOversizeRegistryConsumesCachedPrefix(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	const path = "odd\nscript"
+	content := "#!/usr/bin/env bash\n" + strings.Repeat("echo oversized\n", 256)
+	blob := gitObjectInputOutput(t, repo, content, "hash-object", "-w", "--stdin")
+	tree := gitObjectInputOutput(t, repo, "100644 blob "+blob+"\t"+path+string(byte(0)), "mktree", "-z")
+	commit := gitObjectInputOutput(
+		t, repo, "", "-c", "user.name=Entire Graph Test", "-c", "user.email=graph@example.com",
+		"commit-tree", tree, "-m", "oversized shebang",
+	)
+
+	registry := newFallbackOversizeRegistry(repo, commit, 128)
+	registry.note(path)
+	first, ok := registry.lookup(t.Context(), path)
+	if !ok || !strings.HasPrefix(first.Prefix, "#!/usr/bin/env bash") {
+		t.Fatalf("first fallback oversize lookup = %#v (ok=%v), want captured shebang prefix", first, ok)
+	}
+	if cached := registry.resolved[path]; cached == nil || cached.Prefix != "" || cached.Hash == "" {
+		t.Fatalf("cached fallback oversize record = %#v, want metadata with consumed Prefix", cached)
+	}
+	second, ok := registry.lookup(t.Context(), path)
+	if !ok || second.Prefix != "" || second.Hash != first.Hash || second.Bytes != first.Bytes {
+		t.Fatalf("second fallback oversize lookup = %#v (ok=%v), want cached metadata without Prefix", second, ok)
+	}
+}
+
 func fileHasSymbolNamed(snapshot ProviderSnapshot, path, name string) bool {
 	for _, symbol := range snapshot.Symbols {
 		if symbol.FilePath == path && symbol.Name == name {

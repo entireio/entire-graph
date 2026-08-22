@@ -57,6 +57,8 @@ func processProviderFile(
 	if ctx.Err() != nil {
 		return result
 	}
+	var routedLanguage languageSpec
+	var routedLanguageOK bool
 	var routedOversize *oversizeFile
 	// Path-based routing first; files the path cannot classify (extensionless
 	// executables like pyenv's libexec/* scripts) get one bounded prefix read
@@ -67,16 +69,20 @@ func processProviderFile(
 	// kept one, so it does not fall through to "unsupported" purely because
 	// of its size.
 	if !Supported(path) {
-		routable := shebangRoutable(sc.readPrefix, path)
-		if !routable {
+		if sc.readPrefix != nil {
+			if prefix, prefixOK := sc.readPrefix(path, shebangSniffLimit); prefixOK {
+				routedLanguage, routedLanguageOK = languageForShebang(prefix)
+			}
+		}
+		if !routedLanguageOK {
 			if over, isOversize := sc.oversizeAt(path); isOversize && over.Prefix != "" {
-				_, routable = languageForShebang(over.Prefix)
-				if routable {
+				routedLanguage, routedLanguageOK = languageForShebang(over.Prefix)
+				if routedLanguageOK {
 					routedOversize = &over
 				}
 			}
 		}
-		if !routable {
+		if !routedLanguageOK {
 			if hint := unsupportedLanguageHint(path); hint != "" {
 				result.failures = append(result.failures, PartialFailure{
 					Code:                 "E_UNSUPPORTED_LANGUAGE",
@@ -98,13 +104,18 @@ func processProviderFile(
 	if !ok {
 		// A refused read is not a failed one: the reader declines files above
 		// the byte cap so no single file can set the snapshot's memory ceiling.
-		over, isOversize := sc.oversizeAt(path)
+		var over oversizeFile
+		var isOversize bool
 		if routedOversize != nil {
 			over, isOversize = *routedOversize, true
+		} else {
+			over, isOversize = sc.oversizeAt(path)
 		}
 		if isOversize {
 			langSpec, langOK := languageForPath(path)
-			if !langOK && over.Prefix != "" {
+			if !langOK && routedLanguageOK {
+				langSpec, langOK = routedLanguage, true
+			} else if !langOK && over.Prefix != "" {
 				// The ordinary bounded prefix read is doomed here for the same
 				// reason the read above was refused (Git blob reads are
 				// all-or-nothing); reuse the prefix already captured while

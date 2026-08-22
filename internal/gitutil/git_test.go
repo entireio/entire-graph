@@ -731,8 +731,25 @@ func TestBatchFileReaderRejectsNonBlobBeforeRequestingContent(t *testing.T) {
 	if got := contentWrites.countCommands("contents "); got != 1 {
 		t.Fatalf("blob issued %d content requests, want one: %#v", got, contentWrites.commands)
 	}
-	if _, ok := reader.OversizeBlob("plain.py"); !ok {
+	if blob, ok := reader.OversizeBlob("plain.py"); !ok {
 		t.Fatal("blob preflight bypassed the existing oversize digest registry")
+	} else if blob.Prefix != "" {
+		t.Fatalf("ordinary oversized blob retained %d prefix bytes without an opt-in consumer", len(blob.Prefix))
+	}
+
+	reader.SetOversizePrefixSelector(func(path string) bool { return path == "plain.py" })
+	if content, ok, err := reader.ReadFile("plain.py"); err != nil || ok || content != "" {
+		t.Fatalf("opted-in oversized blob read = (%q, %v, %v), want refusal", content, ok, err)
+	}
+	if blob, ok := reader.TakeOversizeBlob("plain.py"); !ok {
+		t.Fatal("opted-in oversized blob missing from digest registry")
+	} else if !strings.HasPrefix(blob.Prefix, "def plain") {
+		t.Fatalf("opted-in oversized blob prefix = %q, want leading source bytes", blob.Prefix)
+	}
+	if blob, ok := reader.OversizeBlob("plain.py"); !ok {
+		t.Fatal("consuming prefix removed oversized blob metadata")
+	} else if blob.Prefix != "" || blob.Bytes == 0 || blob.Hash == "" {
+		t.Fatalf("stored oversized blob after prefix consumption = %#v, want metadata with empty Prefix", blob)
 	}
 }
 
@@ -1803,6 +1820,20 @@ func TestLimitedFileReaderPrimeStopsOrdinaryBatchesAtDeadline(t *testing.T) {
 	}
 	if resolved == 0 {
 		t.Fatal("Prime marked every path unaddressable; want the already-started first batch to still complete")
+	}
+}
+
+func TestLimitedFileReaderPrimeValidatesPathsBeforeExpiredDeadline(t *testing.T) {
+	reader := NewLimitedFileReader(t.Context(), t.TempDir(), "HEAD", 1024)
+	deadline := time.Unix(100, 0)
+	reader.now = func() time.Time { return deadline }
+	reader.SetDeadline(deadline)
+
+	if err := reader.Prime([]string{"bad/"}); err == nil || !strings.Contains(err.Error(), `invalid Git tree path "bad/"`) {
+		t.Fatalf("Prime invalid path after elapsed deadline = %v, want the established path-validation error", err)
+	}
+	if len(reader.primed) != 0 {
+		t.Fatalf("Prime retained invalid path metadata after validation failure: %#v", reader.primed)
 	}
 }
 

@@ -9805,6 +9805,9 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 			return openedSource{}, err
 		}
 		batch.SetMaxBytes(maxReadBytes)
+		batch.SetOversizePrefixSelector(func(path string) bool {
+			return !Supported(path)
+		})
 		limited := gitutil.NewLimitedFileReader(ctx, repo, committedRevision, maxReadBytes)
 		// The oversize registry for the paths the batch reader cannot carry.
 		// batch.OversizeBlob only knows blobs that streamed past IT, so a
@@ -9852,7 +9855,7 @@ func openSource(ctx context.Context, repo, committedRevision string, options sou
 			if over, ok := fallback.lookup(ctx, path); ok {
 				return over, true
 			}
-			blob, ok := batch.OversizeBlob(path)
+			blob, ok := batch.TakeOversizeBlob(path)
 			if !ok {
 				return oversizeFile{}, false
 			}
@@ -10004,10 +10007,20 @@ func (r *fallbackOversizeRegistry) lookup(ctx context.Context, path string) (ove
 		r.mu.Unlock()
 		blob, over, err := gitutil.OversizeBlobAtRev(ctx, r.repo, r.rev, path, r.maxBytes)
 		if err == nil && over {
-			record = &oversizeFile{Bytes: blob.Bytes, Hash: blob.Hash, Lines: blob.Lines, Prefix: blob.Prefix}
+			prefix := blob.Prefix
+			if Supported(path) {
+				prefix = ""
+			}
+			record = &oversizeFile{Bytes: blob.Bytes, Hash: blob.Hash, Lines: blob.Lines, Prefix: prefix}
 		}
 		r.mu.Lock()
-		r.resolved[path] = record
+		stored := record
+		if record != nil && record.Prefix != "" {
+			cached := *record
+			cached.Prefix = ""
+			stored = &cached
+		}
+		r.resolved[path] = stored
 		delete(r.pending, path)
 	}
 	r.mu.Unlock()

@@ -804,7 +804,8 @@ func readBlobAtRev(ctx context.Context, repo, rev, path string) (string, bool, e
 // OversizeBlobAtRev reports the size, content hash and line count of the blob at
 // rev:path when that blob exceeds maxBytes — the same OversizeBlob the batch
 // reader records for a blob IT refuses, learned the same way, by streaming the
-// blob past a digest and discarding it. The bytes are never held.
+// blob past a digest and discarding it. The complete content is never held;
+// only the bounded leading Prefix is retained.
 //
 // It is the companion ShowFileLimited owes its callers. The batch reader digests
 // what it declines on the way past, so a caller can still record a file it could
@@ -913,18 +914,19 @@ func isMissingPathDiagnostic(stderr string) bool {
 // Paths are relative to repo; rev represents the repository-root tree when repo
 // is a subdirectory.
 type BatchFileReader struct {
-	rev          string
-	pathPrefix   string
-	cmd          *exec.Cmd
-	stdin        io.WriteCloser
-	stdout       *bufio.Reader
-	stderr       *bytes.Buffer
-	mu           sync.Mutex
-	closed       bool
-	poison       error
-	maxBytes     int64
-	oversize     map[string]OversizeBlob
-	oversizeScan func(path string, chunk []byte)
+	rev            string
+	pathPrefix     string
+	cmd            *exec.Cmd
+	stdin          io.WriteCloser
+	stdout         *bufio.Reader
+	stderr         *bytes.Buffer
+	mu             sync.Mutex
+	closed         bool
+	poison         error
+	maxBytes       int64
+	oversize       map[string]OversizeBlob
+	oversizeScan   func(path string, chunk []byte)
+	oversizePrefix func(path string) bool
 }
 
 // OversizeBlob describes a blob ReadFile refused to materialize because it
@@ -935,12 +937,11 @@ type OversizeBlob struct {
 	Bytes int64
 	Hash  string
 	Lines int
-	// Prefix holds up to oversizeBlobPrefixCap leading bytes, captured for
-	// free from the same mandatory streaming pass that computes Hash and
-	// Lines. Git blob reads are all-or-nothing, so a refused blob otherwise
-	// cannot be prefix-sniffed at all (for example, to route an
-	// extensionless committed file by its shebang line) without a second,
-	// unbounded read of the same object.
+	// Prefix holds up to oversizeBlobPrefixCap leading bytes. Batch readers
+	// populate it only for paths admitted by SetOversizePrefixSelector; the
+	// one-shot OversizeBlobAtRev result also populates it because it retains no
+	// aggregate registry. The bytes come from the same mandatory streaming pass
+	// that computes Hash and Lines.
 	Prefix string
 }
 
@@ -978,6 +979,17 @@ func (r *BatchFileReader) SetOversizeScanner(scan func(path string, chunk []byte
 	r.oversizeScan = scan
 }
 
+// SetOversizePrefixSelector opts selected oversized paths into retaining a
+// bounded leading prefix alongside their digest. The default retains none:
+// even a small per-blob prefix becomes unbounded aggregate memory when a tree
+// contains many oversized blobs. The selector runs while the reader lock is
+// held and must not call back into the reader.
+func (r *BatchFileReader) SetOversizePrefixSelector(selectPath func(path string) bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.oversizePrefix = selectPath
+}
+
 // SetMaxBytes caps the blob size ReadFile will materialize. A larger blob is
 // streamed past the reader into a digest and discarded: ReadFile reports it as
 // unavailable and OversizeBlob then returns its size, content hash and line
@@ -998,6 +1010,26 @@ func (r *BatchFileReader) OversizeBlob(path string) (OversizeBlob, bool) {
 	defer r.mu.Unlock()
 	blob, ok := r.oversize[path]
 	return blob, ok
+}
+
+// TakeOversizeBlob returns an oversized record while consuming its optional
+// retained Prefix. Size, hash, and line metadata remain available through
+// OversizeBlob, but repeated calls return an empty Prefix. Prefix consumers use
+// this form so aggregate retained prefix memory is bounded by active workers
+// rather than by the number of oversized paths in the tree.
+func (r *BatchFileReader) TakeOversizeBlob(path string) (OversizeBlob, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	blob, ok := r.oversize[path]
+	if !ok {
+		return OversizeBlob{}, false
+	}
+	if blob.Prefix != "" {
+		stored := blob
+		stored.Prefix = ""
+		r.oversize[path] = stored
+	}
+	return blob, true
 }
 
 func NewBatchFileReader(ctx context.Context, repo, rev string) (*BatchFileReader, error) {
@@ -1192,14 +1224,20 @@ func (r *BatchFileReader) readObjectContentsLocked(objectSpec, expectedType stri
 	}
 	if r.maxBytes > 0 && size > r.maxBytes {
 		var src io.Reader = io.LimitReader(r.stdout, size)
-		prefix := make([]byte, 0, oversizeBlobPrefixCap)
-		tee := io.Writer(prefixCaptureWriter{buf: &prefix})
+		var prefix []byte
+		writers := make([]io.Writer, 0, 2)
+		if selectPath := r.oversizePrefix; selectPath != nil && selectPath(oversizeKey) {
+			prefix = make([]byte, 0, oversizeBlobPrefixCap)
+			writers = append(writers, prefixCaptureWriter{buf: &prefix})
+		}
 		if scan := r.oversizeScan; scan != nil {
 			// The same single pass the digest already makes: the scanner sees the bytes on their
 			// way to being discarded, so relevance costs no extra read and no retained memory.
-			tee = io.MultiWriter(tee, oversizeScanWriter{path: oversizeKey, scan: scan})
+			writers = append(writers, oversizeScanWriter{path: oversizeKey, scan: scan})
 		}
-		src = io.TeeReader(src, tee)
+		if len(writers) > 0 {
+			src = io.TeeReader(src, io.MultiWriter(writers...))
+		}
 		digest, err := filedigest.Stream(src)
 		if err != nil {
 			return "", false, r.poisonLocked(fmt.Errorf("stream oversized git blob: %w", err))
@@ -1383,6 +1421,14 @@ func (r *LimitedFileReader) Prime(paths []string) error {
 	}
 	if len(paths) == 0 {
 		return nil
+	}
+	// Argument validity is independent of the traversal budget. Validate the
+	// complete batch before an elapsed deadline can classify untouched input as
+	// merely unaddressable and thereby change the API's fail-fast contract.
+	for _, path := range paths {
+		if err := validateLimitedFilePath(path); err != nil {
+			return err
+		}
 	}
 	if r.primed == nil {
 		r.primed = make(map[string]primedLimitedFile, len(paths))

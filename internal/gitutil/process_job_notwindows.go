@@ -27,6 +27,6 @@ func (*pathOutputLaunch) start(cmd *exec.Cmd) (pathOutputJob, error) {
 
 func (*pathOutputLaunch) close() {}
 
-func (pathOutputJob) terminate() {}
+func (pathOutputJob) terminate() error { return nil }
 
 func (pathOutputJob) close() {}
