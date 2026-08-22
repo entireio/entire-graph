@@ -44,20 +44,10 @@ func deleteLooseObject(t *testing.T, repo, hash string) {
 	}
 }
 
-// TestSnapshotDoesNotSilentlyDropPathsWhenANestedVendorGitignoreIsUnreadable
-// reproduces the trail finding on headVendorIgnoreRules: this provider's
-// GIT_ALLOW_PROTOCOL= no-egress guard (added to close the pre-2.45
-// GIT_NO_LAZY_FETCH gap) means a partial clone can no longer lazily fetch a
-// promised-but-missing blob, so `git show` for it fails with a REAL error
-// rather than "path does not exist". headVendorIgnoreRules used to treat that
-// error exactly like an absent file, silently discarding the negation
-// `vendor/.gitignore` (`*` + `!pkg/`) declares — and with it, the first-party
-// path `vendor/pkg/keep.go` it re-includes, with no warning at all.
-//
-// A loose object deleted after the commit reproduces the same failure mode
-// ShowFile sees (a real git error, never the missing-path diagnostic)
-// without needing a real partial clone or network denial.
-func TestSnapshotDoesNotSilentlyDropPathsWhenANestedVendorGitignoreIsUnreadable(t *testing.T) {
+// A missing committed ignore blob must stop the snapshot with an actionable
+// error. Continuing with incomplete rules would make both inclusion and
+// vendored-directory decisions depend on silently missing policy.
+func TestSnapshotReportsNestedVendorGitignoreUnreadable(t *testing.T) {
 	repo := t.TempDir()
 	initRepo(t, repo)
 	writeFile(t, repo, "vendor/.gitignore", "*\n!pkg/\n")
@@ -73,44 +63,14 @@ func TestSnapshotDoesNotSilentlyDropPathsWhenANestedVendorGitignoreIsUnreadable(
 	hash := gitRevParseOutput(t, repo, "HEAD:vendor/.gitignore")
 	deleteLooseObject(t, repo, hash)
 
-	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var sawKeep bool
-	for _, file := range snapshot.Files {
-		if file.Path == "vendor/pkg/keep.go" {
-			sawKeep = true
-		}
-	}
-	if !sawKeep {
-		t.Errorf("vendor/pkg/keep.go missing from snapshot files (%d files); an unreadable nested"+
-			" .gitignore must not silently drop the first-party path its negation re-includes",
-			len(snapshot.Files))
-	}
-
-	var sawWarning bool
-	for _, warning := range snapshot.Header.Warnings {
-		if warning.Code == "W_VENDOR_IGNORE_UNREADABLE" {
-			sawWarning = true
-			if warning.FilePath != "vendor/.gitignore" {
-				t.Errorf("W_VENDOR_IGNORE_UNREADABLE warning FilePath = %q, want %q", warning.FilePath, "vendor/.gitignore")
-			}
-		}
-	}
-	if !sawWarning {
-		t.Error("no W_VENDOR_IGNORE_UNREADABLE warning: an unreadable nested .gitignore must be disclosed, not silent")
+	_, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{})
+	if err == nil || !strings.Contains(err.Error(), `vendor/.gitignore`) ||
+		!strings.Contains(err.Error(), "Git blob object is unavailable or unreadable") {
+		t.Fatalf("unreadable nested ignore error = %v, want path and actionable blob diagnosis", err)
 	}
 }
 
-// TestNestedVendorGitignoreStillExcludesUnrelatedVendoredPathsWhenAnotherIsUnreadable
-// is the narrowing half: an unreadable .gitignore must fail open only for the
-// specific subtree its own rules govern, not for every vendored directory in
-// the repository, or the heuristic loses all value the instant any one blob
-// is unreadable. node_modules/ here has no .gitignore of its own at all, so
-// nothing about vendor/.gitignore being unreadable can legitimately affect it.
-func TestNestedVendorGitignoreStillExcludesUnrelatedVendoredPathsWhenAnotherIsUnreadable(t *testing.T) {
+func TestUnreadableNestedVendorGitignoreStopsBeforeUnrelatedFiltering(t *testing.T) {
 	repo := t.TempDir()
 	initRepo(t, repo)
 	writeFile(t, repo, "vendor/.gitignore", "*\n!pkg/\n")
@@ -123,25 +83,13 @@ func TestNestedVendorGitignoreStillExcludesUnrelatedVendoredPathsWhenAnotherIsUn
 	hash := gitRevParseOutput(t, repo, "HEAD:vendor/.gitignore")
 	deleteLooseObject(t, repo, hash)
 
-	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	filesByPath := map[string]struct{}{}
-	for _, file := range snapshot.Files {
-		filesByPath[file.Path] = struct{}{}
-	}
-	if _, ok := filesByPath["vendor/pkg/keep.go"]; !ok {
-		t.Error("vendor/pkg/keep.go missing: its own unreadable .gitignore must fail open for its subtree")
-	}
-	if _, ok := filesByPath["node_modules/thirdparty.js"]; ok {
-		t.Error("node_modules/thirdparty.js present: an unrelated vendored directory with no .gitignore" +
-			" of its own must still be excluded when only vendor/.gitignore is unreadable")
+	_, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{})
+	if err == nil || !strings.Contains(err.Error(), `vendor/.gitignore`) {
+		t.Fatalf("unreadable nested ignore error = %v, want the policy path", err)
 	}
 }
 
-func TestUnreadableNestedVendorGitignoreKeepsItsVendoredAncestor(t *testing.T) {
+func TestUnreadableDeepNestedVendorGitignoreIsReported(t *testing.T) {
 	repo := t.TempDir()
 	initRepo(t, repo)
 	writeFile(t, repo, "vendor/pkg/.gitignore", "*\n!keep.go\n")
@@ -153,39 +101,20 @@ func TestUnreadableNestedVendorGitignoreKeepsItsVendoredAncestor(t *testing.T) {
 	hash := gitRevParseOutput(t, repo, "HEAD:vendor/pkg/.gitignore")
 	deleteLooseObject(t, repo, hash)
 
-	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{})
-	if err != nil {
-		t.Fatal(err)
+	_, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{})
+	if err == nil || !strings.Contains(err.Error(), `vendor/pkg/.gitignore`) {
+		t.Fatalf("unreadable deep nested ignore error = %v, want the scoped policy path", err)
 	}
-
-	for _, file := range snapshot.Files {
-		if file.Path == "vendor/pkg/keep.go" {
-			return
-		}
-	}
-	t.Error("vendor/pkg/keep.go missing: an unreadable nested .gitignore must also keep a vendored ancestor that traversal must cross")
 }
 
-func TestBoundedNestedIgnorePathsCapsEveryAttemptedInput(t *testing.T) {
+func TestNestedIgnorePathsRejectEveryInputBeyondBound(t *testing.T) {
 	paths := []string{"main.go", ".gitignore"}
 	for i := 0; i < maxNestedIgnoreFiles+1; i++ {
 		paths = append(paths, fmt.Sprintf("dir-%04d/.gitignore", i))
 	}
 
-	got, truncated := boundedNestedIgnorePaths(paths)
-	if !truncated {
-		t.Fatal("boundedNestedIgnorePaths did not disclose an input beyond the limit")
-	}
-	if len(got) != maxNestedIgnoreFiles {
-		t.Fatalf("boundedNestedIgnorePaths returned %d inputs, want bounded %d", len(got), maxNestedIgnoreFiles)
-	}
-	if last := got[len(got)-1]; last != fmt.Sprintf("dir-%04d/.gitignore", maxNestedIgnoreFiles-1) {
-		t.Fatalf("last bounded nested ignore path = %q, want stable input prefix", last)
-	}
-
-	rules := newNestedIgnoreRules(ignoreMatcher{})
-	rules.incomplete = true
-	if !rules.ReincludesDescendant("vendor") {
-		t.Fatal("incomplete nested ignore inputs did not fail open for an arbitrary vendored subtree")
+	if _, err := nestedIgnorePathsFromListing(paths); err == nil ||
+		!strings.Contains(err.Error(), fmt.Sprintf("more than %d nested ignore files", maxNestedIgnoreFiles)) {
+		t.Fatalf("nested ignore overflow error = %v, want explicit resource-bound refusal", err)
 	}
 }
