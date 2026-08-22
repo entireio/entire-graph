@@ -389,7 +389,13 @@ following bounds are enforced:
   sweep that looks for a suppressed `.git` pointer descends the roots Git
   collapsed, ignored trees included, so its size is set by content Git omits — a
   `node_modules`, a package store, a build cache — and without a bound one query
-  is a whole-tree scan of it. The budget is one ledger for the whole listing, so
+  is a whole-tree scan of it. The traversal stays beneath a held repository root,
+  refuses symlinks, reparse points, and mount points (Linux uses `openat2`
+  no-crossing resolution when available, with a bounded mount-table preflight
+  plus held no-follow descriptors on older kernels), and reports a refused
+  directory as `W_GITDIR_SWEEP_UNREADABLE_DIRECTORY` rather than following it.
+  Rooted path-component work is capped at 16 times the configured directory
+  budget. The budget is one ledger for the whole listing, so
   splitting one large ignored tree into many, or flattening it into arbitrarily
   many files, buys no extra allowance, and
   exhaustion is not silence: it records hidden evidence, which makes every

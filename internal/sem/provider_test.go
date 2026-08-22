@@ -15271,17 +15271,22 @@ func TestGitDirPointerTargetResolvesSeparateGitDirPointer(t *testing.T) {
 		// on git 2.54.0.
 		{"spaces after the prefix are the path, not padding", "", func(t *testing.T, repo string) string {
 			writeFile(t, repo, ".git", "gitdir:   \n")
+			if !trailingSpaceNameTestFS(t, repo) {
+				return ""
+			}
+			if err := os.Mkdir(filepath.Join(repo, "  "), 0o755); err != nil {
+				t.Fatal(err)
+			}
 			return "  "
 		}},
-		// The window is git's own ceiling (maxGitFileBytes, 1 MiB), not the
-		// smaller read-safety bound `commondir` uses: a path well past the old
-		// 4 KiB window but still inside git's 1 MiB limit is a target git
-		// itself reads and follows, so refusing it here would be a leak, not a
-		// safety margin.
-		{"pointer path longer than the old 4 KiB window is still followed", "", func(t *testing.T, repo string) string {
+		// The reader accepts this pointer, but its target cannot be looked up on
+		// any supported filesystem. Resolution must return no target rather than
+		// an unchecked lexical spelling that a concurrent redirect can replace;
+		// the reader-only fidelity is pinned separately.
+		{"unrepresentably long pointer target is not returned unchecked", "", func(t *testing.T, repo string) string {
 			target := ".repo-git" + strings.Repeat("x", 8*maxGitPointerBytes)
 			writeFile(t, repo, ".git", "gitdir: "+target+"\n")
-			return target
+			return ""
 		}},
 		// Git refuses the whole `.git` FILE above 1 MiB (`fatal: too large to
 		// be a .git file`), checked on the file's real size and before it reads
@@ -15297,6 +15302,11 @@ func TestGitDirPointerTargetResolvesSeparateGitDirPointer(t *testing.T) {
 			t.Parallel()
 			repo := t.TempDir()
 			want := testCase.setup(t, repo)
+			if want != "" && want != "." && want != "  " {
+				if err := os.MkdirAll(filepath.Join(repo, filepath.FromSlash(want)), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
 			got, ok, hidden := gitDirPointerTarget(repo, testCase.dir)
 			if ok != (want != "") || hidden || got != want {
 				t.Errorf("gitDirPointerTarget(%q) = (%q, %v, hidden %v), want (%q, %v, false)", testCase.dir, got, ok, hidden, want, want != "")

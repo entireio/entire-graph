@@ -231,6 +231,89 @@ func assertSearchReturns(t *testing.T, repo, want string) {
 	t.Errorf("search did not return %q; results = %v", want, got)
 }
 
+func TestGitDirPointerRefusesAFileThatGrewPastGitsCeilingAfterObservation(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	pointer := filepath.Join(repo, ".git")
+	if err := os.WriteFile(pointer, []byte("gitdir: .repo-git\x00"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(pointer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := make([]byte, maxGitFileBytes+1)
+	copy(content, "gitdir: .repo-git\x00")
+	if err := os.WriteFile(pointer, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if target, ok := readGitDirPointerAtSize(pointer, info.Size()); ok {
+		t.Fatalf("readGitDirPointerAtSize accepted stale oversized gitfile as %q", target)
+	}
+}
+
+func TestOpenedGitDirPointerRefusesGrowthPastGitsCeiling(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	pointer := filepath.Join(repo, ".git")
+	if err := os.WriteFile(pointer, []byte("gitdir: .repo-git\x00"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(pointer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := make([]byte, maxGitFileBytes+1)
+	copy(content, "gitdir: .repo-git\x00")
+	if err := os.WriteFile(pointer, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if target, ok := readGitDirPointerFromOpened(file, info.Size()); ok {
+		t.Fatalf("readGitDirPointerFromOpened accepted grown oversized gitfile as %q", target)
+	}
+}
+
+func TestGenericGitPointerReaderStillAcceptsANULTerminatedBoundedPrefix(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pointer := filepath.Join(dir, "commondir")
+	content := make([]byte, maxGitPointerBytes+1)
+	copy(content, "../common\x00")
+	if err := os.WriteFile(pointer, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(pointer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target, ok := readGitPointerFromOpened(file, maxGitPointerBytes, info.Size()); !ok || target != "../common" {
+		t.Fatalf("readGitPointerFromOpened = (%q, %v), want (../common, true)", target, ok)
+	}
+}
+
+func TestGitDirPointerReaderAcceptsAPathPastTheOldWindowBelowGitsCeiling(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pointer := filepath.Join(dir, ".git")
+	target := ".repo-git" + strings.Repeat("x", 8*maxGitPointerBytes)
+	if err := os.WriteFile(pointer, []byte("gitdir: "+target+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := readGitDirPointer(pointer); !ok || got != target {
+		t.Fatalf("readGitDirPointer = (len %d, %v), want (len %d, true)", len(got), ok, len(target))
+	}
+}
+
 // TestGitPointerFilesAreReadThroughOneReader is the structural half of this
 // round's fix, and the one that survives the next reader somebody adds.
 //
@@ -238,12 +321,13 @@ func assertSearchReturns(t *testing.T, repo, want string) {
 // at once — the excluder's gitfile parser had the NUL rule, its `commondir`
 // reader did not, and ignore.go's info/exclude resolver had neither it nor the
 // concatenating join — because each one opened the file itself. There is one
-// reader now, readGitPointerFile, and this test fails if a function grows its
-// own: naming `.git`, `gitdir: ` or `commondir` AND reading a file directly is
-// the shape of a bypass.
+// shared bounded reader now, readGitPointerFromOpened, with the `.git` caller
+// adding Git's real-size rule. This test fails if a function grows its own:
+// naming `.git`, `gitdir: ` or `commondir` AND reading a file directly is the
+// shape of a bypass.
 func TestGitPointerFilesAreReadThroughOneReader(t *testing.T) {
 	t.Parallel()
-	const sink = "readGitPointerFile"
+	const sink = "readGitPointerFromOpened"
 	pointerLiterals := []string{`".git"`, `"commondir"`, `"gitdir: "`}
 	rawReaders := map[string]struct{}{"os.ReadFile": {}, "os.Open": {}}
 

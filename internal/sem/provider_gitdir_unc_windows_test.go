@@ -559,3 +559,25 @@ func TestRootGitDirectoryWithUNCObjectStoreIsUnsafeWithoutDialing(t *testing.T) 
 		t.Fatal("UNC .git/objects redirect was followed instead of rejected before network access")
 	}
 }
+
+func TestPrunedTreeSweepRefusesAnExternalDirectoryJunctionAndWarns(t *testing.T) {
+	repo := t.TempDir()
+	external := t.TempDir()
+	if err := os.Mkdir(filepath.Join(external, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	windowsJunction(t, external, filepath.Join(repo, "ignored"))
+
+	excluder := newGitDirExcluder(t.Context(), repo)
+	excluder.observePrunedSubtree("ignored")
+	if excluder.directoriesRead != 0 {
+		t.Fatalf("directoriesRead = %d, want 0: the sweep followed the junction", excluder.directoriesRead)
+	}
+	if excluder.hiddenEvidence == 0 {
+		t.Fatal("junction refusal did not create fail-closed hidden evidence")
+	}
+	warnings := excluder.sweepUnreadableDirWarning()
+	if len(warnings) != 1 || !strings.Contains(warnings[0].Detail, "ignored") {
+		t.Fatalf("warnings = %+v, want one warning naming ignored", warnings)
+	}
+}

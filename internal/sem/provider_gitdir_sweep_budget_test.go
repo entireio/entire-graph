@@ -336,6 +336,21 @@ func TestObservePrunedSubtreeRootIsChargedToTheLedger(t *testing.T) {
 	}
 }
 
+func TestSweepTraversalStepsAreBoundedByTheDirectoryBudget(t *testing.T) {
+	excluder := &gitDirExcluder{sweepBudget: 1}
+	for step := 0; step < sweepTraversalStepMultiplier; step++ {
+		if !excluder.admitSweepTraversalStep() {
+			t.Fatalf("admitSweepTraversalStep stopped at %d, want %d allowed steps", step, sweepTraversalStepMultiplier)
+		}
+	}
+	if excluder.admitSweepTraversalStep() {
+		t.Fatal("admitSweepTraversalStep exceeded its bounded multiplier")
+	}
+	if excluder.sweepStop != sweepStoppedOnBudget || excluder.hiddenEvidence == 0 {
+		t.Fatalf("exhaustion = (stop %d, hidden %d), want budget stop with hidden evidence", excluder.sweepStop, excluder.hiddenEvidence)
+	}
+}
+
 // The override is read from the environment, and anything unparseable falls back
 // to the default rather than silently unbounding the sweep.
 func TestResolveSweepDirectoryBudget(t *testing.T) {

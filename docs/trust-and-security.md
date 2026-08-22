@@ -33,7 +33,10 @@ other is installation.
   bounded filesystem fallback applies the ignore files it can observe and emits
   `W_GIT_WORKTREE_FALLBACK`; Git-only policy such as `core.excludesFile` may be
   unavailable, so the warning explicitly reports that excluded files can be
-  present.
+  present. Its ignored-tree `.git`-pointer sweep stays beneath a held repository
+  root and refuses redirects or mount points (including same-filesystem bind
+  mounts on Linux); a refused directory is disclosed as
+  `W_GITDIR_SWEEP_UNREADABLE_DIRECTORY`.
 - For `stats` only: local coding-agent session transcripts
   (`~/.claude/projects/<path-slug>/*.jsonl`, or `--sessions-dir`/
   `--transcript` overrides). This is Claude Code's transcript layout; the

@@ -117,19 +117,18 @@ func TestGitDirPointerTargetFollowsASymlinkThatStaysInsideTheRepository(t *testi
 	}
 }
 
-// TestGitDirPointerTargetAcceptsANonexistentTargetLexically is the other
-// widening direction: a target that does not exist anywhere on disk has
-// nothing for a symlink to redirect, so it must still be reported on its
-// lexical spelling exactly as before — hasGitDirStructure is what rejects a
-// target with no real objects/refs, not this function.
-func TestGitDirPointerTargetAcceptsANonexistentTargetLexically(t *testing.T) {
+// A nonexistent target has no git-directory structure to preserve, and its
+// unchecked lexical spelling must not escape this resolver: a concurrent writer
+// could replace a dangling in-repository link before the structure probe uses
+// that spelling.
+func TestGitDirPointerTargetRejectsANonexistentTargetWithoutReturningUncheckedSpelling(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
 	writeFile(t, repo, ".git", "gitdir: .repo-git\n")
 
 	got, ok, hidden := gitDirPointerTarget(repo, "")
-	if !ok || hidden || got != ".repo-git" {
-		t.Errorf("gitDirPointerTarget(repo, \"\") = (%q, ok=%v, hidden=%v), want (\".repo-git\", true, false)", got, ok, hidden)
+	if ok || hidden {
+		t.Errorf("gitDirPointerTarget(repo, \"\") = (%q, ok=%v, hidden=%v), want (_, false, false)", got, ok, hidden)
 	}
 }
 

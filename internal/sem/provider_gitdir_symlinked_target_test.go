@@ -47,6 +47,17 @@ func TestGitDirPointerTargetRecordsSymlinkResolvedTarget(t *testing.T) {
 	}
 }
 
+func TestGitDirPointerTargetDoesNotReturnADanglingLinkSpelling(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	symlinkOrSkip(t, "missing", filepath.Join(repo, "admin-link"))
+	writeFile(t, repo, ".git", "gitdir: admin-link\n")
+
+	if target, ok, hidden := gitDirPointerTarget(repo, ""); ok || hidden {
+		t.Fatalf("gitDirPointerTarget = (%q, %v, hidden %v), want (_, false, false): a concurrent writer could replace the dangling link before its unchecked spelling is consumed", target, ok, hidden)
+	}
+}
+
 // TestGitDirExcluderResolvesNestedSymlinkedPointerTarget is the same shape one
 // level down, where no listing ever mentions the link: a vendored dependency's
 // `.git` pointer names a sibling symlink and the real git directory carries an
