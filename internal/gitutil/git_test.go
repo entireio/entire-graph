@@ -1002,11 +1002,9 @@ func TestGitObjectReadersUseRepoSubdirectoryPrefix(t *testing.T) {
 // anchors a literal pathspec to the REPOSITORY ROOT regardless of the
 // process's cwd -- verified independently with a bare `git ls-tree` from a
 // subdirectory. If the claimed double-prefix bug were real, the probe would
-// silently return blobProbeUnknown for the second-level path below, and
-// ReadFileLimited would fall through to materializing the oversized blob
-// with `git show` -- exactly the memory-bound violation the finding warns
-// about. This asserts the PROBE succeeds (LimitedFileOversize with the exact
-// size, no content read) rather than merely that some result comes back.
+// silently return blobProbeUnknown for the second-level path below. Calling
+// blobSizeAtRev directly and requiring blobProbeBlob with the exact size keeps
+// a higher-level content fallback from masking that failure.
 func TestBlobSizeAtRevProbeSucceedsFromARepoSubdirectory(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")
