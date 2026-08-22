@@ -10144,14 +10144,23 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 	// hides for them, and dropping it would take source out of the corpus with no
 	// disclosure, because the list belongs to the local operator rather than to
 	// the repository.
-	ignores = ignores.withoutLocalExcludes()
+	//
+	// That stripped copy is for the FINAL ignore verdict below only. The
+	// vendored-directory heuristic answers a different question — is a path
+	// Git already decided to list one the operator or project means to keep —
+	// and a local `!vendor/mypkg/` in .git/info/exclude is exactly the kind of
+	// rule Git itself used to decide to list that path as untracked in the
+	// first place. Stripping it before it reaches ReincludesDescendant made
+	// vendoredScanPath drop a path Git had just re-included, so vendorRules
+	// below is built from the FULL matcher, local excludes included.
+	finalIgnores := ignores.withoutLocalExcludes()
 	if hasIncludeFiles {
 		// An explicit include file's negations are allowed to reach into ignored
 		// content; nothing else is, so the ignored listing is only ever requested
 		// when such a file was supplied.
 		if ignored, ignoredErr := gitutil.ListIgnoredWorktreeFiles(ctx, repo); ignoredErr == nil {
 			for _, rel := range ignored {
-				if ignores.Reincluded(filepath.ToSlash(rel), false) {
+				if finalIgnores.Reincluded(filepath.ToSlash(rel), false) {
 					listed = append(listed, rel)
 				}
 			}
@@ -10197,14 +10206,14 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 			continue
 		}
 		ledger.noteListingCandidate()
-		if ignores.Ignored(rel, false) {
+		if finalIgnores.Ignored(rel, false) {
 			// Git's listing already applied the repository's exclude stack to
 			// UNTRACKED content (`--exclude-standard`), so a path that reaches
 			// this line and is dropped here is one Git would still show — a
 			// tracked file, or one an include file reopened. Disclosing those and
 			// nothing else is what keeps the report free of the ordinary
 			// build-output noise every repository gitignores.
-			ignores.noteRepoExclusion(ledger, rel, false)
+			finalIgnores.noteRepoExclusion(ledger, rel, false)
 			continue
 		}
 		seen[rel] = struct{}{}
