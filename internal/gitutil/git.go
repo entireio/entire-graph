@@ -1804,7 +1804,19 @@ func run(ctx context.Context, dir, name string, args ...string) (string, error) 
 const (
 	rawGitObjectsEnv    = "GIT_NO_REPLACE_OBJECTS=1"
 	noLazyFetchEnv      = "GIT_NO_LAZY_FETCH=1"
-	gitCommandWaitDelay = time.Second
+	// noTransportProtocolEnv is a second, independent no-egress guard.
+	// GIT_NO_LAZY_FETCH only became effective in Git 2.45 (git/git@2c206fc);
+	// this package's floor is Git 2.36 (cat-file --batch-command), so on any
+	// Git between those two versions GIT_NO_LAZY_FETCH is an unrecognized,
+	// silently ignored variable and a partial clone's promisor remote would
+	// still be lazily fetched with no guard at all. GIT_ALLOW_PROTOCOL has
+	// gated every transport since Git 2.11.1; set to empty it whitelists zero
+	// protocols, so any fetch a lazy-fetch would need to make (over http,
+	// https, ssh, or git) fails hard instead of being silently skipped like
+	// GIT_NO_LAZY_FETCH's own guard. This tool never intentionally fetches,
+	// clones, or pushes, so blocking every transport costs it nothing.
+	noTransportProtocolEnv = "GIT_ALLOW_PROTOCOL="
+	gitCommandWaitDelay    = time.Second
 )
 
 // newGitCmdWithCallerLocale builds the two git-grep subprocesses whose
@@ -1824,7 +1836,7 @@ func newGitCmdWithCallerLocale(ctx context.Context, dir string, args ...string) 
 	cmd.WaitDelay = gitCommandWaitDelay
 	// Cmd.Environ observes Dir and updates PWD accordingly. Append after the
 	// inherited environment so a hostile GIT_NO_REPLACE_OBJECTS=0 is overridden.
-	cmd.Env = append(cmd.Environ(), rawGitObjectsEnv, noLazyFetchEnv)
+	cmd.Env = append(cmd.Environ(), rawGitObjectsEnv, noLazyFetchEnv, noTransportProtocolEnv)
 	return cmd
 }
 
@@ -1845,7 +1857,9 @@ func newGitCmdWithCallerLocale(ctx context.Context, dir string, args ...string) 
 // exactly such a command). With lazy fetch disabled, Git reports a missing
 // promised object as a per-entry failure instead of fetching it — ls-tree -l
 // prints its "BAD" sentinel for a blob it cannot size, which callers already
-// classify as LimitedFileUnreadable rather than treating as an error.
+// classify as LimitedFileUnreadable rather than treating as an error. The
+// GIT_ALLOW_PROTOCOL guard alongside it closes the same gap on a Git older
+// than the lazy-fetch guard itself (see noTransportProtocolEnv).
 func newCmd(ctx context.Context, dir, name string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
@@ -1857,7 +1871,7 @@ func newCmd(ctx context.Context, dir, name string, args ...string) *exec.Cmd {
 	// os.Environ would leave child processes with the parent's stale PWD.
 	env := cmd.Environ()
 	if name == "git" {
-		env = append(env, rawGitObjectsEnv, noLazyFetchEnv)
+		env = append(env, rawGitObjectsEnv, noLazyFetchEnv, noTransportProtocolEnv)
 	}
 	cmd.Env = append(env, "LC_ALL=C", "LANG=C")
 	return cmd

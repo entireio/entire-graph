@@ -2045,12 +2045,13 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	t.Setenv("LC_ALL", "fr_FR.UTF-8")
 	t.Setenv("LANG", "fr_FR.UTF-8")
 	t.Setenv("GIT_NO_REPLACE_OBJECTS", "0")
+	t.Setenv("GIT_ALLOW_PROTOCOL", "https")
 	dir := t.TempDir()
 	cmd := newCmd(context.Background(), dir, "git", "version")
 	if cmd.WaitDelay != gitCommandWaitDelay || cmd.WaitDelay == 0 {
 		t.Fatalf("stable-locale command WaitDelay = %v, want %v", cmd.WaitDelay, gitCommandWaitDelay)
 	}
-	lcAll, lang, pwd, noReplace, noLazyFetch := "", "", "", "", ""
+	lcAll, lang, pwd, noReplace, noLazyFetch, allowProtocol := "", "", "", "", "", "unset"
 	for _, kv := range cmd.Env {
 		if v, ok := strings.CutPrefix(kv, "LC_ALL="); ok {
 			lcAll = v
@@ -2067,6 +2068,9 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 		if v, ok := strings.CutPrefix(kv, "GIT_NO_LAZY_FETCH="); ok {
 			noLazyFetch = v
 		}
+		if v, ok := strings.CutPrefix(kv, "GIT_ALLOW_PROTOCOL="); ok {
+			allowProtocol = v
+		}
 	}
 	if lcAll != "C" || lang != "C" {
 		t.Fatalf("effective subprocess locale LC_ALL=%q LANG=%q, want both \"C\"", lcAll, lang)
@@ -2080,12 +2084,16 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	if noLazyFetch != "1" {
 		t.Fatalf("effective GIT_NO_LAZY_FETCH=%q, want 1: a partial clone's promisor remote must never be contacted by this no-egress provider", noLazyFetch)
 	}
+	if allowProtocol != "" {
+		t.Fatalf("effective GIT_ALLOW_PROTOCOL=%q, want empty: GIT_NO_LAZY_FETCH is unrecognized before Git 2.45,"+
+			" so every transport must independently be denied regardless of the inherited environment", allowProtocol)
+	}
 
 	grepCmd := newGitCmdWithCallerLocale(context.Background(), dir, "version")
 	if grepCmd.WaitDelay != gitCommandWaitDelay || grepCmd.WaitDelay == 0 {
 		t.Fatalf("caller-locale command WaitDelay = %v, want %v", grepCmd.WaitDelay, gitCommandWaitDelay)
 	}
-	lcAll, pwd, noReplace, noLazyFetch = "", "", "", ""
+	lcAll, pwd, noReplace, noLazyFetch, allowProtocol = "", "", "", "", "unset"
 	for _, kv := range grepCmd.Env {
 		if v, ok := strings.CutPrefix(kv, "LC_ALL="); ok {
 			lcAll = v
@@ -2099,6 +2107,9 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 		if v, ok := strings.CutPrefix(kv, "GIT_NO_LAZY_FETCH="); ok {
 			noLazyFetch = v
 		}
+		if v, ok := strings.CutPrefix(kv, "GIT_ALLOW_PROTOCOL="); ok {
+			allowProtocol = v
+		}
 	}
 	if lcAll != "fr_FR.UTF-8" {
 		t.Fatalf("caller-locale git command LC_ALL=%q, want inherited locale", lcAll)
@@ -2111,6 +2122,40 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	}
 	if noLazyFetch != "1" {
 		t.Fatalf("caller-locale git command GIT_NO_LAZY_FETCH=%q, want 1", noLazyFetch)
+	}
+	if allowProtocol != "" {
+		t.Fatalf("caller-locale git command GIT_ALLOW_PROTOCOL=%q, want empty", allowProtocol)
+	}
+}
+
+// TestGitAllowProtocolBlocksALazyFetchGitVersionIndependently pins the
+// property the trail finding asked for directly: even if a caller's own
+// GIT_NO_LAZY_FETCH were somehow ineffective (as it silently is on any Git
+// older than 2.45, since the variable did not exist yet), a fetch attempt
+// still cannot reach the network, because newCmd's GIT_ALLOW_PROTOCOL=
+// denies every transport unconditionally.
+func TestGitAllowProtocolBlocksALazyFetchGitVersionIndependently(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+
+	// GIT_NO_LAZY_FETCH unset here (unlike newCmd's own environment) stands
+	// in for a Git binary old enough that the variable does nothing, so a
+	// pass only because of that guard would go undetected by this test.
+	cmd := exec.Command("git", "-C", repo, "fetch", "file:///nonexistent-does-not-exist")
+	cmd.Env = append(os.Environ(), noTransportProtocolEnv)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("git fetch under GIT_ALLOW_PROTOCOL= succeeded, want every transport denied: %s", out)
+	}
+	if !strings.Contains(string(out), "not allowed") {
+		t.Fatalf("git fetch under GIT_ALLOW_PROTOCOL= failed for an unexpected reason (want a transport-denial error): %s", out)
 	}
 }
 
