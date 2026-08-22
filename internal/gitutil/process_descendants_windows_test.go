@@ -39,11 +39,16 @@ func TestStopPathOutputCommandTerminatesWindowsDescendants(t *testing.T) {
 	cmd.Env = append(cmd.Env, pathOutputDescendantHelperEnv+"=parent")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	launch, err := preparePathOutputCommand(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer launch.close()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err := startPathOutputCommand(cmd)
+	job, err := launch.start(cmd)
 	if err != nil {
 		t.Fatal(err)
 	}

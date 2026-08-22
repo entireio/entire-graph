@@ -18,6 +18,21 @@ import (
 
 const pathOutputJobHelperEnv = "ENTIRE_GRAPH_PATH_OUTPUT_JOB_HELPER"
 
+func TestWindowsJobObjectInformationABILayout(t *testing.T) {
+	wantBasic := uintptr(64)
+	wantExtended := uintptr(144)
+	if unsafe.Sizeof(uintptr(0)) == 4 {
+		wantBasic = 48
+		wantExtended = 112
+	}
+	if got := unsafe.Sizeof(jobObjectBasicLimitInformation{}); got != wantBasic {
+		t.Fatalf("JOBOBJECT_BASIC_LIMIT_INFORMATION size = %d, want %d", got, wantBasic)
+	}
+	if got := unsafe.Sizeof(jobObjectExtendedLimitInformation{}); got != wantExtended {
+		t.Fatalf("JOBOBJECT_EXTENDED_LIMIT_INFORMATION size = %d, want %d", got, wantExtended)
+	}
+}
+
 func TestPathOutputChildSysProcAttrPreservesEveryCallerField(t *testing.T) {
 	processSecurity := &syscall.SecurityAttributes{Length: 11, InheritHandle: 1}
 	threadSecurity := &syscall.SecurityAttributes{Length: 22, InheritHandle: 1}
@@ -59,6 +74,11 @@ func TestPathOutputCommandIsBornInJobAndDirectTerminationWorks(t *testing.T) {
 		CreationFlags: createNoWindow,
 	}
 	cmd.SysProcAttr = originalAttrs
+	launch, err := preparePathOutputCommand(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer launch.close()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +88,7 @@ func TestPathOutputCommandIsBornInJobAndDirectTerminationWorks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	job, err := startPathOutputCommand(cmd)
+	job, err := launch.start(cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,12 +160,12 @@ func TestPathOutputCommandRejectsCallerSuppliedCreationParent(t *testing.T) {
 	attrs := &syscall.SysProcAttr{ParentProcess: current, HideWindow: true}
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	cmd.SysProcAttr = attrs
-	job, err := startPathOutputCommand(cmd)
+	launch, err := preparePathOutputCommand(cmd)
 	if err == nil || !strings.Contains(err.Error(), "caller-supplied Windows parent process") {
-		t.Fatalf("startPathOutputCommand = (%#v, %v), want explicit parent-process refusal", job, err)
+		t.Fatalf("preparePathOutputCommand = (%#v, %v), want explicit parent-process refusal", launch, err)
 	}
-	if job.handle != 0 || cmd.Process != nil || cmd.SysProcAttr != attrs {
-		t.Fatalf("refused command mutated or started: job=%#v process=%#v attrs=%#v", job, cmd.Process, cmd.SysProcAttr)
+	if launch.job.handle != 0 || cmd.Process != nil || cmd.SysProcAttr != attrs {
+		t.Fatalf("refused command mutated or started: launch=%#v process=%#v attrs=%#v", launch, cmd.Process, cmd.SysProcAttr)
 	}
 }
 

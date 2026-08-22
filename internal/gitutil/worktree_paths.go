@@ -236,11 +236,16 @@ func validateNestedIgnoreLimit(limit int) error {
 func visitBoundedNULPaths(cmd *exec.Cmd, visit func(string) bool) error {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	launch, err := preparePathOutputCommand(cmd)
+	if err != nil {
+		return err
+	}
+	defer launch.close()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
 	}
-	job, err := startPathOutputCommand(cmd)
+	job, err := launch.start(cmd)
 	if err != nil {
 		return err
 	}
@@ -370,11 +375,16 @@ func runBoundedPathOutput(
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	launch, err := preparePathOutputCommand(cmd)
+	if err != nil {
+		return nil, err
+	}
+	defer launch.close()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
 	}
-	job, err := startPathOutputCommand(cmd)
+	job, err := launch.start(cmd)
 	if err != nil {
 		message := strings.TrimSpace(stderr.String())
 		if message == "" {
@@ -552,11 +562,16 @@ func IndexHasFilesUnder(ctx context.Context, repo, rel string) (bool, error) {
 	cmd := newCmd(ctx, repo, "git", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	launch, err := preparePathOutputCommand(cmd)
+	if err != nil {
+		return false, fmt.Errorf("git ls-files literal index probe: %w", err)
+	}
+	defer launch.close()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return false, fmt.Errorf("git ls-files literal index probe: %w", err)
 	}
-	job, err := startPathOutputCommand(cmd)
+	job, err := launch.start(cmd)
 	if err != nil {
 		return false, fmt.Errorf("git ls-files literal index probe: %w", err)
 	}

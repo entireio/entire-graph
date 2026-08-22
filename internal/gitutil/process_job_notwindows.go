@@ -2,16 +2,30 @@
 
 package gitutil
 
-import "os/exec"
+import (
+	"errors"
+	"os/exec"
+)
 
 type pathOutputJob struct{}
 
-func startPathOutputCommand(cmd *exec.Cmd) (pathOutputJob, error) {
+type pathOutputLaunch struct{}
+
+func preparePathOutputCommand(cmd *exec.Cmd) (pathOutputLaunch, error) {
+	if cmd == nil {
+		return pathOutputLaunch{}, errors.New("prepare path-output command: nil command")
+	}
+	return pathOutputLaunch{}, nil
+}
+
+func (*pathOutputLaunch) start(cmd *exec.Cmd) (pathOutputJob, error) {
 	if err := cmd.Start(); err != nil {
 		return pathOutputJob{}, err
 	}
 	return pathOutputJob{}, nil
 }
+
+func (*pathOutputLaunch) close() {}
 
 func (pathOutputJob) terminate() {}
 

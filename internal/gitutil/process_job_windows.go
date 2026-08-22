@@ -19,31 +19,6 @@ const (
 	processQueryLimitedInformation         = 0x00001000
 )
 
-// jobObjectBasicLimitInformation mirrors JOBOBJECT_BASIC_LIMIT_INFORMATION.
-// Only LimitFlags is populated; the rest keep their zero value, which Windows
-// treats as "no limit" for each field.
-type jobObjectBasicLimitInformation struct {
-	PerProcessUserTimeLimit int64
-	PerJobUserTimeLimit     int64
-	LimitFlags              uint32
-	MinimumWorkingSetSize   uintptr
-	MaximumWorkingSetSize   uintptr
-	ActiveProcessLimit      uint32
-	Affinity                uintptr
-	PriorityClass           uint32
-	SchedulingClass         uint32
-}
-
-// jobObjectExtendedLimitInformation mirrors JOBOBJECT_EXTENDED_LIMIT_INFORMATION.
-type jobObjectExtendedLimitInformation struct {
-	BasicLimitInformation jobObjectBasicLimitInformation
-	IoInfo                [6]uint64
-	ProcessMemoryLimit    uintptr
-	JobMemoryLimit        uintptr
-	PeakProcessMemoryUsed uintptr
-	PeakJobMemoryUsed     uintptr
-}
-
 var (
 	modkernel32Job               = syscall.NewLazyDLL("kernel32.dll")
 	procCreateJobObjectW         = modkernel32Job.NewProc("CreateJobObjectW")
@@ -64,28 +39,34 @@ type pathOutputJob struct {
 	creationParentPID uint32
 }
 
-// startPathOutputCommand establishes containment before cmd can execute. A
-// CREATE_SUSPENDED surrogate is assigned to a KILL_ON_JOB_CLOSE job, then used
-// as cmd's creation parent. The surrogate never executes user code and is
-// retired immediately after cmd.Start returns.
+// pathOutputLaunch establishes containment before callers create os/exec pipe
+// handles. A CREATE_SUSPENDED surrogate is assigned to a KILL_ON_JOB_CLOSE job,
+// then used as cmd's creation parent. The surrogate never executes user code
+// and is retired immediately after start returns.
 //
 // Containment setup is mandatory on Windows. Returning a nil job after starting
 // the command would silently restore the launcher/assignment race this helper
 // exists to close, so any setup failure prevents the command and is returned to
 // the caller.
-func startPathOutputCommand(cmd *exec.Cmd) (pathOutputJob, error) {
+type pathOutputLaunch struct {
+	job              pathOutputJob
+	creationParent   *pathOutputCreationParent
+	originalProcAttr *syscall.SysProcAttr
+}
+
+func preparePathOutputCommand(cmd *exec.Cmd) (pathOutputLaunch, error) {
 	if cmd == nil {
-		return pathOutputJob{}, errors.New("start path-output command: nil command")
+		return pathOutputLaunch{}, errors.New("prepare path-output command: nil command")
 	}
 	originalSysProcAttr := cmd.SysProcAttr
 	if originalSysProcAttr != nil && originalSysProcAttr.ParentProcess != 0 {
-		return pathOutputJob{}, errors.New("start path-output command: caller-supplied Windows parent process is incompatible with job containment")
+		return pathOutputLaunch{}, errors.New("prepare path-output command: caller-supplied Windows parent process is incompatible with job containment")
 	}
 	childAttrs := pathOutputChildSysProcAttr(originalSysProcAttr, 0)
 
 	job, err := createPathOutputJob()
 	if err != nil {
-		return pathOutputJob{}, err
+		return pathOutputLaunch{}, err
 	}
 	creationParent, err := newPathOutputCreationParent(
 		job,
@@ -93,20 +74,43 @@ func startPathOutputCommand(cmd *exec.Cmd) (pathOutputJob, error) {
 	)
 	if err != nil {
 		job.close()
-		return pathOutputJob{}, err
+		return pathOutputLaunch{}, err
 	}
-	defer creationParent.close()
+	return pathOutputLaunch{
+		job:              job,
+		creationParent:   creationParent,
+		originalProcAttr: originalSysProcAttr,
+	}, nil
+}
 
-	childAttrs = pathOutputChildSysProcAttr(originalSysProcAttr, creationParent.process)
+func (launch *pathOutputLaunch) start(cmd *exec.Cmd) (pathOutputJob, error) {
+	if launch == nil || cmd == nil || launch.job.handle == 0 || launch.creationParent == nil {
+		return pathOutputJob{}, errors.New("start path-output command: containment is unavailable")
+	}
+	childAttrs := pathOutputChildSysProcAttr(launch.originalProcAttr, launch.creationParent.process)
 	cmd.SysProcAttr = &childAttrs
 	startErr := cmd.Start()
-	cmd.SysProcAttr = originalSysProcAttr
+	cmd.SysProcAttr = launch.originalProcAttr
 	if startErr != nil {
-		job.close()
+		launch.close()
 		return pathOutputJob{}, startErr
 	}
-	job.creationParentPID = creationParent.pid
+	job := launch.job
+	job.creationParentPID = launch.creationParent.pid
+	launch.creationParent.close()
+	launch.creationParent = nil
+	launch.job = pathOutputJob{}
 	return job, nil
+}
+
+func (launch *pathOutputLaunch) close() {
+	if launch == nil {
+		return
+	}
+	launch.creationParent.close()
+	launch.creationParent = nil
+	launch.job.close()
+	launch.job = pathOutputJob{}
 }
 
 func pathOutputChildSysProcAttr(original *syscall.SysProcAttr, parent syscall.Handle) syscall.SysProcAttr {

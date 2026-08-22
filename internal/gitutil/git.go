@@ -1527,11 +1527,16 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 	cmd := newCmd(ctx, repo, "git", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	launch, err := preparePathOutputCommand(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("git ls-tree metadata: %w", err)
+	}
+	defer launch.close()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("git ls-tree metadata pipe: %w", err)
 	}
-	job, err := startPathOutputCommand(cmd)
+	job, err := launch.start(cmd)
 	if err != nil {
 		message := strings.TrimSpace(stderr.String())
 		if message == "" {
