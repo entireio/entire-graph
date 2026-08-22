@@ -168,6 +168,79 @@ exec "$REAL_GIT" "$@"
 	}
 }
 
+func TestBuildReferenceIndexWarnsWhenPromisedBlobIsMissingBeforePrefilter(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+
+	authBase := gitObjectInputOutput(t, repo, "def Foo():\n    return 1\n", "hash-object", "-w", "--stdin")
+	authHead := gitObjectInputOutput(t, repo, "def Foo():\n    return 2\n", "hash-object", "-w", "--stdin")
+	missingCaller := gitObjectInputOutput(t, repo, "def missing_caller():\n    return Foo()\n", "hash-object", "-w", "--stdin")
+	readableCaller := gitObjectInputOutput(t, repo, "def readable_caller():\n    return Foo()\n", "hash-object", "-w", "--stdin")
+	treeInput := func(auth string) string {
+		return fmt.Sprintf(
+			"100644 blob %s\tauth.py%c100644 blob %s\tmissing.py%c100644 blob %s\treadable.py%c",
+			auth, byte(0), missingCaller, byte(0), readableCaller, byte(0),
+		)
+	}
+	baseTree := gitObjectInputOutput(t, repo, treeInput(authBase), "mktree", "-z")
+	base := gitObjectInputOutput(
+		t, repo, "", "-c", "user.name=Entire Graph Test", "-c", "user.email=graph@example.com",
+		"commit-tree", baseTree, "-m", "base",
+	)
+	headTree := gitObjectInputOutput(t, repo, treeInput(authHead), "mktree", "-z")
+	head := gitObjectInputOutput(
+		t, repo, "", "-c", "user.name=Entire Graph Test", "-c", "user.email=graph@example.com",
+		"commit-tree", headTree, "-p", base, "-m", "head",
+	)
+	git(t, repo, "update-ref", "refs/heads/main", head)
+	git(t, repo, "config", "extensions.partialClone", "origin")
+	git(t, repo, "config", "remote.origin.promisor", "true")
+	git(t, repo, "config", "remote.origin.partialclonefilter", "blob:none")
+
+	objectPath := filepath.Join(repo, ".git", "objects", missingCaller[:2], missingCaller[2:])
+	if err := os.Remove(objectPath); err != nil {
+		t.Fatalf("remove promised caller blob: %v", err)
+	}
+	assertMissing := func(stage string) {
+		t.Helper()
+		cmd := exec.Command("git", "cat-file", "-e", missingCaller)
+		cmd.Dir = repo
+		cmd.Env = append(cmd.Environ(), "GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL=")
+		if err := cmd.Run(); err == nil {
+			t.Fatalf("%s: promised caller blob unexpectedly exists", stage)
+		}
+	}
+	assertMissing("before dependent scan")
+
+	index, warnings, err := buildReferenceIndex(t.Context(), repo, head, map[string]struct{}{"Foo": {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMissing("after dependent scan")
+	if _, ok := index["Foo"]["readable.py#function:readable_caller"]; !ok {
+		t.Fatalf("readable sibling dependent was not counted: %#v", index["Foo"])
+	}
+	if _, ok := index["Foo"]["missing.py#function:missing_caller"]; ok {
+		t.Fatalf("missing promised dependent was unexpectedly counted: %#v", index["Foo"])
+	}
+
+	var fallbackWarnings, missingWarnings []ProviderWarning
+	for _, warning := range warnings {
+		if warning.Code == "W_DEPENDENTS_PREFILTER_FAILED" {
+			fallbackWarnings = append(fallbackWarnings, warning)
+		}
+		if warning.Code == "E_FILE_READ" && warning.FilePath == "missing.py" {
+			missingWarnings = append(missingWarnings, warning)
+		}
+	}
+	if len(fallbackWarnings) != 1 || len(missingWarnings) != 1 {
+		t.Fatalf("promised missing blob warnings = %#v, want one prefilter and one file-read warning", warnings)
+	}
+	if !strings.Contains(missingWarnings[0].EffectOnCompleteness, "not counted") {
+		t.Fatalf("missing blob warning does not disclose undercount: %#v", missingWarnings[0])
+	}
+}
+
 // TestBuildReferenceIndexEmptyNamesDoesNoWork pins that an empty names map
 // short-circuits before any git call is made -- passing a repo path that
 // does not exist must not surface an error, because buildReferenceIndex
@@ -380,9 +453,6 @@ func TestBuildReferenceIndexFallbackWarnsOnlyForCandidateFiles(t *testing.T) {
 // nothing in Result.Warnings to show for it. With no candidate evidence
 // either way, it must warn.
 func TestBuildReferenceIndexFallbackWarnsForLineUnsafeOversizedCandidate(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("embedded-newline paths are not representable in a Windows working tree")
-	}
 	repo := t.TempDir()
 	git(t, repo, "init")
 	git(t, repo, "config", "user.name", "Entire Graph Test")
@@ -410,14 +480,17 @@ func TestBuildReferenceIndexFallbackWarnsForLineUnsafeOversizedCandidate(t *test
 		t.Fatal(err)
 	}
 
-	sawTooLarge := false
+	var fallbackCount, tooLargeCount int
 	for _, warning := range warnings {
+		if warning.Code == "W_DEPENDENTS_PREFILTER_FAILED" {
+			fallbackCount++
+		}
 		if warning.Code == "E_FILE_TOO_LARGE" && warning.FilePath == unsafePath {
-			sawTooLarge = true
+			tooLargeCount++
 		}
 	}
-	if !sawTooLarge {
-		t.Fatalf("expected E_FILE_TOO_LARGE for the line-unsafe oversized candidate, got %#v", warnings)
+	if fallbackCount != 1 || tooLargeCount != 1 || len(warnings) != 2 {
+		t.Fatalf("warnings = %#v, want exactly one prefilter warning and one E_FILE_TOO_LARGE for the line-unsafe candidate", warnings)
 	}
 }
 

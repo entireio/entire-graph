@@ -275,14 +275,16 @@ func buildReferenceIndexWithProgress(ctx context.Context, repo, head string, nam
 			// silently assumed clean; the same applies to a path this scan
 			// cannot address at all. Both are rare, so this does not reopen
 			// the vendored-blob warning spam the isCandidate check above
-			// exists to avoid.
+			// exists to avoid. Unavailable content has the same uncertainty: on a
+			// full-tree fallback there is no sound way to prove the unreadable file
+			// did not contain a changed name, so it is always disclosed too.
 			if size, oversize := oversizeBytes(path); oversize && (prefiltered || oversizeMatched[path] || limitedOversizeUnscanned[path]) {
 				warnings = append(warnings, dependentsFileTooLargeWarning(path, int(size)))
 			}
 			if limitedUnaddressable[path] {
 				warnings = append(warnings, dependentsFileUnaddressableWarning(path))
 			}
-			if status, unavailable := limitedUnavailable[path]; unavailable && prefiltered {
+			if status, unavailable := limitedUnavailable[path]; unavailable {
 				warnings = append(warnings, dependentsFileUnavailableWarning(path, status))
 			}
 			continue
@@ -404,17 +406,17 @@ func dependentsFileUnaddressableWarning(path string) ProviderWarning {
 }
 
 func dependentsFileUnavailableWarning(path string, status gitutil.LimitedFileStatus) ProviderWarning {
-	detail := "file matched during dependent discovery but its Git blob was unavailable when content was read"
+	detail := "the tree entry identifies a blob, but its Git content was unavailable during dependent analysis"
 	if status == gitutil.LimitedFileNonBlob {
-		detail = "file matched during dependent discovery but its tree entry was no longer a blob when content was read"
+		detail = "the tree entry was not a blob when dependent content was read"
 	} else if status == gitutil.LimitedFileMissing {
-		detail = "file matched during dependent discovery but its tree entry was missing when content was read"
+		detail = "the tree entry was missing when dependent content was read"
 	}
 	return ProviderWarning{
 		Code:                 "E_FILE_READ",
 		Severity:             "error",
 		FilePath:             path,
-		EffectOnCompleteness: "dependent references in this file were not counted because its Git content became unavailable after discovery",
+		EffectOnCompleteness: "dependent references in this file were not counted because its Git content was unavailable",
 		Detail:               detail,
 	}
 }
@@ -442,8 +444,8 @@ func dependentsParseFailureWarning(path string, status ParseStatus) ProviderWarn
 
 // grepFallbackWarning is surfaced once when the git-grep prefilter itself
 // fails and referenceCandidateFiles falls back to scanning every file in the
-// tree. The fallback keeps dependent counts correct, but it is far slower
-// than the prefiltered path, so callers should know it happened.
+// tree. This avoids trusting partial grep stdout; per-file warnings separately
+// disclose any content the fallback itself cannot read.
 func grepFallbackWarning(err error) ProviderWarning {
 	return ProviderWarning{
 		Code:                 "W_DEPENDENTS_PREFILTER_FAILED",

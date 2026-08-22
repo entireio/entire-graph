@@ -187,6 +187,33 @@ func TestGrepTreePathsMatchesTextAPIAndHandlesUnusualPaths(t *testing.T) {
 	}
 }
 
+func TestGitGrepRejectsSuccessfulStderr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the Git wrapper is a POSIX shell script")
+	}
+	wrapperDir := t.TempDir()
+	wrapper := filepath.Join(wrapperDir, "git")
+	script := `#!/bin/sh
+case " $* " in
+	*" -o "*) printf 'HEAD:auth.py\000Foo\n' ;;
+	*) printf 'HEAD:auth.py\000' ;;
+esac
+printf '%s\n' "error: 'HEAD:caller.py': unable to read promised blob" >&2
+exit 0
+`
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if paths, err := GrepTreePathsIncludingBinary(t.Context(), t.TempDir(), "HEAD", []string{"Foo"}); err == nil {
+		t.Fatalf("path-only Git grep accepted successful stderr and returned %#v", paths)
+	}
+	if matches, err := grepFixedStringMatches(t.Context(), t.TempDir(), "HEAD", []string{"Foo"}, 1); err == nil {
+		t.Fatalf("matched-text Git grep accepted successful stderr and returned %#v", matches)
+	}
+}
+
 // TestGrepTreePathsIncludingBinaryFindsFilesGrepTreePathsExcludes pins the
 // only behavioral difference between the two functions: a blob Git itself
 // classifies as binary because of an early embedded NUL byte. GrepTreePaths

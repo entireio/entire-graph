@@ -329,6 +329,13 @@ func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string,
 		}
 		return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
 	}
+	if stderr.Len() > 0 {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = "unexpected stderr output"
+		}
+		return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
+	}
 	prefix := ""
 	if treeish != "" {
 		prefix = treeish + ":"
@@ -387,6 +394,13 @@ func grepFixedStringMatches(ctx context.Context, repo, treeish string, patterns 
 		message := strings.TrimSpace(stderr.String())
 		if message == "" {
 			message = err.Error()
+		}
+		return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
+	}
+	if stderr.Len() > 0 {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = "unexpected stderr output"
 		}
 		return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
 	}
