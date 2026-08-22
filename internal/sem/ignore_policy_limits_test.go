@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -405,6 +406,36 @@ func TestIgnoredNestedIgnoreHasProviderReplayParity(t *testing.T) {
 	}
 	if !replay.AllowsReplayPaths([]string{"vendor/mypkg/keep.go"}) {
 		t.Fatal("replay rejected the provider-admitted path from an ignored nested policy file")
+	}
+}
+
+func TestIrrelevantIgnoredNestedIgnoresDoNotSpendProviderReplayBudget(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, ".gitignore", "ignored/\n")
+	writeFile(t, repo, "main.go", "package main\n")
+	initializeIgnorePolicyRepo(t, repo)
+	for index := 0; index <= maxNestedIgnoreFiles; index++ {
+		writeFile(t, repo, fmt.Sprintf("ignored/d%03d/.gitignore", index), "# irrelevant\n")
+	}
+
+	ignores, err := loadWorktreeIgnoreMatcher(repo, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := worktreeSourceFiles(t.Context(), repo, ignores, false)
+	if err != nil {
+		t.Fatalf("irrelevant ignored policies exhausted provider budget: %v", err)
+	}
+	if !slices.Contains(paths, "main.go") {
+		t.Fatalf("provider paths = %q, want main.go", paths)
+	}
+
+	replay, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
+	if err != nil {
+		t.Fatalf("irrelevant ignored policies exhausted replay budget: %v", err)
+	}
+	if !replay.AllowsReplayPaths([]string{"main.go"}) {
+		t.Fatal("replay rejected the legitimate path beside a wholly ignored tree")
 	}
 }
 

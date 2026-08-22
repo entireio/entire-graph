@@ -555,7 +555,7 @@ func TestSearchReplayPolicyReportsGlobalNestedIgnoreCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := worktreeSourceFiles(t.Context(), repo, ignores, false); err == nil ||
-		!strings.Contains(err.Error(), "more than 512 nested ignore files") {
+		!strings.Contains(err.Error(), "nested-ignore candidates exceed 512") {
 		t.Fatalf("provider nested-ignore cap error = %v", err)
 	}
 

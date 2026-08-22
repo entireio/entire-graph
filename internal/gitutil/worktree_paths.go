@@ -161,8 +161,13 @@ func FirstWorktreeNestedIgnorePaths(
 	if err != nil || len(paths) >= limit || includeIgnored == nil {
 		return paths, err
 	}
+	// Collapse a wholly ignored directory to its directory record. Git never
+	// consults .gitignore files below such a pruned directory, while a policy
+	// whose own pathname is ignored inside a traversed directory is still emitted
+	// and can govern listed siblings.
 	ignoredArgs := []string{
-		"ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--",
+		"ls-files", "-z", "--others", "--ignored", "--exclude-standard",
+		"--directory", "--no-empty-directory", "--",
 		":(glob)**/.gitignore",
 	}
 	ignored, err := firstNestedIgnorePaths(ctx, repo, ignoredArgs, limit-len(paths), includeIgnored)
@@ -196,8 +201,11 @@ func BoundedWorktreeNestedIgnorePaths(
 	if err != nil || includeIgnored == nil {
 		return paths, err
 	}
+	// See FirstWorktreeNestedIgnorePaths: directory collapsing prevents
+	// irrelevant policies below pruned ignored trees from spending this budget.
 	ignoredArgs := []string{
-		"ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--",
+		"ls-files", "-z", "--others", "--ignored", "--exclude-standard",
+		"--directory", "--no-empty-directory", "--",
 		":(glob)**/.gitignore",
 	}
 	return boundedNestedIgnorePaths(ctx, repo, ignoredArgs, limit, includeIgnored, paths)

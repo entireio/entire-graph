@@ -383,7 +383,10 @@ func TestFirstWorktreeNestedIgnorePathsPreservesProviderOrder(t *testing.T) {
 	gitCmd(t, repo, "add", "b/.gitignore")
 	gitCmd(t, repo, "commit", "-m", "tracked")
 	write(t, repo, "a/.gitignore", "untracked\n")
-	write(t, repo, ".git/info/exclude", "ignored/\n")
+	// Ignore the policy pathname, not its whole parent directory. Git still
+	// traverses this directory and applies the ignored policy to siblings, so it
+	// remains relevant when the caller admits it.
+	write(t, repo, ".git/info/exclude", "ignored/.gitignore\n")
 	write(t, repo, "ignored/.gitignore", "ignored\n")
 
 	withoutIncludes, err := FirstWorktreeNestedIgnorePaths(t.Context(), repo, 3, nil)
@@ -403,6 +406,29 @@ func TestFirstWorktreeNestedIgnorePathsPreservesProviderOrder(t *testing.T) {
 	want := []string{"a/.gitignore", "b/.gitignore", "ignored/.gitignore"}
 	if !reflect.DeepEqual(paths, want) {
 		t.Fatalf("worktree nested ignore paths = %v, want %v", paths, want)
+	}
+}
+
+func TestBoundedWorktreeNestedIgnorePathsCollapseWhollyIgnoredDirectories(t *testing.T) {
+	repo := t.TempDir()
+	gitCmd(t, repo, "init")
+	gitCmd(t, repo, "config", "user.name", "T")
+	gitCmd(t, repo, "config", "user.email", "t@example.com")
+	write(t, repo, ".gitignore", "ignored/\n")
+	gitCmd(t, repo, "add", ".gitignore")
+	gitCmd(t, repo, "commit", "-m", "ignore subtree")
+	for index := 0; index <= nestedIgnoreCandidateMaxCount; index++ {
+		write(t, repo, fmt.Sprintf("ignored/d%03d/.gitignore", index), "# irrelevant\n")
+	}
+
+	paths, err := BoundedWorktreeNestedIgnorePaths(
+		t.Context(), repo, nestedIgnoreCandidateMaxCount, func(string) bool { return true },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 0 {
+		t.Fatalf("wholly ignored subtree produced nested policy paths %q", paths)
 	}
 }
 
