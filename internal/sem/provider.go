@@ -10973,6 +10973,19 @@ var gitDirRootEntryNames = []string{
 	"config.lock", "index.lock", "HEAD.lock", "packed-refs.lock", "shallow.lock",
 }
 
+// gitDirRootEntryPrefixes are the git-owned top-level names whose full
+// spelling is not fixed, so no exact string in gitDirRootEntryNames can name
+// them. `git update-index --split-index` writes `sharedindex.<hash>` beside
+// `index`, with a fresh content-addressed hash each time the shared index
+// changes; matching by name alone would need to enumerate every hash git
+// could ever write. Verified on git 2.54.0: `git update-index --split-index`
+// at a repository root that doubles as its own git directory leaves
+// `sharedindex.<40-or-64-hex-chars>` there, and `git ls-files --others
+// --directory` does not list it (it is git index state, not worktree
+// content) while a name-only exact-match excluder does not recognize it
+// either and leaves it in the source listing.
+var gitDirRootEntryPrefixes = []string{"sharedindex."}
+
 // recordGitDirRootEntries excludes the git directory's own top-level entries
 // when the repository root IS the git directory a pointer named.
 //
@@ -10984,9 +10997,22 @@ func (g *gitDirExcluder) recordGitDirRootEntries() {
 		if _, err := os.Lstat(filepath.Join(g.repo, name)); err != nil {
 			continue
 		}
-		g.targets[name] = struct{}{}
-		if foldsCase(g.repo, name) {
-			g.foldedTargets[strings.ToLower(name)] = struct{}{}
+		g.recordTarget(name)
+	}
+	// A variably-named entry cannot be probed by an exact Lstat, so this asks
+	// the directory itself instead, once, for whichever of its entries starts
+	// with a known git-owned prefix (currently only sharedindex.<hash>).
+	entries, err := os.ReadDir(g.repo)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		for _, prefix := range gitDirRootEntryPrefixes {
+			if strings.HasPrefix(name, prefix) {
+				g.recordTarget(name)
+				break
+			}
 		}
 	}
 }
@@ -11269,6 +11295,18 @@ func gitCommonDir(dir string) (string, bool) {
 		// Git resolves a relative commondir against the git directory itself,
 		// by concatenation — see gitJoinRelative.
 		target = gitJoinRelative(dir, target)
+	}
+	// A different volume than dir's own is rejected BEFORE the caller ever
+	// stats it: unlike gitDirPointerTarget, this result feeds straight into
+	// hasObjectsAndRefs's os.Stat with no containment check downstream, so
+	// the guard has to live here. On Windows, filepath.VolumeName reports a
+	// UNC share (`\\host\share`) as its own volume, and a `commondir` naming
+	// one would otherwise make looksLikeGitDir/hasGitDirStructure open an
+	// SMB connection to a server the scanned repository's own committed
+	// content names — with ambient credentials. VolumeName is "" for every
+	// relative and POSIX-absolute path, so this is a no-op off Windows.
+	if filepath.VolumeName(target) != filepath.VolumeName(dir) {
+		return "", false
 	}
 	return target, true
 }

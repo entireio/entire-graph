@@ -257,6 +257,41 @@ func topLevelNames(t *testing.T, gitDir string) []string {
 	return names
 }
 
+// TestGitDirExcluderExcludesASharedIndexFileAtARootGitDir reproduces the trail
+// finding on gitDirRootEntryNames: `git update-index --split-index` writes
+// `sharedindex.<hash>` beside `index` with a fresh content-addressed hash each
+// time, so no fixed name in that list can ever cover it. It has to be found by
+// listing the git directory's own entries and matching the `sharedindex.`
+// prefix, the same way gitDirRootEntryPrefixes documents.
+func TestGitDirExcluderExcludesASharedIndexFileAtARootGitDir(t *testing.T) {
+	t.Parallel()
+	t.Run("at a root git directory it goes", func(t *testing.T) {
+		t.Parallel()
+		repo := t.TempDir()
+		writeRootGitDirFixture(t, repo)
+		writeFile(t, repo, ".git", "gitdir: .\n")
+		// A real hash would do, but any name with the prefix is git-owned index
+		// state regardless of what the hash algorithm or length happens to be.
+		writeFile(t, repo, "sharedindex.deadbeefcafef00d", "\n")
+		writeFile(t, repo, "src/app.go", "package src\n")
+
+		excluder := newGitDirExcluder(t.Context(), repo)
+		if !excluder.excluded("sharedindex.deadbeefcafef00d") {
+			t.Error(`excluded("sharedindex.deadbeefcafef00d") = false, want true: the pointer names the root, so this is the git directory's own split-index state`)
+		}
+		if excluder.excluded("src/app.go") {
+			t.Error(`excluded("src/app.go") = true, want false`)
+		}
+	})
+	t.Run("in an ordinary repository it stays", func(t *testing.T) {
+		t.Parallel()
+		repo := t.TempDir()
+		writeFile(t, repo, "sharedindex.go", "package main\n\n// LoadOriginCredential returns the origin remote credential.\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+		assertSearchReturns(t, repo, "sharedindex.go")
+	})
+}
+
 // TestSearchRepositoryNeverIndexesTheReftableRefStoreAtARootGitDir is the leak
 // the list above was missing, end to end and with its narrowing guard.
 //
