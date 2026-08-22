@@ -490,7 +490,7 @@ func TestGitAbsolutePathMatchesGitForWindowsRootGrammar(t *testing.T) {
 	}
 }
 
-func TestUnsafeRootGitfileUsesFilesystemFallbackBeforeStartingGit(t *testing.T) {
+func TestUnsafeRootGitfileUsesWarnedFallbackBeforeStartingGit(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, ".git", `gitdir: \\203.0.113.1\share\repo`+"\n")
 	writeFile(t, repo, "main.go", "package main\n")
@@ -510,20 +510,52 @@ func TestUnsafeRootGitfileUsesFilesystemFallbackBeforeStartingGit(t *testing.T) 
 	t.Setenv("PATH", binDir)
 	t.Setenv(fakeGitMarkerEnv, marker)
 
-	done := make(chan error, 1)
+	type result struct {
+		snapshot ProviderSnapshot
+		err      error
+	}
+	done := make(chan result, 1)
 	go func() {
-		_, _, err := worktreeSourceFiles(t.Context(), repo, ignoreMatcher{}, false)
-		done <- err
+		snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+		done <- result{snapshot: snapshot, err: err}
 	}()
 	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("filesystem fallback: %v", err)
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("warned filesystem fallback: %v", got.err)
+		}
+		warned := false
+		for _, warning := range got.snapshot.Header.Warnings {
+			warned = warned || warning.Code == "W_GIT_WORKTREE_FALLBACK"
+		}
+		if !warned {
+			t.Fatalf("warnings = %+v, want W_GIT_WORKTREE_FALLBACK", got.snapshot.Header.Warnings)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("unsafe root gitfile did not select the filesystem fallback promptly")
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Git subprocess marker stat = %v, want not-exist", err)
+	}
+}
+
+func TestRootGitDirectoryWithUNCObjectStoreIsUnsafeWithoutDialing(t *testing.T) {
+	repo := t.TempDir()
+	gitDir := filepath.Join(repo, ".git")
+	if err := os.MkdirAll(filepath.Join(gitDir, "refs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, gitDir, "HEAD", "ref: refs/heads/main\n")
+	windowsSymlinkOrSkip(t, `\\203.0.113.1\share\objects`, filepath.Join(gitDir, "objects"))
+
+	done := make(chan bool, 1)
+	go func() { done <- gitMetadataSafeForSubprocess(repo) }()
+	select {
+	case safe := <-done:
+		if safe {
+			t.Fatal("UNC .git/objects redirect passed the pre-subprocess metadata guard")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("UNC .git/objects redirect was followed instead of rejected before network access")
 	}
 }

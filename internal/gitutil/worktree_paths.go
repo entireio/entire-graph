@@ -214,8 +214,9 @@ func BoundedWorktreeNestedIgnorePaths(
 // VisitWorktreePaths streams Git's provider candidate listing one NUL-safe path
 // at a time. When ignored is false it matches ListWorktreeFiles; when true it
 // matches ListIgnoredWorktreeFiles. Returning false stops the subprocess
-// successfully. The reader bounds each record and never buffers complete Git
-// output, so callers can enforce their own retained-count and aggregate limits.
+// successfully. The reader applies the same fixed raw count and aggregate-byte
+// bound as the materialized listings before invoking the callback, and never
+// buffers complete Git output.
 func VisitWorktreePaths(
 	ctx context.Context,
 	repo string,
@@ -231,7 +232,7 @@ func VisitWorktreePaths(
 	} else {
 		args = append(args, "--cached")
 	}
-	return visitBoundedNULPaths(newCmd(ctx, repo, "git", args...), visit)
+	return visitBoundedWorktreePathOutput(newCmd(ctx, repo, "git", args...), visit)
 }
 
 // VisitWorktreeDirectoryEntries streams only the collapsed directory records

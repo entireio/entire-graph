@@ -253,3 +253,22 @@ func TestWorktreeListingBudgetAllowsExactBytesAndRejectsOneMore(t *testing.T) {
 		t.Fatal("one byte beyond aggregate worktree byte bound was accepted")
 	}
 }
+
+func TestVisitWorktreePathOutputChargesRecordsBeforeVisitorFiltering(t *testing.T) {
+	budget := worktreeListingBudget{fields: maxWorktreeListingFields - 1}
+	visited := 0
+	err := visitBoundedWorktreePathOutputWithBudget(
+		directoryEntryProducerCommandWithRecordBytes(t, 2, 2, false, false),
+		&budget,
+		func(string) bool {
+			visited++
+			return true // Model a caller that discards every record after this callback.
+		},
+	)
+	if !errors.Is(err, ErrWorktreeListingTruncated) {
+		t.Fatalf("discarded raw records err = %v, want ErrWorktreeListingTruncated", err)
+	}
+	if visited != 1 {
+		t.Fatalf("visitor saw %d records, want 1 before the fixed raw bound stopped the stream", visited)
+	}
+}

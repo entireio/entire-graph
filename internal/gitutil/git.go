@@ -247,13 +247,7 @@ func (b *worktreeListingBudget) admit(path string) bool {
 func listBoundedWorktreePaths(cmd *exec.Cmd) ([]string, error) {
 	paths := make([]string, 0)
 	seen := make(map[string]struct{})
-	var budget worktreeListingBudget
-	truncated := false
-	err := visitBoundedNULPaths(cmd, func(path string) bool {
-		if !budget.admit(path) {
-			truncated = true
-			return false
-		}
+	err := visitBoundedWorktreePathOutput(cmd, func(path string) bool {
 		if path == "" {
 			return true
 		}
@@ -267,10 +261,34 @@ func listBoundedWorktreePaths(cmd *exec.Cmd) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if truncated {
-		return nil, ErrWorktreeListingTruncated
-	}
 	return paths, nil
+}
+
+// visitBoundedWorktreePathOutput applies the fixed raw count and byte budget
+// before the caller sees each record. In particular, a visitor that discards
+// ignored or otherwise ineligible records cannot accidentally turn a bounded
+// retained set into an unbounded Git stdout stream.
+func visitBoundedWorktreePathOutput(cmd *exec.Cmd, visit func(string) bool) error {
+	var budget worktreeListingBudget
+	return visitBoundedWorktreePathOutputWithBudget(cmd, &budget, visit)
+}
+
+func visitBoundedWorktreePathOutputWithBudget(cmd *exec.Cmd, budget *worktreeListingBudget, visit func(string) bool) error {
+	truncated := false
+	err := visitBoundedNULPaths(cmd, func(path string) bool {
+		if !budget.admit(path) {
+			truncated = true
+			return false
+		}
+		return visit(path)
+	})
+	if err != nil {
+		return err
+	}
+	if truncated {
+		return ErrWorktreeListingTruncated
+	}
+	return nil
 }
 
 func splitNULPaths(out string) []string {
@@ -2128,7 +2146,10 @@ const (
 	// GIT_NO_LAZY_FETCH's own guard. This tool never intentionally fetches,
 	// clones, or pushes, so blocking every transport costs it nothing.
 	noTransportProtocolEnv = "GIT_ALLOW_PROTOCOL="
-	gitCommandWaitDelay    = time.Second
+	// Listing and object inspection are read-only. Disable optional lock and
+	// index-refresh writes even when repository configuration would request one.
+	noOptionalLocksEnv  = "GIT_OPTIONAL_LOCKS=0"
+	gitCommandWaitDelay = time.Second
 )
 
 // newGitCmdWithCallerLocale builds the two git-grep subprocesses whose
@@ -2146,10 +2167,56 @@ func newGitCmdWithCallerLocale(ctx context.Context, dir string, args ...string) 
 	// This matters especially on Windows, where killing Git does not necessarily
 	// close an orphan-held stderr handle promptly.
 	cmd.WaitDelay = gitCommandWaitDelay
-	// Cmd.Environ observes Dir and updates PWD accordingly. Append after the
-	// inherited environment so a hostile GIT_NO_REPLACE_OBJECTS=0 is overridden.
-	cmd.Env = append(cmd.Environ(), rawGitObjectsEnv, noLazyFetchEnv, noTransportProtocolEnv)
+	// Cmd.Environ observes Dir and updates PWD accordingly. Repository-selection
+	// environment is stripped before the fixed guards are appended: --repo must
+	// name the repository Git opens, rather than an inherited GIT_DIR or object
+	// store silently replacing it.
+	cmd.Env = append(sanitizedGitEnvironment(cmd.Environ()), rawGitObjectsEnv, noLazyFetchEnv, noTransportProtocolEnv, noOptionalLocksEnv)
 	return cmd
+}
+
+// gitRepositoryEnvironment contains Git's repository-local environment
+// variables (`git rev-parse --local-env-vars`). None is meaningful to a
+// provider subprocess because every call already receives an explicit working
+// directory. Inheriting one would let the caller replace the repository,
+// index, worktree, object store, refs or config observed for an unrelated
+// --repo path. GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n accompany GIT_CONFIG_COUNT
+// but are filtered by prefix too so the child never receives a partial injected
+// configuration if Git's handling changes.
+var gitRepositoryEnvironment = map[string]struct{}{
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES": {},
+	"GIT_COMMON_DIR":                   {},
+	"GIT_CONFIG":                       {},
+	"GIT_CONFIG_COUNT":                 {},
+	"GIT_CONFIG_PARAMETERS":            {},
+	"GIT_CEILING_DIRECTORIES":          {},
+	"GIT_DIR":                          {},
+	"GIT_DISCOVERY_ACROSS_FILESYSTEM":  {},
+	"GIT_GRAFT_FILE":                   {},
+	"GIT_IMPLICIT_WORK_TREE":           {},
+	"GIT_INDEX_FILE":                   {},
+	"GIT_NAMESPACE":                    {},
+	"GIT_NO_REPLACE_OBJECTS":           {},
+	"GIT_OBJECT_DIRECTORY":             {},
+	"GIT_PREFIX":                       {},
+	"GIT_REPLACE_REF_BASE":             {},
+	"GIT_SHALLOW_FILE":                 {},
+	"GIT_WORK_TREE":                    {},
+}
+
+func sanitizedGitEnvironment(env []string) []string {
+	clean := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		canonicalKey := strings.ToUpper(key)
+		if _, remove := gitRepositoryEnvironment[canonicalKey]; remove ||
+			strings.HasPrefix(canonicalKey, "GIT_CONFIG_KEY_") ||
+			strings.HasPrefix(canonicalKey, "GIT_CONFIG_VALUE_") {
+			continue
+		}
+		clean = append(clean, entry)
+	}
+	return clean
 }
 
 // newCmd builds the exec.Cmd used by subprocesses whose diagnostics must be
@@ -2183,7 +2250,7 @@ func newCmd(ctx context.Context, dir, name string, args ...string) *exec.Cmd {
 	// os.Environ would leave child processes with the parent's stale PWD.
 	env := cmd.Environ()
 	if name == "git" {
-		env = append(env, rawGitObjectsEnv, noLazyFetchEnv, noTransportProtocolEnv)
+		env = append(sanitizedGitEnvironment(env), rawGitObjectsEnv, noLazyFetchEnv, noTransportProtocolEnv, noOptionalLocksEnv)
 	}
 	cmd.Env = append(env, "LC_ALL=C", "LANG=C")
 	return cmd

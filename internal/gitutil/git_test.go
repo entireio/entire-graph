@@ -2146,12 +2146,13 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	t.Setenv("LANG", "fr_FR.UTF-8")
 	t.Setenv("GIT_NO_REPLACE_OBJECTS", "0")
 	t.Setenv("GIT_ALLOW_PROTOCOL", "https")
+	t.Setenv("GIT_OPTIONAL_LOCKS", "1")
 	dir := t.TempDir()
 	cmd := newCmd(context.Background(), dir, "git", "version")
 	if cmd.WaitDelay != gitCommandWaitDelay || cmd.WaitDelay == 0 {
 		t.Fatalf("stable-locale command WaitDelay = %v, want %v", cmd.WaitDelay, gitCommandWaitDelay)
 	}
-	lcAll, lang, pwd, noReplace, noLazyFetch, allowProtocol := "", "", "", "", "", "unset"
+	lcAll, lang, pwd, noReplace, noLazyFetch, allowProtocol, optionalLocks := "", "", "", "", "", "unset", ""
 	for _, kv := range cmd.Env {
 		if v, ok := strings.CutPrefix(kv, "LC_ALL="); ok {
 			lcAll = v
@@ -2171,6 +2172,9 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 		if v, ok := strings.CutPrefix(kv, "GIT_ALLOW_PROTOCOL="); ok {
 			allowProtocol = v
 		}
+		if v, ok := strings.CutPrefix(kv, "GIT_OPTIONAL_LOCKS="); ok {
+			optionalLocks = v
+		}
 	}
 	if lcAll != "C" || lang != "C" {
 		t.Fatalf("effective subprocess locale LC_ALL=%q LANG=%q, want both \"C\"", lcAll, lang)
@@ -2188,12 +2192,15 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 		t.Fatalf("effective GIT_ALLOW_PROTOCOL=%q, want empty: GIT_NO_LAZY_FETCH is unrecognized before Git 2.45,"+
 			" so every transport must independently be denied regardless of the inherited environment", allowProtocol)
 	}
+	if optionalLocks != "0" {
+		t.Fatalf("effective GIT_OPTIONAL_LOCKS=%q, want 0 for read-only provider subprocesses", optionalLocks)
+	}
 
 	grepCmd := newGitCmdWithCallerLocale(context.Background(), dir, "version")
 	if grepCmd.WaitDelay != gitCommandWaitDelay || grepCmd.WaitDelay == 0 {
 		t.Fatalf("caller-locale command WaitDelay = %v, want %v", grepCmd.WaitDelay, gitCommandWaitDelay)
 	}
-	lcAll, pwd, noReplace, noLazyFetch, allowProtocol = "", "", "", "", "unset"
+	lcAll, pwd, noReplace, noLazyFetch, allowProtocol, optionalLocks = "", "", "", "", "unset", ""
 	for _, kv := range grepCmd.Env {
 		if v, ok := strings.CutPrefix(kv, "LC_ALL="); ok {
 			lcAll = v
@@ -2209,6 +2216,9 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 		}
 		if v, ok := strings.CutPrefix(kv, "GIT_ALLOW_PROTOCOL="); ok {
 			allowProtocol = v
+		}
+		if v, ok := strings.CutPrefix(kv, "GIT_OPTIONAL_LOCKS="); ok {
+			optionalLocks = v
 		}
 	}
 	if lcAll != "fr_FR.UTF-8" {
@@ -2226,6 +2236,44 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	if allowProtocol != "" {
 		t.Fatalf("caller-locale git command GIT_ALLOW_PROTOCOL=%q, want empty", allowProtocol)
 	}
+	if optionalLocks != "0" {
+		t.Fatalf("caller-locale git command GIT_OPTIONAL_LOCKS=%q, want 0", optionalLocks)
+	}
+}
+
+func TestGitCommandsDiscardInheritedRepositorySelection(t *testing.T) {
+	inherited := map[string]string{
+		"GIT_DIR":                          filepath.Join(t.TempDir(), "other.git"),
+		"GIT_WORK_TREE":                    filepath.Join(t.TempDir(), "other-worktree"),
+		"GIT_COMMON_DIR":                   filepath.Join(t.TempDir(), "other-common"),
+		"GIT_OBJECT_DIRECTORY":             filepath.Join(t.TempDir(), "other-objects"),
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES": filepath.Join(t.TempDir(), "alternates"),
+		"GIT_INDEX_FILE":                   filepath.Join(t.TempDir(), "other-index"),
+		"GIT_CONFIG":                       filepath.Join(t.TempDir(), "other-config"),
+		"GIT_CONFIG_COUNT":                 "1",
+		"GIT_CONFIG_KEY_0":                 "core.worktree",
+		"GIT_CONFIG_VALUE_0":               filepath.Join(t.TempDir(), "injected-worktree"),
+		"GIT_NAMESPACE":                    "other-namespace",
+		"GIT_CEILING_DIRECTORIES":          filepath.Dir(t.TempDir()),
+		"GIT_DISCOVERY_ACROSS_FILESYSTEM":  "1",
+	}
+	for key, value := range inherited {
+		t.Setenv(key, value)
+	}
+
+	assertSanitized := func(name string, cmd *exec.Cmd) {
+		t.Helper()
+		for _, entry := range cmd.Env {
+			key, _, _ := strings.Cut(entry, "=")
+			if _, found := inherited[key]; found {
+				t.Fatalf("%s inherited repository-selection variable %q", name, key)
+			}
+		}
+	}
+
+	dir := t.TempDir()
+	assertSanitized("stable-locale command", newCmd(t.Context(), dir, "git", "version"))
+	assertSanitized("caller-locale command", newGitCmdWithCallerLocale(t.Context(), dir, "version"))
 }
 
 func TestNewCmdDisablesEveryGitTransport(t *testing.T) {

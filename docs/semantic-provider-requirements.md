@@ -377,6 +377,12 @@ following bounds are enforced:
   retains at most 200,000 unique ancestor directories and 64 MiB of their path
   bytes. Crossing either cap fails the listing explicitly; it never continues
   with incomplete pointer evidence.
+- **Filesystem-fallback discovery cap** — a fallback traversal accepts at most
+  1,000,000 raw directory entries and 256 MiB of their repository-relative path
+  bytes, and retains at most 200,000 directories and 64 MiB of directory paths.
+  Directories are read in batches of 256 rather than materialized by an
+  unbounded `ReadDir`. Crossing any bound fails explicitly before a partial
+  listing can be returned.
 - **`.git`-pointer sweep budget** — 20,000 admitted directories and 20,000
   inspected directory entries per working-tree listing
   (`ENTIRE_GRAPH_SWEEP_DIR_BUDGET` overrides; 0 or negative removes it). The
@@ -407,7 +413,10 @@ The working-tree listing is Git's own view of the working tree (tracked files pl
 untracked files no exclude rule covers). Every exclude source Git applies — nested
 `.gitignore` files, `.git/info/exclude`, per-worktree excludes, `core.excludesFile`
 — therefore applies to the graph. A filesystem walk that honours the ignore stack
-per directory is the fallback for a tree Git cannot enumerate.
+per directory is the fallback for a tree Git cannot enumerate. That fallback
+conservatively retains ambiguous vendored directories and emits
+`W_GIT_WORKTREE_FALLBACK`, because Git-only policy such as `core.excludesFile`
+cannot always be recovered and excluded files can therefore be present.
 
 ## Capability Reporting
 

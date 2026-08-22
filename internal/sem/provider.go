@@ -1425,8 +1425,16 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 	if err != nil {
 		return sourceContext{}, err
 	}
-	key := repoKey(ctx, absRepo)
-	commit, tree, headErr := resolveCommittedHEAD(ctx, absRepo)
+	key := "local/" + filepath.Base(absRepo)
+	commit := ""
+	tree := ""
+	var headErr error
+	if gitMetadataSafeForSubprocess(absRepo) {
+		key = repoKey(ctx, absRepo)
+		commit, tree, headErr = resolveCommittedHEAD(ctx, absRepo)
+	} else {
+		headErr = fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", absRepo)
+	}
 
 	// The provider is local-only. NoNetwork is accepted to make that contract
 	// explicit for callers that enforce no-egress provider execution.
@@ -1514,6 +1522,9 @@ func resolveMaxParseBytes(requested int) int {
 // HEAD expression, preventing mixed commit/tree provenance if HEAD advances
 // between subprocesses.
 func resolveCommittedHEAD(ctx context.Context, repo string) (string, string, error) {
+	if err := ensureGitMetadataSafeForSubprocess(repo); err != nil {
+		return "", "", err
+	}
 	commit, err := gitutil.RevParse(ctx, repo, "HEAD")
 	if err != nil || commit == "" {
 		if err == nil {
@@ -10685,7 +10696,8 @@ var errGitDirListedObservationBound = errors.New("Git worktree ancestor observat
 // noteUnreadableWalkDir records one directory walkWorktreeFiles could not
 // read, for unreadableWalkWarning. Source under it is silently excluded from
 // the listing rather than aborting the whole walk (see the comment at the
-// WalkDir error branch), so unlike an aborted walk this has to say so itself.
+// fallback traversal's open/read branch), so unlike an aborted walk this has
+// to say so itself.
 func (g *gitDirExcluder) noteUnreadableWalkDir(rel string) {
 	retainSmallestPathSample(&g.unreadableWalkDirs, rel)
 }
@@ -12195,12 +12207,20 @@ func smallestMapKeys(values map[string]struct{}, limit int) []string {
 	return result
 }
 
+func sweepQueueCapacity(seenCount, sweepBudget int) int {
+	capacity := seenCount
+	if capacity < int(^uint(0)>>1) {
+		capacity++
+	}
+	if sweepBudget > 0 {
+		capacity = min(capacity, sweepBudget)
+	}
+	return capacity
+}
+
 // When git could not answer, the old derivation is the fallback.
 func (g *gitDirExcluder) observeUnlistedDirs(seen map[string]struct{}) {
-	queueCapacity := len(seen) + 1
-	if g.sweepBudget > 0 {
-		queueCapacity = min(queueCapacity, g.sweepBudget+1)
-	}
+	queueCapacity := sweepQueueCapacity(len(seen), g.sweepBudget)
 	queue := make([]string, 0, queueCapacity)
 	queued := make(map[string]struct{}, queueCapacity)
 	// Being already observed and being already swept are two different facts,
@@ -12885,25 +12905,46 @@ func trackedDirSet(ctx context.Context, repo string) (map[string]struct{}, error
 	if err != nil {
 		return nil, err
 	}
+	return trackedDirSetFromFiles(files, maxTrackedDirectories, maxTrackedDirectoryBytes)
+}
+
+const (
+	maxTrackedDirectories    = 200_000
+	maxTrackedDirectoryBytes = 64 << 20
+)
+
+var errTrackedDirectoryBound = errors.New("Git index directory expansion exceeded a resource bound")
+
+func trackedDirSetFromFiles(files []string, maxDirectories, maxBytes int) (map[string]struct{}, error) {
 	dirs := make(map[string]struct{})
+	retainedBytes := 0
 	for _, file := range files {
 		for dir := path.Dir(file); dir != "." && dir != "/"; dir = path.Dir(dir) {
 			if _, seen := dirs[dir]; seen {
 				break
 			}
+			if maxDirectories >= 0 && len(dirs) >= maxDirectories {
+				return nil, fmt.Errorf("%w: more than %d directories", errTrackedDirectoryBound, maxDirectories)
+			}
+			if maxBytes >= 0 && len(dir) > maxBytes-retainedBytes {
+				return nil, fmt.Errorf("%w: more than %d aggregate path bytes", errTrackedDirectoryBound, maxBytes)
+			}
 			dirs[dir] = struct{}{}
+			retainedBytes += len(dir)
 		}
 	}
 	return dirs, nil
 }
 
-// gitMetadataSafeForSubprocess verifies the repository metadata Git discovery
-// can reach before any production Git subprocess is started. Git's transport
-// protocols are disabled separately, but repository discovery follows .git
-// gitfiles, junctions and commondir paths through the filesystem itself; on
-// Windows that can otherwise dial an attacker-named UNC share before Git has
-// parsed an argument. The rooted resolver rejects every cross-volume or
-// cross-filesystem hop without asking the kernel to follow it.
+// gitMetadataSafeForSubprocess verifies Git's repository-discovery path and the
+// fixed metadata entries its read-only commands can open before a production
+// subprocess is started. Git's transport protocols are disabled separately,
+// but .git gitfiles, junctions, commondir, object/ref stores and index/config
+// files are filesystem paths; on Windows an attacker-named UNC redirect can
+// otherwise dial SMB before Git has parsed an ordinary subcommand argument.
+// The rooted resolver rejects every cross-volume or cross-filesystem hop before
+// asking the kernel to follow it. Configuration values are not filesystem
+// entries themselves and are outside this structural path validator.
 func gitMetadataSafeForSubprocess(repo string) bool {
 	repoAbs, err := filepath.Abs(repo)
 	if err != nil {
@@ -12920,8 +12961,7 @@ func gitMetadataSafeForSubprocess(repo string) bool {
 			}
 			if info.IsDir() {
 				_ = opened.Close()
-				_, ok := gitCommonDir(resolvedDotGit)
-				return ok
+				return gitMetadataDirectoryPathsSafe(repoAbs, resolvedDotGit)
 			}
 			regular, regularErr := openedFileIsRegular(opened, info)
 			if regularErr != nil {
@@ -12961,8 +13001,7 @@ func gitMetadataSafeForSubprocess(repo string) bool {
 			if !targetInfo.IsDir() {
 				return true
 			}
-			_, ok = gitCommonDir(resolvedTarget)
-			return ok
+			return gitMetadataDirectoryPathsSafe(repoAbs, resolvedTarget)
 		}
 		if !isMissingPathError(openErr) {
 			return false
@@ -12972,6 +13011,71 @@ func gitMetadataSafeForSubprocess(repo string) bool {
 			return true
 		}
 	}
+}
+
+func gitMetadataDirectoryPathsSafe(repoRoot, gitDir string) bool {
+	common, ok := gitCommonDir(gitDir)
+	if !ok {
+		return false
+	}
+	entries := []string{
+		filepath.Join(gitDir, "HEAD"),
+		filepath.Join(gitDir, "index"),
+		filepath.Join(gitDir, "config.worktree"),
+		filepath.Join(common, "objects"),
+		filepath.Join(common, "refs"),
+		filepath.Join(common, "packed-refs"),
+		filepath.Join(common, "config"),
+		filepath.Join(common, "info", "exclude"),
+		filepath.Join(common, "objects", "info", "alternates"),
+	}
+	for _, entry := range entries {
+		opened, _, err := openSameVolumePath(repoRoot, entry)
+		if err == nil {
+			_ = opened.Close()
+			continue
+		}
+		if !isMissingPathError(err) {
+			return false
+		}
+	}
+	return true
+}
+
+func ensureGitMetadataSafeForSubprocess(repo string) error {
+	if gitMetadataSafeForSubprocess(repo) {
+		return nil
+	}
+	return fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
+}
+
+func worktreeGitFallbackWarning(cause error) ProviderWarning {
+	detail := "Git worktree enumeration was unavailable"
+	if cause != nil {
+		detail += ": " + cause.Error()
+	}
+	return ProviderWarning{
+		Code:     "W_GIT_WORKTREE_FALLBACK",
+		Severity: "warning",
+		EffectOnCompleteness: "the filesystem fallback retains ambiguous vendored directories conservatively, but Git-only exclude sources " +
+			"such as core.excludesFile may not be applied; excluded files can therefore be present in the snapshot",
+		Detail: detail,
+	}
+}
+
+func walkWorktreeFilesAfterGitFailure(
+	ctx context.Context,
+	repo string,
+	ignores ignoreMatcher,
+	dirTracked func(string) bool,
+	cause error,
+) ([]string, []ProviderWarning, error) {
+	paths, warnings, err := walkWorktreeFiles(ctx, repo, ignores, dirTracked)
+	if err != nil {
+		return nil, nil, err
+	}
+	warnings = append(warnings, worktreeGitFallbackWarning(cause))
+	return paths, warnings, nil
 }
 
 func isVendoredScanFile(rel, name string) bool {
@@ -12999,13 +13103,24 @@ func isVendoredScanFile(rel, name string) bool {
 // (not a repository at all, or no usable git binary), and it now applies nested
 // .gitignore files itself.
 func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher, hasIncludeFiles bool) ([]string, []ProviderWarning, error) {
-	if !gitMetadataSafeForSubprocess(repo) {
-		dirTracked := func(string) bool { return false }
-		return walkWorktreeFiles(ctx, repo, ignores, dirTracked)
+	if err := ensureGitMetadataSafeForSubprocess(repo); err != nil {
+		// No Git process is started. The fallback treats every ambiguous vendored
+		// directory as potentially tracked so unsafe metadata cannot cause source
+		// omissions, and the warning reports the Git-only policy that is unavailable.
+		dirTracked := func(string) bool { return true }
+		return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, err)
 	}
 	trackedDirs, trackedErr := trackedDirSet(ctx, repo)
-	if errors.Is(trackedErr, gitutil.ErrWorktreeListingTruncated) {
-		return nil, nil, fmt.Errorf("list Git index paths: %w", trackedErr)
+	if trackedErr != nil {
+		if errors.Is(trackedErr, gitutil.ErrWorktreeListingTruncated) || errors.Is(trackedErr, errTrackedDirectoryBound) {
+			return nil, nil, fmt.Errorf("list Git index paths: %w", trackedErr)
+		}
+		if repositoryHasGitMetadata(repo) {
+			dirTracked := func(string) bool { return true }
+			return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, trackedErr)
+		}
+		dirTracked := func(string) bool { return false }
+		return walkWorktreeFiles(ctx, repo, ignores, dirTracked)
 	}
 	dirTracked := func(rel string) bool {
 		_, ok := trackedDirs[rel]
@@ -13015,6 +13130,9 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 	if err != nil {
 		if errors.Is(err, gitutil.ErrWorktreeListingTruncated) {
 			return nil, nil, fmt.Errorf("list Git worktree paths: %w", err)
+		}
+		if repositoryHasGitMetadata(repo) {
+			return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, err)
 		}
 		return walkWorktreeFiles(ctx, repo, ignores, dirTracked)
 	}
@@ -13224,6 +13342,60 @@ func visitWalkWorktreeFiles(
 
 var errWorktreeRawPathLimit = errors.New("filesystem worktree raw path limit exceeded")
 
+const (
+	maxWorktreeWalkRawEntries     = 1_000_000
+	maxWorktreeWalkRawBytes       = 256 << 20
+	maxWorktreeWalkDirectories    = 200_000
+	maxWorktreeWalkDirectoryBytes = 64 << 20
+)
+
+var (
+	errWorktreeWalkEntryBound     = errors.New("filesystem worktree traversal exceeded a raw-entry resource bound")
+	errWorktreeWalkDirectoryBound = errors.New("filesystem worktree traversal exceeded a directory resource bound")
+)
+
+type worktreeWalkBudget struct {
+	rawEntries     int
+	rawBytes       int
+	directories    int
+	directoryBytes int
+}
+
+func (b *worktreeWalkBudget) admitRawEntry(rel string) bool {
+	if b.rawEntries >= maxWorktreeWalkRawEntries {
+		return false
+	}
+	remaining := maxWorktreeWalkRawBytes - b.rawBytes
+	// The delimiter is not present on disk, but charging it makes this the same
+	// aggregate accounting used for Git's NUL-delimited worktree listing.
+	if remaining <= 0 || len(rel) >= remaining {
+		return false
+	}
+	b.rawEntries++
+	b.rawBytes += len(rel) + 1
+	return true
+}
+
+func (b *worktreeWalkBudget) admitDirectory(rel string) bool {
+	if b.directories >= maxWorktreeWalkDirectories {
+		return false
+	}
+	remaining := maxWorktreeWalkDirectoryBytes - b.directoryBytes
+	if remaining <= 0 || len(rel) >= remaining {
+		return false
+	}
+	b.directories++
+	b.directoryBytes += len(rel) + 1
+	return true
+}
+
+type worktreeWalkFrame struct {
+	rel     string
+	entries []fs.DirEntry
+	next    int
+	ready   bool
+}
+
 // visitWalkWorktreeFilesWithRawLimit is visitWalkWorktreeFiles with an
 // optional conservative pre-filter ceiling. The replay observer uses it to
 // decline persistence as soon as the raw candidate set cannot fit its exact
@@ -13240,45 +13412,27 @@ func visitWalkWorktreeFilesWithRawLimit(
 	stack := newNestedIgnoreStack(repo, ignores)
 	defer stack.close()
 	gitDirs := newGitDirExcluder(ctx, repo)
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	var budget worktreeWalkBudget
+	if !budget.admitDirectory("") {
+		return nil, errWorktreeWalkDirectoryBound
+	}
 	var paths []string
-	walkErr := filepath.WalkDir(repo, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			// WalkDir reports a directory it could not read by calling this
-			// function a SECOND time for that directory, after the visit that
-			// already observed it. Returning the error there aborted the walk, so
-			// one mode-000 subdirectory made `search` answer `permission denied`
-			// for the whole tree and index nothing — a repository-wide outage
-			// caused by a root-owned build directory. Note it and walk on: what
-			// an unreadable directory can hide is a `.git` pointer, and
-			// promoteUnverifiedGitDirs fails closed for that, narrowly, at the
-			// end of the walk.
-			//
-			// The root is the exception. `entry` is nil when WalkDir could not
-			// even stat what it was pointed at, and there is no listing to
-			// salvage there.
-			if entry == nil {
-				return err
-			}
-			if !errors.Is(err, fs.ErrNotExist) {
-				gitDirs.hiddenEvidence++
-				rel := "."
-				if relPath, relErr := filepath.Rel(repo, path); relErr == nil {
-					rel = filepath.ToSlash(relPath)
-				}
-				gitDirs.noteUnreadableWalkDir(rel)
-			}
-			return nil
+	frames := []worktreeWalkFrame{{rel: ""}}
+	var walkErr error
+	for len(frames) > 0 {
+		if err := ctx.Err(); err != nil {
+			walkErr = err
+			break
 		}
-		name := entry.Name()
-		if entry.IsDir() {
-			rel := ""
-			if path != repo {
-				relPath, relErr := filepath.Rel(repo, path)
-				if relErr != nil {
-					return relErr
-				}
-				rel = filepath.ToSlash(relPath)
-			}
+		frame := &frames[len(frames)-1]
+		if !frame.ready {
+			rel := frame.rel
+			name := path.Base(rel)
 			// A directory's own `.git` pointer is read on the way in, before any
 			// of its children are visited, so a `--separate-git-dir` target
 			// beside it is already known when the walk reaches it.
@@ -13292,7 +13446,8 @@ func visitWalkWorktreeFilesWithRawLimit(
 			// on this path exactly as it did on the git-listing path.
 			if rel != "" && gitDirs.excluded(rel) {
 				gitDirs.observePrunedSubtree(rel)
-				return filepath.SkipDir
+				frames = frames[:len(frames)-1]
+				continue
 			}
 			// Enter first: this directory's own .gitignore is part of the evidence
 			// for whether the project re-includes something inside it.
@@ -13306,9 +13461,11 @@ func visitWalkWorktreeFilesWithRawLimit(
 				if errors.Is(err, fs.ErrPermission) && !stack.directoryReadable(rel) {
 					gitDirs.hiddenEvidence++
 					gitDirs.noteUnreadableWalkDir(rel)
-					return filepath.SkipDir
+					frames = frames[:len(frames)-1]
+					continue
 				}
-				return err
+				walkErr = err
+				break
 			}
 			// The ignore rules are consulted BEFORE the vendored name, but they
 			// prune the same way and no longer prune any harder: the project's
@@ -13317,10 +13474,11 @@ func visitWalkWorktreeFilesWithRawLimit(
 			// `build/dep/.git` -> `gitdir: ../../.dep-git` and the root-level,
 			// HEAD-damaged git directory it names was indexed in full. Read the
 			// directories for pointers, then stop. Both branches still return
-			// SkipDir, so the set of walked FILES is unchanged.
+			// prune, so the set of walked FILES is unchanged.
 			if rel != "" && stack.Ignored(rel, true) && !stack.MayIncludeDescendant(rel) {
 				gitDirs.observePrunedSubtree(rel)
-				return filepath.SkipDir
+				frames = frames[:len(frames)-1]
+				continue
 			}
 			if rel != "" && skipVendoredDir(rel, name, stack, dirTracked) {
 				// Nothing in this tree is indexed, but a `.git` pointer in it
@@ -13329,35 +13487,116 @@ func visitWalkWorktreeFilesWithRawLimit(
 				// indexed, and whose damaged HEAD puts it out of every other
 				// rule's reach. Read the directories, then stop.
 				gitDirs.observePrunedSubtree(rel)
-				return filepath.SkipDir
+				frames = frames[:len(frames)-1]
+				continue
 			}
-			return nil
+
+			openPath := "."
+			if rel != "" {
+				openPath = filepath.FromSlash(rel)
+			}
+			opened, openErr := root.Open(openPath)
+			if openErr != nil {
+				if rel == "" {
+					walkErr = openErr
+					break
+				}
+				if !errors.Is(openErr, fs.ErrNotExist) {
+					gitDirs.hiddenEvidence++
+					gitDirs.noteUnreadableWalkDir(rel)
+				}
+				frames = frames[:len(frames)-1]
+				continue
+			}
+			var entries []fs.DirEntry
+			for {
+				batch, readErr := opened.ReadDir(256)
+				for _, entry := range batch {
+					child := entry.Name()
+					if rel != "" {
+						child = rel + "/" + child
+					}
+					if !budget.admitRawEntry(child) {
+						walkErr = fmt.Errorf(
+							"%w: more than %d entries or %d aggregate path bytes",
+							errWorktreeWalkEntryBound,
+							maxWorktreeWalkRawEntries,
+							maxWorktreeWalkRawBytes,
+						)
+						break
+					}
+					entries = append(entries, entry)
+				}
+				if walkErr != nil {
+					break
+				}
+				if readErr == nil {
+					continue
+				}
+				if !errors.Is(readErr, io.EOF) && !errors.Is(readErr, fs.ErrNotExist) {
+					gitDirs.hiddenEvidence++
+					warningPath := rel
+					if warningPath == "" {
+						warningPath = "."
+					}
+					gitDirs.noteUnreadableWalkDir(warningPath)
+				}
+				break
+			}
+			_ = opened.Close()
+			if walkErr != nil {
+				break
+			}
+			sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+			frame.entries = entries
+			frame.ready = true
+			continue
+		}
+
+		if frame.next >= len(frame.entries) {
+			frames = frames[:len(frames)-1]
+			continue
+		}
+		entry := frame.entries[frame.next]
+		frame.next++
+		rel := entry.Name()
+		if frame.rel != "" {
+			rel = frame.rel + "/" + rel
+		}
+		if entry.IsDir() {
+			if !budget.admitDirectory(rel) {
+				walkErr = fmt.Errorf(
+					"%w: more than %d directories or %d aggregate path bytes",
+					errWorktreeWalkDirectoryBound,
+					maxWorktreeWalkDirectories,
+					maxWorktreeWalkDirectoryBytes,
+				)
+				break
+			}
+			frames = append(frames, worktreeWalkFrame{rel: rel})
+			continue
 		}
 		if entry.Type()&fs.ModeSymlink != 0 {
-			return nil
+			continue
 		}
-		rel, err := filepath.Rel(repo, path)
-		if err != nil {
-			return err
-		}
-		rel = filepath.ToSlash(rel)
+		name := entry.Name()
 		// A linked worktree's `.git` is a FILE, so the directory decision above
 		// never sees it; the same unconditional rule applies.
 		if gitDirs.excluded(rel) {
-			return nil
+			continue
 		}
 		if isVendoredScanFile(rel, name) {
-			return nil
+			continue
 		}
 		if stack.Ignored(rel, false) {
-			return nil
+			continue
 		}
 		if rawPathLimit > 0 && len(paths) >= rawPathLimit {
-			return errWorktreeRawPathLimit
+			walkErr = errWorktreeRawPathLimit
+			break
 		}
 		paths = append(paths, rel)
-		return nil
-	})
+	}
 	// A pointer can name a directory the walk had already passed (`.aaa-git`
 	// sorts before the `.git` that names it), so the collected paths are filtered
 	// once more against every pointer the whole walk found — and against the
@@ -21253,9 +21492,11 @@ func externalID(kind, value string) string {
 }
 
 func repoKey(ctx context.Context, repo string) string {
-	for _, remoteURL := range githubRemoteURLs(ctx, repo) {
-		if key, ok := githubRepoKey(remoteURL); ok {
-			return key
+	if gitMetadataSafeForSubprocess(repo) {
+		for _, remoteURL := range githubRemoteURLs(ctx, repo) {
+			if key, ok := githubRepoKey(remoteURL); ok {
+				return key
+			}
 		}
 	}
 	return "local/" + filepath.Base(repo)

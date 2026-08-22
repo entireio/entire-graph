@@ -29,7 +29,11 @@ other is installation.
   most 512 nested `.gitignore` files. A limit refusal is reported instead of
   truncating the policy and silently changing the indexed corpus. Nested
   worktree ignore files are confined to the repository and are not followed
-  through a symlink that escapes it.
+  through a symlink that escapes it. When Git cannot enumerate a worktree, the
+  bounded filesystem fallback applies the ignore files it can observe and emits
+  `W_GIT_WORKTREE_FALLBACK`; Git-only policy such as `core.excludesFile` may be
+  unavailable, so the warning explicitly reports that excluded files can be
+  present.
 - For `stats` only: local coding-agent session transcripts
   (`~/.claude/projects/<path-slug>/*.jsonl`, or `--sessions-dir`/
   `--transcript` overrides). This is Claude Code's transcript layout; the

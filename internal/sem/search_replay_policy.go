@@ -70,11 +70,13 @@ func ResolveSearchReplayPolicy(ctx context.Context, repo string, options SearchO
 	if err != nil {
 		return SearchReplayPolicy{}, err
 	}
-
 	worktree := options.Worktree
 	commit := ""
 	tree := ""
-	if !worktree {
+	gitMetadataSafe := gitMetadataSafeForSubprocess(absRepo)
+	if !gitMetadataSafe {
+		worktree = true
+	} else if !worktree {
 		resolvedCommit, resolvedTree, headErr := resolveCommittedHEAD(ctx, absRepo)
 		if headErr != nil {
 			worktree = true
@@ -84,7 +86,7 @@ func ResolveSearchReplayPolicy(ctx context.Context, repo string, options SearchO
 		}
 	}
 	gitWorktree := false
-	if worktree {
+	if worktree && gitMetadataSafe {
 		if _, gitErr := gitutil.RepoRoot(ctx, absRepo); gitErr == nil {
 			gitWorktree = true
 		} else if repositoryHasGitMetadata(absRepo) {

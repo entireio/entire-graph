@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -131,6 +132,74 @@ func TestWorktreeSnapshotHonorsEveryGitExcludeSource(t *testing.T) {
 		if snapshotHasSymbol(snapshot, name) {
 			t.Fatalf("worktree snapshot included excluded symbol %q", name)
 		}
+	}
+}
+
+func TestWorktreeSnapshotIgnoresInheritedRepositoryOverrides(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, "pkg/.gitignore", "secret.go\n")
+	writeFile(t, repo, "pkg/keep.go", "package pkg\nfunc Keep() {}\n")
+	writeFile(t, repo, "pkg/secret.go", "package pkg\nfunc AmbientOverrideSecret() {}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "requested repository")
+
+	other := t.TempDir()
+	initRepo(t, other)
+	writeFile(t, other, "pkg/secret.go", "package pkg\nfunc OtherRepositorySecret() {}\n")
+	git(t, other, "add", ".")
+	git(t, other, "commit", "-m", "ambient override repository")
+
+	t.Setenv("GIT_DIR", filepath.Join(other, ".git"))
+	t.Setenv("GIT_WORK_TREE", other)
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshotHasSymbol(snapshot, "Keep") {
+		t.Fatalf("requested repository's tracked source is missing: %#v", snapshot.Files)
+	}
+	if snapshotHasPath(snapshot, "pkg/secret.go") || snapshotHasSymbol(snapshot, "AmbientOverrideSecret") {
+		t.Fatalf("inherited Git repository overrides changed the requested corpus: %#v", snapshot.Files)
+	}
+}
+
+func TestWorktreeSnapshotWarnsAndRetainsTrackedAmbiguousDirectoryWhenGitFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the selective Git wrapper is a POSIX shell script")
+	}
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeFile(t, repo, "build/keep.go", "package build\nfunc KeepOnFallback() {}\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "tracked ambiguous directory")
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	wrapper := filepath.Join(binDir, "git")
+	script := "#!/bin/sh\ncase \"$*\" in *\"ls-files\"*) exit 41;; esac\nexec \"$REAL_GIT\" \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REAL_GIT", realGit)
+	t.Setenv("PATH", binDir)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test-version", ProviderSnapshotOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshotHasSymbol(snapshot, "KeepOnFallback") {
+		t.Fatalf("fallback treated a potentially tracked ambiguous directory as untracked: %#v", snapshot.Files)
+	}
+	warned := false
+	for _, warning := range snapshot.Header.Warnings {
+		warned = warned || warning.Code == "W_GIT_WORKTREE_FALLBACK"
+	}
+	if !warned {
+		t.Fatalf("warnings = %+v, want W_GIT_WORKTREE_FALLBACK", snapshot.Header.Warnings)
 	}
 }
 

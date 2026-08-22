@@ -444,7 +444,7 @@ func (m *ignoreMatcher) loadExplicit(repo string, ignoreFiles, includeFiles []st
 // lives under the common directory, not under <repo>/.git.
 func gitInfoExcludePath(repo string) string {
 	dotGit := filepath.Join(repo, ".git")
-	opened, _, err := openSameVolumePath(repo, dotGit)
+	opened, resolvedDotGit, err := openSameVolumePath(repo, dotGit)
 	if err != nil {
 		return ""
 	}
@@ -454,7 +454,11 @@ func gitInfoExcludePath(repo string) string {
 		return ""
 	}
 	if info.IsDir() {
-		return filepath.Join(dotGit, "info", "exclude")
+		common, ok := gitCommonDir(resolvedDotGit)
+		if !ok {
+			return ""
+		}
+		return filepath.Join(common, "info", "exclude")
 	}
 	regular, err := openedFileIsRegular(opened, info)
 	if err != nil || !regular || info.Size() > maxGitFileBytes {
