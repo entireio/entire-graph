@@ -31,6 +31,27 @@ type Options struct {
 	Stdin io.Reader
 }
 
+// SignalError reports that Execute stopped because it received a signal
+// asking the process to terminate (SIGINT/SIGTERM), rather than because the
+// command itself failed.
+//
+// signal.NotifyContext turns the signal into an ordinary context.Canceled,
+// indistinguishable from any other cancellation once it reaches Run's
+// return value — so without this, main's generic "print the error, exit 1"
+// path reported an operator's Ctrl-C the same way it reports a real command
+// failure, regressing the exit statuses (130 for SIGINT, 143 for SIGTERM) a
+// program with no signal handling at all would have had for free, and that
+// shells and supervisors already know how to interpret. Callers that care
+// can use errors.As to recover the signal and choose the conventional
+// 128+signal status instead.
+type SignalError struct {
+	Signal os.Signal
+	Err    error
+}
+
+func (e *SignalError) Error() string { return e.Err.Error() }
+func (e *SignalError) Unwrap() error { return e.Err }
+
 // Execute is the process entry point. It runs the command under a context that
 // is actually cancellable, which the provider path depends on: every phase of
 // the indexer polls ctx.Err() (see internal/sem/provider.go), so under the
@@ -41,20 +62,71 @@ type Options struct {
 // handler, so a second one still kills the process immediately. Without that
 // restore, installing a handler would make a runaway index HARDER to stop than
 // before, which is the opposite of the point.
+//
+// Signal delivery is handled with signal.Notify rather than
+// signal.NotifyContext specifically so the received signal itself survives
+// past cancellation, for SignalError below — NotifyContext's context carries
+// no record of which signal (or that one at all, versus a caller-driven
+// cancellation) caused Done to close. The signal race itself lives in
+// runUnderSignals, split out so it is testable without going through real
+// command dispatch.
 func Execute(version string, args []string) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	return runUnderSignals(func(ctx context.Context) error {
+		return Run(ctx, Options{
+			Version: version,
+			Env:     EnvFromOS(),
+			Stdout:  os.Stdout,
+			Stderr:  os.Stderr,
+			Stdin:   os.Stdin,
+		}, args)
+	})
+}
+
+// runUnderSignals runs run under a context canceled by the first
+// SIGINT/SIGTERM this process receives, and wraps a non-nil result in a
+// *SignalError when that signal is what stopped it.
+func runUnderSignals(run func(context.Context) error) error {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// caughtCh, not a plain variable: it is written from this goroutine and
+	// read from the one running run after it returns, and a channel handoff
+	// is what makes that safe without a separate lock. The send
+	// happens-before cancel() in program order, and cancel() closing
+	// ctx.Done() happens-before run observes it, so if run returned BECAUSE
+	// of this signal, the send below is already complete by the time the
+	// non-blocking receive after run runs.
+	caughtCh := make(chan os.Signal, 1)
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
 	go func() {
-		<-ctx.Done()
-		stop()
+		select {
+		case sig := <-sigCh:
+			caughtCh <- sig
+			cancel()
+			// Restore the default disposition so a second signal kills the
+			// process immediately, matching the guarantee the previous
+			// NotifyContext-based handler already made.
+			signal.Stop(sigCh)
+		case <-stopWatch:
+		}
 	}()
-	return Run(ctx, Options{
-		Version: version,
-		Env:     EnvFromOS(),
-		Stdout:  os.Stdout,
-		Stderr:  os.Stderr,
-		Stdin:   os.Stdin,
-	}, args)
+
+	err := run(ctx)
+
+	var caught os.Signal
+	select {
+	case caught = <-caughtCh:
+	default:
+	}
+	if err != nil && caught != nil {
+		return &SignalError{Signal: caught, Err: err}
+	}
+	return err
 }
 
 func Run(ctx context.Context, opts Options, args []string) error {

@@ -784,19 +784,7 @@ func selectiveSearchSnapshotFromFull(
 		return ProviderSnapshot{}, err
 	}
 
-	externalIDs := make([]string, 0, len(externalsByID))
-	for id := range externalsByID {
-		externalIDs = append(externalIDs, id)
-	}
-	sort.Strings(externalIDs)
-	for _, id := range externalIDs {
-		selective.Externals = append(selective.Externals, externalsByID[id])
-	}
-	sort.Slice(selective.Relations, func(i, j int) bool {
-		left := selective.Relations[i].Type + selective.Relations[i].FromID + selective.Relations[i].ToID
-		right := selective.Relations[j].Type + selective.Relations[j].FromID + selective.Relations[j].ToID
-		return left < right
-	})
+	finalizeSelectiveOrdering(&selective, externalsByID, budgetHit)
 
 	warnings := sc.warnings
 	if warnings == nil {
@@ -853,6 +841,42 @@ func selectiveSearchSnapshotFromFull(
 		Relations: relationsByType,
 	}
 	return selective, nil
+}
+
+// finalizeSelectiveOrdering populates selective.Externals from externalsByID
+// and sorts both it and selective.Relations for stable output -- but only on
+// the complete (budgetHit == false) path.
+//
+// Sorting is itself O(n log n) work over whatever the relation phase
+// accumulated before the gate tripped -- on a 500-function nested fixture,
+// that phase alone produced 385,137 relations, and the comparator
+// reallocates a concatenated key on every comparison on top of that. The
+// caller already turned budget expiry into a truncation rather than an
+// error by the time this runs, so a true budgetHit skips the sort entirely
+// instead of letting the advertised parse/relation ceiling get blown by its
+// own finalization step. A truncated snapshot is already unordered from the
+// caller's point of view (it is missing an arbitrary tail), gets an
+// E_ANALYSIS_BUDGET_EXCEEDED marker from the caller, and writeSearchSnapshot
+// refuses to cache it -- so there is no correctness or cacheability property
+// left for a stable order to protect here.
+func finalizeSelectiveOrdering(selective *ProviderSnapshot, externalsByID map[string]ExternalRecord, budgetHit bool) {
+	externalIDs := make([]string, 0, len(externalsByID))
+	for id := range externalsByID {
+		externalIDs = append(externalIDs, id)
+	}
+	if !budgetHit {
+		sort.Strings(externalIDs)
+	}
+	for _, id := range externalIDs {
+		selective.Externals = append(selective.Externals, externalsByID[id])
+	}
+	if !budgetHit {
+		sort.Slice(selective.Relations, func(i, j int) bool {
+			left := selective.Relations[i].Type + selective.Relations[i].FromID + selective.Relations[i].ToID
+			right := selective.Relations[j].Type + selective.Relations[j].FromID + selective.Relations[j].ToID
+			return left < right
+		})
+	}
 }
 
 // The relation-phase failures recorded during selective derivation are merged
