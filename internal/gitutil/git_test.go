@@ -1029,14 +1029,11 @@ func TestBlobSizeAtRevProbeSucceedsFromARepoSubdirectory(t *testing.T) {
 	subdir := filepath.Join(repo, "scope")
 
 	for _, path := range []string{"big.txt", "nested/big.txt"} {
-		detailed, err := ReadFileLimited(t.Context(), subdir, "HEAD", path, ceiling)
-		if err != nil {
-			t.Fatalf("ReadFileLimited(%q): %v", path, err)
-		}
-		if detailed.Status != LimitedFileOversize || detailed.Bytes != ceiling+1 || detailed.Content != "" {
-			t.Fatalf("ReadFileLimited(subdir, HEAD, %q, %d) = %#v, want oversize status with %d bytes and"+
-				" no content read: a double-prefixed pathspec would miss the tree entry entirely and this"+
-				" falls back to materializing the whole oversized blob", path, ceiling, detailed, ceiling+1)
+		bytes, status := blobSizeAtRev(t.Context(), subdir, "HEAD", path)
+		if status != blobProbeBlob || bytes != ceiling+1 {
+			t.Fatalf("blobSizeAtRev(subdir, HEAD, %q) = (%d, %v), want (%d, blobProbeBlob): a"+
+				" double-prefixed pathspec must fail this probe directly instead of being hidden by"+
+				" ReadFileLimited's content fallback", path, bytes, status, ceiling+1)
 		}
 	}
 }
