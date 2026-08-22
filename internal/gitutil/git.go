@@ -1531,13 +1531,15 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 	if err != nil {
 		return nil, fmt.Errorf("git ls-tree metadata pipe: %w", err)
 	}
-	if err := cmd.Start(); err != nil {
+	job, err := startPathOutputCommand(cmd)
+	if err != nil {
 		message := strings.TrimSpace(stderr.String())
 		if message == "" {
 			message = err.Error()
 		}
 		return nil, fmt.Errorf("git ls-tree metadata: %s", message)
 	}
+	defer job.close()
 
 	entries := make(map[string]primedLimitedFile, len(paths))
 	outputCount := 0
@@ -1546,7 +1548,7 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 	for {
 		record, readErr := reader.ReadSlice(0)
 		if errors.Is(readErr, bufio.ErrBufferFull) {
-			stopPathOutputCommand(cmd, stdout)
+			stopPathOutputCommand(cmd, stdout, job)
 			return nil, fmt.Errorf(
 				"git ls-tree returned a metadata record longer than %d bytes",
 				literalPathspecBatchBytes+treeMetadataRecordOverheadMax,
@@ -1564,37 +1566,37 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 			return entries, nil
 		}
 		if len(record) == 0 || record[len(record)-1] != 0 {
-			stopPathOutputCommand(cmd, stdout)
+			stopPathOutputCommand(cmd, stdout, job)
 			return nil, errors.New("git ls-tree returned non-NUL-terminated metadata")
 		}
 		record = record[:len(record)-1]
 		tab := bytes.IndexByte(record, '\t')
 		if tab < 0 {
-			stopPathOutputCommand(cmd, stdout)
+			stopPathOutputCommand(cmd, stdout, job)
 			return nil, errors.New("git ls-tree returned malformed metadata")
 		}
 		fields := strings.Fields(string(record[:tab]))
 		if len(fields) != 4 {
-			stopPathOutputCommand(cmd, stdout)
+			stopPathOutputCommand(cmd, stdout, job)
 			return nil, fmt.Errorf("git ls-tree returned malformed metadata header %q", record[:tab])
 		}
 		path := string(record[tab+1:])
 		if _, ok := known[path]; !ok {
-			stopPathOutputCommand(cmd, stdout)
+			stopPathOutputCommand(cmd, stdout, job)
 			return nil, fmt.Errorf("git ls-tree returned unexpected path %q", path)
 		}
 		if _, duplicate := entries[path]; duplicate {
-			stopPathOutputCommand(cmd, stdout)
+			stopPathOutputCommand(cmd, stdout, job)
 			return nil, fmt.Errorf("git ls-tree returned duplicate path %q", path)
 		}
 		outputCount++
 		outputBytes += len(record) + 1
 		if outputCount > len(known) || outputCount > literalPathspecBatchCount {
-			stopPathOutputCommand(cmd, stdout)
+			stopPathOutputCommand(cmd, stdout, job)
 			return nil, fmt.Errorf("git ls-tree returned more than %d metadata records", len(known))
 		}
 		if outputBytes > expectedOutputBytes {
-			stopPathOutputCommand(cmd, stdout)
+			stopPathOutputCommand(cmd, stdout, job)
 			return nil, fmt.Errorf("git ls-tree returned more than %d metadata bytes", expectedOutputBytes)
 		}
 		if fields[1] != "blob" {
@@ -1619,7 +1621,7 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 		}
 		size, err := strconv.ParseInt(fields[3], 10, 64)
 		if err != nil || size < 0 {
-			stopPathOutputCommand(cmd, stdout)
+			stopPathOutputCommand(cmd, stdout, job)
 			return nil, fmt.Errorf("parse git ls-tree blob size %q for %q", fields[3], path)
 		}
 		entries[path] = primedLimitedFile{
@@ -1628,7 +1630,7 @@ func treeEntryMetadataBatch(ctx context.Context, repo, rev string, paths []strin
 			objectType: fields[1],
 		}
 		if readErr != nil {
-			stopPathOutputCommand(cmd, stdout)
+			stopPathOutputCommand(cmd, stdout, job)
 			return nil, fmt.Errorf("read git ls-tree metadata: %w", readErr)
 		}
 	}

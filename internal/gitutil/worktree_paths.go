@@ -240,23 +240,25 @@ func visitBoundedNULPaths(cmd *exec.Cmd, visit func(string) bool) error {
 	if err != nil {
 		return err
 	}
-	if err := cmd.Start(); err != nil {
+	job, err := startPathOutputCommand(cmd)
+	if err != nil {
 		return err
 	}
+	defer job.close()
 	reader := bufio.NewReaderSize(stdout, nestedIgnorePathMaxBytes+1)
 	for {
 		record, readErr := reader.ReadSlice(0)
 		if errors.Is(readErr, bufio.ErrBufferFull) {
-			stopPathOutputCommand(cmd, stdout)
+			stopPathOutputCommand(cmd, stdout, job)
 			return fmt.Errorf("git returned a path longer than %d bytes", nestedIgnorePathMaxBytes)
 		}
 		if len(record) > 0 {
 			if record[len(record)-1] != 0 {
-				stopPathOutputCommand(cmd, stdout)
+				stopPathOutputCommand(cmd, stdout, job)
 				return errors.New("git returned a non-NUL-terminated path")
 			}
 			if !visit(string(record[:len(record)-1])) {
-				stopPathOutputCommand(cmd, stdout)
+				stopPathOutputCommand(cmd, stdout, job)
 				return nil
 			}
 		}
@@ -264,7 +266,7 @@ func visitBoundedNULPaths(cmd *exec.Cmd, visit func(string) bool) error {
 			continue
 		}
 		if !errors.Is(readErr, io.EOF) {
-			stopPathOutputCommand(cmd, stdout)
+			stopPathOutputCommand(cmd, stdout, job)
 			return readErr
 		}
 		waitErr := cmd.Wait()
@@ -372,13 +374,15 @@ func runBoundedPathOutput(
 	if err != nil {
 		return nil, err
 	}
-	if err := cmd.Start(); err != nil {
+	job, err := startPathOutputCommand(cmd)
+	if err != nil {
 		message := strings.TrimSpace(stderr.String())
 		if message == "" {
 			message = err.Error()
 		}
 		return nil, errors.New(message)
 	}
+	defer job.close()
 
 	result := make(map[string]struct{}, len(known))
 	outputCount := 0
@@ -387,7 +391,7 @@ func runBoundedPathOutput(
 	for {
 		record, readErr := reader.ReadSlice(0)
 		if errors.Is(readErr, bufio.ErrBufferFull) {
-			stopPathOutputCommand(cmd, stdout)
+			stopPathOutputCommand(cmd, stdout, job)
 			return nil, fmt.Errorf(
 				"git returned a path longer than %d bytes",
 				literalPathOutputMaxPathBytes,
@@ -395,33 +399,33 @@ func runBoundedPathOutput(
 		}
 		if len(record) > 0 {
 			if record[len(record)-1] != 0 {
-				stopPathOutputCommand(cmd, stdout)
+				stopPathOutputCommand(cmd, stdout, job)
 				return nil, errors.New("git returned a non-NUL-terminated path")
 			}
 			if len(record) == 1 {
-				stopPathOutputCommand(cmd, stdout)
+				stopPathOutputCommand(cmd, stdout, job)
 				return nil, errors.New("git returned an empty path")
 			}
 			path := string(record[:len(record)-1])
 			if _, ok := known[path]; !ok {
-				stopPathOutputCommand(cmd, stdout)
+				stopPathOutputCommand(cmd, stdout, job)
 				return nil, fmt.Errorf("git returned unexpected path %q", path)
 			}
 			if _, duplicate := result[path]; duplicate {
-				stopPathOutputCommand(cmd, stdout)
+				stopPathOutputCommand(cmd, stdout, job)
 				return nil, fmt.Errorf("git returned duplicate path %q", path)
 			}
 			outputCount++
 			outputBytes += len(record)
 			if outputCount > len(known) || outputCount > literalPathspecBatchCount {
-				stopPathOutputCommand(cmd, stdout)
+				stopPathOutputCommand(cmd, stdout, job)
 				return nil, fmt.Errorf(
 					"git returned more than %d literal paths",
 					len(known),
 				)
 			}
 			if outputBytes > expectedOutputBytes || outputBytes > literalPathspecBatchBytes {
-				stopPathOutputCommand(cmd, stdout)
+				stopPathOutputCommand(cmd, stdout, job)
 				return nil, fmt.Errorf(
 					"git returned more than %d aggregate path bytes",
 					expectedOutputBytes,
@@ -447,7 +451,10 @@ func runBoundedPathOutput(
 	}
 }
 
-func stopPathOutputCommand(cmd *exec.Cmd, stdout io.Closer) {
+// stopPathOutputCommand does not close job: the caller owns the job handle
+// from the point startPathOutputCommand returns it and must close it exactly
+// once, on every exit path, not only the ones that stop the command early.
+func stopPathOutputCommand(cmd *exec.Cmd, stdout io.Closer, job pathOutputJob) {
 	descendants := capturePathOutputDescendants(cmd)
 	defer descendants.close()
 
@@ -468,9 +475,13 @@ func stopPathOutputCommand(cmd *exec.Cmd, stdout io.Closer) {
 	defer timer.Stop()
 	select {
 	case <-done:
-		// WaitDelay may have released os/exec after a descendant retained a
-		// copied pipe. Stable Windows process handles captured before stdout was
-		// closed prevent that descendant from surviving with repository handles.
+		// The job (if one was created) kills every process it still contains,
+		// including a worker spawned after this point-in-time descendant
+		// snapshot was taken -- closing the race a snapshot alone has against a
+		// launcher that forks late. Stable Windows process handles captured
+		// before stdout was closed remain as a fallback for descendants that
+		// predate the job or existed when no job could be created.
+		job.terminate()
 		descendants.terminateAndWait(gitCommandWaitDelay)
 		return
 	case <-timer.C:
@@ -480,8 +491,10 @@ func stopPathOutputCommand(cmd *exec.Cmd, stdout io.Closer) {
 		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}
-		// Stop the root before its captured descendants so it cannot create a
-		// replacement worker between the process snapshot and termination.
+		// Stop the job and the root before its captured descendants so neither
+		// can create a replacement worker between the process snapshot and
+		// termination.
+		job.terminate()
 		descendants.terminateAndWait(gitCommandWaitDelay)
 		finalTimer := time.NewTimer(gitCommandWaitDelay)
 		defer finalTimer.Stop()
@@ -543,16 +556,18 @@ func IndexHasFilesUnder(ctx context.Context, repo, rel string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("git ls-files literal index probe: %w", err)
 	}
-	if err := cmd.Start(); err != nil {
+	job, err := startPathOutputCommand(cmd)
+	if err != nil {
 		return false, fmt.Errorf("git ls-files literal index probe: %w", err)
 	}
+	defer job.close()
 	var first [1]byte
 	n, readErr := stdout.Read(first[:])
 	if n > 0 {
 		// No later output can change an existence answer from true to false.
 		// Stopping here keeps the probe proportional to one match even when
 		// rel contains a very large tracked subtree.
-		stopPathOutputCommand(cmd, stdout)
+		stopPathOutputCommand(cmd, stdout, job)
 		return true, nil
 	}
 	waitErr := cmd.Wait()

@@ -43,9 +43,11 @@ func TestStopPathOutputCommandTerminatesWindowsDescendants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cmd.Start(); err != nil {
+	job, err := startPathOutputCommand(cmd)
+	if err != nil {
 		t.Fatal(err)
 	}
+	defer job.close()
 	line, err := bufio.NewReader(stdout).ReadString('\n')
 	if err != nil {
 		t.Fatalf("read descendant PID: %v; stderr: %s", err, stderr.String())
@@ -61,7 +63,7 @@ func TestStopPathOutputCommandTerminatesWindowsDescendants(t *testing.T) {
 	defer syscall.CloseHandle(child)
 
 	started := time.Now()
-	stopPathOutputCommand(cmd, stdout)
+	stopPathOutputCommand(cmd, stdout, job)
 	if elapsed := time.Since(started); elapsed >= 5*time.Second {
 		t.Fatalf("descendant cleanup took %s, want under 5s", elapsed)
 	}
