@@ -213,6 +213,18 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		beforeNoEntitySignal := beforeOK && beforeStatus.Partial && len(beforeEntities) == 0
 		afterNoEntitySignal := afterOK && afterStatus.Partial && len(afterEntities) == 0
 		entitiesSkipped := beforeNoEntitySignal || afterNoEntitySignal
+		// A truncated side that DID recover entities (the case above is the
+		// zero-entity one) still cannot tell "unchanged, just below the walk
+		// limit" apart from "genuinely removed": both look like a key missing
+		// from that side's recovered set. A matched key present on BOTH sides
+		// carries no such ambiguity — it was extracted from both trees, so its
+		// signature/body comparison is exact — but a key found on only one
+		// side is exactly the shape a truncated side manufactures for every
+		// declaration hidden below the limit, real removal or not. Suppress
+		// one-sided results (including the rename reconciliation, which is
+		// built from those same one-sided sets) whenever either side is
+		// truncated; matched changes are unaffected.
+		oneSidedSuppressed := (beforeOK && beforeStatus.Partial) || (afterOK && afterStatus.Partial)
 		if afterStatus.ParseError || beforeStatus.ParseError {
 			status, warnPath := afterStatus, path
 			// Warn about the side that lost the signal when one did, so the
@@ -236,7 +248,7 @@ func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, pa
 		var changes []EntityChange
 		var removed, added []Entity
 		if !entitiesSkipped {
-			changes, removed, added = compareEntities(beforeEntities, afterEntities)
+			changes, removed, added = compareEntities(beforeEntities, afterEntities, oneSidedSuppressed)
 		}
 		if len(changes) == 0 && len(removed) == 0 && len(added) == 0 {
 			// The file changed but no named symbol did: the edit lives at
@@ -359,7 +371,10 @@ func parseFailureWarning(path string, status ParseStatus, outcome diffParseOutco
 		// Never suppressed (ParseStatus.Partial), so the "syntax errors" wording
 		// below would be wrong on both counts: the file parsed, and what is
 		// missing is what the walk declined to reach, not what it misread.
-		effect = "diff kept, but declarations nested deeper than the parser walk limit were not compared on one side and may surface as phantom changes"
+		// compareEntities drops one-sided (removed/added/renamed) results for
+		// this outcome, so what is omitted is a real change below the limit,
+		// not a phantom one.
+		effect = "diff kept, but declarations nested deeper than the parser walk limit were not compared on one side; only changes visible on both sides are reported, so an addition or removal below the limit is omitted"
 	default:
 		effect = "file parsed with syntax errors on one side; diff kept but may be incomplete or contain phantom changes"
 	}
@@ -516,7 +531,7 @@ func AnalyzeCheckpoint(ctx context.Context, repo, checkpointID string) (Result, 
 // Removed and added entities that are not reconciled within the file (rename)
 // are emitted as plain removed/added changes.
 func Compare(before, after []Entity) []EntityChange {
-	changes, removed, added := compareEntities(before, after)
+	changes, removed, added := compareEntities(before, after, false)
 	for _, oldEntity := range removed {
 		changes = append(changes, removedChange(oldEntity))
 	}
@@ -531,7 +546,15 @@ func Compare(before, after []Entity) []EntityChange {
 // resolved changes (signature/body changes and within-file renames) plus the
 // removed and added entities that were not reconciled, sorted deterministically
 // so callers can run a cross-file reconciliation pass over the leftovers.
-func compareEntities(before, after []Entity) (changes []EntityChange, removed, added []Entity) {
+// compareEntities matches before/after entities by key and reports what
+// changed. suppressOneSided drops removed, added, and renamed results — every
+// one of which is derived from a key present on only one side — while keeping
+// signature_changed/body_changed results, which require the key to be present
+// (and extracted) on BOTH sides and so cannot be manufactured by one side's
+// walk stopping early. Callers set it when either parsed tree was
+// depth-truncated: see AnalyzeGitRangeWithOptions for why a truncated side's
+// missing keys are not trustworthy evidence of an actual removal or addition.
+func compareEntities(before, after []Entity, suppressOneSided bool) (changes []EntityChange, removed, added []Entity) {
 	beforeByKey, afterByKey := keyedEntityMaps(before, after)
 
 	deleted := map[string]Entity{}
@@ -568,6 +591,10 @@ func compareEntities(before, after []Entity) (changes []EntityChange, removed, a
 		if _, ok := beforeByKey[key]; !ok {
 			addedByKey[key] = newEntity
 		}
+	}
+
+	if suppressOneSided {
+		return changes, nil, nil
 	}
 
 	for oldKey, oldEntity := range deleted {

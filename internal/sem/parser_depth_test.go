@@ -1114,6 +1114,51 @@ func TestAnalyzeKeepsEntityDiffWhenTruncatedSideHasEntities(t *testing.T) {
 	} else if strings.Contains(w.EffectOnCompleteness, "entity comparison skipped") {
 		t.Fatalf("effect = %q, must not claim the comparison was skipped: it was kept", w.EffectOnCompleteness)
 	}
+	for _, f := range res.Files {
+		for _, c := range f.Changes {
+			if c.Name == "beta" {
+				t.Fatalf("phantom %s %q: beta is unchanged in both revisions, merely hidden below the head side's walk limit; changes %+v", c.Type, c.Name, f.Changes)
+			}
+		}
+	}
+}
+
+// TestAnalyzeSuppressesOneSidedResultWhenTruncatedSideHasEntities is the
+// direct repro from the trail finding: a nonempty truncated side used to be
+// compared as if complete, so an unrelated declaration hidden below the limit
+// on ONE side (present, unchanged, on the other) surfaced as a phantom
+// removed/added alongside the real matched change. Matched changes (alpha)
+// must stay; one-sided results (beta) must not appear as removed OR added.
+func TestAnalyzeSuppressesOneSidedResultWhenTruncatedSideHasEntities(t *testing.T) {
+	t.Parallel()
+	base := "function alpha() { return 1 }\n" + nestedBlockJS(6000, "function beta() { return 2 }")
+	head := "function alpha() { return 99 }\n" + nestedBlockJS(6000, "function beta() { return 2 }")
+	assertReachesTheParser(t, base)
+	assertReachesTheParser(t, head)
+
+	repo := buildLinearRepo(t, func(r string) {
+		write(t, r, "svc.js", base)
+	}, func(r string) {
+		write(t, r, "svc.js", head)
+	})
+	res, err := AnalyzeGitRange(context.Background(), repo.repo, repo.base, repo.head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var alphaChanged bool
+	for _, f := range res.Files {
+		for _, c := range f.Changes {
+			if c.Name == "beta" {
+				t.Fatalf("phantom %s %q: beta is truncated on BOTH sides at the same depth and never changed; changes %+v", c.Type, c.Name, f.Changes)
+			}
+			if c.Name == "alpha" && c.Type == "body_changed" {
+				alphaChanged = true
+			}
+		}
+	}
+	if !alphaChanged {
+		t.Fatalf("alpha's real matched change must still be reported; got %+v", res.Files)
+	}
 }
 
 // depthWarning returns the analyze-phase depth warning for a path. The
