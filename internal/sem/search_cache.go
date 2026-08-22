@@ -220,6 +220,12 @@ func loadOrBuildSearchSnapshot(
 				// letting an optional cache break retrieval.
 				return ProviderSnapshot{}, false
 			}
+			if validateBuiltSearchSnapshot(selective, repositoryKey, providerVersion, tree, options) != nil {
+				// The derivation reopens the repository to enumerate the selective
+				// source. If identity or HEAD moved since this transaction was keyed,
+				// discard the result and take the ordinary build path below.
+				return ProviderSnapshot{}, false
+			}
 			// Persisting the exact selective view makes repeated identical queries
 			// a direct cache hit. As with ordinary search caching, this is best effort.
 			_ = writeSearchSnapshot(entry, newCachedSearchSnapshot(providerVersion, commit, tree, options, selective))
@@ -804,6 +810,7 @@ func validCachedSearchSnapshot(cache cachedSearchSnapshot, repositoryKey, provid
 		cache.Worktree == options.Worktree &&
 		cache.Snapshot.Header.Tree == tree &&
 		cache.Snapshot.Header.Provider == ProviderName &&
+		cache.Snapshot.Header.ProviderVersion == providerVersion &&
 		cache.Snapshot.Header.Profile == string(options.Profile)
 }
 

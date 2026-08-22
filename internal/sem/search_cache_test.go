@@ -194,11 +194,12 @@ func TestCacheWritesTolerateSymlinkedCacheDirectories(t *testing.T) {
 func TestValidCachedSearchSnapshotKeysRepoAndIgnoresCommit(t *testing.T) {
 	options := ProviderSnapshotOptions{Profile: ProfileFull}
 	snapshot := ProviderSnapshot{Header: SnapshotHeader{
-		RepoKey:  "github.com/example/repo",
-		Commit:   "old-commit",
-		Tree:     "tree",
-		Provider: ProviderName,
-		Profile:  string(ProfileFull),
+		RepoKey:         "github.com/example/repo",
+		Commit:          "old-commit",
+		Tree:            "tree",
+		Provider:        ProviderName,
+		ProviderVersion: "test-version",
+		Profile:         string(ProfileFull),
 	}}
 	cache := newCachedSearchSnapshot("test-version", "old-commit", "tree", options, snapshot)
 	if !validCachedSearchSnapshot(cache, snapshot.Header.RepoKey, "test-version", "tree", options) {
@@ -207,6 +208,11 @@ func TestValidCachedSearchSnapshotKeysRepoAndIgnoresCommit(t *testing.T) {
 	if validCachedSearchSnapshot(cache, "github.com/example/other", "test-version", "tree", options) {
 		t.Fatal("cache entry from another repository identity must not be reused")
 	}
+	cache.Snapshot.Header.ProviderVersion = "other-version"
+	if validCachedSearchSnapshot(cache, snapshot.Header.RepoKey, "test-version", "tree", options) {
+		t.Fatal("cache entry with mismatched snapshot provider version must not be reused")
+	}
+	cache.Snapshot.Header.ProviderVersion = "test-version"
 	cache.Commit = "different-commit"
 	cache.Snapshot.Header.Commit = "different-commit"
 	if !validCachedSearchSnapshot(cache, snapshot.Header.RepoKey, "test-version", "tree", options) {
