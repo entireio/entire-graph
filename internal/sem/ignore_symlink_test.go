@@ -81,31 +81,80 @@ func TestSymlinkedNestedGitignoreIsSkippedNotFollowed(t *testing.T) {
 	}
 }
 
-// TestSymlinkedExplicitIgnoreFileIsRejected pins loadRequired's half of the
-// fix: an operator-supplied --ignore-file that turns out to be a symlink is
-// refused (as "not a regular file") the same way a directory would be, rather
-// than transparently reading through it.
-func TestSymlinkedExplicitIgnoreFileIsRejected(t *testing.T) {
+// TestSymlinkedCallerControlledIgnoreSourcesAreFollowedNotRejected reproduces
+// the re-review finding on loadOptional/loadRequired: the Lstat guard above is
+// scoped to REPOSITORY-controlled sources, because ignoreOrigin's own doc says
+// only a repo-controlled rule is ever disclosed (repoExclusion's Rule field).
+// A CALLER-controlled source -- .git/info/exclude (the checkout's own local
+// exclude list, via loadOptional) and an explicit --ignore-file/--include-file
+// (via loadRequired) -- carries none of that leak, and Git itself follows a
+// symlinked .git/info/exclude. Rejecting either turned "a user shares their
+// local exclude file via symlink" into a fatal error on every worktree
+// search, for content that was never echoed anywhere.
+func TestSymlinkedCallerControlledIgnoreSourcesAreFollowedNotRejected(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("os.Symlink requires elevated privileges on Windows CI")
 	}
 	t.Parallel()
 
-	outside := t.TempDir()
-	secretPath := filepath.Join(outside, "secret.env")
-	if err := os.WriteFile(secretPath, []byte("SECRET_TOKEN\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	t.Run(".git/info/exclude via loadOptional", func(t *testing.T) {
+		t.Parallel()
+		shared := t.TempDir()
+		sharedExclude := filepath.Join(shared, "shared-exclude")
+		if err := os.WriteFile(sharedExclude, []byte("*.local\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 
-	repo := t.TempDir()
-	linked := filepath.Join(repo, "explicit-ignore")
-	if err := os.Symlink(secretPath, linked); err != nil {
-		t.Fatal(err)
-	}
+		repo := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(repo, ".git", "info"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(sharedExclude, filepath.Join(repo, ".git", "info", "exclude")); err != nil {
+			t.Fatal(err)
+		}
 
-	var matcher ignoreMatcher
-	err := matcher.loadRequired(linked, false, callerIgnoreOrigin("explicit-ignore"))
-	if err == nil {
-		t.Fatal("a symlinked --ignore-file must be rejected, not silently followed")
-	}
+		var matcher ignoreMatcher
+		exclude := filepath.Join(repo, ".git", "info", "exclude")
+		if err := matcher.loadOptional(exclude, false, localIgnoreOrigin(".git/info/exclude")); err != nil {
+			t.Fatalf("a symlinked .git/info/exclude must be followed like Git itself follows it, got error: %v", err)
+		}
+		found := false
+		for _, rule := range matcher.rules {
+			if rule.pattern == "*.local" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("the symlinked exclude file's rule was not loaded")
+		}
+	})
+
+	t.Run("--ignore-file via loadRequired", func(t *testing.T) {
+		t.Parallel()
+		shared := t.TempDir()
+		sharedIgnore := filepath.Join(shared, "shared-ignore")
+		if err := os.WriteFile(sharedIgnore, []byte("*.local\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		repo := t.TempDir()
+		linked := filepath.Join(repo, "explicit-ignore")
+		if err := os.Symlink(sharedIgnore, linked); err != nil {
+			t.Fatal(err)
+		}
+
+		var matcher ignoreMatcher
+		if err := matcher.loadRequired(linked, false, callerIgnoreOrigin("explicit-ignore")); err != nil {
+			t.Fatalf("a symlinked --ignore-file is the caller's own choice and must be followed, got error: %v", err)
+		}
+		found := false
+		for _, rule := range matcher.rules {
+			if rule.pattern == "*.local" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("the symlinked --ignore-file's rule was not loaded")
+		}
+	})
 }
