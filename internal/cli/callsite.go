@@ -97,6 +97,9 @@ func openSnapshotLineReader(
 	if worktree || snapshot.Header.Commit == "" {
 		return newRepoLineReader(snapshot.Header.RepoRoot), nil, nil
 	}
+	if err := sem.EnsureGitMetadataSafeForSubprocess(snapshot.Header.RepoRoot); err != nil {
+		return nil, nil, err
+	}
 
 	treePathPrefix, err := gitutil.RepoPrefix(ctx, snapshot.Header.RepoRoot)
 	if err != nil {

@@ -362,11 +362,10 @@ func searchSessionScopeFor(ctx context.Context, repo string) searchSessionScope 
 	if resolved, err := filepath.Abs(repo); err == nil {
 		scope.Repo = resolved
 	}
-	commit, err := gitutil.RevParse(ctx, repo, "HEAD")
-	if err != nil {
+	if sem.EnsureGitMetadataSafeForSubprocess(repo) != nil {
 		return scope
 	}
-	tree, err := gitutil.RevParse(ctx, repo, commit+"^{tree}")
+	_, tree, err := gitutil.HeadCommitAndTree(ctx, repo)
 	if err != nil {
 		return scope
 	}

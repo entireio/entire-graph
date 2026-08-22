@@ -2,6 +2,7 @@ package sem
 
 import (
 	"bufio"
+	"bytes"
 	"container/heap"
 	"context"
 	"crypto/sha256"
@@ -1522,20 +1523,13 @@ func resolveMaxParseBytes(requested int) int {
 // HEAD expression, preventing mixed commit/tree provenance if HEAD advances
 // between subprocesses.
 func resolveCommittedHEAD(ctx context.Context, repo string) (string, string, error) {
-	if err := ensureGitMetadataSafeForSubprocess(repo); err != nil {
+	if err := EnsureGitMetadataSafeForSubprocess(repo); err != nil {
 		return "", "", err
 	}
-	commit, err := gitutil.RevParse(ctx, repo, "HEAD")
+	commit, tree, err := gitutil.HeadCommitAndTree(ctx, repo)
 	if err != nil || commit == "" {
 		if err == nil {
 			err = errors.New("HEAD resolved to an empty commit")
-		}
-		return "", "", err
-	}
-	tree, err := gitutil.RevParse(ctx, repo, commit+"^{tree}")
-	if err != nil || tree == "" {
-		if err == nil {
-			err = errors.New("committed HEAD resolved to an empty tree")
 		}
 		return "", "", err
 	}
@@ -11670,32 +11664,50 @@ func safeStatThroughSymlinks(base, path string) (os.FileInfo, error) {
 	return file.Stat()
 }
 
-// openSameVolumePath resolves path one component at a time beneath an os.Root
-// anchored at base's volume root. Inspecting only the final path with Lstat is
-// insufficient: the kernel follows an ancestor junction before reporting that
-// final component, which let an in-repository path redirect to UNC and dial SMB
-// before the caller could inspect it. Rooted Lstat/Readlink keeps every probe on
-// the original volume; the final Open returns a held handle so callers need not
-// reopen a checked pathname.
-func openSameVolumePath(base, path string) (*os.File, string, error) {
+// sameVolumePathResolver resolves paths beneath one held filesystem root. A
+// metadata validation checks several fixed paths and may recursively inspect
+// thousands of alternates, so it creates one resolver and reuses both the
+// traversal anchor and os.Root instead of rediscovering the same volume for
+// every path.
+type sameVolumePathResolver struct {
+	baseAbs string
+	anchor  pathTraversalAnchor
+	root    *os.Root
+}
+
+func newSameVolumePathResolver(base string) (*sameVolumePathResolver, error) {
 	baseAbs, err := filepath.Abs(base)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	if !filepath.IsAbs(path) {
-		path = trimTrailingPathSeparators(baseAbs) + string(filepath.Separator) + path
-	}
-	anchor, path, err := newPathTraversalAnchor(baseAbs, path)
+	anchor, _, err := newPathTraversalAnchor(baseAbs, baseAbs)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	root, err := os.OpenRoot(anchor.root)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	defer root.Close()
+	return &sameVolumePathResolver{baseAbs: baseAbs, anchor: anchor, root: root}, nil
+}
 
-	components, ok := anchor.components(path)
+func (r *sameVolumePathResolver) Close() error {
+	return r.root.Close()
+}
+
+// open resolves path one component at a time beneath the resolver's os.Root.
+// Inspecting only the final path with Lstat is insufficient: the kernel follows
+// an ancestor junction before reporting that final component, which let an
+// in-repository path redirect to UNC and dial SMB before the caller could
+// inspect it. Rooted Lstat/Readlink keeps every probe on the original volume;
+// the final Open returns a held handle so callers need not reopen a checked
+// pathname.
+func (r *sameVolumePathResolver) open(path string) (*os.File, string, error) {
+	if !filepath.IsAbs(path) {
+		path = trimTrailingPathSeparators(r.baseAbs) + string(filepath.Separator) + path
+	}
+
+	components, ok := r.anchor.components(path)
 	if !ok {
 		return nil, "", errSymlinkChainOffVolume
 	}
@@ -11717,11 +11729,11 @@ func openSameVolumePath(base, path string) (*os.File, string, error) {
 
 		candidateParts := append(append([]string(nil), resolved...), component)
 		candidate := filepath.Join(candidateParts...)
-		info, statErr := root.Lstat(candidate)
+		info, statErr := r.root.Lstat(candidate)
 		if statErr != nil {
 			return nil, "", statErr
 		}
-		if !anchor.allows(info) {
+		if !r.anchor.allows(info) {
 			return nil, "", errSymlinkChainOffVolume
 		}
 		if !pathMayRedirect(info) {
@@ -11732,13 +11744,13 @@ func openSameVolumePath(base, path string) (*os.File, string, error) {
 		if hops > maxSymlinkChainHops {
 			return nil, "", errSymlinkChainOffVolume
 		}
-		target, readErr := root.Readlink(candidate)
+		target, readErr := r.root.Readlink(candidate)
 		if readErr != nil {
 			return nil, "", fmt.Errorf("%w: %v", errPathRedirectUnreadable, readErr)
 		}
 		target = filepath.FromSlash(target)
-		if absoluteTarget, absolute := linkAbsolutePath(baseAbs, target); absolute {
-			targetComponents, inside := anchor.components(absoluteTarget)
+		if absoluteTarget, absolute := linkAbsolutePath(r.baseAbs, target); absolute {
+			targetComponents, inside := r.anchor.components(absoluteTarget)
 			if !inside {
 				return nil, "", errSymlinkChainOffVolume
 			}
@@ -11753,7 +11765,7 @@ func openSameVolumePath(base, path string) (*os.File, string, error) {
 	if len(resolved) > 0 {
 		rel = filepath.Join(resolved...)
 	}
-	file, err := openRootBoundedRegularFile(root, rel)
+	file, err := openRootBoundedRegularFile(r.root, rel)
 	if err != nil {
 		return nil, "", err
 	}
@@ -11762,16 +11774,27 @@ func openSameVolumePath(base, path string) (*os.File, string, error) {
 		_ = file.Close()
 		return nil, "", err
 	}
-	if !anchor.allows(openedInfo) {
+	if !r.anchor.allows(openedInfo) {
 		_ = file.Close()
 		return nil, "", errSymlinkChainOffVolume
 	}
-	resolvedPath, err := canonicalOpenedPath(file, filepath.Join(anchor.root, rel), anchor)
+	resolvedPath, err := canonicalOpenedPath(file, filepath.Join(r.anchor.root, rel), r.anchor)
 	if err != nil {
 		_ = file.Close()
 		return nil, "", err
 	}
 	return file, resolvedPath, nil
+}
+
+// openSameVolumePath preserves the one-shot helper used outside metadata
+// validation. Multi-path validation uses sameVolumePathResolver directly.
+func openSameVolumePath(base, path string) (*os.File, string, error) {
+	resolver, err := newSameVolumePathResolver(base)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resolver.Close()
+	return resolver.open(path)
 }
 
 func splitNativePathComponents(value string) []string {
@@ -11786,25 +11809,21 @@ func trimTrailingPathSeparators(value string) string {
 }
 
 func lstatSameVolumePath(base, path string) (os.FileInfo, error) {
-	baseAbs, err := filepath.Abs(base)
+	resolver, err := newSameVolumePathResolver(base)
 	if err != nil {
 		return nil, err
 	}
-	parent, resolvedParent, err := openSameVolumePath(base, filepath.Dir(path))
+	defer resolver.Close()
+	return resolver.lstat(path)
+}
+
+func (r *sameVolumePathResolver) lstat(path string) (os.FileInfo, error) {
+	parent, resolvedParent, err := r.open(filepath.Dir(path))
 	if err != nil {
 		return nil, err
 	}
 	_ = parent.Close()
-	anchor, resolvedParent, err := newPathTraversalAnchor(baseAbs, resolvedParent)
-	if err != nil {
-		return nil, err
-	}
-	root, err := os.OpenRoot(anchor.root)
-	if err != nil {
-		return nil, err
-	}
-	defer root.Close()
-	parentParts, ok := anchor.components(resolvedParent)
+	parentParts, ok := r.anchor.components(resolvedParent)
 	if !ok {
 		return nil, errSymlinkChainOffVolume
 	}
@@ -11813,36 +11832,32 @@ func lstatSameVolumePath(base, path string) (os.FileInfo, error) {
 	if rel == "" {
 		rel = "."
 	}
-	info, err := root.Lstat(rel)
+	info, err := r.root.Lstat(rel)
 	if err != nil {
 		return nil, err
 	}
-	if !anchor.allows(info) {
+	if !r.anchor.allows(info) {
 		return nil, errSymlinkChainOffVolume
 	}
 	return info, nil
 }
 
 func readlinkSameVolumePath(base, path string) (string, error) {
-	baseAbs, err := filepath.Abs(base)
+	resolver, err := newSameVolumePathResolver(base)
 	if err != nil {
 		return "", err
 	}
-	parent, resolvedParent, err := openSameVolumePath(base, filepath.Dir(path))
+	defer resolver.Close()
+	return resolver.readlink(path)
+}
+
+func (r *sameVolumePathResolver) readlink(path string) (string, error) {
+	parent, resolvedParent, err := r.open(filepath.Dir(path))
 	if err != nil {
 		return "", err
 	}
 	_ = parent.Close()
-	anchor, resolvedParent, err := newPathTraversalAnchor(baseAbs, resolvedParent)
-	if err != nil {
-		return "", err
-	}
-	root, err := os.OpenRoot(anchor.root)
-	if err != nil {
-		return "", err
-	}
-	defer root.Close()
-	parentParts, ok := anchor.components(resolvedParent)
+	parentParts, ok := r.anchor.components(resolvedParent)
 	if !ok {
 		return "", errSymlinkChainOffVolume
 	}
@@ -11851,14 +11866,14 @@ func readlinkSameVolumePath(base, path string) (string, error) {
 	if rel == "" {
 		rel = "."
 	}
-	info, err := root.Lstat(rel)
+	info, err := r.root.Lstat(rel)
 	if err != nil {
 		return "", err
 	}
-	if !anchor.allows(info) {
+	if !r.anchor.allows(info) {
 		return "", errSymlinkChainOffVolume
 	}
-	target, err := root.Readlink(rel)
+	target, err := r.root.Readlink(rel)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", errPathRedirectUnreadable, err)
 	}
@@ -11996,7 +12011,16 @@ const (
 )
 
 func gitCommonDirStateWithBudget(dir string, admitRead func(int64) bool) (string, gitCommonDirState) {
-	dirHandle, resolvedDir, err := openSameVolumePath(dir, dir)
+	resolver, err := newSameVolumePathResolver(dir)
+	if err != nil {
+		return "", gitCommonDirRefused
+	}
+	defer resolver.Close()
+	return gitCommonDirStateWithResolver(resolver, dir, admitRead)
+}
+
+func gitCommonDirStateWithResolver(resolver *sameVolumePathResolver, dir string, admitRead func(int64) bool) (string, gitCommonDirState) {
+	dirHandle, resolvedDir, err := resolver.open(dir)
 	if err != nil {
 		return "", gitCommonDirRefused
 	}
@@ -12007,7 +12031,7 @@ func gitCommonDirStateWithBudget(dir string, admitRead func(int64) bool) (string
 	// both are ENOENT — and git treats those two oppositely: absent means
 	// "resolve inside dir", present-but-unreadable means it refuses the
 	// directory outright.
-	if _, err := lstatSameVolumePath(resolvedDir, pointer); err != nil {
+	if _, err := resolver.lstat(pointer); err != nil {
 		return resolvedDir, gitCommonDirResolved
 	}
 	// A zero-byte file is the read git gets nothing out of and dies on; every
@@ -12021,7 +12045,7 @@ func gitCommonDirStateWithBudget(dir string, admitRead func(int64) bool) (string
 	// hop. Resolving hop by hop and checking each one's volume against dir
 	// closes that the same way hasObjectsAndRefs and gitDirPointerTarget do
 	// for objects/refs and .git.
-	opened, _, err := openSameVolumePath(resolvedDir, pointer)
+	opened, _, err := resolver.open(pointer)
 	if err != nil {
 		return "", gitCommonDirRefused
 	}
@@ -12077,7 +12101,7 @@ func gitCommonDirStateWithBudget(dir string, admitRead func(int64) bool) (string
 	if !sameVolume(target, resolvedDir) {
 		return "", gitCommonDirRefused
 	}
-	targetHandle, resolvedTarget, err := openSameVolumePath(resolvedDir, target)
+	targetHandle, resolvedTarget, err := resolver.open(target)
 	if err != nil {
 		return "", gitCommonDirRefused
 	}
@@ -12106,7 +12130,16 @@ const maxGitHEADBytes = 256
 // every worktree snapshot.
 func validGitHEAD(head string) bool {
 	base := filepath.Dir(head)
-	info, err := lstatSameVolumePath(base, head)
+	resolver, err := newSameVolumePathResolver(base)
+	if err != nil {
+		return false
+	}
+	defer resolver.Close()
+	return validGitHEADWithResolver(resolver, head)
+}
+
+func validGitHEADWithResolver(resolver *sameVolumePathResolver, head string) bool {
+	info, err := resolver.lstat(head)
 	if err != nil {
 		return false
 	}
@@ -12120,13 +12153,13 @@ func validGitHEAD(head string) bool {
 		// filepath.ToSlash would turn it into `refs/heads/main` here and accept
 		// it anyway, misclassifying an ordinary source fixture as a git
 		// directory and dropping it from the corpus.
-		target, readErr := readlinkSameVolumePath(base, head)
+		target, readErr := resolver.readlink(head)
 		return readErr == nil && strings.HasPrefix(target, "refs/")
 	}
 	if !info.Mode().IsRegular() {
 		return false
 	}
-	file, _, err := openSameVolumePath(base, head)
+	file, _, err := resolver.open(head)
 	if err != nil {
 		return false
 	}
@@ -12990,18 +13023,6 @@ func gitDirLinkTarget(repo, dir string) (string, bool, bool) {
 	return target, ok, false
 }
 
-// readableFile reports whether this process can open path for reading. It is the
-// one question os.Stat cannot answer, and the difference between "there is no
-// pointer here" and "there is a pointer here that I may not read".
-func readableFile(path string) bool {
-	file, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	_ = file.Close()
-	return true
-}
-
 // containedRel reports target's slash-separated path relative to root, and
 // whether it is inside root — the ROOT ITSELF included, reported as
 // gitDirRootTarget.
@@ -13116,9 +13137,14 @@ func gitMetadataSafeForSubprocess(repo string) bool {
 	if err != nil {
 		return false
 	}
+	resolver, err := newSameVolumePathResolver(repoAbs)
+	if err != nil {
+		return false
+	}
+	defer resolver.Close()
 	for dir := repoAbs; ; dir = filepath.Dir(dir) {
 		dotGit := filepath.Join(dir, ".git")
-		opened, resolvedDotGit, openErr := openSameVolumePath(repoAbs, dotGit)
+		opened, resolvedDotGit, openErr := resolver.open(dotGit)
 		if openErr == nil {
 			info, statErr := opened.Stat()
 			if statErr != nil {
@@ -13127,7 +13153,7 @@ func gitMetadataSafeForSubprocess(repo string) bool {
 			}
 			if info.IsDir() {
 				_ = opened.Close()
-				return gitMetadataDirectoryPathsSafe(repoAbs, resolvedDotGit)
+				return gitMetadataDirectoryPathsSafeWithResolver(resolver, resolvedDotGit)
 			}
 			regular, regularErr := openedFileIsRegular(opened, info)
 			if regularErr != nil {
@@ -13157,7 +13183,7 @@ func gitMetadataSafeForSubprocess(repo string) bool {
 			} else {
 				target = gitJoinRelative(dir, target)
 			}
-			targetHandle, resolvedTarget, targetErr := openSameVolumePath(repoAbs, target)
+			targetHandle, resolvedTarget, targetErr := resolver.open(target)
 			if targetErr != nil {
 				// A missing local target makes Git fail discovery without
 				// touching anything else. An off-volume or unreadable target is
@@ -13172,10 +13198,17 @@ func gitMetadataSafeForSubprocess(repo string) bool {
 			if !targetInfo.IsDir() {
 				return true
 			}
-			return gitMetadataDirectoryPathsSafe(repoAbs, resolvedTarget)
+			return gitMetadataDirectoryPathsSafeWithResolver(resolver, resolvedTarget)
 		}
 		if !isMissingPathError(openErr) {
 			return false
+		}
+		bare, safe := bareGitMetadataDirectorySafeWithResolver(resolver, dir)
+		if !safe {
+			return false
+		}
+		if bare {
+			return true
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -13184,25 +13217,102 @@ func gitMetadataSafeForSubprocess(repo string) bool {
 	}
 }
 
+// bareGitMetadataDirectorySafe recognizes the same HEAD/objects/refs shape Git
+// checks while walking ancestors of a cwd inside a bare repository. Path
+// resolution happens before Git is started, so redirected metadata is refused
+// without asking the kernel to follow it on Git's behalf.
+func bareGitMetadataDirectorySafe(repoRoot, dir string) (bare, safe bool) {
+	resolver, err := newSameVolumePathResolver(repoRoot)
+	if err != nil {
+		return false, false
+	}
+	defer resolver.Close()
+	return bareGitMetadataDirectorySafeWithResolver(resolver, dir)
+}
+
+func bareGitMetadataDirectorySafeWithResolver(resolver *sameVolumePathResolver, dir string) (bare, safe bool) {
+	head := filepath.Join(dir, "HEAD")
+	headInfo, err := resolver.lstat(head)
+	if err != nil {
+		return false, isMissingPathError(err)
+	}
+	if headInfo.Mode()&os.ModeSymlink == 0 && !headInfo.Mode().IsRegular() && !headInfo.IsDir() {
+		// Git may block reading a FIFO/device while probing whether this ancestor
+		// is bare. Directories fail locally; symbolic HEADs are validated from
+		// their raw link text by validGitHEAD without following the target.
+		return false, false
+	}
+	if !validGitHEADWithResolver(resolver, head) {
+		return false, true
+	}
+	common, commonState := gitCommonDirStateWithResolver(resolver, dir, nil)
+	if commonState != gitCommonDirResolved {
+		return false, false
+	}
+	for _, entry := range []string{filepath.Join(common, "objects"), filepath.Join(common, "refs")} {
+		opened, _, err := resolver.open(entry)
+		if err != nil {
+			if isMissingPathError(err) {
+				return false, true
+			}
+			return false, false
+		}
+		info, statErr := opened.Stat()
+		_ = opened.Close()
+		if statErr != nil {
+			return false, false
+		}
+		if !info.IsDir() {
+			return false, true
+		}
+	}
+	return true, gitMetadataDirectoryPathsSafeWithResolver(resolver, dir)
+}
+
 func gitMetadataDirectoryPathsSafe(repoRoot, gitDir string) bool {
-	common, ok := gitCommonDir(gitDir)
-	if !ok {
+	resolver, err := newSameVolumePathResolver(repoRoot)
+	if err != nil {
 		return false
 	}
+	defer resolver.Close()
+	return gitMetadataDirectoryPathsSafeWithResolver(resolver, gitDir)
+}
+
+func gitMetadataDirectoryPathsSafeWithResolver(resolver *sameVolumePathResolver, gitDir string) bool {
+	common, commonState := gitCommonDirStateWithResolver(resolver, gitDir, nil)
+	if commonState != gitCommonDirResolved {
+		return false
+	}
+	objectsPath := filepath.Join(common, "objects")
+	resolvedObjects := ""
 	entries := []string{
 		filepath.Join(gitDir, "HEAD"),
 		filepath.Join(gitDir, "index"),
 		filepath.Join(gitDir, "config.worktree"),
-		filepath.Join(common, "objects"),
+		objectsPath,
 		filepath.Join(common, "refs"),
 		filepath.Join(common, "packed-refs"),
 		filepath.Join(common, "config"),
 		filepath.Join(common, "info", "exclude"),
-		filepath.Join(common, "objects", "info", "alternates"),
 	}
 	for _, entry := range entries {
-		opened, _, err := openSameVolumePath(repoRoot, entry)
+		opened, resolved, err := resolver.open(entry)
 		if err == nil {
+			info, statErr := opened.Stat()
+			if statErr != nil {
+				_ = opened.Close()
+				return false
+			}
+			regular, regularErr := openedFileIsRegular(opened, info)
+			if regularErr != nil || (!regular && !info.IsDir()) {
+				_ = opened.Close()
+				return false
+			}
+			if entry == objectsPath {
+				if info.IsDir() {
+					resolvedObjects = resolved
+				}
+			}
 			_ = opened.Close()
 			continue
 		}
@@ -13210,10 +13320,226 @@ func gitMetadataDirectoryPathsSafe(repoRoot, gitDir string) bool {
 			return false
 		}
 	}
+	if resolvedObjects == "" {
+		return true
+	}
+	return gitAlternatesPathsSafeWithResolver(resolver, resolvedObjects)
+}
+
+const (
+	maxGitAlternatesAggregateBytes = 1 << 20
+	maxGitAlternateEntries         = 4096
+	maxGitAlternateDepth           = 5
+)
+
+type gitAlternatesValidation struct {
+	resolver       *sameVolumePathResolver
+	remainingBytes int64
+	remainingPaths int
+	seen           map[string]struct{}
+}
+
+// gitAlternatesPathsSafe validates the path-bearing contents Git reads from
+// objects/info/alternates, including the recursive alternates Git follows.
+// Transport guards do not cover filesystem UNC paths, so every entry is
+// resolved with the same rooted, same-volume walker as fixed metadata paths.
+func gitAlternatesPathsSafe(repoRoot, objectsDir string) bool {
+	resolver, err := newSameVolumePathResolver(repoRoot)
+	if err != nil {
+		return false
+	}
+	defer resolver.Close()
+	return gitAlternatesPathsSafeWithResolver(resolver, objectsDir)
+}
+
+func gitAlternatesPathsSafeWithResolver(resolver *sameVolumePathResolver, objectsDir string) bool {
+	validation := gitAlternatesValidation{
+		resolver:       resolver,
+		remainingBytes: maxGitAlternatesAggregateBytes,
+		remainingPaths: maxGitAlternateEntries,
+		seen:           make(map[string]struct{}),
+	}
+	validation.seen[objectsDir] = struct{}{}
+	// Git reads the primary object's alternates before entering its recursive
+	// depth counter: the first alternate is depth 0 and the sixth is depth 5.
+	return validation.validate(objectsDir, -1)
+}
+
+func (v *gitAlternatesValidation) validate(objectsDir string, depth int) bool {
+	opened, _, err := v.resolver.open(filepath.Join(objectsDir, "info", "alternates"))
+	if err != nil {
+		return isMissingPathError(err)
+	}
+	defer opened.Close()
+	info, err := opened.Stat()
+	if err != nil {
+		return false
+	}
+	regular, err := openedFileIsRegular(opened, info)
+	if err != nil {
+		return false
+	}
+	if !regular {
+		// A directory makes Git's fopen fail locally. FIFOs/devices can block or
+		// yield attacker-controlled bytes and must be refused before Git opens them.
+		return info.IsDir()
+	}
+	if info.Size() < 0 || info.Size() > v.remainingBytes {
+		return false
+	}
+	content, whole, ok := readGitPointerWindowFromOpened(opened, int(info.Size()), info.Size())
+	if !ok || !whole {
+		return false
+	}
+	v.remainingBytes -= info.Size()
+	entries, ok := parseGitAlternatePaths(content, v.remainingPaths)
+	if !ok {
+		return false
+	}
+	v.remainingPaths -= len(entries)
+	for _, entry := range entries {
+		target := filepath.FromSlash(entry)
+		if absolute, isAbsolute := gitAbsolutePath(objectsDir, target); isAbsolute {
+			target = absolute
+		} else {
+			target = gitJoinRelative(objectsDir, target)
+		}
+		alternate, resolved, openErr := v.resolver.open(target)
+		if openErr != nil {
+			if isMissingPathError(openErr) {
+				continue
+			}
+			return false
+		}
+		alternateInfo, statErr := alternate.Stat()
+		_ = alternate.Close()
+		if statErr != nil {
+			return false
+		}
+		if !alternateInfo.IsDir() {
+			continue
+		}
+		if _, duplicate := v.seen[resolved]; duplicate {
+			continue
+		}
+		v.seen[resolved] = struct{}{}
+		if depth < maxGitAlternateDepth && !v.validate(resolved, depth+1) {
+			return false
+		}
+	}
 	return true
 }
 
-func ensureGitMetadataSafeForSubprocess(repo string) error {
+// parseGitAlternatePaths implements Git's newline-separated parse_alternates
+// input, including C-style quoted paths. A raw NUL terminates Git's C string;
+// a decoded NUL terminates the pathname handed to realpath. Broken quoting
+// falls back to a literal entry. Trailing bytes after a successful closing
+// quote consume Git's single separator byte before the remainder is parsed as
+// another entry.
+func parseGitAlternatePaths(content []byte, maxPaths int) ([]string, bool) {
+	if nul := bytes.IndexByte(content, 0); nul >= 0 {
+		content = content[:nul]
+	}
+	input := string(content)
+	paths := make([]string, 0)
+	for len(input) > 0 {
+		if input[0] == '#' {
+			if newline := strings.IndexByte(input, '\n'); newline >= 0 {
+				input = input[newline+1:]
+				continue
+			}
+			break
+		}
+		entry := ""
+		if input[0] == '"' {
+			if decoded, end, ok := unquoteGitCStyle(input); ok {
+				entry = decoded
+				if end < len(input) {
+					// Git advances past exactly one separator byte, even when it is
+					// not a newline, then parses the remainder as another entry.
+					end++
+				}
+				input = input[end:]
+			} else {
+				entry, input = cutGitAlternateLine(input)
+			}
+		} else {
+			entry, input = cutGitAlternateLine(input)
+		}
+		if nul := strings.IndexByte(entry, 0); nul >= 0 {
+			entry = entry[:nul]
+		}
+		if len(entry) > maxGitPointerBytes {
+			return nil, false
+		}
+		if entry != "" {
+			if len(paths) >= maxPaths {
+				return nil, false
+			}
+			paths = append(paths, entry)
+		}
+	}
+	return paths, true
+}
+
+func cutGitAlternateLine(input string) (line, rest string) {
+	if newline := strings.IndexByte(input, '\n'); newline >= 0 {
+		return input[:newline], input[newline+1:]
+	}
+	return input, ""
+}
+
+func unquoteGitCStyle(input string) (string, int, bool) {
+	result := make([]byte, 0, len(input))
+	for index := 1; index < len(input); index++ {
+		switch input[index] {
+		case '"':
+			return string(result), index + 1, true
+		case '\\':
+			index++
+			if index >= len(input) {
+				return "", 0, false
+			}
+			character := input[index]
+			switch character {
+			case 'a':
+				character = '\a'
+			case 'b':
+				character = '\b'
+			case 'f':
+				character = '\f'
+			case 'n':
+				character = '\n'
+			case 'r':
+				character = '\r'
+			case 't':
+				character = '\t'
+			case 'v':
+				character = '\v'
+			case '\\', '"':
+			case '0', '1', '2', '3':
+				if index+2 >= len(input) || input[index+1] < '0' || input[index+1] > '7' || input[index+2] < '0' || input[index+2] > '7' {
+					return "", 0, false
+				}
+				value := int(character-'0')<<6 | int(input[index+1]-'0')<<3 | int(input[index+2]-'0')
+				character = byte(value)
+				index += 2
+			default:
+				return "", 0, false
+			}
+			result = append(result, character)
+		default:
+			result = append(result, input[index])
+		}
+	}
+	return "", 0, false
+}
+
+// EnsureGitMetadataSafeForSubprocess rejects a repository whose discovery or
+// fixed metadata paths can leave the repository's local filesystem before Git
+// has a chance to interpret them. Callers that do any Git work before provider
+// construction must invoke this first; provider construction invokes it too.
+func EnsureGitMetadataSafeForSubprocess(repo string) error {
 	if gitMetadataSafeForSubprocess(repo) {
 		return nil
 	}
@@ -13259,6 +13585,21 @@ func isVendoredScanFile(rel, name string) bool {
 	return strings.HasSuffix(rel, ".map")
 }
 
+func repositoryHasGitMetadata(repo string) bool {
+	for directory := filepath.Clean(repo); ; directory = filepath.Dir(directory) {
+		_, err := os.Lstat(filepath.Join(directory, ".git"))
+		if err == nil || !errors.Is(err, os.ErrNotExist) {
+			// Permission and other probe errors are metadata uncertainty, not
+			// evidence that this is safely a non-Git directory.
+			return true
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			return false
+		}
+	}
+}
+
 // worktreeSourceFiles lists the working tree's source files.
 //
 // Git's own view of the working tree — tracked files plus untracked files no
@@ -13274,7 +13615,7 @@ func isVendoredScanFile(rel, name string) bool {
 // (not a repository at all, or no usable git binary), and it now applies nested
 // .gitignore files itself.
 func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher, hasIncludeFiles bool) ([]string, []ProviderWarning, error) {
-	if err := ensureGitMetadataSafeForSubprocess(repo); err != nil {
+	if err := EnsureGitMetadataSafeForSubprocess(repo); err != nil {
 		// No Git process is started. The fallback treats every ambiguous vendored
 		// directory as potentially tracked so unsafe metadata cannot cause source
 		// omissions, and the warning reports the Git-only policy that is unavailable.

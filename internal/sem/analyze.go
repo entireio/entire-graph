@@ -48,6 +48,9 @@ type AnalyzeProgressEvent struct {
 
 // AnalyzeGitRangeWithOptions analyzes a Git range with optional progress reporting.
 func AnalyzeGitRangeWithOptions(ctx context.Context, repo, base, head string, paths []string, options AnalyzeOptions) (Result, error) {
+	if err := EnsureGitMetadataSafeForSubprocess(repo); err != nil {
+		return Result{}, err
+	}
 	started := time.Now()
 	var deadline time.Time
 	if options.MaxDuration > 0 {
@@ -683,6 +686,9 @@ func reconcileMoves(deltas []*fileDelta) []ProviderWarning {
 }
 
 func AnalyzeCheckpoint(ctx context.Context, repo, checkpointID string) (Result, error) {
+	if err := EnsureGitMetadataSafeForSubprocess(repo); err != nil {
+		return Result{}, err
+	}
 	head, err := gitutil.FindCommitWithCheckpoint(ctx, repo, checkpointID)
 	if err != nil {
 		return Result{}, err

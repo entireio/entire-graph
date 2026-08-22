@@ -82,48 +82,13 @@ func TestListWorktreeFilesAppliesEveryExcludeSource(t *testing.T) {
 	}
 }
 
-// TestSplitNULDirectoryEntriesKeepsOnlyCollapsedDirectories reproduces the
-// trail finding on ListIgnoredWorktreeDirectoryEntries: `git ls-files
-// --directory` only collapses a directory to a single trailing-slash entry
-// when its ENTIRE content is classified the same way. A directory ignored
-// only by file-pattern rules alongside other content is not collapsed, so git
-// lists every one of its matched files individually — and the only consumer
-// of this listing (the git-directory sweep's root list) already discards
-// every entry without a trailing slash, so parsing them at all bought nothing
-// but memory and CPU sized to every ignored file in the tree. This pins that
-// the split itself now drops non-directory entries instead of materializing
-// them.
-func TestSplitNULDirectoryEntriesKeepsOnlyCollapsedDirectories(t *testing.T) {
-	t.Parallel()
-	raw := strings.Join([]string{
-		"build/",        // whole directory collapsed: keep
-		"vendor/pkg.o",  // pattern-ignored file inside a mixed directory: drop
-		"vendor/pkg2.o", // same, a second one, also a duplicate-prefix check
-		"dist/",         // another collapsed directory: keep
-		"",              // trailing NUL from -z output: drop
-		"README.md",     // an ordinary file entry with no trailing slash: drop
-		"build/",        // duplicate of an already-kept directory: dedup
-	}, "\x00")
-
-	got := splitNULDirectoryEntries(raw)
-	want := []string{"build/", "dist/"}
-	if len(got) != len(want) {
-		t.Fatalf("splitNULDirectoryEntries(...) = %#v, want %#v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("splitNULDirectoryEntries(...) = %#v, want %#v", got, want)
-		}
-	}
-}
-
-// TestListIgnoredWorktreeDirectoryEntriesDropsPatternIgnoredFilenames is the
+// TestVisitIgnoredWorktreeDirectoryEntriesDropsPatternIgnoredFilenames is the
 // end-to-end form of the same finding: a real git checkout where a directory
 // is ignored only by a file-pattern rule, mixed with content that is NOT
 // ignored, so `--directory` cannot collapse it. Before the fix, every ignored
 // filename inside such a directory reached the caller; after it, none does —
 // the caller only ever wanted directory roots for the git-directory sweep.
-func TestListIgnoredWorktreeDirectoryEntriesDropsPatternIgnoredFilenames(t *testing.T) {
+func TestVisitIgnoredWorktreeDirectoryEntriesDropsPatternIgnoredFilenames(t *testing.T) {
 	repo := t.TempDir()
 	gitCmd(t, repo, "init")
 	gitCmd(t, repo, "config", "user.name", "T")
@@ -141,7 +106,11 @@ func TestListIgnoredWorktreeDirectoryEntriesDropsPatternIgnoredFilenames(t *test
 	write(t, repo, "cache/a.o", "object\n")
 	write(t, repo, "cache/b.o", "object\n")
 
-	entries, err := ListIgnoredWorktreeDirectoryEntries(t.Context(), repo)
+	var entries []string
+	err := VisitWorktreeDirectoryEntries(t.Context(), repo, true, func(entry string) bool {
+		entries = append(entries, entry)
+		return true
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

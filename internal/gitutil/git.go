@@ -103,6 +103,22 @@ func RevParse(ctx context.Context, repo, rev string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// HeadCommitAndTree resolves HEAD and its root tree from one selected commit.
+// Besides avoiding a second Git process on every committed cache probe, using
+// one show operation prevents a concurrent HEAD update from mixing provenance
+// from two different commits.
+func HeadCommitAndTree(ctx context.Context, repo string) (string, string, error) {
+	out, err := run(ctx, repo, "git", "show", "-s", "--no-show-signature", "--no-notes", "--format=%H%x00%T", "--end-of-options", "HEAD^{commit}")
+	if err != nil {
+		return "", "", err
+	}
+	commit, tree, ok := strings.Cut(strings.TrimSuffix(out, "\n"), "\x00")
+	if !ok || commit == "" || tree == "" || strings.ContainsAny(commit, "\x00\r\n") || strings.ContainsAny(tree, "\x00\r\n") {
+		return "", "", errors.New("git show returned malformed HEAD commit/tree metadata")
+	}
+	return commit, tree, nil
+}
+
 func FirstParent(ctx context.Context, repo, rev string) (string, error) {
 	// --verify --end-of-options: rev is a caller-supplied revision label
 	// (e.g. the `entire commit <rev>` CLI argument); guard it the same way
@@ -159,52 +175,6 @@ func ListIndexFiles(ctx context.Context, repo string) ([]string, error) {
 // back to a filesystem walk.
 func ListWorktreeFiles(ctx context.Context, repo string) ([]string, error) {
 	return listBoundedWorktreePaths(newCmd(ctx, repo, "git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"))
-}
-
-// ListWorktreeDirectoryEntries lists the working tree the way ListWorktreeFiles
-// does but with `--directory`, which reports a directory holding no listed
-// content as a single entry ending in `/` instead of not at all.
-//
-// It exists for one caller: the git-directory excluder, which has to reach the
-// directories the ordinary listing never mentions — git suppresses every `.git`
-// entry, so a directory whose whole content is a `gitdir:` pointer file
-// contributes no listed path. Asking git for them costs one subprocess and
-// inherits git's exclude stack; deriving them instead means reading every
-// directory in the tree, ignored build and cache trees included.
-func ListWorktreeDirectoryEntries(ctx context.Context, repo string) ([]string, error) {
-	var entries []string
-	err := VisitWorktreeDirectoryEntries(ctx, repo, false, func(entry string) bool {
-		entries = append(entries, entry)
-		return true
-	})
-	return entries, err
-}
-
-// ListIgnoredWorktreeDirectoryEntries lists the trees Git's exclude rules cover,
-// collapsed to one entry per top-most ignored directory
-// (`--others --ignored --exclude-standard --directory`).
-//
-// It exists for the git-directory sweep, and for nothing else. A `.git` pointer
-// inside an ignored tree names a git directory OUTSIDE it, which git lists as
-// ordinary untracked content — and the ordinary listings cannot reach the
-// pointer: verified on git 2.54.0 with `build/` ignored and holding
-// `build/dep/.git`, neither `--exclude-standard` listing mentions `build/` at
-// all, while `.dep-git/config` is listed in full. The sweep reads directories
-// only, never a file, so nothing in the ignored tree becomes indexable.
-//
-// Bounded by maxIgnoredDirectoryFields and maxIgnoredDirectoryBytes: past
-// either raw-output limit, this gives up and reports
-// errIgnoredListingTruncated rather than reading a pattern-ignored tree's
-// files one at a time indefinitely. The caller (gitSweepRoots) treats that
-// exactly like any other listing failure and falls back to the sweep's own
-// budgeted derivation instead.
-func ListIgnoredWorktreeDirectoryEntries(ctx context.Context, repo string) ([]string, error) {
-	var entries []string
-	err := VisitWorktreeDirectoryEntries(ctx, repo, true, func(entry string) bool {
-		entries = append(entries, entry)
-		return true
-	})
-	return entries, err
 }
 
 // ListIgnoredWorktreeFiles lists the untracked working-tree files Git's exclude
@@ -291,65 +261,8 @@ func visitBoundedWorktreePathOutputWithBudget(cmd *exec.Cmd, budget *worktreeLis
 	return nil
 }
 
-func splitNULPaths(out string) []string {
-	fields := strings.Split(out, "\x00")
-	files := make([]string, 0, len(fields))
-	seen := make(map[string]struct{}, len(fields))
-	for _, path := range fields {
-		if path == "" {
-			continue
-		}
-		if _, exists := seen[path]; exists {
-			continue
-		}
-		seen[path] = struct{}{}
-		files = append(files, path)
-	}
-	return files
-}
-
-// splitNULDirectoryEntries parses a NUL-terminated `git ls-files --directory`
-// listing, keeping ONLY the entries `--directory` actually collapsed (they
-// carry the trailing slash git adds for that case) and discarding every plain
-// filename immediately, without ever placing it in a slice or a dedup map.
-//
-// `--directory` collapses a directory to one entry only when git's OWN
-// listing classifies its ENTIRE content the same way (all "other", or here,
-// all ignored). A directory ignored only by file-pattern rules (`*.o`,
-// `node_modules/*.log`) rather than a whole-directory rule does not collapse:
-// git instead lists every one of its matched files individually, so a build
-// or dependency tree with hundreds of thousands of pattern-ignored files
-// widens this listing to the same size. The only consumer of this listing
-// (the git-directory sweep's root list) already discards every non-directory
-// entry one at a time — see its trailing-slash check — so parsing them at all
-// bought nothing but the memory and CPU of a slice and a dedup map sized to
-// every ignored FILE in the tree, ahead of the sweep's own 20,000-directory
-// budget. Filtering here, during the NUL split rather than after it,
-// bounds this listing's cost to the number of ignored/untracked DIRECTORIES,
-// which is the quantity the sweep ever actually uses.
-func splitNULDirectoryEntries(out string) []string {
-	var dirs []string
-	seen := make(map[string]struct{})
-	for len(out) > 0 {
-		field := out
-		if idx := strings.IndexByte(out, 0); idx >= 0 {
-			field = out[:idx]
-			out = out[idx+1:]
-		} else {
-			out = ""
-		}
-		if keepDirectoryEntry(field, seen) {
-			dirs = append(dirs, field)
-		}
-	}
-	return dirs
-}
-
-// keepDirectoryEntry applies splitNULDirectoryEntries' filter (keep only
-// trailing-slash, not-yet-seen fields) to one field at a time, recording it
-// in seen on acceptance. Shared with streamNULDirectoryEntries so the two
-// callers — one filtering an already-materialized string, the other
-// filtering fields as they arrive off a pipe — cannot drift apart.
+// keepDirectoryEntry keeps only trailing-slash, not-yet-seen fields from a
+// streamed `git ls-files --directory` response.
 func keepDirectoryEntry(field string, seen map[string]struct{}) bool {
 	if field == "" || !strings.HasSuffix(field, "/") {
 		return false
@@ -362,7 +275,7 @@ func keepDirectoryEntry(field string, seen map[string]struct{}) bool {
 }
 
 // maxIgnoredDirectoryFields and maxIgnoredDirectoryBytes bound the total
-// NUL-delimited records streamNULDirectoryEntries will read off git's stdout
+// NUL-delimited records VisitWorktreeDirectoryEntries will read from Git
 // before giving up on the listing, independent of how many of those records
 // turn out to be directory entries kept by keepDirectoryEntry. The byte bound
 // includes each record's NUL delimiter, so even a stream of maximum-size path
@@ -399,7 +312,7 @@ const (
 	maxIgnoredDirectoryBytes  = 64 << 20
 )
 
-// errIgnoredListingTruncated reports that streamNULDirectoryEntries stopped
+// errIgnoredListingTruncated reports that the streamed directory listing stopped
 // before EOF because a raw field-count or aggregate-byte bound was reached.
 // It is a deliberate, fail-closed refusal to keep reading, not a process
 // failure — callers should treat it exactly like any other error from this
@@ -422,48 +335,6 @@ func (b *ignoredDirectoryListingBudget) admit(field string) bool {
 	b.fields++
 	b.bytes += recordBytes
 	return true
-}
-
-// streamNULDirectoryEntries runs a NUL-delimited `git ls-files --directory`
-// listing and keeps only the trailing-slash entries `--directory` actually
-// collapsed, discarding every other field the moment it is read off the
-// subprocess's stdout pipe.
-//
-// It exists because `run` (and the bytes.Buffer it hands to cmd.Stdout)
-// materializes the ENTIRE subprocess output before any caller gets to filter
-// it. `--directory` only collapses a directory when git classifies its whole
-// content the same way; a directory ignored only by file-pattern rules
-// alongside other content is not collapsed, so a repository with a build or
-// dependency tree matched by a pattern like `*.o` makes git print every one
-// of those files individually. Buffering that complete listing first would
-// cost memory and CPU proportional to every ignored FILE in the tree ahead
-// of the caller's own directory-count budget, even though the filter here
-// discards every one of those filenames. Streaming and filtering in the same
-// pass bounds this call's cost to the number of ignored/untracked
-// DIRECTORIES in the ordinary case; the field and byte caps bound it even
-// when that count never grows.
-func streamNULDirectoryEntries(ctx context.Context, repo, name string, args ...string) ([]string, error) {
-	var dirs []string
-	seen := make(map[string]struct{})
-	var budget ignoredDirectoryListingBudget
-	truncated := false
-	err := visitBoundedNULPaths(newCmd(ctx, repo, name, args...), func(field string) bool {
-		if !budget.admit(field) {
-			truncated = true
-			return false
-		}
-		if keepDirectoryEntry(field, seen) {
-			dirs = append(dirs, field)
-		}
-		return true
-	})
-	if err != nil {
-		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
-	}
-	if truncated {
-		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), errIgnoredListingTruncated)
-	}
-	return dirs, nil
 }
 
 // GrepIndexMatches returns a bounded sample of matched terms per tracked

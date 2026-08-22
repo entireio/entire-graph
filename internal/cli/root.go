@@ -361,14 +361,16 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
 	useCache := !flags.DisableCache && !flags.Worktree && cacheDir != ""
 	var commit, tree string
+	if useCache && sem.EnsureGitMetadataSafeForSubprocess(repo) != nil {
+		// Cache probing is optional and runs before provider construction. Unsafe
+		// metadata disables the probe; the provider below selects its warned,
+		// filesystem-only fallback without starting Git.
+		useCache = false
+	}
 	if useCache {
-		if c, commitErr := gitutil.RevParse(ctx, repo, "HEAD^{commit}"); commitErr == nil && c != "" {
-			if t, treeErr := gitutil.RevParse(ctx, repo, c+"^{tree}"); treeErr == nil && t != "" {
-				commit = c
-				tree = t
-			} else {
-				useCache = false
-			}
+		if c, t, headErr := gitutil.HeadCommitAndTree(ctx, repo); headErr == nil && c != "" && t != "" {
+			commit = c
+			tree = t
 		} else {
 			useCache = false
 		}
@@ -684,6 +686,9 @@ func runCommit(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := sem.EnsureGitMetadataSafeForSubprocess(repo); err != nil {
+		return err
+	}
 	base, err := gitutil.FirstParent(ctx, repo, rev)
 	if err != nil {
 		return err
@@ -809,6 +814,15 @@ func resolveRepo(ctx context.Context, env EntireEnv, explicit string) (string, e
 	}
 	if env.RepoRoot != "" {
 		return env.RepoRoot, nil
+	}
+	if err := sem.EnsureGitMetadataSafeForSubprocess("."); err != nil {
+		// Preserve the provider's warned filesystem-only fallback without asking
+		// Git to discover the checkout. Analyze entry points apply their own strict
+		// guard before resolving revisions.
+		if root, ok := discoverCheckoutRoot("."); ok {
+			return root, nil
+		}
+		return ".", nil
 	}
 	return gitutil.RepoRoot(ctx, ".")
 }

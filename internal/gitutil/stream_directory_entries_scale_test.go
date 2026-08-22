@@ -79,14 +79,14 @@ func directoryEntryProducerCommandWithRecordBytes(
 }
 
 // TestStreamNULDirectoryEntriesHandlesLargeMixedOutput reproduces the trail
-// finding on ListIgnoredWorktreeDirectoryEntries: `--directory` only
+// finding on the ignored-directory listing: `--directory` only
 // collapses a directory git classifies as wholly ignored. A directory
 // ignored only by a file-pattern rule (e.g. `*.o`) alongside other content is
 // never collapsed, so an untrusted checkout with a build or dependency tree
 // matched by such a pattern makes git print every one of those filenames
 // individually — potentially millions of them, entirely attacker-controlled.
 // The prior implementation ran that listing through `run`, which buffers the
-// COMPLETE subprocess stdout into memory before splitNULDirectoryEntries
+// COMPLETE subprocess stdout into memory before filtering
 // ever discarded a single non-directory field.
 //
 // This drives a synthetic producer standing in for such a listing (one
@@ -135,7 +135,7 @@ func TestStreamNULDirectoryEntriesHandlesLargeMixedOutput(t *testing.T) {
 }
 
 // TestStreamNULDirectoryEntriesTruncatesAPathologicalFieldCount is the
-// narrowing direction the trail finding on ListIgnoredWorktreeDirectoryEntries
+// narrowing direction of the trail finding on the ignored-directory listing
 // (git.go:152) is about: the prior fix above bounds this call to the
 // ORDINARY case (filtering as fields arrive instead of buffering), but a
 // scanned repository that arranges for a file-pattern ignore matching FAR

@@ -274,10 +274,6 @@ func TestNestedIgnoreFileCountIsReportedAcrossListings(t *testing.T) {
 	if _, _, err := walkWorktreeFiles(t.Context(), repo, ignores, func(string) bool { return false }); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("filesystem nested-file limit error = %v, want %q", err, want)
 	}
-	if _, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true}); err == nil ||
-		!strings.Contains(err.Error(), "nested-ignore candidates exceed") {
-		t.Fatalf("replay-policy nested-file limit error = %v", err)
-	}
 }
 
 func TestWorktreeNestedIgnoreDoesNotFollowEscapingDirectorySymlink(t *testing.T) {
@@ -316,25 +312,7 @@ func TestReusableNestedIgnoreBudgetStartsFresh(t *testing.T) {
 	}
 }
 
-func TestSearchReplayPolicyNestedBudgetIsFreshPerEvaluation(t *testing.T) {
-	repo := t.TempDir()
-	writeFile(t, repo, ".gitignore", parsedIgnoreRules(maxIgnoreParsedRules-1))
-	writeFile(t, repo, "vendor/.gitignore", "!keep/**\n")
-	writeFile(t, repo, "vendor/keep/keep.go", "package keep\n")
-	initializeIgnorePolicyRepo(t, repo)
-
-	policy, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for attempt := 0; attempt < 2; attempt++ {
-		if !policy.AllowsReplayPaths([]string{"vendor/keep/keep.go"}) {
-			t.Fatalf("replay attempt %d reused a spent nested-ignore budget", attempt+1)
-		}
-	}
-}
-
-func TestUnmergedNestedIgnoreHasProviderReplayParity(t *testing.T) {
+func TestUnmergedNestedIgnoreHasProviderParity(t *testing.T) {
 	repo := t.TempDir()
 	policy := parsedIgnoreRules(maxIgnoreParsedRules/2) + "*\n!.gitignore\n!mypkg/\n!mypkg/**\n"
 	writeFile(t, repo, "vendor/.gitignore", policy)
@@ -361,17 +339,9 @@ func TestUnmergedNestedIgnoreHasProviderReplayParity(t *testing.T) {
 		t.Fatalf("provider paths = %q, want vendored path re-admitted by nested policy", paths)
 	}
 
-	replay, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	replayAllows := replay.AllowsReplayPaths([]string{"vendor/mypkg/kept.go"})
-	if replayAllows != providerAllows {
-		t.Fatalf("replay allows vendored path = %v, provider = %v", replayAllows, providerAllows)
-	}
 }
 
-func TestIgnoredNestedIgnoreHasProviderReplayParity(t *testing.T) {
+func TestIgnoredNestedIgnoreHasProviderParity(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, ".gitignore", "vendor/.gitignore\n")
 	writeFile(t, repo, "main.go", "package main\n")
@@ -400,16 +370,9 @@ func TestIgnoredNestedIgnoreHasProviderReplayParity(t *testing.T) {
 		t.Fatalf("provider paths = %q, want path re-admitted by an ignored nested policy file", paths)
 	}
 
-	replay, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !replay.AllowsReplayPaths([]string{"vendor/mypkg/keep.go"}) {
-		t.Fatal("replay rejected the provider-admitted path from an ignored nested policy file")
-	}
 }
 
-func TestIrrelevantIgnoredNestedIgnoresDoNotSpendProviderReplayBudget(t *testing.T) {
+func TestIrrelevantIgnoredNestedIgnoresDoNotSpendProviderBudget(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, ".gitignore", "ignored/\n")
 	writeFile(t, repo, "main.go", "package main\n")
@@ -430,13 +393,6 @@ func TestIrrelevantIgnoredNestedIgnoresDoNotSpendProviderReplayBudget(t *testing
 		t.Fatalf("provider paths = %q, want main.go", paths)
 	}
 
-	replay, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
-	if err != nil {
-		t.Fatalf("irrelevant ignored policies exhausted replay budget: %v", err)
-	}
-	if !replay.AllowsReplayPaths([]string{"main.go"}) {
-		t.Fatal("replay rejected the legitimate path beside a wholly ignored tree")
-	}
 }
 
 func TestCommittedSubdirectoryReadsRootAndNestedIgnoreFiles(t *testing.T) {

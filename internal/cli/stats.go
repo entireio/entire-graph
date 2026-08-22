@@ -732,13 +732,15 @@ func (c *statsCollector) medianTrackedFileSize() int64 {
 		return 0
 	}
 	var sizes []int64
-	if files, err := gitutil.ListIndexFiles(c.ctx, c.repo); err == nil {
-		for _, name := range files {
-			if info, err := os.Stat(filepath.Join(c.repo, name)); err == nil && info.Mode().IsRegular() {
-				sizes = append(sizes, info.Size())
-			}
-			if len(sizes) >= 5000 {
-				break
+	if sem.EnsureGitMetadataSafeForSubprocess(c.repo) == nil {
+		if files, err := gitutil.ListIndexFiles(c.ctx, c.repo); err == nil {
+			for _, name := range files {
+				if info, err := os.Stat(filepath.Join(c.repo, name)); err == nil && info.Mode().IsRegular() {
+					sizes = append(sizes, info.Size())
+				}
+				if len(sizes) >= 5000 {
+					break
+				}
 			}
 		}
 	}

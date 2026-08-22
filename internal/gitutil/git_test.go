@@ -2514,6 +2514,46 @@ func TestRevParseRejectsAnOptionShapedRevisionInsteadOfPassingItThrough(t *testi
 	}
 }
 
+func TestHeadCommitAndTreeReturnsOneCommitProvenancePair(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "a.txt", "hi\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "init")
+
+	commit, tree, err := HeadCommitAndTree(t.Context(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCommit, err := RevParse(t.Context(), repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commit != wantCommit {
+		t.Fatalf("commit = %q, want %q", commit, wantCommit)
+	}
+	wantTree, err := RevParse(t.Context(), repo, "HEAD^{tree}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tree != wantTree {
+		t.Fatalf("tree = %q, want %q", tree, wantTree)
+	}
+
+	git(t, repo, "tag", "-a", "v1", "-m", "annotated tag")
+	git(t, repo, "symbolic-ref", "HEAD", "refs/tags/v1")
+	commit, tree, err = HeadCommitAndTree(t.Context(), repo)
+	if err != nil {
+		t.Fatalf("annotated-tag HEAD: %v", err)
+	}
+	if commit != wantCommit || tree != wantTree {
+		t.Fatalf("annotated-tag provenance = %q/%q, want %q/%q", commit, tree, wantCommit, wantTree)
+	}
+}
+
 // TestFirstParentRejectsAnOptionShapedRevision pins the same guard on
 // FirstParent, used directly with a CLI-supplied revision by `entire commit
 // <rev>` (internal/cli/root.go's runCommit).

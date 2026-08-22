@@ -24,6 +24,33 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func installFakeGitMarker(t *testing.T) string {
+	t.Helper()
+	binDir := t.TempDir()
+	marker := filepath.Join(binDir, "git-was-started")
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.Open(testExecutable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination, err := os.OpenFile(filepath.Join(binDir, "git.exe"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o755)
+	if err != nil {
+		_ = source.Close()
+		t.Fatalf("create fake git executable: %v", err)
+	}
+	_, copyErr := io.Copy(destination, source)
+	closeErr := errors.Join(destination.Close(), source.Close())
+	if copyErr != nil || closeErr != nil {
+		t.Fatalf("install fake git executable: %v", errors.Join(copyErr, closeErr))
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv(fakeGitMarkerEnv, marker)
+	return marker
+}
+
 func windowsJunction(t *testing.T, target, link string) {
 	t.Helper()
 	cmd := exec.Command("cmd", "/c", "mklink", "/J", link, target)
@@ -765,28 +792,7 @@ func TestUnsafeRootGitfileUsesWarnedFallbackBeforeStartingGit(t *testing.T) {
 		t.Fatal("UNC root gitfile passed the pre-subprocess metadata guard")
 	}
 
-	binDir := t.TempDir()
-	marker := filepath.Join(binDir, "git-was-started")
-	testExecutable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := os.Open(testExecutable)
-	if err != nil {
-		t.Fatal(err)
-	}
-	destination, err := os.OpenFile(filepath.Join(binDir, "git.exe"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o755)
-	if err != nil {
-		_ = source.Close()
-		t.Fatalf("create fake git executable: %v", err)
-	}
-	_, copyErr := io.Copy(destination, source)
-	closeErr := errors.Join(destination.Close(), source.Close())
-	if copyErr != nil || closeErr != nil {
-		t.Fatalf("install fake git executable: %v", errors.Join(copyErr, closeErr))
-	}
-	t.Setenv("PATH", binDir)
-	t.Setenv(fakeGitMarkerEnv, marker)
+	marker := installFakeGitMarker(t)
 
 	type result struct {
 		snapshot ProviderSnapshot
@@ -817,6 +823,40 @@ func TestUnsafeRootGitfileUsesWarnedFallbackBeforeStartingGit(t *testing.T) {
 	}
 }
 
+func TestAnalyzeEntryPointsRejectUnsafeMetadataBeforeStartingGit(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, ".git", `gitdir: \\203.0.113.1\share\repo`+"\n")
+	marker := installFakeGitMarker(t)
+
+	tests := map[string]func() error{
+		"range": func() error {
+			_, err := AnalyzeGitRangeWithOptions(t.Context(), repo, "base", "head", nil, AnalyzeOptions{})
+			return err
+		},
+		"checkpoint": func() error {
+			_, err := AnalyzeCheckpoint(t.Context(), repo, "checkpoint")
+			return err
+		},
+	}
+	for name, run := range tests {
+		t.Run(name, func(t *testing.T) {
+			done := make(chan error, 1)
+			go func() { done <- run() }()
+			select {
+			case err := <-done:
+				if err == nil || !strings.Contains(err.Error(), "refuse Git subprocesses") {
+					t.Fatalf("error = %v, want unsafe-metadata refusal", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("unsafe metadata did not fail before Git promptly")
+			}
+		})
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Git subprocess marker stat = %v, want not-exist", err)
+	}
+}
+
 func TestRootGitDirectoryWithUNCObjectStoreIsUnsafeWithoutDialing(t *testing.T) {
 	repo := t.TempDir()
 	gitDir := filepath.Join(repo, ".git")
@@ -835,6 +875,74 @@ func TestRootGitDirectoryWithUNCObjectStoreIsUnsafeWithoutDialing(t *testing.T) 
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("UNC .git/objects redirect was followed instead of rejected before network access")
+	}
+}
+
+func TestBareGitDirectoryWithUNCObjectStoreIsUnsafeWithoutDialing(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, "refs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, "HEAD", "ref: refs/heads/main\n")
+	windowsSymlinkOrSkip(t, `\\203.0.113.1\share\objects`, filepath.Join(repo, "objects"))
+	marker := installFakeGitMarker(t)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := AnalyzeGitRangeWithOptions(t.Context(), repo, "base", "head", nil, AnalyzeOptions{})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "refuse Git subprocesses") {
+			t.Fatalf("error = %v, want unsafe bare-metadata refusal", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("UNC bare objects redirect was followed instead of rejected before network access")
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Git subprocess marker stat = %v, want not-exist", err)
+	}
+}
+
+func TestUNCAlternateObjectStoreIsUnsafeBeforeStartingGit(t *testing.T) {
+	payloads := map[string]string{
+		"plain":     `\\203.0.113.1\share\objects` + "\n",
+		"C quoted":  `"\\\\203.0.113.1\\share\\objects"` + "\n",
+		"octal":     `"\134\134203.0.113.1\134share\134objects"` + "\n",
+		"multiline": `"\\\\203.0.113.1\\share` + "\n" + `\\objects"` + "\n",
+	}
+	for name, payload := range payloads {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			gitDir := filepath.Join(repo, ".git")
+			if err := os.MkdirAll(filepath.Join(gitDir, "objects", "info"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(gitDir, "refs"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, gitDir, "HEAD", "ref: refs/heads/main\n")
+			writeFile(t, filepath.Join(gitDir, "objects", "info"), "alternates", payload)
+			marker := installFakeGitMarker(t)
+
+			done := make(chan error, 1)
+			go func() {
+				_, err := AnalyzeGitRangeWithOptions(t.Context(), repo, "base", "head", nil, AnalyzeOptions{})
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err == nil || !strings.Contains(err.Error(), "refuse Git subprocesses") {
+					t.Fatalf("error = %v, want unsafe alternates refusal", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("UNC alternates path was followed instead of rejected before network access")
+			}
+			if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("Git subprocess marker stat = %v, want not-exist", err)
+			}
+		})
 	}
 }
 
