@@ -153,6 +153,127 @@ func TestJSONWriterReportsAShortWriteAsAnError(t *testing.T) {
 	}
 }
 
+// TestJSONWriterResolvesAC1SequenceSplitAcrossWrites pins the cross-call state:
+// io.Writer's contract says nothing about where one Write ends and the next
+// begins, and json.Encoder.Encode happening to write one value per call is not
+// a guarantee this writer may rely on. Splitting the pair after the leading
+// 0xc2 must still produce the identical escaped output a single Write would.
+func TestJSONWriterResolvesAC1SequenceSplitAcrossWrites(t *testing.T) {
+	whole := "{\"p\":\"evil\u009dtail\"}\n"
+	splitAt := len("{\"p\":\"evil") + 1 // just after the 0xc2 lead byte
+
+	var oneShot bytes.Buffer
+	if _, err := NewJSONWriter(&oneShot).Write([]byte(whole)); err != nil {
+		t.Fatalf("one-shot write: %v", err)
+	}
+
+	var split bytes.Buffer
+	writer := NewJSONWriter(&split)
+	first, second := whole[:splitAt], whole[splitAt:]
+	if _, err := writer.Write([]byte(first)); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if _, err := writer.Write([]byte(second)); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+	if split.String() != oneShot.String() {
+		t.Errorf("split write diverged from one-shot:\n split =  %q\n oneShot = %q", split.String(), oneShot.String())
+	}
+	if index := indexRawC1(split.String()); index >= 0 {
+		t.Errorf("raw C1 control at byte %d after a split write: %q", index, split.String())
+	}
+}
+
+// TestJSONWriterResolvesAnOrdinaryTwoByteCharacterSplitAcrossWrites is the other
+// half: a 0xc2 lead followed by a byte OUTSIDE the C1 range (U+00A0-U+00FF) must
+// still be copied through raw, not escaped, even when the two bytes arrive in
+// different Write calls.
+func TestJSONWriterResolvesAnOrdinaryTwoByteCharacterSplitAcrossWrites(t *testing.T) {
+	whole := "{\"p\":\"a\u00a0\u009db\"}\n" // NBSP (not C1) beside a real C1 control
+	splitAt := len("{\"p\":\"a") + 1        // just after the NBSP's 0xc2 lead byte
+
+	var oneShot bytes.Buffer
+	if _, err := NewJSONWriter(&oneShot).Write([]byte(whole)); err != nil {
+		t.Fatalf("one-shot write: %v", err)
+	}
+
+	var split bytes.Buffer
+	writer := NewJSONWriter(&split)
+	first, second := whole[:splitAt], whole[splitAt:]
+	if _, err := writer.Write([]byte(first)); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if _, err := writer.Write([]byte(second)); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+	if split.String() != oneShot.String() {
+		t.Errorf("split write diverged from one-shot:\n split =  %q\n oneShot = %q", split.String(), oneShot.String())
+	}
+}
+
+// TestJSONWriterCloseFlushesAnUnresolvedTrailingLead covers the stream that ends
+// mid-sequence: nothing ever arrives to complete the withheld 0xc2, and Close
+// must still emit it rather than lose it silently.
+func TestJSONWriterCloseFlushesAnUnresolvedTrailingLead(t *testing.T) {
+	var buffer bytes.Buffer
+	writer := NewJSONWriter(&buffer)
+	if _, err := writer.Write([]byte("{\"p\":\"evil\xc2")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if buffer.String() != "{\"p\":\"evil" {
+		t.Errorf("wrote the withheld lead before Close: %q", buffer.String())
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if want := "{\"p\":\"evil\xc2"; buffer.String() != want {
+		t.Errorf("got %q, want %q", buffer.String(), want)
+	}
+	// Idempotent: a second Close must not duplicate the byte.
+	if err := writer.Close(); err != nil {
+		t.Fatalf("second close: %v", err)
+	}
+	if want := "{\"p\":\"evil\xc2"; buffer.String() != want {
+		t.Errorf("second close changed the output: got %q, want %q", buffer.String(), want)
+	}
+}
+
+// TestJSONWriterSmallWriteDoesNotAllocateTheFullFlushBuffer pins the other
+// finding: a several-byte record used to cost a 32 KiB allocation just because
+// it contained one control byte, and a hostile path repeated across many
+// records turned that into tens of thousands of oversized allocations.
+func TestJSONWriterSmallWriteDoesNotAllocateTheFullFlushBuffer(t *testing.T) {
+	input := []byte("{\"p\":\"a\u009db\"}\n")
+	allocs := testing.AllocsPerRun(100, func() {
+		var buffer bytes.Buffer
+		if _, err := NewJSONWriter(&buffer).Write(input); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	})
+	// A handful of small allocations (the flush buffer sized to this input, the
+	// escaped byte slice, bytes.Buffer's own growth) is expected; anything that
+	// scales with escapeFlushBytes instead of len(input) would show up as a
+	// wildly larger byte total, which AllocsPerRun does not measure directly —
+	// so this pins the DIRECT evidence instead: the capacity helper itself.
+	if got, want := escapedFlushCapacity(len(input)), len(input)*6+escapeHeadroom; got != want {
+		t.Errorf("escapedFlushCapacity(%d) = %d, want %d (below escapeFlushBytes, so the small bound applies)", len(input), got, want)
+	}
+	if allocs <= 0 {
+		t.Errorf("AllocsPerRun reported %v allocations, want at least one for the escape path", allocs)
+	}
+}
+
+// TestEscapedFlushCapacityIsBoundedByTheFlushLimit is the other half: an input
+// at or above the flush limit must still cap the buffer at escapeFlushBytes,
+// preserving the bounded-memory guarantee writeEscaped documents.
+func TestEscapedFlushCapacityIsBoundedByTheFlushLimit(t *testing.T) {
+	for _, inputBytes := range []int{escapeFlushBytes, escapeFlushBytes * 10, escapeFlushBytes * 1000} {
+		if got, want := escapedFlushCapacity(inputBytes), escapeFlushBytes+escapeHeadroom; got != want {
+			t.Errorf("escapedFlushCapacity(%d) = %d, want %d", inputBytes, got, want)
+		}
+	}
+}
+
 // indexRawC1 reports the first C1 control still present as the code point itself,
 // in either form a repository can deliver one.
 func indexRawC1(value string) int {
