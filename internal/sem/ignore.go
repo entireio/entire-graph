@@ -468,31 +468,25 @@ func gitInfoExcludePath(repo string) string {
 	if !filepath.IsAbs(gitDir) {
 		gitDir = gitJoinRelative(repo, gitDir)
 	}
-	// commondir points at the shared .git that owns info/; it may be relative to gitDir.
-	if common, ok := readGitPointerFile(filepath.Join(gitDir, "commondir"), maxGitPointerBytes); ok && common != "" {
-		if !filepath.IsAbs(common) {
-			common = gitJoinRelative(gitDir, common)
-		}
-		// A different volume than gitDir's own is rejected before the caller's
-		// os.Stat(exclude) ever reaches it: on Windows, filepath.VolumeName
-		// reports a UNC share (`\\host\share`) as its own volume, and a
-		// `commondir` naming one — reachable through the same NUL-aware
-		// pointer parser readGitDirPointer above already has to defend against
-		// for the `.git` file itself — would otherwise make this process open
-		// an SMB connection to a server the scanned repository's own committed
-		// content names, with ambient credentials, purely to look for an
-		// info/exclude file. VolumeName is "" for every relative and
-		// POSIX-absolute path, so this is a no-op off Windows. sameVolume
-		// compares case-insensitively — Windows drive letters and UNC hosts
-		// are case-insensitive, but VolumeName preserves whatever spelling the
-		// string carries, so a bare != here rejected `c:` against `C:` and
-		// silently skipped the shared info/exclude instead of reading it.
-		// Mirrors the same guard on gitCommonDir in provider.go.
-		if !sameVolume(common, gitDir) {
-			return ""
-		}
-		gitDir = filepath.Clean(common)
+	// commondir points at the shared .git that owns info/; it may be relative to
+	// gitDir. Resolved through gitCommonDir (provider.go), not a second,
+	// hand-rolled parse here: gitCommonDir walks a `commondir` symlink hop by
+	// hop via safeStatThroughSymlinks, rejecting any hop that lands off
+	// gitDir's volume, BEFORE the file is ever opened — the same guard
+	// hasObjectsAndRefs and gitDirPointerTarget already apply to `objects`,
+	// `refs`, and `.git`. This function used to reimplement the same
+	// commondir parse inline with only a single-hop volume check on the
+	// already-fully-resolved target, which is exactly the gap
+	// safeStatThroughSymlinks' own doc comment describes: a `commondir` that
+	// is itself a same-volume local symlink to a SECOND symlink naming a UNC
+	// share would have this process dial SMB with ambient credentials while
+	// resolving a path this function never even looked at, before the single
+	// top-level check ever ran.
+	common, ok := gitCommonDir(gitDir)
+	if !ok {
+		return ""
 	}
+	gitDir = filepath.Clean(common)
 	return filepath.Join(gitDir, "info", "exclude")
 }
 

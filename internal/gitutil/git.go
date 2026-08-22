@@ -205,6 +205,12 @@ func ListWorktreeDirectoryEntries(ctx context.Context, repo string) ([]string, e
 // `build/dep/.git`, neither `--exclude-standard` listing mentions `build/` at
 // all, while `.dep-git/config` is listed in full. The sweep reads directories
 // only, never a file, so nothing in the ignored tree becomes indexable.
+//
+// Bounded by maxIgnoredDirectoryFields: past that many total fields, this
+// gives up and reports errIgnoredListingTruncated rather than reading a
+// pattern-ignored tree's files one at a time indefinitely. The caller
+// (gitSweepRoots) treats that exactly like any other listing failure and
+// falls back to the sweep's own budgeted derivation instead.
 func ListIgnoredWorktreeDirectoryEntries(ctx context.Context, repo string) ([]string, error) {
 	var entries []string
 	err := VisitWorktreeDirectoryEntries(ctx, repo, true, func(entry string) bool {
@@ -297,6 +303,44 @@ func keepDirectoryEntry(field string, seen map[string]struct{}) bool {
 	return true
 }
 
+// maxIgnoredDirectoryFields bounds the total number of NUL-delimited fields
+// streamNULDirectoryEntries will read off git's stdout before giving up on
+// the listing, independent of how many of those fields turn out to be
+// directory entries kept by keepDirectoryEntry.
+//
+// `--directory` only collapses a directory when git's own listing classifies
+// its ENTIRE content the same way (see keepDirectoryEntry). A directory
+// ignored only by a file-pattern rule (`*.o`, `node_modules/*.log`)
+// alongside other content is never collapsed, so git instead prints one
+// field per matched FILE — potentially millions, entirely controlled by the
+// scanned repository's own committed `.gitignore` — while the number of
+// fields this loop actually KEEPS can stay at zero. Filtering as each field
+// arrives (rather than buffering the whole listing) already bounds this
+// call's cost to the number of directories in the ordinary case, but a
+// scanned repository that arranges for zero collapsible directories among
+// millions of pattern-ignored files still makes this loop read and discard
+// every one of them before the caller's OWN directory budget
+// (defaultSweepDirectoryBudget) ever gets a chance to apply — unbounded CPU
+// and pipe I/O on every worktree query, ahead of the budget that exists
+// specifically to prevent that.
+//
+// 2,000,000 comfortably clears TestStreamNULDirectoryEntriesHandlesLargeMixedOutput's
+// 1,000,003-field fixture (an ordinary large listing must not be truncated)
+// while still turning "unbounded" into "bounded" for the adversarial case:
+// exceeding it kills the subprocess and reports the listing incomplete via
+// errIgnoredListingTruncated, which the caller (gitSweepRoots) already
+// treats exactly like a failed listing — falling back to the sweep's own
+// budgeted, already-observed-directory derivation instead of trusting a
+// partial one as if it were complete.
+const maxIgnoredDirectoryFields = 2_000_000
+
+// errIgnoredListingTruncated reports that streamNULDirectoryEntries stopped
+// before EOF because maxIgnoredDirectoryFields was reached. It is a
+// deliberate, fail-closed refusal to keep reading, not a process failure —
+// callers should treat it exactly like any other error from this listing
+// (gitSweepRoots already does, via a plain non-nil check).
+var errIgnoredListingTruncated = errors.New("ignored-directory listing exceeded the field-count bound")
+
 // streamNULDirectoryEntries runs a NUL-delimited `git ls-files --directory`
 // listing and keeps only the trailing-slash entries `--directory` actually
 // collapsed, discarding every other field the moment it is read off the
@@ -313,7 +357,8 @@ func keepDirectoryEntry(field string, seen map[string]struct{}) bool {
 // of the caller's own directory-count budget, even though the filter here
 // discards every one of those filenames. Streaming and filtering in the same
 // pass bounds this call's cost to the number of ignored/untracked
-// DIRECTORIES, which is the quantity any caller of this helper ever uses.
+// DIRECTORIES in the ordinary case, and maxIgnoredDirectoryFields bounds it
+// even when that count never grows.
 func streamNULDirectoryEntries(ctx context.Context, repo, name string, args ...string) ([]string, error) {
 	cmd := newCmd(ctx, repo, name, args...)
 	stdout, err := cmd.StdoutPipe()
@@ -329,9 +374,12 @@ func streamNULDirectoryEntries(ctx context.Context, repo, name string, args ...s
 	var dirs []string
 	seen := make(map[string]struct{})
 	var readErr error
+	fields := 0
+	truncated := false
 	for {
 		field, err := reader.ReadString(0)
 		field = strings.TrimSuffix(field, "\x00")
+		fields++
 		if keepDirectoryEntry(field, seen) {
 			dirs = append(dirs, field)
 		}
@@ -341,10 +389,20 @@ func streamNULDirectoryEntries(ctx context.Context, repo, name string, args ...s
 			}
 			break
 		}
+		if fields >= maxIgnoredDirectoryFields {
+			// Kill rather than let the subprocess block writing to a pipe
+			// nothing is draining anymore; Wait below still reaps it.
+			truncated = true
+			_ = cmd.Process.Kill()
+			break
+		}
 	}
 	waitErr := cmd.Wait()
 	if readErr != nil {
 		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), readErr)
+	}
+	if truncated {
+		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), errIgnoredListingTruncated)
 	}
 	if waitErr != nil {
 		msg := strings.TrimSpace(stderr.String())

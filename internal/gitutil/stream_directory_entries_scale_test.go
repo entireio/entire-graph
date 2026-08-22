@@ -1,6 +1,7 @@
 package gitutil
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -59,5 +60,47 @@ func TestStreamNULDirectoryEntriesHandlesLargeMixedOutput(t *testing.T) {
 	if elapsed > budget {
 		t.Fatalf("streamNULDirectoryEntries took %s to process %d fields (budget %s): "+
 			"this smells like the listing is being buffered/rescanned instead of streamed", elapsed, fields, budget)
+	}
+}
+
+// TestStreamNULDirectoryEntriesTruncatesAPathologicalFieldCount is the
+// narrowing direction the trail finding on ListIgnoredWorktreeDirectoryEntries
+// (git.go:152) is about: the prior fix above bounds this call to the
+// ORDINARY case (filtering as fields arrive instead of buffering), but a
+// scanned repository that arranges for a file-pattern ignore matching FAR
+// more entries than the sweep's own directory budget, with zero of them ever
+// collapsing into a directory, still made the loop read every one of them
+// before returning -- unbounded CPU and pipe I/O ahead of the caller's own
+// budget, and unbounded ahead of anything this test's sibling above proves
+// bounded. This drives a producer well past maxIgnoredDirectoryFields with NO
+// real directory entries anywhere in the stream (unlike the sibling test,
+// which places two after a mere 1,000,000) and asserts the call gives up --
+// reporting errIgnoredListingTruncated -- rather than draining the full
+// stream, in time comparable to the bounded case above rather than scaling
+// with the producer's true size.
+func TestStreamNULDirectoryEntriesTruncatesAPathologicalFieldCount(t *testing.T) {
+	const fields = maxIgnoredDirectoryFields * 3
+	script := fmt.Sprintf(
+		`awk 'BEGIN{for(i=0;i<%d;i++) printf "vendor/dep-%%d.o%%c", i, 0}'`,
+		fields,
+	)
+
+	start := time.Now()
+	dirs, err := streamNULDirectoryEntries(t.Context(), t.TempDir(), "sh", "-c", script)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, errIgnoredListingTruncated) {
+		t.Fatalf("streamNULDirectoryEntries err = %v, want errIgnoredListingTruncated", err)
+	}
+	if len(dirs) != 0 {
+		t.Fatalf("a truncated listing returned %d dir(s), want none returned alongside the error", len(dirs))
+	}
+	// A generous ceiling well under how long fully producing and draining
+	// 3x the field bound would take: this call must give up at the bound,
+	// not after the producer finishes emitting fields ~3x past it.
+	const budget = 10 * time.Second
+	if elapsed > budget {
+		t.Fatalf("streamNULDirectoryEntries took %s to give up on a %d-field pathological listing (budget %s): "+
+			"it is reading past maxIgnoredDirectoryFields instead of stopping there", elapsed, fields, budget)
 	}
 }

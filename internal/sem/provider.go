@@ -10269,7 +10269,22 @@ func hasGitDirComponent(rel string) bool {
 // the read, not the file: `commondir` carries no size limit of git's own, so
 // this is a read-safety bound this tool chooses, not one git enforces. See
 // readGitPointerFile.
-const maxGitPointerBytes = 4 << 10
+//
+// 64 KiB, not the original 4 KiB: gitPointerPath refuses a window with no NUL
+// in it on the theory that "no path that long names anything on any
+// filesystem" — true of the REAL path a `commondir` resolves to, but not of
+// its LEXICAL text. Git concatenates and hands the raw string to the kernel
+// without collapsing it (see gitJoinRelative), so a legitimate commondir
+// padded with repeated `./` components — or produced by a tool that emits
+// one per intermediate symlink hop it flattened — can be lexically many times
+// longer than the real directory it names while still resolving on any OS's
+// actual path-length limit (Windows extended-length paths alone go to 32767
+// characters). A real linked worktree whose commondir happened to be that
+// long, with no NUL at all, was refused here though git accepts it — hiding
+// its genuinely credentialed config and hooks from exclusion instead of the
+// intended fail-closed direction. 64 KiB clears every OS's real path-length
+// ceiling with room to spare while still bounding the read.
+const maxGitPointerBytes = 64 << 10
 
 // maxGitFileBytes is git's own limit on a `.git` FILE. read_gitfile_gently()
 // stats the path and dies "Too large to be a .git file" above this size — a
