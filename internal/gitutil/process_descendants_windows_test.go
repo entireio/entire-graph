@@ -48,6 +48,12 @@ func TestStopPathOutputCommandTerminatesWindowsDescendants(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer job.close()
+	if job.handle == 0 {
+		t.Fatal("startPathOutputCommand returned a zero job handle")
+	}
+	if contained, err := job.contains(cmd); err != nil || !contained {
+		t.Fatalf("root helper job membership = (%v, %v), want true", contained, err)
+	}
 	line, err := bufio.NewReader(stdout).ReadString('\n')
 	if err != nil {
 		t.Fatalf("read descendant PID: %v; stderr: %s", err, stderr.String())
@@ -61,6 +67,9 @@ func TestStopPathOutputCommandTerminatesWindowsDescendants(t *testing.T) {
 		t.Fatalf("open descendant process %d: %v", pid, err)
 	}
 	defer syscall.CloseHandle(child)
+	if contained, err := job.containsPID(uint32(pid)); err != nil || !contained {
+		t.Fatalf("descendant helper job membership = (%v, %v), want true", contained, err)
+	}
 
 	started := time.Now()
 	stopPathOutputCommand(cmd, stdout, job)

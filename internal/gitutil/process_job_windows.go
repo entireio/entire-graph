@@ -3,19 +3,20 @@
 package gitutil
 
 import (
+	"errors"
+	"fmt"
+	"os"
 	"os/exec"
 	"syscall"
 	"unsafe"
 )
 
-// processSetQuota is PROCESS_SET_QUOTA. It is not exposed by the standard
-// syscall package for windows, unlike the PROCESS_TERMINATE and SYNCHRONIZE
-// rights used elsewhere in this file.
-const processSetQuota = 0x0100
-
 const (
 	jobObjectExtendedLimitInformationClass = 9
 	jobObjectLimitKillOnJobClose           = 0x00002000
+	createSuspended                        = 0x00000004
+	createNoWindow                         = 0x08000000
+	processQueryLimitedInformation         = 0x00001000
 )
 
 // jobObjectBasicLimitInformation mirrors JOBOBJECT_BASIC_LIMIT_INFORMATION.
@@ -49,91 +50,202 @@ var (
 	procAssignProcessToJobObject = modkernel32Job.NewProc("AssignProcessToJobObject")
 	procSetInformationJobObject  = modkernel32Job.NewProc("SetInformationJobObject")
 	procTerminateJobObject       = modkernel32Job.NewProc("TerminateJobObject")
+	procIsProcessInJob           = modkernel32Job.NewProc("IsProcessInJob")
 )
 
 // pathOutputJob is a Windows Job Object that contains a launched process and
-// every descendant it spawns for as long as the job handle stays open. Unlike
-// a point-in-time process-tree snapshot (pathOutputDescendants), a job closes
-// the race a snapshot has against a descendant spawned after the snapshot was
-// taken: Windows places a new child process into its parent's job
-// automatically whenever the parent is itself a job member, so a
-// launcher/worker pair spawned after cleanup begins is still caught.
+// every descendant it spawns for as long as the job handle stays open. The
+// actual command is created with a suspended member of this job as its
+// PROC_THREAD_ATTRIBUTE_PARENT_PROCESS. Windows inherits the designated
+// parent's job membership while creating the child, so there is no interval in
+// which a fast launcher can create an uncontained worker.
 type pathOutputJob struct {
-	handle syscall.Handle
+	handle            syscall.Handle
+	creationParentPID uint32
 }
 
-// startPathOutputCommand starts cmd and, best-effort, contains it (and its
-// future descendants) in a job object established immediately after start --
-// before the process has had a chance to do anything beyond being created.
-// Job creation or assignment failure is not fatal: it only means cleanup
-// falls back to the pre-existing point-in-time descendant snapshot taken by
-// stopPathOutputCommand.
+// startPathOutputCommand establishes containment before cmd can execute. A
+// CREATE_SUSPENDED surrogate is assigned to a KILL_ON_JOB_CLOSE job, then used
+// as cmd's creation parent. The surrogate never executes user code and is
+// retired immediately after cmd.Start returns.
+//
+// Containment setup is mandatory on Windows. Returning a nil job after starting
+// the command would silently restore the launcher/assignment race this helper
+// exists to close, so any setup failure prevents the command and is returned to
+// the caller.
 func startPathOutputCommand(cmd *exec.Cmd) (pathOutputJob, error) {
-	if err := cmd.Start(); err != nil {
+	if cmd == nil {
+		return pathOutputJob{}, errors.New("start path-output command: nil command")
+	}
+	originalSysProcAttr := cmd.SysProcAttr
+	if originalSysProcAttr != nil && originalSysProcAttr.ParentProcess != 0 {
+		return pathOutputJob{}, errors.New("start path-output command: caller-supplied Windows parent process is incompatible with job containment")
+	}
+	childAttrs := pathOutputChildSysProcAttr(originalSysProcAttr, 0)
+
+	job, err := createPathOutputJob()
+	if err != nil {
 		return pathOutputJob{}, err
 	}
-	return newPathOutputJob(cmd), nil
+	creationParent, err := newPathOutputCreationParent(
+		job,
+		len(childAttrs.AdditionalInheritedHandles) > 0 && !childAttrs.NoInheritHandles,
+	)
+	if err != nil {
+		job.close()
+		return pathOutputJob{}, err
+	}
+	defer creationParent.close()
+
+	childAttrs = pathOutputChildSysProcAttr(originalSysProcAttr, creationParent.process)
+	cmd.SysProcAttr = &childAttrs
+	startErr := cmd.Start()
+	cmd.SysProcAttr = originalSysProcAttr
+	if startErr != nil {
+		job.close()
+		return pathOutputJob{}, startErr
+	}
+	job.creationParentPID = creationParent.pid
+	return job, nil
 }
 
-func newPathOutputJob(cmd *exec.Cmd) pathOutputJob {
-	if cmd == nil || cmd.Process == nil || cmd.Process.Pid <= 0 {
-		return pathOutputJob{}
+func pathOutputChildSysProcAttr(original *syscall.SysProcAttr, parent syscall.Handle) syscall.SysProcAttr {
+	attributes := syscall.SysProcAttr{}
+	if original != nil {
+		attributes = *original
 	}
-	handle, _, _ := procCreateJobObjectW.Call(0, 0)
+	attributes.ParentProcess = parent
+	return attributes
+}
+
+func createPathOutputJob() (pathOutputJob, error) {
+	handle, _, callErr := procCreateJobObjectW.Call(0, 0)
 	if handle == 0 {
-		return pathOutputJob{}
+		return pathOutputJob{}, windowsJobCallError("CreateJobObjectW", callErr)
 	}
-	jobHandle := syscall.Handle(handle)
+	job := pathOutputJob{handle: syscall.Handle(handle)}
 	info := jobObjectExtendedLimitInformation{
 		BasicLimitInformation: jobObjectBasicLimitInformation{
 			LimitFlags: jobObjectLimitKillOnJobClose,
 		},
 	}
-	ret, _, _ := procSetInformationJobObject.Call(
-		uintptr(jobHandle),
+	ret, _, callErr := procSetInformationJobObject.Call(
+		uintptr(job.handle),
 		jobObjectExtendedLimitInformationClass,
 		uintptr(unsafe.Pointer(&info)),
 		unsafe.Sizeof(info),
 	)
 	if ret == 0 {
-		_ = syscall.CloseHandle(jobHandle)
-		return pathOutputJob{}
-	}
-	job := pathOutputJob{handle: jobHandle}
-	if !job.assign(cmd) {
 		job.close()
-		return pathOutputJob{}
+		return pathOutputJob{}, windowsJobCallError("SetInformationJobObject", callErr)
 	}
-	return job
+	return job, nil
 }
 
-// assign places the already-started process into the job. This runs as the
-// very next step after cmd.Start() returns in startPathOutputCommand, so the
-// window in which a fast-forking launcher could spawn a worker outside the
-// job's containment is a scheduling quantum, not however long the command
-// runs before something goes wrong and cleanup begins.
-func (job pathOutputJob) assign(cmd *exec.Cmd) bool {
-	if job.handle == 0 || cmd == nil || cmd.Process == nil {
-		return false
-	}
-	processHandle, err := syscall.OpenProcess(
-		syscall.PROCESS_TERMINATE|processSetQuota,
-		false,
-		uint32(cmd.Process.Pid),
-	)
+type pathOutputCreationParent struct {
+	process syscall.Handle
+	thread  syscall.Handle
+	pid     uint32
+}
+
+func newPathOutputCreationParent(job pathOutputJob, inheritHandles bool) (*pathOutputCreationParent, error) {
+	executable, err := os.Executable()
 	if err != nil {
-		return false
+		return nil, fmt.Errorf("resolve path-output creation parent executable: %w", err)
 	}
-	defer syscall.CloseHandle(processHandle)
-	ret, _, _ := procAssignProcessToJobObject.Call(uintptr(job.handle), uintptr(processHandle))
-	return ret != 0
+	application, err := syscall.UTF16PtrFromString(executable)
+	if err != nil {
+		return nil, fmt.Errorf("encode path-output creation parent executable: %w", err)
+	}
+	startup := syscall.StartupInfo{Cb: uint32(unsafe.Sizeof(syscall.StartupInfo{}))}
+	var process syscall.ProcessInformation
+	// SysProcAttr requires AdditionalInheritedHandles to exist in ParentProcess.
+	// Windows handle inheritance preserves their numeric values, so let the
+	// suspended surrogate inherit them before Go supplies the exact handle list
+	// for the real child. The surrogate executes no instructions, and the real
+	// child still inherits only the handles os.StartProcess explicitly lists.
+	if err := syscall.CreateProcess(
+		application,
+		nil,
+		nil,
+		nil,
+		inheritHandles,
+		createSuspended|createNoWindow,
+		nil,
+		nil,
+		&startup,
+		&process,
+	); err != nil {
+		return nil, fmt.Errorf("create suspended path-output parent: %w", err)
+	}
+	parent := &pathOutputCreationParent{
+		process: process.Process,
+		thread:  process.Thread,
+		pid:     process.ProcessId,
+	}
+	ret, _, callErr := procAssignProcessToJobObject.Call(uintptr(job.handle), uintptr(parent.process))
+	if ret == 0 {
+		parent.close()
+		return nil, windowsJobCallError("AssignProcessToJobObject", callErr)
+	}
+	return parent, nil
+}
+
+func (parent *pathOutputCreationParent) close() {
+	if parent == nil {
+		return
+	}
+	if parent.process != 0 {
+		_ = syscall.TerminateProcess(parent.process, 1)
+		_, _ = syscall.WaitForSingleObject(parent.process, 5_000)
+	}
+	if parent.thread != 0 {
+		_ = syscall.CloseHandle(parent.thread)
+		parent.thread = 0
+	}
+	if parent.process != 0 {
+		_ = syscall.CloseHandle(parent.process)
+		parent.process = 0
+	}
+}
+
+func (job pathOutputJob) contains(cmd *exec.Cmd) (bool, error) {
+	if job.handle == 0 || cmd == nil || cmd.Process == nil || cmd.Process.Pid <= 0 {
+		return false, errors.New("job or process is unavailable")
+	}
+	return job.containsPID(uint32(cmd.Process.Pid))
+}
+
+func (job pathOutputJob) containsPID(pid uint32) (bool, error) {
+	if job.handle == 0 || pid == 0 {
+		return false, errors.New("job or process is unavailable")
+	}
+	process, err := syscall.OpenProcess(processQueryLimitedInformation, false, pid)
+	if err != nil {
+		return false, err
+	}
+	defer syscall.CloseHandle(process)
+	var contained int32
+	ret, _, callErr := procIsProcessInJob.Call(
+		uintptr(process),
+		uintptr(job.handle),
+		uintptr(unsafe.Pointer(&contained)),
+	)
+	if ret == 0 {
+		return false, windowsJobCallError("IsProcessInJob", callErr)
+	}
+	return contained != 0, nil
+}
+
+func windowsJobCallError(name string, err error) error {
+	if err == nil || errors.Is(err, syscall.Errno(0)) {
+		return fmt.Errorf("%s failed", name)
+	}
+	return fmt.Errorf("%s: %w", name, err)
 }
 
 // terminate kills every process still in the job: current members and any
-// descendant spawned after the job was created, including ones that spawned
-// after the point-in-time snapshot capturePathOutputDescendants takes as a
-// fallback for descendants that already existed when a job could not be
-// created.
+// descendant spawned after the point-in-time snapshot capture fallback.
 func (job pathOutputJob) terminate() {
 	if job.handle == 0 {
 		return
