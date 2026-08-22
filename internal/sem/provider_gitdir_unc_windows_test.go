@@ -42,6 +42,18 @@ func windowsSymlinkOrSkip(t *testing.T, oldname, newname string) {
 	}
 }
 
+func windowsSameFileAliasOrSkip(t *testing.T, physical, alias string) {
+	t.Helper()
+	physicalInfo, err := os.Lstat(physical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasInfo, err := os.Lstat(alias)
+	if err != nil || !os.SameFile(physicalInfo, aliasInfo) {
+		t.Skipf("directory is case-sensitive for %q and %q", physical, alias)
+	}
+}
+
 // TestGitDirPointerTargetRejectsAUNCTargetWithoutTouchingTheNetwork
 // reproduces the trail finding on gitDirPointerTarget's out-of-repo fallback:
 // a `.git` pointer naming a UNC share reached filepath.EvalSymlinks on that
@@ -260,10 +272,19 @@ func TestGitInfoExcludePathAcceptsACaseDifferentCommonDirVolume(t *testing.T) {
 	writeFile(t, repo, ".realgit/commondir", lowerVolume+"\n")
 
 	got := gitInfoExcludePath(repo)
-	want := filepath.Join(gitDir, "info", "exclude")
-	if got != want {
-		t.Errorf("gitInfoExcludePath(repo) = %q, want %q: a commondir differing only in drive-letter case"+
-			" from gitDir's own must still resolve, not be treated as a different volume", got, want)
+	if got == "" {
+		t.Fatal("gitInfoExcludePath(repo) = empty: a commondir differing only in drive-letter case was treated as a different volume")
+	}
+	gotParent, err := os.Stat(filepath.Dir(filepath.Dir(got)))
+	if err != nil {
+		t.Fatalf("stat resolved common directory %q: %v", got, err)
+	}
+	wantParent, err := os.Stat(gitDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(gotParent, wantParent) {
+		t.Errorf("gitInfoExcludePath(repo) = %q: resolved a different common directory", got)
 	}
 }
 
@@ -506,14 +527,179 @@ func TestGitTargetPathRejectsWin32TrimAliases(t *testing.T) {
 
 func TestGitDirPointerTargetReturnsPhysicalUnicodeCaseSpelling(t *testing.T) {
 	repo := t.TempDir()
-	const physical = `state\ς\.dep-git`
+	const physical = `state\σ\.dep-git`
 	const pointer = `state\Σ\.dep-git`
-	writeFile(t, repo, ".git", "gitdir: "+pointer+"\n")
 	writeHeadlessGitDirFixture(t, repo, filepath.ToSlash(physical))
+	physicalInfo, err := os.Lstat(filepath.Join(repo, physical))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pointerInfo, err := os.Lstat(filepath.Join(repo, pointer))
+	if err != nil || !os.SameFile(physicalInfo, pointerInfo) {
+		t.Skip("filesystem does not fold the Greek sigma spellings onto one directory")
+	}
+	writeFile(t, repo, ".git", "gitdir: "+pointer+"\n")
 
 	target, ok, hidden := gitDirPointerTarget(repo, "")
 	if !ok || hidden || target != filepath.ToSlash(physical) {
 		t.Fatalf("gitDirPointerTarget = (%q, %v, %v), want (%q, true, false)", target, ok, hidden, filepath.ToSlash(physical))
+	}
+}
+
+func TestGitDirExcluderDoesNotFoldDistinctFinalSigmaDirectory(t *testing.T) {
+	repo := t.TempDir()
+	const gitDir = `state/Σ/.dep-git`
+	const ordinaryDir = `state/ς/.dep-git`
+	writeHeadlessGitDirFixture(t, repo, gitDir)
+	writeFile(t, repo, ordinaryDir+"/source.go", "package ordinary\n")
+
+	gitInfo, err := os.Lstat(filepath.Join(repo, filepath.FromSlash(gitDir)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordinaryInfo, err := os.Lstat(filepath.Join(repo, filepath.FromSlash(ordinaryDir)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(gitInfo, ordinaryInfo) {
+		t.Skip("filesystem folds capital and final sigma onto one directory")
+	}
+
+	excluder := newGitDirExcluder(t.Context(), repo)
+	excluder.recordTarget(gitDir)
+	if !excluder.excluded(gitDir + "/config") {
+		t.Fatal("the exact git directory was not excluded")
+	}
+	if excluder.excluded(ordinaryDir + "/source.go") {
+		t.Fatal("a distinct final-sigma source directory was excluded by generic Unicode folding")
+	}
+}
+
+func TestGitDirExcluderCanonicalizesObservedIndexSpelling(t *testing.T) {
+	repo := t.TempDir()
+	const physical = `state/admin/.dep-git`
+	const listed = `STATE/ADMIN/.DEP-GIT`
+	writeHeadlessGitDirFixture(t, repo, physical)
+	windowsSameFileAliasOrSkip(t,
+		filepath.Join(repo, filepath.FromSlash(physical)),
+		filepath.Join(repo, filepath.FromSlash(listed)))
+
+	excluder := newGitDirExcluder(t.Context(), repo)
+	excluder.recordTarget(physical)
+	excluder.observeListedPaths([]string{listed + "/config"}, nil)
+	if !excluder.excluded(listed + "/config") {
+		t.Fatal("a differently-cased Git/index spelling did not match its exact physical git-directory target")
+	}
+}
+
+func TestGitDirExcluderBoundsCanonicalObservedSpellings(t *testing.T) {
+	repo := t.TempDir()
+	const physical = `state/admin/.dep-git`
+	const listed = `STATE/ADMIN/.DEP-GIT`
+	writeHeadlessGitDirFixture(t, repo, physical)
+	windowsSameFileAliasOrSkip(t,
+		filepath.Join(repo, filepath.FromSlash(physical)),
+		filepath.Join(repo, filepath.FromSlash(listed)))
+
+	excluder := newGitDirExcluder(t.Context(), repo)
+	excluder.canonicalObservedDirectoryBytes = maxListedDirectoryBytes
+	excluder.observeListedPaths([]string{listed + "/config"}, nil)
+	if !excluder.listedObservationExceeded {
+		t.Fatal("canonical observed-directory bytes exceeded their aggregate bound without failing the listing")
+	}
+}
+
+func TestGitRootIdentityProbeBoundFailsClosed(t *testing.T) {
+	excluder := newGitDirExcluder(t.Context(), t.TempDir())
+	excluder.gitDirRoot = true
+	excluder.rootIdentityProbes = maxGitRootIdentityProbes
+	if !excluder.excluded("ordinary.go") {
+		t.Fatal("root identity probe exhaustion did not fail closed")
+	}
+	if !errors.Is(excluder.listedObservationError(), errGitDirListedObservationBound) {
+		t.Fatalf("identity probe error = %v, want %v", excluder.listedObservationError(), errGitDirListedObservationBound)
+	}
+}
+
+func TestGitDirRootExcludesPhysicalSharedIndexCase(t *testing.T) {
+	repo := t.TempDir()
+	const hash = "0123456789abcdef0123456789abcdef01234567"
+	const physical = "SHAREDINDEX." + hash
+	writeFile(t, repo, physical, "index state\n")
+	windowsSameFileAliasOrSkip(t, filepath.Join(repo, physical), filepath.Join(repo, "sharedindex."+hash))
+
+	excluder := newGitDirExcluder(t.Context(), repo)
+	excluder.gitDirRoot = true
+	if !excluder.excluded(physical) {
+		t.Fatal("a physically uppercase shared-index file was not excluded")
+	}
+}
+
+func TestGitDirRootExcludesUnicodeAliasSharedIndex(t *testing.T) {
+	repo := t.TempDir()
+	const hash = "0123456789abcdef0123456789abcdef01234567"
+	const physical = "ſharedindex." + hash
+	const canonical = "sharedindex." + hash
+	writeFile(t, repo, physical, "index state\n")
+	windowsSameFileAliasOrSkip(t, filepath.Join(repo, physical), filepath.Join(repo, canonical))
+
+	excluder := newGitDirExcluder(t.Context(), repo)
+	excluder.gitDirRoot = true
+	if !excluder.excluded(physical) {
+		t.Fatal("a Unicode-aliased shared-index file was not excluded after identity verification")
+	}
+}
+
+func TestGitDirRootEntriesRecordPhysicalCase(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "CONFIG", gitDirConfigWithCredential)
+	windowsSameFileAliasOrSkip(t, filepath.Join(repo, "CONFIG"), filepath.Join(repo, "config"))
+
+	excluder := newGitDirExcluder(t.Context(), repo)
+	excluder.recordGitDirRootEntries()
+	if !excluder.excluded("CONFIG") {
+		t.Fatal("a physically uppercase root git config was not excluded")
+	}
+}
+
+func TestGitDirRootEntriesExcludePhysicalCaseDirectoryDescendants(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "HOOKS/post-commit.go", "package hooks\n")
+	windowsSameFileAliasOrSkip(t, filepath.Join(repo, "HOOKS"), filepath.Join(repo, "hooks"))
+
+	excluder := newGitDirExcluder(t.Context(), repo)
+	excluder.recordGitDirRootEntries()
+	if !excluder.excluded("HOOKS/post-commit.go") {
+		t.Fatal("a descendant of a physically uppercase root Git metadata directory was not excluded")
+	}
+}
+
+func TestGitDirRootEntriesExcludeUnicodeAliasDirectoryDescendants(t *testing.T) {
+	repo := t.TempDir()
+	const physical = "hooKs"
+	writeFile(t, repo, physical+"/post-commit.go", "package hooks\n")
+	windowsSameFileAliasOrSkip(t, filepath.Join(repo, physical), filepath.Join(repo, "hooks"))
+
+	excluder := newGitDirExcluder(t.Context(), repo)
+	excluder.recordGitDirRootEntries()
+	if !excluder.excluded(physical + "/post-commit.go") {
+		t.Fatal("a descendant of a Unicode-aliased root Git metadata directory was not excluded")
+	}
+}
+
+func TestGitDirRootEntriesSupportExtendedLengthPath(t *testing.T) {
+	dir := t.TempDir()
+	for len(dir) <= 300 {
+		dir = filepath.Join(dir, "deep-directory-segment")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, "config", gitDirConfigWithCredential)
+	excluder := newGitDirExcluder(t.Context(), dir)
+	excluder.recordGitDirRootEntries()
+	if !excluder.excluded("config") {
+		t.Fatal("root config under an extended-length path was not excluded")
 	}
 }
 

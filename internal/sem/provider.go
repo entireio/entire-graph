@@ -10568,7 +10568,11 @@ type gitDirExcluder struct {
 	// share the repository root. Variable Git-owned names are then recognized
 	// directly by excluded, avoiding an unbounded root ReadDir merely to find a
 	// sharedindex.<hash> entry.
-	gitDirRoot bool
+	gitDirRoot          bool
+	rootEntryIdentities map[string]os.FileInfo
+	rootEntryMatchCache map[string]bool
+	rootEntryMatchBytes int
+	rootIdentityProbes  int
 	// foldedTargets holds the same targets lowercased, and is populated only
 	// where the filesystem itself folds case. A pointer's spelling and the
 	// listing's spelling are two independent strings for one directory there —
@@ -10585,6 +10589,13 @@ type gitDirExcluder struct {
 	// never loses a genuinely distinct source directory.
 	normalizedTargets       map[string]struct{}
 	foldedNormalizedTargets map[string]struct{}
+	// canonicalObservedDirs maps a Windows listing spelling to the physical
+	// repo-relative directory name obtained from an already-rooted open. NTFS's
+	// case relation is volume-specific and cannot safely be replaced by Go's
+	// generic Unicode fold; caching each already-bounded observed directory lets
+	// excluded compare Git/index spellings to exact physical targets instead.
+	canonicalObservedDirs           map[string]string
+	canonicalObservedDirectoryBytes int
 	// unlistedRoots names the directories the listing says nothing under, from
 	// git's own `--directory` listing, and gitAnsweredRoots records that git
 	// answered at all (an empty answer is a real answer). Without them the sweep
@@ -10677,7 +10688,9 @@ const (
 	maxListedDirectoryBytes        = 64 << 20
 )
 
-var errGitDirListedObservationBound = errors.New("Git worktree ancestor observation exceeded a resource bound")
+var errGitDirListedObservationBound = errors.New("Git worktree path observation exceeded a resource bound")
+
+const maxGitRootIdentityProbes = 200_000
 
 var errGitDirSweepHalted = errors.New("git directory sweep halted")
 
@@ -10865,6 +10878,9 @@ func newGitDirExcluder(ctx context.Context, repo string) *gitDirExcluder {
 		foldedTargets:           map[string]struct{}{},
 		normalizedTargets:       map[string]struct{}{},
 		foldedNormalizedTargets: map[string]struct{}{},
+		canonicalObservedDirs:   map[string]string{},
+		rootEntryIdentities:     map[string]os.FileInfo{},
+		rootEntryMatchCache:     map[string]bool{},
 		sweepCtx:                ctx,
 		sweepBudget:             resolveSweepDirectoryBudget(),
 	}
@@ -11170,6 +11186,18 @@ func (g *gitDirExcluder) recordTarget(target string) {
 		return
 	}
 	g.targets[target] = struct{}{}
+	// Windows paths returned by openSameVolumePath already carry the physical
+	// spelling obtained from the opened handle. Do not add Go's generic Unicode
+	// fold key there: NTFS's volume-specific upcase table is not the same
+	// equivalence relation (for example, it aliases Greek capital sigma with
+	// small sigma but keeps final sigma distinct). Collapsing all three through
+	// cases.Fold would let one real git directory suppress a distinct ordinary
+	// source tree. Exact physical spellings are both sufficient and narrower on
+	// Windows; the probes below remain necessary on filesystems such as APFS,
+	// where the opened path does not provide that canonical spelling.
+	if runtime.GOOS == "windows" {
+		return
+	}
 	caseFolded := foldsCase(g.repo, target)
 	normalizationFolded := foldsNormalization(g.repo, target)
 	if caseFolded {
@@ -11299,6 +11327,38 @@ func isGitSharedIndexName(name string) bool {
 	return true
 }
 
+// canonicalGitSharedIndexName derives Git's lowercase sharedindex.<hash>
+// spelling with Unicode simple folding. The fold is only a candidate: the
+// Windows caller must still prove the listed and canonical names are the same
+// file, because NTFS's per-volume case table is not identical to Go's Unicode
+// relation and a case-sensitive directory may contain both.
+func canonicalGitSharedIndexName(name string) (string, bool) {
+	folded := unicodeCaseFoldKey(name)
+	return folded, isGitSharedIndexName(folded)
+}
+
+func (g *gitDirExcluder) isGitSharedIndexEntry(name string) bool {
+	if isGitSharedIndexName(name) {
+		return true
+	}
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	canonical, ok := canonicalGitSharedIndexName(name)
+	if !ok {
+		return false
+	}
+	if !g.admitRootIdentityProbes(2) {
+		return true
+	}
+	canonicalInfo, err := g.lstatRootEntry(canonical)
+	if err != nil {
+		return false
+	}
+	listedInfo, err := g.lstatRootEntry(name)
+	return err == nil && os.SameFile(canonicalInfo, listedInfo)
+}
+
 // recordGitDirRootEntries excludes the git directory's own top-level entries
 // when the repository root IS the git directory a pointer named.
 //
@@ -11308,11 +11368,67 @@ func isGitSharedIndexName(name string) bool {
 func (g *gitDirExcluder) recordGitDirRootEntries() {
 	g.gitDirRoot = true
 	for _, name := range gitDirRootEntryNames {
-		if _, err := os.Lstat(filepath.Join(g.repo, name)); err != nil {
+		entry := filepath.Join(g.repo, name)
+		info, err := os.Lstat(entry)
+		if err != nil {
 			continue
+		}
+		if runtime.GOOS == "windows" {
+			g.rootEntryIdentities[name] = info
 		}
 		g.recordTarget(name)
 	}
+}
+
+func (g *gitDirExcluder) isGitDirRootEntry(name string) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	if match, ok := g.rootEntryMatchCache[name]; ok {
+		return match
+	}
+	if !g.admitRootIdentityProbes(1) {
+		return true
+	}
+	listedInfo, err := g.lstatRootEntry(name)
+	match := false
+	if err == nil {
+		for _, canonical := range gitDirRootEntryNames {
+			if info, ok := g.rootEntryIdentities[canonical]; ok && os.SameFile(info, listedInfo) {
+				match = true
+				break
+			}
+		}
+	}
+	if len(g.rootEntryMatchCache) >= maxListedDirectoryObservations ||
+		len(name)+1 > maxListedDirectoryBytes-g.rootEntryMatchBytes {
+		g.listedObservationExceeded = true
+		return true
+	}
+	g.rootEntryMatchCache[name] = match
+	g.rootEntryMatchBytes += len(name) + 1
+	return match
+}
+
+func (g *gitDirExcluder) admitRootIdentityProbes(count int) bool {
+	if g.listedObservationExceeded || count > maxGitRootIdentityProbes-g.rootIdentityProbes {
+		g.listedObservationExceeded = true
+		return false
+	}
+	g.rootIdentityProbes += count
+	return true
+}
+
+// lstatRootEntry is one exact, no-follow probe beneath the caller-selected
+// repository root. The candidate is always a single listed root component, so
+// an attacker cannot insert an ancestor redirect here; using one OS lstat also
+// avoids multiplying the repository's absolute depth by every listed file.
+func (g *gitDirExcluder) lstatRootEntry(name string) (os.FileInfo, error) {
+	native := filepath.FromSlash(name)
+	if native == "" || filepath.Base(native) != native {
+		return nil, fs.ErrInvalid
+	}
+	return os.Lstat(filepath.Join(g.repo, native))
 }
 
 // symlinkResolvedRel reports <repo>/<target> with every symlink resolved, as a
@@ -12089,6 +12205,17 @@ func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
 			seen[dir] = struct{}{}
 			g.listedDirectoriesObserved++
 			g.listedDirectoryBytes += len(dir) + 1
+			if runtime.GOOS == "windows" {
+				physical, ok := symlinkResolvedRel(g.repo, dir)
+				if ok && physical != dir {
+					if len(physical)+1 > maxListedDirectoryBytes-g.canonicalObservedDirectoryBytes {
+						g.listedObservationExceeded = true
+						return false
+					}
+					g.canonicalObservedDirs[dir] = physical
+					g.canonicalObservedDirectoryBytes += len(physical) + 1
+				}
+			}
 			g.observe(dir)
 		}
 		return true
@@ -12598,11 +12725,19 @@ func (g *gitDirExcluder) excluded(rel string) bool {
 		if rel[start:end] == ".git" {
 			return true
 		}
-		if start == 0 && end == len(rel) && g.gitDirRoot && isGitSharedIndexName(rel[:end]) {
+		if start == 0 && g.gitDirRoot && runtime.GOOS == "windows" && g.isGitDirRootEntry(rel[:end]) {
+			return true
+		}
+		if start == 0 && end == len(rel) && g.gitDirRoot && g.isGitSharedIndexEntry(rel[:end]) {
 			return true
 		}
 		if _, isTarget := g.targets[rel[:end]]; isTarget {
 			return true
+		}
+		if physical, ok := g.canonicalObservedDirs[rel[:end]]; ok {
+			if _, isTarget := g.targets[physical]; isTarget {
+				return true
+			}
 		}
 		if len(g.foldedTargets) > 0 {
 			if _, isTarget := g.foldedTargets[unicodeCaseFoldKey(rel[:end])]; isTarget {
@@ -13262,6 +13397,9 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 		seen[rel] = struct{}{}
 		paths = append(paths, rel)
 	}
+	if err := gitDirs.listedObservationError(); err != nil {
+		return nil, nil, err
+	}
 	sort.Strings(paths)
 	warnings := append(gitDirs.sweepWarnings(), gitDirs.sweepUnreadableDirWarning()...)
 	return paths, warnings, nil
@@ -13646,6 +13784,9 @@ func visitWalkWorktreeFilesWithRawLimit(
 		kept = append(kept, rel)
 	}
 	paths = kept
+	if boundErr := gitDirs.listedObservationError(); boundErr != nil && walkErr == nil {
+		walkErr = boundErr
+	}
 	sort.Strings(paths)
 	warnings := append(gitDirs.sweepWarnings(), gitDirs.unreadableWalkWarning()...)
 	warnings = append(warnings, gitDirs.sweepUnreadableDirWarning()...)

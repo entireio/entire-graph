@@ -15747,13 +15747,18 @@ func TestSearchRepositoryNeverIndexesGitDirNamedInAnotherNormalization(t *testin
 func TestSearchRepositoryNeverIndexesGitDirNamedWithUnicodeCaseAlias(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
-	if !caseFoldingTestFS(t, repo) {
-		t.Skip("filesystem is case-sensitive: Greek sigma spellings are distinct here")
-	}
 	const physical = "state/\u03c2/.dep-git"
 	const pointer = "state/\u03a3/.dep-git"
-	writeFile(t, repo, "libs/dep/.git", "gitdir: ../../"+pointer+"\n")
 	writeHeadlessGitDirFixture(t, repo, physical)
+	physicalInfo, err := os.Lstat(filepath.Join(repo, filepath.FromSlash(physical)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pointerInfo, err := os.Lstat(filepath.Join(repo, filepath.FromSlash(pointer)))
+	if err != nil || !os.SameFile(physicalInfo, pointerInfo) {
+		t.Skip("filesystem does not fold the Greek sigma spellings onto one directory")
+	}
+	writeFile(t, repo, "libs/dep/.git", "gitdir: ../../"+pointer+"\n")
 	writeFile(t, repo, "src/app.go", "package src\n\nfunc LoadOriginCredential() string { return \"\" }\n")
 
 	assertNoGitDirLeak(t, repo, physical)

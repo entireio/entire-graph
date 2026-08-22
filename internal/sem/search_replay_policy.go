@@ -363,6 +363,9 @@ func observeSearchReplayGitWorktreeCorpus(
 			return observationErr
 		}
 	}
+	if err := gitDirs.listedObservationError(); err != nil {
+		return fmt.Errorf("filter worktree git-directory aliases for replay: %w", err)
+	}
 	return nil
 }
 
