@@ -476,6 +476,9 @@ func gitInfoExcludePath(repo string) string {
 		return ""
 	}
 	gitDir = filepath.FromSlash(gitDir)
+	if !gitTargetPathValid(gitDir) {
+		return ""
+	}
 	if absoluteGitDir, absolute := gitAbsolutePath(repo, gitDir); absolute {
 		gitDir = absoluteGitDir
 	} else {

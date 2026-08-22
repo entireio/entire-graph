@@ -11650,7 +11650,12 @@ func openSameVolumePath(base, path string) (*os.File, string, error) {
 		_ = file.Close()
 		return nil, "", errSymlinkChainOffVolume
 	}
-	return file, filepath.Join(anchor.root, rel), nil
+	resolvedPath, err := canonicalOpenedPath(file, filepath.Join(anchor.root, rel), anchor)
+	if err != nil {
+		_ = file.Close()
+		return nil, "", err
+	}
+	return file, resolvedPath, nil
 }
 
 func splitNativePathComponents(value string) []string {
@@ -11932,6 +11937,9 @@ func gitCommonDirStateWithBudget(dir string, admitRead func(int64) bool) (string
 		return resolvedDir, gitCommonDirResolved
 	}
 	target = filepath.FromSlash(target)
+	if !gitTargetPathValid(target) {
+		return "", gitCommonDirRefused
+	}
 	if absoluteTarget, absolute := gitAbsolutePath(resolvedDir, target); absolute {
 		target = absoluteTarget
 	} else {
@@ -12729,6 +12737,9 @@ func gitDirPointerTargetWithBudget(
 	// Git writes the pointer with `/` separators on every platform, and resolves
 	// a relative target against the directory that holds the `.git` file.
 	target = filepath.FromSlash(target)
+	if !gitTargetPathValid(target) {
+		return "", false, false
+	}
 	if absoluteTarget, absolute := gitAbsolutePath(base, target); absolute {
 		target = absoluteTarget
 	} else {
@@ -13001,6 +13012,11 @@ func gitMetadataSafeForSubprocess(repo string) bool {
 				return true
 			}
 			target = filepath.FromSlash(target)
+			if !gitTargetPathValid(target) {
+				// Git rejects this target locally before treating it as a
+				// repository-discovery path.
+				return true
+			}
 			if absoluteTarget, absolute := gitAbsolutePath(dir, target); absolute {
 				target = absoluteTarget
 			} else {

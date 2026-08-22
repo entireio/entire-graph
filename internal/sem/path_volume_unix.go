@@ -99,6 +99,10 @@ func (a pathTraversalAnchor) allows(info os.FileInfo) bool {
 	return ok && device == a.device
 }
 
+func canonicalOpenedPath(_ *os.File, fallback string, _ pathTraversalAnchor) (string, error) {
+	return fallback, nil
+}
+
 func fileSystemDevice(info os.FileInfo) (uint64, bool) {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {

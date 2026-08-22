@@ -4,6 +4,7 @@ package sem
 
 import (
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -490,6 +491,86 @@ func TestGitAbsolutePathMatchesGitForWindowsRootGrammar(t *testing.T) {
 	}
 }
 
+func TestGitTargetPathRejectsWin32TrimAliases(t *testing.T) {
+	for _, target := range []string{`  `, `admin.`, `state\admin \objects`} {
+		if gitTargetPathValid(target) {
+			t.Errorf("gitTargetPathValid(%q) = true, want false", target)
+		}
+	}
+	for _, target := range []string{`.`, `..`, `.repo-git`, `state\admin\objects`} {
+		if !gitTargetPathValid(target) {
+			t.Errorf("gitTargetPathValid(%q) = false, want true", target)
+		}
+	}
+}
+
+func TestGitDirPointerTargetReturnsPhysicalUnicodeCaseSpelling(t *testing.T) {
+	repo := t.TempDir()
+	const physical = `state\ς\.dep-git`
+	const pointer = `state\Σ\.dep-git`
+	writeFile(t, repo, ".git", "gitdir: "+pointer+"\n")
+	writeHeadlessGitDirFixture(t, repo, filepath.ToSlash(physical))
+
+	target, ok, hidden := gitDirPointerTarget(repo, "")
+	if !ok || hidden || target != filepath.ToSlash(physical) {
+		t.Fatalf("gitDirPointerTarget = (%q, %v, %v), want (%q, true, false)", target, ok, hidden, filepath.ToSlash(physical))
+	}
+}
+
+func TestOpenSameVolumePathAcceptsSubstAlias(t *testing.T) {
+	backing := t.TempDir()
+	var drive string
+	for letter := 'Z'; letter >= 'D'; letter-- {
+		candidate := string(letter) + ":"
+		if _, err := os.Stat(candidate + `\`); errors.Is(err, os.ErrNotExist) {
+			drive = candidate
+			break
+		}
+	}
+	if drive == "" {
+		t.Fatal("no unused drive letter available for SUBST regression")
+	}
+	if output, err := exec.Command("subst", drive, backing).CombinedOutput(); err != nil {
+		t.Fatalf("create SUBST alias %s -> %q: %v: %s", drive, backing, err, output)
+	}
+	t.Cleanup(func() {
+		if output, err := exec.Command("subst", drive, "/D").CombinedOutput(); err != nil {
+			t.Errorf("remove SUBST alias %s: %v: %s", drive, err, output)
+		}
+	})
+
+	repo := filepath.Join(drive+`\`, "repo")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	opened, resolved, err := openSameVolumePath(repo, repo)
+	if err != nil {
+		t.Fatalf("open repository through SUBST alias: %v", err)
+	}
+	_ = opened.Close()
+	if strings.EqualFold(filepath.VolumeName(resolved), drive) {
+		t.Fatalf("resolved path %q retained SUBST volume %s; test did not exercise physical-volume canonicalization", resolved, drive)
+	}
+}
+
+func TestGitInfoExcludePathRejectsWin32TrimAlias(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, ".git", "gitdir:   \n")
+	writeFile(t, repo, "info/exclude", "secret.go\n")
+	if got := gitInfoExcludePath(repo); got != "" {
+		t.Fatalf("gitInfoExcludePath = %q, want empty for Git-rejected Win32 trim alias", got)
+	}
+}
+
+func TestGitMetadataGuardTreatsWin32TrimAliasAsRejectedPointer(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, ".git", "gitdir:   \n")
+	writeFile(t, repo, "commondir", "missing\n")
+	if !gitMetadataSafeForSubprocess(repo) {
+		t.Fatal("Git-rejected Win32 trim alias was treated as the repository root's metadata")
+	}
+}
+
 func TestUnsafeRootGitfileUsesWarnedFallbackBeforeStartingGit(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, ".git", `gitdir: \\203.0.113.1\share\repo`+"\n")
@@ -504,8 +585,19 @@ func TestUnsafeRootGitfileUsesWarnedFallbackBeforeStartingGit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Link(testExecutable, filepath.Join(binDir, "git.exe")); err != nil {
-		t.Fatalf("install fake git executable: %v", err)
+	source, err := os.Open(testExecutable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination, err := os.OpenFile(filepath.Join(binDir, "git.exe"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o755)
+	if err != nil {
+		_ = source.Close()
+		t.Fatalf("create fake git executable: %v", err)
+	}
+	_, copyErr := io.Copy(destination, source)
+	closeErr := errors.Join(destination.Close(), source.Close())
+	if copyErr != nil || closeErr != nil {
+		t.Fatalf("install fake git executable: %v", errors.Join(copyErr, closeErr))
 	}
 	t.Setenv("PATH", binDir)
 	t.Setenv(fakeGitMarkerEnv, marker)

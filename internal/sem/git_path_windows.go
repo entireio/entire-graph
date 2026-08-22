@@ -34,3 +34,23 @@ func gitAbsolutePath(base, value string) (string, bool) {
 	}
 	return value, false
 }
+
+// gitTargetPathValid rejects Win32 path components Git for Windows refuses
+// before attempting to resolve a gitfile or commondir target. Win32 otherwise
+// aliases a trailing space or period away, so `gitdir:   ` can accidentally
+// resolve to the worktree root even though Git rejects the pointer.
+func gitTargetPathValid(value string) bool {
+	rest := value[len(filepath.VolumeName(value)):]
+	for _, component := range strings.FieldsFunc(rest, func(r rune) bool {
+		return r == '/' || r == '\\'
+	}) {
+		if component == "." || component == ".." || component == "" {
+			continue
+		}
+		last := component[len(component)-1]
+		if last == ' ' || last == '.' {
+			return false
+		}
+	}
+	return true
+}
