@@ -701,27 +701,79 @@ func gitInfoExcludePath(repo string) string {
 	if !info.Mode().IsRegular() {
 		return ""
 	}
-	raw, err := os.ReadFile(dotGit)
-	if err != nil {
-		return ""
-	}
-	gitDir := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(raw)), "gitdir:"))
-	if gitDir == "" {
+	gitDir, ok := readGitDirPointerFile(dotGit, maxGitFileBytes)
+	if !ok {
 		return ""
 	}
 	if !filepath.IsAbs(gitDir) {
 		gitDir = filepath.Join(repo, gitDir)
 	}
 	// commondir points at the shared .git that owns info/; it may be relative to gitDir.
-	if common, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
-		if c := strings.TrimSpace(string(common)); c != "" {
-			if !filepath.IsAbs(c) {
-				c = filepath.Join(gitDir, c)
-			}
-			gitDir = filepath.Clean(c)
+	if common, ok := readTrimmedFile(filepath.Join(gitDir, "commondir"), maxGitPointerBytes); ok && common != "" {
+		if !filepath.IsAbs(common) {
+			common = filepath.Join(gitDir, common)
 		}
+		gitDir = filepath.Clean(common)
 	}
 	return filepath.Join(gitDir, "info", "exclude")
+}
+
+const (
+	// maxGitFileBytes mirrors Git's own read_gitfile_gently limit for a linked
+	// worktree's .git file. Because an ordinary directory is a supported
+	// repository here, an untrusted tree can plant an arbitrarily large
+	// regular file at that path; refusing anything past this size via
+	// os.Stat, before ever reading the content, bounds the allocation a
+	// worktree search is forced to make per file rather than per repository.
+	maxGitFileBytes = 1 << 20 // 1 MiB
+	// maxGitPointerBytes bounds commondir, which Git does not size-limit
+	// itself but which is never more than a short relative or absolute path
+	// in a real repository.
+	maxGitPointerBytes = 4096
+)
+
+// readGitDirPointerFile reads a linked worktree's .git file and returns the
+// gitdir it names, or false if the file is oversized, unreadable, or not
+// actually a Git-authored pointer. The size check runs via os.Stat before any
+// read, so an oversized file never gets its content allocated at all. The
+// "gitdir:" prefix is required rather than merely stripped: content lacking
+// it is not metadata Git wrote, and treating it as a literal path anyway
+// would let arbitrary file content redirect this repository's info/exclude
+// lookup to a location the caller never intended.
+func readGitDirPointerFile(path string, maxBytes int64) (string, bool) {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxBytes {
+		return "", false
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	const prefix = "gitdir:"
+	text := strings.TrimSpace(string(raw))
+	if !strings.HasPrefix(text, prefix) {
+		return "", false
+	}
+	gitDir := strings.TrimSpace(strings.TrimPrefix(text, prefix))
+	if gitDir == "" {
+		return "", false
+	}
+	return gitDir, true
+}
+
+// readTrimmedFile reads a small pointer-style file and returns its trimmed
+// content, or false if it is missing, not a regular file, larger than
+// maxBytes, or unreadable. The size check runs via os.Stat before any read.
+func readTrimmedFile(path string, maxBytes int64) (string, bool) {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxBytes {
+		return "", false
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(raw)), true
 }
 
 func (m *ignoreMatcher) loadOptional(file string, includeMode bool, origin ignoreOrigin) error {
@@ -1067,8 +1119,17 @@ func (s *nestedIgnoreStack) enterCharged(ledger *repoIgnoreLedger, dir string) b
 	}
 	file := filepath.Join(s.repo, filepath.FromSlash(dir), ".gitignore")
 	info, err := os.Stat(file)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > maxNestedIgnoreFileBytes {
+	if err != nil || !info.Mode().IsRegular() {
 		return true
+	}
+	if info.Size() > maxNestedIgnoreFileBytes {
+		// Git can still apply this file's rules regardless of its size, so
+		// treating it as absent and continuing to descend would credit the
+		// repository's own rule with removing every descendant this ignore
+		// file actually hides — the same phantom-exact-count the unparseable
+		// and over-budget cases below already refuse to produce.
+		s.noteUnreadablePath(ledger, file, dir)
+		return false
 	}
 	if ledger != nil && !ledger.spendIgnoreBytes(info.Size()) {
 		return false
@@ -1323,6 +1384,14 @@ func (s *nestedIgnoreStack) notePrunedRepoExclusion(ledger *repoIgnoreLedger, re
 				// while staying silent here reported a partial disclosure as a
 				// complete one.
 				sub.noteGitBlindSpot(ledger)
+				// The whole subtree's descendants are skipped here without ever
+				// reaching noteListingCandidate, and unlike the single-file sink
+				// below, the count skipped is unbounded and unknown. Leaving
+				// listingPosition unmarked let a LATER exclusion elsewhere in this
+				// listing test as "inside the cap" only because this subtree's
+				// positions were never counted — crediting .graphignore for an
+				// exclusion the cap alone would already have produced.
+				ledger.notePositionIncomplete()
 				return filepath.SkipDir
 			}
 			return nil

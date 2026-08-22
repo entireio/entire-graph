@@ -81,3 +81,36 @@ func TestHoistRepoIgnoreShortfallPreservesEveryRecord(t *testing.T) {
 		t.Fatalf("input was mutated: %+v", failures)
 	}
 }
+
+// TestAgentDiagnosticsKeepBothExclusionShortfallsVisible is the two-shortfall
+// case the single-slot guarantee still lost: a fallback worktree search with
+// counted exclusions can emit W_REPO_IGNORED_SOURCE and W_WORKTREE_SNAPSHOT
+// together, consuming two of the three visible slots, and separately can emit
+// E_REPO_IGNORE_GIT_UNAVAILABLE alongside E_REPO_IGNORE_COUNT_INCOMPLETE.
+// Reserving only one failure slot showed the former and hid the latter,
+// leaving the coverage line's X<n> looking exact when it was a lower bound
+// missing its own explanation.
+func TestAgentDiagnosticsKeepBothExclusionShortfallsVisible(t *testing.T) {
+	t.Parallel()
+
+	response := sem.SearchResponse{
+		Warnings: []sem.ProviderWarning{
+			{Code: "W_REPO_IGNORED_SOURCE", Severity: "info", FilePath: "internal/auth/auth.go"},
+			{Code: "W_WORKTREE_SNAPSHOT", Severity: "warning"},
+		},
+		PartialFailures: []sem.PartialFailure{
+			{Code: "E_REPO_IGNORE_GIT_UNAVAILABLE", Severity: "warning"},
+			{Code: "E_REPO_IGNORE_COUNT_INCOMPLETE", Severity: "warning", FilePath: "vendor"},
+		},
+		Stats: sem.SearchStats{RepoIgnoredFiles: 7},
+	}
+
+	full, _ := agentSearchDiagnostics(response)
+	if !strings.Contains(string(full), "- partial E_REPO_IGNORE_GIT_UNAVAILABLE") {
+		t.Fatalf("E_REPO_IGNORE_GIT_UNAVAILABLE must stay visible: agent block:\n%s", full)
+	}
+	if !strings.Contains(string(full), "- partial E_REPO_IGNORE_COUNT_INCOMPLETE") {
+		t.Fatalf("E_REPO_IGNORE_COUNT_INCOMPLETE must stay visible alongside it, not just one of the"+
+			" two: agent block:\n%s", full)
+	}
+}

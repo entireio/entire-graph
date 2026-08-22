@@ -1466,7 +1466,7 @@ func agentSearchDiagnostics(response sem.SearchResponse) ([]byte, []byte) {
 	// cap, leaving a payload that reported a narrowed corpus as if it were whole.
 	failures := hoistRepoIgnoreShortfall(response.PartialFailures)
 	warningsVisible, failuresVisible := agentDiagnosticVisibility(
-		len(warnings), len(failures), maxAgentDiagnostics,
+		len(warnings), len(failures), repoIgnoreShortfallCount(failures), maxAgentDiagnostics,
 	)
 	for _, warning := range warnings[:warningsVisible] {
 		fmt.Fprintf(&full, "- warning %s%s\n", warning.Code, agentDiagnosticPath(warning.FilePath))
@@ -1528,16 +1528,25 @@ func hoistRepoIgnoreDisclosure(warnings []sem.ProviderWarning) []sem.ProviderWar
 // one visible by construction instead of silently capped away.
 const repoIgnoreShortfallPrefix = "E_REPO_IGNORE_"
 
+// repoIgnoreShortfallCount reports how many failures qualify the exclusion
+// accounting (see repoIgnoreShortfallPrefix). Shared by hoistRepoIgnoreShortfall
+// and agentDiagnosticVisibility so the two agree on exactly what counts as one
+// of these failures.
+func repoIgnoreShortfallCount(failures []sem.PartialFailure) int {
+	count := 0
+	for _, failure := range failures {
+		if strings.HasPrefix(failure.Code, repoIgnoreShortfallPrefix) {
+			count++
+		}
+	}
+	return count
+}
+
 // hoistRepoIgnoreShortfall returns failures with every exclusion-shortfall
 // record moved to the front, each group keeping its original relative order.
 // The input is never mutated.
 func hoistRepoIgnoreShortfall(failures []sem.PartialFailure) []sem.PartialFailure {
-	shortfalls := 0
-	for _, failure := range failures {
-		if strings.HasPrefix(failure.Code, repoIgnoreShortfallPrefix) {
-			shortfalls++
-		}
-	}
+	shortfalls := repoIgnoreShortfallCount(failures)
 	if shortfalls == 0 || shortfalls == len(failures) {
 		return failures
 	}
@@ -1564,15 +1573,28 @@ func agentCoverageExcluded(excluded int) string {
 	return fmt.Sprintf(", %d excluded by repo ignore rules", excluded)
 }
 
-func agentDiagnosticVisibility(warnings, failures, limit int) (int, int) {
+// agentDiagnosticVisibility splits maxAgentDiagnostics slots between warnings
+// and failures. requiredFailures is a floor failuresVisible must reach
+// whenever there are at least that many failures: the repo-ignore shortfall
+// failures a single run can emit together (E_REPO_IGNORE_GIT_UNAVAILABLE,
+// E_REPO_IGNORE_COUNT_INCOMPLETE, ...) each qualify the coverage line's X<n>
+// count in a way the others do not stand in for, so showing only one of two
+// leaves that count looking exact when it is actually a lower bound. Callers
+// with no such floor pass 0; at least one failure of any kind is still
+// guaranteed visible whenever one exists, as before this parameter existed.
+func agentDiagnosticVisibility(warnings, failures, requiredFailures, limit int) (int, int) {
 	if limit <= 0 {
 		return 0, 0
 	}
-	warningsVisible := minIntCLI(warnings, limit)
+	if failures > 0 && requiredFailures < 1 {
+		requiredFailures = 1
+	}
+	requiredFailures = minIntCLI(requiredFailures, minIntCLI(failures, limit))
+	warningsVisible := minIntCLI(warnings, limit-requiredFailures)
 	failuresVisible := minIntCLI(failures, limit-warningsVisible)
-	if failures > 0 && failuresVisible == 0 {
-		warningsVisible--
-		failuresVisible = 1
+	if failuresVisible < requiredFailures {
+		failuresVisible = requiredFailures
+		warningsVisible = minIntCLI(warnings, limit-failuresVisible)
 	}
 	return warningsVisible, failuresVisible
 }

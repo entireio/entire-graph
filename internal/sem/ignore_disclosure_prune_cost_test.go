@@ -157,6 +157,51 @@ func TestPrunedTreeGitSwallowAdmitsTheBlindSpot(t *testing.T) {
 	}
 }
 
+// TestPrunedTreeGitSwallowMarksThePositionIncomplete is
+// TestPrunedTreeGitSwallowAdmitsTheBlindSpot's counterfactual-position
+// counterpart: a Git-hidden DIRECTORY inside an already-pruned tree is skipped
+// with its entire (unknown-size) subtree never reaching noteListingCandidate,
+// unlike the single-file swallow one level up whose shortfall is exactly one
+// path. Before the fix, listingPosition stayed a normal count instead of a
+// lower bound, so a later exclusion elsewhere in the same listing could test
+// as within the snapshot's file cap only because this subtree's positions
+// were never charged against it.
+func TestPrunedTreeGitSwallowMarksThePositionIncomplete(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, root, graphIgnoreFileName, "hidden/\n")
+	write(t, root, ".gitignore", "hidden/generated/\n")
+	write(t, root, "hidden/keep.go", "package hidden\n\nfunc Keep() {}\n")
+	// A tracked-in-a-real-checkout directory the outer .gitignore also hides:
+	// the swallow this test targets is the DIRECTORY form (hidden/generated),
+	// not the per-file form TestPrunedTreeGitSwallowAdmitsTheBlindSpot covers.
+	write(t, root, "hidden/generated/tracked.go", "package generated\n\nfunc Tracked() {}\n")
+
+	ignores, err := loadWorktreeIgnoreMatcher(root, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger := &repoIgnoreLedger{}
+	stack := newNestedIgnoreStack(root, ignores)
+	stack.notePrunedRepoExclusion(ledger, "hidden", func(string) bool { return false })
+
+	if !ledger.positionIncomplete {
+		t.Fatal("a Git-hidden subtree of unknown size inside a pruned directory must mark the" +
+			" counterfactual listing position incomplete, not leave it looking like an exact count")
+	}
+	// The consequence that matters: once the position cannot be trusted, no
+	// FURTHER exclusion in this listing can be safely tested against the file
+	// cap, so beyondListingCap must refuse everything from here on.
+	ledger.listingLimit = 1_000_000
+	if !ledger.beyondListingCap() {
+		t.Fatal("positionIncomplete must make beyondListingCap refuse unconditionally, regardless of" +
+			" how far under the cap listingPosition itself claims to be")
+	}
+}
+
 // TestPrunedLedgerBookkeepingStaysInsideTheListingCap is the lock for the
 // "`seen` grows without bound" reading of this ledger.
 //

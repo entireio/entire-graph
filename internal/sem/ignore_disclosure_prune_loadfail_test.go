@@ -65,3 +65,49 @@ func TestPruneAccountingRefusesToDescendPastAnUnreadableNestedIgnore(t *testing.
 			report.Files, report.Sample)
 	}
 }
+
+// TestPruneAccountingRefusesToDescendPastAnOversizedNestedIgnore is the size
+// counterpart to the unparseable case above. Git still applies a nested
+// .gitignore regardless of its size, so before the fix an existing file over
+// maxNestedIgnoreFileBytes was treated as if absent and the walk kept
+// descending — the same "swallowed a rule the stack never had" outcome the
+// unparseable case exists to prevent, reached through a file that is simply
+// too large rather than malformed.
+func TestPruneAccountingRefusesToDescendPastAnOversizedNestedIgnore(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	write(t, repo, "main.go", "package main\n\nfunc main() {}\n")
+	write(t, repo, "hidden/plain.go", "package hidden\n\nfunc Plain() {}\n")
+	write(t, repo, "hidden/nested/secret.go", "package nested\n\nfunc Secret() {}\n")
+	oversized := "secret.go\n# " + strings.Repeat("a", maxNestedIgnoreFileBytes) + "\n"
+	write(t, repo, "hidden/nested/.gitignore", oversized)
+	write(t, repo, graphIgnoreFileName, "hidden/\n")
+
+	ignores, err := loadWorktreeIgnoreMatcher(repo, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger := &repoIgnoreLedger{}
+	if _, err := walkWorktreeFiles(repo, ignores, func(string) bool { return false }, ledger); err != nil {
+		t.Fatal(err)
+	}
+	report := ledger.report()
+	if report == nil {
+		t.Fatal("the pruned tree left the corpus with no disclosure at all")
+	}
+	for _, exclusion := range report.Sample {
+		if strings.HasPrefix(exclusion.Path, "hidden/nested/") {
+			t.Fatalf("the disclosure blames %s for %q, but the oversized nested .gitignore that hides"+
+				" it was never read, so the stack never had the rule that would have swallowed it: %+v",
+				exclusion.Source, exclusion.Path, report.Sample)
+		}
+	}
+	if !report.CountIncomplete {
+		t.Fatalf("a subtree whose ignore rules were too large to read is excluded and uncounted, and"+
+			" the report presents its count as exact: %+v", *report)
+	}
+	if report.Files != 1 || report.Sample[0].Path != "hidden/plain.go" {
+		t.Fatalf("files = %d sample = %+v, want the one descendant outside the oversized-ignore subtree",
+			report.Files, report.Sample)
+	}
+}
