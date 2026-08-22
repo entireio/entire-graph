@@ -10641,7 +10641,10 @@ type gitDirExcluder struct {
 	// sweep has finished. Recording the name costs one slice append per
 	// directory; the structure test itself is paid only when evidence was
 	// actually hidden.
-	observedDirs []string
+	observedDirs              []string
+	listedDirectoriesObserved int
+	listedDirectoryBytes      int
+	listedObservationExceeded bool
 	// promotedUnverified makes promoteUnverifiedGitDirs idempotent, since the
 	// filesystem fallback and the git listing each call it at their own end.
 	promotedUnverified bool
@@ -10671,6 +10674,13 @@ type gitDirExcluder struct {
 
 // maxUnreadableWalkDirSample bounds unreadableWalkDirs and sweepUnreadableDirs.
 const maxUnreadableWalkDirSample = 8
+
+const (
+	maxListedDirectoryObservations = 200_000
+	maxListedDirectoryBytes        = 64 << 20
+)
+
+var errGitDirListedObservationBound = errors.New("Git worktree ancestor observation exceeded a resource bound")
 
 // noteUnreadableWalkDir records one directory walkWorktreeFiles could not
 // read, for unreadableWalkWarning. Source under it is silently excluded from
@@ -10797,7 +10807,8 @@ const (
 // the other five range from 269 to 9,259. 20,000 is a little under twice the
 // largest of them, so no repository of that shape spends the ledger, and it caps
 // the sweep at ~0.42 s on the timings above instead of at nothing at all. It
-// also caps `observedDirs`, which is one retained string per observed directory.
+// also caps the sweep's additions to `observedDirs`; ancestors supplied by
+// Git's main listing have their own count and byte bounds below.
 //
 // ENTIRE_GRAPH_SWEEP_DIR_BUDGET overrides it for a caller who knows their own
 // tree; 0 or a negative value means unbounded, which is what this branch did
@@ -11041,14 +11052,14 @@ func (g *gitDirExcluder) observe(dir string) {
 		if !g.pointerReadBudgetExceeded {
 			g.noteUnreadablePointer(dir)
 		}
-	case ok && hasGitDirStructureWithBudget(filepath.Join(g.repo, filepath.FromSlash(target)), g.admitPointerRead):
+	case ok && hasGitDirStructureWithBudget(filepath.Join(g.repo, filepath.FromSlash(target)), g.admitPointerRead) != gitDirStructureAbsent:
 		g.addTarget(target)
 	}
 	switch target, ok, hidden := gitDirLinkTarget(g.repo, dir); {
 	case hidden:
 		g.hiddenEvidence++
 		g.noteUnreadablePointer(dir)
-	case ok && hasGitDirStructureWithBudget(filepath.Join(g.repo, filepath.FromSlash(target)), g.admitPointerRead):
+	case ok && hasGitDirStructureWithBudget(filepath.Join(g.repo, filepath.FromSlash(target)), g.admitPointerRead) != gitDirStructureAbsent:
 		g.addTarget(target)
 	}
 	if dir == "" {
@@ -11402,8 +11413,8 @@ func looksLikeGitDirWithBudget(dir string, admitRead func(int64) bool) bool {
 	// directory, so it is not a git directory here either. Falling back to dir
 	// instead called an ordinary fixture tree carrying HEAD, objects/ and refs/
 	// a git directory and dropped it from every snapshot.
-	common, ok := gitCommonDirWithBudget(dir, admitRead)
-	return ok && hasObjectsAndRefs(common)
+	common, state := gitCommonDirStateWithBudget(dir, admitRead)
+	return state == gitCommonDirResolved && hasObjectsAndRefs(common)
 }
 
 // hasGitDirStructure is is_git_directory() with the HEAD test removed: the
@@ -11426,12 +11437,23 @@ func looksLikeGitDirWithBudget(dir string, admitRead func(int64) bool) bool {
 // says otherwise and the refusal is just more of the damage this rule exists to
 // survive.
 func hasGitDirStructure(dir string) bool {
-	return hasGitDirStructureWithBudget(dir, nil)
+	return hasGitDirStructureWithBudget(dir, nil) == gitDirStructurePresent
 }
 
-func hasGitDirStructureWithBudget(dir string, admitRead func(int64) bool) bool {
-	common, ok := gitCommonDirWithBudget(dir, admitRead)
-	if !ok {
+type gitDirStructureState uint8
+
+const (
+	gitDirStructureAbsent gitDirStructureState = iota
+	gitDirStructurePresent
+	gitDirStructureUnknown
+)
+
+func hasGitDirStructureWithBudget(dir string, admitRead func(int64) bool) gitDirStructureState {
+	common, state := gitCommonDirStateWithBudget(dir, admitRead)
+	if state == gitCommonDirBudgetUnknown {
+		return gitDirStructureUnknown
+	}
+	if state != gitCommonDirResolved {
 		// A `commondir` git will not read is the same class of damage as the
 		// missing HEAD this rule already carries: git refuses the repository,
 		// which is what makes the fallback run, while the config keeps the
@@ -11439,7 +11461,10 @@ func hasGitDirStructureWithBudget(dir string, admitRead func(int64) bool) bool {
 		// itself rather than declaring it ordinary content.
 		common = dir
 	}
-	return hasObjectsAndRefs(common)
+	if hasObjectsAndRefs(common) {
+		return gitDirStructurePresent
+	}
+	return gitDirStructureAbsent
 }
 
 // sameVolume reports whether a and b name the same Windows volume. Windows
@@ -11488,6 +11513,8 @@ const maxSymlinkChainHops = 40
 // promoteUnverifiedGitDirs' fail-closed path exists for).
 var errSymlinkChainOffVolume = errors.New("symlink chain resolves off the expected volume")
 
+var errPathRedirectUnreadable = errors.New("path redirect could not be inspected")
+
 // base is the volume every hop must match; a hop landing on a different
 // volume aborts immediately, with no further Stat or Readlink issued on it or
 // anything beyond it. The error is the raw OS error from whichever hop failed
@@ -11517,23 +11544,22 @@ func openSameVolumePath(base, path string) (*os.File, string, error) {
 		return nil, "", err
 	}
 	if !filepath.IsAbs(path) {
-		path = strings.TrimRight(baseAbs, `/\\`) + string(filepath.Separator) + path
+		path = trimTrailingPathSeparators(baseAbs) + string(filepath.Separator) + path
 	}
-	if !sameVolume(path, baseAbs) {
-		return nil, "", errSymlinkChainOffVolume
+	anchor, path, err := newPathTraversalAnchor(baseAbs, path)
+	if err != nil {
+		return nil, "", err
 	}
-	volume := filepath.VolumeName(baseAbs)
-	volumeRoot := string(filepath.Separator)
-	if volume != "" {
-		volumeRoot = volume + string(filepath.Separator)
-	}
-	root, err := os.OpenRoot(volumeRoot)
+	root, err := os.OpenRoot(anchor.root)
 	if err != nil {
 		return nil, "", err
 	}
 	defer root.Close()
 
-	components := pathComponentsAfterVolume(path)
+	components, ok := anchor.components(path)
+	if !ok {
+		return nil, "", errSymlinkChainOffVolume
+	}
 	resolved := make([]string, 0, len(components))
 	hops := 0
 	for len(components) > 0 {
@@ -11556,7 +11582,10 @@ func openSameVolumePath(base, path string) (*os.File, string, error) {
 		if statErr != nil {
 			return nil, "", statErr
 		}
-		if info.Mode()&os.ModeSymlink == 0 {
+		if !anchor.allows(info) {
+			return nil, "", errSymlinkChainOffVolume
+		}
+		if !pathMayRedirect(info) {
 			resolved = append(resolved, component)
 			continue
 		}
@@ -11566,18 +11595,19 @@ func openSameVolumePath(base, path string) (*os.File, string, error) {
 		}
 		target, readErr := root.Readlink(candidate)
 		if readErr != nil {
-			return nil, "", readErr
+			return nil, "", fmt.Errorf("%w: %v", errPathRedirectUnreadable, readErr)
 		}
 		target = filepath.FromSlash(target)
-		if filepath.IsAbs(target) {
-			if !sameVolume(target, baseAbs) {
+		if absoluteTarget, absolute := linkAbsolutePath(baseAbs, target); absolute {
+			targetComponents, inside := anchor.components(absoluteTarget)
+			if !inside {
 				return nil, "", errSymlinkChainOffVolume
 			}
 			resolved = resolved[:0]
-			components = append(pathComponentsAfterVolume(target), components...)
+			components = append(targetComponents, components...)
 			continue
 		}
-		components = append(pathComponentsAfterVolume(target), components...)
+		components = append(splitNativePathComponents(target), components...)
 	}
 
 	rel := "."
@@ -11588,66 +11618,107 @@ func openSameVolumePath(base, path string) (*os.File, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	return file, filepath.Join(volumeRoot, rel), nil
+	openedInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, "", err
+	}
+	if !anchor.allows(openedInfo) {
+		_ = file.Close()
+		return nil, "", errSymlinkChainOffVolume
+	}
+	return file, filepath.Join(anchor.root, rel), nil
 }
 
-func pathComponentsAfterVolume(value string) []string {
-	rest := value[len(filepath.VolumeName(value)):]
-	return strings.FieldsFunc(rest, func(r rune) bool { return r == '/' || r == '\\' })
+func splitNativePathComponents(value string) []string {
+	return strings.FieldsFunc(filepath.ToSlash(value), func(r rune) bool { return r == '/' })
+}
+
+func trimTrailingPathSeparators(value string) string {
+	for len(value) > 0 && os.IsPathSeparator(value[len(value)-1]) {
+		value = value[:len(value)-1]
+	}
+	return value
 }
 
 func lstatSameVolumePath(base, path string) (os.FileInfo, error) {
+	baseAbs, err := filepath.Abs(base)
+	if err != nil {
+		return nil, err
+	}
 	parent, resolvedParent, err := openSameVolumePath(base, filepath.Dir(path))
 	if err != nil {
 		return nil, err
 	}
 	_ = parent.Close()
-	if !sameVolume(resolvedParent, base) {
-		return nil, errSymlinkChainOffVolume
+	anchor, resolvedParent, err := newPathTraversalAnchor(baseAbs, resolvedParent)
+	if err != nil {
+		return nil, err
 	}
-	volume := filepath.VolumeName(resolvedParent)
-	volumeRoot := string(filepath.Separator)
-	if volume != "" {
-		volumeRoot = volume + string(filepath.Separator)
-	}
-	root, err := os.OpenRoot(volumeRoot)
+	root, err := os.OpenRoot(anchor.root)
 	if err != nil {
 		return nil, err
 	}
 	defer root.Close()
-	relParts := append(pathComponentsAfterVolume(resolvedParent), filepath.Base(path))
+	parentParts, ok := anchor.components(resolvedParent)
+	if !ok {
+		return nil, errSymlinkChainOffVolume
+	}
+	relParts := append(parentParts, filepath.Base(path))
 	rel := filepath.Join(relParts...)
 	if rel == "" {
 		rel = "."
 	}
-	return root.Lstat(rel)
+	info, err := root.Lstat(rel)
+	if err != nil {
+		return nil, err
+	}
+	if !anchor.allows(info) {
+		return nil, errSymlinkChainOffVolume
+	}
+	return info, nil
 }
 
 func readlinkSameVolumePath(base, path string) (string, error) {
+	baseAbs, err := filepath.Abs(base)
+	if err != nil {
+		return "", err
+	}
 	parent, resolvedParent, err := openSameVolumePath(base, filepath.Dir(path))
 	if err != nil {
 		return "", err
 	}
 	_ = parent.Close()
-	if !sameVolume(resolvedParent, base) {
-		return "", errSymlinkChainOffVolume
+	anchor, resolvedParent, err := newPathTraversalAnchor(baseAbs, resolvedParent)
+	if err != nil {
+		return "", err
 	}
-	volume := filepath.VolumeName(resolvedParent)
-	volumeRoot := string(filepath.Separator)
-	if volume != "" {
-		volumeRoot = volume + string(filepath.Separator)
-	}
-	root, err := os.OpenRoot(volumeRoot)
+	root, err := os.OpenRoot(anchor.root)
 	if err != nil {
 		return "", err
 	}
 	defer root.Close()
-	relParts := append(pathComponentsAfterVolume(resolvedParent), filepath.Base(path))
+	parentParts, ok := anchor.components(resolvedParent)
+	if !ok {
+		return "", errSymlinkChainOffVolume
+	}
+	relParts := append(parentParts, filepath.Base(path))
 	rel := filepath.Join(relParts...)
 	if rel == "" {
 		rel = "."
 	}
-	return root.Readlink(rel)
+	info, err := root.Lstat(rel)
+	if err != nil {
+		return "", err
+	}
+	if !anchor.allows(info) {
+		return "", errSymlinkChainOffVolume
+	}
+	target, err := root.Readlink(rel)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", errPathRedirectUnreadable, err)
+	}
+	return target, nil
 }
 
 // hasObjectsAndRefs is the objects/ and refs/ half of is_git_directory(), asked
@@ -11713,7 +11784,7 @@ func hasObjectsAndRefs(common string) bool {
 // any off-volume hop before following it. If resolution later fails, git would
 // call the target "not a git repository" too.
 func gitJoinRelative(base, target string) string {
-	return strings.TrimRight(base, `/\\`) + string(filepath.Separator) + target
+	return trimTrailingPathSeparators(base) + string(filepath.Separator) + target
 }
 
 // gitCommonDir reports the directory git resolves `objects` and `refs` THROUGH
@@ -11768,9 +11839,22 @@ func gitCommonDir(dir string) (string, bool) {
 }
 
 func gitCommonDirWithBudget(dir string, admitRead func(int64) bool) (string, bool) {
+	common, state := gitCommonDirStateWithBudget(dir, admitRead)
+	return common, state == gitCommonDirResolved
+}
+
+type gitCommonDirState uint8
+
+const (
+	gitCommonDirRefused gitCommonDirState = iota
+	gitCommonDirResolved
+	gitCommonDirBudgetUnknown
+)
+
+func gitCommonDirStateWithBudget(dir string, admitRead func(int64) bool) (string, gitCommonDirState) {
 	dirHandle, resolvedDir, err := openSameVolumePath(dir, dir)
 	if err != nil {
-		return "", false
+		return "", gitCommonDirRefused
 	}
 	_ = dirHandle.Close()
 	pointer := filepath.Join(resolvedDir, "commondir")
@@ -11780,7 +11864,7 @@ func gitCommonDirWithBudget(dir string, admitRead func(int64) bool) (string, boo
 	// "resolve inside dir", present-but-unreadable means it refuses the
 	// directory outright.
 	if _, err := lstatSameVolumePath(resolvedDir, pointer); err != nil {
-		return resolvedDir, true
+		return resolvedDir, gitCommonDirResolved
 	}
 	// A zero-byte file is the read git gets nothing out of and dies on; every
 	// other readable content is a successful read whatever it holds.
@@ -11795,19 +11879,19 @@ func gitCommonDirWithBudget(dir string, admitRead func(int64) bool) (string, boo
 	// for objects/refs and .git.
 	opened, _, err := openSameVolumePath(resolvedDir, pointer)
 	if err != nil {
-		return "", false
+		return "", gitCommonDirRefused
 	}
 	defer opened.Close()
 	info, err := opened.Stat()
 	if err != nil {
-		return "", false
+		return "", gitCommonDirRefused
 	}
 	regular, err := openedFileIsRegular(opened, info)
 	if err != nil || !regular || info.Size() == 0 {
-		return "", false
+		return "", gitCommonDirRefused
 	}
 	if admitRead != nil && !admitRead(info.Size()) {
-		return "", false
+		return "", gitCommonDirBudgetUnknown
 	}
 	// One byte rule for both pointer files, and one reader: git strips the
 	// trailing newlines and then stops the path at the first NUL here exactly as
@@ -11818,14 +11902,16 @@ func gitCommonDirWithBudget(dir string, admitRead func(int64) bool) (string, boo
 	// linked worktree's administrative git directory ordinary content.
 	target, ok := readGitPointerFromOpened(opened, maxGitPointerBytes, info.Size())
 	if !ok {
-		return "", false
+		return "", gitCommonDirRefused
 	}
 	if target == "" {
 		// Read, and empty: git leaves the common directory at dir.
-		return resolvedDir, true
+		return resolvedDir, gitCommonDirResolved
 	}
 	target = filepath.FromSlash(target)
-	if !filepath.IsAbs(target) {
+	if absoluteTarget, absolute := gitAbsolutePath(resolvedDir, target); absolute {
+		target = absoluteTarget
+	} else {
 		// Git resolves a relative commondir against the git directory itself,
 		// by concatenation — see gitJoinRelative.
 		target = gitJoinRelative(resolvedDir, target)
@@ -11842,9 +11928,14 @@ func gitCommonDirWithBudget(dir string, admitRead func(int64) bool) (string, boo
 	// are not case-sensitive ("C:" and "c:" are the same drive), and this is
 	// a no-op off Windows.
 	if !sameVolume(target, resolvedDir) {
-		return "", false
+		return "", gitCommonDirRefused
 	}
-	return target, true
+	targetHandle, resolvedTarget, err := openSameVolumePath(resolvedDir, target)
+	if err != nil {
+		return "", gitCommonDirRefused
+	}
+	_ = targetHandle.Close()
+	return resolvedTarget, gitCommonDirResolved
 }
 
 // maxGitHEADBytes bounds the read of a HEAD file, and is git's own buffer size
@@ -11954,23 +12045,42 @@ func startsWithObjectID(content string) bool {
 // performs over the same listing.
 func (g *gitDirExcluder) observeListedPaths(listed, listedDirs []string) {
 	seen := make(map[string]struct{}, len(listed))
-	observeChain := func(start string) {
+	observeChain := func(start string) bool {
 		for dir := start; dir != "." && dir != "/"; dir = path.Dir(dir) {
 			if _, done := seen[dir]; done {
-				return
+				return true
+			}
+			if g.listedDirectoriesObserved >= maxListedDirectoryObservations ||
+				len(dir)+1 > maxListedDirectoryBytes-g.listedDirectoryBytes {
+				g.listedObservationExceeded = true
+				return false
 			}
 			seen[dir] = struct{}{}
+			g.listedDirectoriesObserved++
+			g.listedDirectoryBytes += len(dir) + 1
 			g.observe(dir)
 		}
+		return true
 	}
 	for _, entry := range listedDirs {
-		observeChain(filepath.ToSlash(entry))
+		if !observeChain(filepath.ToSlash(entry)) {
+			return
+		}
 	}
 	for _, entry := range listed {
-		observeChain(path.Dir(filepath.ToSlash(entry)))
+		if !observeChain(path.Dir(filepath.ToSlash(entry))) {
+			return
+		}
 	}
 	g.observeUnlistedDirs(seen)
 	g.promoteUnverifiedGitDirs()
+}
+
+func (g *gitDirExcluder) listedObservationError() error {
+	if g.listedObservationExceeded {
+		return errGitDirListedObservationBound
+	}
+	return nil
 }
 
 // observeUnlistedDirs observes the directories git's listing does not mention at
@@ -12390,14 +12500,14 @@ func (g *gitDirExcluder) promoteUnverifiedGitDirs() {
 		return
 	}
 	g.promotedUnverified = true
-	if hasGitDirStructureWithBudget(g.repo, g.admitPointerRead) {
+	if hasGitDirStructureWithBudget(g.repo, g.admitPointerRead) != gitDirStructureAbsent {
 		g.addTarget(gitDirRootTarget)
 	}
 	for _, dir := range g.observedDirs {
 		if g.excluded(dir) {
 			continue
 		}
-		if hasGitDirStructureWithBudget(filepath.Join(g.repo, filepath.FromSlash(dir)), g.admitPointerRead) {
+		if hasGitDirStructureWithBudget(filepath.Join(g.repo, filepath.FromSlash(dir)), g.admitPointerRead) != gitDirStructureAbsent {
 			g.addTarget(dir)
 		}
 	}
@@ -12430,7 +12540,7 @@ func (g *gitDirExcluder) excluded(rel string) bool {
 		if rel[start:end] == ".git" {
 			return true
 		}
-		if start == 0 && g.gitDirRoot && isGitSharedIndexName(rel[:end]) {
+		if start == 0 && end == len(rel) && g.gitDirRoot && isGitSharedIndexName(rel[:end]) {
 			return true
 		}
 		if _, isTarget := g.targets[rel[:end]]; isTarget {
@@ -12569,7 +12679,9 @@ func gitDirPointerTargetWithBudget(
 	// Git writes the pointer with `/` separators on every platform, and resolves
 	// a relative target against the directory that holds the `.git` file.
 	target = filepath.FromSlash(target)
-	if !filepath.IsAbs(target) {
+	if absoluteTarget, absolute := gitAbsolutePath(base, target); absolute {
+		target = absoluteTarget
+	} else {
 		target = gitJoinRelative(base, target)
 	}
 	// No lexical fast path on a target that EXISTS: a target that LOOKS like
@@ -12668,7 +12780,7 @@ func gitDirLinkTarget(repo, dir string) (string, bool, bool) {
 	if err != nil {
 		return "", false, !errors.Is(err, fs.ErrNotExist)
 	}
-	if info.Mode()&os.ModeSymlink == 0 {
+	if !pathMayRedirect(info) {
 		return "", false, false
 	}
 	// safeStatThroughSymlinks, not a bare os.Stat: exactly the same hazard
@@ -12768,10 +12880,10 @@ func skipVendoredDir(rel, name string, ignores vendorIgnoreRules, dirTracked fun
 // the whole snapshot; the walk then answers "is this directory tracked?" with
 // a map lookup instead of per-directory git calls. A non-git directory yields
 // nil, so every directory reads as untracked there.
-func trackedDirSet(ctx context.Context, repo string) map[string]struct{} {
+func trackedDirSet(ctx context.Context, repo string) (map[string]struct{}, error) {
 	files, err := gitutil.ListIndexFiles(ctx, repo)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	dirs := make(map[string]struct{})
 	for _, file := range files {
@@ -12782,7 +12894,84 @@ func trackedDirSet(ctx context.Context, repo string) map[string]struct{} {
 			dirs[dir] = struct{}{}
 		}
 	}
-	return dirs
+	return dirs, nil
+}
+
+// gitMetadataSafeForSubprocess verifies the repository metadata Git discovery
+// can reach before any production Git subprocess is started. Git's transport
+// protocols are disabled separately, but repository discovery follows .git
+// gitfiles, junctions and commondir paths through the filesystem itself; on
+// Windows that can otherwise dial an attacker-named UNC share before Git has
+// parsed an argument. The rooted resolver rejects every cross-volume or
+// cross-filesystem hop without asking the kernel to follow it.
+func gitMetadataSafeForSubprocess(repo string) bool {
+	repoAbs, err := filepath.Abs(repo)
+	if err != nil {
+		return false
+	}
+	for dir := repoAbs; ; dir = filepath.Dir(dir) {
+		dotGit := filepath.Join(dir, ".git")
+		opened, resolvedDotGit, openErr := openSameVolumePath(repoAbs, dotGit)
+		if openErr == nil {
+			info, statErr := opened.Stat()
+			if statErr != nil {
+				_ = opened.Close()
+				return false
+			}
+			if info.IsDir() {
+				_ = opened.Close()
+				_, ok := gitCommonDir(resolvedDotGit)
+				return ok
+			}
+			regular, regularErr := openedFileIsRegular(opened, info)
+			if regularErr != nil {
+				_ = opened.Close()
+				return false
+			}
+			if !regular || info.Size() > maxGitFileBytes {
+				_ = opened.Close()
+				// Git rejects this metadata locally and does not follow a path.
+				return true
+			}
+			target, ok := readGitDirPointerFromOpened(opened, info.Size())
+			_ = opened.Close()
+			if !ok {
+				// An ordinary or malformed .git file is not a path-bearing
+				// repository-discovery input.
+				return true
+			}
+			target = filepath.FromSlash(target)
+			if absoluteTarget, absolute := gitAbsolutePath(dir, target); absolute {
+				target = absoluteTarget
+			} else {
+				target = gitJoinRelative(dir, target)
+			}
+			targetHandle, resolvedTarget, targetErr := openSameVolumePath(repoAbs, target)
+			if targetErr != nil {
+				// A missing local target makes Git fail discovery without
+				// touching anything else. An off-volume or unreadable target is
+				// not safe to hand back to Git.
+				return errors.Is(targetErr, fs.ErrNotExist)
+			}
+			targetInfo, targetStatErr := targetHandle.Stat()
+			_ = targetHandle.Close()
+			if targetStatErr != nil {
+				return false
+			}
+			if !targetInfo.IsDir() {
+				return true
+			}
+			_, ok = gitCommonDir(resolvedTarget)
+			return ok
+		}
+		if !isMissingPathError(openErr) {
+			return false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return true
+		}
+	}
 }
 
 func isVendoredScanFile(rel, name string) bool {
@@ -12810,24 +12999,36 @@ func isVendoredScanFile(rel, name string) bool {
 // (not a repository at all, or no usable git binary), and it now applies nested
 // .gitignore files itself.
 func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher, hasIncludeFiles bool) ([]string, []ProviderWarning, error) {
-	trackedDirs := trackedDirSet(ctx, repo)
+	if !gitMetadataSafeForSubprocess(repo) {
+		dirTracked := func(string) bool { return false }
+		return walkWorktreeFiles(ctx, repo, ignores, dirTracked)
+	}
+	trackedDirs, trackedErr := trackedDirSet(ctx, repo)
+	if errors.Is(trackedErr, gitutil.ErrWorktreeListingTruncated) {
+		return nil, nil, fmt.Errorf("list Git index paths: %w", trackedErr)
+	}
 	dirTracked := func(rel string) bool {
 		_, ok := trackedDirs[rel]
 		return ok
 	}
 	listed, err := gitutil.ListWorktreeFiles(ctx, repo)
 	if err != nil {
+		if errors.Is(err, gitutil.ErrWorktreeListingTruncated) {
+			return nil, nil, fmt.Errorf("list Git worktree paths: %w", err)
+		}
 		return walkWorktreeFiles(ctx, repo, ignores, dirTracked)
 	}
 	if hasIncludeFiles {
 		// An explicit include file's negations are allowed to reach into ignored
 		// content; nothing else is, so the ignored listing is only ever requested
 		// when such a file was supplied.
-		if ignored, ignoredErr := gitutil.ListIgnoredWorktreeFiles(ctx, repo); ignoredErr == nil {
-			for _, rel := range ignored {
-				if ignores.Reincluded(filepath.ToSlash(rel), false) {
-					listed = append(listed, rel)
-				}
+		ignored, ignoredErr := gitutil.ListIgnoredWorktreeFiles(ctx, repo)
+		if ignoredErr != nil {
+			return nil, nil, fmt.Errorf("list ignored Git worktree paths for explicit includes: %w", ignoredErr)
+		}
+		for _, rel := range ignored {
+			if ignores.Reincluded(filepath.ToSlash(rel), false) {
+				listed = append(listed, rel)
 			}
 		}
 	}
@@ -12877,6 +13078,9 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 	// pointers this rule may read. Ask git for them by name.
 	gitDirs.unlistedRoots, gitDirs.gitAnsweredRoots = gitSweepRootsFromGit(ctx, repo, gitDirs)
 	gitDirs.observeListedPaths(listed, listedDirs)
+	if err := gitDirs.listedObservationError(); err != nil {
+		return nil, nil, err
+	}
 	paths := make([]string, 0, len(listed))
 	seen := make(map[string]struct{}, len(listed))
 	for index, entry := range listed {

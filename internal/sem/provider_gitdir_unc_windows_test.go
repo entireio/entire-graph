@@ -5,12 +5,31 @@ package sem
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
+
+const fakeGitMarkerEnv = "ENTIRE_GRAPH_TEST_FAKE_GIT_MARKER"
+
+func TestMain(m *testing.M) {
+	if marker := os.Getenv(fakeGitMarkerEnv); marker != "" {
+		_ = os.WriteFile(marker, []byte("started"), 0o600)
+		os.Exit(23)
+	}
+	os.Exit(m.Run())
+}
+
+func windowsJunction(t *testing.T, target, link string) {
+	t.Helper()
+	cmd := exec.Command("cmd", "/c", "mklink", "/J", link, target)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("create junction %q -> %q: %v: %s", link, target, err, output)
+	}
+}
 
 func windowsSymlinkOrSkip(t *testing.T, oldname, newname string) {
 	t.Helper()
@@ -406,5 +425,105 @@ func TestGitInfoExcludePathRejectsAUNCCommonDirWithoutTouchingTheNetwork(t *test
 	}
 	if got != "" {
 		t.Errorf("gitInfoExcludePath(repo) = %q, want \"\": a UNC commondir target is never on the repository's own volume", got)
+	}
+}
+
+func TestGitDirLinkTargetFollowsAHeadlessDirectoryJunction(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".real-git", "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".real-git", "refs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	windowsJunction(t, filepath.Join(repo, ".real-git"), filepath.Join(repo, ".git"))
+
+	target, ok, hidden := gitDirLinkTarget(repo, "")
+	if !ok || hidden || target != ".real-git" {
+		t.Fatalf("gitDirLinkTarget(repo, empty) = (%q, %v, %v), want (.real-git, true, false)", target, ok, hidden)
+	}
+	if !hasGitDirStructure(filepath.Join(repo, filepath.FromSlash(target))) {
+		t.Fatal("junction target lost its HEAD-less git-directory structure")
+	}
+}
+
+func TestGitDirPointerTargetFollowsAnIntermediateDirectoryJunction(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "dep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "state", "admin", "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "state", "admin", "refs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	windowsJunction(t, filepath.Join(repo, "state"), filepath.Join(repo, "admin-link"))
+	writeFile(t, repo, "dep/.git", "gitdir: ../admin-link/admin\n")
+
+	target, ok, hidden := gitDirPointerTarget(repo, "dep")
+	if !ok || hidden || target != "state/admin" {
+		t.Fatalf("gitDirPointerTarget(repo, dep) = (%q, %v, %v), want (state/admin, true, false)", target, ok, hidden)
+	}
+}
+
+func TestGitAbsolutePathMatchesGitForWindowsRootGrammar(t *testing.T) {
+	base := `C:\work\repo`
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: `\admin\git`, want: `C:\admin\git`},
+		{input: `/admin/git`, want: `C:/admin/git`},
+		{input: `C:admin\git`, want: `C:\admin\git`},
+		{input: `C:\admin\git`, want: `C:\admin\git`},
+		{input: `\\host\share\admin`, want: `\\host\share\admin`},
+	}
+	for _, test := range tests {
+		got, absolute := gitAbsolutePath(base, test.input)
+		if !absolute || got != test.want {
+			t.Errorf("gitAbsolutePath(%q, %q) = (%q, %v), want (%q, true)", base, test.input, got, absolute, test.want)
+		}
+	}
+	if got, absolute := gitAbsolutePath(base, `relative\admin`); absolute || got != `relative\admin` {
+		t.Errorf("relative git path = (%q, %v), want unchanged and false", got, absolute)
+	}
+}
+
+func TestUnsafeRootGitfileUsesFilesystemFallbackBeforeStartingGit(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, ".git", `gitdir: \\203.0.113.1\share\repo`+"\n")
+	writeFile(t, repo, "main.go", "package main\n")
+	if gitMetadataSafeForSubprocess(repo) {
+		t.Fatal("UNC root gitfile passed the pre-subprocess metadata guard")
+	}
+
+	binDir := t.TempDir()
+	marker := filepath.Join(binDir, "git-was-started")
+	testExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(testExecutable, filepath.Join(binDir, "git.exe")); err != nil {
+		t.Fatalf("install fake git executable: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv(fakeGitMarkerEnv, marker)
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := worktreeSourceFiles(t.Context(), repo, ignoreMatcher{}, false)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("filesystem fallback: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("unsafe root gitfile did not select the filesystem fallback promptly")
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Git subprocess marker stat = %v, want not-exist", err)
 	}
 }

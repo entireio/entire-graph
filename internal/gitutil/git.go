@@ -145,17 +145,7 @@ func ListFiles(ctx context.Context, repo, rev string) ([]string, error) {
 // whole listing; callers use it to decide tracked-ness without per-path git
 // calls. A non-git directory returns an error.
 func ListIndexFiles(ctx context.Context, repo string) ([]string, error) {
-	out, err := run(ctx, repo, "git", "ls-files", "-z")
-	if err != nil {
-		return nil, err
-	}
-	var files []string
-	for _, path := range strings.Split(out, "\x00") {
-		if path != "" {
-			files = append(files, path)
-		}
-	}
-	return files, nil
+	return listBoundedWorktreePaths(newCmd(ctx, repo, "git", "ls-files", "-z"))
 }
 
 // ListWorktreeFiles lists the working tree the way Git itself sees it: tracked
@@ -168,11 +158,7 @@ func ListIndexFiles(ctx context.Context, repo string) ([]string, error) {
 // duplicates removed; a non-git directory returns an error so callers can fall
 // back to a filesystem walk.
 func ListWorktreeFiles(ctx context.Context, repo string) ([]string, error) {
-	out, err := run(ctx, repo, "git", "ls-files", "-z", "--cached", "--others", "--exclude-standard")
-	if err != nil {
-		return nil, err
-	}
-	return splitNULPaths(out), nil
+	return listBoundedWorktreePaths(newCmd(ctx, repo, "git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"))
 }
 
 // ListWorktreeDirectoryEntries lists the working tree the way ListWorktreeFiles
@@ -206,11 +192,12 @@ func ListWorktreeDirectoryEntries(ctx context.Context, repo string) ([]string, e
 // all, while `.dep-git/config` is listed in full. The sweep reads directories
 // only, never a file, so nothing in the ignored tree becomes indexable.
 //
-// Bounded by maxIgnoredDirectoryFields: past that many total fields, this
-// gives up and reports errIgnoredListingTruncated rather than reading a
-// pattern-ignored tree's files one at a time indefinitely. The caller
-// (gitSweepRoots) treats that exactly like any other listing failure and
-// falls back to the sweep's own budgeted derivation instead.
+// Bounded by maxIgnoredDirectoryFields and maxIgnoredDirectoryBytes: past
+// either raw-output limit, this gives up and reports
+// errIgnoredListingTruncated rather than reading a pattern-ignored tree's
+// files one at a time indefinitely. The caller (gitSweepRoots) treats that
+// exactly like any other listing failure and falls back to the sweep's own
+// budgeted derivation instead.
 func ListIgnoredWorktreeDirectoryEntries(ctx context.Context, repo string) ([]string, error) {
 	var entries []string
 	err := VisitWorktreeDirectoryEntries(ctx, repo, true, func(entry string) bool {
@@ -226,11 +213,64 @@ func ListIgnoredWorktreeDirectoryEntries(ctx context.Context, repo string) ([]st
 // paths the project gitignores. Nothing else should enumerate ignored content —
 // that is the tree whose size is the reason the exclude rules exist.
 func ListIgnoredWorktreeFiles(ctx context.Context, repo string) ([]string, error) {
-	out, err := run(ctx, repo, "git", "ls-files", "-z", "--others", "--ignored", "--exclude-standard")
+	return listBoundedWorktreePaths(newCmd(ctx, repo, "git", "ls-files", "-z", "--others", "--ignored", "--exclude-standard"))
+}
+
+const (
+	maxWorktreeListingFields = 1_000_000
+	maxWorktreeListingBytes  = 256 << 20
+)
+
+// ErrWorktreeListingTruncated reports that a provider/index path listing
+// exceeded its fixed discovery bound. Callers must not reinterpret this as an
+// ordinary Git failure and retry through another unbounded listing path.
+var ErrWorktreeListingTruncated = errors.New("Git worktree listing exceeded a raw-output bound")
+
+type worktreeListingBudget struct {
+	fields int
+	bytes  int
+}
+
+func (b *worktreeListingBudget) admit(path string) bool {
+	if b.fields >= maxWorktreeListingFields {
+		return false
+	}
+	recordBytes := len(path) + 1
+	if recordBytes > maxWorktreeListingBytes-b.bytes {
+		return false
+	}
+	b.fields++
+	b.bytes += recordBytes
+	return true
+}
+
+func listBoundedWorktreePaths(cmd *exec.Cmd) ([]string, error) {
+	paths := make([]string, 0)
+	seen := make(map[string]struct{})
+	var budget worktreeListingBudget
+	truncated := false
+	err := visitBoundedNULPaths(cmd, func(path string) bool {
+		if !budget.admit(path) {
+			truncated = true
+			return false
+		}
+		if path == "" {
+			return true
+		}
+		if _, duplicate := seen[path]; duplicate {
+			return true
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+		return true
+	})
 	if err != nil {
 		return nil, err
 	}
-	return splitNULPaths(out), nil
+	if truncated {
+		return nil, ErrWorktreeListingTruncated
+	}
+	return paths, nil
 }
 
 func splitNULPaths(out string) []string {
@@ -303,10 +343,12 @@ func keepDirectoryEntry(field string, seen map[string]struct{}) bool {
 	return true
 }
 
-// maxIgnoredDirectoryFields bounds the total number of NUL-delimited fields
-// streamNULDirectoryEntries will read off git's stdout before giving up on
-// the listing, independent of how many of those fields turn out to be
-// directory entries kept by keepDirectoryEntry.
+// maxIgnoredDirectoryFields and maxIgnoredDirectoryBytes bound the total
+// NUL-delimited records streamNULDirectoryEntries will read off git's stdout
+// before giving up on the listing, independent of how many of those records
+// turn out to be directory entries kept by keepDirectoryEntry. The byte bound
+// includes each record's NUL delimiter, so even a stream of maximum-size path
+// records has a fixed aggregate I/O ceiling.
 //
 // `--directory` only collapses a directory when git's own listing classifies
 // its ENTIRE content the same way (see keepDirectoryEntry). A directory
@@ -324,22 +366,45 @@ func keepDirectoryEntry(field string, seen map[string]struct{}) bool {
 // and pipe I/O on every worktree query, ahead of the budget that exists
 // specifically to prevent that.
 //
-// 2,000,000 comfortably clears TestStreamNULDirectoryEntriesHandlesLargeMixedOutput's
-// 1,000,003-field fixture (an ordinary large listing must not be truncated)
-// while still turning "unbounded" into "bounded" for the adversarial case:
-// exceeding it kills the subprocess and reports the listing incomplete via
-// errIgnoredListingTruncated, which the caller (gitSweepRoots) already
-// treats exactly like a failed listing — falling back to the sweep's own
-// budgeted, already-observed-directory derivation instead of trusting a
+// 2,000,000 fields and 64 MiB comfortably clear both the exact field-bound
+// fixture and TestStreamNULDirectoryEntriesHandlesLargeMixedOutput's roughly
+// 13 MiB, 1,000,003-field fixture (an ordinary large listing must not be
+// truncated) while still turning "unbounded" into "bounded" for the
+// adversarial case.
+// Exceeding either limit kills the subprocess and reports the listing
+// incomplete via errIgnoredListingTruncated, which the caller (gitSweepRoots)
+// already treats exactly like a failed listing — falling back to the sweep's
+// own budgeted, already-observed-directory derivation instead of trusting a
 // partial one as if it were complete.
-const maxIgnoredDirectoryFields = 2_000_000
+const (
+	maxIgnoredDirectoryFields = 2_000_000
+	maxIgnoredDirectoryBytes  = 64 << 20
+)
 
 // errIgnoredListingTruncated reports that streamNULDirectoryEntries stopped
-// before EOF because maxIgnoredDirectoryFields was reached. It is a
-// deliberate, fail-closed refusal to keep reading, not a process failure —
-// callers should treat it exactly like any other error from this listing
-// (gitSweepRoots already does, via a plain non-nil check).
-var errIgnoredListingTruncated = errors.New("ignored-directory listing exceeded the field-count bound")
+// before EOF because a raw field-count or aggregate-byte bound was reached.
+// It is a deliberate, fail-closed refusal to keep reading, not a process
+// failure — callers should treat it exactly like any other error from this
+// listing (gitSweepRoots already does, via a plain non-nil check).
+var errIgnoredListingTruncated = errors.New("ignored-directory listing exceeded a raw-output bound")
+
+type ignoredDirectoryListingBudget struct {
+	fields int
+	bytes  int
+}
+
+func (b *ignoredDirectoryListingBudget) admit(field string) bool {
+	if b.fields >= maxIgnoredDirectoryFields {
+		return false
+	}
+	recordBytes := len(field) + 1 // Include the NUL delimiter read from Git.
+	if recordBytes > maxIgnoredDirectoryBytes-b.bytes {
+		return false
+	}
+	b.fields++
+	b.bytes += recordBytes
+	return true
+}
 
 // streamNULDirectoryEntries runs a NUL-delimited `git ls-files --directory`
 // listing and keeps only the trailing-slash entries `--directory` actually
@@ -357,16 +422,15 @@ var errIgnoredListingTruncated = errors.New("ignored-directory listing exceeded 
 // of the caller's own directory-count budget, even though the filter here
 // discards every one of those filenames. Streaming and filtering in the same
 // pass bounds this call's cost to the number of ignored/untracked
-// DIRECTORIES in the ordinary case, and maxIgnoredDirectoryFields bounds it
-// even when that count never grows.
+// DIRECTORIES in the ordinary case; the field and byte caps bound it even
+// when that count never grows.
 func streamNULDirectoryEntries(ctx context.Context, repo, name string, args ...string) ([]string, error) {
 	var dirs []string
 	seen := make(map[string]struct{})
-	fields := 0
+	var budget ignoredDirectoryListingBudget
 	truncated := false
 	err := visitBoundedNULPaths(newCmd(ctx, repo, name, args...), func(field string) bool {
-		fields++
-		if fields > maxIgnoredDirectoryFields {
+		if !budget.admit(field) {
 			truncated = true
 			return false
 		}

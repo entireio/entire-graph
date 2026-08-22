@@ -339,6 +339,9 @@ func observeSearchReplayGitWorktreeCorpus(
 	gitDirs := newGitDirExcluder(ctx, repo)
 	gitDirs.unlistedRoots, gitDirs.gitAnsweredRoots = gitSweepRootsFromGit(ctx, repo, gitDirs)
 	gitDirs.observeListedPaths(raw.paths, listedDirs)
+	if err := gitDirs.listedObservationError(); err != nil {
+		return fmt.Errorf("observe worktree git-directory ancestors for replay: %w", err)
+	}
 	for _, warning := range gitDirs.sweepWarnings() {
 		collector.addWarning(warning)
 	}

@@ -262,11 +262,10 @@ func VisitWorktreeDirectoryEntries(
 // Windows, without requiring sh/awk or testing a separate parser.
 func visitWorktreeDirectoryEntryOutput(cmd *exec.Cmd, visit func(string) bool) error {
 	seen := make(map[string]struct{})
-	rawFields := 0
+	var budget ignoredDirectoryListingBudget
 	truncated := false
 	err := visitBoundedNULPaths(cmd, func(entry string) bool {
-		rawFields++
-		if rawFields > maxIgnoredDirectoryFields {
+		if !budget.admit(entry) {
 			truncated = true
 			return false
 		}

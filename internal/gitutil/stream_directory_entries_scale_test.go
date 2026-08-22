@@ -6,11 +6,17 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
 
 const directoryEntryProducerEnv = "ENTIRE_GRAPH_TEST_DIRECTORY_ENTRY_FIELDS"
+
+const (
+	directoryEntryProducerRecordBytesEnv = directoryEntryProducerEnv + "_RECORD_BYTES"
+	directoryEntryProducerExtraNULEnv    = directoryEntryProducerEnv + "_EXTRA_NUL"
+)
 
 func TestDirectoryEntryScaleProducer(t *testing.T) {
 	raw := os.Getenv(directoryEntryProducerEnv)
@@ -21,11 +27,22 @@ func TestDirectoryEntryScaleProducer(t *testing.T) {
 	if err != nil {
 		os.Exit(2)
 	}
+	record := "vendor/file.o\x00"
+	if rawRecordBytes := os.Getenv(directoryEntryProducerRecordBytesEnv); rawRecordBytes != "" {
+		recordBytes, err := strconv.Atoi(rawRecordBytes)
+		if err != nil || recordBytes < 1 || recordBytes > nestedIgnorePathMaxBytes+1 {
+			os.Exit(2)
+		}
+		record = strings.Repeat("x", recordBytes-1) + "\x00"
+	}
 	writer := bufio.NewWriterSize(os.Stdout, 64<<10)
 	for index := 0; index < fields; index++ {
-		if _, err := writer.WriteString("vendor/file.o\x00"); err != nil {
+		if _, err := writer.WriteString(record); err != nil {
 			os.Exit(0)
 		}
+	}
+	if os.Getenv(directoryEntryProducerExtraNULEnv) != "" {
+		_ = writer.WriteByte(0)
 	}
 	if os.Getenv(directoryEntryProducerEnv+"_DIRS") != "" {
 		_, _ = writer.WriteString("build/\x00dist/\x00build/\x00")
@@ -35,11 +52,28 @@ func TestDirectoryEntryScaleProducer(t *testing.T) {
 }
 
 func directoryEntryProducerCommand(t *testing.T, fields int, withDirs bool) *exec.Cmd {
+	return directoryEntryProducerCommandWithRecordBytes(t, fields, len("vendor/file.o")+1, withDirs, false)
+}
+
+func directoryEntryProducerCommandWithRecordBytes(
+	t *testing.T,
+	fields int,
+	recordBytes int,
+	withDirs bool,
+	extraNUL bool,
+) *exec.Cmd {
 	t.Helper()
 	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestDirectoryEntryScaleProducer$")
-	cmd.Env = append(cmd.Environ(), directoryEntryProducerEnv+"="+strconv.Itoa(fields))
+	cmd.Env = append(
+		cmd.Environ(),
+		directoryEntryProducerEnv+"="+strconv.Itoa(fields),
+		directoryEntryProducerRecordBytesEnv+"="+strconv.Itoa(recordBytes),
+	)
 	if withDirs {
 		cmd.Env = append(cmd.Env, directoryEntryProducerEnv+"_DIRS=1")
+	}
+	if extraNUL {
+		cmd.Env = append(cmd.Env, directoryEntryProducerExtraNULEnv+"=1")
 	}
 	return cmd
 }
@@ -156,5 +190,66 @@ func TestVisitWorktreeDirectoryEntryOutputAllowsExactRawFieldBound(t *testing.T)
 	}
 	if len(dirs) != 0 {
 		t.Fatalf("pattern-only output produced directory entries: %v", dirs)
+	}
+}
+
+func TestVisitWorktreeDirectoryEntryOutputAllowsExactRawByteBound(t *testing.T) {
+	const recordBytes = nestedIgnorePathMaxBytes
+	if maxIgnoredDirectoryBytes%recordBytes != 0 {
+		t.Fatalf("test record size %d does not divide byte bound %d", recordBytes, maxIgnoredDirectoryBytes)
+	}
+	fields := maxIgnoredDirectoryBytes / recordBytes
+	err := visitWorktreeDirectoryEntryOutput(
+		directoryEntryProducerCommandWithRecordBytes(t, fields, recordBytes, false, false),
+		func(string) bool { return true },
+	)
+	if err != nil {
+		t.Fatalf("exactly %d raw bytes were truncated: %v", maxIgnoredDirectoryBytes, err)
+	}
+}
+
+func TestVisitWorktreeDirectoryEntryOutputTruncatesOneBytePastRawByteBound(t *testing.T) {
+	const recordBytes = nestedIgnorePathMaxBytes
+	if maxIgnoredDirectoryBytes%recordBytes != 0 {
+		t.Fatalf("test record size %d does not divide byte bound %d", recordBytes, maxIgnoredDirectoryBytes)
+	}
+	fields := maxIgnoredDirectoryBytes / recordBytes
+	err := visitWorktreeDirectoryEntryOutput(
+		directoryEntryProducerCommandWithRecordBytes(t, fields, recordBytes, false, true),
+		func(string) bool { return true },
+	)
+	if !errors.Is(err, errIgnoredListingTruncated) {
+		t.Fatalf("%d raw bytes err = %v, want errIgnoredListingTruncated", maxIgnoredDirectoryBytes+1, err)
+	}
+}
+
+func TestListBoundedWorktreePathsAllowsExactRawFieldBound(t *testing.T) {
+	paths, err := listBoundedWorktreePaths(
+		directoryEntryProducerCommandWithRecordBytes(t, maxWorktreeListingFields, 2, false, false),
+	)
+	if err != nil {
+		t.Fatalf("exactly %d worktree fields were truncated: %v", maxWorktreeListingFields, err)
+	}
+	if len(paths) != 1 || paths[0] != "x" {
+		t.Fatalf("deduplicated paths = %q, want [x]", paths)
+	}
+}
+
+func TestListBoundedWorktreePathsTruncatesOneFieldPastRawBound(t *testing.T) {
+	_, err := listBoundedWorktreePaths(
+		directoryEntryProducerCommandWithRecordBytes(t, maxWorktreeListingFields+1, 2, false, false),
+	)
+	if !errors.Is(err, ErrWorktreeListingTruncated) {
+		t.Fatalf("%d worktree fields err = %v, want ErrWorktreeListingTruncated", maxWorktreeListingFields+1, err)
+	}
+}
+
+func TestWorktreeListingBudgetAllowsExactBytesAndRejectsOneMore(t *testing.T) {
+	budget := worktreeListingBudget{bytes: maxWorktreeListingBytes - 2}
+	if !budget.admit("x") {
+		t.Fatal("exact aggregate worktree byte bound was rejected")
+	}
+	if budget.admit("") {
+		t.Fatal("one byte beyond aggregate worktree byte bound was accepted")
 	}
 }

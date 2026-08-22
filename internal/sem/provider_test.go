@@ -15749,6 +15749,24 @@ func TestSearchRepositoryNeverIndexesGitDirNamedWithUnicodeCaseAlias(t *testing.
 	assertNoGitDirLeak(t, repo, physical)
 }
 
+// TestSearchRepositoryNeverIndexesGitDirWithBackslashName pins POSIX path
+// semantics: a backslash is an ordinary filename byte there, not a separator.
+// Treating it like Windows rewrites the pointer target and leaves the real
+// headless git directory eligible for indexing.
+func TestSearchRepositoryNeverIndexesGitDirWithBackslashName(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("backslash is a path separator on Windows")
+	}
+	repo := t.TempDir()
+	const gitDir = `.admin\git`
+	writeFile(t, repo, "libs/dep/.git", `gitdir: ../../`+gitDir+"\n")
+	writeHeadlessGitDirFixture(t, repo, gitDir)
+	writeFile(t, repo, "src/app.go", "package src\n\nfunc LoadOriginCredential() string { return \"\" }\n")
+
+	assertNoGitDirLeak(t, repo, gitDir)
+}
+
 // TestLooksLikeGitDirAcceptsSymlinkedObjectsAndRefs pins the structural half
 // against a repository layout git itself accepts: `objects` and `refs` are
 // symlinks to directories elsewhere (a shared object store, a relocated refs

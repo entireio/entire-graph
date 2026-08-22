@@ -471,12 +471,20 @@ func gitInfoExcludePath(repo string) string {
 	if !ok {
 		return ""
 	}
-	if !filepath.IsAbs(gitDir) {
+	gitDir = filepath.FromSlash(gitDir)
+	if absoluteGitDir, absolute := gitAbsolutePath(repo, gitDir); absolute {
+		gitDir = absoluteGitDir
+	} else {
 		gitDir = gitJoinRelative(repo, gitDir)
 	}
 	if !sameVolume(gitDir, repo) {
 		return ""
 	}
+	gitDirHandle, resolvedGitDir, err := openSameVolumePath(repo, gitDir)
+	if err != nil {
+		return ""
+	}
+	_ = gitDirHandle.Close()
 	// commondir points at the shared .git that owns info/; it may be relative to
 	// gitDir. Resolved through gitCommonDir (provider.go), not a second,
 	// hand-rolled parse here: gitCommonDir walks a `commondir` symlink hop by
@@ -491,7 +499,7 @@ func gitInfoExcludePath(repo string) string {
 	// share would have this process dial SMB with ambient credentials while
 	// resolving a path this function never even looked at, before the single
 	// top-level check ever ran.
-	common, ok := gitCommonDir(gitDir)
+	common, ok := gitCommonDir(resolvedGitDir)
 	if !ok {
 		return ""
 	}

@@ -350,8 +350,10 @@ reported.
 
 ## Listing And Memory Bounds
 
-A snapshot's memory must be set by the caller's limits, not by what happens to be
-on disk. The following bounds are enforced:
+A snapshot's retained graph memory is set by the caller's limits, not by what
+happens to be on disk. Discovery that must inspect more than the retained file
+set for security and policy fidelity has separate fixed raw-input bounds. The
+following bounds are enforced:
 
 - **Per-file read cap** — the same limit as the parser input cap (`MaxParseBytes`,
   4 MiB by default). A file above it is never materialized in memory: its size,
@@ -364,6 +366,17 @@ on disk. The following bounds are enforced:
   overrides; negative removes it). Truncation is deterministic in sorted path
   order and always reported as `W_FILE_LIMIT`, naming the real count, the limit
   and the override.
+- **Git worktree discovery cap** — each index, eligible-worktree, or explicitly
+  requested ignored-worktree listing accepts at most 1,000,000 raw
+  NUL-delimited records and 256 MiB including delimiters. These listings must
+  inspect paths beyond `MaxFiles` to find later git-directory evidence before
+  retaining a deterministic prefix. Crossing either bound terminates Git and
+  fails the listing explicitly rather than buffering attacker-sized output or
+  retrying through another unbounded path.
+- **Listed-directory observation cap** — the git-directory exclusion pass
+  retains at most 200,000 unique ancestor directories and 64 MiB of their path
+  bytes. Crossing either cap fails the listing explicitly; it never continues
+  with incomplete pointer evidence.
 - **`.git`-pointer sweep budget** — 20,000 admitted directories and 20,000
   inspected directory entries per working-tree listing
   (`ENTIRE_GRAPH_SWEEP_DIR_BUDGET` overrides; 0 or negative removes it). The
@@ -378,11 +391,12 @@ on disk. The following bounds are enforced:
   and it is reported as `W_GITDIR_SWEEP_BUDGET` (`W_GITDIR_SWEEP_CANCELLED` when
   the caller's context ended it). Running the ledger out therefore produces a
   WIDER exclusion than a completed sweep, never a narrower one.
-- **Git directory-listing record cap** — 2,000,000 raw NUL-delimited records,
-  charged before non-directory filenames are discarded. A pattern-only ignore
-  can otherwise make `git ls-files --directory` emit one record per ignored
-  file without spending the directory ledger. Crossing the cap terminates Git,
-  treats the listing as incomplete, and selects the fail-closed derived sweep.
+- **Git directory-listing raw-output cap** — 2,000,000 raw NUL-delimited
+  records or 64 MiB including delimiters, charged before non-directory
+  filenames are discarded. A pattern-only ignore can otherwise make
+  `git ls-files --directory` emit one record per ignored file without spending
+  the directory ledger. Crossing either cap terminates Git, treats the listing
+  as incomplete, and selects the fail-closed derived sweep.
 - **Aggregate gitfile read cap** — 64 MiB of `.git` and `commondir` pointer bytes
   per working-tree listing. Individual `.git` files retain Git's 1 MiB fidelity
   limit and `commondir` retains a 64 KiB lexical window, but those per-file
