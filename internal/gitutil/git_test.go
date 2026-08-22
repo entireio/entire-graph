@@ -2233,34 +2233,24 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	}
 }
 
-// TestGitAllowProtocolBlocksALazyFetchGitVersionIndependently pins the
-// property the trail finding asked for directly: even if a caller's own
-// GIT_NO_LAZY_FETCH were somehow ineffective (as it silently is on any Git
-// older than 2.45, since the variable did not exist yet), a fetch attempt
-// still cannot reach the network, because newCmd's GIT_ALLOW_PROTOCOL=
-// denies every transport unconditionally.
-func TestGitAllowProtocolBlocksALazyFetchGitVersionIndependently(t *testing.T) {
-	repo := t.TempDir()
-	git(t, repo, "init")
-	git(t, repo, "config", "user.name", "Entire Graph Test")
-	git(t, repo, "config", "user.email", "graph@example.com")
-	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("hello\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	git(t, repo, "add", ".")
-	git(t, repo, "commit", "-m", "initial")
+func TestNewCmdDisablesEveryGitTransport(t *testing.T) {
+	source := t.TempDir()
+	target := t.TempDir()
+	git(t, source, "init", "--bare")
+	git(t, target, "init")
 
-	// GIT_NO_LAZY_FETCH unset here (unlike newCmd's own environment) stands
-	// in for a Git binary old enough that the variable does nothing, so a
-	// pass only because of that guard would go undetected by this test.
-	cmd := exec.Command("git", "-C", repo, "fetch", "file:///nonexistent-does-not-exist")
-	cmd.Env = append(os.Environ(), noTransportProtocolEnv)
+	// A caller-provided allowlist and locale must not reopen a transport or make
+	// the denial assertion depend on localized Git diagnostics.
+	t.Setenv("GIT_ALLOW_PROTOCOL", "file:https:ssh")
+	t.Setenv("LC_ALL", "de_DE.UTF-8")
+	t.Setenv("LANG", "de_DE.UTF-8")
+	cmd := newCmd(t.Context(), target, "git", "fetch", source)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
-		t.Fatalf("git fetch under GIT_ALLOW_PROTOCOL= succeeded, want every transport denied: %s", out)
+		t.Fatalf("Git fetch unexpectedly succeeded despite the no-egress transport boundary")
 	}
-	if !strings.Contains(string(out), "not allowed") {
-		t.Fatalf("git fetch under GIT_ALLOW_PROTOCOL= failed for an unexpected reason (want a transport-denial error): %s", out)
+	if !strings.Contains(string(out), "transport 'file' not allowed") {
+		t.Fatalf("Git fetch failure = %q, want C-locale disabled file transport", out)
 	}
 }
 
