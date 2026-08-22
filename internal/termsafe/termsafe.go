@@ -344,8 +344,18 @@ const escapeFlushBytes = 32 << 10
 // times over is exactly the shape that turns that waste into a resource-
 // exhaustion cost paid once per record.
 func escapedFlushCapacity(inputBytes int) int {
-	if worst := inputBytes*6 + escapeHeadroom; worst < escapeFlushBytes+escapeHeadroom {
-		return worst
+	// Widened to int64 before multiplying: on a 32-bit build, int is 32 bits,
+	// and inputBytes*6 overflows above ~357,913,941 bytes (~341 MiB) — a size a
+	// repository-controlled string can reach on this exact input (the whole
+	// point of a flush-buffer sizing helper is that it runs on the largest
+	// thing the tool holds). A wrapped negative "worst" compares less than
+	// escapeFlushBytes+escapeHeadroom and gets returned as the capacity,
+	// and make([]byte, 0, negative) panics — turning oversized repository
+	// content into a crash on the one architecture where this arithmetic can
+	// wrap. int64(inputBytes)*6 cannot overflow for any inputBytes an int (even
+	// a 64-bit one) can hold.
+	if worst := int64(inputBytes)*6 + escapeHeadroom; worst < escapeFlushBytes+escapeHeadroom {
+		return int(worst)
 	}
 	return escapeFlushBytes + escapeHeadroom
 }

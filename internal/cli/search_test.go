@@ -1,11 +1,34 @@
 package cli
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
 	"github.com/entireio/entire-graph/internal/sem"
 )
+
+// TestReplaySearchPayloadFlushesATrailingWithheldLead reproduces the trail
+// finding on replaySearchPayload: JSONWriter.Write withholds a trailing 0xc2
+// (the lead byte of a two-byte UTF-8 sequence) whose continuation byte has
+// not arrived yet, on the reasonable assumption that a caller who splits its
+// stream across several Write calls will supply it next — and calls it out
+// as a caller obligation to call Close for a one-shot replay that will never
+// make a second call. A stored payload whose LAST byte is a lone 0xc2 (any
+// prior byte in the two-byte sequence being cut off there, not necessarily a
+// C1 control) is exactly that one-shot case, and without Close the byte was
+// silently dropped from the replay.
+func TestReplaySearchPayloadFlushesATrailingWithheldLead(t *testing.T) {
+	t.Parallel()
+	payload := []byte("{\"p\":\"evil\xc2")
+	var out bytes.Buffer
+	if err := replaySearchPayload(&out, payload); err != nil {
+		t.Fatalf("replaySearchPayload: %v", err)
+	}
+	if got, want := out.String(), string(payload); got != want {
+		t.Errorf("replaySearchPayload dropped the trailing withheld byte: got %q, want %q", got, want)
+	}
+}
 
 // A locator names a symbol but shows one line of it. Without the symbol's true extent the agent
 // cannot tell whether it is holding a 3-line helper or a shard of a 456-line function, and measured

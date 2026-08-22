@@ -274,6 +274,37 @@ func TestEscapedFlushCapacityIsBoundedByTheFlushLimit(t *testing.T) {
 	}
 }
 
+// TestEscapedFlushCapacityDoesNotOverflowOn32BitBuilds reproduces the trail
+// finding: inputBytes*6 in a native int overflows on a 32-bit build once
+// inputBytes passes roughly 357,913,941 (~341 MiB), which a repository-
+// controlled record can reach — this is exactly the largest thing the tool
+// holds, per this function's own doc. A wrapped-negative "worst" used to
+// compare less than escapeFlushBytes+escapeHeadroom and get returned as the
+// capacity, and make([]byte, 0, negative) panics. The multiplication is done
+// in int64 now, which cannot overflow for any inputBytes an int can hold, so
+// every size at or above the flush limit — including ones a 32-bit int*6
+// would wrap on — must still return exactly the capped bound.
+func TestEscapedFlushCapacityDoesNotOverflowOn32BitBuilds(t *testing.T) {
+	inputs := []int{
+		357_913_942, // smallest input where int32(inputBytes)*6 wraps negative
+		400_000_000, // comfortably past it
+		2_000_000_000,
+	}
+	for _, inputBytes := range inputs {
+		// Prove the fixture actually exercises the overflow this test is
+		// about: simulate the pre-fix arithmetic in a 32-bit int explicitly,
+		// independent of this test binary's native int width (GOARCH here is
+		// whatever the sandbox runs, not necessarily 32-bit).
+		if naive := int32(inputBytes)*6 + escapeHeadroom; naive >= 0 {
+			t.Fatalf("fixture input %d does not overflow a 32-bit int*6 (naive = %d); adjust the fixture", inputBytes, naive)
+		}
+		if got, want := escapedFlushCapacity(inputBytes), escapeFlushBytes+escapeHeadroom; got != want {
+			t.Errorf("escapedFlushCapacity(%d) = %d, want %d (a negative result here means the multiplication"+
+				" overflowed and make() would panic on a 32-bit build)", inputBytes, got, want)
+		}
+	}
+}
+
 // indexRawC1 reports the first C1 control still present as the code point itself,
 // in either form a repository can deliver one.
 func indexRawC1(value string) int {

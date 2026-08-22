@@ -352,8 +352,18 @@ func echoPresearchPayload(out interface{ Write([]byte) (int, error) }, path stri
 // could hold a raw ESC, and JSONWriter does not rewrite it — a C0 escape inside a
 // JSON string would be an escape JSON does not define, the same way \x7f is.
 func replaySearchPayload(out io.Writer, payload []byte) error {
-	_, err := termsafe.NewJSONWriter(out).Write(payload)
-	return err
+	writer := termsafe.NewJSONWriter(out)
+	if _, err := writer.Write(payload); err != nil {
+		return err
+	}
+	// This is the one-shot case JSONWriter's own doc calls out: a caller that
+	// does not chunk its stream must still call Close, because a payload whose
+	// LAST byte happens to be a bare 0xc2 (an incomplete two-byte UTF-8 lead,
+	// not necessarily a C1 sequence at all) is withheld by Write pending a
+	// continuation byte that this replay's single Write call will never
+	// supply. Skipping Close silently drops that trailing byte from the
+	// replayed payload.
+	return writer.Close()
 }
 
 // writeNdjsonSearch streams a payload as one record per line: a header, the blocks that are their own
