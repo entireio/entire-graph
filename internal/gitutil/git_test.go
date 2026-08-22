@@ -950,6 +950,53 @@ func TestGitObjectReadersUseRepoSubdirectoryPrefix(t *testing.T) {
 	}
 }
 
+// TestBlobSizeAtRevProbeSucceedsFromARepoSubdirectory is an adversarial check
+// against the trail finding claiming treeEntryMetadata's ls-tree, run with a
+// subdirectory `repo` as its cwd, re-applies repoTreePath's already-prefixed
+// treePath a second time (e.g. "scope/scope/file"). ls-tree's pathspec here
+// carries the `:(top,literal)` magic (treeMetadataLiteralPrefix), which
+// anchors a literal pathspec to the REPOSITORY ROOT regardless of the
+// process's cwd -- verified independently with a bare `git ls-tree` from a
+// subdirectory. If the claimed double-prefix bug were real, the probe would
+// silently return blobProbeUnknown for the second-level path below, and
+// ReadFileLimited would fall through to materializing the oversized blob
+// with `git show` -- exactly the memory-bound violation the finding warns
+// about. This asserts the PROBE succeeds (LimitedFileOversize with the exact
+// size, no content read) rather than merely that some result comes back.
+func TestBlobSizeAtRevProbeSucceedsFromARepoSubdirectory(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	git(t, repo, "config", "commit.gpgsign", "false")
+	if err := os.MkdirAll(filepath.Join(repo, "scope", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const ceiling = 1 << 10
+	oversized := strings.Repeat("x", ceiling+1)
+	if err := os.WriteFile(filepath.Join(repo, "scope", "big.txt"), []byte(oversized), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "scope", "nested", "big.txt"), []byte(oversized), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "subdirectory oversize fixture")
+	subdir := filepath.Join(repo, "scope")
+
+	for _, path := range []string{"big.txt", "nested/big.txt"} {
+		detailed, err := ReadFileLimited(t.Context(), subdir, "HEAD", path, ceiling)
+		if err != nil {
+			t.Fatalf("ReadFileLimited(%q): %v", path, err)
+		}
+		if detailed.Status != LimitedFileOversize || detailed.Bytes != ceiling+1 || detailed.Content != "" {
+			t.Fatalf("ReadFileLimited(subdir, HEAD, %q, %d) = %#v, want oversize status with %d bytes and"+
+				" no content read: a double-prefixed pathspec would miss the tree entry entirely and this"+
+				" falls back to materializing the whole oversized blob", path, ceiling, detailed, ceiling+1)
+		}
+	}
+}
+
 func TestBatchFileReaderRejectsLineUnsafePathsWithoutDesync(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows filenames cannot contain newlines or carriage returns")
