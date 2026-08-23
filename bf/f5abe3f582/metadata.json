@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "bff5abe3f582",
+  "strategy": "manual-commit",
+  "branch": "codex/pr-132-windows-fix",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "internal/sem/path_mount_guard.go",
+    "internal/sem/path_mount_guard_bsd.go",
+    "internal/sem/path_mount_guard_bsd_name.go",
+    "internal/sem/path_mount_guard_bsd_test.go",
+    "internal/sem/path_mount_guard_darwin_test.go",
+    "internal/sem/path_mount_guard_linux.go",
+    "internal/sem/path_mount_guard_openbsd.go",
+    "internal/sem/path_mount_guard_test.go",
+    "internal/sem/path_mount_guard_unsupported.go",
+    "internal/sem/path_mount_guard_windows.go",
+    "internal/sem/provider.go",
+    "internal/sem/sweep_open_other.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/bf/f5abe3f582/0/metadata.json",
+      "transcript": "/bf/f5abe3f582/0/full.jsonl",
+      "compact_transcript": "/bf/f5abe3f582/0/transcript.jsonl",
+      "content_hash": "/bf/f5abe3f582/0/content_hash.txt",
+      "prompt": "/bf/f5abe3f582/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 773112,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 51798784,
+    "output_tokens": 112924,
+    "api_call_count": 436
+  }
+}
