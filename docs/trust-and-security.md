@@ -20,6 +20,17 @@ other is installation.
   `commit`).
 - Bounded local Git history, for co-change relations (`FILE_CHANGES_WITH`) and
   change analysis. History never leaves the machine.
+- Structural Git metadata needed by those subprocesses. Before Git starts, the
+  provider walks the resolved administrative/common directories and recursive
+  alternate object stores from held handles, with fixed entry and
+  resolver-relative-path bounds, and rejects mount points, off-volume redirects,
+  and special files.
+  Git's own fsmonitor daemon socket is permitted because every provider Git
+  subprocess explicitly disables `core.fsmonitor`. Git configuration-derived
+  paths and commands, including `extensions.refStorage` locations, remain the
+  separate limitation recorded in `docs/parking-lot.md`. Adjacent setup helpers
+  reuse a repository-bound validation receipt only within the current operation;
+  validation results are not cached globally or persisted.
 - The full Git ignore stack, including nested `.gitignore` files,
   `.git/info/exclude`, per-worktree excludes, and `core.excludesFile`, plus
   `.graphignore` and any

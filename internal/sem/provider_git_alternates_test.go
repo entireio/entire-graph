@@ -107,3 +107,19 @@ func TestGitAlternatesBoundsFailClosed(t *testing.T) {
 		t.Fatal("oversized aggregate alternates metadata passed the pre-subprocess guard")
 	}
 }
+
+func TestGitAlternateResolvedPathAccountingExactBound(t *testing.T) {
+	base := t.TempDir()
+	directory := filepath.Join(base, "objects")
+	validation := gitAlternatesValidation{
+		resolver:          &sameVolumePathResolver{baseResolved: base},
+		resolvedPathBytes: maxGitMetadataTreePathBytes - len("objects") - 1,
+		seen:              make(map[string]struct{}),
+	}
+	if !validation.admitObjectDirectory(directory) {
+		t.Fatal("alternate root exactly filling the retained-path bound was refused")
+	}
+	if validation.admitObjectDirectory(filepath.Join(base, "next")) {
+		t.Fatal("alternate root above the retained-path bound was admitted")
+	}
+}

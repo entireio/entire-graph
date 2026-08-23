@@ -373,6 +373,19 @@ following bounds are enforced:
   retaining a deterministic prefix. Crossing either bound terminates Git and
   fails the listing explicitly rather than buffering attacker-sized output or
   retrying through another unbounded path.
+- **Git metadata validation cap** — before a production Git subprocess starts,
+  the resolved Git administrative directory, common directory, and every
+  recursively discovered alternate object store are walked from held directory
+  handles. The walk accepts at most 2,000,000 entries and 256 MiB of aggregate
+  metadata-path bytes relative to the held resolver root, so its bound is
+  independent of the checkout's absolute path prefix. It refuses mount points,
+  off-volume redirects, and special files, except for Git's own fsmonitor daemon
+  socket while fsmonitor is explicitly disabled for the subprocess; crossing
+  either bound fails closed and refuses the subprocess rather than validating an
+  incomplete metadata tree.
+  Immediately adjacent cache/HEAD/source setup helpers may reuse one
+  repository-bound validation receipt carried by their context; it is neither
+  global nor persisted beyond that operation setup.
 - **Listed-directory observation cap** — the git-directory exclusion pass
   retains at most 200,000 unique ancestor directories and 64 MiB of their path
   bytes. Crossing either cap fails the listing explicitly; it never continues

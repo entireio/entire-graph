@@ -2019,8 +2019,14 @@ const (
 	noTransportProtocolEnv = "GIT_ALLOW_PROTOCOL="
 	// Listing and object inspection are read-only. Disable optional lock and
 	// index-refresh writes even when repository configuration would request one.
-	noOptionalLocksEnv  = "GIT_OPTIONAL_LOCKS=0"
-	gitCommandWaitDelay = time.Second
+	noOptionalLocksEnv = "GIT_OPTIONAL_LOCKS=0"
+	// The metadata preflight permits Git's own fsmonitor daemon socket so an
+	// otherwise ordinary fsmonitor-enabled checkout remains usable. Pinning this
+	// command-scope setting means no provider Git process can connect to it.
+	gitConfigCountEnv          = "GIT_CONFIG_COUNT=1"
+	gitConfigFSMonitorKeyEnv   = "GIT_CONFIG_KEY_0=core.fsmonitor"
+	gitConfigFSMonitorValueEnv = "GIT_CONFIG_VALUE_0=false"
+	gitCommandWaitDelay        = time.Second
 )
 
 // newGitCmdWithCallerLocale builds the two git-grep subprocesses whose
@@ -2042,7 +2048,7 @@ func newGitCmdWithCallerLocale(ctx context.Context, dir string, args ...string) 
 	// environment is stripped before the fixed guards are appended: --repo must
 	// name the repository Git opens, rather than an inherited GIT_DIR or object
 	// store silently replacing it.
-	cmd.Env = append(sanitizedGitEnvironment(cmd.Environ()), rawGitObjectsEnv, noLazyFetchEnv, noTransportProtocolEnv, noOptionalLocksEnv)
+	cmd.Env = gitSubprocessEnvironment(cmd.Environ())
 	return cmd
 }
 
@@ -2090,6 +2096,19 @@ func sanitizedGitEnvironment(env []string) []string {
 	return clean
 }
 
+func gitSubprocessEnvironment(env []string) []string {
+	return append(
+		sanitizedGitEnvironment(env),
+		rawGitObjectsEnv,
+		noLazyFetchEnv,
+		noTransportProtocolEnv,
+		noOptionalLocksEnv,
+		gitConfigCountEnv,
+		gitConfigFSMonitorKeyEnv,
+		gitConfigFSMonitorValueEnv,
+	)
+}
+
 // newCmd builds the exec.Cmd used by subprocesses whose diagnostics must be
 // stable. It pins the subprocess locale to C (LC_ALL=C overrides LANG and any
 // LC_*; LANG=C is set as a belt-and-braces default) so git's stderr messages
@@ -2121,7 +2140,7 @@ func newCmd(ctx context.Context, dir, name string, args ...string) *exec.Cmd {
 	// os.Environ would leave child processes with the parent's stale PWD.
 	env := cmd.Environ()
 	if name == "git" {
-		env = append(sanitizedGitEnvironment(env), rawGitObjectsEnv, noLazyFetchEnv, noTransportProtocolEnv, noOptionalLocksEnv)
+		env = gitSubprocessEnvironment(env)
 	}
 	cmd.Env = append(env, "LC_ALL=C", "LANG=C")
 	return cmd

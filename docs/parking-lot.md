@@ -8,7 +8,8 @@ fix does not reduce functionality or performance.
 
 The repository metadata validator covers structural Git metadata, but not paths
 or commands supplied by Git configuration. Examples include `include.path`,
-`core.worktree`, `core.excludesFile`, `core.fsmonitor`, and
+`core.worktree`, `core.excludesFile`, `extensions.refStorage` (including its
+optional relocated reftable path), `core.fsmonitor`, and
 `core.alternateRefsCommand`. In a repository with hostile configuration, Git
 could therefore read an external, off-volume, or UNC path, or invoke a configured
 command, even after the structural metadata checks pass.

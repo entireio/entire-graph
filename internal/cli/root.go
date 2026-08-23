@@ -361,14 +361,19 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
 	useCache := !flags.DisableCache && !flags.Worktree && cacheDir != ""
 	var commit, tree string
-	if useCache && sem.EnsureGitMetadataSafeForSubprocess(repo) != nil {
-		// Cache probing is optional and runs before provider construction. Unsafe
-		// metadata disables the probe; the provider below selects its warned,
-		// filesystem-only fallback without starting Git.
-		useCache = false
+	cacheContext := ctx
+	if useCache {
+		var validationErr error
+		cacheContext, validationErr = sem.WithGitMetadataValidationForSetup(ctx, repo)
+		if validationErr != nil {
+			// Cache probing is optional and runs before provider construction. Unsafe
+			// metadata disables the probe; the provider below selects its warned,
+			// filesystem-only fallback without starting Git.
+			useCache = false
+		}
 	}
 	if useCache {
-		if c, t, headErr := gitutil.HeadCommitAndTree(ctx, repo); headErr == nil && c != "" && t != "" {
+		if c, t, headErr := gitutil.HeadCommitAndTree(cacheContext, repo); headErr == nil && c != "" && t != "" {
 			commit = c
 			tree = t
 		} else {
@@ -381,7 +386,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	}
 	var recordsCache *sem.ProviderRecordsCacheTransaction
 	if useCache {
-		recordsCache, err = sem.BeginProviderRecordsCache(ctx, repo, opts.Version, commit, tree, cacheMode, cacheDir, options)
+		recordsCache, err = sem.BeginProviderRecordsCache(cacheContext, repo, opts.Version, commit, tree, cacheMode, cacheDir, options)
 		if err != nil {
 			// Cache setup is optional. The uncached stream below will surface any
 			// policy-input error that also prevents a correct build.

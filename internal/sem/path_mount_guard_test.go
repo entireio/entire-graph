@@ -73,6 +73,33 @@ func TestGitMetadataGuardTreatsMissingKnownMountAsUnsafe(t *testing.T) {
 	}
 }
 
+func TestGitMetadataTreeGuardChecksMountBeforeChildMetadataLookup(t *testing.T) {
+	repo := t.TempDir()
+	gitDir := filepath.Join(repo, ".git")
+	for _, dir := range []string{
+		filepath.Join(gitDir, "objects"),
+		filepath.Join(gitDir, "refs", "nested"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := newSameVolumePathResolver(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resolver.Close()
+	nested := resolver.anchor.mapBase(filepath.Join(gitDir, "refs", "nested"))
+	resolver.mounts.addMountPoint(nested)
+
+	if gitMetadataDirectoryPathsSafeWithResolver(resolver, gitDir) {
+		t.Fatal("known nested mount passed the metadata-tree guard")
+	}
+}
+
 func TestPathMountGuardTrustsSelectedMountOnly(t *testing.T) {
 	guard := makePathMountGuard(
 		string(filepath.Separator),

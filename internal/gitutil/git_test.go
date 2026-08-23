@@ -2153,6 +2153,7 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 		t.Fatalf("stable-locale command WaitDelay = %v, want %v", cmd.WaitDelay, gitCommandWaitDelay)
 	}
 	lcAll, lang, pwd, noReplace, noLazyFetch, allowProtocol, optionalLocks := "", "", "", "", "", "unset", ""
+	configCount, configKey, configValue := "", "", ""
 	for _, kv := range cmd.Env {
 		if v, ok := strings.CutPrefix(kv, "LC_ALL="); ok {
 			lcAll = v
@@ -2175,6 +2176,15 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 		if v, ok := strings.CutPrefix(kv, "GIT_OPTIONAL_LOCKS="); ok {
 			optionalLocks = v
 		}
+		if v, ok := strings.CutPrefix(kv, "GIT_CONFIG_COUNT="); ok {
+			configCount = v
+		}
+		if v, ok := strings.CutPrefix(kv, "GIT_CONFIG_KEY_0="); ok {
+			configKey = v
+		}
+		if v, ok := strings.CutPrefix(kv, "GIT_CONFIG_VALUE_0="); ok {
+			configValue = v
+		}
 	}
 	if lcAll != "C" || lang != "C" {
 		t.Fatalf("effective subprocess locale LC_ALL=%q LANG=%q, want both \"C\"", lcAll, lang)
@@ -2195,12 +2205,16 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	if optionalLocks != "0" {
 		t.Fatalf("effective GIT_OPTIONAL_LOCKS=%q, want 0 for read-only provider subprocesses", optionalLocks)
 	}
+	if configCount != "1" || configKey != "core.fsmonitor" || configValue != "false" {
+		t.Fatalf("effective Git command config = count %q, key %q, value %q; want core.fsmonitor=false", configCount, configKey, configValue)
+	}
 
 	grepCmd := newGitCmdWithCallerLocale(context.Background(), dir, "version")
 	if grepCmd.WaitDelay != gitCommandWaitDelay || grepCmd.WaitDelay == 0 {
 		t.Fatalf("caller-locale command WaitDelay = %v, want %v", grepCmd.WaitDelay, gitCommandWaitDelay)
 	}
 	lcAll, pwd, noReplace, noLazyFetch, allowProtocol, optionalLocks = "", "", "", "", "unset", ""
+	configCount, configKey, configValue = "", "", ""
 	for _, kv := range grepCmd.Env {
 		if v, ok := strings.CutPrefix(kv, "LC_ALL="); ok {
 			lcAll = v
@@ -2220,6 +2234,15 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 		if v, ok := strings.CutPrefix(kv, "GIT_OPTIONAL_LOCKS="); ok {
 			optionalLocks = v
 		}
+		if v, ok := strings.CutPrefix(kv, "GIT_CONFIG_COUNT="); ok {
+			configCount = v
+		}
+		if v, ok := strings.CutPrefix(kv, "GIT_CONFIG_KEY_0="); ok {
+			configKey = v
+		}
+		if v, ok := strings.CutPrefix(kv, "GIT_CONFIG_VALUE_0="); ok {
+			configValue = v
+		}
 	}
 	if lcAll != "fr_FR.UTF-8" {
 		t.Fatalf("caller-locale git command LC_ALL=%q, want inherited locale", lcAll)
@@ -2238,6 +2261,9 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	}
 	if optionalLocks != "0" {
 		t.Fatalf("caller-locale git command GIT_OPTIONAL_LOCKS=%q, want 0", optionalLocks)
+	}
+	if configCount != "1" || configKey != "core.fsmonitor" || configValue != "false" {
+		t.Fatalf("caller-locale Git command config = count %q, key %q, value %q; want core.fsmonitor=false", configCount, configKey, configValue)
 	}
 }
 
@@ -2261,11 +2287,26 @@ func TestGitCommandsDiscardInheritedRepositorySelection(t *testing.T) {
 		t.Setenv(key, value)
 	}
 
+	controlled := map[string]string{
+		"GIT_CONFIG_COUNT":   "1",
+		"GIT_CONFIG_KEY_0":   "core.fsmonitor",
+		"GIT_CONFIG_VALUE_0": "false",
+	}
 	assertSanitized := func(name string, cmd *exec.Cmd) {
 		t.Helper()
+		actual := make(map[string]string)
 		for _, entry := range cmd.Env {
-			key, _, _ := strings.Cut(entry, "=")
-			if _, found := inherited[key]; found {
+			key, value, _ := strings.Cut(entry, "=")
+			actual[key] = value
+		}
+		for key := range inherited {
+			if want, replaced := controlled[key]; replaced {
+				if got := actual[key]; got != want {
+					t.Fatalf("%s controlled %s=%q, want %q", name, key, got, want)
+				}
+				continue
+			}
+			if _, found := actual[key]; found {
 				t.Fatalf("%s inherited repository-selection variable %q", name, key)
 			}
 		}

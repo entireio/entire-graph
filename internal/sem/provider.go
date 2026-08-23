@@ -1430,7 +1430,8 @@ func prepareSource(ctx context.Context, repo string, options ProviderSnapshotOpt
 	commit := ""
 	tree := ""
 	var headErr error
-	if gitMetadataSafeForSubprocess(absRepo) {
+	ctx, metadataSafe := newGitMetadataValidation(ctx, absRepo)
+	if metadataSafe {
 		key = repoKey(ctx, absRepo)
 		commit, tree, headErr = resolveCommittedHEAD(ctx, absRepo)
 	} else {
@@ -1523,7 +1524,8 @@ func resolveMaxParseBytes(requested int) int {
 // HEAD expression, preventing mixed commit/tree provenance if HEAD advances
 // between subprocesses.
 func resolveCommittedHEAD(ctx context.Context, repo string) (string, string, error) {
-	if err := EnsureGitMetadataSafeForSubprocess(repo); err != nil {
+	if !gitMetadataSafeForSubprocessContext(ctx, repo) {
+		err := fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
 		return "", "", err
 	}
 	commit, tree, err := gitutil.HeadCommitAndTree(ctx, repo)
@@ -11676,10 +11678,11 @@ func safeStatThroughSymlinks(base, path string) (os.FileInfo, error) {
 // traversal anchor and os.Root instead of rediscovering the same volume for
 // every path.
 type sameVolumePathResolver struct {
-	baseAbs string
-	anchor  pathTraversalAnchor
-	root    *os.Root
-	mounts  pathMountGuard
+	baseAbs      string
+	baseResolved string
+	anchor       pathTraversalAnchor
+	root         *os.Root
+	mounts       pathMountGuard
 }
 
 func newSameVolumePathResolver(base string) (*sameVolumePathResolver, error) {
@@ -11700,7 +11703,7 @@ func newSameVolumePathResolver(base string) (*sameVolumePathResolver, error) {
 		_ = root.Close()
 		return nil, err
 	}
-	return &sameVolumePathResolver{baseAbs: baseAbs, anchor: anchor, root: root, mounts: mounts}, nil
+	return &sameVolumePathResolver{baseAbs: baseAbs, baseResolved: resolvedBase, anchor: anchor, root: root, mounts: mounts}, nil
 }
 
 func (r *sameVolumePathResolver) Close() error {
@@ -11802,6 +11805,23 @@ func (r *sameVolumePathResolver) open(path string) (*os.File, string, error) {
 		return nil, "", err
 	}
 	return file, resolvedPath, nil
+}
+
+// beforeLookup applies the mount-table guard to one absolute or base-relative
+// path before a caller performs its own descriptor-relative metadata lookup.
+func (r *sameVolumePathResolver) beforeLookup(path string) error {
+	if !filepath.IsAbs(path) {
+		path = trimTrailingPathSeparators(r.baseAbs) + string(filepath.Separator) + path
+	}
+	components, ok := r.anchor.components(path)
+	if !ok {
+		return errSymlinkChainOffVolume
+	}
+	rel := "."
+	if len(components) > 0 {
+		rel = filepath.Join(components...)
+	}
+	return r.mounts.beforeLookup(rel)
 }
 
 // openSameVolumePath preserves the one-shot helper used outside metadata
@@ -13148,14 +13168,14 @@ func trackedDirSetFromFiles(files []string, maxDirectories, maxBytes int) (map[s
 }
 
 // gitMetadataSafeForSubprocess verifies Git's repository-discovery path and the
-// fixed metadata entries its read-only commands can open before a production
-// subprocess is started. Git's transport protocols are disabled separately,
-// but .git gitfiles, junctions, commondir, object/ref stores and index/config
-// files are filesystem paths; on Windows an attacker-named UNC redirect can
-// otherwise dial SMB before Git has parsed an ordinary subcommand argument.
-// The rooted resolver rejects every cross-volume or cross-filesystem hop before
-// asking the kernel to follow it. Configuration values are not filesystem
-// entries themselves and are outside this structural path validator.
+// complete structural metadata trees its read-only commands can open before a
+// production subprocess is started. Git's transport protocols are disabled
+// separately, but .git gitfiles, junctions, commondir, object/ref stores and
+// index/config files are filesystem paths; on Windows an attacker-named UNC
+// redirect can otherwise dial SMB before Git has parsed an ordinary subcommand
+// argument. The rooted resolver rejects every cross-volume or cross-filesystem
+// hop before asking the kernel to follow it. Configuration values are not
+// filesystem entries themselves and are outside this structural path validator.
 func gitMetadataSafeForSubprocess(repo string) bool {
 	repoAbs, err := filepath.Abs(repo)
 	if err != nil {
@@ -13245,13 +13265,15 @@ func gitMetadataSafeForSubprocess(repo string) bool {
 				return errors.Is(targetErr, fs.ErrNotExist)
 			}
 			targetInfo, targetStatErr := targetHandle.Stat()
-			_ = targetHandle.Close()
 			if targetStatErr != nil {
+				_ = targetHandle.Close()
 				return false
 			}
 			if !targetInfo.IsDir() {
+				_ = targetHandle.Close()
 				return true
 			}
+			_ = targetHandle.Close()
 			return gitMetadataDirectoryPathsSafeWithResolver(resolver, resolvedTarget)
 		}
 		if !isMissingPathError(openErr) {
@@ -13356,7 +13378,6 @@ func gitMetadataDirectoryPathsSafeWithResolver(resolver *sameVolumePathResolver,
 	}
 	objectsPath := filepath.Join(common, "objects")
 	reftablePath := filepath.Join(common, "reftable")
-	tablesListPath := filepath.Join(reftablePath, "tables.list")
 	resolvedObjects := ""
 	entries := []string{
 		filepath.Join(gitDir, "HEAD"),
@@ -13365,9 +13386,11 @@ func gitMetadataDirectoryPathsSafeWithResolver(resolver *sameVolumePathResolver,
 		objectsPath,
 		filepath.Join(common, "refs"),
 		filepath.Join(common, "packed-refs"),
+		filepath.Join(common, "shallow"),
 		reftablePath,
 		filepath.Join(common, "config"),
 		filepath.Join(common, "info", "exclude"),
+		filepath.Join(common, "info", "grafts"),
 	}
 	for index := 0; index < len(entries); index++ {
 		entry := entries[index]
@@ -13386,31 +13409,6 @@ func gitMetadataDirectoryPathsSafeWithResolver(resolver *sameVolumePathResolver,
 			if entry == objectsPath && info.IsDir() {
 				resolvedObjects = resolved
 			}
-			if entry == reftablePath && info.IsDir() {
-				// Git follows this fixed manifest after opening a reftable store.
-				// Append it only for reftable repositories so the common loose-ref
-				// path does not pay for another missing-path traversal.
-				entries = append(entries, tablesListPath)
-			}
-			if entry == tablesListPath && regular {
-				if info.Size() < 0 || info.Size() > maxGitReftableListBytes {
-					_ = opened.Close()
-					return false
-				}
-				content, whole, ok := readGitPointerWindowFromOpened(opened, maxGitReftableListBytes, info.Size())
-				if !ok || !whole {
-					_ = opened.Close()
-					return false
-				}
-				tableNames, ok := parseGitReftableTableNames(content, maxGitReftableEntries)
-				if !ok {
-					_ = opened.Close()
-					return false
-				}
-				for _, name := range tableNames {
-					entries = append(entries, filepath.Join(reftablePath, filepath.FromSlash(name)))
-				}
-			}
 			_ = opened.Close()
 			continue
 		}
@@ -13418,18 +13416,454 @@ func gitMetadataDirectoryPathsSafeWithResolver(resolver *sameVolumePathResolver,
 			return false
 		}
 	}
-	if resolvedObjects == "" {
-		return true
+	objectStores := make([]string, 0)
+	if resolvedObjects != "" {
+		var safe bool
+		objectStores, safe = gitAlternateObjectDirectoriesWithResolver(resolver, resolvedObjects)
+		if !safe {
+			return false
+		}
 	}
-	return gitAlternatesPathsSafeWithResolver(resolver, resolvedObjects)
+	// Fixed path checks are not enough for Git's derived metadata reads. HEAD
+	// can name a recursive symbolic ref; `log --all` enumerates every loose
+	// ref; reflog syntax reads logs/<ref>; split indexes name sharedindex.<oid>;
+	// and object ids select loose-object, pack, commit-graph, and MIDX children.
+	// Validate the complete administrative trees (plus every recursive
+	// alternate object store) so all of those dynamic paths inherit the same
+	// mount, volume, redirect, and special-file policy as the fixed entries.
+	trees := []string{gitDir, common}
+	trees = append(trees, objectStores...)
+	return gitMetadataTreesSafeWithResolver(resolver, trees)
+}
+
+const (
+	// A repository with more structural metadata than this is refused before
+	// Git starts. The ceilings match the largest raw discovery surfaces in this
+	// provider: high enough for large unpacked object stores, but fixed so a
+	// hostile administrative tree cannot turn validation into an unbounded walk.
+	maxGitMetadataTreeEntries   = 2_000_000
+	maxGitMetadataTreePathBytes = 256 << 20
+)
+
+type gitMetadataTreeValidation struct {
+	resolver        *sameVolumePathResolver
+	entries         int
+	pathBytes       int
+	reftableBytes   int64
+	reftableEntries int
+	seenDirs        map[string]gitMetadataTreeRole
+	seenReftables   map[string]struct{}
+	adminRoots      map[string]struct{}
+	pendingSockets  map[string]struct{}
+}
+
+type gitMetadataEntryKind uint8
+
+const (
+	gitMetadataEntrySpecial gitMetadataEntryKind = iota
+	gitMetadataEntryRegular
+	gitMetadataEntryDirectory
+	gitMetadataEntryRedirect
+	gitMetadataEntrySocket
+)
+
+type gitMetadataDirectoryEntry struct {
+	name string
+	kind gitMetadataEntryKind
+}
+
+type gitMetadataTreeDirectory struct {
+	path          string
+	reftable      bool
+	adminRoot     bool
+	commonRoot    bool
+	worktreesRoot bool
+}
+
+type gitMetadataTreeRole uint8
+
+const (
+	gitMetadataTreeScanned gitMetadataTreeRole = 1 << iota
+	gitMetadataTreeAdminRoot
+	gitMetadataTreeCommonRoot
+	gitMetadataTreeWorktreesRoot
+)
+
+var errGitMetadataTreeBound = errors.New("Git metadata tree exceeded its structural validation bound")
+
+// gitMetadataTreesSafeWithResolver walks complete Git administrative trees
+// through the rooted resolver. Readdirnames enumerates from the already-opened
+// directory handle without an implicit Lstat; each name is then inspected by
+// the resolver, which runs the mount preflight before its first metadata lookup.
+// Special files are rejected without opening, so a writerless FIFO cannot park
+// the validator. Directory redirects that remain on the local filesystem are
+// followed and scanned, with canonical-path deduplication to bound cycles.
+func gitMetadataTreesSafeWithResolver(resolver *sameVolumePathResolver, roots []string) bool {
+	validation := gitMetadataTreeValidation{
+		resolver:       resolver,
+		seenDirs:       make(map[string]gitMetadataTreeRole),
+		seenReftables:  make(map[string]struct{}),
+		adminRoots:     make(map[string]struct{}),
+		pendingSockets: make(map[string]struct{}),
+	}
+	queue := make([]gitMetadataTreeDirectory, 0, len(roots))
+	queuedRoots := make(map[string]int, len(roots))
+	for index, root := range roots {
+		relative, ok := validation.relativePath(root)
+		if !ok {
+			return false
+		}
+		candidate := gitMetadataTreeDirectory{
+			path:       relative,
+			adminRoot:  index < 2,
+			commonRoot: index == 1,
+		}
+		if existing, duplicate := queuedRoots[relative]; duplicate {
+			queue[existing].adminRoot = queue[existing].adminRoot || candidate.adminRoot
+			queue[existing].commonRoot = queue[existing].commonRoot || candidate.commonRoot
+			continue
+		}
+		if !validation.admitRetainedPath(relative) {
+			return false
+		}
+		queuedRoots[relative] = len(queue)
+		queue = append(queue, candidate)
+	}
+	for cursor := 0; cursor < len(queue); cursor++ {
+		current := queue[cursor]
+		opened, resolved, err := resolver.open(filepath.Join(resolver.baseResolved, current.path))
+		if err != nil {
+			return false
+		}
+		info, err := opened.Stat()
+		if err != nil || !info.IsDir() {
+			_ = opened.Close()
+			return false
+		}
+		resolvedKey, ok := validation.relativePath(resolved)
+		if !ok {
+			_ = opened.Close()
+			return false
+		}
+		if current.adminRoot {
+			validation.adminRoots[resolvedKey] = struct{}{}
+		}
+		if current.reftable {
+			if _, checked := validation.seenReftables[resolvedKey]; !checked {
+				if !validation.reftableStackSafe(resolved) {
+					_ = opened.Close()
+					return false
+				}
+				validation.seenReftables[resolvedKey] = struct{}{}
+			}
+		}
+		role := gitMetadataTreeScanned
+		if current.adminRoot {
+			role |= gitMetadataTreeAdminRoot
+		}
+		if current.commonRoot {
+			role |= gitMetadataTreeCommonRoot
+		}
+		if current.worktreesRoot {
+			role |= gitMetadataTreeWorktreesRoot
+		}
+		seenRole := validation.seenDirs[resolvedKey]
+		if seenRole&role == role {
+			_ = opened.Close()
+			continue
+		}
+		validation.seenDirs[resolvedKey] = seenRole | role
+
+		for {
+			entries, readErr := readGitMetadataDirectory(opened, resolved, resolver, 256, validation.admit)
+			for _, entry := range entries {
+				child := filepath.Join(resolved, entry.name)
+				childKey, keyOK := validation.relativePath(child)
+				if !keyOK {
+					_ = opened.Close()
+					return false
+				}
+				if entry.kind != gitMetadataEntryRedirect {
+					switch entry.kind {
+					case gitMetadataEntryRegular:
+						continue
+					case gitMetadataEntrySocket:
+						// Git's built-in fsmonitor daemon owns this one socket.
+						// Every subprocess explicitly disables core.fsmonitor, so it
+						// cannot connect while the metadata preflight permits it.
+						if strings.EqualFold(entry.name, "fsmonitor--daemon.ipc") {
+							validation.pendingSockets[resolvedKey] = struct{}{}
+							continue
+						}
+						_ = opened.Close()
+						return false
+					case gitMetadataEntryDirectory:
+						reftable := false
+						if current.adminRoot {
+							var nameSafe bool
+							reftable, nameSafe = validation.matchesGitDirectoryName(resolved, child, entry.name, "reftable")
+							if !nameSafe {
+								_ = opened.Close()
+								return false
+							}
+						}
+						worktreesRoot := false
+						if current.commonRoot {
+							var nameSafe bool
+							worktreesRoot, nameSafe = validation.matchesGitDirectoryName(resolved, child, entry.name, "worktrees")
+							if !nameSafe {
+								_ = opened.Close()
+								return false
+							}
+						}
+						queue = append(queue, gitMetadataTreeDirectory{
+							path:          childKey,
+							reftable:      reftable,
+							adminRoot:     current.worktreesRoot,
+							worktreesRoot: worktreesRoot,
+						})
+						continue
+					default:
+						// Lstat-like inspection cannot block on a FIFO/device;
+						// reject it without opening it at all.
+						_ = opened.Close()
+						return false
+					}
+				}
+
+				// Redirects need the full rooted walk so every hop is checked and
+				// a safe same-volume directory target can itself be scanned.
+				childFile, childResolved, openErr := resolver.open(child)
+				if openErr != nil {
+					// An entry removed between ReadDir and Open is absent when Git
+					// starts too. Redirect, permission, mount, and type failures are
+					// uncertainty and therefore fail closed.
+					if isMissingPathError(openErr) {
+						continue
+					}
+					_ = opened.Close()
+					return false
+				}
+				childInfo, statErr := childFile.Stat()
+				if statErr != nil {
+					_ = childFile.Close()
+					_ = opened.Close()
+					return false
+				}
+				regular, regularErr := openedFileIsRegular(childFile, childInfo)
+				_ = childFile.Close()
+				if regularErr != nil {
+					_ = opened.Close()
+					return false
+				}
+				switch {
+				case regular:
+					continue
+				case childInfo.IsDir():
+					childResolvedKey, keyOK := validation.relativePath(childResolved)
+					if !keyOK {
+						_ = opened.Close()
+						return false
+					}
+					reftable := false
+					if current.adminRoot {
+						var nameSafe bool
+						reftable, nameSafe = validation.matchesGitDirectoryNameWithInfo(resolved, entry.name, "reftable", childInfo)
+						if !nameSafe {
+							_ = opened.Close()
+							return false
+						}
+					}
+					worktreesRoot := false
+					if current.commonRoot {
+						var nameSafe bool
+						worktreesRoot, nameSafe = validation.matchesGitDirectoryNameWithInfo(resolved, entry.name, "worktrees", childInfo)
+						if !nameSafe {
+							_ = opened.Close()
+							return false
+						}
+					}
+					if !validation.admitRetainedPath(childResolvedKey) {
+						_ = opened.Close()
+						return false
+					}
+					queue = append(queue, gitMetadataTreeDirectory{
+						path:          childResolvedKey,
+						reftable:      reftable,
+						adminRoot:     current.worktreesRoot,
+						worktreesRoot: worktreesRoot,
+					})
+				default:
+					// Git can block on FIFOs/devices, and Windows reparse data
+					// must not be treated as an ordinary disk file.
+					_ = opened.Close()
+					return false
+				}
+			}
+			if readErr == nil {
+				continue
+			}
+			_ = opened.Close()
+			if !errors.Is(readErr, io.EOF) && !isMissingPathError(readErr) {
+				return false
+			}
+			break
+		}
+	}
+	for directory := range validation.pendingSockets {
+		if _, allowed := validation.adminRoots[directory]; !allowed {
+			return false
+		}
+	}
+	return true
+}
+
+func (v *gitMetadataTreeValidation) matchesGitDirectoryName(parent, child, listed, expected string) (bool, bool) {
+	if listed == expected {
+		return true, true
+	}
+	if !strings.EqualFold(listed, expected) {
+		return false, true
+	}
+	opened, _, err := v.resolver.open(child)
+	if err != nil {
+		return false, false
+	}
+	info, statErr := opened.Stat()
+	_ = opened.Close()
+	if statErr != nil || !info.IsDir() {
+		return false, false
+	}
+	return v.matchesGitDirectoryNameWithInfo(parent, listed, expected, info)
+}
+
+func (v *gitMetadataTreeValidation) matchesGitDirectoryNameWithInfo(parent, listed, expected string, childInfo os.FileInfo) (bool, bool) {
+	if listed == expected {
+		return true, true
+	}
+	if !strings.EqualFold(listed, expected) {
+		return false, true
+	}
+	opened, _, err := v.resolver.open(filepath.Join(parent, expected))
+	if err != nil {
+		return false, isMissingPathError(err)
+	}
+	info, statErr := opened.Stat()
+	_ = opened.Close()
+	if statErr != nil {
+		return false, false
+	}
+	return info.IsDir() && os.SameFile(info, childInfo), true
+}
+
+// reftableStackSafe validates one stack's path-bearing tables.list. Unlike
+// loose refnames, Git's reftable parser accepts raw names containing `..` and
+// joins them onto the stack directory, so walking the directory tree alone does
+// not reveal every file Git can open. The validation budget is aggregate across
+// the common stack and all linked-worktree stacks reached by the metadata walk.
+func (v *gitMetadataTreeValidation) reftableStackSafe(directory string) bool {
+	manifest := filepath.Join(directory, "tables.list")
+	opened, _, err := v.resolver.open(manifest)
+	if err != nil {
+		return isMissingPathError(err)
+	}
+	defer opened.Close()
+	info, err := opened.Stat()
+	if err != nil {
+		return false
+	}
+	regular, err := openedFileIsRegular(opened, info)
+	if err != nil {
+		return false
+	}
+	if !regular {
+		// Git's fopen fails locally on a directory. A FIFO/device can block and
+		// must be rejected before Git opens it.
+		return info.IsDir()
+	}
+	if info.Size() < 0 || info.Size() > maxGitReftableListBytes ||
+		info.Size() > maxGitReftableAggregateBytes-v.reftableBytes {
+		return false
+	}
+	content, whole, ok := readGitPointerWindowFromOpened(opened, maxGitReftableListBytes, info.Size())
+	if !ok || !whole {
+		return false
+	}
+	remainingEntries := maxGitReftableAggregateEntries - v.reftableEntries
+	if remainingEntries < 0 {
+		return false
+	}
+	names, ok := parseGitReftableTableNames(content, min(maxGitReftableEntries, remainingEntries))
+	if !ok {
+		return false
+	}
+	v.reftableBytes += info.Size()
+	v.reftableEntries += len(names)
+	for _, name := range names {
+		table, _, openErr := v.resolver.open(filepath.Join(directory, filepath.FromSlash(name)))
+		if openErr != nil {
+			if isMissingPathError(openErr) {
+				continue
+			}
+			return false
+		}
+		tableInfo, statErr := table.Stat()
+		if statErr != nil {
+			_ = table.Close()
+			return false
+		}
+		tableRegular, regularErr := openedFileIsRegular(table, tableInfo)
+		_ = table.Close()
+		if regularErr != nil || (!tableRegular && !tableInfo.IsDir()) {
+			return false
+		}
+	}
+	return true
+}
+
+func (v *gitMetadataTreeValidation) relativePath(path string) (string, bool) {
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(v.resolver.baseResolved, path)
+	}
+	relative, err := filepath.Rel(v.resolver.baseResolved, path)
+	if err != nil || filepath.IsAbs(relative) {
+		return "", false
+	}
+	return filepath.Clean(relative), true
+}
+
+func (v *gitMetadataTreeValidation) admit(path string) bool {
+	if v.entries >= maxGitMetadataTreeEntries {
+		return false
+	}
+	relative, ok := v.relativePath(path)
+	if !ok {
+		return false
+	}
+	if !v.admitRetainedPath(relative) {
+		return false
+	}
+	v.entries++
+	return true
+}
+
+func (v *gitMetadataTreeValidation) admitRetainedPath(relative string) bool {
+	pathBytes := len(relative) + 1
+	if pathBytes > maxGitMetadataTreePathBytes-v.pathBytes {
+		return false
+	}
+	v.pathBytes += pathBytes
+	return true
 }
 
 const (
 	// Reftable stacks are normally compacted to a handful of files. These
 	// ceilings keep hostile manifests bounded while leaving ample headroom for
 	// repositories whose compaction has fallen behind.
-	maxGitReftableListBytes = 1 << 20
-	maxGitReftableEntries   = 4096
+	maxGitReftableListBytes        = 1 << 20
+	maxGitReftableEntries          = 4096
+	maxGitReftableAggregateBytes   = 16 << 20
+	maxGitReftableAggregateEntries = 65_536
 )
 
 func parseGitReftableTableNames(content []byte, maxEntries int) ([]string, bool) {
@@ -13461,10 +13895,12 @@ const (
 )
 
 type gitAlternatesValidation struct {
-	resolver       *sameVolumePathResolver
-	remainingBytes int64
-	remainingPaths int
-	seen           map[string]struct{}
+	resolver          *sameVolumePathResolver
+	remainingBytes    int64
+	remainingPaths    int
+	resolvedPathBytes int
+	seen              map[string]struct{}
+	objectDirs        []string
 }
 
 // gitAlternatesPathsSafe validates the path-bearing contents Git reads from
@@ -13481,16 +13917,30 @@ func gitAlternatesPathsSafe(repoRoot, objectsDir string) bool {
 }
 
 func gitAlternatesPathsSafeWithResolver(resolver *sameVolumePathResolver, objectsDir string) bool {
+	_, safe := gitAlternateObjectDirectoriesWithResolver(resolver, objectsDir)
+	return safe
+}
+
+// gitAlternateObjectDirectoriesWithResolver returns the object-store roots
+// Git can reach through its bounded recursive alternates chain. The caller
+// uses those roots for complete structural validation after the path-bearing
+// alternates files themselves have been read safely here.
+func gitAlternateObjectDirectoriesWithResolver(resolver *sameVolumePathResolver, objectsDir string) ([]string, bool) {
 	validation := gitAlternatesValidation{
 		resolver:       resolver,
 		remainingBytes: maxGitAlternatesAggregateBytes,
 		remainingPaths: maxGitAlternateEntries,
 		seen:           make(map[string]struct{}),
 	}
-	validation.seen[objectsDir] = struct{}{}
+	if !validation.admitObjectDirectory(objectsDir) {
+		return nil, false
+	}
 	// Git reads the primary object's alternates before entering its recursive
 	// depth counter: the first alternate is depth 0 and the sixth is depth 5.
-	return validation.validate(objectsDir, -1)
+	if !validation.validate(objectsDir, -1) {
+		return nil, false
+	}
+	return validation.objectDirs, true
 }
 
 func (v *gitAlternatesValidation) validate(objectsDir string, depth int) bool {
@@ -13547,15 +13997,54 @@ func (v *gitAlternatesValidation) validate(objectsDir string, depth int) bool {
 		if !alternateInfo.IsDir() {
 			continue
 		}
-		if _, duplicate := v.seen[resolved]; duplicate {
+		// Git resolves every path in the terminal store's alternates file, but
+		// refuses to add those targets as object stores once the recursion depth
+		// is exhausted. Mirror that split: resolution still closes UNC/mount
+		// escapes, while retention, sweeping, and recursion stop here.
+		if depth >= maxGitAlternateDepth {
 			continue
 		}
-		v.seen[resolved] = struct{}{}
-		if depth < maxGitAlternateDepth && !v.validate(resolved, depth+1) {
+		resolvedKey, ok := v.objectDirectoryKey(resolved)
+		if !ok {
+			return false
+		}
+		if _, duplicate := v.seen[resolvedKey]; duplicate {
+			continue
+		}
+		if !v.admitObjectDirectory(resolved) {
+			return false
+		}
+		if !v.validate(resolved, depth+1) {
 			return false
 		}
 	}
 	return true
+}
+
+func (v *gitAlternatesValidation) admitObjectDirectory(directory string) bool {
+	relative, ok := v.objectDirectoryKey(directory)
+	if !ok {
+		return false
+	}
+	pathBytes := len(relative) + 1
+	if pathBytes > maxGitMetadataTreePathBytes-v.resolvedPathBytes {
+		return false
+	}
+	v.resolvedPathBytes += pathBytes
+	v.seen[relative] = struct{}{}
+	v.objectDirs = append(v.objectDirs, relative)
+	return true
+}
+
+func (v *gitAlternatesValidation) objectDirectoryKey(directory string) (string, bool) {
+	if !filepath.IsAbs(directory) {
+		directory = filepath.Join(v.resolver.baseResolved, directory)
+	}
+	relative, err := filepath.Rel(v.resolver.baseResolved, directory)
+	if err != nil || filepath.IsAbs(relative) {
+		return "", false
+	}
+	return filepath.Clean(relative), true
 }
 
 // parseGitAlternatePaths implements Git's newline-separated parse_alternates
@@ -13664,14 +14153,56 @@ func unquoteGitCStyle(input string) (string, int, bool) {
 }
 
 // EnsureGitMetadataSafeForSubprocess rejects a repository whose discovery or
-// fixed metadata paths can leave the repository's local filesystem before Git
-// has a chance to interpret them. Callers that do any Git work before provider
-// construction must invoke this first; provider construction invokes it too.
+// structural metadata paths can leave the repository's local filesystem before
+// Git has a chance to interpret them. Callers that do any Git work before
+// provider construction must invoke this first; provider construction invokes
+// it too.
 func EnsureGitMetadataSafeForSubprocess(repo string) error {
 	if gitMetadataSafeForSubprocess(repo) {
 		return nil
 	}
 	return fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
+}
+
+type gitMetadataValidationContextKey struct{}
+
+type gitMetadataValidationReceipt struct {
+	repo string
+	safe bool
+}
+
+// WithGitMetadataValidationForSetup validates one repository and returns a
+// context that lets immediately adjacent setup helpers reuse that exact result.
+// The receipt is repo-bound, operation-scoped, and carried only in memory; it is
+// not a process cache and must not be retained beyond the current command setup.
+func WithGitMetadataValidationForSetup(ctx context.Context, repo string) (context.Context, error) {
+	validated, safe := newGitMetadataValidation(ctx, repo)
+	if !safe {
+		return validated, fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
+	}
+	return validated, nil
+}
+
+func newGitMetadataValidation(ctx context.Context, repo string) (context.Context, bool) {
+	absRepo, err := filepath.Abs(repo)
+	if err != nil {
+		return ctx, false
+	}
+	absRepo = filepath.Clean(absRepo)
+	safe := gitMetadataSafeForSubprocess(absRepo)
+	return context.WithValue(ctx, gitMetadataValidationContextKey{}, gitMetadataValidationReceipt{repo: absRepo, safe: safe}), safe
+}
+
+func gitMetadataSafeForSubprocessContext(ctx context.Context, repo string) bool {
+	absRepo, err := filepath.Abs(repo)
+	if err != nil {
+		return false
+	}
+	absRepo = filepath.Clean(absRepo)
+	if receipt, ok := ctx.Value(gitMetadataValidationContextKey{}).(gitMetadataValidationReceipt); ok && receipt.repo == absRepo {
+		return receipt.safe
+	}
+	return gitMetadataSafeForSubprocess(absRepo)
 }
 
 func worktreeGitFallbackWarning(cause error) ProviderWarning {
@@ -13743,7 +14274,8 @@ func repositoryHasGitMetadata(repo string) bool {
 // (not a repository at all, or no usable git binary), and it now applies nested
 // .gitignore files itself.
 func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher, hasIncludeFiles bool) ([]string, []ProviderWarning, error) {
-	if err := EnsureGitMetadataSafeForSubprocess(repo); err != nil {
+	if !gitMetadataSafeForSubprocessContext(ctx, repo) {
+		err := fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
 		// No Git process is started. The fallback treats every ambiguous vendored
 		// directory as potentially tracked so unsafe metadata cannot cause source
 		// omissions, and the warning reports the Git-only policy that is unavailable.
@@ -22138,7 +22670,7 @@ func externalID(kind, value string) string {
 }
 
 func repoKey(ctx context.Context, repo string) string {
-	if gitMetadataSafeForSubprocess(repo) {
+	if gitMetadataSafeForSubprocessContext(ctx, repo) {
 		for _, remoteURL := range githubRemoteURLs(ctx, repo) {
 			if key, ok := githubRepoKey(remoteURL); ok {
 				return key
