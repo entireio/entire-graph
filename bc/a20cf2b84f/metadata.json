@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "bca20cf2b84f",
+  "strategy": "manual-commit",
+  "branch": "review/pr126-rebased",
+  "checkpoints_count": 6,
+  "files_touched": [
+    "cmd/entire-graph/main.go",
+    "cmd/entire-graph/main_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/bc/a20cf2b84f/0/metadata.json",
+      "transcript": "/bc/a20cf2b84f/0/full.jsonl",
+      "compact_transcript": "/bc/a20cf2b84f/0/transcript.jsonl",
+      "content_hash": "/bc/a20cf2b84f/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 202,
+    "cache_creation_tokens": 149163,
+    "cache_read_tokens": 10691007,
+    "output_tokens": 78475,
+    "api_call_count": 101
+  }
+}
