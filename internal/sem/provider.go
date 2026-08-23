@@ -11835,6 +11835,133 @@ func openSameVolumePath(base, path string) (*os.File, string, error) {
 	return resolver.open(path)
 }
 
+// GitCeilingPathResolution tells repository discovery whether a ceiling path
+// was resolved, failed the way Git's realpath would fail, was deliberately
+// refused before a potentially off-volume lookup, or lacks a platform guard.
+type GitCeilingPathResolution uint8
+
+const (
+	GitCeilingPathUnresolvable GitCeilingPathResolution = iota
+	GitCeilingPathResolved
+	GitCeilingPathUnsafe
+	GitCeilingPathUnsupported
+)
+
+// GitCeilingPathResolver keeps one guarded filesystem root open throughout
+// implicit repository discovery. Reusing it matters beyond efficiency: a
+// caller-controlled path must not be canonicalized safely and then reopened by
+// name with os.Stat/Lstat after a redirect has been swapped into place.
+type GitCeilingPathResolver struct {
+	resolver *sameVolumePathResolver
+}
+
+// GitAbsolutePath applies Git's platform-specific absolute-path grammar and
+// returns the native absolute spelling it denotes. On Windows this includes
+// rooted paths on the current drive and drive-prefixed paths without a slash,
+// both of which filepath.IsAbs rejects even though Git accepts them.
+func GitAbsolutePath(base, value string) (string, bool) {
+	return gitAbsolutePath(base, value)
+}
+
+// GitAbsolutePathNeedsFailClosed reports a Git absolute spelling that the
+// platform accepts but Go cannot safely normalize for guarded traversal.
+func GitAbsolutePathNeedsFailClosed(value string) bool {
+	return gitAbsolutePathNeedsFailClosed(value)
+}
+
+// NewGitCeilingPathResolver anchors a guarded discovery walk at base.
+func NewGitCeilingPathResolver(base string) (*GitCeilingPathResolver, GitCeilingPathResolution) {
+	resolver, err := newSameVolumePathResolver(base)
+	if err != nil {
+		if errors.Is(err, errPathMountGuardUnsupported) {
+			return nil, GitCeilingPathUnsupported
+		}
+		return nil, GitCeilingPathUnsafe
+	}
+	return &GitCeilingPathResolver{resolver: resolver}, GitCeilingPathResolved
+}
+
+// Close releases the resolver's held filesystem root.
+func (r *GitCeilingPathResolver) Close() error {
+	return r.resolver.Close()
+}
+
+// Canonicalize returns path's physical spelling without leaving the filesystem
+// that contains the resolver's base. Git normally canonicalizes
+// GIT_CEILING_DIRECTORIES entries before repository discovery, but its generic
+// pathname resolution can probe a caller-supplied network path. The guarded
+// component walk preserves local symlink semantics while rejecting mount,
+// volume, and UNC redirects before following them.
+func (r *GitCeilingPathResolver) Canonicalize(path string) (string, GitCeilingPathResolution) {
+	opened, resolved, err := r.resolver.open(path)
+	if err != nil {
+		return "", gitCeilingPathResolution(err)
+	}
+	_ = opened.Close()
+	return filepath.Clean(resolved), GitCeilingPathResolved
+}
+
+// HasGitEntry opens dir through the guarded resolver, then enumerates that held
+// directory handle for a .git entry. It deliberately does not close the
+// checked parent and re-walk its
+// pathname for Lstat: that gap would let a raced ancestor redirect the second
+// walk into a nested network mount. Enumeration is bounded so a hostile
+// directory cannot consume unbounded memory or time.
+func (r *GitCeilingPathResolver) HasGitEntry(dir string) (bool, GitCeilingPathResolution) {
+	opened, resolved, err := r.resolver.open(dir)
+	if err != nil {
+		return false, gitCeilingPathResolution(err)
+	}
+	defer opened.Close()
+	expected := filepath.Clean(dir)
+	equal := resolved == expected
+	if runtime.GOOS == "windows" {
+		equal = strings.EqualFold(resolved, expected)
+	}
+	if !equal {
+		// The candidate changed identity after the physical discovery path
+		// was chosen, so its relationship to the ceilings is now unknown.
+		return false, GitCeilingPathUnsafe
+	}
+
+	const batchSize = 128
+	entriesSeen, bytesSeen := 0, 0
+	for {
+		names, readErr := opened.Readdirnames(batchSize)
+		for _, name := range names {
+			entriesSeen++
+			bytesSeen += len(name) + 1
+			if entriesSeen > maxListedDirectoryObservations || bytesSeen > maxListedDirectoryBytes {
+				return false, GitCeilingPathUnsafe
+			}
+			if name == ".git" {
+				return true, GitCeilingPathResolved
+			}
+			if strings.EqualFold(name, ".git") {
+				// This is an alias on common Windows and macOS filesystems but a
+				// different entry on a case-sensitive volume. Without a
+				// descriptor-relative case-sensitivity query, refuse discovery:
+				// accepting it could select a false child and let downstream Git
+				// climb into the real parent after the ceiling is discarded.
+				return false, GitCeilingPathUnsafe
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			return false, GitCeilingPathResolved
+		}
+		if readErr != nil {
+			return false, GitCeilingPathUnresolvable
+		}
+	}
+}
+
+func gitCeilingPathResolution(err error) GitCeilingPathResolution {
+	if errors.Is(err, errSymlinkChainOffVolume) || errors.Is(err, errPathRedirectUnreadable) {
+		return GitCeilingPathUnsafe
+	}
+	return GitCeilingPathUnresolvable
+}
+
 func splitNativePathComponents(value string) []string {
 	return strings.FieldsFunc(filepath.ToSlash(value), func(r rune) bool { return r == '/' })
 }

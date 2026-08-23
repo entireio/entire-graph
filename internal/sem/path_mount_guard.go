@@ -1,9 +1,12 @@
 package sem
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 )
+
+var errPathMountGuardUnsupported = errors.New("safe mount-point inventory is unavailable on this platform")
 
 // pathMountGuard confines candidate lookups to the deepest mounted filesystem
 // that already contains the explicitly selected repository. Reaching that

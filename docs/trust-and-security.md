@@ -85,9 +85,13 @@ other is installation.
   startup. Those inherited values therefore cannot open an arbitrary path or
   socket (including a Windows UNC target) or replace explicit machine-command
   path semantics. When `GIT_CEILING_DIRECTORIES` is present during implicit
-  discovery, the CLI applies usable absolute entries lexically in-process and
-  never gives Git the raw list, whose canonicalization could itself probe an
-  off-volume or UNC path. All selected-repository subprocesses discard it.
+  discovery, the CLI applies usable absolute entries in-process. Entries before
+  Git's first empty-list marker are canonicalized with a same-volume guarded
+  walk; subsequent entries stay lexical as Git specifies. The CLI never gives
+  Git the raw list, whose canonicalization could itself probe an off-volume or
+  UNC path. If a pre-marker entry cannot be resolved without such a probe,
+  implicit discovery fails closed. All selected-repository subprocesses
+  discard it.
 - For `stats` only: local coding-agent session transcripts
   (`~/.claude/projects/<path-slug>/*.jsonl`, or `--sessions-dir`/
   `--transcript` overrides). This is Claude Code's transcript layout; the

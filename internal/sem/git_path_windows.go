@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 // gitAbsolutePath applies Git-for-Windows' path grammar. Git accepts a leading
@@ -33,6 +34,18 @@ func gitAbsolutePath(base, value string) (string, bool) {
 		return volume + string(filepath.Separator) + rest, true
 	}
 	return value, false
+}
+
+// Git also accepts a multibyte UTF-8 code point before ':' as a DOS drive
+// prefix. Go's filepath package cannot represent that spelling as a Windows
+// volume, so callers handling an untrusted discovery boundary must refuse it
+// instead of misclassifying it as relative and silently discarding it.
+func gitAbsolutePathNeedsFailClosed(value string) bool {
+	if value == "" || filepath.VolumeName(value) != "" {
+		return false
+	}
+	_, size := utf8.DecodeRuneInString(value)
+	return size < len(value) && value[size] == ':'
 }
 
 // gitTargetPathValid rejects Win32 path components Git for Windows refuses

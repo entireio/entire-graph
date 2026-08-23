@@ -401,10 +401,13 @@ refusal routes to the existing bounded filesystem fallback before
 
 Implicit repository discovery is the sole ceiling-sensitive path. When
 `GIT_CEILING_DIRECTORIES` is present, the CLI applies its usable absolute entries
-lexically in-process and never passes the raw list to Git, because Git's own
-canonicalization could probe an off-volume or UNC entry. Commands operating on
-an already selected repository discard the ceiling with every other inherited
-repository-selection variable.
+in-process. Entries before Git's first empty-list marker are canonicalized with
+the provider's same-volume guarded path walk; entries after it stay lexical.
+The raw list is never passed to Git, because Git's own canonicalization could
+probe an off-volume or UNC entry; a pre-marker entry that cannot be resolved by
+the guarded walk therefore makes implicit discovery fail closed. Commands
+operating on an already selected repository discard the ceiling with every
+other inherited repository-selection variable.
 
 ## Listing And Memory Bounds
 

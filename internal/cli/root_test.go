@@ -69,6 +69,79 @@ func TestDiscoverImplicitCheckoutRootStopsAtGitCeiling(t *testing.T) {
 	}
 }
 
+func TestDiscoverImplicitCheckoutRootCanonicalizesGitCeilingsBeforeEmptyMarker(t *testing.T) {
+	requireSymlinkSupport(t)
+
+	outer := t.TempDir()
+	boundary := filepath.Join(outer, "discovery-boundary")
+	child := filepath.Join(boundary, "nested", "child")
+	for _, dir := range []string{filepath.Join(outer, ".git"), child} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alias := filepath.Join(t.TempDir(), "boundary-alias")
+	if err := os.Symlink(boundary, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("before marker", func(t *testing.T) {
+		t.Setenv("GIT_CEILING_DIRECTORIES", alias)
+		if root, ok := discoverImplicitCheckoutRoot(child); ok {
+			t.Fatalf("filesystem fallback discovered %q above symlinked ceiling %q", root, alias)
+		}
+	})
+
+	t.Run("after marker", func(t *testing.T) {
+		t.Setenv("GIT_CEILING_DIRECTORIES", string(os.PathListSeparator)+alias)
+		root, ok := discoverImplicitCheckoutRoot(child)
+		if !ok || root != outer {
+			t.Fatalf("filesystem fallback with non-canonicalized ceiling = (%q, %v), want (%q, true)", root, ok, outer)
+		}
+	})
+}
+
+func TestDiscoverImplicitCheckoutRootDoesNotExcludeStartingDirectory(t *testing.T) {
+	outer := t.TempDir()
+	child := filepath.Join(outer, "child")
+	for _, dir := range []string{filepath.Join(outer, ".git"), child} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", child)
+
+	root, ok := discoverImplicitCheckoutRoot(child)
+	if !ok || root != outer {
+		t.Fatalf("filesystem fallback from the ceiling directory = (%q, %v), want (%q, true)", root, ok, outer)
+	}
+
+	if err := os.Mkdir(filepath.Join(child, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, ok = discoverImplicitCheckoutRoot(child)
+	if !ok || root != child {
+		t.Fatalf("filesystem fallback for repository at the ceiling = (%q, %v), want (%q, true)", root, ok, child)
+	}
+}
+
+func TestDiscoverImplicitCheckoutRootDiscardsUnresolvableGitCeilings(t *testing.T) {
+	outer := t.TempDir()
+	child := filepath.Join(outer, "nested", "child")
+	for _, dir := range []string{filepath.Join(outer, ".git"), child} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	missing := filepath.Join(t.TempDir(), "missing-ceiling")
+	t.Setenv("GIT_CEILING_DIRECTORIES", "relative-ceiling"+string(os.PathListSeparator)+missing)
+
+	root, ok := discoverImplicitCheckoutRoot(child)
+	if !ok || root != outer {
+		t.Fatalf("filesystem fallback with unusable ceilings = (%q, %v), want (%q, true)", root, ok, outer)
+	}
+}
+
 func TestResolveRepoIgnoresUnrelatedGitCeilingsWithoutStartingGit(t *testing.T) {
 	repo := t.TempDir()
 	child := filepath.Join(repo, "nested", "child")
