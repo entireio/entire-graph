@@ -33,6 +33,10 @@ func TestGitMetadataGuardRejectsLocalConfigIncludeSections(t *testing.T) {
 			content: "[include]\n\tpath = ../outside\n",
 		},
 		{
+			name:    "UTF-8 BOM before include",
+			content: "\xef\xbb\xbf[include]\n\tpath = ../outside\n",
+		},
+		{
 			name:    "case whitespace and CRLF",
 			content: " \t[InClUdE]\r\n\t PaTh\t = ../outside\r\n",
 		},
@@ -59,6 +63,42 @@ func TestGitMetadataGuardRejectsLocalConfigIncludeSections(t *testing.T) {
 			}
 			if gitMetadataSafeForSubprocess(repo) {
 				t.Fatalf("repo-local config include passed metadata preflight:\n%s", tt.content)
+			}
+		})
+	}
+}
+
+func TestGitMetadataGuardAllowsUTF8BOMAtConfigStart(t *testing.T) {
+	repo, gitDir := gitConfigPreflightFixture(t)
+	content := []byte("\xef\xbb\xbf[core]\n\tfilemode = true\n")
+	config := filepath.Join(gitDir, "config")
+	if err := os.WriteFile(config, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "config", "--file", config, "--list")
+	if !gitMetadataSafeForSubprocess(repo) {
+		t.Fatal("Git-valid config with a leading UTF-8 BOM was refused")
+	}
+}
+
+func TestGitMetadataGuardRejectsMisplacedUTF8BOM(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{name: "after whitespace", content: " \xef\xbb\xbf[core]\nfilemode = true\n"},
+		{name: "on later line", content: "[core]\nfilemode = true\n\xef\xbb\xbf[custom]\nvalue = true\n"},
+		{name: "repeated", content: "\xef\xbb\xbf\xef\xbb\xbf[core]\nfilemode = true\n"},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, gitDir := gitConfigPreflightFixture(t)
+			if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte(tt.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if gitMetadataSafeForSubprocess(repo) {
+				t.Fatalf("Git-invalid misplaced UTF-8 BOM passed metadata preflight: %q", tt.content)
 			}
 		})
 	}

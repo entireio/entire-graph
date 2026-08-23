@@ -13842,6 +13842,12 @@ func parseGitConfigBool(value string, implicit bool) (bool, bool) {
 }
 
 func parseGitLocalConfigPreflight(content []byte) (gitLocalConfigPreflight, bool) {
+	// Git accepts exactly one UTF-8 byte-order mark at byte zero. Normalize that
+	// one prefix before lexing, but leave displaced or repeated marks intact so
+	// syntax Git rejects still fails closed here.
+	if bytes.HasPrefix(content, []byte{0xef, 0xbb, 0xbf}) {
+		content = content[3:]
+	}
 	lines, ok := gitConfigLogicalLines(content)
 	if !ok {
 		return gitLocalConfigPreflight{}, false

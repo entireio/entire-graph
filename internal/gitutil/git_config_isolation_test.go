@@ -83,6 +83,68 @@ func TestGitSubprocessesAuthorizeOnlySelectedRepositoryWhenOwnershipDiffers(t *t
 	}
 }
 
+func TestGitSubprocessesAuthorizeSelectedRepositoryThroughDirectoryAlias(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "init")
+	physicalNested := filepath.Join(repo, "nested")
+	physicalSelected := filepath.Join(physicalNested, "deeper")
+	if err := os.MkdirAll(physicalSelected, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	alias := filepath.Join(t.TempDir(), "selected")
+	gitSafeDirectoryAlias(t, physicalNested, alias)
+	selected := filepath.Join(alias, "deeper")
+	wantRoot := gitOutput(t, selected, "rev-parse", "--show-toplevel")
+	physicalRoot, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	safeDirectories := gitSafeDirectoryValues(selected)
+	if !slices.Contains(safeDirectories, filepath.Clean(physicalRoot)) {
+		t.Fatalf("safe.directory values = %#v, want physical repository root %q", safeDirectories, physicalRoot)
+	}
+	seen := make(map[string]struct{}, len(safeDirectories))
+	for _, directory := range safeDirectories {
+		if _, duplicate := seen[directory]; duplicate {
+			t.Fatalf("safe.directory values contain duplicate %q: %#v", directory, safeDirectories)
+		}
+		seen[directory] = struct{}{}
+	}
+
+	unrelated := t.TempDir()
+	git(t, unrelated, "init")
+	t.Setenv("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+	control := exec.Command("git", "rev-parse", "--show-toplevel")
+	control.Dir = selected
+	if output, err := control.CombinedOutput(); err == nil {
+		t.Fatalf("ownership control unexpectedly trusted the aliased repository: %q", output)
+	}
+
+	gotRoot, err := RepoRoot(t.Context(), selected)
+	if err != nil {
+		t.Fatalf("explicitly selected aliased foreign-owned repository: %v", err)
+	}
+	if gotRoot != wantRoot {
+		t.Fatalf("aliased foreign-owned repository root = %q, want %q", gotRoot, wantRoot)
+	}
+
+	cmd := newCmd(t.Context(), selected, "git", "-C", unrelated, "rev-parse", "--show-toplevel")
+	if output, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("aliased repository exception trusted unrelated checkout: %q", output)
+	} else if !bytes.Contains(output, []byte("dubious ownership")) {
+		t.Fatalf("unrelated checkout failure = %q, want ownership refusal: %v", output, err)
+	}
+}
+
 func TestGitSubprocessesNeutralizeConfiguredExternalPolicyFiles(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")

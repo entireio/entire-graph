@@ -2210,26 +2210,37 @@ func gitSubprocessEnvironment(env []string, dir string) []string {
 // command directory.
 //
 // Include dir itself for a worktree root or bare repository, then each parent
-// for callers that select a worktree subdirectory. Git compares canonicalized
-// paths, so an absolute, cleaned candidate is sufficient even when dir reaches
-// the checkout through a symlink. If Abs cannot resolve a relative dir because
-// the process working directory is unavailable, return no exception and let
-// Git fail closed on an ownership mismatch.
+// for callers that select a worktree subdirectory. Also include the physical
+// path and its parents: Git compares the discovered repository's canonical path,
+// so lexical ancestors alone cannot authorize a checkout reached through a
+// symlink or junction. If Abs or EvalSymlinks fails, retain only the candidates
+// resolved so far and let Git fail closed on an ownership mismatch.
 func gitSafeDirectoryValues(dir string) []string {
 	directory, err := filepath.Abs(dir)
 	if err != nil {
 		return nil
 	}
 	directory = filepath.Clean(directory)
-	values := make([]string, 0, 8)
-	for {
-		values = append(values, directory)
-		parent := filepath.Dir(directory)
-		if parent == directory {
-			return values
+	values := make([]string, 0, 16)
+	seen := make(map[string]struct{}, 16)
+	appendAncestors := func(candidate string) {
+		for {
+			if _, exists := seen[candidate]; !exists {
+				seen[candidate] = struct{}{}
+				values = append(values, candidate)
+			}
+			parent := filepath.Dir(candidate)
+			if parent == candidate {
+				return
+			}
+			candidate = parent
 		}
-		directory = parent
 	}
+	appendAncestors(directory)
+	if physical, resolveErr := filepath.EvalSymlinks(directory); resolveErr == nil {
+		appendAncestors(filepath.Clean(physical))
+	}
+	return values
 }
 
 // newCmd builds the exec.Cmd used by subprocesses whose diagnostics must be
