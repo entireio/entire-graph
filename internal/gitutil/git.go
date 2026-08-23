@@ -2213,8 +2213,8 @@ func gitSubprocessEnvironment(env []string, dir string) []string {
 // for callers that select a worktree subdirectory. Also include the physical
 // path and its parents: Git compares the discovered repository's canonical path,
 // so lexical ancestors alone cannot authorize a checkout reached through a
-// symlink or junction. If Abs or EvalSymlinks fails, retain only the candidates
-// resolved so far and let Git fail closed on an ownership mismatch.
+// symlink or junction. If Abs or physical-path resolution fails, retain only
+// the candidates resolved so far and let Git fail closed on an ownership mismatch.
 func gitSafeDirectoryValues(dir string) []string {
 	directory, err := filepath.Abs(dir)
 	if err != nil {
@@ -2237,7 +2237,7 @@ func gitSafeDirectoryValues(dir string) []string {
 		}
 	}
 	appendAncestors(directory)
-	if physical, resolveErr := filepath.EvalSymlinks(directory); resolveErr == nil {
+	if physical, resolveErr := gitPhysicalDirectory(directory); resolveErr == nil {
 		appendAncestors(filepath.Clean(physical))
 	}
 	return values
