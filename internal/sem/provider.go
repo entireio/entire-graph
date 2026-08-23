@@ -11648,6 +11648,12 @@ var errSymlinkChainOffVolume = errors.New("symlink chain resolves off the expect
 
 var errPathRedirectUnreadable = errors.New("path redirect could not be inspected")
 
+// errPathCrossesKnownMount distinguishes a mount-table rejection from the
+// descriptor-level device check that backs it up. The mount check must happen
+// first: asking Lstat about an NFS/SMB/autofs mount point can activate that
+// filesystem before its different device identity is available to reject.
+var errPathCrossesKnownMount = fmt.Errorf("%w: path crosses a known mount point", errSymlinkChainOffVolume)
+
 // base is the volume every hop must match; a hop landing on a different
 // volume aborts immediately, with no further Stat or Readlink issued on it or
 // anything beyond it. The error is the raw OS error from whichever hop failed
@@ -11673,6 +11679,7 @@ type sameVolumePathResolver struct {
 	baseAbs string
 	anchor  pathTraversalAnchor
 	root    *os.Root
+	mounts  pathMountGuard
 }
 
 func newSameVolumePathResolver(base string) (*sameVolumePathResolver, error) {
@@ -11680,7 +11687,7 @@ func newSameVolumePathResolver(base string) (*sameVolumePathResolver, error) {
 	if err != nil {
 		return nil, err
 	}
-	anchor, _, err := newPathTraversalAnchor(baseAbs, baseAbs)
+	anchor, resolvedBase, err := newPathTraversalAnchor(baseAbs, baseAbs)
 	if err != nil {
 		return nil, err
 	}
@@ -11688,7 +11695,12 @@ func newSameVolumePathResolver(base string) (*sameVolumePathResolver, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &sameVolumePathResolver{baseAbs: baseAbs, anchor: anchor, root: root}, nil
+	mounts, err := newPathMountGuard(anchor.root, resolvedBase)
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	return &sameVolumePathResolver{baseAbs: baseAbs, anchor: anchor, root: root, mounts: mounts}, nil
 }
 
 func (r *sameVolumePathResolver) Close() error {
@@ -11729,6 +11741,9 @@ func (r *sameVolumePathResolver) open(path string) (*os.File, string, error) {
 
 		candidateParts := append(append([]string(nil), resolved...), component)
 		candidate := filepath.Join(candidateParts...)
+		if err := r.mounts.beforeLookup(candidate); err != nil {
+			return nil, "", err
+		}
 		info, statErr := r.root.Lstat(candidate)
 		if statErr != nil {
 			return nil, "", statErr
@@ -11764,6 +11779,9 @@ func (r *sameVolumePathResolver) open(path string) (*os.File, string, error) {
 	rel := "."
 	if len(resolved) > 0 {
 		rel = filepath.Join(resolved...)
+	}
+	if err := r.mounts.beforeLookup(rel); err != nil {
+		return nil, "", err
 	}
 	file, err := openRootBoundedRegularFile(r.root, rel)
 	if err != nil {
@@ -11832,6 +11850,9 @@ func (r *sameVolumePathResolver) lstat(path string) (os.FileInfo, error) {
 	if rel == "" {
 		rel = "."
 	}
+	if err := r.mounts.beforeLookup(rel); err != nil {
+		return nil, err
+	}
 	info, err := r.root.Lstat(rel)
 	if err != nil {
 		return nil, err
@@ -11865,6 +11886,9 @@ func (r *sameVolumePathResolver) readlink(path string) (string, error) {
 	rel := filepath.Join(relParts...)
 	if rel == "" {
 		rel = "."
+	}
+	if err := r.mounts.beforeLookup(rel); err != nil {
+		return "", err
 	}
 	info, err := r.root.Lstat(rel)
 	if err != nil {

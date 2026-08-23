@@ -9,7 +9,8 @@ import (
 )
 
 type sweepDirectoryRoot struct {
-	root *os.Root
+	root   *os.Root
+	mounts pathMountGuard
 }
 
 func newSweepDirectoryRoot(repo string) (*sweepDirectoryRoot, error) {
@@ -17,7 +18,12 @@ func newSweepDirectoryRoot(repo string) (*sweepDirectoryRoot, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &sweepDirectoryRoot{root: root}, nil
+	mounts, err := newPathMountGuard(repo, repo)
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	return &sweepDirectoryRoot{root: root, mounts: mounts}, nil
 }
 
 func (r *sweepDirectoryRoot) Close() error { return r.root.Close() }
@@ -29,6 +35,7 @@ func (r *sweepDirectoryRoot) Open(anchor pathTraversalAnchor, dir string, admitS
 	}
 	components := splitNativePathComponents(rel)
 	current := r.root
+	resolved := make([]string, 0, len(components))
 	var owned *os.Root
 	defer func() {
 		if owned != nil {
@@ -45,6 +52,10 @@ func (r *sweepDirectoryRoot) Open(anchor pathTraversalAnchor, dir string, admitS
 		}
 		if !admitStep() {
 			return nil, errGitDirSweepHalted
+		}
+		candidate := filepath.Join(append(append([]string(nil), resolved...), component)...)
+		if err := r.mounts.beforeLookup(candidate); err != nil {
+			return nil, err
 		}
 		info, err := current.Lstat(component)
 		if err != nil {
@@ -77,6 +88,7 @@ func (r *sweepDirectoryRoot) Open(anchor pathTraversalAnchor, dir string, admitS
 		}
 		owned = next
 		current = next
+		resolved = append(resolved, component)
 	}
 
 	opened, err := current.Open(".")
