@@ -5,7 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
+	"time"
 )
 
 func cacheTestRepo(t *testing.T) string {
@@ -29,6 +31,78 @@ func cacheTestRepo(t *testing.T) string {
 	runCacheGit("add", ".")
 	runCacheGit("commit", "-m", "initial")
 	return repo
+}
+
+func TestWorktreeSnapshotCacheProbeDoesNotRunGitFilters(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the executable filter fixture uses a POSIX shell; worktree cache bypass itself is platform-independent")
+	}
+	for _, configKey := range []string{"filter.evil.clean", "filter.evil.process"} {
+		t.Run(configKey, func(t *testing.T) {
+			repo := cacheTestRepo(t)
+			attributes := filepath.Join(repo, ".gitattributes")
+			if err := os.WriteFile(attributes, []byte("*.go filter=evil\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			git := func(args ...string) {
+				t.Helper()
+				command := exec.Command("git", args...)
+				command.Dir = repo
+				if out, err := command.CombinedOutput(); err != nil {
+					t.Fatalf("git %v: %v\n%s", args, err, out)
+				}
+			}
+			git("add", ".gitattributes")
+			git("commit", "-m", "select filter driver")
+
+			marker := filepath.Join(t.TempDir(), "filter-fired")
+			helper := filepath.Join(t.TempDir(), "filter-helper")
+			script := "#!/bin/sh\n: > \"$1\"\nexit 1\n"
+			if err := os.WriteFile(helper, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			filterCommand := shellQuote(helper) + " " + shellQuote(marker)
+			git("config", configKey, filterCommand)
+			git("config", "filter.evil.required", "false")
+
+			app := filepath.Join(repo, "app.go")
+			forceGitContentCheck := func() {
+				t.Helper()
+				future := time.Now().Add(2 * time.Second)
+				if err := os.Chtimes(app, future, future); err != nil {
+					t.Fatal(err)
+				}
+			}
+			forceGitContentCheck()
+			control := exec.Command("git", "--no-optional-locks", "status", "--porcelain", "--untracked-files=all", "-z")
+			control.Dir = repo
+			_ = control.Run()
+			if _, err := os.Stat(marker); err != nil {
+				t.Fatalf("control git status did not execute %s: %v", configKey, err)
+			}
+			if err := os.Remove(marker); err != nil {
+				t.Fatal(err)
+			}
+
+			forceGitContentCheck()
+			options := ProviderSnapshotOptions{Worktree: true, Profile: ProfileFull, NoNetwork: true}
+			snapshot, hit, err := LoadOrBuildProviderSnapshot(context.Background(), repo, "test", options, t.TempDir(), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hit {
+				t.Fatal("worktree snapshot unexpectedly reported a cache hit")
+			}
+			if _, err := os.Stat(marker); err == nil {
+				t.Fatalf("worktree snapshot load executed %s", configKey)
+			} else if !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if !hasSymbolNamed(snapshot.Symbols, "Alpha") {
+				t.Error("worktree snapshot lost its symbols while proving filters do not run")
+			}
+		})
+	}
 }
 
 // Worktree queries always rebuild until raw worktree equality can be checked
