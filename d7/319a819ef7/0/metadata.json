@@ -1,0 +1,48 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "d7319a819ef7",
+  "session_id": "01a02ccc-cca8-7c03-9fae-23b4a21b6c95",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-23T05:23:26.869446Z",
+  "branch": "codex/pr-132-windows-fix",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/sem/provider.go",
+    "internal/sem/provider_gitdir_unc_windows_test.go"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.6-sol",
+  "turn_id": "b717243f12de",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 279251,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 22496000,
+    "output_tokens": 52061,
+    "api_call_count": 186
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-23T05:23:26.618375Z",
+    "agent_lines": 5307,
+    "agent_removed": 114,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 5307,
+    "total_lines_changed": 5421,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
