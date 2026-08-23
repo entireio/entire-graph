@@ -998,9 +998,13 @@ func TestGitMetadataGuardAllowsSubstSubdirectoryRepository(t *testing.T) {
 		}
 	}
 	writeFile(t, gitDir, "HEAD", "ref: refs/heads/main\n")
-	alias := filepath.Join(drive+`\`, "checkout", "subdir")
-	if !gitMetadataSafeForSubprocess(alias) {
-		t.Fatal("safe repository discovered from a SUBST subdirectory was refused")
+	for _, alias := range []string{
+		filepath.Join(drive+`\`, "checkout"),
+		filepath.Join(drive+`\`, "checkout", "subdir"),
+	} {
+		if !gitMetadataSafeForSubprocess(alias) {
+			t.Errorf("safe repository discovered from SUBST path %q was refused", alias)
+		}
 	}
 }
 

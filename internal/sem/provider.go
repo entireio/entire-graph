@@ -13143,10 +13143,39 @@ func gitMetadataSafeForSubprocess(repo string) bool {
 	}
 	defer resolver.Close()
 	resolvedDiscoveryRoot := false
+	resolveDiscoveryRoot := func() (*sameVolumePathResolver, string, error) {
+		repoHandle, resolvedRepo, resolveErr := resolver.open(repoAbs)
+		if resolveErr != nil {
+			return nil, "", resolveErr
+		}
+		_ = repoHandle.Close()
+		if _, sameNamespace := resolver.anchor.components(resolvedRepo); sameNamespace {
+			return resolver, resolvedRepo, nil
+		}
+		physicalResolver, physicalErr := newSameVolumePathResolver(resolvedRepo)
+		if physicalErr != nil {
+			return nil, "", physicalErr
+		}
+		return physicalResolver, resolvedRepo, nil
+	}
 	for dir := repoAbs; ; {
 		dotGit := filepath.Join(dir, ".git")
 		opened, resolvedDotGit, openErr := resolver.open(dotGit)
 		if openErr == nil {
+			if _, sameNamespace := resolver.anchor.components(resolvedDotGit); !sameNamespace {
+				discoveryResolver, resolvedRepo, resolveErr := resolveDiscoveryRoot()
+				if resolveErr != nil {
+					_ = opened.Close()
+					return false
+				}
+				if discoveryResolver != resolver {
+					defer discoveryResolver.Close()
+					resolver = discoveryResolver
+				}
+				repoAbs = resolvedRepo
+				dir = resolvedRepo
+				resolvedDiscoveryRoot = true
+			}
 			info, statErr := opened.Stat()
 			if statErr != nil {
 				_ = opened.Close()
@@ -13204,33 +13233,28 @@ func gitMetadataSafeForSubprocess(repo string) bool {
 		if !isMissingPathError(openErr) {
 			return false
 		}
+		if !resolvedDiscoveryRoot {
+			// Git probes the physical working directory for bare metadata before it
+			// walks to the first parent. Resolve a symlinked, junctioned, or SUBST
+			// repo before either step so both checks use the same path namespace.
+			discoveryResolver, resolvedRepo, resolveErr := resolveDiscoveryRoot()
+			if resolveErr != nil {
+				return false
+			}
+			if discoveryResolver != resolver {
+				defer discoveryResolver.Close()
+				resolver = discoveryResolver
+			}
+			repoAbs = resolvedRepo
+			dir = resolvedRepo
+			resolvedDiscoveryRoot = true
+		}
 		bare, safe := bareGitMetadataDirectorySafeWithResolver(resolver, dir)
 		if !safe {
 			return false
 		}
 		if bare {
 			return true
-		}
-		if !resolvedDiscoveryRoot {
-			// Git discovers ancestors from the physical working directory. Before
-			// walking to the first parent, resolve a symlinked or junctioned repo so
-			// the loop follows the same ancestor chain. Root invocations that find
-			// their own metadata return above without paying for this extra walk.
-			repoHandle, resolvedRepo, resolveErr := resolver.open(repoAbs)
-			if resolveErr != nil {
-				return false
-			}
-			_ = repoHandle.Close()
-			if _, sameNamespace := resolver.anchor.components(resolvedRepo); !sameNamespace {
-				physicalResolver, physicalErr := newSameVolumePathResolver(resolvedRepo)
-				if physicalErr != nil {
-					return false
-				}
-				defer physicalResolver.Close()
-				resolver = physicalResolver
-			}
-			dir = resolvedRepo
-			resolvedDiscoveryRoot = true
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
