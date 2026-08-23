@@ -285,6 +285,7 @@ func TestWorktreeNestedIgnoreDoesNotFollowEscapingDirectorySymlink(t *testing.T)
 	external := t.TempDir()
 	writeFile(t, external, ".gitignore", "!keep/**\n")
 	writeFile(t, external, "keep/keep.go", "package escaped\n")
+	writeFile(t, external, "only-external.go", "package escaped\n")
 	if err := os.RemoveAll(filepath.Join(repo, "vendor")); err != nil {
 		t.Fatal(err)
 	}
@@ -296,9 +297,32 @@ func TestWorktreeNestedIgnoreDoesNotFollowEscapingDirectorySymlink(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := worktreeSourceFiles(t.Context(), repo, ignores, false); err == nil ||
-		!strings.Contains(err.Error(), "vendor/.gitignore") {
-		t.Fatalf("escaping nested-ignore symlink error = %v", err)
+	paths, warnings, err := worktreeSourceFiles(t.Context(), repo, ignores, false)
+	if err != nil {
+		if !strings.Contains(err.Error(), "vendor/.gitignore") {
+			t.Fatalf("escaping nested-ignore symlink error = %v", err)
+		}
+		return
+	}
+
+	// Windows declines Git enumeration when the directory symlink is seen as a
+	// reparse point, then completes through the no-follow filesystem fallback.
+	// That safe outcome is intentionally a warning rather than the nested-ignore
+	// error produced by the Git-listing path on POSIX.
+	var fallbackDetail string
+	for _, warning := range warnings {
+		if warning.Code == "W_GIT_WORKTREE_FALLBACK" {
+			fallbackDetail = warning.Detail
+			break
+		}
+	}
+	if fallbackDetail == "" || !strings.Contains(fallbackDetail, "vendor") {
+		t.Fatalf("escaping directory symlink warnings = %+v, want explicit fallback for vendor", warnings)
+	}
+	for _, externalPath := range []string{"vendor/keep/keep.go", "vendor/only-external.go"} {
+		if slices.Contains(paths, externalPath) {
+			t.Fatalf("escaping directory symlink exposed external path %q in %v", externalPath, paths)
+		}
 	}
 }
 

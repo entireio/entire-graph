@@ -69,6 +69,27 @@ func TestDiscoverImplicitCheckoutRootStopsAtGitCeiling(t *testing.T) {
 	}
 }
 
+func TestResolveRepoIgnoresUnrelatedGitCeilingsWithoutStartingGit(t *testing.T) {
+	repo := t.TempDir()
+	child := filepath.Join(repo, "nested", "child")
+	for _, dir := range []string{filepath.Join(repo, ".git"), child} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+	t.Chdir(child)
+
+	got, err := resolveRepo(t.Context(), EntireEnv{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != repo {
+		t.Fatalf("resolveRepo with unrelated ceiling = %q, want %q", got, repo)
+	}
+}
+
 func TestDoctorPrintsEntireEnvironment(t *testing.T) {
 	var out bytes.Buffer
 	dataDir := t.TempDir()

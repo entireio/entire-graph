@@ -849,8 +849,8 @@ func resolveRepo(ctx context.Context, env EntireEnv, explicit string) (string, e
 // filesystem fallback. With a ceiling it walks only the lexical spelling and
 // stops before inspecting the ceiling directory. It deliberately does not
 // resolve ceiling entries: doing so could itself touch an off-volume or UNC
-// path. If no ceiling can be proven to contain the lexical spelling, discovery
-// fails closed rather than crossing a possible alias.
+// path. Unrelated absolute entries impose no boundary on this lexical walk,
+// matching Git without asking Git to canonicalize those caller-supplied paths.
 func discoverImplicitCheckoutRoot(dir string) (string, bool) {
 	var ceilings []string
 	for _, entry := range filepath.SplitList(os.Getenv("GIT_CEILING_DIRECTORIES")) {
@@ -879,9 +879,6 @@ func discoverImplicitCheckoutRoot(dir string) (string, bool) {
 		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
 			applicable = append(applicable, ceiling)
 		}
-	}
-	if len(applicable) == 0 {
-		return "", false
 	}
 	for {
 		for _, ceiling := range applicable {

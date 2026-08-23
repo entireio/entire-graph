@@ -27,8 +27,12 @@ other is installation.
   and special files.
   Git's own fsmonitor daemon socket is permitted because every provider Git
   subprocess explicitly disables `core.fsmonitor`. Before those subprocesses
-  start, inherited global and system Git configuration is disabled and the
-  bounded repository-metadata preflight rejects active repository-local
+  start, inherited global and system Git configuration is disabled. Protected
+  command-scope `safe.directory` entries authorize only the selected command
+  directory and its ancestors (the exact repository-discovery candidates),
+  never the unrestricted `*` value, so explicitly selected shared checkouts
+  remain usable without trusting unrelated repositories. The bounded
+  repository-metadata preflight rejects active repository-local
   `[include]` and `[includeIf]` sections, including in an enabled
   `config.worktree`. Repository-local configuration remains available for
   structural settings Git needs; active `core.worktree` paths are checked by

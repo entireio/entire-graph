@@ -358,19 +358,25 @@ variables, `GIT_TRACE*` output targets, and Git for Windows'
 because Git probes that directory during startup. Those variables can otherwise
 make Git open arbitrary paths or sockets, including UNC targets, or override the
 explicit path and attribute semantics of machine-readable commands. Inherited
-global and system Git configuration is disabled. Repository-local configuration
-remains available for structural settings required to read the selected
-repository, but the bounded metadata preflight rejects active `[include]` and
-`[includeIf]` sections before Git starts, including sections in `config.worktree` when
-`extensions.worktreeConfig` enables it. The same preflight parses and checks an
-active `core.worktree` path. It also rejects active partial-clone/promisor
+global and system Git configuration is disabled. To preserve intentionally
+shared or foreign-owned repositories, protected command-scope `safe.directory`
+entries authorize only the selected command directory and its ancestors: the
+exact candidates Git can discover while walking upward from that directory.
+The provider never uses the unrestricted `safe.directory=*` exception.
+Repository-local configuration remains available for structural settings
+required to read the selected repository, but the bounded metadata preflight
+rejects active `[include]` and `[includeIf]` sections before Git starts,
+including sections in `config.worktree` when `extensions.worktreeConfig`
+enables it. The same preflight parses and checks an active `core.worktree` path.
+It also rejects active partial-clone/promisor
 configuration: `extensions.partialClone`, a true `remote.*.promisor`, or any
 `remote.*.partialCloneFilter`. Git before 2.45 can inspect a local or UNC
 promisor URL before applying the transport deny-list, so partial clones are
 refused across the supported Git range rather than weakening no-egress on older
 clients.
 
-Command-scope configuration must set `core.fsmonitor=false`,
+Command-scope configuration must set selected-path `safe.directory` entries,
+`core.fsmonitor=false`,
 `log.showSignature=false`, `log.mailmap=false`, `submodule.recurse=false`,
 `core.excludesFile=` and `core.attributesFile=`, and pin `diff.orderFile` to the
 platform null device. Thus Git cannot connect to its configured fsmonitor daemon,

@@ -10,6 +10,8 @@ The broad configuration-derived vectors that motivated this item are now
 bounded. Production Git subprocesses disable inherited global and system
 configuration; the metadata preflight rejects active repository-local
 `[include]` and `[includeIf]` sections and checks active `core.worktree` paths;
+protected command-scope `safe.directory` entries retain support for the
+explicitly selected directory and its discovery ancestors without using `*`;
 and command-scope configuration disables `core.fsmonitor`,
 `log.showSignature`, `log.mailmap`, `submodule.recurse`, `core.excludesFile`,
 `core.attributesFile`, and `diff.orderFile`. Those fixed settings are no longer

@@ -27,6 +27,62 @@ func TestGitSubprocessesIgnoreInheritedGlobalAndSystemConfig(t *testing.T) {
 	}
 }
 
+func TestGitSubprocessesAuthorizeOnlySelectedRepositoryWhenOwnershipDiffers(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	nested := filepath.Join(repo, "nested", "deeper")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "needle.go"), []byte("package needle\n// SelectedOwnershipNeedle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "nested/deeper/needle.go")
+	wantRoot := gitOutput(t, nested, "rev-parse", "--show-toplevel")
+
+	unrelated := t.TempDir()
+	git(t, unrelated, "init")
+
+	// Git's own test hook makes every repository look foreign-owned without
+	// needing privileges or platform-specific ownership changes. Disable every
+	// protected config source here so the control cannot inherit an exception.
+	t.Setenv("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+	control := exec.Command("git", "rev-parse", "--show-toplevel")
+	control.Dir = nested
+	if output, err := control.CombinedOutput(); err == nil {
+		t.Fatalf("ownership control unexpectedly trusted the repository: %q", output)
+	}
+
+	gotRoot, err := RepoRoot(t.Context(), nested)
+	if err != nil {
+		t.Fatalf("explicitly selected foreign-owned repository: %v", err)
+	}
+	if gotRoot != wantRoot {
+		t.Fatalf("foreign-owned repository root = %q, want %q", gotRoot, wantRoot)
+	}
+	paths, err := GrepFixedStringPaths(t.Context(), nested, "", "SelectedOwnershipNeedle")
+	if err != nil {
+		t.Fatalf("caller-locale Git command in foreign-owned repository: %v", err)
+	}
+	if !slices.Equal(paths, []string{"needle.go"}) {
+		t.Fatalf("foreign-owned repository grep paths = %#v, want needle.go", paths)
+	}
+
+	// Reusing the selected directory's subprocess environment must not turn
+	// ownership checks off globally. An argv that redirects Git to an unrelated
+	// checkout remains untrusted.
+	cmd := newCmd(t.Context(), nested, "git", "-C", unrelated, "rev-parse", "--show-toplevel")
+	if output, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("selected repository exception trusted unrelated checkout: %q", output)
+	} else if !bytes.Contains(output, []byte("dubious ownership")) {
+		t.Fatalf("unrelated checkout failure = %q, want ownership refusal: %v", output, err)
+	}
+}
+
 func TestGitSubprocessesNeutralizeConfiguredExternalPolicyFiles(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init")

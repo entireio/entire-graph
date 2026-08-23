@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -2051,7 +2052,7 @@ const (
 	// file or executable is instead pinned at command scope. Local include
 	// directives are rejected by the metadata preflight before any Git command
 	// starts; global and system configuration are disabled below.
-	gitConfigCountEnv               = "GIT_CONFIG_COUNT=7"
+	gitPinnedConfigCount            = 7
 	gitConfigFSMonitorKeyEnv        = "GIT_CONFIG_KEY_0=core.fsmonitor"
 	gitConfigFSMonitorValueEnv      = "GIT_CONFIG_VALUE_0=false"
 	gitConfigLogSignatureKeyEnv     = "GIT_CONFIG_KEY_1=log.showSignature"
@@ -2086,7 +2087,7 @@ func newGitCmdWithCallerLocale(ctx context.Context, dir string, args ...string) 
 	// environment is stripped before the fixed guards are appended: --repo must
 	// name the repository Git opens, rather than an inherited GIT_DIR or object
 	// store silently replacing it.
-	cmd.Env = gitSubprocessEnvironment(cmd.Environ())
+	cmd.Env = gitSubprocessEnvironment(cmd.Environ(), dir)
 	return cmd
 }
 
@@ -2152,8 +2153,9 @@ func sanitizedGitEnvironment(env []string) []string {
 	return clean
 }
 
-func gitSubprocessEnvironment(env []string) []string {
-	return append(
+func gitSubprocessEnvironment(env []string, dir string) []string {
+	safeDirectories := gitSafeDirectoryValues(dir)
+	clean := append(
 		sanitizedGitEnvironment(env),
 		rawGitObjectsEnv,
 		noLazyFetchEnv,
@@ -2164,7 +2166,7 @@ func gitSubprocessEnvironment(env []string) []string {
 		"GIT_CONFIG_SYSTEM="+os.DevNull,
 		"GIT_ATTR_NOSYSTEM=1",
 		"GIT_TERMINAL_PROMPT=0",
-		gitConfigCountEnv,
+		"GIT_CONFIG_COUNT="+strconv.Itoa(gitPinnedConfigCount+len(safeDirectories)),
 		gitConfigFSMonitorKeyEnv,
 		gitConfigFSMonitorValueEnv,
 		gitConfigLogSignatureKeyEnv,
@@ -2180,6 +2182,45 @@ func gitSubprocessEnvironment(env []string) []string {
 		gitConfigDiffOrderFileKeyEnv,
 		"GIT_CONFIG_VALUE_6="+os.DevNull,
 	)
+	for index, directory := range safeDirectories {
+		configIndex := gitPinnedConfigCount + index
+		clean = append(clean,
+			"GIT_CONFIG_KEY_"+strconv.Itoa(configIndex)+"=safe.directory",
+			"GIT_CONFIG_VALUE_"+strconv.Itoa(configIndex)+"="+directory,
+		)
+	}
+	return clean
+}
+
+// gitSafeDirectoryValues returns exactly the paths Git can select while
+// discovering a repository from dir. safe.directory is only honored in
+// protected configuration; disabling inherited global and system config would
+// otherwise make an intentionally shared checkout unusable. Supplying these
+// values at command scope keeps that support without using safe.directory=*,
+// which would authorize repositories unrelated to the explicitly selected
+// command directory.
+//
+// Include dir itself for a worktree root or bare repository, then each parent
+// for callers that select a worktree subdirectory. Git compares canonicalized
+// paths, so an absolute, cleaned candidate is sufficient even when dir reaches
+// the checkout through a symlink. If Abs cannot resolve a relative dir because
+// the process working directory is unavailable, return no exception and let
+// Git fail closed on an ownership mismatch.
+func gitSafeDirectoryValues(dir string) []string {
+	directory, err := filepath.Abs(dir)
+	if err != nil {
+		return nil
+	}
+	directory = filepath.Clean(directory)
+	values := make([]string, 0, 8)
+	for {
+		values = append(values, directory)
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			return values
+		}
+		directory = parent
+	}
 }
 
 // newCmd builds the exec.Cmd used by subprocesses whose diagnostics must be
@@ -2214,7 +2255,7 @@ func newCmd(ctx context.Context, dir, name string, args ...string) *exec.Cmd {
 	// os.Environ would leave child processes with the parent's stale PWD.
 	env := cmd.Environ()
 	if name == "git" {
-		env = gitSubprocessEnvironment(env)
+		env = gitSubprocessEnvironment(env, dir)
 	}
 	cmd.Env = append(env, "LC_ALL=C", "LANG=C")
 	return cmd

@@ -2356,7 +2356,7 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	if optionalLocks != "0" {
 		t.Fatalf("effective GIT_OPTIONAL_LOCKS=%q, want 0 for read-only provider subprocesses", optionalLocks)
 	}
-	assertIsolatedGitConfiguration(t, "stable-locale command", env)
+	assertIsolatedGitConfiguration(t, "stable-locale command", env, dir)
 
 	grepCmd := newGitCmdWithCallerLocale(context.Background(), dir, "version")
 	if grepCmd.WaitDelay != gitCommandWaitDelay || grepCmd.WaitDelay == 0 {
@@ -2384,7 +2384,7 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	if optionalLocks != "0" {
 		t.Fatalf("caller-locale git command GIT_OPTIONAL_LOCKS=%q, want 0", optionalLocks)
 	}
-	assertIsolatedGitConfiguration(t, "caller-locale command", env)
+	assertIsolatedGitConfiguration(t, "caller-locale command", env, dir)
 }
 
 func commandEnvironment(cmd *exec.Cmd) map[string]string {
@@ -2396,15 +2396,16 @@ func commandEnvironment(cmd *exec.Cmd) map[string]string {
 	return env
 }
 
-func assertIsolatedGitConfiguration(t *testing.T, name string, env map[string]string) {
+func assertIsolatedGitConfiguration(t *testing.T, name string, env map[string]string, dir string) {
 	t.Helper()
+	safeDirectories := gitSafeDirectoryValues(dir)
 	want := map[string]string{
 		"GIT_CONFIG_NOSYSTEM": "1",
 		"GIT_CONFIG_GLOBAL":   os.DevNull,
 		"GIT_CONFIG_SYSTEM":   os.DevNull,
 		"GIT_ATTR_NOSYSTEM":   "1",
 		"GIT_TERMINAL_PROMPT": "0",
-		"GIT_CONFIG_COUNT":    "7",
+		"GIT_CONFIG_COUNT":    strconv.Itoa(gitPinnedConfigCount + len(safeDirectories)),
 		"GIT_CONFIG_KEY_0":    "core.fsmonitor",
 		"GIT_CONFIG_VALUE_0":  "false",
 		"GIT_CONFIG_KEY_1":    "log.showSignature",
@@ -2419,6 +2420,11 @@ func assertIsolatedGitConfiguration(t *testing.T, name string, env map[string]st
 		"GIT_CONFIG_VALUE_5":  "false",
 		"GIT_CONFIG_KEY_6":    "diff.orderFile",
 		"GIT_CONFIG_VALUE_6":  os.DevNull,
+	}
+	for index, directory := range safeDirectories {
+		configIndex := strconv.Itoa(gitPinnedConfigCount + index)
+		want["GIT_CONFIG_KEY_"+configIndex] = "safe.directory"
+		want["GIT_CONFIG_VALUE_"+configIndex] = directory
 	}
 	for key, value := range want {
 		if got := env[key]; got != value {
@@ -2498,13 +2504,14 @@ func TestGitCommandsDiscardInheritedRepositorySelection(t *testing.T) {
 		t.Setenv(key, value)
 	}
 
+	dir := t.TempDir()
 	controlled := map[string]string{
 		"GIT_CONFIG_GLOBAL":   os.DevNull,
 		"GIT_CONFIG_SYSTEM":   os.DevNull,
 		"GIT_CONFIG_NOSYSTEM": "1",
 		"GIT_ATTR_NOSYSTEM":   "1",
 		"GIT_TERMINAL_PROMPT": "0",
-		"GIT_CONFIG_COUNT":    "7",
+		"GIT_CONFIG_COUNT":    strconv.Itoa(gitPinnedConfigCount + len(gitSafeDirectoryValues(dir))),
 		"GIT_CONFIG_KEY_0":    "core.fsmonitor",
 		"GIT_CONFIG_VALUE_0":  "false",
 	}
@@ -2528,7 +2535,6 @@ func TestGitCommandsDiscardInheritedRepositorySelection(t *testing.T) {
 		}
 	}
 
-	dir := t.TempDir()
 	assertSanitized("stable-locale command", newCmd(t.Context(), dir, "git", "version"))
 	assertSanitized("caller-locale command", newGitCmdWithCallerLocale(t.Context(), dir, "version"))
 }
