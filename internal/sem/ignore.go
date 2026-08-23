@@ -834,6 +834,23 @@ const maxNestedIgnoreFiles = 512
 type nestedIgnoreRules struct {
 	base   ignoreMatcher
 	levels []nestedIgnoreLevel
+	// baseUnreadable is set when the root .gitignore could not be read at the
+	// committed revision (a real I/O error, not simply "no such file") — for
+	// example a promised blob a partial clone cannot lazily fetch because
+	// network egress is disabled. The project's own re-inclusion rules are
+	// then unknowable, so ReincludesDescendant fails OPEN for every path
+	// rather than let the vendored-directory heuristic silently drop
+	// first-party source it would have re-included.
+	baseUnreadable bool
+	// unreadableDirs holds the repo-relative directories whose OWN nested
+	// .gitignore failed to read for the same reason, scoped to that
+	// subtree only: the rest of the tree's rules are still known and still
+	// enforced.
+	unreadableDirs []string
+	// incomplete is set when the bounded reader cannot inspect every nested
+	// .gitignore. Unknown rules can affect any vendored subtree, so the heuristic
+	// must fail open globally instead of silently dropping possible re-inclusions.
+	incomplete bool
 }
 
 func newNestedIgnoreRules(base ignoreMatcher) *nestedIgnoreRules {
@@ -856,10 +873,21 @@ func (r *nestedIgnoreRules) addFile(file, content string) {
 }
 
 // ReincludesDescendant reports whether the root rules or any nested .gitignore
-// negate a path at or below rel.
+// negate a path at or below rel. It also fails open — reports true, meaning
+// "do not vendor-exclude this" — wherever the rules needed to answer honestly
+// could not be read, rather than silently agree with a heuristic that has no
+// idea what the project's own re-inclusion rules say there.
 func (r *nestedIgnoreRules) ReincludesDescendant(rel string) bool {
+	if r.baseUnreadable || r.incomplete {
+		return true
+	}
 	if r.base.ReincludesDescendant(rel) {
 		return true
+	}
+	for _, dir := range r.unreadableDirs {
+		if subtreesOverlap(dir, rel) {
+			return true
+		}
 	}
 	for _, level := range r.levels {
 		if level.matcher.reincludesDescendantUnder(level.dir, rel) {
@@ -878,6 +906,17 @@ func pathUnder(dir, rel string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimPrefix(rel, dir+"/"), true
+}
+
+// subtreesOverlap reports whether either path is the other path or its
+// ancestor. An unreadable nested .gitignore makes both its own subtree and any
+// ancestor that the vendored-directory heuristic might skip unknowable: if the
+// ancestor were skipped, traversal would never reach the unreadable rules.
+func subtreesOverlap(a, b string) bool {
+	if a == "" || b == "" || a == b {
+		return true
+	}
+	return strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
 
 func (m ignoreMatcher) MayIncludeDescendant(rel string) bool {

@@ -2,6 +2,11 @@ package sem
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +101,143 @@ func TestBuildReferenceIndexCaseSensitiveWholeToken(t *testing.T) {
 
 	if got, want := len(dependents), 2; got != want {
 		t.Fatalf("dependents count = %d, want %d: %#v", got, want, dependents)
+	}
+}
+
+func TestBuildReferenceIndexWarnsWhenPrefilteredBlobDisappears(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the Git wrapper is a POSIX shell script")
+	}
+	repo, head := newDependentsTestRepo(t)
+	objectID := rev(t, repo, head+":caller_one.py")
+	objectPath := filepath.Join(repo, ".git", "objects", objectID[:2], objectID[2:])
+	if _, err := os.Stat(objectPath); err != nil {
+		t.Fatalf("locate loose candidate blob: %v", err)
+	}
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapperDir := t.TempDir()
+	wrapper := filepath.Join(wrapperDir, "git")
+	script := `#!/bin/sh
+for arg do
+	if [ "$arg" = "grep" ]; then
+		"$REAL_GIT" "$@"
+		status=$?
+		if [ "$status" -eq 0 ]; then
+			unlink "$DELETE_OBJECT"
+		fi
+		exit "$status"
+	fi
+done
+exec "$REAL_GIT" "$@"
+`
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REAL_GIT", realGit)
+	t.Setenv("DELETE_OBJECT", objectPath)
+	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	index, warnings, err := buildReferenceIndex(context.Background(), repo, head, map[string]struct{}{"Foo": {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, counted := index["Foo"]["caller_one.py#function:check"]; counted {
+		t.Fatalf("dependent was counted after its blob disappeared: %#v", index["Foo"])
+	}
+	if _, counted := index["Foo"]["caller_two.py#function:check_again"]; !counted {
+		t.Fatalf("readable dependent disappeared beside the missing blob: %#v", index["Foo"])
+	}
+	var fileWarnings []ProviderWarning
+	for _, warning := range warnings {
+		if warning.FilePath == "caller_one.py" {
+			fileWarnings = append(fileWarnings, warning)
+		}
+	}
+	if len(fileWarnings) != 1 {
+		t.Fatalf("missing blob after dependent prefilter warnings = %#v, want exactly one", fileWarnings)
+	}
+	warning := fileWarnings[0]
+	if warning.Code != "E_FILE_READ" || warning.Severity != "error" ||
+		!strings.Contains(warning.Detail, "unavailable") ||
+		!strings.Contains(warning.EffectOnCompleteness, "not counted") {
+		t.Fatalf("missing blob warning = %#v, want exact E_FILE_READ completeness disclosure", warning)
+	}
+}
+
+func TestBuildReferenceIndexWarnsWhenPromisedBlobIsMissingBeforePrefilter(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+
+	authBase := gitObjectInputOutput(t, repo, "def Foo():\n    return 1\n", "hash-object", "-w", "--stdin")
+	authHead := gitObjectInputOutput(t, repo, "def Foo():\n    return 2\n", "hash-object", "-w", "--stdin")
+	missingCaller := gitObjectInputOutput(t, repo, "def missing_caller():\n    return Foo()\n", "hash-object", "-w", "--stdin")
+	readableCaller := gitObjectInputOutput(t, repo, "def readable_caller():\n    return Foo()\n", "hash-object", "-w", "--stdin")
+	treeInput := func(auth string) string {
+		return fmt.Sprintf(
+			"100644 blob %s\tauth.py%c100644 blob %s\tmissing.py%c100644 blob %s\treadable.py%c",
+			auth, byte(0), missingCaller, byte(0), readableCaller, byte(0),
+		)
+	}
+	baseTree := gitObjectInputOutput(t, repo, treeInput(authBase), "mktree", "-z")
+	base := gitObjectInputOutput(
+		t, repo, "", "-c", "user.name=Entire Graph Test", "-c", "user.email=graph@example.com",
+		"commit-tree", baseTree, "-m", "base",
+	)
+	headTree := gitObjectInputOutput(t, repo, treeInput(authHead), "mktree", "-z")
+	head := gitObjectInputOutput(
+		t, repo, "", "-c", "user.name=Entire Graph Test", "-c", "user.email=graph@example.com",
+		"commit-tree", headTree, "-p", base, "-m", "head",
+	)
+	git(t, repo, "update-ref", "refs/heads/main", head)
+	git(t, repo, "config", "extensions.partialClone", "origin")
+	git(t, repo, "config", "remote.origin.promisor", "true")
+	git(t, repo, "config", "remote.origin.partialclonefilter", "blob:none")
+
+	objectPath := filepath.Join(repo, ".git", "objects", missingCaller[:2], missingCaller[2:])
+	if err := os.Remove(objectPath); err != nil {
+		t.Fatalf("remove promised caller blob: %v", err)
+	}
+	assertMissing := func(stage string) {
+		t.Helper()
+		cmd := exec.Command("git", "cat-file", "-e", missingCaller)
+		cmd.Dir = repo
+		cmd.Env = append(cmd.Environ(), "GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL=")
+		if err := cmd.Run(); err == nil {
+			t.Fatalf("%s: promised caller blob unexpectedly exists", stage)
+		}
+	}
+	assertMissing("before dependent scan")
+
+	index, warnings, err := buildReferenceIndex(t.Context(), repo, head, map[string]struct{}{"Foo": {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMissing("after dependent scan")
+	if _, ok := index["Foo"]["readable.py#function:readable_caller"]; !ok {
+		t.Fatalf("readable sibling dependent was not counted: %#v", index["Foo"])
+	}
+	if _, ok := index["Foo"]["missing.py#function:missing_caller"]; ok {
+		t.Fatalf("missing promised dependent was unexpectedly counted: %#v", index["Foo"])
+	}
+
+	var fallbackWarnings, missingWarnings []ProviderWarning
+	for _, warning := range warnings {
+		if warning.Code == "W_DEPENDENTS_PREFILTER_FAILED" {
+			fallbackWarnings = append(fallbackWarnings, warning)
+		}
+		if warning.Code == "E_FILE_READ" && warning.FilePath == "missing.py" {
+			missingWarnings = append(missingWarnings, warning)
+		}
+	}
+	if len(fallbackWarnings) != 1 || len(missingWarnings) != 1 {
+		t.Fatalf("promised missing blob warnings = %#v, want one prefilter and one file-read warning", warnings)
+	}
+	if !strings.Contains(missingWarnings[0].EffectOnCompleteness, "not counted") {
+		t.Fatalf("missing blob warning does not disclose undercount: %#v", missingWarnings[0])
 	}
 }
 
@@ -300,6 +442,58 @@ func TestBuildReferenceIndexFallbackWarnsOnlyForCandidateFiles(t *testing.T) {
 	}
 }
 
+// TestBuildReferenceIndexFallbackWarnsForLineUnsafeOversizedCandidate
+// reproduces the dependents.go:248 finding: a candidate whose path the batch
+// reader's IsPathSafe rejects (here, an embedded newline) is read through
+// LimitedFileReader instead, which has no content-scanning capability of its
+// own, so oversizeMatched can never be populated for it. On the full-tree
+// fallback (git-grep failed, prefiltered == false) that used to read as "did
+// not match" and silently drop the E_FILE_TOO_LARGE warning even though the
+// file does contain a changed name, undercounting dependents_count with
+// nothing in Result.Warnings to show for it. With no candidate evidence
+// either way, it must warn.
+func TestBuildReferenceIndexFallbackWarnsForLineUnsafeOversizedCandidate(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+
+	// importDeepDependentFiles treats a single path component as both the
+	// containing tree's name and the blob's own name, so a genuinely flat
+	// path needs a directory component to avoid an unrelated self-nesting
+	// quirk in the fixture builder.
+	const unsafePath = "d/unsafe\ncaller.py"
+	head := importDeepDependentFiles(t, repo, []deepDependentFile{{
+		path:    unsafePath,
+		content: paddedPythonSource("unsafe_caller", "Foo", defaultMaxParseBytes+4096),
+	}})
+
+	// The NUL byte forces the grep prefilter to fail, exactly as in
+	// TestBuildReferenceIndexFallbackWarnsOnlyForCandidateFiles, so
+	// buildReferenceIndex takes the full-tree fallback.
+	names := map[string]struct{}{
+		"Foo":         {},
+		"poison\x00x": {},
+	}
+	_, warnings, err := buildReferenceIndex(context.Background(), repo, head, names)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var fallbackCount, tooLargeCount int
+	for _, warning := range warnings {
+		if warning.Code == "W_DEPENDENTS_PREFILTER_FAILED" {
+			fallbackCount++
+		}
+		if warning.Code == "E_FILE_TOO_LARGE" && warning.FilePath == unsafePath {
+			tooLargeCount++
+		}
+	}
+	if fallbackCount != 1 || tooLargeCount != 1 || len(warnings) != 2 {
+		t.Fatalf("warnings = %#v, want exactly one prefilter warning and one E_FILE_TOO_LARGE for the line-unsafe candidate", warnings)
+	}
+}
+
 // pfBrokenCallsFooTS is a hard tree-sitter parse failure (mirrors
 // analyze_parsefailure_test.go's pfBrokenTS trick: a malformed leading type
 // alias derails the whole parse) that also contains a whole-token match for
@@ -437,6 +631,260 @@ func TestAddDependentCountsBudgetExpiredWarnsAndKeepsResult(t *testing.T) {
 	}
 	if got := result.Files[0].Changes[0].DependentsCount; got != 0 {
 		t.Fatalf("dependents count under expired budget = %d, want 0", got)
+	}
+}
+
+type deepDependentFile struct {
+	path    string
+	content string
+}
+
+// importDeepDependentFiles builds the tree one component at a time. No Git
+// command receives the complete adversarial path: besides avoiding filesystem
+// limits, that keeps the fixture valid on Git for Windows, whose fast-import
+// path parser rejects names this deep even though the object format permits
+// them.
+func importDeepDependentFiles(t *testing.T, repo string, files []deepDependentFile) string {
+	t.Helper()
+	var rootInput strings.Builder
+	for _, file := range files {
+		components := strings.Split(file.path, "/")
+		blob := gitObjectInputOutput(t, repo, file.content, "hash-object", "-w", "--stdin")
+		tree := gitObjectInputOutput(
+			t,
+			repo,
+			fmt.Sprintf("100644 blob %s\t%s%c", blob, components[len(components)-1], byte(0)),
+			"mktree", "-z",
+		)
+		for i := len(components) - 2; i >= 1; i-- {
+			tree = gitObjectInputOutput(
+				t,
+				repo,
+				fmt.Sprintf("040000 tree %s\t%s%c", tree, components[i], byte(0)),
+				"mktree", "-z",
+			)
+		}
+		fmt.Fprintf(&rootInput, "040000 tree %s\t%s%c", tree, components[0], byte(0))
+	}
+	root := gitObjectInputOutput(t, repo, rootInput.String(), "mktree", "-z")
+	commit := gitObjectInputOutput(
+		t,
+		repo,
+		"",
+		"-c", "user.name=Entire Graph Test",
+		"-c", "user.email=graph@example.com",
+		"commit-tree", root, "-m", "deep dependents",
+	)
+	git(t, repo, "update-ref", "refs/heads/deep-dependents", commit)
+	return commit
+}
+
+func gitObjectInputOutput(t *testing.T, repo, input string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repo
+	cmd.Stdin = strings.NewReader(input)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func repeatedDeepUnsafePath(branch, depth, componentBytes int) string {
+	component := strings.Repeat(string(rune('a'+branch)), componentBytes)
+	components := make([]string, depth, depth+1)
+	for i := range components {
+		components[i] = component
+	}
+	components = append(components, fmt.Sprintf("unsafe\ncaller_%d.py", branch))
+	return strings.Join(components, "/")
+}
+
+// TestBuildReferenceIndexSharesDeepPathMetadataAllowance proves that unsafe
+// dependent paths use one LimitedFileReader. Four independent 81-component
+// paths need 324 metadata subprocesses in total; the shared allowance resolves
+// three, then reports the known-relevant remainder as partial. The previous
+// per-file ReadFileLimited fallback reset the allowance four times and read all
+// four paths.
+func TestBuildReferenceIndexSharesDeepPathMetadataAllowance(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+
+	files := make([]deepDependentFile, 4)
+	for i := range files {
+		files[i] = deepDependentFile{
+			path:    repeatedDeepUnsafePath(i, 80, 200),
+			content: fmt.Sprintf("def caller_%d():\n    return Foo()\n", i),
+		}
+	}
+	head := importDeepDependentFiles(t, repo, files)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	index, warnings, err := buildReferenceIndexWithProgress(ctx, repo, head, map[string]struct{}{"Foo": {}}, dependentsScanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("dependents scan exceeded safety timeout: %v", err)
+	}
+	if got, want := len(index["Foo"]), 3; got != want {
+		t.Fatalf("dependents resolved before shared metadata cap = %d, want %d", got, want)
+	}
+
+	var unaddressable []ProviderWarning
+	for _, warning := range warnings {
+		if warning.Code == "E_FILE_READ" && strings.Contains(warning.Detail, "bounded Git metadata traversal") {
+			unaddressable = append(unaddressable, warning)
+		}
+		if warning.Code == "W_ANALYSIS_BUDGET_EXCEEDED" {
+			t.Fatalf("metadata process cap must not be reported as a time budget expiry: %#v", warning)
+		}
+	}
+	if got, want := len(unaddressable), 1; got != want {
+		t.Fatalf("bounded metadata warnings = %d, want %d: %#v", got, want, warnings)
+	}
+	if unaddressable[0].EffectOnCompleteness == "" {
+		t.Fatalf("bounded metadata warning must explain partial dependents: %#v", unaddressable[0])
+	}
+}
+
+// Every newline-bearing candidate is unsafe for cat-file's LF request
+// protocol. Prime must batch their exact metadata before the scan; otherwise
+// each lazy fallback starts its own ls-tree process and the scan cost grows
+// linearly with the candidate count.
+func TestBuildReferenceIndexBatchesLineUnsafeMetadata(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the Git wrapper is a POSIX shell script")
+	}
+	repo := t.TempDir()
+	git(t, repo, "init")
+	const fileCount = 200
+	files := make([]deepDependentFile, fileCount)
+	for i := range files {
+		files[i] = deepDependentFile{
+			path:    fmt.Sprintf("unsafe\ncaller_%03d.py", i),
+			content: fmt.Sprintf("def caller_%03d():\n    return Foo()\n", i),
+		}
+	}
+	head := importDeepDependentFiles(t, repo, files)
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapperDir := t.TempDir()
+	lsTreeLog := filepath.Join(wrapperDir, "ls-tree.log")
+	wrapper := filepath.Join(wrapperDir, "git")
+	script := `#!/bin/sh
+for arg do
+	if [ "$arg" = "ls-tree" ]; then
+		printf 'ls-tree\n' >> "$LS_TREE_LOG"
+		break
+	fi
+done
+exec "$REAL_GIT" "$@"
+`
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REAL_GIT", realGit)
+	t.Setenv("LS_TREE_LOG", lsTreeLog)
+	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	index, warnings, err := buildReferenceIndexWithProgress(
+		ctx,
+		repo,
+		head,
+		map[string]struct{}{"Foo": {}},
+		dependentsScanOptions{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("line-unsafe dependents scan exceeded safety timeout: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("line-unsafe dependents warnings = %#v, want none", warnings)
+	}
+	if got := len(index["Foo"]); got != fileCount {
+		t.Fatalf("line-unsafe dependents = %d, want %d", got, fileCount)
+	}
+	log, err := os.ReadFile(lsTreeLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Count(string(log), "ls-tree\n"), 2; got != want {
+		t.Fatalf("ls-tree metadata subprocesses = %d, want %d bounded batches", got, want)
+	}
+}
+
+// TestHeadReadersShareDeepUnsafeMetadataAllowance covers the two committed
+// multi-file reader closures outside Analyze. Each has one shared component
+// allowance: four independent 81-component unsafe paths resolve three and
+// classify the fourth as unavailable. A fresh one-shot reader per file would
+// reset the allowance and incorrectly read all four.
+func TestHeadReadersShareDeepUnsafeMetadataAllowance(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	files := make([]deepDependentFile, 4)
+	for i := range files {
+		files[i] = deepDependentFile{
+			path:    repeatedDeepUnsafePath(i, 80, 200),
+			content: fmt.Sprintf("def caller_%d():\n    return %d\n", i, i),
+		}
+	}
+	head := importDeepDependentFiles(t, repo, files)
+	git(t, repo, "symbolic-ref", "HEAD", "refs/heads/deep-dependents")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	source, err := prepareSource(ctx, repo, ProviderSnapshotOptions{MaxParseBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Read in the opposite order from the deterministic listing. Without the
+	// pre-worker Prime, this reverse schedule would give the allowance to the
+	// last three paths and make provider output depend on worker timing.
+	providerRead := make(map[string]bool, len(files))
+	for i := len(files) - 1; i >= 0; i-- {
+		file := files[i]
+		if content, ok := source.read(file.path); ok && content == file.content {
+			providerRead[file.path] = true
+		}
+	}
+	if err := source.close(); err != nil {
+		t.Fatal(err)
+	}
+	for i, file := range files {
+		want := i < 3
+		if got := providerRead[file.path]; got != want {
+			t.Fatalf("provider read for listed path %d = %v, want %v", i, got, want)
+		}
+	}
+
+	readSearch, closeSearch, err := openSearchContentReader(ctx, repo, head, true, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	searchReads := 0
+	for _, file := range files {
+		if content, ok := readSearch(file.path); ok && content == file.content {
+			searchReads++
+		}
+	}
+	if err := closeSearch(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := searchReads, 3; got != want {
+		t.Fatalf("search reads before shared metadata cap = %d, want %d", got, want)
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("shared head readers exceeded safety timeout: %v", err)
 	}
 }
 

@@ -1,0 +1,368 @@
+package sem
+
+import (
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+// TestAnalyzeGitRangeRefusesBlobsAboveTheReadCap pins the memory and time bound
+// of the semantic diff: `diff`/`commit` read BOTH sides of every changed file,
+// so an uncapped read makes one oversized blob set the command's cost. The file
+// must not vanish either — it is skipped with a machine-readable
+// E_FILE_TOO_LARGE warning, the same code the snapshot path uses.
+func TestAnalyzeGitRangeRefusesBlobsAboveTheReadCap(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+
+	// One long string literal, so the blob is large but cheap to lex: the test
+	// is about the read, not about parser throughput.
+	// Sized against defaultMaxParseBytes rather than against the diff cap's own
+	// name, so this file compiles against a tree where the cap does not exist
+	// yet and the test can be shown to FAIL there rather than not build.
+	huge := func(fill string) string {
+		return "BLOB = \"" + strings.Repeat(fill, defaultMaxParseBytes+1024) + "\"\n"
+	}
+	write(t, repo, "huge.py", huge("x"))
+	write(t, repo, "small.py", "def helper(value):\n    return value\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	base := rev(t, repo, "HEAD")
+	write(t, repo, "huge.py", huge("y"))
+	write(t, repo, "small.py", "def helper(value):\n    return value + 1\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "change")
+	head := rev(t, repo, "HEAD")
+
+	result, err := AnalyzeGitRange(t.Context(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, file := range result.Files {
+		if file.Path == "huge.py" {
+			t.Fatalf("a blob above the %d-byte read cap was analyzed: %#v", defaultMaxParseBytes, file)
+		}
+	}
+	analyzedSmall := false
+	for _, file := range result.Files {
+		if file.Path == "small.py" {
+			analyzedSmall = true
+		}
+	}
+	if !analyzedSmall {
+		t.Fatalf("the cap must refuse only the oversized file; small.py was not analyzed: %#v", result.Files)
+	}
+
+	var refusal *ProviderWarning
+	for i, warning := range result.Warnings {
+		if warning.Code == "E_FILE_TOO_LARGE" && warning.FilePath == "huge.py" {
+			refusal = &result.Warnings[i]
+		}
+	}
+	if refusal == nil {
+		t.Fatalf("a refused file must not disappear silently; warnings = %#v", result.Warnings)
+	}
+	if refusal.Severity != "warning" {
+		t.Fatalf("severity = %q, want warning", refusal.Severity)
+	}
+	if refusal.EffectOnCompleteness == "" || refusal.Detail == "" {
+		t.Fatalf("refusal warning must explain itself: %#v", *refusal)
+	}
+}
+
+func TestCommittedProviderRecoversFromMissingBlobObjectsForSafeAndUnsafePaths(t *testing.T) {
+	repo := t.TempDir()
+	initRepo(t, repo)
+	knownBlob := gitInput(t, repo, "def available():\n    return True\n", "hash-object", "-w", "--stdin")
+	missingOID := strings.Repeat("1", len(knownBlob))
+	const (
+		safePath          = "safe-missing.py"
+		unsafePath        = "unsafe\nmissing.py"
+		invalidUnsafePath = "../unsafe\ninvalid.py"
+	)
+	invalidSubtree := gitInput(
+		t,
+		repo,
+		"100644 blob "+knownBlob+"\tunsafe\ninvalid.py\x00",
+		"mktree", "-z",
+	)
+	treeInput := "040000 tree " + invalidSubtree + "\t..\x00" +
+		"100644 blob " + knownBlob + "\tplain.py\x00" +
+		"100644 blob " + missingOID + "\t" + safePath + "\x00" +
+		"100644 blob " + missingOID + "\t" + unsafePath + "\x00"
+	tree := gitInput(t, repo, treeInput, "mktree", "-z", "--missing")
+	commit := gitInput(t, repo, "missing-object parity\n", "commit-tree", tree)
+	git(t, repo, "update-ref", "HEAD", commit)
+
+	snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test", ProviderSnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot with listed missing objects: %v", err)
+	}
+	foundPlain := false
+	for _, file := range snapshot.Files {
+		if file.Path == "plain.py" {
+			foundPlain = true
+		}
+		if file.Path == safePath || file.Path == unsafePath || file.Path == invalidUnsafePath {
+			t.Fatalf("missing-object path emitted a file record: %#v", file)
+		}
+	}
+	if !foundPlain {
+		t.Fatalf("recoverable missing objects suppressed the readable sibling: %#v", snapshot.Files)
+	}
+
+	failures := map[string]PartialFailure{}
+	for _, failure := range snapshot.Header.PartialFailures {
+		if failure.FilePath == safePath || failure.FilePath == unsafePath || failure.FilePath == invalidUnsafePath {
+			failures[failure.FilePath] = failure
+		}
+	}
+	for _, path := range []string{safePath, unsafePath, invalidUnsafePath} {
+		failure, ok := failures[path]
+		if !ok {
+			t.Fatalf("missing-object path %q had no partial failure: %#v", path, snapshot.Header.PartialFailures)
+		}
+		if failure.Code != "E_FILE_READ" || failure.Severity != "error" || failure.Detail != "file listed but content was unavailable" {
+			t.Fatalf("missing-object path %q failure = %#v, want E_FILE_READ parity", path, failure)
+		}
+	}
+}
+
+// TestHeadReadersCapNewlineBearingPaths pins the bound on the one HEAD read
+// that the `git cat-file --batch` protocol cannot carry. The batch reader is
+// line based, so a Git path containing a newline falls back to a shared bounded
+// reader — a fallback selected by the file's NAME, which the repository under
+// analysis chooses. An uncapped fallback therefore lets any repository opt a
+// blob out of the cap by renaming it.
+func TestHeadReadersCapNewlineBearingPaths(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Win32 rejects newlines (and every other control character) in file
+		// names, so this input cannot exist there and Git cannot check it out.
+		t.Skip("a newline-bearing file name is unrepresentable on Windows")
+	}
+
+	const newlinePath = "over\ncap.py"
+	const smallNewlinePath = "under\ncap.py"
+	const carriagePath = "carriage.py\r"
+	const carriageContent = "def carriage(value):\n    return value\n"
+
+	repo := t.TempDir()
+	initRepo(t, repo)
+	// defaultMaxParseBytes is the ceiling openSearchContentReader applies, so
+	// the oversized fixture is sized against it; openSource takes its ceiling
+	// from the caller and is exercised with a much smaller one below.
+	writeSparseFile(t, repo, newlinePath, int64(defaultMaxParseBytes)+1, "# over the cap\n")
+	write(t, repo, smallNewlinePath, "def helper(value):\n    return value\n")
+	write(t, repo, carriagePath, carriageContent)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	head := rev(t, repo, "HEAD")
+
+	t.Run("openSource", func(t *testing.T) {
+		opened, err := openSource(t.Context(), repo, head, sourceOptions{maxReadBytes: 1024})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if opened.close != nil {
+				_ = opened.close()
+			}
+		}()
+		listed := false
+		for _, path := range opened.paths {
+			if path == newlinePath {
+				listed = true
+			}
+		}
+		if !listed {
+			t.Fatalf("fixture is not exercising the read closure; paths = %#v", opened.paths)
+		}
+		if content, ok := opened.read(newlinePath); ok {
+			t.Fatalf("read returned %d bytes for a blob above the 1024-byte cap", len(content))
+		}
+		if content, ok := opened.readPrefix(newlinePath, 64); ok {
+			t.Fatalf("readPrefix returned %d bytes for a blob above the 1024-byte cap", len(content))
+		}
+		if _, ok := opened.read(smallNewlinePath); !ok {
+			t.Fatal("a newline-bearing path under the cap must still be readable")
+		}
+		if content, ok := opened.read(carriagePath); !ok || content != carriageContent {
+			t.Fatalf("trailing-CR path = (%q, %v), want exact content", content, ok)
+		}
+	})
+
+	// The refused blob must still be accounted for. docs/trust-and-security.md
+	// promises that a file the graph cannot process emits a machine-readable
+	// partial failure "rather than disappearing silently", and that promise is
+	// the reason this assertion does not name a code: it holds whichever code
+	// the snapshot chooses for a read it declined.
+	t.Run("snapshotAccountsForTheRefusedFile", func(t *testing.T) {
+		snapshot, err := BuildProviderSnapshotWithOptions(t.Context(), repo, "test", ProviderSnapshotOptions{MaxParseBytes: 1024})
+		if err != nil {
+			t.Fatal(err)
+		}
+		reported := false
+		for _, failure := range snapshot.Header.PartialFailures {
+			if failure.FilePath == newlinePath {
+				reported = true
+				if failure.Code == "" || failure.EffectOnCompleteness == "" {
+					t.Fatalf("partial failure must be machine-readable: %#v", failure)
+				}
+			}
+		}
+		if !reported {
+			t.Fatalf("the refused file disappeared silently; partial failures = %#v", snapshot.Header.PartialFailures)
+		}
+	})
+
+	t.Run("openSearchContentReader", func(t *testing.T) {
+		read, closeReader, err := openSearchContentReader(t.Context(), repo, head, true, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if closeReader != nil {
+				_ = closeReader()
+			}
+		}()
+		if content, ok := read(newlinePath); ok {
+			t.Fatalf("read returned %d bytes for a blob above the %d-byte cap", len(content), defaultMaxParseBytes)
+		}
+		if _, ok := read(smallNewlinePath); !ok {
+			t.Fatal("a newline-bearing path under the cap must still be readable")
+		}
+		if content, ok := read(carriagePath); !ok || content != carriageContent {
+			t.Fatalf("search trailing-CR path = (%q, %v), want exact content", content, ok)
+		}
+	})
+}
+
+func TestHeadReadersFallbackWhenRepoPrefixContainsNewline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows directory names cannot contain newlines")
+	}
+	root := t.TempDir()
+	initRepo(t, root)
+	const firstContent = "def first():\n    return 1\n"
+	const secondContent = "def second():\n    return 2\n"
+	write(t, root, "line\nscope/first.py", firstContent)
+	write(t, root, "line\nscope/second.py", secondContent)
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-m", "newline prefix fixture")
+	head := rev(t, root, "HEAD")
+	repo := filepath.Join(root, "line\nscope")
+
+	opened, err := openSource(t.Context(), repo, head, sourceOptions{maxReadBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = opened.close() }()
+	for path, want := range map[string]string{"first.py": firstContent, "second.py": secondContent} {
+		content, ok := opened.read(path)
+		if !ok || content != want {
+			t.Fatalf("provider read after newline prefix %q = (%q, %v), want exact content", path, content, ok)
+		}
+	}
+
+	read, closeReader, err := openSearchContentReader(t.Context(), repo, head, true, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeReader() }()
+	for path, want := range map[string]string{"first.py": firstContent, "second.py": secondContent} {
+		content, ok := read(path)
+		if !ok || content != want {
+			t.Fatalf("search read after newline prefix %q = (%q, %v), want exact content", path, content, ok)
+		}
+	}
+}
+
+// TestRefusedNewlinePathKeepsItsFileRecord is the parity guard the cap must not
+// cost. ProviderSnapshotOptions.MaxParseBytes documents (provider.go:356-361)
+// that an oversized file "still emit[s] file records and a partial failure" with
+// the record's blob hash and line count "from a streamed digest". The batch
+// reader keeps that promise: it digests the blob it refuses on the way past.
+//
+// The bounded fallback taken for a newline-bearing path must keep the same
+// promise. If it only refuses, processProviderFile cannot tell a refused file
+// from an unreadable one (provider_parallel.go:76-126): the FileRecord is
+// dropped, the warning-severity E_FILE_TOO_LARGE becomes an error-severity
+// E_FILE_READ, and completeness falls from ok to degraded. The file then
+// disappears from the snapshot because of how it is NAMED.
+func TestRefusedNewlinePathKeepsItsFileRecord(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Win32 rejects newlines (and every other control character) in file
+		// names, so this input cannot exist there and Git cannot check it out.
+		t.Skip("a newline-bearing file name is unrepresentable on Windows")
+	}
+
+	const newlinePath = "record\nme.py"
+	const oversizeBytes = int64(4096)
+
+	repo := t.TempDir()
+	initRepo(t, repo)
+	writeSparseFile(t, repo, newlinePath, oversizeBytes, "# over the cap\n")
+	write(t, repo, "plain.py", "def helper(value):\n    return value\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "initial")
+	wantHash, wantLines := fileSHA256(t, filepath.Join(repo, newlinePath))
+
+	snapshot, err := BuildProviderSnapshotWithOptions(
+		t.Context(), repo, "test", ProviderSnapshotOptions{MaxParseBytes: 1024},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var record *FileRecord
+	for i := range snapshot.Files {
+		if snapshot.Files[i].Path == newlinePath {
+			record = &snapshot.Files[i]
+		}
+	}
+	if record == nil {
+		t.Fatalf("the refused file lost its record; files = %#v", snapshot.Files)
+	}
+	if int64(record.Bytes) != oversizeBytes || record.Lines != wantLines || record.Blob != wantHash {
+		t.Fatalf(
+			"record = {Bytes:%d Lines:%d Blob:%s}, want {Bytes:%d Lines:%d Blob:%s}",
+			record.Bytes, record.Lines, record.Blob, oversizeBytes, wantLines, wantHash,
+		)
+	}
+	if record.Language != "Python" {
+		t.Fatalf("record language = %q, want Python", record.Language)
+	}
+
+	var failure *PartialFailure
+	for i := range snapshot.Header.PartialFailures {
+		if snapshot.Header.PartialFailures[i].FilePath == newlinePath {
+			failure = &snapshot.Header.PartialFailures[i]
+		}
+	}
+	if failure == nil {
+		t.Fatalf("the refused file disappeared silently; partial failures = %#v", snapshot.Header.PartialFailures)
+	}
+	if failure.Code != "E_FILE_TOO_LARGE" || failure.Severity != "warning" {
+		t.Fatalf("failure = {Code:%s Severity:%s}, want {E_FILE_TOO_LARGE warning}", failure.Code, failure.Severity)
+	}
+	if snapshot.Header.Stats.CompletenessLevel != "ok" {
+		t.Fatalf("completeness = %q, want ok", snapshot.Header.Stats.CompletenessLevel)
+	}
+
+	// The parity must not come from un-capping the read: the fallback still
+	// refuses to materialize the blob.
+	opened, err := openSource(t.Context(), repo, rev(t, repo, "HEAD"), sourceOptions{maxReadBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if opened.close != nil {
+			_ = opened.close()
+		}
+	}()
+	if content, ok := opened.read(newlinePath); ok {
+		t.Fatalf("read returned %d bytes for a blob above the 1024-byte cap", len(content))
+	}
+}

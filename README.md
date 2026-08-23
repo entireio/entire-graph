@@ -40,8 +40,10 @@ retractions, and reproduction steps.
 
 ## Install
 
-Entire Graph requires Entire CLI 0.10.0 or later on `PATH`. The commands
-below are the official ones from the [Entire CLI installation
+Entire Graph requires Entire CLI 0.10.0 or later and Git 2.36 or later on
+`PATH`. Git 2.36 added the single-session object protocol Entire Graph uses to
+inspect an object's type before reading its contents. The commands below are
+the official ones from the [Entire CLI installation
 guide](https://docs.entire.io/installation), which also covers Windows and
 other channels.
 
