@@ -3,7 +3,7 @@
   "checkpoint_id": "07cd5a9392aa",
   "strategy": "manual-commit",
   "branch": "codex/test-git-subprocess-hardening-regressions",
-  "checkpoints_count": 1,
+  "checkpoints_count": 3,
   "files_touched": [
     "internal/gitutil/git_hardening_test.go",
     "internal/sem/search_cache_worktree_test.go"
@@ -18,10 +18,10 @@
     }
   ],
   "token_usage": {
-    "input_tokens": 47,
-    "cache_creation_tokens": 42646,
-    "cache_read_tokens": 1283452,
-    "output_tokens": 9680,
-    "api_call_count": 27
+    "input_tokens": 22,
+    "cache_creation_tokens": 17266,
+    "cache_read_tokens": 1104632,
+    "output_tokens": 10098,
+    "api_call_count": 12
   }
 }
