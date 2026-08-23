@@ -26,28 +26,64 @@ other is installation.
   resolver-relative-path bounds, and rejects mount points, off-volume redirects,
   and special files.
   Git's own fsmonitor daemon socket is permitted because every provider Git
-  subprocess explicitly disables `core.fsmonitor`. Git configuration-derived
-  paths and commands, including `extensions.refStorage` locations, remain the
-  separate limitation recorded in `docs/parking-lot.md`. Adjacent setup helpers
-  reuse a repository-bound validation receipt only within the current operation;
+  subprocess explicitly disables `core.fsmonitor`. Before those subprocesses
+  start, inherited global and system Git configuration is disabled and the
+  bounded repository-metadata preflight rejects active repository-local
+  `[include]` and `[includeIf]` sections, including in an enabled
+  `config.worktree`. Repository-local configuration remains available for
+  structural settings Git needs; active `core.worktree` paths are checked by
+  the same rooted preflight. Active partial-clone/promisor configuration is
+  refused because supported Git versions before 2.45 can inspect a local or UNC
+  promisor URL before enforcing the transport deny-list. At command scope the
+  provider sets
+  `core.fsmonitor=false`, `log.showSignature=false`, `log.mailmap=false`,
+  `submodule.recurse=false`, and empty values for `core.excludesFile` and
+  `core.attributesFile`; `diff.orderFile` is pinned to the platform null device.
+  Configuration-derived external ignore, attribute, mailmap, and diff-order
+  files are therefore not read or honored, and grep does not enter nested
+  submodule worktrees. Machine-readable grep calls explicitly disable configured
+  line numbers, columns, color, and full-name rewriting. Working-tree snapshot
+  caching stays disabled instead of asking Git's conversion-aware status
+  machinery to run repository-configured clean or process filters. Remaining
+  configuration-derived structural limitations, including relocated ref storage,
+  are recorded in `docs/parking-lot.md`. Adjacent setup helpers reuse a
+  repository-bound validation receipt only within the current operation;
   validation results are not cached globally or persisted.
-- The full Git ignore stack, including nested `.gitignore` files,
-  `.git/info/exclude`, per-worktree excludes, and `core.excludesFile`, plus
-  `.graphignore` and any
+- Before Git recursively enumerates untracked worktree content, a bounded
+  held-root preflight walks the complete directory tree without resolving a
+  nested case-insensitive `.git` marker. Nested markers, traversable redirects,
+  mount boundaries, unreadable directories, cancellation, and traversal
+  ceilings all select the bounded filesystem fallback before
+  `git ls-files --others` starts.
+  This prevents an untracked gitfile from making Git resolve a UNC or off-volume
+  target before the post-listing Git-directory excluder can observe it.
+- Repository-controlled Git ignore policy, including nested `.gitignore` files,
+  `.git/info/exclude`, and per-worktree excludes, plus `.graphignore` and any
   `--ignore-file`/`--include-file` the caller passes.
-  External ignore inputs are bounded to 1 MiB per file and 64 KiB per rule
+  Caller-supplied ignore inputs are bounded to 1 MiB per file and 64 KiB per rule
   line. One listing retains at most 16,384 parsed external rules and observes at
   most 512 nested `.gitignore` files. A limit refusal is reported instead of
   truncating the policy and silently changing the indexed corpus. Nested
   worktree ignore files are confined to the repository and are not followed
   through a symlink that escapes it. When Git cannot enumerate a worktree, the
   bounded filesystem fallback applies the ignore files it can observe and emits
-  `W_GIT_WORKTREE_FALLBACK`; Git-only policy such as `core.excludesFile` may be
-  unavailable, so the warning explicitly reports that excluded files can be
-  present. Its ignored-tree `.git`-pointer sweep stays beneath a held repository
-  root and refuses redirects or mount points (including same-filesystem bind
-  mounts on Linux); a refused directory is disclosed as
+  `W_GIT_WORKTREE_FALLBACK`; Git-only policy may be unavailable, so the warning
+  explicitly reports that excluded files can be present. Configuration-derived
+  `core.excludesFile` is outside the effective policy in both the Git and
+  fallback paths. The fallback's ignored-tree `.git`-pointer sweep stays beneath
+  a held repository root and refuses redirects or mount points (including
+  same-filesystem bind mounts on Linux); a refused directory is disclosed as
   `W_GITDIR_SWEEP_UNREADABLE_DIRECTORY`.
+- Inherited repository-selection, attribute-source, and pathspec-control
+  variables, every `GIT_TRACE*` output target, and Git for Windows'
+  `GIT_REDIRECT_*` standard-stream targets are removed from production Git
+  subprocesses. `GIT_TEXTDOMAINDIR` is removed too because Git probes it during
+  startup. Those inherited values therefore cannot open an arbitrary path or
+  socket (including a Windows UNC target) or replace explicit machine-command
+  path semantics. When `GIT_CEILING_DIRECTORIES` is present during implicit
+  discovery, the CLI applies usable absolute entries lexically in-process and
+  never gives Git the raw list, whose canonicalization could itself probe an
+  off-volume or UNC path. All selected-repository subprocesses discard it.
 - For `stats` only: local coding-agent session transcripts
   (`~/.claude/projects/<path-slug>/*.jsonl`, or `--sessions-dir`/
   `--transcript` overrides). This is Claude Code's transcript layout; the

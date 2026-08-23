@@ -4,20 +4,25 @@ Deferred work that is intentionally outside the scope of the pull request that
 identified it. Each item should be reassessed before implementation so that a
 fix does not reduce functionality or performance.
 
-## 1. Structurally validate Git configuration-derived paths and commands
+## 1. Validate remaining repository-local structural Git configuration
 
-The repository metadata validator covers structural Git metadata, but not paths
-or commands supplied by Git configuration. Examples include `include.path`,
-`core.worktree`, `core.excludesFile`, `extensions.refStorage` (including its
-optional relocated reftable path), `core.fsmonitor`, and
-`core.alternateRefsCommand`. In a repository with hostile configuration, Git
-could therefore read an external, off-volume, or UNC path, or invoke a configured
-command, even after the structural metadata checks pass.
+The broad configuration-derived vectors that motivated this item are now
+bounded. Production Git subprocesses disable inherited global and system
+configuration; the metadata preflight rejects active repository-local
+`[include]` and `[includeIf]` sections and checks active `core.worktree` paths;
+and command-scope configuration disables `core.fsmonitor`,
+`log.showSignature`, `log.mailmap`, `submodule.recurse`, `core.excludesFile`,
+`core.attributesFile`, and `diff.orderFile`. Those fixed settings are no longer
+deferred work.
 
-A follow-up should centralize or synthesize the configuration used by production
-Git subprocesses. It must preserve supported repository behavior, the provider's
-no-egress contract, and current performance. PR #134 contains related Git
-configuration defenses; rebases must preserve both sets of protections.
+Repository-local structural configuration still cannot be disabled wholesale:
+Git needs it for repository format and layout. A follow-up should classify and
+preflight the remaining path- or command-bearing settings that the production
+command surface can activate. This includes `extensions.refStorage` when it can
+name a relocated reftable store, and may include command-bearing settings such as
+`core.alternateRefsCommand` as command coverage evolves. The follow-up must
+preserve supported repository formats, the provider's no-egress contract, and
+current performance; it should not re-list neutralized settings as unresolved.
 
 ## 3. Enforce metadata validation at the Git subprocess boundary
 

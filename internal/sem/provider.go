@@ -13371,24 +13371,486 @@ func gitMetadataDirectoryPathsSafe(repoRoot, gitDir string) bool {
 	return gitMetadataDirectoryPathsSafeWithResolver(resolver, gitDir)
 }
 
+// gitLocalConfigPreflight retains only the repository-format settings that can
+// change which additional config, worktree path, or promisor remote Git opens.
+// The ordinary Git config API follows include.path while it is parsing a file,
+// before a later command-scope override can replace the value. Promisor remotes
+// have the same ordering problem: Git registers a true remote.*.promisor or any
+// remote.*.partialCloneFilter monotonically, while extensions.partialClone is
+// read directly from the repository-format file. A later -c value cannot undo
+// either one. The metadata guard therefore has to reject those namespaces before
+// Git starts.
+type gitLocalConfigPreflight struct {
+	hasInclude               bool
+	hasPartialCloneExtension bool
+	hasPromisorRemote        bool
+	worktreeConfig           bool
+	coreWorktree             string
+	hasCoreWorktree          bool
+}
+
+// gitLocalConfigPreflightFromOpened reads repository config from the handle the
+// rooted resolver already opened and classified. Reopening its pathname would
+// give a concurrent rename or redirect a second chance to select a different
+// file. Reuse the existing one-MiB metadata-file ceiling so a hostile config
+// cannot turn this content check into an unbounded allocation; exceeding the
+// ceiling fails closed before any bytes are read.
+func gitLocalConfigPreflightFromOpened(opened *os.File, info os.FileInfo) (gitLocalConfigPreflight, bool) {
+	if info.Size() < 0 || info.Size() > maxGitFileBytes {
+		return gitLocalConfigPreflight{}, false
+	}
+	regular, err := openedFileIsRegular(opened, info)
+	if err != nil || !regular {
+		return gitLocalConfigPreflight{}, false
+	}
+	content, whole, ok := readGitPointerWindowFromOpened(opened, maxGitFileBytes, info.Size())
+	if !ok || !whole {
+		// A file that grew after the handle's Stat is not the file whose size was
+		// admitted above. Refuse instead of parsing a raced prefix.
+		return gitLocalConfigPreflight{}, false
+	}
+	return parseGitLocalConfigPreflight(content)
+}
+
+// gitConfigLogicalLines applies the part of Git's config lexer needed before
+// section/key parsing: comments outside quotes end a line, and a final
+// unescaped backslash joins the next physical line without the newline. It is
+// deliberately strict on malformed quotes and a continuation at EOF. Git would
+// fail locally on those inputs too, and a fail-closed answer cannot conceal an
+// include directive behind syntax this parser did not understand.
+func gitConfigLogicalLines(content []byte) ([]string, bool) {
+	if bytes.IndexByte(content, 0) >= 0 {
+		return nil, false
+	}
+	lines := make([]string, 0, bytes.Count(content, []byte{'\n'})+1)
+	var logical strings.Builder
+	inQuote := false
+	for offset := 0; offset < len(content); {
+		end := bytes.IndexByte(content[offset:], '\n')
+		hasNewline := end >= 0
+		if hasNewline {
+			end += offset
+		} else {
+			end = len(content)
+		}
+		physical := content[offset:end]
+		if len(physical) > 0 && physical[len(physical)-1] == '\r' {
+			physical = physical[:len(physical)-1]
+		}
+
+		fragmentEnd := len(physical)
+		continued := false
+		for index := 0; index < len(physical); index++ {
+			switch physical[index] {
+			case '\\':
+				if index+1 == len(physical) {
+					fragmentEnd = index
+					continued = true
+					index = len(physical)
+					continue
+				}
+				// The escaped byte cannot start/end a quote or start a comment.
+				index++
+			case '"':
+				inQuote = !inQuote
+			case '#', ';':
+				if !inQuote {
+					fragmentEnd = index
+					index = len(physical)
+				}
+			}
+		}
+		logical.Write(physical[:fragmentEnd])
+		if continued {
+			if !hasNewline {
+				return nil, false
+			}
+		} else {
+			if inQuote {
+				return nil, false
+			}
+			lines = append(lines, logical.String())
+			logical.Reset()
+		}
+		if !hasNewline {
+			break
+		}
+		offset = end + 1
+	}
+	if logical.Len() != 0 || inQuote {
+		return nil, false
+	}
+	return lines, true
+}
+
+// parseGitConfigSection returns the case-folded base section and whether the
+// header carries a subsection. It accepts Git's quoted modern form and the old
+// dotted form. The latter matters to the guard even when a particular Git
+// version would not turn it into the exact include.path key: rejecting the
+// complete include namespace avoids making safety depend on parser-version
+// quirks in the executable found on PATH.
+func parseGitConfigSection(line string) (section string, subsection, header, ok bool) {
+	line = strings.TrimLeft(line, " \t\v\f\r")
+	if line == "" || line[0] != '[' {
+		return "", false, false, true
+	}
+	header = true
+	if len(line) < 3 || !asciiAlpha(line[1]) {
+		return "", false, true, false
+	}
+	index := 2
+	for index < len(line) && (asciiAlphaNumeric(line[index]) || line[index] == '-') {
+		index++
+	}
+	section = strings.ToLower(line[1:index])
+	if index >= len(line) {
+		return "", false, true, false
+	}
+
+	switch line[index] {
+	case ']':
+		index++
+	case '.':
+		subsection = true
+		index++
+		start := index
+		for index < len(line) && line[index] != ']' {
+			if line[index] == '\n' || line[index] == '\r' {
+				return "", false, true, false
+			}
+			index++
+		}
+		if index == start || index >= len(line) {
+			return "", false, true, false
+		}
+		index++
+	default:
+		if !asciiConfigSpace(line[index]) {
+			return "", false, true, false
+		}
+		for index < len(line) && asciiConfigSpace(line[index]) {
+			index++
+		}
+		if index >= len(line) || line[index] != '"' {
+			return "", false, true, false
+		}
+		subsection = true
+		index++
+		closed := false
+		for index < len(line) {
+			switch line[index] {
+			case '\\':
+				if index+1 >= len(line) {
+					return "", false, true, false
+				}
+				index += 2
+				continue
+			case '"':
+				index++
+				closed = true
+			}
+			if closed {
+				break
+			}
+			index++
+		}
+		if !closed {
+			return "", false, true, false
+		}
+		for index < len(line) && asciiConfigSpace(line[index]) {
+			index++
+		}
+		if index >= len(line) || line[index] != ']' {
+			return "", false, true, false
+		}
+		index++
+	}
+	if strings.Trim(line[index:], " \t\v\f\r") != "" {
+		return "", false, true, false
+	}
+	return section, subsection, true, true
+}
+
+func asciiAlpha(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z'
+}
+
+func asciiAlphaNumeric(value byte) bool {
+	return asciiAlpha(value) || value >= '0' && value <= '9'
+}
+
+func asciiConfigSpace(value byte) bool {
+	switch value {
+	case ' ', '\t', '\v', '\f', '\r':
+		return true
+	default:
+		return false
+	}
+}
+
+func parseGitConfigVariable(line string) (name, rawValue string, hasValue, ok bool) {
+	line = strings.TrimLeft(line, " \t\v\f\r")
+	if line == "" {
+		return "", "", false, true
+	}
+	if !asciiAlpha(line[0]) {
+		return "", "", false, false
+	}
+	index := 1
+	for index < len(line) && (asciiAlphaNumeric(line[index]) || line[index] == '-') {
+		index++
+	}
+	name = strings.ToLower(line[:index])
+	for index < len(line) && asciiConfigSpace(line[index]) {
+		index++
+	}
+	if index == len(line) {
+		return name, "", false, true
+	}
+	if line[index] != '=' {
+		return "", "", false, false
+	}
+	return name, line[index+1:], true, true
+}
+
+func parseGitConfigValue(raw string) (string, bool) {
+	raw = strings.Trim(raw, " \t\v\f\r")
+	var value strings.Builder
+	inQuote := false
+	for index := 0; index < len(raw); index++ {
+		switch raw[index] {
+		case '"':
+			inQuote = !inQuote
+		case '\\':
+			if index+1 >= len(raw) {
+				return "", false
+			}
+			index++
+			switch raw[index] {
+			case '\\', '"':
+				value.WriteByte(raw[index])
+			case 'n':
+				value.WriteByte('\n')
+			case 't':
+				value.WriteByte('\t')
+			case 'b':
+				value.WriteByte('\b')
+			default:
+				return "", false
+			}
+		default:
+			value.WriteByte(raw[index])
+		}
+	}
+	if inQuote {
+		return "", false
+	}
+	return value.String(), true
+}
+
+func parseGitConfigBool(value string, implicit bool) (bool, bool) {
+	if implicit {
+		return true, true
+	}
+	value = strings.TrimSpace(strings.ToLower(value))
+	switch value {
+	case "", "false", "no", "off":
+		return false, true
+	case "true", "yes", "on":
+		return true, true
+	}
+	// Git accepts a numeric prefix (including hexadecimal and values with a
+	// unit suffix) and interprets zero as false, non-zero as true.
+	end := 0
+	if end < len(value) && (value[end] == '+' || value[end] == '-') {
+		end++
+	}
+	digits := end
+	base := 10
+	if end+2 <= len(value) && value[end] == '0' && (value[end+1] == 'x') {
+		base = 16
+		end += 2
+		digits = end
+		for end < len(value) && (value[end] >= '0' && value[end] <= '9' || value[end] >= 'a' && value[end] <= 'f') {
+			end++
+		}
+	} else {
+		for end < len(value) && value[end] >= '0' && value[end] <= '9' {
+			end++
+		}
+	}
+	if end == digits {
+		return false, false
+	}
+	var number int64
+	if base == 16 {
+		sign := int64(1)
+		prefix := 0
+		if value[prefix] == '+' || value[prefix] == '-' {
+			if value[prefix] == '-' {
+				sign = -1
+			}
+			prefix++
+		}
+		unsigned, err := strconv.ParseUint(value[prefix+2:end], 16, 64)
+		if err != nil || unsigned > uint64(^uint64(0)>>1) {
+			return false, false
+		}
+		number = sign * int64(unsigned)
+	} else {
+		var err error
+		number, err = strconv.ParseInt(value[:end], 10, 64)
+		if err != nil {
+			return false, false
+		}
+	}
+	return number != 0, true
+}
+
+func parseGitLocalConfigPreflight(content []byte) (gitLocalConfigPreflight, bool) {
+	lines, ok := gitConfigLogicalLines(content)
+	if !ok {
+		return gitLocalConfigPreflight{}, false
+	}
+	var result gitLocalConfigPreflight
+	section := ""
+	topLevel := false
+	for _, line := range lines {
+		parsedSection, subsection, header, sectionOK := parseGitConfigSection(line)
+		if !sectionOK {
+			return gitLocalConfigPreflight{}, false
+		}
+		if header {
+			if parsedSection == "include" || parsedSection == "includeif" {
+				result.hasInclude = true
+				return result, true
+			}
+			section = parsedSection
+			topLevel = !subsection
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if section == "" {
+			return gitLocalConfigPreflight{}, false
+		}
+		name, rawValue, hasValue, variableOK := parseGitConfigVariable(line)
+		if !variableOK {
+			return gitLocalConfigPreflight{}, false
+		}
+		if section == "remote" && !topLevel {
+			switch name {
+			case "promisor":
+				value, valueOK := parseGitConfigValue(rawValue)
+				if !valueOK {
+					return gitLocalConfigPreflight{}, false
+				}
+				enabled, boolOK := parseGitConfigBool(value, !hasValue)
+				if !boolOK {
+					return gitLocalConfigPreflight{}, false
+				}
+				// Git's promisor callback adds on true but does not remove on a
+				// later false, so preserve any true occurrence rather than applying
+				// ordinary last-value-wins semantics.
+				if enabled {
+					result.hasPromisorRemote = true
+				}
+			case "partialclonefilter":
+				if !hasValue {
+					return gitLocalConfigPreflight{}, false
+				}
+				if _, valueOK := parseGitConfigValue(rawValue); !valueOK {
+					return gitLocalConfigPreflight{}, false
+				}
+				// Merely configuring a filter registers the named remote as a
+				// promisor, even without remote.<name>.promisor=true.
+				result.hasPromisorRemote = true
+			}
+			continue
+		}
+		if !topLevel || name == "" {
+			continue
+		}
+		switch {
+		case section == "extensions" && name == "partialclone":
+			if !hasValue {
+				return gitLocalConfigPreflight{}, false
+			}
+			if _, valueOK := parseGitConfigValue(rawValue); !valueOK {
+				return gitLocalConfigPreflight{}, false
+			}
+			result.hasPartialCloneExtension = true
+		case section == "extensions" && name == "worktreeconfig":
+			value, valueOK := parseGitConfigValue(rawValue)
+			if !valueOK {
+				return gitLocalConfigPreflight{}, false
+			}
+			enabled, boolOK := parseGitConfigBool(value, !hasValue)
+			if !boolOK {
+				return gitLocalConfigPreflight{}, false
+			}
+			result.worktreeConfig = enabled
+		case section == "core" && name == "worktree":
+			if !hasValue {
+				return gitLocalConfigPreflight{}, false
+			}
+			value, valueOK := parseGitConfigValue(rawValue)
+			if !valueOK || strings.IndexByte(value, 0) >= 0 {
+				return gitLocalConfigPreflight{}, false
+			}
+			result.coreWorktree = value
+			result.hasCoreWorktree = true
+		}
+	}
+	return result, true
+}
+
+func gitCoreWorktreePathSafeWithResolver(resolver *sameVolumePathResolver, gitDir, value string) bool {
+	target := filepath.FromSlash(value)
+	if target == "" {
+		target = gitDir
+	} else if absoluteTarget, absolute := gitAbsolutePath(gitDir, target); absolute {
+		target = absoluteTarget
+	} else {
+		target = gitJoinRelative(gitDir, target)
+	}
+	if !gitTargetPathValid(target) {
+		return false
+	}
+	opened, _, err := resolver.open(target)
+	if err != nil {
+		// A missing same-volume worktree makes Git fail locally at chdir. Mount,
+		// volume, redirect and permission failures are not safe to hand to Git.
+		return isMissingPathError(err)
+	}
+	_ = opened.Close()
+	return true
+}
+
 func gitMetadataDirectoryPathsSafeWithResolver(resolver *sameVolumePathResolver, gitDir string) bool {
 	common, commonState := gitCommonDirStateWithResolver(resolver, gitDir, nil)
 	if commonState != gitCommonDirResolved {
 		return false
 	}
+	commonConfigPath := filepath.Join(common, "config")
+	worktreeConfigPath := filepath.Join(gitDir, "config.worktree")
+	var commonConfig, worktreeConfig gitLocalConfigPreflight
+	commonConfigValid, worktreeConfigValid := true, true
 	objectsPath := filepath.Join(common, "objects")
 	reftablePath := filepath.Join(common, "reftable")
 	resolvedObjects := ""
 	entries := []string{
 		filepath.Join(gitDir, "HEAD"),
 		filepath.Join(gitDir, "index"),
-		filepath.Join(gitDir, "config.worktree"),
+		worktreeConfigPath,
 		objectsPath,
 		filepath.Join(common, "refs"),
 		filepath.Join(common, "packed-refs"),
 		filepath.Join(common, "shallow"),
 		reftablePath,
-		filepath.Join(common, "config"),
+		commonConfigPath,
 		filepath.Join(common, "info", "exclude"),
 		filepath.Join(common, "info", "grafts"),
 	}
@@ -13409,10 +13871,35 @@ func gitMetadataDirectoryPathsSafeWithResolver(resolver *sameVolumePathResolver,
 			if entry == objectsPath && info.IsDir() {
 				resolvedObjects = resolved
 			}
+			if regular {
+				switch entry {
+				case commonConfigPath:
+					commonConfig, commonConfigValid = gitLocalConfigPreflightFromOpened(opened, info)
+				case worktreeConfigPath:
+					worktreeConfig, worktreeConfigValid = gitLocalConfigPreflightFromOpened(opened, info)
+				}
+			}
 			_ = opened.Close()
 			continue
 		}
 		if !isMissingPathError(err) {
+			return false
+		}
+	}
+	if !commonConfigValid || commonConfig.hasInclude ||
+		commonConfig.hasPartialCloneExtension || commonConfig.hasPromisorRemote {
+		return false
+	}
+	if commonConfig.hasCoreWorktree &&
+		!gitCoreWorktreePathSafeWithResolver(resolver, gitDir, commonConfig.coreWorktree) {
+		return false
+	}
+	if commonConfig.worktreeConfig {
+		if !worktreeConfigValid || worktreeConfig.hasInclude || worktreeConfig.hasPromisorRemote {
+			return false
+		}
+		if worktreeConfig.hasCoreWorktree &&
+			!gitCoreWorktreePathSafeWithResolver(resolver, gitDir, worktreeConfig.coreWorktree) {
 			return false
 		}
 	}
@@ -14205,6 +14692,190 @@ func gitMetadataSafeForSubprocessContext(ctx context.Context, repo string) bool 
 	return gitMetadataSafeForSubprocess(absRepo)
 }
 
+// errGitWorktreePreflight marks a worktree shape that must be enumerated by the
+// filesystem fallback instead of Git. In particular, `git ls-files --others`
+// performs its own recursive directory walk and can inspect a nested `.git`
+// marker before the provider's post-listing excluder ever sees that pathname.
+// On Windows a repository-controlled gitfile can name a UNC share, and a
+// junction or mount can redirect the recursive walk off the selected volume.
+var errGitWorktreePreflight = errors.New("Git worktree preflight declined subprocess enumeration")
+
+// gitWorktreePreflightBudget reuses the filesystem fallback's supported-tree
+// ceilings. The preflight has to finish the entire traversal before Git starts;
+// reaching any ceiling is therefore a decline, never a partial success. The
+// aggregate directory-path byte ceiling also bounds the component-by-component
+// rooted opens, but keep an explicit step count so that relationship is not an
+// implicit invariant of sweepDirectoryRoot.Open.
+type gitWorktreePreflightBudget struct {
+	worktreeWalkBudget
+	traversalSteps int
+}
+
+func (b *gitWorktreePreflightBudget) admitTraversalStep(ctx context.Context) bool {
+	if ctx != nil && ctx.Err() != nil {
+		return false
+	}
+	if b.traversalSteps >= maxWorktreeWalkDirectoryBytes {
+		return false
+	}
+	b.traversalSteps++
+	return true
+}
+
+// gitWorktreeSafeBeforeListing performs a complete, bounded directory-only
+// traversal through held-root opens. It does not resolve or read `.git`
+// markers: the selected root's own marker is the sole exemption, while any
+// case spelling at a nested location declines Git enumeration. Symlinks are not
+// followed. Windows reparses are declined because Git for Windows can traverse
+// directory junctions even though the Go lstat view reports them as redirects.
+func gitWorktreeSafeBeforeListing(ctx context.Context, repo string) error {
+	repoAbs, err := filepath.Abs(repo)
+	if err != nil {
+		return fmt.Errorf("%w: resolve selected root: %v", errGitWorktreePreflight, err)
+	}
+	anchor, resolvedRepo, err := newPathTraversalAnchor(repoAbs, repoAbs)
+	if err != nil {
+		return fmt.Errorf("%w: anchor selected root: %v", errGitWorktreePreflight, err)
+	}
+	root, err := newSweepDirectoryRoot(resolvedRepo)
+	if err != nil {
+		return fmt.Errorf("%w: hold selected root: %v", errGitWorktreePreflight, err)
+	}
+	defer root.Close()
+
+	var budget gitWorktreePreflightBudget
+	if !budget.admitDirectory("") {
+		return fmt.Errorf("%w: selected root exceeds the directory ceiling", errGitWorktreePreflight)
+	}
+	return gitWorktreeSafeBeforeListingFromDirectories(ctx, root, anchor, &budget, []string{""})
+}
+
+// gitWorktreeSafeBeforeListingFromDirectories is split from the setup above so
+// mount-boundary tests can seed a known mounted directory and exercise the
+// exact rooted-open path used by production without walking an unrelated host
+// filesystem first.
+func gitWorktreeSafeBeforeListingFromDirectories(
+	ctx context.Context,
+	root *sweepDirectoryRoot,
+	anchor pathTraversalAnchor,
+	budget *gitWorktreePreflightBudget,
+	queue []string,
+) error {
+	for cursor := 0; cursor < len(queue); cursor++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("%w: traversal cancelled: %v", errGitWorktreePreflight, err)
+		}
+		dir := queue[cursor]
+		opened, err := root.Open(anchor, dir, func() bool {
+			return budget.admitTraversalStep(ctx)
+		})
+		if err != nil {
+			return fmt.Errorf("%w: open directory %q: %v", errGitWorktreePreflight, filepath.ToSlash(dir), err)
+		}
+		for {
+			entries, readErr := opened.ReadDir(256)
+			for _, entry := range entries {
+				name := entry.Name()
+				child := name
+				if dir != "" {
+					child = filepath.ToSlash(dir) + "/" + name
+				}
+				if !budget.admitRawEntry(child) {
+					_ = opened.Close()
+					return fmt.Errorf(
+						"%w: more than %d entries or %d aggregate path bytes",
+						errGitWorktreePreflight,
+						maxWorktreeWalkRawEntries,
+						maxWorktreeWalkRawBytes,
+					)
+				}
+				if strings.EqualFold(name, ".git") {
+					if dir == "" {
+						// The explicitly selected repository root owns this one
+						// marker. Do not stat, read, resolve, or descend into it.
+						continue
+					}
+					_ = opened.Close()
+					return fmt.Errorf("%w: nested .git marker at %q", errGitWorktreePreflight, child)
+				}
+				entryType := entry.Type()
+				if entryType&fs.ModeSymlink != 0 {
+					if runtime.GOOS == "windows" {
+						_ = opened.Close()
+						return fmt.Errorf("%w: reparse point at %q", errGitWorktreePreflight, child)
+					}
+					// Git treats POSIX symlinks as leaf entries. Matching that
+					// behavior without resolving them preserves ordinary source
+					// symlinks while keeping the preflight no-follow.
+					continue
+				}
+				if runtime.GOOS == "windows" && entryType&fs.ModeIrregular != 0 {
+					_ = opened.Close()
+					return fmt.Errorf("%w: reparse point at %q", errGitWorktreePreflight, child)
+				}
+				if entryType.IsDir() {
+					if !budget.admitDirectory(child) {
+						_ = opened.Close()
+						return fmt.Errorf(
+							"%w: more than %d directories or %d aggregate directory-path bytes",
+							errGitWorktreePreflight,
+							maxWorktreeWalkDirectories,
+							maxWorktreeWalkDirectoryBytes,
+						)
+					}
+					queue = append(queue, child)
+					continue
+				}
+				if entryType != 0 {
+					continue
+				}
+				// A zero type is either a regular file or a filesystem whose
+				// directory enumeration could not classify the entry. Only that
+				// ambiguity needs an Info call; known directories are enqueued
+				// above so sweepDirectoryRoot.Open performs the mount check before
+				// any child-path lookup.
+				info, infoErr := entry.Info()
+				if infoErr != nil {
+					_ = opened.Close()
+					return fmt.Errorf("%w: inspect ambiguous directory entry %q: %v", errGitWorktreePreflight, child, infoErr)
+				}
+				if pathMayRedirect(info) {
+					if runtime.GOOS == "windows" {
+						_ = opened.Close()
+						return fmt.Errorf("%w: reparse point at %q", errGitWorktreePreflight, child)
+					}
+					continue
+				}
+				if !info.IsDir() {
+					continue
+				}
+				if !budget.admitDirectory(child) {
+					_ = opened.Close()
+					return fmt.Errorf(
+						"%w: more than %d directories or %d aggregate directory-path bytes",
+						errGitWorktreePreflight,
+						maxWorktreeWalkDirectories,
+						maxWorktreeWalkDirectoryBytes,
+					)
+				}
+				queue = append(queue, child)
+			}
+			if readErr == nil {
+				continue
+			}
+			if !errors.Is(readErr, io.EOF) {
+				_ = opened.Close()
+				return fmt.Errorf("%w: read directory %q: %v", errGitWorktreePreflight, filepath.ToSlash(dir), readErr)
+			}
+			break
+		}
+		if err := opened.Close(); err != nil {
+			return fmt.Errorf("%w: close directory %q: %v", errGitWorktreePreflight, filepath.ToSlash(dir), err)
+		}
+	}
+	return nil
+}
+
 func worktreeGitFallbackWarning(cause error) ProviderWarning {
 	detail := "Git worktree enumeration was unavailable"
 	if cause != nil {
@@ -14213,8 +14884,8 @@ func worktreeGitFallbackWarning(cause error) ProviderWarning {
 	return ProviderWarning{
 		Code:     "W_GIT_WORKTREE_FALLBACK",
 		Severity: "warning",
-		EffectOnCompleteness: "the filesystem fallback retains ambiguous vendored directories conservatively, but Git-only exclude sources " +
-			"such as core.excludesFile may not be applied; excluded files can therefore be present in the snapshot",
+		EffectOnCompleteness: "the filesystem fallback retains ambiguous vendored directories conservatively, but cannot reproduce every Git " +
+			"index and exclude decision; excluded files can therefore be present in the snapshot",
 		Detail: detail,
 	}
 }
@@ -14262,10 +14933,11 @@ func repositoryHasGitMetadata(repo string) bool {
 // worktreeSourceFiles lists the working tree's source files.
 //
 // Git's own view of the working tree — tracked files plus untracked files no
-// exclude rule covers — is the listing, because only Git applies the whole
-// exclude stack: nested .gitignore files, .git/info/exclude, per-worktree
-// excludes and core.excludesFile. A reader that parses only the repository-root
-// .gitignore misses every one of those, which is how a vendored dependency tree
+// exclude rule covers — is the listing, because Git applies nested .gitignore
+// files, .git/info/exclude, and per-worktree excludes with its index semantics.
+// Configuration-derived core.excludesFile is intentionally disabled at the
+// subprocess boundary. A reader that parses only the repository-root .gitignore
+// misses the safe nested sources, which is how a vendored dependency tree
 // excluded by `backend/.gitignore` (a virtual environment, a checked-out package
 // cache) ended up listed, parsed, and read into memory while `--head` on the same
 // repository listed only the tracked source.
@@ -14273,7 +14945,19 @@ func repositoryHasGitMetadata(repo string) bool {
 // The filesystem walk remains the fallback for a directory Git cannot enumerate
 // (not a repository at all, or no usable git binary), and it now applies nested
 // .gitignore files itself.
+type worktreeFilesLister func(context.Context, string) ([]string, error)
+
 func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher, hasIncludeFiles bool) ([]string, []ProviderWarning, error) {
+	return worktreeSourceFilesWithLister(ctx, repo, ignores, hasIncludeFiles, gitutil.ListWorktreeFiles)
+}
+
+func worktreeSourceFilesWithLister(
+	ctx context.Context,
+	repo string,
+	ignores ignoreMatcher,
+	hasIncludeFiles bool,
+	listWorktreeFiles worktreeFilesLister,
+) ([]string, []ProviderWarning, error) {
 	if !gitMetadataSafeForSubprocessContext(ctx, repo) {
 		err := fmt.Errorf("refuse Git subprocesses for unsafe or unreadable repository metadata under %q", repo)
 		// No Git process is started. The fallback treats every ambiguous vendored
@@ -14298,7 +14982,10 @@ func worktreeSourceFiles(ctx context.Context, repo string, ignores ignoreMatcher
 		_, ok := trackedDirs[rel]
 		return ok
 	}
-	listed, err := gitutil.ListWorktreeFiles(ctx, repo)
+	if err := gitWorktreeSafeBeforeListing(ctx, repo); err != nil {
+		return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, err)
+	}
+	listed, err := listWorktreeFiles(ctx, repo)
 	if err != nil {
 		if errors.Is(err, gitutil.ErrWorktreeListingTruncated) {
 			return nil, nil, fmt.Errorf("list Git worktree paths: %w", err)

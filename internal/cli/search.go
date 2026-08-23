@@ -226,8 +226,8 @@ func runSearch(ctx context.Context, opts Options, args []string) error {
 						// Path admission can stream a large tree. Recheck the identities and exact paths
 						// after it so a concurrent ref or policy change cannot land in that interval and
 						// still release the older payload. The second admission is intentional: Git's
-						// effective worktree excludes include dynamic inputs such as core.excludesFile
-						// and nested .gitignore files that are not all part of the root-rule fingerprint.
+						// effective worktree excludes include dynamic nested .gitignore inputs that are
+						// not all part of the root-rule fingerprint.
 						finalPolicy, finalErr := sem.ResolveSearchReplayPolicy(ctx, repo, sem.SearchOptions{
 							Worktree:     flags.Worktree,
 							IgnoreFiles:  flags.IgnoreFiles,

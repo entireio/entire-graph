@@ -30,8 +30,9 @@ commit because their opaque NDJSON header records that commit; the search cache 
 tree-keyed because it safely restamps structured commit provenance on a hit. In `--head` mode
 the file set is otherwise a pure function of the tree: `openSource` lists via
 `gitutil.ListFiles(ctx, repo, committedRevision)` and filters with the captured explicit policy
-plus a tree-derived `headIgnoreMatcher`. `.git/info/exclude` and `core.excludesFile` reach only
-the working-tree path, which is never cached.
+plus a tree-derived `headIgnoreMatcher`. `.git/info/exclude` reaches only the working-tree path,
+which is never cached; configuration-derived `core.excludesFile` is neutralized at the Git
+subprocess boundary and reaches neither path.
 
 Measured on a binary built from `cdcb8db`, against an isolated clone with three linked
 worktrees — `wtA`/`wtC` at `cdcb8db`, `wtB` at `6e4bfde`, 3 of 317 tracked files differing:

@@ -31,9 +31,10 @@ func write(t *testing.T, repo, path, content string) {
 	}
 }
 
-// TestListWorktreeFilesAppliesEveryExcludeSource pins the reason this function
-// exists: it must report the same set `git status` would, including the exclude
-// sources a root-.gitignore reader cannot see.
+// TestListWorktreeFilesAppliesEveryExcludeSource pins the safe exclude sources
+// this function delegates to Git. Configuration-derived external exclude files
+// are deliberately neutralized at the subprocess boundary; a hostile repository
+// must not make this local-only provider open an arbitrary path.
 func TestListWorktreeFilesAppliesEveryExcludeSource(t *testing.T) {
 	repo := t.TempDir()
 	gitCmd(t, repo, "init")
@@ -64,11 +65,14 @@ func TestListWorktreeFilesAppliesEveryExcludeSource(t *testing.T) {
 		}
 	}
 	for _, unwanted := range []string{
-		"root_ignored/a.go", "private/b.go", "sub/vendored/c.go", "src/d.generated",
+		"root_ignored/a.go", "private/b.go", "sub/vendored/c.go",
 	} {
 		if slices.Contains(files, unwanted) {
 			t.Fatalf("listing included excluded path %q: %#v", unwanted, files)
 		}
+	}
+	if !slices.Contains(files, "src/d.generated") {
+		t.Fatalf("listing honored configuration-derived core.excludesFile outside the isolated Git config boundary: %#v", files)
 	}
 
 	ignored, err := ListIgnoredWorktreeFiles(t.Context(), repo)

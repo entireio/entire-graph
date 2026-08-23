@@ -75,12 +75,11 @@ func fileSHA256(t *testing.T, path string) (string, int) {
 	return hex.EncodeToString(hasher.Sum(nil)), lines
 }
 
-// TestWorktreeSnapshotHonorsEveryGitExcludeSource is the regression guard for the
-// working-tree listing: a vendored dependency tree excluded by a NESTED
-// .gitignore (plus .git/info/exclude and core.excludesFile) was listed, parsed
-// and read into memory, while --head on the same repository listed only the
-// tracked source. The graph must see the same files Git does.
-func TestWorktreeSnapshotHonorsEveryGitExcludeSource(t *testing.T) {
+// TestWorktreeSnapshotHonorsSafeGitExcludeSources is the regression guard for
+// the working-tree listing: vendored trees excluded by nested .gitignore and
+// .git/info/exclude must stay out, while a configuration-derived external
+// core.excludesFile is neutralized at the no-egress subprocess boundary.
+func TestWorktreeSnapshotHonorsSafeGitExcludeSources(t *testing.T) {
 	repo := t.TempDir()
 	initRepo(t, repo)
 	writeFile(t, repo, ".gitignore", ".pytest_cache/\n")
@@ -113,7 +112,7 @@ func TestWorktreeSnapshotHonorsEveryGitExcludeSource(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, name := range []string{"keep_me", "handler", "brand_new"} {
+	for _, name := range []string{"keep_me", "handler", "brand_new", "generated"} {
 		if !snapshotHasSymbol(snapshot, name) {
 			t.Fatalf("worktree snapshot missing first-party symbol %q: %#v", name, snapshot.Symbols)
 		}
@@ -125,8 +124,8 @@ func TestWorktreeSnapshotHonorsEveryGitExcludeSource(t *testing.T) {
 	} {
 		assertSnapshotOmitsPathPrefix(t, snapshot, prefix)
 	}
-	if snapshotHasPath(snapshot, "app/thing.generated.py") || snapshotHasSymbol(snapshot, "generated") {
-		t.Fatalf("worktree snapshot included a path excluded by core.excludesFile: %#v", snapshot.Files)
+	if !snapshotHasPath(snapshot, "app/thing.generated.py") {
+		t.Fatalf("worktree snapshot honored configuration-derived core.excludesFile: %#v", snapshot.Files)
 	}
 	for _, name := range []string{"vendored_numeric", "vendored_mod", "cached", "secret"} {
 		if snapshotHasSymbol(snapshot, name) {

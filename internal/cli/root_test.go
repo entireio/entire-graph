@@ -15,6 +15,60 @@ import (
 	"github.com/entireio/entire-graph/internal/sem"
 )
 
+func TestResolveRepoHonorsInheritedGitCeiling(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	ceiling := filepath.Join(repo, "discovery-boundary")
+	child := filepath.Join(ceiling, "child")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", ceiling)
+	t.Chdir(child)
+	// Repository discovery with a ceiling is deliberately in-process. If this
+	// regresses to Git, an empty PATH makes the test fail for the right reason.
+	t.Setenv("PATH", t.TempDir())
+
+	if discovered, err := resolveRepo(t.Context(), EntireEnv{}, ""); err == nil {
+		t.Fatalf("resolveRepo = %q, nil; want no implicit repository above ceiling %q", discovered, ceiling)
+	}
+
+	// A repository selected by the trusted Entire environment is not discovery
+	// and remains authoritative even when a caller also supplied a ceiling.
+	selected, err := resolveRepo(t.Context(), EntireEnv{RepoRoot: repo}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != repo {
+		t.Fatalf("resolveRepo with ENTIRE_REPO_ROOT = %q, want %q", selected, repo)
+	}
+}
+
+func TestDiscoverImplicitCheckoutRootStopsAtGitCeiling(t *testing.T) {
+	outer := t.TempDir()
+	if err := os.Mkdir(filepath.Join(outer, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ceiling := filepath.Join(outer, "discovery-boundary")
+	blockedChild := filepath.Join(ceiling, "blocked", "child")
+	insideRepo := filepath.Join(ceiling, "inside-repo")
+	insideChild := filepath.Join(insideRepo, "child")
+	for _, dir := range []string{blockedChild, filepath.Join(insideRepo, ".git"), insideChild} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", ceiling)
+
+	if root, ok := discoverImplicitCheckoutRoot(blockedChild); ok {
+		t.Fatalf("filesystem fallback discovered %q above ceiling %q", root, ceiling)
+	}
+	root, ok := discoverImplicitCheckoutRoot(insideChild)
+	if !ok || root != insideRepo {
+		t.Fatalf("filesystem fallback below ceiling = (%q, %v), want (%q, true)", root, ok, insideRepo)
+	}
+}
+
 func TestDoctorPrintsEntireEnvironment(t *testing.T) {
 	var out bytes.Buffer
 	dataDir := t.TempDir()

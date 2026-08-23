@@ -343,7 +343,9 @@ func TestUnreadableEvidenceSamplesAreOrderIndependent(t *testing.T) {
 // skips the one directory and keeps going), so sweepWarnings' switch on
 // sweepStop never disclosed it. The caller had no machine-readable signal
 // that unrelated structure-only source trees may have been excluded as a
-// side effect of one unreadable directory.
+// side effect of one unreadable directory. The pre-launch worktree guard can
+// now detect the same directory earlier and select the filesystem fallback;
+// that path must preserve equivalent explicit unreadable + fallback warnings.
 func TestWorktreeSourceFilesWarnsAboutAnUnreadableSweepDirectory(t *testing.T) {
 	repo := t.TempDir()
 	initRepo(t, repo)
@@ -363,15 +365,20 @@ func TestWorktreeSourceFilesWarnsAboutAnUnreadableSweepDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var warned bool
+	var sweepWarned, walkWarned, fallbackWarned bool
 	for _, w := range warnings {
 		if w.Code == "W_GITDIR_SWEEP_UNREADABLE_DIRECTORY" && strings.Contains(w.Detail, "build") {
-			warned = true
+			sweepWarned = true
+		}
+		if w.Code == "W_WALK_UNREADABLE_DIRECTORY" && strings.Contains(w.Detail, "build") {
+			walkWarned = true
+		}
+		if w.Code == "W_GIT_WORKTREE_FALLBACK" && strings.Contains(w.Detail, "build") {
+			fallbackWarned = true
 		}
 	}
-	if !warned {
-		t.Errorf("warnings = %+v, want a W_GITDIR_SWEEP_UNREADABLE_DIRECTORY warning naming \"build\":"+
-			" an unreadable sweep directory can widen exclusion via hiddenEvidence with no disclosure otherwise", warnings)
+	if !sweepWarned && !(walkWarned && fallbackWarned) {
+		t.Errorf("warnings = %+v, want either the sweep warning or explicit unreadable-directory and Git-fallback warnings naming \"build\"", warnings)
 	}
 }
 

@@ -113,7 +113,8 @@ ignore-file paths resolve against `--repo`, and missing ignore files should fail
 closed with a clear error. Callers may also pass repeatable `--include-file
 <path>` flags containing gitignore-style inclusion rules. Include files are
 applied after `.gitignore` and `--ignore-file`, so they can reopen otherwise
-ignored paths.
+ignored paths. Configuration-derived `core.excludesFile` is deliberately empty
+at the Git subprocess boundary and is not part of the effective ignore policy.
 
 ## Schema Contract
 
@@ -348,6 +349,57 @@ files dominating large-repo runs. Files above the cap still emit file records,
 but symbol parsing is skipped and an `E_FILE_TOO_LARGE` partial failure is
 reported.
 
+## Git Subprocess Configuration Boundary
+
+Every production Git subprocess must discard inherited repository-selection,
+command-scope configuration injection, attribute-source and pathspec-control
+variables, `GIT_TRACE*` output targets, and Git for Windows'
+`GIT_REDIRECT_*` standard-stream targets. `GIT_TEXTDOMAINDIR` is also discarded
+because Git probes that directory during startup. Those variables can otherwise
+make Git open arbitrary paths or sockets, including UNC targets, or override the
+explicit path and attribute semantics of machine-readable commands. Inherited
+global and system Git configuration is disabled. Repository-local configuration
+remains available for structural settings required to read the selected
+repository, but the bounded metadata preflight rejects active `[include]` and
+`[includeIf]` sections before Git starts, including sections in `config.worktree` when
+`extensions.worktreeConfig` enables it. The same preflight parses and checks an
+active `core.worktree` path. It also rejects active partial-clone/promisor
+configuration: `extensions.partialClone`, a true `remote.*.promisor`, or any
+`remote.*.partialCloneFilter`. Git before 2.45 can inspect a local or UNC
+promisor URL before applying the transport deny-list, so partial clones are
+refused across the supported Git range rather than weakening no-egress on older
+clients.
+
+Command-scope configuration must set `core.fsmonitor=false`,
+`log.showSignature=false`, `log.mailmap=false`, `submodule.recurse=false`,
+`core.excludesFile=` and `core.attributesFile=`, and pin `diff.orderFile` to the
+platform null device. Thus Git cannot connect to its configured fsmonitor daemon,
+trigger log signature verification, consult configuration-derived external
+ignore/attribute/mailmap/diff-order files, or make grep enter a nested submodule
+checkout. Machine-readable grep calls also force no line numbers, columns,
+color, or full-name rewriting so repository configuration cannot change their
+record grammar. Working-tree snapshot caching remains disabled rather than
+running Git's conversion-aware status machinery, which can execute configured
+clean or process filters. In-repository `.gitignore`, `.git/info/exclude`,
+per-worktree excludes, and `.gitattributes` remain available; only the
+configuration-derived external files are neutralized.
+
+Before the first worktree Git command that recursively enumerates untracked
+content, the provider completes a bounded traversal beneath a held repository
+root. The preflight never reads or resolves nested case-insensitive `.git`
+markers and refuses Git enumeration when it encounters one, a traversable
+redirect, a mount boundary, an unreadable directory, cancellation, or a
+traversal ceiling. A
+refusal routes to the existing bounded filesystem fallback before
+`git ls-files --others` can inspect a repository-controlled gitfile target.
+
+Implicit repository discovery is the sole ceiling-sensitive path. When
+`GIT_CEILING_DIRECTORIES` is present, the CLI applies its usable absolute entries
+lexically in-process and never passes the raw list to Git, because Git's own
+canonicalization could probe an off-volume or UNC entry. Commands operating on
+an already selected repository discard the ceiling with every other inherited
+repository-selection variable.
+
 ## Listing And Memory Bounds
 
 A snapshot's retained graph memory is set by the caller's limits, not by what
@@ -429,13 +481,14 @@ following bounds are enforced:
   evidence and emits `W_GITDIR_POINTER_READ_BUDGET`.
 
 The working-tree listing is Git's own view of the working tree (tracked files plus
-untracked files no exclude rule covers). Every exclude source Git applies — nested
-`.gitignore` files, `.git/info/exclude`, per-worktree excludes, `core.excludesFile`
-— therefore applies to the graph. A filesystem walk that honours the ignore stack
-per directory is the fallback for a tree Git cannot enumerate. That fallback
-conservatively retains ambiguous vendored directories and emits
-`W_GIT_WORKTREE_FALLBACK`, because Git-only policy such as `core.excludesFile`
-cannot always be recovered and excluded files can therefore be present.
+untracked files no effective exclude rule covers). Repository-controlled exclude
+sources Git applies — nested `.gitignore` files, `.git/info/exclude`, and
+per-worktree excludes — therefore apply to the graph. Configuration-derived
+`core.excludesFile` is neutralized at command scope and does not apply. A
+filesystem walk that honours the ignore stack per directory is the fallback for a
+tree Git cannot enumerate. That fallback conservatively retains ambiguous
+vendored directories and emits `W_GIT_WORKTREE_FALLBACK`, because it cannot
+reproduce every Git-only policy and excluded files can therefore be present.
 
 ## Capability Reporting
 

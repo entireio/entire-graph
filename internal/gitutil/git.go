@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -131,7 +132,7 @@ func FirstParent(ctx context.Context, repo, rev string) (string, error) {
 }
 
 func FindCommitWithCheckpoint(ctx context.Context, repo, checkpointID string) (string, error) {
-	out, err := run(ctx, repo, "git", "log", "--all", "--format=%H", "-n", "1", "--grep=Entire-Checkpoint: "+checkpointID)
+	out, err := run(ctx, repo, "git", "log", "--single-worktree", "--all", "--format=%H", "-n", "1", "--grep=Entire-Checkpoint: "+checkpointID)
 	if err != nil {
 		return "", err
 	}
@@ -168,11 +169,12 @@ func ListIndexFiles(ctx context.Context, repo string) ([]string, error) {
 // files plus untracked files that no exclude rule covers
 // (`git ls-files --cached --others --exclude-standard`). Delegating the exclude
 // decision to Git is the point — it applies nested .gitignore files,
-// .git/info/exclude, per-worktree excludes, and core.excludesFile (global and
-// system), none of which a hand-rolled reader of the repository-root .gitignore
-// can see. Paths are relative to repo and returned in Git's order with
-// duplicates removed; a non-git directory returns an error so callers can fall
-// back to a filesystem walk.
+// .git/info/exclude, and per-worktree excludes, none of which a hand-rolled
+// reader of the repository-root .gitignore can see. Configuration-derived
+// core.excludesFile is deliberately disabled because it can name an arbitrary
+// off-volume or network path. Paths are relative to repo and returned in Git's
+// order with duplicates removed; a non-git directory returns an error so callers
+// can fall back to a filesystem walk.
 func ListWorktreeFiles(ctx context.Context, repo string) ([]string, error) {
 	return listBoundedWorktreePaths(newCmd(ctx, repo, "git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"))
 }
@@ -428,7 +430,15 @@ func grepTreePaths(ctx context.Context, repo, treeish string, patterns []string,
 	if len(patterns) == 0 {
 		return []string{}, nil
 	}
-	args := []string{"grep", "-z"}
+	args := []string{
+		"grep",
+		"--no-recurse-submodules",
+		"--no-line-number",
+		"--no-column",
+		"--no-color",
+		"--no-full-name",
+		"-z",
+	}
 	if textOnly {
 		args = append(args, "-I")
 	}
@@ -505,13 +515,23 @@ func grepFixedStringMatches(ctx context.Context, repo, treeish string, patterns 
 	if maxPerFile <= 0 {
 		maxPerFile = 32
 	}
-	args := []string{"grep", "-z", "-I", "-i", "-F", "-o", "-m", strconv.Itoa(maxPerFile)}
+	args := []string{
+		"grep",
+		"--no-recurse-submodules",
+		"--no-line-number",
+		"--no-column",
+		"--no-color",
+		"--no-full-name",
+		"-z", "-I", "-i", "-F", "-o", "-m", strconv.Itoa(maxPerFile),
+	}
+	patternCount := 0
 	for _, pattern := range patterns {
 		if pattern != "" {
 			args = append(args, "-e", pattern)
+			patternCount++
 		}
 	}
-	if len(args) == 8 {
+	if patternCount == 0 {
 		return []GrepMatch{}, nil
 	}
 	if treeish != "" {
@@ -577,7 +597,10 @@ func grepFixedStringMatches(ctx context.Context, repo, treeish string, patterns 
 }
 
 func ChangedFiles(ctx context.Context, repo, base, head string, paths []string) ([]ChangedFile, error) {
-	args := []string{"diff", "-z", "--name-status", "--find-renames", base, head, "--"}
+	args := []string{
+		"diff", "--no-relative", "--ignore-submodules=none",
+		"-z", "--name-status", "--find-renames", base, head, "--",
+	}
 	args = append(args, paths...)
 	out, err := run(ctx, repo, "git", args...)
 	if err != nil {
@@ -637,7 +660,11 @@ func FileCochanges(ctx context.Context, repo, revision string, maxCommits int) (
 	// blows up memory: one 10k-file commit alone produces ~50M pair keys (multi-GB).
 	// Real feature/fix commits touch a handful of related files and stay well under.
 	const maxFilesPerCommit = 50
-	out, err := run(ctx, repo, "git", "log", "-z", "--name-only", "--pretty=format:"+marker, "-n", strconv.Itoa(maxCommits), revision, "--")
+	out, err := run(
+		ctx, repo, "git", "log", "--no-relative", "--ignore-submodules=none",
+		"-z", "--name-only", "--pretty=format:"+marker,
+		"-n", strconv.Itoa(maxCommits), revision, "--",
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -2007,36 +2034,47 @@ const (
 	noLazyFetchEnv   = "GIT_NO_LAZY_FETCH=1"
 	// noTransportProtocolEnv is a second, independent no-egress guard.
 	// GIT_NO_LAZY_FETCH only became effective in Git 2.45 (git/git@2c206fc);
-	// this package's floor is Git 2.36 (cat-file --batch-command), so on any
-	// Git between those two versions GIT_NO_LAZY_FETCH is an unrecognized,
-	// silently ignored variable and a partial clone's promisor remote would
-	// still be lazily fetched with no guard at all. GIT_ALLOW_PROTOCOL has
-	// gated every transport since Git 2.11.1; set to empty it whitelists zero
-	// protocols, so any fetch a lazy-fetch would need to make (over http,
-	// https, ssh, or git) fails hard instead of being silently skipped like
-	// GIT_NO_LAZY_FETCH's own guard. This tool never intentionally fetches,
-	// clones, or pushes, so blocking every transport costs it nothing.
+	// this package's floor is Git 2.36 (cat-file --batch-command). Production
+	// entrypoints therefore reject active partial-clone/promisor configuration
+	// in the repository metadata preflight: older Git can stat a local/UNC
+	// promisor URL before it applies the protocol allowlist. GIT_ALLOW_PROTOCOL
+	// remains a second guard for every transport and remote helper after that
+	// preflight. This tool never intentionally fetches, clones, or pushes, so
+	// blocking every protocol costs it nothing.
 	noTransportProtocolEnv = "GIT_ALLOW_PROTOCOL="
 	// Listing and object inspection are read-only. Disable optional lock and
 	// index-refresh writes even when repository configuration would request one.
 	noOptionalLocksEnv = "GIT_OPTIONAL_LOCKS=0"
-	// The metadata preflight permits Git's own fsmonitor daemon socket so an
-	// otherwise ordinary fsmonitor-enabled checkout remains usable. Pinning this
-	// command-scope setting means no provider Git process can connect to it.
-	gitConfigCountEnv          = "GIT_CONFIG_COUNT=1"
-	gitConfigFSMonitorKeyEnv   = "GIT_CONFIG_KEY_0=core.fsmonitor"
-	gitConfigFSMonitorValueEnv = "GIT_CONFIG_VALUE_0=false"
-	gitCommandWaitDelay        = time.Second
+	// Repository-local configuration is still needed for structural settings
+	// such as object format, ref storage, and linked worktrees. Everything that
+	// can make the read-only commands below consult a caller-selected external
+	// file or executable is instead pinned at command scope. Local include
+	// directives are rejected by the metadata preflight before any Git command
+	// starts; global and system configuration are disabled below.
+	gitConfigCountEnv               = "GIT_CONFIG_COUNT=7"
+	gitConfigFSMonitorKeyEnv        = "GIT_CONFIG_KEY_0=core.fsmonitor"
+	gitConfigFSMonitorValueEnv      = "GIT_CONFIG_VALUE_0=false"
+	gitConfigLogSignatureKeyEnv     = "GIT_CONFIG_KEY_1=log.showSignature"
+	gitConfigLogSignatureValueEnv   = "GIT_CONFIG_VALUE_1=false"
+	gitConfigExcludesFileKeyEnv     = "GIT_CONFIG_KEY_2=core.excludesFile"
+	gitConfigExcludesFileValueEnv   = "GIT_CONFIG_VALUE_2="
+	gitConfigAttributesFileKeyEnv   = "GIT_CONFIG_KEY_3=core.attributesFile"
+	gitConfigAttributesFileValueEnv = "GIT_CONFIG_VALUE_3="
+	gitConfigSubmoduleRecurseKeyEnv = "GIT_CONFIG_KEY_4=submodule.recurse"
+	gitConfigSubmoduleRecurseValEnv = "GIT_CONFIG_VALUE_4=false"
+	gitConfigLogMailmapKeyEnv       = "GIT_CONFIG_KEY_5=log.mailmap"
+	gitConfigLogMailmapValueEnv     = "GIT_CONFIG_VALUE_5=false"
+	gitConfigDiffOrderFileKeyEnv    = "GIT_CONFIG_KEY_6=diff.orderFile"
+	gitCommandWaitDelay             = time.Second
 )
 
 // newGitCmdWithCallerLocale builds the two git-grep subprocesses whose
 // case-folding must retain the caller's locale. Like every other production Git
 // subprocess in this package, it disables replace refs: exact tree/object IDs
 // are the immutable snapshot boundary, regardless of later refs/replace edits.
-// It also disables lazy fetching, for the same reason newCmd does below: this
-// provider promises no-egress execution, and without this a partial clone
-// would have Git silently reach out to the promisor remote for any object a
-// command here touches.
+// It also disables lazy fetching as defense in depth. Production entrypoints
+// reject active partial-clone/promisor configuration before reaching this
+// constructor because the Git 2.36 compatibility floor predates that guard.
 func newGitCmdWithCallerLocale(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
@@ -2059,25 +2097,41 @@ func newGitCmdWithCallerLocale(ctx context.Context, dir string, args ...string) 
 // index, worktree, object store, refs or config observed for an unrelated
 // --repo path. GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n accompany GIT_CONFIG_COUNT
 // but are filtered by prefix too so the child never receives a partial injected
-// configuration if Git's handling changes.
+// configuration if Git's handling changes. GIT_TRACE* is also filtered by prefix:
+// Git accepts arbitrary filesystem and socket trace targets, including UNC paths
+// on Windows, so inherited tracing would violate the provider's no-egress boundary.
+// Git for Windows opens GIT_REDIRECT_{STDIN,STDOUT,STDERR} before Git's main
+// function, and Git probes GIT_TEXTDOMAINDIR during gettext setup before command
+// dispatch, so those paths are stripped for the same reason.
 var gitRepositoryEnvironment = map[string]struct{}{
 	"GIT_ALTERNATE_OBJECT_DIRECTORIES": {},
+	"GIT_ATTR_NOSYSTEM":                {},
+	"GIT_ATTR_SOURCE":                  {},
 	"GIT_COMMON_DIR":                   {},
 	"GIT_CONFIG":                       {},
 	"GIT_CONFIG_COUNT":                 {},
+	"GIT_CONFIG_GLOBAL":                {},
+	"GIT_CONFIG_NOSYSTEM":              {},
 	"GIT_CONFIG_PARAMETERS":            {},
+	"GIT_CONFIG_SYSTEM":                {},
 	"GIT_CEILING_DIRECTORIES":          {},
 	"GIT_DIR":                          {},
 	"GIT_DISCOVERY_ACROSS_FILESYSTEM":  {},
 	"GIT_GRAFT_FILE":                   {},
+	"GIT_GLOB_PATHSPECS":               {},
 	"GIT_IMPLICIT_WORK_TREE":           {},
+	"GIT_ICASE_PATHSPECS":              {},
 	"GIT_INDEX_FILE":                   {},
+	"GIT_LITERAL_PATHSPECS":            {},
 	"GIT_NAMESPACE":                    {},
+	"GIT_NOGLOB_PATHSPECS":             {},
 	"GIT_NO_REPLACE_OBJECTS":           {},
 	"GIT_OBJECT_DIRECTORY":             {},
 	"GIT_PREFIX":                       {},
 	"GIT_REPLACE_REF_BASE":             {},
 	"GIT_SHALLOW_FILE":                 {},
+	"GIT_TERMINAL_PROMPT":              {},
+	"GIT_TEXTDOMAINDIR":                {},
 	"GIT_WORK_TREE":                    {},
 }
 
@@ -2088,7 +2142,9 @@ func sanitizedGitEnvironment(env []string) []string {
 		canonicalKey := strings.ToUpper(key)
 		if _, remove := gitRepositoryEnvironment[canonicalKey]; remove ||
 			strings.HasPrefix(canonicalKey, "GIT_CONFIG_KEY_") ||
-			strings.HasPrefix(canonicalKey, "GIT_CONFIG_VALUE_") {
+			strings.HasPrefix(canonicalKey, "GIT_CONFIG_VALUE_") ||
+			strings.HasPrefix(canonicalKey, "GIT_TRACE") ||
+			strings.HasPrefix(canonicalKey, "GIT_REDIRECT_") {
 			continue
 		}
 		clean = append(clean, entry)
@@ -2103,9 +2159,26 @@ func gitSubprocessEnvironment(env []string) []string {
 		noLazyFetchEnv,
 		noTransportProtocolEnv,
 		noOptionalLocksEnv,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL="+os.DevNull,
+		"GIT_CONFIG_SYSTEM="+os.DevNull,
+		"GIT_ATTR_NOSYSTEM=1",
+		"GIT_TERMINAL_PROMPT=0",
 		gitConfigCountEnv,
 		gitConfigFSMonitorKeyEnv,
 		gitConfigFSMonitorValueEnv,
+		gitConfigLogSignatureKeyEnv,
+		gitConfigLogSignatureValueEnv,
+		gitConfigExcludesFileKeyEnv,
+		gitConfigExcludesFileValueEnv,
+		gitConfigAttributesFileKeyEnv,
+		gitConfigAttributesFileValueEnv,
+		gitConfigSubmoduleRecurseKeyEnv,
+		gitConfigSubmoduleRecurseValEnv,
+		gitConfigLogMailmapKeyEnv,
+		gitConfigLogMailmapValueEnv,
+		gitConfigDiffOrderFileKeyEnv,
+		"GIT_CONFIG_VALUE_6="+os.DevNull,
 	)
 }
 
@@ -2126,9 +2199,10 @@ func gitSubprocessEnvironment(env []string) []string {
 // exactly such a command). With lazy fetch disabled, Git reports a missing
 // promised object as a per-entry failure instead of fetching it — ls-tree -l
 // prints its "BAD" sentinel for a blob it cannot size, which callers already
-// classify as LimitedFileUnreadable rather than treating as an error. The
-// GIT_ALLOW_PROTOCOL guard alongside it closes the same gap on a Git older
-// than the lazy-fetch guard itself (see noTransportProtocolEnv).
+// classify as LimitedFileUnreadable rather than treating as an error.
+// Production metadata preflight rejects active promisor configuration because
+// old Git can inspect a local/UNC URL before applying GIT_ALLOW_PROTOCOL; both
+// environment guards remain defense in depth (see noTransportProtocolEnv).
 func newCmd(ctx context.Context, dir, name string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir

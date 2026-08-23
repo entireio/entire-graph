@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -820,16 +822,86 @@ func resolveRepo(ctx context.Context, env EntireEnv, explicit string) (string, e
 	if env.RepoRoot != "" {
 		return env.RepoRoot, nil
 	}
+	if os.Getenv("GIT_CEILING_DIRECTORIES") != "" {
+		// Git canonicalizes ceiling entries before discovery. A caller-controlled
+		// Windows UNC entry can therefore perform network I/O before Git looks for
+		// repository metadata. Apply the boundary lexically in-process instead and
+		// never pass its raw path list to a subprocess.
+		if root, ok := discoverImplicitCheckoutRoot("."); ok {
+			return root, nil
+		}
+		return "", errors.New("no Git repository found below GIT_CEILING_DIRECTORIES")
+	}
 	if err := sem.EnsureGitMetadataSafeForSubprocess("."); err != nil {
 		// Preserve the provider's warned filesystem-only fallback without asking
 		// Git to discover the checkout. Analyze entry points apply their own strict
 		// guard before resolving revisions.
-		if root, ok := discoverCheckoutRoot("."); ok {
+		if root, ok := discoverImplicitCheckoutRoot("."); ok {
 			return root, nil
 		}
 		return ".", nil
 	}
 	return gitutil.RepoRoot(ctx, ".")
+}
+
+// discoverImplicitCheckoutRoot applies an inherited ceiling without a Git
+// subprocess. With no usable ceiling it keeps the established two-spelling
+// filesystem fallback. With a ceiling it walks only the lexical spelling and
+// stops before inspecting the ceiling directory. It deliberately does not
+// resolve ceiling entries: doing so could itself touch an off-volume or UNC
+// path. If no ceiling can be proven to contain the lexical spelling, discovery
+// fails closed rather than crossing a possible alias.
+func discoverImplicitCheckoutRoot(dir string) (string, bool) {
+	var ceilings []string
+	for _, entry := range filepath.SplitList(os.Getenv("GIT_CEILING_DIRECTORIES")) {
+		// Git documents ceiling entries as absolute paths. Empty entries are a
+		// canonicalization marker within the list, not discovery boundaries.
+		if entry != "" && filepath.IsAbs(entry) {
+			ceilings = append(ceilings, filepath.Clean(entry))
+		}
+	}
+	if len(ceilings) == 0 {
+		return discoverCheckoutRoot(dir)
+	}
+
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", false
+	}
+	abs = filepath.Clean(abs)
+	applicable := ceilings[:0]
+	for _, ceiling := range ceilings {
+		left, right := ceiling, abs
+		if runtime.GOOS == "windows" {
+			left, right = strings.ToLower(left), strings.ToLower(right)
+		}
+		rel, err := filepath.Rel(left, right)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+			applicable = append(applicable, ceiling)
+		}
+	}
+	if len(applicable) == 0 {
+		return "", false
+	}
+	for {
+		for _, ceiling := range applicable {
+			equal := abs == ceiling
+			if runtime.GOOS == "windows" {
+				equal = strings.EqualFold(abs, ceiling)
+			}
+			if equal {
+				return "", false
+			}
+		}
+		if _, err := os.Lstat(filepath.Join(abs, ".git")); err == nil {
+			return abs, true
+		}
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			return "", false
+		}
+		abs = parent
+	}
 }
 
 func analyzeAndPrint(ctx context.Context, opts Options, repo, base, head string, paths []string, flags commonFlags) error {
