@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.10.1-nightly.202608130635.9862b0dd6.0.20260813151813-ec5593200a1c",
+  "checkpoint_id": "bddd43383a9c",
+  "strategy": "manual-commit",
+  "branch": "codex/pr-132-windows-fix",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "docs/semantic-provider-requirements.md",
+    "docs/trust-and-security.md",
+    "internal/cli/stats.go",
+    "internal/cli/stats_mount_windows_test.go",
+    "internal/cli/stats_test.go",
+    "internal/sem/provider.go",
+    "internal/sem/sweep_open_linux.go",
+    "internal/sem/worktree_prelaunch_guard_linux_test.go",
+    "internal/sem/worktree_prelaunch_guard_test.go",
+    "internal/sem/worktree_prelaunch_guard_windows_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/bd/dd43383a9c/0/metadata.json",
+      "transcript": "/bd/dd43383a9c/0/full.jsonl",
+      "compact_transcript": "/bd/dd43383a9c/0/transcript.jsonl",
+      "content_hash": "/bd/dd43383a9c/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 141119,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 13827328,
+    "output_tokens": 34052,
+    "api_call_count": 107
+  }
+}
