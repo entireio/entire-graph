@@ -1,17 +1,13 @@
 package sem
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
-	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 )
 
@@ -23,10 +19,10 @@ func TestSearchReplayPolicyFingerprintIsDeterministicAndOrderSensitive(t *testin
 	writeFile(t, repo, "ignore-target", "target.go\n")
 	writeFile(t, repo, "reinclude-target", "!target.go\n")
 
-	includeTarget := SearchOptions{
-		Worktree:    true,
-		IgnoreFiles: []string{"ignore-target", "reinclude-target"},
-	}
+	initRepo(t, repo)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "fixture")
+	includeTarget := SearchOptions{IgnoreFiles: []string{"ignore-target", "reinclude-target"}}
 	first, err := ResolveSearchReplayPolicy(t.Context(), repo, includeTarget)
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +58,7 @@ func TestSearchReplayPolicyFingerprintBindsEveryParsedRuleSemantic(t *testing.T)
 		pattern:      "credentials",
 		expression:   regexp.MustCompile(`^credentials$`),
 	}
-	baseline := searchReplayPolicyFingerprint(searchReplayViewFilesystemWorktree, ignoreMatcher{rules: []ignoreRule{base}})
+	baseline := searchReplayPolicyFingerprint(searchReplayViewHead, ignoreMatcher{rules: []ignoreRule{base}})
 
 	mutations := map[string]func(*ignoreRule){
 		"ignore":        func(rule *ignoreRule) { rule.ignore = false },
@@ -79,17 +75,11 @@ func TestSearchReplayPolicyFingerprintBindsEveryParsedRuleSemantic(t *testing.T)
 			t.Parallel()
 			changed := base
 			mutate(&changed)
-			got := searchReplayPolicyFingerprint(searchReplayViewFilesystemWorktree, ignoreMatcher{rules: []ignoreRule{changed}})
+			got := searchReplayPolicyFingerprint(searchReplayViewHead, ignoreMatcher{rules: []ignoreRule{changed}})
 			if got == baseline {
 				t.Fatalf("changing %s did not change fingerprint %q", name, got)
 			}
 		})
-	}
-	if got := searchReplayPolicyFingerprint(searchReplayViewHead, ignoreMatcher{rules: []ignoreRule{base}}); got == baseline {
-		t.Fatalf("changing resolved repository view did not change fingerprint %q", got)
-	}
-	if got := searchReplayPolicyFingerprint(searchReplayViewGitWorktree, ignoreMatcher{rules: []ignoreRule{base}}); got == baseline {
-		t.Fatalf("changing worktree eligibility backend did not change fingerprint %q", got)
 	}
 }
 
@@ -107,8 +97,8 @@ func TestSearchReplayPolicyFingerprintLengthPrefixesRuleFields(t *testing.T) {
 		pattern:    "a",
 		expression: regexp.MustCompile("b\x00c"),
 	}}}
-	leftFingerprint := searchReplayPolicyFingerprint(searchReplayViewFilesystemWorktree, left)
-	rightFingerprint := searchReplayPolicyFingerprint(searchReplayViewFilesystemWorktree, right)
+	leftFingerprint := searchReplayPolicyFingerprint(searchReplayViewHead, left)
+	rightFingerprint := searchReplayPolicyFingerprint(searchReplayViewHead, right)
 	if leftFingerprint == rightFingerprint {
 		t.Fatalf("ambiguous rule fields produced the same fingerprint %q", leftFingerprint)
 	}
@@ -117,10 +107,13 @@ func TestSearchReplayPolicyFingerprintLengthPrefixesRuleFields(t *testing.T) {
 func TestSearchReplayPolicyCanonicalizesEffectiveFileCap(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, repo, "only.go", "package sample\n")
+	initRepo(t, repo)
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "fixture")
 	resolve := func(value string) SearchReplayPolicy {
 		t.Helper()
 		t.Setenv(maxSourceFilesEnv, value)
-		policy, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
+		policy, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{})
 		if err != nil {
 			t.Fatalf("resolve policy with %s=%q: %v", maxSourceFilesEnv, value, err)
 		}
@@ -171,136 +164,30 @@ func TestSearchReplayPolicyHeadFingerprintBindsEffectiveFileCap(t *testing.T) {
 	}
 }
 
-func TestSearchReplayPolicyWorktreeFingerprintBindsCompleteCorpus(t *testing.T) {
+func TestResolveSearchReplayPolicyNeverAuthorizesAWorktree(t *testing.T) {
 	for _, gitRepo := range []bool{false, true} {
-		name := "filesystem"
-		if gitRepo {
-			name = "git"
-		}
-		t.Run(name, func(t *testing.T) {
-			repo := t.TempDir()
-			if gitRepo {
-				initRepo(t, repo)
-			}
-			t.Setenv(maxSourceFilesEnv, "2")
-			writeFile(t, repo, "b.go", "package sample\n")
-			before, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
-			if err != nil {
-				t.Fatal(err)
-			}
-			writeFile(t, repo, "a.go", "package sample\n")
-			after, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if before.Fingerprint() == after.Fingerprint() {
-				t.Fatalf("adding an eligible lexical predecessor retained %s worktree fingerprint %q",
-					name, before.Fingerprint())
-			}
-			if !after.AllowsReplayPaths([]string{"b.go"}) {
-				t.Fatal("old path stopped being individually eligible; fixture did not isolate corpus identity")
-			}
-		})
-	}
-}
-
-func TestSearchReplayPolicyWorktreeCorpusBoundsFailClosed(t *testing.T) {
-	t.Run("bounded provider cap truncation", func(t *testing.T) {
 		repo := t.TempDir()
-		t.Setenv(maxSourceFilesEnv, "1")
-		writeFile(t, repo, "b.go", "package sample\n")
-		before, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
+		if gitRepo {
+			initRepo(t, repo)
+		}
+		writeFile(t, repo, "keep.go", "package keep\n")
+		policy, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
 		if err != nil {
 			t.Fatal(err)
 		}
-		writeFile(t, repo, "a.go", "package sample\n")
-		after, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
-		if err != nil {
-			t.Fatalf("bounded pre-cap corpus was not fingerprinted: %v", err)
+		if policy.Fingerprint() != "" || policy.MatchesTree("any") || policy.AllowsReplayPaths([]string{"keep.go"}) {
+			t.Fatalf("worktree policy became replayable: %+v", policy)
 		}
-		if before.Fingerprint() == after.Fingerprint() {
-			t.Fatal("same-cap lexical displacement retained the old corpus fingerprint")
-		}
-	})
+	}
 
-	t.Run("path count", func(t *testing.T) {
-		collector := newSearchReplayCorpusCollector()
-		for index := 0; index < SearchReplayMaxPathCount; index++ {
-			if !collector.add(fmt.Sprintf("p-%04d.go", index)) {
-				t.Fatalf("collector rejected path %d at the boundary", index)
-			}
-		}
-		if collector.add("overflow.go") {
-			t.Fatal("collector accepted one path beyond replay bound")
-		}
-		if _, err := collector.identity(); err == nil {
-			t.Fatal("overflowed corpus produced an identity")
-		}
-	})
-
-	t.Run("aggregate bytes", func(t *testing.T) {
-		collector := newSearchReplayCorpusCollector()
-		for index := 0; !collector.exceeded; index++ {
-			collector.add(fmt.Sprintf("%04d-%s.go", index, strings.Repeat("x", 180)))
-		}
-		if _, err := collector.identity(); err == nil {
-			t.Fatal("aggregate-overflow corpus produced an identity")
-		}
-	})
-}
-
-func TestResolveSearchReplayPolicySubdirectoryGitProbeFailureFailsClosed(t *testing.T) {
-	repo := t.TempDir()
-	initRepo(t, repo)
-	writeFile(t, repo, "scope/safe.go", "package safe\n")
-	scope := filepath.Join(repo, "scope")
-
-	baseline, err := ResolveSearchReplayPolicy(t.Context(), scope, SearchOptions{})
+	withoutHEAD := t.TempDir()
+	writeFile(t, withoutHEAD, "keep.go", "package keep\n")
+	policy, err := ResolveSearchReplayPolicy(t.Context(), withoutHEAD, SearchOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !baseline.gitWorktree || !baseline.AllowsReplayPaths([]string{"safe.go"}) {
-		t.Fatal("fixture did not resolve the no-HEAD subdirectory as a Git worktree")
-	}
-	writeFile(t, repo, ".git/info/exclude", "scope/safe.go\n")
-
-	// Simulate a transient Git execution failure without removing the ancestor
-	// metadata that says filesystem fallback would have weaker semantics.
-	t.Setenv("PATH", t.TempDir())
-	policy, err := ResolveSearchReplayPolicy(t.Context(), scope, SearchOptions{})
-	if err == nil {
-		t.Fatalf("Git probe failure under ancestor metadata returned policy %q", policy.Fingerprint())
-	}
-	if policy.Fingerprint() != "" || policy.AllowsReplayPaths([]string{"safe.go"}) {
-		t.Fatal("failed Git probe returned a replayable filesystem policy")
-	}
-}
-
-func TestResolveSearchReplayPolicyFallsBackToWorktreeWithoutHEAD(t *testing.T) {
-	t.Parallel()
-
-	repo := t.TempDir()
-	writeFile(t, repo, ".gitignore", "blocked.go\n")
-	writeFile(t, repo, "blocked.go", "package blocked\n")
-	writeFile(t, repo, "keep.go", "package keep\n")
-
-	fallback, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	explicitWorktree, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fallback.Fingerprint() != explicitWorktree.Fingerprint() {
-		t.Fatalf("head fallback fingerprint = %q, explicit worktree = %q",
-			fallback.Fingerprint(), explicitWorktree.Fingerprint())
-	}
-	if fallback.AllowsReplayPaths([]string{"blocked.go"}) {
-		t.Fatal("head fallback ignored the worktree .gitignore")
-	}
-	if !fallback.AllowsReplayPaths([]string{"keep.go"}) {
-		t.Fatal("head fallback rejected an admitted regular worktree file")
+	if policy.Fingerprint() != "" || policy.AllowsReplayPaths([]string{"keep.go"}) {
+		t.Fatal("HEAD fallback produced a replayable worktree policy")
 	}
 }
 
@@ -337,251 +224,11 @@ func TestSearchReplayPolicyMatchesExactResolvedTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !worktree.MatchesTree("") || !worktree.MatchesTree(secondTree) {
-		t.Fatal("effective worktree policy was incorrectly bound to a Git tree")
+	if worktree.MatchesTree("") || worktree.MatchesTree(secondTree) {
+		t.Fatal("mutable worktree policy authorized persisted replay without an immutable tree")
 	}
 	if (SearchReplayPolicy{}).MatchesTree("") {
 		t.Fatal("zero policy matched a tree")
-	}
-}
-
-func TestSearchReplayPolicyAllowsReplayPathsRejectsUnsafeWorktreePaths(t *testing.T) {
-	t.Parallel()
-
-	repo := t.TempDir()
-	writeFile(t, repo, "keep.go", "package keep\n")
-	writeFile(t, repo, ".env", "SECRET=placeholder\n")
-	if err := os.Mkdir(filepath.Join(repo, "directory"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	policy, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !policy.AllowsReplayPaths(nil) {
-		t.Fatal("a valid policy rejected a payload with no repository paths")
-	}
-	if !policy.AllowsReplayPaths([]string{"keep.go"}) {
-		t.Fatal("regular admitted worktree file was rejected")
-	}
-
-	for _, invalid := range []string{
-		".env",
-		"missing.go",
-		"directory",
-		"../outside.go",
-		"nested/../../outside.go",
-		`..\outside.go`,
-		filepath.Join(repo, "keep.go"),
-		"C:/outside.go",
-	} {
-		if policy.AllowsReplayPaths([]string{invalid}) {
-			t.Errorf("unsafe replay path %q was admitted", invalid)
-		}
-	}
-
-	symlink := filepath.Join(repo, "link.go")
-	requireReplayTestSymlink(t, "keep.go", symlink)
-	if policy.AllowsReplayPaths([]string{"link.go"}) {
-		t.Error("worktree symlink was admitted for replay")
-	}
-
-	outside := t.TempDir()
-	writeFile(t, outside, "secret.go", "package secret\n")
-	requireReplayTestSymlink(t, outside, filepath.Join(repo, "linked"))
-	if policy.AllowsReplayPaths([]string{"linked/secret.go"}) {
-		t.Error("worktree path with a symlink ancestor was admitted for replay")
-	}
-}
-
-func requireReplayTestSymlink(t *testing.T, target, link string) {
-	t.Helper()
-	if err := os.Symlink(target, link); err != nil {
-		const windowsErrorPrivilegeNotHeld = syscall.Errno(1314)
-		if errors.Is(err, os.ErrPermission) ||
-			(runtime.GOOS == "windows" && errors.Is(err, windowsErrorPrivilegeNotHeld)) {
-			t.Skipf("symlink creation requires unavailable privileges: %v", err)
-		}
-		t.Fatalf("create symlink %q -> %q: %v", link, target, err)
-	}
-}
-
-func TestWorktreeNestedIgnoreReadIsBounded(t *testing.T) {
-	t.Parallel()
-	repo := t.TempDir()
-	writeFile(t, repo, "nested/.gitignore", "*.generated\n")
-	writeFile(t, repo, "oversized/.gitignore", strings.Repeat("x", maxNestedIgnoreFileBytes+1))
-	root, err := os.OpenRoot(repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer root.Close()
-
-	content, ok, err := readWorktreeNestedIgnore(root, repo, "nested/.gitignore")
-	if err != nil || !ok || content != "*.generated\n" {
-		t.Fatalf("bounded nested ignore read = (%q, %v, %v)", content, ok, err)
-	}
-	if content, ok, err := readWorktreeNestedIgnore(root, repo, "oversized/.gitignore"); err == nil || ok || content != "" {
-		t.Fatalf("oversized nested ignore read = (%q, %v, %v), want reported refusal", content, ok, err)
-	}
-}
-
-func TestSearchReplayPolicyWorktreeUsesGitEffectiveExcludes(t *testing.T) {
-	t.Parallel()
-
-	repo := t.TempDir()
-	initRepo(t, repo)
-	writeFile(t, repo, "nested/.gitignore", "*.generated\n")
-	writeFile(t, repo, "global-excludes", "*.private\n")
-	git(t, repo, "config", "core.excludesFile", filepath.Join(repo, "global-excludes"))
-	writeFile(t, repo, ".git/info/exclude", "*.local-only\n")
-	git(t, repo, "add", ".")
-	git(t, repo, "commit", "-m", "ignore policy")
-	writeFile(t, repo, "nested/drop.generated", "generated\n")
-	writeFile(t, repo, "nested/drop.private", "private\n")
-	writeFile(t, repo, "nested/drop.local-only", "local\n")
-	writeFile(t, repo, "nested/keep.go", "package keep\n")
-
-	policy, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ignored := range []string{
-		"nested/drop.generated",
-		"nested/drop.private",
-		"nested/drop.local-only",
-	} {
-		if policy.AllowsReplayPaths([]string{ignored}) {
-			t.Errorf("Git-ignored path %q was admitted for replay", ignored)
-		}
-	}
-	if policy.AllowsReplayPaths([]string{".git/config"}) {
-		t.Fatal("Git-internal path was admitted for replay")
-	}
-	if !policy.AllowsReplayPaths([]string{"nested/keep.go"}) {
-		t.Fatal("Git-eligible worktree path was rejected")
-	}
-}
-
-func TestSearchReplayPolicyFailsClosedWhenGitEligibilityCheckFails(t *testing.T) {
-	t.Parallel()
-
-	repo := t.TempDir()
-	initRepo(t, repo)
-	writeFile(t, repo, "keep.go", "package keep\n")
-	ctx, cancel := context.WithCancel(t.Context())
-	policy, err := ResolveSearchReplayPolicy(ctx, repo, SearchOptions{Worktree: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cancel()
-	if policy.AllowsReplayPaths([]string{"keep.go"}) {
-		t.Fatal("canceled Git eligibility validation admitted replay")
-	}
-}
-
-func TestSearchReplayPolicyExplicitIncludeReadmitsGitIgnoredPath(t *testing.T) {
-	t.Parallel()
-
-	repo := t.TempDir()
-	initRepo(t, repo)
-	writeFile(t, repo, "global-excludes", "*.private\n")
-	writeFile(t, repo, "replay.include", "*.private\n")
-	git(t, repo, "config", "core.excludesFile", filepath.Join(repo, "global-excludes"))
-	writeFile(t, repo, "nested/readmitted.private", "not a credential\n")
-
-	withoutInclude, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	withInclude, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{
-		Worktree:     true,
-		IncludeFiles: []string{"replay.include"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if withoutInclude.AllowsReplayPaths([]string{"nested/readmitted.private"}) {
-		t.Fatal("global Git exclude was ignored without an explicit include")
-	}
-	if !withInclude.AllowsReplayPaths([]string{"nested/readmitted.private"}) {
-		t.Fatal("explicit include did not re-admit a Git-ignored regular file")
-	}
-}
-
-func TestSearchReplayPolicyHonorsNestedVendoredReinclude(t *testing.T) {
-	t.Parallel()
-
-	repo := t.TempDir()
-	initRepo(t, repo)
-	writeFile(t, repo, "vendor/.gitignore", "*\n!mypkg/\n!mypkg/**\n")
-	writeFile(t, repo, "vendor/mypkg/kept.go", "package kept\n")
-	git(t, repo, "add", "-f", "vendor/.gitignore", "vendor/mypkg/kept.go")
-	git(t, repo, "commit", "-m", "vendor policy")
-
-	for _, worktree := range []bool{false, true} {
-		policy, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: worktree})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !policy.AllowsReplayPaths([]string{"vendor/mypkg/kept.go"}) {
-			t.Fatalf("worktree=%v: nested .gitignore re-inclusion did not override the vendored-directory heuristic", worktree)
-		}
-	}
-}
-
-func TestSearchReplayPolicyReportsGlobalNestedIgnoreCap(t *testing.T) {
-	repo := t.TempDir()
-	initRepo(t, repo)
-	writeFile(t, repo, "vendor/.gitignore", "*\n!mypkg/\n!mypkg/**\n")
-	writeFile(t, repo, "vendor/mypkg/kept.go", "package kept\n")
-	git(t, repo, "add", "-f", "vendor/.gitignore", "vendor/mypkg/kept.go")
-	git(t, repo, "commit", "-m", "vendor policy")
-
-	before, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !before.AllowsReplayPaths([]string{"vendor/mypkg/kept.go"}) {
-		t.Fatal("fixture did not begin with the nested vendor rule inside the provider cap")
-	}
-	for index := 0; index < maxNestedIgnoreFiles; index++ {
-		writeFile(t, repo, fmt.Sprintf("a%03d/.gitignore", index), "")
-	}
-
-	ignores, err := loadWorktreeIgnoreMatcher(repo, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := worktreeSourceFiles(t.Context(), repo, ignores, false); err == nil ||
-		!strings.Contains(err.Error(), "nested-ignore candidates exceed 512") {
-		t.Fatalf("provider nested-ignore cap error = %v", err)
-	}
-
-	if _, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true}); err == nil ||
-		!strings.Contains(err.Error(), "nested-ignore candidates exceed") {
-		t.Fatalf("replay nested-ignore cap error = %v", err)
-	}
-}
-
-func TestSearchReplayPolicyNonGitFallbackUsesNestedIgnoreRules(t *testing.T) {
-	t.Parallel()
-
-	repo := t.TempDir()
-	writeFile(t, repo, "nested/.gitignore", "*.generated\n")
-	writeFile(t, repo, "nested/drop.generated", "generated\n")
-	writeFile(t, repo, "nested/keep.go", "package keep\n")
-
-	policy, err := ResolveSearchReplayPolicy(t.Context(), repo, SearchOptions{Worktree: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if policy.AllowsReplayPaths([]string{"nested/drop.generated"}) {
-		t.Fatal("non-Git replay fallback ignored a nested .gitignore")
-	}
-	if !policy.AllowsReplayPaths([]string{"nested/keep.go"}) {
-		t.Fatal("non-Git replay fallback rejected an eligible regular file")
 	}
 }
 
@@ -609,7 +256,7 @@ func TestValidateSearchReplayPathsBoundsHostileProvenance(t *testing.T) {
 		t.Fatalf("valid bounded provenance was rejected: %v", err)
 	}
 
-	policy := SearchReplayPolicy{repo: t.TempDir(), worktree: true, fingerprint: "valid"}
+	policy := SearchReplayPolicy{repo: t.TempDir(), fingerprint: "valid"}
 	if policy.AllowsReplayPaths(tooMany) {
 		t.Fatal("AllowsReplayPaths bypassed provenance bounds")
 	}
@@ -690,7 +337,7 @@ func TestSearchReplayPolicyHeadUsesRepoSubdirectoryPathBasis(t *testing.T) {
 	}
 }
 
-func TestResolveSearchReplayPolicyUsesTheHeadMatcher(t *testing.T) {
+func TestResolveSearchReplayPolicyUsesOnlyTheHeadMatcher(t *testing.T) {
 	t.Parallel()
 
 	repo := t.TempDir()
@@ -717,10 +364,10 @@ func TestResolveSearchReplayPolicyUsesTheHeadMatcher(t *testing.T) {
 		t.Fatal("head policy did not load .graphignore")
 	}
 	if worktree.AllowsReplayPaths([]string{"worktree-only.go"}) {
-		t.Fatal("worktree policy did not load .gitignore")
+		t.Fatal("non-replayable worktree policy admitted a path")
 	}
-	if head.Fingerprint() == worktree.Fingerprint() {
-		t.Fatal("head and worktree policies produced the same fingerprint")
+	if worktree.Fingerprint() != "" || head.Fingerprint() == "" {
+		t.Fatalf("fingerprints: head=%q worktree=%q", head.Fingerprint(), worktree.Fingerprint())
 	}
 }
 
@@ -911,17 +558,17 @@ func TestSearchReplayProvenanceIsNotPublicJSON(t *testing.T) {
 	}
 }
 
-func TestResolveSearchReplayPolicyRejectsMissingExplicitRuleFile(t *testing.T) {
+func TestResolveSearchReplayPolicyDoesNotLoadWorktreeRuleFiles(t *testing.T) {
 	t.Parallel()
 
 	policy, err := ResolveSearchReplayPolicy(t.Context(), t.TempDir(), SearchOptions{
 		Worktree:    true,
 		IgnoreFiles: []string{"missing.ignore"},
 	})
-	if err == nil {
-		t.Fatal("missing explicit ignore file did not fail policy resolution")
+	if err != nil {
+		t.Fatalf("non-replayable worktree policy loaded an irrelevant rule file: %v", err)
 	}
 	if policy.Fingerprint() != "" || policy.AllowsReplayPaths(nil) {
-		t.Fatal("failed policy resolution returned a replayable policy")
+		t.Fatal("worktree policy became replayable")
 	}
 }

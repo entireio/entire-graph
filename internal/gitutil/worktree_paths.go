@@ -214,8 +214,9 @@ func BoundedWorktreeNestedIgnorePaths(
 // VisitWorktreePaths streams Git's provider candidate listing one NUL-safe path
 // at a time. When ignored is false it matches ListWorktreeFiles; when true it
 // matches ListIgnoredWorktreeFiles. Returning false stops the subprocess
-// successfully. The reader bounds each record and never buffers complete Git
-// output, so callers can enforce their own retained-count and aggregate limits.
+// successfully. The reader applies the same fixed raw count and aggregate-byte
+// bound as the materialized listings before invoking the callback, and never
+// buffers complete Git output.
 func VisitWorktreePaths(
 	ctx context.Context,
 	repo string,
@@ -231,7 +232,56 @@ func VisitWorktreePaths(
 	} else {
 		args = append(args, "--cached")
 	}
-	return visitBoundedNULPaths(newCmd(ctx, repo, "git", args...), visit)
+	return visitBoundedWorktreePathOutput(newCmd(ctx, repo, "git", args...), visit)
+}
+
+// VisitWorktreeDirectoryEntries streams only the collapsed directory records
+// from Git's --directory listing. Returning false stops Git through the same
+// bounded process-tree path as VisitWorktreePaths, allowing callers to enforce
+// their own root budget without first materializing every collapsed directory.
+func VisitWorktreeDirectoryEntries(
+	ctx context.Context,
+	repo string,
+	ignored bool,
+	visit func(string) bool,
+) error {
+	if visit == nil {
+		return errors.New("git worktree directory-entry visitor is nil")
+	}
+	args := []string{"ls-files", "-z", "--others", "--exclude-standard", "--directory"}
+	if ignored {
+		args = append(args, "--ignored")
+	} else {
+		args = append(args, "--cached")
+	}
+	return visitWorktreeDirectoryEntryOutput(newCmd(ctx, repo, "git", args...), visit)
+}
+
+// visitWorktreeDirectoryEntryOutput applies the production directory filter
+// and raw-record bound to an already-constructed command. Keeping the command
+// injectable lets scale tests use the Go test binary as a portable producer on
+// Windows, without requiring sh/awk or testing a separate parser.
+func visitWorktreeDirectoryEntryOutput(cmd *exec.Cmd, visit func(string) bool) error {
+	seen := make(map[string]struct{})
+	var budget ignoredDirectoryListingBudget
+	truncated := false
+	err := visitBoundedNULPaths(cmd, func(entry string) bool {
+		if !budget.admit(entry) {
+			truncated = true
+			return false
+		}
+		if !keepDirectoryEntry(entry, seen) {
+			return true
+		}
+		return visit(entry)
+	})
+	if err != nil {
+		return err
+	}
+	if truncated {
+		return errIgnoredListingTruncated
+	}
+	return nil
 }
 
 func firstNestedIgnorePaths(

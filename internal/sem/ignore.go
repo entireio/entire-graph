@@ -390,7 +390,7 @@ func loadWorktreeIgnoreMatcher(repo string, ignoreFiles, includeFiles []string) 
 	// non-directory: os.Stat returns ENOTDIR rather than ErrNotExist, and treating
 	// that as fatal aborted the entire search with zero results in every worktree.
 	if exclude := gitInfoExcludePath(repo); exclude != "" {
-		if err := matcher.loadOptional(exclude, false); err != nil {
+		if err := matcher.loadOptionalSameVolume(repo, exclude, false); err != nil {
 			return ignoreMatcher{}, err
 		}
 	}
@@ -444,44 +444,112 @@ func (m *ignoreMatcher) loadExplicit(repo string, ignoreFiles, includeFiles []st
 // lives under the common directory, not under <repo>/.git.
 func gitInfoExcludePath(repo string) string {
 	dotGit := filepath.Join(repo, ".git")
-	info, err := os.Stat(dotGit)
+	opened, resolvedDotGit, err := openSameVolumePath(repo, dotGit)
+	if err != nil {
+		return ""
+	}
+	defer opened.Close()
+	info, err := opened.Stat()
 	if err != nil {
 		return ""
 	}
 	if info.IsDir() {
-		return filepath.Join(dotGit, "info", "exclude")
+		common, ok := gitCommonDir(resolvedDotGit)
+		if !ok {
+			return ""
+		}
+		return filepath.Join(common, "info", "exclude")
 	}
-	if !info.Mode().IsRegular() {
+	regular, err := openedFileIsRegular(opened, info)
+	if err != nil || !regular || info.Size() > maxGitFileBytes {
 		return ""
 	}
-	raw, err := readSmallRegularFile(dotGit, maxGitIndirectionFileBytes)
+	// One reader and one byte rule for both pointer files, in provider.go: git
+	// applies read_gitfile_gently() here too, so a `.git` text file git refuses
+	// to parse must steer this worktree's exclude rules nowhere — git applies no
+	// info/exclude at all there — and a pointer git DOES follow must be followed
+	// to the same place. Reading these bytes here with rules of its own (a
+	// whole-file size test, TrimSpace, no NUL rule) disagreed with the excluder
+	// about which directory a worktree's `.git` names.
+	gitDir, ok := readGitDirPointerFromOpened(opened, info.Size())
+	if !ok {
+		return ""
+	}
+	gitDir = filepath.FromSlash(gitDir)
+	if !gitTargetPathValid(gitDir) {
+		return ""
+	}
+	if absoluteGitDir, absolute := gitAbsolutePath(repo, gitDir); absolute {
+		gitDir = absoluteGitDir
+	} else {
+		gitDir = gitJoinRelative(repo, gitDir)
+	}
+	if !sameVolume(gitDir, repo) {
+		return ""
+	}
+	gitDirHandle, resolvedGitDir, err := openSameVolumePath(repo, gitDir)
 	if err != nil {
 		return ""
 	}
-	gitDir := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(raw)), "gitdir:"))
-	if gitDir == "" {
+	_ = gitDirHandle.Close()
+	// commondir points at the shared .git that owns info/; it may be relative to
+	// gitDir. Resolved through gitCommonDir (provider.go), not a second,
+	// hand-rolled parse here: gitCommonDir walks a `commondir` symlink hop by
+	// hop via safeStatThroughSymlinks, rejecting any hop that lands off
+	// gitDir's volume, BEFORE the file is ever opened — the same guard
+	// hasObjectsAndRefs and gitDirPointerTarget already apply to `objects`,
+	// `refs`, and `.git`. This function used to reimplement the same
+	// commondir parse inline with only a single-hop volume check on the
+	// already-fully-resolved target, which is exactly the gap
+	// safeStatThroughSymlinks' own doc comment describes: a `commondir` that
+	// is itself a same-volume local symlink to a SECOND symlink naming a UNC
+	// share would have this process dial SMB with ambient credentials while
+	// resolving a path this function never even looked at, before the single
+	// top-level check ever ran.
+	common, ok := gitCommonDir(resolvedGitDir)
+	if !ok {
 		return ""
 	}
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(repo, gitDir)
-	}
-	// commondir points at the shared .git that owns info/; it may be relative to gitDir.
-	if common, err := readSmallRegularFile(
-		filepath.Join(gitDir, "commondir"),
-		maxGitIndirectionFileBytes,
-	); err == nil {
-		if c := strings.TrimSpace(string(common)); c != "" {
-			if !filepath.IsAbs(c) {
-				c = filepath.Join(gitDir, c)
-			}
-			gitDir = filepath.Clean(c)
-		}
-	}
+	gitDir = filepath.Clean(common)
 	return filepath.Join(gitDir, "info", "exclude")
 }
 
 func (m *ignoreMatcher) loadOptional(file string, includeMode bool) error {
 	return m.loadPath(file, includeMode, false)
+}
+
+func (m *ignoreMatcher) loadOptionalSameVolume(base, file string, includeMode bool) error {
+	label := ignoreFileLabel(includeMode)
+	opened, resolved, err := openSameVolumePath(base, file)
+	if isMissingPathError(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read %s %q: %w", label, file, err)
+	}
+	defer opened.Close()
+	info, err := opened.Stat()
+	if err != nil {
+		return fmt.Errorf("read %s %q: %w", label, file, err)
+	}
+	regular, err := openedFileIsRegular(opened, info)
+	if err != nil {
+		return fmt.Errorf("read %s %q: %w", label, file, err)
+	}
+	if !regular {
+		return fmt.Errorf("%s %q is not a regular file", label, file)
+	}
+	if info.Size() > maxIgnoreFileBytes {
+		return fmt.Errorf("read %s %q: file exceeds %d bytes", label, file, maxIgnoreFileBytes)
+	}
+	content, err := readOpenedBoundedRegularFile(opened, info, resolved, label, maxIgnoreFileBytes)
+	if err != nil {
+		return err
+	}
+	if err := m.loadContent(string(content), includeMode); err != nil {
+		return fmt.Errorf("read %s %q: %w", label, file, err)
+	}
+	return nil
 }
 
 func (m *ignoreMatcher) loadRequired(file string, includeMode bool) error {
@@ -865,6 +933,34 @@ func (s *nestedIgnoreStack) close() error {
 		return nil
 	}
 	return s.root.Close()
+}
+
+// directoryReadable distinguishes an unreadable directory from an unreadable
+// .gitignore inside a readable directory after enter reports fs.ErrPermission.
+// The former cannot contribute source and is disclosed by the walk warning;
+// the latter is policy evidence the provider must not silently ignore. OpenRoot
+// keeps this one-entry probe confined to the repository if the path changes
+// between WalkDir's directory entry and this check.
+func (s *nestedIgnoreStack) directoryReadable(dir string) bool {
+	if s.root == nil {
+		return false
+	}
+	opened, err := s.root.Open(filepath.FromSlash(cleanIgnorePath(dir)))
+	if err != nil {
+		return false
+	}
+	defer opened.Close()
+	entries, err := opened.ReadDir(1)
+	if err != nil || len(entries) == 0 {
+		// This probe is reached only after the confined .gitignore lookup failed.
+		// An empty directory contributes no policy or source, so treating it as
+		// inaccessible is conservative and avoids pretending enumeration implies
+		// traversal/search permission.
+		return false
+	}
+	child := path.Join(cleanIgnorePath(dir), entries[0].Name())
+	_, err = s.root.Lstat(filepath.FromSlash(child))
+	return err == nil
 }
 
 // enter registers the directory the walk is about to descend into (repo-relative,

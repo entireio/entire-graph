@@ -20,16 +20,87 @@ other is installation.
   `commit`).
 - Bounded local Git history, for co-change relations (`FILE_CHANGES_WITH`) and
   change analysis. History never leaves the machine.
-- The full Git ignore stack, including nested `.gitignore` files,
-  `.git/info/exclude`, per-worktree excludes, and `core.excludesFile`, plus
-  `.graphignore` and any
+- Structural Git metadata needed by those subprocesses. Before Git starts, the
+  provider walks the resolved administrative/common directories and recursive
+  alternate object stores from held handles, with fixed entry and
+  resolver-relative-path bounds, and rejects mount points, off-volume redirects,
+  and special files.
+  Git's own fsmonitor daemon socket is permitted because every provider Git
+  subprocess explicitly disables `core.fsmonitor`. Before those subprocesses
+  start, inherited global and system Git configuration is disabled. Protected
+  command-scope `safe.directory` entries authorize only the selected command
+  directory and its ancestors (the exact repository-discovery candidates),
+  never the unrestricted `*` value, so explicitly selected shared checkouts
+  remain usable without trusting unrelated repositories. The bounded
+  repository-metadata preflight rejects active repository-local
+  `[include]` and `[includeIf]` sections, including in an enabled
+  `config.worktree`. Repository-local configuration remains available for
+  structural settings Git needs; active `core.worktree` paths are checked by
+  the same rooted preflight. Active partial-clone/promisor configuration is
+  refused because supported Git versions before 2.45 can inspect a local or UNC
+  promisor URL before enforcing the transport deny-list. At command scope the
+  provider sets
+  `core.fsmonitor=false`, `log.showSignature=false`, `log.mailmap=false`,
+  `submodule.recurse=false`, and empty values for `core.excludesFile` and
+  `core.attributesFile`; `diff.orderFile` is pinned to the platform null device.
+  Configuration-derived external ignore, attribute, mailmap, and diff-order
+  files are therefore not read or honored, and grep does not enter nested
+  submodule worktrees. Machine-readable grep calls explicitly disable configured
+  line numbers, columns, color, and full-name rewriting. Working-tree snapshot
+  caching stays disabled instead of asking Git's conversion-aware status
+  machinery to run repository-configured clean or process filters. Remaining
+  configuration-derived structural limitations, including relocated ref storage,
+  are recorded in `docs/parking-lot.md`. Adjacent setup helpers reuse a
+  repository-bound validation receipt only within the current operation;
+  validation results are not cached globally or persisted.
+- Before Git recursively enumerates untracked worktree content, a bounded
+  held-root preflight walks the complete directory tree without resolving a
+  nested case-insensitive `.git` marker. A nested marker selects the bounded
+  filesystem fallback only after the preflight finishes checking every other
+  directory. Unreadable local subtrees retain the fallback's warned omission,
+  while the preflight continues across every other reachable directory. A
+  traversable redirect, mount boundary, cancellation, or traversal ceiling
+  fails closed. Every earlier Git failure also passes through this safety gate
+  before the filesystem fallback begins. Under Go's legacy Windows reparse-mode
+  compatibility, mount points surface as symlinks instead; both filesystem
+  fallbacks apply their no-follow rule before considering a directory entry.
+  This prevents an untracked gitfile from making Git resolve a UNC or off-volume
+  target before the post-listing Git-directory excluder can observe it.
+- `stats` applies the same worktree safety gate before sampling on-disk file
+  sizes. Transcript-derived top-hit paths are confined beneath the selected
+  repository and measured with a final-component no-follow lookup; an unsafe
+  worktree contributes no filesystem-size estimate.
+- Repository-controlled Git ignore policy, including nested `.gitignore` files,
+  `.git/info/exclude`, and per-worktree excludes, plus `.graphignore` and any
   `--ignore-file`/`--include-file` the caller passes.
-  External ignore inputs are bounded to 1 MiB per file and 64 KiB per rule
+  Caller-supplied ignore inputs are bounded to 1 MiB per file and 64 KiB per rule
   line. One listing retains at most 16,384 parsed external rules and observes at
   most 512 nested `.gitignore` files. A limit refusal is reported instead of
   truncating the policy and silently changing the indexed corpus. Nested
   worktree ignore files are confined to the repository and are not followed
-  through a symlink that escapes it.
+  through a symlink that escapes it. When Git cannot enumerate a worktree, the
+  bounded filesystem fallback applies the ignore files it can observe and emits
+  `W_GIT_WORKTREE_FALLBACK`; Git-only policy may be unavailable, so the warning
+  explicitly reports that excluded files can be present. Configuration-derived
+  `core.excludesFile` is outside the effective policy in both the Git and
+  fallback paths. The fallback's ignored-tree `.git`-pointer sweep stays beneath
+  a held repository root and refuses redirects or mount points (including
+  same-filesystem bind mounts on Linux); a refused directory is disclosed as
+  `W_GITDIR_SWEEP_UNREADABLE_DIRECTORY`.
+- Inherited repository-selection, attribute-source, and pathspec-control
+  variables, every `GIT_TRACE*` output target, and Git for Windows'
+  `GIT_REDIRECT_*` standard-stream targets are removed from production Git
+  subprocesses. `GIT_TEXTDOMAINDIR` is removed too because Git probes it during
+  startup. Those inherited values therefore cannot open an arbitrary path or
+  socket (including a Windows UNC target) or replace explicit machine-command
+  path semantics. When `GIT_CEILING_DIRECTORIES` is present during implicit
+  discovery, the CLI applies usable absolute entries in-process. Entries before
+  Git's first empty-list marker are canonicalized with a same-volume guarded
+  walk; subsequent entries stay lexical as Git specifies. The CLI never gives
+  Git the raw list, whose canonicalization could itself probe an off-volume or
+  UNC path. If a pre-marker entry cannot be resolved without such a probe,
+  implicit discovery fails closed. All selected-repository subprocesses
+  discard it.
 - For `stats` only: local coding-agent session transcripts
   (`~/.claude/projects/<path-slug>/*.jsonl`, or `--sessions-dir`/
   `--transcript` overrides). This is Claude Code's transcript layout; the

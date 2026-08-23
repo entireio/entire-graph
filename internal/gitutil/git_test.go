@@ -20,6 +20,83 @@ import (
 	"time"
 )
 
+func TestFindCommitWithCheckpointIgnoresOtherWorktreeHEAD(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	if err := os.WriteFile(filepath.Join(repo, "source.go"), []byte("package source\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "source.go")
+	git(t, repo, "commit", "-m", "checkpoint", "-m", "Entire-Checkpoint: intended")
+	want := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	linked := filepath.Join(t.TempDir(), "linked")
+	git(t, repo, "worktree", "add", "-b", "linked", linked)
+	linkedGitDir := gitOutput(t, linked, "rev-parse", "--absolute-git-dir")
+	if err := os.WriteFile(filepath.Join(linkedGitDir, "HEAD"), []byte(strings.Repeat("0", 40)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Prove the other worktree's invalid administrative HEAD is observable to
+	// an unrestricted --all traversal, rather than merely constructing dead
+	// metadata that Git happens not to inspect.
+	control := exec.Command("git", "log", "--all", "--format=%H", "-n", "1", "--grep=Entire-Checkpoint: intended")
+	control.Dir = repo
+	if output, err := control.CombinedOutput(); err == nil {
+		t.Fatalf("unrestricted git log ignored invalid linked-worktree HEAD; output %q", output)
+	}
+
+	got, err := FindCommitWithCheckpoint(t.Context(), repo, "intended")
+	if err != nil {
+		t.Fatalf("FindCommitWithCheckpoint: %v", err)
+	}
+	if got != want {
+		t.Fatalf("FindCommitWithCheckpoint = %q, want %q", got, want)
+	}
+}
+
+func TestFindCommitWithCheckpointIncludesDetachedOtherWorktreeHEAD(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	if err := os.WriteFile(filepath.Join(repo, "source.go"), []byte("package source\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "source.go")
+	git(t, repo, "commit", "-m", "base")
+
+	linked := filepath.Join(t.TempDir(), "linked")
+	git(t, repo, "worktree", "add", "--detach", linked)
+	if err := os.WriteFile(filepath.Join(linked, "source.go"), []byte("package source\n\nvar Linked = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, linked, "add", "source.go")
+	git(t, linked, "commit", "-m", "checkpoint", "-m", "Entire-Checkpoint: detached")
+	want := gitOutput(t, linked, "rev-parse", "HEAD")
+
+	currentOnly := gitOutput(t, repo, "log", "--single-worktree", "--all", "--format=%H", "-n", "1", "--grep=Entire-Checkpoint: detached")
+	if currentOnly != "" {
+		t.Fatalf("fixture checkpoint unexpectedly reachable from current-worktree refs: %q", currentOnly)
+	}
+	broken := filepath.Join(t.TempDir(), "broken")
+	git(t, repo, "worktree", "add", "--detach", broken)
+	brokenGitDir := gitOutput(t, broken, "rev-parse", "--absolute-git-dir")
+	if err := os.WriteFile(filepath.Join(brokenGitDir, "HEAD"), []byte(strings.Repeat("0", 40)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := FindCommitWithCheckpoint(t.Context(), repo, "detached")
+	if err != nil {
+		t.Fatalf("FindCommitWithCheckpoint: %v", err)
+	}
+	if got != want {
+		t.Fatalf("FindCommitWithCheckpoint = %q, want detached linked-worktree HEAD %q", got, want)
+	}
+}
+
 func TestListFilesHandlesNewlinesInPaths(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows filenames cannot contain newlines")
@@ -376,6 +453,67 @@ func TestChangedFilesHandlesNewlinesAndTabsInPaths(t *testing.T) {
 	}
 }
 
+func TestChangedFilesPinsRepositoryRelativePaths(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	if err := os.MkdirAll(filepath.Join(repo, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for path, content := range map[string]string{
+		"root.go":          "package root\nvar Root = 1\n",
+		"nested/inside.go": "package nested\nvar Inside = 1\n",
+	} {
+		if err := os.WriteFile(filepath.Join(repo, filepath.FromSlash(path)), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "base")
+	base := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	for path, content := range map[string]string{
+		"root.go":          "package root\nvar Root = 2\n",
+		"nested/inside.go": "package nested\nvar Inside = 2\n",
+	} {
+		if err := os.WriteFile(filepath.Join(repo, filepath.FromSlash(path)), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "head")
+	head := gitOutput(t, repo, "rev-parse", "HEAD")
+	git(t, repo, "config", "diff.relative", "true")
+
+	files, err := ChangedFiles(t.Context(), filepath.Join(repo, "nested"), base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]string, len(files))
+	for _, file := range files {
+		got[file.Path] = file.Status
+	}
+	want := map[string]string{"root.go": "M", "nested/inside.go": "M"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("configured relative diff files = %#v, want repository-root paths %#v", files, want)
+	}
+}
+
+func TestChangedFilesDoesNotIgnoreGitlinkChanges(t *testing.T) {
+	repo, base, head := gitlinkHistoryFixture(t)
+	files, err := ChangedFiles(t.Context(), repo, base, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		if file.Path == "dep" && file.Status == "M" {
+			return
+		}
+	}
+	t.Fatalf("configured submodule ignore hid gitlink change: %#v", files)
+}
+
 func TestFileCochangesHandlesQuotedPaths(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip(`Windows filenames cannot contain '"' or '\'`)
@@ -426,6 +564,89 @@ func TestFileCochangesHandlesQuotedPaths(t *testing.T) {
 	if !found {
 		t.Fatalf("FileCochanges dropped the raw quoted-path pair; got %#v", pairs)
 	}
+}
+
+func TestFileCochangesPinsRepositoryRelativePaths(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	if err := os.MkdirAll(filepath.Join(repo, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for revision := 1; revision <= 2; revision++ {
+		for _, path := range []string{"root.go", "nested/inside.go"} {
+			content := fmt.Sprintf("package fixture\nvar Revision = %d\n", revision)
+			if err := os.WriteFile(filepath.Join(repo, filepath.FromSlash(path)), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		git(t, repo, "add", ".")
+		git(t, repo, "commit", "-m", fmt.Sprintf("revision %d", revision))
+	}
+	git(t, repo, "config", "diff.relative", "true")
+	revision := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	pairs, err := FileCochanges(t.Context(), filepath.Join(repo, "nested"), revision, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFileCochangePair(pairs, [2]string{"root.go", "nested/inside.go"}) {
+		t.Fatalf("configured relative history lost repository-root pair: %#v", pairs)
+	}
+}
+
+func TestFileCochangesDoesNotIgnoreGitlinkChanges(t *testing.T) {
+	repo, _, head := gitlinkHistoryFixture(t)
+	pairs, err := FileCochanges(t.Context(), repo, head, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFileCochangePair(pairs, [2]string{"anchor.go", "dep"}) {
+		t.Fatalf("configured submodule ignore hid gitlink co-change pair: %#v", pairs)
+	}
+}
+
+func gitlinkHistoryFixture(t *testing.T) (repo, base, head string) {
+	t.Helper()
+	dependency := t.TempDir()
+	git(t, dependency, "init")
+	git(t, dependency, "config", "user.name", "Entire Graph Test")
+	git(t, dependency, "config", "user.email", "graph@example.com")
+	if err := os.WriteFile(filepath.Join(dependency, "dep.go"), []byte("package dep\nvar Revision = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dependency, "add", ".")
+	git(t, dependency, "commit", "-m", "dependency one")
+	firstDependency := gitOutput(t, dependency, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(dependency, "dep.go"), []byte("package dep\nvar Revision = 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dependency, "add", ".")
+	git(t, dependency, "commit", "-m", "dependency two")
+	secondDependency := gitOutput(t, dependency, "rev-parse", "HEAD")
+
+	repo = t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	if err := os.WriteFile(filepath.Join(repo, "anchor.go"), []byte("package anchor\nvar Revision = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "anchor.go")
+	git(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+firstDependency+",dep")
+	git(t, repo, "commit", "-m", "pair one")
+	base = gitOutput(t, repo, "rev-parse", "HEAD")
+
+	if err := os.WriteFile(filepath.Join(repo, "anchor.go"), []byte("package anchor\nvar Revision = 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "anchor.go")
+	git(t, repo, "update-index", "--cacheinfo", "160000,"+secondDependency+",dep")
+	git(t, repo, "commit", "-m", "pair two")
+	head = gitOutput(t, repo, "rev-parse", "HEAD")
+	git(t, repo, "config", "diff.ignoreSubmodules", "all")
+	return repo, base, head
 }
 
 func TestFileCochangesUsesExactRevision(t *testing.T) {
@@ -2145,33 +2366,18 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	t.Setenv("LC_ALL", "fr_FR.UTF-8")
 	t.Setenv("LANG", "fr_FR.UTF-8")
 	t.Setenv("GIT_NO_REPLACE_OBJECTS", "0")
+	t.Setenv("GIT_NO_LAZY_FETCH", "0")
 	t.Setenv("GIT_ALLOW_PROTOCOL", "https")
+	t.Setenv("GIT_OPTIONAL_LOCKS", "1")
 	dir := t.TempDir()
 	cmd := newCmd(context.Background(), dir, "git", "version")
 	if cmd.WaitDelay != gitCommandWaitDelay || cmd.WaitDelay == 0 {
 		t.Fatalf("stable-locale command WaitDelay = %v, want %v", cmd.WaitDelay, gitCommandWaitDelay)
 	}
-	lcAll, lang, pwd, noReplace, noLazyFetch, allowProtocol := "", "", "", "", "", "unset"
-	for _, kv := range cmd.Env {
-		if v, ok := strings.CutPrefix(kv, "LC_ALL="); ok {
-			lcAll = v
-		}
-		if v, ok := strings.CutPrefix(kv, "LANG="); ok {
-			lang = v
-		}
-		if v, ok := strings.CutPrefix(kv, "PWD="); ok {
-			pwd = v
-		}
-		if v, ok := strings.CutPrefix(kv, "GIT_NO_REPLACE_OBJECTS="); ok {
-			noReplace = v
-		}
-		if v, ok := strings.CutPrefix(kv, "GIT_NO_LAZY_FETCH="); ok {
-			noLazyFetch = v
-		}
-		if v, ok := strings.CutPrefix(kv, "GIT_ALLOW_PROTOCOL="); ok {
-			allowProtocol = v
-		}
-	}
+	env := commandEnvironment(cmd)
+	lcAll, lang, pwd := env["LC_ALL"], env["LANG"], env["PWD"]
+	noReplace, noLazyFetch := env["GIT_NO_REPLACE_OBJECTS"], env["GIT_NO_LAZY_FETCH"]
+	allowProtocol, optionalLocks := env["GIT_ALLOW_PROTOCOL"], env["GIT_OPTIONAL_LOCKS"]
 	if lcAll != "C" || lang != "C" {
 		t.Fatalf("effective subprocess locale LC_ALL=%q LANG=%q, want both \"C\"", lcAll, lang)
 	}
@@ -2188,29 +2394,22 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 		t.Fatalf("effective GIT_ALLOW_PROTOCOL=%q, want empty: GIT_NO_LAZY_FETCH is unrecognized before Git 2.45,"+
 			" so every transport must independently be denied regardless of the inherited environment", allowProtocol)
 	}
+	if optionalLocks != "0" {
+		t.Fatalf("effective GIT_OPTIONAL_LOCKS=%q, want 0 for read-only provider subprocesses", optionalLocks)
+	}
+	assertSingleEnvironmentEntry(t, cmd.Env, "GIT_NO_LAZY_FETCH", "1")
+	assertSingleEnvironmentEntry(t, cmd.Env, "GIT_ALLOW_PROTOCOL", "")
+	assertSingleEnvironmentEntry(t, cmd.Env, "GIT_OPTIONAL_LOCKS", "0")
+	assertIsolatedGitConfiguration(t, "stable-locale command", env, dir)
 
 	grepCmd := newGitCmdWithCallerLocale(context.Background(), dir, "version")
 	if grepCmd.WaitDelay != gitCommandWaitDelay || grepCmd.WaitDelay == 0 {
 		t.Fatalf("caller-locale command WaitDelay = %v, want %v", grepCmd.WaitDelay, gitCommandWaitDelay)
 	}
-	lcAll, pwd, noReplace, noLazyFetch, allowProtocol = "", "", "", "", "unset"
-	for _, kv := range grepCmd.Env {
-		if v, ok := strings.CutPrefix(kv, "LC_ALL="); ok {
-			lcAll = v
-		}
-		if v, ok := strings.CutPrefix(kv, "PWD="); ok {
-			pwd = v
-		}
-		if v, ok := strings.CutPrefix(kv, "GIT_NO_REPLACE_OBJECTS="); ok {
-			noReplace = v
-		}
-		if v, ok := strings.CutPrefix(kv, "GIT_NO_LAZY_FETCH="); ok {
-			noLazyFetch = v
-		}
-		if v, ok := strings.CutPrefix(kv, "GIT_ALLOW_PROTOCOL="); ok {
-			allowProtocol = v
-		}
-	}
+	env = commandEnvironment(grepCmd)
+	lcAll, pwd = env["LC_ALL"], env["PWD"]
+	noReplace, noLazyFetch = env["GIT_NO_REPLACE_OBJECTS"], env["GIT_NO_LAZY_FETCH"]
+	allowProtocol, optionalLocks = env["GIT_ALLOW_PROTOCOL"], env["GIT_OPTIONAL_LOCKS"]
 	if lcAll != "fr_FR.UTF-8" {
 		t.Fatalf("caller-locale git command LC_ALL=%q, want inherited locale", lcAll)
 	}
@@ -2226,6 +2425,179 @@ func TestNewCmdPinsSubprocessLocaleToC(t *testing.T) {
 	if allowProtocol != "" {
 		t.Fatalf("caller-locale git command GIT_ALLOW_PROTOCOL=%q, want empty", allowProtocol)
 	}
+	if optionalLocks != "0" {
+		t.Fatalf("caller-locale git command GIT_OPTIONAL_LOCKS=%q, want 0", optionalLocks)
+	}
+	assertSingleEnvironmentEntry(t, grepCmd.Env, "GIT_NO_LAZY_FETCH", "1")
+	assertSingleEnvironmentEntry(t, grepCmd.Env, "GIT_ALLOW_PROTOCOL", "")
+	assertSingleEnvironmentEntry(t, grepCmd.Env, "GIT_OPTIONAL_LOCKS", "0")
+	assertIsolatedGitConfiguration(t, "caller-locale command", env, dir)
+}
+
+func assertSingleEnvironmentEntry(t *testing.T, env []string, wantKey, wantValue string) {
+	t.Helper()
+	values := make([]string, 0, 1)
+	for _, entry := range env {
+		key, value, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(key, wantKey) {
+			values = append(values, value)
+		}
+	}
+	if len(values) != 1 || values[0] != wantValue {
+		t.Fatalf("environment %s entries = %q, want exactly [%q]", wantKey, values, wantValue)
+	}
+}
+
+func commandEnvironment(cmd *exec.Cmd) map[string]string {
+	env := make(map[string]string, len(cmd.Env))
+	for _, entry := range cmd.Env {
+		key, value, _ := strings.Cut(entry, "=")
+		env[strings.ToUpper(key)] = value
+	}
+	return env
+}
+
+func assertIsolatedGitConfiguration(t *testing.T, name string, env map[string]string, dir string) {
+	t.Helper()
+	safeDirectories := gitSafeDirectoryValues(dir)
+	want := map[string]string{
+		"GIT_CONFIG_NOSYSTEM": "1",
+		"GIT_CONFIG_GLOBAL":   os.DevNull,
+		"GIT_CONFIG_SYSTEM":   os.DevNull,
+		"GIT_ATTR_NOSYSTEM":   "1",
+		"GIT_TERMINAL_PROMPT": "0",
+		"GIT_CONFIG_COUNT":    strconv.Itoa(gitPinnedConfigCount + len(safeDirectories)),
+		"GIT_CONFIG_KEY_0":    "core.fsmonitor",
+		"GIT_CONFIG_VALUE_0":  "false",
+		"GIT_CONFIG_KEY_1":    "log.showSignature",
+		"GIT_CONFIG_VALUE_1":  "false",
+		"GIT_CONFIG_KEY_2":    "core.excludesFile",
+		"GIT_CONFIG_VALUE_2":  "",
+		"GIT_CONFIG_KEY_3":    "core.attributesFile",
+		"GIT_CONFIG_VALUE_3":  "",
+		"GIT_CONFIG_KEY_4":    "submodule.recurse",
+		"GIT_CONFIG_VALUE_4":  "false",
+		"GIT_CONFIG_KEY_5":    "log.mailmap",
+		"GIT_CONFIG_VALUE_5":  "false",
+		"GIT_CONFIG_KEY_6":    "diff.orderFile",
+		"GIT_CONFIG_VALUE_6":  os.DevNull,
+	}
+	for index, directory := range safeDirectories {
+		configIndex := strconv.Itoa(gitPinnedConfigCount + index)
+		want["GIT_CONFIG_KEY_"+configIndex] = "safe.directory"
+		want["GIT_CONFIG_VALUE_"+configIndex] = directory
+	}
+	for key, value := range want {
+		if got := env[key]; got != value {
+			t.Errorf("%s %s=%q, want %q", name, key, got, value)
+		}
+	}
+	for _, key := range []string{
+		"GIT_ATTR_SOURCE",
+		"GIT_LITERAL_PATHSPECS",
+		"GIT_GLOB_PATHSPECS",
+		"GIT_NOGLOB_PATHSPECS",
+		"GIT_ICASE_PATHSPECS",
+	} {
+		if value, present := env[key]; present {
+			t.Errorf("%s retained inherited %s=%q", name, key, value)
+		}
+	}
+}
+
+func TestSanitizedGitEnvironmentDropsAttributeAndPathspecSelectors(t *testing.T) {
+	selectors := []string{
+		"GIT_ATTR_SOURCE",
+		"GIT_LITERAL_PATHSPECS",
+		"GIT_GLOB_PATHSPECS",
+		"GIT_NOGLOB_PATHSPECS",
+		"GIT_ICASE_PATHSPECS",
+	}
+	env := []string{"ENTIRE_GRAPH_KEEP_ME=yes"}
+	for _, key := range selectors {
+		env = append(env, strings.ToLower(key)+"=hostile")
+	}
+	clean := commandEnvironment(&exec.Cmd{Env: sanitizedGitEnvironment(env)})
+	if got := clean["ENTIRE_GRAPH_KEEP_ME"]; got != "yes" {
+		t.Fatalf("unrelated environment value = %q, want yes", got)
+	}
+	for _, key := range selectors {
+		if value, present := clean[key]; present {
+			t.Errorf("sanitized environment retained %s=%q", key, value)
+		}
+	}
+}
+
+func TestGitCommandsDiscardInheritedRepositorySelection(t *testing.T) {
+	inherited := map[string]string{
+		"GIT_DIR":                          filepath.Join(t.TempDir(), "other.git"),
+		"GIT_WORK_TREE":                    filepath.Join(t.TempDir(), "other-worktree"),
+		"GIT_COMMON_DIR":                   filepath.Join(t.TempDir(), "other-common"),
+		"GIT_OBJECT_DIRECTORY":             filepath.Join(t.TempDir(), "other-objects"),
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES": filepath.Join(t.TempDir(), "alternates"),
+		"GIT_INDEX_FILE":                   filepath.Join(t.TempDir(), "other-index"),
+		"GIT_CONFIG":                       filepath.Join(t.TempDir(), "other-config"),
+		"GIT_CONFIG_GLOBAL":                filepath.Join(t.TempDir(), "other-global-config"),
+		"GIT_CONFIG_SYSTEM":                filepath.Join(t.TempDir(), "other-system-config"),
+		"GIT_CONFIG_NOSYSTEM":              "0",
+		"GIT_CONFIG_COUNT":                 "1",
+		"GIT_CONFIG_KEY_0":                 "core.worktree",
+		"GIT_CONFIG_VALUE_0":               filepath.Join(t.TempDir(), "injected-worktree"),
+		"GIT_NAMESPACE":                    "other-namespace",
+		"GIT_CEILING_DIRECTORIES":          filepath.Dir(t.TempDir()),
+		"GIT_DISCOVERY_ACROSS_FILESYSTEM":  "1",
+		"GIT_ATTR_NOSYSTEM":                "0",
+		"GIT_ATTR_SOURCE":                  "HEAD^",
+		"GIT_LITERAL_PATHSPECS":            "1",
+		"GIT_GLOB_PATHSPECS":               "1",
+		"GIT_NOGLOB_PATHSPECS":             "1",
+		"GIT_ICASE_PATHSPECS":              "1",
+		"GIT_TERMINAL_PROMPT":              "1",
+		"GIT_TRACE":                        filepath.Join(t.TempDir(), "trace.log"),
+		"GIT_TRACE2_EVENT":                 filepath.Join(t.TempDir(), "trace2.json"),
+		"GIT_TRACE_FUTURE_TARGET":          filepath.Join(t.TempDir(), "future.log"),
+		"GIT_REDIRECT_STDIN":               `\\192.0.2.1\entire-graph\stdin`,
+		"GIT_REDIRECT_STDOUT":              `\\192.0.2.1\entire-graph\stdout`,
+		"GIT_REDIRECT_STDERR":              `\\192.0.2.1\entire-graph\stderr`,
+		"GIT_TEXTDOMAINDIR":                `\\192.0.2.1\entire-graph\locale`,
+	}
+	for key, value := range inherited {
+		t.Setenv(key, value)
+	}
+
+	dir := t.TempDir()
+	controlled := map[string]string{
+		"GIT_CONFIG_GLOBAL":   os.DevNull,
+		"GIT_CONFIG_SYSTEM":   os.DevNull,
+		"GIT_CONFIG_NOSYSTEM": "1",
+		"GIT_ATTR_NOSYSTEM":   "1",
+		"GIT_TERMINAL_PROMPT": "0",
+		"GIT_CONFIG_COUNT":    strconv.Itoa(gitPinnedConfigCount + len(gitSafeDirectoryValues(dir))),
+		"GIT_CONFIG_KEY_0":    "core.fsmonitor",
+		"GIT_CONFIG_VALUE_0":  "false",
+	}
+	assertSanitized := func(name string, cmd *exec.Cmd) {
+		t.Helper()
+		actual := make(map[string]string)
+		for _, entry := range cmd.Env {
+			key, value, _ := strings.Cut(entry, "=")
+			actual[key] = value
+		}
+		for key := range inherited {
+			if want, replaced := controlled[key]; replaced {
+				if got := actual[key]; got != want {
+					t.Fatalf("%s controlled %s=%q, want %q", name, key, got, want)
+				}
+				continue
+			}
+			if _, found := actual[key]; found {
+				t.Fatalf("%s inherited repository-selection variable %q", name, key)
+			}
+		}
+	}
+
+	assertSanitized("stable-locale command", newCmd(t.Context(), dir, "git", "version"))
+	assertSanitized("caller-locale command", newGitCmdWithCallerLocale(t.Context(), dir, "version"))
 }
 
 func TestNewCmdDisablesEveryGitTransport(t *testing.T) {
@@ -2463,6 +2835,46 @@ func TestRevParseRejectsAnOptionShapedRevisionInsteadOfPassingItThrough(t *testi
 	// Control: an ordinary revision still resolves.
 	if _, err := RevParse(t.Context(), repo, "HEAD"); err != nil {
 		t.Fatalf("RevParse(\"HEAD\") = %v, want a resolved commit OID", err)
+	}
+}
+
+func TestHeadCommitAndTreeReturnsOneCommitProvenancePair(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	write(t, repo, "a.txt", "hi\n")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", "init")
+
+	commit, tree, err := HeadCommitAndTree(t.Context(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCommit, err := RevParse(t.Context(), repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commit != wantCommit {
+		t.Fatalf("commit = %q, want %q", commit, wantCommit)
+	}
+	wantTree, err := RevParse(t.Context(), repo, "HEAD^{tree}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tree != wantTree {
+		t.Fatalf("tree = %q, want %q", tree, wantTree)
+	}
+
+	git(t, repo, "tag", "-a", "v1", "-m", "annotated tag")
+	git(t, repo, "symbolic-ref", "HEAD", "refs/tags/v1")
+	commit, tree, err = HeadCommitAndTree(t.Context(), repo)
+	if err != nil {
+		t.Fatalf("annotated-tag HEAD: %v", err)
+	}
+	if commit != wantCommit || tree != wantTree {
+		t.Fatalf("annotated-tag provenance = %q/%q, want %q/%q", commit, tree, wantCommit, wantTree)
 	}
 }
 

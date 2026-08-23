@@ -65,6 +65,29 @@ func searchInSessionViewFormat(
 	return out.String()
 }
 
+func commitSearchSessionFixture(t *testing.T, repo, message string) {
+	t.Helper()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Tests")
+	git(t, repo, "config", "user.email", "tests@entire.local")
+	git(t, repo, "add", ".")
+	git(t, repo, "commit", "-m", message)
+}
+
+func requireWorktreeSessionDidNotReplayOrPersist(t *testing.T, session, got string) {
+	t.Helper()
+	if strings.Contains(got, "not run") {
+		t.Fatalf("mutable worktree search replayed persisted output: %q", got)
+	}
+	state, err := (&searchSession{path: session, limit: 1}).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Payload != "" || state.PayloadPaths != nil {
+		t.Fatalf("mutable worktree search persisted replay bytes: %#v", state)
+	}
+}
+
 // Machine-readable responses always expose corpus-wide counters whose complete file provenance is
 // intentionally not materialized into a bounded session record. They must run live instead of
 // replaying an opaque payload that may describe files newly excluded by dynamic worktree policy.
@@ -152,7 +175,7 @@ func rewriteSearchSessionState(t *testing.T, session string, rewrite func(map[st
 	}
 }
 
-// The second search of a task must replay the first one's payload, not run a new query. The
+// The second committed-tree search of a task must replay the first one's payload, not run a new query. The
 // measurement behind the cap is in search_session.go: >=4-call sessions cost 1.148 of the no-tool
 // baseline against 0.975 for one-call sessions, +0.173 with a bootstrap CI of [+0.019,+0.324].
 func TestSearchEchoesFirstPayloadOnRepeatSearch(t *testing.T) {
@@ -160,14 +183,15 @@ func TestSearchEchoesFirstPayloadOnRepeatSearch(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "alpha.py", "def alpha_widget():\n    return True\n")
 	write(t, repo, "beta.py", "def beta_gadget():\n    return False\n")
+	commitSearchSessionFixture(t, repo, "repeat-search replay fixture")
 	session := filepath.Join(t.TempDir(), "session.json")
 
-	first := searchInSession(t, repo, session, "", "alpha_widget")
+	first := searchInHeadSession(t, repo, session, "", "alpha_widget")
 	if !strings.Contains(first, "alpha.py") {
 		t.Fatalf("first search did not answer its own question: %q", first)
 	}
 
-	second := searchInSession(t, repo, session, "", "beta_gadget")
+	second := searchInHeadSession(t, repo, session, "", "beta_gadget")
 	header, replayed, ok := strings.Cut(second, "\n")
 	if !ok {
 		t.Fatalf("echo is not header + payload: %q", second)
@@ -252,9 +276,9 @@ func TestSearchEchoEscapesPersistedTerminalControls(t *testing.T) {
 	}
 }
 
-// A session payload is valid only for the exact bounded source set that produced
-// it. Changing the source-file cap, or changing which worktree paths occupy that
-// cap, must run a live search and replace the old payload before the cap re-arms.
+// A committed session payload is valid only for the exact bounded source set
+// that produced it. Changing its source-file cap runs a live search before the
+// cap re-arms. A mutable worktree source set always runs live and never re-arms.
 // This test is intentionally not parallel because ENTIRE_GRAPH_MAX_FILES is a
 // process environment variable.
 func TestSearchEchoRefusesChangedBoundedSourceSet(t *testing.T) {
@@ -327,7 +351,7 @@ func TestSearchEchoRefusesChangedBoundedSourceSet(t *testing.T) {
 		}
 
 		third := searchInSession(t, repo, session, "", "another bounded worktree question", "--no-cache")
-		requireSearchSessionReplay(t, third, second)
+		requireWorktreeSessionDidNotReplayOrPersist(t, session, third)
 	})
 }
 
@@ -367,6 +391,7 @@ func TestSearchEchoRefusesLegacyStateWithoutPolicy(t *testing.T) {
 	if !strings.Contains(got, "fresh.py") {
 		t.Fatalf("legacy-state rejection did not run the live query: %q", got)
 	}
+	requireWorktreeSessionDidNotReplayOrPersist(t, session, got)
 }
 
 // An explicit include is a deliberate authority expansion. Removing it on the next invocation
@@ -378,17 +403,18 @@ func TestSearchEchoRefusesIncludeToDefaultPolicyReplay(t *testing.T) {
 	const secret = "placeholder-session-policy-secret"
 	write(t, repo, ".env", "SESSION_POLICY_SECRET="+secret+"\n")
 	write(t, repo, "safe.py", "def safe_policy_control():\n    return True\n")
+	commitSearchSessionFixture(t, repo, "include-policy replay fixture")
 	includeDir := t.TempDir()
 	write(t, includeDir, "include.txt", ".env\n")
 	includeFile := filepath.Join(includeDir, "include.txt")
 	session := filepath.Join(t.TempDir(), "session.json")
 
-	first := searchInSession(t, repo, session, "", "SESSION_POLICY_SECRET", "--include-file", includeFile)
+	first := searchInHeadSession(t, repo, session, "", "SESSION_POLICY_SECRET", "--include-file", includeFile)
 	if !strings.Contains(first, ".env") || !strings.Contains(first, secret) {
 		t.Fatalf("explicit include did not establish the credential-bearing positive control: %q", first)
 	}
 
-	second := searchInSession(t, repo, session, "", "safe_policy_control")
+	second := searchInHeadSession(t, repo, session, "", "safe_policy_control")
 	if strings.Contains(second, "not run") || strings.Contains(second, ".env") || strings.Contains(second, secret) {
 		t.Fatalf("default policy replayed the explicitly included payload:\n%s", second)
 	}
@@ -396,7 +422,7 @@ func TestSearchEchoRefusesIncludeToDefaultPolicyReplay(t *testing.T) {
 		t.Fatalf("default policy did not run its live query: %q", second)
 	}
 
-	third := searchInSession(t, repo, session, "", "another question")
+	third := searchInHeadSession(t, repo, session, "", "another question")
 	header, replayed, ok := strings.Cut(third, "\n")
 	if !ok || !strings.Contains(header, "not run") || replayed != second {
 		t.Fatalf("fresh default-policy result did not re-arm the cap:\n got %q\nwant replay of %q", third, second)
@@ -487,16 +513,17 @@ func TestSearchEchoReusesIdenticalNonemptyPolicy(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "alpha.py", "def alpha_policy_widget():\n    return True\n")
 	write(t, repo, "beta.py", "def beta_policy_widget():\n    return True\n")
+	commitSearchSessionFixture(t, repo, "explicit-policy replay fixture")
 	ignoreDir := t.TempDir()
 	write(t, ignoreDir, "ignore.txt", "unrelated.py\n")
 	ignoreFile := filepath.Join(ignoreDir, "ignore.txt")
 	session := filepath.Join(t.TempDir(), "session.json")
 
-	first := searchInSession(t, repo, session, "", "alpha_policy_widget", "--ignore-file", ignoreFile)
+	first := searchInHeadSession(t, repo, session, "", "alpha_policy_widget", "--ignore-file", ignoreFile)
 	if !strings.Contains(first, "alpha.py") {
 		t.Fatalf("first policy-bound search missed its positive control: %q", first)
 	}
-	second := searchInSession(t, repo, session, "", "beta_policy_widget", "--ignore-file", ignoreFile)
+	second := searchInHeadSession(t, repo, session, "", "beta_policy_widget", "--ignore-file", ignoreFile)
 	header, replayed, ok := strings.Cut(second, "\n")
 	if !ok || !strings.Contains(header, "not run") || replayed != first {
 		t.Fatalf("identical nonempty policy did not replay verbatim:\n got %q\nwant replay of %q", second, first)
@@ -677,10 +704,10 @@ func TestSearchSessionLoadRejectsOverlongPayloadPath(t *testing.T) {
 	}
 }
 
-// Nested Git excludes are evaluated by Git at replay time rather than folded into the root-policy
-// fingerprint. A path that was eligible when recorded can therefore become ineligible without HEAD
-// or the fingerprint changing; the path gate must still reject it before any stored byte is written.
-func TestSearchEchoRefusesPathNewlyExcludedByNestedGitignore(t *testing.T) {
+// Nested Git excludes are mutable worktree policy. Neither a formerly eligible
+// path nor a later safe result may be persisted for replay across that mutable
+// boundary.
+func TestSearchWorktreeReplayStaysDisabledAcrossNestedGitignoreChange(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
 	git(t, repo, "init")
@@ -710,10 +737,7 @@ func TestSearchEchoRefusesPathNewlyExcludedByNestedGitignore(t *testing.T) {
 	}
 
 	third := searchInSession(t, repo, session, "", "another nested-ignore question")
-	header, replayed, ok := strings.Cut(third, "\n")
-	if !ok || !strings.Contains(header, "not run") || replayed != second {
-		t.Fatalf("nested-ignore recovery did not re-arm the cap:\n got %q\nwant replay of %q", third, second)
-	}
+	requireWorktreeSessionDidNotReplayOrPersist(t, session, third)
 }
 
 // A session file is caller-owned state, so it must be bounded before JSON decoding can allocate a
@@ -724,9 +748,10 @@ func TestSearchEchoRejectsOversizedSessionStateAndRearms(t *testing.T) {
 	repo := t.TempDir()
 	write(t, repo, "safe.py", "def bounded_session_control():\n    return True\n")
 	write(t, repo, "fresh.py", "def bounded_session_fresh():\n    return True\n")
+	commitSearchSessionFixture(t, repo, "oversized-session replay fixture")
 	session := filepath.Join(t.TempDir(), "session.json")
 
-	first := searchInSession(t, repo, session, "", "bounded_session_control")
+	first := searchInHeadSession(t, repo, session, "", "bounded_session_control")
 	if !strings.Contains(first, "safe.py") {
 		t.Fatalf("first search did not establish current replay metadata: %q", first)
 	}
@@ -738,14 +763,14 @@ func TestSearchEchoRejectsOversizedSessionStateAndRearms(t *testing.T) {
 		state["payload"] = storedSentinel + strings.Repeat("x", (8<<20)+1)
 	})
 
-	second := searchInSession(t, repo, session, "", "bounded_session_fresh")
+	second := searchInHeadSession(t, repo, session, "", "bounded_session_fresh")
 	if strings.Contains(second, storedSentinel) || strings.Contains(second, "not run") {
 		t.Fatalf("oversized session state reached stdout (output bytes %d)", len(second))
 	}
 	if !strings.Contains(second, "fresh.py") {
 		t.Fatalf("oversized-state rejection did not run the live query: %q", second)
 	}
-	third := searchInSession(t, repo, session, "", "another bounded question")
+	third := searchInHeadSession(t, repo, session, "", "another bounded question")
 	header, replayed, ok := strings.Cut(third, "\n")
 	if !ok || !strings.Contains(header, "not run") || replayed != second {
 		t.Fatalf("oversized-state recovery did not re-arm the cap:\n got %q\nwant replay of %q", third, second)
@@ -865,15 +890,23 @@ func TestSearchEchoFailsOpenOnBrokenSessionFile(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
 	write(t, repo, "alpha.py", "def alpha_widget():\n    return True\n")
+	commitSearchSessionFixture(t, repo, "broken-session replay fixture")
 	session := filepath.Join(t.TempDir(), "session.json")
 	write(t, filepath.Dir(session), filepath.Base(session), "{not json")
 
-	got := searchInSession(t, repo, session, "", "alpha_widget")
+	got := searchInHeadSession(t, repo, session, "", "alpha_widget")
 	if !strings.Contains(got, "alpha.py") {
 		t.Fatalf("broken session file suppressed the search: %q", got)
 	}
+	state, err := (&searchSession{path: session, limit: 1}).load()
+	if err != nil {
+		t.Fatalf("live search did not replace the broken session file: %v", err)
+	}
+	if state.Payload == "" {
+		t.Fatalf("live committed-tree search did not re-arm replay state: %#v", state)
+	}
 	// ...and the search it did run becomes the session's first payload.
-	second := searchInSession(t, repo, session, "", "beta_gadget")
+	second := searchInHeadSession(t, repo, session, "", "beta_gadget")
 	if !strings.Contains(second, "not run") {
 		t.Fatalf("session did not recover after the broken file: %q", second)
 	}
@@ -890,16 +923,18 @@ func TestSearchEchoRefusesAnotherRepositorysPayload(t *testing.T) {
 	t.Parallel()
 	first := t.TempDir()
 	write(t, first, "alpha.py", "def alpha_widget():\n    return True\n")
+	commitSearchSessionFixture(t, first, "first repository replay fixture")
 	second := t.TempDir()
 	write(t, second, "beta.py", "def beta_gadget():\n    return False\n")
+	commitSearchSessionFixture(t, second, "second repository replay fixture")
 	// One session file, two repositories — the reuse this guards against.
 	session := filepath.Join(t.TempDir(), "session.json")
 
-	if got := searchInSession(t, first, session, "", "alpha_widget"); !strings.Contains(got, "alpha.py") {
+	if got := searchInHeadSession(t, first, session, "", "alpha_widget"); !strings.Contains(got, "alpha.py") {
 		t.Fatalf("first repository's search did not answer its own question: %q", got)
 	}
 
-	got := searchInSession(t, second, session, "", "beta_gadget")
+	got := searchInHeadSession(t, second, session, "", "beta_gadget")
 	if strings.Contains(got, "not run") || strings.Contains(got, "alpha.py") {
 		t.Fatalf("second repository was answered with the first repository's payload:\n%s", got)
 	}
@@ -908,7 +943,7 @@ func TestSearchEchoRefusesAnotherRepositorysPayload(t *testing.T) {
 	}
 	// The refusal re-scopes rather than merely skipping once: this repository's own second query
 	// still echoes, so the cap is intact for the task that actually owns the file now.
-	if repeat := searchInSession(t, second, session, "", "gamma_thing"); !strings.Contains(repeat, "not run") {
+	if repeat := searchInHeadSession(t, second, session, "", "gamma_thing"); !strings.Contains(repeat, "not run") {
 		t.Fatalf("the cap did not re-arm for the new repository: %q", repeat)
 	}
 }

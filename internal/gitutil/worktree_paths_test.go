@@ -147,12 +147,14 @@ func TestClassifyWorktreePathsUsesEffectiveExcludesAndLiteralNames(t *testing.T)
 	}
 	for _, path := range []string{
 		"nested/[literal].generated",
-		"nested/also.private",
 		"nested/also.local-only",
 	} {
 		if _, ok := classifiedIgnored[path]; !ok {
 			t.Errorf("ignored worktree file %q was not classified: %#v", path, classifiedIgnored)
 		}
+	}
+	if _, ok := eligible["nested/also.private"]; !ok {
+		t.Fatalf("configuration-derived core.excludesFile unexpectedly affected classification: %#v", eligible)
 	}
 	if _, ok := eligible[".git/config"]; ok {
 		t.Fatal("Git-internal path was classified as eligible")

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -361,14 +363,21 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	cacheDir := resolveCacheDir(flags.CacheDir, opts.Env.PluginDataDir)
 	useCache := !flags.DisableCache && !flags.Worktree && cacheDir != ""
 	var commit, tree string
+	cacheContext := ctx
 	if useCache {
-		if c, commitErr := gitutil.RevParse(ctx, repo, "HEAD^{commit}"); commitErr == nil && c != "" {
-			if t, treeErr := gitutil.RevParse(ctx, repo, c+"^{tree}"); treeErr == nil && t != "" {
-				commit = c
-				tree = t
-			} else {
-				useCache = false
-			}
+		var validationErr error
+		cacheContext, validationErr = sem.WithGitMetadataValidationForSetup(ctx, repo)
+		if validationErr != nil {
+			// Cache probing is optional and runs before provider construction. Unsafe
+			// metadata disables the probe; the provider below selects its warned,
+			// filesystem-only fallback without starting Git.
+			useCache = false
+		}
+	}
+	if useCache {
+		if c, t, headErr := gitutil.HeadCommitAndTree(cacheContext, repo); headErr == nil && c != "" && t != "" {
+			commit = c
+			tree = t
 		} else {
 			useCache = false
 		}
@@ -379,7 +388,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	}
 	var recordsCache *sem.ProviderRecordsCacheTransaction
 	if useCache {
-		recordsCache, err = sem.BeginProviderRecordsCache(ctx, repo, opts.Version, commit, tree, cacheMode, cacheDir, options)
+		recordsCache, err = sem.BeginProviderRecordsCache(cacheContext, repo, opts.Version, commit, tree, cacheMode, cacheDir, options)
 		if err != nil {
 			// Cache setup is optional. The uncached stream below will surface any
 			// policy-input error that also prevents a correct build.
@@ -684,6 +693,9 @@ func runCommit(ctx context.Context, opts Options, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := sem.EnsureGitMetadataSafeForSubprocess(repo); err != nil {
+		return err
+	}
 	base, err := gitutil.FirstParent(ctx, repo, rev)
 	if err != nil {
 		return err
@@ -810,7 +822,177 @@ func resolveRepo(ctx context.Context, env EntireEnv, explicit string) (string, e
 	if env.RepoRoot != "" {
 		return env.RepoRoot, nil
 	}
+	if os.Getenv("GIT_CEILING_DIRECTORIES") != "" {
+		// Git canonicalizes ceiling entries before discovery. A caller-controlled
+		// Windows UNC entry can therefore perform network I/O before Git looks for
+		// repository metadata. Apply the boundary in-process with the provider's
+		// same-volume resolver and never pass its raw path list to a subprocess.
+		if root, ok := discoverImplicitCheckoutRoot("."); ok {
+			return root, nil
+		}
+		return "", errors.New("no Git repository found below GIT_CEILING_DIRECTORIES")
+	}
+	if err := sem.EnsureGitMetadataSafeForSubprocess("."); err != nil {
+		// Preserve the provider's warned filesystem-only fallback without asking
+		// Git to discover the checkout. Analyze entry points apply their own strict
+		// guard before resolving revisions.
+		if root, ok := discoverImplicitCheckoutRoot("."); ok {
+			return root, nil
+		}
+		return ".", nil
+	}
 	return gitutil.RepoRoot(ctx, ".")
+}
+
+// discoverImplicitCheckoutRoot applies an inherited ceiling without a Git
+// subprocess. With no usable ceiling it keeps the established two-spelling
+// filesystem fallback. Git canonicalizes entries before the first empty list
+// element, while an empty element promises that subsequent entries contain no
+// symlinks and can stay lexical. Canonicalization uses the provider's guarded
+// same-volume walk, which refuses off-volume and UNC redirects before probing
+// them. Unresolvable entries are discarded just as Git discards them.
+func discoverImplicitCheckoutRoot(dir string) (string, bool) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", false
+	}
+	abs = filepath.Clean(abs)
+
+	type ceilingEntry struct {
+		path         string
+		canonicalize bool
+	}
+	var entries []ceilingEntry
+	canonicalize := true
+	for _, entry := range strings.Split(os.Getenv("GIT_CEILING_DIRECTORIES"), string(os.PathListSeparator)) {
+		// Git documents ceiling entries as absolute paths. The first empty
+		// entry disables canonicalization for every subsequent entry.
+		if entry == "" {
+			canonicalize = false
+			continue
+		}
+		absoluteEntry, absolute := sem.GitAbsolutePath(abs, entry)
+		if !absolute {
+			if sem.GitAbsolutePathNeedsFailClosed(entry) {
+				return "", false
+			}
+			continue
+		}
+		entries = append(entries, ceilingEntry{path: filepath.Clean(absoluteEntry), canonicalize: canonicalize})
+	}
+	if len(entries) == 0 {
+		return discoverCheckoutRoot(dir)
+	}
+
+	resolver, resolution := sem.NewGitCeilingPathResolver(abs)
+	if resolution != sem.GitCeilingPathResolved {
+		if resolution != sem.GitCeilingPathUnsupported {
+			return "", false
+		}
+		// Platforms without a safe mount inventory retain the prior lexical
+		// behavior only when the caller put every usable entry after the
+		// empty marker and therefore promised that none needs resolution.
+		var ceilings []string
+		for _, entry := range entries {
+			if entry.canonicalize {
+				return "", false
+			}
+			ceilings = append(ceilings, entry.path)
+		}
+		return discoverImplicitCheckoutRootBelowCeilings(abs, abs, ceilings, nil)
+	}
+	defer resolver.Close()
+
+	physicalAbs, resolution := resolver.Canonicalize(abs)
+	if resolution != sem.GitCeilingPathResolved {
+		return "", false
+	}
+	ceilings := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		ceiling := entry.path
+		if entry.canonicalize {
+			resolved, resolution := resolver.Canonicalize(ceiling)
+			switch resolution {
+			case sem.GitCeilingPathResolved:
+				ceiling = resolved
+			case sem.GitCeilingPathUnresolvable:
+				continue
+			default:
+				// Exact Git parity would require following the unsafe path to
+				// learn whether it aliases an ancestor. Refuse implicit
+				// discovery rather than risk either network I/O or walking
+				// through a boundary whose canonical spelling is unknown.
+				return "", false
+			}
+		}
+		ceilings = append(ceilings, ceiling)
+	}
+	return discoverImplicitCheckoutRootBelowCeilings(abs, physicalAbs, ceilings, resolver)
+}
+
+func discoverImplicitCheckoutRootBelowCeilings(namedStart, physicalStart string, ceilings []string, resolver *sem.GitCeilingPathResolver) (string, bool) {
+	applicable := ceilings[:0]
+	for _, ceiling := range ceilings {
+		rel, err := filepath.Rel(ceiling, physicalStart)
+		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+			applicable = append(applicable, ceiling)
+		}
+	}
+	abs := physicalStart
+	for {
+		for _, ceiling := range applicable {
+			equal := abs == ceiling
+			if runtime.GOOS == "windows" {
+				equal = strings.EqualFold(abs, ceiling)
+			}
+			if equal {
+				return "", false
+			}
+		}
+		if resolver == nil {
+			if _, err := os.Lstat(filepath.Join(abs, ".git")); err == nil {
+				return abs, true
+			}
+		} else {
+			exists, resolution := resolver.HasGitEntry(abs)
+			if resolution != sem.GitCeilingPathResolved {
+				return "", false
+			}
+			if exists {
+				return preferredCheckoutRootSpelling(resolver, namedStart, abs)
+			}
+		}
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			return "", false
+		}
+		abs = parent
+	}
+}
+
+// preferredCheckoutRootSpelling preserves the caller-visible spelling used by
+// the filesystem fallback when it names the physical checkout Git discovery
+// found. This matters on systems such as macOS where /var is an alias for
+// /private/var: ceilings must be compared physically, but an unrelated ceiling
+// must not silently change the checkout path returned to existing callers.
+func preferredCheckoutRootSpelling(resolver *sem.GitCeilingPathResolver, namedStart, physicalRoot string) (string, bool) {
+	for candidate := namedStart; ; candidate = filepath.Dir(candidate) {
+		resolved, resolution := resolver.Canonicalize(candidate)
+		if resolution == sem.GitCeilingPathUnsafe {
+			return "", false
+		}
+		equal := resolved == physicalRoot
+		if runtime.GOOS == "windows" {
+			equal = strings.EqualFold(resolved, physicalRoot)
+		}
+		if resolution == sem.GitCeilingPathResolved && equal {
+			return candidate, true
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			return physicalRoot, true
+		}
+	}
 }
 
 func analyzeAndPrint(ctx context.Context, opts Options, repo, base, head string, paths []string, flags commonFlags) error {

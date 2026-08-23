@@ -440,15 +440,17 @@ func (a *sessionAcc) tokens() statsTokens {
 }
 
 type statsCollector struct {
-	ctx         context.Context
-	repo        string
-	sessions    map[string]*sessionAcc
-	pending     map[string]pendingCall
-	sizeCache   map[string]int64
-	medianBytes int64
-	medianDone  bool
-	transcripts int
-	malformed   int
+	ctx              context.Context
+	repo             string
+	sessions         map[string]*sessionAcc
+	pending          map[string]pendingCall
+	sizeCache        map[string]int64
+	medianBytes      int64
+	medianDone       bool
+	worktreeSafe     bool
+	worktreeSafeDone bool
+	transcripts      int
+	malformed        int
 }
 
 func newStatsCollector(ctx context.Context, repo string) *statsCollector {
@@ -708,16 +710,77 @@ func (c *statsCollector) fileSize(path string) int64 {
 	if cached, ok := c.sizeCache[path]; ok {
 		return cached
 	}
-	resolved := path
-	if !filepath.IsAbs(resolved) {
-		resolved = filepath.Join(c.repo, resolved)
-	}
 	var size int64
-	if info, err := os.Stat(resolved); err == nil && info.Mode().IsRegular() {
-		size = info.Size()
+	if c.worktreeTraversalSafe() {
+		if rel, ok := statsRepoRelativePath(c.repo, path); ok {
+			if root, err := os.OpenRoot(c.repo); err == nil {
+				if measured, ok := statsRootedRegularFileSize(root, rel); ok {
+					size = measured
+				}
+				_ = root.Close()
+			}
+		}
 	}
 	c.sizeCache[path] = size
 	return size
+}
+
+func statsRepoRelativePath(repo, candidate string) (string, bool) {
+	repoAbs, err := filepath.Abs(repo)
+	if err != nil {
+		return "", false
+	}
+	resolved := candidate
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(repoAbs, resolved)
+	}
+	resolvedAbs, err := filepath.Abs(resolved)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(repoAbs, resolvedAbs)
+	if err != nil || rel == "." || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
+}
+
+func statsRootedRegularFileSize(root *os.Root, rel string) (int64, bool) {
+	native := filepath.Clean(filepath.FromSlash(rel))
+	if native == "." || filepath.IsAbs(native) || filepath.VolumeName(native) != "" {
+		return 0, false
+	}
+	components := strings.Split(native, string(filepath.Separator))
+	current := ""
+	for index, component := range components {
+		if component == "" || component == "." || component == ".." {
+			return 0, false
+		}
+		current = filepath.Join(current, component)
+		info, err := root.Lstat(current)
+		if err != nil || info.Mode()&fs.ModeSymlink != 0 {
+			return 0, false
+		}
+		if index < len(components)-1 {
+			if !info.IsDir() {
+				return 0, false
+			}
+			continue
+		}
+		if info.Mode().IsRegular() {
+			return info.Size(), true
+		}
+	}
+	return 0, false
+}
+
+func (c *statsCollector) worktreeTraversalSafe() bool {
+	if c.worktreeSafeDone {
+		return c.worktreeSafe
+	}
+	c.worktreeSafeDone = true
+	c.worktreeSafe = c.repo != "" && sem.EnsureWorktreeSafeForFilesystemTraversal(c.ctx, c.repo) == nil
+	return c.worktreeSafe
 }
 
 // medianTrackedFileSize is the fallback counterfactual when the top hit cannot be resolved on
@@ -731,14 +794,22 @@ func (c *statsCollector) medianTrackedFileSize() int64 {
 	if c.repo == "" {
 		return 0
 	}
+	if !c.worktreeTraversalSafe() {
+		return 0
+	}
 	var sizes []int64
-	if files, err := gitutil.ListIndexFiles(c.ctx, c.repo); err == nil {
-		for _, name := range files {
-			if info, err := os.Stat(filepath.Join(c.repo, name)); err == nil && info.Mode().IsRegular() {
-				sizes = append(sizes, info.Size())
-			}
-			if len(sizes) >= 5000 {
-				break
+	if sem.EnsureGitMetadataSafeForSubprocess(c.repo) == nil {
+		if files, err := gitutil.ListIndexFiles(c.ctx, c.repo); err == nil {
+			if root, err := os.OpenRoot(c.repo); err == nil {
+				for _, name := range files {
+					if size, ok := statsRootedRegularFileSize(root, filepath.ToSlash(name)); ok {
+						sizes = append(sizes, size)
+					}
+					if len(sizes) >= 5000 {
+						break
+					}
+				}
+				_ = root.Close()
 			}
 		}
 	}
@@ -746,6 +817,12 @@ func (c *statsCollector) medianTrackedFileSize() int64 {
 		_ = filepath.WalkDir(c.repo, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
 				return nil //nolint:nilerr // best-effort fallback measurement
+			}
+			if entry.Type()&fs.ModeSymlink != 0 {
+				if entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
 			}
 			if entry.IsDir() {
 				if entry.Name() != "." && strings.HasPrefix(entry.Name(), ".") && path != c.repo {
