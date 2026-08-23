@@ -842,7 +842,7 @@ func selectiveSearchSnapshotFromFull(
 	if warnings == nil {
 		warnings = []ProviderWarning{}
 	}
-	failures := filterSearchPartialFailures(full.Header.PartialFailures, allowedFiles)
+	failures := filterSearchPartialFailures(full.Header.PartialFailures, retainedFileSet(selective.Files))
 	failures = mergePartialFailures(failures, relationFailures)
 	if budgetHit {
 		// The marker both tells the caller the view is partial and makes the
@@ -936,6 +936,14 @@ func filterSearchPartialFailures(failures []PartialFailure, allowedFiles map[str
 		}
 	}
 	return filtered
+}
+
+func retainedFileSet(files []FileRecord) map[string]bool {
+	retained := make(map[string]bool, len(files))
+	for _, file := range files {
+		retained[filepath.ToSlash(filepath.Clean(file.Path))] = true
+	}
+	return retained
 }
 
 // LoadOrBuildProviderSnapshot reuses the tree-keyed, option-keyed compressed

@@ -129,6 +129,28 @@ func runUnderSignals(run func(context.Context) error) error {
 	return err
 }
 
+const writeBytesChunkSize = 64 * 1024
+
+// writeBytesWithContext writes b to w in chunks, returning ctx.Err() as soon as
+// the context is canceled. A cache hit can be megabytes; a plain Write would
+// ignore SIGINT until the whole buffer is flushed.
+func writeBytesWithContext(ctx context.Context, w io.Writer, b []byte) error {
+	for len(b) > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n := writeBytesChunkSize
+		if n > len(b) {
+			n = len(b)
+		}
+		if _, err := w.Write(b[:n]); err != nil {
+			return err
+		}
+		b = b[n:]
+	}
+	return nil
+}
+
 func Run(ctx context.Context, opts Options, args []string) error {
 	if opts.Version == "" {
 		opts.Version = "dev"
@@ -476,7 +498,7 @@ func runProviderRecords(ctx context.Context, opts Options, args []string, mode s
 	}
 	if useCache {
 		if records, cachedSummary, hit, err := sem.LoadProviderRecords(ctx, repo, opts.Version, tree, cacheMode, cacheDir, options); err == nil && hit {
-			if _, err := opts.Stdout.Write(records); err != nil {
+			if err := writeBytesWithContext(ctx, opts.Stdout, records); err != nil {
 				return err
 			}
 			warnIfPartial(opts.Stderr, flags.Worktree, cachedSummary)

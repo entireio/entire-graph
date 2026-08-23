@@ -475,6 +475,9 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 	// qualified name for the same source location. Collapse them onto the function record
 	// (real span, real signature) LAST, after every pass has contributed.
 	entities = collapseFunctionValueBindings(entities)
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "entity reconciliation")
+	}
 	if entityLineOffset > 0 {
 		for index := range entities {
 			entities[index].StartLine -= entityLineOffset
@@ -489,6 +492,9 @@ func (TreeSitterParser) ParseWithStatusCtx(ctx context.Context, path, content st
 				entities[index].sourceEndByte = 0
 			}
 		}
+	}
+	if stopped(stop) {
+		return nil, spec.language, parseStoppedStatus(ctx, "entity sort")
 	}
 	sort.Slice(entities, func(i, j int) bool {
 		if entities[i].StartLine == entities[j].StartLine {
