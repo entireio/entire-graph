@@ -395,9 +395,12 @@ content, the provider completes a bounded traversal beneath a held repository
 root. The preflight never reads or resolves nested case-insensitive `.git`
 markers and refuses Git enumeration when it encounters one, a traversable
 redirect, a mount boundary, an unreadable directory, cancellation, or a
-traversal ceiling. A
-refusal routes to the existing bounded filesystem fallback before
-`git ls-files --others` can inspect a repository-controlled gitfile target.
+traversal ceiling. A nested marker routes to the existing bounded filesystem
+fallback only after the full preflight proves that no other directory is a
+mount or traversable redirect. Unreadable local subtrees retain the fallback's
+warned omission while the preflight checks every other reachable directory.
+Redirects, mount boundaries, cancellation, and traversal ceilings fail closed.
+Fallbacks selected by earlier Git failures pass through the same safety gate.
 
 Implicit repository discovery is the sole ceiling-sensitive path. When
 `GIT_CEILING_DIRECTORIES` is present, the CLI applies its usable absolute entries

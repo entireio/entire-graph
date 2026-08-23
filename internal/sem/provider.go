@@ -14828,6 +14828,14 @@ func gitMetadataSafeForSubprocessContext(ctx context.Context, repo string) bool 
 // junction or mount can redirect the recursive walk off the selected volume.
 var errGitWorktreePreflight = errors.New("Git worktree preflight declined subprocess enumeration")
 
+// errGitWorktreeFallbackUnsafe marks a preflight refusal whose cause (a mount,
+// traversable redirect, unavailable safety guard, cancellation, or exhausted
+// traversal bound) is unsafe for the ordinary os.Root filesystem fallback too.
+// A nested .git marker or unreadable local subtree may use that fallback only
+// after every other reachable directory is checked; this class must fail closed
+// before either traversal begins.
+var errGitWorktreeFallbackUnsafe = errors.New("filesystem worktree fallback cannot safely traverse the refused path")
+
 // gitWorktreePreflightBudget reuses the filesystem fallback's supported-tree
 // ceilings. The preflight has to finish the entire traversal before Git starts;
 // reaching any ceiling is therefore a decline, never a partial success. The
@@ -14859,23 +14867,27 @@ func (b *gitWorktreePreflightBudget) admitTraversalStep(ctx context.Context) boo
 func gitWorktreeSafeBeforeListing(ctx context.Context, repo string) error {
 	repoAbs, err := filepath.Abs(repo)
 	if err != nil {
-		return fmt.Errorf("%w: resolve selected root: %v", errGitWorktreePreflight, err)
+		return fmt.Errorf("%w: %w: resolve selected root: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, err)
 	}
 	anchor, resolvedRepo, err := newPathTraversalAnchor(repoAbs, repoAbs)
 	if err != nil {
-		return fmt.Errorf("%w: anchor selected root: %v", errGitWorktreePreflight, err)
+		return fmt.Errorf("%w: %w: anchor selected root: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, err)
 	}
 	root, err := newSweepDirectoryRoot(resolvedRepo)
 	if err != nil {
-		return fmt.Errorf("%w: hold selected root: %v", errGitWorktreePreflight, err)
+		return fmt.Errorf("%w: %w: hold selected root: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, err)
 	}
 	defer root.Close()
 
 	var budget gitWorktreePreflightBudget
 	if !budget.admitDirectory("") {
-		return fmt.Errorf("%w: selected root exceeds the directory ceiling", errGitWorktreePreflight)
+		return fmt.Errorf("%w: %w: selected root exceeds the directory ceiling", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe)
 	}
 	return gitWorktreeSafeBeforeListingFromDirectories(ctx, root, anchor, &budget, []string{""})
+}
+
+func worktreePreflightCanSkipLocalFailure(err error) bool {
+	return errors.Is(err, fs.ErrPermission) || os.IsPermission(err) || errors.Is(err, fs.ErrNotExist)
 }
 
 // gitWorktreeSafeBeforeListingFromDirectories is split from the setup above so
@@ -14889,16 +14901,31 @@ func gitWorktreeSafeBeforeListingFromDirectories(
 	budget *gitWorktreePreflightBudget,
 	queue []string,
 ) error {
+	var fallbackReason error
 	for cursor := 0; cursor < len(queue); cursor++ {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("%w: traversal cancelled: %v", errGitWorktreePreflight, err)
+			return fmt.Errorf("%w: %w: traversal cancelled: %w", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, err)
 		}
 		dir := queue[cursor]
 		opened, err := root.Open(anchor, dir, func() bool {
 			return budget.admitTraversalStep(ctx)
 		})
 		if err != nil {
-			return fmt.Errorf("%w: open directory %q: %v", errGitWorktreePreflight, filepath.ToSlash(dir), err)
+			if errors.Is(err, errGitDirSweepHalted) && ctx.Err() != nil {
+				return fmt.Errorf("%w: %w: traversal cancelled: %w", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, ctx.Err())
+			}
+			if errors.Is(err, errSymlinkChainOffVolume) ||
+				errors.Is(err, errGitDirSweepHalted) ||
+				!worktreePreflightCanSkipLocalFailure(err) {
+				return fmt.Errorf("%w: %w: open directory %q: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, filepath.ToSlash(dir), err)
+			}
+			if fallbackReason == nil {
+				fallbackReason = fmt.Errorf("%w: open directory %q: %v", errGitWorktreePreflight, filepath.ToSlash(dir), err)
+			}
+			// The fallback already warns and skips an unreadable local subtree.
+			// Keep checking every other reachable directory so that condition
+			// cannot mask a later mount or redirect.
+			continue
 		}
 		for {
 			entries, readErr := opened.ReadDir(256)
@@ -14911,8 +14938,8 @@ func gitWorktreeSafeBeforeListingFromDirectories(
 				if !budget.admitRawEntry(child) {
 					_ = opened.Close()
 					return fmt.Errorf(
-						"%w: more than %d entries or %d aggregate path bytes",
-						errGitWorktreePreflight,
+						"%w: %w: more than %d entries or %d aggregate path bytes",
+						errGitWorktreePreflight, errGitWorktreeFallbackUnsafe,
 						maxWorktreeWalkRawEntries,
 						maxWorktreeWalkRawBytes,
 					)
@@ -14923,14 +14950,19 @@ func gitWorktreeSafeBeforeListingFromDirectories(
 						// marker. Do not stat, read, resolve, or descend into it.
 						continue
 					}
-					_ = opened.Close()
-					return fmt.Errorf("%w: nested .git marker at %q", errGitWorktreePreflight, child)
+					if fallbackReason == nil {
+						fallbackReason = fmt.Errorf("%w: nested .git marker at %q", errGitWorktreePreflight, child)
+					}
+					// Keep traversing every other directory. The filesystem fallback
+					// is safe only after this pass has proved that a later sibling is
+					// not a mount or traversable redirect.
+					continue
 				}
 				entryType := entry.Type()
 				if entryType&fs.ModeSymlink != 0 {
 					if runtime.GOOS == "windows" {
 						_ = opened.Close()
-						return fmt.Errorf("%w: reparse point at %q", errGitWorktreePreflight, child)
+						return fmt.Errorf("%w: %w: reparse point at %q", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, child)
 					}
 					// Git treats POSIX symlinks as leaf entries. Matching that
 					// behavior without resolving them preserves ordinary source
@@ -14939,14 +14971,14 @@ func gitWorktreeSafeBeforeListingFromDirectories(
 				}
 				if runtime.GOOS == "windows" && entryType&fs.ModeIrregular != 0 {
 					_ = opened.Close()
-					return fmt.Errorf("%w: reparse point at %q", errGitWorktreePreflight, child)
+					return fmt.Errorf("%w: %w: reparse point at %q", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, child)
 				}
 				if entryType.IsDir() {
 					if !budget.admitDirectory(child) {
 						_ = opened.Close()
 						return fmt.Errorf(
-							"%w: more than %d directories or %d aggregate directory-path bytes",
-							errGitWorktreePreflight,
+							"%w: %w: more than %d directories or %d aggregate directory-path bytes",
+							errGitWorktreePreflight, errGitWorktreeFallbackUnsafe,
 							maxWorktreeWalkDirectories,
 							maxWorktreeWalkDirectoryBytes,
 						)
@@ -14964,13 +14996,19 @@ func gitWorktreeSafeBeforeListingFromDirectories(
 				// any child-path lookup.
 				info, infoErr := entry.Info()
 				if infoErr != nil {
-					_ = opened.Close()
-					return fmt.Errorf("%w: inspect ambiguous directory entry %q: %v", errGitWorktreePreflight, child, infoErr)
+					if !worktreePreflightCanSkipLocalFailure(infoErr) {
+						_ = opened.Close()
+						return fmt.Errorf("%w: %w: inspect ambiguous directory entry %q: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, child, infoErr)
+					}
+					if fallbackReason == nil {
+						fallbackReason = fmt.Errorf("%w: inspect ambiguous directory entry %q: %v", errGitWorktreePreflight, child, infoErr)
+					}
+					continue
 				}
 				if pathMayRedirect(info) {
 					if runtime.GOOS == "windows" {
 						_ = opened.Close()
-						return fmt.Errorf("%w: reparse point at %q", errGitWorktreePreflight, child)
+						return fmt.Errorf("%w: %w: reparse point at %q", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, child)
 					}
 					continue
 				}
@@ -14980,8 +15018,8 @@ func gitWorktreeSafeBeforeListingFromDirectories(
 				if !budget.admitDirectory(child) {
 					_ = opened.Close()
 					return fmt.Errorf(
-						"%w: more than %d directories or %d aggregate directory-path bytes",
-						errGitWorktreePreflight,
+						"%w: %w: more than %d directories or %d aggregate directory-path bytes",
+						errGitWorktreePreflight, errGitWorktreeFallbackUnsafe,
 						maxWorktreeWalkDirectories,
 						maxWorktreeWalkDirectoryBytes,
 					)
@@ -14992,16 +15030,21 @@ func gitWorktreeSafeBeforeListingFromDirectories(
 				continue
 			}
 			if !errors.Is(readErr, io.EOF) {
-				_ = opened.Close()
-				return fmt.Errorf("%w: read directory %q: %v", errGitWorktreePreflight, filepath.ToSlash(dir), readErr)
+				if !worktreePreflightCanSkipLocalFailure(readErr) {
+					_ = opened.Close()
+					return fmt.Errorf("%w: %w: read directory %q: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, filepath.ToSlash(dir), readErr)
+				}
+				if fallbackReason == nil {
+					fallbackReason = fmt.Errorf("%w: read directory %q: %v", errGitWorktreePreflight, filepath.ToSlash(dir), readErr)
+				}
 			}
 			break
 		}
 		if err := opened.Close(); err != nil {
-			return fmt.Errorf("%w: close directory %q: %v", errGitWorktreePreflight, filepath.ToSlash(dir), err)
+			return fmt.Errorf("%w: %w: close directory %q: %v", errGitWorktreePreflight, errGitWorktreeFallbackUnsafe, filepath.ToSlash(dir), err)
 		}
 	}
-	return nil
+	return fallbackReason
 }
 
 func worktreeGitFallbackWarning(cause error) ProviderWarning {
@@ -15111,6 +15154,9 @@ func worktreeSourceFilesWithLister(
 		return ok
 	}
 	if err := gitWorktreeSafeBeforeListing(ctx, repo); err != nil {
+		if errors.Is(err, errGitWorktreeFallbackUnsafe) {
+			return nil, nil, err
+		}
 		return walkWorktreeFilesAfterGitFailure(ctx, repo, ignores, dirTracked, err)
 	}
 	listed, err := listWorktreeFiles(ctx, repo)
@@ -15308,6 +15354,12 @@ func gitSweepRootsFromGit(ctx context.Context, repo string, gitDirs *gitDirExclu
 // per directory (root .gitignore plus every nested one on the path) so a
 // directory Git cannot enumerate is still filtered the way the project asked.
 func walkWorktreeFiles(ctx context.Context, repo string, ignores ignoreMatcher, dirTracked func(string) bool) ([]string, []ProviderWarning, error) {
+	// Every filesystem fallback enters through here, including paths selected
+	// before Git's index listing succeeds. Require the same complete held-root
+	// safety proof so an earlier Git failure cannot bypass mount detection.
+	if err := gitWorktreeSafeBeforeListing(ctx, repo); errors.Is(err, errGitWorktreeFallbackUnsafe) {
+		return nil, nil, err
+	}
 	var paths []string
 	warnings, err := visitWalkWorktreeFiles(ctx, repo, ignores, dirTracked, func(rel string) bool {
 		paths = append(paths, rel)

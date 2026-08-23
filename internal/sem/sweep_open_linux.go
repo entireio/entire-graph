@@ -164,7 +164,7 @@ func (r *sweepDirectoryRoot) openWithoutOpenat2(
 	}
 	mountPoints, err := r.loadMountPoints()
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(errSymlinkChainOffVolume, err)
 	}
 	// mountinfo identifies mount points by their current absolute paths, while
 	// the fallback below opens components relative to the held repository
@@ -174,11 +174,11 @@ func (r *sweepDirectoryRoot) openWithoutOpenat2(
 	// directory held by r.file.
 	heldInfo, err := r.file.Stat()
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(errSymlinkChainOffVolume, err)
 	}
 	namedInfo, err := os.Lstat(r.file.Name())
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(errSymlinkChainOffVolume, err)
 	}
 	if !os.SameFile(heldInfo, namedInfo) {
 		return nil, errSymlinkChainOffVolume
@@ -214,7 +214,7 @@ func (r *sweepDirectoryRoot) openWithoutOpenat2(
 			_ = next.Close()
 			closeOwned()
 			if err != nil {
-				return nil, err
+				return nil, errors.Join(errSymlinkChainOffVolume, err)
 			}
 			return nil, errSymlinkChainOffVolume
 		}
@@ -224,6 +224,10 @@ func (r *sweepDirectoryRoot) openWithoutOpenat2(
 		currentPath = candidate
 	}
 	return owned, nil
+}
+
+func linuxSweepOpenCanSkipLocalPathFailure(err error) bool {
+	return errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ENOTDIR)
 }
 
 func (r *sweepDirectoryRoot) Open(anchor pathTraversalAnchor, dir string, admitStep func() bool) (*os.File, error) {
@@ -252,8 +256,21 @@ func (r *sweepDirectoryRoot) Open(anchor pathTraversalAnchor, dir string, admitS
 	if err == nil {
 		return opened, nil
 	}
-	if !errors.Is(err, syscall.ENOSYS) {
-		return nil, err
+	if errors.Is(err, syscall.EXDEV) || errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.EAGAIN) {
+		return nil, errSymlinkChainOffVolume
 	}
-	return r.openWithoutOpenat2(anchor, components, admitStep)
+	if !errors.Is(err, syscall.ENOSYS) {
+		// EPERM can mean seccomp denied the openat2 syscall entirely, so it
+		// cannot prove that this particular directory is merely unreadable.
+		if linuxSweepOpenCanSkipLocalPathFailure(err) {
+			return nil, err
+		}
+		return nil, errors.Join(errSymlinkChainOffVolume, err)
+	}
+	opened, err = r.openWithoutOpenat2(anchor, components, admitStep)
+	if err == nil || errors.Is(err, errSymlinkChainOffVolume) || errors.Is(err, errGitDirSweepHalted) ||
+		linuxSweepOpenCanSkipLocalPathFailure(err) {
+		return opened, err
+	}
+	return nil, errors.Join(errSymlinkChainOffVolume, err)
 }

@@ -55,10 +55,13 @@ other is installation.
   validation results are not cached globally or persisted.
 - Before Git recursively enumerates untracked worktree content, a bounded
   held-root preflight walks the complete directory tree without resolving a
-  nested case-insensitive `.git` marker. Nested markers, traversable redirects,
-  mount boundaries, unreadable directories, cancellation, and traversal
-  ceilings all select the bounded filesystem fallback before
-  `git ls-files --others` starts.
+  nested case-insensitive `.git` marker. A nested marker selects the bounded
+  filesystem fallback only after the preflight finishes checking every other
+  directory. Unreadable local subtrees retain the fallback's warned omission,
+  while the preflight continues across every other reachable directory. A
+  traversable redirect, mount boundary, cancellation, or traversal ceiling
+  fails closed. Every earlier Git failure also passes through this safety gate
+  before the filesystem fallback begins.
   This prevents an untracked gitfile from making Git resolve a UNC or off-volume
   target before the post-listing Git-directory excluder can observe it.
 - Repository-controlled Git ignore policy, including nested `.gitignore` files,
