@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.10.3-nightly.202608220610.6bf587d66",
+  "checkpoint_id": "07cd5a9392aa",
+  "strategy": "manual-commit",
+  "branch": "codex/test-git-subprocess-hardening-regressions",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "internal/gitutil/git_hardening_test.go",
+    "internal/sem/search_cache_worktree_test.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/07/cd5a9392aa/0/metadata.json",
+      "transcript": "/07/cd5a9392aa/0/full.jsonl",
+      "compact_transcript": "/07/cd5a9392aa/0/transcript.jsonl",
+      "content_hash": "/07/cd5a9392aa/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 47,
+    "cache_creation_tokens": 42646,
+    "cache_read_tokens": 1283452,
+    "output_tokens": 9680,
+    "api_call_count": 27
+  }
+}
