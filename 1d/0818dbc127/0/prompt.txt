@@ -1,0 +1,69 @@
+What's the status?
+
+---
+
+This PR review is taking really long
+
+---
+
+OK, let me know when 132 CI is green?
+
+---
+
+Aren’t the Entire Gates just approvals?
+
+---
+
+The Entire trail for 132 has two unresolved findings. Review these.
+
+---
+
+The Entire CLI is signed in now
+
+---
+
+You worked for 24h and didn't find those Why?
+
+---
+
+Ok, address those findings. Also, the statement "increasingly complex [..] behavior" makes me nervous. Are all the changes that you made actually needed or did you introduce all this complexity for no real benefit?
+
+---
+
+Do not in any case worsen the product quality, functionality, or performance.
+
+---
+
+Also, you can test on Windows at any time by booting a VM via the az CLI.
+
+---
+
+Add finding 1 and 3 to docs/parking-lot.md. If it doesn't already exist, create it. Then commit/push and ensure the Entire branch is also pushed.
+
+---
+
+The trails now reports 4 findings. Review those again.
+
+---
+
+The Entire CLI exposes all findings. Try again.
+
+---
+
+No, just upgrade the CLI
+
+---
+
+Fix 1 and 2, and 4 to the parking lot and update it for 3 if there are new infos.
+
+---
+
+While we wait for CI, run the Codex stop hook.
+
+---
+
+Wait wait, you ran the wrong hook
+
+---
+
+What the hell did you just do?
