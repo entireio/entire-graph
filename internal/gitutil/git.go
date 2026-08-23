@@ -133,7 +133,10 @@ func FirstParent(ctx context.Context, repo, rev string) (string, error) {
 }
 
 func FindCommitWithCheckpoint(ctx context.Context, repo, checkpointID string) (string, error) {
-	out, err := run(ctx, repo, "git", "log", "--single-worktree", "--all", "--format=%H", "-n", "1", "--grep=Entire-Checkpoint: "+checkpointID)
+	// --all includes detached HEADs from every linked worktree because a
+	// checkpoint commit can be reachable only from one of them. --ignore-missing
+	// keeps an unrelated invalid worktree HEAD from breaking the whole lookup.
+	out, err := run(ctx, repo, "git", "log", "--ignore-missing", "--all", "--format=%H", "-n", "1", "--grep=Entire-Checkpoint: "+checkpointID)
 	if err != nil {
 		return "", err
 	}

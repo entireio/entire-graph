@@ -57,6 +57,46 @@ func TestFindCommitWithCheckpointIgnoresOtherWorktreeHEAD(t *testing.T) {
 	}
 }
 
+func TestFindCommitWithCheckpointIncludesDetachedOtherWorktreeHEAD(t *testing.T) {
+	repo := t.TempDir()
+	git(t, repo, "init")
+	git(t, repo, "config", "user.name", "Entire Graph Test")
+	git(t, repo, "config", "user.email", "graph@example.com")
+	if err := os.WriteFile(filepath.Join(repo, "source.go"), []byte("package source\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", "source.go")
+	git(t, repo, "commit", "-m", "base")
+
+	linked := filepath.Join(t.TempDir(), "linked")
+	git(t, repo, "worktree", "add", "--detach", linked)
+	if err := os.WriteFile(filepath.Join(linked, "source.go"), []byte("package source\n\nvar Linked = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, linked, "add", "source.go")
+	git(t, linked, "commit", "-m", "checkpoint", "-m", "Entire-Checkpoint: detached")
+	want := gitOutput(t, linked, "rev-parse", "HEAD")
+
+	currentOnly := gitOutput(t, repo, "log", "--single-worktree", "--all", "--format=%H", "-n", "1", "--grep=Entire-Checkpoint: detached")
+	if currentOnly != "" {
+		t.Fatalf("fixture checkpoint unexpectedly reachable from current-worktree refs: %q", currentOnly)
+	}
+	broken := filepath.Join(t.TempDir(), "broken")
+	git(t, repo, "worktree", "add", "--detach", broken)
+	brokenGitDir := gitOutput(t, broken, "rev-parse", "--absolute-git-dir")
+	if err := os.WriteFile(filepath.Join(brokenGitDir, "HEAD"), []byte(strings.Repeat("0", 40)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := FindCommitWithCheckpoint(t.Context(), repo, "detached")
+	if err != nil {
+		t.Fatalf("FindCommitWithCheckpoint: %v", err)
+	}
+	if got != want {
+		t.Fatalf("FindCommitWithCheckpoint = %q, want detached linked-worktree HEAD %q", got, want)
+	}
+}
+
 func TestListFilesHandlesNewlinesInPaths(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows filenames cannot contain newlines")
